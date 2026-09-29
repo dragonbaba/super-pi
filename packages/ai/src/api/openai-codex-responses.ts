@@ -842,9 +842,10 @@ async function* parseSSE(response: Response, signal?: AbortSignal): AsyncGenerat
             if (signal?.aborted) {
                 throw new Error("Request was aborted");
             }
-            if (done)
-                break;
-            buffer += decoder.decode(value, { stream: true });
+            // At EOF, flush the decoder and terminate a residual final frame so it is parsed.
+            buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
+            if (done && buffer.trim())
+                buffer += "\n\n";
             let idx = buffer.indexOf("\n\n");
             while (idx !== -1) {
                 const chunk = buffer.slice(0, idx);
@@ -869,6 +870,8 @@ async function* parseSSE(response: Response, signal?: AbortSignal): AsyncGenerat
                 }
                 idx = buffer.indexOf("\n\n");
             }
+            if (done)
+                break;
         }
     }
     finally {
