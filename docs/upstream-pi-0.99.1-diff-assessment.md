@@ -4,6 +4,8 @@
 修订：v1.1 · 2026-09-30（API-first / 既有 Codex 兼容 / 性能归属 / 验证去重）
 
 > 本次交付是对原评估的修订，不是源码修复或测试完成报告。保留 A1–D3 编号及原始对照材料，新增 A5 与执行边界。原审查事实、补充静态核验和本次实施要求分开标明；尚未复现的风险、性能收益、账号在线有效性均不得写成已验证结论。
+>
+> 实施状态（2026-09-30）：本计划已在分支 `feat/upstream-0991-absorb` 上按 §6.1 实施，逐项结论与证据见 §9；§1–§8 的计划正文保持修订稿原样，不按实施结果回改。
 
 ## 1. 基线与方法
 
@@ -459,17 +461,50 @@ Super Pi（`D:\RMProjects\Pi\packages`）：
 
 ## 9. 实施交接记录（由执行者就地维护）
 
-当前状态：仅完成计划修订；没有运行源码测试或创建 PR。此节保持简短，不另外生成批次目录、源码副本和多份重复审查报告。
+当前状态：本地实施完成，未推送、未创建 PR，分支留给 Codex 审核。此节保持简短，不另外生成批次目录、源码副本和多份重复审查报告。
+
+| 项 | 值 |
+| --- | --- |
+| 文档 | 本文件 `docs/upstream-pi-0.99.1-diff-assessment.md`（修订稿原位更新，仅此一份） |
+| 分支 / worktree | `feat/upstream-0991-absorb` / `D:\RMProjects\Pi-upstream-0991`（主工作区 `D:\RMProjects\Pi` 的用户未跟踪文件未动） |
+| 基线 | `ef8ac684de2ee46441b2a3deca4a67e4239e1c28` |
+| 已验证代码 HEAD | `09094442ab40042c3172ee7b629e710a99f94d72`（其后只有本节所在的文档 commit，不改源码与测试） |
+| 在线状态 | 全部为离线夹具（`SP_OFFLINE=1`、注入 fetch、合成哨兵秘密）；**账号在线有效性未实测** |
+
+状态口径：**已修复**（有先失败的最小回归，且已运行通过）；**已等价**（现有实现已满足，本轮补回归或静态核对并注明）；**无收益不采用**（已测量，改动已撤回）；**待证实/阻塞**；**暂缓**。
 
 | 切片 | 状态 | 实现/验证证据或不采用原因 |
 | --- | --- | --- |
-| A1–A4 | 待实施核验 | 分项登记，不用一条“全部完成”代替 |
-| A5 | 待实施核验 | 认证、诊断、压缩分项；线上有效性未实测 |
-| C9 | 待实施核验 | 参数终止符 |
-| C8 | 待复现 | 确认现有容器与派发契约 |
-| C4 | 待证实 | 不预设计价倍数 |
-| B3/B1/B2/B4 | 待测候选 | 分别登记语义与分配/释放证据 |
-| C7 | 待测候选 | 不与 A3 混为同一个性能结论 |
-| C1–C3/C5/C6/D1–D3/其余 P2 | 本轮暂缓 | 不得在审核“补全”时自动扩张 |
+| A1 未完成工具调用 | 已修复 | `58561b934`、`f1e74e840`：`openai-responses-shared.ts` 在任一调用仍持有 scratch 缓冲时拒绝终态 toolUse；Codex SSE 共用 `processResponsesStream`，改为报告错误结果。`tests/provider-contract/responses-terminal-tool-calls.contract.test.ts`：缺 `output_index`/未 done 的函数与自定义调用被拒，已完成调用保留，截断响应仍走 length，Agent 不执行未完成调用 |
+| A2 自定义消息顺序 | 已修复 | `643189cf8`、`f1e74e840`：流式期间 `triggerTurn:false` 的消息排队，在 turn_end、settle 或下一次 prompt 前写入，写入历史前不发事件。`tests/custom-message-ordering.test.ts`：工具调用期间发送的消息落在本轮之后；abort 后恰好释放一次；空闲时立即写入。上游附带的 `getQueuedMessages` 改动在 Super Pi 无对应 API，N/A |
+| A3 Codex SSE 残余帧 / CRLF | 已修复 | EOF：`f5a53829a`，读到 done 时先 flush decoder、补帧结束再解析，截断的残余帧报 `Invalid Codex SSE JSON`。CRLF：`53fda4afc`，与 C7 共用的语料发现 CRLF 流会被缓存到 EOF 后当成一帧解析失败（先失败 4 例），按 §6 归入 A3 单独修复。夹具 `tests/helpers/responses-sse-fixture.ts`，回归 `tests/provider-contract/codex-sse-framing.contract.test.ts`（LF/CRLF × 有/无结尾空行 × 整块/3 字节分片） |
+| A4 首条用户消息落盘 | 已修复 | `9cdd2f21f`：存在 user 或 assistant 消息即创建会话文件，只在未 flush 时检查，分支会话同规则；保留原子首写。`tests/session-first-user-persistence.test.ts`：仅 setup 的会话不留文件；首条 user 在 assistant 回复前落盘；只含 user 的分支按新对话写入。进程内夹具，不据此声称断电持久性 |
+| A5-a 认证与诊断 | 已修复 + 已等价 | 已修复 `7d666f1de`：token/设备码错误不再回显原始响应、token、授权码或 JSON.parse 消息，只报告状态、校验过的 OAuth 错误码和缺失字段名。已等价（补回归）：临近过期在请求边界只刷新一次并使用新 token；刷新失败 fail-closed，不回退环境 key，保留凭据，秘密被脱敏。`tests/provider-contract/openai-codex-auth-diagnostics.contract.test.ts`（合成哨兵秘密） |
+| A5-b 压缩边界 | 已等价（补回归） | `dee4836c4`：只有输出前明确的 400/404（`compaction_trigger`/`remote_compaction_v2`）才回退一次 unary；通用 400、401/403/429/5xx、畸形/不完整流、输出后错误和 abort 都不再发送；unary 也失败时不重试；v2 成功只发一次请求并保留 opaque item；GPT 认证失败返回 `{ cancel: true }` 和纯枚举遥测；非 GPT 保持默认回退。`tests/provider-contract/openai-remote-compaction-fallback.contract.test.ts`。continuation/opaque 状态在会话切换、模型、端点或身份变化时的失效只做了静态阅读，未加运行时回归；摘要 `toolChoice`/提示词未复现（P2），未改 |
+| C9 `--` 终止符 | 已修复 | `07e848aa2`：`--` 之后都视为消息或 @file，启动时的 `--offline` 预扫描不再匹配其后参数，`--help` 已补说明。`tests/cli-args-terminator.test.ts` |
+| C8 RpcClient 派发 | 已修复（已复现） | 先复现：监听器在派发中取消订阅会 splice 活数组，导致下一个监听器漏掉该事件；派发中新增的监听器会收到正在派发的事件。`2518020b1`：订阅/退订时写时复制，派发时对捕获的数组用下标循环，得到快照语义且不按事件复制。`tests/rpc-client-dispatch.test.ts`：自退订、重入派发、1000 次稳态派发数组身份不变，并做结构检查（`handleLine` 无 spread/slice/filter/map） |
+| C4 Fast service tier | 已修复（依据已核实） | 依据：OpenAI 官方定价页 <https://developers.openai.com/api/docs/pricing>（2026-07-30 起 Priority processing 更名 Fast mode：标准价 2×，gpt-5.5 为 2.5×）；上游 issue <https://github.com/earendil-works/pi/issues/10034>。`d9bfbba91`：Responses 与 Codex 倍率把 `"fast"` 按 priority 计价，档位优先级不变（有上报档位就用上报的，没有才用请求档位）。`tests/provider-contract/openai-service-tier-pricing.contract.test.ts`，2 API × 8 例。**待证实（未改）**：上游 #3307 的 Codex `"default"` 档位覆盖行为；Codex 订阅费用仍是按 API 价换算的估算值 |
+| B3 Footer 会话扫描 | 已采用 | `0cfc8062d`：按 (sessionManager, sessionId, leafId, entryCount) 缓存 usage 合计、缓存命中率和会话名（新增 O(1) `SessionManager.getEntryCount()`）；`setSession`/`dispose` 时释放，上下文用量仍每帧读取。采样分配：1k 条目每次渲染约 26µs/43KB，10k 约 138µs/323KB，改后稳态约 8–10µs/约 6KB，与历史长度无关。`tests/footer-session-scan.test.ts`（100 帧 1 次扫描；追加、改名、切换能刷新；释放）；`tests/alpha-footer-scans.test.ts` 更新为未变历史只复制 1 次 |
+| B1 `visibleWidth` ASCII+ANSI 快速路径 | 无收益不采用 | 微基准：缓存命中（200 行）9ns → 快速路径约 400ns（回退）；未命中（2000 行）8.7µs/8.8KB → 约 350ns/0B。生产基准无改善：`bench:tui-frame-allocations --fixture production-main` 7024 → 7008/6995 B/frame；`bench:tui-transcript --cpu-only --full-history` p50 在噪声内（约 3.9–4.0ms 对 3.8–4.0ms）；`bench:tui-retained-lifecycle` meanMs 2990/2962 对 3000/2954。生产行宽测量基本都命中缓存，已撤回 |
+| B2 Box 未填充行缓存比较 | 无收益不采用 | 微基准（40 行保留子组件）：约 3.7µs/约 5.4KB → 约 0.25µs/约 544B/帧。生产基准无差异：`bench:tui-frame-allocations` 6998.6 对 6997.9 B/frame；`bench:tui-paced-tool-leaf` 四类 B/delivery 两轮都在噪声内（如 generic 38456/39051 对 38628/38810），CPU p50 持平。原因：TUI 已有保留式身份缓存，稳态帧不重渲染未变的 Box；工具进度帧内容每次都变。已撤回 |
+| B4 Markdown token 复用 | 无收益不采用（代价失衡） | 实现后测量：仅宽度变化的重渲染 CPU 降 44–49%（1.7K/6.9K/27.7K 字符：0.284/1.035/4.117ms → 0.159/0.559/2.117ms）。但完成的 `RetainedItem` 会在整个会话期间持有内部组件，每个已渲染的 Markdown 保留堆约翻倍（200 个约 1.4K 字符的组件：6.51MB → 12.93MB，每个 32.5KB → 64.6KB）；`RELEASE_COMPONENT_RENDER_CACHE` 只在最终卸载时触发。收益只在少见的 resize/主题切换且仅限视口内的项，代价是全会话常驻堆，已撤回。若以后要做，需要一个只覆盖视口的 token 所有权状态，属新设计 |
+| C7 Codex SSE 解析分配 | 已采用 | `09094442a`（与 A3 分 commit、共用夹具与 parser）：游标逐行扫描 LF/CRLF，按帧累积 data 行，每次读取最多压缩一次已消费前缀；游标、残余和待处理 data 都是单个 stream 的局部状态。`bench:stream` 不覆盖 `parseSSE`，改用生产 `streamCodex` + 注入 fetch 的采样堆剖析（2000 个文本 delta）：LF 1KiB 读取 2377 → 1838 B/delta（`parseSSE` 1434 → 898），CRLF 2655 → 1844（1714 → 905），每个 stream CPU 约 19.8 → 13.3ms（1KiB）、约 18.5 → 11.6ms（16KiB）；split/filter/map/join/trim/replace 分配归零，剩下的是 JSON.parse 输出、payload 切片和 decode。回归：同一 framing 文件新增注释、event/id/retry、空帧、多行 data、`[DONE]` × LF/CRLF × 1/5/4096 字节读取；abort 中途取消并释放响应 body（cancel 1 次、锁释放）；结构检查 |
+| C1–C3/C5/C6/D1–D3/其余 P2 | 暂缓 | 按 §6.1 未动；未顺带做 codemode、统一工具暴露、打包或工具链升级 |
+
+**已执行检查（基于 `09094442a`）**
+
+- 开发期只跑相关检查：各切片的单文件 `node --test`、`npx tsgo --noEmit`（通过）；`tests/provider-contract/*.test.ts` 共 122/122 通过（C7 后）。
+- `npm test -- --list`：新增或修改的 11 个回归文件都被根入口发现（footer-session-scan、alpha-footer-scans、cli-args-terminator、custom-message-ordering、rpc-client-dispatch、session-first-user-persistence，以及 provider-contract 下的 codex-sse-framing、openai-codex-auth-diagnostics、openai-remote-compaction-fallback、openai-service-tier-pricing、responses-terminal-tool-calls）。
+- `npm run verify` 一次（约 4m12s），**退出码 1**：`tsgo --noEmit` 与 `build:offline` 通过；`npm test` 在字母序第 93 个文件 `native-file-metadata.test.ts` 失败并停止（runner 遇到失败即停），此前 92 个文件退出码 0（1354 个用例通过）。失败的 2 例是 `N2 Windows denied content-write ACL…` 和 `N2 Windows parent FILE_ADD_FILE denial…`，都期望 ACL 拒绝导致写入失败；本机以提权 Administrator 运行，在基线 `ef8ac684d` 上单独运行同一文件也是 34 通过 2 失败，与本分支无关（本分支不触及 native 文件代码）。
+- 因 runner 在上述失败处停止，其余 110 个入口（109 个文件 + `@super-pi/memory` workspace）用临时驱动逐个运行，参数、环境与隔离目录与 `scripts/test.mjs` 的 runChild 相同，只去掉遇错即停：1533 个用例通过，1 个失败。失败的是 `native-source-delivery.test.ts` 的打包用例：本机 npm 的 `pack --workspace --json` 输出以包名为键的对象而非数组，`JSON.parse(stdout)[0]` 为 undefined；基线上结果相同，属既有工具链差异。
+- 未运行：真实账号请求、CI、远端 review。
+
+**未解决 / 待证实**
+
+- 账号在线有效性未实测（认证、普通请求、远程压缩与续接都只有离线夹具）。
+- C4：上游 #3307 的 Codex `"default"` 档位覆盖行为待证实，未改。
+- A5-b：continuation/opaque 状态失效只做了静态阅读，没有运行时回归。
+- `npm run verify` 在本机的两处失败（提权下的 ACL 拒绝用例、npm `pack --json` 输出形状）与基线一致，需要在非提权环境或 CI 中确认。
+- B4：若以后要采用，需要先设计只覆盖视口的 token 所有权，不在本轮范围。
 
 交接只需追加：实际文档路径、工作分支/worktree、基线和当前 HEAD、逐项状态、已执行命令/结果、性能证据位置及阻塞。最终远端 SHA、PR/review/CI 链接以 PR 正文和交付回复记录，避免为了回填自身最终 commit SHA 再生成一个未经验证的新 head。
