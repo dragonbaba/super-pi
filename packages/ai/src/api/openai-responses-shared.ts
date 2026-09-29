@@ -760,6 +760,20 @@ export async function processResponsesStream<TApi extends Api>(
 	if (!sawTerminalResponseEvent) {
 		throw new Error("OpenAI Responses stream ended before a terminal response event");
 	}
+	// The agent executes every tool call in the final message. A call whose output_item.done
+	// never arrived still owns its scratch buffer and may carry cut-off or mixed-up arguments
+	// (for example when a server omits output_index), so it must not be handed over.
+	if (output.stopReason === "toolUse") {
+		for (const block of output.content) {
+			if (block.type !== "toolCall") continue;
+			const toolCall = block as StreamingToolCall;
+			if (toolCall.partialJson !== undefined || toolCall.customInput !== undefined) {
+				throw new Error(
+					`OpenAI Responses stream completed with an unfinished tool call: ${toolCall.name} (${toolCall.id})`,
+				);
+			}
+		}
+	}
 }
 
 function mapStopReason(
