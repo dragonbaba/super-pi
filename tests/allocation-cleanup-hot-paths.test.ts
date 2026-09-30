@@ -55,22 +55,32 @@ const paths: Record<string, readonly string[]> = {
 	".sp/extensions/prompt-url-widget.ts": ["render", "setWidget", "updatePromptContext", "getUserText"],
 };
 
-test("production allocation cleanup excludes inline callbacks and regex construction throughout the touched hot chains", () => {
+const ARRAY_CALLBACK_METHODS = new Set(["map", "filter", "flatMap", "reduce", "reduceRight", "find", "findLast", "findIndex", "findLastIndex", "some", "every", "forEach"]);
+
+function inspectAllocationBody(node: ts.Node, tree: ts.SourceFile, failures: string[]): void {
+	if (ts.isArrowFunction(node) || ts.isFunctionExpression(node) || ts.isFunctionDeclaration(node)) failures.push(`callback: ${node.getText(tree).slice(0, 45)}`);
+	if (node.kind === ts.SyntaxKind.RegularExpressionLiteral) failures.push(`regex: ${node.getText(tree)}`);
+	if (ts.isNewExpression(node) && /^(RegExp|String)$/.test(node.expression.getText(tree))) failures.push(node.getText(tree));
+	if (ts.isCallExpression(node)) {
+		const callee = node.expression;
+		if (ts.isIdentifier(callee) && callee.text === "RegExp") failures.push(`regex call: ${node.getText(tree)}`);
+		const method = ts.isPropertyAccessExpression(callee) ? callee.name.text
+			: ts.isElementAccessExpression(callee) && callee.argumentExpression && ts.isStringLiteral(callee.argumentExpression) ? callee.argumentExpression.text : undefined;
+		if (method !== undefined && ARRAY_CALLBACK_METHODS.has(method)) failures.push(`array callback call: ${node.getText(tree).slice(0, 60)}`);
+	}
+	ts.forEachChild(node, child => inspectAllocationBody(child, tree, failures));
+}
+
+test("production allocation cleanup checks named bodies for inline functions, regex construction and array callback calls", () => {
 	for (const [path, names] of Object.entries(paths)) {
 		const source = readFileSync(new URL(path, root), "utf8");
 		const tree = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
 		const found = new Set<string>();
 		const failures: string[] = [];
-		function inspect(node: ts.Node): void {
-			if (ts.isArrowFunction(node) || ts.isFunctionExpression(node) || ts.isFunctionDeclaration(node)) failures.push(`callback: ${node.getText(tree).slice(0, 45)}`);
-			if (node.kind === ts.SyntaxKind.RegularExpressionLiteral) failures.push(`regex: ${node.getText(tree)}`);
-			if (ts.isNewExpression(node) && /^(RegExp|String)$/.test(node.expression.getText(tree))) failures.push(node.getText(tree));
-			ts.forEachChild(node, inspect);
-		}
 		function visit(node: ts.Node): void {
 			if ((ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node)) && node.name && node.body && names.includes(node.name.getText(tree))) {
 				found.add(node.name.getText(tree));
-				inspect(node.body);
+				inspectAllocationBody(node.body, tree, failures);
 			}
 			ts.forEachChild(node, visit);
 		}
@@ -78,6 +88,19 @@ test("production allocation cleanup excludes inline callbacks and regex construc
 		assert.deepEqual(failures, [], path);
 		for (const name of names) assert.ok(found.has(name), `${path}: gate must actually inspect ${name}`);
 	}
+});
+
+test("allocation source gate detects module-callback arrays and callable RegExp without blanket banning String conversion or stable sort", () => {
+	for (const source of ["items.map(moduleHelper);", "items['filter'](moduleHelper);", "RegExp(pattern);", "new RegExp(pattern);", "new String(value);", "const callback = () => value;", "const pattern = /x/;"]) {
+		const tree = ts.createSourceFile("gate-fixture.ts", `{ ${source} }`, ts.ScriptTarget.Latest, true);
+		const failures: string[] = [];
+		inspectAllocationBody(tree.statements[0]!, tree, failures);
+		assert.ok(failures.length > 0, source);
+	}
+	const accepted = ts.createSourceFile("gate-fixture.ts", "{ String(externalValue); items.sort(stableComparator); }", ts.ScriptTarget.Latest, true);
+	const failures: string[] = [];
+	inspectAllocationBody(accepted.statements[0]!, accepted, failures);
+	assert.deepEqual(failures, []);
 });
 
 test("LaTeX matrices, alignment, cases, fractions and malformed inputs retain the pre-cleanup golden", () => {
@@ -123,6 +146,42 @@ test("stack and scroll outputs do not mutate a child's cached lines, including f
 	scroll[RELEASE_COMPONENT_RENDER_CACHE]();
 	assert.equal((scroll as any).requestRenderCallback, undefined);
 	assert.equal((scroll as any).scrollbarHideTimer, undefined);
+});
+
+test("real HStack and VStack visibility traversals retain the initial boundary under container mutation", () => {
+	for (const Constructor of [HStack, VStack]) {
+		for (const action of ["append", "remove", "clear", "reenter"] as const) {
+			const visits: string[] = [];
+			const a = { render: () => ["AAA"], invalidate() {} };
+			const b = { render: () => ["BBB"], invalidate() {} };
+			const c = { render: () => ["CCC"], invalidate() {} };
+			const stack = new Constructor();
+			let changed = false;
+			stack.addChild(a, { visible() {
+				visits.push("A");
+				if (!changed) {
+					changed = true;
+					if (action === "append" || action === "reenter") stack.addChild(b, { visible() { visits.push("B"); return true; } });
+					else if (action === "remove") stack.removeChild(b);
+					else stack.clear();
+					if (action === "reenter") assert.match(stripVTControlCharacters(stack.render(30).join("\n")), /BBB/);
+				}
+				return true;
+			} });
+			if (action === "remove" || action === "clear") {
+				stack.addChild(b, { visible() { visits.push("B"); return true; } });
+				stack.addChild(c, { visible() { visits.push("C"); return true; } });
+			}
+			const first = stripVTControlCharacters(stack.render(30).join("\n"));
+			assert.match(first, /AAA/);
+			assert.doesNotMatch(first, /BBB/, `${Constructor.name}: ${action}`);
+			assert.equal(first.includes("CCC"), action === "remove");
+			assert.deepEqual(visits, action === "remove" ? ["A", "C"] : action === "reenter" ? ["A", "A", "B"] : ["A"]);
+			const next = stripVTControlCharacters(stack.render(30).join("\n"));
+			assert.equal(next.includes("BBB"), action === "append" || action === "reenter");
+			if (action === "clear") assert.equal(next, "");
+		}
+	}
 });
 
 test("animation ticks retain all seven effects and release the animation owner", async () => {

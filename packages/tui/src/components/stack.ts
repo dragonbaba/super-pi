@@ -92,7 +92,13 @@ export function visibleStackEntries(
 	viewport: LayoutViewport,
 ): StackLayoutEntry[] {
 	const visible: StackLayoutEntry[] = [];
-	for (const entry of entries) if (entry.visible?.(viewport) ?? true) visible.push(entry);
+	// Match filter's starting-length boundary and skip slots removed by a predicate.
+	const count = entries.length;
+	for (let index = 0; index < count; index++) {
+		if (!(index in entries)) continue;
+		const entry = entries[index]!;
+		if (entry.visible?.(viewport) ?? true) visible.push(entry);
+	}
 	return visible;
 }
 
