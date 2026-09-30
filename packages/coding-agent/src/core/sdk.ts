@@ -488,11 +488,13 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				},
 			});
 		},
-		onPayload: async (payload, _model) => {
+		onPayload: async (payload, _model, requestAuth) => {
 			const runner = extensionRunnerRef.current;
 			session.assertImageRequestAllowed(_model);
 			if (runner?.hasHandlers("before_provider_request")) session.discardPendingToolResultBudgetSources();
-			const result = runner?.hasHandlers("before_provider_request") ? await runner.emitBeforeProviderRequest(payload) : payload;
+			const result = runner?.hasHandlers("before_provider_request") ? await runner.emitBeforeProviderRequest(
+				payload, false, requestAuth ? { model: _model, apiKey: requestAuth.apiKey, headers: requestAuth.headers, env: requestAuth.env } : undefined,
+			) : payload;
 			session.assertImageRequestAllowed(_model);
 			return result;
 		},
@@ -588,6 +590,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			});
 			return {
 				compactionItem: result.compactionItem,
+				requestAuth: { model, apiKey, headers: requestHeaders, env },
 				usage: result.usage,
 				...(result.diagnostics ? { diagnostics: { ...result.diagnostics } } : {}),
 			};

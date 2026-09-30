@@ -8,8 +8,6 @@ import { EventEmitter } from "node:events";
 import { InMemoryCredentialStore } from "../../packages/ai/src/auth/credential-store.ts";
 import { openaiCodexOAuth } from "../../packages/ai/src/auth/oauth/openai-codex.ts";
 import { resolveProviderAuth } from "../../packages/ai/src/auth/resolve.ts";
-import { lazyStream } from "../../packages/ai/src/api/lazy.ts";
-import { streamSimple as streamCodex } from "@super-pi/ai/api/openai-codex-responses";
 import extension from "../../packages/openai-server-compaction/src/index.ts";
 import { streamOpenAIResponsesWithPhase2B } from "../../packages/openai-server-compaction/src/custom-stream.ts";
 import { DefaultResourceLoader } from "../../packages/coding-agent/src/core/resource-loader.ts";
@@ -17,7 +15,7 @@ import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.ts"
 import { AgentSessionRuntime } from "../../packages/coding-agent/src/core/agent-session-runtime.ts";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.ts";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.ts";
-import { alphaModelRuntime } from "../helpers/alpha-session.ts";
+import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.ts";
 import { responsesUsage, sseFrames, textEvents } from "../helpers/responses-sse-fixture.ts";
 import { FakeCodexWebSocket } from "../helpers/codex-websocket-fixture.ts";
 import { createOpenAIWebSocketStreamFn, releaseWsSession } from "../../packages/openai-server-compaction/src/openai-ws-stream.ts";
@@ -66,7 +64,11 @@ test("direct Responses WebSocket uses the configured endpoint and effective rout
   } finally { releaseWsSession("audit-direct-ws"); }
 });
 
-async function fixture(codex = false, fail?: "remote" | "summary", modelId = "gpt-5.1") {
+async function fixture(codex = false, fail?: "remote" | "summary", modelId = "gpt-5.1", extra?: {
+  headers?: (headers: Record<string, string | null | undefined>) => void;
+  tool?: (session: any) => Promise<void>;
+  customEnd?: () => Promise<void>;
+}) {
   const root = mkdtempSync(join(tmpdir(), "compaction-lifecycle-"));
   const settings = SettingsManager.inMemory({ compaction: { enabled: false, keepRecentTokens: 128, reserveTokens: 128 },
     retry: { enabled: false }, transport: "sse", providerRetry: { maxRetries: 0 } } as any);
@@ -74,7 +76,8 @@ async function fixture(codex = false, fail?: "remote" | "summary", modelId = "gp
     provider: codex ? "openai-codex" : "openai", baseUrl: codex ? "https://chatgpt.com/backend-api" : "https://api.openai.com/v1",
     reasoning: false, input: ["text"], cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }, contextWindow: 64000, maxTokens: 512 };
   let key = codex ? token() : "sk-offline-one", endpoint = model.baseUrl;
-  const requests: Array<{ payload: any; url: string; authorization: string | null }> = [];
+  const requests: Array<{ payload: any; url: string; authorization: string | null; headers: Headers }> = [];
+  let callTool = false, headerCalls = 0;
   const refreshRequests: string[] = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (url: any, init: any) => {
@@ -87,13 +90,20 @@ async function fixture(codex = false, fail?: "remote" | "summary", modelId = "gp
       ? (zlib as any).zstdDecompressSync(init.body).toString("utf8")
       : typeof init.body === "string" ? init.body : new TextDecoder().decode(init.body);
     const payload = JSON.parse(body);
-    requests.push({ payload, url: String(url), authorization: new Headers(init.headers).get("authorization") });
+    requests.push({ payload, url: String(url), authorization: new Headers(init.headers).get("authorization"), headers: new Headers(init.headers) });
     if (payload.input?.some((item: any) => item.type === "compaction_trigger")) {
       if (fail === "remote") return new Response(JSON.stringify({ error: { message: "offline remote failure" } }), { status: 500 });
       return response([{ type: "response.output_item.done", output_index: 0, item: artifact },
         { type: "response.completed", response: { status: "completed", output: [artifact], usage: { input_tokens: 10, output_tokens: 2 } } }]);
     }
     if (fail === "summary") return response([{ type: "response.failed", response: { status: "failed", error: { code: "offline", message: "summary failed" } } }]);
+    if (callTool) {
+      callTool = false;
+      const item = { type: "function_call", id: "fc_note", call_id: "call_note", name: "note", arguments: "{}", status: "completed" };
+      return response([{ type: "response.output_item.added", output_index: 0, item },
+        { type: "response.output_item.done", output_index: 0, item },
+        { type: "response.completed", response: { id: "resp_tool", status: "completed", output: [item] } }]);
+    }
     const events: any[] = structuredClone(textEvents());
     events[2].item.status = "completed";
     events[3].response.output[0].status = "completed";
@@ -108,19 +118,16 @@ async function fixture(codex = false, fail?: "remote" | "summary", modelId = "gp
     }
     return response(events);
   }) as typeof fetch;
-  const runtime: any = alphaModelRuntime((active, context, options: any) => lazyStream(active, async () => {
-    const resolved = await runtime.getAuth(active);
-    const headers = await options.transformHeaders?.(resolved.auth.headers ?? {});
-    return (codex ? streamCodex : streamOpenAIResponsesWithPhase2B)({ ...active, baseUrl: resolved.auth.baseUrl ?? active.baseUrl } as any, context,
-      { ...options, apiKey: resolved.auth.apiKey, headers, maxRetries: 0, transport: options.transport ?? "sse" });
-  }));
+  const runtime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false });
   runtime.getAuth = async () => ({ auth: { apiKey: key, baseUrl: endpoint }, source: codex ? "oauth" : "api_key" });
   runtime.getModel = () => model;
-  runtime.getModels = () => [model];
-  runtime.getCompatibilityRequestConfig = () => ({});
+  runtime.hasConfiguredAuth = () => true;
+  runtime.checkAuth = async () => ({ type: "api_key" });
   const resourceLoader = new DefaultResourceLoader({ cwd: root, agentDir: root, settingsManager: settings,
     noExtensions: false, extensionFactories: [(pi: any) => {
       extension(pi);
+      pi.on("before_provider_headers", (event: any) => { headerCalls++; extra?.headers?.(event.headers); });
+      pi.on("message_end", async (event: any) => { if (event.message.role === "custom") await extra?.customEnd?.(); });
     }], noContextFiles: true, noSkills: true, noPromptTemplates: true, noThemes: true });
   await resourceLoader.reload();
   const manager = SessionManager.create(root, root);
@@ -130,7 +137,9 @@ async function fixture(codex = false, fail?: "remote" | "summary", modelId = "gp
       provider: model.provider, model: model.id, usage: responsesUsage, stopReason: "stop", timestamp: i });
   }
   const { session } = await createAgentSession({ cwd: root, agentDir: root, settingsManager: settings, sessionManager: manager,
-    resourceLoader, model, modelRuntime: runtime, noTools: "all" });
+    resourceLoader, model, modelRuntime: runtime, noTools: extra?.tool ? "builtin" : "all",
+    customTools: extra?.tool ? [{ name: "note", label: "Note", description: "fixture", parameters: { type: "object", properties: {} },
+      execute: async () => { await extra.tool!(session); return { content: [{ type: "text", text: "TOOL_RESULT_SENTINEL" }], details: {} }; } }] : undefined });
   await session.bindExtensions({});
   const sessionRuntime = new AgentSessionRuntime(session, { cwd: root, agentDir: root } as any, async target => {
     const loader = new DefaultResourceLoader({ cwd: target.cwd, agentDir: target.agentDir, settingsManager: settings,
@@ -144,10 +153,145 @@ async function fixture(codex = false, fail?: "remote" | "summary", modelId = "gp
   sessionRuntime.setRebindSession(async active => { await active.bindExtensions({}); });
   return { get session() { return sessionRuntime.session; }, get manager() { return sessionRuntime.session.sessionManager; }, sessionRuntime, requests, refreshRequests, model, root,
     setAuthResolver(resolver: () => Promise<any>) { runtime.getAuth = resolver; },
+    requestTool() { callTool = true; }, get headerCalls() { return headerCalls; },
     changeKey(value: string) { key = value; }, changeEndpoint(value: string) { endpoint = value; },
     clearFailure() { fail = undefined; },
     async release() { await sessionRuntime.dispose(); globalThis.fetch = originalFetch; rmSync(root, { recursive: true, force: true }); } };
 }
+
+for (const codex of [false, true]) for (const queued of [false, true]) test(`${codex ? "Codex" : "API"} opaque replay includes ${queued ? "tool-queued" : "idle"} custom messages exactly once`, async () => {
+  const sentinel = queued ? "QUEUED_CUSTOM_SENTINEL" : "IDLE_CUSTOM_SENTINEL";
+  const send = async (session: any) => { await session.sendCustomMessage({ customType: "local", content: sentinel, display: true }, { triggerTurn: false }); };
+  const f = await fixture(codex, undefined, "gpt-5.1", queued ? { tool: send } : undefined);
+  let customEnds = 0;
+  const off = f.session.subscribe(event => { if (event.type === "message_end" && event.message.role === "custom") customEnds++; });
+  try {
+    await f.session.prompt("establish boundary"); await f.session.compact();
+    if (queued) f.requestTool(); else await send(f.session);
+    await f.session.prompt("CUSTOM_NEXT");
+    assert.equal(f.requests.length, queued ? 4 : 3);
+    const wire = JSON.stringify(f.requests.at(-1)!.payload.input);
+    assert.equal(wire.split(sentinel).length - 1, 1, wire);
+    if (queued) assert.ok(wire.indexOf("TOOL_RESULT_SENTINEL") < wire.indexOf(sentinel), wire);
+    assert.equal(customEnds, 1);
+    assert.equal(f.session.messages.filter((m: any) => m.role === "custom" && m.content === sentinel).length, 1);
+    const reopened = SessionManager.open(f.manager.getSessionFile()!, f.root).getEntries();
+    assert.equal(reopened.filter((e: any) => e.type === "custom_message" && e.content === sentinel).length, 1);
+    await f.session.prompt("CUSTOM_AGAIN");
+    assert.equal(f.requests.length, queued ? 5 : 4);
+    assert.equal(JSON.stringify(f.requests.at(-1)!.payload.input).split(sentinel).length - 1, 1);
+  } finally { off(); await f.release(); }
+});
+
+for (const codex of [false, true]) for (const name of ["OpenAI-Project", "OpenAI-Organization"]) {
+  test(`${codex ? "Codex" : "API"} opaque compatibility follows final header hook ${name} injection, change and deletion`, async () => {
+    let value: string | null | undefined;
+    const f = await fixture(codex, undefined, "gpt-5.1", { headers: headers => { if (value !== undefined) headers[name] = value; } });
+    try {
+      await f.session.prompt("establish boundary"); await f.session.compact();
+      const history = f.manager.getEntries().filter(e => e.type === "compaction");
+      for (const route of ["route-one", "route-two", null]) {
+        value = route;
+        const calls = f.headerCalls, count = f.requests.length;
+        await f.session.prompt(`HEADER_NEXT_${route}`);
+        assert.equal(f.headerCalls, calls + 1, "header hooks execute once per request");
+        assert.equal(f.requests.length, count + 1);
+        const next = f.requests.at(-1)!;
+        assert.equal(next.headers.get(name), route);
+        assert.equal(next.payload.input.some((item: any) => item.type === "compaction"), route === null);
+        assert.equal(next.payload.previous_response_id, undefined);
+        assert.match(JSON.stringify(next.payload.input), /HEADER_NEXT_/);
+        assert.deepEqual(f.manager.getEntries().filter(e => e.type === "compaction"), history);
+      }
+    } finally { await f.release(); }
+  });
+}
+
+test("API continuation invalidates on final header hook route changes and resumes only on a matching dispatch", async () => {
+  let value: string | null = "project-one";
+  const f = await fixture(false, undefined, "gpt-5.1", { headers: headers => { headers["OpenAI-Project"] = value; } });
+  try {
+    await f.session.prompt("first"); await f.session.prompt("same project");
+    assert.equal(f.requests[1].payload.previous_response_id, "resp_1");
+    value = "project-two"; await f.session.prompt("different project");
+    assert.equal(f.requests[2].headers.get("openai-project"), value);
+    assert.equal(f.requests[2].payload.previous_response_id, undefined);
+    await f.session.prompt("same new project");
+    assert.equal(f.requests[3].payload.previous_response_id, "resp_1");
+    value = null; await f.session.prompt("deleted project");
+    assert.equal(f.requests[4].headers.get("openai-project"), null);
+    assert.equal(f.requests[4].payload.previous_response_id, undefined);
+    assert.equal(f.requests.length, 5);
+    assert.match(JSON.stringify(SessionManager.open(f.manager.getSessionFile()!, f.root).getEntries()), /different project/);
+  } finally { await f.release(); }
+});
+
+for (const codex of [false, true]) test(`${codex ? "Codex" : "API"} final header deletion suppresses a model default without losing compatible durable history`, async () => {
+  let value: string | null = "model-project";
+  const f = await fixture(codex, undefined, "gpt-5.1", { headers: headers => { headers["OpenAI-Project"] = value; } });
+  f.model.headers = { "OpenAI-Project": "model-project" };
+  try {
+    await f.session.prompt("establish boundary"); await f.session.compact();
+    value = null; await f.session.prompt("DELETE_MODEL_PROJECT");
+    assert.equal(f.requests.at(-1)!.headers.get("openai-project"), null);
+    assert.equal(f.requests.at(-1)!.payload.input.some((item: any) => item.type === "compaction"), false);
+    value = "model-project"; await f.session.prompt("RESTORE_MODEL_PROJECT");
+    assert.equal(f.requests.at(-1)!.payload.input.some((item: any) => item.type === "compaction"), true);
+    assert.match(JSON.stringify(f.requests.at(-1)!.payload.input), /DELETE_MODEL_PROJECT/);
+    assert.equal(f.requests.length, 4);
+    assert.equal(SessionManager.open(f.manager.getSessionFile()!, f.root).getEntries().filter(e => e.type === "compaction").length, 1);
+  } finally { await f.release(); }
+});
+
+test("Codex account header hooks cannot change token-owned transport identity or invalidate its compatible opaque history", async () => {
+  let value: string | null = "attempted-other-account";
+  const f = await fixture(true, undefined, "gpt-5.1", { headers: headers => { headers["ChatGPT-Account-Id"] = value; } });
+  try {
+    await f.session.prompt("establish boundary"); await f.session.compact();
+    for (const header of [null, "another-override"]) {
+      value = header;
+      const count = f.headerCalls;
+      await f.session.prompt("TOKEN_OWNED_ACCOUNT_NEXT");
+      assert.equal(f.headerCalls, count + 1);
+      assert.equal(f.requests.at(-1)!.headers.get("chatgpt-account-id"), "one");
+      assert.equal(f.requests.at(-1)!.payload.input.some((item: any) => item.type === "compaction"), true);
+    }
+    assert.equal(f.requests.length, 4);
+    assert.equal(SessionManager.open(f.manager.getSessionFile()!, f.root).getEntries().filter(e => e.type === "compaction").length, 1);
+  } finally { await f.release(); }
+});
+
+test("regular request scope uses the already-resolved credential without a second registry lookup", async () => {
+  const f = await fixture();
+  let lookups = 0;
+  f.setAuthResolver(async () => ({ auth: { apiKey: ++lookups === 1 ? "first-effective-key" : "later-key", baseUrl: "https://api.openai.com/selected" }, source: "api_key" }));
+  try {
+    await f.session.prompt("ONE_AUTH_SNAPSHOT");
+    assert.equal(lookups, 1);
+    assert.equal(f.requests.length, 1);
+    assert.equal(f.requests[0].authorization, "Bearer first-effective-key");
+    assert.match(f.requests[0].url, /\/selected\//);
+  } finally { await f.release(); }
+});
+
+test("session replacement while an idle custom extension callback is awaited cannot write into the incoming session", async () => {
+  let entered!: () => void, release!: () => void;
+  const ready = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const f = await fixture(false, undefined, "gpt-5.1", { customEnd: async () => { entered(); await gate; } });
+  try {
+    await f.session.prompt("establish boundary"); await f.session.compact();
+    const oldFile = f.manager.getSessionFile()!;
+    const sent = f.session.sendCustomMessage({ customType: "local", content: "OLD_OWNER_CUSTOM", display: true }, { triggerTurn: false });
+    await ready;
+    await f.sessionRuntime.newSession();
+    release(); await sent;
+    await f.session.prompt("INCOMING_REQUEST");
+    assert.doesNotMatch(JSON.stringify(f.requests.at(-1)!.payload.input), /OLD_OWNER_CUSTOM/);
+    assert.equal(f.manager.getEntries().some((e: any) => e.type === "custom_message"), false);
+    assert.equal(SessionManager.open(oldFile, f.root).getEntries().filter((e: any) => e.type === "custom_message" && e.content === "OLD_OWNER_CUSTOM").length, 1);
+  } finally { release(); await f.release(); }
+});
 
 for (const codex of [false, true]) test(`successful ${codex ? "Codex" : "API"} compaction replays opaque history on the next actual request`, async () => {
   const f = await fixture(codex);

@@ -99,6 +99,7 @@ type ProviderRequestPayloadAPI = ExtensionAPI & {
     auth?: CompactionAuthSnapshot;
   }) => Promise<{
     compactionItem: Record<string, unknown>;
+    requestAuth?: CompactionAuthSnapshot;
     usage?: unknown;
     diagnostics?: Record<string, unknown>;
   } | undefined>;
@@ -235,6 +236,7 @@ async function callConfiguredRemoteCompaction(
   }
   return {
     protocol: "responses_compaction_v2",
+    requestScope: result.requestAuth ? requestScope(result.requestAuth.model, result.requestAuth.apiKey, result.requestAuth.headers) : undefined,
     output: buildRemoteCompactionV2History(params.input, result.compactionItem as ResponseItem),
     usage: extractRemoteCompactionUsage(params.model, result.usage),
     ...(params.shapeDiagnostics && isRecord(result.diagnostics)
@@ -956,7 +958,7 @@ export default function openaiServerCompactionExtension(pi: ExtensionAPI) {
       remoteResult.usage,
       remoteResult.protocol,
     );
-    remoteDetails.requestScope = requestScope(auth.model, auth.apiKey, auth.headers);
+    remoteDetails.requestScope = remoteResult.requestScope ?? requestScope(auth.model, auth.apiKey, auth.headers);
     const localSummary = bindLocalCheckpointToPreparation(
       localResult
         ? localResult
@@ -1048,7 +1050,9 @@ export default function openaiServerCompactionExtension(pi: ExtensionAPI) {
 
     const sessionId = getSessionId(ctx);
     const dryRun = (event as typeof event & { dryRun?: boolean }).dryRun === true;
-    const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+    const auth = event.requestAuth
+      ? { ok: true as const, apiKey: event.requestAuth.apiKey, headers: event.requestAuth.headers, baseUrl: event.requestAuth.model.baseUrl }
+      : await ctx.modelRegistry.getApiKeyAndHeaders(model);
     if (auth.ok && auth.baseUrl) model = { ...model, baseUrl: auth.baseUrl };
     const scope = auth.ok ? requestScope(model, auth.apiKey, auth.headers) : undefined;
     const continuation = getContinuationState(sessionId);

@@ -390,7 +390,7 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 					: options?.sessionId;
             const codexSessionId = clampOpenAIPromptCacheKey(cacheSessionId);
             let body = buildOpenAICodexRequestBody(model, context, options, codexSessionId, grammarToolInputProperties);
-            const nextBody = await options?.onPayload?.(body, model);
+            const nextBody = await options?.onPayload?.(body, model, options);
             if (nextBody !== undefined) {
                 body = nextBody as OpenAICodexRequestBody;
             }

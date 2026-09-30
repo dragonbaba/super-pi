@@ -733,6 +733,8 @@ export interface BeforeProviderRequestEvent {
 	payload: unknown;
 	/** True for previews. Return the same deterministic transformation without external or durable side effects. */
 	dryRun: boolean;
+	/** Ephemeral auth and routing snapshot for this dispatch; never persist credentials. Absent for previews. */
+	requestAuth?: ProviderRequestAuthSnapshot;
 }
 
 /**
@@ -1731,12 +1733,14 @@ export interface ProviderRequestCompactionInput {
 export interface ProviderRequestAuthSnapshot {
 	readonly model: Model<any>;
 	readonly apiKey?: string;
-	readonly headers?: Readonly<Record<string, string>>;
+	readonly headers?: Readonly<ProviderHeaders>;
 	readonly env?: Readonly<Record<string, string>>;
 }
 
 export interface ProviderRequestCompactionResult {
 	compactionItem: Record<string, unknown>;
+	/** Ephemeral effective snapshot used by the native compaction transport. */
+	requestAuth?: ProviderRequestAuthSnapshot;
 	usage?: unknown;
 	diagnostics?: Record<string, unknown>;
 }

@@ -762,6 +762,7 @@ export async function prepareHttpFallbackPayload(params: {
   model: Model<any>;
   context: Context;
   originalOnPayload?: SimpleStreamOptions["onPayload"];
+  requestAuth?: Parameters<NonNullable<SimpleStreamOptions["onPayload"]>>[2];
   remoteCompactionState: ReturnType<typeof getRemoteCompactionState>;
   continuationState: ReturnType<typeof getContinuationState>;
 }): Promise<unknown> {
@@ -769,7 +770,7 @@ export async function prepareHttpFallbackPayload(params: {
   // extension that hook is before_provider_request, and it is what adds
   // previous_response_id. Computing the delta first would therefore produce
   // the forbidden combination of full input plus a newly-added previous id.
-  const patched = (await params.originalOnPayload?.(params.payload, params.payloadModel)) ?? params.payload;
+  const patched = (await params.originalOnPayload?.(params.payload, params.payloadModel, params.requestAuth)) ?? params.payload;
   if (!patched || typeof patched !== "object") return patched;
 
   let payloadObj = { ...(patched as Record<string, unknown>) };
@@ -832,6 +833,7 @@ async function fallbackToHttp(
         model,
         context,
         originalOnPayload,
+        requestAuth: options,
         remoteCompactionState,
         continuationState,
       }),
@@ -995,7 +997,7 @@ export function createOpenAIWebSocketStreamFn(
           options: typedOptions,
         });
 
-        const nextPayload = (await options?.onPayload?.(payload, model)) ?? payload;
+        const nextPayload = (await options?.onPayload?.(payload, model, options)) ?? payload;
         try {
           session.manager.send(nextPayload as Parameters<OpenAIWebSocketManager["send"]>[0]);
           session.lastRequestKey = requestKey;

@@ -52,6 +52,7 @@ import type {
 	ProjectTrustEvent,
 	ProjectTrustEventResult,
 	ProviderConfig,
+	ProviderRequestAuthSnapshot,
 	RegisteredCommand,
 	RegisteredTool,
 	RegisteredExtensionObserver,
@@ -1623,7 +1624,7 @@ export class ExtensionRunner {
 		return currentMessages;
 	}
 
-	async emitBeforeProviderRequest(payload: unknown, dryRun = false): Promise<unknown> {
+	async emitBeforeProviderRequest(payload: unknown, dryRun = false, requestAuth?: ProviderRequestAuthSnapshot): Promise<unknown> {
 		const ctx = this.createContext();
 		let currentPayload = payload;
 
@@ -1637,6 +1638,7 @@ export class ExtensionRunner {
 						type: "before_provider_request",
 						payload: currentPayload,
 						dryRun,
+						requestAuth,
 					};
 					const handlerResult = await this.invokeHook(
 						handler,

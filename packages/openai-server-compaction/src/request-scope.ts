@@ -6,6 +6,7 @@ import { isRecord } from "./config.ts";
 export function requestScope(model: Model<any>, apiKey: string | undefined, headers?: ProviderHeaders): string | undefined {
   if (!apiKey) return undefined;
   let identity = apiKey;
+  let codexAccountId: string | undefined;
   if (model.api === "openai-codex-responses") {
     try {
       const claims: unknown = JSON.parse(Buffer.from(apiKey.split(".")[1] ?? "", "base64url").toString("utf8"));
@@ -13,6 +14,7 @@ export function requestScope(model: Model<any>, apiKey: string | undefined, head
       const auth = claims["https://api.openai.com/auth"];
       if (!isRecord(auth) || typeof auth.chatgpt_account_id !== "string" || !auth.chatgpt_account_id) return undefined;
       identity = JSON.stringify([auth.chatgpt_account_id, typeof claims.sub === "string" ? claims.sub : null]);
+      codexAccountId = auth.chatgpt_account_id;
     } catch { return undefined; }
   }
   const routing = new Headers();
@@ -26,6 +28,8 @@ export function requestScope(model: Model<any>, apiKey: string | undefined, head
       else if (value !== undefined) routing.set(key, value);
     }
   }
+  // The native Codex transport overwrites this header from the token after merging custom headers.
+  if (codexAccountId !== undefined) routing.set("chatgpt-account-id", codexAccountId);
   const endpoint = (model.baseUrl?.trim() || (model.api === "openai-codex-responses"
     ? "https://chatgpt.com/backend-api" : "https://api.openai.com/v1")).replace(/\/+$/, "");
   return createHash("sha256").update(JSON.stringify([

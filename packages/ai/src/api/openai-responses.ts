@@ -147,7 +147,7 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 			);
 			const client = createClient(model, context, apiKey, options?.headers, options?.fetch, cacheSessionId);
 			let params = buildOpenAIResponsesRequestBody(model, context, options, compat, grammarToolInputProperties);
-			const nextParams = await options?.onPayload?.(params, model);
+			const nextParams = await options?.onPayload?.(params, model, options);
 			if (nextParams !== undefined) {
 				params = nextParams as ResponseCreateParamsStreaming;
 			}
