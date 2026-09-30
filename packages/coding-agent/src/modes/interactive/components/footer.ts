@@ -10,6 +10,7 @@ import { theme } from "../theme/theme.ts";
 // String.replace consumes these synchronously and resets global lastIndex.
 const STATUS_LINE_BREAK_PATTERN = /[\r\n\t]/g;
 const STATUS_SPACE_RUN_PATTERN = / +/g;
+const MAX_CACHED_STATUS_CODE_UNITS = 16_384;
 
 /**
  * Sanitize text for display in a single-line status.
@@ -123,6 +124,11 @@ export class FooterComponent implements Component {
 		let line = "";
 		for (let index = 0; index < sorted.length; index++) {
 			line += (index > 0 ? " " : "") + sanitizeStatusText(sorted[index]![1]);
+		}
+		if (revision === undefined || line.length > MAX_CACHED_STATUS_CODE_UNITS) {
+			this.extensionStatusRevision = undefined;
+			this.extensionStatusLine = undefined;
+			return line;
 		}
 		this.extensionStatusRevision = revision;
 		this.extensionStatusLine = line;

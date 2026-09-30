@@ -644,7 +644,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		let cachedOffscreenImageCount = 0;
 		let cachedOffscreenTransmissionBytes = 0;
 		let cachedOffscreenDecodedBytes = 0;
-		for (const [imageId, cachedImage] of this.uploadedKittyImages) {
+		for (const cachedImage of this.uploadedKittyImages.values()) {
 			if (cachedImage.visibleGeneration === visibleGeneration) continue;
 			cachedOffscreenImageCount += 1;
 			cachedOffscreenTransmissionBytes += cachedImage.transmissionBytes;
@@ -652,6 +652,11 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		}
 
 		let evictedImageDeletion = "";
+		if (
+			cachedOffscreenImageCount <= MAX_CACHED_OFFSCREEN_KITTY_IMAGES &&
+			cachedOffscreenTransmissionBytes <= MAX_CACHED_OFFSCREEN_KITTY_TRANSMISSION_BYTES &&
+			cachedOffscreenDecodedBytes <= MAX_CACHED_OFFSCREEN_KITTY_DECODED_BYTES
+		) return evictedImageDeletion;
 		for (const [imageId, cachedImage] of this.uploadedKittyImages) {
 			if (
 				cachedOffscreenImageCount <= MAX_CACHED_OFFSCREEN_KITTY_IMAGES &&

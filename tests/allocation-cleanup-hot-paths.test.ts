@@ -157,7 +157,7 @@ test("session tree filters, hidden ancestors, branching gutters and horizontal v
 	assert.deepEqual(treeGolden(TreeSelectorComponent), golden.values);
 });
 
-test("Kitty cache reuses its bounded owner entries, retransmits changed generations and releases on disposal", async () => {
+test("Kitty cache reuses its bounded owner entries, retransmits changed generations and releases on disposal", async (t) => {
 	const tui = new TuiAltScreen(new FakeTerminal(80, 20), false, undefined, { mouse: false });
 	const raw = tui as any;
 	const lines: string[] = [];
@@ -168,8 +168,16 @@ test("Kitty cache reuses its bounded owner entries, retransmits changed generati
 		raw.prepareKittyScreen([first], lines);
 		assert.deepEqual(lines, [first]);
 		const entry = raw.uploadedKittyImages.get(metadata.imageId);
+		let entryIterators = 0;
+		const cache: Map<number, unknown> = raw.uploadedKittyImages;
+		const iterateEntries = cache[Symbol.iterator];
+		t.mock.method(cache, Symbol.iterator, function (this: Map<number, unknown>) {
+			entryIterators++;
+			return iterateEntries.call(this);
+		});
 		lines.length = 0;
 		raw.prepareKittyScreen([first], lines);
+		assert.equal(entryIterators, 0, "warm bounded cache scans values without allocating entry tuples");
 		assert.equal(raw.uploadedKittyImages.get(metadata.imageId), entry);
 		assert.deepEqual(lines, [getKittyImagePlacement(first)!.replacementLine]);
 		registerKittyImageMetadata(metadata);
