@@ -226,7 +226,12 @@ export interface ProviderRequestOptions<TModel = Model<Api>> {
 	 * Optional callback for inspecting or replacing provider payloads before sending.
 	 * Return undefined to keep the payload unchanged.
 	 */
-	onPayload?: (payload: unknown, model: TModel) => unknown | undefined | Promise<unknown | undefined>;
+	onPayload?: (
+		payload: unknown,
+		model: TModel,
+		/** Resolved request options after authentication and header transforms, when supplied by the provider. */
+		requestAuth?: Readonly<Pick<ProviderRequestOptions<TModel>, "apiKey" | "headers" | "env">>,
+	) => unknown | undefined | Promise<unknown | undefined>;
 	/**
 	 * Observes bounded hashes from the request selected for dispatch. Provider implementations
 	 * never expose the original payload through this hook. Delivery is observational: providers

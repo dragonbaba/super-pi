@@ -155,6 +155,7 @@ export type RemoteCompactionSessionState = {
 
 export type RemoteCompactionResult = {
   protocol: RemoteCompactionProtocol;
+  requestScope?: string;
   output: ResponseItem[];
   usage?: RemoteCompactionUsageSnapshot;
   shapeDiagnostics?: CompactionShapeDiagnostics | Record<string, unknown>;

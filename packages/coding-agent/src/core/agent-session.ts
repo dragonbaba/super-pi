@@ -404,7 +404,7 @@ export interface AgentSessionConfig {
 	providerRequestCompactor?: (input: {
 		model: Model<any>;
 		apiKey: string;
-		headers?: Record<string, string>;
+		headers?: ProviderHeaders;
 		env?: Record<string, string>;
 		sessionId: string;
 		regularPayload: Record<string, unknown>;
@@ -1329,13 +1329,15 @@ export class AgentSession {
 
 	private async _emitAgentSettled(): Promise<void> {
 		// Every run exit settles here, so nothing queued mid-run outlives it.
-		this._flushPendingCustomMessages();
-		this._pendingCustomContextMessages.length = 0;
-		this._isAgentRunActive = false;
 		try {
+			await this._flushPendingCustomMessages();
+			this._pendingCustomContextMessages.length = 0;
+			this._isAgentRunActive = false;
 			await this._extensionRunner.emit({ type: "agent_settled" });
 			this._emit({ type: "agent_settled" });
 		} finally {
+			this._pendingCustomContextMessages.length = 0;
+			this._isAgentRunActive = false;
 			this._resolveIdleWaitIfIdle();
 		}
 	}
@@ -1548,7 +1550,7 @@ export class AgentSession {
 
 		// turn_end follows the assistant message and all of its tool results (listeners,
 		// including turn_end handlers, have run), so queued custom messages cannot split them.
-		if (event.type === "turn_end") this._flushPendingCustomMessages();
+		if (event.type === "turn_end") await this._flushPendingCustomMessages();
 	};
 
 	/** Coalesced display-only path for the built-in UI and explicit extension observers. */
@@ -2686,7 +2688,7 @@ export class AgentSession {
 
 			// Flush any pending bash and custom messages before the new prompt
 			this._flushPendingBashMessages();
-			this._flushPendingCustomMessages();
+			await this._flushPendingCustomMessages();
 
 			// Validate model
 			if (!this.model) {
@@ -2967,25 +2969,29 @@ export class AgentSession {
 			// order-validating providers reject on replay. Nothing is emitted until appended.
 			this._pendingCustomMessages.push(appMessage);
 		} else {
-			this._appendCustomMessage(appMessage);
+			await this._appendCustomMessage(appMessage);
 		}
 	}
 
-	private _appendCustomMessage(appMessage: CustomMessage): void {
-		this.sessionManager.appendCustomMessageEntry(
-			appMessage.customType,
-			appMessage.content,
-			appMessage.display,
-			appMessage.details,
-		);
+	private async _appendCustomMessage(appMessage: CustomMessage): Promise<void> {
+		const manager = this.sessionManager;
 		this.agent.state.messages.push(appMessage);
 		if (this.isStreaming) this._pendingCustomContextMessages.push(appMessage);
-		this._emit({ type: "message_start", message: appMessage });
-		this._emit({ type: "message_end", message: appMessage });
+		try {
+			// The session notification lane alone does not reach extension replay owners.
+			if (this._extensionRunner.hasHandlers("message_end")) {
+				await this._emitExtensionEvent({ type: "message_end", message: appMessage });
+			}
+		} finally {
+			// Persist the same finalized object once, including on hook failure.
+			manager.appendCustomMessageEntry(appMessage.customType, appMessage.content, appMessage.display, appMessage.details);
+			this._emit({ type: "message_start", message: appMessage });
+			this._emit({ type: "message_end", message: appMessage });
+		}
 	}
 
 	/** Append custom messages queued during the run, after the turn's tool results. */
-	private _flushPendingCustomMessages(): void {
+	private async _flushPendingCustomMessages(): Promise<void> {
 		if (this._pendingCustomMessages.length === 0 || this._flushingCustomMessages || this._operationDisposed) return;
 		const pending = this._pendingCustomMessages;
 		this._flushingCustomMessages = true;
@@ -2994,8 +3000,8 @@ export class AgentSession {
 			// A synchronous message listener may enqueue more messages. They follow the
 			// already queued messages and must reach this turn's next request too.
 			while (consumed < pending.length) {
-				this._appendCustomMessage(pending[consumed]!);
-				consumed++;
+				const message = pending[consumed++]!;
+				await this._appendCustomMessage(message);
 			}
 		} finally {
 			if (consumed === pending.length) pending.length = 0;
