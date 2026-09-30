@@ -8,7 +8,7 @@ import {
 } from "@super-pi/tui";
 import type { ActionMenuItem, MenuMultiSelectItem } from "../types.js";
 import type { MenuChangeResponse, MenuScreenComponent, MultiSelectOptions } from "./contracts.js";
-import { handleSearchInput, renderFrame, safeMenuText } from "./rendering.js";
+import { findItemIndex, getSearchText, handleSearchInput, renderFrame, safeMenuText } from "./rendering.js";
 
 type ToggleRow = { kind: "toggle"; item: MenuMultiSelectItem };
 type ActionRow<ScreenId extends string, ActionId extends string> = {
@@ -75,17 +75,19 @@ export function createMultiSelectComponent<ScreenId extends string, ActionId ext
 		const filteredRows = fuzzyFilter(
 			searchableRows,
 			searchInput.getValue(),
-			(candidate) => candidate.text,
-		).map((candidate) => candidate.row);
-		rows = [...filteredRows, ...actionRows];
+			getSearchText,
+		);
+		rows = [];
+		for (const candidate of filteredRows) rows.push(candidate.row);
+		for (const row of actionRows) rows.push(row);
 		if (rows.length === 0) {
 			if (previouslySelectedId) restoreItemId ??= previouslySelectedId;
 			selectedIndex = 0;
 			return;
 		}
-		const previousIndex = rows.findIndex((row) => row.item.id === previouslySelectedId);
+		const previousIndex = findItemIndex(rows, previouslySelectedId);
 		if (previousIndex < 0 && previouslySelectedId) restoreItemId ??= previouslySelectedId;
-		const restoreIndex = rows.findIndex((row) => row.item.id === restoreItemId);
+		const restoreIndex = findItemIndex(rows, restoreItemId);
 		const nextIndex = restoreIndex >= 0 ? restoreIndex : previousIndex >= 0 ? previousIndex : 0;
 		if (restoreIndex >= 0) restoreItemId = undefined;
 		setSelectedIndex(nextIndex, false);
@@ -146,9 +148,9 @@ export function createMultiSelectComponent<ScreenId extends string, ActionId ext
 				0,
 				Math.min(selectedIndex - Math.floor(viewportSize / 2), rows.length - viewportSize),
 			);
-			const visibleRows = rows.slice(viewportStart, viewportStart + viewportSize);
-			const rowContent = visibleRows.map((row, offset) => {
-				const index = viewportStart + offset;
+			const rowContent: string[] = [];
+			for (let index = viewportStart; index < Math.min(rows.length, viewportStart + viewportSize); index++) {
+				const row = rows[index]!;
 				const isSelected = index === selectedIndex;
 				const prefix = isSelected ? "› " : "  ";
 				const marker =
@@ -157,38 +159,30 @@ export function createMultiSelectComponent<ScreenId extends string, ActionId ext
 						: "";
 				const unavailable = row.item.disabled ? " (unavailable)" : "";
 				const label = `${prefix}${marker}${safeMenuText(row.item.label)}${unavailable}`;
-				if (isSelected) return options.theme.fg("accent", label);
-				return row.item.disabled ? options.theme.fg("dim", label) : label;
-			});
+				rowContent.push(isSelected ? options.theme.fg("accent", label) : row.item.disabled ? options.theme.fg("dim", label) : label);
+			}
 			if (viewportSize < rows.length) {
 				rowContent.push(options.theme.fg("dim", `  (${selectedIndex + 1}/${rows.length})`));
 			}
 			const row = selectedRow();
-			const descriptions = row
-				? [
-						row.item.description,
-						row.kind === "toggle" && row.item.disabled
-							? row.item.disabledReason
-								? `Unavailable: ${row.item.disabledReason}`
-								: "Unavailable"
-							: undefined,
-					].filter((value): value is string => Boolean(value))
-				: [];
+			const descriptions: string[] = [];
+			if (row?.item.description) descriptions.push(row.item.description);
+			if (row?.kind === "toggle" && row.item.disabled) descriptions.push(row.item.disabledReason ? `Unavailable: ${row.item.disabledReason}` : "Unavailable");
 			if (descriptions.length > 0) {
-				rowContent.push(
-					"",
-					...descriptions.flatMap((description) =>
-						wrapTextWithAnsi(options.theme.fg("dim", `  ${safeMenuText(description)}`), safeWidth),
-					),
-				);
+				rowContent.push("");
+				for (const description of descriptions) {
+					for (const line of wrapTextWithAnsi(options.theme.fg("dim", `  ${safeMenuText(description)}`), safeWidth)) rowContent.push(line);
+				}
 			}
+			let hasToggle = false;
+			for (const candidate of rows) if (candidate.kind === "toggle") { hasToggle = true; break; }
 			const content = options.screen.enableSearch
 				? [
 						...searchInput.render(safeWidth),
 						"",
 						...(options.screen.items.length === 0
 							? [options.theme.fg("dim", "  No items available")]
-							: rows.every((candidate) => candidate.kind === "action")
+							: !hasToggle
 								? [options.theme.fg("dim", "  No matching items")]
 								: []),
 						...rowContent,

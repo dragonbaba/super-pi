@@ -161,14 +161,13 @@ test("B3 Plan Gate records allocation shapes only for the five exact candidate l
 	assert.equal(editorCacheUpdate.objectLiterals, 0);
 	assert.equal(editorCacheUpdate.mapOrSetConstructions, 0);
 	assert.ok(editorLayoutBuild.arrayLiterals >= 1);
-	assert.ok(mouseHit.closures >= 3);
-	assert.ok(mouseHit.objectLiterals >= 1);
+	assert.equal(mouseHit.closures, 0);
 	assert.equal(selection.closures, 0);
 	assert.equal(selection.arrayMethods, 0);
-	assert.ok(kitty.closures >= 1);
-	assert.ok(kitty.mapOrSetConstructions >= 1);
-	assert.ok(hStackRender.closures >= 4);
-	assert.ok(vStackRender.closures >= 2);
+	assert.equal(kitty.closures, 0);
+	assert.equal(kitty.mapOrSetConstructions, 0);
+	assert.equal(hStackRender.closures, 0);
+	assert.equal(vStackRender.closures, 0);
 });
 
 test("B3 lifecycle allocation fixture exercises production render-time root replacement", () => {

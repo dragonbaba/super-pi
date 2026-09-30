@@ -2,6 +2,10 @@ import { LAYOUT_NODE, type ScrollLayoutNode } from "../layout-node.ts";
 import { RELEASE_COMPONENT_RENDER_CACHE } from "../component-cache.ts";
 import { type Component, Container } from "../tui.ts";
 
+function defaultScrollbarStyle(text: string): string {
+	return `\x1b[100m${text}\x1b[49m`;
+}
+
 export type ScrollViewScrollbar = "hidden" | "auto" | "always";
 
 export interface ScrollViewOptions {
@@ -31,6 +35,11 @@ export class ScrollView extends Container {
 	private transientScrollbarVisible = false;
 	private scrollbarActive = false;
 	private scrollbarHideTimer: NodeJS.Timeout | undefined;
+	private readonly hideScrollbar = (): void => {
+		this.scrollbarHideTimer = undefined;
+		this.transientScrollbarVisible = false;
+		this.requestRenderCallback?.();
+	};
 
 	constructor(component: Component, options: ScrollViewOptions = {}) {
 		super();
@@ -45,7 +54,7 @@ export class ScrollView extends Container {
 		this.primary = options.primary ?? false;
 		this.overscroll = options.overscroll ?? "chain";
 		this.currentScrollbar = options.scrollbar ?? "hidden";
-		this.scrollbarStyle = options.scrollbarStyle ?? ((text) => `\x1b[100m${text}\x1b[49m`);
+		this.scrollbarStyle = options.scrollbarStyle ?? defaultScrollbarStyle;
 		this.scrollbarHideDelayMs = Math.max(0, Math.floor(options.scrollbarHideDelayMs ?? 1000));
 	}
 
@@ -92,11 +101,7 @@ export class ScrollView extends Container {
 			this.scrollbarHideTimer = undefined;
 		}
 		if (this.scrollbarActive) return;
-		this.scrollbarHideTimer = setTimeout(() => {
-			this.scrollbarHideTimer = undefined;
-			this.transientScrollbarVisible = false;
-			this.requestRenderCallback?.();
-		}, this.scrollbarHideDelayMs);
+		this.scrollbarHideTimer = setTimeout(this.hideScrollbar, this.scrollbarHideDelayMs);
 		this.scrollbarHideTimer.unref();
 	}
 
@@ -189,7 +194,10 @@ export class ScrollView extends Container {
 	override render(width: number): string[] {
 		const contentWidth = this.getContentWidth(width);
 		const lines = this.child.render(contentWidth);
-		return contentWidth === width ? lines : lines.map((line) => `${line} `);
+		if (contentWidth === width) return lines;
+		const padded: string[] = [];
+		for (const line of lines) padded.push(`${line} `);
+		return padded;
 	}
 
 	[RELEASE_COMPONENT_RENDER_CACHE](): void {

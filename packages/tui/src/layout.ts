@@ -1235,25 +1235,35 @@ function containsPoint(rect: LayoutRect, x: number, y: number): boolean {
 }
 
 export function getScrollViewBox(frame: LayoutFrame, scrollView: ScrollView): LayoutBox | undefined {
-	const visit = (box: LayoutBox): LayoutBox | undefined => {
-		if (box.scrollView === scrollView) return box;
-		for (const child of box.children) {
-			const match = visit(child);
-			if (match) return match;
-		}
-		return undefined;
-	};
-	return visit(frame.root);
+	return findScrollViewBox(frame.root, scrollView);
+}
+
+function findScrollViewBox(box: LayoutBox, scrollView: ScrollView): LayoutBox | undefined {
+	if (box.scrollView === scrollView) return box;
+	for (const child of box.children) {
+		const match = findScrollViewBox(child, scrollView);
+		if (match) return match;
+	}
+	return undefined;
+}
+
+interface ScrollViewHit { scrollView: ScrollView; depth: number }
+
+function collectScrollViews(box: LayoutBox, x: number, y: number, depth: number, result: ScrollViewHit[]): void {
+	if (!containsPoint(box.clip, x, y)) return;
+	if (box.scrollView && containsPoint(box.rect, x, y)) result.push({ scrollView: box.scrollView, depth });
+	for (const child of box.children) collectScrollViews(child, x, y, depth + 1, result);
+}
+
+function compareScrollViewDepth(a: ScrollViewHit, b: ScrollViewHit): number {
+	return b.depth - a.depth;
 }
 
 export function getScrollViewsAt(frame: LayoutFrame, x: number, y: number): ScrollView[] {
-	const result: Array<{ scrollView: ScrollView; depth: number }> = [];
-	const visit = (box: LayoutBox, depth: number): void => {
-		if (!containsPoint(box.clip, x, y)) return;
-		if (box.scrollView && containsPoint(box.rect, x, y)) result.push({ scrollView: box.scrollView, depth });
-		for (const child of box.children) visit(child, depth + 1);
-	};
-	visit(frame.root, 0);
-	result.sort((a, b) => b.depth - a.depth);
-	return result.map((entry) => entry.scrollView);
+	const result: ScrollViewHit[] = [];
+	collectScrollViews(frame.root, x, y, 0, result);
+	result.sort(compareScrollViewDepth);
+	const views: ScrollView[] = [];
+	for (const entry of result) views.push(entry.scrollView);
+	return views;
 }

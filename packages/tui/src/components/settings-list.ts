@@ -32,6 +32,10 @@ export interface SettingsListOptions {
 	enableSearch?: boolean;
 }
 
+function getSettingLabel(item: SettingItem): string {
+	return item.label;
+}
+
 export class SettingsList implements Component {
 	private items: SettingItem[];
 	private filteredItems: SettingItem[];
@@ -123,7 +127,9 @@ export class SettingsList implements Component {
 		const endIndex = Math.min(startIndex + this.maxVisible, displayItems.length);
 
 		// Calculate max label width for alignment
-		const maxLabelWidth = Math.min(30, Math.max(...this.items.map((item) => visibleWidth(item.label))));
+		let maxLabelWidth = 0;
+		for (const item of this.items) maxLabelWidth = Math.max(maxLabelWidth, visibleWidth(item.label));
+		maxLabelWidth = Math.min(30, maxLabelWidth);
 
 		// Render visible items
 		for (let i = startIndex; i < endIndex; i++) {
@@ -234,7 +240,7 @@ export class SettingsList implements Component {
 	}
 
 	private applyFilter(query: string): void {
-		this.filteredItems = fuzzyFilter(this.items, query, (item) => item.label);
+		this.filteredItems = fuzzyFilter(this.items, query, getSettingLabel);
 		this.selectedIndex = 0;
 	}
 

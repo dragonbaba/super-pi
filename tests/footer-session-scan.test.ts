@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
 import { FooterComponent } from "../packages/coding-agent/src/modes/interactive/components/footer.ts";
 import { initTheme } from "../packages/coding-agent/src/modes/interactive/theme/theme.ts";
+import { FooterDataProvider } from "../packages/coding-agent/src/core/footer-data-provider.ts";
 
 // The footer renders every frame; its whole-session usage scan must only rerun when entries change.
 initTheme("dark");
@@ -68,6 +69,53 @@ test("session switch and dispose release the cached scan", () => {
 	text(footer);
 	footer.dispose();
 	assert.equal((footer as any).sessionScan, undefined);
+});
+
+test("extension status cache follows actual mutations, key order, empty values and disposal", () => {
+	const { session } = fixture();
+	const data = new FooterDataProvider(process.env.SP_CODING_AGENT_DIR ?? tmpdir());
+	const footer = new FooterComponent(session, data);
+	try {
+		data.setExtensionStatus("z", "last\nstatus");
+		data.setExtensionStatus("a", "first\t status");
+		assert.equal((footer as any).getExtensionStatusLine(), "first status last status");
+		const revision = data.getExtensionStatusRevision();
+		data.setExtensionStatus("a", "first\t status");
+		data.setExtensionStatus("absent", undefined);
+		assert.equal(data.getExtensionStatusRevision(), revision);
+		let enumerations = 0;
+		const statuses = data.getExtensionStatuses() as Map<string, string>;
+		const entries = statuses.entries.bind(statuses);
+		statuses.entries = () => { enumerations++; return entries(); };
+		for (let index = 0; index < 100; index++) text(footer);
+		assert.equal(enumerations, 0, "warm frames must not copy/sort/sanitize statuses");
+		data.setExtensionStatus("a", undefined);
+		data.setExtensionStatus("b", "renamed");
+		assert.equal((footer as any).getExtensionStatusLine(), "renamed last status");
+		assert.equal(enumerations, 1);
+		data.clearExtensionStatuses();
+		assert.equal((footer as any).getExtensionStatusLine(), undefined);
+		assert.equal((footer as any).extensionStatusLine, undefined);
+		data.setExtensionStatus("only", "");
+		assert.equal((footer as any).getExtensionStatusLine(), "");
+		footer.dispose();
+		assert.equal((footer as any).extensionStatusLine, undefined);
+		assert.equal((footer as any).extensionStatusRevision, undefined);
+	} finally { footer.dispose(); data.dispose(); }
+});
+
+test("legacy footer providers without a revision still reflect map mutations and independent owners", () => {
+	const { session } = fixture();
+	const statuses = new Map([["a", "old"]]);
+	const data: any = { getGitBranch: () => undefined, getAvailableProviderCount: () => 1, getExtensionStatuses: () => statuses };
+	const footer = new FooterComponent(session, data);
+	assert.equal((footer as any).getExtensionStatusLine(), "old");
+	statuses.set("a", "new");
+	assert.equal((footer as any).getExtensionStatusLine(), "new");
+	const other = new FooterComponent(session, { ...data, getExtensionStatuses: () => new Map([["b", "separate"]]) });
+	assert.equal((other as any).getExtensionStatusLine(), "separate");
+	assert.equal((footer as any).getExtensionStatusLine(), "new");
+	footer.dispose(); other.dispose();
 });
 
 test("branch and compaction invalidate the scan while history and live usage stay separate", () => {

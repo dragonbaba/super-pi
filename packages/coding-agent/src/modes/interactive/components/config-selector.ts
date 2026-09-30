@@ -442,9 +442,13 @@ class ResourceList implements Component, Focusable {
 
 		// Scroll indicator
 		if (startIndex > 0 || endIndex < this.filteredItems.length) {
-			const itemCount = this.filteredItems.filter((e) => e.type === "item").length;
-			const currentItemIndex =
-				this.filteredItems.slice(0, this.selectedIndex).filter((e) => e.type === "item").length + 1;
+			let itemCount = 0;
+			let currentItemIndex = 1;
+			for (let index = 0; index < this.filteredItems.length; index++) {
+				if (this.filteredItems[index]!.type !== "item") continue;
+				itemCount++;
+				if (index < this.selectedIndex) currentItemIndex++;
+			}
 			lines.push(theme.fg("dim", `  (${currentItemIndex}/${itemCount})`));
 		}
 

@@ -372,10 +372,21 @@ export function getKittyImagePlacement(line: string): KittyImagePlacement | unde
 		commandControls = line.slice(commandStart + KITTY_PREFIX.length, controlsEnd);
 	}
 
-	const controls = match[1]
-		.split(",")
-		.filter((control) => KITTY_PLACEMENT_CONTROL_KEYS.has(control.split("=", 1)[0] ?? ""));
-	const sequence = `\x1b_Ga=p,q=2,${controls.join(",")}\x1b\\`;
+	let controls = "";
+	const originalControls = match[1];
+	let start = 0;
+	while (start <= originalControls.length) {
+		const separator = originalControls.indexOf(",", start);
+		const end = separator < 0 ? originalControls.length : separator;
+		const control = originalControls.slice(start, end);
+		const equals = control.indexOf("=");
+		if (KITTY_PLACEMENT_CONTROL_KEYS.has(equals < 0 ? control : control.slice(0, equals))) {
+			controls += (controls ? "," : "") + control;
+		}
+		if (separator < 0) break;
+		start = separator + 1;
+	}
+	const sequence = `\x1b_Ga=p,q=2,${controls}\x1b\\`;
 	return {
 		imageId: metadata.imageId,
 		transmissionGeneration: metadata.transmissionGeneration,

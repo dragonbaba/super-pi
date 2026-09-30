@@ -1,0 +1,40 @@
+{
+  "baseline": "6ebe643f1dcf6eded74da3b59bb3f177a720dbee",
+  "values": [
+    {
+      "effect": "typewriter",
+      "ticks": 187,
+      "hash": "2eb90bfd35f93efa4cffa46106a28c8b8fab2819015f64c565773d82d0733d2c"
+    },
+    {
+      "effect": "scanline",
+      "ticks": 19,
+      "hash": "99f7d56d7f5d6374ddb4edcc74ecfcfe8462c102ae7112becae9005744f135f8"
+    },
+    {
+      "effect": "rain",
+      "ticks": 220,
+      "hash": "c0d820be9f4f988644d43c57558999ce5d7d5fa9fb35faede0850e6040e71fe3"
+    },
+    {
+      "effect": "fade",
+      "ticks": 38,
+      "hash": "9f809cdcd469ebd41aa6012653b1812df3a3a9b7484e4c446a8fda70d3e7612f"
+    },
+    {
+      "effect": "crt",
+      "ticks": 19,
+      "hash": "b5a833db7a757766ab5f1c45ca5a55696256bd27bca3949eddbd65397b8df77c"
+    },
+    {
+      "effect": "glitch",
+      "ticks": 9,
+      "hash": "68f65665e806db6b94e2674e8f3fda506bfe9ec7725510feb5516612165693d2"
+    },
+    {
+      "effect": "dissolve",
+      "ticks": 28,
+      "hash": "c3494218d756dbe16ec3c7a5ae806eaf5c7df1c0921ba19e34ef48f29be0f023"
+    }
+  ]
+}

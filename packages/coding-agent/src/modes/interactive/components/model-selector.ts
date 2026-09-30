@@ -23,6 +23,10 @@ interface ModelItem {
 	model: Model<any>;
 }
 
+function getSelectorItemSearchText(item: ModelItem): string {
+	return getModelSelectorSearchText(item.model);
+}
+
 interface ScopedModelItem {
 	model: Model<any>;
 	thinkingLevel?: string;
@@ -255,7 +259,10 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		if (this.scope === scope) return;
 		this.scope = scope;
 		this.activeModels = this.scope === "scoped" ? this.scopedModelItems : this.allModels;
-		const currentIndex = this.activeModels.findIndex((item) => modelsAreEqual(this.currentModel, item.model));
+		let currentIndex = -1;
+		for (let index = 0; index < this.activeModels.length; index++) {
+			if (modelsAreEqual(this.currentModel, this.activeModels[index]!.model)) { currentIndex = index; break; }
+		}
 		this.selectedIndex = currentIndex >= 0 ? currentIndex : 0;
 		this.filterModels(this.searchInput.getValue());
 		if (this.scopeText) {
@@ -265,9 +272,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 
 	private filterModels(query: string): void {
 		this.filteredModels = query
-			? fuzzyFilter(this.activeModels, query, ({ id, provider, model }) =>
-					getModelSelectorSearchText({ id, provider, name: model.name }),
-				)
+			? fuzzyFilter(this.activeModels, query, getSelectorItemSearchText)
 			: this.activeModels;
 		// When filtering by a query, move the selector to the top row so the best
 		// match is highlighted. When the query is cleared, keep the current position

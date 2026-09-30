@@ -79,29 +79,32 @@ function convertToolResultOutput<TApi extends Api>(
 	model: Model<TApi>,
 	content: readonly (TextContent | ImageContent)[],
 ): string | ToolResultOutputContent {
-	const textResult = content
-		.filter((c): c is TextContent => c.type === "text")
-		.map((c) => c.text)
-		.join("\n");
-	const images = content.filter((c): c is ImageContent => c.type === "image");
+	let textResult = "";
+	let textBlocks = 0;
+	let imageCount = 0;
+	const supportsImages = model.input.includes("image");
+	let output: ToolResultOutputContent | undefined;
+	for (const item of content) {
+		if (item.type === "text") {
+			textResult += (textBlocks++ > 0 ? "\n" : "") + item.text;
+		} else if (item.type === "image") {
+			imageCount++;
+			if (supportsImages) {
+				output ??= [];
+				output.push({ type: "input_image", detail: "auto", image_url: `data:${item.mimeType};base64,${item.data}` });
+			}
+		}
+	}
 	const hasText = textResult.length > 0;
 
-	if (images.length === 0 || !model.input.includes("image")) {
-		return sanitizeSurrogates(hasText ? textResult : images.length > 0 ? "(see attached image)" : "(no tool output)");
+	if (imageCount === 0 || !supportsImages) {
+		return sanitizeSurrogates(hasText ? textResult : imageCount > 0 ? "(see attached image)" : "(no tool output)");
 	}
 
-	const output: ToolResultOutputContent = [];
 	if (hasText) {
-		output.push({ type: "input_text", text: sanitizeSurrogates(textResult) });
+		output!.unshift({ type: "input_text", text: sanitizeSurrogates(textResult) });
 	}
-	for (const image of images) {
-		output.push({
-			type: "input_image",
-			detail: "auto",
-			image_url: `data:${image.mimeType};base64,${image.data}`,
-		});
-	}
-	return output;
+	return output!;
 }
 
 export interface OpenAIResponsesStreamOptions {
@@ -135,6 +138,20 @@ export interface ConvertResponsesToolsOptions {
 // Message conversion
 // =============================================================================
 
+const ID_INVALID_CHARACTER_PATTERN = /[^a-zA-Z0-9_-]/g;
+const ID_TRAILING_UNDERSCORE_PATTERN = /_+$/;
+
+function normalizeIdPart(part: string): string {
+	const sanitized = part.replace(ID_INVALID_CHARACTER_PATTERN, "_");
+	const normalized = sanitized.length > 64 ? sanitized.slice(0, 64) : sanitized;
+	return normalized.replace(ID_TRAILING_UNDERSCORE_PATTERN, "");
+}
+
+function buildForeignResponsesItemId(itemId: string): string {
+	const normalized = `fc_${shortHash(itemId)}`;
+	return normalized.length > 64 ? normalized.slice(0, 64) : normalized;
+}
+
 export function convertResponsesMessages<TApi extends Api>(
 	model: Model<TApi>,
 	context: Context,
@@ -144,16 +161,9 @@ export function convertResponsesMessages<TApi extends Api>(
 	const messages: ResponseInput = [];
 	const loadedToolNames = new Set<string>();
 
-	const normalizeIdPart = (part: string): string => {
-		const sanitized = part.replace(/[^a-zA-Z0-9_-]/g, "_");
-		const normalized = sanitized.length > 64 ? sanitized.slice(0, 64) : sanitized;
-		return normalized.replace(/_+$/, "");
-	};
 
-	const buildForeignResponsesItemId = (itemId: string): string => {
-		const normalized = `fc_${shortHash(itemId)}`;
-		return normalized.length > 64 ? normalized.slice(0, 64) : normalized;
-	};
+
+
 
 	const normalizeToolCallId = (id: string, _targetModel: Model<TApi>, source: AssistantMessage): string => {
 		if (!allowedToolCallProviders.has(model.provider)) return normalizeIdPart(id);
@@ -192,19 +202,21 @@ export function convertResponsesMessages<TApi extends Api>(
 					content: [{ type: "input_text", text: sanitizeSurrogates(msg.content) }],
 				});
 			} else {
-				const content: ResponseInputContent[] = msg.content.map((item): ResponseInputContent => {
+				const content: ResponseInputContent[] = [];
+				for (const item of msg.content) {
 					if (item.type === "text") {
-						return {
+						content.push({
 							type: "input_text",
 							text: sanitizeSurrogates(item.text),
-						} satisfies ResponseInputText;
+						} satisfies ResponseInputText);
+						continue;
 					}
-					return {
+					content.push({
 						type: "input_image",
 						detail: "auto",
 						image_url: `data:${item.mimeType};base64,${item.data}`,
-					} satisfies ResponseInputImage;
-				});
+					} satisfies ResponseInputImage);
+				}
 				if (content.length === 0) continue;
 				messages.push({
 					role: "user",
@@ -320,7 +332,8 @@ export function convertResponsesMessages<TApi extends Api>(
 				deferredTools.push(tool);
 			}
 			if (deferredTools.length > 0) {
-				const names = deferredTools.map((tool) => tool.name);
+				const names: string[] = [];
+				for (const tool of deferredTools) names.push(tool.name);
 				const searchCallId = `pi_tool_load_${shortHash(`${msg.toolCallId}:${names.join(",")}`)}`;
 				messages.push({
 					type: "tool_search_call",
@@ -356,10 +369,11 @@ export function convertResponsesTools(tools: readonly Tool[], options?: ConvertR
 	const supportsStrictMode = options?.supportsStrictMode ?? true;
 	const supportsOpenAIGrammarTools = options?.supportsOpenAIGrammarTools ?? false;
 
-	return tools.map((tool) => {
+	const converted: OpenAITool[] = [];
+	for (const tool of tools) {
 		const grammar = resolveGrammarConstrainedSampling(tool, supportsOpenAIGrammarTools);
 		if (grammar) {
-			return {
+			converted.push({
 				type: "custom",
 				name: tool.name,
 				description: tool.description,
@@ -369,7 +383,8 @@ export function convertResponsesTools(tools: readonly Tool[], options?: ConvertR
 					definition: grammar.definition,
 				},
 				...(options?.deferLoading ? { defer_loading: true } : {}),
-			} satisfies OpenAITool;
+			} satisfies OpenAITool);
+			continue;
 		}
 
 		const constrainedStrict = resolveJsonSchemaStrictSampling(tool, supportsStrictMode);
@@ -386,8 +401,9 @@ export function convertResponsesTools(tools: readonly Tool[], options?: ConvertR
 		if (supportsStrictMode) {
 			functionTool.strict = strict;
 		}
-		return functionTool as OpenAITool;
-	});
+		converted.push(functionTool as OpenAITool);
+	}
+	return converted;
 }
 
 // =============================================================================
@@ -427,6 +443,211 @@ type ResponsesOutputSlot =
 
 type ToolCallOutputSlot = Extract<ResponsesOutputSlot, { type: "toolCall" }>;
 
+function joinReasoningText(parts: readonly { text?: string }[] | undefined): string {
+	if (!parts) return "";
+	let text = "";
+	for (let index = 0; index < parts.length; index++) {
+		text += (index > 0 ? "\n\n" : "") + (parts[index]!.text ?? "");
+	}
+	return text;
+}
+
+function applyMessagePhaseStopReason(
+	item: ResponseOutputItem,
+	output: AssistantMessage,
+): void {
+	if (item.type === "message" && item.phase === "final_answer") {
+		output.stopReason = "stop";
+	}
+}
+
+function getSlot<TType extends ResponsesOutputSlot["type"]>(
+	outputIndex: number,
+	type: TType,
+	outputSlots: Map<number, ResponsesOutputSlot>,
+): Extract<ResponsesOutputSlot, { type: TType }> | undefined {
+	const slot = outputSlots.get(outputIndex);
+	return slot?.type === type ? (slot as Extract<ResponsesOutputSlot, { type: TType }>) : undefined;
+}
+
+function pushToolCallDelta(
+	slot: ToolCallOutputSlot,
+	delta: string | undefined,
+	output: AssistantMessage,
+	stream: AssistantMessageEventStream,
+): void {
+	if (delta === undefined) return;
+	stream.push({
+		type: "toolcall_delta",
+		contentIndex: slot.contentIndex,
+		delta,
+		partial: output,
+		toolArgsGeneration: slot.block.toolArgsGeneration,
+	});
+}
+
+function createSlot(
+	outputIndex: number,
+	item: ResponseOutputItem,
+	output: AssistantMessage,
+	stream: AssistantMessageEventStream,
+	outputSlots: Map<number, ResponsesOutputSlot>,
+	options?: OpenAIResponsesStreamOptions,
+): ResponsesOutputSlot | undefined {
+	if (item.type === "reasoning") {
+		const block: ThinkingContent = { type: "thinking", thinking: "" };
+		output.content.push(block);
+		const slot = {
+			type: "thinking",
+			block,
+			contentIndex: output.content.length - 1,
+		} satisfies ResponsesOutputSlot;
+		outputSlots.set(outputIndex, slot);
+		stream.push({ type: "thinking_start", contentIndex: slot.contentIndex, partial: output });
+		return slot;
+	}
+	if (item.type === "message") {
+		applyMessagePhaseStopReason(item, output);
+		const block: TextContent = { type: "text", text: "" };
+		output.content.push(block);
+		const slot = { type: "text", block, contentIndex: output.content.length - 1 } satisfies ResponsesOutputSlot;
+		outputSlots.set(outputIndex, slot);
+		stream.push({ type: "text_start", contentIndex: slot.contentIndex, partial: output });
+		return slot;
+	}
+	if (item.type === "function_call") {
+		const namespace = "namespace" in item && typeof item.namespace === "string" ? item.namespace : undefined;
+		const block: StreamingToolCall = {
+			type: "toolCall",
+			id: `${item.call_id}|${item.id}`,
+			name: item.name,
+			arguments: {},
+			...(namespace !== undefined ? { namespace } : {}),
+			partialJson: item.arguments || "",
+		};
+		output.content.push(block);
+		const slot = {
+			type: "toolCall",
+			block,
+			contentIndex: output.content.length - 1,
+		} satisfies ResponsesOutputSlot;
+		outputSlots.set(outputIndex, slot);
+		stream.push({ type: "toolcall_start", contentIndex: slot.contentIndex, partial: output });
+		return slot;
+	}
+	if (item.type === "custom_tool_call") {
+		const namespace = "namespace" in item && typeof item.namespace === "string" ? item.namespace : undefined;
+		const inputProperty = options?.grammarToolInputProperties?.get(item.name) ?? "input";
+		const input = item.input || "";
+		const block: StreamingToolCall = {
+			type: "toolCall",
+			id: `${item.call_id}|${item.id}`,
+			name: item.name,
+			arguments: { [inputProperty]: input },
+			toolArgsGeneration: 0,
+			...(namespace !== undefined ? { namespace } : {}),
+			customInput: {
+				property: inputProperty,
+				jsonBuffer: { input: "", started: false, closed: false },
+			},
+		};
+		output.content.push(block);
+		const slot = {
+			type: "toolCall",
+			block,
+			contentIndex: output.content.length - 1,
+		} satisfies ResponsesOutputSlot;
+		outputSlots.set(outputIndex, slot);
+		stream.push({ type: "toolcall_start", contentIndex: slot.contentIndex, partial: output });
+		return slot;
+	}
+	return undefined;
+}
+
+function getOrCreateSlot(
+	outputIndex: number,
+	item: ResponseOutputItem,
+	output: AssistantMessage,
+	stream: AssistantMessageEventStream,
+	outputSlots: Map<number, ResponsesOutputSlot>,
+	options?: OpenAIResponsesStreamOptions,
+): ResponsesOutputSlot | undefined {
+	return outputSlots.get(outputIndex) ?? createSlot(outputIndex, item, output, stream, outputSlots, options);
+}
+
+// Azure OpenAI can omit reasoning.encrypted_content from response.output_item.done
+// and provide it only in response.completed.response.output. Backfill the
+// persisted reasoning signature from the terminal response to keep store:false
+// multi-turn replay stateless. See https://github.com/earendil-works/pi/issues/6409.
+function backfillReasoningSignatures(
+	responseOutput: ResponseOutputItem[],
+	reasoningBlocksById: Map<string, ThinkingContent>,
+): void {
+	for (const item of responseOutput) {
+		if (item.type !== "reasoning" || !item.encrypted_content) continue;
+		const block = reasoningBlocksById.get(item.id);
+		if (!block?.thinkingSignature) continue;
+
+		const storedItem = JSON.parse(block.thinkingSignature) as ResponseReasoningItem;
+		if (storedItem.encrypted_content) continue;
+		storedItem.encrypted_content = item.encrypted_content;
+		block.thinkingSignature = JSON.stringify(storedItem);
+	}
+}
+
+function finalizeResponse<TApi extends Api>(
+	response: Extract<ResponseStreamEvent, { type: "response.completed" | "response.incomplete" }>["response"],
+	output: AssistantMessage,
+	model: Model<TApi>,
+	reasoningBlocksById: Map<string, ThinkingContent>,
+	options?: OpenAIResponsesStreamOptions,
+): void {
+	backfillReasoningSignatures(response.output ?? [], reasoningBlocksById);
+	if (response?.id) {
+		output.responseId = response.id;
+	}
+	if (response?.usage) {
+		const inputDetails = response.usage.input_tokens_details as
+			| { cached_tokens?: number; cache_write_tokens?: number }
+			| undefined;
+		const cachedTokens = inputDetails?.cached_tokens || 0;
+		const cacheWriteTokens = inputDetails?.cache_write_tokens || 0;
+		output.usage = {
+			// OpenAI includes cached and cache-write tokens in input_tokens, so subtract both.
+			input: Math.max(0, (response.usage.input_tokens || 0) - cachedTokens - cacheWriteTokens),
+			output: response.usage.output_tokens || 0,
+			cacheRead: cachedTokens,
+			cacheWrite: cacheWriteTokens,
+			reasoning: response.usage.output_tokens_details?.reasoning_tokens || 0,
+			totalTokens: response.usage.total_tokens || 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		};
+	}
+	calculateCost(model, output.usage);
+	if (options?.applyServiceTierPricing) {
+		const serviceTier = options.resolveServiceTier
+			? options.resolveServiceTier(response?.service_tier, options.serviceTier)
+			: (response?.service_tier ?? options.serviceTier);
+		options.applyServiceTierPricing(output.usage, serviceTier);
+	}
+	// Map status to stop reason. For incomplete responses, retain the provider's
+	// specific reason so max-output truncation and content filtering stay distinct.
+	const status = response?.status;
+	const incompleteDetails = response?.incomplete_details as { reason?: unknown } | null | undefined;
+	const incompleteReason = typeof incompleteDetails?.reason === "string" ? incompleteDetails.reason : undefined;
+	output.rawStopReason = incompleteReason ? `${status}.${incompleteReason}` : status;
+	const mappedStop = mapStopReason(status, incompleteReason);
+	output.stopReason = mappedStop.stopReason;
+	output.errorMessage = mappedStop.errorMessage;
+	if (output.stopReason === "stop") {
+		for (const block of output.content) {
+			if (block.type !== "toolCall") continue;
+			output.stopReason = "toolUse";
+			break;
+		}
+	}
+}
+
 export async function processResponsesStream<TApi extends Api>(
 	openaiStream: AsyncIterable<ResponseStreamEvent>,
 	output: AssistantMessage,
@@ -437,172 +658,14 @@ export async function processResponsesStream<TApi extends Api>(
 	let sawTerminalResponseEvent = false;
 	const outputSlots = new Map<number, ResponsesOutputSlot>();
 	const reasoningBlocksById = new Map<string, ThinkingContent>();
-	const applyMessagePhaseStopReason = (item: ResponseOutputItem): void => {
-		if (item.type === "message" && item.phase === "final_answer") {
-			output.stopReason = "stop";
-		}
-	};
-	const getSlot = <TType extends ResponsesOutputSlot["type"]>(
-		outputIndex: number,
-		type: TType,
-	): Extract<ResponsesOutputSlot, { type: TType }> | undefined => {
-		const slot = outputSlots.get(outputIndex);
-		return slot?.type === type ? (slot as Extract<ResponsesOutputSlot, { type: TType }>) : undefined;
-	};
-	const pushToolCallDelta = (slot: ToolCallOutputSlot, delta: string | undefined): void => {
-		if (delta === undefined) return;
-		stream.push({
-			type: "toolcall_delta",
-			contentIndex: slot.contentIndex,
-			delta,
-			partial: output,
-			toolArgsGeneration: slot.block.toolArgsGeneration,
-		});
-	};
-	const createSlot = (outputIndex: number, item: ResponseOutputItem): ResponsesOutputSlot | undefined => {
-		if (item.type === "reasoning") {
-			const block: ThinkingContent = { type: "thinking", thinking: "" };
-			output.content.push(block);
-			const slot = {
-				type: "thinking",
-				block,
-				contentIndex: output.content.length - 1,
-			} satisfies ResponsesOutputSlot;
-			outputSlots.set(outputIndex, slot);
-			stream.push({ type: "thinking_start", contentIndex: slot.contentIndex, partial: output });
-			return slot;
-		}
-		if (item.type === "message") {
-			applyMessagePhaseStopReason(item);
-			const block: TextContent = { type: "text", text: "" };
-			output.content.push(block);
-			const slot = { type: "text", block, contentIndex: output.content.length - 1 } satisfies ResponsesOutputSlot;
-			outputSlots.set(outputIndex, slot);
-			stream.push({ type: "text_start", contentIndex: slot.contentIndex, partial: output });
-			return slot;
-		}
-		if (item.type === "function_call") {
-			const namespace = "namespace" in item && typeof item.namespace === "string" ? item.namespace : undefined;
-			const block: StreamingToolCall = {
-				type: "toolCall",
-				id: `${item.call_id}|${item.id}`,
-				name: item.name,
-				arguments: {},
-				...(namespace !== undefined ? { namespace } : {}),
-				partialJson: item.arguments || "",
-			};
-			output.content.push(block);
-			const slot = {
-				type: "toolCall",
-				block,
-				contentIndex: output.content.length - 1,
-			} satisfies ResponsesOutputSlot;
-			outputSlots.set(outputIndex, slot);
-			stream.push({ type: "toolcall_start", contentIndex: slot.contentIndex, partial: output });
-			return slot;
-		}
-		if (item.type === "custom_tool_call") {
-			const namespace = "namespace" in item && typeof item.namespace === "string" ? item.namespace : undefined;
-			const inputProperty = options?.grammarToolInputProperties?.get(item.name) ?? "input";
-			const input = item.input || "";
-			const block: StreamingToolCall = {
-				type: "toolCall",
-				id: `${item.call_id}|${item.id}`,
-				name: item.name,
-				arguments: { [inputProperty]: input },
-				toolArgsGeneration: 0,
-				...(namespace !== undefined ? { namespace } : {}),
-				customInput: {
-					property: inputProperty,
-					jsonBuffer: { input: "", started: false, closed: false },
-				},
-			};
-			output.content.push(block);
-			const slot = {
-				type: "toolCall",
-				block,
-				contentIndex: output.content.length - 1,
-			} satisfies ResponsesOutputSlot;
-			outputSlots.set(outputIndex, slot);
-			stream.push({ type: "toolcall_start", contentIndex: slot.contentIndex, partial: output });
-			return slot;
-		}
-		return undefined;
-	};
-	const getOrCreateSlot = (outputIndex: number, item: ResponseOutputItem): ResponsesOutputSlot | undefined => {
-		return outputSlots.get(outputIndex) ?? createSlot(outputIndex, item);
-	};
-	// Azure OpenAI can omit reasoning.encrypted_content from response.output_item.done
-	// and provide it only in response.completed.response.output. Backfill the
-	// persisted reasoning signature from the terminal response to keep store:false
-	// multi-turn replay stateless. See https://github.com/earendil-works/pi/issues/6409.
-	const backfillReasoningSignatures = (responseOutput: ResponseOutputItem[]): void => {
-		for (const item of responseOutput) {
-			if (item.type !== "reasoning" || !item.encrypted_content) continue;
-			const block = reasoningBlocksById.get(item.id);
-			if (!block?.thinkingSignature) continue;
-
-			const storedItem = JSON.parse(block.thinkingSignature) as ResponseReasoningItem;
-			if (storedItem.encrypted_content) continue;
-			block.thinkingSignature = JSON.stringify({
-				...storedItem,
-				encrypted_content: item.encrypted_content,
-			});
-		}
-	};
-	const finalizeResponse = (
-		response: Extract<ResponseStreamEvent, { type: "response.completed" | "response.incomplete" }>["response"],
-	): void => {
-		sawTerminalResponseEvent = true;
-		backfillReasoningSignatures(response.output ?? []);
-		if (response?.id) {
-			output.responseId = response.id;
-		}
-		if (response?.usage) {
-			const inputDetails = response.usage.input_tokens_details as
-				| { cached_tokens?: number; cache_write_tokens?: number }
-				| undefined;
-			const cachedTokens = inputDetails?.cached_tokens || 0;
-			const cacheWriteTokens = inputDetails?.cache_write_tokens || 0;
-			output.usage = {
-				// OpenAI includes cached and cache-write tokens in input_tokens, so subtract both.
-				input: Math.max(0, (response.usage.input_tokens || 0) - cachedTokens - cacheWriteTokens),
-				output: response.usage.output_tokens || 0,
-				cacheRead: cachedTokens,
-				cacheWrite: cacheWriteTokens,
-				reasoning: response.usage.output_tokens_details?.reasoning_tokens || 0,
-				totalTokens: response.usage.total_tokens || 0,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-			};
-		}
-		calculateCost(model, output.usage);
-		if (options?.applyServiceTierPricing) {
-			const serviceTier = options.resolveServiceTier
-				? options.resolveServiceTier(response?.service_tier, options.serviceTier)
-				: (response?.service_tier ?? options.serviceTier);
-			options.applyServiceTierPricing(output.usage, serviceTier);
-		}
-		// Map status to stop reason. For incomplete responses, retain the provider's
-		// specific reason so max-output truncation and content filtering stay distinct.
-		const status = response?.status;
-		const incompleteDetails = response?.incomplete_details as { reason?: unknown } | null | undefined;
-		const incompleteReason = typeof incompleteDetails?.reason === "string" ? incompleteDetails.reason : undefined;
-		output.rawStopReason = incompleteReason ? `${status}.${incompleteReason}` : status;
-		const mappedStop = mapStopReason(status, incompleteReason);
-		output.stopReason = mappedStop.stopReason;
-		output.errorMessage = mappedStop.errorMessage;
-		if (output.content.some((b) => b.type === "toolCall") && output.stopReason === "stop") {
-			output.stopReason = "toolUse";
-		}
-	};
 
 	for await (const event of openaiStream) {
 		if (event.type === "response.created") {
 			output.responseId = event.response.id;
 		} else if (event.type === "response.output_item.added") {
-			createSlot(event.output_index, event.item);
+			createSlot(event.output_index, event.item, output, stream, outputSlots, options);
 		} else if (event.type === "response.reasoning_summary_text.delta") {
-			const slot = getSlot(event.output_index, "thinking");
+			const slot = getSlot(event.output_index, "thinking", outputSlots);
 			if (!slot) continue;
 			slot.block.thinking += event.delta;
 			stream.push({
@@ -612,7 +675,7 @@ export async function processResponsesStream<TApi extends Api>(
 				partial: output,
 			});
 		} else if (event.type === "response.reasoning_summary_part.done") {
-			const slot = getSlot(event.output_index, "thinking");
+			const slot = getSlot(event.output_index, "thinking", outputSlots);
 			if (!slot) continue;
 			slot.block.thinking += "\n\n";
 			stream.push({
@@ -622,7 +685,7 @@ export async function processResponsesStream<TApi extends Api>(
 				partial: output,
 			});
 		} else if (event.type === "response.reasoning_text.delta") {
-			const slot = getSlot(event.output_index, "thinking");
+			const slot = getSlot(event.output_index, "thinking", outputSlots);
 			if (!slot) continue;
 			slot.block.thinking += event.delta;
 			stream.push({
@@ -632,7 +695,7 @@ export async function processResponsesStream<TApi extends Api>(
 				partial: output,
 			});
 		} else if (event.type === "response.output_text.delta") {
-			const slot = getSlot(event.output_index, "text");
+			const slot = getSlot(event.output_index, "text", outputSlots);
 			if (!slot) continue;
 			slot.block.text += event.delta;
 			stream.push({
@@ -642,7 +705,7 @@ export async function processResponsesStream<TApi extends Api>(
 				partial: output,
 			});
 		} else if (event.type === "response.refusal.delta") {
-			const slot = getSlot(event.output_index, "text");
+			const slot = getSlot(event.output_index, "text", outputSlots);
 			if (!slot) continue;
 			slot.block.text += event.delta;
 			stream.push({
@@ -652,13 +715,13 @@ export async function processResponsesStream<TApi extends Api>(
 				partial: output,
 			});
 		} else if (event.type === "response.function_call_arguments.delta") {
-			const slot = getSlot(event.output_index, "toolCall");
+			const slot = getSlot(event.output_index, "toolCall", outputSlots);
 			if (!slot || slot.block.partialJson === undefined) continue;
 			slot.block.partialJson += event.delta;
 			slot.block.arguments = parseStreamingJson(slot.block.partialJson);
-			pushToolCallDelta(slot, event.delta);
+			pushToolCallDelta(slot, event.delta, output, stream);
 		} else if (event.type === "response.function_call_arguments.done") {
-			const slot = getSlot(event.output_index, "toolCall");
+			const slot = getSlot(event.output_index, "toolCall", outputSlots);
 			if (!slot || slot.block.partialJson === undefined) continue;
 			const previousPartialJson = slot.block.partialJson;
 			slot.block.partialJson = event.arguments;
@@ -666,27 +729,24 @@ export async function processResponsesStream<TApi extends Api>(
 
 			if (event.arguments.startsWith(previousPartialJson)) {
 				const delta = event.arguments.slice(previousPartialJson.length);
-				if (delta.length > 0) pushToolCallDelta(slot, delta);
+				if (delta.length > 0) pushToolCallDelta(slot, delta, output, stream);
 			}
 		} else if (event.type === "response.custom_tool_call_input.delta") {
-			const slot = getSlot(event.output_index, "toolCall");
+			const slot = getSlot(event.output_index, "toolCall", outputSlots);
 			if (!slot || !slot.block.customInput) continue;
-			pushToolCallDelta(
-				slot,
-				appendCustomToolCallInput(slot.block, getCustomToolCallInput(slot.block) + event.delta, false),
-			);
+			pushToolCallDelta(slot, appendCustomToolCallInput(slot.block, getCustomToolCallInput(slot.block) + event.delta, false), output, stream);
 		} else if (event.type === "response.custom_tool_call_input.done") {
-			const slot = getSlot(event.output_index, "toolCall");
+			const slot = getSlot(event.output_index, "toolCall", outputSlots);
 			if (!slot || !slot.block.customInput) continue;
-			pushToolCallDelta(slot, appendCustomToolCallInput(slot.block, event.input, true));
+			pushToolCallDelta(slot, appendCustomToolCallInput(slot.block, event.input, true), output, stream);
 		} else if (event.type === "response.output_item.done") {
 			const item = event.item;
-			applyMessagePhaseStopReason(item);
-			const slot = getOrCreateSlot(event.output_index, item);
+			applyMessagePhaseStopReason(item, output);
+			const slot = getOrCreateSlot(event.output_index, item, output, stream, outputSlots, options);
 
 			if (item.type === "reasoning" && slot?.type === "thinking") {
-				const summaryText = item.summary?.map((s) => s.text).join("\n\n") || "";
-				const contentText = item.content?.map((c) => c.text).join("\n\n") || "";
+				const summaryText = joinReasoningText(item.summary);
+				const contentText = summaryText ? "" : joinReasoningText(item.content);
 				slot.block.thinking = summaryText || contentText || slot.block.thinking;
 				slot.block.thinkingSignature = JSON.stringify(item);
 				reasoningBlocksById.set(item.id, slot.block);
@@ -698,7 +758,9 @@ export async function processResponsesStream<TApi extends Api>(
 				});
 				outputSlots.delete(event.output_index);
 			} else if (item.type === "message" && slot?.type === "text") {
-				slot.block.text = item.content?.map((c) => (c.type === "output_text" ? c.text : c.refusal)).join("") || "";
+				let text = "";
+				for (const part of item.content ?? []) text += (part.type === "output_text" ? part.text : part.refusal) ?? "";
+				slot.block.text = text;
 				slot.block.textSignature = encodeTextSignatureV1(item.id, item.phase ?? undefined);
 				stream.push({
 					type: "text_end",
@@ -725,10 +787,7 @@ export async function processResponsesStream<TApi extends Api>(
 				});
 				outputSlots.delete(event.output_index);
 			} else if (item.type === "custom_tool_call" && slot?.type === "toolCall" && slot.block.customInput) {
-				pushToolCallDelta(
-					slot,
-					appendCustomToolCallInput(slot.block, item.input ?? getCustomToolCallInput(slot.block), true),
-				);
+				pushToolCallDelta(slot, appendCustomToolCallInput(slot.block, item.input ?? getCustomToolCallInput(slot.block), true), output, stream);
 				if ("namespace" in item && typeof item.namespace === "string") slot.block.namespace = item.namespace;
 				slot.block.customInput = undefined;
 				slot.block.toolArgsGeneration = undefined;
@@ -741,7 +800,8 @@ export async function processResponsesStream<TApi extends Api>(
 				outputSlots.delete(event.output_index);
 			}
 		} else if (event.type === "response.completed" || event.type === "response.incomplete") {
-			finalizeResponse(event.response);
+			sawTerminalResponseEvent = true;
+			finalizeResponse(event.response, output, model, reasoningBlocksById, options);
 		} else if (event.type === "error") {
 			throw new Error(`Error Code ${event.code}: ${event.message}` || "Unknown error");
 		} else if (event.type === "response.failed") {

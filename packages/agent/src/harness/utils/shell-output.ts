@@ -1,6 +1,8 @@
 import { type ExecutionEnv, ExecutionError, err, ok, type Result, type ShellExecOptions, toError } from "../types.ts";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, type TruncationResult, truncateTail } from "./truncate.ts";
 
+const CARRIAGE_RETURN_PATTERN = /\r/g;
+
 export interface ShellCaptureProgress {
 	output: string;
 	truncation: TruncationResult;
@@ -114,10 +116,11 @@ export async function executeShellWithCapture(
 	const onChunk = (chunk: string): void => {
 		if (!acceptingOutput) return;
 		try {
-			const text = sanitizeBinaryOutput(chunk).replace(/\r/g, "");
+			const text = sanitizeBinaryOutput(chunk).replace(CARRIAGE_RETURN_PATTERN, "");
 			const textBytes = encoder.encode(text).byteLength;
 			totalBytes += textBytes;
-			const newlineCount = text.split("\n").length - 1;
+			let newlineCount = 0;
+			for (let index = text.indexOf("\n"); index !== -1; index = text.indexOf("\n", index + 1)) newlineCount++;
 			completedLines += newlineCount;
 			const lastNewline = text.lastIndexOf("\n");
 			if (lastNewline >= 0) {

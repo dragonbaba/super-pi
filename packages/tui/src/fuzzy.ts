@@ -22,88 +22,91 @@ export interface FuzzyMatch {
 	score: number;
 }
 
-export function fuzzyMatch(query: string, text: string): FuzzyMatch {
-	const queryLower = query.toLowerCase();
-	const textLower = text.toLowerCase();
-
-	const matchQuery = (normalizedQuery: string): FuzzyMatch => {
-		if (normalizedQuery.length === 0) {
-			return { matches: true, score: 0 };
-		}
-
-		if (normalizedQuery.length > textLower.length) {
-			return { matches: false, score: 0 };
-		}
-
-		let queryIndex = 0;
-		let score = 0;
-		let lastMatchIndex = -1;
-		let consecutiveMatches = 0;
-
-		while (queryIndex < normalizedQuery.length) {
-			const i = textLower.indexOf(normalizedQuery[queryIndex]!, lastMatchIndex + 1);
-			if (i === -1) break;
-
-			const isWordBoundary = i === 0 || isWordBoundaryCharacter(textLower[i - 1]!);
-
-			// Reward consecutive matches
-			if (lastMatchIndex === i - 1) {
-				consecutiveMatches++;
-				score -= consecutiveMatches * 5;
-			} else {
-				consecutiveMatches = 0;
-				// Penalize gaps
-				if (lastMatchIndex >= 0) {
-					score += (i - lastMatchIndex - 1) * 2;
-				}
-			}
-
-			// Reward word boundary matches
-			if (isWordBoundary) {
-				score -= 10;
-			}
-
-			// Slight penalty for later matches
-			score += i * 0.1;
-
-			lastMatchIndex = i;
-			queryIndex++;
-		}
-
-		if (queryIndex < normalizedQuery.length) {
-			return { matches: false, score: 0 };
-		}
-
-		if (normalizedQuery === textLower) {
-			score -= 100;
-		}
-
-		return { matches: true, score };
-	};
-
-	const primaryMatch = matchQuery(queryLower);
-	if (primaryMatch.matches) {
-		return primaryMatch;
+function scoreQuery(normalizedQuery: string, textLower: string): number | undefined {
+	if (normalizedQuery.length === 0) {
+		return 0;
 	}
 
+	if (normalizedQuery.length > textLower.length) {
+		return undefined;
+	}
+
+	let queryIndex = 0;
+	let score = 0;
+	let lastMatchIndex = -1;
+	let consecutiveMatches = 0;
+
+	while (queryIndex < normalizedQuery.length) {
+		const i = textLower.indexOf(normalizedQuery[queryIndex]!, lastMatchIndex + 1);
+		if (i === -1) break;
+
+		const isWordBoundary = i === 0 || isWordBoundaryCharacter(textLower[i - 1]!);
+
+		// Reward consecutive matches
+		if (lastMatchIndex === i - 1) {
+			consecutiveMatches++;
+			score -= consecutiveMatches * 5;
+		} else {
+			consecutiveMatches = 0;
+			// Penalize gaps
+			if (lastMatchIndex >= 0) {
+				score += (i - lastMatchIndex - 1) * 2;
+			}
+		}
+
+		// Reward word boundary matches
+		if (isWordBoundary) {
+			score -= 10;
+		}
+
+		// Slight penalty for later matches
+		score += i * 0.1;
+
+		lastMatchIndex = i;
+		queryIndex++;
+	}
+
+	if (queryIndex < normalizedQuery.length) {
+		return undefined;
+	}
+
+	if (normalizedQuery === textLower) {
+		score -= 100;
+	}
+
+	return score;
+}
+
+function swappedQueryFor(queryLower: string): string {
 	const alphaNumericMatch = queryLower.match(FUZZY_ALPHA_NUMERIC_PATTERN);
 	const numericAlphaMatch = queryLower.match(FUZZY_NUMERIC_ALPHA_PATTERN);
-	const swappedQuery = alphaNumericMatch
+	return alphaNumericMatch
 		? `${alphaNumericMatch.groups?.digits ?? ""}${alphaNumericMatch.groups?.letters ?? ""}`
 		: numericAlphaMatch
 			? `${numericAlphaMatch.groups?.letters ?? ""}${numericAlphaMatch.groups?.digits ?? ""}`
 			: "";
 
-	if (!swappedQuery) {
-		return primaryMatch;
-	}
+}
 
-	const swappedMatch = matchQuery(swappedQuery);
-	if (!swappedMatch.matches) {
-		return primaryMatch;
-	}
+function scoreWithSwap(query: string, swappedQuery: string, text: string): number | undefined {
+	const score = scoreQuery(query, text);
+	if (score !== undefined || !swappedQuery) return score;
+	const swappedScore = scoreQuery(swappedQuery, text);
+	return swappedScore === undefined ? undefined : swappedScore + 5;
+}
 
-	return { matches: true, score: swappedMatch.score + 5 };
+export function fuzzyMatch(query: string, text: string): FuzzyMatch {
+	const queryLower = query.toLowerCase();
+	const textLower = text.toLowerCase();
+	const primary = scoreQuery(queryLower, textLower);
+	if (primary !== undefined) return { matches: true, score: primary };
+	const swapped = swappedQueryFor(queryLower);
+	const score = swapped ? scoreQuery(swapped, textLower) : undefined;
+	return score === undefined ? { matches: false, score: 0 } : { matches: true, score: score + 5 };
+}
+
+function compareMatchScores(a: { totalScore: number }, b: { totalScore: number }): number {
+	return a.totalScore - b.totalScore;
 }
 
 /**
@@ -115,10 +118,16 @@ export function fuzzyFilter<T>(items: T[], query: string, getText: (item: T) => 
 		return items;
 	}
 
-	const tokens = query
-		.trim()
-		.split(FUZZY_TOKEN_SEPARATOR_PATTERN)
-		.filter((t) => t.length > 0);
+	const tokens = query.trim().split(FUZZY_TOKEN_SEPARATOR_PATTERN);
+	const swappedTokens: string[] = [];
+	let tokenCount = 0;
+	for (const token of tokens) {
+		if (token.length === 0) continue;
+		const normalized = token.toLowerCase();
+		tokens[tokenCount++] = normalized;
+		swappedTokens.push(swappedQueryFor(normalized));
+	}
+	tokens.length = tokenCount;
 
 	if (tokens.length === 0) {
 		return items;
@@ -127,14 +136,14 @@ export function fuzzyFilter<T>(items: T[], query: string, getText: (item: T) => 
 	const results: { item: T; totalScore: number }[] = [];
 
 	for (const item of items) {
-		const text = getText(item);
+		const text = getText(item).toLowerCase();
 		let totalScore = 0;
 		let allMatch = true;
 
-		for (const token of tokens) {
-			const match = fuzzyMatch(token, text);
-			if (match.matches) {
-				totalScore += match.score;
+		for (let index = 0; index < tokens.length; index++) {
+			const score = scoreWithSwap(tokens[index]!, swappedTokens[index]!, text);
+			if (score !== undefined) {
+				totalScore += score;
 			} else {
 				allMatch = false;
 				break;
@@ -146,6 +155,8 @@ export function fuzzyFilter<T>(items: T[], query: string, getText: (item: T) => 
 		}
 	}
 
-	results.sort((a, b) => a.totalScore - b.totalScore);
-	return results.map((r) => r.item);
+	results.sort(compareMatchScores);
+	const filtered: T[] = [];
+	for (const result of results) filtered.push(result.item);
+	return filtered;
 }

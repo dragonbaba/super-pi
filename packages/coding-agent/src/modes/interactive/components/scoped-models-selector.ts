@@ -36,15 +36,21 @@ function enableAll(enabledIds: EnabledIds, allIds: string[], targetIds?: string[
 	for (const id of targets) {
 		if (!result.includes(id)) result.push(id);
 	}
-	return result.length === allIds.length && result.every((id) => allIds.includes(id)) ? null : result;
+	if (result.length !== allIds.length) return result;
+	for (const id of result) if (!allIds.includes(id)) return result;
+	return null;
 }
 
 function clearAll(enabledIds: EnabledIds, allIds: string[], targetIds?: string[]): EnabledIds {
 	if (enabledIds === null) {
-		return targetIds ? allIds.filter((id) => !targetIds.includes(id)) : [];
+		const result: string[] = [];
+		if (targetIds) for (const id of allIds) if (!targetIds.includes(id)) result.push(id);
+		return result;
 	}
 	const targets = new Set(targetIds ?? enabledIds);
-	return enabledIds.filter((id) => !targets.has(id));
+	const result: string[] = [];
+	for (const id of enabledIds) if (!targets.has(id)) result.push(id);
+	return result;
 }
 
 function move(enabledIds: EnabledIds, id: string, delta: number): EnabledIds {
@@ -54,21 +60,34 @@ function move(enabledIds: EnabledIds, id: string, delta: number): EnabledIds {
 	if (index < 0) return list;
 	const newIndex = index + delta;
 	if (newIndex < 0 || newIndex >= list.length) return list;
-	const result = [...list];
-	[result[index], result[newIndex]] = [result[newIndex], result[index]];
-	return result;
+	const previous = list[index]!;
+	list[index] = list[newIndex]!;
+	list[newIndex] = previous;
+	return list;
 }
 
 function getSortedIds(enabledIds: EnabledIds, allIds: string[]): string[] {
 	if (enabledIds === null) return allIds;
 	const enabledSet = new Set(enabledIds);
-	return [...enabledIds, ...allIds.filter((id) => !enabledSet.has(id))];
+	const ids = [...enabledIds];
+	for (const id of allIds) if (!enabledSet.has(id)) ids.push(id);
+	return ids;
 }
 
 interface ModelItem {
 	fullId: string;
 	model: Model<any> | undefined;
 	enabled: boolean;
+}
+
+function getItemSearchText(item: ModelItem): string {
+	return item.model ? getModelSearchText(item.model) : item.fullId;
+}
+
+function getItemIds(items: ModelItem[]): string[] {
+	const ids: string[] = [];
+	for (const item of items) ids.push(item.fullId);
+	return ids;
 }
 
 export interface ModelsConfig {
@@ -168,7 +187,10 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
 			this.allIds.push(fullId);
 		}
 		this.refresh();
-		const refreshedIndex = selectedId ? this.filteredItems.findIndex((item) => item.fullId === selectedId) : -1;
+		let refreshedIndex = -1;
+		if (selectedId) for (let index = 0; index < this.filteredItems.length; index++) {
+			if (this.filteredItems[index]!.fullId === selectedId) { refreshedIndex = index; break; }
+		}
 		if (refreshedIndex >= 0) {
 			this.selectedIndex = refreshedIndex;
 			this.updateList();
@@ -180,16 +202,18 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
 	}
 
 	private buildItems(): ModelItem[] {
-		return getSortedIds(this.enabledIds, this.allIds).map((id) => ({
-			fullId: id,
-			model: this.modelsById.get(id),
-			enabled: isEnabled(this.enabledIds, id),
-		}));
+		const items: ModelItem[] = [];
+		for (const id of getSortedIds(this.enabledIds, this.allIds)) items.push({ fullId: id, model: this.modelsById.get(id), enabled: isEnabled(this.enabledIds, id) });
+		return items;
 	}
 
 	private getFooterText(): string {
-		const enabledCount = this.enabledIds?.filter((id) => this.modelsById.has(id)).length ?? this.allIds.length;
-		const unavailableCount = this.enabledIds?.filter((id) => !this.modelsById.has(id)).length ?? 0;
+		let enabledCount = this.enabledIds === null ? this.allIds.length : 0;
+		let unavailableCount = 0;
+		if (this.enabledIds) for (const id of this.enabledIds) {
+			if (this.modelsById.has(id)) enabledCount++;
+			else unavailableCount++;
+		}
 		const allEnabled = this.enabledIds === null;
 		const countText = allEnabled
 			? "all enabled"
@@ -212,11 +236,7 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
 		const query = this.searchInput.getValue();
 		const items = this.buildItems();
 		this.filteredItems = query
-			? fuzzyFilter(items, query, (item) =>
-					item.model
-						? getModelSearchText({ id: item.model.id, provider: item.model.provider, name: item.model.name })
-						: item.fullId,
-				)
+			? fuzzyFilter(items, query, getItemSearchText)
 			: items;
 		this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.filteredItems.length - 1));
 		this.updateList();
@@ -332,7 +352,7 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
 
 		// Enable all (filtered if search active, otherwise all)
 		if (kb.matches(data, "app.models.enableAll")) {
-			const targetIds = this.searchInput.getValue() ? this.filteredItems.map((i) => i.fullId) : undefined;
+			const targetIds = this.searchInput.getValue() ? getItemIds(this.filteredItems) : undefined;
 			this.enabledIds = enableAll(this.enabledIds, this.allIds, targetIds);
 			this.isDirty = true;
 			this.refresh();
@@ -342,7 +362,7 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
 
 		// Clear all (filtered if search active, otherwise all)
 		if (kb.matches(data, "app.models.clearAll")) {
-			const targetIds = this.searchInput.getValue() ? this.filteredItems.map((i) => i.fullId) : undefined;
+			const targetIds = this.searchInput.getValue() ? getItemIds(this.filteredItems) : undefined;
 			this.enabledIds = clearAll(this.enabledIds, this.allIds, targetIds);
 			this.isDirty = true;
 			this.refresh();
@@ -355,8 +375,13 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
 			const item = this.filteredItems[this.selectedIndex];
 			if (item?.model) {
 				const provider = item.model.provider;
-				const providerIds = this.allIds.filter((id) => this.modelsById.get(id)!.provider === provider);
-				const allEnabled = providerIds.every((id) => isEnabled(this.enabledIds, id));
+				const providerIds: string[] = [];
+				let allEnabled = true;
+				for (const id of this.allIds) {
+					if (this.modelsById.get(id)!.provider !== provider) continue;
+					providerIds.push(id);
+					if (!isEnabled(this.enabledIds, id)) allEnabled = false;
+				}
 				this.enabledIds = allEnabled
 					? clearAll(this.enabledIds, this.allIds, providerIds)
 					: enableAll(this.enabledIds, this.allIds, providerIds);

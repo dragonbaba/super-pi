@@ -46,11 +46,52 @@ interface HorizontalViewportRow {
 	isSelected: boolean;
 }
 
+const ENTRY_LINE_BREAK_PATTERN = /[\n\t]/g;
+function normalizeEntryText(text: string): string { return text.replace(ENTRY_LINE_BREAK_PATTERN, " ").trim(); }
+function indexVisibleNodes(nodes: FlatNode[]): Map<string, number> {
+	const indices = new Map<string, number>();
+	for (let index = 0; index < nodes.length; index++) indices.set(nodes[index]!.node.entry.id, index);
+	return indices;
+}
+function visibleNodeIds(nodes: FlatNode[]): Set<string> {
+	const ids = new Set<string>();
+	for (const node of nodes) ids.add(node.node.entry.id);
+	return ids;
+}
+function getGutter(gutters: GutterInfo[], level: number): GutterInfo | undefined {
+	for (const gutter of gutters) if (gutter.position === level) return gutter;
+	return undefined;
+}
+
+function findVisibleAncestor(nodeId: string, entryMap: ReadonlyMap<string, FlatNode>, visibleIds: ReadonlySet<string>): string | null {
+	let currentId = entryMap.get(nodeId)?.node.entry.parentId ?? null;
+	while (currentId !== null) {
+		if (visibleIds.has(currentId)) {
+			return currentId;
+		}
+		currentId = entryMap.get(currentId)?.node.entry.parentId ?? null;
+	}
+	return null;
+		}
+
+function shortenPath(p: string): string {
+	const home = process.env.HOME || process.env.USERPROFILE || "";
+	if (home && p.startsWith(home)) return `~${p.slice(home.length)}`;
+	return p;
+		}
+
 const TREE_GUTTER_WIDTH = 2;
 const MIN_VISIBLE_ANCHOR_CONTENT_WIDTH = 4;
 const MAX_VISIBLE_ANCHOR_CONTENT_WIDTH = 20;
 const MIN_ANCHOR_CONTEXT_WIDTH = 2;
 const MAX_ANCHOR_CONTEXT_WIDTH = 12;
+const SEARCH_SEPARATOR_PATTERN = /\s+/;
+const PAGE_UP_PATTERN = /\bpageUp\b/g;
+const PAGE_DOWN_PATTERN = /\bpageDown\b/g;
+const UP_PATTERN = /\bup\b/g;
+const DOWN_PATTERN = /\bdown\b/g;
+const LEFT_PATTERN = /\bleft\b/g;
+const RIGHT_PATTERN = /\bright\b/g;
 
 /**
  * Render tree rows into a horizontally clipped viewport.
@@ -61,9 +102,13 @@ const MAX_ANCHOR_CONTEXT_WIDTH = 12;
  */
 function renderHorizontalViewport(rows: HorizontalViewportRow[], width: number): string[] {
 	const viewportWidth = Math.max(0, width - TREE_GUTTER_WIDTH);
-	const maxBodyWidth = rows.reduce((max, row) => Math.max(max, row.bodyWidth), 0);
+	let maxBodyWidth = 0;
+	let selectedRow: HorizontalViewportRow | undefined;
+	for (const row of rows) {
+		maxBodyWidth = Math.max(maxBodyWidth, row.bodyWidth);
+		if (row.isSelected && selectedRow === undefined) selectedRow = row;
+	}
 	const maxHorizontalScroll = Math.max(0, maxBodyWidth - viewportWidth);
-	const selectedRow = rows.find((row) => row.isSelected);
 
 	// Only pan horizontally when needed to keep enough selected-row content visible after its anchor.
 	let horizontalScroll = 0;
@@ -82,13 +127,15 @@ function renderHorizontalViewport(rows: HorizontalViewportRow[], width: number):
 	}
 
 	// Clip only the body; the fixed-width gutter remains visible as navigation context.
-	return rows.map((row) => {
+	const lines: string[] = [];
+	for (const row of rows) {
 		const line =
 			horizontalScroll > 0
 				? `${row.gutter}${sliceByColumn(row.body, horizontalScroll, viewportWidth, true)}\x1b[0m`
 				: row.gutter + row.body;
-		return truncateToWidth(line, width, "");
-	});
+		lines.push(truncateToWidth(line, width, ""));
+	}
+	return lines;
 }
 
 /** Filter mode for tree display */
@@ -160,7 +207,7 @@ class TreeList implements Component {
 		}
 
 		// Build a map of visible entry IDs to their indices in filteredNodes
-		const visibleIdToIndex = new Map<string, number>(this.filteredNodes.map((node, i) => [node.node.entry.id, i]));
+		const visibleIdToIndex = indexVisibleNodes(this.filteredNodes);
 
 		// Walk from entryId up to root, looking for a visible entry
 		let currentId = entryId;
@@ -327,6 +374,67 @@ class TreeList implements Component {
 		return result;
 	}
 
+	private passesFilter(flatNode: FlatNode, searchTokens: string[]): boolean {
+		const entry = flatNode.node.entry;
+		const isCurrentLeaf = entry.id === this.currentLeafId;
+
+		// Skip assistant messages with only tool calls (no text) unless error/aborted
+		// Always show current leaf so active position is visible
+		if (entry.type === "message" && entry.message.role === "assistant" && !isCurrentLeaf) {
+			const msg = entry.message as { stopReason?: string; content?: unknown };
+			const hasText = this.hasTextContent(msg.content);
+			const isErrorOrAborted = msg.stopReason && msg.stopReason !== "stop" && msg.stopReason !== "toolUse";
+			// Only hide if no text AND not an error/aborted message
+			if (!hasText && !isErrorOrAborted) {
+				return false;
+			}
+		}
+
+		// Apply filter mode
+		let passesFilter = true;
+		// Entry types hidden in default view (settings/bookkeeping)
+		const isSettingsEntry =
+			entry.type === "label" ||
+			entry.type === "custom" ||
+			entry.type === "model_change" ||
+			entry.type === "thinking_level_change" ||
+			entry.type === "session_info";
+
+		switch (this.filterMode) {
+			case "user-only":
+				// Just user messages
+				passesFilter = entry.type === "message" && entry.message.role === "user";
+				break;
+			case "no-tools":
+				// Default minus tool results
+				passesFilter = !isSettingsEntry && !(entry.type === "message" && entry.message.role === "toolResult");
+				break;
+			case "labeled-only":
+				// Just labeled entries
+				passesFilter = flatNode.node.label !== undefined;
+				break;
+			case "all":
+				// Show everything
+				passesFilter = true;
+				break;
+			default:
+				// Default mode: hide settings/bookkeeping entries
+				passesFilter = !isSettingsEntry;
+				break;
+		}
+
+		if (!passesFilter) return false;
+
+		// Apply search filter
+		if (searchTokens.length > 0) {
+			const nodeText = this.getSearchableText(flatNode.node).toLowerCase();
+			for (const token of searchTokens) if (!nodeText.includes(token)) return false;
+			return true;
+		}
+
+		return true;
+	}
+
 	private applyFilter(): void {
 		// Update lastSelectedId only when we have a valid selection (non-empty list)
 		// This preserves the selection when switching through empty filter results
@@ -334,67 +442,12 @@ class TreeList implements Component {
 			this.lastSelectedId = this.filteredNodes[this.selectedIndex]?.node.entry.id ?? this.lastSelectedId;
 		}
 
-		const searchTokens = this.searchQuery.toLowerCase().split(/\s+/).filter(Boolean);
+		const searchTokens = this.searchQuery.toLowerCase().split(SEARCH_SEPARATOR_PATTERN);
 
-		this.filteredNodes = this.flatNodes.filter((flatNode) => {
-			const entry = flatNode.node.entry;
-			const isCurrentLeaf = entry.id === this.currentLeafId;
-
-			// Skip assistant messages with only tool calls (no text) unless error/aborted
-			// Always show current leaf so active position is visible
-			if (entry.type === "message" && entry.message.role === "assistant" && !isCurrentLeaf) {
-				const msg = entry.message as { stopReason?: string; content?: unknown };
-				const hasText = this.hasTextContent(msg.content);
-				const isErrorOrAborted = msg.stopReason && msg.stopReason !== "stop" && msg.stopReason !== "toolUse";
-				// Only hide if no text AND not an error/aborted message
-				if (!hasText && !isErrorOrAborted) {
-					return false;
-				}
-			}
-
-			// Apply filter mode
-			let passesFilter = true;
-			// Entry types hidden in default view (settings/bookkeeping)
-			const isSettingsEntry =
-				entry.type === "label" ||
-				entry.type === "custom" ||
-				entry.type === "model_change" ||
-				entry.type === "thinking_level_change" ||
-				entry.type === "session_info";
-
-			switch (this.filterMode) {
-				case "user-only":
-					// Just user messages
-					passesFilter = entry.type === "message" && entry.message.role === "user";
-					break;
-				case "no-tools":
-					// Default minus tool results
-					passesFilter = !isSettingsEntry && !(entry.type === "message" && entry.message.role === "toolResult");
-					break;
-				case "labeled-only":
-					// Just labeled entries
-					passesFilter = flatNode.node.label !== undefined;
-					break;
-				case "all":
-					// Show everything
-					passesFilter = true;
-					break;
-				default:
-					// Default mode: hide settings/bookkeeping entries
-					passesFilter = !isSettingsEntry;
-					break;
-			}
-
-			if (!passesFilter) return false;
-
-			// Apply search filter
-			if (searchTokens.length > 0) {
-				const nodeText = this.getSearchableText(flatNode.node).toLowerCase();
-				return searchTokens.every((token) => nodeText.includes(token));
-			}
-
-			return true;
-		});
+		this.filteredNodes = [];
+		for (const flatNode of this.flatNodes) {
+			if (this.passesFilter(flatNode, searchTokens)) this.filteredNodes.push(flatNode);
+		}
 
 		// Filter out descendants of folded nodes.
 		if (this.foldedNodes.size > 0) {
@@ -405,7 +458,9 @@ class TreeList implements Component {
 					skipSet.add(id);
 				}
 			}
-			this.filteredNodes = this.filteredNodes.filter((flatNode) => !skipSet.has(flatNode.node.entry.id));
+			let count = 0;
+			for (const flatNode of this.filteredNodes) if (!skipSet.has(flatNode.node.entry.id)) this.filteredNodes[count++] = flatNode;
+			this.filteredNodes.length = count;
 		}
 
 		// Recalculate visual structure (indent, connectors, gutters) based on visible tree
@@ -434,7 +489,7 @@ class TreeList implements Component {
 	private recalculateVisualStructure(): void {
 		if (this.filteredNodes.length === 0) return;
 
-		const visibleIds = new Set(this.filteredNodes.map((n) => n.node.entry.id));
+		const visibleIds = visibleNodeIds(this.filteredNodes);
 
 		// Build entry map for efficient parent lookup (using full tree)
 		const entryMap = new Map<string, FlatNode>();
@@ -443,16 +498,7 @@ class TreeList implements Component {
 		}
 
 		// Find nearest visible ancestor for a node
-		const findVisibleAncestor = (nodeId: string): string | null => {
-			let currentId = entryMap.get(nodeId)?.node.entry.parentId ?? null;
-			while (currentId !== null) {
-				if (visibleIds.has(currentId)) {
-					return currentId;
-				}
-				currentId = entryMap.get(currentId)?.node.entry.parentId ?? null;
-			}
-			return null;
-		};
+
 
 		// Build visible tree structure:
 		// - visibleParent: nodeId → nearest visible ancestor (or null for roots)
@@ -463,7 +509,7 @@ class TreeList implements Component {
 
 		for (const flatNode of this.filteredNodes) {
 			const nodeId = flatNode.node.entry.id;
-			const ancestorId = findVisibleAncestor(nodeId);
+			const ancestorId = findVisibleAncestor(nodeId, entryMap, visibleIds);
 			visibleParent.set(nodeId, ancestorId);
 
 			if (!visibleChildren.has(ancestorId)) {
@@ -706,7 +752,7 @@ class TreeList implements Component {
 				const posInLevel = i % 3;
 
 				// Check if there's a gutter at this level
-				const gutter = flatNode.gutters.find((g) => g.position === level);
+				const gutter = getGutter(flatNode.gutters, level);
 				if (gutter) {
 					if (posInLevel === 0) {
 						prefixChars.push(gutter.show ? "│" : " ");
@@ -769,7 +815,6 @@ class TreeList implements Component {
 		const entry = node.entry;
 		let result: string;
 
-		const normalize = (s: string) => s.replace(/[\n\t]/g, " ").trim();
 
 		switch (entry.type) {
 			case "message": {
@@ -777,17 +822,17 @@ class TreeList implements Component {
 				const role = msg.role;
 				if (role === "user") {
 					const msgWithContent = msg as { content?: unknown };
-					const content = normalize(this.extractContent(msgWithContent.content));
+					const content = normalizeEntryText(this.extractContent(msgWithContent.content));
 					result = theme.fg("accent", "user: ") + content;
 				} else if (role === "assistant") {
 					const msgWithContent = msg as { content?: unknown; stopReason?: string; errorMessage?: string };
-					const textContent = normalize(this.extractContent(msgWithContent.content));
+					const textContent = normalizeEntryText(this.extractContent(msgWithContent.content));
 					if (textContent) {
 						result = theme.fg("success", "assistant: ") + textContent;
 					} else if (msgWithContent.stopReason === "aborted") {
 						result = theme.fg("success", "assistant: ") + theme.fg("muted", "(aborted)");
 					} else if (msgWithContent.errorMessage) {
-						const errMsg = normalize(msgWithContent.errorMessage).slice(0, 80);
+						const errMsg = normalizeEntryText(msgWithContent.errorMessage).slice(0, 80);
 						result = theme.fg("success", "assistant: ") + theme.fg("error", errMsg);
 					} else {
 						result = theme.fg("success", "assistant: ") + theme.fg("muted", "(no content)");
@@ -802,21 +847,16 @@ class TreeList implements Component {
 					}
 				} else if (role === "bashExecution") {
 					const bashMsg = msg as { command?: string };
-					result = theme.fg("dim", `[bash]: ${normalize(bashMsg.command ?? "")}`);
+					result = theme.fg("dim", `[bash]: ${normalizeEntryText(bashMsg.command ?? "")}`);
 				} else {
 					result = theme.fg("dim", `[${role}]`);
 				}
 				break;
 			}
 			case "custom_message": {
-				const content =
-					typeof entry.content === "string"
-						? entry.content
-						: entry.content
-								.filter((c): c is { type: "text"; text: string } => c.type === "text")
-								.map((c) => c.text)
-								.join("");
-				result = theme.fg("customMessageLabel", `[${entry.customType}]: `) + normalize(content);
+				let content = typeof entry.content === "string" ? entry.content : "";
+				if (typeof entry.content !== "string") for (const block of entry.content) if (block.type === "text") content += block.text;
+				result = theme.fg("customMessageLabel", `[${entry.customType}]: `) + normalizeEntryText(content);
 				break;
 			}
 			case "compaction": {
@@ -825,7 +865,7 @@ class TreeList implements Component {
 				break;
 			}
 			case "branch_summary":
-				result = theme.fg("warning", `[branch summary]: `) + normalize(entry.summary);
+				result = theme.fg("warning", `[branch summary]: `) + normalizeEntryText(entry.summary);
 				break;
 			case "model_change":
 				result = theme.fg("dim", `[model: ${entry.modelId}]`);
@@ -936,11 +976,7 @@ class TreeList implements Component {
 	}
 
 	private formatToolCall(name: string, args: Record<string, unknown>): string {
-		const shortenPath = (p: string): string => {
-			const home = process.env.HOME || process.env.USERPROFILE || "";
-			if (home && p.startsWith(home)) return `~${p.slice(home.length)}`;
-			return p;
-		};
+
 
 		switch (name) {
 			case "read": {
@@ -966,7 +1002,7 @@ class TreeList implements Component {
 			case "bash": {
 				const rawCmd = String(args.command || "");
 				const cmd = rawCmd
-					.replace(/[\n\t]/g, " ")
+					.replace(ENTRY_LINE_BREAK_PATTERN, " ")
 					.trim()
 					.slice(0, 50);
 				return `[bash: ${cmd}${rawCmd.length > 50 ? "..." : ""}]`;
@@ -1089,10 +1125,11 @@ class TreeList implements Component {
 		} else if (kb.matches(keyData, "app.tree.toggleLabelTimestamp")) {
 			this.showLabelTimestamps = !this.showLabelTimestamps;
 		} else {
-			const hasControlChars = [...keyData].some((ch) => {
+			let hasControlChars = false;
+			for (const ch of keyData) {
 				const code = ch.charCodeAt(0);
-				return code < 32 || code === 0x7f || (code >= 0x80 && code <= 0x9f);
-			});
+				if (code < 32 || code === 0x7f || (code >= 0x80 && code <= 0x9f)) { hasControlChars = true; break; }
+			}
 			if (!hasControlChars && keyData.length > 0) {
 				this.searchQuery += keyData;
 				this.foldedNodes.clear();
@@ -1126,7 +1163,7 @@ class TreeList implements Component {
 		const selectedId = this.filteredNodes[this.selectedIndex]?.node.entry.id;
 		if (!selectedId) return this.selectedIndex;
 
-		const indexByEntryId = new Map(this.filteredNodes.map((node, i) => [node.node.entry.id, i]));
+		const indexByEntryId = indexVisibleNodes(this.filteredNodes);
 		let currentId: string = selectedId;
 		if (direction === "down") {
 			while (true) {
@@ -1179,19 +1216,15 @@ class TreeHelp implements Component {
 	invalidate(): void {}
 
 	render(width: number): string[] {
-		const items = TREE_HELP_ITEMS.map(({ keys, label, labelFirst }) => {
-			const text = formatHelpKeys(keys);
-			if (!text) return label;
-			return labelFirst ? `${label} ${text}` : `${text} ${label}`;
-		});
-
 		const availableWidth = Math.max(1, width);
 		const indent = "  ";
 		const separator = " · ";
 		const lines: string[] = [];
 		let currentLine = "";
 
-		for (const item of items) {
+		for (const { keys, label, labelFirst } of TREE_HELP_ITEMS) {
+			const text = formatHelpKeys(keys);
+			const item = !text ? label : labelFirst ? `${label} ${text}` : `${text} ${label}`;
 			const candidate = currentLine
 				? `${currentLine}${separator}${item}`
 				: visibleWidth(`${indent}${item}`) <= availableWidth
@@ -1210,7 +1243,8 @@ class TreeHelp implements Component {
 			lines.push(...wrapTextWithAnsi(currentLine.trimEnd(), availableWidth));
 		}
 
-		return lines.map((line) => theme.fg("muted", line));
+		for (let index = 0; index < lines.length; index++) lines[index] = theme.fg("muted", lines[index]!);
+		return lines;
 	}
 }
 
@@ -1244,27 +1278,28 @@ function formatHelpKeys(keybindings: Keybinding[]): string {
 	if (keys.length === 0) return "";
 
 	return formatKeyText(compactRawKeys(keys))
-		.replace(/\bpageUp\b/g, "pgup")
-		.replace(/\bpageDown\b/g, "pgdn")
-		.replace(/\bup\b/g, "↑")
-		.replace(/\bdown\b/g, "↓")
-		.replace(/\bleft\b/g, "←")
-		.replace(/\bright\b/g, "→");
+		.replace(PAGE_UP_PATTERN, "pgup")
+		.replace(PAGE_DOWN_PATTERN, "pgdn")
+		.replace(UP_PATTERN, "↑")
+		.replace(DOWN_PATTERN, "↓")
+		.replace(LEFT_PATTERN, "←")
+		.replace(RIGHT_PATTERN, "→");
 }
 
 function compactRawKeys(keys: string[]): string {
 	if (keys.length === 1) return keys[0]!;
 
-	const parts = keys.map((key) => {
-		const separatorIndex = key.lastIndexOf("+");
-		return separatorIndex === -1
-			? { prefix: "", suffix: key }
-			: { prefix: key.slice(0, separatorIndex + 1), suffix: key.slice(separatorIndex + 1) };
-	});
-	const prefix = parts[0]!.prefix;
-	return prefix && parts.every((part) => part.prefix === prefix)
-		? `${prefix}${parts.map((part) => part.suffix).join("/")}`
-		: keys.join("/");
+	const separatorIndex = keys[0]!.lastIndexOf("+");
+	if (separatorIndex === -1) return keys.join("/");
+	const prefix = keys[0]!.slice(0, separatorIndex + 1);
+	let suffixes = "";
+	let count = 0;
+	for (const key of keys) {
+		const separator = key.lastIndexOf("+");
+		if (key.slice(0, separator + 1) !== prefix) return keys.join("/");
+		suffixes += (count++ > 0 ? "/" : "") + key.slice(separator + 1);
+	}
+	return prefix + suffixes;
 }
 
 /** Label input component shown when editing a label */
@@ -1299,7 +1334,7 @@ class LabelInput implements Component, Focusable {
 		const indent = "  ";
 		const availableWidth = width - indent.length;
 		lines.push(truncateToWidth(`${indent}${theme.fg("muted", "Label (empty to remove):")}`, width));
-		lines.push(...this.input.render(availableWidth).map((line) => truncateToWidth(`${indent}${line}`, width)));
+		for (const line of this.input.render(availableWidth)) lines.push(truncateToWidth(`${indent}${line}`, width));
 		lines.push(
 			truncateToWidth(
 				`${indent}${keyHint("tui.select.confirm", "save")}  ${keyHint("tui.select.cancel", "cancel")}`,

@@ -227,12 +227,12 @@ function getRenderablePreviewInput(args: RenderableEditArgs | undefined): { path
 		return null;
 	}
 
-	if (
-		Array.isArray(args.edits) &&
-		args.edits.length > 0 &&
-		args.edits.every((edit) => typeof edit?.oldText === "string" && typeof edit?.newText === "string")
-	) {
-		return { path, edits: args.edits };
+	if (Array.isArray(args.edits) && args.edits.length > 0) {
+		let valid = true;
+		for (const edit of args.edits) {
+			if (typeof edit?.oldText !== "string" || typeof edit?.newText !== "string") { valid = false; break; }
+		}
+		if (valid) return { path, edits: args.edits };
 	}
 
 	if (typeof args.oldText === "string" && typeof args.newText === "string") {
@@ -240,6 +240,17 @@ function getRenderablePreviewInput(args: RenderableEditArgs | undefined): { path
 	}
 
 	return null;
+}
+
+function getEditResultErrorText(content: EditToolResultLike["content"]): string {
+	let text = "";
+	let count = 0;
+	for (const block of content) {
+		if (block.type !== "text") continue;
+		text += (count > 0 ? "\n" : "") + (block.text || "");
+		count++;
+	}
+	return text;
 }
 
 function formatEditCall(args: RenderableEditArgs | undefined, theme: Theme, cwd: string): string {
@@ -474,7 +485,7 @@ export function createEditToolDefinition(
 			const typedResult = result as EditToolResultLike;
 			const resultDiff = !context.isError ? typedResult.details?.diff : undefined;
 			const errorText = context.isError
-				? typedResult.content.filter((c) => c.type === "text").map((c) => c.text || "").join("\n")
+				? getEditResultErrorText(typedResult.content)
 				: "";
 			let changed = false;
 			if (callComponent) {
@@ -503,7 +514,7 @@ export function createEditToolDefinition(
 				}
 			}
 
-			const component = Object.assign((context.lastComponent as Container | undefined) ?? new Container(), {}) as Container & EditDiffRenderCache;
+			const component = ((context.lastComponent as Container | undefined) ?? new Container()) as Container & EditDiffRenderCache;
 			component.clear();
 			if (callComponent) return component;
 			const output = context.isError

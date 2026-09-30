@@ -24,7 +24,7 @@ import type {
 import { DynamicBorder } from "./dynamic-border.js";
 import { createInputComponent, type InputOptions } from "./input.js";
 import { createMultiSelectComponent } from "./multi-select.js";
-import { handleSearchInput, menuHint, renderFrame, safeMenuText } from "./rendering.js";
+import { appendMutedLines, findItem, findValueIndex, getSearchLabel, handleSearchInput, menuHint, renderFrame, safeMenuText, truncateOwnedLines } from "./rendering.js";
 import { createReviewComponent, type ReviewOptions } from "./review.js";
 
 export { browseDialogLabel, browseDialogPages } from "./browse.js";
@@ -114,7 +114,7 @@ function createActionsComponent<ScreenId extends string, ActionId extends string
 		options.screen.lines ?? [],
 		options.screen.hint ?? "back",
 		(itemId) => {
-			const source = options.screen.items.find((candidate) => candidate.id === itemId);
+			const source = findItem(options.screen.items, itemId);
 			if (!source?.disabled) options.onEvent({ kind: "activate", itemId });
 		},
 	);
@@ -186,60 +186,49 @@ function createChoiceComponent<ScreenId extends string, ActionId extends string>
 	};
 	const move = (delta: number) => {
 		if (items.length === 0) return;
-		const index = items.findIndex((item) => item.value === selectedItemId);
+		const index = findValueIndex(items, selectedItemId);
 		select((index + delta + items.length) % items.length);
 	};
 	const activate = (itemId: string | undefined) => {
 		if (!itemId) return;
-		const item = options.screen.items.find((candidate) => candidate.id === itemId);
+		const item = findItem(options.screen.items, itemId);
 		if (!item?.disabled) options.onEvent({ kind: "activate", itemId });
 	};
 	let disposed = false;
 	return {
 		render(width) {
 			const safeWidth = Math.max(1, width);
-			const selected = options.screen.items.find((item) => item.id === selectedItemId);
-			const details = [
-				...(selected?.disabledReason
-					? [`Unavailable: ${safeMenuText(selected.disabledReason)}`]
-					: []),
-				...(selected?.details ?? []).map(safeMenuText),
-			];
-			const content =
-				items.length === 0
-					? [options.theme.fg("dim", "  No choices available")]
-					: [
-							...list.render(safeWidth),
-							...(details.length > 0
-								? [
-										"",
-										...details.flatMap((line) =>
-											wrapTextWithAnsi(options.theme.fg("muted", line), safeWidth),
-										),
-									]
-								: []),
-						];
-			const result = [
-				...border.render(safeWidth),
-				...wrapTextWithAnsi(
+			const selected = findItem(options.screen.items, selectedItemId);
+			const content: string[] = [];
+			if (items.length === 0) content.push(options.theme.fg("dim", "  No choices available"));
+			else {
+				for (const line of list.render(safeWidth)) content.push(line);
+				if (selected?.disabledReason || selected?.details?.length) {
+					content.push("");
+					if (selected.disabledReason) {
+						for (const line of wrapTextWithAnsi(options.theme.fg("muted", `Unavailable: ${safeMenuText(selected.disabledReason)}`), safeWidth)) content.push(line);
+					}
+					appendMutedLines(content, selected.details ?? [], safeWidth, options.theme);
+				}
+			}
+			const result: string[] = [];
+			for (const line of border.render(safeWidth)) result.push(line);
+			for (const line of wrapTextWithAnsi(
 					options.theme.fg("accent", options.theme.bold(safeMenuText(options.screen.title))),
 					safeWidth,
-				),
-				...(options.screen.lines ?? []).flatMap((line) =>
-					wrapTextWithAnsi(options.theme.fg("muted", safeMenuText(line)), safeWidth),
-				),
-				"",
-				...content,
-				...wrapTextWithAnsi(
+				)) result.push(line);
+			appendMutedLines(result, options.screen.lines ?? [], safeWidth, options.theme);
+			result.push("");
+			for (const line of content) result.push(line);
+			for (const line of wrapTextWithAnsi(
 					options.theme.fg(
 						"dim",
 						menuHint(options.keybindings, options.screen.hint ?? "back", "select"),
 					),
 					safeWidth,
-				),
-				...border.render(safeWidth),
-			];
-			return result.map((line) => truncateToWidth(line, safeWidth, ""));
+				)) result.push(line);
+			for (const line of border.render(safeWidth)) result.push(line);
+			return truncateOwnedLines(result, safeWidth);
 		},
 		invalidate() {
 			border.invalidate();
@@ -253,10 +242,10 @@ function createChoiceComponent<ScreenId extends string, ActionId extends string>
 			} else if (options.keybindings.matches(data, "tui.select.up")) move(-1);
 			else if (options.keybindings.matches(data, "tui.select.down")) move(1);
 			else if (options.keybindings.matches(data, "tui.select.pageUp")) {
-				const index = items.findIndex((item) => item.value === selectedItemId);
+				const index = findValueIndex(items, selectedItemId);
 				select(index - Math.max(1, viewportSize));
 			} else if (options.keybindings.matches(data, "tui.select.pageDown")) {
-				const index = items.findIndex((item) => item.value === selectedItemId);
+				const index = findValueIndex(items, selectedItemId);
 				select(index + Math.max(1, viewportSize));
 			} else if (matchesKey(data, Key.home)) select(0);
 			else if (matchesKey(data, Key.end)) select(items.length - 1);
@@ -314,7 +303,7 @@ function createSettingsComponent<ScreenId extends string, ActionId extends strin
 		filteredItems = fuzzyFilter(
 			searchableItems,
 			searchInput.getValue(),
-			(candidate) => candidate.label,
+			getSearchLabel,
 		);
 		selectedIndex = 0;
 		const item = selectedItem();
@@ -367,31 +356,28 @@ function createSettingsComponent<ScreenId extends string, ActionId extends strin
 		},
 		render(width) {
 			const safeWidth = Math.max(1, width);
-			const result = [
-				...border.render(safeWidth),
-				...wrapTextWithAnsi(
+			const result: string[] = [];
+			for (const line of border.render(safeWidth)) result.push(line);
+			for (const line of wrapTextWithAnsi(
 					options.theme.fg("accent", options.theme.bold(safeMenuText(options.screen.title))),
 					safeWidth,
-				),
-				...(options.screen.lines ?? []).flatMap((line) =>
-					wrapTextWithAnsi(options.theme.fg("muted", safeMenuText(line)), safeWidth),
-				),
-				"",
-				...searchInput.render(safeWidth),
-				"",
-				...renderSettingsRows(
+				)) result.push(line);
+			appendMutedLines(result, options.screen.lines ?? [], safeWidth, options.theme);
+			result.push("");
+			for (const line of searchInput.render(safeWidth)) result.push(line);
+			result.push("");
+			for (const line of renderSettingsRows(
 					filteredItems,
 					searchableItems,
 					selectedIndex,
 					displayed,
 					safeWidth,
 					options,
-				),
-				"",
-				...wrapTextWithAnsi(options.theme.fg("dim", settingsHint(options.keybindings)), safeWidth),
-				...border.render(safeWidth),
-			];
-			return result.map((line) => truncateToWidth(line, safeWidth, ""));
+				)) result.push(line);
+			result.push("");
+			for (const line of wrapTextWithAnsi(options.theme.fg("dim", settingsHint(options.keybindings)), safeWidth)) result.push(line);
+			for (const line of border.render(safeWidth)) result.push(line);
+			return truncateOwnedLines(result, safeWidth);
 		},
 		invalidate() {
 			border.invalidate();
@@ -444,10 +430,9 @@ function renderSettingsRows<ScreenId extends string, ActionId extends string>(
 		Math.min(selectedIndex - Math.floor(maxVisible / 2), filteredItems.length - maxVisible),
 	);
 	const endIndex = Math.min(startIndex + maxVisible, filteredItems.length);
-	const maxLabelWidth = Math.min(
-		30,
-		Math.max(...allItems.map((candidate) => visibleWidth(candidate.label))),
-	);
+	let maxLabelWidth = 0;
+	for (const candidate of allItems) maxLabelWidth = Math.max(maxLabelWidth, visibleWidth(candidate.label));
+	maxLabelWidth = Math.min(30, maxLabelWidth);
 	const lines: string[] = [];
 	for (let index = startIndex; index < endIndex; index += 1) {
 		const candidate = filteredItems[index];

@@ -101,6 +101,7 @@ export class FooterDataProvider {
 	private static readonly WATCH_DEBOUNCE_MS = 500;
 
 	private extensionStatuses = new Map<string, string>();
+	private extensionStatusRevision = 0;
 	private cachedBranch: string | null | undefined = undefined;
 	private gitPaths: GitPaths | null | undefined = undefined;
 	private headWatcher: FSWatcher | null = null;
@@ -136,6 +137,10 @@ export class FooterDataProvider {
 		return this.extensionStatuses;
 	}
 
+	getExtensionStatusRevision(): number {
+		return this.extensionStatusRevision;
+	}
+
 	/** Subscribe to git branch changes. Returns unsubscribe function. */
 	onBranchChange(callback: () => void): () => void {
 		this.branchChangeCallbacks.add(callback);
@@ -145,15 +150,19 @@ export class FooterDataProvider {
 	/** Internal: set extension status */
 	setExtensionStatus(key: string, text: string | undefined): void {
 		if (text === undefined) {
-			this.extensionStatuses.delete(key);
+			if (!this.extensionStatuses.delete(key)) return;
 		} else {
+			if (this.extensionStatuses.get(key) === text) return;
 			this.extensionStatuses.set(key, text);
 		}
+		this.extensionStatusRevision++;
 	}
 
 	/** Internal: clear extension statuses */
 	clearExtensionStatuses(): void {
+		if (this.extensionStatuses.size === 0) return;
 		this.extensionStatuses.clear();
+		this.extensionStatusRevision++;
 	}
 
 	/** Number of unique providers with available models (for footer display) */
@@ -385,4 +394,4 @@ export class FooterDataProvider {
 export type ReadonlyFooterDataProvider = Pick<
 	FooterDataProvider,
 	"getGitBranch" | "getExtensionStatuses" | "getAvailableProviderCount" | "onBranchChange"
->;
+> & Partial<Pick<FooterDataProvider, "getExtensionStatusRevision">>;

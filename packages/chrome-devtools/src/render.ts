@@ -1,6 +1,8 @@
 import type { AgentToolResult, ToolRenderResultOptions } from "@super-pi/coding-agent";
 
 const STATUS_KEY = "chrome-devtools";
+const TAB_PATTERN = /\t/g;
+const LINE_BREAK_PATTERN = /\r?\n/;
 interface StatusContext {
 	ui: { setStatus: (key: string, value: string | undefined) => void };
 }
@@ -36,9 +38,14 @@ export function renderScreenshotResult(
 }
 
 function textContent(result: AgentToolResult<unknown>) {
-	return result.content
-		.flatMap((content) => (content.type === "text" ? [content.text] : []))
-		.join("\n");
+	let text = "";
+	let hasText = false;
+	for (const content of result.content) {
+		if (content.type !== "text") continue;
+		text += (hasText ? "\n" : "") + content.text;
+		hasText = true;
+	}
+	return text;
 }
 
 function screenshotTextContent(result: AgentToolResult<unknown>) {
@@ -82,18 +89,25 @@ class PiTextComponent implements RenderComponent {
 
 	render(width: number) {
 		if (!this.text.trim()) return [];
-		return this.text
-			.replace(/\t/g, "   ")
-			.split(/\r?\n/)
-			.map((line) => {
-				const truncatedLine = truncateLine(line, Math.max(1, width));
-				return this.theme && this.color ? this.theme.fg(this.color, truncatedLine) : truncatedLine;
-			});
+		const lines = this.text.split(LINE_BREAK_PATTERN);
+		const maxWidth = Math.max(1, width);
+		for (let index = 0; index < lines.length; index++) {
+			// replace resets lastIndex on the shared global pattern synchronously.
+			const line = truncateLine(lines[index]!.replace(TAB_PATTERN, "   "), maxWidth);
+			lines[index] = this.theme && this.color ? this.theme.fg(this.color, line) : line;
+		}
+		return lines;
 	}
 }
 
 function truncateLine(line: string, maxWidth: number) {
-	return Array.from(line).slice(0, maxWidth).join("");
+	let text = "";
+	let count = 0;
+	for (const character of line) {
+		if (++count > maxWidth) break;
+		text += character;
+	}
+	return text;
 }
 
 export async function withStatus<T>(

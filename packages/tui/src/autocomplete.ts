@@ -5,13 +5,16 @@ import { basename, dirname, join } from "path";
 import { fuzzyFilter } from "./fuzzy.ts";
 
 const PATH_DELIMITERS = new Set([" ", "\t", '"', "'", "="]);
+const PATH_BACKSLASH_PATTERN = /\\/g;
+const REGEX_ESCAPE_PATTERN = /[.*+?^${}()|[\]\\]/g;
+const EDGE_PATH_SEPARATOR_PATTERN = /^\/+|\/+$/g;
 
 function toDisplayPath(value: string): string {
-	return value.replace(/\\/g, "/");
+	return value.replace(PATH_BACKSLASH_PATTERN, "/");
 }
 
 function escapeRegex(value: string): string {
-	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	return value.replace(REGEX_ESCAPE_PATTERN, "\\$&");
 }
 
 function buildFdPathQuery(query: string): string {
@@ -21,21 +24,21 @@ function buildFdPathQuery(query: string): string {
 	}
 
 	const hasTrailingSeparator = normalized.endsWith("/");
-	const trimmed = normalized.replace(/^\/+|\/+$/g, "");
+	const trimmed = normalized.replace(EDGE_PATH_SEPARATOR_PATTERN, "");
 	if (!trimmed) {
 		return normalized;
 	}
 
 	const separatorPattern = "[\\\\/]";
-	const segments = trimmed
-		.split("/")
-		.filter(Boolean)
-		.map((segment) => escapeRegex(segment));
-	if (segments.length === 0) {
+	let pattern = "";
+	for (const segment of trimmed.split("/")) {
+		if (!segment) continue;
+		pattern += (pattern ? separatorPattern : "") + escapeRegex(segment);
+	}
+	if (!pattern) {
 		return normalized;
 	}
 
-	let pattern = segments.join(separatorPattern);
 	if (hasTrailingSeparator) {
 		pattern += separatorPattern;
 	}
@@ -269,6 +272,21 @@ export interface AutocompleteProvider {
 	shouldTriggerFileCompletion?(lines: string[], cursorLine: number, cursorCol: number): boolean;
 }
 
+function getAutocompleteSearchText(item: AutocompleteItem): string {
+	return item.label;
+}
+
+function compareAutocompletePaths(a: AutocompleteItem, b: AutocompleteItem): number {
+	const aIsDir = a.value.endsWith("/");
+	const bIsDir = b.value.endsWith("/");
+	if (aIsDir !== bIsDir) return aIsDir ? -1 : 1;
+	return a.label.localeCompare(b.label);
+}
+
+function compareFileScores(a: { score: number }, b: { score: number }): number {
+	return b.score - a.score;
+}
+
 // Combined provider that handles both slash commands and file paths
 export class CombinedAutocompleteProvider implements AutocompleteProvider {
 	private commands: (SlashCommand | AutocompleteItem)[];
@@ -310,23 +328,16 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 
 			if (spaceIndex === -1) {
 				const prefix = textBeforeCursor.slice(1);
-				const commandItems = this.commands.map((cmd) => {
+				const commandItems: AutocompleteItem[] = [];
+				for (const cmd of this.commands) {
 					const name = "name" in cmd ? cmd.name : cmd.value;
 					const hint = "argumentHint" in cmd && cmd.argumentHint ? cmd.argumentHint : undefined;
 					const desc = cmd.description ?? "";
 					const fullDesc = hint ? (desc ? `${hint} — ${desc}` : hint) : desc;
-					return {
-						name,
-						label: name,
-						description: fullDesc || undefined,
-					};
-				});
+					commandItems.push(fullDesc ? { value: name, label: name, description: fullDesc } : { value: name, label: name });
+				}
 
-				const filtered = fuzzyFilter(commandItems, prefix, (item) => item.name).map((item) => ({
-					value: item.name,
-					label: item.label,
-					...(item.description && { description: item.description }),
-				}));
+				const filtered = fuzzyFilter(commandItems, prefix, getAutocompleteSearchText);
 
 				if (filtered.length === 0) return null;
 
@@ -339,10 +350,12 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 			const commandName = textBeforeCursor.slice(1, spaceIndex);
 			const argumentText = textBeforeCursor.slice(spaceIndex + 1);
 
-			const command = this.commands.find((cmd) => {
-				const name = "name" in cmd ? cmd.name : cmd.value;
-				return name === commandName;
-			});
+			let command: SlashCommand | AutocompleteItem | undefined;
+			for (const cmd of this.commands) {
+				if (("name" in cmd ? cmd.name : cmd.value) !== commandName) continue;
+				command = cmd;
+				break;
+			}
 			if (!command || !("getArgumentCompletions" in command) || !command.getArgumentCompletions) {
 				return null;
 			}
@@ -677,13 +690,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 			}
 
 			// Sort directories first, then alphabetically
-			suggestions.sort((a, b) => {
-				const aIsDir = a.value.endsWith("/");
-				const bIsDir = b.value.endsWith("/");
-				if (aIsDir && !bIsDir) return -1;
-				if (!aIsDir && bIsDir) return 1;
-				return a.label.localeCompare(b.label);
-			});
+			suggestions.sort(compareAutocompletePaths);
 
 			return suggestions;
 		} catch (_e) {
@@ -734,18 +741,16 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 				return [];
 			}
 
-			const scoredEntries = entries
-				.map((entry) => ({
-					...entry,
-					score: fdQuery ? this.scoreEntry(entry.path, fdQuery, entry.isDirectory) : 1,
-				}))
-				.filter((entry) => entry.score > 0);
-
-			scoredEntries.sort((a, b) => b.score - a.score);
-			const topEntries = scoredEntries.slice(0, 20);
+			const scoredEntries: { path: string; isDirectory: boolean; score: number }[] = [];
+			for (const entry of entries) {
+				const score = fdQuery ? this.scoreEntry(entry.path, fdQuery, entry.isDirectory) : 1;
+				if (score > 0) scoredEntries.push({ path: entry.path, isDirectory: entry.isDirectory, score });
+			}
+			scoredEntries.sort(compareFileScores);
 
 			const suggestions: AutocompleteItem[] = [];
-			for (const { path: entryPath, isDirectory } of topEntries) {
+			for (let index = 0; index < Math.min(20, scoredEntries.length); index++) {
+				const { path: entryPath, isDirectory } = scoredEntries[index]!;
 				const pathWithoutSlash = isDirectory ? entryPath.slice(0, -1) : entryPath;
 				const displayPath = scopedQuery
 					? this.scopedPathForDisplay(scopedQuery.displayBase, pathWithoutSlash)

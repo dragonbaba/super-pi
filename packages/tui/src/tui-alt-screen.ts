@@ -92,6 +92,7 @@ interface CachedKittyImage {
 	transmissionGeneration: number;
 	transmissionBytes: number;
 	estimatedDecodedBytes: number;
+	visibleGeneration: number;
 }
 
 interface SelectionPoint {
@@ -180,6 +181,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private imageProtocol: ImageProtocol = null;
 	private savedCapabilities?: TerminalCapabilities;
 	private readonly uploadedKittyImages = new Map<number, CachedKittyImage>();
+	private kittyVisibilityGeneration = 0;
 	private selectionAnchor?: SelectionPoint;
 	private selectionFocus?: SelectionPoint;
 	private selectionGranularity: SelectionGranularity = "character";
@@ -615,32 +617,35 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		};
 	}
 
-	private prepareKittyScreen(screen: string[]): { lines: string[]; evictedImageDeletion: string } {
-		const visibleImageIds = new Set<number>();
-		const lines = screen.map((line) => {
+	private prepareKittyScreen(screen: string[], lines: string[]): string {
+		const visibleGeneration = ++this.kittyVisibilityGeneration;
+		for (const line of screen) {
 			const placement = getKittyImagePlacement(line);
-			if (!placement) return line;
-			visibleImageIds.add(placement.imageId);
+			if (!placement) { lines.push(line); continue; }
 
 			const cachedImage = this.uploadedKittyImages.get(placement.imageId);
-			const nextCachedImage = {
+			const alreadyUploaded = cachedImage?.transmissionGeneration === placement.transmissionGeneration;
+			const nextCachedImage = cachedImage ?? {
 				transmissionGeneration: placement.transmissionGeneration,
 				transmissionBytes: placement.transmissionBytes,
 				estimatedDecodedBytes: placement.estimatedDecodedBytes,
+				visibleGeneration,
 			};
+			nextCachedImage.transmissionGeneration = placement.transmissionGeneration;
+			nextCachedImage.transmissionBytes = placement.transmissionBytes;
+			nextCachedImage.estimatedDecodedBytes = placement.estimatedDecodedBytes;
+			nextCachedImage.visibleGeneration = visibleGeneration;
 			if (cachedImage) this.uploadedKittyImages.delete(placement.imageId);
 			this.uploadedKittyImages.set(placement.imageId, nextCachedImage);
 
-			return cachedImage?.transmissionGeneration === placement.transmissionGeneration
-				? placement.replacementLine
-				: line;
-		});
+			lines.push(alreadyUploaded ? placement.replacementLine : line);
+		}
 
 		let cachedOffscreenImageCount = 0;
 		let cachedOffscreenTransmissionBytes = 0;
 		let cachedOffscreenDecodedBytes = 0;
 		for (const [imageId, cachedImage] of this.uploadedKittyImages) {
-			if (visibleImageIds.has(imageId)) continue;
+			if (cachedImage.visibleGeneration === visibleGeneration) continue;
 			cachedOffscreenImageCount += 1;
 			cachedOffscreenTransmissionBytes += cachedImage.transmissionBytes;
 			cachedOffscreenDecodedBytes += cachedImage.estimatedDecodedBytes;
@@ -655,14 +660,14 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			) {
 				break;
 			}
-			if (visibleImageIds.has(imageId)) continue;
+			if (cachedImage.visibleGeneration === visibleGeneration) continue;
 			evictedImageDeletion += deleteKittyImage(imageId);
 			this.uploadedKittyImages.delete(imageId);
 			cachedOffscreenImageCount -= 1;
 			cachedOffscreenTransmissionBytes -= cachedImage.transmissionBytes;
 			cachedOffscreenDecodedBytes -= cachedImage.estimatedDecodedBytes;
 		}
-		return { lines, evictedImageDeletion };
+		return evictedImageDeletion;
 	}
 
 	protected override resetRenderState(): void {
@@ -1490,9 +1495,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		let preparedLines = nextScreen;
 		let evictedImageDeletion = "";
 		if (redrawImages && this.imageProtocol === "kitty") {
-			const preparedKittyScreen = this.prepareKittyScreen(nextScreen);
-			preparedLines = preparedKittyScreen.lines;
-			evictedImageDeletion = preparedKittyScreen.evictedImageDeletion;
+			preparedLines = [];
+			evictedImageDeletion = this.prepareKittyScreen(nextScreen, preparedLines);
 		}
 
 		let buffer = BEGIN_SYNCHRONIZED_OUTPUT;
