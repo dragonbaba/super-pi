@@ -874,6 +874,8 @@ export class SessionManager {
 	private flushed: boolean = false;
 	private fileEntries: FileEntry[] = [];
 	private byId: Map<string, SessionEntry> = new Map();
+	private entryCount = 0;
+	private historyGeneration = 0;
 	private labelsById: Map<string, string> = new Map();
 	private labelTimestampsById: Map<string, string> = new Map();
 	private leafId: string | null = null;
@@ -969,6 +971,8 @@ export class SessionManager {
 		this.labelTimestampsById.clear();
 		this.leafId = null;
 		this.flushed = false;
+		this.entryCount = 0;
+		this.historyGeneration++;
 
 		if (this.persist) {
 			const fileTimestamp = timestamp.replace(/[:.]/g, "-");
@@ -978,12 +982,15 @@ export class SessionManager {
 	}
 
 	private _buildIndex(): void {
+		this.entryCount = 0;
+		this.historyGeneration++;
 		this.byId.clear();
 		this.labelsById.clear();
 		this.labelTimestampsById.clear();
 		this.leafId = null;
 		for (const entry of this.fileEntries) {
 			if (entry.type === "session") continue;
+			this.entryCount++;
 			this.byId.set(entry.id, entry);
 			this.leafId = entry.id;
 			if (entry.type === "label") {
@@ -1038,6 +1045,18 @@ export class SessionManager {
 		return this.sessionFile;
 	}
 
+	/**
+	 * A new session file is created once the session contains a user or assistant message.
+	 * Setup entries alone stay in memory, so opening and closing without chatting leaves no
+	 * file. Starting at the user message keeps the prompt on disk if the first turn never
+	 * completes.
+	 */
+	private _hasConversation(): boolean {
+		return this.fileEntries.some(
+			(e) => e.type === "message" && (e.message.role === "user" || e.message.role === "assistant"),
+		);
+	}
+
 	_persist(entry: SessionEntry): void {
 		if (!this.persist || !this.sessionFile) return;
 		if (this._appendNeedsSeparator) {
@@ -1045,18 +1064,8 @@ export class SessionManager {
 			this._appendNeedsSeparator = false;
 		}
 
-		const hasAssistant = this.fileEntries.some((e) => e.type === "message" && e.message.role === "assistant");
-		if (!hasAssistant) {
-			if (this.flushed) {
-				appendFileSync(this.sessionFile, `${JSON.stringify(entry)}\n`);
-			} else {
-				// Mark as not flushed so when assistant arrives, all entries get written
-				this.flushed = false;
-			}
-			return;
-		}
-
 		if (!this.flushed) {
+			if (!this._hasConversation()) return;
 			writeSessionEntriesAtomically(this.sessionFile, this.fileEntries, false);
 			this.flushed = true;
 		} else {
@@ -1066,6 +1075,7 @@ export class SessionManager {
 
 	private _appendEntry(entry: SessionEntry): void {
 		this.fileEntries.push(entry);
+		this.entryCount++;
 		this.byId.set(entry.id, entry);
 		this.leafId = entry.id;
 		this._persist(entry);
@@ -1327,6 +1337,16 @@ export class SessionManager {
 		return this.fileEntries.filter((e): e is SessionEntry => e.type !== "session");
 	}
 
+	/** Number of session entries (excludes header) without copying them. */
+	getEntryCount(): number {
+		return this.entryCount;
+	}
+
+	/** Changes only when history is replaced/reloaded, including a same-file reload. */
+	getHistoryGeneration(): number {
+		return this.historyGeneration;
+	}
+
 	/**
 	 * Get the session as a tree structure. Returns a shallow defensive copy of all entries.
 	 * A well-formed session has exactly one root (first entry with parentId === null).
@@ -1507,13 +1527,9 @@ export class SessionManager {
 			this.sessionFile = newSessionFile;
 			this._buildIndex();
 
-			// Only write the file now if it contains an assistant message.
-			// Otherwise defer to _persist(), which creates the file on the
-			// first assistant response, matching the newSession() contract
-			// and avoiding the duplicate-header bug when _persist()'s
-			// no-assistant guard later resets flushed to false.
-			const hasAssistant = this.fileEntries.some((e) => e.type === "message" && e.message.role === "assistant");
-			if (hasAssistant) {
+			// Use the same rule as _persist(): write now if the branched path already
+			// has a conversation, otherwise let _persist() create the file later.
+			if (this._hasConversation()) {
 				this._rewriteFile();
 				this.flushed = true;
 			} else {

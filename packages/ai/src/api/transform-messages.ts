@@ -120,7 +120,12 @@ export function transformMessages<TApi extends Api>(
 				}
 
 				if (block.type === "text") {
-					if (isSameModel) return replaySignatures ? block : { ...block, textSignature: undefined };
+					// Responses text signatures carry item identity/phase, independently of
+					// opaque thought signatures. Preserve them for same-model replay so a
+					// one-message response commitment and its full-history replay have the same id.
+					if (isSameModel) return replaySignatures || model.api === "openai-responses" ||
+						model.api === "openai-codex-responses" || model.api === "azure-openai-responses"
+						? block : { ...block, textSignature: undefined };
 					return {
 						type: "text" as const,
 						text: block.text,

@@ -390,7 +390,7 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 					: options?.sessionId;
             const codexSessionId = clampOpenAIPromptCacheKey(cacheSessionId);
             let body = buildOpenAICodexRequestBody(model, context, options, codexSessionId, grammarToolInputProperties);
-            const nextBody = await options?.onPayload?.(body, model);
+            const nextBody = await options?.onPayload?.(body, model, options);
             if (nextBody !== undefined) {
                 body = nextBody as OpenAICodexRequestBody;
             }
@@ -666,12 +666,14 @@ export function buildOpenAICodexRequestBody(
     }
     return body;
 }
-function getServiceTierCostMultiplier(model: Pick<Model<"openai-codex-responses">, "id">, serviceTier: ResponseCreateParamsStreaming["service_tier"] | undefined): number {
+// OpenAI renamed Priority processing to Fast mode (2026-07-30) at the same price; GPT-6 reports "fast".
+function getServiceTierCostMultiplier(model: Pick<Model<"openai-codex-responses">, "id">, serviceTier: ResponseCreateParamsStreaming["service_tier"] | "fast" | undefined): number {
     switch (serviceTier) {
         case "flex":
             return 0.5;
         case "priority":
-            return model.id.startsWith("gpt-5.5") || model.id.startsWith("gpt-5.6") ? 2.5 : 2;
+        case "fast":
+            return model.id.startsWith("gpt-5.5") ? 2.5 : 2;
         default:
             return 1;
     }
@@ -828,7 +830,9 @@ async function* parseSSE(response: Response, signal?: AbortSignal): AsyncGenerat
         return;
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
+    // Unterminated line residue and the current frame's data lines; both owned by this stream.
     let buffer = "";
+    let data: string | undefined;
     const onAbort = () => {
         void reader.cancel().catch(() => { });
     };
@@ -842,36 +846,50 @@ async function* parseSSE(response: Response, signal?: AbortSignal): AsyncGenerat
             if (signal?.aborted) {
                 throw new Error("Request was aborted");
             }
+            // At EOF, flush the decoder and terminate a residual final line and frame so they are parsed.
+            buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
             if (done)
-                break;
-            buffer += decoder.decode(value, { stream: true });
-            let idx = buffer.indexOf("\n\n");
-            while (idx !== -1) {
-                const chunk = buffer.slice(0, idx);
-                buffer = buffer.slice(idx + 2);
-                const dataLines = chunk
-                    .split("\n")
-                    .filter((l) => l.startsWith("data:"))
-                    .map((l) => l.slice(5).trim());
-                if (dataLines.length > 0) {
-                    const data = dataLines.join("\n").trim();
-                    if (data && data !== "[DONE]") {
+                buffer += "\n\n";
+            // Scan complete LF/CRLF lines in place; a CR that ends a read waits for its LF.
+            let lineStart = 0;
+            let newline = buffer.indexOf("\n");
+            while (newline !== -1) {
+                const lineEnd = newline > lineStart && buffer.charCodeAt(newline - 1) === 13 ? newline - 1 : newline;
+                if (lineEnd === lineStart) {
+                    const payload = data?.trim();
+                    data = undefined;
+                    if (payload && payload !== "[DONE]") {
                         try {
-                            yield JSON.parse(data) as CodexEvent;
+                            yield JSON.parse(payload) as CodexEvent;
                         }
                         catch (cause) {
                             throw new CodexProtocolError(`Invalid Codex SSE JSON: ${formatThrownValue(cause)}`, {
                                 cause,
-                                payload: data,
+                                payload,
                             });
                         }
                     }
                 }
-                idx = buffer.indexOf("\n\n");
+                else if (buffer.startsWith("data:", lineStart)) {
+                    // Skip the conventional space so trim() usually returns the slice unchanged.
+                    const valueStart = buffer.charCodeAt(lineStart + 5) === 32 ? lineStart + 6 : lineStart + 5;
+                    const line = buffer.slice(valueStart, lineEnd).trim();
+                    data = data === undefined ? line : `${data}\n${line}`;
+                }
+                lineStart = newline + 1;
+                newline = buffer.indexOf("\n", lineStart);
             }
+            // Drop the consumed prefix once per read.
+            if (lineStart > 0)
+                buffer = buffer.slice(lineStart);
+            if (done)
+                break;
         }
     }
     finally {
+        // Release unread residue/current frame before cancellation can await transport cleanup.
+        buffer = "";
+        data = undefined;
         signal?.removeEventListener("abort", onAbort);
         try {
             await reader.cancel();
@@ -927,6 +945,7 @@ interface CachedWebSocketContinuationState {
 }
 
 interface CachedWebSocketConnection {
+    url: string;
     socket: WebSocketLike;
     connectionHeadersKey: string;
     busy: boolean;
@@ -1256,7 +1275,7 @@ async function acquireWebSocket(
             clearTimeout(cached.idleTimer);
             cached.idleTimer = undefined;
         }
-        if (!cached.busy && cached.connectionHeadersKey !== connectionHeadersKey) {
+        if (!cached.busy && (cached.url !== url || cached.connectionHeadersKey !== connectionHeadersKey)) {
             closeWebSocketSilently(cached.socket, 1000, "headers_changed");
             accountEntries?.delete(accountId);
             if (accountEntries?.size === 0)
@@ -1319,6 +1338,7 @@ async function acquireWebSocket(
     }
     const now = Date.now();
     const entry: CachedWebSocketConnection = {
+        url,
         socket,
         connectionHeadersKey,
         busy: true,

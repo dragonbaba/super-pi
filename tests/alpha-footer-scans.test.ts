@@ -30,7 +30,6 @@ test('footer usage traversal does not request an iterator result per history ent
   let iteratorResults = 0; let entryCopies = 0;
   try {
     f.sessionManager.appendSessionInfo('retained usage semantics');
-    const expected = f.internal.footer.render(120);
     const getEntries = f.sessionManager.getEntries.bind(f.sessionManager);
     t.mock.method(f.sessionManager, 'getEntries', () => {
       const entries = getEntries(); entryCopies++;
@@ -42,9 +41,11 @@ test('footer usage traversal does not request an iterator result per history ent
       } });
       return entries;
     });
-    assert.deepEqual(f.internal.footer.render(120), expected);
-    assert.equal(entryCopies, 1);
+    const expected = f.internal.footer.render(120);
+    assert.ok(expected.some((line: string) => line.includes('retained usage semantics')));
     assert.equal(iteratorResults, 0, 'avoid per-entry iterator protocol work in the measured footer loop');
+    assert.deepEqual(f.internal.footer.render(120), expected);
+    assert.equal(entryCopies, 1, 'unchanged history reuses the footer scan instead of copying it per frame');
   } finally { t.diagnostic(JSON.stringify({ history: messages.length, iteratorResults, entryCopies })); await f.release(); }
 });
 

@@ -84,6 +84,9 @@ function getAliases(): Record<string, string> {
 	);
 
 	_aliases = {
+		"@super-pi/ai/api/openai-codex-responses": resolveWorkspaceOrImport(
+			"ai/dist/api/openai-codex-responses.js", "@super-pi/ai/api/openai-codex-responses",
+		),
 		"@super-pi/coding-agent": piCodingAgentEntry,
 		"@super-pi/agent-core": piAgentCoreEntry,
 		"@super-pi/tui": piTuiEntry,

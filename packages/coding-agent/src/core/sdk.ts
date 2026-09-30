@@ -13,6 +13,7 @@ import {
 } from "@super-pi/ai/api/openai-codex-responses";
 import { clampThinkingLevel, type Message, type Model, streamSimple } from "@super-pi/ai/compat";
 import { usesAdaptiveRequestBudget } from "@super-pi/ai/api/simple-options";
+import { buildOpenAIResponsesRequestBody } from "@super-pi/ai/api/openai-responses";
 import { getAgentDir, getConfigDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { AgentSession } from "./agent-session.ts";
@@ -487,11 +488,13 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				},
 			});
 		},
-		onPayload: async (payload, _model) => {
+		onPayload: async (payload, _model, requestAuth) => {
 			const runner = extensionRunnerRef.current;
 			session.assertImageRequestAllowed(_model);
 			if (runner?.hasHandlers("before_provider_request")) session.discardPendingToolResultBudgetSources();
-			const result = runner?.hasHandlers("before_provider_request") ? await runner.emitBeforeProviderRequest(payload) : payload;
+			const result = runner?.hasHandlers("before_provider_request") ? await runner.emitBeforeProviderRequest(
+				payload, false, requestAuth ? { model: _model, apiKey: requestAuth.apiKey, headers: requestAuth.headers, env: requestAuth.env } : undefined,
+			) : payload;
 			session.assertImageRequestAllowed(_model);
 			return result;
 		},
@@ -547,6 +550,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		modelRuntime,
 		prefixManifestRecorder,
 		providerRequestPayloadBuilder: ({ model, systemPrompt, messages, tools, thinkingLevel, sessionId }) => {
+			if (model.api === "openai-responses") {
+				return buildOpenAIResponsesRequestBody(model,
+					{ systemPrompt, messages: convertToLlmWithBlockImages(messages, systemPrompt, tools, model), tools },
+					{ sessionId, reasoningEffort: thinkingLevel === "off" ? undefined : thinkingLevel },
+				) as unknown as Record<string, unknown>;
+			}
 			if (model.api !== "openai-codex-responses") return undefined;
 			return buildOpenAICodexRequestBody(
 				model,
@@ -581,6 +590,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			});
 			return {
 				compactionItem: result.compactionItem,
+				requestAuth: { model, apiKey, headers: requestHeaders, env },
 				usage: result.usage,
 				...(result.diagnostics ? { diagnostics: { ...result.diagnostics } } : {}),
 			};

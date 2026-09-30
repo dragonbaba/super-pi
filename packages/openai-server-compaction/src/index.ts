@@ -16,6 +16,8 @@ import {
 } from "@super-pi/coding-agent";
 import type { AgentMessage, ThinkingLevel } from "@super-pi/agent-core";
 import type { Model, ProviderHeaders } from "@super-pi/ai";
+import { closeOpenAICodexWebSocketSessions } from "@super-pi/ai/api/openai-codex-responses";
+import { requestScope } from "./request-scope.ts";
 import { isRecord, loadConfig, type ExtensionConfig } from "./config.ts";
 import {
   COMPACTION_CONTINUATION_MESSAGE_TYPE,
@@ -37,7 +39,7 @@ import {
   supportsPreviousResponseId,
   supportsRemoteCompactionModel,
 } from "./openai.ts";
-import { releaseAllWsSessions, releaseWsSession } from "./openai-ws-stream.ts";
+import { releaseWsSession } from "./openai-ws-stream.ts";
 import { SUPPORTED_SP_VERSION_PATTERN } from "./regex.ts";
 import { unknownText } from "./text.ts";
 import {
@@ -49,6 +51,7 @@ import {
   extractRemoteCompactionUsage,
   generateBestEffortLocalSummary,
   messageToResponseItems,
+  messageToPortableResponseItems,
   messagesToResponseItems,
   normalizeResponseItemsForPrompt,
   PORTABLE_SUMMARY_MAX_TOKENS,
@@ -60,19 +63,18 @@ import {
   type ResponseItem,
 } from "./remote-compaction.ts";
 import {
-  clearAllContinuationState,
   clearContinuationState,
   clearRemoteCompactionState,
   clearResponsesRequestShapeState,
   clearSessionDedupState,
   clearSessionConfig,
-  clearTransportContextState,
   claimCompactionContinuation,
   getContinuationState,
   getTransportContextState,
   getRemoteCompactionState,
   markMessageProcessed,
   setContinuationState,
+  setTransportContextState,
   setRemoteCompactionState,
   setResponsesRequestShapeState,
   setSessionConfig,
@@ -97,6 +99,7 @@ type ProviderRequestPayloadAPI = ExtensionAPI & {
     auth?: CompactionAuthSnapshot;
   }) => Promise<{
     compactionItem: Record<string, unknown>;
+    requestAuth?: CompactionAuthSnapshot;
     usage?: unknown;
     diagnostics?: Record<string, unknown>;
   } | undefined>;
@@ -233,6 +236,7 @@ async function callConfiguredRemoteCompaction(
   }
   return {
     protocol: "responses_compaction_v2",
+    requestScope: result.requestAuth ? requestScope(result.requestAuth.model, result.requestAuth.apiKey, result.requestAuth.headers) : undefined,
     output: buildRemoteCompactionV2History(params.input, result.compactionItem as ResponseItem),
     usage: extractRemoteCompactionUsage(params.model, result.usage),
     ...(params.shapeDiagnostics && isRecord(result.diagnostics)
@@ -374,7 +378,9 @@ export function extractCanonicalCompactionRequest(
   sessionId: string,
 ): CanonicalCompactionRequest | undefined {
   if (payload.model !== model.id || payload.prompt_cache_key !== sessionId) return undefined;
-  if (!Array.isArray(payload.input) || typeof payload.instructions !== "string") return undefined;
+  if (!Array.isArray(payload.input)) return undefined;
+  if (isOpenAICodexResponsesModel(model) ? typeof payload.instructions !== "string"
+    : payload.instructions !== undefined && typeof payload.instructions !== "string") return undefined;
 
   const sourceInput = payload.input;
   let normalizedInput: ResponseItem[] | undefined;
@@ -388,9 +394,10 @@ export function extractCanonicalCompactionRequest(
     // The authoritative Codex builder emits Responses easy-input messages as
     // { role, content } without type. Preserve the request payload byte shape;
     // normalize only the internal history view used after compaction succeeds.
-    if (typeof item.role !== "string" || !Array.isArray(item.content)) return undefined;
+    if (typeof item.role !== "string" || (!Array.isArray(item.content) && typeof item.content !== "string")) return undefined;
     if (!normalizedInput) normalizedInput = sourceInput.slice(0, index) as ResponseItem[];
-    normalizedInput.push({ ...item, type: "message" } as ResponseItem);
+    normalizedInput.push({ ...item, type: "message", content: typeof item.content === "string"
+      ? [{ type: "input_text", text: item.content }] : item.content } as ResponseItem);
   }
 
   return {
@@ -534,6 +541,7 @@ export function combineCompactionUsage(
 function clearLiveContinuation(sessionId: string | undefined): void {
   clearContinuationState(sessionId);
   releaseWsSession(sessionId);
+  if (sessionId) closeOpenAICodexWebSocketSessions(sessionId);
 }
 
 function clearSessionRuntimeState(sessionId: string | undefined): void {
@@ -575,10 +583,11 @@ function syncRemoteState(ctx: SessionContextLike): void {
 function getMatchingRemoteState(
   sessionId: string,
   model: TargetModel | undefined,
+  scope?: string,
 ): ReturnType<typeof getRemoteCompactionState> {
   if (!model) return undefined;
   const remoteState = getRemoteCompactionState(sessionId);
-  return remoteState && remoteState.modelKey === modelKey(model) ? remoteState : undefined;
+  return remoteState && scope !== undefined && remoteState.requestScope === scope && remoteState.modelKey === modelKey(model) ? remoteState : undefined;
 }
 
 function extendRemoteHistoryIfCompatible(params: {
@@ -586,13 +595,13 @@ function extendRemoteHistoryIfCompatible(params: {
   model: TargetModel | undefined;
   message: AgentMessage;
 }): void {
-  const remoteState = getMatchingRemoteState(params.sessionId, params.model);
+  const scope = params.message.role === "assistant" || params.message.role === "toolResult"
+    ? getTransportContextState(params.sessionId)?.requestScope : getRemoteCompactionState(params.sessionId)?.requestScope;
+  const remoteState = getRemoteCompactionState(params.sessionId);
   if (!remoteState || !params.model) return;
-  if (params.message.role === "assistant" && !messageMatchesModel(params.message, params.model)) {
-    return;
-  }
-
-  const items = messageToResponseItems(params.message);
+  const compatible = remoteState.modelKey === modelKey(params.model) && remoteState.requestScope === scope &&
+    (params.message.role !== "assistant" || messageMatchesModel(params.message, params.model));
+  const items = compatible ? messageToResponseItems(params.message) : messageToPortableResponseItems(params.message);
   if (items.length === 0 || !markMessageProcessed(params.sessionId, params.message as object)) return;
 
   setRemoteCompactionState(params.sessionId, {
@@ -716,11 +725,15 @@ export default function openaiServerCompactionExtension(pi: ExtensionAPI) {
     clearResponsesRequestShapeState(sessionId);
   });
 
-  pi.on("session_shutdown", () => {
-    for (const sessionId of capabilitySessionIds) setTransportRemoteCompactionCapability(sessionId, false);
+  pi.on("session_shutdown", (_event, ctx) => {
+    const currentSessionId = getSessionId(ctx);
+    for (const sessionId of capabilitySessionIds) {
+      setTransportRemoteCompactionCapability(sessionId, false);
+      if (sessionId !== currentSessionId) clearSessionRuntimeState(sessionId);
+    }
     capabilitySessionIds.clear();
-    clearAllContinuationState();
-    releaseAllWsSessions();
+    setTransportRemoteCompactionCapability(currentSessionId, false);
+    clearSessionRuntimeState(currentSessionId);
   });
 
   pi.on("session_before_compact", async (event, ctx) => {
@@ -739,7 +752,7 @@ export default function openaiServerCompactionExtension(pi: ExtensionAPI) {
           recordCompactionFallback(pi, model, "cancelled", "aborted");
           return undefined;
         }
-        if (resolved.ok) auth = { model, apiKey: resolved.apiKey, headers: resolved.headers, env: resolved.env };
+        if (resolved.ok) auth = { model: resolved.baseUrl ? { ...model, baseUrl: resolved.baseUrl } : model, apiKey: resolved.apiKey, headers: resolved.headers, env: resolved.env };
         else if (isGptSeriesModel(model)) {
           return failGptCompaction(pi, ctx, model, "authentication", resolved.error || "API key unavailable");
         }
@@ -849,7 +862,7 @@ export default function openaiServerCompactionExtension(pi: ExtensionAPI) {
     }
 
     const remoteResultPromise = callConfiguredRemoteCompaction(pi, {
-      model,
+      model: auth.model,
       apiKey: auth.apiKey,
       headers: auth.headers,
       sessionId,
@@ -945,6 +958,7 @@ export default function openaiServerCompactionExtension(pi: ExtensionAPI) {
       remoteResult.usage,
       remoteResult.protocol,
     );
+    remoteDetails.requestScope = remoteResult.requestScope ?? requestScope(auth.model, auth.apiKey, auth.headers);
     const localSummary = bindLocalCheckpointToPreparation(
       localResult
         ? localResult
@@ -1021,20 +1035,36 @@ export default function openaiServerCompactionExtension(pi: ExtensionAPI) {
       responseId,
       modelKey: currentModelKey,
       updatedAt: Date.now(),
+      requestScope: transportContext?.requestScope ?? currentContinuation?.requestScope,
       ...(contextLength !== undefined ? { contextLength } : {}),
     });
-    clearTransportContextState(sessionId);
+    // Keep the request identity through user/tool message_end until the next boundary.
   });
 
-  pi.on("before_provider_request", (event, ctx) => {
+  pi.on("before_provider_request", async (event, ctx) => {
     const cfg = loadContextConfig(ctx);
     if (!cfg.enabled) return undefined;
 
-    const model = ctx.model;
+    let model = ctx.model;
     if (!model || !isRecord(event.payload) || !looksLikeResponsesPayload(event.payload)) return undefined;
 
     const sessionId = getSessionId(ctx);
     const dryRun = (event as typeof event & { dryRun?: boolean }).dryRun === true;
+    const auth = event.requestAuth
+      ? { ok: true as const, apiKey: event.requestAuth.apiKey, headers: event.requestAuth.headers, baseUrl: event.requestAuth.model.baseUrl }
+      : await ctx.modelRegistry.getApiKeyAndHeaders(model);
+    if (auth.ok && auth.baseUrl) model = { ...model, baseUrl: auth.baseUrl };
+    const scope = auth.ok ? requestScope(model, auth.apiKey, auth.headers) : undefined;
+    const continuation = getContinuationState(sessionId);
+    const compatibleContinuation = scope !== undefined && continuation?.requestScope === scope;
+    if (!dryRun) {
+      const transport = getTransportContextState(sessionId);
+      const previousScope = continuation?.requestScope ?? transport?.requestScope;
+      if ((continuation || transport) && (scope === undefined || previousScope !== scope)) clearLiveContinuation(sessionId);
+      setTransportContextState(sessionId, {
+        modelKey: modelKey(model), contextLength: transport?.contextLength ?? 0, requestScope: scope,
+      });
+    }
     if (!dryRun) {
       setResponsesRequestShapeState(sessionId, {
         updatedAt: Date.now(),
@@ -1043,7 +1073,7 @@ export default function openaiServerCompactionExtension(pi: ExtensionAPI) {
         serviceTier: extractResponsesServiceTier(event.payload),
       });
     }
-    const remoteState = getMatchingRemoteState(sessionId, model);
+    const remoteState = getMatchingRemoteState(sessionId, model, scope);
 
     if (isOpenAICodexResponsesModel(model)) {
       if (!remoteState) return undefined;
@@ -1066,9 +1096,9 @@ export default function openaiServerCompactionExtension(pi: ExtensionAPI) {
 
     if (!supportsPreviousResponseId(model, cfg)) return undefined;
 
-    const continuation = getContinuationState(sessionId);
     const previousResponseId =
       remoteState === undefined &&
+      compatibleContinuation &&
       continuation &&
       continuation.modelKey === modelKey(model) &&
       typeof continuation.contextLength === "number"

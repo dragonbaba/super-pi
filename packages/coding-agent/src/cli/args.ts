@@ -62,6 +62,14 @@ export function isValidThinkingLevel(level: string): level is ThinkingLevel {
 	return VALID_THINKING_LEVELS.includes(level as ThinkingLevel);
 }
 
+/** Whether a startup prescan sees `option`; arguments after `--` are messages, not options. */
+export function hasOption(args: readonly string[], option: string): boolean {
+	const index = args.indexOf(option);
+	if (index === -1) return false;
+	const terminator = args.indexOf("--");
+	return terminator === -1 || index < terminator;
+}
+
 export function parseArgs(args: string[]): Args {
 	const result: Args = {
 		messages: [],
@@ -73,7 +81,15 @@ export function parseArgs(args: string[]): Args {
 	for (let i = 0; i < args.length; i++) {
 		const arg = args[i];
 
-		if (arg === "--help" || arg === "-h") {
+		if (arg === "--") {
+			// End of options: the rest are messages (or @file references), even if they look like flags.
+			for (let j = i + 1; j < args.length; j++) {
+				const positional = args[j];
+				if (positional.startsWith("@")) result.fileArgs.push(positional.slice(1));
+				else result.messages.push(positional);
+			}
+			break;
+		} else if (arg === "--help" || arg === "-h") {
 			result.help = true;
 		} else if (arg === "--version" || arg === "-v") {
 			result.version = true;
@@ -292,6 +308,7 @@ ${chalk.bold("Options:")}
   --approve, -a                  Trust project-local files for this run
   --no-approve, -na              Ignore project-local files for this run
   --offline                      Disable startup network operations (same as SP_OFFLINE=1)
+  --                             End option parsing; treat remaining arguments as messages/files
   --help, -h                     Show this help
   --version, -v                  Show version number
 

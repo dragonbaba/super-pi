@@ -8,7 +8,7 @@
 import { createInterface } from "node:readline";
 import { type ImageContent, modelsAreEqual } from "@super-pi/ai";
 import chalk from "chalk";
-import { type Args, type Mode, parseArgs, printHelp } from "./cli/args.ts";
+import { type Args, hasOption, type Mode, parseArgs, printHelp } from "./cli/args.ts";
 import {
 	type AuthCheckResult,
 	checkProviderAuth,
@@ -601,7 +601,7 @@ export function createMainProjectTrustResolver(options: MainProjectTrustResolver
 export async function main(args: string[], options?: MainOptions) {
 	resetTimings();
 	const extensionFactories = [...builtInExtensions, ...(options?.extensionFactories ?? [])];
-	const offlineMode = args.includes("--offline") || isTruthyEnvFlag(process.env.SP_OFFLINE);
+	const offlineMode = hasOption(args, "--offline") || isTruthyEnvFlag(process.env.SP_OFFLINE);
 	if (offlineMode) {
 		process.env.SP_OFFLINE = "1";
 		process.env.SP_SKIP_VERSION_CHECK = "1";

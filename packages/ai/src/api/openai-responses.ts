@@ -146,8 +146,8 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 				compat.supportsOpenAIGrammarTools,
 			);
 			const client = createClient(model, context, apiKey, options?.headers, options?.fetch, cacheSessionId);
-			let params = buildParams(model, context, options, compat, grammarToolInputProperties);
-			const nextParams = await options?.onPayload?.(params, model);
+			let params = buildOpenAIResponsesRequestBody(model, context, options, compat, grammarToolInputProperties);
+			const nextParams = await options?.onPayload?.(params, model, options);
 			if (nextParams !== undefined) {
 				params = nextParams as ResponseCreateParamsStreaming;
 			}
@@ -296,7 +296,7 @@ export function observeOpenAIResponsesEffectiveDispatch(
 	});
 }
 
-function buildParams(
+export function buildOpenAIResponsesRequestBody(
 	model: Model<"openai-responses">,
 	context: Context,
 	options: OpenAIResponsesOptions | undefined,
@@ -383,14 +383,16 @@ function buildParams(
 	return params;
 }
 
+// OpenAI renamed Priority processing to Fast mode (2026-07-30) at the same price; GPT-6 reports "fast".
 function getServiceTierCostMultiplier(
 	model: Pick<Model<"openai-responses">, "id">,
-	serviceTier: ResponseCreateParamsStreaming["service_tier"] | undefined,
+	serviceTier: ResponseCreateParamsStreaming["service_tier"] | "fast" | undefined,
 ): number {
 	switch (serviceTier) {
 		case "flex":
 			return 0.5;
 		case "priority":
+		case "fast":
 			return model.id === "gpt-5.5" ? 2.5 : 2;
 		default:
 			return 1;

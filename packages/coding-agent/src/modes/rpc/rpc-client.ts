@@ -56,7 +56,8 @@ export type RpcEventListener = (event: JsonAgentSessionEvent) => void;
 export class RpcClient {
 	private process: ChildProcess | null = null;
 	private stopReadingStdout: (() => void) | null = null;
-	private eventListeners: RpcEventListener[] = [];
+	/** Copy-on-write: replaced on (un)subscribe, never mutated, so dispatch needs no per-event copy. */
+	private eventListeners: readonly RpcEventListener[] = [];
 	private pendingRequests: Map<string, { resolve: (response: RpcResponse) => void; reject: (error: Error) => void }> =
 		new Map();
 	private requestId = 0;
@@ -170,11 +171,11 @@ export class RpcClient {
 	 * Subscribe to agent events.
 	 */
 	onEvent(listener: RpcEventListener): () => void {
-		this.eventListeners.push(listener);
+		this.eventListeners = [...this.eventListeners, listener];
 		return () => {
 			const index = this.eventListeners.indexOf(listener);
 			if (index !== -1) {
-				this.eventListeners.splice(index, 1);
+				this.eventListeners = [...this.eventListeners.slice(0, index), ...this.eventListeners.slice(index + 1)];
 			}
 		};
 	}
@@ -517,9 +518,11 @@ export class RpcClient {
 				return;
 			}
 
-			// Otherwise it's an event
-			for (const listener of this.eventListeners) {
-				listener(data as JsonAgentSessionEvent);
+			// Otherwise it's an event. Listeners subscribed when dispatch starts receive it;
+			// (un)subscribing during dispatch replaces the array and applies from the next event.
+			const listeners = this.eventListeners;
+			for (let index = 0; index < listeners.length; index++) {
+				listeners[index]!(data as JsonAgentSessionEvent);
 			}
 		} catch {
 			// Ignore non-JSON lines

@@ -654,8 +654,11 @@ export class Agent {
 			onAccepted?.();
 			await executor(abortController.signal);
 		} catch (error) {
+			const aborted = abortController.signal.aborted;
+			// A failed consumer can abandon a still-running provider producer.
+			abortController.abort();
 			if (hostOnly) throw error;
-			await this.handleRunFailure(error, abortController.signal.aborted);
+			await this.handleRunFailure(error, aborted);
 		} finally {
 			this.finishRun();
 		}

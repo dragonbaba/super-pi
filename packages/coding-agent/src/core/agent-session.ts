@@ -404,7 +404,7 @@ export interface AgentSessionConfig {
 	providerRequestCompactor?: (input: {
 		model: Model<any>;
 		apiKey: string;
-		headers?: Record<string, string>;
+		headers?: ProviderHeaders;
 		env?: Record<string, string>;
 		sessionId: string;
 		regularPayload: Record<string, unknown>;
@@ -775,6 +775,11 @@ export class AgentSession {
 	private _followUpMessages: string[] = [];
 	/** Messages queued to be included with the next user prompt as context ("asides"). */
 	private _pendingNextTurnMessages: CustomMessage[] = [];
+	/** Context-only custom messages sent mid-run; appended once the turn's tool results are recorded. */
+	private _pendingCustomMessages: CustomMessage[] = [];
+	/** Delivered messages awaiting synchronization with the agent loop's separate context. */
+	private _pendingCustomContextMessages: CustomMessage[] = [];
+	private _flushingCustomMessages = false;
 
 	// Compaction state
 	private _compactionAbortController: AbortController | undefined = undefined;
@@ -1179,6 +1184,10 @@ export class AgentSession {
 			const previousSnapshot = await previousPrepareNextTurnWithContext?.(turn, signal);
 			const previousContext = previousSnapshot?.context ?? turn.context;
 			let messages = previousContext.messages;
+			for (const message of this._pendingCustomContextMessages) {
+				if (!messages.includes(message)) messages.push(message);
+			}
+			this._pendingCustomContextMessages.length = 0;
 			if (turn.toolResults.length > 0 && !signal?.aborted && !this.isCompacting) {
 				const settings = this.settingsManager.getCompactionSettings();
 				const contextWindow = this.model?.contextWindow ?? 0;
@@ -1319,11 +1328,16 @@ export class AgentSession {
 	}
 
 	private async _emitAgentSettled(): Promise<void> {
-		this._isAgentRunActive = false;
+		// Every run exit settles here, so nothing queued mid-run outlives it.
 		try {
+			await this._flushPendingCustomMessages();
+			this._pendingCustomContextMessages.length = 0;
+			this._isAgentRunActive = false;
 			await this._extensionRunner.emit({ type: "agent_settled" });
 			this._emit({ type: "agent_settled" });
 		} finally {
+			this._pendingCustomContextMessages.length = 0;
+			this._isAgentRunActive = false;
 			this._resolveIdleWaitIfIdle();
 		}
 	}
@@ -1533,6 +1547,10 @@ export class AgentSession {
 				}
 			}
 		}
+
+		// turn_end follows the assistant message and all of its tool results (listeners,
+		// including turn_end handlers, have run), so queued custom messages cannot split them.
+		if (event.type === "turn_end") await this._flushPendingCustomMessages();
 	};
 
 	/** Coalesced display-only path for the built-in UI and explicit extension observers. */
@@ -1746,6 +1764,8 @@ export class AgentSession {
 	 * Call this when completely done with the session.
 	 */
 	dispose(): void {
+		this._pendingCustomMessages.length = 0;
+		this._pendingCustomContextMessages.length = 0;
 		this._pendingLengthRecovery = undefined;
 		this._imageDigests = new WeakMap();
 		this._imageRequest = undefined;
@@ -2666,8 +2686,9 @@ export class AgentSession {
 				return;
 			}
 
-			// Flush any pending bash messages before the new prompt
+			// Flush any pending bash and custom messages before the new prompt
 			this._flushPendingBashMessages();
+			await this._flushPendingCustomMessages();
 
 			// Validate model
 			if (!this.model) {
@@ -2910,8 +2931,9 @@ export class AgentSession {
 	/**
 	 * Send a custom message to the session. Creates a CustomMessageEntry.
 	 *
-	 * Handles three cases:
+	 * Handles four cases:
 	 * - Streaming: queues message, processed when loop pulls from queue
+	 * - Streaming + triggerTurn false: appended after the current turn's tool results
 	 * - Not streaming + triggerTurn: appends to state/session, starts new turn
 	 * - Not streaming + no trigger: appends to state/session, no turn
 	 *
@@ -2942,16 +2964,49 @@ export class AgentSession {
 			}
 		} else if (options?.triggerTurn) {
 			await this._runAgentPrompt(appMessage);
+		} else if (this.isStreaming) {
+			// Appending now could land between an assistant tool call and its result, which
+			// order-validating providers reject on replay. Nothing is emitted until appended.
+			this._pendingCustomMessages.push(appMessage);
 		} else {
-			this.agent.state.messages.push(appMessage);
-			this.sessionManager.appendCustomMessageEntry(
-				message.customType,
-				message.content,
-				message.display,
-				message.details,
-			);
+			await this._appendCustomMessage(appMessage);
+		}
+	}
+
+	private async _appendCustomMessage(appMessage: CustomMessage): Promise<void> {
+		const manager = this.sessionManager;
+		this.agent.state.messages.push(appMessage);
+		if (this.isStreaming) this._pendingCustomContextMessages.push(appMessage);
+		try {
+			// The session notification lane alone does not reach extension replay owners.
+			if (this._extensionRunner.hasHandlers("message_end")) {
+				await this._emitExtensionEvent({ type: "message_end", message: appMessage });
+			}
+		} finally {
+			// Persist the same finalized object once, including on hook failure.
+			manager.appendCustomMessageEntry(appMessage.customType, appMessage.content, appMessage.display, appMessage.details);
 			this._emit({ type: "message_start", message: appMessage });
 			this._emit({ type: "message_end", message: appMessage });
+		}
+	}
+
+	/** Append custom messages queued during the run, after the turn's tool results. */
+	private async _flushPendingCustomMessages(): Promise<void> {
+		if (this._pendingCustomMessages.length === 0 || this._flushingCustomMessages || this._operationDisposed) return;
+		const pending = this._pendingCustomMessages;
+		this._flushingCustomMessages = true;
+		let consumed = 0;
+		try {
+			// A synchronous message listener may enqueue more messages. They follow the
+			// already queued messages and must reach this turn's next request too.
+			while (consumed < pending.length) {
+				const message = pending[consumed++]!;
+				await this._appendCustomMessage(message);
+			}
+		} finally {
+			if (consumed === pending.length) pending.length = 0;
+			else pending.splice(0, consumed);
+			this._flushingCustomMessages = false;
 		}
 	}
 
