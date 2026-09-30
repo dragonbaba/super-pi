@@ -7,7 +7,7 @@ import {
 
 export type SyntaxTheme = Pick<Theme, "fg" | "bold"> & Partial<Pick<Theme, "italic" | "underline">>;
 
-type Formatter = (text: string) => string;
+const NAMED_ENTITIES: Readonly<Record<string, string>> = { amp: "&", apos: "'", gt: ">", lt: "<", quot: '"' };
 
 const LANGUAGE_BY_EXTENSION: Readonly<Record<string, string>> = {
 	ts: "typescript",
@@ -96,7 +96,7 @@ const SCOPE_COLORS: Readonly<Record<string, ThemeColor>> = {
 };
 
 export function getLanguageFromPath(filePath: string): string | undefined {
-	const extension = filePath.split(".").pop()?.toLowerCase();
+	const extension = filePath.slice(filePath.lastIndexOf(".") + 1).toLowerCase();
 	return extension ? LANGUAGE_BY_EXTENSION[extension] : undefined;
 }
 
@@ -110,48 +110,32 @@ export function highlightCode(
 	}
 	try {
 		const html = hljs.highlight(code, { language, ignoreIllegals: true }).value;
-		return theme.fg("mdCodeBlock", renderHighlightedHtml(html, syntaxFormatters(theme)));
+		return theme.fg("mdCodeBlock", renderHighlightedHtml(html, theme));
 	} catch {
 		return theme.fg("mdCodeBlock", code);
 	}
 }
 
-function syntaxFormatters(theme: SyntaxTheme): Readonly<Record<string, Formatter>> {
-	const formatters: Record<string, Formatter> = {};
-	for (const [scope, color] of Object.entries(SCOPE_COLORS)) {
-		formatters[scope] = (text) => theme.fg(color, text);
-	}
-	formatters.emphasis = (text) => theme.italic?.(text) ?? text;
-	formatters.strong = (text) => theme.bold(text);
-	formatters.link = (text) => theme.underline?.(text) ?? text;
-	return formatters;
-}
-
 function renderHighlightedHtml(
 	html: string,
-	formatters: Readonly<Record<string, Formatter>>,
+	theme: SyntaxTheme,
 ): string {
 	let output = "";
 	let textBuffer = "";
 	const scopes: Array<string | undefined> = [];
-	const flush = () => {
-		if (!textBuffer) return;
-		output += activeFormatter(scopes, formatters)?.(textBuffer) ?? textBuffer;
-		textBuffer = "";
-	};
 
 	for (let index = 0; index < html.length; ) {
 		if (html.startsWith("<span", index)) {
 			const tagEnd = html.indexOf(">", index + 5);
 			if (tagEnd >= 0) {
-				flush();
+				if (textBuffer) { output += styleSyntaxText(textBuffer, scopes, theme); textBuffer = ""; }
 				scopes.push(scopeFromTag(html.slice(index, tagEnd + 1)));
 				index = tagEnd + 1;
 				continue;
 			}
 		}
 		if (html.startsWith("</span>", index)) {
-			flush();
+			if (textBuffer) { output += styleSyntaxText(textBuffer, scopes, theme); textBuffer = ""; }
 			scopes.pop();
 			index += "</span>".length;
 			continue;
@@ -170,46 +154,43 @@ function renderHighlightedHtml(
 		textBuffer += html[index];
 		index += 1;
 	}
-	flush();
+	if (textBuffer) { output += styleSyntaxText(textBuffer, scopes, theme); textBuffer = ""; }
 	return output;
 }
 
 function scopeFromTag(tag: string): string | undefined {
 	const classMatch = HIGHLIGHT_CLASS_ATTRIBUTE_PATTERN.exec(tag);
 	const classValue = classMatch?.[1] || classMatch?.[2];
-	return classValue
-		?.split(HIGHLIGHT_CLASS_SEPARATOR_PATTERN)
-		.find((className) => className.startsWith("hljs-"))
-		?.slice("hljs-".length);
-}
-
-function activeFormatter(
-	scopes: readonly (string | undefined)[],
-	formatters: Readonly<Record<string, Formatter>>,
-): Formatter | undefined {
-	for (let index = scopes.length - 1; index >= 0; index -= 1) {
-		const scope = scopes[index];
-		if (!scope) continue;
-		const exact = formatters[scope];
-		if (exact) return exact;
-		const dotIndex = scope.indexOf(".");
-		const dashIndex = scope.indexOf("-");
-		const separatorIndex = dotIndex < 0 ? dashIndex : dashIndex < 0 ? dotIndex : Math.min(dotIndex, dashIndex);
-		const prefix = separatorIndex < 0 ? scope : scope.slice(0, separatorIndex);
-		if (prefix && formatters[prefix]) return formatters[prefix];
-	}
+	if (!classValue) return undefined;
+	for (const className of classValue.split(HIGHLIGHT_CLASS_SEPARATOR_PATTERN)) if (className.startsWith("hljs-")) return className.slice("hljs-".length);
 	return undefined;
 }
 
+function isSyntaxScope(scope: string): boolean {
+	return typeof SCOPE_COLORS[scope] === "string" || scope === "emphasis" || scope === "strong" || scope === "link";
+}
+
+function styleSyntaxText(text: string, scopes: readonly (string | undefined)[], theme: SyntaxTheme): string {
+	for (let index = scopes.length - 1; index >= 0; index--) {
+		let scope = scopes[index];
+		if (!scope) continue;
+		if (!isSyntaxScope(scope)) {
+			const dotIndex = scope.indexOf(".");
+			const dashIndex = scope.indexOf("-");
+			const separatorIndex = dotIndex < 0 ? dashIndex : dashIndex < 0 ? dotIndex : Math.min(dotIndex, dashIndex);
+			scope = separatorIndex < 0 ? scope : scope.slice(0, separatorIndex);
+			if (!isSyntaxScope(scope)) continue;
+		}
+		if (scope === "emphasis") return theme.italic?.(text) ?? text;
+		if (scope === "strong") return theme.bold(text);
+		if (scope === "link") return theme.underline?.(text) ?? text;
+		return theme.fg(SCOPE_COLORS[scope]!, text);
+	}
+	return text;
+}
+
 function decodeEntity(entity: string): string | undefined {
-	const named: Readonly<Record<string, string>> = {
-		amp: "&",
-		apos: "'",
-		gt: ">",
-		lt: "<",
-		quot: '"',
-	};
-	if (named[entity] !== undefined) return named[entity];
+	if (NAMED_ENTITIES[entity] !== undefined) return NAMED_ENTITIES[entity];
 	const radix = entity.startsWith("#x") || entity.startsWith("#X") ? 16 : 10;
 	const digits =
 		entity.startsWith("#x") || entity.startsWith("#X") ? entity.slice(2) : entity.slice(1);

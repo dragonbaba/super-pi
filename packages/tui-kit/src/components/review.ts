@@ -12,7 +12,7 @@ import type {
 	MenuScreenComponent,
 	MenuScreenComponentOptions,
 } from "./contracts.js";
-import { menuHint, renderFrame, safeMenuText } from "./rendering.js";
+import { appendMutedLines, menuHint, renderFrame, safeMenuText, truncateOwnedLines } from "./rendering.js";
 import { getLanguageFromPath, highlightCode } from "./syntax-highlighting.js";
 
 const DEFAULT_REVIEW_VIEWPORT_SIZE = 14;
@@ -20,6 +20,7 @@ const RPC_REVIEW_VIEWPORT_SIZE = 8;
 const RPC_REVIEW_LINE_WIDTH = 120;
 const RESERVED_HOST_ROWS = 3;
 const TAB_SIZE = 4;
+const CR_PATTERN = /\r\n?/gu;
 const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
 export type ReviewOptions<
@@ -145,19 +146,16 @@ function renderAdaptiveReviewFrame<ActionId extends string>(
 	const availableRows = Math.max(1, Math.floor(options.terminalRows) - RESERVED_HOST_ROWS);
 	const destination = options.screen.hint ?? "back";
 	const confirmAction = options.screen.confirm ? safeMenuText(options.screen.confirm.label) : "";
-	const fullHeader = [
-		...wrapTextWithAnsi(
+	const fullHeader = wrapTextWithAnsi(
 			options.theme.fg("accent", options.theme.bold(safeMenuText(options.screen.title))),
 			options.width,
-		),
-		...(options.screen.lines ?? []).flatMap((line) =>
-			wrapTextWithAnsi(options.theme.fg("muted", safeMenuText(line)), options.width),
-		),
-	].map((line) => truncateToWidth(line, options.width, ""));
-	const fullHint = wrapTextWithAnsi(
+		);
+	appendMutedLines(fullHeader, options.screen.lines ?? [], options.width, options.theme);
+	truncateOwnedLines(fullHeader, options.width);
+	const fullHint = truncateOwnedLines(wrapTextWithAnsi(
 		options.theme.fg("dim", menuHint(options.keybindings, destination, confirmAction)),
 		options.width,
-	).map((line) => truncateToWidth(line, options.width, ""));
+	), options.width);
 	const criticalHint = truncateToWidth(
 		options.theme.fg("dim", compactReviewHint(options.keybindings, destination, confirmAction)),
 		options.width,
@@ -177,19 +175,18 @@ function renderAdaptiveReviewFrame<ActionId extends string>(
 
 	const maximumScroll = Math.max(0, options.allLines.length - chrome.viewportSize);
 	const scrollOffset = Math.max(0, Math.min(options.scrollOffset, maximumScroll));
-	const visible = options.allLines.slice(scrollOffset, scrollOffset + chrome.viewportSize);
 	const first = options.allLines.length === 0 ? 0 : scrollOffset + 1;
 	const last = Math.min(options.allLines.length, scrollOffset + chrome.viewportSize);
 	const position = chrome.showPosition
 		? [options.theme.fg("dim", `${first}-${last}/${options.allLines.length}`)]
 		: [];
-	const lines = [
-		...chrome.header,
-		...(chrome.separator ? [""] : []),
-		...visible,
-		...position,
-		...chrome.hint,
-	].map((line) => truncateToWidth(line, options.width, ""));
+	const lines: string[] = [];
+	for (const line of chrome.header) lines.push(line);
+	if (chrome.separator) lines.push("");
+	for (let index = scrollOffset; index < Math.min(options.allLines.length, scrollOffset + chrome.viewportSize); index++) lines.push(options.allLines[index]!);
+	for (const line of position) lines.push(line);
+	for (const line of chrome.hint) lines.push(line);
+	truncateOwnedLines(lines, options.width);
 
 	return { lines, scrollOffset, maximumScroll, viewportSize: chrome.viewportSize };
 }
@@ -256,12 +253,11 @@ function compactReviewHint(
 	const cancel = reviewBindingText(keybindings, "tui.select.cancel", "ctrl+c");
 	const up = reviewBindingText(keybindings, "tui.select.up");
 	const down = reviewBindingText(keybindings, "tui.select.down");
-	return [
-		...(confirm && confirmAction ? [`${confirm} ${confirmAction}`] : []),
-		...(cancel ? [`${cancel} ${destination}`] : []),
-		...(destination === "back" || !cancel ? ["ctrl+c close"] : []),
-		...(up || down ? [`${[up, down].filter(Boolean).join("/")} navigate`] : []),
-	].join(" • ");
+	let hint = confirm && confirmAction ? `${confirm} ${confirmAction}` : "";
+	if (cancel) hint += (hint ? " • " : "") + `${cancel} ${destination}`;
+	if (destination === "back" || !cancel) hint += (hint ? " • " : "") + "ctrl+c close";
+	if (up || down) hint += (hint ? " • " : "") + `${up}${up && down ? "/" : ""}${down} navigate`;
+	return hint;
 }
 
 function reviewBindingText(
@@ -269,17 +265,13 @@ function reviewBindingText(
 	binding: Parameters<MenuKeybindings["getKeys"]>[0],
 	excluded?: string,
 ) {
-	return keybindings
-		.getKeys(binding)
-		.filter((key) => key !== excluded)
-		.map((key) => {
-			if (key === "up") return "↑";
-			if (key === "down") return "↓";
-			if (key === "escape") return "esc";
-			return safeMenuText(key);
-		})
-		.filter(Boolean)
-		.join("/");
+	let text = "";
+	for (const key of keybindings.getKeys(binding)) {
+		if (key === excluded) continue;
+		const label = key === "up" ? "↑" : key === "down" ? "↓" : key === "escape" ? "esc" : safeMenuText(key);
+		if (label) text += (text ? "/" : "") + label;
+	}
+	return text;
 }
 
 export function reviewDialogPages<ActionId extends string>(
@@ -301,45 +293,43 @@ function formatReviewLines<ActionId extends string>(
 ): string[] {
 	const segments = reviewSegments(screen.content, width);
 	const format = screen.format ?? { kind: "text" as const };
-	if (format.kind === "code") {
-		const language =
-			format.language ?? (format.filePath ? getLanguageFromPath(format.filePath) : undefined);
-		return segments.map(({ text }) => highlightCode(text, language, theme));
+	const lines: string[] = [];
+	const language = format.kind === "code" ? format.language ?? (format.filePath ? getLanguageFromPath(format.filePath) : undefined) : undefined;
+	for (const {source,text} of segments) {
+		if (format.kind === "code") lines.push(highlightCode(text, language, theme));
+		else if (format.kind === "diff") {
+			const color = source.startsWith("@@") ? "accent" : source.startsWith("+") && !source.startsWith("+++") ? "toolDiffAdded" : source.startsWith("-") && !source.startsWith("---") ? "toolDiffRemoved" : "toolDiffContext";
+			lines.push(theme.fg(color, text));
+		} else lines.push(theme.fg("text", text));
 	}
-	if (format.kind === "diff") {
-		return segments.map(({ source, text }) => {
-			if (source.startsWith("@@")) return theme.fg("accent", text);
-			if (source.startsWith("+") && !source.startsWith("+++")) {
-				return theme.fg("toolDiffAdded", text);
-			}
-			if (source.startsWith("-") && !source.startsWith("---")) {
-				return theme.fg("toolDiffRemoved", text);
-			}
-			return theme.fg("toolDiffContext", text);
-		});
-	}
-	return segments.map(({ text }) => theme.fg("text", text));
+	return lines;
 }
 
 function plainReviewLines(content: string, width: number): string[] {
-	return reviewSegments(content, width).map(({ text }) => text);
+	const lines: string[] = [];
+	for (const segment of reviewSegments(content, width)) lines.push(segment.text);
+	return lines;
 }
 
 function reviewSegments(content: string, width: number) {
 	const safe = sanitizeDocumentText(content);
-	return safe.split("\n").flatMap((line) => {
+	const segments: { source: string; text: string }[] = [];
+	for (const line of safe.split("\n")) {
 		const source = expandTabs(line);
-		return hardWrapLine(source, width).map((text) => ({ source, text }));
-	});
+		for (const text of hardWrapLine(source, width)) segments.push({ source, text });
+	}
+	return segments;
 }
 
 export function sanitizeDocumentText(value: unknown): string {
-	const stripped = stripVTControlCharacters(String(value)).replace(/\r\n?/gu, "\n");
-	return Array.from(stripped, (character) => {
-		if (character === "\n" || character === "\t") return character;
+	const stripped = stripVTControlCharacters(typeof value === "string" ? value : String(value)).replace(CR_PATTERN, "\n");
+	let text = "";
+	for (const character of stripped) {
+		if (character === "\n" || character === "\t") { text += character; continue; }
 		const codePoint = character.codePointAt(0) ?? 0;
-		return codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f) ? " " : character;
-	}).join("");
+		text += codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f) ? " " : character;
+	}
+	return text;
 }
 
 function expandTabs(line: string): string {
@@ -364,19 +354,14 @@ function hardWrapLine(line: string, width: number): string[] {
 	const lines: string[] = [];
 	let current = "";
 	let currentWidth = 0;
-	const flush = () => {
-		lines.push(current);
-		current = "";
-		currentWidth = 0;
-	};
 	for (const { segment } of graphemeSegmenter.segment(line)) {
 		const segmentWidth = visibleWidth(segment);
 		if (segmentWidth > safeWidth) {
-			if (current.length > 0) flush();
+			if (current.length > 0) { lines.push(current); current = ""; currentWidth = 0; }
 			lines.push("?".repeat(safeWidth));
 			continue;
 		}
-		if (currentWidth + segmentWidth > safeWidth && current.length > 0) flush();
+		if (currentWidth + segmentWidth > safeWidth && current.length > 0) { lines.push(current); current = ""; currentWidth = 0; }
 		current += segment;
 		currentWidth += segmentWidth;
 	}

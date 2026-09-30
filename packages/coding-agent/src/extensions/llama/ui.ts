@@ -21,6 +21,8 @@ import type { LlamaModelInfo, LlamaProgress } from "./client.ts";
 import type { HuggingFaceModel } from "./huggingface.ts";
 
 const DOWNLOAD_VALUE = "\0download";
+const EXACT_MODEL_PATTERN = /^[^/\s]+\/[^:\s]+(?::[^\s:]+)?$/u;
+function getModelId(model: HuggingFaceModel): string { return model.id; }
 
 export type LlamaManagerAction = { type: "model"; model: LlamaModelInfo } | { type: "download" } | { type: "close" };
 
@@ -111,6 +113,7 @@ class HuggingFaceSearch extends Container implements Focusable {
 	private request: AbortController | undefined;
 	private closed = false;
 	private _focused = false;
+	private readonly runScheduledSearch = (): void => { void this.runSearch(this.query); };
 
 	constructor(
 		tui: TUI,
@@ -181,8 +184,10 @@ class HuggingFaceSearch extends Container implements Focusable {
 
 	private filterResults(): void {
 		if (this.query) {
-			const matches = new Set(fuzzyFilter(this.results, this.query, (model) => model.id).map((model) => model.id));
-			this.filteredResults = this.results.filter((model) => matches.has(model.id));
+			const matches = new Set<string>();
+			for (const model of fuzzyFilter(this.results, this.query, getModelId)) matches.add(model.id);
+			this.filteredResults = [];
+			for (const model of this.results) if (matches.has(model.id)) this.filteredResults.push(model);
 		} else {
 			this.filteredResults = this.results;
 		}
@@ -208,7 +213,7 @@ class HuggingFaceSearch extends Container implements Focusable {
 		}
 		this.status = "Searching Hugging Face…";
 		this.filterResults();
-		this.debounce = setTimeout(() => void this.runSearch(this.query), 500);
+		this.debounce = setTimeout(this.runScheduledSearch, 500);
 	}
 
 	private async runSearch(query: string): Promise<void> {
@@ -256,7 +261,7 @@ class HuggingFaceSearch extends Container implements Focusable {
 			return;
 		}
 		if (this.keybindings.matches(data, "tui.select.confirm")) {
-			const exact = /^[^/\s]+\/[^:\s]+(?::[^\s:]+)?$/u.test(this.query) ? this.query : undefined;
+			const exact = EXACT_MODEL_PATTERN.test(this.query) ? this.query : undefined;
 			const selected = exact ?? this.filteredResults[this.selectedIndex]?.id;
 			if (selected) this.close(selected);
 			return;
@@ -467,9 +472,9 @@ class LlamaView implements LlamaUi, Focusable {
 	}
 
 	render(width: number): string[] {
-		return this.content
-			.render(width)
-			.map((line) => (visibleWidth(line) > width ? truncateToWidth(line, width, "") : line));
+		const lines: string[] = [];
+		for (const line of this.content.render(width)) lines.push(visibleWidth(line) > width ? truncateToWidth(line, width, "") : line);
+		return lines;
 	}
 
 	invalidate(): void {

@@ -1,0 +1,1168 @@
+{
+  "baseline": "6ebe643f1dcf6eded74da3b59bb3f177a720dbee",
+  "values": [
+    {
+      "scene": 0,
+      "width": 12,
+      "rows": 8,
+      "initial": [
+        "────────────",
+        "Choose",
+        "Context line",
+        "",
+        "→ First",
+        "  [-] Disa\u001b[0m",
+        "",
+        "",
+        "multiline",
+        "next",
+        "↑/↓ navigate",
+        "• enter",
+        "select • esc",
+        "back •",
+        "ctrl+c close",
+        "────────────"
+      ],
+      "down": [
+        "────────────",
+        "Choose",
+        "Context line",
+        "",
+        "  First",
+        "→ [-] Disa\u001b[0m",
+        "",
+        "Unavailable:",
+        "blocked",
+        "↑/↓ navigate",
+        "• enter",
+        "select • esc",
+        "back •",
+        "ctrl+c close",
+        "────────────"
+      ],
+      "searched": [
+        "────────────",
+        "Choose",
+        "Context line",
+        "",
+        "  First",
+        "→ [-] Disa\u001b[0m",
+        "",
+        "Unavailable:",
+        "blocked",
+        "↑/↓ navigate",
+        "• enter",
+        "select • esc",
+        "back •",
+        "ctrl+c close",
+        "────────────"
+      ]
+    },
+    {
+      "scene": 0,
+      "width": 12,
+      "rows": 24,
+      "initial": [
+        "────────────",
+        "Choose",
+        "Context line",
+        "",
+        "→ First",
+        "  [-] Disa\u001b[0m",
+        "",
+        "",
+        "multiline",
+        "next",
+        "↑/↓ navigate",
+        "• enter",
+        "select • esc",
+        "back •",
+        "ctrl+c close",
+        "────────────"
+      ],
+      "down": [
+        "────────────",
+        "Choose",
+        "Context line",
+        "",
+        "  First",
+        "→ [-] Disa\u001b[0m",
+        "",
+        "Unavailable:",
+        "blocked",
+        "↑/↓ navigate",
+        "• enter",
+        "select • esc",
+        "back •",
+        "ctrl+c close",
+        "────────────"
+      ],
+      "searched": [
+        "────────────",
+        "Choose",
+        "Context line",
+        "",
+        "  First",
+        "→ [-] Disa\u001b[0m",
+        "",
+        "Unavailable:",
+        "blocked",
+        "↑/↓ navigate",
+        "• enter",
+        "select • esc",
+        "back •",
+        "ctrl+c close",
+        "────────────"
+      ]
+    },
+    {
+      "scene": 0,
+      "width": 42,
+      "rows": 8,
+      "initial": [
+        "──────────────────────────────────────────",
+        "Choose",
+        "Context line",
+        "",
+        "→ First",
+        "  [-] Disabled",
+        "",
+        "",
+        "multiline next",
+        "↑/↓ navigate • enter select • esc back •",
+        "ctrl+c close",
+        "──────────────────────────────────────────"
+      ],
+      "down": [
+        "──────────────────────────────────────────",
+        "Choose",
+        "Context line",
+        "",
+        "  First",
+        "→ [-] Disabled",
+        "",
+        "Unavailable: blocked",
+        "↑/↓ navigate • enter select • esc back •",
+        "ctrl+c close",
+        "──────────────────────────────────────────"
+      ],
+      "searched": [
+        "──────────────────────────────────────────",
+        "Choose",
+        "Context line",
+        "",
+        "  First",
+        "→ [-] Disabled",
+        "",
+        "Unavailable: blocked",
+        "↑/↓ navigate • enter select • esc back •",
+        "ctrl+c close",
+        "──────────────────────────────────────────"
+      ]
+    },
+    {
+      "scene": 0,
+      "width": 42,
+      "rows": 24,
+      "initial": [
+        "──────────────────────────────────────────",
+        "Choose",
+        "Context line",
+        "",
+        "→ First",
+        "  [-] Disabled",
+        "",
+        "",
+        "multiline next",
+        "↑/↓ navigate • enter select • esc back •",
+        "ctrl+c close",
+        "──────────────────────────────────────────"
+      ],
+      "down": [
+        "──────────────────────────────────────────",
+        "Choose",
+        "Context line",
+        "",
+        "  First",
+        "→ [-] Disabled",
+        "",
+        "Unavailable: blocked",
+        "↑/↓ navigate • enter select • esc back •",
+        "ctrl+c close",
+        "──────────────────────────────────────────"
+      ],
+      "searched": [
+        "──────────────────────────────────────────",
+        "Choose",
+        "Context line",
+        "",
+        "  First",
+        "→ [-] Disabled",
+        "",
+        "Unavailable: blocked",
+        "↑/↓ navigate • enter select • esc back •",
+        "ctrl+c close",
+        "──────────────────────────────────────────"
+      ]
+    },
+    {
+      "scene": 1,
+      "width": 12,
+      "rows": 8,
+      "initial": [
+        "────────────",
+        "Empty",
+        "",
+        "  No choices\u001b[0m",
+        "↑/↓ navigate",
+        "• enter",
+        "select • esc",
+        "back •",
+        "ctrl+c close",
+        "────────────"
+      ],
+      "down": [
+        "────────────",
+        "Empty",
+        "",
+        "  No choices\u001b[0m",
+        "↑/↓ navigate",
+        "• enter",
+        "select • esc",
+        "back •",
+        "ctrl+c close",
+        "────────────"
+      ],
+      "searched": [
+        "────────────",
+        "Empty",
+        "",
+        "  No choices\u001b[0m",
+        "↑/↓ navigate",
+        "• enter",
+        "select • esc",
+        "back •",
+        "ctrl+c close",
+        "────────────"
+      ]
+    },
+    {
+      "scene": 1,
+      "width": 12,
+      "rows": 24,
+      "initial": [
+        "────────────",
+        "Empty",
+        "",
+        "  No choices\u001b[0m",
+        "↑/↓ navigate",
+        "• enter",
+        "select • esc",
+        "back •",
+        "ctrl+c close",
+        "────────────"
+      ],
+      "down": [
+        "────────────",
+        "Empty",
+        "",
+        "  No choices\u001b[0m",
+        "↑/↓ navigate",
+        "• enter",
+        "select • esc",
+        "back •",
+        "ctrl+c close",
+        "────────────"
+      ],
+      "searched": [
+        "────────────",
+        "Empty",
+        "",
+        "  No choices\u001b[0m",
+        "↑/↓ navigate",
+        "• enter",
+        "select • esc",
+        "back •",
+        "ctrl+c close",
+        "────────────"
+      ]
+    },
+    {
+      "scene": 1,
+      "width": 42,
+      "rows": 8,
+      "initial": [
+        "──────────────────────────────────────────",
+        "Empty",
+        "",
+        "  No choices available",
+        "↑/↓ navigate • enter select • esc back •",
+        "ctrl+c close",
+        "──────────────────────────────────────────"
+      ],
+      "down": [
+        "──────────────────────────────────────────",
+        "Empty",
+        "",
+        "  No choices available",
+        "↑/↓ navigate • enter select • esc back •",
+        "ctrl+c close",
+        "──────────────────────────────────────────"
+      ],
+      "searched": [
+        "──────────────────────────────────────────",
+        "Empty",
+        "",
+        "  No choices available",
+        "↑/↓ navigate • enter select • esc back •",
+        "ctrl+c close",
+        "──────────────────────────────────────────"
+      ]
+    },
+    {
+      "scene": 1,
+      "width": 42,
+      "rows": 24,
+      "initial": [
+        "──────────────────────────────────────────",
+        "Empty",
+        "",
+        "  No choices available",
+        "↑/↓ navigate • enter select • esc back •",
+        "ctrl+c close",
+        "──────────────────────────────────────────"
+      ],
+      "down": [
+        "──────────────────────────────────────────",
+        "Empty",
+        "",
+        "  No choices available",
+        "↑/↓ navigate • enter select • esc back •",
+        "ctrl+c close",
+        "──────────────────────────────────────────"
+      ],
+      "searched": [
+        "──────────────────────────────────────────",
+        "Empty",
+        "",
+        "  No choices available",
+        "↑/↓ navigate • enter select • esc back •",
+        "ctrl+c close",
+        "──────────────────────────────────────────"
+      ]
+    },
+    {
+      "scene": 2,
+      "width": 12,
+      "rows": 8,
+      "initial": [
+        "────────────",
+        "Settings",
+        "",
+        "> \u001b[7m \u001b[27m         ",
+        "",
+        "→ Long label\u001b[0m",
+        "  Short     \u001b[0m",
+        "",
+        "Type to",
+        "search ·",
+        "Enter/Space",
+        "to change ·",
+        "Esc to go",
+        "back ·",
+        "Ctrl+C to",
+        "close",
+        "────────────"
+      ],
+      "down": [
+        "────────────",
+        "Settings",
+        "",
+        "> \u001b[7m \u001b[27m         ",
+        "",
+        "  Long label\u001b[0m",
+        "→ Short     \u001b[0m",
+        "",
+        "Type to",
+        "search ·",
+        "Enter/Space",
+        "to change ·",
+        "Esc to go",
+        "back ·",
+        "Ctrl+C to",
+        "close",
+        "────────────"
+      ],
+      "searched": [
+        "────────────",
+        "Settings",
+        "",
+        "> a\u001b[7m \u001b[27m        ",
+        "",
+        "→ Long label\u001b[0m",
+        "",
+        "Type to",
+        "search ·",
+        "Enter/Space",
+        "to change ·",
+        "Esc to go",
+        "back ·",
+        "Ctrl+C to",
+        "close",
+        "────────────"
+      ]
+    },
+    {
+      "scene": 2,
+      "width": 12,
+      "rows": 24,
+      "initial": [
+        "────────────",
+        "Settings",
+        "",
+        "> \u001b[7m \u001b[27m         ",
+        "",
+        "→ Long label\u001b[0m",
+        "  Short     \u001b[0m",
+        "",
+        "Type to",
+        "search ·",
+        "Enter/Space",
+        "to change ·",
+        "Esc to go",
+        "back ·",
+        "Ctrl+C to",
+        "close",
+        "────────────"
+      ],
+      "down": [
+        "────────────",
+        "Settings",
+        "",
+        "> \u001b[7m \u001b[27m         ",
+        "",
+        "  Long label\u001b[0m",
+        "→ Short     \u001b[0m",
+        "",
+        "Type to",
+        "search ·",
+        "Enter/Space",
+        "to change ·",
+        "Esc to go",
+        "back ·",
+        "Ctrl+C to",
+        "close",
+        "────────────"
+      ],
+      "searched": [
+        "────────────",
+        "Settings",
+        "",
+        "> a\u001b[7m \u001b[27m        ",
+        "",
+        "→ Long label\u001b[0m",
+        "",
+        "Type to",
+        "search ·",
+        "Enter/Space",
+        "to change ·",
+        "Esc to go",
+        "back ·",
+        "Ctrl+C to",
+        "close",
+        "────────────"
+      ]
+    },
+    {
+      "scene": 2,
+      "width": 42,
+      "rows": 8,
+      "initial": [
+        "──────────────────────────────────────────",
+        "Settings",
+        "",
+        "> \u001b[7m \u001b[27m                                       ",
+        "",
+        "→ Long label  yes",
+        "  Short       (unavailable) off",
+        "",
+        "Type to search · Enter/Space to change ·",
+        "Esc to go back · Ctrl+C to close",
+        "──────────────────────────────────────────"
+      ],
+      "down": [
+        "──────────────────────────────────────────",
+        "Settings",
+        "",
+        "> \u001b[7m \u001b[27m                                       ",
+        "",
+        "  Long label  yes",
+        "→ Short       (unavailable) off",
+        "",
+        "Type to search · Enter/Space to change ·",
+        "Esc to go back · Ctrl+C to close",
+        "──────────────────────────────────────────"
+      ],
+      "searched": [
+        "──────────────────────────────────────────",
+        "Settings",
+        "",
+        "> a\u001b[7m \u001b[27m                                      ",
+        "",
+        "→ Long label  yes",
+        "",
+        "Type to search · Enter/Space to change ·",
+        "Esc to go back · Ctrl+C to close",
+        "──────────────────────────────────────────"
+      ]
+    },
+    {
+      "scene": 2,
+      "width": 42,
+      "rows": 24,
+      "initial": [
+        "──────────────────────────────────────────",
+        "Settings",
+        "",
+        "> \u001b[7m \u001b[27m                                       ",
+        "",
+        "→ Long label  yes",
+        "  Short       (unavailable) off",
+        "",
+        "Type to search · Enter/Space to change ·",
+        "Esc to go back · Ctrl+C to close",
+        "──────────────────────────────────────────"
+      ],
+      "down": [
+        "──────────────────────────────────────────",
+        "Settings",
+        "",
+        "> \u001b[7m \u001b[27m                                       ",
+        "",
+        "  Long label  yes",
+        "→ Short       (unavailable) off",
+        "",
+        "Type to search · Enter/Space to change ·",
+        "Esc to go back · Ctrl+C to close",
+        "──────────────────────────────────────────"
+      ],
+      "searched": [
+        "──────────────────────────────────────────",
+        "Settings",
+        "",
+        "> a\u001b[7m \u001b[27m                                      ",
+        "",
+        "→ Long label  yes",
+        "",
+        "Type to search · Enter/Space to change ·",
+        "Esc to go back · Ctrl+C to close",
+        "──────────────────────────────────────────"
+      ]
+    },
+    {
+      "scene": 3,
+      "width": 12,
+      "rows": 8,
+      "initial": [
+        "Browse",
+        "Search: > \u001b[7m \u001b[27m ",
+        "›   [enabled\u001b[0m",
+        "    [disable\u001b[0m",
+        "type to sear\u001b[0m"
+      ],
+      "down": [
+        "Browse",
+        "Search: > \u001b[7m \u001b[27m ",
+        "    [enabled\u001b[0m",
+        "›   [disable\u001b[0m",
+        "type to sear\u001b[0m"
+      ],
+      "searched": [
+        "Browse",
+        "Search: > a\u001b[7m \u001b[27m",
+        "    [enabled\u001b[0m",
+        "›   [disable\u001b[0m",
+        "type to sear\u001b[0m"
+      ]
+    },
+    {
+      "scene": 3,
+      "width": 12,
+      "rows": 24,
+      "initial": [
+        "Browse",
+        "Context",
+        "Search: > \u001b[7m \u001b[27m ",
+        "›   [enabled\u001b[0m",
+        "    [disable\u001b[0m",
+        "detail",
+        "type to sear\u001b[0m"
+      ],
+      "down": [
+        "Browse",
+        "Context",
+        "Search: > \u001b[7m \u001b[27m ",
+        "    [enabled\u001b[0m",
+        "›   [disable\u001b[0m",
+        "type to sear\u001b[0m"
+      ],
+      "searched": [
+        "Browse",
+        "Context",
+        "Search: > a\u001b[7m \u001b[27m",
+        "    [enabled\u001b[0m",
+        "›   [disable\u001b[0m",
+        "type to sear\u001b[0m"
+      ]
+    },
+    {
+      "scene": 3,
+      "width": 42,
+      "rows": 8,
+      "initial": [
+        "Browse",
+        "Search: > \u001b[7m \u001b[27m                               ",
+        "› Alpha  [enabled]",
+        "  Beta  [disabled]",
+        "type to search · ↑/↓ navigate · enter deta\u001b[0m"
+      ],
+      "down": [
+        "Browse",
+        "Search: > \u001b[7m \u001b[27m                               ",
+        "  Alpha  [enabled]",
+        "› Beta  [disabled]",
+        "type to search · ↑/↓ navigate · enter deta\u001b[0m"
+      ],
+      "searched": [
+        "Browse",
+        "Search: > a\u001b[7m \u001b[27m                              ",
+        "  Alpha  [enabled]",
+        "› Beta  [disabled]",
+        "type to search · ↑/↓ navigate · enter deta\u001b[0m"
+      ]
+    },
+    {
+      "scene": 3,
+      "width": 42,
+      "rows": 24,
+      "initial": [
+        "Browse",
+        "Context",
+        "Search: > \u001b[7m \u001b[27m                               ",
+        "› Alpha  [enabled]",
+        "  Beta  [disabled]",
+        "detail",
+        "type to search · ↑/↓ navigate · enter deta\u001b[0m"
+      ],
+      "down": [
+        "Browse",
+        "Context",
+        "Search: > \u001b[7m \u001b[27m                               ",
+        "  Alpha  [enabled]",
+        "› Beta  [disabled]",
+        "type to search · ↑/↓ navigate · enter deta\u001b[0m"
+      ],
+      "searched": [
+        "Browse",
+        "Context",
+        "Search: > a\u001b[7m \u001b[27m                              ",
+        "  Alpha  [enabled]",
+        "› Beta  [disabled]",
+        "type to search · ↑/↓ navigate · enter deta\u001b[0m"
+      ]
+    },
+    {
+      "scene": 4,
+      "width": 12,
+      "rows": 8,
+      "initial": [
+        "Multiple",
+        "",
+        "> \u001b[7m \u001b[27m         ",
+        "",
+        "› [x] Alpha",
+        "  [-] Beta (\u001b[0m",
+        "  Done",
+        "",
+        "  desc",
+        "Type to sear\u001b[0m",
+        "↑/↓ navigate",
+        "• enter",
+        "toggle • esc",
+        "back •",
+        "ctrl+c close"
+      ],
+      "down": [
+        "Multiple",
+        "",
+        "> \u001b[7m \u001b[27m         ",
+        "",
+        "  [x] Alpha",
+        "› [-] Beta (\u001b[0m",
+        "  Done",
+        "",
+        "",
+        "Unavailable:",
+        "blocked",
+        "Type to sear\u001b[0m",
+        "↑/↓ navigate",
+        "• enter",
+        "toggle • esc",
+        "back •",
+        "ctrl+c close"
+      ],
+      "searched": [
+        "Multiple",
+        "",
+        "> a\u001b[7m \u001b[27m        ",
+        "",
+        "  [x] Alpha",
+        "› [-] Beta (\u001b[0m",
+        "  Done",
+        "",
+        "",
+        "Unavailable:",
+        "blocked",
+        "Type to sear\u001b[0m",
+        "↑/↓ navigate",
+        "• enter",
+        "toggle • esc",
+        "back •",
+        "ctrl+c close"
+      ]
+    },
+    {
+      "scene": 4,
+      "width": 12,
+      "rows": 24,
+      "initial": [
+        "Multiple",
+        "",
+        "> \u001b[7m \u001b[27m         ",
+        "",
+        "› [x] Alpha",
+        "  [-] Beta (\u001b[0m",
+        "  Done",
+        "",
+        "  desc",
+        "Type to sear\u001b[0m",
+        "↑/↓ navigate",
+        "• enter",
+        "toggle • esc",
+        "back •",
+        "ctrl+c close"
+      ],
+      "down": [
+        "Multiple",
+        "",
+        "> \u001b[7m \u001b[27m         ",
+        "",
+        "  [x] Alpha",
+        "› [-] Beta (\u001b[0m",
+        "  Done",
+        "",
+        "",
+        "Unavailable:",
+        "blocked",
+        "Type to sear\u001b[0m",
+        "↑/↓ navigate",
+        "• enter",
+        "toggle • esc",
+        "back •",
+        "ctrl+c close"
+      ],
+      "searched": [
+        "Multiple",
+        "",
+        "> a\u001b[7m \u001b[27m        ",
+        "",
+        "  [x] Alpha",
+        "› [-] Beta (\u001b[0m",
+        "  Done",
+        "",
+        "",
+        "Unavailable:",
+        "blocked",
+        "Type to sear\u001b[0m",
+        "↑/↓ navigate",
+        "• enter",
+        "toggle • esc",
+        "back •",
+        "ctrl+c close"
+      ]
+    },
+    {
+      "scene": 4,
+      "width": 42,
+      "rows": 8,
+      "initial": [
+        "Multiple",
+        "",
+        "> \u001b[7m \u001b[27m                                       ",
+        "",
+        "› [x] Alpha",
+        "  [-] Beta (unavailable)",
+        "  Done",
+        "",
+        "  desc",
+        "Type to search",
+        "↑/↓ navigate • enter toggle • esc back •",
+        "ctrl+c close"
+      ],
+      "down": [
+        "Multiple",
+        "",
+        "> \u001b[7m \u001b[27m                                       ",
+        "",
+        "  [x] Alpha",
+        "› [-] Beta (unavailable)",
+        "  Done",
+        "",
+        "  Unavailable: blocked",
+        "Type to search",
+        "↑/↓ navigate • enter toggle • esc back •",
+        "ctrl+c close"
+      ],
+      "searched": [
+        "Multiple",
+        "",
+        "> a\u001b[7m \u001b[27m                                      ",
+        "",
+        "  [x] Alpha",
+        "› [-] Beta (unavailable)",
+        "  Done",
+        "",
+        "  Unavailable: blocked",
+        "Type to search",
+        "↑/↓ navigate • enter toggle • esc back •",
+        "ctrl+c close"
+      ]
+    },
+    {
+      "scene": 4,
+      "width": 42,
+      "rows": 24,
+      "initial": [
+        "Multiple",
+        "",
+        "> \u001b[7m \u001b[27m                                       ",
+        "",
+        "› [x] Alpha",
+        "  [-] Beta (unavailable)",
+        "  Done",
+        "",
+        "  desc",
+        "Type to search",
+        "↑/↓ navigate • enter toggle • esc back •",
+        "ctrl+c close"
+      ],
+      "down": [
+        "Multiple",
+        "",
+        "> \u001b[7m \u001b[27m                                       ",
+        "",
+        "  [x] Alpha",
+        "› [-] Beta (unavailable)",
+        "  Done",
+        "",
+        "  Unavailable: blocked",
+        "Type to search",
+        "↑/↓ navigate • enter toggle • esc back •",
+        "ctrl+c close"
+      ],
+      "searched": [
+        "Multiple",
+        "",
+        "> a\u001b[7m \u001b[27m                                      ",
+        "",
+        "  [x] Alpha",
+        "› [-] Beta (unavailable)",
+        "  Done",
+        "",
+        "  Unavailable: blocked",
+        "Type to search",
+        "↑/↓ navigate • enter toggle • esc back •",
+        "ctrl+c close"
+      ]
+    },
+    {
+      "scene": 5,
+      "width": 12,
+      "rows": 8,
+      "initial": [
+        "Review",
+        "Context",
+        "@@ header",
+        "1-1/5",
+        "esc back • c\u001b[0m"
+      ],
+      "down": [
+        "Review",
+        "Context",
+        "+added",
+        "2-2/5",
+        "esc back • c\u001b[0m"
+      ],
+      "searched": [
+        "Review",
+        "Context",
+        "+added",
+        "2-2/5",
+        "esc back • c\u001b[0m"
+      ]
+    },
+    {
+      "scene": 5,
+      "width": 12,
+      "rows": 24,
+      "initial": [
+        "Review",
+        "Context",
+        "",
+        "@@ header",
+        "+added",
+        "-removed",
+        "    😀中文",
+        "",
+        "↑/↓ navigate",
+        "• esc back •",
+        "ctrl+c close"
+      ],
+      "down": [
+        "Review",
+        "Context",
+        "",
+        "@@ header",
+        "+added",
+        "-removed",
+        "    😀中文",
+        "",
+        "↑/↓ navigate",
+        "• esc back •",
+        "ctrl+c close"
+      ],
+      "searched": [
+        "Review",
+        "Context",
+        "",
+        "@@ header",
+        "+added",
+        "-removed",
+        "    😀中文",
+        "",
+        "↑/↓ navigate",
+        "• esc back •",
+        "ctrl+c close"
+      ]
+    },
+    {
+      "scene": 5,
+      "width": 42,
+      "rows": 8,
+      "initial": [
+        "Review",
+        "Context",
+        "@@ header",
+        "1-1/5",
+        "esc back • ctrl+c close • ↑/↓ navigate"
+      ],
+      "down": [
+        "Review",
+        "Context",
+        "+added",
+        "2-2/5",
+        "esc back • ctrl+c close • ↑/↓ navigate"
+      ],
+      "searched": [
+        "Review",
+        "Context",
+        "+added",
+        "2-2/5",
+        "esc back • ctrl+c close • ↑/↓ navigate"
+      ]
+    },
+    {
+      "scene": 5,
+      "width": 42,
+      "rows": 24,
+      "initial": [
+        "Review",
+        "Context",
+        "",
+        "@@ header",
+        "+added",
+        "-removed",
+        "    😀中文",
+        "",
+        "↑/↓ navigate • esc back • ctrl+c close"
+      ],
+      "down": [
+        "Review",
+        "Context",
+        "",
+        "@@ header",
+        "+added",
+        "-removed",
+        "    😀中文",
+        "",
+        "↑/↓ navigate • esc back • ctrl+c close"
+      ],
+      "searched": [
+        "Review",
+        "Context",
+        "",
+        "@@ header",
+        "+added",
+        "-removed",
+        "    😀中文",
+        "",
+        "↑/↓ navigate • esc back • ctrl+c close"
+      ]
+    },
+    {
+      "scene": 6,
+      "width": 12,
+      "rows": 8,
+      "initial": [
+        "Code",
+        "",
+        "const text =",
+        "1-1/4",
+        "esc back • c\u001b[0m"
+      ],
+      "down": [
+        "Code",
+        "",
+        " 'a&b';",
+        "2-2/4",
+        "esc back • c\u001b[0m"
+      ],
+      "searched": [
+        "Code",
+        "",
+        " 'a&b';",
+        "2-2/4",
+        "esc back • c\u001b[0m"
+      ]
+    },
+    {
+      "scene": 6,
+      "width": 12,
+      "rows": 24,
+      "initial": [
+        "Code",
+        "",
+        "const text =",
+        " 'a&b';",
+        "// comment",
+        "",
+        "↑/↓ navigate",
+        "• esc back •",
+        "ctrl+c close"
+      ],
+      "down": [
+        "Code",
+        "",
+        "const text =",
+        " 'a&b';",
+        "// comment",
+        "",
+        "↑/↓ navigate",
+        "• esc back •",
+        "ctrl+c close"
+      ],
+      "searched": [
+        "Code",
+        "",
+        "const text =",
+        " 'a&b';",
+        "// comment",
+        "",
+        "↑/↓ navigate",
+        "• esc back •",
+        "ctrl+c close"
+      ]
+    },
+    {
+      "scene": 6,
+      "width": 42,
+      "rows": 8,
+      "initial": [
+        "Code",
+        "",
+        "const text = 'a&b';",
+        "1-1/3",
+        "↑/↓ navigate • esc back • ctrl+c close"
+      ],
+      "down": [
+        "Code",
+        "",
+        "// comment",
+        "2-2/3",
+        "↑/↓ navigate • esc back • ctrl+c close"
+      ],
+      "searched": [
+        "Code",
+        "",
+        "// comment",
+        "2-2/3",
+        "↑/↓ navigate • esc back • ctrl+c close"
+      ]
+    },
+    {
+      "scene": 6,
+      "width": 42,
+      "rows": 24,
+      "initial": [
+        "Code",
+        "",
+        "const text = 'a&b';",
+        "// comment",
+        "",
+        "↑/↓ navigate • esc back • ctrl+c close"
+      ],
+      "down": [
+        "Code",
+        "",
+        "const text = 'a&b';",
+        "// comment",
+        "",
+        "↑/↓ navigate • esc back • ctrl+c close"
+      ],
+      "searched": [
+        "Code",
+        "",
+        "const text = 'a&b';",
+        "// comment",
+        "",
+        "↑/↓ navigate • esc back • ctrl+c close"
+      ]
+    }
+  ],
+  "syntax": [
+    {
+      "code": "const text = 'a&b';\n// comment",
+      "language": "typescript",
+      "expected": "<mdCodeBlock><syntaxKeyword>const</syntaxKeyword> text = <syntaxString>'a&b'</syntaxString>;\n<syntaxComment>// comment</syntaxComment></mdCodeBlock>"
+    },
+    {
+      "code": "<div attr=\"x\">&amp;</div>",
+      "language": "html",
+      "expected": "<mdCodeBlock><syntaxPunctuation><</syntaxPunctuation><syntaxKeyword>div</syntaxKeyword><syntaxPunctuation> </syntaxPunctuation><syntaxVariable>attr</syntaxVariable><syntaxPunctuation>=</syntaxPunctuation><syntaxString>\"x\"</syntaxString><syntaxPunctuation>></syntaxPunctuation>&amp;<syntaxPunctuation></</syntaxPunctuation><syntaxKeyword>div</syntaxKeyword><syntaxPunctuation>></syntaxPunctuation></mdCodeBlock>"
+    },
+    {
+      "code": "**bold** *italic* [link](url)",
+      "language": "markdown",
+      "expected": "<mdCodeBlock><bold>**bold**</bold> <italic>*italic*</italic> [<syntaxString>link</syntaxString>](<underline>url</underline>)</mdCodeBlock>"
+    },
+    {
+      "code": "x > y",
+      "expected": "<mdCodeBlock><mdCodeBlock>x > y</mdCodeBlock></mdCodeBlock>"
+    },
+    {
+      "code": "malformed😀",
+      "language": "nonexistent",
+      "expected": "<mdCodeBlock><mdCodeBlock>malformed😀</mdCodeBlock></mdCodeBlock>"
+    }
+  ]
+}

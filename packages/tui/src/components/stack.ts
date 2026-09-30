@@ -61,8 +61,11 @@ export abstract class Stack extends Container {
 
 	override removeChild(component: Component): void {
 		super.removeChild(component);
-		const index = this.entries.findIndex((entry) => entry.component === component);
-		if (index !== -1) this.entries.splice(index, 1);
+		for (let index = 0; index < this.entries.length; index++) {
+			if (this.entries[index]!.component !== component) continue;
+			this.entries.splice(index, 1);
+			break;
+		}
 	}
 
 	override clear(): void {
@@ -88,7 +91,15 @@ export function visibleStackEntries(
 	entries: readonly StackLayoutEntry[],
 	viewport: LayoutViewport,
 ): StackLayoutEntry[] {
-	return entries.filter((entry) => entry.visible?.(viewport) ?? true);
+	const visible: StackLayoutEntry[] = [];
+	// Match filter's starting-length boundary and skip slots removed by a predicate.
+	const count = entries.length;
+	for (let index = 0; index < count; index++) {
+		if (!(index in entries)) continue;
+		const entry = entries[index]!;
+		if (entry.visible?.(viewport) ?? true) visible.push(entry);
+	}
+	return visible;
 }
 
 function clampSize(size: number, entry: StackLayoutEntry): number {

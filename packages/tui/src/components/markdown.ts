@@ -316,6 +316,9 @@ export interface MarkdownOptions {
 	incrementalRenderCache?: boolean;
 }
 
+function identityText(text: string): string { return text; }
+const DISPLAY_LATEX_OPTIONS = { display: true };
+
 interface InlineStyleContext {
 	applyText: (text: string) => string;
 	stylePrefix: string;
@@ -384,6 +387,9 @@ export class Markdown implements Component {
 	private lastParserTokenCount = 0;
 	private readonly incrementalMetrics: MarkdownIncrementalMetrics | undefined;
 	private readonly applyDefaultInlineText = (text: string): string => this.applyDefaultStyle(text);
+	private readonly applyHeadingText = (text: string): string => this.theme.heading(this.theme.bold(text));
+	private readonly applyHeadingOneText = (text: string): string => this.theme.heading(this.theme.bold(this.theme.underline(text)));
+	private readonly applyQuoteText = (text: string): string => this.theme.quote(this.theme.italic(text));
 	private readonly defaultInlineStyleContext: InlineStyleContext = {
 		applyText: this.applyDefaultInlineText,
 		stylePrefix: "",
@@ -1270,12 +1276,7 @@ export class Markdown implements Component {
 				// Build a heading-specific style context so inline tokens (codespan, bold, etc.)
 				// restore heading styling after their own ANSI resets instead of falling back to
 				// the default text style.
-				let headingStyleFn: (text: string) => string;
-				if (headingLevel === 1) {
-					headingStyleFn = (text: string) => this.theme.heading(this.theme.bold(this.theme.underline(text)));
-				} else {
-					headingStyleFn = (text: string) => this.theme.heading(this.theme.bold(text));
-				}
+				const headingStyleFn = headingLevel === 1 ? this.applyHeadingOneText : this.applyHeadingText;
 
 				const headingStyleContext: InlineStyleContext = {
 					applyText: headingStyleFn,
@@ -1309,7 +1310,7 @@ export class Markdown implements Component {
 				const latexToken = token as LatexToken;
 				const rendered =
 					!latexToken.pending && this.options.renderLatex !== false
-						? (renderLatex(latexToken.text, { display: true }) ?? latexToken.raw.trim())
+						? (renderLatex(latexToken.text, DISPLAY_LATEX_OPTIONS) ?? latexToken.raw.trim())
 						: latexToken.raw.trim();
 				for (const line of rendered.split("\n")) {
 					lines.push(this.applyDefaultStyle(line));
@@ -1357,15 +1358,8 @@ export class Markdown implements Component {
 			}
 
 			case "blockquote": {
-				const quoteStyle = (text: string) => this.theme.quote(this.theme.italic(text));
+				const quoteStyle = this.applyQuoteText;
 				const quoteStylePrefix = this.getStylePrefix(quoteStyle);
-				const applyQuoteStyle = (line: string): string => {
-					if (!quoteStylePrefix) {
-						return quoteStyle(line);
-					}
-					const lineWithReappliedStyle = line.replace(ANSI_RESET_PATTERN, `\x1b[0m${quoteStylePrefix}`);
-					return quoteStyle(lineWithReappliedStyle);
-				};
 
 				// Calculate available width for quote content (subtract border "│ " = 2 chars)
 				const quoteContentWidth = Math.max(1, width - 2);
@@ -1374,7 +1368,7 @@ export class Markdown implements Component {
 				// children with renderToken() instead of renderInlineTokens().
 				// Default message style should not apply inside blockquotes.
 				const quoteInlineStyleContext: InlineStyleContext = {
-					applyText: (text: string) => text,
+					applyText: identityText,
 					stylePrefix: quoteStylePrefix,
 				};
 				const quoteTokens = token.tokens || [];
@@ -1393,7 +1387,7 @@ export class Markdown implements Component {
 				}
 
 				for (const quoteLine of renderedQuoteLines) {
-					const styledLine = applyQuoteStyle(quoteLine);
+					const styledLine = quoteStyle(quoteStylePrefix ? quoteLine.replace(ANSI_RESET_PATTERN, `\x1b[0m${quoteStylePrefix}`) : quoteLine);
 					const wrappedLines = wrapTextWithAnsi(styledLine, quoteContentWidth);
 					for (const wrappedLine of wrappedLines) {
 						lines.push(this.theme.quoteBorder("│ ") + wrappedLine);

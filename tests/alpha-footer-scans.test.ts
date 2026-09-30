@@ -49,7 +49,7 @@ test('footer usage traversal does not request an iterator result per history ent
   } finally { t.diagnostic(JSON.stringify({ history: messages.length, iteratorResults, entryCopies })); await f.release(); }
 });
 
-test('footer extension status callbacks have stable identities across renders', async (t) => {
+test('footer extension statuses skip warm copies and keep one comparator on actual changes', async (t) => {
   const f = await alphaSession();
   const comparisons = new Set<unknown>(); const transforms = new Set<unknown>();
   const sort = Array.prototype.sort; const map = Array.prototype.map; const from = Array.from;
@@ -73,7 +73,13 @@ test('footer extension status callbacks have stable identities across renders', 
       return result;
     });
     for (let render = 0; render < 3; render++) assert.deepEqual(f.internal.footer.render(120), expected);
-    assert.equal(comparisons.size, 1, 'one stable status comparator, not one closure per render');
-    assert.equal(transforms.size, 1, 'one stable sanitizer callback, not one closure per render');
+    assert.equal(comparisons.size, 0, 'unchanged statuses do not copy or sort');
+    assert.equal(transforms.size, 0, 'unchanged statuses do not map');
+    f.internal.footerDataProvider.setExtensionStatus('g2s-status-z', 'third\nline');
+    assert.ok(f.internal.footer.render(120)[2].includes('first line third line'));
+    f.internal.footerDataProvider.setExtensionStatus('g2s-status-z', ' second\nline ');
+    assert.deepEqual(f.internal.footer.render(120), expected);
+    assert.equal(comparisons.size, 1, 'actual changes reuse one comparator');
+    assert.equal(transforms.size, 0, 'changed statuses use the direct sanitizer loop');
   } finally { t.mock.reset(); t.diagnostic(JSON.stringify({ renders: 3, comparators: comparisons.size, transforms: transforms.size })); await f.release(); }
 });

@@ -7,6 +7,11 @@ import type { SessionManager } from "../../../core/session-manager.ts";
 import { addUsageToTotals, createUsageTotals, type UsageTotals } from "../../../core/usage-totals.ts";
 import { theme } from "../theme/theme.ts";
 
+// String.replace consumes these synchronously and resets global lastIndex.
+const STATUS_LINE_BREAK_PATTERN = /[\r\n\t]/g;
+const STATUS_SPACE_RUN_PATTERN = / +/g;
+const MAX_CACHED_STATUS_CODE_UNITS = 16_384;
+
 /**
  * Sanitize text for display in a single-line status.
  * Removes newlines, tabs, carriage returns, and other control characters.
@@ -14,17 +19,13 @@ import { theme } from "../theme/theme.ts";
 function sanitizeStatusText(text: string): string {
 	// Replace newlines, tabs, carriage returns with space, then collapse multiple spaces
 	return text
-		.replace(/[\r\n\t]/g, " ")
-		.replace(/ +/g, " ")
+		.replace(STATUS_LINE_BREAK_PATTERN, " ")
+		.replace(STATUS_SPACE_RUN_PATTERN, " ")
 		.trim();
 }
 
 function compareExtensionStatusKeys(left: [string, string], right: [string, string]): number {
 	return left[0].localeCompare(right[0]);
-}
-
-function formatExtensionStatus(entry: [string, string]): string {
-	return sanitizeStatusText(entry[1]);
 }
 
 /**
@@ -73,6 +74,8 @@ export class FooterComponent implements Component {
 	private footerData: ReadonlyFooterDataProvider;
 	/** Whole-session scan reused across frames; owned by this footer and its current session. */
 	private sessionScan: SessionScan | undefined;
+	private extensionStatusRevision: number | undefined;
+	private extensionStatusLine: string | undefined;
 
 	constructor(session: AgentSession, footerData: ReadonlyFooterDataProvider) {
 		this.session = session;
@@ -103,6 +106,33 @@ export class FooterComponent implements Component {
 	dispose(): void {
 		// Git watcher cleanup handled by provider
 		this.sessionScan = undefined;
+		this.extensionStatusRevision = undefined;
+		this.extensionStatusLine = undefined;
+	}
+
+	private getExtensionStatusLine(): string | undefined {
+		const statuses = this.footerData.getExtensionStatuses();
+		if (statuses.size === 0) {
+			this.extensionStatusRevision = undefined;
+			this.extensionStatusLine = undefined;
+			return undefined;
+		}
+		const revision = this.footerData.getExtensionStatusRevision?.();
+		if (revision !== undefined && revision === this.extensionStatusRevision) return this.extensionStatusLine;
+		const sorted = Array.from(statuses.entries());
+		sorted.sort(compareExtensionStatusKeys);
+		let line = "";
+		for (let index = 0; index < sorted.length; index++) {
+			line += (index > 0 ? " " : "") + sanitizeStatusText(sorted[index]![1]);
+		}
+		if (revision === undefined || line.length > MAX_CACHED_STATUS_CODE_UNITS) {
+			this.extensionStatusRevision = undefined;
+			this.extensionStatusLine = undefined;
+			return line;
+		}
+		this.extensionStatusRevision = revision;
+		this.extensionStatusLine = line;
+		return line;
 	}
 
 	/**
@@ -288,12 +318,8 @@ export class FooterComponent implements Component {
 		const lines = [pwdLine, dimStatsLeft + dimRemainder];
 
 		// Add extension statuses on a single line, sorted by key alphabetically
-		const extensionStatuses = this.footerData.getExtensionStatuses();
-		if (extensionStatuses.size > 0) {
-			const sortedStatuses = Array.from(extensionStatuses.entries())
-				.sort(compareExtensionStatusKeys)
-				.map(formatExtensionStatus);
-			const statusLine = sortedStatuses.join(" ");
+		const statusLine = this.getExtensionStatusLine();
+		if (statusLine !== undefined) {
 			// Truncate to terminal width with dim ellipsis for consistency with footer style
 			lines.push(truncateToWidth(statusLine, width, theme.fg("dim", "...")));
 		}

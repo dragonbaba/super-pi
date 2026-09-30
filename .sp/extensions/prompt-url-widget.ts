@@ -1,12 +1,15 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
-import { DynamicBorder, type ExtensionAPI, type ExtensionContext } from "@super-pi/coding-agent";
-import { Container, hyperlink, Text } from "@super-pi/tui";
+import { type ExtensionAPI, type ExtensionContext, type Theme } from "@super-pi/coding-agent";
+import { type Component, Container, hyperlink, Text, type TUI } from "@super-pi/tui";
 
 const PR_PROMPT_PATTERN = /^\s*You are given one or more GitHub PR URLs:\s*(\S+)/im;
 const ISSUE_PROMPT_PATTERN = /^\s*Analyze GitHub issue\(s\):\s*(\S+)/im;
 const ADVISORY_PROMPT_PATTERN = /^\s*Update a GitHub security advisory for publication:\s*(\S+)/im;
+const ADVISORY_URL_PATTERN = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/security\/advisories\/(GHSA-[A-Za-z0-9-]+)(?:[/?#].*)?$/i;
+const FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)\r?\n---/;
+const ADVISORY_FIELD_PATTERN = /^advisory_url:\s*(.+)$/m;
 
 type PromptMatch = {
 	kind: "pr" | "issue" | "advisory";
@@ -65,9 +68,7 @@ function getPromptLabel(kind: PromptMatch["kind"]): string {
 }
 
 function parseAdvisoryUrl(value: string): AdvisoryRef | undefined {
-	const match = value.match(
-		/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/security\/advisories\/(GHSA-[A-Za-z0-9-]+)(?:[/?#].*)?$/i,
-	);
+	const match = value.match(ADVISORY_URL_PATTERN);
 	if (!match?.[1] || !match[2] || !match[3]) return undefined;
 	return {
 		owner: match[1],
@@ -97,9 +98,9 @@ function resolveDraftPath(cwd: string, target: string): string {
 async function readAdvisoryRefFromDraft(cwd: string, target: string): Promise<AdvisoryRef | undefined> {
 	try {
 		const content = await readFile(resolveDraftPath(cwd, target), "utf8");
-		const frontmatter = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+		const frontmatter = content.match(FRONTMATTER_PATTERN);
 		const body = frontmatter?.[1] ?? content;
-		const urlMatch = body.match(/^advisory_url:\s*(.+)$/m);
+		const urlMatch = body.match(ADVISORY_FIELD_PATTERN);
 		if (!urlMatch?.[1]) return undefined;
 		return parseAdvisoryUrl(unquoteYamlValue(urlMatch[1]));
 	} catch {
@@ -108,10 +109,12 @@ async function readAdvisoryRefFromDraft(cwd: string, target: string): Promise<Ad
 }
 
 function formatAdvisoryDetail(advisory: GitHubAdvisoryMetadata): string | undefined {
-	const parts = [advisory.ghsa_id, advisory.cve_id ?? undefined, advisory.severity, advisory.state]
-		.map((part) => part?.trim())
-		.filter((part): part is string => part !== undefined && part.length > 0);
-	return parts.length > 0 ? parts.join(" · ") : undefined;
+	let text = "";
+	for (const value of [advisory.ghsa_id, advisory.cve_id, advisory.severity, advisory.state]) {
+		const part = value?.trim();
+		if (part) text += (text ? " · " : "") + part;
+	}
+	return text || undefined;
 }
 
 async function fetchAdvisoryMetadata(pi: ExtensionAPI, cwd: string, target: string): Promise<GhMetadata | undefined> {
@@ -169,102 +172,125 @@ function formatAuthor(author?: GhMetadata["author"]): string | undefined {
 	return undefined;
 }
 
-export default function promptUrlWidgetExtension(pi: ExtensionAPI) {
-	const setWidget = (ctx: ExtensionContext, match: PromptMatch, metadata?: GhMetadata) => {
-		ctx.ui.setWidget("prompt-url", (_tui, thm) => {
-			const displayTarget = metadata?.displayUrl ?? match.target;
-			const titleText = metadata?.title
-				? thm.fg("accent", metadata.title)
-				: hyperlink(thm.fg("accent", displayTarget), displayTarget);
-			const detailText = metadata?.detail ?? formatAuthor(metadata?.author);
-			const detailLine = detailText ? thm.fg("muted", detailText) : undefined;
-			const urlLine = hyperlink(thm.fg("dim", displayTarget), displayTarget);
+function applySessionName(pi: ExtensionAPI, match: PromptMatch, metadata?: GhMetadata): void {
+	const label = getPromptLabel(match.kind);
+	const displayTarget = metadata?.displayUrl ?? match.target;
+	const trimmedTitle = metadata?.title?.trim();
+	const fallbackName = `${label}: ${match.target}`;
+	const desiredFallbackName = `${label}: ${displayTarget}`;
+	const desiredName = trimmedTitle ? `${label}: ${trimmedTitle} (${displayTarget})` : desiredFallbackName;
+	const currentName = pi.getSessionName()?.trim();
+	if (!currentName) {
+		pi.setSessionName(desiredName);
+		return;
+	}
+	if (currentName === match.target || currentName === fallbackName || currentName === desiredFallbackName) {
+		pi.setSessionName(desiredName);
+	}
+}
 
-			const lines = [titleText];
-			if (detailLine) lines.push(detailLine);
-			lines.push(urlLine);
+function getUserText(content: string | { type: string; text?: string }[] | undefined): string {
+	if (!content) return "";
+	if (typeof content === "string") return content;
+	let text = "";
+	let hasText = false;
+	for (const block of content) {
+		if (block.type !== "text") continue;
+		text += (hasText ? "\n" : "") + (block.text ?? "");
+		hasText = true;
+	}
+	return text;
+}
 
-			const container = new Container();
-			container.addChild(new DynamicBorder((s: string) => thm.fg("muted", s)));
-			container.addChild(new Text(lines.join("\n"), 1, 0));
-			return container;
-		});
+class PromptUrlBorder implements Component {
+	private readonly theme: Theme;
+	constructor(theme: Theme) {
+		this.theme = theme;
+	}
+	invalidate(): void {}
+	render(width: number): string[] {
+		return [this.theme.fg("muted", "─".repeat(Math.max(1, width)))];
+	}
+}
+
+class PromptUrlWidgetOwner {
+	private displayTarget = "";
+	private title: string | undefined;
+	private detail: string | undefined;
+	private generation = 0;
+
+	private readonly pi: ExtensionAPI;
+	constructor(pi: ExtensionAPI) {
+		this.pi = pi;
+	}
+
+	// The production UI invokes the factory synchronously in setExtensionWidget.
+	// Only this owner keeps the factory; rendered components own their theme/text.
+	readonly createWidget = (_tui: TUI, thm: Theme): Container => {
+		const target = this.displayTarget;
+		const title = this.title ? thm.fg("accent", this.title) : hyperlink(thm.fg("accent", target), target);
+		let text = title;
+		if (this.detail) text += `\n${thm.fg("muted", this.detail)}`;
+		text += `\n${hyperlink(thm.fg("dim", target), target)}`;
+		const container = new Container();
+		container.addChild(new PromptUrlBorder(thm));
+		container.addChild(new Text(text, 1, 0));
+		return container;
 	};
 
-	const applySessionName = (ctx: ExtensionContext, match: PromptMatch, metadata?: GhMetadata) => {
-		const label = getPromptLabel(match.kind);
-		const displayTarget = metadata?.displayUrl ?? match.target;
-		const trimmedTitle = metadata?.title?.trim();
-		const fallbackName = `${label}: ${match.target}`;
-		const desiredFallbackName = `${label}: ${displayTarget}`;
-		const desiredName = trimmedTitle ? `${label}: ${trimmedTitle} (${displayTarget})` : desiredFallbackName;
-		const currentName = pi.getSessionName()?.trim();
-		if (!currentName) {
-			pi.setSessionName(desiredName);
-			return;
-		}
-		if (currentName === match.target || currentName === fallbackName || currentName === desiredFallbackName) {
-			pi.setSessionName(desiredName);
-		}
-	};
+	private setWidget(ctx: ExtensionContext, match: PromptMatch, metadata?: GhMetadata): void {
+		this.displayTarget = metadata?.displayUrl ?? match.target;
+		this.title = metadata?.title;
+		this.detail = metadata?.detail ?? formatAuthor(metadata?.author);
+		ctx.ui.setWidget("prompt-url", this.createWidget);
+	}
 
-	const updatePromptContext = (ctx: ExtensionContext, match: PromptMatch) => {
-		setWidget(ctx, match);
-		applySessionName(ctx, match);
-		void fetchGhMetadata(pi, match.kind, match.target, ctx.cwd).then((meta) => {
-			setWidget(ctx, match, meta);
-			applySessionName(ctx, match, meta);
-		});
-	};
+	private updatePromptContext(ctx: ExtensionContext, match: PromptMatch): void {
+		const generation = ++this.generation;
+		this.setWidget(ctx, match);
+		applySessionName(this.pi, match);
+		void this.resolveMetadata(ctx, match, generation);
+	}
 
-	pi.on("before_agent_start", async (event, ctx) => {
+	private async resolveMetadata(ctx: ExtensionContext, match: PromptMatch, generation: number): Promise<void> {
+		const metadata = await fetchGhMetadata(this.pi, match.kind, match.target, ctx.cwd);
+		if (generation !== this.generation) return;
+		this.setWidget(ctx, match, metadata);
+		applySessionName(this.pi, match, metadata);
+	}
+
+	readonly beforeStart = (event: { prompt: string }, ctx: ExtensionContext): void => {
 		if (!ctx.hasUI) return;
 		const match = extractPromptMatch(event.prompt);
-		if (!match) {
-			return;
-		}
-
-		updatePromptContext(ctx, match);
-	});
-
-	pi.on("session_switch", async (_event, ctx) => {
-		rebuildFromSession(ctx);
-	});
-
-	const getUserText = (content: string | { type: string; text?: string }[] | undefined): string => {
-		if (!content) return "";
-		if (typeof content === "string") return content;
-		return (
-			content
-				.filter((block): block is { type: "text"; text: string } => block.type === "text")
-				.map((block) => block.text)
-				.join("\n") ?? ""
-		);
+		if (match) this.updatePromptContext(ctx, match);
 	};
 
-	const rebuildFromSession = (ctx: ExtensionContext) => {
+	readonly clear = (): void => {
+		this.generation++;
+		this.displayTarget = "";
+		this.title = undefined;
+		this.detail = undefined;
+	};
+
+	readonly rebuild = (_event: unknown, ctx: ExtensionContext): void => {
+		this.clear();
 		if (!ctx.hasUI) return;
-
 		const entries = ctx.sessionManager.getEntries();
-		const lastMatch = [...entries].reverse().find((entry) => {
-			if (entry.type !== "message" || entry.message.role !== "user") return false;
-			const text = getUserText(entry.message.content);
-			return !!extractPromptMatch(text);
-		});
-
-		const content =
-			lastMatch?.type === "message" && lastMatch.message.role === "user" ? lastMatch.message.content : undefined;
-		const text = getUserText(content);
-		const match = text ? extractPromptMatch(text) : undefined;
-		if (!match) {
-			ctx.ui.setWidget("prompt-url", undefined);
+		for (let index = entries.length - 1; index >= 0; index--) {
+			const entry = entries[index]!;
+			if (entry.type !== "message" || entry.message.role !== "user") continue;
+			const match = extractPromptMatch(getUserText(entry.message.content));
+			if (!match) continue;
+			this.updatePromptContext(ctx, match);
 			return;
 		}
-
-		updatePromptContext(ctx, match);
+		ctx.ui.setWidget("prompt-url", undefined);
 	};
+}
 
-	pi.on("session_start", async (_event, ctx) => {
-		rebuildFromSession(ctx);
-	});
+export default function promptUrlWidgetExtension(pi: ExtensionAPI): void {
+	const owner = new PromptUrlWidgetOwner(pi);
+	pi.on("before_agent_start", owner.beforeStart);
+	pi.on("session_start", owner.rebuild);
+	pi.on("session_shutdown", owner.clear);
 }

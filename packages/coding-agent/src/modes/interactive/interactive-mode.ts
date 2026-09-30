@@ -5421,13 +5421,15 @@ export class InteractiveMode {
 		entries: SessionEntry[],
 		options: { updateFooter?: boolean; populateHistory?: boolean } = {},
 	): void {
-		const items = entries.flatMap((entry): RenderSessionItem[] => {
-			if (entry.type === "compaction") return [];
+		const items: RenderSessionItem[] = [];
+		for (const entry of entries) {
+			if (entry.type === "compaction") continue;
 			if (entry.type === "custom") {
-				return [entry];
+				items.push(entry);
+			} else {
+				for (const message of sessionEntryToContextMessages(entry)) items.push(message);
 			}
-			return sessionEntryToContextMessages(entry);
-		});
+		}
 		this.renderSessionItems(items, options);
 	}
 
@@ -5470,7 +5472,8 @@ export class InteractiveMode {
 
 		// Show compaction info if session was compacted
 		const allEntries = this.sessionManager.getEntries();
-		const compactionCount = allEntries.filter((e) => e.type === "compaction").length;
+		let compactionCount = 0;
+		for (const entry of allEntries) if (entry.type === "compaction") compactionCount++;
 		if (compactionCount > 0) {
 			const times = compactionCount === 1 ? "1 time" : `${compactionCount} times`;
 			this.showStatus(`Session compacted ${times}`);

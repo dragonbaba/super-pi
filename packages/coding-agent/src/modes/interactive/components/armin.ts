@@ -100,12 +100,15 @@ export class ArminComponent implements Component {
 		const padding = 1;
 		const availableWidth = width - padding;
 
-		this.cachedLines = this.currentGrid.map((row) => {
+		this.cachedLines = [];
+		for (const row of this.currentGrid) {
 			// Clip row to available width before applying color
-			const clipped = row.slice(0, availableWidth).join("");
+			const end = availableWidth < 0 ? Math.max(0, row.length + Math.ceil(availableWidth)) : Math.min(row.length, Math.floor(availableWidth));
+			let clipped = "";
+			for (let index = 0; index < end; index++) clipped += row[index]!;
 			const padRight = Math.max(0, width - padding - clipped.length);
-			return ` ${theme.fg("accent", clipped)}${" ".repeat(padRight)}`;
-		});
+			this.cachedLines.push(` ${theme.fg("accent", clipped)}${" ".repeat(padRight)}`);
+		}
 
 		// Add "ARMIN SAYS HI" at the end
 		const message = "ARMIN SAYS HI";
@@ -119,7 +122,13 @@ export class ArminComponent implements Component {
 	}
 
 	private createEmptyGrid(): string[][] {
-		return Array.from({ length: DISPLAY_HEIGHT }, () => Array(WIDTH).fill(" "));
+		const grid: string[][] = [];
+		for (let row = 0; row < DISPLAY_HEIGHT; row++) grid.push(new Array<string>(WIDTH).fill(" "));
+		return grid;
+	}
+
+	private clearGrid(): void {
+		for (const row of this.currentGrid) row.fill(" ");
 	}
 
 	private initEffect(): void {
@@ -259,7 +268,7 @@ export class ArminComponent implements Component {
 		};
 
 		let allSettled = true;
-		this.currentGrid = this.createEmptyGrid();
+		this.clearGrid();
 
 		for (let x = 0; x < WIDTH; x++) {
 			const drop = state.drops[x];
@@ -321,7 +330,7 @@ export class ArminComponent implements Component {
 		const state = this.effectState as { expansion: number };
 		const midRow = Math.floor(DISPLAY_HEIGHT / 2);
 
-		this.currentGrid = this.createEmptyGrid();
+		this.clearGrid();
 
 		// Draw from middle expanding outward
 		const top = midRow - state.expansion;
@@ -342,30 +351,33 @@ export class ArminComponent implements Component {
 
 		if (state.phase < state.glitchFrames) {
 			// Glitch phase: show corrupted version
-			this.currentGrid = this.finalGrid.map((row) => {
+			for (let index = 0; index < DISPLAY_HEIGHT; index++) {
+				let row = this.finalGrid[index]!;
 				const offset = Math.floor(Math.random() * 7) - 3;
-				const glitchRow = [...row];
 
 				// Random horizontal offset
 				if (Math.random() < 0.3) {
-					const shifted = glitchRow.slice(offset).concat(glitchRow.slice(0, offset));
-					return shifted.slice(0, WIDTH);
+					const start = offset < 0 ? WIDTH + offset : offset;
+					for (let x = 0; x < WIDTH; x++) this.currentGrid[index]![x] = row[(start + x) % WIDTH]!;
+					continue;
 				}
 
 				// Random vertical swap
 				if (Math.random() < 0.2) {
 					const swapRow = Math.floor(Math.random() * DISPLAY_HEIGHT);
-					return [...this.finalGrid[swapRow]];
+					row = this.finalGrid[swapRow]!;
 				}
 
-				return glitchRow;
-			});
+				for (let x = 0; x < WIDTH; x++) this.currentGrid[index]![x] = row[x]!;
+			}
 			state.phase++;
 			return false;
 		}
 
 		// Final frame: show clean image
-		this.currentGrid = this.finalGrid.map((row) => [...row]);
+		for (let row = 0; row < DISPLAY_HEIGHT; row++) {
+			for (let x = 0; x < WIDTH; x++) this.currentGrid[row]![x] = this.finalGrid[row]![x]!;
+		}
 		return true;
 	}
 

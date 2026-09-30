@@ -1,6 +1,10 @@
 import type { Component } from "@super-pi/tui";
 import { theme } from "../theme/theme.ts";
 
+function colorBorder(str: string): string {
+	return theme.fg("border", str);
+}
+
 /**
  * Dynamic border component that adjusts to viewport width.
  *
@@ -11,7 +15,7 @@ import { theme } from "../theme/theme.ts";
 export class DynamicBorder implements Component {
 	private color: (str: string) => string;
 
-	constructor(color: (str: string) => string = (str) => theme.fg("border", str)) {
+	constructor(color: (str: string) => string = colorBorder) {
 		this.color = color;
 	}
 

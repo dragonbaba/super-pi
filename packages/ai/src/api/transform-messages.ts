@@ -33,28 +33,117 @@ function replaceImagesWithPlaceholder(content: (TextContent | ImageContent)[], p
 	return result;
 }
 
-function downgradeUnsupportedImages<TApi extends Api>(messages: Message[], model: Model<TApi>): Message[] {
-	if (model.input.includes("image")) {
-		return messages;
+type NormalizeToolCallId<TApi extends Api> = (id: string, model: Model<TApi>, source: AssistantMessage) => string;
+
+function transformContentBlock<TApi extends Api>(block: AssistantMessage["content"][number], isSameModel: boolean, replaySignatures: boolean, model: Model<TApi>, normalizeToolCallId: NormalizeToolCallId<TApi> | undefined, assistantMsg: AssistantMessage, toolCallIdMap: Map<string, string>): AssistantMessage["content"][number] | undefined {
+	if (block.type === "thinking") {
+		// Redacted thinking is opaque encrypted content, only valid for the same model.
+		// Drop it for cross-model to avoid API errors.
+		if (block.redacted) {
+			return replaySignatures ? block : undefined;
+		}
+		// For same model: keep thinking blocks with signatures (needed for replay)
+		// even if the thinking text is empty (OpenAI encrypted reasoning)
+		if (replaySignatures && block.thinkingSignature) return block;
+		// Skip empty thinking blocks, convert others to plain text
+		if (!block.thinking || block.thinking.trim() === "") return undefined;
+		if (isSameModel) return { ...block, thinkingSignature: undefined };
+		return {
+			type: "text" as const,
+			text: block.thinking,
+		};
 	}
 
-	return messages.map((msg) => {
-		if (msg.role === "user" && Array.isArray(msg.content)) {
-			return {
-				...msg,
-				content: replaceImagesWithPlaceholder(msg.content, NON_VISION_USER_IMAGE_PLACEHOLDER),
-			};
+	if (block.type === "text") {
+		// Responses text signatures carry item identity/phase, independently of
+		// opaque thought signatures. Preserve them for same-model replay so a
+		// one-message response commitment and its full-history replay have the same id.
+		if (isSameModel) return replaySignatures || model.api === "openai-responses" ||
+			model.api === "openai-codex-responses" || model.api === "azure-openai-responses"
+			? block : { ...block, textSignature: undefined };
+		return {
+			type: "text" as const,
+			text: block.text,
+		};
+	}
+
+	if (block.type === "toolCall") {
+		const toolCall = block as ToolCall;
+		let normalizedToolCall: ToolCall = toolCall;
+
+		if (!replaySignatures && toolCall.thoughtSignature) {
+			normalizedToolCall = { ...toolCall, thoughtSignature: undefined };
 		}
 
-		if (msg.role === "toolResult") {
-			return {
-				...msg,
-				content: replaceImagesWithPlaceholder(msg.content, NON_VISION_TOOL_IMAGE_PLACEHOLDER),
-			};
+		if (!isSameModel && normalizeToolCallId) {
+			const normalizedId = normalizeToolCallId(toolCall.id, model, assistantMsg);
+			if (normalizedId !== toolCall.id) {
+				toolCallIdMap.set(toolCall.id, normalizedId);
+				normalizedToolCall = { ...normalizedToolCall, id: normalizedId };
+			}
 		}
 
+		return normalizedToolCall;
+	}
+
+	return block;
+}
+
+function transformMessage<TApi extends Api>(msg: Message, model: Model<TApi>, signatureRoundTrip: boolean, normalizeToolCallId: NormalizeToolCallId<TApi> | undefined, toolCallIdMap: Map<string, string>): Message {
+	// User messages pass through unchanged
+	if (msg.role === "user") {
 		return msg;
-	});
+	}
+
+	// Handle toolResult messages - normalize toolCallId if we have a mapping
+	if (msg.role === "toolResult") {
+		const normalizedId = toolCallIdMap.get(msg.toolCallId);
+		if (normalizedId && normalizedId !== msg.toolCallId) {
+			return { ...msg, toolCallId: normalizedId };
+		}
+		return msg;
+	}
+
+	// Assistant messages need transformation check
+	if (msg.role === "assistant") {
+		const assistantMsg = msg as AssistantMessage;
+		const isSameModel =
+			assistantMsg.provider === model.provider &&
+			assistantMsg.api === model.api &&
+			assistantMsg.model === model.id;
+		const replaySignatures = isSameModel && signatureRoundTrip;
+
+		const transformedContent: AssistantMessage["content"] = [];
+		for (const block of assistantMsg.content) {
+			const transformedBlock = transformContentBlock(block, isSameModel, replaySignatures, model, normalizeToolCallId, assistantMsg, toolCallIdMap);
+			if (transformedBlock !== undefined) transformedContent.push(transformedBlock);
+		}
+
+		return {
+			...assistantMsg,
+			content: transformedContent,
+		};
+	}
+	return msg;
+}
+
+function insertSyntheticToolResults(pendingToolCalls: ToolCall[], existingToolResultIds: Set<string>, result: Message[]): void {
+	if (pendingToolCalls.length > 0) {
+		for (const tc of pendingToolCalls) {
+			if (!existingToolResultIds.has(tc.id)) {
+				result.push({
+					role: "toolResult",
+					toolCallId: tc.id,
+					toolName: tc.name,
+					content: [{ type: "text", text: "No result provided" }],
+					isError: true,
+					timestamp: Date.now(),
+				} as ToolResultMessage);
+			}
+		}
+		pendingToolCalls.length = 0;
+		existingToolResultIds.clear();
+	}
 }
 
 /**
@@ -72,126 +161,29 @@ export function transformMessages<TApi extends Api>(
 	const toolCallIdMap = new Map<string, string>();
 	// Normalize null/undefined content from untyped callers (custom tools, hand-built
 	// histories, old session files) so downstream code can rely on the type contract.
-	const normalizedMessages = messages.map((msg) => (msg.content == null ? { ...msg, content: [] } : msg));
-	const imageAwareMessages = downgradeUnsupportedImages(normalizedMessages, model);
-
-	// First pass: transform messages (unsupported image downgrade, thinking blocks, tool call ID normalization)
-	const transformed = imageAwareMessages.map((msg) => {
-		// User messages pass through unchanged
-		if (msg.role === "user") {
-			return msg;
+	const transformed: Message[] = [];
+	const supportsImages = model.input.includes("image");
+	for (const original of messages) {
+		let msg = original.content == null ? { ...original, content: [] } as Message : original;
+		if (!supportsImages) {
+			if (msg.role === "user" && Array.isArray(msg.content)) msg = { ...msg, content: replaceImagesWithPlaceholder(msg.content, NON_VISION_USER_IMAGE_PLACEHOLDER) };
+			else if (msg.role === "toolResult") msg = { ...msg, content: replaceImagesWithPlaceholder(msg.content, NON_VISION_TOOL_IMAGE_PLACEHOLDER) };
 		}
-
-		// Handle toolResult messages - normalize toolCallId if we have a mapping
-		if (msg.role === "toolResult") {
-			const normalizedId = toolCallIdMap.get(msg.toolCallId);
-			if (normalizedId && normalizedId !== msg.toolCallId) {
-				return { ...msg, toolCallId: normalizedId };
-			}
-			return msg;
-		}
-
-		// Assistant messages need transformation check
-		if (msg.role === "assistant") {
-			const assistantMsg = msg as AssistantMessage;
-			const isSameModel =
-				assistantMsg.provider === model.provider &&
-				assistantMsg.api === model.api &&
-				assistantMsg.model === model.id;
-			const replaySignatures = isSameModel && signatureRoundTrip;
-
-			const transformedContent = assistantMsg.content.flatMap((block) => {
-				if (block.type === "thinking") {
-					// Redacted thinking is opaque encrypted content, only valid for the same model.
-					// Drop it for cross-model to avoid API errors.
-					if (block.redacted) {
-						return replaySignatures ? block : [];
-					}
-					// For same model: keep thinking blocks with signatures (needed for replay)
-					// even if the thinking text is empty (OpenAI encrypted reasoning)
-					if (replaySignatures && block.thinkingSignature) return block;
-					// Skip empty thinking blocks, convert others to plain text
-					if (!block.thinking || block.thinking.trim() === "") return [];
-					if (isSameModel) return { ...block, thinkingSignature: undefined };
-					return {
-						type: "text" as const,
-						text: block.thinking,
-					};
-				}
-
-				if (block.type === "text") {
-					// Responses text signatures carry item identity/phase, independently of
-					// opaque thought signatures. Preserve them for same-model replay so a
-					// one-message response commitment and its full-history replay have the same id.
-					if (isSameModel) return replaySignatures || model.api === "openai-responses" ||
-						model.api === "openai-codex-responses" || model.api === "azure-openai-responses"
-						? block : { ...block, textSignature: undefined };
-					return {
-						type: "text" as const,
-						text: block.text,
-					};
-				}
-
-				if (block.type === "toolCall") {
-					const toolCall = block as ToolCall;
-					let normalizedToolCall: ToolCall = toolCall;
-
-					if (!replaySignatures && toolCall.thoughtSignature) {
-						normalizedToolCall = { ...toolCall, thoughtSignature: undefined };
-					}
-
-					if (!isSameModel && normalizeToolCallId) {
-						const normalizedId = normalizeToolCallId(toolCall.id, model, assistantMsg);
-						if (normalizedId !== toolCall.id) {
-							toolCallIdMap.set(toolCall.id, normalizedId);
-							normalizedToolCall = { ...normalizedToolCall, id: normalizedId };
-						}
-					}
-
-					return normalizedToolCall;
-				}
-
-				return block;
-			});
-
-			return {
-				...assistantMsg,
-				content: transformedContent,
-			};
-		}
-		return msg;
-	});
+		transformed.push(transformMessage(msg, model, signatureRoundTrip, normalizeToolCallId, toolCallIdMap));
+	}
 
 	// Second pass: insert synthetic empty tool results for orphaned tool calls
 	// This preserves thinking signatures and satisfies API requirements
 	const result: Message[] = [];
-	let pendingToolCalls: ToolCall[] = [];
-	let existingToolResultIds = new Set<string>();
-	const insertSyntheticToolResults = () => {
-		if (pendingToolCalls.length > 0) {
-			for (const tc of pendingToolCalls) {
-				if (!existingToolResultIds.has(tc.id)) {
-					result.push({
-						role: "toolResult",
-						toolCallId: tc.id,
-						toolName: tc.name,
-						content: [{ type: "text", text: "No result provided" }],
-						isError: true,
-						timestamp: Date.now(),
-					} as ToolResultMessage);
-				}
-			}
-			pendingToolCalls = [];
-			existingToolResultIds = new Set();
-		}
-	};
+	const pendingToolCalls: ToolCall[] = [];
+	const existingToolResultIds = new Set<string>();
 
 	for (let i = 0; i < transformed.length; i++) {
 		const msg = transformed[i];
 
 		if (msg.role === "assistant") {
 			// If we have pending orphaned tool calls from a previous assistant, insert synthetic results now
-			insertSyntheticToolResults();
+			insertSyntheticToolResults(pendingToolCalls, existingToolResultIds, result);
 
 			// Skip errored/aborted assistant messages entirely.
 			// These are incomplete turns that shouldn't be replayed:
@@ -204,11 +196,8 @@ export function transformMessages<TApi extends Api>(
 			}
 
 			// Track tool calls from this assistant message
-			const toolCalls = assistantMsg.content.filter((b) => b.type === "toolCall") as ToolCall[];
-			if (toolCalls.length > 0) {
-				pendingToolCalls = toolCalls;
-				existingToolResultIds = new Set();
-			}
+			for (const block of assistantMsg.content) if (block.type === "toolCall") pendingToolCalls.push(block);
+			if (pendingToolCalls.length > 0) existingToolResultIds.clear();
 
 			result.push(msg);
 		} else if (msg.role === "toolResult") {
@@ -216,7 +205,7 @@ export function transformMessages<TApi extends Api>(
 			result.push(msg);
 		} else if (msg.role === "user") {
 			// User message interrupts tool flow - insert synthetic results for orphaned calls
-			insertSyntheticToolResults();
+			insertSyntheticToolResults(pendingToolCalls, existingToolResultIds, result);
 			result.push(msg);
 		} else {
 			result.push(msg);
@@ -224,7 +213,7 @@ export function transformMessages<TApi extends Api>(
 	}
 
 	// If the conversation ends with unresolved tool calls, synthesize results now.
-	insertSyntheticToolResults();
+	insertSyntheticToolResults(pendingToolCalls, existingToolResultIds, result);
 
 	return result;
 }

@@ -11,7 +11,7 @@ import {
 } from "@super-pi/tui";
 import type { MenuBrowseItem } from "../types.js";
 import type { BrowseOptions, MenuKeybindings, MenuScreenComponent } from "./contracts.js";
-import { handleSearchInput, safeMenuText } from "./rendering.js";
+import { appendMutedLines, findItemIndex, handleSearchInput, safeMenuText } from "./rendering.js";
 import { reviewDialogPages } from "./review.js";
 
 const RESERVED_HOST_ROWS = 3;
@@ -25,6 +25,14 @@ interface SearchableItem {
 	statusText: string;
 	description: string;
 	searchText: string;
+}
+
+function searchableItemText(candidate: SearchableItem): string {
+	let text = candidate.label;
+	if (candidate.statusText) text += (text ? " " : "") + candidate.statusText;
+	if (candidate.description) text += (text ? " " : "") + candidate.description;
+	if (candidate.searchText) text += (text ? " " : "") + candidate.searchText;
+	return text;
 }
 
 export function createBrowseComponent<ScreenId extends string, ActionId extends string>(
@@ -73,23 +81,15 @@ export function createBrowseComponent<ScreenId extends string, ActionId extends 
 		setSelectedIndex(selectedIndex + delta * Math.max(1, listViewportRows), false, true);
 	const applyFilter = () => {
 		const previouslySelectedId = selected()?.item.id;
-		filteredItems = fuzzyFilter(allItems, searchInput.getValue(), (candidate) =>
-			[candidate.label, candidate.statusText, candidate.description, candidate.searchText]
-				.filter(Boolean)
-				.join(" "),
-		);
+		filteredItems = fuzzyFilter(allItems, searchInput.getValue(), searchableItemText);
 		if (filteredItems.length === 0) {
 			if (previouslySelectedId) restoreItemId ??= previouslySelectedId;
 			selectedIndex = 0;
 			return;
 		}
-		const previousIndex = filteredItems.findIndex(
-			(candidate) => candidate.item.id === previouslySelectedId,
-		);
+		const previousIndex = findItemIndex(filteredItems, previouslySelectedId);
 		if (previousIndex < 0 && previouslySelectedId) restoreItemId ??= previouslySelectedId;
-		const restoreIndex = filteredItems.findIndex(
-			(candidate) => candidate.item.id === restoreItemId,
-		);
+		const restoreIndex = findItemIndex(filteredItems, restoreItemId);
 		const nextIndex = restoreIndex >= 0 ? restoreIndex : previousIndex >= 0 ? previousIndex : 0;
 		if (restoreIndex >= 0) restoreItemId = undefined;
 		setSelectedIndex(nextIndex, false, false);
@@ -129,9 +129,10 @@ export function createBrowseComponent<ScreenId extends string, ActionId extends 
 				return boundedLines(lines, safeWidth, availableRows);
 			}
 
-			const context = (options.screen.lines ?? []).flatMap((line) =>
-				wrapTextWithAnsi(options.theme.fg("muted", safeBrowseText(line)), safeWidth),
-			);
+			const context: string[] = [];
+			for (const line of options.screen.lines ?? []) {
+				for (const wrapped of wrapTextWithAnsi(options.theme.fg("muted", safeBrowseText(line)), safeWidth)) context.push(wrapped);
+			}
 			const layout = listLayout(
 				availableRows,
 				context.length,
@@ -252,20 +253,27 @@ function listRows<ScreenId extends string, ActionId extends string>(
 		return [options.theme.fg("dim", "  No items available")];
 	}
 	if (items.length === 0) return [options.theme.fg("dim", "  No matching items")];
-	return items.slice(viewportStart, viewportStart + viewportRows).map((candidate, offset) => {
-		const index = viewportStart + offset;
+	const lines: string[] = [];
+	for (let index = viewportStart; index < Math.min(items.length, viewportStart + viewportRows); index++) {
+		const candidate = items[index]!;
 		const prefix = index === selectedIndex ? "› " : "  ";
 		const suffix = candidate.statusText ? `  [${candidate.statusText}]` : "";
 		const labelWidth = Math.max(0, width - visibleWidth(prefix) - visibleWidth(suffix));
 		const label = truncateToWidth(candidate.label, labelWidth, "");
 		const line = truncateToWidth(`${prefix}${label}${suffix}`, width, "");
-		return index === selectedIndex ? options.theme.fg("accent", line) : line;
-	});
+		lines.push(index === selectedIndex ? options.theme.fg("accent", line) : line);
+	}
+	return lines;
 }
 
 function detailLines(item: MenuBrowseItem | undefined, width: number): string[] {
 	if (!item) return ["No matching item."];
-	return browseDetailSource(item).flatMap((line) => (line ? wrapTextWithAnsi(line, width) : [""]));
+	const lines: string[] = [];
+	for (const line of browseDetailSource(item)) {
+		if (!line) lines.push("");
+		else for (const wrapped of wrapTextWithAnsi(line, width)) lines.push(wrapped);
+	}
+	return lines;
 }
 
 export function browseDialogLabel(item: MenuBrowseItem) {
@@ -284,18 +292,19 @@ export function browseDialogPages(item: MenuBrowseItem) {
 }
 
 function browseDetailSource(item: MenuBrowseItem) {
-	const lines = [
-		...(item.statusText ? [`Status: ${safeBrowseText(item.statusText)}`] : []),
-		...(item.description ? [safeBrowseText(item.description)] : []),
-		...(item.details ?? []).map(safeBrowseText),
-	];
+	const lines: string[] = [];
+	if (item.statusText) lines.push(`Status: ${safeBrowseText(item.statusText)}`);
+	if (item.description) lines.push(safeBrowseText(item.description));
+	if (item.details) for (const detail of item.details) lines.push(safeBrowseText(detail));
 	return lines.length > 0 ? lines : ["No details available."];
 }
 
 function renderSearchInput(input: Input, width: number): string[] {
 	const prefix = "Search: ";
 	const inputWidth = Math.max(1, width - visibleWidth(prefix));
-	return input.render(inputWidth).map((line) => truncateToWidth(`${prefix}${line}`, width, ""));
+	const lines: string[] = [];
+	for (const line of input.render(inputWidth)) lines.push(truncateToWidth(`${prefix}${line}`, width, ""));
+	return lines;
 }
 
 interface BrowseListLayout {
@@ -394,7 +403,9 @@ function positionText(offset: number, viewportSize: number, itemCount: number) {
 }
 
 function boundedLines(lines: readonly string[], width: number, rows: number) {
-	return lines.slice(0, rows).map((line) => truncateToWidth(line, width, ""));
+	const bounded: string[] = [];
+	for (let index = 0; index < Math.min(lines.length, rows); index++) bounded.push(truncateToWidth(lines[index]!, width, ""));
+	return bounded;
 }
 
 function browseHint(keybindings: MenuKeybindings, destination: "back" | "close") {
@@ -402,13 +413,12 @@ function browseHint(keybindings: MenuKeybindings, destination: "back" | "close")
 	const down = bindingText(keybindings, "tui.select.down");
 	const confirm = bindingText(keybindings, "tui.select.confirm");
 	const cancel = bindingText(keybindings, "tui.select.cancel", "ctrl+c");
-	return [
-		"type to search",
-		...(up || down ? [`${[up, down].filter(Boolean).join("/")} navigate`] : []),
-		...(confirm ? [`${confirm} details`] : []),
-		...(cancel ? [`${cancel} ${destination}`] : []),
-		...(destination === "back" ? ["ctrl+c close"] : []),
-	].join(" · ");
+	let hint = "type to search";
+	if (up || down) hint += ` · ${up}${up && down ? "/" : ""}${down} navigate`;
+	if (confirm) hint += ` · ${confirm} details`;
+	if (cancel) hint += ` · ${cancel} ${destination}`;
+	if (destination === "back") hint += " · ctrl+c close";
+	return hint;
 }
 
 function detailHint(keybindings: MenuKeybindings) {
@@ -417,12 +427,10 @@ function detailHint(keybindings: MenuKeybindings) {
 	const pageUp = bindingText(keybindings, "tui.select.pageUp");
 	const pageDown = bindingText(keybindings, "tui.select.pageDown");
 	const cancel = bindingText(keybindings, "tui.select.cancel", "ctrl+c");
-	return [
-		...(up || down ? [`${[up, down].filter(Boolean).join("/")} scroll`] : []),
-		...(pageUp || pageDown ? [`${[pageUp, pageDown].filter(Boolean).join("/")} page`] : []),
-		...(cancel ? [`${cancel} back`] : []),
-		"ctrl+c close",
-	].join(" · ");
+	let hint = up || down ? `${up}${up && down ? "/" : ""}${down} scroll` : "";
+	if (pageUp || pageDown) hint += (hint ? " · " : "") + `${pageUp}${pageUp && pageDown ? "/" : ""}${pageDown} page`;
+	if (cancel) hint += (hint ? " · " : "") + `${cancel} back`;
+	return hint + (hint ? " · " : "") + "ctrl+c close";
 }
 
 function bindingText(
@@ -430,22 +438,17 @@ function bindingText(
 	binding: Parameters<MenuKeybindings["getKeys"]>[0],
 	excluded?: string,
 ) {
-	return keybindings
-		.getKeys(binding)
-		.filter((key) => key !== excluded)
-		.map((key) => {
-			if (key === "up") return "↑";
-			if (key === "down") return "↓";
-			if (key === "escape") return "esc";
-			if (key === "enter" || key === "return") return "enter";
-			return safeMenuText(key);
-		})
-		.filter(Boolean)
-		.join("/");
+	let text = "";
+	for (const key of keybindings.getKeys(binding)) {
+		if (key === excluded) continue;
+		const label = key === "up" ? "↑" : key === "down" ? "↓" : key === "escape" ? "esc" : key === "enter" || key === "return" ? "enter" : safeMenuText(key);
+		if (label) text += (text ? "/" : "") + label;
+	}
+	return text;
 }
 
 function safeBrowseText(value: unknown) {
-	return safeMenuText(stripVTControlCharacters(String(value)));
+	return safeMenuText(stripVTControlCharacters(typeof value === "string" ? value : String(value)));
 }
 
 function clamp(value: number, minimum: number, maximum: number) {

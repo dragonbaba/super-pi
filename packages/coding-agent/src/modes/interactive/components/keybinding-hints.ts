@@ -9,26 +9,33 @@ export interface KeyTextFormatOptions {
 	capitalize?: boolean;
 }
 
+const DEFAULT_FORMAT_OPTIONS: KeyTextFormatOptions = {};
+const CAPITALIZED_FORMAT_OPTIONS: KeyTextFormatOptions = { capitalize: true };
+
 function formatKeyPart(part: string, options: KeyTextFormatOptions): string {
 	const displayPart = process.platform === "darwin" && part.toLowerCase() === "alt" ? "option" : part;
 	return options.capitalize ? displayPart.charAt(0).toUpperCase() + displayPart.slice(1) : displayPart;
 }
 
-export function formatKeyText(key: string, options: KeyTextFormatOptions = {}): string {
-	return key
-		.split("/")
-		.map((k) =>
-			k
-				.split("+")
-				.map((part) => formatKeyPart(part, options))
-				.join("+"),
-		)
-		.join("/");
+export function formatKeyText(key: string, options: KeyTextFormatOptions = DEFAULT_FORMAT_OPTIONS): string {
+	let result = "";
+	let start = 0;
+	for (let index = 0; index < key.length; index++) {
+		const delimiter = key[index];
+		if (delimiter !== "/" && delimiter !== "+") continue;
+		result += formatKeyPart(key.slice(start, index), options) + delimiter;
+		start = index + 1;
+	}
+	return result + formatKeyPart(key.slice(start), options);
 }
 
-function formatKeys(keys: KeyId[], options: KeyTextFormatOptions = {}): string {
-	if (keys.length === 0) return "";
-	return formatKeyText(keys.join("/"), options);
+function formatKeys(keys: KeyId[], options: KeyTextFormatOptions = DEFAULT_FORMAT_OPTIONS): string {
+	let result = "";
+	for (let index = 0; index < keys.length; index++) {
+		if (index > 0) result += "/";
+		result += formatKeyText(keys[index]!, options);
+	}
+	return result;
 }
 
 export function keyText(keybinding: Keybinding): string {
@@ -36,7 +43,7 @@ export function keyText(keybinding: Keybinding): string {
 }
 
 export function keyDisplayText(keybinding: Keybinding): string {
-	return formatKeys(getKeybindings().getKeys(keybinding), { capitalize: true });
+	return formatKeys(getKeybindings().getKeys(keybinding), CAPITALIZED_FORMAT_OPTIONS);
 }
 
 export function keyHint(keybinding: Keybinding, description: string): string {

@@ -15,16 +15,22 @@ export class HStack extends Stack {
 		const entries = visibleStackEntries(this.entries, viewport);
 		if (entries.length === 0) return [];
 
-		const intrinsicWidths = entries.map((entry) => {
+		const intrinsicWidths: number[] = [];
+		for (const entry of entries) {
 			const lines = entry.component.render(safeWidth);
-			return lines.reduce((max, line) => Math.max(max, visibleWidth(line)), 0);
-		});
+			let intrinsicWidth = 0;
+			for (const line of lines) intrinsicWidth = Math.max(intrinsicWidth, visibleWidth(line));
+			intrinsicWidths.push(intrinsicWidth);
+		}
 		const widths = allocateStackSizes(entries, intrinsicWidths, safeWidth, this.gap);
-		const rendered = entries.map((entry, index) =>
-			widths[index] === 0 ? [] : entry.component.render(widths[index]!),
-		);
-		const height = rendered.reduce((max, lines) => Math.max(max, lines.length), 0);
-		const result = Array.from({ length: height }, () => "");
+		const rendered: string[][] = [];
+		let height = 0;
+		for (let index = 0; index < entries.length; index++) {
+			const childLines = widths[index] === 0 ? [] : entries[index]!.component.render(widths[index]!);
+			rendered.push(childLines);
+			height = Math.max(height, childLines.length);
+		}
+		const result = new Array<string>(height).fill("");
 		let x = 0;
 		for (let index = 0; index < rendered.length; index++) {
 			const lines = rendered[index]!;

@@ -713,6 +713,13 @@ interface Layout {
 const LAYOUT_MARKER_START = "\u{f0000}";
 const LAYOUT_MARKER_END = "\u{f0001}";
 const PROTECTED_SPACE = "\u{f0002}";
+const MATRIX_DELIMITERS: Readonly<Record<string, readonly [string, string, string, string, string, string]>> = {
+	pmatrix: ["⎛", "⎞", "⎜", "⎟", "⎝", "⎠"],
+	bmatrix: ["⎡", "⎤", "⎢", "⎥", "⎣", "⎦"],
+	Bmatrix: ["⎧", "⎫", "⎨", "⎬", "⎩", "⎭"],
+	vmatrix: ["│", "│", "│", "│", "│", "│"],
+	Vmatrix: ["║", "║", "║", "║", "║", "║"],
+};
 
 function padLayoutLine(line: string, width: number, centered = false): string {
 	const padding = Math.max(0, width - visibleWidth(line));
@@ -724,8 +731,14 @@ function joinLayouts(layouts: readonly Layout[]): Layout {
 	if (layouts.length === 0) {
 		return { lines: [""], width: 0, baseline: 0 };
 	}
-	const baseline = Math.max(...layouts.map((layout) => layout.baseline));
-	const below = Math.max(...layouts.map((layout) => layout.lines.length - layout.baseline - 1));
+	let baseline = -Infinity;
+	let below = -Infinity;
+	let width = 0;
+	for (const layout of layouts) {
+		baseline = Math.max(baseline, layout.baseline);
+		below = Math.max(below, layout.lines.length - layout.baseline - 1);
+		width += layout.width;
+	}
 	const lines: string[] = [];
 	for (let row = 0; row <= baseline + below; row++) {
 		let line = "";
@@ -740,7 +753,7 @@ function joinLayouts(layouts: readonly Layout[]): Layout {
 	}
 	return {
 		lines,
-		width: layouts.reduce((width, layout) => width + layout.width, 0),
+		width,
 		baseline,
 	};
 }
@@ -775,12 +788,12 @@ function renderLayout(source: string, nodes: readonly LayoutNode[]): Layout {
 				const denominator = renderLayout(node.denominator, nodes);
 				const contentWidth = Math.max(numerator.width, denominator.width, 1);
 				const width = contentWidth + 2;
+				const lines: string[] = [];
+				for (const line of numerator.lines) lines.push(padLayoutLine(line, width, true));
+				lines.push(` ${"─".repeat(contentWidth)} `);
+				for (const line of denominator.lines) lines.push(padLayoutLine(line, width, true));
 				layouts.push({
-					lines: [
-						...numerator.lines.map((line) => padLayoutLine(line, width, true)),
-						` ${"─".repeat(contentWidth)} `,
-						...denominator.lines.map((line) => padLayoutLine(line, width, true)),
-					],
+					lines,
 					width,
 					baseline: numerator.lines.length,
 				});
@@ -804,9 +817,12 @@ function renderLayout(source: string, nodes: readonly LayoutNode[]): Layout {
 					baseline: node.upper === undefined ? 0 : 1,
 				});
 			} else {
-				const width = Math.max(0, ...node.lines.map((line) => visibleWidth(line)));
+				let width = 0;
+				for (const line of node.lines) width = Math.max(width, visibleWidth(line));
+				const lines: string[] = [];
+				for (const line of node.lines) lines.push(padLayoutLine(line, width));
 				layouts.push({
-					lines: node.lines.map((line) => padLayoutLine(line, width)),
+					lines,
 					width,
 					baseline: node.baseline,
 				});
@@ -826,9 +842,11 @@ function renderLayout(source: string, nodes: readonly LayoutNode[]): Layout {
 		}
 		renderedLines.push(...lineLayout.lines);
 	}
+	let width = 0;
+	for (const line of renderedLines) width = Math.max(width, visibleWidth(line));
 	return {
 		lines: renderedLines,
-		width: Math.max(0, ...renderedLines.map((line) => visibleWidth(line))),
+		width,
 		baseline: firstBaseline,
 	};
 }
@@ -1070,11 +1088,13 @@ class LatexParser {
 		const accent = ACCENTS[command];
 		if (accent !== undefined) {
 			const value = this.parseRequiredArgument();
-			return Array.from(value).length === 1 ? `${value}${accent}` : `${command}(${value})`;
+			return isSingleCodePoint(value) ? `${value}${accent}` : `${command}(${value})`;
 		}
 		if (command === "mathbb") {
 			const value = this.parseRequiredArgument();
-			return Array.from(value, (character) => BLACKBOARD[character] ?? character).join("");
+			let text = "";
+			for (const character of value) text += BLACKBOARD[character] ?? character;
+			return text;
 		}
 		if (command === "operatorname") {
 			const starred = this.source[this.position] === "*";
@@ -1287,33 +1307,32 @@ class LatexParser {
 		) {
 			const alignedAt = ["alignedat", "alignat", "alignat*"].includes(environment);
 			const alignedBody = alignedAt ? body.replace(LATEX_LEADING_ARRAY_SPEC_PATTERN, "") : body;
-			return this.splitEnvironmentRows(alignedBody)
-				.map((row) => {
-					const cells = row.split("&");
-					const source = alignedAt
-						? Array.from({ length: Math.ceil(cells.length / 2) }, (_, index) =>
-								cells.slice(index * 2, index * 2 + 2).join(""),
-							).join(" ")
-						: cells.join("");
-					return this.renderNested(source).trim();
-				})
-				.filter(Boolean)
-				.join("\n");
+			let text = "";
+			for (const row of this.splitEnvironmentRows(alignedBody)) {
+				const cells = row.split("&");
+				let source = "";
+				for (let index = 0; index < cells.length; index++) {
+					if (alignedAt && index > 0 && index % 2 === 0) source += " ";
+					source += cells[index]!;
+				}
+				const rendered = this.renderNested(source).trim();
+				if (rendered) text += (text ? "\n" : "") + rendered;
+			}
+			return text;
 		}
 
 		if (environment === "cases" || environment === "cases*") {
-			const rows = this.splitEnvironmentRows(body)
-				.map((row) => row.split("&").map((cell) => this.renderNested(cell, false).trim()))
-				.filter((row) => row.some(Boolean));
-			return rows
-				.map((row, index) => {
-					const value = (row[0] ?? "").replace(LATEX_TRAILING_COMMA_PATTERN, "");
-					const condition = row[1] ?? "";
-					const delimiter = index === 0 ? "⎧" : index === rows.length - 1 ? "⎩" : "⎨";
-					const conditionPrefix = LATEX_CONDITION_PREFIX_PATTERN.test(condition) ? " " : " if ";
-					return `${delimiter} ${value}${condition ? `${conditionPrefix}${condition}` : ""}`;
-				})
-				.join("\n");
+			const rows = this.renderEnvironmentRows(body);
+			let text = "";
+			for (let index = 0; index < rows.length; index++) {
+				const row = rows[index]!;
+				const value = (row[0] ?? "").replace(LATEX_TRAILING_COMMA_PATTERN, "");
+				const condition = row[1] ?? "";
+				const delimiter = index === 0 ? "⎧" : index === rows.length - 1 ? "⎩" : "⎨";
+				const conditionPrefix = LATEX_CONDITION_PREFIX_PATTERN.test(condition) ? " " : " if ";
+				text += `${index > 0 ? "\n" : ""}${delimiter} ${value}${condition ? `${conditionPrefix}${condition}` : ""}`;
+			}
+			return text;
 		}
 
 		if (
@@ -1327,42 +1346,54 @@ class LatexParser {
 		return body;
 	}
 
+	private renderEnvironmentRows(body: string): string[][] {
+		const rows: string[][] = [];
+		for (const row of this.splitEnvironmentRows(body)) {
+			const cells = row.split("&");
+			let nonEmpty = false;
+			for (let index = 0; index < cells.length; index++) {
+				cells[index] = this.renderNested(cells[index]!, false).trim();
+				if (cells[index]) nonEmpty = true;
+			}
+			if (nonEmpty) rows.push(cells);
+		}
+		return rows;
+	}
+
 	private renderMatrix(environment: string, body: string): string {
-		const matrix = this.splitEnvironmentRows(body)
-			.map((row) => row.split("&").map((cell) => this.renderNested(cell, false).trim()))
-			.filter((row) => row.some(Boolean));
-		const columnCount = Math.max(0, ...matrix.map((row) => row.length));
-		const columnWidths = Array.from({ length: columnCount }, (_, column) =>
-			Math.max(0, ...matrix.map((row) => visibleWidth(row[column] ?? ""))),
-		);
-		const rows = matrix.map((row) =>
-			Array.from({ length: columnCount }, (_, column) => {
+		const matrix = this.renderEnvironmentRows(body);
+		const columnWidths: number[] = [];
+		for (const row of matrix) {
+			for (let column = 0; column < row.length; column++) {
+				columnWidths[column] = Math.max(columnWidths[column] ?? 0, visibleWidth(row[column]!));
+			}
+		}
+		const rows: string[] = [];
+		for (const row of matrix) {
+			let text = "";
+			for (let column = 0; column < columnWidths.length; column++) {
 				const cell = row[column] ?? "";
-				return `${cell}${PROTECTED_SPACE.repeat(Math.max(0, (columnWidths[column] ?? 0) - visibleWidth(cell)))}`;
-			}).join(" │ "),
-		);
+				text += `${column > 0 ? " │ " : ""}${cell}${PROTECTED_SPACE.repeat(Math.max(0, columnWidths[column]! - visibleWidth(cell)))}`;
+			}
+			rows.push(text);
+		}
 
 		let lines: string[];
 		if (environment === "array" || environment === "matrix" || environment === "smallmatrix") {
 			lines = rows;
 		} else {
-			const delimiters: Readonly<Record<string, readonly [string, string, string, string, string, string]>> = {
-				pmatrix: ["⎛", "⎞", "⎜", "⎟", "⎝", "⎠"],
-				bmatrix: ["⎡", "⎤", "⎢", "⎥", "⎣", "⎦"],
-				Bmatrix: ["⎧", "⎫", "⎨", "⎬", "⎩", "⎭"],
-				vmatrix: ["│", "│", "│", "│", "│", "│"],
-				Vmatrix: ["║", "║", "║", "║", "║", "║"],
-			};
-			const delimiter = delimiters[environment];
+			const delimiter = MATRIX_DELIMITERS[environment];
 			if (!delimiter) {
 				this.supported = false;
 				return rows.join("\n");
 			}
-			lines = rows.map((row, index) => {
+			lines = rows;
+			for (let index = 0; index < rows.length; index++) {
+				const row = rows[index]!;
 				const left = index === 0 ? delimiter[0] : index === rows.length - 1 ? delimiter[4] : delimiter[2];
 				const right = index === 0 ? delimiter[1] : index === rows.length - 1 ? delimiter[5] : delimiter[3];
-				return `${left} ${row} ${right}`;
-			});
+				lines[index] = `${left} ${row} ${right}`;
+			}
 		}
 
 		if (lines.length <= 1) {
@@ -1387,11 +1418,13 @@ export interface RenderLatexOptions {
 	display?: boolean;
 }
 
+const DEFAULT_RENDER_OPTIONS: RenderLatexOptions = {};
+
 /**
  * Render a basic LaTeX math expression as terminal-friendly Unicode text.
  * Returns undefined when the expression contains unsupported or malformed syntax.
  */
-export function renderLatex(source: string, options: RenderLatexOptions = {}): string | undefined {
+export function renderLatex(source: string, options: RenderLatexOptions = DEFAULT_RENDER_OPTIONS): string | undefined {
 	const layoutNodes: LayoutNode[] = [];
 	const rendered = new LatexParser(source, layoutNodes, options.display === true).render();
 	if (rendered === undefined) {
@@ -1401,12 +1434,13 @@ export function renderLatex(source: string, options: RenderLatexOptions = {}): s
 		return rendered.replaceAll(PROTECTED_SPACE, " ");
 	}
 	const lines = renderLayout(rendered, layoutNodes).lines;
-	const indentation = Math.min(
-		...lines.filter((line) => line.trim()).map((line) => line.length - line.trimStart().length),
-	);
-	return lines
-		.map((line) => line.slice(indentation).trimEnd())
-		.join("\n")
-		.trimEnd()
-		.replaceAll(PROTECTED_SPACE, " ");
+	let indentation = Infinity;
+	for (const line of lines) {
+		if (line.trim()) indentation = Math.min(indentation, line.length - line.trimStart().length);
+	}
+	let text = "";
+	for (let index = 0; index < lines.length; index++) {
+		text += (index > 0 ? "\n" : "") + lines[index]!.slice(indentation).trimEnd();
+	}
+	return text.trimEnd().replaceAll(PROTECTED_SPACE, " ");
 }

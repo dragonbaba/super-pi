@@ -11,6 +11,28 @@ const call = (id: string) => ({ type: "function_call", id: `fc_${id}`, call_id: 
 const custom = { type: "custom_tool_call", id: "ct_1", call_id: "call_c", name: "apply_patch", input: "" };
 const completed = { type: "response.completed", response: { id: "resp", status: "completed" } };
 
+test("Responses helpers keep concurrent stream slots private and preserve empty summary/text separators", async () => {
+	const outputs = [responsesOutput(), responsesOutput()];
+	const events = (name: string) => [
+		{ type: "response.output_item.added", output_index: 0, item: { type: "reasoning", id: `rs_${name}` } },
+		{ type: "response.reasoning_summary_text.delta", output_index: 0, delta: "temporary" },
+		{ type: "response.output_item.done", output_index: 0, item: { type: "reasoning", id: `rs_${name}`, summary: [{ text: "" }, { text: name }, { text: "" }] } },
+		{ type: "response.output_item.added", output_index: 1, item: { type: "message", id: `msg_${name}`, content: [] } },
+		{ type: "response.output_text.delta", output_index: 1, delta: "temporary" },
+		{ type: "response.output_item.done", output_index: 1, item: { type: "message", id: `msg_${name}`, content: [{ type: "output_text", text: "" }, { type: "refusal", refusal: name }] } },
+		{ type: "response.completed", response: { id: `resp_${name}`, status: "completed", output: [{ type: "reasoning", id: `rs_${name}`, encrypted_content: `opaque_${name}` }] } },
+	];
+	async function* concurrentReplay(name: string) { for (const event of events(name)) { await Promise.resolve(); yield event as never; } }
+	await Promise.all(outputs.map((output, index) => processResponsesStream(concurrentReplay(String(index)), output, sink, model)));
+	for (let index = 0; index < outputs.length; index++) {
+		const output = outputs[index]!;
+		assert.equal(output.responseId, `resp_${index}`);
+		assert.equal((output.content[0] as any).thinking, `\n\n${index}\n\n`);
+		assert.equal(JSON.parse((output.content[0] as any).thinkingSignature).encrypted_content, `opaque_${index}`);
+		assert.equal((output.content[1] as any).text, String(index));
+	}
+});
+
 async function* replay(events: readonly unknown[]) {
 	for (const event of events) yield event as never;
 }

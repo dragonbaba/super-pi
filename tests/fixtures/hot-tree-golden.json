@@ -1,0 +1,25 @@
+{
+  "baseline": "6ebe643f1dcf6eded74da3b59bb3f177a720dbee",
+  "values": [
+    {
+      "filter": "default",
+      "hash": "ed7fcbf030347ecece4bd995d6dbe3c52d276ed2d620bafaa2ab3ec279aa9e41"
+    },
+    {
+      "filter": "no-tools",
+      "hash": "3079875457fb99e0bd838c5709799096f89a05323ce902beb3cb6697c5740f83"
+    },
+    {
+      "filter": "user-only",
+      "hash": "2316b29a74da8b14a1f808d0a5248aec5c3a23ef576f225cbd9e536e55ac9144"
+    },
+    {
+      "filter": "labeled-only",
+      "hash": "bf5e46b8105826f2d47e065e2e3655fb9c8487ece033146dc9692e322c7b4bd1"
+    },
+    {
+      "filter": "all",
+      "hash": "7294b2c12c9f263c6ed16f97629009123af6902c2d78c76d63f596d9044b5d09"
+    }
+  ]
+}

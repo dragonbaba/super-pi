@@ -1,0 +1,225 @@
+{
+  "baseline": "6ebe643f1dcf6eded74da3b59bb3f177a720dbee",
+  "values": [
+    {
+      "source": "",
+      "display": false,
+      "expected": ""
+    },
+    {
+      "source": "",
+      "display": true,
+      "expected": ""
+    },
+    {
+      "source": "a+b",
+      "display": false,
+      "expected": "a+b"
+    },
+    {
+      "source": "a+b",
+      "display": true,
+      "expected": "a+b"
+    },
+    {
+      "source": "\\frac{a}{b}",
+      "display": false,
+      "expected": "a/b"
+    },
+    {
+      "source": "\\frac{a}{b}",
+      "display": true,
+      "expected": "a\n─\nb"
+    },
+    {
+      "source": "\\frac{\\frac{a}{b}}{c}",
+      "display": false,
+      "expected": "(a/b)/c"
+    },
+    {
+      "source": "\\frac{\\frac{a}{b}}{c}",
+      "display": true,
+      "expected": "a/b\n───\n c"
+    },
+    {
+      "source": "\\sqrt{x_1^2+y}",
+      "display": false,
+      "expected": "√(x₁²+y)"
+    },
+    {
+      "source": "\\sqrt{x_1^2+y}",
+      "display": true,
+      "expected": "√(x₁²+y)"
+    },
+    {
+      "source": "\\mathbb{ABC123}",
+      "display": false,
+      "expected": "ABℂ123"
+    },
+    {
+      "source": "\\mathbb{ABC123}",
+      "display": true,
+      "expected": "ABℂ123"
+    },
+    {
+      "source": "\\hat{x}",
+      "display": false,
+      "expected": "x̂"
+    },
+    {
+      "source": "\\hat{x}",
+      "display": true,
+      "expected": "x̂"
+    },
+    {
+      "source": "\\hat{😀}",
+      "display": false,
+      "expected": "😀̂"
+    },
+    {
+      "source": "\\hat{😀}",
+      "display": true,
+      "expected": "😀̂"
+    },
+    {
+      "source": "\\sum_{i=1}^{n} i",
+      "display": false,
+      "expected": "∑ᵢ₌₁ⁿ i"
+    },
+    {
+      "source": "\\sum_{i=1}^{n} i",
+      "display": true,
+      "expected": " n\n ∑  i\ni=1"
+    },
+    {
+      "source": "\\begin{matrix}a&bb\\\\ccc&d\\end{matrix}",
+      "display": false,
+      "expected": "a   │ bb\nccc │ d "
+    },
+    {
+      "source": "\\begin{matrix}a&bb\\\\ccc&d\\end{matrix}",
+      "display": true,
+      "expected": "a   │ bb\nccc │ d "
+    },
+    {
+      "source": "\\begin{pmatrix}a&b\\\\c&d\\end{pmatrix}",
+      "display": false,
+      "expected": "⎛ a │ b ⎞\n⎝ c │ d ⎠"
+    },
+    {
+      "source": "\\begin{pmatrix}a&b\\\\c&d\\end{pmatrix}",
+      "display": true,
+      "expected": "⎛ a │ b ⎞\n⎝ c │ d ⎠"
+    },
+    {
+      "source": "\\begin{bmatrix}&b\\\\c&\\end{bmatrix}",
+      "display": false,
+      "expected": "⎡   │ b ⎤\n⎣ c │   ⎦"
+    },
+    {
+      "source": "\\begin{bmatrix}&b\\\\c&\\end{bmatrix}",
+      "display": true,
+      "expected": "⎡   │ b ⎤\n⎣ c │   ⎦"
+    },
+    {
+      "source": "\\begin{cases}x&x>0\\\\-x&x<0\\end{cases}",
+      "display": false,
+      "expected": "⎧ x if x > 0\n⎩ -x if x < 0"
+    },
+    {
+      "source": "\\begin{cases}x&x>0\\\\-x&x<0\\end{cases}",
+      "display": true,
+      "expected": "⎧ x if x > 0\n⎩ -x if x < 0"
+    },
+    {
+      "source": "\\begin{cases}&&ignored\\\\a&b&c\\end{cases}",
+      "display": false,
+      "expected": "⎧\n⎩ a if b"
+    },
+    {
+      "source": "\\begin{cases}&&ignored\\\\a&b&c\\end{cases}",
+      "display": true,
+      "expected": "⎧\n⎩ a if b"
+    },
+    {
+      "source": "\\begin{align}a&=b&+c&=d\\\\e&=f\\end{align}",
+      "display": false,
+      "expected": "a = b+c = d\ne = f"
+    },
+    {
+      "source": "\\begin{align}a&=b&+c&=d\\\\e&=f\\end{align}",
+      "display": true,
+      "expected": "a = b+c = d\ne = f"
+    },
+    {
+      "source": "\\begin{aligned}a&=b\\\\&=c\\end{aligned}",
+      "display": false,
+      "expected": "a = b\n= c"
+    },
+    {
+      "source": "\\begin{aligned}a&=b\\\\&=c\\end{aligned}",
+      "display": true,
+      "expected": "a = b\n= c"
+    },
+    {
+      "source": "\\begin{matrix}\\end{matrix}",
+      "display": false,
+      "expected": ""
+    },
+    {
+      "source": "\\begin{matrix}\\end{matrix}",
+      "display": true,
+      "expected": ""
+    },
+    {
+      "source": "\\begin{matrix}a\\\\\\\\b\\end{matrix}",
+      "display": false,
+      "expected": "a\nb"
+    },
+    {
+      "source": "\\begin{matrix}a\\\\\\\\b\\end{matrix}",
+      "display": true,
+      "expected": "a\nb"
+    },
+    {
+      "source": "\\begin{matrix}\\frac{a}{b}&\\sqrt{x}\\end{matrix}",
+      "display": false,
+      "expected": "a/b │ √x"
+    },
+    {
+      "source": "\\begin{matrix}\\frac{a}{b}&\\sqrt{x}\\end{matrix}",
+      "display": true,
+      "expected": "a/b │ √x"
+    },
+    {
+      "source": "\\unknown{x}",
+      "display": false,
+      "expected": null
+    },
+    {
+      "source": "\\unknown{x}",
+      "display": true,
+      "expected": null
+    },
+    {
+      "source": "\\frac{a}",
+      "display": false,
+      "expected": null
+    },
+    {
+      "source": "\\frac{a}",
+      "display": true,
+      "expected": null
+    },
+    {
+      "source": "\\begin{matrix}a&b",
+      "display": false,
+      "expected": null
+    },
+    {
+      "source": "\\begin{matrix}a&b",
+      "display": true,
+      "expected": null
+    }
+  ]
+}
