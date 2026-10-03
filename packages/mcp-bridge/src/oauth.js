@@ -11,6 +11,22 @@ const REFRESH_SKEW_MS = 30_000;
 const FLOW_TIMEOUT_MS = 180_000;
 const ISSUER_VALIDATION_VERSION = 1;
 const AUTH_METADATA_PATH = /\/\.well-known\/(?:oauth-authorization-server|openid-configuration)(?:\/|$)/;
+const OPTIONAL_TOKEN_FIELDS = ["scope", "expires_in", "refresh_token", "id_token"];
+
+class OAuthTokenResponse extends Response {
+  async json() {
+    const value = await super.json();
+    // Match upstream's absent optional fields before the SDK validates strings
+    // or coerces expiry (null/"" would otherwise become zero). Required fields
+    // and all non-empty values still go through the SDK's original validation.
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      for (const field of OPTIONAL_TOKEN_FIELDS) {
+        if (value[field] === null || value[field] === "") value[field] = undefined;
+      }
+    }
+    return value;
+  }
+}
 
 // The SDK's OIDC schema strips the RFC 9207 support flag. Observe the same JSON
 // parse the SDK requests, keeping only the issuer and flag for saveDiscoveryState.
@@ -120,6 +136,12 @@ export function createOAuthFetch(fetchImpl, signal, discoveryObservation) {
     } finally { await reader.cancel().catch(() => undefined); reader.releaseLock(); }
     const body = Buffer.concat(chunks, bytes);
     const responseInit = { status: response.status, statusText: response.statusText, headers: response.headers };
+    // The SDK uses URLSearchParams for both token grants. Identify the request,
+    // not an assumed /token path; never normalize discovery, registration or errors.
+    if (response.ok && init.method === "POST" && init.body instanceof URLSearchParams) {
+      const grant = init.body.get("grant_type");
+      if (grant === "authorization_code" || grant === "refresh_token") return new OAuthTokenResponse(body, responseInit);
+    }
     return discoveryObservation && response.ok && AUTH_METADATA_PATH.test(url.pathname)
       ? new OAuthMetadataResponse(body, responseInit, discoveryObservation)
       : new Response(body, responseInit);
