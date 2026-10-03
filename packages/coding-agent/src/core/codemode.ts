@@ -10,12 +10,12 @@ import { CODEMODE_DESCRIPTION, CODEMODE_NAME, CODEMODE_PARAMETERS, CODEMODE_SAMP
 	MAX_CODEMODE_DESCRIPTION_CHARS, MAX_CODEMODE_RETAINED_CHARS } from "./codemode-constants.ts";
 import { CODEMODE_MUTATION_NAMES } from "./codemode-constants.ts";
 import { CodemodeStore } from "./codemode-store.ts";
-import { boundCodemodeResult, capCodemodeOutput, codemodeContentChars } from "./codemode-result.ts";
+import { boundCodemodeResult, capCodemodeOutput, codemodeContentChars, codemodeImageChars } from "./codemode-result.ts";
 import { MUTATION_READ_SOURCE } from "./tools/read-window.ts";
 import { readShellExecution } from "./tools/shell-execution.ts";
 import { codemodeInputSummary, codemodeOutputDigests, codemodeTextDigest, CODEMODE_DISPLAY_PREVIEW_CHARS, type CodemodeChildDisplay } from "./codemode-display.ts";
 
-interface ChildRecord { result: ToolResultMessage; input: Record<string, unknown>; chars: number; }
+interface ChildRecord { result: ToolResultMessage; input: Record<string, unknown>; chars: number; imageChars: number; }
 /** Durable mutation outcome; `observationError` is kept outside the receipt-bearing result. */
 interface CodemodeResultEntry { version: 1; parentToolCallId: string; result: ToolResultMessage; observationError?: string; }
 type ChildFact = CodemodeChildDisplay;
@@ -27,7 +27,9 @@ interface Invocation {
 	started: number;
 	records: Map<string, ChildRecord>;
 	retainedChars: number;
+	retainedImageChars: number;
 	shownChars: number;
+	shownImageChars: number;
 	shown: (TextContent | ImageContent)[];
 	reads: CodemodeReadEvent[];
 	facts: ChildFact[];
@@ -40,6 +42,11 @@ const MAX_SHOWN_READS = 64;
 /** Codemode calls in one assistant batch whose shown reads await the shared projection. */
 const MAX_PENDING_READ_PARENTS = 16;
 const MAX_SHOWN_CHARS = 256 * 1024;
+/** Images are budgeted apart from text: a native screenshot may be several MiB and is shown whole. */
+const MAX_RETAINED_IMAGE_CHARS = 16 * 1024 * 1024;
+const MAX_SHOWN_IMAGE_CHARS = 16 * 1024 * 1024;
+/** Image data handed to the script per result; larger images stay host-side behind show(ref). */
+const MAX_SCRIPT_IMAGE_CHARS = 256 * 1024;
 const TOOL_SIGNATURE_OPTIONS = Object.freeze({ inputMaxChars: 2048 });
 const DEFERRED_DECLARATIONS = "\nMCP declarations are deferred. Filter ALL_TOOLS and use await describeTools([names]) for their current schemas.\n";
 
@@ -52,6 +59,16 @@ function preview(result: ToolResultMessage): string {
 	return "";
 }
 function descriptorName(tool: CodemodeTool): string { return tool.name; }
+/** Script copy of a result with large images: their data stays host-side and is attached whole by show(ref). */
+function scriptContent(content: readonly (TextContent | ImageContent)[]): (TextContent | ImageContent)[] {
+	const copy: (TextContent | ImageContent)[] = [];
+	for (const block of content) {
+		copy.push(block.type === "image"
+			? { type: "text", text: `[image ${block.mimeType} (${block.data.length} base64 chars) held by the host; attach it with await show(result.ref)]` }
+			: block);
+	}
+	return copy;
+}
 function compareChildSequence(a: ChildFact, b: ChildFact): number { return (a.sequence ?? 0) - (b.sequence ?? 0); }
 /** The read survived only if its exact blocks occupy their own positions; equal text elsewhere is not this read. */
 function readSurvived(read: CodemodeReadEvent, visible: readonly (TextContent | ImageContent)[]): boolean {
@@ -271,16 +288,22 @@ export class CodemodeController {
 		fact.outputPath = result.details?.codemodeOutput?.path ?? result.details?.fullOutputPath;
 		const chars = codemodeContentChars(result) + (this.serializer.stringify(result.details, 128 * 1024)?.length ?? 0)
 			+ inputChars;
-		while (invocation.retainedChars + chars > MAX_CODEMODE_RETAINED_CHARS && invocation.records.size) {
+		const imageChars = codemodeImageChars(result.content);
+		while ((invocation.retainedChars + chars > MAX_CODEMODE_RETAINED_CHARS
+			|| invocation.retainedImageChars + imageChars > MAX_RETAINED_IMAGE_CHARS) && invocation.records.size) {
 			const oldest = invocation.records.keys().next().value!;
-			invocation.retainedChars -= invocation.records.get(oldest)!.chars;
+			const evicted = invocation.records.get(oldest)!;
+			invocation.retainedChars -= evicted.chars;
+			invocation.retainedImageChars -= evicted.imageChars;
 			invocation.records.delete(oldest);
 		}
 		const ref = `${invocation.prefix}:${++invocation.issued}`;
-		invocation.records.set(ref, { result, input, chars });
+		invocation.records.set(ref, { result, input, chars, imageChars });
 		invocation.retainedChars += chars;
+		invocation.retainedImageChars += imageChars;
 		if (result.isError) throw new Error(`[${ref}] ${preview(result)}`);
-		return { content: result.content, details: result.details, isError: false, ref };
+		const content = imageChars > MAX_SCRIPT_IMAGE_CHARS ? scriptContent(result.content) : result.content;
+		return { content, details: result.details, isError: false, ref };
 	}
 	private show(ref: unknown): void {
 		const invocation = this.requireInvocation();
@@ -289,7 +312,11 @@ export class CodemodeController {
 		if (invocation.shownChars + record.chars > MAX_SHOWN_CHARS || invocation.shown.length + record.result.content.length > 256) {
 			invocation.failed = true; throw new Error("Shown results exceed the display budget; read smaller ranges");
 		}
+		if (invocation.shownImageChars + record.imageChars > MAX_SHOWN_IMAGE_CHARS) {
+			invocation.failed = true; throw new Error("Shown images exceed the display budget; show fewer or smaller images");
+		}
 		invocation.shownChars += record.chars;
+		invocation.shownImageChars += record.imageChars;
 		const shownIndex = invocation.shown.length;
 		for (const block of record.result.content) invocation.shown.push(block);
 		if (record.result.toolName === "read" && !record.result.isError &&
@@ -338,8 +365,8 @@ export class CodemodeController {
 		const parsed = parseCodemodeSource(code);
 		const outputTokens = parsed.options.maxOutputTokens ?? 8000;
 		if (outputTokens < 256 || outputTokens > 16384) throw new Error("Codemode max_output_tokens must be 256..16384; no tools were executed");
-		const invocation: Invocation = { context, signal, prefix: randomUUID(), issued: 0, started: 0, records: new Map(), retainedChars: 0,
-			shownChars: 0, shown: [], reads: [], facts: [], failed: false, pending: 0, resolveIdle: undefined };
+		const invocation: Invocation = { context, signal, prefix: randomUUID(), issued: 0, started: 0, records: new Map(), retainedChars: 0, retainedImageChars: 0,
+			shownChars: 0, shownImageChars: 0, shown: [], reads: [], facts: [], failed: false, pending: 0, resolveIdle: undefined };
 		this.current = invocation;
 		let result: CodemodeResult;
 		try {

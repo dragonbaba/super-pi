@@ -489,3 +489,27 @@ test("a Codemode read whose parent result sits just before the retained tail is 
 	const outcome = await f.run(['await tools.edit({path:"file.txt",edits:[{oldText:"hello",newText:"edited"}]})']);
 	assert.equal(outcome.results.at(-1)?.isError, false, JSON.stringify(outcome.results.at(-1)));
 });
+
+test("screenshot-sized images survive Codemode bounding and are shown whole beside spilled text", async t => {
+	const shot: InlineExtension = pi => pi.registerTool({ name: "shot", label: "shot", description: "large text plus an image",
+		parameters: Type.Object({ size: Type.Integer() }),
+		// `size` is the base64 length: a PNG signature padded to size * 3 / 4 bytes.
+		execute: async (_id, params: { size: number }) => {
+			const bytes = Buffer.alloc(params.size / 4 * 3);
+			Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(bytes);
+			return { content: [{ type: "text", text: "log ".repeat(50_000) },
+				{ type: "image", data: bytes.toString("base64"), mimeType: "image/png" }], details: {} };
+		} });
+	const f = await fixture(t, {}, [shot]);
+	const outcome = await f.run([
+		'const small=await tools.shot({size:4096}); text(small.content.map(b=>b.type).join()); image(small.content[1]);' +
+		'const big=await tools.shot({size:2*1024*1024}); text(big.content[1].text); await show(big.ref)']);
+	const parent = outcome.results[0]!;
+	assert.equal(parent.isError, false, JSON.stringify(parent.content).slice(0, 2000));
+	const texts = parent.content.filter(block => block.type === "text").map(block => (block as { text: string }).text).join("\n");
+	assert.match(texts, /text,image/, "a small image stays attachable from inside the script");
+	assert.match(texts, /image\/png \(2097152 base64 chars\) held by the host; attach it with await show/);
+	assert.match(texts, /Codemode bounded result/);
+	const images = parent.content.filter(block => block.type === "image").map(block => (block as { data: string }).data.length);
+	assert.deepEqual(images, [4096, 2 * 1024 * 1024]);
+});

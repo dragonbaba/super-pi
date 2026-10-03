@@ -9,6 +9,8 @@ const MAX_INLINE_CHARS = 128 * 1024;
 const CHUNK_CHARS = 16 * 1024;
 const OUTPUT_OPTIONS = Object.freeze({ maxBytes: 32 * 1024, maxLines: 400 });
 const FORCE_SPILL_OPTIONS = Object.freeze({ maxBytes: 1, maxLines: 1 });
+/** Images stay attachable blocks; base64 in a text spill file is useless to the model. */
+const MAX_KEPT_IMAGES = 16;
 
 function appendText(output: OutputAccumulator, text: string): void {
 	for (let offset = 0; offset < text.length;) {
@@ -20,7 +22,10 @@ function appendText(output: OutputAccumulator, text: string): void {
 	}
 }
 
-/** Reuse the native capped spill/cleanup mechanism; never join a large result to make a preview. */
+/**
+ * Reuse the native capped spill/cleanup mechanism; never join a large result to make a preview.
+ * Only text counts toward the inline bound: up to MAX_KEPT_IMAGES image blocks are kept as images.
+ */
 export async function boundCodemodeResult(result: ToolResultMessage, serializer: BoundedJson): Promise<ToolResultMessage> {
 	let chars = 0, needsRecovery = false;
 	let detailsNeedRecovery = false;
@@ -30,17 +35,21 @@ export async function boundCodemodeResult(result: ToolResultMessage, serializer:
 		catch { needsRecovery = true; detailsNeedRecovery = true; }
 	}
 	for (const block of result.content) {
-		chars += block.type === "text" ? block.text.length : block.data.length;
+		if (block.type === "text") chars += block.text.length;
 		if ((block as { mcpSource?: unknown }).mcpSource) needsRecovery = true;
 	}
 	if (!needsRecovery && chars <= MAX_INLINE_CHARS && result.content.length <= 128) return details === undefined ? result : { ...result, details };
 	const output = new OutputAccumulator(OUTPUT_OPTIONS);
+	const content: (TextContent | ImageContent)[] = [{ type: "text", text: "" }];
 	try {
 		for (const block of result.content) {
 			if (block.type === "text") {
 				appendText(output, block.text);
 				const source = (block as { mcpSource?: McpTypedSource }).mcpSource;
 				if (source) appendText(output, serializeMcpStructured(verifiedMcpSource(source).value));
+			} else if (content.length <= MAX_KEPT_IMAGES) {
+				content.push(block);
+				appendText(output, `[image ${block.mimeType} kept as attachment ${content.length - 1}]`);
 			} else {
 				appendText(output, `data:${block.mimeType};base64,`);
 				appendText(output, block.data);
@@ -54,7 +63,8 @@ export async function boundCodemodeResult(result: ToolResultMessage, serializer:
 		const recovery = snapshot.fullOutputPath
 			? `${snapshot.spillFileCapped ? "Capped output (5 MiB; later data was not saved)" : "Full output"}: ${snapshot.fullOutputPath}`
 			: "Complete source is included below.";
-		return { ...result, content: [{ type: "text", text: `${snapshot.content}\n[Codemode bounded result. ${recovery}]` }],
+		content[0] = { type: "text", text: `${snapshot.content}\n[Codemode bounded result. ${recovery}]` };
+		return { ...result, content,
 			details: { ...(detailsNeedRecovery ? {} : details as object), codemodeOutput: { path: snapshot.fullOutputPath, capped: snapshot.spillFileCapped } } };
 	} catch (error) { await output.discardTempFile(); throw error; }
 	finally { await output.closeTempFile(); }
@@ -62,7 +72,13 @@ export async function boundCodemodeResult(result: ToolResultMessage, serializer:
 
 export function codemodeContentChars(result: Pick<ToolResultMessage, "content">): number {
 	let chars = 0;
-	for (const block of result.content) chars += block.type === "text" ? block.text.length : block.data.length;
+	for (const block of result.content) if (block.type === "text") chars += block.text.length;
+	return chars;
+}
+
+export function codemodeImageChars(content: readonly (TextContent | ImageContent)[]): number {
+	let chars = 0;
+	for (const block of content) if (block.type === "image") chars += block.data.length;
 	return chars;
 }
 

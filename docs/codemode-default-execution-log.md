@@ -418,3 +418,17 @@ ebea295c1 的 CI（verify-linux、verify-windows）均通过。Codex 提出 3 �
 
 - `npm run check`、`npm run build:offline` 退出 0；`git diff --check` 通过。
 - 全套 `npm test`（PowerShell）：219 个执行单元全部退出 0；3,245 项中 3,155 通过、90 跳过，失败/取消/todo 为 0。
+
+### PR #55 九次复审修复（b0edd20f7 之后）
+
+b0edd20f7 的 CI（verify-linux、verify-windows）均通过。Codex 提出 2 条新问题（另外 3 条是旧评论，GitHub 把它们的 `commit_id` 前移到了新提交，`original_commit_id` 均为更早的提交，且已在前几轮修复）：
+
+| 复审问题 | 核实 | 修复 | 回归（去掉修复后均失败） |
+| --- | --- | --- | --- |
+| P2 编排工具抛异常时不报告被放弃的子调用 | 成立：抛异常时直接进入 catch，结果在 `finally` 里的 `nested.close()` 标记放弃之前就已构建，调用方看不到 `[NESTED_TOOL_ABANDONED]` | catch 中先关闭嵌套调度（宽限期内等待），有放弃的子调用就把同一条警告追加到失败结果；警告文本提取为 `nestedAbandonedNotice` 共用 | 编排工具启动一个忽略取消的子调用后抛异常：结果同时包含原异常和 `NESTED_TOOL_ABANDONED] 1 child call` |
+| P1 大图片被 Codemode 截断后无法展示 | 成立：`boundCodemodeResult` 把图片的 base64 计入 128 KiB 内联上限，超限时把所有内容块（含图片）写进文本溢出文件；browser-use 截图（最多 8 MiB）、`read` 图片都会失去可见图片 | 只按文本计入内联上限，溢出时只溢出文本，最多保留 16 个图片块；图片单独计预算（保留 16 MiB、show 16 MiB），不占文本的 1 MiB/256 KiB 预算；单个结果图片超过 256 KiB 时，脚本里拿到的是文字占位符（避免超过 1 MiB 的跨 VM 上限），图片本体留在宿主，用 `show(result.ref)` 完整附加 | 工具返回 200 KB 文本加图片：4 KiB 图片在脚本内仍是 image 块，可用 `image()`；2 MiB 图片在脚本内是占位符，`show` 后父结果包含完整 2 MiB 图片，文本走溢出。单独还原任一文件都会失败 |
+
+验证：
+
+- `npm run check`、`npm run build:offline` 退出 0；`git diff --check` 通过。
+- 全套 `npm test`（PowerShell）：219 个执行单元全部退出 0；3,247 项中 3,157 通过、90 跳过，失败/取消/todo 为 0。

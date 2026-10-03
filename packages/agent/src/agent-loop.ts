@@ -979,7 +979,7 @@ async function executePreparedToolCall(
 			const abandoned = nested.abandonedCalls;
 			if (abandoned > 0 || (nested.hasErrors && !result.isError)) {
 				result = { ...result, isError: true, content: [...(result.content ?? []), { type: "text", text: abandoned > 0
-					? `[NESTED_TOOL_ABANDONED] ${abandoned} child call(s) ignored cancellation for ${NESTED_CANCEL_GRACE_MS} ms and may still be running or changing state. Verify current state before any retry.`
+					? nestedAbandonedNotice(abandoned)
 					: "[NESTED_TOOL_ERRORS] One or more child calls failed, were cancelled, or were refused. Completed side effects are not rolled back." }] };
 			}
 			completedResult = result;
@@ -994,17 +994,22 @@ async function executePreparedToolCall(
 				isError: true, authorizationVeto: true };
 		}
 		let failedResult = completedResult ? undefined : toolResultFromError(error);
+		// A thrown parent skipped the nested block above; close first so lingering children are reported.
+		let abandoned = 0;
+		if (nested && !completedResult) {
+			await nested.close();
+			abandoned = nested.abandonedCalls;
+		}
 		try {
 			await progress.flush();
 		} catch (observationError) {
 			// Preserve the primary tool failure and record a separate drain failure.
 			if (failedResult) failedResult = resultWithObservationFailure(failedResult, observationError);
 		}
-		return {
-			result: failedResult ?? (completedResult ? resultWithObservationFailure(completedResult, error)
-				: createErrorToolResult(error instanceof Error ? error.message : String(error))),
-			isError: true,
-		};
+		let result = failedResult ?? (completedResult ? resultWithObservationFailure(completedResult, error)
+			: createErrorToolResult(error instanceof Error ? error.message : String(error)));
+		if (abandoned > 0) result = { ...result, content: [...(result.content ?? []), { type: "text", text: nestedAbandonedNotice(abandoned) }] };
+		return { result, isError: true };
 	} finally {
 		acceptingUpdates = false;
 		if (nested) await nested.close();
@@ -1013,6 +1018,10 @@ async function executePreparedToolCall(
 			prepared.finalAuthorization = undefined;
 		}
 	}
+}
+
+function nestedAbandonedNotice(abandoned: number): string {
+	return `[NESTED_TOOL_ABANDONED] ${abandoned} child call(s) ignored cancellation for ${NESTED_CANCEL_GRACE_MS} ms and may still be running or changing state. Verify current state before any retry.`;
 }
 
 /** One callback pair per orchestration invocation, never per child progress update. */

@@ -339,3 +339,23 @@ test("a queued nested call to a tool removed in place from agent state is refuse
 	assert.deepEqual(outcomes, [false, true]);
 	assert.equal(victimRuns, 0);
 });
+
+test("an orchestrator that throws still reports a child that ignored cancellation", async () => {
+	let started!: () => void, settle!: () => void;
+	const ready = new Promise<void>(resolve => { started = resolve; });
+	const late = new Promise<void>(resolve => { settle = resolve; });
+	const child = tool("hang", async () => { started(); await late; return result(); }); // ignores the abort signal
+	const f = fixture(async ctx => {
+		ctx.callTool("hang", {}).catch(() => undefined);
+		await ready;
+		throw new Error("parent failed after starting a child");
+	}, [child]);
+	try {
+		await f.agent.prompt("run");
+		const parent = f.agent.state.messages.find(m => m.role === "toolResult" && m.toolCallId === "parent");
+		assert.ok(parent?.role === "toolResult" && parent.isError);
+		const text = JSON.stringify(parent.content);
+		assert.match(text, /parent failed after starting a child/);
+		assert.match(text, /NESTED_TOOL_ABANDONED\] 1 child call/);
+	} finally { settle(); }
+});
