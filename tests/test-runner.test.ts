@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { spawnSync } from "node:child_process";
+import { dirname, join, resolve } from "node:path";
+import { spawn, spawnSync } from "node:child_process";
 import test from "node:test";
 import {
 	classifyTestFile,
@@ -86,6 +86,7 @@ test("default runner executes GC integration once with isolated cwd, home and of
 		writeFileSync(join(root, "alpha-assistant-update.test.ts"), `
 import assert from 'node:assert/strict';
 import { writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import test from 'node:test';
 test('isolated GC fixture', () => {
@@ -95,6 +96,9 @@ test('isolated GC fixture', () => {
   for (const key of ['HOME', 'USERPROFILE', 'XDG_CONFIG_HOME']) assert.equal(process.env[key], process.cwd());
   assert.equal(process.env.SP_CODING_AGENT_DIR, resolve(process.cwd(), 'agent'));
   assert.equal(process.env.SP_CODING_AGENT_SESSION_DIR, resolve(process.cwd(), 'sessions'));
+  // Temporary files go to the run-owned directory shared by this run's children.
+  for (const key of ['TMPDIR', 'TMP', 'TEMP']) assert.equal(process.env[key], tmpdir());
+  assert.match(tmpdir(), /super-pi-test-run-[^\\\\/]+[\\\\/]tmp$/);
   writeFileSync(${JSON.stringify(report)}, JSON.stringify({ cwd: process.cwd() }));
 });
 `);
@@ -217,6 +221,98 @@ test("runner starts no new file after the first failure", () => {
 		assert.match(result.stderr, /a-failure\.test\.ts failed with exit code 1/);
 		assert.doesNotMatch(result.stdout, /START b-later/);
 	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("a failed peer stops scheduling before a blocked output replay finishes", async () => {
+	const root = mkdtempSync(join(tmpdir(), "super-pi-test-backpressure-"));
+	const noisyDone = join(root, "noisy-done"), failed = join(root, "failed"), later = join(root, "later");
+	let child: ReturnType<typeof spawn> | undefined;
+	let completion: Promise<number | null> | undefined;
+	try {
+		writeFileSync(join(root, "a-noisy.test.ts"), `
+import { writeFileSync } from 'node:fs';
+process.stdout.write('x'.repeat(1024 * 1024));
+process.on('exit', () => writeFileSync(${JSON.stringify(noisyDone)}, ''));
+`);
+		writeFileSync(join(root, "b-failure.test.ts"), `
+import { existsSync, writeFileSync } from 'node:fs';
+const deadline = Date.now() + 10000;
+while (!existsSync(${JSON.stringify(noisyDone)})) {
+  if (Date.now() > deadline) throw new Error('noisy peer did not finish');
+  await new Promise(resolve => setTimeout(resolve, 10));
+}
+await new Promise(resolve => setTimeout(resolve, 100));
+writeFileSync(${JSON.stringify(failed)}, '');
+process.exit(7);
+`);
+		writeFileSync(join(root, "c-later.test.ts"), `import { writeFileSync } from 'node:fs'; writeFileSync(${JSON.stringify(later)}, '');`);
+		child = spawn(process.execPath, [join(process.cwd(), "scripts", "test.mjs"),
+			"--root", root, "--skip-memory", "--jobs", "2"], { env: NESTED_RUNNER_ENV, stdio: ["ignore", "pipe", "pipe"] });
+		let stderr = "";
+		child.stderr!.on("data", chunk => { stderr += chunk; });
+		completion = new Promise((resolve, reject) => { child!.once("error", reject); child!.once("close", resolve); });
+		// Deliberately hold stdout. The successful peer owns the printer while the other exits.
+		const deadline = Date.now() + 15000;
+		while (!existsSync(failed) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+		assert.equal(existsSync(failed), true);
+		await new Promise(resolve => setTimeout(resolve, 250));
+		child.stdout!.resume();
+		assert.equal(await completion, 1, stderr);
+		assert.match(stderr, /b-failure\.test\.ts failed/);
+		assert.equal(existsSync(later), false, "an observed failure must stop scheduling even while the printer is blocked");
+	} finally {
+		child?.stdout?.resume();
+		await completion;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("runner lists the memory unit exactly once across shards", () => {
+	const root = mkdtempSync(join(tmpdir(), "super-pi-test-manifest-"));
+	try {
+		writeFileSync(join(root, "a.test.ts"), "");
+		writeFileSync(join(root, "b.test.ts"), "");
+		for (const count of [1, 2, 4]) {
+			const listed: string[] = [];
+			for (let index = 1; index <= count; index++) {
+				const result = spawnSync(process.execPath, [join(process.cwd(), "scripts", "test.mjs"),
+					"--root", root, "--list", "--shard", `${index}/${count}`], { encoding: "utf8", env: NESTED_RUNNER_ENV });
+				assert.equal(result.status, 0, result.stderr);
+				listed.push(...result.stdout.trim().split(/\r?\n/).filter(Boolean));
+			}
+			assert.deepEqual(listed.sort(), ["@super-pi/memory workspace", "a.test.ts", "b.test.ts"]);
+		}
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+for (const fail of [false, true]) test(`runner contains temporary files after child ${fail ? "failure" : "success"}`, () => {
+	const root = mkdtempSync(join(tmpdir(), "super-pi-test-temp-owner-"));
+	const report = join(root, "observed.json");
+	let leaked: string | undefined;
+	try {
+		writeFileSync(join(root, "temporary.test.ts"), `
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+const directory = mkdtempSync(join(tmpdir(), 'sp-runner-owned-fixture-'));
+writeFileSync(join(directory, 'sp-output-fixture.log'), 'owned test output');
+writeFileSync(${JSON.stringify(report)}, JSON.stringify({ directory, home: process.env.HOME }));
+${fail ? "process.exit(7);" : ""}
+`);
+		const result = runRunner(root, "--jobs", "1");
+		const observed = JSON.parse(readFileSync(report, "utf8"));
+		leaked = observed.directory;
+		assert.equal(result.status, fail ? 1 : 0, `${result.stdout}\n${result.stderr}`);
+		assert.equal(existsSync(observed.home), false);
+		assert.equal(existsSync(observed.directory), false, "temporary output must leave with its child owner");
+	} finally {
+		// Also contain this regression when run against the old, leaking runner.
+		if (leaked && existsSync(leaked)) {
+			assert.equal(dirname(leaked), resolve(tmpdir()));
+			rmSync(leaked, { recursive: true, force: true });
+		}
 		rmSync(root, { recursive: true, force: true });
 	}
 });

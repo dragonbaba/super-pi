@@ -18,14 +18,16 @@ const server = resolve("tests/fixtures/lsp-diagnostic-server.mjs");
 
 function fixture(mode = "full") {
   const root = mkdtempSync(join(tmpdir(), "sp-lsp-scope-"));
-  mkdirSync(join(root, ".sp/config"), { recursive: true });
-  writeFileSync(join(root, "page.html"), "<script>const broken = ;</script>");
-  writeFileSync(join(root, "example.ts"), "const n = 1;");
-  writeFileSync(join(root, ".sp/config/pi-lsp.json"), JSON.stringify({ timeout: 2500, servers: { fixture: {
-    command: [process.execPath, server, mode], extensions: [".ts"], pushDiagnosticsGraceMs: mode === "push-provisional" ? 250 : 60, diagnosticsSettleMs: 10,
-  } } }));
-  const runtime = loadRuntime(root, { projectTrusted: true });
-  return { root, ...runtime, release() { assert.equal(dirname(root), tmpdir()); removeOwnedFixture(root); } };
+  try {
+    mkdirSync(join(root, ".sp/config"), { recursive: true });
+    writeFileSync(join(root, "page.html"), "<script>const broken = ;</script>");
+    writeFileSync(join(root, "example.ts"), "const n = 1;");
+    writeFileSync(join(root, ".sp/config/pi-lsp.json"), JSON.stringify({ timeout: 2500, servers: { fixture: {
+      command: [process.execPath, server, mode], extensions: [".ts"], pushDiagnosticsGraceMs: mode === "push-provisional" ? 250 : 60, diagnosticsSettleMs: 10,
+    } } }));
+    const runtime = loadRuntime(root, { projectTrusted: true });
+    return { root, ...runtime, release() { assert.equal(dirname(root), tmpdir()); removeOwnedFixture(root); } };
+  } catch (error) { removeOwnedFixture(root); throw error; }
 }
 function tools() {
   const registered = new Map<string, any>(), events = new Map<string, any>();
@@ -123,7 +125,7 @@ for (const mode of ["full", "push-empty", "push-provisional", "push-silent", "pu
         assert.equal(result.details.status, "diagnostics_received"); assert.equal(result.details.summary.files, 1);
         assert.equal(result.details.summary.diagnostics, mode === "push-provisional" ? 1 : 0);
       } else await assert.rejects(work, /unconfirmed|synthetic diagnostic failure/);
-    } finally { await pool.shutdownAll(); f.release(); }
+    } finally { try { await pool.shutdownAll(); } finally { f.release(); } }
   });
 }
 
@@ -143,7 +145,7 @@ test("tool uses session cwd, preserves received count and discloses unverified e
       assert.match(result.content[0].text, /Embedded languages.*not established/);
       assert.equal(result.isError, false);
     }
-  } finally { await registration.events.get("session_shutdown")({}, ctx); f.release(); }
+  } finally { try { await registration.events.get("session_shutdown")({}, ctx); } finally { f.release(); } }
 });
 
 test("strict validation can fail for silence while source fixes retain an empty diagnostic context", async () => {
@@ -156,7 +158,7 @@ test("strict validation can fail for silence while source fixes retain an empty 
     assert.equal(result.details.editCount, 1);
     assert.match(result.content[0].text, /const n = 2/);
     assert.equal(readFileSync(join(f.root, "example.ts"), "utf8"), "const n = 1;", "preview is not a write or a validation pass");
-  } finally { await pool.shutdownAll(); f.release(); }
+  } finally { try { await pool.shutdownAll(); } finally { f.release(); } }
 });
 
 test("actual tool reports live-route truncation as partial and exact-cap exhaustion as complete", async () => {
@@ -180,7 +182,7 @@ test("actual tool reports live-route truncation as partial and exact-cap exhaust
     const directory = await registration.registered.get("lsp_diagnostics").execute("directory", { paths: ["example.ts", "later.html"], limit: 1 }, undefined, undefined, ctx);
     assert.equal(directory.details.routedScopeLimited, true, "an unsupported-looking directory still has unvisited scope");
     assert.equal(directory.details.status, "partial"); assert.equal(directory.isError, true);
-  } finally { await registration.events.get("session_shutdown")({}, ctx); f.release(); }
+  } finally { try { await registration.events.get("session_shutdown")({}, ctx); } finally { f.release(); } }
 });
 
 test("actual tool classifies capped directory symlinks before declaring omitted scope", async () => {
@@ -209,7 +211,7 @@ test("actual tool classifies capped directory symlinks before declaring omitted 
     symlinkSync(scan, join(directoryScan, "z.html"), process.platform === "win32" ? "junction" : "dir");
     const directory = await tool.execute("directory-link", { paths: ["directory-scan"], limit: 1 }, undefined, undefined, ctx);
     assert.equal(directory.details.status, "partial"); assert.equal(directory.isError, true);
-  } finally { await registration.events.get("session_shutdown")({}, ctx); f.release(); }
+  } finally { try { await registration.events.get("session_shutdown")({}, ctx); } finally { f.release(); } }
 });
 
 test("actual tool recognizes a capped directory already exhausted through an earlier symlink", async () => {
@@ -227,7 +229,7 @@ test("actual tool recognizes a capped directory already exhausted through an ear
     writeFileSync(join(target, "second.ts"), "const second = 2;");
     const partial = await tool.execute("incomplete-visited-directory", { paths: ["alias-scan"], limit: 1 }, undefined, undefined, ctx);
     assert.equal(partial.details.status, "partial"); assert.equal(partial.isError, true);
-  } finally { await registration.events.get("session_shutdown")({}, ctx); f.release(); }
+  } finally { try { await registration.events.get("session_shutdown")({}, ctx); } finally { f.release(); } }
 });
 
 test("mixed available and unavailable matching default routes retain uncovered files and return partial", () => {
@@ -277,5 +279,5 @@ test("available real Biome diagnoses standalone JS; HTML route alone does not pr
     // This records the observed server result; no assertion treats zero as HTML validity.
     t.diagnostic(JSON.stringify({ server: "repository-installed Biome", standaloneJsDiagnostics: js.details.summary.diagnostics, htmlDiagnostics: html.details.summary.diagnostics,
       htmlMessages: html.details.files.flatMap((file: any) => file.diagnostics.map((diagnostic: any) => diagnostic.message)), embeddedJsCoverage: "not established by route" }));
-  } finally { await pool.shutdownAll(); f.release(); }
+  } finally { try { await pool.shutdownAll(); } finally { f.release(); } }
 });

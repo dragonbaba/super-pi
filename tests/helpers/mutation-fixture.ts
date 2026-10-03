@@ -18,6 +18,8 @@ export const { MutationWriteGuard } = await jiti.import<any>("../../packages/ext
 
 export async function mutationFixture(t: test.TestContext, options: ConstructorParameters<typeof ExtensionRunner>[5] = {}) {
   const cwd = mkdtempSync(join(tmpdir(), "sp-file-batch-"));
+  let shutdown: (() => Promise<void>) | undefined;
+  t.after(async () => { try { await shutdown?.(); } finally { removeOwnedFixture(cwd); } });
   const session = SessionManager.create(cwd, join(cwd, "sessions"));
   const runtime = createExtensionRuntime();
   const extensions = [];
@@ -31,13 +33,17 @@ export async function mutationFixture(t: test.TestContext, options: ConstructorP
     beforeToolCall: async ({ toolCall, args }) => { if (advanceTurn) await runner.emit({ type: "turn_start" } as never); return runner.emitToolCall({ type: "tool_call", toolName: toolCall.name, toolCallId: toolCall.id, input: args } as never); },
     afterToolCall: ({ toolCall, args, result, isError }) => runner.emitToolResult({ type: "tool_result", toolName: toolCall.name, toolCallId: toolCall.id, input: args, content: result.content, details: result.details, isError } as never),
   });
+  shutdown = async () => {
+    agent.abort();
+    try { await agent.waitForIdle(); }
+    finally { runner.invalidate(); await runner.emit({ type: "session_shutdown" } as never); }
+  };
   runner.bindCore({ getThinkingLevel: () => "off", getActiveTools: () => agent.state.tools.map(t => t.name),
     appendEntry: (kind: string, data: any) => { if (kind === "file-mutation-progress-v2") recordHook(data); session.appendCustomEntry(kind, data); },
   } as never, { getSignal: () => agent.signal, isProjectTrusted: () => false, getModel: () => agent.state.model, isIdle: () => true, abort: () => agent.abort(), hasPendingMessages: () => false } as never);
   runner.setUIContext({ ...runner.getUIContext(), select: async () => { approvals++; approvalHook(); return decision; } }, "tui");
   await runner.emit({ type: "session_start" } as never);
   agent.state.tools = runner.getAllRegisteredTools().map(r => wrapToolDefinition(r.definition, () => runner.createContext()));
-  t.after(async () => { agent.abort(); runner.invalidate(); await runner.emit({ type: "session_shutdown" } as never); removeOwnedFixture(cwd); });
   return { cwd, session, runner, agent, async freezeTurn() { advanceTurn = false; await runner.emit({ type: "turn_start" } as never); }, approvals: () => approvals, deny() { decision = "拒绝"; }, onApprove(fn: () => void) { approvalHook = fn; }, onRecord(fn: (data: any) => void) { recordHook = fn; },
     async call(name: string, input: any, id = name) {
       session.appendMessage({ role: "assistant", content: [{ type: "toolCall", id, name, arguments: input }], timestamp: 0 } as never);

@@ -4,32 +4,42 @@ Default Linux and Windows CI runs `npm ci`, `npm run check`,
 `npm run build:offline`, then `npm test`, within the unchanged 30-minute job
 limit. Use `npm.cmd` on Windows PowerShell when required by execution policy.
 
-`node scripts/test.mjs --suite all --list` lists the deterministic test-file
-order (of the selected shard, if any) without executing tests. The runner discovers each file once and
-includes the memory workspace. It runs files in a bounded pool of
-`min(available CPUs, 8)` child processes; `--jobs N` or `SP_TEST_JOBS=N`
-overrides the width, and `--jobs 1` restores serial execution. Files with
-wall-clock pass conditions (`bash-running-responsiveness`,
-`tool-lifecycle-postmerge`) run alone before the pool starts. In the pool, known
-slow files start first so they do not extend the tail. `--shard i/n` or
+`node scripts/test.mjs --suite all --list` lists the deterministic
+execution-unit order (of the selected shard, if any), including the memory
+workspace, without executing tests. Each file is discovered once and runs in a
+bounded pool of `min(available CPUs, 8)` child processes; `--jobs N` or
+`SP_TEST_JOBS=N` overrides the width, and `--jobs 1` restores serial execution.
+Files with wall-clock pass conditions (`bash-running-responsiveness`,
+`tool-lifecycle-postmerge`) run alone before the pool starts. In the pool,
+known slow files start first so they do not extend the tail. `--shard i/n` or
 `SP_TEST_SHARD=i/n` runs one part of a deterministic split: units are assigned
 heaviest first to the least-loaded shard using approximate weights in the
 runner, so the shards are disjoint and together cover every file and the memory
 workspace once. CI runs Linux as 2 shards and Windows as 4 shards on separate
 runners, each shard serially (`SP_TEST_JOBS=1`) because the two-core hosted
-runners gain little from a pool; only shard 1 repeats `npm run check`. After the first nonzero
-child exit or signal no new file starts; running files finish and the first
-failure's exit code is returned. Each child writes stdout and stderr to a
-runner-owned log file, replayed to stdout with its END line, so parallel output
-never interleaves and the runner does not hold child output in memory.
-`test:unit`, `test:hot` and `test:contract` partition that discovery for focused
-work; they are not an additional validation chain before `npm test`.
+runners gain little from a pool; only shard 1 repeats `npm run check`. After
+the first nonzero child exit or signal no new file starts, even if a slow output
+consumer is still holding another file's log replay. Running files finish, and
+the first failure's exit code is returned. Each child writes stdout and stderr
+to a runner-owned log file, replayed to stdout with its END line. Parallel
+output never interleaves, and the runner does not hold child output in memory.
+`test:unit`, `test:hot` and `test:contract` partition that discovery for
+focused work; they are not an additional validation chain before `npm test`.
 
 Every child gets private HOME, USERPROFILE, config, agent and session paths and
-`SP_OFFLINE=1`. Raw-result/interactive integration fixtures also retain their
-empty temporary cwd. Other tests keep the repository cwd needed by source,
-build and packaging checks. The runner removes only its own temporary child
-directory and reports cleanup failures. START/END lines identify the file,
+`SP_OFFLINE=1`. Its `TMPDIR`, `TMP` and `TEMP` point at one runner-owned
+directory shared by the run's children, so jiti's tmpdir transpile cache stays
+warm across files. Raw-result/interactive integration fixtures also retain their
+empty temporary cwd. Other tests keep the repository cwd needed by source, build
+and packaging checks. The runner removes only its own child directory after the
+child closes, on success or failure, and the run directory when the run ends.
+Retryable removal errors receive up to five retries with a 100ms linear backoff;
+exhausted retries still fail. Output spills and abandoned fixture directories in
+the run's temporary path leave with the run; no shared system-temp logs are
+swept. Test fixtures must still register cleanup
+before fallible initialization and release their directories in `finally` after
+resource shutdown. Runner cleanup contains abrupt test exits; it does not
+replace resource-lifecycle assertions. START/END lines identify the file,
 elapsed milliseconds, exit code and signal.
 
 ## Consolidated coverage
