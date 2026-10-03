@@ -1,8 +1,9 @@
-import { existsSync, readdirSync, mkdtempSync, mkdirSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { closeSync, createReadStream, existsSync, openSync, readdirSync, mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { once } from "node:events";
+import { availableParallelism, tmpdir } from "node:os";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 
 const SCRIPT_DIRECTORY = dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = resolve(SCRIPT_DIRECTORY, "..");
@@ -24,6 +25,21 @@ const GC_TESTS = new Set([
 	"alpha-assistant-update.test.ts", "alpha-markdown-ownership.test.ts",
 	"alpha-raw-parallel.test.ts", "alpha-startup-quit.test.ts",
 ]);
+// Approximate serial Windows CI seconds; unlisted units weigh DEFAULT_TEST_WEIGHT
+// (the suite mean). Weights only order units and balance shards; every
+// discovered file still runs exactly once across all shards.
+const TEST_WEIGHTS = new Map([
+	["alpha-raw-parallel.test.ts", 190], ["alpha-cli.test.ts", 78], ["shell-incident-launcher.test.mjs", 56],
+	["alpha-startup-faults.test.ts", 41], ["bash-running-responsiveness.test.ts", 41], ["alpha-raw-session.test.ts", 36],
+	["tui-frame-queue.test.ts", 35], ["image-review-boundaries.test.ts", 26], ["next-phase-task-matrix.test.ts", 25],
+	["codemode-session.test.ts", 25],
+]);
+const DEFAULT_TEST_WEIGHT = 6;
+// Wall-clock gated files run alone, before the pool starts: paired p50/p95 deltas
+// and frames that must land while a 3s child shell is still running.
+const EXCLUSIVE_TESTS = new Set(["bash-running-responsiveness.test.ts", "tool-lifecycle-postmerge.test.ts"]);
+const MAX_DEFAULT_JOBS = 8;
+const MEMORY_LABEL = "@super-pi/memory workspace";
 
 function compareCodeUnits(left, right) {
 	return left < right ? -1 : left > right ? 1 : 0;
@@ -65,8 +81,19 @@ export function discoverTestFiles(root = DEFAULT_TEST_ROOT) {
 	return discovered.sort(compareCodeUnits);
 }
 
+function parseJobs(value, source) {
+	const jobs = Number(value);
+	if (!Number.isInteger(jobs) || jobs < 1) throw new Error(`${source} must be a positive integer`);
+	return jobs;
+}
+
+export function defaultJobs(env = process.env) {
+	if (env.SP_TEST_JOBS !== undefined && env.SP_TEST_JOBS !== "") return parseJobs(env.SP_TEST_JOBS, "SP_TEST_JOBS");
+	return Math.max(1, Math.min(availableParallelism(), MAX_DEFAULT_JOBS));
+}
+
 function parseArguments(argv) {
-	const options = { suite: "all", root: DEFAULT_TEST_ROOT, skipMemory: false, list: false };
+	const options = { suite: "all", root: DEFAULT_TEST_ROOT, skipMemory: false, list: false, jobs: undefined, shard: undefined };
 	for (let index = 0; index < argv.length; index++) {
 		const argument = argv[index];
 		if (argument === "--suite") {
@@ -77,6 +104,10 @@ function parseArguments(argv) {
 			options.skipMemory = true;
 		} else if (argument === "--list") {
 			options.list = true;
+		} else if (argument === "--jobs") {
+			options.jobs = parseJobs(argv[++index], "--jobs");
+		} else if (argument === "--shard") {
+			options.shard = parseShard(argv[++index], "--shard");
 		} else {
 			throw new Error(`Unknown test runner argument: ${argument}`);
 		}
@@ -84,83 +115,191 @@ function parseArguments(argv) {
 	if (!new Set(["all", "unit", "hot", "contract"]).has(options.suite)) {
 		throw new Error(`Unknown test suite: ${options.suite}`);
 	}
+	options.jobs ??= defaultJobs();
+	options.shard ??= defaultShard();
 	return options;
 }
 
-function runChild(label, command, args, cwd) {
+export function parseShard(value, source = "shard") {
+	const match = /^(\d+)\/(\d+)$/.exec(String(value));
+	const index = Number(match?.[1]), count = Number(match?.[2]);
+	if (!match || count < 1 || index < 1 || index > count) throw new Error(`${source} must look like i/n with 1 <= i <= n`);
+	return { index, count };
+}
+
+export function defaultShard(env = process.env) {
+	if (env.SP_TEST_SHARD !== undefined && env.SP_TEST_SHARD !== "") return parseShard(env.SP_TEST_SHARD, "SP_TEST_SHARD");
+	return { index: 1, count: 1 };
+}
+
+/**
+ * Orders units heaviest first (ties keep the given order) and assigns each to the
+ * least-loaded shard, so every shard computes the same deterministic split.
+ * Returns this shard's wall-clock gated and pooled units.
+ */
+export function scheduleTestFiles(labels, shard = { index: 1, count: 1 }) {
+	const weight = (label) => TEST_WEIGHTS.get(label) ?? DEFAULT_TEST_WEIGHT;
+	const ordered = labels.map((label, position) => ({ label, position }))
+		.sort((left, right) => weight(right.label) - weight(left.label) || left.position - right.position);
+	const loads = new Array(shard.count).fill(0);
+	const exclusive = [], pooled = [];
+	for (const { label } of ordered) {
+		let target = 0;
+		for (let index = 1; index < loads.length; index++) if (loads[index] < loads[target]) target = index;
+		loads[target] += weight(label);
+		if (target === shard.index - 1) (EXCLUSIVE_TESTS.has(label) ? exclusive : pooled).push(label);
+	}
+	return { exclusive, pooled };
+}
+
+async function write(chunk) {
+	if (!process.stdout.write(chunk)) await once(process.stdout, "drain");
+}
+
+// Children write straight to an owned log file, so the runner never holds their
+// output; one serialized printer replays each block so files never interleave.
+function createPrinter() {
+	let tail = Promise.resolve();
+	return (task) => {
+		const printed = tail.then(task);
+		tail = printed.catch(() => {});
+		return printed;
+	};
+}
+
+async function runChild(unit, logFile, print) {
 	const root = mkdtempSync(resolve(tmpdir(), "super-pi-test-"));
 	const started = performance.now();
-	console.log(`[test] START ${label}`);
-	let child;
+	// A stdout failure here also fails this file's awaited END block.
+	print(() => write(`[test] START ${unit.label}\n`)).catch(() => {});
+	let status, signal, error, cleanupError, log;
 	try {
 		mkdirSync(resolve(root, "agent"));
 		mkdirSync(resolve(root, "sessions"));
-		child = spawnSync(command, args, {
-			cwd: cwd ?? root, stdio: "inherit",
+		log = openSync(logFile, "w");
+		const child = spawn(unit.command, unit.args, {
+			cwd: unit.cwd ?? root, stdio: ["ignore", log, log],
 			env: { ...process.env, HOME: root, USERPROFILE: root, XDG_CONFIG_HOME: root,
 				SP_CODING_AGENT_DIR: resolve(root, "agent"), SP_CODING_AGENT_SESSION_DIR: resolve(root, "sessions"),
 				SP_OFFLINE: "1", SP_TUI_WRITE_LOG: "" },
 		});
+		// A failed spawn emits "error" and then "close" with a negative errno status.
+		({ status, signal, error } = await new Promise((settle) => {
+			let startError;
+			child.once("error", (reason) => { startError = reason; });
+			child.once("close", (code, closeSignal) => settle({ status: code, signal: closeSignal, error: startError }));
+		}));
+	} catch (reason) {
+		error = reason;
 	} finally {
-		// Only remove this invocation's exact, directly-created temporary child.
-		if (dirname(root) !== resolve(tmpdir())) throw new Error("temporary root escaped");
-		rmSync(root, { recursive: true, force: true });
-		console.log(`[test] END ${label} ms=${Math.round(performance.now() - started)} exit=${child?.status ?? "none"} signal=${child?.signal ?? "none"}`);
+		try {
+			if (log !== undefined) closeSync(log);
+			// Only remove this invocation's exact, directly-created temporary child.
+			if (dirname(root) !== resolve(tmpdir())) throw new Error("temporary root escaped");
+			rmSync(root, { recursive: true, force: true });
+		} catch (reason) {
+			cleanupError = reason;
+		}
 	}
-	if (child.error) {
-		console.error(`[test] ${label} failed to start: ${child.error.message}`);
-		return 1;
+
+	const elapsed = Math.round(performance.now() - started);
+	let exitCode = 0;
+	const failures = [];
+	if (error) {
+		exitCode = 1;
+		failures.push(`failed to start: ${error.message}`);
+	} else if (status !== 0) {
+		exitCode = status ?? 1;
+		failures.push(`failed with exit code ${exitCode}`);
 	}
-	if (child.status !== 0) {
-		const exitCode = child.status ?? 1;
-		console.error(`[test] ${label} failed with exit code ${exitCode}`);
-		return exitCode;
+	if (cleanupError) {
+		exitCode ||= 1;
+		failures.push(`temporary root cleanup failed: ${cleanupError.message}`);
 	}
-	return 0;
+	await print(async () => {
+		try {
+			if (log !== undefined) for await (const chunk of createReadStream(logFile)) await write(chunk);
+			rmSync(logFile, { force: true });
+		} catch (reason) {
+			exitCode ||= 1;
+			failures.push(`output replay failed: ${reason.message}`);
+		}
+		await write(`[test] END ${unit.label} ms=${elapsed} exit=${status ?? "none"} signal=${signal ?? "none"}\n`);
+		for (const failure of failures) console.error(`[test] ${unit.label} ${failure}`);
+	});
+	return exitCode;
 }
 
-export function run(options) {
+function memoryCommand() {
+	const bundledNpmCli = resolve(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
+	const npmCli = process.env.npm_execpath || (existsSync(bundledNpmCli) ? bundledNpmCli : undefined);
+	return npmCli
+		? { command: process.execPath, args: [npmCli, "test", "--workspace", "@super-pi/memory"] }
+		: { command: "npm", args: ["test", "--workspace", "@super-pi/memory"] };
+}
+
+export async function run(options) {
+	const jobs = parseJobs(options.jobs ?? defaultJobs(), "jobs");
+	const shard = options.shard === undefined ? defaultShard() : parseShard(`${options.shard.index}/${options.shard.count}`);
 	const files = discoverTestFiles(options.root).filter(
 		(file) => options.suite === "all" || classifyTestFile(file) === options.suite,
 	);
+	const includeMemory = !options.skipMemory && (options.suite === "all" || options.suite === "unit");
+	const { exclusive, pooled } = scheduleTestFiles(includeMemory ? [...files, MEMORY_LABEL] : files, shard);
 	if (options.list) {
-		for (const file of files) console.log(file);
+		const selected = new Set([...exclusive, ...pooled]);
+		for (const file of files) if (selected.has(file)) console.log(file);
 		return 0;
 	}
 
-	for (const file of files) {
-		const absoluteFile = resolve(options.root, file);
-		const args = ["--experimental-strip-types", "--test", absoluteFile];
+	const testUnit = (file) => {
+		const args = ["--experimental-strip-types", "--test", resolve(options.root, file)];
 		if (GC_TESTS.has(file)) args.unshift("--expose-gc");
-		const exitCode = runChild(file, process.execPath, args, ISOLATED_CWD_TESTS.has(file) ? undefined : REPOSITORY_ROOT);
-		if (exitCode !== 0) return exitCode;
+		return { label: file, command: process.execPath, args, cwd: ISOLATED_CWD_TESTS.has(file) ? undefined : REPOSITORY_ROOT };
+	};
+	const exclusiveUnits = exclusive.map(testUnit);
+	const pooledUnits = pooled.map((label) => label === MEMORY_LABEL
+		? { label, ...memoryCommand(), cwd: REPOSITORY_ROOT }
+		: testUnit(label));
+	if (exclusiveUnits.length + pooledUnits.length === 0) {
+		console.log(`[test] no ${options.suite} tests in shard ${shard.index}/${shard.count}`);
+		return 0;
 	}
 
-	const includeMemory = !options.skipMemory && (options.suite === "all" || options.suite === "unit");
-	if (includeMemory) {
-		const bundledNpmCli = resolve(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
-		const npmCli = process.env.npm_execpath || (existsSync(bundledNpmCli) ? bundledNpmCli : undefined);
-		const npmCommand = npmCli ? process.execPath : "npm";
-		const npmArguments = npmCli
-			? [npmCli, "test", "--workspace", "@super-pi/memory"]
-			: ["test", "--workspace", "@super-pi/memory"];
-		const exitCode = runChild(
-			"@super-pi/memory workspace",
-			npmCommand,
-			npmArguments,
-			REPOSITORY_ROOT,
-		);
-		if (exitCode !== 0) return exitCode;
+	const width = Math.max(1, Math.min(jobs, pooledUnits.length));
+	console.log(`[test] shard ${shard.index}/${shard.count}: running ${exclusiveUnits.length} exclusive then ${pooledUnits.length} pooled units with ${width} parallel job(s)`);
+	const logRoot = mkdtempSync(resolve(tmpdir(), "super-pi-test-logs-"));
+	const print = createPrinter();
+	let firstFailure = 0, logIndex = 0;
+	// After the first failure no new child starts; running children finish and report.
+	const runPool = async (units, poolWidth) => {
+		let next = 0;
+		const worker = async () => {
+			while (firstFailure === 0 && next < units.length) {
+				const unit = units[next++];
+				const exitCode = await runChild(unit, resolve(logRoot, `${logIndex++}.log`), print);
+				if (exitCode !== 0 && firstFailure === 0) firstFailure = exitCode;
+			}
+		};
+		const workers = [];
+		for (let index = 0; index < poolWidth; index++) workers.push(worker());
+		await Promise.all(workers);
+	};
+	try {
+		await runPool(exclusiveUnits, 1);
+		await runPool(pooledUnits, width);
+	} finally {
+		// Only remove this run's exact, directly-created log directory.
+		if (dirname(logRoot) !== resolve(tmpdir())) throw new Error("temporary log root escaped");
+		rmSync(logRoot, { recursive: true, force: true });
 	}
-
-	if (files.length === 0 && !includeMemory) console.log(`[test] no ${options.suite} tests discovered`);
-	return 0;
+	return firstFailure;
 }
 
 const isEntrypoint = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isEntrypoint) {
 	try {
-		process.exitCode = run(parseArguments(process.argv.slice(2)));
+		process.exitCode = await run(parseArguments(process.argv.slice(2)));
 	} catch (error) {
 		console.error(`[test] ${error instanceof Error ? error.message : String(error)}`);
 		process.exitCode = 1;

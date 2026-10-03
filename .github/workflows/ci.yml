@@ -8,10 +8,23 @@ on:
 permissions:
   contents: read
 
+# A newer push to the same PR supersedes the running verification.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Each OS splits the suite into shards on separate runners; scripts/test.mjs
+# computes the same deterministic split on every shard. Typecheck runs once.
+# Hosted runners have two cores and the heavy files contend for them
+# (alpha-raw-parallel: 190s alone, 409s beside a peer), so shards run serially.
 jobs:
   verify-linux:
+    name: verify-linux (${{ matrix.shard }}/2)
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      matrix:
+        shard: [1, 2]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -26,12 +39,20 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
+        if: matrix.shard == 1
       - run: npm run build:offline
       - run: npm test
+        env:
+          SP_TEST_SHARD: ${{ matrix.shard }}/2
+          SP_TEST_JOBS: 1
 
   verify-windows:
+    name: verify-windows (${{ matrix.shard }}/4)
     runs-on: windows-latest
     timeout-minutes: 30
+    strategy:
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -44,7 +65,15 @@ jobs:
         with:
           node-version: 22.19.x
           cache: npm
+      # Real-time scanning inspects every spawned test process on this ephemeral runner.
+      - name: Disable Defender real-time scanning
+        shell: pwsh
+        run: Set-MpPreference -DisableRealtimeMonitoring $true
       - run: npm ci
       - run: npm run check
+        if: matrix.shard == 1
       - run: npm run build:offline
       - run: npm test
+        env:
+          SP_TEST_SHARD: ${{ matrix.shard }}/4
+          SP_TEST_JOBS: 1
