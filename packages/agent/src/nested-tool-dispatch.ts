@@ -13,6 +13,12 @@ interface PendingCall {
 	reject: (error: unknown) => void;
 }
 function observeRejection(): void {}
+function findByName(tools: readonly AgentTool<any>[], name: string): AgentTool<any> | undefined {
+	for (let index = 0; index < tools.length; index++) {
+		if (tools[index]!.name === name) return tools[index];
+	}
+	return undefined;
+}
 /** Close-path only: one timer per orchestration call whose children outlive cancellation. */
 function settlesWithin(promise: Promise<void>, ms: number): Promise<boolean> {
 	return new Promise(resolve => {
@@ -29,6 +35,9 @@ export function isConcurrentNestedRead(tool: AgentTool<any> | undefined): boolea
 export class NestedToolDispatch implements AgentToolExecutionContext {
 	readonly parentToolCallId: string;
 	private getCurrentTools: (() => readonly AgentTool<any>[]) | undefined;
+	private turnTools: readonly AgentTool<any>[] | undefined;
+	/** First live tool per name when this dispatch started. */
+	private baseline: Map<string, AgentTool<any>> | undefined;
 	private invoke: InvokeNestedTool | undefined;
 	private readonly controller = new AbortController();
 	private readonly signal: AbortSignal;
@@ -55,29 +64,44 @@ export class NestedToolDispatch implements AgentToolExecutionContext {
 		this.allChildrenTerminate &&= terminate === true;
 	}
 
+	/**
+	 * `getTools` returns the live tools. `turnTools`, when given, is the active turn context's
+	 * tool set; the live tools seen now become the baseline that later live changes are judged against.
+	 */
 	constructor(parentToolCallId: string, getTools: () => readonly AgentTool<any>[], invoke: InvokeNestedTool, signal?: AbortSignal,
-		cancelGraceMs = NESTED_CANCEL_GRACE_MS) {
+		cancelGraceMs = NESTED_CANCEL_GRACE_MS, turnTools?: readonly AgentTool<any>[]) {
 		this.parentToolCallId = parentToolCallId;
 		this.cancelGraceMs = cancelGraceMs;
 		this.getCurrentTools = getTools;
+		if (turnTools) {
+			const live = getTools();
+			const baseline = new Map<string, AgentTool<any>>();
+			for (let index = 0; index < live.length; index++) {
+				if (!baseline.has(live[index]!.name)) baseline.set(live[index]!.name, live[index]!);
+			}
+			this.turnTools = turnTools;
+			this.baseline = baseline;
+		}
 		this.invoke = invoke;
 		this.signal = signal ? AbortSignal.any([signal, this.controller.signal]) : this.controller.signal;
 	}
 
 	getTools(): readonly AgentTool<any>[] {
-		return this.getCurrentTools?.() ?? EMPTY_TOOLS;
+		if (!this.getCurrentTools) return EMPTY_TOOLS;
+		return this.turnTools ?? this.getCurrentTools();
 	}
 
 	/**
 	 * The live array may be mutated in place, so array identity proves nothing about its
 	 * contents. Scan it on every lookup: authorization must see removals; no allocation.
+	 * With a turn context, that context decides each name unless the live tools changed it
+	 * after this dispatch started, so a host may replace the turn's tools without touching
+	 * the live state while in-place removals and mid-script activations still apply.
 	 */
-	private findTool(name: string): AgentTool<any> | undefined {
-		const tools = this.getTools();
-		for (let index = 0; index < tools.length; index++) {
-			if (tools[index]!.name === name) return tools[index];
-		}
-		return undefined;
+	findTool(name: string): AgentTool<any> | undefined {
+		const live = findByName(this.getCurrentTools?.() ?? EMPTY_TOOLS, name);
+		if (!this.turnTools || !this.baseline || live !== this.baseline.get(name)) return live;
+		return findByName(this.turnTools, name);
 	}
 
 	isCurrentTool(tool: AgentTool<any>): boolean {
@@ -165,6 +189,8 @@ export class NestedToolDispatch implements AgentToolExecutionContext {
 			this.pending.length = 0;
 			this.pendingIndex = 0;
 			this.getCurrentTools = undefined;
+			this.turnTools = undefined;
+			this.baseline = undefined;
 			this.invoke = undefined;
 			this.resolveIdle = undefined;
 			this.idle = undefined;

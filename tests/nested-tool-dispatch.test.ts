@@ -359,3 +359,41 @@ test("an orchestrator that throws still reports a child that ignored cancellatio
 		assert.match(text, /NESTED_TOOL_ABANDONED\] 1 child call/);
 	} finally { settle(); }
 });
+
+class CallStream {
+	private message: AssistantMessage;
+	constructor(name: string | undefined, id: string) {
+		this.message = { role: "assistant", api: "openai-responses", provider: "fixture", model: "fixture", usage: USAGE,
+			content: name ? [{ type: "toolCall", id, name, arguments: {} }] : [{ type: "text", text: "done" }],
+			stopReason: name ? "toolUse" : "stop", timestamp: 1 };
+	}
+	async *[Symbol.asyncIterator](): AsyncGenerator<AssistantMessageEvent> {
+		yield { type: "done", reason: this.message.stopReason as "toolUse" | "stop", message: this.message };
+	}
+	async result() { return this.message; }
+}
+
+test("nested authorization follows a next-turn tool replacement that leaves agent state untouched", async () => {
+	let victimRuns = 0, addedRuns = 0, lateRuns = 0, agent!: Agent;
+	const victim = tool("victim", async () => { victimRuns++; return result(); });
+	const added = tool("added", async () => { addedRuns++; return result(); });
+	const late = tool("late", async () => { lateRuns++; return result(); });
+	const warmup = tool("warmup", async () => result());
+	let outcomes: boolean[] = [];
+	const script: AgentTool<any> = { name: "script", label: "Script", description: "fixture", parameters: PARAMETERS,
+		orchestration: true, async execute(_id, _args, _signal, _update, context) {
+			outcomes.push((await context!.callTool("victim", {})).isError, (await context!.callTool("added", {})).isError);
+			agent.state.tools.push(late); // a live activation made during the script still applies
+			outcomes.push((await context!.callTool("late", {})).isError);
+			return result("script completed");
+		} };
+	const calls = ["warmup", "script"];
+	let request = 0;
+	agent = new Agent({ initialState: { tools: [warmup, script, victim] },
+		streamFn: () => new CallStream(calls[request], `call-${request++}`) as never });
+	// The host replaces the turn's tools without mutating agent.state.tools.
+	agent.prepareNextTurnWithContext = async ({ context }) => ({ context: { ...context, tools: [warmup, script, added] } });
+	await agent.prompt("run");
+	assert.deepEqual(outcomes, [true, false, false]);
+	assert.deepEqual([victimRuns, addedRuns, lateRuns], [0, 1, 1]);
+});

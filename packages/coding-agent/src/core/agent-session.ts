@@ -4642,9 +4642,11 @@ export class AgentSession {
 		for (const tool of wrappedExtensionTools as AgentTool[]) {
 			toolRegistry.set(tool.name, tool);
 		}
+		// Ordinary tools are reachable only through the Codemode gateway; if it is excluded they stay direct.
+		const gateway = toolRegistry.has(CODEMODE_NAME);
 		for (const tool of toolRegistry.values()) {
 			if (DIRECT_CONTROL_NAMES.has(tool.name)) tool.modelOnly = true;
-			tool.modelExposure = tool.orchestration || tool.modelOnly || tool.interactionBoundary ? undefined : "nested";
+			tool.modelExposure = !gateway || tool.orchestration || tool.modelOnly || tool.interactionBoundary ? undefined : "nested";
 		}
 		if (this._evidenceLedger) {
 			for (const tool of toolRegistry.values()) {

@@ -476,8 +476,13 @@ export interface AgentToolExecutionContext {
 	readonly parentToolCallId: string;
 	/** Executes through the current run's hooks; never creates a new Agent run. */
 	callTool(name: string, args: Record<string, unknown>): Promise<NestedToolResultMessage>;
-	/** Current authorized definitions. These host objects never enter the sandbox. */
+	/**
+	 * Tools of the active turn context (the live tools when there is none). These host objects never
+	 * enter the sandbox. Later live changes are not reflected here; authorize a name with findTool().
+	 */
 	getTools(): readonly AgentTool<any>[];
+	/** The tool a nested call to this name would run now, or undefined; never allocates. */
+	findTool(name: string): AgentTool<any> | undefined;
 	/** Stop admitting children, cancel unawaited work and wait for its final facts. Returns whether any child failed. */
 	finish(): Promise<boolean>;
 }

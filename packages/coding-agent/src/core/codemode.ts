@@ -15,7 +15,8 @@ import { MUTATION_READ_SOURCE } from "./tools/read-window.ts";
 import { readShellExecution } from "./tools/shell-execution.ts";
 import { codemodeInputSummary, codemodeOutputDigests, codemodeTextDigest, CODEMODE_DISPLAY_PREVIEW_CHARS, type CodemodeChildDisplay } from "./codemode-display.ts";
 
-interface ChildRecord { result: ToolResultMessage; input: Record<string, unknown>; chars: number; imageChars: number; }
+/** `chars` is retention (content, details, input); `contentChars` is what show() appends. */
+interface ChildRecord { result: ToolResultMessage; input: Record<string, unknown>; chars: number; contentChars: number; imageChars: number; }
 /** Durable mutation outcome; `observationError` is kept outside the receipt-bearing result. */
 interface CodemodeResultEntry { version: 1; parentToolCallId: string; result: ToolResultMessage; observationError?: string; }
 type ChildFact = CodemodeChildDisplay;
@@ -96,6 +97,8 @@ export class CodemodeController {
 	private descriptors: CodemodeTool[] = [];
 	/** Same mapping the sandbox derives from the registered names; see assignCodemodeIdentifiers. */
 	private identifiers = new Map<string, string>();
+	/** Script identifier to registered name, for describeTools. */
+	private identifierNames = new Map<string, string>();
 	private sandbox: CodemodeSandbox | undefined;
 	private current: Invocation | undefined;
 	private readonly store = new CodemodeStore();
@@ -156,6 +159,8 @@ export class CodemodeController {
 		}
 		this.descriptors = descriptors;
 		this.identifiers = identifiers;
+		this.identifierNames.clear();
+		for (const [name, identifier] of identifiers) this.identifierNames.set(identifier, name);
 		this.definition.description = description;
 	}
 
@@ -286,7 +291,8 @@ export class CodemodeController {
 		}
 		fact.outputDigests = codemodeOutputDigests(result.content);
 		fact.outputPath = result.details?.codemodeOutput?.path ?? result.details?.fullOutputPath;
-		const chars = codemodeContentChars(result) + (this.serializer.stringify(result.details, 128 * 1024)?.length ?? 0)
+		const contentChars = codemodeContentChars(result);
+		const chars = contentChars + (this.serializer.stringify(result.details, 128 * 1024)?.length ?? 0)
 			+ inputChars;
 		const imageChars = codemodeImageChars(result.content);
 		while ((invocation.retainedChars + chars > MAX_CODEMODE_RETAINED_CHARS
@@ -298,7 +304,7 @@ export class CodemodeController {
 			invocation.records.delete(oldest);
 		}
 		const ref = `${invocation.prefix}:${++invocation.issued}`;
-		invocation.records.set(ref, { result, input, chars, imageChars });
+		invocation.records.set(ref, { result, input, chars, contentChars, imageChars });
 		invocation.retainedChars += chars;
 		invocation.retainedImageChars += imageChars;
 		if (result.isError) throw new Error(`[${ref}] ${preview(result)}`);
@@ -309,13 +315,13 @@ export class CodemodeController {
 		const invocation = this.requireInvocation();
 		const record = typeof ref === "string" ? invocation.records.get(ref) : undefined;
 		if (!record) { invocation.failed = true; throw new Error("Unknown or expired result reference; references belong to the current script"); }
-		if (invocation.shownChars + record.chars > MAX_SHOWN_CHARS || invocation.shown.length + record.result.content.length > 256) {
+		if (invocation.shownChars + record.contentChars > MAX_SHOWN_CHARS || invocation.shown.length + record.result.content.length > 256) {
 			invocation.failed = true; throw new Error("Shown results exceed the display budget; read smaller ranges");
 		}
 		if (invocation.shownImageChars + record.imageChars > MAX_SHOWN_IMAGE_CHARS) {
 			invocation.failed = true; throw new Error("Shown images exceed the display budget; show fewer or smaller images");
 		}
-		invocation.shownChars += record.chars;
+		invocation.shownChars += record.contentChars;
 		invocation.shownImageChars += record.imageChars;
 		const shownIndex = invocation.shown.length;
 		for (const block of record.result.content) invocation.shown.push(block);
@@ -330,13 +336,16 @@ export class CodemodeController {
 		const invocation = this.requireInvocation();
 		if (!Array.isArray(names) || names.length > 16) throw new Error("describeTools expects up to 16 names");
 		let text = "";
-		for (const tool of invocation.context.getTools()) {
-			if (!nestedAllowed(tool)) continue;
+		const described: AgentTool<any>[] = [];
+		for (const requested of names) {
+			if (typeof requested !== "string") continue;
 			// ALL_TOOLS lists script identifiers; accept them as well as registered names.
+			const alias = this.identifierNames.get(requested);
+			const tool = invocation.context.findTool(requested) ?? (alias === undefined ? undefined : invocation.context.findTool(alias));
+			if (!tool || !nestedAllowed(tool) || described.includes(tool)) continue;
+			described.push(tool);
 			const identifier = this.identifiers.get(tool.name);
-			if (names.includes(tool.name) || (identifier !== undefined && names.includes(identifier))) {
-				text += tool.description.slice(0, 1024) + "\n" + renderToolSignature({ name: tool.name, inputSchema: tool.parameters as never }, { ...TOOL_SIGNATURE_OPTIONS, identifier }) + "\n";
-			}
+			text += tool.description.slice(0, 1024) + "\n" + renderToolSignature({ name: tool.name, inputSchema: tool.parameters as never }, { ...TOOL_SIGNATURE_OPTIONS, identifier }) + "\n";
 		}
 		return text;
 	}
@@ -380,7 +389,8 @@ export class CodemodeController {
 			const content: (TextContent | ImageContent)[] = result.output;
 			if (result.ok && result.value !== undefined) content.push({ type: "text", text: typeof result.value === "string" ? result.value : JSON.stringify(result.value) });
 			if (!result.ok) content.push({ type: "text", text: `[CODEMODE_${result.error.kind.toUpperCase()}] ${result.error.message}` });
-			// The summary is unshifted below; capping keeps a prefix, so retained blocks keep these positions.
+			// The summary is unshifted below; capping keeps every block before the cut (and only images
+			// after it), so retained text blocks keep these positions.
 			const shownOffset = content.length + 1;
 			for (const block of invocation.shown) content.push(block);
 			let summary = `[CODEMODE_${failed ? "FAILED" : "OK"}] Child calls: ${invocation.facts.length}.`;

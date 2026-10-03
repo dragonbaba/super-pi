@@ -27,7 +27,7 @@ function appendText(output: OutputAccumulator, text: string): void {
  * Only text counts toward the inline bound: up to MAX_KEPT_IMAGES image blocks are kept as images.
  */
 export async function boundCodemodeResult(result: ToolResultMessage, serializer: BoundedJson): Promise<ToolResultMessage> {
-	let chars = 0, needsRecovery = false;
+	let chars = 0, images = 0, needsRecovery = false;
 	let detailsNeedRecovery = false;
 	let details: unknown;
 	if (result.details !== undefined) {
@@ -36,9 +36,10 @@ export async function boundCodemodeResult(result: ToolResultMessage, serializer:
 	}
 	for (const block of result.content) {
 		if (block.type === "text") chars += block.text.length;
+		else images++;
 		if ((block as { mcpSource?: unknown }).mcpSource) needsRecovery = true;
 	}
-	if (!needsRecovery && chars <= MAX_INLINE_CHARS && result.content.length <= 128) return details === undefined ? result : { ...result, details };
+	if (!needsRecovery && chars <= MAX_INLINE_CHARS && images <= MAX_KEPT_IMAGES && result.content.length <= 128) return details === undefined ? result : { ...result, details };
 	const output = new OutputAccumulator(OUTPUT_OPTIONS);
 	const content: (TextContent | ImageContent)[] = [{ type: "text", text: "" }];
 	try {
@@ -107,11 +108,16 @@ export async function capCodemodeOutput(content: (TextContent | ImageContent)[],
 	let remaining = tokens - estimateToolOutputTokens(sample).estimatedTokens - 2;
 	if (remaining < 0) throw new Error("Codemode output budget cannot fit the recovery notice");
 	const projected: (TextContent | ImageContent)[] = [];
+	let truncated = false;
 	for (const block of content) {
+		// Images are budgeted when retained and shown; beside the text notice they add no estimated
+		// tokens, so keep every image, including those after the text was cut.
+		if (block.type === "image") { projected.push(block); continue; }
+		if (truncated) continue;
 		sample[0] = block;
 		const cost = estimateToolOutputTokens(sample).estimatedTokens + 1;
 		if (cost <= remaining) { projected.push(block); remaining -= cost; continue; }
-		if (block.type === "text" && remaining > 0) {
+		if (remaining > 0) {
 			sample[0] = scratch;
 			let low = 0, high = Math.min(block.text.length, remaining * 8);
 			while (low < high) {
@@ -123,7 +129,7 @@ export async function capCodemodeOutput(content: (TextContent | ImageContent)[],
 			if (low && low < block.text.length && block.text.charCodeAt(low - 1) >= 0xd800 && block.text.charCodeAt(low - 1) <= 0xdbff) low--;
 			if (low) projected.push({ type: "text", text: block.text.slice(0, low) });
 		}
-		break;
+		truncated = true;
 	}
 	projected.push(notice);
 	if (estimateToolOutputTokens(projected).estimatedTokens > tokens) throw new Error("Codemode output budget could not be satisfied");

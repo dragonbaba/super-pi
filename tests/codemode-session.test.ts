@@ -513,3 +513,54 @@ test("screenshot-sized images survive Codemode bounding and are shown whole besi
 	const images = parent.content.filter(block => block.type === "image").map(block => (block as { data: string }).data.length);
 	assert.deepEqual(images, [4096, 2 * 1024 * 1024]);
 });
+
+test("the Codemode gateway cannot be excluded, and a registry without it leaves ordinary tools directly declared", async t => {
+	// Rejected before any directory, loader or session is created.
+	await assert.rejects(createAgentSession({ excludeTools: ["codemode"] }), /required default tool transport/);
+	const f = await fixture(t);
+	// A directly constructed AgentSession can still pass excludedToolNames; ordinary tools must stay reachable.
+	(f.session as any)._excludedToolNames = new Set(["codemode"]);
+	(f.session as any)._refreshToolRegistry({ activeToolNames: ["read", "bash", "edit"] });
+	(f.session as any)._providerRequestPayloadBuilder = (input: any) => ({ tools: input.tools.map((tool: any) => tool.name) });
+	const preview = await f.session.buildProviderRequestPayload({ messages: [], systemPrompt: "fixture" });
+	const declared = preview?.tools as string[];
+	assert.equal(declared.includes("codemode"), false);
+	for (const name of ["read", "bash", "edit"]) assert.ok(declared.includes(name), `${name} must stay callable: ${declared}`);
+	assert.ok(f.session.agent.state.tools.every(tool => tool.modelExposure === undefined));
+});
+
+function pngBase64(base64Chars: number): string {
+	const bytes = Buffer.alloc(base64Chars / 4 * 3);
+	Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(bytes);
+	return bytes.toString("base64");
+}
+
+test("Codemode image bounding: images survive text truncation, the image cap applies inline, and show charges only shown content", async t => {
+	const tools: InlineExtension = pi => {
+		pi.registerTool({ name: "pics", label: "pics", description: "short text plus images", parameters: Type.Object({ count: Type.Integer(), size: Type.Integer() }),
+			execute: async (_id, params: { count: number; size: number }) => {
+				const content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] = [{ type: "text", text: "pics" }];
+				for (let index = 0; index < params.count; index++) content.push({ type: "image", data: pngBase64(params.size), mimeType: "image/png" });
+				return { content, details: {} };
+			} });
+		pi.registerTool({ name: "echo", label: "echo", description: "large input, tiny result", parameters: Type.Object({ blob: Type.String() }),
+			execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }) });
+	};
+	const f = await fixture(t, {}, [tools]);
+	const outcome = await f.run([
+		// Text alone exhausts max_output_tokens before the shown screenshot.
+		'// @options: {"max_output_tokens":256}\ntext("word ".repeat(5000)); await show((await tools.pics({count:1,size:1024*1024})).ref)',
+		// 20 tiny images with short text: still capped at 16 kept images.
+		'await show((await tools.pics({count:20,size:64})).ref)',
+		// Two tiny results whose hidden inputs are ~200 KB each fit the 256 KiB display budget.
+		'const blob="x".repeat(200000); await show((await tools.echo({blob})).ref); await show((await tools.echo({blob})).ref)',
+	]);
+	const [truncated, many, echoed] = outcome.results;
+	const images = (message: typeof truncated) => message!.content.filter(block => block.type === "image").map(block => (block as { data: string }).data.length);
+	assert.match(JSON.stringify(truncated!.content), /Codemode output truncated/);
+	assert.deepEqual(images(truncated), [1024 * 1024]);
+	assert.equal(many!.isError, false, JSON.stringify(many!.content).slice(0, 1000));
+	assert.equal(images(many).length, 16);
+	assert.equal(echoed!.isError, false, JSON.stringify(echoed!.content).slice(0, 1000));
+	assert.equal(echoed!.content.filter(block => block.type === "text" && block.text === "ok").length, 2);
+});

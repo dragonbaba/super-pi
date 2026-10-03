@@ -432,3 +432,22 @@ b0edd20f7 的 CI（verify-linux、verify-windows）均通过。Codex 提出 2 �
 
 - `npm run check`、`npm run build:offline` 退出 0；`git diff --check` 通过。
 - 全套 `npm test`（PowerShell）：219 个执行单元全部退出 0；3,247 项中 3,157 通过、90 跳过，失败/取消/todo 为 0。
+
+### PR #55 十次复审修复（bea12cfbc 之后）
+
+bea12cfbc 复审提出 5 条：
+
+| 复审问题 | 核实 | 修复 | 回归（去掉修复后均失败） |
+| --- | --- | --- | --- |
+| P1 嵌套授权没有使用下一轮替换后的工具集 | 成立：`getCurrentTools` 读的是 `agent.state.tools`。宿主在 `prepareNextTurnWithContext` 中只替换上下文工具、不修改状态时，模型声明和直接调用都用新工具集，而嵌套调用仍按旧状态授权 | `NestedToolDispatch` 增加 `turnTools`：以当前轮上下文为准，调度开始时记录实时工具作为基线；同名工具只有在基线之后被实时修改（原地删除、替换、脚本中途激活）时，才以实时状态为准。查找仍是线性扫描、不分配；`getTools()` 只用于列举 | 宿主替换下一轮工具后：被移除的工具执行 0 次，新增工具可调用，脚本中途 push 的工具仍可调用；不传 `turnTools` 时失败 |
+| P1 文本截断后，后续图片被丢弃 | 成立：`capCodemodeOutput` 截断文本后直接 `break` | 截断后继续扫描，只保留图片（图片已有自己的预算；有可见文本时估算器不计图片 token） | `max_output_tokens: 256` 加大段文本后 show 1 MiB 截图：图片保留 |
+| P2 内联快速路径没有应用 16 张图片上限 | 成立：只有文本超限才走截断路径 | 图片数量超过 16 也进入截断路径 | 短文本加 20 张图片，show 后只保留 16 张 |
+| P2 show 按输入和 details 计费 | 成立：`record.chars` 含入参和 details，而 show 只追加 content | 记录 `contentChars`，show 的预算只按追加的内容计 | 两次 200 KB 入参、结果仅为 "ok" 的调用都能 show |
+| P2 排除 codemode 后普通工具不可调用 | 部分成立：`createAgentSession`（CLI `--exclude-tools` 和 SDK 都经过它）已拒绝排除 codemode，所以评论描述的场景不会出现；只有直接构造 `AgentSession` 并传 `excludedToolNames` 时可以绕过 | 防御性修复：注册表中没有 codemode 网关时，不把普通工具标为 nested | 拒绝排除 codemode；注册表中没有网关时，read/bash/edit 直接声明 |
+
+补充：热路径 AST 审计（`codemode-hot-paths.test.ts`）要求 `getTools` 不分配。因此 `getTools()` 改为直接返回当前轮工具（没有轮上下文时返回实时工具），`AgentToolExecutionContext` 新增不分配的 `findTool(name)`，按上述规则授权；`describeTools` 改为按名称逐个用 `findTool` 授权（支持脚本标识符的反向映射），能看到脚本中途激活的工具，也会排除被移除的工具。
+
+验证：
+
+- `npm run check`、`npm run build:offline` 退出 0；`git diff --check` 通过。
+- 全套 `npm test`（PowerShell）：219 个执行单元全部退出 0；3,250 项中 3,160 通过、90 跳过，失败/取消/todo 为 0。之前一次运行中，`file-change-recovery.test.ts` 的 "N1 … draft placement" 偶发失败（编辑器草稿时序，与本轮改动无关）；单独运行 3 次和全套重跑均通过。

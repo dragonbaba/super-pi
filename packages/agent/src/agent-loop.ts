@@ -1037,9 +1037,12 @@ function createNestedToolDispatch(
 		}
 		return emit(event);
 	};
-	const owner: NestedToolDispatch = new NestedToolDispatch(parentToolCallId,
-		scope.config.getCurrentTools ?? (() => scope.context.tools ?? NO_TOOLS),
-		(call, tool, childSignal) => runNestedToolCall(call, tool, owner, scope, emitNested, childSignal), signal);
+	const turnTools = scope.context.tools ?? NO_TOOLS;
+	const live = scope.config.getCurrentTools;
+	// The active turn context, which a next-turn hook may replace, is the baseline; live changes made afterwards win.
+	const owner: NestedToolDispatch = new NestedToolDispatch(parentToolCallId, live ?? (() => turnTools),
+		(call, tool, childSignal) => runNestedToolCall(call, tool, owner, scope, emitNested, childSignal), signal,
+		NESTED_CANCEL_GRACE_MS, live ? turnTools : undefined);
 	return owner;
 }
 
