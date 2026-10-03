@@ -319,3 +319,23 @@ test("a child that ignores cancellation is abandoned after the grace period inst
 	await nextTask();
 	assert.equal(dispatch.abandonedCalls, 1);
 });
+
+test("a queued nested call to a tool removed in place from agent state is refused", async () => {
+	let victimRuns = 0, agent!: Agent;
+	const victim = tool("victim", async () => { victimRuns++; return result("victim ran"); });
+	const first = tool("first", async () => {
+		// The supported state contract allows in-place mutation; the array identity stays the same.
+		agent.state.tools.splice(agent.state.tools.indexOf(victim), 1);
+		return result();
+	});
+	let outcomes: boolean[] = [];
+	const f = fixture(async ctx => {
+		// "first" is a write, so "victim" queues behind it and resolves only after the removal.
+		const calls = [ctx.callTool("first", {}), ctx.callTool("victim", {})];
+		outcomes = (await Promise.all(calls)).map(message => message.isError);
+	}, [first, victim]);
+	agent = f.agent;
+	await f.agent.prompt("run");
+	assert.deepEqual(outcomes, [false, true]);
+	assert.equal(victimRuns, 0);
+});

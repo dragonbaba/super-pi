@@ -1525,6 +1525,14 @@ export class AgentSession {
 			);
 		}
 
+		// An answered request proves the model received the projection holding displayed reads.
+		// Admit (and persist) them here, so a run that ends in text keeps them across reload or
+		// tree navigation; beforeToolCall still admits for the next tool call. Empty is a no-op.
+		if (event.type === "message_end" && event.message.role === "assistant" && !this._hostOperation
+			&& event.message.stopReason !== "error" && event.message.stopReason !== "aborted") {
+			await this._codemode.admitVisibleReads(this._emitCodemodeRead);
+		}
+
 		// Notify all listeners. The final boundary is awaited so prompt/abort/idle
 		// cannot overtake critical UI output; high-frequency events stay unchanged.
 		if (event.type === "agent_end" && event.requiresUserInput) this._interactionPaused = true;

@@ -385,3 +385,19 @@ CI 失败：`npm run check`（tsgo）在 `tests/codemode-tree.test.ts` 报 TS230
 - 全套 `npm test`（PowerShell）：219 个执行单元全部退出 0；3,241 项中 3,151 通过、90 跳过（平台条件），失败/取消/todo 为 0。
 - 调试时修复前的挂起测试进程按 PID 结束（3 个，依据命令行确认）。
 - 尚未提交。
+
+### PR #55 七次复审修复（4c82dcacb 之后，本地待复审）
+
+4c82dcacb 的 CI（verify-linux、verify-windows）均通过。Codex 提出 3 条：
+
+| 复审问题 | 核实 | 修复 | 回归 |
+| --- | --- | --- | --- |
+| P1 原地修改工具数组后，嵌套调度仍按旧缓存授权 | 成立：`getCurrentTools` 返回 `agent.state.tools` 本身，按数组引用缓存的 `toolsByName` 不会因原地 `splice` 失效。排在写操作后的调用，以及 `isCurrentTool` 授权检查，都会认可已删除的工具 | `findTool` 改为每次线性扫描当前数组（不分配），删除按引用缓存 | 写操作子调用在执行中 `splice` 掉排队的工具：排队调用被拒，被删工具执行 0 次；改回缓存后失败 |
+| P2 投影后的读证据要等下一次工具调用才持久化 | 成立：模型以文本结束本轮时没有 `beforeToolCall`，此后 reload 或树导航会丢失读证据 | 成功的 assistant `message_end`（非 error/aborted，非宿主操作）即接纳并持久化读证据；`beforeToolCall` 保留作兜底。该事件的监听逐个 await，在工具执行之前完成 | show 后模型以文本结束、reload 后 edit 成功；去掉修复后失败 |
+| P2 规范化后同名工具被隐藏（prelude） | 重复报告：目录只经宿主构建，4c82dcacb 已用 `assignCodemodeIdentifiers` 分配不冲突的标识符，并有真实 prelude 测试覆盖 | 为让不变量明确，prelude 遇到重复标识符时直接让执行失败，不再静默保留第一个；`CodemodeTool.name` 文档补充冲突时的后缀规则 | 既有冲突测试通过 |
+
+验证：
+
+- `npm run check`、`npm run build:offline` 退出 0；`git diff --check` 通过。
+- 全套 `npm test`（PowerShell）：219 个执行单元全部退出 0；3,243 项中 3,153 通过、90 跳过（平台条件），失败/取消/todo 为 0。
+- 尚未提交。

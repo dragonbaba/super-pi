@@ -128,11 +128,11 @@ export const PRELUDE_SOURCE: string = `(function (bridge, toolsJson, globalsJson
 	const allTools = [];
 	for (const { name, jsName, description } of parse(toolsJson)) {
 		const fn = caller("call", name);
-		// The host assigns collision-free identifiers; the check only guards against a malformed catalog.
-		if (!(jsName in tools)) {
-			tools[jsName] = fn;
-			allTools.push(Object.freeze({ name: jsName, description }));
-		}
+		// The host assigns collision-free identifiers (assignCodemodeIdentifiers). Never hide a tool:
+		// a duplicate means a malformed catalog and fails the execution instead.
+		if (jsName in tools) throw new ErrorCtor("Codemode tool catalog has a duplicate identifier: " + jsName);
+		tools[jsName] = fn;
+		allTools.push(Object.freeze({ name: jsName, description }));
 		if (!(name in tools)) tools[name] = fn;
 	}
 	Object.freeze(tools);

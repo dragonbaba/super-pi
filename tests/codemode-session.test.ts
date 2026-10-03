@@ -443,3 +443,18 @@ test("colliding tool names get distinct declared identifiers that scripts and de
 	assert.match(text, /ran foo-bar/);
 	assert.match(text, /ran foo_bar/);
 });
+
+test("a shown read answered by a final text response is persisted before reload", async t => {
+	const f = await fixture(t, { tools: ["read", "edit"] }, [mutation]);
+	// The run ends with the model's text answer; no later tool call admits the read.
+	await f.run(['await show((await tools.read({path:"file.txt"})).ref)']);
+	assert.equal(f.manager.getBranch().filter(e => e.type === "custom" && e.customType === "codemode-read-evidence-v1").length, 1);
+	// Reload emits session_start only for a bound host, as in interactive and RPC modes.
+	const errors: unknown[] = [];
+	await f.session.bindExtensions({ onError: error => errors.push(error) });
+	await f.session.reload();
+	assert.deepEqual(errors, []);
+	const outcome = await f.run(['await tools.edit({path:"file.txt",edits:[{oldText:"hello",newText:"edited"}]})']);
+	assert.equal(outcome.results.at(-1)?.isError, false, JSON.stringify(outcome.results.at(-1)));
+	assert.equal(readFileSync(join(f.cwd, "file.txt"), "utf8"), "edited\nworld\n");
+});

@@ -42,8 +42,6 @@ export class NestedToolDispatch implements AgentToolExecutionContext {
 	private accepting = true;
 	private idle: Promise<void> | undefined;
 	private resolveIdle: (() => void) | undefined;
-	private toolSnapshot: readonly AgentTool<any>[] | undefined;
-	private readonly toolsByName = new Map<string, AgentTool<any>>();
 	hasErrors = false;
 	completedCalls = 0;
 	/** Children that ignored cancellation past the grace period; they may still change state. */
@@ -70,17 +68,16 @@ export class NestedToolDispatch implements AgentToolExecutionContext {
 		return this.getCurrentTools?.() ?? EMPTY_TOOLS;
 	}
 
+	/**
+	 * The live array may be mutated in place, so array identity proves nothing about its
+	 * contents. Scan it on every lookup: authorization must see removals; no allocation.
+	 */
 	private findTool(name: string): AgentTool<any> | undefined {
 		const tools = this.getTools();
-		if (tools !== this.toolSnapshot) {
-			this.toolsByName.clear();
-			for (let index = 0; index < tools.length; index++) {
-				const tool = tools[index]!;
-				if (!this.toolsByName.has(tool.name)) this.toolsByName.set(tool.name, tool);
-			}
-			this.toolSnapshot = tools;
+		for (let index = 0; index < tools.length; index++) {
+			if (tools[index]!.name === name) return tools[index];
 		}
-		return this.toolsByName.get(name);
+		return undefined;
 	}
 
 	isCurrentTool(tool: AgentTool<any>): boolean {
@@ -167,8 +164,6 @@ export class NestedToolDispatch implements AgentToolExecutionContext {
 		} finally {
 			this.pending.length = 0;
 			this.pendingIndex = 0;
-			this.toolSnapshot = undefined;
-			this.toolsByName.clear();
 			this.getCurrentTools = undefined;
 			this.invoke = undefined;
 			this.resolveIdle = undefined;
