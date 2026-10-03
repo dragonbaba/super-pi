@@ -32,6 +32,8 @@ const USAGE = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0
 
 async function fixture(t: TestContext, options: Pick<CreateAgentSessionOptions, "tools" | "noTools" | "excludeTools" | "toolResultPresentation" | "extensionRunnerOptions"> = {}, factories: InlineExtension[] = [], bundle = false, persist = false) {
 	const root = mkdtempSync(join(tmpdir(), "sp-codemode-session-"));
+	let shutdown: (() => Promise<void>) | undefined;
+	t.after(async () => { try { await shutdown?.(); } finally { rmSync(root, { recursive: true, force: true }); } });
 	const cwd = join(root, "work"), agentDir = join(root, "agent");
 	mkdirSync(cwd); mkdirSync(agentDir);
 	writeFileSync(join(cwd, "file.txt"), "hello\nworld\n");
@@ -45,8 +47,11 @@ async function fixture(t: TestContext, options: Pick<CreateAgentSessionOptions, 
 	const { session } = await createAgentSession({ cwd, agentDir, resourceLoader: resources, settingsManager: settings, sessionManager: manager,
 		model: { ...MODEL, input: ["text"] }, modelRuntime: { hasConfiguredAuth: () => true, checkAuth: async () => ({ type: "api_key" }),
 			isUsingOAuth: () => false, getModel: () => undefined, getAuth: async () => undefined } as never, ...options });
+	shutdown = async () => {
+		session.agent.abort();
+		try { await session.agent.waitForIdle(); } finally { session.dispose(); }
+	};
 	await session.bindExtensions({});
-	t.after(async () => { session.agent.abort(); await session.agent.waitForIdle(); session.dispose(); rmSync(root, { recursive: true, force: true }); });
 	let id = 0;
 	// An array entry is one assistant response carrying several Codemode calls.
 	async function run(scripts: (string | string[])[], project?: (context: Context) => void, rawCode = false) {

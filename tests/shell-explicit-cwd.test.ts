@@ -21,7 +21,10 @@ const { default: lifecycle } = await createJiti(import.meta.url).import<any>("..
 const bashPath = process.platform !== "win32" ? "/bin/bash" : existsSync("D:/Git/bin/bash.exe") ? "D:/Git/bin/bash.exe" : join(process.env.ProgramFiles!, "Git/bin/bash.exe");
 
 async function fixture(t: test.TestContext, auxiliary?: any, aliasedTrustedRoot = false) {
-  const root = mkdtempSync(join(tmpdir(), "sp-shell-cwd-")); let cwd = join(root, "workspace"); mkdirSync(cwd);
+  const root = mkdtempSync(join(tmpdir(), "sp-shell-cwd-"));
+  let shutdown: (() => Promise<void>) | undefined;
+  t.after(async () => { try { await shutdown?.(); } finally { removeOwnedFixture(root); } });
+  let cwd = join(root, "workspace"); mkdirSync(cwd);
   if (aliasedTrustedRoot) { const alias = join(root, "workspace-alias"); symlinkSync(cwd, alias, process.platform === "win32" ? "junction" : "dir"); cwd = alias; }
   const trustOwner = SettingsManager.create(cwd, join(root, "trust-agent"), { projectTrusted: aliasedTrustedRoot });
   const session = SessionManager.create(cwd, join(root, "sessions"));
@@ -34,12 +37,16 @@ async function fixture(t: test.TestContext, auxiliary?: any, aliasedTrustedRoot 
     const result = await runner.emitToolCall({ type: "tool_call", toolName: toolCall.name, toolCallId: toolCall.id, input: args } as never);
     afterAuthorization(args); return result;
   } });
+  shutdown = async () => {
+    agent.abort();
+    try { await agent.waitForIdle(); }
+    finally { runner.invalidate(); await runner.emit({ type: "session_shutdown" } as never); }
+  };
   agent.state.tools = [createBashTool(cwd, { shellPath: bashPath }), createPowerShellTool(cwd)];
   runner.bindCore({ getThinkingLevel: () => "off", getActiveTools: () => ["bash", "powershell"], appendEntry: (kind: string, data: any) => session.appendCustomEntry(kind, data) } as never,
     { getSignal: () => agent.signal, getModel: () => agent.state.model, isProjectTrusted: (revalidateIdentity?: boolean) => trustOwner.isProjectTrusted(revalidateIdentity), isIdle: () => true, hasPendingMessages: () => false } as never);
   runner.setUIContext({ ...runner.getUIContext(), select: async () => { approvals++; onApproval(); return "仅允许本次"; } }, "tui");
   await runner.emit({ type: "session_start" } as never);
-  t.after(async () => { agent.abort(); runner.invalidate(); await runner.emit({ type: "session_shutdown" } as never); removeOwnedFixture(root); });
   return { root, cwd, agent, runner, session, approvals: () => approvals,
     onApproval(fn: () => void) { onApproval = fn; }, afterAuthorization(fn: (args: any) => void) { afterAuthorization = fn; },
     async call(name: string, command: string, directory?: string) {
