@@ -8,11 +8,14 @@ limit. Use `npm.cmd` on Windows PowerShell when required by execution policy.
 order without executing tests. The runner discovers each file once and
 includes the memory workspace. It runs files in a bounded pool of
 `min(available CPUs, 8)` child processes; `--jobs N` or `SP_TEST_JOBS=N`
-overrides the width, and `--jobs 1` restores serial execution. Known slow files
-start first so they do not extend the tail. After the first nonzero child exit
-or signal no new file starts; running files finish and the first failure's exit
-code is returned. Each child's output is buffered and printed with its END line,
-so parallel output never interleaves.
+overrides the width, and `--jobs 1` restores serial execution. Files with
+wall-clock pass conditions (`bash-running-responsiveness`,
+`tool-lifecycle-postmerge`) run alone before the pool starts. In the pool, known
+slow files start first so they do not extend the tail. After the first nonzero
+child exit or signal no new file starts; running files finish and the first
+failure's exit code is returned. Each child writes stdout and stderr to a
+runner-owned log file, replayed to stdout with its END line, so parallel output
+never interleaves and the runner does not hold child output in memory.
 `test:unit`, `test:hot` and `test:contract` partition that discovery for focused
 work; they are not an additional validation chain before `npm test`.
 

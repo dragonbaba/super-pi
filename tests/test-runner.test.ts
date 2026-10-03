@@ -9,6 +9,7 @@ import {
 	defaultJobs,
 	discoverTestFiles,
 	normalizeTestPath,
+	run,
 	scheduleTestFiles,
 } from "../scripts/test.mjs";
 
@@ -107,14 +108,46 @@ test('isolated GC fixture', () => {
 	}
 });
 
-test("runner schedules known slow files first and bounds the default width", () => {
+test("runner schedules known slow files first and bounds the default width", async () => {
 	assert.deepEqual(
-		scheduleTestFiles(["a.test.ts", "codemode-session.test.ts", "b.test.ts", "alpha-cli.test.ts"]),
-		["alpha-cli.test.ts", "codemode-session.test.ts", "a.test.ts", "b.test.ts"],
+		scheduleTestFiles(["a.test.ts", "codemode-session.test.ts", "tool-lifecycle-postmerge.test.ts", "b.test.ts", "alpha-cli.test.ts"]),
+		{
+			exclusive: ["tool-lifecycle-postmerge.test.ts"],
+			pooled: ["alpha-cli.test.ts", "codemode-session.test.ts", "a.test.ts", "b.test.ts"],
+		},
 	);
 	assert.equal(defaultJobs({ SP_TEST_JOBS: "3" }), 3);
 	assert.ok(defaultJobs({}) >= 1 && defaultJobs({}) <= 8);
 	assert.throws(() => defaultJobs({ SP_TEST_JOBS: "0" }), /positive integer/);
+	for (const jobs of [0, -1, Number.NaN, 1.5]) {
+		await assert.rejects(run({ suite: "unit", root: join(tmpdir(), "super-pi-runner-never-discovered"), skipMemory: true, list: false, jobs }), /positive integer/);
+	}
+});
+
+test("wall-clock gated files run with no pooled peer", () => {
+	const root = mkdtempSync(join(tmpdir(), "super-pi-test-exclusive-"));
+	const events = join(root, "events.log");
+	const recorder = (name: string, holdMs: number) => `
+import { appendFileSync } from 'node:fs';
+import test from 'node:test';
+test('${name}', async () => {
+  appendFileSync(${JSON.stringify(events)}, 'start ${name}\\n');
+  await new Promise((resolve) => setTimeout(resolve, ${holdMs}));
+  appendFileSync(${JSON.stringify(events)}, 'end ${name}\\n');
+});
+`;
+	try {
+		writeFileSync(join(root, "a-pooled.test.ts"), recorder("a-pooled", 50));
+		writeFileSync(join(root, "bash-running-responsiveness.test.ts"), recorder("bash-running-responsiveness", 300));
+		writeFileSync(join(root, "z-pooled.test.ts"), recorder("z-pooled", 50));
+		const result = runRunner(root, "--jobs", "4");
+		assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+		const lines = readFileSync(events, "utf8").trim().split("\n");
+		assert.deepEqual(lines.slice(0, 2), ["start bash-running-responsiveness", "end bash-running-responsiveness"]);
+		assert.equal(lines.length, 6);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
 });
 
 test("parallel runner overlaps files and keeps each file's output in one block", () => {
