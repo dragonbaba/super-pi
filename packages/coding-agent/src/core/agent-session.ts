@@ -1,5 +1,8 @@
 import { type AttachmentMessage, type ImageSubmission, snapshotImageSubmission, verifyImmutableImage, isDecodedImage, verifySubmittedImage } from "./image-attachments.ts";
 import { createHash } from "node:crypto";
+import { CodemodeController } from "./codemode.ts";
+import { CODEMODE_NAME, CODEMODE_STORE_ENTRY, CODEMODE_CALL_ENTRY, CODEMODE_RESULT_ENTRY, DIRECT_CONTROL_NAMES } from "./codemode-constants.ts";
+import type { CodemodeReadEvent } from "./extensions/types.ts";
 /**
  * AgentSession - Core abstraction for agent lifecycle and session management.
  *
@@ -866,6 +869,8 @@ export class AgentSession {
 	private _evidenceSessionId = "";
 	private _evidenceLeaf: string | null = null;
 	private _toolRegistry: Map<string, AgentTool> = new Map();
+	private readonly _codemode: CodemodeController;
+	private readonly _emitCodemodeRead = async (event: CodemodeReadEvent): Promise<void> => { await this._extensionRunner.emit(event); };
 	private _toolDefinitions: Map<string, ToolDefinitionEntry> = new Map();
 	private _toolPromptSnippets: Map<string, string> = new Map();
 	private _toolPromptGuidelines: Map<string, string[]> = new Map();
@@ -976,6 +981,9 @@ export class AgentSession {
 		stabilizeCompletedToolArguments(this.agent.state.messages);
 		this.sessionManager = config.sessionManager;
 		this.settingsManager = config.settingsManager;
+		this._codemode = new CodemodeController(values => { this.sessionManager.appendCustomEntry(CODEMODE_STORE_ENTRY, { version: 1, values }); },
+			entry => { this.sessionManager.appendCustomEntry(CODEMODE_CALL_ENTRY, entry); },
+			entry => { this.sessionManager.appendCustomEntry(CODEMODE_RESULT_ENTRY, entry); });
 		this._scopedModels = config.scopedModels ?? [];
 		this._resourceLoader = config.resourceLoader;
 		this._customTools = config.customTools ?? [];
@@ -1096,24 +1104,30 @@ export class AgentSession {
 	 * happens here instead of in wrappers.
 	 */
 	private _installAgentToolHooks(): void {
-		this.agent.beforeToolCall = async ({ toolCall, args }) => {
+		this.agent.beforeToolCall = async ({ toolCall, args, parentToolCallId }) => {
+			await this._codemode.admitVisibleReads(this._emitCodemodeRead);
 			if (toolCall.name === "inspect_image" && this.settingsManager.getBlockImages()) {
 				return { block: true, reason: "图片读取/发送已被 blockImages 禁止" };
 			}
 			const runner = this._extensionRunner;
 			if (!runner.hasHandlers("tool_call")) {
+				this._codemode.recordInvocation(parentToolCallId, toolCall.id, toolCall.name, args);
 				return undefined;
 			}
 
 			try {
-				return await runner.emitToolCall({
+				const decision = await runner.emitToolCall({
 					// Preserve the runner-owned finalAuthorization in the returned result;
 					// the dispatcher consumes it only at invocation, not at hook completion.
 					type: "tool_call",
 					toolName: toolCall.name,
 					toolCallId: toolCall.id,
+					parentToolCallId,
 					input: args as Record<string, unknown>,
 				});
+				try { if (!decision?.block) this._codemode.recordInvocation(parentToolCallId, toolCall.id, toolCall.name, args); }
+				catch (error) { decision?.finalAuthorization?.release(); throw error; }
+				return decision;
 			} catch (err) {
 				if (err instanceof Error) {
 					throw err;
@@ -1122,7 +1136,7 @@ export class AgentSession {
 			}
 		};
 
-		this.agent.afterToolCall = async ({ toolCall, args, result, isError }) => {
+		this.agent.afterToolCall = async ({ toolCall, args, result, isError, parentToolCallId }) => {
 			try {
 			const mcpTool = toolCall.name.startsWith("mcp__");
 			const mcpFailure = mcpTool && typeof result.details?.mcpError === "string";
@@ -1135,6 +1149,7 @@ export class AgentSession {
 						type: "tool_result",
 						toolName: toolCall.name,
 						toolCallId: toolCall.id,
+						parentToolCallId,
 						input: args as Record<string, unknown>,
 						content: result.content,
 						details: result.details,
@@ -1157,6 +1172,22 @@ export class AgentSession {
 			const normalizedContent = await normalizeToolResultImages(finalContent, {
 				autoResizeImages: this.settingsManager.getImageAutoResize(),
 			});
+			this._codemode.finalizeStore(toolCall.id, finalIsError || hookResult?.isError === true);
+			if (toolCall.name === CODEMODE_NAME && hookResult?.isError === true && !result.isError) {
+				const hookDetails = hookResult.details;
+				return this._codemode.observationFailed(
+					{
+						...result,
+						content: normalizedContent,
+						details: {
+							...result.details,
+							...(hookDetails && typeof hookDetails === "object" ? hookDetails : {}),
+							codemode: result.details?.codemode,
+						},
+					},
+					new Error("A result hook rejected Codemode completion; store writes were not committed"),
+				);
+			}
 
 			if (!hookResult && normalizedContent === content && finalIsError === isError) {
 				return undefined;
@@ -1168,6 +1199,10 @@ export class AgentSession {
 				isError: hookResult?.isError ?? finalIsError,
 				usage: hookResult?.usage,
 			};
+			} catch (error) {
+				this._codemode.finalizeStore(toolCall.id, true);
+				if (toolCall.name === CODEMODE_NAME) return this._codemode.observationFailed(result, error);
+				throw error;
 			} finally {
 				stabilizeToolArguments(toolCall.arguments);
 			}
@@ -1215,6 +1250,7 @@ export class AgentSession {
 					tools: getModelCapabilities(this.agent.state.model).toolCalling
 						? this.agent.state.tools.slice()
 						: [],
+					modelTools: getModelCapabilities(this.agent.state.model).toolCalling ? this.agent.state.modelTools : [],
 				},
 				model: this.agent.state.model,
 				thinkingLevel: this.agent.state.thinkingLevel,
@@ -1669,6 +1705,7 @@ export class AgentSession {
 		} else if (event.type === "tool_execution_start") {
 			const extensionEvent: ToolExecutionStartEvent = {
 				type: "tool_execution_start",
+				parentToolCallId: event.parentToolCallId,
 				toolCallId: event.toolCallId,
 				toolName: event.toolName,
 				args: event.args,
@@ -1677,6 +1714,7 @@ export class AgentSession {
 		} else if (event.type === "tool_execution_update") {
 			const extensionEvent: ToolExecutionUpdateEvent = {
 				type: "tool_execution_update",
+				parentToolCallId: event.parentToolCallId,
 				toolCallId: event.toolCallId,
 				toolName: event.toolName,
 				args: event.args,
@@ -1686,6 +1724,7 @@ export class AgentSession {
 		} else if (event.type === "tool_execution_end") {
 			const extensionEvent: ToolExecutionEndEvent = {
 				type: "tool_execution_end",
+				parentToolCallId: event.parentToolCallId,
 				toolCallId: event.toolCallId,
 				toolName: event.toolName,
 				result: event.result,
@@ -1707,6 +1746,7 @@ export class AgentSession {
 		}
 		await this._extensionRunner.emitObservers({
 			type: "tool_execution_update",
+			parentToolCallId: event.parentToolCallId,
 			toolCallId: event.toolCallId,
 			toolName: event.toolName,
 			args: event.args,
@@ -1764,6 +1804,7 @@ export class AgentSession {
 	 * Call this when completely done with the session.
 	 */
 	dispose(): void {
+		void this._codemode.close().catch(ignoreOrdinaryEventListenerRejection);
 		this._pendingCustomMessages.length = 0;
 		this._pendingCustomContextMessages.length = 0;
 		this._pendingLengthRecovery = undefined;
@@ -1930,6 +1971,7 @@ export class AgentSession {
 
 	/** A payload hook cannot prove source identity; failures must permit recapture. */
 	discardPendingToolResultBudgetSources(): void {
+		this._codemode.discardVisibleReads();
 		if (!this._toolBudgetProjectionPending) return;
 		this._clearToolBudgetProjectedSources();
 		this._toolBudgetCanonicalRediscoveryBlocked = true;
@@ -1954,12 +1996,16 @@ export class AgentSession {
 	projectToolResultMessagesForModel(messages: Message[], imagePolicy?: (message: Message) => Message,
 		systemPrompt?: string, tools?: readonly AgentTool<any>[], contextWindow?: number, maxOutputTokens?: number, requestPlanning = false): Message[] {
 		const owner = this._toolResultPresentation;
-		if (!owner) return messages;
+		if (!owner) {
+			if (this._toolBudgetPayloadPreviewDepth === 0) this._codemode.recordProjection(messages);
+			return messages;
+		}
 		if (this._toolBudgetPayloadPreviewDepth !== 0) return owner.projectMessagesForModel(messages, imagePolicy, systemPrompt, tools, contextWindow, maxOutputTokens, requestPlanning);
 		this.discardPendingToolResultBudgetSources();
 		const sources = this._toolBudgetProjectionPending ? this._captureBudgetProjectionSources() : undefined;
 		try {
 			const projected = owner.projectMessagesForModel(messages, imagePolicy, systemPrompt, tools, contextWindow, maxOutputTokens, requestPlanning, sources);
+			this._codemode.recordProjection(projected);
 			this._toolBudgetLastRequest = owner.getEvidenceBudgetTokens() === undefined ? "not-observed" : "applied";
 			if (sources) {
 				// Request preparation is the existing cold history boundary. Do not
@@ -2294,7 +2340,7 @@ export class AgentSession {
 				model,
 				systemPrompt: input.systemPrompt,
 				messages,
-				tools: this.agent.state.tools,
+				tools: this.agent.state.modelTools ?? this.agent.state.tools,
 				thinkingLevel: this.thinkingLevel,
 				sessionId: this.sessionManager.getSessionId(),
 			});
@@ -2366,6 +2412,13 @@ export class AgentSession {
 				validToolNames.push(name);
 			}
 		}
+		const codemode = this._toolRegistry.get(CODEMODE_NAME);
+		if (tools.length > 0 && codemode && !tools.includes(codemode)) {
+			tools.push(codemode);
+			validToolNames.push(CODEMODE_NAME);
+		}
+		this._codemode.setTools(tools);
+		if (codemode) codemode.description = this._codemode.definition.description;
 		this.agent.state.tools = tools;
 
 		// Rebuild base system prompt with new tool set
@@ -2454,15 +2507,19 @@ export class AgentSession {
 		const validToolNames = toolCalling ? toolNames.filter((name) => this._toolRegistry.has(name)) : [];
 		const toolSnippets: Record<string, string> = {};
 		const promptGuidelines: string[] = [];
+		const modelToolNames: string[] = [];
+		const nestedToolNames: string[] = [];
 		for (const name of validToolNames) {
+			const nested = this._toolRegistry.get(name)!.modelExposure === "nested";
+			(nested ? nestedToolNames : modelToolNames).push(name);
 			const snippet = this._toolPromptSnippets.get(name);
-			if (snippet) {
+			if (snippet && !nested) {
 				setOwnProperty(toolSnippets, name, snippet);
 			}
 
 			const toolGuidelines = this._toolPromptGuidelines.get(name);
 			if (toolGuidelines) {
-				promptGuidelines.push(...toolGuidelines);
+				for (const guideline of toolGuidelines) promptGuidelines.push(nested ? `For ${name} inside codemode: ${guideline}` : guideline);
 			}
 		}
 
@@ -2479,7 +2536,8 @@ export class AgentSession {
 			contextFiles: loadedContextFiles,
 			customPrompt: loaderSystemPrompt,
 			appendSystemPrompt,
-			selectedTools: validToolNames,
+			selectedTools: modelToolNames,
+			nestedTools: nestedToolNames,
 			toolSnippets,
 			promptGuidelines,
 		};
@@ -4284,6 +4342,7 @@ export class AgentSession {
 	}
 
 	private _clearEvidenceBranch(): void {
+		this._codemode.clearReadEvidence();
 		this._evidenceLedger?.changeBranch();
 		this._evidenceCompletedReads?.clear();
 		this._evidenceCompletedBytes = 0;
@@ -4505,14 +4564,16 @@ export class AgentSession {
 		const allowedToolNames = this._allowedToolNames;
 		const excludedToolNames = this._excludedToolNames;
 		const isAllowedTool = (name: string): boolean =>
-			(!allowedToolNames || allowedToolNames.has(name)) && !excludedToolNames?.has(name);
+			(name === CODEMODE_NAME ? !allowedToolNames || allowedToolNames.size > 0 : !allowedToolNames || allowedToolNames.has(name)) && !excludedToolNames?.has(name);
 
 		const registeredTools = this._extensionRunner.getAllRegisteredTools();
 		const allCustomTools: RegisteredTool[] = [];
 		for (const tool of registeredTools) {
+			if (tool.definition.name === CODEMODE_NAME) throw new Error("codemode is a reserved built-in orchestration tool");
 			if (isAllowedTool(tool.definition.name)) allCustomTools.push(tool);
 		}
 		for (const definition of this._customTools) {
+			if (definition.name === CODEMODE_NAME) throw new Error("codemode is a reserved built-in orchestration tool");
 			if (!isAllowedTool(definition.name)) continue;
 			allCustomTools.push({
 				definition,
@@ -4573,6 +4634,10 @@ export class AgentSession {
 		for (const tool of wrappedExtensionTools as AgentTool[]) {
 			toolRegistry.set(tool.name, tool);
 		}
+		for (const tool of toolRegistry.values()) {
+			if (DIRECT_CONTROL_NAMES.has(tool.name)) tool.modelOnly = true;
+			tool.modelExposure = tool.orchestration || tool.modelOnly || tool.interactionBoundary ? undefined : "nested";
+		}
 		if (this._evidenceLedger) {
 			for (const tool of toolRegistry.values()) {
 				const definition = this._baseToolDefinitions.get(tool.name);
@@ -4583,7 +4648,9 @@ export class AgentSession {
 				if (trustedRead && definition) (definition as typeof definition & { [READ_EVIDENCE_CAPTURE]?: () => boolean })[READ_EVIDENCE_CAPTURE] = this._captureReadEvidenceIdentity.bind(this);
 				const execute = tool.execute;
 				// Lifecycle-created adapter, never a closure created by lookup.
-				tool.execute = (callId, args, signal, onUpdate) => this._executeEvidenceTool(execute, trustedRead, callId, args, signal, onUpdate);
+				tool.execute = (callId, args, signal, onUpdate, executionContext) => executionContext
+					? execute(callId, args, signal, onUpdate, executionContext)
+					: this._executeEvidenceTool(execute, trustedRead, callId, args, signal, onUpdate);
 			}
 		}
 		this._toolRegistry = toolRegistry;
@@ -4631,6 +4698,7 @@ export class AgentSession {
 		flagValues?: Map<string, boolean | string>;
 		includeAllExtensionTools?: boolean;
 	}): void {
+		this._restoreCodemodeStore();
 		const previousProtectedDefinition = this._operationOptions && this._baseToolDefinitions.get("write");
 		if (previousProtectedDefinition) retireOperationWrite(previousProtectedDefinition);
 		const autoResizeImages = this.settingsManager.getImageAutoResize();
@@ -4674,6 +4742,8 @@ export class AgentSession {
 				});
 		}
 
+		if (Object.hasOwn(baseToolDefinitions, CODEMODE_NAME)) throw new Error("codemode is a reserved built-in orchestration tool");
+		baseToolDefinitions[CODEMODE_NAME] = this._codemode.definition;
 		const baseToolDefinitionMap = new Map<string, ToolDefinition>();
 		const baseToolNames = Object.keys(baseToolDefinitions);
 		for (let index = 0; index < baseToolNames.length; index++) {
@@ -4746,6 +4816,21 @@ export class AgentSession {
 			await this._extensionRunner.emit({ type: "session_start", reason: "reload" });
 			await this.extendResourcesFromExtensions("reload");
 		}
+	}
+
+	private _restoreCodemodeStore(): void {
+		const branch = this.sessionManager.getBranch();
+		let value: unknown;
+		for (let index = branch.length - 1; index >= 0; index--) {
+			const entry = branch[index]!;
+			if (entry.type === "custom" && entry.customType === CODEMODE_STORE_ENTRY) {
+				const data = entry.data as { version?: unknown; values?: unknown } | undefined;
+				if (data?.version === 1) value = data.values;
+				break;
+			}
+		}
+		try { this._codemode.restoreStore(value); }
+		catch (error) { this._codemode.failStoreRestore(error); }
 	}
 
 	// =========================================================================
@@ -5199,6 +5284,7 @@ export class AgentSession {
 			this._rebuildToolResultUiCanonicalIndex();
 
 			// Emit session_tree event
+			this._restoreCodemodeStore();
 			await this._extensionRunner.emit({
 				type: "session_tree",
 				newLeafId: this.sessionManager.getLeafId(),

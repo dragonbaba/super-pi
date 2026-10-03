@@ -8,7 +8,7 @@
 import { createInterface } from "node:readline";
 import { type ImageContent, modelsAreEqual } from "@super-pi/ai";
 import chalk from "chalk";
-import { type Args, hasOption, type Mode, parseArgs, printHelp } from "./cli/args.ts";
+import { type Args, hasOption, type Mode, parseArgs, printHelp, validateModelSelectionArgs } from "./cli/args.ts";
 import {
 	type AuthCheckResult,
 	checkProviderAuth,
@@ -482,6 +482,8 @@ function buildSessionOptions(
 	// Model from CLI
 	// - supports --provider <name> --model <pattern>
 	// - supports --model <provider>/<pattern>
+	const modelSelectionError = validateModelSelectionArgs(parsed);
+	if (modelSelectionError) diagnostics.push({ type: "error", message: modelSelectionError });
 	if (parsed.model) {
 		const resolved = resolveCliModel({
 			cliProvider: parsed.provider,

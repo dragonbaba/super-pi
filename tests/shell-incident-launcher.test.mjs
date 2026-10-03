@@ -66,7 +66,7 @@ function runFixture(t, { name, command, preexisting, denied = false, shim, broke
   assert.equal(child.error, undefined); assert.equal(child.status, 0, child.stderr);
   const events = fs.readFileSync(report, 'utf8').trim().split('\n').map(JSON.parse);
   const wire = child.stdout.split('\n').flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } });
-  const resultEvent = wire.find(event => event.type === 'tool_execution_end' && event.toolCallId === name);
+  const resultEvent = wire.find(event => event.type === 'tool_execution_end' && event.toolCallId === `${name}:nested:1`);
   assert.ok(resultEvent, child.stdout);
   const result = resultEvent.result, facts = result.details.shellExecution;
   const spawns = events.filter(event => event.phase === 'spawn');
@@ -75,7 +75,7 @@ function runFixture(t, { name, command, preexisting, denied = false, shim, broke
   const exit = events.find(event => event.phase === 'exit');
   assert.equal(exit.network, 0); assert.equal(release.pending, 0); assert.equal(release.authorizations, 0);
   assert.equal(exit.launcher, join(project, 'scripts/superpi.mjs'));
-  assert.equal(wire.filter(event => event.type === 'tool_execution_end').length, 1, 'no retry');
+  assert.equal(wire.filter(event => event.type === 'tool_execution_end' && event.toolName === 'bash').length, 1, 'no child retry');
   if (denied || refused) {
     assert.equal(resultEvent.isError, true); assert.equal(spawns.length, 0);
     assert.equal(facts.started, false); assert.equal(facts.sideEffects, 'none'); assert.deepEqual(after, before);

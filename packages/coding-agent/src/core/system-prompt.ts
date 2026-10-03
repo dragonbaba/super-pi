@@ -9,11 +9,18 @@ function addUniqueGuideline(guidelines: string[], guideline: string): void {
 	if (!guidelines.includes(guideline)) guidelines.push(guideline);
 }
 
+/** Direct model tools and Codemode children are both callable for guideline purposes. */
+function hasCallableTool(tools: string[], nestedTools: string[] | undefined, name: string): boolean {
+	return tools.includes(name) || nestedTools?.includes(name) === true;
+}
+
 export interface BuildSystemPromptOptions {
 	/** Custom system prompt (replaces default). */
 	customPrompt?: string;
 	/** Tools to include in prompt. Default: [read, bash, edit, write] */
 	selectedTools?: string[];
+	/** Callable through Codemode, not declared as direct model tools. */
+	nestedTools?: string[];
 	/** Optional one-line tool snippets keyed by tool name. */
 	toolSnippets?: Record<string, string>;
 	/** Additional guideline bullets appended to the default system prompt guidelines. */
@@ -33,6 +40,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 	const {
 		customPrompt,
 		selectedTools,
+		nestedTools,
 		toolSnippets,
 		promptGuidelines,
 		appendSystemPrompt,
@@ -65,7 +73,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 		}
 
 		// Append skills section (only if read tool is available)
-		const customPromptHasRead = !selectedTools || selectedTools.includes("read");
+		const customPromptHasRead = !selectedTools || hasCallableTool(selectedTools, nestedTools, "read");
 		if (customPromptHasRead && skills.length > 0) {
 			prompt += formatSkillsForPrompt(skills);
 		}
@@ -89,12 +97,12 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 	// Build guidelines based on which tools are actually available
 	const guidelinesList: string[] = [];
 
-	const hasBash = tools.includes("bash");
-	const hasPowerShell = tools.includes("powershell");
-	const hasGrep = tools.includes("grep");
-	const hasFind = tools.includes("find");
-	const hasLs = tools.includes("ls");
-	const hasRead = tools.includes("read");
+	const hasBash = hasCallableTool(tools, nestedTools, "bash");
+	const hasPowerShell = hasCallableTool(tools, nestedTools, "powershell");
+	const hasGrep = hasCallableTool(tools, nestedTools, "grep");
+	const hasFind = hasCallableTool(tools, nestedTools, "find");
+	const hasLs = hasCallableTool(tools, nestedTools, "ls");
+	const hasRead = hasCallableTool(tools, nestedTools, "read");
 
 	// File exploration guidelines
 	if ((hasBash || hasPowerShell) && !hasGrep && !hasFind && !hasLs) {

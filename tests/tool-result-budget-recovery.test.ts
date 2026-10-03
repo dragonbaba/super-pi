@@ -81,7 +81,7 @@ test("multiple required results retain exact order and bounded batch envelopes",
 });
 
 for (const presentationBudget of [1024,1]) test(`real SDK write persists across projection block and recovery: budget ${presentationBudget}`, async t => {
- const {createAgentSession}=await import("../packages/coding-agent/src/core/sdk.ts");
+ const {createNativeProtocolSessionFixture:createAgentSession}=await import("./helpers/native-protocol-session.ts");
  const {DefaultResourceLoader}=await import("../packages/coding-agent/src/core/resource-loader.ts");
  const {SettingsManager}=await import("../packages/coding-agent/src/core/settings-manager.ts");
  const {SessionManager}=await import("../packages/coding-agent/src/core/session-manager.ts");

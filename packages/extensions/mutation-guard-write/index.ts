@@ -35,6 +35,7 @@ import { canonicalCreationDirectories } from "./file-creation.ts";
 interface ToolResultEventShape {
   toolName: string;
   toolCallId: string;
+  parentToolCallId?: string;
   input: unknown;
   content: Array<{ type: string; text?: string }>;
   details?: unknown;
@@ -127,7 +128,7 @@ function observedTextRead(event: ToolResultEventShape): {
   endLine: number;
   complete: boolean;
 } | undefined {
-  if (event.toolName !== "read" || event.isError) return undefined;
+  if (event.toolName !== "read" || event.isError || event.parentToolCallId !== undefined) return undefined;
   if (!event.input || typeof event.input !== "object") return undefined;
   const input = event.input as { path?: unknown; offset?: unknown; limit?: unknown };
   if (typeof input.path !== "string") return undefined;
@@ -263,37 +264,39 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
     turnGeneration += 1;
   });
 
+  async function recordDisplayedRead(event: ToolResultEventShape, cwd: string, generation: number) {
+    const read = observedTextRead(event);
+    if (!read) return undefined;
+    try {
+      const source = (event.content as any)?.[MUTATION_READ_SOURCE];
+      if (!source || typeof source.canonicalPath !== "string" || typeof source.addressedPath !== "string" || typeof source.fileGeneration !== "string") throw new Error("Read source identity is unavailable.");
+      const target = await guard.recordRead(cwd, source.addressedPath, read.text, read.startLine, read.endLine,
+        event.toolCallId, generation, read.complete, source.canonicalPath, source);
+      const input = event.input as { path: string; offset?: unknown; limit?: unknown };
+      return { details: { ...(event.details as object), mutationReadEvidence: { version: 2, toolCallId: event.toolCallId,
+        path: input.path, offset: input.offset, limit: input.limit, target } } };
+    } catch {
+      return { details: { ...(event.details as object), mutationReadEvidence: { version: 2, toolCallId: event.toolCallId, rejected: true } } };
+    }
+  }
+
+  pi.on("codemode_read", async (event, ctx) => {
+    // This distinct host event is delivered only after a previous parent result
+    // survived model projection. It never originates in VM-provided metadata.
+    await recordDisplayedRead({ toolName: "read", toolCallId: event.toolCallId, input: event.input,
+      content: event.content, details: event.details, isError: false }, ctx.cwd, turnGeneration - 1);
+  });
+
   pi.on("tool_result", async (rawEvent, ctx) => {
     const event = rawEvent as ToolResultEventShape;
     if (event.toolName === "file_batch") {
+      // Internal batch reads have not been displayed to the model. Codemode's
+      // host presentation boundary admits visible evidence separately.
+      if (event.parentToolCallId !== undefined) return;
       await recordBatchMutationEvidence(guard, ctx.cwd, event.input, event.details, event.toolCallId, turnGeneration, recentMutationEntries(ctx.sessionManager));
       return;
     }
-    const read = observedTextRead(event);
-    if (read) {
-      try {
-        const source = (event.content as any)?.[MUTATION_READ_SOURCE];
-        if (!source || typeof source.canonicalPath !== "string" || typeof source.addressedPath !== "string" || typeof source.fileGeneration !== "string") throw new Error("Read source identity is unavailable.");
-        const target = await guard.recordRead(
-          ctx.cwd,
-          source.addressedPath,
-          read.text,
-          read.startLine,
-          read.endLine,
-          event.toolCallId,
-          turnGeneration,
-          read.complete,
-          source.canonicalPath,
-          source,
-        );
-        const input = event.input as { path: string; offset?: unknown; limit?: unknown };
-        return { details: { ...(event.details as object), mutationReadEvidence: { version: 2, toolCallId: event.toolCallId,
-          path: input.path, offset: input.offset, limit: input.limit, target } } };
-      } catch {
-        // A rejected modern read must not fall back to legacy raw-path restoration.
-        return { details: { ...(event.details as object), mutationReadEvidence: { version: 2, toolCallId: event.toolCallId, rejected: true } } };
-      }
-    }
+    if (event.toolName === "read" && !event.isError && event.parentToolCallId === undefined) return recordDisplayedRead(event, ctx.cwd, turnGeneration);
 
     if ((event.toolName === "edit" || event.toolName === "write") && !event.isError) {
       const path = inputPath(event.input);

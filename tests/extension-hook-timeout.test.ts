@@ -119,6 +119,35 @@ test("configured safety hook timeout is fail-closed", async () => {
 	assert.equal(runner.hookDeliveryStats.timeouts, 1);
 });
 
+test("a fail-closed tool_execution_end timeout still reaches later handlers and reports the first timeout", async () => {
+	const scheduler = new FakeScheduler();
+	const calls: string[] = [];
+	const runner = await createRunner(
+		(pi) => {
+			pi.on("tool_execution_end", async () => { calls.push("first"); await new Promise(() => {}); });
+			pi.on("tool_execution_end", () => { calls.push("cleanup"); });
+			pi.on("tool_execution_end", async () => { calls.push("third"); await new Promise(() => {}); });
+			pi.on("turn_end", async () => { calls.push("turn"); await new Promise(() => {}); });
+			pi.on("turn_end", () => { calls.push("turn-later"); });
+		},
+		{ scheduler, hookTimeouts: { lifecycle: { timeoutMs: 100, onTimeout: "fail-closed" } } },
+	);
+
+	const ended = runner.emit({ type: "tool_execution_end", toolCallId: "tool-1", toolName: "read", result: {}, isError: false });
+	scheduler.advanceBy(100);
+	await new Promise(setImmediate);
+	scheduler.advanceBy(100);
+	await assert.rejects(ended, ExtensionHookTimeoutError);
+	assert.deepEqual(calls, ["first", "cleanup", "third"]);
+	assert.equal(runner.hookDeliveryStats.timeouts, 2);
+
+	// Other lifecycle events keep stopping at the first fail-closed timeout.
+	const turn = runner.emit({ type: "turn_end", message: { role: "assistant", content: [] }, toolResults: [] } as never);
+	scheduler.advanceBy(100);
+	await assert.rejects(turn, ExtensionHookTimeoutError);
+	assert.deepEqual(calls.slice(3), ["turn"]);
+});
+
 test("project_trust uses the safety timeout, fails closed, and ignores a late allow result", async () => {
 	const scheduler = new FakeScheduler();
 	let releaseLate = () => {};

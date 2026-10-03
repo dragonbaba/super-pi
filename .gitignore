@@ -41,3 +41,9 @@ plans/
 .sp/hf-sessions/
 .sp/hf-sessions-backup/
 collect.sh
+
+# Local code index and generated project context
+.codegraph/
+.sp/project-context.json
+.sp/project-context.md
+.sp/project-index.jsonl

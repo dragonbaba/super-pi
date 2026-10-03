@@ -14,6 +14,7 @@ export default function mcpBridgeExtension(pi) {
 
   let configError = null;
   let configInfo = null;
+  let authController = null;
   const knownRemoteToolNames = new Set();
 
   const deactivateRemoteTools = (clearNames = true) => {
@@ -30,7 +31,7 @@ export default function mcpBridgeExtension(pi) {
   pi.registerTool({
     name: "mcp_search_tools",
     label: "MCP tool search",
-    description: "Search configured MCP tool metadata and activate matching tools for the next model request.",
+    description: "Search configured MCP tools. After activation, use Codemode callTool(name, args) in this script; describeTools([name]) provides the current schema.",
     parameters: {
       type: "object",
       properties: { query: { type: "string", description: "Words from the desired MCP server, tool, or capability" } },
@@ -60,6 +61,7 @@ export default function mcpBridgeExtension(pi) {
   });
 
   pi.on("session_start", async (_event, ctx) => {
+    authController?.abort(); authController = null;
     const token = await lifecycle.begin(ctx.signal);
     if (!token) return;
     configError = null;
@@ -116,6 +118,7 @@ export default function mcpBridgeExtension(pi) {
   });
 
   pi.on("session_shutdown", async () => {
+    authController?.abort(); authController = null;
     await lifecycle.shutdown();
   });
 
@@ -144,6 +147,28 @@ export default function mcpBridgeExtension(pi) {
       return;
     },
   });
+
+  for (const action of ["login", "logout"]) {
+    pi.registerCommand(`mcp-${action}`, {
+      description: `${action === "login" ? "Authorize" : "Remove local authorization for"} an OAuth MCP server: /mcp-${action} <server-id>`,
+      handler: async (args, ctx) => {
+        const server = configInfo?.servers.find(item => item.id === args.trim() && item.oauth);
+        if (!server) { ctx.ui.notify("Specify a configured OAuth MCP server ID.", "error"); return; }
+        const { McpOAuth } = await import("./oauth.js");
+        const owner = new McpOAuth(server);
+        authController?.abort();
+        const controller = new AbortController(); authController = controller;
+        const signal = ctx.signal ? AbortSignal.any([ctx.signal, controller.signal]) : controller.signal;
+        try {
+          if (action === "login") await owner.login(url => ctx.ui.notify(`Open this URL to authorize ${server.id}:\n${url}`, "info"), signal);
+          else await owner.logout(signal);
+          await ctx.reload();
+          ctx.ui.notify(`MCP ${action} completed for ${server.id}.`, "info");
+        } catch { ctx.ui.notify(`MCP ${action} failed or was cancelled. No credentials are shown in diagnostics.`, "error"); }
+        finally { if (authController === controller) authController = null; }
+      },
+    });
+  }
 }
 
 export { loadMcpConfig };

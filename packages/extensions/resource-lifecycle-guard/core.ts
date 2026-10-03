@@ -30,6 +30,7 @@ import {
 import { extractCommandSubstitutions, inspectHereDocuments, prepareShellAnalysis } from "./shell-substitution.ts";
 import { boundedShellInput } from "@super-pi/coding-agent";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
+import { isReadOnlyFindTail } from "./readonly-find.ts";
 import { bashArithmeticForHeader, bashLoopVariableIndex, bashPipelinePrefixEnd, bashScriptOperandIndex, unsafeBashForHeaderReason, hasStatefulBashPrintf, shellExpansionRisk, hasUnsafeBashTestOperand, hasUnsafeBashLoopListOperand, hasUnsafeCommandQueryOperand, isBashArithmeticCommandHead, isBashDoubleBracketCloseBoundary, isBashNetworkRedirectionTarget, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isLookupSensitiveBashVariable, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 import { FD_DUPLICATION_PATTERN } from "./regex.ts";
 import { diagnosticForPrimitives, policyMetadata, renderPolicyDiagnostic, type PolicyDiagnosticMetadata } from "./policy-diagnostics.ts";
@@ -1189,17 +1190,7 @@ function isReadOnlyConditionalTailSegment(tokens: ShellSegment): boolean {
 		}
 		return true;
 	}
-	if (command !== "find") return false;
-	if (argv[index + 1] !== ".") return false;
-	for (let cursor = index + 2; cursor < argv.length; cursor += 2) {
-		const option = argv[cursor];
-		const operand = argv[cursor + 1];
-		if (option === "-maxdepth" && operand && NONNEGATIVE_INTEGER_PATTERN.test(operand)) continue;
-		if (option === "-type" && (operand === "d" || operand === "f")) continue;
-		if ((option === "-iname" || option === "-name") && operand) continue;
-		return false;
-	}
-	return true;
+	return command === "find" && isReadOnlyFindTail(argv, index);
 }
 
 function parseShellSegments(command: string): ShellSegment[] {

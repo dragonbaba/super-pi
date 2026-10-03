@@ -90,7 +90,7 @@ for (const scenario of [
 	} as unknown as ModelRuntime;
 	const { session } = await createAgentSession({ cwd: root, agentDir: root, model, modelRuntime: runtime,
 		settingsManager: settings, sessionManager: manager, resourceLoader: resources, tools: ["lookup"], customTools: [{
-			name: "lookup", label: "Lookup", description: "Synthetic lookup", parameters: Type.Object({ note: Type.Optional(Type.String()) }),
+			name: "lookup", modelOnly: true, label: "Lookup", description: "Synthetic direct schema probe", parameters: Type.Object({ note: Type.Optional(Type.String()) }),
 			constrainedSampling: { type: "json_schema", strict: "prefer" },
 			execute: async () => ({ content: [{ type: "text", text: "unused" }], details: {} }),
 		}] });

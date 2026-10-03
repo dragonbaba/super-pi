@@ -174,11 +174,11 @@ async function fixture(scenario: Scenario) {
 			sessionManager: manager!, resourceLoader: resources, extensionRunnerOptions: hookTimeoutScenario
 			? { hookTimeouts: { lifecycle: { timeoutMs: 5, onTimeout: "fail-closed" } } } : undefined,
 			tools: ["record_effect", "inspect_effect"], customTools: [{
-				name: "record_effect", label: "Effect", description: "Synthetic effect", parameters: Type.Object({}),
+				name: "record_effect", modelOnly: true, label: "Effect", description: "Synthetic direct effect", parameters: Type.Object({}),
 				execute: async () => { writeFileSync(effectPath, String(Number(readFileSync(effectPath, "utf8")) + 1));
 					return { content: [{ type: "text" as const, text: "EFFECT_ALREADY_COMPLETED" }], details: {} }; },
 			}, {
-				name: "inspect_effect", label: "Inspect effect", description: "Read completed synthetic effect", parameters: Type.Object({}),
+				name: "inspect_effect", modelOnly: true, label: "Inspect effect", description: "Read completed synthetic effect", parameters: Type.Object({}),
 				execute: async () => { inspections++; return { content: [{ type: "text" as const,
 					text: thresholdScenario ? "synthetic ".repeat(400) : readFileSync(effectPath, "utf8") }], details: {} }; },
 			}] })).session;

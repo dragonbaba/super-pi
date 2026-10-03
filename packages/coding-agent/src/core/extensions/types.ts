@@ -10,6 +10,7 @@
 
 import type {
 	AgentMessage,
+	AgentToolExecutionContext,
 	AgentToolResult,
 	AgentToolUpdateCallback,
 	ThinkingLevel,
@@ -503,6 +504,9 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 	 */
 	/** Requires a user answer before replanning the rest of this response. */
 	interactionBoundary?: boolean;
+	orchestration?: boolean;
+	modelOnly?: boolean;
+	modelExposure?: "nested";
 	executionMode?: ToolExecutionMode;
 
 	/** Execute the tool. */
@@ -512,6 +516,7 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 		signal: AbortSignal | undefined,
 		onUpdate: AgentToolUpdateCallback<TDetails> | undefined,
 		ctx: ExtensionContext,
+		executionContext?: AgentToolExecutionContext,
 	): Promise<AgentToolResult<TDetails>>;
 
 	/** Custom rendering for tool call display */
@@ -829,6 +834,7 @@ export interface MessageEndEvent {
 /** Fired when a tool starts executing */
 export interface ToolExecutionStartEvent {
 	type: "tool_execution_start";
+	parentToolCallId?: string;
 	toolCallId: string;
 	toolName: string;
 	args: any;
@@ -837,6 +843,7 @@ export interface ToolExecutionStartEvent {
 /** Fired during tool execution with partial/streaming output */
 export interface ToolExecutionUpdateEvent {
 	type: "tool_execution_update";
+	parentToolCallId?: string;
 	toolCallId: string;
 	toolName: string;
 	args: any;
@@ -846,6 +853,7 @@ export interface ToolExecutionUpdateEvent {
 /** Fired when a tool finishes executing */
 export interface ToolExecutionEndEvent {
 	type: "tool_execution_end";
+	parentToolCallId?: string;
 	toolCallId: string;
 	toolName: string;
 	result: any;
@@ -925,6 +933,7 @@ export type InputEventResult =
 interface ToolCallEventBase {
 	type: "tool_call";
 	toolCallId: string;
+	parentToolCallId?: string;
 }
 
 export interface BashToolCallEvent extends ToolCallEventBase {
@@ -992,6 +1001,8 @@ export type ToolCallEvent =
 interface ToolResultEventBase {
 	type: "tool_result";
 	toolCallId: string;
+	/** Nested content has not necessarily been presented to the model. */
+	parentToolCallId?: string;
 	input: Record<string, unknown>;
 	content: (TextContent | ImageContent)[];
 	isError: boolean;
@@ -1119,7 +1130,17 @@ export function isToolCallEventType(toolName: string, event: ToolCallEvent): boo
 }
 
 /** Union of all event types */
+export interface CodemodeReadEvent {
+	type: "codemode_read";
+	toolCallId: string;
+	parentToolCallId: string;
+	input: Record<string, unknown>;
+	content: (TextContent | ImageContent)[];
+	details?: unknown;
+}
+
 export type ExtensionEvent =
+	| CodemodeReadEvent
 	| ProjectTrustEvent
 	| ResourcesDiscoverEvent
 	| SessionEvent
@@ -1347,6 +1368,8 @@ export interface ExtensionAPI {
 	on(event: "thinking_level_select", handler: ExtensionHandler<ThinkingLevelSelectEvent>): void;
 	on(event: "tool_call", handler: ExtensionHandler<ToolCallEvent, ToolCallEventResult>): void;
 	on(event: "tool_result", handler: ExtensionHandler<ToolResultEvent, ToolResultEventResult>): void;
+	/** Host-attested native read shown in a prior completed Codemode turn. No replay from script fields. */
+	on(event: "codemode_read", handler: ExtensionHandler<CodemodeReadEvent>): void;
 	on(event: "user_bash", handler: ExtensionHandler<UserBashEvent, UserBashEventResult>): void;
 	/** Default: once per new submission. Image processors opt into request-time projection only. */
 	on(event: "input", handler: ExtensionHandler<InputEvent, InputEventResult>, options?: { phase: "image-processing" }): void;

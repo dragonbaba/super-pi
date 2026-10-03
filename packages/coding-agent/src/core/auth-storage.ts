@@ -26,6 +26,10 @@ type LockResult<T> = {
 
 const AUTH_FILE_WRITE_OPTIONS = { mode: 0o600, enforceMode: true } as const;
 const AUTH_FILE_CREATE_OPTIONS = { mode: 0o600, enforceMode: true, replaceExisting: false } as const;
+const AUTH_LOCK_STALE_MS = 30_000;
+// All accessors must agree on the lease; a shorter sync stale interval can
+// steal an active async lock before its next heartbeat and lose committed data.
+const AUTH_LOCK_OPTIONS = Object.freeze({ realpath: false, stale: AUTH_LOCK_STALE_MS, update: 5_000 });
 
 type AuthFileReload = {
 	controller: AbortController;
@@ -86,7 +90,7 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 
 		for (let attempt = 1; attempt <= maxAttempts; attempt++) {
 			try {
-				return lockfile.lockSync(path, { realpath: false });
+				return lockfile.lockSync(path, AUTH_LOCK_OPTIONS);
 			} catch (error) {
 				const code =
 					typeof error === "object" && error !== null && "code" in error
@@ -127,18 +131,16 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 		signal: AbortSignal | undefined,
 		onCompromised: (error: Error) => void,
 	): Promise<() => Promise<void>> {
-		const staleMs = 30_000;
 		const maxDelayMs = 2_000;
-		const deadline = Date.now() + staleMs;
+		const deadline = Date.now() + AUTH_LOCK_STALE_MS;
 		let retry = 0;
 		while (true) {
 			signal?.throwIfAborted();
 			let release: (() => Promise<void>) | undefined;
 			try {
 				release = await lockfile.lock(this.authPath, {
-					realpath: false,
+					...AUTH_LOCK_OPTIONS,
 					retries: 0,
-					stale: staleMs,
 					onCompromised,
 				});
 			} catch (error) {

@@ -1430,7 +1430,7 @@ test("N1 actual default SDK Session: view/verify/draft do not trigger provider c
   const options = { cwd, agentDir, settingsManager, resourceLoader, sessionManager: manager, model: ALPHA_MODEL, modelRuntime: runtime, noTools: "builtin" as const };
   let { session } = await createAgentSession(options);
   t.after(async () => { session.dispose(); await new Promise<void>(resolve => setImmediate(resolve)); assert.equal(dirname(resolve(root)), resolve(tmpdir())); rmSync(root, { recursive: true, force: true }); });
-  let action = "View", selectedItem = "sdk-preview:0", input = ""; const notices: string[] = [];
+  let action = "View", selectedItem = "sdk-preview:nested:1:0", input = ""; const notices: string[] = [];
   const ui = { ...session.extensionRunner.getUIContext(),
     select: async (title: string, choices: string[]) => title === "Session changes" ? choices.find(s => s.startsWith(selectedItem + " "))
       : title === selectedItem ? action : "仅允许本次",
@@ -1440,7 +1440,7 @@ test("N1 actual default SDK Session: view/verify/draft do not trigger provider c
   await session.bindExtensions({ mode: "tui", uiContext: ui });
   session.setActiveToolsByName(["file_batch", "read"]);
   async function call(id: string, args: any) {
-    pendingCall = { type: "toolCall", id, name: "file_batch", arguments: args };
+    pendingCall = { type: "toolCall", id, name: "codemode", arguments: { code: `await tools.file_batch(${JSON.stringify(args)})` } };
     await session.prompt("Run this synthetic file change fixture.");
     await session.agent.waitForIdle();
     return session.messages.find((m: any) => m.role === "toolResult" && m.toolCallId === id) as any;
@@ -1453,13 +1453,13 @@ test("N1 actual default SDK Session: view/verify/draft do not trigger provider c
   const append = manager.appendCustomEntry.bind(manager);
   t.mock.method(manager, "appendCustomEntry", (kind: string, data: any) => {
     const entry = append(kind, data);
-    if (kind === "file-mutation-progress-v2" && data.phase === "result" && data.itemId === "sdk-batch:0") writeFileSync(join(cwd, "stale"), "external");
+    if (kind === "file-mutation-progress-v2" && data.phase === "result" && data.itemId === "sdk-batch:nested:1:0") writeFileSync(join(cwd, "stale"), "external");
     return entry;
   });
   const result = await call("sdk-batch", { operations: [{ operation: "write", mode: "create", path: "committed", content: "postimage" }, { operation: "delete", path: "stale" }, { operation: "write", mode: "create", path: "remaining", content: "desired" }] });
   assert.equal(result.isError, true);
   const callsBeforeCommands = providerCalls;
-  selectedItem = "sdk-batch:0"; action = "Verify current state";
+  selectedItem = "sdk-batch:nested:1:0"; action = "Verify current state";
   await session.extensionRunner.getCommand("changes")!.handler("", session.extensionRunner.createContext() as never);
   assert.deepEqual(notices, [], JSON.stringify({ notices, branch: manager.getBranch().map((e: any) => ({ id: e.id, type: e.type, customType: e.customType, phase: e.data?.phase, role: e.message?.role, calls: e.message?.role === "assistant" ? e.message.content : undefined, resultId: e.message?.toolCallId })) }));
   assert.ok(manager.getBranch().some((e: any) => e.customType === "file-change-verification-v1" && e.data.postimageMatches === true), JSON.stringify(collectChanges(manager.getBranch(), cwd)));

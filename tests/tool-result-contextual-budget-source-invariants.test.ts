@@ -62,7 +62,7 @@ test("contextual coordinator has no full-result copy, serialization, per-result 
 test("agent loop and SDK pass the request envelope without allocating a context wrapper", () => {
 	const loop = readFileSync(LOOP_PATH, "utf8");
 	const sdk = readFileSync(SDK_PATH, "utf8");
-	assert.match(loop, /config\.convertToLlm\(messages, context\.systemPrompt, context\.tools, config\.model, config\.maxTokens\)/);
+	assert.match(loop, /config\.convertToLlm\(messages, context\.systemPrompt, modelTools, config\.model, config\.maxTokens\)/);
 	const ast = ts.createSourceFile(SDK_PATH, sdk, ts.ScriptTarget.Latest, true);
 	let projections = 0;
 	function inspect(node: ts.Node): void {

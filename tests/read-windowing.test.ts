@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { removeOwnedFixture } from "./helpers/owned-fixture-cleanup.ts";
 import fsPromises, { mkdtemp, writeFile, rm, readFile, appendFile, truncate, rename, symlink, unlink, utimes } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
@@ -14,7 +15,7 @@ import { estimateToolOutputTokens } from "../packages/coding-agent/src/core/tool
 async function fixture(run: (path: string, directory: string) => Promise<void>) {
 	const directory = await mkdtemp(join(tmpdir(), "pi-read-window-"));
 	try { await run(join(directory, "input.txt"), directory); }
-	finally { await rm(directory, { recursive: true, force: true }); }
+	finally { removeOwnedFixture(directory); }
 }
 
 // Full-file readers belong exclusively to tests and benchmarks.

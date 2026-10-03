@@ -29,6 +29,7 @@ import {
 import { ObjectPool } from "../../../utils/object-pool.ts";
 import { theme } from "../theme/theme.ts";
 import { keyHint } from "./keybinding-hints.ts";
+import { CodemodeTreeComponent } from "./codemode-tree.ts";
 import { READ_GROUP_BACKSLASH_PATTERN, READ_GROUP_IMAGE_EXTENSION_PATTERN } from "./tool-execution-regex.ts";
 
 const READ_GROUP_SPECIAL_BASENAMES = new Set(["skill.md", "agents.md", "agents.override.md", "claude.md"]);
@@ -744,6 +745,8 @@ export interface ToolExecutionAllocationMetrics {
 }
 
 export class ToolExecutionComponent extends Container {
+	private codemodeTree?: CodemodeTreeComponent;
+	private codemodeDiscovery?: Text;
 	private contentBox: Box;
 	private contentText: Text;
 	private selfRenderContainer: Container;
@@ -846,13 +849,31 @@ export class ToolExecutionComponent extends Container {
 		this.contentText = new Text("", 1, 1, toolPendingBackground);
 		this.selfRenderContainer = new Container();
 
-		if (this.hasRendererDefinition()) {
+		if (toolName === "codemode") {
+			this.codemodeTree = new CodemodeTreeComponent(this.renderContextRefreshResult);
+			this.codemodeDiscovery = new Text("", 0, 0);
+			this.contentBox.addChild(this.codemodeTree);
+			this.contentBox.addChild(this.codemodeDiscovery);
+			this.addChild(this.contentBox);
+		} else if (this.hasRendererDefinition()) {
 			this.addChild(this.getRenderShell() === "self" ? this.selfRenderContainer : this.contentBox);
 		} else {
 			this.addChild(this.contentText);
 		}
 
 		this.updateDisplay();
+	}
+
+	startNestedTool(toolCallId: string, toolName: string, args: unknown): boolean {
+		if (!this.codemodeTree) return false;
+		this.codemodeTree.startChild(toolCallId, toolName, args);
+		return true;
+	}
+
+	updateNestedTool(toolCallId: string, result: ToolResultLike, partial: boolean, failed: boolean): boolean {
+		if (!this.codemodeTree) return false;
+		this.codemodeTree.updateChild(toolCallId, result, partial, failed);
+		return true;
 	}
 
 	private getCallRenderer(): ToolDefinition<any, any>["renderCall"] | undefined {
@@ -1388,6 +1409,13 @@ export class ToolExecutionComponent extends Container {
 	private updateDisplay(): void {
 		if (this.allocationMetrics) this.allocationMetrics.updateDisplayCalls++;
 		const bgFn = this.isPartial ? toolPendingBackground : this.resultIsError ? toolErrorBackground : toolSuccessBackground;
+		if (this.codemodeTree) {
+			this.contentBox.setBgFn(bgFn);
+			this.codemodeTree.updateParent(typeof this.args === "string" ? this.args : this.args?.code, this.result, this.isPartial, this.resultIsError, this.expanded);
+			this.codemodeDiscovery!.setText(this.toolResultDiscovery ? formatToolResultDiscovery(this.toolResultDiscovery, this.expanded) : "");
+			this.refreshImageTree();
+			return;
+		}
 
 		let hasContent = false;
 		this.hideComponent = false;

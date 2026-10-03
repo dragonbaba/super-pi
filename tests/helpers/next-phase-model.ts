@@ -7,3 +7,22 @@ export function alphaModelRuntime(streamSimple: (...args: any[]) => any): any {
     getAvailable: async () => [ALPHA_MODEL], getError: () => undefined,
     registerProvider() {}, registerNativeProvider() {}, unregisterProvider() {}, getModel: () => ALPHA_MODEL, streamSimple };
 }
+
+/** Test-only adapter for native protocol/schema-cost fixtures. No SDK import:
+ * cross-checkout measurements must load production code only from their target.
+ * Default Codemode acceptance tests use the unmodified SDK. */
+export function exposeNativeProtocolForFixture(session: any): void {
+  const original = session.setActiveToolsByName.bind(session);
+  const all = session.getAllTools.bind(session);
+  session.getAllTools = () => all().filter((tool: any) => tool.name !== "codemode");
+  function expose(): void {
+    const tools = [];
+    for (const tool of session.agent.state.tools) if (tool.name !== "codemode") {
+      tool.modelExposure = undefined;
+      tools.push(tool);
+    }
+    session.agent.state.tools = tools;
+  }
+  session.setActiveToolsByName = (names: string[]) => { original(names); expose(); };
+  expose();
+}

@@ -9,8 +9,10 @@ Large text and typed resource/audio results require configured ToolResult presen
 - `/mcp-status` — connection state, transport, server version, and tool count.
 - `/mcp-tools` — Pi tool name → MCP server/tool mapping.
 - `/mcp-reload` — reload Pi resources and reconnect from disk.
+- `/mcp-login <server>` — explicitly authorize an HTTP/SSE server using its browser URL.
+- `/mcp-logout <server>` — remove that server's stored OAuth credentials and reload.
 
-Remote tools are registered as `mcp__<server>__<tool>` (bounded and collision-checked) and use Pi's sequential execution mode so sibling calls cannot race an editor or game engine. They are deferred by default: call `mcp_search_tools` with capability words to activate up to eight matching tools for the next model request.
+Remote tools are registered as `mcp__<server>__<tool>` (bounded and collision-checked) and execute sequentially. They are deferred by default: call `tools.mcp_search_tools` with capability words to activate up to eight matching tools, then use `callTool(name, args)` in the same Codemode script. Changed schemas are refreshed on reconnect; tools removed from the server catalog are rejected before any remote execution. Remote `readOnlyHint` alone does not authorize concurrent execution.
 
 ## Global configuration
 
@@ -56,7 +58,11 @@ Create `~/.sp/agent/config/mcp.json`:
 }
 ```
 
-Use `"transport": "sse"` for a legacy SSE endpoint. Remote URLs require HTTPS; loopback HTTP is allowed for local engine integrations. Redirects are rejected so configured authorization headers cannot be silently forwarded elsewhere. Interactive OAuth is not implemented in this first version; use fixed headers sourced from environment variables.
+Use `"transport": "sse"` for a legacy SSE endpoint. Remote URLs require HTTPS; loopback HTTP is allowed for local engine integrations. Redirects and cross-origin transport endpoints are rejected so configured authorization headers cannot be silently forwarded elsewhere.
+
+For OAuth, replace the `Authorization` header with `"oauth": true`, or `"oauth": {"scope": "tools.read", "clientId": "registered-client", "callbackPort": 49152}`. A fixed client ID requires a registered loopback callback port; otherwise the server must support dynamic registration. Run `/mcp-login engine`, open the displayed authorization URL, and complete the browser flow. Login uses PKCE and a state-checked `http://127.0.0.1:<port>/callback`, closes after completion/cancellation, and expires after three minutes. Ordinary connections do not open browsers or start registration automatically.
+
+Credentials are isolated by server identity in `~/.sp/agent/mcp-auth.json`, using the host's file locking and atomic persistence. Interactive login reserves a bounded attempt, releases the lock during browser authorization, then re-reads and merges the current file when committing. Another service's writes are preserved; logout invalidates a pending login, and a second active login for the same server is rejected. Cancellation removes its own reservation, with an expiry for abandoned attempts. Sync and async access use the same lease parameters. A refresh holds the lock through rotation; an HTTP 401 permits one refresh/retry. Metadata/token requests do not inherit MCP headers. OAuth and a static `Authorization` header cannot be combined. A scope change requires updated configuration and an explicit new login; automatic HTTP 403 step-up is not implemented. Browser/provider interoperability needs testing against the chosen server; the repository tests use offline OAuth fixtures, including a separate process writing during authorization.
 
 ## Project configuration
 

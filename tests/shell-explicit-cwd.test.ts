@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { removeOwnedFixture } from "./helpers/owned-fixture-cleanup.ts";
 import test from "node:test";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -38,7 +39,7 @@ async function fixture(t: test.TestContext, auxiliary?: any, aliasedTrustedRoot 
     { getSignal: () => agent.signal, getModel: () => agent.state.model, isProjectTrusted: (revalidateIdentity?: boolean) => trustOwner.isProjectTrusted(revalidateIdentity), isIdle: () => true, hasPendingMessages: () => false } as never);
   runner.setUIContext({ ...runner.getUIContext(), select: async () => { approvals++; onApproval(); return "仅允许本次"; } }, "tui");
   await runner.emit({ type: "session_start" } as never);
-  t.after(async () => { agent.abort(); runner.invalidate(); await runner.emit({ type: "session_shutdown" } as never); rmSync(root, { recursive: true, force: true }); });
+  t.after(async () => { agent.abort(); runner.invalidate(); await runner.emit({ type: "session_shutdown" } as never); removeOwnedFixture(root); });
   return { root, cwd, agent, runner, session, approvals: () => approvals,
     onApproval(fn: () => void) { onApproval = fn; }, afterAuthorization(fn: (args: any) => void) { afterAuthorization = fn; },
     async call(name: string, command: string, directory?: string) {

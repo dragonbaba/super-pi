@@ -1,0 +1,20 @@
+{
+	"name": "@super-pi/codemode",
+	"version": "0.84.1",
+	"description": "Bounded QuickJS tool orchestration for Super Pi",
+	"type": "module",
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"exports": {
+		".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+		"./declarations": { "types": "./dist/declarations.d.ts", "import": "./dist/declarations.js" },
+		"./source": { "types": "./dist/source.d.ts", "import": "./dist/source.js" },
+		"./bounded-json": { "types": "./dist/bounded-json.d.ts", "import": "./dist/bounded-json.js" },
+		"./worker": { "types": "./dist/runtime/worker.d.ts", "import": "./dist/runtime/worker.js" }
+	},
+	"files": ["dist", "README.md", "LICENSE"],
+	"scripts": { "build": "tsc -p tsconfig.build.json" },
+	"license": "MIT",
+	"engines": { "node": ">=22.19.0" },
+	"dependencies": { "quickjs-wasi": "3.6.2" }
+}

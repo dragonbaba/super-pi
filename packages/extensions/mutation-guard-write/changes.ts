@@ -398,6 +398,16 @@ function retainNewestChanges(records: ChangeRecord[], order: Map<string, number>
 
 export function collectChanges(branch: readonly any[], cwd: string): ChangeRecord[] {
   branch = branch.slice(-512);
+  // Custom nested results are durable receipts, never provider protocol messages.
+  // Normalize only this bounded recovery view; all existing hash/order checks remain.
+  for (let index = 0; index < branch.length; index++) {
+    const entry = branch[index], data = entry?.data;
+    if (entry?.type === "custom" && entry.customType === "codemode-tool-result-v1" && data?.version === 1
+      && typeof data.parentToolCallId === "string" && data.result?.role === "toolResult" && typeof data.result.toolCallId === "string"
+      && data.result.toolCallId.startsWith(data.parentToolCallId + ":nested:")) {
+      (branch as any[])[index] = { ...entry, type: "message", message: data.result };
+    }
+  }
   for (const entry of branch) if (!isBoundedMutationEntryId(entry?.id)) throw new Error("Session entry ID exceeds recovery bounds; changes are unavailable for this history.");
   const calls = new Map<string, any>();
   const argumentBudget = { bytes: MAX_RECOVERY_ARGUMENT_BYTES };
@@ -415,14 +425,19 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
     if (entries.has(entry.id)) duplicateEntries.add(entry.id);
     entries.set(entry.id, entry);
     order.set(entry.id, position);
-    if (callsOverflow || entry.type !== "message" || entry.message?.role !== "assistant" || !Array.isArray(entry.message.content)) continue;
-    scannedBlocks += entry.message.content.length;
-    if (entry.message.content.length > 128 || scannedBlocks > 4096) {
+    const nested = entry.type === "custom" && entry.customType === "codemode-tool-call-v1" && entry.data?.version === 1
+      && typeof entry.data.parentToolCallId === "string" && typeof entry.data.call?.id === "string"
+      && entry.data.call.id.startsWith(entry.data.parentToolCallId + ":nested:");
+    const blocks = entry.type === "message" && entry.message?.role === "assistant" ? entry.message.content : undefined;
+    if (callsOverflow || !nested && !Array.isArray(blocks)) continue;
+    const blockCount = nested ? 1 : blocks.length;
+    scannedBlocks += blockCount;
+    if (blockCount > 128 || scannedBlocks > 4096) {
       callsOverflow = true; calls.clear(); callOrder.clear(); duplicate.clear(); continue;
     }
-    for (let callIndex = entry.message.content.length - 1; callIndex >= 0; callIndex--) {
+    for (let callIndex = blockCount - 1; callIndex >= 0; callIndex--) {
       if (calls.size >= 512) { callsOverflow = true; calls.clear(); callOrder.clear(); duplicate.clear(); break; }
-      const call = entry.message.content[callIndex];
+      const call = nested ? entry.data.call : blocks[callIndex];
       if (call?.type !== "toolCall" || typeof call.id !== "string" || call.id.length < 1 || call.id.length > 256) continue;
       if (calls.has(call.id)) duplicate.add(call.id);
       calls.set(call.id, { id: call.id, name: call.name, arguments: call.arguments, requestHash: undefined });

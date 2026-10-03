@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@super-pi/coding-agent";
 import { Type } from "typebox";
 
 const CORE_TOOL_NAMES = [
+  "codemode",
   "read",
   "bash",
   "edit",

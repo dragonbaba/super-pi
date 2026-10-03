@@ -26,7 +26,7 @@ async function customMessageSession(execute: (session: any, signal: AbortSignal)
 		payloads.push(JSON.parse(String(init?.body)));
 		if (failFirst && payloads.length === 1) throw new Error("offline first request failure");
 		return payloads.length === 1
-			? chatResponse({ tool_calls: [{ index: 0, id: "call_note", type: "function", function: { name: "note", arguments: "{}" } }] }, "tool_calls")
+			? chatResponse({ tool_calls: [{ index: 0, id: "call_note", type: "function", function: { name: "codemode", arguments: JSON.stringify({ code: 'await tools.note({})' }) } }] }, "tool_calls")
 			: chatResponse({ content: "done" }, "stop");
 	};
 	const runtime = alphaModelRuntime((model: any, context: any, options: any) =>

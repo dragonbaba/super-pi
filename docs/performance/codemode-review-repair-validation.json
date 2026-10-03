@@ -1,0 +1,1210 @@
+{
+  "date": "2026-10-03",
+  "node": "v26.4.0",
+  "platform": "win32",
+  "scope": "Review repair samples; before/after tree uses the same grouped display and payload. Expanded timing has measurable noise; samples are retained without selecting only the fastest run.",
+  "samples": {
+    ".tmp-codemode-fix-tree-before-collapsed.json": {
+      "node": "v26.4.0",
+      "platform": "win32",
+      "scope": "InteractiveMode event handler -> retained transcript -> real Text/Box render; separate event/frame benchmarks cover observer and terminal queue. Ungrouped control routes the same events without parent ID; it is not a historical checkout.",
+      "ungrouped": {
+        "mode": "ungrouped-control",
+        "expanded": false,
+        "updates": 4096,
+        "warmup": 256,
+        "cardCount": 2,
+        "medianMs": 0.7426000000000386,
+        "p95Ms": 0.9194999999999709,
+        "sampledBytesPerUpdate": 1301991.521484375,
+        "heapStart": 42692208,
+        "peakHeap": 50492664,
+        "eventPromises": 0,
+        "counters": {
+          "rows": 0,
+          "runningChildren": 0,
+          "resultReferences": 0,
+          "textChars": 37,
+          "timers": 0,
+          "timerRefreshes": 0,
+          "rowCreations": 0,
+          "progressUpdates": 0,
+          "outputProjections": 0
+        },
+        "released": {
+          "rows": 0,
+          "runningChildren": 0,
+          "resultReferences": 0,
+          "textChars": 0,
+          "timers": 0,
+          "timerRefreshes": 0,
+          "rowCreations": 0,
+          "progressUpdates": 0,
+          "outputProjections": 1
+        },
+        "top": [
+          {
+            "bytes": 2947241024,
+            "function": "breakLongWord",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+            "line": 972
+          },
+          {
+            "bytes": 1923129120,
+            "function": "splitIntoTokensWithAnsi",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+            "line": 715
+          },
+          {
+            "bytes": 150919768,
+            "function": "breakLongWord",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+            "line": 972
+          },
+          {
+            "bytes": 97918960,
+            "function": "splitIntoTokensWithAnsi",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+            "line": 715
+          },
+          {
+            "bytes": 33414328,
+            "function": "getActiveCodes",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+            "line": 641
+          },
+          {
+            "bytes": 26166808,
+            "function": "truncateToWidth",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+            "line": 1065
+          },
+          {
+            "bytes": 20994448,
+            "function": "trimEnd",
+            "url": "",
+            "line": 0
+          },
+          {
+            "bytes": 17481744,
+            "function": "getPreparedBashOutput",
+            "url": "file:///D:/RMProjects/Pi/packages/coding-agent/src/core/tools/bash.ts",
+            "line": 717
+          }
+        ],
+        "heapAfterGc": 46529856,
+        "retainedWeakRefs": 0,
+        "weakRefs": 3
+      },
+      "grouped": {
+        "mode": "grouped",
+        "expanded": false,
+        "updates": 4096,
+        "warmup": 256,
+        "cardCount": 1,
+        "medianMs": 0.002800000000206637,
+        "p95Ms": 0.0059000000001105946,
+        "sampledBytesPerUpdate": 4533.837890625,
+        "heapStart": 47132120,
+        "peakHeap": 64660344,
+        "eventPromises": 0,
+        "counters": {
+          "rows": 1,
+          "runningChildren": 1,
+          "resultReferences": 0,
+          "textChars": 2114,
+          "timers": 1,
+          "timerRefreshes": 0,
+          "rowCreations": 1,
+          "progressUpdates": 4352,
+          "outputProjections": 0
+        },
+        "released": {
+          "rows": 0,
+          "runningChildren": 0,
+          "resultReferences": 0,
+          "textChars": 0,
+          "timers": 0,
+          "timerRefreshes": 0,
+          "rowCreations": 1,
+          "progressUpdates": 4353,
+          "outputProjections": 1
+        },
+        "top": [
+          {
+            "bytes": 3683248,
+            "function": "matchCache",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/components/box.js",
+            "line": 46
+          },
+          {
+            "bytes": 2381480,
+            "function": "render",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/components/retained-item.js",
+            "line": 572
+          },
+          {
+            "bytes": 2298648,
+            "function": "render",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/components/box.js",
+            "line": 65
+          },
+          {
+            "bytes": 1591288,
+            "function": "refresh",
+            "url": "file:///D:/RMProjects/Pi/packages/coding-agent/src/modes/interactive/components/codemode-tree.ts",
+            "line": 44
+          },
+          {
+            "bytes": 1019520,
+            "function": "clearPreparedViewportLines",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/components/retained-item.js",
+            "line": 715
+          },
+          {
+            "bytes": 837168,
+            "function": "now",
+            "url": "node:internal/perf/performance",
+            "line": 137
+          },
+          {
+            "bytes": 757112,
+            "function": "renderContainerInto",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/tui.js",
+            "line": 113
+          },
+          {
+            "bytes": 690928,
+            "function": "rebuildViewportBlockHeights",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/components/retained-item.js",
+            "line": 821
+          }
+        ],
+        "heapAfterGc": 46857968,
+        "retainedWeakRefs": 0,
+        "weakRefs": 2
+      }
+    },
+    ".tmp-codemode-fix-tree-before-expanded.json": {
+      "node": "v26.4.0",
+      "platform": "win32",
+      "scope": "InteractiveMode event handler -> retained transcript -> real Text/Box render; separate event/frame benchmarks cover observer and terminal queue. Ungrouped control routes the same events without parent ID; it is not a historical checkout.",
+      "ungrouped": {
+        "mode": "ungrouped-control",
+        "expanded": true,
+        "updates": 4096,
+        "warmup": 256,
+        "cardCount": 2,
+        "medianMs": 0.7475999999999203,
+        "p95Ms": 0.9388999999996486,
+        "sampledBytesPerUpdate": 1320907.46484375,
+        "heapStart": 42734304,
+        "peakHeap": 76177336,
+        "eventPromises": 0,
+        "counters": {
+          "rows": 0,
+          "runningChildren": 0,
+          "resultReferences": 0,
+          "textChars": 37,
+          "timers": 0,
+          "timerRefreshes": 0,
+          "rowCreations": 0,
+          "progressUpdates": 0,
+          "outputProjections": 0
+        },
+        "released": {
+          "rows": 0,
+          "runningChildren": 0,
+          "resultReferences": 0,
+          "textChars": 0,
+          "timers": 0,
+          "timerRefreshes": 0,
+          "rowCreations": 0,
+          "progressUpdates": 0,
+          "outputProjections": 1
+        },
+        "top": [
+          {
+            "bytes": 1713103816,
+            "function": "breakLongWord",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+            "line": 972
+          },
+          {
+            "bytes": 1392687176,
+            "function": "breakLongWord",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+            "line": 972
+          },
+          {
+            "bytes": 1097960368,
+            "function": "splitIntoTokensWithAnsi",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+            "line": 715
+          },
+          {
+            "bytes": 905271856,
+            "function": "splitIntoTokensWithAnsi",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+            "line": 715
+          },
+          {
+            "bytes": 40678616,
+            "function": "visibleWidth",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+            "line": 214
+          },
+          {
+            "bytes": 29435200,
+            "function": "captureActiveLineChanges",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/components/retained-item.js",
+            "line": 206
+          },
+          {
+            "bytes": 29177280,
+            "function": "render",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/components/box.js",
+            "line": 65
+          },
+          {
+            "bytes": 19244016,
+            "function": "getPreparedBashOutput",
+            "url": "file:///D:/RMProjects/Pi/packages/coding-agent/src/core/tools/bash.ts",
+            "line": 717
+          }
+        ],
+        "heapAfterGc": 46596744,
+        "retainedWeakRefs": 0,
+        "weakRefs": 3
+      },
+      "grouped": {
+        "mode": "grouped",
+        "expanded": true,
+        "updates": 4096,
+        "warmup": 256,
+        "cardCount": 1,
+        "medianMs": 0.4062000000003536,
+        "p95Ms": 0.47959999999966385,
+        "sampledBytesPerUpdate": 710107.78515625,
+        "heapStart": 47362800,
+        "peakHeap": 80364704,
+        "eventPromises": 0,
+        "counters": {
+          "rows": 1,
+          "runningChildren": 1,
+          "resultReferences": 0,
+          "textChars": 2114,
+          "timers": 1,
+          "timerRefreshes": 0,
+          "rowCreations": 1,
+          "progressUpdates": 4352,
+          "outputProjections": 0
+        },
+        "released": {
+          "rows": 0,
+          "runningChildren": 0,
+          "resultReferences": 0,
+          "textChars": 0,
+          "timers": 0,
+          "timerRefreshes": 0,
+          "rowCreations": 1,
+          "progressUpdates": 4353,
+          "outputProjections": 1
+        },
+        "top": [
+          {
+            "bytes": 1276179104,
+            "function": "breakLongWord",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+            "line": 972
+          },
+          {
+            "bytes": 795652992,
+            "function": "splitIntoTokensWithAnsi",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+            "line": 715
+          },
+          {
+            "bytes": 341596784,
+            "function": "breakLongWord",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+            "line": 972
+          },
+          {
+            "bytes": 207894936,
+            "function": "splitIntoTokensWithAnsi",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+            "line": 715
+          },
+          {
+            "bytes": 50017672,
+            "function": "visibleWidth",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+            "line": 214
+          },
+          {
+            "bytes": 34777104,
+            "function": "captureActiveLineChanges",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/components/retained-item.js",
+            "line": 206
+          },
+          {
+            "bytes": 25479664,
+            "function": "visibleWidth",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+            "line": 214
+          },
+          {
+            "bytes": 18722888,
+            "function": "refresh",
+            "url": "file:///D:/RMProjects/Pi/packages/coding-agent/src/modes/interactive/components/codemode-tree.ts",
+            "line": 44
+          }
+        ],
+        "heapAfterGc": 47064600,
+        "retainedWeakRefs": 0,
+        "weakRefs": 2
+      }
+    },
+    ".tmp-codemode-fix-tree-after-collapsed.json": {
+      "node": "v26.4.0",
+      "platform": "win32",
+      "scope": "InteractiveMode event handler -> retained transcript -> real Text/Box render; separate event/frame benchmarks cover observer and terminal queue. Ungrouped control routes the same events without parent ID; it is not a historical checkout.",
+      "ungrouped": {
+        "mode": "ungrouped-control",
+        "expanded": false,
+        "updates": 4096,
+        "warmup": 256,
+        "cardCount": 2,
+        "medianMs": 0.7572999999999865,
+        "p95Ms": 1.0034000000005108,
+        "sampledBytesPerUpdate": 1305489.1953125,
+        "heapStart": 42603960,
+        "peakHeap": 219352568,
+        "eventPromises": 0,
+        "counters": {
+          "rows": 0,
+          "runningChildren": 0,
+          "resultReferences": 0,
+          "textChars": 37,
+          "timers": 0,
+          "timerRefreshes": 0,
+          "rowCreations": 0,
+          "progressUpdates": 0,
+          "outputProjections": 0,
+          "labelMaterializations": 0,
+          "previewMaterializations": 0
+        },
+        "released": {
+          "rows": 0,
+          "runningChildren": 0,
+          "resultReferences": 0,
+          "textChars": 0,
+          "timers": 0,
+          "timerRefreshes": 0,
+          "rowCreations": 0,
+          "progressUpdates": 0,
+          "outputProjections": 1,
+          "labelMaterializations": 0,
+          "previewMaterializations": 0
+        },
+        "top": [
+          {
+            "bytes": 2959370680,
+            "function": "breakLongWord",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+            "line": 972
+          },
+          {
+            "bytes": 1920321440,
+            "function": "splitIntoTokensWithAnsi",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+            "line": 715
+          },
+          {
+            "bytes": 152622600,
+            "function": "breakLongWord",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+            "line": 972
+          },
+          {
+            "bytes": 98952400,
+            "function": "splitIntoTokensWithAnsi",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+            "line": 715
+          },
+          {
+            "bytes": 31951816,
+            "function": "getActiveCodes",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+            "line": 641
+          },
+          {
+            "bytes": 25871040,
+            "function": "truncateToWidth",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+            "line": 1065
+          },
+          {
+            "bytes": 21893712,
+            "function": "trimEnd",
+            "url": "",
+            "line": 0
+          },
+          {
+            "bytes": 17499672,
+            "function": "getPreparedBashOutput",
+            "url": "file:///D:/RMProjects/Pi/packages/coding-agent/src/core/tools/bash.ts",
+            "line": 717
+          }
+        ],
+        "heapAfterGc": 40294872,
+        "retainedWeakRefs": 0,
+        "weakRefs": 3
+      },
+      "grouped": {
+        "mode": "grouped",
+        "expanded": false,
+        "updates": 4096,
+        "warmup": 256,
+        "cardCount": 1,
+        "medianMs": 0.0026000000007115887,
+        "p95Ms": 0.005500000000211003,
+        "sampledBytesPerUpdate": 3913.755859375,
+        "heapStart": 41251064,
+        "peakHeap": 57120992,
+        "eventPromises": 0,
+        "counters": {
+          "rows": 1,
+          "runningChildren": 1,
+          "resultReferences": 0,
+          "textChars": 2092,
+          "timers": 1,
+          "timerRefreshes": 0,
+          "rowCreations": 1,
+          "progressUpdates": 4352,
+          "outputProjections": 0,
+          "labelMaterializations": 1,
+          "previewMaterializations": 4352
+        },
+        "released": {
+          "rows": 0,
+          "runningChildren": 0,
+          "resultReferences": 0,
+          "textChars": 0,
+          "timers": 0,
+          "timerRefreshes": 0,
+          "rowCreations": 1,
+          "progressUpdates": 4353,
+          "outputProjections": 1,
+          "labelMaterializations": 0,
+          "previewMaterializations": 0
+        },
+        "top": [
+          {
+            "bytes": 2759360,
+            "function": "matchCache",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/components/box.js",
+            "line": 46
+          },
+          {
+            "bytes": 2710352,
+            "function": "render",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/components/retained-item.js",
+            "line": 572
+          },
+          {
+            "bytes": 2462552,
+            "function": "render",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/components/box.js",
+            "line": 65
+          },
+          {
+            "bytes": 1134600,
+            "function": "clearPreparedViewportLines",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/components/retained-item.js",
+            "line": 715
+          },
+          {
+            "bytes": 757112,
+            "function": "rebuildViewportBlockHeights",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/components/retained-item.js",
+            "line": 821
+          },
+          {
+            "bytes": 656160,
+            "function": "next",
+            "url": "",
+            "line": 0
+          },
+          {
+            "bytes": 592496,
+            "function": "renderContainerInto",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/tui.js",
+            "line": 113
+          },
+          {
+            "bytes": 574512,
+            "function": "now",
+            "url": "node:internal/perf/performance",
+            "line": 137
+          }
+        ],
+        "heapAfterGc": 40960496,
+        "retainedWeakRefs": 0,
+        "weakRefs": 2
+      }
+    },
+    ".tmp-codemode-fix-tree-after-expanded.json": {
+      "node": "v26.4.0",
+      "platform": "win32",
+      "scope": "InteractiveMode event handler -> retained transcript -> real Text/Box render; separate event/frame benchmarks cover observer and terminal queue. Ungrouped control routes the same events without parent ID; it is not a historical checkout.",
+      "ungrouped": {
+        "mode": "ungrouped-control",
+        "expanded": true,
+        "updates": 4096,
+        "warmup": 256,
+        "cardCount": 2,
+        "medianMs": 0.7266999999999371,
+        "p95Ms": 0.9320999999999913,
+        "sampledBytesPerUpdate": 1322730.26953125,
+        "heapStart": 42675216,
+        "peakHeap": 75938144,
+        "eventPromises": 0,
+        "counters": {
+          "rows": 0,
+          "runningChildren": 0,
+          "resultReferences": 0,
+          "textChars": 37,
+          "timers": 0,
+          "timerRefreshes": 0,
+          "rowCreations": 0,
+          "progressUpdates": 0,
+          "outputProjections": 0,
+          "labelMaterializations": 0,
+          "previewMaterializations": 0
+        },
+        "released": {
+          "rows": 0,
+          "runningChildren": 0,
+          "resultReferences": 0,
+          "textChars": 0,
+          "timers": 0,
+          "timerRefreshes": 0,
+          "rowCreations": 0,
+          "progressUpdates": 0,
+          "outputProjections": 1,
+          "labelMaterializations": 0,
+          "previewMaterializations": 0
+        },
+        "top": [
+          {
+            "bytes": 1712973064,
+            "function": "breakLongWord",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+            "line": 972
+          },
+          {
+            "bytes": 1398360880,
+            "function": "breakLongWord",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+            "line": 972
+          },
+          {
+            "bytes": 1101800384,
+            "function": "splitIntoTokensWithAnsi",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+            "line": 715
+          },
+          {
+            "bytes": 902435448,
+            "function": "splitIntoTokensWithAnsi",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+            "line": 715
+          },
+          {
+            "bytes": 35502248,
+            "function": "applyBackgroundToLine",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+            "line": 1045
+          },
+          {
+            "bytes": 31181352,
+            "function": "captureActiveLineChanges",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/components/retained-item.js",
+            "line": 206
+          },
+          {
+            "bytes": 24133568,
+            "function": "visibleWidth",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+            "line": 214
+          },
+          {
+            "bytes": 22810720,
+            "function": "render",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/components/box.js",
+            "line": 65
+          }
+        ],
+        "heapAfterGc": 46526912,
+        "retainedWeakRefs": 0,
+        "weakRefs": 3
+      },
+      "grouped": {
+        "mode": "grouped",
+        "expanded": true,
+        "updates": 4096,
+        "warmup": 256,
+        "cardCount": 1,
+        "medianMs": 0.4070000000001528,
+        "p95Ms": 0.5114000000003216,
+        "sampledBytesPerUpdate": 704117.369140625,
+        "heapStart": 47291760,
+        "peakHeap": 79474800,
+        "eventPromises": 0,
+        "counters": {
+          "rows": 1,
+          "runningChildren": 1,
+          "resultReferences": 0,
+          "textChars": 2092,
+          "timers": 1,
+          "timerRefreshes": 0,
+          "rowCreations": 1,
+          "progressUpdates": 4352,
+          "outputProjections": 0,
+          "labelMaterializations": 1,
+          "previewMaterializations": 4352
+        },
+        "released": {
+          "rows": 0,
+          "runningChildren": 0,
+          "resultReferences": 0,
+          "textChars": 0,
+          "timers": 0,
+          "timerRefreshes": 0,
+          "rowCreations": 1,
+          "progressUpdates": 4353,
+          "outputProjections": 1,
+          "labelMaterializations": 0,
+          "previewMaterializations": 0
+        },
+        "top": [
+          {
+            "bytes": 1272124640,
+            "function": "breakLongWord",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+            "line": 972
+          },
+          {
+            "bytes": 788817360,
+            "function": "splitIntoTokensWithAnsi",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+            "line": 715
+          },
+          {
+            "bytes": 341953872,
+            "function": "breakLongWord",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+            "line": 972
+          },
+          {
+            "bytes": 209486824,
+            "function": "splitIntoTokensWithAnsi",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+            "line": 715
+          },
+          {
+            "bytes": 50016944,
+            "function": "visibleWidth",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+            "line": 214
+          },
+          {
+            "bytes": 34579496,
+            "function": "captureActiveLineChanges",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/components/retained-item.js",
+            "line": 206
+          },
+          {
+            "bytes": 25824816,
+            "function": "visibleWidth",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+            "line": 214
+          },
+          {
+            "bytes": 14579136,
+            "function": "getActiveCodes",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+            "line": 641
+          }
+        ],
+        "heapAfterGc": 46997144,
+        "retainedWeakRefs": 0,
+        "weakRefs": 2
+      }
+    },
+    ".tmp-codemode-fix-tree-after-expanded-repeat.json": {
+      "node": "v26.4.0",
+      "platform": "win32",
+      "scope": "InteractiveMode event handler -> retained transcript -> real Text/Box render; separate event/frame benchmarks cover observer and terminal queue. Ungrouped control routes the same events without parent ID; it is not a historical checkout.",
+      "ungrouped": {
+        "mode": "ungrouped-control",
+        "expanded": true,
+        "updates": 4096,
+        "warmup": 256,
+        "cardCount": 2,
+        "medianMs": 0.7226999999998043,
+        "p95Ms": 0.9048999999999978,
+        "sampledBytesPerUpdate": 1324537.751953125,
+        "heapStart": 42687904,
+        "peakHeap": 75916696,
+        "eventPromises": 0,
+        "counters": {
+          "rows": 0,
+          "runningChildren": 0,
+          "resultReferences": 0,
+          "textChars": 37,
+          "timers": 0,
+          "timerRefreshes": 0,
+          "rowCreations": 0,
+          "progressUpdates": 0,
+          "outputProjections": 0,
+          "labelMaterializations": 0,
+          "previewMaterializations": 0
+        },
+        "released": {
+          "rows": 0,
+          "runningChildren": 0,
+          "resultReferences": 0,
+          "textChars": 0,
+          "timers": 0,
+          "timerRefreshes": 0,
+          "rowCreations": 0,
+          "progressUpdates": 0,
+          "outputProjections": 1,
+          "labelMaterializations": 0,
+          "previewMaterializations": 0
+        },
+        "top": [
+          {
+            "bytes": 1718706000,
+            "function": "breakLongWord",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+            "line": 972
+          },
+          {
+            "bytes": 1390573072,
+            "function": "breakLongWord",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+            "line": 972
+          },
+          {
+            "bytes": 1112344176,
+            "function": "splitIntoTokensWithAnsi",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+            "line": 715
+          },
+          {
+            "bytes": 900670176,
+            "function": "splitIntoTokensWithAnsi",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+            "line": 715
+          },
+          {
+            "bytes": 43121968,
+            "function": "visibleWidth",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+            "line": 214
+          },
+          {
+            "bytes": 30475496,
+            "function": "render",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/components/box.js",
+            "line": 65
+          },
+          {
+            "bytes": 28891656,
+            "function": "captureActiveLineChanges",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/components/retained-item.js",
+            "line": 206
+          },
+          {
+            "bytes": 19888952,
+            "function": "getActiveCodes",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+            "line": 641
+          }
+        ],
+        "heapAfterGc": 46537456,
+        "retainedWeakRefs": 0,
+        "weakRefs": 3
+      },
+      "grouped": {
+        "mode": "grouped",
+        "expanded": true,
+        "updates": 4096,
+        "warmup": 256,
+        "cardCount": 1,
+        "medianMs": 0.40599999999994907,
+        "p95Ms": 0.47290000000066357,
+        "sampledBytesPerUpdate": 703366.125,
+        "heapStart": 47302304,
+        "peakHeap": 79098304,
+        "eventPromises": 0,
+        "counters": {
+          "rows": 1,
+          "runningChildren": 1,
+          "resultReferences": 0,
+          "textChars": 2092,
+          "timers": 1,
+          "timerRefreshes": 0,
+          "rowCreations": 1,
+          "progressUpdates": 4352,
+          "outputProjections": 0,
+          "labelMaterializations": 1,
+          "previewMaterializations": 4352
+        },
+        "released": {
+          "rows": 0,
+          "runningChildren": 0,
+          "resultReferences": 0,
+          "textChars": 0,
+          "timers": 0,
+          "timerRefreshes": 0,
+          "rowCreations": 1,
+          "progressUpdates": 4353,
+          "outputProjections": 1,
+          "labelMaterializations": 0,
+          "previewMaterializations": 0
+        },
+        "top": [
+          {
+            "bytes": 1266243960,
+            "function": "breakLongWord",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+            "line": 972
+          },
+          {
+            "bytes": 793293008,
+            "function": "splitIntoTokensWithAnsi",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+            "line": 715
+          },
+          {
+            "bytes": 340197656,
+            "function": "breakLongWord",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+            "line": 972
+          },
+          {
+            "bytes": 212307768,
+            "function": "splitIntoTokensWithAnsi",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+            "line": 715
+          },
+          {
+            "bytes": 49752384,
+            "function": "visibleWidth",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+            "line": 214
+          },
+          {
+            "bytes": 33189648,
+            "function": "captureActiveLineChanges",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/components/retained-item.js",
+            "line": 206
+          },
+          {
+            "bytes": 25434792,
+            "function": "visibleWidth",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+            "line": 214
+          },
+          {
+            "bytes": 15151872,
+            "function": "render",
+            "url": "file:///D:/RMProjects/Pi/packages/tui/dist/components/box.js",
+            "line": 65
+          }
+        ],
+        "heapAfterGc": 47003336,
+        "retainedWeakRefs": 0,
+        "weakRefs": 2
+      }
+    },
+    ".tmp-codemode-fix-json.json": {
+      "node": "v26.4.0",
+      "platform": "win32",
+      "scope": "Same JSON payload and native encoder; exact former counter vs corrected bounded serializer. Both cases fit both limits. Full bridge/SDK allocation is measured separately.",
+      "before": {
+        "control": true,
+        "iterations": 1024,
+        "charsPerResult": 9299,
+        "callbackVisits": 1056768,
+        "callbacksPerOwner": 1,
+        "callbacksAllocatedPerValue": 0,
+        "medianMs": 0.044799999999995066,
+        "p95Ms": 0.05099999999998772,
+        "sampledBytesPerResult": 19032.765625,
+        "peakHeap": 10595952,
+        "top": [
+          {
+            "bytes": 19143096,
+            "function": "stringify",
+            "url": "file:///D:/RMProjects/Pi/scripts/bench/codemode-json.ts"
+          },
+          {
+            "bytes": 146032,
+            "function": "now",
+            "url": "node:internal/perf/performance"
+          },
+          {
+            "bytes": 28704,
+            "function": "push",
+            "url": ""
+          },
+          {
+            "bytes": 28656,
+            "function": "wrappedFn",
+            "url": "node:internal/errors"
+          },
+          {
+            "bytes": 23624,
+            "function": "compileForInternalLoader",
+            "url": "node:internal/bootstrap/realm"
+          },
+          {
+            "bytes": 19240,
+            "function": "sample",
+            "url": "file:///D:/RMProjects/Pi/scripts/bench/codemode-json.ts"
+          }
+        ],
+        "retainedWeakRefs": 0,
+        "heapAfterGc": 9275944
+      },
+      "after": {
+        "control": false,
+        "iterations": 1024,
+        "charsPerResult": 9299,
+        "callbackVisits": 1056768,
+        "callbacksPerOwner": 1,
+        "callbacksAllocatedPerValue": 0,
+        "medianMs": 0.048599999999993315,
+        "p95Ms": 0.05129999999999768,
+        "sampledBytesPerResult": 18918.28125,
+        "peakHeap": 11109992,
+        "top": [
+          {
+            "bytes": 19135000,
+            "function": "stringify",
+            "url": "file:///D:/RMProjects/Pi/packages/codemode/src/bounded-json.ts"
+          },
+          {
+            "bytes": 182752,
+            "function": "now",
+            "url": "node:internal/perf/performance"
+          },
+          {
+            "bytes": 26896,
+            "function": "push",
+            "url": ""
+          },
+          {
+            "bytes": 20288,
+            "function": "sample",
+            "url": "file:///D:/RMProjects/Pi/scripts/bench/codemode-json.ts"
+          },
+          {
+            "bytes": 4496,
+            "function": "memoryUsage",
+            "url": "node:internal/process/per_thread"
+          },
+          {
+            "bytes": 1096,
+            "function": "#onMessage",
+            "url": "node:inspector"
+          }
+        ],
+        "retainedWeakRefs": 0,
+        "heapAfterGc": 8951304
+      },
+      "correctness": {
+        "numericChars": 40001,
+        "cap": 262144,
+        "previousAccepted": false,
+        "correctedAccepted": true
+      }
+    },
+    ".tmp-codemode-fix-session.json": {
+      "benchmark": "codemode-session",
+      "node": "v26.4.0",
+      "platform": "win32",
+      "sampledCycles": 10,
+      "excludedWarmupCycles": 1,
+      "startupMedianMs": 0.5800999999999021,
+      "startupP95Ms": 0.7612000000000307,
+      "firstBatchMedianMs": 41.4375,
+      "firstBatchP95Ms": 43.968200000000024,
+      "warmBatchMedianMs": 41.97880000000009,
+      "warmBatchP95Ms": 42.79079999999999,
+      "childCalls": 242,
+      "progress": 0,
+      "workersStarted": 22,
+      "workersStopped": 22,
+      "trackedReferences": 55,
+      "retainedAfterGc": 0,
+      "pendingEvidenceAfterTurn": 0,
+      "sampledHostBytes": 26023608,
+      "leadingSites": [
+        {
+          "name": "split",
+          "bytes": 1453096
+        },
+        {
+          "name": "createContext",
+          "bytes": 765536
+        },
+        {
+          "name": "join",
+          "bytes": 747688
+        },
+        {
+          "name": "stringify",
+          "bytes": 533552
+        },
+        {
+          "name": "toString",
+          "bytes": 433760
+        }
+      ],
+      "coverage": "real SDK, built-in reads, AgentSession policy/hooks/results/store, Worker, projection and disposal; offline provider; excludes UI, worker heap and disk sessions"
+    },
+    ".tmp-codemode-fix-json-final.json": {
+      "node": "v26.4.0",
+      "platform": "win32",
+      "scope": "Same JSON payload and native encoder; exact former counter vs corrected bounded serializer. Both cases fit both limits. Full bridge/SDK allocation is measured separately.",
+      "before": {
+        "control": true,
+        "iterations": 1024,
+        "charsPerResult": 9299,
+        "callbackVisits": 1056768,
+        "callbacksPerOwner": 1,
+        "callbacksAllocatedPerValue": 0,
+        "medianMs": 0.04760000000000275,
+        "p95Ms": 0.08089999999999975,
+        "sampledBytesPerResult": 19044.578125,
+        "peakHeap": 10562856,
+        "top": [
+          {
+            "bytes": 19153952,
+            "function": "stringify",
+            "url": "file:///D:/RMProjects/Pi/scripts/bench/codemode-json.ts"
+          },
+          {
+            "bytes": 144544,
+            "function": "now",
+            "url": "node:internal/perf/performance"
+          },
+          {
+            "bytes": 30248,
+            "function": "wrappedFn",
+            "url": "node:internal/errors"
+          },
+          {
+            "bytes": 28816,
+            "function": "push",
+            "url": ""
+          },
+          {
+            "bytes": 27328,
+            "function": "compileForInternalLoader",
+            "url": "node:internal/bootstrap/realm"
+          },
+          {
+            "bytes": 17760,
+            "function": "sample",
+            "url": "file:///D:/RMProjects/Pi/scripts/bench/codemode-json.ts"
+          }
+        ],
+        "retainedWeakRefs": 0,
+        "heapAfterGc": 8927824
+      },
+      "after": {
+        "control": false,
+        "iterations": 1024,
+        "charsPerResult": 9299,
+        "callbackVisits": 1056768,
+        "callbacksPerOwner": 1,
+        "callbacksAllocatedPerValue": 0,
+        "medianMs": 0.04980000000000473,
+        "p95Ms": 0.05259999999998399,
+        "sampledBytesPerResult": 18923.40625,
+        "peakHeap": 11116224,
+        "top": [
+          {
+            "bytes": 19138736,
+            "function": "stringify",
+            "url": "file:///D:/RMProjects/Pi/packages/codemode/src/bounded-json.ts"
+          },
+          {
+            "bytes": 190000,
+            "function": "now",
+            "url": "node:internal/perf/performance"
+          },
+          {
+            "bytes": 28752,
+            "function": "push",
+            "url": ""
+          },
+          {
+            "bytes": 11984,
+            "function": "sample",
+            "url": "file:///D:/RMProjects/Pi/scripts/bench/codemode-json.ts"
+          },
+          {
+            "bytes": 5064,
+            "function": "memoryUsage",
+            "url": "node:internal/process/per_thread"
+          },
+          {
+            "bytes": 672,
+            "function": "Promise",
+            "url": ""
+          }
+        ],
+        "retainedWeakRefs": 0,
+        "heapAfterGc": 8956824
+      },
+      "correctness": {
+        "numericChars": 40001,
+        "cap": 262144,
+        "previousAccepted": false,
+        "correctedAccepted": true
+      }
+    }
+  },
+  "finalJsonSample": ".tmp-codemode-fix-json-final.json",
+  "notes": [
+    "Both JSON controls encode the same payload within both limits; per-value callbacks remain zero. Earlier and final samples are both retained; do not infer a stable latency win from one p95 sample.",
+    "Tree comparison uses grouped-before against grouped-after, with identical display content. Expanded p95 has noise; final claims rely on allocation counters and reference release rather than universal speedup.",
+    "Default configuration integration loads 14 packages and 22 extensions with an offline provider; real external service OAuth and native ConPTY were not exercised."
+  ],
+  "finalVerification": {
+    "command": "npm run verify",
+    "exitCode": 0,
+    "node": "v26.4.0",
+    "platform": "win32",
+    "completedUnits": 219,
+    "tests": 3224,
+    "pass": 3134,
+    "fail": 0,
+    "cancelled": 0,
+    "skipped": 90,
+    "todo": 0,
+    "unitWallMs": 426991,
+    "logPath": ".tmp-codemode-fix-verification-final.log",
+    "logSha256": "62c462f39574da5e537781a7c3309720162ad535d3bcef944c48013bbb7786cd",
+    "note": "Type check, offline build and all test units including memory workspace; process-local Git Bash path. Platform skips are preserved."
+  }
+}

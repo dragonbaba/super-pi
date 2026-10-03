@@ -13,3 +13,7 @@ for (const termination of ["failure", "abort"] as const) {
 		t.diagnostic(JSON.stringify(await runBashResponsiveness("short", undefined, termination)));
 	});
 }
+
+test("standalone native shell renderer keeps its own timer lifecycle", { timeout: 20_000 }, async t => {
+	t.diagnostic(JSON.stringify(await runBashResponsiveness("short", undefined, "success", false)));
+});

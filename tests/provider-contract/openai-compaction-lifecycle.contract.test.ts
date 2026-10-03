@@ -138,7 +138,7 @@ async function fixture(codex = false, fail?: "remote" | "summary", modelId = "gp
   }
   const { session } = await createAgentSession({ cwd: root, agentDir: root, settingsManager: settings, sessionManager: manager,
     resourceLoader, model, modelRuntime: runtime, noTools: extra?.tool ? "builtin" : "all",
-    customTools: extra?.tool ? [{ name: "note", label: "Note", description: "fixture", parameters: { type: "object", properties: {} },
+    customTools: extra?.tool ? [{ name: "note", modelOnly: true, label: "Note", description: "direct wire fixture", parameters: { type: "object", properties: {} },
       execute: async () => { await extra.tool!(session); return { content: [{ type: "text", text: "TOOL_RESULT_SENTINEL" }], details: {} }; } }] : undefined });
   await session.bindExtensions({});
   const sessionRuntime = new AgentSessionRuntime(session, { cwd: root, agentDir: root } as any, async target => {

@@ -3,7 +3,7 @@ import test from "node:test";
 import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { createAgentSession } from "../packages/coding-agent/src/core/sdk.ts";
+import { createNativeProtocolSessionFixture as createAgentSession } from "./helpers/native-protocol-session.ts";
 import { DefaultResourceLoader } from "../packages/coding-agent/src/core/resource-loader.ts";
 import { SettingsManager } from "../packages/coding-agent/src/core/settings-manager.ts";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
@@ -12,7 +12,7 @@ import { streamSimple } from "@super-pi/ai/api/openai-completions";
 import { readShellExecution } from "../packages/coding-agent/src/core/tools/shell-execution.ts";
 import { realpathSync } from "node:fs";
 
-test("N3 default SDK: quoted source/data require approval and changed approved input cannot execute", { timeout: 30000 }, async t => {
+test("N3 native protocol SDK: quoted source/data require approval and changed approved input cannot execute", { timeout: 30000 }, async t => {
   const root = mkdtempSync(join(tmpdir(), "sp-input-sdk-")), cwd = join(root, "work"), agentDir = join(root, "agent"); mkdirSync(cwd); mkdirSync(agentDir);
   const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } });
   let tamper = false, pendingCall: any, providerCalls = 0, approve = true, approvals = 0;

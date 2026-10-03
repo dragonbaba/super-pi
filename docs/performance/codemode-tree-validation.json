@@ -1,0 +1,1914 @@
+{
+  "schemaVersion": 1,
+  "baseCommit": "0949fc33f8eb3cc68496b63997e1f9fc36e32c76",
+  "branch": "codex/default-codemode",
+  "committed": false,
+  "verification": {
+    "full": {
+      "tests": 3201,
+      "pass": 3111,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 90,
+      "units": 216,
+      "failedUnits": 0
+    },
+    "finalTargeted": {
+      "tests": 46,
+      "pass": 46,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0
+    },
+    "note": "Full suite completed successfully. Final display-boundary follow-ups were then checked by typecheck, coding-agent rebuild and all 46 targeted tests."
+  },
+  "collapsed": {
+    "node": "v26.4.0",
+    "platform": "win32",
+    "scope": "InteractiveMode event handler -> retained transcript -> real Text/Box render; separate event/frame benchmarks cover observer and terminal queue. Ungrouped control routes the same events without parent ID; it is not a historical checkout.",
+    "ungrouped": {
+      "mode": "ungrouped-control",
+      "expanded": false,
+      "updates": 4096,
+      "warmup": 256,
+      "cardCount": 2,
+      "medianMs": 0.7588999999998123,
+      "p95Ms": 1.0322999999998501,
+      "sampledBytesPerUpdate": 1308762.83203125,
+      "heapStart": 42726880,
+      "peakHeap": 53586640,
+      "eventPromises": 0,
+      "counters": {
+        "rows": 0,
+        "runningChildren": 0,
+        "resultReferences": 0,
+        "textChars": 37,
+        "timers": 0,
+        "timerRefreshes": 0,
+        "rowCreations": 0,
+        "progressUpdates": 0,
+        "outputProjections": 0
+      },
+      "released": {
+        "rows": 0,
+        "runningChildren": 0,
+        "resultReferences": 0,
+        "textChars": 0,
+        "timers": 0,
+        "timerRefreshes": 0,
+        "rowCreations": 0,
+        "progressUpdates": 0,
+        "outputProjections": 1
+      },
+      "top": [
+        {
+          "bytes": 2965645000,
+          "function": "breakLongWord",
+          "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+          "line": 972
+        },
+        {
+          "bytes": 1924620976,
+          "function": "splitIntoTokensWithAnsi",
+          "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+          "line": 715
+        },
+        {
+          "bytes": 151612720,
+          "function": "breakLongWord",
+          "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+          "line": 972
+        },
+        {
+          "bytes": 98968808,
+          "function": "splitIntoTokensWithAnsi",
+          "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+          "line": 715
+        },
+        {
+          "bytes": 33267792,
+          "function": "getActiveCodes",
+          "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+          "line": 641
+        },
+        {
+          "bytes": 27429080,
+          "function": "truncateToWidth",
+          "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+          "line": 1065
+        },
+        {
+          "bytes": 21913760,
+          "function": "trimEnd",
+          "url": "",
+          "line": 0
+        },
+        {
+          "bytes": 17895104,
+          "function": "getPreparedBashOutput",
+          "url": "file:///D:/RMProjects/Pi/packages/coding-agent/src/core/tools/bash.ts",
+          "line": 717
+        }
+      ],
+      "heapAfterGc": 46559912,
+      "retainedWeakRefs": 0,
+      "weakRefs": 3
+    },
+    "grouped": {
+      "mode": "grouped",
+      "expanded": false,
+      "updates": 4096,
+      "warmup": 256,
+      "cardCount": 1,
+      "medianMs": 0.002800000000206637,
+      "p95Ms": 0.0059000000001105946,
+      "sampledBytesPerUpdate": 4244.64453125,
+      "heapStart": 47166776,
+      "peakHeap": 64694048,
+      "eventPromises": 0,
+      "counters": {
+        "rows": 1,
+        "runningChildren": 1,
+        "resultReferences": 0,
+        "textChars": 2114,
+        "timers": 1,
+        "timerRefreshes": 0,
+        "rowCreations": 1,
+        "progressUpdates": 4352,
+        "outputProjections": 0
+      },
+      "released": {
+        "rows": 0,
+        "runningChildren": 0,
+        "resultReferences": 0,
+        "textChars": 0,
+        "timers": 0,
+        "timerRefreshes": 0,
+        "rowCreations": 1,
+        "progressUpdates": 4353,
+        "outputProjections": 1
+      },
+      "top": [
+        {
+          "bytes": 3005408,
+          "function": "matchCache",
+          "url": "file:///D:/RMProjects/Pi/packages/tui/dist/components/box.js",
+          "line": 46
+        },
+        {
+          "bytes": 2529696,
+          "function": "render",
+          "url": "file:///D:/RMProjects/Pi/packages/tui/dist/components/retained-item.js",
+          "line": 572
+        },
+        {
+          "bytes": 2527952,
+          "function": "render",
+          "url": "file:///D:/RMProjects/Pi/packages/tui/dist/components/box.js",
+          "line": 65
+        },
+        {
+          "bytes": 1624152,
+          "function": "refresh",
+          "url": "file:///D:/RMProjects/Pi/packages/coding-agent/src/modes/interactive/components/codemode-tree.ts",
+          "line": 44
+        },
+        {
+          "bytes": 871560,
+          "function": "clearPreparedViewportLines",
+          "url": "file:///D:/RMProjects/Pi/packages/tui/dist/components/retained-item.js",
+          "line": 715
+        },
+        {
+          "bytes": 723696,
+          "function": "rebuildViewportBlockHeights",
+          "url": "file:///D:/RMProjects/Pi/packages/tui/dist/components/retained-item.js",
+          "line": 821
+        },
+        {
+          "bytes": 625480,
+          "function": "renderContainerInto",
+          "url": "file:///D:/RMProjects/Pi/packages/tui/dist/tui.js",
+          "line": 113
+        },
+        {
+          "bytes": 623792,
+          "function": "now",
+          "url": "node:internal/perf/performance",
+          "line": 137
+        }
+      ],
+      "heapAfterGc": 46892568,
+      "retainedWeakRefs": 0,
+      "weakRefs": 2
+    }
+  },
+  "expanded": {
+    "node": "v26.4.0",
+    "platform": "win32",
+    "scope": "InteractiveMode event handler -> retained transcript -> real Text/Box render; separate event/frame benchmarks cover observer and terminal queue. Ungrouped control routes the same events without parent ID; it is not a historical checkout.",
+    "ungrouped": {
+      "mode": "ungrouped-control",
+      "expanded": true,
+      "updates": 4096,
+      "warmup": 256,
+      "cardCount": 2,
+      "medianMs": 0.7309999999997672,
+      "p95Ms": 0.9621999999999389,
+      "sampledBytesPerUpdate": 1324680.916015625,
+      "heapStart": 42653192,
+      "peakHeap": 76217688,
+      "eventPromises": 0,
+      "counters": {
+        "rows": 0,
+        "runningChildren": 0,
+        "resultReferences": 0,
+        "textChars": 37,
+        "timers": 0,
+        "timerRefreshes": 0,
+        "rowCreations": 0,
+        "progressUpdates": 0,
+        "outputProjections": 0
+      },
+      "released": {
+        "rows": 0,
+        "runningChildren": 0,
+        "resultReferences": 0,
+        "textChars": 0,
+        "timers": 0,
+        "timerRefreshes": 0,
+        "rowCreations": 0,
+        "progressUpdates": 0,
+        "outputProjections": 1
+      },
+      "top": [
+        {
+          "bytes": 1714508672,
+          "function": "breakLongWord",
+          "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+          "line": 972
+        },
+        {
+          "bytes": 1394624968,
+          "function": "breakLongWord",
+          "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+          "line": 972
+        },
+        {
+          "bytes": 1108259520,
+          "function": "splitIntoTokensWithAnsi",
+          "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+          "line": 715
+        },
+        {
+          "bytes": 902467856,
+          "function": "splitIntoTokensWithAnsi",
+          "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+          "line": 715
+        },
+        {
+          "bytes": 31066008,
+          "function": "captureActiveLineChanges",
+          "url": "file:///D:/RMProjects/Pi/packages/tui/dist/components/retained-item.js",
+          "line": 206
+        },
+        {
+          "bytes": 30356536,
+          "function": "visibleWidth",
+          "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+          "line": 214
+        },
+        {
+          "bytes": 26055784,
+          "function": "render",
+          "url": "file:///D:/RMProjects/Pi/packages/tui/dist/components/box.js",
+          "line": 65
+        },
+        {
+          "bytes": 25450632,
+          "function": "visibleWidth",
+          "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+          "line": 214
+        }
+      ],
+      "heapAfterGc": 46508584,
+      "retainedWeakRefs": 0,
+      "weakRefs": 3
+    },
+    "grouped": {
+      "mode": "grouped",
+      "expanded": true,
+      "updates": 4096,
+      "warmup": 256,
+      "cardCount": 1,
+      "medianMs": 0.4128000000000611,
+      "p95Ms": 0.5363999999999578,
+      "sampledBytesPerUpdate": 707288.85546875,
+      "heapStart": 47270240,
+      "peakHeap": 80292096,
+      "eventPromises": 0,
+      "counters": {
+        "rows": 1,
+        "runningChildren": 1,
+        "resultReferences": 0,
+        "textChars": 2114,
+        "timers": 1,
+        "timerRefreshes": 0,
+        "rowCreations": 1,
+        "progressUpdates": 4352,
+        "outputProjections": 0
+      },
+      "released": {
+        "rows": 0,
+        "runningChildren": 0,
+        "resultReferences": 0,
+        "textChars": 0,
+        "timers": 0,
+        "timerRefreshes": 0,
+        "rowCreations": 1,
+        "progressUpdates": 4353,
+        "outputProjections": 1
+      },
+      "top": [
+        {
+          "bytes": 1264987384,
+          "function": "breakLongWord",
+          "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+          "line": 972
+        },
+        {
+          "bytes": 790194288,
+          "function": "splitIntoTokensWithAnsi",
+          "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+          "line": 715
+        },
+        {
+          "bytes": 338800208,
+          "function": "breakLongWord",
+          "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+          "line": 972
+        },
+        {
+          "bytes": 212126848,
+          "function": "splitIntoTokensWithAnsi",
+          "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+          "line": 715
+        },
+        {
+          "bytes": 33022160,
+          "function": "captureActiveLineChanges",
+          "url": "file:///D:/RMProjects/Pi/packages/tui/dist/components/retained-item.js",
+          "line": 206
+        },
+        {
+          "bytes": 30076648,
+          "function": "visibleWidth",
+          "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+          "line": 214
+        },
+        {
+          "bytes": 26903568,
+          "function": "visibleWidth",
+          "url": "file:///D:/RMProjects/Pi/packages/tui/dist/utils.js",
+          "line": 214
+        },
+        {
+          "bytes": 24330280,
+          "function": "applyBg",
+          "url": "file:///D:/RMProjects/Pi/packages/tui/dist/components/box.js",
+          "line": 106
+        }
+      ],
+      "heapAfterGc": 46976128,
+      "retainedWeakRefs": 0,
+      "weakRefs": 2
+    }
+  },
+  "eventDelivery": {
+    "schemaVersion": 1,
+    "benchmark": "tui-session-event-allocations",
+    "commit": "0949fc33f8eb3cc68496b63997e1f9fc36e32c76",
+    "node": "v26.4.0",
+    "platform": "win32",
+    "arch": "x64",
+    "fixtures": [
+      {
+        "name": "agent-session-to-interactive-stub",
+        "coverage": {
+          "realAgentObserverDelivery": true,
+          "realStableReference": true,
+          "realAssistantComponent": false,
+          "realToolComponent": false,
+          "markdown": false,
+          "frameQueue": false
+        },
+        "results": [
+          {
+            "name": "message_update",
+            "updates": 4096,
+            "warmup": 256,
+            "metrics": {
+              "cpuP50MsPerUpdate": 0.0002477999999998701,
+              "cpuP95MsPerUpdate": 0.00035540000000014514,
+              "sampledAllocationBytes": 166736,
+              "sampledAllocationBytesPerUpdate": 40.70703125,
+              "minorGcCount": 0,
+              "majorGcCount": 1,
+              "totalGcDurationMs": 5.753800004720688,
+              "heapBefore": 40938344,
+              "heapAfter": 41119176,
+              "controlledGcAfter": 41039328,
+              "controlledGcHeapDeltaBytes": 100984,
+              "builtInListenerPromisesPerUpdate": 0,
+              "rejectionObserversPerUpdate": 0,
+              "finalUpdateCorrect": 1
+            },
+            "sourceInvariant": {
+              "toolWrapperObjectsPerUpdate": 0,
+              "inlineClosuresPerUpdate": 0,
+              "promiseTailsPerUpdate": 0,
+              "promiseArraysPerUpdate": 0,
+              "arraysPerUpdate": 0
+            },
+            "topAllocationSites": [
+              {
+                "bytes": 145160,
+                "functionName": "handleEvent",
+                "url": "file:///D:/RMProjects/Pi/packages/coding-agent/src/modes/interactive/interactive-mode.ts",
+                "line": 4106,
+                "column": 21
+              },
+              {
+                "bytes": 14824,
+                "functionName": "post",
+                "url": "node:inspector",
+                "line": 115,
+                "column": 7
+              },
+              {
+                "bytes": 2080,
+                "functionName": "measure",
+                "url": "file:///D:/RMProjects/Pi/scripts/bench/tui-session-event-allocations.ts",
+                "line": 137,
+                "column": 23
+              },
+              {
+                "bytes": 1512,
+                "functionName": "invalidate",
+                "url": "file:///D:/RMProjects/Pi/scripts/bench/tui-session-event-allocations.ts",
+                "line": 112,
+                "column": 23
+              },
+              {
+                "bytes": 1064,
+                "functionName": "(anonymous)",
+                "url": "node:internal/util",
+                "line": 478,
+                "column": 24
+              },
+              {
+                "bytes": 1056,
+                "functionName": "(anonymous)",
+                "url": "node:internal/util",
+                "line": 479,
+                "column": 32
+              },
+              {
+                "bytes": 1040,
+                "functionName": "wrappedFn",
+                "url": "node:internal/errors",
+                "line": 541,
+                "column": 21
+              }
+            ]
+          },
+          {
+            "name": "tool_execution_update",
+            "updates": 4096,
+            "warmup": 256,
+            "metrics": {
+              "cpuP50MsPerUpdate": 0.00020280000000002474,
+              "cpuP95MsPerUpdate": 0.0003270833333329411,
+              "sampledAllocationBytes": 172464,
+              "sampledAllocationBytesPerUpdate": 42.10546875,
+              "minorGcCount": 0,
+              "majorGcCount": 1,
+              "totalGcDurationMs": 4.9134999960660934,
+              "heapBefore": 41029136,
+              "heapAfter": 41123104,
+              "controlledGcAfter": 41055744,
+              "controlledGcHeapDeltaBytes": 26608,
+              "builtInListenerPromisesPerUpdate": 0,
+              "rejectionObserversPerUpdate": 0,
+              "finalUpdateCorrect": 1
+            },
+            "sourceInvariant": {
+              "toolWrapperObjectsPerUpdate": 0,
+              "inlineClosuresPerUpdate": 0,
+              "promiseTailsPerUpdate": 0,
+              "promiseArraysPerUpdate": 0,
+              "arraysPerUpdate": 0
+            },
+            "topAllocationSites": [
+              {
+                "bytes": 167080,
+                "functionName": "handleEvent",
+                "url": "file:///D:/RMProjects/Pi/packages/coding-agent/src/modes/interactive/interactive-mode.ts",
+                "line": 4106,
+                "column": 21
+              },
+              {
+                "bytes": 2128,
+                "functionName": "measure",
+                "url": "file:///D:/RMProjects/Pi/scripts/bench/tui-session-event-allocations.ts",
+                "line": 137,
+                "column": 23
+              },
+              {
+                "bytes": 2080,
+                "functionName": "wrappedFn",
+                "url": "node:internal/errors",
+                "line": 541,
+                "column": 21
+              },
+              {
+                "bytes": 1176,
+                "functionName": "Promise",
+                "url": "",
+                "line": 0,
+                "column": 0
+              }
+            ]
+          },
+          {
+            "name": "observer-coalesced-message_update",
+            "updates": 4096,
+            "warmup": 256,
+            "metrics": {
+              "rawUpdates": 4096,
+              "coalescedUpdates": 4095,
+              "coalescedDeliveries": 1,
+              "snapshotCount": 1,
+              "extensionObserverPublishes": 1,
+              "promisesPerRawUpdate": 0,
+              "promisesPerDelivery": 0,
+              "observerBridgePromisesPerDelivery": 0,
+              "builtInInteractivePromisesPerDelivery": 0,
+              "rejectionObserversPerDelivery": 0,
+              "sampledAllocationBytes": 2176640,
+              "sampledAllocationBytesPerRawUpdate": 531.40625,
+              "sampledAllocationBytesPerDelivery": 2176640,
+              "cpuP50MsPerRawUpdate": 0.0006666000000000167,
+              "cpuP95MsPerRawUpdate": 0.0012545999999999822,
+              "minorGcCount": 0,
+              "majorGcCount": 1,
+              "totalGcDurationMs": 4.675799995660782,
+              "heapBefore": 41058192,
+              "heapAfter": 41382544,
+              "controlledGcAfter": 41264504,
+              "controlledGcHeapDeltaBytes": 206312,
+              "finalUpdateCorrect": 1
+            },
+            "sourceInvariant": {
+              "toolWrapperObjectsPerUpdate": 0,
+              "inlineClosuresPerUpdate": 0,
+              "promiseTailsPerUpdate": 0,
+              "promiseArraysPerUpdate": 0
+            },
+            "topAllocationSites": [
+              {
+                "bytes": 820912,
+                "functionName": "next",
+                "url": "",
+                "line": 0,
+                "column": 0
+              },
+              {
+                "bytes": 569496,
+                "functionName": "scheduleFlush",
+                "url": "file:///D:/RMProjects/Pi/packages/agent/src/event-delivery.ts",
+                "line": 258,
+                "column": 23
+              },
+              {
+                "bytes": 313256,
+                "functionName": "now",
+                "url": "node:internal/perf/performance",
+                "line": 137,
+                "column": 6
+              },
+              {
+                "bytes": 210096,
+                "functionName": "values",
+                "url": "",
+                "line": 0,
+                "column": 0
+              },
+              {
+                "bytes": 148256,
+                "functionName": "entries",
+                "url": "",
+                "line": 0,
+                "column": 0
+              },
+              {
+                "bytes": 37520,
+                "functionName": "wrappedFn",
+                "url": "node:internal/errors",
+                "line": 541,
+                "column": 21
+              },
+              {
+                "bytes": 25808,
+                "functionName": "min",
+                "url": "",
+                "line": 0,
+                "column": 0
+              },
+              {
+                "bytes": 21680,
+                "functionName": "max",
+                "url": "",
+                "line": 0,
+                "column": 0
+              },
+              {
+                "bytes": 7896,
+                "functionName": "deepFreezeSnapshot",
+                "url": "file:///D:/RMProjects/Pi/packages/agent/src/agent.ts",
+                "line": 75,
+                "column": 28
+              },
+              {
+                "bytes": 5464,
+                "functionName": "structuredClone",
+                "url": "node:internal/worker/js_transferable",
+                "line": 113,
+                "column": 25
+              },
+              {
+                "bytes": 2192,
+                "functionName": "flushAvailable",
+                "url": "file:///D:/RMProjects/Pi/packages/agent/src/event-delivery.ts",
+                "line": 309,
+                "column": 30
+              },
+              {
+                "bytes": 2120,
+                "functionName": "measureFullObserverChain",
+                "url": "file:///D:/RMProjects/Pi/scripts/bench/tui-session-event-allocations.ts",
+                "line": 228,
+                "column": 40
+              },
+              {
+                "bytes": 2104,
+                "functionName": "flushLatest",
+                "url": "file:///D:/RMProjects/Pi/packages/agent/src/event-delivery.ts",
+                "line": 227,
+                "column": 19
+              },
+              {
+                "bytes": 2104,
+                "functionName": "Timeout",
+                "url": "node:internal/timers",
+                "line": 179,
+                "column": 14
+              },
+              {
+                "bytes": 1184,
+                "functionName": "add",
+                "url": "",
+                "line": 0,
+                "column": 0
+              },
+              {
+                "bytes": 1176,
+                "functionName": "setTimeout",
+                "url": "node:timers",
+                "line": 115,
+                "column": 20
+              },
+              {
+                "bytes": 1152,
+                "functionName": "insert",
+                "url": "node:internal/timers",
+                "line": 387,
+                "column": 16
+              },
+              {
+                "bytes": 1080,
+                "functionName": "publishLatest",
+                "url": "file:///D:/RMProjects/Pi/packages/agent/src/event-delivery.ts",
+                "line": 200,
+                "column": 15
+              },
+              {
+                "bytes": 1064,
+                "functionName": "delete",
+                "url": "",
+                "line": 0,
+                "column": 0
+              },
+              {
+                "bytes": 1040,
+                "functionName": "TimersList",
+                "url": "node:internal/timers",
+                "line": 267,
+                "column": 14
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "queue": {
+    "schemaVersion": 1,
+    "benchmark": "tui-frame-queue-allocations",
+    "commit": "0949fc33f8eb3cc68496b63997e1f9fc36e32c76",
+    "fixture": "queue-only-prebuilt-frame",
+    "frameKiB": 64,
+    "warmupFrames": 1000,
+    "measuredFrames": 20000,
+    "node": "v26.4.0",
+    "platform": "win32",
+    "arch": "x64",
+    "metrics": {
+      "cpuP50Ms": 0.08960000000001855,
+      "cpuP95Ms": 0.09559999999987667,
+      "sampledAllocationBytes": 2219848,
+      "sampledAllocationBytesPerFrame": 110.9924,
+      "minorGcCount": 0,
+      "majorGcCount": 1,
+      "incrementalGcCount": 0,
+      "weakCallbackGcCount": 0,
+      "totalGcDurationMs": 1.4371000081300735,
+      "controlledGcBeforeHeapBytes": 9006536,
+      "heapAfterFramesBytes": 9375984,
+      "controlledGcAfterHeapBytes": 9262576,
+      "controlledGcHeapDeltaBytes": 256040,
+      "writtenFrames": 20000,
+      "activeAfterFlush": 0,
+      "pendingAfterFlush": 0,
+      "activeFrameUtf8BytesAfterFlush": 0,
+      "pendingFrameUtf8BytesAfterFlush": 0,
+      "closuresCreated": 0,
+      "framePromisesCreated": 0,
+      "frameAbortControllersCreated": 0,
+      "frameWrapperObjectsCreated": 0,
+      "frameStringsMaterializedByQueue": 0,
+      "fullSizeFrameCopies": 0
+    },
+    "topAllocationSites": [
+      {
+        "bytes": 1641440,
+        "functionName": "now",
+        "url": "node:internal/perf/performance",
+        "line": 137,
+        "column": 6
+      },
+      {
+        "bytes": 520752,
+        "functionName": "(anonymous)",
+        "url": "file:///D:/RMProjects/Pi/scripts/bench/tui-frame-queue-allocations.ts",
+        "line": 1,
+        "column": 1
+      },
+      {
+        "bytes": 29216,
+        "functionName": "wrappedFn",
+        "url": "node:internal/errors",
+        "line": 541,
+        "column": 21
+      },
+      {
+        "bytes": 17032,
+        "functionName": "start",
+        "url": "file:///D:/RMProjects/Pi/packages/tui/src/terminal-frame-queue.ts",
+        "line": 226,
+        "column": 15
+      },
+      {
+        "bytes": 11408,
+        "functionName": "post",
+        "url": "node:inspector",
+        "line": 115,
+        "column": 7
+      }
+    ]
+  },
+  "productionFrames": {
+    "schemaVersion": 1,
+    "benchmark": "tui-frame-allocations",
+    "commit": "0949fc33f8eb3cc68496b63997e1f9fc36e32c76",
+    "fixtureClass": "render-plus-queue",
+    "fixture": "production-alt",
+    "altControl": "stable",
+    "items": 5000,
+    "width": 120,
+    "height": 40,
+    "warmupFrames": 256,
+    "measuredFrames": 4096,
+    "node": "v26.4.0",
+    "platform": "win32",
+    "arch": "x64",
+    "metrics": {
+      "cpuP50Ms": 0.03129999999998745,
+      "cpuP95Ms": 0.04560000000000741,
+      "sampledAllocationBytes": 47133880,
+      "sampledAllocationBytesPerFrame": 11507.294921875,
+      "minorGcCount": 5,
+      "majorGcCount": 1,
+      "incrementalGcCount": 0,
+      "weakCallbackGcCount": 0,
+      "totalGcDurationMs": 4.427199989557266,
+      "controlledGcBeforeHeapBytes": 14643760,
+      "heapAfterFramesBytes": 19236616,
+      "controlledGcAfterHeapBytes": 17377416,
+      "controlledGcHeapDeltaBytes": 2733656,
+      "controlledGcAfterDisposeHeapBytes": 17251664,
+      "controlledGcAfterDisposeHeapDeltaBytes": 2607904,
+      "retainedReferencesBeforeDispose": {
+        "components": 0,
+        "lines": 0,
+        "sources": 80,
+        "cachedRows": 80,
+        "sourceCodeUnits": 1043,
+        "paintedCodeUnits": 11200,
+        "maximumRowCodeUnits": 154,
+        "indexedComponents": 0,
+        "screenRows": 80,
+        "screenCodeUnits": 11200
+      },
+      "retainedReferencesAfterDispose": {
+        "components": 0,
+        "lines": 0,
+        "sources": 0,
+        "cachedRows": 0,
+        "sourceCodeUnits": 0,
+        "paintedCodeUnits": 0,
+        "maximumRowCodeUnits": 0,
+        "indexedComponents": 0,
+        "screenRows": 0,
+        "screenCodeUnits": 0
+      },
+      "compositionReferencesBeforeDispose": {
+        "overlayLineReferences": 0,
+        "selectionPointReferences": 0
+      },
+      "compositionReferencesAfterDispose": {
+        "overlayLineReferences": 0,
+        "selectionPointReferences": 0
+      },
+      "lifecycleCycles": 0,
+      "lifecycleHeapSamples": [],
+      "lifecycleHeapSlopeBytesPerCycle": 0,
+      "lifecycleMaximumRetainedReferencesAfterDispose": 0,
+      "plainChildRenderCallsPerFrame": 12,
+      "maxPlainChildRenderCallsPerFrame": 3,
+      "activeRenderCallsPerFrame": 2,
+      "completedItemRendersPerFrame": 0,
+      "overlayRendersPerFrame": 0,
+      "overlayComposedLinesPerFrame": 0,
+      "overlayStringRepeatCallsPerFrame": 0,
+      "overlayStringRepeatBytesPerFrame": 0,
+      "selectionRowsVisitedPerFrame": 0,
+      "selectionComposedLinesPerFrame": 0,
+      "viewportItemVisitsPerFrame": 32,
+      "viewportLineArraysPerFrame": 1,
+      "viewportComposedLinesPerFrame": 32,
+      "viewportCopiedLinesPerFrame": 32,
+      "viewportTargetHeightLookupProbesPerFrame": 32,
+      "viewportBlockLookupProbesPerFrame": 0,
+      "mutationEventWritesPerFrame": 1,
+      "fullHistoryFallbacksPerFrame": 0,
+      "frameStringsGenerated": 4096,
+      "frameStringsGeneratedPerFrame": 1,
+      "frameStringUtf8BytesGenerated": 749568,
+      "frameStringUtf8BytesGeneratedPerFrame": 183,
+      "maximumFrameUtf8Bytes": 183,
+      "activeFrameUtf8Bytes": 0,
+      "pendingFrameUtf8Bytes": 0,
+      "terminalFrameQueueHighWaterMark": 1,
+      "terminalActiveWriteHighWaterMark": 1,
+      "terminalPendingFrameHighWaterMark": 0,
+      "fullSizeFrameCopies": 0,
+      "framePromisesCreated": 0,
+      "frameAbortControllersCreated": 0,
+      "frameWrapperObjectsCreated": 0,
+      "layoutNodesVisitedPerFrame": 9,
+      "layoutBoxObjectsPerFrame": 10,
+      "layoutRectObjectsPerFrame": 21,
+      "layoutClipObjectsPerFrame": 10,
+      "layoutRenderCacheLookupProbesPerFrame": 57,
+      "layoutRenderCacheRecordCountPerFrame": 6,
+      "layoutRenderCacheIndexActivationsPerFrame": 0,
+      "layoutRenderCacheWidthVariantBypassesPerFrame": 0,
+      "layoutScreenArraysCreatedPerFrame": 0,
+      "layoutFullViewportArrayCopiesPerFrame": 0,
+      "layoutStringRepeatCallsPerFrame": 1,
+      "layoutStringRepeatBytesPerFrame": 109.5,
+      "layoutPaintBoxCallsPerFrame": 10,
+      "layoutChildRenderCallsPerFrame": 6,
+      "layoutFullWidthRowCacheHitsPerFrame": 39,
+      "layoutCachedSourceCodeUnitsPerFrame": 1043,
+      "layoutCachedPaintedCodeUnitsPerFrame": 11200,
+      "layoutMaximumCachedRowCodeUnits": 154,
+      "layoutRowCacheRejectedBySizePerFrame": 0,
+      "sourceInvariantNestedRenderCacheMapsPerFrame": 0,
+      "sourceInvariantRenderCacheLookupWrapperObjectsPerFrame": 0,
+      "sourceInvariantOverlayTemporaryArraysPerFrame": 0,
+      "sourceInvariantSelectionTemporaryArraysPerFrame": 0,
+      "sourceInvariantOverlaySelectionWrapperObjectsPerFrame": 0
+    },
+    "topAllocationSites": [
+      {
+        "bytes": 8517256,
+        "functionName": "layoutComponent",
+        "url": "file:///D:/RMProjects/Pi/packages/tui/src/layout.ts",
+        "line": 696,
+        "column": 25
+      },
+      {
+        "bytes": 8494112,
+        "functionName": "renderComponentsViewport",
+        "url": "file:///D:/RMProjects/Pi/packages/tui/src/components/viewport-container.ts",
+        "line": 70,
+        "column": 41
+      },
+      {
+        "bytes": 5559784,
+        "functionName": "renderCached",
+        "url": "file:///D:/RMProjects/Pi/packages/tui/src/layout.ts",
+        "line": 557,
+        "column": 22
+      },
+      {
+        "bytes": 3961648,
+        "functionName": "renderContainerInto",
+        "url": "file:///D:/RMProjects/Pi/packages/tui/src/tui.ts",
+        "line": 313,
+        "column": 29
+      },
+      {
+        "bytes": 2669288,
+        "functionName": "composeViewport",
+        "url": "file:///D:/RMProjects/Pi/packages/tui/src/components/retained-item.ts",
+        "line": 1080,
+        "column": 25
+      },
+      {
+        "bytes": 2388624,
+        "functionName": "createRect",
+        "url": "file:///D:/RMProjects/Pi/packages/tui/src/layout.ts",
+        "line": 517,
+        "column": 20
+      },
+      {
+        "bytes": 2274968,
+        "functionName": "intersect",
+        "url": "file:///D:/RMProjects/Pi/packages/tui/src/layout.ts",
+        "line": 522,
+        "column": 19
+      },
+      {
+        "bytes": 1750320,
+        "functionName": "clearPreparedViewportLines",
+        "url": "file:///D:/RMProjects/Pi/packages/tui/src/components/retained-item.ts",
+        "line": 860,
+        "column": 36
+      },
+      {
+        "bytes": 1565256,
+        "functionName": "doRender",
+        "url": "file:///D:/RMProjects/Pi/packages/tui/src/tui-alt-screen.ts",
+        "line": 1417,
+        "column": 29
+      },
+      {
+        "bytes": 1554240,
+        "functionName": "next",
+        "url": "",
+        "line": 0,
+        "column": 0
+      },
+      {
+        "bytes": 1247792,
+        "functionName": "renderLayoutFrame",
+        "url": "file:///D:/RMProjects/Pi/packages/tui/src/layout.ts",
+        "line": 1176,
+        "column": 34
+      },
+      {
+        "bytes": 1141576,
+        "functionName": "repeat",
+        "url": "",
+        "line": 0,
+        "column": 0
+      },
+      {
+        "bytes": 1121880,
+        "functionName": "getContentHeight",
+        "url": "file:///D:/RMProjects/Pi/packages/tui/src/components/viewport-container.ts",
+        "line": 224,
+        "column": 18
+      },
+      {
+        "bytes": 1075600,
+        "functionName": "now",
+        "url": "node:internal/perf/performance",
+        "line": 137,
+        "column": 6
+      },
+      {
+        "bytes": 802600,
+        "functionName": "utf8ByteLength",
+        "url": "file:///D:/RMProjects/Pi/packages/tui/src/terminal-frame-queue.ts",
+        "line": 38,
+        "column": 24
+      },
+      {
+        "bytes": 759080,
+        "functionName": "values",
+        "url": "",
+        "line": 0,
+        "column": 0
+      },
+      {
+        "bytes": 648480,
+        "functionName": "isPrintableAscii",
+        "url": "file:///D:/RMProjects/Pi/packages/tui/src/utils.ts",
+        "line": 60,
+        "column": 26
+      },
+      {
+        "bytes": 528480,
+        "functionName": "prepareViewportIndex",
+        "url": "file:///D:/RMProjects/Pi/packages/tui/src/components/retained-item.ts",
+        "line": 914,
+        "column": 30
+      },
+      {
+        "bytes": 395232,
+        "functionName": "paintBox",
+        "url": "file:///D:/RMProjects/Pi/packages/tui/src/layout.ts",
+        "line": 1080,
+        "column": 18
+      },
+      {
+        "bytes": 255696,
+        "functionName": "locateViewportTail",
+        "url": "file:///D:/RMProjects/Pi/packages/tui/src/components/retained-item.ts",
+        "line": 1036,
+        "column": 28
+      }
+    ]
+  },
+  "sdk": {
+    "benchmark": "codemode-session",
+    "node": "v26.4.0",
+    "platform": "win32",
+    "sampledCycles": 10,
+    "excludedWarmupCycles": 1,
+    "startupMedianMs": 0.5820000000001073,
+    "startupP95Ms": 0.8958999999999833,
+    "firstBatchMedianMs": 42.3107,
+    "firstBatchP95Ms": 43.8103000000001,
+    "warmBatchMedianMs": 42.56540000000007,
+    "warmBatchP95Ms": 45.115099999999984,
+    "childCalls": 242,
+    "progress": 0,
+    "workersStarted": 22,
+    "workersStopped": 22,
+    "trackedReferences": 55,
+    "retainedAfterGc": 0,
+    "pendingEvidenceAfterTurn": 0,
+    "sampledHostBytes": 25889032,
+    "leadingSites": [
+      {
+        "name": "split",
+        "bytes": 1511656
+      },
+      {
+        "name": "join",
+        "bytes": 826968
+      },
+      {
+        "name": "createContext",
+        "bytes": 676128
+      },
+      {
+        "name": "read",
+        "bytes": 511392
+      },
+      {
+        "name": "realpath",
+        "bytes": 484912
+      }
+    ],
+    "coverage": "real SDK, built-in reads, AgentSession policy/hooks/results/store, Worker, projection and disposal; offline provider; excludes UI, worker heap and disk sessions"
+  },
+  "responsiveness": [
+    {
+      "scenario": "short",
+      "termination": "success",
+      "grouped": true,
+      "node": "v26.4.0",
+      "platform": "win32",
+      "cpu": "Intel(R) Core(TM) i7-14700KF",
+      "toolName": "powershell",
+      "shell": "D:\\PowerShell\\7\\pwsh.exe",
+      "terminal": "simulated async sink; real fullscreen input dispatcher; no ConPTY",
+      "viewport": [
+        120,
+        40
+      ],
+      "historyItems": 100,
+      "commandCodeUnits": 103,
+      "providerCalls": 2,
+      "abortedProviderCalls": 0,
+      "toolCalls": 1,
+      "progress": 1,
+      "timerRefreshes": 3,
+      "maxRefreshMs": 0.14589999999952852,
+      "probes": [
+        {
+          "planned": 1430.1007,
+          "running": true,
+          "handled": 1443.593,
+          "inputMs": 0.5207000000000335,
+          "viewport": 34,
+          "changed": true,
+          "frame": 1473.8709,
+          "frameWall": 1790996051625
+        },
+        {
+          "planned": 1830.1007,
+          "running": true,
+          "handled": 1830.0054,
+          "inputMs": 0.10159999999996217,
+          "viewport": 37,
+          "changed": true,
+          "frame": 1860.9739,
+          "frameWall": 1790996052012
+        },
+        {
+          "planned": 2330.1007,
+          "running": true,
+          "handled": 2342.0503,
+          "inputMs": 0.27819999999974243,
+          "viewport": 34,
+          "changed": true,
+          "frame": 2357.4706,
+          "frameWall": 1790996052508
+        },
+        {
+          "planned": 2830.1007,
+          "running": true,
+          "handled": 2836.7596,
+          "inputMs": 0.240099999999984,
+          "viewport": 37,
+          "changed": true,
+          "frame": 2867.0602,
+          "frameWall": 1790996053018
+        },
+        {
+          "planned": 3330.1007,
+          "running": true,
+          "handled": 3330.7972,
+          "inputMs": 0.20319999999992433,
+          "viewport": 34,
+          "changed": true,
+          "frame": 3360.3099,
+          "frameWall": 1790996053511
+        },
+        {
+          "planned": 3730.1007,
+          "running": true,
+          "handled": 3744.427,
+          "inputMs": 0.08170000000018263,
+          "viewport": 37,
+          "changed": true,
+          "frame": 3773.7317,
+          "frameWall": 1790996053925
+        }
+      ],
+      "longestEventLoopGapMs": 44.76480000000015,
+      "eventLoopDelayP95Ms": 16.187391,
+      "eventLoopDelayMaxMs": 16.859135,
+      "scheduledToHandledP95Ms": 14.326300000000174,
+      "scheduledToFrameP95Ms": 43.77019999999993,
+      "inputHandlingP95Ms": 0.5207000000000335,
+      "handledToFrameP95Ms": 30.96849999999995,
+      "longestProbeFrameGapMs": 509.5895999999998,
+      "completedProbeFrames": 6,
+      "completedFrames": 14,
+      "frameBytes": 58216,
+      "maxActiveWrites": 1,
+      "childDurationMs": 3004,
+      "released": {
+        "activeWrites": 0,
+        "sinkTimers": 0,
+        "inputReferences": 0,
+        "derived": {
+          "rows": 0,
+          "runningChildren": 0,
+          "resultReferences": 0,
+          "textChars": 0,
+          "timers": 0,
+          "timerRefreshes": 3,
+          "rowCreations": 1,
+          "progressUpdates": 2,
+          "outputProjections": 1
+        }
+      }
+    },
+    {
+      "scenario": "long",
+      "termination": "success",
+      "grouped": true,
+      "node": "v26.4.0",
+      "platform": "win32",
+      "cpu": "Intel(R) Core(TM) i7-14700KF",
+      "toolName": "powershell",
+      "shell": "D:\\PowerShell\\7\\pwsh.exe",
+      "terminal": "simulated async sink; real fullscreen input dispatcher; no ConPTY",
+      "viewport": [
+        120,
+        40
+      ],
+      "historyItems": 100,
+      "commandCodeUnits": 2424,
+      "providerCalls": 2,
+      "abortedProviderCalls": 0,
+      "toolCalls": 1,
+      "progress": 1,
+      "timerRefreshes": 3,
+      "maxRefreshMs": 0.13259999999991123,
+      "probes": [
+        {
+          "planned": 4965.6911,
+          "running": true,
+          "handled": 4966.4833,
+          "inputMs": 0.22810000000026776,
+          "viewport": 38,
+          "changed": true,
+          "frame": 4997.242,
+          "frameWall": 1790996055148
+        },
+        {
+          "planned": 5365.6911,
+          "running": true,
+          "handled": 5369.9151,
+          "inputMs": 0.19880000000011933,
+          "viewport": 41,
+          "changed": true,
+          "frame": 5399.556,
+          "frameWall": 1790996055551
+        },
+        {
+          "planned": 5865.6911,
+          "running": true,
+          "handled": 5868.2095,
+          "inputMs": 0.29020000000036816,
+          "viewport": 38,
+          "changed": true,
+          "frame": 5897.8017,
+          "frameWall": 1790996056049
+        },
+        {
+          "planned": 6365.6911,
+          "running": true,
+          "handled": 6379.1005,
+          "inputMs": 0.23739999999997963,
+          "viewport": 41,
+          "changed": true,
+          "frame": 6409.7803,
+          "frameWall": 1790996056561
+        },
+        {
+          "planned": 6865.6911,
+          "running": true,
+          "handled": 6875.0299,
+          "inputMs": 0.23940000000038708,
+          "viewport": 38,
+          "changed": true,
+          "frame": 6904.5735,
+          "frameWall": 1790996057056
+        },
+        {
+          "planned": 7265.6911,
+          "running": true,
+          "handled": 7276.4392,
+          "inputMs": 0.31859999999960564,
+          "viewport": 41,
+          "changed": true,
+          "frame": 7305.7437,
+          "frameWall": 1790996057457
+        }
+      ],
+      "longestEventLoopGapMs": 45.164700000000266,
+      "eventLoopDelayP95Ms": 16.228351,
+      "eventLoopDelayMaxMs": 16.744447,
+      "scheduledToHandledP95Ms": 13.40939999999955,
+      "scheduledToFrameP95Ms": 44.089200000000346,
+      "inputHandlingP95Ms": 0.31859999999960564,
+      "handledToFrameP95Ms": 30.758700000000317,
+      "longestProbeFrameGapMs": 511.97860000000037,
+      "completedProbeFrames": 6,
+      "completedFrames": 14,
+      "frameBytes": 58434,
+      "maxActiveWrites": 1,
+      "childDurationMs": 3005,
+      "released": {
+        "activeWrites": 0,
+        "sinkTimers": 0,
+        "inputReferences": 0,
+        "derived": {
+          "rows": 0,
+          "runningChildren": 0,
+          "resultReferences": 0,
+          "textChars": 0,
+          "timers": 0,
+          "timerRefreshes": 3,
+          "rowCreations": 1,
+          "progressUpdates": 2,
+          "outputProjections": 1
+        }
+      }
+    },
+    {
+      "scenario": "output-then-quiet",
+      "termination": "success",
+      "grouped": true,
+      "node": "v26.4.0",
+      "platform": "win32",
+      "cpu": "Intel(R) Core(TM) i7-14700KF",
+      "toolName": "powershell",
+      "shell": "D:\\PowerShell\\7\\pwsh.exe",
+      "terminal": "simulated async sink; real fullscreen input dispatcher; no ConPTY",
+      "viewport": [
+        120,
+        40
+      ],
+      "historyItems": 100,
+      "commandCodeUnits": 2424,
+      "providerCalls": 2,
+      "abortedProviderCalls": 0,
+      "toolCalls": 1,
+      "progress": 2,
+      "timerRefreshes": 3,
+      "maxRefreshMs": 0.06829999999899883,
+      "probes": [
+        {
+          "planned": 8539.9319,
+          "running": true,
+          "handled": 8542.9718,
+          "inputMs": 0.17629999999917345,
+          "viewport": 38,
+          "changed": true,
+          "frame": 8573.6047,
+          "frameWall": 1790996058725
+        },
+        {
+          "planned": 8939.9319,
+          "running": true,
+          "handled": 8948.725,
+          "inputMs": 0.18630000000121072,
+          "viewport": 41,
+          "changed": true,
+          "frame": 8979.0427,
+          "frameWall": 1790996059130
+        },
+        {
+          "planned": 9439.9319,
+          "running": true,
+          "handled": 9452.6842,
+          "inputMs": 0.16530000000057044,
+          "viewport": 38,
+          "changed": true,
+          "frame": 9482.5007,
+          "frameWall": 1790996059633
+        },
+        {
+          "planned": 9939.9319,
+          "running": true,
+          "handled": 9949.4168,
+          "inputMs": 0.2624000000014348,
+          "viewport": 41,
+          "changed": true,
+          "frame": 9980.2785,
+          "frameWall": 1790996060131
+        },
+        {
+          "planned": 10439.9319,
+          "running": true,
+          "handled": 10444.7738,
+          "inputMs": 0.189700000000812,
+          "viewport": 38,
+          "changed": true,
+          "frame": 10475.7622,
+          "frameWall": 1790996060627
+        },
+        {
+          "planned": 10839.9319,
+          "running": true,
+          "handled": 10844.7629,
+          "inputMs": 0.18449999999938882,
+          "viewport": 41,
+          "changed": true,
+          "frame": 10874.9023,
+          "frameWall": 1790996061026
+        }
+      ],
+      "longestEventLoopGapMs": 62.81850000000122,
+      "eventLoopDelayP95Ms": 16.211967,
+      "eventLoopDelayMaxMs": 16.875519,
+      "scheduledToHandledP95Ms": 12.752300000000105,
+      "scheduledToFrameP95Ms": 42.56880000000092,
+      "inputHandlingP95Ms": 0.2624000000014348,
+      "handledToFrameP95Ms": 30.988399999998364,
+      "longestProbeFrameGapMs": 503.45800000000054,
+      "completedProbeFrames": 6,
+      "completedFrames": 15,
+      "frameBytes": 58456,
+      "maxActiveWrites": 1,
+      "childDurationMs": 3000,
+      "released": {
+        "activeWrites": 0,
+        "sinkTimers": 0,
+        "inputReferences": 0,
+        "derived": {
+          "rows": 0,
+          "runningChildren": 0,
+          "resultReferences": 0,
+          "textChars": 0,
+          "timers": 0,
+          "timerRefreshes": 3,
+          "rowCreations": 1,
+          "progressUpdates": 3,
+          "outputProjections": 1
+        }
+      }
+    },
+    {
+      "scenario": "off-tail",
+      "termination": "success",
+      "grouped": true,
+      "node": "v26.4.0",
+      "platform": "win32",
+      "cpu": "Intel(R) Core(TM) i7-14700KF",
+      "toolName": "powershell",
+      "shell": "D:\\PowerShell\\7\\pwsh.exe",
+      "terminal": "simulated async sink; real fullscreen input dispatcher; no ConPTY",
+      "viewport": [
+        120,
+        40
+      ],
+      "historyItems": 5000,
+      "commandCodeUnits": 2424,
+      "providerCalls": 2,
+      "abortedProviderCalls": 0,
+      "toolCalls": 1,
+      "progress": 1,
+      "timerRefreshes": 3,
+      "maxRefreshMs": 0.08150000000023283,
+      "probes": [
+        {
+          "planned": 12116.1113,
+          "running": true,
+          "handled": 12120.3018,
+          "inputMs": 0.15649999999914144,
+          "viewport": 4938,
+          "changed": true,
+          "frame": 12150.8158,
+          "frameWall": 1790996062302
+        },
+        {
+          "planned": 12516.1113,
+          "running": true,
+          "handled": 12523.0947,
+          "inputMs": 0.29439999999885913,
+          "viewport": 4941,
+          "changed": true,
+          "frame": 12552.4328,
+          "frameWall": 1790996062703
+        },
+        {
+          "planned": 13016.1113,
+          "running": true,
+          "handled": 13016.1701,
+          "inputMs": 0.16299999999864667,
+          "viewport": 4938,
+          "changed": true,
+          "frame": 13046.3765,
+          "frameWall": 1790996063197
+        },
+        {
+          "planned": 13516.1113,
+          "running": true,
+          "handled": 13530.3316,
+          "inputMs": 0.15539999999964493,
+          "viewport": 4941,
+          "changed": true,
+          "frame": 13559.8718,
+          "frameWall": 1790996063711
+        },
+        {
+          "planned": 14016.1113,
+          "running": true,
+          "handled": 14026.8103,
+          "inputMs": 0.1554999999989377,
+          "viewport": 4938,
+          "changed": true,
+          "frame": 14057.5409,
+          "frameWall": 1790996064209
+        },
+        {
+          "planned": 14416.1113,
+          "running": true,
+          "handled": 14429.1585,
+          "inputMs": 0.2217000000000553,
+          "viewport": 4941,
+          "changed": true,
+          "frame": 14458.3981,
+          "frameWall": 1790996064609
+        }
+      ],
+      "longestEventLoopGapMs": 47.23559999999998,
+      "eventLoopDelayP95Ms": 16.269311,
+      "eventLoopDelayMaxMs": 17.268735,
+      "scheduledToHandledP95Ms": 14.220299999999042,
+      "scheduledToFrameP95Ms": 43.76050000000032,
+      "inputHandlingP95Ms": 0.29439999999885913,
+      "handledToFrameP95Ms": 30.730600000000777,
+      "longestProbeFrameGapMs": 513.4953000000005,
+      "completedProbeFrames": 6,
+      "completedFrames": 14,
+      "frameBytes": 58434,
+      "maxActiveWrites": 1,
+      "childDurationMs": 3012,
+      "released": {
+        "activeWrites": 0,
+        "sinkTimers": 0,
+        "inputReferences": 0,
+        "derived": {
+          "rows": 0,
+          "runningChildren": 0,
+          "resultReferences": 0,
+          "textChars": 0,
+          "timers": 0,
+          "timerRefreshes": 3,
+          "rowCreations": 1,
+          "progressUpdates": 2,
+          "outputProjections": 1
+        }
+      }
+    },
+    {
+      "scenario": "short",
+      "termination": "failure",
+      "grouped": true,
+      "node": "v26.4.0",
+      "platform": "win32",
+      "cpu": "Intel(R) Core(TM) i7-14700KF",
+      "toolName": "powershell",
+      "shell": "D:\\PowerShell\\7\\pwsh.exe",
+      "terminal": "simulated async sink; real fullscreen input dispatcher; no ConPTY",
+      "viewport": [
+        120,
+        40
+      ],
+      "historyItems": 100,
+      "commandCodeUnits": 103,
+      "providerCalls": 2,
+      "abortedProviderCalls": 0,
+      "toolCalls": 1,
+      "progress": 1,
+      "timerRefreshes": 3,
+      "maxRefreshMs": 0.14750000000276486,
+      "probes": [
+        {
+          "planned": 15691.5157,
+          "running": true,
+          "handled": 15694.2525,
+          "inputMs": 0.19319999999970605,
+          "viewport": 34,
+          "changed": true,
+          "frame": 15725.0388,
+          "frameWall": 1790996065876
+        },
+        {
+          "planned": 16091.5157,
+          "running": true,
+          "handled": 16098.7086,
+          "inputMs": 0.1555000000007567,
+          "viewport": 37,
+          "changed": true,
+          "frame": 16128.6997,
+          "frameWall": 1790996066280
+        },
+        {
+          "planned": 16591.5157,
+          "running": true,
+          "handled": 16594.6107,
+          "inputMs": 0.153600000001461,
+          "viewport": 34,
+          "changed": true,
+          "frame": 16625.4088,
+          "frameWall": 1790996066776
+        },
+        {
+          "planned": 17091.5157,
+          "running": true,
+          "handled": 17090.9069,
+          "inputMs": 0.14780000000246218,
+          "viewport": 37,
+          "changed": true,
+          "frame": 17120.4624,
+          "frameWall": 1790996067271
+        },
+        {
+          "planned": 17591.5157,
+          "running": true,
+          "handled": 17598.1101,
+          "inputMs": 0.13000000000101863,
+          "viewport": 34,
+          "changed": true,
+          "frame": 17628.1745,
+          "frameWall": 1790996067779
+        },
+        {
+          "planned": 17991.5157,
+          "running": true,
+          "handled": 17999.8662,
+          "inputMs": 0.18470000000161235,
+          "viewport": 37,
+          "changed": true,
+          "frame": 18030.1702,
+          "frameWall": 1790996068181
+        }
+      ],
+      "longestEventLoopGapMs": 46.748100000000704,
+      "eventLoopDelayP95Ms": 16.154623,
+      "eventLoopDelayMaxMs": 16.523263,
+      "scheduledToHandledP95Ms": 8.350500000000466,
+      "scheduledToFrameP95Ms": 38.65450000000055,
+      "inputHandlingP95Ms": 0.19319999999970605,
+      "handledToFrameP95Ms": 30.798099999999977,
+      "longestProbeFrameGapMs": 507.71210000000065,
+      "completedProbeFrames": 6,
+      "completedFrames": 14,
+      "frameBytes": 58216,
+      "maxActiveWrites": 1,
+      "childDurationMs": 3009,
+      "released": {
+        "activeWrites": 0,
+        "sinkTimers": 0,
+        "inputReferences": 0,
+        "derived": {
+          "rows": 0,
+          "runningChildren": 0,
+          "resultReferences": 0,
+          "textChars": 0,
+          "timers": 0,
+          "timerRefreshes": 3,
+          "rowCreations": 1,
+          "progressUpdates": 2,
+          "outputProjections": 1
+        }
+      }
+    },
+    {
+      "scenario": "short",
+      "termination": "abort",
+      "grouped": true,
+      "node": "v26.4.0",
+      "platform": "win32",
+      "cpu": "Intel(R) Core(TM) i7-14700KF",
+      "toolName": "powershell",
+      "shell": "D:\\PowerShell\\7\\pwsh.exe",
+      "terminal": "simulated async sink; real fullscreen input dispatcher; no ConPTY",
+      "viewport": [
+        120,
+        40
+      ],
+      "historyItems": 100,
+      "commandCodeUnits": 103,
+      "providerCalls": 2,
+      "abortedProviderCalls": 1,
+      "toolCalls": 1,
+      "progress": 1,
+      "timerRefreshes": 3,
+      "maxRefreshMs": 0.09110000000146101,
+      "probes": [
+        {
+          "planned": 19240.1018,
+          "running": true,
+          "handled": 19241.1849,
+          "inputMs": 0.15980000000126893,
+          "viewport": 34,
+          "changed": true,
+          "frame": 19271.3472,
+          "frameWall": 1790996069422
+        },
+        {
+          "planned": 19640.1018,
+          "running": true,
+          "handled": 19651.3227,
+          "inputMs": 0.18219999999928405,
+          "viewport": 37,
+          "changed": true,
+          "frame": 19682.0362,
+          "frameWall": 1790996069833
+        },
+        {
+          "planned": 20140.1018,
+          "running": true,
+          "handled": 20149.3593,
+          "inputMs": 0.1574000000000524,
+          "viewport": 34,
+          "changed": true,
+          "frame": 20179.075,
+          "frameWall": 1790996070330
+        },
+        {
+          "planned": 20640.1018,
+          "running": true,
+          "handled": 20643.255,
+          "inputMs": 0.12010000000009313,
+          "viewport": 37,
+          "changed": true,
+          "frame": 20674.8109,
+          "frameWall": 1790996070826
+        },
+        {
+          "planned": 21140.1018,
+          "running": true,
+          "handled": 21141.4572,
+          "inputMs": 0.1599000000023807,
+          "viewport": 34,
+          "changed": true,
+          "frame": 21171.4761,
+          "frameWall": 1790996071322
+        },
+        {
+          "planned": 21540.1018,
+          "running": true,
+          "handled": 21543.1002,
+          "inputMs": 0.1304999999993015,
+          "viewport": 37,
+          "changed": true,
+          "frame": 21573.3861,
+          "frameWall": 1790996071724
+        }
+      ],
+      "longestEventLoopGapMs": 46.328999999997905,
+      "eventLoopDelayP95Ms": 16.269311,
+      "eventLoopDelayMaxMs": 21.643263,
+      "scheduledToHandledP95Ms": 11.220900000000256,
+      "scheduledToFrameP95Ms": 41.93439999999828,
+      "inputHandlingP95Ms": 0.18219999999928405,
+      "handledToFrameP95Ms": 31.555899999999383,
+      "longestProbeFrameGapMs": 497.0388000000021,
+      "completedProbeFrames": 6,
+      "completedFrames": 14,
+      "frameBytes": 58216,
+      "maxActiveWrites": 1,
+      "childDurationMs": 2828,
+      "released": {
+        "activeWrites": 0,
+        "sinkTimers": 0,
+        "inputReferences": 0,
+        "derived": {
+          "rows": 0,
+          "runningChildren": 0,
+          "resultReferences": 0,
+          "textChars": 0,
+          "timers": 0,
+          "timerRefreshes": 3,
+          "rowCreations": 1,
+          "progressUpdates": 2,
+          "outputProjections": 1
+        }
+      }
+    },
+    {
+      "scenario": "short",
+      "termination": "success",
+      "grouped": false,
+      "node": "v26.4.0",
+      "platform": "win32",
+      "cpu": "Intel(R) Core(TM) i7-14700KF",
+      "toolName": "powershell",
+      "shell": "D:\\PowerShell\\7\\pwsh.exe",
+      "terminal": "simulated async sink; real fullscreen input dispatcher; no ConPTY",
+      "viewport": [
+        120,
+        40
+      ],
+      "historyItems": 100,
+      "commandCodeUnits": 103,
+      "providerCalls": 2,
+      "abortedProviderCalls": 0,
+      "toolCalls": 1,
+      "progress": 1,
+      "timerRefreshes": 3,
+      "maxRefreshMs": 0.39310000000114087,
+      "probes": [
+        {
+          "planned": 22692.3452,
+          "running": true,
+          "handled": 22705.8272,
+          "inputMs": 0.15599999999903957,
+          "viewport": 33,
+          "changed": true,
+          "frame": 22735.4947,
+          "frameWall": 1790996072886
+        },
+        {
+          "planned": 23092.3452,
+          "running": true,
+          "handled": 23094.9848,
+          "inputMs": 0.20049999999901047,
+          "viewport": 36,
+          "changed": true,
+          "frame": 23125.6433,
+          "frameWall": 1790996073277
+        },
+        {
+          "planned": 23592.3452,
+          "running": true,
+          "handled": 23605.3448,
+          "inputMs": 0.12379999999757274,
+          "viewport": 33,
+          "changed": true,
+          "frame": 23635.4796,
+          "frameWall": 1790996073786
+        },
+        {
+          "planned": 24092.3452,
+          "running": true,
+          "handled": 24102.3039,
+          "inputMs": 0.13739999999961583,
+          "viewport": 36,
+          "changed": true,
+          "frame": 24133.2696,
+          "frameWall": 1790996074284
+        },
+        {
+          "planned": 24592.3452,
+          "running": true,
+          "handled": 24594.9538,
+          "inputMs": 0.18460000000050059,
+          "viewport": 33,
+          "changed": true,
+          "frame": 24625.0433,
+          "frameWall": 1790996074776
+        },
+        {
+          "planned": 24992.3452,
+          "running": true,
+          "handled": 24996.0846,
+          "inputMs": 0.16829999999754364,
+          "viewport": 36,
+          "changed": true,
+          "frame": 25010.788,
+          "frameWall": 1790996075162
+        }
+      ],
+      "longestEventLoopGapMs": 45.71470000000045,
+      "eventLoopDelayP95Ms": 16.105471,
+      "eventLoopDelayMaxMs": 17.022975,
+      "scheduledToHandledP95Ms": 13.481999999999971,
+      "scheduledToFrameP95Ms": 43.149499999999534,
+      "inputHandlingP95Ms": 0.20049999999901047,
+      "handledToFrameP95Ms": 30.965700000000652,
+      "longestProbeFrameGapMs": 509.836299999999,
+      "completedProbeFrames": 6,
+      "completedFrames": 12,
+      "frameBytes": 58023,
+      "maxActiveWrites": 1,
+      "childDurationMs": 3006,
+      "released": {
+        "activeWrites": 0,
+        "sinkTimers": 0,
+        "inputReferences": 0,
+        "derived": {
+          "cachedLineReferences": 0,
+          "preparedContentReferences": 0,
+          "preparedStyledOutputCodeUnits": 0,
+          "expandedOutputReferences": 0,
+          "derivedChildReferences": 0,
+          "previewComponentReferences": 0,
+          "timeComponentReferences": 0,
+          "timeTextCodeUnits": 0,
+          "warningComponentReferences": 0,
+          "warningTextCodeUnits": 0,
+          "allocationMetricsReferences": 0,
+          "preparedFailurePreviewReferences": 0
+        }
+      }
+    }
+  ]
+}

@@ -1,4 +1,5 @@
 import { pathToFileURL } from "node:url";
+import { createHash } from "node:crypto";
 import { createMcpClient } from "./client.js";
 export { createMcpClient } from "./client.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -100,11 +101,22 @@ function limitMcpResponse(response) {
   return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
 }
 
-function fetchWithHeaders(headers) {
+export function fetchWithHeaders(headers, serverUrl, oauth) {
+  const entries = Object.entries(headers);
+  const origin = new URL(serverUrl).origin;
   return async (input, init = {}) => {
+    if (new URL(input instanceof Request ? input.url : input).origin !== origin) throw new Error("MCP cross-origin endpoint rejected");
     const merged = new Headers(init.headers);
-    for (const [name, value] of Object.entries(headers)) merged.set(name, value);
-    const response = await fetch(input, { ...init, headers: merged, redirect: "error" });
+    for (const [name, value] of entries) merged.set(name, value);
+    const token = await oauth?.token(init.signal);
+    if (token) merged.set("Authorization", `Bearer ${token}`);
+    let response = await fetch(input, { ...init, headers: merged, redirect: "error" });
+    if (response.status === 401 && oauth) {
+      await response.body?.cancel();
+      const refreshed = await oauth.refresh(token, init.signal);
+      merged.set("Authorization", `Bearer ${refreshed}`);
+      response = await fetch(input, { ...init, headers: merged, redirect: "error" });
+    }
     return limitMcpResponse(response);
   };
 }
@@ -125,7 +137,7 @@ function createTransport(config, state) {
     });
     return transport;
   }
-  const customFetch = fetchWithHeaders(config.headers);
+  const customFetch = fetchWithHeaders(config.headers, config.url, state.oauth);
   if (config.transport === "http") {
     return new StreamableHTTPClientTransport(new URL(config.url), {
       requestInit: { headers: config.headers },
@@ -187,6 +199,7 @@ export class McpBridgeRuntime {
     this.states = new Map();
     this.registeredNames = new Map();
     this.registeredSchemaBytes = new Map();
+    this.registeredSchemas = new Map();
     this.searchIndex = new Map();
     this.closed = false;
     this.activeCalls = new Set();
@@ -226,6 +239,10 @@ export class McpBridgeRuntime {
     try {
       await state.client?.close().catch(() => undefined);
       if (this.closed || signal?.aborted) throw signal?.reason ?? new Error("MCP startup aborted");
+      if (config.oauth && !state.oauth) {
+        const { McpOAuth } = await import("./oauth.js");
+        state.oauth = new McpOAuth(config);
+      }
       const client = createMcpClient();
       client.setRequestHandler(ListRootsRequestSchema, async () => ({
         roots: [{ uri: pathToFileURL(this.workspace).href, name: sanitizeText(this.workspace, 200) }],
@@ -258,6 +275,7 @@ export class McpBridgeRuntime {
       await state.client?.close().catch(() => undefined);
       state.client = null;
       state.transport = null;
+      state.oauth = null;
       throw new McpCallError(signal?.aborted || this.closed ? "aborted" : "protocol-error");
     }
   }
@@ -266,8 +284,10 @@ export class McpBridgeRuntime {
     const name = piToolName(state.config.id, remoteTool.name);
     const existing = this.registeredNames.get(name);
     if (existing && existing !== `${state.config.id}\0${remoteTool.name}`) throw new Error(`MCP tool-name collision: ${name}`);
-    if (existing) return;
     const parameters = normalizeInputSchema(remoteTool.inputSchema);
+    const signature = createHash("sha256").update(JSON.stringify(parameters)).update("\0").update(remoteTool.description ?? "").digest("hex");
+    if (existing && this.registeredSchemas.get(name) === signature) return;
+    this.registeredSchemas.set(name, signature);
     this.registeredNames.set(name, `${state.config.id}\0${remoteTool.name}`);
     this.registeredSchemaBytes.set(name, Buffer.byteLength(JSON.stringify(parameters), "utf8")
       + Buffer.byteLength(remoteTool.description ?? "", "utf8"));
@@ -304,6 +324,7 @@ export class McpBridgeRuntime {
       await this.connect(state.config, signal);
     }
     if (state.status !== "connected" || !state.client) throw new Error(`MCP server ${state.config.id} is not connected; run /mcp-reload`);
+    if (state.tools && !state.tools.has(remoteName)) throw new Error("MCP tool is no longer in the current server catalog");
     const call = new McpCall(signal, onUpdate);
     this.activeCalls.add(call);
     try {
@@ -375,10 +396,12 @@ export class McpBridgeRuntime {
       if (state.client) closes.push(state.client.close());
       state.client = null;
       state.transport = null;
+      state.oauth = null;
     }
     await Promise.allSettled(closes);
     this.searchIndex.clear();
     this.registeredSchemaBytes.clear();
+    this.registeredSchemas.clear();
     this.registeredNames.clear();
   }
 }

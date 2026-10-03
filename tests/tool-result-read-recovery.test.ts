@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Session as InspectorSession } from "node:inspector/promises";
 import { createJiti } from "jiti";
-import { createAgentSession } from "../packages/coding-agent/src/core/sdk.ts";
+import { createNativeProtocolSessionFixture as createAgentSession } from "./helpers/native-protocol-session.ts";
 import { DefaultResourceLoader } from "../packages/coding-agent/src/core/resource-loader.ts";
 import { SettingsManager } from "../packages/coding-agent/src/core/settings-manager.ts";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";

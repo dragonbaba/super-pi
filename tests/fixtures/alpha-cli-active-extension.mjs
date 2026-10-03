@@ -20,7 +20,7 @@ export default function (pi) {
       if (options?.signal?.aborted) { abort(); return stream; }
       requests++;
       if (kind === 'active-tool') {
-        message.content.push({ type: 'toolCall', id: 'alpha-tool', name: 'alpha_wait', arguments: {} });
+        message.content.push({ type: 'toolCall', id: 'alpha-tool', name: 'codemode', arguments: { code: 'await tools.alpha_wait({})' } });
         message.stopReason = 'toolUse'; stream.push({ type: 'done', reason: 'toolUse', message });
       } else {
         message.content.push({ type: 'text', text: 'active stream' });

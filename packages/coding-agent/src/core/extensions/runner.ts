@@ -1376,6 +1376,7 @@ export class ExtensionRunner {
 	async emit<TEvent extends RunnerEmitEvent>(event: TEvent): Promise<RunnerEmitResult<TEvent>> {
 		const ctx = this.createContext();
 		let result: SessionBeforeEventResult | undefined;
+		let terminalTimeout: ExtensionHookTimeoutError | undefined;
 
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get(event.type);
@@ -1395,7 +1396,13 @@ export class ExtensionRunner {
 						}
 					}
 				} catch (err) {
-					if (err instanceof ExtensionHookTimeoutError) throw err;
+					if (err instanceof ExtensionHookTimeoutError) {
+						// The tool has already finished. Later handlers still receive its terminal
+						// event so per-call cleanup runs; the first timeout is reported afterwards.
+						if (event.type !== "tool_execution_end") throw err;
+						terminalTimeout ??= err;
+						continue;
+					}
 					const message = err instanceof Error ? err.message : String(err);
 					const stack = err instanceof Error ? err.stack : undefined;
 					this.emitError({
@@ -1408,6 +1415,7 @@ export class ExtensionRunner {
 			}
 		}
 
+		if (terminalTimeout) throw terminalTimeout;
 		return result as RunnerEmitResult<TEvent>;
 	}
 
