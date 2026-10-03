@@ -2,6 +2,8 @@ import type { AgentTool, AgentToolCall, AgentToolExecutionContext, NestedToolRes
 
 export const MAX_NESTED_TOOL_CALLS = 256;
 export const MAX_NESTED_READ_CONCURRENCY = 4;
+/** After cancellation, children get this long to settle before the parent stops waiting for them. */
+export const NESTED_CANCEL_GRACE_MS = 5_000;
 const EMPTY_TOOLS: readonly AgentTool<any>[] = Object.freeze([]);
 
 type InvokeNestedTool = (call: AgentToolCall, tool: AgentTool<any> | undefined, signal: AbortSignal) => Promise<NestedToolResultMessage>;
@@ -11,6 +13,13 @@ interface PendingCall {
 	reject: (error: unknown) => void;
 }
 function observeRejection(): void {}
+/** Close-path only: one timer per orchestration call whose children outlive cancellation. */
+function settlesWithin(promise: Promise<void>, ms: number): Promise<boolean> {
+	return new Promise(resolve => {
+		const timer = setTimeout(resolve, ms, false);
+		void promise.then(() => { clearTimeout(timer); resolve(true); });
+	});
+}
 export function isConcurrentNestedRead(tool: AgentTool<any> | undefined): boolean {
 	return tool?.executionPath?.access === "read" && tool.executionMode !== "sequential"
 		&& !tool.orchestration && !tool.interactionBoundary && !tool.modelOnly;
@@ -24,6 +33,8 @@ export class NestedToolDispatch implements AgentToolExecutionContext {
 	private readonly controller = new AbortController();
 	private readonly signal: AbortSignal;
 	private readonly pending: Array<PendingCall | undefined> = [];
+	private readonly running = new Set<PendingCall>();
+	private readonly cancelGraceMs: number;
 	private pendingIndex = 0;
 	private issued = 0;
 	private active = 0;
@@ -35,6 +46,8 @@ export class NestedToolDispatch implements AgentToolExecutionContext {
 	private readonly toolsByName = new Map<string, AgentTool<any>>();
 	hasErrors = false;
 	completedCalls = 0;
+	/** Children that ignored cancellation past the grace period; they may still change state. */
+	abandonedCalls = 0;
 	maxActive = 0;
 	private terminationSamples = 0;
 	private allChildrenTerminate = true;
@@ -44,8 +57,10 @@ export class NestedToolDispatch implements AgentToolExecutionContext {
 		this.allChildrenTerminate &&= terminate === true;
 	}
 
-	constructor(parentToolCallId: string, getTools: () => readonly AgentTool<any>[], invoke: InvokeNestedTool, signal?: AbortSignal) {
+	constructor(parentToolCallId: string, getTools: () => readonly AgentTool<any>[], invoke: InvokeNestedTool, signal?: AbortSignal,
+		cancelGraceMs = NESTED_CANCEL_GRACE_MS) {
 		this.parentToolCallId = parentToolCallId;
+		this.cancelGraceMs = cancelGraceMs;
 		this.getCurrentTools = getTools;
 		this.invoke = invoke;
 		this.signal = signal ? AbortSignal.any([signal, this.controller.signal]) : this.controller.signal;
@@ -111,6 +126,7 @@ export class NestedToolDispatch implements AgentToolExecutionContext {
 	}
 
 	private async run(entry: PendingCall, tool: AgentTool<any> | undefined): Promise<void> {
+		this.running.add(entry);
 		try {
 			const result = await this.invoke!(entry.call, tool, this.signal);
 			this.hasErrors ||= result.isError;
@@ -119,6 +135,7 @@ export class NestedToolDispatch implements AgentToolExecutionContext {
 			this.hasErrors = true;
 			entry.reject(error);
 		} finally {
+			this.running.delete(entry);
 			this.completedCalls++;
 			this.active--;
 			this.writing = false;
@@ -129,13 +146,23 @@ export class NestedToolDispatch implements AgentToolExecutionContext {
 	/** Wait for children, including calls whose promises the script did not await. */
 	async finish(): Promise<boolean> { await this.close(); return this.hasErrors; }
 
+	/** A child that ignores its abort signal must not wedge the parent past its deadline. */
+	private abandon(): void {
+		this.hasErrors = true;
+		const error = new Error(`Nested tool ignored cancellation for ${this.cancelGraceMs} ms; it may still be running or changing state`);
+		for (const entry of this.running) { this.abandonedCalls++; entry.reject(error); }
+		this.running.clear();
+		for (let index = this.pendingIndex; index < this.pending.length; index++) this.pending[index]?.reject(new Error("Nested tool dispatch closed before this call started"));
+	}
+
 	async close(): Promise<void> {
 		this.accepting = false;
 		this.controller.abort();
 		try {
-			if (this.active > 0 || this.pendingIndex < this.pending.length) {
+			// An abandoned child is never awaited again; later closes return at once.
+			if (this.abandonedCalls === 0 && (this.active > 0 || this.pendingIndex < this.pending.length)) {
 				this.idle ??= new Promise<void>(resolve => { this.resolveIdle = resolve; });
-				await this.idle;
+				if (!await settlesWithin(this.idle, this.cancelGraceMs)) this.abandon();
 			}
 		} finally {
 			this.pending.length = 0;

@@ -101,10 +101,15 @@ export class McpOAuth {
 
   authorizationRequired() { return new Error(`MCP authorization required. Run /mcp-login ${this.config.id}`); }
 
-  read() {
+  /**
+   * A refresh in another process holds the async lease across OAuth requests, so the cold read
+   * waits for that commit (abortably) instead of the short synchronous retry window.
+   */
+  async read(signal) {
     if (!this.loaded) {
-      this.cached = this.backend.withLock(text => ({ result: parseStore(text)[this.key] }));
-      this.loaded = true;
+      const entry = await this.backend.withLockAsync(async text => ({ result: parseStore(text)[this.key] }), { signal });
+      // A transaction that committed meanwhile is newer than this read.
+      if (!this.loaded) { this.cached = entry; this.loaded = true; }
     }
     return this.cached;
   }
@@ -176,7 +181,7 @@ export class McpOAuth {
   }
 
   async token(signal) {
-    const entry = this.read();
+    const entry = await this.read(signal);
     if (entry?.expiresAt && entry.expiresAt <= Date.now() + REFRESH_SKEW_MS) return this.refresh(entry.tokens?.access_token, signal);
     return entry?.tokens?.access_token;
   }

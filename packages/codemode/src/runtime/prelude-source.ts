@@ -128,7 +128,7 @@ export const PRELUDE_SOURCE: string = `(function (bridge, toolsJson, globalsJson
 	const allTools = [];
 	for (const { name, jsName, description } of parse(toolsJson)) {
 		const fn = caller("call", name);
-		// The first tool wins when two names normalize to the same identifier.
+		// The host assigns collision-free identifiers; the check only guards against a malformed catalog.
 		if (!(jsName in tools)) {
 			tools[jsName] = fn;
 			allTools.push(Object.freeze({ name: jsName, description }));

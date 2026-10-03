@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { AgentTool, AgentToolExecutionContext, AgentToolResult } from "@super-pi/agent-core";
 import type { Message, ToolResultMessage, TextContent, ImageContent } from "@super-pi/ai";
 import type { CodemodeSandbox, CodemodeTool, CodemodeResult, CodemodeStoreWrites } from "@super-pi/codemode";
-import { renderToolSignature } from "@super-pi/codemode/declarations";
+import { assignCodemodeIdentifiers, renderToolSignature } from "@super-pi/codemode/declarations";
 import { parseCodemodeSource } from "@super-pi/codemode/source";
 import { BoundedJson } from "@super-pi/codemode/bounded-json";
 import type { ToolDefinition, CodemodeReadEvent } from "./extensions/types.ts";
@@ -51,6 +51,7 @@ function preview(result: ToolResultMessage): string {
 	for (const block of result.content) if (block.type === "text") return block.text.slice(0, 512);
 	return "";
 }
+function descriptorName(tool: CodemodeTool): string { return tool.name; }
 function compareChildSequence(a: ChildFact, b: ChildFact): number { return (a.sequence ?? 0) - (b.sequence ?? 0); }
 /** The read survived only if its exact blocks occupy their own positions; equal text elsewhere is not this read. */
 function readSurvived(read: CodemodeReadEvent, visible: readonly (TextContent | ImageContent)[]): boolean {
@@ -76,6 +77,8 @@ export class CodemodeController {
 	readonly definition: ToolDefinition;
 	private tools: readonly AgentTool<any>[] = EMPTY_TOOLS;
 	private descriptors: CodemodeTool[] = [];
+	/** Same mapping the sandbox derives from the registered names; see assignCodemodeIdentifiers. */
+	private identifiers = new Map<string, string>();
 	private sandbox: CodemodeSandbox | undefined;
 	private current: Invocation | undefined;
 	private readonly store = new CodemodeStore();
@@ -118,12 +121,14 @@ export class CodemodeController {
 		for (const tool of tools) {
 			if (!nestedAllowed(tool)) continue;
 			const name = tool.name;
-			const descriptor: CodemodeTool = { name, description: tool.description.slice(0, 1024), inputSchema: tool.parameters as never,
-				execute: args => this.invoke(name, args) };
-			descriptors.push(descriptor);
-			if (name.startsWith("mcp__")) continue;
+			descriptors.push({ name, description: tool.description.slice(0, 1024), inputSchema: tool.parameters as never,
+				execute: args => this.invoke(name, args) });
+		}
+		const identifiers = assignCodemodeIdentifiers(descriptors.map(descriptorName));
+		for (const descriptor of descriptors) {
+			if (descriptor.name.startsWith("mcp__")) continue;
 			if (description.length >= MAX_CODEMODE_DESCRIPTION_CHARS - 256) { omitted++; continue; }
-			const signature = renderToolSignature(descriptor, TOOL_SIGNATURE_OPTIONS);
+			const signature = renderToolSignature(descriptor, { ...TOOL_SIGNATURE_OPTIONS, identifier: identifiers.get(descriptor.name) });
 			if (description.length + signature.length + 1 < MAX_CODEMODE_DESCRIPTION_CHARS - 256) description += signature + "\n";
 			else omitted++;
 		}
@@ -133,6 +138,7 @@ export class CodemodeController {
 			for (const descriptor of descriptors) this.sandbox.registerTool(descriptor);
 		}
 		this.descriptors = descriptors;
+		this.identifiers = identifiers;
 		this.definition.description = description;
 	}
 
@@ -298,7 +304,12 @@ export class CodemodeController {
 		if (!Array.isArray(names) || names.length > 16) throw new Error("describeTools expects up to 16 names");
 		let text = "";
 		for (const tool of invocation.context.getTools()) {
-			if (nestedAllowed(tool) && names.includes(tool.name)) text += tool.description.slice(0, 1024) + "\n" + renderToolSignature({ name: tool.name, inputSchema: tool.parameters as never }, TOOL_SIGNATURE_OPTIONS) + "\n";
+			if (!nestedAllowed(tool)) continue;
+			// ALL_TOOLS lists script identifiers; accept them as well as registered names.
+			const identifier = this.identifiers.get(tool.name);
+			if (names.includes(tool.name) || (identifier !== undefined && names.includes(identifier))) {
+				text += tool.description.slice(0, 1024) + "\n" + renderToolSignature({ name: tool.name, inputSchema: tool.parameters as never }, { ...TOOL_SIGNATURE_OPTIONS, identifier }) + "\n";
+			}
 		}
 		return text;
 	}

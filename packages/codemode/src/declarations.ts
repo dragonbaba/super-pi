@@ -1,8 +1,8 @@
-import { toCodemodeIdentifier } from "./identifier.ts";
+import { assignCodemodeIdentifiers, toCodemodeIdentifier } from "./identifier.ts";
 import { BoundedJson } from "./bounded-json.ts";
 import { IDENTIFIER_RE as IDENTIFIER, LINE_BREAK_RE } from "./regex.ts";
 
-export { toCodemodeIdentifier };
+export { assignCodemodeIdentifiers, toCodemodeIdentifier };
 
 import type { CodemodeJsonSchema, CodemodeTool } from "./types.ts";
 
@@ -132,19 +132,20 @@ export function renderDeclarations(options: RenderDeclarationsOptions): string {
 
 /**
  * One tool as a member of the `tools` object: `name(args: T): Promise<R>;` with the
- * name as the identifier scripts use. Input types longer than `inputMaxChars` render as `unknown`.
+ * name as the identifier scripts use (`identifier` from {@link assignCodemodeIdentifiers} when the
+ * catalog has collisions). Input types longer than `inputMaxChars` render as `unknown`.
  * Tools whose output schema is an MCP `CallToolResult` render as `Promise<CallToolResult<T>>`,
  * which needs {@link MCP_TYPESCRIPT_PREAMBLE}.
  */
 export function renderToolSignature(
 	tool: Pick<CodemodeTool, "name" | "inputSchema" | "outputSchema">,
-	options: { inputMaxChars?: number } = {},
+	options: { inputMaxChars?: number; identifier?: string } = {},
 ): string {
 	const input =
 		tool.inputSchema === undefined
 			? "unknown"
 			: schemaToType(tool.inputSchema, { maxChars: options.inputMaxChars ?? DEFAULT_INPUT_SCHEMA_MAX_CHARS });
-	return `${toCodemodeIdentifier(tool.name)}(args: ${input}): Promise<${renderToolOutputType(tool.outputSchema)}>;`;
+	return `${options.identifier ?? toCodemodeIdentifier(tool.name)}(args: ${input}): Promise<${renderToolOutputType(tool.outputSchema)}>;`;
 }
 
 /**

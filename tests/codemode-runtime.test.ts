@@ -7,6 +7,7 @@ import { MAX_CALLS, MAX_CODE_CHARS, MAX_OUTPUT_ITEMS } from "../packages/codemod
 import { parseCodemodeSource } from "../packages/codemode/src/source.ts";
 import { BoundedJson } from "../packages/codemode/src/bounded-json.ts";
 import { BridgeBudget, isWorkerToHostMessage } from "../packages/codemode/src/runtime/protocol.ts";
+import { assignCodemodeIdentifiers, renderToolSignature } from "../packages/codemode/src/declarations.ts";
 
 test("Codemode shares the compiled WASM promise and runs isolated executions", async () => {
 	assert.equal(loadQuickJSWasm(), loadQuickJSWasm());
@@ -153,4 +154,21 @@ test("Codemode source options keep source lines and reject unsupported directive
 	assert.deepEqual(parseCodemodeSource('// @options: {"timeout_ms":20,"max_output_tokens":100}\nreturn 1'), { code: "\nreturn 1", options: { timeoutMs: 20, maxOutputTokens: 100 } });
 	assert.throws(() => parseCodemodeSource("// @options: {}"), /followed/);
 	assert.throws(() => parseCodemodeSource('// @options: {"trusted":true}\nreturn 1'), /only supports/);
+});
+
+test("tool names that normalize to the same identifier all stay reachable and listed", async () => {
+	// Registration order must not decide the mapping: the valid identifier keeps its own name.
+	for (const names of [["foo-bar", "foo_bar", "foo.bar"], ["foo.bar", "foo_bar", "foo-bar"]]) {
+		const identifiers = assignCodemodeIdentifiers(names);
+		assert.deepEqual(Object.fromEntries(identifiers), { "foo-bar": "foo_bar_2", "foo.bar": "foo_bar_3", foo_bar: "foo_bar" });
+		const sandbox = new CodemodeSandbox({ tools: names.map(name => ({ name, execute: () => name })) });
+		try {
+			const result = await sandbox.execute(
+				'return [ALL_TOOLS.map(t => t.name).sort(), await tools.foo_bar({}), await tools.foo_bar_2({}), await tools.foo_bar_3({}), await tools["foo-bar"]({}), await tools["foo.bar"]({})]');
+			assert.equal(result.ok, true, JSON.stringify(result));
+			if (result.ok) assert.deepEqual(result.value, [["foo_bar", "foo_bar_2", "foo_bar_3"], "foo_bar", "foo-bar", "foo.bar", "foo-bar", "foo.bar"]);
+		} finally { await sandbox.close(); }
+	}
+	assert.deepEqual(Object.fromEntries(assignCodemodeIdentifiers(["a-b", "a_b_2", "a.b"])), { "a-b": "a_b", "a.b": "a_b_3", a_b_2: "a_b_2" });
+	assert.ok(renderToolSignature({ name: "foo-bar" }, { identifier: "foo_bar_2" }).startsWith("foo_bar_2(args: unknown)"));
 });

@@ -20,8 +20,8 @@ import {
 import { resolve as resolvePath, sep } from "node:path";
 import { getDefaultStreamFn } from "./stream-fn.ts";
 import { toolResultFromError } from "./tool-result-error.ts";
-import { NestedToolDispatch, isConcurrentNestedRead } from "./nested-tool-dispatch.ts";
-import { selectModelTools } from "./tool-exposure.ts";
+import { NESTED_CANCEL_GRACE_MS, NestedToolDispatch, isConcurrentNestedRead } from "./nested-tool-dispatch.ts";
+import { isModelToolSelection, selectModelTools } from "./tool-exposure.ts";
 import type {
 	AgentContext,
 	AgentEvent,
@@ -298,12 +298,7 @@ async function runLoop(
 			};
 			const nextTurnSnapshot = await config.prepareNextTurn?.(nextTurnContext);
 			if (nextTurnSnapshot) {
-				const nextContext = nextTurnSnapshot.context;
-				// `{ ...context, tools }` carries the old declaration cache; rebuild it for replaced tools.
-				currentContext = !nextContext ? currentContext
-					: nextContext.tools !== currentContext.tools && nextContext.modelTools === currentContext.modelTools
-						? { ...nextContext, modelTools: selectModelTools(nextContext.tools) }
-						: nextContext;
+				currentContext = nextTurnSnapshot.context ?? currentContext;
 				config = {
 					...config,
 					model: nextTurnSnapshot.model ?? config.model,
@@ -364,7 +359,8 @@ async function streamAssistantResponse(
 	}
 
 	// Convert to LLM-compatible messages (AgentMessage[] → Message[])
-	const modelTools = context.modelTools ?? selectModelTools(context.tools);
+	// A carried cache is stale after `{ ...context, tools }` replacement or in-place tool mutation.
+	const modelTools = isModelToolSelection(context.tools, context.modelTools) ? context.modelTools : selectModelTools(context.tools);
 	const llmMessages = await config.convertToLlm(messages, context.systemPrompt, modelTools, config.model, config.maxTokens);
 
 	// Build LLM context
@@ -979,9 +975,12 @@ async function executePreparedToolCall(
 		if (nested) {
 			await nested.close();
 			if (nested.shouldTerminate) result = { ...result, terminate: true };
-			if (nested.hasErrors && !result.isError) {
-				result = { ...result, isError: true, content: [...(result.content ?? []),
-					{ type: "text", text: "[NESTED_TOOL_ERRORS] One or more child calls failed, were cancelled, or were refused. Completed side effects are not rolled back." }] };
+			// Abandoned children are reported even on a failed parent: they may still change state.
+			const abandoned = nested.abandonedCalls;
+			if (abandoned > 0 || (nested.hasErrors && !result.isError)) {
+				result = { ...result, isError: true, content: [...(result.content ?? []), { type: "text", text: abandoned > 0
+					? `[NESTED_TOOL_ABANDONED] ${abandoned} child call(s) ignored cancellation for ${NESTED_CANCEL_GRACE_MS} ms and may still be running or changing state. Verify current state before any retry.`
+					: "[NESTED_TOOL_ERRORS] One or more child calls failed, were cancelled, or were refused. Completed side effects are not rolled back." }] };
 			}
 			completedResult = result;
 		}

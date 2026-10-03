@@ -18,7 +18,7 @@ import {
 } from "./event-delivery.ts";
 import { runAgentLoop, runAgentLoopContinue, runHostToolDispatch } from "./agent-loop.ts";
 import { getDefaultStreamFn } from "./stream-fn.ts";
-import { selectModelTools } from "./tool-exposure.ts";
+import { isModelToolSelection, selectModelTools } from "./tool-exposure.ts";
 import type {
 	AfterToolCallContext,
 	AfterToolCallResult,
@@ -115,7 +115,11 @@ function createMutableAgentState(
 			tools = nextTools.slice();
 			modelTools = selectModelTools(tools);
 		},
-		get modelTools() { return modelTools; },
+		get modelTools() {
+			// The returned tools array may be mutated in place; revalidate the cached projection.
+			if (!isModelToolSelection(tools, modelTools)) modelTools = selectModelTools(tools);
+			return modelTools;
+		},
 		get messages() {
 			return messages;
 		},

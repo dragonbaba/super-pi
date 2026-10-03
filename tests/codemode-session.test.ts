@@ -413,3 +413,33 @@ for (const tampered of [false, true]) test(`an admitted Codemode read ${tampered
 	assert.equal(outcome.results.at(-1)?.isError, tampered, JSON.stringify(outcome.results.at(-1)));
 	assert.equal(readFileSync(join(f.cwd, "file.txt"), "utf8"), tampered ? "hello\nworld\n" : "edited\nworld\n");
 });
+
+test("a nested tool that ignores cancellation cannot wedge Codemode past its deadline", async t => {
+	const hang: InlineExtension = pi => pi.registerTool({ name: "hang", label: "hang", description: "ignores abort", parameters: Type.Object({}),
+		execute: () => new Promise<never>(() => {}) });
+	const f = await fixture(t, {}, [hang]);
+	const started = Date.now();
+	const outcome = await f.run(['// @options: {"timeout_ms":200}\nawait tools.hang({})']);
+	assert.ok(Date.now() - started < 15_000, "bounded by the timeout plus the cancellation grace period");
+	const parent = outcome.results[0]!;
+	assert.equal(parent.isError, true);
+	assert.match(JSON.stringify(parent.content), /CODEMODE_TIMEOUT/);
+	assert.match(JSON.stringify(parent.content), /NESTED_TOOL_ABANDONED\] 1 child call/);
+});
+
+test("colliding tool names get distinct declared identifiers that scripts and describeTools accept", async t => {
+	const tools: InlineExtension = pi => {
+		for (const name of ["foo-bar", "foo_bar"]) pi.registerTool({ name, label: name, description: `fixture ${name}`, parameters: Type.Object({}),
+			execute: async () => ({ content: [{ type: "text", text: `ran ${name}` }], details: {} }) });
+	};
+	const f = await fixture(t, {}, [tools]);
+	const outcome = await f.run(['text(await describeTools(["foo_bar_2"])); text((await tools.foo_bar_2({})).content[0].text); text((await tools.foo_bar({})).content[0].text)']);
+	const declared = outcome.wires[0]!.tools!.find(tool => tool.name === "codemode")!.description;
+	assert.match(declared, /\nfoo_bar\(args/);
+	assert.match(declared, /\nfoo_bar_2\(args/);
+	const text = JSON.stringify(outcome.results[0]?.content);
+	assert.equal(outcome.results[0]?.isError, false, text);
+	assert.match(text, /fixture foo-bar/);
+	assert.match(text, /ran foo-bar/);
+	assert.match(text, /ran foo_bar/);
+});

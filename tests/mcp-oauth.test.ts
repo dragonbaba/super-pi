@@ -128,7 +128,7 @@ test("interactive OAuth leaves the file unlocked and merges another process's co
   try {
     const url = await ready;
     const other = new McpOAuth({ ...f.config, id: "other" }, new FileAuthStorageBackend(f.path), f.fetchImpl);
-    assert.equal(other.read(), undefined, "read succeeds while browser authorization is pending");
+    assert.equal(await other.read(), undefined, "read succeeds while browser authorization is pending");
     await new Promise<void>((resolve, reject) => {
       execFile(process.execPath, ["tests/fixtures/oauth-lock-writer.mjs", f.path], { windowsHide: true, timeout: 10000 }, error => error ? reject(error) : resolve());
     });
@@ -235,4 +235,24 @@ test("a successful logout reports before reload and never uses the replaced comm
   await commands.get("mcp-logout")!("fixture", ctx);
   assert.equal(reloaded, true);
   assert.deepEqual(notes, ["info: MCP logout completed for fixture. Reloading MCP servers."]);
+});
+
+test("a cold token read waits for another process's refresh lease and uses its committed token", async t => {
+  const f = fixture(t), backend = new FileAuthStorageBackend(f.path);
+  let entered!: () => void, release!: () => void;
+  const ready = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const committed = { [f.owner.key]: { tokens: { access_token: "fresh-token" }, expiresAt: Date.now() + 3_600_000 } };
+  // Held well past the old ~200 ms synchronous retry window, as an OAuth network refresh would be.
+  const held = backend.withLockAsync(async () => { entered(); await gate; return { result: undefined, next: JSON.stringify(committed) }; });
+  await ready;
+  const cold = new McpOAuth(f.config, new FileAuthStorageBackend(f.path), f.fetchImpl);
+  const token = cold.token();
+  const cancelled = new AbortController();
+  const aborted = new McpOAuth(f.config, new FileAuthStorageBackend(f.path), f.fetchImpl).token(cancelled.signal);
+  await new Promise(resolve => setTimeout(resolve, 600));
+  cancelled.abort();
+  await assert.rejects(aborted, { name: "AbortError" });
+  release(); await held;
+  assert.equal(await token, "fresh-token");
 });

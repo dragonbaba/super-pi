@@ -364,3 +364,24 @@ CI 失败：`npm run check`（tsgo）在 `tests/codemode-tree.test.ts` 报 TS230
 - `npm run check` 与 `npm run build:offline` 退出 0；`git diff --check` 通过。
 - 全套 `npm test`（PowerShell，刷新后的 PATH）：219 个执行单元全部退出 0；3,235 项中 3,145 通过、90 跳过（平台条件），失败/取消/todo 为 0。
 - 尚未提交或推送。
+
+### PR #55 六次复审修复（9f0abb334 之后，本地待复审）
+
+9f0abb334 的 CI（verify-linux、verify-windows）均通过。Codex 对该提交提出 5 条，逐条核实均成立：
+
+| 复审问题 | 根因 | 修复 | 回归（去掉修复后均失败） |
+| --- | --- | --- | --- |
+| P2 `prepareNextTurn` 替换工具后声明过期（agent-loop 使用点） | 上轮只在 `prepareNextTurn` 处特判；缓存来自 `agent.state.modelTools` 等其他来源时仍会过期 | 新增 `isModelToolSelection(tools, modelTools)`：一次扫描、零分配，判断缓存是否仍等于 `selectModelTools(tools)`；agent-loop 在使用前校验，不匹配就重建。上轮特判已删除 | `nested-tool-dispatch`：存在 nested 工具时（缓存是独立数组），展开替换后第二轮声明包含新工具 |
+| P1 原地修改 `agent.state.tools` 后声明过期 | README 允许原地修改返回的数组，但缓存只在 setter 中重算 | `AgentState.modelTools` getter 读取时校验，变化才重建；不变时保持同一引用 | `push` 后可见新工具，`splice` 后不再声明被删的工具，模型请求同步 |
+| P1 不响应 abort 的子工具让 Codemode 永久卡住 | 沙箱超时后 `NestedToolDispatch.close()` 无限期等待子调用 settle | 取消后最多等 `NESTED_CANCEL_GRACE_MS`（5 秒）；超时放弃：拒绝运行中和排队的子调用 promise，计入 `abandonedCalls`，后续 close 不再等待。agent-loop 追加 `[NESTED_TOOL_ABANDONED]`（父调用已失败时也追加），提示子调用可能仍在运行或改变状态 | 单元测试（30ms 宽限）：close 有界、promise 被拒、二次 close 立即返回；`codemode-session` 端到端：`timeout_ms:200` 加永不 settle 的工具，约 5.2 秒返回并带两种标记。修复前该测试一直挂起 |
+| P2 规范化后同名的工具（`foo-bar` / `foo_bar`）有一个不可达 | 宿主各自调用 `toCodemodeIdentifier`，第二个被丢弃 | 新增 `assignCodemodeIdentifiers`：本身已是合法标识符的名字保留；其他名字冲突时依次加 `_2`、`_3`…；按排序遍历，结果只取决于名字集合。宿主目录、Codemode 声明和 `describeTools` 共用这份映射；`describeTools` 也接受 `ALL_TOOLS` 中的别名 | `codemode-runtime`：两种注册顺序映射一致，全部可调用并列在 `ALL_TOOLS`；`codemode-session`：声明里有 `foo_bar` 与 `foo_bar_2`，脚本和 `describeTools` 都可用 |
+| P2 OAuth 冷读在另一进程刷新期间报 ELOCKED | `read()` 用同步锁，重试约 200ms 并阻塞事件循环；刷新事务在网络请求期间一直持有异步租约 | `read(signal)` 改为 `withLockAsync`（可中止，最长等到租约过期时限）；读取期间已有事务提交时，保留更新的缓存 | 租约持有 600ms：冷读等待并拿到提交的 token；带 signal 的读可以中止 |
+
+性能：`isModelToolSelection` 每轮最多扫描两次，不分配。宽限计时器只在 close 时子调用仍未结束的情况下创建。别名映射只在工具集合变化时计算。热路径上没有新增闭包或正则，也没有用 `String(`。
+
+验证：
+
+- `npm run check`、`npm run build:offline` 退出 0；`git diff --check` 通过。
+- 全套 `npm test`（PowerShell）：219 个执行单元全部退出 0；3,241 项中 3,151 通过、90 跳过（平台条件），失败/取消/todo 为 0。
+- 调试时修复前的挂起测试进程按 PID 结束（3 个，依据命令行确认）。
+- 尚未提交。

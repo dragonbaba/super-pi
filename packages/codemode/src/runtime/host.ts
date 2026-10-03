@@ -1,5 +1,5 @@
 import { Worker } from "node:worker_threads";
-import { toCodemodeIdentifier } from "../identifier.ts";
+import { assignCodemodeIdentifiers } from "../identifier.ts";
 import { BoundedJson } from "../bounded-json.ts";
 import { IDENTIFIER_RE as IDENTIFIER } from "../regex.ts";
 import {
@@ -408,12 +408,13 @@ export class CodemodeSandbox {
 		if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_TIMEOUT_MS) throw new RangeError("Codemode timeout must be 1..300000 ms");
 		if (!this.toolSnapshot) {
 			this.toolCatalog = [];
+			const identifiers = assignCodemodeIdentifiers(this.toolsByName.keys());
 			let chars = 0;
 			for (const tool of this.toolsByName.values()) {
 				const description = tool.description ?? "";
 				chars += tool.name.length * 2 + description.length;
 				if (chars > MAX_CATALOG_CHARS) throw new RangeError("Codemode catalog text exceeds its limit");
-				this.toolCatalog.push({ name: tool.name, jsName: toCodemodeIdentifier(tool.name), description });
+				this.toolCatalog.push({ name: tool.name, jsName: identifiers.get(tool.name)!, description });
 			}
 			this.toolSnapshot = new Map(this.toolsByName);
 		}

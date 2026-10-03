@@ -402,7 +402,7 @@ export interface AgentState {
 	/** Available tools. Assigning a new array copies the top-level array. */
 	set tools(tools: AgentTool<any>[]);
 	get tools(): AgentTool<any>[];
-	/** Cached provider declarations; callable tools remain in tools. */
+	/** Cached provider declarations, revalidated against `tools` on read; callable tools remain in tools. */
 	readonly modelTools?: AgentTool<any>[];
 	/** Conversation transcript. Assigning a new array copies the top-level array. */
 	set messages(messages: AgentMessage[]);
@@ -527,7 +527,7 @@ export interface AgentContext {
 	messages: AgentMessage[];
 	/** Tools available for this run. */
 	tools?: AgentTool<any>[];
-	/** Optional precomputed model-facing subset, owned by this context version. */
+	/** Optional precomputed model-facing subset; used only while it still matches `tools`. */
 	modelTools?: AgentTool<any>[];
 }
 

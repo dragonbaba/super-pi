@@ -14,3 +14,18 @@ export function selectModelTools(tools: AgentTool<any>[] | undefined): AgentTool
 	}
 	return selected;
 }
+
+/**
+ * Whether `modelTools` is still exactly `selectModelTools(tools)`. Callers may mutate or
+ * replace `tools` after the projection was cached; this check costs one scan and no allocation.
+ */
+export function isModelToolSelection(tools: readonly AgentTool<any>[] | undefined, modelTools: readonly AgentTool<any>[] | undefined): boolean {
+	if (!tools || !modelTools) return tools === modelTools;
+	let selected = 0;
+	for (let index = 0; index < tools.length; index++) {
+		const tool = tools[index]!;
+		if (tool.modelExposure === "nested") continue;
+		if (modelTools[selected++] !== tool) return false;
+	}
+	return selected === modelTools.length;
+}

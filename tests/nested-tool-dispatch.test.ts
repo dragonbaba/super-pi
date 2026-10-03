@@ -4,6 +4,7 @@ import { setImmediate as nextTask } from "node:timers/promises";
 import type { AssistantMessage, AssistantMessageEvent, Context } from "../packages/ai/src/types.ts";
 import { Agent } from "../packages/agent/src/agent.ts";
 import type { AgentEvent, AgentTool, AgentToolExecutionContext } from "../packages/agent/src/types.ts";
+import { NestedToolDispatch } from "../packages/agent/src/nested-tool-dispatch.ts";
 
 const PARAMETERS = { type: "object", properties: {}, additionalProperties: false };
 const USAGE = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
@@ -266,4 +267,55 @@ test("next-turn tool replacement rebuilds model declarations carried by a spread
 	agent.prepareNextTurnWithContext = async ({ context }) => ({ context: { ...context, tools: [...context.tools!, added] } });
 	await agent.prompt("run");
 	assert.deepEqual(declared, [["script"], ["script", "added"]]);
+});
+
+test("model declarations follow next-turn spread replacement and in-place state mutation with nested tools present", async () => {
+	const script = tool("script", async () => result());
+	const hidden = tool("hidden", async () => result());
+	hidden.modelExposure = "nested";
+	const added = tool("added", async () => result());
+	const later = tool("later", async () => result());
+	const declared: string[][] = [];
+	let request = 0;
+	const agent = new Agent({ initialState: { tools: [script, hidden] }, streamFn: (_model, context) => {
+		declared.push((context.tools ?? []).map(t => t.name));
+		return new FixtureStream(request++ === 0) as never;
+	} });
+	// A nested tool makes the cached projection a separate array, so a spread context carries a stale one.
+	agent.prepareNextTurnWithContext = async ({ context }) => ({ context: { ...context, tools: [...context.tools!, added] } });
+	await agent.prompt("run");
+	assert.deepEqual(declared, [["script"], ["script", "added"]]);
+	// The state contract allows mutating the returned array in place.
+	agent.prepareNextTurnWithContext = undefined;
+	agent.state.tools.push(later);
+	assert.deepEqual(agent.state.modelTools?.map(t => t.name), ["script", "later"]);
+	agent.state.tools.splice(0, 1);
+	assert.deepEqual(agent.state.modelTools?.map(t => t.name), ["later"]);
+	const cached = agent.state.modelTools;
+	assert.equal(agent.state.modelTools, cached, "an unchanged projection keeps its identity");
+	request = 0;
+	await agent.prompt("again");
+	assert.deepEqual(declared.at(-2), ["later"]);
+});
+
+test("a child that ignores cancellation is abandoned after the grace period instead of wedging close", async () => {
+	let aborted = false, settle!: () => void;
+	const late = new Promise<void>(resolve => { settle = resolve; });
+	const dispatch = new NestedToolDispatch("parent", () => [tool("hang", async () => result())],
+		async (call, _tool, signal) => {
+			signal.addEventListener("abort", () => { aborted = true; }, { once: true });
+			await late; // ignores the abort signal
+			return { role: "toolResult", toolCallId: call.id, toolName: call.name, content: [], isError: false, timestamp: 0 } as never;
+		}, undefined, 30);
+	const call = dispatch.callTool("hang", {});
+	const started = Date.now();
+	assert.equal(await dispatch.finish(), true);
+	assert.ok(Date.now() - started < 2000);
+	assert.equal(aborted, true);
+	assert.equal(dispatch.abandonedCalls, 1);
+	await assert.rejects(call, /ignored cancellation for 30 ms/);
+	await dispatch.close(); // a later close never waits on the abandoned child again
+	settle();
+	await nextTask();
+	assert.equal(dispatch.abandonedCalls, 1);
 });
