@@ -7,8 +7,10 @@ import test from "node:test";
 import {
 	classifyTestFile,
 	defaultJobs,
+	defaultShard,
 	discoverTestFiles,
 	normalizeTestPath,
+	parseShard,
 	run,
 	scheduleTestFiles,
 } from "../scripts/test.mjs";
@@ -116,6 +118,23 @@ test("runner schedules known slow files first and bounds the default width", asy
 			pooled: ["alpha-cli.test.ts", "codemode-session.test.ts", "a.test.ts", "b.test.ts"],
 		},
 	);
+	// Shards are disjoint, cover every unit, and put the heaviest files on different shards.
+	const labels = discoverTestFiles();
+	for (const count of [2, 3, 4]) {
+		const seen: string[] = [];
+		for (let index = 1; index <= count; index++) {
+			const { exclusive, pooled } = scheduleTestFiles(labels, { index, count });
+			seen.push(...exclusive, ...pooled);
+		}
+		assert.deepEqual(seen.sort(), [...labels].sort());
+	}
+	assert.equal(scheduleTestFiles(labels, { index: 1, count: 2 }).pooled.includes("alpha-cli.test.ts"), false);
+	assert.deepEqual(parseShard("2/4"), { index: 2, count: 4 });
+	for (const value of ["0/2", "3/2", "1/0", "2", "a/b"]) assert.throws(() => parseShard(value), /i\/n/);
+	assert.deepEqual(defaultShard({}), { index: 1, count: 1 });
+	assert.deepEqual(defaultShard({ SP_TEST_SHARD: "1/3" }), { index: 1, count: 3 });
+	await assert.rejects(run({ suite: "unit", root: join(tmpdir(), "super-pi-runner-never-discovered"), skipMemory: true,
+		list: false, jobs: 1, shard: { index: 3, count: 2 } }), /i\/n/);
 	assert.equal(defaultJobs({ SP_TEST_JOBS: "3" }), 3);
 	assert.ok(defaultJobs({}) >= 1 && defaultJobs({}) <= 8);
 	assert.throws(() => defaultJobs({ SP_TEST_JOBS: "0" }), /positive integer/);

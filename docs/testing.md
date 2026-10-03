@@ -5,13 +5,19 @@ Default Linux and Windows CI runs `npm ci`, `npm run check`,
 limit. Use `npm.cmd` on Windows PowerShell when required by execution policy.
 
 `node scripts/test.mjs --suite all --list` lists the deterministic test-file
-order without executing tests. The runner discovers each file once and
+order (of the selected shard, if any) without executing tests. The runner discovers each file once and
 includes the memory workspace. It runs files in a bounded pool of
 `min(available CPUs, 8)` child processes; `--jobs N` or `SP_TEST_JOBS=N`
 overrides the width, and `--jobs 1` restores serial execution. Files with
 wall-clock pass conditions (`bash-running-responsiveness`,
 `tool-lifecycle-postmerge`) run alone before the pool starts. In the pool, known
-slow files start first so they do not extend the tail. After the first nonzero
+slow files start first so they do not extend the tail. `--shard i/n` or
+`SP_TEST_SHARD=i/n` runs one part of a deterministic split: units are assigned
+heaviest first to the least-loaded shard using approximate weights in the
+runner, so the shards are disjoint and together cover every file and the memory
+workspace once. CI runs Linux as 2 shards and Windows as 4 shards on separate
+runners, each shard serially (`SP_TEST_JOBS=1`) because the two-core hosted
+runners gain little from a pool; only shard 1 repeats `npm run check`. After the first nonzero
 child exit or signal no new file starts; running files finish and the first
 failure's exit code is returned. Each child writes stdout and stderr to a
 runner-owned log file, replayed to stdout with its END line, so parallel output

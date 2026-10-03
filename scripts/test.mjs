@@ -25,13 +25,16 @@ const GC_TESTS = new Set([
 	"alpha-assistant-update.test.ts", "alpha-markdown-ownership.test.ts",
 	"alpha-raw-parallel.test.ts", "alpha-startup-quit.test.ts",
 ]);
-// Started first so the longest files do not extend the tail of a parallel run.
-// Order only; every discovered file still runs exactly once.
-const SLOW_TESTS = [
-	"alpha-raw-parallel.test.ts", "alpha-cli.test.ts", "alpha-startup-faults.test.ts",
-	"shell-incident-launcher.test.mjs", "tui-frame-queue.test.ts", "alpha-raw-session.test.ts",
-	"next-phase-task-matrix.test.ts", "codemode-session.test.ts",
-];
+// Approximate serial Windows CI seconds; unlisted units weigh DEFAULT_TEST_WEIGHT
+// (the suite mean). Weights only order units and balance shards; every
+// discovered file still runs exactly once across all shards.
+const TEST_WEIGHTS = new Map([
+	["alpha-raw-parallel.test.ts", 190], ["alpha-cli.test.ts", 78], ["shell-incident-launcher.test.mjs", 56],
+	["alpha-startup-faults.test.ts", 41], ["bash-running-responsiveness.test.ts", 41], ["alpha-raw-session.test.ts", 36],
+	["tui-frame-queue.test.ts", 35], ["image-review-boundaries.test.ts", 26], ["next-phase-task-matrix.test.ts", 25],
+	["codemode-session.test.ts", 25],
+]);
+const DEFAULT_TEST_WEIGHT = 6;
 // Wall-clock gated files run alone, before the pool starts: paired p50/p95 deltas
 // and frames that must land while a 3s child shell is still running.
 const EXCLUSIVE_TESTS = new Set(["bash-running-responsiveness.test.ts", "tool-lifecycle-postmerge.test.ts"]);
@@ -90,7 +93,7 @@ export function defaultJobs(env = process.env) {
 }
 
 function parseArguments(argv) {
-	const options = { suite: "all", root: DEFAULT_TEST_ROOT, skipMemory: false, list: false, jobs: undefined };
+	const options = { suite: "all", root: DEFAULT_TEST_ROOT, skipMemory: false, list: false, jobs: undefined, shard: undefined };
 	for (let index = 0; index < argv.length; index++) {
 		const argument = argv[index];
 		if (argument === "--suite") {
@@ -103,6 +106,8 @@ function parseArguments(argv) {
 			options.list = true;
 		} else if (argument === "--jobs") {
 			options.jobs = parseJobs(argv[++index], "--jobs");
+		} else if (argument === "--shard") {
+			options.shard = parseShard(argv[++index], "--shard");
 		} else {
 			throw new Error(`Unknown test runner argument: ${argument}`);
 		}
@@ -111,16 +116,38 @@ function parseArguments(argv) {
 		throw new Error(`Unknown test suite: ${options.suite}`);
 	}
 	options.jobs ??= defaultJobs();
+	options.shard ??= defaultShard();
 	return options;
 }
 
-/** Exclusive files keep discovery order; pooled files start slow files first, then discovery order. */
-export function scheduleTestFiles(files) {
+export function parseShard(value, source = "shard") {
+	const match = /^(\d+)\/(\d+)$/.exec(String(value));
+	const index = Number(match?.[1]), count = Number(match?.[2]);
+	if (!match || count < 1 || index < 1 || index > count) throw new Error(`${source} must look like i/n with 1 <= i <= n`);
+	return { index, count };
+}
+
+export function defaultShard(env = process.env) {
+	if (env.SP_TEST_SHARD !== undefined && env.SP_TEST_SHARD !== "") return parseShard(env.SP_TEST_SHARD, "SP_TEST_SHARD");
+	return { index: 1, count: 1 };
+}
+
+/**
+ * Orders units heaviest first (ties keep the given order) and assigns each to the
+ * least-loaded shard, so every shard computes the same deterministic split.
+ * Returns this shard's wall-clock gated and pooled units.
+ */
+export function scheduleTestFiles(labels, shard = { index: 1, count: 1 }) {
+	const weight = (label) => TEST_WEIGHTS.get(label) ?? DEFAULT_TEST_WEIGHT;
+	const ordered = labels.map((label, position) => ({ label, position }))
+		.sort((left, right) => weight(right.label) - weight(left.label) || left.position - right.position);
+	const loads = new Array(shard.count).fill(0);
 	const exclusive = [], pooled = [];
-	for (const file of SLOW_TESTS) if (files.includes(file)) pooled.push(file);
-	for (const file of files) {
-		if (EXCLUSIVE_TESTS.has(file)) exclusive.push(file);
-		else if (!SLOW_TESTS.includes(file)) pooled.push(file);
+	for (const { label } of ordered) {
+		let target = 0;
+		for (let index = 1; index < loads.length; index++) if (loads[index] < loads[target]) target = index;
+		loads[target] += weight(label);
+		if (target === shard.index - 1) (EXCLUSIVE_TESTS.has(label) ? exclusive : pooled).push(label);
 	}
 	return { exclusive, pooled };
 }
@@ -213,11 +240,15 @@ function memoryCommand() {
 
 export async function run(options) {
 	const jobs = parseJobs(options.jobs ?? defaultJobs(), "jobs");
+	const shard = options.shard === undefined ? defaultShard() : parseShard(`${options.shard.index}/${options.shard.count}`);
 	const files = discoverTestFiles(options.root).filter(
 		(file) => options.suite === "all" || classifyTestFile(file) === options.suite,
 	);
+	const includeMemory = !options.skipMemory && (options.suite === "all" || options.suite === "unit");
+	const { exclusive, pooled } = scheduleTestFiles(includeMemory ? [...files, MEMORY_LABEL] : files, shard);
 	if (options.list) {
-		for (const file of files) console.log(file);
+		const selected = new Set([...exclusive, ...pooled]);
+		for (const file of files) if (selected.has(file)) console.log(file);
 		return 0;
 	}
 
@@ -226,18 +257,17 @@ export async function run(options) {
 		if (GC_TESTS.has(file)) args.unshift("--expose-gc");
 		return { label: file, command: process.execPath, args, cwd: ISOLATED_CWD_TESTS.has(file) ? undefined : REPOSITORY_ROOT };
 	};
-	const { exclusive, pooled } = scheduleTestFiles(files);
 	const exclusiveUnits = exclusive.map(testUnit);
-	const pooledUnits = pooled.map(testUnit);
-	const includeMemory = !options.skipMemory && (options.suite === "all" || options.suite === "unit");
-	if (includeMemory) pooledUnits.push({ label: MEMORY_LABEL, ...memoryCommand(), cwd: REPOSITORY_ROOT });
+	const pooledUnits = pooled.map((label) => label === MEMORY_LABEL
+		? { label, ...memoryCommand(), cwd: REPOSITORY_ROOT }
+		: testUnit(label));
 	if (exclusiveUnits.length + pooledUnits.length === 0) {
-		console.log(`[test] no ${options.suite} tests discovered`);
+		console.log(`[test] no ${options.suite} tests in shard ${shard.index}/${shard.count}`);
 		return 0;
 	}
 
 	const width = Math.max(1, Math.min(jobs, pooledUnits.length));
-	console.log(`[test] running ${exclusiveUnits.length} exclusive then ${pooledUnits.length} pooled units with ${width} parallel job(s)`);
+	console.log(`[test] shard ${shard.index}/${shard.count}: running ${exclusiveUnits.length} exclusive then ${pooledUnits.length} pooled units with ${width} parallel job(s)`);
 	const logRoot = mkdtempSync(resolve(tmpdir(), "super-pi-test-logs-"));
 	const print = createPrinter();
 	let firstFailure = 0, logIndex = 0;
