@@ -62,6 +62,18 @@ Use `"transport": "sse"` for a legacy SSE endpoint. Remote URLs require HTTPS; l
 
 For OAuth, replace the `Authorization` header with `"oauth": true`, or `"oauth": {"scope": "tools.read", "clientId": "registered-client", "callbackPort": 49152}`. A fixed client ID requires a registered loopback callback port; otherwise the server must support dynamic registration. Run `/mcp-login engine`, open the displayed authorization URL, and complete the browser flow. Login uses PKCE and a state-checked `http://127.0.0.1:<port>/callback`, closes after completion/cancellation, and expires after three minutes. Ordinary connections do not open browsers or start registration automatically.
 
+OAuth/OIDC discovery validates the metadata issuer before registration or token
+requests, including when reusing stored discovery. Callback `iss` must match the
+issuer bound to that login; it is required when the server advertises support.
+Duplicate or mismatched issuers fail before code exchange. Legacy servers that
+do not advertise support may omit `iss`. Discovery comparison removes at most one
+trailing slash from each issuer, matching upstream Pi; all other characters must
+match. The metadata issuer is preserved unchanged. Callback values and the issuer
+bound to a login compare exactly, including case, encoding and trailing slashes.
+Previously stored metadata is rediscovered on the first login or refresh to
+recover issuer support flags omitted by older versions. Successful upgrades are
+cached; failed discovery leaves existing credentials intact and requires a retry.
+
 Credentials are isolated by server identity in `~/.sp/agent/mcp-auth.json`, using the host's file locking and atomic persistence. Interactive login reserves a bounded attempt, releases the lock during browser authorization, then re-reads and merges the current file when committing. Another service's writes are preserved; logout invalidates a pending login, and a second active login for the same server is rejected. Cancellation removes its own reservation, with an expiry for abandoned attempts. Sync and async access use the same lease parameters. A refresh holds the lock through rotation; an HTTP 401 permits one refresh/retry. Metadata/token requests do not inherit MCP headers. OAuth and a static `Authorization` header cannot be combined. A scope change requires updated configuration and an explicit new login; automatic HTTP 403 step-up is not implemented. Browser/provider interoperability needs testing against the chosen server; the repository tests use offline OAuth fixtures, including a separate process writing during authorization.
 
 ## Project configuration

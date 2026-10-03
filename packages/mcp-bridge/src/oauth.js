@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { join } from "node:path";
-import { auth } from "@modelcontextprotocol/sdk/client/auth.js";
+import { auth, discoverAuthorizationServerMetadata } from "@modelcontextprotocol/sdk/client/auth.js";
 import { FileAuthStorageBackend } from "@super-pi/coding-agent";
 import { agentDir } from "./config.js";
 
@@ -9,6 +9,24 @@ const MAX_STORE_CHARS = 2 * 1024 * 1024;
 const MAX_AUTH_BYTES = 1024 * 1024;
 const REFRESH_SKEW_MS = 30_000;
 const FLOW_TIMEOUT_MS = 180_000;
+const ISSUER_VALIDATION_VERSION = 1;
+const AUTH_METADATA_PATH = /\/\.well-known\/(?:oauth-authorization-server|openid-configuration)(?:\/|$)/;
+
+// The SDK's OIDC schema strips the RFC 9207 support flag. Observe the same JSON
+// parse the SDK requests, keeping only the issuer and flag for saveDiscoveryState.
+class OAuthMetadataResponse extends Response {
+  constructor(body, init, observation) {
+    super(body, init);
+    this.observation = observation;
+  }
+
+  async json() {
+    const value = await super.json();
+    this.observation.issuer = value?.issuer;
+    this.observation.issuerSupport = value?.authorization_response_iss_parameter_supported;
+    return value;
+  }
+}
 
 function secureUrl(value) {
   const url = new URL(value);
@@ -17,6 +35,54 @@ function secureUrl(value) {
     throw new Error("MCP OAuth requires HTTPS or loopback HTTP without URL credentials");
   }
   return url;
+}
+
+function validateIssuer(value) {
+  if (typeof value !== "string" || !value || value.includes("?") || value.includes("#")) {
+    throw new Error("Invalid MCP OAuth issuer");
+  }
+  secureUrl(value);
+}
+
+function trimIssuerTrailingSlash(value) {
+  return value.endsWith("/") ? value.slice(0, -1) : value;
+}
+
+/** Run before the SDK uses either fresh or cached discovery for registration/token requests. */
+function validateDiscovery(discovery, authorizationIssuer) {
+  if (!discovery) return discovery;
+  const expected = discovery.authorizationServerUrl;
+  validateIssuer(expected);
+  const metadata = discovery.authorizationServerMetadata;
+  const issuer = metadata?.issuer ?? expected;
+  if (metadata) {
+    validateIssuer(metadata.issuer);
+    // Match upstream discovery compatibility: remove at most one trailing '/'
+    // from each identifier. Keep the original metadata issuer for exact callback
+    // validation and flow binding; no other URL normalization is permitted.
+    if (issuer !== expected && trimIssuerTrailingSlash(issuer) !== trimIssuerTrailingSlash(expected)) {
+      throw new Error("MCP OAuth discovery issuer does not match the authorization server");
+    }
+    const supported = metadata.authorization_response_iss_parameter_supported;
+    if (supported !== undefined && typeof supported !== "boolean") throw new Error("Invalid MCP OAuth issuer support flag");
+  }
+  // auth() can invalidate a client and rediscover after receiving a code. The
+  // code must stay bound to the issuer that started this authorization flow.
+  if (authorizationIssuer !== undefined && issuer !== authorizationIssuer) {
+    throw new Error("MCP OAuth authorization issuer changed during login");
+  }
+  return discovery;
+}
+
+function authorizationCodeFromCallback(parameters, issuer, issuerRequired) {
+  const issuers = parameters.getAll("iss");
+  if (issuers.length > 1) throw new Error("MCP OAuth callback has multiple issuer parameters");
+  if (issuers.length === 1 && issuers[0] !== issuer) throw new Error("MCP OAuth callback issuer does not match the authorization server");
+  if (issuers.length === 0 && issuerRequired) throw new Error("MCP OAuth callback issuer is missing");
+  // Validate issuer even for an error response before attributing it to this server.
+  const code = parameters.get("code");
+  if (!code || parameters.has("error")) throw new Error("MCP OAuth authorization was declined");
+  return code;
 }
 
 function parseStore(text) {
@@ -33,9 +99,9 @@ function serializeStore(store) {
 }
 
 /** OAuth discovery/token fetches never inherit MCP headers or follow redirects. */
-export function createOAuthFetch(fetchImpl, signal) {
+export function createOAuthFetch(fetchImpl, signal, discoveryObservation) {
   return async (input, init = {}) => {
-    secureUrl(input instanceof Request ? input.url : input);
+    const url = secureUrl(input instanceof Request ? input.url : input);
     const timeout = AbortSignal.timeout(15_000);
     const combined = AbortSignal.any([timeout, ...(signal ? [signal] : []), ...(init.signal ? [init.signal] : [])]);
     const response = await fetchImpl(input, { ...init, signal: combined, redirect: "error" });
@@ -52,27 +118,29 @@ export function createOAuthFetch(fetchImpl, signal) {
         chunks.push(next.value);
       }
     } finally { await reader.cancel().catch(() => undefined); reader.releaseLock(); }
-    return new Response(Buffer.concat(chunks, bytes), { status: response.status, statusText: response.statusText, headers: response.headers });
+    const body = Buffer.concat(chunks, bytes);
+    const responseInit = { status: response.status, statusText: response.statusText, headers: response.headers };
+    return discoveryObservation && response.ok && AUTH_METADATA_PATH.test(url.pathname)
+      ? new OAuthMetadataResponse(body, responseInit, discoveryObservation)
+      : new Response(body, responseInit);
   };
 }
 
 async function callbackReceiver(port, state, signal) {
-  let resolveCode, rejectCode;
-  const code = new Promise((resolve, reject) => { resolveCode = resolve; rejectCode = reject; });
+  let resolveCallback, rejectCallback;
+  const callback = new Promise((resolve, reject) => { resolveCallback = resolve; rejectCallback = reject; });
   // The callback may arrive before SDK discovery completes.
-  void code.catch(() => undefined);
+  void callback.catch(() => undefined);
   const server = createServer((request, response) => {
     if ((request.url?.length ?? 0) > 8192) { response.writeHead(414).end(); return; }
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
     if (request.method !== "GET" || url.pathname !== "/callback" || url.searchParams.get("state") !== state) {
       response.writeHead(400).end("Invalid authorization callback."); return;
     }
-    const value = url.searchParams.get("code");
     response.writeHead(200, { "Content-Type": "text/plain", "Cache-Control": "no-store" }).end("Return to Super Pi.");
-    if (!value || url.searchParams.has("error")) rejectCode(new Error("MCP OAuth authorization was declined"));
-    else resolveCode(value);
+    resolveCallback(url.searchParams);
   });
-  const abort = () => rejectCode(new Error("MCP OAuth cancelled or timed out"));
+  const abort = () => rejectCallback(new Error("MCP OAuth cancelled or timed out"));
   signal.addEventListener("abort", abort, { once: true });
   try {
     signal.throwIfAborted();
@@ -81,7 +149,7 @@ async function callbackReceiver(port, state, signal) {
   } catch (error) {
     signal.removeEventListener("abort", abort); server.closeAllConnections(); server.close(); throw error;
   }
-  return { code, url: `http://127.0.0.1:${server.address().port}/callback`, async close() {
+  return { callback, url: `http://127.0.0.1:${server.address().port}/callback`, async close() {
     signal.removeEventListener("abort", abort);
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));
@@ -129,7 +197,8 @@ export class McpOAuth {
   }
 
   async authorize(entry, signal, receiver, notify) {
-    let verifier;
+    let verifier, authorizationIssuer, issuerRequired = false;
+    const discoveryObservation = {};
     const state = randomBytes(32).toString("hex");
     const provider = {
       redirectUrl: receiver?.url ?? entry.redirectUrl ?? "http://127.0.0.1/callback",
@@ -147,10 +216,19 @@ export class McpOAuth {
       codeVerifier: () => { if (!verifier) throw new Error("Missing MCP PKCE verifier"); return verifier; },
       redirectToAuthorization: url => {
         if (!receiver) throw this.authorizationRequired();
+        authorizationIssuer = entry.discovery.authorizationServerMetadata?.issuer ?? entry.discovery.authorizationServerUrl;
+        issuerRequired = entry.discovery.authorizationServerMetadata?.authorization_response_iss_parameter_supported === true;
         secureUrl(url); notify(url.href);
       },
-      discoveryState: () => entry.discovery,
-      saveDiscoveryState: value => { entry.discovery = value; },
+      discoveryState: () => validateDiscovery(entry.discovery, authorizationIssuer),
+      saveDiscoveryState: value => {
+        const metadata = value.authorizationServerMetadata;
+        if (metadata && metadata.issuer === discoveryObservation.issuer && discoveryObservation.issuerSupport !== undefined) {
+          metadata.authorization_response_iss_parameter_supported = discoveryObservation.issuerSupport;
+        }
+        entry.discovery = validateDiscovery(value, authorizationIssuer);
+        entry.discovery.issuerValidationVersion = ISSUER_VALIDATION_VERSION;
+      },
       invalidateCredentials: scope => {
         if (scope === "all" || scope === "tokens") entry.tokens = undefined;
         if (scope === "all" || scope === "client") entry.client = undefined;
@@ -158,12 +236,23 @@ export class McpOAuth {
         if (scope === "all" || scope === "verifier") verifier = undefined;
       },
     };
-    const options = { serverUrl: this.config.url, scope: this.config.oauth?.scope, fetchFn: createOAuthFetch(this.fetchImpl, signal) };
+    const options = { serverUrl: this.config.url, scope: this.config.oauth?.scope, fetchFn: createOAuthFetch(this.fetchImpl, signal, discoveryObservation) };
+    // Pre-fix OIDC caches may have lost the support flag. Refresh just the server
+    // metadata once, retaining resource discovery and client registration. Do not
+    // downgrade a previously discovered server to metadata-free legacy behavior
+    // if discovery is temporarily unavailable during this upgrade.
+    if (entry.discovery?.authorizationServerMetadata && entry.discovery.issuerValidationVersion !== ISSUER_VALIDATION_VERSION) {
+      validateDiscovery(entry.discovery);
+      const metadata = await discoverAuthorizationServerMetadata(entry.discovery.authorizationServerUrl, { fetchFn: options.fetchFn });
+      if (!metadata) throw new Error("MCP OAuth discovery metadata unavailable for issuer validation");
+      provider.saveDiscoveryState({ ...entry.discovery, authorizationServerMetadata: metadata });
+    }
     let result = await auth(provider, options);
     if (result === "REDIRECT") {
       if (!receiver) throw this.authorizationRequired();
-      const authorizationCode = await receiver.code;
+      const callback = await receiver.callback;
       signal.throwIfAborted();
+      const authorizationCode = authorizationCodeFromCallback(callback, authorizationIssuer, issuerRequired);
       result = await auth(provider, { ...options, authorizationCode });
     }
     if (result !== "AUTHORIZED" || !entry.tokens?.access_token) throw this.authorizationRequired();
