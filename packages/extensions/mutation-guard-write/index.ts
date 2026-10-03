@@ -298,9 +298,8 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
   pi.on("tool_result", async (rawEvent, ctx) => {
     const event = rawEvent as ToolResultEventShape;
     if (event.toolName === "file_batch") {
-      // Internal batch reads have not been displayed to the model. Codemode's
-      // host presentation boundary admits visible evidence separately.
-      if (event.parentToolCallId !== undefined) return;
+      // Only post-mutation snapshots and invalidations are recorded; internal batch
+      // reads never become read evidence. Nested batches change disk like top-level ones.
       await recordBatchMutationEvidence(guard, ctx.cwd, event.input, event.details, event.toolCallId, turnGeneration, recentMutationEntries(ctx.sessionManager));
       return;
     }

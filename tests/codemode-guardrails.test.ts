@@ -69,3 +69,35 @@ test("native duplicate batches and repeated nested failure guards remain enforce
 	}
 	assert.equal(blocked, true);
 });
+
+test("a queued nested duplicate stays an overlap after many distinct siblings complete", async () => {
+	const f = fixture();
+	const ctx = { cwd: process.cwd() };
+	const call = (id: string, input: object, nestedIssuedAt: number, parent = "p") =>
+		f.hooks.get("tool_call")!({ toolCallId: id, toolName: "fixture_operation", parentToolCallId: parent, nestedIssuedAt, input }, ctx);
+	const finish = async (id: string, input: object, parent = "p") => {
+		await f.hooks.get("tool_result")!({ toolCallId: id, toolName: "fixture_operation", parentToolCallId: parent, input, isError: false,
+			content: [{ type: "text", text: "ok" }], details: {} }, ctx);
+		f.hooks.get("tool_execution_end")!({ type: "tool_execution_end", toolCallId: id, toolName: "fixture_operation", parentToolCallId: parent, result: {}, isError: false });
+	};
+	const duplicate = { fixture: "duplicate" };
+	// Both copies were issued together; the dispatcher admits the second one only after 70 others ran.
+	const issuedTogether = performance.now();
+	assert.equal(await call("first", duplicate, issuedTogether), undefined);
+	await finish("first", duplicate);
+	for (let i = 0; i < 70; i++) {
+		const input = { fixture: `distinct-${i}` };
+		assert.equal(await call(`distinct-${i}`, input, performance.now()), undefined);
+		await finish(`distinct-${i}`, input);
+	}
+	assert.match((await call("queued-copy", duplicate, issuedTogether)).reason, /DUPLICATE_CALL/);
+	f.hooks.get("tool_execution_end")!({ type: "tool_execution_end", toolCallId: "queued-copy", toolName: "fixture_operation", parentToolCallId: "p", result: {}, isError: true });
+	// A copy issued after the first call completed is an intentional repeat.
+	assert.equal(await call("repeat", duplicate, performance.now()), undefined);
+	await finish("repeat", duplicate);
+	// Another parent never inherits release times, and the parent's end discards its own.
+	assert.equal(await call("other-parent", duplicate, issuedTogether, "q"), undefined);
+	await finish("other-parent", duplicate, "q");
+	f.hooks.get("tool_execution_end")!({ type: "tool_execution_end", toolCallId: "p", toolName: "codemode", result: {}, isError: false });
+	assert.equal(await call("after-parent", { fixture: "distinct-0" }, issuedTogether), undefined);
+});

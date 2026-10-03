@@ -583,3 +583,16 @@ test("identical side effects issued together in one script run once even though 
 	assert.equal(sequential!.isError, false, JSON.stringify(sequential!.content).slice(0, 1000));
 	assert.equal(appended, 3);
 });
+
+test("a nested file_batch records post-mutation evidence for a later guarded overwrite", async t => {
+	const f = await fixture(t, {}, [], true);
+	const outcome = await f.run([
+		'await show((await tools.read({path:"file.txt"})).ref)',
+		'await tools.file_batch({operations:[{operation:"edit", path:"file.txt", edits:[{oldText:"hello", newText:"batched"}]}]})',
+		// An overwrite needs complete evidence matching the disk; only the batch snapshot matches "batched".
+		'await tools.write({path:"file.txt",content:"edited\\nworld\\n"})',
+	]);
+	assert.equal(outcome.results[1]?.isError, false, JSON.stringify(outcome.results[1]?.content).slice(0, 1000));
+	assert.equal(outcome.results[2]?.isError, false, JSON.stringify(outcome.results[2]?.content).slice(0, 1000));
+	assert.equal(readFileSync(join(f.cwd, "file.txt"), "utf8"), "edited\nworld\n");
+});

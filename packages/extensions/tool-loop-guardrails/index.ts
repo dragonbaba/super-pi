@@ -77,18 +77,19 @@ function sendHiddenAdvisory(pi: ExtensionAPI, customType: string, content: strin
 
 export default function toolLoopGuardrails(pi: ExtensionAPI): void {
   const state = createGuardState();
-  const pendingCalls = new Map<string, { key?: string; repairNote?: string; nestedKey?: string }>();
+  const pendingCalls = new Map<string, { key?: string; repairNote?: string; nestedKey?: string; nestedParent?: string }>();
   // Nested scripts may intentionally repeat a completed call after changing state.
   // Only overlapping identical children are siblings; native batches retain their turn scope.
   const nestedCalls = new Map<string, true>();
-  // Release time of each completed nested child. The dispatcher serializes identical siblings,
-  // so one issued before that time overlapped the first call even though it is admitted later.
-  const nestedReleased = new Map<string, number>();
-  const releaseNested = (nestedKey: string): void => {
+  // Release time of each completed nested child, per parent. The dispatcher serializes identical
+  // siblings, so one issued before that time overlapped the first call even though it is admitted
+  // later. Times live until the parent ends; a parent issues at most 256 children, so none is evicted.
+  const nestedReleased = new Map<string, Map<string, number>>();
+  const releaseNested = (parent: string, nestedKey: string): void => {
     nestedCalls.delete(nestedKey);
-    nestedReleased.delete(nestedKey);
-    if (nestedReleased.size >= 64) nestedReleased.delete(nestedReleased.keys().next().value!);
-    nestedReleased.set(nestedKey, performance.now());
+    let released = nestedReleased.get(parent);
+    if (!released) nestedReleased.set(parent, released = new Map());
+    released.set(nestedKey, performance.now());
   };
   let nativeReadCwd = process.cwd();
   let nativeRead = createReadToolDefinition(nativeReadCwd);
@@ -212,17 +213,19 @@ export default function toolLoopGuardrails(pi: ExtensionAPI): void {
   // Blocked, aborted and vetoed calls never reach tool_result; execution end is terminal
   // for every call and follows tool_result when the tool actually ran.
   pi.on("tool_execution_end", (event) => {
+    // A finished parent dispatches no further children.
+    nestedReleased.delete(event.toolCallId);
     const pending = pendingCalls.get(event.toolCallId);
     if (!pending) return;
     pendingCalls.delete(event.toolCallId);
-    if (pending.nestedKey) releaseNested(pending.nestedKey);
+    if (pending.nestedKey) releaseNested(pending.nestedParent!, pending.nestedKey);
   });
 
   pi.on("tool_call", async (event, ctx) => {
     const key = callKey(event.toolName, event.input);
     rememberCallKey(event.toolCallId, key);
     const nestedKey = event.parentToolCallId ? `${event.parentToolCallId}\0${key}` : undefined;
-    const releasedAt = nestedKey ? nestedReleased.get(nestedKey) : undefined;
+    const releasedAt = nestedKey ? nestedReleased.get(event.parentToolCallId!)?.get(nestedKey) : undefined;
     const overlapped = releasedAt !== undefined && event.nestedIssuedAt !== undefined && event.nestedIssuedAt <= releasedAt;
     const duplicate = inspectBatchCall(state, event.toolName, event.input, nestedKey ?? key, nestedKey ? nestedCalls : state.batchCalls, overlapped);
     if (duplicate) {
@@ -231,7 +234,11 @@ export default function toolLoopGuardrails(pi: ExtensionAPI): void {
       }
       return { block: true, reason: duplicate };
     }
-    if (nestedKey) pendingCalls.get(event.toolCallId)!.nestedKey = nestedKey;
+    if (nestedKey) {
+      const pending = pendingCalls.get(event.toolCallId)!;
+      pending.nestedKey = nestedKey;
+      pending.nestedParent = event.parentToolCallId;
+    }
     const effectiveCwd = event.toolName === "bash" || event.toolName === "powershell"
       ? resolveBashCallCwd(event.input, ctx.cwd)
       : ctx.cwd;
@@ -249,7 +256,7 @@ export default function toolLoopGuardrails(pi: ExtensionAPI): void {
   pi.on("tool_result", async (event: ToolResultEvent, ctx) => {
     const pending = pendingCalls.get(event.toolCallId);
     pendingCalls.delete(event.toolCallId);
-    if (pending?.nestedKey) releaseNested(pending.nestedKey);
+    if (pending?.nestedKey) releaseNested(pending.nestedParent!, pending.nestedKey);
     const key = pending?.key ?? callKey(event.toolName, event.input);
     const repeatReminder = observeRepeatedCall(state, event.toolName, event.input, key);
     const failureText = event.isError ? boundedFailureText(event.content) : "";

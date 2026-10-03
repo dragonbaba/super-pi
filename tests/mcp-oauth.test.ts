@@ -11,6 +11,10 @@ import { McpOAuth, createOAuthFetch } from "../packages/mcp-bridge/src/oauth.js"
 import mcpBridgeExtension from "../packages/mcp-bridge/src/index.js";
 // @ts-expect-error JavaScript extension has no declaration file
 import { fetchWithHeaders } from "../packages/mcp-bridge/src/bridge.js";
+// @ts-expect-error JavaScript extension has no declaration file
+import { loadMcpConfig } from "../packages/mcp-bridge/src/config.js";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { FileAuthStorageBackend } from "../packages/coding-agent/src/core/auth-storage.ts";
 
 function sendCallback(url: string) {
@@ -117,6 +121,36 @@ test("MCP OAuth bounds metadata and rejects unsafe URL schemes before fetching",
 test("MCP configured headers never cross endpoint origins", async () => {
   const fetcher = fetchWithHeaders({ "X-Private-MCP": "fixture-secret" }, "https://mcp.fixture.invalid/mcp");
   await assert.rejects(fetcher("https://other.invalid/endpoint"), /cross-origin/);
+});
+
+test("MCP configured headers merge with, not replace, a Request input's own headers", async t => {
+  const seen: Array<Record<string, string | string[] | undefined>> = [];
+  const server = createServer((request, response) => { seen.push(request.headers); response.end("ok"); });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise<void>(resolve => server.close(() => resolve())));
+  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`;
+  const fetcher = fetchWithHeaders({ "X-Private-MCP": "fixture-secret" }, url);
+  const response = await fetcher(new Request(url, { headers: { "Mcp-Session-Id": "session-1", "X-Overlay": "request" } }), { headers: { "X-Overlay": "init" } });
+  assert.equal(await response.text(), "ok");
+  assert.equal(seen[0]?.["mcp-session-id"], "session-1");
+  assert.equal(seen[0]?.["x-overlay"], "init");
+  assert.equal(seen[0]?.["x-private-mcp"], "fixture-secret");
+});
+
+test("MCP HTTP config accepts the bracketed IPv6 loopback and still rejects remote HTTP", t => {
+  const root = mkdtempSync(join(tmpdir(), "sp-mcp-config-"));
+  const previous = process.env.SP_CODING_AGENT_DIR;
+  t.after(() => {
+    if (previous === undefined) delete process.env.SP_CODING_AGENT_DIR; else process.env.SP_CODING_AGENT_DIR = previous;
+    rmSync(root, { recursive: true, force: true });
+  });
+  process.env.SP_CODING_AGENT_DIR = root;
+  mkdirSync(join(root, "config"));
+  const write = (url: string) => writeFileSync(join(root, "config", "mcp.json"), JSON.stringify({ version: 1, servers: { local: { transport: "http", url } } }));
+  write("http://[::1]:8080/mcp");
+  assert.equal(loadMcpConfig(root, false).servers[0]?.url, "http://[::1]:8080/mcp");
+  write("http://remote.invalid/mcp");
+  assert.throws(() => loadMcpConfig(root, false), /HTTPS/);
 });
 
 test("interactive OAuth leaves the file unlocked and merges another process's committed entry", async t => {

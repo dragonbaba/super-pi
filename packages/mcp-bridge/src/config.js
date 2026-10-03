@@ -11,6 +11,8 @@ import {
 import { MAX_CONFIG_BYTES, MAX_SERVERS } from "./security.js";
 const SAFE_ENV = ["SystemRoot", "WINDIR", "ComSpec", "PATHEXT", "TEMP", "TMP", "PATH", "HOME", "USERPROFILE"];
 const TRANSPORTS = new Set(["stdio", "http", "sse"]);
+// WHATWG URL keeps the brackets on IPv6 hostnames.
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
 export function agentDir() {
   return process.env.SP_CODING_AGENT_DIR || path.join(os.homedir(), ".sp", "agent");
@@ -112,7 +114,7 @@ function normalizeServer(id, raw, workspace, source) {
     return { ...common, command, args, cwd, env: resolveEnvironment(raw, label) };
   }
   const url = new URL(boundedString(raw.url, `${label}.url`, 8192));
-  const localHttp = url.protocol === "http:" && ["localhost", "127.0.0.1", "::1"].includes(url.hostname);
+  const localHttp = url.protocol === "http:" && LOOPBACK_HOSTS.has(url.hostname);
   if (url.protocol !== "https:" && !localHttp) throw new Error(`${label}.url must use HTTPS, except for loopback HTTP`);
   if (url.username || url.password) throw new Error(`${label}.url must not contain credentials`);
   const headers = resolveHeaders(raw, label);

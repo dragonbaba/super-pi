@@ -106,7 +106,10 @@ export function fetchWithHeaders(headers, serverUrl, oauth) {
   const origin = new URL(serverUrl).origin;
   return async (input, init = {}) => {
     if (new URL(input instanceof Request ? input.url : input).origin !== origin) throw new Error("MCP cross-origin endpoint rejected");
-    const merged = new Headers(init.headers);
+    // fetch(Request, { headers }) replaces the Request's own headers, so carry them forward first.
+    const request = input instanceof Request;
+    const merged = new Headers(request ? input.headers : init.headers);
+    if (request && init.headers) for (const [name, value] of new Headers(init.headers)) merged.set(name, value);
     for (const [name, value] of entries) merged.set(name, value);
     const token = await oauth?.token(init.signal);
     if (token) merged.set("Authorization", `Bearer ${token}`);

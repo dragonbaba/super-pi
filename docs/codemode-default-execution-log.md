@@ -465,3 +465,19 @@ d73b89f25 复审提出 2 条：
 
 - `npm run check`、`npm run build:offline` 退出 0；`git diff --check` 通过。
 - 全套 `npm test`（PowerShell）：219 个执行单元全部退出 0；3,251 项中 3,161 通过、90 跳过，失败/取消/todo 为 0。
+
+### PR #55 十二次复审修复（4055bbbde 之后）
+
+4055bbbde 复审提出 4 条：
+
+| 复审问题 | 核实 | 修复 | 回归（去掉修复后均失败） |
+| --- | --- | --- | --- |
+| guardrails 的释放时间只保留最近 64 个键 | 成立：一个脚本同时发出两个相同调用，再发出 64 个以上不同调用时，第一个调用的释放时间会被淘汰，排队的副本被放行 | 释放时间按父调用分组（`Map<parent, Map<key, time>>`），不再淘汰；父调用的 `tool_execution_end` 删除该组，turn/agent 事件清空全部。每个父调用最多 256 个子调用，所以容量有界 | 先完成 70 个不同调用，再接纳同时发出的副本：仍报 `DUPLICATE_CALL`；完成后发出的重复调用仍然允许；其他父调用不会继承释放时间；父调用结束后释放时间被清除（不删除时失败） |
+| MCP 配置拒绝 `http://[::1]` | 成立：WHATWG URL 的 IPv6 `hostname` 保留方括号，所以 `"::1"` 永远匹配不到 | 回环地址集合改为 `"[::1]"`，作为模块常量 `Set` | `http://[::1]:8080/mcp` 加载成功；远程 HTTP 仍被拒绝 |
+| 嵌套 `file_batch` 不记录变更后证据 | 成立：`tool_result` 遇到嵌套的 `file_batch` 时提前返回，之后整文件覆盖只剩批处理前的读证据，报 `STALE_STATE` | 删除提前返回。`recordBatchMutationEvidence` 只记录变更快照、使不确定目标失效，不会把批处理内部的读当成读证据 | Codemode 中先 show 读取，再执行嵌套批量编辑，然后整文件 `write`：修复前为 `STALE_STATE`，修复后成功 |
+| `fetchWithHeaders` 丢弃 `Request` 自带的请求头 | 成立：`fetch(Request, { headers })` 会整体替换 Request 的请求头 | 以 `input.headers` 为基础，叠加 `init.headers`，再叠加配置的请求头 | 本地 HTTP 服务确认服务端收到 `Mcp-Session-Id`，`init` 覆盖同名请求头，且带上配置的请求头 |
+
+验证：
+
+- `npm run check`、`npm run build:offline` 退出 0；`git diff --check` 通过。
+- 全套 `npm test`（PowerShell）：219 个执行单元全部退出 0；3,255 项中 3,165 通过、90 跳过，失败为 0。
