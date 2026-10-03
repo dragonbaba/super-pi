@@ -26,15 +26,17 @@ output never interleaves, and the runner does not hold child output in memory.
 `test:unit`, `test:hot` and `test:contract` partition that discovery for
 focused work; they are not an additional validation chain before `npm test`.
 
-Every child gets private HOME, USERPROFILE, config, agent, session and temporary
-paths (`TMPDIR`, `TMP`, `TEMP`) and `SP_OFFLINE=1`. Raw-result/interactive
-integration fixtures also retain their empty temporary cwd. Other tests keep the
-repository cwd needed by source, build and packaging checks. The runner removes
-only its own temporary child directory after the child closes, on success or
-failure. Retryable removal errors receive up to five retries with a 100ms linear
-backoff; exhausted retries still fail the unit. Output spills and abandoned
-fixture directories inside that private temporary path leave with their child;
-no shared system-temp logs are swept. Test fixtures must still register cleanup
+Every child gets private HOME, USERPROFILE, config, agent and session paths and
+`SP_OFFLINE=1`. Its `TMPDIR`, `TMP` and `TEMP` point at one runner-owned
+directory shared by the run's children, so jiti's tmpdir transpile cache stays
+warm across files. Raw-result/interactive integration fixtures also retain their
+empty temporary cwd. Other tests keep the repository cwd needed by source, build
+and packaging checks. The runner removes only its own child directory after the
+child closes, on success or failure, and the run directory when the run ends.
+Retryable removal errors receive up to five retries with a 100ms linear backoff;
+exhausted retries still fail. Output spills and abandoned fixture directories in
+the run's temporary path leave with the run; no shared system-temp logs are
+swept. Test fixtures must still register cleanup
 before fallible initialization and release their directories in `finally` after
 resource shutdown. Runner cleanup contains abrupt test exits; it does not
 replace resource-lifecycle assertions. START/END lines identify the file,

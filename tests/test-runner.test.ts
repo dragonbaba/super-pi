@@ -96,8 +96,9 @@ test('isolated GC fixture', () => {
   for (const key of ['HOME', 'USERPROFILE', 'XDG_CONFIG_HOME']) assert.equal(process.env[key], process.cwd());
   assert.equal(process.env.SP_CODING_AGENT_DIR, resolve(process.cwd(), 'agent'));
   assert.equal(process.env.SP_CODING_AGENT_SESSION_DIR, resolve(process.cwd(), 'sessions'));
-  for (const key of ['TMPDIR', 'TMP', 'TEMP']) assert.equal(process.env[key], resolve(process.cwd(), 'tmp'));
-  assert.equal(tmpdir(), resolve(process.cwd(), 'tmp'));
+  // Temporary files go to the run-owned directory shared by this run's children.
+  for (const key of ['TMPDIR', 'TMP', 'TEMP']) assert.equal(process.env[key], tmpdir());
+  assert.match(tmpdir(), /super-pi-test-run-[^\\\\/]+[\\\\/]tmp$/);
   writeFileSync(${JSON.stringify(report)}, JSON.stringify({ cwd: process.cwd() }));
 });
 `);

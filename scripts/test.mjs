@@ -167,7 +167,7 @@ function createPrinter() {
 	};
 }
 
-async function runChild(unit, logFile, print, recordFailure) {
+async function runChild(unit, logFile, temporary, print, recordFailure) {
 	const root = mkdtempSync(resolve(tmpdir(), "super-pi-test-"));
 	const started = performance.now();
 	// A stdout failure here also fails this file's awaited END block.
@@ -176,8 +176,6 @@ async function runChild(unit, logFile, print, recordFailure) {
 	try {
 		mkdirSync(resolve(root, "agent"));
 		mkdirSync(resolve(root, "sessions"));
-		const temporary = resolve(root, "tmp");
-		mkdirSync(temporary);
 		log = openSync(logFile, "w");
 		const child = spawn(unit.command, unit.args, {
 			cwd: unit.cwd ?? root, stdio: ["ignore", log, log],
@@ -277,7 +275,11 @@ export async function run(options) {
 
 	const width = Math.max(1, Math.min(jobs, pooledUnits.length));
 	console.log(`[test] shard ${shard.index}/${shard.count}: running ${exclusiveUnits.length} exclusive then ${pooledUnits.length} pooled units with ${width} parallel job(s)`);
-	const logRoot = mkdtempSync(resolve(tmpdir(), "super-pi-test-logs-"));
+	// One runner-owned directory per run holds child logs and the children's shared
+	// TMPDIR/TMP/TEMP. Sharing it per run keeps jiti's tmpdir transpile cache warm
+	// across files (a cold cache costs ~0.7s per file); it leaves with the run.
+	const logRoot = mkdtempSync(resolve(tmpdir(), "super-pi-test-run-"));
+	const temporary = resolve(logRoot, "tmp");
 	const print = createPrinter();
 	let firstFailure = 0, logIndex = 0;
 	const recordFailure = (code) => { if (code !== 0 && firstFailure === 0) firstFailure = code; };
@@ -287,7 +289,7 @@ export async function run(options) {
 		const worker = async () => {
 			while (firstFailure === 0 && next < units.length) {
 				const unit = units[next++];
-				const exitCode = await runChild(unit, resolve(logRoot, `${logIndex++}.log`), print, recordFailure);
+				const exitCode = await runChild(unit, resolve(logRoot, `${logIndex++}.log`), temporary, print, recordFailure);
 				recordFailure(exitCode);
 			}
 		};
@@ -296,12 +298,13 @@ export async function run(options) {
 		await Promise.all(workers);
 	};
 	try {
+		mkdirSync(temporary);
 		await runPool(exclusiveUnits, 1);
 		await runPool(pooledUnits, width);
 	} finally {
-		// Only remove this run's exact, directly-created log directory.
-		if (dirname(logRoot) !== resolve(tmpdir())) throw new Error("temporary log root escaped");
-		rmSync(logRoot, { recursive: true, force: true });
+		// Only remove this run's exact, directly-created directory.
+		if (dirname(logRoot) !== resolve(tmpdir())) throw new Error("temporary run root escaped");
+		rmSync(logRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 	}
 	return firstFailure;
 }
