@@ -17,6 +17,22 @@
 - 固定 `brace-expansion` 5.0.12 是上游的**发布后修复**（`0495646a8`），v1.0.0 不包含。
 - 处理方式：逐包升到兼容版本，更新锁文件，重新审计并跑相关回归。不使用 `npm audit fix --force`。
 
+**PR 1 结果（`fix/prod-dependency-audit`）**：
+
+| 包 | 引入路径 | 原版本 | 新版本 |
+| --- | --- | --- | --- |
+| `undici` | coding-agent 直接依赖（精确版本） | 8.9.0 | 8.11.2 |
+| `brace-expansion` | coding-agent → minimatch `^5.0.5` | 5.0.9 | 5.0.12 |
+| `fast-uri` | MCP SDK → ajv `^3.0.1` | 3.1.5 | 3.1.8 |
+| `hono` | MCP SDK `^4.11.4` | 4.13.3 | 4.13.12 |
+| `ip-address` | MCP SDK → express-rate-limit `^10.2.0` | 10.5.0 | 10.7.2 |
+| `qs` | MCP SDK → express / body-parser `^6.15.2` | 6.15.3 | 6.16.0 |
+
+- 除 `undici` 改了精确版本外，其余都在父包已声明的范围内更新，锁文件只改动这 6 项。
+- 修复后 `npm audit --omit=dev` 为 0。
+- 全量审计仍有 5 个 high，都只在开发依赖里，路径为 `shx@0.4.0 → shelljs → fast-glob → micromatch → braces`。npm 给出的唯一修复是把 `shx` 降到 0.3.4，属于主版本变化。`shx` 只在构建时处理固定的 glob（`copy-assets`），不接收不可信输入，所以本 PR 不处理，留待替换构建脚本时一并解决。
+- 验证：`npm run check`、`npm run build:offline`、`git diff --check` 均退出 0；全量 `npm test` 共 219 个执行单元，3,258 项中 3,168 通过、90 跳过，失败为 0。
+
 ## 3. MCP OAuth
 
 ### 3.1 已复现的问题
