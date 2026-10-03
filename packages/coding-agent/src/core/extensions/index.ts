@@ -176,6 +176,7 @@ export type {
 	ToolInfo,
 	ToolRenderResultOptions,
 	ToolResultEvent,
+	CodemodeReadEvent,
 	ToolResultEventResult,
 	TreePreparation,
 	TurnEndEvent,

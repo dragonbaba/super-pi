@@ -62,6 +62,14 @@ export function isValidThinkingLevel(level: string): level is ThinkingLevel {
 	return VALID_THINKING_LEVELS.includes(level as ThinkingLevel);
 }
 
+/** Session selection only: auth and catalog commands may use a provider without a model. */
+export function validateModelSelectionArgs(args: Pick<Args, "provider" | "model">): string | undefined {
+	if (args.provider && !args.model) {
+		return `--provider requires --model (for example: --provider ${args.provider} --model <pattern>)`;
+	}
+	return undefined;
+}
+
 /** Whether a startup prescan sees `option`; arguments after `--` are messages, not options. */
 export function hasOption(args: readonly string[], option: string): boolean {
 	const index = args.indexOf(option);
@@ -268,7 +276,7 @@ ${chalk.bold("Commands:")}
   ${APP_NAME} <command> --help          Show help for install/remove/uninstall/update/list/config/auth
 
 ${chalk.bold("Options:")}
-  --provider <name>              Provider name (default: google)
+  --provider <name>              Provider to search for --model (requires --model)
   --model <pattern>              Model pattern or ID (supports "provider/id" and optional ":<thinking>")
   --api-key <key>                API key (defaults to env vars)
   --system-prompt <text>         System prompt (default: coding assistant prompt)

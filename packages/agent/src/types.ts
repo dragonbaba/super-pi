@@ -121,6 +121,13 @@ export interface AfterToolCallResult {
 
 /** Context passed to `beforeToolCall`. */
 export interface BeforeToolCallContext {
+	/** Host-owned association for a call made by an orchestration tool. */
+	parentToolCallId?: string;
+	/**
+	 * Nested calls only: `performance.now()` when the orchestrator issued the call. Serialized
+	 * siblings reach this hook after earlier calls finish; compare with this, not hook order.
+	 */
+	nestedIssuedAt?: number;
 	/** The assistant message that requested the tool call. */
 	assistantMessage: AssistantMessage;
 	/** The raw tool call block from `assistantMessage.content`. */
@@ -133,6 +140,8 @@ export interface BeforeToolCallContext {
 
 /** Context passed to `afterToolCall`. */
 export interface AfterToolCallContext {
+	/** Nested results are not themselves model-visible transcript messages. */
+	parentToolCallId?: string;
 	/** The assistant message that requested the tool call. */
 	assistantMessage: AssistantMessage;
 	/** The raw tool call block from `assistantMessage.content`. */
@@ -191,6 +200,8 @@ export interface AgentChangedToolUpdate {
 
 export interface AgentLoopConfig extends SimpleStreamOptions {
 	model: Model<any>;
+	/** Current authorized tools, re-read before a queued nested call executes. */
+	getCurrentTools?: () => readonly AgentTool<any>[];
 	eventInstrumentation?: AgentEventInstrumentation;
 
 	/**
@@ -396,6 +407,8 @@ export interface AgentState {
 	/** Available tools. Assigning a new array copies the top-level array. */
 	set tools(tools: AgentTool<any>[]);
 	get tools(): AgentTool<any>[];
+	/** Cached provider declarations, revalidated against `tools` on read; callable tools remain in tools. */
+	readonly modelTools?: AgentTool<any>[];
 	/** Conversation transcript. Assigning a new array copies the top-level array. */
 	set messages(messages: AgentMessage[]);
 	get messages(): AgentMessage[];
@@ -450,6 +463,35 @@ export interface AgentToolUpdateCallback<T = any> {
 	awaited(partialResult: AgentToolResult<T>): Promise<void>;
 }
 
+/** End-event delivery failure for a child that had already finished. Set only by the agent loop. */
+export interface NestedObservationFailure {
+	/** The tool's own outcome before the failure was folded into `isError`. */
+	readonly executionIsError: boolean;
+	/** The `[TOOL_OBSERVATION_FAILED]` notice also placed first in `content`. */
+	readonly error: string;
+}
+
+/** A child result. With `observationFailure`, `isError` is true so callers still report a failure. */
+export interface NestedToolResultMessage extends ToolResultMessage {
+	observationFailure?: NestedObservationFailure;
+}
+
+/** Tool definition used by the agent runtime. */
+export interface AgentToolExecutionContext {
+	readonly parentToolCallId: string;
+	/** Executes through the current run's hooks; never creates a new Agent run. */
+	callTool(name: string, args: Record<string, unknown>): Promise<NestedToolResultMessage>;
+	/**
+	 * Tools of the active turn context (the live tools when there is none). These host objects never
+	 * enter the sandbox. Later live changes are not reflected here; authorize a name with findTool().
+	 */
+	getTools(): readonly AgentTool<any>[];
+	/** The tool a nested call to this name would run now, or undefined; never allocates. */
+	findTool(name: string): AgentTool<any> | undefined;
+	/** Stop admitting children, cancel unawaited work and wait for its final facts. Returns whether any child failed. */
+	finish(): Promise<boolean>;
+}
+
 /** Tool definition used by the agent runtime. */
 export interface AgentTool<TParameters extends TSchema = TSchema, TDetails = any> extends Tool<TParameters> {
 	/** Human-readable label for UI display. */
@@ -465,6 +507,7 @@ export interface AgentTool<TParameters extends TSchema = TSchema, TDetails = any
 		params: Static<TParameters>,
 		signal?: AbortSignal,
 		onUpdate?: AgentToolUpdateCallback<TDetails>,
+		executionContext?: AgentToolExecutionContext,
 	) => Promise<AgentToolResult<TDetails>>;
 	/**
 	 * Per-tool execution mode override.
@@ -475,6 +518,12 @@ export interface AgentTool<TParameters extends TSchema = TSchema, TDetails = any
 	 */
 	/** Requires a user answer before replanning the rest of this response. */
 	interactionBoundary?: boolean;
+	/** Host capability: this tool may orchestrate bounded, non-recursive child calls. */
+	orchestration?: boolean;
+	/** Control tools must be called directly by the model, never from a script. */
+	modelOnly?: boolean;
+	/** Nested-only tools remain callable through an orchestration context. */
+	modelExposure?: "nested";
 	executionMode?: ToolExecutionMode;
 	/** Filesystem path metadata used to serialize overlapping reads and writes. */
 	executionPath?: ToolExecutionPath;
@@ -488,6 +537,8 @@ export interface AgentContext {
 	messages: AgentMessage[];
 	/** Tools available for this run. */
 	tools?: AgentTool<any>[];
+	/** Optional precomputed model-facing subset; used only while it still matches `tools`. */
+	modelTools?: AgentTool<any>[];
 }
 
 /**
@@ -516,6 +567,6 @@ export type AgentEvent =
 	  }
 	| { type: "message_end"; message: AgentMessage }
 	// Tool execution lifecycle
-	| { type: "tool_execution_start"; toolCallId: string; toolName: string; args: any }
-	| { type: "tool_execution_update"; toolCallId: string; toolName: string; args: any; partialResult: any }
-	| { type: "tool_execution_end"; toolCallId: string; toolName: string; result: any; isError: boolean };
+	| { type: "tool_execution_start"; toolCallId: string; toolName: string; args: any; parentToolCallId?: string }
+	| { type: "tool_execution_update"; toolCallId: string; toolName: string; args: any; partialResult: any; parentToolCallId?: string }
+	| { type: "tool_execution_end"; toolCallId: string; toolName: string; result: any; isError: boolean; parentToolCallId?: string };

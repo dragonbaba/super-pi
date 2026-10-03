@@ -60,6 +60,8 @@ export async function alphaSession(options: {
   mode?: 'regular' | 'fullscreen'; sinkDelay?: number; columns?: number; rows?: number;
   runtime?: ModelRuntime; extensions?: any[]; messages?: any[]; customTools?: any[];
   g2?: boolean; budgetTokens?: number; settings?: Record<string, unknown>; allowReplacements?: boolean;
+  /** Native-result/rendering fixtures use direct model-only probes; opt into the real Codemode transport for lifecycle coverage. */
+  codemode?: boolean;
   /** Caller-owned isolated root for repeated-path GC controls; never a real user HOME. */
   fixtureRoot?: string;
 } = {}) {
@@ -71,9 +73,10 @@ export async function alphaSession(options: {
   await resourceLoader.reload();
   const sessionManager = SessionManager.inMemory(root);
   for (const message of options.messages ?? []) sessionManager.appendMessage(message);
+  const customTools = options.codemode ? options.customTools : options.customTools?.map(tool => ({ ...tool, modelOnly: true }));
   const { session } = await createAgentSession({ cwd: root, agentDir, model: ALPHA_MODEL, modelRuntime: options.runtime ?? alphaModelRuntime(),
     settingsManager: settings, sessionManager, resourceLoader, noTools: options.customTools?.length ? 'builtin' : 'all',
-    customTools: options.customTools, toolResultPresentation: { enabled: options.g2 ?? true, budgetTokens: options.budgetTokens ?? 1024 } });
+    customTools, toolResultPresentation: { enabled: options.g2 ?? true, budgetTokens: options.budgetTokens ?? 1024 } });
   const runtime = new AgentSessionRuntime(session, { cwd: root, agentDir } as never, async target => {
     if (!options.allowReplacements) throw new Error('unexpected replacement');
     const loader = new DefaultResourceLoader({ cwd: target.cwd, agentDir: target.agentDir, settingsManager: settings, noContextFiles: true,
@@ -82,7 +85,7 @@ export async function alphaSession(options: {
     const created = await createAgentSession({ cwd: target.cwd, agentDir: target.agentDir, sessionManager: target.sessionManager,
       sessionStartEvent: target.sessionStartEvent, model: ALPHA_MODEL, modelRuntime: options.runtime ?? alphaModelRuntime(),
       settingsManager: settings, resourceLoader: loader, noTools: options.customTools?.length ? 'builtin' : 'all',
-      customTools: options.customTools, toolResultPresentation: { enabled: options.g2 ?? true, budgetTokens: options.budgetTokens ?? 1024 } });
+      customTools, toolResultPresentation: { enabled: options.g2 ?? true, budgetTokens: options.budgetTokens ?? 1024 } });
     return { ...created, services: { cwd: target.cwd, agentDir: target.agentDir } as never, diagnostics: [] };
   });
   initTheme('dark');

@@ -20,6 +20,7 @@ export function configFingerprint(config, workspace) {
     env: config.env,
     url: config.url,
     headers: config.headers,
+    oauth: config.oauth,
     maxTools: config.maxTools,
   };
   return createHash("sha256").update(JSON.stringify(canonicalJsonShape(material))).digest("hex");

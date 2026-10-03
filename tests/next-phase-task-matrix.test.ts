@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 import { getEncoding } from "js-tiktoken";
-import { ALPHA_MODEL, alphaModelRuntime } from "./helpers/next-phase-model.ts";
+import { ALPHA_MODEL, alphaModelRuntime, exposeNativeProtocolForFixture } from "./helpers/next-phase-model.ts";
 import { FIXTURE_SNAPSHOT_ID_PATTERN, FIXTURE_SECOND_LINE_ANCHOR_PATTERN } from "./helpers/next-phase-fixture-regex.ts";
 
 // The same harness can run an untouched parent checkout for interleaved comparisons.
@@ -107,6 +107,7 @@ async function measure(t: test.TestContext, strategy: Strategy, count: number, k
   const runtime = alphaModelRuntime((m: any, c: any, o: any) => streamSimple(m, c, { ...o, apiKey: "offline-fixture", fetch: fakeFetch, maxRetries: 0 }));
   const manager = SessionManager.create(cwd, join(root, "sessions"));
   ({ session } = await createAgentSession({ cwd, agentDir, settingsManager: settings, resourceLoader, sessionManager: manager, model, modelRuntime: runtime, noTools: "builtin" }));
+    exposeNativeProtocolForFixture(session);
     await session.bindExtensions({ mode: "tui", uiContext: { ...session.extensionRunner.getUIContext(), select: async () => { approvals++; return "仅允许本次"; } } });
     unsubscribe = session.agent.subscribe((event: any) => {
       if (event.type === "tool_execution_start") toolStartSamples++;
@@ -119,10 +120,10 @@ async function measure(t: test.TestContext, strategy: Strategy, count: number, k
     const cpu = process.cpuUsage(), start = performance.now();
     await session.prompt("Perform the deterministic fixture task using its recorded operations."); await session.agent.waitForIdle();
     const elapsedMs = performance.now() - start, used = process.cpuUsage(cpu);
-    assert.equal(estimatorPasses, requests * 2); assert.ok(estimatorElapsedMs >= 0 && estimatorElapsedMs < elapsedMs);
     const results = session.messages.filter((message: any) => message.role === "toolResult");
-    assert.equal(toolStartSamples, results.length); assert.equal(toolEndSamples, results.length);
     for (const message of session.messages) if (message.role === "assistant") assert.notEqual(message.stopReason, "error", JSON.stringify({ strategy, count, kind, error: message.errorMessage, discovery: results.filter((item: any) => item.toolName === "tool_search") }));
+    assert.equal(estimatorPasses, requests * 2); assert.ok(estimatorElapsedMs >= 0 && estimatorElapsedMs < elapsedMs);
+    assert.equal(toolStartSamples, results.length); assert.equal(toolEndSamples, results.length);
     for (const result of results) assert.equal(result.isError, false, JSON.stringify({ strategy, count, kind, result }));
     for (const file of files) {
       peakHeap = Math.max(peakHeap, process.memoryUsage().heapUsed); verificationSamples++;

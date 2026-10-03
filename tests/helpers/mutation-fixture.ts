@@ -1,4 +1,5 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
+import { removeOwnedFixture } from "./owned-fixture-cleanup.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type test from "node:test";
@@ -36,7 +37,7 @@ export async function mutationFixture(t: test.TestContext, options: ConstructorP
   runner.setUIContext({ ...runner.getUIContext(), select: async () => { approvals++; approvalHook(); return decision; } }, "tui");
   await runner.emit({ type: "session_start" } as never);
   agent.state.tools = runner.getAllRegisteredTools().map(r => wrapToolDefinition(r.definition, () => runner.createContext()));
-  t.after(async () => { agent.abort(); runner.invalidate(); await runner.emit({ type: "session_shutdown" } as never); rmSync(cwd, { recursive: true, force: true }); });
+  t.after(async () => { agent.abort(); runner.invalidate(); await runner.emit({ type: "session_shutdown" } as never); removeOwnedFixture(cwd); });
   return { cwd, session, runner, agent, async freezeTurn() { advanceTurn = false; await runner.emit({ type: "turn_start" } as never); }, approvals: () => approvals, deny() { decision = "拒绝"; }, onApprove(fn: () => void) { approvalHook = fn; }, onRecord(fn: (data: any) => void) { recordHook = fn; },
     async call(name: string, input: any, id = name) {
       session.appendMessage({ role: "assistant", content: [{ type: "toolCall", id, name, arguments: input }], timestamp: 0 } as never);

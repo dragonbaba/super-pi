@@ -11,7 +11,8 @@ export default function incidentProvider(pi) {
     streamSimple(model) {
       const first = requests++ === 0, stream = new AssistantMessageEventStream();
       globalThis.__shellIncidentToolActive = first;
-      const message = { role: 'assistant', content: first ? [call] : [{ type: 'text', text: 'Isolated result recorded. No replay.' }],
+      const message = { role: 'assistant', content: first ? [{ type: 'toolCall', id: call.id, name: 'codemode',
+        arguments: { code: `await callTool("bash", ${JSON.stringify(call.arguments)})` } }] : [{ type: 'text', text: 'Isolated result recorded. No replay.' }],
         api: model.api, provider: model.provider, model: model.id,
         usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
         stopReason: first ? 'toolUse' : 'stop', timestamp: Date.now() };

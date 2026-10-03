@@ -49,7 +49,7 @@ function quoteBash(value: string): string { return "'" + value.replace(/'/g, "'\
 function quotePowerShell(value: string): string { return "'" + value.replace(/'/g, "''") + "'"; }
 
 /** Optional root permits read-only baseline measurement from an existing checkout. */
-export async function runBashResponsiveness(scenario: BashResponseScenario, sourceRoot?: string, termination: "success" | "failure" | "abort" = "success") {
+export async function runBashResponsiveness(scenario: BashResponseScenario, sourceRoot?: string, termination: "success" | "failure" | "abort" = "success", grouped = true) {
 	const rootUrl = sourceRoot ? pathToFileURL(resolve(sourceRoot) + "/").href : new URL("../../", import.meta.url).href;
 	const [{ createAgentSession }, { DefaultResourceLoader }, { SettingsManager }, { SessionManager },
 		{ AssistantMessageEventStream }, { ToolExecutionComponent }, { InteractiveMode }, { initTheme },
@@ -84,17 +84,19 @@ export async function runBashResponsiveness(scenario: BashResponseScenario, sour
 		const transcript = new RetainedContainer();
 		for (let i = 0; i < historyItems; i++) transcript.addRetainedChild(new Text(`history-${i}`, 0, 0), { id: `h-${i}`, version: 1, completed: true });
 		let timerRefreshes = 0, maxRefreshMs = 0;
-		const component = new ToolExecutionComponent(toolName, "quiet-tool", { command }, {
+		const nativeToolCallId = "quiet-tool:nested:1";
+		const displayedId = grouped ? "quiet-tool" : nativeToolCallId;
+		const component = new ToolExecutionComponent(grouped ? "codemode" : toolName, displayedId, grouped ? { code: "await callTool(shell, args)" } : { command }, {
 			onVisualInvalidate(c: any) { timerRefreshes++; transcript.invalidateRetainedChild(c); },
 		}, undefined, ui, root);
 		const originalUpdate = component.updateDisplay;
 		component.updateDisplay = function () { const t = performance.now(); const result = originalUpdate.call(this); maxRefreshMs = Math.max(maxRefreshMs, performance.now() - t); return result; };
-		transcript.addRetainedChild(component, { id: "quiet-tool", version: 0 });
+		transcript.addRetainedChild(component, { id: displayedId, version: 0 });
 		ui.setLayoutRoot(new ScrollView(transcript, { follow: "end", primary: true }));
 		sink.viewport = () => ui.viewportTop;
 		// Real production event handler; startup/editor chrome is outside this focused harness.
 		const mode = Object.assign(Object.create(InteractiveMode.prototype), { isInitialized: true, footer: { invalidate() {} },
-			pendingTools: new Map([["quiet-tool", component]]), deferredReadExecutions: new Map(), chatContainer: transcript, ui,
+			pendingTools: new Map([[displayedId, component]]), deferredReadExecutions: new Map(), chatContainer: transcript, ui,
 			pendingToolResultDiscoveries: new Map(), attachedToolResultDiscoveries: new Map(), tuiLifecycleGeneration: 0 });
 		const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } });
 		const resourceLoader = new DefaultResourceLoader({ cwd: root, agentDir, settingsManager, noExtensions: true,
@@ -111,7 +113,7 @@ export async function runBashResponsiveness(scenario: BashResponseScenario, sour
 				const aborted = options?.signal?.aborted === true;
 				if (aborted) abortedProviderCalls++;
 				queueMicrotask(() => {
-					const message = { role: "assistant", content: tool ? [{ type: "toolCall", id: "quiet-tool", name: toolName, arguments: { command, timeout: 8 } }] : [{ type: "text", text: "done" }],
+					const message = { role: "assistant", content: tool ? [{ type: "toolCall", id: "quiet-tool", name: "codemode", arguments: { code: `await callTool(${JSON.stringify(toolName)}, ${JSON.stringify({ command, timeout: 8 })})` } }] : [{ type: "text", text: "done" }],
 						api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(), stopReason: tool ? "toolUse" : "stop",
 						usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
 					stream.push({ type: "start", partial: message });
@@ -123,9 +125,11 @@ export async function runBashResponsiveness(scenario: BashResponseScenario, sour
 		({ session } = await createAgentSession({ cwd: root, agentDir, model, modelRuntime: runtime, resourceLoader, settingsManager,
 			sessionManager: SessionManager.inMemory(root), tools: [toolName] }));
 		session.subscribe((event: any) => {
-			if (event.type === "tool_execution_start") toolCalls++;
-			if (event.type === "tool_execution_update") progress++;
-			if (event.type === "tool_execution_end") { canonical = event.result; toolError = event.isError; }
+			const parentEvent = event.toolName === "codemode";
+			if (!grouped && event.type.startsWith("tool_execution_") && parentEvent) return;
+			if (event.type === "tool_execution_start" && !parentEvent) toolCalls++;
+			if (event.type === "tool_execution_update" && !parentEvent) progress++;
+			if (event.type === "tool_execution_end" && !parentEvent) { canonical = event.result; toolError = event.isError; }
 			if (event.type.startsWith("tool_execution_")) return mode.handleEvent(event);
 			if (event.type === "agent_end") return ui.flushTerminalFrames();
 		}, { criticalAgentEnd: true });
@@ -168,6 +172,7 @@ export async function runBashResponsiveness(scenario: BashResponseScenario, sour
 		if (termination === "success") assert.equal(canonical.content[0].text.trim(), scenario === "output-then-quiet" ? "initial output 中文 😀" : "(no output)");
 		else assert.match(canonical.content[0].text, termination === "abort" ? /Command aborted/ : /code 1/);
 		assert.equal(session.agent.state.messages.filter((message: any) => message.role === "toolResult").length, 1, "one canonical result; no tool replay");
+		assert.equal(transcript.children.filter((child: unknown) => child instanceof ToolExecutionComponent).length, 1, "one displayed card, including parent events");
 		assert.equal(frames.length, probes.length, "every running input must reach a corresponding completed frame");
 		for (const probe of probes) {
 			assert.equal(probe.running, true); assert.equal(probe.changed, true);
@@ -175,7 +180,7 @@ export async function runBashResponsiveness(scenario: BashResponseScenario, sour
 		}
 		assert.equal(ui.isFollowingOutput, false, "timer updates and tool completion must not steal scroll position");
 		assert.ok(timerRefreshes >= 2, "multiple live timer boundaries must execute");
-		const result = { scenario, termination, node: process.version, platform: process.platform, cpu: cpus()[0]?.model, toolName, shell,
+		const result = { scenario, termination, grouped, node: process.version, platform: process.platform, cpu: cpus()[0]?.model, toolName, shell,
 			terminal: "simulated async sink; real fullscreen input dispatcher; no ConPTY", viewport: [120, 40], historyItems, commandCodeUnits: command.length,
 			providerCalls, abortedProviderCalls, toolCalls, progress, timerRefreshes, maxRefreshMs, probes, longestEventLoopGapMs: longestGapMs,
 			eventLoopDelayP95Ms: delay.percentile(95) / 1e6, eventLoopDelayMaxMs: delay.max / 1e6,
@@ -190,8 +195,10 @@ export async function runBashResponsiveness(scenario: BashResponseScenario, sour
 		assert.equal(sink.active, 0); assert.equal(sink.pendingTimers, 0);
 		assert.equal(component.rendererState.interval, undefined);
 		assert.equal(component.rendererState.elapsedTimer, undefined);
-		const derived = component.resultRendererComponent.getBashResultRenderCacheReferenceCounts();
-		assert.ok(Object.values(derived).every(v => v === 0), "production unmount releases all Bash derived owners");
+		const derived = grouped ? component.codemodeTree.getLifecycleCounts() : component.resultRendererComponent.getBashResultRenderCacheReferenceCounts();
+		if (grouped) {
+			assert.equal(derived.timers, 0); assert.equal(derived.rows, 0); assert.equal(derived.resultReferences, 0); assert.equal(derived.textChars, 0);
+		} else assert.ok(Object.values(derived).every(v => v === 0), "production unmount releases all Bash derived owners");
 		return { ...result, released: { activeWrites: sink.active, sinkTimers: sink.pendingTimers, inputReferences: Number(sink.input !== undefined), derived } };
 	} finally {
 		for (const timer of probeTimers) clearTimeout(timer);

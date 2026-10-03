@@ -23,6 +23,8 @@
 
 ## 工具、权限和项目上下文
 
+- [Codemode 使用说明](codemode.md)：脚本调用、树状卡片、读取与修改、失败处理、工具发现和分支存储。
+- [默认 Codemode 方案](codemode-default-execution-plan.md)：默认工具入口、官方 1.0.0 借鉴、PR 划分和性能契约；[执行记录](codemode-default-execution-log.md) 给出实际验证及限制。
 - [Project Context 和 CodeGraph](../packages/project-context/README.md)：项目身份、规则、轻量索引和显式 CodeGraph 操作。
 - [LSP](../packages/lsp/README.md)：诊断、source fix 和符号导航的配置与边界。
 - [Tool classification](../packages/tool-classification/README.md)：初始工具面、延迟工具搜索和按需激活。

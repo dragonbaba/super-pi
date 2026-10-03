@@ -14,11 +14,14 @@ import {
 	readPolicyDiagnostic,
 	renderPolicyDiagnostic,
 	sanitizePolicyFeedback,
+	type TextContent,
 	validateToolArguments,
 } from "@super-pi/ai";
 import { resolve as resolvePath, sep } from "node:path";
 import { getDefaultStreamFn } from "./stream-fn.ts";
 import { toolResultFromError } from "./tool-result-error.ts";
+import { NESTED_CANCEL_GRACE_MS, NestedToolDispatch, isConcurrentNestedRead } from "./nested-tool-dispatch.ts";
+import { isModelToolSelection, selectModelTools } from "./tool-exposure.ts";
 import type {
 	AgentContext,
 	AgentEvent,
@@ -29,6 +32,8 @@ import type {
 	AgentToolCall,
 	AgentToolResult,
 	AgentToolUpdateCallback,
+	NestedObservationFailure,
+	NestedToolResultMessage,
 	ToolInvocationAuthorization,
 	StreamFn,
 } from "./types.ts";
@@ -36,6 +41,7 @@ import type {
 export type AgentEventSink = (event: AgentEvent) => Promise<void> | void;
 
 const RESOLVED_VOID_PROMISE = Promise.resolve();
+const NO_TOOLS: readonly AgentTool<any>[] = Object.freeze([]);
 
 /** @internal Experimental single-call host dispatch. Never polls a provider or prompt queue. */
 export async function runHostToolDispatch(
@@ -50,7 +56,7 @@ export async function runHostToolDispatch(
 	// field container without duplicating payload strings or freezing policy inputs.
 	const selectedCall = Object.freeze({ type: "toolCall" as const, id: selectedId, name: selectedName, arguments: { ...call.arguments } });
 	const selectedTool = context.tools?.find(tool => tool.name === selectedName);
-	const selectedContext = { ...context, tools: selectedTool ? [Object.freeze({ ...selectedTool })] : [] };
+	const selectedContext = { ...context, tools: selectedTool ? [Object.freeze({ ...selectedTool, modelExposure: undefined })] : [] };
 	// Explicit host origin in the existing message shape; zero provider usage.
 	// Persist the association before its result, without replaying historical sibling calls.
 	const association = { type: "toolCall" as const, id: selectedId, name: selectedName, arguments: {} };
@@ -353,13 +359,15 @@ async function streamAssistantResponse(
 	}
 
 	// Convert to LLM-compatible messages (AgentMessage[] → Message[])
-	const llmMessages = await config.convertToLlm(messages, context.systemPrompt, context.tools, config.model, config.maxTokens);
+	// A carried cache is stale after `{ ...context, tools }` replacement or in-place tool mutation.
+	const modelTools = isModelToolSelection(context.tools, context.modelTools) ? context.modelTools : selectModelTools(context.tools);
+	const llmMessages = await config.convertToLlm(messages, context.systemPrompt, modelTools, config.model, config.maxTokens);
 
 	// Build LLM context
 	const llmContext: Context = {
 		systemPrompt: context.systemPrompt,
 		messages: llmMessages,
-		tools: context.tools,
+		tools: modelTools,
 	};
 
 	// Resolve API key (important for expiring tokens)
@@ -489,7 +497,10 @@ async function executeToolCalls(
 		return answered;
 	}
 	const hasSequentialToolCall = toolCalls.some(
-		(tc) => currentContext.tools?.find((t) => t.name === tc.name)?.executionMode === "sequential",
+		(tc) => {
+			const tool = currentContext.tools?.find((t) => t.name === tc.name);
+			return tool?.executionMode === "sequential" || tool?.orchestration === true;
+		},
 	);
 	if (config.toolExecution === "sequential" || hasSequentialToolCall) {
 		return executeToolCallsSequential(currentContext, assistantMessage, toolCalls, config, signal, emit);
@@ -763,6 +774,9 @@ type PreparedToolCall = {
 	args: unknown;
 	finalAuthorization?: ToolInvocationAuthorization;
 	authorizedExecute?: AgentTool<any>["execute"];
+	parentDispatch?: NestedToolDispatch;
+	concurrentNestedRead?: boolean;
+	orchestration?: { context: AgentContext; assistantMessage: AssistantMessage; config: AgentLoopConfig };
 };
 
 type ImmediateToolCallOutcome = {
@@ -810,6 +824,8 @@ async function prepareToolCall(
 	toolCall: AgentToolCall,
 	config: AgentLoopConfig,
 	signal: AbortSignal | undefined,
+	parentDispatch?: NestedToolDispatch,
+	concurrentNestedRead?: boolean,
 ): Promise<PreparedToolCall | ImmediateToolCallOutcome> {
 	const tool = currentContext.tools?.find((t) => t.name === toolCall.name);
 	if (!tool) {
@@ -828,11 +844,15 @@ async function prepareToolCall(
 			isError: true,
 		};
 	}
+	if (!parentDispatch && tool.modelExposure === "nested") {
+		return { kind: "immediate", isError: true,
+			result: createPreExecutionError(tool.name, `[TOOL_NESTED_ONLY] Use codemode to call tools[${JSON.stringify(tool.name)}](args).`) };
+	}
 
 	let finalAuthorization: ToolInvocationAuthorization | undefined;
 	let handedOff = false;
 	try {
-		const selectedExecute = config.beforeToolCall ? tool.execute : undefined;
+		const selectedExecute = config.beforeToolCall || parentDispatch ? tool.execute : undefined;
 		const preparedToolCall = prepareToolCallArguments(tool, toolCall);
 		const validatedArgs = validateToolArguments(tool, preparedToolCall);
 		if (config.beforeToolCall) {
@@ -842,6 +862,8 @@ async function prepareToolCall(
 					toolCall,
 					args: validatedArgs,
 					context: currentContext,
+					parentToolCallId: parentDispatch?.parentToolCallId,
+					nestedIssuedAt: parentDispatch?.issuedAt(toolCall.id),
 				},
 				signal,
 			);
@@ -880,6 +902,12 @@ async function prepareToolCall(
 			tool,
 			args: validatedArgs,
 		};
+		if (parentDispatch) {
+			prepared.parentDispatch = parentDispatch;
+			prepared.concurrentNestedRead = concurrentNestedRead;
+			prepared.authorizedExecute = selectedExecute;
+		}
+		if (tool.orchestration) prepared.orchestration = { context: currentContext, assistantMessage, config };
 		if (finalAuthorization) {
 			prepared.finalAuthorization = finalAuthorization;
 			prepared.authorizedExecute = selectedExecute;
@@ -905,6 +933,7 @@ async function executePreparedToolCall(
 	let acceptingUpdates = true;
 	let checkingAuthorization = false;
 	let completedResult: AgentToolResult<any> | undefined;
+	let nested: NestedToolDispatch | undefined;
 
 	try {
 		const onUpdate = ((partialResult: AgentToolResult<any>) => {
@@ -918,21 +947,44 @@ async function executePreparedToolCall(
 		const execute = prepared.tool.execute;
 		const id = prepared.toolCall.id;
 		const name = prepared.toolCall.name;
-		checkingAuthorization = prepared.finalAuthorization !== undefined;
-		if (prepared.finalAuthorization && execute !== prepared.authorizedExecute) {
+		checkingAuthorization = prepared.finalAuthorization !== undefined || prepared.parentDispatch !== undefined;
+		if (prepared.parentDispatch && !prepared.parentDispatch.isCurrentTool(prepared.tool)) {
+			throw new Error("Blocked by policy: nested tool is no longer active");
+		}
+		if (prepared.concurrentNestedRead && !isConcurrentNestedRead(prepared.tool)) {
+			throw new Error("Blocked by policy: nested tool lost its concurrent read authorization");
+		}
+		if (prepared.parentDispatch && (prepared.tool.orchestration || prepared.tool.modelOnly || prepared.tool.interactionBoundary)) {
+			throw new Error("Blocked by policy: nested tool became a direct control tool before invocation");
+		}
+		if (checkingAuthorization && execute !== prepared.authorizedExecute) {
 			throw new Error("Blocked by policy: authorized tool implementation changed before invocation");
 		}
 		const args = prepared.finalAuthorization
 			? prepared.finalAuthorization.consume(prepared.args, id, name, signal)
 			: prepared.args;
 		checkingAuthorization = false;
-		const result = await execute.call(prepared.tool,
+		if (prepared.orchestration) nested = createNestedToolDispatch(prepared.toolCall.id, prepared.orchestration, emit, signal);
+		let result = await execute.call(prepared.tool,
 			id,
 			args as never,
 			signal,
 			onUpdate,
+			nested,
 		);
 		completedResult = result;
+		if (nested) {
+			await nested.close();
+			if (nested.shouldTerminate) result = { ...result, terminate: true };
+			// Abandoned children are reported even on a failed parent: they may still change state.
+			const abandoned = nested.abandonedCalls;
+			if (abandoned > 0 || (nested.hasErrors && !result.isError)) {
+				result = { ...result, isError: true, content: [...(result.content ?? []), { type: "text", text: abandoned > 0
+					? nestedAbandonedNotice(abandoned)
+					: "[NESTED_TOOL_ERRORS] One or more child calls failed, were cancelled, or were refused. Completed side effects are not rolled back." }] };
+			}
+			completedResult = result;
+		}
 		acceptingUpdates = false;
 		await progress.flush();
     return { result, isError: result.isError === true };
@@ -943,24 +995,94 @@ async function executePreparedToolCall(
 				isError: true, authorizationVeto: true };
 		}
 		let failedResult = completedResult ? undefined : toolResultFromError(error);
+		// A thrown parent skipped the nested block above; close first so lingering children are reported.
+		let abandoned = 0;
+		if (nested && !completedResult) {
+			await nested.close();
+			abandoned = nested.abandonedCalls;
+		}
 		try {
 			await progress.flush();
 		} catch (observationError) {
 			// Preserve the primary tool failure and record a separate drain failure.
 			if (failedResult) failedResult = resultWithObservationFailure(failedResult, observationError);
 		}
-		return {
-			result: failedResult ?? (completedResult ? resultWithObservationFailure(completedResult, error)
-				: createErrorToolResult(error instanceof Error ? error.message : String(error))),
-			isError: true,
-		};
+		let result = failedResult ?? (completedResult ? resultWithObservationFailure(completedResult, error)
+			: createErrorToolResult(error instanceof Error ? error.message : String(error)));
+		if (abandoned > 0) result = { ...result, content: [...(result.content ?? []), { type: "text", text: nestedAbandonedNotice(abandoned) }] };
+		return { result, isError: true };
 	} finally {
 		acceptingUpdates = false;
+		if (nested) await nested.close();
 		if (prepared.finalAuthorization) {
 			prepared.finalAuthorization.release();
 			prepared.finalAuthorization = undefined;
 		}
 	}
+}
+
+function nestedAbandonedNotice(abandoned: number): string {
+	return `[NESTED_TOOL_ABANDONED] ${abandoned} child call(s) ignored cancellation for ${NESTED_CANCEL_GRACE_MS} ms and may still be running or changing state. Verify current state before any retry.`;
+}
+
+/** One callback pair per orchestration invocation, never per child progress update. */
+function createNestedToolDispatch(
+	parentToolCallId: string,
+	scope: NonNullable<PreparedToolCall["orchestration"]>,
+	emit: AgentEventSink,
+	signal?: AbortSignal,
+): NestedToolDispatch {
+	const emitNested: AgentEventSink = event => {
+		if (event.type === "tool_execution_start" || event.type === "tool_execution_update" || event.type === "tool_execution_end") {
+			event.parentToolCallId = parentToolCallId;
+		}
+		return emit(event);
+	};
+	const turnTools = scope.context.tools ?? NO_TOOLS;
+	const live = scope.config.getCurrentTools;
+	// The active turn context, which a next-turn hook may replace, is the baseline; live changes made afterwards win.
+	const owner: NestedToolDispatch = new NestedToolDispatch(parentToolCallId, live ?? (() => turnTools),
+		(call, tool, childSignal) => runNestedToolCall(call, tool, owner, scope, emitNested, childSignal), signal,
+		NESTED_CANCEL_GRACE_MS, live ? turnTools : undefined);
+	return owner;
+}
+
+async function runNestedToolCall(
+	call: AgentToolCall, tool: AgentTool<any> | undefined, owner: NestedToolDispatch,
+	scope: NonNullable<PreparedToolCall["orchestration"]>, emit: AgentEventSink, signal: AbortSignal,
+): Promise<NestedToolResultMessage> {
+	const concurrentNestedRead = isConcurrentNestedRead(tool);
+	await emit({ type: "tool_execution_start", toolCallId: call.id, toolName: call.name, args: call.arguments });
+	let finalized: FinalizedToolCallOutcome;
+	if (signal.aborted || tool?.orchestration || tool?.interactionBoundary || tool?.modelOnly) {
+		finalized = { toolCall: call, isError: true, result: createPreExecutionError(call.name,
+			signal.aborted ? "Operation aborted before nested tool execution" : "This tool requires a direct model call; nested control or orchestration calls are not allowed") };
+	} else {
+		const context: AgentContext = { ...scope.context, tools: tool ? [tool] : [] };
+		const prepared = await prepareToolCall(context, scope.assistantMessage, call, scope.config, signal, owner, concurrentNestedRead);
+		if (prepared.kind === "immediate") {
+			finalized = { toolCall: call, result: prepared.result, isError: prepared.isError };
+		} else {
+			const executed = await executePreparedToolCall(prepared, signal, emit, scope.config.eventInstrumentation);
+			finalized = await finalizeExecutedToolCall(context, scope.assistantMessage, prepared, executed, scope.config, signal);
+		}
+	}
+	let observationFailure: NestedObservationFailure | undefined;
+	try {
+		await emitToolExecutionEnd(finalized, emit);
+	} catch (error) {
+		// The child has already finished. Keep its outcome for Codemode records and
+		// report the end-event delivery failure first, so its summary is not mistaken for a tool failure.
+		const result = resultWithObservationFailure(finalized.result, error, true);
+		// Receipts need the tool's own outcome, kept apart from the folded isError.
+		observationFailure = { executionIsError: finalized.isError, error: (result.content[0] as TextContent).text };
+		finalized = { ...finalized, result, isError: true };
+	}
+	// Only the parent is a protocol tool result. Child facts travel via hooks and events.
+	owner.observeTermination(finalized.result.terminate);
+	const message: NestedToolResultMessage = createToolResultMessage(finalized);
+	if (observationFailure) message.observationFailure = observationFailure;
+	return message;
 }
 
 class ToolProgressDelivery {
@@ -1112,6 +1234,7 @@ async function finalizeExecutedToolCall(
 					result,
 					isError,
 					context: currentContext,
+					parentToolCallId: prepared.parentDispatch?.parentToolCallId,
 				},
 				signal,
 			);
@@ -1123,7 +1246,7 @@ async function finalizeExecutedToolCall(
 					usage: afterResult.usage ?? result.usage,
 					terminate: afterResult.terminate ?? result.terminate,
 				};
-				isError = afterResult.isError ?? isError;
+				isError = (prepared.orchestration || prepared.parentDispatch) && executed.isError ? true : afterResult.isError ?? isError;
 			}
 		} catch (error) {
 			result = resultWithObservationFailure(result, error);
@@ -1139,7 +1262,7 @@ async function finalizeExecutedToolCall(
 }
 
 /** Once a tool has completed, observer failures cannot erase its execution facts. */
-function resultWithObservationFailure(result: AgentToolResult<any>, error: unknown): AgentToolResult<any> {
+function resultWithObservationFailure(result: AgentToolResult<any>, error: unknown, noticeFirst = false): AgentToolResult<any> {
   const message = (error instanceof Error ? error.message : String(error)).slice(0, 1000);
   const execution = result.details?.shellExecution;
   // Completion-error boundary only. Clone once so preserved producer objects
@@ -1150,8 +1273,10 @@ function resultWithObservationFailure(result: AgentToolResult<any>, error: unkno
       secondaryObservationError: execution.observationError !== undefined ? execution.secondaryObservationError ?? message : undefined,
       observationErrorsOmitted: execution.secondaryObservationError !== undefined || execution.observationErrorsOmitted === true ? true : undefined,
     } } : result.details;
-  return { ...result, content: [...(result.content ?? []), { type: "text", text: `[TOOL_OBSERVATION_FAILED] ${message}` }],
-    details, isError: true };
+  const notice = { type: "text" as const, text: `[TOOL_OBSERVATION_FAILED] ${message}` };
+  // Codemode previews and child errors show only the first text block.
+  const content = noticeFirst ? [notice, ...(result.content ?? [])] : [...(result.content ?? []), notice];
+  return { ...result, content, details, isError: true };
 }
 
 function nonEmptyReason(reason: unknown): string | undefined {

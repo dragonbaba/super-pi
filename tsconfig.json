@@ -23,6 +23,8 @@
 			"@super-pi/protocol": ["./packages/protocol/src/index.ts"],
 			"@super-pi/protocol/*": ["./packages/protocol/src/*"],
 			"@super-pi/client": ["./packages/client/src/index.ts"],
+			"@super-pi/codemode": ["./packages/codemode/src/index.ts"],
+			"@super-pi/codemode/*": ["./packages/codemode/src/*.ts"],
 			"@super-pi/client/*": ["./packages/client/src/*"],
 			"@super-pi/server": ["./packages/server/src/index.ts"],
 			"@super-pi/server/*": ["./packages/server/src/*"],

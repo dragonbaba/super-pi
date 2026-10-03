@@ -32,6 +32,10 @@ Super Pi 适合需要多轮探索和修改的工程任务，例如：
 
 ### 代码工具与项目理解
 
+普通工具默认通过内置 `codemode` JavaScript 工具调用，CLI、TUI、JSON/RPC 和 SDK 一致，无需开关。脚本使用 `await tools.read({path: "README.md"})`、`await callTool(name, args)` 和 `await show(result.ref)`；交互及 Plan/Goal 控制工具仍直接调用。不支持专用代码格式的模型使用 JSON `code` 参数进入同一运行时。每个子调用继续遵守工具白名单、Plan mode、权限与取消规则；`--no-tools` 仍可禁用工具。
+
+Codemode 首次调用才加载隔离的 QuickJS Worker，并限制执行时间、桥接流量、存储和输出。只有实际展示的原生读取才能在后续模型轮次授权受保护编辑；隐藏读取、打印副本及被截断内容不能授权。子调用失败时，即使脚本捕获异常，父调用也会保留失败状态。成功的分支内 `store` 写入会持久保存，恢复会话不重放脚本；外部工具副作用不会回滚。相关操作可合并到一个脚本以摊薄 Worker 启动成本。详见 [使用说明](docs/codemode.md)、[默认 Codemode 契约](docs/codemode-default-execution-plan.md) 和 [验证记录](docs/codemode-default-execution-log.md)。
+
 coding agent 提供 `read`、`grep`、`find`、`ls`、`edit`、`write`、`bash`，以及 Windows 上的 `powershell` 工具。各工具有自己的读取窗口和字节/行数限制；TUI 折叠控制屏幕上的可见内容。这些不等于模型 Token 预算。独立的 `toolResultPresentation` 流程需要 `enabled: true`；模型 Token 预算投影还需要配置正整数 `budgetTokens`，它没有生产默认值。支持时，较大输出可以保存在本地 artifact 中按需查看。配置和边界见 [tool-result presentation](docs/performance/phase5b-budgeted-model-view.md)。
 
 项目理解分成几层：

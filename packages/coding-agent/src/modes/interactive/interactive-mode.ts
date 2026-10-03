@@ -4286,6 +4286,12 @@ export class InteractiveMode {
 				break;
 
 			case "tool_execution_start": {
+				if (event.parentToolCallId) {
+					const parent = this.pendingTools.get(event.parentToolCallId);
+					if (parent instanceof ToolExecutionComponent && parent.startNestedTool(event.toolCallId, event.toolName, event.args)) {
+						this.advanceActiveToolVersion(parent); this.ui.requestRender(); break;
+					}
+				}
 				if (event.toolName === "read" && !this.pendingTools.has(event.toolCallId)) {
 					this.deferReadExecutionStart(event.toolCallId, event.args);
 					break;
@@ -4299,6 +4305,12 @@ export class InteractiveMode {
 			}
 
 			case "tool_execution_update": {
+				if (event.parentToolCallId) {
+					const parent = this.pendingTools.get(event.parentToolCallId);
+					if (parent instanceof ToolExecutionComponent && parent.updateNestedTool(event.toolCallId, event.partialResult, true, false)) {
+						this.advanceActiveToolVersion(parent); this.ui.requestRender(); break;
+					}
+				}
 				const component = this.pendingTools.get(event.toolCallId);
 				if (component) {
 					this.updateTrackedToolResult(component, event.toolCallId, event.partialResult, true, false);
@@ -4310,6 +4322,12 @@ export class InteractiveMode {
 			}
 
 			case "tool_execution_end": {
+				if (event.parentToolCallId) {
+					const parent = this.pendingTools.get(event.parentToolCallId);
+					if (parent instanceof ToolExecutionComponent && parent.updateNestedTool(event.toolCallId, event.result, false, event.isError)) {
+						this.advanceActiveToolVersion(parent); this.ui.requestRender(); break;
+					}
+				}
 				const component = this.pendingTools.get(event.toolCallId);
 				if (component) {
 					this.updateTrackedToolResult(component, event.toolCallId, event.result, false, event.isError);

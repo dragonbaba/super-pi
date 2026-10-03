@@ -75,7 +75,7 @@ export {
 	type ToolResultPresentationV2,
 	type ToolResultTruncationV1,
 } from "./core/tool-result-presentation.ts";
-export { readStoredCredential } from "./core/auth-storage.ts";
+export { readStoredCredential, FileAuthStorageBackend } from "./core/auth-storage.ts";
 // Compaction
 export {
 	type BranchPreparation,
@@ -207,6 +207,7 @@ export type {
 	ToolInfo,
 	ToolRenderResultOptions,
 	ToolResultEvent,
+	CodemodeReadEvent,
 	TurnEndEvent,
 	TurnStartEvent,
 	UserBashEvent,

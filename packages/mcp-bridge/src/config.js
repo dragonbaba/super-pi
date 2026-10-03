@@ -11,6 +11,8 @@ import {
 import { MAX_CONFIG_BYTES, MAX_SERVERS } from "./security.js";
 const SAFE_ENV = ["SystemRoot", "WINDIR", "ComSpec", "PATHEXT", "TEMP", "TMP", "PATH", "HOME", "USERPROFILE"];
 const TRANSPORTS = new Set(["stdio", "http", "sse"]);
+// WHATWG URL keeps the brackets on IPv6 hostnames.
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
 export function agentDir() {
   return process.env.SP_CODING_AGENT_DIR || path.join(os.homedir(), ".sp", "agent");
@@ -98,6 +100,7 @@ function normalizeServer(id, raw, workspace, source) {
     maxTools: boundedInt(raw.maxTools, 64, 1, 128, `${label}.maxTools`),
   };
   if (transport === "stdio") {
+    if (raw.oauth) throw new Error(`${label}.oauth requires an HTTP transport`);
     const command = path.resolve(boundedString(raw.command, `${label}.command`));
     let commandStat;
     try { commandStat = fs.lstatSync(command); } catch {}
@@ -111,10 +114,22 @@ function normalizeServer(id, raw, workspace, source) {
     return { ...common, command, args, cwd, env: resolveEnvironment(raw, label) };
   }
   const url = new URL(boundedString(raw.url, `${label}.url`, 8192));
-  const localHttp = url.protocol === "http:" && ["localhost", "127.0.0.1", "::1"].includes(url.hostname);
+  const localHttp = url.protocol === "http:" && LOOPBACK_HOSTS.has(url.hostname);
   if (url.protocol !== "https:" && !localHttp) throw new Error(`${label}.url must use HTTPS, except for loopback HTTP`);
   if (url.username || url.password) throw new Error(`${label}.url must not contain credentials`);
-  return { ...common, url: url.href, headers: resolveHeaders(raw, label) };
+  const headers = resolveHeaders(raw, label);
+  let oauth;
+  if (raw.oauth !== undefined && raw.oauth !== false) {
+    if (raw.oauth !== true && !ownObject(raw.oauth)) throw new Error(`${label}.oauth must be true or an object`);
+    for (const name of Object.keys(headers)) if (name.toLowerCase() === "authorization") throw new Error(`${label} cannot combine OAuth with an Authorization header`);
+    const settings = raw.oauth === true ? {} : raw.oauth;
+    oauth = {};
+    if (settings.scope !== undefined) oauth.scope = boundedString(settings.scope, `${label}.oauth.scope`, 4096);
+    if (settings.clientId !== undefined) oauth.clientId = boundedString(settings.clientId, `${label}.oauth.clientId`, 4096);
+    if (settings.callbackPort !== undefined) oauth.callbackPort = boundedInt(settings.callbackPort, 0, 1, 65535, `${label}.oauth.callbackPort`);
+    if (oauth.clientId && !oauth.callbackPort) throw new Error(`${label}.oauth.clientId requires its registered callbackPort`);
+  }
+  return { ...common, url: url.href, headers, ...(oauth ? { oauth } : {}) };
 }
 
 export function loadMcpConfig(workspace, projectTrusted) {

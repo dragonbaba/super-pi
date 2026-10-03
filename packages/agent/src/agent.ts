@@ -18,6 +18,7 @@ import {
 } from "./event-delivery.ts";
 import { runAgentLoop, runAgentLoopContinue, runHostToolDispatch } from "./agent-loop.ts";
 import { getDefaultStreamFn } from "./stream-fn.ts";
+import { isModelToolSelection, selectModelTools } from "./tool-exposure.ts";
 import type {
 	AfterToolCallContext,
 	AfterToolCallResult,
@@ -100,6 +101,7 @@ function createMutableAgentState(
 	initialState?: Partial<Omit<AgentState, "pendingToolCalls" | "isStreaming" | "streamingMessage" | "errorMessage">>,
 ): MutableAgentState {
 	let tools = initialState?.tools?.slice() ?? [];
+	let modelTools = selectModelTools(tools);
 	let messages = initialState?.messages?.slice() ?? [];
 
 	return {
@@ -111,6 +113,12 @@ function createMutableAgentState(
 		},
 		set tools(nextTools: AgentTool<any>[]) {
 			tools = nextTools.slice();
+			modelTools = selectModelTools(tools);
+		},
+		get modelTools() {
+			// The returned tools array may be mutated in place; revalidate the cached projection.
+			if (!isModelToolSelection(tools, modelTools)) modelTools = selectModelTools(tools);
+			return modelTools;
 		},
 		get messages() {
 			return messages;
@@ -286,6 +294,7 @@ export class Agent {
 	private readonly eventInstrumentation?: AgentEventInstrumentation;
 	private readonly steeringQueue: PendingMessageQueue;
 	private readonly followUpQueue: PendingMessageQueue;
+	private readonly getCurrentTools = (): readonly AgentTool<any>[] => this._state.tools;
 
 	public convertToLlm: AgentLlmConverter;
 	public transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => Promise<AgentMessage[]>;
@@ -572,6 +581,7 @@ export class Agent {
 			systemPrompt: this._state.systemPrompt,
 			messages: this._state.messages.slice(),
 			tools: this._state.tools.slice(),
+			modelTools: this._state.modelTools,
 		};
 	}
 
@@ -588,6 +598,7 @@ export class Agent {
 			thinkingBudgets: this.thinkingBudgets,
 			maxRetryDelayMs: this.maxRetryDelayMs,
 			toolExecution: this.toolExecution,
+			getCurrentTools: this.getCurrentTools,
 			eventInstrumentation: this.eventInstrumentation,
 			beforeToolCall: this.beforeToolCall,
 			afterToolCall: this.afterToolCall,

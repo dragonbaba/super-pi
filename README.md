@@ -32,6 +32,10 @@ These capabilities still depend on the provider, model capabilities, project con
 
 ### Code tools and project understanding
 
+Ordinary tools run through the built-in `codemode` JavaScript tool by default in the CLI, TUI, JSON/RPC and SDK. No opt-in setting is required. Scripts use `await tools.read({path: "README.md"})`, `await callTool(name, args)` and `await show(result.ref)`; native interaction and Plan/Goal controls remain direct tools. Unsupported grammar formats use a JSON `code` parameter with the same runtime. Tool allowlists, Plan mode, authorization and cancellation still apply to every child call; `--no-tools` disables tools.
+
+Codemode loads its isolated QuickJS Worker on first use and bounds execution, bridge traffic, state and output. Shown native reads can authorize guarded edits only on a later model turn; hidden reads, printed copies and truncated content do not. A failed child keeps its parent failed, even if the script catches the error. Successful branch-local `store` writes persist without replaying scripts; external tool effects are never rolled back. Batch related operations to amortize Worker startup. See [the usage guide](docs/codemode.md), [the default Codemode contract](docs/codemode-default-execution-plan.md) and [validation evidence](docs/codemode-default-execution-log.md).
+
 The coding agent includes `read`, `grep`, `find`, `ls`, `edit`, `write`, `bash`, and, on Windows, `powershell` tools. Individual tools have their own read windows and byte/line limits; TUI folding controls what is visible on screen. These do not imply a model token budget. The separate `toolResultPresentation` pipeline requires `enabled: true`; model token-budget projection also requires a positive integer `budgetTokens`, which has no production default. Larger output can be kept in a local artifact and opened when supported. See [tool-result presentation](docs/performance/phase5b-budgeted-model-view.md) for the configuration and boundaries.
 
 Project understanding is layered:

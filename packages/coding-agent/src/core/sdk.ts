@@ -254,6 +254,9 @@ function replaceBlockedImagesInMessages(messages: Message[]): Message[] {
  * ```
  */
 export async function createAgentSession(options: CreateAgentSessionOptions = {}): Promise<CreateAgentSessionResult> {
+	if (options.excludeTools?.includes("codemode")) {
+		throw new Error("codemode is the required default tool transport; use noTools: 'all' to disable tools");
+	}
 	const cwd = resolvePath(options.cwd ?? options.sessionManager?.getCwd() ?? process.cwd());
 	const agentDir = options.agentDir ? resolvePath(options.agentDir) : getDefaultAgentDir();
 	let resourceLoader = options.resourceLoader;
@@ -434,6 +437,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				cacheRetention: options?.cacheRetention,
 				systemPrompt: context.systemPrompt ?? "",
 				tools: (context.tools ?? []).map((tool) => ({ name: tool.name, schema: tool.parameters })),
+				logicalToolNames: session?.getActiveToolNames(),
 				persistentContext,
 				requestTransformChain,
 				cacheKey: options?.sessionId,

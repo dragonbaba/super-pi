@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
-import { ALPHA_MODEL, alphaModelRuntime } from "./next-phase-model.ts";
+import { ALPHA_MODEL, alphaModelRuntime, exposeNativeProtocolForFixture } from "./next-phase-model.ts";
 
 export const costProject = resolve(process.env.SP_COST_PROJECT_ROOT ?? ".");
 export async function costModule(path: string): Promise<any> { return import(pathToFileURL(join(costProject, path)).href); }
@@ -33,7 +33,7 @@ export function finishCostMeasurement(metrics: EstimatorMetrics, start: ReturnTy
     measurementScope: "elapsedMs/cpuUs subtract only diagnostic estimation and its JSON serialization within this workload; inclusive totals remain. CPU quantization, later GC, estimator heap allocations and fixture/provider scheduling are not isolated." };
 }
 
-/** Isolated real default SDK and final serializer; no provider request leaves this process. */
+/** Isolated native-protocol schema-cost fixture; Codemode default costs have separate benchmarks. */
 export async function costSession(options: { historyPairs?: number; budget?: number; extensions?: any[] } = {}) {
   const root = mkdtempSync(join(tmpdir(), "sp-n4-session-")), cwd = join(root, "work"), agentDir = join(root, "agent");
   let session: any;
@@ -85,6 +85,7 @@ export async function costSession(options: { historyPairs?: number; budget?: num
     manager.appendCustomEntry = function measuredRecord(type: string, data: any) { beforeRecord?.(type, data); return append.call(this, type, data); };
     ({ session } = await createAgentSession({ cwd, agentDir, settingsManager, resourceLoader: loader, sessionManager: manager, model, modelRuntime: runtime,
       noTools: "builtin", toolResultPresentation: options.budget === undefined ? undefined : { enabled: true, budgetTokens: options.budget } }));
+    exposeNativeProtocolForFixture(session);
     await session.bindExtensions({ mode: "tui", uiContext: { ...session.extensionRunner.getUIContext(), select: async () => { metrics.approvals++; onApproval?.(); return "仅允许本次"; } } });
     session.subscribe((event: any) => {
       if (event.type === "tool_execution_end") { metrics.toolCalls++; if (event.toolName === "tool_search") metrics.discoveryCalls++; if (event.toolName === "read") metrics.reads++; }

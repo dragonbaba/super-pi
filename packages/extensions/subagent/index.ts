@@ -1213,6 +1213,8 @@ export default function (pi: ExtensionAPI) {
 		label: "Subagent",
 		description: "Delegate tasks to isolated subagents. agent is a registered role (planner/reviewer/scout/worker), never a custom task name; put labels and instructions in task. Supports single, parallel tasks, or sequential chain.",
 		parameters: SubagentParams,
+		// Tasks run for up to two hours; a Codemode script (60s default, 300s maximum) cannot host them.
+		modelOnly: true,
 
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			const defaultTimeoutMs = params.timeoutMs ?? DEFAULT_TASK_TIMEOUT_MS;

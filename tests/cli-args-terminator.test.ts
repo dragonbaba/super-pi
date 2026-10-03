@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { hasOption, parseArgs } from "../packages/coding-agent/src/cli/args.ts";
+import { hasOption, parseArgs, validateModelSelectionArgs } from "../packages/coding-agent/src/cli/args.ts";
 
 // `--` ends option parsing so messages that look like flags reach the model verbatim.
 for (const [name, argv, messages, fileArgs] of [
@@ -30,4 +30,14 @@ test("startup option prescan ignores options after --", () => {
 	assert.equal(hasOption(["--", "--offline"], "--offline"), false);
 	assert.equal(hasOption(["--offline", "--", "--offline"], "--offline"), true);
 	assert.equal(hasOption(["hi"], "--offline"), false);
+});
+
+test("session model selection requires --model for an explicit provider", () => {
+	const providerOnly = parseArgs(["--provider", "fixture", "hello"]);
+	assert.match(validateModelSelectionArgs(providerOnly) ?? "", /--provider requires --model/);
+	assert.equal(validateModelSelectionArgs(parseArgs(["--provider", "fixture", "--model", "chosen"])), undefined);
+	assert.equal(validateModelSelectionArgs(parseArgs(["--model", "fixture/chosen"])), undefined);
+	assert.equal(validateModelSelectionArgs(parseArgs(["--", "--provider", "fixture"])), undefined);
+	// Parsing remains reusable for auth/catalog commands; session validation is explicit.
+	assert.deepEqual(providerOnly.diagnostics, []);
 });

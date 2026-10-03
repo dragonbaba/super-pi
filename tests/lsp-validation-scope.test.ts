@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
+import { removeOwnedFixture } from "./helpers/owned-fixture-cleanup.ts";
 import test from "node:test";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, symlinkSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { createJiti } from "jiti";
@@ -24,7 +25,7 @@ function fixture(mode = "full") {
     command: [process.execPath, server, mode], extensions: [".ts"], pushDiagnosticsGraceMs: mode === "push-provisional" ? 250 : 60, diagnosticsSettleMs: 10,
   } } }));
   const runtime = loadRuntime(root, { projectTrusted: true });
-  return { root, ...runtime, release() { assert.equal(dirname(root), tmpdir()); rmSync(root, { recursive: true, force: true }); } };
+  return { root, ...runtime, release() { assert.equal(dirname(root), tmpdir()); removeOwnedFixture(root); } };
 }
 function tools() {
   const registered = new Map<string, any>(), events = new Map<string, any>();
@@ -197,6 +198,9 @@ test("actual tool classifies capped directory symlinks before declaring omitted 
     symlinkSync(join(f.root, "absent.html"), join(scan, "z-dangling.html"), "file");
     const dangling = await tool.execute("dangling-link", { paths: ["scan"], limit: 1 }, undefined, undefined, ctx);
     assert.equal(dangling.details.status, "diagnostics_received"); assert.equal(dangling.isError, false);
+      // This Windows runtime cannot unlink a dangling file link. Restore only
+      // this fixture-owned target after the dangling-link assertion.
+      writeFileSync(join(f.root, "absent.html"), "fixture cleanup target");
     symlinkSync(join(f.root, "example.ts"), join(scan, "z.ts"), "file");
     const supported = await tool.execute("supported-link", { paths: ["scan"], limit: 1 }, undefined, undefined, ctx);
     assert.equal(supported.details.status, "partial"); assert.equal(supported.isError, true);

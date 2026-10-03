@@ -22,7 +22,7 @@ for (const mode of ['regular', 'fullscreen'] as const) for (const signal of [fal
       requests++;
       if (requests > 1) return finalStream(alphaMessage([{ type: 'text', text: 'unexpected continuation' }]));
       if (active === 'tool') {
-        const message = alphaMessage([{ type: 'toolCall', id: 'active-tool', name: 'active_probe', arguments: {} }]);
+        const message = alphaMessage([{ type: 'toolCall', id: 'active-tool', name: 'codemode', arguments: { code: 'await tools.active_probe({})' } }]);
         message.stopReason = 'toolUse'; return finalStream(message);
       }
       const stream = new AssistantMessageEventStream();
@@ -37,7 +37,7 @@ for (const mode of ['regular', 'fullscreen'] as const) for (const signal of [fal
       options?.signal?.addEventListener('abort', () => setImmediate(releaseFixture!), { once: true });
       started(); return stream;
     });
-    const f = await alphaSession({ mode, runtime, settings: { compaction: { enabled: false }, retry: { enabled: false } },
+    const f = await alphaSession({ mode, runtime, codemode: true, settings: { compaction: { enabled: false }, retry: { enabled: false } },
       extensions: [(pi: any) => { pi.on('session_shutdown', () => { shutdowns++; }); }],
       customTools: [{ name: 'active_probe', label: 'test only', description: 'cooperative delayed cleanup', parameters: Type.Object({}),
         execute: async (_id: string, _args: unknown, abortSignal: AbortSignal) => {

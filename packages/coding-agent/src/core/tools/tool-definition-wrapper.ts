@@ -1,5 +1,5 @@
 import { getProtectedWriteExecute } from "./write.ts";
-import type { AgentTool } from "@super-pi/agent-core";
+import type { AgentTool, AgentToolExecutionContext } from "@super-pi/agent-core";
 import type { ExtensionContext, ToolDefinition } from "../extensions/types.ts";
 
 /** Wrap a ToolDefinition into an AgentTool for the core runtime. */
@@ -18,9 +18,15 @@ export function wrapToolDefinition<TDetails = unknown>(
 			? (args) => definition.prepareArguments!(args, ctxFactory())
 			: definition.prepareArguments,
 		interactionBoundary: definition.interactionBoundary,
+		orchestration: definition.orchestration,
+		modelOnly: definition.modelOnly,
+		modelExposure: definition.modelExposure,
 		executionMode: definition.executionMode,
-		execute: (toolCallId, params, signal, onUpdate, ctx?: ExtensionContext) =>
-			(protectedExecute ?? definition.execute).call(definition, toolCallId, params, signal, onUpdate, ctx ?? (ctxFactory?.() as ExtensionContext)),
+		execute: (toolCallId, params, signal, onUpdate, context?: AgentToolExecutionContext | ExtensionContext) => {
+			const nested = context && "callTool" in context ? context : undefined;
+			const ctx = context && !nested ? context as ExtensionContext : ctxFactory?.() as ExtensionContext;
+			return (protectedExecute ?? definition.execute).call(definition, toolCallId, params, signal, onUpdate, ctx, nested);
+		},
 	};
 }
 
@@ -47,7 +53,10 @@ export function createToolDefinitionFromAgentTool(tool: AgentTool<any>): ToolDef
 		constrainedSampling: tool.constrainedSampling,
 		prepareArguments: tool.prepareArguments,
 		interactionBoundary: tool.interactionBoundary,
+		orchestration: tool.orchestration,
+		modelOnly: tool.modelOnly,
+		modelExposure: tool.modelExposure,
 		executionMode: tool.executionMode,
-		execute: async (toolCallId, params, signal, onUpdate) => tool.execute(toolCallId, params, signal, onUpdate),
+		execute: async (toolCallId, params, signal, onUpdate, _ctx, executionContext) => tool.execute(toolCallId, params, signal, onUpdate, executionContext),
 	};
 }

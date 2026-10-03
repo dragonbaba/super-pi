@@ -1,0 +1,267 @@
+{
+  "node": "v26.4.0",
+  "root": "C:\\Users\\ADMINI~1\\AppData\\Local\\Temp\\sp-codemode-review-WhjtNd",
+  "probes": {
+    "boundedJsonAndStore": {
+      "actualChars": 40001,
+      "cap": 262144,
+      "previousAfterApply": 7,
+      "keysAfterRestore": [
+        "previous",
+        "numbers"
+      ]
+    },
+    "session-none": {
+      "modelTools": [
+        "ask_user",
+        "codemode"
+      ],
+      "available": "Available tools:\n- ask_user: Ask one bounded question and wait for an explicit user answer\n- codemode: Run JavaScript to call ordinary tools via tools.NAME(args) or callTool(name,args)\n\nIn addition to the tools above, you may have access to other custom tools depending on the project.\n\nGuidelines:\n- For read inside codemode: Use read to examine files instead of cat or sed.\n- For bash inside codemode: You can inspect SP_* environment variables for current model and session details.\n- For bash inside codemode: For Node scripts, use node -e when the one-off source can be passed reliably; for complex quoting or reusable code, an explicit file or supported stdin is optional. Script length does not decide permission, and a file does not bypass approval.\n- For powershell inside codemode: You can inspect SP_* environment variables for current model and session details.\n- For edit inside codemode: Use edit for precise changes (edits[].oldText must match exactly)\n- For edit inside codemode: When changing multiple separate locations in one file, use one edit call with multiple entries in edits[] instead of multiple edit calls\n- For edit inside codemode: Each edits[].oldText is matched against the original file, not after earlier edits are applied. Do not emit overlapping or nested edits. Me",
+      "extensionCount": 0,
+      "extensionPaths": [],
+      "extensionErrors": [],
+      "failed": false,
+      "result": [
+        {
+          "type": "text",
+          "text": "[CODEMODE_OK] Child calls: 2.\nread: completed\nread: completed"
+        }
+      ]
+    },
+    "session-guard": {
+      "modelTools": [
+        "ask_user",
+        "codemode"
+      ],
+      "available": "Available tools:\n- ask_user: Ask one bounded question and wait for an explicit user answer\n- codemode: Run JavaScript to call ordinary tools via tools.NAME(args) or callTool(name,args)\n\nIn addition to the tools above, you may have access to other custom tools depending on the project.\n\nGuidelines:\n- For read inside codemode: Use read to examine files instead of cat or sed.\n- For bash inside codemode: Set bash.cwd to the verified task directory; inspect SP_* only when current model or Session details are needed.\n- For bash inside codemode: For Node scripts, use node -e when the one-off source can be passed reliably; complex quoting or reusable code may use an explicit file or supported stdin. Script length does not decide permission, and a file does not bypass approval.\n- For powershell inside codemode: You can inspect SP_* environment variables for current model and session details.\n- For edit inside codemode: Use edit for precise changes (edits[].oldText must match exactly)\n- For edit inside codemode: When changing multiple separate locations in one file, use one edit call with multiple entries in edits[] instead of multiple edit calls\n- For edit inside codemode: Each edits[].oldText is matched against the original file, not after earlier edits are applied. Do not emit overlappi",
+      "extensionCount": 1,
+      "extensionPaths": [
+        "<inline:1>"
+      ],
+      "extensionErrors": [],
+      "failed": false,
+      "result": [
+        {
+          "type": "text",
+          "text": "[CODEMODE_OK] Child calls: 2.\nread: completed\nread: completed"
+        }
+      ]
+    },
+    "session-bundle": {
+      "modelTools": [
+        "ask_user",
+        "codemode"
+      ],
+      "available": "Available tools:\n- ask_user: Ask one bounded question and wait for an explicit user answer\n- codemode: Run JavaScript to call ordinary tools via tools.NAME(args) or callTool(name,args)\n\nIn addition to the tools above, you may have access to other custom tools depending on the project.\n\nGuidelines:\n- For read inside codemode: Use read to examine files instead of cat or sed.\n- For bash inside codemode: Set bash.cwd to the verified task directory; inspect SP_* only when current model or Session details are needed.\n- For bash inside codemode: For Node scripts, use node -e when the one-off source can be passed reliably; complex quoting or reusable code may use an explicit file or supported stdin. Script length does not decide permission, and a file does not bypass approval.\n- For powershell inside codemode: You can inspect SP_* environment variables for current model and session details.\n- For edit inside codemode: Before editing, use dedicated read in a completed prior turn; Bash, grep, LSP, and same-turn reads do not authorize edits.\n- For edit inside codemode: Combine already-known, non-overlapping edits covered by the same valid snapshot into one call as a logical change, including a declaration rename and known references confirmed to belong to that binding. A successful mutation",
+      "extensionCount": 9,
+      "extensionPaths": [
+        "D:\\RMProjects\\Pi\\packages\\extensions\\auxiliary-vision\\index.ts",
+        "D:\\RMProjects\\Pi\\packages\\extensions\\browser-use\\index.ts",
+        "D:\\RMProjects\\Pi\\packages\\extensions\\false-success-guard\\index.ts",
+        "D:\\RMProjects\\Pi\\packages\\extensions\\mutation-guard-write\\index.ts",
+        "D:\\RMProjects\\Pi\\packages\\extensions\\resource-lifecycle-guard\\index.ts",
+        "D:\\RMProjects\\Pi\\packages\\extensions\\session-memory-manager\\index.ts",
+        "D:\\RMProjects\\Pi\\packages\\extensions\\structured-readonly-command\\index.ts",
+        "D:\\RMProjects\\Pi\\packages\\extensions\\subagent\\index.ts",
+        "D:\\RMProjects\\Pi\\packages\\extensions\\tool-loop-guardrails\\index.ts"
+      ],
+      "extensionErrors": [],
+      "failed": false,
+      "result": [
+        {
+          "type": "text",
+          "text": "[CODEMODE_OK] Child calls: 2.\nread: completed\nread: completed"
+        }
+      ]
+    },
+    "exitAndVmStore": [
+      {
+        "failed": false,
+        "content": [
+          {
+            "type": "text",
+            "text": "[CODEMODE_OK] Child calls: 0."
+          },
+          {
+            "type": "text",
+            "text": "before"
+          }
+        ]
+      },
+      {
+        "failed": false,
+        "content": [
+          {
+            "type": "text",
+            "text": "[CODEMODE_OK] Child calls: 0."
+          }
+        ]
+      },
+      {
+        "failed": false,
+        "content": [
+          {
+            "type": "text",
+            "text": "[CODEMODE_OK] Child calls: 0."
+          }
+        ]
+      },
+      {
+        "failed": false,
+        "content": [
+          {
+            "type": "text",
+            "text": "[CODEMODE_OK] Child calls: 0."
+          },
+          {
+            "type": "text",
+            "text": "7"
+          },
+          {
+            "type": "text",
+            "text": "false"
+          }
+        ]
+      }
+    ],
+    "postMutationSerialization": {
+      "sideEffects": 1,
+      "savedCalls": 1,
+      "savedResults": 1,
+      "failed": true,
+      "content": [
+        {
+          "type": "text",
+          "text": "[CODEMODE_FAILED] Child calls: 1.\nwrite: completed\nCompleted tool side effects are not rolled back. Do not automatically retry mutations."
+        },
+        {
+          "type": "text",
+          "text": "[CODEMODE_SCRIPT] [CODEMODE_RESULT_PROCESSING_FAILED] The tool returned, but its details could not be persisted. Its observed status was recorded; verify current state without repeating completed mutations."
+        }
+      ],
+      "facts": [
+        {
+          "toolCallId": "child-1",
+          "toolName": "write",
+          "isError": false,
+          "preview": "",
+          "inputSummary": "fixture.txt",
+          "sequence": 1,
+          "durationMs": 0
+        }
+      ]
+    },
+    "evidence-codemode": {
+      "platform": "win32",
+      "interpretation": "Native and Codemode both use the existing Windows uncertain-identity fallback; this probe cannot measure a Codemode cache regression.",
+      "failed": [
+        false,
+        false
+      ],
+      "counters": {
+        "lookups": 0,
+        "hits": 0,
+        "misses": 2,
+        "missesByReason": {
+          "disabled": 0,
+          "ineligible-tool": 0,
+          "no-record": 0,
+          "args-mismatch": 0,
+          "workspace-generation": 0,
+          "branch/session/cwd": 0,
+          "file-generation": 0,
+          "source-not-active": 0,
+          "source-not-in-context": 0,
+          "artifact-unavailable": 0,
+          "mutable-hook": 0,
+          "uncertain-identity": 2,
+          "not-beneficial": 0,
+          "source-call-id-reused": 0
+        },
+        "recordsCreated": 0,
+        "recordsEvicted": 0,
+        "recordsInvalidated": 0,
+        "entries": 0,
+        "entryHighWaterMark": 0,
+        "metadataBytes": 0,
+        "metadataBytesHighWaterMark": 0,
+        "realReadExecutions": 2,
+        "realReadExecutionsPrevented": 0,
+        "modelVisibleTokensAvoided": 0,
+        "argumentBytesHashed": 0,
+        "scopeBytesHashed": 0,
+        "canonicalArgumentHashes": 0,
+        "scopeFingerprintHashes": 0,
+        "g2ArtifactIntegrityScans": 0,
+        "g2ArtifactIntegrityBytes": 0,
+        "completeFileHashes": 0,
+        "ledgerOwnedResultHashes": 0,
+        "completeResultCopies": 0,
+        "retainedSourceReferences": 0,
+        "hashSkippedFileGenerationMisses": 0,
+        "hashSkippedNonresidentArtifactMisses": 0
+      },
+      "pendingReceipts": 0
+    },
+    "evidence-native-control": {
+      "platform": "win32",
+      "interpretation": "Native and Codemode both use the existing Windows uncertain-identity fallback; this probe cannot measure a Codemode cache regression.",
+      "failed": [
+        false,
+        false
+      ],
+      "counters": {
+        "lookups": 0,
+        "hits": 0,
+        "misses": 2,
+        "missesByReason": {
+          "disabled": 0,
+          "ineligible-tool": 0,
+          "no-record": 0,
+          "args-mismatch": 0,
+          "workspace-generation": 0,
+          "branch/session/cwd": 0,
+          "file-generation": 0,
+          "source-not-active": 0,
+          "source-not-in-context": 0,
+          "artifact-unavailable": 0,
+          "mutable-hook": 0,
+          "uncertain-identity": 2,
+          "not-beneficial": 0,
+          "source-call-id-reused": 0
+        },
+        "recordsCreated": 0,
+        "recordsEvicted": 0,
+        "recordsInvalidated": 0,
+        "entries": 0,
+        "entryHighWaterMark": 0,
+        "metadataBytes": 0,
+        "metadataBytesHighWaterMark": 0,
+        "realReadExecutions": 2,
+        "realReadExecutionsPrevented": 0,
+        "modelVisibleTokensAvoided": 0,
+        "argumentBytesHashed": 0,
+        "scopeBytesHashed": 0,
+        "canonicalArgumentHashes": 0,
+        "scopeFingerprintHashes": 0,
+        "g2ArtifactIntegrityScans": 0,
+        "g2ArtifactIntegrityBytes": 0,
+        "completeFileHashes": 0,
+        "ledgerOwnedResultHashes": 0,
+        "completeResultCopies": 0,
+        "retainedSourceReferences": 0,
+        "hashSkippedFileGenerationMisses": 0,
+        "hashSkippedNonresidentArtifactMisses": 0
+      },
+      "pendingReceipts": 0
+    },
+    "oauthInteractiveLock": {
+      "blockedMs": 0.7747999999999138,
+      "secondRead": "succeeded while login still pending",
+      "loginOutcome": "completed",
+      "concurrentEntryBeforeCommit": "concurrent-write",
+      "concurrentEntryRetained": true
+    }
+  },
+  "cleaned": true
+}

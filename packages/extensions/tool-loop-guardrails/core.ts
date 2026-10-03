@@ -40,6 +40,10 @@ const MAX_DISTANCE_CHARS = 96;
 const TOOL_INPUT_REPAIRS = Symbol.for("pi.toolInputRepairs");
 const NPM_MANIFEST_ACTIONS = new Set(["restart", "run", "run-script", "start", "stop", "test"]);
 const EMPTY_PATH_ARGUMENTS: readonly string[] = Object.freeze([]);
+const BATCH_DUPLICATE_CAUSE = "An identical sibling call already exists in the current assistant tool batch.";
+const BATCH_DUPLICATE_ACTION = "Reuse the first sibling result; do not issue another identical call.";
+const NESTED_DUPLICATE_CAUSE = "An identical call from the same Codemode script is still running.";
+const NESTED_DUPLICATE_ACTION = "Await the first call and reuse its result; repeat it only after that call completes.";
 const GENTLE_REPEAT_REMINDER = "You are repeating the same bounded canonical tool call. Re-read the latest result before calling it again; change the arguments or method, or finish if the available evidence is sufficient.";
 const READ_ONLY_TOOLS = new Set([
   "read",
@@ -520,21 +524,26 @@ export function inspectBatchCall(
   toolName: string,
   input: unknown,
   key = callKey(toolName, input),
+  calls = state.batchCalls,
+  /** A nested sibling issued while an identical call ran, then serialized behind it. */
+  overlapped = false,
 ): string | undefined {
-  if (state.batchCalls.has(key)) {
+  if (overlapped || calls.has(key)) {
     state.blocked++;
     state.batchDuplicates++;
+    // A caller-owned set holds in-flight nested children rather than a protocol batch.
+    const nested = calls !== state.batchCalls;
     return JSON.stringify({
       ok: false,
       category: "DUPLICATE_CALL",
       operation: boundedToolName(toolName),
       retryable: false,
       stateChanged: false,
-      cause: "An identical sibling call already exists in the current assistant tool batch.",
-      nextAction: "Reuse the first sibling result; do not issue another identical call.",
+      cause: nested ? NESTED_DUPLICATE_CAUSE : BATCH_DUPLICATE_CAUSE,
+      nextAction: nested ? NESTED_DUPLICATE_ACTION : BATCH_DUPLICATE_ACTION,
     });
   }
-  setBounded(state.batchCalls, key, true);
+  setBounded(calls, key, true);
   return undefined;
 }
 

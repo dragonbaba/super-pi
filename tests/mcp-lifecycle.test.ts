@@ -61,3 +61,26 @@ test("typed MCP recovery stays in session and active branch across restore", () 
 		assert.throws(() => owner.readArtifact(view.artifact!.id, [{ role: "toolResult", toolCallId: "foreign-call", content }]));
 	} finally { owner.dispose(); foreign.dispose(); }
 });
+
+test("MCP refreshed schemas replace stale registrations and removed tools never call the server", async () => {
+	const registrations: any[] = [];
+	let calls = 0;
+	const runtime = new McpBridgeRuntime({ registerTool(tool: any) { registrations.push(tool); } }, "catalog-fixture");
+	const state = { status: "connected", config: { id: "fixture", toolTimeoutMs: 1000 }, tools: new Map([["lookup", {}]]), client: {
+		async callTool() { calls++; return { content: [] }; }, async close() {},
+	} };
+	const first = { name: "lookup", description: "first", inputSchema: { type: "object", properties: { old: { type: "string" } } } };
+	try {
+		runtime.registerRemoteTool(state, first);
+		runtime.registerRemoteTool(state, structuredClone(first));
+		assert.equal(registrations.length, 1, "unchanged catalogs keep definition identity");
+		runtime.registerRemoteTool(state, { ...first, description: "updated", inputSchema: { type: "object", properties: { next: { type: "number" } } } });
+		assert.equal(registrations.length, 2);
+		assert.equal(registrations[1].parameters.properties.next.type, "number");
+		await runtime.callRemoteTool(state, "lookup", {});
+		state.tools.clear();
+		await assert.rejects(runtime.callRemoteTool(state, "lookup", {}), /no longer/);
+		assert.equal(calls, 1);
+	} finally { await runtime.close(); }
+	assert.equal(runtime.registeredSchemas.size, 0);
+});

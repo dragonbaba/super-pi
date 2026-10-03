@@ -33,7 +33,7 @@ export interface SafeSubcommands {
 	gh?: SafeGhSubcommandPath[];
 }
 
-export const SAFE_BUILTIN_PLAN_TOOLS = new Set(["read", "bash", "powershell", "grep", "find", "ls"]);
+export const SAFE_BUILTIN_PLAN_TOOLS = new Set(["codemode", "read", "bash", "powershell", "grep", "find", "ls"]);
 export type PlanModeToolPolicy = "read-only" | "limited" | "user-opt-in" | "blocked";
 
 const BLOCKED_BUILTIN_TOOLS = new Set(["edit", "write"]);
@@ -110,7 +110,7 @@ export function classifyPlanModeTool(tool: ToolInfo): PlanModeToolPolicy {
   if (tool.name === "delete" || tool.name === "move" || tool.name === "file_batch") return "blocked";
 	if (!isBuiltinTool(tool)) return "user-opt-in";
 	if (BLOCKED_BUILTIN_TOOLS.has(tool.name)) return "blocked";
-	if (tool.name === "bash" || tool.name === "powershell") return "limited";
+	if (tool.name === "bash" || tool.name === "powershell" || tool.name === "codemode") return "limited";
 	return SAFE_BUILTIN_PLAN_TOOLS.has(tool.name) ? "read-only" : "blocked";
 }
 

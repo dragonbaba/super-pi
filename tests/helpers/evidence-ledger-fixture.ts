@@ -41,6 +41,10 @@ export async function fixture(enabled = true, owner = true, extensions: InlineEx
 	}
 	const internals = session as unknown as { _evidenceLedger?: EvidenceLedger; _toolResultPresentation?: ToolResultPresentationOwner; _evidenceCompletedReads?: Map<string, unknown>; _evidenceCompletedBytes: number; _refreshToolRegistry(): void };
 	async function runCalls(calls: Array<{ name: string; arguments: Record<string, unknown>; id?: string }>) {
+		// Exercise the native ToolResult/Evidence Ledger protocol explicitly. Default
+		// Codemode projection/guard semantics are covered by codemode-session.test.ts.
+		for (const tool of session.agent.state.tools) tool.modelExposure = undefined;
+		session.agent.state.tools = session.agent.state.tools;
 		const contexts: Context[] = [];
 		let dispatched = false;
 		session.agent.streamFunction = (model, context) => {

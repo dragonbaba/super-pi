@@ -26,7 +26,8 @@ export default function (pi) {
         if (!snapshot || !start) throw new Error("Formal source read did not issue snapshot anchors.");
         call = { name: "edit", arguments: { path, snapshot, edits: [{ kind: "replace", start, newLines: ["snapshot"] }] } };
       }
-      if (call) { message.content.push({ type: "toolCall", id: `native-source-${turn}`, ...call }); message.stopReason = "toolUse"; }
+      if (call) { message.content.push({ type: "toolCall", id: `native-source-${turn}`, name: "codemode",
+        arguments: { code: `const r = await callTool(${JSON.stringify(call.name)}, ${JSON.stringify(call.arguments)}); await show(r.ref);` } }); message.stopReason = "toolUse"; }
       else message.content.push({ type: "text", text: "NATIVE_SOURCE_COMPLETE" });
       turn++;
       stream.push({ type: "done", reason: message.stopReason, message });

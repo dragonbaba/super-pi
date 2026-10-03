@@ -116,7 +116,7 @@ test("AgentSession preserves active tools while a no-tool model is selected and 
 	});
 	t.after(() => session.dispose());
 
-	assert.deepEqual(session.getActiveToolNames(), ["read"]);
+	assert.deepEqual(session.getActiveToolNames(), ["read", "codemode"]);
 	assert.equal(session.systemPrompt.includes("Available tools:"), false);
 	let compactionCalls = 0;
 	(session as unknown as { _providerRequestCompactor: (input: unknown) => Promise<unknown> })._providerRequestCompactor = async () => {
@@ -132,10 +132,10 @@ test("AgentSession preserves active tools while a no-tool model is selected and 
 	assert.equal(disabledCompaction, undefined);
 	assert.equal(compactionCalls, 0);
 	await session.setModel(toolModel);
-	assert.deepEqual(session.getActiveToolNames(), ["read"]);
+	assert.deepEqual(session.getActiveToolNames(), ["read", "codemode"]);
 	assert.equal(session.systemPrompt.includes("Available tools:"), true);
 	await session.setModel(noToolModel);
-	assert.deepEqual(session.getActiveToolNames(), ["read"]);
+	assert.deepEqual(session.getActiveToolNames(), ["read", "codemode"]);
 	assert.equal(session.systemPrompt.includes("Available tools:"), false);
 	const remoteModel: Model<"openai-codex-responses"> = {
 		...noToolModel,

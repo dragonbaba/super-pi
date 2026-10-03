@@ -10,6 +10,9 @@ interface JsonSchemaObject {
 
 class UnsupportedStrictJsonSchemaError extends Error {}
 
+/** Provider-specific strict schema restrictions, evaluated only at schema nodes. */
+export type UnsupportedStrictSchemaKeywordCheck = (key: string, value: unknown) => boolean;
+
 const UNSUPPORTED_STRICT_SCHEMA_KEYS = [
 	"$ref",
 	"$defs",
@@ -46,10 +49,17 @@ function schemaAllowsNull(schema: unknown): boolean {
 	return Array.isArray(schema.anyOf) && schema.anyOf.some((variant) => schemaAllowsNull(variant));
 }
 
-function makeJsonSchemaNodeStrict(schema: unknown): void {
+function makeJsonSchemaNodeStrict(schema: unknown, isUnsupportedKeyword?: UnsupportedStrictSchemaKeywordCheck): void {
 	if (!isJsonSchemaObject(schema)) throw new UnsupportedStrictJsonSchemaError("boolean schemas are unsupported");
 	for (const key of UNSUPPORTED_STRICT_SCHEMA_KEYS) {
 		if (schema[key] !== undefined) throw new UnsupportedStrictJsonSchemaError(`${key} schemas are unsupported`);
+	}
+	if (isUnsupportedKeyword) {
+		for (const key of Object.keys(schema)) {
+			if (isUnsupportedKeyword(key, schema[key])) {
+				throw new UnsupportedStrictJsonSchemaError(`${key} is unsupported by this provider`);
+			}
+		}
 	}
 	if (schema.anyOf !== undefined) {
 		if (!Array.isArray(schema.anyOf) || schema.anyOf.length === 0) {
@@ -59,12 +69,12 @@ function makeJsonSchemaNodeStrict(schema: unknown): void {
 			if (isStructuredSchema(variant)) {
 				throw new UnsupportedStrictJsonSchemaError("object and array unions are unsupported");
 			}
-			makeJsonSchemaNodeStrict(variant);
+			makeJsonSchemaNodeStrict(variant, isUnsupportedKeyword);
 		}
 	}
 	if (schema.items !== undefined) {
 		if (Array.isArray(schema.items)) throw new UnsupportedStrictJsonSchemaError("tuple schemas are unsupported");
-		makeJsonSchemaNodeStrict(schema.items);
+		makeJsonSchemaNodeStrict(schema.items, isUnsupportedKeyword);
 	}
 	const isObjectSchema = schema.type === "object";
 	if (schema.properties !== undefined && !isObjectSchema) {
@@ -90,7 +100,7 @@ function makeJsonSchemaNodeStrict(schema: unknown): void {
 		throw new UnsupportedStrictJsonSchemaError("required contains an unknown property");
 	}
 	for (const [key, property] of Object.entries(properties)) {
-		makeJsonSchemaNodeStrict(property);
+		makeJsonSchemaNodeStrict(property, isUnsupportedKeyword);
 		if (!required.has(key) && !schemaAllowsNull(property)) {
 			setOwnProperty(properties, key, { anyOf: [property, { type: "null" }] });
 		}
@@ -99,10 +109,13 @@ function makeJsonSchemaNodeStrict(schema: unknown): void {
 	schema.additionalProperties = false;
 }
 
-export function makeStrictJsonSchema(schema: Tool["parameters"]): Tool["parameters"] {
+export function makeStrictJsonSchema(
+	schema: Tool["parameters"],
+	isUnsupportedKeyword?: UnsupportedStrictSchemaKeywordCheck,
+): Tool["parameters"] {
 	const cloned = structuredClone(schema) as unknown;
 	if (!isJsonSchemaObject(cloned)) throw new UnsupportedStrictJsonSchemaError("root schema must have type object");
-	makeJsonSchemaNodeStrict(cloned);
+	makeJsonSchemaNodeStrict(cloned, isUnsupportedKeyword);
 	if (cloned.type !== "object") throw new UnsupportedStrictJsonSchemaError("root schema must have type object");
 	return cloned as Tool["parameters"];
 }
@@ -186,7 +199,11 @@ function inferGrammarInputProperty(tool: Tool): string {
 	return inputProperty;
 }
 
-export function resolveJsonSchemaStrictSampling(tool: Tool, supportsStrictMode: boolean): boolean | undefined {
+export function resolveJsonSchemaStrictSampling(
+	tool: Tool,
+	supportsStrictMode: boolean,
+	isUnsupportedKeyword?: UnsupportedStrictSchemaKeywordCheck,
+): boolean | undefined {
 	const config = tool.constrainedSampling;
 	if (!config || config.type !== "json_schema") {
 		return undefined;
@@ -194,7 +211,7 @@ export function resolveJsonSchemaStrictSampling(tool: Tool, supportsStrictMode: 
 
 	if (supportsStrictMode) {
 		try {
-			makeStrictJsonSchema(tool.parameters);
+			makeStrictJsonSchema(tool.parameters, isUnsupportedKeyword);
 			return true;
 		} catch (error) {
 			if (!(error instanceof UnsupportedStrictJsonSchemaError)) throw error;

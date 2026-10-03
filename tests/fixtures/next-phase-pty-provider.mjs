@@ -9,7 +9,7 @@ export default function ptyProvider(pi) {
     models: [{ id: "fixture", name: "fixture", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 4096 }],
     streamSimple(model) {
       const stream = new AssistantMessageEventStream(), first = requests++ === 0;
-      const message = { role: "assistant", content: first ? [{ type: "toolCall", id: "pty-read", name: "read", arguments: { path: "ready.txt" } }] : [{ type: "text", text: "N4_PTY_TOOL_EXECUTED" }],
+      const message = { role: "assistant", content: first ? [{ type: "toolCall", id: "pty-read", name: "codemode", arguments: { code: 'const r=await tools.read({path:"ready.txt"}); await show(r.ref)' } }] : [{ type: "text", text: "N4_PTY_TOOL_EXECUTED" }],
         api: model.api, provider: model.provider, model: model.id, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: first ? "toolUse" : "stop", timestamp: Date.now() };
       stream.push({ type: "done", reason: message.stopReason, message }); return stream;
     } });
@@ -18,7 +18,7 @@ export default function ptyProvider(pi) {
     if (!model || !await pi.setModel(model)) throw new Error("PTY fixture model unavailable.");
   });
   pi.on("tool_result", function completed(event) {
-    if (event.toolCallId !== "pty-read") return;
+    if (event.toolCallId !== "pty-read:nested:1") return;
     let found = false;
     for (const block of event.content) if (block.type === "text" && block.text.includes("N4_PTY_ACTUAL_READ_中文")) found = true;
     if (event.isError || !found) throw new Error("Actual default read did not return the fixture bytes.");

@@ -750,7 +750,7 @@ test("AgentSession awaits only explicit critical listeners and isolates final re
 		release = resolve;
 	});
 	const events: string[] = [];
-	const session = Object.create(AgentSession.prototype) as unknown as {
+	const session = Object.assign(Object.create(AgentSession.prototype), { _codemode: { discardVisibleReads() {} } }) as unknown as {
 		_eventListeners: Array<{
 			listener: (event: unknown) => void | Promise<void>;
 			criticalAgentEnd: boolean;
@@ -798,7 +798,7 @@ test("AgentSession awaits only explicit critical listeners and isolates final re
 
 test("AgentSession bounds the complete critical agent_end listener lane", async () => {
 	const events: string[] = [];
-	const session = Object.create(AgentSession.prototype) as unknown as {
+	const session = Object.assign(Object.create(AgentSession.prototype), { _codemode: { discardVisibleReads() {} } }) as unknown as {
 		_eventListeners: Array<{
 			listener: (event: unknown) => void | Promise<void>;
 			criticalAgentEnd: boolean;
@@ -829,7 +829,7 @@ test("AgentSession bounds the complete critical agent_end listener lane", async 
 });
 
 test("AgentSession observes ordinary async listener rejection without awaiting pending listeners", async () => {
-	const session = Object.create(AgentSession.prototype) as unknown as {
+	const session = Object.assign(Object.create(AgentSession.prototype), { _codemode: { discardVisibleReads() {} } }) as unknown as {
 		_eventListeners: Array<{
 			listener: (event: unknown) => void | Promise<void>;
 			criticalAgentEnd: boolean;
@@ -3002,7 +3002,7 @@ test("Bounded Agent observer and session delivery preserve synchronous UI lanes"
 test("AgentSession observer bridge source is synchronous before extension coalescing", () => {
 	const published: unknown[] = [];
 	const delivered: unknown[] = [];
-	const session = Object.create(AgentSession.prototype) as unknown as {
+	const session = Object.assign(Object.create(AgentSession.prototype), { _codemode: { discardVisibleReads() {} } }) as unknown as {
 		_eventListeners: Array<{
 			listener: (event: unknown) => void;
 			criticalAgentEnd: boolean;

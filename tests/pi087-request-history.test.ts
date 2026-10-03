@@ -67,7 +67,7 @@ test("final Chat wire excludes failed attempts across retry, resume, branch and 
 	} as unknown as ModelRuntime;
 	const options = { cwd: root, agentDir: root, model, modelRuntime: runtime, settingsManager: settings,
 		sessionManager: manager, resourceLoader: resources, tools: ["lookup"], customTools: [{
-			name: "lookup", label: "Lookup", description: "Synthetic lookup", parameters: Type.Object({}),
+			name: "lookup", modelOnly: true, label: "Lookup", description: "Synthetic direct lookup", parameters: Type.Object({}),
 			execute: async () => { executions++; return { content: [{ type: "text" as const, text: "unexpected" }], details: {} }; },
 		}] };
 	let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;

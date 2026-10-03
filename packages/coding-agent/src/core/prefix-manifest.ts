@@ -72,6 +72,8 @@ export interface PrefixManifestBuildInput {
 	systemPrompt: string;
 	/** Tool order is semantic and is never sorted. */
 	tools: readonly PrefixManifestToolInput[];
+	/** Explanatory callable catalog (including Codemode children); never changes effective wire hashes. */
+	logicalToolNames?: readonly string[];
 	/** Precedence is semantic; only sibling identifiers within a precedence are sorted. */
 	persistentContext?: readonly PrefixManifestContextInput[];
 	dynamicInstructionGeneration?: number;
@@ -130,6 +132,7 @@ export interface PrefixDriftDiagnostic {
 interface SegmentMetadata {
 	observationKind: "intent" | "effective";
 	toolOrder: string[];
+	logicalToolNames?: readonly string[];
 	toolSchemas: Map<string, string>;
 	persistentContext: Map<string, string>;
 	requestTransforms: string[];
@@ -483,6 +486,7 @@ export function buildPrefixManifest(input: PrefixManifestBuildInput): PrefixMani
 		observationKind: effective ? "effective" : "intent",
 		toolOrder,
 		toolSchemas,
+		logicalToolNames: input.logicalToolNames?.slice(),
 		persistentContext,
 		requestTransforms,
 	});
@@ -574,6 +578,8 @@ export function comparePrefixManifests(
 		return undefined;
 	}
 	if (systemPromptChanged) {
+		const changedLogicalTools = symmetricDifference(previousMetadata?.logicalToolNames ?? [], currentMetadata?.logicalToolNames ?? []);
+		if (changedLogicalTools.length) return diagnostic(previous, current, "system-prompt", "TOOL_ACTIVATED", true, changedLogicalTools);
 		if (toolSetChanged) {
 			return diagnostic(previous, current, "system-prompt", "TOOL_ACTIVATED", true, changedTools);
 		}

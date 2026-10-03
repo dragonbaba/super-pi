@@ -8,6 +8,8 @@
 			"@super-pi/ai": ["../ai/dist/index.d.ts"],
 			"@super-pi/ai/*": ["../ai/dist/*.d.ts", "../ai/dist/providers/*.d.ts"],
 			"@super-pi/client": ["../client/dist/index.d.ts"],
+			"@super-pi/codemode": ["../codemode/dist/index.d.ts"],
+			"@super-pi/codemode/*": ["../codemode/dist/*.d.ts"],
 			"@super-pi/protocol": ["../protocol/dist/index.d.ts"],
 			"@super-pi/tui": ["../tui/dist/index.d.ts"],
 			"@super-pi/tui/*": ["../tui/dist/*.d.ts", "../tui/dist/components/*.d.ts"]

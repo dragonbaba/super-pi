@@ -12,6 +12,7 @@ import {
 import { VERSION } from "../config.ts";
 import { fetchWithRetry } from "../utils/management-http.ts";
 import { getPiUserAgent } from "../utils/pi-user-agent.ts";
+import { mergeCatalogModels } from "./model-catalog-merge.ts";
 
 const DEFAULT_CATALOG_BASE_URL = "https://pi.dev";
 // Keep each provider request inside the caller's aggregate refresh budget. A slow
@@ -19,16 +20,6 @@ const DEFAULT_CATALOG_BASE_URL = "https://pi.dev";
 const REMOTE_CATALOG_REQUEST_TIMEOUT_MS = 10_000;
 const REMOTE_CATALOG_MAX_RETRIES = 1;
 export const REMOTE_CATALOG_REFRESH_INTERVAL_MS = 4 * 60 * 60 * 1000;
-
-function mergeModels(baseline: readonly Model<Api>[], dynamic: readonly Model<Api>[]): Model<Api>[] {
-	const merged = [...baseline];
-	for (const model of dynamic) {
-		const index = merged.findIndex((entry) => entry.id === model.id);
-		if (index >= 0) merged[index] = model;
-		else merged.push(model);
-	}
-	return merged;
-}
 
 function parseCatalog(providerId: string, value: unknown): Model<Api>[] {
 	const entries = Array.isArray(value)
@@ -78,7 +69,7 @@ export function withRemoteCatalog(
 
 	return {
 		...provider,
-		getModels: () => (mergedModels ??= mergeModels(provider.getModels(), dynamicModels)),
+		getModels: () => (mergedModels ??= mergeCatalogModels(provider.getModels(), dynamicModels)),
 		refreshModels: async (context) => {
 			const stored = context.stored;
 			const legacyRuntimeProfile = stored !== undefined && stored.profileRevision !== MODELS_STORE_PROFILE_REVISION;
