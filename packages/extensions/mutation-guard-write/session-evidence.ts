@@ -508,7 +508,8 @@ export async function restoreMutationEvidenceFromBranch(
     const entry = branch[index] as SessionEntryShape;
     const custom = entry as any;
     if (custom?.type === "custom" && custom.customType === CODEMODE_READ_EVIDENCE_ENTRY) {
-      try { await restoreCodemodeRead(guard, cwd, branch, index, start, custom.data); }
+      // The parent result may sit just before the retained tail; search the bounded pairing prefix too.
+      try { await restoreCodemodeRead(guard, cwd, branch, index, pairingStart, custom.data); }
       catch { /* Fail closed like every restored receipt. */ }
       continue;
     }

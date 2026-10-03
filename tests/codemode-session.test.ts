@@ -458,3 +458,34 @@ test("a shown read answered by a final text response is persisted before reload"
 	assert.equal(outcome.results.at(-1)?.isError, false, JSON.stringify(outcome.results.at(-1)));
 	assert.equal(readFileSync(join(f.cwd, "file.txt"), "utf8"), "edited\nworld\n");
 });
+
+test("the long-running subagent tool stays directly declared instead of being forced into Codemode", async t => {
+	const f = await fixture(t, {}, [], true);
+	const subagent = f.session.agent.state.tools.find(tool => tool.name === "subagent");
+	assert.ok(subagent, "bundled subagent extension registers its tool");
+	assert.equal(subagent.modelOnly, true);
+	assert.equal(subagent.modelExposure, undefined);
+	assert.ok(f.session.agent.state.modelTools?.includes(subagent), "declared to the provider directly");
+	const outcome = await f.run(['await callTool("subagent", {agent:"scout", task:"x"})']);
+	assert.equal(outcome.results[0]?.isError, true);
+	assert.match(JSON.stringify(outcome.results[0]?.content), /direct model call/);
+});
+
+test("a Codemode read whose parent result sits just before the retained tail is still restored", async t => {
+	const f = await fixture(t, { tools: ["read", "edit"] }, [mutation]);
+	await f.run(['await show((await tools.read({path:"file.txt"})).ref)']);
+	let branch = f.manager.getBranch();
+	const marker = branch.findIndex(e => e.type === "custom" && e.customType === "codemode-read-evidence-v1");
+	const parent = branch.findIndex(e => e.type === "message" && e.message.role === "toolResult" && e.message.toolName === "codemode");
+	assert.ok(parent >= 0 && parent < marker);
+	// Restoration keeps the last 512 entries: place the marker first in that tail, its parent outside.
+	for (let fill = marker + 512 - branch.length; fill > 0; fill--) f.manager.appendCustomEntry("restore-window-filler", {});
+	branch = f.manager.getBranch();
+	assert.equal(branch.length - 512, marker);
+	const errors: unknown[] = [];
+	await f.session.bindExtensions({ onError: error => errors.push(error) });
+	await f.session.reload();
+	assert.deepEqual(errors, []);
+	const outcome = await f.run(['await tools.edit({path:"file.txt",edits:[{oldText:"hello",newText:"edited"}]})']);
+	assert.equal(outcome.results.at(-1)?.isError, false, JSON.stringify(outcome.results.at(-1)));
+});

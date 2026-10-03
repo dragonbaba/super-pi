@@ -401,3 +401,20 @@ CI 失败：`npm run check`（tsgo）在 `tests/codemode-tree.test.ts` 报 TS230
 - `npm run check`、`npm run build:offline` 退出 0；`git diff --check` 通过。
 - 全套 `npm test`（PowerShell）：219 个执行单元全部退出 0；3,243 项中 3,153 通过、90 跳过（平台条件），失败/取消/todo 为 0。
 - 尚未提交。
+
+### PR #55 八次复审修复（ebea295c1 之后）
+
+ebea295c1 的 CI（verify-linux、verify-windows）均通过。Codex 提出 3 条：
+
+| 复审问题 | 核实 | 修复 | 回归（去掉修复后均失败） |
+| --- | --- | --- | --- |
+| P1 subagent 被强制放进 Codemode | 成立：注册表把非控制工具一律标为 nested；subagent 默认 30 分钟、最长 2 小时，而 Codemode 默认 60 秒、最长 300 秒 | subagent 工具声明 `modelOnly: true`（`ToolDefinition` 已有字段），保持直接声明，脚本内调用会被拒绝 | 加载内置扩展后，subagent 为 `modelOnly`、出现在 provider 声明中；脚本 `callTool("subagent")` 被拒绝 |
+| P2 恢复时父结果正好在保留窗口之外 | 成立：`restoreCodemodeRead` 只从 `start` 往前找，条目落在 512 条窗口开头、父结果在窗口外一两条时会丢失 | 和原生调用配对一样，搜索范围扩到有界的 `pairingStart` 前缀 | 填充记录使条目恰好位于窗口首位、父结果在窗口外，reload 后 edit 成功 |
+| P2 读证据等下一次工具调用才持久化（agent-session.ts:1108） | 重复报告：ebea295c1 已改为在成功的 assistant `message_end` 时持久化，有"以文本结束一轮后 reload"的测试 | 无代码修改 | 既有测试通过 |
+
+已知限制：bash/powershell 没有默认超时，但在 Codemode 中受脚本上限约束（默认 60 秒、最长 300 秒），超过 5 分钟的命令无法在默认路径完成。这是 Codemode 作为默认执行路径的设计取舍，本轮未改动。
+
+验证：
+
+- `npm run check`、`npm run build:offline` 退出 0；`git diff --check` 通过。
+- 全套 `npm test`（PowerShell）：219 个执行单元全部退出 0；3,245 项中 3,155 通过、90 跳过，失败/取消/todo 为 0。
