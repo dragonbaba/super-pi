@@ -8,6 +8,11 @@ on:
 permissions:
   contents: read
 
+# A newer push to the same PR supersedes the running verification.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   verify-linux:
     runs-on: ubuntu-latest
@@ -44,6 +49,10 @@ jobs:
         with:
           node-version: 22.19.x
           cache: npm
+      # Real-time scanning inspects every spawned test process on this ephemeral runner.
+      - name: Disable Defender real-time scanning
+        shell: pwsh
+        run: Set-MpPreference -DisableRealtimeMonitoring $true
       - run: npm ci
       - run: npm run check
       - run: npm run build:offline

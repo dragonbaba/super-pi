@@ -6,9 +6,18 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 import {
 	classifyTestFile,
+	defaultJobs,
 	discoverTestFiles,
 	normalizeTestPath,
+	scheduleTestFiles,
 } from "../scripts/test.mjs";
+
+function runRunner(root: string, ...extra: string[]) {
+	return spawnSync(process.execPath, [join(process.cwd(), "scripts", "test.mjs"),
+		"--suite", "unit", "--root", root, "--skip-memory", ...extra], {
+		encoding: "utf8", env: { ...process.env, NODE_TEST_CONTEXT: undefined, SP_TEST_JOBS: undefined },
+	});
+}
 
 test("test discovery is stable and platform-neutral", () => {
 	const root = mkdtempSync(join(tmpdir(), "super-pi-test-runner-"));
@@ -93,6 +102,65 @@ test('isolated GC fixture', () => {
 		const observed = JSON.parse(readFileSync(report, "utf8"));
 		assert.notEqual(observed.cwd, process.cwd());
 		assert.equal(existsSync(observed.cwd), false, "runner releases only its owned fixture directory");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("runner schedules known slow files first and bounds the default width", () => {
+	assert.deepEqual(
+		scheduleTestFiles(["a.test.ts", "codemode-session.test.ts", "b.test.ts", "alpha-cli.test.ts"]),
+		["alpha-cli.test.ts", "codemode-session.test.ts", "a.test.ts", "b.test.ts"],
+	);
+	assert.equal(defaultJobs({ SP_TEST_JOBS: "3" }), 3);
+	assert.ok(defaultJobs({}) >= 1 && defaultJobs({}) <= 8);
+	assert.throws(() => defaultJobs({ SP_TEST_JOBS: "0" }), /positive integer/);
+});
+
+test("parallel runner overlaps files and keeps each file's output in one block", () => {
+	const root = mkdtempSync(join(tmpdir(), "super-pi-test-parallel-"));
+	try {
+		// Each file waits for the other's marker, so both pass only when they run concurrently.
+		for (const [self, other] of [["left", "right"], ["right", "left"]]) {
+			writeFileSync(join(root, `${self}.test.ts`), `
+import { existsSync, writeFileSync } from 'node:fs';
+import test from 'node:test';
+test('${self} overlaps ${other}', async () => {
+  writeFileSync(${JSON.stringify(join(root, self))}, '');
+  const deadline = Date.now() + 20000;
+  while (!existsSync(${JSON.stringify(join(root, other))})) {
+    if (Date.now() > deadline) throw new Error('${other} never started');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  console.log('${self}-output');
+});
+`);
+		}
+		const result = runRunner(root, "--jobs", "2");
+		assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+		for (const name of ["left", "right"]) {
+			// The file's own output sits between its START and END lines, never after another END.
+			const start = result.stdout.indexOf(`[test] START ${name}.test.ts`);
+			const output = result.stdout.indexOf(`${name}-output`);
+			const end = result.stdout.indexOf(`[test] END ${name}.test.ts ms=`);
+			assert.ok(start >= 0 && start < output && output < end, result.stdout);
+			assert.equal(result.stdout.slice(output, end).includes("[test] END"), false, result.stdout);
+			assert.equal(result.stdout.split(`[test] START ${name}.test.ts`).length, 2);
+		}
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("runner starts no new file after the first failure", () => {
+	const root = mkdtempSync(join(tmpdir(), "super-pi-test-stop-"));
+	try {
+		writeFileSync(join(root, "a-failure.test.ts"), "process.exit(7);\n");
+		writeFileSync(join(root, "b-later.test.ts"), 'import test from "node:test"; test("later", () => {});\n');
+		const result = runRunner(root, "--jobs", "1");
+		assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+		assert.match(result.stderr, /a-failure\.test\.ts failed with exit code 1/);
+		assert.doesNotMatch(result.stdout, /START b-later/);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

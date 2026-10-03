@@ -1,8 +1,8 @@
 import { existsSync, readdirSync, mkdtempSync, mkdirSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { availableParallelism, tmpdir } from "node:os";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 
 const SCRIPT_DIRECTORY = dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = resolve(SCRIPT_DIRECTORY, "..");
@@ -24,6 +24,15 @@ const GC_TESTS = new Set([
 	"alpha-assistant-update.test.ts", "alpha-markdown-ownership.test.ts",
 	"alpha-raw-parallel.test.ts", "alpha-startup-quit.test.ts",
 ]);
+// Started first so the longest files do not extend the tail of a parallel run.
+// Order only; every discovered file still runs exactly once.
+const SLOW_TESTS = [
+	"alpha-raw-parallel.test.ts", "alpha-cli.test.ts", "alpha-startup-faults.test.ts",
+	"shell-incident-launcher.test.mjs", "tui-frame-queue.test.ts", "alpha-raw-session.test.ts",
+	"bash-running-responsiveness.test.ts", "next-phase-task-matrix.test.ts", "codemode-session.test.ts",
+];
+const MAX_DEFAULT_JOBS = 8;
+const MEMORY_LABEL = "@super-pi/memory workspace";
 
 function compareCodeUnits(left, right) {
 	return left < right ? -1 : left > right ? 1 : 0;
@@ -65,8 +74,19 @@ export function discoverTestFiles(root = DEFAULT_TEST_ROOT) {
 	return discovered.sort(compareCodeUnits);
 }
 
+function parseJobs(value, source) {
+	const jobs = Number(value);
+	if (!Number.isInteger(jobs) || jobs < 1) throw new Error(`${source} must be a positive integer`);
+	return jobs;
+}
+
+export function defaultJobs(env = process.env) {
+	if (env.SP_TEST_JOBS !== undefined && env.SP_TEST_JOBS !== "") return parseJobs(env.SP_TEST_JOBS, "SP_TEST_JOBS");
+	return Math.max(1, Math.min(availableParallelism(), MAX_DEFAULT_JOBS));
+}
+
 function parseArguments(argv) {
-	const options = { suite: "all", root: DEFAULT_TEST_ROOT, skipMemory: false, list: false };
+	const options = { suite: "all", root: DEFAULT_TEST_ROOT, skipMemory: false, list: false, jobs: undefined };
 	for (let index = 0; index < argv.length; index++) {
 		const argument = argv[index];
 		if (argument === "--suite") {
@@ -77,6 +97,8 @@ function parseArguments(argv) {
 			options.skipMemory = true;
 		} else if (argument === "--list") {
 			options.list = true;
+		} else if (argument === "--jobs") {
+			options.jobs = parseJobs(argv[++index], "--jobs");
 		} else {
 			throw new Error(`Unknown test runner argument: ${argument}`);
 		}
@@ -84,42 +106,78 @@ function parseArguments(argv) {
 	if (!new Set(["all", "unit", "hot", "contract"]).has(options.suite)) {
 		throw new Error(`Unknown test suite: ${options.suite}`);
 	}
+	options.jobs ??= defaultJobs();
 	return options;
 }
 
+/** Slow files first, in their listed order; everything else keeps discovery order. */
+export function scheduleTestFiles(files) {
+	const slow = [];
+	for (const file of SLOW_TESTS) if (files.includes(file)) slow.push(file);
+	if (slow.length === 0) return files;
+	const scheduled = slow.slice();
+	for (const file of files) if (!SLOW_TESTS.includes(file)) scheduled.push(file);
+	return scheduled;
+}
+
+// Output is buffered per child and printed as one block, so parallel files never interleave.
 function runChild(label, command, args, cwd) {
 	const root = mkdtempSync(resolve(tmpdir(), "super-pi-test-"));
 	const started = performance.now();
 	console.log(`[test] START ${label}`);
-	let child;
-	try {
-		mkdirSync(resolve(root, "agent"));
-		mkdirSync(resolve(root, "sessions"));
-		child = spawnSync(command, args, {
-			cwd: cwd ?? root, stdio: "inherit",
-			env: { ...process.env, HOME: root, USERPROFILE: root, XDG_CONFIG_HOME: root,
-				SP_CODING_AGENT_DIR: resolve(root, "agent"), SP_CODING_AGENT_SESSION_DIR: resolve(root, "sessions"),
-				SP_OFFLINE: "1", SP_TUI_WRITE_LOG: "" },
-		});
-	} finally {
-		// Only remove this invocation's exact, directly-created temporary child.
-		if (dirname(root) !== resolve(tmpdir())) throw new Error("temporary root escaped");
-		rmSync(root, { recursive: true, force: true });
-		console.log(`[test] END ${label} ms=${Math.round(performance.now() - started)} exit=${child?.status ?? "none"} signal=${child?.signal ?? "none"}`);
-	}
-	if (child.error) {
-		console.error(`[test] ${label} failed to start: ${child.error.message}`);
-		return 1;
-	}
-	if (child.status !== 0) {
-		const exitCode = child.status ?? 1;
-		console.error(`[test] ${label} failed with exit code ${exitCode}`);
-		return exitCode;
-	}
-	return 0;
+	const output = [];
+	return new Promise((settle) => {
+		let child;
+		const finish = (status, signal, error) => {
+			let exitCode = 0;
+			try {
+				// Only remove this invocation's exact, directly-created temporary child.
+				if (dirname(root) !== resolve(tmpdir())) throw new Error("temporary root escaped");
+				rmSync(root, { recursive: true, force: true });
+			} finally {
+				for (const [stream, chunk] of output) stream.write(chunk);
+				console.log(`[test] END ${label} ms=${Math.round(performance.now() - started)} exit=${status ?? "none"} signal=${signal ?? "none"}`);
+				if (error) {
+					console.error(`[test] ${label} failed to start: ${error.message}`);
+					exitCode = 1;
+				} else if (status !== 0) {
+					exitCode = status ?? 1;
+					console.error(`[test] ${label} failed with exit code ${exitCode}`);
+				}
+				settle(exitCode);
+			}
+		};
+		try {
+			mkdirSync(resolve(root, "agent"));
+			mkdirSync(resolve(root, "sessions"));
+			child = spawn(command, args, {
+				cwd: cwd ?? root, stdio: ["ignore", "pipe", "pipe"],
+				env: { ...process.env, HOME: root, USERPROFILE: root, XDG_CONFIG_HOME: root,
+					SP_CODING_AGENT_DIR: resolve(root, "agent"), SP_CODING_AGENT_SESSION_DIR: resolve(root, "sessions"),
+					SP_OFFLINE: "1", SP_TUI_WRITE_LOG: "" },
+			});
+		} catch (error) {
+			finish(undefined, undefined, error);
+			return;
+		}
+		child.stdout.on("data", (chunk) => output.push([process.stdout, chunk]));
+		child.stderr.on("data", (chunk) => output.push([process.stderr, chunk]));
+		let startError;
+		child.once("error", (error) => { startError = error; });
+		// A failed spawn emits "error" and then "close" with a negative errno status.
+		child.once("close", (status, signal) => finish(status, signal, startError));
+	});
 }
 
-export function run(options) {
+function memoryCommand() {
+	const bundledNpmCli = resolve(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
+	const npmCli = process.env.npm_execpath || (existsSync(bundledNpmCli) ? bundledNpmCli : undefined);
+	return npmCli
+		? { command: process.execPath, args: [npmCli, "test", "--workspace", "@super-pi/memory"] }
+		: { command: "npm", args: ["test", "--workspace", "@super-pi/memory"] };
+}
+
+export async function run(options) {
 	const files = discoverTestFiles(options.root).filter(
 		(file) => options.suite === "all" || classifyTestFile(file) === options.suite,
 	);
@@ -128,39 +186,40 @@ export function run(options) {
 		return 0;
 	}
 
-	for (const file of files) {
-		const absoluteFile = resolve(options.root, file);
-		const args = ["--experimental-strip-types", "--test", absoluteFile];
+	const units = [];
+	for (const file of scheduleTestFiles(files)) {
+		const args = ["--experimental-strip-types", "--test", resolve(options.root, file)];
 		if (GC_TESTS.has(file)) args.unshift("--expose-gc");
-		const exitCode = runChild(file, process.execPath, args, ISOLATED_CWD_TESTS.has(file) ? undefined : REPOSITORY_ROOT);
-		if (exitCode !== 0) return exitCode;
+		units.push({ label: file, command: process.execPath, args, cwd: ISOLATED_CWD_TESTS.has(file) ? undefined : REPOSITORY_ROOT });
 	}
-
 	const includeMemory = !options.skipMemory && (options.suite === "all" || options.suite === "unit");
-	if (includeMemory) {
-		const bundledNpmCli = resolve(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
-		const npmCli = process.env.npm_execpath || (existsSync(bundledNpmCli) ? bundledNpmCli : undefined);
-		const npmCommand = npmCli ? process.execPath : "npm";
-		const npmArguments = npmCli
-			? [npmCli, "test", "--workspace", "@super-pi/memory"]
-			: ["test", "--workspace", "@super-pi/memory"];
-		const exitCode = runChild(
-			"@super-pi/memory workspace",
-			npmCommand,
-			npmArguments,
-			REPOSITORY_ROOT,
-		);
-		if (exitCode !== 0) return exitCode;
+	if (includeMemory) units.push({ label: MEMORY_LABEL, ...memoryCommand(), cwd: REPOSITORY_ROOT });
+	if (units.length === 0) {
+		console.log(`[test] no ${options.suite} tests discovered`);
+		return 0;
 	}
 
-	if (files.length === 0 && !includeMemory) console.log(`[test] no ${options.suite} tests discovered`);
-	return 0;
+	// After the first failure no new child starts; running children finish and report.
+	const jobs = Math.min(options.jobs ?? defaultJobs(), units.length);
+	console.log(`[test] running ${units.length} units with ${jobs} parallel job(s)`);
+	let next = 0, firstFailure = 0;
+	const worker = async () => {
+		while (firstFailure === 0 && next < units.length) {
+			const unit = units[next++];
+			const exitCode = await runChild(unit.label, unit.command, unit.args, unit.cwd);
+			if (exitCode !== 0 && firstFailure === 0) firstFailure = exitCode;
+		}
+	};
+	const workers = [];
+	for (let index = 0; index < jobs; index++) workers.push(worker());
+	await Promise.all(workers);
+	return firstFailure;
 }
 
 const isEntrypoint = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isEntrypoint) {
 	try {
-		process.exitCode = run(parseArguments(process.argv.slice(2)));
+		process.exitCode = await run(parseArguments(process.argv.slice(2)));
 	} catch (error) {
 		console.error(`[test] ${error instanceof Error ? error.message : String(error)}`);
 		process.exitCode = 1;
