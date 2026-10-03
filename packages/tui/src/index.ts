@@ -157,6 +157,7 @@ export {
 	type OverlayMargin,
 	type OverlayOptions,
 	type OverlayUnfocusOptions,
+	releaseComponentRenderCaches,
 	type SizeValue,
 	type TUI,
 	type TuiInputListener,

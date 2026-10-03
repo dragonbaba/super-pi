@@ -24,7 +24,7 @@ import {
 import { MUTATION_RECEIPT_VERSION, MutationWriteGuard, resolveToolPath, sha256 } from "./core.ts";
 import { diagnoseFailedEdit } from "./edit-diagnostics.ts";
 import { SHA256_PATTERN } from "./regex.ts";
-import { primaryReadResultText, readEvidenceRange, restoreMutationEvidenceFromBranch, recordBatchMutationEvidence, recentMutationEntries } from "./session-evidence.ts";
+import { CODEMODE_READ_EVIDENCE_ENTRY, primaryReadResultText, readEvidenceRange, restoreMutationEvidenceFromBranch, recordBatchMutationEvidence, recentMutationEntries } from "./session-evidence.ts";
 import { consumePermissionPathApproval, mutationRequestHash } from "../resource-lifecycle-guard/permission-contract.ts";
 import { registerNativeTools, MUTATION_PROGRESS_ENTRY } from "./native-tools.ts";
 import { renderWriteResult } from "./write-renderer.ts";
@@ -283,8 +283,16 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
   pi.on("codemode_read", async (event, ctx) => {
     // This distinct host event is delivered only after a previous parent result
     // survived model projection. It never originates in VM-provided metadata.
-    await recordDisplayedRead({ toolName: "read", toolCallId: event.toolCallId, input: event.input,
+    const admitted = await recordDisplayedRead({ toolName: "read", toolCallId: event.toolCallId, input: event.input,
       content: event.content, details: event.details, isError: false }, ctx.cwd, turnGeneration - 1);
+    const binding = (admitted?.details as { mutationReadEvidence?: { rejected?: boolean } } | undefined)?.mutationReadEvidence;
+    if (!binding || binding.rejected) return;
+    // Restoration has no nested protocol message; record the binding and where the parent result holds the text.
+    const details = event.details as { window?: unknown; truncation?: unknown } | undefined;
+    try {
+      pi.appendEntry(CODEMODE_READ_EVIDENCE_ENTRY, { version: 1, parentToolCallId: event.parentToolCallId, toolCallId: event.toolCallId,
+        parentContentIndex: event.parentContentIndex, blocks: event.content.length, window: details?.window, truncation: details?.truncation, binding });
+    } catch { /* The live guard keeps this read; a missing record only makes restoration fail closed. */ }
   });
 
   pi.on("tool_result", async (rawEvent, ctx) => {

@@ -10,6 +10,10 @@ const MAX_RESTORE_ENTRIES = 512;
 const MAX_PENDING_TOOL_CALLS = 128;
 const RESTORED_TURN_GENERATION = -1;
 export const MAX_STRUCTURED_MUTATION_RECEIPTS = 512;
+/** Admitted Codemode read: host binding plus the read's position in the persisted parent result. */
+export const CODEMODE_READ_EVIDENCE_ENTRY = "codemode-read-evidence-v1";
+const MAX_CODEMODE_READ_BLOCKS = 256;
+const NO_STORED_INPUT: Record<string, unknown> = Object.freeze({}) as Record<string, unknown>;
 
 export function isBoundedMutationEntryId(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= 256;
@@ -328,6 +332,35 @@ async function restoreRead(
   if (range) await guard.recordRead(cwd, target, text, range.startLine, range.endLine, toolCallId, RESTORED_TURN_GENERATION, range.complete, target);
 }
 
+/**
+ * Nested reads have no protocol message. The text comes from the parent Codemode result in
+ * the same branch at the admitted position; the binding is checked exactly as for a native read.
+ */
+async function restoreCodemodeRead(
+  guard: MutationWriteGuard,
+  cwd: string,
+  branch: readonly unknown[],
+  index: number,
+  start: number,
+  data: any,
+): Promise<void> {
+  const parentId = data?.parentToolCallId, toolCallId = data?.toolCallId, first = data?.parentContentIndex, count = data?.blocks;
+  if (data?.version !== 1 || typeof parentId !== "string" || parentId.length < 1 || parentId.length > 256
+    || typeof toolCallId !== "string" || toolCallId.length > 256 || !toolCallId.startsWith(parentId + ":nested:")
+    || !Number.isSafeInteger(first) || first < 1 || !Number.isSafeInteger(count) || count < 1 || count > MAX_CODEMODE_READ_BLOCKS) return;
+  for (let position = index - 1; position >= start; position--) {
+    const entry = branch[position] as SessionEntryShape;
+    if (entry?.type !== "message" || !entry.message || typeof entry.message !== "object") continue;
+    const message = entry.message as ToolResultMessageShape;
+    if (message.role !== "toolResult" || message.toolCallId !== parentId) continue;
+    if (message.toolName !== "codemode" || !Array.isArray(message.content) || first + count > message.content.length) return;
+    await restoreRead(guard, cwd, { name: "read", input: NO_STORED_INPUT }, { role: "toolResult", toolCallId, toolName: "read",
+      content: message.content.slice(first, first + count),
+      details: { window: data.window, truncation: data.truncation, mutationReadEvidence: data.binding } }, toolCallId);
+    return;
+  }
+}
+
 async function restoreMutation(
   guard: MutationWriteGuard,
   cwd: string,
@@ -474,6 +507,11 @@ export async function restoreMutationEvidenceFromBranch(
   for (let index = start; index < branch.length; index++) {
     const entry = branch[index] as SessionEntryShape;
     const custom = entry as any;
+    if (custom?.type === "custom" && custom.customType === CODEMODE_READ_EVIDENCE_ENTRY) {
+      try { await restoreCodemodeRead(guard, cwd, branch, index, start, custom.data); }
+      catch { /* Fail closed like every restored receipt. */ }
+      continue;
+    }
     if (custom?.type === "custom" && custom.customType === "file-mutation-progress-v2") {
       const data = custom.data;
       const itemId = data?.itemId ?? (typeof data?.toolCallId === "string" && data.toolCallId.length <= 256 ? `${data.toolCallId}:0` : undefined);

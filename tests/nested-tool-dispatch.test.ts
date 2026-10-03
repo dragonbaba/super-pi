@@ -253,3 +253,17 @@ test("a completed nested child keeps its result when execution end delivery fail
 	assert.equal(observed?.observationFailure?.executionIsError, false, "the tool's own outcome stays separate");
 	assert.equal(observed?.observationFailure?.error, content[0]?.text);
 });
+
+test("next-turn tool replacement rebuilds model declarations carried by a spread context", async () => {
+	const script = tool("script", async () => result());
+	const added = tool("added", async () => result());
+	const declared: string[][] = [];
+	let request = 0;
+	const agent = new Agent({ initialState: { tools: [script] }, streamFn: (_model, context) => {
+		declared.push((context.tools ?? []).map(t => t.name));
+		return new FixtureStream(request++ === 0) as never;
+	} });
+	agent.prepareNextTurnWithContext = async ({ context }) => ({ context: { ...context, tools: [...context.tools!, added] } });
+	await agent.prompt("run");
+	assert.deepEqual(declared, [["script"], ["script", "added"]]);
+});

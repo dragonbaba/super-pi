@@ -37,6 +37,8 @@ interface Invocation {
 }
 const EMPTY_TOOLS: readonly AgentTool<any>[] = Object.freeze([]);
 const MAX_SHOWN_READS = 64;
+/** Codemode calls in one assistant batch whose shown reads await the shared projection. */
+const MAX_PENDING_READ_PARENTS = 16;
 const MAX_SHOWN_CHARS = 256 * 1024;
 const TOOL_SIGNATURE_OPTIONS = Object.freeze({ inputMaxChars: 2048 });
 const DEFERRED_DECLARATIONS = "\nMCP declarations are deferred. Filter ALL_TOOLS and use await describeTools([names]) for their current schemas.\n";
@@ -50,6 +52,24 @@ function preview(result: ToolResultMessage): string {
 	return "";
 }
 function compareChildSequence(a: ChildFact, b: ChildFact): number { return (a.sequence ?? 0) - (b.sequence ?? 0); }
+/** The read survived only if its exact blocks occupy their own positions; equal text elsewhere is not this read. */
+function readSurvived(read: CodemodeReadEvent, visible: readonly (TextContent | ImageContent)[]): boolean {
+	const start = read.parentContentIndex, count = read.content.length;
+	if (count === 0 || start < 0 || start + count > visible.length) return false;
+	for (let offset = 0; offset < count; offset++) {
+		const block = read.content[offset]!, shown = visible[start + offset]!;
+		if (block.type !== "text" || shown.type !== "text" || block.text !== shown.text) return false;
+	}
+	return true;
+}
+/** Tool call IDs should be unique; a repeated ID in the same batch is matched once, at its newest result. */
+function hasNewerResult(messages: readonly Message[], index: number, end: number, toolCallId: string): boolean {
+	for (let later = index + 1; later <= end; later++) {
+		const message = messages[later]!;
+		if (message.role === "toolResult" && message.toolCallId === toolCallId) return true;
+	}
+	return false;
+}
 
 /** Session owner. Runtime is imported only at first execution; no VM on the startup path. */
 export class CodemodeController {
@@ -62,6 +82,8 @@ export class CodemodeController {
 	private readonly serializer = new BoundedJson();
 	private readonly displayedReads = new Map<string, CodemodeReadEvent[]>();
 	private visibleReads: CodemodeReadEvent[] = [];
+	/** A projection closed the batch whose reads are in displayedReads; the next script starts a new batch. */
+	private readsProjected = false;
 	private pendingStore: { id: string; writes: CodemodeStoreWrites } | undefined;
 	private restoreError: string | undefined;
 	private closed = false;
@@ -147,30 +169,28 @@ export class CodemodeController {
 		content.push({ type: "text", text: `[CODEMODE_OBSERVATION_FAILED] ${message(error).slice(0, 1000)}. Completed side effects are not rolled back; do not repeat mutations.` });
 		return { ...result, content, isError: true, details: display ? { ...result.details, codemode: { ...display, summaryDigest: digest } } : result.details };
 	}
-	clearReadEvidence(): void { this.displayedReads.clear(); this.visibleReads.length = 0; }
+	clearReadEvidence(): void { this.displayedReads.clear(); this.visibleReads.length = 0; this.readsProjected = false; }
 	discardVisibleReads(): void { this.visibleReads.length = 0; }
 
 	/** Called only on the actual model projection, never previews; exact native blocks must survive. */
 	recordProjection(messages: readonly Message[]): void {
 		this.visibleReads.length = 0;
+		this.readsProjected = true;
 		if (this.displayedReads.size === 0) return;
-		for (let index = messages.length - 1; index >= 0; index--) {
+		// Pending reads belong to the latest tool batch: its contiguous results. Never search
+		// an older batch to compensate for truncation of the current one.
+		let end = messages.length - 1;
+		while (end >= 0 && messages[end]!.role !== "toolResult") end--;
+		for (let index = end; index >= 0; index--) {
 			const result = messages[index]!;
-			if (result.role !== "toolResult" || result.toolName !== CODEMODE_NAME) continue;
+			if (result.role !== "toolResult") break;
+			if (result.toolName !== CODEMODE_NAME) continue;
 			const reads = this.displayedReads.get(result.toolCallId);
-			if (!reads) continue;
+			if (!reads || hasNewerResult(messages, index, end, result.toolCallId)) continue;
 			for (const read of reads) {
-				let matched = true;
-				for (const block of read.content) {
-					let found = false;
-					for (const visible of result.content) if (block.type === "text" && visible.type === "text" && block.text === visible.text) { found = true; break; }
-					if (!found) { matched = false; break; }
-				}
-				if (matched && this.visibleReads.length < MAX_SHOWN_READS) this.visibleReads.push(read);
+				if (this.visibleReads.length >= MAX_SHOWN_READS) return;
+				if (readSurvived(read, result.content)) this.visibleReads.push(read);
 			}
-			// execute() owns at most one pending parent projection. Never search an
-			// older same-ID result to compensate for truncation of the current one.
-			break;
 		}
 	}
 	async admitVisibleReads(emit: (event: CodemodeReadEvent) => Promise<void>): Promise<void> {
@@ -264,11 +284,13 @@ export class CodemodeController {
 			invocation.failed = true; throw new Error("Shown results exceed the display budget; read smaller ranges");
 		}
 		invocation.shownChars += record.chars;
+		const shownIndex = invocation.shown.length;
 		for (const block of record.result.content) invocation.shown.push(block);
 		if (record.result.toolName === "read" && !record.result.isError &&
 			(record.result.content as unknown as Record<symbol, unknown>)[MUTATION_READ_SOURCE] && invocation.reads.length < MAX_SHOWN_READS) {
+			// Offset within shown blocks; execute() adds the final position of the first shown block.
 			invocation.reads.push({ type: "codemode_read", toolCallId: record.result.toolCallId, parentToolCallId: invocation.context.parentToolCallId,
-				input: record.input, content: record.result.content, details: record.result.details });
+				input: record.input, content: record.result.content, details: record.result.details, parentContentIndex: shownIndex });
 		}
 	}
 	private describe(names: unknown): string {
@@ -320,6 +342,8 @@ export class CodemodeController {
 			const content: (TextContent | ImageContent)[] = result.output;
 			if (result.ok && result.value !== undefined) content.push({ type: "text", text: typeof result.value === "string" ? result.value : JSON.stringify(result.value) });
 			if (!result.ok) content.push({ type: "text", text: `[CODEMODE_${result.error.kind.toUpperCase()}] ${result.error.message}` });
+			// The summary is unshifted below; capping keeps a prefix, so retained blocks keep these positions.
+			const shownOffset = content.length + 1;
 			for (const block of invocation.shown) content.push(block);
 			let summary = `[CODEMODE_${failed ? "FAILED" : "OK"}] Child calls: ${invocation.facts.length}.`;
 			for (const fact of invocation.facts) summary += `\n${fact.toolName.slice(0, 80)}: ${fact.executionStatus ?? (fact.isError ? "failed" : "completed")}${fact.executionStatus ? "; exit=" + (fact.exitCode ?? "unknown") : ""}${fact.isError ? " — " + fact.preview.slice(0, 512) : ""}${fact.outputPath ? " Output: " + fact.outputPath : ""}`;
@@ -331,8 +355,12 @@ export class CodemodeController {
 			if (result.ok && !failed) {
 				this.pendingStore = { id: context.parentToolCallId, writes: result.storeWrites };
 			}
-			this.displayedReads.clear();
-			if (invocation.reads.length) this.displayedReads.set(context.parentToolCallId, invocation.reads);
+			if (this.readsProjected) { this.displayedReads.clear(); this.readsProjected = false; }
+			if (invocation.reads.length) {
+				for (const read of invocation.reads) read.parentContentIndex += shownOffset;
+				if (this.displayedReads.size >= MAX_PENDING_READ_PARENTS) this.displayedReads.delete(this.displayedReads.keys().next().value!);
+				this.displayedReads.set(context.parentToolCallId, invocation.reads);
+			}
 			return { content: projected, isError: failed, details: { codemode: { version: 1, scriptOk: result.ok, summaryDigest: codemodeTextDigest(displayedSummary), calls: invocation.facts, runtimeCalls: result.calls } } };
 		} catch (error) {
 			await context.finish();

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, utimesSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, utimesSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +7,8 @@ import { test, type TestContext } from "node:test";
 // The bridge intentionally ships JavaScript; these tests exercise its public runtime contract.
 // @ts-expect-error JavaScript extension has no declaration file
 import { McpOAuth, createOAuthFetch } from "../packages/mcp-bridge/src/oauth.js";
+// @ts-expect-error JavaScript extension has no declaration file
+import mcpBridgeExtension from "../packages/mcp-bridge/src/index.js";
 // @ts-expect-error JavaScript extension has no declaration file
 import { fetchWithHeaders } from "../packages/mcp-bridge/src/bridge.js";
 import { FileAuthStorageBackend } from "../packages/coding-agent/src/core/auth-storage.ts";
@@ -206,4 +208,31 @@ test("a failed login reports its own error when attempt cleanup cannot take the 
   } finally { release(); await held; }
   // The unreleased reservation is bounded by loginUntil rather than lost silently.
   assert.ok(JSON.parse(readFileSync(f.path, "utf8"))[f.owner.key].loginAttempt);
+});
+
+test("a successful logout reports before reload and never uses the replaced command context", async t => {
+  const root = mkdtempSync(join(tmpdir(), "sp-mcp-logout-"));
+  const previous = process.env.SP_CODING_AGENT_DIR, entry = process.argv[1];
+  process.env.SP_CODING_AGENT_DIR = root;
+  // The bridge discovers its host version from the entry script's package.
+  process.argv[1] = join(process.cwd(), "packages", "coding-agent", "src", "cli.ts");
+  t.after(() => {
+    process.argv[1] = entry!;
+    if (previous === undefined) delete process.env.SP_CODING_AGENT_DIR; else process.env.SP_CODING_AGENT_DIR = previous;
+    rmSync(root, { recursive: true, force: true });
+  });
+  mkdirSync(join(root, "config"));
+  writeFileSync(join(root, "config", "mcp.json"), JSON.stringify({ version: 1, servers: { fixture: { transport: "http", url: "https://example.test/mcp", oauth: true, enabled: false } } }));
+  const commands = new Map<string, (args: string, ctx: unknown) => Promise<void>>();
+  const events = new Map<string, (event: unknown, ctx: unknown) => Promise<void>>();
+  mcpBridgeExtension({ registerTool() {}, registerCommand: (name: string, command: { handler: (args: string, ctx: unknown) => Promise<void> }) => { commands.set(name, command.handler); },
+    on: (name: string, handler: (event: unknown, ctx: unknown) => Promise<void>) => { events.set(name, handler); }, getActiveTools: () => [], setActiveTools() {} });
+  await events.get("session_start")!({}, { cwd: root, isProjectTrusted: () => false, hasUI: false, ui: { notify() {} } });
+  const notes: string[] = [];
+  let reloaded = false;
+  const ctx = { get ui() { if (reloaded) throw new Error("stale command context"); return { notify: (text: string, level: string) => { notes.push(`${level}: ${text}`); } }; },
+    reload: async () => { reloaded = true; } };
+  await commands.get("mcp-logout")!("fixture", ctx);
+  assert.equal(reloaded, true);
+  assert.deepEqual(notes, ["info: MCP logout completed for fixture. Reloading MCP servers."]);
 });

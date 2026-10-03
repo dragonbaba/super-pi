@@ -162,10 +162,11 @@ export default function mcpBridgeExtension(pi) {
         try {
           if (action === "login") await owner.login(url => ctx.ui.notify(`Open this URL to authorize ${server.id}:\n${url}`, "info"), signal);
           else await owner.logout(signal);
-          await ctx.reload();
-          ctx.ui.notify(`MCP ${action} completed for ${server.id}.`, "info");
-        } catch { ctx.ui.notify(`MCP ${action} failed or was cancelled. No credentials are shown in diagnostics.`, "error"); }
+        } catch { ctx.ui.notify(`MCP ${action} failed or was cancelled. No credentials are shown in diagnostics.`, "error"); return; }
         finally { if (authController === controller) authController = null; }
+        // Reload replaces this runner and its command context; ctx must not be used afterwards.
+        ctx.ui.notify(`MCP ${action} completed for ${server.id}. Reloading MCP servers.`, "info");
+        await ctx.reload();
       },
     });
   }

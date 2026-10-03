@@ -48,14 +48,16 @@ async function fixture(t: TestContext, options: Pick<CreateAgentSessionOptions, 
 	await session.bindExtensions({});
 	t.after(async () => { session.agent.abort(); await session.agent.waitForIdle(); session.dispose(); rmSync(root, { recursive: true, force: true }); });
 	let id = 0;
-	async function run(scripts: string[], project?: (context: Context) => void, rawCode = false) {
+	// An array entry is one assistant response carrying several Codemode calls.
+	async function run(scripts: (string | string[])[], project?: (context: Context) => void, rawCode = false) {
 		const wires: Context[] = [];
 		let index = 0;
 		session.agent.streamFunction = (_model, context) => {
 			wires.push(context); project?.(context);
 			const code = scripts[index++];
 			const message: AssistantMessage = { role: "assistant", api: "openai-responses", provider: "fixture", model: "fixture", usage: USAGE,
-				content: code === undefined ? [{ type: "text", text: "done" }] : [{ type: "toolCall", id: `script-${++id}`, name: "codemode", arguments: (rawCode ? code : { code }) as never }],
+				content: code === undefined ? [{ type: "text", text: "done" }] : (typeof code === "string" ? [code] : code).map(source =>
+					({ type: "toolCall" as const, id: `script-${++id}`, name: "codemode", arguments: (rawCode ? source : { code: source }) as never })),
 				stopReason: code === undefined ? "stop" : "toolUse", timestamp: id };
 			const stream = new AssistantMessageEventStream();
 			stream.push({ type: "done", reason: message.stopReason as "toolUse" | "stop", message });
@@ -366,4 +368,48 @@ for (const boundary of ["truncated", "changed-file", "context-filter", "payload-
 	});
 	assert.equal(outcome.results[1]?.isError, true, JSON.stringify(outcome.results));
 	assert.ok(readFileSync(join(f.cwd, "file.txt"), "utf8").startsWith("hello\n"));
+});
+
+test("read evidence needs the shown block at its own position, not an equal copy elsewhere", async t => {
+	const f = await fixture(t, { tools: ["read", "edit"] }, [mutation]);
+	writeFileSync(join(f.cwd, "file.txt"), "hello\n" + "visible-data\n".repeat(300));
+	const outcome = await f.run([
+		'// @options: {"max_output_tokens":1800}\nconst r=await tools.read({path:"file.txt"}); text(r.content[0].text); await show(r.ref)',
+		'await tools.edit({path:"file.txt",edits:[{oldText:"hello",newText:"bad"}]})',
+	]);
+	const parent = outcome.results[0]!.content as Array<{ type: string; text: string }>;
+	// Precondition: the printed copy survives intact while the native shown block is truncated.
+	assert.ok(parent[2]!.text.length < parent[1]!.text.length && parent[1]!.text.startsWith(parent[2]!.text), JSON.stringify(parent.map(b => b.text.length)));
+	assert.match(parent.at(-1)!.text, /Codemode output truncated/);
+	assert.equal(outcome.results[1]?.isError, true, JSON.stringify(outcome.results[1]));
+	assert.match(JSON.stringify(outcome.results[1]), /READ_REQUIRED/);
+	assert.ok(readFileSync(join(f.cwd, "file.txt"), "utf8").startsWith("hello\n"));
+});
+
+test("shown reads from every Codemode call in one assistant batch stay admissible", async t => {
+	const f = await fixture(t, { tools: ["read", "edit"] }, [mutation]);
+	const outcome = await f.run([
+		['await show((await tools.read({path:"file.txt"})).ref)', 'text("second call in the same batch")'],
+		'await tools.edit({path:"file.txt",edits:[{oldText:"hello",newText:"changed"}]})',
+	]);
+	assert.equal(outcome.results.length, 3);
+	assert.equal(outcome.results[2]?.isError, false, JSON.stringify(outcome.results[2]));
+	assert.equal(readFileSync(join(f.cwd, "file.txt"), "utf8"), "changed\nworld\n");
+});
+
+for (const tampered of [false, true]) test(`an admitted Codemode read ${tampered ? "with a tampered receipt is not" : "is"} restored after reload`, async t => {
+	const f = await fixture(t, { tools: ["read", "edit"] }, [mutation]);
+	await f.run(['await show((await tools.read({path:"file.txt"})).ref)', 'text("admits the displayed read")']);
+	const saved = f.manager.getBranch().filter(e => e.type === "custom" && e.customType === "codemode-read-evidence-v1") as any[];
+	assert.equal(saved.length, 1);
+	// The producer binding names the original nested call; a receipt re-pointed elsewhere must fail closed.
+	if (tampered) saved[0].data.toolCallId = `${saved[0].data.parentToolCallId}:nested:99`;
+	// Reload emits session_start only for a bound host, as in interactive and RPC modes.
+	const errors: unknown[] = [];
+	await f.session.bindExtensions({ onError: error => errors.push(error) });
+	await f.session.reload();
+	assert.deepEqual(errors, []);
+	const outcome = await f.run(['await tools.edit({path:"file.txt",edits:[{oldText:"hello",newText:"edited"}]})']);
+	assert.equal(outcome.results.at(-1)?.isError, tampered, JSON.stringify(outcome.results.at(-1)));
+	assert.equal(readFileSync(join(f.cwd, "file.txt"), "utf8"), tampered ? "hello\nworld\n" : "edited\nworld\n");
 });

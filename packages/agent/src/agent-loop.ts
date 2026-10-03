@@ -298,7 +298,12 @@ async function runLoop(
 			};
 			const nextTurnSnapshot = await config.prepareNextTurn?.(nextTurnContext);
 			if (nextTurnSnapshot) {
-				currentContext = nextTurnSnapshot.context ?? currentContext;
+				const nextContext = nextTurnSnapshot.context;
+				// `{ ...context, tools }` carries the old declaration cache; rebuild it for replaced tools.
+				currentContext = !nextContext ? currentContext
+					: nextContext.tools !== currentContext.tools && nextContext.modelTools === currentContext.modelTools
+						? { ...nextContext, modelTools: selectModelTools(nextContext.tools) }
+						: nextContext;
 				config = {
 					...config,
 					model: nextTurnSnapshot.model ?? config.model,

@@ -1137,6 +1137,8 @@ export interface CodemodeReadEvent {
 	input: Record<string, unknown>;
 	content: (TextContent | ImageContent)[];
 	details?: unknown;
+	/** Host-attested position of `content[0]` in the parent Codemode result that the model received. */
+	parentContentIndex: number;
 }
 
 export type ExtensionEvent =

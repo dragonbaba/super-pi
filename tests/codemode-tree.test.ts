@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Type } from "typebox";
 import { stripVTControlCharacters } from "node:util";
-import { releaseComponentRenderCaches } from "../packages/tui/dist/tui.js";
+import { releaseComponentRenderCaches } from "@super-pi/tui";
 import { CodemodeTreeComponent } from "../packages/coding-agent/src/modes/interactive/components/codemode-tree.ts";
 import { ToolExecutionComponent } from "../packages/coding-agent/src/modes/interactive/components/tool-execution.ts";
 import { initTheme } from "../packages/coding-agent/src/modes/interactive/theme/theme.ts";

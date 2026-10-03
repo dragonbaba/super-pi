@@ -338,3 +338,29 @@ AST/source invariants 覆盖新增与既有热方法，禁止逐进度闭包、�
 验证：agent 包 `npm run build`、`tsc -p tsconfig.build.json` 退出 0；`npm run check`、`npm run build:offline` 退出 0；`git diff --check` 通过。相关 22 个文件（含 4 个 `/changes` 恢复测试文件）共 413 项：407 通过、6 跳过、0 失败。全套 `npm test`（PowerShell，刷新后的 PATH）：219 个执行单元全部退出 0，3,229 项中 3,139 通过、90 跳过，失败/取消/todo 为 0。未提交、推送或创建 PR。
 
 提交前清理：按用户确认删除根目录 45 个 `.tmp-*` 诊断文件及 `scripts/.codemode-test-audit.mjs`（上文提及的诊断材料，结论已归档在本文和 performance JSON）；`.codegraph/` 与 `.sp/` 生成索引加入 `.gitignore`。未发现过期或无效测试：全部跳过均为平台条件，无无条件 skip/todo，无重名测试。
+
+### PR #55 CI 失败与五次复审修复（本地待复审）
+
+CI 失败：`npm run check`（tsgo）在 `tests/codemode-tree.test.ts` 报 TS2307。原因是该测试直接导入 `../packages/tui/dist/tui.js`，CI 在 `check` 之前还没有构建，所以 dist 不存在。修复：`@super-pi/tui` 入口导出 `releaseComponentRenderCaches`，测试改为从包名导入。类型检查映射到 src，运行时解析到 dist，与渲染器使用同一个模块实例（`RELEASE_COMPONENT_RENDER_CACHE` 是未注册 Symbol，src 和 dist 不能混用）。检查范围内没有其他静态 dist 导入。
+
+| 复审问题 | 根因 | 修复 | 回归（去掉修复后均失败） |
+| --- | --- | --- | --- |
+| 截断后 show 的块已被删，但脚本自己打印的等文本副本让读证据被接纳 | `recordProjection` 在父结果任意位置找等文本 | 读事件携带宿主确定的 `parentContentIndex`（show 时记下块偏移，execute 加上摘要和脚本输出的块数）；只有原块在原位置完整保留才接纳 | `codemode-session`：打印副本完整、show 块被截断，edit 得到 `READ_REQUIRED` |
+| 同一条 assistant 消息里多个 Codemode 调用，只有最后一个的 show 可被接纳 | 每次 execute 都清空 `displayedReads`，投影也只看第一个命中 | 一次投影结束一个批次：execute 只在上次投影之后清空；投影扫描最新的连续 toolResult 段，同 ID 只取最新结果；待投影父调用上限 16 | 两个并行 Codemode 调用各自 show，后续两处 edit 都成功 |
+| 接纳的 Codemode 读证据在 reload / 会话恢复后丢失 | 恢复只认原生 read 结果消息，嵌套读没有协议消息 | 接纳时追加 `codemode-read-evidence-v1` 自定义条目（binding、父 ID、块位置与数量、window/truncation）；恢复时在同分支前面找到父 codemode 结果，取原位置的块，走原生 `restoreRead` 同一套 binding 校验 | reload 后 edit 成功；篡改条目的 toolCallId 后 edit 得到 `READ_REQUIRED` |
+| `prepareNextTurn` 用 `{ ...context, tools }` 替换工具后，模型仍拿到旧声明 | 展开复制了旧的 `modelTools` 缓存 | tools 变了而 `modelTools` 没变时，按新工具重新 `selectModelTools` | `nested-tool-dispatch`：第二轮声明包含新增工具 |
+| MCP 登录/注销成功后在 `ctx.reload()` 之后再用 `ctx.ui`（已被替换的命令上下文） | 成功通知写在 reload 之后 | 先通知再 reload，reload 之后不再使用 ctx；失败分支提前返回 | `mcp-oauth`：reload 后访问 `ctx.ui` 会抛错，测试断言只收到 reload 前的成功通知 |
+
+说明：
+
+- reload 测试需要 `bindExtensions` 绑定宿主（交互/RPC 模式都会绑定），否则 `AgentSession.reload` 不发 `session_start`，这是既有行为。
+- guard 的证据判定是“证据文本包含 oldText”，与原生 read 恢复一致，不按行判定新鲜度，所以反例用篡改的条目，而不是修改文件。
+- 投影路径（`recordProjection`）没有新增闭包或分配，`readSurvived` / `hasNewerResult` 是模块函数。恢复路径不在热路径上。
+- MCP：`ctx.reload()` 本身抛错时不再显示“failed or was cancelled”，而是交给扩展命令的错误通道（这时 ctx 已不可用）。
+
+验证：
+
+- 新增 5 个测试单项，各自对应的修复去掉后都失败。
+- `npm run check` 与 `npm run build:offline` 退出 0；`git diff --check` 通过。
+- 全套 `npm test`（PowerShell，刷新后的 PATH）：219 个执行单元全部退出 0；3,235 项中 3,145 通过、90 跳过（平台条件），失败/取消/todo 为 0。
+- 尚未提交或推送。
