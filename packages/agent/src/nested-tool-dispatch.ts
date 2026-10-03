@@ -11,6 +11,8 @@ interface PendingCall {
 	call: AgentToolCall;
 	resolve: (result: NestedToolResultMessage) => void;
 	reject: (error: unknown) => void;
+	/** `performance.now()` when the orchestrator issued the call, before any queueing. */
+	issuedAt: number;
 }
 function observeRejection(): void {}
 function findByName(tools: readonly AgentTool<any>[], name: string): AgentTool<any> | undefined {
@@ -36,8 +38,8 @@ export class NestedToolDispatch implements AgentToolExecutionContext {
 	readonly parentToolCallId: string;
 	private getCurrentTools: (() => readonly AgentTool<any>[]) | undefined;
 	private turnTools: readonly AgentTool<any>[] | undefined;
-	/** First live tool per name when this dispatch started. */
-	private baseline: Map<string, AgentTool<any>> | undefined;
+	/** Live tool names when this dispatch started. */
+	private baseline: Set<string> | undefined;
 	private invoke: InvokeNestedTool | undefined;
 	private readonly controller = new AbortController();
 	private readonly signal: AbortSignal;
@@ -66,7 +68,7 @@ export class NestedToolDispatch implements AgentToolExecutionContext {
 
 	/**
 	 * `getTools` returns the live tools. `turnTools`, when given, is the active turn context's
-	 * tool set; the live tools seen now become the baseline that later live changes are judged against.
+	 * tool set; the live tool names seen now become the baseline that later live changes are judged against.
 	 */
 	constructor(parentToolCallId: string, getTools: () => readonly AgentTool<any>[], invoke: InvokeNestedTool, signal?: AbortSignal,
 		cancelGraceMs = NESTED_CANCEL_GRACE_MS, turnTools?: readonly AgentTool<any>[]) {
@@ -75,10 +77,8 @@ export class NestedToolDispatch implements AgentToolExecutionContext {
 		this.getCurrentTools = getTools;
 		if (turnTools) {
 			const live = getTools();
-			const baseline = new Map<string, AgentTool<any>>();
-			for (let index = 0; index < live.length; index++) {
-				if (!baseline.has(live[index]!.name)) baseline.set(live[index]!.name, live[index]!);
-			}
+			const baseline = new Set<string>();
+			for (let index = 0; index < live.length; index++) baseline.add(live[index]!.name);
 			this.turnTools = turnTools;
 			this.baseline = baseline;
 		}
@@ -94,14 +94,18 @@ export class NestedToolDispatch implements AgentToolExecutionContext {
 	/**
 	 * The live array may be mutated in place, so array identity proves nothing about its
 	 * contents. Scan it on every lookup: authorization must see removals; no allocation.
-	 * With a turn context, that context decides each name unless the live tools changed it
-	 * after this dispatch started, so a host may replace the turn's tools without touching
-	 * the live state while in-place removals and mid-script activations still apply.
+	 * With a turn context, that context decides whether a name is allowed unless the name was
+	 * added to or removed from the live tools after this dispatch started. Membership, not
+	 * wrapper identity, decides: a registry refresh re-wraps every tool without changing which
+	 * names the turn allowed. An allowed name runs its latest live wrapper, so a replaced
+	 * implementation still fails isCurrentTool for a call prepared before the replacement.
 	 */
 	findTool(name: string): AgentTool<any> | undefined {
 		const live = findByName(this.getCurrentTools?.() ?? EMPTY_TOOLS, name);
-		if (!this.turnTools || !this.baseline || live !== this.baseline.get(name)) return live;
-		return findByName(this.turnTools, name);
+		const turnTools = this.turnTools, baseline = this.baseline;
+		if (!turnTools || !baseline || baseline.has(name) !== (live !== undefined)) return live;
+		const turn = findByName(turnTools, name);
+		return turn === undefined ? undefined : live ?? turn;
 	}
 
 	isCurrentTool(tool: AgentTool<any>): boolean {
@@ -116,8 +120,9 @@ export class NestedToolDispatch implements AgentToolExecutionContext {
 			return rejected;
 		}
 		const call: AgentToolCall = { type: "toolCall", id: `${this.parentToolCallId}:nested:${++this.issued}`, name, arguments: args };
+		const issuedAt = performance.now();
 		const result = new Promise<NestedToolResultMessage>((resolve, reject) => {
-			this.pending.push({ call, resolve, reject });
+			this.pending.push({ call, resolve, reject, issuedAt });
 		});
 		// Scripts may intentionally omit await. The owner still observes every failure.
 		void result.catch(observeRejection);
@@ -162,6 +167,15 @@ export class NestedToolDispatch implements AgentToolExecutionContext {
 			this.writing = false;
 			this.pump();
 		}
+	}
+
+	/**
+	 * When a running child was issued. Serialized siblings reach policy hooks only after earlier
+	 * calls finish, so hooks compare this time, not their own admission order.
+	 */
+	issuedAt(callId: string): number | undefined {
+		for (const entry of this.running) if (entry.call.id === callId) return entry.issuedAt;
+		return undefined;
 	}
 
 	/** Wait for children, including calls whose promises the script did not await. */

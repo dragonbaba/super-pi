@@ -81,6 +81,15 @@ export default function toolLoopGuardrails(pi: ExtensionAPI): void {
   // Nested scripts may intentionally repeat a completed call after changing state.
   // Only overlapping identical children are siblings; native batches retain their turn scope.
   const nestedCalls = new Map<string, true>();
+  // Release time of each completed nested child. The dispatcher serializes identical siblings,
+  // so one issued before that time overlapped the first call even though it is admitted later.
+  const nestedReleased = new Map<string, number>();
+  const releaseNested = (nestedKey: string): void => {
+    nestedCalls.delete(nestedKey);
+    nestedReleased.delete(nestedKey);
+    if (nestedReleased.size >= 64) nestedReleased.delete(nestedReleased.keys().next().value!);
+    nestedReleased.set(nestedKey, performance.now());
+  };
   let nativeReadCwd = process.cwd();
   let nativeRead = createReadToolDefinition(nativeReadCwd);
   const upstreamRead = nativeRead;
@@ -196,23 +205,26 @@ export default function toolLoopGuardrails(pi: ExtensionAPI): void {
     resetGuardState(state);
     pendingCalls.clear();
     nestedCalls.clear();
+    nestedReleased.clear();
   });
-  pi.on("turn_start", () => { resetBatchState(state); nestedCalls.clear(); });
-  pi.on("agent_end", () => { pendingCalls.clear(); nestedCalls.clear(); });
+  pi.on("turn_start", () => { resetBatchState(state); nestedCalls.clear(); nestedReleased.clear(); });
+  pi.on("agent_end", () => { pendingCalls.clear(); nestedCalls.clear(); nestedReleased.clear(); });
   // Blocked, aborted and vetoed calls never reach tool_result; execution end is terminal
   // for every call and follows tool_result when the tool actually ran.
   pi.on("tool_execution_end", (event) => {
     const pending = pendingCalls.get(event.toolCallId);
     if (!pending) return;
     pendingCalls.delete(event.toolCallId);
-    if (pending.nestedKey) nestedCalls.delete(pending.nestedKey);
+    if (pending.nestedKey) releaseNested(pending.nestedKey);
   });
 
   pi.on("tool_call", async (event, ctx) => {
     const key = callKey(event.toolName, event.input);
     rememberCallKey(event.toolCallId, key);
     const nestedKey = event.parentToolCallId ? `${event.parentToolCallId}\0${key}` : undefined;
-    const duplicate = inspectBatchCall(state, event.toolName, event.input, nestedKey ?? key, nestedKey ? nestedCalls : state.batchCalls);
+    const releasedAt = nestedKey ? nestedReleased.get(nestedKey) : undefined;
+    const overlapped = releasedAt !== undefined && event.nestedIssuedAt !== undefined && event.nestedIssuedAt <= releasedAt;
+    const duplicate = inspectBatchCall(state, event.toolName, event.input, nestedKey ?? key, nestedKey ? nestedCalls : state.batchCalls, overlapped);
     if (duplicate) {
       if (event.input && typeof event.input === "object") {
         attachRepairKind(event.input as Record<PropertyKey, unknown>, "batch_duplicate_blocked");
@@ -237,7 +249,7 @@ export default function toolLoopGuardrails(pi: ExtensionAPI): void {
   pi.on("tool_result", async (event: ToolResultEvent, ctx) => {
     const pending = pendingCalls.get(event.toolCallId);
     pendingCalls.delete(event.toolCallId);
-    if (pending?.nestedKey) nestedCalls.delete(pending.nestedKey);
+    if (pending?.nestedKey) releaseNested(pending.nestedKey);
     const key = pending?.key ?? callKey(event.toolName, event.input);
     const repeatReminder = observeRepeatedCall(state, event.toolName, event.input, key);
     const failureText = event.isError ? boundedFailureText(event.content) : "";

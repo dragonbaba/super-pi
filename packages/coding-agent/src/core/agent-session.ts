@@ -1104,7 +1104,7 @@ export class AgentSession {
 	 * happens here instead of in wrappers.
 	 */
 	private _installAgentToolHooks(): void {
-		this.agent.beforeToolCall = async ({ toolCall, args, parentToolCallId }) => {
+		this.agent.beforeToolCall = async ({ toolCall, args, parentToolCallId, nestedIssuedAt }) => {
 			await this._codemode.admitVisibleReads(this._emitCodemodeRead);
 			if (toolCall.name === "inspect_image" && this.settingsManager.getBlockImages()) {
 				return { block: true, reason: "图片读取/发送已被 blockImages 禁止" };
@@ -1123,6 +1123,7 @@ export class AgentSession {
 					toolName: toolCall.name,
 					toolCallId: toolCall.id,
 					parentToolCallId,
+					nestedIssuedAt,
 					input: args as Record<string, unknown>,
 				});
 				try { if (!decision?.block) this._codemode.recordInvocation(parentToolCallId, toolCall.id, toolCall.name, args); }

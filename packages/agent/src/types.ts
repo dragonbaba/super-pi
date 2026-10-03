@@ -123,6 +123,11 @@ export interface AfterToolCallResult {
 export interface BeforeToolCallContext {
 	/** Host-owned association for a call made by an orchestration tool. */
 	parentToolCallId?: string;
+	/**
+	 * Nested calls only: `performance.now()` when the orchestrator issued the call. Serialized
+	 * siblings reach this hook after earlier calls finish; compare with this, not hook order.
+	 */
+	nestedIssuedAt?: number;
 	/** The assistant message that requested the tool call. */
 	assistantMessage: AssistantMessage;
 	/** The raw tool call block from `assistantMessage.content`. */

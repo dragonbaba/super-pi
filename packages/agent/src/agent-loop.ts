@@ -863,6 +863,7 @@ async function prepareToolCall(
 					args: validatedArgs,
 					context: currentContext,
 					parentToolCallId: parentDispatch?.parentToolCallId,
+					nestedIssuedAt: parentDispatch?.issuedAt(toolCall.id),
 				},
 				signal,
 			);

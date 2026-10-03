@@ -564,3 +564,22 @@ test("Codemode image bounding: images survive text truncation, the image cap app
 	assert.equal(echoed!.isError, false, JSON.stringify(echoed!.content).slice(0, 1000));
 	assert.equal(echoed!.content.filter(block => block.type === "text" && block.text === "ok").length, 2);
 });
+
+test("identical side effects issued together in one script run once even though the dispatcher serializes them", async t => {
+	const { default: guardrails } = await jiti.import<{ default: InlineExtension }>("../packages/extensions/tool-loop-guardrails/index.ts");
+	let appended = 0;
+	const append: InlineExtension = pi => pi.registerTool({ name: "append", label: "append", description: "appends a line", parameters: Type.Object({ line: Type.String() }),
+		// Slow enough that the second call is issued while the first still runs, as with a real shell command.
+		execute: async () => { await new Promise(resolve => setTimeout(resolve, 100)); appended++; return { content: [{ type: "text", text: `appended ${appended}` }], details: {} }; } });
+	const f = await fixture(t, {}, [guardrails, append]);
+	const outcome = await f.run([
+		'const r = await Promise.allSettled([tools.append({line:"x"}), tools.append({line:"x"})]); text(r.map(x => x.status).join())',
+		// Sequential repeats after the first call completed remain allowed.
+		'await tools.append({line:"y"}); await tools.append({line:"y"})',
+	]);
+	const [together, sequential] = outcome.results;
+	assert.match(JSON.stringify(together!.content), /fulfilled,rejected/);
+	assert.match(JSON.stringify(together!.content), /DUPLICATE_CALL/);
+	assert.equal(sequential!.isError, false, JSON.stringify(sequential!.content).slice(0, 1000));
+	assert.equal(appended, 3);
+});

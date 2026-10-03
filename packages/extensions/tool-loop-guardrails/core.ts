@@ -525,8 +525,10 @@ export function inspectBatchCall(
   input: unknown,
   key = callKey(toolName, input),
   calls = state.batchCalls,
+  /** A nested sibling issued while an identical call ran, then serialized behind it. */
+  overlapped = false,
 ): string | undefined {
-  if (calls.has(key)) {
+  if (overlapped || calls.has(key)) {
     state.blocked++;
     state.batchDuplicates++;
     // A caller-owned set holds in-flight nested children rather than a protocol batch.

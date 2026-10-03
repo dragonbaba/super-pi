@@ -385,6 +385,10 @@ test("nested authorization follows a next-turn tool replacement that leaves agen
 			outcomes.push((await context!.callTool("victim", {})).isError, (await context!.callTool("added", {})).isError);
 			agent.state.tools.push(late); // a live activation made during the script still applies
 			outcomes.push((await context!.callTool("late", {})).isError);
+			// A registry refresh re-wraps every live tool without changing which names are active.
+			agent.state.tools = agent.state.tools.map(tool => ({ ...tool }));
+			outcomes.push((await context!.callTool("victim", {})).isError, (await context!.callTool("added", {})).isError,
+				(await context!.callTool("late", {})).isError);
 			return result("script completed");
 		} };
 	const calls = ["warmup", "script"];
@@ -394,6 +398,6 @@ test("nested authorization follows a next-turn tool replacement that leaves agen
 	// The host replaces the turn's tools without mutating agent.state.tools.
 	agent.prepareNextTurnWithContext = async ({ context }) => ({ context: { ...context, tools: [warmup, script, added] } });
 	await agent.prompt("run");
-	assert.deepEqual(outcomes, [true, false, false]);
-	assert.deepEqual([victimRuns, addedRuns, lateRuns], [0, 1, 1]);
+	assert.deepEqual(outcomes, [true, false, false, true, false, false]);
+	assert.deepEqual([victimRuns, addedRuns, lateRuns], [0, 2, 2]);
 });

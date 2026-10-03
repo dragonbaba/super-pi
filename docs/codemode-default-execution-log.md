@@ -451,3 +451,17 @@ bea12cfbc 复审提出 5 条：
 
 - `npm run check`、`npm run build:offline` 退出 0；`git diff --check` 通过。
 - 全套 `npm test`（PowerShell）：219 个执行单元全部退出 0；3,250 项中 3,160 通过、90 跳过，失败/取消/todo 为 0。之前一次运行中，`file-change-recovery.test.ts` 的 "N1 … draft placement" 偶发失败（编辑器草稿时序，与本轮改动无关）；单独运行 3 次和全套重跑均通过。
+
+### PR #55 十一次复审修复（d73b89f25 之后）
+
+d73b89f25 复审提出 2 条：
+
+| 复审问题 | 核实 | 修复 | 回归（去掉修复后均失败） |
+| --- | --- | --- | --- |
+| P1 注册表刷新后，轮授权失效 | 成立：`_refreshToolRegistry()` 会重新包装所有工具，按对象身份比较时，每个名称都会被当成"实时修改"，被当前轮排除的工具重新可调用 | 基线改为调度开始时的实时工具**名称**集合：只有名称在实时工具中新增或移除时，才以实时状态为准；否则由当前轮决定名称是否允许，允许的名称执行最新的实时包装（替换实现后，此前准备的调用仍会被 `isCurrentTool` 拒绝） | 下一轮替换后，模拟一次刷新（全部重新包装）：被移除的工具仍被拒绝，新增和中途激活的工具仍可调用；改回身份比较时失败 |
+| P1 并发发出的相同子调用，被串行化后仍会执行两次 | 成立：调度器把两个相同的非只读调用串行化，第二个调用到达 `tool_call` 时，第一个已经完成并释放了占位 | 嵌套调用在发出时记录 `performance.now()`，经 `BeforeToolCallContext.nestedIssuedAt` 传到扩展的 `tool_call` 事件；guardrails 在子调用完成时记录释放时间，发出时间早于释放时间的同键调用视为重叠并阻止。完成后再顺序发出的相同调用仍然允许 | 端到端测试（真实 session、脚本、调度器）：`Promise.allSettled` 同时发出两个慢速 `append`，结果为 `fulfilled,rejected` 且只执行一次；之后顺序执行两次都成功；强制 `overlapped=false` 时失败 |
+
+验证：
+
+- `npm run check`、`npm run build:offline` 退出 0；`git diff --check` 通过。
+- 全套 `npm test`（PowerShell）：219 个执行单元全部退出 0；3,251 项中 3,161 通过、90 跳过，失败/取消/todo 为 0。
