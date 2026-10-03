@@ -15,10 +15,13 @@ import {
 	scheduleTestFiles,
 } from "../scripts/test.mjs";
 
+// Nested runners must see their whole fixture root, not the outer CI shard or width.
+const NESTED_RUNNER_ENV = { ...process.env, NODE_TEST_CONTEXT: undefined, SP_TEST_JOBS: undefined, SP_TEST_SHARD: undefined };
+
 function runRunner(root: string, ...extra: string[]) {
 	return spawnSync(process.execPath, [join(process.cwd(), "scripts", "test.mjs"),
 		"--suite", "unit", "--root", root, "--skip-memory", ...extra], {
-		encoding: "utf8", env: { ...process.env, NODE_TEST_CONTEXT: undefined, SP_TEST_JOBS: undefined },
+		encoding: "utf8", env: NESTED_RUNNER_ENV,
 	});
 }
 
@@ -65,7 +68,7 @@ test("test runner preserves a failing child exit code and names the exact file",
 				root,
 				"--skip-memory",
 			],
-			{ encoding: "utf8", env: { ...process.env, NODE_TEST_CONTEXT: undefined } },
+			{ encoding: "utf8", env: NESTED_RUNNER_ENV },
 		);
 
 		assert.equal(result.status, 1, `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
@@ -97,7 +100,7 @@ test('isolated GC fixture', () => {
 `);
 		const child = spawnSync(process.execPath, [join(process.cwd(), "scripts", "test.mjs"),
 			"--root", root, "--skip-memory"], {
-			encoding: "utf8", env: { ...process.env, NODE_TEST_CONTEXT: undefined },
+			encoding: "utf8", env: NESTED_RUNNER_ENV,
 		});
 		assert.equal(child.status, 0, `${child.stdout}\n${child.stderr}`);
 		assert.equal(child.stdout.match(/\[test\] START alpha-assistant-update.test.ts/g)?.length, 1);
