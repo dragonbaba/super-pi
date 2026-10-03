@@ -10,17 +10,11 @@ import { McpCall, McpCallError } from "./call.js";
 import { convertMcpResult } from "./result.js";
 export { convertMcpResult } from "./result.js";
 import {
-  MAX_CONTENT_ITEMS,
-  MAX_IMAGE_BYTES,
   MAX_SSE_EVENT_BYTES,
-  MAX_TEXT_BYTES,
   MAX_TRANSPORT_RESPONSE_BYTES,
-  decodedBase64Bytes,
-  boundedJson,
   canonicalJsonShape,
   piToolName,
   sanitizeText,
-  truncateUtf8,
   validateJsonShape,
 } from "./security.js";
 
@@ -161,33 +155,6 @@ function normalizeInputSchema(schema) {
   const cloned = validateJsonShape(schema ?? { type: "object", properties: {} });
   if (!cloned || cloned.type !== "object" || Array.isArray(cloned)) throw new Error("MCP tool inputSchema must be a JSON object schema");
   return canonicalJsonShape(cloned);
-}
-
-function appendMcpText(content, value, remaining) {
-  if (remaining <= 0 || content.length >= MAX_CONTENT_ITEMS) return remaining;
-  const text = truncateUtf8(value, remaining);
-  if (!text) return remaining;
-  const used = Math.min(remaining, Buffer.byteLength(text, "utf8"));
-  content.push({ type: "text", text });
-  return remaining - used;
-}
-
-function resultText(result) {
-  const content = [];
-  let remaining = MAX_TEXT_BYTES;
-  const items = Array.isArray(result?.content) ? result.content : [];
-  const count = Math.min(items.length, MAX_CONTENT_ITEMS);
-  for (let index = 0; index < count && remaining > 0; index += 1) {
-    const item = items[index];
-    if (item?.type === "text") remaining = appendMcpText(content, item.text, remaining);
-    else if (item?.type === "resource" && typeof item.resource?.text === "string") remaining = appendMcpText(content, item.resource.text, remaining);
-    else if (item?.type === "resource_link") remaining = appendMcpText(content, `[MCP resource: ${item.name ?? item.uri} — ${item.uri}]`, remaining);
-  }
-  if (result?.structuredContent !== undefined) remaining = appendMcpText(content, boundedJson(result.structuredContent, remaining), remaining);
-  if (content.length === 0) return "MCP tool returned no text content";
-  let joined = "";
-  for (let index = 0; index < content.length; index += 1) joined += `${index === 0 ? "" : "\n\n"}${content[index].text}`;
-  return joined;
 }
 
 function mapRemoteTools(tools) {
