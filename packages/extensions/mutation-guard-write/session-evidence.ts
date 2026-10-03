@@ -13,6 +13,10 @@ export const MAX_STRUCTURED_MUTATION_RECEIPTS = 512;
 /** Admitted Codemode read: host binding plus the read's position in the persisted parent result. */
 export const CODEMODE_READ_EVIDENCE_ENTRY = "codemode-read-evidence-v1";
 const MAX_CODEMODE_READ_BLOCKS = 256;
+const CODEMODE_CALL_ENTRY = "codemode-tool-call-v1";
+const CODEMODE_RESULT_ENTRY = "codemode-tool-result-v1";
+/** Nested mutations restore like native ones; nested reads are restored only through admitted read markers. */
+const NESTED_RESTORED_TOOLS: ReadonlySet<string> = new Set(["edit", "write", "file_batch"]);
 const NO_STORED_INPUT: Record<string, unknown> = Object.freeze({}) as Record<string, unknown>;
 
 export function isBoundedMutationEntryId(value: unknown): value is string {
@@ -236,6 +240,29 @@ function collectAssistantToolCalls(message: ToolResultMessageShape, pending: Map
     rememberToolCall(pending, part.id, { name: part.name, input: part.arguments as Record<string, unknown> });
   }
   return true;
+}
+
+function nestedOwnId(data: any, id: unknown): boolean {
+  return data?.version === 1 && typeof data.parentToolCallId === "string" && typeof id === "string"
+    && id.length <= 256 && id.startsWith(data.parentToolCallId + ":nested:");
+}
+
+/** Durable nested Codemode call receipt, paired exactly like a protocol tool call. */
+function collectNestedToolCall(entry: any, pending: Map<string, StoredToolCall>): boolean {
+  if (entry?.type !== "custom" || entry.customType !== CODEMODE_CALL_ENTRY) return false;
+  const call = entry.data?.call;
+  if (nestedOwnId(entry.data, call?.id) && call.type === "toolCall" && NESTED_RESTORED_TOOLS.has(call.name)
+    && call.arguments && typeof call.arguments === "object" && !Array.isArray(call.arguments)) {
+    rememberToolCall(pending, call.id, { name: call.name, input: call.arguments });
+  }
+  return true;
+}
+
+function nestedToolResult(entry: any): ToolResultMessageShape | undefined {
+  if (entry?.type !== "custom" || entry.customType !== CODEMODE_RESULT_ENTRY) return undefined;
+  const result = entry.data?.result;
+  return result?.role === "toolResult" && nestedOwnId(entry.data, result.toolCallId) && NESTED_RESTORED_TOOLS.has(result.toolName)
+    ? result : undefined;
 }
 export function readEvidenceRange(input: { offset?: unknown; limit?: unknown }, details: any, text: string):
   { startLine: number; endLine: number; complete: boolean } | undefined {
@@ -501,6 +528,7 @@ export async function restoreMutationEvidenceFromBranch(
   const pairingStart = Math.max(0, start - MAX_PENDING_TOOL_CALLS);
   for (let index = pairingStart; index < start; index++) {
     const entry = branch[index] as SessionEntryShape;
+    if (collectNestedToolCall(entry, pending)) continue;
     if (entry?.type !== "message" || !entry.message || typeof entry.message !== "object") continue;
     collectAssistantToolCalls(entry.message as ToolResultMessageShape, pending);
   }
@@ -524,9 +552,13 @@ export async function restoreMutationEvidenceFromBranch(
       }
       continue;
     }
-    if (entry?.type !== "message" || !entry.message || typeof entry.message !== "object") continue;
-    const message = entry.message as ToolResultMessageShape;
-    if (collectAssistantToolCalls(message, pending)) continue;
+    if (collectNestedToolCall(entry, pending)) continue;
+    let message = nestedToolResult(entry);
+    if (!message) {
+      if (entry?.type !== "message" || !entry.message || typeof entry.message !== "object") continue;
+      message = entry.message as ToolResultMessageShape;
+      if (collectAssistantToolCalls(message, pending)) continue;
+    }
     if (message.role !== "toolResult"
       || (message.isError === true && message.toolName !== "file_batch")
       || typeof message.toolCallId !== "string"

@@ -113,13 +113,15 @@ export function fetchWithHeaders(headers, serverUrl, oauth) {
     for (const [name, value] of entries) merged.set(name, value);
     const token = await oauth?.token(init.signal);
     if (token) merged.set("Authorization", `Bearer ${token}`);
+    // The first attempt consumes a Request body; keep an unused copy for the OAuth retry.
+    const retryInput = request && oauth && input.body ? input.clone() : input;
     let response = await fetch(input, { ...init, headers: merged, redirect: "error" });
     if (response.status === 401 && oauth) {
       await response.body?.cancel();
       const refreshed = await oauth.refresh(token, init.signal);
       merged.set("Authorization", `Bearer ${refreshed}`);
-      response = await fetch(input, { ...init, headers: merged, redirect: "error" });
-    }
+      response = await fetch(retryInput, { ...init, headers: merged, redirect: "error" });
+    } else if (retryInput !== input) await retryInput.body.cancel();
     return limitMcpResponse(response);
   };
 }

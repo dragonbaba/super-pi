@@ -481,3 +481,17 @@ d73b89f25 复审提出 2 条：
 
 - `npm run check`、`npm run build:offline` 退出 0；`git diff --check` 通过。
 - 全套 `npm test`（PowerShell）：219 个执行单元全部退出 0；3,255 项中 3,165 通过、90 跳过，失败为 0。
+
+### PR #55 十三次复审修复（39a4152fd 之后）
+
+39a4152fd 复审提出 2 条：
+
+| 复审问题 | 核实 | 修复 | 回归（去掉修复后均失败） |
+| --- | --- | --- | --- |
+| OAuth 401 重试复用已被消费的 `Request` | 成立：第一次 `fetch(Request)` 会消费请求体，刷新令牌后用同一个 Request 重试时，Node 抛出 `Cannot construct a Request with a Request object that has already been used` | 只有在配置了 OAuth、输入是带请求体的 Request 时，才在第一次请求前 `clone()` 一份供重试使用；不需要重试时，取消这份副本的请求体 | 本地 HTTP 服务先返回 401：重试带上刷新后的令牌和完整请求体；未遇到 401 时，单次请求的请求体也完整 |
+| 会话重置后，嵌套变更的回执丢失 | 成立：`session_start`/`session_tree` 恢复证据时只识别原生协议消息和 Codemode 读标记，`codemode-tool-call-v1`/`codemode-tool-result-v1` 自定义条目没有参与配对，变更后快照丢失 | 恢复时把嵌套调用和结果条目按原生调用/结果配对（ID 必须带 `父调用:nested:` 前缀），只处理 `edit`、`write`、`file_batch`；嵌套读取仍然只能通过已接纳的读标记恢复 | 先 show 读取，再执行嵌套 `edit` 或 `file_batch`，reload 后整文件 `write`：修复前两种情况都报 `READ_REQUIRED`，修复后成功 |
+
+验证：
+
+- `npm run check`、`npm run build:offline` 退出 0；`git diff --check` 通过。
+- 全套 `npm test`（PowerShell）：219 个执行单元全部退出 0；3,258 项中 3,168 通过、90 跳过，失败为 0。

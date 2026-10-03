@@ -596,3 +596,20 @@ test("a nested file_batch records post-mutation evidence for a later guarded ove
 	assert.equal(outcome.results[2]?.isError, false, JSON.stringify(outcome.results[2]?.content).slice(0, 1000));
 	assert.equal(readFileSync(join(f.cwd, "file.txt"), "utf8"), "edited\nworld\n");
 });
+
+for (const nested of ["edit", "file_batch"]) test(`a nested ${nested} receipt is restored after reload for a later guarded overwrite`, async t => {
+	const f = await fixture(t, {}, [], true);
+	const mutate = nested === "edit"
+		? 'await tools.edit({path:"file.txt",edits:[{oldText:"hello",newText:"batched"}]})'
+		: 'await tools.file_batch({operations:[{operation:"edit", path:"file.txt", edits:[{oldText:"hello", newText:"batched"}]}]})';
+	const first = await f.run(['await show((await tools.read({path:"file.txt"})).ref)', mutate]);
+	assert.equal(first.results[1]?.isError, false, JSON.stringify(first.results[1]?.content).slice(0, 1000));
+	// Reload emits session_start only for a bound host; the restored read predates the mutation.
+	const errors: unknown[] = [];
+	await f.session.bindExtensions({ onError: error => errors.push(error) });
+	await f.session.reload();
+	assert.deepEqual(errors, []);
+	const outcome = await f.run(['await tools.write({path:"file.txt",content:"edited\\nworld\\n"})']);
+	assert.equal(outcome.results.at(-1)?.isError, false, JSON.stringify(outcome.results.at(-1)?.content).slice(0, 1000));
+	assert.equal(readFileSync(join(f.cwd, "file.txt"), "utf8"), "edited\nworld\n");
+});

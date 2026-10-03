@@ -137,6 +137,34 @@ test("MCP configured headers merge with, not replace, a Request input's own head
   assert.equal(seen[0]?.["x-private-mcp"], "fixture-secret");
 });
 
+test("MCP OAuth retry after a 401 resends an unused copy of a Request body", async t => {
+  const seen: Array<{ authorization?: string; body: string }> = [];
+  const server = createServer((request, response) => {
+    let body = "";
+    request.setEncoding("utf8").on("data", chunk => { body += chunk; }).on("end", () => {
+      seen.push({ authorization: request.headers.authorization, body });
+      response.statusCode = seen.length === 1 ? 401 : 200;
+      response.end(seen.length === 1 ? "expired" : "ok");
+    });
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise<void>(resolve => server.close(() => resolve())));
+  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`;
+  const oauth = { token: async () => "old", refresh: async (token: string) => `${token}-refreshed` };
+  const fetcher = fetchWithHeaders({}, url, oauth);
+  const response = await fetcher(new Request(url, { method: "POST", body: '{"jsonrpc":"2.0","id":1}' }));
+  assert.equal(await response.text(), "ok");
+  assert.deepEqual(seen, [
+    { authorization: "Bearer old", body: '{"jsonrpc":"2.0","id":1}' },
+    { authorization: "Bearer old-refreshed", body: '{"jsonrpc":"2.0","id":1}' },
+  ]);
+  // Without a 401 the spare copy is released, and the single attempt still carries the body.
+  seen.length = 1;
+  const direct = await fetcher(new Request(url, { method: "POST", body: "second" }));
+  assert.equal(await direct.text(), "ok");
+  assert.deepEqual(seen.at(-1), { authorization: "Bearer old", body: "second" });
+});
+
 test("MCP HTTP config accepts the bracketed IPv6 loopback and still rejects remote HTTP", t => {
   const root = mkdtempSync(join(tmpdir(), "sp-mcp-config-"));
   const previous = process.env.SP_CODING_AGENT_DIR;
