@@ -124,6 +124,17 @@ function normalizeServer(id, raw, workspace, source) {
     for (const name of Object.keys(headers)) if (name.toLowerCase() === "authorization") throw new Error(`${label} cannot combine OAuth with an Authorization header`);
     const settings = raw.oauth === true ? {} : raw.oauth;
     oauth = {};
+    if (settings.authServerMetadataUrl !== undefined) {
+      const name = `${label}.oauth.authServerMetadataUrl`;
+      const text = boundedString(settings.authServerMetadataUrl, name, 8192);
+      let metadataUrl;
+      try { metadataUrl = new URL(text); } catch { throw new Error(`${name} must be an absolute URL`); }
+      if (metadataUrl.protocol !== "https:" && !(metadataUrl.protocol === "http:" && LOOPBACK_HOSTS.has(metadataUrl.hostname))) {
+        throw new Error(`${name} must use HTTPS, except for loopback HTTP`);
+      }
+      if (metadataUrl.username || metadataUrl.password || text.includes("#")) throw new Error(`${name} must not contain credentials or a fragment`);
+      oauth.authServerMetadataUrl = metadataUrl.href;
+    }
     if (settings.scope !== undefined) oauth.scope = boundedString(settings.scope, `${label}.oauth.scope`, 4096);
     if (settings.clientId !== undefined) oauth.clientId = boundedString(settings.clientId, `${label}.oauth.clientId`, 4096);
     if (settings.callbackPort !== undefined) oauth.callbackPort = boundedInt(settings.callbackPort, 0, 1, 65535, `${label}.oauth.callbackPort`);

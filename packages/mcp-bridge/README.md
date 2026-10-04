@@ -74,6 +74,39 @@ Previously stored metadata is rediscovered on the first login or refresh to
 recover issuer support flags omitted by older versions. Successful upgrades are
 cached; failed discovery leaves existing credentials intact and requires a retry.
 
+If the MCP server advertises the wrong authorization server, or none, configure
+the correct **metadata document URL**:
+
+```json
+"oauth": {
+  "authServerMetadataUrl": "https://identity.example.com/tenant/metadata.json"
+}
+```
+
+This works with both HTTP and SSE transports and can be combined with `scope`,
+`clientId` and `callbackPort`. The URL must use HTTPS (loopback HTTP is allowed)
+and must not contain credentials or a fragment. OAuth and OIDC metadata documents
+are supported; the path does not need to be a standard `.well-known` path.
+
+The configured document supplies the initial issuer, which may differ from the
+document's host/path and from the MCP server's advertised authorization server.
+Protected resource and scope checks still apply. Callback `iss` and any SDK
+rediscovery remain bound to that login's issuer. Metadata is validated and cached
+with the credentials; reopening a valid cache or refreshing tokens reuses it.
+Missing or outdated metadata is reloaded from the configured URL, preserving the
+cached issuer so existing credentials cannot follow an issuer change. A failed
+load stops authorization without falling back to another metadata document.
+These requests retain the 1 MiB limit, cancellation and redirect restrictions,
+and do not inherit MCP request headers. Changing or removing this setting changes
+the credential identity: run `/mcp-login <server>` again.
+
+This cache policy intentionally differs from upstream Pi v1.0.0, which reloads
+configured metadata on each authorization flow. Repeating `/mcp-login <server>`
+with the same configuration still reuses complete cached metadata. If the server
+changes its endpoint addresses, run `/mcp-logout <server>` followed by
+`/mcp-login <server>` to fetch fresh metadata. This trades automatic endpoint
+updates for fewer requests and a stable cached issuer binding.
+
 Credentials are isolated by server identity in `~/.sp/agent/mcp-auth.json`, using the host's file locking and atomic persistence. Interactive login reserves a bounded attempt, releases the lock during browser authorization, then re-reads and merges the current file when committing. Another service's writes are preserved; logout invalidates a pending login, and a second active login for the same server is rejected. Cancellation removes its own reservation, with an expiry for abandoned attempts. Sync and async access use the same lease parameters. A refresh holds the lock through rotation; an HTTP 401 permits one refresh/retry. Metadata/token requests do not inherit MCP headers. OAuth and a static `Authorization` header cannot be combined. A scope change requires updated configuration and an explicit new login; automatic HTTP 403 step-up is not implemented. Browser/provider interoperability needs testing against the chosen server; the repository tests use offline OAuth fixtures, including a separate process writing during authorization.
 
 ## Project configuration

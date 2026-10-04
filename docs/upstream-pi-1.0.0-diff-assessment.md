@@ -76,7 +76,7 @@
 - 提交候选重新验证（Windows / PowerShell，Node 26.4.0）：类型检查、JS 语法、离线构建和差异检查通过；同一候选的全量测试 **220 个唯一执行单元全部 exit 0，3,312 项中 3,222 通过、90 跳过、0 失败**。其中 13 个 MCP 文件 **197/197**，OAuth **60/60**。统计采用每个执行单元的最终汇总，排除内嵌测量汇总；证据为 `full-test-commit-candidate.log`、`build-commit-candidate.log`、`commit-candidate-summary.json`（含生产/测试文件 SHA-256）。
 - 合并复核：PR [#59](https://github.com/dragonbaba/super-pi/pull/59) 的最终提交 `bd4459aeed` 已通过六个 CI 分片（Linux 两片、Windows 四片，均为 Node 22.19.x），Codex 对该提交未发现主要问题；普通合并提交为 `58bbc4451`，本地与远端 `main` 已同步，旧分支已删除。仍未连接真实外部 OAuth 服务；端到端测试使用本地回调和远端响应夹具。运行器正常完成各自拥有目录的清理，没有清扫共享系统临时目录或历史输出日志。
 - 其余兼容/体验边界保持：无元数据的旧服务端若返回裸 origin 的 `iss`，与 SDK 补出的带 `/` 根标识不同仍拒绝；浏览器页面只提示返回 Super Pi，最终错误在终端显示，不表示授权成功。
-- 本批只处理 issuer 安全边界；可选字段空值另见 §3.3，元数据覆盖和增量授权仍待后续批次。
+- 本批只处理 issuer 安全边界；可选字段空值另见 §3.3，元数据覆盖另见 §3.4，增量授权仍待后续批次。
 
 ### 3.3 令牌可选字段空值兼容（基于 PR #59 合并后的 `58bbc4451`）
 
@@ -89,11 +89,23 @@
 - 修复前运行新增的 22 项集成回归：11 项失败、11 项对照通过；失败包括三类可选字符串 `null`、空有效期和刷新令牌保留。空字符串的“保存为缺省”断言失败不等同于原本不能登录。证据为 `.git/oauth-token-compat-20261004/before.log`。
 - 第一轮全量被源码不变量检查拦下：初版用了属性 `delete`。改为赋值 `undefined` 后，OAuth 与源码不变量联合检查 87/87 通过，重新构建并完整重跑全量；首次失败日志单独保留为 `full-test-attempt1.log`，不与最终结果拼接。
 - 最终候选验证（Windows / PowerShell，Node 26.4.0）：`npm run check`、修改 JS 的 `node --check`、`npm run build:offline` 和 `git diff --check` 均通过。全量 **220 个唯一执行单元全部 exit 0，3,335 项中 3,245 通过、90 跳过、0 失败**；其中 13 个 MCP 文件 **220/220**，OAuth **83/83**。逐单元名称与运行器 `--list` 完全一致，仅统计各单元最后的汇总，排除内嵌测量子进程的重复计数；运行器临时目录清理正常完成。
-- 证据保存在 `.git/oauth-token-compat-20261004/`：`focused-final.log`、`build-final.log`、`full-test.log`、`summarize.mjs` 和 `summary.json`（逐单元清单、去重计数、生产与测试文件 SHA-256）。新批次尚未运行 GitHub CI、Linux / Node 22.19 或真实外部 OAuth 服务。PR #59 的 CI 不作为本批候选验证。
+- 证据保存在 `.git/oauth-token-compat-20261004/`：`focused-final.log`、`build-final.log`、`full-test.log`、`summarize.mjs` 和 `summary.json`（逐单元清单、去重计数、生产与测试文件 SHA-256）。当时尚未运行 GitHub CI、Linux / Node 22.19 或真实外部 OAuth 服务；合并前的 CI 结果见下条。PR #59 的 CI 不作为本批候选验证。
+- 合并复核：PR [#60](https://github.com/dragonbaba/super-pi/pull/60) 的最终提交 `a574f2298` 已通过六个 CI 分片（Linux 两片、Windows 四片，Node 22.19.x），普通合并提交为 `87aa1a120`；本地与远端 main 同步，旧分支已删除。此处补充前述本地候选之后的 CI 结果，真实外部 OAuth 服务仍未验证。
 
-### 3.4 能力差距（不属于安全修复，单独立项）
+### 3.4 手动指定授权服务器元数据地址（基于 PR #60 合并后的 `87aa1a120`）
 
-- **`oauth.authServerMetadataUrl`**：目前不能手动指定授权服务器的元数据地址。
+- 实现分支 `codex/mcp-oauth-metadata-url`。新增 HTTP/SSE 配置 `oauth.authServerMetadataUrl`，支持 HTTPS 和回环 HTTP，拒绝 URL 凭据、片段、非法类型和超长值；规范化后的配置继续参与原有凭据身份哈希。改变或移除该项需要重新登录，不复用其他配置的凭据。用法见 [MCP Bridge README](../packages/mcp-bridge/README.md)。
+- 官方依据：v1.0.0 的 `packages/coding-agent/src/core/mcp-servers.ts` 和 `packages/mcp/src/oauth/discovery.ts`。指定的是完整元数据文档地址，不是 issuer 或授权页面；文档视为显式配置的可信来源，首次 issuer 取文档中的原始值，不与文档地址或资源元数据公布的错误授权服务器比较。仍校验 issuer 的安全 URL 形式、元数据 schema 和支持标志；回调按原样精确比较。
+- SDK 1.30 没有该配置入口，因此通过其异步 `discoveryState` 接口加载并提供已校验的发现结果；SDK 仍负责资源元数据发现、资源匹配和 scope 选择。只覆盖授权服务器元数据来源，不改 SDK 或拦截伪装默认发现地址。指定地址出现网络/HTTP 错误、非法 JSON、非法元数据或超限时拒绝，不回退默认授权服务器发现。
+- 完整缓存继续复用，不在每次读取令牌或刷新时联网加载元数据；缺少元数据或校验版本陈旧时从指定地址补全，并保留缓存 issuer，拒绝把已有凭据带给变化后的 issuer。SDK 的 `invalid_client` 重试会重新经过该入口，动态注册和固定客户端都受原登录 issuer 绑定保护。OIDC 支持标志在任意文档路径上保留，失败不覆盖旧凭据。
+- 缓存复用是有意区别于官方 v1.0.0 的取舍：官方 `packages/mcp/src/oauth/flow.ts` 在指定元数据 URL 时不读写发现缓存，每次授权流程重新获取文档；我们复用已校验的元数据，减少请求并保持缓存 issuer 绑定。代价是服务端接口地址变化不会自动生效，同一配置下再次 `/mcp-login <server>` 也仍复用完整缓存；需要先 `/mcp-logout <server>` 再登录，或更新元数据 URL 配置并登录。新增此配置会改变凭据标识，因此旧版本的普通发现缓存不会自然落入该命名空间；缺失元数据或校验版本的补全分支保留为防御处理。
+- 沿用有界 OAuth fetch：1 MiB、超时/取消、禁止重定向、不继承 MCP 请求头。加载函数和请求头对象置于模块内，无动态正则、`String()` 或对象池；不增加第二次 JSON 解析。变更处于配置和 OAuth 登录/刷新冷路径，未改普通有效令牌读取、工具进度或渲染路径，没有宣称实测性能收益。
+- 测试复用现有登录、SDK、真实本地回调和文件存储夹具；远端响应由夹具提供。三个先行回归（错误发现、无资源发现、配置字段）在修复前全部失败。补充覆盖自定义/OIDC 路径、HTTP/SSE 配置、资源/scope 保留、回调拒绝、缓存重开和修复、刷新与重发现 issuer 绑定、HTTP/JSON/schema/大小失败、取消、凭据隔离和请求头隔离。夹具按创建身份清理，不增加测试执行单元。
+- 最终候选验证（Windows / PowerShell，Node 26.4.0）：`npm run check`、修改 JS 的 `node --check`、`npm run build:offline`、源码不变量与 `git diff --check` 均通过。同一候选的全量 **220 个唯一执行单元全部 exit 0，3,360 项中 3,270 通过、90 跳过、0 失败**；其中 13 个 MCP 文件 **245/245**，OAuth **108/108**。实际执行单元与运行器清单一致，没有重复或遗漏；仅统计各单元末尾汇总，排除内嵌测量子进程的重复计数。运行器正常清理，按日志记录的本次临时目录身份复查也确认不存在。
+- 证据位于 `.git/oauth-metadata-url-20261004/`：`before.log`、`focused-final.log`、`build.log`、`full-test.log`、`summarize.mjs` 和 `summary.json`（逐单元清单、去重计数、配置/运行时/测试文件 SHA-256）。本批尚未运行 GitHub CI、Linux / Node 22.19 或真实外部 OAuth 服务，PR #60 的 CI 不作为本批候选验证。
+
+### 3.5 剩余 OAuth 能力（单独立项）
+
 - **`insufficient_scope` 之后的增量授权**：目前没有完整的挑战处理，也没有“已有 scope 加新增 scope”的流程。要作为一项完整能力来做，不能只移植上游合并 scope 的小函数。
 
 ## 4. 小型正确性修复
@@ -163,8 +175,8 @@
 | --- | --- | --- |
 | 1 | 生产依赖修复 | 升到兼容版本、更新锁文件、重新审计、跑相关回归 |
 | 2（已合并 #59） | OAuth issuer 校验（实现见 §3.2） | 发现、缓存与回调绑定同一 issuer；错误或必需 `iss` 缺失在令牌交换前拒绝；保留 `state` 和 PKCE |
-| 3a（本地实现） | OAuth 令牌空值兼容（§3.3） | 可选字段缺省、刷新令牌保留、原校验边界与缓存重开 |
-| 3b | OAuth 元数据地址覆盖 | 配置入口、发现来源和 issuer 绑定，各有针对性回归 |
+| 3a（已合并 #60） | OAuth 令牌空值兼容（§3.3） | 可选字段缺省、刷新令牌保留、原校验边界与缓存重开 |
+| 3b（本地实现） | OAuth 元数据地址覆盖（§3.4） | 配置入口、发现来源和 issuer 绑定，各有针对性回归 |
 | 3c | OAuth 增量授权 | 挑战处理、scope 合并、完整重新授权流程 |
 | 4 | CLI、重试、扩展注册 | 三项小修复，各带针对性回归 |
 | 5 | TUI 正确性 | ANSI 顺序、前导空格补全，附热路径检查 |
@@ -175,4 +187,4 @@
 ## 10. 本轮验证与边界
 
 - 审查阶段（基于 `7434ba7ab`）：13 个 MCP 测试文件共 153 项通过，Codemode 描述稳定性测试通过，`npm run check` 和 `git diff --check` 通过。这个阶段没有运行全量测试和性能基准，临时夹具已清理。
-- 初版随本文提交的生产改动有两项：一是删除 `bridge.js` 中没有调用方的 `resultText()` 和 `appendMcpText()`，以及只被它们使用的 import，共 33 行；二是 §2 列出的依赖升级。该批全量验证结果见 §2。后续 issuer 修复见 §3.2，令牌空值兼容见 §3.3，其余候选尚未实施。
+- 初版随本文提交的生产改动有两项：一是删除 `bridge.js` 中没有调用方的 `resultText()` 和 `appendMcpText()`，以及只被它们使用的 import，共 33 行；二是 §2 列出的依赖升级。该批全量验证结果见 §2。后续 issuer 修复见 §3.2，令牌空值兼容见 §3.3，元数据地址覆盖见 §3.4，其余候选尚未实施。
