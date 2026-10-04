@@ -138,12 +138,13 @@
 - 新增 4 项回归：较窄登记和未记录登记的动态客户端重新注册并登记合并后的 scope；已覆盖的动态客户端和固定 `clientId` 不重新注册。修复前前两项失败、后两项通过。原“缺省 token scope”用例的首个客户端只登记了 `tools.read`，期望注册次数随之由 1 改为 2；拒绝授权保留旧条目的原有用例继续通过。
 - P2（不改代码，记录边界）：迟到响应只按 access token 文本判断是否过期。若重新登录后服务器恰好返回相同的 access token，旧需求可能写入新条目。`pendingScope` 只在下一次用户显式 `/mcp-login` 时扩大申请的 scope，不阻止工具调用、不强制登录，最坏结果是下次登录多申请已授予的 scope；引入登录代际标记需要改动令牌读取到请求的整条链，本批不做。
 - 修复验证（Windows / PowerShell，Node 26.4.0）：`npm run check`、`npm run build:offline`、修改 JS 的 `node --check` 和 `git diff --check` 通过。全量 **220 个唯一执行单元全部 exit 0，3,419 项中 3,329 通过、90 跳过、0 失败**；13 个 MCP 文件 **304/304**，OAuth **167/167**。执行单元与运行器清单一致，只统计各单元末尾汇总。同一改动在提升权限的 Git Bash 下运行时，`native-file-metadata` 的两项 Windows ACL 拒绝用例因管理员权限不会被拒绝而失败；该文件不涉及 MCP，普通 PowerShell 下通过。本轮没有重跑性能基准；改动只在显式登录路径。
+- 合并复核：PR [#62](https://github.com/dragonbaba/super-pi/pull/62) 最终提交 `042a8893d` 的六个 CI 分片（Linux 两片、Windows 四片）全部成功，普通合并提交为 `f206b4087`。开始下一批前已核对本地 main 与 origin/main 一致、工作区干净、旧分支已删除。OAuth 计划 3a/3b/3c 已合并；真实外部服务未验证，`token_type: ""` 和 §3.5.1 的 SSE 普通 401 提示差异继续保留为独立后续项。
 
 ## 4. 小型正确性修复
 
 都已通过调用当前生产函数或真实扩展加载入口复现。
 
-| 项目 | 当前结果 | 上游来源 | 位置 |
+| 项目 | 修复前复现 | 上游来源 | 位置 |
 | --- | --- | --- | --- |
 | `"Selected model is at capacity"` 重试 | 被判为不可重试 | **发布后修复** `3874b3e98` | `packages/ai/src/utils/retry.ts` |
 | `--models a,b,` | 得到 `["a","b",""]` | **发布后修复** `9b3c19da5` | `packages/coding-agent/src/cli/args.ts:141` |
@@ -155,6 +156,17 @@
 
 - ANSI 修复要适配 Super Pi 现有的切片实现，保留复用的工作对象；不要整体替换成上游版本而把分配带回来。这里是渲染热路径，按[热路径分配契约](performance/hot-path-allocation-contract.md)提供不变量检查、确定性计数和释放证据。
 - 斜杠补全要同时检查前缀、命令名和参数的定位，不能只改判断条件。
+
+### 4.1 PR 4：CLI、重试与扩展命令注册（基于 `f206b4087`）
+
+- 实现分支 `codex/cli-retry-extension-validation`，本地候选待复核；本批不进入 TUI 或 MCP 后台启动，也不处理剩余 OAuth 项。
+- `--models` 在原有逗号分隔和 trim 后过滤空项，保留非空模式的顺序、重复值、glob、provider/model 与 thinking 后缀；全空参数得到空数组。生产 `parseArgs` → `resolveModelScopeFromModels` 回归确认尾逗号原本会把无关模型加入轮换列表，修复后只保留明确选择的模型。依据上游发布后提交 `9b3c19da5`，不算 v1.0.0 已包含。
+- 共享重试分类器新增 `model is at capacity`，沿用模块初始化时编译、忽略大小写的固定正则；不使用泛化的 `capacity` 匹配。原有 quota/billing/停用认证等不可重试判断仍优先，重试次数、退避、取消以及成功/中止消息处理不改。生产 `retryAssistantCall` 验证成功重试、预算耗尽和取消，结束时 AbortSignal 监听器为零。依据上游发布后提交 `3874b3e98`；`AgentSession` 的上下文溢出、图像与请求预算拦截仍在共享分类器之前执行。
+- 扩展命令在写入 Map 前要求非空字符串名称和函数 handler；错误包含扩展来源与命令上下文，让加载器按现有失败路径给出诊断。校验对齐 v0.99.2 的 `dc83372f8`，不额外 trim 名称、不增加命名格式限制。对齐之外补上加载器字段所有权：展开 options 后固定 name/sourceInfo，并保存已验证的 handler，防止 JavaScript 的额外字段覆盖最终注册项。本地回归已复现 options.name 覆盖为数字的情况。无效替换不覆盖原命令，初始化失败不提交暂存 flag 并解除事件订阅，某个文件失败不阻止后续合法扩展加载。
+- 性能边界：检查了 `parseArgs` → 模型范围解析、错误消息 → 重试分类/预算/退避、扩展 factory → 注册 → commit/discard 三条链。修改位于 CLI 启动、错误重试和扩展注册边界，没有修改 provider delta、事件投递、渲染或大结果处理。重试正则仍只在模块初始化构造；不引入按错误重建的正则、`String()` 或对象池。注册校验只增加原始值判断和局部引用，合法注册仍只创建原有的命令描述对象；CLI 使用与现有工具列表参数一致的过滤写法，不宣称启动或吞吐收益。
+- 首轮 4 个测试文件 42 项中，修复前 26 项失败、16 项通过，修复后 42 项全部通过。CLI/模型范围回归复用既有测试文件，新增独立的 provider retry policy 与 extension command registration 测试文件，不复制旧用例。文件夹具在写入前登记清理并支持 Windows 文件占用重试；运行时按实例 invalidate 释放订阅，不扫描或清理共享临时目录。
+- 最终候选验证（Windows / PowerShell，Node 26.4.0）：`npm run check`、`npm run build:offline`、3 个修改 TS 及 4 个测试文件的 `node --check`、`git diff --check` 均通过。11 个相关测试文件（含源码不变量、流处理与内置扩展检查）**75/75**；同一候选全量 **222 个唯一执行单元全部 exit 0，3,450 项中 3,360 通过、90 跳过、0 失败**。本批新增 31 项测试、2 个执行单元。按单元最后汇总计数，排除内嵌子进程重复，实际清单无重复或遗漏；本次日志记录的临时根目录已确认不存在。本轮没有运行分配或计时基准，不把未测量的性能写成收益。
+- 证据在 `.git/cli-retry-extension-20261004/`：`before.log` / `after.log` 保存修复前后结果，`focused-final.log`、`check.log`、`build.log`、`full-test.log` 保存最终检查；`summarize.mjs` / `summary.json` 保存逐单元清单、去重汇总及三个生产文件和四个测试文件的 SHA-256，`cleanup.json` 保存临时根目录按身份复查结果。本地候选验证时尚未提交、推送或创建 PR；GitHub CI、Linux / Node 22.19 尚未验证。PR 开启时由 Codex 自动审查；之后推送修复到已开 PR，由助手评论 `@codex review`，用户决定合并时机。
 
 ## 5. MCP 生命周期（已复现）
 
@@ -208,8 +220,8 @@
 | 2（已合并 #59） | OAuth issuer 校验（实现见 §3.2） | 发现、缓存与回调绑定同一 issuer；错误或必需 `iss` 缺失在令牌交换前拒绝；保留 `state` 和 PKCE |
 | 3a（已合并 #60） | OAuth 令牌空值兼容（§3.3） | 可选字段缺省、刷新令牌保留、原校验边界与缓存重开 |
 | 3b（已合并 #61） | OAuth 元数据地址覆盖（§3.4） | 配置入口、发现来源和 issuer 绑定，各有针对性回归 |
-| 3c（PR #62 审查中） | OAuth 增量授权（§3.5） | 挑战处理、scope 合并、完整显式重新授权流程 |
-| 4 | CLI、重试、扩展注册 | 三项小修复，各带针对性回归 |
+| 3c（已合并 #62） | OAuth 增量授权（§3.5） | 挑战处理、scope 合并、完整显式重新授权流程 |
+| 4（本地实现） | CLI、重试、扩展注册（§4.1） | 三项小修复，各带针对性回归 |
 | 5 | TUI 正确性 | ANSI 顺序、前导空格补全，附热路径检查 |
 | 6 | MCP 启动与激活恢复 | 后台连接、按需等待、reload 和 resume 恢复，覆盖取消和代次边界 |
 
@@ -218,4 +230,4 @@
 ## 10. 本轮验证与边界
 
 - 审查阶段（基于 `7434ba7ab`）：13 个 MCP 测试文件共 153 项通过，Codemode 描述稳定性测试通过，`npm run check` 和 `git diff --check` 通过。这个阶段没有运行全量测试和性能基准，临时夹具已清理。
-- 初版随本文提交的生产改动有两项：一是删除 `bridge.js` 中没有调用方的 `resultText()` 和 `appendMcpText()`，以及只被它们使用的 import，共 33 行；二是 §2 列出的依赖升级。该批全量验证结果见 §2。后续 issuer 修复见 §3.2，令牌空值兼容见 §3.3，元数据地址覆盖见 §3.4，增量授权见 §3.5，其余候选尚未实施。
+- 初版随本文提交的生产改动有两项：一是删除 `bridge.js` 中没有调用方的 `resultText()` 和 `appendMcpText()`，以及只被它们使用的 import，共 33 行；二是 §2 列出的依赖升级。该批全量验证结果见 §2。后续 issuer 修复见 §3.2，令牌空值兼容见 §3.3，元数据地址覆盖见 §3.4，增量授权见 §3.5，CLI/重试/扩展注册见 §4.1，其余候选尚未实施。

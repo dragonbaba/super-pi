@@ -41,3 +41,17 @@ test("session model selection requires --model for an explicit provider", () => 
 	// Parsing remains reusable for auth/catalog commands; session validation is explicit.
 	assert.deepEqual(providerOnly.diagnostics, []);
 });
+
+for (const [input, expected] of [
+	["a,b,", ["a", "b"]],
+	[",a,,b", ["a", "b"]],
+	[" , a, \t, b , ", ["a", "b"]],
+	["", []],
+	[" , ,\t", []],
+	[" provider/*:high, vendor/model:low , model/model , model/model ", ["provider/*:high", "vendor/model:low", "model/model", "model/model"]],
+] as const) test(`--models ignores only empty comma entries: ${JSON.stringify(input)}`, () => {
+	const result = parseArgs(["--models", input, "--", "prompt"]);
+	assert.deepEqual(result.models, expected);
+	assert.deepEqual(result.messages, ["prompt"]);
+	assert.deepEqual(result.diagnostics, []);
+});
