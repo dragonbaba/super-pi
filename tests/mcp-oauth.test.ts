@@ -1104,6 +1104,74 @@ for (const [index, tokenResponse] of invalidTokenCases.entries()) {
   });
 }
 
+test("MCP OAuth token type: empty type rejects initial login and releases its attempt", async t => {
+  const options: OAuthFixtureOptions = { tokenResponse: { token_type: "" } };
+  const f = fixture(t, options);
+  await assert.rejects(f.login(), /Invalid MCP OAuth token_type/);
+  assert.equal(JSON.parse(readFileSync(f.path, "utf8"))[f.owner.key], undefined);
+  assert.equal(await f.owner.token(), undefined);
+  const reopened = new McpOAuth(f.config, new FileAuthStorageBackend(f.path), f.fetchImpl);
+  assert.equal(await reopened.token(), undefined);
+  for (const callback of f.callbacks) await assert.rejects(fetch(callback));
+  assert.equal(f.counts().exchanges, 1);
+  options.tokenResponse = undefined;
+  await f.login(reopened);
+  assert.equal(await reopened.token(), "access-2-0");
+  for (const callback of f.callbacks) await assert.rejects(fetch(callback));
+});
+
+test("MCP OAuth token type: empty type on re-login preserves saved credentials", async t => {
+  const options: OAuthFixtureOptions = {};
+  const f = fixture(t, options);
+  await f.login();
+  const saved = readFileSync(f.path, "utf8");
+  options.tokenResponse = { token_type: "" };
+  await assert.rejects(f.login(), /Invalid MCP OAuth token_type/);
+  assert.equal(readFileSync(f.path, "utf8"), saved);
+  assert.equal(await f.owner.token(), "access-1-0");
+  const reopened = new McpOAuth(f.config, new FileAuthStorageBackend(f.path), f.fetchImpl);
+  assert.equal(await reopened.token(), "access-1-0");
+  for (const callback of f.callbacks) await assert.rejects(fetch(callback));
+  assert.deepEqual(f.counts(), { refreshes: 0, exchanges: 2, registrations: 1 });
+  options.tokenResponse = undefined;
+  await f.login();
+  assert.equal(await f.owner.token(), "access-3-0");
+});
+
+test("MCP OAuth token type: empty type on refresh preserves saved credentials", async t => {
+  const options: OAuthFixtureOptions = { refreshResponse: { token_type: "" } };
+  const f = fixture(t, options);
+  await f.login();
+  const saved = readFileSync(f.path, "utf8");
+  // The SDK falls back to explicit reauthorization after an invalid refresh response.
+  await assert.rejects(f.owner.refresh("access-1-0"), /mcp-login fixture/);
+  assert.equal(readFileSync(f.path, "utf8"), saved);
+  assert.equal(await f.owner.token(), "access-1-0");
+  const reopened = new McpOAuth(f.config, new FileAuthStorageBackend(f.path), async (input: string | URL, init: RequestInit) => {
+    const body = new URLSearchParams(init.body as string);
+    if (body.get("grant_type") === "refresh_token") assert.equal(body.get("refresh_token"), "refresh-0");
+    return f.fetchImpl(input, init);
+  });
+  assert.equal(await reopened.token(), "access-1-0");
+  assert.deepEqual(f.counts(), { refreshes: 1, exchanges: 1, registrations: 1 });
+  options.refreshResponse = undefined;
+  assert.equal(await reopened.refresh("access-1-0"), "access-1-2");
+  assert.deepEqual(f.counts(), { refreshes: 2, exchanges: 1, registrations: 1 });
+});
+
+for (const tokenType of ["Bearer", "bearer", "custom-token-type", " "]) {
+  test(`MCP OAuth token type: non-empty ${JSON.stringify(tokenType)} stays unchanged`, async t => {
+    const f = fixture(t, { tokenResponse: { token_type: tokenType }, refreshResponse: { token_type: tokenType } });
+    await f.login();
+    assert.equal(JSON.parse(readFileSync(f.path, "utf8"))[f.owner.key].tokens.token_type, tokenType);
+    const reopened = new McpOAuth(f.config, new FileAuthStorageBackend(f.path), f.fetchImpl);
+    assert.equal(await reopened.token(), "access-1-0");
+    assert.equal(await reopened.refresh("access-1-0"), "access-1-1");
+    assert.equal(JSON.parse(readFileSync(f.path, "utf8"))[f.owner.key].tokens.token_type, tokenType);
+    assert.deepEqual(f.counts(), { refreshes: 1, exchanges: 1, registrations: 1 });
+  });
+}
+
 test("MCP OAuth concurrent owners share the file-locked refresh and preserve token rotation", async t => {
   const f = fixture(t); await f.login();
   const second = new McpOAuth(f.config, new FileAuthStorageBackend(f.path), f.fetchImpl);
@@ -1119,7 +1187,7 @@ test("MCP OAuth concurrent owners share the file-locked refresh and preserve tok
 
 test("MCP OAuth token compatibility: other OAuth responses keep their original JSON", async () => {
   const value = { issuer: ISSUER, authorization_response_iss_parameter_supported: null,
-    scope: null, expires_in: "", refresh_token: null, id_token: "" };
+    scope: null, expires_in: "", refresh_token: null, id_token: "", token_type: "" };
   const cases = [
     { path: "/.well-known/openid-configuration", status: 200, init: {} },
     { path: "/register", status: 200, init: { method: "POST", body: JSON.stringify({ scope: null }) } },

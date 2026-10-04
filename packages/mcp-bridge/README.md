@@ -167,6 +167,13 @@ for abandoned attempts. Sync and async access use the same lease parameters.
 Metadata/token requests do not inherit MCP headers. OAuth and a static
 `Authorization` header cannot be combined.
 
+Successful authorization-code and refresh responses require a non-empty
+`token_type`, matching upstream Pi v1.0.0. An empty string is rejected rather
+than defaulted to `Bearer`; missing, null, or non-string `token_type` values
+are still rejected by the SDK.
+Invalid login or refresh responses do not replace saved credentials. An invalid
+refresh response follows the SDK's existing explicit-reauthorization path.
+
 If an OAuth server returns HTTP 401 or 403 with a Bearer
 `error="insufficient_scope"` challenge, the bridge saves the requested scopes and
 reports `authorization-required`. Run `/mcp-login <server-id>`, review the
