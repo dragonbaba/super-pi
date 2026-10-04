@@ -3,6 +3,23 @@ async function closeRuntime(runtime) {
   try { await runtime.close(); } catch { /* lifecycle cleanup is best effort */ }
 }
 
+// Only connection/discovery waits use this boundary. Cancelling one waiter must
+// not cancel the shared server connection, and settled waits retain no listener.
+export async function waitForMcpReady(pending, signal) {
+  signal?.throwIfAborted();
+  if (!signal) return pending;
+  let abort;
+  try {
+    return await Promise.race([pending, new Promise((_resolve, reject) => {
+      abort = () => reject(signal.reason);
+      signal.addEventListener("abort", abort, { once: true });
+      if (signal.aborted) abort();
+    })]);
+  } finally {
+    if (abort) signal.removeEventListener("abort", abort);
+  }
+}
+
 export class McpRuntimeLifecycle {
   #generation = 0;
   #controller = null;
@@ -41,7 +58,7 @@ export class McpRuntimeLifecycle {
   }
 
   async attach(token, runtime) {
-    if (!this.isCurrent(token)) {
+    if (!this.isCurrent(token) || token.signal.aborted) {
       await closeRuntime(runtime);
       return false;
     }
@@ -59,6 +76,7 @@ export class McpRuntimeLifecycle {
   fail(token, runtime) {
     if (!this.isCurrent(token)) return false;
     if (this.#starting === runtime) this.#starting = null;
+    if (this.#current === runtime) this.#current = null;
     return true;
   }
 

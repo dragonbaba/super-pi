@@ -308,8 +308,9 @@ test("real MCP adapter discovery executes in Codemode and ignores self-reported 
 	let runtime: any, active = 0, maximum = 0, calls = 0;
 	const extension: InlineExtension = pi => {
 		runtime = new McpBridgeRuntime(pi, "fixture");
-		const state = { status: "connected", config: { id: "fixture", toolTimeoutMs: 1000 }, client: {
+		const state = { status: "connected", catalogReady: true, config: { id: "fixture", toolTimeoutMs: 1000 }, tools: new Map([["lookup", {}]]), client: {
 			async callTool() { calls++; maximum = Math.max(maximum, ++active); await new Promise(resolve => setImmediate(resolve)); active--; return { content: [{ type: "text", text: "native MCP result" }] }; }, async close() {} } };
+		runtime.states.set("fixture", state);
 		runtime.registerRemoteTool(state, { name: "lookup", description: "lookup", annotations: { readOnlyHint: true }, inputSchema: { type: "object", properties: {} } });
 		pi.registerTool({ name: "mcp_search_tools", label: "search", description: "discovery fixture", parameters: Type.Object({}), execute: async () => {
 			pi.setActiveTools([...pi.getActiveTools(), ...runtime.searchTools("lookup")]); return { content: [], details: {} };

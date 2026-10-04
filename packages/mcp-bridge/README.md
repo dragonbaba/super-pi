@@ -14,6 +14,44 @@ Large text and typed resource/audio results require configured ToolResult presen
 
 Remote tools are registered as `mcp__<server>__<tool>` (bounded and collision-checked) and execute sequentially. They are deferred by default: call `tools.mcp_search_tools` with capability words to activate up to eight matching tools, then use `callTool(name, args)` in the same Codemode script. Changed schemas are refreshed on reconnect; tools removed from the server catalog are rejected before any remote execution. Remote `readOnlyHint` alone does not authorize concurrent execution.
 
+## Startup and restoring activated tools
+
+Session startup performs local configuration/cache setup, then connects uncached
+servers in the background. `/mcp-status` shows connections in progress. Tool
+search waits for outstanding discovery so it does not incorrectly report an
+empty catalog; a call to an already registered cached tool waits only for that
+tool's server. Concurrent callers share the connection attempt. Cancelling a
+search or a cached-tool waiter stops that wait without cancelling another
+caller's connection. Shutdown/reload cancels and closes the old runtime.
+
+A transient connection or discovery failure keeps the last fully registered
+catalog searchable and its activated tools available. `/mcp-status` retains the
+connection error; the next explicit tool call reconnects without requiring
+`/mcp-reload`. Once a replacement catalog arrives, it must register completely
+before becoming eligible; rejected catalogs and tools removed by the server do
+not inherit the old catalog's availability.
+
+Successful `mcp_search_tools` activation records an intent in the current session
+branch. Reload and session reopen restore only tools whose exact server/tool
+identity, workspace and configuration still match the available catalog.
+Cached catalogs remain lazy and are checked against the server before a call;
+uncached tools become active when background discovery confirms them. Removed,
+disabled or renamed tools are not restored. Changing configuration requires a
+new search to activate its tools. Navigating the session tree uses that branch's
+latest activation record.
+
+A remote tool activated by other means (not through search) stays active while
+its server's catalog still contains it, including after later discovery or
+reconnects. It is not recorded, so startup, reload, session reopen and tree
+navigation apply only the recorded search intent.
+
+Records contain tool names and identity hashes, not connection settings or
+credentials. Repeating a search without changing intent does not append another
+record. At most 2,048 intents are retained; new identities displace the oldest
+when that bound is reached. Existing sessions without these records begin with
+remote tools deferred and acquire records on subsequent searches. Tool failures
+are never automatically replayed.
+
 ## Global configuration
 
 Create `~/.sp/agent/config/mcp.json`:
