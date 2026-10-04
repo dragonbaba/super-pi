@@ -90,6 +90,11 @@ test("Alt overlay and selection frame leaves avoid wrapper and collection alloca
 		{ node: findMethod(alt, "TuiAltScreen", "resolveSelectionBounds"), source: alt },
 		{ node: findMethod(alt, "TuiAltScreen", "resolveSelectionColumns"), source: alt },
 		{ node: findFunction(utils, "highlightTerminalColumns"), source: utils },
+		{ node: findFunction(utils, "sliceColumns"), source: utils },
+		{ node: findFunction(utils, "sliceByColumn"), source: utils },
+		{ node: findFunction(utils, "sliceWithWidthInto"), source: utils },
+		{ node: findFunction(utils, "findTerminalSequenceEnd"), source: utils },
+		{ node: findFunction(utils, "isSimpleTerminalAsciiRun"), source: utils },
 	];
 	const violations: string[] = [];
 	for (let targetIndex = 0; targetIndex < targets.length; targetIndex++) {
@@ -99,15 +104,17 @@ test("Alt overlay and selection frame leaves avoid wrapper and collection alloca
 			if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) violations.push(`closure:${line}`);
 			if (ts.isObjectLiteralExpression(node)) violations.push(`object:${line}`);
 			if (ts.isArrayLiteralExpression(node)) violations.push(`array:${line}`);
+			if (ts.isRegularExpressionLiteral(node)) violations.push(`regex:${line}`);
 			if (ts.isSpreadElement(node) || ts.isSpreadAssignment(node)) violations.push(`spread:${line}`);
 			if (ts.isNewExpression(node)) {
 				const name = node.expression.getText(target.source);
-				if (name === "Promise" || name === "AbortController" || name === "Map" || name === "Set") {
+				if (name === "Promise" || name === "AbortController" || name === "Map" || name === "Set" || name === "String" || name === "RegExp") {
 					violations.push(`new ${name}:${line}`);
 				}
 			}
 			if (ts.isCallExpression(node)) {
 				const call = node.expression.getText(target.source);
+				if (call === "String" || call === "RegExp") violations.push(`${call}:${line}`);
 				if (/\.(?:map|filter|flatMap|reduce|slice|bind)$/.test(call) || call === "Array.from") {
 					violations.push(`${call}:${line}`);
 				}
