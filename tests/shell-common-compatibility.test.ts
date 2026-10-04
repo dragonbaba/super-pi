@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { execFileSync } from "node:child_process";
+import { once } from "node:events";
 import fs from "node:fs";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
@@ -586,8 +587,11 @@ test("asynchronous spill write failure releases only its owned file", async () =
   const path = output.snapshot({ persistIfTruncated: true }).fullOutputPath;
   assert.ok(path);
   try {
-    (output as any).tempFileStream.destroy(new Error("synthetic write failure"));
-    await new Promise<void>(resolve => setImmediate(resolve));
+    const stream = (output as any).tempFileStream;
+    const failure = once(stream, "error");
+    stream.destroy(new Error("synthetic write failure"));
+    // Destroy waits for pending I/O and close; one event-loop tick is not a completion barrier.
+    await failure;
     assert.equal(abort.signal.aborted, true, "an asynchronous log failure must interrupt a quiet command");
     await assert.rejects(output.closeTempFile(), /synthetic write failure/);
     await output.discardTempFile();
