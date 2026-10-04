@@ -21,9 +21,11 @@ class OAuthTokenResponse extends Response {
   async json() {
     const value = await super.json();
     // Match upstream's absent optional fields before the SDK validates strings
-    // or coerces expiry (null/"" would otherwise become zero). Required fields
-    // and all non-empty values still go through the SDK's original validation.
+    // or coerces expiry (null/"" would otherwise become zero). All other values
+    // still go through the SDK's original validation.
     if (value && typeof value === "object" && !Array.isArray(value)) {
+      // Upstream requires a non-empty type; the SDK only checks that it is a string.
+      if (value.token_type === "") throw new Error("Invalid MCP OAuth token_type");
       for (const field of OPTIONAL_TOKEN_FIELDS) {
         if (value[field] === null || value[field] === "") value[field] = undefined;
       }
