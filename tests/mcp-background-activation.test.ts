@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { getEventListeners } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -13,7 +13,7 @@ import mcpBridgeExtension, { applyActivationItems, toolActivationFingerprint } f
 // @ts-expect-error JavaScript extension package.
 import { loadActivationKey } from "../packages/mcp-bridge/src/activation-key.js";
 // @ts-expect-error JavaScript extension package.
-import { MAX_SERVERS } from "../packages/mcp-bridge/src/security.js";
+import { MAX_CONFIG_BYTES, MAX_SERVERS, sanitizeText } from "../packages/mcp-bridge/src/security.js";
 // @ts-expect-error JavaScript extension package.
 import { McpBridgeRuntime } from "../packages/mcp-bridge/src/bridge.js";
 // @ts-expect-error JavaScript extension package.
@@ -115,6 +115,47 @@ async function fixture(t: TestContext) {
 }
 
 const REMOTE = "mcp__fixture__lookup";
+
+for (const source of ["global", "trusted-project"]) {
+	for (const invalid of ["json", "oversized", "symlink", "server"]) test(`configuration failure still scrubs legacy schema cache: ${source} ${invalid}`, async t => {
+		const f = await fixture(t);
+		const config = loadMcpConfig(f.root, false).servers[0];
+		let configPath = join(f.agentDir, "config", "mcp.json");
+		if (source === "trusted-project") {
+			writeFileSync(configPath, JSON.stringify({ version: 1, allowProjectConfig: true, servers: {} }));
+			mkdirSync(join(f.root, ".sp", "config"), { recursive: true });
+			configPath = join(f.root, ".sp", "config", "mcp.json");
+		}
+		if (invalid === "symlink") {
+			const target = join(f.root, "linked-config.json");
+			writeFileSync(target, JSON.stringify({ version: 1, servers: {} }));
+			if (source === "global") unlinkSync(configPath);
+			try { symlinkSync(target, configPath, "file"); }
+			catch (error) {
+				if ((error as NodeJS.ErrnoException).code === "EPERM") { t.skip("OS denies fixture file symlinks"); return; }
+				throw error;
+			}
+		} else writeFileSync(configPath, invalid === "json" ? "{"
+			: invalid === "oversized" ? " ".repeat(MAX_CONFIG_BYTES + 1)
+			: JSON.stringify({ version: 1, servers: { invalid: { transport: "invalid" } } }));
+		let expectedError: Error | undefined;
+		try { loadMcpConfig(f.root, source === "trusted-project"); }
+		catch (error) { assert.ok(error instanceof Error); expectedError = error; }
+		assert.ok(expectedError, "fixture must be rejected by the real configuration validator");
+		const cachePath = join(f.agentDir, "cache", "mcp-schemas-v1.json");
+		mkdirSync(join(f.agentDir, "cache"));
+		writeFileSync(cachePath, JSON.stringify({ version: 1, entries: [{
+			fingerprint: configFingerprint(config, f.root), updatedAt: Date.now(), tools: f.endpoint.tools,
+		}] }));
+		const h = f.host(); h.ctx.isProjectTrusted = () => source === "trusted-project";
+		await h.start();
+		assert.deepEqual(h.notes, [`MCP bridge configuration error: ${sanitizeText(expectedError.message, 500)}`]);
+		assert.equal(f.endpoint.initializes, 0);
+		assert.deepEqual([...h.tools.keys()], ["mcp_search_tools"]);
+		assert.equal(existsSync(join(f.agentDir, "mcp-activation.key")), false);
+		assert.deepEqual(JSON.parse(readFileSync(cachePath, "utf8")), { version: 2, entries: [] });
+	});
+}
 
 for (const configuration of ["absent", "empty"]) {
 	for (const keyState of ["usable", "missing", "unavailable"]) test(`serverless startup scrubs legacy schema cache: config ${configuration}, key ${keyState}`, async t => {

@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 // @ts-expect-error JavaScript extension package.
-import { McpSchemaCache, configFingerprint } from "../packages/mcp-bridge/src/schema-cache.js";
+import { McpSchemaCache, configFingerprint, prepareSchemaCache } from "../packages/mcp-bridge/src/schema-cache.js";
 
 const TOOLS = [{ name: "lookup", inputSchema: { type: "object" } }];
 const CONFIG = { source: "global", transport: "http", url: "https://fixture.invalid/mcp", maxTools: 64,
@@ -52,6 +52,16 @@ test("a different machine key cannot reuse an existing schema cache", t => {
 	assert.equal(rekeyed.put(CONFIG, f.root, TOOLS, null), true);
 	assert.notEqual(rekeyed.get(CONFIG, f.root).fingerprint, before);
 	assert.ok(new McpSchemaCache().get(CONFIG, f.root));
+});
+
+test("prepared schema cache is consumed without rereading and is bound to its file path", t => {
+	const f = fixture(t), cache = new McpSchemaCache();
+	assert.equal(cache.put(CONFIG, f.root, TOOLS, null), true);
+	const snapshot = prepareSchemaCache();
+	unlinkSync(f.path);
+	const prepared = new McpSchemaCache(f.path, snapshot);
+	assert.deepEqual(prepared.get(CONFIG, f.root).tools, cache.get(CONFIG, f.root).tools);
+	assert.equal(new McpSchemaCache(join(f.root, "other.json"), snapshot).get(CONFIG, f.root), null);
 });
 
 for (const unavailable of ["directory", "invalid-size"]) test(`schema cache never falls back to unkeyed identities with a ${unavailable} key`, t => {

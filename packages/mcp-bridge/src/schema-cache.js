@@ -47,10 +47,15 @@ function saveCache(cachePath, payload) {
   }
 }
 
-// The serverless startup path needs migration, but no key or runtime instance.
-export function migrateLegacySchemaCache(cachePath = defaultCachePath()) {
-  if (readCache(cachePath)?.version === 1) return saveCache(cachePath, EMPTY_CACHE_PAYLOAD);
-  return false;
+// Run before configuration parsing, without needing a key or runtime. The
+// startup-local snapshot avoids rereading the cache if configuration succeeds.
+export function prepareSchemaCache(cachePath = defaultCachePath()) {
+  let data = readCache(cachePath);
+  if (data?.version === 1) {
+    saveCache(cachePath, EMPTY_CACHE_PAYLOAD);
+    data = undefined; // Never reuse legacy identities, even if replacement failed.
+  }
+  return { path: cachePath, data };
 }
 
 export function configFingerprint(config, workspace) {
@@ -93,15 +98,15 @@ function normalizeCachedTool(tool) {
 }
 
 export class McpSchemaCache {
-  constructor(cachePath = defaultCachePath()) {
+  constructor(cachePath = defaultCachePath(), snapshot) {
     this.path = cachePath;
     this.fingerprintKey = loadActivationKey();
     this.entries = new Map();
-    this.load();
+    this.load(snapshot);
   }
 
-  load() {
-    const parsed = readCache(this.path);
+  load(snapshot) {
+    const parsed = snapshot?.path === this.path ? snapshot.data : readCache(this.path);
     if (parsed?.version === 1) {
       // Keep the existing path so upgrading replaces the unkeyed verifier,
       // rather than leaving an obsolete secret-bearing cache beside a new file.
