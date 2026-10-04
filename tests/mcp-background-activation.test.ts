@@ -116,6 +116,27 @@ async function fixture(t: TestContext) {
 
 const REMOTE = "mcp__fixture__lookup";
 
+for (const configuration of ["absent", "invalid"]) {
+	for (const damage of ["truncated", "missing-version"]) test(`startup scrubs malformed legacy cache: config ${configuration}, cache ${damage}`, async t => {
+		const f = await fixture(t), configPath = join(f.agentDir, "config", "mcp.json");
+		const fingerprint = configFingerprint(loadMcpConfig(f.root, false).servers[0], f.root);
+		if (configuration === "absent") unlinkSync(configPath);
+		else writeFileSync(configPath, "{");
+		const cachePath = join(f.agentDir, "cache", "mcp-schemas-v1.json");
+		mkdirSync(join(f.agentDir, "cache"));
+		writeFileSync(cachePath, damage === "truncated" ? `{"version":1,"entries":[{"fingerprint":"${fingerprint}"`
+			: JSON.stringify({ entries: [{ fingerprint }] }));
+		const h = f.host(); await h.start();
+		assert.equal(f.endpoint.initializes, 0);
+		assert.equal(existsSync(join(f.agentDir, "mcp-activation.key")), false);
+		if (configuration === "invalid") { assert.equal(h.notes.length, 1); assert.match(h.notes[0]!, /configuration error/); }
+		else assert.deepEqual(h.notes, []);
+		const after = readFileSync(cachePath, "utf8");
+		assert.equal(after.includes(fingerprint), false);
+		assert.deepEqual(JSON.parse(after), { version: 2, entries: [] });
+	});
+}
+
 for (const source of ["global", "trusted-project"]) {
 	for (const invalid of ["json", "oversized", "symlink", "server"]) test(`configuration failure still scrubs legacy schema cache: ${source} ${invalid}`, async t => {
 		const f = await fixture(t);

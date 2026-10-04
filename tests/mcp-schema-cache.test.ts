@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
@@ -62,6 +62,51 @@ test("prepared schema cache is consumed without rereading and is bound to its fi
 	const prepared = new McpSchemaCache(f.path, snapshot);
 	assert.deepEqual(prepared.get(CONFIG, f.root).tools, cache.get(CONFIG, f.root).tools);
 	assert.equal(new McpSchemaCache(join(f.root, "other.json"), snapshot).get(CONFIG, f.root), null);
+});
+
+for (const route of ["prepare", "construct"]) test(`readable malformed cache envelopes are scrubbed without reuse: ${route}`, t => {
+	const f = fixture(t), fingerprint = configFingerprint(CONFIG, f.root);
+	mkdirSync(join(f.root, "cache"));
+	mkdirSync(f.keyPath);
+	const legacy = JSON.stringify({ version: 1, entries: [{ fingerprint }] });
+	for (const payload of [
+		"", `{"version":1,"entries":[{"fingerprint":"${fingerprint}"`, `${legacy} trailing garbage`,
+		"null", "[]", JSON.stringify({ entries: [{ fingerprint }] }),
+		JSON.stringify({ version: "2", entries: [{ fingerprint }] }),
+		JSON.stringify({ version: 2, fingerprint }),
+		JSON.stringify({ version: 2, entries: { fingerprint } }),
+		JSON.stringify({ version: 99, entries: [{ fingerprint }] }),
+	]) {
+		writeFileSync(f.path, payload);
+		const cache = route === "prepare" ? new McpSchemaCache(f.path, prepareSchemaCache(f.path)) : new McpSchemaCache(f.path);
+		assert.equal(cache.get(CONFIG, f.root), null);
+		assert.equal(cache.entries.size, 0);
+		assert.deepEqual(JSON.parse(readFileSync(f.path, "utf8")), { version: 2, entries: [] }, payload);
+	}
+});
+
+for (const kind of ["missing", "directory", "symlink", "oversized"]) test(`cache scrubbing preserves file safety boundaries: ${kind}`, t => {
+	const f = fixture(t), damaged = `{"version":1,"entries":[{"fingerprint":"${configFingerprint(CONFIG, f.root)}"`;
+	mkdirSync(join(f.root, "cache"));
+	const target = join(f.root, "symlink-target.json");
+	if (kind === "directory") mkdirSync(f.path);
+	else if (kind === "symlink") {
+		writeFileSync(target, damaged);
+		try { symlinkSync(target, f.path, "file"); }
+		catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "EPERM") { t.skip("OS denies fixture file symlinks"); return; }
+			throw error;
+		}
+	} else if (kind === "oversized") writeFileSync(f.path, damaged.padEnd(2 * 1024 * 1024 + 1, " "));
+	const snapshot = prepareSchemaCache(f.path);
+	assert.equal(snapshot.data, undefined);
+	assert.equal(existsSync(f.keyPath), false);
+	if (kind === "missing") assert.equal(existsSync(f.path), false);
+	else if (kind === "directory") assert.equal(lstatSync(f.path).isDirectory(), true);
+	else if (kind === "symlink") {
+		assert.equal(lstatSync(f.path).isSymbolicLink(), true);
+		assert.equal(readFileSync(target, "utf8"), damaged);
+	} else assert.equal(readFileSync(f.path, "utf8"), damaged.padEnd(2 * 1024 * 1024 + 1, " "));
 });
 
 for (const unavailable of ["directory", "invalid-size"]) test(`schema cache never falls back to unkeyed identities with a ${unavailable} key`, t => {

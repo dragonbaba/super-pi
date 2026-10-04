@@ -20,10 +20,17 @@ function readCache(cachePath) {
   try {
     const info = fs.lstatSync(cachePath);
     if (!info.isFile() || info.isSymbolicLink() || info.size > MAX_CACHE_BYTES) return undefined;
-    return JSON.parse(fs.readFileSync(cachePath, "utf8"));
+    const text = fs.readFileSync(cachePath, "utf8");
+    try { return JSON.parse(text); }
+    catch { return null; } // Readable but malformed: eligible for replacement.
   } catch {
+    // Missing, unreadable, or unsafe files must not become replacement targets.
     return undefined;
   }
+}
+
+function isCurrentCacheEnvelope(data) {
+  return data?.version === CACHE_VERSION && Array.isArray(data.entries);
 }
 
 function saveCache(cachePath, payload) {
@@ -51,9 +58,9 @@ function saveCache(cachePath, payload) {
 // startup-local snapshot avoids rereading the cache if configuration succeeds.
 export function prepareSchemaCache(cachePath = defaultCachePath()) {
   let data = readCache(cachePath);
-  if (data?.version === 1) {
+  if (data !== undefined && !isCurrentCacheEnvelope(data)) {
     saveCache(cachePath, EMPTY_CACHE_PAYLOAD);
-    data = undefined; // Never reuse legacy identities, even if replacement failed.
+    data = undefined; // Never reuse legacy/invalid data, even if replacement failed.
   }
   return { path: cachePath, data };
 }
@@ -107,14 +114,14 @@ export class McpSchemaCache {
 
   load(snapshot) {
     const parsed = snapshot?.path === this.path ? snapshot.data : readCache(this.path);
-    if (parsed?.version === 1) {
+    if (parsed !== undefined && !isCurrentCacheEnvelope(parsed)) {
       // Keep the existing path so upgrading replaces the unkeyed verifier,
-      // rather than leaving an obsolete secret-bearing cache beside a new file.
+      // including damaged payloads that no longer identify their format.
       this.entries.clear();
       this.save();
       return;
     }
-    if (!this.fingerprintKey || parsed?.version !== CACHE_VERSION || !Array.isArray(parsed.entries)) return;
+    if (!this.fingerprintKey || parsed === undefined) return;
     const now = Date.now();
     for (const entry of parsed.entries.slice(0, MAX_CACHE_ENTRIES)) {
       if (!entry || !isHexDigest(entry.fingerprint) || !Number.isFinite(entry.updatedAt) || now - entry.updatedAt > MAX_CACHE_AGE_MS || !Array.isArray(entry.tools) || entry.tools.length > 128) continue;
