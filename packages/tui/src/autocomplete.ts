@@ -323,11 +323,12 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 			};
 		}
 
-		if (!options.force && textBeforeCursor.startsWith("/")) {
-			const spaceIndex = textBeforeCursor.indexOf(" ");
+		const commandText = textBeforeCursor.trimStart();
+		if (!options.force && commandText.startsWith("/")) {
+			const spaceIndex = commandText.indexOf(" ");
 
 			if (spaceIndex === -1) {
-				const prefix = textBeforeCursor.slice(1);
+				const prefix = commandText.slice(1);
 				const commandItems: AutocompleteItem[] = [];
 				for (const cmd of this.commands) {
 					const name = "name" in cmd ? cmd.name : cmd.value;
@@ -343,12 +344,12 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 
 				return {
 					items: filtered,
-					prefix: textBeforeCursor,
+					prefix: commandText,
 				};
 			}
 
-			const commandName = textBeforeCursor.slice(1, spaceIndex);
-			const argumentText = textBeforeCursor.slice(spaceIndex + 1);
+			const commandName = commandText.slice(1, spaceIndex);
+			const argumentText = commandText.slice(spaceIndex + 1);
 
 			let command: SlashCommand | AutocompleteItem | undefined;
 			for (const cmd of this.commands) {

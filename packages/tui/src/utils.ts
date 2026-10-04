@@ -1344,8 +1344,14 @@ function sliceColumns(
 		const ansiEnd = findTerminalSequenceEnd(line, i);
 		if (ansiEnd !== 0) {
 			const code = line.substring(i, ansiEnd);
-			if (currentCol >= startCol && currentCol < endCol) result += code;
-			else if (currentCol < startCol) pendingAnsi += code;
+			if (currentCol >= startCol && currentCol < endCol) {
+				// Codes inherited from before the slice precede boundary resets/styles.
+				if (pendingAnsi) {
+					result += pendingAnsi;
+					pendingAnsi = "";
+				}
+				result += code;
+			} else if (currentCol < startCol) pendingAnsi += code;
 			i = ansiEnd;
 			continue;
 		}
@@ -1541,14 +1547,23 @@ export function highlightTerminalColumns(line: string, startColumn: number, endC
 			const code = line.substring(index, ansiEnd);
 			if (currentColumn < startColumn) before += code;
 			if (currentColumn >= startColumn && currentColumn < endColumn) {
+				if (pendingSelected) {
+					selected += pendingSelected;
+					pendingSelected = "";
+				}
 				selected += code;
 				if (code.endsWith("m")) selected += "\x1b[7m";
 			} else if (currentColumn < startColumn) {
 				pendingSelected += code;
 				if (code.endsWith("m")) pendingSelected += "\x1b[7m";
 			}
-			if (currentColumn >= endColumn && currentColumn < lineWidth) after += code;
-			else if (currentColumn < endColumn) pendingAfter += code;
+			if (currentColumn >= endColumn && currentColumn < lineWidth) {
+				if (pendingAfter) {
+					after += pendingAfter;
+					pendingAfter = "";
+				}
+				after += code;
+			} else if (currentColumn < endColumn) pendingAfter += code;
 			index = ansiEnd;
 			continue;
 		}
