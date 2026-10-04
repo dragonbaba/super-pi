@@ -9,6 +9,7 @@ import { ListRootsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { McpCall, McpCallError } from "./call.js";
 import { convertMcpResult } from "./result.js";
 import { McpAuthorizationRequiredError, parseScopeChallenge } from "./oauth-scope.js";
+import { waitForMcpReady } from "./lifecycle.js";
 export { convertMcpResult } from "./result.js";
 import {
   MAX_SSE_EVENT_BYTES,
@@ -213,34 +214,59 @@ export class McpBridgeRuntime {
     this.searchIndex = new Map();
     this.closed = false;
     this.activeCalls = new Set();
+    this.connectionController = new AbortController();
+    this.closePromise = null;
+    this.onToolsChanged = null;
   }
 
   addConfigured(config) {
     this.states.set(config.id, {
-      config, status: "disconnected", error: null, stderr: "", stderrBytes: 0, client: null, transport: null, tools: new Map(), serverInfo: null,
+      config, status: "disconnected", catalogReady: false, error: null, stderr: "", stderrBytes: 0, client: null, transport: null, tools: new Map(), serverInfo: null,
     });
   }
 
   addCached(config, cached) {
     const state = {
-      config, status: "cached", error: null, stderr: "", stderrBytes: 0, client: null, transport: null,
+      config, status: "cached", catalogReady: false, error: null, stderr: "", stderrBytes: 0, client: null, transport: null,
       tools: mapRemoteTools(cached.tools), serverInfo: cached.serverInfo,
     };
     this.states.set(config.id, state);
     for (const tool of cached.tools) this.registerRemoteTool(state, tool);
+    state.catalogReady = true;
     return state;
   }
 
   addDisabled(config) {
     this.states.set(config.id, {
-      config, status: "disabled", error: null, stderr: "", stderrBytes: 0, client: null, transport: null, tools: new Map(), serverInfo: null,
+      config, status: "disabled", catalogReady: false, error: null, stderr: "", stderrBytes: 0, client: null, transport: null, tools: new Map(), serverInfo: null,
     });
   }
 
-  async connect(config, signal) {
-    if (this.closed) throw new Error("MCP runtime is closed");
+  connect(config, signal) {
+    if (this.closed || signal?.aborted) return Promise.reject(new McpCallError("aborted"));
+    if (!this.states.has(config.id)) this.addConfigured(config);
+    const state = this.states.get(config.id);
+    if (state.connectPromise) return waitForMcpReady(state.connectPromise, signal);
+    const ownerSignal = signal ? AbortSignal.any([signal, this.connectionController.signal]) : this.connectionController.signal;
+    const pending = this.connectState(config, ownerSignal).finally(() => {
+      if (state.connectPromise === pending) state.connectPromise = null;
+    });
+    state.connectPromise = pending;
+    return pending;
+  }
+
+  async waitForDiscovery(signal) {
+    const pending = [];
+    for (const state of this.states.values()) {
+      if (state.connectPromise) pending.push(state.connectPromise);
+    }
+    await waitForMcpReady(Promise.allSettled(pending), signal);
+    if (this.closed) throw new McpCallError("aborted");
+  }
+
+  async connectState(config, signal) {
     const state = this.states.get(config.id) ?? {
-      config, status: "disconnected", error: null, stderr: "", stderrBytes: 0, client: null, transport: null, tools: new Map(), serverInfo: null,
+      config, status: "disconnected", catalogReady: false, error: null, stderr: "", stderrBytes: 0, client: null, transport: null, tools: new Map(), serverInfo: null,
     };
     state.config = config;
     state.status = "connecting";
@@ -253,6 +279,7 @@ export class McpBridgeRuntime {
         const { McpOAuth } = await import("./oauth.js");
         state.oauth = new McpOAuth(config);
       }
+      if (this.closed || signal?.aborted) throw signal?.reason ?? new Error("MCP startup aborted");
       const client = createMcpClient();
       client.setRequestHandler(ListRootsRequestSchema, async () => ({
         roots: [{ uri: pathToFileURL(this.workspace).href, name: sanitizeText(this.workspace, 200) }],
@@ -272,29 +299,36 @@ export class McpBridgeRuntime {
       } finally {
         startup.dispose();
       }
+      // Transport/discovery failures leave the last complete catalog retryable.
+      // Once a replacement arrives, only a fully registered catalog is eligible.
+      state.catalogReady = false;
       if (!Array.isArray(listed.tools) || listed.tools.length > config.maxTools) throw new Error(`Server exposed more than ${config.maxTools} tools`);
       state.serverInfo = client.getServerVersion() ?? null;
       state.tools = mapRemoteTools(listed.tools);
       state.status = "connected";
       state.connectFetch = null;
       for (const tool of listed.tools) this.registerRemoteTool(state, tool);
+      state.catalogReady = true;
       this.schemaCache?.put(config, this.workspace, listed.tools, state.serverInfo);
+      this.onToolsChanged?.();
       return state;
     } catch (error) {
-      state.status = this.closed ? "closed" : "error";
       const code = signal?.aborted || this.closed ? "aborted"
         : error instanceof McpAuthorizationRequiredError || state.connectFetch?.authorizationRequired ? "authorization-required" : "protocol-error";
       state.error = code === "authorization-required" ? `MCP authorization required. Run /mcp-login ${config.id}` : "MCP connection failed (protocol-error).";
       await state.client?.close().catch(() => undefined);
+      state.status = this.closed ? "closed" : "error";
       state.client = null;
       state.transport = null;
       state.oauth = null;
       state.connectFetch = null;
+      if (!this.closed) this.onToolsChanged?.();
       throw new McpCallError(code);
     }
   }
 
   registerRemoteTool(state, remoteTool) {
+    if (this.closed) throw new McpCallError("aborted");
     const name = piToolName(state.config.id, remoteTool.name);
     const existing = this.registeredNames.get(name);
     if (existing && existing !== `${state.config.id}\0${remoteTool.name}`) throw new Error(`MCP tool-name collision: ${name}`);
@@ -334,9 +368,16 @@ export class McpBridgeRuntime {
   }
 
   async callRemoteTool(state, remoteName, args, signal, onUpdate) {
-    if ((state.status === "disconnected" || state.status === "cached" || !state.client) && !this.closed) {
-      await this.connect(state.config, signal);
+    if (state.connectPromise || ((state.status === "disconnected" || state.status === "cached" || !state.client) && !this.closed)) {
+      if (signal?.aborted) throw new McpCallError("aborted");
+      try {
+        await waitForMcpReady(state.connectPromise ?? this.connect(state.config), signal);
+      } catch (error) {
+        if (this.closed || signal?.aborted) throw new McpCallError("aborted");
+        throw error;
+      }
     }
+    if (this.closed || signal?.aborted) throw new McpCallError("aborted");
     if (state.status !== "connected" || !state.client) throw new Error(`MCP server ${state.config.id} is not connected; run /mcp-reload`);
     if (state.tools && !state.tools.has(remoteName)) throw new Error("MCP tool is no longer in the current server catalog");
     const call = new McpCall(signal, onUpdate);
@@ -360,7 +401,18 @@ export class McpBridgeRuntime {
   }
 
   toolNames() {
-    return [...this.registeredNames.keys()];
+    const names = [];
+    for (const name of this.registeredNames.keys()) { if (this.toolConfig(name)) names.push(name); }
+    return names;
+  }
+
+  toolConfig(name) {
+    const key = this.registeredNames.get(name);
+    if (!key) return undefined;
+    const separator = key.indexOf("\0");
+    const state = this.states.get(key.slice(0, separator));
+    if (this.closed || !state?.catalogReady || !state.tools.has(key.slice(separator + 1))) return undefined;
+    return state.config;
   }
 
   toolSchemaBytes(name) {
@@ -372,7 +424,7 @@ export class McpBridgeRuntime {
     if (!needle) return [];
     const matches = [];
     for (const [piName, haystack] of this.searchIndex) {
-      if (haystack.includes(needle)) {
+      if (haystack.includes(needle) && this.toolConfig(piName)) {
         matches.push(piName);
         if (matches.length >= limit) break;
       }
@@ -399,14 +451,21 @@ export class McpBridgeRuntime {
     return rows.length ? rows.join("\n") : "No MCP tools are registered.";
   }
 
-  async close() {
-    if (this.closed) return;
+  close() {
+    return this.closePromise ??= this.closeRuntime();
+  }
+
+  async closeRuntime() {
     this.closed = true;
+    this.onToolsChanged = null;
+    this.connectionController.abort(new McpCallError("aborted"));
     for (const call of this.activeCalls) { call.abort(); call.finish(); }
     this.activeCalls.clear();
     const closes = [];
     for (const state of this.states.values()) {
       state.status = "closed";
+      state.catalogReady = false;
+      if (state.connectPromise) closes.push(state.connectPromise);
       if (state.client) closes.push(state.client.close());
       state.client = null;
       state.transport = null;
