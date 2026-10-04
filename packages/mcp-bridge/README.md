@@ -135,7 +135,10 @@ are combined under the file lock, and requirements arriving during consent remai
 for the next explicit login. Denial or cancellation preserves old credentials and
 pending requirements. An explicit token-response scope is authoritative, even
 when narrower than requested; an omitted scope retains the authorization request
-scope (or the previous grant on refresh).
+scope (or the previous grant on refresh). A dynamically registered client whose
+registered scope does not cover the step-up request (or whose registration did
+not report one) is registered again for the combined scopes; a fixed `clientId`
+is never replaced.
 
 Challenge parsing is limited to 8,192 characters and accumulated scopes to
 4,096 characters. Malformed, ambiguous or oversized challenge headers are not

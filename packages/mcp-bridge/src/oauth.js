@@ -6,7 +6,7 @@ import { OAuthMetadataSchema } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { LATEST_PROTOCOL_VERSION } from "@modelcontextprotocol/sdk/types.js";
 import { FileAuthStorageBackend } from "@super-pi/coding-agent";
 import { agentDir } from "./config.js";
-import { McpAuthorizationRequiredError, mergeScopes } from "./oauth-scope.js";
+import { McpAuthorizationRequiredError, mergeScopes, scopeCovers } from "./oauth-scope.js";
 
 const MAX_STORE_CHARS = 2 * 1024 * 1024;
 const MAX_AUTH_BYTES = 1024 * 1024;
@@ -359,6 +359,10 @@ export class McpOAuth {
         this.config.oauth?.scope, entry.tokens?.scope,
         pendingScope || this.config.oauth?.scope || entry.discovery?.resourceMetadata?.scopes_supported?.join(" "),
       );
+      // A dynamic registration may limit the client to its registered scope
+      // (RFC 7591). Register again for a step-up it does not cover; only this
+      // draft changes, so a failed login keeps the stored client and tokens.
+      if (pendingScope !== undefined && !this.config.oauth?.clientId && !scopeCovers(entry.client?.scope, requestedScope)) entry.client = undefined;
       const state = randomBytes(32).toString("hex");
       const previousPort = entry.redirectUrl ? Number(new URL(entry.redirectUrl).port) : 0;
       receiver = await callbackReceiver(this.config.oauth?.callbackPort ?? previousPort, state, signal);

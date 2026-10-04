@@ -188,8 +188,35 @@ test("MCP OAuth step-up: scopes omitted by token responses survive refresh and t
   assert.equal(new URL(f.authorizationUrls.at(-1)!).searchParams.get("scope"), "tools.read tools.write");
   assert.equal(saved.tokens.scope, "tools.read tools.write");
   assert.equal(saved.pendingScope, undefined);
-  assert.deepEqual(f.counts(), { registrations: 1, exchanges: 2, refreshes: 1 });
+  // The first dynamic client was registered for tools.read only.
+  assert.equal(saved.client.scope, "tools.read tools.write");
+  assert.deepEqual(f.counts(), { registrations: 2, exchanges: 2, refreshes: 1 });
 });
+
+for (const kind of ["narrow", "unrecorded", "covering", "fixed"] as const) {
+  const replaced = kind === "narrow" || kind === "unrecorded";
+  test(`MCP OAuth step-up: ${kind} client registration is ${replaced ? "replaced" : "kept"} for requested scopes`, async t => {
+    const endpoint = await scopeEndpoint(t);
+    const f = fixture(t, { serverUrl: endpoint.url, scope: kind === "covering" ? "read tools.write" : "read", ...(kind === "fixed" ? { clientId: "fixed-client" } : {}) });
+    await f.login();
+    if (kind === "unrecorded") {
+      // Registration responses may omit scope; the registered limit is then unknown.
+      const store = JSON.parse(readFileSync(f.path, "utf8"));
+      delete store[f.owner.key].client.scope;
+      writeFileSync(f.path, JSON.stringify(store));
+    }
+    await assert.rejects(fetchWithHeaders({}, endpoint.url, f.owner)(endpoint.url), /authorization required/i);
+    await f.login();
+    const auth = new URL(f.authorizationUrls.at(-1)!);
+    const saved = JSON.parse(readFileSync(f.path, "utf8"))[f.owner.key];
+    const clientId = kind === "fixed" ? "fixed-client" : "fixture-client";
+    assert.equal(auth.searchParams.get("scope"), "read tools.write");
+    assert.equal(auth.searchParams.get("client_id"), clientId);
+    assert.deepEqual(f.counts(), { registrations: kind === "fixed" ? 0 : replaced ? 2 : 1, exchanges: 2, refreshes: 0 });
+    assert.deepEqual(saved.client, kind === "fixed" ? { client_id: clientId } : { ...saved.client, client_id: clientId, scope: "read tools.write" });
+    assert.equal(saved.pendingScope, undefined);
+  });
+}
 
 for (const [header, expected] of [
   ['Basic realm="scope=admin, Bearer error=insufficient_scope"', undefined],

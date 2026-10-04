@@ -33,6 +33,15 @@ export function mergeScopes(first, second, third) {
   return scopes.size ? [...scopes].join(" ") : undefined;
 }
 
+/** Whether a registered client scope (RFC 7591) lists every requested scope; unknown is not covered. */
+export function scopeCovers(registered, requested) {
+  if (requested === undefined) return true;
+  if (typeof registered !== "string") return false;
+  const allowed = new Set(registered.trim().split(SCOPE_SEPARATOR));
+  for (const scope of requested.split(SCOPE_SEPARATOR)) if (!allowed.has(scope)) return false;
+  return true;
+}
+
 function finishedChallenge(challenge) {
   if (!challenge?.bearer || challenge.error !== "insufficient_scope") return undefined;
   if (challenge.invalid) throw new Error("Invalid MCP OAuth scope challenge");
