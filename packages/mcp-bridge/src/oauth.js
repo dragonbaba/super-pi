@@ -6,6 +6,7 @@ import { OAuthMetadataSchema } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { LATEST_PROTOCOL_VERSION } from "@modelcontextprotocol/sdk/types.js";
 import { FileAuthStorageBackend } from "@super-pi/coding-agent";
 import { agentDir } from "./config.js";
+import { McpAuthorizationRequiredError, mergeScopes, scopeCovers } from "./oauth-scope.js";
 
 const MAX_STORE_CHARS = 2 * 1024 * 1024;
 const MAX_AUTH_BYTES = 1024 * 1024;
@@ -204,7 +205,22 @@ export class McpOAuth {
     this.loaded = false;
   }
 
-  authorizationRequired() { return new Error(`MCP authorization required. Run /mcp-login ${this.config.id}`); }
+  authorizationRequired() { return new McpAuthorizationRequiredError(this.config.id); }
+
+  async recordScopeChallenge(scope, failedToken, signal) {
+    // Persist the hint for the command's new owner/process, without changing the
+    // granted scope. A late response must not recreate logged-out credentials or
+    // overwrite a newer login. Concurrent hints union under the same file lock.
+    await this.backend.withLockAsync(async text => {
+      signal?.throwIfAborted();
+      const store = parseStore(text), current = store[this.key];
+      if (current?.tokens?.access_token !== failedToken || (!current && this.cached)) return { result: undefined };
+      const pendingScope = mergeScopes(current?.pendingScope, scope) ?? "";
+      if (current?.pendingScope === pendingScope) return { result: undefined };
+      store[this.key] = { ...current, pendingScope };
+      return { result: undefined, next: serializeStore(store) };
+    }, { signal });
+  }
 
   /**
    * A refresh in another process holds the async lease across OAuth requests, so the cold read
@@ -233,8 +249,8 @@ export class McpOAuth {
     }, { signal }).then(result => { this.cached = result.entry; this.loaded = true; return result.value; });
   }
 
-  async authorize(entry, signal, receiver, notify) {
-    let verifier, authorizationIssuer, issuerRequired = false;
+  async authorize(entry, signal, receiver, notify, requestedScope = this.config.oauth?.scope) {
+    let verifier, authorizationIssuer, authorizedScope, issuerRequired = false;
     const metadataUrl = this.config.oauth?.authServerMetadataUrl;
     const discoveryObservation = {};
     const state = randomBytes(32).toString("hex");
@@ -247,7 +263,10 @@ export class McpOAuth {
       saveClientInformation: value => { if (!receiver) throw this.authorizationRequired(); entry.client = value; },
       tokens: () => entry.tokens,
       saveTokens: value => {
-        entry.tokens = { ...value, refresh_token: value.refresh_token ?? entry.tokens?.refresh_token };
+        // An omitted scope means the scope requested at authorization, or the
+        // previous grant on refresh. An explicit narrower response stays narrow.
+        entry.tokens = { ...value, scope: value.scope ?? authorizedScope ?? entry.tokens?.scope,
+          refresh_token: value.refresh_token ?? entry.tokens?.refresh_token };
         entry.expiresAt = Number.isFinite(value.expires_in) ? Date.now() + value.expires_in * 1000 : undefined;
       },
       saveCodeVerifier: value => { verifier = value; },
@@ -256,6 +275,7 @@ export class McpOAuth {
         if (!receiver) throw this.authorizationRequired();
         authorizationIssuer = entry.discovery.authorizationServerMetadata?.issuer ?? entry.discovery.authorizationServerUrl;
         issuerRequired = entry.discovery.authorizationServerMetadata?.authorization_response_iss_parameter_supported === true;
+        authorizedScope = url.searchParams.get("scope") || undefined;
         secureUrl(url); notify(url.href);
       },
       discoveryState: async () => {
@@ -280,7 +300,7 @@ export class McpOAuth {
         if (scope === "all" || scope === "verifier") verifier = undefined;
       },
     };
-    const options = { serverUrl: this.config.url, scope: this.config.oauth?.scope, fetchFn: createOAuthFetch(this.fetchImpl, signal, discoveryObservation) };
+    const options = { serverUrl: this.config.url, scope: requestedScope, fetchFn: createOAuthFetch(this.fetchImpl, signal, discoveryObservation) };
     // Pre-fix OIDC caches may have lost the support flag. Refresh just the server
     // metadata once, retaining resource discovery and client registration. Do not
     // downgrade a previously discovered server to metadata-free legacy behavior
@@ -332,19 +352,31 @@ export class McpOAuth {
       store[this.key] = draft;
       return { result: draft, next: serializeStore(store) };
     }, { signal });
+    const pendingScope = entry.pendingScope;
     let receiver, committed = false;
     try {
+      const requestedScope = pendingScope === undefined ? this.config.oauth?.scope : mergeScopes(
+        this.config.oauth?.scope, entry.tokens?.scope,
+        pendingScope || this.config.oauth?.scope || entry.discovery?.resourceMetadata?.scopes_supported?.join(" "),
+      );
+      // A dynamic registration may limit the client to its registered scope
+      // (RFC 7591). Register again for a step-up it does not cover; only this
+      // draft changes, so a failed login keeps the stored client and tokens.
+      if (pendingScope !== undefined && !this.config.oauth?.clientId && !scopeCovers(entry.client?.scope, requestedScope)) entry.client = undefined;
       const state = randomBytes(32).toString("hex");
       const previousPort = entry.redirectUrl ? Number(new URL(entry.redirectUrl).port) : 0;
       receiver = await callbackReceiver(this.config.oauth?.callbackPort ?? previousPort, state, signal);
       receiver.state = state;
       entry.redirectUrl = receiver.url;
       entry.tokens = undefined;
-      const token = await this.authorize(entry, signal, receiver, notify);
+      const token = await this.authorize(entry, signal, receiver, notify, requestedScope);
       await this.backend.withLockAsync(async text => {
         signal.throwIfAborted();
         const store = parseStore(text);
         if (store[this.key]?.loginAttempt !== attempt) throw new Error("MCP OAuth login was cancelled or superseded; credentials were not saved");
+        // A new challenge received while the browser was open belongs to the
+        // next explicit login; completing this one must not erase it.
+        entry.pendingScope = store[this.key].pendingScope === pendingScope ? undefined : store[this.key].pendingScope;
         entry.loginAttempt = undefined; entry.loginUntil = undefined;
         store[this.key] = entry;
         return { result: undefined, next: serializeStore(store) };

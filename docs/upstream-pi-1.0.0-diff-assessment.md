@@ -76,7 +76,7 @@
 - 提交候选重新验证（Windows / PowerShell，Node 26.4.0）：类型检查、JS 语法、离线构建和差异检查通过；同一候选的全量测试 **220 个唯一执行单元全部 exit 0，3,312 项中 3,222 通过、90 跳过、0 失败**。其中 13 个 MCP 文件 **197/197**，OAuth **60/60**。统计采用每个执行单元的最终汇总，排除内嵌测量汇总；证据为 `full-test-commit-candidate.log`、`build-commit-candidate.log`、`commit-candidate-summary.json`（含生产/测试文件 SHA-256）。
 - 合并复核：PR [#59](https://github.com/dragonbaba/super-pi/pull/59) 的最终提交 `bd4459aeed` 已通过六个 CI 分片（Linux 两片、Windows 四片，均为 Node 22.19.x），Codex 对该提交未发现主要问题；普通合并提交为 `58bbc4451`，本地与远端 `main` 已同步，旧分支已删除。仍未连接真实外部 OAuth 服务；端到端测试使用本地回调和远端响应夹具。运行器正常完成各自拥有目录的清理，没有清扫共享系统临时目录或历史输出日志。
 - 其余兼容/体验边界保持：无元数据的旧服务端若返回裸 origin 的 `iss`，与 SDK 补出的带 `/` 根标识不同仍拒绝；浏览器页面只提示返回 Super Pi，最终错误在终端显示，不表示授权成功。
-- 本批只处理 issuer 安全边界；可选字段空值另见 §3.3，元数据覆盖另见 §3.4，增量授权仍待后续批次。
+- 本批只处理 issuer 安全边界；可选字段空值另见 §3.3，元数据覆盖另见 §3.4，增量授权另见 §3.5。
 
 ### 3.3 令牌可选字段空值兼容（基于 PR #59 合并后的 `58bbc4451`）
 
@@ -104,9 +104,40 @@
 - 最终候选验证（Windows / PowerShell，Node 26.4.0）：`npm run check`、修改 JS 的 `node --check`、`npm run build:offline`、源码不变量与 `git diff --check` 均通过。同一候选的全量 **220 个唯一执行单元全部 exit 0，3,360 项中 3,270 通过、90 跳过、0 失败**；其中 13 个 MCP 文件 **245/245**，OAuth **108/108**。实际执行单元与运行器清单一致，没有重复或遗漏；仅统计各单元末尾汇总，排除内嵌测量子进程的重复计数。运行器正常清理，按日志记录的本次临时目录身份复查也确认不存在。
 - 证据位于 `.git/oauth-metadata-url-20261004/`：`before.log`、`focused-final.log`、`build.log`、`full-test.log`、`summarize.mjs` 和 `summary.json`（逐单元清单、去重计数、配置/运行时/测试文件 SHA-256）。本批尚未运行 GitHub CI、Linux / Node 22.19 或真实外部 OAuth 服务，PR #60 的 CI 不作为本批候选验证。
 
-### 3.5 剩余 OAuth 能力（单独立项）
+- 合并复核：PR [#61](https://github.com/dragonbaba/super-pi/pull/61) 的最终提交 `b0af2fce0` 已通过六个 CI 分片（Linux 两片、Windows 四片），普通合并提交为 `b22cb52b6`；开始下一批前已核对本地 main 与 origin/main 一致、工作区干净、旧分支已删除。真实外部 OAuth 服务仍未验证。
 
-- **`insufficient_scope` 之后的增量授权**：目前没有完整的挑战处理，也没有“已有 scope 加新增 scope”的流程。要作为一项完整能力来做，不能只移植上游合并 scope 的小函数。
+### 3.5 权限不足后的显式增量授权（基于 PR #61 合并后的 `b22cb52b6`）
+
+- 实现分支 `codex/mcp-oauth-scope-step-up`，提交为 `48cc61918` 并开 PR [#62](https://github.com/dragonbaba/super-pi/pull/62)；Codex 审查后的修复见 §3.5.2。官方依据是 v1.0.0 的 `packages/mcp/src/oauth/flow.ts` 中 `stepUpScope`、缺省 token scope 的保存，以及 coding-agent OAuth provider 的挑战记录与显式登录流程。本批不处理 `token_type: ""`。
+- HTTP/SSE 请求遇到 401/403 的 Bearer `insufficient_scope` 时，记录需求并报告 `authorization-required`，由用户执行 `/mcp-login <server-id>`。授权页面的 scope 合并配置、旧令牌授予和挑战需求，保序、区分大小写并去重。该分支不刷新令牌、不自动打开浏览器、不重放被拒工具；没有此挑战的普通 401 保持最多一次刷新/重试，普通 403 不触发重新授权。
+- 待授权 scope 保存在原凭据身份下，支持命令创建新 owner 和会话重开。写入时在文件锁内合并；带旧 access token 的迟到响应不能改写已经换 token 或登出的条目。授权中收到的新需求继续保留，拒绝或取消不覆盖旧凭据和需求。成功登录清除本次已消费的提示，logout 清除整个条目；提示没有单独 TTL，最多 4,096 字符。相同 access token 的重复提示不重复写文件。
+- 提示不是授权凭据。响应明确给出的 token scope 优先，即使比请求窄；没有给 scope 时保存实际授权 URL 中的请求值，刷新响应缺省时保留旧 grant。挑战缺少 scope 时也提示显式登录，使用已知 scope。没有先前凭据也能记录需求供首次登录使用，不能因此生成令牌。
+- 新模块集中保存正则和上限：挑战解析最多 8,192 字符，scope 合并最多 4,096 字符；区分其他认证方案、引号内逗号和转义，不把重复关键字段、歧义、损坏字段或超长头作为增量授权依据。解析失败时回到原状态码处理，401 最多刷新/重试一次，403 原响应交回 SDK，不保存该头的 scope 需求。只消费 scope，不跟随挑战里的 `resource_metadata` 切换发现来源；这是本批与上游完整挑战发现能力的明确边界。原资源匹配、issuer 绑定、元数据地址覆盖、PKCE、state 与回调检查不变。
+- SSE 的 EventSource 会丢失原异常类型，因此连接阶段从该 transport 独占的 fetch 函数读取布尔标记；连接成功、失败或关闭都释放额外引用。运行中的 HTTP 工具调用保留固定错误类别，诊断不暴露挑战正文、scope 或令牌。Request 的备用请求体在首发、刷新或重试失败时均释放，保留原异常对象。OAuth 文件操作同时支持 Request 自带和 init 提供的取消信号；收到挑战之后取消，也不能继续保存提示。
+- 回归复用 OAuth 夹具，不新建测试执行单元：真实 loopback MCP 请求、SDK HTTP 连接/工具调用、SSE 连接、生产 `/mcp-login`、文件锁与回调均有覆盖。包括跨 owner 合并、授权中新增需求、拒绝/取消、登录和登出后的迟到响应、首次登录、配置隔离、普通响应不改变提示文件、元数据覆盖、较窄 grant、缺省 grant、重试上限与流取消。先行两个生产回归在未修复时失败；新增测试还复现了损坏挑战尾段被接受、SSE 丢失错误类别、重试失败后请求体未释放和 Request 自带取消信号未传到提示事务，修复后通过。
+- 性能边界：审计了 fetch → transport → runtime → `McpCall`/结果转换链。新增解析、Set/数组和文件事务仅发生在认证失败或显式登录边界，普通成功请求不解析挑战、不写提示；分块响应限制、progress 通知和大结果转换未改。模块级正则和清理回调复用，没有动态正则、`String()` 或对象池，没有增加每块/每次 progress 分配。认证失败时使用有界冷路径对象，不宣称吞吐提升。
+- 首轮实现验证（复审前候选，Windows / PowerShell，Node 26.4.0）：`npm run check`、4 个修改/新增 JS 的 `node --check`、`npm run build:offline` 和 `git diff --check` 通过。MCP 与源码不变量联合 **287/287**；该候选全量 **220 个唯一执行单元全部 exit 0，3,398 项中 3,308 通过、90 跳过、0 失败**，其中 13 个 MCP 文件 **283/283**，OAuth **146/146**（当时新增 38 项）。逐单元核对运行器清单无重复或遗漏，排除内嵌测量子进程的重复统计；没有清理失败，日志里记录的本次临时根目录已确认不存在。取消信号补修后已重新完整运行；下述复审再次更新了候选，不能用本段替代其验证结果。
+- 现有 `mcp-output-bounds` 的 allocation、gc 和 timing 模式均退出 0；mixed 场景计数保持 100 次 progress、1 个 artifact、4 个 continuation、1 个 source entry，受控 GC 的 9 个 WeakRef 均释放（retained 0）。这是未改动的结果/进度链回归证据，不是新增挑战解析的性能收益或真实授权服务测试。新增请求边界回归确认：scope 拒绝只发 1 次请求、0 次刷新；普通 401 后遇到 scope 拒绝总计 2 次请求、1 次刷新；每个失败上传底层流只取消 1 次，连接失败或 runtime 关闭清空 client/transport/oauth/connectFetch，activeCalls 为 0。
+- 证据在 `.git/oauth-scope-step-up-20261004/`：`before.log`、`expanded.log`、`integration.log`、`sse-before.log`、`cancel-before.log` 记录失败回归，`focused-final.log`、`check.log`、`build.log`、`full-test.log` 为最终验证，`summarize.mjs` / `summary.json` 保存逐单元汇总和源码/测试 SHA-256，`cleanup.json` 保存按身份复查结果，`allocation.log`、`gc.log`、`timing.log` 保存基准。当时尚未提交、推送或创建 PR；GitHub CI、Linux / Node 22.19 与真实外部 OAuth 服务尚未验证，PR #61 的 CI 不作为本批候选结果。
+
+#### 3.5.1 复审：恢复畸形挑战头下的普通 401 重试
+
+- 已复现回归：`fetchWithHeaders` 在判断普通 401 刷新前直接调用严格解析器，未闭合引号、无法识别的非 scope 参数和超过 8,192 字符的头都会抛错，因此只发出一次请求、没有刷新。此前仅覆盖了 scope 语法拒绝，缺少状态码回退的端到端回归。
+- 修复只包住同步挑战解析。解析失败后仍按 401/403 处理；只有能成功识别的 `insufficient_scope` 才记录需求并提示显式授权。文件存储、刷新、取消及网络错误不在这个 catch 范围内，继续传播原异常。成功响应与进度/结果处理链不变；没有新增闭包、正则或可复用对象。
+- 新增 17 项检查复用生产 OAuth owner、文件存储和 loopback HTTP 夹具，不增加执行单元。15 项覆盖未闭合 realm、错误参数、超长 realm、未闭合 scope、重复 scope，各验证 401→200、401→401 和 403→403；检查请求体、令牌轮换、最多一次刷新、响应状态/头/正文保留、不写无效提示。另 2 项验证 scope 保存和刷新存储失败仍抛出原异常。修复前 16 项失败、1 项通过，修复后 17 项全部通过；原有效挑战、并发/取消、SSE 与真实命令入口回归继续运行。
+- 再次核对了 token 一致性检查、锁内 scope 合并、授权前保存旧 grant、登录提交时保留新增需求、缺省/较窄 scope、请求体清理与 runtime 引用释放，未发现其他阻塞问题。保留一项已知体验差异：普通 401 且没有刷新令牌时，HTTP 连接识别为 `authorization-required`，SSE 因 EventSource 丢失异常类型仍为 `protocol-error`；SSE 补救标记目前只记录已确认的 scope 挑战，本次不扩大修复范围。
+- 本轮最终候选验证（Windows / PowerShell，Node 26.4.0）：`npm run check`、4 个 JS 的语法检查、`npm run build:offline`、`git diff --check` 全部通过。MCP 与源码不变量联合 **304/304**；全量 **220 个唯一执行单元全部 exit 0，3,415 项中 3,325 通过、90 跳过、0 失败**，其中 13 个 MCP 文件 **300/300**，OAuth **163/163**。按各执行单元最后汇总计数，排除内嵌子进程重复，清单无遗漏或重复；日志记录的本轮临时根目录已清理。
+- 与上一候选的 SHA-256 对照确认，生产修改只涉及 `bridge.js`；`oauth.js`、`oauth-scope.js`、`call.js` 和 `config.js` 均未变化。本轮没有重跑性能基准，前一候选数据保留为历史证据，不能当作本次新测量。GitHub CI、Linux / Node 22.19 与真实外部 OAuth 服务仍未验证。
+- 证据另存 `.git/oauth-scope-step-up-review-20261004/`：`before.log` / `after.log` 保存新增回归的修复前后结果，`focused-final.log`、`check.log`、`build.log`、`full-test.log` 保存最终验证，`summarize.mjs` / `summary.json` 保存逐单元清单、计数和源码/测试 SHA-256，`cleanup.json` 保存临时根目录按身份复查结果。保留前一候选日志供对照。该候选随后提交为 `48cc61918` 并开 PR #62。
+
+#### 3.5.2 PR #62 审查：增量授权时更新动态注册客户端
+
+- PR #62 的 CI 六个分片通过，Codex 在 `48cc61918` 上提出两条意见。
+- P1（已修复）：动态注册会把当时的 scope 一并登记，RFC 7591 把它定义为该客户端可申请的范围。原实现在增量授权时沿用已缓存的动态客户端，SDK 1.30 因此跳过注册，只扩大授权请求；严格执行登记范围的授权服务器会拒绝每次扩权。官方 v1.0.0 的 `signInMcpServer` 同样在回调地址不变时保留客户端，本项是对官方行为的加强。
+- 修复：`login()` 处理待授权需求时，若未配置固定 `clientId`，且已登记 scope 没有覆盖本次请求（注册响应未返回 scope 视为未覆盖），只在登录草稿中移除客户端，由 SDK 按合并后的 scope 重新注册。固定 `clientId` 和已覆盖的动态客户端不变；拒绝或取消时文件中的旧客户端和令牌保留，授权服务器上可能多出一个未使用的注册。判断函数 `scopeCovers` 位于 `oauth-scope.js`，只在显式登录时运行。
+- 新增 4 项回归：较窄登记和未记录登记的动态客户端重新注册并登记合并后的 scope；已覆盖的动态客户端和固定 `clientId` 不重新注册。修复前前两项失败、后两项通过。原“缺省 token scope”用例的首个客户端只登记了 `tools.read`，期望注册次数随之由 1 改为 2；拒绝授权保留旧条目的原有用例继续通过。
+- P2（不改代码，记录边界）：迟到响应只按 access token 文本判断是否过期。若重新登录后服务器恰好返回相同的 access token，旧需求可能写入新条目。`pendingScope` 只在下一次用户显式 `/mcp-login` 时扩大申请的 scope，不阻止工具调用、不强制登录，最坏结果是下次登录多申请已授予的 scope；引入登录代际标记需要改动令牌读取到请求的整条链，本批不做。
+- 修复验证（Windows / PowerShell，Node 26.4.0）：`npm run check`、`npm run build:offline`、修改 JS 的 `node --check` 和 `git diff --check` 通过。全量 **220 个唯一执行单元全部 exit 0，3,419 项中 3,329 通过、90 跳过、0 失败**；13 个 MCP 文件 **304/304**，OAuth **167/167**。执行单元与运行器清单一致，只统计各单元末尾汇总。同一改动在提升权限的 Git Bash 下运行时，`native-file-metadata` 的两项 Windows ACL 拒绝用例因管理员权限不会被拒绝而失败；该文件不涉及 MCP，普通 PowerShell 下通过。本轮没有重跑性能基准；改动只在显式登录路径。
 
 ## 4. 小型正确性修复
 
@@ -176,8 +207,8 @@
 | 1 | 生产依赖修复 | 升到兼容版本、更新锁文件、重新审计、跑相关回归 |
 | 2（已合并 #59） | OAuth issuer 校验（实现见 §3.2） | 发现、缓存与回调绑定同一 issuer；错误或必需 `iss` 缺失在令牌交换前拒绝；保留 `state` 和 PKCE |
 | 3a（已合并 #60） | OAuth 令牌空值兼容（§3.3） | 可选字段缺省、刷新令牌保留、原校验边界与缓存重开 |
-| 3b（本地实现） | OAuth 元数据地址覆盖（§3.4） | 配置入口、发现来源和 issuer 绑定，各有针对性回归 |
-| 3c | OAuth 增量授权 | 挑战处理、scope 合并、完整重新授权流程 |
+| 3b（已合并 #61） | OAuth 元数据地址覆盖（§3.4） | 配置入口、发现来源和 issuer 绑定，各有针对性回归 |
+| 3c（PR #62 审查中） | OAuth 增量授权（§3.5） | 挑战处理、scope 合并、完整显式重新授权流程 |
 | 4 | CLI、重试、扩展注册 | 三项小修复，各带针对性回归 |
 | 5 | TUI 正确性 | ANSI 顺序、前导空格补全，附热路径检查 |
 | 6 | MCP 启动与激活恢复 | 后台连接、按需等待、reload 和 resume 恢复，覆盖取消和代次边界 |
@@ -187,4 +218,4 @@
 ## 10. 本轮验证与边界
 
 - 审查阶段（基于 `7434ba7ab`）：13 个 MCP 测试文件共 153 项通过，Codemode 描述稳定性测试通过，`npm run check` 和 `git diff --check` 通过。这个阶段没有运行全量测试和性能基准，临时夹具已清理。
-- 初版随本文提交的生产改动有两项：一是删除 `bridge.js` 中没有调用方的 `resultText()` 和 `appendMcpText()`，以及只被它们使用的 import，共 33 行；二是 §2 列出的依赖升级。该批全量验证结果见 §2。后续 issuer 修复见 §3.2，令牌空值兼容见 §3.3，元数据地址覆盖见 §3.4，其余候选尚未实施。
+- 初版随本文提交的生产改动有两项：一是删除 `bridge.js` 中没有调用方的 `resultText()` 和 `appendMcpText()`，以及只被它们使用的 import，共 33 行；二是 §2 列出的依赖升级。该批全量验证结果见 §2。后续 issuer 修复见 §3.2，令牌空值兼容见 §3.3，元数据地址覆盖见 §3.4，增量授权见 §3.5，其余候选尚未实施。

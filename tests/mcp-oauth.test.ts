@@ -10,7 +10,9 @@ import { McpOAuth, createOAuthFetch } from "../packages/mcp-bridge/src/oauth.js"
 // @ts-expect-error JavaScript extension has no declaration file
 import mcpBridgeExtension from "../packages/mcp-bridge/src/index.js";
 // @ts-expect-error JavaScript extension has no declaration file
-import { fetchWithHeaders } from "../packages/mcp-bridge/src/bridge.js";
+import { fetchWithHeaders, McpBridgeRuntime } from "../packages/mcp-bridge/src/bridge.js";
+// @ts-expect-error JavaScript extension has no declaration file
+import { parseScopeChallenge, mergeScopes } from "../packages/mcp-bridge/src/oauth-scope.js";
 // @ts-expect-error JavaScript extension has no declaration file
 import { loadMcpConfig } from "../packages/mcp-bridge/src/config.js";
 import { createServer } from "node:http";
@@ -37,18 +39,22 @@ type OAuthFixtureOptions = {
   authServerMetadataUrl?: string;
   metadataOverrides?: Record<string, unknown>;
   resourceMetadataOverrides?: Record<string, unknown>;
+  scope?: string;
+  serverUrl?: string;
 };
 
 function fixture(t: TestContext, options: OAuthFixtureOptions = {}) {
   const root = mkdtempSync(join(tmpdir(), "sp-mcp-oauth-"));
   t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const path = join(root, "auth.json");
-  const config = { id: "fixture", source: "global", url: "https://mcp.fixture.invalid/mcp", headers: { "X-Private-MCP": "fixture-private-header" },
+  const config = { id: "fixture", source: "global", url: options.serverUrl ?? "https://mcp.fixture.invalid/mcp", headers: { "X-Private-MCP": "fixture-private-header" },
     oauth: { ...(options.clientId ? { clientId: options.clientId, callbackPort: options.callbackPort } : {}),
+      ...(options.scope ? { scope: options.scope } : {}),
       ...(options.authServerMetadataUrl ? { authServerMetadataUrl: options.authServerMetadataUrl } : {}) } };
   let refreshes = 0, exchanges = 0, registrations = 0;
   let discoveryRequests = 0;
   const callbacks: string[] = [];
+  const authorizationUrls: string[] = [];
   const metadataRequests: string[] = [];
   const fetchImpl = async (input: string | URL, init: RequestInit = {}) => {
     const url = new URL(input);
@@ -89,6 +95,7 @@ function fixture(t: TestContext, options: OAuthFixtureOptions = {}) {
     const controller = new AbortController();
     try {
       await target.login((url: string) => {
+        authorizationUrls.push(url);
         const auth = new URL(url); callback = auth.searchParams.get("redirect_uri")!;
         callbacks.push(callback);
         const request = (async () => {
@@ -108,12 +115,478 @@ function fixture(t: TestContext, options: OAuthFixtureOptions = {}) {
     } finally { controller.abort(); await Promise.all(requests); }
     return callback;
   }
-  return { owner, config, root, path, fetchImpl, login, callbacks, metadataRequests,
+  return { owner, config, root, path, fetchImpl, login, callbacks, authorizationUrls, metadataRequests,
     discoveryRequests: () => discoveryRequests, counts: () => ({ refreshes, exchanges, registrations }) };
 }
 
 const ISSUER = "https://auth.fixture.invalid";
 const CONFIGURED_METADATA = "https://catalog.fixture.invalid/tenant/metadata.json?version=1";
+
+async function scopeEndpoint(t: TestContext, rpc = false) {
+  const replies = { status: 403, challenge: 'Bearer error="insufficient_scope", scope="tools.write"', firstUnauthorized: false,
+    blockInitialization: false, beforeReply: undefined as (() => Promise<void>) | undefined };
+  const requests: Array<{ body: string; token?: string }> = [];
+  const server = createServer((request, response) => {
+    let body = "";
+    request.setEncoding("utf8").on("data", chunk => { body += chunk; }).on("end", async () => {
+      requests.push({ body, token: request.headers.authorization });
+      const { status, challenge, beforeReply } = replies;
+      await beforeReply?.();
+      if (rpc) {
+        if (request.method !== "POST") { response.writeHead(405).end(); return; }
+        const message = JSON.parse(body);
+        if (message.method?.startsWith("notifications/")) { response.writeHead(202).end(); return; }
+        if (!replies.blockInitialization && message.method !== "tools/call") {
+          const result = message.method === "initialize"
+            ? { protocolVersion: message.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "scope-fixture", version: "1" } }
+            : { tools: [{ name: "mutate", inputSchema: { type: "object" } }] };
+          response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }));
+          return;
+        }
+      }
+      response.writeHead(replies.firstUnauthorized && requests.length === 1 ? 401 : status,
+        { "WWW-Authenticate": replies.firstUnauthorized && requests.length === 1 ? 'Bearer error="invalid_token"' : challenge }).end("fixture response");
+    });
+  });
+  t.after(async () => { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  return { replies, requests, url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp` };
+}
+
+test("MCP OAuth step-up: a challenge survives reopen and expands explicit login without refresh or replay", async t => {
+  const endpoint = await scopeEndpoint(t);
+  const f = fixture(t, { serverUrl: endpoint.url, scope: "configured", tokenResponse: { scope: "tools.read configured" } });
+  await f.login();
+  const fetcher = fetchWithHeaders({}, endpoint.url, f.owner);
+  await assert.rejects(fetcher(new Request(endpoint.url, { method: "POST", body: "mutation-once" })), /authorization required/i);
+  assert.equal(endpoint.requests.length, 1);
+  assert.equal(f.counts().refreshes, 0);
+  const saved = JSON.parse(readFileSync(f.path, "utf8"))[f.owner.key];
+  assert.equal(saved.pendingScope, "tools.write");
+  assert.equal(saved.tokens.access_token, "access-1-0");
+  const reopened = new McpOAuth(f.config, new FileAuthStorageBackend(f.path), f.fetchImpl);
+  await f.login(reopened);
+  assert.equal(new URL(f.authorizationUrls.at(-1)!).searchParams.get("scope"), "configured tools.read tools.write");
+  assert.equal(JSON.parse(readFileSync(f.path, "utf8"))[f.owner.key].tokens.scope, "tools.read configured", "an explicit narrower grant is never promoted to the requested scope");
+  assert.equal(f.counts().refreshes, 0);
+  assert.equal(endpoint.requests.length, 1, "only an explicit caller retry may replay the tool");
+  endpoint.replies.status = 200;
+  const response = await fetchWithHeaders({}, endpoint.url, reopened)(endpoint.url);
+  await response.text();
+  assert.equal(endpoint.requests.at(-1)?.token, "Bearer access-2-0");
+});
+
+test("MCP OAuth step-up: scopes omitted by token responses survive refresh and the next challenge", async t => {
+  const endpoint = await scopeEndpoint(t);
+  const f = fixture(t, { serverUrl: endpoint.url, resourceMetadataOverrides: { scopes_supported: ["tools.read"] } });
+  await f.login();
+  assert.equal(JSON.parse(readFileSync(f.path, "utf8"))[f.owner.key].tokens.scope, "tools.read");
+  await f.owner.refresh("access-1-0");
+  await assert.rejects(fetchWithHeaders({}, endpoint.url, f.owner)(endpoint.url), /authorization required/i);
+  await f.login();
+  const saved = JSON.parse(readFileSync(f.path, "utf8"))[f.owner.key];
+  assert.equal(new URL(f.authorizationUrls.at(-1)!).searchParams.get("scope"), "tools.read tools.write");
+  assert.equal(saved.tokens.scope, "tools.read tools.write");
+  assert.equal(saved.pendingScope, undefined);
+  // The first dynamic client was registered for tools.read only.
+  assert.equal(saved.client.scope, "tools.read tools.write");
+  assert.deepEqual(f.counts(), { registrations: 2, exchanges: 2, refreshes: 1 });
+});
+
+for (const kind of ["narrow", "unrecorded", "covering", "fixed"] as const) {
+  const replaced = kind === "narrow" || kind === "unrecorded";
+  test(`MCP OAuth step-up: ${kind} client registration is ${replaced ? "replaced" : "kept"} for requested scopes`, async t => {
+    const endpoint = await scopeEndpoint(t);
+    const f = fixture(t, { serverUrl: endpoint.url, scope: kind === "covering" ? "read tools.write" : "read", ...(kind === "fixed" ? { clientId: "fixed-client" } : {}) });
+    await f.login();
+    if (kind === "unrecorded") {
+      // Registration responses may omit scope; the registered limit is then unknown.
+      const store = JSON.parse(readFileSync(f.path, "utf8"));
+      delete store[f.owner.key].client.scope;
+      writeFileSync(f.path, JSON.stringify(store));
+    }
+    await assert.rejects(fetchWithHeaders({}, endpoint.url, f.owner)(endpoint.url), /authorization required/i);
+    await f.login();
+    const auth = new URL(f.authorizationUrls.at(-1)!);
+    const saved = JSON.parse(readFileSync(f.path, "utf8"))[f.owner.key];
+    const clientId = kind === "fixed" ? "fixed-client" : "fixture-client";
+    assert.equal(auth.searchParams.get("scope"), "read tools.write");
+    assert.equal(auth.searchParams.get("client_id"), clientId);
+    assert.deepEqual(f.counts(), { registrations: kind === "fixed" ? 0 : replaced ? 2 : 1, exchanges: 2, refreshes: 0 });
+    assert.deepEqual(saved.client, kind === "fixed" ? { client_id: clientId } : { ...saved.client, client_id: clientId, scope: "read tools.write" });
+    assert.equal(saved.pendingScope, undefined);
+  });
+}
+
+for (const [header, expected] of [
+  ['Basic realm="scope=admin, Bearer error=insufficient_scope"', undefined],
+  ['Basic error="insufficient_scope", scope="admin", Bearer error="invalid_token"', undefined],
+  ['bEaReR realm="a,b", ERROR="insufficient_scope", SCOPE="read write read"', "read write"],
+  ['Basic realm="one", Bearer error="insufficient_scope", scope="Read read", Digest realm="two"', "Read read"],
+  ['Bearer error=insufficient_scope', ""],
+  ['Bearer scope="tools.write", error="insufficient_scope"', "tools.write"],
+  ['Bearer error="insufficient_scope", scope="tools\\.write"', "tools.write"],
+] as const) {
+  test(`MCP OAuth scope challenge isolates schemes: ${header}`, () => assert.equal(parseScopeChallenge(header), expected));
+}
+
+for (const header of [
+  'Bearer error="insufficient_scope", scope="a", SCOPE="b"',
+  'Bearer error="insufficient_scope", error="invalid_token"',
+  'Bearer error="insufficient_scope", scope="a", Bearer error="insufficient_scope", scope="b"',
+  'Bearer error="insufficient_scope", scope="unterminated',
+  'Bearer error="insufficient_scope", scope="a\\\\b"',
+  'Bearer error="insufficient_scope", scope="a\tb"',
+  'Bearer error="insufficient_scope", scope="a", broken==',
+  `Bearer error="insufficient_scope", scope="${"a".repeat(4097)}"`,
+  "x".repeat(8193),
+]) {
+  test(`MCP OAuth rejects invalid scope challenge ${header.slice(0, 100)}`, () => assert.throws(() => parseScopeChallenge(header)));
+}
+
+test("MCP OAuth scope merge is bounded and retains case-sensitive order", () => {
+  assert.equal(mergeScopes("read Read", "write read", "extra"), "read Read write extra");
+  assert.throws(() => mergeScopes("a".repeat(3000), "b".repeat(2000)), /4096/);
+  assert.throws(() => mergeScopes("read\nwrite"), /Invalid/);
+});
+
+for (const status of [401, 403]) {
+  test(`MCP OAuth step-up: ${status} without a scope still requires explicit login`, async t => {
+    const endpoint = await scopeEndpoint(t);
+    endpoint.replies.status = status;
+    endpoint.replies.challenge = 'Bearer error="insufficient_scope"';
+    const f = fixture(t, { serverUrl: endpoint.url, scope: "configured" });
+    await f.login();
+    await assert.rejects(fetchWithHeaders({}, endpoint.url, f.owner)(endpoint.url), /authorization required/i);
+    assert.equal(JSON.parse(readFileSync(f.path, "utf8"))[f.owner.key].pendingScope, "");
+    await f.login();
+    assert.equal(new URL(f.authorizationUrls.at(-1)!).searchParams.get("scope"), "configured");
+    assert.equal(f.counts().refreshes, 0);
+    assert.equal(endpoint.requests.length, 1);
+  });
+}
+
+test("MCP OAuth step-up: only failed OAuth requests inspect or save challenges", async t => {
+  const endpoint = await scopeEndpoint(t);
+  const f = fixture(t, { serverUrl: endpoint.url });
+  await f.login();
+  const saved = readFileSync(f.path, "utf8");
+  endpoint.replies.status = 200;
+  endpoint.replies.challenge = 'Bearer error="insufficient_scope", scope="unterminated';
+  await (await fetchWithHeaders({}, endpoint.url, f.owner)(endpoint.url)).text();
+  endpoint.replies.status = 403;
+  await (await fetchWithHeaders({}, endpoint.url)(endpoint.url)).text();
+  endpoint.replies.challenge = 'Basic error="insufficient_scope", scope="admin"';
+  const forbidden = await fetchWithHeaders({}, endpoint.url, f.owner)(endpoint.url);
+  assert.equal(forbidden.status, 403);
+  await forbidden.text();
+  endpoint.replies.challenge = 'Bearer error="insufficient_scope", scope="a", scope="b"';
+  const malformed = await fetchWithHeaders({}, endpoint.url, f.owner)(endpoint.url);
+  assert.equal(malformed.status, 403);
+  assert.equal(await malformed.text(), "fixture response");
+  assert.equal(readFileSync(f.path, "utf8"), saved);
+  assert.equal(f.counts().refreshes, 0);
+});
+
+for (const [label, header] of [
+  ["unclosed realm", 'Bearer realm="x'],
+  ["invalid non-scope parameter", 'Bearer error="invalid_token", =x'],
+  ["oversized realm", `Bearer realm="${"x".repeat(8192)}"`],
+  ["unclosed scope", 'Bearer error="insufficient_scope", scope="x'],
+  ["ambiguous scope", 'Bearer error="insufficient_scope", scope="a", scope="b"'],
+] as const) {
+  for (const [initialStatus, finalStatus] of [[401, 200], [401, 401], [403, 403]] as const) {
+    test(`MCP OAuth malformed challenge fallback: ${label}, ${initialStatus} to ${finalStatus}`, async t => {
+      const endpoint = await scopeEndpoint(t);
+      endpoint.replies.status = initialStatus;
+      endpoint.replies.challenge = header;
+      endpoint.replies.beforeReply = async () => { endpoint.replies.status = finalStatus; };
+      const f = fixture(t, { serverUrl: endpoint.url });
+      await f.login();
+      const saved = readFileSync(f.path, "utf8");
+      const fetcher = fetchWithHeaders({}, endpoint.url, f.owner);
+      const request = new Request(endpoint.url, { method: "POST", body: "request-body" });
+      const response = await fetcher(request);
+      assert.equal(response.status, finalStatus);
+      assert.equal(response.headers.get("www-authenticate"), header);
+      assert.equal(await response.text(), "fixture response");
+      assert.equal(fetcher.authorizationRequired, false);
+      assert.equal(request.bodyUsed, true);
+      assert.deepEqual(endpoint.requests, initialStatus === 401
+        ? [{ body: "request-body", token: "Bearer access-1-0" }, { body: "request-body", token: "Bearer access-1-1" }]
+        : [{ body: "request-body", token: "Bearer access-1-0" }]);
+      assert.equal(f.counts().refreshes, initialStatus === 401 ? 1 : 0);
+      assert.equal(JSON.parse(readFileSync(f.path, "utf8"))[f.owner.key].pendingScope, undefined);
+      if (initialStatus === 403) assert.equal(readFileSync(f.path, "utf8"), saved);
+    });
+  }
+}
+
+for (const phase of ["scope persistence", "refresh"] as const) {
+  test(`MCP OAuth challenge fallback never swallows ${phase} failures`, async t => {
+    const endpoint = await scopeEndpoint(t);
+    if (phase === "refresh") {
+      endpoint.replies.status = 401;
+      endpoint.replies.challenge = 'Bearer realm="x';
+    }
+    const f = fixture(t, { serverUrl: endpoint.url });
+    await f.login();
+    const saved = readFileSync(f.path, "utf8"), failure = new Error("fixture auth storage unavailable");
+    // Fault at the storage boundary; the fetcher and OAuth owner are production implementations.
+    f.owner.backend.withLockAsync = async () => { throw failure; };
+    await assert.rejects(fetchWithHeaders({}, endpoint.url, f.owner)(new Request(endpoint.url, { method: "POST", body: "once" })), error => error === failure);
+    assert.equal(endpoint.requests.length, 1);
+    assert.equal(f.counts().refreshes, 0);
+    assert.equal(readFileSync(f.path, "utf8"), saved);
+  });
+}
+
+test("MCP OAuth step-up: challenge after the single 401 retry uses the refreshed token", async t => {
+  const endpoint = await scopeEndpoint(t);
+  endpoint.replies.firstUnauthorized = true;
+  const f = fixture(t, { serverUrl: endpoint.url });
+  await f.login();
+  await assert.rejects(fetchWithHeaders({}, endpoint.url, f.owner)(new Request(endpoint.url, { method: "POST", body: "call" })), /authorization required/i);
+  assert.deepEqual(endpoint.requests, [{ body: "call", token: "Bearer access-1-0" }, { body: "call", token: "Bearer access-1-1" }]);
+  assert.equal(JSON.parse(readFileSync(f.path, "utf8"))[f.owner.key].pendingScope, "tools.write");
+  assert.equal(f.counts().refreshes, 1);
+});
+
+test("MCP OAuth step-up: concurrent owners merge needs without changing granted scopes", async t => {
+  const endpoint = await scopeEndpoint(t);
+  const f = fixture(t, { serverUrl: endpoint.url, scope: "read", authServerMetadataUrl: CONFIGURED_METADATA });
+  await f.login();
+  const other = new McpOAuth(f.config, new FileAuthStorageBackend(f.path), f.fetchImpl);
+  const fetcher = fetchWithHeaders({}, endpoint.url, f.owner);
+  const second = fetchWithHeaders({}, endpoint.url, other);
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const ready = new Promise<void>(resolve => { entered = resolve; });
+  endpoint.replies.beforeReply = async () => { entered(); await gate; };
+  const first = assert.rejects(fetcher(endpoint.url), /authorization required/i);
+  try {
+    await ready;
+    endpoint.replies.beforeReply = undefined;
+    endpoint.replies.challenge = 'Bearer error="insufficient_scope", scope="extra"';
+    await assert.rejects(second(endpoint.url), /authorization required/i);
+  } finally { release(); await first; }
+  const saved = JSON.parse(readFileSync(f.path, "utf8"))[f.owner.key];
+  assert.equal(saved.pendingScope, "extra tools.write");
+  assert.equal(saved.tokens.scope, "read");
+  await f.login();
+  assert.equal(new URL(f.authorizationUrls.at(-1)!).searchParams.get("scope"), "read extra tools.write");
+  assert.deepEqual(f.metadataRequests, [CONFIGURED_METADATA]);
+});
+
+test("MCP OAuth step-up: unsigned challenge survives first login but cannot select another issuer or identity", async t => {
+  const endpoint = await scopeEndpoint(t);
+  endpoint.replies.challenge += ', resource_metadata="https://untrusted.fixture.invalid/metadata"';
+  const f = fixture(t, { serverUrl: endpoint.url, authServerMetadataUrl: CONFIGURED_METADATA });
+  await assert.rejects(fetchWithHeaders({}, endpoint.url, f.owner)(endpoint.url), /authorization required/i);
+  const saved = JSON.parse(readFileSync(f.path, "utf8"))[f.owner.key];
+  assert.equal(saved.tokens, undefined);
+  assert.equal(saved.pendingScope, "tools.write");
+  const isolated = new McpOAuth({ ...f.config, id: "another" }, new FileAuthStorageBackend(f.path), f.fetchImpl);
+  assert.equal(await isolated.read(), undefined);
+  const changed = new McpOAuth({ ...f.config, oauth: { scope: "changed" } }, new FileAuthStorageBackend(f.path), f.fetchImpl);
+  assert.equal(await changed.read(), undefined);
+  await f.login();
+  assert.equal(new URL(f.authorizationUrls.at(-1)!).searchParams.get("scope"), "tools.write");
+  assert.equal(JSON.parse(readFileSync(f.path, "utf8"))[f.owner.key].tokens.scope, "tools.write");
+  assert.deepEqual(f.metadataRequests, [CONFIGURED_METADATA]);
+  assert.deepEqual(f.counts(), { registrations: 1, exchanges: 1, refreshes: 0 });
+  await f.owner.logout();
+  assert.deepEqual(JSON.parse(readFileSync(f.path, "utf8")), {});
+});
+
+test("MCP OAuth step-up: Request-owned cancellation prevents saving a just-received challenge", async t => {
+  const endpoint = await scopeEndpoint(t);
+  const f = fixture(t, { serverUrl: endpoint.url });
+  await f.login();
+  const saved = readFileSync(f.path, "utf8"), originalFetch = globalThis.fetch;
+  const controller = new AbortController(), reason = new Error("cancelled after headers");
+  t.after(() => { globalThis.fetch = originalFetch; });
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const response = await originalFetch(input, init);
+    controller.abort(reason);
+    // Return an already-received response independent of the aborted upload.
+    await response.body?.cancel().catch(() => undefined);
+    return new Response(null, { status: 403, headers: { "WWW-Authenticate": endpoint.replies.challenge } });
+  }) as typeof fetch;
+  const request = new Request(endpoint.url, { signal: controller.signal });
+  await assert.rejects(fetchWithHeaders({}, endpoint.url, f.owner)(request), error => error === reason);
+  assert.equal(readFileSync(f.path, "utf8"), saved);
+  assert.equal(endpoint.requests.length, 1);
+});
+
+for (const outcome of ["denied", "aborted", "new-challenge"] as const) {
+  test(`MCP OAuth step-up: ${outcome} during consent preserves the right credentials and pending scopes`, async t => {
+    const endpoint = await scopeEndpoint(t);
+    const f = fixture(t, { serverUrl: endpoint.url, scope: "read" });
+    await f.login();
+    const fetcher = fetchWithHeaders({}, endpoint.url, f.owner);
+    await assert.rejects(fetcher(endpoint.url), /authorization required/i);
+    const before = JSON.parse(readFileSync(f.path, "utf8"))[f.owner.key];
+    const controller = new AbortController();
+    let notify!: (url: string) => void;
+    const ready = new Promise<string>(resolve => { notify = resolve; });
+    const login = f.owner.login(notify, AbortSignal.any([controller.signal, AbortSignal.timeout(5000)]));
+    void login.catch(() => undefined);
+    try {
+      const url = await ready;
+      if (outcome === "aborted") {
+        controller.abort();
+        await assert.rejects(login, /cancelled|abort/i);
+      } else if (outcome === "denied") {
+        const auth = new URL(url);
+        await (await fetch(`${auth.searchParams.get("redirect_uri")}?state=${auth.searchParams.get("state")}&error=access_denied`)).text();
+        await assert.rejects(login);
+      } else {
+        endpoint.replies.challenge = 'Bearer error="insufficient_scope", scope="extra"';
+        await assert.rejects(fetcher(endpoint.url), /authorization required/i);
+        await (await sendCallback(url)).text(); await login;
+      }
+      const saved = JSON.parse(readFileSync(f.path, "utf8"))[f.owner.key];
+      if (outcome === "new-challenge") {
+        assert.equal(saved.tokens.scope, "read tools.write");
+        assert.equal(saved.pendingScope, "tools.write extra");
+        await f.login();
+        assert.equal(new URL(f.authorizationUrls.at(-1)!).searchParams.get("scope"), "read tools.write extra");
+      } else assert.deepEqual(saved, before);
+      await assert.rejects(fetch(new URL(url).searchParams.get("redirect_uri")!));
+    } finally { controller.abort(); await login.catch(() => undefined); }
+  });
+}
+
+for (const change of ["login", "logout"] as const) {
+  test(`MCP OAuth step-up: late old-token challenge cannot overwrite ${change}`, async t => {
+    const endpoint = await scopeEndpoint(t);
+    const f = fixture(t, { serverUrl: endpoint.url });
+    await f.login();
+    let release!: () => void, entered!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const ready = new Promise<void>(resolve => { entered = resolve; });
+    endpoint.replies.beforeReply = async () => { entered(); await gate; };
+    const pending = assert.rejects(fetchWithHeaders({}, endpoint.url, f.owner)(endpoint.url), /authorization required/i);
+    const other = new McpOAuth(f.config, new FileAuthStorageBackend(f.path), f.fetchImpl);
+    let saved = "";
+    try {
+      await ready;
+      if (change === "login") await f.login(other); else await other.logout();
+      saved = readFileSync(f.path, "utf8");
+    } finally { release(); await pending; }
+    assert.equal(readFileSync(f.path, "utf8"), saved);
+  });
+}
+
+for (const [transport, phase] of [["http", "initialize"], ["http", "tools/call"], ["sse", "initialize"]] as const) {
+  test(`MCP OAuth step-up: real SDK ${transport} ${phase} reports authorization and releases runtime ownership`, async t => {
+    const endpoint = await scopeEndpoint(t, transport === "http");
+    endpoint.replies.blockInitialization = phase === "initialize";
+    endpoint.replies.challenge += ', error_description="private-server-diagnostic"';
+    const f = fixture(t, { serverUrl: endpoint.url });
+    await f.login();
+    const previous = process.env.SP_CODING_AGENT_DIR;
+    t.after(() => { if (previous === undefined) delete process.env.SP_CODING_AGENT_DIR; else process.env.SP_CODING_AGENT_DIR = previous; });
+    process.env.SP_CODING_AGENT_DIR = f.root;
+    writeFileSync(join(f.root, "mcp-auth.json"), readFileSync(f.path));
+    let tool: any;
+    const runtime = new McpBridgeRuntime({ registerTool(value: unknown) { tool = value; } }, f.root);
+    t.after(() => runtime.close());
+    const config = { ...f.config, transport, startupTimeoutMs: 3000, toolTimeoutMs: 3000, maxTools: 8 };
+    if (phase === "initialize") {
+      await assert.rejects(runtime.connect(config), { code: "authorization-required" });
+      const state = runtime.states.get(config.id);
+      assert.equal(state.client, null);
+      assert.equal(state.transport, null);
+      assert.equal(state.oauth, null);
+      assert.equal(state.connectFetch, null);
+    } else {
+      await runtime.connect(config);
+      const result = await tool.execute("call", {}, undefined, undefined, {});
+      assert.equal(result.details.mcpError, "authorization-required");
+      assert.match(result.content[0].text, /mcp-login/);
+      assert.doesNotMatch(JSON.stringify(result), /private-server-diagnostic|access-1-0|tools.write/);
+    }
+    assert.equal(runtime.activeCalls.size, 0);
+    assert.match(runtime.statusText(), /mcp-login fixture/);
+    assert.doesNotMatch(runtime.statusText(), /private-server-diagnostic/);
+    assert.equal(JSON.parse(readFileSync(join(f.root, "mcp-auth.json"), "utf8"))[f.owner.key].pendingScope, "tools.write");
+    assert.equal(endpoint.requests.filter(request => transport === "sse" || request.body.includes(`"method":"${phase}"`)).length, 1);
+    await runtime.close();
+    for (const state of runtime.states.values()) assert.equal(state.oauth, null);
+  });
+}
+
+test("MCP OAuth step-up: /mcp-login consumes the durable hint with a new owner before reload", async t => {
+  const endpoint = await scopeEndpoint(t);
+  const f = fixture(t, { serverUrl: endpoint.url, scope: "read" });
+  const previous = process.env.SP_CODING_AGENT_DIR, entry = process.argv[1], originalFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch; process.argv[1] = entry!;
+    if (previous === undefined) delete process.env.SP_CODING_AGENT_DIR; else process.env.SP_CODING_AGENT_DIR = previous;
+  });
+  process.env.SP_CODING_AGENT_DIR = f.root;
+  process.argv[1] = join(process.cwd(), "packages", "coding-agent", "src", "cli.ts");
+  mkdirSync(join(f.root, "config"));
+  writeFileSync(join(f.root, "config", "mcp.json"), JSON.stringify({ version: 1, servers: { fixture:
+    { transport: "http", url: endpoint.url, oauth: { scope: "read" }, enabled: false } } }));
+  const config = loadMcpConfig(f.root, false).servers[0];
+  const owner = new McpOAuth(config, new FileAuthStorageBackend(join(f.root, "mcp-auth.json")), f.fetchImpl);
+  await f.login(owner);
+  await assert.rejects(fetchWithHeaders({}, endpoint.url, owner)(endpoint.url), /authorization required/i);
+  globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(input instanceof Request ? input.url : input);
+    if (url.hostname === "auth.fixture.invalid") return f.fetchImpl(url, init);
+    return originalFetch(input, init);
+  }) as typeof fetch;
+  const commands = new Map<string, (args: string, ctx: unknown) => Promise<void>>();
+  const events = new Map<string, (event: unknown, ctx: unknown) => Promise<void>>();
+  mcpBridgeExtension({ registerTool() {}, registerCommand: (name: string, command: { handler: (args: string, ctx: unknown) => Promise<void> }) => { commands.set(name, command.handler); },
+    on: (name: string, handler: (event: unknown, ctx: unknown) => Promise<void>) => { events.set(name, handler); }, getActiveTools: () => [], setActiveTools() {} });
+  t.after(async () => { await events.get("session_shutdown")?.({}, {}); });
+  await events.get("session_start")!({}, { cwd: f.root, isProjectTrusted: () => false, hasUI: false, ui: { notify() {} } });
+  const notes: string[] = [], callbacks: Promise<unknown>[] = [];
+  let reloaded = false;
+  await commands.get("mcp-login")!("fixture", { signal: AbortSignal.timeout(5000),
+    ui: { notify(text: string) {
+      assert.equal(reloaded, false); notes.push(text);
+      if (text.startsWith("Open this URL")) {
+        const url = text.split("\n")[1];
+        assert.equal(new URL(url).searchParams.get("scope"), "read tools.write");
+        callbacks.push(sendCallback(url).then(response => response.text()));
+      }
+    } }, reload: async () => { reloaded = true; } });
+  await Promise.all(callbacks);
+  assert.equal(reloaded, true);
+  assert.match(notes.at(-1)!, /login completed/);
+  assert.equal(endpoint.requests.length, 1, "the command never replays the denied MCP call");
+  assert.equal(JSON.parse(readFileSync(join(f.root, "mcp-auth.json"), "utf8"))[owner.key].pendingScope, undefined);
+});
+
+for (const failure of ["initial-fetch", "refresh", "retry-fetch"] as const) {
+  test(`MCP OAuth request body cleanup preserves ${failure} error and closes both tee branches`, async t => {
+    const originalFetch = globalThis.fetch;
+    t.after(() => { globalThis.fetch = originalFetch; });
+    const primary = new Error("fixture primary failure");
+    const requests: Request[] = [];
+    let cancelled = 0;
+    const request = new Request("https://mcp.fixture.invalid/mcp", { method: "POST", duplex: "half", body: new ReadableStream({
+      start(controller) { controller.enqueue(new TextEncoder().encode("call")); }, cancel() { cancelled++; },
+    }) } as RequestInit);
+    globalThis.fetch = (async (input: Request) => {
+      requests.push(input);
+      if (failure === "initial-fetch" || requests.length === 2) throw primary;
+      // A server may return 401 before consuming the entire streaming upload.
+      return new Response("unauthorized", { status: 401 });
+    }) as typeof fetch;
+    const oauth = { token: async () => "old", refresh: async () => { if (failure === "refresh") throw primary; return "new"; } };
+    await assert.rejects(fetchWithHeaders({}, request.url, oauth)(request), error => error === primary);
+    assert.equal(cancelled, 1);
+    assert.equal(request.bodyUsed, true);
+    for (const sent of requests) assert.equal(sent.bodyUsed, true);
+  });
+}
 
 for (const mode of ["wrong", "missing", "OIDC"] as const) {
   test(`MCP OAuth configured metadata: overrides ${mode} advertised server and survives reopen`, async t => {
