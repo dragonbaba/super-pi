@@ -184,15 +184,17 @@ export default function mcpBridgeExtension(pi) {
     configError = null;
     let nextRuntime = null;
     try {
+      const { McpSchemaCache, configFingerprint, prepareSchemaCache } = await import("./schema-cache.js");
+      if (!lifecycle.isCurrent(token)) return;
+      const cacheSnapshot = prepareSchemaCache();
       configInfo = loadMcpConfig(ctx.cwd, ctx.isProjectTrusted());
       if (configInfo.servers.length === 0 || !lifecycle.isCurrent(token)) return;
-      const [{ McpBridgeRuntime }, { McpSchemaCache, configFingerprint }, { loadActivationKey }] = await Promise.all([
+      const [{ McpBridgeRuntime }, { loadActivationKey }] = await Promise.all([
         import("./bridge.js"),
-        import("./schema-cache.js"),
         import("./activation-key.js"),
       ]);
       if (!lifecycle.isCurrent(token)) return;
-      const schemaCache = new McpSchemaCache();
+      const schemaCache = new McpSchemaCache(cacheSnapshot.path, cacheSnapshot);
       nextRuntime = new McpBridgeRuntime({
         registerTool(tool) {
           if (!lifecycle.isCurrent(token) || token.signal.aborted || nextRuntime.closed) throw new Error("MCP startup aborted");

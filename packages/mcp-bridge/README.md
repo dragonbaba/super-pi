@@ -209,7 +209,22 @@ A trusted project may define `.sp/config/mcp.json` only when the global file set
 ## Safety boundaries
 
 - Pi runtime gate: only `0.84.x`.
-- Validated schema metadata is cached under `~/.sp/agent/cache/mcp-schemas-v1.json` (2 MiB total, 16 entries, 30-day age bound). Commands, URLs, environment values, and headers participate only in an in-memory SHA-256 fingerprint and are never written to the cache.
+- Validated schema metadata is cached under `~/.sp/agent/cache/mcp-schemas-v1.json` (2 MiB total, 16 entries, 30-day age bound). The filename is retained for upgrades; its current payload version is 2. Commands, URLs, environment values, and headers contribute to an in-memory configuration digest. Only an HMAC of that digest is persisted, using the existing `mcp-activation.key` with a schema-cache-specific domain. Cache metadata is not encrypted, and the HMAC identifies the configuration rather than authenticating the whole file.
+- Without a usable local key, schema caching is disabled and servers are discovered normally. A different key cannot reuse the previous cache. Legacy version-1 caches are never reused and are replaced with an empty version-2 cache on load before rediscovery, even if the key is unavailable. If file permissions prevent replacement, the legacy file remains on disk but is not used; it must be removed or made writable separately. Previously copied legacy files are outside this upgrade's protection.
+- Startup checks for a legacy cache before parsing global or trusted-project
+  MCP configuration, so missing, empty, or invalid configuration cannot prevent
+  migration. This preparation does not create a key, construct an MCP runtime,
+  or load the MCP SDK. Valid version-2 caches stay unchanged; missing caches
+  are not created. Configured runtimes reuse the bounded read snapshot instead
+  of reading and parsing the cache a second time; configuration errors still
+  appear unchanged.
+- Readable regular cache files within the size limit are also reset when their
+  JSON is malformed or their top-level format lacks numeric version 2 and an
+  `entries` array. A truncated legacy fingerprint is therefore scrubbed even
+  when its version can no longer be parsed. This recognizes the v2 format;
+  existing per-entry/schema validation still applies, and it does not authenticate
+  the file. Missing files, symlinks, directories, oversized files and read failures
+  remain outside the replacement path. Failed replacements are never reused.
 - A cache hit registers deferred tools without starting the MCP server; the first actual remote call connects and refreshes the cache. A cache miss connects once at startup to discover schemas.
 - At most 16 configured servers, 128 tools per server, and 64 KiB per tool schema.
 - Tool descriptions, errors, and text/resource output are stripped of ANSI/OSC/control sequences.
