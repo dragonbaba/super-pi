@@ -1,10 +1,12 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { agentDir } from "./config.js";
+import { loadActivationKey } from "./activation-key.js";
 import { MAX_SCHEMA_BYTES, canonicalJsonShape, sanitizeText, validateJsonShape } from "./security.js";
 
-const CACHE_VERSION = 1;
+const CACHE_VERSION = 2;
+const CACHE_FINGERPRINT_DOMAIN = "super-pi.mcp-schema-cache.v2\0";
 const MAX_CACHE_BYTES = 2 * 1024 * 1024;
 const MAX_CACHE_ENTRIES = 16;
 const MAX_CACHE_AGE_MS = 30 * 24 * 60 * 60 * 1000;
@@ -51,6 +53,7 @@ function normalizeCachedTool(tool) {
 export class McpSchemaCache {
   constructor(cachePath = path.join(agentDir(), "cache", "mcp-schemas-v1.json")) {
     this.path = cachePath;
+    this.fingerprintKey = loadActivationKey();
     this.entries = new Map();
     this.load();
   }
@@ -63,7 +66,14 @@ export class McpSchemaCache {
     let parsed;
     try { parsed = JSON.parse(fs.readFileSync(this.path, "utf8")); }
     catch { return; }
-    if (parsed?.version !== CACHE_VERSION || !Array.isArray(parsed.entries)) return;
+    if (parsed?.version === 1) {
+      // Keep the existing path so upgrading replaces the unkeyed verifier,
+      // rather than leaving an obsolete secret-bearing cache beside a new file.
+      this.entries.clear();
+      this.save();
+      return;
+    }
+    if (!this.fingerprintKey || parsed?.version !== CACHE_VERSION || !Array.isArray(parsed.entries)) return;
     const now = Date.now();
     for (const entry of parsed.entries.slice(0, MAX_CACHE_ENTRIES)) {
       if (!entry || !isHexDigest(entry.fingerprint) || !Number.isFinite(entry.updatedAt) || now - entry.updatedAt > MAX_CACHE_AGE_MS || !Array.isArray(entry.tools) || entry.tools.length > 128) continue;
@@ -80,14 +90,21 @@ export class McpSchemaCache {
     }
   }
 
+  fingerprint(config, workspace) {
+    if (!this.fingerprintKey) return undefined;
+    return createHmac("sha256", this.fingerprintKey).update(CACHE_FINGERPRINT_DOMAIN).update(configFingerprint(config, workspace)).digest("hex");
+  }
+
   get(config, workspace) {
-    return this.entries.get(configFingerprint(config, workspace)) ?? null;
+    const fingerprint = this.fingerprint(config, workspace);
+    return fingerprint === undefined ? null : this.entries.get(fingerprint) ?? null;
   }
 
   put(config, workspace, tools, serverInfo) {
+    const fingerprint = this.fingerprint(config, workspace);
+    if (fingerprint === undefined) return false;
     const normalized = tools.map(normalizeCachedTool);
     if (normalized.some((tool) => tool === null)) return false;
-    const fingerprint = configFingerprint(config, workspace);
     this.entries.delete(fingerprint);
     this.entries.set(fingerprint, {
       fingerprint,

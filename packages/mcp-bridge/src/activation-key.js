@@ -17,10 +17,10 @@ function readKey(keyPath) {
 }
 
 /**
- * Machine-local HMAC key for persisted activation identities, so a copied session
- * file is not an offline verifier for secrets in the MCP configuration. The key is
+ * Machine-local HMAC key for persisted MCP identities, so copied session/cache
+ * files are not offline verifiers for secrets in the MCP configuration. The key is
  * published by hard link, so concurrent creators never observe a partial file.
- * Undefined means activation intent is neither recorded nor restored.
+ * Undefined means activation intent and schema caching are disabled.
  */
 export function loadActivationKey(keyPath = path.join(agentDir(), "mcp-activation.key")) {
   const existing = readKey(keyPath);
