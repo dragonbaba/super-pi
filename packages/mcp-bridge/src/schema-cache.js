@@ -6,10 +6,52 @@ import { loadActivationKey } from "./activation-key.js";
 import { MAX_SCHEMA_BYTES, canonicalJsonShape, sanitizeText, validateJsonShape } from "./security.js";
 
 const CACHE_VERSION = 2;
+const EMPTY_CACHE_PAYLOAD = `${JSON.stringify({ version: CACHE_VERSION, entries: [] })}\n`;
 const CACHE_FINGERPRINT_DOMAIN = "super-pi.mcp-schema-cache.v2\0";
 const MAX_CACHE_BYTES = 2 * 1024 * 1024;
 const MAX_CACHE_ENTRIES = 16;
 const MAX_CACHE_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+
+function defaultCachePath() {
+  return path.join(agentDir(), "cache", "mcp-schemas-v1.json");
+}
+
+function readCache(cachePath) {
+  try {
+    const info = fs.lstatSync(cachePath);
+    if (!info.isFile() || info.isSymbolicLink() || info.size > MAX_CACHE_BYTES) return undefined;
+    return JSON.parse(fs.readFileSync(cachePath, "utf8"));
+  } catch {
+    return undefined;
+  }
+}
+
+function saveCache(cachePath, payload) {
+  if (Buffer.byteLength(payload, "utf8") > MAX_CACHE_BYTES) return false;
+  try {
+    fs.mkdirSync(path.dirname(cachePath), { recursive: true, mode: 0o700 });
+    try {
+      const existing = fs.lstatSync(cachePath);
+      if (!existing.isFile() || existing.isSymbolicLink()) return false;
+      if (fs.readFileSync(cachePath, "utf8") === payload) return true;
+    } catch (error) {
+      if (error?.code !== "ENOENT") return false;
+    }
+    const temporary = `${cachePath}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
+    fs.writeFileSync(temporary, payload, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    try { fs.renameSync(temporary, cachePath); }
+    catch (error) { try { fs.unlinkSync(temporary); } catch {} throw error; }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// The serverless startup path needs migration, but no key or runtime instance.
+export function migrateLegacySchemaCache(cachePath = defaultCachePath()) {
+  if (readCache(cachePath)?.version === 1) return saveCache(cachePath, EMPTY_CACHE_PAYLOAD);
+  return false;
+}
 
 export function configFingerprint(config, workspace) {
   const material = {
@@ -51,7 +93,7 @@ function normalizeCachedTool(tool) {
 }
 
 export class McpSchemaCache {
-  constructor(cachePath = path.join(agentDir(), "cache", "mcp-schemas-v1.json")) {
+  constructor(cachePath = defaultCachePath()) {
     this.path = cachePath;
     this.fingerprintKey = loadActivationKey();
     this.entries = new Map();
@@ -59,13 +101,7 @@ export class McpSchemaCache {
   }
 
   load() {
-    let info;
-    try { info = fs.lstatSync(this.path); }
-    catch { return; }
-    if (!info.isFile() || info.isSymbolicLink() || info.size > MAX_CACHE_BYTES) return;
-    let parsed;
-    try { parsed = JSON.parse(fs.readFileSync(this.path, "utf8")); }
-    catch { return; }
+    const parsed = readCache(this.path);
     if (parsed?.version === 1) {
       // Keep the existing path so upgrading replaces the unkeyed verifier,
       // rather than leaving an obsolete secret-bearing cache beside a new file.
@@ -126,23 +162,6 @@ export class McpSchemaCache {
   }
 
   save(payload = this.serialize()) {
-    if (Buffer.byteLength(payload, "utf8") > MAX_CACHE_BYTES) return false;
-    try {
-      fs.mkdirSync(path.dirname(this.path), { recursive: true, mode: 0o700 });
-      try {
-        const existing = fs.lstatSync(this.path);
-        if (!existing.isFile() || existing.isSymbolicLink()) return false;
-        if (fs.readFileSync(this.path, "utf8") === payload) return true;
-      } catch (error) {
-        if (error?.code !== "ENOENT") return false;
-      }
-      const temporary = `${this.path}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
-      fs.writeFileSync(temporary, payload, { encoding: "utf8", mode: 0o600, flag: "wx" });
-      try { fs.renameSync(temporary, this.path); }
-      catch (error) { try { fs.unlinkSync(temporary); } catch {} throw error; }
-      return true;
-    } catch {
-      return false;
-    }
+    return saveCache(this.path, payload);
   }
 }

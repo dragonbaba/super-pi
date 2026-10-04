@@ -185,7 +185,12 @@ export default function mcpBridgeExtension(pi) {
     let nextRuntime = null;
     try {
       configInfo = loadMcpConfig(ctx.cwd, ctx.isProjectTrusted());
-      if (configInfo.servers.length === 0 || !lifecycle.isCurrent(token)) return;
+      if (!lifecycle.isCurrent(token)) return;
+      if (configInfo.servers.length === 0) {
+        const { migrateLegacySchemaCache } = await import("./schema-cache.js");
+        if (lifecycle.isCurrent(token)) migrateLegacySchemaCache();
+        return;
+      }
       const [{ McpBridgeRuntime }, { McpSchemaCache, configFingerprint }, { loadActivationKey }] = await Promise.all([
         import("./bridge.js"),
         import("./schema-cache.js"),

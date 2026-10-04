@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { getEventListeners } from "node:events";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -115,6 +115,50 @@ async function fixture(t: TestContext) {
 }
 
 const REMOTE = "mcp__fixture__lookup";
+
+for (const configuration of ["absent", "empty"]) {
+	for (const keyState of ["usable", "missing", "unavailable"]) test(`serverless startup scrubs legacy schema cache: config ${configuration}, key ${keyState}`, async t => {
+		const f = await fixture(t);
+		const configPath = join(f.agentDir, "config", "mcp.json");
+		const config = loadMcpConfig(f.root, false).servers[0];
+		if (configuration === "absent") unlinkSync(configPath);
+		else writeFileSync(configPath, JSON.stringify({ version: 1, servers: {} }));
+		const keyPath = join(f.agentDir, "mcp-activation.key");
+		if (keyState === "usable") writeFileSync(keyPath, Buffer.alloc(32, 7));
+		else if (keyState === "unavailable") mkdirSync(keyPath);
+		const cachePath = join(f.agentDir, "cache", "mcp-schemas-v1.json");
+		mkdirSync(join(f.agentDir, "cache"));
+		writeFileSync(cachePath, JSON.stringify({ version: 1, entries: [{
+			fingerprint: configFingerprint(config, f.root), updatedAt: Date.now(), tools: f.endpoint.tools,
+		}] }));
+		const h = f.host(); await h.start();
+		assert.deepEqual(JSON.parse(readFileSync(cachePath, "utf8")), { version: 2, entries: [] });
+		assert.equal(f.endpoint.initializes, 0);
+		assert.deepEqual([...h.tools.keys()], ["mcp_search_tools"]);
+		assert.deepEqual(h.notes, []);
+		if (keyState === "usable") assert.deepEqual(readFileSync(keyPath), Buffer.alloc(32, 7));
+		else if (keyState === "missing") assert.equal(existsSync(keyPath), false);
+	});
+}
+
+test("serverless startup leaves keyed schema cache unchanged and creates no missing key or cache", async t => {
+	const f = await fixture(t), cache = new McpSchemaCache();
+	assert.equal(cache.put(loadMcpConfig(f.root, false).servers[0], f.root, f.endpoint.tools, null), true);
+	const cachePath = join(f.agentDir, "cache", "mcp-schemas-v1.json");
+	const keyPath = join(f.agentDir, "mcp-activation.key");
+	const before = readFileSync(cachePath, "utf8");
+	unlinkSync(keyPath);
+	writeFileSync(join(f.agentDir, "config", "mcp.json"), JSON.stringify({ version: 1, servers: {} }));
+	const h = f.host(); await h.start();
+	assert.equal(readFileSync(cachePath, "utf8"), before);
+	assert.equal(existsSync(keyPath), false);
+	unlinkSync(cachePath);
+	await h.start();
+	assert.equal(existsSync(cachePath), false);
+	assert.equal(existsSync(keyPath), false);
+	assert.equal(f.endpoint.initializes, 0);
+	assert.deepEqual(h.notes, []);
+});
 
 test("MCP session startup returns while real SDK discovery is pending; search waits and stays deferred", async t => {
 	const f = await fixture(t), gate = f.block(), h = f.host();
