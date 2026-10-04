@@ -2,6 +2,8 @@ import { createHash, randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { auth, discoverAuthorizationServerMetadata } from "@modelcontextprotocol/sdk/client/auth.js";
+import { OAuthMetadataSchema } from "@modelcontextprotocol/sdk/shared/auth.js";
+import { LATEST_PROTOCOL_VERSION } from "@modelcontextprotocol/sdk/types.js";
 import { FileAuthStorageBackend } from "@super-pi/coding-agent";
 import { agentDir } from "./config.js";
 
@@ -12,6 +14,7 @@ const FLOW_TIMEOUT_MS = 180_000;
 const ISSUER_VALIDATION_VERSION = 1;
 const AUTH_METADATA_PATH = /\/\.well-known\/(?:oauth-authorization-server|openid-configuration)(?:\/|$)/;
 const OPTIONAL_TOKEN_FIELDS = ["scope", "expires_in", "refresh_token", "id_token"];
+const METADATA_REQUEST = { headers: { Accept: "application/json", "MCP-Protocol-Version": LATEST_PROTOCOL_VERSION } };
 
 class OAuthTokenResponse extends Response {
   async json() {
@@ -99,6 +102,18 @@ function authorizationCodeFromCallback(parameters, issuer, issuerRequired) {
   const code = parameters.get("code");
   if (!code || parameters.has("error")) throw new Error("MCP OAuth authorization was declined");
   return code;
+}
+
+async function configuredDiscovery(metadataUrl, previous, fetchFn) {
+  if (metadataUrl.includes("#")) throw new Error("MCP OAuth metadata URL must not contain a fragment");
+  const response = await fetchFn(metadataUrl, METADATA_REQUEST);
+  if (!response.ok) throw new Error(`HTTP ${response.status} loading configured MCP OAuth metadata`);
+  const metadata = OAuthMetadataSchema.parse(await response.json());
+  // A configured document supplies the initial issuer, independently of the
+  // resource's advertised server or the document's host/path. On cache repair,
+  // retain the old issuer so new metadata cannot redirect existing credentials.
+  return { ...previous, authorizationServerUrl: previous?.authorizationServerUrl ?? metadata.issuer,
+    authorizationServerMetadata: metadata };
 }
 
 function parseStore(text) {
@@ -220,6 +235,7 @@ export class McpOAuth {
 
   async authorize(entry, signal, receiver, notify) {
     let verifier, authorizationIssuer, issuerRequired = false;
+    const metadataUrl = this.config.oauth?.authServerMetadataUrl;
     const discoveryObservation = {};
     const state = randomBytes(32).toString("hex");
     const provider = {
@@ -242,7 +258,13 @@ export class McpOAuth {
         issuerRequired = entry.discovery.authorizationServerMetadata?.authorization_response_iss_parameter_supported === true;
         secureUrl(url); notify(url.href);
       },
-      discoveryState: () => validateDiscovery(entry.discovery, authorizationIssuer),
+      discoveryState: async () => {
+        validateDiscovery(entry.discovery, authorizationIssuer);
+        if (metadataUrl && (!entry.discovery?.authorizationServerMetadata || entry.discovery.issuerValidationVersion !== ISSUER_VALIDATION_VERSION)) {
+          provider.saveDiscoveryState(await configuredDiscovery(metadataUrl, entry.discovery, options.fetchFn));
+        }
+        return entry.discovery;
+      },
       saveDiscoveryState: value => {
         const metadata = value.authorizationServerMetadata;
         if (metadata && metadata.issuer === discoveryObservation.issuer && discoveryObservation.issuerSupport !== undefined) {
@@ -263,7 +285,7 @@ export class McpOAuth {
     // metadata once, retaining resource discovery and client registration. Do not
     // downgrade a previously discovered server to metadata-free legacy behavior
     // if discovery is temporarily unavailable during this upgrade.
-    if (entry.discovery?.authorizationServerMetadata && entry.discovery.issuerValidationVersion !== ISSUER_VALIDATION_VERSION) {
+    if (!metadataUrl && entry.discovery?.authorizationServerMetadata && entry.discovery.issuerValidationVersion !== ISSUER_VALIDATION_VERSION) {
       validateDiscovery(entry.discovery);
       const metadata = await discoverAuthorizationServerMetadata(entry.discovery.authorizationServerUrl, { fetchFn: options.fetchFn });
       if (!metadata) throw new Error("MCP OAuth discovery metadata unavailable for issuer validation");

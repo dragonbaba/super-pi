@@ -34,17 +34,22 @@ type OAuthFixtureOptions = {
   tokenEndpoint?: string;
   tokenResponse?: Record<string, unknown>;
   refreshResponse?: Record<string, unknown>;
+  authServerMetadataUrl?: string;
+  metadataOverrides?: Record<string, unknown>;
+  resourceMetadataOverrides?: Record<string, unknown>;
 };
 
 function fixture(t: TestContext, options: OAuthFixtureOptions = {}) {
   const root = mkdtempSync(join(tmpdir(), "sp-mcp-oauth-"));
   t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const path = join(root, "auth.json");
-  const config = { id: "fixture", source: "global", url: "https://mcp.fixture.invalid/mcp",
-    oauth: options.clientId ? { clientId: options.clientId, callbackPort: options.callbackPort } : {} };
+  const config = { id: "fixture", source: "global", url: "https://mcp.fixture.invalid/mcp", headers: { "X-Private-MCP": "fixture-private-header" },
+    oauth: { ...(options.clientId ? { clientId: options.clientId, callbackPort: options.callbackPort } : {}),
+      ...(options.authServerMetadataUrl ? { authServerMetadataUrl: options.authServerMetadataUrl } : {}) } };
   let refreshes = 0, exchanges = 0, registrations = 0;
   let discoveryRequests = 0;
   const callbacks: string[] = [];
+  const metadataRequests: string[] = [];
   const fetchImpl = async (input: string | URL, init: RequestInit = {}) => {
     const url = new URL(input);
     assert.equal(new Headers(init.headers).has("x-private-mcp"), false);
@@ -52,16 +57,20 @@ function fixture(t: TestContext, options: OAuthFixtureOptions = {}) {
     init.signal?.throwIfAborted();
     if (url.pathname.includes("oauth-protected-resource")) {
       discoveryRequests++;
-      return options.noResourceMetadata ? new Response(null, { status: 404 }) : Response.json({ resource: config.url, authorization_servers: [options.authorizationServer ?? "https://auth.fixture.invalid"] });
+      return options.noResourceMetadata ? new Response(null, { status: 404 }) : Response.json({ resource: config.url,
+        authorization_servers: [options.authorizationServer ?? "https://auth.fixture.invalid"], ...options.resourceMetadataOverrides });
     }
-    if (url.pathname.includes(".well-known")) {
+    const configuredMetadata = url.href === options.authServerMetadataUrl;
+    if (configuredMetadata || url.pathname.includes(".well-known")) {
       discoveryRequests++;
-      if (options.noAuthorizationMetadata || (options.oidc && url.pathname.includes("oauth-authorization-server"))) return new Response(null, { status: 404 });
+      metadataRequests.push(url.href);
+      if (!configuredMetadata && (options.noAuthorizationMetadata || (options.oidc && url.pathname.includes("oauth-authorization-server")))) return new Response(null, { status: 404 });
       return Response.json({ issuer: options.issuer ?? options.authorizationServer ?? "https://auth.fixture.invalid", authorization_endpoint: "https://auth.fixture.invalid/authorize",
         token_endpoint: options.tokenEndpoint ?? "https://auth.fixture.invalid/token", registration_endpoint: "https://auth.fixture.invalid/register",
         response_types_supported: ["code"], code_challenge_methods_supported: ["S256"], token_endpoint_auth_methods_supported: ["none"],
         authorization_response_iss_parameter_supported: options.issuerSupport,
-        ...(options.oidc ? { jwks_uri: "https://auth.fixture.invalid/keys", subject_types_supported: ["public"], id_token_signing_alg_values_supported: ["RS256"] } : {}) });
+        ...(options.oidc ? { jwks_uri: "https://auth.fixture.invalid/keys", subject_types_supported: ["public"], id_token_signing_alg_values_supported: ["RS256"] } : {}),
+        ...options.metadataOverrides });
     }
     if (url.pathname === "/register") { registrations++; return Response.json({ ...JSON.parse(init.body as string), client_id: "fixture-client" }); }
     if (url.href === (options.tokenEndpoint ?? `${url.origin}/token`)) {
@@ -99,10 +108,194 @@ function fixture(t: TestContext, options: OAuthFixtureOptions = {}) {
     } finally { controller.abort(); await Promise.all(requests); }
     return callback;
   }
-  return { owner, config, path, fetchImpl, login, callbacks, discoveryRequests: () => discoveryRequests, counts: () => ({ refreshes, exchanges, registrations }) };
+  return { owner, config, root, path, fetchImpl, login, callbacks, metadataRequests,
+    discoveryRequests: () => discoveryRequests, counts: () => ({ refreshes, exchanges, registrations }) };
 }
 
 const ISSUER = "https://auth.fixture.invalid";
+const CONFIGURED_METADATA = "https://catalog.fixture.invalid/tenant/metadata.json?version=1";
+
+for (const mode of ["wrong", "missing", "OIDC"] as const) {
+  test(`MCP OAuth configured metadata: overrides ${mode} advertised server and survives reopen`, async t => {
+    const metadataUrl = mode === "OIDC" ? "https://catalog.fixture.invalid/.well-known/openid-configuration" : CONFIGURED_METADATA;
+    const f = fixture(t, { authServerMetadataUrl: metadataUrl, authorizationServer: "https://wrong.fixture.invalid",
+      issuer: ISSUER, issuerSupport: true, noResourceMetadata: mode === "missing", oidc: mode === "OIDC",
+      resourceMetadataOverrides: { scopes_supported: ["tools.read"] } });
+    const valid = new URLSearchParams({ code: "fixture-code", iss: ISSUER });
+    await f.login(f.owner, valid);
+    const saved = JSON.parse(readFileSync(f.path, "utf8"))[f.owner.key];
+    assert.equal(saved.discovery.authorizationServerUrl, ISSUER);
+    assert.equal(saved.discovery.authorizationServerMetadata.authorization_response_iss_parameter_supported, true);
+    if (mode !== "missing") {
+      assert.deepEqual(saved.discovery.resourceMetadata.scopes_supported, ["tools.read"]);
+      assert.equal(saved.client.scope, "tools.read");
+    }
+    const reopened = new McpOAuth(f.config, new FileAuthStorageBackend(f.path), f.fetchImpl);
+    assert.equal(await reopened.token(), "access-1-0");
+    assert.equal(await reopened.refresh("access-1-0"), "access-1-1");
+    await f.login(reopened, valid);
+    assert.deepEqual(f.metadataRequests, [metadataUrl], "configured metadata is cached; no default AS discovery");
+    assert.deepEqual(f.counts(), { registrations: 1, exchanges: 2, refreshes: 1 });
+    for (const callback of f.callbacks) await assert.rejects(fetch(callback));
+  });
+}
+
+test("MCP OAuth configured metadata: configuration validates URL and retains normalized setting", t => {
+  const f = fixture(t);
+  const previous = process.env.SP_CODING_AGENT_DIR;
+  t.after(() => { if (previous === undefined) delete process.env.SP_CODING_AGENT_DIR; else process.env.SP_CODING_AGENT_DIR = previous; });
+  process.env.SP_CODING_AGENT_DIR = f.root;
+  mkdirSync(join(f.root, "config"));
+  const configPath = join(f.root, "config", "mcp.json");
+  const write = (authServerMetadataUrl: unknown, transport = "http") => writeFileSync(configPath, JSON.stringify({ version: 1,
+    servers: { fixture: { transport, url: f.config.url, oauth: { authServerMetadataUrl } } } }));
+  for (const transport of ["http", "sse"]) {
+    for (const url of [CONFIGURED_METADATA, "https://CATALOG.fixture.invalid:443", "http://localhost:8765/metadata", "http://127.0.0.1:8765/metadata", "http://[::1]:8765/metadata"]) {
+      write(url, transport);
+      assert.equal(loadMcpConfig(f.root, false).servers[0].oauth.authServerMetadataUrl, new URL(url).href);
+    }
+  }
+  for (const url of [null, "", 7, {}, "/metadata", "http://remote.invalid/metadata", "ftp://localhost/metadata",
+    "https://user:secret@host.invalid/metadata", `${CONFIGURED_METADATA}#fragment`, `${CONFIGURED_METADATA}\n`]) {
+    write(url);
+    assert.throws(() => loadMcpConfig(f.root, false), /authServerMetadataUrl/);
+  }
+});
+
+test("MCP OAuth configured metadata: protected resource mismatch still prevents registration", async t => {
+  const f = fixture(t, { authServerMetadataUrl: CONFIGURED_METADATA,
+    resourceMetadataOverrides: { resource: "https://other.fixture.invalid/mcp" } });
+  await assert.rejects(f.login(), /Protected resource .* does not match/);
+  assert.deepEqual(f.counts(), { registrations: 0, exchanges: 0, refreshes: 0 });
+  assert.deepEqual(JSON.parse(readFileSync(f.path, "utf8")), {});
+});
+
+test("MCP OAuth configured metadata: runtime URL checks reject unsafe endpoints before fetching", async t => {
+  for (const url of ["http://remote.invalid/metadata", "https://user:secret@host.invalid/metadata", `${CONFIGURED_METADATA}#fragment`]) {
+    const f = fixture(t, { authServerMetadataUrl: url });
+    let calls = 0;
+    const owner = new McpOAuth(f.config, new FileAuthStorageBackend(f.path), async (input: string | URL, init: RequestInit) => {
+      calls++;
+      return f.fetchImpl(input, init);
+    });
+    await assert.rejects(f.login(owner), /HTTPS|credentials|fragment/);
+    assert.equal(calls, 0);
+    assert.deepEqual(JSON.parse(readFileSync(f.path, "utf8")), {});
+  }
+});
+
+for (const item of [
+  { name: "missing issuer", values: [], error: /callback issuer is missing/ },
+  { name: "wrong issuer", values: ["https://other.fixture.invalid"], error: /callback issuer does not match/ },
+  { name: "trailing slash alias", values: [`${ISSUER}/`], error: /callback issuer does not match/ },
+]) {
+  test(`MCP OAuth configured metadata: callback rejects ${item.name} before exchange`, async t => {
+    const f = fixture(t, { authServerMetadataUrl: CONFIGURED_METADATA, issuerSupport: true });
+    const parameters = new URLSearchParams({ code: "fixture-code" });
+    for (const issuer of item.values) parameters.append("iss", issuer);
+    await assert.rejects(f.login(f.owner, parameters), item.error);
+    assert.equal(f.counts().exchanges, 0);
+    assert.deepEqual(JSON.parse(readFileSync(f.path, "utf8")), {});
+    for (const callback of f.callbacks) await assert.rejects(fetch(callback));
+  });
+}
+
+for (const item of [
+  { name: "redirect", status: 302, body: "", error: /HTTP 302/ },
+  { name: "not found", status: 404, body: "", error: /HTTP 404/ },
+  { name: "server error", status: 500, body: "", error: /HTTP 500/ },
+  { name: "invalid JSON", status: 200, body: "not-json", error: /JSON/ },
+  { name: "missing required metadata", status: 200, body: "{}", error: /invalid_type/ },
+  { name: "oversized body", status: 200, body: "x".repeat(1024 * 1024 + 1), error: /exceeds 1 MiB/ },
+]) {
+  test(`MCP OAuth configured metadata: ${item.name} fails without default discovery`, async t => {
+    const f = fixture(t, { authServerMetadataUrl: CONFIGURED_METADATA });
+    const requests: string[] = [];
+    const owner = new McpOAuth(f.config, new FileAuthStorageBackend(f.path), async (input: string | URL, init: RequestInit) => {
+      const url = new URL(input).href;
+      requests.push(url);
+      if (url !== CONFIGURED_METADATA) return f.fetchImpl(input, init);
+      assert.equal(init.redirect, "error");
+      assert.equal(new Headers(init.headers).get("Accept"), "application/json");
+      assert.equal(new Headers(init.headers).has("x-private-mcp"), false);
+      return new Response(item.body, { status: item.status });
+    });
+    await assert.rejects(f.login(owner), item.error);
+    assert.deepEqual(requests, [CONFIGURED_METADATA]);
+    assert.deepEqual(f.counts(), { registrations: 0, exchanges: 0, refreshes: 0 });
+    assert.deepEqual(JSON.parse(readFileSync(f.path, "utf8")), {});
+  });
+}
+
+for (const metadataOverrides of [
+  { issuer: "http://remote.invalid" }, { issuer: `${ISSUER}?tenant=one` },
+  { authorization_response_iss_parameter_supported: null }, { token_endpoint: "not-a-url" },
+]) {
+  test(`MCP OAuth configured metadata: malformed document ${JSON.stringify(metadataOverrides)} is rejected`, async t => {
+    const f = fixture(t, { authServerMetadataUrl: CONFIGURED_METADATA, metadataOverrides });
+    await assert.rejects(f.login(), /HTTPS|Invalid MCP OAuth issuer|issuer support flag|Invalid URL/);
+    assert.deepEqual(f.counts(), { registrations: 0, exchanges: 0, refreshes: 0 });
+    assert.deepEqual(JSON.parse(readFileSync(f.path, "utf8")), {});
+  });
+}
+
+for (const repair of ["missing metadata", "old validation version"]) {
+  test(`MCP OAuth configured metadata: ${repair} reloads the configured document without changing cached issuer`, async t => {
+    const options: OAuthFixtureOptions = { authServerMetadataUrl: CONFIGURED_METADATA, issuerSupport: true };
+    const f = fixture(t, options);
+    await f.login(f.owner, new URLSearchParams({ code: "fixture-code", iss: ISSUER }));
+    const saved = JSON.parse(readFileSync(f.path, "utf8"));
+    if (repair === "missing metadata") delete saved[f.owner.key].discovery.authorizationServerMetadata;
+    else delete saved[f.owner.key].discovery.issuerValidationVersion;
+    writeFileSync(f.path, JSON.stringify(saved));
+    let unavailable = true;
+    const owner = new McpOAuth(f.config, new FileAuthStorageBackend(f.path), async (input: string | URL, init: RequestInit) => {
+      if (unavailable && new URL(input).href === CONFIGURED_METADATA) return new Response(null, { status: 404 });
+      return f.fetchImpl(input, init);
+    });
+    await assert.rejects(owner.refresh("access-1-0"), /HTTP 404/);
+    assert.deepEqual(JSON.parse(readFileSync(f.path, "utf8")), saved);
+    unavailable = false;
+    options.issuer = "https://other.fixture.invalid";
+    await assert.rejects(owner.refresh("access-1-0"), /discovery issuer does not match/);
+    assert.equal(f.counts().refreshes, 0, "cached refresh token cannot follow an issuer change");
+    assert.deepEqual(JSON.parse(readFileSync(f.path, "utf8")), saved);
+    options.issuer = ISSUER;
+    assert.equal(await owner.refresh("access-1-0"), "access-1-1");
+    assert.deepEqual(f.metadataRequests, [CONFIGURED_METADATA, CONFIGURED_METADATA, CONFIGURED_METADATA]);
+    assert.deepEqual(f.counts(), { registrations: 1, exchanges: 1, refreshes: 1 });
+  });
+}
+
+test("MCP OAuth configured metadata: cancellation during loading releases the login reservation", async t => {
+  const f = fixture(t, { authServerMetadataUrl: CONFIGURED_METADATA });
+  const controller = new AbortController();
+  const reason = new Error("fixture metadata fetch cancelled");
+  let calls = 0;
+  const owner = new McpOAuth(f.config, new FileAuthStorageBackend(f.path), async (input: string | URL, init: RequestInit) => {
+    calls++;
+    assert.equal(new URL(input).href, CONFIGURED_METADATA);
+    controller.abort(reason);
+    init.signal!.throwIfAborted();
+  });
+  await assert.rejects(owner.login(() => assert.fail("no authorization notification after cancelled discovery"), controller.signal), error => error === reason);
+  assert.equal(calls, 1);
+  assert.deepEqual(JSON.parse(readFileSync(f.path, "utf8")), {});
+  await f.login();
+});
+
+test("MCP OAuth configured metadata: changing or removing the override isolates stored credentials", async t => {
+  const f = fixture(t, { authServerMetadataUrl: CONFIGURED_METADATA });
+  await f.login();
+  for (const oauth of [{ authServerMetadataUrl: "https://catalog.fixture.invalid/another.json" }, {}]) {
+    const other = new McpOAuth({ ...f.config, oauth }, new FileAuthStorageBackend(f.path), f.fetchImpl);
+    assert.notEqual(other.key, f.owner.key);
+    assert.equal(await other.token(), undefined);
+    await assert.rejects(other.refresh("access-1-0"), /mcp-login fixture/);
+  }
+  assert.deepEqual(f.counts(), { registrations: 1, exchanges: 1, refreshes: 0 });
+  assert.equal(await f.owner.token(), "access-1-0");
+});
 
 const callbackCases = [
   { name: "matching root", issuer: ISSUER, values: [ISSUER] },
@@ -273,9 +466,10 @@ test("MCP OAuth validates metadata added to an incomplete discovery cache before
   assert.deepEqual(JSON.parse(readFileSync(f.path, "utf8")), saved);
 });
 
-for (const clientKind of ["dynamic", "fixed"] as const) {
-  test(`MCP OAuth SDK rediscovery binds issuer with a ${clientKind} client`, async t => {
-    const options: OAuthFixtureOptions = { issuerSupport: true };
+for (const [clientKind, metadataUrl] of [["dynamic", undefined], ["fixed", undefined],
+  ["dynamic", CONFIGURED_METADATA], ["fixed", CONFIGURED_METADATA]] as const) {
+  test(`MCP OAuth SDK rediscovery binds issuer with a ${clientKind} client${metadataUrl ? " and configured metadata" : ""}`, async t => {
+    const options: OAuthFixtureOptions = { issuerSupport: true, authServerMetadataUrl: metadataUrl };
     if (clientKind === "fixed") {
       // Reserve a valid loopback port for this pre-registered client, then release
       // it to the production callback receiver. No listener survives initialization.
@@ -298,6 +492,7 @@ for (const clientKind of ["dynamic", "fixed"] as const) {
     const fetchImpl = async (input: string | URL, init: RequestInit = {}) => {
       const url = new URL(input);
       if (url.origin === "https://other.fixture.invalid" && url.pathname.includes(".well-known")) rediscovered = true;
+      if (metadataUrl && url.href === metadataUrl && tokenRequests.length > 0) rediscovered = true;
       if (url.pathname === "/token") {
         const body = new URLSearchParams(init.body as string);
         tokenRequests.push({ url: url.href, code: body.get("code"), clientId: body.get("client_id") });
@@ -315,6 +510,7 @@ for (const clientKind of ["dynamic", "fixed"] as const) {
       failure = error;
     }
     assert.equal(rediscovered, true, "the actual SDK retries discovery after invalid_client");
+    if (metadataUrl) assert.deepEqual(f.metadataRequests, [metadataUrl, metadataUrl]);
     assert.deepEqual(tokenRequests, [{ url: `${ISSUER}/token`, code: "fixture-code", clientId: options.clientId ?? "fixture-client" }]);
     assert.equal(f.counts().registrations, clientKind === "fixed" ? 0 : 1);
     assert.deepEqual(JSON.parse(readFileSync(f.path, "utf8")), {});
