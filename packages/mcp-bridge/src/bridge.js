@@ -8,6 +8,7 @@ import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { ListRootsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { McpCall, McpCallError } from "./call.js";
 import { convertMcpResult } from "./result.js";
+import { McpAuthorizationRequiredError, parseScopeChallenge } from "./oauth-scope.js";
 export { convertMcpResult } from "./result.js";
 import {
   MAX_SSE_EVENT_BYTES,
@@ -98,27 +99,63 @@ function limitMcpResponse(response) {
 export function fetchWithHeaders(headers, serverUrl, oauth) {
   const entries = Object.entries(headers);
   const origin = new URL(serverUrl).origin;
-  return async (input, init = {}) => {
+  const fetcher = async (input, init = {}) => {
     if (new URL(input instanceof Request ? input.url : input).origin !== origin) throw new Error("MCP cross-origin endpoint rejected");
     // fetch(Request, { headers }) replaces the Request's own headers, so carry them forward first.
     const request = input instanceof Request;
+    const signal = init.signal === undefined && request ? input.signal : init.signal;
     const merged = new Headers(request ? input.headers : init.headers);
     if (request && init.headers) for (const [name, value] of new Headers(init.headers)) merged.set(name, value);
     for (const [name, value] of entries) merged.set(name, value);
-    const token = await oauth?.token(init.signal);
+    let token = await oauth?.token(signal);
     if (token) merged.set("Authorization", `Bearer ${token}`);
     // The first attempt consumes a Request body; keep an unused copy for the OAuth retry.
     const retryInput = request && oauth && input.body ? input.clone() : input;
-    let response = await fetch(input, { ...init, headers: merged, redirect: "error" });
-    if (response.status === 401 && oauth) {
-      await response.body?.cancel();
-      const refreshed = await oauth.refresh(token, init.signal);
-      merged.set("Authorization", `Bearer ${refreshed}`);
-      response = await fetch(retryInput, { ...init, headers: merged, redirect: "error" });
-    } else if (retryInput !== input) await retryInput.body.cancel();
-    return limitMcpResponse(response);
+    let response, retried = false, failed = false;
+    try {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        response = await fetch(attempt === 0 ? input : retryInput, { ...init, headers: merged, redirect: "error" });
+        if (oauth && (response.status === 401 || response.status === 403)) {
+          let scope;
+          try { scope = parseScopeChallenge(response.headers.get("www-authenticate")); }
+          catch {
+            // A malformed/oversized challenge is not evidence of insufficient
+            // scope. Preserve the ordinary 401 retry and 403 response instead.
+          }
+          if (scope !== undefined) {
+            await response.body?.cancel(); response = undefined;
+            await oauth.recordScopeChallenge(scope, token, signal);
+            fetcher.authorizationRequired = true;
+            throw new McpAuthorizationRequiredError(oauth.config?.id);
+          }
+        }
+        if (response.status !== 401 || !oauth || attempt === 1) return limitMcpResponse(response);
+        await response.body?.cancel(); response = undefined;
+        token = await oauth.refresh(token, signal);
+        merged.set("Authorization", `Bearer ${token}`);
+        retried = true;
+      }
+    } catch (error) {
+      failed = true;
+      try { await response?.body?.cancel(); } catch {}
+      throw error;
+    } finally {
+      if (retryInput !== input && (!retried || failed)) {
+        const cancelled = retryInput.body.cancel().catch(ignoreBodyCancellation);
+        // A failed fetch can leave the original tee branch unread. Cancel both
+        // before awaiting either, otherwise cancelling the spare may never settle.
+        if (failed && !input.body.locked) { try { await input.body.cancel(); } catch {} }
+        await cancelled;
+      }
+    }
   };
+  // EventSource wraps fetch errors and drops their type. This primitive belongs
+  // to one transport, and is read only while connecting that transport.
+  fetcher.authorizationRequired = false;
+  return fetcher;
 }
+
+function ignoreBodyCancellation() {}
 
 function createTransport(config, state) {
   if (config.transport === "stdio") {
@@ -137,6 +174,7 @@ function createTransport(config, state) {
     return transport;
   }
   const customFetch = fetchWithHeaders(config.headers, config.url, state.oauth);
+  state.connectFetch = customFetch;
   if (config.transport === "http") {
     return new StreamableHTTPClientTransport(new URL(config.url), {
       requestInit: { headers: config.headers },
@@ -238,17 +276,21 @@ export class McpBridgeRuntime {
       state.serverInfo = client.getServerVersion() ?? null;
       state.tools = mapRemoteTools(listed.tools);
       state.status = "connected";
+      state.connectFetch = null;
       for (const tool of listed.tools) this.registerRemoteTool(state, tool);
       this.schemaCache?.put(config, this.workspace, listed.tools, state.serverInfo);
       return state;
-    } catch {
+    } catch (error) {
       state.status = this.closed ? "closed" : "error";
-      state.error = "MCP connection failed (protocol-error).";
+      const code = signal?.aborted || this.closed ? "aborted"
+        : error instanceof McpAuthorizationRequiredError || state.connectFetch?.authorizationRequired ? "authorization-required" : "protocol-error";
+      state.error = code === "authorization-required" ? `MCP authorization required. Run /mcp-login ${config.id}` : "MCP connection failed (protocol-error).";
       await state.client?.close().catch(() => undefined);
       state.client = null;
       state.transport = null;
       state.oauth = null;
-      throw new McpCallError(signal?.aborted || this.closed ? "aborted" : "protocol-error");
+      state.connectFetch = null;
+      throw new McpCallError(code);
     }
   }
 
@@ -307,9 +349,9 @@ export class McpBridgeRuntime {
       );
       if (call.controller.signal.aborted || this.closed) throw new McpCallError("aborted");
       return result;
-    } catch {
-      const code = call.controller.signal.aborted || this.closed ? "aborted" : "protocol-error";
-      state.error = code === "aborted" ? "MCP request aborted." : "MCP protocol error.";
+    } catch (error) {
+      const code = call.controller.signal.aborted || this.closed ? "aborted" : error instanceof McpAuthorizationRequiredError ? "authorization-required" : "protocol-error";
+      state.error = code === "authorization-required" ? `MCP authorization required. Run /mcp-login ${state.config.id}` : code === "aborted" ? "MCP request aborted." : "MCP protocol error.";
       throw new McpCallError(code);
     } finally {
       call.finish();
@@ -369,6 +411,7 @@ export class McpBridgeRuntime {
       state.client = null;
       state.transport = null;
       state.oauth = null;
+      state.connectFetch = null;
     }
     await Promise.allSettled(closes);
     this.searchIndex.clear();
@@ -381,11 +424,12 @@ export class McpBridgeRuntime {
 function mcpFailureResult(code, ctx, toolCallId) {
   const category = code === "budget-not-configured" || code === "budget-too-small"
     ? "budget-not-configured"
-    : code === "result-size-limit" || code === "invalid-typed-content" || code === "invalid-structured-content" || code === "aborted" || code === "server-tool-error"
+    : code === "result-size-limit" || code === "invalid-typed-content" || code === "invalid-structured-content" || code === "aborted" || code === "server-tool-error" || code === "authorization-required"
       ? code : "protocol-error";
   const text = category === "budget-not-configured"
     ? "MCP result unavailable: configure tool-result presentation with a sufficient token budget for recovery."
-    : `MCP result unavailable (${category}).`;
+    : category === "authorization-required" ? "MCP authorization required. Run /mcp-login <server-id>, then explicitly retry the tool."
+      : `MCP result unavailable (${category}).`;
   const failure = { content: [{ type: "text", text }], details: { mcpError: category } };
   try {
     if (ctx?.mcpResultInputConfigured === true) ctx.admitMcpResultInput(failure.content, toolCallId);

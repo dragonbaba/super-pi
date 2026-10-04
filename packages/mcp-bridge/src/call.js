@@ -3,7 +3,8 @@ const MCP_PROGRESS_SOURCE = Symbol.for("super-pi.mcp-progress-source.v1");
 /** Fixed public errors never retain an arbitrary server error as message/cause. */
 export class McpCallError extends Error {
   constructor(code) {
-    super(code === "aborted" ? "MCP request aborted." : "MCP request failed (protocol-error).");
+    super(code === "aborted" ? "MCP request aborted." : code === "authorization-required"
+      ? "MCP authorization required. Run /mcp-login <server-id>." : "MCP request failed (protocol-error).");
     this.name = "McpCallError";
     this.code = code;
   }

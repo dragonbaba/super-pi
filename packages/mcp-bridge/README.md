@@ -107,7 +107,47 @@ changes its endpoint addresses, run `/mcp-logout <server>` followed by
 `/mcp-login <server>` to fetch fresh metadata. This trades automatic endpoint
 updates for fewer requests and a stable cached issuer binding.
 
-Credentials are isolated by server identity in `~/.sp/agent/mcp-auth.json`, using the host's file locking and atomic persistence. Interactive login reserves a bounded attempt, releases the lock during browser authorization, then re-reads and merges the current file when committing. Another service's writes are preserved; logout invalidates a pending login, and a second active login for the same server is rejected. Cancellation removes its own reservation, with an expiry for abandoned attempts. Sync and async access use the same lease parameters. A refresh holds the lock through rotation; an HTTP 401 permits one refresh/retry. Metadata/token requests do not inherit MCP headers. OAuth and a static `Authorization` header cannot be combined. A scope change requires updated configuration and an explicit new login; automatic HTTP 403 step-up is not implemented. Browser/provider interoperability needs testing against the chosen server; the repository tests use offline OAuth fixtures, including a separate process writing during authorization.
+Credentials are isolated by server identity in `~/.sp/agent/mcp-auth.json`, using
+the host's file locking and atomic persistence. Interactive login reserves a
+bounded attempt, releases the lock during browser authorization, then re-reads
+and merges the current file when committing. Another service's writes are
+preserved; logout invalidates a pending login, and a second active login for the
+same server is rejected. Cancellation removes its own reservation, with an expiry
+for abandoned attempts. Sync and async access use the same lease parameters.
+Metadata/token requests do not inherit MCP headers. OAuth and a static
+`Authorization` header cannot be combined.
+
+If an OAuth server returns HTTP 401 or 403 with a Bearer
+`error="insufficient_scope"` challenge, the bridge saves the requested scopes and
+reports `authorization-required`. Run `/mcp-login <server-id>`, review the
+authorization URL and consent screen, and then explicitly retry the denied tool.
+The login combines configured scopes, previously granted scopes, and the new
+request, removing duplicates while retaining case. A missing challenge scope
+still requires explicit login using the known scopes. This flow never opens a
+browser automatically, refreshes to try to gain permissions, or replays the
+denied tool. An ordinary 401 without this challenge retains the existing single
+refresh/retry; a plain 403 does not trigger authorization.
+
+Scope requests are hints, not grants. They survive restart in the same credential
+entry until consumed by a successful login or cleared by logout; changing the
+OAuth configuration selects a different credential identity. Concurrent requests
+are combined under the file lock, and requirements arriving during consent remain
+for the next explicit login. Denial or cancellation preserves old credentials and
+pending requirements. An explicit token-response scope is authoritative, even
+when narrower than requested; an omitted scope retains the authorization request
+scope (or the previous grant on refresh).
+
+Challenge parsing is limited to 8,192 characters and accumulated scopes to
+4,096 characters. Malformed, ambiguous or oversized challenge headers are not
+accepted as scope requirements. They retain the ordinary response handling:
+401 permits at most one refresh/retry, and 403 is returned to the SDK unchanged.
+No scope hint is saved for an unrecognized challenge. Only Bearer scope
+requirements are consumed: `resource_metadata` in a challenge does
+not change discovery or the authorization server. Existing resource matching,
+issuer validation, configured metadata URLs, PKCE and callback checks still apply.
+Browser/provider interoperability needs testing against the chosen server; the
+repository tests use offline OAuth responses, real loopback callbacks and MCP
+HTTP/SSE transports, including a separate process writing during authorization.
 
 ## Project configuration
 
