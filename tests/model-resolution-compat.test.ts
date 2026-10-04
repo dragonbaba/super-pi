@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { Api, Model } from "../packages/ai/src/types.ts";
-import { resolveCliModel } from "../packages/coding-agent/src/core/model-resolver.ts";
+import { resolveCliModel, resolveModelScopeFromModels } from "../packages/coding-agent/src/core/model-resolver.ts";
+import { parseArgs } from "../packages/coding-agent/src/cli/args.ts";
 import type { ModelRuntime } from "../packages/coding-agent/src/core/model-runtime.ts";
 
 function model(provider: string, id: string): Model<Api> {
@@ -39,6 +40,14 @@ function runtime(models: Model<Api>[], authenticated: string[] = []): ModelRunti
 		}),
 	} as unknown as ModelRuntime;
 }
+
+test("--models trailing comma cannot add an unrelated model to the resolved cycle", () => {
+	const models = [model("fixture", "unrelated"), model("fixture", "chosen")];
+	const parsed = parseArgs(["--models", "fixture/chosen,"]);
+	const result = resolveModelScopeFromModels(parsed.models!, models);
+	assert.deepEqual(result.scopedModels.map(value => value.model.id), ["chosen"]);
+	assert.deepEqual(result.diagnostics, []);
+});
 
 test("bare duplicate ids remain ambiguous and independent of catalog order", () => {
 	const forward = [model("alpha", "shared"), model("beta", "shared")];
