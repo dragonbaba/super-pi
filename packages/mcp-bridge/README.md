@@ -32,13 +32,14 @@ before becoming eligible; rejected catalogs and tools removed by the server do
 not inherit the old catalog's availability.
 
 Successful `mcp_search_tools` activation records an intent in the current session
-branch. Reload and session reopen restore only tools whose exact server/tool
+branch, only for tools the host actually activated: names ignored by a host tool
+policy (such as an allowlist) are reported as not activated and never recorded. Reload and session reopen restore only tools whose exact server/tool
 identity, workspace and configuration still match the available catalog.
 Cached catalogs remain lazy and are checked against the server before a call;
 uncached tools become active when background discovery confirms them. Removed,
 disabled or renamed tools are not restored. Changing configuration requires a
 new search to activate its tools. Navigating the session tree uses that branch's
-latest activation record.
+latest activation state.
 
 A remote tool activated by other means (not through search) stays active while
 its server's catalog still contains it, including after later discovery or
@@ -46,9 +47,20 @@ reconnects. It is not recorded, so startup, reload, session reopen and tree
 navigation apply only the recorded search intent.
 
 Records contain tool names and identity hashes, not connection settings or
-credentials. Repeating a search without changing intent does not append another
-record. At most 2,048 intents are retained; new identities displace the oldest
-when that bound is reached. Existing sessions without these records begin with
+credentials. Because the configuration digest covers header, environment and
+argument values, each identity is an HMAC under a random machine-local key
+(`~/.sp/agent/mcp-activation.key`, created on first use), so a copied session
+file cannot be used to test guesses of those secrets offline. A session opened
+with a different key, or a missing/unreadable key, restores no activations;
+without a usable key, intent is not recorded.
+
+Repeating a search without changing intent does not append another record. A
+changed search appends only the changed identities; a full snapshot replaces
+them once the deltas since the previous snapshot would be at least as large, so
+persisted data grows linearly with activation changes. At most 2,048 intents are
+retained; recording a changed identity for an existing name makes it the most
+recent, and the least recently recorded identity is displaced when that bound is
+reached. Existing sessions without these records begin with
 remote tools deferred and acquire records on subsequent searches. Tool failures
 are never automatically replayed.
 

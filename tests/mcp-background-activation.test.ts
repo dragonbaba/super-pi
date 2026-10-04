@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { getEventListeners } from "node:events";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -8,13 +9,17 @@ import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { test, type TestContext } from "node:test";
 // @ts-expect-error JavaScript extension package.
-import mcpBridgeExtension, { toolActivationFingerprint } from "../packages/mcp-bridge/src/index.js";
+import mcpBridgeExtension, { applyActivationItems, toolActivationFingerprint } from "../packages/mcp-bridge/src/index.js";
+// @ts-expect-error JavaScript extension package.
+import { loadActivationKey } from "../packages/mcp-bridge/src/activation-key.js";
+// @ts-expect-error JavaScript extension package.
+import { MAX_SERVERS } from "../packages/mcp-bridge/src/security.js";
 // @ts-expect-error JavaScript extension package.
 import { McpBridgeRuntime } from "../packages/mcp-bridge/src/bridge.js";
 // @ts-expect-error JavaScript extension package.
 import { loadMcpConfig } from "../packages/mcp-bridge/src/config.js";
 // @ts-expect-error JavaScript extension package.
-import { McpSchemaCache } from "../packages/mcp-bridge/src/schema-cache.js";
+import { McpSchemaCache, configFingerprint } from "../packages/mcp-bridge/src/schema-cache.js";
 // @ts-expect-error JavaScript extension package.
 import { McpRuntimeLifecycle } from "../packages/mcp-bridge/src/lifecycle.js";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
@@ -86,13 +91,14 @@ async function fixture(t: TestContext) {
 	}
 	writeConfig();
 	function block() { endpoint.listed = deferred(); endpoint.gate = deferred(); gates.push(endpoint.gate); return endpoint.gate; }
-	function host(manager = SessionManager.inMemory(root)) {
+	// `allow` models a host tool policy (allowlist) that silently ignores other names.
+	function host(manager = SessionManager.inMemory(root), allow = (_name: string) => true) {
 		const events = new Map<string, any>(), tools = new Map<string, any>(), notes: string[] = [];
 		let active = ["read"];
 		const pi = {
 			on(name: string, handler: any) { events.set(name, handler); }, registerCommand() {},
-			registerTool(tool: any) { tools.set(tool.name, tool); if (!active.includes(tool.name)) active.push(tool.name); },
-			getActiveTools: () => active, setActiveTools(names: string[]) { active = names; },
+			registerTool(tool: any) { tools.set(tool.name, tool); if (!active.includes(tool.name) && allow(tool.name)) active.push(tool.name); },
+			getActiveTools: () => active, setActiveTools(names: string[]) { active = names.filter(allow); },
 			appendEntry(type: string, data: unknown) { manager.appendCustomEntry(type, data); },
 		};
 		mcpBridgeExtension(pi);
@@ -459,4 +465,81 @@ test("activation fingerprints are absent rather than throwing when a server iden
 	assert.equal(toolActivationFingerprint(runtime, REMOTE, new Map()), undefined);
 	assert.equal(toolActivationFingerprint({ ...runtime, toolConfig: () => undefined }, REMOTE, new Map([["fixture", "id"]])), undefined);
 	assert.match(toolActivationFingerprint(runtime, REMOTE, new Map([["fixture", "id"]])), /^[0-9a-f]{64}$/);
+});
+
+const activationRecords = (manager: SessionManager) => manager.getBranch()
+	.filter((entry: any) => entry.type === "custom" && entry.customType === "mcp-tool-activation-v1")
+	.map((entry: any) => entry.data);
+
+test("progressive activation persists deltas with linear snapshots and restores every identity", async t => {
+	const f = await fixture(t), names: string[] = [];
+	f.endpoint.tools = [];
+	for (let index = 0; index < 40; index++) {
+		const name = `n${String(index).padStart(3, "0")}x`;
+		f.endpoint.tools.push({ name, inputSchema: { type: "object" } });
+		names.push(`mcp__fixture__${name}`);
+	}
+	const h = f.host(); await h.start();
+	for (let index = 0; index < 40; index++) await h.search(`n${String(index).padStart(3, "0")}x`);
+	const records = activationRecords(h.manager);
+	const items = records.reduce((sum: number, record: any) => sum + record.tools.length, 0);
+	assert.equal(records.length, 40, "one record per changed search");
+	assert.ok(records.some((record: any) => !record.base) && records.some((record: any) => record.base));
+	assert.ok(items <= 3 * 40, `persisted items stay linear: ${items}`);
+	await h.search("n039x");
+	assert.equal(activationRecords(h.manager).length, 40, "an unchanged search appends nothing");
+	await h.stop();
+	const reopened = f.host(h.manager); await reopened.start(); await reopened.search("nothing-matches");
+	for (const name of names) assert.ok(reopened.active().includes(name), `${name} restored`);
+});
+
+test("the activation bound evicts the least recently refreshed identity", () => {
+	const limit = MAX_SERVERS * 128, intent = new Map<string, string>(), fingerprint = (seed: string) => createHash("sha256").update(seed).digest("hex");
+	const items = [];
+	for (let index = 0; index < limit; index++) items.push({ name: `mcp__s__t${index}`, fingerprint: fingerprint(`old${index}`) });
+	applyActivationItems(intent, items);
+	applyActivationItems(intent, [{ name: "mcp__s__t0", fingerprint: fingerprint("new0") }]);
+	applyActivationItems(intent, [{ name: "mcp__s__fresh", fingerprint: fingerprint("fresh") }]);
+	assert.equal(intent.size, limit);
+	assert.equal(intent.get("mcp__s__t0"), fingerprint("new0"), "a refreshed identity is not the oldest");
+	assert.equal(intent.has("mcp__s__t1"), false);
+	assert.ok(intent.has("mcp__s__fresh"));
+});
+
+test("only activations accepted by the host tool policy are recorded and reported", async t => {
+	const f = await fixture(t), h = f.host(undefined, name => name !== REMOTE);
+	await h.start();
+	const text = JSON.stringify(await h.search());
+	assert.match(text, /Not activated by the host tool policy/);
+	assert.doesNotMatch(text, /Activated MCP tools/);
+	assert.equal(h.active().includes(REMOTE), false);
+	assert.equal(activationRecords(h.manager).length, 0);
+	await h.stop();
+	const permissive = f.host(h.manager); await permissive.start(); await permissive.search("nothing-matches");
+	assert.equal(permissive.active().includes(REMOTE), false, "a rejected activation is never restored");
+});
+
+test("persisted activation identities are keyed by a machine-local secret", async t => {
+	const f = await fixture(t), h = f.host();
+	f.writeConfig({ headers: { Authorization: "Bearer low-entropy-secret" } });
+	await h.start(); await h.search(); await h.stop();
+	const keyPath = join(f.agentDir, "mcp-activation.key");
+	assert.equal(readFileSync(keyPath).length, 32);
+	const config = loadMcpConfig(f.root, false).servers[0];
+	const unkeyed = configFingerprint(config, f.root);
+	const legacy = createHash("sha256").update(unkeyed).update("\0").update("fixture\0lookup").digest("hex");
+	const saved = JSON.stringify(h.manager.getBranch());
+	assert.equal(saved.includes(unkeyed) || saved.includes(legacy) || saved.includes("low-entropy-secret"), false);
+	const resumed = f.host(h.manager); await resumed.start(); await resumed.search("nothing-matches");
+	assert.ok(resumed.active().includes(REMOTE), "the same machine key restores activation");
+	await resumed.stop();
+	writeFileSync(keyPath, Buffer.alloc(32, 7));
+	const rekeyed = f.host(h.manager); await rekeyed.start(); await rekeyed.search("nothing-matches");
+	assert.equal(rekeyed.active().includes(REMOTE), false, "a session copied to another key does not restore");
+	await rekeyed.stop();
+	rmSync(keyPath); mkdirSync(keyPath);
+	assert.equal(loadActivationKey(keyPath), undefined);
+	const keyless = f.host(); await keyless.start();
+	assert.match(JSON.stringify(await keyless.search()), /Activated MCP tools/);
+	assert.equal(activationRecords(keyless.manager).length, 0, "without a key, intent is not recorded");
 });

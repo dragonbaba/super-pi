@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { loadMcpConfig } from "./config.js";
 import { checkRuntimeCompatibility, discoverPiVersion } from "./runtime-compat.js";
 import { MAX_ACTIVATED_SCHEMA_BYTES, MAX_SERVERS, sanitizeText } from "./security.js";
@@ -12,6 +12,27 @@ export function toolActivationFingerprint(runtime, name, fingerprints) {
   const identity = config && fingerprints.get(config.id);
   if (typeof identity !== "string") return undefined;
   return createHash("sha256").update(identity).update("\0").update(runtime.registeredNames.get(name)).digest("hex");
+}
+
+function isActivationItem(item) {
+  return typeof item?.name === "string" && item.name.length <= 58 && typeof item.fingerprint === "string" && item.fingerprint.length === 64;
+}
+
+function activationRecord(entry) {
+  if (entry.type !== "custom" || entry.customType !== ACTIVATION_ENTRY) return undefined;
+  const data = entry.data;
+  return data?.version === 1 && typeof data.base === "boolean" && Array.isArray(data.tools) && data.tools.length <= MAX_ACTIVATION_ENTRIES ? data : undefined;
+}
+
+// Re-setting a name moves it to the newest position, so the size bound evicts
+// the least recently recorded identity. Restore replays the same operations.
+export function applyActivationItems(intent, items) {
+  for (const item of items) {
+    if (!isActivationItem(item)) continue;
+    intent.delete(item.name);
+    intent.set(item.name, item.fingerprint);
+  }
+  while (intent.size > MAX_ACTIVATION_ENTRIES) intent.delete(intent.keys().next().value);
 }
 
 export default function mcpBridgeExtension(pi) {
@@ -30,26 +51,50 @@ export default function mcpBridgeExtension(pi) {
   // Names the host activated only because they were newly registered.
   const hostActivatedRemoteNames = new Set();
   let activationIntent = new Map();
+  // Delta items appended since the branch's latest full snapshot.
+  let activationDeltaItems = 0;
   let activationGeneration = 0;
   let fingerprints = new Map();
 
+  // Records are full snapshots (`base: true`) or deltas. Restore replays the
+  // latest snapshot on the branch and the deltas after it.
   const restoreActivationIntent = (ctx) => {
     activationGeneration++;
     activationIntent = new Map();
+    activationDeltaItems = 0;
     const branch = ctx.sessionManager?.getBranch() ?? [];
+    let start = branch.length;
     for (let index = branch.length - 1; index >= 0; index--) {
-      const entry = branch[index];
-      if (entry.type !== "custom" || entry.customType !== ACTIVATION_ENTRY) continue;
-      const data = entry.data;
-      if (data?.version === 1 && Array.isArray(data.tools) && data.tools.length <= MAX_ACTIVATION_ENTRIES) {
-        for (const item of data.tools) {
-          if (typeof item?.name === "string" && item.name.length <= 58 && typeof item.fingerprint === "string" && item.fingerprint.length === 64) {
-            activationIntent.set(item.name, item.fingerprint);
-          }
-        }
-      }
-      break;
+      const record = activationRecord(branch[index]);
+      if (!record) continue;
+      start = index;
+      if (record.base) break;
     }
+    for (let index = start; index < branch.length; index++) {
+      const record = activationRecord(branch[index]);
+      if (!record) continue;
+      if (record.base) { activationIntent = new Map(); activationDeltaItems = 0; }
+      else activationDeltaItems += record.tools.length;
+      applyActivationItems(activationIntent, record.tools);
+    }
+  };
+
+  // A snapshot is written once the deltas since the previous one would be at
+  // least as large, so persisted data stays linear in the number of changes.
+  const recordActivationChanges = (changes) => {
+    if (changes.length === 0) return;
+    const intent = new Map(activationIntent);
+    applyActivationItems(intent, changes);
+    if (activationDeltaItems + changes.length >= intent.size) {
+      const tools = [];
+      for (const [name, fingerprint] of intent) tools.push({ name, fingerprint });
+      pi.appendEntry(ACTIVATION_ENTRY, { version: 1, base: true, tools });
+      activationDeltaItems = 0;
+    } else {
+      pi.appendEntry(ACTIVATION_ENTRY, { version: 1, base: false, tools: changes });
+      activationDeltaItems += changes.length;
+    }
+    activationIntent = intent;
   };
 
   // A reset (startup, tree navigation) applies only the branch intent. A catalog
@@ -110,21 +155,24 @@ export default function mcpBridgeExtension(pi) {
       const active = pi.getActiveTools();
       const activeSet = new Set(active);
       const added = matches.filter((name) => !activeSet.has(name));
-      const intent = new Map(activationIntent);
-      let changed = false;
-      for (const name of matches) {
-        const fingerprint = toolActivationFingerprint(runtime, name, fingerprints);
-        if (fingerprint !== undefined && intent.get(name) !== fingerprint) { intent.set(name, fingerprint); changed = true; }
-      }
-      if (changed) {
-        while (intent.size > MAX_ACTIVATION_ENTRIES) intent.delete(intent.keys().next().value);
-        const tools = [];
-        for (const [name, fingerprint] of intent) tools.push({ name, fingerprint });
-        pi.appendEntry(ACTIVATION_ENTRY, { version: 1, tools });
-        activationIntent = intent;
-      }
       if (added.length > 0) pi.setActiveTools([...active, ...added]);
-      return { content: [{ type: "text", text: added.length > 0 ? `Activated MCP tools: ${added.join(", ")}` : `Matching MCP tools were already active: ${matches.join(", ")}` }] };
+      // Host policy (for example an allowlist) may ignore names; record and
+      // report only the tools the host actually accepted.
+      const accepted = new Set(pi.getActiveTools());
+      const changes = [];
+      for (const name of matches) {
+        if (!accepted.has(name)) continue;
+        const fingerprint = toolActivationFingerprint(runtime, name, fingerprints);
+        if (fingerprint !== undefined && activationIntent.get(name) !== fingerprint) changes.push({ name, fingerprint });
+      }
+      recordActivationChanges(changes);
+      const activated = added.filter((name) => accepted.has(name));
+      const rejected = matches.filter((name) => !accepted.has(name));
+      const lines = [];
+      if (activated.length > 0) lines.push(`Activated MCP tools: ${activated.join(", ")}`);
+      else if (rejected.length < matches.length) lines.push(`Matching MCP tools were already active: ${matches.filter((name) => accepted.has(name)).join(", ")}`);
+      if (rejected.length > 0) lines.push(`Not activated by the host tool policy: ${rejected.join(", ")}`);
+      return { content: [{ type: "text", text: lines.join("\n") }] };
     },
   });
 
@@ -138,9 +186,10 @@ export default function mcpBridgeExtension(pi) {
     try {
       configInfo = loadMcpConfig(ctx.cwd, ctx.isProjectTrusted());
       if (configInfo.servers.length === 0 || !lifecycle.isCurrent(token)) return;
-      const [{ McpBridgeRuntime }, { McpSchemaCache, configFingerprint }] = await Promise.all([
+      const [{ McpBridgeRuntime }, { McpSchemaCache, configFingerprint }, { loadActivationKey }] = await Promise.all([
         import("./bridge.js"),
         import("./schema-cache.js"),
+        import("./activation-key.js"),
       ]);
       if (!lifecycle.isCurrent(token)) return;
       const schemaCache = new McpSchemaCache();
@@ -155,9 +204,14 @@ export default function mcpBridgeExtension(pi) {
           if (!wasActive && pi.getActiveTools().includes(tool.name)) hostActivatedRemoteNames.add(tool.name);
         },
       }, ctx.cwd, schemaCache);
+      // The configuration digest covers secret values; only a keyed digest of it
+      // is persisted. Without a key, activation intent is not recorded or restored.
       fingerprints = new Map();
-      for (const server of configInfo.servers) {
-        fingerprints.set(server.id, configFingerprint(server, ctx.cwd));
+      const activationKey = loadActivationKey();
+      if (activationKey) {
+        for (const server of configInfo.servers) {
+          fingerprints.set(server.id, createHmac("sha256", activationKey).update(configFingerprint(server, ctx.cwd)).digest("hex"));
+        }
       }
       if (!await lifecycle.attach(token, nextRuntime)) return;
       if (!lifecycle.isCurrent(token) || token.signal.aborted || nextRuntime.closed) {
