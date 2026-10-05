@@ -4,6 +4,7 @@ import { estimateToolOutputTokens } from "./tool-output-budget.ts";
 import type { TextContent, ImageContent } from "@super-pi/ai";
 import { serializeMcpStructured, verifiedMcpSource, type McpTypedSource } from "./tool-result-source.ts";
 import { BoundedJson } from "@super-pi/codemode/bounded-json";
+import type { ToolResultPresentationContent } from "./tool-result-presentation.ts";
 
 const MAX_INLINE_CHARS = 128 * 1024;
 const CHUNK_CHARS = 16 * 1024;
@@ -109,11 +110,34 @@ export async function capCodemodeOutput(content: (TextContent | ImageContent)[],
 	if (remaining < 0) throw new Error("Codemode output budget cannot fit the recovery notice");
 	const projected: (TextContent | ImageContent)[] = [];
 	let truncated = false;
-	for (const block of content) {
+	for (let index = 0; index < content.length; index++) {
+		const block = content[index]! as ToolResultPresentationContent;
 		// Images are budgeted when retained and shown; beside the text notice they add no estimated
 		// tokens, so keep every image, including those after the text was cut.
 		if (block.type === "image") { projected.push(block); continue; }
 		if (truncated) continue;
+		if (block.readBoundary === "lines") {
+			let end = index;
+			let groupCost = 0;
+			for (let next = index; next < content.length; next++) {
+				const member = content[next]! as ToolResultPresentationContent;
+				if (member.type !== "text") continue;
+				if (next > index && member.readBoundary === "lines") break;
+				sample[0] = member;
+				groupCost += estimateToolOutputTokens(sample).estimatedTokens + 1;
+				if (groupCost > remaining) break;
+				if (member.readBoundary === "metadata") { end = next; break; }
+			}
+			if (end > index && groupCost <= remaining) {
+				for (; index <= end; index++) projected.push(content[index]!);
+				index--; remaining -= groupCost;
+			} else {
+				// The spill already owns the full output. Omit this group and later
+				// text atomically; the outer loop still preserves all later images.
+				truncated = true;
+			}
+			continue;
+		}
 		sample[0] = block;
 		const cost = estimateToolOutputTokens(sample).estimatedTokens + 1;
 		if (cost <= remaining) { projected.push(block); remaining -= cost; continue; }

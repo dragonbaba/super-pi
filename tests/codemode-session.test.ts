@@ -71,8 +71,100 @@ async function fixture(t: TestContext, options: Pick<CreateAgentSessionOptions, 
 		await session.agent.prompt("run offline fixture");
 		return { wires, results: session.agent.state.messages.filter(m => m.role === "toolResult") };
 	}
-	return { session, cwd, manager, run };
+	return { session, cwd, agentDir, resources, settings, manager, run };
 }
+
+for (const repeated of [false, true]) test(`budgeted default bundle accepts multiple shown native reads: repeated=${repeated}`, async t => {
+	const f = await fixture(t, { toolResultPresentation: { enabled: true, budgetTokens: 8000 } }, [], true);
+	writeFileSync(join(f.cwd, "other.txt"), "other\n");
+	const outcome = await f.run([repeated
+		? 'const r=await tools.read({path:"file.txt"}); await show(r.ref); await show(r.ref)'
+		: 'await show((await tools.read({path:"file.txt"})).ref); await show((await tools.read({path:"other.txt"})).ref)']);
+	assert.equal(f.session.agent.state.errorMessage, undefined);
+	assert.equal(outcome.wires.length, 2);
+	assert.equal(outcome.results[0]?.isError, false);
+	const markers = outcome.results[0]!.content.filter((b: any) => b.readBoundary).map((b: any) => b.readBoundary);
+	assert.deepEqual(markers, ["lines", "metadata", "lines", "metadata"]);
+	await f.run([]);
+	assert.equal(f.session.agent.state.errorMessage, undefined, "the next user request must also succeed");
+});
+
+test("saved multi-read Codemode history recovers after request failure and reopen without replaying reads", async t => {
+	const options = { toolResultPresentation: { enabled: true, budgetTokens: 8000 } };
+	const f = await fixture(t, options, [], true, true);
+	const convert = f.session.agent.convertToLlm;
+	f.session.agent.convertToLlm = (...args) => {
+		if (args[0].some(m => m.role === "toolResult")) throw new Error("Read projection requires one source-line block followed by paired metadata.");
+		return convert(...args);
+	};
+	await f.run(['await show((await tools.read({path:"file.txt",offset:1,limit:1})).ref); await show((await tools.read({path:"file.txt",offset:2,limit:1})).ref)']);
+	assert.match(f.session.agent.state.errorMessage!, /Read projection requires/);
+	const parent = f.session.agent.state.messages.find(m => m.role === "toolResult")!;
+	const canonical = JSON.stringify(parent);
+	f.session.agent.convertToLlm = convert;
+	const continued = await f.run([]);
+	assert.equal(f.session.agent.state.errorMessage, undefined);
+	assert.equal(continued.wires.length, 1);
+	assert.equal(JSON.stringify(parent), canonical);
+	assert.equal(continued.results.length, 1);
+	const file = f.manager.getSessionFile()!;
+	f.session.dispose();
+	await f.resources.reload();
+	const { session } = await createAgentSession({ cwd: f.cwd, agentDir: f.agentDir, resourceLoader: f.resources,
+		settingsManager: f.settings, sessionManager: SessionManager.open(file), ...options,
+		model: { ...MODEL, input: ["text"] }, modelRuntime: { hasConfiguredAuth: () => true, checkAuth: async () => ({ type: "api_key" }),
+			isUsingOAuth: () => false, getModel: () => undefined, getAuth: async () => undefined } as never });
+	try {
+		await session.bindExtensions({});
+		let requests = 0;
+		session.agent.streamFunction = () => {
+			requests++;
+			const stream = new AssistantMessageEventStream();
+			stream.push({ type: "done", reason: "stop", message: { role: "assistant", api: "openai-responses", provider: "fixture", model: "fixture", usage: USAGE,
+				content: [{ type: "text", text: "Recovered without replay" }], stopReason: "stop", timestamp: 1 } });
+			return stream;
+		};
+		await session.agent.prompt("Continue the saved session");
+		assert.equal(session.agent.state.errorMessage, undefined);
+		assert.equal(requests, 1);
+		const saved = session.agent.state.messages.filter(m => m.role === "toolResult");
+		assert.equal(saved.length, 1);
+		assert.equal(JSON.stringify(saved[0]), canonical);
+	} finally { session.dispose(); }
+});
+
+test("five native reads under a shared budget continue without granting omitted reads edit authority", async t => {
+	const f = await fixture(t, { toolResultPresentation: { enabled: true, budgetTokens: 512 } }, [], true);
+	// Any capped spill belongs to this test's registered fixture root too.
+	const temporary = join(f.cwd, "tmp"); mkdirSync(temporary);
+	const previousTmp = process.env.TMP, previousTemp = process.env.TEMP, previousTmpdir = process.env.TMPDIR;
+	process.env.TMP = temporary; process.env.TEMP = temporary; process.env.TMPDIR = temporary;
+	t.after(() => {
+		if (previousTmp === undefined) delete process.env.TMP; else process.env.TMP = previousTmp;
+		if (previousTemp === undefined) delete process.env.TEMP; else process.env.TEMP = previousTemp;
+		if (previousTmpdir === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = previousTmpdir;
+	});
+	for (let file = 0; file < 3; file++) writeFileSync(join(f.cwd, `middle${file}.txt`), Array.from({ length: 400 }, (_, line) => `hidden${file} line${line}\n`).join(""));
+	writeFileSync(join(f.cwd, "last.txt"), "last\n");
+	const outcome = await f.run([
+		'for (const path of ["file.txt","middle0.txt","middle1.txt","middle2.txt","last.txt"]) await show((await tools.read({path})).ref)',
+		'await tools.edit({path:"middle1.txt",edits:[{oldText:"hidden1 line0",newText:"must not write"}]})',
+	]);
+	assert.equal(f.session.agent.state.errorMessage, undefined);
+	assert.equal(outcome.wires.length, 3);
+	assert.equal(outcome.results[0]?.isError, false);
+	assert.equal(outcome.results[0]?.details?.codemode.calls.length, 5);
+	assert.equal(outcome.results[1]?.isError, true);
+	assert.match(JSON.stringify(outcome.results[1]?.content), /READ_REQUIRED/);
+	assert.ok(readFileSync(join(f.cwd, "middle1.txt"), "utf8").startsWith("hidden1 line0\n"));
+	const recovery = await f.run([
+		'await show((await tools.read({path:"middle1.txt",offset:1,limit:1})).ref)',
+		'await tools.edit({path:"middle1.txt",edits:[{oldText:"hidden1 line0",newText:"verified change"}]})',
+	]);
+	assert.equal(f.session.agent.state.errorMessage, undefined);
+	assert.equal(recovery.results.at(-1)?.isError, false, JSON.stringify(recovery.results.at(-1)?.content));
+	assert.ok(readFileSync(join(f.cwd, "middle1.txt"), "utf8").startsWith("verified change\n"));
+});
 
 test("SDK defaults to Codemode declarations and native control tools, retaining callable tools", async t => {
 	const f = await fixture(t);

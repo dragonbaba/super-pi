@@ -27,7 +27,7 @@ const NOTICE_PREFIX = "[Tool result truncated. Continue with cursor ";
 const NOTICE_SUFFIX = ".]";
 const READ_NOTICE_SUFFIX = ". Source lines omitted; the recorded snapshot range is not full model visibility. For edits needing omitted lines, read with offset/limit and use that read's paired snapshot and anchors. Continuation/artifact are historical, not a fresh read.]";
 const READ_OMITTED_SUFFIX = ". Read output omitted: budget cannot fit complete source lines and paired snapshot metadata. This view supplies neither source lines nor snapshot anchors. Read a smaller range with offset/limit, or increase the tool-result budget. Continuation/artifact are historical, not a fresh read.]";
-const READ_LAYOUT_ERROR = "Read projection requires one source-line block followed by paired metadata. Restore the read hook layout before retrying; the canonical result is unchanged.";
+const READ_LAYOUT_ERROR = "Read projection requires each source-line block to be followed by paired metadata before the next read. Restore the read hook layout before retrying; the canonical result is unchanged.";
 const ESCAPE_CODE = 0x1b;
 const GRAPHEME_SEGMENTER = new Intl.Segmenter("en", { granularity: "grapheme" });
 
@@ -230,6 +230,7 @@ interface CursorState {
 }
 
 interface SourceScan {
+	readGroupCount: number;
 	readLinesBlock: number;
 	readMetadataBlock: number;
 	readPrefixTextCodeUnits: number;
@@ -832,6 +833,8 @@ function scanSource(
 	let mcpInput = false;
 	let readLinesBlock = -1;
 	let readMetadataBlock = -1;
+	let readGroupCount = 0;
+	let readPending = false;
 	let readPrefixTextCodeUnits = 0;
 	let readSuffixTextCodeUnits = 0;
 	let mcpArtifactRequired = false;
@@ -847,13 +850,16 @@ function scanSource(
 		if (block.mcpInput) mcpInput = true;
 		if (block.type === "text") {
 			if (block.readBoundary === "lines") {
-				if (readLinesBlock >= 0 || readMetadataBlock >= 0) throw new ToolResultContinuationError("invalid-read-layout", READ_LAYOUT_ERROR);
-				readLinesBlock = index; readPrefixTextCodeUnits = textCodeUnits;
+				if (readPending) throw new ToolResultContinuationError("invalid-read-layout", READ_LAYOUT_ERROR);
+				readPending = true;
+				if (readLinesBlock < 0) { readLinesBlock = index; readPrefixTextCodeUnits = textCodeUnits; }
 			}
 			else if (readLinesBlock >= 0) readSuffixTextCodeUnits += block.text.length;
 			if (block.readBoundary === "metadata") {
-				if (readLinesBlock < 0 || readMetadataBlock >= 0) throw new ToolResultContinuationError("invalid-read-layout", READ_LAYOUT_ERROR);
-				readMetadataBlock = index;
+				if (!readPending) throw new ToolResultContinuationError("invalid-read-layout", READ_LAYOUT_ERROR);
+				readPending = false;
+				readGroupCount++;
+				if (readMetadataBlock < 0) readMetadataBlock = index;
 			}
 			if (block.mcpInput || block.mcpSource) mcpInput = true;
 			if (block.mcpSource) {
@@ -906,11 +912,12 @@ function scanSource(
 			retainedCodeUnits += block.data.length + block.mimeType.length;
 		}
 	}
-	if (readLinesBlock >= 0 && readMetadataBlock < 0) throw new ToolResultContinuationError("invalid-read-layout", READ_LAYOUT_ERROR);
+	if (readPending) throw new ToolResultContinuationError("invalid-read-layout", READ_LAYOUT_ERROR);
 	counters.sourceDigestConstructions++;
 	const sha256 = digest.digest("hex");
 	return {
 		mcpInput,
+		readGroupCount,
 		readLinesBlock,
 		readMetadataBlock,
 		readPrefixTextCodeUnits,
@@ -990,6 +997,7 @@ function buildProjection(
 ): ProjectionBuild {
 	const start = locateHeadEnd(content, headTextCodeUnits, sourceScan, counters);
 	const end = locateTailStart(content, tailTextCodeUnits, sourceScan, counters);
+	if (sourceScan.readGroupCount > 1) alignReadGroupOmission(content, start, end);
 	const actualHeadTextCodeUnits = textCodeUnitsBetween(
 		content,
 		{ blockIndex: 0, textOffset: 0 },
@@ -1027,6 +1035,26 @@ function buildProjection(
 		estimate: estimateToolOutputTokens(projected),
 		fullEstimate: sourceScan.estimate,
 	};
+}
+
+/** Expand the existing omission interval, never split a read from its metadata.
+ * Single-read projection still retains whole rows plus its complete suffix.
+ * Multiple reads reuse canonical blocks; no per-group index or strings are kept.
+ */
+function alignReadGroupOmission(content: readonly ToolResultPresentationContent[], start: ContentPosition, end: ContentPosition): void {
+	let lines = -1;
+	for (let index = 0; index < content.length; index++) {
+		const block = content[index]!;
+		if (block.type !== "text") continue;
+		if (block.readBoundary === "lines") lines = index;
+		else if (block.readBoundary === "metadata") {
+			if (start.blockIndex >= lines && start.blockIndex <= index) { start.blockIndex = lines; start.textOffset = 0; }
+			if ((end.blockIndex > lines && end.blockIndex <= index) || (end.blockIndex === lines && end.textOffset > 0)) {
+				end.blockIndex = index + 1; end.textOffset = 0;
+			}
+			lines = -1;
+		}
+	}
 }
 
 function buildFullOmissionProjection(
@@ -1091,7 +1119,7 @@ function projectLegacyContent(
 	for (let pass = 0; pass < MAX_PROJECTION_SHRINK_PASSES; pass++) {
 		// Keep the suffix at its actual position, including tool annotations on
 		// either side of the metadata. Character counts are from the existing scan.
-		const tailTextCodeUnits = sourceScan.readLinesBlock >= 0 ? sourceScan.readSuffixTextCodeUnits : Math.floor(retainedTextCodeUnits / 2);
+		const tailTextCodeUnits = sourceScan.readGroupCount === 1 ? sourceScan.readSuffixTextCodeUnits : Math.floor(retainedTextCodeUnits / 2);
 		const headTextCodeUnits = Math.max(0, retainedTextCodeUnits - tailTextCodeUnits);
 		build = buildProjection(content, headTextCodeUnits, tailTextCodeUnits, sourceKey, sourceDigest, sourceScan, counters);
 		if (build.estimate.estimatedTokens <= budgetTokens && comparePositions(build.start, build.end) < 0) {
@@ -1112,7 +1140,7 @@ function projectLegacyContent(
 }
 
 function requireReadProjection(content: readonly ToolResultPresentationContent[], scan: SourceScan, build: ProjectionBuild, budget: number, sourceKey: string, sourceDigest: string, counters: ToolResultPresentationCounters): ProjectionBuild {
-	if (scan.readLinesBlock < 0) return build;
+	if (scan.readGroupCount !== 1) return build;
 	const lines = content[scan.readLinesBlock];
 	const metadata = content[scan.readMetadataBlock];
 	if (lines?.type !== "text" || metadata?.type !== "text" || scan.readMetadataBlock <= scan.readLinesBlock) {

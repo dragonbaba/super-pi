@@ -23,6 +23,86 @@ const note = { type: "text", text: "Read audit: local text inspected." } as cons
 const metadata = { type: "text", readBoundary: "metadata", text: "[Snapshot edit] snapshot=snap_0000000000000000000000; editable lines=1-200. Use this snapshot and its LINE#ID anchors together." } as const;
 const lines = { type: "text", readBoundary: "lines", text: "1#1234|short\n" + "2#5678|source payload 中文😀\n".repeat(199) } as const;
 
+test("multiple native read groups project atomically and recover the exact omitted interval", () => {
+ const first = { ...lines, text: "1#1234|first\n" }, last = { ...lines, text: "1#5678|last\n" };
+ const source = [note, first, metadata, lines, note, metadata, last, metadata, note];
+ const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 512 }, "multi-read")!;
+ try {
+  const p = owner.create(source, "multi")!;
+  assert.equal(p.version, 2);
+  assert.ok(estimateToolOutputTokens(p.modelContent).estimatedTokens <= 512);
+  let pending = false;
+  for (const block of p.modelContent) {
+   if (block.type !== "text") continue;
+   if (block.readBoundary === "lines") { assert.equal(pending, false); pending = true; assert.ok(source.includes(block as any)); }
+   if (block.readBoundary === "metadata") { assert.equal(pending, true); pending = false; }
+  }
+  assert.equal(pending, false);
+  assert.ok(p.modelContent.includes(first) || p.modelContent.includes(last), "retain affordable complete read groups");
+  const canonical: any[] = [{ role: "toolResult", toolCallId: "multi", content: source }];
+  const chunk = owner.readContinuation(p.continuation.cursor, canonical, 16000);
+  assert.equal(chunk.done, true);
+  assert.equal(chunk.content.some((b: any) => b.readBoundary), false);
+  assert.equal(body([...p.modelContent.slice(0, p.truncation.noticeBlockIndex), ...chunk.content, ...p.modelContent.slice(p.truncation.noticeBlockIndex + 1)]), body(source));
+  assert.equal(owner.readArtifact(p.artifact!.id, canonical).content, source);
+ } finally { owner.release(); owner.dispose(); }
+ assert.equal(owner.counters.projectionRecordEntries, 0);
+ assert.equal(owner.counters.retainedProjectionCodeUnits, 0);
+});
+
+test("multiple oversized groups omit all anchors within budget while a later small read remains usable", () => {
+ const source = [{ ...lines, text: "1#1234|" + "x".repeat(12000) }, metadata, { ...lines, text: "1#5678|" + "y".repeat(12000) }, metadata];
+ const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 256 }, "multi-large")!;
+ try {
+  const p = owner.create(source, "large")!;
+  assert.equal(p.version, 2);
+  assert.ok(estimateToolOutputTokens(p.modelContent).estimatedTokens <= 256);
+  assert.doesNotMatch(body(p.modelContent), /1#|snapshot=snap_/);
+  owner.release();
+  const small = [{ ...lines, text: "1#1234|fresh\n" }, metadata];
+  const next = owner.create(small, "small")!;
+  assert.equal(next.modelContent, small);
+ } finally { owner.release(); owner.dispose(); }
+});
+
+test("multiple-read projections reuse source scans and release all retained references", async t => {
+ const inspector = new InspectorSession(); inspector.connect();
+ const refs: WeakRef<object>[] = [];
+ async function exercise() {
+  const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 512 }, "multi-profile")!;
+  refs.push(new WeakRef(owner));
+  for (let i = 0; i < 16; i++) {
+   const source = [{ ...lines, text: "1#1234|small\n" }, metadata, lines, metadata, { ...lines, text: "1#5678|last\n" }, metadata];
+   refs.push(new WeakRef(source));
+   const p = owner.create(source, `multi-${i}`)!;
+   refs.push(new WeakRef(p), new WeakRef(p.modelContent)); owner.release();
+   const message: any = { role: "toolResult", toolCallId: `multi-${i}`, toolName: "codemode", content: source, isError: false, timestamp: 0 };
+   for (let replay = 0; replay < 3; replay++) refs.push(new WeakRef(owner.projectMessagesForModel([message])));
+  }
+  assert.equal(owner.counters.fullSourceEstimatorScans, 16);
+  assert.equal(owner.counters.sourceDigestConstructions, 16);
+  assert.equal(owner.counters.residentReadHits, 48);
+  assert.equal(owner.counters.activeDispatchPresentationScopes, 0);
+  assert.ok(owner.counters.modelProjectionArraysCreated <= 16 * 6);
+  const arrays = owner.counters.modelProjectionArraysCreated;
+  owner.clearProjectionRecords(); owner.dispose();
+  assert.equal(owner.counters.projectionRecordEntries, 0); assert.equal(owner.counters.retainedProjectionCodeUnits, 0);
+  return arrays;
+ }
+ try {
+  await inspector.post("HeapProfiler.enable");
+  await inspector.post("HeapProfiler.startSampling", { samplingInterval: 1024, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true });
+  const arrays = await exercise();
+  const { profile } = await inspector.post("HeapProfiler.stopSampling");
+  let bytes = 0; const stack = [profile.head];
+  while (stack.length) { const node = stack.pop()!; if (node.callFrame.url.includes("tool-result-presentation")) bytes += node.selfSize; stack.push(...node.children); }
+  for (let i = 0; i < 3; i++) { await new Promise<void>(resolve => setImmediate(resolve)); await inspector.post("HeapProfiler.collectGarbage"); }
+  assert.equal(refs.filter(ref => ref.deref()).length, 0);
+  assert.ok(bytes < 16 * 64 * 1024);
+  t.diagnostic(JSON.stringify({ groups: 48, scans: 16, digests: 16, residentReadHits: 48, arrays, sampledBytes: bytes, retainedRefs: 0 }));
+ } finally { inspector.disconnect(); }
+});
+
 for (const position of ["none", "after", "before"] as const) test(`paired read metadata survives a ${position} annotation using the real estimator`, () => {
  const source = position === "none" ? [lines, metadata] : position === "after" ? [lines, metadata, note] : [lines, note, metadata];
  const probe = createToolResultPresentationOwner({ enabled: true, budgetTokens: 512 }, "read-layout")!;
