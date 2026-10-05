@@ -291,7 +291,7 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
     const details = event.details as { window?: unknown; truncation?: unknown } | undefined;
     try {
       pi.appendEntry(CODEMODE_READ_EVIDENCE_ENTRY, { version: 1, parentToolCallId: event.parentToolCallId, toolCallId: event.toolCallId,
-        parentContentIndex: event.parentContentIndex, blocks: event.content.length, window: details?.window, truncation: details?.truncation, binding });
+        parentContentIndex: event.parentContentIndex, blocks: event.requiredContentBlocks ?? event.content.length, window: details?.window, truncation: details?.truncation, binding });
     } catch { /* The live guard keeps this read; a missing record only makes restoration fail closed. */ }
   });
 

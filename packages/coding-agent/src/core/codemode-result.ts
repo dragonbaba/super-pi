@@ -110,6 +110,7 @@ export async function capCodemodeOutput(content: (TextContent | ImageContent)[],
 	if (remaining < 0) throw new Error("Codemode output budget cannot fit the recovery notice");
 	const projected: (TextContent | ImageContent)[] = [];
 	let truncated = false;
+	let partialText = "";
 	for (let index = 0; index < content.length; index++) {
 		const block = content[index]! as ToolResultPresentationContent;
 		// Images are budgeted when retained and shown; beside the text notice they add no estimated
@@ -151,11 +152,26 @@ export async function capCodemodeOutput(content: (TextContent | ImageContent)[],
 				else high = mid - 1;
 			}
 			if (low && low < block.text.length && block.text.charCodeAt(low - 1) >= 0xd800 && block.text.charCodeAt(low - 1) <= 0xdbff) low--;
-			if (low) projected.push({ type: "text", text: block.text.slice(0, low) });
+			if (low) { scratch.text = block.text.slice(0, low); partialText = scratch.text; projected.push(scratch); }
 		}
 		truncated = true;
 	}
 	projected.push(notice);
-	if (estimateToolOutputTokens(projected).estimatedTokens > tokens) throw new Error("Codemode output budget could not be satisfied");
+	let finalTokens = estimateToolOutputTokens(projected).estimatedTokens;
+	// Combined density/rounding can exceed the sum of isolated block estimates.
+	// Only this previously failing edge needs another search over bounded output.
+	if (partialText && finalTokens > tokens) {
+		let low = 0, high = partialText.length;
+		while (low < high) {
+			const mid = Math.ceil((low + high) / 2);
+			scratch.text = partialText.slice(0, mid);
+			if (estimateToolOutputTokens(projected).estimatedTokens <= tokens) low = mid;
+			else high = mid - 1;
+		}
+		if (low && low < partialText.length && partialText.charCodeAt(low - 1) >= 0xd800 && partialText.charCodeAt(low - 1) <= 0xdbff) low--;
+		scratch.text = partialText.slice(0, low);
+		finalTokens = estimateToolOutputTokens(projected).estimatedTokens;
+	}
+	if (finalTokens > tokens) throw new Error("Codemode output budget could not be satisfied");
 	return projected;
 }

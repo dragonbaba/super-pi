@@ -24,6 +24,7 @@ import { McpBridgeRuntime } from "../packages/mcp-bridge/src/bridge.js";
 
 const jiti = createJiti(import.meta.url);
 const { default: mutation } = await jiti.import<{ default: InlineExtension }>("../packages/extensions/mutation-guard-write/index.ts");
+const { default: guardrails } = await jiti.import<{ default: InlineExtension }>("../packages/extensions/tool-loop-guardrails/index.ts");
 const { collectChanges } = await jiti.import<typeof import("../packages/extensions/mutation-guard-write/changes.ts")>("../packages/extensions/mutation-guard-write/changes.ts");
 const { default: planMode } = await jiti.import<{ default: ExtensionFactory }>("../packages/plan-mode/src/index.ts");
 const MODEL = { id: "fixture", name: "fixture", api: "openai-responses", provider: "fixture", baseUrl: "https://example.test", reasoning: false,
@@ -133,10 +134,9 @@ test("saved multi-read Codemode history recovers after request failure and reope
 	} finally { session.dispose(); }
 });
 
-test("five native reads under a shared budget continue without granting omitted reads edit authority", async t => {
-	const f = await fixture(t, { toolResultPresentation: { enabled: true, budgetTokens: 512 } }, [], true);
+function isolateTemporaryFiles(t: TestContext, cwd: string): void {
 	// Any capped spill belongs to this test's registered fixture root too.
-	const temporary = join(f.cwd, "tmp"); mkdirSync(temporary);
+	const temporary = join(cwd, "tmp"); mkdirSync(temporary);
 	const previousTmp = process.env.TMP, previousTemp = process.env.TEMP, previousTmpdir = process.env.TMPDIR;
 	process.env.TMP = temporary; process.env.TEMP = temporary; process.env.TMPDIR = temporary;
 	t.after(() => {
@@ -144,6 +144,11 @@ test("five native reads under a shared budget continue without granting omitted 
 		if (previousTemp === undefined) delete process.env.TEMP; else process.env.TEMP = previousTemp;
 		if (previousTmpdir === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = previousTmpdir;
 	});
+}
+
+test("five native reads under a shared budget continue without granting omitted reads edit authority", async t => {
+	const f = await fixture(t, { toolResultPresentation: { enabled: true, budgetTokens: 512 } }, [], true);
+	isolateTemporaryFiles(t, f.cwd);
 	for (let file = 0; file < 3; file++) writeFileSync(join(f.cwd, `middle${file}.txt`), Array.from({ length: 400 }, (_, line) => `hidden${file} line${line}\n`).join(""));
 	writeFileSync(join(f.cwd, "last.txt"), "last\n");
 	const outcome = await f.run([
@@ -192,6 +197,49 @@ test("enabled presentation without a token budget keeps native read evidence", a
 	]);
 	assert.equal(outcome.results[1]?.isError, false, JSON.stringify(outcome.results[1]?.content));
 	assert.equal(readFileSync(join(f.cwd, "file.txt"), "utf8"), "unprojected\nworld\n");
+});
+
+for (const projected of [false, true]) test(`blocked adjacent images do not displace the evidence of a visible native read: projected=${projected}`, async t => {
+	const pictures: InlineExtension = pi => pi.registerTool({ name: "pictures", label: "pictures", description: "image fixture", parameters: Type.Object({}),
+		execute: async () => ({ content: [{ type: "image", data: "AAAA", mimeType: "image/png" }, { type: "image", data: "BBBB", mimeType: "image/png" }], details: {} }) });
+	const f = await fixture(t, { toolResultPresentation: { enabled: true, budgetTokens: projected ? 1024 : 8000 } }, [pictures], true);
+	f.settings.setBlockImages(true);
+	writeFileSync(join(f.cwd, "before.txt"), "leading\n");
+	const outcome = await f.run([
+		(projected ? 'text("padding ".repeat(1000)); await show((await tools.read({path:"before.txt"})).ref);' : '') + 'await show((await tools.pictures({})).ref); await show((await tools.read({path:"file.txt"})).ref)',
+		'await tools.edit({path:"file.txt",edits:[{oldText:"hello",newText:"after images"}]})',
+	]);
+	const visible = outcome.wires[1]!.messages.find(m => m.role === "toolResult")!.content;
+	assert.equal(visible.filter(b => b.type === "text" && b.text === "Image reading is disabled.").length, 1, JSON.stringify(visible));
+	assert.equal(visible.some(b => b.type === "image"), false);
+	assert.ok(visible.some(b => b.type === "text" && b.text.includes("|hello")));
+	assert.equal(outcome.results[1]?.isError, false, JSON.stringify(outcome.results[1]?.content));
+	assert.equal(readFileSync(join(f.cwd, "file.txt"), "utf8"), "after images\nworld\n");
+});
+
+for (const mode of ["live", "reload", "unrecognized"] as const) test(`capped trailing read annotations keep source evidence boundaries: ${mode}`, async t => {
+	const annotation = (mode === "unrecognized" ? "arbitrary extra text\n" : "[TLG: fixture]\n") + "annotation ".repeat(1000);
+	const annotate: InlineExtension = pi => pi.on("tool_result", event => {
+		if (event.toolName !== "read") return;
+		// Append to the tool-owned array so its nonserializing native-source proof survives.
+		event.content.push({ type: "text", text: annotation });
+	});
+	const f = await fixture(t, { toolResultPresentation: { enabled: true, budgetTokens: 8000 } }, mode === "reload" ? [mutation, guardrails, annotate] : [annotate], mode !== "reload");
+	isolateTemporaryFiles(t, f.cwd);
+	const read = await f.run(['// @options: {"max_output_tokens":512}\nawait show((await tools.read({path:"file.txt"})).ref)', 'text("acknowledge the displayed read")']);
+	const parent = read.results[0]!.content;
+	assert.equal(parent.filter((b: any) => b.readBoundary).length, 2, JSON.stringify(parent));
+	assert.equal(parent.some(b => b.type === "text" && b.text === annotation), false);
+	assert.match(JSON.stringify(parent), /Codemode output truncated/);
+	if (mode === "reload") {
+		const errors: unknown[] = [];
+		await f.session.bindExtensions({ onError: error => errors.push(error) });
+		await f.session.reload();
+		assert.deepEqual(errors, []);
+	}
+	const edit = await f.run(['await tools.edit({path:"file.txt",edits:[{oldText:"hello",newText:"annotation safe"}]})']);
+	assert.equal(edit.results.at(-1)?.isError, mode === "unrecognized", JSON.stringify(edit.results.at(-1)?.content));
+	assert.equal(readFileSync(join(f.cwd, "file.txt"), "utf8"), mode === "unrecognized" ? "hello\nworld\n" : "annotation safe\nworld\n");
 });
 
 test("projection never substitutes a printed read copy for an omitted native group", async t => {

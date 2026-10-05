@@ -73,9 +73,19 @@ function scriptContent(content: readonly (TextContent | ImageContent)[]): (TextC
 	return copy;
 }
 function compareChildSequence(a: ChildFact, b: ChildFact): number { return (a.sequence ?? 0) - (b.sequence ?? 0); }
+function requiredReadBlocks(content: readonly ToolResultPresentationContent[]): number {
+	let lines = false;
+	for (let index = 0; index < content.length; index++) {
+		const block = content[index]!;
+		if (block.type !== "text") continue;
+		if (block.readBoundary === "lines") lines = true;
+		else if (lines && block.readBoundary === "metadata") return index + 1;
+	}
+	return content.length;
+}
 /** The read survived only if its exact blocks occupy their own positions; equal text elsewhere is not this read. */
 function readSurvived(read: CodemodeReadEvent, visible: readonly (TextContent | ImageContent)[], start = read.parentContentIndex): boolean {
-	const count = read.content.length;
+	const count = read.requiredContentBlocks ?? read.content.length;
 	if (count === 0 || start < 0 || start + count > visible.length) return false;
 	for (let offset = 0; offset < count; offset++) {
 		const block = read.content[offset]!, shown = visible[start + offset]!;
@@ -204,7 +214,7 @@ export class CodemodeController {
 	/** Projection retains canonical block identities before transport strips the markers.
 	 * Remap only the original native span, never a textually equal script copy.
 	 */
-	recordToolResultProjection(source: ToolResultMessage, retained: readonly ToolResultPresentationContent[], canonical: readonly ToolResultPresentationContent[]): void {
+	recordToolResultProjection(source: ToolResultMessage, retained: readonly ToolResultPresentationContent[], canonical: readonly ToolResultPresentationContent[], transport: readonly ToolResultPresentationContent[], visible: readonly ToolResultPresentationContent[]): void {
 		const reads = this.displayedReads.get(source.toolCallId);
 		if (!reads) return;
 		for (const read of reads) {
@@ -214,9 +224,13 @@ export class CodemodeController {
 			const first = canonical[read.parentContentIndex]!;
 			const start = retained.indexOf(first);
 			if (start < 0) continue;
+			const finalStart = transport === visible ? start : visible.indexOf(transport[start]!);
+			if (finalStart < 0) continue;
+			const required = read.requiredContentBlocks ?? read.content.length;
 			let count = 0;
-			while (count < read.content.length && retained[start + count] === canonical[read.parentContentIndex + count]) count++;
-			if (count === read.content.length) read.projectedContentIndex = start;
+			while (count < required && retained[start + count] === canonical[read.parentContentIndex + count]
+				&& visible[finalStart + count] === transport[start + count]) count++;
+			if (count === required) read.projectedContentIndex = finalStart;
 		}
 	}
 
@@ -349,7 +363,8 @@ export class CodemodeController {
 			(record.result.content as unknown as Record<symbol, unknown>)[MUTATION_READ_SOURCE] && invocation.reads.length < MAX_SHOWN_READS) {
 			// Offset within shown blocks; execute() adds the final position of the first shown block.
 			invocation.reads.push({ type: "codemode_read", toolCallId: record.result.toolCallId, parentToolCallId: invocation.context.parentToolCallId,
-				input: record.input, content: record.result.content, details: record.result.details, parentContentIndex: shownIndex, projectedContentIndex: -1 });
+				input: record.input, content: record.result.content, details: record.result.details, parentContentIndex: shownIndex, projectedContentIndex: -1,
+				requiredContentBlocks: requiredReadBlocks(record.result.content) });
 		}
 	}
 	private describe(names: unknown): string {

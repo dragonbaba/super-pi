@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { readFileSync, statSync, unlinkSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { capCodemodeOutput, boundCodemodeResult } from "../packages/coding-agent/src/core/codemode-result.ts";
 import { estimateToolOutputTokens } from "../packages/coding-agent/src/core/tool-output-budget.ts";
@@ -68,6 +70,27 @@ test("Codemode cap keeps complete read groups and trailing images without orphan
     assert.ok(readFileSync(path, "utf8").includes(large.text));
     assert.equal(source[2], large);
   } finally { removeOwned(path); }
+});
+
+test("partial annotations fit the combined capped result across text densities", async t => {
+  const root = mkdtempSync(join(tmpdir(), "sp-codemode-cap-"));
+  t.diagnostic(`ownedFixture=${root}`);
+  const previous = { TMP: process.env.TMP, TEMP: process.env.TEMP, TMPDIR: process.env.TMPDIR };
+  process.env.TMP = root; process.env.TEMP = root; process.env.TMPDIR = root;
+  try {
+    for (let index = 0; index < 24; index++) {
+      const lines = { type: "text" as const, readBoundary: "lines" as const, text: "1#1234|hello\n2#5678|world\n" };
+      const metadata = { type: "text" as const, readBoundary: "metadata" as const, text: `[Snapshot edit] snapshot=snap_${index.toString(16).padStart(24, "0")}; editable lines=1-2.` };
+      const annotation = "[TLG: fixture] " + "x".repeat(index) + "annotation 中文 123! ".repeat(1000);
+      const result = await capCodemodeOutput([{ type: "text", text: "[CODEMODE_OK] Child calls: 1." }, lines, metadata, { type: "text", text: annotation }], 512);
+      assert.equal(result[1], lines); assert.equal(result[2], metadata);
+      assert.ok(estimateToolOutputTokens(result).estimatedTokens <= 512);
+      const partial = result[3]; assert.ok(partial?.type === "text" && annotation.startsWith(partial.text));
+    }
+  } finally {
+    for (const key of ["TMP", "TEMP", "TMPDIR"] as const) { if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key]; }
+    rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
 });
 
 test("schema declarations and restored state reject oversized, recursive and deep data before expansion", () => {

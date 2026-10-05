@@ -281,7 +281,7 @@ export interface ToolResultProjectedUiSource {
 
 /** Synchronous request-boundary observer; the session supplies its existing owner. */
 export interface ToolResultProjectionObserver {
-	recordToolResultProjection(source: ToolResultMessage, retained: readonly ToolResultPresentationContent[], canonical: readonly ToolResultPresentationContent[]): void;
+	recordToolResultProjection(source: ToolResultMessage, retained: readonly ToolResultPresentationContent[], canonical: readonly ToolResultPresentationContent[], transport: readonly ToolResultPresentationContent[], visible: readonly ToolResultPresentationContent[]): void;
 }
 
 interface ProjectionRecord {
@@ -2053,6 +2053,7 @@ export class ToolResultPresentationOwner {
 		record: ProjectionRecord,
 		projection: ProjectionBuild,
 		filtered: ToolResultMessage,
+		transport: readonly ToolResultPresentationContent[],
 		imagePolicy: (message: Message) => Message,
 		budgetTokens = this.budgetTokens!,
 		capture?: ToolResultProjectedUiSource,
@@ -2061,7 +2062,7 @@ export class ToolResultPresentationOwner {
 		this.counters.postImagePolicyEstimatorScans++;
 		let estimate = estimateToolOutputTokens(filtered.content);
 		if (estimate.estimatedTokens <= budgetTokens) {
-			observer?.recordToolResultProjection(message, projection.content, record.sourceContent);
+			observer?.recordToolResultProjection(message, projection.content, record.sourceContent, transport, filtered.content);
 			return filtered;
 		}
 		const originalHead = projection.headTextCodeUnits;
@@ -2087,18 +2088,20 @@ export class ToolResultPresentationOwner {
 				record.sourceScan,
 				this.counters,
 			);
-			const candidate = imagePolicy(this.createModelMessage(message, candidateProjection.content)) as ToolResultMessage;
+			const candidateMessage = this.createModelMessage(message, candidateProjection.content);
+			const candidate = imagePolicy(candidateMessage) as ToolResultMessage;
 			this.counters.postImagePolicyShrinkPasses++;
 			this.counters.postImagePolicyEstimatorScans++;
 			estimate = estimateToolOutputTokens(candidate.content);
 			if (estimate.estimatedTokens <= budgetTokens) {
 				if (capture) capture.projection = candidateProjection;
-				observer?.recordToolResultProjection(message, candidateProjection.content, record.sourceContent);
+				observer?.recordToolResultProjection(message, candidateProjection.content, record.sourceContent, candidateMessage.content, candidate.content);
 				return candidate;
 			}
 		}
 		const omission = this.getImagePolicyProjection(record, budgetTokens);
-		let candidate = imagePolicy(this.createModelMessage(message, omission.content)) as ToolResultMessage;
+		const omissionMessage = this.createModelMessage(message, omission.content);
+		let candidate = imagePolicy(omissionMessage) as ToolResultMessage;
 		for (let index = 0; index < record.sourceContent.length; index++) {
 			const block = record.sourceContent[index]!;
 			if (block.type !== "image") continue;
@@ -2142,7 +2145,7 @@ export class ToolResultPresentationOwner {
 			);
 		}
 		if (capture) capture.projection = omission;
-		observer?.recordToolResultProjection(message, omission.content, record.sourceContent);
+		observer?.recordToolResultProjection(message, omission.content, record.sourceContent, omissionMessage.content, candidate.content);
 		return candidate;
 	}
 
@@ -2160,6 +2163,7 @@ export class ToolResultPresentationOwner {
 		let projectionObserved = false;
 		const capture: ToolResultProjectedUiSource | undefined = sources && (projection || imagePolicy) ? { toolCallId: message.toolCallId, budgetTokens: this.budgetTokens!, projection, retainedCodeUnits: 0 } : undefined;
 		let projected = projection ? this.createModelMessage(message, projection.content) : record.sourceScan.mcpInput ? this.createModelMessage(message, message.content) : message;
+		let transport = projected.content;
 		if (imagePolicy) {
 			let filtered = imagePolicy(projected);
 			if (filtered !== projected && !projection) {
@@ -2169,6 +2173,7 @@ export class ToolResultPresentationOwner {
 					projection = this.getImagePolicyProjection(record);
 					if (capture) capture.projection = projection;
 					projected = this.createModelMessage(message, projection.content);
+					transport = projected.content;
 					filtered = imagePolicy(projected);
 				}
 			}
@@ -2178,6 +2183,7 @@ export class ToolResultPresentationOwner {
 					record,
 					projection,
 					filtered as ToolResultMessage,
+					transport,
 					imagePolicy,
 					this.budgetTokens!,
 					capture,
@@ -2188,7 +2194,7 @@ export class ToolResultPresentationOwner {
 			projected = filtered as ToolResultMessage;
 		}
 		if (capture) this.recordProjectedUiSource(message, projected, capture, sources!);
-		if (!projectionObserved) observer?.recordToolResultProjection(message, projection?.content ?? message.content, projection ? record.sourceContent : message.content);
+		if (!projectionObserved) observer?.recordToolResultProjection(message, projection?.content ?? message.content, projection ? record.sourceContent : message.content, transport, projected.content);
 		return projected;
 	}
 
@@ -2234,6 +2240,7 @@ export class ToolResultPresentationOwner {
 			if (projection) this.ensureArtifactDescriptor(record);
 			if (capture) { capture.projection = projection; capture.budgetTokens = candidateBudget; }
 			let projected = projection ? this.createModelMessage(message, projection.content) : record.sourceScan.mcpInput ? this.createModelMessage(message, message.content) : message;
+			let transport = projected.content;
 			try {
 				if (imagePolicy) {
 					let filtered = imagePolicy(projected);
@@ -2244,8 +2251,9 @@ export class ToolResultPresentationOwner {
 							const omission = this.getImagePolicyProjection(record, candidateBudget);
 							if (capture) capture.projection = omission;
 							projected = this.createModelMessage(message, omission.content);
+							transport = projected.content;
 							filtered = imagePolicy(projected);
-							observer?.recordToolResultProjection(message, omission.content, record.sourceContent);
+							observer?.recordToolResultProjection(message, omission.content, record.sourceContent, transport, (filtered as ToolResultMessage).content);
 							projectionObserved = true;
 						}
 					}
@@ -2255,6 +2263,7 @@ export class ToolResultPresentationOwner {
 							record,
 							projection,
 							filtered as ToolResultMessage,
+							transport,
 							imagePolicy,
 							candidateBudget,
 							capture,
@@ -2271,7 +2280,7 @@ export class ToolResultPresentationOwner {
 			const contextEstimate = estimateMessageTokens(projected);
 			if (toolEstimate <= toolBudgetTokens && contextEstimate <= contextBudgetTokens) {
 				if (capture) this.recordProjectedUiSource(message, projected, capture, sources!);
-				if (!projectionObserved) observer?.recordToolResultProjection(message, projection?.content ?? message.content, projection ? record.sourceContent : message.content);
+				if (!projectionObserved) observer?.recordToolResultProjection(message, projection?.content ?? message.content, projection ? record.sourceContent : message.content, transport, projected.content);
 				return projected;
 			}
 			if (candidateBudget === 1) break;
