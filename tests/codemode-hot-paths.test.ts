@@ -7,6 +7,7 @@ test("Codemode tree progress, timer and leaf refresh reuse owners without hot fa
 	const targets = new Map([
 		["packages/coding-agent/src/modes/interactive/components/codemode-tree.ts", new Set(["boundedPreview", "updateChild", "refresh", "refreshHeader", "tick"])],
 		["packages/coding-agent/src/modes/interactive/components/tool-execution.ts", new Set(["startNestedTool", "updateNestedTool"])],
+		["packages/coding-agent/src/core/codemode.ts", new Set(["requiredReadBlocks", "readSurvived", "recordToolResultProjection", "recordProjection"])],
 	]);
 	for (const [path, names] of targets) {
 		const source = ts.createSourceFile(path, readFileSync(path, "utf8"), ts.ScriptTarget.Latest, true);
@@ -119,6 +120,26 @@ test("Codemode child completion tracks a count without per-call settlement closu
 	for (const statement of source.statements) if (ts.isClassDeclaration(statement)) for (const member of statement.members) {
 		if (ts.isMethodDeclaration(member) && member.name.getText(source) === "invoke" && member.body) { found++; visit(member.body); }
 	}
+	assert.equal(found, 1);
+});
+
+test("Codemode output cap uses no nested callbacks, dynamic patterns or per-group containers", () => {
+	const path = "packages/coding-agent/src/core/codemode-result.ts";
+	const source = ts.createSourceFile(path, readFileSync(path, "utf8"), ts.ScriptTarget.Latest, true);
+	let found = 0;
+	function audit(node: ts.Node): void {
+		assert.equal(ts.isArrowFunction(node) || ts.isFunctionExpression(node), false);
+		if (ts.isNewExpression(node) || ts.isCallExpression(node)) assert.equal(["String", "RegExp", "Map", "Set", "Array", "Promise", "AbortController"].includes(node.expression.getText(source)), false);
+		if (ts.isForStatement(node) || ts.isForOfStatement(node)) {
+			function containers(child: ts.Node): void {
+				assert.equal(ts.isArrayLiteralExpression(child) || ts.isSpreadAssignment(child) || ts.isNewExpression(child), false);
+				ts.forEachChild(child, containers);
+			}
+			containers(node);
+		}
+		ts.forEachChild(node, audit);
+	}
+	for (const statement of source.statements) if (ts.isFunctionDeclaration(statement) && statement.name?.text === "capCodemodeOutput") { found++; audit(statement.body!); }
 	assert.equal(found, 1);
 });
 

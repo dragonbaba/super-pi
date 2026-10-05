@@ -27,7 +27,7 @@ const NOTICE_PREFIX = "[Tool result truncated. Continue with cursor ";
 const NOTICE_SUFFIX = ".]";
 const READ_NOTICE_SUFFIX = ". Source lines omitted; the recorded snapshot range is not full model visibility. For edits needing omitted lines, read with offset/limit and use that read's paired snapshot and anchors. Continuation/artifact are historical, not a fresh read.]";
 const READ_OMITTED_SUFFIX = ". Read output omitted: budget cannot fit complete source lines and paired snapshot metadata. This view supplies neither source lines nor snapshot anchors. Read a smaller range with offset/limit, or increase the tool-result budget. Continuation/artifact are historical, not a fresh read.]";
-const READ_LAYOUT_ERROR = "Read projection requires one source-line block followed by paired metadata. Restore the read hook layout before retrying; the canonical result is unchanged.";
+const READ_LAYOUT_ERROR = "Read projection requires each source-line block to be followed by paired metadata before the next read. Restore the read hook layout before retrying; the canonical result is unchanged.";
 const ESCAPE_CODE = 0x1b;
 const GRAPHEME_SEGMENTER = new Intl.Segmenter("en", { granularity: "grapheme" });
 
@@ -230,6 +230,7 @@ interface CursorState {
 }
 
 interface SourceScan {
+	readGroupCount: number;
 	readLinesBlock: number;
 	readMetadataBlock: number;
 	readPrefixTextCodeUnits: number;
@@ -276,6 +277,11 @@ export interface ToolResultProjectedUiSource {
 	budgetTokens: number;
 	projection?: ProjectionBuild;
 	retainedCodeUnits: number;
+}
+
+/** Synchronous request-boundary observer; the session supplies its existing owner. */
+export interface ToolResultProjectionObserver {
+	recordToolResultProjection(source: ToolResultMessage, retained: readonly ToolResultPresentationContent[], canonical: readonly ToolResultPresentationContent[], transport: readonly ToolResultPresentationContent[], visible: readonly ToolResultPresentationContent[]): void;
 }
 
 interface ProjectionRecord {
@@ -832,6 +838,8 @@ function scanSource(
 	let mcpInput = false;
 	let readLinesBlock = -1;
 	let readMetadataBlock = -1;
+	let readGroupCount = 0;
+	let readPending = false;
 	let readPrefixTextCodeUnits = 0;
 	let readSuffixTextCodeUnits = 0;
 	let mcpArtifactRequired = false;
@@ -847,13 +855,16 @@ function scanSource(
 		if (block.mcpInput) mcpInput = true;
 		if (block.type === "text") {
 			if (block.readBoundary === "lines") {
-				if (readLinesBlock >= 0 || readMetadataBlock >= 0) throw new ToolResultContinuationError("invalid-read-layout", READ_LAYOUT_ERROR);
-				readLinesBlock = index; readPrefixTextCodeUnits = textCodeUnits;
+				if (readPending) throw new ToolResultContinuationError("invalid-read-layout", READ_LAYOUT_ERROR);
+				readPending = true;
+				if (readLinesBlock < 0) { readLinesBlock = index; readPrefixTextCodeUnits = textCodeUnits; }
 			}
 			else if (readLinesBlock >= 0) readSuffixTextCodeUnits += block.text.length;
 			if (block.readBoundary === "metadata") {
-				if (readLinesBlock < 0 || readMetadataBlock >= 0) throw new ToolResultContinuationError("invalid-read-layout", READ_LAYOUT_ERROR);
-				readMetadataBlock = index;
+				if (!readPending) throw new ToolResultContinuationError("invalid-read-layout", READ_LAYOUT_ERROR);
+				readPending = false;
+				readGroupCount++;
+				if (readMetadataBlock < 0) readMetadataBlock = index;
 			}
 			if (block.mcpInput || block.mcpSource) mcpInput = true;
 			if (block.mcpSource) {
@@ -906,11 +917,12 @@ function scanSource(
 			retainedCodeUnits += block.data.length + block.mimeType.length;
 		}
 	}
-	if (readLinesBlock >= 0 && readMetadataBlock < 0) throw new ToolResultContinuationError("invalid-read-layout", READ_LAYOUT_ERROR);
+	if (readPending) throw new ToolResultContinuationError("invalid-read-layout", READ_LAYOUT_ERROR);
 	counters.sourceDigestConstructions++;
 	const sha256 = digest.digest("hex");
 	return {
 		mcpInput,
+		readGroupCount,
 		readLinesBlock,
 		readMetadataBlock,
 		readPrefixTextCodeUnits,
@@ -990,6 +1002,7 @@ function buildProjection(
 ): ProjectionBuild {
 	const start = locateHeadEnd(content, headTextCodeUnits, sourceScan, counters);
 	const end = locateTailStart(content, tailTextCodeUnits, sourceScan, counters);
+	if (sourceScan.readGroupCount > 1) alignReadGroupOmission(content, start, end);
 	const actualHeadTextCodeUnits = textCodeUnitsBetween(
 		content,
 		{ blockIndex: 0, textOffset: 0 },
@@ -1027,6 +1040,26 @@ function buildProjection(
 		estimate: estimateToolOutputTokens(projected),
 		fullEstimate: sourceScan.estimate,
 	};
+}
+
+/** Expand the existing omission interval, never split a read from its metadata.
+ * Single-read projection still retains whole rows plus its complete suffix.
+ * Multiple reads reuse canonical blocks; no per-group index or strings are kept.
+ */
+function alignReadGroupOmission(content: readonly ToolResultPresentationContent[], start: ContentPosition, end: ContentPosition): void {
+	let lines = -1;
+	for (let index = 0; index < content.length; index++) {
+		const block = content[index]!;
+		if (block.type !== "text") continue;
+		if (block.readBoundary === "lines") lines = index;
+		else if (block.readBoundary === "metadata") {
+			if (start.blockIndex >= lines && start.blockIndex <= index) { start.blockIndex = lines; start.textOffset = 0; }
+			if ((end.blockIndex > lines && end.blockIndex <= index) || (end.blockIndex === lines && end.textOffset > 0)) {
+				end.blockIndex = index + 1; end.textOffset = 0;
+			}
+			lines = -1;
+		}
+	}
 }
 
 function buildFullOmissionProjection(
@@ -1091,7 +1124,7 @@ function projectLegacyContent(
 	for (let pass = 0; pass < MAX_PROJECTION_SHRINK_PASSES; pass++) {
 		// Keep the suffix at its actual position, including tool annotations on
 		// either side of the metadata. Character counts are from the existing scan.
-		const tailTextCodeUnits = sourceScan.readLinesBlock >= 0 ? sourceScan.readSuffixTextCodeUnits : Math.floor(retainedTextCodeUnits / 2);
+		const tailTextCodeUnits = sourceScan.readGroupCount === 1 ? sourceScan.readSuffixTextCodeUnits : Math.floor(retainedTextCodeUnits / 2);
 		const headTextCodeUnits = Math.max(0, retainedTextCodeUnits - tailTextCodeUnits);
 		build = buildProjection(content, headTextCodeUnits, tailTextCodeUnits, sourceKey, sourceDigest, sourceScan, counters);
 		if (build.estimate.estimatedTokens <= budgetTokens && comparePositions(build.start, build.end) < 0) {
@@ -1112,7 +1145,12 @@ function projectLegacyContent(
 }
 
 function requireReadProjection(content: readonly ToolResultPresentationContent[], scan: SourceScan, build: ProjectionBuild, budget: number, sourceKey: string, sourceDigest: string, counters: ToolResultPresentationCounters): ProjectionBuild {
-	if (scan.readLinesBlock < 0) return build;
+	if (scan.readGroupCount !== 1) {
+		if (build.estimate.estimatedTokens <= budget) return build;
+		const omitted = buildFullOmissionProjection(content, sourceKey, sourceDigest, scan, counters);
+		if (omitted.estimate.estimatedTokens <= budget) return omitted;
+		throw new ToolResultContinuationError("budget-too-small", `Tool-result budget ${budget} cannot contain the fixed continuation notice.`, omitted.estimate.estimatedTokens);
+	}
 	const lines = content[scan.readLinesBlock];
 	const metadata = content[scan.readMetadataBlock];
 	if (lines?.type !== "text" || metadata?.type !== "text" || scan.readMetadataBlock <= scan.readLinesBlock) {
@@ -2015,13 +2053,18 @@ export class ToolResultPresentationOwner {
 		record: ProjectionRecord,
 		projection: ProjectionBuild,
 		filtered: ToolResultMessage,
+		transport: readonly ToolResultPresentationContent[],
 		imagePolicy: (message: Message) => Message,
 		budgetTokens = this.budgetTokens!,
 		capture?: ToolResultProjectedUiSource,
+		observer?: ToolResultProjectionObserver,
 	): ToolResultMessage {
 		this.counters.postImagePolicyEstimatorScans++;
 		let estimate = estimateToolOutputTokens(filtered.content);
-		if (estimate.estimatedTokens <= budgetTokens) return filtered;
+		if (estimate.estimatedTokens <= budgetTokens) {
+			observer?.recordToolResultProjection(message, projection.content, record.sourceContent, transport, filtered.content);
+			return filtered;
+		}
 		const originalHead = projection.headTextCodeUnits;
 		const originalTail = projection.tailTextCodeUnits;
 		let retainedTextCodeUnits = originalHead + originalTail;
@@ -2045,17 +2088,20 @@ export class ToolResultPresentationOwner {
 				record.sourceScan,
 				this.counters,
 			);
-			const candidate = imagePolicy(this.createModelMessage(message, candidateProjection.content)) as ToolResultMessage;
+			const candidateMessage = this.createModelMessage(message, candidateProjection.content);
+			const candidate = imagePolicy(candidateMessage) as ToolResultMessage;
 			this.counters.postImagePolicyShrinkPasses++;
 			this.counters.postImagePolicyEstimatorScans++;
 			estimate = estimateToolOutputTokens(candidate.content);
 			if (estimate.estimatedTokens <= budgetTokens) {
 				if (capture) capture.projection = candidateProjection;
+				observer?.recordToolResultProjection(message, candidateProjection.content, record.sourceContent, candidateMessage.content, candidate.content);
 				return candidate;
 			}
 		}
 		const omission = this.getImagePolicyProjection(record, budgetTokens);
-		let candidate = imagePolicy(this.createModelMessage(message, omission.content)) as ToolResultMessage;
+		const omissionMessage = this.createModelMessage(message, omission.content);
+		let candidate = imagePolicy(omissionMessage) as ToolResultMessage;
 		for (let index = 0; index < record.sourceContent.length; index++) {
 			const block = record.sourceContent[index]!;
 			if (block.type !== "image") continue;
@@ -2099,6 +2145,7 @@ export class ToolResultPresentationOwner {
 			);
 		}
 		if (capture) capture.projection = omission;
+		observer?.recordToolResultProjection(message, omission.content, record.sourceContent, omissionMessage.content, candidate.content);
 		return candidate;
 	}
 
@@ -2106,14 +2153,17 @@ export class ToolResultPresentationOwner {
 		message: ToolResultMessage,
 		imagePolicy?: (message: Message) => Message,
 		sources?: Map<object, ToolResultProjectedUiSource | null>,
+		observer?: ToolResultProjectionObserver,
 	): ToolResultMessage {
 		const resident = this.projectionRecords?.get(message.toolCallId);
 		if (resident?.sourceContent === message.content) this.counters.residentReadHits++;
 		else this.counters.providerReadMisses++;
 		const record = this.getOrCreateProjectionRecord(message.content, message.toolCallId, "provider");
 		let projection = record.projection;
+		let projectionObserved = false;
 		const capture: ToolResultProjectedUiSource | undefined = sources && (projection || imagePolicy) ? { toolCallId: message.toolCallId, budgetTokens: this.budgetTokens!, projection, retainedCodeUnits: 0 } : undefined;
 		let projected = projection ? this.createModelMessage(message, projection.content) : record.sourceScan.mcpInput ? this.createModelMessage(message, message.content) : message;
+		let transport = projected.content;
 		if (imagePolicy) {
 			let filtered = imagePolicy(projected);
 			if (filtered !== projected && !projection) {
@@ -2123,6 +2173,7 @@ export class ToolResultPresentationOwner {
 					projection = this.getImagePolicyProjection(record);
 					if (capture) capture.projection = projection;
 					projected = this.createModelMessage(message, projection.content);
+					transport = projected.content;
 					filtered = imagePolicy(projected);
 				}
 			}
@@ -2132,14 +2183,18 @@ export class ToolResultPresentationOwner {
 					record,
 					projection,
 					filtered as ToolResultMessage,
+					transport,
 					imagePolicy,
 					this.budgetTokens!,
 					capture,
+					observer,
 				);
+				projectionObserved = true;
 			}
 			projected = filtered as ToolResultMessage;
 		}
 		if (capture) this.recordProjectedUiSource(message, projected, capture, sources!);
+		if (!projectionObserved) observer?.recordToolResultProjection(message, projection?.content ?? message.content, projection ? record.sourceContent : message.content, transport, projected.content);
 		return projected;
 	}
 
@@ -2149,6 +2204,7 @@ export class ToolResultPresentationOwner {
 		contextBudgetTokens: number,
 		imagePolicy?: (message: Message) => Message,
 		sources?: Map<object, ToolResultProjectedUiSource | null>,
+		observer?: ToolResultProjectionObserver,
 	): ToolResultMessage {
 		let candidateBudget = Math.min(toolBudgetTokens, contextBudgetTokens);
 		if (!Number.isSafeInteger(candidateBudget) || candidateBudget <= 0) {
@@ -2166,6 +2222,7 @@ export class ToolResultPresentationOwner {
 		for (let pass = 0; pass <= MAX_PROJECTION_SHRINK_PASSES; pass++) {
 			this.counters.contextualProjectionPasses++;
 			let projection: ProjectionBuild | undefined;
+			let projectionObserved = false;
 			try {
 				projection = candidateBudget === this.budgetTokens
 					? record.projection
@@ -2183,6 +2240,7 @@ export class ToolResultPresentationOwner {
 			if (projection) this.ensureArtifactDescriptor(record);
 			if (capture) { capture.projection = projection; capture.budgetTokens = candidateBudget; }
 			let projected = projection ? this.createModelMessage(message, projection.content) : record.sourceScan.mcpInput ? this.createModelMessage(message, message.content) : message;
+			let transport = projected.content;
 			try {
 				if (imagePolicy) {
 					let filtered = imagePolicy(projected);
@@ -2193,7 +2251,10 @@ export class ToolResultPresentationOwner {
 							const omission = this.getImagePolicyProjection(record, candidateBudget);
 							if (capture) capture.projection = omission;
 							projected = this.createModelMessage(message, omission.content);
+							transport = projected.content;
 							filtered = imagePolicy(projected);
+							observer?.recordToolResultProjection(message, omission.content, record.sourceContent, transport, (filtered as ToolResultMessage).content);
+							projectionObserved = true;
 						}
 					}
 					if (filtered !== projected && projection) {
@@ -2202,10 +2263,13 @@ export class ToolResultPresentationOwner {
 							record,
 							projection,
 							filtered as ToolResultMessage,
+							transport,
 							imagePolicy,
 							candidateBudget,
 							capture,
+							observer,
 						);
+						projectionObserved = true;
 					}
 					projected = filtered as ToolResultMessage;
 				}
@@ -2216,6 +2280,7 @@ export class ToolResultPresentationOwner {
 			const contextEstimate = estimateMessageTokens(projected);
 			if (toolEstimate <= toolBudgetTokens && contextEstimate <= contextBudgetTokens) {
 				if (capture) this.recordProjectedUiSource(message, projected, capture, sources!);
+				if (!projectionObserved) observer?.recordToolResultProjection(message, projection?.content ?? message.content, projection ? record.sourceContent : message.content, transport, projected.content);
 				return projected;
 			}
 			if (candidateBudget === 1) break;
@@ -2288,6 +2353,7 @@ export class ToolResultPresentationOwner {
 		maxOutputTokens: number | undefined,
 		requestPlanning = false,
 		sources?: Map<object, ToolResultProjectedUiSource | null>,
+		observer?: ToolResultProjectionObserver,
 	): Message[] {
 		let assistantIndex = -1;
 		for (let index = messages.length - 1; index >= 0; index--) {
@@ -2310,7 +2376,7 @@ export class ToolResultPresentationOwner {
 				currentResultContextTokens += estimateMessageTokens(message);
 			}
 		}
-		if (currentResultCount === 0) return this.projectMessagesForModel(messages, imagePolicy, undefined, undefined, undefined, undefined, false, sources);
+		if (currentResultCount === 0) return this.projectMessagesForModel(messages, imagePolicy, undefined, undefined, undefined, undefined, false, sources, observer);
 
 		this.counters.contextualBudgetCalls++;
 		this.counters.contextualContextScans++;
@@ -2324,7 +2390,7 @@ export class ToolResultPresentationOwner {
 			for (let index = 0; index <= assistantIndex; index++) {
 				const message = messages[index]!;
 				if (message.role !== "toolResult") continue;
-				const projected = this.projectMessageForConfiguredBudget(message, imagePolicy, sources);
+				const projected = this.projectMessageForConfiguredBudget(message, imagePolicy, sources, observer);
 				if (projected !== message) messages[index] = projected;
 			}
 			const contextEstimate = estimateContextTokensFromParts(systemPrompt, messages, tools).tokens;
@@ -2358,6 +2424,7 @@ export class ToolResultPresentationOwner {
 						contextBudget,
 						imagePolicy,
 						sources,
+						observer,
 					);
 				} catch (error) {
 					if (!requestPlanning || !(error instanceof ToolResultContinuationError) || error.code !== "budget-too-small") throw error;
@@ -2390,6 +2457,7 @@ export class ToolResultPresentationOwner {
 		maxOutputTokens?: number,
 		requestPlanning = false,
 		sources?: Map<object, ToolResultProjectedUiSource | null>,
+		observer?: ToolResultProjectionObserver,
 	): Message[] {
 		if (!this.accepting || this.budgetTokens === undefined) return messages;
 		if (contextWindow !== undefined) {
@@ -2402,12 +2470,13 @@ export class ToolResultPresentationOwner {
 				maxOutputTokens,
 				requestPlanning,
 				sources,
+				observer,
 			);
 		}
 		for (let index = 0; index < messages.length; index++) {
 			const message = messages[index]!;
 			if (message.role !== "toolResult") continue;
-			const projected = this.projectMessageForConfiguredBudget(message, imagePolicy, sources);
+			const projected = this.projectMessageForConfiguredBudget(message, imagePolicy, sources, observer);
 			if (projected !== message) messages[index] = projected;
 		}
 		return messages;

@@ -1142,8 +1142,11 @@ export interface CodemodeReadEvent {
 	input: Record<string, unknown>;
 	content: (TextContent | ImageContent)[];
 	details?: unknown;
-	/** Host-attested position of `content[0]` in the parent Codemode result that the model received. */
+	/** Host-attested position of `content[0]` in the canonical parent Codemode result. */
 	parentContentIndex: number;
+	/** Native prefix required in the model view, through paired snapshot metadata.
+	 * Full content remains available for annotation and receipt validation. */
+	requiredContentBlocks?: number;
 }
 
 export type ExtensionEvent =

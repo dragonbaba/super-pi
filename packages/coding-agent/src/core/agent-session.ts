@@ -2013,8 +2013,8 @@ export class AgentSession {
 		this.discardPendingToolResultBudgetSources();
 		const sources = this._toolBudgetProjectionPending ? this._captureBudgetProjectionSources() : undefined;
 		try {
-			const projected = owner.projectMessagesForModel(messages, imagePolicy, systemPrompt, tools, contextWindow, maxOutputTokens, requestPlanning, sources);
-			this._codemode.recordProjection(projected);
+			const projected = owner.projectMessagesForModel(messages, imagePolicy, systemPrompt, tools, contextWindow, maxOutputTokens, requestPlanning, sources, this._codemode);
+			this._codemode.recordProjection(projected, owner.getEvidenceBudgetTokens() !== undefined);
 			this._toolBudgetLastRequest = owner.getEvidenceBudgetTokens() === undefined ? "not-observed" : "applied";
 			if (sources) {
 				// Request preparation is the existing cold history boundary. Do not
