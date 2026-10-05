@@ -17,6 +17,7 @@ export function wrapToolDefinition<TDetails = unknown>(
 		prepareArguments: definition.prepareArguments && ctxFactory
 			? (args) => definition.prepareArguments!(args, ctxFactory())
 			: definition.prepareArguments,
+		validateInput: definition.validateInput,
 		interactionBoundary: definition.interactionBoundary,
 		orchestration: definition.orchestration,
 		modelOnly: definition.modelOnly,
@@ -52,6 +53,7 @@ export function createToolDefinitionFromAgentTool(tool: AgentTool<any>): ToolDef
 		parameters: tool.parameters as any,
 		constrainedSampling: tool.constrainedSampling,
 		prepareArguments: tool.prepareArguments,
+		validateInput: tool.validateInput,
 		interactionBoundary: tool.interactionBoundary,
 		orchestration: tool.orchestration,
 		modelOnly: tool.modelOnly,

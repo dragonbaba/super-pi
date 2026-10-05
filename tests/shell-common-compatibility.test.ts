@@ -22,6 +22,8 @@ import { createJiti } from "jiti";
 import { inspectBashResourceLifecycle, inspectHighRiskBashMutation } from "../packages/extensions/resource-lifecycle-guard/core.ts";
 import { inspectBashPermissionScope } from "../packages/extensions/resource-lifecycle-guard/permission-bash.ts";
 import { isLiteralReadLoop } from "../packages/extensions/resource-lifecycle-guard/readonly-loop.ts";
+import { isReadOnlyFindLoop } from "../packages/extensions/resource-lifecycle-guard/readonly-find-loop.ts";
+import { isReadOnlyFindTail, isReadOnlySortTail } from "../packages/extensions/resource-lifecycle-guard/readonly-find.ts";
 import { classifyError } from "../packages/extensions/tool-loop-guardrails/failure-classification.ts";
 
 const cwd = process.cwd();
@@ -989,6 +991,114 @@ test("literal read loop exemption excludes alternate-shell lookup variable names
     assert.equal(isLiteralReadLoop(command), false, command);
     assert.notEqual(inspectBashPermissionScope({ command }, cwd)?.kind, "read-only", command);
     assert.ok(inspectHighRiskBashMutation({ command }, cwd), command);
+  }
+});
+
+test("dynamic find recipe bounds, quote provenance and option allowlists remain conservative", () => {
+  for (const root of [".", "js", "./js", "../js", "dir with spaces"]) assert.equal(isReadOnlyFindTail(["find", root, "-type", "f"], 0), true);
+  for (const root of ["-js", "/tmp", "//host", "C:/js", "$root", "`pwd`", ""]) assert.equal(isReadOnlyFindTail(["find", root], 0), false);
+  for (const args of [[], ["-u"], ["-rn"], ["-V"], ["-f"]]) assert.equal(isReadOnlySortTail(["sort", ...args], 0), true);
+  for (const args of [["-o", ".git/config"], ["--output=.git/config"], ["-T", ".git"], ["--temporary-directory=.git"], ["--compress-program=sh"], ["-uro.git/config"]]) {
+    assert.equal(isReadOnlySortTail(["sort", ...args], 0), false);
+    assert.notEqual(inspectBashPermissionScope({ command: ["sort", ...args].join(" ") }, cwd)?.kind, "read-only");
+  }
+  const braced = 'for file in $(find js -name "*.js"); do cat -- "${file}"; echo "checked ${file}"; done';
+  assert.equal(isReadOnlyFindLoop(braced), true);
+  for (const quote of ["'", '"']) for (const text of [";", "|", "&&"]) {
+    const command = `for f in $(find js -name '*.js'); do echo ${quote}${text}${quote}; cat -- "$f"; done`;
+    assert.equal(isReadOnlyFindLoop(command), true, command);
+  }
+  for (const command of [
+    'for path in $(find js); do cat -- "$path"; done',
+    'for f in $(find js); do cat -- "$f"; done; touch .git/config',
+    'for f in $(find js); do cat -- "$f"; done &',
+    'for f in $(find js); do cat -- "$f"; done\r',
+    'for f in $(find js); do echo "$(touch .git/config)"; cat -- "$f"; done',
+    'for f in $(find js); do echo "${f:=x}"; cat -- "$f"; done',
+    'for f in $(find js); do echo "\\"; touch .git/config; cat -- "$f"; done',
+    'for f in $(find js -name "$(touch .git/config)"); do cat -- "$f"; done',
+    'for f in $(find js | sort -u | sh); do cat -- "$f"; done',
+    'for f in $(find js); do ' + 'echo x; '.repeat(33) + 'cat -- "$f"; done',
+    'for f in $(find js); do echo ' + 'x '.repeat(257) + '; cat -- "$f"; done',
+    'for f in $(find js); do echo "' + 'x'.repeat(4096) + '"; cat -- "$f"; done',
+  ]) assert.equal(isReadOnlyFindLoop(command), false, command);
+});
+
+test("dynamic find loops execute only protected operands through the real guard", async t => {
+  const shellPath = findTestBash();
+  if (!shellPath || !existsSync(shellPath)) { if (process.env.CI) assert.fail("Bash unavailable"); t.skip("Bash unavailable"); return; }
+  const workspace = mkdtempSync(join(tmpdir(), "sp-shell-find-loop-"));
+  let fixture: Awaited<ReturnType<typeof guardedCwdBoundaryFixture>> | undefined;
+  t.after(async () => { try { await fixture?.close(); } finally { rmSync(workspace, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } });
+  t.diagnostic(`ownedFixture=${workspace}`);
+  mkdirSync(join(workspace, "js")); mkdirSync(join(workspace, ".git"));
+  writeFileSync(join(workspace, "js", "one.js"), "const x = 1;\n");
+  writeFileSync(join(workspace, "js", "two.js"), "const y = 2;\n");
+  fixture = await guardedCwdBoundaryFixture(workspace, shellPath);
+  fixture.setDecision("拒绝");
+  const commands = [
+    `for f in $(find js -name '*.js' | sort -u); do node --check -- "$f" 2>&1 || echo "FAIL $f" | head -n 5; done`,
+    `for f in $(find ./js -type f -name '*.js'); do cat -- "$f" && head -n 5 -- "$f"; wc -l -- "$f"; echo "checked $f"; done`,
+    `for file in $(find "js" -maxdepth 1 -iname '*.JS' | sort -rn); do echo "file: $file"; cat -- "$file" | head -n 1; done`,
+    `find js -name '*.js' | sort -u -r -f`,
+    `find js -name '*.js' | sort -n`,
+    `find js -name '*.js' | sort -V`,
+  ];
+  let id = 0;
+  for (const mode of ["read-only", "workspace-write", "full-access"] as const) {
+    await fixture.setMode(mode);
+    for (const command of commands) {
+      assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
+      assert.equal(inspectHighRiskBashMutation({ command }, workspace), undefined, command);
+      assert.equal(inspectBashPermissionScope({ command }, workspace)?.kind, "read-only", command);
+      const result = await fixture.agent.dispatchHostTool({ type: "toolCall", id: `find-positive-${++id}`, name: "bash", arguments: { command } });
+      assert.equal(result.isError, false, JSON.stringify(result));
+    }
+  }
+  assert.equal(fixture.executions, commands.length * 3); assert.equal(fixture.approvals.length, 0);
+  // A whitespace-split filename can become a Node option. It must stay an operand.
+  writeFileSync(join(workspace, "js", "a --require=payload.cjs"), "const split = 1;\n");
+  mkdirSync(join(workspace, "node_modules", "payload.cjs"), { recursive: true });
+  writeFileSync(join(workspace, "node_modules", "payload.cjs", "index.js"), 'require("node:fs").writeFileSync(".git/config", "unsafe preload");');
+  const command = 'for f in $(find js -type f | sort); do node --check -- "$f" 2>&1 || echo "FAIL $f"; done';
+  for (const mode of ["read-only", "workspace-write", "full-access"] as const) {
+    await fixture.setMode(mode);
+    const result = await fixture.agent.dispatchHostTool({ type: "toolCall", id: `split-${mode}`, name: "bash", arguments: { command } });
+    assert.equal(result.isError, false, JSON.stringify(result));
+    assert.match(JSON.stringify(result.content), /FAIL --require=payload.cjs/);
+    assert.equal(existsSync(join(workspace, ".git", "config")), false);
+  }
+  assert.equal(fixture.approvals.length, 0);
+});
+
+test("dynamic find loops reject unsafe grammar and quoted separators before approval or spawn", async t => {
+  const shellPath = findTestBash();
+  if (!shellPath || !existsSync(shellPath)) { if (process.env.CI) assert.fail("Bash unavailable"); t.skip("Bash unavailable"); return; }
+  const workspace = mkdtempSync(join(tmpdir(), "sp-shell-find-refusal-"));
+  let fixture: Awaited<ReturnType<typeof guardedCwdBoundaryFixture>> | undefined;
+  t.after(async () => { try { await fixture?.close(); } finally { rmSync(workspace, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } });
+  t.diagnostic(`ownedFixture=${workspace}`);
+  mkdirSync(join(workspace, ".git")); mkdirSync(join(workspace, "js"));
+  writeFileSync(join(workspace, "js", "one.js"), "const x = 1;\n");
+  fixture = await guardedCwdBoundaryFixture(workspace, shellPath); fixture.setDecision("拒绝");
+  const protectedPath = join(workspace, ".git", "config");
+  const bodies = [
+    'node --check "$f"', 'cat < "$f"', 'cat -- "$f" > .git/config', 'cat -- "$f" &',
+    'cat -- "$f" | sh', 'for g in js; do cat -- "$f"; done',
+    'out=$(node --check "$f" 2>&1) || echo "FAIL $f: $out" | head -5',
+    'node --require=./js/one.js --check -- "$f"', 'head -- "$f" -n 5',
+  ];
+  const commands = bodies.map(body => `for f in $(find js -name '*.js' | sort); do ${body}; done`);
+  for (const find of ["find js -delete", "find js -exec touch .git/config +", "find js -fprint .git/config", "find -js -name '*.js'", "find /dev/tcp/127.0.0.1/9", "find js | sort -o .git/config", "find js | sort --compress-program=sh", "find js | sort -T .git", "find js | sort --output=.git/config"]) {
+    commands.push(`for f in $(${find}); do cat -- "$f"; done`);
+  }
+  for (const quote of ["'", '"']) for (const separator of [";", "|", "&&", "||"]) for (const boundary of [";", "\n", ";\n", "\n\n", "|", "&&", "||"]) {
+    commands.push(`for f in $(find js -name '*.js'); do echo ${quote}${separator}${quote}${boundary}touch .git/config; cat -- "$f"; done`);
+  }
+  let id = 0;
+  for (const mode of ["read-only", "workspace-write", "full-access"] as const) {
+    await fixture.setMode(mode);
+    for (const command of commands) await assertBoundaryRefusedBeforeSpawn(fixture, workspace, `find-negative-${++id}`, command, [protectedPath]);
   }
 });
 

@@ -494,6 +494,8 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 
 	/** Optional compatibility shim to prepare raw tool call arguments before schema validation. Must return an object conforming to TParams. */
 	prepareArguments?: (args: unknown, ctx?: ExtensionContext) => Static<TParams>;
+	/** Synchronous pure shape checks after final authorization, before execute. Must not perform I/O or mutate arguments. Throwing retains tool_result hooks. */
+	validateInput?(args: Static<TParams>): void;
 
 	/**
 	 * Per-tool execution mode override.

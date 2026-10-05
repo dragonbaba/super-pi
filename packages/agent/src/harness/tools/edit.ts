@@ -63,11 +63,10 @@ function prepareEditArguments(input: unknown): EditToolInput {
 	return { ...rest, edits } as EditToolInput;
 }
 
-function validateEditInput(input: EditToolInput): { path: string; edits: Edit[] } {
+function validateEditInput(input: EditToolInput): void {
 	if (!Array.isArray(input.edits) || input.edits.length === 0) {
 		throw new Error("Edit tool input is invalid. edits must contain at least one replacement.");
 	}
-	return { path: input.path, edits: input.edits };
 }
 
 function editAccessError(path: string, error: FileError): Error {
@@ -86,8 +85,10 @@ export function createEditTool<TContext extends ExecutionToolContext = Execution
 			"Edit a single file using exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the original file. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.",
 		parameters: editSchema,
 		prepareArguments: prepareEditArguments,
+		validateInput: validateEditInput,
 		async execute(_toolCallId, input, signal, _onUpdate, { env }) {
-			const { path, edits } = validateEditInput(input);
+			validateEditInput(input);
+			const { path, edits } = input;
 			const absolutePath = await resolveToolPath(env, path, signal);
 			return withFileMutationQueue(env, absolutePath, async () => {
 				if (signal?.aborted) throw new Error("Operation aborted");

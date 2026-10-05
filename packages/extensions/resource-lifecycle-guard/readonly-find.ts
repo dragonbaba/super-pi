@@ -5,10 +5,23 @@ import { NONNEGATIVE_INTEGER_PATTERN } from "./regex.ts";
 const READ_ONLY_OPERATORS: ReadonlySet<string> = new Set([
 	"-o", "-or", "-a", "-and", "!", "-not", "(", ")", "-print", "-print0",
 ]);
+const RELATIVE_ROOT = /^[A-Za-z0-9_.][A-Za-z0-9_. /-]*$/;
+const SORT_OPTIONS = /^-[urnVf]+$/;
+
+/** One literal relative root; no options, devices, drives, expansion or UNC paths. */
+export function isReadOnlyFindRoot(value: string | undefined): boolean {
+	return value !== undefined && RELATIVE_ROOT.test(value);
+}
+
+/** Stdin-only sort. Do not admit output/temp paths, compressors or arbitrary options. */
+export function isReadOnlySortTail(argv: readonly string[], commandIndex: number): boolean {
+	for (let cursor = commandIndex + 1; cursor < argv.length; cursor++) if (!SORT_OPTIONS.test(argv[cursor]!)) return false;
+	return true;
+}
 
 /** Read-only effects classification; find itself still validates expression grammar. */
 export function isReadOnlyFindTail(argv: readonly string[], commandIndex: number): boolean {
-	if (argv[commandIndex + 1] !== ".") return false;
+	if (!isReadOnlyFindRoot(argv[commandIndex + 1])) return false;
 	for (let cursor = commandIndex + 2; cursor < argv.length; cursor++) {
 		const option = argv[cursor]!;
 		if (READ_ONLY_OPERATORS.has(option)) continue;

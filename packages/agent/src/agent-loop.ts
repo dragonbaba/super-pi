@@ -790,6 +790,8 @@ type ExecutedToolCallOutcome = {
 	isError: boolean;
 	/** Invocation was refused; retain the normal pre-execution block semantics. */
 	authorizationVeto?: true;
+	/** Agent-owned validation failure: result hooks still run, execute did not. */
+	inputRejected?: true;
 };
 
 type FinalizedToolCallOutcome = {
@@ -932,6 +934,7 @@ async function executePreparedToolCall(
 	const progress = new ToolProgressDelivery(prepared, emit, instrumentation);
 	let acceptingUpdates = true;
 	let checkingAuthorization = false;
+	let validatingInput = false;
 	let completedResult: AgentToolResult<any> | undefined;
 	let nested: NestedToolDispatch | undefined;
 
@@ -964,6 +967,11 @@ async function executePreparedToolCall(
 			? prepared.finalAuthorization.consume(prepared.args, id, name, signal)
 			: prepared.args;
 		checkingAuthorization = false;
+		if (prepared.tool.validateInput) {
+			validatingInput = true;
+			prepared.tool.validateInput(args as never);
+			validatingInput = false;
+		}
 		if (prepared.orchestration) nested = createNestedToolDispatch(prepared.toolCall.id, prepared.orchestration, emit, signal);
 		let result = await execute.call(prepared.tool,
 			id,
@@ -1010,6 +1018,10 @@ async function executePreparedToolCall(
 		let result = failedResult ?? (completedResult ? resultWithObservationFailure(completedResult, error)
 			: createErrorToolResult(error instanceof Error ? error.message : String(error)));
 		if (abandoned > 0) result = { ...result, content: [...(result.content ?? []), { type: "text", text: nestedAbandonedNotice(abandoned) }] };
+		if (validatingInput) {
+			preExecutionResults.add(result);
+			return { result, isError: true, inputRejected: true };
+		}
 		return { result, isError: true };
 	} finally {
 		acceptingUpdates = false;
@@ -1054,16 +1066,21 @@ async function runNestedToolCall(
 	const concurrentNestedRead = isConcurrentNestedRead(tool);
 	await emit({ type: "tool_execution_start", toolCallId: call.id, toolName: call.name, args: call.arguments });
 	let finalized: FinalizedToolCallOutcome;
+	let notExecuted = false;
 	if (signal.aborted || tool?.orchestration || tool?.interactionBoundary || tool?.modelOnly) {
 		finalized = { toolCall: call, isError: true, result: createPreExecutionError(call.name,
 			signal.aborted ? "Operation aborted before nested tool execution" : "This tool requires a direct model call; nested control or orchestration calls are not allowed") };
+		notExecuted = preExecutionResults.has(finalized.result);
 	} else {
 		const context: AgentContext = { ...scope.context, tools: tool ? [tool] : [] };
 		const prepared = await prepareToolCall(context, scope.assistantMessage, call, scope.config, signal, owner, concurrentNestedRead);
 		if (prepared.kind === "immediate") {
 			finalized = { toolCall: call, result: prepared.result, isError: prepared.isError };
+			notExecuted = preExecutionResults.has(prepared.result);
 		} else {
 			const executed = await executePreparedToolCall(prepared, signal, emit, scope.config.eventInstrumentation);
+			// Never accept even a replayed agent result after an actual execute call.
+			notExecuted = (executed.authorizationVeto === true || executed.inputRejected === true) && preExecutionResults.has(executed.result);
 			finalized = await finalizeExecutedToolCall(context, scope.assistantMessage, prepared, executed, scope.config, signal);
 		}
 	}
@@ -1082,6 +1099,7 @@ async function runNestedToolCall(
 	owner.observeTermination(finalized.result.terminate);
 	const message: NestedToolResultMessage = createToolResultMessage(finalized);
 	if (observationFailure) message.observationFailure = observationFailure;
+	if (notExecuted) message.executionStatus = "not_executed";
 	return message;
 }
 
@@ -1357,14 +1375,21 @@ function projectStructuredPolicyRefusal(reason: unknown): { text: string; detail
 	};
 }
 
+// Error-boundary evidence only. Weak membership cannot retain results or be forged by tools.
+const preExecutionResults = new WeakSet<AgentToolResult<any>>();
 function createPreExecutionError(tool: string, message: string, originalDetails?: unknown): AgentToolResult<any> {
-  if (tool !== "bash" && tool !== "powershell") return createErrorToolResult(message, originalDetails);
-  const prototype = originalDetails && typeof originalDetails === "object" ? Object.getPrototypeOf(originalDetails) : undefined;
-  const details = prototype === Object.prototype || prototype === null ? { ...originalDetails as Record<string, unknown> } : { originalDetails };
-  return createErrorToolResult(message, { ...details, executionStatus: "not_executed",
-    shellExecution: { version: 1, producer: "agent", started: false, cwd: null, exitCode: null, signal: null, termination: "not_started",
-      executionStatus: "not_executed", sideEffects: "none", retryGuidance: "fresh_request",
-      output: { complete: true, tailTruncated: false, log: "not_needed", cleanup: "not_needed" } } });
+  let result: AgentToolResult<any>;
+  if (tool !== "bash" && tool !== "powershell") result = createErrorToolResult(message, originalDetails);
+  else {
+    const prototype = originalDetails && typeof originalDetails === "object" ? Object.getPrototypeOf(originalDetails) : undefined;
+    const details = prototype === Object.prototype || prototype === null ? { ...originalDetails as Record<string, unknown> } : { originalDetails };
+    result = createErrorToolResult(message, { ...details, executionStatus: "not_executed",
+      shellExecution: { version: 1, producer: "agent", started: false, cwd: null, exitCode: null, signal: null, termination: "not_started",
+        executionStatus: "not_executed", sideEffects: "none", retryGuidance: "fresh_request",
+        output: { complete: true, tailTruncated: false, log: "not_needed", cleanup: "not_needed" } } });
+  }
+  preExecutionResults.add(result);
+  return result;
 }
 
 function createErrorToolResult(message: string, details: unknown = {}): AgentToolResult<any> {

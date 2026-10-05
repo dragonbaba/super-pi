@@ -288,7 +288,7 @@ export class CodemodeController {
 		if (name === "bash" || name === "powershell") {
 			const execution = readShellExecution(raw.details);
 			if (execution) { fact.executionStatus = execution.executionStatus; fact.exitCode = execution.exitCode; }
-		}
+		} else if (raw.executionStatus === "not_executed") fact.executionStatus = "not_executed";
 		invocation.facts.push(fact);
 		invocation.failed ||= raw.isError;
 		if (CODEMODE_MUTATION_NAMES.has(name) && this.saveResult) {
@@ -429,7 +429,7 @@ export class CodemodeController {
 			const shownOffset = content.length + 1;
 			for (const block of invocation.shown) content.push(block);
 			let summary = `[CODEMODE_${failed ? "FAILED" : "OK"}] Child calls: ${invocation.facts.length}.`;
-			for (const fact of invocation.facts) summary += `\n${fact.toolName.slice(0, 80)}: ${fact.executionStatus ?? (fact.isError ? "failed" : "completed")}${fact.executionStatus ? "; exit=" + (fact.exitCode ?? "unknown") : ""}${fact.isError ? " — " + fact.preview.slice(0, 512) : ""}${fact.outputPath ? " Output: " + fact.outputPath : ""}`;
+			for (const fact of invocation.facts) summary += `\n${fact.toolName.slice(0, 80)}: ${fact.executionStatus ?? (fact.isError ? "failed" : "completed")}${fact.executionStatus && (fact.toolName === "bash" || fact.toolName === "powershell") ? "; exit=" + (fact.exitCode ?? "unknown") : ""}${fact.isError ? " — " + fact.preview.slice(0, 512) : ""}${fact.outputPath ? " Output: " + fact.outputPath : ""}`;
 			if (failed) summary += "\nCompleted tool side effects are not rolled back. Do not automatically retry mutations.";
 			content.unshift({ type: "text", text: summary });
 			const projected = await capCodemodeOutput(content, outputTokens);

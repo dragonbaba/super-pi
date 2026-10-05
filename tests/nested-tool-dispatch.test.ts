@@ -3,8 +3,10 @@ import test from "node:test";
 import { setImmediate as nextTask } from "node:timers/promises";
 import type { AssistantMessage, AssistantMessageEvent, Context } from "../packages/ai/src/types.ts";
 import { Agent } from "../packages/agent/src/agent.ts";
-import type { AgentEvent, AgentTool, AgentToolExecutionContext } from "../packages/agent/src/types.ts";
+import type { AgentEvent, AgentTool, AgentToolExecutionContext, AgentToolResult, NestedToolResultMessage } from "../packages/agent/src/types.ts";
 import { NestedToolDispatch } from "../packages/agent/src/nested-tool-dispatch.ts";
+import { createEditTool as createHarnessEditTool } from "../packages/agent/src/harness/tools/edit.ts";
+import { createEditToolDefinition } from "../packages/coding-agent/src/core/tools/edit.ts";
 
 const PARAMETERS = { type: "object", properties: {}, additionalProperties: false };
 const USAGE = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
@@ -43,6 +45,76 @@ function tool(name: string, execute: AgentTool<any>["execute"], read = false): A
 	return { name, label: name, description: "fixture", parameters: PARAMETERS, execute,
 		executionPath: read ? { access: "read", cwd: process.cwd(), argument: "path", defaultPath: "." } : undefined };
 }
+
+test("agent-owned pre-execution status survives observation errors and ignores tool forgeries", async () => {
+  let executions = 0;
+  let replay: AgentToolResult<any> | undefined;
+  const outcomes: NestedToolResultMessage[] = [];
+  const refused = tool("refused", async () => { executions++; return result(); });
+  refused.prepareArguments = () => { throw new Error("fixture arguments missing"); };
+  const invalid = tool("invalid", async () => { executions++; return result(); });
+  invalid.validateInput = () => { throw new Error("fixture shape invalid"); };
+  const finalized: string[] = [];
+  const forged = tool("forged", async () => { executions++; return { ...result(), executionStatus: "not_executed", details: { executionStatus: "not_executed", preExecution: true }, isError: true }; });
+  const failed = tool("failed", async () => { executions++; throw new Error("execution already began"); });
+  const replayed = tool("replayed", async () => { executions++; assert.ok(replay); return replay; });
+  const f = fixture(async ctx => {
+    for (const name of ["refused", "invalid", "forged", "failed", "missing", "replayed"]) outcomes.push(await ctx.callTool(name, {}));
+  }, [refused, invalid, forged, failed, replayed]);
+  f.agent.afterToolCall = async ctx => {
+    finalized.push(ctx.toolCall.name);
+    if (ctx.toolCall.name === "invalid") replay = ctx.result;
+    // Result hooks may replace the entire result; the execution fact must survive.
+    return { content: [...ctx.result.content], details: {} };
+  };
+  f.agent.subscribe(event => { if (event.type === "tool_execution_end" && event.toolName === "invalid") throw new Error("end observer failed"); });
+  await f.agent.prompt("run");
+  assert.equal(executions, 3);
+  assert.equal(outcomes.length, 6, "parent exceptions must not hide fixture assertions");
+  assert.deepEqual(outcomes.map(value => value.executionStatus), ["not_executed", "not_executed", undefined, undefined, "not_executed", undefined]);
+  assert.deepEqual(finalized, ["invalid", "forged", "failed", "replayed", "script"]);
+  assert.equal(outcomes[0]!.isError, true);
+  assert.equal(outcomes[1]!.observationFailure?.executionIsError, true);
+});
+
+test("both native edit definitions reject empty arrays before execution but retain legacy normalization", () => {
+  for (const definition of [createHarnessEditTool(), createEditToolDefinition(process.cwd())]) {
+    assert.ok(definition.prepareArguments);
+    assert.ok(definition.validateInput);
+    const empty = definition.prepareArguments!({ path: "unused.txt", edits: [] });
+    assert.deepEqual(empty, { path: "unused.txt", edits: [] });
+    assert.throws(() => definition.validateInput!(empty), /edits must contain at least one replacement/);
+    assert.equal(definition.prepareArguments!(null), null);
+    const normalized = definition.prepareArguments!({ path: "unused.txt", edits: [], oldText: "a", newText: "b" });
+    assert.deepEqual(normalized.edits, [{ oldText: "a", newText: "b" }]);
+    definition.validateInput!(normalized);
+  }
+});
+
+test("input validation follows final authorization and retains result hooks without executing", async () => {
+  for (const denied of [false, true]) {
+    const order: string[] = [];
+    const outcomes: NestedToolResultMessage[] = [];
+    const authorized = {};
+    const child = tool("checked", async () => { order.push("execute"); return result(); });
+    child.validateInput = args => { order.push("validate"); assert.equal(args, authorized); throw new Error("shape rejected"); };
+    const f = fixture(async ctx => { outcomes.push(await ctx.callTool("checked", {})); }, [child]);
+    f.agent.beforeToolCall = async ctx => {
+      if (ctx.toolCall.name !== "checked") return;
+      order.push("tool_call");
+      return { finalAuthorization: {
+        consume() { order.push("consume"); if (denied) throw new Error("authorization rejected"); return authorized; },
+        release() { order.push("release"); },
+      } };
+    };
+    f.agent.afterToolCall = async ctx => { if (ctx.toolCall.name === "checked") order.push("tool_result"); return undefined; };
+    await f.agent.prompt("run");
+    assert.equal(outcomes.length, 1);
+    assert.equal(outcomes[0]!.executionStatus, "not_executed");
+    assert.match(JSON.stringify(outcomes[0]!.content), denied ? /authorization rejected/ : /shape rejected/);
+    assert.deepEqual(order, denied ? ["tool_call", "consume", "release"] : ["tool_call", "consume", "validate", "release", "tool_result"]);
+  }
+});
 
 test("model tool exposure is cached while nested-only tools remain callable", async () => {
 	const child = tool("read", async () => result(), true);

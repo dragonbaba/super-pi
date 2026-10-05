@@ -474,6 +474,8 @@ export interface NestedObservationFailure {
 /** A child result. With `observationFailure`, `isError` is true so callers still report a failure. */
 export interface NestedToolResultMessage extends ToolResultMessage {
 	observationFailure?: NestedObservationFailure;
+	/** Agent-owned evidence that execute was never entered; never copied from tool details/results. */
+	executionStatus?: "not_executed";
 }
 
 /** Tool definition used by the agent runtime. */
@@ -501,6 +503,12 @@ export interface AgentTool<TParameters extends TSchema = TSchema, TDetails = any
 	 * Must return an object that matches `TParameters`.
 	 */
 	prepareArguments?: (args: unknown) => Static<TParameters>;
+	/**
+	 * Synchronous, side-effect-free input checks after final authorization, before execute.
+	 * Arguments have passed schema validation. Throwing retains the normal result hooks.
+	 * Must not perform I/O or mutate arguments; use execute for state-dependent checks.
+	 */
+	validateInput?(args: Static<TParameters>): void;
 	/** Execute the tool call. Throw on failure instead of encoding errors in `content`. */
 	execute: (
 		toolCallId: string,

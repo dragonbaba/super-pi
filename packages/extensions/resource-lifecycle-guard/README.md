@@ -66,6 +66,25 @@ outside the recipe fall back to the existing checks. This does not turn `full-ac
 into arbitrary-script execution or change approval policy. Standalone `tr` is
 classified with the other read-only commands; its redirects are still checked.
 
+A separate bounded find-list recipe accepts, for example:
+`for f in $(find js -name '*.js' | sort -u); do node --check -- "$f" 2>&1 || echo "FAIL $f" | head -n 5; done`.
+The root must be one literal relative path that does not start with an option.
+Only the existing read-only find predicates and stdin-only sort options
+`-u`, `-r`, `-n`, `-V`, `-f` (including short-option combinations) qualify.
+The same sort option rule applies to standalone commands. Output files, temporary
+directories, compressor programs and arbitrary sort options do not qualify.
+
+In this recipe dynamic filenames must be quoted operands after `--` for
+`node --check`, `cat`, `head -n N` or `wc -l`, or data inside an echo label.
+Only `2>&1`, sequential/conditional commands and pipes to `head -n N` are accepted;
+the whole source remains limited to 4096 characters, 256 words and 32 body commands.
+Assignments such as `out=$(...)`, dynamic input redirection, nested/background
+loops, output redirection and pipes to other programs remain outside the exemption.
+All three scanners share the full-source decision and retain quote provenance.
+Unquoted find output still undergoes Bash word splitting and globbing: this recipe
+prevents option/redirection interpretation of those pieces, but does not guarantee
+lossless processing of filenames containing whitespace. Original bytes execute unchanged.
+
 | Form | Current behavior |
 | --- | --- |
 | `command -v/-V` with literal or simple variable names, including finite literal `for` lists | Query semantics are distinct from bounded `command`/`exec` execution prefixes. Normal permission checks still apply. |
