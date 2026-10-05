@@ -65,6 +65,17 @@ test("multiple oversized groups omit all anchors within budget while a later sma
  } finally { owner.release(); owner.dispose(); }
 });
 
+test("multi-read configured projections reject a budget smaller than the recovery notice", () => {
+ const source = [lines, metadata, { ...lines, text: "1#5678|tail\n" }, metadata];
+ const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 1 }, "tiny-multi")!;
+ try {
+  assert.throws(() => owner.create(source, "tiny"), (error: any) => error.code === "budget-too-small");
+  assert.throws(() => owner.projectMessagesForModel([{ role: "toolResult", toolCallId: "tiny", toolName: "codemode", content: source, isError: false, timestamp: 0 }]), (error: any) => error.code === "budget-too-small");
+ } finally { owner.release(); owner.dispose(); }
+ assert.equal(owner.counters.projectionRecordEntries, 0);
+ assert.equal(owner.counters.retainedProjectionCodeUnits, 0);
+});
+
 test("multiple-read projections reuse source scans and release all retained references", async t => {
  const inspector = new InspectorSession(); inspector.connect();
  const refs: WeakRef<object>[] = [];

@@ -166,6 +166,52 @@ test("five native reads under a shared budget continue without granting omitted 
 	assert.ok(readFileSync(join(f.cwd, "middle1.txt"), "utf8").startsWith("verified change\n"));
 });
 
+test("a complete tail read retained after projection still authorizes its edit", async t => {
+	const f = await fixture(t, { toolResultPresentation: { enabled: true, budgetTokens: 512 } }, [], true);
+	writeFileSync(join(f.cwd, "first.txt"), "earlier data\n".repeat(140));
+	const outcome = await f.run([
+		'await show((await tools.read({path:"first.txt"})).ref); await show((await tools.read({path:"file.txt"})).ref)',
+		'await tools.edit({path:"file.txt",edits:[{oldText:"hello",newText:"retained tail"}]})',
+	]);
+	assert.equal(f.session.agent.state.errorMessage, undefined);
+	const canonical = outcome.results[0]!.content;
+	const visible = outcome.wires[1]!.messages.find(m => m.role === "toolResult")!.content;
+	const sourceIndex = canonical.findIndex(b => b.type === "text" && b.text.includes("|hello"));
+	const modelIndex = visible.findIndex(b => b.type === "text" && b.text.includes("|hello"));
+	assert.ok(sourceIndex > modelIndex && modelIndex >= 0, "the complete tail read must move after the omitted first group");
+	assert.equal(outcome.results[1]?.isError, false, JSON.stringify(outcome.results[1]?.content));
+	assert.equal(readFileSync(join(f.cwd, "file.txt"), "utf8"), "retained tail\nworld\n");
+});
+
+test("enabled presentation without a token budget keeps native read evidence", async t => {
+	const f = await fixture(t, { toolResultPresentation: { enabled: true } }, [], true);
+	const outcome = await f.run([
+		'await show((await tools.read({path:"file.txt"})).ref)',
+		'await tools.edit({path:"file.txt",edits:[{oldText:"hello",newText:"unprojected"}]})',
+	]);
+	assert.equal(outcome.results[1]?.isError, false, JSON.stringify(outcome.results[1]?.content));
+	assert.equal(readFileSync(join(f.cwd, "file.txt"), "utf8"), "unprojected\nworld\n");
+});
+
+test("projection never substitutes a printed read copy for an omitted native group", async t => {
+	const f = await fixture(t, { toolResultPresentation: { enabled: true, budgetTokens: 512 } }, [], true);
+	writeFileSync(join(f.cwd, "large.txt"), "surrounding data\n".repeat(100));
+	const outcome = await f.run([
+		'const r=await tools.read({path:"file.txt"}); for(const b of r.content) text(b.text); const large=await tools.read({path:"large.txt"}); await show(large.ref); await show(r.ref); await show(large.ref)',
+		'await tools.edit({path:"file.txt",edits:[{oldText:"hello",newText:"must not write"}]})',
+	]);
+	assert.equal(f.session.agent.state.errorMessage, undefined);
+	const original = outcome.results[0]!.content;
+	const lines = original.find((b: any) => b.readBoundary === "lines" && b.text.includes("|hello"));
+	assert.ok(lines?.type === "text");
+	const visible = outcome.wires[1]!.messages.find(m => m.role === "toolResult")!.content;
+	assert.equal(original.filter(b => b.type === "text" && b.text === lines.text).length, 2);
+	assert.equal(visible.filter(b => b.type === "text" && b.text === lines.text).length, 1, "only the printed copy survives");
+	assert.equal(outcome.results[1]?.isError, true);
+	assert.match(JSON.stringify(outcome.results[1]?.content), /READ_REQUIRED/);
+	assert.equal(readFileSync(join(f.cwd, "file.txt"), "utf8"), "hello\nworld\n");
+});
+
 test("SDK defaults to Codemode declarations and native control tools, retaining callable tools", async t => {
 	const f = await fixture(t);
 	(f.session as any)._providerRequestPayloadBuilder = (input: any) => ({ tools: input.tools.map((tool: any) => tool.name) });
