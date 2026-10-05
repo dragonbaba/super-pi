@@ -4,6 +4,8 @@ import { hasUninspectableBashState, unsafeBashLoopHeaderReason } from "./core.ts
 import { extractCommandSubstitutions, prepareShellAnalysis } from "./shell-substitution.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
 import { isLiteralReadLoop } from "./readonly-loop.ts";
+import { isReadOnlyFindLoop } from "./readonly-find-loop.ts";
+import { isReadOnlySortTail } from "./readonly-find.ts";
 import { boundedShellInput } from "@super-pi/coding-agent";
 import { bashPipelinePrefixEnd, bashScriptOperandIndex, hasStatefulBashPrintf, isBashArithmeticCommandHead, isBashNetworkRedirectionTarget, shellExpansionRisk, hasUnsafeBashTestOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 
@@ -368,7 +370,7 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
     addTarget(builder, ".git", cwd);
     return cwd;
   }
-  if (READ_ONLY_COMMANDS.has(command)) {
+  if (READ_ONLY_COMMANDS.has(command) || command === "sort" && isReadOnlySortTail(tokens, index)) {
     addClass(builder, `read:${command}`);
     return cwd;
   }
@@ -646,6 +648,10 @@ export function inspectBashPermissionScope(input: unknown, cwd: string): BashPer
   }
   if (isLiteralReadLoop(command)) {
     addClass(builder, "read:literal-loop");
+    return publicScope(builder);
+  }
+  if (isReadOnlyFindLoop(command)) {
+    addClass(builder, "read:find-loop");
     return publicScope(builder);
   }
   const stdin = command.includes("<<") ? boundedShellInput(command) : undefined;

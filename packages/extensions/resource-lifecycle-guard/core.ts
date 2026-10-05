@@ -30,7 +30,8 @@ import {
 import { extractCommandSubstitutions, inspectHereDocuments, prepareShellAnalysis } from "./shell-substitution.ts";
 import { boundedShellInput } from "@super-pi/coding-agent";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
-import { isReadOnlyFindTail } from "./readonly-find.ts";
+import { isReadOnlyFindTail, isReadOnlySortTail } from "./readonly-find.ts";
+import { isReadOnlyFindLoop } from "./readonly-find-loop.ts";
 import { isLiteralReadLoop } from "./readonly-loop.ts";
 import { bashArithmeticForHeader, bashLoopVariableIndex, bashPipelinePrefixEnd, bashScriptOperandIndex, unsafeBashForHeaderReason, hasStatefulBashPrintf, shellExpansionRisk, hasUnsafeBashTestOperand, hasUnsafeBashLoopListOperand, hasUnsafeCommandQueryOperand, isBashArithmeticCommandHead, isBashDoubleBracketCloseBoundary, isBashNetworkRedirectionTarget, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isLookupSensitiveBashVariable, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 import { FD_DUPLICATION_PATTERN } from "./regex.ts";
@@ -117,6 +118,7 @@ export function inspectBashResourceLifecycle(input: unknown, nativePowerShellAva
 
 function inspectLifecycleScript(source: string, depth: number, nativePowerShellAvailable = false): string | undefined {
  if (depth > MAX_WRAPPER_DEPTH) return lifecycleRefusal("SHELL_INSPECTION_LIMIT", "wrapper/substitution nesting exceeds the inspection depth", "reduce nesting");
+ if (isReadOnlyFindLoop(source)) return undefined;
  const input = depth === 0 && source.includes("<<") ? boundedShellInput(source) : undefined;
  if (input) return inspectLifecycleScript(input.analysisCommand, depth + 1, nativePowerShellAvailable);
  const here = source.includes("<<") ? inspectHereDocuments(source) : undefined;
@@ -140,7 +142,7 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
  const segments = parseShellSegments(command);
  if (segments.length > MAX_SCRIPT_SEGMENTS) return lifecycleRefusal("SHELL_INSPECTION_LIMIT", "too many command segments", "reduce the number of segments");
  const loopReason = unsafeBashLoopHeaders(segments);
- if (loopReason) return lifecycleRefusal("SHELL_UNINSPECTABLE", loopReason === "stateful_loop_list_expansion" ? "loop list expansion can change later shell state" : "loop variable can change later executable lookup", "use a literal list or simple variable reference without shell-state changes");
+ if (loopReason) return lifecycleRefusal("SHELL_UNINSPECTABLE", loopReason === "stateful_loop_list_expansion" ? "loop list expansion can change later shell state" : "loop variable can change later executable lookup", "use a literal list, or a bounded read-only find loop such as for f in $(find js -name '*.js' | sort); do node --check -- \"$f\"; done; assignments and dynamic input redirections are not supported");
  for (const tokens of segments) {
   if (tokens.bashTestProcessSubstitution) return lifecycleRefusal("SHELL_UNINSPECTABLE", "process substitution inside a Bash test cannot be safely inspected", "split the process substitution into separately inspectable commands");
   if (hasUnsafeBashTestOperand(tokens)) return lifecycleRefusal("SHELL_UNINSPECTABLE", "Bash test operand may change shell state or evaluate arithmetic", "use simple variable tests or literal numeric comparisons");
@@ -285,7 +287,7 @@ export function inspectHighRiskBashMutation(input: unknown, cwd: string, shellOp
 		};
 	}
 
-	if (shellOperation === "bash" && isLiteralReadLoop(command)) return undefined;
+	if (shellOperation === "bash" && (isLiteralReadLoop(command) || isReadOnlyFindLoop(command))) return undefined;
 	const builder: ScanBuilder = {
 		primitives: [],
 		targets: [],
@@ -1192,7 +1194,7 @@ function isReadOnlyConditionalTailSegment(tokens: ShellSegment): boolean {
 		}
 		return true;
 	}
-	return command === "find" && isReadOnlyFindTail(argv, index);
+	return command === "find" ? isReadOnlyFindTail(argv, index) : command === "sort" && isReadOnlySortTail(argv, index);
 }
 
 function parseShellSegments(command: string): ShellSegment[] {

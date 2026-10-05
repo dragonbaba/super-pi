@@ -10,6 +10,8 @@ const FIND = 'find . -maxdepth 3 -iname "nw.exe" -o -maxdepth 3 -iname "nw" -o -
 
 test("reported cd and find alternatives are inspectable without rewriting the script", () => {
 	assert.equal(inspectBashResourceLifecycle({ command: `cd /d 2>/dev/null; ${FIND} | head; echo "--- exit ---"; echo "search done"` }), undefined);
+	assert.equal(inspectBashResourceLifecycle({ command: `cd sub; find js -name '*.js' | sort -u` }), undefined);
+	assert.match(inspectBashResourceLifecycle({ command: `cd sub; find js -name '*.js' | sort -o .git/config` }) ?? "", /SHELL_UNINSPECTABLE/);
 });
 
 for (const expression of [
