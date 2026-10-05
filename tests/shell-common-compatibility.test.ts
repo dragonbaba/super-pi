@@ -21,6 +21,7 @@ import { ToolExecutionComponent } from "../packages/coding-agent/src/modes/inter
 import { createJiti } from "jiti";
 import { inspectBashResourceLifecycle, inspectHighRiskBashMutation } from "../packages/extensions/resource-lifecycle-guard/core.ts";
 import { inspectBashPermissionScope } from "../packages/extensions/resource-lifecycle-guard/permission-bash.ts";
+import { isLiteralReadLoop } from "../packages/extensions/resource-lifecycle-guard/readonly-loop.ts";
 import { classifyError } from "../packages/extensions/tool-loop-guardrails/failure-classification.ts";
 
 const cwd = process.cwd();
@@ -844,7 +845,7 @@ async function guardedCwdBoundaryFixture(workspace: string, shellPath: string, s
     agent, approvals,
     get executions() { return executions; },
     setDecision(choice: string) { decision = choice; },
-    async setMode(mode: "read-only" | "workspace-write") {
+    async setMode(mode: "read-only" | "workspace-write" | "full-access") {
       await runner.getCommand("permissions")!.handler(mode, runner.createContext() as never);
     },
     async close() {
@@ -854,6 +855,142 @@ async function guardedCwdBoundaryFixture(workspace: string, shellPath: string, s
     },
   };
 }
+
+test("finite literal read loop executes unchanged through the real guard without approval", async t => {
+  const shellPath = findTestBash();
+  if (!shellPath || !existsSync(shellPath)) { if (process.env.CI) assert.fail("Bash unavailable"); t.skip("Bash unavailable"); return; }
+  const workspace = mkdtempSync(join(tmpdir(), "sp-shell-read-loop-"));
+  let fixture: Awaited<ReturnType<typeof guardedCwdBoundaryFixture>> | undefined;
+  t.after(async () => { try { await fixture?.close(); } finally { rmSync(workspace, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } });
+  mkdirSync(join(workspace, "data"));
+  for (const name of ["characters", "dialogues", "scene.house1"]) writeFileSync(join(workspace, "data", name + ".json"), '{\n  "value":  1\n}\n');
+  const command = String.raw`for f in data/characters.json data/dialogues.json data/scene.house1.json; do echo "@@@ $f"; tr -s ' \n' ' ' < "$f"; echo; done`;
+  assert.equal(inspectHighRiskBashMutation({ command }, workspace), undefined);
+  assert.equal(inspectBashPermissionScope({ command }, workspace)?.kind, "read-only");
+  fixture = await guardedCwdBoundaryFixture(workspace, shellPath);
+  fixture.setDecision("拒绝");
+  for (const mode of ["read-only", "workspace-write", "full-access"] as const) {
+    await fixture.setMode(mode);
+    const result = await fixture.agent.dispatchHostTool({ type: "toolCall", id: `literal-read-${mode}`, name: "bash", arguments: { command } });
+    assert.equal(result.isError, false, JSON.stringify(result));
+    const output = (result.content[0] as { text: string }).text;
+    assert.match(output, /@@@ data\/characters.json\r?\n\{ "value": 1 \}/);
+    assert.match(output, /@@@ data\/scene.house1.json/);
+  }
+  assert.equal(fixture.executions, 3);
+  assert.equal(fixture.approvals.length, 0);
+  mkdirSync(join(workspace, ".git"));
+  const protectedPath = join(workspace, ".git", "config");
+  for (const [id, command] of [
+    ["loop-write", 'for f in .git/config; do echo changed > "$f"; done'],
+    ["loop-assignment", 'for f in data/characters.json; do f=.git/config; cat < "$f"; done'],
+    ["loop-hidden-write", 'for f in data/characters.json; do echo "$(echo changed > .git/config)"; cat < "$f"; done'],
+    ["loop-network", 'for f in /dev/tcp/127.0.0.1/9; do cat < "$f"; done'],
+    ["loop-dynamic", 'for f in "$unknown"; do cat < "$f"; done'],
+    ["loop-carriage-return", 'for f in data/characters.json; do cat\r < "$f"; done'],
+  ]) await assertBoundaryRefusedBeforeSpawn(fixture, workspace, id!, command!, [protectedPath]);
+});
+
+test("literal read loop recognition rejects nonlocal state and every unsupported shell boundary", () => {
+  for (const command of [
+    'for f in one two; do cat < "$f"; done',
+    'for file in "one file" two; do echo "${file}"; cat < "${file}"; done',
+    "for f in one\ndo\ncat < \"$f\"\ndone\n",
+  ]) assert.equal(isLiteralReadLoop(command), true, command);
+  for (const command of [
+    'for f in; do cat < "$f"; done',
+    'for f in *.json; do cat < "$f"; done',
+    'for f in $(ls); do cat < "$f"; done',
+    'for f in one; do cat < "$other"; done',
+    'for f in one; do cat < "$f"; done; echo changed > .git/config',
+    'for f in one; do cat < "$f" > .git/config; done',
+    'for f in one; do cat < "$f" & done',
+    'for f in one; do cat < "$f" | sh; done',
+    'for f in one; do cat < "$f"; done &',
+    'for f in one; do eval "cat < $f"; done',
+    'for f in one; do printf -v f /dev/tcp/127.0.0.1/9; cat < "$f"; done',
+    'for PATH in one; do cat < "$PATH"; done',
+    'for _ in one; do echo /dev/tcp/127.0.0.1/9; cat < "$_"; done',
+    'for f in /dev/udp/127.0.0.1/9; do cat < "$f"; done',
+    'for f in \\/dev/tcp/127.0.0.1/9; do cat < "$f"; done',
+    'for f in one; do echo "$(rm -rf .git)"; cat < "$f"; done',
+    'for f in one; do echo "`rm -rf .git`"; cat < "$f"; done',
+    'for f in one; do echo "${f:=x}"; cat < "$f"; done',
+    'for f in one; do echo "$foo"; cat < "$f"; done',
+    'for f in one; do cat < "$f"',
+    'for f in one; do cat < "$f; done',
+    'for f in one; do cat < "$f" < "$f"; done',
+    'for f in one; do ./cat < "$f"; done',
+    'for f in one; do cat\r < "$f"; done',
+    'for f in one; do cat < "$f"; done\r',
+    'for f in one\r\ndo\r\ncat < "$f"\r\ndone\r\n',
+    'for f in one; do for g in two; do cat < "$g"; done; done',
+    'for f in ' + 'one '.repeat(17) + '; do cat < "$f"; done',
+    'for f in one; do ' + 'echo x; '.repeat(33) + 'cat < "$f"; done',
+    'for f in one; do echo "' + 'x'.repeat(4096) + '"; cat < "$f"; done',
+  ]) assert.equal(isLiteralReadLoop(command), false, command);
+});
+
+test("literal read loops preserve quoted separators across recognition, permission and high-risk scans", () => {
+  const control = 'for f in a.json; do rm -rf data; cat < "$f"; done';
+  assert.equal(isLiteralReadLoop(control), false);
+  assert.notEqual(inspectBashPermissionScope({ command: control }, cwd)?.kind, "read-only");
+  assert.ok(inspectHighRiskBashMutation({ command: control }, cwd)?.primitives.includes("rm_recursive"));
+  for (const quoted of ['";"', "';'"]) {
+    for (const separator of [";", "\n", ";\n", "\n\n"]) {
+      for (const prefix of [`echo ${quoted}`, `cat < "$f" ${quoted}`]) {
+        const command = `for f in a.json; do ${prefix}${separator}rm -rf data; cat < "$f"; done`;
+        assert.equal(isLiteralReadLoop(command), false, command);
+        assert.notEqual(inspectBashPermissionScope({ command }, cwd)?.kind, "read-only", command);
+        assert.ok(inspectHighRiskBashMutation({ command }, cwd)?.primitives.includes("rm_recursive"), command);
+      }
+      const dataOnly = `for f in a.json; do echo ${quoted}${separator}cat < "$f"; done`;
+      assert.equal(isLiteralReadLoop(dataOnly), true, dataOnly);
+      assert.equal(inspectBashPermissionScope({ command: dataOnly }, cwd)?.kind, "read-only", dataOnly);
+      assert.equal(inspectHighRiskBashMutation({ command: dataOnly }, cwd), undefined, dataOnly);
+    }
+  }
+});
+
+test("quoted loop separators cannot hide protected writes before real guard spawn", async t => {
+  const shellPath = findTestBash();
+  if (!shellPath || !existsSync(shellPath)) { if (process.env.CI) assert.fail("Bash unavailable"); t.skip("Bash unavailable"); return; }
+  const workspace = mkdtempSync(join(tmpdir(), "sp-shell-quoted-separator-"));
+  let fixture: Awaited<ReturnType<typeof guardedCwdBoundaryFixture>> | undefined;
+  t.after(async () => { try { await fixture?.close(); } finally { rmSync(workspace, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } });
+  t.diagnostic(`ownedFixture=${workspace}`);
+  mkdirSync(join(workspace, ".git"));
+  writeFileSync(join(workspace, "a.json"), "read-only fixture\n");
+  const protectedPath = join(workspace, ".git", "config");
+  fixture = await guardedCwdBoundaryFixture(workspace, shellPath);
+  fixture.setDecision("拒绝");
+  let id = 0;
+  for (const mode of ["read-only", "workspace-write", "full-access"] as const) {
+    await fixture.setMode(mode);
+    for (const quoted of ['";"', "';'"]) for (const separator of [";", "\n", ";\n", "\n\n"]) {
+      const command = `for f in a.json; do echo ${quoted}${separator}touch .git/config; cat < "$f"; done`;
+      await assertBoundaryRefusedBeforeSpawn(fixture, workspace, `quoted-write-${++id}`, command, [protectedPath]);
+      const dataOnly = `for f in a.json; do echo ${quoted}${separator}cat < "$f"; done`;
+      const executed: number = fixture.executions;
+      const approvals: number = fixture.approvals.length;
+      const result = await fixture.agent.dispatchHostTool({ type: "toolCall", id: `quoted-data-${id}`, name: "bash", arguments: { command: dataOnly } });
+      assert.equal(result.isError, false, JSON.stringify(result));
+      assert.match((result.content[0] as { text: string }).text, /^;\r?\nread-only fixture\r?\n$/);
+      assert.equal(fixture.executions, executed + 1);
+      assert.equal(fixture.approvals.length, approvals);
+      assert.equal(existsSync(protectedPath), false);
+    }
+  }
+});
+
+test("literal read loop exemption excludes alternate-shell lookup variable names", () => {
+  for (const name of ["_", "path", "cdpath", "fpath"]) {
+    const command = `for ${name} in ./x; do cat < "$${name}"; done`;
+    assert.equal(isLiteralReadLoop(command), false, command);
+    assert.notEqual(inspectBashPermissionScope({ command }, cwd)?.kind, "read-only", command);
+    assert.ok(inspectHighRiskBashMutation({ command }, cwd), command);
+  }
+});
 
 async function assertBoundaryRefusedBeforeSpawn(
   fixture: Awaited<ReturnType<typeof guardedCwdBoundaryFixture>>,

@@ -45,6 +45,54 @@ test("tree groups two calls, decodes exact content JSON and renders each output 
 	assert.equal(plain(summaryTree).split(printedSummary).length - 1, 1, "only the host's first summary block is hidden; identical script output is preserved");
 });
 
+test("all collapsed calls hide output equally, including the final script return and shared output", () => {
+	const tree = new CodemodeTreeComponent();
+	const texts = ["first detail\n".repeat(10), "middle detail\n".repeat(10), "last detail\n".repeat(10)];
+	const facts = texts.map((text, index) => ({ ...fact(`p:${index}`, "read", text), durationMs: 0 }));
+	const final = parent(facts, [...texts, "last script return\n".repeat(10)]);
+	const canonical = JSON.stringify(final);
+	for (let index = 0; index < facts.length; index++) {
+		tree.startChild(facts[index]!.toolCallId, "read", { path: `file-${index}.txt` });
+		tree.updateChild(facts[index]!.toolCallId, result(texts[index]!), true, false);
+		assert.doesNotMatch(plain(tree), /first detail|middle detail|last detail/);
+		tree.updateChild(facts[index]!.toolCallId, result(texts[index]!), false, false);
+	}
+	tree.updateParent("source", final, false, false, false);
+	const collapsed = plain(tree);
+	assert.doesNotMatch(collapsed, /detail|last script return|Script output/);
+	assert.equal(collapsed.split("\n").filter(line => /[├└]─/.test(line)).length, 3);
+	assert.equal(collapsed.split("\n").filter(line => line.trim()).length, 5, "header + three equal rows + expansion hint");
+	tree.updateParent("source", final, false, false, true);
+	for (const text of ["first detail", "middle detail", "last detail", "last script return"]) assert.ok(plain(tree).includes(text));
+	tree.updateParent("source", final, false, false, false);
+	assert.equal(plain(tree), collapsed);
+	tree.invalidate(); assert.equal(plain(tree), collapsed);
+	releaseComponentRenderCaches(tree);
+	tree.updateParent("source", final, false, false, false);
+	assert.equal(plain(tree), collapsed);
+	assert.equal(JSON.stringify(final), canonical);
+	releaseComponentRenderCaches(tree);
+	const shared = parent([fact("s:1", "read", "shared detail"), fact("s:2", "read", "shared detail")], ["shared detail"]);
+	tree.updateParent("", shared, false, false, false);
+	assert.doesNotMatch(plain(tree), /shared detail/);
+	tree.updateParent("", shared, false, false, true);
+	assert.equal(plain(tree).split("shared detail").length - 1, 1);
+	releaseComponentRenderCaches(tree);
+});
+
+test("first and last failed rows use the same compact error layout without output-file details", () => {
+	const tree = new CodemodeTreeComponent();
+	const error = "reason\nnext action\nextra diagnostic";
+	const final = parent([0, 1, 2].map(index => ({ ...fact(`p:${index}`, "bash", error, true), outputPath: `output-${index}.log` })), [], true);
+	tree.updateParent("source", final, false, true, false);
+	const collapsed = plain(tree);
+	assert.equal(collapsed.split("\n").filter(line => /reason.*next action.*extra diagnostic/.test(line)).length, 3);
+	assert.doesNotMatch(collapsed, /output-[012]\.log/);
+	tree.updateParent("source", final, false, true, true);
+	for (let index = 0; index < 3; index++) assert.ok(plain(tree).includes(`output-${index}.log`));
+	releaseComponentRenderCaches(tree);
+});
+
 test("collapsed progress reuses stable previews and labels without retaining full results", () => {
 	const tree = new CodemodeTreeComponent();
 	tree.updateParent("script", undefined, true, false, false);
@@ -78,6 +126,51 @@ test("failed child remains visible collapsed and hooks/unrecognized output are r
 	const legacy = result("[CODEMODE_FAILED] legacy error");
 	tree.updateParent("query", legacy, false, true, false);
 	assert.match(plain(tree), /legacy error/);
+});
+
+test("collapsed preflight failure shows one concise error and no partial-effects warning", () => {
+	const tree = new CodemodeTreeComponent();
+	const error = "[POLICY_BLOCKED:DYNAMIC_TARGET] Not executed:\nThe target cannot be verified from this request.\nNext: Submit a literal target for authorization.";
+	const wrapped = "[CODEMODE_SCRIPT] [p:1] " + error + "\n[Permission recovery] Resolve this exact operation before retrying.";
+	const final = parent([{ ...fact("p:1", "bash", error, true), executionStatus: "not_executed", exitCode: null }], [wrapped], true);
+	const canonical = JSON.stringify(final);
+	tree.updateParent("await tools.bash(args)", final, false, true, false);
+	const collapsed = plain(tree);
+	assert.equal(collapsed.split("POLICY_BLOCKED:DYNAMIC_TARGET").length - 1, 1);
+	assert.doesNotMatch(collapsed, /Script output|Permission recovery|not rolled back|exit=unknown/);
+	assert.match(collapsed, /target cannot be verified/);
+	tree.updateParent("await tools.bash(args)", final, false, true, true);
+	assert.match(plain(tree), /Permission recovery/);
+	assert.equal(JSON.stringify(final), canonical);
+});
+
+test("collapsed script output is bounded while independent failures and partial effects stay visible", () => {
+	const tree = new CodemodeTreeComponent();
+	const final = parent([{ ...fact("p:1", "bash", "done"), executionStatus: "exited", exitCode: 0 }],
+		["prior output\n".repeat(60), "[CODEMODE_SCRIPT] independent failure\n" + "verbose line\n".repeat(60)], true);
+	tree.updateParent("script", final, false, true, false);
+	const collapsed = plain(tree);
+	assert.match(collapsed, /independent failure/);
+	assert.match(collapsed, /not rolled back/);
+	assert.ok(collapsed.split("\n").length < 15);
+	tree.updateParent("script", final, false, true, true);
+	assert.equal(plain(tree).split("verbose line").length - 1, 60);
+});
+
+test("compact failed child bounds long diagnostics and releases the extra preview on restore", () => {
+	const tree = new CodemodeTreeComponent();
+	const final = parent([{ ...fact("p:1", "bash", "primary error\n" + "detail\n".repeat(100), true), inputSummary: "x".repeat(500) }], [], true);
+	tree.updateParent("", final, false, true, false);
+	assert.ok(plain(tree).split("\n").length < 14);
+	assert.match(plain(tree), /primary error/);
+	assert.doesNotMatch(plain(tree), /x{100}/);
+	tree.updateParent("", final, false, true, true);
+	assert.equal(plain(tree).split("detail").length - 1, 100);
+	releaseComponentRenderCaches(tree);
+	assert.equal(tree.getLifecycleCounts().textChars, 0);
+	tree.updateParent("", final, false, true, false);
+	assert.match(plain(tree), /primary error/);
+	releaseComponentRenderCaches(tree);
 });
 
 test("identical outputs remain explicitly unassigned instead of guessing a child owner", () => {
@@ -176,4 +269,38 @@ test("real SDK + InteractiveMode retains one parent card, no child protocol resu
 	cards = f.internal.chatContainer.children.filter((child: unknown) => child instanceof ToolExecutionComponent);
 	assert.equal(cards.length, 1); cards[0].setExpanded(true); assert.equal(plain(cards[0]), live);
 	assert.equal(f.internal.pendingTools.size, 0); assert.equal(f.internal.pendingToolResultDiscoveries?.size ?? 0, 0);
+});
+
+test("real Codemode preflight error stays compact live and after history reconstruction", async t => {
+	let executions = 0;
+	const f = await alphaSession({ codemode: true, g2: false,
+		extensions: [(pi: any) => pi.on("tool_call", (event: any) => event.toolName === "bash" ? ({ block: true, reason: JSON.stringify({
+			category: "POLICY_BLOCKED", stateChanged: false, policyReason: "unverifiable_target",
+		}) }) : undefined)],
+		customTools: [{ name: "bash", label: "bash", description: "blocked fixture", parameters: Type.Object({ command: Type.String() }),
+			execute: async () => { executions++; return result("should not execute"); } }] });
+	t.after(() => f.release());
+	await f.mode.init();
+	let turns = 0;
+	f.session.agent.streamFunction = () => {
+		const first = turns++ === 0;
+		const message: any = { role: "assistant", api: ALPHA_MODEL.api, provider: ALPHA_MODEL.provider, model: ALPHA_MODEL.id, timestamp: 1,
+			content: first ? [{ type: "toolCall", id: "blocked-parent", name: "codemode", arguments: { code: 'await tools.bash({command:"fixture"})' } }] : [{ type: "text", text: "done" }],
+			stopReason: first ? "toolUse" : "stop", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
+		const stream = new AssistantMessageEventStream(); stream.push({ type: "done", reason: message.stopReason, message }); return stream;
+	};
+	await f.session.prompt("blocked fixture");
+	assert.equal(executions, 0);
+	const messages = JSON.stringify(f.session.messages);
+	const card = f.internal.chatContainer.children.find((child: unknown) => child instanceof ToolExecutionComponent);
+	const collapsed = plain(card);
+	assert.equal(collapsed.split("POLICY_BLOCKED:DYNAMIC_TARGET").length - 1, 1);
+	assert.doesNotMatch(collapsed, /CODEMODE_SCRIPT|Script output|not rolled back|exit=unknown/);
+	card.setExpanded(true);
+	assert.match(plain(card), /CODEMODE_SCRIPT/);
+	f.internal.rebuildChatFromMessages();
+	const restored = f.internal.chatContainer.children.find((child: unknown) => child instanceof ToolExecutionComponent);
+	restored.setExpanded(false);
+	assert.equal(plain(restored), collapsed);
+	assert.equal(JSON.stringify(f.session.messages), messages);
 });

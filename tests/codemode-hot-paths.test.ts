@@ -5,7 +5,7 @@ import ts from "typescript";
 
 test("Codemode tree progress, timer and leaf refresh reuse owners without hot factories", () => {
 	const targets = new Map([
-		["packages/coding-agent/src/modes/interactive/components/codemode-tree.ts", new Set(["boundedPreview", "updateChild", "refresh", "refreshHeader", "tick"])],
+		["packages/coding-agent/src/modes/interactive/components/codemode-tree.ts", new Set(["boundedPreview", "compactText", "shellStatus", "updateChild", "refresh", "refreshHeader", "tick"])],
 		["packages/coding-agent/src/modes/interactive/components/tool-execution.ts", new Set(["startNestedTool", "updateNestedTool"])],
 		["packages/coding-agent/src/core/codemode.ts", new Set(["requiredReadBlocks", "readSurvived", "recordToolResultProjection", "recordProjection"])],
 	]);

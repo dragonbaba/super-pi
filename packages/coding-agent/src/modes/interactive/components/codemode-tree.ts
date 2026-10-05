@@ -10,6 +10,18 @@ import { keyHint } from "./keybinding-hints.ts";
 type Result = { content: readonly { type: string; text?: string }[]; details?: any; isError?: boolean };
 const PREVIEW_TRUNCATED_NOTICE = "\n… (preview truncated)";
 const PARTIAL_EFFECTS_NOTICE = "Completed tool side effects are not rolled back. Do not automatically retry mutations.";
+const COMPACT_CHARS = 320;
+const COMPACT_WHITESPACE = /[\r\n\t]+/g;
+const CHILD_SCRIPT_ERROR = /^\[CODEMODE_SCRIPT\] \[[^\]\r\n]{1,128}\] /;
+
+function compactText(text: string): string {
+	const bounded = text.length > COMPACT_CHARS ? text.slice(0, COMPACT_CHARS) + "…" : text;
+	return bounded.replace(COMPACT_WHITESPACE, " ");
+}
+
+function shellStatus(status: string, exit: number | null | undefined): string {
+	return status === "not_executed" ? "not executed" : `${status}; exit=${exit ?? "unknown"}`;
+}
 
 function boundedPreview(row: CodemodeTreeRow, result: Result): void {
 	for (const block of result.content) if (block.type === "text" && typeof block.text === "string") {
@@ -49,10 +61,12 @@ class CodemodeTreeRow extends Container {
 	private labelFailed = false;
 	private labelLast = true;
 	private labelOrdinal = 0;
+	private labelExpanded = false;
 	private bodySource = "";
 	private bodyPath = "";
 	private bodyFailed = false;
 	private bodyTruncated = false;
+	private bodyExpanded = false;
 	private bodyDirty = true;
 	readonly id: string;
 	readonly name: string;
@@ -62,22 +76,25 @@ class CodemodeTreeRow extends Container {
 	}
 	refresh(): void {
 		if (!this.label || this.labelInput !== this.input || this.labelStatus !== this.status || this.labelDuration !== this.durationMs
-			|| this.labelFailed !== this.failed || this.labelLast !== this.last || this.labelOrdinal !== this.ordinal) {
+			|| this.labelFailed !== this.failed || this.labelLast !== this.last || this.labelOrdinal !== this.ordinal || this.labelExpanded !== this.expanded) {
 			const icon = this.failed ? "✗" : this.status === "running" ? "○" : "•";
-			const label = `${this.last ? "└─" : "├─"} ${icon} ${this.ordinal}. ${this.name} — ${this.status}${this.durationMs === undefined ? "" : " (" + (this.durationMs / 1000).toFixed(1) + "s)"}${this.input ? "  " + this.input : ""}`;
+			const input = !this.expanded && this.input.length > 96 ? this.input.slice(0, 95) + "…" : this.input;
+			const label = `${this.last ? "└─" : "├─"} ${icon} ${this.ordinal}. ${this.name} — ${this.status}${this.durationMs === undefined || this.status === "not executed" ? "" : " (" + (this.durationMs / 1000).toFixed(1) + "s)"}${input ? "  " + input : ""}`;
 			this.labelMaterializations++;
 			this.labelInput = this.input; this.labelStatus = this.status; this.labelDuration = this.durationMs;
 			this.labelFailed = this.failed; this.labelLast = this.last; this.labelOrdinal = this.ordinal;
+			this.labelExpanded = this.expanded;
 			if (label !== this.label) { this.label = label; this.title.setText(theme.fg(this.failed ? "error" : "toolTitle", label)); }
 		}
 		const visible = this.expanded || this.failed;
 		const shared = this.sharedOutput && !this.failed;
 		const body = visible ? shared ? "Identical output is shown under Script output." : this.reported || this.preview : "";
-		const path = visible ? this.outputPath : "";
+		const path = this.expanded ? this.outputPath : "";
 		const truncated = visible && !shared && !this.reported && this.previewTruncated;
-		if (this.bodyDirty || this.bodySource !== body || this.bodyPath !== path || this.bodyFailed !== this.failed || this.bodyTruncated !== truncated) {
+		if (this.bodyDirty || this.bodySource !== body || this.bodyPath !== path || this.bodyFailed !== this.failed || this.bodyTruncated !== truncated || this.bodyExpanded !== this.expanded) {
 			this.bodyDirty = false; this.bodySource = body; this.bodyPath = path; this.bodyFailed = this.failed; this.bodyTruncated = truncated;
-			const output = body + (truncated ? PREVIEW_TRUNCATED_NOTICE : "") + (path ? "\nOutput: " + path : "");
+			this.bodyExpanded = this.expanded;
+			const output = (this.expanded ? body : compactText(body)) + (truncated && this.expanded ? PREVIEW_TRUNCATED_NOTICE : "") + (path ? "\nOutput: " + path : "");
 			this.shown = output; this.body.setText(theme.fg(this.failed ? "error" : "toolOutput", output));
 			this.children.length = 1; if (output) this.addChild(this.body);
 		}
@@ -107,6 +124,9 @@ export class CodemodeTreeComponent extends Container {
 	private failed = false;
 	private script = "";
 	private scriptOutput = "";
+	private scriptPreview = "";
+	private hasScriptError = false;
+	private mayHaveSideEffects = false;
 	private sourceText = "";
 	private outputText = "";
 	private titleText = "";
@@ -151,7 +171,7 @@ export class CodemodeTreeComponent extends Container {
 			row.durationMs = Date.now() - row.startedAt;
 		}
 		const execution = readShellExecution(result.details);
-		row.status = partial ? "running" : execution ? `${execution.executionStatus}; exit=${execution.exitCode ?? "unknown"}` : failed ? "failed" : "completed";
+		row.status = partial ? "running" : execution ? shellStatus(execution.executionStatus, execution.exitCode) : failed ? "failed" : "completed";
 		row.refresh();
 	}
 	updateParent(code: unknown, result: Result | undefined, partial: boolean, failed: boolean, expanded: boolean): void {
@@ -172,20 +192,22 @@ export class CodemodeTreeComponent extends Container {
 		super.invalidate(); this.titleText = this.sourceText = this.outputText = this.hintText = ""; this.refreshHeader();
 	}
 	private refreshHeader(): void {
-		const title = `• Codemode (${this.rows.size} child calls) — ${this.partial ? "running" : this.failed ? "failed" : "completed"}`;
+		const title = `• Codemode (${this.rows.size} child ${this.rows.size === 1 ? "call" : "calls"}) — ${this.partial ? "running" : this.failed ? "failed" : "completed"}`;
 		if (title !== this.titleText) { this.titleText = title; this.title.setText(theme.fg(this.failed ? "error" : "toolTitle", theme.bold(title))); }
 		const source = this.expanded && this.script ? "Script\n" + this.script : "";
-		if (source !== this.sourceText) { this.sourceText = source; this.source.setText(theme.fg("muted", source)); }
-		const output = this.scriptOutput ? "Script output\n" + (this.expanded ? this.scriptOutput : this.scriptOutput.slice(0, CODEMODE_DISPLAY_PREVIEW_CHARS)) : "";
-		if (output !== this.outputText) { this.outputText = output; this.output.setText(theme.fg("toolOutput", output)); }
+		if (source !== this.sourceText) { this.sourceText = source; this.source.setText(source ? theme.fg("muted", source) : ""); }
+		const visibleOutput = this.expanded ? this.scriptOutput : this.failed ? this.scriptPreview : "";
+		const output = visibleOutput ? (this.expanded ? "Script output\n" : "Script error: ") + visibleOutput : "";
+		if (output !== this.outputText) { this.outputText = output; this.output.setText(output ? theme.fg(this.expanded ? "toolOutput" : "error", output) : ""); }
 		let hint = this.expanded ? "" : theme.fg("muted", keyHint("app.tools.expand", "to expand script and child output"));
-		if (this.failed) hint += (hint ? "\n" : "") + theme.fg("warning", PARTIAL_EFFECTS_NOTICE);
+		if (this.failed && this.mayHaveSideEffects) hint += (hint ? "\n" : "") + theme.fg("warning", PARTIAL_EFFECTS_NOTICE);
 		if (hint !== this.hintText) { this.hintText = hint; this.hint.setText(hint); }
 	}
 	/** Completion boundary: exact digests only; never remove unknown or hook-modified output. */
 	private projectResult(result: Result): void {
 		this.outputProjections++;
 		const metadata = result.details?.codemode;
+		this.mayHaveSideEffects = metadata?.version !== 1 || !Array.isArray(metadata.calls);
 		const owners = new Map<string, OutputOwner>();
 		if (metadata?.version === 1 && Array.isArray(metadata.calls)) {
 			for (let index = 0; index < metadata.calls.length && index < CODEMODE_DISPLAY_MAX_CALLS; index++) {
@@ -201,7 +223,8 @@ export class CodemodeTreeComponent extends Container {
 				row.previewTruncated = fact.previewTruncated === true;
 				row.outputPath = typeof fact.outputPath === "string" ? fact.outputPath.slice(0, 1024) : "";
 				row.failed = fact.isError === true;
-				row.status = typeof fact.executionStatus === "string" ? `${fact.executionStatus.slice(0, 80)}; exit=${typeof fact.exitCode === "number" ? fact.exitCode : "unknown"}` : row.failed ? "failed" : "completed";
+				if (fact.executionStatus !== "not_executed") this.mayHaveSideEffects = true;
+				row.status = typeof fact.executionStatus === "string" ? shellStatus(fact.executionStatus.slice(0, 80), fact.exitCode) : row.failed ? "failed" : "completed";
 				row.reported = "";
 				if (Array.isArray(fact.outputDigests)) for (let i = 0; i < fact.outputDigests.length && i < 16; i++) {
 					const digest = fact.outputDigests[i];
@@ -217,10 +240,12 @@ export class CodemodeTreeComponent extends Container {
 			if (this.lastRow) this.lastRow.last = true;
 		}
 		this.scriptOutput = "";
+		this.scriptPreview = "";
+		this.hasScriptError = false;
 		let remaining = CODEMODE_DISPLAY_JSON_CHARS;
 		for (let blockIndex = 0; blockIndex < result.content.length; blockIndex++) {
 			const block = result.content[blockIndex];
-			if (block.type === "image") { this.scriptOutput += (this.scriptOutput ? "\n" : "") + "[image output]"; continue; }
+			if (block.type === "image") { this.appendScriptOutput("[image output]"); continue; }
 			if (block.type !== "text" || typeof block.text !== "string") continue;
 			const digest = block.text.length <= CODEMODE_DISPLAY_JSON_CHARS ? codemodeTextDigest(block.text) : "";
 			if (blockIndex === 0 && digest === metadata?.summaryDigest) continue;
@@ -231,19 +256,41 @@ export class CodemodeTreeComponent extends Container {
 			// text(result.content) is a frequent source of visible JSON. Decode only bounded,
 			// all-text arrays whose every block has an exact native-result digest.
 			if (text.length === block.text.length && this.projectContentArray(text, owners)) continue;
-			this.scriptOutput += (this.scriptOutput ? "\n" : "") + text;
+			this.appendScriptOutput(text);
 			if (text.length !== block.text.length) { this.scriptOutput += "\n… (display truncated; canonical result retained)"; break; }
 		}
 		for (const row of this.rows.values()) {
+			if (row.status !== "not executed") this.mayHaveSideEffects = true;
 			if (!this.partial && row.status === "running") { row.status = "interrupted / result unavailable"; row.failed = true; }
 			row.refresh();
 		}
 		owners.clear();
 	}
+	private appendScriptOutput(text: string): void {
+		this.scriptOutput += (this.scriptOutput ? "\n" : "") + text;
+		if (!this.failed || this.isRepeatedChildError(text)) return;
+		if (this.failed && text.startsWith("[CODEMODE_")) {
+			this.scriptPreview = compactText(text); this.hasScriptError = true; return;
+		}
+		if (this.hasScriptError || this.scriptPreview.length >= COMPACT_CHARS) return;
+		this.scriptPreview = compactText(this.scriptPreview + (this.scriptPreview ? "\n" : "") + compactText(text));
+	}
+	private isRepeatedChildError(text: string): boolean {
+		const prefix = CHILD_SCRIPT_ERROR.exec(text);
+		if (!prefix) return false;
+		for (const row of this.rows.values()) {
+			if (!row.failed || !row.preview) continue;
+			const preview = row.preview.slice(0, 512);
+			if (!text.startsWith(preview, prefix[0].length)) continue;
+			const rest = text.slice(prefix[0].length + preview.length);
+			if (!rest || rest.startsWith("\n[Permission recovery] ")) return true;
+		}
+		return false;
+	}
 	private appendReported(owner: OutputOwner, text: string): void {
 		if (Array.isArray(owner)) {
 			for (const row of owner) row.sharedOutput = true;
-			this.scriptOutput += (this.scriptOutput ? "\n" : "") + text;
+			this.appendScriptOutput(text);
 		} else owner.reported += (owner.reported ? "\n" : "") + text;
 	}
 	private projectContentArray(text: string, owners: Map<string, OutputOwner>): boolean {
@@ -265,13 +312,15 @@ export class CodemodeTreeComponent extends Container {
 			this.rows.clear(); this.rowsView.children.length = 0; this.lastRow = undefined;
 		}
 		this.result = undefined;
-		this.script = this.scriptOutput = this.sourceText = this.outputText = this.titleText = this.hintText = "";
+		this.script = this.scriptOutput = this.scriptPreview = this.sourceText = this.outputText = this.titleText = this.hintText = "";
+		this.mayHaveSideEffects = false;
+		this.hasScriptError = false;
 		this.title.setText(""); this.source.setText(""); this.output.setText(""); this.hint.setText("");
 		this.released = true;
 	}
 	/** Diagnostics are lifecycle-only, never called from render/update. */
 	getLifecycleCounts() {
-		let textChars = this.script.length + this.scriptOutput.length;
+		let textChars = this.script.length + this.scriptOutput.length + this.scriptPreview.length;
 		let labelMaterializations = 0, previewMaterializations = 0;
 		for (const row of this.rows.values()) {
 			textChars += row.preview.length + row.reported.length + row.input.length + row.outputPath.length;
