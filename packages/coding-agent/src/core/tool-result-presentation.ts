@@ -281,7 +281,7 @@ export interface ToolResultProjectedUiSource {
 
 /** Synchronous request-boundary observer; the session supplies its existing owner. */
 export interface ToolResultProjectionObserver {
-	recordToolResultProjection(source: ToolResultMessage, retained: readonly ToolResultPresentationContent[]): void;
+	recordToolResultProjection(source: ToolResultMessage, retained: readonly ToolResultPresentationContent[], canonical: readonly ToolResultPresentationContent[]): void;
 }
 
 interface ProjectionRecord {
@@ -2061,7 +2061,7 @@ export class ToolResultPresentationOwner {
 		this.counters.postImagePolicyEstimatorScans++;
 		let estimate = estimateToolOutputTokens(filtered.content);
 		if (estimate.estimatedTokens <= budgetTokens) {
-			observer?.recordToolResultProjection(message, projection.content);
+			observer?.recordToolResultProjection(message, projection.content, record.sourceContent);
 			return filtered;
 		}
 		const originalHead = projection.headTextCodeUnits;
@@ -2093,7 +2093,7 @@ export class ToolResultPresentationOwner {
 			estimate = estimateToolOutputTokens(candidate.content);
 			if (estimate.estimatedTokens <= budgetTokens) {
 				if (capture) capture.projection = candidateProjection;
-				observer?.recordToolResultProjection(message, candidateProjection.content);
+				observer?.recordToolResultProjection(message, candidateProjection.content, record.sourceContent);
 				return candidate;
 			}
 		}
@@ -2142,7 +2142,7 @@ export class ToolResultPresentationOwner {
 			);
 		}
 		if (capture) capture.projection = omission;
-		observer?.recordToolResultProjection(message, omission.content);
+		observer?.recordToolResultProjection(message, omission.content, record.sourceContent);
 		return candidate;
 	}
 
@@ -2188,7 +2188,7 @@ export class ToolResultPresentationOwner {
 			projected = filtered as ToolResultMessage;
 		}
 		if (capture) this.recordProjectedUiSource(message, projected, capture, sources!);
-		if (!projectionObserved) observer?.recordToolResultProjection(message, projection?.content ?? message.content);
+		if (!projectionObserved) observer?.recordToolResultProjection(message, projection?.content ?? message.content, projection ? record.sourceContent : message.content);
 		return projected;
 	}
 
@@ -2245,7 +2245,7 @@ export class ToolResultPresentationOwner {
 							if (capture) capture.projection = omission;
 							projected = this.createModelMessage(message, omission.content);
 							filtered = imagePolicy(projected);
-							observer?.recordToolResultProjection(message, omission.content);
+							observer?.recordToolResultProjection(message, omission.content, record.sourceContent);
 							projectionObserved = true;
 						}
 					}
@@ -2271,7 +2271,7 @@ export class ToolResultPresentationOwner {
 			const contextEstimate = estimateMessageTokens(projected);
 			if (toolEstimate <= toolBudgetTokens && contextEstimate <= contextBudgetTokens) {
 				if (capture) this.recordProjectedUiSource(message, projected, capture, sources!);
-				if (!projectionObserved) observer?.recordToolResultProjection(message, projection?.content ?? message.content);
+				if (!projectionObserved) observer?.recordToolResultProjection(message, projection?.content ?? message.content, projection ? record.sourceContent : message.content);
 				return projected;
 			}
 			if (candidateBudget === 1) break;

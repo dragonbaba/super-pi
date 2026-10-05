@@ -166,8 +166,9 @@ test("five native reads under a shared budget continue without granting omitted 
 	assert.ok(readFileSync(join(f.cwd, "middle1.txt"), "utf8").startsWith("verified change\n"));
 });
 
-test("a complete tail read retained after projection still authorizes its edit", async t => {
-	const f = await fixture(t, { toolResultPresentation: { enabled: true, budgetTokens: 512 } }, [], true);
+for (const cloned of [false, true]) test(`a complete tail read retained after projection still authorizes its edit: cloned=${cloned}`, async t => {
+	const clone: InlineExtension = pi => pi.on("context", event => ({ messages: structuredClone(event.messages) }));
+	const f = await fixture(t, { toolResultPresentation: { enabled: true, budgetTokens: 512 } }, cloned ? [clone] : [], true);
 	writeFileSync(join(f.cwd, "first.txt"), "earlier data\n".repeat(140));
 	const outcome = await f.run([
 		'await show((await tools.read({path:"first.txt"})).ref); await show((await tools.read({path:"file.txt"})).ref)',

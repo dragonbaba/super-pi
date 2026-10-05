@@ -204,17 +204,18 @@ export class CodemodeController {
 	/** Projection retains canonical block identities before transport strips the markers.
 	 * Remap only the original native span, never a textually equal script copy.
 	 */
-	recordToolResultProjection(source: ToolResultMessage, retained: readonly ToolResultPresentationContent[]): void {
+	recordToolResultProjection(source: ToolResultMessage, retained: readonly ToolResultPresentationContent[], canonical: readonly ToolResultPresentationContent[]): void {
 		const reads = this.displayedReads.get(source.toolCallId);
 		if (!reads) return;
 		for (const read of reads) {
 			read.projectedContentIndex = -1;
 			if (!readSurvived(read, source.content)) continue;
-			const first = source.content[read.parentContentIndex]!;
+			// A validated cache hit may own equivalent blocks from an earlier message array.
+			const first = canonical[read.parentContentIndex]!;
 			const start = retained.indexOf(first);
 			if (start < 0) continue;
 			let count = 0;
-			while (count < read.content.length && retained[start + count] === source.content[read.parentContentIndex + count]) count++;
+			while (count < read.content.length && retained[start + count] === canonical[read.parentContentIndex + count]) count++;
 			if (count === read.content.length) read.projectedContentIndex = start;
 		}
 	}
