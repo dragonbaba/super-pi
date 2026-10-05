@@ -108,12 +108,12 @@ export function fetchWithHeaders(headers, serverUrl, oauth) {
     const merged = new Headers(request ? input.headers : init.headers);
     if (request && init.headers) for (const [name, value] of new Headers(init.headers)) merged.set(name, value);
     for (const [name, value] of entries) merged.set(name, value);
-    let token = await oauth?.token(signal);
-    if (token) merged.set("Authorization", `Bearer ${token}`);
-    // The first attempt consumes a Request body; keep an unused copy for the OAuth retry.
-    const retryInput = request && oauth && input.body ? input.clone() : input;
-    let response, retried = false, failed = false;
+    let retryInput = input, response, retried = false, failed = false;
     try {
+      let token = await oauth?.token(signal);
+      if (token) merged.set("Authorization", `Bearer ${token}`);
+      // The first attempt consumes a Request body; keep an unused copy for the OAuth retry.
+      if (request && oauth && input.body) retryInput = input.clone();
       for (let attempt = 0; attempt < 2; attempt++) {
         response = await fetch(attempt === 0 ? input : retryInput, { ...init, headers: merged, redirect: "error" });
         if (oauth && (response.status === 401 || response.status === 403)) {
@@ -126,7 +126,6 @@ export function fetchWithHeaders(headers, serverUrl, oauth) {
           if (scope !== undefined) {
             await response.body?.cancel(); response = undefined;
             await oauth.recordScopeChallenge(scope, token, signal);
-            fetcher.authorizationRequired = true;
             throw new McpAuthorizationRequiredError(oauth.config?.id);
           }
         }
@@ -138,6 +137,8 @@ export function fetchWithHeaders(headers, serverUrl, oauth) {
       }
     } catch (error) {
       failed = true;
+      // EventSource drops error types from token lookup as well as 401 refresh.
+      if (error instanceof McpAuthorizationRequiredError) fetcher.authorizationRequired = true;
       try { await response?.body?.cancel(); } catch {}
       throw error;
     } finally {

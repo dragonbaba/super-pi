@@ -15,7 +15,7 @@ import { fetchWithHeaders, McpBridgeRuntime } from "../packages/mcp-bridge/src/b
 import { parseScopeChallenge, mergeScopes } from "../packages/mcp-bridge/src/oauth-scope.js";
 // @ts-expect-error JavaScript extension has no declaration file
 import { loadMcpConfig } from "../packages/mcp-bridge/src/config.js";
-import { createServer } from "node:http";
+import { createServer, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { FileAuthStorageBackend } from "../packages/coding-agent/src/core/auth-storage.ts";
 
@@ -477,6 +477,165 @@ for (const change of ["login", "logout"] as const) {
     } finally { release(); await pending; }
     assert.equal(readFileSync(f.path, "utf8"), saved);
   });
+}
+
+async function authorizationEndpoint(t: TestContext, transport: "http" | "sse") {
+  const control = { mode: "unauthorized" as "unauthorized" | "ready" | "disconnect", firstUnauthorized: false,
+    challenge: 'Bearer error="invalid_token"', holdInitialize: false, onInitialize: undefined as (() => void) | undefined };
+  const requests: Array<{ method: string; token?: string; body: string; initial: boolean }> = [];
+  const streams = new Set<ServerResponse>();
+  let stream: ServerResponse | undefined, initialRequests = 0;
+  const server = createServer((request, response) => {
+    let body = "";
+    request.setEncoding("utf8").on("data", chunk => { body += chunk; }).on("end", () => {
+      const message = body ? JSON.parse(body) : undefined;
+      const initial = transport === "sse" ? request.method === "GET" : message?.method === "initialize";
+      requests.push({ method: request.method!, token: request.headers.authorization, body, initial });
+      if (initial) {
+        initialRequests++;
+        if (control.mode === "disconnect") { request.socket.destroy(); return; }
+        if (control.mode === "unauthorized" || (control.firstUnauthorized && initialRequests === 1)) {
+          response.writeHead(401, { "WWW-Authenticate": control.challenge }).end("private-auth-diagnostic"); return;
+        }
+      }
+      if (request.method === "GET") {
+        if (transport !== "sse") { response.writeHead(405).end(); return; }
+        stream = response; streams.add(response);
+        response.on("close", () => { streams.delete(response); if (stream === response) stream = undefined; });
+        response.writeHead(200, { "Content-Type": "text/event-stream" });
+        response.write("event: endpoint\ndata: /messages\n\n"); return;
+      }
+      if (message?.method === "initialize") {
+        control.onInitialize?.();
+        if (control.holdInitialize) { response.writeHead(202).end(); return; }
+      }
+      if (message?.method?.startsWith("notifications/")) { response.writeHead(202).end(); return; }
+      const result = message?.method === "initialize"
+        ? { protocolVersion: message.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "authorization-fixture", version: "1" } }
+        : { tools: [{ name: "lookup", inputSchema: { type: "object" } }] };
+      const payload = JSON.stringify({ jsonrpc: "2.0", id: message?.id, result });
+      if (transport === "sse") { response.writeHead(202).end(); stream?.write(`event: message\ndata: ${payload}\n\n`); }
+      else response.writeHead(200, { "Content-Type": "application/json" }).end(payload);
+    });
+  });
+  t.after(async () => {
+    for (const response of streams) response.end();
+    server.closeAllConnections();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  return { control, requests, url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp` };
+}
+
+for (const transport of ["http", "sse"] as const) {
+  for (const scenario of ["no-login", "no-refresh-token", "expired-token", "invalid-refresh"] as const) {
+    test(`MCP OAuth connection status: ${transport} ${scenario} requires explicit authorization`, async t => {
+      const endpoint = await authorizationEndpoint(t, transport);
+      const f = fixture(t, { serverUrl: endpoint.url,
+        tokenResponse: scenario === "invalid-refresh" ? undefined : { refresh_token: null },
+        refreshResponse: { token_type: "" } });
+      if (scenario !== "no-login") await f.login();
+      if (scenario === "expired-token") {
+        const stored = JSON.parse(readFileSync(f.path, "utf8"));
+        stored[f.owner.key].expiresAt = 1;
+        writeFileSync(f.path, JSON.stringify(stored));
+      }
+      const runtime = new McpBridgeRuntime({ registerTool() {} }, f.root);
+      t.after(() => runtime.close());
+      const config = { ...f.config, transport, startupTimeoutMs: 3000, toolTimeoutMs: 3000, maxTools: 8 };
+      runtime.addConfigured(config);
+      runtime.states.get(config.id).oauth = new McpOAuth(f.config, new FileAuthStorageBackend(f.path), f.fetchImpl);
+      await assert.rejects(runtime.connect(config), { code: "authorization-required" });
+      const state = runtime.states.get(config.id);
+      for (const field of ["client", "transport", "oauth", "connectFetch", "connectPromise"]) assert.equal(state[field], null, field);
+      assert.equal(state.status, "error");
+      assert.equal(runtime.activeCalls.size, 0);
+      assert.match(runtime.statusText(), /mcp-login fixture/);
+      assert.doesNotMatch(runtime.statusText(), /private-auth-diagnostic|access-1-0|refresh-0/);
+      assert.equal(endpoint.requests.length, scenario === "expired-token" ? 0 : 1);
+      assert.deepEqual(f.counts(), { refreshes: scenario === "invalid-refresh" ? 1 : 0,
+        exchanges: scenario === "no-login" ? 0 : 1, registrations: scenario === "no-login" ? 0 : 1 });
+      await runtime.close();
+      assert.equal(state.connectFetch, null);
+    });
+  }
+
+  for (const outcome of ["ready", "unauthorized"] as const) {
+    test(`MCP OAuth connection status: ${transport} refresh then ${outcome} makes at most two attempts`, async t => {
+      const endpoint = await authorizationEndpoint(t, transport);
+      endpoint.control.mode = outcome;
+      endpoint.control.firstUnauthorized = true;
+      if (outcome === "ready") endpoint.control.challenge = 'Bearer realm="unterminated';
+      const f = fixture(t, { serverUrl: endpoint.url });
+      await f.login();
+      const runtime = new McpBridgeRuntime({ registerTool() {} }, f.root);
+      t.after(() => runtime.close());
+      const config = { ...f.config, transport, startupTimeoutMs: 3000, toolTimeoutMs: 3000, maxTools: 8 };
+      runtime.addConfigured(config);
+      runtime.states.get(config.id).oauth = f.owner;
+      if (outcome === "ready") {
+        await runtime.connect(config);
+        assert.equal(runtime.states.get(config.id).status, "connected");
+        assert.deepEqual(runtime.toolNames(), ["mcp__fixture__lookup"]);
+      } else {
+        await assert.rejects(runtime.connect(config), { code: "protocol-error" });
+        assert.doesNotMatch(runtime.statusText(), /mcp-login/);
+      }
+      assert.deepEqual(endpoint.requests.filter(request => request.initial).map(request => request.token), ["Bearer access-1-0", "Bearer access-1-1"]);
+      assert.deepEqual(f.counts(), { refreshes: 1, exchanges: 1, registrations: 1 });
+      assert.equal(runtime.states.get(config.id).connectFetch, null);
+      await runtime.close();
+      for (const field of ["client", "transport", "oauth", "connectFetch", "connectPromise"]) assert.equal(runtime.states.get(config.id)[field], null, field);
+    });
+  }
+
+  test(`MCP OAuth connection status: ${transport} authorization failure does not taint later connections`, async t => {
+    const endpoint = await authorizationEndpoint(t, transport);
+    const f = fixture(t, { serverUrl: endpoint.url, tokenResponse: { refresh_token: null } });
+    await f.login();
+    const runtime = new McpBridgeRuntime({ registerTool() {} }, f.root);
+    t.after(() => runtime.close());
+    const config = { ...f.config, transport, startupTimeoutMs: 3000, toolTimeoutMs: 3000, maxTools: 8 };
+    runtime.addConfigured(config);
+    const state = runtime.states.get(config.id);
+    for (const mode of ["unauthorized", "disconnect", "ready"] as const) {
+      endpoint.control.mode = mode;
+      state.oauth = new McpOAuth(f.config, new FileAuthStorageBackend(f.path), f.fetchImpl);
+      if (mode === "ready") await runtime.connect(config);
+      else await assert.rejects(runtime.connect(config), { code: mode === "unauthorized" ? "authorization-required" : "protocol-error" });
+      assert.equal(state.connectFetch, null);
+      if (mode !== "unauthorized") assert.doesNotMatch(runtime.statusText(), /mcp-login/);
+    }
+    assert.equal(state.status, "connected");
+    assert.deepEqual(f.counts(), { refreshes: 0, exchanges: 1, registrations: 1 });
+    await runtime.close();
+    assert.equal(runtime.activeCalls.size, 0);
+    for (const field of ["client", "transport", "oauth", "connectFetch", "connectPromise"]) assert.equal(state[field], null, field);
+  });
+
+  for (const interruption of ["cancel", "timeout"] as const) {
+    test(`MCP OAuth connection status: ${transport} ${interruption} stays separate from authorization`, async t => {
+      const endpoint = await authorizationEndpoint(t, transport);
+      endpoint.control.mode = "ready";
+      endpoint.control.holdInitialize = true;
+      const controller = new AbortController();
+      if (interruption === "cancel") endpoint.control.onInitialize = () => controller.abort(new Error("fixture cancellation"));
+      const f = fixture(t, { serverUrl: endpoint.url });
+      await f.login();
+      const runtime = new McpBridgeRuntime({ registerTool() {} }, f.root);
+      t.after(() => runtime.close());
+      const config = { ...f.config, transport, startupTimeoutMs: interruption === "timeout" ? 100 : 3000, toolTimeoutMs: 3000, maxTools: 8 };
+      runtime.addConfigured(config);
+      runtime.states.get(config.id).oauth = f.owner;
+      await assert.rejects(runtime.connect(config, controller.signal), { code: interruption === "cancel" ? "aborted" : "protocol-error" });
+      assert.doesNotMatch(runtime.statusText(), /mcp-login/);
+      assert.equal(f.counts().refreshes, 0);
+      const state = runtime.states.get(config.id);
+      for (const field of ["client", "transport", "oauth", "connectFetch", "connectPromise"]) assert.equal(state[field], null, field);
+      await runtime.close();
+      assert.equal(runtime.activeCalls.size, 0);
+    });
+  }
 }
 
 for (const [transport, phase] of [["http", "initialize"], ["http", "tools/call"], ["sse", "initialize"]] as const) {
