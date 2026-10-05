@@ -47,12 +47,16 @@ async function fixture(t: test.TestContext, project = false) {
  const runner = new ExtensionRunner(extensions, runtime, cwd, SessionManager.inMemory(cwd), {} as never);
  let lastAssistant: any, processes = 0, transforms = 0, approvals = 0;
  const invocations = new Map<string, number>();
+ const executions = new Map<string, number>();
  const owner = project ? createToolResultPresentationOwner({ enabled: true, budgetTokens: 1024 }, runner.createContext().sessionManager.getSessionId()) : undefined;
  t.after(() => owner?.dispose());
  const agent = new Agent({ convertToLlm: messages => owner ? owner.projectMessagesForModel(convertToLlm(messages), undefined, undefined, undefined, 1_000_000, 384_000, true) : convertToLlm(messages), streamFn: () => { throw new Error("live provider forbidden"); }, beforeToolCall: async ({ assistantMessage, toolCall, args }) => {
   if (lastAssistant !== assistantMessage) { lastAssistant = assistantMessage; await runner.emit({ type: "turn_start" } as never); }
   return runner.emitToolCall({ type: "tool_call", toolName: toolCall.name, toolCallId: toolCall.id, input: args } as never);
  }, afterToolCall: async ({ toolCall, args, result, isError }) => {
+  // Admitted attempts still finalize when validateInput rejects before execute.
+  // Count this result lifecycle separately from actual tool entry/replay below.
+  invocations.set(toolCall.id, (invocations.get(toolCall.id) ?? 0) + 1);
   transforms++;
   return runner.emitToolResult({ type: "tool_result", toolName: toolCall.name, toolCallId: toolCall.id, input: args,
    content: result.content, details: result.details, isError } as never);
@@ -67,7 +71,7 @@ async function fixture(t: test.TestContext, project = false) {
  agent.state.tools = registered.map(r => {
   const tool = wrapToolDefinition(r.definition, () => runner.createContext());
   const execute = tool.execute;
-  return { ...tool, execute: (...args: any[]) => { invocations.set(args[0], (invocations.get(args[0]) ?? 0) + 1); return (execute as any)(...args); } };
+  return { ...tool, execute: (...args: any[]) => { executions.set(args[0], (executions.get(args[0]) ?? 0) + 1); return (execute as any)(...args); } };
  });
  const hook = createHook({ init(_id, type) { if (type === "PROCESSWRAP") processes++; } }); hook.enable();
  t.after(async () => { hook.disable(); agent.abort(); runner.invalidate(); await runner.emit({ type: "session_shutdown" } as never); });
@@ -91,7 +95,8 @@ async function fixture(t: test.TestContext, project = false) {
   assert.equal(response, expectedResponses);
   assert.equal(agent.state.pendingToolCalls.size, 0);
   assert.equal((runner as any).finalAuthorizations?.size ?? 0, 0);
-  for (const count of invocations.values()) assert.equal(count, 1, "no tool invocation replay");
+  for (const count of invocations.values()) assert.equal(count, 1, "one result lifecycle per admitted attempt");
+  for (const count of executions.values()) assert.equal(count, 1, "no tool invocation replay");
   return { results: agent.state.messages.filter(m => m.role === "toolResult"), contexts };
  } };
 }

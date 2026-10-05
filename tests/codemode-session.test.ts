@@ -6,6 +6,10 @@ import { join, resolve } from "node:path";
 import { test, type TestContext } from "node:test";
 import { createJiti } from "jiti";
 import { Type } from "typebox";
+import { releaseComponentRenderCaches } from "@super-pi/tui";
+import { stripVTControlCharacters } from "node:util";
+import { CodemodeTreeComponent } from "../packages/coding-agent/src/modes/interactive/components/codemode-tree.ts";
+import { initTheme } from "../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { createAgentSession, type CreateAgentSessionOptions } from "../packages/coding-agent/src/core/sdk.ts";
 import { DefaultResourceLoader } from "../packages/coding-agent/src/core/resource-loader.ts";
 import { SettingsManager } from "../packages/coding-agent/src/core/settings-manager.ts";
@@ -55,7 +59,7 @@ async function fixture(t: TestContext, options: Pick<CreateAgentSessionOptions, 
 	await session.bindExtensions({});
 	let id = 0;
 	// An array entry is one assistant response carrying several Codemode calls.
-	async function run(scripts: (string | string[])[], project?: (context: Context) => void, rawCode = false) {
+	async function run(scripts: (string | string[])[], project?: (context: Context) => void, rawCode = false, throughSession = false) {
 		const wires: Context[] = [];
 		let index = 0;
 		session.agent.streamFunction = (_model, context) => {
@@ -69,11 +73,141 @@ async function fixture(t: TestContext, options: Pick<CreateAgentSessionOptions, 
 			stream.push({ type: "done", reason: message.stopReason as "toolUse" | "stop", message });
 			return stream;
 		};
-		await session.agent.prompt("run offline fixture");
+		// Steering uses the session's active-run lifecycle; most fixtures exercise Agent directly.
+		if (throughSession) await session.prompt("run offline fixture");
+		else await session.agent.prompt("run offline fixture");
 		return { wires, results: session.agent.state.messages.filter(m => m.role === "toolResult") };
 	}
 	return { session, cwd, agentDir, resources, settings, manager, run };
 }
+
+test("Codemode pre-execution edit failures suppress only the proven no-execution card warning", async t => {
+  initTheme("dark");
+  let executions = 0;
+  const extension: InlineExtension = pi => {
+    pi.registerTool({ name: "forged", label: "forged", description: "fixture", parameters: Type.Object({}),
+      execute: async () => { executions++; return { content: [{ type: "text", text: "No change. forged" }], isError: true, details: { executionStatus: "not_executed", preExecution: true } }; } });
+    pi.registerTool({ name: "throws", label: "throws", description: "fixture", parameters: Type.Object({}),
+      execute: async () => { executions++; throw new Error("No change. execution failed"); } });
+  };
+  const f = await fixture(t, {}, [mutation, extension]);
+  const missing = 'await tools.edit({path:"file.txt",edits:[{kind:"replace",start:"1#1234",newLines:["x"]}]})';
+  const scripts = [missing, 'await tools.edit({path:"file.txt",edits:[{oldText:"hello"}]})',
+    'await tools.forged({})', 'await tools.throws({})', 'await tools.read({path:"file.txt"});' + missing];
+  const outcome = await f.run(scripts);
+  for (let index = 0; index < scripts.length; index++) {
+    const result = outcome.results[index]!;
+    assert.equal(result.isError, true);
+    const calls = (result.details as any).codemode.calls;
+    assert.equal(calls.at(-1).executionStatus, index === 2 || index === 3 ? undefined : "not_executed");
+    const tree = new CodemodeTreeComponent();
+    try {
+      tree.updateParent(scripts[index]!, result as any, false, true, false);
+      const text = stripVTControlCharacters(tree.render(160).join("\n"));
+      if (index < 2) {
+        assert.doesNotMatch(text, /not rolled back|exit=unknown/);
+        assert.match(text, index === 0 ? /SNAPSHOT_REQUIRED/ : /TOOL_ARGS_INVALID/);
+      } else assert.match(text, /not rolled back/);
+    } finally { releaseComponentRenderCaches(tree); }
+    assert.doesNotMatch(JSON.stringify(result.content), /edit: not_executed; exit=/);
+    assert.match(JSON.stringify(result.content), /Do not automatically retry mutations/);
+  }
+  assert.equal(executions, 2);
+  assert.equal(readFileSync(join(f.cwd, "file.txt"), "utf8"), "hello\nworld\n");
+});
+
+test("guarded edit execute rejects a missing snapshot even when its validation hook is lost", async t => {
+  const f = await fixture(t, {}, [mutation]);
+  const edit = f.session.agent.state.tools.find(tool => tool.name === "edit")!;
+  assert.ok(edit.validateInput);
+  edit.validateInput = undefined;
+  await assert.rejects(edit.execute("direct-edit", {
+    path: "file.txt", edits: [{ kind: "replace", start: "1#1234", newLines: ["changed"] }],
+  }), /\[SNAPSHOT_REQUIRED\] Missing top-level "snapshot"/);
+  assert.equal(readFileSync(join(f.cwd, "file.txt"), "utf8"), "hello\nworld\n");
+});
+
+test("guarded shape validation leaves malformed input to schema and snapshot state checks in execute", async t => {
+  const f = await fixture(t, {}, [mutation]);
+  const edit = f.session.agent.state.tools.find(tool => tool.name === "edit")!;
+  assert.equal(edit.prepareArguments, undefined);
+  assert.ok(edit.validateInput);
+  const scripts = [
+    'await tools.edit({path:"file.txt",edits:[null]})',
+    'await tools.write({path:"file.txt"})',
+    'await tools.edit({path:"file.txt",snapshot:"snap_' + 'a'.repeat(22) + '",edits:[{kind:"replace",start:"1#1234",newLines:["x"]}]})',
+  ];
+  const outcome = await f.run(scripts);
+  for (let index = 0; index < 2; index++) {
+    assert.equal(outcome.results[index]?.isError, true);
+    assert.equal((outcome.results[index]!.details as any).codemode.calls[0].executionStatus, "not_executed");
+  }
+  // Use the actual snapshot identifier grammar; absent receipts remain execution failures.
+  const unknown = outcome.results[2]!;
+  assert.match(JSON.stringify(unknown.content), /SNAPSHOT_EDIT_UNKNOWN/);
+  assert.equal((unknown.details as any).codemode.calls[0].executionStatus, undefined);
+  assert.equal(readFileSync(join(f.cwd, "file.txt"), "utf8"), "hello\nworld\n");
+});
+
+test("native edit empty replacements are refused before execute", async t => {
+  const f = await fixture(t);
+  const outcome = await f.run(['await tools.edit({path:"file.txt",edits:[]})']);
+  assert.match(JSON.stringify(outcome.results[0]!.content), /edits must contain at least one replacement/);
+  assert.equal((outcome.results[0]!.details as any).codemode.calls[0].executionStatus, "not_executed");
+});
+
+test("Codemode missing snapshot retains guardrail recovery, one steering note and third-call refusal", async t => {
+  initTheme("dark");
+  const received: any[] = [];
+  const observer: InlineExtension = pi => {
+    pi.on("tool_result", event => { if (event.toolName === "edit") received.push(event); });
+  };
+  const f = await fixture(t, {}, [mutation, guardrails, observer]);
+  let executed = 0;
+  const edit = f.session.agent.state.tools.find(tool => tool.name === "edit")!;
+  const execute = edit.execute;
+  edit.execute = (...args) => { executed++; return execute(...args); };
+  const script = 'for(let i=0;i<3;i++){try{await tools.edit({path:"file.txt",edits:[{kind:"replace",start:"1#1234",newLines:["x"]}]})}catch(error){text(error.message)}}';
+  const { results, wires } = await f.run([script], undefined, false, true);
+  assert.equal(results.length, 1);
+  assert.equal(executed, 0);
+  assert.equal(received.length, 2, "only admitted validation failures produce tool_result");
+  const result = results[0]!;
+  const calls = (result.details as any).codemode.calls;
+  assert.equal(calls.length, 3);
+  assert.equal(result.isError, true);
+  for (const call of calls) assert.equal(call.executionStatus, "not_executed");
+  assert.match(JSON.stringify(result.content), /SNAPSHOT_REQUIRED/);
+  assert.match(JSON.stringify(result.content), /REPEATED_CALL_BLOCKED/);
+  for (const event of received) assert.match(JSON.stringify(event.content), /Retry: copy the snapshot ID/);
+  const tree = new CodemodeTreeComponent();
+  try {
+    tree.updateParent(script, result as any, false, true, false);
+    assert.doesNotMatch(stripVTControlCharacters(tree.render(160).join("\n")), /not rolled back/);
+  } finally { releaseComponentRenderCaches(tree); }
+  const steering = wires[1]!.messages.filter((message: any) => message.role === "user" && Array.isArray(message.content)
+    && message.content.some((block: any) => block.text?.startsWith("[Tool-loop")));
+  assert.equal(steering.length, 1, "one hidden steering note reaches the next model request");
+  const notices = f.session.messages.filter(message => message.role === "custom" && message.customType === "tool-failure-advisory-v1");
+  assert.equal(notices.length, 1);
+  assert.equal((notices[0] as any).display, false);
+  assert.equal(readFileSync(join(f.cwd, "file.txt"), "utf8"), "hello\nworld\n");
+});
+
+test("validation-hook failures retain failureRecoveryHint result transformation", async t => {
+  let executed = 0;
+  const extension: InlineExtension = pi => pi.registerTool({ name: "edit", label: "edit", description: "fixture", parameters: Type.Object({}),
+    validateInput: () => { throw new Error("[READ_REQUIRED] fixture validation failure"); },
+    execute: async () => { executed++; return { content: [], details: {} }; },
+  });
+  const f = await fixture(t, {}, [extension, guardrails]);
+  let ended: unknown;
+  f.session.subscribe(event => { if (event.type === "tool_execution_end" && event.toolName === "edit") ended = event.result; });
+  const outcome = await f.run(['await tools.edit({})']);
+  assert.equal(executed, 0);
+  assert.match(JSON.stringify(ended), /\[Read recovery\] Use dedicated read/);
+  assert.equal((outcome.results[0]!.details as any).codemode.calls[0].executionStatus, "not_executed");
+});
 
 for (const repeated of [false, true]) test(`budgeted default bundle accepts multiple shown native reads: repeated=${repeated}`, async t => {
 	const f = await fixture(t, { toolResultPresentation: { enabled: true, budgetTokens: 8000 } }, [], true);

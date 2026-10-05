@@ -1,6 +1,6 @@
 import { MUTATION_READ_SOURCE } from "../../coding-agent/src/core/tools/read-window.ts";
-import { EditParameters, SnapshotEditParameters, PublicEditParameters, WriteParameters,
-  hasSnapshotOperationFields, validatePublicSnapshotAnchors,
+import { EditParameters, PublicEditParameters, WriteParameters,
+  validatePublicEditInput,
   type GuardedEditInput, type SnapshotEditInput, type PublicEditInput, type GuardedWriteInput } from "./mutation-parameters.ts";
 import { EDIT_INDEX_PATTERN } from "./regex.ts";
 import { constants } from "node:fs";
@@ -11,7 +11,6 @@ import {
   createEditToolDefinition,
   withFileMutationQueue,
 } from "@super-pi/coding-agent";
-import { Value } from "typebox/value";
 import type { GuardedEdit, MutationEditAuthorization, MutationPathApproval } from "./core.ts";
 import {
   executeSnapshotLineEdit,
@@ -429,26 +428,12 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
         "Without snapshot, exact oldText/newText still requires the same completed read evidence; keep oldText unique. Include purpose for protected targets.",
       ],
       parameters: PublicEditParameters,
+      validateInput: validatePublicEditInput,
       executionMode: "sequential",
       async execute(toolCallId, input: PublicEditInput, signal, _onUpdate, ctx) {
+        validatePublicEditInput(input);
         if (typeof input.snapshot !== "string") {
-          for (let index = 0; index < input.edits.length; index++) {
-            if (hasSnapshotOperationFields(input.edits[index])) {
-              throw new Error(`[SNAPSHOT_REQUIRED] Missing top-level "snapshot" for LINE#ID edits (not inside edits[${index}]). No change.\nRetry: copy the snapshot ID paired with these anchors from the completed read. Read again only if that snapshot is unavailable, stale, or does not cover the target.`);
-            }
-          }
-          if (!Value.Check(EditParameters, input)) {
-            for (let index = 0; index < input.edits.length; index++) {
-              const edit = input.edits[index];
-              if (edit.oldText === undefined || edit.newText === undefined) throw new Error(`[TOOL_ARGS_INVALID] Missing required field "edits[${index}].${edit.oldText === undefined ? "oldText" : "newText"}" in exact mode. No change.\nRetry: complete this replacement using qualifying read evidence.`);
-            }
-            throw new Error("[TOOL_ARGS_INVALID] Invalid exact edit fields. No change.\nRetry: supply only oldText/newText and optional expectedLine operations.");
-          }
           return ordinaryEdit.execute(toolCallId, input as GuardedEditInput, signal, _onUpdate, ctx);
-        }
-        validatePublicSnapshotAnchors(input);
-        if (!Value.Check(SnapshotEditParameters, input)) {
-          throw new Error("[SNAPSHOT_EDIT_INVALID] Invalid snapshot operation fields. No change.\nRetry: supply only kind/start/end/newLines operations.");
         }
         const snapshotInput = input as SnapshotEditInput;
         const pathApproval = consumePermissionPathApproval(snapshotInput, toolCallId, "edit") as MutationPathApproval | undefined;

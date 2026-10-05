@@ -3,6 +3,24 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "typescript";
 
+test("post-authorization validation dispatch has no per-call factory or async boundary", () => {
+  const source = ts.createSourceFile("agent-loop.ts", readFileSync("packages/agent/src/agent-loop.ts", "utf8"), ts.ScriptTarget.Latest, true);
+  let found = 0;
+  function audit(node: ts.Node): void {
+    assert.equal(ts.isArrowFunction(node) || ts.isFunctionExpression(node) || ts.isNewExpression(node)
+      || ts.isObjectLiteralExpression(node) || ts.isArrayLiteralExpression(node) || ts.isAwaitExpression(node)
+      || node.kind === ts.SyntaxKind.RegularExpressionLiteral, false, node.getText(source));
+    if (ts.isCallExpression(node)) assert.equal(["String", "RegExp", "Promise", "AbortController"].includes(node.expression.getText(source)), false);
+    ts.forEachChild(node, audit);
+  }
+  function find(node: ts.Node): void {
+    if (ts.isIfStatement(node) && node.expression.getText(source) === "prepared.tool.validateInput") {
+      found++; audit(node.thenStatement);
+    } else ts.forEachChild(node, find);
+  }
+  find(source); assert.equal(found, 1);
+});
+
 test("Codemode tree progress, timer and leaf refresh reuse owners without hot factories", () => {
 	const targets = new Map([
 		["packages/coding-agent/src/modes/interactive/components/codemode-tree.ts", new Set(["boundedPreview", "compactText", "shellStatus", "updateChild", "refresh", "refreshHeader", "tick"])],

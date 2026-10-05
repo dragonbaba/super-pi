@@ -1,4 +1,5 @@
 import { Type, type Static } from "typebox";
+import { Value } from "typebox/value";
 import { MAX_SNAPSHOT_LINE_EDITS, validateInsertionFields, type SnapshotLineEdit } from "./snapshot-line-edit.ts";
 import { SNAPSHOT_LINE_REFERENCE_PATTERN, SNAPSHOT_LINE_REFERENCE_REGEX, SNAPSHOT_ID_PATTERN } from "./regex.ts";
 export const GuardedReplaceParameters = Type.Object({
@@ -93,6 +94,29 @@ export const PublicEditParameters = Type.Object({
   description: "Prefer snapshot LINE#ID edits after read; use exact oldText replacements when no snapshot is available.",
 });
 export type PublicEditInput = Static<typeof PublicEditParameters>;
+
+/** Pure shape checks on schema-validated input, after authorization and before execute.
+ * Never inspect files or read receipts here; failures retain normal tool_result recovery.
+ */
+export function validatePublicEditInput(input: PublicEditInput): void {
+  if (typeof input.snapshot !== "string") {
+    for (let index = 0; index < input.edits.length; index++) {
+      if (hasSnapshotOperationFields(input.edits[index])) {
+        throw new Error(`[SNAPSHOT_REQUIRED] Missing top-level "snapshot" for LINE#ID edits (not inside edits[${index}]). No change.\nRetry: copy the snapshot ID paired with these anchors from the completed read. Read again only if that snapshot is unavailable, stale, or does not cover the target.`);
+      }
+    }
+    if (!Value.Check(EditParameters, input)) {
+      for (let index = 0; index < input.edits.length; index++) {
+        const edit = input.edits[index]!;
+        if (edit.oldText === undefined || edit.newText === undefined) throw new Error(`[TOOL_ARGS_INVALID] Missing required field "edits[${index}].${edit.oldText === undefined ? "oldText" : "newText"}" in exact mode. No change.\nRetry: complete this replacement using qualifying read evidence.`);
+      }
+      throw new Error("[TOOL_ARGS_INVALID] Invalid exact edit fields. No change.\nRetry: supply only oldText/newText and optional expectedLine operations.");
+    }
+  } else {
+    validatePublicSnapshotAnchors(input);
+    if (!Value.Check(SnapshotEditParameters, input)) throw new Error("[SNAPSHOT_EDIT_INVALID] Invalid snapshot operation fields. No change.\nRetry: supply only kind/start/end/newLines operations.");
+  }
+}
 
 export function hasSnapshotOperationFields(edit: Static<typeof PublicEditOperationParameters>): boolean {
   return edit.kind !== undefined || edit.start !== undefined || edit.end !== undefined || edit.newLines !== undefined;
