@@ -3,6 +3,7 @@ import { basename, resolve } from "node:path";
 import { hasUninspectableBashState, unsafeBashLoopHeaderReason } from "./core.ts";
 import { extractCommandSubstitutions, prepareShellAnalysis } from "./shell-substitution.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
+import { isLiteralReadLoop } from "./readonly-loop.ts";
 import { boundedShellInput } from "@super-pi/coding-agent";
 import { bashPipelinePrefixEnd, bashScriptOperandIndex, hasStatefulBashPrintf, isBashArithmeticCommandHead, isBashNetworkRedirectionTarget, shellExpansionRisk, hasUnsafeBashTestOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 
@@ -11,7 +12,7 @@ const MAX_SEGMENTS = 64;
 const MAX_TARGETS = 16;
 const MAX_DEPTH = 4;
 const READ_ONLY_COMMANDS = new Set([
-  "cat", "dir", "echo", "file", "grep", "head", "ls", "printf", "pwd", "readlink", "realpath", "rg", "stat", "tail", "type", "wc", "where", "which",
+  "cat", "dir", "echo", "file", "grep", "head", "ls", "printf", "pwd", "readlink", "realpath", "rg", "stat", "tail", "tr", "type", "wc", "where", "which",
 ]);
 const SCRIPT_WRAPPERS = new Set(["bash", "bash.exe", "sh", "zsh", "cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "pwsh.exe"]);
 const OPAQUE_RUNNERS = new Set([
@@ -641,6 +642,10 @@ export function inspectBashPermissionScope(input: unknown, cwd: string): BashPer
   };
   if (command.length > MAX_COMMAND_CHARS) {
     markOpaque(builder, "oversized_command");
+    return publicScope(builder);
+  }
+  if (isLiteralReadLoop(command)) {
+    addClass(builder, "read:literal-loop");
     return publicScope(builder);
   }
   const stdin = command.includes("<<") ? boundedShellInput(command) : undefined;

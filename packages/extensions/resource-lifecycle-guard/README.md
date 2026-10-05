@@ -45,6 +45,27 @@ A second conservative classifier distinguishes strict read-only shell commands, 
 
 This is a policy analysis boundary, not a complete Bash parser or a sandbox. The submitted source runs unchanged only after lifecycle, target, permission, and final execution checks. A refusal saying that a target or shell state cannot be established does **not** assert that a dangerous operation ran or was proven to occur.
 
+A finite literal read loop is also recognized without opaque-script approval:
+`for f in data/a.json data/b.json; do echo "@@@ $f"; tr -s ' \n' ' ' < "$f"; echo; done`.
+This bounded form accepts up to 16 literal file names and 32 `echo`/`cat`/`tr`
+commands in 4096 characters. Each `cat`/`tr` uses one quoted input redirect to
+the loop variable; `echo` may interpolate that variable for labels. Lowercase
+local variable names (excluding `_`, `path`, `cdpath`, and `fpath`) are supported.
+The latter three exclusions avoid granting this exemption to lookup-sensitive
+variables of alternate shells; they do not imply general zsh support.
+Quoted `";"` / `';'` remains data. Only adjacent unquoted separators are coalesced,
+so an actual separator after quoted punctuation still ends the command. Regression
+tests exercise hidden commands after both `echo` and `cat`, and use the real guard
+to reject protected file creation before spawn in all three permission modes.
+Source bytes are executed
+unchanged. This exemption accepts LF line endings only; CR-bearing input uses
+the existing checks because Bash builds/options can interpret CR differently.
+Glob/command-generated lists, network-device input, assignments,
+output redirects, wrappers, nested loops, excluded shell variables and commands
+outside the recipe fall back to the existing checks. This does not turn `full-access`
+into arbitrary-script execution or change approval policy. Standalone `tr` is
+classified with the other read-only commands; its redirects are still checked.
+
 | Form | Current behavior |
 | --- | --- |
 | `command -v/-V` with literal or simple variable names, including finite literal `for` lists | Query semantics are distinct from bounded `command`/`exec` execution prefixes. Normal permission checks still apply. |
