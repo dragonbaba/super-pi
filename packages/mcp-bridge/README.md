@@ -185,6 +185,13 @@ browser automatically, refreshes to try to gain permissions, or replays the
 denied tool. An ordinary 401 without this challenge retains the existing single
 refresh/retry; a plain 403 does not trigger authorization.
 
+HTTP and SSE connections both report `authorization-required` with
+`/mcp-login <server-id>` when token lookup or refresh requires explicit login.
+This includes an ordinary 401 without a usable refresh token. A 401 alone is
+not classified as a login requirement: a successful refresh can still connect,
+and a second 401 is returned to the SDK after the single retry. Network errors,
+cancellation and startup timeouts retain their existing classifications.
+
 Scope requests are hints, not grants. They survive restart in the same credential
 entry until consumed by a successful login or cleared by logout; changing the
 OAuth configuration selects a different credential identity. Concurrent requests
