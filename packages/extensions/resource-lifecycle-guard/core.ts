@@ -27,7 +27,7 @@ import {
 	WINDOWS_START_BACKGROUND_PATTERN,
 	WINDOWS_WAIT_PATTERN,
 } from "./regex.ts";
-import { extractCommandSubstitutions, inspectHereDocuments, prepareShellAnalysis } from "./shell-substitution.ts";
+import { commandSubstitutionEnd, extractCommandSubstitutions, inspectHereDocuments, MAX_SUBSTITUTIONS, MAX_SUBSTITUTION_NESTING, prepareShellAnalysis } from "./shell-substitution.ts";
 import { boundedShellInput } from "@super-pi/coding-agent";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
 import { isReadOnlyFindTail, isReadOnlySortTail } from "./readonly-find.ts";
@@ -127,6 +127,8 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
   : lifecycleRefusal("SHELL_UNINSPECTABLE", "arithmetic structure could not be inspected", "correct or simplify the arithmetic expression");
  const command = here?.command ?? source;
  const substitutions = extractCommandSubstitutions(command);
+ if (substitutions.limitExceeded === "count") return `[SHELL_INSPECTION_LIMIT] Bash not executed: more than ${MAX_SUBSTITUTIONS} command substitutions per script.\nRetry: split into smaller calls (max ${MAX_SUBSTITUTIONS} each).`;
+ if (substitutions.limitExceeded === "nesting") return `[SHELL_INSPECTION_LIMIT] Bash not executed: command substitution nesting exceeds ${MAX_SUBSTITUTION_NESTING} levels.\nRetry: reduce nesting.`;
  if (substitutions.unterminated || substitutions.unsupported) return lifecycleRefusal("SHELL_SUBSTITUTION", substitutions.unterminated ? "unterminated command substitution" : "uncertain/uninspectable command substitution grammar", "simplify the substitution into inspectable foreground commands");
  for (const script of here?.substitutions ?? EMPTY_SUBSTITUTIONS) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable); if (result) return result; }
  for (const script of substitutions.scripts) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable); if (result) return result; }
@@ -1239,6 +1241,18 @@ function parseShellSegments(command: string): ShellSegment[] {
 			const flags = code === 96 || command.charCodeAt(index + 1) === 40 ? 4 : quote === 34 ? 1 : 2;
 			const expansions = tokens.expansions ??= [];
 			expansions[tokens.length] = (expansions[tokens.length] ?? 0) | flags;
+		}
+		// Preserve a substitution as part of this argv word; its body is inspected
+		// recursively by lifecycle/mutation analysis, never as outer shell state.
+		if (quote !== 39 && code === 36 && command.charCodeAt(index + 1) === 40 && command.charCodeAt(index + 2) !== 40) {
+			const end = commandSubstitutionEnd(command, index);
+			if (end >= 0) {
+				value += command.slice(index, end + 1);
+				tokenStarted = true;
+				literalWord = false;
+				index = end;
+				continue;
+			}
 		}
 		// Launcher assignment operands are ordinary argv words: unquoted braces
 		// can expand one apparent assignment into additional executable operands.

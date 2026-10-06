@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHook } from "node:async_hooks";
 import { Session } from "node:inspector/promises";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -111,6 +111,48 @@ test("postmerge uncertainty is not a syntax fact or an approval request", async 
  const f = await fixture(t); const result = await f.call(command);
  assert.equal(result.error, true); assert.match(result.text, /uncertain\/uninspectable/);
  assert.deepEqual(f.counts(), { approvals: 0, spawns: 0 });
+});
+
+test("substitution inspection: unquoted grep counts execute and release authorization", async t => {
+ const f = await fixture(t);
+ writeFileSync(join(f.cwd, "old.js"), "class GCSystem {}\nconst GCSystem = {};\n");
+ writeFileSync(join(f.cwd, "new.js"), "class Other {}\n");
+ const row = String.raw`printf '%s:%s/%s ' GCSystem $(grep -c -E '(class|function|const|var|let) GCSystem\b' old.js) $(grep -c -E '(class|function|const|var|let) GCSystem\b' new.js)`;
+ const result = await f.call(Array(8).fill(row).join("; "));
+ assert.equal(result.error, false, result.text);
+ assert.equal(result.text.trim(), Array(8).fill("GCSystem:2/0").join(" "));
+ assert.equal(f.counts().spawns, 1);
+ f.assertReleased();
+});
+
+test("substitution inspection: count overflow refuses before approval or spawn", async t => {
+ const f = await fixture(t);
+ const result = await f.call(`printf '%s ' ${Array(17).fill("$(printf 1)").join(" ")}`);
+ assert.equal(result.error, true);
+ assert.match(result.text, /SHELL_INSPECTION_LIMIT/);
+ assert.match(result.text, /16/);
+ assert.deepEqual(f.counts(), { approvals: 0, spawns: 0 });
+ f.assertReleased();
+});
+
+test("substitution inspection: unsupported ANSI-C escapes never truncate a body before spawn", async t => {
+ const f = await fixture(t);
+ const result = await f.call(String.raw`printf '%s' $(printf '%s' $'\')'; printf data > target)`);
+ assert.equal(result.error, true);
+ assert.match(result.text, /SHELL_SUBSTITUTION/);
+ assert.deepEqual(f.counts(), { approvals: 0, spawns: 0 });
+ assert.equal(existsSync(join(f.cwd, "target")), false);
+ f.assertReleased();
+});
+
+test("substitution inspection: denied nested mutation never executes", async t => {
+ const f = await fixture(t);
+ f.deny();
+ const result = await f.call("printf '%s' $(printf data > target)");
+ assert.equal(result.error, true, result.text);
+ assert.deepEqual(f.counts(), { approvals: 1, spawns: 0 });
+ assert.equal(existsSync(join(f.cwd, "target")), false);
+ f.assertReleased();
 });
 
 test("postmerge permission denial still prevents a lifecycle-compatible launcher", async t => {
