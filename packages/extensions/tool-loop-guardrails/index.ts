@@ -28,6 +28,7 @@ import {
 import { createConfiguredMsysBashDefinition } from "./msys-bash.js";
 import { issueSnapshotForRead } from "../mutation-guard-write/snapshot-line-edit.ts";
 import { SNAPSHOT_FAILURE_RE } from "./regex.ts";
+import { MAX_SUBSTITUTIONS, MAX_SUBSTITUTION_NESTING } from "../resource-lifecycle-guard/shell-substitution.ts";
 
 const GUARDRAIL_CONTENT_TYPE = "text" as const;
 const MAX_PENDING_REPAIR_NOTES = 64;
@@ -138,7 +139,7 @@ export default function toolLoopGuardrails(pi: ExtensionAPI): void {
     ...upstreamBash,
     name: "bash",
     label: "bash (MSYS argv protected)",
-    description: "Execute a Bash command in an explicit working directory. Returns bounded stdout/stderr. Prefer cwd over cd ... && ... when one package directory is intended.",
+    description: `Execute a Bash command in an explicit working directory. Returns bounded stdout/stderr. Prefer cwd over cd ... && ... when one package directory is intended. With resource-lifecycle-guard: max ${MAX_SUBSTITUTIONS} command substitutions ($() or backticks) per script, nesting max ${MAX_SUBSTITUTION_NESTING}; split larger batches.`,
     promptGuidelines: [
       "Set bash.cwd to the verified task directory; inspect SP_* only when current model or Session details are needed.",
       "For Node scripts, use node -e when the one-off source can be passed reliably; complex quoting or reusable code may use an explicit file or supported stdin. Script length does not decide permission, and a file does not bypass approval.",

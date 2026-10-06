@@ -46,3 +46,22 @@ test("N3 completion and CDPATH helpers use module functions without nested callb
   }
   assert.deepEqual(seen, targets);
 });
+
+test("substitution boundaries use primitive offsets without per-boundary containers or callbacks", () => {
+  const file = "packages/extensions/resource-lifecycle-guard/shell-substitution.ts";
+  const source = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
+  const boundary = source.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "commandSubstitutionEnd") as ts.FunctionDeclaration;
+  assert.ok(boundary);
+  function audit(node: ts.Node): void {
+    assert.equal(ts.isArrowFunction(node) || ts.isFunctionExpression(node) || ts.isFunctionDeclaration(node)
+      || ts.isObjectLiteralExpression(node) || ts.isArrayLiteralExpression(node) || ts.isNewExpression(node)
+      || ts.isRegularExpressionLiteral(node) || ts.isAwaitExpression(node), false, node.getText(source));
+    ts.forEachChild(node, audit);
+  }
+  audit(boundary.body!);
+  for (const path of ["packages/extensions/resource-lifecycle-guard/core.ts", "packages/extensions/resource-lifecycle-guard/permission-bash.ts"]) {
+    const text = readFileSync(path, "utf8");
+    assert.match(text, /const end = commandSubstitutionEnd\(command, index\)/);
+    assert.match(text, /value \+= command\.slice\(index, end \+ 1\)/);
+  }
+});

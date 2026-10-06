@@ -121,6 +121,7 @@ test("Node recovery distinguishes parse failures from argv/runtime failures and 
 
 test("effective guarded Bash metadata gives one short optional Node carrier guideline", () => {
  const bash = definitions.get("bash");
+ assert.match(bash.description, /max 16 command substitutions \(\$\(\) or backticks\) per script, nesting max 4; split larger batches/);
  assert.ok(Array.isArray(bash?.promptGuidelines));
  const nodeGuidelines = bash.promptGuidelines.filter((line: string) => /node -e/.test(line));
  assert.equal(nodeGuidelines.length, 1);

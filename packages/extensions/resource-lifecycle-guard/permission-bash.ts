@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { basename, resolve } from "node:path";
 import { hasUninspectableBashState, unsafeBashLoopHeaderReason } from "./core.ts";
-import { extractCommandSubstitutions, prepareShellAnalysis } from "./shell-substitution.ts";
+import { commandSubstitutionEnd, extractCommandSubstitutions, prepareShellAnalysis } from "./shell-substitution.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
 import { isLiteralReadLoop } from "./readonly-loop.ts";
 import { isReadOnlyFindLoop } from "./readonly-find-loop.ts";
@@ -483,6 +483,17 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
       const flags = code === 96 || command.charCodeAt(index + 1) === 40 ? 4 : 1;
       const expansions = tokens.expansions ??= [];
       expansions[tokens.length] = (expansions[tokens.length] ?? 0) | flags;
+    }
+    // Keep the original dynamic word; nested scripts above own their effects.
+    if (quote !== 39 && code === 36 && command.charCodeAt(index + 1) === 40 && command.charCodeAt(index + 2) !== 40) {
+      const end = commandSubstitutionEnd(command, index);
+      if (end >= 0) {
+        value += command.slice(index, end + 1);
+        tokenStarted = true;
+        literalWord = false;
+        index = end;
+        continue;
+      }
     }
     if (quote === 0 && (code === 123 || code === 125)) {
       const expansions = tokens.expansions ??= [];
