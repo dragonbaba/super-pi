@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { TaskHistory, TASK_RESULT_CHARS, type TaskHistorySession, type TaskKind, type TaskObservation } from "../task-history.ts";
 import type { ShellExecutionFacts } from "@super-pi/coding-agent";
+import { decodeCheckpoint, encodeCheckpoint, type TaskCheckpoint } from "./checkpoints.ts";
 
 export type { TaskState } from "../task-history.ts";
 export interface ManagedSubagentTask extends TaskObservation {
@@ -64,6 +65,7 @@ export class SubagentTasks {
 	constructor(capacity: number, label = "Subagent") { this.capacity = capacity; this.label = label; }
 	get size(): number { return this.records.size; }
 	get retainedResults(): number { return this.completed; }
+	get persistent(): boolean { return !!this.historySession?.file; }
 	values(): IterableIterator<ManagedSubagentTask> { return this.records.values(); }
 	find(id: string): ManagedSubagentTask | undefined { return this.records.get(id); }
 	get historyStatus(): string {
@@ -98,6 +100,24 @@ export class SubagentTasks {
 	private closeHistory(): void {
 		try { this.history?.close(); } catch (error) { this.recordHistoryError(error); }
 		this.history = undefined;
+	}
+	readCheckpoint(id: string): TaskCheckpoint {
+		this.assertHistoryAvailable();
+		const record = this.get(id);
+		if (!isTerminal(record)) throw new Error("Stop the original task before continuing its checkpoint.");
+		if (!this.history) throw new Error("Checkpoint history is unavailable.");
+		return this.history.readCheckpoint(record);
+	}
+	saveCheckpoint(checkpoint: TaskCheckpoint): void {
+		// Invalid/oversized context stops this task, not unrelated fresh work.
+		const encoded = encodeCheckpoint(checkpoint);
+		decodeCheckpoint(encoded, checkpoint.id, checkpoint.agent, checkpoint.cwd);
+		try {
+			this.assertHistoryAvailable();
+			if (!this.history) throw new Error("Checkpoint history is unavailable.");
+			this.history.saveCheckpoint(checkpoint, encoded);
+			this.get(checkpoint.id).checkpointAvailable = checkpoint.turns > 0;
+		} catch (error) { this.recordHistoryError(error); throw error; }
 	}
 
 	create(agent: string, cwd?: string, branchId?: string | null): ManagedSubagentTask {

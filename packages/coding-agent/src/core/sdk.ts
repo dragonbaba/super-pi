@@ -408,6 +408,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		},
 		convertToLlm: convertToLlmWithBlockImages,
 		streamFn: async (model, context, options) => {
+			options?.signal?.throwIfAborted();
+			const admissionRunner = extensionRunnerRef.current;
+			if (admissionRunner?.hasHandlers("before_model_request")) await admissionRunner.emitBeforeModelRequest(model.provider, model.id);
 			session.assertImageRequestAllowed(model);
 			const providerRetrySettings = settingsManager.getProviderRetrySettings();
 			const httpIdleTimeoutMs = settingsManager.getHttpIdleTimeoutMs();

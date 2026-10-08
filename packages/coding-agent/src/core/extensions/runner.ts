@@ -18,6 +18,8 @@ import { setOwnProperty } from "../../utils/record.ts";
 import type {
 	BeforeAgentStartEvent,
 	BeforeAgentStartEventResult,
+	BeforeModelRequestEvent,
+	BeforeModelRequestResult,
 	BeforeProviderHeadersEvent,
 	BeforeProviderRequestEvent,
 	CompactOptions,
@@ -63,6 +65,7 @@ import type {
 	SessionBeforeCompactResult,
 	SessionBeforeForkResult,
 	SessionBeforeSwitchResult,
+	SessionBeforeShutdownResult,
 	SessionBeforeTreeResult,
 	SessionShutdownEvent,
 	ToolCallEvent,
@@ -140,6 +143,7 @@ type RunnerEmitEvent = Exclude<
 	| BeforeProviderRequestEvent
 	| BeforeProviderHeadersEvent
 	| BeforeAgentStartEvent
+	| BeforeModelRequestEvent
 	| MessageEndEvent
 	| ResourcesDiscoverEvent
 	| InputEvent
@@ -147,13 +151,14 @@ type RunnerEmitEvent = Exclude<
 
 type SessionBeforeEvent = Extract<
 	RunnerEmitEvent,
-	{ type: "session_before_switch" | "session_before_fork" | "session_before_compact" | "session_before_tree" }
+	{ type: "session_before_switch" | "session_before_fork" | "session_before_compact" | "session_before_tree" | "session_before_shutdown" }
 >;
 
 type SessionBeforeEventResult =
 	| SessionBeforeSwitchResult
 	| SessionBeforeForkResult
 	| SessionBeforeCompactResult
+	| SessionBeforeShutdownResult
 	| SessionBeforeTreeResult;
 
 type RunnerEmitResult<TEvent extends RunnerEmitEvent> = TEvent extends { type: "session_before_switch" }
@@ -164,7 +169,9 @@ type RunnerEmitResult<TEvent extends RunnerEmitEvent> = TEvent extends { type: "
 			? SessionBeforeCompactResult | undefined
 			: TEvent extends { type: "session_before_tree" }
 				? SessionBeforeTreeResult | undefined
-				: undefined;
+				: TEvent extends { type: "session_before_shutdown" }
+					? SessionBeforeShutdownResult | undefined
+					: undefined;
 
 export interface ExtensionRunnerScheduler {
 	now(): number;
@@ -257,10 +264,12 @@ const OBSERVER_DURATION_BUCKETS_MS = [1, 5, 10, 25, 50, 100, 250, 1_000, 5_000, 
 const SAFETY_HOOK_EVENTS = new Set([
 	"project_trust",
 	"tool_call",
+	"before_model_request",
 	"session_before_switch",
 	"session_before_fork",
 	"session_before_compact",
 	"session_before_tree",
+	"session_before_shutdown",
 ]);
 const TRANSFORM_HOOK_EVENTS = new Set([
 	"context",
@@ -1162,7 +1171,8 @@ export class ExtensionRunner {
 			event.type === "session_before_switch" ||
 			event.type === "session_before_fork" ||
 			event.type === "session_before_compact" ||
-			event.type === "session_before_tree"
+			event.type === "session_before_tree" ||
+			event.type === "session_before_shutdown"
 		);
 	}
 
@@ -1379,6 +1389,8 @@ export class ExtensionRunner {
 		const ctx = this.createContext();
 		let result: SessionBeforeEventResult | undefined;
 		let terminalTimeout: ExtensionHookTimeoutError | undefined;
+		let shutdownFailure: unknown;
+		let shutdownFailed = false;
 
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get(event.type);
@@ -1398,6 +1410,12 @@ export class ExtensionRunner {
 						}
 					}
 				} catch (err) {
+					if (event.type === "session_before_shutdown") throw err;
+					if (event.type === "session_shutdown") {
+						if (!shutdownFailed) { shutdownFailed = true; shutdownFailure = err; }
+						// Every owner gets its cleanup even when an earlier handler fails.
+						continue;
+					}
 					if (err instanceof ExtensionHookTimeoutError) {
 						// The tool has already finished. Later handlers still receive its terminal
 						// event so per-call cleanup runs; the first timeout is reported afterwards.
@@ -1418,6 +1436,7 @@ export class ExtensionRunner {
 		}
 
 		if (terminalTimeout) throw terminalTimeout;
+		if (shutdownFailed) throw shutdownFailure;
 		return result as RunnerEmitResult<TEvent>;
 	}
 
@@ -1632,6 +1651,21 @@ export class ExtensionRunner {
 		}
 
 		return currentMessages;
+	}
+
+	async emitBeforeModelRequest(provider: string, model: string): Promise<void> {
+		const ctx = this.createContext();
+		const event: BeforeModelRequestEvent = { type: "before_model_request", provider, model };
+		for (const ext of this.extensions) {
+			const handlers = ext.handlers.get(event.type);
+			if (!handlers) continue;
+			for (const handler of handlers) {
+				ctx.signal?.throwIfAborted();
+				const result = await this.invokeHook(handler, event, ctx, ext.path, event.type) as BeforeModelRequestResult | undefined;
+				if (result?.block) throw new Error(result.reason ?? "Model request blocked by execution budget.");
+			}
+		}
+		ctx.signal?.throwIfAborted();
 	}
 
 	async emitBeforeProviderRequest(payload: unknown, dryRun = false, requestAuth?: ProviderRequestAuthSnapshot): Promise<unknown> {

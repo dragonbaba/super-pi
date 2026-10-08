@@ -38,6 +38,9 @@ import { consumeDelegatedTaskPolicies, type DelegatedTaskPolicy } from "./delega
 import { DELEGATION_GUIDANCE, describeSubagentLimits, loadSubagentLimits, SUBAGENT_LIMITS_PATH, type SubagentLimits } from "./limits.ts";
 import { SubagentScheduler } from "./scheduler.ts";
 import { SubagentTasks, type ManagedSubagentTask } from "./tasks.ts";
+import { loadTaskBudgets, TaskBudgetLedger } from "./budgets.ts";
+import { type TaskCheckpoint } from "./checkpoints.ts";
+import { SubagentControl } from "./control.ts";
 import { SESSION_PERMISSION_EVENT } from "../resource-lifecycle-guard/permission-contract.ts";
 import {
 	formatModelAssignments,
@@ -715,9 +718,19 @@ function processIsAlive(pid: number): boolean {
 	try {
 		process.kill(pid, 0);
 		return true;
-	} catch {
-		return false;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+		throw new Error(`Cannot verify whether owned subagent PID ${pid} stopped: ${error instanceof Error ? error.message : String(error)}`);
 	}
+}
+
+class SubagentProcessCleanupError extends Error {}
+
+/** Root exit must not cancel escalation while its owned POSIX group still has descendants. */
+export function finishCancelledProcessGroup(pid: number | undefined): void {
+	if (process.platform === "win32" || !pid || pid <= 0) return;
+	try { process.kill(-pid, "SIGKILL"); }
+	catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
 }
 
 export function killProcessTree(pid: number | undefined): ReturnType<typeof setTimeout> | undefined {
@@ -801,6 +814,8 @@ export class SubagentProcessRun {
 	private readonly closeListener = this.onClose.bind(this);
 	private readonly errorListener = this.onError.bind(this);
 	private readonly abortListener = this.onAbort.bind(this);
+	private readonly controlFailure = this.onControlFailure.bind(this);
+	private readonly control: SubagentControl | undefined;
 	private readonly signal: AbortSignal | undefined;
 	private readonly timeoutMs: number;
 	private readonly result: SingleResult;
@@ -816,6 +831,7 @@ export class SubagentProcessRun {
 	private settled = false;
 	wasAborted = false;
 	timedOut = false;
+	cleanupError: string | undefined;
 
 	constructor(
 		args: string[],
@@ -825,7 +841,9 @@ export class SubagentProcessRun {
 		signal: AbortSignal | undefined,
 		timeoutMs: number,
 		result: SingleResult,
+		control?: SubagentControl,
 	) {
+		this.control = control;
 		this.signal = signal;
 		this.timeoutMs = timeoutMs;
 		this.result = result;
@@ -835,12 +853,18 @@ export class SubagentProcessRun {
 			env: buildChildEnvironment(process.env, execution?.authEnv ?? {}, {
 				SP_SUBAGENT_WORKSPACE: childCwd,
 				SP_SUBAGENT_ALLOW_BASH: allowBash ? "1" : "0",
+				SP_SUBAGENT_CONTROL: control ? "1" : "0",
 			}),
 			shell: false,
 			windowsHide: true,
 			detached: process.platform !== "win32",
-			stdio: ["ignore", "pipe", "pipe"],
-		});
+			stdio: ["ignore", "pipe", "pipe", "ipc"],
+		}) as ChildProcessByStdio<null, Readable, Readable>;
+		control?.attach(this.proc, this.controlFailure);
+	}
+	private onControlFailure(reason: string): void {
+		this.result.errorMessage = capText(reason, 4096);
+		this.requestProcessTreeKill();
 	}
 
 	run(): Promise<number> {
@@ -877,6 +901,7 @@ export class SubagentProcessRun {
 			this.forceKillTimer = killProcessTree(this.proc.pid);
 		} catch (error) {
 			const reason = error instanceof Error ? error.message : String(error);
+			this.cleanupError = `Subagent process-tree cleanup failed: ${reason}`;
 			this.result.errorMessage = capText(`${this.result.errorMessage ? `${this.result.errorMessage} ` : ""}Process cleanup failed: ${reason}.`, 4096);
 			try { this.proc.kill("SIGKILL"); } catch { /* Exact child may already have exited. */ }
 		}
@@ -958,6 +983,11 @@ export class SubagentProcessRun {
 	private onClose(code: number | null): void {
 		if (this.settled) return;
 		this.childClosed = true;
+		if (this.killRequested) {
+			try { finishCancelledProcessGroup(this.proc.pid); }
+			catch (error) { this.cleanupError ??= `Subagent process-group cleanup failed: ${error instanceof Error ? error.message : String(error)}`; }
+		}
+		this.control?.finish();
 		this.buffer += this.stdoutDecoder.end();
 		if (this.buffer.trim()) this.processLine(this.buffer);
 		this.settle(code ?? (this.timedOut || this.wasAborted ? 1 : 0));
@@ -978,6 +1008,7 @@ export class SubagentProcessRun {
 	}
 
 	private dispose(): void {
+		this.control?.dispose();
 		if (this.timeout) clearTimeout(this.timeout);
 		if (this.forceKillTimer) clearTimeout(this.forceKillTimer);
 		if (this.abortListenerAttached) this.signal?.removeEventListener("abort", this.abortListener);
@@ -1000,6 +1031,7 @@ async function runSingleAgent(
 	makeDetails: (results: SingleResult[]) => SubagentDetails,
 	execution: ResolvedSubagentExecution | undefined,
 	timeoutMs: number,
+	control: SubagentControl,
 ): Promise<SingleResult> {
 	const agent = findAgent(agents, agentName);
 
@@ -1088,6 +1120,7 @@ async function runSingleAgent(
 			signal,
 			timeoutMs,
 			currentResult,
+			control,
 		);
 		const exitCode = await processRun.run();
 
@@ -1097,6 +1130,7 @@ async function runSingleAgent(
 			currentResult.errorMessage = failureDisplayText(currentResult);
 		}
 		emitSingleResultUpdate(onUpdate, makeDetails, currentResult);
+		if (processRun.cleanupError) throw new SubagentProcessCleanupError(processRun.cleanupError);
 		if (processRun.wasAborted) throw new Error("Subagent was aborted");
 		if (processRun.timedOut) throw new Error(currentResult.errorMessage ?? `Subagent timed out after ${timeoutMs}ms.`);
 		return currentResult;
@@ -1110,6 +1144,7 @@ async function runSingleAgent(
 		}
 		throw error;
 	} finally {
+		control.dispose();
 		if (tmpPromptDir) {
 			try {
 				fs.rmSync(tmpPromptDir, { recursive: true, force: true });
@@ -1149,6 +1184,8 @@ function subagentParameters(limits: SubagentLimits) { return Type.Object({
 	tasks: Type.Optional(Type.Array(TaskItem, { minItems: 1, maxItems: limits.maxTasks, description: `Independent parallel tasks; at most ${limits.maxConcurrent} running, remainder queued` })),
 	chain: Type.Optional(Type.Array(ChainItem, { minItems: 1, maxItems: limits.maxTasks, description: "Dependent sequential tasks" })),
 	background: Type.Optional(Type.Boolean({ description: "Return managed task IDs immediately; continue work and await completion notification. TUI/RPC only; tasks stop when this session closes." })),
+	checkpoint: Type.Optional(Type.Boolean({ description: "Opt in to storing bounded completed-turn context (including prompts/tool arguments): 1 MiB, 128 messages, no images or hidden reasoning. Requires a persistent session. Stops if the checkpoint cannot be saved." })),
+	resumeTaskId: Type.Optional(Type.String({ minLength: 1, maxLength: 80, description: "Single mode only: continue a terminal task's checkpoint as a NEW task with a fresh instruction. Requires the same role/workspace identity and current authorization. Does not replay unfinished tools; inspect current files first." })),
 	agentScope: Type.Optional(AgentScopeSchema),
 	confirmProjectAgents: Type.Optional(
 		Type.Boolean({ description: "Confirm project agents; defaults true.", default: true }),
@@ -1323,9 +1360,11 @@ export default function (pi: ExtensionAPI) {
 	const limits = loadSubagentLimits();
 	const scheduler = new SubagentScheduler(limits);
 	const tasks = new SubagentTasks(limits.maxTasks);
+	const budgets = new TaskBudgetLedger(loadTaskBudgets(), pi);
 	const pending = new Set<Promise<unknown>>();
 	let authority = new AbortController();
 	let closed = false;
+	let cleanupFailure: string | undefined;
 	let changingSession = 0;
 	const drain = async (): Promise<void> => {
 		changingSession++;
@@ -1335,7 +1374,29 @@ export default function (pi: ExtensionAPI) {
 		finally { authority = new AbortController(); changingSession--; }
 	};
 	pi.on("session_before_tree", drain);
-	pi.on("session_start", async (_event, ctx) => { await drain(); configureTaskHistory(tasks, "subagent", ctx); });
+	pi.on("session_start", async (_event, ctx) => { await drain(); configureTaskHistory(tasks, "subagent", ctx); budgets.configure(ctx); });
+	pi.on("before_agent_start", (event, ctx) => {
+		budgets.configure(ctx);
+		return { systemPrompt: `${event.systemPrompt}\n\n${budgets.describe()}` };
+	});
+	pi.on("before_model_request", (_event, ctx) => { budgets.configure(ctx); budgets.request(); });
+	pi.on("message_end", event => {
+		if (event.message.role === "assistant") budgets.settle(event.message.usage, undefined, event.message.stopReason === "error" || event.message.stopReason === "aborted");
+	});
+	pi.on("agent_settled", () => { budgets.settle(undefined); });
+	pi.registerCommand("task-budget", {
+		description: "Show aggregate parent/child budgets; reset only when all work is stopped",
+		handler: async (args, ctx) => {
+			try {
+				budgets.configure(ctx);
+				if (args.trim() === "reset") {
+					if (!ctx.isIdle() || tasks.size !== tasks.retainedResults || pending.size) throw new Error("Stop parent and child work before resetting budgets.");
+					budgets.reset();
+				} else if (args.trim()) throw new Error("Use /task-budget or /task-budget reset.");
+				ctx.ui.notify(budgets.describe(), "info");
+			} catch (error) { ctx.ui.notify(error instanceof Error ? error.message : String(error), "error"); }
+		},
+	});
 	const removePermissionListener = pi.events.on(SESSION_PERMISSION_EVENT, () => {
 		authority.abort(new Error("Subagent permission state changed; submit a new task."));
 		tasks.cancelAll();
@@ -1351,6 +1412,7 @@ export default function (pi: ExtensionAPI) {
 		await Promise.allSettled(pending);
 		pending.clear();
 		tasks.dispose();
+		if (cleanupFailure) throw new Error(cleanupFailure);
 	});
 	pi.registerCommand("subagent-limits", {
 		description: "Show effective subagent limits, hard ceilings and configuration path",
@@ -1377,7 +1439,7 @@ export default function (pi: ExtensionAPI) {
 			if (!params.id) throw new Error("A subagent task ID is required.");
 			const task = params.action === "cancel" ? tasks.cancel(params.id)
 				: params.action === "wait" ? await tasks.wait(params.id, params.timeoutMs ?? 10_000, signal) : tasks.get(params.id);
-			return { content: [{ type: "text", text: `${taskStatus(task)}${task.cwd ? `\nWorkspace: ${task.cwd}; branch: ${task.branchId ?? "root"}` : ""}${task.result === undefined ? "" : `\n\n${task.result}`}${tasks.historyError ? `\n\n${tasks.historyStatus}` : ""}` }],
+			return { content: [{ type: "text", text: `${taskStatus(task)}${task.checkpointAvailable ? "\nCheckpoint available: use subagent single mode with resumeTaskId, the same agent/cwd and a fresh task instruction." : ""}${task.cwd ? `\nWorkspace: ${task.cwd}; branch: ${task.branchId ?? "root"}` : ""}${task.result === undefined ? "" : `\n\n${task.result}`}${tasks.historyError ? `\n\n${tasks.historyStatus}` : ""}` }],
 				details: { task: { id: task.id, state: task.state, historical: task.recovered === true }, historyError: tasks.historyError } };
 		},
 	});
@@ -1470,7 +1532,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "subagent",
 		label: "Subagent",
-		description: `Delegate tasks to isolated subagents. agent is a registered role (planner/reviewer/scout/worker), never a custom task name; put labels and instructions in task. Supports single, parallel tasks, sequential chain, and session-owned background execution. ${describeSubagentLimits(limits)} ${DELEGATION_GUIDANCE}`,
+		description: `Delegate tasks to isolated subagents. agent is a registered role (planner/reviewer/scout/worker), never a custom task name; put labels and instructions in task. Supports single, parallel tasks, sequential chain, and session-owned background execution. ${describeSubagentLimits(limits)} ${budgets.describe()} Optional checkpoint/resumeTaskId saves completed context only; current authorization is always required. ${DELEGATION_GUIDANCE}`,
 		parameters: subagentParameters(limits),
 		prepareArguments(input) {
 			assertTaskCount(input, limits);
@@ -1482,7 +1544,9 @@ export default function (pi: ExtensionAPI) {
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			if (closed) throw new Error("Subagent session is closed.");
 			if (changingSession) throw new Error("Subagent session is changing; wait for previous tasks to stop.");
+			if (cleanupFailure) throw new Error(cleanupFailure);
 			configureTaskHistory(tasks, "subagent", ctx); tasks.assertHistoryAvailable();
+			budgets.configure(ctx); budgets.assertAvailable();
 			assertTaskCount(params, limits);
 			signal?.throwIfAborted();
 			if (params.background && ctx.mode !== "tui" && ctx.mode !== "rpc") {
@@ -1530,6 +1594,8 @@ export default function (pi: ExtensionAPI) {
 				(results: SingleResult[]): SubagentDetails => snapshotSubagentDetails(mode, agentScope, discovery.projectAgentsDir, results);
 
 			if (modeCount !== 1) throw new Error("Invalid parameters: provide exactly one of single, parallel, or chain mode");
+			if (params.resumeTaskId && !hasSingle) throw new Error("Checkpoint continuation requires single mode with agent, task and cwd.");
+			if ((params.checkpoint || params.resumeTaskId) && !tasks.persistent) throw new Error("Checkpoints require a persistent parent session; this session is memory-only.");
 			const requestedCwds: (string | undefined)[] = [];
 			const requestedAgentNames: string[] = [];
 			if (params.chain) {
@@ -1548,6 +1614,13 @@ export default function (pi: ExtensionAPI) {
 			}
 			const delegatedPolicies = consumeDelegatedTaskPolicies(params, requestedCwds, ctx.cwd, toolCallId);
 			assertSubagentBatchPreflight(agents, requestedAgentNames, delegatedPolicies, hasTasks);
+			const continuation = params.resumeTaskId ? tasks.readCheckpoint(params.resumeTaskId) : undefined;
+			if (continuation) {
+				const policy = delegatedPolicies[0];
+				const identity = fs.statSync(policy.canonicalCwd, { bigint: true });
+				if (continuation.turns === 0) throw new Error("No completed turn is available to continue; inspect the workspace and submit a fresh task.");
+				if (continuation.agent !== requestedAgentNames[0] || continuation.cwd !== policy.canonicalCwd || continuation.device !== String(identity.dev) || continuation.inode !== String(identity.ino)) throw new Error("Checkpoint role/workspace identity does not match this newly authorized task.");
+			}
 			if (params.background) {
 				for (const policy of delegatedPolicies) {
 					if (policy.allowMutation && (isPathInside(policy.canonicalCwd, trustedWorkspace) || isPathInside(trustedWorkspace, policy.canonicalCwd))) {
@@ -1595,8 +1668,25 @@ export default function (pi: ExtensionAPI) {
 					const childSignal = AbortSignal.any([executionSignal, record.controller!.signal]);
 					try {
 						const result = await scheduler.run(childSignal, async () => {
+							budgets.assertAvailable();
 							tasks.start(record);
-							return runSingleAgent(delegatedPolicies[index], agents, requestedAgentNames[index], task, step, childSignal, update, details, executions.get(requestedAgentNames[index]), timeoutMs);
+							const policy = delegatedPolicies[index];
+							const identity = params.checkpoint || continuation ? fs.statSync(policy.canonicalCwd, { bigint: true }) : undefined;
+							if (continuation && (continuation.device !== String(identity!.dev) || continuation.inode !== String(identity!.ino))) throw new Error("Checkpoint workspace identity changed while queued.");
+							const checkpoint: TaskCheckpoint | undefined = params.checkpoint || continuation ? {
+								version: 1, id: record.id, agent: record.agent, cwd: policy.canonicalCwd, device: String(identity!.dev), inode: String(identity!.ino),
+								turns: continuation?.turns ?? 0, updatedAt: Date.now(), pending: false,
+								messages: [...(continuation?.messages ?? []), { role: "user", content: `Task: ${task}`, timestamp: Date.now() }],
+							} : undefined;
+							const control = new SubagentControl(budgets, tasks, checkpoint, continuation?.messages, continuation?.pending);
+							try { return await runSingleAgent(policy, agents, requestedAgentNames[index], task, step, childSignal, update, details, executions.get(requestedAgentNames[index]), timeoutMs, control); }
+							catch (error) {
+								if (error instanceof SubagentProcessCleanupError || error instanceof Error && error.cause instanceof SubagentProcessCleanupError) {
+									// Latch before the scheduler releases this slot to queued work.
+									cleanupFailure ??= capText(error.message, 4096); scheduler.dispose(); tasks.cancelAll();
+								}
+								throw error;
+							}
 						});
 						tasks.finish(record, getResultOutput(result), isFailedResult(result));
 						return result;

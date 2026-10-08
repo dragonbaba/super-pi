@@ -7,11 +7,13 @@ import {
 	sensitivePathReason,
 } from "./child-security.ts";
 import { OUTSIDE_CD_COMMAND_PATTERN } from "./regex.ts";
+import { installChildControl } from "./child-control.ts";
 
 const FILE_TOOLS = new Set(["read", "write", "edit", "grep", "find", "ls"]);
 const RECURSIVE_FILE_TOOLS = new Set(["grep", "find", "ls"]);
 
 export default function childGuard(pi: ExtensionAPI): void {
+	installChildControl(pi);
 	pi.on("before_agent_start", (event) => ({
 		systemPrompt: `${event.systemPrompt}\n\n<subagent-security>\nDo not inspect credentials, secret environment values, Pi auth storage, browser profiles, or private key files. Access files only inside the assigned canonical workspace. Shells are not sandboxes; Bash is available only when explicitly permitted, and PowerShell is disabled.\n</subagent-security>`,
 	}));

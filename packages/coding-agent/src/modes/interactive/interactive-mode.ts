@@ -5563,9 +5563,12 @@ export class InteractiveMode {
 	 */
 	private isShuttingDown = false;
 	private shutdownOperation: Promise<void> | undefined;
+	private quitConfirmationAbort: AbortController | undefined;
+	private shutdownFromSignal = false;
 	private terminalDisconnected = false;
 
 	private shutdown(options?: { fromSignal?: boolean }): Promise<void> {
+		if (options?.fromSignal) { this.shutdownFromSignal = true; this.quitConfirmationAbort?.abort(); }
 		if (this.shutdownOperation) return this.shutdownOperation;
 		let resolveOperation!: () => void;
 		let rejectOperation!: (error: unknown) => void;
@@ -5579,6 +5582,19 @@ export class InteractiveMode {
 	}
 
 	private async performShutdown(options?: { fromSignal?: boolean }): Promise<void> {
+		if (!this.shutdownFromSignal && this.session.extensionRunner.hasHandlers("session_before_shutdown")) {
+			const confirmation = this.quitConfirmationAbort = new AbortController();
+			try {
+				const result = await this.session.extensionRunner.emit({ type: "session_before_shutdown", signal: confirmation.signal });
+				if (result?.cancel && !this.shutdownFromSignal) {
+					this.shutdownOperation = undefined;
+					this.shutdownRequested = false;
+					return;
+				}
+			} catch (error) {
+				if (!this.shutdownFromSignal) { this.shutdownOperation = undefined; this.shutdownRequested = false; throw error; }
+			} finally { confirmation.abort(); this.quitConfirmationAbort = undefined; }
+		}
 		this.isShuttingDown = true;
 		this.invalidateInitialization();
 		this.tuiLifecycleGeneration++;
@@ -5625,7 +5641,7 @@ export class InteractiveMode {
 		// Report terminal loss only after local owners and raw input are released.
 		if (this.terminalDisconnected) return process.exit(129);
 
-		const resumeCommand = options?.fromSignal ? undefined : formatResumeCommand(this.sessionManager);
+		const resumeCommand = this.shutdownFromSignal || options?.fromSignal ? undefined : formatResumeCommand(this.sessionManager);
 		if (resumeCommand) {
 			process.stdout.write(`${chalk.dim("To resume this session:")} ${resumeCommand}\n`);
 		}

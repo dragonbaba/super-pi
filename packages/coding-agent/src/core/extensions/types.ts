@@ -671,6 +671,14 @@ export interface SessionCompactFailedEvent {
 	fromExtension: boolean;
 }
 
+/** Cancellable confirmation before manual TUI quit, while extension UI is still available. */
+export interface SessionBeforeShutdownEvent {
+	type: "session_before_shutdown";
+	/** Manual TUI quit only. A signal cancels the dialog and forces normal cleanup. */
+	signal: AbortSignal;
+}
+export interface SessionBeforeShutdownResult { cancel?: boolean; }
+
 /** Fired before an extension runtime is torn down due to quit, reload, or session replacement. */
 export interface SessionShutdownEvent {
 	type: "session_shutdown";
@@ -718,6 +726,7 @@ export type SessionEvent =
 	| SessionBeforeCompactEvent
 	| SessionCompactEvent
 	| SessionCompactFailedEvent
+	| SessionBeforeShutdownEvent
 	| SessionShutdownEvent
 	| SessionBeforeTreeEvent
 	| SessionTreeEvent;
@@ -733,6 +742,14 @@ export interface ContextEvent {
 	/** True when building a request preview. Handlers must not perform external or durable side effects. */
 	dryRun: boolean;
 }
+
+/** Request admission before provider work. Not emitted for request previews. */
+export interface BeforeModelRequestEvent {
+	type: "before_model_request";
+	provider: string;
+	model: string;
+}
+export interface BeforeModelRequestResult { block?: boolean; reason?: string; }
 
 /** Fired before a provider request is sent. Can replace the payload. */
 export interface BeforeProviderRequestEvent {
@@ -1157,6 +1174,7 @@ export type ExtensionEvent =
 	| ResourcesDiscoverEvent
 	| SessionEvent
 	| ContextEvent
+	| BeforeModelRequestEvent
 	| BeforeProviderRequestEvent
 	| BeforeProviderHeadersEvent
 	| AfterProviderResponseEvent
@@ -1354,10 +1372,13 @@ export interface ExtensionAPI {
 	): void;
 	on(event: "session_compact", handler: ExtensionHandler<SessionCompactEvent>): void;
 	on(event: "session_compact_failed", handler: ExtensionHandler<SessionCompactFailedEvent>): void;
+	on(event: "session_before_shutdown", handler: ExtensionHandler<SessionBeforeShutdownEvent, SessionBeforeShutdownResult>): void;
 	on(event: "session_shutdown", handler: ExtensionHandler<SessionShutdownEvent>): void;
 	on(event: "session_before_tree", handler: ExtensionHandler<SessionBeforeTreeEvent, SessionBeforeTreeResult>): void;
 	on(event: "session_tree", handler: ExtensionHandler<SessionTreeEvent>): void;
 	on(event: "context", handler: ExtensionHandler<ContextEvent, ContextEventResult>): void;
+	/** Request admission only; no payload/auth data and no preview calls. Errors block dispatch. */
+	on(event: "before_model_request", handler: ExtensionHandler<BeforeModelRequestEvent, BeforeModelRequestResult>): void;
 	on(
 		event: "before_provider_request",
 		handler: ExtensionHandler<BeforeProviderRequestEvent, BeforeProviderRequestEventResult>,

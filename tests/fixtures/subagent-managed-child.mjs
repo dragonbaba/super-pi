@@ -10,7 +10,32 @@ const message = {
 };
 if (!process.argv.includes("--no-session") || !process.argv.includes("--no-extensions")) process.exit(90);
 writeFileSync(join(process.cwd(), `child-${process.pid}.ready.json`), JSON.stringify({ pid: process.pid, task }));
-setTimeout(() => {
-	process.stdout.write(`${JSON.stringify({ type: "message_end", message })}\n`);
+let sequence = 0;
+async function control(kind, fields = {}) {
+	if (process.env.SP_SUBAGENT_CONTROL !== "1") return {};
+	const id = ++sequence;
+	return new Promise((resolve, reject) => {
+		process.once("message", raw => {
+			const reply = JSON.parse(raw);
+			if (reply.id !== id || !reply.ok) reject(new Error(reply.reason ?? "Bad fixture control reply"));
+			else resolve(reply);
+		});
+		process.send(JSON.stringify({ id, kind, ...fields }));
+	});
+}
+try {
+	const init = await control("ready");
+	const turns = task.includes("two-turn") ? 2 : 1;
+	for (let turn = 0; turn < turns; turn++) {
+		await control("request");
+		await new Promise(resolve => setTimeout(resolve, delay));
+		await control("usage", { usage: message.usage });
+		process.stdout.write(`${JSON.stringify({ type: "message_end", message })}\n`);
+		await control("turn", { completed: true, ...(init.checkpoint ? { message, results: [] } : {}) });
+		if (task.includes("checkpoint-hold")) await new Promise(resolve => setTimeout(resolve, 30_000));
+	}
 	process.exitCode = task.includes("fail") ? 1 : 0;
-}, delay);
+} catch (error) {
+	process.stdout.write(`${JSON.stringify({ type: "message_end", message: { ...message, stopReason: "error", errorMessage: error.message } })}\n`);
+	process.exitCode = 1;
+} finally { if (process.connected) process.disconnect(); }

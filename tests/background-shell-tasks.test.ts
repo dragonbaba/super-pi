@@ -43,7 +43,7 @@ test.after(() => {
 	assert.equal(dirname(root), tmpdir()); rmSync(root, { recursive: true, force: true });
 });
 
-function harness(t: test.TestContext) {
+function harness(t: test.TestContext, expectedDisposalError?: RegExp) {
 	assert.ok(BACKGROUND_SHELL_LIMITS_PATH.startsWith(root));
 	const events = createEventBus(), tools = new Map<string, any>(), commands = new Map<string, any>(), hooks = new Map<string, any[]>();
 	const messages: any[] = [];
@@ -51,7 +51,7 @@ function harness(t: test.TestContext) {
 	const owner = new BackgroundShellTasks(pi);
 	pi.getAllTools = () => [...tools.values()];
 	const ctx: any = { cwd: root, mode: "tui", getActiveTools: () => ["bash", "tasks"] };
-	t.after(async () => { await owner.dispose(); events.clear(); });
+	t.after(async () => { if (expectedDisposalError) await assert.rejects(owner.dispose(), expectedDisposalError); else await owner.dispose(); events.clear(); });
 	const start = (execute: any, signal?: AbortSignal, release = () => {}, check = () => {}) => owner.createLaunch("bash", "call", "npm test", root, ctx, check)(execute, signal, release).details.backgroundTask!.id;
 	return { owner, events, tools, hooks, messages, ctx, start };
 }
@@ -277,7 +277,7 @@ test("pre-tree cleanup finishes before earlier new-branch evidence handlers run"
 });
 
 test("process cleanup failure blocks queued and new launches before the slot drains", async t => {
-	const h = harness(t); let finish!: () => void, queuedStarted = 0;
+	const h = harness(t, /Process-tree cleanup failed: fixture/); let finish!: () => void, queuedStarted = 0;
 	const first = h.start(async () => {
 		await new Promise<void>(resolve => { finish = resolve; });
 		return { content: [], details: { shellExecution: shellFacts(1, "Process-tree cleanup failed: fixture") } };

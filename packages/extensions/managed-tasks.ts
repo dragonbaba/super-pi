@@ -32,7 +32,7 @@ export function configureTaskHistory(tasks: SubagentTasks, kind: Kind, ctx: Exte
 }
 
 function taskText(task: ManagedSubagentTask, item: ManagedTaskProvider): string {
-	return `${formatManagedTask(task)}${task.cwd ? `\nWorkspace: ${task.cwd}; branch: ${task.branchId ?? "root"}` : ""}${task.result === undefined ? "" : `\n\n${task.result}`}${item.tasks.historyError ? `\n\n${item.tasks.historyStatus}` : ""}`;
+	return `${formatManagedTask(task)}${task.cwd ? `\nWorkspace: ${task.cwd}; branch: ${task.branchId ?? "root"}` : ""}${task.checkpointAvailable ? "\nCheckpoint available: use a fresh authorized subagent request with resumeTaskId and new instructions; inspect any unobserved side effects first." : ""}${task.result === undefined ? "" : `\n\n${task.result}`}${item.tasks.historyError ? `\n\n${item.tasks.historyStatus}` : ""}`;
 }
 
 /** Two bounded providers; registration and explicit control calls are lifecycle work. */
@@ -52,6 +52,13 @@ export function registerManagedTasks(pi: ExtensionAPI, kind: Kind, provider: Man
 		directory = { providers: owned, parameters, stopDiscovery: () => {} };
 		const created = directory;
 		directory.stopDiscovery = pi.events.on(DIRECTORY_EVENT, value => { (value as typeof request).directory = created; });
+		pi.on("session_before_shutdown", async (event, ctx) => {
+			let active = 0;
+			for (const item of owned.values()) active += item.tasks.size - item.tasks.retainedResults;
+			if (active === 0 || event.signal.aborted) return;
+			const confirmed = await ctx.ui.confirm("退出 Super Pi？", `还有 ${active} 项任务尚未结束。确认退出将停止这些任务，清理后台进程后退出。`, { signal: event.signal });
+			return { cancel: !confirmed };
+		});
 		const list = (): string => {
 			if (owned.size === 0) throw new Error("Task session is closed.");
 			let text = "";

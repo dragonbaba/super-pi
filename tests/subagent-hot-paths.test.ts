@@ -14,6 +14,7 @@ test("child event ingestion and status rendering allocate no callbacks, promises
 		if (ts.isNewExpression(node) && ["Promise", "AbortController", "Map", "Set"].includes(node.expression.getText(tree))) failures.push(`${name}: ${node.expression.getText(tree)}`);
 		if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
 			if (["map", "filter", "flatMap", "bind", "then", "catch", "finally"].includes(node.expression.name.text)) failures.push(`${name}: ${node.expression.name.text}`);
+			if (["send", "saveCheckpoint", "request", "settle"].includes(node.expression.name.text)) failures.push(`${name}: budget/checkpoint work belongs to request/turn boundaries`);
 		}
 		if (name === "processLine" && ts.isCallExpression(node) && node.expression.getText(tree) === "emitSingleResultUpdate") failures.push("per-message progress publication");
 		ts.forEachChild(node, child => inspect(child, name));
