@@ -238,7 +238,7 @@ test("foreground and background reject nested writers before launch while chains
 	const batch = [{ agent: "worker", task: "fast-parent", cwd: workspace }, { agent: "worker", task: "fast-child", cwd: nested }];
 	for (const background of [false, true]) {
 		await assert.rejects(h.run({ tasks: batch, background }), /tasks 1 and 2.*overlapping.*no task was started/);
-		assert.equal((await h.control("list")).split("\n").length, 1, "rejected calls must not create task records");
+		assert.doesNotMatch(await h.control("list"), /[a-f0-9-]{36}-\d+/, "rejected calls must not create task records");
 		assert.match(await h.control("list"), /0\/8 reserved/);
 		assert.deepEqual(readdirSync(workspace), ["nested"]);
 		assert.deepEqual(readdirSync(nested), []);
@@ -305,6 +305,16 @@ test("permission changes cancel owned children and suppress stale notifications"
 	assert.equal(h.messages.length, 0);
 	assert.throws(() => process.kill(pid, 0), /ESRCH/);
 	assert.match(await h.control("list"), /0\/2 running/);
+});
+
+test("tree navigation drains owned children before new branch work", async t => {
+	const h = harness(t);
+	const result = await h.run({ agent: "scout", task: "hold-tree", readOnly: true, background: true });
+	const pid = await startedChild(h.ctx.cwd, "hold-tree");
+	await h.hooks.get("session_before_tree")();
+	assert.throws(() => process.kill(pid, 0), /ESRCH/);
+	assert.match(await h.control("status", ids(result)[0]), /cancelled/); assert.equal(h.messages.length, 0);
+	assert.match((await h.run({ agent: "scout", task: "fast-new-branch", readOnly: true })).content[0].text, /fixture result/);
 });
 
 test("shutdown waits for real child exit and suppresses late delivery", { timeout: 10_000 }, async t => {

@@ -48,7 +48,7 @@ File editing uses scoped reads and identity checks. Snapshots, line anchors, and
 
 ### Session background tasks
 
-In TUI/RPC sessions, Bash and PowerShell can use `background: true` with an explicit `cwd`. The model sees effective capacity before submission; `/tasks` and the direct `tasks` tool manage shell and subagent work together. Shell defaults are 16 running and 64 admitted commands, configurable up to 64/256. Commands keep normal authorization, bounded results and completion notifications; they stop on session shutdown and cannot resume after restart. See [background task usage and limits](docs/background-tasks.md).
+In TUI/RPC sessions, Bash and PowerShell can use `background: true` with an explicit `cwd`. The model sees effective capacity before submission; `/tasks` and the direct `tasks` tool manage shell and subagent work together. Shell defaults are 16 running and 64 admitted commands, configurable up to 64/256. Commands keep normal authorization, bounded results and completion notifications, and stop on session shutdown. Persistent sessions restore bounded historical results after restart; missing completion is marked interrupted, without replaying work or restoring permissions. See [background task usage and limits](docs/background-tasks.md).
 
 ### Goal, Plan, sessions, and memory
 

@@ -48,7 +48,7 @@ coding agent 提供 `read`、`grep`、`find`、`ls`、`edit`、`write`、`bash`�
 
 ### 会话内后台任务
 
-在 TUI/RPC 会话中，Bash 和 PowerShell 可使用 `background: true` 和明确的 `cwd`。提交前模型会获知实际容量；`/tasks` 和直接工具 `tasks` 统一管理普通命令与子代理任务。普通命令默认同时运行 16 个、接纳 64 个，可配置到 64/256。命令保留正常授权、有限结果和完成通知；会话关闭时停止，重启后不能续跑。参见[后台任务用法与限制](docs/background-tasks.md)。
+在 TUI/RPC 会话中，Bash 和 PowerShell 可使用 `background: true` 和明确的 `cwd`。提交前模型会获知实际容量；`/tasks` 和直接工具 `tasks` 统一管理普通命令与子代理任务。普通命令默认同时运行 16 个、接纳 64 个，可配置到 64/256。命令保留正常授权、有限结果和完成通知，会话关闭时停止。持久会话重启后可查看有限历史结果；缺少完成记录的任务标记为中断，不自动重跑或恢复旧授权。参见[后台任务用法与限制](docs/background-tasks.md)。
 
 ### Goal、Plan、会话和记忆
 
