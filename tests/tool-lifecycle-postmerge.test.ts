@@ -207,7 +207,7 @@ test("postmerge preflight adds zero argument-wrapper allocations", () => {
  }
  findContainer(consume);
  assert.equal(containers.length, 1);
- assert.deepEqual(containers[0].properties.map(property => property.name!.getText(source)), ["command", "timeout", "cwd", "purpose"]);
+ assert.deepEqual(containers[0].properties.map(property => property.name!.getText(source)), ["command", "timeout", "cwd", "purpose", "background"]);
  assert.doesNotMatch(consume.getText(source), /\bawait\b|new Promise|setTimeout|createHash|JSON\.stringify/);
  const runnerText = readFileSync(new URL("../packages/coding-agent/src/core/extensions/runner.ts", import.meta.url), "utf8");
  const runnerSource = ts.createSourceFile("runner.ts", runnerText, ts.ScriptTarget.Latest, true);

@@ -80,24 +80,25 @@ export class SubagentScheduler {
 	private readonly reservations = new Set<TaskReservation>();
 	private readonly waiters: SlotWaiter[] = [];
 	private disposed = false;
+	private readonly label: string;
 	active = 0;
 	outstanding = 0;
 	reserved = 0;
 	highWaterMark = 0;
 	queueHighWaterMark = 0;
 
-	constructor(limits: SubagentLimits) { this.limits = limits; }
+	constructor(limits: SubagentLimits, label = "Subagent") { this.limits = limits; this.label = label; }
 	get queued(): number { return this.waiters.length; }
 	get reservationCount(): number { return this.reservations.size; }
 
 	reserve(workspaces: readonly TaskWorkspace[], mode: "parallel" | "chain" = "parallel"): TaskReservation {
-		if (this.disposed) throw new Error("Subagent scheduler is closed.");
+		if (this.disposed) throw new Error(`${this.label} scheduler is closed.`);
 		const count = workspaces.length;
 		if (count < 1 || count > this.limits.maxTasks) {
-			throw new Error(`Subagent task limit exceeded: requested ${count}, per-call maximum ${this.limits.maxTasks}. Split into batches.`);
+			throw new Error(`${this.label} task limit exceeded: requested ${count}, per-call maximum ${this.limits.maxTasks}. Split into batches.`);
 		}
 		if (this.reserved + count > this.limits.maxTasks) {
-			throw new Error(`Subagent capacity exceeded: ${this.reserved} reserved by unfinished calls + ${count} requested; maximum ${this.limits.maxTasks}. Wait for a call to finish or submit fewer.`);
+			throw new Error(`${this.label} capacity exceeded: ${this.reserved} reserved by unfinished calls + ${count} requested; maximum ${this.limits.maxTasks}. Wait for a call to finish or submit fewer.`);
 		}
 		// Chain steps cannot overlap in time; parallel tasks must also be checked
 		// against each other before creating any reservation or child record.
@@ -128,7 +129,7 @@ export class SubagentScheduler {
 
 	async run<T>(signal: AbortSignal | undefined, execute: () => Promise<T>): Promise<T> {
 		signal?.throwIfAborted();
-		if (this.disposed) throw new Error("Subagent scheduler is closed.");
+		if (this.disposed) throw new Error(`${this.label} scheduler is closed.`);
 		if (this.active < this.limits.maxConcurrent && this.waiters.length === 0) this.takeSlot();
 		else {
 			const waiter = new SlotWaiter(this, signal);
@@ -139,7 +140,7 @@ export class SubagentScheduler {
 		}
 		try {
 			signal?.throwIfAborted();
-			if (this.disposed) throw new Error("Subagent scheduler is closed.");
+			if (this.disposed) throw new Error(`${this.label} scheduler is closed.`);
 			return await execute();
 		} finally {
 			this.active--;
@@ -173,7 +174,7 @@ export class SubagentScheduler {
 	dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;
-		for (const waiter of this.waiters) waiter.finish(new Error("Subagent session ended before launch."));
+		for (const waiter of this.waiters) waiter.finish(new Error(`${this.label} session ended before launch.`));
 		this.waiters.length = 0;
 		for (const reservation of this.reservations) reservation.release();
 	}

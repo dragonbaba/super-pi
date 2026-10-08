@@ -1,4 +1,5 @@
 import { withMsysStdinBridge } from "./msys-stdin.ts";
+import { consumeBackgroundShellLaunch, validateBackgroundShellInput, DEFAULT_BACKGROUND_SHELL_TIMEOUT } from "./shell-background.ts";
 import { boundedShellInput } from "./bounded-shell-input.ts";
 import { prepareShellCwd, getShellCwdBinding, isLocalShellBackend, registerLocalShellBackend } from "./shell-cwd.ts";
 import { constants } from "node:fs";
@@ -7,6 +8,7 @@ import { type AgentTool, ToolResultError, toolResultFromError } from "@super-pi/
 import { type Component, Container, getCapabilities, RELEASE_COMPONENT_RENDER_CACHE, Text, truncateToWidth, visibleWidth } from "@super-pi/tui";
 import { spawn } from "child_process";
 import type { Writable } from "node:stream";
+import type { WindowsShellJob } from "../../utils/windows-shell-job.ts";
 import { type Static, Type } from "typebox";
 import { keyHint } from "../../modes/interactive/components/keybinding-hints.ts";
 import { truncateToVisualLines } from "../../modes/interactive/components/visual-truncate.ts";
@@ -17,7 +19,7 @@ import { setOwnProperty } from "../../utils/record.ts";
 import {
 	getShellConfig,
 	getShellEnv,
-	killProcessTree,
+	killProcessTreeAndWait,
 	type ShellConfig,
 	trackDetachedChildPid,
 	untrackDetachedChildPid,
@@ -69,9 +71,10 @@ function resolveTimeoutMs(timeout: number | undefined): number | undefined {
 }
 
 const bashSchema = Type.Object({
+	background: Type.Optional(Type.Boolean({ description: "Run as a session-owned background task in TUI/RPC. Requires explicit cwd and active tasks management. Read tasks tool limits before launching; wait for completion before claiming success. Default timeout 1800s, maximum 7200s. Stops on session close or permission changes." })),
 	cwd: Type.Optional(Type.String({ minLength: 1, maxLength: 4096, description: "Literal directory for this call; relative to Session cwd. No shell or home expansion. Does not change Session cwd." })),
 	command: Type.String({ description: "Shell command to execute" }),
-	timeout: Type.Optional(Type.Number({ description: "Timeout in seconds (optional, no default timeout)" })),
+	timeout: Type.Optional(Type.Number({ description: "Timeout in seconds (foreground: no default; background: default 1800, maximum 7200)" })),
 });
 
 export const bashToolSystemPromptContribution = {
@@ -85,6 +88,7 @@ export const bashToolSystemPromptContribution = {
 export type BashToolInput = Static<typeof bashSchema>;
 
 export interface BashToolDetails {
+	backgroundTask?: { id: string; state: "queued" | "completed" | "failed" | "cancelled"; kind: "shell" };
 	cwd?: string;
 	shellExecution?: ShellExecutionFacts;
 	truncation?: TruncationResult;
@@ -115,6 +119,7 @@ export interface BashOperations {
 			timeout?: number;
 			env?: NodeJS.ProcessEnv;
 			beforeSpawn?: (cwd: string) => void;
+			managedBackground?: boolean;
 		},
 	) => Promise<ShellProcessResult>;
 }
@@ -143,10 +148,11 @@ class ShellInputObserver {
 /** Shared process execution used by the built-in shell tools. */
 export function createLocalShellOperations(shellName: string, resolveShellConfig: () => ShellConfig): BashOperations {
 	return registerLocalShellBackend({
-		exec: async (command, cwd, { onData, signal, timeout, env, beforeSpawn }) => {
+		exec: async (command, cwd, { onData, signal, timeout, env, beforeSpawn, managedBackground }) => {
 			const observation: ChildProcessObservation = { started: false, exitCode: null, signal: null, outputDrained: false };
 			let stopReason: ShellTermination | undefined;
 			let inputObserver: ShellInputObserver | undefined;
+			let processCleanupError: string | undefined;
 			try {
 			const timeoutMs = resolveTimeoutMs(timeout);
 			if (signal?.aborted) {
@@ -166,7 +172,12 @@ export function createLocalShellOperations(shellName: string, resolveShellConfig
 			if (signal?.aborted) { stopReason = "cancelled"; signal.throwIfAborted(); }
 			beforeSpawn?.(actualCwd);
 			observation.spawnAttempted = true;
-			const child = spawn(shellConfig.shell, commandFromStdin ? shellConfig.args : [...shellConfig.args, command], {
+			let windowsJob: WindowsShellJob | undefined;
+			if (managedBackground && process.platform === "win32") {
+				const { WindowsShellJob } = await import("../../utils/windows-shell-job.ts");
+				windowsJob = await WindowsShellJob.spawn(shellConfig.shell, commandFromStdin ? shellConfig.args : [...shellConfig.args, command], actualCwd, env ?? getShellEnv(), commandFromStdin, signal, beforeSpawn);
+			}
+			const child = windowsJob?.child ?? spawn(shellConfig.shell, commandFromStdin ? shellConfig.args : [...shellConfig.args, command], {
 				cwd: actualCwd,
 				detached: process.platform !== "win32",
 				env: env ?? getShellEnv(),
@@ -180,11 +191,16 @@ export function createLocalShellOperations(shellName: string, resolveShellConfig
 			if (child.pid) trackDetachedChildPid(child.pid);
 			let timeoutHandle: NodeJS.Timeout | undefined;
 			let outputSettled = false;
+			let processCleanup: Promise<string | undefined> | undefined;
+			const stopChild = () => {
+				if (windowsJob) processCleanup ??= windowsJob.stop();
+				else if (child.pid) processCleanup ??= killProcessTreeAndWait(child.pid);
+				if (observation.exitCode !== null || observation.signal !== null) { child.stdout?.destroy(); child.stderr?.destroy(); }
+			};
 			const onAbort = () => {
 				if (outputSettled) return;
 				stopReason ??= signal?.reason?.[OUTPUT_FAILURE_ABORT] ? "output_failure" : "cancelled";
-				if (child.pid) killProcessTree(child.pid);
-				if (observation.exitCode !== null || observation.signal !== null) { child.stdout?.destroy(); child.stderr?.destroy(); }
+				stopChild();
 			};
 
 			try {
@@ -193,8 +209,7 @@ export function createLocalShellOperations(shellName: string, resolveShellConfig
 					timeoutHandle = setTimeout(() => {
 						if (outputSettled) return;
 						stopReason ??= "timeout";
-						if (child.pid) killProcessTree(child.pid);
-						if (observation.exitCode !== null || observation.signal !== null) { child.stdout?.destroy(); child.stderr?.destroy(); }
+						stopChild();
 					}, timeoutMs);
 				}
 				// Stream stdout and stderr.
@@ -209,12 +224,22 @@ export function createLocalShellOperations(shellName: string, resolveShellConfig
 				// on inherited stdio handles held by detached descendants.
 				const exitCode = await waitForChildProcess(child, observation);
 				outputSettled = true;
+				if (windowsJob) processCleanup ??= windowsJob.stop();
+				if (processCleanup) processCleanupError = await processCleanup;
+				processCleanupError ??= windowsJob?.dispatchError;
 				await inputObserver?.finish();
+				if (windowsJob?.launchError) {
+					observation.started = false; observation.exitCode = null; observation.signal = null;
+					throw windowsJob.launchError;
+				}
 				const termination = stopReason ?? (observation.signal ? "signal" : exitCode === null ? "unknown" : "exit");
-				const result: ShellProcessResult = { exitCode, observation, termination, inputError: inputObserver?.error };
+				const result: ShellProcessResult = { exitCode, observation, termination, inputError: inputObserver?.error, observationError: processCleanupError };
 				if (stopReason) throw observedShellError(new Error(stopReason === "timeout" ? `timeout:${timeout}` : stopReason === "output_failure" ? "output capture failed" : "aborted"), result);
 				return result;
 			} finally {
+				outputSettled = true;
+				if (windowsJob) processCleanup ??= windowsJob.stop();
+				if (processCleanup) processCleanupError = await processCleanup;
 				if (child.pid) untrackDetachedChildPid(child.pid);
 				if (timeoutHandle) clearTimeout(timeoutHandle);
 				if (signal) signal.removeEventListener("abort", onAbort);
@@ -225,7 +250,7 @@ export function createLocalShellOperations(shellName: string, resolveShellConfig
 				if (shellProcessResultFromError(error)) throw error;
 				if (!observation.started) observation.outputDrained = true;
 				throw observedShellError(error, { exitCode: observation.exitCode, observation,
-					termination: observation.started ? stopReason ?? "unknown" : stopReason === "cancelled" ? "cancelled" : "not_started", inputError: inputObserver?.error });
+					termination: observation.started ? stopReason ?? "unknown" : stopReason === "cancelled" ? "cancelled" : "not_started", inputError: inputObserver?.error, observationError: processCleanupError });
 			}
 		},
 	});
@@ -895,28 +920,15 @@ export function createShellToolDefinition(
 	const commandPrefix = options?.commandPrefix;
 	const exposeSessionEnvironment = options?.exposeSessionEnvironment ?? true;
 	const spawnHook = options?.spawnHook;
-	return {
-		name: config.name,
-		label: config.label,
-		description: `Execute a ${config.shellName} command in the current working directory. Returns stdout and stderr. Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). If truncated, an output log is saved to a temp file, capped at 5 MiB. Optionally provide a timeout in seconds.`,
-		promptSnippet: config.promptSnippet,
-		promptGuidelines: exposeSessionEnvironment && config.promptGuidelines ? [...config.promptGuidelines] : undefined,
-		parameters: bashSchema,
-        prepareArguments(args) {
-            if (args && typeof args === "object" && typeof (args as BashToolInput).command === "string" && boundedShellInput((args as BashToolInput).command)
-              && (config.name !== "bash" || !isLocalShellBackend(ops) || commandPrefix || (spawnHook && spawnHook !== withMsysStdinBridge) || ops.exec !== backendExecute)) throw new Error("[SHELL_INPUT_UNSUPPORTED] Bounded heredoc input requires the unchanged built-in Bash backend and transport.");
-            if (args && typeof args === "object" && (args as BashToolInput).cwd !== undefined
-              && (!isLocalShellBackend(ops) || commandPrefix || (spawnHook && spawnHook !== withMsysStdinBridge) || ops.exec !== backendExecute)) throw new Error("[SHELL_CWD_UNSUPPORTED] Explicit cwd requires an unchanged built-in local backend without commandPrefix or spawnHook.");
-            return args as BashToolInput;
-        },
-		async execute(
+	const executeForeground: ToolDefinition<typeof bashSchema, BashToolDetails | undefined>["execute"] = async (
 			_toolCallId,
 			input: BashToolInput,
 			signal?: AbortSignal,
 			onUpdate?,
 			ctx?,
-		) {
-			const { command, timeout } = input;
+		) => {
+			const { command } = input;
+			const timeout = input.timeout ?? (input.background ? DEFAULT_BACKGROUND_SHELL_TIMEOUT : undefined);
             let cwdBinding = getShellCwdBinding(input);
             let executionEntered = false;
             try {
@@ -1003,6 +1015,10 @@ export function createShellToolDefinition(
 					if (outputFailure) throw outputFailure;
 					const snapshot = output.snapshot({ persistIfTruncated: true });
 					await output.closeTempFile();
+					if (input.background) {
+						try { cleanup = await output.discardTempFile(); snapshot.fullOutputPath = undefined; }
+						catch (failure) { cleanup = "failed"; cleanupError = (failure instanceof Error ? failure.message : String(failure)).slice(0, 1000); }
+					}
 					return snapshot;
 				} catch (error) {
 					clearUpdateTimer();
@@ -1020,7 +1036,7 @@ export function createShellToolDefinition(
 				const details: BashToolDetails = { cwd: spawnContext.cwd };
 				if (truncation.truncated) {
 					details.truncation = truncation; details.fullOutputPath = snapshot.fullOutputPath; details.spillFileCapped = snapshot.spillFileCapped;
-					const outputLabel = snapshot.fullOutputPath ? `${snapshot.spillFileCapped ? "Capped output file (5 MiB; later output unavailable)" : "Full output"}: ${snapshot.fullOutputPath}` : "Output log unavailable";
+					const outputLabel = input.background && cleanup !== "failed" ? "Background capture retains this tail only; temporary log removed after completion" : snapshot.fullOutputPath ? `${snapshot.spillFileCapped ? "Capped output file (5 MiB; later output unavailable)" : "Full output"}: ${snapshot.fullOutputPath}` : "Output log unavailable";
 					const startLine = truncation.totalLines - truncation.outputLines + 1;
 					const endLine = truncation.totalLines;
 					if (truncation.lastLinePartial) {
@@ -1045,6 +1061,7 @@ export function createShellToolDefinition(
 						timeout,
 						env: spawnContext.env,
 						beforeSpawn: cwdBinding?.beforeSpawn,
+						managedBackground: input.background,
 					});
 				} catch (err) {
 					executionError = err; processResult = shellProcessResultFromError(err);
@@ -1106,7 +1123,7 @@ export function createShellToolDefinition(
 					outputText = failure ? appendShellStatus(outputText, status) : `${status}\n${outputText}`;
 				}
 				if (cleanupError) outputText = appendShellStatus(outputText, `[SHELL_LOG_CLEANUP_FAILED] ${cleanupError}`);
-				if (failure || logError) throw new ToolResultError(outputText, { content: [{ type: "text", text: outputText }], details });
+				if (failure || logError || input.background && cleanupError) throw new ToolResultError(outputText, { content: [{ type: "text", text: outputText }], details });
 				return { content: [{ type: "text", text: outputText }], details };
 			} finally {
 				clearUpdateTimer();
@@ -1121,6 +1138,30 @@ export function createShellToolDefinition(
 						output: { complete: executionEntered ? "unknown" : true, tailTruncated: false, log: "not_needed", cleanup: "not_needed" } } };
 				throw new ToolResultError(message, { content: [{ type: "text", text: message }], details }, { cause: error });
 			} finally { cwdBinding?.release(); }
+	};
+	return {
+		name: config.name,
+		label: config.label,
+		description: `Execute a ${config.shellName} command in the current working directory. Returns stdout and stderr. Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Foreground truncated output is saved to a temp file, capped at 5 MiB. Background mode returns a task ID, retains bounded result text and removes its temporary log on completion. Optionally provide a timeout in seconds.`,
+		promptSnippet: config.promptSnippet,
+		promptGuidelines: exposeSessionEnvironment && config.promptGuidelines ? [...config.promptGuidelines] : undefined,
+		parameters: bashSchema,
+        prepareArguments(args) {
+            if (args && typeof args === "object") validateBackgroundShellInput(args as BashToolInput);
+            if ((args as BashToolInput)?.background && (!isLocalShellBackend(ops) || commandPrefix || (spawnHook && spawnHook !== withMsysStdinBridge) || ops.exec !== backendExecute)) throw new Error("[SHELL_BACKGROUND_UNSUPPORTED] Background commands require the unchanged built-in local shell backend.");
+            if (args && typeof args === "object" && typeof (args as BashToolInput).command === "string" && boundedShellInput((args as BashToolInput).command)
+              && (config.name !== "bash" || !isLocalShellBackend(ops) || commandPrefix || (spawnHook && spawnHook !== withMsysStdinBridge) || ops.exec !== backendExecute)) throw new Error("[SHELL_INPUT_UNSUPPORTED] Bounded heredoc input requires the unchanged built-in Bash backend and transport.");
+            if (args && typeof args === "object" && (args as BashToolInput).cwd !== undefined
+              && (!isLocalShellBackend(ops) || commandPrefix || (spawnHook && spawnHook !== withMsysStdinBridge) || ops.exec !== backendExecute)) throw new Error("[SHELL_CWD_UNSUPPORTED] Explicit cwd requires an unchanged built-in local backend without commandPrefix or spawnHook.");
+            return args as BashToolInput;
+        },
+		async execute(id, input, signal, onUpdate, ctx) {
+			if (!input.background) return executeForeground(id, input, signal, onUpdate, ctx);
+			try {
+				validateBackgroundShellInput(input);
+				if (!isLocalShellBackend(ops) || commandPrefix || (spawnHook && spawnHook !== withMsysStdinBridge) || ops.exec !== backendExecute) throw new Error("[SHELL_BACKGROUND_UNSUPPORTED] Background commands require the unchanged built-in local shell backend.");
+				return consumeBackgroundShellLaunch(input)((taskSignal) => executeForeground(id, input, taskSignal, undefined, ctx), signal, () => getShellCwdBinding(input)?.release());
+			} catch (error) { getShellCwdBinding(input)?.release(); throw error; }
 		},
 		renderCall(args, _theme, context) {
 			const state = context.state;

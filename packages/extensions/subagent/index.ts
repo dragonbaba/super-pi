@@ -1,3 +1,4 @@
+import { registerManagedTasks } from "../managed-tasks.ts";
 /**
  * Subagent Tool - Delegate tasks to specialized agents
  *
@@ -1332,6 +1333,7 @@ export default function (pi: ExtensionAPI) {
 	});
 	pi.on("session_shutdown", async () => {
 		closed = true;
+		taskRegistration.unregister();
 		removePermissionListener();
 		authority.abort(new Error("Subagent session closed."));
 		tasks.cancelAll();
@@ -1349,17 +1351,7 @@ export default function (pi: ExtensionAPI) {
 		for (const task of tasks.values()) text += `\n${taskStatus(task)}`;
 		return text;
 	};
-	pi.registerCommand("tasks", {
-		description: "List session subagent tasks; /tasks cancel <id> stops one task",
-		handler: async (args, ctx) => {
-			try {
-				const parts = args.trim().split(/\s+/);
-				if (parts[0] === "cancel" && parts.length === 2) ctx.ui.notify(taskStatus(tasks.cancel(parts[1])), "info");
-				else if (args.trim()) ctx.ui.notify("Usage: /tasks or /tasks cancel <id>", "error");
-				else ctx.ui.notify(listTasks(), "info");
-			} catch (error) { ctx.ui.notify(error instanceof Error ? error.message : String(error), "error"); }
-		},
-	});
+	const taskRegistration = registerManagedTasks(pi, "subagent", { tasks, list: listTasks, guidance: describeSubagentLimits(limits) });
 	pi.registerTool({
 		name: "subagent_tasks", label: "Subagent tasks",
 		description: `Manage existing session subagent tasks: list, status, wait, or cancel one ID. Waiting (0–60000ms, at most 64 pending waits) never cancels execution. Prefer completion notifications to repeated polling. Keep the latest ${limits.maxTasks} completed tasks, at most 12000 characters per result; IDs expire on session close. Cannot launch tasks or grant permissions.`,
@@ -1483,8 +1475,8 @@ export default function (pi: ExtensionAPI) {
 			if (params.background && ctx.mode !== "tui" && ctx.mode !== "rpc") {
 				throw new Error("Background subagents require a live TUI or RPC session. Use foreground execution in print/JSON mode.");
 			}
-			if (params.background && !ctx.getActiveTools().includes("subagent_tasks")) {
-				throw new Error("Background subagents require the subagent_tasks management tool. Enable it or use foreground execution.");
+			if (params.background && !ctx.getActiveTools().includes("subagent_tasks") && !taskRegistration.controlsAvailable(ctx)) {
+				throw new Error("Background subagents require the tasks or subagent_tasks management tool. Enable one or use foreground execution.");
 			}
 			const authoritySignal = authority.signal;
 			const foregroundSignal = signal ? AbortSignal.any([signal, authoritySignal]) : authoritySignal;

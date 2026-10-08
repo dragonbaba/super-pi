@@ -42,9 +42,9 @@ and stop condition. Keep dependent edits sequential or in isolated workspaces.
 
 ## Subsequent milestones
 
-- Adapt long-running shell commands to the same task lifecycle through the
-  existing permission and resource controllers. Do not add an alternate shell
-  execution path that bypasses inspection or final authorization.
+- Session-owned shell adaptation is implemented in the
+  [background shell phase](background-shell-tasks-plan.md), through the existing
+  permission and resource controllers with unified task management.
 - Persist bounded task metadata and results. After a crash, report interrupted
   work honestly; do not automatically replay edits or external side effects.
 - Add resumable child checkpoints, with renewed workspace and permission checks,

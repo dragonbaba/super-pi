@@ -5,7 +5,7 @@ import ts from "typescript";
 
 test("shell data/progress/drain callbacks create no callback or Promise on delivery", () => {
   const targets = new Set(["onError", "onClose", "onIdle", "armIdleTimer", "onData", "onStdoutEnd", "onStderrEnd", "onSpawn", "onExit", "maybeFinalizeAfterExit", "finalize", "cleanup",
-    "recordOutputFailure", "emitOutputUpdate", "clearUpdateTimer", "onUpdateTimer", "scheduleOutputUpdate", "handleData"]);
+    "recordOutputFailure", "emitOutputUpdate", "clearUpdateTimer", "onUpdateTimer", "scheduleOutputUpdate", "handleData", "stopChild"]);
   const seen = new Set<string>();
   for (const file of ["packages/coding-agent/src/core/tools/bash.ts", "packages/coding-agent/src/core/bash-executor.ts", "packages/coding-agent/src/utils/child-process.ts"]) {
     const source = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
@@ -31,9 +31,9 @@ test("shell data/progress/drain callbacks create no callback or Promise on deliv
   assert.deepEqual(seen, targets);
 });
 
-test("N3 completion and CDPATH helpers use module functions without nested callbacks or regexes", () => {
-  const targets = new Set(["appendShellStatus", "normalizeShellProcessResult", "appendShellObservationError", "shellFailureCategory", "isTemporaryCdpathQuery", "changesBashCdSemantics"]), seen = new Set<string>();
-  for (const file of ["packages/coding-agent/src/core/tools/bash.ts", "packages/coding-agent/src/core/tools/shell-execution.ts", "packages/extensions/resource-lifecycle-guard/core.ts"]) {
+test("completion, retention and CDPATH helpers use module functions without nested callbacks or regexes", () => {
+  const targets = new Set(["appendShellStatus", "normalizeShellProcessResult", "appendShellObservationError", "shellFailureCategory", "isTemporaryCdpathQuery", "changesBashCdSemantics", "retainedShellText", "setBounded"]), seen = new Set<string>();
+  for (const file of ["packages/coding-agent/src/core/tools/bash.ts", "packages/coding-agent/src/core/tools/shell-execution.ts", "packages/extensions/resource-lifecycle-guard/core.ts", "packages/extensions/resource-lifecycle-guard/background-shell.ts", "packages/extensions/false-success-guard/core.ts"]) {
     const source = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
     for (const node of source.statements) if (ts.isFunctionDeclaration(node) && node.name && targets.has(node.name.text)) {
       seen.add(node.name.text);
@@ -45,6 +45,23 @@ test("N3 completion and CDPATH helpers use module functions without nested callb
     }
   }
   assert.deepEqual(seen, targets);
+});
+
+test("Windows job callbacks are owned by admission and never forward shell output", () => {
+  const file = "packages/coding-agent/src/utils/windows-shell-job.ts";
+  const text = readFileSync(file, "utf8"), source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
+  const owners = new Set<string>();
+  function visit(node: ts.Node): void {
+    if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) {
+      assert.ok(ts.isPropertyDeclaration(node.parent));
+      const name = node.parent.name.getText(source); assert.ok(["onMessage", "onSend"].includes(name)); owners.add(name);
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(source); assert.deepEqual(owners, new Set(["onMessage", "onSend"]));
+  assert.doesNotMatch(text, /\.on\(["']data|\.pipe\(|onData\(/);
+  assert.match(text, /stdio:\[process.stdin,process.stdout,process.stderr\]/);
+  assert.ok(text.indexOf("native.assign(job, processHandle)") < text.indexOf("child.send({ shell, args, env }"));
 });
 
 test("substitution boundaries use primitive offsets without per-boundary containers or callbacks", () => {
