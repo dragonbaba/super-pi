@@ -3,7 +3,7 @@ import { closeSync, existsSync, lstatSync, openSync, realpathSync } from "node:f
 import { createRequire } from "node:module";
 import { hostname } from "node:os";
 import { dirname, resolve } from "node:path";
-import type { DatabaseSync, StatementSync } from "node:sqlite";
+import type { DatabaseSync, SQLOutputValue, StatementSync } from "node:sqlite";
 import { readShellExecution, type ShellExecutionFacts } from "../coding-agent/src/core/tools/shell-execution.ts";
 
 export type TaskKind = "shell" | "subagent";
@@ -28,12 +28,12 @@ const FACT_BYTES = 128 * 1024;
 const INTERRUPTED = "Previous runtime ended without a recorded completion. Process state and side effects are unknown. Inspect the workspace before submitting a fresh authorized request; nothing was replayed.";
 const require = createRequire(import.meta.url);
 const STATES = new Set<TaskState>(["queued", "running", "cancelling", "completed", "failed", "cancelled", "interrupted"]);
+const RECORDS_SQL = "SELECT id, agent, state, created, started, completed, result, cwd, branch, facts FROM tasks ORDER BY seq";
 
 export function taskHistoryPath(file: string, kind: TaskKind): string { return `${resolve(file)}.tasks-${kind}-v1.sqlite`; }
 function text(value: unknown, limit: number): value is string { return typeof value === "string" && value.length <= limit; }
 function timestamp(value: unknown): value is number { return Number.isSafeInteger(value) && (value as number) >= 0; }
 
-/** Observations only. Explicit schema projection prevents persisting execution closures/arguments. */
 function validate(record: TaskObservation): void {
 	if (!text(record.id, 80) || !/^[a-f0-9-]{36}-\d+$/.test(record.id) || !text(record.agent, 256)
 		|| !STATES.has(record.state) || !timestamp(record.createdAt)
@@ -46,6 +46,36 @@ function validate(record: TaskObservation): void {
 		|| (["completed", "failed", "cancelled", "interrupted"].includes(record.state) !== (record.completedAt !== undefined))) {
 		throw new Error("Invalid task history record; preserved for inspection.");
 	}
+}
+
+/** Lifecycle boundary: copy only schema fields, never backend extras or toJSON hooks. */
+function projectShellExecution(facts: ShellExecutionFacts): ShellExecutionFacts {
+	const output = facts.output;
+	const projected: ShellExecutionFacts = {
+		version: facts.version, producer: facts.producer, started: facts.started, executionStatus: facts.executionStatus,
+		sideEffects: facts.sideEffects, retryGuidance: facts.retryGuidance, cwd: facts.cwd,
+		exitCode: facts.exitCode, signal: facts.signal, termination: facts.termination,
+		output: { complete: output.complete, tailTruncated: output.tailTruncated, log: output.log, cleanup: output.cleanup },
+	};
+	if (facts.inputError !== undefined) projected.inputError = facts.inputError;
+	if (facts.observationError !== undefined) projected.observationError = facts.observationError;
+	if (facts.secondaryObservationError !== undefined) projected.secondaryObservationError = facts.secondaryObservationError;
+	if (facts.observationErrorsOmitted !== undefined) projected.observationErrorsOmitted = facts.observationErrorsOmitted;
+	if (output.logError !== undefined) projected.output.logError = output.logError;
+	if (output.cleanupError !== undefined) projected.output.cleanupError = output.cleanupError;
+	// Validate the copied primitives as well, in case backend getters changed after initial validation.
+	if (!readShellExecution({ shellExecution: projected })) throw new Error("Invalid task shell facts; nothing was serialized.");
+	return projected;
+}
+
+function readRecord(row: Record<string, SQLOutputValue>): TaskObservation {
+	const record: TaskObservation = { id: row.id as string, agent: row.agent as string, state: row.state as TaskState,
+		createdAt: row.created as number, startedAt: row.started === null ? undefined : row.started as number,
+		completedAt: row.completed === null ? undefined : row.completed as number,
+		result: row.result === null ? undefined : row.result as string, cwd: row.cwd === null ? undefined : row.cwd as string,
+		branchId: row.branch as string | null, shellExecution: row.facts === null ? undefined : JSON.parse(row.facts as string), recovered: true };
+	validate(record);
+	return record;
 }
 
 /** A separate connection per kind; transactions arbitrate writers, never PID/time lock stealing. */
@@ -92,15 +122,11 @@ export class TaskHistory {
 	load(): TaskObservation[] {
 		if (!this.path || !existsSync(this.path)) return [];
 		this.open();
-		const rows = this.db!.prepare("SELECT id, agent, state, created, started, completed, result, cwd, branch, facts FROM tasks ORDER BY seq").all();
 		const records: TaskObservation[] = [];
-		for (const row of rows) {
-			const record: TaskObservation = { id: row.id as string, agent: row.agent as string, state: row.state as TaskState,
-				createdAt: row.created as number, startedAt: row.started === null ? undefined : row.started as number,
-				completedAt: row.completed === null ? undefined : row.completed as number,
-				result: row.result === null ? undefined : row.result as string, cwd: row.cwd === null ? undefined : row.cwd as string,
-				branchId: row.branch as string | null, shellExecution: row.facts === null ? undefined : JSON.parse(row.facts as string), recovered: true };
-			validate(record); records.push(record);
+		for (const row of this.db!.prepare(RECORDS_SQL).iterate()) {
+			const record = readRecord(row);
+			if (record.shellExecution !== undefined) record.shellExecution = projectShellExecution(record.shellExecution);
+			records.push(record);
 		}
 		return records;
 	}
@@ -115,6 +141,7 @@ export class TaskHistory {
 		const { DatabaseSync: Database } = require("node:sqlite") as typeof import("node:sqlite");
 		const db = new Database(this.path, { timeout: 0, allowExtension: false });
 		this.counters.opens++; this.counters.openHandles++;
+		let committed = false;
 		try {
 			db.exec("PRAGMA trusted_schema=OFF; PRAGMA synchronous=FULL; PRAGMA journal_mode=DELETE; PRAGMA page_size=4096; PRAGMA max_page_count=32768;");
 			if (db.prepare("PRAGMA page_size").get()?.page_size !== 4096) throw new Error("Unsupported task history page size.");
@@ -133,8 +160,8 @@ export class TaskHistory {
 			if (ownerBounds.count !== 1 || (ownerBounds.session as number) > 1024 || (ownerBounds.cwd as number) > 131072 || (ownerBounds.kind as number) > 8 || (ownerBounds.token as number) > 80 || (ownerBounds.host as number) > 1024) throw new Error("Task history owner exceeds its bounded schema.");
 			const owner = db.prepare("SELECT session,cwd,kind,token,pid,host FROM owner WHERE singleton=1").get();
 			if (!owner || owner.session !== this.session.id || owner.cwd !== this.session.cwd || owner.kind !== this.kind) throw new Error("Task history belongs to a different session/workspace.");
-			if (owner.token !== null) {
-				if (!text(owner.token, 80) || !Number.isSafeInteger(owner.pid) || (owner.pid as number) <= 0 || owner.host !== hostname()) throw new Error("Task history writer cannot be reconciled on this host; preserve the file for inspection.");
+			if (owner.token !== null || owner.pid !== null || owner.host !== null) {
+				if (!text(owner.token, 80) || !owner.token || !Number.isSafeInteger(owner.pid) || (owner.pid as number) <= 0 || owner.host !== hostname()) throw new Error("Task history writer cannot be reconciled on this host; preserve the file for inspection.");
 				let stopped = false;
 				try { process.kill(owner.pid as number, 0); }
 				catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") stopped = true; }
@@ -148,6 +175,8 @@ export class TaskHistory {
 			if (db.prepare(`SELECT 1 FROM tasks WHERE state NOT IN ('queued','running','cancelling','completed','failed','cancelled','interrupted')
 				OR (state IN ('completed','failed','cancelled','interrupted')) != (completed IS NOT NULL)
 				OR created<0 OR started<0 OR completed<0 OR seq<0 LIMIT 1`).get()) throw new Error("Invalid task history state; preserved for inspection.");
+			// Validate every bounded row before recovery/pruning can overwrite evidence, in this same transaction.
+			for (const row of db.prepare(RECORDS_SQL).iterate()) readRecord(row);
 			this.sequence = bounds.seq as number;
 			const recovery = db.prepare("UPDATE tasks SET state='interrupted', completed=?, result=?, facts=NULL, seq=seq+? WHERE completed IS NULL").run(Date.now(), INTERRUPTED, this.sequence);
 			this.counters.recovered += Number(recovery.changes);
@@ -160,9 +189,11 @@ export class TaskHistory {
 			this.saveStatement = db.prepare(`INSERT INTO tasks(id,agent,state,created,started,completed,result,cwd,branch,facts,seq) VALUES(?,?,?,?,?,?,?,?,?,?,?)
 				ON CONFLICT(id) DO UPDATE SET state=excluded.state, started=excluded.started, completed=excluded.completed, result=excluded.result, facts=excluded.facts, seq=excluded.seq`);
 			db.exec("COMMIT");
+			committed = true;
+			this.assertOwner();
 			this.db = db;
 		} catch (error) {
-			try { db.exec("ROLLBACK"); } catch { /* BEGIN may have failed. */ }
+			if (!committed) { try { db.exec("ROLLBACK"); } catch { /* BEGIN may have failed. */ } }
 			this.saveStatement = undefined; this.ownerStatement = undefined; this.pruneStatement = undefined;
 			this.db = undefined; db.close(); this.counters.openHandles--;
 			throw error;
@@ -172,12 +203,13 @@ export class TaskHistory {
 	save(record: TaskObservation): void {
 		if (!this.path) return;
 		validate(record);
-		const facts = record.shellExecution === undefined ? null : JSON.stringify(record.shellExecution);
+		const facts = record.shellExecution === undefined ? null : JSON.stringify(projectShellExecution(record.shellExecution));
 		if (facts !== null && Buffer.byteLength(facts) > FACT_BYTES) throw new Error(`Task shell facts exceed ${FACT_BYTES} bytes.`);
 		this.open();
 		const db = this.db!;
 		this.assertOwner();
 		db.exec("BEGIN IMMEDIATE");
+		let committed = false;
 		try {
 			this.assertOwner();
 			this.saveStatement!.run(record.id, record.agent, record.state, record.createdAt, record.startedAt ?? null, record.completedAt ?? null,
@@ -186,8 +218,13 @@ export class TaskHistory {
 			const counts = db.prepare("SELECT count(*) AS total, count(*) FILTER (WHERE completed IS NULL) AS active FROM tasks").get()!;
 			if ((counts.active as number) > this.capacity || (counts.total as number) > this.capacity * 2) throw new Error(`Task history capacity reached: ${this.capacity} active plus ${this.capacity} terminal records.`);
 			db.exec("COMMIT");
+			committed = true;
 			this.counters.rows = counts.total as number; this.counters.writes++;
-		} catch (error) { db.exec("ROLLBACK"); throw error; }
+			this.assertOwner();
+		} catch (error) {
+			if (!committed) { try { db.exec("ROLLBACK"); } catch { /* Preserve the original storage failure. */ } }
+			throw error;
+		}
 	}
 
 	close(): void {

@@ -22,5 +22,7 @@ test("task persistence is reachable only from named lifecycle boundaries, never 
 	const storage = readFileSync("packages/extensions/task-history.ts", "utf8");
 	assert.doesNotMatch(storage, /setTimeout|setInterval|new Promise|AbortController|\.on\(["']data/);
 	assert.doesNotMatch(storage, /JSON\.stringify\(record\)|JSON\.stringify\(.*records/);
-	assert.match(storage, /JSON\.stringify\(record\.shellExecution\)/, "only bounded terminal facts are encoded");
+	assert.doesNotMatch(storage, /JSON\.stringify\(record\.shellExecution\)/, "backend-owned facts must never be serialized directly");
+	assert.match(storage, /JSON\.stringify\(projectShellExecution\(record\.shellExecution\)\)/, "only projected terminal facts are encoded");
+	assert.doesNotMatch(storage, /\.all\(\)/, "startup validates bounded records one at a time, without retaining an unpruned row array");
 });

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, linkSync, renameSync, realpathSync, statSync, readdirSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
@@ -22,6 +22,14 @@ function fixture(t: test.TestContext) {
 }
 function mutate(file: string, sql: string): void {
 	const db = new DatabaseSync(file); try { db.exec(sql); } finally { db.close(); }
+}
+function snapshot(file: string) {
+	const db = new DatabaseSync(file, { readOnly: true });
+	try {
+		const tasks = db.prepare("SELECT * FROM tasks ORDER BY seq"), owner = db.prepare("SELECT * FROM owner");
+		tasks.setReadBigInts(true); owner.setReadBigInts(true);
+		return { tasks: tasks.all(), owner: owner.all() };
+	} finally { db.close(); }
 }
 
 test("empty and memory-only sessions allocate no history files", t => {
@@ -49,6 +57,26 @@ test("normal restart restores bounded text, shell facts and IDs without controll
 	assert.equal(restored.cancel(record.id).state, "failed");
 	assert.throws(() => restored.start(record), /cannot restart/);
 	assert.equal(restored.create("bash").recovered, undefined);
+});
+
+test("shell history stores only schema facts and never invokes backend serialization hooks", t => {
+	const h = fixture(t), tasks = h.open("shell");
+	const expected: ShellExecutionFacts = { version: 1, producer: "custom-shell", started: true, executionStatus: "exited", sideEffects: "unknown",
+		retryGuidance: "inspect_before_retry", cwd: h.cwd, exitCode: 2, signal: null, termination: "exit", inputError: "input diagnostic",
+		observationError: "first diagnostic", secondaryObservationError: "second diagnostic", observationErrorsOmitted: true,
+		output: { complete: false, tailTruncated: true, log: "failed", cleanup: "failed", logError: "log diagnostic", cleanupError: "cleanup diagnostic" } };
+	const facts = { ...expected, backendArguments: "private-root", toJSON() { throw new Error("backend root hook called"); },
+		output: { ...expected.output, credentials: "private-output", toJSON() { throw new Error("backend output hook called"); } } };
+	const task = tasks.create("bash"); tasks.start(task); tasks.finish(task, "failed", true, facts);
+	assert.equal(tasks.historyError, undefined); tasks.dispose();
+	const path = taskHistoryPath(h.session.file, "shell");
+	assert.deepEqual(JSON.parse(snapshot(path).tasks[0].facts as string), expected);
+	// Existing version-1 files may already contain extra backend fields. Do not expose them on reload.
+	const db = new DatabaseSync(path);
+	try { db.prepare("UPDATE tasks SET facts=?").run(JSON.stringify({ ...expected, backendArguments: "private-root", output: { ...expected.output, credentials: "private-output" } })); }
+	finally { db.close(); }
+	const restored = h.open("shell");
+	assert.equal(restored.historyError, undefined); assert.deepEqual(restored.get(task.id).shellExecution, expected);
 });
 
 test("a real exited writer recovers queued/running observations as interrupted and preserves known results", async t => {
@@ -85,6 +113,19 @@ test("owner identity mismatch, foreign host and corrupt version fail closed", t 
 	mutate(h.path, "UPDATE owner SET token='old',pid=1,host='unrelated-host'");
 	const host = h.open(); assert.match(host.historyError!, /cannot be reconciled/); host.dispose();
 	mutate(h.path, "PRAGMA user_version=999"); const version = h.open(); assert.match(version.historyError!, /version: 999/);
+});
+
+test("partial writer claims are rejected without changing ownership or unfinished records", t => {
+	for (let mask = 1; mask < 8; mask++) {
+		const h = fixture(t), first = h.open(); first.create("scout"); first.dispose();
+		const db = new DatabaseSync(h.path);
+		try { db.prepare("UPDATE owner SET token=?,pid=?,host=?").run(mask === 7 ? "" : mask & 1 ? "previous-writer" : null, mask & 2 ? process.pid : null, mask & 4 ? hostname() : null); }
+		finally { db.close(); }
+		const before = snapshot(h.path), restored = h.open();
+		assert.match(restored.historyError!, /cannot be reconciled/, `claim mask ${mask}`);
+		assert.throws(() => restored.create("scout"), /New work is blocked/);
+		assert.deepEqual(snapshot(h.path), before); restored.dispose();
+	}
 });
 
 test("bounded completion order, reduced configuration and Unicode truncation survive restart", t => {
@@ -135,6 +176,70 @@ test("damaged records and oversized text never become successful historical evid
 	try { assert.equal(inspection.prepare("SELECT state FROM tasks").get()!.state, "impossible", "recovery must not rewrite malformed state"); } finally { inspection.close(); }
 	mutate(h.path, "UPDATE owner SET host=char(0)||printf('%2000s','x')");
 	const badOwner = h.open(); assert.match(badOwner.historyError!, /owner exceeds its bounded schema/);
+});
+
+test("full row validation precedes recovery, writer claim and pruning", t => {
+	for (const damage of [
+		"UPDATE tasks SET id='invalid-id' WHERE state='queued'",
+		"UPDATE tasks SET created=9007199254740992 WHERE state='running'",
+		"UPDATE tasks SET facts='{' WHERE state='queued'",
+		"UPDATE tasks SET facts='{}' WHERE state='running'",
+		"UPDATE tasks SET facts='{}' WHERE state='completed'",
+	]) {
+		const h = fixture(t), tasks = h.open();
+		tasks.finish(tasks.create("scout"), "old terminal result", false);
+		tasks.create("scout"); tasks.start(tasks.create("scout")); tasks.dispose();
+		mutate(h.path, damage);
+		const before = snapshot(h.path), restored = h.open("subagent", 1);
+		assert.ok(restored.historyError, damage); assert.equal(restored.size, 0);
+		assert.throws(() => restored.create("scout"), /New work is blocked/);
+		assert.deepEqual(snapshot(h.path), before, "even records that would be pruned must remain unchanged");
+		restored.dispose();
+	}
+});
+
+for (const identity of ["fileIdentity", "directoryIdentity"] as const) {
+	test(`post-commit ${identity} changes block launch and preserve the identity error`, t => {
+		const h = fixture(t), tasks = h.open(), task = tasks.create("scout");
+		const history = (tasks as unknown as { history: TaskHistory }).history;
+		const source = history as unknown as { fileIdentity(): string; directoryIdentity(): string };
+		const originalIdentity = source[identity], originalExec = DatabaseSync.prototype.exec;
+		let committed = false, launched = false;
+		t.mock.method(source, identity, function () { return originalIdentity.call(source) + (committed ? ":replaced" : ""); });
+		const commit = t.mock.method(DatabaseSync.prototype, "exec", function (this: DatabaseSync, sql: string) {
+			originalExec.call(this, sql); if (sql === "COMMIT") committed = true;
+		});
+		assert.throws(() => { tasks.start(task); launched = true; }, /storage identity changed/);
+		assert.equal(launched, false); assert.equal(committed, true);
+		assert.equal(commit.mock.calls.some(call => call.arguments[0] === "ROLLBACK"), false, "a completed transaction must not be rolled back");
+		assert.match(tasks.historyError!, /storage identity changed/); assert.throws(() => tasks.create("scout"), /New work is blocked/);
+		tasks.dispose(); assert.equal(history.counters.openHandles, 0);
+	});
+}
+
+test("recovery rejects storage replaced at commit and releases the failed opener", t => {
+	const h = fixture(t), tasks = h.open(); tasks.create("scout"); tasks.dispose();
+	const history = new TaskHistory(h.session, "subagent", 8);
+	const source = history as unknown as { fileIdentity(): string };
+	const originalIdentity = source.fileIdentity, originalExec = DatabaseSync.prototype.exec;
+	let committed = false;
+	t.mock.method(source, "fileIdentity", function () { return originalIdentity.call(source) + (committed ? ":replaced" : ""); });
+	t.mock.method(DatabaseSync.prototype, "exec", function (this: DatabaseSync, sql: string) {
+		originalExec.call(this, sql); if (sql === "COMMIT") committed = true;
+	});
+	assert.throws(() => history.load(), /storage identity changed/); history.close();
+	assert.equal(history.counters.openHandles, 0);
+});
+
+test("POSIX replacement during commit cannot acknowledge a start in an unlinked database", { skip: process.platform === "win32" }, t => {
+	const h = fixture(t), tasks = h.open(), task = tasks.create("scout");
+	const originalExec = DatabaseSync.prototype.exec;
+	t.mock.method(DatabaseSync.prototype, "exec", function (this: DatabaseSync, sql: string) {
+		originalExec.call(this, sql);
+		if (sql === "COMMIT") { renameSync(h.path, `${h.path}.original`); writeFileSync(h.path, "replacement"); }
+	});
+	assert.throws(() => tasks.start(task), /storage identity changed/); tasks.dispose();
+	assert.equal(readFileSync(h.path, "utf8"), "replacement");
 });
 
 test("storage replacement and hard links are rejected without writing the replacement", t => {
