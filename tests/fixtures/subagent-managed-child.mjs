@@ -27,12 +27,14 @@ async function control(kind, fields = {}) {
 }
 try {
 	const init = await control("ready");
-	const turns = task.includes("two-turn") ? 2 : 1;
+	const capacityHandoff = task.includes("capacity-handoff");
+	const turns = task.includes("two-turn") || capacityHandoff ? 2 : 1;
 	for (let turn = 0; turn < turns; turn++) {
 		if (init.checkpoint) await control("begin");
 		await new Promise(resolve => setTimeout(resolve, delay));
-		process.stdout.write(`${JSON.stringify({ type: "message_end", message })}\n`);
-		if (init.checkpoint) await control("turn", { completed: true, message, results: [] });
+		const response = capacityHandoff && turn === 0 ? { ...message, content: [{ type: "text", text: "large evidence ".repeat(60_000) }] } : message;
+		process.stdout.write(`${JSON.stringify({ type: "message_end", message: response })}\n`);
+		if (init.checkpoint) await control("turn", { completed: true, message: response, results: [] });
 		if (task.includes("checkpoint-hold")) await new Promise(resolve => setTimeout(resolve, 30_000));
 	}
 	process.exitCode = task.includes("fail") ? 1 : 0;

@@ -123,6 +123,24 @@ instructed to return concise evidence/results on completion, or report a blocker
 instead of expanding scope. Token/turn statistics are informational; concurrency,
 task-count and runtime limits still apply.
 
+Plan long assignments before launching: name a bounded phase and an early handoff
+point in `stopCondition`. The tool advertises checkpoint capacity (1 MiB / 128
+messages), the handoff threshold (768 KiB / 96 messages), and runtime limits.
+Each child receives its actual runtime limit; checkpoint-enabled children also see
+current/remaining stored bytes and message slots at startup and in request context.
+Resumed history consumes the same capacity.
+
+At the handoff threshold the child loses tool access and returns completed work,
+verification, changed files, remaining work and a specific next assignment. A final
+text response that triggers the threshold gets one follow-up summary request.
+Chains return before dependent steps launch; parallel results label handoffs
+separately. Review the result before assigning a fresh phase; do not repeatedly
+resume a nearly full checkpoint. A single oversized turn preserves the last valid
+checkpoint with pending effects and reports that the turn was not saved, then
+hands back work. Invalid content, storage and communication failures still fail.
+The task's terminal state describes execution ending, not acceptance of the whole
+objective. See [checkpoint and handoff details](../../../docs/background-tasks.md).
+
 ## Output Display
 
 **All views**:

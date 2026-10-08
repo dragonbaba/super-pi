@@ -108,8 +108,8 @@ export class SubagentTasks {
 		if (!this.history) throw new Error("Checkpoint history is unavailable.");
 		return this.history.readCheckpoint(record);
 	}
-	saveCheckpoint(checkpoint: TaskCheckpoint): void {
-		// Invalid/oversized context stops this task, not unrelated fresh work.
+	saveCheckpoint(checkpoint: TaskCheckpoint): number {
+		// Capacity can trigger handoff; invalid context must not poison unrelated work.
 		const encoded = encodeCheckpoint(checkpoint);
 		decodeCheckpoint(encoded, checkpoint.id, checkpoint.agent, checkpoint.cwd);
 		try {
@@ -117,6 +117,7 @@ export class SubagentTasks {
 			if (!this.history) throw new Error("Checkpoint history is unavailable.");
 			this.history.saveCheckpoint(checkpoint, encoded);
 			this.get(checkpoint.id).checkpointAvailable = checkpoint.turns > 0;
+			return Buffer.byteLength(encoded);
 		} catch (error) { this.recordHistoryError(error); throw error; }
 	}
 

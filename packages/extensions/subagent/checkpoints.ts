@@ -2,6 +2,12 @@ import type { Message } from "@super-pi/ai";
 
 export const CHECKPOINT_BYTES = 1024 * 1024;
 export const CHECKPOINT_MESSAGES = 128;
+export const CHECKPOINT_HANDOFF_BYTES = 768 * 1024;
+export const CHECKPOINT_HANDOFF_MESSAGES = 96;
+export const CHECKPOINT_PLANNING = `Plan long work as bounded phases BEFORE delegation, each with a verifiable deliverable and a handoff point in stopCondition. With checkpoint/resumeTaskId, completed context is limited to ${CHECKPOINT_BYTES} bytes (1 MiB) and ${CHECKPOINT_MESSAGES} messages, including prompts, assistant messages and tool results; resumed history consumes that same capacity. Handoff starts at ${CHECKPOINT_HANDOFF_BYTES} bytes (768 KiB) or ${CHECKPOINT_HANDOFF_MESSAGES} messages, reserving space for a concise summary. Keep reads and tool batches small; return file locations instead of full files/logs. A handoff must state completed work, verification, changed files, remaining work and the next bounded assignment. Review that result before starting a fresh task; do not repeatedly resume a nearly full checkpoint. No automatic extra agents or token/turn quotas.`;
+
+/** Capacity exhaustion may hand back work; corrupt/unsupported context must still fail. */
+export class CheckpointCapacityError extends Error {}
 export interface TaskCheckpoint {
 	version: 1;
 	id: string;
@@ -22,7 +28,8 @@ function fileIdentity(value: unknown): value is string { return typeof value ===
 export function assertCheckpointJson(value: unknown, maximum = CHECKPOINT_BYTES): void {
 	let remaining = maximum, nodes = 0;
 	function visit(item: unknown, depth: number): void {
-		if (depth > 32 || ++nodes > 20000) throw new Error("Checkpoint/control structure exceeds depth 32 or 20000 nodes.");
+		if (depth > 32) throw new Error("Checkpoint/control structure exceeds depth 32.");
+		if (++nodes > 20000) throw new CheckpointCapacityError("Checkpoint/control structure exceeds 20000 nodes.");
 		if (typeof item === "string") {
 			remaining -= 2;
 			for (let i = 0; i < item.length && remaining >= 0; i++) {
@@ -44,19 +51,19 @@ export function assertCheckpointJson(value: unknown, maximum = CHECKPOINT_BYTES)
 			remaining -= 2;
 			let first = true;
 			const keys = Object.keys(item);
-			if (keys.length > 20000) throw new Error("Checkpoint/control structure exceeds 20000 nodes.");
+			if (keys.length > 20000) throw new CheckpointCapacityError("Checkpoint/control structure exceeds 20000 nodes.");
 			for (const key of keys) {
 				remaining -= first ? 1 : 2; first = false;
 				visit(key, depth + 1); visit((item as Record<string, unknown>)[key], depth + 1);
 			}
 		} else throw new Error("Checkpoint contains non-JSON data.");
-		if (remaining < 0) throw new Error(`Checkpoint/control message exceeds ${maximum} bytes.`);
+		if (remaining < 0) throw new CheckpointCapacityError(`Checkpoint/control message exceeds ${maximum} bytes.`);
 	}
 	visit(value, 0);
 }
 
 export function encodeCheckpoint(checkpoint: TaskCheckpoint): string {
-	if (checkpoint.messages.length > CHECKPOINT_MESSAGES) throw new Error("Checkpoint limit reached: 128 messages. Split the remaining work into a fresh task.");
+	if (checkpoint.messages.length > CHECKPOINT_MESSAGES) throw new CheckpointCapacityError("Checkpoint limit reached: 128 messages. Split the remaining work into a fresh task.");
 	const messages: Message[] = [];
 	for (const message of checkpoint.messages) messages.push(checkpointMessage(message));
 	const projected: TaskCheckpoint = { version: checkpoint.version, id: checkpoint.id, agent: checkpoint.agent, cwd: checkpoint.cwd,
@@ -73,10 +80,14 @@ export function checkpointMessage(value: unknown): Message {
 		if (!bounded(item.content, 32768)) throw new Error("Checkpoint user context must be bounded text.");
 		return { role: "user", content: item.content, timestamp: item.timestamp };
 	}
-	if (item.role !== "assistant" && item.role !== "toolResult" || !Array.isArray(item.content) || item.content.length > 128) throw new Error("Unsupported checkpoint message.");
+	if (item.role !== "assistant" && item.role !== "toolResult" || !Array.isArray(item.content)) throw new Error("Unsupported checkpoint message.");
+	if (item.content.length > 128) throw new CheckpointCapacityError("Checkpoint message exceeds 128 content blocks.");
 	const content: any[] = [];
 	for (const part of item.content) {
-		if (part?.type === "text" && bounded(part.text, CHECKPOINT_BYTES)) content.push({ type: "text", text: part.text });
+		if (part?.type === "text" && typeof part.text === "string") {
+			if (part.text.length > CHECKPOINT_BYTES) throw new CheckpointCapacityError("Checkpoint text exceeds 1 MiB.");
+			content.push({ type: "text", text: part.text });
+		}
 		else if (part?.type === "thinking" && item.role === "assistant") continue;
 		else if (part?.type === "toolCall" && item.role === "assistant" && bounded(part.id, 256) && bounded(part.name, 128)
 			&& part.arguments && typeof part.arguments === "object" && !Array.isArray(part.arguments)) {
@@ -122,8 +133,8 @@ export function decodeCheckpoint(encoded: string, id: string, agent: string, cwd
 }
 
 export function appendCheckpointTurn(checkpoint: TaskCheckpoint, assistant: unknown, results: unknown): void {
-	if (!Array.isArray(results) || results.length > 128) throw new Error("Invalid checkpoint turn results.");
-	if (checkpoint.messages.length + results.length + 1 > CHECKPOINT_MESSAGES) throw new Error("Checkpoint limit reached: 128 messages. Split the remaining work into a fresh task.");
+	if (!Array.isArray(results)) throw new Error("Invalid checkpoint turn results.");
+	if (checkpoint.messages.length + results.length + 1 > CHECKPOINT_MESSAGES) throw new CheckpointCapacityError("Checkpoint limit reached: 128 messages. Split the remaining work into a fresh task.");
 	checkpoint.messages.push(checkpointMessage(assistant));
 	for (const result of results) checkpoint.messages.push(checkpointMessage(result));
 	checkpoint.turns++; checkpoint.updatedAt = Date.now(); checkpoint.pending = false;

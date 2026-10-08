@@ -7,6 +7,22 @@ const source = readFileSync(new URL("../packages/extensions/subagent/index.ts", 
 const tree = ts.createSourceFile("subagent/index.ts", source, ts.ScriptTarget.Latest, true);
 const hot = new Set(["onStdoutData", "onStderrData", "processLine", "appendBoundedMessage", "boundedMessage", "boundedUsage", "finiteUsage", "boundedTextContent", "capText", "prefixEnd", "capTextHeadTail", "jsonEventLimitReason", "jsonTransportLimitReason", "renderAgentStatus", "refreshStatus", "formatAgentUsage", "formatTokens", "formatElapsedMs", "resultStateCounts"]);
 
+test("child checkpoint guidance and IPC use only named intercepting/lifecycle hooks", () => {
+	const text = readFileSync(new URL("../packages/extensions/subagent/child-control.ts", import.meta.url), "utf8");
+	const child = ts.createSourceFile("child-control.ts", text, ts.ScriptTarget.Latest, true);
+	const allowed = new Set(["session_start", "before_agent_start", "context", "tool_call", "turn_start", "turn_end", "session_shutdown"]);
+	let count = 0;
+	function visit(node: ts.Node): void {
+		if (ts.isCallExpression(node) && node.expression.getText(child) === "pi.on") {
+			const event = node.arguments[0];
+			assert.ok(event && ts.isStringLiteral(event) && allowed.has(event.text), "no provider-delta, tool-progress or message-update hook may acquire checkpoint work");
+			count++;
+		}
+		ts.forEachChild(node, visit);
+	}
+	visit(child); assert.ok(count > 0);
+});
+
 test("child event ingestion and status rendering allocate no callbacks, promises or batch copies", () => {
 	const found = new Set<string>(); const failures: string[] = [];
 	function inspect(node: ts.Node, name: string): void {

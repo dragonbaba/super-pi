@@ -1,7 +1,7 @@
 # Subagent scheduling and managed tasks
 
 Status: first session-owned subagent release implemented and locally verified.
-Base: `8b7308691`. Cross-restart recovery remains a subsequent milestone.
+Base: `8b7308691`. Bounded historical recovery and explicit checkpoints are now implemented.
 
 ## Intended behavior
 
@@ -48,9 +48,10 @@ and stop condition. Keep dependent edits sequential or in isolated workspaces.
 - Bounded task metadata/results and honest interrupted-state recovery are
   implemented in the [task history phase](task-history-persistence-plan.md).
   It never automatically replays edits or external side effects.
-- Add resumable child checkpoints, with renewed workspace and permission checks,
-  and enforce parent/child turn and token budgets. Label cost estimates and the
-  granularity of budget enforcement.
+- Explicit resumable checkpoints and renewed workspace/permission checks are
+  implemented. Token/turn quotas are excluded. Plan long work as bounded phases
+  before delegation, advertise capacity to both models, and hand back remaining
+  work before storage limits; see [current behavior](background-tasks.md).
 - Only introduce a daemon when tasks must survive application exit. Distributed
   workers and inter-agent messaging are separate compatibility decisions.
 

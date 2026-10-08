@@ -4,6 +4,10 @@ Contract: [hot-path allocation contract](hot-path-allocation-contract.md).
 Base: PR #75, f9680c578. Candidate: PR #76.
 Offline measurements: Windows, Node 22.19.0, 2026-10-09.
 
+This records PR #76. The subsequent capacity guidance and graceful handoff change
+is audited in [checkpoint handoff](checkpoint-handoff.md), including updated
+intercepting hooks, capacity fallback and allocation/lifecycle measurements.
+
 ## Complete production chain
 
 Bounded assignment validation -> current delegated authorization -> shared

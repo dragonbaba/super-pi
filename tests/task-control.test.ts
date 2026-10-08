@@ -38,15 +38,18 @@ for (const stage of ["ready", "ready-uncertain", "begin", "incomplete", "invalid
 	if (stage === "invalid") assert.match(failure, /unsupported content/);
 });
 
-for (const bad of [false, true]) test(`real child control ${bad ? "reports unsupported checkpoint failure" : "saves completed turns and prepends historical context without replay"}`, async t => {
+for (const mode of ["complete", "bad-checkpoint", "near", "resume-full", "large-turn", "large-tool-result", "checkpoint-overflow", "transport-overflow", "ordinary"]) test(`real child control: ${mode}`, async t => {
 	const cwd = realpathSync(mkdtempSync(join(tmpdir(), "sp-control-")));
 	const tasks = new SubagentTasks(2); tasks.configureHistory({ file: join(cwd, "session.jsonl"), id: "fixture", cwd }, "subagent");
 	const record = tasks.create("scout", cwd); tasks.start(record);
 	const identity = statSync(cwd, { bigint: true });
 	const checkpoint: TaskCheckpoint = { version: 1, id: record.id, agent: "scout", cwd, device: String(identity.dev), inode: String(identity.ino), turns: 1, updatedAt: 1, pending: false,
 		messages: [{ role: "user", content: "historical instruction", timestamp: 0 }] };
-	const control = new SubagentControl(tasks, checkpoint, checkpoint.messages);
-	const proc = spawn(process.execPath, ["--experimental-strip-types", fileURLToPath(new URL("fixtures/subagent-control.mjs", import.meta.url)), bad ? "bad-checkpoint" : "complete"], {
+	if (mode === "near") checkpoint.messages = new Array(96).fill(checkpoint.messages[0]);
+	if (mode === "resume-full") checkpoint.messages = new Array(127).fill(checkpoint.messages[0]);
+	const control = new SubagentControl(tasks, mode === "ordinary" ? undefined : checkpoint, mode === "ordinary" ? undefined : checkpoint.messages, false,
+		mode === "resume-full" ? { role: "user", content: "new instruction", timestamp: 3 } : undefined);
+	const proc = spawn(process.execPath, ["--experimental-strip-types", fileURLToPath(new URL("fixtures/subagent-control.mjs", import.meta.url)), mode], {
 		cwd, windowsHide: true, stdio: ["ignore", "pipe", "pipe", "ipc"], env: { ...process.env, SP_SUBAGENT_CONTROL: "1" },
 	});
 	let failure = "", output = "", errors = "";
@@ -57,10 +60,34 @@ for (const bad of [false, true]) test(`real child control ${bad ? "reports unsup
 	control.finish(); control.dispose();
 	assert.equal(proc.listenerCount("message"), 0);
 	const summary = JSON.parse(output);
-	assert.deepEqual(summary.seedRoles, ["user", "user"]); assert.equal(summary.initialCount, 1);
+	assert.equal(summary.initialCount, 1);
+	assert.equal(summary.messageListeners, 0); assert.equal(summary.disconnectListeners, 0);
+	if (mode === "ordinary") {
+		assert.equal(summary.seedRoles, undefined); assert.equal(summary.toolsDisabled, 0);
+		assert.equal(control.counters.received, 1); assert.equal(control.counters.checkpointWrites, 0);
+		assert.equal(failure, ""); return;
+	}
+	assert.deepEqual(summary.seedRoles, new Array(mode === "near" ? 98 : mode === "resume-full" ? 129 : 3).fill("user"));
 	assert.match(summary.prompt, /historical context/);
+	assert.match(summary.prompt, /1048576.*128 messages/);
+	assert.match(summary.prompt, /786432.*96 messages/);
 	tasks.finish(record, failure || "done", !!failure);
 	const saved = tasks.readCheckpoint(record.id);
-	if (bad) { assert.match(failure, /unsupported content/); assert.equal(saved.pending, true); assert.equal(saved.messages.length, 1); }
-	else { assert.equal(failure, ""); assert.equal(summary.aborted, 0); assert.equal(saved.pending, false); assert.equal(saved.messages.length, 3); assert.equal(control.counters.starts, 2); }
+	if (mode === "bad-checkpoint") { assert.match(failure, /unsupported content/); assert.equal(saved.pending, true); assert.equal(saved.messages.length, 1); }
+	else {
+		assert.equal(failure, ""); assert.equal(summary.aborted, 0); assert.equal(control.counters.starts, 2);
+		const frozen = mode === "transport-overflow" || mode === "checkpoint-overflow" || mode === "resume-full";
+		assert.equal(saved.pending, frozen);
+		assert.equal(saved.messages.length, mode === "near" ? 98 : mode === "resume-full" ? 127 : mode === "large-tool-result" ? 4 : frozen ? 1 : 3);
+		if (frozen) assert.equal(saved.turns, 1, "failed capacity admission must restore in-memory and durable completed-turn counts");
+		assert.equal(summary.toolsDisabled, mode === "complete" ? 0 : 1);
+		assert.equal(summary.startupDisabled, mode === "near" || mode === "resume-full" ? 1 : 0);
+		assert.equal(summary.followUps, mode === "large-turn" || mode === "checkpoint-overflow" || mode === "transport-overflow" ? 1 : 0, "a final text turn must get exactly one chance to return a concise handoff");
+		assert.equal(summary.toolBlocked, mode !== "complete");
+		assert.equal(tasks.historyError, undefined);
+		if (mode !== "complete") {
+			assert.match(summary.capacityNotice, /HANDOFF NOW/); assert.match(control.handoffReason!, /fresh bounded assignment/);
+			assert.equal(control.counters.handoffs, 1);
+		}
+	}
 });
