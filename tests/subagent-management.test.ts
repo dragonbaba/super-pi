@@ -3,6 +3,8 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync, statSync, realpathSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { StringDecoder } from "node:string_decoder";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { setImmediate as tick, setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import { createEventBus } from "../packages/coding-agent/src/core/event-bus.ts";
@@ -23,7 +25,7 @@ mkdirSync(join(process.env.SP_CODING_AGENT_DIR, "agents"), { recursive: true });
 mkdirSync(join(process.env.SP_CODING_AGENT_DIR, "config"), { recursive: true });
 writeFileSync(join(process.env.SP_CODING_AGENT_DIR, "agents", "scout.md"), "---\nname: scout\ndescription: Offline test agent\ntools: read\n---\nFixture prompt.");
 writeFileSync(join(process.env.SP_CODING_AGENT_DIR, "agents", "worker.md"), "---\nname: worker\ndescription: Offline writer agent\ntools: read, write\n---\nFixture prompt.");
-const { default: extension, assertTaskCount, snapshotSubagentDetails, boundedMessage } = await import("../packages/extensions/subagent/index.ts");
+const { default: extension, assertTaskCount, snapshotSubagentDetails, boundedMessage, SubagentProcessRun, finishCancelledProcessGroup } = await import("../packages/extensions/subagent/index.ts");
 const { parseSubagentLimits, loadSubagentLimits, SUBAGENT_LIMITS_PATH } = await import("../packages/extensions/subagent/limits.ts");
 test.after(() => {
 	for (const [name, value] of [["SP_CODING_AGENT_DIR", oldAgentDir], ["SP_SOURCE_LAUNCHER", oldLauncher], ["SP_BUNDLED_AGENTS_DIR", oldBundled]]) {
@@ -43,6 +45,17 @@ test("limits accept explicit capacity, reject invalid values, and bound file rea
 });
 
 const readonlyWorkspace = { canonicalCwd: realpathSync(fixtureRoot), allowMutation: false };
+test("POSIX root close escalates the recorded group and preserves cleanup failure", { skip: process.platform === "win32" }, t => {
+	const calls: Array<[number, unknown]> = [];
+	const kill = t.mock.method(process, "kill", (pid: number, signal: unknown) => { calls.push([pid, signal]); return true; });
+	finishCancelledProcessGroup(321); assert.deepEqual(calls, [[-321, "SIGKILL"]]);
+	kill.mock.mockImplementation(() => { throw Object.assign(new Error("denied"), { code: "EPERM" }); });
+	let finished = false;
+	const run: any = Object.create(SubagentProcessRun.prototype);
+	Object.assign(run, { settled: false, childClosed: false, killRequested: true, proc: { pid: 321 }, buffer: "", stdoutDecoder: new StringDecoder("utf8"),
+		settle() { finished = true; } });
+	run.onClose(0); assert.equal(finished, true); assert.match(run.cleanupError, /process-group cleanup failed: denied/);
+});
 test("shared FIFO handles multiple batches and releases cancelled queue entries", async () => {
 	const scheduler = new SubagentScheduler({ maxConcurrent: 2, maxTasks: 4 });
 	const first = scheduler.reserve([readonlyWorkspace, readonlyWorkspace]);
@@ -176,29 +189,93 @@ test("dispose releases waiters and ignores late results", async () => {
 	assert.equal(registry.waiterCount + registry.size + registry.retainedResults, 0);
 });
 
-function harness(t: test.TestContext) {
+const responsibility = { scope: "Fixture workspace only", deliverable: "Fixture result and evidence", stopCondition: "Return when the assigned fixture completes or report its blocker" };
+
+function harness(t: test.TestContext, options: { persistent?: boolean; shutdownError?: RegExp } = {}) {
 	assert.ok(SUBAGENT_LIMITS_PATH.startsWith(fixtureRoot), "configuration must stay in the recorded fixture directory");
 	writeFileSync(SUBAGENT_LIMITS_PATH, '{"maxConcurrent":2,"maxTasks":8}');
 	const tools = new Map<string, any>(); const commands = new Map<string, any>(); const hooks = new Map<string, any>();
+	const startHooks: any[] = [], notices: Array<{ text: string; level: string }> = [];
 	const events = createEventBus(); const messages: any[] = [];
 	let completion!: () => void;
 	let notified = new Promise<void>(resolve => { completion = resolve; });
-	const pi: any = { events, registerTool: (tool: any) => tools.set(tool.name, tool), registerCommand: (name: string, command: any) => commands.set(name, command), on: (name: string, hook: any) => hooks.set(name, hook), sendMessage: (message: any) => { messages.push(message); completion(); } };
+	const pi: any = { events, registerTool: (tool: any) => tools.set(tool.name, tool), registerCommand: (name: string, command: any) => commands.set(name, command), on: (name: string, hook: any) => { hooks.set(name, hook); if (name === "before_agent_start") startHooks.push(hook); }, sendMessage: (message: any) => { messages.push(message); completion(); } };
 	extension(pi);
+	const entries: any[] = [];
+	pi.appendEntry = (customType: string, data: unknown) => { entries.push({ type: "custom", customType, data }); };
 	const cwd = realpathSync(mkdtempSync(join(fixtureRoot, "workspace-")));
-	const ctx: any = { cwd, mode: "tui", hasUI: false, isProjectTrusted: () => false, getActiveTools: () => ["subagent", "subagent_tasks"], modelRegistry: {}, model: undefined, ui: { notify() {} } };
+	const ctx: any = { cwd, mode: "tui", hasUI: false, isIdle: () => true, isProjectTrusted: () => false, getActiveTools: () => ["subagent", "subagent_tasks"], modelRegistry: {}, model: undefined, ui: { notify(text: string, level: string) { notices.push({ text, level }); } } };
+	if (options.persistent) ctx.sessionManager = { getSessionFile: () => join(cwd, "session.jsonl"), getSessionId: () => "fixture", getLeafId: () => null, getEntries: () => entries };
 	let sequence = 0;
 	const run = (params: any, onUpdate?: (value: any) => void) => {
 		const id = `call-${++sequence}`;
 		const items = params.tasks ?? params.chain ?? [params];
+		for (const item of items) { item.scope ??= responsibility.scope; item.deliverable ??= responsibility.deliverable; item.stopCondition ??= responsibility.stopCondition; }
 		const grants = items.map((item: any) => { const canonicalCwd = item.cwd ?? cwd; const stat = statSync(canonicalCwd); return { canonicalCwd, device: stat.dev, inode: stat.ino, permissionMode: item.readOnly ? "read-only" : "workspace-write", writable: !item.readOnly, source: isPathInside(canonicalCwd, cwd) ? "primary" : "additional" }; });
 		attachSubagentWorkspaceDelegation(params, { schemaVersion: 1, sequence, toolCallId: id, grants });
 		return tools.get("subagent").execute(id, params, undefined, onUpdate, ctx);
 	};
 	const control = async (action: string, id?: string, timeoutMs?: number) => (await tools.get("subagent_tasks").execute("control", { action, id, timeoutMs }, undefined)).content[0].text as string;
-	t.after(async () => { await hooks.get("session_shutdown")(); events.clear(); });
-	return { tools, commands, hooks, events, ctx, run, control, messages, notified: () => notified, resetNotification: () => { notified = new Promise<void>(resolve => { completion = resolve; }); } };
+	t.after(async () => { if (options.shutdownError) await assert.rejects(hooks.get("session_shutdown")(), options.shutdownError); else await hooks.get("session_shutdown")(); events.clear(); });
+	return { tools, commands, hooks, startHooks, notices, events, ctx, run, control, messages, entries, notified: () => notified, resetNotification: () => { notified = new Promise<void>(resolve => { completion = resolve; }); } };
 }
+
+test("ordinary children have no turn/token quota or per-turn control writes, even with a stale budget file", async t => {
+	const stale = join(process.env.SP_CODING_AGENT_DIR!, "config", "task-budgets.json");
+	writeFileSync(stale, '{"childTurns":1,"sessionTurns":1,"sessionTokens":1}');
+	t.after(() => rmSync(stale));
+	const h = harness(t, { persistent: true });
+	const result = await h.run({ tasks: [{ agent: "scout", task: "two-turn-one", readOnly: true }, { agent: "scout", task: "two-turn-two", readOnly: true }] });
+	assert.equal(result.details.results.length, 2);
+	for (const item of result.details.results) { assert.equal(item.exitCode, 0); assert.equal(item.usage.turns, 2); }
+	assert.equal(h.entries.length, 0);
+	assert.equal(h.commands.has("task-budget"), false);
+	assert.match(h.tools.get("subagent").description, /No token or turn quotas/);
+});
+
+test("responsibilities are required for every item before any child starts and reach its prompt", async t => {
+	const h = harness(t); const tool = h.tools.get("subagent");
+	assert.throws(() => tool.prepareArguments({ agent: "scout", task: "  ", ...responsibility }), /nonblank task objective/);
+	assert.throws(() => tool.prepareArguments({ agent: "scout", task: "x".repeat(16384), ...responsibility }), /responsibility fields exceeds 16384/);
+	for (const item of [tool.parameters.properties.tasks.items, tool.parameters.properties.chain.items]) {
+		for (const key of ["scope", "deliverable", "stopCondition"]) assert.ok(item.required.includes(key), "models see required batch fields before calling");
+	}
+	for (const key of ["scope", "deliverable", "stopCondition"]) {
+		for (const value of [undefined, "  ", "x".repeat(1025)]) {
+			const item = { agent: "scout", task: "inspect", ...responsibility, [key]: value };
+			for (const params of [item, { tasks: [{ agent: "scout", task: "valid", ...responsibility }, item] }, { chain: [item] }]) {
+				assert.throws(() => tool.prepareArguments(params), new RegExp(key));
+				await assert.rejects(tool.execute("invalid", params, undefined, undefined, h.ctx), new RegExp(key));
+			}
+		}
+	}
+	assert.deepEqual(readdirSync(h.ctx.cwd), []);
+	assert.match(await h.control("list"), /0\/8 reserved/);
+	const result = await h.run({ agent: "scout", task: "inspect", readOnly: true, ...responsibility });
+	assert.equal(result.details.results[0].exitCode, 0);
+	const marker = readdirSync(h.ctx.cwd).find(file => file.endsWith(".ready.json"))!;
+	const started = JSON.parse(readFileSync(join(h.ctx.cwd, marker), "utf8"));
+	assert.equal(started.task, `Task: inspect\n\nScope: ${responsibility.scope}\nDeliverable: ${responsibility.deliverable}\nStop condition: ${responsibility.stopCondition}`);
+	assert.match(started.systemPrompt, /Return immediately when done/);
+});
+
+test("real completed checkpoint continues under a fresh ID and current authorization; memory sessions refuse storage", async t => {
+	const memory = harness(t);
+	await assert.rejects(memory.run({ agent: "scout", task: "persist", checkpoint: true }), /persistent parent session/);
+	const h = harness(t, { persistent: true });
+	const first = await h.run({ agent: "scout", task: "original", checkpoint: true, background: true, readOnly: true });
+	const id = ids(first)[0]; await h.notified();
+	assert.match(await h.control("status", id), /Checkpoint available/);
+	await assert.rejects(h.run({ agent: "worker", task: "resume", resumeTaskId: id, readOnly: true }), /role\/workspace identity/);
+	const ungranted = { agent: "scout", task: "resume", resumeTaskId: id, ...responsibility };
+	await assert.rejects(h.tools.get("subagent").execute("no-grant", ungranted, undefined, undefined, h.ctx), /delegat|authoriz|permission/i);
+	h.resetNotification();
+	const next = await h.run({ agent: "scout", task: "verify and continue", resumeTaskId: id, background: true, readOnly: true });
+	const nextId = ids(next)[0]; assert.notEqual(nextId, id); await h.notified();
+	assert.match(await h.control("status", nextId), /completed.*\nCheckpoint available/);
+	assert.match(await h.control("status", id), /original/);
+	assert.equal(h.entries.length, 0, "continuation does not keep a budget ledger");
+});
 
 function ids(result: any): string[] { return result.content[0].text.match(/[a-f0-9-]{36}-\d+/g) ?? []; }
 
@@ -208,7 +285,7 @@ async function startedChild(cwd: string, task: string): Promise<number> {
 			if (!file.endsWith(".ready.json")) continue;
 			let value;
 			try { value = JSON.parse(readFileSync(join(cwd, file), "utf8")); } catch { continue; }
-			if (value.task === `Task: ${task}`) return value.pid;
+			if (value.task.startsWith(`Task: ${task}\n\nScope: `)) return value.pid;
 		}
 		await delay(20);
 	}
@@ -325,6 +402,25 @@ test("shutdown waits for real child exit and suppresses late delivery", { timeou
 	assert.throws(() => process.kill(pid, 0), /ESRCH/);
 	assert.equal(h.messages.length, 0);
 	await assert.rejects(h.control("list"), /session is closed/);
+});
+
+test("failed Windows tree cleanup blocks queued children and successful quit acknowledgement", { skip: process.platform !== "win32", timeout: 10_000 }, async t => {
+	const h = harness(t, { shutdownError: /process-tree cleanup failed/ });
+	const accepted = await h.run({ tasks: [
+		{ agent: "scout", task: "hold-cleanup-one", readOnly: true },
+		{ agent: "scout", task: "hold-cleanup-two", readOnly: true },
+		{ agent: "scout", task: "must-not-launch", readOnly: true },
+	], background: true });
+	const one = await startedChild(h.ctx.cwd, "hold-cleanup-one"), two = await startedChild(h.ctx.cwd, "hold-cleanup-two");
+	const native = createRequire(import.meta.url)("node:child_process"), spawnSync = native.spawnSync;
+	// Force an inspection failure; production fallback still stops these exact owned roots.
+	native.spawnSync = () => ({ error: new Error("fixture tree cleanup denied") }); syncBuiltinESMExports();
+	t.after(() => { native.spawnSync = spawnSync; syncBuiltinESMExports(); });
+	await h.control("cancel", ids(accepted)[0]); await h.notified();
+	assert.throws(() => process.kill(one, 0), /ESRCH/); assert.throws(() => process.kill(two, 0), /ESRCH/);
+	assert.equal(readdirSync(h.ctx.cwd).some(file => readFileSync(join(h.ctx.cwd, file), "utf8").includes("must-not-launch")), false);
+	await assert.rejects(h.run({ agent: "scout", task: "later" }), /process-tree cleanup failed/);
+	await assert.rejects(h.hooks.get("session_shutdown")(), /process-tree cleanup failed/);
 });
 
 test("partial parallel failure keeps successful output; a chain cancels unstarted steps", async t => {

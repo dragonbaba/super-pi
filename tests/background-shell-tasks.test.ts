@@ -43,7 +43,7 @@ test.after(() => {
 	assert.equal(dirname(root), tmpdir()); rmSync(root, { recursive: true, force: true });
 });
 
-function harness(t: test.TestContext) {
+function harness(t: test.TestContext, expectedDisposalError?: RegExp) {
 	assert.ok(BACKGROUND_SHELL_LIMITS_PATH.startsWith(root));
 	const events = createEventBus(), tools = new Map<string, any>(), commands = new Map<string, any>(), hooks = new Map<string, any[]>();
 	const messages: any[] = [];
@@ -51,7 +51,7 @@ function harness(t: test.TestContext) {
 	const owner = new BackgroundShellTasks(pi);
 	pi.getAllTools = () => [...tools.values()];
 	const ctx: any = { cwd: root, mode: "tui", getActiveTools: () => ["bash", "tasks"] };
-	t.after(async () => { await owner.dispose(); events.clear(); });
+	t.after(async () => { if (expectedDisposalError) await assert.rejects(owner.dispose(), expectedDisposalError); else await owner.dispose(); events.clear(); });
 	const start = (execute: any, signal?: AbortSignal, release = () => {}, check = () => {}) => owner.createLaunch("bash", "call", "npm test", root, ctx, check)(execute, signal, release).details.backgroundTask!.id;
 	return { owner, events, tools, hooks, messages, ctx, start };
 }
@@ -174,7 +174,7 @@ test("real extension loading shares shell/subagent controls and keeps the legacy
 	h.active.push("subagent", "subagent_tasks");
 	assert.equal(h.runner.getAllRegisteredTools().filter((tool: any) => tool.definition.name === "tasks").length, 1);
 	const shell = taskId(await h.call("bash", { command: "node fixture.mjs fast", cwd: ".", background: true }));
-	const child = await h.call("subagent", { agent: "scout", task: "fast", readOnly: true, background: true });
+	const child = await h.call("subagent", { agent: "scout", task: "fast", scope: "Fixture workspace", deliverable: "Fixture result", stopCondition: "Return when done", readOnly: true, background: true });
 	assert.equal(child.isError, false, text(child));
 	const id = text(child).match(/[a-f0-9-]{36}-\d+/)![0];
 	const list = text(await h.call("tasks", { action: "list" }));
@@ -190,7 +190,7 @@ test("real reload restores both providers with historical facts but no notificat
 	h.session.appendMessage({ role: "user", content: "offline history fixture", timestamp: Date.now() });
 	const shell = taskId(await h.call("bash", { command: "node fixture.mjs fast", cwd: ".", background: true }));
 	await h.call("tasks", { action: "wait", id: shell, timeoutMs: 5000 });
-	const children = await h.call("subagent", { agent: "scout", task: "hold", readOnly: true, background: true });
+	const children = await h.call("subagent", { agent: "scout", task: "hold", scope: "Fixture workspace", deliverable: "Fixture result", stopCondition: "Return when done", readOnly: true, background: true });
 	const child = text(children).match(/[a-f0-9-]{36}-\d+/)![0];
 	await h.shutdown();
 	let terminalEvents = 0;
@@ -252,7 +252,7 @@ test("an earlier unrelated tasks registration prevents unmanaged background exec
 	assert.equal(result.isError, true); assert.match(text(result), /conflicting tasks/);
 	assert.equal(existsSync(join(h.cwd, "fast.ready.json")), false);
 	h.active.push("subagent");
-	const child = await h.call("subagent", { agent: "scout", task: "fast", readOnly: true, background: true });
+	const child = await h.call("subagent", { agent: "scout", task: "fast", scope: "Fixture workspace", deliverable: "Fixture result", stopCondition: "Return when done", readOnly: true, background: true });
 	assert.equal(child.isError, true); assert.match(text(child), /subagent_tasks|management tool/);
 });
 
@@ -277,7 +277,7 @@ test("pre-tree cleanup finishes before earlier new-branch evidence handlers run"
 });
 
 test("process cleanup failure blocks queued and new launches before the slot drains", async t => {
-	const h = harness(t); let finish!: () => void, queuedStarted = 0;
+	const h = harness(t, /Process-tree cleanup failed: fixture/); let finish!: () => void, queuedStarted = 0;
 	const first = h.start(async () => {
 		await new Promise<void>(resolve => { finish = resolve; });
 		return { content: [], details: { shellExecution: shellFacts(1, "Process-tree cleanup failed: fixture") } };

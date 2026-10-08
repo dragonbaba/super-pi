@@ -9,6 +9,7 @@ Delegate tasks to specialized subagents with isolated context windows.
 - **Shared scheduling**: Foreground and background calls share one bounded FIFO per session runtime
 - **Elapsed-time tracking**: Shows final runtime and passively refreshes running elapsed time whenever the parent UI already renders, without owning a repaint timer
 - **Usage tracking**: Shows the resolved model while running and final turns, tokens, cost, and context usage on completion
+- **Explicit responsibilities**: Every task requires scope, a verifiable deliverable and a stop condition; no token or turn quotas
 - **Managed background work**: Task IDs, status/list/wait/cancel, one completion notification per batch, and session-owned cleanup
 - **Abort support**: Ctrl+C propagates to kill subagent processes
 
@@ -23,7 +24,7 @@ subagent/
 │   ├── scout.md         # Fast recon, returns compressed context
 │   ├── planner.md       # Creates implementation plans
 │   ├── reviewer.md      # Code review
-│   └── worker.md        # General-purpose (full capabilities)
+│   └── worker.md        # Scoped implementation with delegated capabilities
 └── prompts/             # Workflow presets (prompt templates)
     ├── implement.md     # scout -> planner -> worker
     ├── scout-and-plan.md    # scout -> planner (no implementation)
@@ -79,8 +80,8 @@ For multiple audits in the same cwd, set `readOnly: true` on each task explicitl
 ```json
 {
   "tasks": [
-    { "agent": "scout", "task": "Audit models; do not modify files.", "readOnly": true },
-    { "agent": "reviewer", "task": "Review provider risks; do not modify files.", "readOnly": true }
+    { "agent": "scout", "task": "Locate model registration.", "scope": "Model registry module", "deliverable": "Entry points and file locations", "stopCondition": "Return once registration flow is established or report the blocker", "readOnly": true },
+    { "agent": "reviewer", "task": "Review provider cancellation changes.", "scope": "Provider cancellation diff and its callers", "deliverable": "Actionable defects with triggers and locations", "stopCondition": "Return after reviewing the scoped paths", "readOnly": true }
   ]
 }
 ```
@@ -103,9 +104,24 @@ Use a chain: first have scout find the read tool, then have planner suggest impr
 
 | Mode | Parameter | Description |
 |------|-----------|-------------|
-| Single | `{ agent, task }` | One agent, one task |
+| Single | `{ agent, task, scope, deliverable, stopCondition }` | One agent, one objective |
 | Parallel | `{ tasks: [...] }` | Independent tasks share the session FIFO (default 64 tasks, 16 concurrent) |
 | Chain | `{ chain: [...] }` | Sequential with `{previous}` placeholder |
+
+Every parallel/chain item requires the same responsibility fields as single mode.
+Each field must be nonblank and at most 1024 characters; the task and three fields,
+including their labels, must fit 16384 characters. The whole batch is checked before
+launch. A chain's expanded handoff is checked again before that step starts.
+Existing scripts must add these fields. They express responsibilities, not file
+access permissions; workspace grants and `readOnly` remain the enforcement boundary.
+
+Give each child only the evidence needed for its one objective. Scout establishes
+facts, planner produces a plan, reviewer reports actionable defects, and worker
+implements the assigned change. Skip roles whose output already exists, keep
+dependent steps sequential and avoid overlapping investigations. Every child is
+instructed to return concise evidence/results on completion, or report a blocker
+instead of expanding scope. Token/turn statistics are informational; concurrency,
+task-count and runtime limits still apply.
 
 ## Output Display
 
@@ -193,8 +209,8 @@ In a live TUI or RPC session:
 {
   "background": true,
   "tasks": [
-    { "agent": "scout", "task": "Find the parser entry points; return file locations and stop.", "readOnly": true },
-    { "agent": "reviewer", "task": "Review cancellation ownership; return actionable findings and evidence.", "readOnly": true }
+    { "agent": "scout", "task": "Find parser entry points.", "scope": "Parser module", "deliverable": "Entry points and evidence locations", "stopCondition": "Return when the entry points are identified", "readOnly": true },
+    { "agent": "reviewer", "task": "Review cancellation ownership.", "scope": "Cancellation changes and owner cleanup", "deliverable": "Actionable defects with evidence", "stopCondition": "Return once the scoped ownership paths are covered", "readOnly": true }
   ]
 }
 ```
@@ -234,7 +250,8 @@ interactive session. Persistent sessions restore bounded historical observations
 missing completion becomes `interrupted` with unknown effects. History never
 restores permissions, replays work or sends a completion notification. In-memory
 sessions lose their history at exit. Background execution does not survive exit;
-checkpoint resume and a daemon remain later work. Shell task management shares
+explicit `checkpoint: true` and `resumeTaskId` can continue completed context under a
+fresh authorized assignment. A daemon remains out of scope. Shell task management shares
 the `tasks` surface; see [history, limits and storage behavior](../../../docs/background-tasks.md).
 See the [implementation and follow-up plan](../../../docs/subagent-task-management-plan.md).
 
@@ -267,9 +284,9 @@ Assignments use an exact provider/model pair already known to Pi's model registr
 
 | Prompt | Flow |
 |--------|------|
-| `/implement <query>` | scout → planner → worker |
-| `/scout-and-plan <query>` | scout → planner |
-| `/implement-and-review <query>` | worker → reviewer → worker |
+| `/implement <query>` | Optional missing-evidence scout / planner, then worker |
+| `/scout-and-plan <query>` | Optional missing-evidence scout, then planner |
+| `/implement-and-review <query>` | worker → reviewer; a further worker only for actionable findings |
 
 ## Error Handling
 

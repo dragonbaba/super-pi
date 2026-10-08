@@ -3007,7 +3007,7 @@ test("normal shutdown disposes the runtime after TUI stop rejects", async () => 
 	mode.ui = { terminal: { drainInput: async (): Promise<void> => {} } };
 	mode.themeController = { disableAutoSync(): void {} };
 	mode.stop = async (): Promise<void> => { throw stopError; };
-	mode.runtimeHost = { dispose: async (): Promise<void> => { runtimeDisposeCalls++; } };
+	mode.runtimeHost = { session: { extensionRunner: { hasHandlers: () => false } }, dispose: async (): Promise<void> => { runtimeDisposeCalls++; } };
 	mode.closeExtensionUiContext = (): void => {};
 
 	await assert.rejects(mode.shutdown(), (error: unknown) => error === stopError);

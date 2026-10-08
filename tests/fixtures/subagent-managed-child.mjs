@@ -1,5 +1,5 @@
 // Offline child fixture: writes only a ready marker in its task-owned temporary cwd.
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 const task = process.argv.at(-1) ?? "";
 const delay = task.includes("slow") ? 800 : task.includes("hold") ? 30_000 : 10;
@@ -9,8 +9,34 @@ const message = {
 	usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 3, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
 };
 if (!process.argv.includes("--no-session") || !process.argv.includes("--no-extensions")) process.exit(90);
-writeFileSync(join(process.cwd(), `child-${process.pid}.ready.json`), JSON.stringify({ pid: process.pid, task }));
-setTimeout(() => {
-	process.stdout.write(`${JSON.stringify({ type: "message_end", message })}\n`);
+const promptIndex = process.argv.indexOf("--append-system-prompt");
+const systemPrompt = promptIndex < 0 ? "" : readFileSync(process.argv[promptIndex + 1], "utf8");
+writeFileSync(join(process.cwd(), `child-${process.pid}.ready.json`), JSON.stringify({ pid: process.pid, task, systemPrompt }));
+let sequence = 0;
+async function control(kind, fields = {}) {
+	if (process.env.SP_SUBAGENT_CONTROL !== "1") return {};
+	const id = ++sequence;
+	return new Promise((resolve, reject) => {
+		process.once("message", raw => {
+			const reply = JSON.parse(raw);
+			if (reply.id !== id || !reply.ok) reject(new Error(reply.reason ?? "Bad fixture control reply"));
+			else resolve(reply);
+		});
+		process.send(JSON.stringify({ id, kind, ...fields }));
+	});
+}
+try {
+	const init = await control("ready");
+	const turns = task.includes("two-turn") ? 2 : 1;
+	for (let turn = 0; turn < turns; turn++) {
+		if (init.checkpoint) await control("begin");
+		await new Promise(resolve => setTimeout(resolve, delay));
+		process.stdout.write(`${JSON.stringify({ type: "message_end", message })}\n`);
+		if (init.checkpoint) await control("turn", { completed: true, message, results: [] });
+		if (task.includes("checkpoint-hold")) await new Promise(resolve => setTimeout(resolve, 30_000));
+	}
 	process.exitCode = task.includes("fail") ? 1 : 0;
-}, delay);
+} catch (error) {
+	process.stdout.write(`${JSON.stringify({ type: "message_end", message: { ...message, stopReason: "error", errorMessage: error.message } })}\n`);
+	process.exitCode = 1;
+} finally { if (process.connected) process.disconnect(); }

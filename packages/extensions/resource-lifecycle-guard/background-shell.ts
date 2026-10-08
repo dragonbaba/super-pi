@@ -31,6 +31,7 @@ export class BackgroundShellTasks {
 	private changingSession = 0;
 	private closed = false;
 	private cleanupBlocked = false;
+	private processCleanupFailure: string | undefined;
 	private disposal: Promise<void> | undefined;
 	private readonly removePermissionListener: () => void;
 	private readonly taskRegistration: ManagedTaskRegistration;
@@ -135,7 +136,10 @@ export class BackgroundShellTasks {
 	readonly dispose = (): Promise<void> => this.disposal ??= this.close();
 	private checkCleanup(details: BashToolDetails | undefined, failedTask: ManagedSubagentTask): void {
 		const facts = readShellExecution(details);
-		if (facts?.output.cleanup !== "failed" && !facts?.observationError?.startsWith("Process-tree cleanup failed:")) return;
+		const processFailure = facts?.observationError?.startsWith("Process-tree cleanup failed:") ? facts.observationError
+			: facts?.secondaryObservationError?.startsWith("Process-tree cleanup failed:") ? facts.secondaryObservationError : undefined;
+		if (facts?.output.cleanup !== "failed" && !processFailure) return;
+		this.processCleanupFailure ??= processFailure;
 		this.cleanupBlocked = true;
 		// Latch before scheduler.run releases its slot and drains the next waiter.
 		this.scheduler.dispose();
@@ -147,5 +151,6 @@ export class BackgroundShellTasks {
 		this.authority.abort(new Error("Background shell session closed.")); this.tasks.cancelAll(); this.scheduler.dispose();
 		await Promise.allSettled(this.pending);
 		this.pending.clear(); this.tasks.dispose();
+		if (this.processCleanupFailure) throw new Error(this.processCleanupFailure);
 	}
 }

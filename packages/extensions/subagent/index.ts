@@ -6,9 +6,10 @@ import { registerManagedTasks, configureTaskHistory, formatManagedTask } from ".
  * giving it an isolated context window.
  *
  * Supports three modes:
- *   - Single: { agent: "name", task: "..." }
- *   - Parallel: { tasks: [{ agent: "name", task: "..." }, ...] }
- *   - Chain: { chain: [{ agent: "name", task: "... {previous} ..." }, ...] }
+ *   - Single: one agent/task assignment
+ *   - Parallel: independent assignments in tasks
+ *   - Chain: dependent assignments in chain; task may contain {previous}
+ * Each assignment requires scope, deliverable and stopCondition.
  *
  * Uses JSON mode to capture structured output from subagents.
  */
@@ -38,6 +39,9 @@ import { consumeDelegatedTaskPolicies, type DelegatedTaskPolicy } from "./delega
 import { DELEGATION_GUIDANCE, describeSubagentLimits, loadSubagentLimits, SUBAGENT_LIMITS_PATH, type SubagentLimits } from "./limits.ts";
 import { SubagentScheduler } from "./scheduler.ts";
 import { SubagentTasks, type ManagedSubagentTask } from "./tasks.ts";
+import { type TaskCheckpoint } from "./checkpoints.ts";
+import { SubagentControl } from "./control.ts";
+import { assignmentProperties, assertAssignments, formatAssignment, CHILD_RESPONSIBILITIES, MAX_TASK_CHARS } from "./assignments.ts";
 import { SESSION_PERMISSION_EVENT } from "../resource-lifecycle-guard/permission-contract.ts";
 import {
 	formatModelAssignments,
@@ -62,7 +66,6 @@ const MAX_RETAINED_JSON_EVENTS = 100_000;
 const MAX_MESSAGES = 3;
 const MAX_MESSAGE_BYTES = 32 * 1024;
 const MAX_RETAINED_TEXT_BYTES = 24 * 1024;
-const MAX_TASK_CHARS = 16 * 1024;
 const MAX_PREVIOUS_CHARS = 50 * 1024;
 const DEFAULT_TASK_TIMEOUT_MS = 30 * 60 * 1000;
 const MAX_TASK_TIMEOUT_MS = 2 * 60 * 60 * 1000;
@@ -715,9 +718,19 @@ function processIsAlive(pid: number): boolean {
 	try {
 		process.kill(pid, 0);
 		return true;
-	} catch {
-		return false;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+		throw new Error(`Cannot verify whether owned subagent PID ${pid} stopped: ${error instanceof Error ? error.message : String(error)}`);
 	}
+}
+
+class SubagentProcessCleanupError extends Error {}
+
+/** Root exit must not cancel escalation while its owned POSIX group still has descendants. */
+export function finishCancelledProcessGroup(pid: number | undefined): void {
+	if (process.platform === "win32" || !pid || pid <= 0) return;
+	try { process.kill(-pid, "SIGKILL"); }
+	catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
 }
 
 export function killProcessTree(pid: number | undefined): ReturnType<typeof setTimeout> | undefined {
@@ -801,6 +814,8 @@ export class SubagentProcessRun {
 	private readonly closeListener = this.onClose.bind(this);
 	private readonly errorListener = this.onError.bind(this);
 	private readonly abortListener = this.onAbort.bind(this);
+	private readonly controlFailure = this.onControlFailure.bind(this);
+	private readonly control: SubagentControl | undefined;
 	private readonly signal: AbortSignal | undefined;
 	private readonly timeoutMs: number;
 	private readonly result: SingleResult;
@@ -816,6 +831,7 @@ export class SubagentProcessRun {
 	private settled = false;
 	wasAborted = false;
 	timedOut = false;
+	cleanupError: string | undefined;
 
 	constructor(
 		args: string[],
@@ -825,7 +841,9 @@ export class SubagentProcessRun {
 		signal: AbortSignal | undefined,
 		timeoutMs: number,
 		result: SingleResult,
+		control?: SubagentControl,
 	) {
+		this.control = control;
 		this.signal = signal;
 		this.timeoutMs = timeoutMs;
 		this.result = result;
@@ -835,12 +853,18 @@ export class SubagentProcessRun {
 			env: buildChildEnvironment(process.env, execution?.authEnv ?? {}, {
 				SP_SUBAGENT_WORKSPACE: childCwd,
 				SP_SUBAGENT_ALLOW_BASH: allowBash ? "1" : "0",
+				SP_SUBAGENT_CONTROL: control ? "1" : "0",
 			}),
 			shell: false,
 			windowsHide: true,
 			detached: process.platform !== "win32",
-			stdio: ["ignore", "pipe", "pipe"],
-		});
+			stdio: ["ignore", "pipe", "pipe", "ipc"],
+		}) as ChildProcessByStdio<null, Readable, Readable>;
+		control?.attach(this.proc, this.controlFailure);
+	}
+	private onControlFailure(reason: string): void {
+		this.result.errorMessage = capText(reason, 4096);
+		this.requestProcessTreeKill();
 	}
 
 	run(): Promise<number> {
@@ -877,6 +901,7 @@ export class SubagentProcessRun {
 			this.forceKillTimer = killProcessTree(this.proc.pid);
 		} catch (error) {
 			const reason = error instanceof Error ? error.message : String(error);
+			this.cleanupError = `Subagent process-tree cleanup failed: ${reason}`;
 			this.result.errorMessage = capText(`${this.result.errorMessage ? `${this.result.errorMessage} ` : ""}Process cleanup failed: ${reason}.`, 4096);
 			try { this.proc.kill("SIGKILL"); } catch { /* Exact child may already have exited. */ }
 		}
@@ -958,6 +983,11 @@ export class SubagentProcessRun {
 	private onClose(code: number | null): void {
 		if (this.settled) return;
 		this.childClosed = true;
+		if (this.killRequested) {
+			try { finishCancelledProcessGroup(this.proc.pid); }
+			catch (error) { this.cleanupError ??= `Subagent process-group cleanup failed: ${error instanceof Error ? error.message : String(error)}`; }
+		}
+		this.control?.finish();
 		this.buffer += this.stdoutDecoder.end();
 		if (this.buffer.trim()) this.processLine(this.buffer);
 		this.settle(code ?? (this.timedOut || this.wasAborted ? 1 : 0));
@@ -978,6 +1008,7 @@ export class SubagentProcessRun {
 	}
 
 	private dispose(): void {
+		this.control?.dispose();
 		if (this.timeout) clearTimeout(this.timeout);
 		if (this.forceKillTimer) clearTimeout(this.forceKillTimer);
 		if (this.abortListenerAttached) this.signal?.removeEventListener("abort", this.abortListener);
@@ -1000,6 +1031,7 @@ async function runSingleAgent(
 	makeDetails: (results: SingleResult[]) => SubagentDetails,
 	execution: ResolvedSubagentExecution | undefined,
 	timeoutMs: number,
+	control: SubagentControl,
 ): Promise<SingleResult> {
 	const agent = findAgent(agents, agentName);
 
@@ -1067,8 +1099,8 @@ async function runSingleAgent(
 		if (task.length > MAX_TASK_CHARS) throw new Error(`Task exceeds ${MAX_TASK_CHARS} characters`);
 		const childCwd = canonicalWorkspace(policy.canonicalCwd);
 		if (childCwd !== policy.canonicalCwd) throw new Error("Delegated child cwd changed after permission authorization.");
-		if (agent.systemPrompt.trim()) {
-			const tmp = await writePromptToTempFile(agent.name, agent.systemPrompt);
+		{
+			const tmp = await writePromptToTempFile(agent.name, `${agent.systemPrompt}\n\n${CHILD_RESPONSIBILITIES}`);
 			tmpPromptDir = tmp.dir;
 			tmpPromptPath = tmp.filePath;
 			args.push("--append-system-prompt", tmpPromptPath);
@@ -1088,6 +1120,7 @@ async function runSingleAgent(
 			signal,
 			timeoutMs,
 			currentResult,
+			control,
 		);
 		const exitCode = await processRun.run();
 
@@ -1097,6 +1130,7 @@ async function runSingleAgent(
 			currentResult.errorMessage = failureDisplayText(currentResult);
 		}
 		emitSingleResultUpdate(onUpdate, makeDetails, currentResult);
+		if (processRun.cleanupError) throw new SubagentProcessCleanupError(processRun.cleanupError);
 		if (processRun.wasAborted) throw new Error("Subagent was aborted");
 		if (processRun.timedOut) throw new Error(currentResult.errorMessage ?? `Subagent timed out after ${timeoutMs}ms.`);
 		return currentResult;
@@ -1110,6 +1144,7 @@ async function runSingleAgent(
 		}
 		throw error;
 	} finally {
+		control.dispose();
 		if (tmpPromptDir) {
 			try {
 				fs.rmSync(tmpPromptDir, { recursive: true, force: true });
@@ -1123,6 +1158,7 @@ async function runSingleAgent(
 const AGENT_ROLE_DESCRIPTION = "Registered agent role, not a task label. Choose an available role such as planner, reviewer, scout, or worker; put custom names such as audit-lsp in task.";
 
 const TaskItem = Type.Object({
+	...assignmentProperties,
 	agent: Type.String({ minLength: 1, maxLength: 64, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]*$", description: AGENT_ROLE_DESCRIPTION }),
 	task: Type.String({ minLength: 1, maxLength: MAX_TASK_CHARS, description: "Delegated task" }),
 	cwd: Type.Optional(Type.String({ minLength: 1, maxLength: 4096, description: "Task working directory" })),
@@ -1131,6 +1167,7 @@ const TaskItem = Type.Object({
 }, { additionalProperties: false });
 
 const ChainItem = Type.Object({
+	...assignmentProperties,
 	agent: Type.String({ minLength: 1, maxLength: 64, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]*$", description: AGENT_ROLE_DESCRIPTION }),
 	task: Type.String({ minLength: 1, maxLength: MAX_TASK_CHARS, description: "Task; may use {previous}" }),
 	cwd: Type.Optional(Type.String({ minLength: 1, maxLength: 4096, description: "Step working directory" })),
@@ -1144,11 +1181,16 @@ const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
 });
 
 function subagentParameters(limits: SubagentLimits) { return Type.Object({
+	scope: Type.Optional(assignmentProperties.scope),
+	deliverable: Type.Optional(assignmentProperties.deliverable),
+	stopCondition: Type.Optional(assignmentProperties.stopCondition),
 	agent: Type.Optional(Type.String({ minLength: 1, maxLength: 64, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]*$", description: `Single-mode ${AGENT_ROLE_DESCRIPTION}` })),
 	task: Type.Optional(Type.String({ minLength: 1, maxLength: MAX_TASK_CHARS, description: "Task for single mode" })),
 	tasks: Type.Optional(Type.Array(TaskItem, { minItems: 1, maxItems: limits.maxTasks, description: `Independent parallel tasks; at most ${limits.maxConcurrent} running, remainder queued` })),
 	chain: Type.Optional(Type.Array(ChainItem, { minItems: 1, maxItems: limits.maxTasks, description: "Dependent sequential tasks" })),
 	background: Type.Optional(Type.Boolean({ description: "Return managed task IDs immediately; continue work and await completion notification. TUI/RPC only; tasks stop when this session closes." })),
+	checkpoint: Type.Optional(Type.Boolean({ description: "Opt in to storing bounded completed-turn context (including prompts/tool arguments): 1 MiB, 128 messages, no images or hidden reasoning. Requires a persistent session. Stops if the checkpoint cannot be saved." })),
+	resumeTaskId: Type.Optional(Type.String({ minLength: 1, maxLength: 80, description: "Single mode only: continue a terminal task's checkpoint as a NEW task with a fresh instruction. Requires the same role/workspace identity and current authorization. Does not replay unfinished tools; inspect current files first." })),
 	agentScope: Type.Optional(AgentScopeSchema),
 	confirmProjectAgents: Type.Optional(
 		Type.Boolean({ description: "Confirm project agents; defaults true.", default: true }),
@@ -1326,6 +1368,7 @@ export default function (pi: ExtensionAPI) {
 	const pending = new Set<Promise<unknown>>();
 	let authority = new AbortController();
 	let closed = false;
+	let cleanupFailure: string | undefined;
 	let changingSession = 0;
 	const drain = async (): Promise<void> => {
 		changingSession++;
@@ -1351,6 +1394,7 @@ export default function (pi: ExtensionAPI) {
 		await Promise.allSettled(pending);
 		pending.clear();
 		tasks.dispose();
+		if (cleanupFailure) throw new Error(cleanupFailure);
 	});
 	pi.registerCommand("subagent-limits", {
 		description: "Show effective subagent limits, hard ceilings and configuration path",
@@ -1377,7 +1421,7 @@ export default function (pi: ExtensionAPI) {
 			if (!params.id) throw new Error("A subagent task ID is required.");
 			const task = params.action === "cancel" ? tasks.cancel(params.id)
 				: params.action === "wait" ? await tasks.wait(params.id, params.timeoutMs ?? 10_000, signal) : tasks.get(params.id);
-			return { content: [{ type: "text", text: `${taskStatus(task)}${task.cwd ? `\nWorkspace: ${task.cwd}; branch: ${task.branchId ?? "root"}` : ""}${task.result === undefined ? "" : `\n\n${task.result}`}${tasks.historyError ? `\n\n${tasks.historyStatus}` : ""}` }],
+			return { content: [{ type: "text", text: `${taskStatus(task)}${task.checkpointAvailable ? "\nCheckpoint available: use subagent single mode with resumeTaskId, the same agent/cwd and a fresh task instruction." : ""}${task.cwd ? `\nWorkspace: ${task.cwd}; branch: ${task.branchId ?? "root"}` : ""}${task.result === undefined ? "" : `\n\n${task.result}`}${tasks.historyError ? `\n\n${tasks.historyStatus}` : ""}` }],
 				details: { task: { id: task.id, state: task.state, historical: task.recovered === true }, historyError: tasks.historyError } };
 		},
 	});
@@ -1470,10 +1514,11 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "subagent",
 		label: "Subagent",
-		description: `Delegate tasks to isolated subagents. agent is a registered role (planner/reviewer/scout/worker), never a custom task name; put labels and instructions in task. Supports single, parallel tasks, sequential chain, and session-owned background execution. ${describeSubagentLimits(limits)} ${DELEGATION_GUIDANCE}`,
+		description: `Delegate tasks to isolated subagents. agent is a registered role (planner/reviewer/scout/worker), never a custom task name; put the objective and relevant evidence in task. Each single task or batch item REQUIRES scope, deliverable and stopCondition. Task plus responsibility fields must fit 16384 characters. Supports single, parallel tasks, sequential chain, and session-owned background execution. ${describeSubagentLimits(limits)} No token or turn quotas. Optional checkpoint/resumeTaskId saves completed context only; current authorization is always required. ${DELEGATION_GUIDANCE}`,
 		parameters: subagentParameters(limits),
 		prepareArguments(input) {
 			assertTaskCount(input, limits);
+			assertAssignments(input);
 			return input as import("typebox").Static<ReturnType<typeof subagentParameters>>;
 		},
 		// Tasks run for up to two hours; a Codemode script (60s default, 300s maximum) cannot host them.
@@ -1482,8 +1527,10 @@ export default function (pi: ExtensionAPI) {
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			if (closed) throw new Error("Subagent session is closed.");
 			if (changingSession) throw new Error("Subagent session is changing; wait for previous tasks to stop.");
+			if (cleanupFailure) throw new Error(cleanupFailure);
 			configureTaskHistory(tasks, "subagent", ctx); tasks.assertHistoryAvailable();
 			assertTaskCount(params, limits);
+			assertAssignments(params);
 			signal?.throwIfAborted();
 			if (params.background && ctx.mode !== "tui" && ctx.mode !== "rpc") {
 				throw new Error("Background subagents require a live TUI or RPC session. Use foreground execution in print/JSON mode.");
@@ -1530,6 +1577,8 @@ export default function (pi: ExtensionAPI) {
 				(results: SingleResult[]): SubagentDetails => snapshotSubagentDetails(mode, agentScope, discovery.projectAgentsDir, results);
 
 			if (modeCount !== 1) throw new Error("Invalid parameters: provide exactly one of single, parallel, or chain mode");
+			if (params.resumeTaskId && !hasSingle) throw new Error("Checkpoint continuation requires single mode with agent, task and cwd.");
+			if ((params.checkpoint || params.resumeTaskId) && !tasks.persistent) throw new Error("Checkpoints require a persistent parent session; this session is memory-only.");
 			const requestedCwds: (string | undefined)[] = [];
 			const requestedAgentNames: string[] = [];
 			if (params.chain) {
@@ -1548,6 +1597,13 @@ export default function (pi: ExtensionAPI) {
 			}
 			const delegatedPolicies = consumeDelegatedTaskPolicies(params, requestedCwds, ctx.cwd, toolCallId);
 			assertSubagentBatchPreflight(agents, requestedAgentNames, delegatedPolicies, hasTasks);
+			const continuation = params.resumeTaskId ? tasks.readCheckpoint(params.resumeTaskId) : undefined;
+			if (continuation) {
+				const policy = delegatedPolicies[0];
+				const identity = fs.statSync(policy.canonicalCwd, { bigint: true });
+				if (continuation.turns === 0) throw new Error("No completed turn is available to continue; inspect the workspace and submit a fresh task.");
+				if (continuation.agent !== requestedAgentNames[0] || continuation.cwd !== policy.canonicalCwd || continuation.device !== String(identity.dev) || continuation.inode !== String(identity.ino)) throw new Error("Checkpoint role/workspace identity does not match this newly authorized task.");
+			}
 			if (params.background) {
 				for (const policy of delegatedPolicies) {
 					if (policy.allowMutation && (isPathInside(policy.canonicalCwd, trustedWorkspace) || isPathInside(trustedWorkspace, policy.canonicalCwd))) {
@@ -1594,9 +1650,27 @@ export default function (pi: ExtensionAPI) {
 					const record = ownedTasks[index];
 					const childSignal = AbortSignal.any([executionSignal, record.controller!.signal]);
 					try {
+						task = formatAssignment(params.chain?.[index] ?? params.tasks?.[index] ?? params, task);
 						const result = await scheduler.run(childSignal, async () => {
 							tasks.start(record);
-							return runSingleAgent(delegatedPolicies[index], agents, requestedAgentNames[index], task, step, childSignal, update, details, executions.get(requestedAgentNames[index]), timeoutMs);
+							const policy = delegatedPolicies[index];
+							const identity = params.checkpoint || continuation ? fs.statSync(policy.canonicalCwd, { bigint: true }) : undefined;
+							if (continuation && (continuation.device !== String(identity!.dev) || continuation.inode !== String(identity!.ino))) throw new Error("Checkpoint workspace identity changed while queued.");
+							const checkpoint: TaskCheckpoint | undefined = params.checkpoint || continuation ? {
+								version: 1, id: record.id, agent: record.agent, cwd: policy.canonicalCwd, device: String(identity!.dev), inode: String(identity!.ino),
+								turns: continuation?.turns ?? 0, updatedAt: Date.now(), pending: continuation?.pending ?? false,
+								messages: continuation ? [...continuation.messages] : [{ role: "user", content: `Task: ${task}`, timestamp: Date.now() }],
+							} : undefined;
+							const control = new SubagentControl(tasks, checkpoint, continuation?.messages, continuation?.pending,
+								continuation ? { role: "user", content: `Task: ${task}`, timestamp: Date.now() } : undefined);
+							try { return await runSingleAgent(policy, agents, requestedAgentNames[index], task, step, childSignal, update, details, executions.get(requestedAgentNames[index]), timeoutMs, control); }
+							catch (error) {
+								if (error instanceof SubagentProcessCleanupError || error instanceof Error && error.cause instanceof SubagentProcessCleanupError) {
+									// Latch before the scheduler releases this slot to queued work.
+									cleanupFailure ??= capText(error.message, 4096); scheduler.dispose(); tasks.cancelAll();
+								}
+								throw error;
+							}
 						});
 						tasks.finish(record, getResultOutput(result), isFailedResult(result));
 						return result;

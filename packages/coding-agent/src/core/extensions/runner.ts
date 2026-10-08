@@ -63,6 +63,7 @@ import type {
 	SessionBeforeCompactResult,
 	SessionBeforeForkResult,
 	SessionBeforeSwitchResult,
+	SessionBeforeShutdownResult,
 	SessionBeforeTreeResult,
 	SessionShutdownEvent,
 	ToolCallEvent,
@@ -147,13 +148,14 @@ type RunnerEmitEvent = Exclude<
 
 type SessionBeforeEvent = Extract<
 	RunnerEmitEvent,
-	{ type: "session_before_switch" | "session_before_fork" | "session_before_compact" | "session_before_tree" }
+	{ type: "session_before_switch" | "session_before_fork" | "session_before_compact" | "session_before_tree" | "session_before_shutdown" }
 >;
 
 type SessionBeforeEventResult =
 	| SessionBeforeSwitchResult
 	| SessionBeforeForkResult
 	| SessionBeforeCompactResult
+	| SessionBeforeShutdownResult
 	| SessionBeforeTreeResult;
 
 type RunnerEmitResult<TEvent extends RunnerEmitEvent> = TEvent extends { type: "session_before_switch" }
@@ -164,7 +166,9 @@ type RunnerEmitResult<TEvent extends RunnerEmitEvent> = TEvent extends { type: "
 			? SessionBeforeCompactResult | undefined
 			: TEvent extends { type: "session_before_tree" }
 				? SessionBeforeTreeResult | undefined
-				: undefined;
+				: TEvent extends { type: "session_before_shutdown" }
+					? SessionBeforeShutdownResult | undefined
+					: undefined;
 
 export interface ExtensionRunnerScheduler {
 	now(): number;
@@ -270,7 +274,7 @@ const TRANSFORM_HOOK_EVENTS = new Set([
 	"message_end",
 	"tool_result",
 ]);
-const INTERACTION_HOOK_EVENTS = new Set(["input", "user_bash"]);
+const INTERACTION_HOOK_EVENTS = new Set(["input", "user_bash", "session_before_shutdown"]);
 
 export type ExtensionErrorListener = (error: ExtensionError) => void;
 
@@ -1162,7 +1166,8 @@ export class ExtensionRunner {
 			event.type === "session_before_switch" ||
 			event.type === "session_before_fork" ||
 			event.type === "session_before_compact" ||
-			event.type === "session_before_tree"
+			event.type === "session_before_tree" ||
+			event.type === "session_before_shutdown"
 		);
 	}
 
@@ -1379,6 +1384,8 @@ export class ExtensionRunner {
 		const ctx = this.createContext();
 		let result: SessionBeforeEventResult | undefined;
 		let terminalTimeout: ExtensionHookTimeoutError | undefined;
+		let shutdownFailure: unknown;
+		let shutdownFailed = false;
 
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get(event.type);
@@ -1398,6 +1405,12 @@ export class ExtensionRunner {
 						}
 					}
 				} catch (err) {
+					if (event.type === "session_before_shutdown") throw err;
+					if (event.type === "session_shutdown") {
+						if (!shutdownFailed) { shutdownFailed = true; shutdownFailure = err; }
+						// Every owner gets its cleanup even when an earlier handler fails.
+						continue;
+					}
 					if (err instanceof ExtensionHookTimeoutError) {
 						// The tool has already finished. Later handlers still receive its terminal
 						// event so per-call cleanup runs; the first timeout is reported afterwards.
@@ -1418,6 +1431,7 @@ export class ExtensionRunner {
 		}
 
 		if (terminalTimeout) throw terminalTimeout;
+		if (shutdownFailed) throw shutdownFailure;
 		return result as RunnerEmitResult<TEvent>;
 	}
 

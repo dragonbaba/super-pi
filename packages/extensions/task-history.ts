@@ -5,6 +5,7 @@ import { hostname } from "node:os";
 import { dirname, resolve } from "node:path";
 import type { DatabaseSync, SQLOutputValue, StatementSync } from "node:sqlite";
 import { readShellExecution, type ShellExecutionFacts } from "../coding-agent/src/core/tools/shell-execution.ts";
+import { CHECKPOINT_BYTES, decodeCheckpoint, type TaskCheckpoint } from "./subagent/checkpoints.ts";
 
 export type TaskKind = "shell" | "subagent";
 export type TaskState = "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted";
@@ -20,6 +21,7 @@ export interface TaskObservation {
 	branchId?: string | null;
 	shellExecution?: ShellExecutionFacts;
 	recovered?: boolean;
+	checkpointAvailable?: boolean;
 }
 export interface TaskHistorySession { file: string | undefined; id: string; cwd: string; }
 export const TASK_RESULT_CHARS = 12_000;
@@ -28,7 +30,7 @@ const FACT_BYTES = 128 * 1024;
 const INTERRUPTED = "Previous runtime ended without a recorded completion. Process state and side effects are unknown. Inspect the workspace before submitting a fresh authorized request; nothing was replayed.";
 const require = createRequire(import.meta.url);
 const STATES = new Set<TaskState>(["queued", "running", "cancelling", "completed", "failed", "cancelled", "interrupted"]);
-const RECORDS_SQL = "SELECT id, agent, state, created, started, completed, result, cwd, branch, facts FROM tasks ORDER BY seq";
+const RECORDS_SQL = "SELECT id, agent, state, created, started, completed, result, cwd, branch, facts, checkpoint FROM tasks ORDER BY seq";
 
 export function taskHistoryPath(file: string, kind: TaskKind): string { return `${resolve(file)}.tasks-${kind}-v1.sqlite`; }
 function text(value: unknown, limit: number): value is string { return typeof value === "string" && value.length <= limit; }
@@ -75,12 +77,15 @@ function readRecord(row: Record<string, SQLOutputValue>): TaskObservation {
 		result: row.result === null ? undefined : row.result as string, cwd: row.cwd === null ? undefined : row.cwd as string,
 		branchId: row.branch as string | null, shellExecution: row.facts === null ? undefined : JSON.parse(row.facts as string), recovered: true };
 	validate(record);
+	if (row.checkpoint !== null) {
+		record.checkpointAvailable = decodeCheckpoint(row.checkpoint as string, record.id, record.agent, record.cwd).turns > 0;
+	}
 	return record;
 }
 
 /** A separate connection per kind; transactions arbitrate writers, never PID/time lock stealing. */
 export class TaskHistory {
-	readonly counters = { opens: 0, writes: 0, recovered: 0, openHandles: 0, rows: 0 };
+	readonly counters = { opens: 0, writes: 0, checkpointWrites: 0, recovered: 0, openHandles: 0, rows: 0 };
 	private db: DatabaseSync | undefined;
 	private saveStatement: StatementSync | undefined;
 	private ownerStatement: StatementSync | undefined;
@@ -153,7 +158,7 @@ export class TaskHistory {
 					CREATE TABLE tasks (id TEXT PRIMARY KEY, agent TEXT NOT NULL, state TEXT NOT NULL, created INTEGER NOT NULL, started INTEGER, completed INTEGER, result TEXT, cwd TEXT, branch TEXT, facts TEXT, seq INTEGER NOT NULL) STRICT;
 					CREATE INDEX terminal_order ON tasks(completed, seq); PRAGMA user_version=1;`);
 				db.prepare("INSERT INTO owner(singleton,session,cwd,kind) VALUES(1,?,?,?)").run(this.session.id, this.session.cwd, this.kind);
-			} else if (version !== 1) throw new Error(`Unsupported task history version: ${version}.`);
+			} else if (version !== 1 && version !== 2) throw new Error(`Unsupported task history version: ${version}.`);
 			const ownerBounds = db.prepare(`SELECT count(*) AS count, coalesce(max(length(CAST(session AS BLOB))),0) AS session,
 				coalesce(max(length(CAST(cwd AS BLOB))),0) AS cwd, coalesce(max(length(CAST(kind AS BLOB))),0) AS kind,
 				coalesce(max(length(CAST(token AS BLOB))),0) AS token, coalesce(max(length(CAST(host AS BLOB))),0) AS host FROM owner`).get()!;
@@ -167,10 +172,12 @@ export class TaskHistory {
 				catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") stopped = true; }
 				if (!stopped) throw new Error(`Task history is owned by a live or uninspectable runtime (PID ${owner.pid}); close it before resuming this session.`);
 			}
+			if (version === 0 || version === 1) db.exec("ALTER TABLE tasks ADD COLUMN checkpoint TEXT; PRAGMA user_version=2;");
 			// Check lengths in SQLite before materializing rows from a local, possibly damaged file.
 			const bounds = db.prepare(`SELECT count(*) AS count, coalesce(max(length(CAST(id AS BLOB))),0) AS id, coalesce(max(length(CAST(agent AS BLOB))),0) AS agent,
 				coalesce(max(length(CAST(result AS BLOB))),0) AS result, coalesce(max(length(CAST(cwd AS BLOB))),0) AS cwd, coalesce(max(length(CAST(branch AS BLOB))),0) AS branch,
-				coalesce(max(length(CAST(facts AS BLOB))),0) AS facts, coalesce(max(seq),0) AS seq FROM tasks`).get()!;
+				coalesce(max(length(CAST(facts AS BLOB))),0) AS facts, coalesce(max(length(CAST(checkpoint AS BLOB))),0) AS checkpoint, coalesce(max(seq),0) AS seq FROM tasks`).get()!;
+			if ((bounds.checkpoint as number) > CHECKPOINT_BYTES) throw new Error("Checkpoint exceeds 1 MiB; preserved for inspection.");
 			if ((bounds.count as number) > 512 || (bounds.id as number) > 80 || (bounds.agent as number) > 1024 || (bounds.result as number) > TASK_RESULT_CHARS * 4 || (bounds.cwd as number) > 131072 || (bounds.branch as number) > 1024 || (bounds.facts as number) > FACT_BYTES || !timestamp(bounds.seq) || (bounds.seq as number) > Number.MAX_SAFE_INTEGER / 4) throw new Error("Task history exceeds its bounded schema.");
 			if (db.prepare(`SELECT 1 FROM tasks WHERE state NOT IN ('queued','running','cancelling','completed','failed','cancelled','interrupted')
 				OR (state IN ('completed','failed','cancelled','interrupted')) != (completed IS NOT NULL)
@@ -238,6 +245,32 @@ export class TaskHistory {
 		} finally {
 			this.saveStatement = undefined; this.ownerStatement = undefined; this.pruneStatement = undefined;
 			this.db = undefined; db.close(); this.counters.openHandles--;
+		}
+	}
+
+	readCheckpoint(record: TaskObservation): TaskCheckpoint {
+		if (!this.path) throw new Error("Checkpoint continuation requires persistent task history.");
+		this.open(); this.assertOwner();
+		const row = this.db!.prepare("SELECT checkpoint FROM tasks WHERE id=? AND length(CAST(checkpoint AS BLOB))<=?").get(record.id, CHECKPOINT_BYTES);
+		if (typeof row?.checkpoint !== "string") throw new Error("No saved checkpoint for this task.");
+		return decodeCheckpoint(row.checkpoint, record.id, record.agent, record.cwd);
+	}
+
+	saveCheckpoint(checkpoint: TaskCheckpoint, encoded: string): void {
+		if (!this.path) throw new Error("Checkpoints require a persistent session.");
+		this.open(); this.assertOwner();
+		const db = this.db!;
+		db.exec("BEGIN IMMEDIATE");
+		let committed = false;
+		try {
+			this.assertOwner();
+			const written = db.prepare("UPDATE tasks SET checkpoint=? WHERE id=? AND agent=? AND cwd=? AND completed IS NULL").run(encoded, checkpoint.id, checkpoint.agent, checkpoint.cwd);
+			if (Number(written.changes) !== 1) throw new Error("Checkpoint task is no longer active or owned.");
+			db.exec("COMMIT"); committed = true; this.counters.checkpointWrites++;
+			this.assertOwner();
+		} catch (error) {
+			if (!committed) { try { db.exec("ROLLBACK"); } catch { /* Preserve the write failure. */ } }
+			throw error;
 		}
 	}
 }

@@ -671,6 +671,14 @@ export interface SessionCompactFailedEvent {
 	fromExtension: boolean;
 }
 
+/** Cancellable confirmation before manual TUI quit, while extension UI is still available. */
+export interface SessionBeforeShutdownEvent {
+	type: "session_before_shutdown";
+	/** Manual TUI quit only. A signal cancels the dialog and forces normal cleanup. */
+	signal: AbortSignal;
+}
+export interface SessionBeforeShutdownResult { cancel?: boolean; }
+
 /** Fired before an extension runtime is torn down due to quit, reload, or session replacement. */
 export interface SessionShutdownEvent {
 	type: "session_shutdown";
@@ -718,6 +726,7 @@ export type SessionEvent =
 	| SessionBeforeCompactEvent
 	| SessionCompactEvent
 	| SessionCompactFailedEvent
+	| SessionBeforeShutdownEvent
 	| SessionShutdownEvent
 	| SessionBeforeTreeEvent
 	| SessionTreeEvent;
@@ -1354,6 +1363,7 @@ export interface ExtensionAPI {
 	): void;
 	on(event: "session_compact", handler: ExtensionHandler<SessionCompactEvent>): void;
 	on(event: "session_compact_failed", handler: ExtensionHandler<SessionCompactFailedEvent>): void;
+	on(event: "session_before_shutdown", handler: ExtensionHandler<SessionBeforeShutdownEvent, SessionBeforeShutdownResult>): void;
 	on(event: "session_shutdown", handler: ExtensionHandler<SessionShutdownEvent>): void;
 	on(event: "session_before_tree", handler: ExtensionHandler<SessionBeforeTreeEvent, SessionBeforeTreeResult>): void;
 	on(event: "session_tree", handler: ExtensionHandler<SessionTreeEvent>): void;
