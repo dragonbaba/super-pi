@@ -10,13 +10,48 @@ import fs, { realpathSync, existsSync, rmSync } from "node:fs";
 import fsPromises from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { createHash } from "node:crypto";
-import { spawn } from "node:child_process";
+import childProcess, { spawn } from "node:child_process";
+import { setImmediate as tick } from "node:timers/promises";
 import { waitForChildProcess, type ChildProcessObservation } from "../packages/coding-agent/src/utils/child-process.ts";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import type { ChildProcess } from "node:child_process";
 
 const operations = createLocalShellOperations("fixture", () => ({ shell: process.execPath, args: ["-e"] }));
+
+for (const killExit of [0, 1, "spawn-error"] as const) test(`Windows cancellation awaits its tree killer after the shell exits: ${killExit}`, { skip: process.platform !== "win32" }, async t => {
+  const child = Object.assign(new EventEmitter(), { pid: 123, stdout: new PassThrough(), stderr: new PassThrough(), signalCode: null });
+  const killer = Object.assign(new EventEmitter(), { stdout: null, stderr: null, signalCode: null });
+  const controller = new AbortController(); let kills = 0, settled = false, ready!: () => void;
+  const spawned = new Promise<void>(resolve => { ready = resolve; });
+  t.mock.method(childProcess, "spawn", (command: string, args: string[]) => {
+    if (command === "taskkill") { kills++; assert.deepEqual(args, ["/F", "/T", "/PID", "123"]); return killer; }
+    assert.equal(command, process.execPath);
+    setImmediate(() => { child.emit("spawn"); ready(); });
+    return child;
+  });
+  syncBuiltinESMExports();
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  const execution = operations.exec("fixture", process.cwd(), { onData() {}, signal: controller.signal });
+  const checked = assert.rejects(execution, (error: unknown) => {
+    settled = true;
+    const result = shellProcessResultFromError(error); assert.equal(result?.termination, "cancelled");
+    if (killExit === 0) assert.equal(result?.observationError, undefined);
+    else assert.match(result?.observationError ?? "", /Process-tree cleanup failed/);
+    return true;
+  });
+  await spawned; controller.abort();
+  child.stdout.end(); child.stderr.end(); child.emit("exit", 1, null); child.emit("close", 1);
+  await tick();
+  try { assert.equal(settled, false, "shell exit must not release the task before tree cleanup finishes"); }
+  finally {
+    if (killExit === "spawn-error") killer.emit("error", new Error("fixture spawn failure"));
+    else { killer.emit("exit", killExit, null); killer.emit("close", killExit); }
+    await checked;
+  }
+  assert.equal(kills, 1);
+  for (const process of [child, killer]) for (const event of ["error", "spawn", "exit", "close"]) assert.equal(process.listenerCount(event), 0);
+});
 
 for (const termination of ["exit", "signal", "not_started"] as const) test(`N3 direct and Session reject ${termination} contradictions without observation`, async () => {
   const backend = { async exec() { return { exitCode: termination === "exit" ? null : 0, termination }; } };

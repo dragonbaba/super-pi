@@ -15,6 +15,13 @@ task record -> terminal event and one completion notification -> AgentSession
 custom-message/follow-up delivery -> InteractiveMode/TUI -> terminal release.
 Explicit `tasks` queries clone only the bounded terminal details.
 
+Cancellation also joins `killProcessTreeAndWait` before releasing the execution
+owner: Windows waits for the owned `taskkill /T` process as well as the shell.
+Abort and timeout share one cleanup promise per invocation. Nonzero killer exits
+and spawn errors become bounded observation diagnostics, not successful cleanup.
+`waitForChildProcess` releases the killer's exit/error/close listeners; no PID
+enumeration, polling loop or output callback is introduced.
+
 Background execution passes no progress callback to the existing consumer.
 `scheduleOutputUpdate` exits before producing snapshots or timers; no raw stdout
 event reaches the agent observer, UI or frame queue. Existing stable data/drain
@@ -36,6 +43,12 @@ task, completion, permission boundary or shutdown),
 `createShellToolDefinition.execute` (one-use handoff). `finishOutput` and
 `formatOutput` remain execution-completion boundaries. Completion EventBus
 delivery uses its existing async listener wrapper once per task, never per chunk.
+`createLocalShellOperations` owns the stable `stopChild` callback; its cleanup
+promise is created only at the abort/deadline boundary. `beginPromptBoundary`
+filters the bounded obligation map on explicit input. `controlsAvailable` reads
+effective tool metadata at admission, including the existing `getAllTools`
+array/materialization, and compares the original registered schema reference.
+It does not retain that list or run on task output/status delivery.
 No object pool or recurring task polling was added.
 
 | Owner | Bound | Release |
@@ -48,16 +61,18 @@ No object pool or recurring task polling was added.
 | Task history | `maxTasks` active plus latest `maxTasks` terminal records | Completion-order eviction or disposal |
 | Terminal text and metadata | <=12000 chars per shell record; numeric truncation data without duplicated `content` | Record/WeakMap key collection |
 | Explicit waiters | 64 per kind, timeout <=60s | Completion, timeout, caller abort or disposal |
-| False-success guard | 256 late-acceptance IDs, 256 pending checks, 32 terminal/mutation obligations | Task completion / bounded replacement / prompt or session boundary |
+| False-success guard | 256 late-acceptance IDs, 256 pending checks, 32 terminal/mutation obligations | Pending checks survive ordinary prompts; terminal evidence or session/tree reset releases them. Terminal failures reset on a new prompt; IDs remain bounded until session reset. |
 | Task directory | At most shell + subagent providers | Last provider removes discovery listener; runtime unregisters listeners |
 
 Queued tasks release directory authority even when execution never starts.
 Permission revocation cancels owned work and suppresses its completion follow-up;
-session navigation suppresses obsolete terminal events; shutdown suppresses
+session navigation suppresses obsolete terminal events and awaits pending cleanup,
+refusing admission while the boundary drains; shutdown suppresses
 terminal delivery and awaits pending cleanup. Retained
 records have no controller or execution closure. Cleanup errors preserve their
 owned path and block further background admission. Process cancellation reuses
-the existing platform process-tree mechanism and observed child exit/drain rules.
+the existing platform process-tree mechanism and observed child exit/drain rules,
+and now waits for the Windows tree killer before reporting a terminal task.
 
 ## Deterministic counters and samples
 
@@ -70,7 +85,7 @@ the changed consumer; native process/authorization behavior is tested separately
 | --- | ---: | ---: |
 | Progress publications | 3 | 0 |
 | Completion notifications | 0 | 1 |
-| Sampled bytes/chunk, including lifecycle | 5447.200 | 5238.560 |
+| Sampled bytes/chunk, including lifecycle | 5578.088 | 5328.168 |
 | Promises during synchronous chunk delivery | 0 | 0 |
 | AbortControllers during synchronous chunk delivery | 0 | 0 |
 
@@ -107,7 +122,13 @@ single heap delta is reported as noise/context, not proof of a leak or reduction
 
 - `background-shell-tasks.test.ts`: early limits, queue/cancel, authority freshness,
   real Bash/PowerShell cleanup, both providers through the actual loader,
-  terminal result guard, capped output, and cleanup failure.
+  terminal result guard across interactive/RPC follow-ups, drained tree navigation,
+  same-name/copy-schema tool collisions, capped output, and cleanup failure.
+- `shell-process-observation.test.ts`: deterministic Windows root-exit-before-killer
+  regression (failed before the fix), including failed killer exit/spawn and zero
+  retained process listeners. The real nested `npm test` fixture asserts the owned
+  descendant is dead immediately after the navigation hook returns, without a
+  later task wait masking the boundary.
 - `tool-lifecycle-postmerge.test.ts`, `shell-explicit-cwd.test.ts`,
   `shell-result-contract.test.ts`: existing authorization and producer-fact gates.
   Final authorization still creates exactly one approved-argument container;
@@ -117,3 +138,11 @@ single heap delta is reported as noise/context, not proof of a leak or reduction
 - `subagent-management.test.ts`: shared scheduling and legacy controls.
 - Root typecheck and coding-agent build. Linux/native compatibility remains part
   of the repository's existing CI, rather than an unobserved local claim.
+
+Review-fix validation on 2026-10-08: 173 relevant functional tests passed, with
+five existing Windows-inapplicable cases skipped; nine AST/source gates passed.
+The refreshed background benchmark retained the same deterministic counters:
+zero per-chunk Promises/controllers, zero background progress publications,
+4/4 running/queued high-water marks, eight releases per lifecycle fixture, and
+zero live references out of 110 after controlled GC. The unchanged renderer
+measurements above are from the initial PR, not a rerun of this lifecycle fix.

@@ -2,6 +2,7 @@ import { existsSync, statSync } from "node:fs";
 import { delimiter, isAbsolute, join, resolve, sep } from "node:path";
 import { spawn, spawnSync } from "child_process";
 import { getBinDir } from "../config.ts";
+import { waitForChildProcess } from "./child-process.ts";
 import { FORWARD_SLASH_PATTERN, LEGACY_WSL_BASH_PATH_PATTERN } from "./shell-regex.ts";
 
 export interface ShellConfig {
@@ -394,5 +395,19 @@ export function killProcessTree(pid: number): void {
 				// Process already dead
 			}
 		}
+	}
+}
+
+/** Cancellation boundary: retain the Windows tree killer until it exits too. */
+export async function killProcessTreeAndWait(pid: number): Promise<string | undefined> {
+	if (process.platform !== "win32") { killProcessTree(pid); return; }
+	try {
+		const killer = spawn("taskkill", ["/F", "/T", "/PID", String(pid)], {
+			stdio: "ignore", windowsHide: true,
+		});
+		const code = await waitForChildProcess(killer);
+		if (code !== 0) return `Process-tree cleanup failed: taskkill exit=${code ?? "unknown"}; inspect before retrying.`;
+	} catch (error) {
+		return `Process-tree cleanup failed: ${error instanceof Error ? error.message : String(error)}`.slice(0, 1000);
 	}
 }

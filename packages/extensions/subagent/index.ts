@@ -1333,7 +1333,7 @@ export default function (pi: ExtensionAPI) {
 	});
 	pi.on("session_shutdown", async () => {
 		closed = true;
-		unregisterTasks();
+		taskRegistration.unregister();
 		removePermissionListener();
 		authority.abort(new Error("Subagent session closed."));
 		tasks.cancelAll();
@@ -1351,7 +1351,7 @@ export default function (pi: ExtensionAPI) {
 		for (const task of tasks.values()) text += `\n${taskStatus(task)}`;
 		return text;
 	};
-	const unregisterTasks = registerManagedTasks(pi, "subagent", { tasks, list: listTasks, guidance: describeSubagentLimits(limits) });
+	const taskRegistration = registerManagedTasks(pi, "subagent", { tasks, list: listTasks, guidance: describeSubagentLimits(limits) });
 	pi.registerTool({
 		name: "subagent_tasks", label: "Subagent tasks",
 		description: `Manage existing session subagent tasks: list, status, wait, or cancel one ID. Waiting (0–60000ms, at most 64 pending waits) never cancels execution. Prefer completion notifications to repeated polling. Keep the latest ${limits.maxTasks} completed tasks, at most 12000 characters per result; IDs expire on session close. Cannot launch tasks or grant permissions.`,
@@ -1475,7 +1475,7 @@ export default function (pi: ExtensionAPI) {
 			if (params.background && ctx.mode !== "tui" && ctx.mode !== "rpc") {
 				throw new Error("Background subagents require a live TUI or RPC session. Use foreground execution in print/JSON mode.");
 			}
-			if (params.background && !ctx.getActiveTools().includes("subagent_tasks") && !ctx.getActiveTools().includes("tasks")) {
+			if (params.background && !ctx.getActiveTools().includes("subagent_tasks") && !taskRegistration.controlsAvailable(ctx)) {
 				throw new Error("Background subagents require the tasks or subagent_tasks management tool. Enable one or use foreground execution.");
 			}
 			const authoritySignal = authority.signal;

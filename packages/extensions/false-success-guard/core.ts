@@ -128,7 +128,12 @@ export function beginPromptBoundary(
     && prompt.includes(GOAL_ID_OPEN);
   if (!lifecycle.pendingExplicitBoundary && !initialGoalPrompt) return false;
   lifecycle.pendingExplicitBoundary = false;
-  resetFalseSuccessState(state);
+  // Accepted background checks outlive the parent turn. Only their terminal
+  // evidence or an actual session/tree reset can release these obligations.
+  for (const [key, obligation] of state.obligations) {
+    if (obligation.category !== "pending") state.obligations.delete(key);
+  }
+  state.interventions = 0;
   return true;
 }
 

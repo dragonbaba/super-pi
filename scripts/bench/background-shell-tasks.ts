@@ -29,6 +29,7 @@ function harness() {
 	let notifications = 0;
 	const pi: any = { events, registerTool: (tool: any) => tools.set(tool.name, tool), registerCommand() {}, on: (_name: string, fn: unknown) => hooks.push(fn), sendMessage: () => { notifications++; } };
 	const manager = new BackgroundShellTasks(pi);
+	pi.getAllTools = () => [...tools.values()];
 	const ctx: any = { cwd: root, mode: "tui", getActiveTools: () => ["bash", "tasks"] };
 	return { manager, ctx, events, tools, notifications: () => notifications,
 		async dispose() { await manager.dispose(); hooks.length = 0; tools.clear(); events.clear(); } };

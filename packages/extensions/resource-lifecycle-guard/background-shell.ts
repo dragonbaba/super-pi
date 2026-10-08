@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { toolResultFromError } from "@super-pi/agent-core";
 import { getConfigDir, readShellExecution, type BackgroundShellExecution, type BackgroundShellLaunch, type BashToolDetails, type ExtensionAPI, type ExtensionContext } from "@super-pi/coding-agent";
-import { registerManagedTasks, formatManagedTask, SHELL_TASK_RESULT_EVENT } from "../managed-tasks.ts";
+import { registerManagedTasks, formatManagedTask, SHELL_TASK_RESULT_EVENT, type ManagedTaskRegistration } from "../managed-tasks.ts";
 import { loadSubagentLimits, HARD_MAX_CONCURRENT, HARD_MAX_TASKS } from "../subagent/limits.ts";
 import { SubagentScheduler, type TaskReservation } from "../subagent/scheduler.ts";
 import { SubagentTasks, type ManagedSubagentTask } from "../subagent/tasks.ts";
@@ -28,17 +28,18 @@ export class BackgroundShellTasks {
 	private readonly pending = new Set<Promise<void>>();
 	private authority = new AbortController();
 	private sessionGeneration = 0;
+	private changingSession = 0;
 	private closed = false;
 	private cleanupBlocked = false;
 	private disposal: Promise<void> | undefined;
 	private readonly removePermissionListener: () => void;
-	private readonly unregisterTasks: () => void;
+	private readonly taskRegistration: ManagedTaskRegistration;
 	private readonly pi: ExtensionAPI;
 
 	constructor(pi: ExtensionAPI) {
 		this.pi = pi;
 		const guidance = `Background shell limits: ${this.limits.maxConcurrent} running concurrently, ${this.limits.maxTasks} admitted commands including queued work; hard ceilings ${HARD_MAX_CONCURRENT}/${HARD_MAX_TASKS}. Config: ${BACKGROUND_SHELL_LIMITS_PATH}; reload after editing. Separate from subagent quotas. Use background: true with explicit cwd in bash/powershell; ordinary shell inspection and authorization still apply. Default runtime 1800s, maximum 7200s; queue time excluded. Read status with tasks; wait for terminal facts before reporting success. Retain the latest ${this.limits.maxTasks} completed records, at most 12000 characters each, with no durable output logs. Avoid overlapping edits/builds and use only independently useful concurrency.`;
-		this.unregisterTasks = registerManagedTasks(pi, "shell", { tasks: this.tasks, guidance, list: this.list, details: this.details });
+		this.taskRegistration = registerManagedTasks(pi, "shell", { tasks: this.tasks, guidance, list: this.list, details: this.details });
 		this.removePermissionListener = pi.events.on(SESSION_PERMISSION_EVENT, this.revoke);
 		pi.on("session_start", this.beginSession);
 		pi.on("session_tree", this.beginSession);
@@ -56,16 +57,20 @@ export class BackgroundShellTasks {
 		this.tasks.cancelAll();
 		this.authority = new AbortController();
 	};
-	private readonly beginSession = (): void => {
+	private readonly beginSession = async (): Promise<void> => {
 		this.sessionGeneration++;
+		this.changingSession++;
 		this.revoke();
+		try { await Promise.allSettled(this.pending); }
+		finally { this.changingSession--; }
 	};
 
 	assertAvailable(ctx: ExtensionContext): void {
 		if (this.closed) throw new Error("Background shell session is closed.");
+		if (this.changingSession) throw new Error("Background shell session is changing; wait for previous tasks to stop.");
 		if (this.cleanupBlocked) throw new Error("Background shell cleanup failed; inspect the reported temporary log before submitting more work.");
 		if (ctx.mode !== "tui" && ctx.mode !== "rpc") throw new Error("Background commands require a live TUI or RPC session; use foreground execution here.");
-		if (!ctx.getActiveTools().includes("tasks")) throw new Error("Background commands require the tasks management tool; enable it or use foreground execution.");
+		if (!this.taskRegistration.controlsAvailable(ctx)) throw new Error("Background commands require the built-in tasks management tool; enable it and remove conflicting tasks registrations, or use foreground execution.");
 	}
 
 	createLaunch(name: string, callId: string, command: string, cwd: string, ctx: ExtensionContext, assertCurrent: () => void): BackgroundShellLaunch {
@@ -121,7 +126,7 @@ export class BackgroundShellTasks {
 	readonly dispose = (): Promise<void> => this.disposal ??= this.close();
 	private async close(): Promise<void> {
 		this.closed = true;
-		this.removePermissionListener(); this.unregisterTasks();
+		this.removePermissionListener(); this.taskRegistration.unregister();
 		this.authority.abort(new Error("Background shell session closed.")); this.tasks.cancelAll(); this.scheduler.dispose();
 		await Promise.allSettled(this.pending);
 		this.pending.clear(); this.tasks.dispose();

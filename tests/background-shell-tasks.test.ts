@@ -47,6 +47,7 @@ function harness(t: test.TestContext) {
 	const messages: any[] = [];
 	const pi: any = { events, registerTool: (tool: any) => tools.set(tool.name, tool), registerCommand: (name: string, command: any) => commands.set(name, command), on: (name: string, hook: any) => { const list = hooks.get(name) ?? []; list.push(hook); hooks.set(name, list); }, sendMessage: (message: any) => messages.push(message) };
 	const owner = new BackgroundShellTasks(pi);
+	pi.getAllTools = () => [...tools.values()];
 	const ctx: any = { cwd: root, mode: "tui", getActiveTools: () => ["bash", "tasks"] };
 	t.after(async () => { await owner.dispose(); events.clear(); });
 	const start = (execute: any, signal?: AbortSignal, release = () => {}, check = () => {}) => owner.createLaunch("bash", "call", "npm test", root, ctx, check)(execute, signal, release).details.backgroundTask!.id;
@@ -60,6 +61,11 @@ test("background availability and effective caps are advertised before submissio
 	assert.equal(h.tools.get("tasks").modelOnly, true);
 	h.ctx.mode = "print"; assert.throws(() => h.owner.assertAvailable(h.ctx), /live TUI or RPC/);
 	h.ctx.mode = "tui"; h.ctx.getActiveTools = () => ["bash"]; assert.throws(() => h.owner.assertAvailable(h.ctx), /management tool/);
+	h.ctx.getActiveTools = () => ["bash", "tasks"];
+	const managed = h.tools.get("tasks");
+	h.tools.set("tasks", { ...managed, parameters: structuredClone(managed.parameters) });
+	assert.throws(() => h.owner.assertAvailable(h.ctx), /conflicting tasks/);
+	h.tools.set("tasks", managed); h.owner.assertAvailable(h.ctx);
 	const tool = createBashToolDefinition(root);
 	assert.throws(() => tool.prepareArguments!({ command: "echo test", background: true }), /explicit cwd/);
 	assert.throws(() => tool.prepareArguments!({ command: "echo test", cwd: ".", background: true, timeout: 7201 }), /7200/);
@@ -91,12 +97,14 @@ test("queue revalidates authority and releases an unstarted request", async t =>
 	assert.match(h.owner.tasks.get(second).result!, /authority changed/);
 });
 
-async function fixture(t: test.TestContext, auxiliary?: any) {
+async function fixture(t: test.TestContext, auxiliary?: any, preceding?: any) {
 	const cwd = realpathSync(mkdtempSync(join(root, "workspace-")));
 	writeFileSync(join(cwd, "fixture.mjs"), readFileSync(new URL("fixtures/background-shell-child.mjs", import.meta.url)));
 	const session = SessionManager.create(cwd, join(cwd, "sessions")), events = createEventBus(), runtime = createExtensionRuntime();
 	const settings = SettingsManager.create(cwd, join(cwd, "agent"));
-	const extensions = [await loadExtensionFromFactory(lifecycle, cwd, events, runtime)];
+	const extensions = [];
+	if (preceding) extensions.push(await loadExtensionFromFactory(preceding, cwd, events, runtime));
+	extensions.push(await loadExtensionFromFactory(lifecycle, cwd, events, runtime));
 	if (auxiliary) extensions.push(await loadExtensionFromFactory(auxiliary, cwd, events, runtime));
 	const runner = new ExtensionRunner(extensions, runtime, cwd, session, {} as never);
 	let beforeConsume = (_args: any) => {}, approvals = 0;
@@ -105,7 +113,7 @@ async function fixture(t: test.TestContext, auxiliary?: any) {
 		const result = await runner.emitToolCall({ type: "tool_call", toolName: toolCall.name, toolCallId: toolCall.id, input: args } as never); beforeConsume(args); return result;
 	}, afterToolCall: ({ toolCall, args, result, isError }) => runner.emitToolResult({ type: "tool_result", toolName: toolCall.name, toolCallId: toolCall.id, input: args, content: result.content, details: result.details, isError } as never) });
 	const active = ["bash", "powershell", "tasks"];
-	runner.bindCore({ getThinkingLevel: () => "off", getActiveTools: () => active, sendMessage: (message: any) => messages.push(message), appendEntry: (kind: string, data: any) => session.appendCustomEntry(kind, data) } as never,
+	runner.bindCore({ getThinkingLevel: () => "off", getActiveTools: () => active, getAllTools: () => runner.getAllRegisteredTools().map(tool => tool.definition), sendMessage: (message: any) => messages.push(message), appendEntry: (kind: string, data: any) => session.appendCustomEntry(kind, data) } as never,
 		{ getSignal: () => agent.signal, getModel: () => undefined, isProjectTrusted: (identity?: boolean) => settings.isProjectTrusted(identity), isIdle: () => true, hasPendingMessages: () => false } as never);
 	runner.setUIContext({ ...runner.getUIContext(), select: async () => { approvals++; return "仅允许本次"; } }, "tui");
 	agent.state.tools = [createBashTool(cwd, { shellPath: bashPath }), createPowerShellTool(cwd), ...wrapRegisteredTools(runner.getAllRegisteredTools(), runner)];
@@ -192,11 +200,39 @@ test("old task completion cannot contaminate verification after session tree nav
 	writeFileSync(join(h.cwd, "package.json"), JSON.stringify({ scripts: { test: "node fixture.mjs hold" } }));
 	const id = taskId(await h.call("bash", { command: "npm test", cwd: ".", background: true }));
 	const pid = await started(h.cwd, "hold");
+	for (const source of ["interactive", "rpc"] as const) {
+		await h.runner.emitInput("continue", undefined, source);
+		await h.runner.emitBeforeAgentStart("continue", undefined, "base", { cwd: h.cwd });
+		const pending = await h.runner.emitToolCall({ type: "tool_call", toolName: "goal_complete", toolCallId: source, input: {} } as never);
+		assert.equal(pending?.block, true, "ordinary input must preserve a running verification");
+	}
 	await h.runner.emit({ type: "session_tree" } as never);
-	assert.match(text(await h.call("tasks", { action: "wait", id, timeoutMs: 5000 })), /cancelled/);
 	assert.throws(() => process.kill(pid, 0), /ESRCH/); assert.equal(h.messages.length, 0);
+	assert.match(text(await h.call("tasks", { action: "status", id })), /cancelled/);
 	const result = await h.runner.emitToolCall({ type: "tool_call", toolName: "goal_complete", toolCallId: "new-branch", input: {} } as never);
 	assert.notEqual(result?.block, true);
+});
+
+test("session tree navigation drains cleanup before admitting work on the new branch", async t => {
+	const h = harness(t); let finish!: () => void, released = 0, settled = false;
+	const id = h.start(async () => { await new Promise<void>(resolve => { finish = resolve; }); return { content: [], details: undefined }; }, undefined, () => released++);
+	const boundary = h.hooks.get("session_tree")![0]().then(() => { settled = true; });
+	await tick();
+	assert.equal(settled, false); assert.equal(h.owner.tasks.get(id).controller?.signal.aborted, true);
+	assert.throws(() => h.start(async () => assert.fail("must wait for old cleanup")), /session is changing/);
+	finish(); await boundary;
+	assert.equal(released, 1); assert.equal(h.owner.scheduler.outstanding, 0); assert.equal(h.messages.length, 0);
+	h.owner.assertAvailable(h.ctx);
+});
+
+test("an earlier unrelated tasks registration prevents unmanaged background execution", async t => {
+	const h = await fixture(t, subagent, (pi: any) => pi.registerTool({ name: "tasks", label: "Unrelated tasks", description: "Collision fixture", parameters: { type: "object", properties: {} }, async execute() { return { content: [], details: {} }; } }));
+	const result = await h.call("bash", { command: "node fixture.mjs fast", cwd: ".", background: true });
+	assert.equal(result.isError, true); assert.match(text(result), /conflicting tasks/);
+	assert.equal(existsSync(join(h.cwd, "fast.ready.json")), false);
+	h.active.push("subagent");
+	const child = await h.call("subagent", { agent: "scout", task: "fast", readOnly: true, background: true });
+	assert.equal(child.isError, true); assert.match(text(child), /subagent_tasks|management tool/);
 });
 
 test("permission invalidation and shutdown wait for the owned child and suppress notifications", { timeout: 15_000 }, async t => {

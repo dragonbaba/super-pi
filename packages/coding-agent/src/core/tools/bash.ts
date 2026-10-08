@@ -18,7 +18,7 @@ import { setOwnProperty } from "../../utils/record.ts";
 import {
 	getShellConfig,
 	getShellEnv,
-	killProcessTree,
+	killProcessTreeAndWait,
 	type ShellConfig,
 	trackDetachedChildPid,
 	untrackDetachedChildPid,
@@ -150,6 +150,7 @@ export function createLocalShellOperations(shellName: string, resolveShellConfig
 			const observation: ChildProcessObservation = { started: false, exitCode: null, signal: null, outputDrained: false };
 			let stopReason: ShellTermination | undefined;
 			let inputObserver: ShellInputObserver | undefined;
+			let processCleanupError: string | undefined;
 			try {
 			const timeoutMs = resolveTimeoutMs(timeout);
 			if (signal?.aborted) {
@@ -183,11 +184,15 @@ export function createLocalShellOperations(shellName: string, resolveShellConfig
 			if (child.pid) trackDetachedChildPid(child.pid);
 			let timeoutHandle: NodeJS.Timeout | undefined;
 			let outputSettled = false;
+			let processCleanup: Promise<string | undefined> | undefined;
+			const stopChild = () => {
+				if (child.pid) processCleanup ??= killProcessTreeAndWait(child.pid);
+				if (observation.exitCode !== null || observation.signal !== null) { child.stdout?.destroy(); child.stderr?.destroy(); }
+			};
 			const onAbort = () => {
 				if (outputSettled) return;
 				stopReason ??= signal?.reason?.[OUTPUT_FAILURE_ABORT] ? "output_failure" : "cancelled";
-				if (child.pid) killProcessTree(child.pid);
-				if (observation.exitCode !== null || observation.signal !== null) { child.stdout?.destroy(); child.stderr?.destroy(); }
+				stopChild();
 			};
 
 			try {
@@ -196,8 +201,7 @@ export function createLocalShellOperations(shellName: string, resolveShellConfig
 					timeoutHandle = setTimeout(() => {
 						if (outputSettled) return;
 						stopReason ??= "timeout";
-						if (child.pid) killProcessTree(child.pid);
-						if (observation.exitCode !== null || observation.signal !== null) { child.stdout?.destroy(); child.stderr?.destroy(); }
+						stopChild();
 					}, timeoutMs);
 				}
 				// Stream stdout and stderr.
@@ -212,12 +216,15 @@ export function createLocalShellOperations(shellName: string, resolveShellConfig
 				// on inherited stdio handles held by detached descendants.
 				const exitCode = await waitForChildProcess(child, observation);
 				outputSettled = true;
+				if (processCleanup) processCleanupError = await processCleanup;
 				await inputObserver?.finish();
 				const termination = stopReason ?? (observation.signal ? "signal" : exitCode === null ? "unknown" : "exit");
-				const result: ShellProcessResult = { exitCode, observation, termination, inputError: inputObserver?.error };
+				const result: ShellProcessResult = { exitCode, observation, termination, inputError: inputObserver?.error, observationError: processCleanupError };
 				if (stopReason) throw observedShellError(new Error(stopReason === "timeout" ? `timeout:${timeout}` : stopReason === "output_failure" ? "output capture failed" : "aborted"), result);
 				return result;
 			} finally {
+				outputSettled = true;
+				if (processCleanup) processCleanupError = await processCleanup;
 				if (child.pid) untrackDetachedChildPid(child.pid);
 				if (timeoutHandle) clearTimeout(timeoutHandle);
 				if (signal) signal.removeEventListener("abort", onAbort);
@@ -228,7 +235,7 @@ export function createLocalShellOperations(shellName: string, resolveShellConfig
 				if (shellProcessResultFromError(error)) throw error;
 				if (!observation.started) observation.outputDrained = true;
 				throw observedShellError(error, { exitCode: observation.exitCode, observation,
-					termination: observation.started ? stopReason ?? "unknown" : stopReason === "cancelled" ? "cancelled" : "not_started", inputError: inputObserver?.error });
+					termination: observation.started ? stopReason ?? "unknown" : stopReason === "cancelled" ? "cancelled" : "not_started", inputError: inputObserver?.error, observationError: processCleanupError });
 			}
 		},
 	});

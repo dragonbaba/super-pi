@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@super-pi/coding-agent";
+import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@super-pi/coding-agent";
 import type { AgentToolResult } from "@super-pi/agent-core";
 import { Type } from "typebox";
 import type { ManagedSubagentTask, SubagentTasks } from "./subagent/tasks.ts";
@@ -12,7 +12,12 @@ export interface ManagedTaskProvider {
 }
 interface TaskDirectory {
 	providers: Map<Kind, ManagedTaskProvider>;
+	parameters: ToolDefinition["parameters"];
 	stopDiscovery(): void;
+}
+export interface ManagedTaskRegistration {
+	unregister(): void;
+	controlsAvailable(ctx: ExtensionContext): boolean;
 }
 const DIRECTORY_EVENT = "super-pi:managed-tasks-directory";
 export const SHELL_TASK_RESULT_EVENT = "super-pi:shell-task-result";
@@ -22,7 +27,7 @@ export function formatManagedTask(task: ManagedSubagentTask): string {
 }
 
 /** Two bounded providers; registration and explicit control calls are lifecycle work. */
-export function registerManagedTasks(pi: ExtensionAPI, kind: Kind, provider: ManagedTaskProvider): () => void {
+export function registerManagedTasks(pi: ExtensionAPI, kind: Kind, provider: ManagedTaskProvider): ManagedTaskRegistration {
 	// Each extension receives its own EventBus facade. Discover the session owner
 	// through one synchronous startup event, including across source/dist loaders.
 	const request: { directory?: TaskDirectory } = {};
@@ -30,7 +35,12 @@ export function registerManagedTasks(pi: ExtensionAPI, kind: Kind, provider: Man
 	let directory = request.directory;
 	if (!directory) {
 		const owned = new Map<Kind, ManagedTaskProvider>();
-		directory = { providers: owned, stopDiscovery: () => {} };
+		const parameters = Type.Object({
+			action: Type.Union([Type.Literal("list"), Type.Literal("status"), Type.Literal("wait"), Type.Literal("cancel")]),
+			id: Type.Optional(Type.String({ minLength: 1, maxLength: 80 })),
+			timeoutMs: Type.Optional(Type.Integer({ minimum: 0, maximum: 60_000 })),
+		}, { additionalProperties: false });
+		directory = { providers: owned, parameters, stopDiscovery: () => {} };
 		const created = directory;
 		directory.stopDiscovery = pi.events.on(DIRECTORY_EVENT, value => { (value as typeof request).directory = created; });
 		const list = (): string => {
@@ -49,11 +59,7 @@ export function registerManagedTasks(pi: ExtensionAPI, kind: Kind, provider: Man
 		pi.registerTool({
 			name: "tasks", label: "Tasks", modelOnly: true,
 			description: "Manage existing session shell and subagent tasks: list, status, wait, cancel. Wait 0–60000ms (default 10000); at most 64 pending waits per task kind. Waiting timeout never cancels execution. Results and IDs expire when their bounded history is evicted or the session closes. Prefer completion notifications over polling. Cannot launch work or grant permissions. Read current capacities using list before launching background work.",
-			parameters: Type.Object({
-				action: Type.Union([Type.Literal("list"), Type.Literal("status"), Type.Literal("wait"), Type.Literal("cancel")]),
-				id: Type.Optional(Type.String({ minLength: 1, maxLength: 80 })),
-				timeoutMs: Type.Optional(Type.Integer({ minimum: 0, maximum: 60_000 })),
-			}, { additionalProperties: false }),
+			parameters,
 			async execute(_id, args, signal): Promise<AgentToolResult<Record<string, unknown>>> {
 				if (args.action === "list") return { content: [{ type: "text", text: list() }], details: {} };
 				if (!args.id) throw new Error("A task ID is required.");
@@ -83,9 +89,18 @@ export function registerManagedTasks(pi: ExtensionAPI, kind: Kind, provider: Man
 	const owned = directory;
 	// Sent before the model can submit work; no per-output updates or polling.
 	pi.on("before_agent_start", event => ({ systemPrompt: `${event.systemPrompt}\n\n${provider.guidance}` }));
-	return () => {
-		if (owned.providers.get(kind) !== provider) return;
-		owned.providers.delete(kind);
-		if (owned.providers.size === 0) owned.stopDiscovery();
+	return {
+		unregister() {
+			if (owned.providers.get(kind) !== provider) return;
+			owned.providers.delete(kind);
+			if (owned.providers.size === 0) owned.stopDiscovery();
+		},
+		controlsAvailable(ctx) {
+			if (!ctx.getActiveTools().includes("tasks")) return false;
+			// Effective tool metadata preserves the registered schema reference;
+			// a same-named tool or a copied schema is not this controller.
+			for (const tool of pi.getAllTools()) if (tool.name === "tasks") return tool.parameters === owned.parameters;
+			return false;
+		},
 	};
 }
