@@ -32,8 +32,12 @@ import {
 import { Text } from "@super-pi/tui";
 import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
-import { assertProjectAgentAccess, buildChildEnvironment, canonicalWorkspace } from "./child-security.ts";
+import { assertProjectAgentAccess, buildChildEnvironment, canonicalWorkspace, isPathInside } from "./child-security.ts";
 import { consumeDelegatedTaskPolicies, type DelegatedTaskPolicy } from "./delegation.ts";
+import { DELEGATION_GUIDANCE, describeSubagentLimits, loadSubagentLimits, SUBAGENT_LIMITS_PATH, type SubagentLimits } from "./limits.ts";
+import { SubagentScheduler } from "./scheduler.ts";
+import { SubagentTasks, type ManagedSubagentTask } from "./tasks.ts";
+import { SESSION_PERMISSION_EVENT } from "../resource-lifecycle-guard/permission-contract.ts";
 import {
 	formatModelAssignments,
 	loadModelAssignments,
@@ -48,8 +52,6 @@ import {
 	UNSAFE_FILE_NAME_PATTERN,
 } from "./regex.ts";
 
-const MAX_PARALLEL_TASKS = 8;
-const MAX_CONCURRENCY = 4;
 const PER_TASK_OUTPUT_CAP = 50 * 1024;
 const MAX_STDERR_BYTES = 32 * 1024;
 const MAX_JSON_LINE_BYTES = 8 * 1024 * 1024;
@@ -59,7 +61,6 @@ const MAX_RETAINED_JSON_EVENTS = 100_000;
 const MAX_MESSAGES = 3;
 const MAX_MESSAGE_BYTES = 32 * 1024;
 const MAX_RETAINED_TEXT_BYTES = 24 * 1024;
-const MAX_TOOL_ARGUMENT_BYTES = 2 * 1024;
 const MAX_TASK_CHARS = 16 * 1024;
 const MAX_PREVIOUS_CHARS = 50 * 1024;
 const DEFAULT_TASK_TIMEOUT_MS = 30 * 60 * 1000;
@@ -204,7 +205,7 @@ const EMPTY_USAGE: UsageStats = Object.freeze({
 // Shared only by waiting/terminal placeholders. Active runs always own a mutable array.
 const EMPTY_MESSAGES = Object.freeze([]) as unknown as Message[];
 
-interface SingleResult {
+export interface SingleResult {
 	agent: string;
 	agentSource: "user" | "project" | "unknown";
 	task: string;
@@ -220,11 +221,27 @@ interface SingleResult {
 	step?: number;
 }
 
-interface SubagentDetails {
+export interface SubagentDetails {
 	mode: "single" | "parallel" | "chain";
 	agentScope: AgentScope;
 	projectAgentsDir: string | null;
 	results: SingleResult[];
+	backgroundCount?: number;
+}
+
+/** Owned snapshots only at start/finish boundaries; no prompts or child messages enter progress. */
+export function snapshotSubagentDetails(mode: SubagentDetails["mode"], agentScope: AgentScope, projectAgentsDir: string | null, results: SingleResult[]): SubagentDetails {
+	const snapshots: SingleResult[] = new Array(results.length);
+	for (let i = 0; i < results.length; i++) {
+		const result = results[i];
+		snapshots[i] = {
+			agent: result.agent, agentSource: result.agentSource, task: "", stderr: "", messages: EMPTY_MESSAGES,
+			exitCode: result.exitCode, usage: { ...result.usage }, model: result.model, startedAt: result.startedAt,
+			completedAt: result.completedAt, step: result.step, stopReason: result.stopReason,
+			errorMessage: result.errorMessage ? "Subagent failed" : undefined,
+		};
+	}
+	return { mode, agentScope, projectAgentsDir, results: snapshots };
 }
 
 interface ResultStateCounts {
@@ -249,11 +266,14 @@ class SubagentStatusText extends Text {
 	private counts: ResultStateCounts | undefined;
 	private theme: SubagentTheme | undefined;
 	private renderedText = "";
+	private renderedSecond = -1;
+	private dirty = true;
 
 	setStatus(details: SubagentDetails, counts: ResultStateCounts, theme: SubagentTheme): void {
 		this.details = details;
 		this.counts = counts;
 		this.theme = theme;
+		this.dirty = true;
 		this.refreshStatus();
 	}
 
@@ -262,6 +282,8 @@ class SubagentStatusText extends Text {
 		this.counts = undefined;
 		this.theme = undefined;
 		this.renderedText = text;
+		this.renderedSecond = -1;
+		this.dirty = false;
 		super.setText(text);
 	}
 
@@ -270,6 +292,11 @@ class SubagentStatusText extends Text {
 		const counts = this.counts;
 		const theme = this.theme;
 		if (!details || !counts || !theme) return;
+		const now = Date.now();
+		const second = Math.floor(now / 1000);
+		if (!this.dirty && (counts.running === 0 || second === this.renderedSecond)) return;
+		this.dirty = false;
+		this.renderedSecond = second;
 		let text = theme.fg(
 			counts.failed > 0 ? "error" : counts.running > 0 ? "warning" : counts.waiting > 0 ? "muted" : "success",
 			`${counts.succeeded}/${details.results.length} completed`,
@@ -277,7 +304,6 @@ class SubagentStatusText extends Text {
 		if (counts.running > 0) text += theme.fg("warning", ` · ${counts.running} working`);
 		if (counts.waiting > 0) text += theme.fg("muted", ` · ${counts.waiting} waiting`);
 		if (counts.failed > 0) text += theme.fg("error", ` · ${counts.failed} failed`);
-		const now = Date.now();
 		for (const result of details.results) text += `\n\n${renderAgentStatus(result, theme, now)}`;
 		if (text === this.renderedText) return;
 		this.renderedText = text;
@@ -291,11 +317,21 @@ class SubagentStatusText extends Text {
 	}
 }
 
+function prefixEnd(value: string, maxBytes: number): number {
+	let low = 0;
+	let high = Math.min(value.length, maxBytes);
+	while (low < high) {
+		const middle = Math.ceil((low + high) / 2);
+		if (Buffer.byteLength(value.slice(0, middle), "utf8") <= maxBytes) low = middle;
+		else high = middle - 1;
+	}
+	if (low > 0 && low < value.length && value.charCodeAt(low - 1) >= 0xD800 && value.charCodeAt(low - 1) <= 0xDBFF && value.charCodeAt(low) >= 0xDC00 && value.charCodeAt(low) <= 0xDFFF) low--;
+	return low;
+}
+
 function capText(value: string, maxBytes: number): string {
 	if (Buffer.byteLength(value, "utf8") <= maxBytes) return value;
-	let result = value.slice(0, maxBytes);
-	while (Buffer.byteLength(result, "utf8") > maxBytes) result = result.slice(0, -1);
-	return `${result}\n[truncated]`;
+	return `${value.slice(0, prefixEnd(value, maxBytes))}\n[truncated]`;
 }
 
 function capTextHeadTail(value: string, maxBytes: number): string {
@@ -303,21 +339,17 @@ function capTextHeadTail(value: string, maxBytes: number): string {
 	if (totalBytes <= maxBytes) return value;
 	const sideBudget = Math.max(1, Math.floor((maxBytes - 256) / 2));
 	const head = capText(value, sideBudget).replace(TRUNCATED_SUFFIX_PATTERN, "");
-	let tail = value.slice(-sideBudget);
-	while (Buffer.byteLength(tail, "utf8") > sideBudget) tail = tail.slice(1);
+	let low = Math.max(0, value.length - sideBudget);
+	let high = value.length;
+	while (low < high) {
+		const middle = Math.floor((low + high) / 2);
+		if (Buffer.byteLength(value.slice(middle), "utf8") <= sideBudget) high = middle;
+		else low = middle + 1;
+	}
+	if (low > 0 && low < value.length && value.charCodeAt(low) >= 0xDC00 && value.charCodeAt(low) <= 0xDFFF && value.charCodeAt(low - 1) >= 0xD800 && value.charCodeAt(low - 1) <= 0xDBFF) low++;
+	const tail = value.slice(low);
 	const omittedBytes = Math.max(0, totalBytes - Buffer.byteLength(head, "utf8") - Buffer.byteLength(tail, "utf8"));
 	return `${head}\n[truncated: ${omittedBytes} UTF-8 bytes omitted; head and tail retained]\n${tail}`;
-}
-
-function boundedJsonValue(value: unknown, maxBytes: number): unknown {
-	try {
-		const raw = JSON.stringify(value);
-		const rawBytes = Buffer.byteLength(raw, "utf8");
-		if (rawBytes <= maxBytes) return JSON.parse(raw) as unknown;
-		return { truncated: true, originalBytes: rawBytes };
-	} catch {
-		return { truncated: true, reason: "not JSON-serializable" };
-	}
 }
 
 function boundedTextContent(content: unknown): Array<{ type: "text"; text: string }> {
@@ -348,13 +380,14 @@ export function jsonTransportLimitReason(totalBytes: number, eventCount: number)
 	return undefined;
 }
 
-export function boundedMessage(message: Message): Message {
+export function boundedMessage(message: Message, encodedBytes?: number): Message {
 	// Preserve useful final text structurally. Whole-JSON slicing can make valid
 	// messages unparsable and used to replace successful reports with no content.
-	let raw: string;
-	try { raw = JSON.stringify(message); }
-	catch { return { role: "assistant", content: [{ type: "text", text: "[invalid child message: not JSON-serializable]" }], timestamp: Date.now() } as Message; }
-	const rawBytes = Buffer.byteLength(raw, "utf8");
+	let rawBytes = encodedBytes;
+	if (rawBytes === undefined) {
+		try { rawBytes = Buffer.byteLength(JSON.stringify(message), "utf8"); }
+		catch { return { role: "assistant", content: [{ type: "text", text: "[invalid child message: not JSON-serializable]" }], timestamp: Date.now() } as Message; }
+	}
 	// Child events were just parsed from JSON and are not mutated after retention;
 	// retaining the original avoids a second full parse and object graph allocation.
 	if (rawBytes <= MAX_MESSAGE_BYTES) return message;
@@ -377,7 +410,7 @@ export function boundedMessage(message: Message): Message {
 				const retainedCall: Record<string, unknown> = {
 					type: "toolCall",
 					name: capText(item.name, 256),
-					arguments: boundedJsonValue(item.arguments, MAX_TOOL_ARGUMENT_BYTES),
+					arguments: { truncated: true, reason: "oversized child message" },
 				};
 				if (typeof item.id === "string") retainedCall.id = capText(item.id, 256);
 				retained.push(retainedCall);
@@ -396,7 +429,7 @@ export function boundedMessage(message: Message): Message {
 			model: typeof record.model === "string" ? capText(record.model, 256) : undefined,
 			stopReason: typeof record.stopReason === "string" ? capText(record.stopReason, 256) : undefined,
 			errorMessage: typeof record.errorMessage === "string" ? capText(record.errorMessage, 4096) : undefined,
-			usage: record.usage && typeof record.usage === "object" ? boundedJsonValue(record.usage, 2048) : undefined,
+			usage: boundedUsage(record.usage),
 		} as unknown as Message;
 	}
 
@@ -412,8 +445,17 @@ export function boundedMessage(message: Message): Message {
 	} as Message;
 }
 
-function appendBoundedMessage(messages: Message[], message: Message): Message {
-	const bounded = boundedMessage(message);
+function finiteUsage(value: unknown): number { return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0; }
+function boundedUsage(value: unknown): unknown {
+	if (!value || typeof value !== "object") return undefined;
+	const usage = value as Record<string, unknown>;
+	const cost = usage.cost && typeof usage.cost === "object" ? usage.cost as Record<string, unknown> : undefined;
+	return { input: finiteUsage(usage.input), output: finiteUsage(usage.output), cacheRead: finiteUsage(usage.cacheRead), cacheWrite: finiteUsage(usage.cacheWrite), totalTokens: finiteUsage(usage.totalTokens),
+		cost: { input: finiteUsage(cost?.input), output: finiteUsage(cost?.output), cacheRead: finiteUsage(cost?.cacheRead), cacheWrite: finiteUsage(cost?.cacheWrite), total: finiteUsage(cost?.total) } };
+}
+
+function appendBoundedMessage(messages: Message[], message: Message, encodedBytes: number): Message {
+	const bounded = boundedMessage(message, encodedBytes);
 	messages.push(bounded);
 	if (messages.length > MAX_MESSAGES) messages.shift();
 	return bounded;
@@ -464,7 +506,7 @@ export function assertSubagentBatchPreflight(
 		const tools = effectiveTools(agent, true).tools;
 		if (!tools.includes("write") && !tools.includes("edit") && !tools.includes("bash")) continue;
 		if (writerCwds.has(policy.canonicalCwd)) {
-			throw new Error(`Parallel mutation-capable tasks share cwd "${policy.canonicalCwd}". Use chain/sequential execution or set readOnly: true on all but one task; task text alone does not change capabilities. No subagent was started.`);
+			throw new Error(`Parallel mutation-capable tasks share cwd "${policy.canonicalCwd}". Use chain/sequential execution, isolated workspaces, or set readOnly: true on all overlapping tasks; task text alone does not change capabilities. No subagent was started.`);
 		}
 		writerCwds.add(policy.canonicalCwd);
 	}
@@ -591,17 +633,17 @@ function renderAgentStatus(
 ): string {
 	let icon: string;
 	let status: string;
-	if (result.startedAt === undefined) {
+	if (result.startedAt === undefined && result.exitCode === -1) {
 		icon = theme.fg("muted", "○");
 		status = "waiting";
 	} else {
-		const elapsed = formatElapsedMs((result.completedAt ?? now) - result.startedAt);
+		const elapsed = formatElapsedMs(result.startedAt === undefined ? 0 : (result.completedAt ?? now) - result.startedAt);
 		if (result.exitCode === -1) {
 			icon = theme.fg("warning", "⏳");
 			status = `working ${elapsed}`;
 		} else if (isFailedResult(result)) {
 			icon = theme.fg("error", "✗");
-			status = `failed after ${elapsed}`;
+			status = result.startedAt === undefined ? "failed before launch" : `failed after ${elapsed}`;
 		} else {
 			icon = theme.fg("success", "✓");
 			status = `completed in ${elapsed}`;
@@ -731,7 +773,7 @@ function emitSingleResultUpdate(
 ): void {
 	if (!onUpdate) return;
 	onUpdate({
-		content: [{ type: "text", text: getFinalOutput(result.messages) || "(running...)" }],
+		content: [{ type: "text", text: result.exitCode === -1 ? "Subagent running" : "Subagent finished" }],
 		details: makeDetails([result]),
 	});
 }
@@ -749,7 +791,7 @@ class NumberCompletion {
 	}
 }
 
-class SubagentProcessRun {
+export class SubagentProcessRun {
 	private readonly proc: ChildProcessByStdio<null, Readable, Readable>;
 	private readonly completion = new NumberCompletion();
 	private readonly stdoutDecoder = new StringDecoder("utf8");
@@ -761,8 +803,6 @@ class SubagentProcessRun {
 	private readonly signal: AbortSignal | undefined;
 	private readonly timeoutMs: number;
 	private readonly result: SingleResult;
-	private readonly onUpdate: OnUpdateCallback | undefined;
-	private readonly makeDetails: (results: SingleResult[]) => SubagentDetails;
 	private buffer = "";
 	private jsonTransportBytes = 0;
 	private jsonTransportEventCount = 0;
@@ -784,14 +824,10 @@ class SubagentProcessRun {
 		signal: AbortSignal | undefined,
 		timeoutMs: number,
 		result: SingleResult,
-		onUpdate: OnUpdateCallback | undefined,
-		makeDetails: (results: SingleResult[]) => SubagentDetails,
 	) {
 		this.signal = signal;
 		this.timeoutMs = timeoutMs;
 		this.result = result;
-		this.onUpdate = onUpdate;
-		this.makeDetails = makeDetails;
 		const invocation = getPiInvocation(args);
 		this.proc = spawn(invocation.command, invocation.args, {
 			cwd: childCwd,
@@ -800,6 +836,7 @@ class SubagentProcessRun {
 				SP_SUBAGENT_ALLOW_BASH: allowBash ? "1" : "0",
 			}),
 			shell: false,
+			windowsHide: true,
 			detached: process.platform !== "win32",
 			stdio: ["ignore", "pipe", "pipe"],
 		});
@@ -859,6 +896,7 @@ class SubagentProcessRun {
 		let event: any;
 		try { event = JSON.parse(line); }
 		catch { return true; }
+		if (!event || typeof event !== "object") return true;
 		const eventType = event.type;
 		if ((eventType === "message_end" || eventType === "tool_result_end") && event.message) {
 			this.retainedJsonEventCount++;
@@ -870,7 +908,7 @@ class SubagentProcessRun {
 			}
 		}
 		if (eventType === "message_end" && event.message) {
-			const message = appendBoundedMessage(this.result.messages, event.message as Message);
+			const message = appendBoundedMessage(this.result.messages, event.message as Message, lineBytes);
 			if (message.role === "assistant") {
 				this.result.usage.turns++;
 				const usage = message.usage;
@@ -886,10 +924,8 @@ class SubagentProcessRun {
 				if (message.stopReason) this.result.stopReason = message.stopReason;
 				if (message.errorMessage) this.result.errorMessage = message.errorMessage;
 			}
-			emitSingleResultUpdate(this.onUpdate, this.makeDetails, this.result);
 		} else if (eventType === "tool_result_end" && event.message) {
-			appendBoundedMessage(this.result.messages, event.message as Message);
-			emitSingleResultUpdate(this.onUpdate, this.makeDetails, this.result);
+			appendBoundedMessage(this.result.messages, event.message as Message, lineBytes);
 		}
 		return true;
 	}
@@ -1038,6 +1074,11 @@ async function runSingleAgent(
 		}
 
 		args.push(`Task: ${task}`);
+		signal?.throwIfAborted();
+		const identity = fs.statSync(childCwd);
+		if (canonicalWorkspace(childCwd) !== policy.canonicalCwd || identity.dev !== policy.device || identity.ino !== policy.inode || !identity.isDirectory()) {
+			throw new Error("Delegated workspace identity changed before subagent launch.");
+		}
 		const processRun = new SubagentProcessRun(
 			args,
 			childCwd,
@@ -1046,8 +1087,6 @@ async function runSingleAgent(
 			signal,
 			timeoutMs,
 			currentResult,
-			onUpdate,
-			makeDetails,
 		);
 		const exitCode = await processRun.run();
 
@@ -1103,11 +1142,12 @@ const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
 	default: "user",
 });
 
-const SubagentParams = Type.Object({
+function subagentParameters(limits: SubagentLimits) { return Type.Object({
 	agent: Type.Optional(Type.String({ minLength: 1, maxLength: 64, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]*$", description: `Single-mode ${AGENT_ROLE_DESCRIPTION}` })),
 	task: Type.Optional(Type.String({ minLength: 1, maxLength: MAX_TASK_CHARS, description: "Task for single mode" })),
-	tasks: Type.Optional(Type.Array(TaskItem, { minItems: 1, maxItems: MAX_PARALLEL_TASKS, description: "Parallel tasks" })),
-	chain: Type.Optional(Type.Array(ChainItem, { minItems: 1, maxItems: MAX_PARALLEL_TASKS, description: "Sequential tasks" })),
+	tasks: Type.Optional(Type.Array(TaskItem, { minItems: 1, maxItems: limits.maxTasks, description: `Independent parallel tasks; at most ${limits.maxConcurrent} running, remainder queued` })),
+	chain: Type.Optional(Type.Array(ChainItem, { minItems: 1, maxItems: limits.maxTasks, description: "Dependent sequential tasks" })),
+	background: Type.Optional(Type.Boolean({ description: "Return managed task IDs immediately; continue work and await completion notification. TUI/RPC only; tasks stop when this session closes." })),
 	agentScope: Type.Optional(AgentScopeSchema),
 	confirmProjectAgents: Type.Optional(
 		Type.Boolean({ description: "Confirm project agents; defaults true.", default: true }),
@@ -1115,13 +1155,229 @@ const SubagentParams = Type.Object({
 	cwd: Type.Optional(Type.String({ minLength: 1, maxLength: 4096, description: "Single-task working directory" })),
 	readOnly: Type.Optional(Type.Boolean({ description: "Single-task read-only downgrade" })),
 	timeoutMs: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_TASK_TIMEOUT_MS, description: "Default task timeout; 1800000ms" })),
-}, { additionalProperties: false });
+}, { additionalProperties: false }); }
+
+export function assertTaskCount(input: unknown, limits: SubagentLimits): void {
+	if (!input || typeof input !== "object") return;
+	const params = input as { tasks?: unknown; chain?: unknown };
+	for (const items of [params.tasks, params.chain]) {
+		if (Array.isArray(items) && items.length > limits.maxTasks) {
+			throw new Error(`Subagent task limit exceeded: requested ${items.length}, maximum ${limits.maxTasks}. Split into smaller batches; no task was started.`);
+		}
+	}
+}
+
+function taskStatus(task: ManagedSubagentTask): string {
+	return `${task.id} · ${task.agent} · ${task.state}${task.startedAt === undefined ? "" : ` · ${formatElapsedMs((task.completedAt ?? Date.now()) - task.startedAt)}`}`;
+}
+
+interface PreparedBatch {
+	params: import("typebox").Static<ReturnType<typeof subagentParameters>>;
+	agents: AgentConfig[];
+	executions: ReadonlyMap<string, ResolvedSubagentExecution | undefined>;
+	runManaged: (index: number, task: string, step: number | undefined, update: OnUpdateCallback | undefined, details: (results: SingleResult[]) => SubagentDetails, timeoutMs: number) => Promise<SingleResult>;
+	makeDetails: (mode: SubagentDetails["mode"]) => (results: SingleResult[]) => SubagentDetails;
+	publish: OnUpdateCallback | undefined;
+	executionSignal: AbortSignal;
+	defaultTimeoutMs: number;
+}
+
+async function executePreparedBatch(batch: PreparedBatch): Promise<AgentToolResult<SubagentDetails>> {
+	const { params, agents, executions, runManaged, makeDetails, publish, executionSignal, defaultTimeoutMs } = batch;
+	if (params.chain && params.chain.length > 0) {
+		const chainDetails = makeDetails("chain");
+		const results: SingleResult[] = [];
+		const chainResults: SingleResult[] = new Array(params.chain.length);
+		for (let i = 0; i < params.chain.length; i++) {
+			const step = params.chain[i];
+			const execution = executions.get(step.agent);
+			chainResults[i] = {
+				agent: step.agent,
+				agentSource: findAgent(agents, step.agent)?.source ?? "unknown",
+				task: step.task,
+				exitCode: -1,
+				messages: EMPTY_MESSAGES,
+				stderr: "",
+				usage: EMPTY_USAGE,
+				model: execution ? `${execution.provider}/${execution.model}` : undefined,
+				step: i + 1,
+			};
+		}
+		let previousOutput = "";
+
+		for (let i = 0; i < params.chain.length; i++) {
+			const step = params.chain[i];
+			const taskWithContext = expandPreviousPlaceholder(step.task, previousOutput);
+
+			const chainUpdate: OnUpdateCallback | undefined = publish
+				? (partial) => {
+						const currentResult = partial.details?.results[0];
+						if (currentResult) {
+							chainResults[i] = currentResult;
+							publish({
+								content: partial.content,
+								details: chainDetails(chainResults),
+							});
+						}
+					}
+				: undefined;
+
+			const result = await runManaged(i, taskWithContext, i + 1, chainUpdate, chainDetails, step.timeoutMs ?? defaultTimeoutMs);
+			results.push(result);
+			chainResults[i] = result;
+
+			const isError = isFailedResult(result);
+			if (isError) throw new Error(`Chain stopped at step ${i + 1} (${step.agent}): ${capText(getResultOutput(result), PER_TASK_OUTPUT_CAP)}`);
+			previousOutput = getFinalOutput(result.messages);
+		}
+		return {
+			content: [{ type: "text", text: getFinalOutput(results[results.length - 1].messages) || "(no output)" }],
+			details: chainDetails(results),
+		};
+	}
+
+	if (params.tasks && params.tasks.length > 0) {
+		const parallelDetails = makeDetails("parallel");
+
+		// Track all results for streaming updates
+		const allResults: SingleResult[] = new Array(params.tasks.length);
+
+		// Initialize placeholder results
+		for (let i = 0; i < params.tasks.length; i++) {
+			const execution = executions.get(params.tasks[i].agent);
+			allResults[i] = {
+				agent: params.tasks[i].agent,
+				agentSource: "unknown",
+				task: params.tasks[i].task,
+				exitCode: -1, // -1 = still running
+				messages: EMPTY_MESSAGES,
+				stderr: "",
+				usage: EMPTY_USAGE,
+				model: execution ? `${execution.provider}/${execution.model}` : undefined,
+			};
+		}
+
+		const emitParallelUpdate = () => {
+			if (publish) {
+				const { waiting, running } = resultStateCounts(allResults);
+				const done = allResults.length - waiting - running;
+				publish({
+					content: [
+						{ type: "text", text: `Parallel: ${done}/${allResults.length} done, ${running} running...` },
+					],
+					details: parallelDetails(allResults),
+				});
+			}
+		};
+
+		const results = await mapWithConcurrencyLimit(params.tasks, params.tasks.length, async (t, index) => {
+			const result = await runManaged(index, t.task, undefined,
+				// Per-task update callback
+				publish ? (partial) => {
+					if (partial.details?.results[0]) {
+						allResults[index] = partial.details.results[0];
+						emitParallelUpdate();
+					}
+				} : undefined,
+				parallelDetails,
+				t.timeoutMs ?? defaultTimeoutMs,
+			);
+			const previous = allResults[index];
+			allResults[index] = result;
+			if (previous.exitCode === -1 || previous.exitCode !== result.exitCode || previous.errorMessage !== result.errorMessage) emitParallelUpdate();
+			return result;
+		});
+
+		const summaryText = formatParallelResultText(results, executionSignal.aborted);
+		return {
+			content: [
+				{
+					type: "text",
+					text: summaryText,
+				},
+			],
+			details: parallelDetails(results),
+		};
+	}
+
+	if (params.agent && params.task) {
+		const singleDetails = makeDetails("single");
+		const result = await runManaged(0, params.task, undefined, publish, singleDetails, defaultTimeoutMs);
+		const isError = isFailedResult(result);
+		if (isError) throw new Error(`Agent ${result.stopReason || "failed"}: ${capText(getResultOutput(result), PER_TASK_OUTPUT_CAP)}`);
+		return {
+			content: [{ type: "text", text: getFinalOutput(result.messages) || "(no output)" }],
+			details: singleDetails([result]),
+		};
+	}
+
+	throw new Error("Invalid subagent parameters");
+}
 
 export default function (pi: ExtensionAPI) {
 	if (!SUPPORTED_SP_VERSION_PATTERN.test(VERSION)) {
 		console.warn(`@super-pi/subagent disabled: Pi ${VERSION} is unsupported (requires 0.84.x).`);
 		return;
 	}
+	const limits = loadSubagentLimits();
+	const scheduler = new SubagentScheduler(limits);
+	const tasks = new SubagentTasks(limits.maxTasks);
+	const pending = new Set<Promise<unknown>>();
+	let authority = new AbortController();
+	let closed = false;
+	const removePermissionListener = pi.events.on(SESSION_PERMISSION_EVENT, () => {
+		authority.abort(new Error("Subagent permission state changed; submit a new task."));
+		tasks.cancelAll();
+		authority = new AbortController();
+	});
+	pi.on("session_shutdown", async () => {
+		closed = true;
+		removePermissionListener();
+		authority.abort(new Error("Subagent session closed."));
+		tasks.cancelAll();
+		scheduler.dispose();
+		await Promise.allSettled(pending);
+		pending.clear();
+		tasks.dispose();
+	});
+	pi.registerCommand("subagent-limits", {
+		description: "Show effective subagent limits, hard ceilings and configuration path",
+		handler: async (_args, ctx) => ctx.ui.notify(`${describeSubagentLimits(limits)}\nConfig: ${SUBAGENT_LIMITS_PATH}; reload after editing.`, "info"),
+	});
+	const listTasks = (): string => {
+		let text = `${scheduler.active}/${limits.maxConcurrent} running · ${scheduler.outstanding}/${limits.maxTasks} active/queued · ${scheduler.reserved}/${limits.maxTasks} reserved`;
+		for (const task of tasks.values()) text += `\n${taskStatus(task)}`;
+		return text;
+	};
+	pi.registerCommand("tasks", {
+		description: "List session subagent tasks; /tasks cancel <id> stops one task",
+		handler: async (args, ctx) => {
+			try {
+				const parts = args.trim().split(/\s+/);
+				if (parts[0] === "cancel" && parts.length === 2) ctx.ui.notify(taskStatus(tasks.cancel(parts[1])), "info");
+				else if (args.trim()) ctx.ui.notify("Usage: /tasks or /tasks cancel <id>", "error");
+				else ctx.ui.notify(listTasks(), "info");
+			} catch (error) { ctx.ui.notify(error instanceof Error ? error.message : String(error), "error"); }
+		},
+	});
+	pi.registerTool({
+		name: "subagent_tasks", label: "Subagent tasks",
+		description: `Manage existing session subagent tasks: list, status, wait, or cancel one ID. Waiting (0–60000ms, at most 64 pending waits) never cancels execution. Prefer completion notifications to repeated polling. Keep the latest ${limits.maxTasks} completed tasks, at most 12000 characters per result; IDs expire on session close. Cannot launch tasks or grant permissions.`,
+		modelOnly: true,
+		parameters: Type.Object({
+			action: StringEnum(["list", "status", "wait", "cancel"] as const),
+			id: Type.Optional(Type.String({ minLength: 1, maxLength: 80 })),
+			timeoutMs: Type.Optional(Type.Integer({ minimum: 0, maximum: 60_000, description: "Wait only; default 10000 ms" })),
+		}, { additionalProperties: false }),
+		async execute(_id, params, signal) {
+			if (closed) throw new Error("Subagent session is closed.");
+			if (params.action === "list") return { content: [{ type: "text", text: listTasks() }], details: {} };
+			if (!params.id) throw new Error("A subagent task ID is required.");
+			const task = params.action === "cancel" ? tasks.cancel(params.id)
+				: params.action === "wait" ? await tasks.wait(params.id, params.timeoutMs ?? 10_000, signal) : tasks.get(params.id);
+			return { content: [{ type: "text", text: `${taskStatus(task)}${task.result === undefined ? "" : `\n\n${task.result}`}` }], details: {} };
+		},
+	});
 
 	pi.registerCommand("subagent-model", {
 		description: "Assign exact provider/model/thinking routes to subagent roles",
@@ -1211,12 +1467,27 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "subagent",
 		label: "Subagent",
-		description: "Delegate tasks to isolated subagents. agent is a registered role (planner/reviewer/scout/worker), never a custom task name; put labels and instructions in task. Supports single, parallel tasks, or sequential chain.",
-		parameters: SubagentParams,
+		description: `Delegate tasks to isolated subagents. agent is a registered role (planner/reviewer/scout/worker), never a custom task name; put labels and instructions in task. Supports single, parallel tasks, sequential chain, and session-owned background execution. ${describeSubagentLimits(limits)} ${DELEGATION_GUIDANCE}`,
+		parameters: subagentParameters(limits),
+		prepareArguments(input) {
+			assertTaskCount(input, limits);
+			return input as import("typebox").Static<ReturnType<typeof subagentParameters>>;
+		},
 		// Tasks run for up to two hours; a Codemode script (60s default, 300s maximum) cannot host them.
 		modelOnly: true,
 
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
+			if (closed) throw new Error("Subagent session is closed.");
+			assertTaskCount(params, limits);
+			signal?.throwIfAborted();
+			if (params.background && ctx.mode !== "tui" && ctx.mode !== "rpc") {
+				throw new Error("Background subagents require a live TUI or RPC session. Use foreground execution in print/JSON mode.");
+			}
+			if (params.background && !ctx.getActiveTools().includes("subagent_tasks")) {
+				throw new Error("Background subagents require the subagent_tasks management tool. Enable it or use foreground execution.");
+			}
+			const authoritySignal = authority.signal;
+			const foregroundSignal = signal ? AbortSignal.any([signal, authoritySignal]) : authoritySignal;
 			const defaultTimeoutMs = params.timeoutMs ?? DEFAULT_TASK_TIMEOUT_MS;
 			const agentScope: AgentScope = params.agentScope ?? "user";
 			const confirmProjectAgents = params.confirmProjectAgents ?? true;
@@ -1251,12 +1522,7 @@ export default function (pi: ExtensionAPI) {
 
 			const makeDetails =
 				(mode: "single" | "parallel" | "chain") =>
-				(results: SingleResult[]): SubagentDetails => ({
-					mode,
-					agentScope,
-					projectAgentsDir: discovery.projectAgentsDir,
-					results,
-				});
+				(results: SingleResult[]): SubagentDetails => snapshotSubagentDetails(mode, agentScope, discovery.projectAgentsDir, results);
 
 			if (modeCount !== 1) throw new Error("Invalid parameters: provide exactly one of single, parallel, or chain mode");
 			const requestedCwds: (string | undefined)[] = [];
@@ -1277,191 +1543,100 @@ export default function (pi: ExtensionAPI) {
 			}
 			const delegatedPolicies = consumeDelegatedTaskPolicies(params, requestedCwds, ctx.cwd, toolCallId);
 			assertSubagentBatchPreflight(agents, requestedAgentNames, delegatedPolicies, hasTasks);
-			const uniqueAgentNames = new Set(requestedAgentNames);
-
-			if ((agentScope === "project" || agentScope === "both") && confirmProjectAgents && ctx.hasUI) {
-				const projectAgentNames: string[] = [];
-				for (const name of uniqueAgentNames) {
-					const agent = findAgent(agents, name);
-					if (agent?.source === "project") projectAgentNames.push(agent.name);
-				}
-
-				if (projectAgentNames.length > 0) {
-					const dir = discovery.projectAgentsDir ?? "(unknown)";
-					const ok = await ctx.ui.confirm(
-						"Run project-local agents?",
-						`Agents: ${projectAgentNames.join(", ")}\nSource: ${dir}\n\nProject agents are repo-controlled. Only continue for trusted repositories.`,
-					);
-					if (!ok) throw new Error("Project-local agents were not approved");
+			if (params.background) {
+				for (const policy of delegatedPolicies) {
+					if (policy.allowMutation && (isPathInside(policy.canonicalCwd, trustedWorkspace) || isPathInside(trustedWorkspace, policy.canonicalCwd))) {
+						throw new Error("Background writers require an isolated workspace outside the parent's workspace. Use readOnly: true for background research here, or delegate to an authorized worktree.");
+					}
 				}
 			}
+			const reservation = scheduler.reserve(delegatedPolicies, hasChain ? "chain" : "parallel");
+			try {
+				const uniqueAgentNames = new Set(requestedAgentNames);
 
-			// Resolve every route and credential before launching the first child so a
-			// bad later task cannot leave a partially started batch.
-			const executions = new Map<string, ResolvedSubagentExecution | undefined>();
-			for (const name of uniqueAgentNames) executions.set(name, await executionFor(name));
+				if ((agentScope === "project" || agentScope === "both") && confirmProjectAgents && ctx.hasUI) {
+					const projectAgentNames: string[] = [];
+					for (const name of uniqueAgentNames) {
+						const agent = findAgent(agents, name);
+						if (agent?.source === "project") projectAgentNames.push(agent.name);
+					}
 
-			if (params.chain && params.chain.length > 0) {
-				const chainDetails = makeDetails("chain");
-				const results: SingleResult[] = [];
-				const chainResults: SingleResult[] = new Array(params.chain.length);
-				for (let i = 0; i < params.chain.length; i++) {
-					const step = params.chain[i];
-					const execution = executions.get(step.agent);
-					chainResults[i] = {
-						agent: step.agent,
-						agentSource: findAgent(agents, step.agent)?.source ?? "unknown",
-						task: step.task,
-						exitCode: -1,
-						messages: EMPTY_MESSAGES,
-						stderr: "",
-						usage: EMPTY_USAGE,
-						model: execution ? `${execution.provider}/${execution.model}` : undefined,
-						step: i + 1,
-					};
-				}
-				let previousOutput = "";
-
-				for (let i = 0; i < params.chain.length; i++) {
-					const step = params.chain[i];
-					const taskWithContext = expandPreviousPlaceholder(step.task, previousOutput);
-
-					const chainUpdate: OnUpdateCallback | undefined = onUpdate
-						? (partial) => {
-								const currentResult = partial.details?.results[0];
-								if (currentResult) {
-									chainResults[i] = currentResult;
-									onUpdate({
-										content: partial.content,
-										details: chainDetails(chainResults.slice()),
-									});
-								}
-							}
-						: undefined;
-
-					const result = await runSingleAgent(
-						delegatedPolicies[i],
-						agents,
-						step.agent,
-						taskWithContext,
-						i + 1,
-						signal,
-						chainUpdate,
-						chainDetails,
-						executions.get(step.agent),
-						step.timeoutMs ?? defaultTimeoutMs,
-					);
-					results.push(result);
-					chainResults[i] = result;
-
-					const isError = isFailedResult(result);
-					if (isError) throw new Error(`Chain stopped at step ${i + 1} (${step.agent}): ${capText(getResultOutput(result), PER_TASK_OUTPUT_CAP)}`);
-					previousOutput = getFinalOutput(result.messages);
-				}
-				return {
-					content: [{ type: "text", text: getFinalOutput(results[results.length - 1].messages) || "(no output)" }],
-					details: chainDetails(results),
-				};
-			}
-
-			if (params.tasks && params.tasks.length > 0) {
-				const parallelDetails = makeDetails("parallel");
-				if (params.tasks.length > MAX_PARALLEL_TASKS) throw new Error(`Too many parallel tasks; maximum is ${MAX_PARALLEL_TASKS}`);
-
-				// Track all results for streaming updates
-				const allResults: SingleResult[] = new Array(params.tasks.length);
-
-				// Initialize placeholder results
-				for (let i = 0; i < params.tasks.length; i++) {
-					const execution = executions.get(params.tasks[i].agent);
-					allResults[i] = {
-						agent: params.tasks[i].agent,
-						agentSource: "unknown",
-						task: params.tasks[i].task,
-						exitCode: -1, // -1 = still running
-						messages: EMPTY_MESSAGES,
-						stderr: "",
-						usage: EMPTY_USAGE,
-						model: execution ? `${execution.provider}/${execution.model}` : undefined,
-					};
+					if (projectAgentNames.length > 0) {
+						const dir = discovery.projectAgentsDir ?? "(unknown)";
+						const ok = await ctx.ui.confirm(
+							"Run project-local agents?",
+							`Agents: ${projectAgentNames.join(", ")}\nSource: ${dir}\n\nProject agents are repo-controlled. Only continue for trusted repositories.`,
+						);
+						if (!ok) throw new Error("Project-local agents were not approved");
+					}
 				}
 
-				const emitParallelUpdate = () => {
-					if (onUpdate) {
-						const { waiting, running } = resultStateCounts(allResults);
-						const done = allResults.length - waiting - running;
-						onUpdate({
-							content: [
-								{ type: "text", text: `Parallel: ${done}/${allResults.length} done, ${running} running...` },
-							],
-							details: parallelDetails([...allResults]),
+				// Resolve every route and credential before launching the first child so a
+				// bad later task cannot leave a partially started batch.
+				const executions = new Map<string, ResolvedSubagentExecution | undefined>();
+				for (const name of uniqueAgentNames) executions.set(name, await executionFor(name));
+				foregroundSignal.throwIfAborted();
+				const ownedTasks: ManagedSubagentTask[] = [];
+				for (const name of requestedAgentNames) ownedTasks.push(tasks.create(name));
+				const executionSignal = params.background ? authoritySignal : foregroundSignal;
+				const publish = params.background ? undefined : onUpdate;
+				const runManaged = async (index: number, task: string, step: number | undefined, update: OnUpdateCallback | undefined, details: (results: SingleResult[]) => SubagentDetails, timeoutMs: number): Promise<SingleResult> => {
+					const record = ownedTasks[index];
+					const childSignal = AbortSignal.any([executionSignal, record.controller!.signal]);
+					try {
+						const result = await scheduler.run(childSignal, async () => {
+							tasks.start(record);
+							return runSingleAgent(delegatedPolicies[index], agents, requestedAgentNames[index], task, step, childSignal, update, details, executions.get(requestedAgentNames[index]), timeoutMs);
 						});
+						tasks.finish(record, getResultOutput(result), isFailedResult(result));
+						return result;
+					} catch (error) {
+						const message = capText(error instanceof Error ? error.message : String(error), 4096);
+						if (childSignal.aborted) record.controller?.abort();
+						tasks.finish(record, message, true);
+						return { agent: record.agent, agentSource: "unknown", task: "", exitCode: 1, messages: EMPTY_MESSAGES, stderr: "", usage: EMPTY_USAGE, errorMessage: message, startedAt: record.startedAt, completedAt: record.completedAt, step };
+					} finally { reservation.completed(); }
+				};
+				const runTasks = async (): Promise<AgentToolResult<SubagentDetails>> => {
+					try {
+						return await executePreparedBatch({ params, agents, executions, runManaged, makeDetails, publish, executionSignal, defaultTimeoutMs });
+					} finally {
+						for (const record of ownedTasks) {
+							if (record.completedAt === undefined) {
+								record.controller?.abort();
+								tasks.finish(record, "Task did not run because its chain or session ended.", true);
+							}
+						}
+						executions.clear();
+						reservation.release();
 					}
 				};
-
-				const batchAbort = new AbortController();
-				const batchSignal = signal
-					? AbortSignal.any([signal, batchAbort.signal])
-					: batchAbort.signal;
-				const results = await mapWithConcurrencyLimit(params.tasks, MAX_CONCURRENCY, async (t, index) => {
-					const result = await runSingleAgent(
-						delegatedPolicies[index],
-						agents,
-						t.agent,
-						t.task,
-						undefined,
-						batchSignal,
-						// Per-task update callback
-						(partial) => {
-							if (partial.details?.results[0]) {
-								allResults[index] = partial.details.results[0];
-								emitParallelUpdate();
-							}
-						},
-						parallelDetails,
-						executions.get(t.agent),
-						t.timeoutMs ?? defaultTimeoutMs,
-					);
-					allResults[index] = result;
-					emitParallelUpdate();
-					return result;
-				}, () => batchAbort.abort(new Error("A sibling subagent failed")));
-
-				const summaryText = formatParallelResultText(results, signal?.aborted === true);
-				return {
-					content: [
-						{
-							type: "text",
-							text: summaryText,
-						},
-					],
-					details: parallelDetails(results),
-				};
+				const operation = runTasks();
+				pending.add(operation);
+				if (params.background) {
+					const complete = () => {
+						pending.delete(operation);
+						if (closed || authoritySignal.aborted) return;
+						let completed = 0, failed = 0, cancelled = 0;
+						for (const task of ownedTasks) {
+							if (task.state === "completed") completed++;
+							else if (task.state === "cancelled") cancelled++;
+							else failed++;
+						}
+						const summary = `Background subagent call ${capText(toolCallId, 128)} finished: ${completed} completed, ${failed} failed, ${cancelled} cancelled. Read the returned task IDs with subagent_tasks status before reporting results.`;
+						pi.sendMessage({ customType: "subagent-completion", content: summary, display: true }, { triggerTurn: true, deliverAs: "followUp" });
+					};
+					void operation.then(complete, complete).catch(() => { /* Session teardown can race notification delivery. */ });
+					let text = "Background subagents accepted. Continue independent work; completion will be notified.\n";
+					for (const task of ownedTasks) text += `${taskStatus(task)}\n`;
+					return { content: [{ type: "text", text }], details: { mode: hasChain ? "chain" : hasTasks ? "parallel" : "single", agentScope, projectAgentsDir: null, results: [], backgroundCount: ownedTasks.length } };
+				}
+				try { return await operation; }
+				finally { pending.delete(operation); }
+			} catch (error) {
+				reservation.release();
+				throw error;
 			}
-
-			if (params.agent && params.task) {
-				const singleDetails = makeDetails("single");
-				const result = await runSingleAgent(
-					delegatedPolicies[0],
-					agents,
-					params.agent,
-					params.task,
-					undefined,
-					signal,
-					onUpdate,
-					singleDetails,
-					executions.get(params.agent),
-					defaultTimeoutMs,
-				);
-				const isError = isFailedResult(result);
-				if (isError) throw new Error(`Agent ${result.stopReason || "failed"}: ${capText(getResultOutput(result), PER_TASK_OUTPUT_CAP)}`);
-				return {
-					content: [{ type: "text", text: getFinalOutput(result.messages) || "(no output)" }],
-					details: singleDetails([result]),
-				};
-			}
-
-			throw new Error("Invalid subagent parameters");
 		},
 
 		renderCall(args, theme, context) {
@@ -1487,6 +1662,11 @@ export default function (pi: ExtensionAPI) {
 				: new SubagentStatusText("", 0, 0);
 			const state = context.state as SubagentRenderState;
 			const incoming = result.details as SubagentDetails | undefined;
+			if (incoming?.backgroundCount) {
+				state.latestDetails = undefined;
+				component.setText(theme.fg("muted", `${incoming.backgroundCount} background task(s) accepted · /tasks`));
+				return component;
+			}
 			if (incoming && incoming.results.length > 0) state.latestDetails = incoming;
 			const details = incoming && incoming.results.length > 0 ? incoming : state.latestDetails;
 			if (!details || details.results.length === 0) {

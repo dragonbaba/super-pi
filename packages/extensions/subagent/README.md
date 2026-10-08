@@ -6,9 +6,10 @@ Delegate tasks to specialized subagents with isolated context windows.
 
 - **Isolated context**: Each subagent runs in a separate `pi` process
 - **Status-only progress**: See whether each subagent is waiting, working, completed, or failed without exposing delegated task text or child output
-- **Parallel streaming**: All parallel task states update simultaneously
+- **Shared scheduling**: Foreground and background calls share one bounded FIFO per session runtime
 - **Elapsed-time tracking**: Shows final runtime and passively refreshes running elapsed time whenever the parent UI already renders, without owning a repaint timer
-- **Usage tracking**: Shows model, turns, tokens, cost, and context usage per agent
+- **Usage tracking**: Shows the resolved model while running and final turns, tokens, cost, and context usage on completion
+- **Managed background work**: Task IDs, status/list/wait/cancel, one completion notification per batch, and session-owned cleanup
 - **Abort support**: Ctrl+C propagates to kill subagent processes
 
 ## Structure
@@ -103,7 +104,7 @@ Use a chain: first have scout find the read tool, then have planner suggest impr
 | Mode | Parameter | Description |
 |------|-----------|-------------|
 | Single | `{ agent, task }` | One agent, one task |
-| Parallel | `{ tasks: [...] }` | Multiple agents run concurrently (max 8, 4 concurrent) |
+| Parallel | `{ tasks: [...] }` | Independent tasks share the session FIFO (default 64 tasks, 16 concurrent) |
 | Chain | `{ chain: [...] }` | Sequential with `{previous}` placeholder |
 
 ## Output Display
@@ -145,6 +146,94 @@ Project agents override user agents with the same name when `agentScope: "both"`
 
 Definitions are fail-closed: files/prompts are capped at 128 KiB; `name` is 1–64 safe identifier characters; `description` is 1–500 characters; `tools` is parsed in one bounded pass as at most 32 comma-separated safe tool identifiers. Empty segments and invalid definitions are rejected, and agent-file symlinks escaping their canonical agent directory are ignored. Legacy `model` frontmatter is role-inert: it is ignored rather than used as execution configuration.
 
+## Limits and delegation
+
+The model receives the effective limits and delegation guidance in the tool
+description before its first call; `tasks` and `chain` schemas expose the same
+per-call maximum. `/subagent-limits` shows the effective values and configuration
+path. Limits are ceilings, not suggested task counts. Each child should have a
+distinct objective, scope/files, existing evidence, expected output and stop
+condition. Avoid duplicate investigation and splitting trivial work into agents.
+
+| Setting | Default | Hard maximum | Scope |
+| --- | ---: | ---: | --- |
+| `maxConcurrent` | 16 | 64 | Running children across calls in this session runtime |
+| `maxTasks` | 64 | 256 | Tasks per call **and** reserved child slots across unfinished calls |
+
+Configure `~/.sp/agent/config/subagent-limits.json` (or the active
+`SP_CODING_AGENT_DIR`'s `config` directory), then reload:
+
+```json
+{ "maxConcurrent": 32, "maxTasks": 128 }
+```
+
+Both values must be positive integers and `maxConcurrent <= maxTasks`. Unknown
+keys, invalid JSON, oversized files and invalid limits fail explicitly; they are
+not silently clamped. Configuration loads once per extension runtime. Independent
+Super Pi sessions have independent schedulers; this is not a machine-wide quota.
+
+Tasks above the concurrency limit queue. Requests exceeding the batch or session
+capacity fail before launching children with requested/current/maximum counts and
+a short recovery instruction. Admission reserves the entire batch, including
+preflight model resolution, until that call finishes or fails. Completed siblings
+still occupy their batch reservation so long-running tails cannot accumulate
+unbounded retained batch inputs/results. `/tasks` distinguishes running,
+active/queued, and reserved slots. The runtime rejects overlapping workspaces
+(including parent/child directories) whenever either task has write access,
+both within a parallel batch and across accepted calls. Use `readOnly: true` on
+all overlapping tasks for concurrent research, or isolated workspaces for writers.
+Sequential chain steps may share workspaces; their reservation still excludes
+overlapping calls until the entire chain finishes.
+
+## Background tasks
+
+In a live TUI or RPC session:
+
+```json
+{
+  "background": true,
+  "tasks": [
+    { "agent": "scout", "task": "Find the parser entry points; return file locations and stop.", "readOnly": true },
+    { "agent": "reviewer", "task": "Review cancellation ownership; return actionable findings and evidence.", "readOnly": true }
+  ]
+}
+```
+
+The call returns one task ID per child immediately. Continue independent work and
+wait for the single batch completion notification. `subagent_tasks` supports:
+
+- `list`: current and retained completed tasks;
+- `status` with `id`: state and bounded final result;
+- `wait` with `id` and optional `timeoutMs`: wait up to 60,000 ms (default 10,000);
+- `cancel` with `id`: stop one child without cancelling unrelated siblings.
+
+`/tasks` lists statuses; `/tasks cancel <id>` cancels from the UI. Waiting timeout
+or cancelling a wait does **not** cancel the underlying task. Cancellation remains
+`cancelling` until child/prompt-file cleanup settles. A failed or cancelled parallel
+child preserves other children's successful results. A failed chain skips the
+dependent steps. Foreground tasks also receive IDs in the task list.
+
+Background writers require an explicitly authorized isolated workspace outside
+the parent's workspace. Research in the parent's workspace must request
+`readOnly: true`. Existing workspace grants, project trust, tool restrictions,
+credential filtering and immediate pre-launch identity checks still apply.
+Background work cannot prompt for new child permissions or grant itself more
+access. Permission changes cancel existing tasks.
+
+Result history retains at most `maxTasks` completed records, each capped at 12,000
+characters plus a truncation marker. Old records expire as new tasks complete;
+active records are separately bounded by `maxTasks`. At most 64 waits may be
+pending. Prompts, child transcripts, credentials and processes are not retained in
+completed records. Status-card progress contains owned metadata snapshots only at
+child start/finish; raw child events do not publish copies of the batch.
+
+Session replacement, reload and quit cancel children and release records/listeners.
+Notifications from obsolete permission/session generations are suppressed. Print
+and JSON modes reject background execution because they do not own a continuing
+interactive session. Background tasks do not survive application exit; this first
+version does not provide checkpoint resume, a daemon, or background shell commands.
+See the [implementation and follow-up plan](../../../docs/subagent-task-management-plan.md).
+
 ## Provider/model assignments
 
 Role definitions and execution routes are deliberately separate. Use `/subagent-model` to inspect or change the persistent routes stored in `~/.sp/agent/config/subagent-models.json`:
@@ -184,21 +273,22 @@ Assignments use an exact provider/model pair already known to Pi's model registr
 - **stopReason "error"**: LLM error is thrown with its message
 - **stopReason "aborted"**: Ctrl+C terminates the process tree and throws
 - **Chain mode**: Stops and throws at the first failing step
-- **Parallel mode**: Completes scheduled tasks, then throws a bounded aggregate if any failed
+- **Parallel mode**: Completes scheduled tasks, preserving successful outputs with bounded failure summaries; all-failed or externally aborted batches fail
 
 ## Limitations
 
 - Parallel model-visible output is capped at 50 KB per task; retained details are independently bounded
 - Agents and model assignments are loaded fresh on each invocation (allows editing without another reload after the command is registered)
-- Parallel mode limited to 8 tasks, 4 concurrent; mutation-capable siblings cannot share one cwd. Use `readOnly: true` for same-cwd audit tasks or chain/sequential execution for writers
-- Execution is foreground-only: there is no detached/background task API, so the 2-hour hard runtime maximum is intentional
+- Limits are configurable within the documented hard ceilings; mutation-capable siblings cannot share one cwd. Use `readOnly: true` for same-cwd audit tasks or chain/sequential execution for writers
+- Both foreground and session-owned background tasks retain the default 30-minute and maximum 2-hour runtime; queued time is excluded
 - Child guard rules are policy checks, not an operating-system security boundary
 
 ## Verification
 
 ```bash
-npm test       # runnable path/environment/Bash security regression tests
-npm run check  # strict TypeScript check; expected: 0 diagnostics
+node --experimental-strip-types --test tests/subagent-management.test.ts tests/subagent-hot-paths.test.ts
+node --expose-gc --experimental-strip-types scripts/bench/subagent-management.ts
+npm run check
 ```
 
 The included `tsconfig.json` resolves the installed Pi 0.84 type declarations in this Windows installation.
