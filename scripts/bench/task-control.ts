@@ -32,8 +32,9 @@ async function profile(mode: "complete" | "abort" | "rejected") {
 	for (let i = 0; i < 8; i++) {
 		const task = tasks.create("scout", root); tasks.start(task);
 		const cp: TaskCheckpoint = { version: 1, id: task.id, agent: "scout", cwd: root, device: String(identity.dev), inode: String(identity.ino), turns: 0, updatedAt: 1, pending: false, messages: [{ role: "user", content: "inspect", timestamp: 0 }] };
-		const channel = new FixtureChannel(), control = new SubagentControl(ledger, tasks, cp);
-		refs.push(new WeakRef(task), new WeakRef(task.controller!), new WeakRef(cp), new WeakRef(cp.messages), new WeakRef(control), new WeakRef(channel));
+		const prompt: any = { role: "user", content: "continue after inspecting current state", timestamp: 1 };
+		const channel = new FixtureChannel(), control = new SubagentControl(ledger, tasks, cp, undefined, false, prompt);
+		refs.push(new WeakRef(task), new WeakRef(task.controller!), new WeakRef(cp), new WeakRef(cp.messages), new WeakRef(control), new WeakRef(channel), new WeakRef(prompt));
 		control.attach(channel as any, reason => { throw new Error(reason); });
 		let id = 0;
 		channel.emit("message", encodeControl({ id: ++id, kind: "ready" }));
@@ -47,7 +48,7 @@ async function profile(mode: "complete" | "abort" | "rejected") {
 		if (mode !== "abort") control.finish();
 		control.dispose(); tasks.finish(task, mode, mode !== "complete");
 		assert.equal(channel.listenerCount("message"), 0);
-		for (const key of ["proc", "fail", "ledger", "tasks", "checkpoint", "seed"]) assert.equal((control as any)[key], undefined);
+		for (const key of ["proc", "fail", "ledger", "tasks", "checkpoint", "seed", "pendingPrompt"]) assert.equal((control as any)[key], undefined);
 		requests += control.counters.requests; replies += control.counters.replies; checkpoints += control.counters.checkpointWrites;
 	}
 	const history = (tasks as any).history;

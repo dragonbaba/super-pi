@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire, syncBuiltinESMExports } from "node:module";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
-import { TaskBudgetLedger, parseTaskBudgets, emptyBudgetUsage, BUDGET_ENTRY } from "../packages/extensions/subagent/budgets.ts";
+import { TaskBudgetLedger, parseTaskBudgets, parseTaskBudgetCommand, emptyBudgetUsage, BUDGET_ENTRY } from "../packages/extensions/subagent/budgets.ts";
 import { alphaModelRuntime, alphaSession } from "./helpers/alpha-session.ts";
 import { alphaMessage, finalStream } from "./helpers/alpha-stream.ts";
 
@@ -14,6 +18,40 @@ function fixture(limits = "{}", restored: any[] = []) {
 test("budget defaults are unlimited; invalid keys, numbers and oversized configuration are rejected", () => {
 	assert.deepEqual(parseTaskBudgets("{}"), { sessionTurns: 0, sessionTokens: 0, childTurns: 0, childTokens: 0 });
 	for (const input of ["null", "[]", '{"sessionTurns":-1}', '{"childTurns":1.5}', '{"childTokens":1000000001}', '{"unknown":2}', " ".repeat(4097)]) assert.throws(() => parseTaskBudgets(input));
+});
+test("budget commands bound input and reject ambiguous or invalid partial changes", () => {
+	assert.deepEqual(parseTaskBudgetCommand(""), { action: "status" });
+	assert.deepEqual(parseTaskBudgetCommand("help"), { action: "help" });
+	assert.deepEqual(parseTaskBudgetCommand(" reset "), { action: "reset" });
+	assert.deepEqual(parseTaskBudgetCommand("set childTurns 20 childTokens 100000"), { action: "set", changes: { childTurns: 20, childTokens: 100000 } });
+	assert.deepEqual(parseTaskBudgetCommand("set sessionTurns 0"), { action: "set", changes: { sessionTurns: 0 } });
+	for (const input of ["set", "set childTurns", "set childTurns 1 childTurns 2", "set unknown 1", "set __proto__ 1", "set childTurns -1", "set childTurns 1.5", "set childTokens 1e5", "set childTokens 1000000001", "set childTurns 1000001", "set childTurns 1 extra", " ".repeat(513)]) assert.throws(() => parseTaskBudgetCommand(input));
+});
+test("budget settings preserve usage, merge saved fields and keep runtime unchanged after write failure", t => {
+	const root = mkdtempSync(join(tmpdir(), "sp-budget-settings-")), file = join(root, "task-budgets.json");
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const { ledger, entries } = fixture();
+	ledger.request(); ledger.settle(reported);
+	writeFileSync(file, '{"sessionTokens":90}');
+	ledger.setLimits({ sessionTurns: 1, childTurns: 20 }, file);
+	assert.deepEqual(JSON.parse(readFileSync(file, "utf8")), { sessionTurns: 1, sessionTokens: 90, childTurns: 20, childTokens: 0 });
+	assert.equal(ledger.usage.tokens, 10); assert.equal(entries.length, 2);
+	assert.throws(() => ledger.request(), /1\/1/);
+	ledger.setLimits({ sessionTurns: 0 }, file); ledger.request();
+	const saved = readFileSync(file, "utf8"), limits = ledger.limits;
+	assert.throws(() => ledger.setLimits({ childTokens: 10 }, file), /Stop all/);
+	assert.equal(readFileSync(file, "utf8"), saved);
+	ledger.settle(reported);
+	// Fail after the temp file is written, before the old config is replaced.
+	const fs = createRequire(import.meta.url)("node:fs");
+	t.mock.method(fs, "renameSync", () => { throw new Error("fixture replace denied"); }); syncBuiltinESMExports();
+	try { assert.throws(() => ledger.setLimits({ childTokens: 10 }, file), /fixture replace denied/); }
+	finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+	assert.equal(readFileSync(file, "utf8"), saved);
+	assert.equal(ledger.limits, limits); assert.equal(ledger.usage.turns, 2);
+	writeFileSync(file, "corrupt"); assert.throws(() => ledger.setLimits({ childTurns: 3 }, file));
+	assert.equal(readFileSync(file, "utf8"), "corrupt"); assert.equal(ledger.limits, limits);
+	assert.deepEqual(readdirSync(root), ["task-budgets.json"], "no abandoned configuration temporaries");
 });
 test("parent and concurrent children share atomic reservations; usage settles once and overshoot blocks the next request", () => {
 	const { ledger, entries } = fixture('{"sessionTurns":3,"sessionTokens":15,"childTurns":1}');

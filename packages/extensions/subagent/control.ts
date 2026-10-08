@@ -25,6 +25,7 @@ export class SubagentControl {
 	private tasks: SubagentTasks | undefined;
 	private checkpoint: TaskCheckpoint | undefined;
 	private seed: Message[] | undefined;
+	private pendingPrompt: Message | undefined;
 	private proc: ChildProcess | undefined;
 	private fail: ((reason: string) => void) | undefined;
 	private sequence = 0;
@@ -34,9 +35,9 @@ export class SubagentControl {
 	private readonly messageListener = this.onMessage.bind(this);
 	private readonly sendCallback = this.onSend.bind(this);
 
-	constructor(ledger: TaskBudgetLedger, tasks: SubagentTasks, checkpoint?: TaskCheckpoint, seed?: Message[], uncertain = false) {
+	constructor(ledger: TaskBudgetLedger, tasks: SubagentTasks, checkpoint?: TaskCheckpoint, seed?: Message[], uncertain = false, pendingPrompt?: Message) {
 		this.ledger = ledger; this.tasks = tasks; this.checkpoint = checkpoint; this.seed = seed;
-		this.uncertain = uncertain;
+		this.uncertain = uncertain; this.pendingPrompt = pendingPrompt;
 	}
 	attach(proc: ChildProcess, fail: (reason: string) => void): void {
 		if (this.proc || this.phase !== "ready") throw new Error("Subagent control already attached or closed.");
@@ -75,7 +76,10 @@ export class SubagentControl {
 				this.ledger!.settle(packet.usage, this.usage, packet.incomplete === true); this.phase = "turn";
 			} else if (packet.kind === "turn" && this.phase === "turn") {
 				if (this.checkpoint && packet.completed === true) {
+					// An interrupted continuation must not persist its unanswered instruction.
+					if (this.pendingPrompt) this.checkpoint.messages.push(this.pendingPrompt);
 					appendCheckpointTurn(this.checkpoint, packet.message, packet.results); this.save();
+					this.pendingPrompt = undefined;
 				}
 				this.counters.turns++; this.phase = "idle";
 			} else throw new Error(`Unexpected subagent control ${String(packet.kind).slice(0, 64)} during ${this.phase}.`);
@@ -94,6 +98,6 @@ export class SubagentControl {
 		this.proc?.off("message", this.messageListener);
 		try { this.ledger?.settle(undefined, this.usage); }
 		catch (error) { this.fail?.(`Subagent usage could not be saved: ${error instanceof Error ? error.message : String(error)}`); }
-		this.proc = undefined; this.fail = undefined; this.ledger = undefined; this.tasks = undefined; this.checkpoint = undefined; this.seed = undefined;
+		this.proc = undefined; this.fail = undefined; this.ledger = undefined; this.tasks = undefined; this.checkpoint = undefined; this.seed = undefined; this.pendingPrompt = undefined;
 	}
 }

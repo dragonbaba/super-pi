@@ -1,5 +1,5 @@
-import { closeSync, fstatSync, openSync, readSync } from "node:fs";
-import { join } from "node:path";
+import { closeSync, fstatSync, mkdirSync, openSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { getConfigDir, type ExtensionAPI, type ExtensionContext } from "@super-pi/coding-agent";
 
 export interface TaskBudgets { sessionTurns: number; sessionTokens: number; childTurns: number; childTokens: number; }
@@ -7,7 +7,30 @@ export interface BudgetUsage { turns: number; tokens: number; cost: number; pend
 export const TASK_BUDGET_PATH = join(getConfigDir(), "task-budgets.json");
 export const BUDGET_ENTRY = "managed-task-budget-v1";
 const DEFAULTS: Readonly<TaskBudgets> = Object.freeze({ sessionTurns: 0, sessionTokens: 0, childTurns: 0, childTokens: 0 });
+export const TASK_BUDGET_HELP = "Usage: /task-budget [help | set <field> <value> [<field> <value> ...] | reset]. Fields: sessionTurns, sessionTokens, childTurns, childTokens. Turns: 0–1000000; tokens: 0–1000000000; 0 = unlimited. Set saves global limits and applies here immediately without clearing usage; reset clears only this session's usage. Stop parent and child work before either change.";
+type TaskBudgetCommand = { action: "status" | "help" | "reset" } | { action: "set"; changes: Partial<TaskBudgets> };
+let nextTempId = 1;
 export function emptyBudgetUsage(): BudgetUsage { return { turns: 0, tokens: 0, cost: 0, pending: 0, unknown: false }; }
+
+/** Bounded parsing on an explicit user-command boundary, never on provider updates. */
+export function parseTaskBudgetCommand(args: string): TaskBudgetCommand {
+	if (args.length > 512) throw new Error("Task budget command exceeds 512 characters.");
+	const input = args.trim();
+	if (!input) return { action: "status" };
+	if (input === "help" || input === "reset") return { action: input };
+	const parts = input.split(/\s+/, 10);
+	if (parts[0] !== "set" || parts.length < 3 || parts.length > 9 || parts.length % 2 !== 1) throw new Error(TASK_BUDGET_HELP);
+	const changes: Partial<TaskBudgets> = {};
+	for (let i = 1; i < parts.length; i += 2) {
+		const key = parts[i], value = parts[i + 1];
+		if (!(key === "sessionTurns" || key === "sessionTokens" || key === "childTurns" || key === "childTokens")) throw new Error(`Unknown task budget: ${key}. ${TASK_BUDGET_HELP}`);
+		if (changes[key] !== undefined) throw new Error(`Duplicate task budget: ${key}.`);
+		if (!/^[0-9]+$/.test(value)) throw new Error(`Invalid ${key}; use a nonnegative integer (0 = unlimited).`);
+		changes[key] = Number(value);
+	}
+	parseTaskBudgets(JSON.stringify(changes));
+	return { action: "set", changes };
+}
 
 export function parseTaskBudgets(content: string): Readonly<TaskBudgets> {
 	if (Buffer.byteLength(content) > 4096) throw new Error("Task budget configuration exceeds 4096 bytes.");
@@ -50,13 +73,31 @@ function validUsage(value: unknown): value is BudgetUsage {
 
 /** One numeric ledger per parent session; children share its admission counter. */
 export class TaskBudgetLedger {
-	readonly limits: Readonly<TaskBudgets>;
+	private currentLimits: Readonly<TaskBudgets>;
+	get limits(): Readonly<TaskBudgets> { return this.currentLimits; }
 	private readonly pi: ExtensionAPI;
 	readonly usage = emptyBudgetUsage();
 	private sessionId: string | undefined;
 	private primary = emptyBudgetUsage();
 	private failure: string | undefined;
-	constructor(limits: Readonly<TaskBudgets>, pi: ExtensionAPI) { this.limits = limits; this.pi = pi; }
+	constructor(limits: Readonly<TaskBudgets>, pi: ExtensionAPI) { this.currentLimits = limits; this.pi = pi; }
+
+	/** Idle user command only: persist by atomic replacement before changing live admission. */
+	setLimits(changes: Partial<TaskBudgets>, file = TASK_BUDGET_PATH): void {
+		if (this.usage.pending) throw new Error("Stop all model requests before changing budgets.");
+		const limits = parseTaskBudgets(JSON.stringify({ ...loadTaskBudgets(file), ...changes }));
+		const directory = dirname(file);
+		mkdirSync(directory, { recursive: true });
+		const temp = join(directory, `.${basename(file)}.${process.pid}.${nextTempId++}.tmp`);
+		let created = false;
+		try {
+			const fd = openSync(temp, "wx", 0o600); created = true;
+			try { writeFileSync(fd, `${JSON.stringify(limits, null, 2)}\n`, "utf8"); }
+			finally { closeSync(fd); }
+			renameSync(temp, file); created = false;
+			this.currentLimits = limits;
+		} finally { if (created) rmSync(temp, { force: true }); }
+	}
 
 	configure(ctx: ExtensionContext): void {
 		const id = ctx.sessionManager?.getSessionId();

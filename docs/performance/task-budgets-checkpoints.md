@@ -41,7 +41,18 @@ reservation/settlement; `SubagentTasks.saveCheckpoint` validation and
 `TaskHistory.saveCheckpoint` transaction. Their parsing, projection and bounded
 serialization helpers are in the audit. Startup/stop exemptions: child control
 construction/initialization/disposal, session start/settled/shutdown, explicit
-continuation/reset commands, and interactive `shutdown/performShutdown`.
+continuation/reset commands, `/task-budget` handler / `parseTaskBudgetCommand` /
+`TaskBudgetLedger.setLimits`, and interactive `shutdown/performShutdown`.
+
+Budget setting is an explicit idle user-command boundary: at most 512 characters,
+ten parsed tokens (nine for valid input), four numeric fields and a 4096-byte
+config read. The synchronous
+idle-check/read/merge/validate/atomic-replace/live-update sequence has no await gap.
+One exclusive temporary file and descriptor are owned by that call and closed /
+removed on failure; runtime limits change only after successful replacement.
+Usage and ledger entries are unchanged. No polling or per-request config reads
+were added. Parent-start guidance and child initialization read the current limits;
+the static tool description no longer embeds a stale budget snapshot.
 
 These request/turn interceptors intentionally create one deferred, timeout and
 bounded packet per acknowledged child boundary. At most one is pending per child;
@@ -60,6 +71,7 @@ Numeric accounting adds one reservation and one settlement entry per request.
 | IPC | 2 MiB string, depth 32, 20000 nodes | Checked before serialization and parse traversal; one packet per boundary, no delta traffic |
 | Completed context | 1 MiB, 128 messages, 128 blocks/message; no images/hidden reasoning | Only current checkpoint and bounded continuation seed retained; control disposal clears both; no context in task-map records |
 | Restored seed | At most 128 completed messages | Per-request context projection owns one prepend array; child seed released at shutdown; old tools never enter the execution queue |
+| Continuation prompt | One task prompt, at most 16384 characters plus the six-character prefix | Held outside durable history until the first completed turn; reference cleared after save and on disposal; inherited uncertainty retained until completion |
 | History | Existing 128 MiB database, at most 256 active + 256 terminal records | Checkpoint column pruned atomically with owning task; descriptors/statements closed by existing history owner |
 | Quit | One shared shutdown deferred and one confirmation AbortController | Cancellation clears owner for retry; signals abort dialog; successful exit follows cleanup |
 
@@ -79,17 +91,18 @@ calls. HeapProfiler sampling interval: 4096 bytes. Each fixture owns eight tasks
 
 | Fixture | Granted requests | Replies | Numeric entries | Checkpoint writes | Sampled bytes |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Three completed turns/task | 24 | 80 | 48 | 56 | 2466424 |
-| Abort after first admission | 8 | 16 | 16 | 16 | 984320 |
-| Refuse fourth request/task | 24 | 88 | 48 | 56 | 2382648 |
+| Three completed turns/task | 24 | 80 | 48 | 56 | 2489576 |
+| Abort after first admission | 8 | 16 | 16 | 16 | 984072 |
+| Refuse fourth request/task | 24 | 88 | 48 | 56 | 2375872 |
 
 All fixtures end with zero pending requests, message listeners, database handles,
 task-map entries and waiters. Exact control reference slots are cleared; eight
-event-loop/GC cycles collect **156/156** tracked contexts, controls, channels,
-ledgers, task records/controllers, history owners and databases. These allocations
+event-loop/GC cycles collect **180/180** tracked contexts, controls, channels,
+ledgers, task records/controllers, history owners, databases and pending prompts. These allocations
 are deliberate request/lifecycle costs, not streaming costs or a speedup claim.
 
-Existing production benchmarks were also run on this candidate:
+Existing production benchmarks were run on the initial PR candidate; their hot
+bodies remain unchanged in the settings/checkpoint follow-up:
 
 - Subagent ingestion: 8/16/64 children, 1000 updates each; zero progress snapshots
   and full-message serializations; at most three retained messages per child.
@@ -126,3 +139,13 @@ are Linux-only and skipped on this Windows host. The startup/quit collection tes
 were rerun with their required `--expose-gc` flag. Final self-review fixed exact
 Windows directory identity, byte-bound accounting, final-turn control failures,
 confirmation cleanup, and process-cleanup error propagation before submission.
+
+The settings/review follow-up passed root typecheck, budget/control/management
+regressions, source/subagent AST gates, the above control allocation profile, and
+the exact failing CI abort scenario. The latter now requires one provider call,
+zero already-aborted provider dispatches, and an aborted final message, matching
+SDK admission; canonical-result and renderer/resource-release assertions remain.
+Continuation regressions inspect durable history after readiness, inherited
+uncertainty, request, usage, incomplete/invalid turn, and completed turn boundaries.
+Only a completed continuation may persist its new prompt. These are offline checks;
+Linux execution and repository-wide validation remain CI's responsibility.

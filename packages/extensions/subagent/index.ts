@@ -38,7 +38,7 @@ import { consumeDelegatedTaskPolicies, type DelegatedTaskPolicy } from "./delega
 import { DELEGATION_GUIDANCE, describeSubagentLimits, loadSubagentLimits, SUBAGENT_LIMITS_PATH, type SubagentLimits } from "./limits.ts";
 import { SubagentScheduler } from "./scheduler.ts";
 import { SubagentTasks, type ManagedSubagentTask } from "./tasks.ts";
-import { loadTaskBudgets, TaskBudgetLedger } from "./budgets.ts";
+import { loadTaskBudgets, parseTaskBudgetCommand, TASK_BUDGET_HELP, TaskBudgetLedger } from "./budgets.ts";
 import { type TaskCheckpoint } from "./checkpoints.ts";
 import { SubagentControl } from "./control.ts";
 import { SESSION_PERMISSION_EVENT } from "../resource-lifecycle-guard/permission-contract.ts";
@@ -1385,15 +1385,19 @@ export default function (pi: ExtensionAPI) {
 	});
 	pi.on("agent_settled", () => { budgets.settle(undefined); });
 	pi.registerCommand("task-budget", {
-		description: "Show aggregate parent/child budgets; reset only when all work is stopped",
+		description: "Show or set parent/child budgets (help, set <field> <value>, reset)",
 		handler: async (args, ctx) => {
 			try {
+				const command = parseTaskBudgetCommand(args);
+				if (command.action === "help") { ctx.ui.notify(TASK_BUDGET_HELP, "info"); return; }
 				budgets.configure(ctx);
-				if (args.trim() === "reset") {
-					if (!ctx.isIdle() || tasks.size !== tasks.retainedResults || pending.size) throw new Error("Stop parent and child work before resetting budgets.");
-					budgets.reset();
-				} else if (args.trim()) throw new Error("Use /task-budget or /task-budget reset.");
-				ctx.ui.notify(budgets.describe(), "info");
+				if (command.action === "reset" || command.action === "set") {
+					if (!ctx.isIdle() || tasks.size !== tasks.retainedResults || pending.size || changingSession || closed) throw new Error("Stop parent and child work before changing or resetting budgets.");
+					// No await between the idle check, bounded file replacement and live update.
+					if (command.action === "set") budgets.setLimits(command.changes);
+					else budgets.reset();
+				}
+				ctx.ui.notify(`${command.action === "set" ? "Saved globally; active in this session; usage preserved. " : ""}${budgets.describe()}`, "info");
 			} catch (error) { ctx.ui.notify(error instanceof Error ? error.message : String(error), "error"); }
 		},
 	});
@@ -1532,7 +1536,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "subagent",
 		label: "Subagent",
-		description: `Delegate tasks to isolated subagents. agent is a registered role (planner/reviewer/scout/worker), never a custom task name; put labels and instructions in task. Supports single, parallel tasks, sequential chain, and session-owned background execution. ${describeSubagentLimits(limits)} ${budgets.describe()} Optional checkpoint/resumeTaskId saves completed context only; current authorization is always required. ${DELEGATION_GUIDANCE}`,
+		description: `Delegate tasks to isolated subagents. agent is a registered role (planner/reviewer/scout/worker), never a custom task name; put labels and instructions in task. Supports single, parallel tasks, sequential chain, and session-owned background execution. ${describeSubagentLimits(limits)} Current execution budgets are supplied in the system instructions before each parent run and at child startup. Optional checkpoint/resumeTaskId saves completed context only; current authorization is always required. ${DELEGATION_GUIDANCE}`,
 		parameters: subagentParameters(limits),
 		prepareArguments(input) {
 			assertTaskCount(input, limits);
@@ -1675,10 +1679,11 @@ export default function (pi: ExtensionAPI) {
 							if (continuation && (continuation.device !== String(identity!.dev) || continuation.inode !== String(identity!.ino))) throw new Error("Checkpoint workspace identity changed while queued.");
 							const checkpoint: TaskCheckpoint | undefined = params.checkpoint || continuation ? {
 								version: 1, id: record.id, agent: record.agent, cwd: policy.canonicalCwd, device: String(identity!.dev), inode: String(identity!.ino),
-								turns: continuation?.turns ?? 0, updatedAt: Date.now(), pending: false,
-								messages: [...(continuation?.messages ?? []), { role: "user", content: `Task: ${task}`, timestamp: Date.now() }],
+								turns: continuation?.turns ?? 0, updatedAt: Date.now(), pending: continuation?.pending ?? false,
+								messages: continuation ? [...continuation.messages] : [{ role: "user", content: `Task: ${task}`, timestamp: Date.now() }],
 							} : undefined;
-							const control = new SubagentControl(budgets, tasks, checkpoint, continuation?.messages, continuation?.pending);
+							const control = new SubagentControl(budgets, tasks, checkpoint, continuation?.messages, continuation?.pending,
+								continuation ? { role: "user", content: `Task: ${task}`, timestamp: Date.now() } : undefined);
 							try { return await runSingleAgent(policy, agents, requestedAgentNames[index], task, step, childSignal, update, details, executions.get(requestedAgentNames[index]), timeoutMs, control); }
 							catch (error) {
 								if (error instanceof SubagentProcessCleanupError || error instanceof Error && error.cause instanceof SubagentProcessCleanupError) {

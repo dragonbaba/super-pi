@@ -74,7 +74,22 @@ Print/JSON 等短生命周期模式拒绝后台任务。应用退出后继续执
 ## 父子代理预算
 
 `~/.sp/agent/config/task-budgets.json` 控制父会话和子代理的模型请求预算。
-缺省或 `0` 表示不限制；修改后重新加载扩展。示例：
+缺省或 `0` 表示不限制。空闲时可直接设置，无需重新加载扩展：
+
+```text
+/task-budget
+/task-budget help
+/task-budget set childTurns 20 childTokens 100000
+/task-budget set sessionTurns 120 sessionTokens 800000
+/task-budget set childTokens 0
+/task-budget reset
+```
+
+`set` 支持一次设置 1–4 个不同字段，保存到全局配置并立即应用于当前会话；保留已用量，
+未指定字段沿用配置文件。其他已经打开的会话需要重载后读取新配置；新会话自动读取。
+`reset` 只清零当前会话用量，不修改额度。父模型或子代理运行、排队、清理期间拒绝这两种修改。
+字段和值无效、配置损坏或保存失败时明确报错，不切换运行额度。手动编辑 JSON 后仍需重载。
+对应配置示例（仅为演示，不是行业推荐额度）：
 
 ```json
 { "sessionTurns": 120, "sessionTokens": 800000, "childTurns": 20, "childTokens": 100000 }
@@ -93,11 +108,31 @@ Print/JSON 等短生命周期模式拒绝后台任务。应用退出后继续执
 `/task-budget` 查看状态；`/task-budget reset` 仅在父会话和所有子代理停止后重置。
 同一会话重载会恢复合计用量；新续跑任务重新计算单个子代理额度，仍累计到父会话。
 
-token 按供应商返回的 input、output、cacheRead、cacheWrite 计数。
+一回合指一次常规模型请求，不按用户消息数或工具调用数计数。token 按适配器归一化后的
+input、output、cacheRead、cacheWrite 相加，每次响应只结算一次；反复发送的历史上下文也会
+在每次请求中计入。缓存 token 属于输入用量，但须按适配器拆开的分类计一次，不能重复加。
 已发出的请求可以超过 token 上限；这不是硬性账单限额。失败或取消会保留已报告用量，
 并标记可能缺失的部分；启用了相应 token 限额时，未知用量会阻止新请求，需检查后手动重置。
 费用只是已报告的估计值。当前计数覆盖常规模型轮次，不含独立压缩/分支摘要请求及供应商
 内部重试的未报告费用；不要把它当作完整账单。普通 shell 继续使用运行时间和并发限制。
+
+不存在通用的“每个子代理 20 回合／10 万 token”标准。配置表的最大值是输入校验上限，
+不是建议额度。可先只限制回合数，观察同类任务的实际用量，再设置 token 限额；例如
+每次请求约 5000 输入＋500 输出，20 次约需 110000 token，随着历史增长还会增加。
+会话额度应覆盖父代理自身消耗与所有子任务实际消耗的总和，单个子代理额度不会被预先全额扣除。
+
+其他框架采用不同口径：
+
+- [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk/subagents) 可设置子代理 `maxTurns`，
+  查询级 `maxBudgetUsd` 默认不限并包含子代理费用。
+  [查询循环的回合限制](https://code.claude.com/docs/en/agent-sdk/agent-loop) 按工具往返计数，默认不限。
+  [统计全树 token](https://code.claude.com/docs/en/agent-sdk/cost-tracking) 需读 `modelUsage`；
+  顶层 `usage` 不包含子代理，不能据此判断全部消耗。
+- [OpenAI Agents API 用量](https://developers.openai.com/api/docs/guides/agents-api/observability)
+  应汇总主代理和子代理各次模型调用。缓存已包含在 `input_tokens`，推理已包含在 `output_tokens`，
+  不能把明细再次相加；用量可能暂缺，不代表零消耗。
+
+这些限制不能直接按相同数字互换；先确认统计范围、回合定义以及是否包含缓存和子代理。
 
 ## 显式检查点续跑
 
@@ -109,6 +144,7 @@ token 按供应商返回的 input、output、cacheRead、cacheWrite 计数。
 请求，提供 `agent`、`task`、原来的 `cwd` 和 `resumeTaskId`；`task` 写本次的新指令。
 当前角色、信任、模型配置及权限会重新检查，工作区精确身份必须匹配。原任务必须已经结束。
 续跑创建新 ID，原结果保留；历史工具调用只作为模型上下文，不自动重放。
+续跑的新提示词只在其首个完整回合保存时加入检查点；此前取消或失败不会把未完成指令带入下次续跑。
 在检查点之后中断的任务会明确提醒可能存在未记录的副作用，应先检查当前文件。
 
 每个检查点最多 1 MiB、128 条消息，每条最多 128 个内容块；JSON 深度最多 32、节点最多

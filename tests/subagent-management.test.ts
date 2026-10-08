@@ -195,15 +195,16 @@ function harness(t: test.TestContext, options: { budgets?: object; persistent?: 
 	writeFileSync(SUBAGENT_LIMITS_PATH, '{"maxConcurrent":2,"maxTasks":8}');
 	writeFileSync(TASK_BUDGET_PATH, JSON.stringify(options.budgets ?? {}));
 	const tools = new Map<string, any>(); const commands = new Map<string, any>(); const hooks = new Map<string, any>();
+	const startHooks: any[] = [], notices: Array<{ text: string; level: string }> = [];
 	const events = createEventBus(); const messages: any[] = [];
 	let completion!: () => void;
 	let notified = new Promise<void>(resolve => { completion = resolve; });
-	const pi: any = { events, registerTool: (tool: any) => tools.set(tool.name, tool), registerCommand: (name: string, command: any) => commands.set(name, command), on: (name: string, hook: any) => hooks.set(name, hook), sendMessage: (message: any) => { messages.push(message); completion(); } };
+	const pi: any = { events, registerTool: (tool: any) => tools.set(tool.name, tool), registerCommand: (name: string, command: any) => commands.set(name, command), on: (name: string, hook: any) => { hooks.set(name, hook); if (name === "before_agent_start") startHooks.push(hook); }, sendMessage: (message: any) => { messages.push(message); completion(); } };
 	extension(pi);
 	const entries: any[] = [];
 	pi.appendEntry = (customType: string, data: unknown) => { entries.push({ type: "custom", customType, data }); };
 	const cwd = realpathSync(mkdtempSync(join(fixtureRoot, "workspace-")));
-	const ctx: any = { cwd, mode: "tui", hasUI: false, isProjectTrusted: () => false, getActiveTools: () => ["subagent", "subagent_tasks"], modelRegistry: {}, model: undefined, ui: { notify() {} } };
+	const ctx: any = { cwd, mode: "tui", hasUI: false, isIdle: () => true, isProjectTrusted: () => false, getActiveTools: () => ["subagent", "subagent_tasks"], modelRegistry: {}, model: undefined, ui: { notify(text: string, level: string) { notices.push({ text, level }); } } };
 	if (options.persistent) ctx.sessionManager = { getSessionFile: () => join(cwd, "session.jsonl"), getSessionId: () => "fixture", getLeafId: () => null, getEntries: () => entries };
 	let sequence = 0;
 	const run = (params: any, onUpdate?: (value: any) => void) => {
@@ -215,8 +216,35 @@ function harness(t: test.TestContext, options: { budgets?: object; persistent?: 
 	};
 	const control = async (action: string, id?: string, timeoutMs?: number) => (await tools.get("subagent_tasks").execute("control", { action, id, timeoutMs }, undefined)).content[0].text as string;
 	t.after(async () => { if (options.shutdownError) await assert.rejects(hooks.get("session_shutdown")(), options.shutdownError); else await hooks.get("session_shutdown")(); events.clear(); });
-	return { tools, commands, hooks, events, ctx, run, control, messages, entries, notified: () => notified, resetNotification: () => { notified = new Promise<void>(resolve => { completion = resolve; }); } };
+	return { tools, commands, hooks, startHooks, notices, events, ctx, run, control, messages, entries, notified: () => notified, resetNotification: () => { notified = new Promise<void>(resolve => { completion = resolve; }); } };
 }
+
+test("task-budget command applies saved limits without reload, advertises current values and refuses busy edits", async t => {
+	const h = harness(t, { persistent: true });
+	const command = (args: string) => h.commands.get("task-budget").handler(args, h.ctx);
+	await command("set childTurns 1 sessionTurns 10");
+	assert.match(h.notices.at(-1)!.text, /Saved globally.*per-child turns 1/);
+	assert.equal(JSON.parse(readFileSync(TASK_BUDGET_PATH, "utf8")).childTurns, 1);
+	let systemPrompt = "fixture";
+	for (const hook of h.startHooks) systemPrompt = (await hook({ systemPrompt }, h.ctx))?.systemPrompt ?? systemPrompt;
+	assert.match(systemPrompt, /per-child turns 1/);
+	assert.doesNotMatch(h.tools.get("subagent").description, /per-child turns unlimited/, "tool schema must not freeze old limits");
+	await assert.rejects(h.run({ agent: "scout", task: "two-turn", readOnly: true }), /Child turn budget reached: 1\/1/);
+	await command("set sessionTurns 1");
+	assert.match(h.notices.at(-1)!.text, /session \(parent \+ children\) turns 1\/1/);
+	await assert.rejects(h.run({ agent: "scout", task: "blocked", readOnly: true }), /1\/1/);
+	await command("reset");
+	assert.equal(JSON.parse(readFileSync(TASK_BUDGET_PATH, "utf8")).sessionTurns, 1, "reset preserves configured limits");
+	h.ctx.isIdle = () => false;
+	await command("set sessionTurns 0"); assert.equal(h.notices.at(-1)!.level, "error");
+	h.ctx.isIdle = () => true;
+	const background = await h.run({ agent: "scout", task: "hold-budget-command", readOnly: true, background: true });
+	const saved = readFileSync(TASK_BUDGET_PATH, "utf8");
+	await command("set childTurns 2"); assert.match(h.notices.at(-1)!.text, /Stop parent and child/);
+	await command("reset"); assert.match(h.notices.at(-1)!.text, /Stop parent and child/);
+	assert.equal(readFileSync(TASK_BUDGET_PATH, "utf8"), saved);
+	await h.control("cancel", ids(background)[0]); await h.notified();
+});
 
 test("real concurrent children atomically share one remaining turn and report the exact refusal", async t => {
 	const h = harness(t, { budgets: { sessionTurns: 1 } });

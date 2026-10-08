@@ -165,9 +165,9 @@ export async function runBashResponsiveness(scenario: BashResponseScenario, sour
 		clearInterval(heartbeat); heartbeat = undefined; delay.disable();
 		const childEndedWall = termination === "abort" ? abortAt : Number(readFileSync(done, "utf8"));
 		const frames = probes.filter(p => p.frame !== undefined);
-		// The existing loop asks the provider to settle the canceled turn; this offline
-		// provider must honor the already-aborted signal rather than invent success.
-		assert.equal(providerCalls, 2); assert.equal(abortedProviderCalls, termination === "abort" ? 1 : 0); assert.equal(toolCalls, 1);
+		// SDK admission now rejects an already-aborted turn before provider dispatch.
+		assert.equal(providerCalls, termination === "abort" ? 1 : 2); assert.equal(abortedProviderCalls, 0); assert.equal(toolCalls, 1);
+		if (termination === "abort") assert.equal(session.agent.state.messages.at(-1)?.stopReason, "aborted");
 		assert.equal(toolError, termination !== "success");
 		if (termination === "success") assert.equal(canonical.content[0].text.trim(), scenario === "output-then-quiet" ? "initial output 中文 😀" : "(no output)");
 		else assert.match(canonical.content[0].text, termination === "abort" ? /Command aborted/ : /code 1/);
