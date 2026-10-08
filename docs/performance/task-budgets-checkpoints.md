@@ -149,3 +149,9 @@ Continuation regressions inspect durable history after readiness, inherited
 uncertainty, request, usage, incomplete/invalid turn, and completed turn boundaries.
 Only a completed continuation may persist its new prompt. These are offline checks;
 Linux execution and repository-wide validation remain CI's responsibility.
+
+A subsequent Windows CI failure exposed an incomplete mode-switch test session:
+its synthetic session had no extension runner, so quit threw before reaching the
+input-drain boundary. The fixture now supplies the no-handler runner present in
+an extension-free real session. The unchanged shutdown-admission and mode-switch
+assertions pass locally; no production rendering code or benchmark scope changed.

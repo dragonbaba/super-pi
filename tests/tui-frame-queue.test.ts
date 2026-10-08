@@ -1506,7 +1506,9 @@ function createModeSwitchHarness(previousUi: FrameTui | InstrumentedMainTui): Re
 		getShowTerminalProgress(): boolean { return false; },
 		getFullscreenExitOutput(): "resume-hint" { return "resume-hint"; },
 	};
-	const session = { isStreaming: false, isCompacting: false, settingsManager };
+	const session = { isStreaming: false, isCompacting: false, settingsManager,
+		extensionRunner: { hasHandlers: () => false },
+	};
 	Object.assign(mode, {
 		runtimeHost: { session },
 		renderer: previousUi,
