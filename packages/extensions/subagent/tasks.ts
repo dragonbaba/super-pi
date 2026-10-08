@@ -58,17 +58,19 @@ export class SubagentTasks {
 	private nextId = 1;
 	private completed = 0;
 	private readonly capacity: number;
+	private readonly label: string;
 	private closed = false;
 	waiterCount = 0;
 
-	constructor(capacity: number) { this.capacity = capacity; }
+	constructor(capacity: number, label = "Subagent") { this.capacity = capacity; this.label = label; }
 	get size(): number { return this.records.size; }
 	get retainedResults(): number { return this.completed; }
 	values(): IterableIterator<ManagedSubagentTask> { return this.records.values(); }
+	find(id: string): ManagedSubagentTask | undefined { return this.records.get(id); }
 
 	create(agent: string): ManagedSubagentTask {
-		if (this.closed) throw new Error("Subagent task history is closed.");
-		if (this.records.size - this.completed >= this.capacity) throw new Error(`Subagent task capacity reached: ${this.capacity}. Wait for active tasks.`);
+		if (this.closed) throw new Error(`${this.label} task history is closed.`);
+		if (this.records.size - this.completed >= this.capacity) throw new Error(`${this.label} task capacity reached: ${this.capacity}. Wait for active tasks.`);
 		const task: ManagedSubagentTask = {
 			id: `${this.prefix}-${this.nextId++}`, agent, state: "queued", controller: new AbortController(), waiters: new Set(),
 		};
@@ -78,7 +80,7 @@ export class SubagentTasks {
 
 	get(id: string): ManagedSubagentTask {
 		const task = this.records.get(id);
-		if (!task) throw new Error("Unknown or expired subagent task ID. List current tasks.");
+		if (!task) throw new Error(`Unknown or expired ${this.label.toLowerCase()} task ID. List current tasks.`);
 		return task;
 	}
 
@@ -110,7 +112,7 @@ export class SubagentTasks {
 		const task = this.get(id);
 		if (!isTerminal(task)) {
 			task.state = "cancelling";
-			task.controller?.abort(new Error("Subagent task cancelled."));
+			task.controller?.abort(new Error(`${this.label} task cancelled.`));
 		}
 		return task;
 	}
@@ -124,7 +126,7 @@ export class SubagentTasks {
 		signal?.throwIfAborted();
 		if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > 60_000) throw new Error("Task wait timeout must be 0–60000 ms; a timeout leaves the task running.");
 		if (!isTerminal(task) && timeoutMs > 0) {
-			if (this.waiterCount >= 64) throw new Error("Subagent wait capacity reached: 64. Finish an existing wait first.");
+			if (this.waiterCount >= 64) throw new Error(`${this.label} wait capacity reached: 64. Finish an existing wait first.`);
 			this.waiterCount++;
 			await new TaskWaiter(this, task, timeoutMs, signal).promise;
 		}
@@ -145,7 +147,7 @@ export class SubagentTasks {
 		this.closed = true;
 		this.cancelAll();
 		for (const task of this.records.values()) {
-			for (const waiter of task.waiters) waiter.finish(new Error("Subagent session ended."));
+			for (const waiter of task.waiters) waiter.finish(new Error(`${this.label} session ended.`));
 			task.result = undefined;
 		}
 		this.records.clear();

@@ -493,7 +493,7 @@ class PendingToolAuthorization implements ToolInvocationAuthorization {
       }
       // Shell snapshots continue through their existing agreement checks.
 			if (name !== "bash" && name !== "powershell") throw new Error("Blocked by policy: unsupported final authorization tool");
-			let command: unknown, timeout: unknown, cwd: unknown, purpose: unknown;
+			let command: unknown, timeout: unknown, cwd: unknown, purpose: unknown, background: unknown;
 			for (let i = 0; i < this.checks.length; i++) {
 				const check = this.checks[i]!;
 				this.checks[i] = undefined;
@@ -506,15 +506,17 @@ class PendingToolAuthorization implements ToolInvocationAuthorization {
 				const approvedTimeout = Object.getOwnPropertyDescriptor(approved, "timeout");
 				const approvedCwd = Object.getOwnPropertyDescriptor(approved, "cwd");
 				const approvedPurpose = Object.getOwnPropertyDescriptor(approved, "purpose");
+				const approvedBackground = Object.getOwnPropertyDescriptor(approved, "background");
 				if (!approvedCommand || !("value" in approvedCommand) || typeof approvedCommand.value !== "string"
 					|| (approvedTimeout && (!("value" in approvedTimeout)
 						|| (approvedTimeout.value !== undefined && typeof approvedTimeout.value !== "number")))
 					|| (approvedCwd && (!("value" in approvedCwd) || (approvedCwd.value !== undefined && typeof approvedCwd.value !== "string")))
-					|| (approvedPurpose && (!("value" in approvedPurpose) || (approvedPurpose.value !== undefined && typeof approvedPurpose.value !== "string")))) {
+					|| (approvedPurpose && (!("value" in approvedPurpose) || (approvedPurpose.value !== undefined && typeof approvedPurpose.value !== "string")))
+					|| (approvedBackground && (!("value" in approvedBackground) || (approvedBackground.value !== undefined && typeof approvedBackground.value !== "boolean")))) {
 					throw new Error("Blocked by policy: invalid final authorization values");
 				}
-				if (i === 0) { command = approvedCommand.value; timeout = approvedTimeout?.value; cwd = approvedCwd?.value; purpose = approvedPurpose?.value; }
-				else if (command !== approvedCommand.value || timeout !== approvedTimeout?.value || cwd !== approvedCwd?.value || purpose !== approvedPurpose?.value) {
+				if (i === 0) { command = approvedCommand.value; timeout = approvedTimeout?.value; cwd = approvedCwd?.value; purpose = approvedPurpose?.value; background = approvedBackground?.value; }
+				else if (command !== approvedCommand.value || timeout !== approvedTimeout?.value || cwd !== approvedCwd?.value || purpose !== approvedPurpose?.value || background !== approvedBackground?.value) {
 					throw new Error("Blocked by policy: final authorization snapshots disagree");
 				}
 				} finally { check.release(); }
@@ -524,8 +526,8 @@ class PendingToolAuthorization implements ToolInvocationAuthorization {
 			// guard checks current authority, returns private values, and self-releases.
 			const authority = this.authority;
 			this.authority = undefined;
-			const approved = terminalValues = authority.consume(args, id, name, signal) as { command: unknown; timeout: unknown; cwd: unknown; purpose: unknown };
-			if (this.checks.length && (command !== approved.command || timeout !== approved.timeout || cwd !== approved.cwd || purpose !== approved.purpose)) {
+			const approved = terminalValues = authority.consume(args, id, name, signal) as { command: unknown; timeout: unknown; cwd: unknown; purpose: unknown; background: unknown };
+			if (this.checks.length && (command !== approved.command || timeout !== approved.timeout || cwd !== approved.cwd || purpose !== approved.purpose || background !== approved.background)) {
 				throw new Error("Blocked by policy: final authorization snapshots disagree");
 			}
 			if (!this.live || signal?.aborted) throw new Error("Blocked by policy: final authorization is obsolete");

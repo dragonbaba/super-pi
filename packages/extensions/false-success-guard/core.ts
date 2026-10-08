@@ -6,6 +6,9 @@ import { boundBatchIntents, validMutationOutcome } from "../mutation-guard-write
 import { resolveToolPath } from "../mutation-guard-write/core.ts";
 
 const MAX_OBLIGATIONS = 32;
+// Match the admitted background-shell ceiling; pending checks must not be
+// evicted by the smaller terminal-failure history while they are still running.
+const MAX_PENDING_BACKGROUND = 256;
 const MAX_AUDIT_OBLIGATIONS = 16;
 const MAX_LABEL_CHARS = 180;
 const MAX_TOOL_TEXT_CHARS = 8_192;
@@ -39,6 +42,7 @@ export interface CompletionObligation {
 export interface FalseSuccessState {
   obligations: Map<string, CompletionObligation>;
   interventions: number;
+  completedBackground?: Set<string>;
 }
 
 export interface FalseSuccessLifecycleState {
@@ -102,6 +106,7 @@ export function createFalseSuccessLifecycleState(): FalseSuccessLifecycleState {
 export function resetFalseSuccessState(state: FalseSuccessState): void {
   state.obligations.clear();
   state.interventions = 0;
+  state.completedBackground?.clear();
 }
 
 export function observeInputBoundary(
@@ -153,10 +158,29 @@ export function observeToolResult(state: FalseSuccessState, observation: ToolObs
   const scope = verificationScope(observation.toolName, observation.input, execution?.cwd ?? (shell ? fallbackShellVerificationCwd(observation.input, observation.cwd) : observation.cwd));
   const target = mutationTarget(observation.toolName, observation.input, observation.cwd);
   const text = (observation.text ?? "").slice(0, MAX_TOOL_TEXT_CHARS);
+  const background = shell && observation.input.background === true
+    ? (observation.details as { backgroundTask?: { id?: unknown; state?: unknown; kind?: unknown } } | undefined)?.backgroundTask : undefined;
+  const backgroundId = background?.kind === "shell" && typeof background.id === "string" && background.id.length <= 80 ? background.id : undefined;
+  const verification = scope ? verificationKey(scope) : undefined;
+  const pendingKey = backgroundId && verification ? `${verification}:task:${backgroundId}` : undefined;
+  if (backgroundId && background?.state === "queued" && !observation.isError) {
+    if (state.completedBackground?.has(backgroundId)) return;
+    if (scope) setBounded(state.obligations, makeObligation(pendingKey!, "verification", observation.toolName, "pending",
+      `${scope.family} verification is still running`, scope.kind, scope.path));
+    return;
+  }
+  if (backgroundId) {
+    // Terminal evidence replaces only this task's pending record. Failed checks
+    // then use the existing scope key so an authoritative retry can repair them.
+    if (pendingKey) state.obligations.delete(pendingKey);
+    const completed = state.completedBackground ??= new Set<string>();
+    if (completed.size >= 256) completed.delete(completed.values().next().value!);
+    completed.add(backgroundId);
+  }
 
   if (observation.isError || shell && (!execution || !execution.cwd || !shellExecutionSucceeded(execution))) {
     if (scope) {
-      const key = verificationKey(scope);
+      const key = verification!;
       const obligation = makeObligation(
         key,
         "verification",
@@ -190,7 +214,7 @@ export function observeToolResult(state: FalseSuccessState, observation: ToolObs
   }
 
   if (scope) {
-    state.obligations.delete(verificationKey(scope));
+    state.obligations.delete(verification!);
     clearCoveredMutationObligations(state, scope);
     return undefined;
   }
@@ -546,9 +570,15 @@ function makeAudit(
 }
 
 function setBounded(map: Map<string, CompletionObligation>, obligation: CompletionObligation): void {
-  if (!map.has(obligation.key) && map.size >= MAX_OBLIGATIONS) {
-    const oldest = map.keys().next().value;
-    if (oldest !== undefined) map.delete(oldest);
+  const pending = obligation.category === "pending";
+  const limit = pending ? MAX_PENDING_BACKGROUND : MAX_OBLIGATIONS;
+  if (!map.has(obligation.key) && map.size >= limit) {
+    let count = 0, oldest: string | undefined;
+    for (const [key, item] of map) {
+      if ((item.category === "pending") !== pending) continue;
+      oldest ??= key; count++;
+    }
+    if (count >= limit && oldest !== undefined) map.delete(oldest);
   }
   map.set(obligation.key, obligation);
 }

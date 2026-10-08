@@ -1,4 +1,5 @@
 import { recentMutationEntries } from "../mutation-guard-write/session-evidence.ts";
+import { SHELL_TASK_RESULT_EVENT } from "../managed-tasks.ts";
 import type { ExtensionAPI, ToolResultEvent } from "@super-pi/coding-agent";
 import {
   beginPromptBoundary,
@@ -11,6 +12,7 @@ import {
   observeToolResult,
   resetFalseSuccessState,
   type InterventionAudit,
+  type ToolObservation,
 } from "./core.js";
 
 const TEXT_TYPE = "text" as const;
@@ -38,6 +40,8 @@ export default function falseSuccessGuard(pi: ExtensionAPI): void {
   pi.on("session_start", reset);
   pi.on("session_tree", reset);
   pi.on("session_shutdown", reset);
+  const stopShellResults = pi.events.on(SHELL_TASK_RESULT_EVENT, result => observeToolResult(state, result as ToolObservation));
+  pi.on("session_shutdown", stopShellResults);
 
   pi.on("input", (event) => {
     observeInputBoundary(lifecycle, event);

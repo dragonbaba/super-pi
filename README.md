@@ -46,6 +46,10 @@ Project understanding is layered:
 
 File editing uses scoped reads and identity checks. Snapshots, line anchors, and batch edits help keep a change bounded; they are not arbitrary multi-file transactions or a semantic-correctness guarantee. Every write still goes through the normal permission and result checks.
 
+### Session background tasks
+
+In TUI/RPC sessions, Bash and PowerShell can use `background: true` with an explicit `cwd`. The model sees effective capacity before submission; `/tasks` and the direct `tasks` tool manage shell and subagent work together. Shell defaults are 16 running and 64 admitted commands, configurable up to 64/256. Commands keep normal authorization, bounded results and completion notifications; they stop on session shutdown and cannot resume after restart. See [background task usage and limits](docs/background-tasks.md).
+
 ### Goal, Plan, sessions, and memory
 
 - Plan mode starts with `/plan` or `--plan` and emphasizes read-only exploration, clarification, and a complete implementation plan. It narrows the available tools until the plan is accepted.
