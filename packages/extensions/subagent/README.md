@@ -178,9 +178,12 @@ a short recovery instruction. Admission reserves the entire batch, including
 preflight model resolution, until that call finishes or fails. Completed siblings
 still occupy their batch reservation so long-running tails cannot accumulate
 unbounded retained batch inputs/results. `/tasks` distinguishes running,
-active/queued, and reserved slots. The runtime
-also prevents overlapping reader/writer workspaces across accepted calls. Use
-`readOnly: true` for concurrent research; work with dependencies should use a chain.
+active/queued, and reserved slots. The runtime rejects overlapping workspaces
+(including parent/child directories) whenever either task has write access,
+both within a parallel batch and across accepted calls. Use `readOnly: true` on
+all overlapping tasks for concurrent research, or isolated workspaces for writers.
+Sequential chain steps may share workspaces; their reservation still excludes
+overlapping calls until the entire chain finishes.
 
 ## Background tasks
 

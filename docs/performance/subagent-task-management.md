@@ -92,6 +92,33 @@ child and closing the session wait for that PID to exit, while an unrelated chil
 can complete and notify normally. No paid model calls are used. Cross-platform
 process behavior remains subject to the normal Linux/Windows PR CI.
 
+## PR review correction: overlapping batch workspaces
+
+`subagent.execute -> consumeDelegatedTaskPolicies -> scheduler.reserve ->
+workspacesConflict -> isPathInside` now checks pairs inside a parallel batch before
+creating a reservation, task record or child. This is a startup admission boundary,
+not a delta/progress/render path. At the 256-task hard limit, internal admission
+performs at most 32,640 pair checks, with no pair arrays, closures or asynchronous
+state. Read-only pairs skip path normalization; writer comparisons use the existing
+bounded path helpers. Sequential chains skip internal conflict checks but retain
+cross-call exclusion until their final release.
+
+The focused regressions first failed on the reviewed commit, then passed after
+the fix: nested/equal writer and reader/writer pairs fail atomically in either
+order, read-only pairs and sibling paths remain valid, foreground/background
+rejections create no child or task record, and chain timestamps verify sequential
+execution. Rejected admission retains zero slots, queue nodes or reservations.
+Self-review also corrected the old recovery advice to require all overlapping
+tasks to be read-only, rather than leaving one writer alongside a reader.
+
+The producer/downstream audit above remains unchanged. The allocation benchmark
+rerun sampled 8,838 / 8,800 / 8,759 bytes per update for 8 / 16 / 64 children, with
+zero raw-event publications and full-message serializations. All four lifecycle
+cases again released every counter; all 344 weak references were collected. The
+21 management/hot-path tests, four source invariants and type check passed. This
+rerun validates the unchanged event lane and lifecycle release, not admission-time
+throughput; no performance improvement is claimed for the conflict check.
+
 ## Reproduction
 
 ```text

@@ -6,6 +6,11 @@ export interface TaskWorkspace {
 	readonly allowMutation: boolean;
 }
 
+function workspacesConflict(left: TaskWorkspace, right: TaskWorkspace): boolean {
+	return (left.allowMutation || right.allowMutation)
+		&& (isPathInside(left.canonicalCwd, right.canonicalCwd) || isPathInside(right.canonicalCwd, left.canonicalCwd));
+}
+
 /** One reservation per accepted call; no credentials, prompts or results live here. */
 export class TaskReservation {
 	readonly workspaces: readonly TaskWorkspace[];
@@ -85,7 +90,7 @@ export class SubagentScheduler {
 	get queued(): number { return this.waiters.length; }
 	get reservationCount(): number { return this.reservations.size; }
 
-	reserve(workspaces: readonly TaskWorkspace[]): TaskReservation {
+	reserve(workspaces: readonly TaskWorkspace[], mode: "parallel" | "chain" = "parallel"): TaskReservation {
 		if (this.disposed) throw new Error("Subagent scheduler is closed.");
 		const count = workspaces.length;
 		if (count < 1 || count > this.limits.maxTasks) {
@@ -94,11 +99,21 @@ export class SubagentScheduler {
 		if (this.reserved + count > this.limits.maxTasks) {
 			throw new Error(`Subagent capacity exceeded: ${this.reserved} reserved by unfinished calls + ${count} requested; maximum ${this.limits.maxTasks}. Wait for a call to finish or submit fewer.`);
 		}
+		// Chain steps cannot overlap in time; parallel tasks must also be checked
+		// against each other before creating any reservation or child record.
+		if (mode === "parallel") {
+			for (let left = 0; left < count; left++) {
+				for (let right = left + 1; right < count; right++) {
+					if (workspacesConflict(workspaces[left], workspaces[right])) {
+						throw new Error(`Parallel tasks ${left + 1} and ${right + 1} have overlapping workspaces with write access. Use chain, readOnly: true for both tasks, or isolated workspaces; no task was started.`);
+					}
+				}
+			}
+		}
 		for (const reservation of this.reservations) {
 			for (const current of reservation.workspaces) {
 				for (const requested of workspaces) {
-					if ((current.allowMutation || requested.allowMutation)
-						&& (isPathInside(current.canonicalCwd, requested.canonicalCwd) || isPathInside(requested.canonicalCwd, current.canonicalCwd))) {
+					if (workspacesConflict(current, requested)) {
 						throw new Error("Subagent workspace is already reserved by overlapping work with write access. Wait, use readOnly for both calls, or choose an isolated workspace.");
 					}
 				}

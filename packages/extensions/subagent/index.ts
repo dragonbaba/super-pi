@@ -506,7 +506,7 @@ export function assertSubagentBatchPreflight(
 		const tools = effectiveTools(agent, true).tools;
 		if (!tools.includes("write") && !tools.includes("edit") && !tools.includes("bash")) continue;
 		if (writerCwds.has(policy.canonicalCwd)) {
-			throw new Error(`Parallel mutation-capable tasks share cwd "${policy.canonicalCwd}". Use chain/sequential execution or set readOnly: true on all but one task; task text alone does not change capabilities. No subagent was started.`);
+			throw new Error(`Parallel mutation-capable tasks share cwd "${policy.canonicalCwd}". Use chain/sequential execution, isolated workspaces, or set readOnly: true on all overlapping tasks; task text alone does not change capabilities. No subagent was started.`);
 		}
 		writerCwds.add(policy.canonicalCwd);
 	}
@@ -1550,7 +1550,7 @@ export default function (pi: ExtensionAPI) {
 					}
 				}
 			}
-			const reservation = scheduler.reserve(delegatedPolicies);
+			const reservation = scheduler.reserve(delegatedPolicies, hasChain ? "chain" : "parallel");
 			try {
 				const uniqueAgentNames = new Set(requestedAgentNames);
 

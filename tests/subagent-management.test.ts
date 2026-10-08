@@ -9,6 +9,7 @@ import { createEventBus } from "../packages/coding-agent/src/core/event-bus.ts";
 import { attachSubagentWorkspaceDelegation, SESSION_PERMISSION_EVENT } from "../packages/extensions/resource-lifecycle-guard/permission-contract.ts";
 import { SubagentScheduler } from "../packages/extensions/subagent/scheduler.ts";
 import { SubagentTasks } from "../packages/extensions/subagent/tasks.ts";
+import { isPathInside } from "../packages/extensions/subagent/child-security.ts";
 
 // Set before loading the extension's config-path constants; never inspect user configuration.
 const fixtureRoot = mkdtempSync(join(tmpdir(), "sp-managed-subagents-"));
@@ -21,6 +22,7 @@ delete process.env.SP_BUNDLED_AGENTS_DIR;
 mkdirSync(join(process.env.SP_CODING_AGENT_DIR, "agents"), { recursive: true });
 mkdirSync(join(process.env.SP_CODING_AGENT_DIR, "config"), { recursive: true });
 writeFileSync(join(process.env.SP_CODING_AGENT_DIR, "agents", "scout.md"), "---\nname: scout\ndescription: Offline test agent\ntools: read\n---\nFixture prompt.");
+writeFileSync(join(process.env.SP_CODING_AGENT_DIR, "agents", "worker.md"), "---\nname: worker\ndescription: Offline writer agent\ntools: read, write\n---\nFixture prompt.");
 const { default: extension, assertTaskCount, snapshotSubagentDetails, boundedMessage } = await import("../packages/extensions/subagent/index.ts");
 const { parseSubagentLimits, loadSubagentLimits, SUBAGENT_LIMITS_PATH } = await import("../packages/extensions/subagent/limits.ts");
 test.after(() => {
@@ -78,6 +80,27 @@ test("writer overlap is rejected across batches, including nested paths", () => 
 	reservation.completed(); reservation.release(); reservation.release();
 	assert.equal(scheduler.outstanding, 0);
 	scheduler.reserve([readonlyWorkspace]).release();
+	scheduler.dispose();
+});
+
+test("parallel admission rejects internal writer overlaps without reserving capacity", () => {
+	const scheduler = new SubagentScheduler({ maxConcurrent: 2, maxTasks: 4 });
+	const parent = { ...readonlyWorkspace, allowMutation: true };
+	const child = { canonicalCwd: join(fixtureRoot, "nested"), allowMutation: true };
+	for (const paths of [[parent, parent], [parent, child], [child, parent]]) {
+		for (const writes of [[true, true], [true, false], [false, true]]) {
+			assert.throws(() => scheduler.reserve(paths.map((path, i) => ({ ...path, allowMutation: writes[i] }))), /tasks 1 and 2.*overlapping.*no task was started/);
+			assert.equal(scheduler.active + scheduler.queued + scheduler.outstanding + scheduler.reserved + scheduler.reservationCount, 0);
+		}
+	}
+	const readers = scheduler.reserve([readonlyWorkspace, { ...child, allowMutation: false }]);
+	readers.release();
+	const isolated = scheduler.reserve([child, { canonicalCwd: join(fixtureRoot, "nested-other"), allowMutation: true }]);
+	isolated.release();
+	const chain = scheduler.reserve([parent, child], "chain");
+	assert.throws(() => scheduler.reserve([readonlyWorkspace], "chain"), /already reserved/, "sequential steps still exclude overlapping calls");
+	chain.release();
+	assert.equal(scheduler.outstanding + scheduler.reserved + scheduler.reservationCount, 0);
 	scheduler.dispose();
 });
 
@@ -168,7 +191,7 @@ function harness(t: test.TestContext) {
 	const run = (params: any, onUpdate?: (value: any) => void) => {
 		const id = `call-${++sequence}`;
 		const items = params.tasks ?? params.chain ?? [params];
-		const grants = items.map((item: any) => { const canonicalCwd = item.cwd ?? cwd; const stat = statSync(canonicalCwd); return { canonicalCwd, device: stat.dev, inode: stat.ino, permissionMode: item.readOnly ? "read-only" : "workspace-write", writable: !item.readOnly, source: "primary" }; });
+		const grants = items.map((item: any) => { const canonicalCwd = item.cwd ?? cwd; const stat = statSync(canonicalCwd); return { canonicalCwd, device: stat.dev, inode: stat.ino, permissionMode: item.readOnly ? "read-only" : "workspace-write", writable: !item.readOnly, source: isPathInside(canonicalCwd, cwd) ? "primary" : "additional" }; });
 		attachSubagentWorkspaceDelegation(params, { schemaVersion: 1, sequence, toolCallId: id, grants });
 		return tools.get("subagent").execute(id, params, undefined, onUpdate, ctx);
 	};
@@ -206,6 +229,26 @@ test("effective limits are visible before first invocation and enforce preflight
 	h.ctx.getActiveTools = () => ["subagent"];
 	await assert.rejects(h.run({ agent: "scout", task: "x", readOnly: true, background: true }), /management tool/);
 	assert.match(await h.control("list"), /0\/2 running/);
+});
+
+test("foreground and background reject nested writers before launch while chains remain sequential", async t => {
+	const h = harness(t);
+	const workspace = realpathSync(mkdtempSync(join(fixtureRoot, "isolated-")));
+	const nested = join(workspace, "nested"); mkdirSync(nested);
+	const batch = [{ agent: "worker", task: "fast-parent", cwd: workspace }, { agent: "worker", task: "fast-child", cwd: nested }];
+	for (const background of [false, true]) {
+		await assert.rejects(h.run({ tasks: batch, background }), /tasks 1 and 2.*overlapping.*no task was started/);
+		assert.equal((await h.control("list")).split("\n").length, 1, "rejected calls must not create task records");
+		assert.match(await h.control("list"), /0\/8 reserved/);
+		assert.deepEqual(readdirSync(workspace), ["nested"]);
+		assert.deepEqual(readdirSync(nested), []);
+	}
+	const result = await h.run({ chain: batch });
+	assert.match(result.content[0].text, /fixture result: Task: fast-child/);
+	assert.ok(result.details.results[0].completedAt <= result.details.results[1].startedAt);
+	assert.equal(readdirSync(workspace).filter(file => file.endsWith(".ready.json")).length, 1);
+	assert.equal(readdirSync(nested).length, 1);
+	assert.match(await h.control("list"), /0\/8 reserved/);
 });
 
 test("background returns IDs, cancellation isolates one child, and notification arrives once", { timeout: 10_000 }, async t => {
