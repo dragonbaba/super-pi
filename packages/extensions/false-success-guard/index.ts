@@ -10,6 +10,7 @@ import {
   goalCompletionIntervention,
   observeInputBoundary,
   observeToolResult,
+  observeVerificationStart,
   resetFalseSuccessState,
   type InterventionAudit,
   type ToolObservation,
@@ -65,6 +66,7 @@ export default function falseSuccessGuard(pi: ExtensionAPI): void {
   });
 
   pi.on("tool_execution_start", (event, ctx) => {
+    if (event.toolName === "bash" || event.toolName === "powershell") observeVerificationStart(state, event.toolCallId);
     if (!isNativeOrBatch(event.toolName)) return;
     if (pendingMutations.size >= 128) {
       observeToolResult(state, { toolName: "file_batch", input: {}, isError: true, cwd: ctx.cwd });

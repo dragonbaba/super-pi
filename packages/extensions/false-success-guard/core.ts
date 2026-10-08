@@ -1,6 +1,7 @@
 import { COMPLETION_CLAIM_RE, INCOMPLETE_DISCLOSURE_RE, PARTIAL_MUTATION_RE, LEADING_CD_RE, SHELL_OPERATOR_RE, NODE_TEST_RE, TEST_COMMAND_RE, NODE_TSC_RE, TYPECHECK_COMMAND_RE, LINT_COMMAND_RE, BUILD_COMMAND_RE, PACKAGE_PREFIX_RE, POLICY_BLOCKED_RE, TIMEOUT_RE, PATH_NOT_FOUND_RE, COMMAND_FAILED_RE, WINDOWS_ABSOLUTE_RE, TRAILING_SEPARATOR_RE } from "./regex.ts";
 import { dirname, extname, isAbsolute, relative, resolve } from "node:path";
 import { realpathSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { getShellCwdBinding, readShellExecution, shellExecutionSucceeded, shellFailureCategory } from "@super-pi/coding-agent";
 import { boundBatchIntents, validMutationOutcome } from "../mutation-guard-write/session-evidence.ts";
 import { resolveToolPath } from "../mutation-guard-write/core.ts";
@@ -37,12 +38,18 @@ export interface CompletionObligation {
   scopeKind: ObligationScopeKind;
   scopePath: string;
   target?: string;
+  backgroundId?: string;
+  backgroundCommand?: string;
+  startedSequence?: number;
+  failureSequence?: number;
 }
 
 export interface FalseSuccessState {
   obligations: Map<string, CompletionObligation>;
   interventions: number;
   completedBackground?: Set<string>;
+  sequence: number;
+  verificationStarts: Map<string, number>;
 }
 
 export interface FalseSuccessLifecycleState {
@@ -96,7 +103,7 @@ interface VerificationScope {
 }
 
 export function createFalseSuccessState(): FalseSuccessState {
-  return { obligations: new Map(), interventions: 0 };
+  return { obligations: new Map(), interventions: 0, sequence: 0, verificationStarts: new Map() };
 }
 
 export function createFalseSuccessLifecycleState(): FalseSuccessLifecycleState {
@@ -107,6 +114,13 @@ export function resetFalseSuccessState(state: FalseSuccessState): void {
   state.obligations.clear();
   state.interventions = 0;
   state.completedBackground?.clear();
+  state.verificationStarts.clear();
+  state.sequence = 0;
+}
+
+/** Execution admission, never an output/progress callback. Missing starts fail closed. */
+export function observeVerificationStart(state: FalseSuccessState, callId: string): void {
+  if (state.verificationStarts.size < MAX_PENDING_BACKGROUND) state.verificationStarts.set(callId, ++state.sequence);
 }
 
 export function observeInputBoundary(
@@ -128,10 +142,11 @@ export function beginPromptBoundary(
     && prompt.includes(GOAL_ID_OPEN);
   if (!lifecycle.pendingExplicitBoundary && !initialGoalPrompt) return false;
   lifecycle.pendingExplicitBoundary = false;
-  // Accepted background checks outlive the parent turn. Only their terminal
-  // evidence or an actual session/tree reset can release these obligations.
+  // Background evidence outlives the parent turn, including a failure delivered
+  // between input arrival and this hook. A matching later retry or session reset
+  // releases it; a sibling success is not a retry.
   for (const [key, obligation] of state.obligations) {
-    if (obligation.category !== "pending") state.obligations.delete(key);
+    if (!obligation.backgroundId) state.obligations.delete(key);
   }
   state.interventions = 0;
   return true;
@@ -168,15 +183,25 @@ export function observeToolResult(state: FalseSuccessState, observation: ToolObs
   const backgroundId = background?.kind === "shell" && typeof background.id === "string" && background.id.length <= 80 ? background.id : undefined;
   const verification = scope ? verificationKey(scope) : undefined;
   const pendingKey = backgroundId && verification ? `${verification}:task:${backgroundId}` : undefined;
+  const previous = pendingKey ? state.obligations.get(pendingKey) : undefined;
+  const startedSequence = previous?.startedSequence ?? (observation.toolCallId ? state.verificationStarts.get(observation.toolCallId) : undefined);
+  if (observation.toolCallId) state.verificationStarts.delete(observation.toolCallId);
+  const backgroundCommand = scope && shell && typeof observation.input.command === "string"
+    ? createHash("sha256").update(observation.input.command).digest("hex") : undefined;
   if (backgroundId && background?.state === "queued" && !observation.isError) {
     if (state.completedBackground?.has(backgroundId)) return;
-    if (scope) setBounded(state.obligations, makeObligation(pendingKey!, "verification", observation.toolName, "pending",
-      `${scope.family} verification is still running`, scope.kind, scope.path));
+    if (scope) {
+      const obligation = makeObligation(pendingKey!, "verification", observation.toolName, "pending",
+        `${scope.family} verification is still running`, scope.kind, scope.path);
+      obligation.backgroundId = backgroundId; obligation.backgroundCommand = backgroundCommand;
+      obligation.startedSequence = startedSequence ?? ++state.sequence;
+      setBounded(state.obligations, obligation);
+    }
     return;
   }
   if (backgroundId) {
-    // Terminal evidence replaces only this task's pending record. Failed checks
-    // then use the existing scope key so an authoritative retry can repair them.
+    // Terminal evidence replaces only this task. Concurrent successes cannot
+    // repair failures from checks admitted later or different targeted commands.
     if (pendingKey) state.obligations.delete(pendingKey);
     const completed = state.completedBackground ??= new Set<string>();
     if (completed.size >= 256) completed.delete(completed.values().next().value!);
@@ -185,7 +210,7 @@ export function observeToolResult(state: FalseSuccessState, observation: ToolObs
 
   if (observation.isError || shell && (!execution || !execution.cwd || !shellExecutionSucceeded(execution))) {
     if (scope) {
-      const key = verification!;
+      const key = pendingKey ?? verification!;
       const obligation = makeObligation(
         key,
         "verification",
@@ -195,6 +220,8 @@ export function observeToolResult(state: FalseSuccessState, observation: ToolObs
         scope.kind,
         scope.path,
       );
+      obligation.backgroundId = backgroundId; obligation.backgroundCommand = backgroundId ? backgroundCommand : undefined;
+      obligation.startedSequence = startedSequence; obligation.failureSequence = ++state.sequence;
       setBounded(state.obligations, obligation);
       return undefined;
     }
@@ -219,7 +246,16 @@ export function observeToolResult(state: FalseSuccessState, observation: ToolObs
   }
 
   if (scope) {
-    state.obligations.delete(verification!);
+    const shared = state.obligations.get(verification!);
+    if (!backgroundId || shared?.failureSequence !== undefined && startedSequence !== undefined && shared.failureSequence < startedSequence) state.obligations.delete(verification!);
+    if (startedSequence !== undefined) {
+      const prefix = `${verification}:task:`;
+      for (const [key, obligation] of state.obligations) {
+        if (key.startsWith(prefix) && obligation.category !== "pending" && obligation.tool === observation.toolName
+          && obligation.backgroundCommand === backgroundCommand && obligation.failureSequence !== undefined
+          && obligation.failureSequence < startedSequence) state.obligations.delete(key);
+      }
+    }
     clearCoveredMutationObligations(state, scope);
     return undefined;
   }
@@ -539,6 +575,7 @@ function makeObligation(
     scopeKind,
     scopePath,
     target: target ? bounded(target) : undefined,
+    backgroundId: undefined, backgroundCommand: undefined, startedSequence: undefined, failureSequence: undefined,
   };
 }
 

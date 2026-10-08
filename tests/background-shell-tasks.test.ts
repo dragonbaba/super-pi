@@ -32,9 +32,11 @@ const jiti = createJiti(import.meta.url);
 const { default: lifecycle } = await jiti.import<any>("../packages/extensions/resource-lifecycle-guard/index.ts");
 const { default: subagent } = await jiti.import<any>("../packages/extensions/subagent/index.ts");
 const { default: falseSuccessGuard } = await jiti.import<any>("../packages/extensions/false-success-guard/index.ts");
-const { createFalseSuccessState, observeToolResult } = await jiti.import<any>("../packages/extensions/false-success-guard/core.ts");
+const { createFalseSuccessState, createFalseSuccessLifecycleState, observeInputBoundary, beginPromptBoundary, observeVerificationStart, observeToolResult } = await jiti.import<any>("../packages/extensions/false-success-guard/core.ts");
+const { windowsShellJobDiagnostics } = await import("../packages/coding-agent/src/utils/windows-shell-job.ts");
 const bashPath = process.platform !== "win32" ? "/bin/bash" : existsSync("D:/Git/bin/bash.exe") ? "D:/Git/bin/bash.exe" : join(process.env.ProgramFiles!, "Git/bin/bash.exe");
 test.after(() => {
+	assert.equal(windowsShellJobDiagnostics().handles, 0); assert.equal(windowsShellJobDiagnostics().processHandles, 0);
 	for (const [name, value] of [["SP_CODING_AGENT_DIR", oldAgentDir], ["SP_SOURCE_LAUNCHER", oldLauncher], ["SP_BUNDLED_AGENTS_DIR", oldBundled]]) {
 		if (value === undefined) delete process.env[name!]; else process.env[name!] = value;
 	}
@@ -233,6 +235,63 @@ test("an earlier unrelated tasks registration prevents unmanaged background exec
 	h.active.push("subagent");
 	const child = await h.call("subagent", { agent: "scout", task: "fast", readOnly: true, background: true });
 	assert.equal(child.isError, true); assert.match(text(child), /subagent_tasks|management tool/);
+});
+
+test("pre-tree cleanup finishes before earlier new-branch evidence handlers run", async t => {
+	let checkBranch!: () => Promise<void>;
+	const h = await fixture(t, undefined, async (pi: any) => {
+		falseSuccessGuard(pi);
+		pi.on("session_tree", async () => { await checkBranch(); await tick(); });
+	});
+	writeFileSync(join(h.cwd, "package.json"), JSON.stringify({ scripts: { test: "node fixture.mjs hold" } }));
+	const id = taskId(await h.call("bash", { command: "npm test", cwd: ".", background: true }));
+	const pid = await started(h.cwd, "hold");
+	checkBranch = async () => {
+		assert.throws(() => process.kill(pid, 0), /ESRCH/);
+		assert.match(text(await h.call("tasks", { action: "status", id })), /cancelled/);
+		assert.equal(h.messages.length, 0);
+	};
+	await h.runner.emit({ type: "session_before_tree", preparation: {}, signal: new AbortController().signal } as never);
+	await h.runner.emit({ type: "session_tree" } as never);
+	const complete = await h.runner.emitToolCall({ type: "tool_call", toolName: "goal_complete", toolCallId: "after-tree", input: {} } as never);
+	assert.notEqual(complete?.block, true);
+});
+
+test("process cleanup failure blocks queued and new launches before the slot drains", async t => {
+	const h = harness(t); let finish!: () => void, queuedStarted = 0;
+	const first = h.start(async () => {
+		await new Promise<void>(resolve => { finish = resolve; });
+		return { content: [], details: { shellExecution: shellFacts(1, "Process-tree cleanup failed: fixture") } };
+	});
+	const queued = h.start(async () => { queuedStarted++; return { content: [], details: undefined }; });
+	finish(); await h.owner.tasks.wait(first, 1000); await h.owner.tasks.wait(queued, 1000);
+	assert.equal(queuedStarted, 0);
+	assert.throws(() => h.owner.assertAvailable(h.ctx), /cleanup failed/);
+	await h.hooks.get("session_before_tree")![0]();
+	assert.throws(() => h.owner.assertAvailable(h.ctx), /cleanup failed/);
+});
+
+function shellFacts(code: number, observationError?: string) {
+	return { version: 1, producer: "local-shell", started: true, cwd: realpathSync.native(root), executionStatus: "exited", sideEffects: "unknown", retryGuidance: "inspect_before_retry", exitCode: code, signal: null, termination: "exit", observationError, output: { complete: true, tailTruncated: false, log: "not_needed", cleanup: "not_needed" } };
+}
+
+test("queued input and concurrent successes cannot erase a task-specific failed check", () => {
+	const state = createFalseSuccessState(), lifecycleState = createFalseSuccessLifecycleState();
+	const observation = (id: string, command: string, phase: "queued" | "failed" | "completed") => ({ toolName: "bash", toolCallId: id, input: { command, cwd: root, background: true }, isError: phase === "failed", cwd: root,
+		details: { backgroundTask: { id, state: phase, kind: "shell" }, shellExecution: phase === "queued" ? undefined : shellFacts(phase === "failed" ? 1 : 0) } });
+	observeToolResult(state, observation("fails", "npm test -- first", "queued"));
+	observeToolResult(state, observation("sibling", "npm test -- first", "queued"));
+	observeInputBoundary(lifecycleState, { source: "rpc", streamingBehavior: "followUp" });
+	observeToolResult(state, observation("fails", "npm test -- first", "failed"));
+	beginPromptBoundary(state, lifecycleState, "continue");
+	observeToolResult(state, observation("sibling", "npm test -- first", "completed"));
+	assert.equal(state.obligations.size, 1); assert.equal([...state.obligations.values()][0].category, "command_failed");
+	observeToolResult(state, observation("other-target", "npm test -- second", "queued"));
+	observeToolResult(state, observation("other-target", "npm test -- second", "completed"));
+	assert.equal(state.obligations.size, 1, "a different targeted test is not a retry");
+	observeVerificationStart(state, "foreground-retry");
+	observeToolResult(state, { toolName: "bash", toolCallId: "foreground-retry", input: { command: "npm test -- first", cwd: root }, isError: false, cwd: root, details: { shellExecution: shellFacts(0) } });
+	assert.equal(state.obligations.size, 0);
 });
 
 test("permission invalidation and shutdown wait for the owned child and suppress notifications", { timeout: 15_000 }, async t => {

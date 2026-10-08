@@ -107,18 +107,47 @@ async function lifecycle(mode: "complete" | "failure" | "cancel" | "dispose") {
 	return { mode, highWaterMark: s.highWaterMark, queueHighWaterMark: s.queueHighWaterMark, releases, retained, weak };
 }
 
+async function nativeJobs() {
+	const { WindowsShellJob, windowsShellJobDiagnostics } = await import("../../packages/coding-agent/src/utils/windows-shell-job.ts");
+	const { waitForChildProcess } = await import("../../packages/coding-agent/src/utils/child-process.ts");
+	const { once } = await import("node:events");
+	const weak: WeakRef<object>[] = [];
+	const inspector = new Session(); inspector.connect(); globalThis.gc!();
+	await inspector.post("HeapProfiler.enable");
+	await inspector.post("HeapProfiler.startSampling", { samplingInterval: 4096, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true });
+	try {
+		for (const mode of ["complete", "fail", "cancel", "spawn-error"]) {
+			const owner = await WindowsShellJob.spawn(mode === "spawn-error" ? process.execPath + ".missing" : process.execPath,
+				["-e", mode === "cancel" ? "console.log('ready');setTimeout(()=>{},30000)" : `process.exitCode=${mode === "fail" ? 7 : 0}`], root, process.env, false);
+			const exit = waitForChildProcess(owner.child);
+			if (mode === "cancel") { await once(owner.child.stdout!, "data"); assert.equal(await owner.stop(), undefined); }
+			const code = await exit;
+			assert.equal(await owner.stop(), undefined);
+			if (mode === "spawn-error") assert.equal(owner.launchError?.code, "ENOENT");
+			else if (mode !== "cancel") assert.equal(code, mode === "fail" ? 7 : 0);
+			assert.equal(owner.child.listenerCount("message"), 0);
+			weak.push(new WeakRef(owner), new WeakRef(owner.child));
+		}
+		const { profile } = await inspector.post("HeapProfiler.stopSampling");
+		const stats = windowsShellJobDiagnostics(); assert.equal(stats.handles + stats.processHandles, 0); assert.equal(stats.created, 4);
+		return { ...stats, sampledBytesIncludingColdBindingLoad: sampledSites(profile.head, new Map()), weak };
+	} finally { inspector.disconnect(); }
+}
+
 try {
 	hook.enable();
 	const profiles = [await profile(false), await profile(true)];
 	const lifecycles = [];
 	for (const mode of ["complete", "failure", "cancel", "dispose"] as const) lifecycles.push(await lifecycle(mode));
+	const native = process.platform === "win32" ? await nativeJobs() : undefined;
 	hook.disable();
 	for (let i = 0; i < 8; i++) { await tick(); globalThis.gc!(); }
 	let total = 0, live = 0;
 	for (const item of [...profiles, ...lifecycles]) for (const ref of item.weak) { total++; if (ref.deref()) live++; }
+	if (native) for (const ref of native.weak) { total++; if (ref.deref()) live++; }
 	assert.equal(live, 0); assert.equal(chunkPromises, 0); assert.equal(chunkControllers, 0);
 	console.log(JSON.stringify({ node: process.version, platform: process.platform, producer: "synthetic chunks through production shell tool and manager; no provider traffic",
-		profiles: profiles.map(({ weak, ...rest }) => rest), lifecycle: lifecycles.map(({ weak, ...rest }) => rest), perChunk: { promises: chunkPromises, controllers: chunkControllers }, references: { total, live } }, null, 2));
+		profiles: profiles.map(({ weak, ...rest }) => rest), lifecycle: lifecycles.map(({ weak, ...rest }) => rest), nativeJobs: native && { ...native, weak: undefined }, perChunk: { promises: chunkPromises, controllers: chunkControllers }, references: { total, live } }, null, 2));
 } finally {
 	hook.disable(); globalThis.AbortController = NativeController;
 	assert.equal(dirname(root), tmpdir()); rmSync(root, { recursive: true, force: true });

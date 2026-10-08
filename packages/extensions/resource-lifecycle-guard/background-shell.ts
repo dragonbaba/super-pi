@@ -42,6 +42,7 @@ export class BackgroundShellTasks {
 		this.taskRegistration = registerManagedTasks(pi, "shell", { tasks: this.tasks, guidance, list: this.list, details: this.details });
 		this.removePermissionListener = pi.events.on(SESSION_PERMISSION_EVENT, this.revoke);
 		pi.on("session_start", this.beginSession);
+		pi.on("session_before_tree", this.beginSession);
 		pi.on("session_tree", this.beginSession);
 		pi.on("session_shutdown", this.dispose);
 	}
@@ -68,7 +69,7 @@ export class BackgroundShellTasks {
 	assertAvailable(ctx: ExtensionContext): void {
 		if (this.closed) throw new Error("Background shell session is closed.");
 		if (this.changingSession) throw new Error("Background shell session is changing; wait for previous tasks to stop.");
-		if (this.cleanupBlocked) throw new Error("Background shell cleanup failed; inspect the reported temporary log before submitting more work.");
+		if (this.cleanupBlocked) throw new Error("Background shell cleanup failed; inspect the reported process/log diagnostics and reload after resolving it.");
 		if (ctx.mode !== "tui" && ctx.mode !== "rpc") throw new Error("Background commands require a live TUI or RPC session; use foreground execution here.");
 		if (!this.taskRegistration.controlsAvailable(ctx)) throw new Error("Background commands require the built-in tasks management tool; enable it and remove conflicting tasks registrations, or use foreground execution.");
 	}
@@ -98,7 +99,14 @@ export class BackgroundShellTasks {
 		try {
 			const result = await this.scheduler.run(signal, async () => {
 				assertCurrent(); this.tasks.start(task);
-				return execute(signal);
+				try {
+					const result = await execute(signal);
+					this.checkCleanup(result.details, task);
+					return result;
+				} catch (error) {
+					this.checkCleanup(toolResultFromError(error)?.details as BashToolDetails | undefined, task);
+					throw error;
+				}
 			});
 			details = result.details;
 			for (const item of result.content) if (item.type === "text") text += item.text;
@@ -109,7 +117,6 @@ export class BackgroundShellTasks {
 			text = error instanceof Error ? error.message : String(error);
 		} finally { try { release(); } finally { reservation.release(); } }
 		if (signal.aborted) task.controller?.abort();
-		if (details?.shellExecution?.output.cleanup === "failed") this.cleanupBlocked = true;
 		this.tasks.finish(task, retainedShellText(text, details), failed);
 		// Keep numeric truncation facts without retaining a second 50 KiB text tail.
 		details = { ...details, truncation: details?.truncation ? { ...details.truncation, content: "" } : undefined,
@@ -124,6 +131,14 @@ export class BackgroundShellTasks {
 	}
 
 	readonly dispose = (): Promise<void> => this.disposal ??= this.close();
+	private checkCleanup(details: BashToolDetails | undefined, failedTask: ManagedSubagentTask): void {
+		const facts = readShellExecution(details);
+		if (facts?.output.cleanup !== "failed" && !facts?.observationError?.startsWith("Process-tree cleanup failed:")) return;
+		this.cleanupBlocked = true;
+		// Latch before scheduler.run releases its slot and drains the next waiter.
+		this.scheduler.dispose();
+		for (const task of this.tasks.values()) if (task !== failedTask) this.tasks.cancel(task.id);
+	}
 	private async close(): Promise<void> {
 		this.closed = true;
 		this.removePermissionListener(); this.taskRegistration.unregister();

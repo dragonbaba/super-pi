@@ -8,6 +8,7 @@ import { type AgentTool, ToolResultError, toolResultFromError } from "@super-pi/
 import { type Component, Container, getCapabilities, RELEASE_COMPONENT_RENDER_CACHE, Text, truncateToWidth, visibleWidth } from "@super-pi/tui";
 import { spawn } from "child_process";
 import type { Writable } from "node:stream";
+import type { WindowsShellJob } from "../../utils/windows-shell-job.ts";
 import { type Static, Type } from "typebox";
 import { keyHint } from "../../modes/interactive/components/keybinding-hints.ts";
 import { truncateToVisualLines } from "../../modes/interactive/components/visual-truncate.ts";
@@ -118,6 +119,7 @@ export interface BashOperations {
 			timeout?: number;
 			env?: NodeJS.ProcessEnv;
 			beforeSpawn?: (cwd: string) => void;
+			managedBackground?: boolean;
 		},
 	) => Promise<ShellProcessResult>;
 }
@@ -146,7 +148,7 @@ class ShellInputObserver {
 /** Shared process execution used by the built-in shell tools. */
 export function createLocalShellOperations(shellName: string, resolveShellConfig: () => ShellConfig): BashOperations {
 	return registerLocalShellBackend({
-		exec: async (command, cwd, { onData, signal, timeout, env, beforeSpawn }) => {
+		exec: async (command, cwd, { onData, signal, timeout, env, beforeSpawn, managedBackground }) => {
 			const observation: ChildProcessObservation = { started: false, exitCode: null, signal: null, outputDrained: false };
 			let stopReason: ShellTermination | undefined;
 			let inputObserver: ShellInputObserver | undefined;
@@ -170,7 +172,12 @@ export function createLocalShellOperations(shellName: string, resolveShellConfig
 			if (signal?.aborted) { stopReason = "cancelled"; signal.throwIfAborted(); }
 			beforeSpawn?.(actualCwd);
 			observation.spawnAttempted = true;
-			const child = spawn(shellConfig.shell, commandFromStdin ? shellConfig.args : [...shellConfig.args, command], {
+			let windowsJob: WindowsShellJob | undefined;
+			if (managedBackground && process.platform === "win32") {
+				const { WindowsShellJob } = await import("../../utils/windows-shell-job.ts");
+				windowsJob = await WindowsShellJob.spawn(shellConfig.shell, commandFromStdin ? shellConfig.args : [...shellConfig.args, command], actualCwd, env ?? getShellEnv(), commandFromStdin, signal, beforeSpawn);
+			}
+			const child = windowsJob?.child ?? spawn(shellConfig.shell, commandFromStdin ? shellConfig.args : [...shellConfig.args, command], {
 				cwd: actualCwd,
 				detached: process.platform !== "win32",
 				env: env ?? getShellEnv(),
@@ -186,7 +193,8 @@ export function createLocalShellOperations(shellName: string, resolveShellConfig
 			let outputSettled = false;
 			let processCleanup: Promise<string | undefined> | undefined;
 			const stopChild = () => {
-				if (child.pid) processCleanup ??= killProcessTreeAndWait(child.pid);
+				if (windowsJob) processCleanup ??= windowsJob.stop();
+				else if (child.pid) processCleanup ??= killProcessTreeAndWait(child.pid);
 				if (observation.exitCode !== null || observation.signal !== null) { child.stdout?.destroy(); child.stderr?.destroy(); }
 			};
 			const onAbort = () => {
@@ -216,14 +224,21 @@ export function createLocalShellOperations(shellName: string, resolveShellConfig
 				// on inherited stdio handles held by detached descendants.
 				const exitCode = await waitForChildProcess(child, observation);
 				outputSettled = true;
+				if (windowsJob) processCleanup ??= windowsJob.stop();
 				if (processCleanup) processCleanupError = await processCleanup;
+				processCleanupError ??= windowsJob?.dispatchError;
 				await inputObserver?.finish();
+				if (windowsJob?.launchError) {
+					observation.started = false; observation.exitCode = null; observation.signal = null;
+					throw windowsJob.launchError;
+				}
 				const termination = stopReason ?? (observation.signal ? "signal" : exitCode === null ? "unknown" : "exit");
 				const result: ShellProcessResult = { exitCode, observation, termination, inputError: inputObserver?.error, observationError: processCleanupError };
 				if (stopReason) throw observedShellError(new Error(stopReason === "timeout" ? `timeout:${timeout}` : stopReason === "output_failure" ? "output capture failed" : "aborted"), result);
 				return result;
 			} finally {
 				outputSettled = true;
+				if (windowsJob) processCleanup ??= windowsJob.stop();
 				if (processCleanup) processCleanupError = await processCleanup;
 				if (child.pid) untrackDetachedChildPid(child.pid);
 				if (timeoutHandle) clearTimeout(timeoutHandle);
@@ -1046,6 +1061,7 @@ export function createShellToolDefinition(
 						timeout,
 						env: spawnContext.env,
 						beforeSpawn: cwdBinding?.beforeSpawn,
+						managedBackground: input.background,
 					});
 				} catch (err) {
 					executionError = err; processResult = shellProcessResultFromError(err);

@@ -47,6 +47,23 @@ test("completion, retention and CDPATH helpers use module functions without nest
   assert.deepEqual(seen, targets);
 });
 
+test("Windows job callbacks are owned by admission and never forward shell output", () => {
+  const file = "packages/coding-agent/src/utils/windows-shell-job.ts";
+  const text = readFileSync(file, "utf8"), source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
+  const owners = new Set<string>();
+  function visit(node: ts.Node): void {
+    if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) {
+      assert.ok(ts.isPropertyDeclaration(node.parent));
+      const name = node.parent.name.getText(source); assert.ok(["onMessage", "onSend"].includes(name)); owners.add(name);
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(source); assert.deepEqual(owners, new Set(["onMessage", "onSend"]));
+  assert.doesNotMatch(text, /\.on\(["']data|\.pipe\(|onData\(/);
+  assert.match(text, /stdio:\[process.stdin,process.stdout,process.stderr\]/);
+  assert.ok(text.indexOf("native.assign(job, processHandle)") < text.indexOf("child.send({ shell, args, env }"));
+});
+
 test("substitution boundaries use primitive offsets without per-boundary containers or callbacks", () => {
   const file = "packages/extensions/resource-lifecycle-guard/shell-substitution.ts";
   const source = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
