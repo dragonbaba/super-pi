@@ -23,7 +23,16 @@ const DIRECTORY_EVENT = "super-pi:managed-tasks-directory";
 export const SHELL_TASK_RESULT_EVENT = "super-pi:shell-task-result";
 
 export function formatManagedTask(task: ManagedSubagentTask): string {
-	return `${task.id} · ${task.agent} · ${task.state}${task.startedAt === undefined ? "" : ` · ${Math.floor(((task.completedAt ?? Date.now()) - task.startedAt) / 1000)}s`}`;
+	return `${task.id} · ${task.agent} · ${task.state}${task.recovered ? " · historical" : ""}${task.startedAt === undefined || task.state === "interrupted" ? "" : ` · ${Math.floor(((task.completedAt ?? Date.now()) - task.startedAt) / 1000)}s`}`;
+}
+
+export function configureTaskHistory(tasks: SubagentTasks, kind: Kind, ctx: ExtensionContext): void {
+	const session = ctx.sessionManager;
+	if (session) tasks.configureHistory({ file: session.getSessionFile(), id: session.getSessionId(), cwd: ctx.cwd }, kind);
+}
+
+function taskText(task: ManagedSubagentTask, item: ManagedTaskProvider): string {
+	return `${formatManagedTask(task)}${task.cwd ? `\nWorkspace: ${task.cwd}; branch: ${task.branchId ?? "root"}` : ""}${task.result === undefined ? "" : `\n\n${task.result}`}${item.tasks.historyError ? `\n\n${item.tasks.historyStatus}` : ""}`;
 }
 
 /** Two bounded providers; registration and explicit control calls are lifecycle work. */
@@ -46,7 +55,7 @@ export function registerManagedTasks(pi: ExtensionAPI, kind: Kind, provider: Man
 		const list = (): string => {
 			if (owned.size === 0) throw new Error("Task session is closed.");
 			let text = "";
-			for (const [name, item] of owned) text += `${text ? "\n\n" : ""}${name}: ${item.list()}`;
+			for (const [name, item] of owned) text += `${text ? "\n\n" : ""}${name}: ${item.list()}\n${item.tasks.historyStatus}`;
 			return text;
 		};
 		const find = (id: string): [Kind, ManagedTaskProvider, ManagedSubagentTask] => {
@@ -54,11 +63,12 @@ export function registerManagedTasks(pi: ExtensionAPI, kind: Kind, provider: Man
 				const task = item.tasks.find(id);
 				if (task) return [name, item, task];
 			}
+			for (const item of owned.values()) item.tasks.assertHistoryAvailable();
 			throw new Error("Unknown or expired task ID. List current tasks.");
 		};
 		pi.registerTool({
 			name: "tasks", label: "Tasks", modelOnly: true,
-			description: "Manage existing session shell and subagent tasks: list, status, wait, cancel. Wait 0–60000ms (default 10000); at most 64 pending waits per task kind. Waiting timeout never cancels execution. Results and IDs expire when their bounded history is evicted or the session closes. Prefer completion notifications over polling. Cannot launch work or grant permissions. Read current capacities using list before launching background work.",
+			description: "Manage session shell/subagent tasks and bounded saved history: list, status, wait, cancel. Wait 0–60000ms (default 10000); at most 64 pending waits per kind. Timeout never cancels work. Persistent sessions restore historical results; unobserved completion becomes interrupted with unknown side effects. History grants no permissions or current verification evidence and never replays work. IDs expire on history eviction; memory-only sessions lose them on close. Prefer completion notifications over polling. Read capacities using list before launching background work.",
 			parameters,
 			async execute(_id, args, signal): Promise<AgentToolResult<Record<string, unknown>>> {
 				if (args.action === "list") return { content: [{ type: "text", text: list() }], details: {} };
@@ -66,19 +76,21 @@ export function registerManagedTasks(pi: ExtensionAPI, kind: Kind, provider: Man
 				const [name, item, task] = find(args.id);
 				if (args.action === "cancel") item.tasks.cancel(task.id);
 				else if (args.action === "wait") await item.tasks.wait(task.id, args.timeoutMs ?? 10_000, signal);
-				return { content: [{ type: "text", text: `${formatManagedTask(task)}${task.result === undefined ? "" : `\n\n${task.result}`}` }],
-					details: { task: { id: task.id, kind: name, state: task.state }, result: structuredClone(item.details?.(task)) } };
+				return { content: [{ type: "text", text: taskText(task, item) }],
+					details: { task: { id: task.id, kind: name, state: task.state, historical: task.recovered === true, cwd: task.cwd, branchId: task.branchId },
+						historyError: item.tasks.historyError, result: structuredClone(item.details?.(task) ?? (task.shellExecution ? { shellExecution: task.shellExecution } : undefined)) } };
 			},
 		});
 		pi.registerCommand("tasks", {
-			description: "List session tasks; /tasks cancel <id> stops one shell command or subagent",
+			description: "List tasks/history; /tasks status <id> reads a result; /tasks cancel <id> stops active work",
 			async handler(args, ctx) {
 				try {
 					const parts = args.trim().split(/\s+/);
-					if (parts[0] === "cancel" && parts.length === 2) {
-						const [, item, task] = find(parts[1]); item.tasks.cancel(task.id);
-						ctx.ui.notify(formatManagedTask(task), "info");
-					} else if (args.trim()) ctx.ui.notify("Usage: /tasks or /tasks cancel <id>", "error");
+					if ((parts[0] === "cancel" || parts[0] === "status") && parts.length === 2) {
+						const [, item, task] = find(parts[1]);
+						if (parts[0] === "cancel") item.tasks.cancel(task.id);
+						ctx.ui.notify(taskText(task, item), "info");
+					} else if (args.trim()) ctx.ui.notify("Usage: /tasks or /tasks status|cancel <id>", "error");
 					else ctx.ui.notify(list(), "info");
 				} catch (error) { ctx.ui.notify(error instanceof Error ? error.message : String(error), "error"); }
 			},

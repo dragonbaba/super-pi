@@ -45,8 +45,9 @@ and stop condition. Keep dependent edits sequential or in isolated workspaces.
 - Session-owned shell adaptation is implemented in the
   [background shell phase](background-shell-tasks-plan.md), through the existing
   permission and resource controllers with unified task management.
-- Persist bounded task metadata and results. After a crash, report interrupted
-  work honestly; do not automatically replay edits or external side effects.
+- Bounded task metadata/results and honest interrupted-state recovery are
+  implemented in the [task history phase](task-history-persistence-plan.md).
+  It never automatically replays edits or external side effects.
 - Add resumable child checkpoints, with renewed workspace and permission checks,
   and enforce parent/child turn and token budgets. Label cost estimates and the
   granularity of budget enforcement.

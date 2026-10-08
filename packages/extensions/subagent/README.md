@@ -207,7 +207,7 @@ wait for the single batch completion notification. `subagent_tasks` supports:
 - `wait` with `id` and optional `timeoutMs`: wait up to 60,000 ms (default 10,000);
 - `cancel` with `id`: stop one child without cancelling unrelated siblings.
 
-`/tasks` lists statuses; `/tasks cancel <id>` cancels from the UI. Waiting timeout
+`/tasks` lists statuses; `/tasks status <id>` reads a result and `/tasks cancel <id>` cancels from the UI. Waiting timeout
 or cancelling a wait does **not** cancel the underlying task. Cancellation remains
 `cancelling` until child/prompt-file cleanup settles. A failed or cancelled parallel
 child preserves other children's successful results. A failed chain skips the
@@ -221,7 +221,7 @@ Background work cannot prompt for new child permissions or grant itself more
 access. Permission changes cancel existing tasks.
 
 Result history retains at most `maxTasks` completed records, each capped at 12,000
-characters plus a truncation marker. Old records expire as new tasks complete;
+characters including its truncation marker. Old records expire as new tasks complete;
 active records are separately bounded by `maxTasks`. At most 64 waits may be
 pending. Prompts, child transcripts, credentials and processes are not retained in
 completed records. Status-card progress contains owned metadata snapshots only at
@@ -230,8 +230,12 @@ child start/finish; raw child events do not publish copies of the batch.
 Session replacement, reload and quit cancel children and release records/listeners.
 Notifications from obsolete permission/session generations are suppressed. Print
 and JSON modes reject background execution because they do not own a continuing
-interactive session. Background tasks do not survive application exit; this first
-version does not provide checkpoint resume, a daemon, or background shell commands.
+interactive session. Persistent sessions restore bounded historical observations;
+missing completion becomes `interrupted` with unknown effects. History never
+restores permissions, replays work or sends a completion notification. In-memory
+sessions lose their history at exit. Background execution does not survive exit;
+checkpoint resume and a daemon remain later work. Shell task management shares
+the `tasks` surface; see [history, limits and storage behavior](../../../docs/background-tasks.md).
 See the [implementation and follow-up plan](../../../docs/subagent-task-management-plan.md).
 
 ## Provider/model assignments

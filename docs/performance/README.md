@@ -4,6 +4,9 @@ Phase 0 benchmarks are offline, deterministic, and write JSON only to standard o
 
 The permanent [hot-path allocation contract](hot-path-allocation-contract.md) defines the production call chains, closure/Promise/object/array/string limits, lifecycle evidence, and object-pool admission gates for Phase 4C and all later hot-path work in Phases 5–8. Its source invariants and allocation fixtures are regression baselines, not one-time Phase 4C evidence.
 
+The [task history audit](task-history-persistence.md) covers bounded lifecycle storage,
+zero per-chunk writes, crash observations, allocation samples and SQLite handle release.
+
 Run the default corpus with Node's TypeScript stripping. `--silent` keeps redirected output valid JSON, and the explicit `npm run -- <script>` form works across the supported npm versions:
 
 ```text

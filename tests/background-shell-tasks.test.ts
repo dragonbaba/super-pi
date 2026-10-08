@@ -99,10 +99,11 @@ test("queue revalidates authority and releases an unstarted request", async t =>
 	assert.match(h.owner.tasks.get(second).result!, /authority changed/);
 });
 
-async function fixture(t: test.TestContext, auxiliary?: any, preceding?: any) {
-	const cwd = realpathSync(mkdtempSync(join(root, "workspace-")));
+async function fixture(t: test.TestContext, auxiliary?: any, preceding?: any, resume?: string) {
+	const restored = resume ? SessionManager.open(resume) : undefined;
+	const cwd = restored?.getCwd() ?? realpathSync(mkdtempSync(join(root, "workspace-")));
 	writeFileSync(join(cwd, "fixture.mjs"), readFileSync(new URL("fixtures/background-shell-child.mjs", import.meta.url)));
-	const session = SessionManager.create(cwd, join(cwd, "sessions")), events = createEventBus(), runtime = createExtensionRuntime();
+	const session = restored ?? SessionManager.create(cwd, join(cwd, "sessions")), events = createEventBus(), runtime = createExtensionRuntime();
 	const settings = SettingsManager.create(cwd, join(cwd, "agent"));
 	const extensions = [];
 	if (preceding) extensions.push(await loadExtensionFromFactory(preceding, cwd, events, runtime));
@@ -124,7 +125,7 @@ async function fixture(t: test.TestContext, auxiliary?: any, preceding?: any) {
 	const call = (name: string, args: any) => agent.dispatchHostTool({ type: "toolCall", id: `task-${++sequence}`, name, arguments: args });
 	const shutdown = async () => { runner.invalidate(); await runner.emit({ type: "session_shutdown" } as never); agent.abort(); await agent.waitForIdle(); };
 	t.after(async () => { await shutdown(); events.clear(); });
-	return { cwd, call, runner, events, active, messages, shutdown, approvals: () => approvals, beforeConsume: (fn: (args: any) => void) => { beforeConsume = fn; } };
+	return { cwd, session, call, runner, events, active, messages, shutdown, approvals: () => approvals, beforeConsume: (fn: (args: any) => void) => { beforeConsume = fn; } };
 }
 
 function text(result: any): string { return result.content.filter((item: any) => item.type === "text").map((item: any) => item.text).join("\n"); }
@@ -182,6 +183,24 @@ test("real extension loading shares shell/subagent controls and keeps the legacy
 	assert.match(text(result), /completed.*fixture result/s); assert.equal((result.details as any).task.kind, "subagent");
 	assert.match(text(await h.call("subagent_tasks", { action: "status", id })), /fixture result/);
 	await h.call("tasks", { action: "wait", id: shell, timeoutMs: 5000 });
+});
+
+test("real reload restores both providers with historical facts but no notification, verification event or process replay", async t => {
+	const h = await fixture(t, subagent); h.active.push("subagent", "subagent_tasks");
+	h.session.appendMessage({ role: "user", content: "offline history fixture", timestamp: Date.now() });
+	const shell = taskId(await h.call("bash", { command: "node fixture.mjs fast", cwd: ".", background: true }));
+	await h.call("tasks", { action: "wait", id: shell, timeoutMs: 5000 });
+	const children = await h.call("subagent", { agent: "scout", task: "hold", readOnly: true, background: true });
+	const child = text(children).match(/[a-f0-9-]{36}-\d+/)![0];
+	await h.shutdown();
+	let terminalEvents = 0;
+	const restored = await fixture(t, subagent, (pi: any) => { pi.events.on("super-pi:shell-task-result", () => { terminalEvents++; }); }, h.session.getSessionFile());
+	restored.active.push("subagent", "subagent_tasks");
+	const status = await restored.call("tasks", { action: "status", id: shell });
+	assert.match(text(status), /completed · historical/); assert.equal((status.details as any).result.shellExecution.exitCode, 0);
+	assert.equal((status.details as any).task.historical, true); assert.equal(realpathSync.native((status.details as any).task.cwd), realpathSync.native(h.cwd));
+	assert.match(text(await restored.call("subagent_tasks", { action: "wait", id: child, timeoutMs: 60_000 })), /cancelled · historical/);
+	assert.equal(restored.messages.length, 0); assert.equal(terminalEvents, 0); assert.equal(restored.approvals(), 0);
 });
 
 test("terminal background evidence reaches the completion guard without polling", async t => {

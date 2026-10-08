@@ -24,13 +24,18 @@ const hook = createHook({ init(_id, type) { if (pumping && type === "PROMISE") c
 const NativeController = globalThis.AbortController;
 globalThis.AbortController = class extends NativeController { constructor() { super(); if (pumping) chunkControllers++; } };
 
-function harness() {
+let sessionSequence = 0;
+function harness(durable = false) {
 	const events = createEventBus(), hooks: unknown[] = [], tools = new Map<string, any>();
 	let notifications = 0;
 	const pi: any = { events, registerTool: (tool: any) => tools.set(tool.name, tool), registerCommand() {}, on: (_name: string, fn: unknown) => hooks.push(fn), sendMessage: () => { notifications++; } };
 	const manager = new BackgroundShellTasks(pi);
 	pi.getAllTools = () => [...tools.values()];
 	const ctx: any = { cwd: root, mode: "tui", getActiveTools: () => ["bash", "tasks"] };
+	if (durable) {
+		const id = `background-profile-${sessionSequence++}`, file = join(root, `${id}.jsonl`);
+		ctx.sessionManager = { getSessionFile: () => file, getSessionId: () => id, getLeafId: () => "branch" };
+	}
 	return { manager, ctx, events, tools, notifications: () => notifications,
 		async dispose() { await manager.dispose(); hooks.length = 0; tools.clear(); events.clear(); } };
 }
@@ -46,13 +51,15 @@ function sampledSites(node: any, sites: Map<string, number>): number {
 }
 
 async function profile(background: boolean) {
-	const h = harness(); let publications = 0, received = 0;
+	const h = harness(background); let publications = 0, received = 0, chunkWrites = 0;
 	const backend = registerLocalShellBackend({ async exec(_command: string, cwd: string, options: any) {
 		options.beforeSpawn?.(cwd);
 		// Synthetic producer; the consumer is the real shell handleData/accumulator.
+		const writes = (h.manager.tasks as any).history?.counters.writes ?? 0;
 		pumping = true;
 		try { for (let i = 0; i < updates; i++) { options.onData(chunk); received++; } }
 		finally { pumping = false; }
+		chunkWrites += ((h.manager.tasks as any).history?.counters.writes ?? 0) - writes;
 		return { exitCode: 0, termination: "exit" as const, observation: { started: true, cwd, exitCode: 0, signal: null, outputDrained: true } };
 	} });
 	const tool = createBashToolDefinition(root, { operations: backend, exposeSessionEnvironment: false });
@@ -74,10 +81,11 @@ async function profile(background: boolean) {
 		}
 		const { profile } = await inspector.post("HeapProfiler.stopSampling");
 		const sites = new Map<string, number>(), sampledBytes = sampledSites(profile.head, sites);
-		assert.equal(received, updates); if (background) assert.equal(publications, 0);
+		assert.equal(received, updates); assert.equal(chunkWrites, 0); if (background) assert.equal(publications, 0);
 		const weak = [new WeakRef(input), new WeakRef(backend), new WeakRef(tool), new WeakRef(h.manager)];
 		const binding = getShellCwdBinding(input); assert.ok(binding?.isReleased); weak.push(new WeakRef(binding!));
-		return { mode: background ? "background" : "foreground", updates: received, publications, notifications: h.notifications(), sampledBytesPerChunk: sampledBytes / updates,
+		return { mode: background ? "background" : "foreground", updates: received, publications, chunkWrites,
+			history: (h.manager.tasks as any).history?.counters, notifications: h.notifications(), sampledBytesPerChunk: sampledBytes / updates,
 			topSites: [...sites].sort((a, b) => b[1] - a[1]).slice(0, 5), weak };
 	} finally {
 		inspector.disconnect();

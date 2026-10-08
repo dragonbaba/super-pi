@@ -1,4 +1,4 @@
-import { registerManagedTasks } from "../managed-tasks.ts";
+import { registerManagedTasks, configureTaskHistory, formatManagedTask } from "../managed-tasks.ts";
 /**
  * Subagent Tool - Delegate tasks to specialized agents
  *
@@ -1169,7 +1169,7 @@ export function assertTaskCount(input: unknown, limits: SubagentLimits): void {
 }
 
 function taskStatus(task: ManagedSubagentTask): string {
-	return `${task.id} · ${task.agent} · ${task.state}${task.startedAt === undefined ? "" : ` · ${formatElapsedMs((task.completedAt ?? Date.now()) - task.startedAt)}`}`;
+	return formatManagedTask(task);
 }
 
 interface PreparedBatch {
@@ -1326,6 +1326,16 @@ export default function (pi: ExtensionAPI) {
 	const pending = new Set<Promise<unknown>>();
 	let authority = new AbortController();
 	let closed = false;
+	let changingSession = 0;
+	const drain = async (): Promise<void> => {
+		changingSession++;
+		authority.abort(new Error("Subagent session branch changed; submit a fresh request."));
+		tasks.cancelAll();
+		try { await Promise.allSettled(pending); }
+		finally { authority = new AbortController(); changingSession--; }
+	};
+	pi.on("session_before_tree", drain);
+	pi.on("session_start", async (_event, ctx) => { await drain(); configureTaskHistory(tasks, "subagent", ctx); });
 	const removePermissionListener = pi.events.on(SESSION_PERMISSION_EVENT, () => {
 		authority.abort(new Error("Subagent permission state changed; submit a new task."));
 		tasks.cancelAll();
@@ -1354,20 +1364,21 @@ export default function (pi: ExtensionAPI) {
 	const taskRegistration = registerManagedTasks(pi, "subagent", { tasks, list: listTasks, guidance: describeSubagentLimits(limits) });
 	pi.registerTool({
 		name: "subagent_tasks", label: "Subagent tasks",
-		description: `Manage existing session subagent tasks: list, status, wait, or cancel one ID. Waiting (0–60000ms, at most 64 pending waits) never cancels execution. Prefer completion notifications to repeated polling. Keep the latest ${limits.maxTasks} completed tasks, at most 12000 characters per result; IDs expire on session close. Cannot launch tasks or grant permissions.`,
+		description: `Manage session subagent tasks and saved history: list, status, wait, or cancel one ID. Waiting (0–60000ms, at most 64 pending waits) never cancels execution. Prefer completion notifications to polling. Keep the latest ${limits.maxTasks} terminal tasks, at most 12000 characters per result. Persistent sessions restore historical results and mark unfinished work interrupted; memory-only sessions lose history on close. No replay, new permissions or current verification evidence.`,
 		modelOnly: true,
 		parameters: Type.Object({
 			action: StringEnum(["list", "status", "wait", "cancel"] as const),
 			id: Type.Optional(Type.String({ minLength: 1, maxLength: 80 })),
 			timeoutMs: Type.Optional(Type.Integer({ minimum: 0, maximum: 60_000, description: "Wait only; default 10000 ms" })),
 		}, { additionalProperties: false }),
-		async execute(_id, params, signal) {
+		async execute(_id, params, signal): Promise<AgentToolResult<Record<string, unknown>>> {
 			if (closed) throw new Error("Subagent session is closed.");
-			if (params.action === "list") return { content: [{ type: "text", text: listTasks() }], details: {} };
+			if (params.action === "list") return { content: [{ type: "text", text: `${listTasks()}\n${tasks.historyStatus}` }], details: {} };
 			if (!params.id) throw new Error("A subagent task ID is required.");
 			const task = params.action === "cancel" ? tasks.cancel(params.id)
 				: params.action === "wait" ? await tasks.wait(params.id, params.timeoutMs ?? 10_000, signal) : tasks.get(params.id);
-			return { content: [{ type: "text", text: `${taskStatus(task)}${task.result === undefined ? "" : `\n\n${task.result}`}` }], details: {} };
+			return { content: [{ type: "text", text: `${taskStatus(task)}${task.cwd ? `\nWorkspace: ${task.cwd}; branch: ${task.branchId ?? "root"}` : ""}${task.result === undefined ? "" : `\n\n${task.result}`}${tasks.historyError ? `\n\n${tasks.historyStatus}` : ""}` }],
+				details: { task: { id: task.id, state: task.state, historical: task.recovered === true }, historyError: tasks.historyError } };
 		},
 	});
 
@@ -1470,6 +1481,8 @@ export default function (pi: ExtensionAPI) {
 
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			if (closed) throw new Error("Subagent session is closed.");
+			if (changingSession) throw new Error("Subagent session is changing; wait for previous tasks to stop.");
+			configureTaskHistory(tasks, "subagent", ctx); tasks.assertHistoryAvailable();
 			assertTaskCount(params, limits);
 			signal?.throwIfAborted();
 			if (params.background && ctx.mode !== "tui" && ctx.mode !== "rpc") {
@@ -1569,7 +1582,12 @@ export default function (pi: ExtensionAPI) {
 				for (const name of uniqueAgentNames) executions.set(name, await executionFor(name));
 				foregroundSignal.throwIfAborted();
 				const ownedTasks: ManagedSubagentTask[] = [];
-				for (const name of requestedAgentNames) ownedTasks.push(tasks.create(name));
+				try {
+					for (let i = 0; i < requestedAgentNames.length; i++) ownedTasks.push(tasks.create(requestedAgentNames[i], delegatedPolicies[i].canonicalCwd, ctx.sessionManager?.getLeafId()));
+				} catch (error) {
+					for (const record of ownedTasks) { record.controller?.abort(); tasks.finish(record, "Batch admission failed; no child was started.", true); }
+					throw error;
+				}
 				const executionSignal = params.background ? authoritySignal : foregroundSignal;
 				const publish = params.background ? undefined : onUpdate;
 				const runManaged = async (index: number, task: string, step: number | undefined, update: OnUpdateCallback | undefined, details: (results: SingleResult[]) => SubagentDetails, timeoutMs: number): Promise<SingleResult> => {
