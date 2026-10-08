@@ -1,9 +1,8 @@
 ---
-description: Scout gathers context, planner creates implementation plan (no implementation)
+description: Resolve missing evidence and return a scoped implementation plan
 ---
-Use the subagent tool with the chain parameter to execute this workflow:
+Plan without implementing: $@
 
-1. First, use the "scout" agent to find all code relevant to: $@
-2. Then, use the "planner" agent to create an implementation plan for "$@" using the context from the previous step (use {previous} placeholder)
+Reuse existing context. If evidence is missing, delegate only that question to scout with readOnly: true, then pass the relevant findings to planner. Otherwise call planner directly. Use a sequential chain only when the plan depends on new findings.
 
-Execute this as a chain, passing output between steps via {previous}. Do NOT implement - just return the plan.
+Every subagent item requires task, scope, deliverable and stopCondition. Give exact files/subsystem, a concrete question or plan requirement, concise evidence locations and an observable completion condition. Stop at the plan or report the missing decision; do not implement or request redundant scouting.

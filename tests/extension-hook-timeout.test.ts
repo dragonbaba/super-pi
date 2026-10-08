@@ -119,6 +119,21 @@ test("configured safety hook timeout is fail-closed", async () => {
 	assert.equal(runner.hookDeliveryStats.timeouts, 1);
 });
 
+test("manual quit confirmation waits for the user beyond the safety hook deadline", async () => {
+	const scheduler = new FakeScheduler();
+	let answer!: (result: { cancel: boolean }) => void;
+	const selection = new Promise<{ cancel: boolean }>(resolve => { answer = resolve; });
+	const runner = await createRunner(pi => {
+		pi.on("session_before_shutdown", () => selection);
+	}, { scheduler, hookTimeouts: CLI_EXTENSION_HOST_POLICY.hookTimeouts });
+	const pending = runner.emit({ type: "session_before_shutdown", signal: new AbortController().signal });
+	scheduler.advanceBy(60_000);
+	await Promise.resolve();
+	assert.equal(runner.hookDeliveryStats.timeouts, 0);
+	answer({ cancel: true });
+	assert.deepEqual(await pending, { cancel: true });
+});
+
 test("a fail-closed tool_execution_end timeout still reaches later handlers and reports the first timeout", async () => {
 	const scheduler = new FakeScheduler();
 	const calls: string[] = [];

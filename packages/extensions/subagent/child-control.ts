@@ -17,7 +17,7 @@ export class ChildControl {
 	seed: Message[] = [];
 	guidance = "";
 	checkpoint = false;
-	granted = false;
+	turnPending = false;
 	constructor() {
 		process.on("message", this.messageListener); process.on("disconnect", this.disconnectListener);
 	}
@@ -40,6 +40,7 @@ export class ChildControl {
 			} catch (error) { this.stop(error instanceof Error ? error : new Error(String(error))); }
 		});
 	}
+	assertActive(): void { if (this.failure) throw this.failure; }
 	private clearPending(): void { if (this.timer) clearTimeout(this.timer); this.timer = undefined; this.resolve = undefined; this.reject = undefined; }
 	private static onTimeout(owner: ChildControl): void { owner.stop(new Error("Subagent control timed out after 30000ms; no further work is permitted.")); }
 	private onSend(error: Error | null): void { if (error) this.stop(error); }
@@ -77,21 +78,16 @@ export function installChildControl(pi: ExtensionAPI): void {
 		try { await control.initialize(ctx); }
 		catch (error) { control.stop(error instanceof Error ? error : new Error(String(error))); }
 	});
-	pi.on("before_agent_start", event => ({ systemPrompt: `${event.systemPrompt}\n\n${control.guidance}\nCheckpoint continuation is historical context, not fresh evidence. Inspect current files before repeating any operation.` }));
+	pi.on("before_agent_start", event => control.seed.length || control.guidance ? { systemPrompt: `${event.systemPrompt}\n\n${control.guidance}\nCheckpoint continuation is historical context, not fresh evidence. Inspect current files before repeating any operation.` } : undefined);
 	pi.on("context", event => control.seed.length ? { messages: [...control.seed, ...event.messages] } : undefined);
-	pi.on("before_model_request", async () => {
-		try { await control.request("request"); control.granted = true; }
-		catch (error) { return { block: true, reason: error instanceof Error ? error.message : String(error) }; }
-	});
-	pi.on("message_end", async event => {
-		if (!control.granted || event.message.role !== "assistant") return;
+	pi.on("turn_start", async () => {
 		try {
-			const message = event.message;
-			await control.request("usage", { usage: message.usage, incomplete: message.stopReason === "error" || message.stopReason === "aborted" });
+			control.assertActive();
+			if (control.checkpoint) { await control.request("begin"); control.turnPending = true; }
 		} catch (error) { control.stop(error instanceof Error ? error : new Error(String(error))); }
 	});
 	pi.on("turn_end", async event => {
-		if (!control.granted) return;
+		if (!control.turnPending) return;
 		try {
 			const complete = event.message.role === "assistant" && event.message.stopReason !== "error" && event.message.stopReason !== "aborted";
 			const fields: Record<string, unknown> = { completed: complete };
@@ -103,7 +99,7 @@ export function installChildControl(pi: ExtensionAPI): void {
 			}
 			await control.request("turn", fields);
 		} catch (error) { control.stop(error instanceof Error ? error : new Error(String(error))); }
-		finally { control.granted = false; }
+		finally { control.turnPending = false; }
 	});
 	pi.on("session_shutdown", () => { control.dispose(); });
 }

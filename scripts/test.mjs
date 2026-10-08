@@ -17,7 +17,7 @@ const ISOLATED_CWD_TESTS = new Set([
 	"alpha-stream-corpus.test.ts", "alpha-stream-endings.test.ts", "alpha-stream-markers.test.ts",
 	"alpha-markdown-ownership.test.ts", "alpha-assistant-update.test.ts", "alpha-retained-active.test.ts",
 	"alpha-cli.test.ts", "alpha-active-quit.test.ts", "alpha-compaction-quit.test.ts", "alpha-session-replacement.test.ts",
-	"alpha-task-quit.test.ts", "task-budgets.test.ts",
+	"alpha-task-quit.test.ts",
 	"alpha-g2-raw.test.ts", "alpha-ansi.test.ts", "alpha-raw-session.test.ts", "alpha-raw-parallel.test.ts",
 	"alpha-image.test.ts", "alpha-upstream-truncation.test.ts", "alpha-footer-scans.test.ts", "alpha-lifecycle.test.ts",
 	"alpha-runtime-dispose.test.ts", "alpha-startup-quit.test.ts", "alpha-crash-cleanup.test.ts", "alpha-startup-faults.test.ts",

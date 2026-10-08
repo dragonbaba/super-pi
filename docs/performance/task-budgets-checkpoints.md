@@ -1,157 +1,137 @@
-# Task budget, checkpoint and quit allocation audit
+# Subagent responsibility, checkpoint and quit allocation audit
 
 Contract: [hot-path allocation contract](hot-path-allocation-contract.md).
-Base: PR #75, `f9680c578`. Candidate: `codex/task-budgets-checkpoints`.
+Base: PR #75, f9680c578. Candidate: PR #76.
 Offline measurements: Windows, Node 22.19.0, 2026-10-09.
 
 ## Complete production chain
 
-Current delegated authorization -> bounded scheduler/reservation -> persisted task
-start -> current cwd identity check -> child process and private IPC owner -> child
-context preparation -> `before_model_request` -> parent's synchronous shared budget
-reservation and optional pending checkpoint commit -> grant -> existing provider
-stream -> unchanged deltas / child stdout decoding / bounded message retention ->
-assistant completion usage acknowledgement -> existing tool execution -> paired
-`turn_end` checkpoint acknowledgement -> next request or child close -> listener,
-ledger, checkpoint and prompt-file release -> task terminal commit -> existing
-bounded notification/progress -> AgentSession -> InteractiveMode -> renderer/frame
-queue -> terminal cleanup. Parent SDK requests use the same admission ledger.
+Bounded assignment validation -> current delegated authorization -> shared
+scheduler/reservation -> one assignment string per launch -> persisted task start
+-> current cwd identity check -> child process/private IPC initialization -> child
+context preparation -> optional checkpoint pending commit at turn_start -> existing
+provider stream -> stdout decoding / bounded message retention -> existing tool
+execution -> optional paired turn_end checkpoint acknowledgement -> child close ->
+IPC listener, checkpoint and prompt-file release -> terminal task commit -> bounded
+notification/progress -> AgentSession -> InteractiveMode -> renderer/frame queue ->
+terminal cleanup. SDK stream admission checks an already-aborted signal before any
+provider call. No token/turn quota hooks, ledger, configuration reads or usage
+acknowledgements remain. Existing final usage display is observational.
 
-Manual quit -> one `session_before_shutdown` confirmation while UI is alive ->
+Manual quit -> one session_before_shutdown interaction while the UI is alive ->
 cancel without teardown, or existing terminal restoration -> runtime abort/join ->
 all extension shutdown handlers -> shell job/child tree cleanup -> successful exit.
-Signals cancel the confirmation and join that cleanup owner. A failing shutdown
-handler cannot skip later owners. No renderer/frame/write production body changed.
-Process-tree cleanup errors are latched by shell/subagent owners and propagated
-after all their resources are released, preventing a successful exit acknowledgement.
-POSIX cancellation sends final SIGKILL to the recorded process group on root close
-before clearing escalation, including descendants that ignored SIGTERM.
+The confirmation uses the interaction category, so the CLI's 30-second safety-hook
+timeout cannot dismiss it. Signals cancel the dialog and join the cleanup owner.
+A failing shutdown handler cannot skip later owners. Cleanup errors are latched
+before queue release, block new tasks and prevent a successful exit acknowledgement.
+POSIX root close escalates the recorded process group before releasing its timer.
 
-Stdout `onStdoutData/processLine`, stderr, bounded retention, provider delta and
-tool progress producers, observers, renderers and terminal writers gain **zero
-callbacks, Promises, controllers, wrappers, arrays, copies or disk writes per
-update**. IPC never transports deltas/progress. Existing hot-path AST gates now also
-forbid control sends, budget settlement or checkpoint saves from child ingestion.
+Stdout onStdoutData/processLine, stderr, bounded retention, provider deltas, tool
+progress, observers, renderers and terminal writers gain **zero callbacks,
+Promises, controllers, wrappers, arrays, string copies or disk writes per update**.
+Source/AST gates prohibit IPC and checkpoint writes from child ingestion. These
+methods still have their existing bounded UTF-8 decoding, JSON parsing and final
+message projection allocations; the profile below includes them. No frame or
+terminal production body changed; existing one-active/one-pending frame ownership
+and at-most-one final frame materialization remain unchanged.
 
-Named low-frequency intercepting boundaries: SDK `streamFn` admission /
-`ExtensionRunner.emitBeforeModelRequest`; subagent `before_model_request`, assistant
-`message_end`, `turn_end` and context hooks; `ChildControl.request` and
-`SubagentControl.onMessage` for those protocol messages; `TaskBudgetLedger` numeric
-reservation/settlement; `SubagentTasks.saveCheckpoint` validation and
-`TaskHistory.saveCheckpoint` transaction. Their parsing, projection and bounded
-serialization helpers are in the audit. Startup/stop exemptions: child control
-construction/initialization/disposal, session start/settled/shutdown, explicit
-continuation/reset commands, `/task-budget` handler / `parseTaskBudgetCommand` /
-`TaskBudgetLedger.setLimits`, and interactive `shutdown/performShutdown`.
+Named low-frequency boundaries: assertAssignments/assertAssignment and
+formatAssignment at batch admission/child launch; runSingleAgent prompt creation;
+child session_start/before_agent_start/context/turn_start/turn_end/session_shutdown
+hooks; ChildControl.request and SubagentControl.onMessage at initialization or
+checkpoint boundaries; checkpoint projection, validation and bounded serialization;
+SubagentTasks.saveCheckpoint -> TaskHistory.saveCheckpoint transaction; manual
+InteractiveMode shutdown/performShutdown and extension shutdown delivery.
 
-Budget setting is an explicit idle user-command boundary: at most 512 characters,
-ten parsed tokens (nine for valid input), four numeric fields and a 4096-byte
-config read. The synchronous
-idle-check/read/merge/validate/atomic-replace/live-update sequence has no await gap.
-One exclusive temporary file and descriptor are owned by that call and closed /
-removed on failure; runtime limits change only after successful replacement.
-Usage and ledger entries are unchanged. No polling or per-request config reads
-were added. Parent-start guidance and child initialization read the current limits;
-the static tool description no longer embeds a stale budget snapshot.
-
-These request/turn interceptors intentionally create one deferred, timeout and
-bounded packet per acknowledged child boundary. At most one is pending per child;
-stable IPC/send/disconnect listeners belong to its lifecycle. No recurring polling,
-per-delta deferred or pool was added. Checkpoint opt-in adds one initialization write,
-one pending write before each granted request, and one write per completed turn.
-Numeric accounting adds one reservation and one settlement entry per request.
+Ordinary children send one initialization packet and no per-turn packets. An
+opted-in checkpoint sends begin and completed-turn packets, never deltas/progress.
+Each acknowledged boundary owns one deferred, timeout and bounded packet, with at
+most one pending per child; listeners and send/disconnect callbacks are stable
+lifecycle fields. No recurring polling or pools. Role instructions are composed
+once at launch; fresh children do not receive irrelevant continuation guidance.
 
 ## Ownership and bounds
 
 | Owner | Bound | Release and exceptional paths |
 | --- | --- | --- |
-| Budget config | 4096 bytes; four primitive limits | Descriptor closed in `finally`; invalid config rejected |
-| Session ledger | Five numbers/flags plus primary counters; one child counter per running child | Numeric entries use the existing session owner; control drops ledger references on close; incomplete requests settle unknown |
-| Child control | One pending deferred/timer, stable listener set; 30s deadline | Reply, timeout, disconnect, failure or disposal clears pending references; parent aborts the owned process tree on control failure |
-| IPC | 2 MiB string, depth 32, 20000 nodes | Checked before serialization and parse traversal; one packet per boundary, no delta traffic |
-| Completed context | 1 MiB, 128 messages, 128 blocks/message; no images/hidden reasoning | Only current checkpoint and bounded continuation seed retained; control disposal clears both; no context in task-map records |
-| Restored seed | At most 128 completed messages | Per-request context projection owns one prepend array; child seed released at shutdown; old tools never enter the execution queue |
-| Continuation prompt | One task prompt, at most 16384 characters plus the six-character prefix | Held outside durable history until the first completed turn; reference cleared after save and on disposal; inherited uncertainty retained until completion |
-| History | Existing 128 MiB database, at most 256 active + 256 terminal records | Checkpoint column pruned atomically with owning task; descriptors/statements closed by existing history owner |
-| Quit | One shared shutdown deferred and one confirmation AbortController | Cancellation clears owner for retry; signals abort dialog; successful exit follows cleanup |
+| Assignment | One objective plus three nonblank fields, each <=1024 chars; formatted total <=16384 chars | Validate every batch item before launch; expand/check each chain step once; existing bounded batch owner releases after completion/failure |
+| Child prompt | Role definition <=128 KiB plus constant responsibility instructions | One temporary prompt file per launch; recorded directory removed in runSingleAgent finally, including startup/abort failures |
+| Child control | One pending deferred/timer, stable listeners; 30s IPC deadline | Reply, timeout, disconnect, failure and disposal clear pending references; parent failure aborts its exact child tree |
+| IPC | <=2 MiB string, depth 32, 20000 nodes | Checked before serialization and parse traversal; no per-delta traffic |
+| Completed context | <=1 MiB, 128 messages, 128 blocks/message; no images/hidden reasoning | Checkpoint and bounded seed only; disposal releases both; no transcript in the task map |
+| Restored seed | <=128 completed messages | Context hook owns one prepend array per request; seed released at shutdown; old tools never enter execution queue |
+| Continuation prompt | One formatted assignment plus six-character Task prefix | Held outside durable history until first completed turn; cleared after save and on disposal; inherited uncertainty survives interruption |
+| History | Existing 128 MiB database, <=256 active +256 terminal records | Checkpoint pruned with task; descriptors/statements closed by history owner |
+| Quit | One shared shutdown deferred and confirmation AbortController | Cancellation clears owner for retry; signals abort dialog; successful exit follows cleanup |
 
-Workspace identity uses decimal bigint strings: Windows inode values can exceed
-JavaScript's safe integer range. Checkpoints contain projected conversation fields,
-not auth environment, grants or backend extras. Prompt/tool text is explicitly opt-in.
-Pending markers survive a failed/aborted request. Invalid/oversized context stops its
-task without poisoning unrelated work; a storage/ownership fault blocks new work.
-Schema v1 -> v2 migration and full bounded validation happen in the same transaction
-before recovery, owner claim and pruning. Reads validate one row at a time.
+Assignment prose does not grant file permissions or mechanically prove semantic
+compliance. Existing workspace identity/delegation checks and readOnly enforce
+capabilities. Instructions require a single objective, no duplicate investigation,
+minimal necessary verification and immediate return on completion or a blocker.
+Parent review remains responsible for assessing the delivered work.
 
-## Deterministic measurements and controlled GC
+Checkpoint identity uses decimal bigint strings because Windows inode values can
+exceed JavaScript's safe integer range. Checkpoints project conversation fields,
+not auth environment or execution grants. Prompt/tool text is explicitly opt-in.
+Pending markers survive failed/aborted turns; continuation never persists its new
+instruction until completion. Oversized/invalid context stops that task while
+preserving the previous durable checkpoint; storage ownership failure blocks new
+admission. Existing bounded migration, validation and pruning remain transactional.
 
-`scripts/bench/task-control.ts` uses production protocol handlers, validation,
-durable checkpoint writes and ledger settlement; fixture transport performs no model
-calls. HeapProfiler sampling interval: 4096 bytes. Each fixture owns eight tasks.
+## Deterministic counters, allocation profile and controlled GC
 
-| Fixture | Granted requests | Replies | Numeric entries | Checkpoint writes | Sampled bytes |
+scripts/bench/task-control.ts exercises the production protocol handlers,
+validation and durable checkpoint writes. HeapProfiler interval: 4096 bytes.
+Each fixture owns eight tasks; no model calls.
+
+| Fixture | Turn starts | Replies | Checkpoint writes | Failures | Sampled bytes |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Three completed turns/task | 24 | 80 | 48 | 56 | 2489576 |
-| Abort after first admission | 8 | 16 | 16 | 16 | 984072 |
-| Refuse fourth request/task | 24 | 88 | 48 | 56 | 2375872 |
+| Ordinary initialization | 0 | 8 | 0 | 0 | 759232 |
+| Three completed turns/task | 24 | 56 | 56 | 0 | 2384208 |
+| Abort after first begin | 8 | 16 | 16 | 0 | 909656 |
+| Invalid checkpoint content | 8 | 16 | 16 | 8 | 1033216 |
 
-All fixtures end with zero pending requests, message listeners, database handles,
-task-map entries and waiters. Exact control reference slots are cleared; eight
-event-loop/GC cycles collect **180/180** tracked contexts, controls, channels,
-ledgers, task records/controllers, history owners, databases and pending prompts. These allocations
-are deliberate request/lifecycle costs, not streaming costs or a speedup claim.
+Leading sites include getStatsFromBinding / realpathSync / assertOwner during
+history ownership checks and encodeCheckpoint / decodeCheckpoint during bounded
+storage. All fixtures finish with zero message listeners, database handles, task
+entries and waiters. Exact control slots are cleared. Eight event-loop/GC cycles
+collect **236/236** tracked contexts, controls, channels, task records/controllers,
+history owners, databases and continuation prompts. Samples include fixture and
+cold-loading costs and are stochastic; these are lifecycle costs, not per-delta
+costs or a speedup claim.
 
-Existing production benchmarks were run on the initial PR candidate; their hot
-bodies remain unchanged in the settings/checkpoint follow-up:
+scripts/bench/subagent-management.ts exercises production stdout/parse/retention
+and completion/failure/cancel/disposal ownership:
 
-- Subagent ingestion: 8/16/64 children, 1000 updates each; zero progress snapshots
-  and full-message serializations; at most three retained messages per child.
-  Sampled bytes/update: 8520.904 / 8660.616 / 8714.528. **344/344** references released.
-- Task history: 8 tasks per complete/fail/cancel/dispose fixture; 24/24/24/16
-  lifecycle writes. Eight interrupted tasks restored in the disposal fixture.
-  Zero open handles/maps/waiters; **144/144** references released.
-- Background shell: 1000 chunks; zero per-chunk writes/Promises/controllers;
-  three durable lifecycle writes and one completion notification. Four native
-  Windows job fixtures end with zero handles. **118/118** references released.
+| Children | Updates | Sampled bytes/update | Progress snapshots | Full-message serializations | Retained messages |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 8 | 1000 | 8684.968 | 0 | 0 | 24 |
+| 16 | 1000 | 8795.728 | 0 | 0 | 48 |
+| 64 | 1000 | 8756.160 | 0 | 0 | 192 |
 
-Samples include cold loading and synchronous durable writes; they are stochastic.
-Downstream renderer audits remain applicable because those bodies are unchanged.
-Existing source/AST gates and focused shutdown tests cover the changed ownership
-boundary instead of rerunning unrelated rendering benchmarks.
+Leading sites remain processLine and UTF-8 decoder write/onStdoutData. At most three
+messages per child survive ingestion. All four lifecycle fixtures finish with zero
+retained scheduler/task state; **344/344** tracked references are released. Existing
+history/shell and downstream renderer audits remain applicable; no new per-chunk or
+per-frame work was introduced. No object pool is justified or used.
 
-## Validation scope
+## Validation and self-review
 
-Focused tests cover unlimited defaults, shared last-turn admission by real children,
-per-child limits, reported tokens and overshoot, incomplete accounting, corruption/
-write refusal, restoration, SDK admission and previews; real child IPC hooks and
-failure messages; paired bounded context, migration/recovery/eviction, new task IDs
-and fresh role/workspace authorization; one quit dialog across both providers,
-cancel/confirm/signal races, later cleanup after a failing handler, and existing
-active provider/tool/compaction/startup shutdown paths. Typecheck, coding-agent build,
-subagent/history/shell/source AST gates and the above allocation profiles are the
-local scope. Repository-wide Linux/Windows checks remain CI's responsibility.
+Local root typecheck and coding-agent build passed. Focused offline checks cover
+required fields and whole-batch refusal, formatted child/system prompts, ignored
+stale quotas and multi-turn children, scheduling/cancellation/authorization,
+checkpoint pairing/recovery/continuation, real child control, shell/subagent
+management and one quit dialog across regular/fullscreen UI. The safety-deadline
+regression uses a fake scheduler; it does not sleep for a real minute. Source and
+subagent AST gates pass. The exact failing Windows normal-shutdown fixture now
+supplies the no-handler extension runner its synthetic runtime previously omitted.
 
-Local typecheck, coding-agent build, focused tests and named source gates passed.
-An injected Windows taskkill failure additionally proves queued children never start,
-owned roots terminate through fallback, and shutdown reports the cleanup uncertainty.
-The POSIX process-group escalation fixture and existing POSIX file-replacement race
-are Linux-only and skipped on this Windows host. The startup/quit collection tests
-were rerun with their required `--expose-gc` flag. Final self-review fixed exact
-Windows directory identity, byte-bound accounting, final-turn control failures,
-confirmation cleanup, and process-cleanup error propagation before submission.
-
-The settings/review follow-up passed root typecheck, budget/control/management
-regressions, source/subagent AST gates, the above control allocation profile, and
-the exact failing CI abort scenario. The latter now requires one provider call,
-zero already-aborted provider dispatches, and an aborted final message, matching
-SDK admission; canonical-result and renderer/resource-release assertions remain.
-Continuation regressions inspect durable history after readiness, inherited
-uncertainty, request, usage, incomplete/invalid turn, and completed turn boundaries.
-Only a completed continuation may persist its new prompt. These are offline checks;
-Linux execution and repository-wide validation remain CI's responsibility.
-
-A subsequent Windows CI failure exposed an incomplete mode-switch test session:
-its synthetic session had no extension runner, so quit threw before reaching the
-input-drain boundary. The fixture now supplies the no-handler runner present in
-an extension-free real session. The unchanged shutdown-admission and mode-switch
-assertions pass locally; no production rendering code or benchmark scope changed.
+Self-review covered assignment bounds and role guidance, the awaited turn-start
+path before provider dispatch, checkpoint interruption and prompt ownership, fresh
+workspace authorization, disposal after errors, and quit classification/cleanup.
+Linux's process.kill fixture now changes the existing mock implementation instead
+of mocking the same method twice, which had left a no-op kill installed under
+Node 22 and caused later child cancellation tests to time out. POSIX execution is
+skipped on this Windows host and remains CI's responsibility. Full repository
+validation is left to CI; local checks use no paid model calls.

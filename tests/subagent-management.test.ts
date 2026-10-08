@@ -27,7 +27,6 @@ writeFileSync(join(process.env.SP_CODING_AGENT_DIR, "agents", "scout.md"), "---\
 writeFileSync(join(process.env.SP_CODING_AGENT_DIR, "agents", "worker.md"), "---\nname: worker\ndescription: Offline writer agent\ntools: read, write\n---\nFixture prompt.");
 const { default: extension, assertTaskCount, snapshotSubagentDetails, boundedMessage, SubagentProcessRun, finishCancelledProcessGroup } = await import("../packages/extensions/subagent/index.ts");
 const { parseSubagentLimits, loadSubagentLimits, SUBAGENT_LIMITS_PATH } = await import("../packages/extensions/subagent/limits.ts");
-const { TASK_BUDGET_PATH } = await import("../packages/extensions/subagent/budgets.ts");
 test.after(() => {
 	for (const [name, value] of [["SP_CODING_AGENT_DIR", oldAgentDir], ["SP_SOURCE_LAUNCHER", oldLauncher], ["SP_BUNDLED_AGENTS_DIR", oldBundled]]) {
 		if (value === undefined) delete process.env[name!]; else process.env[name!] = value;
@@ -48,9 +47,9 @@ test("limits accept explicit capacity, reject invalid values, and bound file rea
 const readonlyWorkspace = { canonicalCwd: realpathSync(fixtureRoot), allowMutation: false };
 test("POSIX root close escalates the recorded group and preserves cleanup failure", { skip: process.platform === "win32" }, t => {
 	const calls: Array<[number, unknown]> = [];
-	t.mock.method(process, "kill", (pid: number, signal: unknown) => { calls.push([pid, signal]); return true; });
+	const kill = t.mock.method(process, "kill", (pid: number, signal: unknown) => { calls.push([pid, signal]); return true; });
 	finishCancelledProcessGroup(321); assert.deepEqual(calls, [[-321, "SIGKILL"]]);
-	t.mock.method(process, "kill", () => { throw Object.assign(new Error("denied"), { code: "EPERM" }); });
+	kill.mock.mockImplementation(() => { throw Object.assign(new Error("denied"), { code: "EPERM" }); });
 	let finished = false;
 	const run: any = Object.create(SubagentProcessRun.prototype);
 	Object.assign(run, { settled: false, childClosed: false, killRequested: true, proc: { pid: 321 }, buffer: "", stdoutDecoder: new StringDecoder("utf8"),
@@ -190,10 +189,11 @@ test("dispose releases waiters and ignores late results", async () => {
 	assert.equal(registry.waiterCount + registry.size + registry.retainedResults, 0);
 });
 
-function harness(t: test.TestContext, options: { budgets?: object; persistent?: boolean; shutdownError?: RegExp } = {}) {
+const responsibility = { scope: "Fixture workspace only", deliverable: "Fixture result and evidence", stopCondition: "Return when the assigned fixture completes or report its blocker" };
+
+function harness(t: test.TestContext, options: { persistent?: boolean; shutdownError?: RegExp } = {}) {
 	assert.ok(SUBAGENT_LIMITS_PATH.startsWith(fixtureRoot), "configuration must stay in the recorded fixture directory");
 	writeFileSync(SUBAGENT_LIMITS_PATH, '{"maxConcurrent":2,"maxTasks":8}');
-	writeFileSync(TASK_BUDGET_PATH, JSON.stringify(options.budgets ?? {}));
 	const tools = new Map<string, any>(); const commands = new Map<string, any>(); const hooks = new Map<string, any>();
 	const startHooks: any[] = [], notices: Array<{ text: string; level: string }> = [];
 	const events = createEventBus(); const messages: any[] = [];
@@ -210,6 +210,7 @@ function harness(t: test.TestContext, options: { budgets?: object; persistent?: 
 	const run = (params: any, onUpdate?: (value: any) => void) => {
 		const id = `call-${++sequence}`;
 		const items = params.tasks ?? params.chain ?? [params];
+		for (const item of items) { item.scope ??= responsibility.scope; item.deliverable ??= responsibility.deliverable; item.stopCondition ??= responsibility.stopCondition; }
 		const grants = items.map((item: any) => { const canonicalCwd = item.cwd ?? cwd; const stat = statSync(canonicalCwd); return { canonicalCwd, device: stat.dev, inode: stat.ino, permissionMode: item.readOnly ? "read-only" : "workspace-write", writable: !item.readOnly, source: isPathInside(canonicalCwd, cwd) ? "primary" : "additional" }; });
 		attachSubagentWorkspaceDelegation(params, { schemaVersion: 1, sequence, toolCallId: id, grants });
 		return tools.get("subagent").execute(id, params, undefined, onUpdate, ctx);
@@ -219,48 +220,43 @@ function harness(t: test.TestContext, options: { budgets?: object; persistent?: 
 	return { tools, commands, hooks, startHooks, notices, events, ctx, run, control, messages, entries, notified: () => notified, resetNotification: () => { notified = new Promise<void>(resolve => { completion = resolve; }); } };
 }
 
-test("task-budget command applies saved limits without reload, advertises current values and refuses busy edits", async t => {
+test("ordinary children have no turn/token quota or per-turn control writes, even with a stale budget file", async t => {
+	const stale = join(process.env.SP_CODING_AGENT_DIR!, "config", "task-budgets.json");
+	writeFileSync(stale, '{"childTurns":1,"sessionTurns":1,"sessionTokens":1}');
+	t.after(() => rmSync(stale));
 	const h = harness(t, { persistent: true });
-	const command = (args: string) => h.commands.get("task-budget").handler(args, h.ctx);
-	await command("set childTurns 1 sessionTurns 10");
-	assert.match(h.notices.at(-1)!.text, /Saved globally.*per-child turns 1/);
-	assert.equal(JSON.parse(readFileSync(TASK_BUDGET_PATH, "utf8")).childTurns, 1);
-	let systemPrompt = "fixture";
-	for (const hook of h.startHooks) systemPrompt = (await hook({ systemPrompt }, h.ctx))?.systemPrompt ?? systemPrompt;
-	assert.match(systemPrompt, /per-child turns 1/);
-	assert.doesNotMatch(h.tools.get("subagent").description, /per-child turns unlimited/, "tool schema must not freeze old limits");
-	await assert.rejects(h.run({ agent: "scout", task: "two-turn", readOnly: true }), /Child turn budget reached: 1\/1/);
-	await command("set sessionTurns 1");
-	assert.match(h.notices.at(-1)!.text, /session \(parent \+ children\) turns 1\/1/);
-	await assert.rejects(h.run({ agent: "scout", task: "blocked", readOnly: true }), /1\/1/);
-	await command("reset");
-	assert.equal(JSON.parse(readFileSync(TASK_BUDGET_PATH, "utf8")).sessionTurns, 1, "reset preserves configured limits");
-	h.ctx.isIdle = () => false;
-	await command("set sessionTurns 0"); assert.equal(h.notices.at(-1)!.level, "error");
-	h.ctx.isIdle = () => true;
-	const background = await h.run({ agent: "scout", task: "hold-budget-command", readOnly: true, background: true });
-	const saved = readFileSync(TASK_BUDGET_PATH, "utf8");
-	await command("set childTurns 2"); assert.match(h.notices.at(-1)!.text, /Stop parent and child/);
-	await command("reset"); assert.match(h.notices.at(-1)!.text, /Stop parent and child/);
-	assert.equal(readFileSync(TASK_BUDGET_PATH, "utf8"), saved);
-	await h.control("cancel", ids(background)[0]); await h.notified();
+	const result = await h.run({ tasks: [{ agent: "scout", task: "two-turn-one", readOnly: true }, { agent: "scout", task: "two-turn-two", readOnly: true }] });
+	assert.equal(result.details.results.length, 2);
+	for (const item of result.details.results) { assert.equal(item.exitCode, 0); assert.equal(item.usage.turns, 2); }
+	assert.equal(h.entries.length, 0);
+	assert.equal(h.commands.has("task-budget"), false);
+	assert.match(h.tools.get("subagent").description, /No token or turn quotas/);
 });
 
-test("real concurrent children atomically share one remaining turn and report the exact refusal", async t => {
-	const h = harness(t, { budgets: { sessionTurns: 1 } });
-	const result = await h.run({ tasks: [{ agent: "scout", task: "one", readOnly: true }, { agent: "scout", task: "two", readOnly: true }] });
-	assert.equal(result.details.results.filter((item: any) => item.exitCode === 0).length, 1);
-	assert.match(JSON.stringify(result), /turn budget reached: 1\/1/);
-	assert.equal(h.entries.at(-1).data.tokens, 3);
-	assert.equal(h.entries.at(-1).data.pending, 0);
-	await assert.rejects(h.run({ agent: "scout", task: "third" }), /1\/1/);
-});
-
-test("per-child quota blocks its next request while unlimited siblings remain available", async t => {
-	const h = harness(t, { budgets: { childTurns: 1 } });
-	await assert.rejects(h.run({ agent: "scout", task: "two-turn" }), /Child turn budget reached: 1\/1/);
-	assert.equal(h.entries.at(-1).data.turns, 1);
-	assert.equal((await h.run({ agent: "scout", task: "fresh" })).details.results[0].exitCode, 0);
+test("responsibilities are required for every item before any child starts and reach its prompt", async t => {
+	const h = harness(t); const tool = h.tools.get("subagent");
+	assert.throws(() => tool.prepareArguments({ agent: "scout", task: "  ", ...responsibility }), /nonblank task objective/);
+	assert.throws(() => tool.prepareArguments({ agent: "scout", task: "x".repeat(16384), ...responsibility }), /responsibility fields exceeds 16384/);
+	for (const item of [tool.parameters.properties.tasks.items, tool.parameters.properties.chain.items]) {
+		for (const key of ["scope", "deliverable", "stopCondition"]) assert.ok(item.required.includes(key), "models see required batch fields before calling");
+	}
+	for (const key of ["scope", "deliverable", "stopCondition"]) {
+		for (const value of [undefined, "  ", "x".repeat(1025)]) {
+			const item = { agent: "scout", task: "inspect", ...responsibility, [key]: value };
+			for (const params of [item, { tasks: [{ agent: "scout", task: "valid", ...responsibility }, item] }, { chain: [item] }]) {
+				assert.throws(() => tool.prepareArguments(params), new RegExp(key));
+				await assert.rejects(tool.execute("invalid", params, undefined, undefined, h.ctx), new RegExp(key));
+			}
+		}
+	}
+	assert.deepEqual(readdirSync(h.ctx.cwd), []);
+	assert.match(await h.control("list"), /0\/8 reserved/);
+	const result = await h.run({ agent: "scout", task: "inspect", readOnly: true, ...responsibility });
+	assert.equal(result.details.results[0].exitCode, 0);
+	const marker = readdirSync(h.ctx.cwd).find(file => file.endsWith(".ready.json"))!;
+	const started = JSON.parse(readFileSync(join(h.ctx.cwd, marker), "utf8"));
+	assert.equal(started.task, `Task: inspect\n\nScope: ${responsibility.scope}\nDeliverable: ${responsibility.deliverable}\nStop condition: ${responsibility.stopCondition}`);
+	assert.match(started.systemPrompt, /Return immediately when done/);
 });
 
 test("real completed checkpoint continues under a fresh ID and current authorization; memory sessions refuse storage", async t => {
@@ -271,14 +267,14 @@ test("real completed checkpoint continues under a fresh ID and current authoriza
 	const id = ids(first)[0]; await h.notified();
 	assert.match(await h.control("status", id), /Checkpoint available/);
 	await assert.rejects(h.run({ agent: "worker", task: "resume", resumeTaskId: id, readOnly: true }), /role\/workspace identity/);
-	const ungranted = { agent: "scout", task: "resume", resumeTaskId: id };
+	const ungranted = { agent: "scout", task: "resume", resumeTaskId: id, ...responsibility };
 	await assert.rejects(h.tools.get("subagent").execute("no-grant", ungranted, undefined, undefined, h.ctx), /delegat|authoriz|permission/i);
 	h.resetNotification();
 	const next = await h.run({ agent: "scout", task: "verify and continue", resumeTaskId: id, background: true, readOnly: true });
 	const nextId = ids(next)[0]; assert.notEqual(nextId, id); await h.notified();
 	assert.match(await h.control("status", nextId), /completed.*\nCheckpoint available/);
 	assert.match(await h.control("status", id), /original/);
-	assert.equal(h.entries.at(-1).data.turns, 2, "seed context is not charged as new requests");
+	assert.equal(h.entries.length, 0, "continuation does not keep a budget ledger");
 });
 
 function ids(result: any): string[] { return result.content[0].text.match(/[a-f0-9-]{36}-\d+/g) ?? []; }
@@ -289,7 +285,7 @@ async function startedChild(cwd: string, task: string): Promise<number> {
 			if (!file.endsWith(".ready.json")) continue;
 			let value;
 			try { value = JSON.parse(readFileSync(join(cwd, file), "utf8")); } catch { continue; }
-			if (value.task === `Task: ${task}`) return value.pid;
+			if (value.task.startsWith(`Task: ${task}\n\nScope: `)) return value.pid;
 		}
 		await delay(20);
 	}

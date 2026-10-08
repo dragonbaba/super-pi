@@ -1,6 +1,5 @@
 import type { ChildProcess } from "node:child_process";
 import type { Message } from "@super-pi/ai";
-import { emptyBudgetUsage, type TaskBudgetLedger } from "./budgets.ts";
 import { appendCheckpointTurn, assertCheckpointJson, type TaskCheckpoint } from "./checkpoints.ts";
 import type { SubagentTasks } from "./tasks.ts";
 
@@ -17,11 +16,9 @@ export function decodeControl(value: unknown): any {
 	return packet;
 }
 
-/** One IPC owner per child. Only request/usage/completed-turn boundaries enter this lane. */
+/** One IPC owner per child. Initialization and opt-in checkpoint boundaries only. */
 export class SubagentControl {
-	readonly usage = emptyBudgetUsage();
-	readonly counters = { received: 0, replies: 0, requests: 0, turns: 0, checkpointWrites: 0 };
-	private ledger: TaskBudgetLedger | undefined;
+	readonly counters = { received: 0, replies: 0, starts: 0, turns: 0, checkpointWrites: 0 };
 	private tasks: SubagentTasks | undefined;
 	private checkpoint: TaskCheckpoint | undefined;
 	private seed: Message[] | undefined;
@@ -29,14 +26,14 @@ export class SubagentControl {
 	private proc: ChildProcess | undefined;
 	private fail: ((reason: string) => void) | undefined;
 	private sequence = 0;
-	private phase: "ready" | "idle" | "usage" | "turn" | "closed" = "ready";
+	private phase: "ready" | "idle" | "turn" | "closed" = "ready";
 	private failed = false;
 	private readonly uncertain: boolean;
 	private readonly messageListener = this.onMessage.bind(this);
 	private readonly sendCallback = this.onSend.bind(this);
 
-	constructor(ledger: TaskBudgetLedger, tasks: SubagentTasks, checkpoint?: TaskCheckpoint, seed?: Message[], uncertain = false, pendingPrompt?: Message) {
-		this.ledger = ledger; this.tasks = tasks; this.checkpoint = checkpoint; this.seed = seed;
+	constructor(tasks: SubagentTasks, checkpoint?: TaskCheckpoint, seed?: Message[], uncertain = false, pendingPrompt?: Message) {
+		this.tasks = tasks; this.checkpoint = checkpoint; this.seed = seed;
 		this.uncertain = uncertain; this.pendingPrompt = pendingPrompt;
 	}
 	attach(proc: ChildProcess, fail: (reason: string) => void): void {
@@ -61,19 +58,11 @@ export class SubagentControl {
 			if (packet.kind === "ready" && this.phase === "ready") {
 				this.save();
 				response = { id: packet.id, ok: true, messages: this.seed ?? [], checkpoint: !!this.checkpoint,
-					guidance: `${this.ledger!.describe()}${this.uncertain ? " Previous task stopped after its last checkpoint; later operations may already have affected files. Inspect current state before repeating anything." : ""}` };
+					guidance: this.uncertain ? "Previous task stopped after its last checkpoint; later operations may already have affected files. Inspect current state before repeating anything." : "" };
 				this.seed = undefined; this.phase = "idle";
-			} else if (packet.kind === "request" && this.phase === "idle") {
-				// Synchronous reservation covers concurrently arriving children before any grant is sent.
-				try { this.ledger!.request(this.usage); }
-				catch (error) {
-					this.reply({ id: packet.id, ok: false, reason: error instanceof Error ? error.message : String(error) });
-					return;
-				}
-				if (this.checkpoint) { this.checkpoint.pending = true; this.checkpoint.updatedAt = Date.now(); this.save(); }
-				this.counters.requests++; this.phase = "usage";
-			} else if (packet.kind === "usage" && this.phase === "usage") {
-				this.ledger!.settle(packet.usage, this.usage, packet.incomplete === true); this.phase = "turn";
+			} else if (packet.kind === "begin" && this.phase === "idle" && this.checkpoint) {
+				this.checkpoint.pending = true; this.checkpoint.updatedAt = Date.now(); this.save();
+				this.counters.starts++; this.phase = "turn";
 			} else if (packet.kind === "turn" && this.phase === "turn") {
 				if (this.checkpoint && packet.completed === true) {
 					// An interrupted continuation must not persist its unanswered instruction.
@@ -96,8 +85,6 @@ export class SubagentControl {
 		if (this.phase === "closed") return;
 		this.phase = "closed";
 		this.proc?.off("message", this.messageListener);
-		try { this.ledger?.settle(undefined, this.usage); }
-		catch (error) { this.fail?.(`Subagent usage could not be saved: ${error instanceof Error ? error.message : String(error)}`); }
-		this.proc = undefined; this.fail = undefined; this.ledger = undefined; this.tasks = undefined; this.checkpoint = undefined; this.seed = undefined; this.pendingPrompt = undefined;
+		this.proc = undefined; this.fail = undefined; this.tasks = undefined; this.checkpoint = undefined; this.seed = undefined; this.pendingPrompt = undefined;
 	}
 }

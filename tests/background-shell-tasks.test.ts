@@ -174,7 +174,7 @@ test("real extension loading shares shell/subagent controls and keeps the legacy
 	h.active.push("subagent", "subagent_tasks");
 	assert.equal(h.runner.getAllRegisteredTools().filter((tool: any) => tool.definition.name === "tasks").length, 1);
 	const shell = taskId(await h.call("bash", { command: "node fixture.mjs fast", cwd: ".", background: true }));
-	const child = await h.call("subagent", { agent: "scout", task: "fast", readOnly: true, background: true });
+	const child = await h.call("subagent", { agent: "scout", task: "fast", scope: "Fixture workspace", deliverable: "Fixture result", stopCondition: "Return when done", readOnly: true, background: true });
 	assert.equal(child.isError, false, text(child));
 	const id = text(child).match(/[a-f0-9-]{36}-\d+/)![0];
 	const list = text(await h.call("tasks", { action: "list" }));
@@ -190,7 +190,7 @@ test("real reload restores both providers with historical facts but no notificat
 	h.session.appendMessage({ role: "user", content: "offline history fixture", timestamp: Date.now() });
 	const shell = taskId(await h.call("bash", { command: "node fixture.mjs fast", cwd: ".", background: true }));
 	await h.call("tasks", { action: "wait", id: shell, timeoutMs: 5000 });
-	const children = await h.call("subagent", { agent: "scout", task: "hold", readOnly: true, background: true });
+	const children = await h.call("subagent", { agent: "scout", task: "hold", scope: "Fixture workspace", deliverable: "Fixture result", stopCondition: "Return when done", readOnly: true, background: true });
 	const child = text(children).match(/[a-f0-9-]{36}-\d+/)![0];
 	await h.shutdown();
 	let terminalEvents = 0;
@@ -252,7 +252,7 @@ test("an earlier unrelated tasks registration prevents unmanaged background exec
 	assert.equal(result.isError, true); assert.match(text(result), /conflicting tasks/);
 	assert.equal(existsSync(join(h.cwd, "fast.ready.json")), false);
 	h.active.push("subagent");
-	const child = await h.call("subagent", { agent: "scout", task: "fast", readOnly: true, background: true });
+	const child = await h.call("subagent", { agent: "scout", task: "fast", scope: "Fixture workspace", deliverable: "Fixture result", stopCondition: "Return when done", readOnly: true, background: true });
 	assert.equal(child.isError, true); assert.match(text(child), /subagent_tasks|management tool/);
 });
 

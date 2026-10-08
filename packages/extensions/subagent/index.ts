@@ -6,9 +6,10 @@ import { registerManagedTasks, configureTaskHistory, formatManagedTask } from ".
  * giving it an isolated context window.
  *
  * Supports three modes:
- *   - Single: { agent: "name", task: "..." }
- *   - Parallel: { tasks: [{ agent: "name", task: "..." }, ...] }
- *   - Chain: { chain: [{ agent: "name", task: "... {previous} ..." }, ...] }
+ *   - Single: one agent/task assignment
+ *   - Parallel: independent assignments in tasks
+ *   - Chain: dependent assignments in chain; task may contain {previous}
+ * Each assignment requires scope, deliverable and stopCondition.
  *
  * Uses JSON mode to capture structured output from subagents.
  */
@@ -38,9 +39,9 @@ import { consumeDelegatedTaskPolicies, type DelegatedTaskPolicy } from "./delega
 import { DELEGATION_GUIDANCE, describeSubagentLimits, loadSubagentLimits, SUBAGENT_LIMITS_PATH, type SubagentLimits } from "./limits.ts";
 import { SubagentScheduler } from "./scheduler.ts";
 import { SubagentTasks, type ManagedSubagentTask } from "./tasks.ts";
-import { loadTaskBudgets, parseTaskBudgetCommand, TASK_BUDGET_HELP, TaskBudgetLedger } from "./budgets.ts";
 import { type TaskCheckpoint } from "./checkpoints.ts";
 import { SubagentControl } from "./control.ts";
+import { assignmentProperties, assertAssignments, formatAssignment, CHILD_RESPONSIBILITIES, MAX_TASK_CHARS } from "./assignments.ts";
 import { SESSION_PERMISSION_EVENT } from "../resource-lifecycle-guard/permission-contract.ts";
 import {
 	formatModelAssignments,
@@ -65,7 +66,6 @@ const MAX_RETAINED_JSON_EVENTS = 100_000;
 const MAX_MESSAGES = 3;
 const MAX_MESSAGE_BYTES = 32 * 1024;
 const MAX_RETAINED_TEXT_BYTES = 24 * 1024;
-const MAX_TASK_CHARS = 16 * 1024;
 const MAX_PREVIOUS_CHARS = 50 * 1024;
 const DEFAULT_TASK_TIMEOUT_MS = 30 * 60 * 1000;
 const MAX_TASK_TIMEOUT_MS = 2 * 60 * 60 * 1000;
@@ -1099,8 +1099,8 @@ async function runSingleAgent(
 		if (task.length > MAX_TASK_CHARS) throw new Error(`Task exceeds ${MAX_TASK_CHARS} characters`);
 		const childCwd = canonicalWorkspace(policy.canonicalCwd);
 		if (childCwd !== policy.canonicalCwd) throw new Error("Delegated child cwd changed after permission authorization.");
-		if (agent.systemPrompt.trim()) {
-			const tmp = await writePromptToTempFile(agent.name, agent.systemPrompt);
+		{
+			const tmp = await writePromptToTempFile(agent.name, `${agent.systemPrompt}\n\n${CHILD_RESPONSIBILITIES}`);
 			tmpPromptDir = tmp.dir;
 			tmpPromptPath = tmp.filePath;
 			args.push("--append-system-prompt", tmpPromptPath);
@@ -1158,6 +1158,7 @@ async function runSingleAgent(
 const AGENT_ROLE_DESCRIPTION = "Registered agent role, not a task label. Choose an available role such as planner, reviewer, scout, or worker; put custom names such as audit-lsp in task.";
 
 const TaskItem = Type.Object({
+	...assignmentProperties,
 	agent: Type.String({ minLength: 1, maxLength: 64, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]*$", description: AGENT_ROLE_DESCRIPTION }),
 	task: Type.String({ minLength: 1, maxLength: MAX_TASK_CHARS, description: "Delegated task" }),
 	cwd: Type.Optional(Type.String({ minLength: 1, maxLength: 4096, description: "Task working directory" })),
@@ -1166,6 +1167,7 @@ const TaskItem = Type.Object({
 }, { additionalProperties: false });
 
 const ChainItem = Type.Object({
+	...assignmentProperties,
 	agent: Type.String({ minLength: 1, maxLength: 64, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]*$", description: AGENT_ROLE_DESCRIPTION }),
 	task: Type.String({ minLength: 1, maxLength: MAX_TASK_CHARS, description: "Task; may use {previous}" }),
 	cwd: Type.Optional(Type.String({ minLength: 1, maxLength: 4096, description: "Step working directory" })),
@@ -1179,6 +1181,9 @@ const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
 });
 
 function subagentParameters(limits: SubagentLimits) { return Type.Object({
+	scope: Type.Optional(assignmentProperties.scope),
+	deliverable: Type.Optional(assignmentProperties.deliverable),
+	stopCondition: Type.Optional(assignmentProperties.stopCondition),
 	agent: Type.Optional(Type.String({ minLength: 1, maxLength: 64, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]*$", description: `Single-mode ${AGENT_ROLE_DESCRIPTION}` })),
 	task: Type.Optional(Type.String({ minLength: 1, maxLength: MAX_TASK_CHARS, description: "Task for single mode" })),
 	tasks: Type.Optional(Type.Array(TaskItem, { minItems: 1, maxItems: limits.maxTasks, description: `Independent parallel tasks; at most ${limits.maxConcurrent} running, remainder queued` })),
@@ -1360,7 +1365,6 @@ export default function (pi: ExtensionAPI) {
 	const limits = loadSubagentLimits();
 	const scheduler = new SubagentScheduler(limits);
 	const tasks = new SubagentTasks(limits.maxTasks);
-	const budgets = new TaskBudgetLedger(loadTaskBudgets(), pi);
 	const pending = new Set<Promise<unknown>>();
 	let authority = new AbortController();
 	let closed = false;
@@ -1374,33 +1378,7 @@ export default function (pi: ExtensionAPI) {
 		finally { authority = new AbortController(); changingSession--; }
 	};
 	pi.on("session_before_tree", drain);
-	pi.on("session_start", async (_event, ctx) => { await drain(); configureTaskHistory(tasks, "subagent", ctx); budgets.configure(ctx); });
-	pi.on("before_agent_start", (event, ctx) => {
-		budgets.configure(ctx);
-		return { systemPrompt: `${event.systemPrompt}\n\n${budgets.describe()}` };
-	});
-	pi.on("before_model_request", (_event, ctx) => { budgets.configure(ctx); budgets.request(); });
-	pi.on("message_end", event => {
-		if (event.message.role === "assistant") budgets.settle(event.message.usage, undefined, event.message.stopReason === "error" || event.message.stopReason === "aborted");
-	});
-	pi.on("agent_settled", () => { budgets.settle(undefined); });
-	pi.registerCommand("task-budget", {
-		description: "Show or set parent/child budgets (help, set <field> <value>, reset)",
-		handler: async (args, ctx) => {
-			try {
-				const command = parseTaskBudgetCommand(args);
-				if (command.action === "help") { ctx.ui.notify(TASK_BUDGET_HELP, "info"); return; }
-				budgets.configure(ctx);
-				if (command.action === "reset" || command.action === "set") {
-					if (!ctx.isIdle() || tasks.size !== tasks.retainedResults || pending.size || changingSession || closed) throw new Error("Stop parent and child work before changing or resetting budgets.");
-					// No await between the idle check, bounded file replacement and live update.
-					if (command.action === "set") budgets.setLimits(command.changes);
-					else budgets.reset();
-				}
-				ctx.ui.notify(`${command.action === "set" ? "Saved globally; active in this session; usage preserved. " : ""}${budgets.describe()}`, "info");
-			} catch (error) { ctx.ui.notify(error instanceof Error ? error.message : String(error), "error"); }
-		},
-	});
+	pi.on("session_start", async (_event, ctx) => { await drain(); configureTaskHistory(tasks, "subagent", ctx); });
 	const removePermissionListener = pi.events.on(SESSION_PERMISSION_EVENT, () => {
 		authority.abort(new Error("Subagent permission state changed; submit a new task."));
 		tasks.cancelAll();
@@ -1536,10 +1514,11 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "subagent",
 		label: "Subagent",
-		description: `Delegate tasks to isolated subagents. agent is a registered role (planner/reviewer/scout/worker), never a custom task name; put labels and instructions in task. Supports single, parallel tasks, sequential chain, and session-owned background execution. ${describeSubagentLimits(limits)} Current execution budgets are supplied in the system instructions before each parent run and at child startup. Optional checkpoint/resumeTaskId saves completed context only; current authorization is always required. ${DELEGATION_GUIDANCE}`,
+		description: `Delegate tasks to isolated subagents. agent is a registered role (planner/reviewer/scout/worker), never a custom task name; put the objective and relevant evidence in task. Each single task or batch item REQUIRES scope, deliverable and stopCondition. Task plus responsibility fields must fit 16384 characters. Supports single, parallel tasks, sequential chain, and session-owned background execution. ${describeSubagentLimits(limits)} No token or turn quotas. Optional checkpoint/resumeTaskId saves completed context only; current authorization is always required. ${DELEGATION_GUIDANCE}`,
 		parameters: subagentParameters(limits),
 		prepareArguments(input) {
 			assertTaskCount(input, limits);
+			assertAssignments(input);
 			return input as import("typebox").Static<ReturnType<typeof subagentParameters>>;
 		},
 		// Tasks run for up to two hours; a Codemode script (60s default, 300s maximum) cannot host them.
@@ -1550,8 +1529,8 @@ export default function (pi: ExtensionAPI) {
 			if (changingSession) throw new Error("Subagent session is changing; wait for previous tasks to stop.");
 			if (cleanupFailure) throw new Error(cleanupFailure);
 			configureTaskHistory(tasks, "subagent", ctx); tasks.assertHistoryAvailable();
-			budgets.configure(ctx); budgets.assertAvailable();
 			assertTaskCount(params, limits);
+			assertAssignments(params);
 			signal?.throwIfAborted();
 			if (params.background && ctx.mode !== "tui" && ctx.mode !== "rpc") {
 				throw new Error("Background subagents require a live TUI or RPC session. Use foreground execution in print/JSON mode.");
@@ -1671,8 +1650,8 @@ export default function (pi: ExtensionAPI) {
 					const record = ownedTasks[index];
 					const childSignal = AbortSignal.any([executionSignal, record.controller!.signal]);
 					try {
+						task = formatAssignment(params.chain?.[index] ?? params.tasks?.[index] ?? params, task);
 						const result = await scheduler.run(childSignal, async () => {
-							budgets.assertAvailable();
 							tasks.start(record);
 							const policy = delegatedPolicies[index];
 							const identity = params.checkpoint || continuation ? fs.statSync(policy.canonicalCwd, { bigint: true }) : undefined;
@@ -1682,7 +1661,7 @@ export default function (pi: ExtensionAPI) {
 								turns: continuation?.turns ?? 0, updatedAt: Date.now(), pending: continuation?.pending ?? false,
 								messages: continuation ? [...continuation.messages] : [{ role: "user", content: `Task: ${task}`, timestamp: Date.now() }],
 							} : undefined;
-							const control = new SubagentControl(budgets, tasks, checkpoint, continuation?.messages, continuation?.pending,
+							const control = new SubagentControl(tasks, checkpoint, continuation?.messages, continuation?.pending,
 								continuation ? { role: "user", content: `Task: ${task}`, timestamp: Date.now() } : undefined);
 							try { return await runSingleAgent(policy, agents, requestedAgentNames[index], task, step, childSignal, update, details, executions.get(requestedAgentNames[index]), timeoutMs, control); }
 							catch (error) {

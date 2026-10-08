@@ -1,10 +1,8 @@
 ---
-description: Full implementation workflow - scout gathers context, planner creates plan, worker implements
+description: Scoped implementation with research and planning only where needed
 ---
-Use the subagent tool with the chain parameter to execute this workflow:
+Implement: $@
 
-1. First, use the "scout" agent to find all code relevant to: $@
-2. Then, use the "planner" agent to create an implementation plan for "$@" using the context from the previous step (use {previous} placeholder)
-3. Finally, use the "worker" agent to implement the plan from the previous step (use {previous} placeholder)
+Delegate only independently useful work. Reuse existing evidence and plans; include a scout only for unresolved code locations and a planner only when implementation decisions need a separate plan. Use the worker for the resulting scoped implementation. Keep dependent work sequential and use {previous} only for necessary handoffs.
 
-Execute this as a chain, passing output between steps via {previous}.
+For each subagent item, provide task with one objective and known evidence, scope with exact files/subsystem and exclusions, deliverable with a verifiable result, and stopCondition with completion or blocker reporting. Pass concise findings and paths, not full logs. Use readOnly for research. Do not launch all roles automatically or repeat a completed investigation.

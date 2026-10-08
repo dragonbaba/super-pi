@@ -1,10 +1,8 @@
 ---
-description: Worker implements, reviewer reviews, worker applies feedback
+description: Scoped implementation and review, with a fix only for actionable findings
 ---
-Use the subagent tool with the chain parameter to execute this workflow:
+Implement and review: $@
 
-1. First, use the "worker" agent to implement: $@
-2. Then, use the "reviewer" agent to review the implementation from the previous step (use {previous} placeholder)
-3. Finally, use the "worker" agent to apply the feedback from the review (use {previous} placeholder)
+Give worker a scoped implementation task, then reviewer the resulting diff and verification evidence. Keep these dependent steps sequential; use readOnly: true for the reviewer. Inspect the review result before assigning any further worker task. If there are no actionable findings, stop. If findings exist, assign only the specific fixes and relevant verification; do not schedule an unconditional second worker.
 
-Execute this as a chain, passing output between steps via {previous}.
+Every subagent item requires task, scope, deliverable and stopCondition. Name owned files/subsystem and exclusions, supply existing evidence, require a concise verifiable result, and stop on completion or a blocker. Reuse successful prior work and checks.

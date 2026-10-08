@@ -743,14 +743,6 @@ export interface ContextEvent {
 	dryRun: boolean;
 }
 
-/** Request admission before provider work. Not emitted for request previews. */
-export interface BeforeModelRequestEvent {
-	type: "before_model_request";
-	provider: string;
-	model: string;
-}
-export interface BeforeModelRequestResult { block?: boolean; reason?: string; }
-
 /** Fired before a provider request is sent. Can replace the payload. */
 export interface BeforeProviderRequestEvent {
 	type: "before_provider_request";
@@ -1174,7 +1166,6 @@ export type ExtensionEvent =
 	| ResourcesDiscoverEvent
 	| SessionEvent
 	| ContextEvent
-	| BeforeModelRequestEvent
 	| BeforeProviderRequestEvent
 	| BeforeProviderHeadersEvent
 	| AfterProviderResponseEvent
@@ -1377,8 +1368,6 @@ export interface ExtensionAPI {
 	on(event: "session_before_tree", handler: ExtensionHandler<SessionBeforeTreeEvent, SessionBeforeTreeResult>): void;
 	on(event: "session_tree", handler: ExtensionHandler<SessionTreeEvent>): void;
 	on(event: "context", handler: ExtensionHandler<ContextEvent, ContextEventResult>): void;
-	/** Request admission only; no payload/auth data and no preview calls. Errors block dispatch. */
-	on(event: "before_model_request", handler: ExtensionHandler<BeforeModelRequestEvent, BeforeModelRequestResult>): void;
 	on(
 		event: "before_provider_request",
 		handler: ExtensionHandler<BeforeProviderRequestEvent, BeforeProviderRequestEventResult>,

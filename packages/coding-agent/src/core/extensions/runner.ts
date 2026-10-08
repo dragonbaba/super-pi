@@ -18,8 +18,6 @@ import { setOwnProperty } from "../../utils/record.ts";
 import type {
 	BeforeAgentStartEvent,
 	BeforeAgentStartEventResult,
-	BeforeModelRequestEvent,
-	BeforeModelRequestResult,
 	BeforeProviderHeadersEvent,
 	BeforeProviderRequestEvent,
 	CompactOptions,
@@ -143,7 +141,6 @@ type RunnerEmitEvent = Exclude<
 	| BeforeProviderRequestEvent
 	| BeforeProviderHeadersEvent
 	| BeforeAgentStartEvent
-	| BeforeModelRequestEvent
 	| MessageEndEvent
 	| ResourcesDiscoverEvent
 	| InputEvent
@@ -264,12 +261,10 @@ const OBSERVER_DURATION_BUCKETS_MS = [1, 5, 10, 25, 50, 100, 250, 1_000, 5_000, 
 const SAFETY_HOOK_EVENTS = new Set([
 	"project_trust",
 	"tool_call",
-	"before_model_request",
 	"session_before_switch",
 	"session_before_fork",
 	"session_before_compact",
 	"session_before_tree",
-	"session_before_shutdown",
 ]);
 const TRANSFORM_HOOK_EVENTS = new Set([
 	"context",
@@ -279,7 +274,7 @@ const TRANSFORM_HOOK_EVENTS = new Set([
 	"message_end",
 	"tool_result",
 ]);
-const INTERACTION_HOOK_EVENTS = new Set(["input", "user_bash"]);
+const INTERACTION_HOOK_EVENTS = new Set(["input", "user_bash", "session_before_shutdown"]);
 
 export type ExtensionErrorListener = (error: ExtensionError) => void;
 
@@ -1651,21 +1646,6 @@ export class ExtensionRunner {
 		}
 
 		return currentMessages;
-	}
-
-	async emitBeforeModelRequest(provider: string, model: string): Promise<void> {
-		const ctx = this.createContext();
-		const event: BeforeModelRequestEvent = { type: "before_model_request", provider, model };
-		for (const ext of this.extensions) {
-			const handlers = ext.handlers.get(event.type);
-			if (!handlers) continue;
-			for (const handler of handlers) {
-				ctx.signal?.throwIfAborted();
-				const result = await this.invokeHook(handler, event, ctx, ext.path, event.type) as BeforeModelRequestResult | undefined;
-				if (result?.block) throw new Error(result.reason ?? "Model request blocked by execution budget.");
-			}
-		}
-		ctx.signal?.throwIfAborted();
 	}
 
 	async emitBeforeProviderRequest(payload: unknown, dryRun = false, requestAuth?: ProviderRequestAuthSnapshot): Promise<unknown> {
