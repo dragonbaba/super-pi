@@ -399,29 +399,40 @@ function startLocalOAuthServer(state: string): Promise<OAuthServerInfo> {
 		}
 	});
 
-	return new Promise((resolve) => {
+	let serverError: Error | undefined;
+	let closed = false;
+	const close = () => {
+		if (closed) return;
+		closed = true;
+		server.close();
+		// Stop accepting connections before closing browser preconnections and incomplete requests.
+		server.closeAllConnections();
+		settleWait?.(null);
+	};
+
+	return new Promise((resolve, reject) => {
 		server
+			.on("error", (error: NodeJS.ErrnoException) => {
+				serverError =
+					error.code === "EADDRINUSE"
+						? new Error("Port 1455 is in use. Close the other login flow and retry, or choose device code login.", {
+								cause: error,
+							})
+						: error;
+				close();
+				reject(serverError);
+			})
 			.listen(1455, getCallbackHost(), () => {
 				resolve({
-					close: () => server.close(),
+					close,
 					cancelWait: () => {
 						settleWait?.(null);
 					},
-					waitForCode: () => waitForCodePromise,
-				});
-			})
-			.on("error", (_err: NodeJS.ErrnoException) => {
-				settleWait?.(null);
-				resolve({
-					close: () => {
-						try {
-							server.close();
-						} catch {
-							// ignore
-						}
+					waitForCode: async () => {
+						const result = await waitForCodePromise;
+						if (serverError) throw serverError;
+						return result;
 					},
-					cancelWait: () => {},
-					waitForCode: async () => null,
 				});
 			});
 	});
@@ -477,7 +488,9 @@ async function loginOpenAICodexDeviceCode(interaction: ProviderAuthInteraction):
 }
 
 async function loginOpenAICodex(interaction: ProviderAuthInteraction): Promise<OAuthCredential> {
+	interaction.signal.throwIfAborted();
 	const { verifier, state, url } = await createAuthorizationFlow();
+	interaction.signal.throwIfAborted();
 	const server = await startLocalOAuthServer(state);
 	const manualAbort = new AbortController();
 	const onAbort = () => server.cancelWait();
@@ -487,13 +500,14 @@ async function loginOpenAICodex(interaction: ProviderAuthInteraction): Promise<O
 	let manualCode: string | undefined;
 	let manualError: Error | undefined;
 
-	interaction.notify({
-		type: "auth_url",
-		url,
-		instructions: "A browser window should open. Complete login to finish.",
-	});
-
 	try {
+		interaction.signal.throwIfAborted();
+		interaction.notify({
+			type: "auth_url",
+			url,
+			instructions: "A browser window should open. Complete login to finish.",
+		});
+		interaction.signal.throwIfAborted();
 		const manualPromise = interaction
 			.prompt({
 				type: "manual_code",
@@ -511,6 +525,7 @@ async function loginOpenAICodex(interaction: ProviderAuthInteraction): Promise<O
 			});
 
 		const result = await server.waitForCode();
+		interaction.signal.throwIfAborted();
 		if (manualError) throw manualError;
 		if (result?.code) {
 			code = result.code;
