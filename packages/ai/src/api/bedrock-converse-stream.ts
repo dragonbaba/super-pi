@@ -1223,6 +1223,10 @@ function isGovCloudBedrockTarget(model: Model<"bedrock-converse-stream">, region
 	return modelId.startsWith("us-gov.") || modelId.startsWith("arn:aws-us-gov:");
 }
 
+// Match the same separators as normalized model candidates without temporary arrays or strings.
+const OPENAI_GPT_OSS_MODEL = /gpt[-\s_.:]+oss/i;
+const OPENAI_GPT_MODEL = /gpt[-\s_.:]+/i;
+
 function buildAdditionalModelRequestFields(
 	model: Model<"bedrock-converse-stream">,
 	options: BedrockOptions,
@@ -1279,6 +1283,22 @@ function buildAdditionalModelRequestFields(
 		}
 
 		return result;
+	}
+
+	if (OPENAI_GPT_OSS_MODEL.test(model.id) || OPENAI_GPT_OSS_MODEL.test(model.name)) {
+		// gpt-oss accepts only low/medium/high in a flat request field.
+		const effort = options.reasoning === "minimal" ? "low"
+			: options.reasoning === "xhigh" || options.reasoning === "max" ? "high" : options.reasoning;
+		return { reasoning_effort: effort };
+	}
+
+	if (OPENAI_GPT_MODEL.test(model.id) || OPENAI_GPT_MODEL.test(model.name)) {
+		const mapped = model.thinkingLevelMap?.[options.reasoning];
+		return {
+			reasoning: {
+				effort: typeof mapped === "string" ? mapped : options.reasoning === "minimal" ? "low" : options.reasoning,
+			},
+		};
 	}
 
 	return undefined;
