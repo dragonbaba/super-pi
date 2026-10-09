@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { getEventListeners } from "node:events";
+import { setImmediate as nextTask } from "node:timers/promises";
+import { transactionWriter } from "./helpers/oauth-transaction-process.ts";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, utimesSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -121,6 +124,139 @@ function fixture(t: TestContext, options: OAuthFixtureOptions = {}) {
 
 const ISSUER = "https://auth.fixture.invalid";
 const CONFIGURED_METADATA = "https://catalog.fixture.invalid/tenant/metadata.json?version=1";
+
+for (const action of ["login", "logout"]) {
+  test(`MCP SDK cancelled refresh commits before another process ${action}`, { timeout: 10000 }, async t => {
+    const f = fixture(t);
+    await f.login();
+    let entered!: () => void, release!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    f.owner.fetchImpl = async (input: string | URL, init: RequestInit) => {
+      const response = await f.fetchImpl(input, init);
+      if (new URLSearchParams(init.body as string).get("grant_type") === "refresh_token") { entered(); await gate; }
+      return response;
+    };
+    const caller = new AbortController(), reason = new Error("cancel parent wait");
+    const observed = assert.rejects(f.owner.refresh("access-1-0", caller.signal), (error: unknown) => error === reason);
+    let writer: ReturnType<typeof transactionWriter> | undefined;
+    try {
+      await started; caller.abort(reason); await observed;
+      writer = transactionWriter(t, f.path, f.owner.key, action);
+      await writer.waiting;
+    } finally { release(); }
+    assert.equal(await writer!.done(), "refresh-1");
+    const saved = JSON.parse(readFileSync(f.path, "utf8"))[f.owner.key];
+    assert.equal(saved?.tokens?.refresh_token, action === "login" ? "refresh-login" : undefined);
+  });
+}
+
+for (const phase of ["in flight", "before commit"]) {
+  test(`MCP SDK refresh cancellation ${phase} persists rotation before releasing the file lock`, { timeout: 5000 }, async t => {
+    const f = fixture(t);
+    await f.login();
+    let entered!: () => void, release!: () => void, refreshSignal!: AbortSignal;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const caller = new AbortController(), reason = new Error("fixture request cancelled");
+    f.owner.fetchImpl = async (input: string | URL, init: RequestInit) => {
+      const response = await f.fetchImpl(input, init);
+      if (new URLSearchParams(init.body as string).get("grant_type") === "refresh_token") {
+        refreshSignal = init.signal!;
+        entered();
+        await gate;
+        if (phase === "before commit") caller.abort(reason);
+      }
+      return response;
+    };
+    const pending = f.owner.refresh("access-1-0", caller.signal);
+    const observed = assert.rejects(pending, (error: unknown) => error === reason);
+    try {
+      await started;
+      if (phase === "in flight") { caller.abort(reason); await observed; }
+    } finally { release(); }
+    await observed;
+    const entry = await new FileAuthStorageBackend(f.path).withLockAsync(async text => ({ result: JSON.parse(text!)[f.owner.key] }));
+    await nextTask();
+    assert.equal(entry.tokens.refresh_token, "refresh-1");
+    assert.equal(await f.owner.token(), "access-1-1");
+    assert.equal(refreshSignal.aborted, false);
+    assert.equal(getEventListeners(caller.signal, "abort").length, 0);
+    const reopened = new McpOAuth(f.config, new FileAuthStorageBackend(f.path), f.fetchImpl);
+    assert.equal(await reopened.refresh("access-1-0"), "access-1-1");
+    assert.equal(f.counts().refreshes, 1);
+  });
+}
+
+for (const outcome of ["success", "failure"]) {
+  test(`MCP refresh ${outcome} clears its deadline and signal listeners`, async t => {
+    const f = fixture(t);
+    await f.login();
+    let signal!: AbortSignal;
+    const caller = new AbortController();
+    f.owner.authorize = async (_entry: unknown, transactionSignal: AbortSignal) => {
+      signal = transactionSignal;
+      if (outcome === "failure") throw new Error("fixture declined");
+      return "access-1-0";
+    };
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const pending = f.owner.refresh("access-1-0", caller.signal);
+    if (outcome === "failure") await assert.rejects(pending, /fixture declined/);
+    else await pending;
+    t.mock.timers.tick(180_000);
+    assert.equal(signal.aborted, false, "a completed transaction must not retain its deadline");
+    assert.equal(getEventListeners(signal, "abort").length, 0);
+    assert.equal(getEventListeners(caller.signal, "abort").length, 0);
+  });
+}
+
+test("MCP refresh cancellation during the lock wait makes no OAuth request", { timeout: 5000 }, async t => {
+  const f = fixture(t);
+  await f.login();
+  let entered!: () => void, release!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const held = new FileAuthStorageBackend(f.path).withLockAsync(async () => { entered(); await gate; return { result: undefined }; });
+  await started;
+  const caller = new AbortController(), reason = new Error("cancel waiting refresh");
+  const pending = f.owner.refresh("access-1-0", caller.signal);
+  const observed = assert.rejects(pending, (error: unknown) => error === reason);
+  try { await nextTask(); caller.abort(reason); await observed; }
+  finally { release(); await held; }
+  await new FileAuthStorageBackend(f.path).withLockAsync(async () => ({ result: undefined }));
+  assert.equal(f.counts().refreshes, 0);
+  assert.equal(getEventListeners(caller.signal, "abort").length, 0);
+});
+
+test("MCP refresh deadline releases its lease and prevents a late authorization from restoring logout", { timeout: 5000 }, async t => {
+  const f = fixture(t);
+  await f.login();
+  let entered!: () => void, release!: () => void, refreshSignal!: AbortSignal;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  f.owner.authorize = async (entry: any, signal: AbortSignal) => {
+    refreshSignal = signal; entered(); await gate;
+    entry.tokens.access_token = "late";
+    return "late";
+  };
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const caller = new AbortController();
+  const pending = f.owner.refresh("access-1-0", caller.signal);
+  const observed = assert.rejects(pending, /timed out/i);
+  try {
+    await started;
+    t.mock.timers.tick(180_000);
+    await observed;
+    assert.equal(refreshSignal.aborted, true);
+    // Restore real retry timers before asking another owner to take the file lock.
+    t.mock.timers.reset();
+    await f.owner.logout();
+  } finally { release(); }
+  await nextTask();
+  assert.equal(JSON.parse(readFileSync(f.path, "utf8"))[f.owner.key], undefined);
+  assert.equal(f.owner.cached, undefined);
+  assert.equal(getEventListeners(caller.signal, "abort").length, 0);
+});
 
 for (const field of ["client", "tokens"] as const) {
   for (const issuer of [undefined, null, "", 17, "https://other.fixture.invalid"] as const) {
