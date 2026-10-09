@@ -70,8 +70,17 @@ function trimIssuerTrailingSlash(value) {
   return value.endsWith("/") ? value.slice(0, -1) : value;
 }
 
+function issuersMatch(left, right) {
+  return typeof left === "string" && left.length > 0 && typeof right === "string" && right.length > 0 &&
+    (left === right || trimIssuerTrailingSlash(left) === trimIssuerTrailingSlash(right));
+}
+
+function hasUnboundCredential(value) {
+  return value && (typeof value.issuer !== "string" || value.issuer.length === 0);
+}
+
 /** Run before the SDK uses either fresh or cached discovery for registration/token requests. */
-function validateDiscovery(discovery, authorizationIssuer) {
+function validateDiscovery(discovery, authorizationIssuer, credentialIssuer) {
   if (!discovery) return discovery;
   const expected = discovery.authorizationServerUrl;
   validateIssuer(expected);
@@ -92,6 +101,9 @@ function validateDiscovery(discovery, authorizationIssuer) {
   // code must stay bound to the issuer that started this authorization flow.
   if (authorizationIssuer !== undefined && issuer !== authorizationIssuer) {
     throw new Error("MCP OAuth authorization issuer changed during login");
+  }
+  if (credentialIssuer !== undefined && !issuersMatch(expected, credentialIssuer)) {
+    throw new Error("MCP OAuth credential issuer changed. Log out and sign in again for this server.");
   }
   return discovery;
 }
@@ -209,6 +221,16 @@ export class McpOAuth {
 
   authorizationRequired() { return new McpAuthorizationRequiredError(this.config.id); }
 
+  /** Cold load/transaction boundary only; a warm token lookup reuses this validated entry. */
+  validateCredentials(entry) {
+    validateDiscovery(entry?.discovery);
+    const issuer = entry?.discovery?.authorizationServerUrl;
+    if ((entry?.client && !issuersMatch(entry.client.issuer, issuer)) ||
+        (entry?.tokens && (!entry.client || !issuersMatch(entry.tokens.issuer, issuer)))) {
+      throw this.authorizationRequired();
+    }
+  }
+
   async recordScopeChallenge(scope, failedToken, signal) {
     // Persist the hint for the command's new owner/process, without changing the
     // granted scope. A late response must not recreate logged-out credentials or
@@ -232,7 +254,7 @@ export class McpOAuth {
     if (!this.loaded) {
       const entry = await this.backend.withLockAsync(async text => ({ result: parseStore(text)[this.key] }), { signal });
       // A transaction that committed meanwhile is newer than this read.
-      if (!this.loaded) { this.cached = entry; this.loaded = true; }
+      if (!this.loaded) { this.validateCredentials(entry); this.cached = entry; this.loaded = true; }
     }
     return this.cached;
   }
@@ -252,7 +274,10 @@ export class McpOAuth {
   }
 
   async authorize(entry, signal, receiver, notify, requestedScope = this.config.oauth?.scope) {
+    this.validateCredentials(entry);
     let verifier, authorizationIssuer, authorizedScope, issuerRequired = false;
+    // SDK invalidation mutates entry; this operation's binding must survive it.
+    let credentialIssuer = entry.discovery?.authorizationServerUrl;
     const metadataUrl = this.config.oauth?.authServerMetadataUrl;
     const discoveryObservation = {};
     const state = randomBytes(32).toString("hex");
@@ -261,10 +286,24 @@ export class McpOAuth {
       clientMetadata: { client_name: "Super Pi MCP", redirect_uris: [receiver?.url ?? entry.redirectUrl ?? "http://127.0.0.1/callback"],
         grant_types: ["authorization_code", "refresh_token"], response_types: ["code"], token_endpoint_auth_method: "none", scope: this.config.oauth?.scope },
       state: () => receiver?.state ?? state,
-      clientInformation: () => entry.client ?? (this.config.oauth?.clientId ? { client_id: this.config.oauth.clientId } : undefined),
-      saveClientInformation: value => { if (!receiver) throw this.authorizationRequired(); entry.client = value; },
+      clientInformation: () => {
+        if (entry.client) return entry.client;
+        // Refresh cannot register a replacement or resurrect a configured client
+        // after SDK invalidation. Only an explicit login may create credentials.
+        if (!receiver) throw this.authorizationRequired();
+        if (this.config.oauth?.clientId) {
+          entry.client = { client_id: this.config.oauth.clientId, issuer: credentialIssuer };
+          return entry.client;
+        }
+        return undefined;
+      },
+      saveClientInformation: value => {
+        if (!receiver || !issuersMatch(value.issuer, credentialIssuer)) throw this.authorizationRequired();
+        entry.client = value;
+      },
       tokens: () => entry.tokens,
       saveTokens: value => {
+        if (!issuersMatch(value.issuer, credentialIssuer)) throw this.authorizationRequired();
         // An omitted scope means the scope requested at authorization, or the
         // previous grant on refresh. An explicit narrower response stays narrow.
         entry.tokens = { ...value, scope: value.scope ?? authorizedScope ?? entry.tokens?.scope,
@@ -281,7 +320,7 @@ export class McpOAuth {
         secureUrl(url); notify(url.href);
       },
       discoveryState: async () => {
-        validateDiscovery(entry.discovery, authorizationIssuer);
+        validateDiscovery(entry.discovery, authorizationIssuer, credentialIssuer);
         if (metadataUrl && (!entry.discovery?.authorizationServerMetadata || entry.discovery.issuerValidationVersion !== ISSUER_VALIDATION_VERSION)) {
           provider.saveDiscoveryState(await configuredDiscovery(metadataUrl, entry.discovery, options.fetchFn));
         }
@@ -292,7 +331,8 @@ export class McpOAuth {
         if (metadata && metadata.issuer === discoveryObservation.issuer && discoveryObservation.issuerSupport !== undefined) {
           metadata.authorization_response_iss_parameter_supported = discoveryObservation.issuerSupport;
         }
-        entry.discovery = validateDiscovery(value, authorizationIssuer);
+        entry.discovery = validateDiscovery(value, authorizationIssuer, credentialIssuer);
+        credentialIssuer ??= value.authorizationServerUrl;
         entry.discovery.issuerValidationVersion = ISSUER_VALIDATION_VERSION;
       },
       invalidateCredentials: scope => {
@@ -328,6 +368,7 @@ export class McpOAuth {
 
   async refresh(failedToken, signal) {
     return this.transact(async entry => {
+      this.validateCredentials(entry);
       const token = entry.tokens?.access_token;
       if (token && token !== failedToken && (!entry.expiresAt || entry.expiresAt > Date.now() + REFRESH_SKEW_MS)) return token;
       if (!entry.tokens?.refresh_token || !entry.client) throw this.authorizationRequired();
@@ -357,6 +398,13 @@ export class McpOAuth {
     const pendingScope = entry.pendingScope;
     let receiver, committed = false;
     try {
+      if (hasUnboundCredential(entry.client) || hasUnboundCredential(entry.tokens)) {
+        // Never infer old credentials' issuer from cached or fresh discovery.
+        // Discard only this login draft; failed/cancelled login preserves storage.
+        entry.client = undefined; entry.tokens = undefined;
+        entry.discovery = undefined; entry.expiresAt = undefined;
+      }
+      this.validateCredentials(entry);
       const requestedScope = pendingScope === undefined ? this.config.oauth?.scope : mergeScopes(
         this.config.oauth?.scope, entry.tokens?.scope,
         pendingScope || this.config.oauth?.scope || entry.discovery?.resourceMetadata?.scopes_supported?.join(" "),

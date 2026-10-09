@@ -124,6 +124,22 @@ Previously stored metadata is rediscovered on the first login or refresh to
 recover issuer support flags omitted by older versions. Successful upgrades are
 cached; failed discovery leaves existing credentials intact and requires a retry.
 
+Stored tokens and client registrations must also carry the authorization server's
+`issuer`. Caches from versions that did not save it cannot be used for requests or
+refresh: run `/mcp-login <server>` to sign in again. That explicit login discards
+unbound credentials and discovery only in its temporary draft, obtains fresh
+credentials, and replaces the stored record after success. Failed or cancelled
+migration preserves the old record, but does not make its credentials usable.
+Old client secrets and refresh tokens are never assigned an issuer by inference.
+
+Fixed `clientId` values are bound to the validated discovery issuer during the
+explicit login, before code exchange. SDK retries cannot erase an operation's
+issuer binding, fall back to an unbound fixed client, or silently register a new
+client while refreshing. If an already-bound authorization server changes, first
+verify the new server, then run `/mcp-logout <server>` and `/mcp-login <server>`.
+Valid cached token lookups reuse the initial validation without repeated
+discovery, JSON parsing or URL construction.
+
 If the MCP server advertises the wrong authorization server, or none, configure
 the correct **metadata document URL**:
 
