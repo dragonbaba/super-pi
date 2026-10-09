@@ -73,7 +73,7 @@
 		"@types/node": "22.19.19",
 		"@typescript/native-preview": "7.0.0-dev.20260120.1",
 		"js-tiktoken": "1.0.21",
-		"shx": "0.4.0",
+		"shx": "0.3.4",
 		"typescript": "5.9.3"
 	},
 	"engines": {
