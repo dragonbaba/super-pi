@@ -17,6 +17,24 @@ const AUTH_METADATA_PATH = /\/\.well-known\/(?:oauth-authorization-server|openid
 const OPTIONAL_TOKEN_FIELDS = ["scope", "expires_in", "refresh_token", "id_token"];
 const METADATA_REQUEST = { headers: { Accept: "application/json", "MCP-Protocol-Version": LATEST_PROTOCOL_VERSION } };
 
+// Refresh lifecycle only. Observe late settlement after the caller stops waiting.
+function waitForOAuth(pending, signal) {
+  if (!signal) return pending;
+  if (signal.aborted) {
+    void pending.catch(() => {});
+    return Promise.reject(signal.reason);
+  }
+  return new Promise((resolve, reject) => {
+    const onAbort = () => { signal.removeEventListener("abort", onAbort); reject(signal.reason); };
+    signal.addEventListener("abort", onAbort, { once: true });
+    void pending.then(
+      value => { signal.removeEventListener("abort", onAbort); resolve(value); },
+      error => { signal.removeEventListener("abort", onAbort); reject(error); },
+    );
+    if (signal.aborted) onAbort();
+  });
+}
+
 class OAuthTokenResponse extends Response {
   async json() {
     const value = await super.json();
@@ -367,13 +385,32 @@ export class McpOAuth {
   }
 
   async refresh(failedToken, signal) {
-    return this.transact(async entry => {
-      this.validateCredentials(entry);
-      const token = entry.tokens?.access_token;
-      if (token && token !== failedToken && (!entry.expiresAt || entry.expiresAt > Date.now() + REFRESH_SKEW_MS)) return token;
-      if (!entry.tokens?.refresh_token || !entry.client) throw this.authorizationRequired();
-      return this.authorize(entry, signal);
-    }, signal);
+    signal?.throwIfAborted();
+    return waitForOAuth(this.refreshTransaction(failedToken, signal), signal);
+  }
+
+  async refreshTransaction(failedToken, signal) {
+    const transaction = new AbortController();
+    const cancelWait = () => transaction.abort(signal.reason);
+    let deadline;
+    signal?.addEventListener("abort", cancelWait, { once: true });
+    try {
+      return await this.transact(async entry => {
+        signal?.throwIfAborted();
+        this.validateCredentials(entry);
+        const token = entry.tokens?.access_token;
+        if (token && token !== failedToken && (!entry.expiresAt || entry.expiresAt > Date.now() + REFRESH_SKEW_MS)) return token;
+        if (!entry.tokens?.refresh_token || !entry.client) throw this.authorizationRequired();
+        // Keep lock waiting cancellable, then protect rotation and atomic commit.
+        // Per-request 15s deadlines still apply inside createOAuthFetch.
+        signal?.removeEventListener("abort", cancelWait);
+        deadline = setTimeout(() => transaction.abort(new DOMException("MCP OAuth refresh timed out", "TimeoutError")), FLOW_TIMEOUT_MS);
+        return waitForOAuth(this.authorize(entry, transaction.signal), transaction.signal);
+      }, transaction.signal);
+    } finally {
+      clearTimeout(deadline);
+      signal?.removeEventListener("abort", cancelWait);
+    }
   }
 
   async token(signal) {
