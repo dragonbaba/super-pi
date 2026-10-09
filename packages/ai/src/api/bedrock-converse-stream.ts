@@ -28,6 +28,7 @@ import { HttpProxyAgent } from "http-proxy-agent";
 import { HttpsProxyAgent } from "https-proxy-agent";
 import { calculateCost, clampThinkingLevel } from "../models.ts";
 import { capabilityCacheRetention, contextForModelCapabilities, getModelCapabilities } from "../model-capabilities.ts";
+import { isHaiku55Model } from "../providers/haiku-55-profile.ts";
 import type {
 	Api,
 	AssistantMessage,
@@ -35,6 +36,7 @@ import type {
 	Context,
 	ImageContent,
 	Model,
+	ModelThinkingLevel,
 	ProviderEnv,
 	SimpleStreamOptions,
 	StopReason,
@@ -75,7 +77,7 @@ export interface BedrockOptions extends StreamOptions {
 	profile?: string;
 	toolChoice?: "auto" | "any" | "none" | { type: "tool"; name: string };
 	/* See https://docs.aws.amazon.com/bedrock/latest/userguide/inference-reasoning.html for supported models. */
-	reasoning?: ThinkingLevel;
+	reasoning?: ModelThinkingLevel;
 	/* Custom token budgets per thinking level. Overrides default budgets. */
 	thinkingBudgets?: ThinkingBudgets;
 	/* Only supported by Claude 4.x models, see https://docs.aws.amazon.com/bedrock/latest/userguide/claude-messages-extended-thinking.html#claude-messages-extended-thinking-tool-use-interleaved */
@@ -146,15 +148,15 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 			profile: optionsProfile || getProviderEnvValue("AWS_PROFILE", options.env),
 		};
 		const configuredRegion = getConfiguredBedrockRegion(options);
-		const hasAmbientConfiguredProfile = Boolean(getProviderEnvValue("AWS_PROFILE"));
+		const hasConfiguredProfile = Boolean(config.profile);
 		const endpointRegion = getStandardBedrockEndpointRegion(model.baseUrl);
 		const useExplicitEndpoint = shouldUseExplicitBedrockEndpoint(
 			model.baseUrl,
 			configuredRegion,
-			hasAmbientConfiguredProfile,
+			hasConfiguredProfile,
 		);
 
-		// Only pin standard AWS Bedrock runtime endpoints when no region or ambient AWS_PROFILE is configured.
+		// Only pin standard AWS Bedrock runtime endpoints when no region or profile is configured.
 		// This preserves custom endpoints (VPC/proxy) from #3402 without forcing built-in
 		// catalog defaults such as us-east-1 to override AWS_REGION/AWS_PROFILE.
 		if (useExplicitEndpoint) {
@@ -182,7 +184,7 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 				config.region = configuredRegion;
 			} else if (endpointRegion && useExplicitEndpoint) {
 				config.region = endpointRegion;
-			} else if (!hasAmbientConfiguredProfile) {
+			} else if (!hasConfiguredProfile) {
 				config.region = "us-east-1";
 			}
 
@@ -229,7 +231,11 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 		let responseRequestId: string | undefined;
 
 		try {
+			options.signal?.throwIfAborted();
 			const client = new BedrockRuntimeClient(config);
+			// The SDK resolves profile regions lazily and normalizes FIPS region aliases.
+			const region = await client.config.region();
+			options.signal?.throwIfAborted();
 			const customHeaders = providerHeadersToRecord(options.headers);
 			if (customHeaders) {
 				addCustomHeadersMiddleware(client, customHeaders);
@@ -247,14 +253,15 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 				system: buildSystemPrompt(wireContext.systemPrompt, model, cacheRetention, options.env),
 				inferenceConfig: {
 					...(inferenceMaxTokens !== undefined && { maxTokens: inferenceMaxTokens }),
-					...(options.temperature !== undefined && { temperature: options.temperature }),
+					...(options.temperature !== undefined && (model.compat?.supportsTemperature ?? !isHaiku55Model(model)) &&
+						{ temperature: options.temperature }),
 				},
 				toolConfig: convertToolConfig(
 					wireContext.tools,
 					options.toolChoice,
 					(model.compat?.supportsStrictMode ?? false) && capabilities.strictToolSchema,
 				),
-				additionalModelRequestFields: buildAdditionalModelRequestFields(model, options),
+				additionalModelRequestFields: buildAdditionalModelRequestFields(model, options, region),
 				...(options.requestMetadata !== undefined && { requestMetadata: options.requestMetadata }),
 			};
 			const nextCommandInput = await options?.onPayload?.(commandInput, model);
@@ -759,6 +766,7 @@ function getModelMatchCandidates(modelId: string, modelName?: string): string[] 
 }
 
 function supportsNativeXhighEffort(model: Model<"bedrock-converse-stream">): boolean {
+	if (isHaiku55Model(model)) return true;
 	const candidates = getModelMatchCandidates(model.id, model.name);
 	return candidates.some(
 		(s) =>
@@ -774,10 +782,9 @@ function mapThinkingLevelToEffort(
 	model: Model<"bedrock-converse-stream">,
 	level: SimpleStreamOptions["reasoning"],
 ): "low" | "medium" | "high" | "xhigh" | "max" {
-	if (level === "xhigh" && supportsNativeXhighEffort(model)) return "xhigh";
-
 	const mapped = level ? model.thinkingLevelMap?.[level] : undefined;
 	if (typeof mapped === "string") return mapped as "low" | "medium" | "high" | "xhigh" | "max";
+	if (level === "xhigh" && supportsNativeXhighEffort(model)) return "xhigh";
 
 	switch (level) {
 		case "minimal":
@@ -812,6 +819,7 @@ function resolveCacheRetention(cacheRetention?: CacheRetention, env?: ProviderEn
  * whose ARNs don't contain the model name.
  */
 function isAnthropicClaudeModel(model: Model<"bedrock-converse-stream">): boolean {
+	if (isHaiku55Model(model)) return true;
 	const id = model.id.toLowerCase();
 	const name = model.name?.toLowerCase() ?? "";
 	return (
@@ -837,6 +845,7 @@ function isAnthropicClaudeModel(model: Model<"bedrock-converse-stream">): boolea
  */
 function supportsPromptCaching(model: Model<"bedrock-converse-stream">, env?: ProviderEnv): boolean {
 	if (getModelCapabilities(model).promptCache.mode === "none") return false;
+	if (isHaiku55Model(model)) return true;
 	const candidates = getModelMatchCandidates(model.id, model.name);
 
 	const hasClaudeRef = candidates.some((s) => s.includes("claude"));
@@ -937,6 +946,7 @@ function convertMessages(
 ): Message[] {
 	const result: Message[] = [];
 	const transformedMessages = transformMessages(context.messages, model, normalizeToolCallId);
+	const signatureSupported = supportsThinkingSignature(model);
 
 	for (let i = 0; i < transformedMessages.length; i++) {
 		const m = transformedMessages[i];
@@ -995,24 +1005,25 @@ function convertMessages(
 							});
 							break;
 						case "thinking": {
-							// Skip empty thinking blocks
 							const thinking = sanitizeSurrogates(c.thinking);
-							if (thinking.trim().length === 0) continue;
+							const signature = signatureSupported && c.thinkingSignature?.trim() ? c.thinkingSignature : undefined;
+							// Omitted thinking still carries an opaque signature needed by tool continuations.
+							if (!signature && thinking.trim().length === 0) continue;
 							// Only Anthropic models support the signature field in reasoningText.
 							// For other models, we omit the signature to avoid errors like:
 							// "This model doesn't support the reasoningContent.reasoningText.signature field"
-							if (supportsThinkingSignature(model)) {
+							if (signatureSupported) {
 								// Signatures arrive after thinking deltas. If a partial or externally
 								// persisted message lacks a signature, Bedrock rejects the replayed
 								// reasoning block. Fall back to plain text, matching Anthropic.
-								if (!c.thinkingSignature || c.thinkingSignature.trim().length === 0) {
+								if (!signature) {
 									contentBlocks.push({ text: thinking });
 								} else {
 									contentBlocks.push({
 										reasoningContent: {
 											reasoningText: {
 												text: thinking,
-												signature: c.thinkingSignature,
+												signature,
 											},
 										},
 									});
@@ -1192,18 +1203,18 @@ function getStandardBedrockEndpointRegion(baseUrl: string | undefined): string |
 function shouldUseExplicitBedrockEndpoint(
 	baseUrl: string,
 	configuredRegion: string | undefined,
-	hasAmbientConfiguredProfile: boolean,
+	hasConfiguredProfile: boolean,
 ): boolean {
 	const endpointRegion = getStandardBedrockEndpointRegion(baseUrl);
 	if (!endpointRegion) {
 		return true;
 	}
 
-	return !configuredRegion && !hasAmbientConfiguredProfile;
+	return !configuredRegion && !hasConfiguredProfile;
 }
 
-function isGovCloudBedrockTarget(model: Model<"bedrock-converse-stream">, options: BedrockOptions): boolean {
-	const region = getConfiguredBedrockRegion(options);
+function isGovCloudBedrockTarget(model: Model<"bedrock-converse-stream">, region: string | undefined): boolean {
+	// Use the region selected for the SDK client, including an explicit endpoint.
 	if (region?.toLowerCase().startsWith("us-gov-")) {
 		return true;
 	}
@@ -1215,16 +1226,23 @@ function isGovCloudBedrockTarget(model: Model<"bedrock-converse-stream">, option
 function buildAdditionalModelRequestFields(
 	model: Model<"bedrock-converse-stream">,
 	options: BedrockOptions,
+	region: string | undefined,
 ): Record<string, any> | undefined {
-	if (!options.reasoning || getModelCapabilities(model).reasoning.mode === "none") {
-		return undefined;
+	const reasoningCapability = getModelCapabilities(model).reasoning;
+	if (reasoningCapability.mode === "none") return undefined;
+	if (!options.reasoning || options.reasoning === "off") {
+		// Haiku defaults to adaptive on the server; omitting thinking does not disable it.
+		return isHaiku55Model(model) && reasoningCapability.levels.includes("off")
+			? { thinking: { type: "disabled" } }
+			: undefined;
 	}
 
 	if (isAnthropicClaudeModel(model)) {
 		// GovCloud Bedrock currently rejects the Claude thinking.display field.
 		// Omit it there until the GovCloud Converse schema catches up.
-		const display = isGovCloudBedrockTarget(model, options) ? undefined : (options.thinkingDisplay ?? "summarized");
-		const adaptive = getModelCapabilities(model).reasoning.mode === "adaptive";
+		const govCloud = isGovCloudBedrockTarget(model, region);
+		const display = govCloud ? undefined : (options.thinkingDisplay ?? "summarized");
+		const adaptive = reasoningCapability.mode === "adaptive";
 		const result: Record<string, any> = adaptive
 			? {
 					thinking: { type: "adaptive", ...(display !== undefined ? { display } : {}) },
@@ -1253,7 +1271,10 @@ function buildAdditionalModelRequestFields(
 					};
 				})();
 
-		if (!adaptive && (options.interleavedThinking ?? true)) {
+		if (adaptive && !govCloud && isHaiku55Model(model)) {
+			result.thinking.block_binding = { prefix_mismatch_behavior: "drop_block" };
+			result.anthropic_beta = ["thinking-binding-controls-2026-08-01"];
+		} else if (!adaptive && (options.interleavedThinking ?? true)) {
 			result.anthropic_beta = ["interleaved-thinking-2025-05-14"];
 		}
 

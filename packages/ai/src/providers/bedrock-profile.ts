@@ -1,5 +1,6 @@
 import { enrichModelCapabilities } from "../model-capabilities.ts";
 import type { Api, Model } from "../types.ts";
+import { isHaiku55Model, profileHaiku55Model } from "./haiku-55-profile.ts";
 
 function modelMatchCandidates(model: Pick<Model<"bedrock-converse-stream">, "id" | "name">): string[] {
 	return [model.id, model.name].flatMap((value) => {
@@ -11,6 +12,7 @@ function modelMatchCandidates(model: Pick<Model<"bedrock-converse-stream">, "id"
 export function isBedrockAdaptiveReasoningModel(
 	model: Pick<Model<"bedrock-converse-stream">, "id" | "name">,
 ): boolean {
+	if (isHaiku55Model(model)) return true;
 	return modelMatchCandidates(model).some(
 		(value) =>
 			value.includes("opus-4-6") ||
@@ -26,7 +28,8 @@ export function isBedrockAdaptiveReasoningModel(
 
 export function profileBedrockModel<TApi extends Api>(model: Model<TApi>): Model<TApi> {
 	if (model.api !== "bedrock-converse-stream") return model;
-	return enrichModelCapabilities(model, {
+	return enrichModelCapabilities(profileHaiku55Model(model), {
 		reasoningMode: isBedrockAdaptiveReasoningModel(model) ? "adaptive" : "budget",
+		thoughtSignatureRoundTrip: isHaiku55Model(model) ? true : undefined,
 	});
 }

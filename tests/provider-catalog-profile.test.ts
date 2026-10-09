@@ -6,6 +6,7 @@ import { InMemoryCredentialStore } from "../packages/ai/src/auth/credential-stor
 import { InMemoryModelsStore, MODELS_STORE_PROFILE_REVISION } from "../packages/ai/src/models-store.ts";
 import { createModels, createProvider, type Provider } from "../packages/ai/src/models.ts";
 import { amazonBedrockProvider } from "../packages/ai/src/providers/amazon-bedrock.ts";
+import { anthropicProvider } from "../packages/ai/src/providers/anthropic.ts";
 import { googleVertexProvider } from "../packages/ai/src/providers/google-vertex.ts";
 import { googleProvider } from "../packages/ai/src/providers/google.ts";
 import { mistralProvider } from "../packages/ai/src/providers/mistral.ts";
@@ -76,6 +77,42 @@ async function fetchRemoteReplacement(
 		const replacement = models.getModel(provider.id, rawModel.id);
 		assert.ok(replacement);
 		return { model: replacement, stored: await store.read(provider.id) };
+	});
+}
+
+for (const makeProvider of [anthropicProvider, amazonBedrockProvider]) {
+	test(`${makeProvider.name} Haiku remote replacement and offline restore apply current profile defaults`, async () => {
+		const provider = makeProvider();
+		const anthropic = anthropicProvider().getModels().find((model) => model.id === "claude-haiku-5-5");
+		assert.ok(anthropic);
+		const raw: Model<Api> = { ...rawCatalogModel(anthropic), provider: provider.id,
+			api: provider.id === "anthropic" ? "anthropic-messages" : "bedrock-converse-stream",
+			id: provider.id === "anthropic" ? anthropic.id : "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/opaque",
+			name: "Claude Haiku 5.5", compat: undefined, thinkingLevelMap: undefined };
+		const { model, stored } = await fetchRemoteReplacement(provider, raw);
+		assert.equal(model.capabilities?.reasoning.mode, "adaptive");
+		assert.equal(model.capabilities?.thoughtSignatureRoundTrip, true);
+		assert.equal(model.thinkingLevelMap?.xhigh, "xhigh");
+		assert.equal(model.thinkingLevelMap?.max, "max");
+		assert.ok(model.compat && "supportsTemperature" in model.compat);
+		assert.equal(model.compat.supportsTemperature, false);
+		assert.equal(stored?.models[0]?.capabilities, undefined);
+		assert.equal(stored?.models[0]?.compat, undefined);
+		assert.equal(stored?.models[0]?.thinkingLevelMap, undefined);
+		assert.ok(stored);
+		for (const profileRevision of [undefined, MODELS_STORE_PROFILE_REVISION]) {
+			const store = new InMemoryModelsStore();
+			await store.write(provider.id, { ...stored, profileRevision });
+			const models = createModels({ modelsStore: store });
+			models.setProvider(withRemoteCatalog(makeProvider()));
+			assert.equal((await models.refresh({ providers: [provider.id], allowNetwork: false })).errors.size, 0);
+			const restored = models.getModel(provider.id, raw.id);
+			assert.equal(restored?.capabilities?.reasoning.mode, "adaptive");
+			assert.equal(restored?.capabilities?.thoughtSignatureRoundTrip, true);
+			assert.equal(restored?.thinkingLevelMap?.xhigh, "xhigh");
+			assert.ok(restored?.compat && "supportsTemperature" in restored.compat);
+			assert.equal(restored.compat.supportsTemperature, false);
+		}
 	});
 }
 
