@@ -235,9 +235,26 @@ export class McpOAuth {
     this.key = createHash("sha256").update(JSON.stringify([config.id, config.url, config.source, config.oauth])).digest("hex");
     this.cached = undefined;
     this.loaded = false;
+    this.closed = false;
+    this.refreshController = new AbortController();
+    this.refreshCount = 0;
+    this.refreshDrained = undefined;
+    this.resolveRefreshDrained = undefined;
   }
 
   authorizationRequired() { return new McpAuthorizationRequiredError(this.config.id); }
+
+  /** Transport lifecycle only: stop admission, cancel lock waiters, join protected commits. */
+  close() {
+    if (!this.closed) {
+      this.closed = true;
+      if (this.refreshCount) this.refreshDrained = new Promise(resolve => { this.resolveRefreshDrained = resolve; });
+      this.refreshController.abort(new DOMException("MCP OAuth closed", "AbortError"));
+      this.cached = undefined;
+      this.loaded = true;
+    }
+    return this.refreshDrained;
+  }
 
   /** Cold load/transaction boundary only; a warm token lookup reuses this validated entry. */
   validateCredentials(entry) {
@@ -269,8 +286,10 @@ export class McpOAuth {
    * waits for that commit (abortably) instead of the short synchronous retry window.
    */
   async read(signal) {
+    if (this.closed) throw this.refreshController.signal.reason;
     if (!this.loaded) {
       const entry = await this.backend.withLockAsync(async text => ({ result: parseStore(text)[this.key] }), { signal });
+      if (this.closed) throw this.refreshController.signal.reason;
       // A transaction that committed meanwhile is newer than this read.
       if (!this.loaded) { this.validateCredentials(entry); this.cached = entry; this.loaded = true; }
     }
@@ -288,7 +307,10 @@ export class McpOAuth {
       const next = serializeStore(store);
       // Publish the cache only after the atomic file write succeeds.
       return { result: { value: result, entry }, next };
-    }, { signal }).then(result => { this.cached = result.entry; this.loaded = true; return result.value; });
+    }, { signal }).then(result => {
+      if (!this.closed) { this.cached = result.entry; this.loaded = true; }
+      return result.value;
+    });
   }
 
   async authorize(entry, signal, receiver, notify, requestedScope = this.config.oauth?.scope) {
@@ -391,31 +413,41 @@ export class McpOAuth {
   }
 
   async refreshTransaction(failedToken, signal) {
+    const ownerSignal = this.refreshController.signal;
+    ownerSignal.throwIfAborted();
+    const waitSignal = AbortSignal.any(signal ? [signal, ownerSignal] : [ownerSignal]);
     const transaction = new AbortController();
-    const cancelWait = () => transaction.abort(signal.reason);
+    const cancelWait = () => transaction.abort(waitSignal.reason);
     let deadline;
-    signal?.addEventListener("abort", cancelWait, { once: true });
+    this.refreshCount++;
+    waitSignal.addEventListener("abort", cancelWait, { once: true });
     try {
       return await this.transact(async entry => {
-        signal?.throwIfAborted();
+        waitSignal.throwIfAborted();
         this.validateCredentials(entry);
         const token = entry.tokens?.access_token;
         if (token && token !== failedToken && (!entry.expiresAt || entry.expiresAt > Date.now() + REFRESH_SKEW_MS)) return token;
         if (!entry.tokens?.refresh_token || !entry.client) throw this.authorizationRequired();
         // Keep lock waiting cancellable, then protect rotation and atomic commit.
         // Per-request 15s deadlines still apply inside createOAuthFetch.
-        signal?.removeEventListener("abort", cancelWait);
+        waitSignal.removeEventListener("abort", cancelWait);
         deadline = setTimeout(() => transaction.abort(new DOMException("MCP OAuth refresh timed out", "TimeoutError")), FLOW_TIMEOUT_MS);
         return waitForOAuth(this.authorize(entry, transaction.signal), transaction.signal);
       }, transaction.signal);
     } finally {
       clearTimeout(deadline);
-      signal?.removeEventListener("abort", cancelWait);
+      waitSignal.removeEventListener("abort", cancelWait);
+      if (--this.refreshCount === 0) {
+        this.resolveRefreshDrained?.();
+        this.resolveRefreshDrained = undefined;
+        this.refreshDrained = undefined;
+      }
     }
   }
 
   async token(signal) {
     const entry = await this.read(signal);
+    if (this.closed) throw this.refreshController.signal.reason;
     if (entry?.expiresAt && entry.expiresAt <= Date.now() + REFRESH_SKEW_MS) return this.refresh(entry.tokens?.access_token, signal);
     return entry?.tokens?.access_token;
   }
