@@ -44,7 +44,7 @@ test("Haiku 5.5 is available offline with adaptive metadata and official tiered 
 	assert.equal(getModelCapabilities(model).reasoning.mode, "adaptive");
 	const reasoningCapability = getModelCapabilities(model).reasoning;
 	assert.ok(reasoningCapability.mode !== "none");
-	assert.deepEqual(reasoningCapability.levels, ["low", "medium", "high", "xhigh", "max"]);
+	assert.deepEqual(reasoningCapability.levels, ["off", "low", "medium", "high", "xhigh", "max"]);
 	assert.equal(model.compat?.supportsTemperature, false);
 	for (const reasoning of ["xhigh", "max"] as const) {
 		const wire = await payload(model, { reasoning });

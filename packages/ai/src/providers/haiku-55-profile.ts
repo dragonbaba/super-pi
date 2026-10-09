@@ -5,7 +5,7 @@ import type { Api, Model, ThinkingLevelMap } from "../types.ts";
 const HAIKU_55 = /(?:^|[^a-z0-9])haiku[-_.:\s]+5[-_.:\s]+5(?=$|[^a-z0-9])/i;
 
 export const HAIKU_55_THINKING_LEVEL_MAP: Readonly<ThinkingLevelMap> = Object.freeze({
-	off: null, minimal: null, low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max",
+	minimal: null, low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max",
 });
 
 export function isHaiku55Model(model: Pick<Model<Api>, "id" | "name">): boolean {

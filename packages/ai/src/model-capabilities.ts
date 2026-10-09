@@ -60,6 +60,7 @@ const MODEL_CAPABILITY_ENRICHMENT: unique symbol = Symbol.for("super-pi.model-ca
 export interface ModelCapabilityEnrichmentV1 {
 	strictToolSchema?: boolean;
 	reasoningMode?: Exclude<ModelCapabilitiesV1["reasoning"]["mode"], "none">;
+	thoughtSignatureRoundTrip?: boolean;
 }
 
 type CapabilityEnrichedModel = Model<Api> & {
@@ -392,7 +393,8 @@ export function deriveModelCapabilities(model: Model<Api>): Readonly<ModelCapabi
 		streamedToolArguments: STREAMED_TOOL_ARGUMENT_APIS.has(api),
 		reasoning: Object.freeze(reasoning),
 		thoughtSignatureRoundTrip:
-			api === "anthropic-messages" || api === "google-generative-ai" || api === "google-vertex",
+			enrichment?.thoughtSignatureRoundTrip ??
+			(api === "anthropic-messages" || api === "google-generative-ai" || api === "google-vertex"),
 		promptCache: Object.freeze(promptCacheCapability(model)),
 		previousResponseId:
 			api === "openai-responses" || api === "openai-codex-responses" || api === "azure-openai-responses",

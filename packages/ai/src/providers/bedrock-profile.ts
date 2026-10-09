@@ -30,5 +30,6 @@ export function profileBedrockModel<TApi extends Api>(model: Model<TApi>): Model
 	if (model.api !== "bedrock-converse-stream") return model;
 	return enrichModelCapabilities(profileHaiku55Model(model), {
 		reasoningMode: isBedrockAdaptiveReasoningModel(model) ? "adaptive" : "budget",
+		thoughtSignatureRoundTrip: isHaiku55Model(model) ? true : undefined,
 	});
 }

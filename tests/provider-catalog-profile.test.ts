@@ -91,6 +91,7 @@ for (const makeProvider of [anthropicProvider, amazonBedrockProvider]) {
 			name: "Claude Haiku 5.5", compat: undefined, thinkingLevelMap: undefined };
 		const { model, stored } = await fetchRemoteReplacement(provider, raw);
 		assert.equal(model.capabilities?.reasoning.mode, "adaptive");
+		assert.equal(model.capabilities?.thoughtSignatureRoundTrip, true);
 		assert.equal(model.thinkingLevelMap?.xhigh, "xhigh");
 		assert.equal(model.thinkingLevelMap?.max, "max");
 		assert.ok(model.compat && "supportsTemperature" in model.compat);
@@ -107,6 +108,7 @@ for (const makeProvider of [anthropicProvider, amazonBedrockProvider]) {
 			assert.equal((await models.refresh({ providers: [provider.id], allowNetwork: false })).errors.size, 0);
 			const restored = models.getModel(provider.id, raw.id);
 			assert.equal(restored?.capabilities?.reasoning.mode, "adaptive");
+			assert.equal(restored?.capabilities?.thoughtSignatureRoundTrip, true);
 			assert.equal(restored?.thinkingLevelMap?.xhigh, "xhigh");
 			assert.ok(restored?.compat && "supportsTemperature" in restored.compat);
 			assert.equal(restored.compat.supportsTemperature, false);

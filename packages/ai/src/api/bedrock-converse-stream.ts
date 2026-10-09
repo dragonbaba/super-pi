@@ -36,6 +36,7 @@ import type {
 	Context,
 	ImageContent,
 	Model,
+	ModelThinkingLevel,
 	ProviderEnv,
 	SimpleStreamOptions,
 	StopReason,
@@ -76,7 +77,7 @@ export interface BedrockOptions extends StreamOptions {
 	profile?: string;
 	toolChoice?: "auto" | "any" | "none" | { type: "tool"; name: string };
 	/* See https://docs.aws.amazon.com/bedrock/latest/userguide/inference-reasoning.html for supported models. */
-	reasoning?: ThinkingLevel;
+	reasoning?: ModelThinkingLevel;
 	/* Custom token budgets per thinking level. Overrides default budgets. */
 	thinkingBudgets?: ThinkingBudgets;
 	/* Only supported by Claude 4.x models, see https://docs.aws.amazon.com/bedrock/latest/userguide/claude-messages-extended-thinking.html#claude-messages-extended-thinking-tool-use-interleaved */
@@ -256,7 +257,9 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 					options.toolChoice,
 					(model.compat?.supportsStrictMode ?? false) && capabilities.strictToolSchema,
 				),
-				additionalModelRequestFields: buildAdditionalModelRequestFields(model, options),
+				additionalModelRequestFields: buildAdditionalModelRequestFields(
+					model, options, typeof config.region === "string" ? config.region : undefined,
+				),
 				...(options.requestMetadata !== undefined && { requestMetadata: options.requestMetadata }),
 			};
 			const nextCommandInput = await options?.onPayload?.(commandInput, model);
@@ -941,6 +944,7 @@ function convertMessages(
 ): Message[] {
 	const result: Message[] = [];
 	const transformedMessages = transformMessages(context.messages, model, normalizeToolCallId);
+	const signatureSupported = supportsThinkingSignature(model);
 
 	for (let i = 0; i < transformedMessages.length; i++) {
 		const m = transformedMessages[i];
@@ -999,24 +1003,25 @@ function convertMessages(
 							});
 							break;
 						case "thinking": {
-							// Skip empty thinking blocks
 							const thinking = sanitizeSurrogates(c.thinking);
-							if (thinking.trim().length === 0) continue;
+							const signature = signatureSupported && c.thinkingSignature?.trim() ? c.thinkingSignature : undefined;
+							// Omitted thinking still carries an opaque signature needed by tool continuations.
+							if (!signature && thinking.trim().length === 0) continue;
 							// Only Anthropic models support the signature field in reasoningText.
 							// For other models, we omit the signature to avoid errors like:
 							// "This model doesn't support the reasoningContent.reasoningText.signature field"
-							if (supportsThinkingSignature(model)) {
+							if (signatureSupported) {
 								// Signatures arrive after thinking deltas. If a partial or externally
 								// persisted message lacks a signature, Bedrock rejects the replayed
 								// reasoning block. Fall back to plain text, matching Anthropic.
-								if (!c.thinkingSignature || c.thinkingSignature.trim().length === 0) {
+								if (!signature) {
 									contentBlocks.push({ text: thinking });
 								} else {
 									contentBlocks.push({
 										reasoningContent: {
 											reasoningText: {
 												text: thinking,
-												signature: c.thinkingSignature,
+												signature,
 											},
 										},
 									});
@@ -1206,8 +1211,8 @@ function shouldUseExplicitBedrockEndpoint(
 	return !configuredRegion && !hasAmbientConfiguredProfile;
 }
 
-function isGovCloudBedrockTarget(model: Model<"bedrock-converse-stream">, options: BedrockOptions): boolean {
-	const region = getConfiguredBedrockRegion(options);
+function isGovCloudBedrockTarget(model: Model<"bedrock-converse-stream">, region: string | undefined): boolean {
+	// Use the region selected for the SDK client, including an explicit endpoint.
 	if (region?.toLowerCase().startsWith("us-gov-")) {
 		return true;
 	}
@@ -1219,17 +1224,23 @@ function isGovCloudBedrockTarget(model: Model<"bedrock-converse-stream">, option
 function buildAdditionalModelRequestFields(
 	model: Model<"bedrock-converse-stream">,
 	options: BedrockOptions,
+	region: string | undefined,
 ): Record<string, any> | undefined {
-	if (!options.reasoning || getModelCapabilities(model).reasoning.mode === "none") {
-		return undefined;
+	const reasoningCapability = getModelCapabilities(model).reasoning;
+	if (reasoningCapability.mode === "none") return undefined;
+	if (!options.reasoning || options.reasoning === "off") {
+		// Haiku defaults to adaptive on the server; omitting thinking does not disable it.
+		return isHaiku55Model(model) && reasoningCapability.levels.includes("off")
+			? { thinking: { type: "disabled" } }
+			: undefined;
 	}
 
 	if (isAnthropicClaudeModel(model)) {
 		// GovCloud Bedrock currently rejects the Claude thinking.display field.
 		// Omit it there until the GovCloud Converse schema catches up.
-		const govCloud = isGovCloudBedrockTarget(model, options);
+		const govCloud = isGovCloudBedrockTarget(model, region);
 		const display = govCloud ? undefined : (options.thinkingDisplay ?? "summarized");
-		const adaptive = getModelCapabilities(model).reasoning.mode === "adaptive";
+		const adaptive = reasoningCapability.mode === "adaptive";
 		const result: Record<string, any> = adaptive
 			? {
 					thinking: { type: "adaptive", ...(display !== undefined ? { display } : {}) },
