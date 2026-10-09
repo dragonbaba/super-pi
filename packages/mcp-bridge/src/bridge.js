@@ -309,7 +309,7 @@ export class McpBridgeRuntime {
       try {
         await client.connect(transport, { signal: startup.signal, timeout: config.startupTimeoutMs });
         if (this.closed || startup.signal.aborted) throw startup.signal.reason ?? new Error("MCP startup aborted");
-        listed = await client.listTools({}, { signal: startup.signal, timeout: config.startupTimeoutMs });
+        listed = await client.listAllTools(config.maxTools, { signal: startup.signal, timeout: config.startupTimeoutMs });
         if (this.closed || startup.signal.aborted) throw startup.signal.reason ?? new Error("MCP startup aborted");
       } finally {
         startup.dispose();
@@ -317,12 +317,19 @@ export class McpBridgeRuntime {
       // Transport/discovery failures leave the last complete catalog retryable.
       // Once a replacement arrives, only a fully registered catalog is eligible.
       state.catalogReady = false;
-      if (!Array.isArray(listed.tools) || listed.tools.length > config.maxTools) throw new Error(`Server exposed more than ${config.maxTools} tools`);
+      // Preflight the complete replacement before the first host registration.
+      const names = new Set();
+      for (const tool of listed.tools) {
+        const name = piToolName(config.id, tool.name);
+        const existing = this.registeredNames.get(name);
+        if (names.has(name) || (existing && existing !== `${config.id}\0${tool.name}`)) throw new Error(`MCP tool-name collision: ${name}`);
+        names.add(name);
+      }
       state.serverInfo = client.getServerVersion() ?? null;
       state.tools = mapRemoteTools(listed.tools);
       state.status = "connected";
       state.connectFetch = null;
-      for (const tool of listed.tools) this.registerRemoteTool(state, tool);
+      for (const tool of listed.tools) this.registerRemoteTool(state, tool, tool.inputSchema);
       state.catalogReady = true;
       this.schemaCache?.put(config, this.workspace, listed.tools, state.serverInfo);
       this.onToolsChanged?.();
@@ -338,12 +345,11 @@ export class McpBridgeRuntime {
     }
   }
 
-  registerRemoteTool(state, remoteTool) {
+  registerRemoteTool(state, remoteTool, parameters = normalizeInputSchema(remoteTool.inputSchema)) {
     if (this.closed) throw new McpCallError("aborted");
     const name = piToolName(state.config.id, remoteTool.name);
     const existing = this.registeredNames.get(name);
     if (existing && existing !== `${state.config.id}\0${remoteTool.name}`) throw new Error(`MCP tool-name collision: ${name}`);
-    const parameters = normalizeInputSchema(remoteTool.inputSchema);
     const signature = createHash("sha256").update(JSON.stringify(parameters)).update("\0").update(remoteTool.description ?? "").digest("hex");
     if (existing && this.registeredSchemas.get(name) === signature) return;
     this.registeredSchemas.set(name, signature);
@@ -480,6 +486,7 @@ export class McpBridgeRuntime {
       closes.push(closeMcpState(state));
     }
     await Promise.allSettled(closes);
+    for (const state of this.states.values()) { state.tools?.clear(); state.serverInfo = null; }
     this.searchIndex.clear();
     this.registeredSchemaBytes.clear();
     this.registeredSchemas.clear();

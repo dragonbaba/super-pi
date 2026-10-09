@@ -36,7 +36,7 @@ test("schema cache persists only domain-separated keyed identities and reopens w
 	const unkeyed = configFingerprint(CONFIG, f.root);
 	assert.equal(text.includes(unkeyed), false, "cache must not persist an offline verifier for configuration secrets");
 	for (const secret of ["fixture-guessable-secret", "fixture-env-secret", "fixture-arg-secret"]) assert.equal(text.includes(secret), false);
-	assert.equal(data.version, 2);
+	assert.equal(data.version, 3);
 	assert.match(data.entries[0].fingerprint, /^[0-9a-f]{64}$/);
 	assert.notEqual(data.entries[0].fingerprint, createHmac("sha256", key).update(unkeyed).digest("hex"), "cache and activation identities have different domains");
 	assert.deepEqual(new McpSchemaCache().get(CONFIG, f.root).tools, cache.get(CONFIG, f.root).tools);
@@ -81,7 +81,7 @@ for (const route of ["prepare", "construct"]) test(`readable malformed cache env
 		const cache = route === "prepare" ? new McpSchemaCache(f.path, prepareSchemaCache(f.path)) : new McpSchemaCache(f.path);
 		assert.equal(cache.get(CONFIG, f.root), null);
 		assert.equal(cache.entries.size, 0);
-		assert.deepEqual(JSON.parse(readFileSync(f.path, "utf8")), { version: 2, entries: [] }, payload);
+		assert.deepEqual(JSON.parse(readFileSync(f.path, "utf8")), { version: 3, entries: [] }, payload);
 	}
 });
 
@@ -130,7 +130,7 @@ for (const usableKey of [true, false]) test(`legacy unkeyed schema caches are sc
 	assert.equal(cache.entries.size, 0);
 	const text = readFileSync(f.path, "utf8");
 	assert.equal(text.includes(unkeyed), false);
-	assert.deepEqual(JSON.parse(text), { version: 2, entries: [] });
+	assert.deepEqual(JSON.parse(text), { version: 3, entries: [] });
 	assert.equal(cache.put(CONFIG, f.root, TOOLS, null), usableKey);
 });
 

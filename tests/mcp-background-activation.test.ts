@@ -133,7 +133,7 @@ for (const configuration of ["absent", "invalid"]) {
 		else assert.deepEqual(h.notes, []);
 		const after = readFileSync(cachePath, "utf8");
 		assert.equal(after.includes(fingerprint), false);
-		assert.deepEqual(JSON.parse(after), { version: 2, entries: [] });
+		assert.deepEqual(JSON.parse(after), { version: 3, entries: [] });
 	});
 }
 
@@ -174,7 +174,7 @@ for (const source of ["global", "trusted-project"]) {
 		assert.equal(f.endpoint.initializes, 0);
 		assert.deepEqual([...h.tools.keys()], ["mcp_search_tools"]);
 		assert.equal(existsSync(join(f.agentDir, "mcp-activation.key")), false);
-		assert.deepEqual(JSON.parse(readFileSync(cachePath, "utf8")), { version: 2, entries: [] });
+		assert.deepEqual(JSON.parse(readFileSync(cachePath, "utf8")), { version: 3, entries: [] });
 	});
 }
 
@@ -194,7 +194,7 @@ for (const configuration of ["absent", "empty"]) {
 			fingerprint: configFingerprint(config, f.root), updatedAt: Date.now(), tools: f.endpoint.tools,
 		}] }));
 		const h = f.host(); await h.start();
-		assert.deepEqual(JSON.parse(readFileSync(cachePath, "utf8")), { version: 2, entries: [] });
+		assert.deepEqual(JSON.parse(readFileSync(cachePath, "utf8")), { version: 3, entries: [] });
 		assert.equal(f.endpoint.initializes, 0);
 		assert.deepEqual([...h.tools.keys()], ["mcp_search_tools"]);
 		assert.deepEqual(h.notes, []);
