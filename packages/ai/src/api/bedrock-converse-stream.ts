@@ -148,15 +148,15 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 			profile: optionsProfile || getProviderEnvValue("AWS_PROFILE", options.env),
 		};
 		const configuredRegion = getConfiguredBedrockRegion(options);
-		const hasAmbientConfiguredProfile = Boolean(getProviderEnvValue("AWS_PROFILE"));
+		const hasConfiguredProfile = Boolean(config.profile);
 		const endpointRegion = getStandardBedrockEndpointRegion(model.baseUrl);
 		const useExplicitEndpoint = shouldUseExplicitBedrockEndpoint(
 			model.baseUrl,
 			configuredRegion,
-			hasAmbientConfiguredProfile,
+			hasConfiguredProfile,
 		);
 
-		// Only pin standard AWS Bedrock runtime endpoints when no region or ambient AWS_PROFILE is configured.
+		// Only pin standard AWS Bedrock runtime endpoints when no region or profile is configured.
 		// This preserves custom endpoints (VPC/proxy) from #3402 without forcing built-in
 		// catalog defaults such as us-east-1 to override AWS_REGION/AWS_PROFILE.
 		if (useExplicitEndpoint) {
@@ -184,7 +184,7 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 				config.region = configuredRegion;
 			} else if (endpointRegion && useExplicitEndpoint) {
 				config.region = endpointRegion;
-			} else if (!hasAmbientConfiguredProfile) {
+			} else if (!hasConfiguredProfile) {
 				config.region = "us-east-1";
 			}
 
@@ -231,7 +231,11 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 		let responseRequestId: string | undefined;
 
 		try {
+			options.signal?.throwIfAborted();
 			const client = new BedrockRuntimeClient(config);
+			// The SDK resolves profile regions lazily and normalizes FIPS region aliases.
+			const region = await client.config.region();
+			options.signal?.throwIfAborted();
 			const customHeaders = providerHeadersToRecord(options.headers);
 			if (customHeaders) {
 				addCustomHeadersMiddleware(client, customHeaders);
@@ -257,9 +261,7 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 					options.toolChoice,
 					(model.compat?.supportsStrictMode ?? false) && capabilities.strictToolSchema,
 				),
-				additionalModelRequestFields: buildAdditionalModelRequestFields(
-					model, options, typeof config.region === "string" ? config.region : undefined,
-				),
+				additionalModelRequestFields: buildAdditionalModelRequestFields(model, options, region),
 				...(options.requestMetadata !== undefined && { requestMetadata: options.requestMetadata }),
 			};
 			const nextCommandInput = await options?.onPayload?.(commandInput, model);
@@ -1201,14 +1203,14 @@ function getStandardBedrockEndpointRegion(baseUrl: string | undefined): string |
 function shouldUseExplicitBedrockEndpoint(
 	baseUrl: string,
 	configuredRegion: string | undefined,
-	hasAmbientConfiguredProfile: boolean,
+	hasConfiguredProfile: boolean,
 ): boolean {
 	const endpointRegion = getStandardBedrockEndpointRegion(baseUrl);
 	if (!endpointRegion) {
 		return true;
 	}
 
-	return !configuredRegion && !hasAmbientConfiguredProfile;
+	return !configuredRegion && !hasConfiguredProfile;
 }
 
 function isGovCloudBedrockTarget(model: Model<"bedrock-converse-stream">, region: string | undefined): boolean {
