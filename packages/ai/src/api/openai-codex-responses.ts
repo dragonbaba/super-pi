@@ -2396,6 +2396,14 @@ function extractAccountId(token: string) {
 }
 function buildBaseCodexHeaders(initHeaders: Record<string, string> | undefined, additionalHeaders: ProviderHeaders | undefined, accountId: string, token: string) {
     const headers = new Headers(initHeaders);
+    // Model headers replace defaults; caller headers may override or remove either.
+    if (!headers.has("originator")) {
+        headers.set("originator", "pi");
+    }
+    if (!headers.has("User-Agent")) {
+        const userAgent = _os ? `Super Pi (${_os.platform()} ${_os.release()}; ${_os.arch()})` : "Super Pi (browser)";
+        headers.set("User-Agent", userAgent);
+    }
     for (const [key, value] of Object.entries(additionalHeaders || {})) {
         if (value === null) {
             headers.delete(key);
@@ -2406,9 +2414,6 @@ function buildBaseCodexHeaders(initHeaders: Record<string, string> | undefined, 
     }
     headers.set("Authorization", `Bearer ${token}`);
     headers.set("chatgpt-account-id", accountId);
-    headers.set("originator", "pi");
-    const userAgent = _os ? `Super Pi (${_os.platform()} ${_os.release()}; ${_os.arch()})` : "Super Pi (browser)";
-    headers.set("User-Agent", userAgent);
     return headers;
 }
 function addRemoteCompactionFeature(headers: Headers): void {
