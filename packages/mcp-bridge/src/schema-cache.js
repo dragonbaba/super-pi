@@ -5,9 +5,10 @@ import { agentDir } from "./config.js";
 import { loadActivationKey } from "./activation-key.js";
 import { MAX_SCHEMA_BYTES, canonicalJsonShape, sanitizeText, validateJsonShape } from "./security.js";
 
-const CACHE_VERSION = 2;
+// v2 may contain a first-page-only catalog. Keep the safe path, invalidate its contents.
+const CACHE_VERSION = 3;
 const EMPTY_CACHE_PAYLOAD = `${JSON.stringify({ version: CACHE_VERSION, entries: [] })}\n`;
-const CACHE_FINGERPRINT_DOMAIN = "super-pi.mcp-schema-cache.v2\0";
+const CACHE_FINGERPRINT_DOMAIN = "super-pi.mcp-schema-cache.v3\0";
 const MAX_CACHE_BYTES = 2 * 1024 * 1024;
 const MAX_CACHE_ENTRIES = 16;
 const MAX_CACHE_AGE_MS = 30 * 24 * 60 * 60 * 1000;
