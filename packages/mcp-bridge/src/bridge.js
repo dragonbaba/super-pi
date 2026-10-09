@@ -159,6 +159,20 @@ export function fetchWithHeaders(headers, serverUrl, oauth) {
 
 function ignoreBodyCancellation() {}
 
+// SDK close aborts request waiters, but an OAuth rotation already in progress
+// must retain ownership through atomic storage commit and file-lock release.
+async function closeMcpState(state) {
+  const oauth = state.oauth;
+  const drained = oauth?.close();
+  const client = state.client;
+  state.client = null;
+  state.transport = null;
+  state.connectFetch = null;
+  try { await client?.close(); } catch { /* continue credential cleanup after transport failure */ }
+  await drained;
+  if (state.oauth === oauth) state.oauth = null;
+}
+
 function createTransport(config, state) {
   if (config.transport === "stdio") {
     const transport = new StdioClientTransport({
@@ -317,12 +331,8 @@ export class McpBridgeRuntime {
       const code = signal?.aborted || this.closed ? "aborted"
         : error instanceof McpAuthorizationRequiredError || state.connectFetch?.authorizationRequired ? "authorization-required" : "protocol-error";
       state.error = code === "authorization-required" ? `MCP authorization required. Run /mcp-login ${config.id}` : "MCP connection failed (protocol-error).";
-      await state.client?.close().catch(() => undefined);
+      await closeMcpState(state);
       state.status = this.closed ? "closed" : "error";
-      state.client = null;
-      state.transport = null;
-      state.oauth = null;
-      state.connectFetch = null;
       if (!this.closed) this.onToolsChanged?.();
       throw new McpCallError(code);
     }
@@ -467,11 +477,7 @@ export class McpBridgeRuntime {
       state.status = "closed";
       state.catalogReady = false;
       if (state.connectPromise) closes.push(state.connectPromise);
-      if (state.client) closes.push(state.client.close());
-      state.client = null;
-      state.transport = null;
-      state.oauth = null;
-      state.connectFetch = null;
+      closes.push(closeMcpState(state));
     }
     await Promise.allSettled(closes);
     this.searchIndex.clear();
