@@ -18,13 +18,14 @@ const fixtureRoot = mkdtempSync(join(tmpdir(), "sp-managed-subagents-"));
 const oldAgentDir = process.env.SP_CODING_AGENT_DIR;
 const oldLauncher = process.env.SP_SOURCE_LAUNCHER;
 const oldBundled = process.env.SP_BUNDLED_AGENTS_DIR;
+const defaultWorker = readFileSync(new URL("../.sp/agents/worker.md", import.meta.url), "utf8");
 process.env.SP_CODING_AGENT_DIR = join(fixtureRoot, "agent");
 process.env.SP_SOURCE_LAUNCHER = fileURLToPath(new URL("fixtures/subagent-managed-child.mjs", import.meta.url));
 delete process.env.SP_BUNDLED_AGENTS_DIR;
 mkdirSync(join(process.env.SP_CODING_AGENT_DIR, "agents"), { recursive: true });
 mkdirSync(join(process.env.SP_CODING_AGENT_DIR, "config"), { recursive: true });
 writeFileSync(join(process.env.SP_CODING_AGENT_DIR, "agents", "scout.md"), "---\nname: scout\ndescription: Offline test agent\ntools: read\n---\nFixture prompt.");
-writeFileSync(join(process.env.SP_CODING_AGENT_DIR, "agents", "worker.md"), "---\nname: worker\ndescription: Offline writer agent\ntools: read, write\n---\nFixture prompt.");
+writeFileSync(join(process.env.SP_CODING_AGENT_DIR, "agents", "worker.md"), defaultWorker);
 const { default: extension, assertTaskCount, snapshotSubagentDetails, boundedMessage, SubagentProcessRun, finishCancelledProcessGroup } = await import("../packages/extensions/subagent/index.ts");
 const { parseSubagentLimits, loadSubagentLimits, SUBAGENT_LIMITS_PATH } = await import("../packages/extensions/subagent/limits.ts");
 test.after(() => {
@@ -220,6 +221,29 @@ function harness(t: test.TestContext, options: { persistent?: boolean; shutdownE
 	return { tools, commands, hooks, startHooks, notices, events, ctx, run, control, messages, entries, notified: () => notified, resetNotification: () => { notified = new Promise<void>(resolve => { completion = resolve; }); } };
 }
 
+for (const source of ["user", "project"] as const) {
+	for (const readOnly of [false, true]) {
+		test(`default worker from ${source} receives ${readOnly ? "read-only" : "writable"} tools without a shell`, async t => {
+			const h = harness(t);
+			if (source === "project") {
+				const agentsDir = join(h.ctx.cwd, ".sp", "agents");
+				mkdirSync(agentsDir, { recursive: true });
+				writeFileSync(join(agentsDir, "worker.md"), defaultWorker);
+				h.ctx.isProjectTrusted = () => true;
+			}
+			const result = await h.run({ agent: "worker", task: "scoped implementation", agentScope: source, confirmProjectAgents: false, readOnly });
+			assert.equal(result.details.results[0].exitCode, 0);
+			assert.equal(result.details.results[0].agentSource, source);
+			const markers = readdirSync(h.ctx.cwd).filter(file => file.endsWith(".ready.json"));
+			assert.equal(markers.length, 1);
+			const started = JSON.parse(readFileSync(join(h.ctx.cwd, markers[0]), "utf8"));
+			assert.equal(started.tools, readOnly ? "read,grep,find,ls" : "read,grep,find,ls,write,edit");
+			assert.equal(started.allowBash, "0");
+			assert.match(started.systemPrompt, /Give the parent any required verification commands and clearly mark them as not run/);
+		});
+	}
+}
+
 test("ordinary children have no turn/token quota or per-turn control writes, even with a stale budget file", async t => {
 	const stale = join(process.env.SP_CODING_AGENT_DIR!, "config", "task-budgets.json");
 	writeFileSync(stale, '{"childTurns":1,"sessionTurns":1,"sessionTokens":1}');
@@ -254,6 +278,8 @@ test("responsibilities are required for every item before any child starts and r
 	assert.match(tool.description, /Plan long work as bounded phases BEFORE delegation/);
 	assert.match(tool.description, /1048576.*128 messages/);
 	assert.match(tool.description, /786432.*96 messages/);
+	assert.match(tool.description, /State whether the child's effective tools can run verification commands/);
+	assert.match(tool.description, /the default worker has no shell, so the parent owns command-based verification/);
 	const result = await h.run({ agent: "scout", task: "inspect", readOnly: true, timeoutMs: 120000, ...responsibility });
 	assert.equal(result.details.results[0].exitCode, 0);
 	const marker = readdirSync(h.ctx.cwd).find(file => file.endsWith(".ready.json"))!;
