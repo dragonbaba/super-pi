@@ -122,6 +122,171 @@ function fixture(t: TestContext, options: OAuthFixtureOptions = {}) {
 const ISSUER = "https://auth.fixture.invalid";
 const CONFIGURED_METADATA = "https://catalog.fixture.invalid/tenant/metadata.json?version=1";
 
+for (const field of ["client", "tokens"] as const) {
+  for (const issuer of [undefined, null, "", 17, "https://other.fixture.invalid"] as const) {
+    test(`MCP OAuth credential binding rejects ${field} issuer ${String(issuer)} before token use`, async t => {
+      const f = fixture(t);
+      await f.login();
+      const saved = JSON.parse(readFileSync(f.path, "utf8"));
+      saved[f.owner.key][field].issuer = issuer;
+      writeFileSync(f.path, JSON.stringify(saved));
+      const original = readFileSync(f.path, "utf8");
+      const owner = new McpOAuth(f.config, new FileAuthStorageBackend(f.path), () => assert.fail("invalid credentials must not trigger network requests"));
+      await assert.rejects(owner.token(), /authorization required/i);
+      await assert.rejects(owner.refresh("access-1-0"), /authorization required/i);
+      await assert.rejects(owner.refresh("older-access-token"), /authorization required/i);
+      assert.equal(readFileSync(f.path, "utf8"), original);
+    });
+  }
+}
+
+for (const cache of ["missing discovery", "changed discovery", "missing client"] as const) {
+  test(`MCP OAuth credential binding rejects ${cache} before returning a cached token`, async t => {
+    const f = fixture(t);
+    await f.login();
+    const saved = JSON.parse(readFileSync(f.path, "utf8"));
+    const entry = saved[f.owner.key];
+    if (cache === "missing discovery") delete entry.discovery;
+    else if (cache === "missing client") delete entry.client;
+    else {
+      entry.discovery.authorizationServerUrl = "https://other.fixture.invalid";
+      entry.discovery.authorizationServerMetadata.issuer = "https://other.fixture.invalid";
+    }
+    writeFileSync(f.path, JSON.stringify(saved));
+    const owner = new McpOAuth(f.config, new FileAuthStorageBackend(f.path), () => assert.fail("cache rejection must precede network requests"));
+    await assert.rejects(owner.token(), /authorization required/i);
+    await assert.rejects(owner.refresh("access-1-0"), /authorization required/i);
+    if (cache !== "missing client") await assert.rejects(f.login(owner), /authorization required/i);
+    assert.deepEqual(JSON.parse(readFileSync(f.path, "utf8")), saved);
+  });
+}
+
+for (const clientKind of ["dynamic", "fixed"] as const) {
+  for (const metadataUrl of [undefined, CONFIGURED_METADATA]) {
+    test(`MCP OAuth credential migration requires fresh login and preserves failures: ${clientKind}, ${metadataUrl ?? "discovered"}`, async t => {
+      const options: OAuthFixtureOptions = { authServerMetadataUrl: metadataUrl, ...(clientKind === "fixed" ? { clientId: "configured-client" } : {}) };
+      const f = fixture(t, options);
+      await f.login();
+      const saved = JSON.parse(readFileSync(f.path, "utf8"));
+      delete saved[f.owner.key].client.issuer;
+      delete saved[f.owner.key].tokens.issuer;
+      saved[f.owner.key].client.client_id = "CANARY_LEGACY_CLIENT";
+      saved[f.owner.key].client.client_secret = "CANARY_LEGACY_SECRET";
+      saved[f.owner.key].tokens.refresh_token = "CANARY_LEGACY_REFRESH";
+      writeFileSync(f.path, JSON.stringify(saved));
+      options.authorizationServer = "https://other.fixture.invalid";
+      options.tokenEndpoint = "https://other.fixture.invalid/token";
+      options.metadataOverrides = { authorization_endpoint: "https://other.fixture.invalid/authorize", registration_endpoint: "https://other.fixture.invalid/register" };
+      options.tokenResponse = { token_type: "" };
+      const owner = new McpOAuth(f.config, new FileAuthStorageBackend(f.path), (input: string | URL, init: RequestInit = {}) => {
+        assert.doesNotMatch(String(init.body ?? "") + JSON.stringify(init.headers ?? {}), /CANARY_LEGACY/);
+        return f.fetchImpl(input, init);
+      });
+      await assert.rejects(f.login(owner), /token_type/);
+      assert.deepEqual(JSON.parse(readFileSync(f.path, "utf8")), saved, "failed explicit migration preserves the old record without making it usable");
+      await assert.rejects(owner.token(), /authorization required/i);
+      options.tokenResponse = undefined;
+      await f.login(owner);
+      const migrated = JSON.parse(readFileSync(f.path, "utf8"))[owner.key];
+      assert.equal(migrated.client.issuer, options.authorizationServer);
+      assert.equal(migrated.tokens.issuer, options.authorizationServer);
+      assert.equal(migrated.client.client_id, clientKind === "fixed" ? "configured-client" : "fixture-client");
+      assert.equal(migrated.client.client_secret, undefined);
+      assert.equal(f.counts().refreshes, 0);
+      assert.equal(f.counts().registrations, clientKind === "fixed" ? 0 : 3);
+      for (const url of f.authorizationUrls.slice(1)) assert.doesNotMatch(url, /CANARY_LEGACY/);
+      for (const callback of f.callbacks) await assert.rejects(fetch(callback));
+      const reopened = new McpOAuth(f.config, new FileAuthStorageBackend(f.path), f.fetchImpl);
+      assert.equal(await reopened.token(), migrated.tokens.access_token);
+      assert.equal(await reopened.refresh(migrated.tokens.access_token), "access-3-1");
+    });
+
+    test(`MCP OAuth refresh keeps issuer binding across SDK invalidation: ${clientKind}, ${metadataUrl ?? "discovered"}`, async t => {
+      const options: OAuthFixtureOptions = { authServerMetadataUrl: metadataUrl, ...(clientKind === "fixed" ? { clientId: "configured-client" } : {}) };
+      const f = fixture(t, options);
+      await f.login();
+      const saved = JSON.parse(readFileSync(f.path, "utf8"));
+      const requests: string[] = [];
+      let rejectClient = true;
+      const owner = new McpOAuth(f.config, new FileAuthStorageBackend(f.path), (input: string | URL, init: RequestInit = {}) => {
+        if (init.method === "POST") {
+          requests.push(String(input));
+          if (rejectClient) {
+            assert.equal(String(input), `${ISSUER}/token`, "no credentials or registration may reach the replacement issuer");
+            options.authorizationServer = "https://other.fixture.invalid";
+            options.tokenEndpoint = "https://other.fixture.invalid/token";
+            options.metadataOverrides = { authorization_endpoint: "https://other.fixture.invalid/authorize", registration_endpoint: "https://other.fixture.invalid/register" };
+            return Promise.resolve(Response.json({ error: "invalid_client" }, { status: 401 }));
+          }
+        }
+        return f.fetchImpl(input, init);
+      });
+      await assert.rejects(owner.refresh("access-1-0"), /credential issuer changed/i);
+      assert.deepEqual(requests, [`${ISSUER}/token`]);
+      assert.deepEqual(JSON.parse(readFileSync(f.path, "utf8")), saved);
+      assert.equal(await owner.token(), "access-1-0");
+      rejectClient = false;
+      options.authorizationServer = ISSUER;
+      options.tokenEndpoint = `${ISSUER}/token`;
+      options.metadataOverrides = undefined;
+      assert.equal(await owner.refresh("access-1-0"), "access-1-1");
+    });
+  }
+}
+
+for (const clientKind of ["dynamic", "fixed"] as const) {
+  test(`MCP OAuth same-issuer invalid_client cannot register or restore a ${clientKind} client during refresh`, async t => {
+    const f = fixture(t, clientKind === "fixed" ? { clientId: "configured-client" } : {});
+    await f.login();
+    const saved = JSON.parse(readFileSync(f.path, "utf8"));
+    const requests: string[] = [];
+    const owner = new McpOAuth(f.config, new FileAuthStorageBackend(f.path), (input: string | URL, init: RequestInit = {}) => {
+      if (init.method === "POST") {
+        requests.push(String(input));
+        return Promise.resolve(Response.json({ error: "invalid_client" }, { status: 401 }));
+      }
+      return f.fetchImpl(input, init);
+    });
+    await assert.rejects(owner.refresh("access-1-0"), /authorization required/i);
+    assert.deepEqual(requests, [`${ISSUER}/token`]);
+    assert.deepEqual(JSON.parse(readFileSync(f.path, "utf8")), saved);
+  });
+}
+
+test("MCP OAuth cancelled legacy migration preserves storage and closes the callback", async t => {
+  const f = fixture(t);
+  await f.login();
+  const saved = JSON.parse(readFileSync(f.path, "utf8"));
+  delete saved[f.owner.key].tokens.issuer; // A partially stamped record also needs a fresh login.
+  writeFileSync(f.path, JSON.stringify(saved));
+  const owner = new McpOAuth(f.config, new FileAuthStorageBackend(f.path), f.fetchImpl);
+  const controller = new AbortController();
+  let callback = "";
+  await assert.rejects(owner.login((url: string) => {
+    callback = new URL(url).searchParams.get("redirect_uri")!;
+    controller.abort();
+  }, controller.signal), /cancelled|abort/i);
+  assert.deepEqual(JSON.parse(readFileSync(f.path, "utf8")), saved);
+  await assert.rejects(fetch(callback));
+  await assert.rejects(owner.token(), /authorization required/i);
+  await f.login(owner);
+  assert.equal(await owner.token(), "access-2-0");
+  assert.equal(f.counts().registrations, 3, "both attempted migrations register fresh clients, not the old bound client");
+});
+
+for (const mode of ["counts", "gc"]) {
+  test(`MCP OAuth cached-read performance and ownership: ${mode}`, async () => {
+    const output = await new Promise<string>((resolve, reject) => {
+      execFile(process.execPath, ["--expose-gc", "--experimental-strip-types", "scripts/bench/mcp-oauth-cache.ts", mode],
+        { windowsHide: true, timeout: 15000 }, (error, stdout, stderr) => error ? reject(new Error(`${error.message}\n${stdout}\n${stderr}`)) : resolve(stdout));
+    });
+    const result = JSON.parse(output.trim());
+    assert.equal(result.mode, mode);
+    if (mode === "counts") assert.equal(result.reads, 10_000);
+    else assert.equal(result.retained, 0);
+  });
+}
+
 async function scopeEndpoint(t: TestContext, rpc = false) {
   const replies = { status: 403, challenge: 'Bearer error="insufficient_scope", scope="tools.write"', firstUnauthorized: false,
     blockInitialization: false, beforeReply: undefined as (() => Promise<void>) | undefined };
@@ -1576,10 +1741,12 @@ test("a successful logout reports before reload and never uses the replaced comm
 
 test("a cold token read waits for another process's refresh lease and uses its committed token", async t => {
   const f = fixture(t), backend = new FileAuthStorageBackend(f.path);
+  await f.login();
   let entered!: () => void, release!: () => void;
   const ready = new Promise<void>(resolve => { entered = resolve; });
   const gate = new Promise<void>(resolve => { release = resolve; });
-  const committed = { [f.owner.key]: { tokens: { access_token: "fresh-token" }, expiresAt: Date.now() + 3_600_000 } };
+  const committed = JSON.parse(readFileSync(f.path, "utf8"));
+  committed[f.owner.key].tokens.access_token = "fresh-token";
   // Held well past the old ~200 ms synchronous retry window, as an OAuth network refresh would be.
   const held = backend.withLockAsync(async () => { entered(); await gate; return { result: undefined, next: JSON.stringify(committed) }; });
   await ready;
