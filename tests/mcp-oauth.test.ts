@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { getEventListeners } from "node:events";
 import { setImmediate as nextTask } from "node:timers/promises";
 import { transactionWriter } from "./helpers/oauth-transaction-process.ts";
@@ -1468,6 +1469,61 @@ test("MCP OAuth issuer rejection preserves previous credentials and permits imme
   assert.equal(await f.owner.token(), "access-2-0");
   for (const callback of f.callbacks) await assert.rejects(fetch(callback));
 });
+
+for (const oidc of [false, true]) {
+  test(`MCP OAuth native loopback registration with ${oidc ? "OIDC" : "OAuth"} discovery`, async t => {
+    const f = fixture(t, { oidc, issuerSupport: true, scope: "tools.read" });
+    let registration: Record<string, unknown> | undefined;
+    let exchange: URLSearchParams | undefined;
+    f.owner.fetchImpl = async (input: string | URL, init: RequestInit) => {
+      const url = new URL(input);
+      if (url.pathname === "/register") {
+        registration = JSON.parse(init.body as string);
+        // OIDC registration defaults an omitted application_type to web, which
+        // rejects the bridge's HTTP loopback redirect. Exercise the real SDK wire payload.
+        if (registration!.application_type !== "native") {
+          return Response.json({ error: "invalid_redirect_uri", error_description: "HTTP loopback requires a native client" }, { status: 400 });
+        }
+      } else if (url.pathname === "/token") {
+        const body = new URLSearchParams(init.body as string);
+        if (body.get("grant_type") === "authorization_code") exchange = body;
+      }
+      return f.fetchImpl(input, init);
+    };
+    const parameters = new URLSearchParams({ code: "fixture-code", iss: ISSUER });
+    const callback = await f.login(f.owner, parameters);
+    const redirect = new URL(callback);
+    assert.equal(redirect.protocol, "http:");
+    assert.equal(redirect.hostname, "127.0.0.1");
+    assert.ok(Number(redirect.port) > 0);
+    assert.deepEqual(registration, {
+      client_name: "Super Pi MCP", application_type: "native", redirect_uris: [callback],
+      grant_types: ["authorization_code", "refresh_token"], response_types: ["code"],
+      token_endpoint_auth_method: "none", scope: "tools.read",
+    });
+    const authorization = new URL(f.authorizationUrls[0]!);
+    assert.equal(authorization.searchParams.get("client_id"), "fixture-client");
+    assert.equal(authorization.searchParams.get("code_challenge_method"), "S256");
+    assert.equal(authorization.searchParams.get("code_challenge"), createHash("sha256").update(exchange!.get("code_verifier")!).digest("base64url"));
+    assert.equal(exchange!.get("redirect_uri"), callback);
+    const saved = JSON.parse(readFileSync(f.path, "utf8"))[f.owner.key];
+    assert.equal(saved.client.issuer, ISSUER);
+    assert.equal(saved.tokens.issuer, ISSUER);
+    assert.equal(saved.tokens.scope, "tools.read");
+    assert.equal(saved.loginAttempt, undefined);
+    assert.doesNotMatch(readFileSync(f.path, "utf8"), /code_verifier|fixture-code/);
+    await assert.rejects(fetch(callback));
+
+    assert.equal(await f.owner.refresh("access-1-0"), "access-1-1");
+    await f.login(f.owner, parameters);
+    assert.deepEqual(f.counts(), { refreshes: 1, exchanges: 2, registrations: 1 }, "refresh and re-login reuse the registered client");
+    assert.equal(f.callbacks[1], callback);
+    await assert.rejects(fetch(callback));
+    await f.owner.logout();
+    assert.equal(f.owner.cached, undefined);
+    assert.equal(JSON.parse(readFileSync(f.path, "utf8"))[f.owner.key], undefined);
+  });
+}
 
 test("MCP OAuth explicit PKCE login, state validation, durable credentials and closed callback", async t => {
   const f = fixture(t);
