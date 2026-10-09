@@ -1,6 +1,6 @@
 import type { ChildProcess } from "node:child_process";
 import type { Message } from "@super-pi/ai";
-import { appendCheckpointTurn, assertCheckpointJson, type TaskCheckpoint } from "./checkpoints.ts";
+import { appendCheckpointTurn, assertCheckpointJson, CheckpointCapacityError, CHECKPOINT_HANDOFF_BYTES, CHECKPOINT_HANDOFF_MESSAGES, type TaskCheckpoint } from "./checkpoints.ts";
 import type { SubagentTasks } from "./tasks.ts";
 
 export const CONTROL_BYTES = 2 * 1024 * 1024;
@@ -18,7 +18,10 @@ export function decodeControl(value: unknown): any {
 
 /** One IPC owner per child. Initialization and opt-in checkpoint boundaries only. */
 export class SubagentControl {
-	readonly counters = { received: 0, replies: 0, starts: 0, turns: 0, checkpointWrites: 0 };
+	readonly counters = { received: 0, replies: 0, starts: 0, turns: 0, checkpointWrites: 0, handoffs: 0 };
+	handoff = false;
+	private checkpointFrozen = false;
+	private checkpointBytes = 0;
 	private tasks: SubagentTasks | undefined;
 	private checkpoint: TaskCheckpoint | undefined;
 	private seed: Message[] | undefined;
@@ -42,8 +45,30 @@ export class SubagentControl {
 		proc.on("message", this.messageListener);
 	}
 	private save(): void {
-		if (!this.checkpoint) return;
-		this.tasks!.saveCheckpoint(this.checkpoint); this.counters.checkpointWrites++;
+		if (!this.checkpoint || this.checkpointFrozen) return;
+		this.checkpointBytes = this.tasks!.saveCheckpoint(this.checkpoint); this.counters.checkpointWrites++;
+		if (this.checkpointBytes >= CHECKPOINT_HANDOFF_BYTES || this.checkpoint.messages.length >= CHECKPOINT_HANDOFF_MESSAGES) this.requestHandoff();
+	}
+	get handoffReason(): string | undefined {
+		if (!this.handoff) return undefined;
+		return this.checkpointFrozen
+			? "Checkpoint capacity handoff: the latest turn did not fit; the last valid checkpoint is preserved with pending effects. Inspect the workspace and use this result for a fresh bounded assignment, not repeated resume."
+			: "Checkpoint capacity handoff: planning threshold reached before the hard limit. Review completed and remaining work; use the handoff for a fresh bounded assignment instead of repeatedly resuming this checkpoint.";
+	}
+	private requestHandoff(): void { if (!this.handoff) { this.handoff = true; this.counters.handoffs++; } }
+	private saveTurn(message: unknown, results: unknown): void {
+		if (this.checkpointFrozen) return;
+		const checkpoint = this.checkpoint!;
+		const count = checkpoint.messages.length, turns = checkpoint.turns, updatedAt = checkpoint.updatedAt, pending = checkpoint.pending;
+		try {
+			if (this.pendingPrompt) checkpoint.messages.push(this.pendingPrompt);
+			appendCheckpointTurn(checkpoint, message, results); this.save();
+			this.pendingPrompt = undefined;
+		} catch (error) {
+			checkpoint.messages.length = count; checkpoint.turns = turns; checkpoint.updatedAt = updatedAt; checkpoint.pending = pending;
+			if (!(error instanceof CheckpointCapacityError)) throw error;
+			this.checkpointFrozen = true; this.requestHandoff();
+		}
 	}
 	private stop(reason: string): void { this.failed = true; this.fail?.(reason); }
 	private onSend(error: Error | null): void { if (error) this.stop(`Subagent control delivery failed: ${error.message}`); }
@@ -64,15 +89,18 @@ export class SubagentControl {
 				this.checkpoint.pending = true; this.checkpoint.updatedAt = Date.now(); this.save();
 				this.counters.starts++; this.phase = "turn";
 			} else if (packet.kind === "turn" && this.phase === "turn") {
-				if (this.checkpoint && packet.completed === true) {
-					// An interrupted continuation must not persist its unanswered instruction.
-					if (this.pendingPrompt) this.checkpoint.messages.push(this.pendingPrompt);
-					appendCheckpointTurn(this.checkpoint, packet.message, packet.results); this.save();
-					this.pendingPrompt = undefined;
-				}
+				if (packet.completed === true) this.saveTurn(packet.message, packet.results);
 				this.counters.turns++; this.phase = "idle";
+			} else if (packet.kind === "handoff" && this.phase === "turn") {
+				// Child projection/transport hit capacity before it could send the turn.
+				this.checkpointFrozen = true; this.requestHandoff(); this.phase = "idle";
 			} else throw new Error(`Unexpected subagent control ${String(packet.kind).slice(0, 64)} during ${this.phase}.`);
-			this.reply(response ?? { id: packet.id, ok: true });
+			const reply = (response ?? { id: packet.id, ok: true }) as Record<string, unknown>;
+			if (this.checkpoint) {
+				reply.checkpointBytes = this.checkpointBytes; reply.checkpointMessages = this.checkpoint.messages.length;
+				reply.handoff = this.handoff; reply.checkpointFrozen = this.checkpointFrozen;
+			}
+			this.reply(reply);
 		} catch (error) { this.stop(`Subagent control stopped: ${error instanceof Error ? error.message : String(error)}`); }
 	}
 	private reply(packet: unknown): void {

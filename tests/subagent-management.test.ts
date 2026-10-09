@@ -251,12 +251,36 @@ test("responsibilities are required for every item before any child starts and r
 	}
 	assert.deepEqual(readdirSync(h.ctx.cwd), []);
 	assert.match(await h.control("list"), /0\/8 reserved/);
-	const result = await h.run({ agent: "scout", task: "inspect", readOnly: true, ...responsibility });
+	assert.match(tool.description, /Plan long work as bounded phases BEFORE delegation/);
+	assert.match(tool.description, /1048576.*128 messages/);
+	assert.match(tool.description, /786432.*96 messages/);
+	const result = await h.run({ agent: "scout", task: "inspect", readOnly: true, timeoutMs: 120000, ...responsibility });
 	assert.equal(result.details.results[0].exitCode, 0);
 	const marker = readdirSync(h.ctx.cwd).find(file => file.endsWith(".ready.json"))!;
 	const started = JSON.parse(readFileSync(join(h.ctx.cwd, marker), "utf8"));
 	assert.equal(started.task, `Task: inspect\n\nScope: ${responsibility.scope}\nDeliverable: ${responsibility.deliverable}\nStop condition: ${responsibility.stopCondition}`);
 	assert.match(started.systemPrompt, /Return immediately when done/);
+	assert.match(started.systemPrompt, /Runtime limit: 120000ms.*return completed work/);
+});
+
+test("capacity handoff reaches foreground/background results and stops dependent chain launches", async t => {
+	const h = harness(t, { persistent: true });
+	const chain = await h.run({ checkpoint: true, chain: [
+		{ agent: "scout", task: "capacity-handoff", readOnly: true },
+		{ agent: "scout", task: "must-not-run", readOnly: true },
+	] });
+	assert.match(chain.content[0].text, /Chain paused after step 1; dependent steps were not started/);
+	assert.match(chain.content[0].text, /before the hard limit/);
+	assert.equal(chain.details.results[0].handoff, "Checkpoint handoff");
+	assert.equal(readdirSync(h.ctx.cwd).filter(file => file.endsWith(".ready.json")).length, 1);
+	const parallel = await h.run({ checkpoint: true, tasks: [
+		{ agent: "scout", task: "capacity-handoff", readOnly: true },
+		{ agent: "scout", task: "small-phase", readOnly: true },
+	] });
+	assert.match(parallel.content[0].text, /1 completed; 1 handed off/);
+	const background = await h.run({ checkpoint: true, agent: "scout", task: "capacity-handoff", readOnly: true, background: true });
+	const id = ids(background)[0]; await h.notified();
+	assert.match(await h.control("status", id), /Checkpoint capacity handoff.*fresh bounded assignment/s);
 });
 
 test("real completed checkpoint continues under a fresh ID and current authorization; memory sessions refuse storage", async t => {

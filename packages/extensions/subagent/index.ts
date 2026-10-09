@@ -39,7 +39,7 @@ import { consumeDelegatedTaskPolicies, type DelegatedTaskPolicy } from "./delega
 import { DELEGATION_GUIDANCE, describeSubagentLimits, loadSubagentLimits, SUBAGENT_LIMITS_PATH, type SubagentLimits } from "./limits.ts";
 import { SubagentScheduler } from "./scheduler.ts";
 import { SubagentTasks, type ManagedSubagentTask } from "./tasks.ts";
-import { type TaskCheckpoint } from "./checkpoints.ts";
+import { CHECKPOINT_PLANNING, type TaskCheckpoint } from "./checkpoints.ts";
 import { SubagentControl } from "./control.ts";
 import { assignmentProperties, assertAssignments, formatAssignment, CHILD_RESPONSIBILITIES, MAX_TASK_CHARS } from "./assignments.ts";
 import { SESSION_PERMISSION_EVENT } from "../resource-lifecycle-guard/permission-contract.ts";
@@ -222,6 +222,7 @@ export interface SingleResult {
 	completedAt?: number;
 	stopReason?: string;
 	errorMessage?: string;
+	handoff?: string;
 	step?: number;
 }
 
@@ -243,6 +244,7 @@ export function snapshotSubagentDetails(mode: SubagentDetails["mode"], agentScop
 			exitCode: result.exitCode, usage: { ...result.usage }, model: result.model, startedAt: result.startedAt,
 			completedAt: result.completedAt, step: result.step, stopReason: result.stopReason,
 			errorMessage: result.errorMessage ? "Subagent failed" : undefined,
+			handoff: result.handoff ? "Checkpoint handoff" : undefined,
 		};
 	}
 	return { mode, agentScope, projectAgentsDir, results: snapshots };
@@ -536,7 +538,8 @@ function getResultOutput(result: SingleResult): string {
 	if (isFailedResult(result)) {
 		return result.errorMessage || result.stderr || getFinalOutput(result.messages) || "(no output)";
 	}
-	return getFinalOutput(result.messages) || "(no output)";
+	const output = getFinalOutput(result.messages) || "(no output)";
+	return result.handoff ? `${result.handoff}\n\n${output}` : output;
 }
 
 export function subagentCleanupError(primary: unknown, ownedPath: string, cleanupError: unknown): Error {
@@ -596,12 +599,14 @@ export function formatParallelResultText(results: SingleResult[], externallyAbor
 		if (succeeded === 0) throw new Error(capText(`Parallel subagents failed: ${failures.join("; ")}`, 4096));
 	}
 	const summaries: string[] = [];
+	let handoffs = 0;
 	for (const result of results) {
 		const resultFailed = isFailedResult(result);
+		if (!resultFailed && result.handoff) handoffs++;
 		const output = resultFailed ? capText(getResultOutput(result), 1024) : truncateParallelOutput(getResultOutput(result));
-		summaries.push(`### [${result.agent}] ${resultFailed ? "failed" : "completed"}\n\n${output}`);
+		summaries.push(`### [${result.agent}] ${resultFailed ? "failed" : result.handoff ? "handoff" : "completed"}\n\n${output}`);
 	}
-	return `Parallel: ${succeeded}/${results.length} succeeded${failed > 0 ? `; ${failed} failed` : ""}\n\n${summaries.join("\n\n---\n\n")}`;
+	return `Parallel: ${handoffs ? `${succeeded - handoffs} completed; ${handoffs} handed off` : `${succeeded}/${results.length} succeeded`}${failed > 0 ? `; ${failed} failed` : ""}\n\n${summaries.join("\n\n---\n\n")}`;
 }
 
 export function firstTextLines(value: string, maxLines: number): string {
@@ -1100,7 +1105,7 @@ async function runSingleAgent(
 		const childCwd = canonicalWorkspace(policy.canonicalCwd);
 		if (childCwd !== policy.canonicalCwd) throw new Error("Delegated child cwd changed after permission authorization.");
 		{
-			const tmp = await writePromptToTempFile(agent.name, `${agent.systemPrompt}\n\n${CHILD_RESPONSIBILITIES}`);
+			const tmp = await writePromptToTempFile(agent.name, `${agent.systemPrompt}\n\n${CHILD_RESPONSIBILITIES}\nRuntime limit: ${timeoutMs}ms from launch. Plan a phase that finishes within it; if the full objective is longer, return completed work, evidence and the next bounded assignment before the deadline.`);
 			tmpPromptDir = tmp.dir;
 			tmpPromptPath = tmp.filePath;
 			args.push("--append-system-prompt", tmpPromptPath);
@@ -1126,6 +1131,7 @@ async function runSingleAgent(
 
 		currentResult.exitCode = exitCode;
 		currentResult.completedAt = Date.now();
+		currentResult.handoff = control.handoffReason;
 		if (exitCode !== 0 && !currentResult.errorMessage) {
 			currentResult.errorMessage = failureDisplayText(currentResult);
 		}
@@ -1189,7 +1195,7 @@ function subagentParameters(limits: SubagentLimits) { return Type.Object({
 	tasks: Type.Optional(Type.Array(TaskItem, { minItems: 1, maxItems: limits.maxTasks, description: `Independent parallel tasks; at most ${limits.maxConcurrent} running, remainder queued` })),
 	chain: Type.Optional(Type.Array(ChainItem, { minItems: 1, maxItems: limits.maxTasks, description: "Dependent sequential tasks" })),
 	background: Type.Optional(Type.Boolean({ description: "Return managed task IDs immediately; continue work and await completion notification. TUI/RPC only; tasks stop when this session closes." })),
-	checkpoint: Type.Optional(Type.Boolean({ description: "Opt in to storing bounded completed-turn context (including prompts/tool arguments): 1 MiB, 128 messages, no images or hidden reasoning. Requires a persistent session. Stops if the checkpoint cannot be saved." })),
+	checkpoint: Type.Optional(Type.Boolean({ description: "Opt in to completed context including prompts/tool arguments: 1 MiB / 128 messages, early handoff at 768 KiB / 96 messages. Plan bounded phases before delegation. Persistent session required; no images or hidden reasoning. Storage/corruption errors still stop the task." })),
 	resumeTaskId: Type.Optional(Type.String({ minLength: 1, maxLength: 80, description: "Single mode only: continue a terminal task's checkpoint as a NEW task with a fresh instruction. Requires the same role/workspace identity and current authorization. Does not replay unfinished tools; inspect current files first." })),
 	agentScope: Type.Optional(AgentScopeSchema),
 	confirmProjectAgents: Type.Optional(
@@ -1271,6 +1277,7 @@ async function executePreparedBatch(batch: PreparedBatch): Promise<AgentToolResu
 
 			const isError = isFailedResult(result);
 			if (isError) throw new Error(`Chain stopped at step ${i + 1} (${step.agent}): ${capText(getResultOutput(result), PER_TASK_OUTPUT_CAP)}`);
+			if (result.handoff) return { content: [{ type: "text", text: `Chain paused after step ${i + 1}; dependent steps were not started.\n${getResultOutput(result)}` }], details: chainDetails(results) };
 			previousOutput = getFinalOutput(result.messages);
 		}
 		return {
@@ -1349,7 +1356,7 @@ async function executePreparedBatch(batch: PreparedBatch): Promise<AgentToolResu
 		const isError = isFailedResult(result);
 		if (isError) throw new Error(`Agent ${result.stopReason || "failed"}: ${capText(getResultOutput(result), PER_TASK_OUTPUT_CAP)}`);
 		return {
-			content: [{ type: "text", text: getFinalOutput(result.messages) || "(no output)" }],
+			content: [{ type: "text", text: getResultOutput(result) }],
 			details: singleDetails([result]),
 		};
 	}
@@ -1514,7 +1521,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "subagent",
 		label: "Subagent",
-		description: `Delegate tasks to isolated subagents. agent is a registered role (planner/reviewer/scout/worker), never a custom task name; put the objective and relevant evidence in task. Each single task or batch item REQUIRES scope, deliverable and stopCondition. Task plus responsibility fields must fit 16384 characters. Supports single, parallel tasks, sequential chain, and session-owned background execution. ${describeSubagentLimits(limits)} No token or turn quotas. Optional checkpoint/resumeTaskId saves completed context only; current authorization is always required. ${DELEGATION_GUIDANCE}`,
+		description: `Delegate tasks to isolated subagents. agent is a registered role (planner/reviewer/scout/worker), never a custom task name; put the objective and relevant evidence in task. Each single task or batch item REQUIRES scope, deliverable and stopCondition. Task plus responsibility fields must fit 16384 characters. Supports single, parallel tasks, sequential chain, and session-owned background execution. ${describeSubagentLimits(limits)} No token or turn quotas. Runtime: default 1800000ms, maximum 7200000ms after launch; split work and reserve time for handoff. ${CHECKPOINT_PLANNING} Current authorization is always required. ${DELEGATION_GUIDANCE}`,
 		parameters: subagentParameters(limits),
 		prepareArguments(input) {
 			assertTaskCount(input, limits);

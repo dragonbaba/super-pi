@@ -10,7 +10,7 @@ const FIELDS = ["scope", "deliverable", "stopCondition"] as const;
 export const assignmentProperties = {
 	scope: Type.String({ minLength: 1, maxLength: MAX_FIELD_CHARS, description: "Required: exact files, subsystem or question in scope; exclusions where needed. Does not grant file permissions." }),
 	deliverable: Type.String({ minLength: 1, maxLength: MAX_FIELD_CHARS, description: "Required: concrete result the parent can verify; concise findings with evidence locations, plan, or scoped changes and checks." }),
-	stopCondition: Type.String({ minLength: 1, maxLength: MAX_FIELD_CHARS, description: "Required: observable completion condition. Stop and report if blocked or further work would exceed scope." }),
+	stopCondition: Type.String({ minLength: 1, maxLength: MAX_FIELD_CHARS, description: "Required: observable completion condition and an early handoff point for long work. Plan a bounded phase before delegation; return completed/remaining work before checkpoint or runtime limits, and report blockers without expanding scope." }),
 };
 
 export interface Assignment {
