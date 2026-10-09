@@ -40,6 +40,8 @@ const MISTRAL_EVENT_BOUNDARY_OVERLAP = 3;
 type MistralReasoningEffort = "none" | "high";
 
 export interface MistralOptions extends StreamOptions {
+	/** Deadline for response headers (default 60s). Body idle timeouts belong to the HTTP transport. */
+	timeoutMs?: number;
 	toolChoice?: "auto" | "none" | "any" | "required" | { type: "function"; function: { name: string } };
 	promptMode?: "reasoning";
 	reasoningEffort?: MistralReasoningEffort;
@@ -339,38 +341,68 @@ function safeJsonStringify(value: unknown): string {
 	}
 }
 
+function abortMistralHeaderRequest(controller: AbortController, timeoutMs: number): void {
+	controller.abort(new DOMException(`Mistral response headers timed out after ${timeoutMs}ms`, "TimeoutError"));
+}
+
 async function requestMistralStream(
 	model: Model<"mistral-conversations">,
 	payload: Record<string, unknown>,
 	apiKey: string,
 	options?: MistralOptions,
 ): Promise<AsyncIterable<MistralCompletionEvent>> {
+	options?.signal?.throwIfAborted();
 	const baseUrl = new URL(model.baseUrl);
 	let pathnameEnd = baseUrl.pathname.length;
 	while (pathnameEnd > 0 && baseUrl.pathname.charCodeAt(pathnameEnd - 1) === 0x2f) pathnameEnd--;
 	baseUrl.pathname = `${baseUrl.pathname.slice(0, pathnameEnd)}/`;
 	const url = new URL("v1/chat/completions", baseUrl);
 	const headers = buildMistralHeaders(model, apiKey, options);
-	const timeoutSignal = AbortSignal.timeout(options?.timeoutMs ?? 60_000);
-	const signal = options?.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal;
-	const response = await (options?.fetch ?? globalThis.fetch)(url, {
-		method: "POST",
-		headers,
-		body: JSON.stringify(payload),
-		signal,
-	});
-
-	await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
-
-	if (!response.ok) {
-		const body = await readBoundedMistralErrorBody(response);
-		throw new MistralHttpError(response.status, body, response.statusText);
+	const timeoutMs = options?.timeoutMs ?? 60_000;
+	if (!Number.isInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > 0xffffffff) {
+		throw new RangeError("Mistral timeoutMs must be an integer between 0 and 4294967295");
 	}
-	if (!response.body) {
-		throw new Error("Mistral response has no body");
+	const headerController = new AbortController();
+	const signal = options?.signal ? AbortSignal.any([options.signal, headerController.signal]) : headerController.signal;
+	// Disarm only the header deadline; fetch and body reads must still follow caller cancellation.
+	const headerTimeout = setTimeout(abortMistralHeaderRequest, timeoutMs, headerController, timeoutMs);
+	headerTimeout.unref?.();
+	let response: Response;
+	try {
+		response = await (options?.fetch ?? globalThis.fetch)(url, {
+			method: "POST",
+			headers,
+			body: JSON.stringify(payload),
+			signal,
+		});
+	} catch (error) {
+		if (headerController.signal.aborted && !options?.signal?.aborted) throw headerController.signal.reason;
+		throw error;
+	} finally {
+		clearTimeout(headerTimeout);
 	}
 
-	return readMistralEvents(response.body, signal);
+	try {
+		signal.throwIfAborted();
+		await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
+		signal.throwIfAborted();
+
+		if (!response.ok) {
+			const body = await readBoundedMistralErrorBody(response);
+			throw new MistralHttpError(response.status, body, response.statusText);
+		}
+		if (!response.body) {
+			throw new Error("Mistral response has no body");
+		}
+
+		return readMistralEvents(response.body, signal);
+	} catch (error) {
+		// Until the iterator owns the reader, this request owns response cleanup.
+		try {
+			await response.body?.cancel();
+		} catch {}
+		throw error;
+	}
 }
 
 export function observeMistralEffectiveDispatch(
