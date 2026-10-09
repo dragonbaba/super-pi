@@ -20,7 +20,7 @@ const ResultSchema = CallToolResultSchema.extend({
     .or(BoundedResourceSchema).or(ResourceLinkSchema).array().max(MAX_CONTENT_ITEMS).default([]),
 });
 
-/** Adapter for the pinned SDK 1.30.0; no transport, request or cursor owner. */
+/** Adapter for the pinned SDK 1.32.1; no transport, request or cursor owner. */
 class McpClient extends Client {
   constructor() {
     super({ name: "@super-pi/mcp-bridge", version: "0.1.0" }, { capabilities: { roots: { listChanged: false } } });

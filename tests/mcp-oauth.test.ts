@@ -213,7 +213,7 @@ for (const kind of ["narrow", "unrecorded", "covering", "fixed"] as const) {
     assert.equal(auth.searchParams.get("scope"), "read tools.write");
     assert.equal(auth.searchParams.get("client_id"), clientId);
     assert.deepEqual(f.counts(), { registrations: kind === "fixed" ? 0 : replaced ? 2 : 1, exchanges: 2, refreshes: 0 });
-    assert.deepEqual(saved.client, kind === "fixed" ? { client_id: clientId } : { ...saved.client, client_id: clientId, scope: "read tools.write" });
+    assert.deepEqual(saved.client, kind === "fixed" ? { client_id: clientId, issuer: ISSUER } : { ...saved.client, client_id: clientId, scope: "read tools.write", issuer: ISSUER });
     assert.equal(saved.pendingScope, undefined);
   });
 }
@@ -1175,6 +1175,9 @@ test("MCP OAuth explicit PKCE login, state validation, durable credentials and c
   assert.deepEqual(f.counts(), { refreshes: 0, exchanges: 1, registrations: 1 });
   const saved = readFileSync(f.path, "utf8");
   assert.doesNotMatch(saved, /code_verifier|fixture-code/);
+  const credentials = JSON.parse(saved)[f.owner.key];
+  assert.equal(credentials.client.issuer, ISSUER);
+  assert.equal(credentials.tokens.issuer, ISSUER);
   await assert.rejects(fetch(callback));
   const other = new McpOAuth(f.config, new FileAuthStorageBackend(f.path), f.fetchImpl);
   assert.equal(await other.token(), "access-1-0");
@@ -1205,7 +1208,7 @@ for (const value of [null, ""] as const) {
     await f.login();
     assert.equal(await f.owner.refresh("access-1-0"), "access-1-1");
     const saved = JSON.parse(readFileSync(f.path, "utf8"))[f.owner.key];
-    assert.deepEqual(saved.tokens, { token_type: "Bearer", access_token: "access-1-1", refresh_token: "refresh-0" });
+    assert.deepEqual(saved.tokens, { token_type: "Bearer", access_token: "access-1-1", refresh_token: "refresh-0", issuer: ISSUER });
     assert.equal(Object.hasOwn(saved, "expiresAt"), false);
     const reopened = new McpOAuth(f.config, new FileAuthStorageBackend(f.path), async (input: string | URL, init: RequestInit) => {
       assert.equal(new URLSearchParams(init.body as string).get("refresh_token"), "refresh-0");
