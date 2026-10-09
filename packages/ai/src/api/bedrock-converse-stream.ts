@@ -28,6 +28,7 @@ import { HttpProxyAgent } from "http-proxy-agent";
 import { HttpsProxyAgent } from "https-proxy-agent";
 import { calculateCost, clampThinkingLevel } from "../models.ts";
 import { capabilityCacheRetention, contextForModelCapabilities, getModelCapabilities } from "../model-capabilities.ts";
+import { isHaiku55Model } from "../providers/haiku-55-profile.ts";
 import type {
 	Api,
 	AssistantMessage,
@@ -247,7 +248,8 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 				system: buildSystemPrompt(wireContext.systemPrompt, model, cacheRetention, options.env),
 				inferenceConfig: {
 					...(inferenceMaxTokens !== undefined && { maxTokens: inferenceMaxTokens }),
-					...(options.temperature !== undefined && { temperature: options.temperature }),
+					...(options.temperature !== undefined && (model.compat?.supportsTemperature ?? !isHaiku55Model(model)) &&
+						{ temperature: options.temperature }),
 				},
 				toolConfig: convertToolConfig(
 					wireContext.tools,
@@ -759,6 +761,7 @@ function getModelMatchCandidates(modelId: string, modelName?: string): string[] 
 }
 
 function supportsNativeXhighEffort(model: Model<"bedrock-converse-stream">): boolean {
+	if (isHaiku55Model(model)) return true;
 	const candidates = getModelMatchCandidates(model.id, model.name);
 	return candidates.some(
 		(s) =>
@@ -774,10 +777,9 @@ function mapThinkingLevelToEffort(
 	model: Model<"bedrock-converse-stream">,
 	level: SimpleStreamOptions["reasoning"],
 ): "low" | "medium" | "high" | "xhigh" | "max" {
-	if (level === "xhigh" && supportsNativeXhighEffort(model)) return "xhigh";
-
 	const mapped = level ? model.thinkingLevelMap?.[level] : undefined;
 	if (typeof mapped === "string") return mapped as "low" | "medium" | "high" | "xhigh" | "max";
+	if (level === "xhigh" && supportsNativeXhighEffort(model)) return "xhigh";
 
 	switch (level) {
 		case "minimal":
@@ -812,6 +814,7 @@ function resolveCacheRetention(cacheRetention?: CacheRetention, env?: ProviderEn
  * whose ARNs don't contain the model name.
  */
 function isAnthropicClaudeModel(model: Model<"bedrock-converse-stream">): boolean {
+	if (isHaiku55Model(model)) return true;
 	const id = model.id.toLowerCase();
 	const name = model.name?.toLowerCase() ?? "";
 	return (
@@ -837,6 +840,7 @@ function isAnthropicClaudeModel(model: Model<"bedrock-converse-stream">): boolea
  */
 function supportsPromptCaching(model: Model<"bedrock-converse-stream">, env?: ProviderEnv): boolean {
 	if (getModelCapabilities(model).promptCache.mode === "none") return false;
+	if (isHaiku55Model(model)) return true;
 	const candidates = getModelMatchCandidates(model.id, model.name);
 
 	const hasClaudeRef = candidates.some((s) => s.includes("claude"));
@@ -1223,7 +1227,8 @@ function buildAdditionalModelRequestFields(
 	if (isAnthropicClaudeModel(model)) {
 		// GovCloud Bedrock currently rejects the Claude thinking.display field.
 		// Omit it there until the GovCloud Converse schema catches up.
-		const display = isGovCloudBedrockTarget(model, options) ? undefined : (options.thinkingDisplay ?? "summarized");
+		const govCloud = isGovCloudBedrockTarget(model, options);
+		const display = govCloud ? undefined : (options.thinkingDisplay ?? "summarized");
 		const adaptive = getModelCapabilities(model).reasoning.mode === "adaptive";
 		const result: Record<string, any> = adaptive
 			? {
@@ -1253,7 +1258,10 @@ function buildAdditionalModelRequestFields(
 					};
 				})();
 
-		if (!adaptive && (options.interleavedThinking ?? true)) {
+		if (adaptive && !govCloud && isHaiku55Model(model)) {
+			result.thinking.block_binding = { prefix_mismatch_behavior: "drop_block" };
+			result.anthropic_beta = ["thinking-binding-controls-2026-08-01"];
+		} else if (!adaptive && (options.interleavedThinking ?? true)) {
 			result.anthropic_beta = ["interleaved-thinking-2025-05-14"];
 		}
 

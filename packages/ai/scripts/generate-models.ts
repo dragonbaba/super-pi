@@ -4,6 +4,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSy
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 import { getEffortThinkingLevelMap, type ModelsDevReasoningOption } from "./models-dev-reasoning-options.ts";
+import { ensureHaiku55CatalogModel } from "./haiku-55-catalog.ts";
+import { HAIKU_55_THINKING_LEVEL_MAP, isHaiku55Model } from "../src/providers/haiku-55-profile.ts";
 import {
 	CLOUDFLARE_AI_GATEWAY_ANTHROPIC_BASE_URL,
 	CLOUDFLARE_AI_GATEWAY_COMPAT_BASE_URL,
@@ -793,6 +795,14 @@ function isGemma4Model(modelId: string): boolean {
 }
 
 function applyThinkingLevelMetadata(model: Model<any>): void {
+	if (isHaiku55Model(model)) {
+		mergeThinkingLevelMap(model, HAIKU_55_THINKING_LEVEL_MAP);
+		if (model.api === "anthropic-messages") {
+			mergeAnthropicMessagesCompat(model, { forceAdaptiveThinking: true, supportsTemperature: false });
+		} else if (model.api === "bedrock-converse-stream") {
+			model.compat = { ...model.compat, supportsTemperature: false };
+		}
+	}
 	if (
 		(model.api === "openai-responses" || model.api === "azure-openai-responses") &&
 		model.id.startsWith("gpt-5")
@@ -2706,6 +2716,8 @@ async function generateModels() {
 			maxTokens: 30000,
 		});
 	}
+
+	ensureHaiku55CatalogModel(allModels);
 
 	// Azure Foundry deploys these with larger context windows than OpenAI's own short-tier defaults.
 	// See models-sold-directly-by-azure docs.

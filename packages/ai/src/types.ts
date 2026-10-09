@@ -797,6 +797,8 @@ export interface AnthropicMessagesCompat {
 export interface BedrockCompat {
 	/** Whether the model supports Bedrock strict tool schemas. Default: false. */
 	supportsStrictMode?: boolean;
+	/** Whether the model accepts temperature. Default: true; Haiku 5.5 profiles disable it. */
+	supportsTemperature?: boolean;
 }
 
 /**

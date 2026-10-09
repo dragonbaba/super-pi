@@ -5,6 +5,7 @@ import type { ApiKeyAuth } from "../auth/types.ts";
 import { ANTHROPIC_API_KEY_ENV, ANTHROPIC_AUTH_TOKEN_ENV, ANTHROPIC_OAUTH_TOKEN_ENV } from "../env-api-keys.ts";
 import { createProvider, type Provider } from "../models.ts";
 import { ANTHROPIC_MODELS } from "./anthropic.models.ts";
+import { profileHaiku55Model } from "./haiku-55-profile.ts";
 
 function anthropicApiKeyAuth(): ApiKeyAuth {
 	return {
@@ -57,6 +58,7 @@ export function anthropicProvider(): Provider<"anthropic-messages"> {
 			oauth: anthropicOAuth,
 		},
 		models: Object.values(ANTHROPIC_MODELS),
+		profileModel: profileHaiku55Model,
 		api: anthropicMessagesApi(),
 	});
 }
