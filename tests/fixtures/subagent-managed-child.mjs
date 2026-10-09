@@ -11,7 +11,9 @@ const message = {
 if (!process.argv.includes("--no-session") || !process.argv.includes("--no-extensions")) process.exit(90);
 const promptIndex = process.argv.indexOf("--append-system-prompt");
 const systemPrompt = promptIndex < 0 ? "" : readFileSync(process.argv[promptIndex + 1], "utf8");
-writeFileSync(join(process.cwd(), `child-${process.pid}.ready.json`), JSON.stringify({ pid: process.pid, task, systemPrompt }));
+const toolsIndex = process.argv.indexOf("--tools");
+const tools = toolsIndex < 0 ? undefined : process.argv[toolsIndex + 1];
+writeFileSync(join(process.cwd(), `child-${process.pid}.ready.json`), JSON.stringify({ pid: process.pid, task, systemPrompt, tools, allowBash: process.env.SP_SUBAGENT_ALLOW_BASH }));
 let sequence = 0;
 async function control(kind, fields = {}) {
 	if (process.env.SP_SUBAGENT_CONTROL !== "1") return {};
