@@ -44,6 +44,6 @@
 		"@super-pi/protocol": "^0.84.1"
 	},
 	"devDependencies": {
-		"shx": "0.4.0"
+		"shx": "0.3.4"
 	}
 }
