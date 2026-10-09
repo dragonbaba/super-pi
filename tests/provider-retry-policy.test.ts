@@ -13,6 +13,69 @@ function message(errorMessage?: string, stopReason: AssistantMessage["stopReason
 const capacity = "Selected model is at capacity";
 const policy = { enabled: true, maxRetries: 2, baseDelayMs: 0 };
 
+const transientErrors = [
+	"server_busy",
+	'{"error":{"type":"server_busy","message":"Servers are currently busy. Please try again later."}}',
+	"servers are currently busy",
+	"The pending stream has been canceled",
+	"The pending stream has been canceled (caused by: socket closed)",
+];
+
+for (const error of transientErrors) {
+	test(`transient provider failure recovers through the shared retry policy: ${error}`, async () => {
+		const failed = message(error);
+		assert.equal(isRetryableAssistantError(failed), true);
+		let attempts = 0;
+		const success = message(undefined, "stop");
+		assert.equal(await retryAssistantCall(async () => ++attempts === 1 ? failed : success, policy, undefined), success);
+		assert.equal(attempts, 2);
+	});
+}
+
+test("transient wording preserves terminal quota priority, aborts and disabled/zero retry budgets", async () => {
+	for (const error of transientErrors) {
+		for (const terminal of ["insufficient_quota", "billing", "quota exceeded", "GoUsageLimitError", "FreeUsageLimitError", "ANTHROPIC_SUBSCRIPTION_DISABLED"]) {
+			const failed = message(`${terminal}: ${error}`);
+			let attempts = 0;
+			assert.equal(isRetryableAssistantError(failed), false);
+			assert.equal(await retryAssistantCall(async () => { attempts++; return failed; }, policy, undefined), failed);
+			assert.equal(attempts, 1);
+		}
+		for (const stopReason of ["stop", "aborted"] as const) assert.equal(isRetryableAssistantError(message(error, stopReason)), false);
+		for (const limited of [{ ...policy, enabled: false }, { ...policy, maxRetries: 0 }]) {
+			let attempts = 0;
+			const failed = message(error);
+			assert.equal(await retryAssistantCall(async () => { attempts++; return failed; }, limited, undefined), failed);
+			assert.equal(attempts, 1);
+		}
+	}
+	for (const error of ["400 invalid_request_error: invalid parameter", "401 invalid_api_key", "Request canceled", "Provider stopped with: unmapped_error"]) {
+		assert.equal(isRetryableAssistantError(message(error)), false);
+	}
+});
+
+test("transient retries retain exponential backoff, bounded attempts and cancellation cleanup", async () => {
+	for (const error of transientErrors) {
+		const controller = new AbortController();
+		const failed = message(error);
+		const scheduled: number[][] = [];
+		let attempts = 0;
+		assert.equal(await retryAssistantCall(async () => { attempts++; return failed; }, { ...policy, baseDelayMs: 1 }, controller.signal, {
+			onRetryScheduled(attempt, max, delay) { scheduled.push([attempt, max, delay]); },
+		}), failed);
+		assert.equal(attempts, 3);
+		assert.deepEqual(scheduled, [[1, 2, 1], [2, 2, 2]]);
+		assert.equal(getEventListeners(controller.signal, "abort").length, 0);
+		attempts = 0;
+		const result = await retryAssistantCall(async () => { attempts++; return failed; }, { ...policy, baseDelayMs: 60_000 }, controller.signal, {
+			onRetryScheduled() { setImmediate(() => controller.abort()); },
+		});
+		assert.equal(result.stopReason, "aborted");
+		assert.equal(attempts, 1);
+		assert.equal(getEventListeners(controller.signal, "abort").length, 0);
+	}
+});
+
 for (const error of [capacity, "MODEL IS AT CAPACITY. Please wait.", '{"error":{"message":"Selected model is at capacity"}}']) {
 	test(`capacity classifier accepts transient provider text: ${error}`, () => {
 		assert.equal(isRetryableAssistantError(message(error)), true);
