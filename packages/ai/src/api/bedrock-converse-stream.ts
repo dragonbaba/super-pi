@@ -28,6 +28,7 @@ import { HttpProxyAgent } from "http-proxy-agent";
 import { HttpsProxyAgent } from "https-proxy-agent";
 import { calculateCost, clampThinkingLevel } from "../models.ts";
 import { capabilityCacheRetention, contextForModelCapabilities, getModelCapabilities } from "../model-capabilities.ts";
+import { isBedrockThinkingBlockBindingModel } from "../providers/bedrock-profile.ts";
 import { isHaiku55Model } from "../providers/haiku-55-profile.ts";
 import type {
 	Api,
@@ -246,10 +247,12 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 			);
 			const inferenceMaxTokens = options.maxTokens ?? (isAnthropicClaudeModel(model) ? model.maxTokens : undefined);
 			const capabilities = getModelCapabilities(model);
+			const govCloud = isGovCloudBedrockTarget(model, region);
+			const additionalModelRequestFields = buildAdditionalModelRequestFields(model, options, govCloud);
 			const wireContext = contextForModelCapabilities(model, context);
 			let commandInput = {
 				modelId: model.id,
-				messages: convertMessages(wireContext, model, cacheRetention, options.env),
+				messages: convertMessages(wireContext, model, cacheRetention, additionalModelRequestFields, options.env),
 				system: buildSystemPrompt(wireContext.systemPrompt, model, cacheRetention, options.env),
 				inferenceConfig: {
 					...(inferenceMaxTokens !== undefined && { maxTokens: inferenceMaxTokens }),
@@ -261,7 +264,7 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 					options.toolChoice,
 					(model.compat?.supportsStrictMode ?? false) && capabilities.strictToolSchema,
 				),
-				additionalModelRequestFields: buildAdditionalModelRequestFields(model, options, region),
+				additionalModelRequestFields,
 				...(options.requestMetadata !== undefined && { requestMetadata: options.requestMetadata }),
 			};
 			const nextCommandInput = await options?.onPayload?.(commandInput, model);
@@ -942,11 +945,31 @@ function convertMessages(
 	context: Context,
 	model: Model<"bedrock-converse-stream">,
 	cacheRetention: CacheRetention,
+	additionalModelRequestFields: Record<string, any> | undefined,
 	env?: ProviderEnv,
 ): Message[] {
 	const result: Message[] = [];
 	const transformedMessages = transformMessages(context.messages, model, normalizeToolCallId);
 	const signatureSupported = supportsThinkingSignature(model);
+	const thinking = additionalModelRequestFields?.thinking;
+	const reasoningEnabled = thinking?.type === "adaptive" || thinking?.type === "enabled";
+	let signatureReplayStart = 0;
+	if (signatureSupported && thinking?.block_binding?.prefix_mismatch_behavior !== "drop_block") {
+		// Without binding controls, omit completed-turn thinking as a contiguous
+		// oldest prefix. Never turn signed thinking into text: that edits the prefix
+		// of later blocks. Tool results continue the turn started by the last user.
+		signatureReplayStart = transformedMessages.length;
+		let last = transformedMessages.length - 1;
+		while (last >= 0 && transformedMessages[last].role === "assistant" && transformedMessages[last].content.length === 0) {
+			last--;
+		}
+		if (last >= 0 && transformedMessages[last].role === "toolResult") {
+			signatureReplayStart = last;
+			while (signatureReplayStart > 0 && transformedMessages[signatureReplayStart - 1].role !== "user") {
+				signatureReplayStart--;
+			}
+		}
+	}
 
 	for (let i = 0; i < transformedMessages.length; i++) {
 		const m = transformedMessages[i];
@@ -1005,8 +1028,19 @@ function convertMessages(
 							});
 							break;
 						case "thinking": {
-							const thinking = sanitizeSurrogates(c.thinking);
+							if (c.redacted && !signatureSupported) continue;
 							const signature = signatureSupported && c.thinkingSignature?.trim() ? c.thinkingSignature : undefined;
+							if (signature || c.redacted) {
+								if (i < signatureReplayStart) continue;
+								// Bedrock requires current tool-turn thinking intact, with thinking
+								// still enabled. Do not silently override an off/omitted setting.
+								if (!reasoningEnabled) {
+									throw new Error(
+										"Cannot disable Bedrock thinking during a signed tool turn. Keep reasoning enabled until the tool turn completes, or start a new user turn.",
+									);
+								}
+							}
+							const thinking = sanitizeSurrogates(c.thinking);
 							// Omitted thinking still carries an opaque signature needed by tool continuations.
 							if (!signature && thinking.trim().length === 0) continue;
 							// Only Anthropic models support the signature field in reasoningText.
@@ -1230,7 +1264,7 @@ const OPENAI_GPT_MODEL = /gpt[-\s_.:]+/i;
 function buildAdditionalModelRequestFields(
 	model: Model<"bedrock-converse-stream">,
 	options: BedrockOptions,
-	region: string | undefined,
+	govCloud: boolean,
 ): Record<string, any> | undefined {
 	const reasoningCapability = getModelCapabilities(model).reasoning;
 	if (reasoningCapability.mode === "none") return undefined;
@@ -1244,7 +1278,6 @@ function buildAdditionalModelRequestFields(
 	if (isAnthropicClaudeModel(model)) {
 		// GovCloud Bedrock currently rejects the Claude thinking.display field.
 		// Omit it there until the GovCloud Converse schema catches up.
-		const govCloud = isGovCloudBedrockTarget(model, region);
 		const display = govCloud ? undefined : (options.thinkingDisplay ?? "summarized");
 		const adaptive = reasoningCapability.mode === "adaptive";
 		const result: Record<string, any> = adaptive
@@ -1275,7 +1308,7 @@ function buildAdditionalModelRequestFields(
 					};
 				})();
 
-		if (adaptive && !govCloud && isHaiku55Model(model)) {
+		if (adaptive && !govCloud && isBedrockThinkingBlockBindingModel(model)) {
 			result.thinking.block_binding = { prefix_mismatch_behavior: "drop_block" };
 			result.anthropic_beta = ["thinking-binding-controls-2026-08-01"];
 		} else if (!adaptive && (options.interleavedThinking ?? true)) {

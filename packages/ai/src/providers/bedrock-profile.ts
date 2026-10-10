@@ -2,6 +2,13 @@ import { enrichModelCapabilities } from "../model-capabilities.ts";
 import type { Api, Model } from "../types.ts";
 import { isHaiku55Model, profileHaiku55Model } from "./haiku-55-profile.ts";
 
+// Opus 4.6 and Sonnet 4.6 reject binding controls; share the allowlist with replay profiling.
+const THINKING_BLOCK_BINDING_MODEL = /(?:^|[^a-z0-9])(?:opus[-_.:\s]+(?:4[-_.:\s]+[78]|5)|(?:sonnet|fable)[-_.:\s]+5)(?=$|[^a-z0-9])/i;
+
+export function isBedrockThinkingBlockBindingModel(model: Pick<Model<Api>, "id" | "name">): boolean {
+	return isHaiku55Model(model) || THINKING_BLOCK_BINDING_MODEL.test(model.id) || THINKING_BLOCK_BINDING_MODEL.test(model.name);
+}
+
 function modelMatchCandidates(model: Pick<Model<"bedrock-converse-stream">, "id" | "name">): string[] {
 	return [model.id, model.name].flatMap((value) => {
 		const lower = value.toLowerCase();
@@ -30,6 +37,6 @@ export function profileBedrockModel<TApi extends Api>(model: Model<TApi>): Model
 	if (model.api !== "bedrock-converse-stream") return model;
 	return enrichModelCapabilities(profileHaiku55Model(model), {
 		reasoningMode: isBedrockAdaptiveReasoningModel(model) ? "adaptive" : "budget",
-		thoughtSignatureRoundTrip: isHaiku55Model(model) ? true : undefined,
+		thoughtSignatureRoundTrip: isBedrockThinkingBlockBindingModel(model) ? true : undefined,
 	});
 }
