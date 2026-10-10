@@ -40,6 +40,17 @@ function profileRemoteModel(provider: Provider, model: Model<Api>, legacyRuntime
 	const raw = legacyRuntimeProfile
 		? stripModelRuntimeProfile(model)
 		: stripModelProfileMetadata(model);
+	// Old cached and newly downloaded catalogs can still carry models.dev's
+	// dotted Claude IDs. Normalize this owned copy before exact-ID merging;
+	// provider profile hooks also run on user-defined models and are too broad.
+	if (
+		provider.id === "cloudflare-ai-gateway" &&
+		raw.api === "anthropic-messages" &&
+		raw.id.startsWith("claude-") &&
+		raw.id.includes(".")
+	) {
+		raw.id = raw.id.replaceAll(".", "-");
+	}
 	const enriched = provider.profileModel?.(raw) ?? raw;
 	return withModelProfile(enriched, "provider-catalog", {
 		costKnown: enriched.costKnown ?? true,
