@@ -173,7 +173,7 @@ test("Haiku explicit compatibility and reasoning overrides remain authoritative"
 	assert.equal(request.additionalModelRequestFields.thinking.block_binding, undefined);
 });
 
-test("Older Haiku and unrelated Claude models keep their existing request format", async () => {
+test("Older Haiku retains budget thinking while Sonnet 5.5 enables binding", async () => {
 	const old = profiled(bedrock("anthropic.claude-haiku-4-5", "Claude Haiku 4.5"));
 	assert.equal(getModelCapabilities(old).reasoning.mode, "budget");
 	const wire = await payload(old, { reasoning: "high" });
@@ -183,5 +183,6 @@ test("Older Haiku and unrelated Claude models keep their existing request format
 	assert.equal(wire.inferenceConfig.temperature, 0.2);
 	const sonnet = await payload(profiled(bedrock("anthropic.claude-sonnet-5-5")), { reasoning: "high" });
 	assert.equal(sonnet.additionalModelRequestFields.thinking.type, "adaptive");
-	assert.equal(sonnet.additionalModelRequestFields.thinking.block_binding, undefined);
+	assert.deepEqual(sonnet.additionalModelRequestFields.thinking.block_binding, { prefix_mismatch_behavior: "drop_block" });
+	assert.deepEqual(sonnet.additionalModelRequestFields.anthropic_beta, ["thinking-binding-controls-2026-08-01"]);
 });

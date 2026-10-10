@@ -28,6 +28,7 @@ import { HttpProxyAgent } from "http-proxy-agent";
 import { HttpsProxyAgent } from "https-proxy-agent";
 import { calculateCost, clampThinkingLevel } from "../models.ts";
 import { capabilityCacheRetention, contextForModelCapabilities, getModelCapabilities } from "../model-capabilities.ts";
+import { isBedrockThinkingBlockBindingModel } from "../providers/bedrock-profile.ts";
 import { isHaiku55Model } from "../providers/haiku-55-profile.ts";
 import type {
 	Api,
@@ -1275,7 +1276,7 @@ function buildAdditionalModelRequestFields(
 					};
 				})();
 
-		if (adaptive && !govCloud && isHaiku55Model(model)) {
+		if (adaptive && !govCloud && isBedrockThinkingBlockBindingModel(model)) {
 			result.thinking.block_binding = { prefix_mismatch_behavior: "drop_block" };
 			result.anthropic_beta = ["thinking-binding-controls-2026-08-01"];
 		} else if (!adaptive && (options.interleavedThinking ?? true)) {

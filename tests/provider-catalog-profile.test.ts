@@ -116,6 +116,31 @@ for (const makeProvider of [anthropicProvider, amazonBedrockProvider]) {
 	});
 }
 
+test("Bedrock Claude binding signature support survives static, remote and offline catalog paths", async () => {
+	const provider = amazonBedrockProvider();
+	const builtin = provider.getModels().find(model => model.id === "anthropic.claude-opus-4-7");
+	assert.ok(builtin);
+	assert.equal(builtin.capabilities?.thoughtSignatureRoundTrip, true);
+	const raw: Model<Api> = { ...rawCatalogModel(builtin),
+		id: "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/opaque",
+		name: "Claude Opus 5.5" };
+	const { model, stored } = await fetchRemoteReplacement(provider, raw);
+	assert.equal(model.capabilities?.reasoning.mode, "adaptive");
+	assert.equal(model.capabilities?.thoughtSignatureRoundTrip, true);
+	assert.ok(stored);
+	assert.equal(stored.models[0]?.capabilities, undefined);
+	for (const profileRevision of [undefined, MODELS_STORE_PROFILE_REVISION]) {
+		const store = new InMemoryModelsStore();
+		await store.write(provider.id, { ...stored, profileRevision });
+		const models = createModels({ modelsStore: store });
+		models.setProvider(withRemoteCatalog(amazonBedrockProvider()));
+		assert.equal((await models.refresh({ providers: [provider.id], allowNetwork: false })).errors.size, 0);
+		const restored = models.getModel(provider.id, raw.id);
+		assert.equal(restored?.capabilities?.reasoning.mode, "adaptive");
+		assert.equal(restored?.capabilities?.thoughtSignatureRoundTrip, true);
+	}
+});
+
 test("Google and Mistral remote same-ID replacements retain provider-owned facts and raw storage", async () => {
 	const google = googleProvider();
 	const googleStatic = google.getModels().find((model) => model.id === "gemini-3.1-pro-preview");
