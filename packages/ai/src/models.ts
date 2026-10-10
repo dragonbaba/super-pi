@@ -990,7 +990,7 @@ export function calculateCost<TApi extends Api>(model: Model<TApi>, usage: Usage
 		}
 	}
 
-	// Anthropic charges 2x base input for 1h cache writes.
+	// Anthropic and Moonshot K3 charge 2x input for 1h cache writes.
 	const longWrite = usage.cacheWrite1h ?? 0;
 	const shortWrite = usage.cacheWrite - longWrite;
 	usage.cost.input = (rates.input / 1000000) * usage.input;

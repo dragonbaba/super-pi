@@ -269,6 +269,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 					signal: options?.signal,
 				},
 			);
+			const cacheWrite1h = getMoonshotCacheWrite1h(model, response.headers);
 			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
 			stream.push({ type: "start", partial: output });
 
@@ -472,7 +473,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 					output.responseModel ||= chunk.model;
 				}
 				if (chunk.usage) {
-					output.usage = parseChunkUsage(chunk.usage, model);
+					output.usage = parseChunkUsage(chunk.usage, model, cacheWrite1h);
 				}
 
 				const choice = Array.isArray(chunk.choices) ? chunk.choices[0] : undefined;
@@ -481,7 +482,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 				// Fallback: some providers (e.g., Moonshot) return usage
 				// in choice.usage instead of the standard chunk.usage
 				if (!chunk.usage && (choice as any).usage) {
-					output.usage = parseChunkUsage((choice as any).usage, model);
+					output.usage = parseChunkUsage((choice as any).usage, model, cacheWrite1h);
 				}
 
 				if (choice.finish_reason) {
@@ -1553,6 +1554,22 @@ function convertTools(
 	});
 }
 
+// Moonshot locks TTL at first write; only the response reports actual long writes.
+// Read once at the response boundary, retaining only a primitive during streaming.
+function getMoonshotCacheWrite1h(model: Model<"openai-completions">, headers: Headers): number | undefined {
+	if ((model.provider !== "moonshotai" && model.provider !== "moonshotai-cn") || model.id !== "kimi-k3") {
+		return undefined;
+	}
+	const value = headers.get("msh-usage-cache-write-tokens-1h");
+	if (!value) return undefined;
+	for (let index = 0; index < value.length; index++) {
+		const digit = value.charCodeAt(index);
+		if (digit < 48 || digit > 57) return undefined;
+	}
+	const tokens = Number(value);
+	return Number.isSafeInteger(tokens) ? tokens : undefined;
+}
+
 function parseChunkUsage(
 	rawUsage: {
 		prompt_tokens?: number;
@@ -1562,6 +1579,7 @@ function parseChunkUsage(
 		completion_tokens_details?: { reasoning_tokens?: number };
 	},
 	model: Model<"openai-completions">,
+	cacheWrite1h: number | undefined,
 ): AssistantMessage["usage"] {
 	const promptTokens = rawUsage.prompt_tokens || 0;
 	const cacheReadTokens = rawUsage.prompt_tokens_details?.cached_tokens ?? rawUsage.prompt_cache_hit_tokens ?? 0;
@@ -1583,6 +1601,8 @@ function parseChunkUsage(
 		output: outputTokens,
 		cacheRead: cacheReadTokens,
 		cacheWrite: cacheWriteTokens,
+		// Headers describe the whole request; usage chunks may be partial or repeated.
+		cacheWrite1h: cacheWrite1h === undefined ? undefined : Math.min(cacheWrite1h, Math.max(0, cacheWriteTokens)),
 		reasoning: rawUsage.completion_tokens_details?.reasoning_tokens || 0,
 		totalTokens: input + outputTokens + cacheReadTokens + cacheWriteTokens,
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },

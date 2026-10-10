@@ -483,7 +483,7 @@ export interface Usage {
 	output: number;
 	cacheRead: number;
 	cacheWrite: number;
-	/** Subset of `cacheWrite` written with 1h retention. Only Anthropic reports this split. */
+	/** Subset of `cacheWrite` written with 1h retention, when reported by the provider. */
 	cacheWrite1h?: number;
 	/**
 	 * Reasoning/thinking tokens, when the provider reports them. This is a subset of
