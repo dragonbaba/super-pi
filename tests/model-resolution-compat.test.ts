@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { Api, Model } from "../packages/ai/src/types.ts";
-import { resolveCliModel, resolveModelScopeFromModels } from "../packages/coding-agent/src/core/model-resolver.ts";
+import { nvidiaProvider } from "../packages/ai/src/providers/nvidia.ts";
+import { findInitialModel, resolveCliModel, resolveModelScopeFromModels, restoreModelFromSession } from "../packages/coding-agent/src/core/model-resolver.ts";
 import { parseArgs } from "../packages/coding-agent/src/cli/args.ts";
 import type { ModelRuntime } from "../packages/coding-agent/src/core/model-runtime.ts";
 
@@ -23,6 +24,8 @@ function model(provider: string, id: string): Model<Api> {
 function runtime(models: Model<Api>[], authenticated: string[] = []): ModelRuntime {
 	return {
 		getModels: () => models,
+		getModel: (provider: string, id: string) => models.find(value => value.provider === provider && value.id === id),
+		getAvailableSnapshot: () => models.filter(value => authenticated.includes(value.provider)),
 		hasConfiguredAuth: (provider: string) => authenticated.includes(provider),
 		createConservativeFallbackModel: (provider: string, id: string) => ({
 			id,
@@ -93,4 +96,57 @@ test("known models warn when a requested thinking level is unsupported", () => {
 	assert.equal(result.error, undefined);
 	assert.equal(result.model?.id, "known-model");
 	assert.match(result.warning ?? "", /unsupported/u);
+});
+
+const nvidiaUltraId = "nvidia/nemotron-3-ultra-550b-a55b";
+const nvidiaSuperId = "nvidia/nemotron-3-super-120b-a12b";
+
+test("NVIDIA startup selects shipped Nemotron 3 Ultra independently of catalog order or Super availability", async () => {
+	const models = [...nvidiaProvider().getModels()];
+	const ultra = models.find(value => value.id === nvidiaUltraId);
+	assert.ok(ultra, "the default must exist in the shipped provider catalog");
+	for (const catalog of [models, [...models].reverse(), models.filter(value => value.id !== nvidiaSuperId)]) {
+		const result = await findInitialModel({
+			scopedModels: [], isContinuing: false, modelRuntime: runtime(catalog, ["nvidia"]),
+		});
+		assert.equal(result.model, ultra);
+		assert.equal(result.fallbackMessage, undefined);
+	}
+});
+
+test("NVIDIA default keeps explicit CLI, scoped and saved model choices", async () => {
+	const superModel = model("nvidia", nvidiaSuperId);
+	const modelRuntime = runtime([model("nvidia", nvidiaUltraId), superModel], ["nvidia"]);
+	for (const selection of [
+		{ cliProvider: "nvidia", cliModel: nvidiaSuperId },
+		{ scopedModels: [{ model: superModel }] },
+		{ defaultProvider: "nvidia", defaultModelId: nvidiaSuperId },
+	]) {
+		const result = await findInitialModel({ scopedModels: [], isContinuing: false, modelRuntime, ...selection });
+		assert.equal(result.model, superModel);
+	}
+});
+
+test("NVIDIA session restoration preserves saved/current models and uses Ultra only as a fallback", async () => {
+	const superModel = model("nvidia", nvidiaSuperId);
+	const ultra = model("nvidia", nvidiaUltraId);
+	const modelRuntime = runtime([superModel, ultra], ["nvidia"]);
+	const restored = await restoreModelFromSession("nvidia", nvidiaSuperId, undefined, false, modelRuntime);
+	assert.equal(restored.model, superModel);
+	assert.equal(restored.fallbackMessage, undefined);
+	const current = await restoreModelFromSession("nvidia", "missing", superModel, false, modelRuntime);
+	assert.equal(current.model, superModel);
+	const fallback = await restoreModelFromSession("nvidia", "missing", undefined, false, modelRuntime);
+	assert.equal(fallback.model, ultra);
+	assert.ok(fallback.fallbackMessage?.includes(nvidiaUltraId));
+});
+
+test("NVIDIA startup still handles a restricted catalog or missing authentication", async () => {
+	const custom = model("nvidia", "custom-nim-model");
+	for (const authenticated of [["nvidia"], []]) {
+		const result = await findInitialModel({
+			scopedModels: [], isContinuing: false, modelRuntime: runtime([custom], authenticated),
+		});
+		assert.equal(result.model, authenticated.length ? custom : undefined);
+	}
 });
