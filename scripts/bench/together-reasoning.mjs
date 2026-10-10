@@ -2,10 +2,14 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import { createServer } from 'node:http';
 import vm from 'node:vm';
 import ts from 'typescript';
+import { InMemoryCredentialStore } from '../../packages/ai/src/auth/credential-store.ts';
+import { InMemoryModelsStore, MODELS_STORE_PROFILE_REVISION } from '../../packages/ai/src/models-store.ts';
 import { streamSimple } from '../../packages/ai/src/api/openai-completions.ts';
 import { togetherProvider } from '../../packages/ai/src/providers/together.ts';
+import { ModelRuntime } from '../../packages/coding-agent/src/core/model-runtime.ts';
 
 const baseline = 'eaa63e4df7375df340659128d7c898bf17369e6d';
 const id = 'deepseek-ai/DeepSeek-V4-Pro-0813';
@@ -13,10 +17,84 @@ const runtimeFiles = ['packages/ai/src/models.ts', 'packages/ai/src/models-store
   'packages/ai/src/model-capabilities.ts', 'packages/ai/src/api/simple-options.ts',
   'packages/ai/src/api/openai-completions.ts', 'packages/ai/src/utils/event-stream.ts',
   'packages/ai/src/providers/together.ts', 'packages/coding-agent/src/core/remote-catalog-provider.ts',
-  'packages/coding-agent/src/core/model-catalog-merge.ts', 'packages/coding-agent/src/core/provider-composer.ts'];
+  'packages/coding-agent/src/core/model-catalog-merge.ts', 'packages/coding-agent/src/core/provider-composer.ts',
+  'packages/ai/src/providers/all.ts', 'packages/coding-agent/src/core/model-runtime.ts'];
 const atBase = path => execFileSync('git', ['show', `${baseline}:${path}`], { encoding: 'utf8' });
+// This is a one-record metadata repair, not a new snapshot of every provider.
+// Advancing the shared cutoff would discard remote updates absent from this patch.
+const manifestPath = 'packages/ai/src/providers/data/.manifest.json';
+const originalManifest = JSON.parse(atBase(manifestPath));
+const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+// ModelRuntime consumes the built package through @super-pi/ai/providers/all.
+assert.deepEqual(JSON.parse(readFileSync('packages/ai/dist/providers/data/.manifest.json', 'utf8')), manifest,
+  'run npm run build:offline before measuring');
+await verifyOverlayFreshness();
+assert.equal(manifest.generatedAt, originalManifest.generatedAt, 'partial metadata repair must preserve snapshot freshness');
+assert.equal(manifest.structureHash, originalManifest.structureHash);
+assert.deepEqual(Object.keys(manifest.files), Object.keys(originalManifest.files));
+for (const filename of Object.keys(originalManifest.files)) {
+  if (filename !== 'together.json') assert.equal(manifest.files[filename], originalManifest.files[filename]);
+}
+console.log(JSON.stringify({ phase: 'snapshot-freshness', generatedAt: manifest.generatedAt,
+  unchangedProviderHashes: Object.keys(manifest.files).length - 1 }));
 for (const path of runtimeFiles) assert.equal(readFileSync(path, 'utf8').replaceAll('\r\n', '\n'), atBase(path).replaceAll('\r\n', '\n'));
 console.log(JSON.stringify({ baseline, unchangedRuntimeFiles: runtimeFiles.length, node: process.version, platform: process.platform }));
+
+async function verifyOverlayFreshness() {
+  // Between the complete snapshot and the erroneous partial-patch timestamp.
+  const lastModified = Math.ceil(Date.parse(originalManifest.generatedAt) / 1000) * 1000 + 60_000;
+  let servedModel, responseStatus = 200, requests = 0;
+  const server = createServer((request, response) => {
+    requests++;
+    assert.equal(request.url, `/api/models/providers/${servedModel.provider}`);
+    if (responseStatus === 304) assert.equal(request.headers['if-none-match'], '"freshness-fixture"');
+    response.writeHead(responseStatus, { 'content-type': 'application/json', etag: '"freshness-fixture"',
+      'last-modified': new Date(lastModified).toUTCString() });
+    response.end(responseStatus === 200 ? JSON.stringify({ models: [servedModel] }) : undefined);
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    for (const provider of ['openai', 'together']) {
+      const groups = JSON.parse(readFileSync(`packages/ai/src/providers/data/${provider}.json`, 'utf8'));
+      const builtin = provider === 'together' ? groups['openai-completions']['deepseek-ai/DeepSeek-V4-Flash-0731']
+        : Object.values(Object.values(groups)[0])[0];
+      servedModel = { ...builtin, name: 'intervening remote update', cost: { ...builtin.cost, input: builtin.cost.input + 7 } };
+      const store = new InMemoryModelsStore();
+      const credentials = new InMemoryCredentialStore();
+      await credentials.modify(provider, async () => ({ type: 'api_key', key: 'catalog-fixture-only' }));
+      const runtime = await ModelRuntime.create({ credentials, modelsPath: null,
+        modelsStore: store, refreshOnCreate: false, catalogBaseUrl: `http://127.0.0.1:${server.address().port}` });
+      const assertOverlay = () => {
+        const restored = runtime.getModel(provider, builtin.id);
+        assert.equal(restored.name, servedModel.name, `${provider}: keep the intervening remote update`);
+        assert.deepEqual(restored.cost, servedModel.cost);
+      };
+      try {
+        for (const profileRevision of [undefined, MODELS_STORE_PROFILE_REVISION]) {
+          await store.write(provider, { models: [servedModel], profileRevision, checkedAt: 0, lastModified });
+          assert.equal((await runtime.refresh({ providers: [provider], allowNetwork: false })).errors.size, 0);
+          assertOverlay();
+        }
+        await store.delete(provider);
+        for (const status of [200, 200, 304]) {
+          responseStatus = status;
+          assert.equal((await runtime.refresh({ providers: [provider], allowNetwork: true, force: true })).errors.size, 0);
+          assertOverlay();
+          assert.equal((await store.read(provider)).lastModified, lastModified);
+        }
+      } finally {
+        await store.delete(provider);
+      }
+    }
+    assert.equal(requests, 6);
+    console.log(JSON.stringify({ phase: 'overlay-freshness', providers: 2, cacheRestores: 4,
+      http200: 4, http304: 2, lastModified: new Date(lastModified).toISOString(), remoteRequests: requests }));
+  } finally {
+    server.closeAllConnections();
+    await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    assert.equal(server.listening, false);
+  }
+}
 
 function instrument(source) {
   const counts = { object: 0, array: 0, closure: 0, new: 0 };

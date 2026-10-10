@@ -14,8 +14,9 @@ The generator recognizes the exact ID and creates one thinking map per model.
 The shipped record was regenerated with the actual generator using its frozen
 existing name, price, limits and modalities; only its reasoning metadata changed.
 All other model records and the other providers' manifest hashes were checked
-unchanged. The existing manifest utility updates the Together hash and generation
-timestamp.
+unchanged. The existing manifest utility updates the Together hash while retaining
+the complete snapshot's original generation timestamp. A one-record correction
+does not establish freshness for other records, including those in Together.
 
 ## Production chain and ownership
 
@@ -36,6 +37,16 @@ sanitization copy remain; this is not a zero-allocation request path.
 Remote catalog merge/restore and user override implementations are unchanged.
 Regression coverage verifies corrected current/legacy cached profiles and rejects
 an older broken overlay using the existing local-generation timestamp check.
+The freshness chain is manifest → `getBuiltinModelDataGeneratedAt` →
+`ModelRuntime.create` → `withRemoteCatalog.remoteModels` → profile/merge → snapshot.
+Advancing the shared timestamp during a partial repair incorrectly discarded
+intervening remote updates. The repair preserves that cutoff. The probe exercises
+the actual `ModelRuntime` with an unchanged OpenAI row and Together Flash row:
+four current/legacy cache restores, four HTTP 200 responses (including repeat
+Last-Modified values), and two HTTP 304 revalidations keep the intervening updates.
+It also checks the snapshot timestamp and all 38 unrelated provider hashes against
+the fixed baseline. The pre-fix runtime probe failed by restoring the built-in GPT-4
+record instead of the remote update; the separate timestamp invariant failed too.
 A newer external catalog remains authoritative under the existing merge policy;
 this change does not rewrite arbitrary future external metadata or user overrides.
 
@@ -44,14 +55,18 @@ this change does not rewrite arbitrary future external metadata or user override
 Run from the repository root:
 
 ```sh
-node --expose-gc scripts/bench/together-reasoning.mjs
-node --experimental-strip-types --test tests/together-models.test.ts
 npm run check
 npm run build:offline
+node --expose-gc scripts/bench/together-reasoning.mjs
+node --experimental-strip-types --test tests/together-models.test.ts
 npm test -- --jobs 4
 ```
 
-The probe checks ten runtime files against the fixed baseline, instruments the
+Build first: the runtime imports the built AI package, and the probe rejects a
+stale built manifest. Its local catalog HTTP server is closed in `finally` and
+fixture store entries are deleted on success or assertion failure.
+
+The probe checks twelve runtime files against the fixed baseline, instruments the
 actual generator helpers and the exact Together parameter branch with TypeScript
 AST counters, then exercises real `streamSimple` with an in-memory HTTP substitute.
 
@@ -60,7 +75,7 @@ AST counters, then exercises real `streamSimple` with an in-memory HTTP substitu
 | Generator module initialization | 8 → 9 object literals; 3 arrays, 3 `new` expressions, 0 closures in both |
 | 10,000 helper pairs for the renamed model | 10,000 → 10,000 objects; 0 arrays, closures or `new` expressions |
 | 10,000 Together parameter branches, separately for off/high/max | 10,000 → 10,000 reasoning wrappers; 0 arrays, closures or `new` expressions |
-| Runtime source | 10 files byte-equivalent after line-ending normalization |
+| Runtime source | 12 files byte-equivalent after line-ending normalization, including both timestamp consumers |
 | Request lifecycle | 9 payload preparations, 9 mock sends; 63 WeakRefs released, 0 retained |
 
 Lifecycle cases cross off/high/max with success, HTTP error and cancellation.
