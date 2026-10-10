@@ -11,8 +11,10 @@ export interface ContextUsageEstimate {
 	lastUsageIndex: number | null;
 }
 
-const CHARS_PER_TOKEN = 4;
-const ESTIMATED_IMAGE_CHARS = 4800;
+// Conservative request headroom heuristic; provider-reported usage stays authoritative.
+const CHARS_PER_TOKEN = 3.5;
+// Text calibration must not change the existing 1200-token image placeholder.
+const ESTIMATED_IMAGE_CHARS = 1200 * CHARS_PER_TOKEN;
 
 export function calculateContextTokens(usage: Usage): number {
 	return usage.totalTokens || usage.input + usage.output + usage.cacheRead + usage.cacheWrite;

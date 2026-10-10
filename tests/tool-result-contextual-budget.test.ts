@@ -299,7 +299,7 @@ test("usage-based context estimates count only tools added after the applicable 
 		{ name: "selected", description: "added later", parameters: { type: "object", properties: {} } },
 	];
 	const estimate = estimateContextTokensFromParts("already included in usage", [assistant, added], tools);
-	const selectedToolTokens = Math.ceil(JSON.stringify([tools[1]]).length / 4);
+	const selectedToolTokens = Math.ceil(JSON.stringify([tools[1]]).length / 3.5);
 	assert.equal(estimate.usageTokens, 100);
 	assert.equal(estimate.trailingTokens, estimateMessageTokens(added) + selectedToolTokens);
 	assert.equal(estimate.tokens, 100 + estimate.trailingTokens);
