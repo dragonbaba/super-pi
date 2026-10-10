@@ -137,7 +137,123 @@ function signedHistory(target: Model<"bedrock-converse-stream">, thinking: strin
 }
 
 for (const family of ["opus-4-7", "sonnet-5", "fable-5", "haiku-5-5"]) {
-	test(`Bedrock GovCloud suppresses bound ${family} signatures without changing commercial replay`, async (t) => {
+	test(`Bedrock ${family} off/omitted reasoning removes completed bound thinking after prefix edits`, async (t) => {
+		const target = model(`anthropic.claude-${family}`);
+		const send = capture(t);
+		for (const reasoning of [undefined, "off"] as const) for (const simple of [false, true]) {
+			for (const changed of ["system", "tools"] as const) for (const region of ["us-east-1", "us-gov-west-1"]) {
+				const history = signedHistory(target, "Bound thinking must not become ordinary text");
+				if (changed === "system") history.systemPrompt = "Next turn instructions";
+				else history.tools = [{ ...history.tools![0]!, description: "Next turn tool" }];
+				history.messages.push({ role: "user", content: "Next user turn", timestamp: 4 });
+				const before = structuredClone(history);
+				const wire = await send(target, { reasoning, region, env: { ...baseOptions.env, AWS_REGION: region } }, history, simple);
+				assert.deepEqual(wire.messages![1]!.content, [{ toolUse: { toolUseId: "call_1", name: "fixture", input: {} } }]);
+				assert.ok(wire.messages!.every(message => message.content!.every(block => !block.reasoningContent)));
+				assert.deepEqual(wire.additionalModelRequestFields, family === "haiku-5-5" ? { thinking: { type: "disabled" } } : undefined);
+				assert.deepEqual(history, before);
+			}
+		}
+	});
+
+	test(`Bedrock ${family} rejects disabling reasoning inside a signed tool turn before dispatch`, async (t) => {
+		const target = model(`anthropic.claude-${family}`);
+		const history = signedHistory(target, "");
+		const before = structuredClone(history);
+		let sends = 0, payloads = 0, dispatches = 0;
+		t.mock.method(BedrockRuntimeClient.prototype, "send", async () => { sends++; throw new Error("Must not send invalid tool continuation"); });
+		for (const reasoning of [undefined, "off"] as const) for (const simple of [false, true]) {
+			for (const region of ["us-east-1", "us-gov-west-1"]) {
+				const options = { ...baseOptions, reasoning, region, env: { ...baseOptions.env, AWS_REGION: region },
+					onPayload() { payloads++; }, onEffectiveDispatch() { dispatches++; } };
+				// Simple callers normally disable by omission; also cover untyped callers passing off.
+				const result = await (simple ? streamSimple(target, history, options as SimpleStreamOptions) : stream(target, history, options)).result();
+				assert.equal(result.stopReason, "error");
+				assert.match(result.errorMessage ?? "", /Cannot disable Bedrock thinking during a signed tool turn/);
+			}
+		}
+		assert.equal(sends, 0);
+		assert.equal(payloads, 0);
+		assert.equal(dispatches, 0);
+		assert.deepEqual(history, before);
+	});
+}
+
+for (const mode of ["govcloud", "budget-override"] as const) {
+	test(`Bedrock ${mode} preserves a complete multi-round tool turn while pruning only completed thinking`, async (t) => {
+		const target = mode === "govcloud" ? model() : model(undefined, undefined, { capabilities: {
+			...getModelCapabilities(model()), reasoning: { mode: "budget", levels: ["low", "high"] },
+		} });
+		const region = mode === "govcloud" ? "us-gov-west-1" : "us-east-1";
+		const history = signedHistory(target, "Old thinking");
+		(history.messages[1] as AssistantMessage).content.push({ type: "text", text: "Old answer" });
+		history.messages.push({ role: "user", content: "New task", timestamp: 4 });
+		const inputs: ConverseStreamCommand["input"][] = [];
+		t.mock.method(BedrockRuntimeClient.prototype, "send", async (command: ConverseStreamCommand) => {
+			const wire = command.input;
+			const round = inputs.length;
+			const fields = wire.additionalModelRequestFields as any;
+			assert.ok(["adaptive", "enabled"].includes(fields.thinking.type));
+			assert.equal(fields.thinking.block_binding, undefined);
+			assert.deepEqual(wire.messages![1]!.content, [{ toolUse: { toolUseId: "call_1", name: "fixture", input: {} } }, { text: "Old answer" }]);
+			if (round > 0) {
+				// A tool result extends the same turn. Earlier wire content and every
+				// consecutive signed block from each response must remain byte-for-byte.
+				const previous = inputs[round - 1]!;
+				assert.deepEqual(wire.messages!.slice(0, previous.messages!.length), previous.messages);
+				assert.deepEqual(wire.system, previous.system);
+				assert.deepEqual(wire.toolConfig, previous.toolConfig);
+				const assistant = wire.messages!.at(-2)!;
+				assert.deepEqual(assistant.content!.slice(0, 2), [
+					{ reasoningContent: { reasoningText: { text: "", signature: `signature-${round - 1}-0` } } },
+					{ reasoningContent: { reasoningText: { text: " \t\n", signature: `signature-${round - 1}-1` } } },
+				]);
+			}
+			inputs.push(structuredClone(wire));
+			return { $metadata: {}, stream: (async function* () {
+				yield { messageStart: { role: "assistant" } };
+				if (round < 2) {
+					for (const index of [0, 1]) {
+						yield { contentBlockDelta: { contentBlockIndex: index, delta: { reasoningContent: { text: index === 0 ? "" : " \t\n" } } } };
+						yield { contentBlockDelta: { contentBlockIndex: index, delta: { reasoningContent: { signature: `signature-${round}-${index}` } } } };
+						yield { contentBlockStop: { contentBlockIndex: index } };
+					}
+					yield { contentBlockStart: { contentBlockIndex: 2, start: { toolUse: { toolUseId: `next_${round}`, name: "fixture" } } } };
+					yield { contentBlockDelta: { contentBlockIndex: 2, delta: { toolUse: { input: "{}" } } } };
+					yield { contentBlockStop: { contentBlockIndex: 2 } };
+					yield { messageStop: { stopReason: "tool_use" } };
+				} else yield { messageStop: { stopReason: "end_turn" } };
+			})() };
+		});
+		for (let round = 0; round < 3; round++) {
+			const before = structuredClone(history);
+			const options = { ...baseOptions, reasoning: "high" as const, cacheRetention: "none" as const, region, env: { ...baseOptions.env, AWS_REGION: region } };
+			const result = await (round === 1 ? streamSimple(target, history, options) : stream(target, history, options)).result();
+			assert.equal(result.stopReason, round < 2 ? "toolUse" : "stop", result.errorMessage);
+			assert.deepEqual(history, before);
+			if (round < 2) history.messages.push(result, { role: "toolResult", toolCallId: `next_${round}`, toolName: "fixture", content: [{ type: "text", text: "done" }], isError: false, timestamp: 5 + round });
+		}
+		assert.equal(inputs.length, 3);
+	});
+}
+
+test("Bedrock replay cutoff follows normalized tool results, including synthetic results and aborted attempts", async (t) => {
+	const target = model();
+	const send = capture(t);
+	for (const tail of ["orphan", "aborted", "empty", "no-user"] as const) {
+		const history = signedHistory(target, "Current thinking");
+		if (tail === "orphan") history.messages.pop();
+		else if (tail === "no-user") history.messages.shift();
+		else history.messages.push({ ...(history.messages[1] as AssistantMessage), content: [], stopReason: tail === "aborted" ? "aborted" : "stop" });
+		const wire = await send(target, { reasoning: "high", region: "us-gov-west-1" }, history);
+		const assistant = wire.messages!.find(message => message.role === "assistant")!;
+		assert.equal(assistant.content![0]!.reasoningContent?.reasoningText?.signature, "bound-signature", tail);
+		assert.equal(wire.messages!.at(-1)!.content![0]!.toolResult?.toolUseId, "call_1");
+	}
+});
+
+for (const family of ["opus-4-7", "sonnet-5", "fable-5", "haiku-5-5"]) {
+	test(`Bedrock preserves current ${family} tool-turn signatures in GovCloud and commercial regions`, async (t) => {
 		const send = capture(t);
 		const target = model(`anthropic.claude-${family}`);
 		const capabilities = getModelCapabilities(target);
@@ -151,9 +267,8 @@ for (const family of ["opus-4-7", "sonnet-5", "fable-5", "haiku-5-5"]) {
 			for (const simple of [false, true]) {
 				const wire = await send(target, { reasoning: "high", region: "us-gov-west-1", env: { ...baseOptions.env, AWS_REGION: "us-gov-west-1" } }, history, simple);
 				const content = wire.messages![1]!.content!;
-				assert.ok(content.every(block => !block.reasoningContent));
-				assert.equal(content.length, thinking.trim() ? 2 : 1);
-				if (thinking.trim()) assert.deepEqual(content[0], { text: thinking });
+				assert.equal(content.length, 2);
+				assert.deepEqual(content[0], { reasoningContent: { reasoningText: { text: thinking, signature: "bound-signature" } } });
 				assert.equal(content.at(-1)!.toolUse?.toolUseId, "call_1");
 				assert.equal(wire.messages![2]!.content![0]!.toolResult?.toolUseId, "call_1");
 				assert.deepEqual(wire.additionalModelRequestFields, { thinking: { type: "adaptive" }, output_config: { effort: "high" } });
@@ -162,7 +277,9 @@ for (const family of ["opus-4-7", "sonnet-5", "fable-5", "haiku-5-5"]) {
 			}
 			assert.deepEqual(history, before);
 		}
-		const redacted = await send(target, { reasoning: "high", region: "us-gov-west-1" }, signedHistory(target, "opaque ciphertext", true));
+		const completed = signedHistory(target, "opaque ciphertext", true);
+		completed.messages.push({ role: "user", content: "Next turn", timestamp: 4 });
+		const redacted = await send(target, { reasoning: "high", region: "us-gov-west-1" }, completed);
 		assert.deepEqual(redacted.messages![1]!.content, [{ toolUse: { toolUseId: "call_1", name: "fixture", input: {} } }]);
 		assert.equal(getModelCapabilities(target), capabilities);
 		assert.equal(capabilities.thoughtSignatureRoundTrip, true);
@@ -181,8 +298,8 @@ test("Bedrock GovCloud replay follows resolved region, ARN, inference prefix and
 			{ region: undefined, env: { ...baseOptions.env, AWS_REGION: "", AWS_DEFAULT_REGION: "" } }])),
 	] as Array<[Model<"bedrock-converse-stream">, BedrockOptions]>) {
 		const wire = await send(selected, { reasoning: "high", ...options }, signedHistory(selected, "Readable thinking"));
-		assert.deepEqual(wire.messages![1]!.content![0], { text: "Readable thinking" });
-		assert.ok(wire.messages!.every(message => message.content!.every(block => !block.reasoningContent)));
+		assert.deepEqual(wire.messages![1]!.content![0], { reasoningContent: { reasoningText: { text: "Readable thinking", signature: "bound-signature" } } });
+		assert.equal((wire.additionalModelRequestFields as any).thinking.block_binding, undefined);
 	}
 	const commercial = model(arn, "Claude Opus 4.7");
 	const wire = await send(commercial, { reasoning: "high", region: "us-gov-west-1" }, signedHistory(commercial, "Readable thinking"));
@@ -227,14 +344,6 @@ for (const changedPrefix of ["system", "tools"] as const) {
 		assert.deepEqual(fields.thinking.block_binding, binding);
 		assert.deepEqual(fields.anthropic_beta, beta);
 		assert.notDeepEqual(changedPrefix === "system" ? inputs[0]!.system : inputs[0]!.toolConfig, changedPrefix === "system" ? replay.system : replay.toolConfig);
-		assert.deepEqual(history, originalHistory);
-		const govResult = await streamSimple(target, history, { ...baseOptions, reasoning: "high",
-			env: { ...baseOptions.env, AWS_REGION: "us-gov-west-1" } }).result();
-		assert.equal(govResult.stopReason, "stop", govResult.errorMessage);
-		const govReplay = inputs.at(-1)!;
-		assert.deepEqual(govReplay.messages![1]!.content, [{ toolUse: { toolUseId: "call_1", name: "fixture", input: {} } }]);
-		assert.equal(govReplay.messages![2]!.content![0]!.toolResult?.toolUseId, "call_1");
-		assert.deepEqual(govReplay.additionalModelRequestFields, { thinking: { type: "adaptive" }, output_config: { effort: "high" } });
 		assert.deepEqual(history, originalHistory);
 		const noSignatures = model(undefined, undefined, { capabilities: { ...getModelCapabilities(target), thoughtSignatureRoundTrip: false } });
 		for (const other of [noSignatures, model("anthropic.claude-sonnet-5")]) {

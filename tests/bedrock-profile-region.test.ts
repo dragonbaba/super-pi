@@ -100,7 +100,7 @@ for (const scenario of cases) {
 		if (scenario.region.startsWith("us-gov-")) {
 			assert.deepEqual(fields.thinking, { type: "adaptive" });
 			assert.equal(fields.anthropic_beta, undefined);
-			assert.deepEqual(observed.input?.messages?.[1]?.content, [{ text: "Prior thinking" }, { text: "Prior answer" }]);
+			assert.deepEqual(observed.input?.messages?.[1]?.content, [{ text: "Prior answer" }]);
 		} else {
 			assert.equal(fields.thinking.display, "summarized");
 			assert.deepEqual(fields.thinking.block_binding, { prefix_mismatch_behavior: "drop_block" });

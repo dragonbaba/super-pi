@@ -248,10 +248,11 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 			const inferenceMaxTokens = options.maxTokens ?? (isAnthropicClaudeModel(model) ? model.maxTokens : undefined);
 			const capabilities = getModelCapabilities(model);
 			const govCloud = isGovCloudBedrockTarget(model, region);
+			const additionalModelRequestFields = buildAdditionalModelRequestFields(model, options, govCloud);
 			const wireContext = contextForModelCapabilities(model, context);
 			let commandInput = {
 				modelId: model.id,
-				messages: convertMessages(wireContext, model, cacheRetention, govCloud, options.env),
+				messages: convertMessages(wireContext, model, cacheRetention, additionalModelRequestFields, options.env),
 				system: buildSystemPrompt(wireContext.systemPrompt, model, cacheRetention, options.env),
 				inferenceConfig: {
 					...(inferenceMaxTokens !== undefined && { maxTokens: inferenceMaxTokens }),
@@ -263,7 +264,7 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 					options.toolChoice,
 					(model.compat?.supportsStrictMode ?? false) && capabilities.strictToolSchema,
 				),
-				additionalModelRequestFields: buildAdditionalModelRequestFields(model, options, govCloud),
+				additionalModelRequestFields,
 				...(options.requestMetadata !== undefined && { requestMetadata: options.requestMetadata }),
 			};
 			const nextCommandInput = await options?.onPayload?.(commandInput, model);
@@ -944,14 +945,31 @@ function convertMessages(
 	context: Context,
 	model: Model<"bedrock-converse-stream">,
 	cacheRetention: CacheRetention,
-	govCloud: boolean,
+	additionalModelRequestFields: Record<string, any> | undefined,
 	env?: ProviderEnv,
 ): Message[] {
 	const result: Message[] = [];
 	const transformedMessages = transformMessages(context.messages, model, normalizeToolCallId);
 	const signatureSupported = supportsThinkingSignature(model);
-	// GovCloud cannot send binding controls, so never replay prefix-bound signatures there.
-	const replaySignatures = signatureSupported && !govCloud;
+	const thinking = additionalModelRequestFields?.thinking;
+	const reasoningEnabled = thinking?.type === "adaptive" || thinking?.type === "enabled";
+	let signatureReplayStart = 0;
+	if (signatureSupported && thinking?.block_binding?.prefix_mismatch_behavior !== "drop_block") {
+		// Without binding controls, omit completed-turn thinking as a contiguous
+		// oldest prefix. Never turn signed thinking into text: that edits the prefix
+		// of later blocks. Tool results continue the turn started by the last user.
+		signatureReplayStart = transformedMessages.length;
+		let last = transformedMessages.length - 1;
+		while (last >= 0 && transformedMessages[last].role === "assistant" && transformedMessages[last].content.length === 0) {
+			last--;
+		}
+		if (last >= 0 && transformedMessages[last].role === "toolResult") {
+			signatureReplayStart = last;
+			while (signatureReplayStart > 0 && transformedMessages[signatureReplayStart - 1].role !== "user") {
+				signatureReplayStart--;
+			}
+		}
+	}
 
 	for (let i = 0; i < transformedMessages.length; i++) {
 		const m = transformedMessages[i];
@@ -1010,9 +1028,19 @@ function convertMessages(
 							});
 							break;
 						case "thinking": {
-							if (c.redacted && !replaySignatures) continue;
+							if (c.redacted && !signatureSupported) continue;
+							const signature = signatureSupported && c.thinkingSignature?.trim() ? c.thinkingSignature : undefined;
+							if (signature || c.redacted) {
+								if (i < signatureReplayStart) continue;
+								// Bedrock requires current tool-turn thinking intact, with thinking
+								// still enabled. Do not silently override an off/omitted setting.
+								if (!reasoningEnabled) {
+									throw new Error(
+										"Cannot disable Bedrock thinking during a signed tool turn. Keep reasoning enabled until the tool turn completes, or start a new user turn.",
+									);
+								}
+							}
 							const thinking = sanitizeSurrogates(c.thinking);
-							const signature = replaySignatures && c.thinkingSignature?.trim() ? c.thinkingSignature : undefined;
 							// Omitted thinking still carries an opaque signature needed by tool continuations.
 							if (!signature && thinking.trim().length === 0) continue;
 							// Only Anthropic models support the signature field in reasoningText.
