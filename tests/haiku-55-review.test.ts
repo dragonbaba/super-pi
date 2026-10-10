@@ -132,7 +132,7 @@ test("Bedrock signature-only stream survives tool continuation without fabricate
 	}));
 	const model = profiled();
 	assert.equal(getModelCapabilities(model).thoughtSignatureRoundTrip, true);
-	const message = await streamBedrock(model, context, { apiKey: "fixture", reasoning: "high", env: { AWS_REGION: "us-gov-west-1" } }).result();
+	const message = await streamBedrock(model, context, { apiKey: "fixture", reasoning: "high", env: { AWS_REGION: "us-east-1" } }).result();
 	assert.equal(message.stopReason, "toolUse");
 	const thinking = message.content[0];
 	assert.equal(thinking.type, "thinking");
@@ -141,7 +141,7 @@ test("Bedrock signature-only stream survives tool continuation without fabricate
 	assert.equal(thinking.thinkingSignature, "signed-opaque");
 	const history: Context = { messages: [...context.messages, message,
 		{ role: "toolResult", toolCallId: "call_1", toolName: "fixture", content: [{ type: "text", text: "done" }], isError: false, timestamp: 1 }] };
-	const wire = await capture(model, { reasoning: "high", env: { AWS_REGION: "us-gov-west-1" } }, history);
+	const wire = await capture(model, { reasoning: "high", env: { AWS_REGION: "us-east-1" } }, history);
 	assert.deepEqual(wire.messages[1].content[0], { reasoningContent: { reasoningText: { text: "", signature: "signed-opaque" } } });
 	assert.equal(wire.messages[1].content[1].toolUse.toolUseId, "call_1");
 	assert.equal(wire.messages[2].content[0].toolResult.toolUseId, "call_1");

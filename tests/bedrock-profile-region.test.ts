@@ -7,7 +7,7 @@ import { BedrockRuntimeClient, type ConverseStreamCommand } from "@aws-sdk/clien
 import { stream, type BedrockOptions } from "../packages/ai/src/api/bedrock-converse-stream.ts";
 import { withModelProfile } from "../packages/ai/src/model-capabilities.ts";
 import { profileBedrockModel } from "../packages/ai/src/providers/bedrock-profile.ts";
-import type { Model } from "../packages/ai/src/types.ts";
+import type { Context, Model } from "../packages/ai/src/types.ts";
 
 async function fixture(t: TestContext, ambientProfile?: string): Promise<string> {
 	const directory = await fs.mkdtemp(join(tmpdir(), "super-pi-bedrock-region-"));
@@ -82,7 +82,14 @@ for (const scenario of cases) {
 	test(`Bedrock request matches SDK region: ${scenario.name}`, async (t) => {
 		await fixture(t, scenario.ambient);
 		const observed = mockSend(t);
-		const result = await stream(model(scenario.id, scenario.baseUrl), { messages: [] }, {
+		const target = model(scenario.id, scenario.baseUrl);
+		const history: Context = { systemPrompt: "Updated prefix", messages: [
+			{ role: "user", content: "hello", timestamp: 1 },
+			{ role: "assistant", api: target.api, provider: target.provider, model: target.id, stopReason: "stop", timestamp: 2,
+				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+				content: [{ type: "thinking", thinking: "Prior thinking", thinkingSignature: "bound-signature" }, { type: "text", text: "Prior answer" }] },
+		] };
+		const result = await stream(target, history, {
 			apiKey: "fixture", reasoning: "high", ...scenario.options,
 		}).result();
 		assert.equal(result.stopReason, "stop", result.errorMessage);
@@ -93,9 +100,11 @@ for (const scenario of cases) {
 		if (scenario.region.startsWith("us-gov-")) {
 			assert.deepEqual(fields.thinking, { type: "adaptive" });
 			assert.equal(fields.anthropic_beta, undefined);
+			assert.deepEqual(observed.input?.messages?.[1]?.content, [{ text: "Prior thinking" }, { text: "Prior answer" }]);
 		} else {
 			assert.equal(fields.thinking.display, "summarized");
 			assert.deepEqual(fields.thinking.block_binding, { prefix_mismatch_behavior: "drop_block" });
+			assert.equal(observed.input?.messages?.[1]?.content?.[0]?.reasoningContent?.reasoningText?.signature, "bound-signature");
 		}
 	});
 }

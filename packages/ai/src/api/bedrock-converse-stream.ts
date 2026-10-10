@@ -247,10 +247,11 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 			);
 			const inferenceMaxTokens = options.maxTokens ?? (isAnthropicClaudeModel(model) ? model.maxTokens : undefined);
 			const capabilities = getModelCapabilities(model);
+			const govCloud = isGovCloudBedrockTarget(model, region);
 			const wireContext = contextForModelCapabilities(model, context);
 			let commandInput = {
 				modelId: model.id,
-				messages: convertMessages(wireContext, model, cacheRetention, options.env),
+				messages: convertMessages(wireContext, model, cacheRetention, govCloud, options.env),
 				system: buildSystemPrompt(wireContext.systemPrompt, model, cacheRetention, options.env),
 				inferenceConfig: {
 					...(inferenceMaxTokens !== undefined && { maxTokens: inferenceMaxTokens }),
@@ -262,7 +263,7 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 					options.toolChoice,
 					(model.compat?.supportsStrictMode ?? false) && capabilities.strictToolSchema,
 				),
-				additionalModelRequestFields: buildAdditionalModelRequestFields(model, options, region),
+				additionalModelRequestFields: buildAdditionalModelRequestFields(model, options, govCloud),
 				...(options.requestMetadata !== undefined && { requestMetadata: options.requestMetadata }),
 			};
 			const nextCommandInput = await options?.onPayload?.(commandInput, model);
@@ -943,11 +944,14 @@ function convertMessages(
 	context: Context,
 	model: Model<"bedrock-converse-stream">,
 	cacheRetention: CacheRetention,
+	govCloud: boolean,
 	env?: ProviderEnv,
 ): Message[] {
 	const result: Message[] = [];
 	const transformedMessages = transformMessages(context.messages, model, normalizeToolCallId);
 	const signatureSupported = supportsThinkingSignature(model);
+	// GovCloud cannot send binding controls, so never replay prefix-bound signatures there.
+	const replaySignatures = signatureSupported && !govCloud;
 
 	for (let i = 0; i < transformedMessages.length; i++) {
 		const m = transformedMessages[i];
@@ -1006,8 +1010,9 @@ function convertMessages(
 							});
 							break;
 						case "thinking": {
+							if (c.redacted && !replaySignatures) continue;
 							const thinking = sanitizeSurrogates(c.thinking);
-							const signature = signatureSupported && c.thinkingSignature?.trim() ? c.thinkingSignature : undefined;
+							const signature = replaySignatures && c.thinkingSignature?.trim() ? c.thinkingSignature : undefined;
 							// Omitted thinking still carries an opaque signature needed by tool continuations.
 							if (!signature && thinking.trim().length === 0) continue;
 							// Only Anthropic models support the signature field in reasoningText.
@@ -1231,7 +1236,7 @@ const OPENAI_GPT_MODEL = /gpt[-\s_.:]+/i;
 function buildAdditionalModelRequestFields(
 	model: Model<"bedrock-converse-stream">,
 	options: BedrockOptions,
-	region: string | undefined,
+	govCloud: boolean,
 ): Record<string, any> | undefined {
 	const reasoningCapability = getModelCapabilities(model).reasoning;
 	if (reasoningCapability.mode === "none") return undefined;
@@ -1245,7 +1250,6 @@ function buildAdditionalModelRequestFields(
 	if (isAnthropicClaudeModel(model)) {
 		// GovCloud Bedrock currently rejects the Claude thinking.display field.
 		// Omit it there until the GovCloud Converse schema catches up.
-		const govCloud = isGovCloudBedrockTarget(model, region);
 		const display = govCloud ? undefined : (options.thinkingDisplay ?? "summarized");
 		const adaptive = reasoningCapability.mode === "adaptive";
 		const result: Record<string, any> = adaptive
