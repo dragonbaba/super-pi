@@ -167,7 +167,8 @@ const TOGETHER_REASONING_ONLY_MODELS = new Set([
 	"MiniMaxAI/MiniMax-M2.7",
 ]);
 const TOGETHER_REASONING_EFFORT_MODELS = new Set(["openai/gpt-oss-20b", "openai/gpt-oss-120b"]);
-const TOGETHER_TOGGLE_REASONING_EFFORT_MODELS = new Set(["deepseek-ai/DeepSeek-V4-Pro"]);
+const TOGETHER_DEEPSEEK_V4_PRO_0813 = "deepseek-ai/DeepSeek-V4-Pro-0813";
+const TOGETHER_TOGGLE_REASONING_EFFORT_MODELS = new Set(["deepseek-ai/DeepSeek-V4-Pro", TOGETHER_DEEPSEEK_V4_PRO_0813]);
 const TOGETHER_FIXED_REASONING_LEVEL_MAP = {
 	off: null,
 	minimal: null,
@@ -184,6 +185,10 @@ const TOGETHER_DEEPSEEK_V4_THINKING_LEVEL_MAP = {
 	medium: null,
 	high: "high",
 	xhigh: null,
+} as const;
+const TOGETHER_DEEPSEEK_V4_0813_THINKING_LEVEL_MAP = {
+	...TOGETHER_DEEPSEEK_V4_THINKING_LEVEL_MAP,
+	max: "max",
 } as const;
 const TOGETHER_TOGGLE_REASONING_LEVEL_MAP = {
 	minimal: null,
@@ -499,7 +504,13 @@ function getTogetherThinkingLevelMap(
 ): NonNullable<Model<any>["thinkingLevelMap"]> | undefined {
 	if (!reasoning) return undefined;
 	if (TOGETHER_REASONING_EFFORT_MODELS.has(modelId)) return { ...TOGETHER_REASONING_EFFORT_LEVEL_MAP };
-	if (TOGETHER_TOGGLE_REASONING_EFFORT_MODELS.has(modelId)) return { ...TOGETHER_DEEPSEEK_V4_THINKING_LEVEL_MAP };
+	if (TOGETHER_TOGGLE_REASONING_EFFORT_MODELS.has(modelId)) {
+		return {
+			...(modelId === TOGETHER_DEEPSEEK_V4_PRO_0813
+				? TOGETHER_DEEPSEEK_V4_0813_THINKING_LEVEL_MAP
+				: TOGETHER_DEEPSEEK_V4_THINKING_LEVEL_MAP),
+		};
+	}
 	if (TOGETHER_REASONING_ONLY_MODELS.has(modelId)) return { ...TOGETHER_FIXED_REASONING_LEVEL_MAP };
 	return { ...TOGETHER_TOGGLE_REASONING_LEVEL_MAP };
 }
