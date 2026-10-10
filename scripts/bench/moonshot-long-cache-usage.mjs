@@ -1,15 +1,14 @@
 // Run: node --expose-gc scripts/bench/moonshot-long-cache-usage.mjs
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import ts from 'typescript';
 import { moonshotaiProvider } from '../../packages/ai/src/providers/moonshotai.ts';
 import { moonshotaiCnProvider } from '../../packages/ai/src/providers/moonshotai-cn.ts';
 import { createProvider } from '../../packages/ai/src/models.ts';
 import { lazyApi } from '../../packages/ai/src/api/lazy.ts';
+import { loadMoonshotBenchmarkAdapter } from './moonshot-benchmark-adapter.mjs';
 
 const baseline = '1257a336fdbee6f97e0aa60e5a706fd4cae0501e';
 const adapterPath = 'packages/ai/src/api/openai-completions.ts';
@@ -56,12 +55,7 @@ function instrument(source) {
 let owners = [moonshotaiProvider(), moonshotaiCnProvider()];
 const baselineMode = process.argv.includes('--baseline');
 if (baselineMode) {
-  const adapterUrl = new URL(`../../${adapterPath}`, import.meta.url);
-  const baselineSource = before.replace(/from "(\.[^"]+)"/g, (_match, specifier) => `from ${JSON.stringify(new URL(specifier, adapterUrl).href)}`);
-  const output = '.git/t05-4-moonshot-long-cache-20261011/baseline-api.mjs';
-  mkdirSync(dirname(output), { recursive: true });
-  writeFileSync(output, ts.transpileModule(baselineSource, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText);
-  const api = await import(pathToFileURL(output).href);
+  const { api } = await loadMoonshotBenchmarkAdapter(before, 'baseline');
   owners = owners.map(provider => createProvider({ id: provider.id, auth: {}, models: provider.getModels(),
     api: lazyApi(async () => api, 'mutation-with-generation') }));
 }
