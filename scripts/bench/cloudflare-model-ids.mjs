@@ -6,6 +6,9 @@ import vm from 'node:vm';
 import ts from 'typescript';
 import { withModelProfile } from '../../packages/ai/src/model-capabilities.ts';
 import { cloudflareAIGatewayProvider } from '../../packages/ai/src/providers/cloudflare-ai-gateway.ts';
+import { createModels } from '../../packages/ai/src/models.ts';
+import { InMemoryModelsStore, MODELS_STORE_PROFILE_REVISION } from '../../packages/ai/src/models-store.ts';
+import { withRemoteCatalog } from '../../packages/coding-agent/src/core/remote-catalog-provider.ts';
 
 const baseline = '8ed7d79e8d81c197274a95725358cb92c3cec68e';
 const atBase = path => execFileSync('git', ['show', `${baseline}:${path}`], { encoding: 'utf8' });
@@ -13,8 +16,9 @@ const read = path => readFileSync(path, 'utf8');
 const generatorPath = 'packages/ai/scripts/generate-models.ts';
 const catalogPath = 'packages/ai/src/providers/data/cloudflare-ai-gateway.json';
 const manifestPath = 'packages/ai/src/providers/data/.manifest.json';
+const remotePath = 'packages/coding-agent/src/core/remote-catalog-provider.ts';
 const changedProduction = execFileSync('git', ['diff', '--name-only', baseline, '--', 'packages'], { encoding: 'utf8' }).trim().split(/\r?\n/).sort();
-assert.deepEqual(changedProduction, [generatorPath, catalogPath, manifestPath].sort());
+assert.deepEqual(changedProduction, [generatorPath, catalogPath, manifestPath, remotePath].sort());
 
 // Compare the complete loader AST; only this ID assignment may change.
 function idExpression(source) {
@@ -37,6 +41,43 @@ const beforeExpression = idExpression(before), afterExpression = idExpression(af
 const printer = ts.createPrinter({ removeComments: true, newLine: ts.NewLineKind.LineFeed });
 const print = source => printer.printFile(ts.createSourceFile('generator.ts', source, ts.ScriptTarget.Latest, true));
 assert.equal(print(after.replace(`id = ${afterExpression};`, `id = ${beforeExpression};`)), print(before));
+// Only the catalog-ingress guard may differ; the full request/event chain is unchanged.
+const remoteSource = read(remotePath);
+const remoteAst = ts.createSourceFile(remotePath, remoteSource, ts.ScriptTarget.Latest, true);
+const profiler = remoteAst.statements.find(node => ts.isFunctionDeclaration(node) && node.name.text === 'profileRemoteModel');
+const normalization = profiler.body.statements.find(node => ts.isIfStatement(node));
+assert.ok(normalization);
+const normalizationText = normalization.getText(remoteAst);
+assert.equal(print(remoteSource.replace(normalizationText, '')), print(atBase(remotePath)));
+const ingressSites = { objects: 0, arrays: 0, closures: 0, constructors: 0, calls: [] };
+function countIngress(node) {
+  if (ts.isObjectLiteralExpression(node)) ingressSites.objects++;
+  if (ts.isArrayLiteralExpression(node)) ingressSites.arrays++;
+  if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) ingressSites.closures++;
+  if (ts.isNewExpression(node)) ingressSites.constructors++;
+  if (ts.isCallExpression(node)) ingressSites.calls.push(node.expression.getText(remoteAst));
+  ts.forEachChild(node, countIngress);
+}
+countIngress(normalization);
+assert.deepEqual(ingressSites, { objects: 0, arrays: 0, closures: 0, constructors: 0,
+  calls: ['raw.id.startsWith', 'raw.id.includes', 'raw.id.replaceAll'] });
+const instrumented = normalizationText.replace('raw.id = raw.id.replaceAll(".", "-");',
+  'raw.id = raw.id.replaceAll(".", "-"); replacements++;');
+assert.notEqual(instrumented, normalizationText);
+const ingress = vm.runInNewContext(`(() => { let replacements = 0; return {
+  run(provider, raw) { ${instrumented} return raw; }, count() { return replacements; }
+}; })()`);
+const ingressProvider = { id: 'cloudflare-ai-gateway' };
+const ingressRaw = { api: 'anthropic-messages', id: '' };
+for (let index = 0; index < 20_000; index++) {
+  ingressRaw.id = 'claude-sonnet-4.5';
+  assert.equal(ingress.run(ingressProvider, ingressRaw), ingressRaw);
+  assert.equal(ingressRaw.id, 'claude-sonnet-4-5');
+  assert.equal(ingress.run(ingressProvider, ingressRaw), ingressRaw);
+}
+assert.equal(ingress.count(), 20_000);
+console.log(JSON.stringify({ phase: 'catalog-ingress', calls: 40_000, stringReplacements: ingress.count(),
+  newObjectArrayClosureConstructorSites: 0, unchangedRecords: 20_000, reusesOwnedRawCopy: true, ingressSites }));
 for (const [label, expression] of [['baseline', beforeExpression], ['candidate', afterExpression]]) {
   const file = ts.createSourceFile('expression.ts', expression, ts.ScriptTarget.Latest, true);
   const sites = { objects: 0, arrays: 0, closures: 0, constructors: 0, calls: 0 };
@@ -78,13 +119,14 @@ const oldManifest = JSON.parse(atBase(manifestPath)), manifest = JSON.parse(read
 assert.equal(manifest.generatedAt, oldManifest.generatedAt);
 assert.deepEqual(Object.keys(manifest.files), Object.keys(oldManifest.files));
 for (const file of Object.keys(oldManifest.files)) if (file !== 'cloudflare-ai-gateway.json') assert.equal(manifest.files[file], oldManifest.files[file]);
-console.log(JSON.stringify({ phase: 'source-and-data', changedProduction, runtimeFunctionChanges: 0, renamed,
+console.log(JSON.stringify({ phase: 'source-and-data', changedProduction, runtimeFunctionChanges: 1,
+  requestOrDeltaFunctionChanges: 0, renamed,
   unchangedProviderHashes: Object.keys(manifest.files).length - 1, generatedAt: manifest.generatedAt, capabilitiesUnchanged: true }));
 
 assert.equal(typeof globalThis.gc, 'function', '--expose-gc required');
 const provider = cloudflareAIGatewayProvider();
 const baselineLifecycle = process.argv.includes('--baseline-lifecycle');
-// Runtime sources are identical: replay only the old metadata through the same provider.
+// Request sources are identical: replay old metadata directly, bypassing the new catalog ingress.
 const model = baselineLifecycle ? withModelProfile(oldCatalog['anthropic-messages']['claude-sonnet-4.5'], 'built-in')
   : provider.getModels().find(value => value.id === 'claude-sonnet-4-5');
 assert.ok(model);
@@ -132,3 +174,50 @@ assert.deepEqual(retained, []);
 assert.equal(controllers.length, 6);
 console.log(JSON.stringify({ phase: 'request-release', requests: 6, payloads: 6, released: refs.length, retained: 0,
   baselineLifecycle, heldControllers: controllers.length, heldProvider: provider.id, heldModel: model.id }));
+
+const catalogRefs = [], heldCatalogOwners = [];
+async function catalogLifetime(profileRevision, cleanup) {
+  const store = new InMemoryModelsStore();
+  const registry = createModels({ modelsStore: store });
+  const remote = withRemoteCatalog(provider, 'http://127.0.0.1:1', 1);
+  heldCatalogOwners.push({ store, registry, remote });
+  const rows = Array.from({ length: 256 }, (_, index) => ({
+    ...oldCatalog['anthropic-messages']['claude-sonnet-4.5'], id: `claude-fixture-${index}-4.5`,
+  }));
+  await store.write(provider.id, { models: rows, profileRevision, lastModified: 2 });
+  registry.setProvider(remote);
+  assert.equal((await registry.refresh({ allowNetwork: false })).errors.size, 0);
+  const restored = remote.getModels();
+  assert.equal(remote.getModels(), restored, 'merged catalog is cached');
+  catalogRefs.push(new WeakRef(restored));
+  for (let index = 0; index < rows.length; index++) {
+    const value = registry.getModel(provider.id, `claude-fixture-${index}-4-5`);
+    assert.ok(value);
+    assert.equal(registry.getModel(provider.id, rows[index].id), undefined);
+    for (const reference of [value, value.cost, value.capabilities]) catalogRefs.push(new WeakRef(reference));
+  }
+  if (cleanup === 'replace') {
+    await store.write(provider.id, { models: [{ ...rows[0], id: 'claude-replacement-5.5' }],
+      profileRevision: MODELS_STORE_PROFILE_REVISION, lastModified: 3 });
+    assert.equal((await registry.refresh({ allowNetwork: false })).errors.size, 0);
+    assert.ok(registry.getModel(provider.id, 'claude-replacement-5-5'));
+    assert.equal(registry.getModel(provider.id, 'claude-fixture-0-4-5'), undefined);
+  } else {
+    await store.delete(provider.id);
+    assert.equal((await registry.refresh({ allowNetwork: false })).errors.size, 0);
+    assert.equal(remote.getModels().length, provider.getModels().length);
+    registry.clearProviders();
+  }
+}
+for (const revision of [undefined, MODELS_STORE_PROFILE_REVISION]) {
+  for (const cleanup of ['replace', 'clear']) await catalogLifetime(revision, cleanup);
+}
+for (let index = 0; index < 8; index++) { await new Promise(resolve => setImmediate(resolve)); globalThis.gc(); }
+assert.equal(catalogRefs.filter(ref => ref.deref()).length, 0);
+for (const owner of heldCatalogOwners) {
+  await owner.store.delete(provider.id);
+  await owner.registry.refresh({ allowNetwork: false });
+  owner.registry.clearProviders();
+}
+console.log(JSON.stringify({ phase: 'catalog-release', restoredRecords: 1024, released: catalogRefs.length,
+  retained: 0, heldOwners: heldCatalogOwners.length, cleanup: 'current/legacy × replace/clear' }));
