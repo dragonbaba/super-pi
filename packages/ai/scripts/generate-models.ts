@@ -1968,6 +1968,21 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 					compat.thinkingFormat = "openai";
 					compat.supportsReasoningEffort = true;
 				}
+				const cost = getModelsDevCost(m.cost, {
+					input: m.cost?.input || (isKimiK3 ? KIMI_K3_COST.input : 0),
+					output: m.cost?.output || (isKimiK3 ? KIMI_K3_COST.output : 0),
+					cacheRead: m.cost?.cache_read || (isKimiK3 ? KIMI_K3_COST.cacheRead : 0),
+					cacheWrite: m.cost?.cache_write || (isKimiK3 ? KIMI_K3_COST.cacheWrite : 0),
+				});
+				// K3's default 5m cache writes are billed at the input rate. This is
+				// Moonshot API pricing, not Kimi Coding or a reseller's rate card.
+				// https://platform.kimi.ai/docs/guide/context-caching
+				if (isKimiK3) {
+					cost.cacheWrite = cost.input;
+					if (cost.tiers) {
+						for (const tier of cost.tiers) tier.cacheWrite = tier.input;
+					}
+				}
 				models.push({
 					id: modelId,
 					name: m.name || modelId,
@@ -1976,12 +1991,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 					baseUrl,
 					reasoning: isKimiK3 || m.reasoning === true,
 					input: m.modalities?.input?.includes("image") ? ["text", "image"] : ["text"],
-					cost: getModelsDevCost(m.cost, {
-						input: m.cost?.input || (isKimiK3 ? KIMI_K3_COST.input : 0),
-						output: m.cost?.output || (isKimiK3 ? KIMI_K3_COST.output : 0),
-						cacheRead: m.cost?.cache_read || (isKimiK3 ? KIMI_K3_COST.cacheRead : 0),
-						cacheWrite: m.cost?.cache_write || (isKimiK3 ? KIMI_K3_COST.cacheWrite : 0),
-					}),
+					cost,
 					contextWindow: m.limit?.context || 4096,
 					maxTokens: m.limit?.output || 4096,
 					compat,
