@@ -25,7 +25,7 @@ test("an older host can load the extension entry and reach the capability gate",
 		writeFileSync(join(host, "index.js"), "export {};\n");
 		const extension = join(root, "extension");
 		mkdirSync(extension);
-		for (const file of ["index.js", "config.js", "runtime-compat.js", "security.js", "lifecycle.js", "regex.js"]) {
+		for (const file of ["index.js", "config.js", "runtime-compat.js", "security.js", "lifecycle.js", "manager.js", "regex.js"]) {
 			copyFileSync(new URL(`../packages/mcp-bridge/src/${file}`, import.meta.url), join(extension, file));
 		}
 		const entry = await import(pathToFileURL(join(extension, "index.js")).href);

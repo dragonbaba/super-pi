@@ -95,10 +95,10 @@ async function fixture(t: TestContext) {
 	function block() { endpoint.listed = deferred(); endpoint.gate = deferred(); gates.push(endpoint.gate); return endpoint.gate; }
 	// `allow` models a host tool policy (allowlist) that silently ignores other names.
 	function host(manager = SessionManager.inMemory(root), allow = (_name: string) => true) {
-		const events = new Map<string, any>(), tools = new Map<string, any>(), notes: string[] = [];
+		const events = new Map<string, any>(), commands = new Map<string, any>(), tools = new Map<string, any>(), notes: string[] = [];
 		let active = ["read"];
 		const pi = {
-			on(name: string, handler: any) { events.set(name, handler); }, registerCommand() {},
+			on(name: string, handler: any) { events.set(name, handler); }, registerCommand(name: string, command: any) { commands.set(name, command.handler); },
 			registerTool(tool: any) { tools.set(tool.name, tool); if (!active.includes(tool.name) && allow(tool.name)) active.push(tool.name); },
 			getActiveTools: () => active, setActiveTools(names: string[]) { active = names.filter(allow); },
 			appendEntry(type: string, data: unknown) { manager.appendCustomEntry(type, data); },
@@ -108,7 +108,7 @@ async function fixture(t: TestContext) {
 		const ctx = { cwd: root, isProjectTrusted: () => false, hasUI: true, sessionManager: manager, ui: { notify(text: string) { notes.push(text); } } };
 		const stop = async () => { await events.get("session_shutdown")?.({}, ctx); };
 		cleanup.push(stop);
-		return { ctx, manager, tools, events, notes, active: () => active, stop, activate: (name: string) => { active = [...active, name]; },
+		return { ctx, manager, tools, events, commands, notes, active: () => active, stop, activate: (name: string) => { active = [...active, name]; },
 			start: () => events.get("session_start")({}, ctx),
 			search: (query = "lookup", signal?: AbortSignal) => tools.get("mcp_search_tools").execute("search", { query }, signal),
 		};
@@ -117,6 +117,30 @@ async function fixture(t: TestContext) {
 }
 
 const REMOTE = "mcp__fixture__lookup";
+
+test("MCP manager inspects real asynchronous discovery without activating or calling tools", async t => {
+	const f = await fixture(t), gate = f.block(), h = f.host();
+	f.writeConfig({ headers: { "X-Fixture": "private-config-value" } });
+	await h.start(); await f.endpoint.listed.promise;
+	const before = readFileSync(join(f.agentDir, "config", "mcp.json"));
+	let screen = 0;
+	await h.commands.get("mcp")("", { ...h.ctx, ui: { ...h.ctx.ui,
+		async select(title: string, options: string[], opts: { details: string }) {
+			assert.doesNotMatch(`${title}\n${options.join("\n")}\n${opts.details}`, /private-config-value/);
+			screen++;
+			if (screen === 1) {
+				assert.match(options[0]!, /connecting/); gate.resolve(); await h.search("nothing-matches"); return "Refresh status";
+			}
+			if (screen === 2) { assert.match(options[0]!, /connected; 1 tools/); return options[0]; }
+			if (screen === 3) { assert.match(opts.details, /Source: global; transport: http/); return "View tools"; }
+			if (screen === 4) { assert.equal(title, "MCP tools: fixture"); assert.equal(opts.details, "lookup"); return "Back"; }
+			return undefined;
+		},
+	} });
+	assert.equal(screen, 5); assert.equal(h.active().includes(REMOTE), false);
+	assert.equal(f.endpoint.initializes, 1); assert.equal(f.endpoint.lists, 1); assert.equal(f.endpoint.calls, 0);
+	assert.deepEqual(readFileSync(join(f.agentDir, "config", "mcp.json")), before);
+});
 
 test("noMcp blocks real session startup, cached history, reload and tagged activation without changing persistent state", async t => {
 	const f = await fixture(t), enabled = f.host();
