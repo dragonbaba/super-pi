@@ -68,6 +68,20 @@ export default function extension(pi: ExtensionAPI) {
 
 Intercepting and transforming hooks continue to use `pi.on()`. Hosts may configure category-specific hook timeouts through `extensionRunnerOptions`; the standard CLI applies a 30-second timeout to safety/veto hooks, including bootstrap `project_trust`, and always fails them closed. Interactive hooks have no timeout by default, and transform hooks require an explicit fail-open or fail-closed policy. A timeout stops awaiting the handler but cannot forcibly cancel already-running JavaScript. Its eventual fulfillment or rejection is observed and ignored; returned transforms or trust decisions are never applied after the timeout.
 
+## Run settlement events
+
+Extensions and JSON/RPC subscribers receive `agent_settled` after a run and its
+automatic retries, compaction and queued continuations finish:
+
+```json
+{"type":"agent_settled","aborted":false}
+```
+
+`aborted` is true when the run is cancelled, including during retry backoff or
+automatic compaction. A provider error or a request for user input alone leaves
+it false. Existing consumers can ignore the additive field; clients connecting
+to older hosts should treat an absent field as false.
+
 ## Tool-result budget
 
 Tool-result projection stays disabled unless explicitly configured. Use
