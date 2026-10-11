@@ -120,6 +120,7 @@ import { getUsageCostBreakdown } from "../../core/usage-totals.ts";
 import { getChangelogPath, getNewEntries, normalizeChangelogLinks, parseChangelog } from "../../utils/changelog.ts";
 import { copyToClipboard, readClipboardText } from "../../utils/clipboard.ts";
 import { readClipboardImage } from "../../utils/clipboard-image.ts";
+import { initializeTerminalImageTranscoder } from "../../utils/image-convert.ts";
 import { refreshModelCatalogs } from "../../utils/abort.ts";
 import { parseGitUrl } from "../../utils/git.ts";
 import { formatLocaleInteger } from "../../utils/number-format.ts";
@@ -1348,6 +1349,8 @@ export class InteractiveMode {
 		this.isInitialized = true;
 
 		try {
+			await initializeTerminalImageTranscoder();
+			if (!this.ownsInitialization(initializationGeneration, lifecycleGeneration)) return false;
 			await this.themeController.applyFromSettings();
 		} catch (error) {
 			if (!this.ownsInitialization(initializationGeneration, lifecycleGeneration)) return false;

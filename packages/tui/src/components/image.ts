@@ -3,6 +3,7 @@ import {
 	getCapabilities,
 	getCellDimensions,
 	getImageDimensions,
+	getPngDimensions,
 	type ImageDimensions,
 	imageFallback,
 	renderImage,
@@ -10,6 +11,19 @@ import {
 import { RELEASE_COMPONENT_RENDER_CACHE } from "../component-cache.ts";
 import type { Component } from "../tui.ts";
 import { truncateToWidth } from "../utils.ts";
+
+/** Synchronous preparation callback. Return base64 PNG, or null on failure. */
+export type ImageTranscoder = (base64Data: string, mimeType: string) => string | null;
+
+let imageTranscoder: ImageTranscoder | undefined;
+let transcoderRevision = 0;
+
+/** Register before creating images; invalidate existing fallback images to retry. */
+export function setImageTranscoder(transcoder: ImageTranscoder | undefined): void {
+	if (imageTranscoder === transcoder) return;
+	imageTranscoder = transcoder;
+	transcoderRevision++;
+}
 
 export interface ImageTheme {
 	fallbackColor: (str: string) => string;
@@ -30,6 +44,7 @@ export class Image implements Component {
 	private theme: ImageTheme;
 	private options: ImageOptions;
 	private imageId?: number;
+	private preparedTranscoderRevision = -1;
 
 	private cachedLines?: string[];
 	private cachedWidth?: number;
@@ -47,6 +62,25 @@ export class Image implements Component {
 		this.options = options;
 		this.dimensions = dimensions || getImageDimensions(base64Data, mimeType) || { widthPx: 800, heightPx: 600 };
 		this.imageId = options.imageId;
+		this.prepareForTerminal();
+	}
+
+	/** Preparation only: never called by render or cache-only unmount. */
+	private prepareForTerminal(): void {
+		if (this.mimeType === "image/png" || getCapabilities().images !== "kitty" || !imageTranscoder
+			|| this.preparedTranscoderRevision === transcoderRevision) return;
+		this.preparedTranscoderRevision = transcoderRevision;
+		try {
+			const png = imageTranscoder(this.base64Data, this.mimeType);
+			const dimensions = png ? getPngDimensions(png) : null;
+			if (!png || !dimensions || dimensions.widthPx <= 0 || dimensions.heightPx <= 0) return;
+			// Keep a single encoded representation. EXIF rotation can change its dimensions.
+			this.base64Data = png;
+			this.mimeType = "image/png";
+			this.dimensions = dimensions;
+		} catch {
+			// A failed registration is tried once; ordinary redraws keep the fallback.
+		}
 	}
 
 	/** Get the Kitty image ID used by this image (if any). */
@@ -55,6 +89,7 @@ export class Image implements Component {
 	}
 
 	invalidate(): void {
+		this.prepareForTerminal();
 		this.clearRenderCache();
 	}
 
@@ -80,7 +115,7 @@ export class Image implements Component {
 		const caps = getCapabilities();
 		let lines: string[];
 
-		if (caps.images) {
+		if (caps.images && (caps.images !== "kitty" || this.mimeType === "image/png")) {
 			if (caps.images === "kitty" && this.imageId === undefined) {
 				this.imageId = allocateImageId();
 			}

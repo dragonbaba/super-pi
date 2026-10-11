@@ -598,6 +598,17 @@ tui.addChild(image);
 
 Supported formats: PNG, JPEG, GIF, WebP. Dimensions are parsed from the image headers automatically.
 
+Kitty accepts PNG payloads. For direct JPEG/GIF/WebP components, register
+`setImageTranscoder((base64Data, mimeType) => pngBase64OrNull)` before creating
+images. Super Pi registers its existing Photon converter during Kitty startup.
+Standalone TUI applications supply their own synchronous converter. Conversion
+runs when constructing an image or explicitly invalidating it after a new
+converter registration; `render()` never decodes or converts. A successful PNG
+replaces the original encoded representation and supplies its own dimensions.
+Without a converter, or if conversion fails, Kitty shows the text placeholder.
+Failures retry only after registering a different converter and calling
+`image.invalidate()`. PNG and iTerm2 images bypass conversion.
+
 #### Alternate-screen image compatibility
 
 `TuiAltScreen` supports inline images and partial viewport cropping in terminals that implement the Kitty graphics protocol, including Kitty and Ghostty. iTerm2's inline-image protocol does not provide operations to delete an existing placement or crop its source while scrolling. To prevent stale images from remaining over repainted content, `TuiAltScreen` renders image components as text placeholders in iTerm2. `TuiMainScreen` continues to render iTerm2 inline images normally.
