@@ -1,15 +1,11 @@
 import { parentPort } from "node:worker_threads";
-import { type ImageResizeOptions, type ResizedImage, resizeImageInProcess } from "./image-resize-core.ts";
+import { type ImageResizeOptions, resizeImageInProcess } from "./image-resize-core.ts";
+import type { ResizeImageWorkerResponse } from "./image-resize-protocol.ts";
 
 interface ResizeImageWorkerRequest {
 	inputBytes: Uint8Array;
 	mimeType: string;
 	options?: ImageResizeOptions;
-}
-
-interface ResizeImageWorkerResponse {
-	result?: ResizedImage | null;
-	error?: string;
 }
 
 function isResizeImageWorkerRequest(value: unknown): value is ResizeImageWorkerRequest {
@@ -30,10 +26,11 @@ port.once("message", (message: unknown) => {
 				throw new Error("Invalid image resize worker request");
 			}
 			const result = await resizeImageInProcess(message.inputBytes, message.mimeType, message.options);
-			const response: ResizeImageWorkerResponse = { result };
+			const response: ResizeImageWorkerResponse = { type: "image-resize-result", result };
 			port.postMessage(response);
 		} catch (error) {
 			const response: ResizeImageWorkerResponse = {
+				type: "image-resize-result",
 				error: error instanceof Error ? error.message : String(error),
 			};
 			port.postMessage(response);
