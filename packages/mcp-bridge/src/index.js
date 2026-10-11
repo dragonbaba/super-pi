@@ -3,6 +3,7 @@ import { loadMcpConfig } from "./config.js";
 import { checkRuntimeCompatibility, discoverPiVersion } from "./runtime-compat.js";
 import { MAX_ACTIVATED_SCHEMA_BYTES, MAX_SERVERS, sanitizeText } from "./security.js";
 import { McpRuntimeLifecycle } from "./lifecycle.js";
+import { chooseMcpAction, withMcpAuthProgress } from "./manager.js";
 
 const ACTIVATION_ENTRY = "mcp-tool-activation-v1";
 const MAX_ACTIVATION_ENTRIES = MAX_SERVERS * 128;
@@ -37,15 +38,19 @@ export function applyActivationItems(intent, items) {
 
 // Explicit auth command only. Include import/preparation in the owned operation,
 // but leave ctx.reload outside it: reload emits session_shutdown itself.
-async function runAuthCommand(action, server, ctx, signal) {
+async function runAuthCommand(action, server, ctx, signal, showUrl) {
   const { McpOAuth } = await import("./oauth.js");
   signal.throwIfAborted();
   const owner = new McpOAuth(server);
-  if (action === "login") {
-    await owner.login(url => {
-      if (!signal.aborted) ctx.ui.notify(`Open this URL to authorize ${server.id}:\n${url}`, "info");
-    }, signal);
-  } else await owner.logout(signal);
+  try {
+    if (action === "login") {
+      await owner.login(url => {
+        if (signal.aborted) return;
+        if (showUrl) showUrl(url);
+        else ctx.ui.notify(`Open this URL to authorize ${server.id}:\n${url}`, "info");
+      }, signal);
+    } else await owner.logout(signal);
+  } finally { await owner.close(); }
 }
 
 export default function mcpBridgeExtension(pi) {
@@ -64,6 +69,14 @@ export default function mcpBridgeExtension(pi) {
   let authOperation = null;
   let authGeneration = 0;
   let authEnabled = false;
+  let managerEnabled = false;
+  let managerController = null;
+  let managerOperation = null;
+  const stopManager = async () => {
+    managerEnabled = false;
+    managerController?.abort();
+    try { await managerOperation; } catch { /* the command observes its own failure */ }
+  };
   const stopAuth = async () => {
     authEnabled = false;
     authGeneration++;
@@ -202,18 +215,21 @@ export default function mcpBridgeExtension(pi) {
 
   pi.on("session_start", async (event, ctx) => {
     mcpEnabled = event.mcpEnabled !== false;
+    const managerStopped = stopManager();
     const authStopped = stopAuth();
     if (!mcpEnabled) {
       try { await lifecycle.shutdown(); }
-      finally { await authStopped; }
+      finally { await authStopped; await managerStopped; }
       return;
     }
     let token;
     try { token = await lifecycle.begin(ctx.signal); }
-    finally { await authStopped; }
+    finally { await authStopped; await managerStopped; }
     if (!token || !lifecycle.isCurrent(token) || token.signal.aborted) return;
     restoreActivationIntent(ctx);
     configError = null;
+    configInfo = null;
+    managerEnabled = true;
     let nextRuntime = null;
     try {
       const { McpSchemaCache, configFingerprint, prepareSchemaCache } = await import("./schema-cache.js");
@@ -297,9 +313,10 @@ export default function mcpBridgeExtension(pi) {
 
   pi.on("session_shutdown", async () => {
     activationGeneration++;
+    const managerStopped = stopManager();
     const authStopped = stopAuth();
     try { await lifecycle.shutdown(); }
-    finally { await authStopped; }
+    finally { await authStopped; await managerStopped; }
   });
 
   pi.on("session_tree", (_event, ctx) => {
@@ -335,43 +352,74 @@ export default function mcpBridgeExtension(pi) {
     },
   });
 
+  const authCommand = async (action, args, ctx, progress = false) => {
+    if (!authEnabled) return;
+    const parentSignal = ctx.signal;
+    if (parentSignal?.aborted) return;
+    const server = configInfo?.servers.find(item => item.id === args.trim() && item.oauth);
+    if (!server) { ctx.ui.notify("Specify a configured OAuth MCP server ID.", "error"); return; }
+    const generation = ++authGeneration;
+    authController?.abort();
+    // All replacement waiters share the active operation, not a Promise tail.
+    // Only the latest request may proceed once its predecessor has cleaned up.
+    if (authOperation) { try { await authOperation; } catch {} }
+    if (!authEnabled || generation !== authGeneration || parentSignal?.aborted) return;
+    const controller = new AbortController(); authController = controller;
+    const signal = parentSignal ? AbortSignal.any([parentSignal, controller.signal]) : controller.signal;
+    const operation = progress
+      ? withMcpAuthProgress(ctx, `MCP ${action}: ${server.id}`, signal, () => controller.abort(),
+        showUrl => runAuthCommand(action, server, ctx, signal, showUrl))
+      : runAuthCommand(action, server, ctx, signal);
+    authOperation = operation;
+    try {
+      await operation;
+    } catch {
+      if (authEnabled && generation === authGeneration && !signal.aborted) {
+        ctx.ui.notify(`MCP ${action} failed or was cancelled. No credentials are shown in diagnostics.`, "error");
+      }
+      return;
+    } finally {
+      if (authOperation === operation) authOperation = null;
+      if (authController === controller) authController = null;
+    }
+    if (!authEnabled || generation !== authGeneration || signal.aborted) return;
+    // Reload replaces this runner and its command context; ctx must not be used afterwards.
+    ctx.ui.notify(`MCP ${action} completed for ${server.id}. Reloading MCP servers.`, "info");
+    if (authEnabled && generation === authGeneration && !signal.aborted) await ctx.reload();
+  };
+
   for (const action of ["login", "logout"]) {
     pi.registerCommand(`mcp-${action}`, {
       description: `${action === "login" ? "Authorize" : "Remove local authorization for"} an OAuth MCP server: /mcp-${action} <server-id>`,
-      handler: async (args, ctx) => {
-        if (!authEnabled) return;
-        const parentSignal = ctx.signal;
-        if (parentSignal?.aborted) return;
-        const server = configInfo?.servers.find(item => item.id === args.trim() && item.oauth);
-        if (!server) { ctx.ui.notify("Specify a configured OAuth MCP server ID.", "error"); return; }
-        const generation = ++authGeneration;
-        authController?.abort();
-        // All replacement waiters share the active operation, not a Promise tail.
-        // Only the latest request may proceed once its predecessor has cleaned up.
-        if (authOperation) { try { await authOperation; } catch {} }
-        if (!authEnabled || generation !== authGeneration || parentSignal?.aborted) return;
-        const controller = new AbortController(); authController = controller;
-        const signal = parentSignal ? AbortSignal.any([parentSignal, controller.signal]) : controller.signal;
-        const operation = runAuthCommand(action, server, ctx, signal);
-        authOperation = operation;
-        try {
-          await operation;
-        } catch {
-          if (authEnabled && generation === authGeneration && !signal.aborted) {
-            ctx.ui.notify(`MCP ${action} failed or was cancelled. No credentials are shown in diagnostics.`, "error");
-          }
-          return;
-        } finally {
-          if (authOperation === operation) authOperation = null;
-          if (authController === controller) authController = null;
-        }
-        if (!authEnabled || generation !== authGeneration || signal.aborted) return;
-        // Reload replaces this runner and its command context; ctx must not be used afterwards.
-        ctx.ui.notify(`MCP ${action} completed for ${server.id}. Reloading MCP servers.`, "info");
-        if (authEnabled && generation === authGeneration && !signal.aborted) await ctx.reload();
-      },
+      handler: (args, ctx) => authCommand(action, args, ctx),
     });
   }
+
+  pi.registerCommand("mcp", {
+    description: "Manage MCP servers: inspect status/tools, sign in/out, or reload configuration",
+    handler: async (_args, ctx) => {
+      if (!mcpEnabled) { ctx.ui.notify("MCP is disabled for this session (--no-mcp).", "info"); return; }
+      if (!ctx.hasUI) { ctx.ui.notify("Use /mcp-status, /mcp-tools, /mcp-login, /mcp-logout or /mcp-reload in this mode.", "info"); return; }
+      if (!managerEnabled || ctx.signal?.aborted) return;
+      if (managerOperation || authOperation) { ctx.ui.notify("An MCP manager or authorization operation is already open.", "info"); return; }
+      const controller = new AbortController(); managerController = controller;
+      const signal = ctx.signal ? AbortSignal.any([ctx.signal, controller.signal]) : controller.signal;
+      const config = configInfo;
+      const operation = chooseMcpAction(config, lifecycle.current, configError, ctx, signal);
+      managerOperation = operation;
+      let selection;
+      try { selection = await operation; }
+      finally {
+        controller.abort();
+        if (managerOperation === operation) managerOperation = null;
+        if (managerController === controller) managerController = null;
+      }
+      // Ownership must end before dispatch: reload emits our own shutdown.
+      if (!selection || !managerEnabled || config !== configInfo || ctx.signal?.aborted) return;
+      if (selection.action === "reload") await ctx.reload();
+      else await authCommand(selection.action, selection.id, ctx, true);
+    },
+  });
 }
 
 export { loadMcpConfig };

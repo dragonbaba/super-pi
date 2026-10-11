@@ -6,11 +6,31 @@ Large text and typed resource/audio results require configured ToolResult presen
 
 ## Commands
 
+- `/mcp` — interactive server status, tool inspection, sign-in/sign-out and reload.
 - `/mcp-status` — connection state, transport, server version, and tool count.
 - `/mcp-tools` — Pi tool name → MCP server/tool mapping.
 - `/mcp-reload` — reload Pi resources and reconnect from disk.
 - `/mcp-login <server>` — explicitly authorize an HTTP/SSE server using its browser URL.
 - `/mcp-logout <server>` — remove that server's stored OAuth credentials and reload.
+
+The `/mcp` manager opens immediately while discovery continues. Select a server
+to inspect its source, transport, connection state and available tool names;
+**Refresh status** reads the latest snapshot. Viewing tools does not activate or
+execute them. **Reload configuration** reloads resources from disk and reconnects
+using the current trust and configuration rules.
+
+OAuth servers offer **Sign in** and **Sign out**, sharing the same credential
+identity and lifecycle as the standalone commands. Sign-in shows the authorization
+URL in a scrollable status view. Escape or **Cancel** stops the operation and waits
+for cleanup; shutdown/reload also cancels and waits. Only one manager or manager
+authentication flow can open at a time. Successful auth closes the status view
+before reloading resources. Noninteractive modes retain the standalone commands,
+and `--no-mcp` prevents the manager from opening.
+
+The manager uses explicit status refresh, without polling. Configuration editing
+and persistent enable/disable remain in the configuration files; the manager
+does not rewrite them. Connection credentials, environment values and command
+arguments are omitted from its status/tool views.
 
 Remote tools are registered as `mcp__<server>__<tool>` (bounded and collision-checked) and execute sequentially. They are deferred by default: call `tools.mcp_search_tools` with capability words to activate up to eight matching tools, then use `callTool(name, args)` in the same Codemode script. Changed schemas are refreshed on reconnect; tools removed from the server catalog are rejected before any remote execution. Remote `readOnlyHint` alone does not authorize concurrent execution.
 

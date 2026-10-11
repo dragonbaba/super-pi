@@ -27,6 +27,7 @@ function deferred() {
 
 async function fixture(t: TestContext) {
 	const root = mkdtempSync(join(tmpdir(), "sp-mcp-auth-lifecycle-"));
+	t.diagnostic(`ownedFixture=${root}`);
 	const previous = process.env.SP_CODING_AGENT_DIR, entry = process.argv[1];
 	process.env.SP_CODING_AGENT_DIR = root;
 	process.argv[1] = resolve("packages/coding-agent/src/cli.ts");
@@ -62,13 +63,132 @@ async function fixture(t: TestContext) {
 	return { root, ctx, pi, notes, events, operations, cleanup, reloads: () => reloads,
 		gate() { const value = deferred(); gates.push(value); return value; },
 		run(action = "login", context = ctx) {
-			const pending = commands.get(`mcp-${action}`)("fixture", context);
+			const pending = commands.get(action === "manager" ? "mcp" : `mcp-${action}`)("fixture", context);
 			operations.push(pending); void pending.catch(() => {}); return pending as Promise<void>;
 		},
 		stop: () => events.get("session_shutdown")({}, {}) as Promise<void>,
 		start: () => events.get("session_start")({}, ctx) as Promise<void>,
 	};
 }
+
+// chooseMcpAction/withMcpAuthProgress are explicit-command boundaries. The
+// selector host owns its abort listener and releases it before resolving.
+function managerUI(f: Awaited<ReturnType<typeof fixture>>, action = "Sign in") {
+	const dialogs: Array<{ title: string; details: string; signal: AbortSignal; finish: (value?: string) => void }> = [];
+	let live = 0, maximum = 0;
+	const ctx = { ...f.ctx, hasUI: true, ui: { ...f.ctx.ui,
+		async select(title: string, options: string[], opts: { signal: AbortSignal; details?: string }) {
+			live++; maximum = Math.max(maximum, live);
+			try {
+				if (title === "MCP servers") return options[0];
+				if (title === "MCP: fixture") return action;
+				return await new Promise<string | undefined>(resolve => {
+					const finish = (value?: string) => { opts.signal.removeEventListener("abort", abort); resolve(value); };
+					const abort = () => finish();
+					dialogs.push({ title, details: opts.details ?? "", signal: opts.signal, finish });
+					opts.signal.addEventListener("abort", abort, { once: true });
+					if (opts.signal.aborted) abort();
+				});
+			} finally { live--; }
+		},
+	} };
+	return { ctx, dialogs, live: () => live, maximum: () => maximum };
+}
+
+test("MCP manager menu has one owner and shutdown cancels it before stale reload", async t => {
+	const f = await fixture(t), ready = f.gate(), release = f.gate();
+	let selections = 0, signal!: AbortSignal;
+	const ctx = { ...f.ctx, hasUI: true, ui: { ...f.ctx.ui,
+		async select(_title: string, _options: string[], opts: { signal: AbortSignal }) {
+			selections++; signal = opts.signal; ready.resolve(); await release.promise; return "Reload configuration";
+		},
+	} };
+	const first = f.run("manager", ctx); await ready.promise;
+	await f.run("manager", ctx); assert.equal(selections, 1);
+	let stopped = false;
+	const stop = f.stop().then(() => { stopped = true; }); f.operations.push(stop);
+	await nextTask(); assert.equal(signal.aborted, true); assert.equal(stopped, false);
+	release.resolve(); await stop; await first;
+	assert.equal(f.reloads(), 0);
+	const reopened = { ...ctx, ui: { ...ctx.ui, select: async () => undefined } };
+	await f.start(); await f.run("manager", reopened);
+});
+
+test("MCP manager no-UI and noMcp modes never open a selector", async t => {
+	const f = await fixture(t); let opened = 0;
+	const ctx = { ...f.ctx, ui: { ...f.ctx.ui, select: async () => { opened++; return undefined; } } };
+	await f.run("manager", ctx); assert.match(f.notes[0]!, /mcp-status/);
+	await f.events.get("session_start")({ mcpEnabled: false }, ctx);
+	await f.run("manager", { ...ctx, hasUI: true });
+	assert.equal(opened, 0); assert.match(f.notes.at(-1)!, /MCP is disabled/);
+});
+
+test("MCP manager recovers from invalid configuration by releasing its menu before reload", { timeout: 5000 }, async t => {
+	const f = await fixture(t);
+	writeFileSync(join(f.root, "config", "mcp.json"), "invalid fixture JSON"); await f.start();
+	let selections = 0;
+	const ctx = { ...f.ctx, hasUI: true, ui: { ...f.ctx.ui,
+		async select(_title: string, options: string[], opts: { details: string }) {
+			selections++; assert.match(opts.details, /Configuration error/);
+			assert.deepEqual(options, ["Refresh status", "Reload configuration"]);
+			return "Reload configuration";
+		},
+	} };
+	await f.run("manager", ctx);
+	assert.equal(selections, 1); assert.equal(f.reloads(), 1);
+});
+
+for (const outcome of ["cancel", "shutdown"]) test(`MCP manager URL progress ${outcome} waits for cleanup and cannot reload`, { timeout: 5000 }, async t => {
+	const f = await fixture(t), entered = f.gate(), release = f.gate(), ui = managerUI(f);
+	let authSignal!: AbortSignal, closed = 0;
+	t.mock.method(McpOAuth.prototype, "login", async (notify: (url: string) => void, signal: AbortSignal) => {
+		authSignal = signal; notify("https://fixture.invalid/authorize?state=fixture"); entered.resolve(); await release.promise;
+		notify("https://fixture.invalid/late-authorization");
+	});
+	const originalClose = McpOAuth.prototype.close;
+	t.mock.method(McpOAuth.prototype, "close", function (this: any) { closed++; return originalClose.call(this); });
+	let done = false;
+	const pending = f.run("manager", ui.ctx).then(() => { done = true; }); await entered.promise; await nextTask();
+	assert.match(ui.dialogs.at(-1)!.details, /https:\/\/fixture.invalid\/authorize/);
+	assert.equal(ui.live(), 1); assert.equal(ui.maximum(), 1);
+	let stopped = false;
+	const stop = outcome === "shutdown" ? f.stop().then(() => { stopped = true; }) : undefined;
+	if (stop) f.operations.push(stop); else ui.dialogs.at(-1)!.finish();
+	await nextTask();
+	assert.equal(authSignal.aborted, true); assert.equal(done, false);
+	assert.equal(stopped, false);
+	release.resolve(); await pending; await stop;
+	assert.equal(closed, 1); assert.equal(ui.live(), 0); assert.equal(f.reloads(), 0); assert.deepEqual(f.notes, []);
+	assert.equal(ui.dialogs.length, 2, "one initial and one authorization-URL view, with no late UI");
+});
+
+test("MCP manager auth failure releases dialogs and real logout completes before reload", async t => {
+	const f = await fixture(t), ui = managerUI(f);
+	t.mock.method(McpOAuth.prototype, "login", async () => { throw new Error("private fixture secret"); });
+	await f.run("manager", ui.ctx);
+	assert.equal(ui.live(), 0); assert.equal(ui.maximum(), 1);
+	assert.deepEqual(f.notes, ["error: MCP login failed or was cancelled. No credentials are shown in diagnostics."]);
+	const logout = managerUI(f, "Sign out");
+	await f.run("manager", { ...logout.ctx, reload: async () => {
+		assert.equal(logout.live(), 0); await f.ctx.reload();
+	} });
+	assert.equal(f.reloads(), 1); assert.deepEqual(JSON.parse(readFileSync(join(f.root, "mcp-auth.json"), "utf8")), {});
+});
+
+test("MCP manager cancellation closes the real OAuth callback and clears its reservation", { timeout: 5000 }, async t => {
+	const f = await fixture(t), entered = f.gate(), ui = managerUI(f);
+	let callback = "";
+	t.mock.method(McpOAuth.prototype, "authorize", async (_entry: unknown, signal: AbortSignal, receiver: any) => {
+		callback = receiver.url;
+		const aborted = new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+		entered.resolve(); await aborted; signal.throwIfAborted();
+	});
+	const pending = f.run("manager", ui.ctx); await entered.promise;
+	ui.dialogs.at(-1)!.finish("Cancel"); await pending;
+	await assert.rejects(fetch(callback));
+	assert.deepEqual(JSON.parse(readFileSync(join(f.root, "mcp-auth.json"), "utf8")), {});
+	assert.equal(ui.live(), 0); assert.equal(f.reloads(), 0); assert.deepEqual(f.notes, []);
+});
 
 for (const action of ["login", "logout"]) for (const outcome of ["rejected", "late success"]) {
 	test(`MCP shutdown waits for ${outcome} ${action} cleanup and suppresses stale UI/reload`, { timeout: 5000 }, async t => {
