@@ -86,3 +86,23 @@ All fixture after/finally hooks close owned hosts/connections/auth work, remove
 their exact temporary directories and restore environment/entrypoint values.
 No external MCP provider/browser authorization or manual terminal session is
 claimed. Standard Linux/Windows CI and Codex review follow on the final PR head.
+
+### Compatibility-fixture follow-up
+
+Initial CI and Codex review found the same missing fixture dependency: the
+older-host test copies the entry and an explicit list of its imports into an
+isolated directory, but that list omitted the new `manager.js`. Both failing CI
+shards reported `ERR_MODULE_NOT_FOUND`; the other shards were cancelled by CI.
+Reproduced locally (1 pass / 1 fail), then added the module to that exact fixture
+list. Production/package contents already include `src`; production behavior and
+all compatibility assertions remain unchanged. The focused compatibility file now
+passes 2/2, bringing the distinct local behavior/lifecycle total to 24, plus the
+previous 4 source invariants. No repeated full local suite or production benchmark.
+
+```powershell
+node --experimental-strip-types --test tests/mcp-host-compatibility.test.ts
+```
+
+Evidence: `compatibility-before.log`, `compatibility-after.log`, `ci-failed.log`
+and `review-round1.json` in the local evidence directory above. Final-head CI and
+review must be repeated after this fixture correction.
