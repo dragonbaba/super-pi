@@ -51,6 +51,7 @@ type ToolResultLike = {
 	content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
 	isError?: boolean;
 	details?: any;
+	durationMs?: number;
 };
 
 type ConvertedTerminalImage = { data: string; mimeType: string };
@@ -793,6 +794,7 @@ export class ToolExecutionComponent extends Container {
 		details?: any;
 	};
 	private resultIsError = false;
+	private resultDurationMs: number | undefined;
 	private toolResultDiscovery: ToolResultPresentationDiscoveryState | undefined;
 	private convertedImages: Map<number, { data: string; mimeType: string }> = new Map();
 	private callRendererDirty = true;
@@ -933,6 +935,7 @@ export class ToolExecutionComponent extends Container {
 			expanded: this.expanded,
 			showImages: this.showImages,
 			isError: this.resultIsError,
+			durationMs: this.resultDurationMs,
 		};
 	}
 
@@ -1093,12 +1096,15 @@ export class ToolExecutionComponent extends Container {
 			content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
 			details?: any;
 			isError?: boolean;
+			durationMs?: number;
 		},
 		isPartial = false,
 		isError = result.isError === true,
+		durationMs: number | undefined = result.durationMs,
 	): void {
 		this.result = result;
 		this.resultIsError = isError;
+		this.resultDurationMs = isPartial ? undefined : durationMs;
 		this.isPartial = isPartial;
 		const incompleteArguments = !isPartial && isError && result.content[0]?.text?.startsWith("[TOOL_ARGS_INCOMPLETE]") === true;
 		if (this.incompleteArguments !== incompleteArguments) {

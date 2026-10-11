@@ -24,6 +24,7 @@ export interface ToolHtmlRenderer {
 		result: Array<{ type: string; text?: string; data?: string; mimeType?: string }>,
 		details: unknown,
 		isError: boolean,
+		durationMs?: number,
 	): { collapsed?: string; expanded?: string } | undefined;
 }
 
@@ -216,6 +217,7 @@ function preRenderCustomTools(
 					msg.content,
 					msg.details,
 					msg.isError || false,
+					msg.durationMs,
 				);
 				if (rendered) {
 					renderedTools[msg.toolCallId] = {

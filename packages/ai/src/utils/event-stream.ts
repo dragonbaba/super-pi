@@ -88,6 +88,19 @@ export class EventStream<T, R = T> implements AsyncIterable<T> {
 	}
 }
 
+// Keep timing outside the subclass shape: SDK callers may return a structurally
+// compatible EventStream. One primitive record per response, released at finish.
+const responseTiming = new WeakMap<AssistantMessageEventStream, { wall: number; monotonic: number }>();
+
+function finishResponseTiming(stream: AssistantMessageEventStream, message?: AssistantMessage): void {
+	const timing = responseTiming.get(stream);
+	if (!timing) return;
+	responseTiming.delete(stream);
+	if (message && message.durationMs === undefined && message.timestamp >= timing.wall) {
+		message.durationMs = Math.max(0, Math.round(performance.now() - timing.monotonic));
+	}
+}
+
 export class AssistantMessageEventStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
 	constructor() {
 		super(
@@ -101,6 +114,18 @@ export class AssistantMessageEventStream extends EventStream<AssistantMessageEve
 				throw new Error("Unexpected event type for final result");
 			},
 		);
+		responseTiming.set(this, { wall: Date.now(), monotonic: performance.now() });
+	}
+
+	override push(event: AssistantMessageEvent): void {
+		if (event.type === "done") finishResponseTiming(this, event.message);
+		else if (event.type === "error") finishResponseTiming(this, event.error);
+		super.push(event);
+	}
+
+	override end(result?: AssistantMessage): void {
+		finishResponseTiming(this, result);
+		super.end(result);
 	}
 }
 

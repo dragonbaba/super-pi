@@ -64,3 +64,19 @@ the built-in bash/read/write/edit/ls HTML templates; without an override those
 tools keep their existing templates. Call-only and result-only overrides work.
 Each exported tool-call ID selects its renderer once; override detection, call
 and result rendering share that selection, including an undefined selection.
+
+`context.durationMs` is the final tool execution duration in milliseconds. It
+measures the actual `execute()` call, including awaited child calls, and excludes
+preflight checks, later progress draining and result hooks. It is available for
+completed executions (including failed or aborted executions) in live rows,
+restored history and HTML result renderers. It stays `undefined` during progress,
+for calls that never executed, and for old records without a duration; `0` is a
+valid measured value. The producer's result object is not modified.
+
+Assistant messages also persist an optional `durationMs`, measured with a
+monotonic clock from response-stream creation to completion or failure. Existing
+measurements are preserved when streams are forwarded. Responses predating the
+stream, such as later-fetched deferred responses, remain untimed. These fields
+are available in local messages, SDK events and extension contexts; the separate
+server protocol v1 projection does not transmit host timing metadata. Default
+tool labels and compact read/Codemode layouts are unchanged.
