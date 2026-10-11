@@ -104,3 +104,29 @@ the base commit because they were measured before the candidate commit; source
 hashes identify the measured candidate. Temporary session/export directories are
 owned by their fixtures and removed in `t.after`; no background server is started.
 The lifecycle contract for arbitrary third-party renderer side effects is unchanged.
+
+## Review follow-up: template-rendered tools
+
+The later inline review identified an export gap despite the earlier no-findings
+summary: `preRenderCustomTools` skips bash/read/write/edit/ls, and the browser
+template checks pre-rendered HTML only in its default tool branch. Audit the
+complete explicit export path: AgentSession -> renderer selection -> pre-render
+filter -> encoded session data -> template `renderToolCall`.
+
+Before changing production, add a real persisted-export regression for all five
+names, including call-only/result-only overrides and the default-template control.
+Run the actual template functions against the decoded payload. Add an optional
+override predicate so legacy custom exporters retain their existing behavior;
+compare the selected renderer to the executable base, and give existing rendered
+HTML priority in the template. This work is confined to explicit export and its
+offline HTML view; live progress/row resolution and measured TUI paths stay intact.
+The predicate adds no cache or retained owner. Export-local lookup callbacks/maps
+retain their existing one-export lifetime; rerun affected behavior, typecheck and
+package build, without repeating unrelated TUI profiles or full local suites.
+
+The regression failed on the original head at `both:bash has pre-rendered HTML`.
+After the fix, seven behavior cases plus the traversal AST check pass (8 checks),
+as do typecheck and coding-agent build. The new case exports all five template
+tools with full, call-only and result-only renderers and without an override;
+it evaluates the actual template functions against each decoded export. It
+verifies both generation and template precedence, not just embedded strings.

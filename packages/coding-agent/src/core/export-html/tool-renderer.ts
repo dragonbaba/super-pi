@@ -25,6 +25,8 @@ export interface ToolHtmlRendererDeps {
 }
 
 export interface ToolHtmlRenderer {
+	/** True when presentation selection overrides the registered tool definition. */
+	hasRendererOverride?(toolName: string): boolean;
 	/** Render a tool call to HTML. Returns undefined if tool has no custom renderer. */
 	renderCall(toolCallId: string, toolName: string, args: unknown): string | undefined;
 	/** Render a tool result to collapsed/expanded HTML. Returns undefined if tool has no custom renderer. */
@@ -99,6 +101,13 @@ export function createToolHtmlRenderer(deps: ToolHtmlRendererDeps): ToolHtmlRend
 	};
 
 	return {
+		hasRendererOverride(toolName: string): boolean {
+			try {
+				return deps.getToolRenderers !== undefined && deps.getToolRenderers(toolName) !== deps.getToolDefinition?.(toolName);
+			} catch {
+				return false;
+			}
+		},
 		renderCall(toolCallId: string, toolName: string, args: unknown): string | undefined {
 			try {
 				renderedArgs.set(toolCallId, args);

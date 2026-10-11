@@ -5451,6 +5451,7 @@ export class AgentSession {
 		// Create tool renderer if we have an extension runner (for custom tool HTML rendering)
 		const toolRenderer: ToolHtmlRenderer = createToolHtmlRenderer({
 			getToolRenderers: (name) => this.getToolRenderers(name),
+			getToolDefinition: (name) => this.getToolDefinition(name),
 			theme,
 			cwd: this.sessionManager.getCwd(),
 		});

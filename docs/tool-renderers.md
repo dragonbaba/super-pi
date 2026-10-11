@@ -59,4 +59,6 @@ the existing compact tree presentation.
 `session.getToolRenderers(name)` is the presentation lookup.
 `session.getToolDefinition(name)` retains its execution-registry semantics.
 HTML exports use the same resolver chain; the legacy `getToolDefinition` option
-on `createToolHtmlRenderer` remains supported.
+on `createToolHtmlRenderer` remains supported. Explicit overrides also supersede
+the built-in bash/read/write/edit/ls HTML templates; without an override those
+tools keep their existing templates. Call-only and result-only overrides work.

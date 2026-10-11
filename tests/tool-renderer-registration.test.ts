@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { runInNewContext } from "node:vm";
 import test, { type TestContext } from "node:test";
+import ts from "typescript";
 import { Text, type Component, type TUI } from "@super-pi/tui";
 import type { AssistantMessage } from "@super-pi/ai";
 import { createEventBus } from "../packages/coding-agent/src/core/event-bus.ts";
@@ -186,4 +188,51 @@ test("HTML retains legacy definition lookup and supports independent renderer co
 	const html = createToolHtmlRenderer({ getToolDefinition: () => view as never, cwd: process.cwd(), theme });
 	assert.match(html.renderCall("legacy", "gone", {} )!, /call:legacy/);
 	assert.match(html.renderResult("legacy", "gone", [{ type: "text", text: "done" }], {}, false)!.expanded!, /expanded:legacy:done/);
+});
+
+test("HTML export honors explicit overrides for template tools and retains default templates", async t => {
+	const view = renderers("template-override");
+	let override = true;
+	const { session, root } = await sessionFixture(t, (_name, next) => override ? view : next());
+	const names = ["bash", "read", "write", "edit", "ls"];
+	const calls = names.map(name => ({ type: "toolCall" as const, id: name, name,
+		arguments: { path: "fixture.txt", command: "fixture command", content: "fixture content" } }));
+	session.sessionManager.appendMessage({ role: "assistant", content: calls, api: "openai-responses", provider: "fixture", model: "fixture",
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		stopReason: "toolUse", timestamp: 1 });
+	for (const name of names) session.sessionManager.appendMessage({ role: "toolResult", toolCallId: name, toolName: name,
+		content: [{ type: "text", text: "fixture result" }], details: {}, isError: false, timestamp: 2 });
+	const source = ts.createSourceFile("template.js", readFileSync("packages/coding-agent/src/core/export-html/template.js", "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+	const required = new Set(["renderToolCall", "findToolResult", "escapeHtml", "str", "shortenPath", "getLanguageFromPath", "formatExpandableOutput", "replaceTabs"]);
+	const functions: string[] = [];
+	function collect(node: ts.Node): void {
+		if (ts.isFunctionDeclaration(node) && node.name && required.has(node.name.text)) functions.push(node.getText(source));
+		ts.forEachChild(node, collect);
+	}
+	collect(source); assert.equal(functions.length, required.size);
+	const templateScript = `${functions.join("\n")}\nrenderToolCall`;
+	for (const variant of ["both", "call-only", "result-only", "default"] as const) {
+		override = variant !== "default";
+		const full = renderers("template-override");
+		view.renderCall = variant === "result-only" ? undefined : full.renderCall;
+		view.renderResult = variant === "call-only" ? undefined : full.renderResult;
+		const output = await session.exportToHtml(join(root, `${variant}.html`));
+		const encoded = readFileSync(output, "utf8").match(/<script id="session-data" type="application\/json">([A-Za-z0-9+/=]+)<\/script>/)?.[1];
+		assert.ok(encoded);
+		const data = JSON.parse(Buffer.from(encoded, "base64").toString("utf8"));
+		const render = runInNewContext(templateScript, { entries: data.entries, renderedTools: data.renderedTools }) as (call: unknown) => string;
+		for (const call of calls) {
+			const html = render(call);
+			if (override) {
+				assert.ok(data.renderedTools?.[call.id], `${variant}:${call.name} has pre-rendered HTML`);
+				assert.match(html, /template-override/, `${variant}:${call.name} uses the actual template override`);
+				if (variant !== "result-only") assert.match(html, /call:template-override/);
+				if (variant !== "call-only") assert.match(html, /expanded:template-override:fixture result/);
+			} else {
+				assert.equal(data.renderedTools?.[call.id], undefined);
+				assert.doesNotMatch(html, /template-override/);
+				assert.match(html, /fixture/);
+			}
+		}
+	}
 });
