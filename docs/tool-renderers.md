@@ -62,3 +62,5 @@ HTML exports use the same resolver chain; the legacy `getToolDefinition` option
 on `createToolHtmlRenderer` remains supported. Explicit overrides also supersede
 the built-in bash/read/write/edit/ls HTML templates; without an override those
 tools keep their existing templates. Call-only and result-only overrides work.
+Each exported tool-call ID selects its renderer once; override detection, call
+and result rendering share that selection, including an undefined selection.

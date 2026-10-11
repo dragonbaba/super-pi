@@ -191,9 +191,16 @@ test("HTML retains legacy definition lookup and supports independent renderer co
 });
 
 test("HTML export honors explicit overrides for template tools and retains default templates", async t => {
-	const view = renderers("template-override");
-	let override = true;
-	const { session, root } = await sessionFixture(t, (_name, next) => override ? view : next());
+	let variant: "both" | "call-only" | "result-only" | "default" = "both";
+	let lookups = 0;
+	const { session, root } = await sessionFixture(t, (_name, next) => {
+		lookups++;
+		if (variant === "default") return next();
+		const view = renderers(`template-override-${lookups}`);
+		if (variant === "result-only") view.renderCall = undefined;
+		if (variant === "call-only") view.renderResult = undefined;
+		return view;
+	});
 	const names = ["bash", "read", "write", "edit", "ls"];
 	const calls = names.map(name => ({ type: "toolCall" as const, id: name, name,
 		arguments: { path: "fixture.txt", command: "fixture command", content: "fixture content" } }));
@@ -211,23 +218,22 @@ test("HTML export honors explicit overrides for template tools and retains defau
 	}
 	collect(source); assert.equal(functions.length, required.size);
 	const templateScript = `${functions.join("\n")}\nrenderToolCall`;
-	for (const variant of ["both", "call-only", "result-only", "default"] as const) {
-		override = variant !== "default";
-		const full = renderers("template-override");
-		view.renderCall = variant === "result-only" ? undefined : full.renderCall;
-		view.renderResult = variant === "call-only" ? undefined : full.renderResult;
+	for (const nextVariant of ["both", "call-only", "result-only", "default"] as const) {
+		variant = nextVariant;
+		lookups = 0;
 		const output = await session.exportToHtml(join(root, `${variant}.html`));
+		assert.equal(lookups, names.length, `${variant}: resolve every exported row exactly once`);
 		const encoded = readFileSync(output, "utf8").match(/<script id="session-data" type="application\/json">([A-Za-z0-9+/=]+)<\/script>/)?.[1];
 		assert.ok(encoded);
 		const data = JSON.parse(Buffer.from(encoded, "base64").toString("utf8"));
 		const render = runInNewContext(templateScript, { entries: data.entries, renderedTools: data.renderedTools }) as (call: unknown) => string;
-		for (const call of calls) {
+		for (const [index, call] of calls.entries()) {
 			const html = render(call);
-			if (override) {
+			if (variant !== "default") {
 				assert.ok(data.renderedTools?.[call.id], `${variant}:${call.name} has pre-rendered HTML`);
 				assert.match(html, /template-override/, `${variant}:${call.name} uses the actual template override`);
-				if (variant !== "result-only") assert.match(html, /call:template-override/);
-				if (variant !== "call-only") assert.match(html, /expanded:template-override:fixture result/);
+				if (variant !== "result-only") assert.ok(html.includes(`call:template-override-${index + 1}`));
+				if (variant !== "call-only") assert.ok(html.includes(`expanded:template-override-${index + 1}:fixture result`));
 			} else {
 				assert.equal(data.renderedTools?.[call.id], undefined);
 				assert.doesNotMatch(html, /template-override/);

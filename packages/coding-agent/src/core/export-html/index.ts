@@ -14,7 +14,7 @@ import { SessionManager } from "../session-manager.ts";
  */
 export interface ToolHtmlRenderer {
 	/** Allow explicit presentation overrides to supersede built-in HTML templates. */
-	hasRendererOverride?(toolName: string): boolean;
+	hasRendererOverride?(toolCallId: string, toolName: string): boolean;
 	/** Render a tool call to HTML. Returns undefined if tool has no custom renderer. */
 	renderCall(toolCallId: string, toolName: string, args: unknown): string | undefined;
 	/** Render a tool result to HTML. Returns collapsed/expanded or undefined if tool has no custom renderer. */
@@ -195,7 +195,7 @@ function preRenderCustomTools(
 		// Find tool calls in assistant messages
 		if (msg.role === "assistant" && Array.isArray(msg.content)) {
 			for (const block of msg.content) {
-				if (block.type === "toolCall" && (!TEMPLATE_RENDERED_TOOLS.has(block.name) || toolRenderer.hasRendererOverride?.(block.name))) {
+				if (block.type === "toolCall" && (!TEMPLATE_RENDERED_TOOLS.has(block.name) || toolRenderer.hasRendererOverride?.(block.id, block.name))) {
 					const callHtml = toolRenderer.renderCall(block.id, block.name, block.arguments);
 					if (callHtml) {
 						renderedTools[block.id] = { callHtml };
@@ -209,7 +209,7 @@ function preRenderCustomTools(
 			const toolName = msg.toolName || "";
 			// Result-only overrides also supersede built-in templates.
 			const existing = renderedTools[msg.toolCallId];
-			if (existing || !TEMPLATE_RENDERED_TOOLS.has(toolName) || toolRenderer.hasRendererOverride?.(toolName)) {
+			if (existing || !TEMPLATE_RENDERED_TOOLS.has(toolName) || toolRenderer.hasRendererOverride?.(msg.toolCallId, toolName)) {
 				const rendered = toolRenderer.renderResult(
 					msg.toolCallId,
 					toolName,

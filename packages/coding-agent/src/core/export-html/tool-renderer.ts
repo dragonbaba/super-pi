@@ -26,7 +26,7 @@ export interface ToolHtmlRendererDeps {
 
 export interface ToolHtmlRenderer {
 	/** True when presentation selection overrides the registered tool definition. */
-	hasRendererOverride?(toolName: string): boolean;
+	hasRendererOverride?(toolCallId: string, toolName: string): boolean;
 	/** Render a tool call to HTML. Returns undefined if tool has no custom renderer. */
 	renderCall(toolCallId: string, toolName: string, args: unknown): string | undefined;
 	/** Render a tool result to collapsed/expanded HTML. Returns undefined if tool has no custom renderer. */
@@ -67,6 +67,13 @@ export function createToolHtmlRenderer(deps: ToolHtmlRendererDeps): ToolHtmlRend
 	const renderedResultComponents = new Map<string, Component>();
 	const renderedStates = new Map<string, any>();
 	const renderedArgs = new Map<string, unknown>();
+	// Export-local row ownership, matching the component/state maps above. Cache
+	// undefined too so stateful resolvers cannot select different phases of a row.
+	const selectedRenderers = new Map<string, ToolRenderers | undefined>();
+	const getSelectedRenderers = (toolCallId: string, toolName: string): ToolRenderers | undefined => {
+		if (!selectedRenderers.has(toolCallId)) selectedRenderers.set(toolCallId, getToolRenderers?.(toolName));
+		return selectedRenderers.get(toolCallId);
+	};
 
 	const getState = (toolCallId: string): any => {
 		let state = renderedStates.get(toolCallId);
@@ -101,9 +108,9 @@ export function createToolHtmlRenderer(deps: ToolHtmlRendererDeps): ToolHtmlRend
 	};
 
 	return {
-		hasRendererOverride(toolName: string): boolean {
+		hasRendererOverride(toolCallId: string, toolName: string): boolean {
 			try {
-				return deps.getToolRenderers !== undefined && deps.getToolRenderers(toolName) !== deps.getToolDefinition?.(toolName);
+				return deps.getToolRenderers !== undefined && getSelectedRenderers(toolCallId, toolName) !== deps.getToolDefinition?.(toolName);
 			} catch {
 				return false;
 			}
@@ -111,7 +118,7 @@ export function createToolHtmlRenderer(deps: ToolHtmlRendererDeps): ToolHtmlRend
 		renderCall(toolCallId: string, toolName: string, args: unknown): string | undefined {
 			try {
 				renderedArgs.set(toolCallId, args);
-				const toolDef = getToolRenderers?.(toolName);
+				const toolDef = getSelectedRenderers(toolCallId, toolName);
 				if (!toolDef?.renderCall) {
 					return undefined;
 				}
@@ -138,7 +145,7 @@ export function createToolHtmlRenderer(deps: ToolHtmlRendererDeps): ToolHtmlRend
 			isError: boolean,
 		): { collapsed?: string; expanded?: string } | undefined {
 			try {
-				const toolDef = getToolRenderers?.(toolName);
+				const toolDef = getSelectedRenderers(toolCallId, toolName);
 				if (!toolDef?.renderResult) {
 					return undefined;
 				}

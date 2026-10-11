@@ -130,3 +130,16 @@ as do typecheck and coding-agent build. The new case exports all five template
 tools with full, call-only and result-only renderers and without an override;
 it evaluates the actual template functions against each decoded export. It
 verifies both generation and template precedence, not just embedded strings.
+
+A second review found repeated resolver selection within one exported row. Before
+the follow-up fix, strengthen the same export case to return a fresh renderer on
+every resolution and require exactly one selection per tool-call ID, including
+undefined/default results. Use one export-owned map bounded by exported tool-call
+IDs; predicate, call and result share that selection. Its references release with
+the export renderer's existing component/state/args maps after export returns or
+throws. This is an explicit-command owner, not a live-progress or global cache.
+The strengthened test fails before the fix with 15 selections for five rows.
+Afterward all four export variants select exactly five times, and call/result
+HTML carries the same per-row renderer identity. The affected 8 checks, typecheck
+and coding-agent build pass. No controlled-GC claim is added for this cold export
+map; the measured live resolver and frame lifecycle evidence remains unchanged.
