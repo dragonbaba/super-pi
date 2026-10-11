@@ -35,7 +35,8 @@ the changed scope.
 
 ## Verification result
 
-**No missing boundary was reproduced; retain the existing production behavior.**
+**No concatenation of distinct nonempty outputs was reproduced; retain the
+existing production behavior.**
 The test runs three real scripts through the session, obtains the context seen
 by the next model turn, and captures each actual adapter's converted payload:
 
@@ -45,20 +46,27 @@ by the next model turn, and captures each actual adapter's converted payload:
 | OpenAI Responses, Azure Responses, Codex Responses | Same newline join; mixed output has a single joined `input_text` beside image items |
 | Anthropic | Newline join for text-only results; distinct text blocks in mixed output |
 | Google Generative AI, Vertex | Newline join in `functionResponse.response.output` or `.error` |
-| Mistral | Newline join; failures additionally have the existing `[tool error] ` prefix |
+| Mistral | Newline join followed by outer-whitespace trimming; failures additionally have the existing `[tool error] ` prefix |
 | Bedrock | Distinct `toolResult.content` text blocks; blank blocks are omitted |
 | Pi Messages | Original tool-result content array |
 
 The text-only result contains the existing Codemode summary, `alpha`, an empty
 item, `beta {"n":2}`, a multiline item and the returned `omega`. The resulting
-text is checked exactly, including the blank-item newline, so `alphabeta` or
-duplicate wrapping cannot pass. Mixed output checks text before and after an
-image; failure checks prior text, console diagnostics and the script error.
+text is checked exactly, including the interior blank-item newline, so `alphabeta`
+or duplicate wrapping cannot pass. Mixed output checks text before and after an
+image and a final empty text item. Mistral trims the trailing newline; Bedrock
+omits the empty block. Every adapter also checks that the converted payload
+retains exactly one image with the original PNG data, allowing existing image
+placement (including Chat Completions' separate user message). Failure checks
+prior text, console diagnostics and the script error.
 All three results survive as separate tool responses. Every conversion also
 leaves the retained source message history deeply equal to its original value.
 
-The existing joins contribute exactly `textBlockCount - 1` newline characters
-when there are text blocks. There is no new separator or wrapper overhead.
+For nonempty lists of text blocks, the existing joins add `textBlockCount - 1`
+newline characters before normalization. Mistral may trim outer whitespace, so
+this is an upper bound on separators retained in the final text. Bedrock omits
+blank blocks rather than joining them. Neither behavior preserves empty output
+items exactly. There is no new separator or wrapper overhead.
 VM output still has the 1 Mi-character / 1,024-item limits. The controller adds
 its summary, at most one return/error item and at most 256 shown blocks before
 the existing token cap, which may append one recovery notice. This gives a
@@ -82,6 +90,11 @@ recorded files/directories; the session fixture shuts down its owned resources.
 No full local test suite, unrelated build or allocation benchmark was repeated:
 the final diff contains only this record and integration coverage, with no
 production change to measure.
+
+Review follow-up: the same three executions now include the trailing-empty case
+and assert converted image count/data for every adapter. All 11 focused checks
+and the type check passed again; the unchanged output/source-invariant suite was
+not repeated. This strengthens the same coverage without adding VM executions.
 
 Captures stop intentionally at `onPayload`, before provider transport. They
 prove local request conversion, not server-side tokenization, model

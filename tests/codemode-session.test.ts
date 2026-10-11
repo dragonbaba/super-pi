@@ -771,7 +771,7 @@ test("Codemode text and console boundaries survive actual provider message conve
 	const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aXioAAAAASUVORK5CYII=";
 	const { wires, results } = await f.run([
 		'text("alpha"); text(""); console.log("beta", {n:2}); text("line1\\nline2"); return "omega"',
-		`text("before-image"); image("data:image/png;base64,${png}"); console.warn("after-image")`,
+		`text("before-image"); image("data:image/png;base64,${png}"); console.warn("after-image"); text("")`,
 		'text("before-error"); console.error("diagnostic"); throw new Error("boundary-stop")',
 	]);
 	assert.equal(results.length, 3);
@@ -781,8 +781,8 @@ test("Codemode text and console boundaries survive actual provider message conve
 	assert.equal(source.length, 3);
 	const texts = source.map(m => m.content.filter(b => b.type === "text").map(b => b.text));
 	assert.deepEqual(texts[0], ["[CODEMODE_OK] Child calls: 0.", "alpha", "", 'beta {"n":2}', "line1\nline2", "omega"]);
-	assert.deepEqual(source[1]!.content.map(b => b.type), ["text", "text", "image", "text"]);
-	assert.deepEqual(texts[1], ["[CODEMODE_OK] Child calls: 0.", "before-image", "after-image"]);
+	assert.deepEqual(source[1]!.content.map(b => b.type), ["text", "text", "image", "text", "text"]);
+	assert.deepEqual(texts[1], ["[CODEMODE_OK] Child calls: 0.", "before-image", "after-image", ""]);
 	assert.deepEqual(texts[2]!.slice(1), ["before-error", "diagnostic", "[CODEMODE_SCRIPT] boundary-stop"]);
 	const before = structuredClone(context.messages);
 	const adapters: [Api, StreamFunction<any, SimpleStreamOptions>, string, Record<string, unknown>?][] = [
@@ -810,24 +810,50 @@ test("Codemode text and console boundaries survive actual provider message conve
 		assert.ok(payload, stopped.errorMessage);
 		assert.match(stopped.errorMessage ?? "", /codemode boundary payload captured/);
 		let converted: (string | any[])[];
+		let images: string[];
+		let expectedImage = png;
 		switch (api) {
-			case "anthropic-messages": converted = payload.messages.flatMap((m: any) => Array.isArray(m.content) ? m.content.filter((b: any) => b.type === "tool_result").map((b: any) => b.content) : []); break;
-			case "openai-completions": converted = payload.messages.filter((m: any) => m.role === "tool").map((m: any) => m.content); break;
+			case "anthropic-messages":
+				converted = payload.messages.flatMap((m: any) => Array.isArray(m.content) ? m.content.filter((b: any) => b.type === "tool_result").map((b: any) => b.content) : []);
+				images = (converted[1] as any[]).filter(b => b.type === "image").map(b => b.source.data);
+				break;
+			case "openai-completions":
+				converted = payload.messages.filter((m: any) => m.role === "tool").map((m: any) => m.content);
+				images = payload.messages.flatMap((m: any) => m.role === "user" && Array.isArray(m.content) ? m.content.filter((b: any) => b.type === "image_url").map((b: any) => b.image_url.url) : []);
+				expectedImage = `data:image/png;base64,${png}`;
+				break;
 			case "openai-responses": case "azure-openai-responses": case "openai-codex-responses":
-				converted = payload.input.filter((m: any) => m.type === "function_call_output" || m.type === "custom_tool_call_output").map((m: any) => m.output); break;
+				converted = payload.input.filter((m: any) => m.type === "function_call_output" || m.type === "custom_tool_call_output").map((m: any) => m.output);
+				images = (converted[1] as any[]).filter(b => b.type === "input_image").map(b => b.image_url);
+				expectedImage = `data:image/png;base64,${png}`;
+				break;
 			case "google-generative-ai": case "google-vertex":
-				converted = payload.contents.flatMap((m: any) => m.parts.filter((p: any) => p.functionResponse).map((p: any) => p.functionResponse.response.output ?? p.functionResponse.response.error)); break;
-			case "mistral-conversations": converted = payload.messages.filter((m: any) => m.role === "tool").map((m: any) => m.content[0].text); break;
-			case "bedrock-converse-stream": converted = payload.messages.flatMap((m: any) => m.content.filter((b: any) => b.toolResult).map((b: any) => b.toolResult.content)); break;
-			case "pi-messages": converted = payload.context.messages.filter((m: any) => m.role === "toolResult").map((m: any) => m.content); break;
+				converted = payload.contents.flatMap((m: any) => m.parts.filter((p: any) => p.functionResponse).map((p: any) => p.functionResponse.response.output ?? p.functionResponse.response.error));
+				images = payload.contents.flatMap((m: any) => m.parts.flatMap((p: any) => (p.functionResponse?.parts ?? []).filter((b: any) => b.inlineData).map((b: any) => b.inlineData.data)));
+				break;
+			case "mistral-conversations":
+				converted = payload.messages.filter((m: any) => m.role === "tool").map((m: any) => m.content[0].text);
+				images = payload.messages.filter((m: any) => m.role === "tool").flatMap((m: any) => m.content.filter((b: any) => b.type === "image_url").map((b: any) => b.imageUrl));
+				expectedImage = `data:image/png;base64,${png}`;
+				break;
+			case "bedrock-converse-stream":
+				converted = payload.messages.flatMap((m: any) => m.content.filter((b: any) => b.toolResult).map((b: any) => b.toolResult.content));
+				images = (converted[1] as any[]).filter(b => b.image).map(b => Buffer.from(b.image.source.bytes).toString("base64"));
+				break;
+			case "pi-messages":
+				converted = payload.context.messages.filter((m: any) => m.role === "toolResult").map((m: any) => m.content);
+				images = (converted[1] as any[]).filter(b => b.type === "image").map(b => b.data);
+				break;
 			default: assert.fail(`Unverified API ${api}`);
 		}
+		assert.deepEqual(images, [expectedImage], "converted mixed output must retain exactly one image with its original data");
 		assert.equal(converted.length, source.length);
 		for (let index = 0; index < converted.length; index++) {
 			const value = converted[index]!;
 			const expected = texts[index]!;
 			if (typeof value === "string") {
-				assert.equal(value, (api === "mistral-conversations" && source[index]!.isError ? "[tool error] " : "") + expected.join("\n"));
+				const joined = expected.join("\n");
+				assert.equal(value, api === "mistral-conversations" ? (source[index]!.isError ? "[tool error] " : "") + joined.trim() : joined);
 			} else {
 				const blocks = value.filter(b => typeof b.text === "string").map(b => b.text);
 				const joined = api === "openai-responses" || api === "azure-openai-responses" || api === "openai-codex-responses";
