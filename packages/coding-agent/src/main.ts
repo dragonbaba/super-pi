@@ -554,11 +554,8 @@ function buildSessionOptions(
 	} else if (parsed.noBuiltinTools) {
 		options.noTools = "builtin";
 	}
-	if (parsed.tools) {
-		options.tools = [...parsed.tools];
-	}
-	if (parsed.excludeTools) {
-		options.excludeTools = [...parsed.excludeTools];
+	if (parsed.tools !== undefined || parsed.excludeTools !== undefined) {
+		options.toolSelection = { tools: parsed.tools, excludeTools: parsed.excludeTools };
 	}
 
 	return { options, cliThinkingFromModel, diagnostics };
@@ -859,6 +856,7 @@ export async function main(args: string[], options?: MainOptions) {
 			tools: sessionOptions.tools,
 			excludeTools: sessionOptions.excludeTools,
 			noTools: sessionOptions.noTools,
+			toolSelection: sessionOptions.toolSelection,
 			customTools: sessionOptions.customTools,
 			toolResultPresentation: settingsManager.getToolResultPresentationOptions(),
 		});

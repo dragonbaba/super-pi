@@ -41,7 +41,9 @@ import { DefaultResourceLoader } from "./resource-loader.ts";
 import { getDefaultSessionDir, SessionManager } from "./session-manager.ts";
 import { SettingsManager } from "./settings-manager.ts";
 import { time } from "./timings.ts";
+import { ToolSelection, type ToolSelectionOptions } from "./tool-selection.ts";
 import {
+	allToolNames,
 	createBashTool,
 	createCodingTools,
 	createEditTool,
@@ -105,6 +107,8 @@ export interface CreateAgentSessionOptions {
 	tools?: string[];
 	/** Optional denylist of tool names to disable. Applies after `tools` when both are provided. */
 	excludeTools?: string[];
+	/** Optional glob/+/- expressions, intersected with the literal SDK lists above. */
+	toolSelection?: ToolSelectionOptions;
 	/** Custom tools to register (in addition to built-in tools). */
 	customTools?: ToolDefinition[];
 
@@ -254,6 +258,7 @@ function replaceBlockedImagesInMessages(messages: Message[]): Message[] {
  * ```
  */
 export async function createAgentSession(options: CreateAgentSessionOptions = {}): Promise<CreateAgentSessionResult> {
+	const toolSelection = options.toolSelection ? new ToolSelection(options.toolSelection, options.noTools === "all") : undefined;
 	if (options.excludeTools?.includes("codemode")) {
 		throw new Error("codemode is the required default tool transport; use noTools: 'all' to disable tools");
 	}
@@ -339,13 +344,17 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 
 	const defaultActiveToolNames: ToolName[] = getDefaultToolNames();
 	const configuredDefaultToolNames = settingsManager.getDefaultTools();
-	const allowedToolNames = options.tools ?? (options.noTools === "all" ? [] : undefined);
+	const allowedToolNames = options.tools ?? (options.noTools === "all" && !toolSelection ? [] : undefined);
 	const excludedToolNames = options.excludeTools;
 	const excludedToolNameSet = excludedToolNames ? new Set(excludedToolNames) : undefined;
-	const requestedActiveToolNames = options.tools ?? (options.noTools ? [] : (configuredDefaultToolNames ?? defaultActiveToolNames));
+	let requestedActiveToolNames = options.tools ?? (options.noTools || toolSelection && !toolSelection.usesDefaults ? [] : (configuredDefaultToolNames ?? defaultActiveToolNames));
+	if (toolSelection) {
+		requestedActiveToolNames = requestedActiveToolNames.slice();
+		for (const name of allToolNames) if ((!allowedToolNames || allowedToolNames.includes(name)) && toolSelection.adds(name) && !requestedActiveToolNames.includes(name)) requestedActiveToolNames.push(name);
+	}
 	const powerShellRequested =
-		requestedActiveToolNames.includes("powershell") && !excludedToolNameSet?.has("powershell");
-	const powerShellExplicitlyEnabled = powerShellRequested && options.tools?.includes("powershell") === true;
+		requestedActiveToolNames.includes("powershell") && !excludedToolNameSet?.has("powershell") && (!toolSelection || toolSelection.allows("powershell"));
+	const powerShellExplicitlyEnabled = powerShellRequested && (options.tools?.includes("powershell") === true || toolSelection?.explicitlyAdds("powershell") === true);
 	let powerShellAvailable = process.platform === "win32";
 	if (powerShellRequested && process.platform === "win32") {
 		powerShellAvailable = await initializePowerShellPersistence(settingsManager, {
@@ -355,6 +364,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const initialActiveToolNames: string[] = [];
 	for (const name of requestedActiveToolNames) {
 		if (excludedToolNameSet?.has(name)) continue;
+		if (toolSelection && !toolSelection.allows(name)) continue;
 		if (name === "powershell" && !powerShellAvailable) continue;
 		initialActiveToolNames.push(name);
 	}
@@ -603,6 +613,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		initialActiveToolNames,
 		allowedToolNames,
 		excludedToolNames,
+		toolSelection,
 		extensionRunnerRef,
 		extensionRunnerOptions: options.extensionRunnerOptions,
 		sessionStartEvent: options.sessionStartEvent,
