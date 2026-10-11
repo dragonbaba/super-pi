@@ -58,3 +58,65 @@ export function stripAnsi(value: string): string {
 	// and doing it manually has a performance penalty.
 	return value.replace(regex, "");
 }
+
+const TEXT = 0;
+const ESCAPE = 1;
+const INTERMEDIATE = 2;
+const CSI = 3;
+const OSC = 4;
+const OSC_ESCAPE = 5;
+
+/**
+ * Command-owned streaming filter. Incomplete controls are discarded at end of
+ * stream. Only the numeric state crosses calls, even for an unterminated OSC of
+ * arbitrary size. Visible spans, rather than individual characters, form output.
+ * The stateless stripAnsi API above intentionally keeps its existing semantics.
+ */
+export class AnsiStreamFilter {
+	private state = TEXT;
+
+	write(value: string): string {
+		if (this.state === TEXT && !value.includes("\x1b") && !value.includes("\u009b") && !value.includes("\u009d")) return value;
+
+		let result = "";
+		let start = 0;
+		for (let index = 0; index < value.length; index++) {
+			const code = value.charCodeAt(index);
+			if (this.state === TEXT) {
+				if (code !== 0x1b && code !== 0x9b && code !== 0x9d) continue;
+				if (start < index) result += value.slice(start, index);
+				this.state = code === 0x1b ? ESCAPE : code === 0x9b ? CSI : OSC;
+			} else if (this.state === OSC || this.state === OSC_ESCAPE) {
+				if (code === 0x07 || code === 0x9c || (this.state === OSC_ESCAPE && code === 0x5c)) this.state = TEXT;
+				else this.state = code === 0x1b ? OSC_ESCAPE : OSC;
+			} else if (code === 0x1b) {
+				this.state = ESCAPE;
+			} else if (code === 0x18 || code === 0x1a) {
+				this.state = TEXT;
+			} else if (this.state === ESCAPE && code === 0x5b) {
+				this.state = CSI;
+			} else if (this.state === ESCAPE && code === 0x5d) {
+				this.state = OSC;
+			} else if (this.state === CSI && code >= 0x20 && code <= 0x3f) {
+				// Parameters and intermediates; do not buffer their contents.
+			} else if (this.state !== CSI && code >= 0x20 && code <= 0x2f) {
+				this.state = INTERMEDIATE;
+			} else if (code >= (this.state === CSI ? 0x40 : 0x30) && code <= 0x7e) {
+				this.state = TEXT;
+			} else {
+				// An invalid byte terminates the malformed sequence; reprocess it
+				// as text (or a new introducer), without losing a visible character.
+				this.state = TEXT;
+				start = index;
+				index--;
+				continue;
+			}
+			start = index + 1;
+		}
+		return this.state === TEXT && start < value.length ? result + value.slice(start) : result;
+	}
+
+	reset(): void {
+		this.state = TEXT;
+	}
+}
