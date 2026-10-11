@@ -25,6 +25,28 @@ test("Codemode shares the compiled WASM promise and runs isolated executions", a
 	} finally { await sandbox.close(); }
 });
 
+test("unknown tools point to catalog discovery without inventing a sandbox global", async () => {
+	let calls = 0;
+	const sandbox = new CodemodeSandbox({ tools: [{ name: "read-file", description: "Read a fixture", execute: () => { calls++; return "found"; } }] });
+	try {
+		const failed = await sandbox.execute("await tools.readFile({})");
+		assert.equal(failed.ok, false);
+		if (failed.ok) return;
+		assert.equal(failed.error.kind, "script");
+		assert.equal(failed.error.name, "TypeError");
+		assert.match(failed.error.message, /Did you mean tools\.read_file/);
+		assert.match(failed.error.message, /ALL_TOOLS/);
+		assert.doesNotMatch(failed.error.message, /searchTools/);
+		assert.equal(calls, 0);
+		assert.deepEqual(failed.calls, []);
+		const recovered = await sandbox.execute('const tool = ALL_TOOLS.find(t => t.description.includes("fixture")); return [await tools[tool.name]({}), typeof searchTools, typeof describeTools]');
+		assert.equal(recovered.ok, true);
+		if (recovered.ok) assert.deepEqual(recovered.value, ["found", "undefined", "undefined"]);
+		assert.equal(calls, 1);
+	} finally { await sandbox.close(); }
+	assert.deepEqual(sandbox.stats, { activeExecutions: 0, workersStarted: 2, workersStopped: 2 });
+});
+
 for (const [label, code] of [
 	["CPU loop", "while (true) {}"],
 	["microtask loop", "while (true) await null"],
