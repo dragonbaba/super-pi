@@ -38,13 +38,13 @@ class Document extends Container {
 const inspector = new Session();
 inspector.connect();
 const previous = getCapabilities();
-const pane = process.env.WEZTERM_PANE;
-const program = process.env.TERM_PROGRAM;
+const environment = process.env;
 setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
 const results = [];
 try {
+	// Isolate terminal detection once, outside the measured frame loops.
+	process.env = { ...environment, WEZTERM_PANE: "" };
 	for (const mode of ["full-wezterm", "full-kitty", "covered-wezterm", "outside-wezterm"] as const) {
-		delete process.env.WEZTERM_PANE;
 		process.env.TERM_PROGRAM = mode.endsWith("wezterm") ? "WezTerm" : "kitty";
 		const terminal = new Terminal(20, 4);
 		const ui = new TuiAltScreen(terminal, false, undefined, { mouse: false });
@@ -112,6 +112,5 @@ try {
 } finally {
 	inspector.disconnect();
 	setCapabilities(previous);
-	if (pane === undefined) delete process.env.WEZTERM_PANE; else process.env.WEZTERM_PANE = pane;
-	if (program === undefined) delete process.env.TERM_PROGRAM; else process.env.TERM_PROGRAM = program;
+	process.env = environment;
 }

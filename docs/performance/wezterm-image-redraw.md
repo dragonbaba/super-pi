@@ -132,3 +132,17 @@ No real WezTerm visual acceptance, remote terminal or Bun executable validation
 was performed. The regression asserts protocol ordering and reuse through the
 production renderer. Final PR review and CI status are recorded separately in
 the local task plan.
+
+## CI follow-up
+
+The first CI run failed `tests/source-invariants.test.ts` on Linux and Windows:
+three `delete process.env...` expressions in the benchmark violated the repository
+source rule, which also covers scripts. The benchmark now clones the environment
+once before its scenarios, clears the pane signal with an empty string in that
+private environment, and restores the original environment object in `finally`.
+Production code and the measured frame loops are unchanged; no invariant was
+relaxed. The four global source-invariant tests and type check pass. One benchmark
+run with inherited pane/program values verified all four scenario placement
+counts, zero reuploads, owner collection and exact environment-object/value
+restoration. Its production source hashes match the measurements above. Logs are
+stored beside the original evidence with the `ci-fixed-` prefix.
