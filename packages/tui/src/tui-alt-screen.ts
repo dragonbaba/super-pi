@@ -350,6 +350,23 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		return this.currentLayout?.primaryScrollView ?? this.implicitScrollView;
 	}
 
+	/** Drop selection and click history before the host replaces transcript content. */
+	resetTextSelection(): void {
+		const hadSelection = this.selectionAnchor !== undefined || this.selectionFocus !== undefined;
+		this.stopSelectionAutoScroll();
+		this.selectionAnchor = undefined;
+		this.selectionFocus = undefined;
+		this.selectionGranularity = "character";
+		this.selectionInitialRange = undefined;
+		this.lastClick = undefined;
+		this.pressedUrl = undefined;
+		this.selectionPressActive = false;
+		this.selectionDragged = false;
+		this.resolvedSelectionStart = undefined;
+		this.resolvedSelectionEnd = undefined;
+		if (hadSelection) this.requestRender();
+	}
+
 	private releaseLayoutInteractionOwners(): void {
 		if (this.selectionAutoScrollTimer) {
 			clearInterval(this.selectionAutoScrollTimer);
