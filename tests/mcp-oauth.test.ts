@@ -172,11 +172,11 @@ test("MCP OAuth CIMD configuration requires an exact HTTPS document URL and fixe
   assert.throws(() => loadMcpConfig(f.root, false), /callbackPort/);
 });
 
-for (const oidc of [false, true]) {
-  test(`MCP OAuth CIMD-only ${oidc ? "configured OIDC" : "discovered OAuth"} login, reopen and refresh`, async t => {
+for (const discovery of ["discovered OAuth", "discovered OIDC", "configured OIDC"]) {
+  test(`MCP OAuth CIMD-only ${discovery} login, reopen and refresh`, async t => {
     const callbackPort = await availableCallbackPort();
-    const f = fixture(t, { clientMetadataUrl: CLIENT_METADATA, callbackPort, oidc,
-      ...(oidc ? { authServerMetadataUrl: CONFIGURED_METADATA } : {}),
+    const f = fixture(t, { clientMetadataUrl: CLIENT_METADATA, callbackPort, oidc: discovery !== "discovered OAuth",
+      ...(discovery === "configured OIDC" ? { authServerMetadataUrl: CONFIGURED_METADATA } : {}),
       metadataOverrides: { client_id_metadata_document_supported: true, registration_endpoint: undefined } });
     t.after(() => f.owner.close());
     assert.equal(await f.owner.token(), undefined);
@@ -188,6 +188,8 @@ for (const oidc of [false, true]) {
     assert.equal(url.searchParams.get("code_challenge_method"), "S256");
     const saved = JSON.parse(readFileSync(f.path, "utf8"))[f.owner.key];
     assert.deepEqual(saved.client, { client_id: CLIENT_METADATA, issuer: ISSUER });
+    assert.equal(saved.discovery.authorizationServerMetadata.client_id_metadata_document_supported, true);
+    if (discovery === "discovered OIDC") assert.ok(f.metadataRequests.some(url => url.includes("/openid-configuration")));
     assert.equal(saved.tokens.issuer, ISSUER);
     assert.equal(saved.loginAttempt, undefined);
     const reopened = new McpOAuth(f.config, new FileAuthStorageBackend(f.path), f.fetchImpl);

@@ -47,7 +47,7 @@ the protocol basis used by the pinned SDK. The upstream Pi-specific
 The baseline CIMD-only fixture failed with `Incompatible auth server: does not
 support dynamic client registration`. After the adapter change:
 
-- Seven CIMD cases pass: configuration; discovered OAuth and configured OIDC
+- Eight CIMD cases pass: configuration; discovered OAuth, discovered OIDC and configured OIDC
   login/reopen/refresh; absent/false support fallback; configured and cached client
   priority; cancellation and retry.
 - Each CIMD-only success performs zero registrations, one code exchange and one
@@ -71,3 +71,15 @@ Raw local evidence: `.git/f02-3-mcp-cimd-20261012/` (`design.md`, `baseline.log`
 `cimd.log`, `regression.log`, `source-invariants.log`, `typecheck.log`). Hosted
 metadata and a real external authorization server have not been deployed or
 tested; the operator must publish the Super Pi document before enabling CIMD.
+
+## Review follow-up
+
+The first review suggested that automatic OIDC discovery loses the CIMD flag.
+The pinned SDK 1.32.1 `OpenIdProviderMetadataSchema` explicitly defines
+`client_id_metadata_document_supported`, and `OpenIdProviderDiscoveryMetadataSchema`
+spreads that shape. This differs from the RFC 9207 flag retained by our existing
+response adapter. A new automatic OIDC discovery fixture passes on the original
+production candidate: OAuth discovery returns 404, OIDC discovery is observed,
+the saved metadata retains true, and a server without a registration endpoint
+completes CIMD login and refresh. Keep this targeted regression; no production
+workaround is necessary. Evidence: `oidc-before.log` and final `cimd.log`.
