@@ -324,6 +324,7 @@ export class McpOAuth {
     const discoveryObservation = {};
     const state = randomBytes(32).toString("hex");
     const provider = {
+      clientMetadataUrl: this.config.oauth?.clientMetadataUrl,
       redirectUrl: receiver?.url ?? entry.redirectUrl ?? "http://127.0.0.1/callback",
       // callbackReceiver always uses HTTP loopback; OIDC's default web client rejects that redirect.
       clientMetadata: { client_name: "Super Pi MCP", application_type: "native", redirect_uris: [receiver?.url ?? entry.redirectUrl ?? "http://127.0.0.1/callback"],
