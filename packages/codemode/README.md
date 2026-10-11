@@ -13,6 +13,8 @@ built-in prototypes is unsupported (strict writes throw); use your own objects
 or classes instead. Common instance overrides such as `toJSON`, `toString`, and
 Error `name`/`message` remain supported. This protects the bridge's shared
 intrinsics while retaining native JSON serialization and the existing limits.
+Configured globals and namespaces must not shadow a VM built-in or bridge helper
+(for example `JSON` or `Math.read`); the sandbox constructor rejects these names.
 
 Limits are defined in `src/limits.ts`: 60 s default / 300 s maximum, 256 MiB VM
 memory, 256 bridge calls, 128 Ki UTF-16 source characters, 1 Mi output characters,

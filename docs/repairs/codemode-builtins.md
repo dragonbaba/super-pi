@@ -70,7 +70,7 @@ all stop, with zero active executions. Host Array/Object prototypes are unchange
 The compiled-package AgentSession fixture additionally verifies discovery,
 `callTool`/`show` of a real read, committed state and discarded writes after failure.
 
-Focused checks (39 passed, zero skipped):
+Initial focused checks (39 passed, zero skipped; review follow-up below):
 
 ```powershell
 npm.cmd run build --workspace @super-pi/codemode
@@ -83,16 +83,17 @@ This includes the existing CPU/microtask deadlines, cancellation/listener
 release, unsettled Promise, output/call/argument/return/store limits, rollback,
 catalog reuse and closed-sandbox checks. No full local suite was repeated.
 
-One sequential baseline/candidate pair of
+Sequential baseline and candidate measurements of
 `node --expose-gc --experimental-strip-types scripts/bench/codemode-runtime.ts`
-on the same machine, with no concurrent tests/builds:
+on the same machine, with no concurrent tests/builds. The candidate was measured
+again after the reviewed constructor change; this table reports that final run:
 
 | Metric | Baseline | Candidate |
 | --- | ---: | ---: |
-| Warm execution median (ms) | 40.4603 | 42.1491 |
-| Warm execution p95 (ms) | 43.3090 | 45.1584 |
-| 100-call batch (ms) | 47.6050 | 51.9165 |
-| Sampled host bytes | 2,502,776 | 2,517,920 |
+| Warm execution median (ms) | 40.4603 | 42.1876 |
+| Warm execution p95 (ms) | 43.3090 | 45.3543 |
+| 100-call batch (ms) | 47.6050 | 48.6354 |
+| Sampled host bytes | 2,502,776 | 2,715,632 |
 | Workers started / stopped | 32 / 32 | 32 / 32 |
 | WeakRefs retained after five event-loop/GC turns | 0 / 128 | 0 / 128 |
 
@@ -104,6 +105,27 @@ host owners. There is no new per-call encoder, result copy, pool or retained cac
 
 Candidate prelude SHA256:
 `8743866734DEF03CBCE8759F296BF01A89BFF2B706462F17631215ED587EB4B5`.
+Final host SHA256:
+`98B8A471F938F882BE42B1A3CFCCC3758583C8073309DA9117403882CACD0A4E`.
 Raw evidence is in `.git/t09-2-codemode-builtins-20261011/` (local only).
 No online provider, real terminal or Bun executable acceptance was attempted.
 T09.3 output presentation and T09.4 install replacement are separate tasks.
+
+## Review follow-up: configured global collisions
+
+PR #110 review correctly identified that callers could configure a global such
+as `Math` or a namespace such as `JSON.read`; freezing their bindings turned an
+accepted configuration into a repeated worker startup error. Both cases were
+reproduced, with workers released. Reject these names during construction with
+a clear reserved-global error, before any worker starts, rather than leave
+shared intrinsics writable. Extend the existing fixed reserved-name Set to the
+pinned VM's built-ins; there is no new hot-path state or allocation. A live-VM
+inventory regression checks all built-in/helper names as globals and namespaces,
+and preserves a custom namespace and a tool named `Math`. The inventory check
+also flags a required list update when the engine gains a new built-in.
+
+The follow-up reran four affected runtime tests, two session integrations and
+twelve source/hot-path invariants (18 passed), the build and type check. Together
+with the initial checks this covers 40 distinct tests. The new inventory test
+adds one worker and closes it; the four new runtime tests total 13/13 stopped.
+The final benchmark again closes 32/32 workers and releases 128/128 host WeakRefs.

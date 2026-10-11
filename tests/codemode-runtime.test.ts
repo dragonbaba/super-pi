@@ -83,6 +83,28 @@ test("Codemode built-in patches cannot corrupt calls, output or store writes", a
 	assert.equal(Object.hasOwn(Array.prototype, "toJSON"), false);
 });
 
+test("Codemode rejects configured globals that shadow live VM names before execution", async () => {
+	const sandbox = new CodemodeSandbox({
+		tools: [{ name: "Math", execute: () => 7 }],
+		globals: [{ name: "custom.echo", execute: args => args }],
+	});
+	try {
+		const result = await sandbox.execute('return [Object.getOwnPropertyNames(globalThis).filter(name => name !== "custom"), await custom.echo(3), await tools.Math({})]');
+		assert.equal(result.ok, true, JSON.stringify(result));
+		if (!result.ok) return;
+		const [names, echoed, tool] = result.value as [string[], number, number];
+		assert.equal(echoed, 3);
+		assert.equal(tool, 7);
+		assert.ok(names.includes("JSON") && names.includes("Promise") && names.includes("Math"));
+		// Verify the host's reserved names against the actual engine, so upgrades
+		// cannot silently reintroduce startup failures for new built-ins.
+		for (const name of names) for (const configured of [name, `${name}.echo`]) {
+			assert.throws(() => new CodemodeSandbox({ globals: [{ name: configured, execute: () => 0 }] }), /conflicts with a reserved VM global/, configured);
+		}
+	} finally { await sandbox.close(); }
+	assert.deepEqual(sandbox.stats, { activeExecutions: 0, workersStarted: 1, workersStopped: 1 });
+});
+
 test("Codemode freezes indirect intrinsics while preserving instance overrides", async () => {
 	const sandbox = new CodemodeSandbox();
 	try {
