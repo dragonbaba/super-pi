@@ -322,6 +322,7 @@ export class Agent {
 		signal?: AbortSignal,
 	) => Promise<AgentLoopTurnUpdate | undefined> | AgentLoopTurnUpdate | undefined;
 	private activeRun?: ActiveRun;
+	private _abortRequested = false;
 	/** Session identifier forwarded to providers for cache-aware backends. */
 	public sessionId?: string;
 	/** Optional per-level thinking token budgets forwarded to the stream function. */
@@ -457,9 +458,16 @@ export class Agent {
 		return this.activeRun?.abortController.signal;
 	}
 
+	/** Explicit cancellation of the current or most recently admitted run. */
+	get abortRequested(): boolean {
+		return this._abortRequested;
+	}
+
 	/** Abort the current run, if one is active. */
 	abort(): void {
-		this.activeRun?.abortController.abort();
+		if (!this.activeRun) return;
+		this._abortRequested = true;
+		this.activeRun.abortController.abort();
 	}
 
 	/**
@@ -477,6 +485,7 @@ export class Agent {
 			throw new Error("Agent is already processing. Wait for completion before resetting.");
 		}
 
+		this._abortRequested = false;
 		this._state.messages = [];
 		this._state.isStreaming = false;
 		this._state.streamingMessage = undefined;
@@ -656,6 +665,7 @@ export class Agent {
 			resolvePromise = resolve;
 		});
 		this.activeRun = { promise, resolve: resolvePromise, abortController };
+		this._abortRequested = false;
 
 		this._state.isStreaming = true;
 		this._state.streamingMessage = undefined;

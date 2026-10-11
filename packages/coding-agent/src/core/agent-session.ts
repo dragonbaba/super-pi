@@ -227,7 +227,7 @@ export type AgentSessionEvent =
 			willRetry: boolean;
 			requiresUserInput?: boolean;
 	  }
-	| { type: "agent_settled" }
+	| { type: "agent_settled"; aborted: boolean }
 	| {
 			type: "queue_update";
 			steering: readonly string[];
@@ -770,6 +770,7 @@ export class AgentSession {
 	private _eventListeners: AgentSessionEventRegistration[] = [];
 	private _criticalAgentEndTimeoutMs = DEFAULT_CRITICAL_AGENT_END_TIMEOUT_MS;
 	private _isAgentRunActive = false;
+	private _agentRunAbortRequested = false;
 	private _idleWaitPromise: Promise<void> | undefined;
 	private _resolveIdleWait: (() => void) | undefined;
 
@@ -923,6 +924,7 @@ export class AgentSession {
 		const request: NonNullable<AgentSession["_hostOperation"]> = { id, resume, branch: args.originBranch, sessionId, sessionFile, sessionIdentity: operationSessionIdentity(sessionFile!), callId: `host-write-${crypto.randomUUID()}` };
 		this._hostOperation = request;
 		this._isAgentRunActive = true;
+		this._agentRunAbortRequested = false;
 		let dispatchFailed = false;
 		try {
 			const delivered = await this.agent.dispatchHostTool({ type: "toolCall", id: request.callId, name: "write", arguments: { path: args.path, content: args.content } }, this._operationNotice);
@@ -1379,9 +1381,12 @@ export class AgentSession {
 		try {
 			await this._flushPendingCustomMessages();
 			this._pendingCustomContextMessages.length = 0;
+			// Capture before extension callbacks can mutate the event or admit another run.
+			const aborted = this._agentRunAbortRequested || this.agent.abortRequested;
+			this._agentRunAbortRequested = false;
 			this._isAgentRunActive = false;
-			await this._extensionRunner.emit({ type: "agent_settled" });
-			this._emit({ type: "agent_settled" });
+			await this._extensionRunner.emit({ type: "agent_settled", aborted });
+			this._emit({ type: "agent_settled", aborted });
 		} finally {
 			this._pendingCustomContextMessages.length = 0;
 			this._isAgentRunActive = false;
@@ -2591,6 +2596,7 @@ export class AgentSession {
 				}
 				this._interactionPaused = false;
 				this._isAgentRunActive = true;
+				this._agentRunAbortRequested = false;
 				onAccepted?.(true);
 			});
 			while (await this._handlePostAgentRun()) await this.agent.continue();
@@ -2609,6 +2615,7 @@ export class AgentSession {
 
 	private async _handlePostAgentRun(): Promise<boolean> {
 		const recoveryStopReason = this._lastAssistantMessage?.stopReason;
+		if (this.agent.abortRequested || recoveryStopReason === "aborted") this._agentRunAbortRequested = true;
 		if (
 			this._interactionPaused || recoveryStopReason === "stop" ||
 			recoveryStopReason === "length" || recoveryStopReason === "aborted"
@@ -3261,6 +3268,7 @@ export class AgentSession {
 	 * Abort current operation and wait for agent to become idle.
 	 */
 	async abort(): Promise<void> {
+		if (this._isAgentRunActive) this._agentRunAbortRequested = true;
 		this.abortRetry();
 		this.agent.abort();
 		await this.waitForIdle();
@@ -3710,6 +3718,7 @@ export class AgentSession {
 	 * Cancel in-progress compaction (manual or auto).
 	 */
 	abortCompaction(): void {
+		if (this._isAgentRunActive && this._autoCompactionAbortController) this._agentRunAbortRequested = true;
 		this._compactionAbortController?.abort();
 		this._autoCompactionAbortController?.abort();
 	}
@@ -4980,6 +4989,7 @@ export class AgentSession {
 	 * Cancel in-progress retry.
 	 */
 	abortRetry(): void {
+		if (this._isAgentRunActive && this._retryAbortController) this._agentRunAbortRequested = true;
 		this._retryAbortController?.abort();
 	}
 

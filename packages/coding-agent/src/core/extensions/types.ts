@@ -812,6 +812,8 @@ export interface AgentEndEvent {
 /** Fired after an agent run has fully settled and no automatic retry, compaction, or queued continuation will run. */
 export interface AgentSettledEvent {
 	type: "agent_settled";
+	/** Whether the run was cancelled, including during retry or automatic compaction. */
+	aborted: boolean;
 }
 
 /** Fired at the start of each turn */
