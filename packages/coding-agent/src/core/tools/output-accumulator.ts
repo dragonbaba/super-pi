@@ -3,7 +3,6 @@ import {
 	closeSync,
 	createWriteStream,
 	lstatSync,
-	openSync,
 	opendirSync,
 	readFileSync,
 	unlinkSync,
@@ -12,6 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { privateOutputFileSystem } from "../../utils/private-output-file.ts";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, type TruncationResult, truncateTail } from "./truncate.ts";
 
 export interface OutputAccumulatorOptions {
@@ -359,17 +359,24 @@ export class OutputAccumulator {
 		const ownerPath = spillPath + SPILL_OWNER_SUFFIX;
 		let spillCreated = false;
 		let spillFd: number | undefined;
+		let ownerFd: number | undefined;
 		try {
-			spillFd = openSync(spillPath, "wx", 0o600);
+			spillFd = privateOutputFileSystem.openSync(spillPath);
 			spillCreated = true;
 			this.tempFilePath = spillPath;
-			writeFileSync(ownerPath, SPILL_OWNER_MARKER, { encoding: "utf8", flag: "wx", mode: 0o600 });
+			ownerFd = privateOutputFileSystem.openSync(ownerPath);
 			this.ownerMarkerCreated = true;
+			writeFileSync(ownerFd, SPILL_OWNER_MARKER, "utf8");
+			const completedOwnerFd = ownerFd;
+			ownerFd = undefined;
+			try { closeSync(completedOwnerFd); }
+			catch (error) { this.setupCloseError = `Output ownership descriptor close was not confirmed: ${String(error).slice(0, 800)}`; throw error; }
 			this.tempFileStream = createWriteStream(spillPath, { fd: spillFd, autoClose: true });
 			this.tempFileStream.on("error", this.onTempFileError);
 			spillFd = undefined;
 			this.tempFilePath = spillPath;
 		} catch (error) {
+			if (ownerFd !== undefined) try { closeSync(ownerFd); } catch (failure) { this.setupCloseError = `Output ownership descriptor close was not confirmed: ${String(failure).slice(0, 800)}`; }
 			if (spillFd !== undefined) try { closeSync(spillFd); } catch (failure) { this.setupCloseError = `Output descriptor close was not confirmed: ${String(failure).slice(0, 800)}`; }
 			// Keep our exact path until discardTempFile reports cleanup independently
 			// of this primary setup failure; do not silently swallow unlink errors.
