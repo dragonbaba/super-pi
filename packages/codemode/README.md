@@ -8,6 +8,12 @@ The coding agent loads this package on first script execution. Only injected too
 and helpers are available; scripts have no host filesystem, network, Node globals
 or timers. Host tool policy remains the caller's responsibility.
 
+VM built-ins and their global bindings are read-only before scripts run. Patching
+built-in prototypes is unsupported (strict writes throw); use your own objects
+or classes instead. Common instance overrides such as `toJSON`, `toString`, and
+Error `name`/`message` remain supported. This protects the bridge's shared
+intrinsics while retaining native JSON serialization and the existing limits.
+
 Limits are defined in `src/limits.ts`: 60 s default / 300 s maximum, 256 MiB VM
 memory, 256 bridge calls, 128 Ki UTF-16 source characters, 1 Mi output characters,
 and 8 Mi cumulative bridge characters in each direction. The host controller adds

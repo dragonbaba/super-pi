@@ -774,6 +774,23 @@ test("unknown tool guidance supports catalog lookup and awaited schemas in a liv
 	assert.match(recovered, /undefined/);
 });
 
+test("built-in patch attempts preserve live Codemode discovery, reads and committed state", async t => {
+	const f = await fixture(t, { tools: ["read"] });
+	const { results } = await f.run([
+		'Array.prototype.toJSON = () => null; Object.prototype.toJSON = () => 5; text(await describeTools(["read"])); await show((await callTool("read", {path:"file.txt"})).ref); store("kept", [7])',
+		'"use strict"; store("lost", 1); Array.prototype.toJSON = () => null',
+		'text(load("kept")); text(load("lost"))',
+	]);
+	assert.equal(results.length, 3);
+	assert.equal(results[0]!.isError, false, JSON.stringify(results[0]));
+	assert.match(JSON.stringify(results[0]!.content), /read\(args:/);
+	assert.match(JSON.stringify(results[0]!.content), /hello/);
+	assert.equal(results[1]!.isError, true);
+	assert.match(JSON.stringify(results[1]!.content), /CODEMODE_SCRIPT/);
+	assert.equal(results[2]!.isError, false, JSON.stringify(results[2]));
+	assert.deepEqual(results[2]!.content.slice(1), [{ type: "text", text: "[7]" }, { type: "text", text: "undefined" }]);
+});
+
 test("colliding tool names get distinct declared identifiers that scripts and describeTools accept", async t => {
 	const tools: InlineExtension = pi => {
 		for (const name of ["foo-bar", "foo_bar"]) pi.registerTool({ name, label: name, description: `fixture ${name}`, parameters: Type.Object({}),
