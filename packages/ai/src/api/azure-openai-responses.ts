@@ -361,11 +361,10 @@ function buildParams(
 		params.tool_choice = options.toolChoice;
 	}
 
+	const thinkingLevel = clampThinkingLevel(model, options?.reasoningEffort ?? (options?.reasoningSummary ? "medium" : "off"));
 	if (capabilities.reasoning.mode !== "none") {
-		if (options?.reasoningEffort || options?.reasoningSummary) {
-			const effort = options?.reasoningEffort
-				? (model.thinkingLevelMap?.[options.reasoningEffort] ?? options.reasoningEffort)
-				: "medium";
+		if (thinkingLevel !== "off") {
+			const effort = model.thinkingLevelMap?.[thinkingLevel] ?? thinkingLevel;
 			params.reasoning = {
 				effort: effort as NonNullable<typeof params.reasoning>["effort"],
 				summary: options?.reasoningSummary || "auto",
@@ -381,7 +380,7 @@ function buildParams(
 	// Merge generation-only custom keys; structural protocol fields remain capability-owned.
 	mergeSamplingParams(
 		params as unknown as Record<string, unknown>,
-		resolveSamplingParams(model, options?.reasoningEffort ?? (options?.reasoningSummary ? "medium" : "off"), options?.samplingParams),
+		resolveSamplingParams(model, thinkingLevel, options?.samplingParams),
 		OPENAI_RESPONSES_SAMPLING_RESERVED_KEYS,
 	);
 	sanitizeCapabilityRequest(model, params as unknown as Record<string, unknown>);

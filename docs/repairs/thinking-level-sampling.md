@@ -42,7 +42,7 @@ performance-improvement claim is needed.
 
 On Windows / Node v26.4.0, all eight new regression groups failed against
 `494e790145b20fd7e55927143d0b82f3566817b4`, before production edits. The final
-candidate passes 65 related behavioral checks plus four existing source
+initial candidate passes 65 related behavioral checks plus four existing source
 invariants:
 
 ```text
@@ -74,3 +74,26 @@ intercept dispatch; no real provider request was sent. The local full suite and
 unrelated TUI/frame benchmarks were not run because this changes request setup,
 not a streaming hot path. Shared CI and review must correspond to the final PR
 head before merge.
+
+## Review follow-up design gate
+
+The initial review identified a direct-Responses mismatch when the capability
+manifest excludes `off`: sampling clamps to high, but the request builder maps
+implicit off to the wire value `none`, which the sanitizer cannot clamp back.
+The same root cause also affects direct Chat requests before provider mapping.
+The regression fixture uses a manifest supporting only high, provider-specific
+low/high aliases, omitted effort, explicit low, and Responses summary-only calls.
+The correction must clamp before wire mapping and use that effective level for
+sampling. Changes remain in request builders, with no delta-loop changes. Chat
+may copy options once at request setup if the effective effort differs, so all
+existing format-specific branches and thinking budgets see the same value;
+the copy has the request lifetime and does not mutate caller options.
+
+All three new adapter regression groups failed before this correction (Chat
+omitted effort; Responses and Azure emitted `none`). After correction, 43
+sampling/capability checks and 18 adjacent Together/source checks pass, along
+with typecheck and the AI offline build. Unchanged configuration/profile and
+request-estimation tests retain their earlier passing result. The changed
+request-setup functions remain outside delta/observer/frame loops. Evidence:
+`review-baseline.log`, `review-tests.log`, and `review-adjacent.log` in the same
+local evidence directory.

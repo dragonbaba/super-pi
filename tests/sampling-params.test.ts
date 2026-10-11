@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { stream, streamSimple } from "../packages/ai/src/compat.ts";
 import { createProvider } from "../packages/ai/src/models.ts";
+import { deriveModelCapabilities } from "../packages/ai/src/model-capabilities.ts";
 import type { Api, Model, SimpleStreamOptions, StreamOptions, ThinkingLevel } from "../packages/ai/src/types.ts";
 import { ModelConfig } from "../packages/coding-agent/src/core/model-config.ts";
 import { composeModelProvider } from "../packages/coding-agent/src/core/provider-composer.ts";
@@ -90,6 +91,22 @@ test("Responses summary-only calls select medium sampling; other APIs ignore sam
 	assert.equal(payload.top_p, undefined);
 	assert.equal(payload.top_k, undefined);
 });
+
+for (const api of APIS) {
+	test(`${api}: direct requests align wire effort and sampling when the capability manifest excludes off`, async () => {
+		const input = model(api, { thinkingLevelMap: { low: "provider-low", high: "provider-high" } });
+		input.capabilities = { ...deriveModelCapabilities(input), reasoning: { mode: "levels", levels: ["high"] } };
+		const cases: DirectOptions[] = [{}, { reasoningEffort: "low" }];
+		if (api !== "openai-completions") cases.push({ reasoningSummary: "auto" });
+		for (const options of cases) {
+			const payload = await capture(input, options, false);
+			const effort = api === "openai-completions"
+				? payload.reasoning_effort : (payload.reasoning as { effort: string }).effort;
+			assert.equal(effort, "provider-high", `${api}: ${JSON.stringify(options)}`);
+			assert.equal(payload.temperature, 0.6);
+		}
+	});
+}
 
 test("model configuration carries levels and merges user overrides after extension models", async (t) => {
 	const directory = await mkdtemp(join(tmpdir(), "super-pi-sampling-"));
