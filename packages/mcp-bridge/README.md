@@ -130,7 +130,58 @@ Create `~/.sp/agent/config/mcp.json`:
 
 Use `"transport": "sse"` for a legacy SSE endpoint. Remote URLs require HTTPS; loopback HTTP is allowed for local engine integrations. Redirects and cross-origin transport endpoints are rejected so configured authorization headers cannot be silently forwarded elsewhere.
 
-For OAuth, replace the `Authorization` header with `"oauth": true`, or `"oauth": {"scope": "tools.read", "clientId": "registered-client", "callbackPort": 49152}`. A fixed client ID requires a registered loopback callback port; otherwise the server must support dynamic registration. Run `/mcp-login engine`, open the displayed authorization URL, and complete the browser flow. Login uses PKCE and a state-checked `http://127.0.0.1:<port>/callback`, closes after completion/cancellation, and expires after three minutes. Ordinary connections do not open browsers or start registration automatically.
+For OAuth, replace the `Authorization` header with `"oauth": true`, or `"oauth": {"scope": "tools.read", "clientId": "registered-client", "callbackPort": 49152}`. A fixed client ID requires a registered loopback callback port; otherwise configure CIMD below or use a server that supports dynamic registration. Run `/mcp-login engine`, open the displayed authorization URL, and complete the browser flow. Login uses PKCE and a state-checked `http://127.0.0.1:<port>/callback`, closes after completion/cancellation, and expires after three minutes. Ordinary connections do not open browsers or start registration automatically.
+
+### Client ID Metadata Documents (CIMD)
+
+For a server that advertises `client_id_metadata_document_supported: true`,
+configure your own publicly reachable HTTPS client metadata document:
+
+```json
+"oauth": {
+  "clientMetadataUrl": "https://your-domain.example/oauth/super-pi.json",
+  "callbackPort": 49152
+}
+```
+
+Publish the following JSON at that URL, replacing the example domain with a host
+you control. Serve it as `application/json` without authentication or redirects.
+The `client_id` must exactly match the configured URL, and `redirect_uris` must
+include the exact loopback callback port. This bridge uses Super Pi's identity;
+do not copy another application's client document, including upstream Pi's.
+
+```json
+{
+  "client_id": "https://your-domain.example/oauth/super-pi.json",
+  "client_name": "Super Pi MCP",
+  "client_uri": "https://github.com/dragonbaba/super-pi",
+  "application_type": "native",
+  "redirect_uris": ["http://127.0.0.1:49152/callback"],
+  "grant_types": ["authorization_code", "refresh_token"],
+  "response_types": ["code"],
+  "token_endpoint_auth_method": "none"
+}
+```
+
+There is no built-in hosted document or default CIMD URL. `clientMetadataUrl`
+accepts a canonical HTTPS URL of at most 4096 characters with a non-root path,
+no credentials, dot segments or fragment, and requires `callbackPort`. Unlike
+authorization-server metadata URLs, loopback HTTP is not accepted. The bridge
+preserves the URL exactly, without normalization; the authorization server fetches
+and validates the document. Super Pi does not fetch it or host it on the callback
+listener. Publishing and keeping that document consistent is the operator's responsibility.
+
+Existing/pre-registered client information takes priority (including `clientId`
+if both settings are present). Without existing information, the SDK uses CIMD
+only when advertised, and otherwise attempts dynamic registration. A server that
+supports neither requires a pre-registered client. Once CIMD is selected, a failed
+authorization is reported without silently switching registration methods.
+The URL client ID remains issuer-bound through code exchange, reopening and
+refresh. Changing/removing the URL or changing the callback port isolates stored
+credentials and requires login again. HTTP and SSE, trusted project overrides,
+scope and `authServerMetadataUrl` use the same configuration and ownership rules.
+
+### Issuer validation and authorization-server metadata
 
 OAuth/OIDC discovery validates the metadata issuer before registration or token
 requests, including when reusing stored discovery. Callback `iss` must match the

@@ -36,6 +36,7 @@ type OAuthFixtureOptions = {
   noAuthorizationMetadata?: boolean;
   oidc?: boolean;
   clientId?: string;
+  clientMetadataUrl?: string;
   callbackPort?: number;
   tokenEndpoint?: string;
   tokenResponse?: Record<string, unknown>;
@@ -52,7 +53,9 @@ function fixture(t: TestContext, options: OAuthFixtureOptions = {}) {
   t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const path = join(root, "auth.json");
   const config = { id: "fixture", source: "global", url: options.serverUrl ?? "https://mcp.fixture.invalid/mcp", headers: { "X-Private-MCP": "fixture-private-header" },
-    oauth: { ...(options.clientId ? { clientId: options.clientId, callbackPort: options.callbackPort } : {}),
+    oauth: { ...(options.clientId ? { clientId: options.clientId } : {}),
+      ...(options.clientMetadataUrl ? { clientMetadataUrl: options.clientMetadataUrl } : {}),
+      ...(options.callbackPort ? { callbackPort: options.callbackPort } : {}),
       ...(options.scope ? { scope: options.scope } : {}),
       ...(options.authServerMetadataUrl ? { authServerMetadataUrl: options.authServerMetadataUrl } : {}) } };
   let refreshes = 0, exchanges = 0, registrations = 0;
@@ -60,6 +63,7 @@ function fixture(t: TestContext, options: OAuthFixtureOptions = {}) {
   const callbacks: string[] = [];
   const authorizationUrls: string[] = [];
   const metadataRequests: string[] = [];
+  const tokenClientIds: (string | null)[] = [];
   const fetchImpl = async (input: string | URL, init: RequestInit = {}) => {
     const url = new URL(input);
     assert.equal(new Headers(init.headers).has("x-private-mcp"), false);
@@ -85,6 +89,7 @@ function fixture(t: TestContext, options: OAuthFixtureOptions = {}) {
     if (url.pathname === "/register") { registrations++; return Response.json({ ...JSON.parse(init.body as string), client_id: "fixture-client" }); }
     if (url.href === (options.tokenEndpoint ?? `${url.origin}/token`)) {
       const body = new URLSearchParams(init.body as string);
+      tokenClientIds.push(body.get("client_id"));
       if (body.get("grant_type") === "refresh_token") { refreshes++; assert.ok(body.get("refresh_token")); }
       else { exchanges++; assert.ok(body.get("code_verifier")); assert.equal(body.get("code"), "fixture-code"); }
       return Response.json({ token_type: "Bearer", access_token: `access-${exchanges}-${refreshes}`, refresh_token: `refresh-${refreshes}`, expires_in: 3600,
@@ -119,12 +124,149 @@ function fixture(t: TestContext, options: OAuthFixtureOptions = {}) {
     } finally { controller.abort(); await Promise.all(requests); }
     return callback;
   }
-  return { owner, config, root, path, fetchImpl, login, callbacks, authorizationUrls, metadataRequests,
+  return { owner, config, root, path, fetchImpl, login, callbacks, authorizationUrls, metadataRequests, tokenClientIds,
     discoveryRequests: () => discoveryRequests, counts: () => ({ refreshes, exchanges, registrations }) };
 }
 
 const ISSUER = "https://auth.fixture.invalid";
 const CONFIGURED_METADATA = "https://catalog.fixture.invalid/tenant/metadata.json?version=1";
+const CLIENT_METADATA = "https://super-pi.fixture.invalid/oauth/client.json";
+
+async function availableCallbackPort() {
+  const server = createServer();
+  try {
+    await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
+    return (server.address() as AddressInfo).port;
+  } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
+}
+
+test("MCP OAuth CIMD configuration requires an exact HTTPS document URL and fixed callback", t => {
+  const f = fixture(t);
+  const previous = process.env.SP_CODING_AGENT_DIR;
+  t.after(() => { if (previous === undefined) delete process.env.SP_CODING_AGENT_DIR; else process.env.SP_CODING_AGENT_DIR = previous; });
+  process.env.SP_CODING_AGENT_DIR = f.root;
+  mkdirSync(join(f.root, "config"));
+  const configPath = join(f.root, "config", "mcp.json");
+  const write = (clientMetadataUrl: unknown, callbackPort: unknown = 49152, transport = "http") =>
+    writeFileSync(configPath, JSON.stringify({ version: 1, servers: { fixture: {
+      transport, url: f.config.url, oauth: { clientMetadataUrl, callbackPort },
+    } } }));
+  for (const transport of ["http", "sse"]) {
+    write(CLIENT_METADATA, 49152, transport);
+    assert.deepEqual(loadMcpConfig(f.root, false).servers[0].oauth, { clientMetadataUrl: CLIENT_METADATA, callbackPort: 49152 });
+  }
+  for (const url of [null, "", 7, {}, "/client.json", "http://127.0.0.1/client.json", "https://host.invalid/",
+    "https://user:secret@host.invalid/client.json", `${CLIENT_METADATA}#`, `${CLIENT_METADATA}#fragment`,
+    "https://host.invalid/a/../client.json", "https://host.invalid/%2e/client.json", "https://HOST.invalid/client.json",
+    `${CLIENT_METADATA}\t`, `${CLIENT_METADATA}${"a".repeat(4096)}`]) {
+    write(url);
+    assert.throws(() => loadMcpConfig(f.root, false), /clientMetadataUrl/);
+  }
+  for (const port of [null, 0, 65536, "49152"]) {
+    write(CLIENT_METADATA, port);
+    assert.throws(() => loadMcpConfig(f.root, false), /callbackPort/);
+  }
+  writeFileSync(configPath, JSON.stringify({ version: 1, servers: { fixture: {
+    transport: "http", url: f.config.url, oauth: { clientMetadataUrl: CLIENT_METADATA },
+  } } }));
+  assert.throws(() => loadMcpConfig(f.root, false), /callbackPort/);
+});
+
+for (const discovery of ["discovered OAuth", "discovered OIDC", "configured OIDC"]) {
+  test(`MCP OAuth CIMD-only ${discovery} login, reopen and refresh`, async t => {
+    const callbackPort = await availableCallbackPort();
+    const f = fixture(t, { clientMetadataUrl: CLIENT_METADATA, callbackPort, oidc: discovery !== "discovered OAuth",
+      ...(discovery === "configured OIDC" ? { authServerMetadataUrl: CONFIGURED_METADATA } : {}),
+      metadataOverrides: { client_id_metadata_document_supported: true, registration_endpoint: undefined } });
+    t.after(() => f.owner.close());
+    assert.equal(await f.owner.token(), undefined);
+    assert.equal(f.discoveryRequests(), 0, "ordinary connections do not register or fetch documents");
+    const callback = await f.login();
+    assert.equal(callback, `http://127.0.0.1:${callbackPort}/callback`);
+    const url = new URL(f.authorizationUrls[0]);
+    assert.equal(url.searchParams.get("client_id"), CLIENT_METADATA);
+    assert.equal(url.searchParams.get("code_challenge_method"), "S256");
+    const saved = JSON.parse(readFileSync(f.path, "utf8"))[f.owner.key];
+    assert.deepEqual(saved.client, { client_id: CLIENT_METADATA, issuer: ISSUER });
+    assert.equal(saved.discovery.authorizationServerMetadata.client_id_metadata_document_supported, true);
+    if (discovery === "discovered OIDC") assert.ok(f.metadataRequests.some(url => url.includes("/openid-configuration")));
+    assert.equal(saved.tokens.issuer, ISSUER);
+    assert.equal(saved.loginAttempt, undefined);
+    const reopened = new McpOAuth(f.config, new FileAuthStorageBackend(f.path), f.fetchImpl);
+    t.after(() => reopened.close());
+    const requests = f.discoveryRequests();
+    assert.equal(await reopened.token(), "access-1-0");
+    assert.equal(await reopened.refresh("access-1-0"), "access-1-1");
+    assert.equal(f.discoveryRequests(), requests, "reopen and refresh reuse validated discovery");
+    assert.deepEqual(f.tokenClientIds, [CLIENT_METADATA, CLIENT_METADATA]);
+    assert.deepEqual(f.counts(), { registrations: 0, exchanges: 1, refreshes: 1 });
+    for (const config of [
+      { ...f.config, oauth: { ...f.config.oauth, clientMetadataUrl: `${CLIENT_METADATA}?v=2` } },
+      { ...f.config, oauth: { ...f.config.oauth, clientMetadataUrl: undefined } },
+      { ...f.config, oauth: { ...f.config.oauth, callbackPort: callbackPort === 65535 ? 49152 : callbackPort + 1 } },
+      { ...f.config, source: "project", projectScope: f.root },
+    ]) {
+      const isolated = new McpOAuth(config, new FileAuthStorageBackend(f.path), f.fetchImpl);
+      assert.notEqual(isolated.key, f.owner.key);
+      assert.equal(await isolated.token(), undefined);
+      await isolated.close();
+    }
+    await assert.rejects(fetch(callback));
+    await reopened.logout();
+    assert.equal(reopened.cached, undefined);
+    assert.equal(JSON.parse(readFileSync(f.path, "utf8"))[f.owner.key], undefined);
+  });
+}
+
+for (const support of [false, undefined]) {
+  test(`MCP OAuth CIMD falls back to DCR when support is ${support}`, async t => {
+    const f = fixture(t, { clientMetadataUrl: CLIENT_METADATA, callbackPort: await availableCallbackPort(),
+      metadataOverrides: { client_id_metadata_document_supported: support } });
+    t.after(() => f.owner.close());
+    await f.login();
+    assert.equal(new URL(f.authorizationUrls[0]).searchParams.get("client_id"), "fixture-client");
+    assert.deepEqual(f.counts(), { registrations: 1, exchanges: 1, refreshes: 0 });
+  });
+}
+
+test("MCP OAuth CIMD preserves pre-registered and cached DCR client priority", async t => {
+  const f = fixture(t, { clientMetadataUrl: CLIENT_METADATA, callbackPort: await availableCallbackPort(), clientId: "own-client",
+    metadataOverrides: { client_id_metadata_document_supported: true, registration_endpoint: undefined } });
+  t.after(() => f.owner.close());
+  await f.login();
+  assert.equal(new URL(f.authorizationUrls[0]).searchParams.get("client_id"), "own-client");
+  assert.deepEqual(f.counts(), { registrations: 0, exchanges: 1, refreshes: 0 });
+  const metadataOverrides = { client_id_metadata_document_supported: false };
+  const dcr = fixture(t, { clientMetadataUrl: CLIENT_METADATA, callbackPort: await availableCallbackPort(), metadataOverrides });
+  t.after(() => dcr.owner.close());
+  await dcr.login();
+  const entry = JSON.parse(readFileSync(dcr.path, "utf8"))[dcr.owner.key];
+  entry.discovery.authorizationServerMetadata.client_id_metadata_document_supported = true;
+  writeFileSync(dcr.path, JSON.stringify({ [dcr.owner.key]: entry }));
+  await dcr.login();
+  assert.equal(new URL(dcr.authorizationUrls[1]).searchParams.get("client_id"), "fixture-client");
+  assert.deepEqual(dcr.counts(), { registrations: 1, exchanges: 2, refreshes: 0 });
+});
+
+test("MCP OAuth CIMD cancellation closes callback and releases reservation for retry", async t => {
+  const f = fixture(t, { clientMetadataUrl: CLIENT_METADATA, callbackPort: await availableCallbackPort(),
+    metadataOverrides: { client_id_metadata_document_supported: true, registration_endpoint: undefined } });
+  t.after(() => f.owner.close());
+  let notify!: (url: string) => void;
+  const shown = new Promise<string>(resolve => { notify = resolve; });
+  const controller = new AbortController();
+  const pending = f.owner.login(notify, AbortSignal.any([controller.signal, AbortSignal.timeout(5000)]));
+  const rejected = assert.rejects(pending, /cancelled/);
+  const authUrl = new URL(await shown);
+  controller.abort();
+  await rejected;
+  assert.equal(f.owner.cached, undefined);
+  assert.deepEqual(JSON.parse(readFileSync(f.path, "utf8")), {});
+  await assert.rejects(fetch(authUrl.searchParams.get("redirect_uri")!));
+  assert.deepEqual(f.counts(), { registrations: 0, exchanges: 0, refreshes: 0 });
+  await f.login();
+  assert.deepEqual(f.counts(), { registrations: 0, exchanges: 1, refreshes: 0 });
+});
 
 for (const action of ["login", "logout"]) {
   test(`MCP SDK cancelled refresh commits before another process ${action}`, { timeout: 10000 }, async t => {

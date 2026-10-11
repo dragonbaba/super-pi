@@ -139,8 +139,21 @@ function normalizeServer(id, raw, workspace, source, projectScope) {
     }
     if (settings.scope !== undefined) oauth.scope = boundedString(settings.scope, `${label}.oauth.scope`, 4096);
     if (settings.clientId !== undefined) oauth.clientId = boundedString(settings.clientId, `${label}.oauth.clientId`, 4096);
+    if (settings.clientMetadataUrl !== undefined) {
+      const name = `${label}.oauth.clientMetadataUrl`;
+      const text = boundedString(settings.clientMetadataUrl, name, 4096);
+      let metadataUrl;
+      try { metadataUrl = new URL(text); } catch { throw new Error(`${name} must be an absolute URL`); }
+      // CIMD client_id is compared byte-for-byte with the hosted document URL.
+      // Reject normalization (including dot segments) rather than changing identity.
+      if (metadataUrl.protocol !== "https:" || metadataUrl.pathname === "/" || metadataUrl.username || metadataUrl.password || text.includes("#") || metadataUrl.href !== text) {
+        throw new Error(`${name} must be a canonical HTTPS document URL with a non-root path, no credentials, dot segments or fragment`);
+      }
+      oauth.clientMetadataUrl = text;
+    }
     if (settings.callbackPort !== undefined) oauth.callbackPort = boundedInt(settings.callbackPort, 0, 1, 65535, `${label}.oauth.callbackPort`);
     if (oauth.clientId && !oauth.callbackPort) throw new Error(`${label}.oauth.clientId requires its registered callbackPort`);
+    if (oauth.clientMetadataUrl && !oauth.callbackPort) throw new Error(`${label}.oauth.clientMetadataUrl requires the document's callbackPort`);
   }
   return { ...common, url: url.href, headers, ...(oauth ? { oauth } : {}) };
 }
