@@ -6,6 +6,8 @@ import { PassThrough } from 'node:stream';
 import { syncBuiltinESMExports } from 'node:module';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import fs from 'node:fs';
+import { finished } from 'node:stream/promises';
 import { Session } from 'node:inspector/promises';
 import { cpus, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -66,11 +68,40 @@ const cases = {
   split: [Buffer.from('\x1b[3'), Buffer.from('1m中文😀\x1b]title'), Buffer.from('\x1b'), Buffer.from('\\\n')],
   interactive: [Buffer.from('\x1b[31mcolored 中文😀 output\x1b[0m\n')],
   interleaved: [Buffer.from('\x1b]title'), Buffer.from('diagnostic\n'), Buffer.from('\x07out\n'), Buffer.from('err\n')],
+  spill: [Buffer.from('private output\n'.repeat(80))],
 };
 cases.localPipes = cases.interleaved;
 const streamSources = ['stdout', 'stderr', 'stdout', 'stderr'];
 const chunksPerCommand = 100;
 const nativeSpawn = childProcess.spawn;
+const nativeCreateWriteStream = fs.createWriteStream;
+let lastSpillStream;
+let spillFilesCreated = 0, spillFilesReleased = 0;
+let maxSpillQueuedBytes = 0;
+// One harness reference per command. Clear it even when a producer rejects.
+function trackSpill(...args) {
+  assert.equal(lastSpillStream, undefined);
+  lastSpillStream = nativeCreateWriteStream(...args);
+  spillFilesCreated++;
+  return lastSpillStream;
+}
+async function releaseSpill(candidate) {
+  const stream = lastSpillStream;
+  if (!stream) return;
+  try {
+    if (candidate) assert.equal(stream.closed, true, 'candidate returns only after physical close');
+    if (!stream.writableEnded) stream.end();
+    try { await finished(stream, { cleanup: true }); } catch { /* producer error was checked separately */ }
+    assert.equal(stream.closed, true);
+    assert.equal(stream.writableLength, 0);
+    for (const event of ['open', 'error', 'close', 'finish']) assert.equal(stream.listenerCount(event), 0);
+  } finally {
+    if (existsSync(stream.path)) fs.unlinkSync(stream.path);
+    assert.equal(existsSync(stream.path), false);
+    lastSpillStream = undefined;
+    spillFilesReleased++;
+  }
+}
 let lastChild;
 // Real local backend/listeners and Node streams; only process creation is a
 // deterministic fixture. No mock call recorder retains every child/write.
@@ -98,15 +129,24 @@ async function workload(execute, scenario, commands, local) {
       const result = await execute('fixture', root, scenario === 'localPipes' ? local : { async exec(_command, _cwd, { onData }) {
         for (let index = 0; index < chunksPerCommand; index++) onData(chunks[index % chunks.length], scenario === 'interleaved' ? streamSources[index % streamSources.length] : undefined);
         return { exitCode: 0 };
-      } }, { onChunk(text) { deliveries++; visibleUnits += text.length; component?.appendOutput(text); component?.render(100); } });
-      assert.equal(result.fullOutputPath, undefined); assert.equal(result.cancelled, false);
+      } }, { onChunk(text) {
+        deliveries++; visibleUnits += text.length;
+        if (lastSpillStream) maxSpillQueuedBytes = Math.max(maxSpillQueuedBytes, lastSpillStream.writableLength);
+        component?.appendOutput(text); component?.render(100);
+      } });
+      if (scenario === 'spill') {
+        assert.equal(result.fullOutputPath, lastSpillStream.path);
+        // Baseline returned before close; wait on both sides for equal completed-output work.
+        await releaseSpill(execute === implementations.candidate);
+      } else assert.equal(result.fullOutputPath, undefined);
+      assert.equal(result.cancelled, false);
       if (scenario === 'localPipes') {
         assert.equal(lastChild.stdout.listenerCount('data'), 0); assert.equal(lastChild.stderr.listenerCount('data'), 0);
         for (const event of ['spawn', 'exit', 'close', 'error']) assert.equal(lastChild.listenerCount(event), 0);
         lastChild = undefined;
       }
       component?.setComplete(result.exitCode, result.cancelled);
-    } finally { component?.setComplete(undefined, true); component?.[RELEASE_COMPONENT_RENDER_CACHE](); }
+    } finally { await releaseSpill(execute === implementations.candidate); component?.setComplete(undefined, true); component?.[RELEASE_COMPONENT_RENDER_CACHE](); }
   }
   return { inputChunks: commands * chunksPerCommand, deliveries, visibleUnits };
 }
@@ -126,7 +166,7 @@ async function collect() { for (let index = 0; index < 8; index++) { await new P
 
 // Deliberately keep the producer's onData after settlement. Neither a captured
 // observer nor the decoder/parser should remain reachable through that callback.
-async function lifecycle(execute, label) {
+async function lifecycle(execute, label, spilling = false) {
   const late = [], weak = [], NativeDecoder = globalThis.TextDecoder, write = AnsiStreamFilter.prototype.write;
   globalThis.TextDecoder = class extends NativeDecoder { constructor(...args) { super(...args); weak.push({ kind: 'decoder', ref: new WeakRef(this) }); } };
   const parsers = new WeakSet();
@@ -141,7 +181,9 @@ async function lifecycle(execute, label) {
     weak.push({ kind: 'observer', ref: new WeakRef(observer) }, { kind: 'callback', ref: new WeakRef(onChunk) });
     try {
       const result = await execute('fixture', root, { async exec(_command, _cwd, { onData }) {
-        late.push(onData); onData(Buffer.from('ok\x1b]unfinished'), 'stdout');
+        late.push(onData);
+        if (spilling) onData(Buffer.from('spill\n'.repeat(12000)), 'stdout');
+        onData(Buffer.from('ok\x1b]unfinished'), 'stdout');
         onData(Buffer.from('diagnostic\x1b[3'), 'stderr');
         if (outcome === 'cancel') { controller.abort(); throw new Error('aborted'); }
         if (outcome === 'error') throw new Error('producer failed');
@@ -149,6 +191,10 @@ async function lifecycle(execute, label) {
       } }, { signal: controller.signal, onChunk });
       assert.notEqual(outcome, 'error'); assert.equal(result.cancelled, outcome === 'cancel');
     } catch (error) { assert.equal(outcome, 'error'); assert.match(error.message, /producer failed/); }
+    finally {
+      if (lastSpillStream) weak.push({ kind: 'stream', ref: new WeakRef(lastSpillStream) });
+      await releaseSpill(label === 'candidate');
+    }
   }
   try { for (let round = 0; round < 4; round++) for (const outcome of ['success', 'error', 'cancel']) await command(outcome); }
   finally { globalThis.TextDecoder = NativeDecoder; AnsiStreamFilter.prototype.write = write; }
@@ -165,7 +211,11 @@ async function lifecycle(execute, label) {
   return { commands: 12, outcomes: ['success', 'error', 'cancel'], weakReferences: weak.length, retainedWithProducerCallback: retained, afterProducerRelease };
 }
 const lifecycleResults = {};
+fs.createWriteStream = trackSpill; syncBuiltinESMExports();
+try {
 for (const label of ['baseline', 'candidate']) lifecycleResults[label] = await lifecycle(implementations[label], label);
+for (const label of ['baseline', 'candidate']) lifecycleResults[`${label}Spill`] = await lifecycle(implementations[label], label, true);
+} finally { fs.createWriteStream = nativeCreateWriteStream; syncBuiltinESMExports(); }
 
 function countHotSites(source, targets = ['onData', 'appendText']) {
   const parsed = ts.createSourceFile('executor.ts', source, ts.ScriptTarget.Latest, true);
@@ -187,7 +237,7 @@ const structural = { baseline: countHotSites(sources.baseline), candidate: count
 assert.deepEqual(structural.candidate, { callbacks: 0, objects: 0, arrays: 0, constructors: 0 });
 structural.localForwarding = countHotSites(localSources.candidate, ['onStdoutData', 'onStderrData']);
 assert.deepEqual(structural.localForwarding, { callbacks: 0, objects: 0, arrays: 0, constructors: 0 });
-childProcess.spawn = spawnFixture; syncBuiltinESMExports();
+childProcess.spawn = spawnFixture; fs.createWriteStream = trackSpill; syncBuiltinESMExports();
 try {
 for (const label of ['baseline', 'candidate']) for (const scenario of Object.keys(cases)) await workload(implementations[label], scenario, 5, localOperations[label]);
 const results = [];
@@ -219,8 +269,10 @@ for (let run = 0; run < 3; run++) for (const scenario of Object.keys(cases)) {
 }
 const hash = source => createHash('sha256').update(source).digest('hex');
 const report = { baseline, sourceHashes: { baseline: hash(sources.baseline), candidate: hash(sources.candidate), localBaseline: hash(localSources.baseline), localCandidate: hash(localSources.candidate), ansi: hash(readFileSync(new URL('../../packages/coding-agent/src/utils/ansi.ts', import.meta.url))) },
-  moduleCleanup, node: process.version, platform: process.platform, cpu: cpus()[0]?.model, samplingInterval: 1024, structural, lifecycle: lifecycleResults,
+  moduleCleanup, spillCleanup: { created: spillFilesCreated, released: spillFilesReleased,
+    maxSpillQueuedBytes, retainedStreams: Number(lastSpillStream !== undefined) },
+  node: process.version, platform: process.platform, cpu: cpus()[0]?.model, samplingInterval: 1024, structural, lifecycle: lifecycleResults,
   notes: ['JS allocations including collected objects; native allocations are not measured.', 'Heap readings include profiler/harness and are observations, not a continuous peak.', 'Incorrect baseline output is not equal-output speed evidence.', 'Interactive fixture uses real BashExecutionComponent rendering but no physical terminal.', 'localPipes uses each revision of createLocalShellOperations, real Node pipes and executor, but simulated process spawn.'], results };
 if (output) writeFileSync(join(output, 'summary.json'), JSON.stringify(report, null, 2));
 console.log(JSON.stringify(report, null, 2));
-} finally { childProcess.spawn = nativeSpawn; syncBuiltinESMExports(); lastChild = undefined; }
+} finally { childProcess.spawn = nativeSpawn; fs.createWriteStream = nativeCreateWriteStream; syncBuiltinESMExports(); lastChild = undefined; }
