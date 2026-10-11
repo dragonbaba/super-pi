@@ -22,6 +22,18 @@ import { CodemodeStore } from "../packages/coding-agent/src/core/codemode-store.
 import { CodemodeController } from "../packages/coding-agent/src/core/codemode.ts";
 import { CODEMODE_RESULT_ENTRY } from "../packages/coding-agent/src/core/codemode-constants.ts";
 import { convertResponsesTools } from "../packages/ai/src/api/openai-responses-shared.ts";
+import { streamSimple as streamAnthropic } from "../packages/ai/src/api/anthropic-messages.ts";
+import { streamSimple as streamChat } from "../packages/ai/src/api/openai-completions.ts";
+import { streamSimple as streamResponses } from "../packages/ai/src/api/openai-responses.ts";
+import { streamSimple as streamAzure } from "../packages/ai/src/api/azure-openai-responses.ts";
+import { streamSimple as streamCodex } from "../packages/ai/src/api/openai-codex-responses.ts";
+import { streamSimple as streamGoogle } from "../packages/ai/src/api/google-generative-ai.ts";
+import { streamSimple as streamVertex } from "../packages/ai/src/api/google-vertex.ts";
+import { streamSimple as streamMistral } from "../packages/ai/src/api/mistral-conversations.ts";
+import { streamSimple as streamBedrock } from "../packages/ai/src/api/bedrock-converse-stream.ts";
+import { streamSimple as streamPi } from "../packages/ai/src/api/pi-messages.ts";
+import { conservativeModelCapabilities } from "../packages/ai/src/model-capabilities.ts";
+import type { Api, Model, SimpleStreamOptions, StreamFunction } from "../packages/ai/src/types.ts";
 import { CODEMODE_PARAMETERS, CODEMODE_SAMPLING } from "../packages/coding-agent/src/core/codemode-constants.ts";
 // @ts-expect-error JavaScript bridge
 import { McpBridgeRuntime } from "../packages/mcp-bridge/src/bridge.js";
@@ -752,6 +764,78 @@ test("a nested tool that ignores cancellation cannot wedge Codemode past its dea
 	assert.equal(parent.isError, true);
 	assert.match(JSON.stringify(parent.content), /CODEMODE_TIMEOUT/);
 	assert.match(JSON.stringify(parent.content), /NESTED_TOOL_ABANDONED\] 1 child call/);
+});
+
+test("Codemode text and console boundaries survive actual provider message conversion", async t => {
+	const f = await fixture(t, { tools: ["read"] });
+	const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aXioAAAAASUVORK5CYII=";
+	const { wires, results } = await f.run([
+		'text("alpha"); text(""); console.log("beta", {n:2}); text("line1\\nline2"); return "omega"',
+		`text("before-image"); image("data:image/png;base64,${png}"); console.warn("after-image")`,
+		'text("before-error"); console.error("diagnostic"); throw new Error("boundary-stop")',
+	]);
+	assert.equal(results.length, 3);
+	assert.deepEqual(results.map(r => r.isError), [false, false, true]);
+	const context = wires.at(-1)!;
+	const source = context.messages.filter(m => m.role === "toolResult");
+	assert.equal(source.length, 3);
+	const texts = source.map(m => m.content.filter(b => b.type === "text").map(b => b.text));
+	assert.deepEqual(texts[0], ["[CODEMODE_OK] Child calls: 0.", "alpha", "", 'beta {"n":2}', "line1\nline2", "omega"]);
+	assert.deepEqual(source[1]!.content.map(b => b.type), ["text", "text", "image", "text"]);
+	assert.deepEqual(texts[1], ["[CODEMODE_OK] Child calls: 0.", "before-image", "after-image"]);
+	assert.deepEqual(texts[2]!.slice(1), ["before-error", "diagnostic", "[CODEMODE_SCRIPT] boundary-stop"]);
+	const before = structuredClone(context.messages);
+	const adapters: [Api, StreamFunction<any, SimpleStreamOptions>, string, Record<string, unknown>?][] = [
+		["anthropic-messages", streamAnthropic, "claude-sonnet-4-5"],
+		["openai-completions", streamChat, "gpt-5"],
+		["openai-responses", streamResponses, "gpt-5"],
+		["azure-openai-responses", streamAzure, "deployment"],
+		["openai-codex-responses", streamCodex, "gpt-5-codex", { transport: "sse" }],
+		["google-generative-ai", streamGoogle, "gemini-3-flash-preview"],
+		["google-vertex", streamVertex, "gemini-3-flash-preview", { project: "fixture", location: "us-central1" }],
+		["mistral-conversations", streamMistral, "mistral-large"],
+		["bedrock-converse-stream", streamBedrock, "anthropic.claude-3-7-sonnet", { env: { AWS_REGION: "us-east-1" } }],
+		["pi-messages", streamPi, "pi-model"],
+	];
+	for (const [api, stream, id, options] of adapters) await t.test(api, async () => {
+		const model: Model<Api> = { ...MODEL, api, id, input: ["text", "image"],
+			provider: api === "openai-codex-responses" ? "openai-codex" : "fixture",
+			capabilities: { ...conservativeModelCapabilities(), toolCalling: true, parallelTools: true } };
+		let payload: any;
+		const stopped = await stream(model, context, {
+			apiKey: api === "openai-codex-responses" ? `header.${btoa(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "fixture" } }))}.signature` : "fixture-key",
+			env: {}, ...options,
+			onPayload(value) { payload = value; throw new Error("codemode boundary payload captured"); },
+		}).result();
+		assert.ok(payload, stopped.errorMessage);
+		assert.match(stopped.errorMessage ?? "", /codemode boundary payload captured/);
+		let converted: (string | any[])[];
+		switch (api) {
+			case "anthropic-messages": converted = payload.messages.flatMap((m: any) => Array.isArray(m.content) ? m.content.filter((b: any) => b.type === "tool_result").map((b: any) => b.content) : []); break;
+			case "openai-completions": converted = payload.messages.filter((m: any) => m.role === "tool").map((m: any) => m.content); break;
+			case "openai-responses": case "azure-openai-responses": case "openai-codex-responses":
+				converted = payload.input.filter((m: any) => m.type === "function_call_output" || m.type === "custom_tool_call_output").map((m: any) => m.output); break;
+			case "google-generative-ai": case "google-vertex":
+				converted = payload.contents.flatMap((m: any) => m.parts.filter((p: any) => p.functionResponse).map((p: any) => p.functionResponse.response.output ?? p.functionResponse.response.error)); break;
+			case "mistral-conversations": converted = payload.messages.filter((m: any) => m.role === "tool").map((m: any) => m.content[0].text); break;
+			case "bedrock-converse-stream": converted = payload.messages.flatMap((m: any) => m.content.filter((b: any) => b.toolResult).map((b: any) => b.toolResult.content)); break;
+			case "pi-messages": converted = payload.context.messages.filter((m: any) => m.role === "toolResult").map((m: any) => m.content); break;
+			default: assert.fail(`Unverified API ${api}`);
+		}
+		assert.equal(converted.length, source.length);
+		for (let index = 0; index < converted.length; index++) {
+			const value = converted[index]!;
+			const expected = texts[index]!;
+			if (typeof value === "string") {
+				assert.equal(value, (api === "mistral-conversations" && source[index]!.isError ? "[tool error] " : "") + expected.join("\n"));
+			} else {
+				const blocks = value.filter(b => typeof b.text === "string").map(b => b.text);
+				const joined = api === "openai-responses" || api === "azure-openai-responses" || api === "openai-codex-responses";
+				assert.deepEqual(blocks, joined ? [expected.join("\n")] : api === "bedrock-converse-stream" ? expected.filter(s => s.trim()) : expected);
+			}
+		}
+		assert.deepEqual(context.messages, before, "conversion must not wrap or mutate retained Codemode history");
+	});
 });
 
 test("unknown tool guidance supports catalog lookup and awaited schemas in a live Codemode session", async t => {
