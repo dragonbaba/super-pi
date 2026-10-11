@@ -20,7 +20,6 @@ import scala from "highlight.js/lib/languages/scala.js";
 import swift from "highlight.js/lib/languages/swift.js";
 import typescript from "highlight.js/lib/languages/typescript.js";
 import { decodeHtmlEntityAt } from "./html.ts";
-import { ObjectPool } from "./object-pool.ts";
 import { HIGHLIGHT_CLASS_ATTRIBUTE_PATTERN } from "./syntax-highlight-regex.ts";
 
 const eagerLanguages = {
@@ -82,28 +81,6 @@ export interface HighlightOptions {
 const SPAN_CLOSE = "</span>";
 const HIGHLIGHT_CLASS_PREFIX = "hljs-";
 const EMPTY_HIGHLIGHT_THEME: HighlightTheme = Object.freeze({});
-const MAX_POOLED_HIGHLIGHT_OUTPUT_CHARS = 1024 * 1024;
-const MAX_POOLED_HIGHLIGHT_SCOPE_DEPTH = 256;
-
-interface HighlightRenderState {
-	output: string;
-	textBuffer: string;
-	scopes: Array<string | undefined>;
-}
-
-const HIGHLIGHT_RENDER_STATE_POOL = new ObjectPool<HighlightRenderState>(
-	() => ({ output: "", textBuffer: "", scopes: [] }),
-	(state) => {
-		state.output = "";
-		state.textBuffer = "";
-		state.scopes.length = 0;
-	},
-	8,
-	(state) =>
-		state.output.length <= MAX_POOLED_HIGHLIGHT_OUTPUT_CHARS &&
-		state.textBuffer.length <= MAX_POOLED_HIGHLIGHT_OUTPUT_CHARS &&
-		state.scopes.length <= MAX_POOLED_HIGHLIGHT_SCOPE_DEPTH,
-);
 
 function getScopeFromSpanTag(tag: string): string | undefined {
 	const match = HIGHLIGHT_CLASS_ATTRIBUTE_PATTERN.exec(tag);
@@ -173,63 +150,75 @@ function isSpanOpenTagStart(html: string, index: number): boolean {
 	return nextChar === ">" || nextChar === " " || nextChar === "\t" || nextChar === "\n" || nextChar === "\r";
 }
 
-function flushHighlightedText(state: HighlightRenderState, theme: HighlightTheme): void {
-	if (!state.textBuffer) return;
-	const formatter = getActiveFormatter(state.scopes, theme);
-	state.output += formatter ? formatter(state.textBuffer) : state.textBuffer;
-	state.textBuffer = "";
+function formatHighlightedText(text: string, scopes: Array<string | undefined>, theme: HighlightTheme): string {
+	if (!text) return text;
+	const formatter = getActiveFormatter(scopes, theme);
+	if (!formatter) return text;
+	let newline = text.indexOf("\n");
+	if (newline === -1) return formatter(text);
+
+	// Terminal rows reset their styles independently. Reopen the scope on each
+	// nonempty line, preserving blank lines without formatting or line arrays.
+	let output = "";
+	let start = 0;
+	do {
+		if (newline > start) output += formatter(text.slice(start, newline));
+		output += "\n";
+		start = newline + 1;
+		newline = text.indexOf("\n", start);
+	} while (newline !== -1);
+	if (start < text.length) output += formatter(text.slice(start));
+	return output;
 }
 
 export function renderHighlightedHtml(html: string, theme: HighlightTheme = EMPTY_HIGHLIGHT_THEME): string {
-	const state = HIGHLIGHT_RENDER_STATE_POOL.acquire();
-
-	try {
-		let index = 0;
-		while (index < html.length) {
-			const code = html.charCodeAt(index);
-			if (code === 0x3c) {
-				if (isSpanOpenTagStart(html, index)) {
-					const tagEndIndex = html.indexOf(">", index + 5);
-					if (tagEndIndex !== -1) {
-						flushHighlightedText(state, theme);
-						const tag = html.slice(index, tagEndIndex + 1);
-						state.scopes.push(getScopeFromSpanTag(tag));
-						index = tagEndIndex + 1;
-						continue;
-					}
-				}
-
-				if (html.startsWith(SPAN_CLOSE, index)) {
-					flushHighlightedText(state, theme);
-					if (state.scopes.length > 0) state.scopes.pop();
-					index += SPAN_CLOSE.length;
+	let output = "";
+	let textBuffer = "";
+	const scopes: Array<string | undefined> = [];
+	let index = 0;
+	while (index < html.length) {
+		const code = html.charCodeAt(index);
+		if (code === 0x3c) {
+			if (isSpanOpenTagStart(html, index)) {
+				const tagEndIndex = html.indexOf(">", index + 5);
+				if (tagEndIndex !== -1) {
+					output += formatHighlightedText(textBuffer, scopes, theme);
+					textBuffer = "";
+					const tag = html.slice(index, tagEndIndex + 1);
+					scopes.push(getScopeFromSpanTag(tag));
+					index = tagEndIndex + 1;
 					continue;
 				}
 			}
 
-			if (code === 0x26) {
-				const decoded = decodeHtmlEntityAt(html, index);
-				if (decoded) {
-					state.textBuffer += decoded.text;
-					index += decoded.length;
-					continue;
-				}
+			if (html.startsWith(SPAN_CLOSE, index)) {
+				output += formatHighlightedText(textBuffer, scopes, theme);
+				textBuffer = "";
+				if (scopes.length > 0) scopes.pop();
+				index += SPAN_CLOSE.length;
+				continue;
 			}
-
-			let textEnd = index + 1;
-			while (textEnd < html.length) {
-				const textCode = html.charCodeAt(textEnd);
-				if (textCode === 0x3c || textCode === 0x26) break;
-				textEnd++;
-			}
-			state.textBuffer += html.slice(index, textEnd);
-			index = textEnd;
 		}
-		flushHighlightedText(state, theme);
-		return state.output;
-	} finally {
-		HIGHLIGHT_RENDER_STATE_POOL.release(state);
+
+		if (code === 0x26) {
+			const decoded = decodeHtmlEntityAt(html, index);
+			if (decoded) {
+				textBuffer += decoded.text;
+				index += decoded.length;
+				continue;
+			}
+		}
+
+		let textEnd = index + 1;
+		while (textEnd < html.length) {
+			const textCode = html.charCodeAt(textEnd);
+			if (textCode === 0x3c || textCode === 0x26) break;
+			textEnd++;
+		}
+		textBuffer += html.slice(index, textEnd);
+		index = textEnd;
 	}
+	return output + formatHighlightedText(textBuffer, scopes, theme);
 }
 
 export function highlight(code: string, options?: HighlightOptions): string {
