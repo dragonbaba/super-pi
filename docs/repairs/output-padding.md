@@ -128,3 +128,28 @@ and final-unmount counters are zero. Image WeakRef is collected after disposal.
 No extra image owner, scratch array or pool was introduced. Evidence files are
 `image-before.json`, `image-after.json`, `image-pad1.json` and `image-tests.log`.
 Replay padding explicitly with `tui-image-formats.ts <output.json> --padding 1`.
+
+## Review correction: queued user-message previews
+
+A second review found the pending steering/follow-up previews and dequeue hint
+still construct TruncatedText with hard-coded padding. Audit queue admission ->
+getAllQueuedMessages -> updatePendingMessagesDisplay -> pending container ->
+TruncatedText -> frame/clear. Keep its existing truncation and row owners; add a
+primitive setPaddingX assignment to this uncached component, use a state-free
+output adapter for in-place settings updates, and pass the configured padding at
+all three pending-row creation sites. No queue semantics, wrapper/cache owner,
+per-update allocation or callback is added. Verify initial/rebuilt pending views
+and reversible settings changes while preserving row identity; include these
+owners in the existing controlled-GC lifecycle fixture. Status/header chrome and
+extension widgets remain separately owned UI, outside queued message content.
+
+The queue regression fails on the reviewed head and passes after the change,
+including steering/follow-up/hint creation, rebuilding at pad=1 and reversible
+in-place changes. The eight padding groups and frame/retained source gates pass
+(38 checks), as do typecheck and both builds. Lifecycle rerun includes 40
+TruncatedText padding assignments and all 120 weak references collected; 20
+loader owners are cleared, 40 unchanged cached Text/Box calls retain identity,
+and controlled-GC heap delta is +117,888 bytes. The new setter is one primitive
+assignment with exactly zero allocations; TruncatedText.render is unchanged.
+Prior frame/image profiles remain applicable. Evidence: `queued-repro.log`,
+`queued-tests.log`, `padding-lifecycle-queued.json`.

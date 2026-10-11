@@ -145,6 +145,23 @@ test("settings update retained and pending rows in place while an execution is a
 	assert.equal(context.settingsVersion, 1);
 });
 
+test("queued steering, follow-up and dequeue previews use initial and updated padding", () => {
+	const pending = new Container();
+	const mode = Object.assign(Object.create(InteractiveMode.prototype), { outputPad: 0, chatContainer: new RetainedContainer(),
+		pendingMessagesContainer: pending, transcriptRenderContext: { settingsVersion: 0 }, ui,
+		getAllQueuedMessages() { return { steering: ["steer"], followUp: ["follow"] }; },
+		getAppKeyDisplay() { return "fixture-key"; } }) as { updatePendingMessagesDisplay(): void; applyOutputPad(pad: number): void };
+	mode.updatePendingMessagesDisplay();
+	const zero = lines(pending); assert.equal(zero.length, 3);
+	for (const line of zero) assert.match(line, /^\S/);
+	const children = pending.children.slice();
+	mode.applyOutputPad(1); assert.deepEqual(lines(pending), zero.map(line => ` ${line}`));
+	assert.deepEqual(pending.children, children);
+	mode.updatePendingMessagesDisplay(); assert.deepEqual(lines(pending), zero.map(line => ` ${line}`));
+	mode.applyOutputPad(0); assert.deepEqual(lines(pending), zero);
+	pending.clear();
+});
+
 test("production live factories and history restoration pass the configured padding", t => {
 	const session = { settingsManager: SettingsManager.inMemory({ outputPad: 0 }), sessionManager: SessionManager.inMemory(),
 		getToolDefinition() {}, getToolRenderers() {}, extensionRunner: { getMessageRenderer() {} } };

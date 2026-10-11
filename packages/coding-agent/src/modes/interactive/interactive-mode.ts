@@ -240,6 +240,12 @@ class OutputText extends Text {
 	}
 }
 
+class OutputTruncatedText extends TruncatedText {
+	setOutputPad(outputPad: number): void {
+		this.setPaddingX(outputPad);
+	}
+}
+
 class ExpandableText extends Text implements Expandable {
 	private readonly getCollapsedText: () => string;
 	private readonly getExpandedText: () => string;
@@ -6104,15 +6110,15 @@ export class InteractiveMode {
 			this.pendingMessagesContainer.addChild(new Spacer(1));
 			for (const message of steeringMessages) {
 				const text = theme.fg("dim", `Steering: ${message}`);
-				this.pendingMessagesContainer.addChild(new TruncatedText(text, 1, 0));
+				this.pendingMessagesContainer.addChild(new OutputTruncatedText(text, this.outputPad, 0));
 			}
 			for (const message of followUpMessages) {
 				const text = theme.fg("dim", `Follow-up: ${message}`);
-				this.pendingMessagesContainer.addChild(new TruncatedText(text, 1, 0));
+				this.pendingMessagesContainer.addChild(new OutputTruncatedText(text, this.outputPad, 0));
 			}
 			const dequeueHint = this.getAppKeyDisplay("app.message.dequeue");
 			const hintText = theme.fg("dim", `↳ ${dequeueHint} to edit all queued messages`);
-			this.pendingMessagesContainer.addChild(new TruncatedText(hintText, 1, 0));
+			this.pendingMessagesContainer.addChild(new OutputTruncatedText(hintText, this.outputPad, 0));
 		}
 	}
 

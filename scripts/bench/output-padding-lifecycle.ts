@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { Session } from "node:inspector/promises";
-import { Box, Text, releaseComponentRenderCaches, type TUI } from "@super-pi/tui";
+import { Box, Text, TruncatedText, releaseComponentRenderCaches, type TUI } from "@super-pi/tui";
 import { BashExecutionComponent } from "../../packages/coding-agent/src/modes/interactive/components/bash-execution.ts";
 import { ReadToolGroupComponent, ToolExecutionComponent } from "../../packages/coding-agent/src/modes/interactive/components/tool-execution.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
@@ -36,6 +36,7 @@ visit(profile.profile.head as Sample);
 
 let releasedLoaderOwners = 0;
 let noOpCacheHits = 0;
+let truncatedPaddingUpdates = 0;
 function lifecycle(index: number): WeakRef<object>[] {
 	const command = new BashExecutionComponent("fixture", ui, index % 2 === 0, 0);
 	const tool = new ToolExecutionComponent("edit", "fixture", {}, { outputPad: 0 }, undefined, ui, process.cwd());
@@ -46,6 +47,11 @@ function lifecycle(index: number): WeakRef<object>[] {
 	const text = new Text("cached text", 0, 0), box = new Box(0, 0);
 	box.addChild(new Text("cached box", 0, 0));
 	const refs: WeakRef<object>[] = [];
+	const truncated = new TruncatedText("queued preview", 0, 0);
+	assert.match(truncated.render(10)[0], /^q/);
+	truncated.setPaddingX(1); assert.match(truncated.render(10)[0], /^ q/);
+	truncated.setPaddingX(0); assert.match(truncated.render(10)[0], /^q/);
+	truncatedPaddingUpdates += 2; refs.push(new WeakRef(truncated));
 	for (const component of [text, box]) {
 		const cache = component.render(20);
 		refs.push(new WeakRef(cache));
@@ -73,7 +79,7 @@ async function collect(): Promise<void> {
 for (let i = 0; i < 5; i++) lifecycle(i);
 await collect();
 const beforeHeapBytes = process.memoryUsage().heapUsed;
-releasedLoaderOwners = 0; noOpCacheHits = 0;
+releasedLoaderOwners = 0; noOpCacheHits = 0; truncatedPaddingUpdates = 0;
 const references: WeakRef<object>[] = [];
 for (let i = 0; i < 20; i++) references.push(...lifecycle(i));
 await collect();
@@ -83,7 +89,7 @@ assert.equal(liveReferences, 0);
 console.log(JSON.stringify({ node: process.version, platform: process.platform, arch: process.arch,
 	commandProfile: { updates, sampledBytesPerUpdate: sampledBytes / updates,
 		topSites: sites.sort((a, b) => b.bytes - a.bytes).slice(0, 10) },
-	lifecycle: { measuredCycles: 20, releasedLoaderOwners, noOpCacheHits, weakReferences: references.length,
+	lifecycle: { measuredCycles: 20, releasedLoaderOwners, noOpCacheHits, truncatedPaddingUpdates, weakReferences: references.length,
 		liveReferences, beforeHeapBytes, afterHeapBytes, heapDeltaBytes: afterHeapBytes - beforeHeapBytes },
 	paddingState: "primitive number per owner; no new event closures, promises, controllers, wrappers or arrays",
 }, null, 2));
