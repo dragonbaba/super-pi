@@ -225,6 +225,7 @@ export class ReadToolGroupComponent extends Container {
 	private readonly rows = new Map<string, ReadGroupRow>();
 	private expanded = false;
 	private finalized = false;
+	private outputPad: number;
 	private showImages: boolean;
 	private imageWidthCells: number;
 	private readonly onVisualInvalidate: ((component: ReadToolGroupComponent) => void) | undefined;
@@ -252,8 +253,10 @@ export class ReadToolGroupComponent extends Container {
 		showImages = true,
 		imageWidthCells = 60,
 		onVisualInvalidate?: (component: ReadToolGroupComponent) => void,
+		outputPad = 1,
 	) {
 		super();
+		this.outputPad = outputPad;
 		this.showImages = showImages;
 		this.imageWidthCells = Math.max(1, Math.floor(imageWidthCells));
 		this.onVisualInvalidate = onVisualInvalidate;
@@ -282,6 +285,11 @@ export class ReadToolGroupComponent extends Container {
 		return true;
 	}
 	setExpanded(expanded: boolean): void { if (this.expanded !== expanded) { this.expanded = expanded; if (!expanded) this.clearGroupedImageConversions(); this.rebuild(); } }
+	setOutputPad(outputPad: number): void {
+		if (this.outputPad === outputPad) return;
+		this.outputPad = outputPad;
+		this.rebuild();
+	}
 	setShowImages(show: boolean): void {
 		if (this.showImages === show) return;
 		this.showImages = show;
@@ -621,7 +629,7 @@ export class ReadToolGroupComponent extends Container {
 		}
 		this.addChild(new Spacer(1));
 		const displayRows = this.getDisplayRows();
-		if (callCount > 1) this.addChild(new Text(theme.fg("toolTitle", theme.bold(`• Read (${callCount})`)), 1, 0));
+		if (callCount > 1) this.addChild(new Text(theme.fg("toolTitle", theme.bold(`• Read (${callCount})`)), this.outputPad, 0));
 		for (let index = 0; index < displayRows.length; index++) {
 			const group = displayRows[index];
 			const first = group.entries[0].row;
@@ -646,7 +654,7 @@ export class ReadToolGroupComponent extends Container {
 			const icon = isError ? theme.fg("error", "✗") : isPending ? theme.fg("muted", "○") : theme.fg("muted", "•");
 			const branch = callCount > 1 ? (index === displayRows.length - 1 ? "└─ " : "├─ ") : "";
 			const label = branch + icon + " " + (callCount === 1 ? theme.fg("toolTitle", theme.bold("Read")) + " " : "") + theme.fg("accent", filePath) + theme.fg("warning", selectorText);
-			this.addChild(new Text(label, callCount > 1 ? 2 : 1, 0));
+			this.addChild(new Text(label, this.outputPad + (callCount > 1 ? 1 : 0), 0));
 			for (const entry of group.entries) {
 				const showFullCanonical = this.expanded && entry.row.toolResultDiscovery !== undefined;
 				const output = getReadGroupResultText(
@@ -657,7 +665,7 @@ export class ReadToolGroupComponent extends Container {
 				const preview = showFullCanonical
 					? output
 					: boundReadGroupPreview(output, this.expanded ? READ_GROUP_MAX_PREVIEW_LINES : 10);
-				this.addChild(new Text(theme.fg(entry.row.resultIsError ? "error" : "toolOutput", preview), callCount > 1 ? 4 : 2, 0));
+				this.addChild(new Text(theme.fg(entry.row.resultIsError ? "error" : "toolOutput", preview), this.outputPad + (callCount > 1 ? 3 : 1), 0));
 				if (
 					this.expanded &&
 					entry.row.toolResultDiscovery &&
@@ -689,7 +697,7 @@ export class ReadToolGroupComponent extends Container {
 							imageData,
 							imageMimeType,
 							{ fallbackColor: toolImageFallbackColor },
-							{ maxWidthCells: this.imageWidthCells },
+							{ maxWidthCells: this.imageWidthCells, paddingX: this.outputPad + (callCount > 1 ? 3 : 1) },
 						));
 					}
 				}
@@ -697,7 +705,7 @@ export class ReadToolGroupComponent extends Container {
 			for (const entry of group.entries) {
 				const discovery = entry.row.toolResultDiscovery;
 				if (!discovery) continue;
-				this.addChild(new Text(formatToolResultDiscovery(discovery, this.expanded), callCount > 1 ? 4 : 2, 0));
+				this.addChild(new Text(formatToolResultDiscovery(discovery, this.expanded), this.outputPad + (callCount > 1 ? 3 : 1), 0));
 			}
 		}
 		if (imageProtocol === "kitty") this.pruneGroupedImageConversions(imagePassGeneration);
@@ -715,6 +723,7 @@ function getBuiltInToolDefinition(cwd: string, toolName: ToolName): ToolDefiniti
 }
 
 export interface ToolExecutionOptions {
+	outputPad?: number;
 	showImages?: boolean;
 	imageWidthCells?: number;
 	/** An independent resolver selected this row instead of its registered renderer. */
@@ -795,6 +804,7 @@ export class ToolExecutionComponent extends Container {
 	};
 	private resultIsError = false;
 	private resultDurationMs: number | undefined;
+	private outputPad: number;
 	private toolResultDiscovery: ToolResultPresentationDiscoveryState | undefined;
 	private convertedImages: Map<number, { data: string; mimeType: string }> = new Map();
 	private callRendererDirty = true;
@@ -836,6 +846,7 @@ export class ToolExecutionComponent extends Container {
 		this.toolDefinition = toolDefinition;
 		this.builtInToolDefinition = getBuiltInToolDefinition(cwd, toolName as ToolName);
 		this.showImages = options.showImages ?? true;
+		this.outputPad = options.outputPad ?? 1;
 		this.imageWidthCells = options.imageWidthCells ?? 60;
 		this.onVisualInvalidate = options.onVisualInvalidate;
 		this.allocationMetrics = options.allocationMetrics;
@@ -849,8 +860,8 @@ export class ToolExecutionComponent extends Container {
 		// Always create all shell variants. contentBox is used for default renderer-based composition.
 		// selfRenderContainer is used when the tool renders its own framing.
 		// contentText is reserved for generic fallback rendering when no tool definition exists.
-		this.contentBox = new Box(1, 1, toolPendingBackground);
-		this.contentText = new Text("", 1, 1, toolPendingBackground);
+		this.contentBox = new Box(this.outputPad, 1, toolPendingBackground);
+		this.contentText = new Text("", this.outputPad, 1, toolPendingBackground);
 		this.selfRenderContainer = new Container();
 
 		if (toolName === "codemode" && !options.rendererOverride) {
@@ -936,6 +947,7 @@ export class ToolExecutionComponent extends Container {
 			showImages: this.showImages,
 			isError: this.resultIsError,
 			durationMs: this.resultDurationMs,
+			outputPad: this.outputPad,
 		};
 	}
 
@@ -1236,6 +1248,16 @@ export class ToolExecutionComponent extends Container {
 	setExpanded(expanded: boolean): void {
 		if (this.expanded === expanded) return;
 		this.expanded = expanded;
+		this.callRendererDirty = true;
+		this.updateDisplay();
+	}
+
+	setOutputPad(outputPad: number): void {
+		if (this.outputPad === outputPad) return;
+		this.outputPad = outputPad;
+		this.contentBox.setPaddingX(outputPad);
+		this.contentText.setPaddingX(outputPad);
+		for (const image of this.imageComponents) image.setPaddingX(outputPad);
 		this.callRendererDirty = true;
 		this.updateDisplay();
 	}
@@ -1595,7 +1617,7 @@ export class ToolExecutionComponent extends Container {
 						imageData,
 						imageMimeType,
 						{ fallbackColor: toolImageFallbackColor },
-						{ maxWidthCells: this.imageWidthCells },
+						{ maxWidthCells: this.imageWidthCells, paddingX: this.outputPad },
 					);
 					if (this.allocationMetrics) this.allocationMetrics.componentCreations += 2;
 					this.imageSpacers.push(spacer);

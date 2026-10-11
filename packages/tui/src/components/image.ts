@@ -30,6 +30,8 @@ export interface ImageTheme {
 }
 
 export interface ImageOptions {
+	/** Horizontal padding around the image and its text fallback (default: 0). */
+	paddingX?: number;
 	maxWidthCells?: number;
 	maxHeightCells?: number;
 	filename?: string;
@@ -44,6 +46,7 @@ export class Image implements Component {
 	private theme: ImageTheme;
 	private options: ImageOptions;
 	private imageId?: number;
+	private paddingX: number;
 	private preparedTranscoderRevision = -1;
 
 	private cachedLines?: string[];
@@ -62,6 +65,7 @@ export class Image implements Component {
 		this.options = options;
 		this.dimensions = dimensions || getImageDimensions(base64Data, mimeType) || { widthPx: 800, heightPx: 600 };
 		this.imageId = options.imageId;
+		this.paddingX = options.paddingX ?? 0;
 		this.prepareForTerminal();
 	}
 
@@ -88,6 +92,12 @@ export class Image implements Component {
 		return this.imageId;
 	}
 
+	setPaddingX(paddingX: number): void {
+		if (this.paddingX === paddingX) return;
+		this.paddingX = paddingX;
+		this.clearRenderCache();
+	}
+
 	invalidate(): void {
 		this.prepareForTerminal();
 		this.clearRenderCache();
@@ -107,7 +117,9 @@ export class Image implements Component {
 			return this.cachedLines;
 		}
 
-		const maxWidth = Math.max(1, Math.min(width - 2, this.options.maxWidthCells ?? 60));
+		const contentWidth = Math.max(1, width - this.paddingX * 2);
+		const leftPad = " ".repeat(this.paddingX);
+		const maxWidth = Math.max(1, Math.min(contentWidth - 2, this.options.maxWidthCells ?? 60));
 		const cellDimensions = getCellDimensions();
 		const defaultMaxHeight = Math.max(1, Math.ceil((maxWidth * cellDimensions.widthPx) / cellDimensions.heightPx));
 		const maxHeight = this.options.maxHeightCells ?? defaultMaxHeight;
@@ -135,7 +147,7 @@ export class Image implements Component {
 				if (caps.images === "kitty") {
 					// For Kitty: C=1 prevents cursor movement.
 					// Don't need the cursor movement.
-					lines = [result.sequence];
+					lines = [leftPad + result.sequence];
 
 					// Return `rows` lines so TUI accounts for image height.
 					for (let i = 0; i < result.rows - 1; i++) {
@@ -152,15 +164,15 @@ export class Image implements Component {
 					}
 					const rowOffset = result.rows - 1;
 					const moveUp = rowOffset > 0 ? `\x1b[${rowOffset}A` : "";
-					lines.push(moveUp + result.sequence);
+					lines.push(leftPad + moveUp + result.sequence);
 				}
 			} else {
 				const fallback = imageFallback(this.mimeType, this.dimensions, this.options.filename);
-				lines = [truncateToWidth(this.theme.fallbackColor(fallback), width)];
+				lines = [leftPad + truncateToWidth(this.theme.fallbackColor(fallback), contentWidth)];
 			}
 		} else {
 			const fallback = imageFallback(this.mimeType, this.dimensions, this.options.filename);
-			lines = [truncateToWidth(this.theme.fallbackColor(fallback), width)];
+			lines = [leftPad + truncateToWidth(this.theme.fallbackColor(fallback), contentWidth)];
 		}
 
 		this.cachedLines = lines;

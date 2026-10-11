@@ -19,6 +19,10 @@ export class TruncatedText implements Component {
 		// No cached state to invalidate currently
 	}
 
+	setPaddingX(paddingX: number): void {
+		this.paddingX = paddingX;
+	}
+
 	render(width: number): string[] {
 		const result: string[] = [];
 

@@ -329,10 +329,11 @@ function buildEditCallComponent(
 	theme: Theme,
 	cwd: string,
 	expanded = false,
+	outputPad = 1,
 ): EditCallRenderComponent {
 	const header = getEditHeaderBg(component.preview, component.settledError, theme)(formatEditCall(args, theme, cwd));
 	component.clear();
-	component.addChild(new Text(header, 0, 0));
+	component.addChild(new Text(header, outputPad, 0));
 
 	if (!component.preview) {
 		return component;
@@ -343,7 +344,7 @@ function buildEditCallComponent(
 			? theme.fg("error", component.preview.error)
 			: getRenderedEditDiff(component, component.preview.diff, expanded, theme);
 	component.addChild(new Spacer(1));
-	component.addChild(new Text(body, 0, 0));
+	component.addChild(new Text(body, outputPad, 0));
 	return component;
 }
 
@@ -475,7 +476,7 @@ export function createEditToolDefinition(
 				});
 			}
 
-			return buildEditCallComponent(component, args, theme, context.cwd, context.expanded);
+			return buildEditCallComponent(component, args, theme, context.cwd, context.expanded, context.outputPad ?? 1);
 		},
 		renderResult(result, _options, theme, context) {
 			const callComponent = context.state.callComponent;
@@ -511,6 +512,7 @@ export function createEditToolDefinition(
 						theme,
 						context.cwd,
 						context.expanded,
+						context.outputPad ?? 1,
 					);
 				}
 			}
@@ -527,7 +529,7 @@ export function createEditToolDefinition(
 				return component;
 			}
 			component.addChild(new Spacer(1));
-			component.addChild(new Text(output, 1, 0));
+			component.addChild(new Text(output, context.outputPad ?? 1, 0));
 			return component;
 		},
 	};

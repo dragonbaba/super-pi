@@ -42,6 +42,13 @@ in when execution state, result changes and presentation settings cannot change
 the call component. Reuse components and avoid repeating expensive work on
 progress updates.
 
+`context.outputPad` supplies the transcript's horizontal padding (0 or 1).
+The default tool shell applies it; `renderShell: "self"` renderers should apply
+it themselves, using `context.outputPad ?? 1` for legacy contexts. Reused `Text`
+and `Box` components can update padding with `setPaddingX()`. Changing the setting
+refreshes existing tool rows, including args-only call renderers. HTML renderer
+contexts use the export default of 1.
+
 Resolvers must be synchronous. Call `next` only during the current resolver
 invocation; do not save it for later. Nested resolution and repeated `next()`
 calls are supported. A throwing or invalid async resolver emits an extension

@@ -233,6 +233,19 @@ function isExpandable(obj: unknown): obj is Expandable {
 	return typeof obj === "object" && obj !== null && "setExpanded" in obj && typeof obj.setExpanded === "function";
 }
 
+/** Plain transcript output participating in in-place padding changes. */
+class OutputText extends Text {
+	setOutputPad(outputPad: number): void {
+		this.setPaddingX(outputPad);
+	}
+}
+
+class OutputTruncatedText extends TruncatedText {
+	setOutputPad(outputPad: number): void {
+		this.setPaddingX(outputPad);
+	}
+}
+
 class ExpandableText extends Text implements Expandable {
 	private readonly getCollapsedText: () => string;
 	private readonly getExpandedText: () => string;
@@ -4613,6 +4626,7 @@ export class InteractiveMode {
 					this.settingsManager.getShowImages(),
 					this.settingsManager.getImageWidthCells(),
 					this.invalidateRetainedReadGroupVisual,
+					this.outputPad,
 				);
 				this.lastReadToolGroup.setExpanded(this.toolOutputExpanded);
 				if (!placeholder) this.retainActiveToolComponent(this.lastReadToolGroup, toolCallId);
@@ -4640,6 +4654,7 @@ export class InteractiveMode {
 				imageWidthCells: this.settingsManager.getImageWidthCells(),
 				rendererOverride: renderers !== this.session.getToolDefinition(toolName),
 				onVisualInvalidate: this.invalidateRetainedToolVisual,
+				outputPad: this.outputPad,
 			},
 			renderers,
 			this.ui,
@@ -5158,7 +5173,7 @@ export class InteractiveMode {
 		if (entry.customType === IMAGE_VISION_RESULT_TYPE) {
 			const result = entry.data as Partial<ImageVisionResult>;
 			if (typeof result.description === "string" && typeof result.submissionId === "string") {
-				this.chatContainer.addChild(new Text(`辅助视觉结果（派生） · ${attachmentLabel(result.model ?? "")} · 提交 ${attachmentLabel(result.submissionId)}\n${attachmentDescription(result.description)}`, this.outputPad, 0));
+				this.chatContainer.addChild(new OutputText(`辅助视觉结果（派生） · ${attachmentLabel(result.model ?? "")} · 提交 ${attachmentLabel(result.submissionId)}\n${attachmentDescription(result.description)}`, this.outputPad, 0));
 			}
 			return;
 		}
@@ -5166,7 +5181,7 @@ export class InteractiveMode {
 		if (!renderer) {
 			return;
 		}
-		const component = new CustomEntryComponent(entry, renderer);
+		const component = new CustomEntryComponent(entry, renderer, this.outputPad);
 		component.setExpanded(this.toolOutputExpanded);
 		if (!component.hasContent()) {
 			return;
@@ -5187,7 +5202,7 @@ export class InteractiveMode {
 	private addMessageToChat(message: AgentMessage, options?: { populateHistory?: boolean }): void {
 		switch (message.role) {
 			case "bashExecution": {
-				const component = new BashExecutionComponent(message.command, this.ui, message.excludeFromContext);
+				const component = new BashExecutionComponent(message.command, this.ui, message.excludeFromContext, this.outputPad);
 				if (message.output) {
 					component.appendOutput(message.output);
 				}
@@ -5216,14 +5231,14 @@ export class InteractiveMode {
 			}
 			case "compactionSummary": {
 				this.chatContainer.addChild(new Spacer(1));
-				const component = new CompactionSummaryMessageComponent(message, this.getMarkdownThemeWithSettings());
+				const component = new CompactionSummaryMessageComponent(message, this.getMarkdownThemeWithSettings(), this.outputPad);
 				component.setExpanded(this.toolOutputExpanded);
 				this.chatContainer.addChild(component);
 				break;
 			}
 			case "branchSummary": {
 				this.chatContainer.addChild(new Spacer(1));
-				const component = new BranchSummaryMessageComponent(message, this.getMarkdownThemeWithSettings());
+				const component = new BranchSummaryMessageComponent(message, this.getMarkdownThemeWithSettings(), this.outputPad);
 				component.setExpanded(this.toolOutputExpanded);
 				this.chatContainer.addChild(component);
 				break;
@@ -5246,6 +5261,7 @@ export class InteractiveMode {
 						const component = new SkillInvocationMessageComponent(
 							skillBlock,
 							this.getMarkdownThemeWithSettings(),
+							this.outputPad,
 						);
 						component.setExpanded(this.toolOutputExpanded);
 						this.chatContainer.addChild(component);
@@ -5379,6 +5395,7 @@ export class InteractiveMode {
 								this.settingsManager.getShowImages(),
 								this.settingsManager.getImageWidthCells(),
 								this.invalidateRetainedReadGroupVisual,
+								this.outputPad,
 							);
 								rebuildReadGroup.setExpanded(this.toolOutputExpanded);
 								this.retainActiveToolComponent(rebuildReadGroup, content.id);
@@ -6025,7 +6042,7 @@ export class InteractiveMode {
 
 	showError(errorMessage: string): void {
 		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Text(theme.fg("error", `Error: ${errorMessage}`), this.outputPad, 0));
+		this.chatContainer.addChild(new OutputText(theme.fg("error", `Error: ${errorMessage}`), this.outputPad, 0));
 		this.ui.requestRender();
 	}
 
@@ -6093,15 +6110,15 @@ export class InteractiveMode {
 			this.pendingMessagesContainer.addChild(new Spacer(1));
 			for (const message of steeringMessages) {
 				const text = theme.fg("dim", `Steering: ${message}`);
-				this.pendingMessagesContainer.addChild(new TruncatedText(text, 1, 0));
+				this.pendingMessagesContainer.addChild(new OutputTruncatedText(text, this.outputPad, 0));
 			}
 			for (const message of followUpMessages) {
 				const text = theme.fg("dim", `Follow-up: ${message}`);
-				this.pendingMessagesContainer.addChild(new TruncatedText(text, 1, 0));
+				this.pendingMessagesContainer.addChild(new OutputTruncatedText(text, this.outputPad, 0));
 			}
 			const dequeueHint = this.getAppKeyDisplay("app.message.dequeue");
 			const hintText = theme.fg("dim", `↳ ${dequeueHint} to edit all queued messages`);
-			this.pendingMessagesContainer.addChild(new TruncatedText(hintText, 1, 0));
+			this.pendingMessagesContainer.addChild(new OutputTruncatedText(hintText, this.outputPad, 0));
 		}
 	}
 
@@ -6229,6 +6246,25 @@ export class InteractiveMode {
 		this.editorContainer.addChild(created.component);
 		this.ui.setFocus(created.focus);
 		this.ui.requestRender();
+	}
+
+	private applyOutputPad(padding: 0 | 1): void {
+		if (this.outputPad === padding) return;
+		this.outputPad = padding;
+		this.transcriptRenderContext.settingsVersion++;
+		this.updateContainerOutputPad(this.chatContainer, padding);
+		this.updateContainerOutputPad(this.pendingMessagesContainer, padding);
+		this.streamingComponent?.setOutputPad(padding);
+		this.chatContainer.invalidateViewportHeights();
+		this.ui.requestRender();
+	}
+
+	private updateContainerOutputPad(container: Container, padding: number): void {
+		for (const child of container.children) {
+			if ("setOutputPad" in child && typeof child.setOutputPad === "function") {
+				child.setOutputPad(padding);
+			}
+		}
 	}
 
 	private showSettingsSelector(): void {
@@ -6393,26 +6429,7 @@ export class InteractiveMode {
 					},
 					onOutputPadChange: (padding) => {
 						this.settingsManager.setOutputPad(padding);
-						this.outputPad = padding;
-						this.transcriptRenderContext.settingsVersion++;
-						if (this.streamingComponent || this.session.isStreaming) {
-							for (const child of this.chatContainer.children) {
-								if (
-									child instanceof AssistantMessageComponent ||
-									child instanceof CustomMessageComponent ||
-									child instanceof UserMessageComponent
-								) {
-									child.setOutputPad(padding);
-								}
-							}
-							if (this.streamingComponent) {
-								this.streamingComponent.setOutputPad(padding);
-							}
-							this.chatContainer.invalidateViewportHeights();
-							this.ui.requestRender();
-							return;
-						}
-						this.rebuildChatFromMessages();
+						this.applyOutputPad(padding);
 					},
 					onAutocompleteMaxVisibleChange: (maxVisible) => {
 						this.settingsManager.setAutocompleteMaxVisible(maxVisible);
@@ -8416,7 +8433,7 @@ export class InteractiveMode {
 			const result = eventResult.result;
 
 			// Create UI component for display
-			const bashComponent = new BashExecutionComponent(command, this.ui, excludeFromContext);
+			const bashComponent = new BashExecutionComponent(command, this.ui, excludeFromContext, this.outputPad);
 			this.bashComponent = bashComponent;
 			if (this.session.isStreaming) {
 				this.pendingMessagesContainer.addChild(bashComponent);
@@ -8447,7 +8464,7 @@ export class InteractiveMode {
 
 		// Normal execution path (possibly with custom operations)
 		const isDeferred = this.session.isStreaming;
-		const bashComponent = new BashExecutionComponent(command, this.ui, excludeFromContext);
+		const bashComponent = new BashExecutionComponent(command, this.ui, excludeFromContext, this.outputPad);
 		this.bashComponent = bashComponent;
 
 		if (isDeferred) {

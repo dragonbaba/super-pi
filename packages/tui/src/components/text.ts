@@ -31,6 +31,12 @@ export class Text implements Component {
 		this.cachedLines = undefined;
 	}
 
+	setPaddingX(paddingX: number): void {
+		if (this.paddingX === paddingX) return;
+		this.paddingX = paddingX;
+		this.clearRenderCache();
+	}
+
 	setCustomBgFn(customBgFn?: (text: string) => string): void {
 		this.customBgFn = customBgFn;
 		this.cachedText = undefined;
