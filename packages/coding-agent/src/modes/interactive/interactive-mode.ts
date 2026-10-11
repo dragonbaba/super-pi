@@ -691,6 +691,7 @@ export class InteractiveMode {
 		started?: boolean;
 		result?: any;
 		resultIsError: boolean;
+		durationMs?: number;
 		isPartial?: boolean;
 		ended?: boolean;
 	}>();
@@ -4334,12 +4335,12 @@ export class InteractiveMode {
 				}
 				const component = this.pendingTools.get(event.toolCallId);
 				if (component) {
-					this.updateTrackedToolResult(component, event.toolCallId, event.result, false, event.isError);
+					this.updateTrackedToolResult(component, event.toolCallId, event.result, false, event.isError, event.durationMs);
 					this.trackToolResultPresentationTarget(event.toolCallId, event.result, component);
 					this.pendingTools.delete(event.toolCallId);
 					this.ui.requestRender();
 				} else if (this.deferredReadExecutions.has(event.toolCallId)) {
-					this.deferReadExecutionResult(event.toolCallId, event.result, false, event.isError, true);
+					this.deferReadExecutionResult(event.toolCallId, event.result, false, event.isError, true, event.durationMs);
 				}
 				break;
 			}
@@ -4528,6 +4529,7 @@ export class InteractiveMode {
 			args,
 			started: true,
 			resultIsError: false,
+			durationMs: undefined,
 		});
 	}
 
@@ -4537,11 +4539,13 @@ export class InteractiveMode {
 		isPartial: boolean,
 		isError: boolean,
 		ended: boolean,
+		durationMs?: number,
 	): void {
 		const deferred = this.deferredReadExecutions.get(toolCallId);
 		if (!deferred) return;
 		deferred.result = result;
 		deferred.resultIsError = isError;
+		deferred.durationMs = isPartial ? undefined : durationMs;
 		deferred.isPartial = isPartial;
 		deferred.ended = ended;
 	}
@@ -4560,6 +4564,7 @@ export class InteractiveMode {
 				deferred.result,
 				deferred.isPartial ?? false,
 				deferred.resultIsError,
+				deferred.durationMs,
 			);
 			if (deferred.ended) this.trackToolResultPresentationTarget(toolCallId, deferred.result, component);
 		}
@@ -4715,9 +4720,10 @@ export class InteractiveMode {
 		result: any,
 		isPartial = false,
 		isError = result?.isError === true,
+		durationMs: number | undefined = result?.durationMs,
 	): void {
 		if (component instanceof ReadToolGroupComponent) component.updateResult(toolCallId, result, isPartial, isError);
-		else component.updateResult(result, isPartial, isError);
+		else component.updateResult(result, isPartial, isError, durationMs);
 		this.advanceActiveToolVersion(component);
 		if (!isPartial) this.completeTrackedToolIfReady(component);
 	}

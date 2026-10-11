@@ -102,12 +102,13 @@ type _AiAssistantMessageFieldsAccountedFor = Assert<
 		| "rawStopReason"
 		| "endTurn"
 		| "timestamp"
+		| "durationMs" // Host timing metadata is intentionally outside the protocol v1 projection.
 	>
 >;
 type _AiToolResultMessageFieldsAccountedFor = Assert<
 	ExactKeys<
 		ToolResultMessage,
-		"role" | "toolCallId" | "toolName" | "content" | "details" | "usage" | "addedToolNames" | "isError" | "timestamp"
+		"role" | "toolCallId" | "toolName" | "content" | "details" | "usage" | "addedToolNames" | "isError" | "timestamp" | "durationMs"
 	>
 >;
 

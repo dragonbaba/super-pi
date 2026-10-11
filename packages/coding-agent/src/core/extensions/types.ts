@@ -467,6 +467,8 @@ export interface ToolRenderContext<TState = any, TArgs = any> {
 	showImages: boolean;
 	/** Whether the current result is an error. */
 	isError: boolean;
+	/** Final execute() duration; unknown while running, for legacy results or unexecuted tools. */
+	durationMs?: number;
 }
 
 /**
@@ -880,6 +882,8 @@ export interface ToolExecutionEndEvent {
 	toolName: string;
 	result: any;
 	isError: boolean;
+	/** Monotonic execute() duration; absent when the tool did not execute. */
+	durationMs?: number;
 }
 
 // ============================================================================

@@ -179,7 +179,7 @@ function appendRewriteDiagnostic(message: AssistantMessage, rewrite: PiMessagesR
 	});
 }
 
-function createEventConverter(model: Model<"pi-messages">) {
+function createEventConverter(model: Model<"pi-messages">, timestamp: number) {
 	const partial: AssistantMessage = {
 		role: "assistant",
 		content: [],
@@ -188,7 +188,7 @@ function createEventConverter(model: Model<"pi-messages">) {
 		model: model.id,
 		usage: createEmptyUsage(),
 		stopReason: "pending",
-		timestamp: Date.now(),
+		timestamp,
 	};
 	const toolJson = new Map<number, string>();
 
@@ -324,7 +324,7 @@ function parsePiMessagesEvent(raw: string): PiMessagesEvent | undefined {
 	return data && data !== "[DONE]" ? (JSON.parse(data) as PiMessagesEvent) : undefined;
 }
 
-function createErrorEvent(model: Model<"pi-messages">, error: unknown, aborted: boolean): AssistantMessageEvent {
+function createErrorEvent(model: Model<"pi-messages">, error: unknown, aborted: boolean, timestamp: number): AssistantMessageEvent {
 	const reason = aborted ? "aborted" : "error";
 	const assistantMessage: AssistantMessage = {
 		role: "assistant",
@@ -335,7 +335,7 @@ function createErrorEvent(model: Model<"pi-messages">, error: unknown, aborted: 
 		usage: createEmptyUsage(),
 		stopReason: reason,
 		errorMessage: error instanceof Error ? error.message : String(error),
-		timestamp: Date.now(),
+		timestamp,
 	};
 
 	if (!aborted && error instanceof PiMessagesResponseError) {
@@ -362,7 +362,8 @@ export const stream: StreamFunction<"pi-messages", PiMessagesOptions> = (
 	options?: PiMessagesOptions,
 ): AssistantMessageEventStream => {
 	const eventStream = new AssistantMessageEventStream();
-	const convertEvent = createEventConverter(model);
+	const startedAt = Date.now();
+	const convertEvent = createEventConverter(model, startedAt);
 
 	void (async () => {
 		try {
@@ -431,7 +432,7 @@ export const stream: StreamFunction<"pi-messages", PiMessagesOptions> = (
 
 			throw new Error(`${model.provider} stream ended without a terminal event`);
 		} catch (error) {
-			eventStream.push(createErrorEvent(model, error, options?.signal?.aborted ?? false));
+			eventStream.push(createErrorEvent(model, error, options?.signal?.aborted ?? false, startedAt));
 		}
 	})();
 

@@ -27,6 +27,9 @@ export class EventStream<T, R = T> implements AsyncIterable<T> {
 	private queue = new FifoQueue<T>();
 	private waiting = new FifoQueue<(value: IteratorResult<T>) => void>();
 	private done = false;
+	// Capture at creation for plain SDK streams as well as the assistant subclass.
+	private readonly startedAt = Date.now();
+	private readonly startedMonotonic = performance.now();
 	private finalResultPromise: Promise<R>;
 	private resolveFinalResult!: (result: R) => void;
 	private isComplete: (event: T) => boolean;
@@ -45,7 +48,10 @@ export class EventStream<T, R = T> implements AsyncIterable<T> {
 
 		if (this.isComplete(event)) {
 			this.done = true;
-			this.resolveFinalResult(this.extractResult(event));
+			const original = this.extractResult(event);
+			const result = finalizeAssistantTiming(original, this.startedAt, this.startedMonotonic);
+			event = replaceAssistantTerminal(event, original, result);
+			this.resolveFinalResult(result);
 		}
 
 		// Deliver to waiting consumer or queue it
@@ -58,6 +64,9 @@ export class EventStream<T, R = T> implements AsyncIterable<T> {
 	}
 
 	end(result?: R): void {
+		if (!this.done && result !== undefined) {
+			result = finalizeAssistantTiming(result, this.startedAt, this.startedMonotonic);
+		}
 		this.done = true;
 		if (result !== undefined) {
 			this.resolveFinalResult(result);
@@ -86,6 +95,24 @@ export class EventStream<T, R = T> implements AsyncIterable<T> {
 	result(): Promise<R> {
 		return this.finalResultPromise;
 	}
+}
+
+// Completion-only envelope copies support immutable provider messages/events.
+// Content and usage retain their existing ownership; deltas never enter here.
+function finalizeAssistantTiming<R>(result: R, wall: number, monotonic: number): R {
+	if (typeof result !== "object" || result === null) return result;
+	const message = result as Partial<AssistantMessage>;
+	if (message.role !== "assistant" || message.durationMs !== undefined ||
+		typeof message.timestamp !== "number" || message.timestamp < wall) return result;
+	return { ...result, durationMs: Math.max(0, Math.round(performance.now() - monotonic)) };
+}
+
+function replaceAssistantTerminal<T, R>(event: T, original: R, result: R): T {
+	if (result === original || typeof event !== "object" || event === null) return event;
+	const terminal = event as unknown as AssistantMessageEvent;
+	if (terminal.type === "done" && terminal.message === original) return { ...event, message: result };
+	if (terminal.type === "error" && terminal.error === original) return { ...event, error: result };
+	return event;
 }
 
 export class AssistantMessageEventStream extends EventStream<AssistantMessageEvent, AssistantMessage> {

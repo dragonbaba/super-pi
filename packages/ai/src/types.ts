@@ -539,7 +539,10 @@ export interface AssistantMessage {
 	rawStopReason?: string;
 	/** Provider indication that the model explicitly ended its turn; retained for diagnostics only. */
 	endTurn?: boolean;
-	timestamp: number; // Unix timestamp in milliseconds
+	/** Unix timestamp in milliseconds when the request started. */
+	timestamp: number;
+	/** Monotonic response duration; absent for legacy or later-fetched deferred responses. */
+	durationMs?: number;
 }
 
 export interface ToolResultMessage<TDetails = any> {
@@ -558,6 +561,8 @@ export interface ToolResultMessage<TDetails = any> {
 	addedToolNames?: string[];
 	isError: boolean;
 	timestamp: number; // Unix timestamp in milliseconds
+	/** Monotonic execute() duration; absent for legacy results and tools that did not execute. */
+	durationMs?: number;
 }
 
 export type Message = UserMessage | AssistantMessage | ToolResultMessage;

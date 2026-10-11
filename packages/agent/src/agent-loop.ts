@@ -788,6 +788,7 @@ type ImmediateToolCallOutcome = {
 type ExecutedToolCallOutcome = {
 	result: AgentToolResult<any>;
 	isError: boolean;
+	durationMs?: number;
 	/** Invocation was refused; retain the normal pre-execution block semantics. */
 	authorizationVeto?: true;
 	/** Agent-owned validation failure: result hooks still run, execute did not. */
@@ -798,6 +799,7 @@ type FinalizedToolCallOutcome = {
 	toolCall: AgentToolCall;
 	result: AgentToolResult<any>;
 	isError: boolean;
+	durationMs?: number;
 };
 
 type FinalizedToolCallEntry = FinalizedToolCallOutcome | (() => Promise<FinalizedToolCallOutcome>);
@@ -937,6 +939,8 @@ async function executePreparedToolCall(
 	let validatingInput = false;
 	let completedResult: AgentToolResult<any> | undefined;
 	let nested: NestedToolDispatch | undefined;
+	let startedAt: number | undefined;
+	let durationMs: number | undefined;
 
 	try {
 		const onUpdate = ((partialResult: AgentToolResult<any>) => {
@@ -973,6 +977,7 @@ async function executePreparedToolCall(
 			validatingInput = false;
 		}
 		if (prepared.orchestration) nested = createNestedToolDispatch(prepared.toolCall.id, prepared.orchestration, emit, signal);
+		startedAt = performance.now();
 		let result = await execute.call(prepared.tool,
 			id,
 			args as never,
@@ -980,6 +985,7 @@ async function executePreparedToolCall(
 			onUpdate,
 			nested,
 		);
+		durationMs = Math.max(0, Math.round(performance.now() - startedAt));
 		completedResult = result;
 		if (nested) {
 			await nested.close();
@@ -995,8 +1001,9 @@ async function executePreparedToolCall(
 		}
 		acceptingUpdates = false;
 		await progress.flush();
-    return { result, isError: result.isError === true };
+    return { result, isError: result.isError === true, durationMs };
 	} catch (error) {
+		if (startedAt !== undefined && durationMs === undefined) durationMs = Math.max(0, Math.round(performance.now() - startedAt));
 		acceptingUpdates = false;
 		if (checkingAuthorization) {
 			return { result: createPreExecutionError(prepared.tool.name, error instanceof Error ? error.message : String(error)),
@@ -1022,7 +1029,7 @@ async function executePreparedToolCall(
 			preExecutionResults.add(result);
 			return { result, isError: true, inputRejected: true };
 		}
-		return { result, isError: true };
+		return { result, isError: true, durationMs };
 	} finally {
 		acceptingUpdates = false;
 		if (nested) await nested.close();
@@ -1276,6 +1283,7 @@ async function finalizeExecutedToolCall(
 		toolCall: prepared.toolCall,
 		result,
 		isError,
+		durationMs: executed.durationMs,
 	};
 }
 
@@ -1406,6 +1414,7 @@ async function emitToolExecutionEnd(finalized: FinalizedToolCallOutcome, emit: A
 		toolName: finalized.toolCall.name,
 		result: finalized.result,
 		isError: finalized.isError,
+		durationMs: finalized.durationMs,
 	});
 }
 
@@ -1422,6 +1431,7 @@ function createToolResultMessage(finalized: FinalizedToolCallOutcome): ToolResul
 		...(finalized.result.addedToolNames?.length ? { addedToolNames: finalized.result.addedToolNames } : {}),
 		isError: finalized.isError,
 		timestamp: Date.now(),
+		durationMs: finalized.durationMs,
 	};
 }
 
