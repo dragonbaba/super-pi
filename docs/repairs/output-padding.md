@@ -85,3 +85,12 @@ wrappers/full-size copies/materializations, and zero active/pending references o
 bytes after flush. Controlled-GC heap delta +104,920 bytes. Source/AST gates cover
 the unchanged completion/failure/abort/dispose frame ownership boundaries.
 Raw logs/profiles are retained at `.git/f03-3-output-padding-20261012/`.
+
+Delivery self-review also covered local plain error/vision output that previously
+received changed padding only through history reconstruction. A Text subclass
+exposes the same setter without adding state, wrappers or component owners; these
+rows now participate in the in-place traversal. The history fixture asserts the
+actual skill component and verifies error/vision updates. Its six groups plus
+the affected frame/retained source gates pass (36 checks); typecheck and the
+coding-agent build are repeated for this follow-up. Earlier leaf/queue profiles
+remain applicable: the follow-up does not change those measured paths or caches.

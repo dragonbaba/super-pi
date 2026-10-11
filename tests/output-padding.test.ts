@@ -4,6 +4,7 @@ import { Box, Container, RELEASE_COMPONENT_RENDER_CACHE, RetainedContainer, Text
 import { createToolHtmlRenderer } from "../packages/coding-agent/src/core/export-html/tool-renderer.ts";
 import { SettingsManager } from "../packages/coding-agent/src/core/settings-manager.ts";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
+import { IMAGE_VISION_RESULT_TYPE } from "../packages/coding-agent/src/core/image-attachments.ts";
 import type { ToolRenderers } from "../packages/coding-agent/src/core/extensions/types.ts";
 import { BashExecutionComponent } from "../packages/coding-agent/src/modes/interactive/components/bash-execution.ts";
 import { BranchSummaryMessageComponent } from "../packages/coding-agent/src/modes/interactive/components/branch-summary-message.ts";
@@ -110,9 +111,12 @@ test("production live factories and history restoration pass the configured padd
 	const mode = Object.assign(Object.create(InteractiveMode.prototype), { runtimeHost: { session }, outputPad: 0,
 		chatContainer: chat, pendingTools: new Map(), streamedToolIds: new Set(), deferredReadPlaceholders: new Map(),
 		deferredReadExecutions: new Map(), nextTranscriptItemNumber: 0, toolOutputExpanded: false, ui,
+		pendingMessagesContainer: new Container(), transcriptRenderContext: { settingsVersion: 0 },
 		getMarkdownTransformers() { return []; } }) as {
 		createTrackedToolComponent(name: string, id: string, args: unknown, placeholder?: undefined, group?: boolean): Component;
 		renderSessionItems(items: unknown[]): void;
+		showError(message: string): void;
+		applyOutputPad(padding: number): void;
 	};
 	for (const name of ["missing", "read"]) {
 		const row = mode.createTrackedToolComponent(name, `live-${name}`, { path: "fixture" }, undefined, true);
@@ -124,10 +128,19 @@ test("production live factories and history restoration pass the configured padd
 		{ role: "bashExecution", command: "pwd", output: "result", exitCode: 0, cancelled: false },
 		{ role: "compactionSummary", summary: "summary", tokensBefore: 10, timestamp: 0 },
 		{ role: "branchSummary", summary: "summary", fromId: "from", timestamp: 0 },
-		{ role: "user", content: '<skill name="fixture" location="fixture">body</skill>', timestamp: 0 },
+		{ role: "user", content: '<skill name="fixture" location="fixture">\nbody\n</skill>', timestamp: 0 },
+		{ type: "custom", customType: IMAGE_VISION_RESULT_TYPE, data: { description: "fixture", submissionId: "fixture" } },
 	]);
+	assert.ok(chat.children.some(row => row instanceof SkillInvocationMessageComponent));
+	mode.showError("fixture");
 	for (const row of chat.children) {
 		const rendered = lines(row);
 		if (rendered.length) assert.match(rendered[0], /^\S/, row.constructor.name);
 	}
+	const error = chat.children.at(-1)!;
+	const vision = chat.children.find(row => lines(row)[0]?.startsWith("辅助视觉结果"))!;
+	assert.ok(vision);
+	mode.applyOutputPad(1);
+	assert.match(lines(error)[0], /^ Error:/);
+	assert.match(lines(vision)[0], /^ 辅助视觉结果/);
 });

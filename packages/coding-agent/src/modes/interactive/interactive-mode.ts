@@ -233,6 +233,13 @@ function isExpandable(obj: unknown): obj is Expandable {
 	return typeof obj === "object" && obj !== null && "setExpanded" in obj && typeof obj.setExpanded === "function";
 }
 
+/** Plain transcript output participating in in-place padding changes. */
+class OutputText extends Text {
+	setOutputPad(outputPad: number): void {
+		this.setPaddingX(outputPad);
+	}
+}
+
 class ExpandableText extends Text implements Expandable {
 	private readonly getCollapsedText: () => string;
 	private readonly getExpandedText: () => string;
@@ -5160,7 +5167,7 @@ export class InteractiveMode {
 		if (entry.customType === IMAGE_VISION_RESULT_TYPE) {
 			const result = entry.data as Partial<ImageVisionResult>;
 			if (typeof result.description === "string" && typeof result.submissionId === "string") {
-				this.chatContainer.addChild(new Text(`辅助视觉结果（派生） · ${attachmentLabel(result.model ?? "")} · 提交 ${attachmentLabel(result.submissionId)}\n${attachmentDescription(result.description)}`, this.outputPad, 0));
+				this.chatContainer.addChild(new OutputText(`辅助视觉结果（派生） · ${attachmentLabel(result.model ?? "")} · 提交 ${attachmentLabel(result.submissionId)}\n${attachmentDescription(result.description)}`, this.outputPad, 0));
 			}
 			return;
 		}
@@ -6029,7 +6036,7 @@ export class InteractiveMode {
 
 	showError(errorMessage: string): void {
 		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Text(theme.fg("error", `Error: ${errorMessage}`), this.outputPad, 0));
+		this.chatContainer.addChild(new OutputText(theme.fg("error", `Error: ${errorMessage}`), this.outputPad, 0));
 		this.ui.requestRender();
 	}
 
