@@ -33,7 +33,6 @@ import type {
 	SimpleStreamOptions,
 	StopReason,
 	StreamFunction,
-	StreamOptions,
 	TextContent,
 	ThinkingBudgets,
 	ThinkingContent,
@@ -45,6 +44,7 @@ import type {
 export const streamedToolArgumentOwnership = "mutation-with-generation" as const;
 import { formatProviderError, normalizeProviderError } from "../utils/error-body.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
+import { type AzureEndpointOptions, resolveAzureBaseUrl, resolveDeploymentName } from "./azure-openai-config.ts";
 import { observeEffectiveDispatch, summarizeCacheMarkerMetadata } from "../utils/effective-dispatch.ts";
 import { shortHash } from "../utils/hash.ts";
 import { headersToRecord } from "../utils/headers.ts";
@@ -152,7 +152,7 @@ function isEncryptedReasoningDetail(detail: unknown): detail is OpenAIEncryptedR
 	);
 }
 
-export interface OpenAICompletionsOptions extends StreamOptions {
+export interface OpenAICompletionsOptions extends AzureEndpointOptions {
 	toolChoice?: OpenAI.Chat.Completions.ChatCompletionToolChoiceOption;
 	reasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 	/** Token budgets per thinking level. Only used when `compat.supportsThinkingTokenBudget` is set. */
@@ -249,7 +249,8 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 				resolveCacheRetention(options?.cacheRetention, options?.env),
 			);
 			const cacheSessionId = cacheRetention === "none" ? undefined : options?.sessionId;
-			const client = createClient(model, context, apiKey, options?.headers, options?.fetch, cacheSessionId, compat);
+			const baseUrl = model.provider === "azure-openai-responses" ? resolveAzureBaseUrl(model, options) : model.baseUrl;
+			const client = createClient(model, context, apiKey, options?.headers, options?.fetch, cacheSessionId, compat, baseUrl);
 			let params = buildParams(model, context, options, compat, cacheRetention, grammarToolInputProperties);
 			const nextParams = await options?.onPayload?.(params, model);
 			if (nextParams !== undefined) {
@@ -670,6 +671,7 @@ function createClient(
 	fetch?: typeof globalThis.fetch,
 	sessionId?: string,
 	compat: ResolvedOpenAICompletionsCompat = getCompat(model),
+	baseUrl = model.baseUrl,
 ) {
 	const headers: ProviderHeaders = { "User-Agent": getPiUserAgent(), ...model.headers };
 	if (model.provider === "github-copilot") {
@@ -700,7 +702,7 @@ function createClient(
 
 	return new OpenAI({
 		apiKey,
-		baseURL: model.baseUrl,
+		baseURL: baseUrl,
 		dangerouslyAllowBrowser: true,
 		fetch,
 		defaultHeaders: headers,
@@ -872,7 +874,7 @@ function buildParams(
 	const cacheControl = getCompatCacheControl(compat, cacheRetention);
 
 	const params: OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming = {
-		model: model.id,
+		model: model.provider === "azure-openai-responses" ? resolveDeploymentName(model, options) : model.id,
 		messages,
 		stream: true,
 		prompt_cache_key:

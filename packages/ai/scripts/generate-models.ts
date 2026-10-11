@@ -12,6 +12,7 @@ import {
 } from "./catalog-pricing.ts";
 import { getEffortThinkingLevelMap, type ModelsDevReasoningOption } from "./models-dev-reasoning-options.ts";
 import { ensureHaiku55CatalogModel } from "./haiku-55-catalog.ts";
+import { addAzureFoundryModels } from "./azure-foundry-catalog.ts";
 import { HAIKU_55_THINKING_LEVEL_MAP, isHaiku55Model, profileHaiku55Model } from "../src/providers/haiku-55-profile.ts";
 import {
 	CLOUDFLARE_AI_GATEWAY_ANTHROPIC_BASE_URL,
@@ -2622,6 +2623,8 @@ async function generateModels() {
 		applyOpenAIToolSearchMetadata(model);
 		applyOpenAIExplicitPromptCacheMetadata(model);
 	}
+
+	addAzureFoundryModels(allModels);
 
 	// Group by provider and deduplicate by model ID
 	const providers: Record<string, Record<string, Model<any>>> = {};
