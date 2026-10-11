@@ -420,6 +420,8 @@ export interface AgentSessionConfig {
 	allowedToolNames?: string[];
 	/** Optional denylist of tool names. When provided, these tool names are not exposed. */
 	excludedToolNames?: string[];
+	/** Immutable MCP lifecycle and tagged-tool suppression for this session. */
+	noMcp?: boolean;
 	/**
 	 * Override base tools (useful for custom runtimes).
 	 *
@@ -815,6 +817,7 @@ export class AgentSession {
 	private _initialActiveToolNames?: string[];
 	private _allowedToolNames?: Set<string>;
 	private _excludedToolNames?: Set<string>;
+	private readonly _mcpEnabled: boolean;
 	private _baseToolsOverride?: Record<string, AgentTool>;
 	private _sessionStartEvent: SessionStartEvent;
 	private _extensionUIContext?: ExtensionUIContext;
@@ -1001,8 +1004,9 @@ export class AgentSession {
 		this._initialActiveToolNames = config.initialActiveToolNames;
 		this._allowedToolNames = config.allowedToolNames ? new Set(config.allowedToolNames) : undefined;
 		this._excludedToolNames = config.excludedToolNames ? new Set(config.excludedToolNames) : undefined;
+		this._mcpEnabled = config.noMcp !== true;
 		this._baseToolsOverride = config.baseToolsOverride;
-		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
+		this._sessionStartEvent = { ...(config.sessionStartEvent ?? { type: "session_start", reason: "startup" }), mcpEnabled: this._mcpEnabled };
 		hydratePowerShellToolState(this.settingsManager, this._powerShellToolState);
 		this._extensionObserverDelivery = new EventDeliveryDispatcher({ defaultMinIntervalMs: 0 });
 		this._unsubscribeExtensionObserver = this._extensionObserverDelivery.subscribe(
@@ -4579,10 +4583,12 @@ export class AgentSession {
 		const allCustomTools: RegisteredTool[] = [];
 		for (const tool of registeredTools) {
 			if (tool.definition.name === CODEMODE_NAME) throw new Error("codemode is a reserved built-in orchestration tool");
+			if (!this._mcpEnabled && tool.definition.requiresMcp) continue;
 			if (isAllowedTool(tool.definition.name)) allCustomTools.push(tool);
 		}
 		for (const definition of this._customTools) {
 			if (definition.name === CODEMODE_NAME) throw new Error("codemode is a reserved built-in orchestration tool");
+			if (!this._mcpEnabled && definition.requiresMcp) continue;
 			if (!isAllowedTool(definition.name)) continue;
 			allCustomTools.push({
 				definition,
@@ -4824,7 +4830,7 @@ export class AgentSession {
 			this._extensionErrorListener;
 		if (hasBindings) {
 			await options?.beforeSessionStart?.();
-			await this._extensionRunner.emit({ type: "session_start", reason: "reload" });
+			await this._extensionRunner.emit({ type: "session_start", reason: "reload", mcpEnabled: this._mcpEnabled });
 			await this.extendResourcesFromExtensions("reload");
 		}
 	}

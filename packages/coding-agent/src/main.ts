@@ -560,6 +560,7 @@ function buildSessionOptions(
 	if (parsed.excludeTools) {
 		options.excludeTools = [...parsed.excludeTools];
 	}
+	options.noMcp = parsed.noMcp;
 
 	return { options, cliThinkingFromModel, diagnostics };
 }
@@ -859,6 +860,7 @@ export async function main(args: string[], options?: MainOptions) {
 			tools: sessionOptions.tools,
 			excludeTools: sessionOptions.excludeTools,
 			noTools: sessionOptions.noTools,
+			noMcp: sessionOptions.noMcp,
 			customTools: sessionOptions.customTools,
 			toolResultPresentation: settingsManager.getToolResultPresentationOptions(),
 		});

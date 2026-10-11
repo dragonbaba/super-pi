@@ -32,6 +32,14 @@ test("startup option prescan ignores options after --", () => {
 	assert.equal(hasOption(["hi"], "--offline"), false);
 });
 
+test("--no-mcp is a session option and respects the option terminator", () => {
+	const parsed = parseArgs(["--no-mcp", "--tools", "read,mcp_search_tools"]);
+	assert.equal(parsed.noMcp, true);
+	assert.deepEqual(parsed.diagnostics, []);
+	assert.equal(parsed.unknownFlags.size, 0);
+	assert.equal(parseArgs(["--", "--no-mcp"]).noMcp, undefined);
+});
+
 test("session model selection requires --model for an explicit provider", () => {
 	const providerOnly = parseArgs(["--provider", "fixture", "hello"]);
 	assert.match(validateModelSelectionArgs(providerOnly) ?? "", /--provider requires --model/);

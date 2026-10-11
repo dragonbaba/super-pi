@@ -94,6 +94,8 @@ export interface CreateAgentSessionOptions {
 	 *   but keep extension/custom tools enabled
 	 */
 	noTools?: "all" | "builtin";
+	/** Disable MCP lifecycle and tagged MCP tools for this session, including reload. */
+	noMcp?: boolean;
 	/**
 	 * Optional allowlist of tool names.
 	 *
@@ -601,6 +603,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			};
 		},
 		initialActiveToolNames,
+		noMcp: options.noMcp,
 		allowedToolNames,
 		excludedToolNames,
 		extensionRunnerRef,

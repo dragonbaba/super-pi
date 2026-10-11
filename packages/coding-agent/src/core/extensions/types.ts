@@ -473,6 +473,8 @@ export interface ToolRenderContext<TState = any, TArgs = any> {
  * Tool definition for registerTool().
  */
 export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = unknown, TState = any> {
+	/** MCP bridge/discovery tool; omitted from the host registry when MCP is disabled. */
+	requiresMcp?: boolean;
 	/** Tool name (used in LLM tool calls) */
 	name: string;
 	/** Human-readable label for UI */
@@ -603,6 +605,8 @@ export interface ResourcesDiscoverResult {
 /** Fired when a session is started, loaded, or reloaded */
 export interface SessionStartEvent {
 	type: "session_start";
+	/** Host session policy. False disables MCP startup, discovery and activation. */
+	readonly mcpEnabled?: boolean;
 	/** Why this session start happened. */
 	reason: "startup" | "reload" | "new" | "resume" | "fork";
 	/** Previously active session file. Present for "new", "resume", and "fork". */
