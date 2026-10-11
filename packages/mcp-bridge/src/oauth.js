@@ -232,7 +232,9 @@ export class McpOAuth {
     this.config = config;
     this.backend = backend;
     this.fetchImpl = fetchImpl;
-    this.key = createHash("sha256").update(JSON.stringify([config.id, config.url, config.source, config.oauth])).digest("hex");
+    const identity = [config.id, config.url, config.source, config.oauth];
+    if (config.projectScope !== undefined) identity.push(config.projectScope);
+    this.key = createHash("sha256").update(JSON.stringify(identity)).digest("hex");
     this.cached = undefined;
     this.loaded = false;
     this.closed = false;

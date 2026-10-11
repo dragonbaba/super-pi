@@ -234,7 +234,48 @@ HTTP/SSE transports, including a separate process writing during authorization.
 
 ## Project configuration
 
-A trusted project may define `.sp/config/mcp.json` only when the global file sets `"allowProjectConfig": true`. Project server IDs may not override global IDs. Keep this disabled unless repositories containing MCP configuration are fully trusted: a stdio MCP server is executable code with the user's permissions.
+A trusted project may define `.sp/config/mcp.json` only when the global file sets
+`"allowProjectConfig": true`. Both gates are checked before reading the project
+file. Keep this disabled unless repositories containing MCP configuration are
+fully trusted: a stdio MCP server is executable code with the user's permissions.
+
+Project definitions may add servers or override individual fields of a global
+server with the same ID. For example, a project can change only the timeout of a
+global `docs` server:
+
+```json
+{
+  "version": 1,
+  "servers": {
+    "docs": { "toolTimeoutMs": 60000 }
+  }
+}
+```
+
+Absent fields inherit the global value. Arrays and objects replace the entire
+field: `headers: {}` clears configured headers, `args: []` clears arguments, and
+`oauth: false` disables OAuth. `env: {}` clears explicit environment values;
+`envFrom: []` clears additional inherited names. The basic OS environment
+allowlist remains. Nested OAuth settings are not merged, and `null` is not a
+deletion syntax for overrides. Use `enabled: false` to disable a server. New IDs
+must provide a complete definition. The resulting configuration retains all
+existing path, transport, OAuth and capacity validation, including 16 total
+servers. Neither configuration file is rewritten.
+
+If an override changes `transport`, `url`, `command`, `args` or `cwd`, it must
+explicitly provide any needed `headers`, `oauth`, `env` and `envFrom`; these fields
+are no longer inherited from the global target. Changing `transport` or `command`
+also drops inherited arguments. Targets are compared as configured, before
+expansion, so differently spelled equivalent paths/URLs can require explicit
+settings too.
+
+Each project definition, including an override, has its own project identity.
+OAuth credentials and schema/activation identities include the canonical project
+directory; global credentials and other projects' credentials are not reused.
+Existing global OAuth keys stay compatible. Legacy unscoped project credentials
+remain on disk but require a new explicit `/mcp-login`; they are not migrated or
+automatically used. Global tool activation history cannot authorize a project
+override. Search for its tools again to activate the project definition.
 
 ## Safety boundaries
 
