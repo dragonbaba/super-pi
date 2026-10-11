@@ -9,6 +9,7 @@ test("streaming ANSI delivery and sanitizer allocate no callbacks, containers, p
     ["packages/coding-agent/src/utils/ansi.ts", ["write", "reset"]],
     ["packages/coding-agent/src/utils/shell.ts", ["sanitizeBinaryOutput"]],
     ["packages/coding-agent/src/core/bash-executor.ts", ["onData", "appendText"]],
+    ["packages/coding-agent/src/core/tools/bash.ts", ["onStdoutData", "onStderrData"]],
   ] as const) {
     const source = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
     function audit(node: ts.Node): void {
@@ -36,5 +37,14 @@ test("streaming ANSI delivery and sanitizer allocate no callbacks, containers, p
       assert.equal(slots.length, 1); assert.equal(slots[0].name.getText(source), "state");
     }
   }
-  assert.deepEqual([...seen].sort(), ["appendText", "onData", "reset", "sanitizeBinaryOutput", "write"]);
+  assert.deepEqual([...seen].sort(), ["appendText", "onData", "onStderrData", "onStdoutData", "reset", "sanitizeBinaryOutput", "write"]);
+});
+
+test("local stdout/stderr callbacks have matching listener ownership", () => {
+  const source = readFileSync("packages/coding-agent/src/core/tools/bash.ts", "utf8");
+  for (const [stream, callback] of [["stdout", "onStdoutData"], ["stderr", "onStderrData"]]) {
+    assert.ok(source.includes(`child.${stream}?.on("data", ${callback})`));
+    assert.ok(source.includes(`child.${stream}?.removeListener("data", ${callback})`));
+    assert.ok(source.includes(`const ${callback} = (data: Buffer) => { onData(data, "${stream}"); };`));
+  }
 });

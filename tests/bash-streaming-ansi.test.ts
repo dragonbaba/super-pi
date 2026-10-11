@@ -128,7 +128,11 @@ for (const outcome of ["success", "cancel", "error"] as const) test(`split ANSI 
   let late: ((data: Buffer) => void) | undefined, progress = "";
   try {
     const pending = executeBashWithOperations("fixture", process.cwd(), { async exec(_command, _cwd, { onData }) {
-      late = onData; for (const chunk of chunks) onData(chunk);
+      late = onData;
+      for (let index = 0; index < chunks.length; index++) {
+        onData(chunks[index], "stdout");
+        if (index === 1) onData(Buffer.from("ERROR\n"), "stderr");
+      }
       if (outcome === "cancel") { controller.abort(); throw new Error("aborted"); }
       if (outcome === "error") throw new Error("producer failed");
       return { exitCode: 0 };
@@ -139,11 +143,11 @@ for (const outcome of ["success", "cancel", "error"] as const) test(`split ANSI 
       assert.equal(result.cancelled, outcome === "cancel"); assert.equal(result.truncated, true);
       assert.equal(result.fullOutputPath, streams[0].path);
       await finished(streams[0], { cleanup: true });
-      assert.equal(fs.readFileSync(result.fullOutputPath!, "utf8"), text + "tail");
+      assert.equal(fs.readFileSync(result.fullOutputPath!, "utf8"), text + "ERROR\ntail");
       assert.ok(result.output.endsWith("tail"));
     }
-    assert.equal(progress, text + "tail");
-    late!(Buffer.from("late")); assert.equal(progress, text + "tail");
+    assert.equal(progress, text + "ERROR\ntail");
+    late!(Buffer.from("late")); assert.equal(progress, text + "ERROR\ntail");
     assert.equal(streams.length, 1); assert.equal(streams[0].closed, true);
     if (outcome === "error") assert.equal(fs.existsSync(streams[0].path), false);
   } finally {
@@ -176,11 +180,14 @@ for (const interactive of [false, true]) test(`AgentSession delivers clean outpu
   try {
     const result = await AgentSession.prototype.executeBash.call(owner, "fixture", component ? text => component.appendOutput(text) : undefined,
       { id: "rpc-fixture", operations: { async exec(_command, _cwd, { onData }) {
-        for (const byte of Buffer.from("\x1b[31m中文😀\x1b[0m\x1b]0;title\x07\nend")) onData(Buffer.from([byte]));
+        onData(Buffer.from("\x1b]0;hidden"), "stdout");
+        onData(Buffer.from("diagnostic\n"), "stderr");
+        onData(Buffer.from("\x07"), "stdout");
+        for (const byte of Buffer.from("\x1b[31m中文😀\x1b[0m\x1b]0;title\x07\nend")) onData(Buffer.from([byte]), "stdout");
         return { exitCode: 0 };
       } } });
     component?.setComplete(result.exitCode, result.cancelled);
-    assert.equal(result.output, "中文😀\nend"); assert.equal(controllers.size, 0); assert.deepEqual(history, [result]);
+    assert.equal(result.output, "diagnostic\n中文😀\nend"); assert.equal(controllers.size, 0); assert.deepEqual(history, [result]);
     const updates = events.map(event => JSON.parse(event));
     assert.equal(updates.map(event => event.delta).join(""), result.output);
     assert.ok(updates.every(event => event.type === "bash_execution_update" && event.id === "rpc-fixture" && event.delta));

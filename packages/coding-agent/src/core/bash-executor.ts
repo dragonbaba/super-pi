@@ -79,13 +79,16 @@ export async function executeBashWithOperations(
 		}
 	};
 
-	let decoder: TextDecoder | undefined = new TextDecoder();
-	let ansi: AnsiStreamFilter | undefined = new AnsiStreamFilter();
+	// Independent pipes must not complete each other's ANSI or UTF-8 prefixes.
+	// Unlabelled legacy custom output uses the stdout slot as one logical stream.
+	let stdoutDecoder: TextDecoder | undefined = new TextDecoder();
+	let stderrDecoder: TextDecoder | undefined = new TextDecoder();
+	let stdoutAnsi: AnsiStreamFilter | undefined = new AnsiStreamFilter();
+	let stderrAnsi: AnsiStreamFilter | undefined = new AnsiStreamFilter();
 	let onChunk = options?.onChunk;
-	const appendText = (decoded: string) => {
-		if (!ansi) return;
-		// Sanitize: strip ANSI, replace binary garbage, normalize newlines
-		const text = sanitizeBinaryOutput(ansi.write(decoded)).replace(
+	const appendText = (filtered: string) => {
+		// ANSI has already been filtered using the source's own state.
+		const text = sanitizeBinaryOutput(filtered).replace(
 			CARRIAGE_RETURN_PATTERN,
 			"",
 		);
@@ -119,11 +122,13 @@ export async function executeBashWithOperations(
 		// Stream to callback
 		onChunk?.(text);
 	};
-	const onData = (data: Buffer) => {
+	const onData = (data: Buffer, source?: "stdout" | "stderr") => {
 		// Custom operations may retain this callback beyond command completion.
-		if (!decoder) return;
+		const decoder = source === "stderr" ? stderrDecoder : stdoutDecoder;
+		const ansi = source === "stderr" ? stderrAnsi : stdoutAnsi;
+		if (!decoder || !ansi) return;
 		totalBytes += data.length;
-		appendText(decoder.decode(data, STREAM_DECODE_OPTIONS));
+		appendText(ansi.write(decoder.decode(data, STREAM_DECODE_OPTIONS)));
 	};
 
 	try {
@@ -152,9 +157,12 @@ export async function executeBashWithOperations(
 		}
 		// Flush UTF-8 once, before discarding an unfinished control. A callback
 		// failure here must still reject, including after accepted cancellation.
-		const finalText = decoder.decode();
-		decoder = undefined;
-		appendText(finalText);
+		const finalStdout = stdoutDecoder.decode();
+		const finalStderr = stderrDecoder.decode();
+		stdoutDecoder = undefined;
+		stderrDecoder = undefined;
+		appendText(stdoutAnsi.write(finalStdout));
+		appendText(stderrAnsi.write(finalStderr));
 		cancelled ||= options?.signal?.aborted ?? false;
 
 		const fullOutput = outputChunks.join("");
@@ -174,7 +182,8 @@ export async function executeBashWithOperations(
 			fullOutputPath: tempFilePath,
 		};
 	} catch (err) {
-		decoder = undefined;
+		stdoutDecoder = undefined;
+		stderrDecoder = undefined;
 		if (tempFileStream) {
 			tempFileStream.end();
 			// Rejection has no BashResult through which callers could find this log.
@@ -194,9 +203,12 @@ export async function executeBashWithOperations(
 
 		throw err;
 	} finally {
-		decoder = undefined;
-		ansi?.reset();
-		ansi = undefined;
+		stdoutDecoder = undefined;
+		stderrDecoder = undefined;
+		stdoutAnsi?.reset();
+		stderrAnsi?.reset();
+		stdoutAnsi = undefined;
+		stderrAnsi = undefined;
 		onChunk = undefined;
 		outputChunks.length = 0;
 		tempFileStream = undefined;

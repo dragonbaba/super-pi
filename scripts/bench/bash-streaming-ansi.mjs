@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import childProcess from 'node:child_process';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
+import { syncBuiltinESMExports } from 'node:module';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { Session } from 'node:inspector/promises';
@@ -27,14 +31,20 @@ const sources = {
   baseline: execFileSync('git', ['show', `${baseline}:${sourcePath}`], { cwd: root, encoding: 'utf8' }),
   candidate: readFileSync(sourceUrl, 'utf8'),
 };
+const localPath = 'packages/coding-agent/src/core/tools/bash.ts';
+const localSources = {
+  baseline: execFileSync('git', ['show', `${baseline}:${localPath}`], { cwd: root, encoding: 'utf8' }),
+  candidate: readFileSync(join(root, localPath), 'utf8'),
+};
 const moduleCleanup = [];
-async function load(source, label) {
+async function load(source, label, path = sourcePath, exportName = 'executeBashWithOperations') {
+  const sourceUrl = pathToFileURL(join(root, path));
   const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText
     .replace(/from "([^"]+)"/g, (_match, specifier) => `from ${JSON.stringify(specifier.startsWith('.') ? new URL(specifier, sourceUrl).href : import.meta.resolve(specifier))}`);
   const directory = mkdtempSync(join(tmpdir(), 'pi-bash-ansi-bench-'));
   try {
     const path = join(directory, `${label}.mjs`); writeFileSync(path, compiled);
-    return (await import(pathToFileURL(path).href)).executeBashWithOperations;
+    return (await import(pathToFileURL(path).href))[exportName];
   } finally {
     assert.equal(dirname(resolve(directory)), resolve(tmpdir()));
     rmSync(directory, { recursive: true, force: true });
@@ -43,6 +53,11 @@ async function load(source, label) {
   }
 }
 const implementations = { baseline: await load(sources.baseline, 'baseline'), candidate: await load(sources.candidate, 'candidate') };
+const localOperations = {};
+for (const label of ['baseline', 'candidate']) {
+  const create = await load(localSources[label], label, localPath, 'createLocalShellOperations');
+  localOperations[label] = create('benchmark pipes', () => ({ shell: process.execPath, args: [] }));
+}
 initTheme('dark');
 const ui = { requestRender() {} };
 const cases = {
@@ -50,19 +65,46 @@ const cases = {
   colored: [Buffer.from('\x1b[31mcolored 中文😀 output\x1b[0m\n')],
   split: [Buffer.from('\x1b[3'), Buffer.from('1m中文😀\x1b]title'), Buffer.from('\x1b'), Buffer.from('\\\n')],
   interactive: [Buffer.from('\x1b[31mcolored 中文😀 output\x1b[0m\n')],
+  interleaved: [Buffer.from('\x1b]title'), Buffer.from('diagnostic\n'), Buffer.from('\x07out\n'), Buffer.from('err\n')],
 };
+cases.localPipes = cases.interleaved;
+const streamSources = ['stdout', 'stderr', 'stdout', 'stderr'];
 const chunksPerCommand = 100;
-async function workload(execute, scenario, commands) {
+const nativeSpawn = childProcess.spawn;
+let lastChild;
+// Real local backend/listeners and Node streams; only process creation is a
+// deterministic fixture. No mock call recorder retains every child/write.
+function spawnFixture() {
+  const stdout = new PassThrough(), stderr = new PassThrough();
+  const child = Object.assign(new EventEmitter(), { stdout, stderr, exitCode: null, signalCode: null });
+  lastChild = child;
+  queueMicrotask(() => {
+    child.emit('spawn');
+    for (let index = 0; index < chunksPerCommand; index++) {
+      const source = streamSources[index % streamSources.length];
+      child[source].write(cases.localPipes[index % cases.localPipes.length]);
+    }
+    stdout.end(); stderr.end();
+    setImmediate(() => { child.exitCode = 0; child.emit('exit', 0, null); child.emit('close', 0, null); });
+  });
+  return child;
+}
+async function workload(execute, scenario, commands, local) {
   const chunks = cases[scenario];
   let deliveries = 0, visibleUnits = 0;
   for (let command = 0; command < commands; command++) {
     const component = scenario === 'interactive' ? new BashExecutionComponent('fixture', ui) : undefined;
     try {
-      const result = await execute('fixture', root, { async exec(_command, _cwd, { onData }) {
-        for (let index = 0; index < chunksPerCommand; index++) onData(chunks[index % chunks.length]);
+      const result = await execute('fixture', root, scenario === 'localPipes' ? local : { async exec(_command, _cwd, { onData }) {
+        for (let index = 0; index < chunksPerCommand; index++) onData(chunks[index % chunks.length], scenario === 'interleaved' ? streamSources[index % streamSources.length] : undefined);
         return { exitCode: 0 };
       } }, { onChunk(text) { deliveries++; visibleUnits += text.length; component?.appendOutput(text); component?.render(100); } });
       assert.equal(result.fullOutputPath, undefined); assert.equal(result.cancelled, false);
+      if (scenario === 'localPipes') {
+        assert.equal(lastChild.stdout.listenerCount('data'), 0); assert.equal(lastChild.stderr.listenerCount('data'), 0);
+        for (const event of ['spawn', 'exit', 'close', 'error']) assert.equal(lastChild.listenerCount(event), 0);
+        lastChild = undefined;
+      }
       component?.setComplete(result.exitCode, result.cancelled);
     } finally { component?.setComplete(undefined, true); component?.[RELEASE_COMPONENT_RENDER_CACHE](); }
   }
@@ -99,7 +141,8 @@ async function lifecycle(execute, label) {
     weak.push({ kind: 'observer', ref: new WeakRef(observer) }, { kind: 'callback', ref: new WeakRef(onChunk) });
     try {
       const result = await execute('fixture', root, { async exec(_command, _cwd, { onData }) {
-        late.push(onData); onData(Buffer.from('ok\x1b]unfinished'));
+        late.push(onData); onData(Buffer.from('ok\x1b]unfinished'), 'stdout');
+        onData(Buffer.from('diagnostic\x1b[3'), 'stderr');
         if (outcome === 'cancel') { controller.abort(); throw new Error('aborted'); }
         if (outcome === 'error') throw new Error('producer failed');
         return { exitCode: 0 };
@@ -112,7 +155,10 @@ async function lifecycle(execute, label) {
   await collect();
   const retained = {};
   for (const item of weak) if (item.ref.deref()) retained[item.kind] = (retained[item.kind] ?? 0) + 1;
-  if (label === 'candidate') { assert.deepEqual(retained, {}); for (const callback of late) callback(Buffer.from('late')); }
+  if (label === 'candidate') {
+    assert.deepEqual(retained, {});
+    for (const callback of late) { callback(Buffer.from('late'), 'stdout'); callback(Buffer.from('late'), 'stderr'); }
+  }
   late.length = 0; await collect();
   const afterProducerRelease = weak.filter(item => item.ref.deref() !== undefined).length;
   assert.equal(afterProducerRelease, 0);
@@ -121,7 +167,7 @@ async function lifecycle(execute, label) {
 const lifecycleResults = {};
 for (const label of ['baseline', 'candidate']) lifecycleResults[label] = await lifecycle(implementations[label], label);
 
-function countHotSites(source) {
+function countHotSites(source, targets = ['onData', 'appendText']) {
   const parsed = ts.createSourceFile('executor.ts', source, ts.ScriptTarget.Latest, true);
   const counts = { callbacks: 0, objects: 0, arrays: 0, constructors: 0 };
   function count(node) {
@@ -132,14 +178,18 @@ function countHotSites(source) {
     ts.forEachChild(node, count);
   }
   function find(node) {
-    if (ts.isVariableDeclaration(node) && ['onData', 'appendText'].includes(node.name.getText(parsed)) && node.initializer && ts.isArrowFunction(node.initializer)) count(node.initializer.body);
+    if (ts.isVariableDeclaration(node) && targets.includes(node.name.getText(parsed)) && node.initializer && ts.isArrowFunction(node.initializer)) count(node.initializer.body);
     ts.forEachChild(node, find);
   }
   find(parsed); return counts;
 }
 const structural = { baseline: countHotSites(sources.baseline), candidate: countHotSites(sources.candidate) };
 assert.deepEqual(structural.candidate, { callbacks: 0, objects: 0, arrays: 0, constructors: 0 });
-for (const execute of Object.values(implementations)) for (const scenario of Object.keys(cases)) await workload(execute, scenario, 5);
+structural.localForwarding = countHotSites(localSources.candidate, ['onStdoutData', 'onStderrData']);
+assert.deepEqual(structural.localForwarding, { callbacks: 0, objects: 0, arrays: 0, constructors: 0 });
+childProcess.spawn = spawnFixture; syncBuiltinESMExports();
+try {
+for (const label of ['baseline', 'candidate']) for (const scenario of Object.keys(cases)) await workload(implementations[label], scenario, 5, localOperations[label]);
 const results = [];
 for (let run = 0; run < 3; run++) for (const scenario of Object.keys(cases)) {
   for (const label of run % 2 ? ['candidate', 'baseline'] : ['baseline', 'candidate']) {
@@ -147,7 +197,7 @@ for (let run = 0; run < 3; run++) for (const scenario of Object.keys(cases)) {
     await collect();
     const beforeHeap = process.memoryUsage().heapUsed, durations = [];
     for (let index = 0; index < 20; index++) {
-      const start = performance.now(); await workload(implementations[label], scenario, 1);
+      const start = performance.now(); await workload(implementations[label], scenario, 1, localOperations[label]);
       durations.push((performance.now() - start) / chunksPerCommand);
     }
     durations.sort((a, b) => a - b);
@@ -155,7 +205,7 @@ for (let run = 0; run < 3; run++) for (const scenario of Object.keys(cases)) {
     let profile, counters;
     try {
       await profiler.post('HeapProfiler.startSampling', { samplingInterval: 1024, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true });
-      counters = await workload(implementations[label], scenario, commands);
+      counters = await workload(implementations[label], scenario, commands, localOperations[label]);
       profile = (await profiler.post('HeapProfiler.stopSampling')).profile;
     } finally { profiler.disconnect(); }
     const peakObservedHeap = process.memoryUsage().heapUsed;
@@ -168,8 +218,9 @@ for (let run = 0; run < 3; run++) for (const scenario of Object.keys(cases)) {
   }
 }
 const hash = source => createHash('sha256').update(source).digest('hex');
-const report = { baseline, sourceHashes: { baseline: hash(sources.baseline), candidate: hash(sources.candidate), ansi: hash(readFileSync(new URL('../../packages/coding-agent/src/utils/ansi.ts', import.meta.url))) },
+const report = { baseline, sourceHashes: { baseline: hash(sources.baseline), candidate: hash(sources.candidate), localBaseline: hash(localSources.baseline), localCandidate: hash(localSources.candidate), ansi: hash(readFileSync(new URL('../../packages/coding-agent/src/utils/ansi.ts', import.meta.url))) },
   moduleCleanup, node: process.version, platform: process.platform, cpu: cpus()[0]?.model, samplingInterval: 1024, structural, lifecycle: lifecycleResults,
-  notes: ['JS allocations including collected objects; native allocations are not measured.', 'Heap readings include profiler/harness and are observations, not a continuous peak.', 'Split baseline is incorrect; compare bytes per input chunk and deliveries, not equal-output speed.', 'Interactive fixture uses real BashExecutionComponent rendering but no physical terminal.'], results };
+  notes: ['JS allocations including collected objects; native allocations are not measured.', 'Heap readings include profiler/harness and are observations, not a continuous peak.', 'Incorrect baseline output is not equal-output speed evidence.', 'Interactive fixture uses real BashExecutionComponent rendering but no physical terminal.', 'localPipes uses each revision of createLocalShellOperations, real Node pipes and executor, but simulated process spawn.'], results };
 if (output) writeFileSync(join(output, 'summary.json'), JSON.stringify(report, null, 2));
 console.log(JSON.stringify(report, null, 2));
+} finally { childProcess.spawn = nativeSpawn; syncBuiltinESMExports(); lastChild = undefined; }
