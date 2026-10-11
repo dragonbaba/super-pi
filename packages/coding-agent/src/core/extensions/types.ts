@@ -543,6 +543,13 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 
 type AnyToolDefinition = ToolDefinition<any, any, any>;
 
+/** Presentation only; registering renderers does not register or activate a tool. */
+export type ToolRenderers = Pick<AnyToolDefinition,
+	"renderShell" | "renderCall" | "renderResult" | "renderCallStability" | "collapseCallOnResult">;
+
+/** Synchronous resolution in extension load order. Call next only during this invocation. */
+export type ToolRendererResolver = (toolName: string, next: () => ToolRenderers | undefined) => ToolRenderers | undefined;
+
 /**
  * Preserve parameter inference for standalone tool definitions.
  *
@@ -1462,6 +1469,9 @@ export interface ExtensionAPI {
 	/** Register a custom renderer for CustomEntry. Custom entries do not participate in LLM context. */
 	registerEntryRenderer<T = unknown>(customType: string, renderer: EntryRenderer<T>): void;
 
+	/** Choose presentation for any tool name, including unregistered historical tools. */
+	registerToolRenderer(resolver: ToolRendererResolver): void;
+
 	// =========================================================================
 	// Actions
 	// =========================================================================
@@ -1925,6 +1935,7 @@ export interface Extension {
 	observers: Map<string, RegisteredExtensionObserver[]>;
 	tools: Map<string, RegisteredTool>;
 	messageRenderers: Map<string, MessageRenderer>;
+	toolRenderers?: ToolRendererResolver[];
 	markdownTransformer?: MarkdownTransformer;
 	entryRenderers?: Map<string, EntryRenderer>;
 	commands: Map<string, RegisteredCommand>;

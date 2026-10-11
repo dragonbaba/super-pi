@@ -209,6 +209,8 @@ export type {
 	ToolExecutionUpdateEvent,
 	ToolInfo,
 	ToolRenderResultOptions,
+	ToolRenderers,
+	ToolRendererResolver,
 	ToolResultEvent,
 	CodemodeReadEvent,
 	TurnEndEvent,

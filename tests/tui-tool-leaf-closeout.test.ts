@@ -538,6 +538,7 @@ test("latest delivery can create and finalize a tool when its first observed eve
 		runtimeHost: {
 			session: {
 				getToolDefinition: () => undefined,
+				getToolRenderers: () => undefined,
 				settingsManager: { getShowImages: () => true, getImageWidthCells: () => undefined },
 				sessionManager: { getCwd: () => process.cwd() },
 			},

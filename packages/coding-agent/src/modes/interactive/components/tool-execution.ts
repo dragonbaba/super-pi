@@ -11,7 +11,7 @@ import {
 	type TUI,
 } from "@super-pi/tui";
 import type { StreamedToolArgumentOwnership } from "@super-pi/ai";
-import type { ToolDefinition, ToolRenderContext } from "../../../core/extensions/types.ts";
+import type { ToolDefinition, ToolRenderContext, ToolRenderers } from "../../../core/extensions/types.ts";
 import type { ToolResultPresentation } from "../../../core/tool-result-presentation.ts";
 import { createAllToolDefinitions, type ToolName } from "../../../core/tools/index.ts";
 import { getTextOutput as getRenderedTextOutput } from "../../../core/tools/render-utils.ts";
@@ -716,6 +716,8 @@ function getBuiltInToolDefinition(cwd: string, toolName: ToolName): ToolDefiniti
 export interface ToolExecutionOptions {
 	showImages?: boolean;
 	imageWidthCells?: number;
+	/** An independent resolver selected this row instead of its registered renderer. */
+	rendererOverride?: boolean;
 	/** Clears this component's retained sidecar after a late visual update. */
 	onVisualInvalidate?: (component: ToolExecutionComponent) => void;
 	/** Optional benchmark counters. The component only mutates primitive fields. */
@@ -778,7 +780,7 @@ export class ToolExecutionComponent extends Container {
 	private showImages: boolean;
 	private imageWidthCells: number;
 	private isPartial = true;
-	private toolDefinition?: ToolDefinition<any, any>;
+	private toolDefinition?: ToolRenderers;
 	private builtInToolDefinition?: ToolDefinition<any, any>;
 	private ui: TUI;
 	private cwd: string;
@@ -819,7 +821,7 @@ export class ToolExecutionComponent extends Container {
 		toolCallId: string,
 		args: any,
 		options: ToolExecutionOptions = {},
-		toolDefinition: ToolDefinition<any, any> | undefined,
+		toolDefinition: ToolRenderers | undefined,
 		ui: TUI,
 		cwd: string,
 	) {
@@ -849,7 +851,7 @@ export class ToolExecutionComponent extends Container {
 		this.contentText = new Text("", 1, 1, toolPendingBackground);
 		this.selfRenderContainer = new Container();
 
-		if (toolName === "codemode") {
+		if (toolName === "codemode" && !options.rendererOverride) {
 			this.codemodeTree = new CodemodeTreeComponent(this.renderContextRefreshResult);
 			this.codemodeDiscovery = new Text("", 0, 0);
 			this.contentBox.addChild(this.codemodeTree);
