@@ -3,7 +3,9 @@
 ## Design gate
 
 Baseline: `92cbab2d3480c6636d02157cf4d527d9cc75584b`. User selected F01.
-This independent change covers `--no-mcp`; selection expressions are F01.1.
+This change covers `--no-mcp`; selection expressions are F01.1 / PR #113.
+The PR is stacked on F01.1 to resolve shared SDK/CLI additions before delivery;
+its review diff contains only the MCP switch. Merge #113 before this PR.
 
 Hiding MCP tool names currently leaves session_start configuration loading,
 cache migration, connection/discovery and history activation running. A session
@@ -36,7 +38,8 @@ cached activation history and reload; invalid config/cache left unread and
 unchanged; existing enabled same-script Codemode discovery/call and persisted
 reopen; and a built offline CLI with a configured stdio server. The disabled
 SDK phase adds zero HTTP initialize/list/call requests after one enabled warmup;
-CLI starts zero fixture subprocesses and creates no MCP key/schema cache. Tagged
+CLI starts zero fixture subprocesses and creates no MCP key/schema cache, even
+with `read,+mcp*`; SDK `*` cannot override the lifecycle switch either. Tagged
 tools with ordinary names are denied even by explicit activation; an ordinary
 tool named `mcp__local__helper` remains available. A new enabled session restores
 the prior history without reconnecting the cached server. Config/cache/key bytes

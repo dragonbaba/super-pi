@@ -7,6 +7,7 @@ import chalk from "chalk";
 import { APP_NAME, CONFIG_DIR_NAME, ENV_AGENT_DIR, ENV_SESSION_DIR } from "../config.ts";
 import type { ExtensionFlag } from "../core/extensions/types.ts";
 import type { TuiMode } from "../core/settings-manager.ts";
+import { ToolSelection } from "../core/tool-selection.ts";
 
 export type Mode = "text" | "json" | "rpc";
 
@@ -252,6 +253,10 @@ export function parseArgs(args: string[]): Args {
 		}
 	}
 
+	if (result.tools !== undefined || result.excludeTools !== undefined) {
+		try { new ToolSelection({ tools: result.tools, excludeTools: result.excludeTools }, result.noTools); }
+		catch (error) { result.diagnostics.push({ type: "error", message: error instanceof Error ? error.message : "Invalid tool selection" }); }
+	}
 	return result;
 }
 
@@ -302,10 +307,10 @@ ${chalk.bold("Options:")}
   --no-tools, -nt                Disable all tools by default (built-in and extension)
   --no-mcp                      Disable MCP connections, discovery and tools for this session
   --no-builtin-tools, -nbt       Disable built-in tools by default but keep extension/custom tools enabled
-  --tools, -t <tools>            Comma-separated allowlist of tool names to enable
-                                 Applies to built-in, extension, and custom tools
-  --exclude-tools, -xt <tools>   Comma-separated denylist of tool names to disable
-                                 Applies to built-in, extension, and custom tools
+  --tools, -t <tools>            Comma-separated names/patterns (*, ?); + adds, - excludes
+                                 Bare names select an allowlist; only +/- modifies defaults
+  --exclude-tools, -xt <tools>   Name/pattern exclusions applied last to all tool sources
+                                 Quote patterns in your shell; codemode cannot be excluded
   --thinking <level>             Set thinking level: off, minimal, low, medium, high, xhigh, max
   --extension, -e <path>         Load an extension file (can be used multiple times)
   --no-extensions, -ne           Disable extension discovery (explicit -e paths still work)

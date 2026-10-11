@@ -133,7 +133,7 @@ test("noMcp blocks real session startup, cached history, reload and tagged activ
 		extensionFactories: [mcpBridgeExtension, (pi: ExtensionAPI) => { api = pi; }] });
 	await resources.reload();
 	const { session } = await createAgentSession({ cwd: f.root, agentDir: f.agentDir, resourceLoader: resources, settingsManager: settings,
-		sessionManager: enabled.manager, noMcp: true, tools: ["read", "mcp_search_tools", REMOTE, "alias", "late_alias", ordinary.name],
+		sessionManager: enabled.manager, noMcp: true, tools: ["read", "mcp_search_tools", REMOTE, "alias", "late_alias", ordinary.name], toolSelection: { tools: ["*"] },
 		customTools: [ordinary, { ...ordinary, name: "alias", requiresMcp: true }],
 		model: { id: "fixture", name: "fixture", api: "openai-responses", provider: "fixture", baseUrl: "http://unused", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32000, maxTokens: 4096 },
 		modelRuntime: { hasConfiguredAuth: () => true, checkAuth: async () => ({ type: "api_key" }), isUsingOAuth: () => false, getModel: () => undefined, getAuth: async () => undefined } as never });

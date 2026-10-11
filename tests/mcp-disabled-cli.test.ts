@@ -20,7 +20,7 @@ test("built CLI --no-mcp prevents stdio startup even with an explicit MCP allowl
 			"--extension", fileURLToPath(new URL("./fixtures/mcp-disabled-provider.mjs", import.meta.url)),
 			"--extension", fileURLToPath(new URL("../packages/mcp-bridge/src/index.js", import.meta.url)),
 			"--provider", "disabled-fixture", "--model", "fixture", "--print", "--mode", "text",
-			"--tools", "read,mcp_search_tools,mcp__local__helper", "list tools"], {
+			"--tools", "read,+mcp*", "list tools"], {
 			cwd: root, env: { ...process.env, HOME: root, USERPROFILE: root, XDG_CONFIG_HOME: root,
 				SP_CODING_AGENT_DIR: agent, SP_CODING_AGENT_SESSION_DIR: join(root, "sessions"), SP_OFFLINE: "1" },
 			encoding: "utf8", timeout: 15000, maxBuffer: 1024 * 1024,

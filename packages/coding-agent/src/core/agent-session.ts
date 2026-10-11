@@ -1,6 +1,7 @@
 import { type AttachmentMessage, type ImageSubmission, snapshotImageSubmission, verifyImmutableImage, isDecodedImage, verifySubmittedImage } from "./image-attachments.ts";
 import { createHash } from "node:crypto";
 import { CodemodeController } from "./codemode.ts";
+import type { ToolSelection } from "./tool-selection.ts";
 import { CODEMODE_NAME, CODEMODE_STORE_ENTRY, CODEMODE_CALL_ENTRY, CODEMODE_RESULT_ENTRY, DIRECT_CONTROL_NAMES } from "./codemode-constants.ts";
 import type { CodemodeReadEvent } from "./extensions/types.ts";
 /**
@@ -422,6 +423,8 @@ export interface AgentSessionConfig {
 	excludedToolNames?: string[];
 	/** Immutable MCP lifecycle and tagged-tool suppression for this session. */
 	noMcp?: boolean;
+	/** Internal session-owned expression policy, supplied by the SDK. */
+	toolSelection?: ToolSelection;
 	/**
 	 * Override base tools (useful for custom runtimes).
 	 *
@@ -818,6 +821,7 @@ export class AgentSession {
 	private _allowedToolNames?: Set<string>;
 	private _excludedToolNames?: Set<string>;
 	private readonly _mcpEnabled: boolean;
+	private _toolSelection: ToolSelection | undefined;
 	private _baseToolsOverride?: Record<string, AgentTool>;
 	private _sessionStartEvent: SessionStartEvent;
 	private _extensionUIContext?: ExtensionUIContext;
@@ -1005,6 +1009,7 @@ export class AgentSession {
 		this._allowedToolNames = config.allowedToolNames ? new Set(config.allowedToolNames) : undefined;
 		this._excludedToolNames = config.excludedToolNames ? new Set(config.excludedToolNames) : undefined;
 		this._mcpEnabled = config.noMcp !== true;
+		this._toolSelection = config.toolSelection;
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = { ...(config.sessionStartEvent ?? { type: "session_start", reason: "startup" }), mcpEnabled: this._mcpEnabled };
 		hydratePowerShellToolState(this.settingsManager, this._powerShellToolState);
@@ -1817,6 +1822,7 @@ export class AgentSession {
 	 * Call this when completely done with the session.
 	 */
 	dispose(): void {
+		this._toolSelection = undefined;
 		void this._codemode.close().catch(ignoreOrdinaryEventListenerRejection);
 		this._pendingCustomMessages.length = 0;
 		this._pendingCustomContextMessages.length = 0;
@@ -2410,6 +2416,7 @@ export class AgentSession {
 			process.platform === "win32" &&
 			this._toolRuntimeInitialized &&
 			!powerShellWasActive &&
+			this._toolRegistry.has("powershell") &&
 			toolNames.includes("powershell")
 		) {
 			persistPowerShellPending(this.settingsManager);
@@ -4576,8 +4583,9 @@ export class AgentSession {
 		const previousActiveToolNames = this.getActiveToolNames();
 		const allowedToolNames = this._allowedToolNames;
 		const excludedToolNames = this._excludedToolNames;
+		const selection = this._toolSelection;
 		const isAllowedTool = (name: string): boolean =>
-			(name === CODEMODE_NAME ? !allowedToolNames || allowedToolNames.size > 0 : !allowedToolNames || allowedToolNames.has(name)) && !excludedToolNames?.has(name);
+			(name === CODEMODE_NAME ? !allowedToolNames || allowedToolNames.size > 0 : !allowedToolNames || allowedToolNames.has(name)) && !excludedToolNames?.has(name) && (!selection || selection.allows(name));
 
 		const registeredTools = this._extensionRunner.getAllRegisteredTools();
 		const allCustomTools: RegisteredTool[] = [];
@@ -4678,8 +4686,15 @@ export class AgentSession {
 			if (isAllowedTool(name)) nextActiveToolNames.push(name);
 		}
 
+		if (selection) {
+			for (const toolName of this._toolRegistry.keys()) {
+				if (toolName === "powershell" && (process.platform !== "win32" || this.settingsManager.getPowerShellStatus()?.available === false)) continue;
+				if (selection.adds(toolName)) nextActiveToolNames.push(toolName);
+			}
+		}
 		if (allowedToolNames) {
 			for (const toolName of this._toolRegistry.keys()) {
+				if (selection && toolName === "powershell" && (process.platform !== "win32" || this.settingsManager.getPowerShellStatus()?.available === false)) continue;
 				if (allowedToolNames.has(toolName)) {
 					nextActiveToolNames.push(toolName);
 				}
