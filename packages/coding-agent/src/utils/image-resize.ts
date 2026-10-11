@@ -1,21 +1,13 @@
 import { Worker } from "node:worker_threads";
 import { type ImageResizeOptions, type ResizedImage, resizeImageInProcess } from "./image-resize-core.ts";
+import { isResizeImageWorkerResponse } from "./image-resize-protocol.ts";
 
 export type { ImageResizeOptions, ResizedImage } from "./image-resize-core.ts";
-
-interface ResizeImageWorkerResponse {
-	result?: ResizedImage | null;
-	error?: string;
-}
 
 function toTransferableBytes(input: Uint8Array): Uint8Array<ArrayBuffer> {
 	// Transfer detaches the buffer, so transfer a worker-owned copy and leave the
 	// caller's bytes intact.
 	return new Uint8Array(input);
-}
-
-function isResizeImageWorkerResponse(value: unknown): value is ResizeImageWorkerResponse {
-	return value !== null && typeof value === "object";
 }
 
 function createResizeWorker(workerSpecifier: string | URL): Worker {
@@ -44,16 +36,15 @@ async function resizeImageInWorker(
 				reject(error);
 			};
 
-			worker.once("message", (message: unknown) => {
-				if (!isResizeImageWorkerResponse(message)) {
-					fail(new Error("Invalid image resize worker response"));
-					return;
-				}
-				if (message.error) {
+			worker.on("message", (message: unknown) => {
+				// Node can send unrelated messages before our response. Keep listening
+				// until a validated result/error or worker failure ends this attempt.
+				if (settled || !isResizeImageWorkerResponse(message)) return;
+				if (message.error !== undefined) {
 					fail(new Error(message.error));
 					return;
 				}
-				settle(message.result ?? null);
+				settle(message.result);
 			});
 			worker.once("error", fail);
 			worker.once("exit", (code) => {
@@ -71,7 +62,13 @@ async function resizeImageInWorker(
 			);
 		});
 	} finally {
-		void worker.terminate().catch(() => undefined);
+		try {
+			await worker.terminate();
+		} finally {
+			// This operation exclusively owns the worker. Retain the error observer
+			// through termination, then release all response/settlement closures.
+			worker.removeAllListeners();
+		}
 	}
 }
 
