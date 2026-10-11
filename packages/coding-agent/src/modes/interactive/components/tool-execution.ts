@@ -697,7 +697,7 @@ export class ReadToolGroupComponent extends Container {
 							imageData,
 							imageMimeType,
 							{ fallbackColor: toolImageFallbackColor },
-							{ maxWidthCells: this.imageWidthCells },
+							{ maxWidthCells: this.imageWidthCells, paddingX: this.outputPad + (callCount > 1 ? 3 : 1) },
 						));
 					}
 				}
@@ -1257,6 +1257,7 @@ export class ToolExecutionComponent extends Container {
 		this.outputPad = outputPad;
 		this.contentBox.setPaddingX(outputPad);
 		this.contentText.setPaddingX(outputPad);
+		for (const image of this.imageComponents) image.setPaddingX(outputPad);
 		this.callRendererDirty = true;
 		this.updateDisplay();
 	}
@@ -1616,7 +1617,7 @@ export class ToolExecutionComponent extends Container {
 						imageData,
 						imageMimeType,
 						{ fallbackColor: toolImageFallbackColor },
-						{ maxWidthCells: this.imageWidthCells },
+						{ maxWidthCells: this.imageWidthCells, paddingX: this.outputPad },
 					);
 					if (this.allocationMetrics) this.allocationMetrics.componentCreations += 2;
 					this.imageSpacers.push(spacer);

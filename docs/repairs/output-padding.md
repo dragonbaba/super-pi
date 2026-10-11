@@ -94,3 +94,37 @@ actual skill component and verifies error/vision updates. Its six groups plus
 the affected frame/retained source gates pass (36 checks); typecheck and the
 coding-agent build are repeated for this follow-up. Earlier leaf/queue profiles
 remain applicable: the follow-up does not change those measured paths or caches.
+
+## Review correction: inline image lane
+
+PR review identified a same-scope omission: tool images are direct row children,
+so text-shell padding does not move them. Before this correction, inspect Image
+cache ownership and the complete Image -> Kitty/iTerm sequence -> retained/scroll
+crop -> Main/Alt placement/queue -> disposal chain; capture the existing image
+production profile (`tui-image-formats.ts`). Add one primitive padding field to
+Image, default 0 for existing consumers; pass configured padding in existing tool
+image options and update existing images at the explicit setting boundary.
+Grouped Read preserves its preview indentation. Build the left margin only on
+cache misses using the already-owned output array; do not add a wrapper component,
+new array, per-frame callback or conversion. Padding clears only the line cache,
+preserving the Kitty ID and prepared source. Existing release clears cached lines;
+the new number owns no references. Verify both protocols, wrapping bounds, stable
+cache hits/IDs, production allocation counters and controlled-GC image release.
+
+The new failing image regression was reproduced before production edits, then
+passed for initial padding, reversible changes, both protocols, grouped Read and
+actual Kitty Alt/iTerm Main frame output. iTerm Alt intentionally retains its
+existing text fallback behavior. The 75 affected image/UI/source checks pass;
+the strengthened seven padding groups, typecheck and both affected builds pass.
+
+Image benchmark: 2,048 cache-hit operations and 2,048 production Alt frames.
+Before/after pad=0 sampled bytes per leaf operation: 77.137/97.180, per frame:
+3712.512/3730.434. Explicit pad=1: 112.438 per leaf operation, 3603.094 per frame.
+The sampler includes assertion/instrumentation overhead; the warmed Image path
+returns the same array without executing the padding branch. All three runs
+show zero measured conversions, frame Promises/controllers/wrappers/copies;
+queue high-water is 1, one generated frame per render, and all queue byte/reference
+and final-unmount counters are zero. Image WeakRef is collected after disposal.
+No extra image owner, scratch array or pool was introduced. Evidence files are
+`image-before.json`, `image-after.json`, `image-pad1.json` and `image-tests.log`.
+Replay padding explicitly with `tui-image-formats.ts <output.json> --padding 1`.

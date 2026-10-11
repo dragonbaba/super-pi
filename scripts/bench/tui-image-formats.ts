@@ -10,11 +10,12 @@ import { TuiAltScreen } from "../../packages/tui/src/tui-alt-screen.ts";
 import { VStack } from "../../packages/tui/src/components/v-stack.ts";
 import { FakeTerminal } from "../../tests/helpers/runtime-instrumentation.ts";
 import { pngFixture } from "../../tests/helpers/image-acceptance-fixtures.ts";
-import { currentCommit } from "./benchmark.ts";
+import { currentCommit, readIntegerOption } from "./benchmark.ts";
 
 assert.equal(typeof globalThis.gc, "function", "requires --expose-gc");
 const output = process.argv[2];
 const frames = 2048;
+const paddingX = readIntegerOption("--padding", 0);
 const png = pngFixture(8, 4).toString("base64");
 let conversions = 0;
 function convert(): string { conversions++; return png; }
@@ -48,7 +49,7 @@ let ui: TuiAltScreen | undefined;
 let image: imageModule.Image | undefined;
 let layout: VStack | undefined;
 try {
-	image = new imageModule.Image(png, "image/jpeg", { fallbackColor: String }, {}, { widthPx: 8, heightPx: 4 });
+	image = new imageModule.Image(png, "image/jpeg", { fallbackColor: String }, { paddingX }, { widthPx: 8, heightPx: 4 });
 	const weakImage = new WeakRef(image);
 	let lines: string[] | undefined = image.render(80);
 	const preparationConversions = conversions;
@@ -91,7 +92,7 @@ try {
 	assert.ok(imageCollected, "unmounted image owner must be collectible");
 	const result = {
 		commit: currentCommit(), sourceSha256: createHash("sha256").update(readFileSync("packages/tui/src/components/image.ts")).digest("hex"),
-		node: process.version, platform: process.platform, arch: process.arch, frames,
+		node: process.version, platform: process.platform, arch: process.arch, frames, paddingX,
 		preparationConversions, measuredConversions: conversions - preparationConversions,
 		leaf, production, measured, retained, queue, imageCollected,
 	};

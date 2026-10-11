@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { Box, Container, RELEASE_COMPONENT_RENDER_CACHE, RetainedContainer, Text, type Component, type TUI } from "@super-pi/tui";
+import { Box, Container, Image, getCapabilities, setCapabilities, RELEASE_COMPONENT_RENDER_CACHE, RetainedContainer, Text, TuiAltScreen, TuiMainScreen, type Component, type TUI } from "@super-pi/tui";
 import { createToolHtmlRenderer } from "../packages/coding-agent/src/core/export-html/tool-renderer.ts";
 import { SettingsManager } from "../packages/coding-agent/src/core/settings-manager.ts";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
 import { IMAGE_VISION_RESULT_TYPE } from "../packages/coding-agent/src/core/image-attachments.ts";
+import { createToolResultPresentationOwner } from "../packages/coding-agent/src/core/tool-result-presentation.ts";
+import { pngFixture } from "./helpers/image-acceptance-fixtures.ts";
+import { FakeTerminal } from "./helpers/runtime-instrumentation.ts";
 import type { ToolRenderers } from "../packages/coding-agent/src/core/extensions/types.ts";
 import { BashExecutionComponent } from "../packages/coding-agent/src/modes/interactive/components/bash-execution.ts";
 import { BranchSummaryMessageComponent } from "../packages/coding-agent/src/modes/interactive/components/branch-summary-message.ts";
@@ -65,6 +68,44 @@ test("grouped reads retain relative indentation when base padding changes", t =>
 	row.setExpanded(true);
 	const zero = lines(row); assert.match(zero[0], /^\S/);
 	row.setOutputPad(1); assert.deepEqual(lines(row), zero.map(line => ` ${line}`));
+});
+
+test("tool images follow padding in both protocols and grouped Read preserves preview indentation", async t => {
+	const previous = getCapabilities(); t.after(() => setCapabilities(previous));
+	const content = [{ type: "image" as const, data: pngFixture(8, 4).toString("base64"), mimeType: "image/png" }];
+	function placement(row: Component): string {
+		const line = row.render(60).find(line => line.includes("\x1b_G") || line.includes("\x1b]1337;"));
+		assert.ok(line); return line;
+	}
+	for (const protocol of ["kitty", "iterm2"] as const) {
+		setCapabilities({ images: protocol, trueColor: true, hyperlinks: true });
+		const row = new ToolExecutionComponent("image", "image", {}, { outputPad: 1 }, undefined, ui, process.cwd());
+		t.after(() => row[RELEASE_COMPONENT_RENDER_CACHE]()); row.updateResult({ content });
+		assert.equal(placement(row)[0], " ");
+		const image = row.children.find(child => child instanceof Image) as Image;
+		const id = image.getImageId(); const cached = image.render(60);
+		row.setOutputPad(1); assert.equal(image.render(60), cached);
+		row.setOutputPad(0); assert.equal(placement(row)[0], "\x1b");
+		row.setOutputPad(1); assert.equal(placement(row)[0], " ");
+		assert.equal(image.getImageId(), id); assert.ok(row.children.includes(image));
+		const terminal = new FakeTerminal(60, 24);
+		const renderer = protocol === "kitty" ? new TuiAltScreen(terminal, false, undefined, { mouse: false }) : new TuiMainScreen(terminal, false);
+		try {
+			if (renderer instanceof TuiAltScreen) renderer.setLayoutRoot(row); else renderer.addChild(row);
+			renderer.start(); renderer.renderNow();
+			assert.ok(terminal.writes.some(frame => protocol === "kitty" ? frame.includes(" \x1b_G") : / (?:\x1b\[\d+A)?\x1b\]1337;/.test(frame)), protocol);
+		} finally { await renderer.dispose({ preserveScreen: true }); }
+		const group = new ReadToolGroupComponent(true, 60, undefined, 0);
+		t.after(() => group[RELEASE_COMPONENT_RENDER_CACHE]());
+		const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 128 }, `padding-${protocol}`)!;
+		t.after(() => owner.dispose());
+		const groupedContent = [{ type: "text" as const, text: "large\n".repeat(2000) }, ...content];
+		group.updateArgs("read", { path: "fixture.png" }); group.updateResult("read", { content: groupedContent });
+		group.setToolResultPresentation("read", owner.create(groupedContent, "read")!); group.setExpanded(true);
+		assert.ok(placement(group).startsWith(" \x1b"));
+		group.setOutputPad(1); assert.ok(placement(group).startsWith("  \x1b"));
+		owner.release();
+	}
 });
 
 test("self renderers receive padding and args-only calls refresh on a setting change", t => {
