@@ -70,6 +70,9 @@ function cloneModelForExtension(model: Model<Api>): Model<Api> {
 		cost: structuredClone(model.cost),
 		headers: model.headers ? { ...model.headers } : undefined,
 		samplingParams: model.samplingParams ? structuredClone(model.samplingParams) : undefined,
+		samplingParamsByThinkingLevel: model.samplingParamsByThinkingLevel
+			? structuredClone(model.samplingParamsByThinkingLevel)
+			: undefined,
 		input: [...model.input],
 		thinkingLevelMap: model.thinkingLevelMap ? { ...model.thinkingLevelMap } : undefined,
 		thinkingBudgetMap: model.thinkingBudgetMap ? { ...model.thinkingBudgetMap } : undefined,
@@ -111,7 +114,8 @@ export interface ProviderConfigInput {
 		contextWindow: number;
 		maxTokens: number;
 		capabilities?: Model<Api>["capabilities"];
-		samplingParams?: Record<string, unknown>;
+		samplingParams?: Model<Api>["samplingParams"];
+		samplingParamsByThinkingLevel?: Model<Api>["samplingParamsByThinkingLevel"];
 		headers?: Record<string, string>;
 		compat?: Model<Api>["compat"];
 	}>;
@@ -158,6 +162,19 @@ function validateCapabilityLimits(model: Model<Api>, label: string): void {
 	}
 }
 
+function mergeSamplingParamsByThinkingLevel(
+	base: Model<Api>["samplingParamsByThinkingLevel"],
+	override: Model<Api>["samplingParamsByThinkingLevel"],
+): Model<Api>["samplingParamsByThinkingLevel"] {
+	if (!override) return base;
+	const merged = { ...base };
+	for (const level of ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const) {
+		const params = override[level];
+		if (params) merged[level] = { ...base?.[level], ...params };
+	}
+	return merged;
+}
+
 function applyModelOverride(model: Model<Api>, override: ModelsJsonModelOverride): Model<Api> {
 	const rederiveCapabilities =
 		override.capabilities === undefined &&
@@ -190,6 +207,9 @@ function applyModelOverride(model: Model<Api>, override: ModelsJsonModelOverride
 		samplingParams: override.samplingParams
 			? { ...model.samplingParams, ...override.samplingParams }
 			: model.samplingParams,
+		samplingParamsByThinkingLevel: mergeSamplingParamsByThinkingLevel(
+			model.samplingParamsByThinkingLevel, override.samplingParamsByThinkingLevel,
+		),
 		compat: mergeCompat(model.compat, override.compat),
 	};
 	return withModelProfile(overridden, "explicit-custom", {
@@ -275,6 +295,7 @@ function modelFromJson(
 		maxTokens: definition.maxTokens ?? 16384,
 		capabilities: definition.capabilities,
 		samplingParams: definition.samplingParams,
+		samplingParamsByThinkingLevel: definition.samplingParamsByThinkingLevel,
 		headers: undefined,
 		compat: mergeCompat(providerConfig.compat, definition.compat),
 	};

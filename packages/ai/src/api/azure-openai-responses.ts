@@ -24,7 +24,7 @@ import { createGrammarToolInputProperties } from "./constrained-sampling.ts";
 import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.ts";
 import { OPENAI_RESPONSES_SAMPLING_RESERVED_KEYS } from "./openai-sampling-reserved.ts";
 import { convertResponsesMessages, convertResponsesTools, processResponsesStream } from "./openai-responses-shared.ts";
-import { buildBaseOptions } from "./simple-options.ts";
+import { buildBaseOptions, resolveSamplingParams } from "./simple-options.ts";
 
 const DEFAULT_AZURE_API_VERSION = "v1";
 const AZURE_TOOL_CALL_PROVIDERS = new Set(["openai", "openai-codex", "opencode", "azure-openai-responses"]);
@@ -381,7 +381,7 @@ function buildParams(
 	// Merge generation-only custom keys; structural protocol fields remain capability-owned.
 	mergeSamplingParams(
 		params as unknown as Record<string, unknown>,
-		options?.samplingParams,
+		resolveSamplingParams(model, options?.reasoningEffort ?? (options?.reasoningSummary ? "medium" : "off"), options?.samplingParams),
 		OPENAI_RESPONSES_SAMPLING_RESERVED_KEYS,
 	);
 	sanitizeCapabilityRequest(model, params as unknown as Record<string, unknown>);

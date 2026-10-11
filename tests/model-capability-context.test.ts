@@ -180,7 +180,9 @@ test("capability sanitizer blocks samplingParams while onPayload remains the fin
 	const legacyFunction = { name: "legacy-injected", parameters: {} };
 	const webSearchOptions = { search_context_size: "high" };
 	const injectedReasoning = { effort: "high", summary: "auto" };
-	await streamOpenAIChat(model(), contextWithToolHistory(), {
+	await streamOpenAIChat({
+		...model(), samplingParamsByThinkingLevel: { off: { temperature: 0.8, tools: [injectedTool] } },
+	}, contextWithToolHistory(), {
 		apiKey: "fixture-key",
 		cacheRetention: "long",
 		reasoningEffort: "high",
@@ -240,6 +242,7 @@ test("capability sanitizer blocks samplingParams while onPayload remains the fin
 		},
 	}).result();
 	assert.ok(sanitized);
+	assert.equal(sanitized.temperature, 0.8);
 	assert.equal(sanitized.max_tool_calls, undefined);
 	assert.equal(sanitized.maxToolCalls, undefined);
 	assert.equal(sanitized.tools, undefined);

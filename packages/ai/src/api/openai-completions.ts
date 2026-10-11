@@ -65,7 +65,7 @@ import {
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.ts";
 import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.ts";
 import { OPENAI_CHAT_SAMPLING_RESERVED_KEYS } from "./openai-sampling-reserved.ts";
-import { buildBaseOptions, clampReasoning, MIN_ANSWER_TOKENS } from "./simple-options.ts";
+import { buildBaseOptions, clampReasoning, MIN_ANSWER_TOKENS, resolveSamplingParams } from "./simple-options.ts";
 import { transformMessages } from "./transform-messages.ts";
 
 /**
@@ -1059,7 +1059,7 @@ function buildParams(
 	// Merge generation-only custom keys; structural protocol fields remain capability-owned.
 	mergeSamplingParams(
 		params as unknown as Record<string, unknown>,
-		options?.samplingParams,
+		resolveSamplingParams(model, options?.reasoningEffort ?? "off", options?.samplingParams),
 		OPENAI_CHAT_SAMPLING_RESERVED_KEYS,
 	);
 	sanitizeCapabilityRequest(model, params as unknown as Record<string, unknown>);
