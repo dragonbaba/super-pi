@@ -114,7 +114,9 @@ export interface BashOperations {
 		command: string,
 		cwd: string,
 		options: {
-			onData: (data: Buffer) => void;
+			/** Preserve source identity when separate pipes are available. Omitted
+			 * source is one logical combined stream, for legacy custom backends. */
+			onData: (data: Buffer, source?: "stdout" | "stderr") => void;
 			signal?: AbortSignal;
 			timeout?: number;
 			env?: NodeJS.ProcessEnv;
@@ -202,6 +204,8 @@ export function createLocalShellOperations(shellName: string, resolveShellConfig
 				stopReason ??= signal?.reason?.[OUTPUT_FAILURE_ABORT] ? "output_failure" : "cancelled";
 				stopChild();
 			};
+			const onStdoutData = (data: Buffer) => { onData(data, "stdout"); };
+			const onStderrData = (data: Buffer) => { onData(data, "stderr"); };
 
 			try {
 				// Set timeout if provided.
@@ -213,8 +217,8 @@ export function createLocalShellOperations(shellName: string, resolveShellConfig
 					}, timeoutMs);
 				}
 				// Stream stdout and stderr.
-				child.stdout?.on("data", onData);
-				child.stderr?.on("data", onData);
+				child.stdout?.on("data", onStdoutData);
+				child.stderr?.on("data", onStderrData);
 				// Handle abort signal by killing the entire process tree.
 				if (signal) {
 					if (signal.aborted) onAbort();
@@ -243,7 +247,7 @@ export function createLocalShellOperations(shellName: string, resolveShellConfig
 				if (child.pid) untrackDetachedChildPid(child.pid);
 				if (timeoutHandle) clearTimeout(timeoutHandle);
 				if (signal) signal.removeEventListener("abort", onAbort);
-				child.stdout?.removeListener("data", onData); child.stderr?.removeListener("data", onData);
+				child.stdout?.removeListener("data", onStdoutData); child.stderr?.removeListener("data", onStderrData);
 				await inputObserver?.finish();
 			}
 			} catch (error) {

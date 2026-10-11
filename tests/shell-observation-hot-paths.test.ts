@@ -4,7 +4,7 @@ import test from "node:test";
 import ts from "typescript";
 
 test("shell data/progress/drain callbacks create no callback or Promise on delivery", () => {
-  const targets = new Set(["onError", "onClose", "onIdle", "armIdleTimer", "onData", "onStdoutEnd", "onStderrEnd", "onSpawn", "onExit", "maybeFinalizeAfterExit", "finalize", "cleanup",
+  const targets = new Set(["onError", "onClose", "onIdle", "armIdleTimer", "onData", "onStdoutData", "onStderrData", "onStdoutEnd", "onStderrEnd", "onSpawn", "onExit", "maybeFinalizeAfterExit", "finalize", "cleanup",
     "recordOutputFailure", "emitOutputUpdate", "clearUpdateTimer", "onUpdateTimer", "scheduleOutputUpdate", "handleData", "stopChild"]);
   const seen = new Set<string>();
   for (const file of ["packages/coding-agent/src/core/tools/bash.ts", "packages/coding-agent/src/core/bash-executor.ts", "packages/coding-agent/src/utils/child-process.ts"]) {

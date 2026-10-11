@@ -12,12 +12,14 @@ import { unlink } from "node:fs/promises";
 import { finished } from "node:stream/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { stripAnsi } from "../utils/ansi.ts";
+import { AnsiStreamFilter } from "../utils/ansi.ts";
 import { sanitizeBinaryOutput } from "../utils/shell.ts";
 import { CARRIAGE_RETURN_PATTERN } from "../utils/shell-regex.ts";
 import type { BashOperations } from "./tools/bash.ts";
 import { normalizeShellProcessResult, observedShellError, shellProcessResultFromError } from "./tools/shell-execution.ts";
 import { DEFAULT_MAX_BYTES, truncateTail } from "./tools/truncate.ts";
+
+const STREAM_DECODE_OPTIONS = { stream: true };
 
 // ============================================================================
 // Types
@@ -77,16 +79,20 @@ export async function executeBashWithOperations(
 		}
 	};
 
-	const decoder = new TextDecoder();
-
-	const onData = (data: Buffer) => {
-		totalBytes += data.length;
-
-		// Sanitize: strip ANSI, replace binary garbage, normalize newlines
-		const text = sanitizeBinaryOutput(stripAnsi(decoder.decode(data, { stream: true }))).replace(
+	// Independent pipes must not complete each other's ANSI or UTF-8 prefixes.
+	// Unlabelled legacy custom output uses the stdout slot as one logical stream.
+	let stdoutDecoder: TextDecoder | undefined = new TextDecoder();
+	let stderrDecoder: TextDecoder | undefined = new TextDecoder();
+	let stdoutAnsi: AnsiStreamFilter | undefined = new AnsiStreamFilter();
+	let stderrAnsi: AnsiStreamFilter | undefined = new AnsiStreamFilter();
+	let onChunk = options?.onChunk;
+	const appendText = (filtered: string) => {
+		// ANSI has already been filtered using the source's own state.
+		const text = sanitizeBinaryOutput(filtered).replace(
 			CARRIAGE_RETURN_PATTERN,
 			"",
 		);
+		if (!text) return;
 
 		// Start writing to temp file if exceeds threshold
 		if (totalBytes > DEFAULT_MAX_BYTES) {
@@ -100,31 +106,64 @@ export async function executeBashWithOperations(
 		// Keep rolling buffer
 		outputChunks.push(text);
 		outputBytes += text.length;
-		while (outputBytes > maxOutputBytes && outputChunks.length > 1) {
-			const removed = outputChunks.shift()!;
-			outputBytes -= removed.length;
+		while (outputBytes > maxOutputBytes) {
+			const excess = outputBytes - maxOutputBytes;
+			const first = outputChunks[0];
+			if (first.length <= excess) {
+				outputChunks.shift();
+				outputBytes -= first.length;
+			} else {
+				// Keep the tail of a large chunk, not just later small chunks.
+				outputChunks[0] = first.slice(excess);
+				outputBytes -= excess;
+			}
 		}
 
 		// Stream to callback
-		if (options?.onChunk) {
-			options.onChunk(text);
-		}
+		onChunk?.(text);
+	};
+	const onData = (data: Buffer, source?: "stdout" | "stderr") => {
+		// Custom operations may retain this callback beyond command completion.
+		const decoder = source === "stderr" ? stderrDecoder : stdoutDecoder;
+		const ansi = source === "stderr" ? stderrAnsi : stdoutAnsi;
+		if (!decoder || !ansi) return;
+		totalBytes += data.length;
+		appendText(ansi.write(decoder.decode(data, STREAM_DECODE_OPTIONS)));
 	};
 
 	try {
-		const result = normalizeShellProcessResult(await operations.exec(command, cwd, {
-			onData,
-			signal: options?.signal,
-		}));
-		// An observed zero exit alone does not mean the entire submitted command
-		// reached the shell. Propagate producer facts to direct Session/RPC callers
-		// before they can persist a successful BashResult; never retry the command.
-		if (result.inputError !== undefined) throw observedShellError(new Error(`[SHELL_INPUT_FAILED] Command input was not fully delivered: ${result.inputError}`), result);
-		if (result.observationError !== undefined) throw observedShellError(new Error(`[SHELL_OBSERVATION_FAILED] ${result.observationError}`), result);
-		if (result.observation?.outputDrained === false || result.observation?.started === false
-			|| result.termination !== undefined && result.termination !== "exit" || result.exitCode === null) {
-			throw observedShellError(new Error("[SHELL_EXECUTION_FAILED] Command completion was not fully observed; inspect state before retrying."), result);
+		let result;
+		let cancelled = false;
+		try {
+			result = normalizeShellProcessResult(await operations.exec(command, cwd, {
+				onData,
+				signal: options?.signal,
+			}));
+			// An observed zero exit alone does not mean the entire submitted command
+			// reached the shell. Propagate producer facts to direct Session/RPC callers
+			// before they can persist a successful BashResult; never retry the command.
+			if (result.inputError !== undefined) throw observedShellError(new Error(`[SHELL_INPUT_FAILED] Command input was not fully delivered: ${result.inputError}`), result);
+			if (result.observationError !== undefined) throw observedShellError(new Error(`[SHELL_OBSERVATION_FAILED] ${result.observationError}`), result);
+			if (result.observation?.outputDrained === false || result.observation?.started === false
+				|| result.termination !== undefined && result.termination !== "exit" || result.exitCode === null) {
+				throw observedShellError(new Error("[SHELL_EXECUTION_FAILED] Command completion was not fully observed; inspect state before retrying."), result);
+			}
+		} catch (err) {
+			// Cancellation cannot erase an already observed delivery/completion failure.
+			const observed = shellProcessResultFromError(err);
+			if (!options?.signal?.aborted || (observed && (observed.inputError !== undefined || observed.observationError !== undefined
+				|| observed.observation?.outputDrained === false || observed.termination !== "cancelled"))) throw err;
+			cancelled = true;
 		}
+		// Flush UTF-8 once, before discarding an unfinished control. A callback
+		// failure here must still reject, including after accepted cancellation.
+		const finalStdout = stdoutDecoder.decode();
+		const finalStderr = stderrDecoder.decode();
+		stdoutDecoder = undefined;
+		stderrDecoder = undefined;
+		appendText(stdoutAnsi.write(finalStdout));
+		appendText(stderrAnsi.write(finalStderr));
+		cancelled ||= options?.signal?.aborted ?? false;
 
 		const fullOutput = outputChunks.join("");
 		const truncationResult = truncateTail(fullOutput);
@@ -134,37 +173,17 @@ export async function executeBashWithOperations(
 		if (tempFileStream) {
 			tempFileStream.end();
 		}
-		const cancelled = options?.signal?.aborted ?? false;
 
 		return {
 			output: truncationResult.truncated ? truncationResult.content : fullOutput,
-			exitCode: cancelled ? undefined : (result.exitCode ?? undefined),
+			exitCode: cancelled ? undefined : (result?.exitCode ?? undefined),
 			cancelled,
 			truncated: truncationResult.truncated,
 			fullOutputPath: tempFilePath,
 		};
 	} catch (err) {
-		// Cancellation cannot erase an already observed delivery/completion failure.
-		const observed = shellProcessResultFromError(err);
-		if (options?.signal?.aborted && (!observed || (observed.inputError === undefined && observed.observationError === undefined
-			&& observed.observation?.outputDrained !== false && observed.termination === "cancelled"))) {
-			const fullOutput = outputChunks.join("");
-			const truncationResult = truncateTail(fullOutput);
-			if (truncationResult.truncated) {
-				ensureTempFile();
-			}
-			if (tempFileStream) {
-				tempFileStream.end();
-			}
-			return {
-				output: truncationResult.truncated ? truncationResult.content : fullOutput,
-				exitCode: undefined,
-				cancelled: true,
-				truncated: truncationResult.truncated,
-				fullOutputPath: tempFilePath,
-			};
-		}
-
+		stdoutDecoder = undefined;
+		stderrDecoder = undefined;
 		if (tempFileStream) {
 			tempFileStream.end();
 			// Rejection has no BashResult through which callers could find this log.
@@ -183,5 +202,15 @@ export async function executeBashWithOperations(
 		}
 
 		throw err;
+	} finally {
+		stdoutDecoder = undefined;
+		stderrDecoder = undefined;
+		stdoutAnsi?.reset();
+		stderrAnsi?.reset();
+		stdoutAnsi = undefined;
+		stderrAnsi = undefined;
+		onChunk = undefined;
+		outputChunks.length = 0;
+		tempFileStream = undefined;
 	}
 }
