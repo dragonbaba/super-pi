@@ -126,16 +126,19 @@ export class ProgramStatusReporter {
 			state = "blocked"; kind = "auth"; message = this.loginMessage;
 		} else if (this.dialogKind) {
 			state = "blocked"; kind = this.dialogKind; message = this.dialogMessage;
-		} else if (this.waitingForInput) {
-			state = "blocked"; kind = "question"; message = "Waiting for input";
 		} else if (this.compacting) {
 			state = "working"; message = "Compacting context";
+		} else if (this.waitingForInput) {
+			state = "blocked"; kind = "question"; message = "Waiting for input";
 		} else if (state === "working" || state === "done") {
 			message = sanitizeProgramStatusMessage(this.getSessionName());
 		}
 		const terminal = this.getTerminal();
 		if (terminal === this.lastTerminal && state === this.lastState && kind === this.lastKind && message === this.lastMessage) return;
-		terminal.setProgramStatus?.(state, message, kind, APP_NAME);
+		// Optional metadata must not interrupt dialog resolution or owner cleanup.
+		// ProcessTerminal already records output failure for its frame/lifecycle lane.
+		try { terminal.setProgramStatus?.(state, message, kind, APP_NAME); }
+		catch { return; }
 		this.lastTerminal = terminal;
 		this.lastState = state;
 		this.lastKind = kind;

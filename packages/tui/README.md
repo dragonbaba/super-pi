@@ -26,6 +26,9 @@ terminals. Reports are supported after query negotiation, or can be forced with
 bounded before base64 encoding, duplicate states are suppressed, and pending
 writes coalesce under backpressure. Stop retains the latest status for restart;
 dispose releases it without clearing completed/error records from the terminal.
+Advertised state/kind subsets are respected: unsupported states use idle or clear;
+unsupported kinds use question if available, otherwise no kind. A bounded raw-text
+cache skips sanitization for duplicate messages and is released on failure/disposal.
 See the [OSC 7501 specification](https://www.superlogical.com/rex/docs/build/program-status).
 
 ## Quick Start

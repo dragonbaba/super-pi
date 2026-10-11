@@ -67,9 +67,42 @@ test("two dialog sources restore underlying status, session changes reset and di
 	assert.deepEqual(f.last(), ["done", "Renamed", undefined]);
 	r.setBlocked("extension-dialog", "question", "old"); r.reset();
 	assert.deepEqual(f.last(), ["idle", undefined, undefined]);
+	r.handleEvent({ type: "agent_start" }); r.handleEvent(assistant("error")); r.handleEvent(settled);
+	r.setBlocked("extension-dialog", "question", "retained dialog"); r.setBlocked("login", "auth", "retained login");
 	r.dispose(); const count = f.reports.length; r.report(); r.handleEvent({ type: "agent_start" });
 	assert.equal(f.reports.length, count);
 	assert.equal((r as any).lastTerminal, undefined); assert.equal((r as any).dialogMessage, undefined);
+	assert.equal((r as any).runMessage, undefined); assert.equal((r as any).restingMessage, undefined);
+	assert.equal((r as any).loginMessage, undefined);
+});
+
+test("active manual compaction overrides persisted input blocking and restores it afterwards", () => {
+	const f = fixture(), r = f.reporter;
+	r.handleEvent({ type: "agent_start" });
+	r.handleEvent({ type: "agent_end", messages: [], willRetry: false, requiresUserInput: true }); r.handleEvent(settled);
+	r.handleEvent({ type: "compaction_start", reason: "manual" });
+	assert.deepEqual(f.last(), ["working", "Compacting context", undefined]);
+	r.handleEvent({ type: "compaction_end", reason: "manual", result: undefined, aborted: false, willRetry: false });
+	assert.deepEqual(f.last(), ["blocked", "Waiting for input", "question"]);
+	r.dispose();
+});
+
+test("terminal status failure cannot interrupt real dialog cancellation and promise cleanup", async () => {
+	const f = await alphaSession();
+	const original = f.terminal.setProgramStatus;
+	try {
+		await f.mode.init();
+		for (const kind of ["Selector", "Input", "Editor"] as const) {
+			const operation = kind === "Selector" ? f.internal.showExtensionConfirm("Allow?", "details")
+				: kind === "Input" ? f.internal.showExtensionInput("Answer?") : f.internal.showExtensionEditor("Edit?");
+			f.terminal.setProgramStatus = () => { throw new Error("fixture metadata write failure"); };
+			const component = f.internal[`extension${kind}`];
+			assert.doesNotThrow(() => component.cancel());
+			assert.equal(await operation, kind === "Selector" ? false : undefined);
+			assert.equal(f.internal[`extension${kind}`], undefined);
+			f.terminal.setProgramStatus = original;
+		}
+	} finally { f.terminal.setProgramStatus = original; await f.release(); }
 });
 
 test("100,000 message/tool updates create no reports, Promises or payload reads", () => {

@@ -139,6 +139,7 @@ for (const failure of ["throw", "callback", "close", "error"] as const) test(`st
 		}
 		assert.equal((f.terminal as any).programStatusSequence, undefined);
 		assert.equal((f.terminal as any).programStatusMessage, undefined);
+		assert.equal((f.terminal as any).programStatusRawMessage, undefined);
 		assert.equal((f.terminal as any).controlWritesOutstanding, 0);
 		f.terminal.dispose(); f.output.finish(); await nextTask();
 		assert.equal(f.output.listenerCount("error"), 0);
@@ -179,4 +180,40 @@ test("disposed terminal owners collect after status callback/drain completion", 
 	run();
 	for (let i = 0; i < 8; i++) { await nextTask(); global.gc!(); }
 	assert.equal(refs.filter(ref => ref.deref()).length, 0);
+});
+
+test("unchanged bounded raw messages bypass sanitization", t => {
+	const f = fixture("1");
+	try {
+		f.start(); f.terminal.setProgramStatus("working", "named\nstatus", undefined, "superpi");
+		let sanitizations = 0;
+		const original = String.prototype.replace;
+		const mocked = t.mock.method(String.prototype, "replace", function(this: string, ...args: Parameters<typeof original>) {
+			sanitizations++; return Reflect.apply(original, this, args);
+		});
+		for (let i = 0; i < 100_000; i++) f.terminal.setProgramStatus("working", "named\nstatus", undefined, "superpi");
+		mocked.mock.restore();
+		assert.equal(sanitizations, 0); assert.equal(f.output.statuses().length, 1);
+		f.terminal.setProgramStatus("working", "x".repeat(10_000));
+		f.terminal.setProgramStatus("working");
+		assert.equal(f.output.statuses().at(-1), formatProgramStatus("working"));
+	} finally { f.release(); }
+});
+
+test("advertised state and kind subsets choose supported fallbacks and renegotiate on restart", () => {
+	const f = fixture();
+	try {
+		f.start(); f.terminal.setProgramStatus("done", "complete");
+		f.input.emit("data", "\x1b]7501;?:states=idle,working:kinds=question\x1b\\\x1b[?1;2c");
+		assert.equal(f.output.statuses().at(-1), formatProgramStatus("idle", "complete"));
+		f.terminal.setProgramStatus("error", "failed");
+		assert.equal(f.output.statuses().at(-1), formatProgramStatus("idle", "failed"));
+		f.terminal.stop(); f.start();
+		f.input.emit("data", "\x1b]7501;?:states=working,blocked:kinds=question\x1b\\\x1b[?1;2c");
+		assert.equal(f.output.statuses().at(-1), formatProgramStatus("clear"));
+		f.terminal.setProgramStatus("blocked", "approval", "permission");
+		assert.equal(f.output.statuses().at(-1), formatProgramStatus("blocked", "approval", "question"));
+		f.terminal.setProgramStatus("blocked", "login", "auth");
+		assert.equal(f.output.statuses().at(-1), formatProgramStatus("blocked", "login", "question"));
+	} finally { f.release(); }
 });

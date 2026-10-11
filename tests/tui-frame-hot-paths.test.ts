@@ -23,6 +23,7 @@ const HOT_METHODS: readonly MethodTarget[] = [
 	{ path: "packages/tui/src/terminal.ts", className: "ProcessTerminal", methodName: "setProgress" },
 	{ path: "packages/tui/src/terminal.ts", className: "ProcessTerminal", methodName: "startProgressWrite" },
 	{ path: "packages/tui/src/terminal.ts", className: "ProcessTerminal", methodName: "setProgramStatus" },
+	{ path: "packages/tui/src/terminal.ts", className: "ProcessTerminal", methodName: "encodeProgramStatus" },
 	{ path: "packages/tui/src/terminal.ts", className: "ProcessTerminal", methodName: "writeProgramStatus" },
 	{ path: "packages/tui/src/terminal.ts", className: "ProcessTerminal", methodName: "tryCompleteProgramStatusWrite" },
 	{ path: "packages/tui/src/terminal.ts", className: "ProcessTerminal", methodName: "completeProgramStatusWrite" },

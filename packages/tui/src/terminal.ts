@@ -4,7 +4,7 @@ import { setKittyProtocolActive } from "./keys.ts";
 import { enableNativeWindowsVirtualTerminalInput, isNativeModifierPressed } from "./native-modifiers.ts";
 import { DEVICE_ATTRIBUTES_PATTERN, DEVICE_ATTRIBUTES_PREFIX_PATTERN, KITTY_FLAGS_PATTERN } from "./regex.ts";
 import { StdinBuffer } from "./stdin-buffer.ts";
-import { formatProgramStatus, isProgramStatusReply, PROGRAM_STATUS_QUERY, sanitizeProgramStatusMessage, type ProgramStatusKind, type ProgramStatusState } from "./program-status.ts";
+import { DEFAULT_PROGRAM_STATUS_CAPABILITIES, formatProgramStatus, isProgramStatusReply, parseProgramStatusCapabilities, PROGRAM_STATUS_QUERY, sanitizeProgramStatusMessage, supportedProgramStatusKind, supportedProgramStatusState, type ProgramStatusKind, type ProgramStatusState } from "./program-status.ts";
 
 const TERMINAL_PROGRESS_KEEPALIVE_MS = 1000;
 const TERMINAL_PROGRESS_ACTIVE_SEQUENCE = "\x1b]9;4;3\x07";
@@ -196,10 +196,13 @@ export class ProcessTerminal implements Terminal {
 	private progressClearPending = false;
 	private programStatusState: ProgramStatusState | undefined;
 	private programStatusMessage: string | undefined;
+	private programStatusRawMessage: string | undefined;
+	private programStatusRawMessageValid = false;
 	private programStatusKind: ProgramStatusKind | undefined;
 	private programStatusApp: string | undefined;
 	private programStatusSequence: string | undefined;
 	private programStatusSupported = false;
+	private programStatusCapabilities = DEFAULT_PROGRAM_STATUS_CAPABILITIES;
 	private programStatusQueryPending = false;
 	private pendingStatusDeviceAttributes = 0;
 	private programStatusRevision = 0;
@@ -305,6 +308,11 @@ export class ProcessTerminal implements Terminal {
 			if (this.programStatusQueryPending) {
 				this.programStatusQueryPending = false;
 				this.programStatusSupported = true;
+				const capabilities = parseProgramStatusCapabilities(sequence);
+				if (capabilities !== this.programStatusCapabilities) {
+					this.programStatusCapabilities = capabilities;
+					this.encodeProgramStatus();
+				}
 				this.writeProgramStatus();
 			}
 			return;
@@ -464,6 +472,10 @@ export class ProcessTerminal implements Terminal {
 		this.keyboardProtocolPushed = true;
 		this.clearKeyboardProtocolNegotiationBuffer();
 		const override = process.env.SP_PROGRAM_STATUS;
+		if (this.programStatusCapabilities !== DEFAULT_PROGRAM_STATUS_CAPABILITIES) {
+			this.programStatusCapabilities = DEFAULT_PROGRAM_STATUS_CAPABILITIES;
+			this.encodeProgramStatus();
+		}
 		this.programStatusSupported = override === "1";
 		this.programStatusQueryPending = override !== "0" && override !== "1";
 		this.pendingStatusDeviceAttributes++;
@@ -990,18 +1002,30 @@ export class ProcessTerminal implements Terminal {
 
 	setProgramStatus(state: ProgramStatusState, message?: string, kind?: ProgramStatusKind, app?: string): void {
 		if (this.disposed || this.frameOutputFailure) return;
-		const safeMessage = sanitizeProgramStatusMessage(message);
 		const safeApp = app && app.length <= 32 ? app : undefined;
 		const safeKind = state === "blocked" ? kind : undefined;
+		if (this.programStatusRawMessageValid && message === this.programStatusRawMessage && state === this.programStatusState &&
+			safeKind === this.programStatusKind && safeApp === this.programStatusApp) return;
+		const safeMessage = sanitizeProgramStatusMessage(message);
+		// Never retain an oversized caller string just to accelerate duplicate checks.
+		this.programStatusRawMessageValid = message === undefined || message.length <= 2048;
+		this.programStatusRawMessage = this.programStatusRawMessageValid ? message : undefined;
 		if (state === this.programStatusState && safeMessage === this.programStatusMessage &&
 			safeKind === this.programStatusKind && safeApp === this.programStatusApp) return;
 		this.programStatusState = state;
 		this.programStatusMessage = safeMessage;
 		this.programStatusKind = safeKind;
 		this.programStatusApp = safeApp;
-		this.programStatusSequence = formatProgramStatus(state, safeMessage, safeKind, safeApp);
-		this.programStatusRevision++;
+		this.encodeProgramStatus();
 		this.writeProgramStatus();
+	}
+
+	private encodeProgramStatus(): void {
+		if (!this.programStatusState) return;
+		const state = supportedProgramStatusState(this.programStatusState, this.programStatusCapabilities);
+		const kind = supportedProgramStatusKind(this.programStatusKind, this.programStatusCapabilities);
+		this.programStatusSequence = formatProgramStatus(state, state === "clear" ? undefined : this.programStatusMessage, kind, this.programStatusApp);
+		this.programStatusRevision++;
 	}
 
 	private writeProgramStatus(): void {
@@ -1056,6 +1080,8 @@ export class ProcessTerminal implements Terminal {
 		this.programStatusSequence = undefined;
 		this.programStatusState = undefined;
 		this.programStatusMessage = undefined;
+		this.programStatusRawMessage = undefined;
+		this.programStatusRawMessageValid = false;
 		this.programStatusKind = undefined;
 		this.programStatusApp = undefined;
 		this.programStatusQueryPending = false;

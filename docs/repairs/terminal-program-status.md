@@ -55,7 +55,7 @@ and a controlled-GC owner-release probe. Run only relevant checks locally.
 Windows / Node v26.4.0. The initial production capability probe failed because
 `ProcessTerminal.setProgramStatus` was absent. Final local checks:
 
-- 22 new behavior/lifecycle checks pass with controlled GC. These exercise real
+- 26 new behavior/lifecycle checks pass with controlled GC. These exercise real
   Main/Alt sessions, permission cancellation and renderer handoff; split BEL/ST
   support replies; DA-before-reply; both environment overrides; UTF-8/control
   limits; both callback/drain orders; stop/restart; throw, callback, close and
@@ -102,3 +102,41 @@ and stub UI leaves, while behavior checks exercise the actual Main/Alt UI and
 ProcessTerminal with a fake Writable. A terminal that visually displays OSC 7501
 has not been tested. Raw logs and profiles are local under
 `.git/f05-2-program-status-20261012/`.
+
+## Review follow-up design gate
+
+Review of `8bbd66bc2` identified four gaps to reproduce and repair in this PR:
+active manual compaction must override a persisted waiting-for-input flag;
+optional metadata write failure must not interrupt dialog/promise cleanup;
+bounded raw-message equality must run before text sanitization; and capability
+replies advertising subsets require supported state/kind fallbacks.
+
+Keep dialog priority above compaction, then restore the waiting state afterwards.
+Isolate optional status delivery failure in the reporter; ProcessTerminal already
+records output failure for the existing frame/lifecycle error path. Cache raw
+messages only up to 2048 code units, with an explicit validity bit for oversized
+inputs, and release this extra bounded slot on disposal/failure. Parse capability
+lists once at negotiation into primitive bit masks. Unsupported states fall back
+to idle, or clear if idle is unavailable; unsupported blocked kinds fall back to
+question when available, otherwise omit kind. Re-encode only on state/capability
+changes or restart. Delta handling and the frame lane remain unchanged.
+
+The separate disposal comment assumes a guard in reset(), but no such guard
+exists: reset clears fields unconditionally and report alone checks disposed.
+Verify active error/dialog/login cleanup directly before replying with evidence;
+no production change is needed for that claim.
+
+The four added failure probes all fail on `8bbd66bc2`; the expanded active
+error/dialog/login disposal check passes there. After correction all 26 behavior
+checks and the 118 relevant regression/source gates pass, along with typecheck
+and TUI/coding-agent builds. The duplicate named-message probe counts zero
+sanitizations over 100,000 repeats; oversized messages never enter the raw cache.
+The added raw-message slot is cleared on output failure/disposal.
+
+The post-review event profile (`event-review.json`, same 100,000/10,000 settings)
+samples 10.312 / 22.157 / 151.628 bytes per update for message / tool / coalesced
+delivery. Controlled-GC deltas are 124,000 / 137,560 / 854,128 B. Status reports,
+listener/bridge Promises and rejection observers remain zero, source gates pass,
+and final updates are correct. No frame/queue implementation changed in review;
+the earlier queue profile remains applicable and its deterministic gate passed
+again in the regression run. Four lifecycle WeakRefs still have zero survivors.

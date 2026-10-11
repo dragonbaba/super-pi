@@ -94,6 +94,11 @@ when replies cannot reach the application, or `SP_PROGRAM_STATUS=0` to disable
 them. OSC 9;4 progress and its existing setting remain independent. JSON and RPC
 output do not contain these terminal sequences.
 
+When a terminal advertises a limited capability list, unsupported states fall
+back to `idle` (or `clear` if `idle` is unavailable). An unsupported blocking kind
+falls back to `question` when supported, otherwise it is omitted. Optional status
+write failures do not interrupt dialog resolution or cleanup.
+
 Reports contain only the session name, dialog title, or first error line, bounded
 to 2048 UTF-8 bytes with control characters removed. Prompt text, assistant output,
 tool results and login credentials are not included. Unchanged statuses are not
