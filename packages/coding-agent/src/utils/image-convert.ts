@@ -1,8 +1,25 @@
+import { getCapabilities, setImageTranscoder } from "@super-pi/tui";
 import { applyExifOrientation } from "./exif-orientation.ts";
 import { loadPhoton } from "./photon.ts";
 
 export type LoadedPngConverter = typeof import("@silvia-odwyer/photon-node");
 export type ConvertedPngImage = { data: string; mimeType: string };
+
+// Application-owned codec only: never retain an image, session or render callback.
+let terminalPngConverter: LoadedPngConverter | undefined;
+
+function transcodeTerminalImage(data: string, mimeType: string): string | null {
+	return terminalPngConverter ? convertToPngWithLoadedConverter(terminalPngConverter, data, mimeType)?.data ?? null : null;
+}
+
+/** Startup preparation before extensions can construct non-PNG Image components. */
+export async function initializeTerminalImageTranscoder(): Promise<void> {
+	if (getCapabilities().images !== "kitty") return;
+	const converter = await loadPngConverter();
+	if (!converter) return;
+	terminalPngConverter = converter;
+	setImageTranscoder(transcodeTerminalImage);
+}
 
 /** @internal Load the shared converter without retaining any image source. */
 export function loadPngConverter(): Promise<LoadedPngConverter | null> {
