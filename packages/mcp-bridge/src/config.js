@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import {
   ENV_HEADER_REFERENCE_PATTERN,
   ENV_NAME_PATTERN,
@@ -85,7 +86,7 @@ function resolveHeaders(server, label) {
   return headers;
 }
 
-function normalizeServer(id, raw, workspace, source) {
+function normalizeServer(id, raw, workspace, source, projectScope) {
   if (!SERVER_ID_PATTERN.test(id) || !ownObject(raw)) throw new Error(`Invalid MCP server definition: ${id}`);
   const label = `${source}.servers.${id}`;
   const transport = raw.transport ?? "stdio";
@@ -93,6 +94,7 @@ function normalizeServer(id, raw, workspace, source) {
   const common = {
     id,
     source,
+    projectScope: source === "project" ? projectScope : undefined,
     enabled: raw.enabled !== false,
     transport,
     startupTimeoutMs: boundedInt(raw.startupTimeoutMs, 30_000, 1_000, 300_000, `${label}.startupTimeoutMs`),
@@ -143,21 +145,46 @@ function normalizeServer(id, raw, workspace, source) {
   return { ...common, url: url.href, headers, ...(oauth ? { oauth } : {}) };
 }
 
+function mergeProjectServer(id, base, override) {
+  if (!ownObject(base) || !ownObject(override)) throw new Error(`Invalid MCP server definition: ${id}`);
+  for (const [field, value] of Object.entries(override)) {
+    if (value === null) throw new Error(`project.servers.${id}.${field} must not be null`);
+  }
+  const transportChanged = Object.hasOwn(override, "transport") && override.transport !== (base.transport ?? "stdio");
+  const commandChanged = Object.hasOwn(override, "command") && override.command !== base.command;
+  const targetChanged = transportChanged || commandChanged
+    || (Object.hasOwn(override, "url") && override.url !== base.url)
+    || (Object.hasOwn(override, "args") && !isDeepStrictEqual(override.args, base.args ?? []))
+    || (Object.hasOwn(override, "cwd") && override.cwd !== (base.cwd ?? "${workspace}"));
+  if (targetChanged) {
+    // A project-selected endpoint/program must explicitly supply its own secrets.
+    return { ...base, headers: undefined, oauth: undefined, env: undefined, envFrom: undefined,
+      args: transportChanged || commandChanged ? undefined : base.args, ...override };
+  }
+  return { ...base, ...override };
+}
+
 export function loadMcpConfig(workspace, projectTrusted) {
   const root = agentDir();
   const globalPath = path.join(root, "config", "mcp.json");
   const globalConfig = readConfigFile(globalPath) ?? { version: 1, allowProjectConfig: false, servers: {} };
   const merged = new Map();
-  for (const [id, server] of Object.entries(globalConfig.servers)) merged.set(id, normalizeServer(id, server, workspace, "global"));
+  for (const [id, server] of Object.entries(globalConfig.servers ?? {})) merged.set(id, server);
 
   const projectPath = path.join(workspace, ".sp", "config", "mcp.json");
+  let projectConfig;
   if (projectTrusted && globalConfig.allowProjectConfig === true && fs.existsSync(projectPath)) {
-    const projectConfig = readConfigFile(projectPath, true);
-    for (const [id, server] of Object.entries(projectConfig.servers)) {
-      if (merged.has(id)) throw new Error(`Project MCP server duplicates global server id: ${id}`);
-      merged.set(id, normalizeServer(id, server, workspace, "project"));
+    projectConfig = readConfigFile(projectPath, true);
+    for (const [id, server] of Object.entries(projectConfig.servers ?? {})) {
+      merged.set(id, merged.has(id) ? mergeProjectServer(id, merged.get(id), server) : server);
     }
   }
   if (merged.size > MAX_SERVERS) throw new Error(`MCP config exceeds ${MAX_SERVERS} servers`);
-  return { globalPath, projectPath, allowProjectConfig: globalConfig.allowProjectConfig === true, servers: [...merged.values()] };
+  const projectScope = projectConfig ? fs.realpathSync.native(workspace) : undefined;
+  const servers = [];
+  for (const [id, server] of merged) {
+    const source = projectConfig && Object.hasOwn(projectConfig.servers ?? {}, id) ? "project" : "global";
+    servers.push(normalizeServer(id, server, workspace, source, projectScope));
+  }
+  return { globalPath, projectPath, allowProjectConfig: globalConfig.allowProjectConfig === true, servers };
 }

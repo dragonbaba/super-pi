@@ -70,6 +70,7 @@ export function configFingerprint(config, workspace) {
   const material = {
     workspace,
     source: config.source,
+    projectScope: config.projectScope,
     transport: config.transport,
     command: config.command,
     args: config.args,

@@ -306,6 +306,26 @@ test("search activation survives extension replacement and validates changed con
 	assert.equal(changed.active().includes(REMOTE), false);
 });
 
+test("trusted project override invalidates global activation and a disabled override never connects", async t => {
+	const f = await fixture(t), initial = f.host();
+	const globalPath = join(f.agentDir, "config", "mcp.json");
+	const global = JSON.parse(readFileSync(globalPath, "utf8")); global.allowProjectConfig = true;
+	writeFileSync(globalPath, JSON.stringify(global));
+	await initial.start(); await initial.search(); await initial.stop();
+	mkdirSync(join(f.root, ".sp", "config"), { recursive: true });
+	const projectPath = join(f.root, ".sp", "config", "mcp.json");
+	writeFileSync(projectPath, JSON.stringify({ version: 1, servers: { fixture: { toolTimeoutMs: 2000 } } }));
+	const project = f.host(initial.manager); project.ctx.isProjectTrusted = () => true;
+	await project.start(); await project.search("nothing-matches");
+	assert.equal(project.active().includes(REMOTE), false, "global intent cannot authorize project identity");
+	await project.search(); assert.ok(project.active().includes(REMOTE)); await project.stop();
+	writeFileSync(projectPath, JSON.stringify({ version: 1, servers: { fixture: { enabled: false } } }));
+	const disabled = f.host(project.manager); disabled.ctx.isProjectTrusted = () => true;
+	await disabled.start(); await disabled.search();
+	assert.equal(disabled.active().includes(REMOTE), false);
+	assert.equal(f.endpoint.initializes, 2); assert.equal(f.endpoint.lists, 2); assert.equal(f.endpoint.calls, 0);
+});
+
 test("concurrent real SDK connections share one discovery attempt", async t => {
 	const f = await fixture(t), gate = f.block();
 	const runtime = new McpBridgeRuntime({ registerTool() {} }, f.root);
