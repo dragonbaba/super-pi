@@ -3,6 +3,7 @@ import test from "node:test";
 import type { AssistantMessage, AssistantMessageEvent, Model } from "@super-pi/ai";
 import { AssistantMessageEventStream, EventStream } from "../packages/ai/src/utils/event-stream.ts";
 import { lazyStream } from "../packages/ai/src/api/lazy.ts";
+import { stream as streamPiMessages } from "../packages/ai/src/api/pi-messages.ts";
 import { Type } from "typebox";
 import { agentLoop, runHostToolDispatch } from "../packages/agent/src/agent-loop.ts";
 import type { AgentEvent, AgentLoopConfig, AgentTool } from "../packages/agent/src/types.ts";
@@ -35,8 +36,10 @@ test("assistant timing uses monotonic completion and preserves forwarding, defer
 	}
 	const outer = new AssistantMessageEventStream(), inner = new AssistantMessageEventStream(), shared = message(wall);
 	monotonic += 4; inner.push({ type: "done", reason: "stop", message: shared });
-	monotonic += 100; outer.push({ type: "done", reason: "stop", message: shared });
-	assert.equal(shared.durationMs, 4);
+	const measured = await inner.result();
+	monotonic += 100; outer.push({ type: "done", reason: "stop", message: measured });
+	assert.equal((await outer.result()).durationMs, 4);
+	assert.equal(await outer.result(), measured);
 	const historic = message(wall - 1), fetched = new AssistantMessageEventStream();
 	fetched.end(historic); assert.equal(historic.durationMs, undefined);
 	const preset = { ...message(wall), durationMs: 0 };
@@ -52,6 +55,52 @@ test("lazy setup failure retains request timestamp and measures failed setup", a
 	assert.equal(result.timestamp, 1000);
 	assert.equal(result.durationMs, 50);
 	assert.equal(result.errorMessage, "setup failed");
+});
+
+test("plain SDK streams time immutable terminal messages without changing provider ownership", async t => {
+	let now = 10;
+	t.mock.method(Date, "now", () => 1000);
+	t.mock.method(performance, "now", () => now);
+	for (const plain of [true, false]) for (const finish of ["done", "error", "end"] as const) {
+		const stream: AssistantMessageEventStream = plain
+			? new EventStream<AssistantMessageEvent, AssistantMessage>(
+				event => event.type === "done" || event.type === "error",
+				event => event.type === "done" ? event.message : (event as Extract<AssistantMessageEvent, { type: "error" }>).error)
+			: new AssistantMessageEventStream();
+		const original = Object.freeze(message(1000));
+		now += 23;
+		const terminal = finish === "error"
+			? Object.freeze({ type: "error" as const, reason: "error" as const, error: original })
+			: Object.freeze({ type: "done" as const, reason: "stop" as const, message: original });
+		if (finish === "end") stream.end(original); else stream.push(terminal);
+		const result = await stream.result();
+		assert.equal(result.durationMs, 23); assert.equal(original.durationMs, undefined);
+		assert.equal(result.content, original.content, "completion must not copy message content");
+		for await (const event of stream) {
+			assert.equal(event.type === "done" ? event.message : event.type === "error" ? event.error : undefined, result);
+		}
+		const late = message(1000); now += 100; stream.end(late); assert.equal(late.durationMs, undefined);
+	}
+});
+
+test("pi-messages failure and abort retain the request start timestamp", async t => {
+	let wall = 1000, now = 10;
+	t.mock.method(Date, "now", () => wall);
+	t.mock.method(performance, "now", () => now);
+	for (const abort of [false, true]) {
+		wall = 1000; now = 10;
+		const controller = new AbortController();
+		const stream = streamPiMessages({ ...model, api: "pi-messages", baseUrl: "https://fixture.invalid", name: "fixture",
+			reasoning: false, input: ["text"], contextWindow: 32000, maxTokens: 4096,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } } as Model<"pi-messages">,
+			{ messages: [] }, { apiKey: "fixture", signal: controller.signal, fetch: async () => {
+				wall = 2000; now = 60; if (abort) controller.abort(); throw new Error("transport failed");
+			} });
+		const result = await stream.result();
+		assert.equal(result.errorMessage, "transport failed");
+		assert.equal(result.timestamp, 1000); assert.equal(result.durationMs, 50);
+		assert.equal(result.stopReason, abort ? "aborted" : "error");
+	}
 });
 
 test("tool duration excludes preflight, progress drain and result hooks; unexecuted calls remain untimed", async t => {

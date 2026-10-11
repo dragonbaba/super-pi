@@ -80,3 +80,10 @@ stream, such as later-fetched deferred responses, remain untimed. These fields
 are available in local messages, SDK events and extension contexts; the separate
 server protocol v1 projection does not transmit host timing metadata. Default
 tool labels and compact read/Codemode layouts are unchanged.
+
+Both `AssistantMessageEventStream` and structurally compatible plain `EventStream`
+implementations time assistant results. Completing a response creates a shallow
+message envelope with the measurement and, when applicable, a terminal event
+envelope pointing to it. Frozen provider messages/events are supported; their
+content and usage are not copied or mutated by timing. Deltas retain their original
+identity, and the terminal event's message is the same object returned by `result()`.

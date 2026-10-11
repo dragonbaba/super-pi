@@ -1,6 +1,28 @@
 # Response and tool duration persistence (F03.2)
 
-## Design gate
+## Final design and review correction
+
+The initial design below missed directly returned plain EventStreams and assumed
+mutable provider terminal messages. Review reproductions confirm the plain stream
+has no duration and pi-messages local failures still timestamp the failure instant.
+Revise the timing boundary to the existing generic EventStream terminal handling:
+two primitive clock fields per stream, with assistant-result detection only at
+completion/end. The existing done flag bounds finalization to once. This covers
+both ordinary and specialized streams, including synchronous SDK completions,
+without wrapping streams or adding per-delta forwarding queues/promises.
+
+Assistant terminal finalization shallow-copies the message envelope with its
+duration and replace the terminal event envelope; content/usage remain shared.
+These are named completion-only allocations (one message and one terminal event,
+or one message for end-only), never per-delta allocations. Provider-owned messages
+and events can be frozen or non-extensible. Existing durations and historical
+timestamps preserve identity. Remove the WeakMap/subclass overrides; no added
+references require release. Timestamp pi-messages local error/abort with the same
+request start used by its event converter. Validate ordinary/specialized immutable
+streams, terminal/result identity and pi-messages failures, then rerun affected
+FIFO/AST/duration checks, builds and the stream/leaf/queue allocation gates.
+
+## Initial design gate (superseded timing storage)
 
 Baseline: `9fcbd5983973ba7be7942f570f9a7a27f83627e0` (PR #118 merged).
 Assistant and tool messages have no duration field. Lazy setup failures currently
@@ -49,7 +71,7 @@ deterministic counters, sampled sites and controlled-GC release; no full local
 suite or unrelated provider calls. Exact evidence directory:
 `.git/f03-2-duration-persistence-20261012/`.
 
-## Verification
+## Initial verification (f0b07ca4a)
 
 Baseline probes failed on missing assistant duration and lazy setup timestamp
 (2000 instead of request start 1000). The candidate passes 64 targeted checks:
@@ -104,3 +126,37 @@ mostly measurement clocks and fixture code. The change does not alter terminal
 queue ownership or backpressure. Session/render fixtures dispose their sessions,
 clear transcript rows and remove their recorded temporary directories. Local
 logs and profiles are evidence artifacts, not repository payloads.
+
+## Final candidate verification
+
+All three review findings are addressed. The added plain/frozen-stream and local
+pi-messages failure/abort probes failed before the correction. The final candidate
+passes 66 targeted behavior/AST checks and 35 provider compatibility/ownership
+checks, plus typecheck and the three affected builds. Frozen terminal events and
+messages complete without mutation; event and result share the timed final
+message while content retains its original reference. Ordinary SDK EventStreams
+and assistant subclasses have the same timing. Pi-messages errors/aborts now keep
+the request timestamp (controlled test: timestamp 1000, duration 50, failure at
+wall time 2000).
+
+Final stream profile: 100000 unchanged delta identities, 0 delta clock reads,
+9.38 sampled bytes/delta versus baseline 9.33 (FIFO push remains the leading site).
+The measured completion creates exactly one shallow message envelope and one
+terminal event envelope, guarded by `isComplete`; `end(result)` creates at most
+one message envelope, guarded by `!done`. AST checks constrain these exact named
+helpers and preserve the existing one iterator-result envelope in push/end.
+No new closures, arrays, promises, controllers or deep content copies are added.
+The generic stream owns two numeric start fields; the initial WeakMap and subclass
+overrides are removed. Non-assistant results pass through unchanged. Queue/waiters
+end at 0, and all 19 tracked original/final message and stream references are
+released across completion, error, abort, end-with-result, end-without-result and
+abandonment after four task/GC boundaries.
+
+Final leaf sampled bytes/delivery (generic / built-in / custom / image):
+1015.44 / 901.45 / 1301.10 / 1760.43; p95 ms: 0.0034 / 0.0023 / 0.0027 / 0.0038.
+Compared with the baseline table above, all deterministic context/wrapper counts
+and final hashes remain equal; pending scheduler tasks and progress promises are
+0. No speedup is claimed. Final queue sampling is 106.04 bytes/frame; all existing
+zero-allocation and post-flush reference/byte counters still pass. Profiles are
+`stream-review.json`, `leaf-review.json`, `queue-review.json`; candidate hashes
+are `source-hashes-review.json`. The original coverage limitations still apply.
