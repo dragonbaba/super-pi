@@ -8,6 +8,7 @@ import {
 	InteractiveMode,
 } from "../../packages/coding-agent/src/modes/interactive/interactive-mode.ts";
 import type { TUI } from "../../packages/tui/src/tui.ts";
+import { ProgramStatusReporter } from "../../packages/coding-agent/src/modes/interactive/program-status-reporter.ts";
 import { currentCommit, readIntegerOption } from "./benchmark.ts";
 
 interface SamplingNode {
@@ -51,6 +52,8 @@ let activeObserverSession: SessionEventHarness;
 let observerBridgePromises = 0;
 let observerDeliveries = 0;
 let extensionObserverPublishes = 0;
+let programStatusReports = 0;
+function recordProgramStatus(): void { programStatusReports++; }
 
 function deliverBuiltInEvent(event: BenchEvent): void | Promise<void> {
 	const result = activeMode.handleEvent(event);
@@ -106,7 +109,8 @@ function allocationSites(head: SamplingNode): { sampledBytes: number; top: Alloc
 
 function createMode(): InteractiveEventHarness {
 	const mode = Object.create(InteractiveMode.prototype) as InteractiveEventHarness & Record<string, unknown>;
-	const renderer = { requestRender(): void {} } as TUI;
+	const renderer = { requestRender(): void {}, terminal: { setProgramStatus: recordProgramStatus } } as unknown as TUI;
+	programStatusReports = 0;
 	Object.assign(mode, {
 		isInitialized: true,
 		footer: { invalidate(): void {} },
@@ -119,6 +123,7 @@ function createMode(): InteractiveEventHarness {
 			["tool-1", { args: {}, started: true, resultIsError: false }],
 		]),
 		ui: createInteractiveTuiReference(() => renderer),
+		programStatus: new ProgramStatusReporter(() => renderer.terminal, () => undefined),
 	});
 	return mode;
 }
@@ -211,6 +216,7 @@ async function measure(name: string, event: BenchEvent, updates: number, warmup:
 			controlledGcAfter,
 			controlledGcHeapDeltaBytes: controlledGcAfter - heapBefore,
 			builtInListenerPromisesPerUpdate: builtInListenerPromises / updates,
+			programStatusReportsPerUpdate: programStatusReports / updates,
 			rejectionObserversPerUpdate: rejectionObservers / updates,
 			finalUpdateCorrect: finalUpdateCorrect ? 1 : 0,
 		},
@@ -326,6 +332,7 @@ async function measureFullObserverChain(event: BenchEvent, updates: number, warm
 				(observerBridgePromises + builtInListenerPromises) / Math.max(1, observerDeliveries),
 			observerBridgePromisesPerDelivery: observerBridgePromises / Math.max(1, observerDeliveries),
 			builtInInteractivePromisesPerDelivery: builtInListenerPromises / Math.max(1, observerDeliveries),
+			programStatusReportsPerDelivery: programStatusReports / Math.max(1, observerDeliveries),
 			rejectionObserversPerDelivery: rejectionObservers / Math.max(1, observerDeliveries),
 			sampledAllocationBytes: sampled.sampledBytes,
 			sampledAllocationBytesPerRawUpdate: sampled.sampledBytes / updates,
@@ -393,6 +400,7 @@ process.stdout.write(`${JSON.stringify({
 		coverage: {
 			realAgentObserverDelivery: true,
 			realStableReference: true,
+			realProgramStatusReporter: true,
 			realAssistantComponent: false,
 			realToolComponent: false,
 			markdown: false,

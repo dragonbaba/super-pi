@@ -102,6 +102,7 @@ export { type RenderLatexOptions, renderLatex } from "./latex.ts";
 export { StdinBuffer, type StdinBufferEventMap, type StdinBufferOptions } from "./stdin-buffer.ts";
 // Terminal interface and implementations
 export { ProcessTerminal, type Terminal, type TerminalFrameWriteCompletion } from "./terminal.ts";
+export { formatProgramStatus, sanitizeProgramStatusMessage, type ProgramStatusState, type ProgramStatusKind } from "./program-status.ts";
 export {
 	TerminalFrameQueue,
 	type TerminalFrameQueueOptions,

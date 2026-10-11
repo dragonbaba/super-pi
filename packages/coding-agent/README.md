@@ -82,6 +82,24 @@ automatic compaction. A provider error or a request for user input alone leaves
 it false. Existing consumers can ignore the additive field; clients connecting
 to older hosts should treat an absent field as false.
 
+## Terminal program status
+
+Interactive mode reports OSC 7501 to supporting terminals: `working` during runs
+and compaction, `blocked` for permission/input/login dialogs or a run waiting for
+input, then `done`, `error`, or `idle` after completion, failure, or cancellation.
+An automatic retry keeps the run working until its final outcome is known.
+
+Support is queried at terminal startup. Set `SP_PROGRAM_STATUS=1` to force reports
+when replies cannot reach the application, or `SP_PROGRAM_STATUS=0` to disable
+them. OSC 9;4 progress and its existing setting remain independent. JSON and RPC
+output do not contain these terminal sequences.
+
+Reports contain only the session name, dialog title, or first error line, bounded
+to 2048 UTF-8 bytes with control characters removed. Prompt text, assistant output,
+tool results and login credentials are not included. Unchanged statuses are not
+re-sent; a slow output retains only the latest pending state. Suspend/resume and
+renderer replacement replay the current status after support is established.
+
 ## Tool-result budget
 
 Tool-result projection stays disabled unless explicitly configured. Use
