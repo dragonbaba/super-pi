@@ -68,6 +68,7 @@ import type {
 	SessionShutdownEvent,
 	ToolCallEvent,
 	ToolCallEventResult,
+	ToolRenderers,
 	ToolResultEvent,
 	ToolResultEventResult,
 	ToolExecutionUpdateEvent,
@@ -552,6 +553,8 @@ class PendingToolAuthorization implements ToolInvocationAuthorization {
 	}
 }
 
+function ignoreToolRendererRejection(): void {}
+
 export class ExtensionRunner {
 	private extensions: Extension[];
 	private handlerEventTypes: Set<string>;
@@ -599,6 +602,49 @@ export class ExtensionRunner {
 	private toolCallDeadlines: Set<ToolCallDeadline> | undefined;
 	private finalAuthorizations: Set<PendingToolAuthorization> | undefined;
 	private toolCallDialogOwner: ToolCallDeadline | undefined;
+	private rendererToolName: string | undefined;
+	private rendererBase: ToolRenderers | undefined;
+	private rendererExtensionIndex = 0;
+	private rendererResolverIndex = 0;
+	private rendererDepth = 0;
+	// One callback per runner lifecycle; never capture a tool name/base per lookup.
+	private readonly nextToolRenderer = (): ToolRenderers | undefined => {
+		const toolName = this.rendererToolName;
+		if (toolName === undefined || this.staleMessage) return undefined;
+		if (this.rendererDepth >= 128) throw new RangeError("Tool renderer resolution exceeds 128 frames");
+		const extensionIndex = this.rendererExtensionIndex;
+		const resolverIndex = this.rendererResolverIndex;
+		this.rendererDepth++;
+		try {
+			while (this.rendererExtensionIndex < this.extensions.length) {
+				const extension = this.extensions[this.rendererExtensionIndex];
+				const resolver = extension.toolRenderers?.[this.rendererResolverIndex++];
+				if (!resolver) {
+					this.rendererExtensionIndex++;
+					this.rendererResolverIndex = 0;
+					continue;
+				}
+				try {
+					const result = resolver(toolName, this.nextToolRenderer);
+					// A malformed async extension must not leave a rejected promise unobserved.
+					if (result && typeof result === "object" && "then" in result) void Promise.resolve(result).catch(ignoreToolRendererRejection);
+					if (result !== undefined && (result === null || typeof result !== "object" || "then" in result)) {
+						throw new TypeError("Tool renderer resolver must synchronously return renderers or undefined");
+					}
+					return result;
+				} catch (error) {
+					this.emitError({ extensionPath: extension.path, event: "tool_renderer",
+						error: error instanceof Error ? error.message : String(error) });
+					return this.rendererBase;
+				}
+			}
+			return this.rendererBase;
+		} finally {
+			this.rendererDepth--;
+			this.rendererExtensionIndex = extensionIndex;
+			this.rendererResolverIndex = resolverIndex;
+		}
+	};
 
 	constructor(
 		extensions: Extension[],
@@ -793,6 +839,26 @@ export class ExtensionRunner {
 			}
 		}
 		return undefined;
+	}
+
+	/** Presentation-only chain. Base is already looked up; no per-resolution thunk or list. */
+	resolveToolRenderers(toolName: string, base: ToolRenderers | undefined): ToolRenderers | undefined {
+		this.assertActive();
+		const previousName = this.rendererToolName;
+		const previousBase = this.rendererBase;
+		const previousExtension = this.rendererExtensionIndex;
+		const previousResolver = this.rendererResolverIndex;
+		this.rendererToolName = toolName;
+		this.rendererBase = base;
+		this.rendererExtensionIndex = 0;
+		this.rendererResolverIndex = 0;
+		try { return this.nextToolRenderer(); }
+		finally {
+			this.rendererToolName = previousName;
+			this.rendererBase = previousBase;
+			this.rendererExtensionIndex = previousExtension;
+			this.rendererResolverIndex = previousResolver;
+		}
 	}
 
 	getFlags(): Map<string, ExtensionFlag> {

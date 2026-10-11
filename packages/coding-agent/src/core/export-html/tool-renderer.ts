@@ -8,12 +8,14 @@
 import type { ImageContent, TextContent } from "@super-pi/ai";
 import type { Component } from "@super-pi/tui";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
-import type { ToolDefinition, ToolRenderContext } from "../extensions/types.ts";
+import type { ToolDefinition, ToolRenderContext, ToolRenderers } from "../extensions/types.ts";
 import { ansiLinesToHtml } from "./ansi-to-html.ts";
 
 export interface ToolHtmlRendererDeps {
 	/** Function to look up tool definition by name */
-	getToolDefinition: (name: string) => ToolDefinition | undefined;
+	getToolDefinition?: (name: string) => ToolDefinition | undefined;
+	/** Presentation lookup, preferred over the legacy definition lookup. */
+	getToolRenderers?: (name: string) => ToolRenderers | undefined;
 	/** Theme for styling */
 	theme: Theme;
 	/** Working directory for render context */
@@ -23,6 +25,8 @@ export interface ToolHtmlRendererDeps {
 }
 
 export interface ToolHtmlRenderer {
+	/** True when presentation selection overrides the registered tool definition. */
+	hasRendererOverride?(toolCallId: string, toolName: string): boolean;
 	/** Render a tool call to HTML. Returns undefined if tool has no custom renderer. */
 	renderCall(toolCallId: string, toolName: string, args: unknown): string | undefined;
 	/** Render a tool result to collapsed/expanded HTML. Returns undefined if tool has no custom renderer. */
@@ -56,12 +60,20 @@ function trimRenderedResultLines(lines: string[]): string[] {
 }
 
 export function createToolHtmlRenderer(deps: ToolHtmlRendererDeps): ToolHtmlRenderer {
-	const { getToolDefinition, theme, cwd, width = 100 } = deps;
+	const { theme, cwd, width = 100 } = deps;
+	const getToolRenderers = deps.getToolRenderers ?? deps.getToolDefinition;
 
 	const renderedCallComponents = new Map<string, Component>();
 	const renderedResultComponents = new Map<string, Component>();
 	const renderedStates = new Map<string, any>();
 	const renderedArgs = new Map<string, unknown>();
+	// Export-local row ownership, matching the component/state maps above. Cache
+	// undefined too so stateful resolvers cannot select different phases of a row.
+	const selectedRenderers = new Map<string, ToolRenderers | undefined>();
+	const getSelectedRenderers = (toolCallId: string, toolName: string): ToolRenderers | undefined => {
+		if (!selectedRenderers.has(toolCallId)) selectedRenderers.set(toolCallId, getToolRenderers?.(toolName));
+		return selectedRenderers.get(toolCallId);
+	};
 
 	const getState = (toolCallId: string): any => {
 		let state = renderedStates.get(toolCallId);
@@ -96,10 +108,17 @@ export function createToolHtmlRenderer(deps: ToolHtmlRendererDeps): ToolHtmlRend
 	};
 
 	return {
+		hasRendererOverride(toolCallId: string, toolName: string): boolean {
+			try {
+				return deps.getToolRenderers !== undefined && getSelectedRenderers(toolCallId, toolName) !== deps.getToolDefinition?.(toolName);
+			} catch {
+				return false;
+			}
+		},
 		renderCall(toolCallId: string, toolName: string, args: unknown): string | undefined {
 			try {
 				renderedArgs.set(toolCallId, args);
-				const toolDef = getToolDefinition(toolName);
+				const toolDef = getSelectedRenderers(toolCallId, toolName);
 				if (!toolDef?.renderCall) {
 					return undefined;
 				}
@@ -126,7 +145,7 @@ export function createToolHtmlRenderer(deps: ToolHtmlRendererDeps): ToolHtmlRend
 			isError: boolean,
 		): { collapsed?: string; expanded?: string } | undefined {
 			try {
-				const toolDef = getToolDefinition(toolName);
+				const toolDef = getSelectedRenderers(toolCallId, toolName);
 				if (!toolDef?.renderResult) {
 					return undefined;
 				}

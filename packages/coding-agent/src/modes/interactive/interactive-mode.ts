@@ -93,6 +93,7 @@ import type {
 	ExtensionWidgetOptions,
 	MarkdownTransformer,
 	ProjectTrustContext,
+	ToolRenderers,
 	WorkingIndicatorOptions,
 } from "../../core/extensions/index.ts";
 import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.ts";
@@ -2504,10 +2505,10 @@ export class InteractiveMode {
 	}
 
 	/**
-	 * Get a registered tool definition by name (for custom rendering).
+	 * Resolve presentation independently of tool execution registration.
 	 */
-	private getRegisteredToolDefinition(toolName: string) {
-		return this.session.getToolDefinition(toolName);
+	private getResolvedToolRenderers(toolName: string) {
+		return this.session.getToolRenderers(toolName);
 	}
 
 	private getMarkdownTransformers(): MarkdownTransformer[] {
@@ -4599,7 +4600,8 @@ export class InteractiveMode {
 		applyBoundary = true,
 	): ToolExecutionComponent | ReadToolGroupComponent {
 		let component: ToolExecutionComponent | ReadToolGroupComponent;
-		if (allowReadGrouping && toolName === "read" && isGroupableReadCall(args)) {
+		const renderers = this.getResolvedToolRenderers(toolName);
+		if (allowReadGrouping && toolName === "read" && renderers === this.session.getToolDefinition(toolName) && isGroupableReadCall(args)) {
 			if (!this.lastReadToolGroup?.canAccept(args)) {
 				this.finalizeReadToolGroup();
 				this.lastReadToolGroup = new ReadToolGroupComponent(
@@ -4614,7 +4616,7 @@ export class InteractiveMode {
 			component.updateArgs(toolCallId, args);
 		} else {
 			if (applyBoundary) this.finalizeReadToolGroup();
-			component = this.createToolExecutionComponent(toolName, toolCallId, args);
+			component = this.createToolExecutionComponent(toolName, toolCallId, args, renderers);
 			component.setExpanded(this.toolOutputExpanded);
 			if (!placeholder) this.retainActiveToolComponent(component, toolCallId);
 		}
@@ -4623,7 +4625,7 @@ export class InteractiveMode {
 		return component;
 	}
 
-	private createToolExecutionComponent(toolName: string, toolCallId: string, args: any): ToolExecutionComponent {
+	private createToolExecutionComponent(toolName: string, toolCallId: string, args: any, renderers: ToolRenderers | undefined): ToolExecutionComponent {
 		return new ToolExecutionComponent(
 			toolName,
 			toolCallId,
@@ -4631,9 +4633,10 @@ export class InteractiveMode {
 			{
 				showImages: this.settingsManager.getShowImages(),
 				imageWidthCells: this.settingsManager.getImageWidthCells(),
+				rendererOverride: renderers !== this.session.getToolDefinition(toolName),
 				onVisualInvalidate: this.invalidateRetainedToolVisual,
 			},
-			this.getRegisteredToolDefinition(toolName),
+			renderers,
 			this.ui,
 			this.sessionManager.getCwd(),
 		);
@@ -5362,7 +5365,8 @@ export class InteractiveMode {
 						finalizeRebuildReadGroup();
 					} else if (content.type === "toolCall") {
 						let component: ToolExecutionComponent | ReadToolGroupComponent;
-						if (content.name === "read" && isGroupableReadCall(content.arguments)) {
+						const renderers = this.getResolvedToolRenderers(content.name);
+						if (content.name === "read" && renderers === this.session.getToolDefinition(content.name) && isGroupableReadCall(content.arguments)) {
 							if (!rebuildReadGroup?.canAccept(content.arguments)) {
 								finalizeRebuildReadGroup();
 							rebuildReadGroup = new ReadToolGroupComponent(
@@ -5378,7 +5382,7 @@ export class InteractiveMode {
 							component.setArgsComplete(content.id);
 						} else {
 							finalizeRebuildReadGroup();
-							component = this.createToolExecutionComponent(content.name, content.id, content.arguments);
+							component = this.createToolExecutionComponent(content.name, content.id, content.arguments, renderers);
 							component.setExpanded(this.toolOutputExpanded);
 							this.retainActiveToolComponent(component, content.id);
 						}

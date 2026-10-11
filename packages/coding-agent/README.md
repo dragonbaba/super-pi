@@ -10,6 +10,14 @@ alias. Build it from the repository root with `npm run build:offline`.
 Super Pi is derived from Pi `v0.84.1`; see the repository `NOTICE.md` for
 attribution and provenance.
 
+## Independent tool renderers
+
+Extensions can use `pi.registerToolRenderer((toolName, next) => renderers)` to
+customize interactive/history tool rows and HTML exports, including tools that
+are no longer registered. This does not register or activate executable tools.
+See [tool renderer registration](../../docs/tool-renderers.md) for precedence,
+lifecycle rules and an example.
+
 ## Fullscreen behavior
 
 The global `fullscreenExitOutput` setting controls what remains when the process exits. `"transcript"` (the default) prints the complete transcript back to the main terminal; `"resume-hint"` restores the pre-fullscreen terminal and leaves only the ordinary resume hint. This can also be changed in `/settings`.

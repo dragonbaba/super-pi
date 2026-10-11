@@ -31,6 +31,7 @@ import type {
 	ProviderConfig,
 	RegisteredCommand,
 	ToolDefinition,
+	ToolRendererResolver,
 } from "./types.ts";
 
 type CreateJiti = typeof import("jiti/static")["createJiti"];
@@ -318,6 +319,14 @@ function createExtensionAPI(
 			runtime.refreshTools();
 		},
 
+		registerToolRenderer(resolver: ToolRendererResolver): void {
+			assertActive();
+			if (typeof resolver !== "function") throw new TypeError("registerToolRenderer requires a synchronous resolver function");
+			const resolvers = extension.toolRenderers ??= [];
+			if (resolvers.length >= 64) throw new RangeError("An extension may register at most 64 tool renderer resolvers");
+			resolvers.push(resolver);
+		},
+
 		registerCommand(name: string, options: Omit<RegisteredCommand, "name" | "sourceInfo">): void {
 			assertActive();
 			if (typeof name !== "string" || name.length === 0) {
@@ -528,6 +537,7 @@ function createExtensionAPI(
 		discard: () => {
 			if (state !== "loading") return;
 			state = "failed";
+			extension.toolRenderers = undefined;
 			for (const unsubscribe of loadingUnsubscribers) unsubscribe();
 			clearPending();
 		},
@@ -609,6 +619,7 @@ function createExtension(extensionPath: string, resolvedPath: string): Extension
 		observers: new Map(),
 		tools: new Map(),
 		messageRenderers: new Map(),
+		toolRenderers: undefined,
 		entryRenderers: new Map(),
 		commands: new Map(),
 		flags: new Map(),

@@ -945,10 +945,12 @@
         let html = `<div class="tool-execution ${statusClass}" id="${toolDomId}">`;
         const args = call.arguments || {};
         const name = call.name;
+        const rendered = renderedTools?.[call.id];
+        const hasCustomHtml = !!(rendered?.callHtml || rendered?.resultHtmlCollapsed || rendered?.resultHtmlExpanded);
 
         const invalidArg = '<span class="tool-error">[invalid arg]</span>';
 
-        switch (name) {
+        switch (hasCustomHtml ? null : name) {
           case 'bash': {
             const command = str(args.command);
             const cmdDisplay = command === null ? invalidArg : escapeHtml(command || '...');
@@ -1039,8 +1041,7 @@
           }
           default: {
             // Check for pre-rendered custom tool HTML
-            const rendered = renderedTools?.[call.id];
-            if (rendered?.callHtml || rendered?.resultHtmlCollapsed || rendered?.resultHtmlExpanded) {
+            if (hasCustomHtml) {
               // Custom tool with pre-rendered HTML from TUI renderer
               if (rendered.callHtml) {
                 html += `<div class="tool-header ansi-rendered">${rendered.callHtml}</div>`;

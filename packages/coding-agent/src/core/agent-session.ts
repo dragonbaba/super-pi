@@ -113,6 +113,7 @@ import {
 	type SessionStartEvent,
 	type ShutdownHandler,
 	type ToolDefinition,
+	type ToolRenderers,
 	type ToolExecutionEndEvent,
 	type ToolExecutionStartEvent,
 	type ToolExecutionUpdateEvent,
@@ -2397,6 +2398,11 @@ export class AgentSession {
 
 	getToolDefinition(name: string): ToolDefinition | undefined {
 		return this._toolDefinitions.get(name)?.definition;
+	}
+
+	/** Resolves display only, without changing executable definitions or active tools. */
+	getToolRenderers(name: string): ToolRenderers | undefined {
+		return this._extensionRunner.resolveToolRenderers(name, this.getToolDefinition(name));
 	}
 
 	/**
@@ -5444,6 +5450,7 @@ export class AgentSession {
 
 		// Create tool renderer if we have an extension runner (for custom tool HTML rendering)
 		const toolRenderer: ToolHtmlRenderer = createToolHtmlRenderer({
+			getToolRenderers: (name) => this.getToolRenderers(name),
 			getToolDefinition: (name) => this.getToolDefinition(name),
 			theme,
 			cwd: this.sessionManager.getCwd(),
