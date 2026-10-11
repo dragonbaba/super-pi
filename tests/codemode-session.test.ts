@@ -754,6 +754,26 @@ test("a nested tool that ignores cancellation cannot wedge Codemode past its dea
 	assert.match(JSON.stringify(parent.content), /NESTED_TOOL_ABANDONED\] 1 child call/);
 });
 
+test("unknown tool guidance supports catalog lookup and awaited schemas in a live Codemode session", async t => {
+	const f = await fixture(t, { tools: ["read"] });
+	const { results } = await f.run([
+		"await tools.readFile({})",
+		'const tool = ALL_TOOLS.find(t => t.name === "read"); text(await describeTools([tool.name])); text((await tools[tool.name]({path:"file.txt"})).content[0].text); text(typeof searchTools)',
+	]);
+	assert.equal(results.length, 2);
+	assert.equal(results[0]!.isError, true);
+	const error = JSON.stringify(results[0]!.content);
+	assert.match(error, /ALL_TOOLS/);
+	assert.match(error, /await describeTools\(\[names\]\)/);
+	assert.doesNotMatch(error, /searchTools/);
+	assert.deepEqual((results[0]!.details as any).codemode.calls, []);
+	assert.equal(results[1]!.isError, false, JSON.stringify(results[1]));
+	const recovered = JSON.stringify(results[1]!.content);
+	assert.match(recovered, /read\(args:/);
+	assert.match(recovered, /hello/);
+	assert.match(recovered, /undefined/);
+});
+
 test("colliding tool names get distinct declared identifiers that scripts and describeTools accept", async t => {
 	const tools: InlineExtension = pi => {
 		for (const name of ["foo-bar", "foo_bar"]) pi.registerTool({ name, label: name, description: `fixture ${name}`, parameters: Type.Object({}),

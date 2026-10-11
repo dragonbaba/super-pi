@@ -163,7 +163,7 @@ export const PRELUDE_SOURCE: string = `(function (bridge, toolsJson, globalsJson
 		tools,
 		"tools",
 		allTools.map((tool) => tool.name),
-		"ALL_TOOLS lists every tool; searchTools(query) finds tools by topic.",
+		"Filter ALL_TOOLS by name or description to find tools. If the host provides describeTools, use await describeTools([names]) for schemas.",
 	);
 
 	const namespaces = new Map();
