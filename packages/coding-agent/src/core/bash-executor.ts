@@ -7,11 +7,12 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { createWriteStream, type WriteStream } from "node:fs";
+import type { WriteStream } from "node:fs";
 import { unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AnsiStreamFilter } from "../utils/ansi.ts";
+import { createPrivateOutputStream } from "../utils/private-output-file.ts";
 import { sanitizeBinaryOutput } from "../utils/shell.ts";
 import { CARRIAGE_RETURN_PATTERN } from "../utils/shell-regex.ts";
 import type { BashOperations } from "./tools/bash.ts";
@@ -78,8 +79,8 @@ export async function executeBashWithOperations(
 			const path = join(tmpdir(), `pi-bash-${randomBytes(8).toString("hex")}.log`);
 			// Only a successful exclusive open grants cleanup ownership. A collision
 			// must neither truncate/follow the existing entry nor remove it later.
-			// POSIX mode is private; Windows protection comes from the parent ACL.
-			tempFileStream = createWriteStream(path, { flags: "wx", mode: 0o600 });
+			// Private at creation: POSIX mode or a protected current-user Windows DACL.
+			tempFileStream = createPrivateOutputStream(path);
 			onTempFileOpen = () => { tempFilePath = path; };
 			tempFileStream.once("open", onTempFileOpen);
 			tempFileStream.on("error", onTempFileError);

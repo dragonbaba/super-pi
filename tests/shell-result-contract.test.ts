@@ -431,14 +431,15 @@ test("N3 actual output over 5 MiB preserves final tail and reports a capped, clo
 
 for (const fault of ["create", "write", "close", "cleanup"]) test(`N3 real output ${fault} failure retains execution facts, bounded tail and separate cleanup status`, async t => {
   const paths = new Set<string>(), streams = new Set<fs.WriteStream>();
-  const open = fs.openSync, unlink = fs.unlinkSync, write = fs.WriteStream.prototype.write;
+  const { privateOutputFileSystem } = await import("../packages/coding-agent/src/utils/private-output-file.ts");
+  const open = privateOutputFileSystem.openSync, unlink = fs.unlinkSync, write = fs.WriteStream.prototype.write;
   const create = fs.createWriteStream;
   const close = OutputAccumulator.prototype.closeTempFile;
   let injected = 0;
-  t.mock.method(fs, "openSync", function(path: any, ...args: any[]) {
+  t.mock.method(privateOutputFileSystem, "openSync", function(path: string) {
     const selected = typeof path === "string" && path.startsWith(join(tmpdir(), "sp-bash-")) && path.endsWith(".log");
     if (selected && fault === "create") { injected++; throw Object.assign(new Error("fixture ENOSPC create"), { code: "ENOSPC" }); }
-    const fd = Reflect.apply(open, fs, [path, ...args]); if (selected) paths.add(path); return fd;
+    const fd = open(path); if (selected) paths.add(path); return fd;
   });
   t.mock.method(fs.WriteStream.prototype, "write", function(this: fs.WriteStream, ...args: any[]) {
     if (streams.has(this)) {
