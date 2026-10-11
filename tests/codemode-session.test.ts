@@ -47,14 +47,14 @@ const MODEL = { id: "fixture", name: "fixture", api: "openai-responses", provide
 	input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 4096 } as const;
 const USAGE = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 
-async function fixture(t: TestContext, options: Pick<CreateAgentSessionOptions, "tools" | "noTools" | "excludeTools" | "toolResultPresentation" | "extensionRunnerOptions"> = {}, factories: InlineExtension[] = [], bundle = false, persist = false) {
+async function fixture(t: TestContext, options: Pick<CreateAgentSessionOptions, "tools" | "noTools" | "excludeTools" | "toolSelection" | "settingsManager" | "toolResultPresentation" | "extensionRunnerOptions"> = {}, factories: InlineExtension[] = [], bundle = false, persist = false) {
 	const root = mkdtempSync(join(tmpdir(), "sp-codemode-session-"));
 	let shutdown: (() => Promise<void>) | undefined;
 	t.after(async () => { try { await shutdown?.(); } finally { rmSync(root, { recursive: true, force: true }); } });
 	const cwd = join(root, "work"), agentDir = join(root, "agent");
 	mkdirSync(cwd); mkdirSync(agentDir);
 	writeFileSync(join(cwd, "file.txt"), "hello\nworld\n");
-	const settings = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false }, ...(bundle ? { packages: [resolve("packages/extensions")] } : {}) });
+	const settings = options.settingsManager ?? SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false }, ...(bundle ? { packages: [resolve("packages/extensions")] } : {}) });
 	const resources = new DefaultResourceLoader({ cwd, agentDir, settingsManager: settings, noExtensions: !bundle,
 		noContextFiles: true, noSkills: true, noPromptTemplates: true, noThemes: true, extensionFactories: factories });
 	await resources.reload();
@@ -454,6 +454,65 @@ test("SDK allowlist constrains children while adding the default transport; no-t
 	const empty = await fixture(t, { noTools: "all" });
 	assert.deepEqual(empty.session.getActiveToolNames(), []);
 	assert.deepEqual(empty.session.agent.state.modelTools, []);
+});
+
+test("tool selection expressions modify configured defaults and intersect literal SDK lists", async t => {
+	const settings = SettingsManager.inMemory({ defaultTools: ["read", "write"] });
+	const f = await fixture(t, { settingsManager: settings, toolSelection: { tools: ["+grep", "-write"] } });
+	assert.deepEqual(f.session.getActiveToolNames().sort(), ["codemode", "grep", "read"]);
+	assert.deepEqual(settings.getDefaultTools(), ["read", "write"]);
+	const strict = await fixture(t, { tools: ["read", "write"], toolSelection: { tools: ["*"], excludeTools: ["writ?"] } });
+	strict.session.setActiveToolsByName(["read", "write", "bash"]);
+	assert.deepEqual(strict.session.getActiveToolNames().sort(), ["codemode", "read"]);
+	const literal = await fixture(t, { tools: ["rea*"] });
+	assert.equal(literal.session.getActiveToolNames().includes("read"), false);
+	const empty = await fixture(t, { toolSelection: { tools: ["missing_*"] } });
+	assert.deepEqual(empty.session.agent.state.modelTools, []);
+	const added = await fixture(t, { noTools: "all", toolSelection: { tools: ["+read"] } });
+	assert.deepEqual(added.session.getActiveToolNames().sort(), ["codemode", "read"]);
+});
+
+test("tool selection expressions constrain late MCP registration, explicit activation and reload", async t => {
+	let registerLate: () => void = () => { throw new Error("not initialized"); };
+	let allowed = 0, denied = 0;
+	const extension: InlineExtension = pi => {
+		const runtime = new McpBridgeRuntime(pi, "fixture");
+		t.after(() => runtime.close());
+		pi.on("session_shutdown", () => runtime.close());
+		const state = { status: "connected", catalogReady: true, config: { id: "fixture", toolTimeoutMs: 1000 }, tools: new Map([["lookup", {}], ["delete", {}]]), client: {
+			async callTool(request: { name: string }) { if (request.name === "lookup") allowed++; else denied++; return { content: [{ type: "text", text: request.name }] }; }, async close() {} } };
+		runtime.states.set("fixture", state);
+		registerLate = () => {
+			for (const name of ["lookup", "delete"]) {
+				runtime.registerRemoteTool(state, { name, description: "fixture", inputSchema: { type: "object", properties: {} } });
+			}
+			pi.setActiveTools(["mcp__fixture__lookup", "mcp__fixture__delete", "write"]);
+		};
+	};
+	const f = await fixture(t, { toolSelection: { tools: ["mcp__fixture__*", "-*__delete"] } }, [extension]);
+	assert.deepEqual(f.session.getActiveToolNames(), []);
+	registerLate();
+	assert.deepEqual(f.session.getActiveToolNames().sort(), ["codemode", "mcp__fixture__lookup"]);
+	const outcome = await f.run(['const r=await callTool("mcp__fixture__lookup",{});text(r.content)', 'await callTool("mcp__fixture__delete",{})']);
+	assert.equal(outcome.results[0]?.isError, false, JSON.stringify(outcome.results));
+	assert.equal(outcome.results[1]?.isError, true);
+	assert.equal(allowed, 1); assert.equal(denied, 0);
+	await f.session.reload();
+	registerLate();
+	assert.deepEqual(f.session.getActiveToolNames().sort(), ["codemode", "mcp__fixture__lookup"]);
+	f.session.dispose();
+	assert.equal((f.session as any)._toolSelection, undefined);
+});
+
+test("tool selection wildcard and denied activation preserve unavailable PowerShell", async t => {
+	const settings = SettingsManager.inMemory({ powershellStatus: { available: false, verified: false, path: "missing.exe" } });
+	const f = await fixture(t, { settingsManager: settings, toolSelection: { tools: ["*"] } });
+	assert.equal(f.session.getActiveToolNames().includes("powershell"), false);
+	assert.equal(settings.getPowerShellStatus()?.available, false);
+	const denied = await fixture(t, { settingsManager: settings, toolSelection: { tools: ["read", "-powershell"] } });
+	denied.session.setActiveToolsByName(["powershell", "read"]);
+	assert.deepEqual(denied.session.getActiveToolNames().sort(), ["codemode", "read"]);
+	assert.equal(settings.getPowerShellStatus()?.available, false);
 });
 
 test("successful state writes persist as a versioned branch entry; failed script writes do not", async t => {
