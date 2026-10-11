@@ -9,7 +9,6 @@
 import { randomBytes } from "node:crypto";
 import { createWriteStream, type WriteStream } from "node:fs";
 import { unlink } from "node:fs/promises";
-import { finished } from "node:stream/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AnsiStreamFilter } from "../utils/ansi.ts";
@@ -65,17 +64,34 @@ export async function executeBashWithOperations(
 
 	let tempFilePath: string | undefined;
 	let tempFileStream: WriteStream | undefined;
+	let tempFileClosed: Promise<void> | undefined;
+	let tempFileError: Error | undefined;
+	let onTempFileOpen: (() => void) | undefined;
+	const onTempFileError = (error: Error) => { tempFileError ??= error; };
 	let totalBytes = 0;
 
 	const ensureTempFile = () => {
-		if (tempFilePath) {
+		if (tempFileStream || tempFileError) {
 			return;
 		}
-		const id = randomBytes(8).toString("hex");
-		tempFilePath = join(tmpdir(), `pi-bash-${id}.log`);
-		tempFileStream = createWriteStream(tempFilePath);
-		for (const chunk of outputChunks) {
-			tempFileStream.write(chunk);
+		try {
+			const path = join(tmpdir(), `pi-bash-${randomBytes(8).toString("hex")}.log`);
+			// Only a successful exclusive open grants cleanup ownership. A collision
+			// must neither truncate/follow the existing entry nor remove it later.
+			// POSIX mode is private; Windows protection comes from the parent ACL.
+			tempFileStream = createWriteStream(path, { flags: "wx", mode: 0o600 });
+			onTempFileOpen = () => { tempFilePath = path; };
+			tempFileStream.once("open", onTempFileOpen);
+			tempFileStream.on("error", onTempFileError);
+			// One non-rejecting close waiter at the spill boundary, never per chunk.
+			// An error may precede physical close, so error alone cannot release it.
+			tempFileClosed = new Promise<void>(resolve => { tempFileStream!.once("close", resolve); });
+			for (const chunk of outputChunks) {
+				tempFileStream.write(chunk);
+			}
+		} catch (error) {
+			// I/O setup failures must not escape a local stdout/stderr data listener.
+			tempFileError ??= error instanceof Error ? error : new Error(String(error));
 		}
 	};
 
@@ -99,7 +115,7 @@ export async function executeBashWithOperations(
 			ensureTempFile();
 		}
 
-		if (tempFileStream) {
+		if (tempFileStream && !tempFileError) {
 			tempFileStream.write(text);
 		}
 
@@ -172,7 +188,12 @@ export async function executeBashWithOperations(
 		}
 		if (tempFileStream) {
 			tempFileStream.end();
+			await tempFileClosed;
+			if (!tempFileError && !tempFileStream.writableFinished) {
+				tempFileError = new Error("Output log closed before all writes finished");
+			}
 		}
+		if (tempFileError) throw tempFileError;
 
 		return {
 			output: truncationResult.truncated ? truncationResult.content : fullOutput,
@@ -185,10 +206,10 @@ export async function executeBashWithOperations(
 		stdoutDecoder = undefined;
 		stderrDecoder = undefined;
 		if (tempFileStream) {
-			tempFileStream.end();
+			if (!tempFileStream.writableEnded) tempFileStream.end();
 			// Rejection has no BashResult through which callers could find this log.
 			// Wait for this owned stream to close before removing its exact path.
-			try { await finished(tempFileStream, { cleanup: true }); } catch { /* Preserve the primary command failure. */ }
+			await tempFileClosed;
 		}
 		if (tempFilePath) {
 			try { await unlink(tempFilePath); }
@@ -211,6 +232,12 @@ export async function executeBashWithOperations(
 		stderrAnsi = undefined;
 		onChunk = undefined;
 		outputChunks.length = 0;
+		if (onTempFileOpen) tempFileStream?.off("open", onTempFileOpen);
+		tempFileStream?.off("error", onTempFileError);
+		onTempFileOpen = undefined;
 		tempFileStream = undefined;
+		tempFileClosed = undefined;
+		tempFileError = undefined;
+		tempFilePath = undefined;
 	}
 }
