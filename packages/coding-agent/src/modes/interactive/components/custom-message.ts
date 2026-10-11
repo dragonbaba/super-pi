@@ -85,6 +85,7 @@ export class CustomMessageComponent extends Container {
 		}
 
 		// Default rendering uses our box
+		this.box.setPaddingX(this.outputPad);
 		this.addChild(this.box);
 		this.box.clear();
 

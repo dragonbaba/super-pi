@@ -469,6 +469,8 @@ export interface ToolRenderContext<TState = any, TArgs = any> {
 	isError: boolean;
 	/** Final execute() duration; unknown while running, for legacy results or unexecuted tools. */
 	durationMs?: number;
+	/** Horizontal transcript padding; self-rendered tools apply it themselves. Defaults to 1 for legacy contexts. */
+	outputPad?: number;
 }
 
 /**
