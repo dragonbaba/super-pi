@@ -56,6 +56,15 @@ function errorMessage(error: unknown): string {
 	return (error instanceof Error ? error.message : typeof error === "string" ? error : "Unknown sandbox error").slice(0, MAX_ERROR_CHARS);
 }
 
+/** Startup/fatal error path only; never retry a script after an installation change. */
+function workerErrorMessage(error: unknown, prefix = ""): string {
+	const message = prefix + errorMessage(error);
+	const code = error instanceof Error && "code" in error ? error.code : undefined;
+	if (code !== "ENOENT" && code !== "MODULE_NOT_FOUND" && code !== "ERR_MODULE_NOT_FOUND") return message.slice(0, MAX_ERROR_CHARS);
+	const hint = "Codemode worker could not load a required file. If the installation was updated or replaced, restart the application and resume the session. If this persists, rebuild or reinstall the runtime. No script was automatically retried. Original error: ";
+	return hint + message.slice(0, MAX_ERROR_CHARS - hint.length);
+}
+
 function serializeStore(store: Readonly<Record<string, unknown>> | undefined): Record<string, string> {
 	const serialized: Record<string, string> = Object.create(null);
 	if (!store) return serialized;
@@ -198,7 +207,7 @@ class Execution {
 			const source = typeof options.workerUrl === "string" ? options.workerUrl.endsWith(".ts") : options.workerUrl.pathname.endsWith(".ts");
 			worker = new Worker(options.workerUrl, { workerData, execArgv: source ? WORKER_EXEC_ARGV : WORKER_COMPILED_EXEC_ARGV, env: WORKER_ENV });
 		} catch (error) {
-			this.finish({ kind: "sandbox", message: `Failed to start worker: ${errorMessage(error)}` });
+			this.finish({ kind: "sandbox", message: workerErrorMessage(error, "Failed to start worker: ") });
 			return;
 		}
 		this.worker = worker;
@@ -208,7 +217,7 @@ class Execution {
 			this.finish({
 				kind: "sandbox",
 				name: error instanceof Error ? error.name : undefined,
-				message: errorMessage(error),
+				message: workerErrorMessage(error),
 			});
 		});
 		worker.on("exit", (code) => {
