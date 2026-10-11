@@ -7,6 +7,7 @@ import {
 	KITTY_IMAGE_CROP_CONTROL_PATTERN,
 	KITTY_IMAGE_ID_CONTROL_PATTERN,
 	KITTY_IMAGE_MORE_CHUNKS_PATTERN,
+	KITTY_IMAGE_ROWS_CONTROL_PATTERN,
 } from "./regex.ts";
 
 export type ImageProtocol = "kitty" | "iterm2" | null;
@@ -312,15 +313,15 @@ export function registerKittyImageMetadata(metadata: KittyImageMetadata): void {
 	}
 }
 
-function getRegisteredKittyImageMetadata(line: string): RegisteredKittyImageMetadata | undefined {
-	const controls = KITTY_IMAGE_CONTROLS_PATTERN.exec(line)?.[1];
-	if (!controls) return undefined;
+function getRegisteredKittyImageMetadataFromControls(controls: string): RegisteredKittyImageMetadata | undefined {
 	const imageId = KITTY_IMAGE_ID_CONTROL_PATTERN.exec(controls)?.[1];
 	return imageId === undefined ? undefined : kittyImageMetadata.get(Number.parseInt(imageId, 10));
 }
 
 export function getKittyImageMetadata(line: string): KittyImageMetadata | undefined {
-	const metadata = getRegisteredKittyImageMetadata(line);
+	const controls = KITTY_IMAGE_CONTROLS_PATTERN.exec(line)?.[1];
+	if (controls === undefined) return undefined;
+	const metadata = getRegisteredKittyImageMetadataFromControls(controls);
 	if (!metadata) return undefined;
 	return {
 		imageId: metadata.imageId,
@@ -351,11 +352,24 @@ const KITTY_PLACEMENT_CONTROL_KEYS = new Set([
 	"V",
 ]);
 
+/** Read the visible placement height from its header, without inspecting the image payload. */
+export function getKittyImagePlacementRows(line: string): number | undefined {
+	const controls = KITTY_IMAGE_CONTROLS_PATTERN.exec(line)?.[1];
+	if (controls === undefined) return undefined;
+	const explicitRows = KITTY_IMAGE_ROWS_CONTROL_PATTERN.exec(controls)?.[1];
+	if (explicitRows !== undefined) {
+		const rows = Number.parseInt(explicitRows, 10);
+		if (rows > 0) return rows;
+	}
+	return getRegisteredKittyImageMetadataFromControls(controls)?.rows;
+}
+
 /** Build a placement-only command for an image line emitted by {@link renderImage}. */
 export function getKittyImagePlacement(line: string): KittyImagePlacement | undefined {
 	const match = KITTY_IMAGE_CONTROLS_PATTERN.exec(line);
-	const metadata = getRegisteredKittyImageMetadata(line);
-	if (!match || !metadata) return undefined;
+	if (!match) return undefined;
+	const metadata = getRegisteredKittyImageMetadataFromControls(match[1]);
+	if (!metadata) return undefined;
 
 	let commandStart = match.index;
 	let commandControls = match[1];
