@@ -87,3 +87,18 @@ to allocation-benchmark, and no allocation/GC improvement is claimed.
 Raw local evidence is in `.git/f04-2-azure-foundry-20261012/`. Linux behavior and
 the full suite are left to required CI; live Azure access, regional pricing
 validation and a global install update are not part of this offline check.
+
+## CI follow-up
+
+Run `38169496140` exposed an existing catalog-wide strict-tool fixture that
+assumed every Chat model has a public base URL. The new Azure model intentionally
+requires tenant endpoint configuration, so it correctly failed before reaching
+the fixture fetch. The seven-test strict file reproduces this locally (one
+failure). Supply a synthetic Azure endpoint in that fixture; preserve all model
+metadata, serialization assertions and the production missing-endpoint guard.
+This follow-up changes no production path or allocation behavior.
+
+After the fixture correction, all seven strict checks and eight Azure checks
+pass (15/15). This brings distinct focused behavior/ownership coverage to 72
+checks plus the four source invariants. The unchanged production code retains
+its successful typecheck/build evidence. Final-head CI/review must run again.

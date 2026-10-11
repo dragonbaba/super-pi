@@ -41,6 +41,8 @@ async function captureWire(entry: Model<"openai-completions">): Promise<Record<s
 	let wire: Record<string, any> | undefined;
 	const stream = streamCompletions(entry, context(), {
 		apiKey: "fixture-key",
+		// Azure catalog models need a tenant endpoint even when fetch is intercepted.
+		azureBaseUrl: "https://azure-fixture.invalid/openai/v1",
 		maxTokens: 1,
 		fetch: async (_input, init) => {
 			const payload = JSON.parse(String(init?.body));
