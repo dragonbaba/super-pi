@@ -363,6 +363,7 @@ export class McpBridgeRuntime {
     const runtime = this;
     this.pi.registerTool({
       name,
+      requiresMcp: true,
       label: `MCP ${sanitizeText(state.config.id, 32)} / ${sanitizeText(remoteTool.name, 80)}`,
       description: sanitizeText(remoteTool.description ?? `MCP tool ${remoteTool.name}`, 1000),
       parameters,

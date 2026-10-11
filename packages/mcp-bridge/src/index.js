@@ -58,6 +58,7 @@ export default function mcpBridgeExtension(pi) {
   }
 
   let configError = null;
+  let mcpEnabled = true;
   let configInfo = null;
   let authController = null;
   let authOperation = null;
@@ -149,6 +150,7 @@ export default function mcpBridgeExtension(pi) {
 
   pi.registerTool({
     name: "mcp_search_tools",
+    requiresMcp: true,
     label: "MCP tool search",
     description: "Search configured MCP tools. After activation, use Codemode callTool(name, args) in this script; describeTools([name]) provides the current schema.",
     parameters: {
@@ -198,8 +200,14 @@ export default function mcpBridgeExtension(pi) {
     },
   });
 
-  pi.on("session_start", async (_event, ctx) => {
+  pi.on("session_start", async (event, ctx) => {
+    mcpEnabled = event.mcpEnabled !== false;
     const authStopped = stopAuth();
+    if (!mcpEnabled) {
+      try { await lifecycle.shutdown(); }
+      finally { await authStopped; }
+      return;
+    }
     let token;
     try { token = await lifecycle.begin(ctx.signal); }
     finally { await authStopped; }
@@ -295,6 +303,7 @@ export default function mcpBridgeExtension(pi) {
   });
 
   pi.on("session_tree", (_event, ctx) => {
+    if (!mcpEnabled) return;
     restoreActivationIntent(ctx);
     if (lifecycle.current) syncRemoteTools(lifecycle.current, true);
   });
@@ -302,6 +311,7 @@ export default function mcpBridgeExtension(pi) {
   pi.registerCommand("mcp-status", {
     description: "Show configured MCP servers, transports, connection state, and tool counts",
     handler: async (_args, ctx) => {
+      if (!mcpEnabled) { ctx.ui.notify("MCP is disabled for this session (--no-mcp).", "info"); return; }
       const header = configInfo
         ? `Global config: ${configInfo.globalPath}\nProject config: ${configInfo.allowProjectConfig ? "allowed when trusted" : "disabled globally"}`
         : "MCP configuration has not been loaded.";

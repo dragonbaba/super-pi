@@ -29,6 +29,8 @@ import { SettingsManager } from "../packages/coding-agent/src/core/settings-mana
 import { emitSessionShutdownEvent } from "../packages/coding-agent/src/core/extensions/runner.ts";
 import { AssistantMessageEventStream } from "../packages/ai/src/utils/event-stream.ts";
 import type { AssistantMessage } from "../packages/ai/src/types.ts";
+import { Type } from "typebox";
+import type { ExtensionAPI } from "../packages/coding-agent/src/core/extensions/types.ts";
 
 const USAGE = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 
@@ -115,6 +117,60 @@ async function fixture(t: TestContext) {
 }
 
 const REMOTE = "mcp__fixture__lookup";
+
+test("noMcp blocks real session startup, cached history, reload and tagged activation without changing persistent state", async t => {
+	const f = await fixture(t), enabled = f.host();
+	await enabled.start(); await enabled.search(); await enabled.stop();
+	assert.ok(enabled.active().includes("read"));
+	const files = [join(f.agentDir, "config", "mcp.json"), join(f.agentDir, "cache", "mcp-schemas-v1.json"), join(f.agentDir, "mcp-activation.key")];
+	const before = files.map(path => readFileSync(path));
+	const entries = enabled.manager.getEntries().filter(entry => entry.type === "custom" && entry.customType === "mcp-tool-activation-v1");
+	const settings = SettingsManager.inMemory({});
+	let api!: ExtensionAPI;
+	const ordinary = { name: "mcp__local__helper", label: "ordinary", description: "ordinary tool with MCP-like name", parameters: Type.Object({}), execute: async () => ({ content: [], details: {} }) };
+	const resources = new DefaultResourceLoader({ cwd: f.root, agentDir: f.agentDir, settingsManager: settings,
+		noExtensions: true, noContextFiles: true, noSkills: true, noPromptTemplates: true, noThemes: true,
+		extensionFactories: [mcpBridgeExtension, (pi: ExtensionAPI) => { api = pi; }] });
+	await resources.reload();
+	const { session } = await createAgentSession({ cwd: f.root, agentDir: f.agentDir, resourceLoader: resources, settingsManager: settings,
+		sessionManager: enabled.manager, noMcp: true, tools: ["read", "mcp_search_tools", REMOTE, "alias", "late_alias", ordinary.name], toolSelection: { tools: ["*"] },
+		customTools: [ordinary, { ...ordinary, name: "alias", requiresMcp: true }],
+		model: { id: "fixture", name: "fixture", api: "openai-responses", provider: "fixture", baseUrl: "http://unused", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32000, maxTokens: 4096 },
+		modelRuntime: { hasConfiguredAuth: () => true, checkAuth: async () => ({ type: "api_key" }), isUsingOAuth: () => false, getModel: () => undefined, getAuth: async () => undefined } as never });
+	f.cleanup.push(async () => { try { await emitSessionShutdownEvent(session.extensionRunner, { type: "session_shutdown", reason: "quit" }); } finally { session.dispose(); } });
+	assert.equal(session.getToolDefinition("mcp_search_tools"), undefined, "filtered even before session_start");
+	await session.bindExtensions({});
+	for (let cycle = 0; cycle < 2; cycle++) {
+		api.registerTool({ ...ordinary, name: "late_alias", requiresMcp: true });
+		session.setActiveToolsByName(["read", "mcp_search_tools", REMOTE, "alias", "late_alias", ordinary.name]);
+		assert.deepEqual(session.getActiveToolNames().sort(), ["codemode", ordinary.name, "read"]);
+		await session.extensionRunner!.emit({ type: "session_tree" } as never);
+		assert.equal(session.getToolDefinition(REMOTE), undefined);
+		if (cycle === 0) await session.reload();
+	}
+	assert.deepEqual(enabled.manager.getEntries().filter(entry => entry.type === "custom" && entry.customType === "mcp-tool-activation-v1"), entries);
+	for (let i = 0; i < files.length; i++) assert.deepEqual(readFileSync(files[i]!), before[i]);
+	assert.equal(f.endpoint.initializes, 1); assert.equal(f.endpoint.lists, 1); assert.equal(f.endpoint.calls, 0);
+	// A new enabled session can still use the same configuration/cache/history.
+	const resumed = f.host(enabled.manager); await resumed.start();
+	assert.ok(resumed.active().includes(REMOTE));
+	assert.equal(f.endpoint.initializes, 1, "cached resume remains lazy");
+});
+
+test("disabled bridge does not read or migrate invalid MCP config/cache", async t => {
+	const f = await fixture(t), h = f.host();
+	const config = join(f.agentDir, "config", "mcp.json"), cache = join(f.agentDir, "cache", "mcp-schemas-v1.json");
+	mkdirSync(join(f.agentDir, "cache"));
+	writeFileSync(config, "invalid fixture config"); writeFileSync(cache, "invalid fixture cache");
+	await h.events.get("session_start")({ type: "session_start", reason: "startup", mcpEnabled: false }, h.ctx);
+	await h.events.get("session_tree")({}, h.ctx);
+	await assert.rejects(h.search(), /not started/);
+	assert.equal(f.endpoint.initializes, 0); assert.equal(f.endpoint.lists, 0); assert.equal(f.endpoint.calls, 0);
+	assert.deepEqual(h.notes, []);
+	assert.equal(readFileSync(config, "utf8"), "invalid fixture config");
+	assert.equal(readFileSync(cache, "utf8"), "invalid fixture cache");
+	assert.equal(existsSync(join(f.agentDir, "mcp-activation.key")), false);
+});
 
 for (const configuration of ["absent", "invalid"]) {
 	for (const damage of ["truncated", "missing-version"]) test(`startup scrubs malformed legacy cache: config ${configuration}, cache ${damage}`, async t => {

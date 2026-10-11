@@ -33,6 +33,7 @@ export interface Args {
 	tools?: string[];
 	excludeTools?: string[];
 	noTools?: boolean;
+	noMcp?: boolean;
 	noBuiltinTools?: boolean;
 	extensions?: string[];
 	noExtensions?: boolean;
@@ -145,6 +146,8 @@ export function parseArgs(args: string[]): Args {
 				.filter((pattern) => pattern.length > 0);
 		} else if (arg === "--no-tools" || arg === "-nt") {
 			result.noTools = true;
+		} else if (arg === "--no-mcp") {
+			result.noMcp = true;
 		} else if (arg === "--no-builtin-tools" || arg === "-nbt") {
 			result.noBuiltinTools = true;
 		} else if ((arg === "--tools" || arg === "-t") && i + 1 < args.length) {
@@ -302,6 +305,7 @@ ${chalk.bold("Options:")}
   --models <patterns>            Comma-separated model patterns for Ctrl+P cycling
                                  Supports globs (anthropic/*, *sonnet*) and fuzzy matching
   --no-tools, -nt                Disable all tools by default (built-in and extension)
+  --no-mcp                      Disable MCP connections, discovery and tools for this session
   --no-builtin-tools, -nbt       Disable built-in tools by default but keep extension/custom tools enabled
   --tools, -t <tools>            Comma-separated names/patterns (*, ?); + adds, - excludes
                                  Bare names select an allowlist; only +/- modifies defaults
