@@ -31,6 +31,16 @@ const WORKER_EXEC_ARGV = ["--experimental-strip-types"];
 const WORKER_COMPILED_EXEC_ARGV: string[] = [];
 const WORKER_ENV = Object.freeze({});
 const RESERVED_GLOBALS: ReadonlySet<string> = new Set([
+	// QuickJS WASI built-ins are locked by the prelude. Reject collisions before
+	// starting a worker; the runtime test checks this list against the live VM.
+	"Object", "Function", "Error", "EvalError", "RangeError", "ReferenceError", "SyntaxError", "TypeError",
+	"URIError", "InternalError", "AggregateError", "SuppressedError", "Iterator", "Array", "parseInt", "parseFloat",
+	"isNaN", "isFinite", "queueMicrotask", "decodeURI", "decodeURIComponent", "encodeURI", "encodeURIComponent",
+	"escape", "unescape", "Infinity", "NaN", "undefined", "eval", "Number", "Boolean", "String", "Math", "Reflect",
+	"Symbol", "DisposableStack", "BigInt", "Date", "RegExp", "JSON", "Proxy", "Map", "Set", "WeakMap", "WeakSet",
+	"ArrayBuffer", "SharedArrayBuffer", "Uint8ClampedArray", "Int8Array", "Uint8Array", "Int16Array", "Uint16Array",
+	"Int32Array", "Uint32Array", "BigInt64Array", "BigUint64Array", "Float16Array", "Float32Array", "Float64Array",
+	"DataView", "Promise", "AsyncDisposableStack", "WeakRef", "FinalizationRegistry", "DOMException", "btoa", "atob", "performance",
 	"tools",
 	"ALL_TOOLS",
 	"console",
@@ -360,9 +370,10 @@ export class CodemodeSandbox {
 		const namespaces = new Set<string>();
 		for (const global of options.globals ?? []) {
 			const parts = global.name.split(".");
-			if (parts.length > 2 || !parts.every((part) => IDENTIFIER.test(part)) || RESERVED_GLOBALS.has(parts[0])) {
+			if (parts.length > 2 || !parts.every((part) => IDENTIFIER.test(part))) {
 				throw new Error(`Invalid global name "${global.name}"`);
 			}
+			if (RESERVED_GLOBALS.has(parts[0])) throw new Error(`Global "${global.name}" conflicts with a reserved VM global "${parts[0]}"`);
 			if (this.globalsByName.has(global.name)) throw new Error(`Global "${global.name}" is already registered`);
 			if (parts.length === 2) namespaces.add(parts[0]);
 			this.globalsByName.set(global.name, global);

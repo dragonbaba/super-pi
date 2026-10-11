@@ -47,6 +47,128 @@ test("unknown tools point to catalog discovery without inventing a sandbox globa
 	assert.deepEqual(sandbox.stats, { activeExecutions: 0, workersStarted: 2, workersStopped: 2 });
 });
 
+test("Codemode built-in patches cannot corrupt calls, output or store writes", async () => {
+	const sandbox = new CodemodeSandbox({
+		tools: [{ name: "echo", execute: args => args }],
+		globals: [{ name: "echoArgs", spread: true, execute: args => args }],
+	});
+	try {
+		const result = await sandbox.execute(`
+			Array.prototype.toJSON = () => null;
+			Object.prototype.toJSON = () => 5;
+			Promise.prototype.then = () => {};
+			Map.prototype.get = () => undefined;
+			globalThis.JSON = { stringify: () => "x", parse: () => "x" };
+			store("k", [1]); store("old", undefined);
+			text(await tools.echo({a: 2}));
+			return [load("k"), await echoArgs([3], {b: 4})];
+		`, { store: { old: 0 } });
+		assert.equal(result.ok, true, JSON.stringify(result));
+		if (result.ok) {
+			assert.deepEqual(result.value, [[1], [[3], { b: 4 }]]);
+			assert.deepEqual(result.output, [{ type: "text", text: '{"a":2}' }]);
+			assert.deepEqual({ ...result.storeWrites.set }, { k: [1] });
+			assert.deepEqual(result.storeWrites.delete, ["old"]);
+			assert.equal(result.calls[0]?.status, "ok");
+		}
+		const exited = await sandbox.execute('Array.prototype.toJSON = () => null; store("k", [2]); exit()');
+		assert.equal(exited.ok, true, JSON.stringify(exited));
+		if (exited.ok) assert.deepEqual({ ...exited.storeWrites.set }, { k: [2] });
+		const next = await sandbox.execute('return [Object.prototype.toJSON === undefined, Array.prototype.toJSON === undefined, await tools.echo(7)]');
+		assert.equal(next.ok, true, JSON.stringify(next));
+		if (next.ok) assert.deepEqual(next.value, [true, true, 7]);
+	} finally { await sandbox.close(); }
+	assert.deepEqual(sandbox.stats, { activeExecutions: 0, workersStarted: 3, workersStopped: 3 });
+	assert.equal(Object.hasOwn(Object.prototype, "toJSON"), false);
+	assert.equal(Object.hasOwn(Array.prototype, "toJSON"), false);
+});
+
+test("Codemode rejects configured globals that shadow live VM names before execution", async () => {
+	const sandbox = new CodemodeSandbox({
+		tools: [{ name: "Math", execute: () => 7 }],
+		globals: [{ name: "custom.echo", execute: args => args }],
+	});
+	try {
+		const result = await sandbox.execute('return [Object.getOwnPropertyNames(globalThis).filter(name => name !== "custom"), await custom.echo(3), await tools.Math({})]');
+		assert.equal(result.ok, true, JSON.stringify(result));
+		if (!result.ok) return;
+		const [names, echoed, tool] = result.value as [string[], number, number];
+		assert.equal(echoed, 3);
+		assert.equal(tool, 7);
+		assert.ok(names.includes("JSON") && names.includes("Promise") && names.includes("Math"));
+		// Verify the host's reserved names against the actual engine, so upgrades
+		// cannot silently reintroduce startup failures for new built-ins.
+		for (const name of names) for (const configured of [name, `${name}.echo`]) {
+			assert.throws(() => new CodemodeSandbox({ globals: [{ name: configured, execute: () => 0 }] }), /conflicts with a reserved VM global/, configured);
+		}
+	} finally { await sandbox.close(); }
+	assert.deepEqual(sandbox.stats, { activeExecutions: 0, workersStarted: 1, workersStopped: 1 });
+});
+
+test("Codemode freezes indirect intrinsics while preserving instance overrides", async () => {
+	const sandbox = new CodemodeSandbox();
+	try {
+		const result = await sandbox.execute(`
+			"use strict";
+			const object = {}; object.toString = () => "custom";
+			function Legacy() {}
+			Legacy.prototype = Object.create(Error.prototype); Legacy.prototype.constructor = Legacy;
+			class MyError extends Error { constructor(message) { super(message); this.name = "MyError"; } }
+			const bare = new Error(); bare.message = "later";
+			const date = new Date(0); const customDate = new Date(0); customDate.toJSON = () => "date";
+			const array = [1]; array.toJSON = () => [2];
+			class Custom { toJSON() { return {custom: true}; } }
+			globalThis.ownGlobal = 7;
+			const frozen = [Object.prototype, Array.prototype, JSON,
+				Object.getPrototypeOf(function* () {}).prototype, Object.getPrototypeOf(async function () {}),
+				Object.getPrototypeOf(async function* () {}).prototype, Object.getPrototypeOf(Int8Array).prototype,
+				Object.getPrototypeOf([][Symbol.iterator]()), Object.getPrototypeOf(Object.getPrototypeOf([][Symbol.iterator]())),
+				Object.getPrototypeOf(new Map()[Symbol.iterator]()), Object.getPrototypeOf(new Set()[Symbol.iterator]()),
+				Object.getPrototypeOf(""[Symbol.iterator]()), Object.getPrototypeOf(/a/[Symbol.matchAll](""))
+			].every(Object.isFrozen);
+			return [frozen, String(object), new Legacy().constructor === Legacy, new MyError("x").name,
+				bare.message, date, customDate, array, new Custom(), ownGlobal];
+		`);
+		assert.equal(result.ok, true, JSON.stringify(result));
+		if (result.ok) assert.deepEqual(result.value, [true, "custom", true, "MyError", "later", "1970-01-01T00:00:00.000Z", "date", [2], { custom: true }, 7]);
+	} finally { await sandbox.close(); }
+	assert.deepEqual(sandbox.stats, { activeExecutions: 0, workersStarted: 1, workersStopped: 1 });
+});
+
+test("Codemode rejected built-in patches and unreadable thrown values remain script errors", async () => {
+	const sandbox = new CodemodeSandbox();
+	try {
+		for (const code of [
+			'"use strict"; Array.prototype.toJSON = () => null',
+			'Object.defineProperty(Object.prototype, "toJSON", {value: () => 5})',
+			'Object.setPrototypeOf(Array.prototype, {})',
+			'"use strict"; globalThis.JSON = {}',
+			'Error.prototype.name = "patched"',
+		]) {
+			const result = await sandbox.execute(code);
+			assert.equal(result.ok, false, code);
+			if (!result.ok) { assert.equal(result.error.kind, "script"); assert.equal(result.error.name, "TypeError"); }
+		}
+		const result = await sandbox.execute('store("lost", 1); const error = new Error("x"); Object.defineProperty(error, "message", {get() {throw 7;}}); throw error');
+		assert.equal(result.ok, false);
+		if (!result.ok) {
+			assert.equal(result.error.kind, "script");
+			assert.equal(result.error.message, "The script threw a value that cannot be described");
+			assert.equal("storeWrites" in result, false);
+		}
+		const numeric = await sandbox.execute('const error = new Error(); error.name = 17; error.message = 42; throw error');
+		assert.equal(numeric.ok, false);
+		if (!numeric.ok) {
+			assert.equal(numeric.error.kind, "script");
+			assert.equal(numeric.error.name, "17");
+			assert.equal(numeric.error.message, "42");
+		}
+		const next = await sandbox.execute('return 7');
+		assert.equal(next.ok && next.value, 7);
+	} finally { await sandbox.close(); }
+	assert.deepEqual(sandbox.stats, { activeExecutions: 0, workersStarted: 8, workersStopped: 8 });
+});
+
 for (const [label, code] of [
 	["CPU loop", "while (true) {}"],
 	["microtask loop", "while (true) await null"],

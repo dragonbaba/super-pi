@@ -36,6 +36,69 @@ const IMAGE_HELPER_EXPECTS =
 
 export const PRELUDE_SOURCE: string = `(function (bridge, toolsJson, globalsJson, storeJson) {
 	"use strict";
+	// The script shares these intrinsics with the bridge. Capturing JSON.stringify
+	// alone does not protect its own records/arrays from an inherited toJSON patch.
+	// Freeze once at VM startup, including prototypes reached only through instances.
+	(function lockdown() {
+		const overridable = new Set(["constructor", "name", "message", "toString", "toLocaleString", "valueOf", "toJSON"]);
+		const seen = new Set([globalThis]);
+		const queue = [];
+		function add(value) {
+			if ((typeof value === "object" && value !== null) || typeof value === "function") {
+				if (!seen.has(value)) { seen.add(value); queue.push(value); }
+			}
+		}
+		// Frozen prototype data properties also block assignment on instances.
+		// Accessors preserve common overrides (e.g. this.name in an Error subclass).
+		function allowOverride(object, key, value, enumerable) {
+			// Method accessors have no prototype.constructor to visit recursively.
+			const { get, set } = Object.getOwnPropertyDescriptor({
+				get accessor() { return value; },
+				set accessor(next) {
+					if (this === object) throw new TypeError("Cannot assign to read only property '" + String(key) + "' of a built-in");
+					if ((typeof this !== "object" || this === null) && typeof this !== "function") return;
+					Object.defineProperty(this, key, { value: next, writable: true, enumerable: true, configurable: true });
+				},
+			}, "accessor");
+			Object.defineProperty(object, key, { get, set, enumerable, configurable: false });
+			add(get); add(set);
+		}
+		for (const key of Reflect.ownKeys(globalThis)) {
+			const descriptor = Object.getOwnPropertyDescriptor(globalThis, key);
+			add(descriptor.value); add(descriptor.get); add(descriptor.set);
+			if ("value" in descriptor && descriptor.configurable) {
+				Object.defineProperty(globalThis, key, { writable: false, configurable: false });
+			}
+		}
+		add(Object.getPrototypeOf(function* () {}));
+		add(Object.getPrototypeOf(async function () {}));
+		add(Object.getPrototypeOf(async function* () {}));
+		add(Object.getPrototypeOf(Int8Array));
+		add(Object.getPrototypeOf([][Symbol.iterator]()));
+		add(Object.getPrototypeOf(new Map()[Symbol.iterator]()));
+		add(Object.getPrototypeOf(new Set()[Symbol.iterator]()));
+		add(Object.getPrototypeOf(""[Symbol.iterator]()));
+		add(Object.getPrototypeOf(/a/[Symbol.matchAll]("")));
+		if (typeof Iterator === "function") {
+			if (typeof Iterator.prototype.map === "function") add(Object.getPrototypeOf([].values().map((x) => x)));
+			if (typeof Iterator.from === "function") add(Object.getPrototypeOf(Iterator.from({ next() {} })));
+		}
+		while (queue.length > 0) {
+			const object = queue.pop();
+			add(Object.getPrototypeOf(object));
+			const descriptors = Object.getOwnPropertyDescriptors(object);
+			for (const key of Reflect.ownKeys(descriptors)) {
+				const descriptor = descriptors[key];
+				if ("value" in descriptor) {
+					add(descriptor.value);
+					if (descriptor.writable && descriptor.configurable && (object === Object.prototype || overridable.has(key))) {
+						allowOverride(object, key, descriptor.value, descriptor.enumerable);
+					}
+				} else { add(descriptor.get); add(descriptor.set); }
+			}
+			Object.freeze(object);
+		}
+	})();
 	const stringify = JSON.stringify;
 	const parse = JSON.parse;
 	const promiseThen = Promise.prototype.then;
@@ -99,10 +162,14 @@ export const PRELUDE_SOURCE: string = `(function (bridge, toolsJson, globalsJson
 	}
 
 	function describeError(error) {
-		if (error instanceof ErrorCtor) {
-			return stringify({ name: error.name, message: format(error.message).slice(0, ${MAX_ERROR_CHARS}), stack: errorText(error).slice(0, ${MAX_ERROR_CHARS}) });
+		try {
+			if (error instanceof ErrorCtor) {
+				return stringify({ name: String(error.name).slice(0, ${MAX_ERROR_CHARS}), message: format(error.message).slice(0, ${MAX_ERROR_CHARS}), stack: errorText(error).slice(0, ${MAX_ERROR_CHARS}) });
+			}
+			return stringify({ message: format(error).slice(0, ${MAX_ERROR_CHARS}) });
+		} catch {
+			return '{"message":"The script threw a value that cannot be described"}';
 		}
-		return stringify({ message: format(error).slice(0, ${MAX_ERROR_CHARS}) });
 	}
 
 	function caller(kind, name, spread) {
