@@ -46,6 +46,40 @@ When `toolCalling=false`, the coding-agent keeps the user's active-tool selectio
 
 The user-facing levels remain `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max` for compatibility. The manifest classifies the adapter mechanism as `none`, `levels`, `budget`, or `adaptive`, and its `reasoning.levels` array is the single source of truth for CLI, AgentSession, and adapter clamping. `thinkingLevelMap` only maps an already-supported level to a provider wire value.
 
+## Sampling by thinking level
+
+Custom models, extension model definitions, and `models.json` `modelOverrides`
+can set generation defaults for each effective Pi thinking level:
+
+```json
+{
+  "samplingParams": { "temperature": 1, "top_p": 0.95 },
+  "samplingParamsByThinkingLevel": {
+    "off": { "temperature": 0.7, "top_p": 0.8 },
+    "high": { "temperature": 0.6, "top_k": 20 }
+  }
+}
+```
+
+Keys are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`.
+Unsupported levels are clamped using the capability manifest before lookup;
+`thinkingLevelMap` provider aliases are not configuration keys. Missing levels
+inherit the defaults. A non-reasoning model selects `off`.
+
+For `openai-completions`, `openai-responses`, and `azure-openai-responses`, the
+precedence per key is model `samplingParams`, the selected level, then request
+`samplingParams`. Explicit zero and null values are preserved. Sampling keys
+override named fields such as request `temperature`, as before. The structural
+filter and capability gates still apply, with `onPayload` last. Other APIs
+ignore these sampling records. Both `streamSimple` and direct `stream` support
+the defaults; direct Responses requests with only `reasoningSummary` select
+`medium` (subject to clamping).
+
+`modelOverrides` remains the final configuration layer after model declarations,
+extension replacement, and OAuth projection. It merges each level per key,
+preserving other keys and levels. It does not change the existing model-source
+replacement rules.
+
 ## Conformance backlog
 
 Two non-blocking cases remain explicitly tracked:

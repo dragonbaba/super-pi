@@ -342,6 +342,7 @@ test("OAuth modifyModels in-place capability input mutation rederives without mu
 		compat: { supportsStrictMode: true },
 		headers: { "x-base": "preserved" },
 		samplingParams: { top_p: 0.5 },
+		samplingParamsByThinkingLevel: { high: { top_p: 0.6, nested: { enabled: true } } },
 	});
 	const baseProvider = createProvider({
 		id: "fixture",
@@ -363,6 +364,8 @@ test("OAuth modifyModels in-place capability input mutation rederives without mu
 				model.cost.input = 99;
 				model.headers!["x-base"] = "mutated";
 				model.samplingParams!.top_p = 0.99;
+				model.samplingParamsByThinkingLevel!.high!.top_p = 0.99;
+				(model.samplingParamsByThinkingLevel!.high!.nested as { enabled: boolean }).enabled = false;
 				return models;
 			},
 		},
@@ -388,6 +391,9 @@ test("OAuth modifyModels in-place capability input mutation rederives without mu
 	assert.equal(baseProvider.getModels()[0]?.cost.input, 1);
 	assert.deepEqual(baseProvider.getModels()[0]?.headers, { "x-base": "preserved" });
 	assert.deepEqual(baseProvider.getModels()[0]?.samplingParams, { top_p: 0.5 });
+	assert.deepEqual(baseProvider.getModels()[0]?.samplingParamsByThinkingLevel, {
+		high: { top_p: 0.6, nested: { enabled: true } },
+	});
 });
 
 test("OAuth identity mutation clears stale provider enrichment and reruns the profiler", async () => {

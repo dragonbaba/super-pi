@@ -1,7 +1,10 @@
+import { clampThinkingLevel } from "../models.ts";
 import type {
 	Api,
 	Context,
 	Model,
+	ModelThinkingLevel,
+	SamplingParams,
 	SimpleStreamOptions,
 	StreamOptions,
 	ThinkingBudgets,
@@ -53,16 +56,25 @@ export function clampMaxTokensToContext(model: Model<Api>, context: Context, max
 	return Math.min(requested, Math.max(1, available));
 }
 
+/** Resolve model defaults at request setup, never from a provider-delta callback. */
+export function resolveSamplingParams(
+	model: Model<Api>,
+	thinkingLevel: ModelThinkingLevel,
+	requestParams?: SamplingParams,
+): SamplingParams | undefined {
+	const levelParams = model.samplingParamsByThinkingLevel?.[clampThinkingLevel(model, thinkingLevel)];
+	return model.samplingParams || levelParams || requestParams
+		? { ...model.samplingParams, ...levelParams, ...requestParams }
+		: undefined;
+}
+
 export function buildBaseOptions(
 	model: Model<Api>,
 	context: Context,
 	options?: SimpleStreamOptions,
 	apiKey?: string,
 ): StreamOptions {
-	const samplingParams =
-		model.samplingParams || options?.samplingParams
-			? { ...model.samplingParams, ...options?.samplingParams }
-			: undefined;
+	const samplingParams = resolveSamplingParams(model, options?.reasoning ?? "off", options?.samplingParams);
 	return {
 		temperature: options?.temperature,
 		samplingParams,

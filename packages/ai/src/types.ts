@@ -83,6 +83,8 @@ export type ToolChoice = "auto" | "none";
 export type ThinkingLevel = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export type ModelThinkingLevel = "off" | ThinkingLevel;
 export type ThinkingLevelMap = Partial<Record<ModelThinkingLevel, string | null>>;
+export type SamplingParams = Record<string, unknown>;
+export type SamplingParamsByThinkingLevel = Partial<Record<ModelThinkingLevel, SamplingParams>>;
 
 /**
  * Ownership contract for arguments on streamed tool-call blocks.
@@ -286,9 +288,10 @@ export interface StreamOptions extends ProviderRequestOptions<Model<Api>> {
 	 * SGLang, ...), e.g. `top_p`, `top_k`, `min_p`, or `repetition_penalty`. Structural protocol
 	 * fields (messages, tools, reasoning, continuation, and cache controls) are ignored here so they
 	 * cannot bypass model capability gates. Use `onPayload` for an explicit final-wire override.
-	 * Merged over `Model.samplingParams` per key. Other provider APIs ignore this option.
+	 * Merged over model defaults and effective thinking-level sampling keys per key.
+	 * Applied by OpenAI Completions, Responses and Azure Responses; other APIs ignore it.
 	 */
-	samplingParams?: Record<string, unknown>;
+	samplingParams?: SamplingParams;
 	maxTokens?: number;
 	/**
 	 * Preferred transport for providers that support multiple transports.
@@ -938,7 +941,9 @@ export interface Model<TApi extends Api> {
 	/** Metadata-only profile diagnostics, such as explicitly omitted custom fields. */
 	profileDiagnostics?: readonly ModelProfileDiagnostic[];
 	/** Default generation parameters. Structural protocol keys are ignored; see {@link StreamOptions.samplingParams}. */
-	samplingParams?: Record<string, unknown>;
+	samplingParams?: SamplingParams;
+	/** Overrides keyed by the effective Pi thinking level, before provider wire-value mapping. */
+	samplingParamsByThinkingLevel?: SamplingParamsByThinkingLevel;
 	headers?: Record<string, string>;
 	/** Compatibility overrides for OpenAI-compatible APIs. If not set, auto-detected from baseUrl. */
 	compat?: TApi extends "openai-completions"

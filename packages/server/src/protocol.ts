@@ -76,6 +76,7 @@ type _AiModelFieldsAccountedFor = Assert<
 		| "costKnown"
 		| "profileDiagnostics"
 		| "samplingParams"
+		| "samplingParamsByThinkingLevel"
 		| "headers"
 		| "compat"
 	>
