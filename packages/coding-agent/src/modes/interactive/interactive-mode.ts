@@ -5442,6 +5442,8 @@ export class InteractiveMode {
 		entries: SessionEntry[],
 		options: { updateFooter?: boolean; populateHistory?: boolean } = {},
 	): void {
+		// Coordinates belong to the transcript being replaced, even if its layout stays mounted.
+		if (this.renderer instanceof TuiAltScreen) this.renderer.resetTextSelection();
 		const items: RenderSessionItem[] = [];
 		for (const entry of entries) {
 			if (entry.type === "compaction") continue;

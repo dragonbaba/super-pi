@@ -25,6 +25,7 @@ const ISOLATED_CWD_TESTS = new Set([
 const GC_TESTS = new Set([
 	"alpha-assistant-update.test.ts", "alpha-markdown-ownership.test.ts",
 	"alpha-raw-parallel.test.ts", "alpha-startup-quit.test.ts",
+	"tui-transcript-selection-reset.test.ts",
 ]);
 // Approximate serial Windows CI seconds; unlisted units weigh DEFAULT_TEST_WEIGHT
 // (the suite mean). Weights only order units and balance shards; every
