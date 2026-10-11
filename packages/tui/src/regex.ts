@@ -80,5 +80,6 @@ export const MARKDOWN_UNORDERED_LIST_MARKER_PATTERN = /^(?: {0,3})([-+*])(?:[ \t
 
 export const KITTY_IMAGE_CONTROLS_PATTERN = /\x1b_G([^;]*);/;
 export const KITTY_IMAGE_ID_CONTROL_PATTERN = /(?:^|,)i=(\d+)(?:,|$)/;
+export const KITTY_IMAGE_ROWS_CONTROL_PATTERN = /(?:^|,)r=(\d+)(?:,|$)/;
 export const KITTY_IMAGE_MORE_CHUNKS_PATTERN = /(?:^|,)m=1(?:,|$)/;
 export const KITTY_IMAGE_CROP_CONTROL_PATTERN = /^[yhr]=/;

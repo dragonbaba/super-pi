@@ -30,6 +30,7 @@ import {
 	deleteKittyImage,
 	getCapabilities,
 	getKittyImagePlacement,
+	getKittyImagePlacementRows,
 	type ImageProtocol,
 	isImageLine,
 	setCapabilities,
@@ -166,6 +167,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private lastDocument: string[] = [];
 	private previousScreenWidth = 0;
 	private previousScreenHeight = 0;
+	private isWezTerm = false;
 	private layoutRoot: Component | undefined;
 	private layoutRootGeneration = 0;
 	private layoutRenderDepth = 0;
@@ -383,6 +385,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.altScreenActive = true;
 		const capabilities = getCapabilities();
 		this.imageProtocol = capabilities.images;
+		this.isWezTerm = Boolean(process.env.WEZTERM_PANE) || process.env.TERM_PROGRAM?.toLowerCase() === "wezterm";
 		this.uploadedKittyImages.clear();
 		if (capabilities.images === "iterm2") {
 			this.savedCapabilities = capabilities;
@@ -1468,6 +1471,9 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		const fullRedraw =
 			this.previousScreen.length === 0 || this.previousScreenWidth !== width || this.previousScreenHeight !== height;
 		let imagesNeedRedraw = false;
+		let hasImageLine = false;
+		let kittyImageEndRow = 0;
+		const checkCoveredRows = this.isWezTerm && this.imageProtocol === "kitty";
 		for (let row = 0; row < screen.length; row++) {
 			const rawLine = rawScreen[row];
 			const previousLine = this.previousScreen[row];
@@ -1491,7 +1497,17 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 				}
 			}
 			const comparablePreviousLine = previousLine ?? "";
-			if (!imagesNeedRedraw && line !== comparablePreviousLine && (imageLine || isImageLine(comparablePreviousLine))) {
+			if (imageLine) {
+				hasImageLine = true;
+				if (checkCoveredRows && !fullRedraw && !imagesNeedRedraw) {
+					const rows = getKittyImagePlacementRows(line);
+					if (rows !== undefined) kittyImageEndRow = Math.max(kittyImageEndRow, Math.min(height, row + rows));
+				}
+			}
+			if (
+				!imagesNeedRedraw && line !== comparablePreviousLine &&
+				(imageLine || isImageLine(comparablePreviousLine) || row < kittyImageEndRow)
+			) {
 				imagesNeedRedraw = true;
 			}
 		}
@@ -1519,10 +1535,21 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		buffer += evictedImageDeletion;
 
 		let diffLines = 0;
+		const drawImagesLast = redrawImages && checkCoveredRows && hasImageLine;
+		// WezTerm erases image cells on later intersecting clears or text writes.
+		// Clear every changed row and write text before placing any images.
 		for (let row = 0; row < height; row++) {
 			if (!fullRedraw && !imagesNeedRedraw && nextScreen[row] === this.previousScreen[row]) continue;
 			diffLines++;
-			buffer += `\x1b[${row + 1};1H\x1b[2K${preparedLines[row] ?? ""}`;
+			const line = preparedLines[row] ?? "";
+			buffer += `\x1b[${row + 1};1H\x1b[2K`;
+			if (!drawImagesLast || !isImageLine(line)) buffer += line;
+		}
+		if (drawImagesLast) {
+			for (let row = 0; row < height; row++) {
+				const line = preparedLines[row] ?? "";
+				if (isImageLine(line)) buffer += `\x1b[${row + 1};1H${line}`;
+			}
 		}
 
 		if (cursorPos) {
