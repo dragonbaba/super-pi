@@ -11,6 +11,7 @@ import {
 	RELEASE_COMPONENT_RENDER_CACHE,
 } from "./component-cache.ts";
 import { isKeyRelease, matchesKey } from "./keys.ts";
+import { FOCUSED_FAKE_CURSOR_PATTERN } from "./regex.ts";
 import type { TuiRenderInstrumentation } from "./render-instrumentation.ts";
 import type { Terminal } from "./terminal.ts";
 import { TerminalFrameQueue, type TerminalFrameQueueSnapshot } from "./terminal-frame-queue.ts";
@@ -116,6 +117,15 @@ export function isFocusable(component: Component | null): component is Component
  * TUI finds and strips this marker, then positions the hardware cursor there.
  */
 export const CURSOR_MARKER = "\x1b_pi:c\x07";
+
+/** Zero-width APC markers, resolved by the renderer before SGR composition. */
+export const FAKE_CURSOR_START = "\x1b_pi:fc\x07";
+export const FAKE_CURSOR_END = "\x1b_pi:/fc\x07";
+
+/** Draw a cursor cell unless an immediately preceding CURSOR_MARKER uses the hardware cursor. */
+export function renderFakeCursor(text: string): string {
+	return FAKE_CURSOR_START + text + FAKE_CURSOR_END;
+}
 
 export { visibleWidth };
 
@@ -1944,7 +1954,7 @@ export abstract class TuiBase extends Container implements TUI {
 				for (let lineIndex = 0; lineIndex < lineCount; lineIndex++) {
 					const targetIndex = viewportStart + row + lineIndex;
 					if (targetIndex < 0 || targetIndex >= lines.length) continue;
-					const overlayLine = overlayLines[lineIndex]!;
+					const overlayLine = this.resolveFakeCursorLine(overlayLines[lineIndex]!);
 					const clippedLine =
 						visibleWidth(overlayLine) > width ? sliceByColumn(overlayLine, 0, width, true) : overlayLine;
 					lines[targetIndex] = this.compositeLineAt(lines[targetIndex]!, clippedLine, col, width, termWidth);
@@ -1961,6 +1971,20 @@ export abstract class TuiBase extends Container implements TUI {
 			this.overlaySegmentsScratch.after = "";
 			this.overlaySliceScratch.text = "";
 		}
+	}
+
+	/** Consume only caller-owned frame arrays; component render arrays may be borrowed. */
+	protected resolveFakeCursors(lines: string[]): void {
+		for (let row = 0; row < lines.length; row++) {
+			lines[row] = this.resolveFakeCursorLine(lines[row]!);
+		}
+	}
+
+	/** Leave ordinary inverse video and unfocused cursors intact. No retained line references. */
+	protected resolveFakeCursorLine(line: string): string {
+		if (!line.includes(FAKE_CURSOR_START) && !line.includes(FAKE_CURSOR_END)) return line;
+		const resolved = this.showHardwareCursor ? line.replace(FOCUSED_FAKE_CURSOR_PATTERN, "$1$2") : line;
+		return resolved.replaceAll(FAKE_CURSOR_START, "\x1b[7m").replaceAll(FAKE_CURSOR_END, "\x1b[27m");
 	}
 
 	protected applyLineResets(lines: string[]): string[] {

@@ -85,6 +85,9 @@ test("Alt overlay and selection frame leaves avoid wrapper and collection alloca
 	const utils = ts.createSourceFile(utilsPath, readFileSync(utilsPath, "utf8"), ts.ScriptTarget.Latest, true);
 	const targets: Array<{ node: ts.Node; source: ts.SourceFile }> = [
 		{ node: findMethod(tui, "TuiBase", "compositeOverlays"), source: tui },
+		{ node: findMethod(tui, "TuiBase", "resolveFakeCursors"), source: tui },
+		{ node: findMethod(tui, "TuiBase", "resolveFakeCursorLine"), source: tui },
+		{ node: findFunction(tui, "renderFakeCursor"), source: tui },
 		{ node: findMethod(tui, "TuiBase", "compositeLineAt"), source: tui },
 		{ node: findMethod(alt, "TuiAltScreen", "applySelection"), source: alt },
 		{ node: findMethod(alt, "TuiAltScreen", "resolveSelectionBounds"), source: alt },

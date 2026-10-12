@@ -459,7 +459,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 				const width = Math.max(1, this.terminal.columns);
 				const documentLines = this.render(width);
 				for (let index = 0; index < documentLines.length; index++) {
-					documentLines[index] = documentLines[index]
+					documentLines[index] = this.resolveFakeCursorLine(documentLines[index]!)
 						.replace(OSC133_ZONE_PREFIX_PATTERN, "")
 						.replaceAll(CURSOR_MARKER, "");
 				}
@@ -1469,8 +1469,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		);
 		this.recordRootRender(nextLayout.generatedLineCount, Math.min(screen.length, height));
 		for (let row = 0; row < screen.length; row++) {
-			const line = screen[row];
-			if (line.startsWith("\x1b]133;")) screen[row] = line.replace(OSC133_ZONE_PREFIX_PATTERN, "");
+			const line = this.resolveFakeCursorLine(screen[row]!);
+			screen[row] = line.startsWith("\x1b]133;") ? line.replace(OSC133_ZONE_PREFIX_PATTERN, "") : line;
 		}
 		screen = this.compositeOverlays(screen, width, height);
 		if (screen.length > height) {

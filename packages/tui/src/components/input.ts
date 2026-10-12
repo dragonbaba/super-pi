@@ -2,7 +2,7 @@ import { getKeybindings } from "../keybindings.ts";
 import { decodeKittyPrintable } from "../keys.ts";
 import { KillRing } from "../kill-ring.ts";
 import { CARRIAGE_RETURN_PATTERN, CRLF_PATTERN, LINE_FEED_PATTERN, TAB_PATTERN } from "../regex.ts";
-import { type Component, CURSOR_MARKER, type Focusable } from "../tui.ts";
+import { type Component, CURSOR_MARKER, type Focusable, renderFakeCursor } from "../tui.ts";
 import { UndoStack } from "../undo-stack.ts";
 import { getGraphemeSegmenter, isWhitespaceChar, sliceByColumn, visibleWidth } from "../utils.ts";
 import { findWordBackward, findWordForward } from "../word-navigation.ts";
@@ -440,8 +440,8 @@ export class Input implements Component, Focusable {
 		// Hardware cursor marker (zero-width, emitted before fake cursor for IME positioning)
 		const marker = this.focused ? CURSOR_MARKER : "";
 
-		// Use inverse video to show cursor
-		const cursorChar = `\x1b[7m${atCursor}\x1b[27m`; // ESC[7m = reverse video, ESC[27m = normal
+		// The renderer chooses the fake or hardware cursor without changing the cell width.
+		const cursorChar = renderFakeCursor(atCursor);
 		const textWithCursor = beforeCursor + marker + cursorChar + afterCursor;
 
 		// Calculate visual width

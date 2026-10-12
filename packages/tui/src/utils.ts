@@ -1458,8 +1458,10 @@ export function extractSegmentsInto(
 			// Include ANSI codes in their respective segments
 			if (currentCol < beforeEnd) {
 				pendingAnsiBefore += code;
-			} else if (currentCol >= afterStart && currentCol < afterEnd && afterStarted) {
-				// Only include after we've started "after" (styling already prepended)
+			} else if (
+				currentCol >= afterStart && currentCol < afterEnd && (afterStarted || code.startsWith("\x1b_"))
+			) {
+				// SGR is restored by the style tracker; zero-width APC cursor markers are not.
 				after += code;
 			}
 			i = ansiEnd;
@@ -1534,6 +1536,7 @@ export function extractSegmentsInto(
  * The output is a new immutable line string; no range or segment wrapper is created.
  */
 export function highlightTerminalColumns(line: string, startColumn: number, endColumn: number, lineWidth: number): string {
+	// APC markers are positional; do not replay them as inherited styles in later segments.
 	let before = "";
 	let selected = "\x1b[7m";
 	let after = "";
@@ -1553,7 +1556,7 @@ export function highlightTerminalColumns(line: string, startColumn: number, endC
 				}
 				selected += code;
 				if (code.endsWith("m")) selected += "\x1b[7m";
-			} else if (currentColumn < startColumn) {
+			} else if (currentColumn < startColumn && !code.startsWith("\x1b_")) {
 				pendingSelected += code;
 				if (code.endsWith("m")) pendingSelected += "\x1b[7m";
 			}
@@ -1563,7 +1566,7 @@ export function highlightTerminalColumns(line: string, startColumn: number, endC
 					pendingAfter = "";
 				}
 				after += code;
-			} else if (currentColumn < endColumn) pendingAfter += code;
+			} else if (currentColumn < endColumn && !code.startsWith("\x1b_")) pendingAfter += code;
 			index = ansiEnd;
 			continue;
 		}

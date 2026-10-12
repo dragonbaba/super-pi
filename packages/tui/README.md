@@ -262,7 +262,7 @@ The TUI appends a full SGR reset and OSC 8 reset at the end of each rendered lin
 Components that display a text cursor and need IME (Input Method Editor) support should implement the `Focusable` interface:
 
 ```typescript
-import { CURSOR_MARKER, type Component, type Focusable } from "@super-pi/tui";
+import { CURSOR_MARKER, type Component, type Focusable, renderFakeCursor } from "@super-pi/tui";
 
 class MyInput implements Component, Focusable {
   focused: boolean = false;  // Set by TUI when focus changes
@@ -270,7 +270,7 @@ class MyInput implements Component, Focusable {
   render(width: number): string[] {
     const marker = this.focused ? CURSOR_MARKER : "";
     // Emit marker right before the fake cursor
-    return [`> ${beforeCursor}${marker}\x1b[7m${atCursor}\x1b[27m${afterCursor}`];
+    return [`> ${beforeCursor}${marker}${renderFakeCursor(atCursor)}${afterCursor}`];
   }
 }
 ```
@@ -281,7 +281,9 @@ When a `Focusable` component has focus, TUI:
 3. Positions the hardware terminal cursor at that location
 4. Shows the hardware cursor only when `showHardwareCursor` is enabled
 
-The cursor remains hidden by default. This keeps the fake cursor rendering, while still positioning the hardware cursor for terminals that track IME candidate windows with hidden cursors. Some terminals require a visible hardware cursor for IME positioning; enable it with the renderer constructor's `showHardwareCursor` argument, `setShowHardwareCursor(true)`, or `SP_HARDWARE_CURSOR=1`. The `Editor` and `Input` built-in components already implement this interface.
+The hardware cursor remains hidden by default, while the fake cursor is drawn in reverse video. The hardware cursor is still positioned for terminals that track IME candidate windows with hidden cursors. Enable it with the renderer constructor's `showHardwareCursor` argument, `setShowHardwareCursor(true)`, or `SP_HARDWARE_CURSOR=1` to use only the hardware cursor at the focused position. Unfocused fake cursors remain visible. The `Editor` and `Input` built-in components already implement this behavior.
+
+`renderFakeCursor()` wraps the cursor cell in zero-width APC markers. Renderers resolve these before overlay and selection composition, using the current hardware cursor setting. Custom components can opt in by placing `CURSOR_MARKER` immediately before `renderFakeCursor(text)` when focused; ordinary inverse-video text is unaffected. Code rendering `Input` or `Editor` outside a TUI now receives these markers instead of raw reverse-video escapes; use `stripTerminalSequences()` for plain text.
 
 **Container components with embedded inputs:** When a container component (dialog, selector, etc.) contains an `Input` or `Editor` child, the container must implement `Focusable` and propagate the focus state to the child:
 
