@@ -203,6 +203,7 @@ export class KeybindingsManager {
 	private userBindings: KeybindingsConfig;
 	private keysById = new Map<Keybinding, KeyId[]>();
 	private conflicts: KeybindingConflict[] = [];
+	private readonly viewportShortcutOverrides = new Set<KeyId>();
 
 	constructor(definitions: KeybindingDefinitions, userBindings: KeybindingsConfig = {}) {
 		this.definitions = definitions;
@@ -233,9 +234,13 @@ export class KeybindingsManager {
 		for (const [id, definition] of Object.entries(this.definitions)) {
 			const userKeys = this.userBindings[id];
 			const keys = userKeys === undefined ? normalizeKeys(definition.defaultKeys) : normalizeKeys(userKeys);
-			// Navigation defaults must not consume a user's explicit editor/action binding.
-			const resolved = userKeys === undefined && (id === "tui.altScreen.top" || id === "tui.altScreen.bottom")
-				? keys.filter(key => !userClaims.has(key))
+			// Accepted host shortcuts reach the focused editor before viewport actions.
+			// Boundary defaults also yield to explicit editor/action bindings.
+			const boundaryDefault = userKeys === undefined && (id === "tui.altScreen.top" || id === "tui.altScreen.bottom");
+			const resolved = id.startsWith("tui.altScreen.")
+				? keys.filter(key =>
+					!this.viewportShortcutOverrides.has(key.toLowerCase() as KeyId) && !(boundaryDefault && userClaims.has(key)),
+				)
 				: keys;
 			this.keysById.set(id as Keybinding, resolved);
 		}
@@ -263,6 +268,15 @@ export class KeybindingsManager {
 
 	setUserBindings(userBindings: KeybindingsConfig): void {
 		this.userBindings = userBindings;
+		this.rebuild();
+	}
+
+	/** Replace accepted host shortcut keys at setup/reload; omit keys to restore viewport bindings. */
+	setViewportShortcutOverrides(keys?: Iterable<KeyId>): void {
+		this.viewportShortcutOverrides.clear();
+		if (keys) {
+			for (const key of keys) this.viewportShortcutOverrides.add(key.toLowerCase() as KeyId);
+		}
 		this.rebuild();
 	}
 

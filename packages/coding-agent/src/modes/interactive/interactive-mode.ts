@@ -2541,7 +2541,10 @@ export class InteractiveMode {
 	 * Set up keyboard shortcuts registered by extensions.
 	 */
 	private setupExtensionShortcuts(extensionRunner: ExtensionRunner): void {
+		this.defaultEditor.onExtensionShortcut = undefined;
+		this.keybindings.setViewportShortcutOverrides();
 		const shortcuts = extensionRunner.getShortcuts(this.keybindings.getEffectiveConfig());
+		this.keybindings.setViewportShortcutOverrides(shortcuts.keys());
 		if (shortcuts.size === 0) return;
 
 		// Create a context for shortcut handlers
@@ -2745,6 +2748,7 @@ export class InteractiveMode {
 		this.setCustomEditorComponent(undefined);
 		this.setupAutocompleteProvider();
 		this.defaultEditor.onExtensionShortcut = undefined;
+		this.keybindings.setViewportShortcutOverrides();
 		this.updateTerminalTitle();
 		this.workingMessage = undefined;
 		this.workingVisible = true;

@@ -40,6 +40,8 @@ of the transcript; PageUp/PageDown continue to scroll the viewport. Use
 Ctrl+Up/Down in Windows Console, where Ctrl+Home/End may arrive as plain
 Home/End. Ctrl+Home/End are not default editor keys in main-screen mode.
 Explicit user bindings take precedence over these transcript navigation defaults.
+Accepted extension shortcuts take precedence over viewport actions; unloading
+the shortcuts restores the configured viewport keys.
 
 ## Quick Start
 
