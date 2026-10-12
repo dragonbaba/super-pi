@@ -808,6 +808,16 @@ function parseKeyId(
 	};
 }
 
+/** Canonical logical key identity for configuration-time shortcut conflict resolution. */
+export function normalizeKeyId(keyId: KeyId): string | undefined {
+	const parsed = parseKeyId(keyId);
+	if (!parsed) return undefined;
+	const key = parsed.key === "esc" ? "escape" : parsed.key === "return" ? "enter" : parsed.key;
+	const modifier = (parsed.shift ? MODIFIERS.shift : 0) | (parsed.ctrl ? MODIFIERS.ctrl : 0)
+		| (parsed.alt ? MODIFIERS.alt : 0) | (parsed.super ? MODIFIERS.super : 0);
+	return formatKeyNameWithModifiers(key, modifier);
+}
+
 /**
  * Match input data against a key identifier string.
  *

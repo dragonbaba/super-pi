@@ -1,4 +1,4 @@
-import { type KeyId, matchesKey } from "./keys.ts";
+import { type KeyId, matchesKey, normalizeKeyId } from "./keys.ts";
 
 /**
  * Global keybinding registry.
@@ -92,11 +92,11 @@ export const TUI_KEYBINDINGS = {
 		description: "Move cursor word right",
 	},
 	"tui.editor.cursorLineStart": {
-		defaultKeys: ["home", "ctrl+home", "ctrl+a"],
+		defaultKeys: ["home", "ctrl+a"],
 		description: "Move to line start",
 	},
 	"tui.editor.cursorLineEnd": {
-		defaultKeys: ["end", "ctrl+end", "ctrl+e"],
+		defaultKeys: ["end", "ctrl+e"],
 		description: "Move to line end",
 	},
 	"tui.editor.jumpForward": {
@@ -179,8 +179,8 @@ export const TUI_KEYBINDINGS = {
 		defaultKeys: "ctrl+shift+down",
 		description: "Jump to next semantic prompt",
 	},
-	"tui.altScreen.top": { defaultKeys: "home", description: "Scroll viewport to top" },
-	"tui.altScreen.bottom": { defaultKeys: "end", description: "Scroll viewport to bottom" },
+	"tui.altScreen.top": { defaultKeys: ["ctrl+home", "ctrl+up"], description: "Scroll viewport to top" },
+	"tui.altScreen.bottom": { defaultKeys: ["ctrl+end", "ctrl+down"], description: "Scroll viewport to bottom" },
 } as const satisfies KeybindingDefinitions;
 
 export interface KeybindingConflict {
@@ -203,6 +203,7 @@ export class KeybindingsManager {
 	private userBindings: KeybindingsConfig;
 	private keysById = new Map<Keybinding, KeyId[]>();
 	private conflicts: KeybindingConflict[] = [];
+	private readonly viewportShortcutOverrides = new Set<string>();
 
 	constructor(definitions: KeybindingDefinitions, userBindings: KeybindingsConfig = {}) {
 		this.definitions = definitions;
@@ -215,9 +216,13 @@ export class KeybindingsManager {
 		this.conflicts = [];
 
 		const userClaims = new Map<KeyId, Keybinding[]>();
+		const userClaimIdentities = new Set<string>();
 		for (const [keybinding, keys] of Object.entries(this.userBindings)) {
 			if (!(keybinding in this.definitions)) continue;
 			for (const key of normalizeKeys(keys)) {
+				const identity = normalizeKeyId(key);
+				if (identity) userClaimIdentities.add(identity);
+				// Keep the configured spelling in existing conflict diagnostics.
 				const claimants = userClaims.get(key) ?? [];
 				if (!claimants.includes(keybinding as Keybinding)) claimants.push(keybinding as Keybinding);
 				userClaims.set(key, claimants);
@@ -233,7 +238,16 @@ export class KeybindingsManager {
 		for (const [id, definition] of Object.entries(this.definitions)) {
 			const userKeys = this.userBindings[id];
 			const keys = userKeys === undefined ? normalizeKeys(definition.defaultKeys) : normalizeKeys(userKeys);
-			this.keysById.set(id as Keybinding, keys);
+			// Accepted host shortcuts reach the focused editor before viewport actions.
+			// Boundary defaults also yield to explicit editor/action bindings.
+			const boundaryDefault = userKeys === undefined && (id === "tui.altScreen.top" || id === "tui.altScreen.bottom");
+			const resolved = id.startsWith("tui.altScreen.")
+				? keys.filter(key => {
+					const identity = normalizeKeyId(key) ?? key;
+					return !this.viewportShortcutOverrides.has(identity) && !(boundaryDefault && userClaimIdentities.has(identity));
+				})
+				: keys;
+			this.keysById.set(id as Keybinding, resolved);
 		}
 	}
 
@@ -259,6 +273,18 @@ export class KeybindingsManager {
 
 	setUserBindings(userBindings: KeybindingsConfig): void {
 		this.userBindings = userBindings;
+		this.rebuild();
+	}
+
+	/** Replace accepted host shortcut keys at setup/reload; omit keys to restore viewport bindings. */
+	setViewportShortcutOverrides(keys?: Iterable<KeyId>): void {
+		this.viewportShortcutOverrides.clear();
+		if (keys) {
+			for (const key of keys) {
+				const normalized = normalizeKeyId(key);
+				if (normalized) this.viewportShortcutOverrides.add(normalized);
+			}
+		}
 		this.rebuild();
 	}
 
