@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, toNamespacedPath } from "node:path";
 import { test, type TestContext } from "node:test";
 import { createJiti } from "jiti";
 import { Type } from "typebox";
@@ -20,6 +20,7 @@ import type { InlineExtension, ExtensionFactory } from "../packages/coding-agent
 import { CODEMODE_STORE_ENTRY } from "../packages/coding-agent/src/core/codemode-constants.ts";
 import { CodemodeStore } from "../packages/coding-agent/src/core/codemode-store.ts";
 import { CodemodeController } from "../packages/coding-agent/src/core/codemode.ts";
+import { privateOutputFileSystem } from "../packages/coding-agent/src/utils/private-output-file.ts";
 import { CODEMODE_RESULT_ENTRY } from "../packages/coding-agent/src/core/codemode-constants.ts";
 import { convertResponsesTools } from "../packages/ai/src/api/openai-responses-shared.ts";
 import { streamSimple as streamAnthropic } from "../packages/ai/src/api/anthropic-messages.ts";
@@ -49,8 +50,12 @@ const USAGE = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0
 
 async function fixture(t: TestContext, options: Pick<CreateAgentSessionOptions, "tools" | "noTools" | "excludeTools" | "toolSelection" | "settingsManager" | "toolResultPresentation" | "extensionRunnerOptions"> = {}, factories: InlineExtension[] = [], bundle = false, persist = false) {
 	const root = mkdtempSync(join(tmpdir(), "sp-codemode-session-"));
+	const imageDirectories = new Set<string>();
 	let shutdown: (() => Promise<void>) | undefined;
-	t.after(async () => { try { await shutdown?.(); } finally { rmSync(root, { recursive: true, force: true }); } });
+	t.after(async () => { try { await shutdown?.(); } finally {
+		for (const directory of imageDirectories) rmSync(directory, { recursive: true, force: true });
+		rmSync(root, { recursive: true, force: true });
+	} });
 	const cwd = join(root, "work"), agentDir = join(root, "agent");
 	mkdirSync(cwd); mkdirSync(agentDir);
 	writeFileSync(join(cwd, "file.txt"), "hello\nworld\n");
@@ -88,7 +93,12 @@ async function fixture(t: TestContext, options: Pick<CreateAgentSessionOptions, 
 		// Steering uses the session's active-run lifecycle; most fixtures exercise Agent directly.
 		if (throughSession) await session.prompt("run offline fixture");
 		else await session.agent.prompt("run offline fixture");
-		return { wires, results: session.agent.state.messages.filter(m => m.role === "toolResult") };
+		const results = session.agent.state.messages.filter(m => m.role === "toolResult");
+		for (const result of results) {
+			const directory = (result.details as any)?.codemode?.imageFiles?.directory;
+			if (directory) imageDirectories.add(directory);
+		}
+		return { wires, results };
 	}
 	return { session, cwd, agentDir, resources, settings, manager, run };
 }
@@ -825,6 +835,76 @@ test("a nested tool that ignores cancellation cannot wedge Codemode past its dea
 	assert.match(JSON.stringify(parent.content), /NESTED_TOOL_ABANDONED\] 1 child call/);
 });
 
+test("Codemode image files remain addressable after a completed script and session reopen", async t => {
+	const f = await fixture(t, { tools: ["read"] }, [], false, true);
+	const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aXioAAAAASUVORK5CYII=";
+	const first = await f.run([`image("data:image/png;base64,${png}"); image("data:image/png;base64,${png}")`]);
+	const parent = first.results[0]!;
+	const files = (parent.details as any).codemode.imageFiles;
+	assert.equal(typeof files?.manifestPath, "string", "completed image output needs a later-turn file reference");
+	const manifest = JSON.parse(readFileSync(files.manifestPath, "utf8"));
+	assert.equal(manifest.images.length, 2);
+	assert.equal(manifest.images[0].path, manifest.images[1].path);
+	assert.deepEqual(readFileSync(manifest.images[0].path), Buffer.from(png, "base64"));
+	assert.equal(parent.content.filter(b => b.type === "image").length, 2);
+	assert.ok(parent.content.some(b => b.type === "text" && b.text.includes(files.manifestPath)));
+	const reopened = SessionManager.open(f.manager.getSessionFile()!);
+	assert.ok(reopened.buildSessionContext().messages.some(m => m.role === "toolResult" && m.content.some(b => b.type === "text" && b.text.includes(files.manifestPath))));
+	const later = await f.run([`await show((await tools.read({path:${JSON.stringify(files.manifestPath)}})).ref)`]);
+	assert.equal(later.results.at(-1)!.isError, false);
+	assert.ok(later.results.at(-1)!.content.some(b => b.type === "text" && b.text.includes("1.png")));
+});
+
+for (const budgetTokens of [512, 1024]) test(`Codemode image manifest remains visible after projecting long child facts: ${budgetTokens}`, async t => {
+	const failure: InlineExtension = pi => pi.registerTool({ name: "failure", label: "failure", description: "fixture", parameters: Type.Object({}),
+		execute: async () => ({ content: [{ type: "text", text: "failure details ".repeat(100) }], isError: true, details: {} }) });
+	const f = await fixture(t, { toolResultPresentation: { enabled: true, budgetTokens } }, [failure]);
+	const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aXioAAAAASUVORK5CYII=";
+	const outcome = await f.run([`// @options: {"max_output_tokens":8192}\nfor(let i=0;i<8;i++) { try { await tools.failure({}); } catch {} } image("data:image/png;base64,${png}"); text("trailing output ".repeat(800))`]);
+	const parent = outcome.results[0]!, files = (parent.details as any).codemode.imageFiles;
+	assert.ok(parent.content.some(b => b.type === "text" && b.text === "trailing output ".repeat(800)), "the script cap must not have truncated first");
+	const visible = outcome.wires[1]!.messages.find(m => m.role === "toolResult")!.content;
+	assert.ok(visible.some(b => b.type === "text" && b.text.includes(files.manifestPath)), "next model turn needs the complete manifest path");
+	const later = await f.run([`await show((await tools.read({path:${JSON.stringify(files.manifestPath)}})).ref)`]);
+	assert.equal(later.results.at(-1)!.isError, false);
+});
+
+test("Codemode image file errors preserve completed tools and attachments under a small output budget", async t => {
+	let executions = 0;
+	const extension: InlineExtension = pi => pi.registerTool({ name: "effect", label: "effect", description: "fixture", parameters: Type.Object({}),
+		execute: async () => { executions++; return { content: [{ type: "text", text: "completed" }], details: {} }; } });
+	const f = await fixture(t, {}, [extension]);
+	const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aXioAAAAASUVORK5CYII=";
+	const open = privateOutputFileSystem.openSync;
+	privateOutputFileSystem.openSync = () => { throw Object.assign(new Error("fixture disk full"), { code: "ENOSPC" }); };
+	try {
+		const outcome = await f.run([`// @options: {"max_output_tokens":256}\nawait tools.effect({});text("x".repeat(2000));image("data:image/png;base64,${png}")`]);
+		const result = outcome.results[0]!;
+		assert.equal(executions, 1);
+		assert.equal(result.isError, false, "optional file failures must not change the completed script status");
+		assert.equal(result.content.filter(b => b.type === "image").length, 1);
+		assert.ok(result.content.some(b => b.type === "text" && b.text.includes("disk full")));
+	} finally { privateOutputFileSystem.openSync = open; }
+	const failed = await f.run([`image("data:image/png;base64,${png}");throw new Error("after-image")`]);
+	const result = failed.results.at(-1)!;
+	assert.equal(result.isError, true);
+	assert.equal((result.details as any).codemode.imageFiles.saved, 1);
+	assert.equal(executions, 1);
+});
+
+test("Codemode keeps a long manifest notice whole in the next model projection", async t => {
+	const f = await fixture(t, { toolResultPresentation: { enabled: true, budgetTokens: 512 } });
+	const deep = join(f.cwd, ...Array.from({ length: 4 }, (_, i) => `${i}-` + "a0b1c2d3".repeat(10)));
+	mkdirSync(deep, { recursive: true });
+	isolateTemporaryFiles(t, toNamespacedPath(deep));
+	const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aXioAAAAASUVORK5CYII=";
+	const outcome = await f.run([`// @options: {"max_output_tokens":8192}\nimage("data:image/png;base64,${png}"); text("a0b1c2d3".repeat(1000))`]);
+	const files = (outcome.results[0]!.details as any).codemode.imageFiles;
+	assert.ok(files.manifestPath);
+	const visible = outcome.wires[1]!.messages.find(m => m.role === "toolResult")!.content;
+	assert.ok(visible.some(b => b.type === "text" && b.text.includes(files.manifestPath)), "whole path fits overall budget but exceeds the default retained head");
+});
+
 test("Codemode text and console boundaries survive actual provider message conversion", async t => {
 	const f = await fixture(t, { tools: ["read"] });
 	const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aXioAAAAASUVORK5CYII=";
@@ -840,8 +920,9 @@ test("Codemode text and console boundaries survive actual provider message conve
 	assert.equal(source.length, 3);
 	const texts = source.map(m => m.content.filter(b => b.type === "text").map(b => b.text));
 	assert.deepEqual(texts[0], ["[CODEMODE_OK] Child calls: 0.", "alpha", "", 'beta {"n":2}', "line1\nline2", "omega"]);
-	assert.deepEqual(source[1]!.content.map(b => b.type), ["text", "text", "image", "text", "text"]);
-	assert.deepEqual(texts[1], ["[CODEMODE_OK] Child calls: 0.", "before-image", "after-image", ""]);
+	assert.deepEqual(source[1]!.content.slice(0, 5).map(b => b.type), ["text", "text", "image", "text", "text"]);
+	assert.ok(texts[1]![0]!.startsWith("[CODEMODE_OK] Child calls: 0.\n[Image files:"));
+	assert.deepEqual(texts[1]!.slice(1), ["before-image", "after-image", ""]);
 	assert.deepEqual(texts[2]!.slice(1), ["before-error", "diagnostic", "[CODEMODE_SCRIPT] boundary-stop"]);
 	const before = structuredClone(context.messages);
 	const adapters: [Api, StreamFunction<any, SimpleStreamOptions>, string, Record<string, unknown>?][] = [

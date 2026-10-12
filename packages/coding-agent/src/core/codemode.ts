@@ -11,6 +11,7 @@ import { CODEMODE_DESCRIPTION, CODEMODE_NAME, CODEMODE_PARAMETERS, CODEMODE_SAMP
 	MAX_CODEMODE_DESCRIPTION_CHARS, MAX_CODEMODE_RETAINED_CHARS } from "./codemode-constants.ts";
 import { CODEMODE_MUTATION_NAMES } from "./codemode-constants.ts";
 import { CodemodeStore } from "./codemode-store.ts";
+import { saveCodemodeImages } from "./codemode-images.ts";
 import { boundCodemodeResult, capCodemodeOutput, codemodeContentChars, codemodeImageChars } from "./codemode-result.ts";
 import { MUTATION_READ_SOURCE } from "./tools/read-window.ts";
 import { readShellExecution } from "./tools/shell-execution.ts";
@@ -429,11 +430,24 @@ export class CodemodeController {
 			const shownOffset = content.length + 1;
 			for (const block of invocation.shown) content.push(block);
 			let summary = `[CODEMODE_${failed ? "FAILED" : "OK"}] Child calls: ${invocation.facts.length}.`;
+			const imageSave = saveCodemodeImages(content);
+			const imageFiles = imageSave ? await imageSave : undefined;
+			// Keep the path in the retained head, before variable child previews,
+			// and out of the trailing native-read group.
+			if (imageFiles) summary += "\n" + imageFiles.notice;
+			const imagePrefix = imageFiles ? summary.length : 0;
 			for (const fact of invocation.facts) summary += `\n${fact.toolName.slice(0, 80)}: ${fact.executionStatus ?? (fact.isError ? "failed" : "completed")}${fact.executionStatus && (fact.toolName === "bash" || fact.toolName === "powershell") ? "; exit=" + (fact.exitCode ?? "unknown") : ""}${fact.isError ? " — " + fact.preview.slice(0, 512) : ""}${fact.outputPath ? " Output: " + fact.outputPath : ""}`;
 			if (failed) summary += "\nCompleted tool side effects are not rolled back. Do not automatically retry mutations.";
-			content.unshift({ type: "text", text: summary });
-			const projected = await capCodemodeOutput(content, outputTokens);
+			const summaryBlock: TextContent & { projectionPrefix?: number } = { type: "text", text: summary };
+			content.unshift(summaryBlock);
+			let projected: (TextContent | ImageContent)[];
+			try { projected = await capCodemodeOutput(content, outputTokens, imageFiles?.notice, imageFiles); }
+			finally { if (imageFiles) imageFiles.ownedFiles = undefined; }
+			summary = summaryBlock.text;
 			const first = projected[0];
+			if (imageFiles?.saved && first?.type === "text" && first.text.length >= imagePrefix && summary.startsWith(first.text)) {
+				(first as TextContent & { projectionPrefix?: number }).projectionPrefix = imagePrefix;
+			}
 			const displayedSummary = first?.type === "text" && summary.startsWith(first.text) ? first.text : summary;
 			if (result.ok && !failed) {
 				this.pendingStore = { id: context.parentToolCallId, writes: result.storeWrites };
@@ -444,7 +458,7 @@ export class CodemodeController {
 				if (this.displayedReads.size >= MAX_PENDING_READ_PARENTS) this.displayedReads.delete(this.displayedReads.keys().next().value!);
 				this.displayedReads.set(context.parentToolCallId, invocation.reads);
 			}
-			return { content: projected, isError: failed, details: { codemode: { version: 1, scriptOk: result.ok, summaryDigest: codemodeTextDigest(displayedSummary), calls: invocation.facts, runtimeCalls: result.calls } } };
+			return { content: projected, isError: failed, details: { codemode: { version: 1, scriptOk: result.ok, summaryDigest: codemodeTextDigest(displayedSummary), calls: invocation.facts, runtimeCalls: result.calls, imageFiles } } };
 		} catch (error) {
 			await context.finish();
 			if (invocation.pending) await new Promise<void>(resolve => { invocation.resolveIdle = resolve; });
