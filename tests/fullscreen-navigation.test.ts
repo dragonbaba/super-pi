@@ -92,19 +92,21 @@ test("fullscreen navigation honors explicit legacy key overrides", async () => {
 });
 
 test("explicit editor overrides win without also rebinding viewport defaults", async () => {
-	await withInput(true, {
+	for (const bindings of [{
 		"tui.editor.cursorLineStart": "ctrl+home", "tui.editor.cursorLineEnd": "ctrl+end",
-	}, (tui, terminal, input) => {
-		assert.ok(tui instanceof TuiAltScreen);
-		const bottom = tui.viewportTop;
-		terminal.onInput!("\x1b[1;5H");
-		terminal.onInput!("x");
-		assert.equal(input.getValue(), "xabcd");
-		assert.equal(tui.viewportTop, bottom);
-		terminal.onInput!("\x1b[1;5F");
-		terminal.onInput!("y");
-		assert.equal(input.getValue(), "xabcdy");
-	});
+	}, JSON.parse('{"tui.editor.cursorLineStart":"CTRL+HOME","tui.editor.cursorLineEnd":"CTRL+END"}')]) {
+		await withInput(true, bindings, (tui, terminal, input) => {
+			assert.ok(tui instanceof TuiAltScreen);
+			const bottom = tui.viewportTop;
+			terminal.onInput!("\x1b[1;5H");
+			terminal.onInput!("x");
+			assert.equal(input.getValue(), "xabcd");
+			assert.equal(tui.viewportTop, bottom);
+			terminal.onInput!("\x1b[1;5F");
+			terminal.onInput!("y");
+			assert.equal(input.getValue(), "xabcdy");
+		});
+	}
 });
 
 test("Windows Console Ctrl+Up/Down sequences keep transcript boundaries reachable", async () => {

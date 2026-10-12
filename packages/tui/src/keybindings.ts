@@ -216,9 +216,13 @@ export class KeybindingsManager {
 		this.conflicts = [];
 
 		const userClaims = new Map<KeyId, Keybinding[]>();
+		const userClaimIdentities = new Set<string>();
 		for (const [keybinding, keys] of Object.entries(this.userBindings)) {
 			if (!(keybinding in this.definitions)) continue;
 			for (const key of normalizeKeys(keys)) {
+				const identity = normalizeKeyId(key);
+				if (identity) userClaimIdentities.add(identity);
+				// Keep the configured spelling in existing conflict diagnostics.
 				const claimants = userClaims.get(key) ?? [];
 				if (!claimants.includes(keybinding as Keybinding)) claimants.push(keybinding as Keybinding);
 				userClaims.set(key, claimants);
@@ -238,9 +242,10 @@ export class KeybindingsManager {
 			// Boundary defaults also yield to explicit editor/action bindings.
 			const boundaryDefault = userKeys === undefined && (id === "tui.altScreen.top" || id === "tui.altScreen.bottom");
 			const resolved = id.startsWith("tui.altScreen.")
-				? keys.filter(key =>
-					!this.viewportShortcutOverrides.has(normalizeKeyId(key) ?? "") && !(boundaryDefault && userClaims.has(key)),
-				)
+				? keys.filter(key => {
+					const identity = normalizeKeyId(key) ?? key;
+					return !this.viewportShortcutOverrides.has(identity) && !(boundaryDefault && userClaimIdentities.has(identity));
+				})
 				: keys;
 			this.keysById.set(id as Keybinding, resolved);
 		}

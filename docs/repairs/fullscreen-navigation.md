@@ -50,6 +50,12 @@ Shortcut identity is canonicalized only at configuration boundaries, using the
 same key-ID parser as matchesKey and normalizing modifier order plus esc/escape
 and return/enter aliases. Terminal protocol ambiguities are not globally treated
 as identical logical keys. The parser and input matcher themselves are unchanged.
+User claims use those same canonical identities for boundary-default precedence,
+including uppercase keys loaded from JSON. The temporary claim set exists only
+during rebuild; user configuration and existing conflict diagnostic spelling stay
+unchanged. The editor-only override regression covers both lowercase and uppercase
+JSON bindings; the uppercase variant reproduced the lost cursor movement before
+correction. See `navigation-user-case-{before,after,typecheck}.log`.
 
 ## Verification
 
