@@ -64,12 +64,12 @@ the script status and completed child-call count remain unchanged. Partial
 image writes are removed by exact identity; previously saved files remain
 addressable by their directory if the manifest itself cannot be written.
 
-74 distinct checks passed across integration/provider conversion, image/output,
+76 distinct checks passed across integration/provider conversion, image/output,
 projection/read provenance and source invariants. Six focused file checks cover actual Windows
 owner/protected DACL on both binary and manifest files (POSIX mode checked on
 that platform), native handle release, signatures, 8/16 MiB limits, count cap,
 dedup, partial writes, projection boundaries, relative/deep temporary roots and
-a 256-token output budget. Final affected reruns passed 6 file, 20 integration
+a 256-token output budget. Final affected reruns passed 6 file, 22 integration
 and 14 output/hot-path checks; the preceding 49-check projection regression
 passed. Root typecheck and coding-agent build passed. Overlapping reruns are
 not counted as additional distinct checks.
@@ -170,3 +170,22 @@ path budget boundary, rather than an earlier OS directory-creation failure.
 The fallback reuses the existing notice and estimator sample; it adds no
 per-block callback/container. Real controller/worker profiling was repeated
 after these final corrections; its candidate values above are from that run.
+
+## Projection visibility review gate
+
+A later review identified that appending the manifest notice after all child
+facts could put it in the omitted middle of a subsequent head/tail projection,
+even when the script-level cap had retained the complete result. Reproduce in
+the real AgentSession with eight long failure previews, a large script budget
+and smaller 512/1024 model budgets. Put the notice immediately after the fixed
+summary header, before any variable child facts, so the retained head exposes
+the path. Preserve the summary block identity/count and read-provenance offsets;
+do not introduce a new generic projection API or copy images into extra blocks.
+
+Both budget cases first failed because the next model request lacked the path.
+After moving the existing notice before the child-fact loop, both retain the
+complete path and successfully read its manifest in the next invocation; all
+22 selected integration/provider checks pass. This final change only reorders
+existing completion statements and adds no allocations, factories or scans.
+The normal image benchmark has zero child facts and produces identical summary
+text/order under this change, so its final allocation evidence remains applicable.

@@ -855,6 +855,20 @@ test("Codemode image files remain addressable after a completed script and sessi
 	assert.ok(later.results.at(-1)!.content.some(b => b.type === "text" && b.text.includes("1.png")));
 });
 
+for (const budgetTokens of [512, 1024]) test(`Codemode image manifest remains visible after projecting long child facts: ${budgetTokens}`, async t => {
+	const failure: InlineExtension = pi => pi.registerTool({ name: "failure", label: "failure", description: "fixture", parameters: Type.Object({}),
+		execute: async () => ({ content: [{ type: "text", text: "failure details ".repeat(100) }], isError: true, details: {} }) });
+	const f = await fixture(t, { toolResultPresentation: { enabled: true, budgetTokens } }, [failure]);
+	const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aXioAAAAASUVORK5CYII=";
+	const outcome = await f.run([`// @options: {"max_output_tokens":8192}\nfor(let i=0;i<8;i++) { try { await tools.failure({}); } catch {} } image("data:image/png;base64,${png}"); text("trailing output ".repeat(800))`]);
+	const parent = outcome.results[0]!, files = (parent.details as any).codemode.imageFiles;
+	assert.ok(parent.content.some(b => b.type === "text" && b.text === "trailing output ".repeat(800)), "the script cap must not have truncated first");
+	const visible = outcome.wires[1]!.messages.find(m => m.role === "toolResult")!.content;
+	assert.ok(visible.some(b => b.type === "text" && b.text.includes(files.manifestPath)), "next model turn needs the complete manifest path");
+	const later = await f.run([`await show((await tools.read({path:${JSON.stringify(files.manifestPath)}})).ref)`]);
+	assert.equal(later.results.at(-1)!.isError, false);
+});
+
 test("Codemode image file errors preserve completed tools and attachments under a small output budget", async t => {
 	let executions = 0;
 	const extension: InlineExtension = pi => pi.registerTool({ name: "effect", label: "effect", description: "fixture", parameters: Type.Object({}),
