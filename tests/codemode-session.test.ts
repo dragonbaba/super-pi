@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, toNamespacedPath } from "node:path";
 import { test, type TestContext } from "node:test";
 import { createJiti } from "jiti";
 import { Type } from "typebox";
@@ -890,6 +890,19 @@ test("Codemode image file errors preserve completed tools and attachments under 
 	assert.equal(result.isError, true);
 	assert.equal((result.details as any).codemode.imageFiles.saved, 1);
 	assert.equal(executions, 1);
+});
+
+test("Codemode keeps a long manifest notice whole in the next model projection", async t => {
+	const f = await fixture(t, { toolResultPresentation: { enabled: true, budgetTokens: 512 } });
+	const deep = join(f.cwd, ...Array.from({ length: 4 }, (_, i) => `${i}-` + "a0b1c2d3".repeat(10)));
+	mkdirSync(deep, { recursive: true });
+	isolateTemporaryFiles(t, toNamespacedPath(deep));
+	const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aXioAAAAASUVORK5CYII=";
+	const outcome = await f.run([`// @options: {"max_output_tokens":8192}\nimage("data:image/png;base64,${png}"); text("a0b1c2d3".repeat(1000))`]);
+	const files = (outcome.results[0]!.details as any).codemode.imageFiles;
+	assert.ok(files.manifestPath);
+	const visible = outcome.wires[1]!.messages.find(m => m.role === "toolResult")!.content;
+	assert.ok(visible.some(b => b.type === "text" && b.text.includes(files.manifestPath)), "whole path fits overall budget but exceeds the default retained head");
 });
 
 test("Codemode text and console boundaries survive actual provider message conversion", async t => {

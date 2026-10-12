@@ -64,23 +64,27 @@ the script status and completed child-call count remain unchanged. Partial
 image writes are removed by exact identity; previously saved files remain
 addressable by their directory if the manifest itself cannot be written.
 
-76 distinct checks passed across integration/provider conversion, image/output,
-projection/read provenance and source invariants. Six focused file checks cover actual Windows
+85 distinct checks passed across integration/provider conversion, image/output,
+projection/read provenance and source invariants. Nine focused file checks cover actual Windows
 owner/protected DACL on both binary and manifest files (POSIX mode checked on
 that platform), native handle release, signatures, 8/16 MiB limits, count cap,
 dedup, partial writes, projection boundaries, relative/deep temporary roots and
-a 256-token output budget. Final affected reruns passed 6 file, 22 integration
-and 14 output/hot-path checks; the preceding 49-check projection regression
-passed. Root typecheck and coding-agent build passed. Overlapping reruns are
+a 256-token output budget. Final affected checks also cover event-loop progress,
+quota recovery and atomic model hints across JSONL-shaped resume. The affected
+integration selection has 23 checks. Output/hot-path, read projection and source
+invariants also pass. Root typecheck and coding-agent build passed. Overlapping reruns are
 not counted as additional distinct checks.
 
 Source audit confirms the existing VM/worker bridge, nested dispatch, Agent/
 Session, estimator/spill, UI/tree/Image, Main/Alt rendering and terminal queue
 are unchanged. The Codemode text-projection loop after notice reservation is
-identical to the merged baseline. The model projector change below only evaluates
-its final bounded shrink candidate; source comparison confirms no other edits.
-The new synchronous file helper has zero closures, Promises and controllers;
-the no-image branch creates no containers. No per-update/frame factory, copy,
+identical to the merged baseline. Model projection adds only the final bounded
+shrink evaluation, numeric atomic-layout hints and their source-identity stamp;
+the audit identifies exactly five affected functions, including two new helpers.
+The file helper has zero inline closures, explicit Promise constructors and
+controllers. Its image-only completion functions await filesystem writes through
+one module-startup promisified callback API; implicit Promises are measured below.
+The no-image branch returns undefined without creating a Promise or containers. No per-update/frame factory, copy,
 timer, worker or pool was added. Images need one decode buffer per accepted
 image, a SHA256 digest, a bounded record array/map, binary writes and a small
 manifest serialization. These are completion allocations, not zero allocation
@@ -94,16 +98,16 @@ Windows x64 / Node v26.4.0, same fixtures before/after:
 | Session first-batch median / p95 ms | 45.513 / 46.504 | 45.466 / 77.486 |
 | Session warm-batch median / p95 ms | 44.910 / 46.113 | 46.984 / 56.024 |
 | Session workers started/stopped; WeakRefs retained | 22/22; 0/55 | 22/22; 0/55 |
-| Image controller: 3 samples x 4 completions, after warmup | 180 Promises / 4 calls | 180 Promises / 4 calls |
-| Image sampled bytes/completion | 270362 / 237844 / 223468 | 315354 / 255696 / 261768 |
-| Image instrumented time / 4 calls ms | 145.625 / 136.883 / 136.313 | 147.898 / 183.399 / 163.225 |
-| Image post-GC heap delta bytes | 735824 / 338496 / 36760 | 830960 / 306784 / 53008 |
+| Image controller: 3 samples x 4 completions, after warmup | 180 Promises / 4 calls | 220 Promises / 4 calls |
+| Image sampled bytes/completion | 270362 / 237844 / 223468 | 327200 / 281318 / 252872 |
+| Image instrumented time / 4 calls ms | 145.625 / 136.883 / 136.313 | 146.744 / 139.267 / 139.041 |
+| Image post-GC heap delta bytes | 735824 / 338496 / 36760 | 853896 / 325128 / 49240 |
 | Image private opens / 4 calls | 8 (text spill + marker) | 16 (also one deduped image + manifest per call) |
-| Image normal/script-error/abort/disk-failure owner release | 0/84 retained WeakRefs | 0/105 retained WeakRefs |
+| Image normal/script-error/abort/disk-failure/quota-recovery owner release | 0/84 retained WeakRefs | 0/112 retained WeakRefs |
 
 The image fixture uses a real controller/worker, two identical images and 20k
 text characters, including the real cap and file writes. Its additional disk
-failure cycle is candidate-only; normal performance samples are identical.
+failure and quota-recovery cycles are candidate-only; normal performance samples are identical.
 Existing full async-chain Promises remain nonzero. Leading image allocations
 remain inspector post, V8 API, decode, fromStringFast and runtime bookkeeping.
 HeapProfiler includes collected allocations and fixture/runtime overhead; heap
@@ -146,9 +150,9 @@ affordable read in 79/96 baseline cases and 96/96 candidate cases. Both versions
 use 0 Promises, 401 projection arrays and 96 full source scans per sample; all
 1152 WeakRefs are collected and owner records/references are zero after disposal.
 Sampled bytes/result: baseline 27175.833 / 25139.917 / 24946.917; candidate
-27165.500 / 25451.583 / 25318.417. Instrumented times/sample: 78.212 / 47.105 /
-78.015 ms versus 106.503 / 103.386 / 114.730 ms. Post-GC deltas: 398928 / 24840 /
-35944 versus 410848 / 31168 / 35768 bytes. The candidate performs the previously
+26480.667 / 25393.583 / 25667.250. Instrumented times/sample: 78.212 / 47.105 /
+78.015 ms versus 35.565 / 35.171 / 34.861 ms. Post-GC deltas: 398928 / 24840 /
+35944 versus 412640 / 37840 / 26336 bytes. The candidate performs the previously
 missing evaluation and retains more text; these profiler samples do not claim
 a CPU improvement. No factory or additional full-source scan was added.
 
@@ -189,3 +193,51 @@ complete path and successfully read its manifest in the next invocation; all
 existing completion statements and adds no allocations, factories or scans.
 The normal image benchmark has zero child facts and produces identical summary
 text/order under this change, so its final allocation evidence remains applicable.
+
+## Final boundary review gate
+
+The short-root fix is insufficient for usable paths longer than the retained
+head. Reproduce with a deep root, 8192 script tokens and 512 model tokens.
+Add a numeric first-block projection-prefix hint to retain that bounded prefix
+atomically; include the hint in source identity and use explicit continuation
+if prefix plus recovery information cannot fit. The hint grants no read authority.
+The cap's complete final recovery notice can serve as the atomic tail when no
+prefix survived. Prefer one anchored end to avoid reserving duplicate paths.
+Reuse existing scans and bounded candidates; add no per-block containers.
+
+Replace image payload/manifest writeFileSync with awaited filesystem writes
+through the same already-private descriptor. Keep a synchronous no-image fast
+path and one active descriptor/buffer per image completion, no worker/pool.
+Measure actual Promise costs and event-loop progress with a large image.
+
+On text-spill ENOSPC after optional images were saved, reclaim only those
+recorded image files and retry text persistence once. Reuse the at-most-16 image
+records as transient cleanup ownership, then release them before returning
+session metadata. Keep attachments and completed tools; report that optional
+files were reclaimed. This avoids preemptively spilling every small image result.
+
+All three defects reproduced before their fixes. A large 8 MiB image allows an
+event-loop callback to run before persistence completes. The quota fixture
+rejects text-spill creation only while this completion's image exists; it now
+reclaims those files and saves the text on one retry, keeping image identity.
+Transient cleanup records are cleared before controller return. Existing disk-
+unavailable behavior still reports disk full without falsely claiming reclamation.
+
+The long-root AgentSession case now retains the entire path at 512 model tokens.
+When a prefix cannot fit 128 tokens, projection omits it wholly; a fresh owner
+recovers it through continuation from JSONL-shaped data. Changing the layout
+hint changes source identity and invalidates the old cursor. Prefix/tail helpers
+use primitive lengths and existing candidates, with no new full-source scan or
+container per block. At most seven candidates are evaluated for anchored output.
+
+Atomic projection profile, same three samples of 96 results after warmup:
+complete paths retained 0/96 -> 96/96; Promises 0 -> 0, scans 96 -> 96, projection
+arrays 192 -> 576. These are six existing candidate arrays/result to preserve
+the full path; ordinary read projection remains 401 arrays/96 results. Sampled
+bytes/result 21430.750 / 19149.417 / 20237.417 -> 28396.917 / 26872.750 /
+26316.083; instrumented ms 19.536 / 19.084 / 19.233 -> 26.369 / 25.100 / 24.286;
+post-GC delta bytes 342552 / 13312 / 53560 -> 418424 / 20856 / 34360. Both sides
+collect all 1152 WeakRefs, with owner records/scopes zero. This is bounded feature
+cost, not an allocation or latency improvement claim. Base64 validation, decode,
+hashing and private descriptor setup remain synchronous and bounded; large file
+writes yield. No claim of fully nonblocking completion or worst-case latency.

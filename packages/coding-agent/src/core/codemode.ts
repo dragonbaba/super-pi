@@ -430,15 +430,24 @@ export class CodemodeController {
 			const shownOffset = content.length + 1;
 			for (const block of invocation.shown) content.push(block);
 			let summary = `[CODEMODE_${failed ? "FAILED" : "OK"}] Child calls: ${invocation.facts.length}.`;
-			const imageFiles = saveCodemodeImages(content);
+			const imageSave = saveCodemodeImages(content);
+			const imageFiles = imageSave ? await imageSave : undefined;
 			// Keep the path in the retained head, before variable child previews,
 			// and out of the trailing native-read group.
 			if (imageFiles) summary += "\n" + imageFiles.notice;
+			const imagePrefix = imageFiles ? summary.length : 0;
 			for (const fact of invocation.facts) summary += `\n${fact.toolName.slice(0, 80)}: ${fact.executionStatus ?? (fact.isError ? "failed" : "completed")}${fact.executionStatus && (fact.toolName === "bash" || fact.toolName === "powershell") ? "; exit=" + (fact.exitCode ?? "unknown") : ""}${fact.isError ? " — " + fact.preview.slice(0, 512) : ""}${fact.outputPath ? " Output: " + fact.outputPath : ""}`;
 			if (failed) summary += "\nCompleted tool side effects are not rolled back. Do not automatically retry mutations.";
-			content.unshift({ type: "text", text: summary });
-			const projected = await capCodemodeOutput(content, outputTokens, imageFiles?.notice);
+			const summaryBlock: TextContent & { projectionPrefix?: number } = { type: "text", text: summary };
+			content.unshift(summaryBlock);
+			let projected: (TextContent | ImageContent)[];
+			try { projected = await capCodemodeOutput(content, outputTokens, imageFiles?.notice, imageFiles); }
+			finally { if (imageFiles) imageFiles.ownedFiles = undefined; }
+			summary = summaryBlock.text;
 			const first = projected[0];
+			if (imageFiles?.saved && first?.type === "text" && first.text.length >= imagePrefix && summary.startsWith(first.text)) {
+				(first as TextContent & { projectionPrefix?: number }).projectionPrefix = imagePrefix;
+			}
 			const displayedSummary = first?.type === "text" && summary.startsWith(first.text) ? first.text : summary;
 			if (result.ok && !failed) {
 				this.pendingStore = { id: context.parentToolCallId, writes: result.storeWrites };

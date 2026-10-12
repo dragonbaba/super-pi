@@ -31,9 +31,9 @@ const READ_LAYOUT_ERROR = "Read projection requires each source-line block to be
 const ESCAPE_CODE = 0x1b;
 const GRAPHEME_SEGMENTER = new Intl.Segmenter("en", { granularity: "grapheme" });
 
-// Layout hints are stamped only after native read/snapshot verification. They are
-// not evidence or authority: receipts, identity and freshness checks remain server-owned.
-export type ToolResultPresentationContent = (Readonly<TextContent> & { readonly mcpSource?: McpTypedSource; readonly mcpInput?: true; readonly readBoundary?: "lines" | "metadata" }) | (Readonly<ImageContent> & { readonly mcpInput?: true });
+// Read hints follow native read/snapshot verification; projectionPrefix is an
+// atomic text-layout hint. Neither grants authority: receipts and freshness remain server-owned.
+export type ToolResultPresentationContent = (Readonly<TextContent> & { readonly mcpSource?: McpTypedSource; readonly mcpInput?: true; readonly readBoundary?: "lines" | "metadata"; readonly projectionPrefix?: number }) | (Readonly<ImageContent> & { readonly mcpInput?: true });
 
 /** Phase 5B-A behavior. V1 always exposes the complete legacy result to both consumers. */
 export interface ToolResultPresentationV1 {
@@ -763,12 +763,32 @@ function createSourceKey(sessionId: string, toolCallId: string, counters: ToolRe
 	return fixedHex(first) + fixedHex(second);
 }
 
+/** Layout hint only; it grants no authority and is bounded by source text. */
+function projectionPrefixLength(block: ToolResultPresentationContent | undefined): number {
+	if (block?.type !== "text") return 0;
+	const length = block.projectionPrefix;
+	return typeof length === "number" && Number.isSafeInteger(length) && length > 0 && length <= block.text.length ? length : 0;
+}
+
+/** A complete final recovery notice can serve as the atomic tail instead. */
+function projectionSuffixLength(content: readonly ToolResultPresentationContent[]): number {
+	if (projectionPrefixLength(content[0])) return 0;
+	const last = content[content.length - 1];
+	return last?.type === "text" && projectionPrefixLength(last) === last.text.length ? last.text.length : 0;
+}
+
 function appendSourceIdentityBlock(
 	digest: Hash,
 	block: ToolResultPresentationContent,
 	artifactBytes: number,
 ): number {
 	if (block.type === "text") {
+		const prefix = projectionPrefixLength(block);
+		if (prefix) {
+			const length = prefix.toString(36);
+			digest.update("p").update(length).update(":");
+			artifactBytes += length.length + 2;
+		}
 		if (block.readBoundary) {
 			digest.update("r").update(block.readBoundary).update(":");
 			artifactBytes += block.readBoundary.length + 2;
@@ -999,9 +1019,15 @@ function buildProjection(
 	sourceDigest: string,
 	sourceScan: SourceScan,
 	counters: ToolResultPresentationCounters,
+	preservePrefix = true,
 ): ProjectionBuild {
+	if (preservePrefix) {
+		headTextCodeUnits = Math.max(headTextCodeUnits, projectionPrefixLength(content[0]));
+		tailTextCodeUnits = Math.max(tailTextCodeUnits, projectionSuffixLength(content));
+	}
 	const start = locateHeadEnd(content, headTextCodeUnits, sourceScan, counters);
 	const end = locateTailStart(content, tailTextCodeUnits, sourceScan, counters);
+	if (comparePositions(start, end) > 0) { end.blockIndex = start.blockIndex; end.textOffset = start.textOffset; }
 	if (sourceScan.readGroupCount > 1) alignReadGroupOmission(content, start, end);
 	const actualHeadTextCodeUnits = textCodeUnitsBetween(
 		content,
@@ -1136,7 +1162,15 @@ function projectLegacyContent(
 		const next = Math.floor((retainedTextCodeUnits * Math.max(1, budgetTokens - 2)) / build.estimate.estimatedTokens);
 		retainedTextCodeUnits = Math.max(0, Math.min(retainedTextCodeUnits - 1, next));
 	}
-	if (!build || build.headTextCodeUnits !== 0 || build.tailTextCodeUnits !== 0) {
+	if (projectionPrefixLength(content[0]) || projectionSuffixLength(content)) {
+		// Spend the available budget on the complete reference before retaining a
+		// tail. If even prefix + cursor cannot fit, omit it atomically for recovery.
+		build = buildProjection(content, 0, 0, sourceKey, sourceDigest, sourceScan, counters);
+		if (build.estimate.estimatedTokens <= budgetTokens && comparePositions(build.start, build.end) < 0) {
+			return requireReadProjection(content, sourceScan, build, budgetTokens, sourceKey, sourceDigest, counters);
+		}
+		build = buildProjection(content, 0, 0, sourceKey, sourceDigest, sourceScan, counters, false);
+	} else if (!build || build.headTextCodeUnits !== 0 || build.tailTextCodeUnits !== 0) {
 		build = buildProjection(content, 0, 0, sourceKey, sourceDigest, sourceScan, counters);
 	}
 	if (build.estimate.estimatedTokens > budgetTokens) {

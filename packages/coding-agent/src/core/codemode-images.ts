@@ -1,13 +1,15 @@
 import { createHash } from "node:crypto";
-import { closeSync, mkdtempSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, mkdtempSync, rmdirSync, unlinkSync, writeFile } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { promisify } from "node:util";
 import type { ImageContent, TextContent } from "@super-pi/ai";
 import { privateOutputFileSystem } from "../utils/private-output-file.ts";
 
 const MAX_IMAGES = 16;
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 16 * 1024 * 1024;
+const writeFileAsync = promisify(writeFile);
 
 export interface CodemodeImageFiles {
 	directory?: string;
@@ -15,6 +17,8 @@ export interface CodemodeImageFiles {
 	saved: number;
 	omitted: number;
 	notice: string;
+	/** Completion-owned cleanup records; cleared before session persistence. */
+	ownedFiles?: { image: number; path: string; bytes: number }[];
 }
 
 /** Strict bounded base64, without a second complete encoded string. */
@@ -39,10 +43,10 @@ function extension(bytes: Buffer): string | undefined {
 }
 
 /** Completion-only boundary. The opener establishes privacy before writing. */
-function writePrivate(path: string, data: Buffer | string): void {
+async function writePrivate(path: string, data: Buffer | string): Promise<void> {
 	const fd = privateOutputFileSystem.openSync(path);
 	try {
-		try { writeFileSync(fd, data); }
+		try { await writeFileAsync(fd, data); }
 		finally { closeSync(fd); }
 	} catch (error) {
 		// Only this exact, exclusively created file belongs to this failed write.
@@ -54,10 +58,14 @@ function writePrivate(path: string, data: Buffer | string): void {
 /** No state survives the call except private files and small returned metadata.
  * Images remain in the ordinary result even if storage is unavailable.
  */
-export function saveCodemodeImages(content: readonly (TextContent | ImageContent)[]): CodemodeImageFiles | undefined {
+export function saveCodemodeImages(content: readonly (TextContent | ImageContent)[]): Promise<CodemodeImageFiles> | undefined {
 	let count = 0;
 	for (const block of content) if (block.type === "image") count++;
 	if (count === 0) return undefined;
+	return persistImages(content, count);
+}
+
+async function persistImages(content: readonly (TextContent | ImageContent)[], count: number): Promise<CodemodeImageFiles> {
 	const images: { image: number; path: string; bytes: number }[] = [];
 	const hashes = new Map<string, string>();
 	let directory: string | undefined, manifestPath: string | undefined;
@@ -78,14 +86,14 @@ export function saveCodemodeImages(content: readonly (TextContent | ImageContent
 			if (!path) {
 				directory ??= mkdtempSync(join(resolve(tmpdir()), "sp-codemode-images-"));
 				path = join(directory, `${index}.${ext}`);
-				writePrivate(path, bytes);
+				await writePrivate(path, bytes);
 				hashes.set(digest, path);
 			}
 			images.push({ image: index, path, bytes: size });
 		}
 		if (directory) {
 			const path = join(directory, "images.json");
-			writePrivate(path, JSON.stringify({ version: 1, images, omitted: count - images.length }) + "\n");
+			await writePrivate(path, JSON.stringify({ version: 1, images, omitted: count - images.length }) + "\n");
 			manifestPath = path;
 		}
 	} catch (error) {
@@ -101,6 +109,28 @@ export function saveCodemodeImages(content: readonly (TextContent | ImageContent
 	// Keep optional metadata small: repeated generic advice can displace native
 	// read evidence in the later model projection. The tool description explains retention.
 	const warning = failure ? ` ${failure}; do not repeat tools.` : omitted ? ` ${omitted} skipped (format/size/count).` : "";
-	return { directory, manifestPath, saved: images.length, omitted,
+	return { directory, manifestPath, saved: images.length, omitted, ownedFiles: images,
 		notice: `[${location}${warning}]` };
+}
+
+/** ENOSPC fallback: reclaim this completion's optional files, never replay tools. */
+export function reclaimCodemodeImages(files: CodemodeImageFiles): boolean {
+	let reclaimed = false, failed = false;
+	if (files.ownedFiles) for (const image of files.ownedFiles) {
+		try { unlinkSync(image.path); reclaimed = true; }
+		catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") failed = true; }
+	}
+	if (files.manifestPath) {
+		try { unlinkSync(files.manifestPath); }
+		catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") failed = true; }
+	}
+	if (files.directory && !failed) {
+		try { rmdirSync(files.directory); files.directory = undefined; } catch { failed = true; }
+	}
+	files.omitted += files.saved;
+	files.saved = 0;
+	files.manifestPath = undefined;
+	files.ownedFiles = undefined;
+	files.notice = `[Image files reclaimed for text recovery.${failed ? " Some cleanup failed." : ""} Images remain attached; do not repeat tools.]`;
+	return reclaimed;
 }

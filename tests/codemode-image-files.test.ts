@@ -28,10 +28,10 @@ function ownedTemp(t: TestContext): string {
 	return root;
 }
 
-test("Codemode image files deduplicate within a completion and retain only private binary/manifest files", t => {
+test("Codemode image files deduplicate within a completion and retain only private binary/manifest files", async t => {
 	ownedTemp(t);
 	const source = [image(), image(), image(Buffer.from("ffd8ffe000", "hex")), image(Buffer.from("GIF89a")), image(Buffer.from("RIFF0000WEBP"))];
-	const saved = saveCodemodeImages(source)!;
+	const saved = (await saveCodemodeImages(source))!;
 	const manifest = JSON.parse(readFileSync(saved.manifestPath!, "utf8"));
 	assert.equal(saved.saved, 5); assert.equal(saved.omitted, 0);
 	assert.equal(manifest.images[0].path, manifest.images[1].path);
@@ -53,26 +53,26 @@ $paths = ConvertFrom-Json $env:PI_IMAGE_ACL_PATHS
 		assert.equal(windowsPrivateOutputDiagnostics().nativeHandles, 0);
 		assert.equal(windowsPrivateOutputDiagnostics().tokenHandles, 0);
 	} else for (const path of files) assert.equal(statSync(path).mode & 0o777, 0o600);
-	assert.notEqual(saveCodemodeImages([source[0]!])!.manifestPath, saved.manifestPath, "no session/global image cache");
+	assert.notEqual((await saveCodemodeImages([source[0]!]))!.manifestPath, saved.manifestPath, "no session/global image cache");
 });
 
-test("Codemode image storage caps decoded bytes and count without changing attachments", t => {
+test("Codemode image storage caps decoded bytes and count without changing attachments", async t => {
 	ownedTemp(t);
 	const large = Buffer.alloc(8 * 1024 * 1024); PNG.copy(large);
 	const exact = image(large);
 	const oversized = image(Buffer.concat([large, Buffer.of(0)]));
 	const content = [image(Buffer.from("not an image")), { ...image(), data: "iVBORw0KGgo!" }, oversized, exact, exact, image()];
-	const saved = saveCodemodeImages(content)!;
+	const saved = (await saveCodemodeImages(content))!;
 	assert.equal(saved.saved, 2); assert.equal(saved.omitted, 4);
 	assert.equal(JSON.parse(readFileSync(saved.manifestPath!, "utf8")).images.length, 2);
 	assert.equal(content[3], exact);
-	const many = saveCodemodeImages(Array.from({ length: 17 }, () => image()))!;
+	const many = (await saveCodemodeImages(Array.from({ length: 17 }, () => image())))!;
 	assert.equal(many.saved, 16); assert.equal(many.omitted, 1);
 	assert.equal(readdirSync(many.directory!).length, 2);
 	assert.equal(saveCodemodeImages([{ type: "text", text: "no image" }]), undefined);
 });
 
-test("Codemode partial storage and manifest failures preserve recovery location; failed owned writes are removed", t => {
+test("Codemode partial storage and manifest failures preserve recovery location; failed owned writes are removed", async t => {
 	const root = ownedTemp(t), open = privateOutputFileSystem.openSync;
 	t.after(() => { privateOutputFileSystem.openSync = open; });
 	let opens = 0;
@@ -80,13 +80,13 @@ test("Codemode partial storage and manifest failures preserve recovery location;
 		if (++opens === 2) throw Object.assign(new Error("fixture failure"), { code: "ENOSPC" });
 		return open(path);
 	};
-	const saved = saveCodemodeImages([image()])!;
+	const saved = (await saveCodemodeImages([image()]))!;
 	assert.equal(saved.saved, 1); assert.equal(saved.manifestPath, undefined);
 	assert.ok(existsSync(join(saved.directory!, "1.png")));
 	assert.match(saved.notice, /manifest unavailable/);
 	let failedPath = "";
 	privateOutputFileSystem.openSync = path => { failedPath = path; const fd = open(path); closeSync(fd); return fd; };
-	const failed = saveCodemodeImages([image()])!;
+	const failed = (await saveCodemodeImages([image()]))!;
 	assert.equal(failed.saved, 0); assert.equal(failed.directory, undefined);
 	assert.equal(existsSync(failedPath), false);
 	assert.equal(readdirSync(root).length, 1, "only the successfully saved output remains");
@@ -95,11 +95,17 @@ test("Codemode partial storage and manifest failures preserve recovery location;
 test("image manifest notices survive the minimum text cap and preserve native block identity", async t => {
 	ownedTemp(t);
 	const block = image(), content = [{ type: "text" as const, text: "summary ".repeat(1000) }, block];
-	const saved = saveCodemodeImages(content)!;
+	const saved = (await saveCodemodeImages(content))!;
 	const result = await capCodemodeOutput(content, 256, saved.notice);
 	assert.ok(result.includes(block));
 	assert.ok(result.some(b => b.type === "text" && b.text.includes(saved.manifestPath!)));
 	assert.ok(estimateToolOutputTokens(result).estimatedTokens <= 256);
+	const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 128 }, "capped-image-notice")!;
+	try {
+		const visible = owner.create(result, "image-cap")!.modelContent;
+		for (const part of visible) if (part.type === "text" && part.text.includes(saved.directory!)) assert.ok(part.text.includes(saved.manifestPath!));
+		assert.ok(estimateToolOutputTokens(visible).estimatedTokens <= 128);
+	} finally { owner.release(); owner.dispose(); }
 });
 
 test("image metadata near a projection budget boundary retains affordable complete read groups", () => {
@@ -128,7 +134,7 @@ test("review: relative and deep temporary roots cannot invalidate completed imag
 	try {
 		process.chdir(root);
 		process.env.TMP = process.env.TEMP = process.env.TMPDIR = "relative";
-		const saved = saveCodemodeImages([image()])!;
+		const saved = (await saveCodemodeImages([image()]))!;
 		assert.ok(isAbsolute(saved.manifestPath!), "persisted image paths must not depend on the original cwd");
 		const manifest = JSON.parse(readFileSync(saved.manifestPath!, "utf8"));
 		assert.ok(isAbsolute(manifest.images[0].path));
@@ -137,7 +143,7 @@ test("review: relative and deep temporary roots cannot invalidate completed imag
 	mkdirSync(deep, { recursive: true });
 	process.env.TMP = process.env.TEMP = process.env.TMPDIR = toNamespacedPath(deep);
 	for (const text of ["summary", "summary ".repeat(1000)]) {
-		const block = image(), saved = saveCodemodeImages([block])!;
+		const block = image(), saved = (await saveCodemodeImages([block]))!;
 		assert.ok(saved.manifestPath, saved.notice);
 		const result = await capCodemodeOutput([{ type: "text", text: text + "\n" + saved.notice }, block], 256, saved.notice);
 		assert.ok(result.includes(block));
@@ -145,4 +151,61 @@ test("review: relative and deep temporary roots cannot invalidate completed imag
 		assert.ok(result.some(b => b.type === "text" && b.text.includes("saved result metadata")));
 		assert.ok(existsSync(saved.manifestPath!));
 	}
+});
+
+test("image completion yields to the event loop during large private writes", async t => {
+	ownedTemp(t);
+	const bytes = Buffer.alloc(8 * 1024 * 1024); PNG.copy(bytes);
+	let responsive = false;
+	const tick = setImmediate(() => { responsive = true; });
+	t.after(() => clearImmediate(tick));
+	const saved = await saveCodemodeImages([image(bytes)]);
+	assert.equal(saved!.saved, 1);
+	assert.equal(responsive, true, "private image persistence must yield before it completes");
+});
+
+test("optional image files are reclaimed when their space prevents text recovery", async t => {
+	ownedTemp(t);
+	const block = image(), saved = (await saveCodemodeImages([block]))!;
+	const imagePath = JSON.parse(readFileSync(saved.manifestPath!, "utf8")).images[0].path;
+	const open = privateOutputFileSystem.openSync;
+	t.after(() => { privateOutputFileSystem.openSync = open; });
+	let spillPath = "", denied = 0;
+	privateOutputFileSystem.openSync = path => {
+		if (path.endsWith(".log")) {
+			if (existsSync(imagePath)) { denied++; throw Object.assign(new Error("space consumed by optional images"), { code: "ENOSPC" }); }
+			spillPath = path;
+		}
+		return open(path);
+	};
+	const content = [{ type: "text" as const, text: saved.notice + "\n" + "recovery payload ".repeat(1000) }, block];
+	const result = await capCodemodeOutput(content, 256, saved.notice, saved);
+	assert.equal(denied, 1);
+	assert.ok(spillPath, "free optional image space and retry text persistence once");
+	assert.match(readFileSync(spillPath, "utf8"), /recovery payload/);
+	assert.equal(existsSync(imagePath), false);
+	assert.equal(saved.saved, 0);
+	assert.ok(result.includes(block));
+});
+
+test("an atomic image prefix that cannot fit remains recoverable after JSONL-shaped resume", () => {
+	const prefix = "[Image files: read /tmp/" + "a0b1c2d3".repeat(80) + "/images.json.]";
+	const content = [{ type: "text" as const, text: prefix + "\n" + "trailing output ".repeat(200), projectionPrefix: prefix.length }];
+	const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 128 }, "atomic-image")!;
+	const presentation = owner.create(content, "image-call")!;
+	assert.equal(presentation.version, 2);
+	if (presentation.version !== 2) return;
+	assert.ok(presentation.modelContent.every(b => b.type !== "text" || !b.text.includes("/tmp/")), "omit the path atomically instead of presenting a fragment");
+	const cursor = presentation.continuation.cursor;
+	owner.release(); owner.dispose();
+	const messages = JSON.parse(JSON.stringify([{ role: "toolResult", toolCallId: "image-call", toolName: "codemode", content, isError: false, timestamp: 1 }]));
+	const resumed = createToolResultPresentationOwner({ enabled: true, budgetTokens: 128 }, "atomic-image")!;
+	try {
+		const recovered = resumed.readContinuation(cursor, messages, 4096);
+		assert.ok(recovered.content.some(b => b.type === "text" && b.text.includes(prefix)));
+		messages[0].content[0].projectionPrefix = 1;
+		const changed = createToolResultPresentationOwner({ enabled: true, budgetTokens: 128 }, "atomic-image")!;
+		try { assert.throws(() => changed.readContinuation(cursor, messages, 4096), { code: "stale-cursor" }); }
+		finally { changed.dispose(); }
+	} finally { resumed.dispose(); }
 });

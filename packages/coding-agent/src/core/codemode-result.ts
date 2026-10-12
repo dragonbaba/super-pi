@@ -5,6 +5,7 @@ import type { TextContent, ImageContent } from "@super-pi/ai";
 import { serializeMcpStructured, verifiedMcpSource, type McpTypedSource } from "./tool-result-source.ts";
 import { BoundedJson } from "@super-pi/codemode/bounded-json";
 import type { ToolResultPresentationContent } from "./tool-result-presentation.ts";
+import { reclaimCodemodeImages, type CodemodeImageFiles } from "./codemode-images.ts";
 
 const MAX_INLINE_CHARS = 128 * 1024;
 const CHUNK_CHARS = 16 * 1024;
@@ -85,7 +86,7 @@ export function codemodeImageChars(content: readonly (TextContent | ImageContent
 }
 
 /** One bounded scratch block/array per result, reused by synchronous estimation. */
-export async function capCodemodeOutput(content: (TextContent | ImageContent)[], tokens: number, imageNotice?: string): Promise<(TextContent | ImageContent)[]> {
+export async function capCodemodeOutput(content: (TextContent | ImageContent)[], tokens: number, imageNotice?: string, imageFiles?: CodemodeImageFiles): Promise<(TextContent | ImageContent)[]> {
 	if (estimateToolOutputTokens(content).estimatedTokens <= tokens) return content;
 	const output = new OutputAccumulator(FORCE_SPILL_OPTIONS);
 	let path: string | undefined;
@@ -107,13 +108,21 @@ export async function capCodemodeOutput(content: (TextContent | ImageContent)[],
 		try { await output.discardTempFile(); }
 		catch (cleanupError) { if (!imageNotice) throw cleanupError; cleanupFailed = true; }
 		if (!imageNotice) throw error;
+		if ((error as NodeJS.ErrnoException).code === "ENOSPC" && imageFiles?.ownedFiles?.length) {
+			const reclaimed = reclaimCodemodeImages(imageFiles);
+			const summary = content[0];
+			if (summary?.type === "text") summary.text = summary.text.replace(imageNotice, imageFiles.notice);
+			imageNotice = imageFiles.notice;
+			// No ownership argument on the retry: it cannot reclaim or retry twice.
+			if (reclaimed) return capCodemodeOutput(content, tokens, imageNotice);
+		}
 		// Optional image persistence must not turn completed effects into a failed
 		// parent when the same disk also rejects the text spill. Keep bounded output.
 		path = undefined;
 		recoveryFailed = true;
 	}
 	finally { await output.closeTempFile(); }
-	const notice: TextContent = { type: "text", text: recoveryFailed
+	const notice: TextContent & { projectionPrefix?: number } = { type: "text", text: recoveryFailed
 		? `[Codemode output truncated; text recovery file unavailable.${cleanupFailed ? " Incomplete spill cleanup failed." : ""} Do not repeat completed side effects.]\n${imageNotice}`
 		: `[Codemode output truncated. ${capped ? "Only the first 5 MiB was saved; later data is unavailable. " : ""}Recover the saved output with read: ${path ?? "unavailable"}. Do not repeat completed side effects.]${imageNotice ? "\n" + imageNotice : ""}` };
 	const scratch: TextContent = { type: "text", text: "" };
@@ -130,6 +139,7 @@ export async function capCodemodeOutput(content: (TextContent | ImageContent)[],
 		}
 	}
 	if (remaining < 0) throw new Error("Codemode output budget cannot fit the recovery notice");
+	if (imageNotice) notice.projectionPrefix = notice.text.length;
 	const projected: (TextContent | ImageContent)[] = [];
 	let truncated = false;
 	let partialText = "";
