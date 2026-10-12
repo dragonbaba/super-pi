@@ -85,11 +85,15 @@ export function codemodeImageChars(content: readonly (TextContent | ImageContent
 }
 
 /** One bounded scratch block/array per result, reused by synchronous estimation. */
-export async function capCodemodeOutput(content: (TextContent | ImageContent)[], tokens: number): Promise<(TextContent | ImageContent)[]> {
+export async function capCodemodeOutput(content: (TextContent | ImageContent)[], tokens: number, imageNotice?: string): Promise<(TextContent | ImageContent)[]> {
+	if (imageNotice) content.push({ type: "text", text: imageNotice });
 	if (estimateToolOutputTokens(content).estimatedTokens <= tokens) return content;
+	if (imageNotice) content.pop(); // The reserved final notice below carries it through truncation.
 	const output = new OutputAccumulator(FORCE_SPILL_OPTIONS);
 	let path: string | undefined;
 	let capped = false;
+	let recoveryFailed = false;
+	let cleanupFailed = false;
 	try {
 		for (const block of content) {
 			appendText(output, block.type === "text" ? block.text : `data:${block.mimeType};base64,`);
@@ -101,9 +105,19 @@ export async function capCodemodeOutput(content: (TextContent | ImageContent)[],
 		path = snapshot.fullOutputPath;
 		capped = snapshot.spillFileCapped;
 		await output.closeTempFile();
-	} catch (error) { await output.discardTempFile(); throw error; }
+	} catch (error) {
+		try { await output.discardTempFile(); }
+		catch (cleanupError) { if (!imageNotice) throw cleanupError; cleanupFailed = true; }
+		if (!imageNotice) throw error;
+		// Optional image persistence must not turn completed effects into a failed
+		// parent when the same disk also rejects the text spill. Keep bounded output.
+		path = undefined;
+		recoveryFailed = true;
+	}
 	finally { await output.closeTempFile(); }
-	const notice: TextContent = { type: "text", text: `[Codemode output truncated. ${capped ? "Only the first 5 MiB was saved; later data is unavailable. " : ""}Recover the saved output with read: ${path ?? "unavailable"}. Do not repeat completed side effects.]` };
+	const notice: TextContent = { type: "text", text: recoveryFailed
+		? `[Codemode output truncated; text recovery file unavailable.${cleanupFailed ? " Incomplete spill cleanup failed." : ""} Do not repeat completed side effects.]\n${imageNotice}`
+		: `[Codemode output truncated. ${capped ? "Only the first 5 MiB was saved; later data is unavailable. " : ""}Recover the saved output with read: ${path ?? "unavailable"}. Do not repeat completed side effects.]${imageNotice ? "\n" + imageNotice : ""}` };
 	const scratch: TextContent = { type: "text", text: "" };
 	const sample: (TextContent | ImageContent)[] = [notice];
 	let remaining = tokens - estimateToolOutputTokens(sample).estimatedTokens - 2;
