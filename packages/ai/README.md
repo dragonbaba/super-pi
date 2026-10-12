@@ -1483,6 +1483,8 @@ Each of these providers carries an `OAuthAuth` on `provider.auth.oauth` with thr
 
 Anthropic subscription OAuth is disabled. Stored credentials and session history are retained, but the old credential fails locally and cannot trigger an automatic fallback to API billing. Select API-key login explicitly or supply a request-specific API key. `ANTHROPIC_OAUTH_TOKEN` is retired; supported non-subscription proxy Bearer auth remains available. See [migration instructions](../../docs/repairs/session-clean-timeout-boundaries.md).
 
+The Anthropic adapter disables the SDK's automatic credential discovery for its own clients. Injected clients must use static API-key/token authentication, or a custom client that disables SDK discovery. SDK `credentials`, `config` and `profile` modes are rejected before request hooks and transport; an external client's constructor may already have started its own discovery before injection. Constructor headers, including SDK environment-provided custom headers, remain subject to the subscription-token check.
+
 ```typescript
 import { createModels } from '@super-pi/ai';
 import { anthropicProvider } from '@super-pi/ai/providers/anthropic';

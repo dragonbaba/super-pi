@@ -108,6 +108,63 @@ function response(): Response {
 	return new Response(events.map(e => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join(""), { headers: { "content-type": "text/event-stream" } });
 }
 
+test("SDK structured and anonymous client authentication is rejected before hooks or token resolution", async (t) => {
+	let resolutions = 0;
+	let effects = 0;
+	// Discovery can start in the SDK constructor. Stub it before constructing any
+	// anonymous/profile client so this regression never reads real credentials.
+	t.mock.method(Anthropic.prototype as any, "_resolveDefaultCredentials", async () => {});
+	const fetch: typeof globalThis.fetch = async () => { effects++; return response(); };
+	const credentials = async () => { resolutions++; return { token, expiresAt: null }; };
+	const configured = new Anthropic({ apiKey: null, authToken: null, credentials, fetch });
+	const clients = [
+		configured, configured.withOptions({ timeout: 1000 }),
+		new Anthropic({ apiKey: null, authToken: null, profile: "offline-fixture", fetch }),
+		new Anthropic({ apiKey: null, authToken: null, config: {
+			authentication: { type: "user_oauth", credentials_path: ".git/f06-inline-tools-20261012/never-read-fixture.json" },
+		}, fetch }),
+		new Anthropic({ apiKey: null, authToken: null, defaultHeaders: { Authorization: "Bearer offline-proxy" }, fetch }),
+	];
+	for (const client of clients) {
+		const result = await stream(model, context, { client, maxRetries: 0, onPayload: () => { effects++; } }).result();
+		assert.match(result.errorMessage ?? "", /\[ANTHROPIC_CLIENT_AUTH_UNSUPPORTED\]/);
+		assert.equal(isRetryableAssistantError(result), false);
+		assert.equal(result.errorMessage!.includes(token), false);
+	}
+	assert.equal(resolutions, 0);
+	assert.equal(effects, 0);
+});
+
+test("built-in proxy authentication disables SDK ambient discovery", async (t) => {
+	let discoveries = 0;
+	t.mock.method(Anthropic.prototype as any, "_resolveDefaultCredentials", async () => { discoveries++; });
+	const fetch: typeof globalThis.fetch = async () => response();
+	const result = await stream(model, context, { headers: { Authorization: "Bearer offline-proxy" }, fetch }).result();
+	assert.equal(result.stopReason, "toolUse", result.errorMessage);
+	class HeaderClient extends Anthropic {
+		protected override _shouldResolveDefaultCredentials(): boolean { return false; }
+	}
+	for (const client of [
+		new Anthropic({ apiKey: "offline-key", authToken: null, fetch }),
+		new Anthropic({ apiKey: null, authToken: "offline-proxy", fetch }),
+		new HeaderClient({ apiKey: null, authToken: null, defaultHeaders: { Authorization: "Bearer offline-proxy" }, fetch }),
+	]) {
+		const injected = await stream(model, context, { client }).result();
+		assert.equal(injected.stopReason, "toolUse", injected.errorMessage);
+	}
+	assert.equal(discoveries, 0);
+});
+
+test("SDK ambient custom headers cannot inject retired credentials into built-in requests", async (t) => {
+	const previous = process.env.ANTHROPIC_CUSTOM_HEADERS;
+	t.after(() => { if (previous === undefined) delete process.env.ANTHROPIC_CUSTOM_HEADERS; else process.env.ANTHROPIC_CUSTOM_HEADERS = previous; });
+	process.env.ANTHROPIC_CUSTOM_HEADERS = `Authorization: Bearer ${token}`;
+	let effects = 0;
+	const result = await stream(model, context, { apiKey: "offline-key", fetch: async () => { effects++; return response(); }, onPayload: () => { effects++; } }).result();
+	assert.match(result.errorMessage ?? "", disabled);
+	assert.equal(effects, 0);
+});
+
 test("standard API actual wire keeps identity, tools/history IDs, images, thinking, cache and legal betas", async () => {
 	const captured: { headers: Headers; body: any }[] = [];
 	const fetch: typeof globalThis.fetch = async (input, init) => {

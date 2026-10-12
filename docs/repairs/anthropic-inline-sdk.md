@@ -77,7 +77,7 @@ Windows / Node v26.4.0, baseline `4c091608757f7305c11029ac7ad4b4ea0f381423`:
 - The lock audit changes exactly six entries: root test dependencies, AI package,
   SDK, standardwebhooks, @stablelib/base64 and fast-sha256. The prior extraneous
   SDK record is untouched; it is not the workspace AI resolution.
-- AST comparisons prove the complete `stream` body and its five SSE helpers
+- AST comparisons prove `stream` after authentication and its five SSE helpers
   unchanged. The direct delta branch contains zero closures, new Promises,
   controllers and array literals; its three existing event-envelope literals
   belong to the mutually exclusive text/thinking/tool branches. No pooling.
@@ -119,3 +119,41 @@ Commands: `node .git/f06-inline-tools-20261012/audit.mjs` and
 `node --expose-gc --experimental-strip-types .git/f06-inline-tools-20261012/measure.mts before|after`.
 The full local suite, live Anthropic calls, real cache-hit behavior and F06.2
 session integration are outside this prerequisite's acceptance.
+
+## Review: credential-provider boundary
+
+Review of `177786bd4` identified new SDK authentication behavior: a client without
+a static key/token can start credential discovery during construction, while
+credentials/config/profile may resolve a token only later. Checking static
+fields alone cannot enforce the existing subscription boundary. Reproduce with
+synthetic credential providers and stub the SDK's discovery method before
+constructing profile/anonymous fixtures; never consult real credential files.
+
+Reject injected clients with structured SDK credential state before payload
+hooks, token resolution or API transport. Preserve explicit static API/proxy
+authentication and custom clients that own their transport. Internally created
+clients must override the SDK's protected default-discovery opt-in to false, so
+header-only proxy auth cannot begin ambient discovery. Validate constructor
+default headers after construction too, because the new SDK also merges ambient
+custom headers. A preconstructed external client may already have started its
+own discovery; the adapter cannot undo that constructor side effect and must
+reject further use. Changes stay at request startup, not the delta path.
+
+All three review probes fail on `177786bd4` and pass after correction. They cover
+structured providers and withOptions clones, config/profile/anonymous clients,
+built-in proxy discovery, and ambient subscription headers. Static injected
+API-key/token clients and a custom discovery-disabled header client still work.
+17 affected checks (including source invariants), root typecheck and all three
+builds pass; the earlier unaffected 99/12-check evidence is retained. Total
+distinct behavior cases increase to 102. No actual credential files are read by
+the review fixtures; constructor discovery is stubbed before clients are made.
+
+The final request-startup change adds bounded header inspection, with no extra
+per-delta code. Repeated three-run profile samples are 4695.758 / 4087.622 /
+4084.791 bytes per update, 280,118 Promise initializations per request, two
+controllers, zero SDK decodes and 16 WeakRefs with zero survivors. Instrumented
+elapsed times are 1748.6 / 1439.4 / 1405.7 ms; heap deltas are 5462616 / -548192 /
+134280 bytes with the same profiler limitations. Full post-auth stream and five
+SSE helpers still match the merged base. Raw review evidence is in
+`auth-review-baseline.log`, `review-regression.log`, `review.json` and three
+`review-*.heapprofile` files.
