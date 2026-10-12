@@ -35,9 +35,11 @@ See the [OSC 7501 specification](https://www.superlogical.com/rex/docs/build/pro
 
 Home/End move the focused input or editor cursor to the start/end of its line
 in both main-screen and fullscreen modes. Ctrl+A/E are equivalent editor keys.
-In fullscreen mode, Ctrl+Home/End scroll to the beginning/end of the transcript;
-PageUp/PageDown continue to scroll the viewport. Ctrl+Home/End are not default
-editor keys in main-screen mode. Explicit user keybinding overrides take precedence.
+In fullscreen mode, Ctrl+Home/End or Ctrl+Up/Down scroll to the beginning/end
+of the transcript; PageUp/PageDown continue to scroll the viewport. Use
+Ctrl+Up/Down in Windows Console, where Ctrl+Home/End may arrive as plain
+Home/End. Ctrl+Home/End are not default editor keys in main-screen mode.
+Explicit user bindings take precedence over these transcript navigation defaults.
 
 ## Quick Start
 

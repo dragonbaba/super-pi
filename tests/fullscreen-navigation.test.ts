@@ -90,3 +90,33 @@ test("fullscreen navigation honors explicit legacy key overrides", async () => {
 		assert.equal(input.getValue(), "xabcdy");
 	});
 });
+
+test("explicit editor overrides win without also rebinding viewport defaults", async () => {
+	await withInput(true, {
+		"tui.editor.cursorLineStart": "ctrl+home", "tui.editor.cursorLineEnd": "ctrl+end",
+	}, (tui, terminal, input) => {
+		assert.ok(tui instanceof TuiAltScreen);
+		const bottom = tui.viewportTop;
+		terminal.onInput!("\x1b[1;5H");
+		terminal.onInput!("x");
+		assert.equal(input.getValue(), "xabcd");
+		assert.equal(tui.viewportTop, bottom);
+		terminal.onInput!("\x1b[1;5F");
+		terminal.onInput!("y");
+		assert.equal(input.getValue(), "xabcdy");
+	});
+});
+
+test("Windows Console Ctrl+Up/Down sequences keep transcript boundaries reachable", async () => {
+	await withInput(true, {}, (tui, terminal, input) => {
+		assert.ok(tui instanceof TuiAltScreen);
+		const bottom = tui.viewportTop;
+		assert.ok(bottom > 0);
+		terminal.onInput!("\x1b[1;5A");
+		assert.equal(tui.viewportTop, 0);
+		terminal.onInput!("\x1b[1;5B");
+		assert.equal(tui.viewportTop, bottom);
+		terminal.onInput!("x");
+		assert.equal(input.getValue(), "abcdx");
+	});
+});

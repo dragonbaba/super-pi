@@ -179,8 +179,8 @@ export const TUI_KEYBINDINGS = {
 		defaultKeys: "ctrl+shift+down",
 		description: "Jump to next semantic prompt",
 	},
-	"tui.altScreen.top": { defaultKeys: "ctrl+home", description: "Scroll viewport to top" },
-	"tui.altScreen.bottom": { defaultKeys: "ctrl+end", description: "Scroll viewport to bottom" },
+	"tui.altScreen.top": { defaultKeys: ["ctrl+home", "ctrl+up"], description: "Scroll viewport to top" },
+	"tui.altScreen.bottom": { defaultKeys: ["ctrl+end", "ctrl+down"], description: "Scroll viewport to bottom" },
 } as const satisfies KeybindingDefinitions;
 
 export interface KeybindingConflict {
@@ -233,7 +233,11 @@ export class KeybindingsManager {
 		for (const [id, definition] of Object.entries(this.definitions)) {
 			const userKeys = this.userBindings[id];
 			const keys = userKeys === undefined ? normalizeKeys(definition.defaultKeys) : normalizeKeys(userKeys);
-			this.keysById.set(id as Keybinding, keys);
+			// Navigation defaults must not consume a user's explicit editor/action binding.
+			const resolved = userKeys === undefined && (id === "tui.altScreen.top" || id === "tui.altScreen.bottom")
+				? keys.filter(key => !userClaims.has(key))
+				: keys;
+			this.keysById.set(id as Keybinding, resolved);
 		}
 	}
 
