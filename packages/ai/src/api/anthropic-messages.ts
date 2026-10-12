@@ -226,6 +226,8 @@ export interface AnthropicOptions extends StreamOptions {
 	 * Pre-built Anthropic client instance. When provided, skips internal client
 	 * construction entirely. Use this to inject alternative SDK clients such as
 	 * `AnthropicVertex` that shares the same messaging API.
+	 * SDK credentials/config/profile and automatic credential discovery are not
+	 * supported. Use static auth or a custom client with discovery disabled.
 	 */
 	client?: Anthropic;
 }
@@ -263,6 +265,39 @@ function assertRequestAuth(provider: string, apiKey: string | undefined, headers
 		return;
 	}
 	throw new Error(`No API key for provider: ${provider}`);
+}
+
+// The SDK otherwise starts local credential discovery in its constructor even
+// when our explicit proxy authentication lives entirely in default headers.
+class ExplicitAuthAnthropic extends Anthropic {
+	protected override _shouldResolveDefaultCredentials(): boolean {
+		return false;
+	}
+}
+
+function assertAnthropicClientAuth(client: Anthropic): void {
+	assertSupportedAnthropicToken(client.apiKey);
+	assertSupportedAnthropicToken(client.authToken);
+	// Inspect only the pinned SDK's configuration/state, never invoke a credential
+	// provider. An injected client may already have started discovery before entry.
+	const sdk = client as unknown as {
+		_options?: {
+			credentials?: unknown;
+			config?: unknown;
+			profile?: unknown;
+			defaultHeaders?: ConstructorParameters<typeof Headers>[0];
+		};
+		_authState?: { provider?: unknown; tokenCache?: unknown; resolution?: unknown; error?: unknown };
+		_shouldResolveDefaultCredentials?: () => boolean;
+	};
+	if (sdk._options?.credentials != null || sdk._options?.config != null || sdk._options?.profile != null ||
+		sdk._authState?.provider || sdk._authState?.tokenCache || sdk._authState?.resolution || sdk._authState?.error ||
+		(client.apiKey == null && client.authToken == null && sdk._shouldResolveDefaultCredentials?.())) {
+		throw new Error("[ANTHROPIC_CLIENT_AUTH_UNSUPPORTED] SDK credentials/config/profile and automatic credential discovery are unsupported. Use an explicit API key, static token, or a custom client with SDK discovery disabled.");
+	}
+	if (sdk._options?.defaultHeaders) {
+		assertSupportedAnthropicHeaders(headersToRecord(new Headers(sdk._options.defaultHeaders)));
+	}
 }
 
 interface ServerSentEvent {
@@ -491,17 +526,6 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 
 			if (options?.client) {
 				client = options.client;
-				assertSupportedAnthropicToken(client.apiKey);
-				assertSupportedAnthropicToken(client.authToken);
-				// The pinned Client SDK keeps constructor headers here. Inspect only auth
-				// headers, without building a request (which can resolve external auth).
-				// Covered with real SDK clients; custom transport code owns its own auth.
-				const defaults = (client as unknown as { _options?: { defaultHeaders?: ConstructorParameters<typeof Headers>[0] } })
-					._options?.defaultHeaders;
-				if (defaults) {
-					const headers = new Headers(defaults);
-					assertSupportedAnthropicHeaders(headersToRecord(headers));
-				}
 			} else {
 				const apiKey = options?.apiKey;
 				assertRequestAuth(model.provider, apiKey, options?.headers);
@@ -532,6 +556,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 					cacheSessionId,
 				);
 			}
+			assertAnthropicClientAuth(client);
 			let params = buildParams(model, context, options);
 			const nextParams = await options?.onPayload?.(params, model);
 			if (nextParams !== undefined) {
@@ -812,7 +837,7 @@ export function observeAnthropicEffectiveDispatch(
 			? params.system.map(removeAnthropicCacheControl)
 			: (params.system ?? null),
 		orderedToolDefinitions: neutralTools,
-		orderedToolIdentifiers: tools.map((tool) => tool.name),
+		orderedToolIdentifiers: tools.map((tool) => "name" in tool ? tool.name : tool.type),
 		cacheRetention: cache.retention,
 		cachePolicy: cache.policy,
 		cacheBoundary: cache.boundary,
@@ -944,7 +969,7 @@ function createClient(
 
 	// Copilot: Bearer auth, selective betas.
 	if (model.provider === "github-copilot") {
-		const client = new Anthropic({
+		const client = new ExplicitAuthAnthropic({
 			apiKey: null,
 			authToken: apiKey ?? null,
 			baseURL: model.baseUrl,
@@ -978,7 +1003,7 @@ function createClient(
 		model.headers,
 		optionsHeaders,
 	);
-	const client = new Anthropic({
+	const client = new ExplicitAuthAnthropic({
 		apiKey: apiKey ?? null,
 		authToken: null,
 		baseURL: model.baseUrl,

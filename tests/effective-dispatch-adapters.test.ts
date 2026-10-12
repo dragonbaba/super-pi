@@ -334,6 +334,20 @@ test("Anthropic, OpenAI Responses, and Pi Messages use their actual top-level wi
 	]);
 });
 
+test("Anthropic SDK toolsets without a name retain their wire type in dispatch identity", () => {
+	const captured = capture<Api>();
+	observeAnthropicEffectiveDispatch(captured.options, model("anthropic-messages"), {
+		model: "claude-test", stream: true, max_tokens: 64, messages: [],
+		tools: [
+			{ name: "read", input_schema: { type: "object" } },
+			{ type: "browser_toolset_20260801" },
+		],
+	});
+	assert.equal(captured.observations[0]?.toolCount, 2);
+	assert.equal(captured.observations[0]?.toolOrderHash, jsonHash(["read", "browser_toolset_20260801"]));
+	assert.equal(captured.observations[0]?.toolIdentifierSetHash, jsonHash(["browser_toolset_20260801", "read"]));
+});
+
 test("provider-resolved retention hashes change without contaminating policy hashes", () => {
 	const observePair = <TApi extends Api>(
 		observe: (captured: ReturnType<typeof capture<TApi>>, long: boolean) => void,

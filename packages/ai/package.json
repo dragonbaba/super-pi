@@ -58,7 +58,7 @@
 		"build:offline": "npm run check:model-data && tsgo -p tsconfig.build.json && shx rm -rf dist/providers/data && shx cp -r src/providers/data dist/providers/data"
 	},
 	"dependencies": {
-		"@anthropic-ai/sdk": "0.91.1",
+		"@anthropic-ai/sdk": "0.129.0",
 		"@aws-sdk/client-bedrock-runtime": "3.1048.0",
 		"@google/genai": "1.52.0",
 		"@opentelemetry/api": "1.9.0",
