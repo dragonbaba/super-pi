@@ -1471,6 +1471,36 @@ const response = await models.complete(model, context, {
 
 Use this when one process needs different provider settings per request, or when ambient environment variables should not leak into a provider call.
 
+## Anthropic inline tool changes
+
+Supported first-party Anthropic models preserve the initial system/tool prefix and
+send later tool additions, same-name schema replacements, removals and system
+instruction replacements as mid-conversation system messages. The adapter enables
+`inline-tools-2026-09-15` for exact model IDs: Fable 5/5.1, Mythos 5/5.1, Opus
+4.8/5/5.5, Sonnet 5.5 and Haiku 5.5. Sonnet 5 and older models keep the existing
+request-level declarations. Custom Anthropic-compatible models must explicitly set
+both `compat.supportsMidConvoSystemMessages` and `compat.supportsMidConvoToolChanges`
+to `true`; either flag can disable this behavior on a built-in model.
+
+Successful assistant messages store an optional `anthropicContext` checkpoint when
+definitions or instructions change. Keep these messages when saving/resuming a
+conversation. Checkpoints contain JSON tool schemas and system instructions, never
+execution callbacks or credentials. They are absent from streaming partials and
+remain outside the server protocol's client transcript projection. Old histories
+and histories pruned past a checkpoint establish a fresh prefix. Empty initial
+tool sets use the existing path until a non-empty initial set is available.
+
+The current `Context.tools` remains the source of availability. AgentSession tool
+selection, nested exposure and prompt guidelines flow into the next update;
+execution still uses the current tool registry and permission checks. A reserved,
+never-activated deferred placeholder stabilizes the initial tool prefix. A user
+tool named `__pi_deferred_placeholder__` disables inline mode to avoid collision.
+Model or wire-policy changes, paused turns and payload hooks that modify
+declarations reset prefix continuity. The payload hook remains the final override.
+Input headroom includes inline declarations after the latest reported usage.
+
+See [implementation and validation boundaries](../../docs/repairs/anthropic-inline-tools.md).
+
 ## OAuth Providers
 
 Several providers support OAuth authentication instead of static API keys:

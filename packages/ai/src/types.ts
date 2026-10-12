@@ -546,6 +546,17 @@ export interface AssistantMessage {
 	timestamp: number;
 	/** Monotonic response duration; absent for legacy or later-fetched deferred responses. */
 	durationMs?: number;
+	/** Successful Anthropic request boundary; absent when unchanged, null resets replay after an override. */
+	anthropicContext?: AnthropicContextCheckpoint | null;
+}
+
+/** Owned JSON snapshot, persisted with the final message, never with streaming updates. */
+export interface AnthropicContextCheckpoint {
+	version: 1;
+	/** Wire tool conversion policy; changes establish a fresh prefix. */
+	toolPolicy: string;
+	systemPrompt: string;
+	tools: Tool[];
 }
 
 export interface ToolResultMessage<TDetails = any> {
@@ -799,6 +810,10 @@ export interface AnthropicMessagesCompat {
 	 * except Haiku and models older than Claude 4.5; false for other providers.
 	 */
 	supportsToolReferences?: boolean;
+	/** Exact transport support for system-role updates; defaults to a first-party model allowlist. */
+	supportsMidConvoSystemMessages?: boolean;
+	/** Inline tool definitions/removals. Requires system-message support and toolCalling. */
+	supportsMidConvoToolChanges?: boolean;
 }
 
 /** Compatibility settings for Amazon Bedrock models. */

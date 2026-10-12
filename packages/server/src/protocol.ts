@@ -104,6 +104,7 @@ type _AiAssistantMessageFieldsAccountedFor = Assert<
 		| "endTurn"
 		| "timestamp"
 		| "durationMs" // Host timing metadata is intentionally outside the protocol v1 projection.
+		| "anthropicContext" // Provider replay checkpoints stay server-side.
 	>
 >;
 type _AiToolResultMessageFieldsAccountedFor = Assert<
