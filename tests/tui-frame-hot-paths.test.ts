@@ -22,6 +22,13 @@ const HOT_METHODS: readonly MethodTarget[] = [
 	{ path: "packages/tui/src/tui.ts", className: "TuiBase", methodName: "compositeOverlays" },
 	{ path: "packages/tui/src/terminal.ts", className: "ProcessTerminal", methodName: "setProgress" },
 	{ path: "packages/tui/src/terminal.ts", className: "ProcessTerminal", methodName: "startProgressWrite" },
+	{ path: "packages/tui/src/terminal.ts", className: "ProcessTerminal", methodName: "setProgramStatus" },
+	{ path: "packages/tui/src/terminal.ts", className: "ProcessTerminal", methodName: "encodeProgramStatus" },
+	{ path: "packages/tui/src/terminal.ts", className: "ProcessTerminal", methodName: "writeProgramStatus" },
+	{ path: "packages/tui/src/terminal.ts", className: "ProcessTerminal", methodName: "tryCompleteProgramStatusWrite" },
+	{ path: "packages/tui/src/terminal.ts", className: "ProcessTerminal", methodName: "completeProgramStatusWrite" },
+	{ path: "packages/coding-agent/src/modes/interactive/program-status-reporter.ts", className: "ProgramStatusReporter", methodName: "handleEvent" },
+	{ path: "packages/coding-agent/src/modes/interactive/program-status-reporter.ts", className: "ProgramStatusReporter", methodName: "report" },
 	{ path: "packages/coding-agent/src/core/agent-session.ts", className: "AgentSession", methodName: "_emit" },
 ] as const;
 

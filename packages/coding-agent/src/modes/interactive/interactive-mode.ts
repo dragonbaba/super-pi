@@ -196,6 +196,7 @@ import {
 	WHITESPACE_CHARACTER_PATTERN,
 } from "./interactive-mode-regex.ts";
 import { getModelSearchText } from "./model-search.ts";
+import { ProgramStatusReporter } from "./program-status-reporter.ts";
 import {
 	getAvailableThemes,
 	getAvailableThemesWithPaths,
@@ -748,6 +749,10 @@ export class InteractiveMode {
 
 	// Shutdown state
 	private shutdownRequested = false;
+	private readonly programStatus = new ProgramStatusReporter(
+		() => this.ui.terminal,
+		() => this.sessionManager.getSessionName(),
+	);
 
 	// Extension UI state
 	private extensionSelectorOverlay: OverlayHandle | undefined;
@@ -1219,6 +1224,7 @@ export class InteractiveMode {
 		nextUi.setFocus(focus);
 		if (!startRenderer) return true;
 		nextUi.start();
+		this.programStatus?.report();
 		this.themeController.rebindTui();
 		this.rebindExtensionTerminalInputListeners();
 		if (
@@ -1362,6 +1368,7 @@ export class InteractiveMode {
 		// Start the UI before initializing extensions so session_start handlers can use interactive dialogs
 		this.ui.start();
 		this.isInitialized = true;
+		this.programStatus?.report();
 
 		try {
 			await initializeTerminalImageTranscoder();
@@ -2472,6 +2479,7 @@ export class InteractiveMode {
 
 		this.unsubscribe?.();
 		this.unsubscribe = undefined;
+		this.programStatus?.reset();
 		this.applyRuntimeSettings();
 
 		if (options.renderBeforeBind) {
@@ -3008,6 +3016,8 @@ export class InteractiveMode {
 		title: string,
 		options: string[],
 		opts?: ExtensionUISelectOptions,
+		blockedKind: "question" | "permission" = "question",
+		statusTitle = title,
 	): Promise<string | undefined> {
 		return new Promise((resolve, reject) => {
 			if (opts?.signal?.aborted || this.extensionSelector || this.extensionInput || this.extensionEditor || this.activeExtensionCustomCancel || this.activeSelectorToken) {
@@ -3033,6 +3043,7 @@ export class InteractiveMode {
 					{ tui: this.ui, timeout: opts?.timeout, details: opts?.details, onToggleToolsExpanded: () => this.toggleToolOutputExpansion() });
 				this.extensionSelector = component;
 				this.extensionSelectorCancel = onAbort;
+				this.programStatus?.setBlocked("extension-dialog", blockedKind, statusTitle);
     if (opts?.details !== undefined) {
      // A full-terminal overlay is outside the shrinkable fullscreen editor dock.
      // Its actual allocation equals the terminal dimensions used by the selector.
@@ -3049,6 +3060,7 @@ export class InteractiveMode {
 				if (this.extensionSelector === component) {
 					this.extensionSelector = undefined;
 					this.extensionSelectorCancel = undefined;
+					this.programStatus?.setBlocked("extension-dialog");
 				}
 				component?.dispose();
 				reject(error);
@@ -3060,6 +3072,7 @@ export class InteractiveMode {
 	 * Hide the extension selector.
 	 */
 	private hideExtensionSelector(): void {
+		this.programStatus?.setBlocked("extension-dialog");
 		const cancel = this.extensionSelectorCancel;
 		this.extensionSelectorCancel = undefined;
   this.extensionSelector?.dispose();
@@ -3084,7 +3097,7 @@ export class InteractiveMode {
 		message: string,
 		opts?: ExtensionUIDialogOptions,
 	): Promise<boolean> {
-		const result = await this.showExtensionSelector(`${title}\n${message}`, ["Yes", "No"], opts);
+		const result = await this.showExtensionSelector(`${title}\n${message}`, ["Yes", "No"], opts, "permission", title);
 		return result === "Yes";
 	}
 
@@ -3128,6 +3141,7 @@ export class InteractiveMode {
 					{ tui: this.ui, timeout: opts?.timeout });
 				this.extensionInput = component;
 				this.extensionInputCancel = onAbort;
+				this.programStatus?.setBlocked("extension-dialog", "question", title);
 			this.disposeActiveSelector();
 			this.editorContainer.clear();
 				this.editorContainer.addChild(component);
@@ -3138,6 +3152,7 @@ export class InteractiveMode {
 				if (this.extensionInput === component) {
 					this.extensionInput = undefined;
 					this.extensionInputCancel = undefined;
+					this.programStatus?.setBlocked("extension-dialog");
 				}
 				component?.dispose();
 				reject(error);
@@ -3149,6 +3164,7 @@ export class InteractiveMode {
 	 * Hide the extension input.
 	 */
 	private hideExtensionInput(): void {
+		this.programStatus?.setBlocked("extension-dialog");
 		const cancel = this.extensionInputCancel;
 		this.extensionInputCancel = undefined;
 		this.extensionInput?.dispose();
@@ -3169,17 +3185,20 @@ export class InteractiveMode {
 	private setActiveLoginDialog(dialog: LoginDialogComponent): void {
 		this.cancelActiveLoginDialog();
 		this.activeLoginDialog = dialog;
+		this.programStatus?.setBlocked("login", "auth", "Log in");
 	}
 
 	private releaseActiveLoginDialog(dialog: LoginDialogComponent): boolean {
 		if (this.activeLoginDialog !== dialog) return false;
 		this.activeLoginDialog = undefined;
+		this.programStatus?.setBlocked("login");
 		return true;
 	}
 
 	private cancelActiveLoginDialog(): void {
 		const dialog = this.activeLoginDialog;
 		this.activeLoginDialog = undefined;
+		this.programStatus?.setBlocked("login");
 		this.cancelActiveAuthSelector();
 		dialog?.cancel();
 	}
@@ -3409,6 +3428,7 @@ export class InteractiveMode {
 			this.editorContainer.clear();
 			this.editorContainer.addChild(this.extensionEditor);
 			this.ui.setFocus(this.extensionEditor);
+			this.programStatus?.setBlocked("extension-dialog", "question", title);
 			this.ui.requestRender();
 		});
 	}
@@ -3417,6 +3437,7 @@ export class InteractiveMode {
 	 * Hide the extension editor.
 	 */
 	private hideExtensionEditor(): void {
+		this.programStatus?.setBlocked("extension-dialog");
 		this.editorContainer.clear();
 		this.editorContainer.addChild(this.editor);
 		this.extensionEditor = undefined;
@@ -4130,6 +4151,7 @@ export class InteractiveMode {
 		if (!this.isInitialized) return this.initializeAndHandleEvent(event);
 
 		this.footer.invalidate();
+		this.programStatus?.handleEvent(event);
 
 		switch (event.type) {
 			case "agent_start":
@@ -8555,6 +8577,7 @@ export class InteractiveMode {
 	}
 
 	private async performStop(fullscreenExitOutput: FullscreenExitOutput): Promise<void> {
+		this.programStatus?.dispose();
 		let cleanupError: unknown;
 		let cleanupFailed = false;
 		// One synchronous collector per stop operation, never per render/update.

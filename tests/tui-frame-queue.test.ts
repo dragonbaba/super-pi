@@ -2957,6 +2957,7 @@ test("Bounded Agent observer and session delivery preserve synchronous UI lanes"
 	const result = JSON.parse(child.stdout) as {
 		fixtures: Array<{
 			name: string;
+			coverage: { realProgramStatusReporter: boolean };
 			results: Array<{
 				name: string;
 				updates: number;
@@ -2966,11 +2967,13 @@ test("Bounded Agent observer and session delivery preserve synchronous UI lanes"
 		}>;
 	};
 	assert.deepEqual(result.fixtures.map((fixture) => fixture.name), ["agent-session-to-interactive-stub"]);
+	assert.equal(result.fixtures[0]!.coverage.realProgramStatusReporter, true);
 	const direct = result.fixtures[0]!.results.slice(0, 2);
 	assert.deepEqual(direct.map((entry) => entry.name), ["message_update", "tool_execution_update"]);
 	for (const entry of direct) {
 		assert.equal(entry.updates, 1025);
 		assert.equal(entry.metrics.builtInListenerPromisesPerUpdate, 0);
+		assert.equal(entry.metrics.programStatusReportsPerUpdate, 0);
 		assert.equal(entry.metrics.rejectionObserversPerUpdate, 0);
 		assert.equal(entry.sourceInvariant.toolWrapperObjectsPerUpdate, 0);
 		assert.equal(entry.sourceInvariant.inlineClosuresPerUpdate, 0);
@@ -2993,6 +2996,7 @@ test("Bounded Agent observer and session delivery preserve synchronous UI lanes"
 	assert.equal(fullChain.metrics.promisesPerDelivery, 0);
 	assert.equal(fullChain.metrics.observerBridgePromisesPerDelivery, 0);
 	assert.equal(fullChain.metrics.builtInInteractivePromisesPerDelivery, 0);
+	assert.equal(fullChain.metrics.programStatusReportsPerDelivery, 0);
 	assert.equal(fullChain.metrics.rejectionObserversPerDelivery, 0);
 	assert.equal(fullChain.sourceInvariant.toolWrapperObjectsPerUpdate, 0);
 	assert.equal(fullChain.metrics.finalUpdateCorrect, 1);

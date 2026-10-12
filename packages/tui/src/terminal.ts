@@ -4,6 +4,7 @@ import { setKittyProtocolActive } from "./keys.ts";
 import { enableNativeWindowsVirtualTerminalInput, isNativeModifierPressed } from "./native-modifiers.ts";
 import { DEVICE_ATTRIBUTES_PATTERN, DEVICE_ATTRIBUTES_PREFIX_PATTERN, KITTY_FLAGS_PATTERN } from "./regex.ts";
 import { StdinBuffer } from "./stdin-buffer.ts";
+import { DEFAULT_PROGRAM_STATUS_CAPABILITIES, formatProgramStatus, isProgramStatusReply, parseProgramStatusCapabilities, PROGRAM_STATUS_QUERY, sanitizeProgramStatusMessage, supportedProgramStatusKind, supportedProgramStatusState, type ProgramStatusKind, type ProgramStatusState } from "./program-status.ts";
 
 const TERMINAL_PROGRESS_KEEPALIVE_MS = 1000;
 const TERMINAL_PROGRESS_ACTIVE_SEQUENCE = "\x1b]9;4;3\x07";
@@ -12,6 +13,7 @@ const NATIVE_SHIFT_ENTER_SEQUENCE = "\x1b[13;2u";
 const DESIRED_KITTY_KEYBOARD_PROTOCOL_FLAGS = 7;
 const KEYBOARD_PROTOCOL_RESPONSE_FRAGMENT_TIMEOUT_MS = 150;
 const KITTY_KEYBOARD_PROTOCOL_QUERY = `\x1b[>${DESIRED_KITTY_KEYBOARD_PROTOCOL_FLAGS}u\x1b[?u\x1b[c`;
+const STATUS_AND_KEYBOARD_QUERY = PROGRAM_STATUS_QUERY + KITTY_KEYBOARD_PROTOCOL_QUERY;
 
 export type KeyboardProtocolNegotiationSequence =
 	| { type: "kitty-flags"; flags: number }
@@ -160,6 +162,8 @@ export interface Terminal {
 
 	// Progress indicator (OSC 9;4)
 	setProgress(active: boolean): void;
+	/** Optional OSC 7501 root status; older/custom terminals may omit this capability. */
+	setProgramStatus?(state: ProgramStatusState, message?: string, kind?: ProgramStatusKind, app?: string): void;
 }
 
 /**
@@ -190,6 +194,36 @@ export class ProcessTerminal implements Terminal {
 	private progressWriteActive = false;
 	private progressWriteIsActive = false;
 	private progressClearPending = false;
+	private programStatusState: ProgramStatusState | undefined;
+	private programStatusMessage: string | undefined;
+	private programStatusRawMessage: string | undefined;
+	private programStatusRawMessageValid = false;
+	private programStatusKind: ProgramStatusKind | undefined;
+	private programStatusApp: string | undefined;
+	private programStatusSequence: string | undefined;
+	private programStatusSupported = false;
+	private programStatusCapabilities = DEFAULT_PROGRAM_STATUS_CAPABILITIES;
+	private programStatusQueryPending = false;
+	private pendingStatusDeviceAttributes = 0;
+	private programStatusRevision = 0;
+	private programStatusWrittenRevision = -1;
+	private programStatusWriteActive = false;
+	private programStatusWriteReturned = false;
+	private programStatusCallbackComplete = false;
+	private programStatusDrainComplete = false;
+	private readonly onProgramStatusCallback = (error?: Error | null): void => {
+		if (!this.programStatusWriteActive) return;
+		if (error) { this.failFrameOutput(error); return; }
+		this.programStatusCallbackComplete = true;
+		this.tryCompleteProgramStatusWrite();
+	};
+	private readonly onProgramStatusDrain = (): void => {
+		this.programStatusDrainComplete = true;
+		this.tryCompleteProgramStatusWrite();
+	};
+	private readonly onProgramStatusClose = (): void => {
+		this.failFrameOutput(new Error("Terminal output closed during program status write"));
+	};
 	private disposed = false;
 	private disposeFinalizationScheduled = false;
 	private readonly onUnawaitedControlWriteCallback = (error?: Error | null): void => {
@@ -270,6 +304,19 @@ export class ProcessTerminal implements Terminal {
 	private keyboardProtocolBufferFlushTimer?: ReturnType<typeof setTimeout>;
 	private stdinBuffer?: StdinBuffer;
 	private readonly onStdinBufferData = (sequence: string): void => {
+		if (isProgramStatusReply(sequence)) {
+			if (this.programStatusQueryPending) {
+				this.programStatusQueryPending = false;
+				this.programStatusSupported = true;
+				const capabilities = parseProgramStatusCapabilities(sequence);
+				if (capabilities !== this.programStatusCapabilities) {
+					this.programStatusCapabilities = capabilities;
+					this.encodeProgramStatus();
+				}
+				this.writeProgramStatus();
+			}
+			return;
+		}
 		const negotiationSequence = this.readKeyboardProtocolNegotiationSequence(sequence);
 		if (negotiationSequence === "pending") {
 			this.scheduleKeyboardProtocolNegotiationBufferFlush();
@@ -424,7 +471,16 @@ export class ProcessTerminal implements Terminal {
 		this.inputSource.on("data", this.onStdinData);
 		this.keyboardProtocolPushed = true;
 		this.clearKeyboardProtocolNegotiationBuffer();
-		this.writeUnawaitedControl(KITTY_KEYBOARD_PROTOCOL_QUERY);
+		const override = process.env.SP_PROGRAM_STATUS;
+		if (this.programStatusCapabilities !== DEFAULT_PROGRAM_STATUS_CAPABILITIES) {
+			this.programStatusCapabilities = DEFAULT_PROGRAM_STATUS_CAPABILITIES;
+			this.encodeProgramStatus();
+		}
+		this.programStatusSupported = override === "1";
+		this.programStatusQueryPending = override !== "0" && override !== "1";
+		this.pendingStatusDeviceAttributes++;
+		this.writeUnawaitedControl(this.programStatusQueryPending ? STATUS_AND_KEYBOARD_QUERY : KITTY_KEYBOARD_PROTOCOL_QUERY);
+		this.writeProgramStatus();
 	}
 
 	private handleKeyboardProtocolNegotiationSequence(
@@ -432,6 +488,10 @@ export class ProcessTerminal implements Terminal {
 	): boolean {
 		if (!negotiationSequence) return false;
 		this.clearKeyboardProtocolNegotiationBuffer();
+		if (negotiationSequence.type === "device-attributes") {
+			if (this.pendingStatusDeviceAttributes > 0) this.pendingStatusDeviceAttributes--;
+			if (this.pendingStatusDeviceAttributes === 0) this.programStatusQueryPending = false;
+		}
 		if (negotiationSequence.type === "kitty-flags") {
 			if (negotiationSequence.flags !== 0) {
 				this.disableModifyOtherKeys();
@@ -624,6 +684,9 @@ export class ProcessTerminal implements Terminal {
 		this.cancelDrainInput();
 		if (!this.started) return;
 		this.started = false;
+		this.programStatusSupported = false;
+		this.programStatusQueryPending = false;
+		this.programStatusWrittenRevision = -1;
 		let failure: Error | undefined;
 		if (this.clearProgressInterval()) {
 			this.progressDesiredActive = false;
@@ -705,6 +768,7 @@ export class ProcessTerminal implements Terminal {
 			}
 		}
 		this.disposed = true;
+		this.clearProgramStatus();
 		this.clearProgressInterval();
 		this.progressDesiredActive = false;
 		this.progressClearPending = false;
@@ -842,6 +906,8 @@ export class ProcessTerminal implements Terminal {
 
 	private failFrameOutput(error: Error): void {
 		this.frameOutputFailure ??= error;
+		this.clearProgramStatus();
+		this.completeProgramStatusWrite();
 		this.completeFrameWrite(error);
 	}
 
@@ -932,6 +998,94 @@ export class ProcessTerminal implements Terminal {
 	setTitle(title: string): void {
 		// OSC 0;title BEL - set terminal window title
 		this.writeUnawaitedControl(`\x1b]0;${title}\x07`);
+	}
+
+	setProgramStatus(state: ProgramStatusState, message?: string, kind?: ProgramStatusKind, app?: string): void {
+		if (this.disposed || this.frameOutputFailure) return;
+		const safeApp = app && app.length <= 32 ? app : undefined;
+		const safeKind = state === "blocked" ? kind : undefined;
+		if (this.programStatusRawMessageValid && message === this.programStatusRawMessage && state === this.programStatusState &&
+			safeKind === this.programStatusKind && safeApp === this.programStatusApp) return;
+		const safeMessage = sanitizeProgramStatusMessage(message);
+		// Never retain an oversized caller string just to accelerate duplicate checks.
+		this.programStatusRawMessageValid = message === undefined || message.length <= 2048;
+		this.programStatusRawMessage = this.programStatusRawMessageValid ? message : undefined;
+		if (state === this.programStatusState && safeMessage === this.programStatusMessage &&
+			safeKind === this.programStatusKind && safeApp === this.programStatusApp) return;
+		this.programStatusState = state;
+		this.programStatusMessage = safeMessage;
+		this.programStatusKind = safeKind;
+		this.programStatusApp = safeApp;
+		this.encodeProgramStatus();
+		this.writeProgramStatus();
+	}
+
+	private encodeProgramStatus(): void {
+		if (!this.programStatusState) return;
+		const state = supportedProgramStatusState(this.programStatusState, this.programStatusCapabilities);
+		const kind = supportedProgramStatusKind(this.programStatusKind, this.programStatusCapabilities);
+		this.programStatusSequence = formatProgramStatus(state, state === "clear" ? undefined : this.programStatusMessage, kind, this.programStatusApp);
+		this.programStatusRevision++;
+	}
+
+	private writeProgramStatus(): void {
+		if (!this.started || this.disposed || this.frameOutputFailure || !this.programStatusSupported ||
+			this.programStatusWriteActive || !this.programStatusSequence || this.programStatusWrittenRevision === this.programStatusRevision) return;
+		this.programStatusWriteActive = true;
+		this.programStatusWriteReturned = false;
+		this.programStatusCallbackComplete = false;
+		this.programStatusDrainComplete = false;
+		this.programStatusWrittenRevision = this.programStatusRevision;
+		this.controlWritesOutstanding++;
+		this.frameOutput.once("drain", this.onProgramStatusDrain);
+		this.frameOutput.once("close", this.onProgramStatusClose);
+		const data = this.programStatusSequence;
+		try {
+			const accepted = this.frameOutput.write(data, this.onProgramStatusCallback);
+			this.programStatusWriteReturned = true;
+			if (accepted) {
+				this.programStatusDrainComplete = true;
+				this.frameOutput.removeListener("drain", this.onProgramStatusDrain);
+			}
+			this.tryCompleteProgramStatusWrite();
+		} catch (error) {
+			this.failFrameOutput(asTerminalError(error));
+			throw error;
+		}
+		this.logWrite(data);
+	}
+
+	private tryCompleteProgramStatusWrite(): void {
+		if (!this.programStatusWriteActive || !this.programStatusWriteReturned ||
+			!this.programStatusCallbackComplete || !this.programStatusDrainComplete) return;
+		this.completeProgramStatusWrite();
+		// A pending write can fail from a Writable callback/drain event. Its failure
+		// is recorded by writeProgramStatus; do not throw out of the event listener.
+		try { this.writeProgramStatus(); } catch { /* output is now poisoned */ }
+	}
+
+	private completeProgramStatusWrite(): void {
+		if (!this.programStatusWriteActive) return;
+		this.programStatusWriteActive = false;
+		this.programStatusWriteReturned = false;
+		this.programStatusCallbackComplete = false;
+		this.programStatusDrainComplete = false;
+		this.frameOutput.removeListener("drain", this.onProgramStatusDrain);
+		this.frameOutput.removeListener("close", this.onProgramStatusClose);
+		this.controlWritesOutstanding--;
+		this.scheduleDisposeFinalization();
+	}
+
+	private clearProgramStatus(): void {
+		this.programStatusSequence = undefined;
+		this.programStatusState = undefined;
+		this.programStatusMessage = undefined;
+		this.programStatusRawMessage = undefined;
+		this.programStatusRawMessageValid = false;
+		this.programStatusKind = undefined;
+		this.programStatusApp = undefined;
+		this.programStatusQueryPending = false;
+		this.programStatusSupported = false;
 	}
 
 	setProgress(active: boolean): void {

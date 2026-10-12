@@ -15,6 +15,22 @@ Minimal terminal UI framework with differential rendering and synchronized outpu
 - **Inline Images**: Renders images in terminals that support Kitty or iTerm2 graphics protocols
 - **Autocomplete Support**: File paths and slash commands
 
+## Program status
+
+`ProcessTerminal.setProgramStatus(state, message?, kind?, app?)` reports the root
+OSC 7501 record. `state` is `idle`, `working`, `blocked`, `done`, `error` or `clear`;
+`kind` is `permission`, `question` or `auth` and applies only to `blocked`.
+The method is optional on the `Terminal` interface for compatibility with custom
+terminals. Reports are supported after query negotiation, or can be forced with
+`SP_PROGRAM_STATUS=1`; `SP_PROGRAM_STATUS=0` disables them. Text is sanitized and
+bounded before base64 encoding, duplicate states are suppressed, and pending
+writes coalesce under backpressure. Stop retains the latest status for restart;
+dispose releases it without clearing completed/error records from the terminal.
+Advertised state/kind subsets are respected: unsupported states use idle or clear;
+unsupported kinds use question if available, otherwise no kind. A bounded raw-text
+cache skips sanitization for duplicate messages and is released on failure/disposal.
+See the [OSC 7501 specification](https://www.superlogical.com/rex/docs/build/program-status).
+
 ## Quick Start
 
 ```typescript
