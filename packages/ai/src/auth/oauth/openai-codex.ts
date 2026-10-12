@@ -487,9 +487,9 @@ async function loginOpenAICodexDeviceCode(interaction: ProviderAuthInteraction):
 	);
 }
 
-async function loginOpenAICodex(interaction: ProviderAuthInteraction): Promise<OAuthCredential> {
+async function loginOpenAICodex(interaction: ProviderAuthInteraction, agentName?: string): Promise<OAuthCredential> {
 	interaction.signal.throwIfAborted();
-	const { verifier, state, url } = await createAuthorizationFlow();
+	const { verifier, state, url } = await createAuthorizationFlow(agentName);
 	interaction.signal.throwIfAborted();
 	const server = await startLocalOAuthServer(state);
 	const manualAbort = new AbortController();
@@ -565,7 +565,7 @@ export const openaiCodexOAuth: OAuthAuth = {
 	name: "OpenAI (ChatGPT Plus/Pro)",
 	isSubscription: true,
 
-	async login(interaction) {
+	async login(interaction, options) {
 		const method = await interaction.prompt({
 			type: "select",
 			message: "Select OpenAI Codex login method:",
@@ -582,7 +582,7 @@ export const openaiCodexOAuth: OAuthAuth = {
 			throw new Error(`Unknown OpenAI Codex login method: ${method}`);
 		}
 
-		return loginOpenAICodex(interaction);
+		return loginOpenAICodex(interaction, options?.agentName);
 	},
 
 	refresh: (credential, signal) => refreshOpenAICodexToken(credential.refresh, signal),

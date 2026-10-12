@@ -7,6 +7,10 @@ import { setImmediate as nextTask } from "node:timers/promises";
 import test, { type TestContext } from "node:test";
 import { openaiCodexOAuth } from "../packages/ai/src/auth/oauth/openai-codex.ts";
 import type { AuthEvent, AuthPrompt } from "../packages/ai/src/auth/types.ts";
+import { InMemoryCredentialStore } from "../packages/ai/src/auth/credential-store.ts";
+import { createModels } from "../packages/ai/src/models.ts";
+import { openaiCodexProvider } from "../packages/ai/src/providers/openai-codex.ts";
+import { ModelRuntime } from "../packages/coding-agent/src/core/model-runtime.ts";
 
 // loginOpenAICodex/startLocalOAuthServer allocate only for an explicit login lifecycle.
 // Each fixture owns its server and sockets; release assertions run before fallback teardown.
@@ -259,6 +263,7 @@ test("device code login works while the callback port is occupied", async (t) =>
 		assert.equal(new URL(url).origin, "https://auth.openai.com");
 		urls.push(url);
 		if (url.endsWith("/api/accounts/deviceauth/usercode")) {
+			assert.deepEqual(JSON.parse(init.body as string), { client_id: "app_EMoamEEZ73f0CkXaXp7hrann" });
 			return Response.json({ device_auth_id: "fixture-device", user_code: "123456", interval: 0 });
 		}
 		if (url.endsWith("/api/accounts/deviceauth/token")) {
@@ -268,7 +273,7 @@ test("device code login works while the callback port is occupied", async (t) =>
 		assert.equal(new URLSearchParams(init.body as string).get("redirect_uri"), "https://auth.openai.com/deviceauth/callback");
 		return Response.json({ access_token: jwt, refresh_token: "fixture-refresh", expires_in: 3600 });
 	});
-	assert.equal((await openaiCodexOAuth.login(f.interaction)).accountId, "fixture");
+	assert.equal((await openaiCodexOAuth.login(f.interaction, { agentName: "Super Pi" })).accountId, "fixture");
 	assert.equal(f.servers.length, 0);
 	assert.equal(occupied.listening, true);
 	assert.deepEqual(f.events.map((event) => event.type), ["device_code"]);
@@ -295,6 +300,7 @@ test("notification failure closes the callback listener and removes the login ab
 test("successful callback closes spare browser connections and preserves PKCE", { timeout: 5000 }, async (t) => {
 	const f = fixture(t), pending = openaiCodexOAuth.login(f.interaction);
 	const authorization = new URL(await f.ready.promise);
+	assert.equal(authorization.searchParams.get("originator"), "pi", "legacy SDK default");
 	await f.spare();
 	assert.equal((await f.callback("/wrong-route")).status, 404);
 	assert.equal((await f.callback("/auth/callback?state=wrong&code=fixture-code")).status, 400);
@@ -311,3 +317,32 @@ test("successful callback closes spare browser connections and preserves PKCE", 
 	assert.equal(f.requests[0]!.body.get("redirect_uri"), "http://localhost:1455/auth/callback");
 	assert.equal(createHash("sha256").update(f.requests[0]!.body.get("code_verifier")!).digest("base64url"), authorization.searchParams.get("code_challenge"));
 });
+
+for (const entry of ["Models", "ModelRuntime"] as const) {
+	test(`${entry} forwards the login app name through lazy OAuth without changing authorization identity`, { timeout: 5000 }, async (t) => {
+		const f = fixture(t), credentials = new InMemoryCredentialStore();
+		const models = createModels({ credentials });
+		models.setProvider(openaiCodexProvider());
+		const owner = entry === "Models" ? models : await ModelRuntime.create({
+			credentials, modelsPath: null, refreshOnCreate: false, allowModelNetwork: false,
+		});
+		const agentName = "Super Pi & 登录=fixture";
+		const pending = owner.login("openai-codex", "oauth", f.interaction, { agentName });
+		const authorization = new URL(await f.ready.promise);
+		// Complete before asserting so even a regression leaves no pending login.
+		f.submit("fixture-code");
+		const credential = await pending;
+		await assertReleased(f);
+		assert.equal(authorization.searchParams.get("originator"), agentName);
+		assert.equal(authorization.searchParams.getAll("originator").length, 1);
+		assert.equal(authorization.searchParams.has("登录"), false);
+		assert.equal(authorization.searchParams.get("client_id"), "app_EMoamEEZ73f0CkXaXp7hrann");
+		assert.equal(authorization.searchParams.get("scope"), "openid profile email offline_access");
+		assert.equal(authorization.searchParams.get("redirect_uri"), "http://localhost:1455/auth/callback");
+		assert.equal(f.requests.length, 1);
+		assert.equal(f.requests[0]!.body.get("client_id"), authorization.searchParams.get("client_id"));
+		assert.equal(f.requests[0]!.body.has("originator"), false);
+		assert.deepEqual(await credentials.read("openai-codex"), credential);
+		assert.equal(Object.hasOwn(credential, "agentName"), false);
+	});
+}

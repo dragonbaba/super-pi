@@ -10,6 +10,8 @@ import { RELEASE_COMPONENT_RENDER_CACHE } from "../packages/tui/src/component-ca
 import { CancellableLoader } from "../packages/tui/src/components/cancellable-loader.ts";
 import { Container, type TUI } from "../packages/tui/src/tui.ts";
 import { InteractiveMode } from "../packages/coding-agent/src/modes/interactive/interactive-mode.ts";
+import { APP_TITLE } from "../packages/coding-agent/src/config.ts";
+import type { LoginOptions } from "../packages/ai/src/auth/types.ts";
 import { AgentSessionRuntime } from "../packages/coding-agent/src/core/agent-session-runtime.ts";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
 import type { BashRenderState } from "../packages/coding-agent/src/core/tools/bash.ts";
@@ -435,6 +437,7 @@ test("provider completion and notifications are inert after final login cancella
 	const tui = createCountingTui();
 	let settleLogin: (() => void) | undefined;
 	let loginOptions: any;
+	let appOptions: LoginOptions | undefined;
 	let completeAuthenticationCalls = 0;
 	let errorCalls = 0;
 	const mode = createTestInteractiveMode() as any;
@@ -442,8 +445,9 @@ test("provider completion and notifications are inert after final login cancella
 		session: {
 			model: undefined,
 			modelRuntime: {
-				login(_providerId: string, _method: string, options: any): Promise<void> {
+				login(_providerId: string, _method: string, options: any, app: LoginOptions | undefined): Promise<void> {
 					loginOptions = options;
+					appOptions = app;
 					return new Promise<void>((resolve) => {
 						settleLogin = resolve;
 					});
@@ -484,6 +488,7 @@ test("provider completion and notifications are inert after final login cancella
 	const operation = mode.showLoginDialog("fixture", "Fixture");
 	await Promise.resolve();
 	assert.ok(mode.activeLoginDialog);
+	assert.deepEqual(appOptions, { agentName: APP_TITLE });
 	assert.equal(loginOptions.signal.aborted, false);
 	await mode.stop();
 	assert.equal(loginOptions.signal.aborted, true);
