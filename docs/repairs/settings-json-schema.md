@@ -76,6 +76,7 @@ for editor association details.
   custom keys. Configurations with extension-owned keys may need their own
   schema. `models.json`, `keybindings.json`, MCP and extension-specific files are
   not covered by these settings schemas.
+  Keybindings have a [separate editor schema](keybindings-json-schema.md).
 - Numeric ranges describe supported editor settings. They do not promise to model
   every permissive runtime fallback or coercion. Provider capabilities, model
   availability, file existence and cross-file values are checked elsewhere.
