@@ -409,6 +409,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		let newLines = this.render(width);
 		const generatedDocumentHeight = newLines.length;
 		this.recordRootRender(newLines.length, Math.min(newLines.length, height));
+		this.resolveFakeCursors(newLines);
 
 		// Composite overlays into the rendered lines (before differential compare)
 		if (this.hasOverlayEntries) {
@@ -750,6 +751,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 				? rendered.lines
 				: rendered.lines.slice(sourceOffset, sourceOffset + height);
 		this.recordRootRender(totalHeight, Math.min(nextWindow.length, height));
+		this.resolveFakeCursors(nextWindow);
 		if (this.hasOverlayEntries) nextWindow = this.compositeOverlays(nextWindow, width, height);
 		const cursorPos = this.extractCursorPosition(nextWindow, height);
 		nextWindow = this.applyLineResets(nextWindow);

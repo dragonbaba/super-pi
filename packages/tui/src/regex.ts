@@ -44,6 +44,8 @@ export const SGR_MOUSE_PAYLOAD_PATTERN = /^<\d+;\d+;\d+[Mm]$/;
 export const SGR_MOUSE_PATTERN = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/;
 export const OSC133_ZONE_PREFIX_PATTERN = /^(?:\x1b\]133;[ABC](?:\x07|\x1b\\))+/;
 export const OSC133_PROMPT_START_PATTERN = /^\x1b\]133;A(?:\x07|\x1b\\)/;
+// Column clipping can drop the fake cursor's end marker at the end of a line.
+export const FOCUSED_FAKE_CURSOR_PATTERN = /(\x1b_pi:c\x07)\x1b_pi:fc\x07(.*?)(?:\x1b_pi:\/fc\x07|$)/gs;
 
 export const LATEX_SCRIPT_OPERATOR_SPACING_PATTERN = /\s*([=+-])\s*/g;
 export const ASCII_LETTERS_PATTERN = /^[A-Za-z]+$/;

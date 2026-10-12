@@ -20,6 +20,8 @@ const HOT_METHODS: readonly MethodTarget[] = [
 	{ path: "packages/tui/src/tui.ts", className: "TuiBase", methodName: "requestRender" },
 	{ path: "packages/tui/src/tui.ts", className: "TuiBase", methodName: "scheduleRender" },
 	{ path: "packages/tui/src/tui.ts", className: "TuiBase", methodName: "compositeOverlays" },
+	{ path: "packages/tui/src/tui.ts", className: "TuiBase", methodName: "resolveFakeCursors" },
+	{ path: "packages/tui/src/tui.ts", className: "TuiBase", methodName: "resolveFakeCursorLine" },
 	{ path: "packages/tui/src/terminal.ts", className: "ProcessTerminal", methodName: "setProgress" },
 	{ path: "packages/tui/src/terminal.ts", className: "ProcessTerminal", methodName: "startProgressWrite" },
 	{ path: "packages/tui/src/terminal.ts", className: "ProcessTerminal", methodName: "setProgramStatus" },
