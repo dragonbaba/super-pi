@@ -67,6 +67,23 @@ export function getComponentsContentHeight(components: readonly Component[], wid
 	return totalHeight;
 }
 
+/** Find an image whose reserved rows cross the first visible row of a borrowed line array. */
+export function findLeadingKittyImage(
+	lines: readonly string[],
+	startLine: number,
+	absoluteStart: number,
+): LineViewportRender["leadingKittyImage"] {
+	for (let lineIndex = startLine - 1; lineIndex >= 0; lineIndex--) {
+		const line = lines[lineIndex] ?? "";
+		const metadata = getKittyImageMetadata(line);
+		if (metadata) {
+			return lineIndex + metadata.rows > startLine ? { line, absoluteRow: absoluteStart + lineIndex } : undefined;
+		}
+		if (line !== "") break;
+	}
+	return undefined;
+}
+
 export function renderComponentsViewport(
 	components: readonly Component[],
 	width: number,
@@ -118,17 +135,7 @@ export function renderComponentsViewport(
 			const localEnd = Math.min(childLines.length, requestedEnd - childStart);
 			resultStart ??= childStart + localStart;
 			if (!leadingKittyImage && localStart > 0) {
-				for (let lineIndex = localStart - 1; lineIndex >= 0; lineIndex--) {
-					const line = childLines[lineIndex] ?? "";
-					const metadata = getKittyImageMetadata(line);
-					if (metadata) {
-						if (lineIndex + metadata.rows > localStart) {
-							leadingKittyImage = { line, absoluteRow: childStart + lineIndex };
-						}
-						break;
-					}
-					if (line !== "") break;
-				}
+				leadingKittyImage = findLeadingKittyImage(childLines, localStart, childStart);
 			}
 			for (let lineIndex = localStart; lineIndex < localEnd; lineIndex++) lines.push(childLines[lineIndex]);
 		}
@@ -253,47 +260,50 @@ export class ViewportContainer extends Container implements LineViewportComponen
 		this.tailChildLeadingKittyImages.length = childCount;
 		let remaining = safeHeight;
 		let totalHeight = 0;
-		for (let index = childCount - 1; index >= 0; index--) {
-			const child = this.children[index];
-			let childHeight: number;
-			if (isLineViewportComponent(child)) {
-				if (remaining > 0) {
-					const rendered = child.renderViewportTail(safeWidth, remaining);
-					childHeight = rendered.totalHeight;
-					this.tailChildLines[index] = rendered.lines;
-					this.tailChildStarts[index] = rendered.startLine;
-					this.tailChildLeadingKittyImages[index] = rendered.leadingKittyImage;
+		try {
+			for (let index = childCount - 1; index >= 0; index--) {
+				const child = this.children[index];
+				let childHeight: number;
+				if (isLineViewportComponent(child)) {
+					if (remaining > 0) {
+						const rendered = child.renderViewportTail(safeWidth, remaining);
+						childHeight = rendered.totalHeight;
+						this.tailChildLines[index] = rendered.lines;
+						this.tailChildStarts[index] = rendered.startLine;
+						this.tailChildLeadingKittyImages[index] = rendered.leadingKittyImage;
+					} else {
+						childHeight = child.getContentHeight(safeWidth);
+						this.tailChildLines[index] = undefined;
+						this.tailChildStarts[index] = childHeight;
+						this.tailChildLeadingKittyImages[index] = undefined;
+					}
 				} else {
-					childHeight = child.getContentHeight(safeWidth);
-					this.tailChildLines[index] = undefined;
-					this.tailChildStarts[index] = childHeight;
+					const childLines = child.render(safeWidth);
+					childHeight = childLines.length;
+					this.tailChildLines[index] = remaining > 0 ? childLines : undefined;
+					// Ordinary render returns the full child array, whose first row is zero.
+					this.tailChildStarts[index] = 0;
 					this.tailChildLeadingKittyImages[index] = undefined;
 				}
-			} else {
-				const childLines = child.render(safeWidth);
-				childHeight = childLines.length;
-				this.tailChildLines[index] = remaining > 0 ? childLines : undefined;
-				this.tailChildStarts[index] = Math.max(0, childHeight - remaining);
-				this.tailChildLeadingKittyImages[index] = undefined;
+				this.childHeights[index] = childHeight;
+				totalHeight += childHeight;
+				remaining = Math.max(0, remaining - childHeight);
 			}
-			this.childHeights[index] = childHeight;
-			totalHeight += childHeight;
-			remaining = Math.max(0, remaining - childHeight);
-		}
 
-		const requestedStart = Math.max(0, totalHeight - safeHeight);
-		const lines: string[] = [];
-		let childAbsoluteStart = 0;
-		let leadingKittyImage: LineViewportRender["leadingKittyImage"];
-		try {
+			const requestedStart = Math.max(0, totalHeight - safeHeight);
+			const lines: string[] = [];
+			let childAbsoluteStart = 0;
+			let leadingKittyImage: LineViewportRender["leadingKittyImage"];
 			for (let index = 0; index < childCount; index++) {
 				const childLines = this.tailChildLines[index];
 				if (childLines) {
 					const childLineStart = this.tailChildStarts[index];
-					for (let lineIndex = 0; lineIndex < childLines.length; lineIndex++) {
-						const absoluteLine = childAbsoluteStart + childLineStart + lineIndex;
-						if (absoluteLine >= requestedStart && lines.length < safeHeight) lines.push(childLines[lineIndex]);
+					const sourceStart = Math.max(0, requestedStart - childAbsoluteStart - childLineStart);
+					const sourceEnd = Math.min(childLines.length, sourceStart + safeHeight - lines.length);
+					if (!leadingKittyImage && sourceStart > 0 && sourceStart < sourceEnd) {
+						leadingKittyImage = findLeadingKittyImage(childLines, sourceStart, childAbsoluteStart + childLineStart);
 					}
+					for (let lineIndex = sourceStart; lineIndex < sourceEnd; lineIndex++) lines.push(childLines[lineIndex]);
 					const childLeading = this.tailChildLeadingKittyImages[index];
 					if (!leadingKittyImage && childLeading) {
 						leadingKittyImage = {
@@ -304,13 +314,13 @@ export class ViewportContainer extends Container implements LineViewportComponen
 				}
 				childAbsoluteStart += this.childHeights[index];
 			}
+			return { lines, startLine: requestedStart, totalHeight, leadingKittyImage };
 		} finally {
 			for (let index = 0; index < childCount; index++) {
 				this.tailChildLines[index] = undefined;
 				this.tailChildLeadingKittyImages[index] = undefined;
 			}
 		}
-		return { lines, startLine: requestedStart, totalHeight, leadingKittyImage };
 	}
 
 	observeViewportMutation(
