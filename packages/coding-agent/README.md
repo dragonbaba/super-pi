@@ -10,7 +10,7 @@ alias. Build it from the repository root with `npm run build:offline`.
 Super Pi is derived from Pi `v0.84.1`; see the repository `NOTICE.md` for
 attribution and provenance.
 
-## Settings editor assistance
+## Configuration editor assistance
 
 Static JSON schemas for global `~/.sp/agent/config/settings.json` and project
 `.sp/config/settings.json` are included in this package's `schemas/` directory.
@@ -18,6 +18,11 @@ They provide field completion and type/spelling diagnostics, including Super Pi
 extensions and legacy settings. Use the project schema for project files to
 identify global-only options. See [settings schema setup](../../docs/repairs/settings-json-schema.md)
 for online/offline examples and the unchanged runtime/trust boundaries.
+
+Global `~/.sp/agent/config/keybindings.json` has a separate
+`schemas/keybindings.schema.json` for built-in action names, descriptions and
+binding value types, including legacy names and empty arrays for unbinding.
+See [keybindings schema setup](../../docs/repairs/keybindings-json-schema.md).
 
 ## Independent tool renderers
 
