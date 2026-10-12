@@ -1,0 +1,13 @@
+{
+	"$schema": "http://json-schema.org/draft-07/schema#",
+	"title": "Super Pi project settings",
+	"description": "Editor assistance for <project>/.sp/config/settings.json. Loaded only after project trust is granted. Nested fields merge over global settings; arrays replace global values. This file cannot grant trust or override global-only settings.",
+	"type": "object",
+	"allOf": [{ "$ref": "settings.schema.json" }],
+	"properties": {
+		"powershellPath": { "not": {}, "description": "Global-only: configure in ~/.sp/agent/config/settings.json." },
+		"powershellStatus": { "not": {}, "description": "Global-only: Super Pi maintains this discovery state in global settings." },
+		"defaultProjectTrust": { "not": {}, "description": "Global-only: a project cannot grant itself trust." },
+		"httpProxy": { "not": {}, "description": "Global-only: startup reads the proxy from global settings." }
+	}
+}

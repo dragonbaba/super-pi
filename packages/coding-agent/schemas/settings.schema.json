@@ -1,0 +1,220 @@
+{
+	"$schema": "http://json-schema.org/draft-07/schema#",
+	"title": "Super Pi global settings",
+	"description": "Editor assistance for ~/.sp/agent/config/settings.json. All fields are optional. This schema does not change runtime loading, migration or trust decisions.",
+	"type": "object",
+	"additionalProperties": false,
+	"properties": {
+		"$schema": { "type": "string", "description": "Editor schema URL or local file reference." },
+		"lastChangelogVersion": { "type": "string", "readOnly": true, "description": "Last changelog version shown; maintained by Super Pi." },
+		"lastUpdateNotificationVersion": { "type": "string", "readOnly": true, "description": "Last update notification version; maintained by Super Pi." },
+		"defaultProvider": { "type": "string", "description": "Default provider identifier, including custom providers." },
+		"defaultModel": { "type": "string", "description": "Default model identifier within the selected provider." },
+		"defaultThinkingLevel": { "allOf": [{ "$ref": "#/definitions/thinkingLevel" }], "description": "Default reasoning effort; availability depends on the model." },
+		"modelThinkingLevels": {
+			"type": "object",
+			"description": "Per-model reasoning defaults keyed by provider/modelId.",
+			"additionalProperties": { "$ref": "#/definitions/thinkingLevel" }
+		},
+		"transport": { "enum": ["auto", "sse", "websocket", "websocket-cached"], "default": "auto", "description": "Preferred provider transport where supported." },
+		"steeringMode": { "enum": ["all", "one-at-a-time"], "default": "one-at-a-time", "description": "How queued steering messages are delivered." },
+		"followUpMode": { "enum": ["all", "one-at-a-time"], "default": "one-at-a-time", "description": "How queued follow-up messages are delivered." },
+		"theme": { "type": "string", "description": "Theme name or automatic light/dark theme pair separated by /." },
+		"compaction": {
+			"type": "object",
+			"description": "Automatic context compaction. Nested fields inherit from global settings in projects.",
+			"additionalProperties": false,
+			"properties": {
+				"enabled": { "type": "boolean", "default": true, "description": "Enable automatic context compaction." },
+				"reserveTokens": { "type": "integer", "minimum": 0, "default": 16384, "description": "Tokens reserved for the next response." },
+				"keepRecentTokens": { "type": "integer", "minimum": 0, "default": 20000, "description": "Recent tokens to retain after compaction." }
+			}
+		},
+		"branchSummary": {
+			"type": "object",
+			"description": "Branch-switch summary preferences.",
+			"additionalProperties": false,
+			"properties": {
+				"reserveTokens": { "type": "integer", "minimum": 0, "default": 16384, "description": "Tokens reserved for the prompt and summary response." },
+				"skipPrompt": { "type": "boolean", "default": false, "description": "Skip the summary prompt and default to no summary." }
+			}
+		},
+		"retry": {
+			"type": "object",
+			"description": "Agent-level retry policy and provider request overrides.",
+			"additionalProperties": false,
+			"properties": {
+				"enabled": { "type": "boolean", "default": true, "description": "Enable automatic retries." },
+				"maxRetries": { "type": "integer", "minimum": 0, "default": 3, "description": "Maximum agent-level retries." },
+				"baseDelayMs": { "type": "number", "minimum": 0, "default": 2000, "description": "Initial exponential-backoff delay in milliseconds." },
+				"maxDelayMs": { "type": "number", "minimum": 0, "description": "Legacy alias migrated to retry.provider.maxRetryDelayMs when not already configured." },
+				"provider": {
+					"type": "object",
+					"additionalProperties": false,
+					"description": "Provider/SDK request retry overrides.",
+					"properties": {
+						"timeoutMs": { "type": "number", "minimum": 0, "description": "Provider/SDK request timeout in milliseconds." },
+						"maxRetries": { "type": "integer", "minimum": 0, "description": "Maximum provider/SDK retry attempts." },
+						"maxRetryDelayMs": { "type": "number", "minimum": 0, "default": 60000, "description": "Maximum server-requested retry delay before failing." }
+					}
+				}
+			}
+		},
+		"hideThinkingBlock": { "type": "boolean", "default": false, "description": "Hide reasoning blocks in the transcript." },
+		"showCacheMissNotices": { "type": "boolean", "default": false, "description": "Show notices for significant prompt-cache misses." },
+		"externalEditor": { "type": "string", "description": "Ctrl+G editor command; takes precedence over VISUAL/EDITOR." },
+		"shellPath": { "type": "string", "description": "Custom bash-compatible shell executable; supports leading ~ expansion." },
+		"powershellPath": { "type": "string", "description": "Global-only PowerShell executable override. Project settings cannot redirect it." },
+		"powershellStatus": {
+			"type": "object",
+			"readOnly": true,
+			"description": "Global-only PowerShell discovery state maintained by Super Pi.",
+			"additionalProperties": false,
+			"required": ["available", "verified"],
+			"properties": {
+				"trustVersion": { "const": 1, "description": "Discovery policy version." },
+				"path": { "type": "string", "description": "Last selected executable." },
+				"available": { "type": "boolean", "description": "Whether PowerShell is offered without an explicit re-enable." },
+				"verified": { "type": "boolean", "description": "Whether a command or probe confirmed the executable." },
+				"configuredPath": { "type": "string", "description": "Explicit path in effect when discovery ran." },
+				"source": { "enum": ["configured", "path-pwsh", "standard-pwsh", "path-windows-powershell", "system-windows-powershell"], "description": "How the executable was discovered." },
+				"version": { "type": "string", "description": "Discovered PowerShell version." },
+				"edition": { "type": "string", "description": "Discovered PowerShell edition." }
+			}
+		},
+		"quietStartup": { "type": "boolean", "default": false, "description": "Reduce startup output." },
+		"defaultProjectTrust": { "enum": ["ask", "always", "never"], "default": "ask", "description": "Global-only default for project trust. Projects cannot grant themselves trust." },
+		"shellCommandPrefix": { "type": "string", "description": "Prefix prepended to bash commands." },
+		"npmCommand": { "allOf": [{ "$ref": "#/definitions/stringArray" }], "description": "npm launcher as argv, for example [mise, exec, node@20, --, npm]." },
+		"collapseChangelog": { "type": "boolean", "default": false, "description": "Show a condensed changelog after updates." },
+		"enableInstallTelemetry": { "type": "boolean", "default": true, "description": "Enable the anonymous version/update ping after a changelog-detected update." },
+		"enableAnalytics": { "type": "boolean", "default": false, "description": "Opt in to analytics data sharing." },
+		"trackingId": { "type": "string", "readOnly": true, "description": "Analytics identifier generated when analytics is enabled." },
+		"packages": { "type": "array", "items": { "$ref": "#/definitions/packageSource" }, "description": "Package sources, optionally with resource filters and autoload control." },
+		"extensions": { "allOf": [{ "$ref": "#/definitions/stringArray" }], "description": "Local extension paths or directories." },
+		"skills": {
+			"description": "Local skill paths, or a legacy skills object migrated when loaded.",
+			"anyOf": [
+				{ "$ref": "#/definitions/stringArray" },
+				{
+					"type": "object",
+					"additionalProperties": false,
+					"properties": {
+						"enableSkillCommands": { "type": "boolean", "description": "Legacy alias for the top-level enableSkillCommands setting." },
+						"customDirectories": { "allOf": [{ "$ref": "#/definitions/stringArray" }], "description": "Legacy skill directories migrated to the skills array." }
+					}
+				}
+			]
+		},
+		"prompts": { "allOf": [{ "$ref": "#/definitions/stringArray" }], "description": "Local prompt template paths or directories." },
+		"themes": { "allOf": [{ "$ref": "#/definitions/stringArray" }], "description": "Local theme paths or directories." },
+		"enableSkillCommands": { "type": "boolean", "default": true, "description": "Register skills as /skill:name commands." },
+		"terminal": {
+			"type": "object",
+			"description": "Terminal display preferences.",
+			"additionalProperties": false,
+			"properties": {
+				"showImages": { "type": "boolean", "default": true, "description": "Show images when the terminal supports them." },
+				"imageWidthCells": { "type": "integer", "minimum": 1, "default": 60, "description": "Preferred inline image width in cells." },
+				"clearOnShrink": { "type": "boolean", "description": "Clear rows when content shrinks; otherwise SP_CLEAR_ON_SHRINK controls the default." },
+				"showTerminalProgress": { "type": "boolean", "default": false, "description": "Enable OSC 9;4 terminal progress indicators." }
+			}
+		},
+		"images": {
+			"type": "object",
+			"description": "Image input preferences.",
+			"additionalProperties": false,
+			"properties": {
+				"autoResize": { "type": "boolean", "default": true, "description": "Resize images to fit within 2000 by 2000 pixels." },
+				"blockImages": { "type": "boolean", "default": false, "description": "Prevent images from being sent to providers." }
+			}
+		},
+		"toolResultPresentation": {
+			"type": "object",
+			"description": "Opt-in bounded tool-result presentation. When enabled, the merged effective settings must provide a positive safe-integer budgetTokens; a project may inherit that budget.",
+			"additionalProperties": false,
+			"properties": {
+				"enabled": { "type": "boolean", "default": false, "description": "Enable bounded tool-result presentation." },
+				"budgetTokens": { "type": "integer", "minimum": 1, "maximum": 9007199254740991, "description": "Explicit token budget. No production default is selected." }
+			}
+		},
+		"evidenceLedger": {
+			"type": "object",
+			"description": "Built-in local text evidence ledger.",
+			"additionalProperties": false,
+			"properties": { "enabled": { "type": "boolean", "default": false, "description": "Enable the evidence ledger." } }
+		},
+		"enabledModels": { "allOf": [{ "$ref": "#/definitions/stringArray" }], "description": "Model patterns for cycling, using the --models syntax." },
+		"defaultTools": { "allOf": [{ "$ref": "#/definitions/stringArray" }], "description": "Initial built-in tool selection; does not disable extension or SDK tools." },
+		"doubleEscapeAction": { "enum": ["fork", "tree", "none"], "default": "tree", "description": "Action for double Escape with an empty editor." },
+		"treeFilterMode": { "enum": ["default", "no-tools", "user-only", "labeled-only", "all"], "default": "default", "description": "Initial session-tree filter." },
+		"thinkingBudgets": {
+			"type": "object",
+			"description": "Custom token budgets for supported reasoning levels.",
+			"additionalProperties": false,
+			"properties": {
+				"minimal": { "type": "integer", "minimum": 0, "description": "Minimal reasoning token budget." },
+				"low": { "type": "integer", "minimum": 0, "description": "Low reasoning token budget." },
+				"medium": { "type": "integer", "minimum": 0, "description": "Medium reasoning token budget." },
+				"high": { "type": "integer", "minimum": 0, "description": "High reasoning token budget." }
+			}
+		},
+		"editorPaddingX": { "type": "integer", "minimum": 0, "maximum": 3, "default": 0, "description": "Horizontal input-editor padding in cells." },
+		"outputPad": { "enum": [0, 1], "default": 1, "description": "Horizontal transcript/tool/command padding in cells." },
+		"autocompleteMaxVisible": { "type": "integer", "minimum": 3, "maximum": 20, "default": 5, "description": "Maximum visible autocomplete entries." },
+		"showHardwareCursor": { "type": "boolean", "description": "Show the terminal cursor instead of the focused fake cursor; IME positioning is retained. Defaults to SP_HARDWARE_CURSOR=1." },
+		"markdown": {
+			"type": "object",
+			"description": "Markdown rendering preferences.",
+			"additionalProperties": false,
+			"properties": {
+				"codeBlockIndent": { "type": "string", "default": "  ", "description": "Indent prefix for code blocks." },
+				"mermaid": { "enum": ["off", "final", "streaming"], "default": "streaming", "description": "When Mermaid diagrams are rendered." }
+			}
+		},
+		"warnings": {
+			"type": "object",
+			"description": "Warning display preferences.",
+			"additionalProperties": false,
+			"properties": { "anthropicExtraUsage": { "type": "boolean", "default": true, "description": "Show Anthropic extra-usage warnings where applicable." } }
+		},
+		"sessionDir": { "type": "string", "description": "Session storage directory, using the --session-dir path syntax." },
+		"httpProxy": { "type": "string", "description": "Global-only proxy URL used by startup when HTTP_PROXY/HTTPS_PROXY are not already set." },
+		"httpIdleTimeoutMs": { "allOf": [{ "$ref": "#/definitions/timeout" }], "default": 300000, "description": "HTTP header/body idle timeout in milliseconds; 0 disables it." },
+		"websocketConnectTimeoutMs": { "allOf": [{ "$ref": "#/definitions/timeout" }], "description": "WebSocket connection handshake timeout in milliseconds; 0 disables it. Otherwise provider defaults apply." },
+		"tuiMode": { "enum": ["regular", "fullscreen"], "default": "regular", "description": "Terminal renderer mode." },
+		"fullscreenExitOutput": { "enum": ["transcript", "resume-hint"], "default": "transcript", "description": "What remains after exiting fullscreen mode." },
+		"fullscreenScrollbar": { "enum": ["hidden", "auto", "always"], "default": "auto", "description": "Scrollbar visibility in fullscreen mode." },
+		"queueMode": { "enum": ["all", "one-at-a-time"], "description": "Legacy alias migrated to steeringMode when steeringMode is absent." },
+		"websockets": { "type": "boolean", "description": "Legacy transport selector: true becomes websocket, false becomes sse when transport is absent." }
+	},
+	"definitions": {
+		"thinkingLevel": { "enum": ["off", "minimal", "low", "medium", "high", "xhigh", "max"] },
+		"stringArray": { "type": "array", "items": { "type": "string" } },
+		"timeout": {
+			"description": "Non-negative milliseconds. Legacy numeric strings and case-insensitive disabled are also accepted; fractional values are rounded down at runtime.",
+			"anyOf": [
+				{ "type": "number", "minimum": 0 },
+				{ "type": "string", "pattern": "^\\s*(?:[dD][iI][sS][aA][bB][lL][eE][dD]|[+]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?|0[xX][0-9a-fA-F]+|0[bB][01]+|0[oO][0-7]+)\\s*$" }
+			]
+		},
+		"packageSource": {
+			"anyOf": [
+				{ "type": "string" },
+				{
+					"type": "object",
+					"additionalProperties": false,
+					"required": ["source"],
+					"properties": {
+						"source": { "type": "string", "description": "npm, git or local package source." },
+						"autoload": { "type": "boolean", "default": true, "description": "When false, load only explicitly selected resource patterns." },
+						"extensions": { "allOf": [{ "$ref": "#/definitions/stringArray" }], "description": "Extension resource filters." },
+						"skills": { "allOf": [{ "$ref": "#/definitions/stringArray" }], "description": "Skill resource filters." },
+						"prompts": { "allOf": [{ "$ref": "#/definitions/stringArray" }], "description": "Prompt resource filters." },
+						"themes": { "allOf": [{ "$ref": "#/definitions/stringArray" }], "description": "Theme resource filters." }
+					}
+				}
+			]
+		}
+	}
+}
