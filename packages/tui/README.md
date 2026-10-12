@@ -31,6 +31,14 @@ unsupported kinds use question if available, otherwise no kind. A bounded raw-te
 cache skips sanitization for duplicate messages and is released on failure/disposal.
 See the [OSC 7501 specification](https://www.superlogical.com/rex/docs/build/program-status).
 
+## Navigation keys
+
+Home/End move the focused input or editor cursor to the start/end of its line
+in both main-screen and fullscreen modes. Ctrl+A/E are equivalent editor keys.
+In fullscreen mode, Ctrl+Home/End scroll to the beginning/end of the transcript;
+PageUp/PageDown continue to scroll the viewport. Ctrl+Home/End are not default
+editor keys in main-screen mode. Explicit user keybinding overrides take precedence.
+
 ## Quick Start
 
 ```typescript
