@@ -812,7 +812,7 @@ export function observeAnthropicEffectiveDispatch(
 			? params.system.map(removeAnthropicCacheControl)
 			: (params.system ?? null),
 		orderedToolDefinitions: neutralTools,
-		orderedToolIdentifiers: tools.map((tool) => tool.name),
+		orderedToolIdentifiers: tools.map((tool) => "name" in tool ? tool.name : tool.type),
 		cacheRetention: cache.retention,
 		cachePolicy: cache.policy,
 		cacheBoundary: cache.boundary,

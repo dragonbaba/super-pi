@@ -70,6 +70,7 @@
 		"check": "tsgo --noEmit"
 	},
 	"devDependencies": {
+		"@anthropic-ai/sdk": "0.129.0",
 		"@types/node": "22.19.19",
 		"@typescript/native-preview": "7.0.0-dev.20260120.1",
 		"js-tiktoken": "1.0.21",
