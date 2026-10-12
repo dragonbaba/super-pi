@@ -48,6 +48,9 @@ export type ProxyAssistantMessageEvent =
 			type: "done";
 			reason: Extract<StopReason, "stop" | "length" | "toolUse">;
 			usage: AssistantMessage["usage"];
+			/** Forward from the provider's final message; omit on legacy servers. */
+			anthropicContext?: AssistantMessage["anthropicContext"];
+			rawStopReason?: AssistantMessage["rawStopReason"];
 	  }
 	| {
 			type: "error";
@@ -359,7 +362,9 @@ function processProxyEvent(
 		case "done":
 			partial.stopReason = proxyEvent.reason;
 			partial.usage = proxyEvent.usage;
-			return { type: "done", reason: proxyEvent.reason, message: partial };
+			return { type: "done", reason: proxyEvent.reason, message:
+				proxyEvent.anthropicContext === undefined && proxyEvent.rawStopReason === undefined ? partial :
+					{ ...partial, anthropicContext: proxyEvent.anthropicContext, rawStopReason: proxyEvent.rawStopReason } };
 
 		case "error":
 			partial.stopReason = proxyEvent.reason;

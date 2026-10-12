@@ -21,6 +21,8 @@ export function createInlineToolPlaceholder(): BetaTool {
 
 export interface InlineToolHistory {
 	initial: AnthropicContextCheckpoint;
+	/** Index of the first retained checkpoint, or messages.length for a newly based prefix. */
+	initialIndex: number;
 	checkpoint: AnthropicContextCheckpoint | undefined;
 	updates: Map<Message, BetaContentBlockParam[]>;
 	tail: BetaContentBlockParam[];
@@ -62,6 +64,7 @@ export function prepareInlineToolHistory(model: Model<"anthropic-messages">, con
 			message.rawStopReason === "pause_turn")) start = i + 1;
 	}
 	let initial: AnthropicContextCheckpoint | undefined;
+	let initialIndex = context.messages.length;
 	let latest: AnthropicContextCheckpoint | undefined;
 	const updates = new Map<Message, BetaContentBlockParam[]>();
 	for (let i = start; i < context.messages.length; i++) {
@@ -70,7 +73,7 @@ export function prepareInlineToolHistory(model: Model<"anthropic-messages">, con
 		const snapshot = message.anthropicContext;
 		if (snapshot.version !== 1 || !Array.isArray(snapshot.tools) || typeof snapshot.systemPrompt !== "string") return undefined;
 		if (latest) updates.set(message, changeBlocks(latest, snapshot, convert));
-		else initial = snapshot;
+		else { initial = snapshot; initialIndex = i; }
 		latest = snapshot;
 	}
 	const serialized = snapshotText(context.systemPrompt ?? "", context.tools ?? [], toolPolicy);
@@ -79,7 +82,7 @@ export function prepareInlineToolHistory(model: Model<"anthropic-messages">, con
 	initial ??= current;
 	if (initial.tools.length === 0 || initial.tools.some(tool => tool.name === PLACEHOLDER_NAME) ||
 		current.tools.some(tool => tool.name === PLACEHOLDER_NAME)) return undefined;
-	return { initial, checkpoint: current === latest ? undefined : current, updates,
+	return { initial, initialIndex, checkpoint: current === latest ? undefined : current, updates,
 		tail: latest ? changeBlocks(latest, current, convert) : [] };
 }
 

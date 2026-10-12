@@ -567,6 +567,12 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 			assertAnthropicClientAuth(client);
 			const checkpoint: { value?: AnthropicContextCheckpoint | null } = {};
 			let params = buildParams(model, context, options, checkpoint);
+			if (params.betas?.includes(INLINE_TOOLS_BETA)) {
+				// The beta endpoint replaces the client default header with params.betas.
+				const defaults = (client as unknown as { _options?: { defaultHeaders?: ConstructorParameters<typeof Headers>[0] } })._options?.defaultHeaders;
+				const activeBetas = new Headers(defaults).get("anthropic-beta");
+				if (activeBetas) params.betas = [...new Set([...activeBetas.split(",").map(value => value.trim()).filter(Boolean), ...params.betas])];
+			}
 			const declarationSignature = options?.onPayload && params.betas?.includes(INLINE_TOOLS_BETA)
 				? inlineDeclarationSignature(params) : undefined;
 			const nextParams = await options?.onPayload?.(params, model);
@@ -843,15 +849,40 @@ export function observeAnthropicEffectiveDispatch(
 	model: Model<"anthropic-messages">,
 	params: MessageCreateParamsStreaming,
 ): void {
-	const tools = params.tools ?? [];
+	if (!options?.onEffectiveDispatch) return;
+	let tools = params.tools ?? [];
+	let instructions: unknown = Array.isArray(params.system)
+		? params.system.map(removeAnthropicCacheControl) : (params.system ?? null);
+	if (params.betas?.includes(INLINE_TOOLS_BETA)) {
+		const registered = new Map(tools.map(tool => ["name" in tool ? tool.name : tool.type, tool]));
+		const active = new Map([...registered].filter(([, tool]) => !("defer_loading" in tool && tool.defer_loading)));
+		const instructionUpdates: unknown[] = [];
+		for (const message of params.messages) {
+			if (message.role !== "system") continue;
+			if (typeof message.content === "string") { instructionUpdates.push(message.content); continue; }
+			for (const block of message.content) {
+				if (block.type === "text") instructionUpdates.push(removeAnthropicCacheControl(block));
+				else if (block.type === "tool_addition" && block.tool.type === "tool_definition") {
+					const definition = block.tool.definition;
+					const name = "name" in definition ? definition.name : definition.type;
+					registered.set(name, definition);
+					if ("defer_loading" in definition && definition.defer_loading) active.delete(name);
+					else active.set(name, definition);
+				} else if (block.type === "tool_addition" && block.tool.type === "tool_reference") {
+					const definition = registered.get(block.tool.name);
+					if (definition) active.set(block.tool.name, definition);
+				} else if (block.type === "tool_removal" && block.tool.type === "tool_reference") active.delete(block.tool.name);
+			}
+		}
+		tools = [...active.values()];
+		if (instructionUpdates.length) instructions = [instructions, ...instructionUpdates];
+	}
 	const cache = extractAnthropicCacheMetadata(params);
 	const neutralTools = tools.map(removeAnthropicCacheControl);
 	observeEffectiveDispatch(options, model, {
 		transport: "sse",
 		previousResponseMode: "none",
-		instructionPrefix: Array.isArray(params.system)
-			? params.system.map(removeAnthropicCacheControl)
-			: (params.system ?? null),
+		instructionPrefix: instructions,
 		orderedToolDefinitions: neutralTools,
 		orderedToolIdentifiers: tools.map((tool) => "name" in tool ? tool.name : tool.type),
 		cacheRetention: cache.retention,
@@ -1122,7 +1153,7 @@ function buildParams(
 		// declarations; without usage, include the initial prefix and all updates.
 		const estimate = estimateContextTokens(transformedMessages);
 		let inputTokens = estimate.tokens;
-		if (estimate.lastUsageIndex === null) {
+		if (estimate.lastUsageIndex === null || estimate.lastUsageIndex < inline.initialIndex) {
 			inputTokens += estimateTextTokens(JSON.stringify(params.tools)) + estimateTextTokens(systemPrompt ?? "");
 		}
 		for (let i = (estimate.lastUsageIndex ?? -1) + 1; i < transformedMessages.length; i++) {

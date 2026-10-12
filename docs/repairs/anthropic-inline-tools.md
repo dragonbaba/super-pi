@@ -135,3 +135,48 @@ final-regression logs, check/build logs, `source-audit.json`, `measure.mts`,
 `baseline-loader.mjs`, before/after JSON and six heap profiles). No full local
 suite or real Anthropic cache-hit test was run. Prefix equality and protocol
 behavior are offline SDK transport evidence, not service-side acceptance.
+
+## Review correction design gate
+
+Review of `6f8fe34a3` identified four integration gaps to reproduce before fixing:
+the beta endpoint overrides client-default beta headers; a usage anchor may
+precede a newly rebased initial declaration; metadata observes only the initial
+prefix; the public proxy completion contract drops checkpoints. Merge active
+client beta flags at request startup, track the first retained checkpoint index
+for usage accounting, replay declaration-only metadata from the final payload,
+and carry optional context/raw-stop metadata in proxy completion envelopes.
+No delta parser is to change. Proxy audit covers fetch -> reader/line decoder ->
+processProxyEvent -> EventStream -> Agent/Session and observer/terminal cleanup.
+Proxy completion must copy the envelope instead of mutating queued partials;
+legacy terminal events remain valid. Add focused failing probes and compare the
+proxy delta branches, allocation counts and owner release before/after.
+
+All four probes failed before the correction and now pass (`review-baseline.log`,
+`review-fixes.log`). The final-payload observer now replays native declaration
+updates, excludes the dormant placeholder from active tools, and hashes system
+updates without exposing their text. A usage record before the first retained
+checkpoint is conservatively charged the new initial declarations. SDK client
+default beta headers are merged before the final payload hook, preserving its
+override precedence. The proxy's optional final fields require forwarding by
+external proxy servers; legacy servers remain compatible but cannot preserve
+inline continuity. 61 affected checks pass; cumulative distinct checks are 113.
+
+With effective-dispatch observation enabled, three 20,000-update review samples
+have the same 280118 Promises/request, two controllers, one fetch, zero SDK
+decodes and 25 collected WeakRefs. Sampled bytes/update change from
+4734.6884 / 4068.9036 / 4093.2828 to 4707.6452 / 4072.5900 / 4059.0684.
+Final instrumented times are 1473.307 / 1438.137 / 1465.149 ms; post-GC heap
+deltas are 5588976 / -500296 / 103184 bytes. Same profiler limitations apply.
+
+The proxy's full reader loop and all pre-terminal event branches match the merged
+base. Three 10,000-update samples after 1,000 warmup retain 40028 Promises/request
+and no checkpoint on buffered partials. Sampled bytes/update: baseline
+1572.3664 / 1110.6536 / 1070.6200; candidate 1590.9544 / 1117.1896 / 1060.3696.
+Times: 28.017 / 19.906 / 16.440 ms vs 23.971 / 19.673 / 16.738 ms.
+Post-GC heap deltas: 1099224 / -185120 / 3408 vs 1123656 / -209968 / 2288 bytes.
+All 15 candidate WeakRefs (13 baseline) collect, including parsed checkpoint and
+tool-array references. Abort listeners are removed. The proxy's pre-existing
+completed reader remains locked while an external owner retains the body;
+collection here proves release after owner disposal, not immediate unlock.
+No proxy reader/delta algorithm was changed. Raw `proxy-measure.mts`,
+`proxy-before/after.json`, review before/after JSON and profiles record the details.

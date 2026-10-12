@@ -165,3 +165,44 @@ test("conversion policy changes rebase snapshots and inline tail contributes to 
 	assert.equal(f.bodies[2].system[0].text, f.context.systemPrompt);
 	assert.equal(f.bodies[2].tools[0].eager_input_streaming, undefined);
 });
+
+test("review: inline beta transport preserves automatic and explicit beta headers", async () => {
+	const f = fixture();
+	await f.turn({ ...model, compat: { supportsEagerToolInputStreaming: false } });
+	assert.match(f.headers[0].get("anthropic-beta") ?? "", /fine-grained-tool-streaming-2025-05-14/);
+	assert.match(f.headers[0].get("anthropic-beta") ?? "", /interleaved-thinking-2025-05-14/);
+	await f.turn(model, { headers: { "Anthropic-Beta": "custom-feature, another-feature" } });
+	assert.match(f.headers[1].get("anthropic-beta") ?? "", /custom-feature/);
+	assert.match(f.headers[1].get("anthropic-beta") ?? "", /another-feature/);
+	assert.match(f.headers[1].get("anthropic-beta") ?? "", /inline-tools-2026-09-15/);
+});
+
+test("review: rebased prefix declarations are counted even with old reported usage", async () => {
+	for (const reset of ["legacy", "policy", "hook", "model"] as const) {
+		const f = fixture(); const first = await f.turn();
+		first.usage.input = first.usage.totalTokens = 1000;
+		if (reset === "legacy") first.anthropicContext = undefined;
+		if (reset === "hook") first.anthropicContext = null;
+		if (reset === "model") first.model = "different-model";
+		f.context.systemPrompt = "New instruction ".repeat(600);
+		const nextModel = { ...model, contextWindow: 12000, ...(reset === "policy" ? { compat: { supportsEagerToolInputStreaming: false } } : {}) };
+		await f.turn(nextModel, { maxTokens: 6000 });
+		assert.ok(f.bodies[1].max_tokens < 5000, `${reset}: missing new initial declarations`);
+	}
+});
+
+test("review: effective metadata tracks inline instructions and currently available definitions", async () => {
+	const f = fixture(); const observations: any[] = [];
+	const options = { onEffectiveDispatch: (observation: any) => { observations.push(observation); } };
+	await f.turn(model, options);
+	f.context.tools = [read, lookup]; f.context.systemPrompt = "Use lookup now.";
+	await f.turn(model, options);
+	assert.notEqual(observations[0].instructionsHash, observations[1].instructionsHash);
+	assert.notEqual(observations[0].toolsHash, observations[1].toolsHash);
+	assert.equal(observations[0].toolCount, 1);
+	assert.equal(observations[1].toolCount, 2);
+	f.context.tools = [lookup]; await f.turn(model, options);
+	assert.equal(observations[2].toolCount, 1);
+	assert.notEqual(observations[1].toolIdentifierSetHash, observations[2].toolIdentifierSetHash);
+	assert.equal(JSON.stringify(observations).includes("Use lookup now."), false);
+});
