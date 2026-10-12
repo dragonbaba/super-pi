@@ -1,5 +1,6 @@
 import type { AuthInfoLink, OAuthDeviceCodeInfo } from "@super-pi/ai";
 import { Container, type Focusable, getKeybindings, Input, Spacer, Text, type TUI } from "@super-pi/tui";
+import { copyToClipboard } from "../../../utils/clipboard.ts";
 import { openBrowser } from "../../../utils/open-browser.ts";
 import { theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
@@ -16,6 +17,10 @@ export class LoginDialogComponent extends Container implements Focusable {
 	private inputResolver?: (value: string) => void;
 	private inputRejecter?: (error: Error) => void;
 	private onComplete: ((success: boolean, message?: string) => void) | undefined;
+	private authUrl: string | undefined;
+	private authUrlHint: Text | undefined;
+	private copyInProgress = false;
+	private readonly copyText: (text: string) => Promise<void>;
 
 	// Focusable implementation - propagate to input for IME cursor positioning
 	private _focused = false;
@@ -33,10 +38,12 @@ export class LoginDialogComponent extends Container implements Focusable {
 		onComplete: (success: boolean, message?: string) => void,
 		providerNameOverride?: string,
 		titleOverride?: string,
+		copyText: (text: string) => Promise<void> = copyToClipboard,
 	) {
 		super();
 		this.tui = tui;
 		this.onComplete = onComplete;
+		this.copyText = copyText;
 
 		const providerName = providerNameOverride || providerId;
 		const title = titleOverride ?? `Login to ${providerName}`;
@@ -81,6 +88,7 @@ export class LoginDialogComponent extends Container implements Focusable {
 	}
 
 	cancel(): void {
+		this.clearAuthUrl();
 		if (this.abortController.signal.aborted) return;
 		const onComplete = this.onComplete;
 		this.onComplete = undefined;
@@ -105,6 +113,7 @@ export class LoginDialogComponent extends Container implements Focusable {
 		const clickHint = process.platform === "darwin" ? "Cmd+click to open" : "Ctrl+click to open";
 		const hyperlink = `\x1b]8;;${url}\x07${clickHint}\x1b]8;;\x07`;
 		this.contentContainer.addChild(new Text(theme.fg("dim", hyperlink), 1, 0));
+		this.setAuthUrl(url);
 
 		if (instructions) {
 			this.contentContainer.addChild(new Spacer(1));
@@ -127,9 +136,41 @@ export class LoginDialogComponent extends Container implements Focusable {
 		const clickHint = process.platform === "darwin" ? "Cmd+click to open" : "Ctrl+click to open";
 		const hyperlink = `\x1b]8;;${info.verificationUri}\x07${clickHint}\x1b]8;;\x07`;
 		this.contentContainer.addChild(new Text(theme.fg("dim", hyperlink), 1, 0));
+		this.setAuthUrl(info.verificationUri);
 		this.contentContainer.addChild(new Spacer(1));
 		this.contentContainer.addChild(new Text(theme.fg("warning", `Enter code: ${info.userCode}`), 1, 0));
 
+		this.tui.requestRender();
+	}
+
+	/** Release the copy target when the login owner finishes or replaces this step. */
+	clearAuthUrl(): void {
+		this.authUrl = undefined;
+		this.authUrlHint = undefined;
+	}
+
+	private setAuthUrl(url: string): void {
+		this.authUrl = url;
+		this.authUrlHint = new Text(theme.fg("dim", keyHint("app.message.copy", "to copy login URL")), 1, 0);
+		this.contentContainer.addChild(this.authUrlHint);
+	}
+
+	private async copyAuthUrl(): Promise<void> {
+		const url = this.authUrl;
+		const hint = this.authUrlHint;
+		if (!url || !hint) return;
+		this.copyInProgress = true;
+		let copied = false;
+		try {
+			await this.copyText(url);
+			copied = true;
+		} catch {
+			// Clipboard failure must not abort the authentication flow.
+		} finally {
+			this.copyInProgress = false;
+		}
+		if (this.authUrlHint !== hint || this.signal.aborted) return;
+		hint.setText(theme.fg(copied ? "dim" : "warning", copied ? "Login URL copied." : "Could not copy login URL."));
 		this.tui.requestRender();
 	}
 
@@ -180,6 +221,7 @@ export class LoginDialogComponent extends Container implements Focusable {
 
 	/** Show informational text before another login step. */
 	showDetails(lines: string[]): void {
+		this.clearAuthUrl();
 		this.contentContainer.clear();
 		this.contentContainer.addChild(new Spacer(1));
 		for (const line of lines) {
@@ -223,10 +265,16 @@ export class LoginDialogComponent extends Container implements Focusable {
 	}
 
 	handleInput(data: string): void {
+		if (this.signal.aborted) return;
 		const kb = getKeybindings();
 
 		if (kb.matches(data, "tui.select.cancel")) {
 			this.cancel();
+			return;
+		}
+
+		if (this.authUrl && kb.matches(data, "app.message.copy")) {
+			if (!this.copyInProgress) void this.copyAuthUrl();
 			return;
 		}
 

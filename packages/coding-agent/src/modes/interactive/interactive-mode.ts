@@ -3191,6 +3191,7 @@ export class InteractiveMode {
 	private releaseActiveLoginDialog(dialog: LoginDialogComponent): boolean {
 		if (this.activeLoginDialog !== dialog) return false;
 		this.activeLoginDialog = undefined;
+		dialog.clearAuthUrl();
 		this.programStatus?.setBlocked("login");
 		return true;
 	}
@@ -7763,6 +7764,8 @@ export class InteractiveMode {
 			} else if (errorMsg !== "Login cancelled") {
 				this.showError(`Failed to login to ${providerName}: ${errorMsg}`);
 			}
+		} finally {
+			dialog.clearAuthUrl();
 		}
 	}
 
