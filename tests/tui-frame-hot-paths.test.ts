@@ -22,6 +22,8 @@ const HOT_METHODS: readonly MethodTarget[] = [
 	{ path: "packages/tui/src/tui.ts", className: "TuiBase", methodName: "compositeOverlays" },
 	{ path: "packages/tui/src/tui.ts", className: "TuiBase", methodName: "resolveFakeCursors" },
 	{ path: "packages/tui/src/tui.ts", className: "TuiBase", methodName: "resolveFakeCursorLine" },
+	{ path: "packages/tui/src/components/viewport-container.ts", className: "ViewportContainer", methodName: "renderViewportTail" },
+	{ path: "packages/tui/src/tui-main-screen.ts", className: "TuiMainScreen", methodName: "renderRootViewportTail" },
 	{ path: "packages/tui/src/terminal.ts", className: "ProcessTerminal", methodName: "setProgress" },
 	{ path: "packages/tui/src/terminal.ts", className: "ProcessTerminal", methodName: "startProgressWrite" },
 	{ path: "packages/tui/src/terminal.ts", className: "ProcessTerminal", methodName: "setProgramStatus" },
@@ -175,7 +177,7 @@ function methodNamed(source: ts.SourceFile, className: string, methodName: strin
 	return result;
 }
 
-function collectForbiddenHotNodes(method: ts.MethodDeclaration, source: ts.SourceFile): string[] {
+function collectForbiddenHotNodes(method: ts.MethodDeclaration | ts.FunctionDeclaration, source: ts.SourceFile): string[] {
 	const violations: string[] = [];
 	function visit(node: ts.Node): void {
 		if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) {
@@ -262,6 +264,12 @@ test("terminal frame hot methods contain no per-frame closures, Promise executor
 			`${target.className}.${target.methodName} must be allocation-stable`,
 		);
 	}
+	const viewportSource = parse("packages/tui/src/components/viewport-container.ts");
+	const imageLookup = viewportSource.statements.find(
+		(node): node is ts.FunctionDeclaration => ts.isFunctionDeclaration(node) && node.name?.text === "findLeadingKittyImage",
+	);
+	assert.ok(imageLookup);
+	assert.deepEqual(collectForbiddenHotNodes(imageLookup, viewportSource), []);
 	assert.deepEqual(LOW_FREQUENCY_ALLOCATION_EXEMPTIONS, [
 		"TuiBase.awaitTerminalBoundary",
 		"TuiBase.finishStopAfterFrames",

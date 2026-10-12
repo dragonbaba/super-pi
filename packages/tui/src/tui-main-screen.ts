@@ -4,6 +4,7 @@ import { deleteKittyImage, isImageLine } from "./terminal-image.ts";
 import { type TUI, TuiBase, type TuiStopOptions } from "./tui.ts";
 import { visibleWidth } from "./utils.ts";
 import {
+	findLeadingKittyImage,
 	isLineViewportComponent,
 	type LineViewportMutationKind,
 	type LineViewportMutationObservation,
@@ -876,50 +877,53 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		this.frameRootLeadingKittyImages.length = childCount;
 		let totalHeight = 0;
 		let remaining = safeHeight;
-		for (let index = childCount - 1; index >= 0; index--) {
-			const child = this.children[index];
-			let childHeight: number;
-			if (isLineViewportComponent(child)) {
-				if (remaining > 0) {
-					const childRender = child.renderViewportTail(width, remaining);
-					childHeight = childRender.totalHeight;
-					this.frameRootLines[index] = childRender.lines;
-					this.frameRootLineStarts[index] = childRender.startLine;
-					this.frameRootLeadingKittyImages[index] = childRender.leadingKittyImage;
+		try {
+			for (let index = childCount - 1; index >= 0; index--) {
+				const child = this.children[index];
+				let childHeight: number;
+				if (isLineViewportComponent(child)) {
+					if (remaining > 0) {
+						const childRender = child.renderViewportTail(width, remaining);
+						childHeight = childRender.totalHeight;
+						this.frameRootLines[index] = childRender.lines;
+						this.frameRootLineStarts[index] = childRender.startLine;
+						this.frameRootLeadingKittyImages[index] = childRender.leadingKittyImage;
+					} else {
+						childHeight = child.getContentHeight(width);
+						this.frameRootLines[index] = undefined;
+						this.frameRootLineStarts[index] = childHeight;
+						this.frameRootLeadingKittyImages[index] = undefined;
+					}
 				} else {
-					childHeight = child.getContentHeight(width);
-					this.frameRootLines[index] = undefined;
-					this.frameRootLineStarts[index] = childHeight;
+					const childLines = child.render(width);
+					childHeight = childLines.length;
+					this.frameRootLines[index] = remaining > 0 ? childLines : undefined;
+					// Ordinary render returns the full child array, whose first row is zero.
+					this.frameRootLineStarts[index] = 0;
 					this.frameRootLeadingKittyImages[index] = undefined;
 				}
-			} else {
-				const childLines = child.render(width);
-				childHeight = childLines.length;
-				this.frameRootLines[index] = remaining > 0 ? childLines : undefined;
-				this.frameRootLineStarts[index] = Math.max(0, childHeight - remaining);
-				this.frameRootLeadingKittyImages[index] = undefined;
+				this.frameRootHeights[index] = childHeight;
+				totalHeight += childHeight;
+				remaining = Math.max(0, remaining - childHeight);
 			}
-			this.frameRootHeights[index] = childHeight;
-			totalHeight += childHeight;
-			remaining = Math.max(0, remaining - childHeight);
-		}
 
-		const requestedStart = Math.max(0, totalHeight - safeHeight);
-		const lines = this.previousLines === this.boundedFrameLinesA
-			? this.boundedFrameLinesB
-			: this.boundedFrameLinesA;
-		lines.length = 0;
-		let childAbsoluteStart = 0;
-		let leadingKittyImage: LineViewportRender["leadingKittyImage"];
-		try {
+			const requestedStart = Math.max(0, totalHeight - safeHeight);
+			const lines = this.previousLines === this.boundedFrameLinesA
+				? this.boundedFrameLinesB
+				: this.boundedFrameLinesA;
+			lines.length = 0;
+			let childAbsoluteStart = 0;
+			let leadingKittyImage: LineViewportRender["leadingKittyImage"];
 			for (let index = 0; index < childCount; index++) {
 				const childLines = this.frameRootLines[index];
 				if (childLines) {
 					const childLineStart = this.frameRootLineStarts[index];
-					for (let lineIndex = 0; lineIndex < childLines.length; lineIndex++) {
-						const absoluteLine = childAbsoluteStart + childLineStart + lineIndex;
-						if (absoluteLine >= requestedStart && lines.length < safeHeight) lines.push(childLines[lineIndex]);
+					const sourceStart = Math.max(0, requestedStart - childAbsoluteStart - childLineStart);
+					const sourceEnd = Math.min(childLines.length, sourceStart + safeHeight - lines.length);
+					if (!leadingKittyImage && sourceStart > 0 && sourceStart < sourceEnd) {
+						leadingKittyImage = findLeadingKittyImage(childLines, sourceStart, childAbsoluteStart + childLineStart);
 					}
+					for (let lineIndex = sourceStart; lineIndex < sourceEnd; lineIndex++) lines.push(childLines[lineIndex]);
 					const childLeading = this.frameRootLeadingKittyImages[index];
 					if (!leadingKittyImage && childLeading) {
 						leadingKittyImage = {
@@ -930,17 +934,17 @@ export class TuiMainScreen extends TuiBase implements TUI {
 				}
 				childAbsoluteStart += this.frameRootHeights[index];
 			}
+			this.rootFrameRender.lines = lines;
+			this.rootFrameRender.startLine = requestedStart;
+			this.rootFrameRender.totalHeight = totalHeight;
+			this.rootFrameRender.leadingKittyImage = leadingKittyImage;
+			return this.rootFrameRender;
 		} finally {
 			for (let index = 0; index < childCount; index++) {
 				this.frameRootLines[index] = undefined;
 				this.frameRootLeadingKittyImages[index] = undefined;
 			}
 		}
-		this.rootFrameRender.lines = lines;
-		this.rootFrameRender.startLine = requestedStart;
-		this.rootFrameRender.totalHeight = totalHeight;
-		this.rootFrameRender.leadingKittyImage = leadingKittyImage;
-		return this.rootFrameRender;
 	}
 
 	/**
