@@ -1,4 +1,4 @@
-import { type KeyId, matchesKey } from "./keys.ts";
+import { type KeyId, matchesKey, normalizeKeyId } from "./keys.ts";
 
 /**
  * Global keybinding registry.
@@ -203,7 +203,7 @@ export class KeybindingsManager {
 	private userBindings: KeybindingsConfig;
 	private keysById = new Map<Keybinding, KeyId[]>();
 	private conflicts: KeybindingConflict[] = [];
-	private readonly viewportShortcutOverrides = new Set<KeyId>();
+	private readonly viewportShortcutOverrides = new Set<string>();
 
 	constructor(definitions: KeybindingDefinitions, userBindings: KeybindingsConfig = {}) {
 		this.definitions = definitions;
@@ -239,7 +239,7 @@ export class KeybindingsManager {
 			const boundaryDefault = userKeys === undefined && (id === "tui.altScreen.top" || id === "tui.altScreen.bottom");
 			const resolved = id.startsWith("tui.altScreen.")
 				? keys.filter(key =>
-					!this.viewportShortcutOverrides.has(key.toLowerCase() as KeyId) && !(boundaryDefault && userClaims.has(key)),
+					!this.viewportShortcutOverrides.has(normalizeKeyId(key) ?? "") && !(boundaryDefault && userClaims.has(key)),
 				)
 				: keys;
 			this.keysById.set(id as Keybinding, resolved);
@@ -275,7 +275,10 @@ export class KeybindingsManager {
 	setViewportShortcutOverrides(keys?: Iterable<KeyId>): void {
 		this.viewportShortcutOverrides.clear();
 		if (keys) {
-			for (const key of keys) this.viewportShortcutOverrides.add(key.toLowerCase() as KeyId);
+			for (const key of keys) {
+				const normalized = normalizeKeyId(key);
+				if (normalized) this.viewportShortcutOverrides.add(normalized);
+			}
 		}
 		this.rebuild();
 	}

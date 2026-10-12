@@ -27,6 +27,7 @@ for (const explicitViewport of [false, true]) {
 		const config: KeybindingsConfig = explicitViewport ? {
 			"tui.altScreen.top": ["ctrl+home", "ctrl+up"],
 			"tui.altScreen.bottom": ["ctrl+end", "ctrl+down"],
+			"tui.altScreen.halfPageUp": "ctrl+return",
 		} : {};
 		const keybindings = new HostKeybindings({ ...KEYBINDINGS, ...TUI_KEYBINDINGS }, config);
 		const baseline = keybindings.getResolvedBindings();
@@ -38,6 +39,7 @@ for (const explicitViewport of [false, true]) {
 		const sequences: [KeyId, string][] = [
 			["ctrl+home", "\x1b[1;5H"], ["ctrl+end", "\x1b[1;5F"],
 			["ctrl+up", "\x1b[1;5A"], ["ctrl+down", "\x1b[1;5B"], ["pageUp", "\x1b[5~"],
+			["shift+ctrl+up", "\x1b[1;6A"], ["ctrl+enter", "\x1b[13;5u"],
 		];
 		const shortcuts = new Map([...sequences.map(([key]) => [key, {
 			key, extensionPath: "fixture.ts", handler: () => { calls.push(key); },

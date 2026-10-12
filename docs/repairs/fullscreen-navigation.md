@@ -46,6 +46,10 @@ matches, viewport input, CustomEditor dispatch and frame methods stay unchanged.
 The existing shortcut callback/context/Promise costs remain explicit command
 costs. Verify real runner acceptance -> setup -> fullscreen -> editor dispatch,
 including empty reload and reserved rejection, without extending the full suite.
+Shortcut identity is canonicalized only at configuration boundaries, using the
+same key-ID parser as matchesKey and normalizing modifier order plus esc/escape
+and return/enter aliases. Terminal protocol ambiguities are not globally treated
+as identical logical keys. The parser and input matcher themselves are unchanged.
 
 ## Verification
 
@@ -58,6 +62,12 @@ default/explicit viewport overrides, reserved rejection, repeat setup, restored
 keys and released callbacks after empty reload. All eight cases now pass, along with three
 existing frame AST/source invariants and repository typecheck. Tests dispose
 both renderers and verify terminal/input callback release.
+The same two extension cases also reproduce and verify modifier-order equivalence
+(`shift+ctrl+up` versus `ctrl+shift+up`) and the return/enter alias on an explicit
+viewport binding. Only cold identity resolution changes; the existing key parser,
+matcher, key formatter and viewport input method remain byte-for-byte unchanged.
+Evidence: `navigation-canonical-{before,after,typecheck}.log` and
+`navigation-canonical-source.json` in the same evidence directory.
 
 The fallback uses documented Ctrl+Up/Down sequences; it does not synthesize
 modifier state or change the native keyboard helper. See [Microsoft's input
