@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { stripVTControlCharacters } from "node:util";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import ts from "typescript";
 import { createJiti } from "jiti";
@@ -109,22 +110,34 @@ test("LaTeX matrices, alignment, cases, fractions and malformed inputs retain th
 	for (const row of golden.values) assert.equal(renderLatex(row.source, { display: row.display }) ?? null, row.expected, `${row.source} display=${row.display}`);
 });
 
+class MenuGoldenRenderer extends TuiAltScreen {
+	resolveCursorLines(lines: string[]): string[] {
+		return lines.map(line => this.resolveFakeCursorLine(line));
+	}
+}
+
 test("menu navigation/search/layout and syntax colors retain the pre-cleanup production golden", async () => {
-	const jiti = createJiti(import.meta.url);
+	const jiti = createJiti(import.meta.url, {
+		alias: { "@super-pi/tui": fileURLToPath(new URL("../packages/tui/src/index.ts", import.meta.url)) },
+	});
 	const { createMenuScreenComponent } = await jiti.import<any>("../packages/tui-kit/src/components/index.ts");
 	const { highlightCode } = await jiti.import<any>("../packages/tui-kit/src/components/syntax-highlighting.ts");
 	const golden = JSON.parse(readFileSync(new URL("fixtures/hot-menu-golden.json", import.meta.url), "utf8"));
 	assert.equal(golden.baseline, "6ebe643f1dcf6eded74da3b59bb3f177a720dbee");
-	for (const row of golden.values) {
-		const component = createMenuScreenComponent(menuOptions(menuScenes[row.scene], row.rows));
-		try {
-			assert.deepEqual(component.render(row.width), row.initial, `initial scene ${row.scene}`);
-			component.handleInput("down");
-			assert.deepEqual(component.render(row.width), row.down, `navigation scene ${row.scene}`);
-			if (["browse", "settings", "multiSelect"].includes(menuScenes[row.scene].kind)) component.handleInput("a");
-			assert.deepEqual(component.render(row.width), row.searched, `search scene ${row.scene}`);
-		} finally { component.dispose(); }
-	}
+	// The golden records visible SGR output; raw components now carry deferred cursor markers.
+	const renderer = new MenuGoldenRenderer(new FakeTerminal(), false);
+	try {
+		for (const row of golden.values) {
+			const component = createMenuScreenComponent(menuOptions(menuScenes[row.scene], row.rows));
+			try {
+				assert.deepEqual(renderer.resolveCursorLines(component.render(row.width)), row.initial, `initial scene ${row.scene}`);
+				component.handleInput("down");
+				assert.deepEqual(renderer.resolveCursorLines(component.render(row.width)), row.down, `navigation scene ${row.scene}`);
+				if (["browse", "settings", "multiSelect"].includes(menuScenes[row.scene].kind)) component.handleInput("a");
+				assert.deepEqual(renderer.resolveCursorLines(component.render(row.width)), row.searched, `search scene ${row.scene}`);
+			} finally { component.dispose(); }
+		}
+	} finally { await renderer.dispose({ preserveScreen: true }); }
 	for (const row of golden.syntax) assert.equal(highlightCode(row.code, row.language, syntaxTheme), row.expected);
 });
 
