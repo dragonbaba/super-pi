@@ -198,6 +198,12 @@ export interface ApiKeyAuth {
 	}): Promise<AuthResult | undefined>;
 }
 
+/** Optional app identity for login, separate from request headers and credentials. */
+export interface LoginOptions {
+	/** Name presented during login. Codex browser login defaults to "pi" when omitted. */
+	agentName?: string;
+}
+
 /**
  * OAuth auth. The `refresh`/`toAuth` split lets `Models` own the locked
  * refresh pattern: `refresh` produces a credential, `toAuth` derives request
@@ -216,7 +222,7 @@ export interface OAuthAuth {
 	/** Selector label for the OAuth login option, e.g. "Sign in with SuperGrok or X Premium". */
 	loginLabel?: string;
 
-	login(interaction: ProviderAuthInteraction): Promise<OAuthCredential>;
+	login(interaction: ProviderAuthInteraction, options?: LoginOptions): Promise<OAuthCredential>;
 
 	/**
 	 * Exchange the refresh token. Network call; throws on failure

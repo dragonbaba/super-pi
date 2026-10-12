@@ -7724,7 +7724,7 @@ export class InteractiveMode {
 			signal: dialog.signal,
 			prompt: (prompt) => this.showAuthPrompt(dialog, prompt),
 			notify: (event) => this.notifyAuthDialog(dialog, event),
-		});
+		}, { agentName: APP_TITLE });
 	}
 
 	private async showLoginDialog(providerId: string, providerName: string): Promise<void> {
