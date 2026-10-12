@@ -432,8 +432,10 @@ export class CodemodeController {
 			let summary = `[CODEMODE_${failed ? "FAILED" : "OK"}] Child calls: ${invocation.facts.length}.`;
 			for (const fact of invocation.facts) summary += `\n${fact.toolName.slice(0, 80)}: ${fact.executionStatus ?? (fact.isError ? "failed" : "completed")}${fact.executionStatus && (fact.toolName === "bash" || fact.toolName === "powershell") ? "; exit=" + (fact.exitCode ?? "unknown") : ""}${fact.isError ? " — " + fact.preview.slice(0, 512) : ""}${fact.outputPath ? " Output: " + fact.outputPath : ""}`;
 			if (failed) summary += "\nCompleted tool side effects are not rolled back. Do not automatically retry mutations.";
-			content.unshift({ type: "text", text: summary });
 			const imageFiles = saveCodemodeImages(content);
+			// Keep optional file metadata out of the trailing native-read group.
+			if (imageFiles) summary += "\n" + imageFiles.notice;
+			content.unshift({ type: "text", text: summary });
 			const projected = await capCodemodeOutput(content, outputTokens, imageFiles?.notice);
 			const first = projected[0];
 			const displayedSummary = first?.type === "text" && summary.startsWith(first.text) ? first.text : summary;

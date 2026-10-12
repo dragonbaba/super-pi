@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { closeSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, dirname } from "node:path";
+import { join, dirname, isAbsolute, toNamespacedPath } from "node:path";
 import test, { type TestContext } from "node:test";
 import type { ImageContent } from "../packages/ai/src/types.ts";
 import { saveCodemodeImages } from "../packages/coding-agent/src/core/codemode-images.ts";
@@ -10,6 +10,7 @@ import { capCodemodeOutput } from "../packages/coding-agent/src/core/codemode-re
 import { estimateToolOutputTokens } from "../packages/coding-agent/src/core/tool-output-budget.ts";
 import { privateOutputFileSystem } from "../packages/coding-agent/src/utils/private-output-file.ts";
 import { windowsPrivateOutputDiagnostics } from "../packages/coding-agent/src/utils/windows-private-output.ts";
+import { createToolResultPresentationOwner } from "../packages/coding-agent/src/core/tool-result-presentation.ts";
 
 const PNG = Buffer.from("89504e470d0a1a0a00000000", "hex");
 function image(bytes = PNG): ImageContent { return { type: "image", data: bytes.toString("base64"), mimeType: "image/png" }; }
@@ -99,4 +100,49 @@ test("image manifest notices survive the minimum text cap and preserve native bl
 	assert.ok(result.includes(block));
 	assert.ok(result.some(b => b.type === "text" && b.text.includes(saved.manifestPath!)));
 	assert.ok(estimateToolOutputTokens(result).estimatedTokens <= 256);
+});
+
+test("image metadata near a projection budget boundary retains affordable complete read groups", () => {
+	for (let index = 0; index < 16; index++) {
+		const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 1024 }, "image-read-boundary")!;
+		const content: any[] = [
+			{ type: "text", text: "[CODEMODE_OK] Child calls: 3.\nread: completed\npictures: completed\nread: completed\n[Image files: read /tmp/sp-images/" + "x".repeat(index * 12) + "/images.json. Temporary.]" },
+			{ type: "text", text: "padding ".repeat(1000) },
+			{ type: "text", readBoundary: "lines", text: "1#4518|leading\n" },
+			{ type: "text", readBoundary: "metadata", text: "[Snapshot edit] snapshot=snap_91lNAK4Y4Y-Zhy2e7EQfkw; editable lines=1-1. Use this snapshot and its LINE#ID anchors together." },
+			{ type: "text", text: "Image reading is disabled." },
+			{ type: "text", readBoundary: "lines", text: "1#1DE8|hello\n2#1020|world\n" },
+			{ type: "text", readBoundary: "metadata", text: "[Snapshot edit] snapshot=snap_e4IEylMPftC-LWU4GwTYkA; editable lines=1-2. Use this snapshot and its LINE#ID anchors together." },
+		];
+		try {
+			const projected = owner.create(content, `image-${index}`)!.modelContent;
+			assert.ok(projected.some(b => b.type === "text" && b.text.includes("|hello")), `metadata variant ${index}`);
+			assert.ok(estimateToolOutputTokens(projected).estimatedTokens <= 1024);
+		} finally { owner.release(); owner.dispose(); }
+	}
+});
+
+test("review: relative and deep temporary roots cannot invalidate completed image output", async t => {
+	const root = ownedTemp(t), cwd = process.cwd();
+	mkdirSync(join(root, "relative"));
+	try {
+		process.chdir(root);
+		process.env.TMP = process.env.TEMP = process.env.TMPDIR = "relative";
+		const saved = saveCodemodeImages([image()])!;
+		assert.ok(isAbsolute(saved.manifestPath!), "persisted image paths must not depend on the original cwd");
+		const manifest = JSON.parse(readFileSync(saved.manifestPath!, "utf8"));
+		assert.ok(isAbsolute(manifest.images[0].path));
+	} finally { process.chdir(cwd); }
+	const deep = join(root, ...Array.from({ length: 8 }, (_, i) => `${i}-` + "a0b1c2d3".repeat(10)));
+	mkdirSync(deep, { recursive: true });
+	process.env.TMP = process.env.TEMP = process.env.TMPDIR = toNamespacedPath(deep);
+	for (const text of ["summary", "summary ".repeat(1000)]) {
+		const block = image(), saved = saveCodemodeImages([block])!;
+		assert.ok(saved.manifestPath, saved.notice);
+		const result = await capCodemodeOutput([{ type: "text", text: text + "\n" + saved.notice }, block], 256, saved.notice);
+		assert.ok(result.includes(block));
+		assert.ok(estimateToolOutputTokens(result).estimatedTokens <= 256);
+		assert.ok(result.some(b => b.type === "text" && b.text.includes("saved result metadata")));
+		assert.ok(existsSync(saved.manifestPath!));
+	}
 });

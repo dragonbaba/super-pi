@@ -894,7 +894,8 @@ test("Codemode text and console boundaries survive actual provider message conve
 	const texts = source.map(m => m.content.filter(b => b.type === "text").map(b => b.text));
 	assert.deepEqual(texts[0], ["[CODEMODE_OK] Child calls: 0.", "alpha", "", 'beta {"n":2}', "line1\nline2", "omega"]);
 	assert.deepEqual(source[1]!.content.slice(0, 5).map(b => b.type), ["text", "text", "image", "text", "text"]);
-	assert.deepEqual(texts[1]!.slice(0, 4), ["[CODEMODE_OK] Child calls: 0.", "before-image", "after-image", ""]);
+	assert.ok(texts[1]![0]!.startsWith("[CODEMODE_OK] Child calls: 0.\n[Image files:"));
+	assert.deepEqual(texts[1]!.slice(1), ["before-image", "after-image", ""]);
 	assert.deepEqual(texts[2]!.slice(1), ["before-error", "diagnostic", "[CODEMODE_SCRIPT] boundary-stop"]);
 	const before = structuredClone(context.messages);
 	const adapters: [Api, StreamFunction<any, SimpleStreamOptions>, string, Record<string, unknown>?][] = [

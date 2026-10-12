@@ -1121,7 +1121,9 @@ function projectLegacyContent(
 	let retainedTextCodeUnits = Math.floor((totalTextCodeUnits * Math.max(1, budgetTokens - 48)) / Math.max(1, fullEstimate.estimatedTokens));
 	retainedTextCodeUnits = Math.max(0, Math.min(retainedTextCodeUnits, totalTextCodeUnits - 1));
 	let build: ProjectionBuild | undefined;
-	for (let pass = 0; pass < MAX_PROJECTION_SHRINK_PASSES; pass++) {
+	// Evaluate the initial view plus every bounded reduction. Otherwise the last
+	// computed, affordable candidate is discarded in favor of full omission.
+	for (let pass = 0; pass <= MAX_PROJECTION_SHRINK_PASSES; pass++) {
 		// Keep the suffix at its actual position, including tool annotations on
 		// either side of the metadata. Character counts are from the existing scan.
 		const tailTextCodeUnits = sourceScan.readGroupCount === 1 ? sourceScan.readSuffixTextCodeUnits : Math.floor(retainedTextCodeUnits / 2);
@@ -1130,7 +1132,7 @@ function projectLegacyContent(
 		if (build.estimate.estimatedTokens <= budgetTokens && comparePositions(build.start, build.end) < 0) {
 			return requireReadProjection(content, sourceScan, build, budgetTokens, sourceKey, sourceDigest, counters);
 		}
-		if (retainedTextCodeUnits === 0) break;
+		if (retainedTextCodeUnits === 0 || pass === MAX_PROJECTION_SHRINK_PASSES) break;
 		const next = Math.floor((retainedTextCodeUnits * Math.max(1, budgetTokens - 2)) / build.estimate.estimatedTokens);
 		retainedTextCodeUnits = Math.max(0, Math.min(retainedTextCodeUnits - 1, next));
 	}

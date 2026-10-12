@@ -86,9 +86,7 @@ export function codemodeImageChars(content: readonly (TextContent | ImageContent
 
 /** One bounded scratch block/array per result, reused by synchronous estimation. */
 export async function capCodemodeOutput(content: (TextContent | ImageContent)[], tokens: number, imageNotice?: string): Promise<(TextContent | ImageContent)[]> {
-	if (imageNotice) content.push({ type: "text", text: imageNotice });
 	if (estimateToolOutputTokens(content).estimatedTokens <= tokens) return content;
-	if (imageNotice) content.pop(); // The reserved final notice below carries it through truncation.
 	const output = new OutputAccumulator(FORCE_SPILL_OPTIONS);
 	let path: string | undefined;
 	let capped = false;
@@ -121,6 +119,16 @@ export async function capCodemodeOutput(content: (TextContent | ImageContent)[],
 	const scratch: TextContent = { type: "text", text: "" };
 	const sample: (TextContent | ImageContent)[] = [notice];
 	let remaining = tokens - estimateToolOutputTokens(sample).estimatedTokens - 2;
+	if (remaining < 0 && imageNotice) {
+		// Temporary roots can be longer than the entire text budget. Omit paths
+		// atomically; their complete image metadata remains on the saved result.
+		notice.text = `[Text truncated; text recovery details omitted here. Do not repeat tools.]\n${imageNotice}`;
+		remaining = tokens - estimateToolOutputTokens(sample).estimatedTokens - 2;
+		if (remaining < 0) {
+			notice.text = "[Text truncated. File paths exceed this output budget; image paths remain in the saved result metadata. Images are attached. Do not repeat tools.]";
+			remaining = tokens - estimateToolOutputTokens(sample).estimatedTokens - 2;
+		}
+	}
 	if (remaining < 0) throw new Error("Codemode output budget cannot fit the recovery notice");
 	const projected: (TextContent | ImageContent)[] = [];
 	let truncated = false;

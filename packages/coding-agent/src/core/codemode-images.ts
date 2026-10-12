@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { closeSync, mkdtempSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { ImageContent, TextContent } from "@super-pi/ai";
 import { privateOutputFileSystem } from "../utils/private-output-file.ts";
 
@@ -76,7 +76,7 @@ export function saveCodemodeImages(content: readonly (TextContent | ImageContent
 			const digest = createHash("sha256").update(bytes).digest("hex");
 			let path = hashes.get(digest);
 			if (!path) {
-				directory ??= mkdtempSync(join(tmpdir(), "sp-codemode-images-"));
+				directory ??= mkdtempSync(join(resolve(tmpdir()), "sp-codemode-images-"));
 				path = join(directory, `${index}.${ext}`);
 				writePrivate(path, bytes);
 				hashes.set(digest, path);
@@ -95,10 +95,12 @@ export function saveCodemodeImages(content: readonly (TextContent | ImageContent
 			try { rmdirSync(directory); directory = undefined; } catch {}
 		}
 	}
-	const location = manifestPath ? `Image files: read ${manifestPath}.`
-		: directory ? `Image files: list ${directory}; manifest unavailable.` : "Image files unavailable.";
 	const omitted = count - images.length;
-	const warning = failure || omitted ? ` ${omitted} image(s) not saved${failure ? ` (${failure})` : " (format/size/count limit)"}.` : "";
+	const location = manifestPath ? `Image files: read ${manifestPath}. Temporary.`
+		: directory ? `Image files: list ${directory}; manifest unavailable.` : "Image files unavailable.";
+	// Keep optional metadata small: repeated generic advice can displace native
+	// read evidence in the later model projection. The tool description explains retention.
+	const warning = failure ? ` ${failure}; do not repeat tools.` : omitted ? ` ${omitted} skipped (format/size/count).` : "";
 	return { directory, manifestPath, saved: images.length, omitted,
-		notice: `[${location}${warning} Temporary files; copy to keep. Images remain attached. Do not repeat completed tools.]` };
+		notice: `[${location}${warning}]` };
 }

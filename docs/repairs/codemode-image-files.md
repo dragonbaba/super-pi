@@ -25,7 +25,8 @@ Windows protected current-user DACL before content writes. Every successful
 descriptor is closed; cleanup targets only a failed file created by this call.
 A private JSON manifest maps image positions to binary paths. Its path is
 reported in the final text and persisted with ordinary session messages.
-The text cap must retain this notice even when it truncates preceding output.
+The text cap must reserve this notice even when it truncates preceding output;
+paths too long for the budget use the explicit metadata fallback described below.
 
 Files survive controller disposal, branch changes and session reopen on the
 same machine. They are temporary, with no application TTL or background sweeper;
@@ -63,16 +64,21 @@ the script status and completed child-call count remain unchanged. Partial
 image writes are removed by exact identity; previously saved files remain
 addressable by their directory if the manifest itself cannot be written.
 
-39 distinct checks passed: 15 integration/provider-conversion checks and 24
-image/output/source checks. Four focused file checks cover actual Windows
+74 distinct checks passed across integration/provider conversion, image/output,
+projection/read provenance and source invariants. Six focused file checks cover actual Windows
 owner/protected DACL on both binary and manifest files (POSIX mode checked on
 that platform), native handle release, signatures, 8/16 MiB limits, count cap,
-dedup, partial writes and a 256-token output budget. The final affected source/
-output rerun passed 18 checks. Root typecheck and coding-agent build passed.
+dedup, partial writes, projection boundaries, relative/deep temporary roots and
+a 256-token output budget. Final affected reruns passed 6 file, 20 integration
+and 14 output/hot-path checks; the preceding 49-check projection regression
+passed. Root typecheck and coding-agent build passed. Overlapping reruns are
+not counted as additional distinct checks.
 
 Source audit confirms the existing VM/worker bridge, nested dispatch, Agent/
 Session, estimator/spill, UI/tree/Image, Main/Alt rendering and terminal queue
-are unchanged. The text-projection loop is identical to the merged baseline.
+are unchanged. The Codemode text-projection loop after notice reservation is
+identical to the merged baseline. The model projector change below only evaluates
+its final bounded shrink candidate; source comparison confirms no other edits.
 The new synchronous file helper has zero closures, Promises and controllers;
 the no-image branch creates no containers. No per-update/frame factory, copy,
 timer, worker or pool was added. Images need one decode buffer per accepted
@@ -89,9 +95,9 @@ Windows x64 / Node v26.4.0, same fixtures before/after:
 | Session warm-batch median / p95 ms | 44.910 / 46.113 | 46.984 / 56.024 |
 | Session workers started/stopped; WeakRefs retained | 22/22; 0/55 | 22/22; 0/55 |
 | Image controller: 3 samples x 4 completions, after warmup | 180 Promises / 4 calls | 180 Promises / 4 calls |
-| Image sampled bytes/completion | 270362 / 237844 / 223468 | 299798 / 259474 / 246412 |
-| Image instrumented time / 4 calls ms | 145.625 / 136.883 / 136.313 | 154.458 / 159.825 / 138.357 |
-| Image post-GC heap delta bytes | 735824 / 338496 / 36760 | 814368 / 317376 / 37536 |
+| Image sampled bytes/completion | 270362 / 237844 / 223468 | 315354 / 255696 / 261768 |
+| Image instrumented time / 4 calls ms | 145.625 / 136.883 / 136.313 | 147.898 / 183.399 / 163.225 |
+| Image post-GC heap delta bytes | 735824 / 338496 / 36760 | 830960 / 306784 / 53008 |
 | Image private opens / 4 calls | 8 (text spill + marker) | 16 (also one deduped image + manifest per call) |
 | Image normal/script-error/abort/disk-failure owner release | 0/84 retained WeakRefs | 0/105 retained WeakRefs |
 
@@ -110,3 +116,57 @@ Raw evidence and reproducible commands/loaders/profiles:
 `.git/f07-codemode-images-20261012/`. All fixture resources are removed by recorded
 identity; no new persistent process, service, worktree or global install change.
 Tests are offline; no real provider, physical-terminal visual or OS expiry test.
+
+## CI correction design gate
+
+Initial Linux shard 2 reproduced a read-provenance regression in the existing
+`blocked adjacent images ... projected=true` check. It also fails locally on
+Windows. Moving the optional notice away from the last native read and making
+it compact did not reliably resolve it; those edits alone were not a fix.
+The diagnostic loader captured estimates 1195 -> 1061 -> 1031 -> 1025 against
+the unchanged 1024 budget. The fourth shrink computed another candidate, but
+the loop discarded it without evaluation and emitted a full-omission view.
+Snapshot/cursor text can move this final estimate by a few tokens, explaining
+intermittent success. A fixed-string metadata/read fixture fails independently
+of workers, platform and snapshot randomness.
+
+This newly exposed integration dependency requires evaluating the fourth
+computed reduction before omitting read evidence. Keep four reductions, allow
+the initial estimate plus their four evaluations, and retain the bounded
+fallback if it still cannot fit. The loop adds no factories, promises or state;
+profile projection arrays/scans and reference release separately. Keep the
+file notice compact and in the controller-owned summary; do not raise budgets,
+weaken read checks or alter native block identities. The text cap still reserves
+file recovery information when truncating.
+
+The original blocked-image/read integration case and 20 selected integration
+checks pass. The fixed-string regression checks 16 path-length variants. A
+separate projection profile (3 x 96 results after 16 warmups) retains the
+affordable read in 79/96 baseline cases and 96/96 candidate cases. Both versions
+use 0 Promises, 401 projection arrays and 96 full source scans per sample; all
+1152 WeakRefs are collected and owner records/references are zero after disposal.
+Sampled bytes/result: baseline 27175.833 / 25139.917 / 24946.917; candidate
+27165.500 / 25451.583 / 25318.417. Instrumented times/sample: 78.212 / 47.105 /
+78.015 ms versus 106.503 / 103.386 / 114.730 ms. Post-GC deltas: 398928 / 24840 /
+35944 versus 410848 / 31168 / 35768 bytes. The candidate performs the previously
+missing evaluation and retains more text; these profiler samples do not claim
+a CPU improvement. No factory or additional full-source scan was added.
+
+## Review correction design gate
+
+Relative TMP/TEMP/TMPDIR values must be resolved at completion before creating
+files: both the persisted manifest location and its binary paths must survive
+a later cwd change. The review fixture currently fails this absolute-path
+requirement. A second case uses a deep temporary root and the minimum 256-token
+budget. Recovery notices must fit independently of path length: first omit the
+text-spill path, then use a fixed short notice if even the image path cannot fit.
+Keep the complete image location in saved result metadata, retain attachments
+and execution status, and explicitly explain that paths were omitted. Never
+shorten a path into a misleading usable-looking location or rerun completed tools.
+
+Both issues were reproduced and the combined fixture now passes. Windows deep
+paths use the platform namespace form so the fixture exercises the actual long
+path budget boundary, rather than an earlier OS directory-creation failure.
+The fallback reuses the existing notice and estimator sample; it adds no
+per-block callback/container. Real controller/worker profiling was repeated
+after these final corrections; its candidate values above are from that run.
