@@ -1,17 +1,20 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type {
 	CacheControlEphemeral,
-	ContentBlockParam,
-	MessageCreateParamsStreaming,
-	MessageParam,
 	RawMessageStreamEvent,
 	RefusalStopDetails,
 } from "@anthropic-ai/sdk/resources/messages.js";
+import type {
+	BetaContentBlockParam as ContentBlockParam,
+	MessageCreateParamsStreaming,
+	BetaMessageParam as MessageParam,
+} from "@anthropic-ai/sdk/resources/beta/messages/messages.js";
 import { assertSupportedAnthropicToken, assertSupportedAnthropicHeaders } from "../auth/anthropic-subscription.ts";
 import { calculateCost, clampThinkingLevel } from "../models.ts";
 import { capabilityCacheRetention, contextForModelCapabilities, getModelCapabilities } from "../model-capabilities.ts";
 import type {
 	AnthropicMessagesCompat,
+	AnthropicContextCheckpoint,
 	Api,
 	AssistantMessage,
 	CacheRetention,
@@ -35,6 +38,7 @@ import type {
 export const streamedToolArgumentOwnership = "mutation-with-generation" as const;
 import { splitDeferredTools } from "../utils/deferred-tools.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
+import { estimateContextTokens, estimateTextTokens } from "../utils/estimate.ts";
 import { observeEffectiveDispatch, summarizeCacheMarkerMetadata } from "../utils/effective-dispatch.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { parseJsonWithRepair, parseStreamingJson } from "../utils/json-parse.ts";
@@ -47,8 +51,10 @@ import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import { getJsonSchemaToolParameters, resolveJsonSchemaStrictSampling } from "./constrained-sampling.ts";
 import { isAnthropicStrictUnsupportedKeyword } from "./anthropic-strict-schema.ts";
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.ts";
-import { adjustMaxTokensForThinking, buildBaseOptions, clampMaxTokensToContext } from "./simple-options.ts";
+import { adjustMaxTokensForThinking, buildBaseOptions, clampMaxTokensToContext, CONTEXT_SAFETY_TOKENS } from "./simple-options.ts";
 import { transformMessages } from "./transform-messages.ts";
+import { defaultSupportsInlineTools, INLINE_TOOLS_BETA, createInlineToolPlaceholder, inlineDeclarationSignature,
+	insertInlineToolUpdates, prepareInlineToolHistory } from "./anthropic-inline-tools.ts";
 
 /**
  * Resolve cache retention preference.
@@ -151,6 +157,8 @@ function getAnthropicCompat(
 		allowEmptySignature: model.compat?.allowEmptySignature ?? false,
 		supportsStrictTools: model.compat?.supportsStrictTools ?? false,
 		supportsToolReferences: model.compat?.supportsToolReferences ?? defaultSupportsToolReferences(model),
+		supportsMidConvoSystemMessages: model.compat?.supportsMidConvoSystemMessages ?? defaultSupportsInlineTools(model),
+		supportsMidConvoToolChanges: model.compat?.supportsMidConvoToolChanges ?? defaultSupportsInlineTools(model),
 	};
 }
 
@@ -557,11 +565,21 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 				);
 			}
 			assertAnthropicClientAuth(client);
-			let params = buildParams(model, context, options);
+			const checkpoint: { value?: AnthropicContextCheckpoint | null } = {};
+			let params = buildParams(model, context, options, checkpoint);
+			if (params.betas?.includes(INLINE_TOOLS_BETA)) {
+				// The beta endpoint replaces the client default header with params.betas.
+				const defaults = (client as unknown as { _options?: { defaultHeaders?: ConstructorParameters<typeof Headers>[0] } })._options?.defaultHeaders;
+				const activeBetas = new Headers(defaults).get("anthropic-beta");
+				if (activeBetas) params.betas = [...new Set([...activeBetas.split(",").map(value => value.trim()).filter(Boolean), ...params.betas])];
+			}
+			const declarationSignature = options?.onPayload && params.betas?.includes(INLINE_TOOLS_BETA)
+				? inlineDeclarationSignature(params) : undefined;
 			const nextParams = await options?.onPayload?.(params, model);
 			if (nextParams !== undefined) {
 				params = nextParams as MessageCreateParamsStreaming;
 			}
+			if (declarationSignature !== undefined && declarationSignature !== inlineDeclarationSignature(params)) checkpoint.value = null;
 			observeAnthropicEffectiveDispatch(options, model, params);
 			const requestOptions = {
 				...(options?.signal ? { signal: options.signal } : {}),
@@ -569,7 +587,9 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 				maxRetries: 0,
 			};
 			const response = await retryProviderRequest(
-				() => client.messages.create({ ...params, stream: true }, requestOptions).asResponse(),
+				() => params.betas?.includes(INLINE_TOOLS_BETA)
+					? client.beta.messages.create({ ...params, stream: true }, requestOptions).asResponse()
+					: client.messages.create({ ...params, stream: true } as Anthropic.MessageCreateParamsStreaming, requestOptions).asResponse(),
 				{
 					maxRetries: options?.maxRetries,
 					maxRetryDelayMs: options?.maxRetryDelayMs,
@@ -775,7 +795,9 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 				throw new Error(output.errorMessage || "An unknown error occurred");
 			}
 
-			stream.push({ type: "done", reason: output.stopReason, message: output });
+			// Keep queued partial references free of schemas even for a slow consumer.
+			const finalOutput = checkpoint.value === undefined ? output : { ...output, anthropicContext: checkpoint.value };
+			stream.push({ type: "done", reason: output.stopReason, message: finalOutput });
 			stream.end();
 		} catch (error) {
 			for (const block of output.content) {
@@ -827,15 +849,40 @@ export function observeAnthropicEffectiveDispatch(
 	model: Model<"anthropic-messages">,
 	params: MessageCreateParamsStreaming,
 ): void {
-	const tools = params.tools ?? [];
+	if (!options?.onEffectiveDispatch) return;
+	let tools = params.tools ?? [];
+	let instructions: unknown = Array.isArray(params.system)
+		? params.system.map(removeAnthropicCacheControl) : (params.system ?? null);
+	if (params.betas?.includes(INLINE_TOOLS_BETA)) {
+		const registered = new Map(tools.map(tool => ["name" in tool ? tool.name : tool.type, tool]));
+		const active = new Map([...registered].filter(([, tool]) => !("defer_loading" in tool && tool.defer_loading)));
+		const instructionUpdates: unknown[] = [];
+		for (const message of params.messages) {
+			if (message.role !== "system") continue;
+			if (typeof message.content === "string") { instructionUpdates.push(message.content); continue; }
+			for (const block of message.content) {
+				if (block.type === "text") instructionUpdates.push(removeAnthropicCacheControl(block));
+				else if (block.type === "tool_addition" && block.tool.type === "tool_definition") {
+					const definition = block.tool.definition;
+					const name = "name" in definition ? definition.name : definition.type;
+					registered.set(name, definition);
+					if ("defer_loading" in definition && definition.defer_loading) active.delete(name);
+					else active.set(name, definition);
+				} else if (block.type === "tool_addition" && block.tool.type === "tool_reference") {
+					const definition = registered.get(block.tool.name);
+					if (definition) active.set(block.tool.name, definition);
+				} else if (block.type === "tool_removal" && block.tool.type === "tool_reference") active.delete(block.tool.name);
+			}
+		}
+		tools = [...active.values()];
+		if (instructionUpdates.length) instructions = [instructions, ...instructionUpdates];
+	}
 	const cache = extractAnthropicCacheMetadata(params);
 	const neutralTools = tools.map(removeAnthropicCacheControl);
 	observeEffectiveDispatch(options, model, {
 		transport: "sse",
 		previousResponseMode: "none",
-		instructionPrefix: Array.isArray(params.system)
-			? params.system.map(removeAnthropicCacheControl)
-			: (params.system ?? null),
+		instructionPrefix: instructions,
 		orderedToolDefinitions: neutralTools,
 		orderedToolIdentifiers: tools.map((tool) => "name" in tool ? tool.name : tool.type),
 		cacheRetention: cache.retention,
@@ -1019,20 +1066,32 @@ function buildParams(
 	model: Model<"anthropic-messages">,
 	context: Context,
 	options?: AnthropicOptions,
+	checkpoint?: { value?: AnthropicContextCheckpoint | null },
 ): MessageCreateParamsStreaming {
 	const { cacheControl } = getCacheControl(model, options?.cacheRetention, options?.env);
 	const compat = getAnthropicCompat(model);
 	const capabilities = getModelCapabilities(model);
 	const wireContext = contextForModelCapabilities(model, context);
 	const transformedMessages = transformMessages(wireContext.messages, model, normalizeToolCallId);
+	const nativeEnabled = capabilities.toolCalling && compat.supportsMidConvoSystemMessages && compat.supportsMidConvoToolChanges;
+	const nativeHistory = nativeEnabled ? prepareInlineToolHistory(model, { ...wireContext, messages: transformedMessages },
+		`${compat.supportsEagerToolInputStreaming}:${compat.supportsStrictTools && capabilities.strictToolSchema}`,
+		tools => convertTools(structuredClone(tools), compat.supportsEagerToolInputStreaming, compat.supportsStrictTools && capabilities.strictToolSchema)) : undefined;
+	const positions = nativeHistory ? new Map<Message, number>() : undefined;
+	const nativeMessages = nativeHistory ? insertInlineToolUpdates(
+		convertMessages(transformedMessages, cacheControl, compat.allowEmptySignature, undefined, undefined, positions),
+		positions!, nativeHistory) : undefined;
+	const inline = nativeMessages ? nativeHistory : undefined;
+	if (checkpoint) checkpoint.value = inline ? inline.checkpoint :
+		context.messages.some(message => message.role === "assistant" && message.anthropicContext) ? null : undefined;
 	const normalizeToolName = (name: string) => name;
-	const toolPlacement = splitDeferredTools(
+	const toolPlacement = inline ? undefined : splitDeferredTools(
 		{ ...wireContext, messages: transformedMessages },
 		compat.supportsToolReferences && capabilities.deferredTools,
 		normalizeToolName,
 	);
-	let immediateTools = toolPlacement.immediate;
-	let deferredTools = [...toolPlacement.deferred.values()];
+	let immediateTools = toolPlacement?.immediate ?? [];
+	let deferredTools = toolPlacement ? [...toolPlacement.deferred.values()] : [];
 	if (immediateTools.length === 0 && deferredTools.length > 0) {
 		immediateTools = deferredTools;
 		deferredTools = [];
@@ -1040,7 +1099,7 @@ function buildParams(
 	const deferredToolNames = new Set(deferredTools.map((tool) => normalizeToolName(tool.name)));
 	const params: MessageCreateParamsStreaming = {
 		model: model.id,
-		messages: convertMessages(
+		messages: nativeMessages ?? convertMessages(
 			transformedMessages,
 			cacheControl,
 			compat.allowEmptySignature,
@@ -1049,13 +1108,15 @@ function buildParams(
 		),
 		max_tokens: options?.maxTokens ?? model.maxTokens,
 		stream: true,
+		...(inline ? { betas: [INLINE_TOOLS_BETA] } : {}),
 	};
 
-	if (wireContext.systemPrompt) {
+	const systemPrompt = inline ? inline.initial.systemPrompt : wireContext.systemPrompt;
+	if (systemPrompt) {
 		params.system = [
 			{
 				type: "text",
-				text: sanitizeSurrogates(wireContext.systemPrompt),
+				text: sanitizeSurrogates(systemPrompt),
 				...(cacheControl ? { cache_control: cacheControl } : {}),
 			},
 		];
@@ -1066,7 +1127,11 @@ function buildParams(
 		params.temperature = options.temperature;
 	}
 
-	if (immediateTools.length > 0 || deferredTools.length > 0) {
+	if (inline) {
+		params.tools = [...convertTools(structuredClone(inline.initial.tools), compat.supportsEagerToolInputStreaming,
+			compat.supportsStrictTools && capabilities.strictToolSchema,
+			compat.supportsCacheControlOnTools ? cacheControl : undefined), createInlineToolPlaceholder()];
+	} else if (immediateTools.length > 0 || deferredTools.length > 0) {
 		params.tools = [
 			...convertTools(
 				immediateTools,
@@ -1082,6 +1147,21 @@ function buildParams(
 				true,
 			),
 		];
+	}
+	if (inline && model.contextWindow > 0) {
+		// Reported usage already includes earlier inline definitions. Only add later
+		// declarations; without usage, include the initial prefix and all updates.
+		const estimate = estimateContextTokens(transformedMessages);
+		let inputTokens = estimate.tokens;
+		if (estimate.lastUsageIndex === null || estimate.lastUsageIndex < inline.initialIndex) {
+			inputTokens += estimateTextTokens(JSON.stringify(params.tools)) + estimateTextTokens(systemPrompt ?? "");
+		}
+		for (let i = (estimate.lastUsageIndex ?? -1) + 1; i < transformedMessages.length; i++) {
+			const blocks = inline.updates.get(transformedMessages[i]);
+			if (blocks?.length) inputTokens += estimateTextTokens(JSON.stringify(blocks));
+		}
+		if (inline.tail.length) inputTokens += estimateTextTokens(JSON.stringify(inline.tail));
+		params.max_tokens = Math.min(params.max_tokens, Math.max(1, model.contextWindow - inputTokens - CONTEXT_SAFETY_TOKENS));
 	}
 
 	// Configure thinking mode: adaptive, budget-based, or explicitly disabled.
@@ -1109,6 +1189,9 @@ function buildParams(
 					budget_tokens: options.thinkingBudgetTokens || 1024,
 					display,
 				};
+				if (inline && params.thinking.budget_tokens >= params.max_tokens) {
+					throw new Error("Request preparation blocked: inline context leaves insufficient capacity for the configured thinking budget. Compact context before retrying.");
+				}
 			}
 		} else if (options?.thinkingEnabled === false && capabilities.reasoning.levels.includes("off")) {
 			params.thinking = { type: "disabled" };
@@ -1178,6 +1261,7 @@ function convertMessages(
 	allowEmptySignature = false,
 	deferredToolNames: ReadonlySet<string> = new Set(),
 	normalizeToolName: (name: string) => string = (name) => name,
+	assistantPositions?: Map<Message, number>,
 ): MessageParam[] {
 	const params: MessageParam[] = [];
 	const loadedToolNames = new Set<string>();
@@ -1278,6 +1362,7 @@ function convertMessages(
 				}
 			}
 			if (blocks.length === 0) continue;
+			assistantPositions?.set(msg, params.length);
 			params.push({
 				role: "assistant",
 				content: blocks,

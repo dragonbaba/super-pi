@@ -514,6 +514,14 @@ const agent = new Agent({
 });
 ```
 
+Proxy servers using `ProxyAssistantMessageEvent` should forward
+`event.message.anthropicContext` and `event.message.rawStopReason` on `done`
+events when present. The client stores them only in the final message, keeping
+queued partial events free of checkpoint schemas. This preserves Anthropic inline
+tool history and paused-turn boundaries across proxied requests. Older servers
+may omit these optional fields; their histories safely establish a fresh prefix
+instead of retaining inline continuity.
+
 ## Low-Level API
 
 For direct control without the Agent class:

@@ -141,6 +141,8 @@ const AnthropicMessagesCompatSchema = Type.Object({
 	allowEmptySignature: Type.Optional(Type.Boolean()),
 	supportsStrictTools: Type.Optional(Type.Boolean()),
 	supportsToolReferences: Type.Optional(Type.Boolean()),
+	supportsMidConvoSystemMessages: Type.Optional(Type.Boolean()),
+	supportsMidConvoToolChanges: Type.Optional(Type.Boolean()),
 });
 
 const ProviderCompatSchema = Type.Union([
