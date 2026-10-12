@@ -55,6 +55,7 @@ class BashPreviewComponent implements Component {
 
 export class BashExecutionComponent extends Container {
 	private command: string;
+	private readonly colorKey: "dim" | "bashMode";
 	private outputLines: string[] = [];
 	private status: "running" | "complete" | "cancelled" | "error" = "running";
 	private exitCode: number | undefined = undefined;
@@ -73,7 +74,8 @@ export class BashExecutionComponent extends Container {
 		this.command = command;
 
 		// Use dim border for excluded-from-context commands (!! prefix)
-		const colorKey = excludeFromContext ? "dim" : "bashMode";
+		this.colorKey = excludeFromContext ? "dim" : "bashMode";
+		const colorKey = this.colorKey;
 		const borderColor = (str: string) => theme.fg(colorKey, str);
 
 		// Add spacer
@@ -199,7 +201,7 @@ export class BashExecutionComponent extends Container {
 		this.contentContainer.clear();
 
 		// Command header
-		const header = new Text(theme.fg("bashMode", theme.bold(`$ ${this.command}`)), this.outputPad, 0);
+		const header = new Text(theme.fg(this.colorKey, theme.bold(`$ ${this.command}`)), this.outputPad, 0);
 		this.contentContainer.addChild(header);
 
 		// Output
