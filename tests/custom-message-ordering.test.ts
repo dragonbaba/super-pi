@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { response } from "./helpers/selected-integration-fixture.ts";
 import { streamSimple } from "../packages/ai/src/api/openai-completions.ts";
 import { DefaultResourceLoader } from "../packages/coding-agent/src/core/resource-loader.ts";
 import { createAgentSession } from "../packages/coding-agent/src/core/sdk.ts";
@@ -169,18 +170,32 @@ test("runtime replacement settles pending notes in the outgoing session without 
 	} finally { await runtime.dispose(); outgoing.release(); incoming.release(); }
 });
 
-test("custom message without a turn is appended immediately when idle", async () => {
+test("idle custom-message drain precedes concurrent triggers without losing either report", async () => {
 	const root = mkdtempSync(join(tmpdir(), "custom-idle-"));
 	const settings = SettingsManager.inMemory({ compaction: { enabled: false } });
-	const resourceLoader = new DefaultResourceLoader({ cwd: root, agentDir: root, settingsManager: settings, noExtensions: true, noContextFiles: true, noSkills: true, noPromptTemplates: true, noThemes: true });
+	let entered!: () => void, release!: () => void, calls = 0;
+	const ready = new Promise<void>(resolve => { entered = resolve; });
+	const done = new Promise<void>(resolve => { release = resolve; });
+	const resourceLoader = new DefaultResourceLoader({ cwd: root, agentDir: root, settingsManager: settings, noExtensions: true, noContextFiles: true, noSkills: true, noPromptTemplates: true, noThemes: true,
+		extensionFactories: [pi => { pi.on("message_end", async event => {
+			if (event.message.role === "custom" && event.message.content === "noted") { entered(); await done; }
+		}); }] });
 	await resourceLoader.reload();
 	const sessionManager = SessionManager.inMemory(root);
 	const { session } = await createAgentSession({ cwd: root, agentDir: root, settingsManager: settings, sessionManager, resourceLoader, model: ALPHA_MODEL, modelRuntime: alphaModelRuntime(), noTools: "all" });
+	session.agent.streamFunction = model => { calls++; return response(model, [{ type: "text", text: "done" }]); };
+	const pending: Promise<void>[] = [];
 	try {
-		await sendNote(session);
+		pending.push(sendNote(session)); await ready;
 		assert.deepEqual(session.messages.map((m: any) => m.role), ["custom"]);
-		assert.equal(sessionManager.getEntries().filter((entry: any) => entry.type === "custom_message").length, 1);
+		assert.equal(calls, 0, "context-only delivery does not start a provider turn");
+		for (const content of ["first report", "second report"]) pending.push(session.sendCustomMessage({ customType: "note", content, display: true }, { triggerTurn: true, deliverAs: "followUp" }));
+		release(); await Promise.all(pending);
+		assert.equal(calls, 2);
+		assert.deepEqual(sessionManager.getEntries().filter((entry: any) => entry.type === "custom_message").map((entry: any) => entry.content), ["noted", "first report", "second report"]);
+		assert.equal((session as any)._customMessageFlush, undefined);
 	} finally {
+		release(); await Promise.allSettled(pending);
 		session.dispose();
 		rmSync(root, { recursive: true, force: true });
 	}

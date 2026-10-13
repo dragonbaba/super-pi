@@ -791,7 +791,8 @@ export class AgentSession {
 	private _pendingCustomMessages: CustomMessage[] = [];
 	/** Delivered messages awaiting synchronization with the agent loop's separate context. */
 	private _pendingCustomContextMessages: CustomMessage[] = [];
-	private _flushingCustomMessages = false;
+	/** One shared owner per custom-message drain, also joined by prompt admission. */
+	private _customMessageFlush: Promise<void> | undefined;
 
 	// Compaction state
 	private _compactionAbortController: AbortController | undefined = undefined;
@@ -1400,7 +1401,7 @@ export class AgentSession {
 			this._agentRunAbortRequested = false;
 			this._isAgentRunActive = false;
 			await this._extensionRunner.emit({ type: "agent_settled", aborted });
-			this._emit({ type: "agent_settled", aborted });
+			if (generation === this._agentRunGeneration) this._emit({ type: "agent_settled", aborted });
 			return false;
 		} finally {
 			if (!continuing && generation === this._agentRunGeneration) {
@@ -2617,6 +2618,10 @@ export class AgentSession {
 		let admitted = false;
 		let needsSettlement = false;
 		try {
+			// An idle/paused report may still be awaiting message_end hooks. Join its
+			// shared drain before admitting a user turn, including after async preflight.
+			while (this._customMessageFlush) await this._customMessageFlush;
+			if (this._operationDisposed) throw new Error("Cannot prompt a disposed session");
 			await this.agent.prompt(messages, () => {
 				admitted = true;
 				needsSettlement = true;
@@ -3077,6 +3082,11 @@ export class AgentSession {
 		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
 		options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" },
 	): Promise<void> {
+		// An idle trigger may have waited alongside another trigger. Re-evaluate
+		// streaming/interaction state below so only the first one starts a run.
+		if (options?.triggerTurn && options.deliverAs !== "nextTurn" && !this._interactionPaused && !this.isStreaming) {
+			while (this._customMessageFlush) await this._customMessageFlush;
+		}
 		if (this._operationDisposed) throw new Error("Cannot deliver a custom message to a disposed session");
 		const appMessage = {
 			role: "custom" as const,
@@ -3091,8 +3101,9 @@ export class AgentSession {
 			this._pendingNextTurnMessages.push(appMessage);
 		} else if (this._interactionPaused && options?.triggerTurn) {
 			// Keep the report as context; only actual user input can answer an interaction.
-			if (this.isStreaming) this._pendingCustomMessages.push(appMessage);
-			else await this._appendCustomMessage(appMessage);
+			this._pendingCustomMessages.push(appMessage);
+			// Reentrant/concurrent deliveries join the queue, never await their own hook.
+			if (!this.isStreaming && !this._customMessageFlush) await this._flushPendingCustomMessages();
 		} else if (this.isStreaming && options?.triggerTurn !== false) {
 			if (options?.deliverAs === "followUp") {
 				this.agent.followUp(appMessage);
@@ -3106,7 +3117,8 @@ export class AgentSession {
 			// order-validating providers reject on replay. Nothing is emitted until appended.
 			this._pendingCustomMessages.push(appMessage);
 		} else {
-			await this._appendCustomMessage(appMessage);
+			this._pendingCustomMessages.push(appMessage);
+			if (!this._customMessageFlush) await this._flushPendingCustomMessages();
 		}
 	}
 
@@ -3128,10 +3140,16 @@ export class AgentSession {
 	}
 
 	/** Append custom messages queued during the run, after the turn's tool results. */
-	private async _flushPendingCustomMessages(): Promise<void> {
-		if (this._pendingCustomMessages.length === 0 || this._flushingCustomMessages || this._operationDisposed) return;
+	private _flushPendingCustomMessages(): Promise<void> | undefined {
+		if (this._customMessageFlush) return this._customMessageFlush;
+		if (this._pendingCustomMessages.length === 0 || this._operationDisposed) return;
+		return this._customMessageFlush = this._drainPendingCustomMessages();
+	}
+
+	private async _drainPendingCustomMessages(): Promise<void> {
+		// Publish the shared owner before any reentrant extension callback runs.
+		await Promise.resolve();
 		const pending = this._pendingCustomMessages;
-		this._flushingCustomMessages = true;
 		let consumed = 0;
 		try {
 			// A synchronous message listener may enqueue more messages. They follow the
@@ -3143,7 +3161,7 @@ export class AgentSession {
 		} finally {
 			if (consumed === pending.length) pending.length = 0;
 			else pending.splice(0, consumed);
-			this._flushingCustomMessages = false;
+			this._customMessageFlush = undefined;
 		}
 	}
 

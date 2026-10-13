@@ -36,6 +36,7 @@ function completionText(text: string, limit: number): string {
 
 /** Projects already bounded terminal records; no task/result object is retained by the notification. */
 export function formatTaskCompletion(kind: Kind, tasks: readonly TaskObservation[], callId?: string): string {
+	const controls = kind === "subagent" ? "tasks or subagent_tasks" : "tasks";
 	let completed = 0, failed = 0, cancelled = 0;
 	for (const task of tasks) {
 		if (task.state === "completed") completed++;
@@ -61,8 +62,8 @@ export function formatTaskCompletion(kind: Kind, tasks: readonly TaskObservation
 		text += entry;
 		shown++;
 	}
-	if (shown < tasks.length) text += `\n${tasks.length - shown} additional task reports omitted by the notification budget; use the IDs returned at acceptance or tasks list.\n`;
-	return text + `\nRead tasks status with the task ID before reporting verified success or retrying. IDs and retained results expire on history eviction.`;
+	if (shown < tasks.length) text += `\n${tasks.length - shown} additional task reports omitted by the notification budget; use the IDs returned at acceptance or list via ${controls}.\n`;
+	return text + `\nRead status via ${controls} with the task ID before reporting verified success or retrying. IDs and retained results expire on history eviction.`;
 }
 
 export function formatManagedTask(task: ManagedSubagentTask): string {

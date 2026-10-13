@@ -213,7 +213,13 @@ Claude Code 官方确认后台报告通过后续回合的自动通知到达，�
 
 ### 第一批实施记录（本地验证完成）
 
-交付前复核：再次审查会话接纳/收尾、交互暂停、旧权限/分支隔离、报告截断与历史回放及 benchmark 释放路径，未发现新的阻断问题。性能证据中全部生产源码/基准/编译产物哈希与待提交文件一致，复用已通过的检查，不重复全量测试。另一任务的 `upstream-pi-1.1.0-task-plan.md` 及其导航条目不纳入本 PR。远端审查/CI、修复 head 与复审请求在 PR 中记录。
+交付记录：[PR #136](https://github.com/dragonbaba/super-pi/pull/136)，首个提交 `9c56756cda44178cd6780266ebdca40861db0f6f` 的 Linux/Windows 六个 CI 分片全部通过。首轮自动 Codex 审查指出三项有效问题，修复与补充验证记录如下。另一任务的 `upstream-pi-1.1.0-task-plan.md` 及其导航条目不纳入本 PR；不重复本地全量测试。修复 head、手动 `@codex review` 请求及最终审查/CI 结果在 PR 中记录，合并仍需另行授权。
+
+**首轮审查修复（OC01/OC02）。** [旧公共 settled 事件](https://github.com/dragonbaba/super-pi/pull/136#discussion_r4253833062)在扩展回调后再次检查接纳代次，后继回合已开始时不向 RPC/UI 发送旧空闲事件。[暂停报告顺序](https://github.com/dragonbaba/super-pi/pull/136#discussion_r4253833068)复用 custom 队列按顺序完成 hook、保存和投递，prompt 在异步预检后、接纳前加入当前排空周期；并发唤醒等待排空后重新判断状态，避免丢掉第二份报告。[兼容查询入口](https://github.com/dragonbaba/super-pi/pull/136#discussion_r4253833070)同时指向 `tasks` / `subagent_tasks`，由已存在的仅 legacy 工具 fixture 验证。
+
+重新审计完成通知 → 排空 → 扩展 hook → session 保存 → prompt 接纳 → Agent/事件分发 → RPC/UI/idle waiter → 释放的调用链。`AgentSession._drainPendingCustomMessages` 是低频生命周期边界：每个非空排空周期保留一个共享执行 Promise，并在发布 owner 前让出一次微任务；不建立逐报告 Promise tail 或计时器。空队列 flush 不再产生 async 返回 Promise。既有 append/hook 的异步调用仍存在，不声称终态处理零分配。并发测试检查共享 owner 身份及结束后的清零；正常、错误、取消后的 dispose 共跟踪 12 个 session/agent/signal/drain 引用，受控 GC 后保留 0。精确函数豁免记录在现有 AST 契约测试中，消息/进度的同步路径未改变。
+
+修复验证复用已有测试文件：首轮定向 72 通过、1 项 POSIX 条件跳过；补充并发唤醒后相关顺序/收尾、后台 shell、状态及 AST/source 门禁 70 项通过。`npm run check` 与 coding-agent 构建通过，未再次运行 `npm test`。会话/子代理/shell 基准依次重测：消息/工具采样 41.18/39.99 B/事件，合并投递 9999/1；子代理 8881/8674/8604 B/更新，344 个引用保留 0；后台 shell 5322.62 B/chunk，通知 1 次、1165 字符，118 个引用保留 0，原生句柄归零。规定的逐进度 Promise/闭包/wrapper 等计数维持 0；噪声采样不作为性能提升结论。最新原始结果和指纹在证据 JSON 的 `reviewFix`，原有数据保留对应首个候选，未重测未改动的 Codemode 引擎。
 
 - 基线：`af067d5efe3bc61128a4cda3162d23e908d3ece5`；已有文档修改保留。范围：OC01 通知/收尾与等待输入边界、OC02 有界通知、OC06 摘要更新提示、OC11 编译模式基线。
 - OC01 调用链：任务完成 → extension sendMessage → AgentSession.sendCustomMessage → Agent 队列/提示 → agent-loop → agent_end → post-run retry/compaction → custom flush → agent_settled → UI/idle waiter。先复现最终 flush 到消息、settled 回调启动后继回合和等待输入边界；不改 provider delta/progress 的同步事件通道。仅在回合接纳/结束生命周期增加有界标量状态，禁止逐通知 timer/promise tail。

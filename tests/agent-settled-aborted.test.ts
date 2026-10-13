@@ -132,7 +132,7 @@ test("settlement snapshots cancellation before extension code changes the event 
 	try {
 		await f.session.prompt("first");
 		assert.deepEqual(extensionEvents, [{ type: "agent_settled", aborted: true }, { type: "agent_settled", aborted: false }]);
-		assert.deepEqual(f.settled, [{ type: "agent_settled", aborted: false }, { type: "agent_settled", aborted: true }]);
+		assert.deepEqual(f.settled, [{ type: "agent_settled", aborted: false }], "public settlement describes only the latest admission");
 	} finally { nested = undefined; unsubscribe(); f.release(); }
 });
 
@@ -211,6 +211,7 @@ test("old settlement cannot clear a still-running successor or resolve its idle 
 		await f.session.prompt("first");
 		assert.equal(f.session.isStreaming, true);
 		assert.equal(f.session.isIdle, false);
+		assert.equal(f.settled.length, 0, "RPC/UI subscribers must not see the predecessor settle after successor start");
 		let idle = false;
 		const waiting = f.session.waitForIdle().then(() => { idle = true; });
 		await Promise.resolve();
@@ -219,6 +220,7 @@ test("old settlement cannot clear a still-running successor or resolve its idle 
 		assert.equal(idle, true);
 		assert.equal(f.session.isIdle, true);
 		assert.equal(f.calls(), 2);
+		assert.equal(f.settled.length, 1);
 	} finally { released.release(); await successor; off(); f.release(); }
 });
 
@@ -295,7 +297,13 @@ test("settlement releases run signals and disposed owners", { skip: !global.gc }
 		const unsubscribe = f.session.subscribe(event => {
 			if (event.type === "agent_start") refs.push(new WeakRef(f.session.agent.signal!));
 		});
-		try { await f.session.prompt("lifecycle"); }
+		try {
+			const note = f.session.sendCustomMessage({ customType: "note", content: "lifecycle", display: false }, { triggerTurn: false });
+			refs.push(new WeakRef((f.session as any)._customMessageFlush));
+			await note;
+			assert.equal((f.session as any)._customMessageFlush, undefined);
+			await f.session.prompt("lifecycle");
+		}
 		finally { unsubscribe(); f.release(); }
 	}
 	for (const reason of ["stop", "error", "aborted"] as const) await run(reason);
@@ -303,7 +311,7 @@ test("settlement releases run signals and disposed owners", { skip: !global.gc }
 		await new Promise<void>(resolve => setImmediate(resolve));
 		global.gc!();
 	}
-	assert.equal(refs.length, 9);
+	assert.equal(refs.length, 12);
 	assert.equal(refs.filter(ref => ref.deref() !== undefined).length, 0);
-	t.diagnostic("settlement lifecycle WeakRefs=9 retained=0");
+	t.diagnostic("settlement lifecycle WeakRefs=12 retained=0 (includes custom-message drain owners)");
 });

@@ -398,6 +398,8 @@ test("background returns IDs, cancellation isolates one child, and notification 
 	const report = h.messages[0];
 	assert.match(report.content, /source=host; user_input=false/);
 	assert.match(report.content, /fixture result/);
+	assert.deepEqual(h.ctx.getActiveTools(), ["subagent", "subagent_tasks"]);
+	assert.match(report.content, /status via tasks or subagent_tasks/);
 	for (const id of taskIds) assert.ok(report.content.includes(id));
 	const manager = SessionManager.create(h.ctx.cwd, join(h.ctx.cwd, "report-replay"));
 	manager.appendMessage({ role: "user", content: "Start the authorized work.", timestamp: 1 });
@@ -421,6 +423,7 @@ test("terminal reports bound serialized control/Unicode excerpts without reading
 		assert.ok(resultReads <= 8, `only bounded excerpts are read: ${resultReads}`);
 		assert.match(report, /256 completed/);
 		assert.match(report, /additional task reports omitted/);
+		assert.match(report, /list via tasks or subagent_tasks/);
 		assert.match(report, /expire on history eviction/);
 		for (const line of report.split("\n")) if (line.startsWith("Output excerpt: ")) {
 			const excerpt = JSON.parse(line.slice("Output excerpt: ".length));

@@ -41,6 +41,7 @@ const LOW_FREQUENCY_ALLOCATION_EXEMPTIONS = [
 	"TuiBase.finishStopAfterFrames",
 	"TuiMainScreen.writeRenderDebugLog",
 	"AgentSession._emitAgentEnd",
+	"AgentSession._drainPendingCustomMessages", // One shared Promise owner per nonempty drain; never per progress event.
 ] as const;
 
 const RENDER_SUBMIT_METHODS: readonly MethodTarget[] = [
@@ -275,6 +276,7 @@ test("terminal frame hot methods contain no per-frame closures, Promise executor
 		"TuiBase.finishStopAfterFrames",
 		"TuiMainScreen.writeRenderDebugLog",
 		"AgentSession._emitAgentEnd",
+		"AgentSession._drainPendingCustomMessages",
 	]);
 });
 
