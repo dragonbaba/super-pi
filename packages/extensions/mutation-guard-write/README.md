@@ -139,6 +139,14 @@ It can view a file's prepared difference/result, observe current filesystem stat
 or place a new remaining-work draft in the input editor. Viewing and observation
 make no model request. Original requests must pair with the actual item and durable
 preparation; missing, ambiguous or trimmed history is explicitly unreconstructable.
+The View details include the current **Session view**, the uniquely paired
+**Request entry**, and the **Record entry** holding the receipt, preparation, or
+preview. Nested Codemode calls point to their persisted custom request entry.
+These are locations in the selected history: forks copy entry IDs, so the viewing
+Session is not proof of which Session or subagent task originally executed a
+change. Missing or ambiguous pairing shows an unavailable request entry. No task
+ownership is inferred from filenames, tool-call IDs, or shell text. Source labels
+are prepared once when opening View and share the existing bounded report budget.
 Observation reuses current Session workspace/full-access scope, rechecks permissions
 and object identity, and hashes at most 32 MiB through a bounded buffer. It records
 only small versioned Session metadata, not file contents or new edit evidence.

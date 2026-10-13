@@ -124,6 +124,8 @@ function validateRecoveryArguments(call: any, budget: RecoveryArgumentBudget): b
 
 export interface ChangeRecord {
   entryId: string; toolCallId: string; itemId: string; operation: string;
+  /** Unique, request-bound entry in this branch; absent when reconstruction is unsafe. */
+  requestEntryId?: string;
   target: string; destination?: string; status: string; preview: boolean;
   original?: any; item?: any; postimage?: string; sourceIdentity?: { device: string; inode: string };
   receipt?: any;
@@ -440,7 +442,7 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
       const call = nested ? entry.data.call : blocks[callIndex];
       if (call?.type !== "toolCall" || typeof call.id !== "string" || call.id.length < 1 || call.id.length > 256) continue;
       if (calls.has(call.id)) duplicate.add(call.id);
-      calls.set(call.id, { id: call.id, name: call.name, arguments: call.arguments, requestHash: undefined });
+      calls.set(call.id, { id: call.id, entryId: entry.id, name: call.name, arguments: call.arguments, requestHash: undefined });
       callOrder.set(call.id, position);
     }
   }
@@ -518,6 +520,7 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
     if (receipt.receiptVersion === 2 && receipt.historyConflict) bound = false;
     if (bound && hasLaterMutationActivity(branch, receiptOrder + 1, receipt.toolCallId, receipt.receiptVersion === 2 ? receipt.itemId : `${receipt.toolCallId}:0`, entry, call.name === "file_batch")) bound = false;
     records.push({ entryId: receipt.entryId, toolCallId: receipt.toolCallId, itemId: receipt.receiptVersion === 2 ? receipt.itemId : `${receipt.toolCallId}:0`,
+      requestEntryId: bound ? call.entryId : undefined,
       operation: receipt.operation, target, destination,
       status: receipt.receiptVersion === 1 ? "succeeded" : receipt.status, preview: false,
       original: bound ? input : undefined, item: bound ? item : undefined,
@@ -559,6 +562,7 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
       }
       if (hasActivity) continue;
       records.push({ entryId: entry.id, toolCallId: call.id, itemId, operation: intent.operation, target: intent.target,
+        requestEntryId: call.entryId,
         destination: intent.destination, status: "not_started", preview: false, original: call.arguments.operations[index], batchSize: call.arguments.operations.length });
       retainNewestChanges(records, order);
     }
@@ -577,6 +581,7 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
       if (item?.itemId !== `${call.id}:${index}` || (item.status !== "preview" && item.status !== "failed_no_change" && item.status !== "cancelled" && item.status !== "not_started") || item.stateChanged !== false || item.receipt !== undefined
         || typeof item.target !== "string" || item.target.length > 4096 || item.operation !== call.arguments.operations?.[index]?.operation) continue;
       previews.push({ entryId: entry.id, toolCallId: call.id, itemId: item.itemId, operation: item.operation,
+        requestEntryId: duplicateEntries.size ? undefined : call.entryId,
         target: item.target, destination: item.destination, status: item.status, preview: true, item });
       if (previews.length > MAX_CHANGES) previews.shift();
     }
@@ -915,7 +920,10 @@ export function registerChanges(pi: ExtensionAPI, permissions: ObservationPermis
       const action = await ctx.ui.select(displayMetadata(record.itemId), ["View", "Verify current state", "Draft remaining request"]); assertChangesSession(ctx, sessionId);
       if (action === "View") {
         const item = record.item ?? record;
-        const text = batchExpandedSummary(`${displayMetadata(record.itemId)} [${displayMetadata(record.status)}]${record.unavailable ? `\n${record.unavailable}` : ""}`, [item]);
+        // Explicit dialog preparation only. A fork can copy entries from another
+        // session, so these are history locations, not claims of execution ownership.
+        const source = `Session view: ${displayMetadata(sessionId)}\nRequest entry: ${record.requestEntryId ? displayMetadata(record.requestEntryId) : "unavailable (missing or ambiguous history)"}\nRecord entry: ${displayMetadata(record.entryId)}\nHistory locations only; originating session/task is not recorded.`;
+        const text = batchExpandedSummary(`${displayMetadata(record.itemId)} [${displayMetadata(record.status)}]\n${source}${record.unavailable ? `\n${record.unavailable}` : ""}`, [item]);
         await showChangeViewer(ctx, text);
       } else if (action === "Verify current state") {
         if (record.preview || record.unavailable) throw new Error(record.unavailable ?? "Preview is not a mutation receipt. Execute a newly prepared request first.");
