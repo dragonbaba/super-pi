@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { response } from "./helpers/selected-integration-fixture.ts";
 import { streamSimple } from "../packages/ai/src/api/openai-completions.ts";
 import { DefaultResourceLoader } from "../packages/coding-agent/src/core/resource-loader.ts";
 import { createAgentSession } from "../packages/coding-agent/src/core/sdk.ts";
@@ -169,19 +170,86 @@ test("runtime replacement settles pending notes in the outgoing session without 
 	} finally { await runtime.dispose(); outgoing.release(); incoming.release(); }
 });
 
-test("custom message without a turn is appended immediately when idle", async () => {
+test("idle custom-message drain precedes concurrent triggers without losing either report", async () => {
 	const root = mkdtempSync(join(tmpdir(), "custom-idle-"));
 	const settings = SettingsManager.inMemory({ compaction: { enabled: false } });
-	const resourceLoader = new DefaultResourceLoader({ cwd: root, agentDir: root, settingsManager: settings, noExtensions: true, noContextFiles: true, noSkills: true, noPromptTemplates: true, noThemes: true });
+	let entered!: () => void, release!: () => void, calls = 0;
+	const ready = new Promise<void>(resolve => { entered = resolve; });
+	const done = new Promise<void>(resolve => { release = resolve; });
+	let teardownEntered!: () => void, releaseTeardown!: () => void;
+	const teardownReady = new Promise<void>(resolve => { teardownEntered = resolve; });
+	const teardownDone = new Promise<void>(resolve => { releaseTeardown = resolve; });
+	const resourceLoader = new DefaultResourceLoader({ cwd: root, agentDir: root, settingsManager: settings, noExtensions: true, noContextFiles: true, noSkills: true, noPromptTemplates: true, noThemes: true,
+		extensionFactories: [pi => { pi.on("message_end", async event => {
+			if (event.message.role === "custom" && event.message.content === "noted") {
+				pi.sendMessage({ customType: "note", content: "reentrant", display: true }, { triggerTurn: false });
+				entered(); await done;
+			}
+			if (event.message.role === "custom" && event.message.content === "teardown report") { teardownEntered(); await teardownDone; }
+		}); }] });
 	await resourceLoader.reload();
 	const sessionManager = SessionManager.inMemory(root);
 	const { session } = await createAgentSession({ cwd: root, agentDir: root, settingsManager: settings, sessionManager, resourceLoader, model: ALPHA_MODEL, modelRuntime: alphaModelRuntime(), noTools: "all" });
+	session.agent.streamFunction = model => { calls++; return response(model, [{ type: "text", text: "done" }]); };
+	const pending: Promise<void>[] = [];
+	const runtime = new AgentSessionRuntime(session, { cwd: root, agentDir: root } as never,
+		async () => { throw new Error("unexpected replacement"); });
+	let invalidated = false, disposal: Promise<void> | undefined;
+	runtime.setBeforeSessionInvalidate(() => { invalidated = true; });
 	try {
-		await sendNote(session);
+		pending.push(sendNote(session)); await ready;
 		assert.deepEqual(session.messages.map((m: any) => m.role), ["custom"]);
-		assert.equal(sessionManager.getEntries().filter((entry: any) => entry.type === "custom_message").length, 1);
+		assert.equal(calls, 0, "context-only delivery does not start a provider turn");
+		for (const content of ["first report", "second report"]) pending.push(session.sendCustomMessage({ customType: "note", content, display: true }, { triggerTurn: true, deliverAs: "followUp" }));
+		release(); await Promise.all(pending);
+		assert.equal(calls, 2);
+		assert.deepEqual(sessionManager.getEntries().filter((entry: any) => entry.type === "custom_message").map((entry: any) => entry.content), ["noted", "reentrant", "first report", "second report"]);
+		assert.equal((session as any)._customMessageFlush, undefined);
+		pending.push(session.sendCustomMessage({ customType: "note", content: "teardown report", display: true }, { triggerTurn: false }));
+		await teardownReady;
+		assert.equal(session.isStreaming, false);
+		assert.equal(session.isIdle, false);
+		disposal = runtime.dispose();
+		await new Promise<void>(resolve => setImmediate(resolve));
+		assert.equal(invalidated, false, "teardown must join report persistence even with no agent run");
+		releaseTeardown(); await Promise.all(pending); await disposal;
+		assert.equal(invalidated, true);
+		assert.equal((session as any)._customMessageFlush, undefined);
+		assert.equal((session as any)._idleWaitPromise, undefined);
+		assert.equal(sessionManager.getEntries().filter((entry: any) => entry.type === "custom_message" && entry.content === "teardown report").length, 1);
 	} finally {
+		release(); releaseTeardown(); await Promise.allSettled(pending); await disposal;
 		session.dispose();
 		rmSync(root, { recursive: true, force: true });
 	}
+});
+
+test("concurrent idle SDK sends await persistence and observe a failed shared drain", async t => {
+	const f = await customMessageSession(async () => {});
+	let entered!: () => void, release!: () => void;
+	const ready = new Promise<void>(resolve => { entered = resolve; });
+	const gate = new Promise<void>(resolve => { release = resolve; });
+	const failure = new Error("fixture custom hook failure");
+	const append = f.session._appendCustomMessage.bind(f.session);
+	t.mock.method(f.session, "_appendCustomMessage", async (message: any) => {
+		await append(message); // Like a failed hook, the consumed entry is still persisted once.
+		if (message.content === "first") { entered(); await gate; throw failure; }
+	});
+	const send = (content: string) => f.session.sendCustomMessage({ customType: "note", content, display: true }, { triggerTurn: false });
+	let results: Promise<PromiseSettledResult<void>[]> | undefined;
+	try {
+		const first = send("first"); await ready;
+		let completed = false;
+		const second = send("second").then(() => { completed = true; });
+		results = Promise.allSettled([first, second]);
+		await Promise.resolve();
+		assert.equal(completed, false, "queue acceptance must not report successful SDK delivery");
+		release();
+		assert.deepEqual(await results, [{ status: "rejected", reason: failure }, { status: "rejected", reason: failure }]);
+		assert.equal(f.session._customMessageFlush, undefined);
+		assert.equal(f.session._pendingCustomMessages.length, 1);
+		await send("retry drain");
+		assert.deepEqual(f.sessionManager.getEntries().filter((entry: any) => entry.type === "custom_message").map((entry: any) => entry.content), ["first", "second", "retry drain"]);
+		assert.equal(f.session._pendingCustomMessages.length, 0);
+	} finally { release(); await results; f.release(); }
 });

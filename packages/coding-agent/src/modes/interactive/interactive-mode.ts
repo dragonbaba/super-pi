@@ -2421,10 +2421,7 @@ export class InteractiveMode {
 				},
 			},
 			shutdownHandler: () => {
-				this.shutdownRequested = true;
-				if (this.session.isIdle) {
-					this.observeLifecyclePromise(this.shutdown());
-				}
+				this.requestExtensionShutdown();
 			},
 			onError: (error) => {
 				if (this.extensionUiGeneration !== extensionUiGeneration) return;
@@ -2558,7 +2555,7 @@ export class InteractiveMode {
 			model: this.session.model,
 			scopedModels: this.session.scopedModels,
 			thinkingLevel: this.session.thinkingLevel,
-			isIdle: () => this.session.isIdle,
+			isIdle: () => !this.session.isStreaming,
 			isProjectTrusted: () => this.settingsManager.isProjectTrusted(),
 			signal: this.session.agent.signal,
 			abort: () => {
@@ -2567,7 +2564,7 @@ export class InteractiveMode {
 			hasPendingMessages: () => this.session.pendingMessageCount > 0,
 			getActiveTools: () => this.session.getActiveToolNames(),
 			shutdown: () => {
-				this.shutdownRequested = true;
+				this.requestExtensionShutdown();
 			},
 			getContextUsage: () => this.session.getContextUsage(),
 			compact: (options) => {
@@ -4412,7 +4409,7 @@ export class InteractiveMode {
 				return this.flushAgentEndFrames();
 
 			case "agent_settled":
-				return this.checkShutdownRequested();
+				return;
 
 			case "compaction_start": {
 				if (this.settingsManager.getShowTerminalProgress()) {
@@ -5762,11 +5759,16 @@ export class InteractiveMode {
 		}
 	}
 
-	/**
-	 * Check if shutdown was requested and perform shutdown if so.
-	 */
-	private async checkShutdownRequested(): Promise<void> {
-		if (!this.shutdownRequested) return;
+	private requestExtensionShutdown(): void {
+		if (this.shutdownRequested || this.isShuttingDown) return;
+		this.shutdownRequested = true;
+		this.observeLifecyclePromise(this.shutdownWhenIdle());
+	}
+
+	/** One waiter per shutdown request, including standalone custom-message drains. */
+	private async shutdownWhenIdle(): Promise<void> {
+		// Recheck after each await: another listener may admit work before we resume.
+		while (!this.session.isIdle) await this.session.waitForIdle();
 		await this.shutdown();
 	}
 

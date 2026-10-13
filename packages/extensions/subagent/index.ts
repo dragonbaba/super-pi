@@ -1,4 +1,4 @@
-import { registerManagedTasks, configureTaskHistory, formatManagedTask } from "../managed-tasks.ts";
+import { registerManagedTasks, configureTaskHistory, formatManagedTask, formatTaskCompletion } from "../managed-tasks.ts";
 /**
  * Subagent Tool - Delegate tasks to specialized agents
  *
@@ -1708,13 +1708,7 @@ export default function (pi: ExtensionAPI) {
 					const complete = () => {
 						pending.delete(operation);
 						if (closed || authoritySignal.aborted) return;
-						let completed = 0, failed = 0, cancelled = 0;
-						for (const task of ownedTasks) {
-							if (task.state === "completed") completed++;
-							else if (task.state === "cancelled") cancelled++;
-							else failed++;
-						}
-						const summary = `Background subagent call ${capText(toolCallId, 128)} finished: ${completed} completed, ${failed} failed, ${cancelled} cancelled. Read the returned task IDs with subagent_tasks status before reporting results.`;
+						const summary = formatTaskCompletion("subagent", ownedTasks, toolCallId);
 						pi.sendMessage({ customType: "subagent-completion", content: summary, display: true }, { triggerTurn: true, deliverAs: "followUp" });
 					};
 					void operation.then(complete, complete).catch(() => { /* Session teardown can race notification delivery. */ });

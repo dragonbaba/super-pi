@@ -770,7 +770,12 @@ export class AgentSession {
 	private _eventListeners: AgentSessionEventRegistration[] = [];
 	private _criticalAgentEndTimeoutMs = DEFAULT_CRITICAL_AGENT_END_TIMEOUT_MS;
 	private _isAgentRunActive = false;
+	/** Admission identity: a settled callback may synchronously start a successor. */
+	private _agentRunGeneration = 0;
 	private _agentRunAbortRequested = false;
+	/** Nested runs may be admitted while earlier settlement hooks still own cleanup. */
+	private _settlementDepth = 0;
+	private _pendingSettledAborted: boolean | undefined;
 	private _idleWaitPromise: Promise<void> | undefined;
 	private _resolveIdleWait: (() => void) | undefined;
 
@@ -789,7 +794,8 @@ export class AgentSession {
 	private _pendingCustomMessages: CustomMessage[] = [];
 	/** Delivered messages awaiting synchronization with the agent loop's separate context. */
 	private _pendingCustomContextMessages: CustomMessage[] = [];
-	private _flushingCustomMessages = false;
+	/** One shared owner per custom-message drain, also joined by prompt admission. */
+	private _customMessageFlush: Promise<void> | undefined;
 
 	// Compaction state
 	private _compactionAbortController: AbortController | undefined = undefined;
@@ -924,6 +930,8 @@ export class AgentSession {
 		const request: NonNullable<AgentSession["_hostOperation"]> = { id, resume, branch: args.originBranch, sessionId, sessionFile, sessionIdentity: operationSessionIdentity(sessionFile!), callId: `host-write-${crypto.randomUUID()}` };
 		this._hostOperation = request;
 		this._isAgentRunActive = true;
+		this._agentRunGeneration++;
+		this._pendingSettledAborted = undefined;
 		this._agentRunAbortRequested = false;
 		let dispatchFailed = false;
 		try {
@@ -1366,32 +1374,71 @@ export class AgentSession {
 		return this._idleWaitPromise;
 	}
 
-	private _resolveIdleWaitIfIdle(): void {
-		if (this._isAgentRunActive || !this._resolveIdleWait) {
-			return;
+	private _publishIdleIfReady(): void {
+		if (!this.isIdle) return;
+		try {
+			if (this._pendingSettledAborted !== undefined) {
+				const aborted = this._pendingSettledAborted;
+				this._pendingSettledAborted = undefined;
+				this._emit({ type: "agent_settled", aborted });
+			}
+		} finally {
+			// A public listener may synchronously admit another run or report.
+			if (this.isIdle && this._resolveIdleWait) {
+				const resolve = this._resolveIdleWait;
+				this._idleWaitPromise = undefined;
+				this._resolveIdleWait = undefined;
+				resolve();
+			}
 		}
-		const resolve = this._resolveIdleWait;
-		this._idleWaitPromise = undefined;
-		this._resolveIdleWait = undefined;
-		resolve();
 	}
 
-	private async _emitAgentSettled(): Promise<void> {
-		// Every run exit settles here, so nothing queued mid-run outlives it.
+	private async _emitAgentSettled(continueQueued = false): Promise<boolean> {
+		const generation = this._agentRunGeneration;
+		this._settlementDepth++;
+		let continuing = false;
 		try {
+			this._flushPendingBashMessages();
 			await this._flushPendingCustomMessages();
+			// Last queue check and releasing run ownership must have no await between them.
+			// A message arriving after release admits its own run; one arriving during
+			// final custom-message hooks is consumed by this run's next iteration.
+			if (continueQueued && this._canContinueQueuedMessages()) {
+				continuing = true;
+				return true;
+			}
+			this._settleLengthRecovery(false);
+			this._systemPromptOverride = undefined;
 			this._pendingCustomContextMessages.length = 0;
 			// Capture before extension callbacks can mutate the event or admit another run.
 			const aborted = this._agentRunAbortRequested || this.agent.abortRequested;
 			this._agentRunAbortRequested = false;
 			this._isAgentRunActive = false;
 			await this._extensionRunner.emit({ type: "agent_settled", aborted });
-			this._emit({ type: "agent_settled", aborted });
+			if (generation === this._agentRunGeneration) this._pendingSettledAborted = aborted;
+			return false;
 		} finally {
-			this._pendingCustomContextMessages.length = 0;
-			this._isAgentRunActive = false;
-			this._resolveIdleWaitIfIdle();
+			try {
+				if (!continuing && generation === this._agentRunGeneration) {
+					this._isAgentRunActive = false;
+					this._systemPromptOverride = undefined;
+					this._pendingCustomContextMessages.length = 0;
+					this._settleLengthRecovery(false);
+				}
+			} finally {
+				this._settlementDepth--;
+				this._publishIdleIfReady();
+			}
 		}
+	}
+
+	private _canResumeAgentRun(): boolean {
+		return !this._operationDisposed && !this._interactionPaused && !this._agentRunAbortRequested
+			&& !this.agent.abortRequested;
+	}
+
+	private _canContinueQueuedMessages(): boolean {
+		return this._canResumeAgentRun() && this.agent.hasQueuedMessages();
 	}
 
 	private async _emitSessionCompactFailed(event: Omit<SessionCompactFailedEvent, "type">): Promise<void> {
@@ -1915,9 +1962,9 @@ export class AgentSession {
 		return this._isAgentRunActive;
 	}
 
-	/** Whether the session has no active agent run, retry, auto-compaction, or queued continuation. */
+	/** Whether runs, settlement hooks and custom-message persistence have all finished. */
 	get isIdle(): boolean {
-		return !this._isAgentRunActive;
+		return !this._isAgentRunActive && this._settlementDepth === 0 && !this._customMessageFlush;
 	}
 
 	/** Current effective system prompt (includes any per-turn extension modifications) */
@@ -2587,29 +2634,46 @@ export class AgentSession {
 
 	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[], onAccepted?: (success: boolean) => void, promptState?: { systemPromptOverride?: string }): Promise<void> {
 		let admitted = false;
+		let needsSettlement = false;
 		try {
+			// An idle/paused report may still be awaiting message_end hooks. Join its
+			// shared drain before admitting a user turn, including after async preflight.
+			while (this._customMessageFlush) await this._customMessageFlush;
+			if (this._operationDisposed) throw new Error("Cannot prompt a disposed session");
 			await this.agent.prompt(messages, () => {
 				admitted = true;
+				needsSettlement = true;
 				if (promptState) {
 					this._systemPromptOverride = promptState.systemPromptOverride;
 					this.agent.state.systemPrompt = promptState.systemPromptOverride ?? this._baseSystemPrompt;
 				}
 				this._interactionPaused = false;
 				this._isAgentRunActive = true;
+				this._agentRunGeneration++;
+				this._pendingSettledAborted = undefined;
 				this._agentRunAbortRequested = false;
 				onAccepted?.(true);
 			});
-			while (await this._handlePostAgentRun()) await this.agent.continue();
+			for (;;) {
+				const allowQueuedWake = !this._lastAssistantMessage?.errorMessage?.includes("Image submission blocked:");
+				if (await this._handlePostAgentRun()) {
+					if (!this._canResumeAgentRun()) break;
+					await this.agent.continue(true);
+					continue;
+				}
+				// Settlement owns its cleanup even if an extension hook throws.
+				needsSettlement = false;
+				if (!await this._emitAgentSettled(allowQueuedWake)) break;
+				needsSettlement = true;
+				// Cancellation or queue edits can arrive across the await above.
+				if (!this._canContinueQueuedMessages()) break;
+				await this.agent.continue(true);
+			}
 		} catch (error) {
 			if (!admitted) onAccepted?.(false);
 			throw error;
 		} finally {
-			if (admitted) {
-				this._settleLengthRecovery(false);
-				this._systemPromptOverride = undefined;
-				this._flushPendingBashMessages();
-				await this._emitAgentSettled();
-			}
+			if (needsSettlement) await this._emitAgentSettled();
 		}
 	}
 
@@ -2655,7 +2719,7 @@ export class AgentSession {
 
 		// The agent loop drains both queues before emitting agent_end. Any messages
 		// here were queued by agent_end extension handlers and need a continuation.
-		return !this._interactionPaused && this.agent.hasQueuedMessages();
+		return this._canContinueQueuedMessages();
 	}
 
 	/** Commit the existing retainedTail projection only after the recovery run succeeds.
@@ -3037,6 +3101,12 @@ export class AgentSession {
 		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
 		options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" },
 	): Promise<void> {
+		// An idle trigger may have waited alongside another trigger. Re-evaluate
+		// streaming/interaction state below so only the first one starts a run.
+		if (options?.triggerTurn && options.deliverAs !== "nextTurn" && !this._interactionPaused && !this.isStreaming) {
+			while (this._customMessageFlush) await this._customMessageFlush;
+		}
+		if (this._operationDisposed) throw new Error("Cannot deliver a custom message to a disposed session");
 		const appMessage = {
 			role: "custom" as const,
 			customType: message.customType,
@@ -3048,6 +3118,11 @@ export class AgentSession {
 		} satisfies CustomMessage<T>;
 		if (options?.deliverAs === "nextTurn") {
 			this._pendingNextTurnMessages.push(appMessage);
+		} else if (this._interactionPaused && options?.triggerTurn) {
+			// Keep the report as context; only actual user input can answer an interaction.
+			this._pendingCustomMessages.push(appMessage);
+			// The SDK Promise joins persistence; extension pi.sendMessage is fire-and-forget.
+			if (!this.isStreaming) await this._flushPendingCustomMessages();
 		} else if (this.isStreaming && options?.triggerTurn !== false) {
 			if (options?.deliverAs === "followUp") {
 				this.agent.followUp(appMessage);
@@ -3061,7 +3136,8 @@ export class AgentSession {
 			// order-validating providers reject on replay. Nothing is emitted until appended.
 			this._pendingCustomMessages.push(appMessage);
 		} else {
-			await this._appendCustomMessage(appMessage);
+			this._pendingCustomMessages.push(appMessage);
+			await this._flushPendingCustomMessages();
 		}
 	}
 
@@ -3083,10 +3159,16 @@ export class AgentSession {
 	}
 
 	/** Append custom messages queued during the run, after the turn's tool results. */
-	private async _flushPendingCustomMessages(): Promise<void> {
-		if (this._pendingCustomMessages.length === 0 || this._flushingCustomMessages || this._operationDisposed) return;
+	private _flushPendingCustomMessages(): Promise<void> | undefined {
+		if (this._customMessageFlush) return this._customMessageFlush;
+		if (this._pendingCustomMessages.length === 0 || this._operationDisposed) return;
+		return this._customMessageFlush = this._drainPendingCustomMessages();
+	}
+
+	private async _drainPendingCustomMessages(): Promise<void> {
+		// Publish the shared owner before any reentrant extension callback runs.
+		await Promise.resolve();
 		const pending = this._pendingCustomMessages;
-		this._flushingCustomMessages = true;
 		let consumed = 0;
 		try {
 			// A synchronous message listener may enqueue more messages. They follow the
@@ -3098,7 +3180,8 @@ export class AgentSession {
 		} finally {
 			if (consumed === pending.length) pending.length = 0;
 			else pending.splice(0, consumed);
-			this._flushingCustomMessages = false;
+			this._customMessageFlush = undefined;
+			this._publishIdleIfReady();
 		}
 	}
 
@@ -4324,7 +4407,9 @@ export class AgentSession {
 			{
 				getModel: () => this.model,
 				getScopedModels: () => this._scopedModels,
-				isIdle: () => this.isIdle,
+				// Extension idle means admission readiness (Goal/Plan settled handlers),
+				// while public isIdle/waitForIdle retain ownership through all cleanup.
+				isIdle: () => !this.isStreaming,
 				isProjectTrusted: (revalidateIdentity) => this.settingsManager.isProjectTrusted(revalidateIdentity),
 				getSignal: () => this.agent.signal,
 				abort: () => {

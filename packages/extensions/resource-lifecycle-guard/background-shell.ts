@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { toolResultFromError } from "@super-pi/agent-core";
 import { getConfigDir, readShellExecution, type BackgroundShellExecution, type BackgroundShellLaunch, type BashToolDetails, type ExtensionAPI, type ExtensionContext } from "@super-pi/coding-agent";
-import { registerManagedTasks, configureTaskHistory, formatManagedTask, SHELL_TASK_RESULT_EVENT, type ManagedTaskRegistration } from "../managed-tasks.ts";
+import { registerManagedTasks, configureTaskHistory, formatManagedTask, formatTaskCompletion, SHELL_TASK_RESULT_EVENT, type ManagedTaskRegistration } from "../managed-tasks.ts";
 import { loadSubagentLimits, HARD_MAX_CONCURRENT, HARD_MAX_TASKS } from "../subagent/limits.ts";
 import { SubagentScheduler, type TaskReservation } from "../subagent/scheduler.ts";
 import { SubagentTasks, type ManagedSubagentTask } from "../subagent/tasks.ts";
@@ -129,7 +129,7 @@ export class BackgroundShellTasks {
 		this.pi.events.emit(SHELL_TASK_RESULT_EVENT, { toolName: task.agent, toolCallId: callId, input, cwd: sessionCwd, details, isError: failed || signal.aborted });
 		if (authority.aborted) return;
 		try {
-			this.pi.sendMessage({ customType: "shell-task-completion", content: `Background ${task.agent} task ${task.id} ${task.state}. Read its terminal result with tasks status before reporting success or retrying.`, display: true }, { triggerTurn: true, deliverAs: "followUp" });
+			this.pi.sendMessage({ customType: "shell-task-completion", content: formatTaskCompletion("shell", [task], callId), display: true }, { triggerTurn: true, deliverAs: "followUp" });
 		} catch { /* Session replacement can invalidate delivery after process cleanup. */ }
 	}
 

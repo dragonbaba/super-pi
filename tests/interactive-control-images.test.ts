@@ -332,7 +332,14 @@ test("blockImages does not call auxiliary vision or silently drop submitted atta
 
 test("SDK ask_user pauses mixed batch, then replans; cancellation preserves pending queue", async () => {
 	for (const cancel of [false, true]) {
-		const f = await fixture(false, false);
+		let reportEntered!: () => void, releaseReport!: () => void;
+		const entered = new Promise<void>(resolve => { reportEntered = resolve; });
+		const released = new Promise<void>(resolve => { releaseReport = resolve; });
+		const f = await fixture(false, false, [pi => { pi.on("message_end", async event => {
+			if (event.message.role === "custom" && event.message.content === "background report") {
+				reportEntered(); await released;
+			}
+		}); }]);
 		let choose!: (value?: string) => void, shown!: () => void;
 		const visible = new Promise<void>(resolve => { shown = resolve; });
 		let calls = 0, effects = 0;
@@ -351,6 +358,7 @@ test("SDK ask_user pauses mixed batch, then replans; cancellation preserves pend
 				{ type: "toolCall", id: "q", name: "ask_user", arguments: { question: "Which?", options: [{ id: "a", label: "A" }, { id: "b", label: "B" }] } },
 			] : [{ type: "text", text: "replanned" }]);
 		};
+		const deliveries: Promise<void>[] = [];
 		try {
 			const run = f.session.prompt("question"); await visible;
 			for (let index = 0; index < 4; index++) await new Promise<void>(resolve => setImmediate(resolve));
@@ -358,8 +366,39 @@ test("SDK ask_user pauses mixed batch, then replans; cancellation preserves pend
 			if (cancel) await f.session.followUp("must stay queued");
 			choose(cancel ? undefined : "yes"); choose("yes"); await run;
 			assert.equal(effects, 0); assert.equal(calls, cancel ? 1 : 2);
-			if (cancel) assert.equal(f.session.pendingMessageCount, 1);
-		} finally { f.close(); }
+			if (cancel) {
+				assert.equal(f.session.pendingMessageCount, 1);
+				const firstReport = f.session.sendCustomMessage({ customType: "subagent-completion", content: "background report", display: true },
+					{ triggerTurn: true, deliverAs: "followUp" });
+				deliveries.push(firstReport);
+				await entered;
+				assert.equal(f.session.isIdle, false, "a paused report owns persistence until its hooks finish");
+				const drain = (f.session as any)._customMessageFlush;
+				const secondReport = f.session.sendCustomMessage({ customType: "subagent-completion", content: "second report", display: true },
+					{ triggerTurn: true, deliverAs: "followUp" });
+				deliveries.push(secondReport);
+				assert.equal((f.session as any)._customMessageFlush, drain, "concurrent reports share one drain owner");
+				assert.equal(calls, 1, "a background report must not answer the cancelled question");
+				assert.equal(f.session.pendingMessageCount, 1);
+				const answer = f.session.prompt("Use A");
+				deliveries.push(answer);
+				await turn();
+				assert.equal(calls, 1, "the user turn waits for report persistence before admission");
+				assert.equal(f.session.sessionManager.getEntries().filter(e => e.type === "custom_message").length, 0);
+				releaseReport();
+				await Promise.all([firstReport, secondReport, answer]);
+				assert.equal(calls, 3, "the explicit answer resumes first, then the preserved follow-up runs");
+				assert.equal(f.session.pendingMessageCount, 0);
+				const select = (messages: typeof f.session.messages) => messages.filter(m => m.role === "custom" || m.role === "user")
+					.map(m => typeof m.content === "string" ? m.content : JSON.stringify(m.content));
+				const live = select(f.session.messages);
+				assert.deepEqual(select(f.session.sessionManager.buildSessionContext().messages), live);
+				assert.deepEqual(live.slice(1, 3), ["background report", "second report"]);
+				assert.match(live[3], /Use A/);
+				assert.equal((f.session as any)._customMessageFlush, undefined);
+				assert.equal((f.session as any)._pendingCustomMessages.length, 0);
+			}
+		} finally { releaseReport(); await Promise.allSettled(deliveries); f.close(); }
 	}
 });
 

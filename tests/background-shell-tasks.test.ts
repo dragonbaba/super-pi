@@ -88,6 +88,9 @@ test("bounded FIFO, cancellation, parent independence, waits and release", async
 	assert.equal(releases, 3); assert.equal(h.owner.scheduler.highWaterMark, 1);
 	assert.equal(h.owner.scheduler.active + h.owner.scheduler.queued + h.owner.scheduler.reserved, 0);
 	assert.equal(h.messages.length, 3);
+	assert.match(h.messages.find(message => message.content.includes(`Task ${first};`))?.content, /Output excerpt: .*first/);
+	assert.ok(h.messages.some(message => message.content.includes("state=cancelled")));
+	for (const message of h.messages) assert.match(message.content, /source=host; user_input=false/);
 });
 
 test("queue revalidates authority and releases an unstarted request", async t => {
@@ -151,6 +154,10 @@ for (const shell of ["bash", "powershell"]) test(`${shell} authorized background
 	const result = await h.call("tasks", { action: "wait", id: last, timeoutMs: 5000 });
 	assert.match(text(result), /completed.*result:fast/s);
 	assert.equal((result.details as any).result.shellExecution.exitCode, 0);
+	await tick();
+	const report = h.messages.find(message => message.content.includes(`Task ${last};`));
+	assert.match(report?.content, /exit=0; termination=exit; outputComplete=true/);
+	assert.match(report.content, /result:fast/);
 	assert.throws(() => process.kill(pid, 0), /ESRCH/);
 	assert.ok(h.approvals() >= 1);
 });
@@ -333,6 +340,10 @@ test("background failure/timeout facts and large-output tail survive bounded ret
 		const result = await h.call("tasks", { action: "wait", id, timeoutMs: 10_000 });
 		const details = (result.details as any).result;
 		assert.ok(text(result).length < 12_200);
+		await tick();
+		const report = h.messages.find(message => message.content.includes(`Task ${id};`));
+		assert.ok(report.content.length <= 8192);
+		assert.ok(report.content.includes(`exit=${details.shellExecution.exitCode ?? "unknown"}; termination=${details.shellExecution.termination}`));
 		if (mode === "fail") { assert.match(text(result), /failed/); assert.equal(details.shellExecution.exitCode, 7); }
 		else if (mode === "hold") { assert.match(text(result), /failed/); assert.equal(details.shellExecution.termination, "timeout"); }
 		else { assert.match(text(result), /FINAL-SHELL-SENTINEL/); assert.equal(details.fullOutputPath, undefined); assert.equal(details.truncation.content, ""); assert.equal(details.shellExecution.output.cleanup, "removed"); }
@@ -349,6 +360,8 @@ test("cleanup failure preserves the owned log path and stops further background 
 	const result = await h.call("tasks", { action: "wait", id, timeoutMs: 5000 });
 	assert.equal(attempts, 1); assert.ok(path && existsSync(path));
 	assert.equal((result.details as any).result.shellExecution.output.cleanup, "failed");
+	await tick();
+	assert.match(h.messages.find(message => message.content.includes(`Task ${id};`))?.content, /cleanup=failed/);
 	assert.equal((result.details as any).result.fullOutputPath, path);
 	assert.match(text(result), /failed/); assert.doesNotMatch(text(result), /temporary log removed/);
 	const next = await h.call("bash", { command: "node fixture.mjs fast", cwd: ".", background: true });

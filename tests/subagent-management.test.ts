@@ -12,6 +12,9 @@ import { attachSubagentWorkspaceDelegation, SESSION_PERMISSION_EVENT } from "../
 import { SubagentScheduler } from "../packages/extensions/subagent/scheduler.ts";
 import { SubagentTasks } from "../packages/extensions/subagent/tasks.ts";
 import { isPathInside } from "../packages/extensions/subagent/child-security.ts";
+import { formatTaskCompletion, TASK_COMPLETION_CHARS } from "../packages/extensions/managed-tasks.ts";
+import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
+import { convertToLlm } from "../packages/coding-agent/src/core/messages.ts";
 
 // Set before loading the extension's config-path constants; never inspect user configuration.
 const fixtureRoot = mkdtempSync(join(tmpdir(), "sp-managed-subagents-"));
@@ -307,6 +310,9 @@ test("capacity handoff reaches foreground/background results and stops dependent
 	const background = await h.run({ checkpoint: true, agent: "scout", task: "capacity-handoff", readOnly: true, background: true });
 	const id = ids(background)[0]; await h.notified();
 	assert.match(await h.control("status", id), /Checkpoint capacity handoff.*fresh bounded assignment/s);
+	assert.match(h.messages[0].content, /partial or capacity handoff/);
+	assert.match(h.messages[0].content, /Checkpoint capacity handoff/);
+	assert.ok(h.messages[0].content.includes(id));
 });
 
 test("real completed checkpoint continues under a fresh ID and current authorization; memory sessions refuse storage", async t => {
@@ -389,8 +395,41 @@ test("background returns IDs, cancellation isolates one child, and notification 
 	assert.match(await h.control("status", taskIds[0]), /cancelled/);
 	assert.match(await h.control("status", taskIds[1]), /completed.*\n\nfixture result/s);
 	assert.equal(h.messages.length, 1);
+	const report = h.messages[0];
+	assert.match(report.content, /source=host; user_input=false/);
+	assert.match(report.content, /fixture result/);
+	assert.deepEqual(h.ctx.getActiveTools(), ["subagent", "subagent_tasks"]);
+	assert.match(report.content, /status via tasks or subagent_tasks/);
+	for (const id of taskIds) assert.ok(report.content.includes(id));
+	const manager = SessionManager.create(h.ctx.cwd, join(h.ctx.cwd, "report-replay"));
+	manager.appendMessage({ role: "user", content: "Start the authorized work.", timestamp: 1 });
+	manager.appendCustomMessageEntry(report.customType, report.content, report.display);
+	const replay = SessionManager.open(manager.getSessionFile()!).buildSessionContext().messages;
+	const converted = convertToLlm(replay);
+	assert.deepEqual(converted.at(-1)?.content, [{ type: "text", text: report.content }]);
 	assert.throws(() => process.kill(pid, 0), /ESRCH/);
 	assert.match(await h.control("list"), /0\/2 running · 0\/8 active\/queued/);
+});
+
+test("terminal reports bound serialized control/Unicode excerpts without reading every result", () => {
+	for (const output of ["\u0000".repeat(12000), "结果😀".repeat(3000)]) {
+		let resultReads = 0;
+		const tasks = Array.from({ length: 256 }, (_, i) => ({ id: `task-${i}`, agent: "scout",
+			state: "completed" as const, createdAt: 1, branchId: "branch",
+			get result() { resultReads++; return output; } }));
+		const report = formatTaskCompletion("subagent", tasks, "call");
+		assert.ok(report.length <= TASK_COMPLETION_CHARS);
+		assert.ok(Buffer.byteLength(report) <= TASK_COMPLETION_CHARS * 3);
+		assert.ok(resultReads <= 8, `only bounded excerpts are read: ${resultReads}`);
+		assert.match(report, /256 completed/);
+		assert.match(report, /additional task reports omitted/);
+		assert.match(report, /list via tasks or subagent_tasks/);
+		assert.match(report, /expire on history eviction/);
+		for (const line of report.split("\n")) if (line.startsWith("Output excerpt: ")) {
+			const excerpt = JSON.parse(line.slice("Output excerpt: ".length));
+			assert.ok(excerpt.length <= 512); assert.equal(excerpt.isWellFormed(), true);
+		}
+	}
 });
 
 test("foreground publishes only isolated lifecycle snapshots and preserves final output", async t => {

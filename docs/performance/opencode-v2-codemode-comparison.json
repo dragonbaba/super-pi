@@ -1,0 +1,666 @@
+{
+  "schemaVersion": 1,
+  "title": "OpenCode v2 / Super Pi Codemode bounded library comparison",
+  "evidenceClass": "M: measured local fixtures, not product-level performance",
+  "buildTool": { "esbuild": "0.28.1", "packagesExternal": true },
+  "temporaryResources": { "directory": "C:/Users/Administrator/AppData/Local/Temp/pi-codemode-compare-dd675fdb0eb44298bbdcb5944d5674e5", "cleanup": "Deletion request rejected by automatic approval: blocked by policy. Directory retained; no cleanup workaround attempted." },
+  "localSourceFingerprints": [{"path":"packages/codemode/src/runtime/host.ts","sha256":"30b09822e1eee0820141b630faa5f050ca27e4d961c3316d298285011f33ece1"},{"path":"packages/codemode/src/runtime/worker.ts","sha256":"6540b2cf1e810552d0e3be5808442fb49b2ac08e8e20e2fd96e75b8b94572422"},{"path":"packages/codemode/src/runtime/prelude-source.ts","sha256":"8743866734def03cbce8759f296bf01a89bff2b706462f17631215ed587eb4b5"},{"path":"packages/codemode/src/runtime/protocol.ts","sha256":"73ea0af049ecc2b85896f3bd603a9a0903cdc54a76c35035d827b401ea01e9b4"},{"path":"packages/codemode/src/wasm.ts","sha256":"88f8c0106cb476c29405148a7fd95b4f71fc91aa0965f18510be68c4b1051793"},{"path":"packages/codemode/src/limits.ts","sha256":"01a6fe5d477b76d0c95bcd2b57d46ab7e8b860c5d8776e247ad415dda07a6976"},{"path":"packages/codemode/src/bounded-json.ts","sha256":"a9703416ed568db5650d785f3d18a046faf3367388959bf52b6012156e7e9dd9"},{"path":"packages/codemode/src/identifier.ts","sha256":"9361d587fc6ff5b25d1ae886f131bf194db0c6a4fd7fd65509c188693988d3f2"},{"path":"packages/coding-agent/src/core/codemode.ts","sha256":"ce3a47acf67a708ee995b54e5f59aa75fdb58b4d3fcc55ba6b8af86b8c92af0b"},{"path":"packages/agent/src/nested-tool-dispatch.ts","sha256":"cd4a04a34b72c96c4d1cd447293c09517b29a39f901f12d00308d9116e40fcc2"},{"path":"scripts/bench/codemode-runtime.ts","sha256":"3021195032622e77f7f3e5e1d3b5464f75345d2634b458595906d4818c3b5114"}],
+  "main": {
+    "date": "2026-10-13T00:16:29.477Z",
+    "upstreamCommit": "4617210822bdbb31e5749751afbfb4584ccedac8",
+    "localCommit": "af067d5efe3bc61128a4cda3162d23e908d3ece5",
+    "environment": {
+      "node": "v26.4.0",
+      "platform": "win32",
+      "arch": "x64",
+      "os": "10.0.22631",
+      "cpu": "Intel(R) Core(TM) i7-14700KF",
+      "effect": "4.0.1",
+      "acorn": "8.15.0",
+      "quickjsWasi": "3.6.2"
+    },
+    "method": {
+      "warmupsPerCaseVariant": 2,
+      "samplesPerCaseVariant": 15,
+      "rotatingOrder": true,
+      "profiler": false,
+      "scope": "Library execution only; static imports and host creation excluded; Pi fresh Worker creation and termination included; OpenCode make_each includes CodeMode.make only, not core adapter tree/progress/web/policy.",
+      "comparableLimits": {
+        "timeoutMs": 60000,
+        "maxToolCalls": 256,
+        "maxOutputBytes": 1048576
+      },
+      "caveats": [
+        "Node is a common comparison runtime; OpenCode application uses Bun.",
+        "Output limits differ in bytes vs UTF-16 chars; fixtures are ASCII.",
+        "No real model, network, disk, policy, UI or complete product/token-cost comparison.",
+        "Reused OpenCode runtime is library best case, not core adapter reuse.",
+        "Timing does not compare total allocations, peak heap or event-loop responsiveness.",
+        "15 samples describe this local run, not a statistically stable production p95.",
+        "Pi imports source .ts files and launches its source-mode Worker; packaged/compiled application latency was not measured.",
+        "Both runtimes use the same three plain-data fixture tools; OpenCode render-only JSON Schema does not add input/output schema validation in this harness.",
+        "The parallel fixture measures library-level fan-out; it does not include Pi's product-level read concurrency=4 and serialized mutation policy."
+      ]
+    },
+    "fixtureBytes": {
+      "read": 4098,
+      "rows": 49641
+    },
+    "cases": [
+      {
+        "name": "noop",
+        "code": "return 1",
+        "expected": 1,
+        "calls": 0
+      },
+      {
+        "name": "one_4KiB_read",
+        "code": "return (await tools.read({})).length",
+        "expected": 4096,
+        "calls": 1
+      },
+      {
+        "name": "100_sequential_4KiB_reads",
+        "code": "let n=0;for(let i=0;i<100;i++)n+=(await tools.read({})).length;return n",
+        "expected": 409600,
+        "calls": 100
+      },
+      {
+        "name": "10000_integer_loop",
+        "code": "let n=0;for(let i=0;i<10000;i++)n+=i;return n",
+        "expected": 49995000,
+        "calls": 0
+      },
+      {
+        "name": "500_structured_rows_filter_reduce",
+        "code": "const rows=await tools.rows({});return rows.filter(r=>r.active).map(r=>r.id).reduce((a,b)=>a+b,0)",
+        "expected": 62250,
+        "calls": 1
+      },
+      {
+        "name": "8_parallel_10ms_host_calls",
+        "code": "return (await Promise.all(Array.from({length:8},()=>tools.wait({})))).reduce((a,b)=>a+b,0)",
+        "expected": 8,
+        "calls": 8
+      }
+    ],
+    "wasmCompileMs": 2.532699999999977,
+    "results": {
+      "noop": {
+        "opencode_reused": {
+          "medianMs": 0.3652000000000726,
+          "p95Ms": 0.5842999999999847,
+          "samplesMs": [
+            0.5130000000000337,
+            0.31740000000002055,
+            0.5842999999999847,
+            0.43650000000002365,
+            0.209699999999998,
+            0.40200000000004366,
+            0.3652000000000726,
+            0.2077000000000453,
+            0.41049999999995634,
+            0.3550999999999931,
+            0.22100000000000364,
+            0.559099999999944,
+            0.38220000000001164,
+            0.2235000000000582,
+            0.3505999999999858
+          ]
+        },
+        "opencode_make_each": {
+          "medianMs": 0.2867999999999711,
+          "p95Ms": 0.6544999999999845,
+          "samplesMs": [
+            0.35449999999997317,
+            0.3206000000000131,
+            0.49409999999994625,
+            0.25509999999997035,
+            0.24159999999994852,
+            0.47719999999992524,
+            0.2758000000000038,
+            0.20640000000003056,
+            0.35389999999995325,
+            0.26400000000001,
+            0.22149999999999181,
+            0.6544999999999845,
+            0.2867999999999711,
+            0.27080000000000837,
+            0.3490999999999076
+          ]
+        },
+        "pi_reused_catalog_fresh_worker": {
+          "medianMs": 38.93539999999996,
+          "p95Ms": 42.816100000000006,
+          "samplesMs": [
+            41.07460000000003,
+            42.816100000000006,
+            37.57190000000003,
+            38.36189999999999,
+            38.067800000000034,
+            40.27870000000007,
+            38.93539999999996,
+            38.51599999999996,
+            39.73770000000002,
+            38.9357,
+            38.31939999999997,
+            40.39510000000007,
+            40.07060000000001,
+            37.45349999999996,
+            38.351
+          ]
+        }
+      },
+      "one_4KiB_read": {
+        "opencode_reused": {
+          "medianMs": 0.5670000000000073,
+          "p95Ms": 0.6975999999999658,
+          "samplesMs": [
+            0.6975999999999658,
+            0.394800000000032,
+            0.6602000000000317,
+            0.6286000000000058,
+            0.34339999999997417,
+            0.6213999999999942,
+            0.5670000000000073,
+            0.29739999999992506,
+            0.5397000000000389,
+            0.5746999999998934,
+            0.4351999999998952,
+            0.5908000000001721,
+            0.4963999999999942,
+            0.35029999999983374,
+            0.5696000000000367
+          ]
+        },
+        "opencode_make_each": {
+          "medianMs": 0.4338999999999942,
+          "p95Ms": 0.791300000000092,
+          "samplesMs": [
+            0.4899000000000342,
+            0.37979999999993197,
+            0.791300000000092,
+            0.4338999999999942,
+            0.38850000000002183,
+            0.6076000000000477,
+            0.3949000000000069,
+            0.3342000000000098,
+            0.5201999999999316,
+            0.5831000000000586,
+            0.3407999999999447,
+            0.5587000000000444,
+            0.34390000000007603,
+            0.34780000000000655,
+            0.5949000000000524
+          ]
+        },
+        "pi_reused_catalog_fresh_worker": {
+          "medianMs": 37.715599999999995,
+          "p95Ms": 39.92730000000006,
+          "samplesMs": [
+            37.85149999999999,
+            37.01040000000012,
+            38.68939999999998,
+            38.115299999999934,
+            37.59920000000011,
+            36.63839999999982,
+            37.23829999999998,
+            37.715599999999995,
+            37.73890000000006,
+            37.743600000000015,
+            37.133600000000115,
+            39.92730000000006,
+            37.934400000000096,
+            37.45719999999983,
+            37.6407999999999
+          ]
+        }
+      },
+      "100_sequential_4KiB_reads": {
+        "opencode_reused": {
+          "medianMs": 2.239600000000337,
+          "p95Ms": 10.068300000000136,
+          "samplesMs": [
+            10.068300000000136,
+            2.855000000000018,
+            2.3514000000000124,
+            3.279199999999946,
+            2.0381999999999607,
+            4.23660000000018,
+            2.239600000000337,
+            2.0430999999998676,
+            3.602400000000216,
+            2.253400000000056,
+            1.9284999999999854,
+            2.1865999999999985,
+            2.1959999999999127,
+            2.0252000000000407,
+            2.196899999999914
+          ]
+        },
+        "opencode_make_each": {
+          "medianMs": 2.1893999999997504,
+          "p95Ms": 3.5109000000002197,
+          "samplesMs": [
+            2.949000000000069,
+            2.269700000000057,
+            2.5552999999999884,
+            2.0881999999999152,
+            2.119100000000117,
+            2.273100000000113,
+            2.1012000000000626,
+            1.9645999999997912,
+            2.2181000000000495,
+            2.0574000000001433,
+            1.9763000000002648,
+            3.5109000000002197,
+            2.031600000000253,
+            3.26929999999993,
+            2.1893999999997504
+          ]
+        },
+        "pi_reused_catalog_fresh_worker": {
+          "medianMs": 42.59860000000026,
+          "p95Ms": 43.883099999999786,
+          "samplesMs": [
+            43.42489999999998,
+            41.922199999999975,
+            42.10799999999995,
+            42.577800000000025,
+            42.83889999999997,
+            43.883099999999786,
+            43.072999999999865,
+            41.316299999999956,
+            41.941100000000006,
+            43.21900000000005,
+            42.23250000000007,
+            42.59860000000026,
+            42.409799999999905,
+            42.78020000000015,
+            43.23849999999993
+          ]
+        }
+      },
+      "10000_integer_loop": {
+        "opencode_reused": {
+          "medianMs": 20.240299999999934,
+          "p95Ms": 24.1882999999998,
+          "samplesMs": [
+            20.627500000000055,
+            19.384000000000015,
+            21.016699999999673,
+            18.96849999999995,
+            18.9686999999999,
+            24.1882999999998,
+            20.421899999999823,
+            20.542699999999968,
+            19.08640000000014,
+            20.9054000000001,
+            20.240299999999934,
+            20.046100000000024,
+            20.917899999999918,
+            19.927700000000186,
+            19.62180000000035
+          ]
+        },
+        "opencode_make_each": {
+          "medianMs": 20.0641999999998,
+          "p95Ms": 24.341100000000097,
+          "samplesMs": [
+            24.341100000000097,
+            20.635999999999967,
+            18.81600000000026,
+            20.0641999999998,
+            20.5634,
+            18.94880000000012,
+            18.61850000000004,
+            19.39539999999988,
+            20.271299999999883,
+            18.646499999999833,
+            20.420900000000074,
+            24.08939999999984,
+            18.89090000000033,
+            18.73829999999998,
+            20.329600000000028
+          ]
+        },
+        "pi_reused_catalog_fresh_worker": {
+          "medianMs": 37.838500000000295,
+          "p95Ms": 39.802799999999934,
+          "samplesMs": [
+            39.802799999999934,
+            38.66620000000012,
+            37.68859999999995,
+            36.91599999999971,
+            37.97119999999995,
+            38.527700000000095,
+            37.72530000000006,
+            38.164600000000064,
+            37.68870000000015,
+            37.5933,
+            39.095400000000154,
+            38.06780000000026,
+            37.66060000000016,
+            37.838500000000295,
+            37.710199999999986
+          ]
+        }
+      },
+      "500_structured_rows_filter_reduce": {
+        "opencode_reused": {
+          "medianMs": 4.871000000000095,
+          "p95Ms": 7.464799999999741,
+          "samplesMs": [
+            5.623499999999694,
+            6.070400000000063,
+            4.871000000000095,
+            4.889400000000023,
+            4.696399999999812,
+            4.904500000000553,
+            7.464799999999741,
+            6.3648999999995794,
+            7.348999999999251,
+            4.630699999999706,
+            4.415299999999661,
+            4.758100000000013,
+            4.457699999999932,
+            4.2193999999999505,
+            4.343499999999949
+          ]
+        },
+        "opencode_make_each": {
+          "medianMs": 5.140500000000429,
+          "p95Ms": 10.11909999999989,
+          "samplesMs": [
+            4.831100000000333,
+            4.7672999999999774,
+            6.1327000000001135,
+            6.715299999999843,
+            7.267299999999523,
+            5.140500000000429,
+            4.612200000000485,
+            4.408800000000156,
+            4.472399999999652,
+            6.755199999999604,
+            4.543400000000474,
+            10.11909999999989,
+            5.777900000000045,
+            4.190200000000004,
+            7.31630000000041
+          ]
+        },
+        "pi_reused_catalog_fresh_worker": {
+          "medianMs": 38.140499999999975,
+          "p95Ms": 40.44800000000032,
+          "samplesMs": [
+            38.23259999999982,
+            38.140499999999975,
+            39.02579999999989,
+            37.524299999999585,
+            40.44800000000032,
+            38.836599999999635,
+            37.23419999999987,
+            38.29500000000007,
+            37.94449999999961,
+            38.22940000000017,
+            38.72280000000046,
+            36.90719999999965,
+            38.024500000000444,
+            37.5634,
+            37.67609999999968
+          ]
+        }
+      },
+      "8_parallel_10ms_host_calls": {
+        "opencode_reused": {
+          "medianMs": 15.65309999999954,
+          "p95Ms": 25.83050000000003,
+          "samplesMs": [
+            15.675599999999577,
+            12.790399999999863,
+            11.2483000000002,
+            15.466499999999542,
+            12.225199999999859,
+            25.83050000000003,
+            15.093600000000151,
+            17.44329999999991,
+            22.405699999999342,
+            11.035499999999956,
+            25.700700000000325,
+            16.380200000000514,
+            25.58559999999943,
+            15.65309999999954,
+            13.860200000000077
+          ]
+        },
+        "opencode_make_each": {
+          "medianMs": 18.552699999999277,
+          "p95Ms": 35.85059999999976,
+          "samplesMs": [
+            26.51339999999982,
+            21.0054999999993,
+            18.552699999999277,
+            15.724499999999352,
+            21.4991,
+            15.963600000000042,
+            16.297300000000178,
+            15.736899999999878,
+            15.6225000000004,
+            28.938900000000103,
+            13.08809999999994,
+            26.102100000000064,
+            35.85059999999976,
+            15.282400000000052,
+            25.66700000000037
+          ]
+        },
+        "pi_reused_catalog_fresh_worker": {
+          "medianMs": 61.35310000000027,
+          "p95Ms": 74.29349999999977,
+          "samplesMs": [
+            47.96720000000005,
+            58.823999999999614,
+            56.404999999999745,
+            56.7532999999994,
+            67.92509999999947,
+            56.33399999999983,
+            68.86779999999999,
+            68.4427999999998,
+            61.35310000000027,
+            65.96060000000034,
+            61.294599999999264,
+            67.65100000000075,
+            56.78819999999996,
+            74.29349999999977,
+            61.988499999999476
+          ]
+        }
+      }
+    },
+    "counters": {
+      "read": 5151,
+      "rows": 51,
+      "wait": 408
+    },
+    "piLifecycle": {
+      "activeExecutions": 0,
+      "workersStarted": 102,
+      "workersStopped": 102
+    },
+    "reproduction": {
+      "dependencies": {
+        "acorn": "8.15.0",
+        "effect": "4.0.1"
+      },
+      "upstreamSourcePath": "packages/codemode/src",
+      "bundle": "esbuild wrapper.ts --bundle --platform=node --format=esm --packages=external --outfile=upstream.mjs",
+      "command": "node --experimental-strip-types compare.mjs",
+      "wrapper": "export * as CodeMode from \"./packages/codemode/src/codemode.ts\";\nexport * as Tool from \"./packages/codemode/src/tool.ts\";\nexport { Effect } from \"effect\";\n"
+    }
+  },
+  "cpuExtension": {
+    "date": "2026-10-13T00:17:00.268Z",
+    "upstreamCommit": "4617210822bdbb31e5749751afbfb4584ccedac8",
+    "localCommit": "af067d5efe3bc61128a4cda3162d23e908d3ece5",
+    "environment": {
+      "node": "v26.4.0",
+      "platform": "win32",
+      "arch": "x64",
+      "os": "10.0.22631",
+      "cpu": "Intel(R) Core(TM) i7-14700KF",
+      "effect": "4.0.1",
+      "acorn": "8.15.0",
+      "quickjsWasi": "3.6.2"
+    },
+    "method": {
+      "warmupsPerCaseVariant": 2,
+      "samplesPerCaseVariant": 15,
+      "rotatingOrder": true,
+      "profiler": false,
+      "scope": "Library execution only; static imports and host creation excluded; Pi fresh Worker creation and termination included; OpenCode make_each includes CodeMode.make only, not core adapter tree/progress/web/policy.",
+      "comparableLimits": {
+        "timeoutMs": 60000,
+        "maxToolCalls": 256,
+        "maxOutputBytes": 1048576
+      },
+      "caveats": [
+        "Node is a common comparison runtime; OpenCode application uses Bun.",
+        "Output limits differ in bytes vs UTF-16 chars; fixtures are ASCII.",
+        "No real model, network, disk, policy, UI or complete product/token-cost comparison.",
+        "Reused OpenCode runtime is library best case, not core adapter reuse.",
+        "Timing does not compare total allocations, peak heap or event-loop responsiveness.",
+        "15 samples describe this local run, not a statistically stable production p95.",
+        "Pi imports source .ts files and launches its source-mode Worker; packaged/compiled application latency was not measured.",
+        "Both runtimes use the same three plain-data fixture tools; OpenCode render-only JSON Schema does not add input/output schema validation in this harness.",
+        "The parallel fixture measures library-level fan-out; it does not include Pi's product-level read concurrency=4 and serialized mutation policy."
+      ]
+    },
+    "fixtureBytes": {
+      "read": 4098,
+      "rows": 49641
+    },
+    "cases": [
+      {
+        "name": "100000_integer_loop",
+        "code": "let n=0;for(let i=0;i<100000;i++)n+=i;return n",
+        "expected": 4999950000,
+        "calls": 0
+      }
+    ],
+    "wasmCompileMs": 2.4529999999999745,
+    "results": {
+      "100000_integer_loop": {
+        "opencode_reused": {
+          "medianMs": 196.5549000000001,
+          "p95Ms": 202.41039999999975,
+          "samplesMs": [
+            198.77870000000007,
+            194.84050000000002,
+            196.5549000000001,
+            195.52390000000014,
+            198.5306999999998,
+            199.058,
+            196.5948999999996,
+            197.98750000000018,
+            202.41039999999975,
+            197.3131000000003,
+            193.89019999999982,
+            192.91259999999966,
+            193.61470000000008,
+            194.40120000000024,
+            191.82110000000011
+          ]
+        },
+        "opencode_make_each": {
+          "medianMs": 197.1179000000002,
+          "p95Ms": 202.92720000000008,
+          "samplesMs": [
+            198.22310000000016,
+            200.07819999999992,
+            201.8733000000002,
+            195.1648,
+            196.23799999999983,
+            202.92720000000008,
+            195.15059999999994,
+            191.97209999999995,
+            192.76819999999952,
+            191.88370000000032,
+            192.4912000000004,
+            198.6301000000003,
+            199.6837999999998,
+            198.65260000000035,
+            197.1179000000002
+          ]
+        },
+        "pi_reused_catalog_fresh_worker": {
+          "medianMs": 41.79570000000058,
+          "p95Ms": 45.27039999999988,
+          "samplesMs": [
+            45.074100000000044,
+            43.63500000000022,
+            41.942299999999705,
+            41.54519999999957,
+            43.08969999999999,
+            45.27039999999988,
+            40.690599999999904,
+            41.25280000000021,
+            41.882400000000416,
+            41.39009999999962,
+            43.134000000000015,
+            41.79570000000058,
+            41.00660000000062,
+            41.02630000000045,
+            40.29780000000028
+          ]
+        }
+      }
+    },
+    "counters": {
+      "read": 0,
+      "rows": 0,
+      "wait": 0
+    },
+    "piLifecycle": {
+      "activeExecutions": 0,
+      "workersStarted": 17,
+      "workersStopped": 17
+    },
+    "reproduction": {
+      "dependencies": {
+        "acorn": "8.15.0",
+        "effect": "4.0.1"
+      },
+      "upstreamSourcePath": "packages/codemode/src",
+      "bundle": "esbuild wrapper.ts --bundle --platform=node --format=esm --packages=external --outfile=upstream.mjs",
+      "command": "node --experimental-strip-types compare.mjs",
+      "wrapper": "export * as CodeMode from \"./packages/codemode/src/codemode.ts\";\nexport * as Tool from \"./packages/codemode/src/tool.ts\";\nexport { Effect } from \"effect\";\n"
+    }
+  },
+  "piLifecycle": {
+    "benchmark": "codemode-runtime",
+    "node": "v26.4.0",
+    "platform": "win32",
+    "wasmCompileMs": 2.938900000000004,
+    "firstScriptMs": 84.3962,
+    "warmMedianMs": 42.832099999999855,
+    "warmP95Ms": 45.870900000000006,
+    "batchCalls": 100,
+    "batchMs": 48.82629999999995,
+    "workersStarted": 32,
+    "workersStopped": 32,
+    "trackedReferences": 128,
+    "retainedAfterGc": 0,
+    "sampledHostBytes": 2455680,
+    "coverage": "real Worker and QuickJS; host allocation sampling excludes worker heaps, AgentSession, policy and UI",
+    "command": "node --expose-gc --experimental-strip-types scripts/bench/codemode-runtime.ts"
+  },
+  "reproduction": {
+    "notes": "Download only the fixed commit packages/codemode/src tree into an isolated temporary directory, create a private ESM package.json with the pinned dependencies, and install with --ignore-scripts --no-audit --no-fund. Create wrapper.ts from main.reproduction.wrapper, bundle with the recorded esbuild command (the repo's existing esbuild was used), then save the exact harness below as compare.mjs. Replace its two D:/RMProjects/Pi file URLs with the local checkout path. Source downloads and temporary dependencies are not vendored.",
+    "commands": [
+      "node --experimental-strip-types compare.mjs",
+      "node --experimental-strip-types compare.mjs --case=100000_integer_loop",
+      "node --expose-gc --experimental-strip-types scripts/bench/codemode-runtime.ts"
+    ],
+    "harness": "import assert from \"node:assert/strict\";\nimport { writeFileSync, readFileSync } from \"node:fs\";\nimport { cpus, release } from \"node:os\";\nimport { setTimeout as delay, setImmediate as nextTask } from \"node:timers/promises\";\nimport { CodeMode, Tool, Effect } from \"./upstream.mjs\";\nimport { CodemodeSandbox } from \"file:///D:/RMProjects/Pi/packages/codemode/src/runtime/host.ts\";\nimport { loadQuickJSWasm } from \"file:///D:/RMProjects/Pi/packages/codemode/src/wasm.ts\";\nconst payload = \"x\".repeat(4096);\nconst rows = Array.from({length:500}, (_,i)=>({id:i,text:\"x\".repeat(64),active:i%2===0}));\nconst counters={read:0,rows:0,wait:0};\nconst host={\n  read:()=>{counters.read++;return payload},\n  rows:()=>{counters.rows++;return rows},\n  wait:async()=>{counters.wait++;await delay(10);return 1}\n};\nconst tools=Object.fromEntries(Object.entries(host).map(([name,fn])=>[name,Tool.make({\n  description:name,input:{type:\"object\"},output:{},\n  execute:()=>name===\"wait\"?Effect.promise(fn):Effect.sync(fn)\n})]));\nconst limits={timeoutMs:60000,maxToolCalls:256,maxOutputBytes:1024*1024};\nconst options={tools,limits};\nconst reused=CodeMode.make(options);\nconst sandbox=new CodemodeSandbox({tools:Object.entries(host).map(([name,execute])=>({name,execute}))});\nconst t=performance.now(); await loadQuickJSWasm(); const wasmCompileMs=performance.now()-t;\nconst allCases=[\n {name:\"noop\",code:\"return 1\",expected:1,calls:0},\n {name:\"one_4KiB_read\",code:\"return (await tools.read({})).length\",expected:4096,calls:1},\n {name:\"100_sequential_4KiB_reads\",code:\"let n=0;for(let i=0;i<100;i++)n+=(await tools.read({})).length;return n\",expected:409600,calls:100},\n {name:\"100000_integer_loop\",code:\"let n=0;for(let i=0;i<100000;i++)n+=i;return n\",expected:4999950000,calls:0},\n {name:\"10000_integer_loop\",code:\"let n=0;for(let i=0;i<10000;i++)n+=i;return n\",expected:49995000,calls:0},\n {name:\"500_structured_rows_filter_reduce\",code:\"const rows=await tools.rows({});return rows.filter(r=>r.active).map(r=>r.id).reduce((a,b)=>a+b,0)\",expected:62250,calls:1},\n {name:\"8_parallel_10ms_host_calls\",code:\"return (await Promise.all(Array.from({length:8},()=>tools.wait({})))).reduce((a,b)=>a+b,0)\",expected:8,calls:8}\n];\nconst selected=process.argv.find(a=>a.startsWith(\"--case=\"))?.slice(7);\nconst cases=selected?allCases.filter(c=>c.name===selected):allCases.filter(c=>c.name!==\"100000_integer_loop\");\nassert.ok(cases.length);\nconst variants=[\"opencode_reused\",\"opencode_make_each\",\"pi_reused_catalog_fresh_worker\"];\nconst samples=Object.fromEntries(cases.map(c=>[c.name,Object.fromEntries(variants.map(v=>[v,[]]))]));\nconst warmups=2, repetitions=15;\nfor(const test of cases) for(let i=-warmups;i<repetitions;i++){\n  // Rotate ordering to avoid always measuring one runtime first.\n  const order=variants.map((_,j)=>variants[(j+(i+warmups)%3)%3]);\n  for(const variant of order){\n    const begin=performance.now();\n    const result=await (variant===\"pi_reused_catalog_fresh_worker\"?sandbox.execute(test.code):\n      Effect.runPromise((variant===\"opencode_reused\"?reused:CodeMode.make(options)).execute(test.code)));\n    const elapsed=performance.now()-begin;\n    assert.equal(result.ok,true,JSON.stringify(result));\n    assert.equal(result.value,test.expected);\n    assert.equal((result.calls??result.toolCalls).length,test.calls);\n    if(i>=0)samples[test.name][variant].push(elapsed);\n  }\n}\nconst stats=sandbox.stats;\nawait sandbox.close();\nassert.equal(stats.activeExecutions,0);\nassert.equal(stats.workersStarted,cases.length*(warmups+repetitions));\nassert.equal(stats.workersStopped,stats.workersStarted);\nconst expectedReplays=variants.length*(warmups+repetitions);\nassert.deepEqual(counters,{read:cases.filter(c=>c.name.includes(\"4KiB\")).reduce((n,c)=>n+c.calls,0)*expectedReplays,rows:(cases.some(c=>c.name===\"500_structured_rows_filter_reduce\")?1:0)*expectedReplays,wait:(cases.some(c=>c.name===\"8_parallel_10ms_host_calls\")?8:0)*expectedReplays});\nconst results=Object.fromEntries(Object.entries(samples).map(([name,vs])=>[name,Object.fromEntries(Object.entries(vs).map(([variant,raw])=>{\n const sorted=[...raw].sort((a,b)=>a-b);\n return [variant,{medianMs:sorted[Math.floor(sorted.length/2)],p95Ms:sorted[Math.ceil(sorted.length*0.95)-1],samplesMs:raw}];\n}))]));\nconst evidence={date:new Date().toISOString(),upstreamCommit:\"4617210822bdbb31e5749751afbfb4584ccedac8\",\n localCommit:\"af067d5efe3bc61128a4cda3162d23e908d3ece5\",environment:{node:process.version,platform:process.platform,arch:process.arch,os:release(),cpu:cpus()[0].model,effect:\"4.0.1\",acorn:\"8.15.0\",quickjsWasi:\"3.6.2\"},\n method:{warmupsPerCaseVariant:warmups,samplesPerCaseVariant:repetitions,rotatingOrder:true,profiler:false,\n scope:\"Library execution only; static imports and host creation excluded; Pi fresh Worker creation and termination included; OpenCode make_each includes CodeMode.make only, not core adapter tree/progress/web/policy.\",\n comparableLimits:limits,\n caveats:[\"Node is a common comparison runtime; OpenCode application uses Bun.\",\"Output limits differ in bytes vs UTF-16 chars; fixtures are ASCII.\",\"No real model, network, disk, policy, UI or complete product/token-cost comparison.\",\"Reused OpenCode runtime is library best case, not core adapter reuse.\",\"Timing does not compare total allocations, peak heap or event-loop responsiveness.\",\"15 samples describe this local run, not a statistically stable production p95.\"]},\n fixtureBytes:{read:Buffer.byteLength(JSON.stringify(payload)),rows:Buffer.byteLength(JSON.stringify(rows))},\n cases,wasmCompileMs,results,counters,piLifecycle:stats,\n reproduction:{dependencies:{acorn:\"8.15.0\",effect:\"4.0.1\"},upstreamSourcePath:\"packages/codemode/src\",bundle:\"esbuild wrapper.ts --bundle --platform=node --format=esm --packages=external --outfile=upstream.mjs\",command:\"node --experimental-strip-types compare.mjs\",wrapper:\"export * as CodeMode from \\\"./packages/codemode/src/codemode.ts\\\";\\nexport * as Tool from \\\"./packages/codemode/src/tool.ts\\\";\\nexport { Effect } from \\\"effect\\\";\\n\"}\n};\nwriteFileSync(new URL(selected?\"./cpu-comparison.json\":\"./comparison.json\",import.meta.url),JSON.stringify(evidence,null,2)+\"\\n\");\nfor (const [name,vs] of Object.entries(results)) process.stdout.write(JSON.stringify({name,...Object.fromEntries(Object.entries(vs).map(([v,s])=>[v,{median:s.medianMs,p95:s.p95Ms}]))})+\"\\n\");\nprocess.stdout.write(JSON.stringify({wasmCompileMs,counters,piLifecycle:stats})+\"\\n\");\n"
+  }
+}

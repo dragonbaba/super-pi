@@ -18,6 +18,7 @@ const { createEventBus } = await import("../../packages/coding-agent/src/core/ev
 const { createBashToolDefinition } = await import("../../packages/coding-agent/src/core/tools/bash.ts");
 const { registerLocalShellBackend, getShellCwdBinding } = await import("../../packages/coding-agent/src/core/tools/shell-cwd.ts");
 const { attachBackgroundShellLaunch } = await import("../../packages/coding-agent/src/core/tools/shell-background.ts");
+const { TASK_COMPLETION_CHARS } = await import("../../packages/extensions/managed-tasks.ts");
 const updates = 1000, chunk = Buffer.from("evidence ".repeat(128) + "\n");
 let pumping = false, chunkPromises = 0, chunkControllers = 0;
 const hook = createHook({ init(_id, type) { if (pumping && type === "PROMISE") chunkPromises++; } });
@@ -27,8 +28,11 @@ globalThis.AbortController = class extends NativeController { constructor() { su
 let sessionSequence = 0;
 function harness(durable = false) {
 	const events = createEventBus(), hooks: unknown[] = [], tools = new Map<string, any>();
-	let notifications = 0;
-	const pi: any = { events, registerTool: (tool: any) => tools.set(tool.name, tool), registerCommand() {}, on: (_name: string, fn: unknown) => hooks.push(fn), sendMessage: () => { notifications++; } };
+	let notifications = 0, notificationChars = 0;
+	const pi: any = { events, registerTool: (tool: any) => tools.set(tool.name, tool), registerCommand() {}, on: (_name: string, fn: unknown) => hooks.push(fn), sendMessage: (message: { content: string }) => {
+		notifications++; notificationChars += message.content.length;
+		assert.ok(message.content.length <= TASK_COMPLETION_CHARS);
+	} };
 	const manager = new BackgroundShellTasks(pi);
 	pi.getAllTools = () => [...tools.values()];
 	const ctx: any = { cwd: root, mode: "tui", getActiveTools: () => ["bash", "tasks"] };
@@ -36,7 +40,7 @@ function harness(durable = false) {
 		const id = `background-profile-${sessionSequence++}`, file = join(root, `${id}.jsonl`);
 		ctx.sessionManager = { getSessionFile: () => file, getSessionId: () => id, getLeafId: () => "branch" };
 	}
-	return { manager, ctx, events, tools, notifications: () => notifications,
+	return { manager, ctx, events, tools, notifications: () => notifications, notificationChars: () => notificationChars,
 		async dispose() { await manager.dispose(); hooks.length = 0; tools.clear(); events.clear(); } };
 }
 
@@ -85,7 +89,7 @@ async function profile(background: boolean) {
 		const weak = [new WeakRef(input), new WeakRef(backend), new WeakRef(tool), new WeakRef(h.manager)];
 		const binding = getShellCwdBinding(input); assert.ok(binding?.isReleased); weak.push(new WeakRef(binding!));
 		return { mode: background ? "background" : "foreground", updates: received, publications, chunkWrites,
-			history: (h.manager.tasks as any).history?.counters, notifications: h.notifications(), sampledBytesPerChunk: sampledBytes / updates,
+			history: (h.manager.tasks as any).history?.counters, notifications: h.notifications(), notificationChars: h.notificationChars(), sampledBytesPerChunk: sampledBytes / updates,
 			topSites: [...sites].sort((a, b) => b[1] - a[1]).slice(0, 5), weak };
 	} finally {
 		inspector.disconnect();

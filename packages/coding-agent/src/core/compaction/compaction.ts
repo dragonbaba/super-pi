@@ -644,29 +644,30 @@ Use this EXACT format:
 - [Any data, examples, or references needed to continue]
 - [Or "(none)" if not applicable]
 
-Keep each section concise. Preserve exact file paths, function names, and error messages.`;
+Keep each section concise. Preserve the current user goal, constraints, decision rationale, unresolved work, and uncertainty. Distinguish verified results from unverified reports; retain pending/background task IDs, their last known states, and retrievable result references. Merge repetitive progress and completed steps; omit duplicate logs, superseded conclusions, and examples no longer needed. Preserve exact file paths, function names, and error messages that are still needed to continue. Do not replace essential facts with references that may no longer be retrievable.`;
 
 const UPDATE_SUMMARIZATION_PROMPT = `The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.
 
 Update the existing structured summary with new information. RULES:
-- PRESERVE all existing information from the previous summary
-- ADD new progress, decisions, and context from the new messages
+- MERGE the previous summary with new messages into one concise current checkpoint, not an append-only history
+- PRESERVE the current user goal, unique constraints, still-relevant decisions and rationale, unresolved work, and uncertainty
+- INCORPORATE new progress, decisions, and context; remove superseded conclusions, duplicate logs, and obsolete examples
 - UPDATE the Progress section: move items from "In Progress" to "Done" when completed
 - UPDATE "Next Steps" based on what was accomplished
-- PRESERVE exact file paths, function names, and error messages
-- If something is no longer relevant, you may remove it
+- PRESERVE pending/background task IDs, last known states, and retrievable result references; distinguish verified results from unverified reports
+- PRESERVE exact file paths, function names, and error messages still needed to continue; do not replace essential facts with references that may no longer be retrievable
 
 Use this EXACT format:
 
 ## Goal
-[Preserve existing goals, add new ones if the task expanded]
+[Preserve current goals and explicit scope changes]
 
 ## Constraints & Preferences
 - [Preserve existing, add new ones discovered]
 
 ## Progress
 ### Done
-- [x] [Include previously done items AND newly completed items]
+- [x] [Merge completed work into concise outcomes that still matter]
 
 ### In Progress
 - [ ] [Current work - update based on progress]
@@ -675,7 +676,7 @@ Use this EXACT format:
 - [Current blockers - remove if resolved]
 
 ## Key Decisions
-- **[Decision]**: [Brief rationale] (preserve all previous, add new)
+- **[Decision]**: [Brief rationale for each still-relevant decision]
 
 ## Next Steps
 1. [Update based on current state]
@@ -683,7 +684,7 @@ Use this EXACT format:
 ## Critical Context
 - [Preserve important context, add new if needed]
 
-Keep each section concise. Preserve exact file paths, function names, and error messages.`;
+Keep each section concise; retain the context required to continue without losing unique user instructions.`;
 
 /**
  * Returns an error message when a summarization response cannot safely be persisted.

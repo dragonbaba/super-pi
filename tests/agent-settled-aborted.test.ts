@@ -7,6 +7,7 @@ import { createAssistantMessageEventStream } from "../packages/ai/src/utils/even
 import type { AssistantMessage } from "../packages/ai/src/types.ts";
 import { DefaultResourceLoader } from "../packages/coding-agent/src/core/resource-loader.ts";
 import { createAgentSession } from "../packages/coding-agent/src/core/sdk.ts";
+import { AgentSessionRuntime } from "../packages/coding-agent/src/core/agent-session-runtime.ts";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
 import { SettingsManager } from "../packages/coding-agent/src/core/settings-manager.ts";
 import { toJsonEvent } from "../packages/coding-agent/src/modes/json-event.ts";
@@ -14,6 +15,11 @@ import type { ExtensionFactory } from "../packages/coding-agent/src/core/extensi
 import { ALPHA_MODEL, alphaModelRuntime } from "./helpers/alpha-session.ts";
 
 type Reason = "stop" | "error" | "aborted" | "throw";
+
+function gate() {
+	let resolve!: () => void;
+	return { promise: new Promise<void>(done => { resolve = done; }), release: () => resolve() };
+}
 
 async function fixture(reasons: Reason[], extension?: ExtensionFactory, retry = false, baseDelayMs = 60_000, autoCompact = false) {
 	const root = mkdtempSync(join(tmpdir(), "pi-settled-"));
@@ -110,25 +116,55 @@ test("cancellation during retry backoff is reported despite an error as the last
 
 test("settlement snapshots cancellation before extension code changes the event or starts another run", async () => {
 	const extensionEvents: unknown[] = [];
+	const extensionIdle: boolean[] = [];
+	const beforeNested = gate(), startNested = gate(), afterNested = gate(), finishOuter = gate();
 	let nested: (() => Promise<void>) | undefined;
 	const f = await fixture(["stop", "stop"], pi => {
-		pi.on("agent_settled", async event => {
+		pi.on("agent_settled", async (event, ctx) => {
 			extensionEvents.push(structuredClone(event));
+			extensionIdle.push(ctx.isIdle());
 			if (extensionEvents.length === 1) {
 				event.aborted = false;
+				beforeNested.release(); await startNested.promise;
 				await nested!();
+				afterNested.release(); await finishOuter.promise;
 			}
 		});
 	});
 	nested = () => f.session.prompt("nested");
+	const runtime = new AgentSessionRuntime(f.session, { cwd: process.cwd(), agentDir: process.cwd() } as never,
+		async () => { throw new Error("unexpected replacement"); });
+	let invalidated = false, disposal: Promise<void> | undefined;
+	runtime.setBeforeSessionInvalidate(() => { invalidated = true; });
 	const unsubscribe = f.session.subscribe(event => {
 		if (event.type === "agent_end" && f.calls() === 1) f.session.agent.abort();
 	});
+	const run = f.session.prompt("first");
 	try {
-		await f.session.prompt("first");
+		await beforeNested.promise;
+		assert.equal(f.session.isStreaming, false, "a settled hook may admit a successor");
+		assert.equal(f.session.isIdle, false, "cleanup still owns the session before successor admission");
+		let idle = false;
+		const waiting = f.session.waitForIdle().then(() => { idle = true; });
+		await Promise.resolve();
+		assert.equal(idle, false);
+		startNested.release(); await afterNested.promise;
+		assert.equal(f.session.isIdle, false, "nested completion must not release its enclosing cleanup");
+		assert.equal(idle, false);
+		assert.equal(f.settled.length, 0, "RPC/UI also wait for all settlement hooks");
+		disposal = runtime.dispose();
+		await new Promise<void>(resolve => setImmediate(resolve));
+		assert.equal(invalidated, false, "runtime disposal waits for the enclosing settlement hook");
+		finishOuter.release(); await run; await waiting; await disposal;
+		assert.equal(invalidated, true);
+		assert.equal(idle, true);
+		assert.equal(f.session.isIdle, true);
+		assert.equal((f.session as any)._settlementDepth, 0);
+		assert.equal((f.session as any)._pendingSettledAborted, undefined);
+		assert.deepEqual(extensionIdle, [true, true], "Goal/Plan handlers must observe admission-ready idle during settlement");
 		assert.deepEqual(extensionEvents, [{ type: "agent_settled", aborted: true }, { type: "agent_settled", aborted: false }]);
-		assert.deepEqual(f.settled, [{ type: "agent_settled", aborted: false }, { type: "agent_settled", aborted: true }]);
-	} finally { nested = undefined; unsubscribe(); f.release(); }
+		assert.deepEqual(f.settled, [{ type: "agent_settled", aborted: false }], "public settlement describes only the latest admission");
+	} finally { startNested.release(); finishOuter.release(); await run; await disposal; nested = undefined; unsubscribe(); f.release(); }
 });
 
 test("a successful automatic retry is not cancellation", async () => {
@@ -138,6 +174,128 @@ test("a successful automatic retry is not cancellation", async () => {
 		assert.equal(f.calls(), 2);
 		assert.deepEqual(f.settled, [{ type: "agent_settled", aborted: false }]);
 		assert.equal(f.session.isRetrying, false);
+	} finally { f.release(); }
+});
+
+test("completion messages arriving during final custom cleanup wake one successor without polling", async () => {
+	const entered = gate(), released = gate();
+	const f = await fixture(["stop", "stop"], pi => {
+		pi.on("message_end", async event => {
+			if (event.message.role === "custom" && event.message.content === "cleanup-note") {
+				entered.release(); await released.promise;
+			}
+		});
+	});
+	f.session.agent.followUpMode = "all";
+	const off = f.session.subscribe(event => {
+		if (event.type === "agent_end" && f.calls() === 1)
+			void f.session.sendCustomMessage({ customType: "note", content: "cleanup-note", display: false }, { triggerTurn: false });
+	});
+	const run = f.session.prompt("first");
+	try {
+		await entered.promise;
+		for (const content of ["completed-A", "completed-B"])
+			await f.session.sendCustomMessage({ customType: "note", content, display: true }, { triggerTurn: true, deliverAs: "followUp" });
+		released.release(); await run;
+		assert.equal(f.calls(), 2);
+		assert.equal(f.session.agent.hasQueuedMessages(), false);
+		for (const content of ["completed-A", "completed-B"])
+			assert.equal(f.session.messages.filter(m => m.role === "custom" && m.content === content).length, 1);
+		assert.equal(f.settled.length, 1);
+		assert.equal(f.session.isIdle, true);
+	} finally { released.release(); await run; off(); f.release(); }
+});
+
+test("a completion at agent_end joins an already flushed note without an empty model turn", async () => {
+	const f = await fixture(["stop", "stop"]);
+	const off = f.session.subscribe(event => {
+		if (f.calls() !== 1) return;
+		if (event.type === "turn_end") void f.session.sendCustomMessage({ customType: "note", content: "context", display: false }, { triggerTurn: false });
+		if (event.type === "agent_end") void f.session.sendCustomMessage({ customType: "note", content: "completed", display: true }, { triggerTurn: true, deliverAs: "followUp" });
+	});
+	try {
+		await f.session.prompt("first");
+		assert.equal(f.calls(), 2);
+		assert.equal(f.session.agent.hasQueuedMessages(), false);
+	} finally { off(); f.release(); }
+});
+
+test("old settlement cannot clear a still-running successor or resolve its idle waiter", async () => {
+	const entered = gate(), released = gate();
+	let successor: Promise<void> | undefined;
+	let startSuccessor!: () => Promise<void>;
+	let started = false;
+	const f = await fixture(["stop", "stop"], pi => {
+		pi.on("agent_settled", async () => {
+			if (started) return;
+			started = true;
+			successor = startSuccessor();
+			await entered.promise;
+		});
+	});
+	startSuccessor = () => f.session.sendCustomMessage({ customType: "note", content: "successor", display: true }, { triggerTurn: true });
+	let admissions = 0;
+	const off = f.session.agent.subscribe(async event => {
+		if (event.type === "agent_start" && ++admissions === 2) { entered.release(); await released.promise; }
+	});
+	try {
+		await f.session.prompt("first");
+		assert.equal(f.session.isStreaming, true);
+		assert.equal(f.session.isIdle, false);
+		assert.equal(f.settled.length, 0, "RPC/UI subscribers must not see the predecessor settle after successor start");
+		let idle = false;
+		const waiting = f.session.waitForIdle().then(() => { idle = true; });
+		await Promise.resolve();
+		assert.equal(idle, false);
+		released.release(); await successor; await waiting;
+		assert.equal(idle, true);
+		assert.equal(f.session.isIdle, true);
+		assert.equal(f.calls(), 2);
+		assert.equal(f.settled.length, 1);
+	} finally { released.release(); await successor; off(); f.release(); }
+});
+
+for (const boundary of ["during-cleanup", "after-queue-check"] as const) test(`cancellation ${boundary} retains a completion until an explicit next prompt`, async t => {
+	const entered = gate(), released = gate();
+	const f = await fixture(["stop", "stop"], pi => {
+		pi.on("message_end", async event => {
+			if (event.message.role === "custom" && event.message.content === "cleanup-note") {
+				entered.release(); await released.promise;
+			}
+		});
+	});
+	const off = f.session.subscribe(event => {
+		if (event.type === "agent_end" && f.calls() === 1)
+			void f.session.sendCustomMessage({ customType: "note", content: "cleanup-note", display: false }, { triggerTurn: false });
+	});
+	let cancelled: Promise<void> | undefined;
+	if (boundary === "after-queue-check") {
+		const internal = f.session as any, settle = internal._emitAgentSettled.bind(internal);
+		t.mock.method(internal, "_emitAgentSettled", async (continueQueued: boolean) => {
+			const resume = await settle(continueQueued);
+			if (resume && !cancelled) cancelled = f.session.abort();
+			return resume;
+		});
+	}
+	const run = f.session.prompt("first");
+	try {
+		await entered.promise;
+		await f.session.sendCustomMessage({ customType: "note", content: "completed", display: true }, { triggerTurn: true, deliverAs: "followUp" });
+		if (boundary === "during-cleanup") cancelled = f.session.abort();
+		released.release(); await run; await cancelled;
+		assert.equal(f.calls(), 1);
+		assert.deepEqual(f.settled, [{ type: "agent_settled", aborted: true }]);
+		await f.session.prompt("continue");
+		assert.equal(f.session.messages.filter(m => m.role === "custom" && m.content === "completed").length, 1);
+	} finally { released.release(); await run; off(); f.release(); }
+});
+
+test("completion reports cannot revive a disposed session", async () => {
+	const f = await fixture(["stop"]);
+	try {
+		f.session.dispose();
+		await assert.rejects(f.session.sendCustomMessage({ customType: "note", content: "late report", display: true }, { triggerTurn: true }), /disposed/i);
+		assert.equal(f.calls(), 0);
 	} finally { f.release(); }
 });
 
@@ -170,7 +328,13 @@ test("settlement releases run signals and disposed owners", { skip: !global.gc }
 		const unsubscribe = f.session.subscribe(event => {
 			if (event.type === "agent_start") refs.push(new WeakRef(f.session.agent.signal!));
 		});
-		try { await f.session.prompt("lifecycle"); }
+		try {
+			const note = f.session.sendCustomMessage({ customType: "note", content: "lifecycle", display: false }, { triggerTurn: false });
+			refs.push(new WeakRef((f.session as any)._customMessageFlush));
+			await note;
+			assert.equal((f.session as any)._customMessageFlush, undefined);
+			await f.session.prompt("lifecycle");
+		}
 		finally { unsubscribe(); f.release(); }
 	}
 	for (const reason of ["stop", "error", "aborted"] as const) await run(reason);
@@ -178,7 +342,7 @@ test("settlement releases run signals and disposed owners", { skip: !global.gc }
 		await new Promise<void>(resolve => setImmediate(resolve));
 		global.gc!();
 	}
-	assert.equal(refs.length, 9);
+	assert.equal(refs.length, 12);
 	assert.equal(refs.filter(ref => ref.deref() !== undefined).length, 0);
-	t.diagnostic("settlement lifecycle WeakRefs=9 retained=0");
+	t.diagnostic("settlement lifecycle WeakRefs=12 retained=0 (includes custom-message drain owners)");
 });
