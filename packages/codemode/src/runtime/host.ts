@@ -1,4 +1,5 @@
-import { Worker } from "node:worker_threads";
+import { MessageChannel, type MessagePort, Worker } from "node:worker_threads";
+import { WorkerPool } from "./worker-pool.ts";
 import { assignCodemodeIdentifiers } from "../identifier.ts";
 import { BoundedJson } from "../bounded-json.ts";
 import { IDENTIFIER_RE as IDENTIFIER } from "../regex.ts";
@@ -126,17 +127,19 @@ interface ExecutionOptions {
 	wasm: Promise<CodemodeWasmModule>;
 	workerUrl: string | URL;
 	lifecycle: { workersStarted: number; workersStopped: number };
+	pool: WorkerPool | undefined;
 }
 
 /**
- * One script run in its own worker and QuickJS VM. A fresh worker per run keeps
- * termination simple: a runaway script, including one that only spins the
- * microtask queue, is killed with `terminate()` and cannot poison a later run.
+ * One script and fresh QuickJS VM. A pooled lease owns a dedicated port until
+ * VM disposal; failures always terminate its worker, including microtask loops.
  */
 class Execution {
 	readonly promise: Promise<CodemodeResult>;
 	private resolveResult!: (result: CodemodeResult) => void;
 	private worker: Worker | undefined;
+	private port: MessagePort | undefined;
+	private readonly pool: WorkerPool | undefined;
 	private readonly interrupt = new SharedArrayBuffer(4);
 	private tools: ReadonlyMap<string, CodemodeTool> | undefined;
 	private globals: ReadonlyMap<string, CodemodeTool> | undefined;
@@ -152,6 +155,7 @@ class Execution {
 	private readonly lifecycle: ExecutionOptions["lifecycle"];
 
 	constructor(options: ExecutionOptions) {
+		this.pool = options.pool;
 		this.lifecycle = options.lifecycle;
 		this.promise = new Promise<CodemodeResult>((resolve) => {
 			this.resolveResult = resolve;
@@ -190,7 +194,7 @@ class Execution {
 		return this.promise;
 	}
 
-	private start(options: ExecutionOptions, wasm: CodemodeWasmModule): void {
+	private async start(options: ExecutionOptions, wasm: CodemodeWasmModule): Promise<void> {
 		if (this.finished) return;
 		const workerData: WorkerData = {
 			code: options.code,
@@ -205,25 +209,32 @@ class Execution {
 		try {
 			// Host preload/inspector hooks and environment credentials are not VM dependencies.
 			const source = typeof options.workerUrl === "string" ? options.workerUrl.endsWith(".ts") : options.workerUrl.pathname.endsWith(".ts");
-			worker = new Worker(options.workerUrl, { workerData, execArgv: source ? WORKER_EXEC_ARGV : WORKER_COMPILED_EXEC_ARGV, env: WORKER_ENV });
+			worker = this.pool ? await this.pool.acquire(this) : new Worker(options.workerUrl, { workerData, execArgv: source ? WORKER_EXEC_ARGV : WORKER_COMPILED_EXEC_ARGV, env: WORKER_ENV });
 		} catch (error) {
 			this.finish({ kind: "sandbox", message: workerErrorMessage(error, "Failed to start worker: ") });
 			return;
 		}
+		if (this.finished) { await this.pool?.release(worker, this, false); return; }
 		this.worker = worker;
-		this.lifecycle.workersStarted++;
-		worker.on("message", (message: unknown) => this.handleMessage(message));
-		worker.on("error", (error: unknown) => {
-			this.finish({
-				kind: "sandbox",
-				name: error instanceof Error ? error.name : undefined,
-				message: workerErrorMessage(error),
-			});
-		});
-		worker.on("exit", (code) => {
-			this.finish({ kind: "sandbox", message: `Worker exited with code ${code} before the script settled` });
-		});
+		worker.on("error", this.onWorkerError);
+		worker.on("exit", this.onWorkerExit);
+		if (this.pool) {
+			const channel = new MessageChannel();
+			this.port = channel.port1;
+			this.port.on("message", this.handleMessage);
+			try { worker.postMessage({ data: workerData, port: channel.port2 }, [channel.port2]); }
+			catch (error) { channel.port2.close(); this.onWorkerError(error); }
+		} else {
+			this.lifecycle.workersStarted++;
+			worker.on("message", this.handleMessage);
+		}
 	}
+	private readonly onWorkerError = (error: unknown): void => {
+		this.finish({ kind: "sandbox", name: error instanceof Error ? error.name : undefined, message: workerErrorMessage(error) });
+	};
+	private readonly onWorkerExit = (code: number): void => {
+		this.finish({ kind: "sandbox", message: `Worker exited with code ${code} before the script settled` });
+	};
 
 	private readonly onAbort = (): void => {
 		const reason: unknown = this.signal?.reason;
@@ -231,10 +242,10 @@ class Execution {
 	};
 
 	private post(message: HostToWorkerMessage): void {
-		this.worker?.postMessage(message);
+		(this.port ?? this.worker)?.postMessage(message);
 	}
 
-	private handleMessage(message: unknown): void {
+	private readonly handleMessage = (message: unknown): void => {
 		if (this.finished) return;
 		if (!isWorkerToHostMessage(message) || !this.budget.consume(message)) {
 			this.finish({ kind: "sandbox", message: "Invalid or oversized Codemode bridge message" });
@@ -254,7 +265,7 @@ class Execution {
 				this.finish({ kind: "sandbox", message: message.message });
 				break;
 		}
-	}
+	};
 
 	private handleDone(message: Extract<WorkerToHostMessage, { type: "done" }>): void {
 		try {
@@ -264,7 +275,7 @@ class Execution {
 				name: typeof parsed.name === "string" ? parsed.name : undefined, stack: typeof parsed.stack === "string" ? parsed.stack : undefined });
 			return;
 		}
-		this.finish(undefined, message.value === undefined ? undefined : JSON.parse(message.value), parseStoreWrites(message.writes));
+		this.finish(undefined, message.value === undefined ? undefined : JSON.parse(message.value), parseStoreWrites(message.writes), message.reusable === true);
 		} catch (error) {
 			this.finish({ kind: "sandbox", message: errorMessage(error) });
 		}
@@ -306,7 +317,7 @@ class Execution {
 		this.post(reply);
 	}
 
-	private finish(error: CodemodeError | undefined, value?: unknown, writes?: CodemodeStoreWrites): void {
+	private finish(error: CodemodeError | undefined, value?: unknown, writes?: CodemodeStoreWrites, reusable = false): void {
 		if (this.finished) return;
 		this.finished = true;
 		clearTimeout(this.timer);
@@ -337,6 +348,17 @@ class Execution {
 		Atomics.store(new Int32Array(this.interrupt), 0, 1);
 		const worker = this.worker;
 		this.worker = undefined;
+		this.port?.removeAllListeners();
+		this.port?.close();
+		this.port = undefined;
+		if (this.pool) {
+			worker.removeListener("error", this.onWorkerError);
+			worker.removeListener("exit", this.onWorkerExit);
+			const retiring = this.pool.release(worker, this, reusable && error === undefined);
+			if (retiring) void retiring.then(() => this.resolveResult(result));
+			else this.resolveResult(result);
+			return;
+		}
 		worker
 			.terminate()
 			.catch(() => undefined)
@@ -350,8 +372,8 @@ class Execution {
  * the output helpers `text`, `image`, `exit`, and `console.*`, `store`/`load`, and the
  * configured globals; nothing else (no timers, `fetch`, `process`, `require`, modules).
  *
- * Each `execute()` gets its own worker and VM; the sandbox only holds the tool
- * table and defaults. `close()` aborts in-flight executions.
+ * Each `execute()` gets a fresh VM. Optional Worker reuse is bounded to one
+ * slot per sandbox; `close()` aborts execution and disposes the retained Worker.
  */
 export class CodemodeSandbox {
 	private readonly toolsByName = new Map<string, CodemodeTool>();
@@ -366,6 +388,7 @@ export class CodemodeSandbox {
 	private toolCatalog: WorkerData["tools"] = [];
 	private readonly globalCatalog: WorkerData["globals"] = [];
 	private readonly lifecycle = { workersStarted: 0, workersStopped: 0 };
+	private readonly pool: WorkerPool | undefined;
 	/** Diagnostic snapshot, allocated only on explicit inspection. */
 	get stats() { return { activeExecutions: this.running.size, ...this.lifecycle }; }
 
@@ -375,6 +398,7 @@ export class CodemodeSandbox {
 		if (!Number.isSafeInteger(this.memoryLimitBytes) || this.memoryLimitBytes < 1024 * 1024 || this.memoryLimitBytes > DEFAULT_MEMORY_BYTES) throw new RangeError("Invalid Codemode memory limit");
 		this.wasm = options.wasm;
 		this.workerUrl = options.workerUrl ?? defaultWorkerUrl();
+		this.pool = options.reuseWorker ? new WorkerPool(this.workerUrl, this.lifecycle) : undefined;
 		for (const tool of options.tools ?? []) this.registerTool(tool);
 		const namespaces = new Set<string>();
 		for (const global of options.globals ?? []) {
@@ -451,6 +475,7 @@ export class CodemodeSandbox {
 			wasm: this.wasm === undefined ? loadQuickJSWasm() : Promise.resolve(this.wasm),
 			workerUrl: this.workerUrl,
 			lifecycle: this.lifecycle,
+			pool: this.pool,
 		});
 		this.running.add(execution);
 		try { return await execution.promise; }
@@ -461,6 +486,7 @@ export class CodemodeSandbox {
 	async close(): Promise<void> {
 		this.closed = true;
 		await Promise.all([...this.running].map((execution) => execution.abort("Sandbox closed")));
+		await this.pool?.close();
 		this.toolsByName.clear();
 		this.globalsByName.clear();
 		this.toolSnapshot = undefined;

@@ -10,7 +10,11 @@ const { CodemodeSandbox } = await import(new URL(`../../packages/codemode/${runt
 const { loadQuickJSWasm } = await import(new URL(`../../packages/codemode/${runtimeRoot}/wasm.${extension}`, import.meta.url).href);
 const moduleImportMs = performance.now() - importStart;
 
-if (process.argv.includes("--stages")) {
+if (process.argv.includes("--pool")) {
+	assert.equal(mode, "compiled", "Pool diagnostics require --compiled and a current codemode build");
+	const { benchmarkWorkerPool } = await import("./codemode-worker-pool.ts");
+	await benchmarkWorkerPool(CodemodeSandbox, loadQuickJSWasm);
+} else if (process.argv.includes("--stages")) {
 	assert.equal(mode, "compiled", "Stage diagnostics require --compiled and a current codemode build");
 	const { benchmarkRuntimeStages } = await import("./codemode-runtime-stages.ts");
 	await benchmarkRuntimeStages(CodemodeSandbox, loadQuickJSWasm, moduleImportMs);

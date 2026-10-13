@@ -389,7 +389,7 @@ export class CodemodeController {
 		if (this.sandbox) return this.sandbox;
 		const { CodemodeSandbox } = await import("@super-pi/codemode");
 		if (this.closed) throw new Error("Codemode session is disposed");
-		this.sandbox = new CodemodeSandbox({ tools: this.descriptors, globals: [
+		this.sandbox = new CodemodeSandbox({ reuseWorker: true, tools: this.descriptors, globals: [
 			{ name: "callTool", spread: true, execute: args => {
 				const [name, input] = args as unknown[];
 				if (typeof name !== "string") { this.requireInvocation().failed = true; throw new Error("callTool requires a tool name"); }

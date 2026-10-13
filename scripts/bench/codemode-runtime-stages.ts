@@ -34,14 +34,14 @@ async function measureRuntimeStages(Sandbox: typeof CodemodeSandbox, loadWasm: t
 	source = source.replace(/from "([^"]+)"/g, (_match, specifier: string) =>
 		`from ${JSON.stringify(specifier.startsWith(".") ? new URL(specifier, workerUrl).href
 			: specifier.startsWith("node:") ? specifier : pathToFileURL(require.resolve(specifier)).href)}`);
-	insert("const budget = new BridgeBudget();", "const __trace = new Float64Array(workerData.__stageBuffer);\nconst __now = () => Number(process.hrtime.bigint()) / 1e6;\n__trace[1] = __now();\nfunction __serialized(value, slot) { const json = JSON.stringify(value); __trace[slot] = json.length; __trace[slot + 3] = Buffer.byteLength(json); return json; }\nconst budget = new BridgeBudget();");
+	insert("function discardOutput(memory)", "const __trace = new Float64Array(workerData.__stageBuffer);\nconst __now = () => Number(process.hrtime.bigint()) / 1e6;\n__trace[1] = __now();\nfunction __serialized(value, slot) { const json = JSON.stringify(value); __trace[slot] = json.length; __trace[slot + 3] = Buffer.byteLength(json); return json; }\nfunction discardOutput(memory)");
 	insert("const vm = await QuickJS.create({", "__trace[9]++;\n    __trace[2] = __now();\n    const vm = await QuickJS.create({");
 	insert("// Called from the prelude with primitives only.", "__trace[3] = __now();\n    // Called from the prelude with primitives only.");
 	insert("const api = vm.withScope(", "__trace[4] = __now();\n    const api = vm.withScope(");
 	insert('const settle = api.getProp("settle");', '__trace[5] = __now();\n    const settle = api.getProp("settle");');
 	insert("let fn;", "__trace[6] = __now();\n    let fn;");
 	insert("vm.callFunction(run, api, fn).dispose();", "__trace[7] = __now();\n    vm.callFunction(run, api, fn).dispose();");
-	insert("parentPort?.postMessage(message);", 'if (message.type === "done") { __trace[23]++; __trace[8] = __now(); }\n    parentPort?.postMessage(message);');
+	insert("port.postMessage(terminal);", 'if (terminal.type === "done") { __trace[23]++; __trace[8] = __now(); }\n    port.postMessage(terminal);');
 	insert("JSON.stringify(data.tools)", "__serialized(data.tools, 24)");
 	insert("JSON.stringify(data.globals)", "__serialized(data.globals, 25)");
 	insert("JSON.stringify(data.store)", "__serialized(data.store, 26)");

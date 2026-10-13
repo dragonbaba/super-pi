@@ -3,6 +3,36 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "typescript";
 
+test("Worker reuse adds no per-message callbacks or async factories", () => {
+	const targets = new Map([
+		["packages/codemode/src/runtime/worker.ts", new Set(["post", "drain", "deliver", "onMessage"])],
+		["packages/codemode/src/runtime/host.ts", new Set(["post", "handleMessage"])],
+		["packages/codemode/src/runtime/worker-pool.ts", new Set(["release", "onExit"])],
+	]);
+	// main/captureMemory/bridge/API scope initialize a VM; start/finish/acquire/retire
+	// own script or Worker lifecycle callbacks. None runs once per tool/progress update.
+	for (const [path, names] of targets) {
+		const source = ts.createSourceFile(path, readFileSync(path, "utf8"), ts.ScriptTarget.Latest, true);
+		const found = new Set<string>();
+		function audit(node: ts.Node): void {
+			assert.equal(ts.isArrowFunction(node) || ts.isFunctionExpression(node) || ts.isAwaitExpression(node), false, node.getText(source));
+			if (ts.isNewExpression(node)) assert.equal(["Promise", "AbortController", "MessageChannel"].includes(node.expression.getText(source)), false);
+			if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) assert.equal(["then", "catch", "finally", "bind", "map", "filter"].includes(node.expression.name.text), false);
+			ts.forEachChild(node, audit);
+		}
+		function visit(node: ts.Node): void {
+			if ((ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node)) && node.name && names.has(node.name.getText(source)) && node.body) {
+				found.add(node.name.getText(source)); audit(node.body);
+			} else if ((ts.isVariableDeclaration(node) || ts.isPropertyDeclaration(node)) && names.has(node.name.getText(source)) && node.initializer && ts.isArrowFunction(node.initializer)) {
+				found.add(node.name.getText(source)); audit(node.initializer.body);
+			} else if (ts.isBinaryExpression(node) && names.has(node.left.getText(source)) && ts.isArrowFunction(node.right)) {
+				found.add(node.left.getText(source)); audit(node.right.body);
+			} else ts.forEachChild(node, visit);
+		}
+		visit(source); assert.deepEqual(found, names);
+	}
+});
+
 test("post-authorization validation dispatch has no per-call factory or async boundary", () => {
   const source = ts.createSourceFile("agent-loop.ts", readFileSync("packages/agent/src/agent-loop.ts", "utf8"), ts.ScriptTarget.Latest, true);
   let found = 0;

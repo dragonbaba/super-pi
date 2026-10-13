@@ -172,7 +172,7 @@ try {
   loader = undefined;
   for (let i = 0; i < 8; i++) { await nextTask(); gc(); }
   let retained = 0; for (const ref of refs) if (ref.deref()) retained++;
-  assert.equal(retained, 0); assert.equal(ledgerPending, 0); assert.equal(childCalls, 242); assert.equal(workersStarted, 22); assert.equal(workersStopped, 22);
+  assert.equal(retained, 0); assert.equal(ledgerPending, 0); assert.equal(childCalls, 242); assert.equal(workersStarted, 11); assert.equal(workersStopped, 11);
   startupMs.sort(compare); firstMs.sort(compare); warmMs.sort(compare); sites.sort((a, b) => b.bytes - a.bytes);
   process.stdout.write(JSON.stringify({ benchmark: "codemode-session", node: process.version, platform: process.platform, sampledCycles: 10, excludedWarmupCycles: 1,
     startupMedianMs: startupMs[5], startupP95Ms: startupMs[9], firstBatchMedianMs: firstMs[5], firstBatchP95Ms: firstMs[9], warmBatchMedianMs: warmMs[5], warmBatchP95Ms: warmMs[9],

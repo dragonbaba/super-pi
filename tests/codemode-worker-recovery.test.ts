@@ -72,8 +72,8 @@ test("Codemode worker recovery hints use error codes and stay within the diagnos
 	const root = mkdtempSync(join(tmpdir(), "sp-codemode-worker-errors-"));
 	const worker = join(root, "worker.mjs");
 	// These workers throw before VM startup, so no compiled WASM is needed.
-	const sandbox = new CodemodeSandbox({ workerUrl: pathToFileURL(worker), wasm: {} });
-	const invalid = new CodemodeSandbox({ workerUrl: "invalid-worker", wasm: {} });
+	const sandbox = new CodemodeSandbox({ reuseWorker: true, workerUrl: pathToFileURL(worker), wasm: {} });
+	const invalid = new CodemodeSandbox({ reuseWorker: true, workerUrl: "invalid-worker", wasm: {} });
 	try {
 		const unrelated = "Cannot find module is just diagnostic text";
 		writeFileSync(worker, `throw new Error(${JSON.stringify(unrelated)});`);

@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "task": "OC11 compiled runtime cost decomposition and data-boundary audit",
   "date": "2026-10-13",
   "baselineCommit": "f099234ec938c3eafd31f7f458ca71acde1b23eb",
@@ -29,7 +29,7 @@
       "packages/agent/src/nested-tool-dispatch.ts": "cd4a04a34b72c96c4d1cd447293c09517b29a39f901f12d00308d9116e40fcc2"
     }
   },
-  "decision": "Keep the independent Worker + QuickJS architecture and existing batching. This stage adds on-demand diagnostics and records boundaries; it does not change production code or claim an optimization.",
+  "decision": "Historical no-pool baseline superseded by explicit user request: bounded Worker reuse with fresh VMs, ownership, retirement and measured gates; see workerPool.",
   "audit": {
     "callChain": [
       "CodemodeController.execute / ensureSandbox, store snapshot and catalog",
@@ -1056,5 +1056,622 @@
     "retainedAfterGc": 0,
     "sampledHostBytes": 2701800,
     "coverage": "real Worker and QuickJS; execution includes Worker startup, VM/prelude, execution, bridge and termination (not separately timed); warm=compiled WASM reused, fresh Worker/VM per run; sampling enabled for 30 warm no-ops and batch; excludes worker heaps, AgentSession, policy and UI; compiled is local tsc output, not an installed release"
+  },
+  "recordScope": "fingerprints/audit/verification/stageBenchmark/allocationBenchmark outside workerPool are historical pre-pool evidence at f099234e / initial #140. workerPool contains current implementation evidence.",
+  "workerPool": {
+    "userAuthorization": "User explicitly requested a Worker pool after baseline diagnostics.",
+    "decision": "Enable a bounded single-slot Worker resource pool in the coding-agent controller; low-level library remains opt-in. Fresh VM, budget, interrupt and MessageChannel per script; no pooled results, messages, Promise or VM.",
+    "bounds": {
+      "capacityPerSandbox": 1,
+      "queue": 0,
+      "maxExecutionsPerWorker": 64,
+      "idleMs": 30000,
+      "maxReusableWasmLinearBytes": 67108864,
+      "reuseAfter": "Explicit successful completion after VM disposal; match physical Worker and Execution owner",
+      "retireOn": [
+        "script error",
+        "timeout",
+        "abort",
+        "Worker failure",
+        "oversized WASM",
+        "64 executions",
+        "30s idle",
+        "close"
+      ],
+      "physicalRetirement": "acquire waits for terminate/exit; close rejects new leases and awaits retirement"
+    },
+    "audit": "Same complete production chain as historical audit plus WorkerPool acquire/release/retire and fresh per-execution ports. No new per-tool/progress callback, Promise, AbortController, wrapper array, JSON encoding or full-result copy. Script startup owns a MessageChannel, transfer-list/start message, acquire/start Promise and fixed VM callbacks; finish owns explicit disposal/optional retirement; idle transition owns one deadline. Existing host-call allocations are unchanged.",
+    "comparison": {
+      "benchmark": "codemode-worker-pool",
+      "node": "v26.4.0",
+      "platform": "win32",
+      "results": [
+        {
+          "reuseWorker": false,
+          "firstMs": 38.65380000000002,
+          "latency": [
+            37.793600000000026,
+            36.06700000000001,
+            36.45169999999996,
+            36.22829999999999,
+            36.64979999999997,
+            36.07570000000004,
+            36.67920000000004,
+            37.90350000000001,
+            36.03600000000006,
+            35.391200000000026,
+            36.62519999999995,
+            35.369500000000016,
+            35.33240000000001,
+            36.7514000000001,
+            35.62799999999993,
+            35.09960000000001,
+            35.34609999999998,
+            36.15549999999996,
+            34.71199999999999,
+            36.662900000000036,
+            35.64059999999995,
+            37.01599999999996,
+            37.66429999999991,
+            35.497299999999996,
+            36.24180000000001,
+            35.78620000000001,
+            35.56129999999985,
+            36.705400000000054,
+            35.8913,
+            36.24420000000009
+          ],
+          "medianMs": 36.15549999999996,
+          "p95Ms": 37.793600000000026,
+          "cpuUs": [
+            1600,
+            3100,
+            6300,
+            3100,
+            3100,
+            3100,
+            6300,
+            0,
+            3100,
+            3100,
+            0,
+            0,
+            3200,
+            3100,
+            1600,
+            6200,
+            1600,
+            1600,
+            3100,
+            3100,
+            0,
+            1600,
+            1500,
+            1600,
+            0,
+            1600,
+            0,
+            0,
+            0,
+            0
+          ],
+          "cpuP95Us": 6300,
+          "cpuGroupSize": 10,
+          "cpuGroups": 30,
+          "batchMs": 45.34960000000001,
+          "closeMs": 0.011300000000119326,
+          "calls": 100,
+          "idle": {
+            "rss": 91463680,
+            "heapTotal": 18067456,
+            "heapUsed": 10149080,
+            "external": 6171646,
+            "arrayBuffers": 137491
+          },
+          "idleStats": {
+            "activeExecutions": 0,
+            "workersStarted": 332,
+            "workersStopped": 332
+          },
+          "closedStats": {
+            "activeExecutions": 0,
+            "workersStarted": 332,
+            "workersStopped": 332
+          },
+          "leadingSites": [
+            {
+              "name": "stringify file:///D:/RMProjects/Pi/packages/codemode/dist/bounded-json.js",
+              "bytes": 494664
+            },
+            {
+              "name": "post node:inspector",
+              "bytes": 117792
+            },
+            {
+              "name": "handleCall file:///D:/RMProjects/Pi/packages/codemode/dist/runtime/host.js",
+              "bytes": 82920
+            },
+            {
+              "name": "Worker node:internal/worker",
+              "bytes": 78848
+            },
+            {
+              "name": "(V8 API) ",
+              "bytes": 74624
+            },
+            {
+              "name": "setupPortReferencing node:internal/worker/io",
+              "bytes": 66104
+            },
+            {
+              "name": "setOwnProperty node:internal/util",
+              "bytes": 63280
+            },
+            {
+              "name": "addEventListener node:internal/event_target",
+              "bytes": 49536
+            },
+            {
+              "name": "Map ",
+              "bytes": 45928
+            },
+            {
+              "name": "setOwnProperty node:internal/util",
+              "bytes": 42056
+            },
+            {
+              "name": "execute file:///D:/RMProjects/Pi/packages/codemode/dist/runtime/host.js",
+              "bytes": 41688
+            },
+            {
+              "name": "Map ",
+              "bytes": 41672
+            }
+          ],
+          "sampledHostBytes": 2520120,
+          "before": {
+            "rss": 76255232,
+            "heapTotal": 12562432,
+            "heapUsed": 9533056,
+            "external": 6171590,
+            "arrayBuffers": 137475
+          },
+          "afterCloseGc": {
+            "rss": 91664384,
+            "heapTotal": 18067456,
+            "heapUsed": 10077152,
+            "external": 6202917,
+            "arrayBuffers": 137491
+          },
+          "trackedReferences": 33,
+          "retainedAfterGc": 0
+        },
+        {
+          "reuseWorker": true,
+          "firstMs": 47.839500000000044,
+          "latency": [
+            9.048899999999776,
+            6.376800000000003,
+            7.86659999999938,
+            6.501000000000204,
+            8.58560000000034,
+            7.471199999999953,
+            6.1995999999999185,
+            6.264000000001033,
+            6.42370000000119,
+            6.149300000000949,
+            4.983799999999974,
+            4.730299999999261,
+            6.665899999999965,
+            7.558000000000902,
+            8.032800000000861,
+            5.455700000000434,
+            5.087299999999232,
+            6.720699999999852,
+            6.35109999999986,
+            6.687799999999697,
+            7.740799999999581,
+            6.371900000000096,
+            6.05869999999959,
+            6.15440000000126,
+            6.8091999999996915,
+            6.275700000000143,
+            6.608400000000984,
+            6.183000000000902,
+            6.671800000000076,
+            7.21730000000025
+          ],
+          "medianMs": 6.501000000000204,
+          "p95Ms": 8.58560000000034,
+          "cpuUs": [
+            0,
+            3100,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "cpuP95Us": 0,
+          "cpuGroupSize": 10,
+          "cpuGroups": 30,
+          "batchMs": 18.02940000000126,
+          "closeMs": 2.148300000000745,
+          "calls": 100,
+          "idle": {
+            "rss": 106479616,
+            "heapTotal": 18329600,
+            "heapUsed": 10211584,
+            "external": 6202917,
+            "arrayBuffers": 137523
+          },
+          "idleStats": {
+            "activeExecutions": 0,
+            "workersStarted": 6,
+            "workersStopped": 5
+          },
+          "closedStats": {
+            "activeExecutions": 0,
+            "workersStarted": 6,
+            "workersStopped": 6
+          },
+          "leadingSites": [
+            {
+              "name": "stringify file:///D:/RMProjects/Pi/packages/codemode/dist/bounded-json.js",
+              "bytes": 403768
+            },
+            {
+              "name": "handleCall file:///D:/RMProjects/Pi/packages/codemode/dist/runtime/host.js",
+              "bytes": 112104
+            },
+            {
+              "name": "(V8 API) ",
+              "bytes": 62048
+            },
+            {
+              "name": "addEventListener node:internal/event_target",
+              "bytes": 53672
+            },
+            {
+              "name": "Map ",
+              "bytes": 37568
+            },
+            {
+              "name": "setOwnProperty node:internal/util",
+              "bytes": 33608
+            },
+            {
+              "name": " node:internal/event_target",
+              "bytes": 33008
+            },
+            {
+              "name": "execute file:///D:/RMProjects/Pi/packages/codemode/dist/runtime/host.js",
+              "bytes": 29272
+            },
+            {
+              "name": "start file:///D:/RMProjects/Pi/packages/codemode/dist/runtime/host.js",
+              "bytes": 29056
+            },
+            {
+              "name": "Map ",
+              "bytes": 25080
+            },
+            {
+              "name": "Execution file:///D:/RMProjects/Pi/packages/codemode/dist/runtime/host.js",
+              "bytes": 24792
+            },
+            {
+              "name": "delete ",
+              "bytes": 20824
+            }
+          ],
+          "sampledHostBytes": 1200544,
+          "before": {
+            "rss": 91664384,
+            "heapTotal": 18067456,
+            "heapUsed": 10078632,
+            "external": 6202917,
+            "arrayBuffers": 137491
+          },
+          "afterCloseGc": {
+            "rss": 94769152,
+            "heapTotal": 18329600,
+            "heapUsed": 10123600,
+            "external": 6202917,
+            "arrayBuffers": 137491
+          },
+          "trackedReferences": 33,
+          "retainedAfterGc": 0
+        }
+      ],
+      "workerLifecycle": {
+        "idleAfterOne": {
+          "diagnostic": true,
+          "created": 1,
+          "disposed": 1,
+          "cleared": 1,
+          "tracked": 8,
+          "retained": 0,
+          "memory": {
+            "rss": 101457920,
+            "heapTotal": 11640832,
+            "heapUsed": 6862312,
+            "external": 3556490,
+            "arrayBuffers": 78163
+          },
+          "peakWasmBytes": 1638400
+        },
+        "idleAfterLargeRuns": {
+          "diagnostic": true,
+          "created": 31,
+          "disposed": 31,
+          "cleared": 31,
+          "tracked": 248,
+          "retained": 0,
+          "memory": {
+            "rss": 102420480,
+            "heapTotal": 11902976,
+            "heapUsed": 7217608,
+            "external": 3556530,
+            "arrayBuffers": 78163
+          },
+          "peakWasmBytes": 10027008,
+          "allocation": {
+            "sampledWorkerBytes": 12611224,
+            "leadingSites": [
+              {
+                "name": "instantiate",
+                "bytes": 8761264
+              },
+              {
+                "name": "Immediate",
+                "bytes": 219680
+              },
+              {
+                "name": "createContext",
+                "bytes": 207856
+              },
+              {
+                "name": "initAsyncResource",
+                "bytes": 175184
+              },
+              {
+                "name": "QuickJS",
+                "bytes": 142976
+              },
+              {
+                "name": "(V8 API)",
+                "bytes": 140752
+              },
+              {
+                "name": "post",
+                "bytes": 94480
+              },
+              {
+                "name": "memoryUsage",
+                "bytes": 87048
+              }
+            ]
+          }
+        },
+        "closedStats": {
+          "activeExecutions": 0,
+          "workersStarted": 1,
+          "workersStopped": 1
+        },
+        "workersRetainedAfterClose": 0
+      },
+      "gates": {
+        "sampledHostReduction": 0.5236163357300446,
+        "cpuP95Ratio": 0.21333333333333335,
+        "finalHostHeapRatio": 1.004609238800804
+      },
+      "coverage": "Compiled Node runtime; timings/host allocation use unmodified compiled workers. Process CPU is too coarse for the gate; separate Worker.cpuUsage captures use a keepalive data-URL bootstrap in both modes. Worker allocation probe includes diagnostic overhead, VM linear-memory peaks and controlled-GC WeakRefs. No installed release/Bun/real-model claim.",
+      "workerCpu": [
+        {
+          "reuseWorker": false,
+          "groupSize": 10,
+          "samplesUs": [
+            0,
+            3100,
+            7500,
+            0,
+            0,
+            0,
+            7500,
+            4500,
+            3000,
+            1500,
+            3000,
+            3000,
+            3000,
+            0,
+            3000,
+            0,
+            0,
+            4500,
+            1500,
+            3000,
+            1500,
+            1500,
+            3000,
+            1500,
+            4500,
+            1500,
+            3000,
+            6000,
+            1500,
+            7600
+          ],
+          "p95Us": 7500,
+          "stats": {
+            "activeExecutions": 0,
+            "workersStarted": 301,
+            "workersStopped": 301
+          }
+        },
+        {
+          "reuseWorker": true,
+          "groupSize": 10,
+          "samplesUs": [
+            0,
+            0,
+            0,
+            1500,
+            0,
+            0,
+            0,
+            1500,
+            1600,
+            0,
+            1500,
+            1600,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1500,
+            0,
+            0,
+            0,
+            1600,
+            0,
+            1500,
+            0,
+            1600,
+            0,
+            0
+          ],
+          "p95Us": 1600,
+          "stats": {
+            "activeExecutions": 0,
+            "workersStarted": 5,
+            "workersStopped": 5
+          }
+        }
+      ]
+    },
+    "productionSession": {
+      "benchmark": "codemode-session",
+      "node": "v26.4.0",
+      "platform": "win32",
+      "sampledCycles": 10,
+      "excludedWarmupCycles": 1,
+      "startupMedianMs": 0.7557000000000471,
+      "startupP95Ms": 1.1048000000000684,
+      "firstBatchMedianMs": 51.084499999999935,
+      "firstBatchP95Ms": 54.97259999999994,
+      "warmBatchMedianMs": 21.176899999999932,
+      "warmBatchP95Ms": 23.467199999999934,
+      "childCalls": 242,
+      "progress": 0,
+      "workersStarted": 11,
+      "workersStopped": 11,
+      "trackedReferences": 55,
+      "retainedAfterGc": 0,
+      "pendingEvidenceAfterTurn": 0,
+      "sampledHostBytes": 25921584,
+      "leadingSites": [
+        {
+          "name": "split",
+          "bytes": 1387928
+        },
+        {
+          "name": "createContext",
+          "bytes": 725848
+        },
+        {
+          "name": "join",
+          "bytes": 722192
+        },
+        {
+          "name": "read",
+          "bytes": 481592
+        },
+        {
+          "name": "stringify",
+          "bytes": 463936
+        }
+      ],
+      "coverage": "real SDK, built-in reads, AgentSession policy/hooks/results/store, Worker, projection and disposal; offline provider; excludes UI, worker heap and disk sessions"
+    },
+    "stageCompatibility": {
+      "result": "Passed all existing stage/result/byte/order assertions with current compiled worker",
+      "workersStarted": 48,
+      "workersStopped": 48,
+      "hostCalls": 1212,
+      "trackedReferences": 91,
+      "retainedAfterGc": 0
+    },
+    "verification": {
+      "localFullSuiteRuns": 0,
+      "newTestFiles": 0,
+      "initialFocused": "40 runtime/recovery/hot-path tests passed; 89 existing session tests passed",
+      "incrementalFocused": "4 pool/AST checks; final 13 recovery/hot-path and 5 affected runtime checks passed after owner/protocol/memory edits",
+      "commands": [
+        "npm run build --workspace @super-pi/codemode",
+        "npm run check",
+        "node --expose-gc --experimental-strip-types scripts/bench/codemode-runtime.ts --compiled --pool",
+        "node --expose-gc --experimental-strip-types scripts/bench/codemode-runtime.ts --compiled --stages",
+        "node --expose-gc --experimental-strip-types scripts/bench/codemode-session.ts",
+        "node node_modules/typescript/bin/tsc --noEmit --target ES2023 --module NodeNext --moduleResolution NodeNext --allowImportingTsExtensions --skipLibCheck --strict scripts/bench/codemode-runtime.ts"
+      ],
+      "captureNotes": "Initial sample exposed quantized per-script Windows CPU readings; use 30 groups of 10 scripts, separate from allocation sampling. Final host sample followed production owner/protocol changes. Worker lifecycle probe was then extended with Worker-local HeapProfiler and linear-memory peak, and rerun alone via exported measureWorkerLifecycle(CodemodeSandbox), without repeating unchanged host comparison. Final runtime interruption change cancels unawaited VM jobs upon main completion. Rebuilt, ran all 28 relevant runtime tests once, then repeated only affected runtime allocation/lifecycle benchmark. Added thread-CPU probe and ran it separately rather than repeating host sampling again.",
+      "finalRuntime": "28 runtime tests passed after final completion-interrupt change",
+      "workerCpuNote": "Worker.cpuUsage from the actual thread supplies the CPU p95 gate: 30 groups x10 scripts, separate from allocation/timing. Both CPU modes use a keepalive bootstrap because one-shot production workers can exit before CPU inspection; host process CPU is retained as raw coarse data only. Initial CPU probe hit ERR_WORKER_NOT_RUNNING and cleaned up; no failed measurement is reported as a pass."
+    },
+    "limitations": [
+      "Local Node compiled runtime only; no installed release/Bun/real-model benchmark.",
+      "RSS is process-wide and noisy; idle snapshot in final sample is about 14.3 MiB higher with pool, bounded by idle/count/size retirement and close.",
+      "Windows CPU remains coarse even when grouped. Acceptance uses Worker.cpuUsage batch p95 (keepalive bootstrap on both modes), not zero-heavy process CPU readings.",
+      "Host allocation reduction gate and post-close heap gate cover host only. Worker sample includes diagnostic overhead and has no separate fresh-thread relative-allocation control; it is not a QuickJS malloc profile.",
+      "Controlled GC proves collection only for tracked owners. No untracked zero-leak claim.",
+      "The Worker resource pool crosses await with an explicit exclusive owner and physical-port fence; it does not pool asynchronous user objects."
+    ],
+    "fingerprints": {
+      "packages/codemode/src/runtime/host.ts": "9d1968a4b20ed3ed9eb069a3b5cf21f8939ff6326bfc50f25d3f4567d6c58aa4",
+      "packages/codemode/src/runtime/worker.ts": "a2b38c52d4ef2b568db116e722d66e8fc1d5d98c22303f7dbe741be30da58c23",
+      "packages/codemode/src/runtime/protocol.ts": "a192f819fd51fd3fc611565167a20030332f490820827e124d29119b357830e9",
+      "packages/codemode/src/runtime/worker-pool.ts": "6921cedd1cc43dd88c08f109d5dca7a24c4b036352c5b7977a9645f87bd76793",
+      "packages/codemode/src/types.ts": "6b9c0e3b697ea49352fa53306625fddb00b2f0f117e644bcf5a8f5fd624349e2",
+      "packages/coding-agent/src/core/codemode.ts": "5d038478ec8b897031d0a285e5fdae086006fa15a1b627edd4120580d188bb3a",
+      "packages/codemode/dist/runtime/host.js": "4d36680d64b5e640199e684e08332cae03eaf05970d3a8ba63d752f8af869581",
+      "packages/codemode/dist/runtime/worker.js": "83162498506f071abdc023bc64d40ce1b554f572f4818982d509f5cebf8f59a2",
+      "packages/codemode/dist/runtime/protocol.js": "d7ee3164609a7d8a4cdacb87699d764739e6169e16bb42b0554ed09d12097d49",
+      "packages/codemode/dist/runtime/worker-pool.js": "0701aaa43e8f72c6bc4a5779ffcf12a02d5b1064b0d4f6483757093a20a444ce",
+      "scripts/bench/codemode-runtime.ts": "1092b4fafc3799852d685683c00599ebd0a1aa670cc76c67f1a8f770c2a47ede",
+      "scripts/bench/codemode-runtime-stages.ts": "2cc31b12ddb4818c37c36e6da8e60de715ae60cc38df5f327b67aaee46973f3d",
+      "scripts/bench/codemode-worker-pool.ts": "288362e19dc3f8a6055270ecbe6bcfc4338ec400ef8acfaab1d431ef60533d96",
+      "scripts/bench/codemode-session.ts": "ea1bf22021f6b225a31cb1311108771c9733576ad110d1b74f2824cb033706de",
+      "tests/codemode-runtime.test.ts": "819612dc219e264f0b4f1cacf3102c8d88094e4b5b0f5f7d9297ad08c1a862e8",
+      "tests/codemode-worker-recovery.test.ts": "11ffc325f202558e303791f37bd33f5fd3a4294ed03f29eb4f2ce8422689a82d",
+      "tests/codemode-hot-paths.test.ts": "a06576447ad27f130932b73142f8ad6aa66f54cb15c5a7f67b27f5dccdf8a42b"
+    }
   }
 }
