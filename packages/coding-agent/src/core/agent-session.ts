@@ -3121,8 +3121,8 @@ export class AgentSession {
 		} else if (this._interactionPaused && options?.triggerTurn) {
 			// Keep the report as context; only actual user input can answer an interaction.
 			this._pendingCustomMessages.push(appMessage);
-			// Reentrant/concurrent deliveries join the queue, never await their own hook.
-			if (!this.isStreaming && !this._customMessageFlush) await this._flushPendingCustomMessages();
+			// The SDK Promise joins persistence; extension pi.sendMessage is fire-and-forget.
+			if (!this.isStreaming) await this._flushPendingCustomMessages();
 		} else if (this.isStreaming && options?.triggerTurn !== false) {
 			if (options?.deliverAs === "followUp") {
 				this.agent.followUp(appMessage);
@@ -3137,7 +3137,7 @@ export class AgentSession {
 			this._pendingCustomMessages.push(appMessage);
 		} else {
 			this._pendingCustomMessages.push(appMessage);
-			if (!this._customMessageFlush) await this._flushPendingCustomMessages();
+			await this._flushPendingCustomMessages();
 		}
 	}
 

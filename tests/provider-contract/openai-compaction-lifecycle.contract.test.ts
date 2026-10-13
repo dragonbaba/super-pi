@@ -274,23 +274,28 @@ test("regular request scope uses the already-resolved credential without a secon
   } finally { await f.release(); }
 });
 
-test("session replacement while an idle custom extension callback is awaited cannot write into the incoming session", async () => {
+test("session replacement waits for an idle custom callback and cannot write into the incoming session", async () => {
   let entered!: () => void, release!: () => void;
   const ready = new Promise<void>(resolve => { entered = resolve; });
   const gate = new Promise<void>(resolve => { release = resolve; });
   const f = await fixture(false, undefined, "gpt-5.1", { customEnd: async () => { entered(); await gate; } });
+  let sent: Promise<void> | undefined, replacement: ReturnType<AgentSessionRuntime["newSession"]> | undefined;
   try {
     await f.session.prompt("establish boundary"); await f.session.compact();
     const oldFile = f.manager.getSessionFile()!;
-    const sent = f.session.sendCustomMessage({ customType: "local", content: "OLD_OWNER_CUSTOM", display: true }, { triggerTurn: false });
+    const outgoing = f.session;
+    sent = outgoing.sendCustomMessage({ customType: "local", content: "OLD_OWNER_CUSTOM", display: true }, { triggerTurn: false });
     await ready;
-    await f.sessionRuntime.newSession();
-    release(); await sent;
+    replacement = f.sessionRuntime.newSession();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(f.session, outgoing, "replacement must retain the owner until the custom hook finishes");
+    assert.equal(outgoing.isIdle, false);
+    release(); await sent; await replacement;
     await f.session.prompt("INCOMING_REQUEST");
     assert.doesNotMatch(JSON.stringify(f.requests.at(-1)!.payload.input), /OLD_OWNER_CUSTOM/);
     assert.equal(f.manager.getEntries().some((e: any) => e.type === "custom_message"), false);
     assert.equal(SessionManager.open(oldFile, f.root).getEntries().filter((e: any) => e.type === "custom_message" && e.content === "OLD_OWNER_CUSTOM").length, 1);
-  } finally { release(); await f.release(); }
+  } finally { release(); await Promise.allSettled([sent, replacement]); await f.release(); }
 });
 
 for (const codex of [false, true]) test(`successful ${codex ? "Codex" : "API"} compaction replays opaque history on the next actual request`, async () => {
