@@ -224,7 +224,7 @@ test("idle custom-message drain precedes concurrent triggers without losing eith
 	}
 });
 
-for (const mode of ["context", "trigger", "disposed"]) test(`concurrent idle SDK sends retain reports after a failed shared drain: ${mode}`, async t => {
+for (const mode of ["context", "trigger", "next-trigger", "disposed"]) test(`concurrent idle SDK sends retain reports after a failed shared drain: ${mode}`, async t => {
 	const f = await customMessageSession(async () => {});
 	let entered!: () => void, release!: () => void;
 	const ready = new Promise<void>(resolve => { entered = resolve; });
@@ -255,10 +255,12 @@ for (const mode of ["context", "trigger", "disposed"]) test(`concurrent idle SDK
 		}
 		assert.equal(f.session._pendingCustomMessages.length, 1);
 		assert.equal(f.payloads.length, 0, "failure must not start an automatic model retry");
-		await send("retry drain");
+		await send("retry drain", mode === "next-trigger");
 		assert.deepEqual(f.sessionManager.getEntries().filter((entry: any) => entry.type === "custom_message").map((entry: any) => entry.content), ["first", "second", "retry drain"]);
 		assert.equal(f.session._pendingCustomMessages.length, 0);
-		await f.session.prompt("Continue explicitly");
-		assert.equal(JSON.stringify(f.payloads[0].messages).split("second").length - 1, 1);
+		if (mode !== "next-trigger") await f.session.prompt("Continue explicitly");
+		const wire = JSON.stringify(f.payloads[0].messages);
+		assert.equal(wire.split("second").length - 1, 1);
+		assert.ok(wire.indexOf("second") < wire.indexOf("retry drain"), "the next valid wake must see retained reports before its newer report");
 	} finally { release(); await results; f.release(); }
 });

@@ -3121,7 +3121,14 @@ export class AgentSession {
 		// streaming/interaction state below so only the first one starts a run.
 		if (options?.triggerTurn && options.deliverAs !== "nextTurn" && !this._interactionPaused && !this.isStreaming) {
 			try {
-				while (this._customMessageFlush) await this._customMessageFlush;
+				// A failed drain may have left reports queued without an active owner.
+				// Include them in this wake's first request; a concurrent run owns its
+				// own turn-end flush, so never drain across that run's tool results.
+				while (!this.isStreaming) {
+					const flush = this._flushPendingCustomMessages();
+					if (!flush) break;
+					await flush;
+				}
 			} catch (error) {
 				// Match context-only sends: preserve the unconsumed report, but expose
 				// the failed drain and wait for a later explicit flush instead of retrying.

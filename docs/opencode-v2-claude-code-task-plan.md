@@ -233,6 +233,10 @@ Claude Code 官方确认后台报告通过后续回合的自动通知到达，�
 
 同机 10000 次普通消息/工具事件、预热 1000 次，分配采样分别为 39.1808/39.6776 → 42.8208/41.4504 B/事件；合并 observer 为 523.4832 → 523.372 B/原始更新，合并 9999 次、实际投递/快照 1 次。规定的逐进度 Promise、闭包、wrapper、Promise tail/array 计数仍为 0。这些采样约束未改动的普通事件通道，包含原有调度/隔离成本，不是异常通知路径零分配或统计性能改善证明。sendCustomMessage 的每次显式接纳仍为一个既有 appMessage 和 async 调用，失败分支只将该对象放入原队列；无新 timer、deferred、Promise 链、存储写入或对象池。完整数据与指纹见 [OC03 证据](performance/oc03-notification-boundaries.json)。
 
+**审查修复。** [PR #139 的 P2 反馈](https://github.com/dragonbaba/super-pi/pull/139#discussion_r4254601233)指出：保留队列没有活动 drain 时，新的 idle trigger 会先启动模型，旧报告才在 turn_end 追加。扩展同一个失败 fixture，复现会话保存顺序为 first/new/retained。现在 idle trigger 复用现有 `_flushPendingCustomMessages` 排空保留队列；等待期间若另一个回合开始，立即停止 idle 排空，交回运行中的队列机制，保留工具调用/结果配对。新的有效通知是新的唤醒，失败本身不自动重试。
+
+修复后，75 项原定向检查通过，首个 provider 请求按旧/新顺序各见报告一次；类型检查和单包构建通过，14 个跟踪引用保留 0。只重测受影响的 session event 基准：消息/工具为 38.3064/39.4704 B/事件，合并 observer 为 528.1464 B/原始更新，零逐事件分配约束及 9999 次合并/1 次快照投递不变；不将单次样本解释为性能提升。完整修复指纹与样本见证据 JSON 的 `reviewFix`。未新增测试文件或重跑其他子系统/本地全量测试，推送后请求一次手动复审。
+
 ### 第二批实施记录
 
 **OC05 实施前。** 基线为第一批合并提交 `1f5e8c6ac`。已核实 `checkpoint: true` / `resumeTaskId` 完成上下文保存与新 ID 续跑，执行前重新检查当前委派、角色、模型、工作区精确身份及冲突，原任务必须终态；普通任务仍不保存上下文。缺口是 list 没有检查点标记，统一/legacy status 的结构化数据没有检查点状态，且运行中的可用检查点被提示为可立即续跑。最小范围：统一有界的查询提示、列表标记与结构化 `checkpointAvailable`，复用现有 single-mode 入口，不增加 resume 工具、队列或存储字段。先复用 `subagent-management` 的真实子进程/检查点续跑与权限用例、`task-checkpoints` 的恢复/损坏/淘汰边界。
