@@ -475,11 +475,17 @@ export class CodemodeController {
 		this.closed = true;
 		this.pendingStore = undefined;
 		this.restoreError = undefined;
-		await this.sandbox?.close();
-		this.sandbox = undefined;
-		this.tools = EMPTY_TOOLS;
-		this.descriptors.length = 0;
-		this.store.reset();
-		this.clearReadEvidence();
+		try {
+			await this.sandbox?.close();
+		} finally {
+			this.sandbox = undefined;
+			this.tools = EMPTY_TOOLS;
+			this.descriptors.length = 0;
+			this.identifiers.clear();
+			this.identifierNames.clear();
+			this.definition.description = CODEMODE_DESCRIPTION;
+			this.store.reset();
+			this.clearReadEvidence();
+		}
 	}
 }
