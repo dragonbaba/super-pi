@@ -10,7 +10,7 @@ import { protectWindowsFixture } from "./helpers/native-metadata-fixture.ts";
 const execute = promisify(execFile);
 const offlinePreload = pathToFileURL(resolve("tests/fixtures/native-offline-preload.mjs")).href;
 
-test("N2 built formal source launcher runs default exact/overwrite/snapshot native commits", { timeout: 60000 }, async t => {
+test("N2 built formal source launcher keeps Codemode isolation, guarded commits and Worker cleanup", { timeout: 60000 }, async t => {
   const temporary = await realpath(tmpdir()), root = await mkdtemp(join(temporary, "sp-source-native-"));
   t.after(async () => { assert.equal(dirname(root), temporary); await rm(root, { recursive: true, force: true }); });
   const cwd = join(root, "work"), agent = join(root, "agent"); await mkdir(cwd); await mkdir(agent);
@@ -18,7 +18,8 @@ test("N2 built formal source launcher runs default exact/overwrite/snapshot nati
   await protectWindowsFixture(join(cwd, "中文.txt"));
   const running = execute(process.execPath, ["--import", offlinePreload, resolve("scripts/superpi.mjs"), "--offline", "--mode", "json", "--print", "--no-session",
     "--provider", "native-source-fixture", "--model", "fixture", "--extension", resolve("tests/fixtures/native-source-entry.mjs"), "Run the isolated native delivery fixture."],
-    { cwd, windowsHide: true, timeout: 55000, maxBuffer: 2 * 1024 * 1024, env: { ...process.env, SP_CODING_AGENT_DIR: agent, SP_OFFLINE: "1" } });
+    { cwd, windowsHide: true, timeout: 55000, maxBuffer: 2 * 1024 * 1024,
+      env: { ...process.env, HOME: root, USERPROFILE: root, SP_CODING_AGENT_DIR: agent, SP_OFFLINE: "1", SP_SOURCE_CODEMODE_PROBE: "1" } });
   running.child.stdin?.end();
   const { stdout, stderr } = await running;
   assert.match(stderr, /NATIVE_NETWORK_ATTEMPTS:0/);
@@ -26,12 +27,24 @@ test("N2 built formal source launcher runs default exact/overwrite/snapshot nati
   assert.equal(await readFile(join(cwd, "中文.txt"), "utf8"), "snapshot\n");
   const events = stdout.split("\n").filter(line => line.startsWith("{")).map(line => JSON.parse(line));
   const mutations = events.filter(event => event.type === "tool_execution_end" && ["edit", "write"].includes(event.toolName));
-  assert.equal(mutations.length, 3, stdout);
-  for (const event of mutations) {
+  assert.deepEqual(mutations.map(event => [event.toolName, event.isError]), [["edit", true], ["edit", false], ["write", false], ["edit", false]]);
+  assert.match(JSON.stringify(mutations[0].result.content), /READ_REQUIRED/);
+  for (const event of mutations.slice(1)) {
     assert.equal(event.isError, false); assert.equal(event.result.details.commit.outcome, "committed");
     assert.equal(event.result.details.commit.strategy, "staged_replace", JSON.stringify(event.result));
   }
-  t.diagnostic(JSON.stringify({ entry: "scripts/superpi.mjs", builtCli: true, defaultResources: true, provider: "offline fixture", mutations: mutations.length, node: process.version, platform: process.platform }));
+  const scripts = events.filter(event => event.type === "tool_execution_end" && event.toolName === "codemode");
+  assert.equal(scripts.length, 10);
+  assert.deepEqual(scripts.filter(event => event.isError).map(event => event.toolCallId), ["native-source-0", "native-source-8"]);
+  assert.deepEqual(scripts[0].result.details.codemode.calls.map((call: any) => [call.toolName, call.isError]), [["edit", true]]);
+  assert.match(JSON.stringify(scripts[8].result.content), /SOURCE_EXPECTED_FAILURE/);
+  assert.match(JSON.stringify(scripts[9].result.content), /SOURCE_CODEMODE_RECOVERED/);
+  const lifecycle = stderr.match(/^SOURCE_CODEMODE_WORKERS:(.+)$/m);
+  assert.ok(lifecycle, stderr);
+  const workers = JSON.parse(lifecycle[1]!);
+  assert.deepEqual(workers, { started: 3, stopped: 3, pooled: 3, scripts: 10, active: 0, peak: 1 });
+  t.diagnostic(JSON.stringify({ entry: "scripts/superpi.mjs", builtCli: true, defaultResources: true, provider: "offline fixture",
+    committedMutations: 3, deniedEdits: 1, codemodeScripts: scripts.length, workers, node: process.version, platform: process.platform }));
 });
 
 test("N2 packed runtime extension includes worker and resolves installed platform binary", { timeout: 60000 }, async t => {

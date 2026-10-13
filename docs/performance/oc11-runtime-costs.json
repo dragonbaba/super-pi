@@ -2563,5 +2563,112 @@
       "https://bun.sh/reference/bun/jsc/heapStats"
     ],
     "cleanup": "All probe child processes exited. Recursive removal of the exact current owned directory was rejected by automatic approval policy (blocked by policy); no cleanup fallback was attempted. Retained directory: C:/Users/Administrator/AppData/Local/Temp/pi-oc11-bun-PGOKlX. The previous installation was reused read-only and remains subject to its recorded policy-denied cleanup."
+  },
+  "sourceCliIntegration": {
+    "date": "2026-10-14",
+    "baselineCommit": "7e68cc3f3c0a67a6afdd4e17cbe184632422786b",
+    "scope": "Supported scripts/superpi.mjs source launcher, compiled Node CLI, default bundled extensions, offline provider, real native tools and JSON print lifecycle. Not a separately released CLI package or Bun CLI.",
+    "environment": {
+      "node": "v26.4.0",
+      "platform": "win32",
+      "arch": "x64",
+      "osRelease": "10.0.22631",
+      "cpu": "Intel(R) Core(TM) i7-14700KF"
+    },
+    "fingerprints": {
+      "algorithm": "SHA-256 of working-tree bytes",
+      "files": {
+        "scripts/superpi.mjs": "fbe5baaa033065f2b1d4c1ffe4d5e7216b998a90071cef29caecfd00f1711c32",
+        "packages/coding-agent/src/main.ts": "257b427f8d90aadac8201cf3d7cd70e1ba7cb08f7c4d3aa3f61244a64640b346",
+        "packages/coding-agent/src/modes/print-mode.ts": "c6aa959c90beaa4c9a4121fa26c72adbdd4a14537ddd20dce73e55fade0b5572",
+        "packages/coding-agent/src/core/agent-session-runtime.ts": "8bfd1bff8a3f650e85d1c2e672d1acfe41e2bd3cb5c664b44962d223f16ca5ba",
+        "packages/coding-agent/src/core/agent-session.ts": "9a9c1698abd201a1739f85ade76909191a83e2bb82859d844fcd555a74ef884b",
+        "packages/coding-agent/src/core/codemode.ts": "5d038478ec8b897031d0a285e5fdae086006fa15a1b627edd4120580d188bb3a",
+        "packages/codemode/src/runtime/host.ts": "2f002efcb8e177016d9aad98f73d9d60b258ebbe1704e1b17c348cf96d5101ca",
+        "packages/codemode/src/runtime/worker.ts": "a2b38c52d4ef2b568db116e722d66e8fc1d5d98c22303f7dbe741be30da58c23",
+        "packages/codemode/src/runtime/worker-pool.ts": "a4de34312939313280ddaf56e758ae95fcff3d94526dea07838c9b0431a77137",
+        "packages/agent/src/nested-tool-dispatch.ts": "cd4a04a34b72c96c4d1cd447293c09517b29a39f901f12d00308d9116e40fcc2",
+        "packages/extensions/mutation-guard-write/index.ts": "a81e5e9b30bfd16bf5407a275997a8e9e5d579ea2037ca0cbe1e79844e93ce34",
+        "tests/native-source-delivery.test.ts": "869cd888fc741303b3ab0c17beb1953226aa86a5752ba1578c2090ffa355a7e2",
+        "tests/fixtures/native-source-entry.mjs": "5406c19363a2a66de6618c71ccc00e882a1ab331a12d8781ea966f9b27b4cc52",
+        "tests/fixtures/native-offline-preload.mjs": "4361efaada3d203607b7f23c38ae22872fb31a4cf326fc60ad001e2a9a324e28"
+      }
+    },
+    "productionChanges": 0,
+    "callChain": [
+      "source resource assembly -> compiled CLI/main -> JSON print runtime/session",
+      "provider-facing Codemode -> controller -> single-slot Worker -> fresh QuickJS VM",
+      "nested dispatch -> default native read/edit/write guard -> commit receipt -> show(ref) -> next model turn",
+      "script failure -> Worker retirement -> explicit next script -> runtime dispose -> physical Worker exit -> process exit"
+    ],
+    "fixture": {
+      "scripts": 10,
+      "providerRequests": 11,
+      "childCalls": 8,
+      "committedMutations": 3,
+      "guardedEditRejections": 1,
+      "scriptExceptions": 1,
+      "modelFacingCatalog": "Codemode is present; read/edit/write are absent from the provider tool list; ALL_TOOLS and describeTools expose them in the VM.",
+      "sequence": [
+        "0: unread edit rejected; next provider call confirms original file bytes",
+        "1..7: native read, exact edit, read, overwrite, read, snapshot edit, final read; original receipt assertions retained",
+        "Successful scripts use a fresh global object and explicitly persisted sourceProbe=1",
+        "8: set transient global/store=2 and throw SOURCE_EXPECTED_FAILURE",
+        "9: explicit next script verifies no leaked global and committed store still 1"
+      ],
+      "workerCounters": {
+        "started": 3,
+        "stopped": 3,
+        "pooled": 3,
+        "scripts": 10,
+        "active": 0,
+        "peak": 1
+      },
+      "networkAttempts": 0,
+      "ownership": "One existing test child, 55-second execFile deadline / 60-second test limit, 2 MiB stdout/stderr maxBuffer, isolated cwd/agent/HOME/USERPROFILE. Existing t.after removes only its recorded realpath temp child. Worker probe is main-thread-only and opt-in; it observes construction, script messages and exit events without ref/unref changes.",
+      "cleanup": "The final targeted test and both assertion-diagnosis runs completed their existing cleanup hook; no retained probe directory, background service or new test file was created. Earlier phases policy-denied directories were not touched."
+    },
+    "result": {
+      "entry": "scripts/superpi.mjs",
+      "builtCli": true,
+      "defaultResources": true,
+      "provider": "offline fixture",
+      "committedMutations": 3,
+      "deniedEdits": 1,
+      "codemodeScripts": 10,
+      "workers": {
+        "started": 3,
+        "stopped": 3,
+        "pooled": 3,
+        "scripts": 10,
+        "active": 0,
+        "peak": 1
+      },
+      "node": "v26.4.0",
+      "platform": "win32"
+    },
+    "verification": {
+      "commands": [
+        "npm.cmd run build --workspace @super-pi/coding-agent",
+        "node --experimental-strip-types --test --test-name-pattern=\"N2 built formal source launcher\" tests/native-source-delivery.test.ts",
+        "npm.cmd run check",
+        "node --experimental-strip-types --test tests/codemode-hot-paths.test.ts"
+      ],
+      "targetedCliTestsPassed": 1,
+      "existingHotPathInvariantsPassed": 9,
+      "typecheck": "passed",
+      "build": "coding-agent only",
+      "defaultPreloadWorkerUnchanged": "verified in a separate opt-out process, zero network attempts",
+      "newTestFiles": 0,
+      "localFullSuiteRuns": 0,
+      "allocationBenchmarkRepeats": 0
+    },
+    "diagnosis": "Two initial assertion failures assumed READ_REQUIRED had Agent pre-execution metadata. Source inspection shows this check occurs inside the native tool. The final fixture checks unchanged file bytes before the next provider request and the real guarded failure, without adding a false not_executed marker or changing production behavior.",
+    "limits": [
+      "This closes only the supported Node source-CLI integration boundary. No full release artifact exists in the repository build scripts; a future release format requires separate acceptance.",
+      "No startup/throughput speedup or new pool admission claim; production sources are unchanged. Existing Node allocation and controlled-GC evidence remains scoped to its recorded fixtures.",
+      "Worker exit counts do not prove whole CLI heap/VM reference collection. No added GC/profile probe, interactive terminal acceptance, real model/I/O benchmark or network provider validation.",
+      "Explicit model fixture continuation after an error is not automatic retry or replay. User cancellation/timeout behavior remains covered by its existing bounded lifecycle fixtures."
+    ]
   }
 }
