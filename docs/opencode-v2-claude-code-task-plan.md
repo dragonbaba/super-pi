@@ -2,7 +2,7 @@
 
 先巩固 Super Pi 已有的后台完成通知与主会话续跑，再改进结果交付、子代理续跑和上下文压缩；Codemode 的工具发现与执行成本独立评估。需要改变会话持久化、远程协议或文件恢复语义的功能单独评估，不将上游实现整体移植进当前运行时。
 
-状态：2026-10-13（Asia/Tokyo）#136、#137、#138、#139 已按用户授权依次合并。#139 最终提交 `2a8707e29` 的六项 CI 通过、Codex 手动复审无重大问题，合并提交为 `f099234ec938c3eafd31f7f458ca71acde1b23eb`。OC01、OC02、OC03 进程内窗口、OC05 已结束任务续跑发现与 OC10 核查已完成。当前 #140 完成 OC11 编译成本/数据边界核查，并按用户后续要求加入有界 Worker 池，宿主/Worker 采样与释放证据见 §5。OC06 真实模型效果、OC11 安装发布包/Bun 与真实负载仍待后续。继续沿用 §2.3 的 PR/审查流程；#140 合并仍需另行授权。
+状态：2026-10-13（Asia/Tokyo）#136–#140 已按用户授权合并。#140 最终提交 `ceeec8ce4b` 的六项 CI 通过，Codex 手动复审无重大问题，合并提交为 `769baee88a454e815c262cc020146f371de04a0a`。OC01、OC02、OC03 进程内窗口、OC05 已结束任务续跑发现、OC10 核查及 OC11 有界 Worker 池已完成，证据见 §5。下一阶段推进 OC04 单项子代理前台转后台；shell 和批次移交另行评估。OC06 真实模型效果、OC11 安装发布包/Bun 与真实负载仍待后续。继续沿用 §2.3 的 PR/审查流程。
 
 ## 1 对照基线与结论边界
 
@@ -127,11 +127,24 @@ Claude Code 官方确认后台报告通过后续回合的自动通知到达，�
 
 入口：[managed-tasks](../packages/extensions/managed-tasks.ts)、[subagent](../packages/extensions/subagent/index.ts)、[shell 后台接口](../packages/coding-agent/src/core/tools/shell-background.ts)、[后台 shell 所有者](../packages/extensions/resource-lifecycle-guard/background-shell.ts)。参考 [O8]。
 
-- [ ] 分别核查 shell 与子代理能否将正在执行的工作移交给会话级所有者；支持者保留同一进程/执行身份、任务 ID、输出与授权，解除前台等待但不取消、重启或重复占用调度槽。
-- [ ] 处理移交与完成、取消、队列容量耗尽同时发生的情况；确保完成结果只交付到正确路径，等待者解除后执行资源仍有明确所有者。
-- [ ] 通过 `/tasks` 或现有交互入口暴露操作；快捷键遵守当前绑定。只在有持续运行时和有效管理工具时允许转后台；Print/JSON、替换执行后端及不能安全移交的情形明确拒绝，不隐式启动守护进程。
+- [x] 分别核查 shell 与子代理的所有权。单项子代理保留同一进程/任务 ID、输出、授权和调度槽，解除前台等待而不重启；shell 的现有启动所有权不足以安全移交，保留启动时后台选项。
+- [x] 单项移交覆盖完成、取消、容量满、权限撤销、树切换和 dispose；结果只走前台或一次后台完成通知，session pending operation 持续拥有执行和清理责任。
+- [x] 通过 `/tasks background <id>` 及 `tasks` action 暴露单项移交。TUI/RPC 和有效内置管理工具必需；Print/JSON、shell、批次/chain、后台/终态/取消中任务明确拒绝，不新增快捷键或守护进程。
+- [ ] shell 及 parallel/chain 的运行中移交仍未实现；需先解决 shell 启动时所有权以及单 ID 对整批执行的语义，不能将本轮单项支持写成全部 OC04 完成。
 
 **性能与最小验证：** 强制执行 §2。复用 shell/subagent 管理测试及现有 child fixture，选择支持的执行器验证身份不变与单次完成；按受影响消费者运行已有 shell/subagent benchmark。移交仅允许生命周期分配，不新增输出复制、逐进度状态发布或计时器；平台特有进程树行为在相应 CI 验证。
+
+**本轮实施前记录（基线 `769baee88`）：** 子代理前台调用已建立 session-owned task、reservation 和 pending operation，但执行 signal 永久组合父回合 signal，返回值只能等待 operation。`AgentSession.prompt → _tryExecuteExtensionCommand` 已允许流式期间立即执行 `/tasks`，无需新增 UI 轮询。先实现单项调用的显式移交，保留 PID/task ID/原超时/同一调度槽，通过可断开的父回合取消监听器和一次性前台 deferred 解除等待；authority 与 task controller 继续拥有取消权。移交前复核 TUI/RPC、有效内置管理工具、未完成/未取消、工作区写入隔离。并行/chain 不隐式整批移交。
+
+shell 审计链为 final shell authorization → cwd binding → bash execute → local operations → WindowsShellJob/child observation → output/log cleanup → background owner。前台尚无 managed task，cwd authority 固定捕获原 signal，Windows Job 只在后台启动时建立；本轮不假装已有安全移交能力，也不重启命令。替换执行器同样不支持。
+
+子代理完整生产链：authorization/delegation → execute → scheduler/reservation → runSingleAgent → SubagentProcessRun stdout/JSON/有界消息保留 → 启动/终态快照 → Agent observer clone/freeze → AgentSession → InteractiveMode → tool renderer/frame queue；终态经 tasks.finish → reservation/pending 清理 → 原前台结果或一次完成通知。新状态仅位于调用/命令/完成/取消生命周期；逐 stdout/progress/frame 不加闭包、Promise、controller、wrapper、数组或定时器，不建对象池。需检查移交后不再保留原 onUpdate/父 signal/前台 deferred，终态从目录移除 handle，仍等待同一进程清理。复用 subagent-management、subagent-hot-paths 与现有 child fixture；运行既有 subagent-management benchmark 的当前基线/候选并扩展生命周期计数，提供可控完成/取消/销毁和 GC 证据。不运行本地全量测试。
+
+**本轮验收：** 真实 child 的 PID/ID 不变、前后各占 1 个 running/outstanding/reserved 槽，父回合 abort 后仍存活，终态通知一次且不再向旧 onUpdate 发布。已有 8/8 容量时 queued 单项移交仍保持 8/8；当前授权与内置工具 schema 身份重新检查，原工作区 writer 和批次拒绝。真实 ExtensionRunner/Agent dispatch 经正常 delegation 后，用运行期间的 `/tasks` 命令移交成功；不能同时派发第二个模型工具的既有主执行锁仍生效。failure/cancel/permission/tree/shutdown 均沿原进程清理和终态规则。新 helper 的终态额外清空代理 AbortController：自审 GC 初测发现 abort 场景 64 个父 signal 随该 controller 保留，清理后归零。
+
+详细调用链、计数和原始基线/候选样本见 [OC04 性能证据](performance/oc04-foreground-handoff.json)。8/16/64 子进程表示的 1000-event fixture，采样字节/事件为基线 8834.696/8541.720/8524.936、候选 8731.920/8626.616/8728.328；两侧逐事件快照与全消息重新序列化均为 0，不据单次波动声称提速。既有 344 个跟踪引用 GC 后保留 0；新增 256 次生命周期夹具（64 次仍在执行的移交 owner 保持强引用）中，768 个前台 signal/callback/wait 引用保留 0，监听器和迟到发布为 0。新增每单项生命周期一个 deferred、一个 controller、两个稳定回调及启动/终态处理；每次 stdout/progress/frame 新增为 0，移交计时器为 0。
+
+复用现有测试文件增加 5 项管理用例和 1 项 source invariant，并扩展原真实扩展集成用例；没有新测试文件。管理/source invariants 共 39 pass、1 个 POSIX 项在 Windows skip，另有 2 项扩展管理集成通过。修复 controller 释放后仅重跑受影响 9 项、同一 benchmark、类型检查、coding-agent 构建和 benchmark strict typecheck；没有本地全量测试。PR/审查/最终 CI 结果在 PR 记录，避免只为填写远端状态再触发 CI。没有测真实模型或完整 UI 性能，也没有改动原超时、process-tree、frame queue 或持久化协议。
 
 ### OC05 子代理续跑与定向消息
 

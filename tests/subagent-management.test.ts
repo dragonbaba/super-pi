@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { StringDecoder } from "node:string_decoder";
+import { getEventListeners } from "node:events";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { setImmediate as tick, setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
@@ -11,6 +12,7 @@ import { createEventBus } from "../packages/coding-agent/src/core/event-bus.ts";
 import { attachSubagentWorkspaceDelegation, SESSION_PERMISSION_EVENT } from "../packages/extensions/resource-lifecycle-guard/permission-contract.ts";
 import { SubagentScheduler } from "../packages/extensions/subagent/scheduler.ts";
 import { SubagentTasks } from "../packages/extensions/subagent/tasks.ts";
+import { ForegroundTask } from "../packages/extensions/subagent/foreground.ts";
 import { isPathInside } from "../packages/extensions/subagent/child-security.ts";
 import { formatTaskCompletion, TASK_COMPLETION_CHARS } from "../packages/extensions/managed-tasks.ts";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
@@ -205,19 +207,20 @@ function harness(t: test.TestContext, options: { persistent?: boolean; shutdownE
 	let notified = new Promise<void>(resolve => { completion = resolve; });
 	const pi: any = { events, registerTool: (tool: any) => tools.set(tool.name, tool), registerCommand: (name: string, command: any) => commands.set(name, command), on: (name: string, hook: any) => { hooks.set(name, hook); if (name === "before_agent_start") startHooks.push(hook); }, sendMessage: (message: any) => { messages.push(message); completion(); } };
 	extension(pi);
+	pi.getAllTools = () => [...tools.values()];
 	const entries: any[] = [];
 	pi.appendEntry = (customType: string, data: unknown) => { entries.push({ type: "custom", customType, data }); };
 	const cwd = realpathSync(mkdtempSync(join(fixtureRoot, "workspace-")));
 	const ctx: any = { cwd, mode: "tui", hasUI: false, isIdle: () => true, isProjectTrusted: () => false, getActiveTools: () => ["subagent", "subagent_tasks"], modelRegistry: {}, model: undefined, ui: { notify(text: string, level: string) { notices.push({ text, level }); } } };
 	if (options.persistent) ctx.sessionManager = { getSessionFile: () => join(cwd, "session.jsonl"), getSessionId: () => "fixture", getLeafId: () => null, getEntries: () => entries };
 	let sequence = 0;
-	const run = (params: any, onUpdate?: (value: any) => void) => {
+	const run = (params: any, onUpdate?: (value: any) => void, signal?: AbortSignal) => {
 		const id = `call-${++sequence}`;
 		const items = params.tasks ?? params.chain ?? [params];
 		for (const item of items) { item.scope ??= responsibility.scope; item.deliverable ??= responsibility.deliverable; item.stopCondition ??= responsibility.stopCondition; }
 		const grants = items.map((item: any) => { const canonicalCwd = item.cwd ?? cwd; const stat = statSync(canonicalCwd); return { canonicalCwd, device: stat.dev, inode: stat.ino, permissionMode: item.readOnly ? "read-only" : "workspace-write", writable: !item.readOnly, source: isPathInside(canonicalCwd, cwd) ? "primary" : "additional" }; });
 		attachSubagentWorkspaceDelegation(params, { schemaVersion: 1, sequence, toolCallId: id, grants });
-		return tools.get("subagent").execute(id, params, undefined, onUpdate, ctx);
+		return tools.get("subagent").execute(id, params, signal, onUpdate, ctx);
 	};
 	const control = async (action: string, id?: string, timeoutMs?: number) => (await tools.get("subagent_tasks").execute("control", { action, id, timeoutMs }, undefined)).content[0].text as string;
 	t.after(async () => { if (options.shutdownError) await assert.rejects(hooks.get("session_shutdown")(), options.shutdownError); else await hooks.get("session_shutdown")(); events.clear(); });
@@ -353,6 +356,107 @@ test("real completed checkpoint continues under a fresh ID and current authoriza
 });
 
 function ids(result: any): string[] { return result.content[0].text.match(/[a-f0-9-]{36}-\d+/g) ?? []; }
+
+test("foreground handoff retains the same child and slot, detaches parent abort and progress, and notifies once", { timeout: 10_000 }, async t => {
+	const h = harness(t); const parent = new AbortController(); let updates = 0;
+	const running = h.run({ agent: "scout", task: "slow-handoff", readOnly: true }, () => updates++, parent.signal);
+	const pid = await startedChild(h.ctx.cwd, "slow-handoff");
+	const listing = await h.control("list"); const id = listing.match(/[a-f0-9-]{36}-\d+/)![0];
+	assert.match(listing, /1\/2 running · 1\/8 active\/queued · 1\/8 reserved/);
+	await h.commands.get("tasks").handler(`background ${id}`, h.ctx);
+	assert.equal(h.notices.at(-1)?.level, "info");
+	const accepted = await running; assert.deepEqual(ids(accepted), [id]); assert.equal(accepted.details.backgroundCount, 1);
+	parent.abort(); assert.equal(process.kill(pid, 0), true);
+	assert.equal(updates, 1); assert.match(await h.control("list"), /1\/2 running · 1\/8 active\/queued · 1\/8 reserved/);
+	await h.commands.get("tasks").handler(`background ${id}`, h.ctx); assert.equal(h.notices.at(-1)?.level, "error");
+	await h.notified(); assert.equal(h.messages.length, 1); assert.equal(updates, 1);
+	assert.ok(h.messages[0].content.includes(id)); assert.match(await h.control("status", id), /completed.*fixture result/s);
+	assert.equal(readdirSync(h.ctx.cwd).filter(file => file.endsWith(".ready.json")).length, 1);
+	assert.throws(() => process.kill(pid, 0), /ESRCH/);
+	assert.match(await h.control("list"), /0\/2 running · 0\/8 active\/queued · 0\/8 reserved/);
+	await assert.rejects(h.tools.get("tasks").execute("control", { action: "background", id }, undefined, undefined, h.ctx), /Only a waiting/);
+});
+
+test("foreground handoff validates current mode, controls, writer isolation and batch scope without cancelling work", { timeout: 10_000 }, async t => {
+	const h = harness(t);
+	const running = h.run({ agent: "scout", task: "hold-handoff-denials", readOnly: true });
+	void running.catch(() => {});
+	await startedChild(h.ctx.cwd, "hold-handoff-denials");
+	const id = (await h.control("list")).match(/[a-f0-9-]{36}-\d+/)![0];
+	const move = () => h.tools.get("tasks").execute("control", { action: "background", id }, undefined, undefined, h.ctx);
+	h.ctx.mode = "json"; await assert.rejects(move(), /TUI or RPC/); h.ctx.mode = "tui";
+	h.ctx.getActiveTools = () => ["subagent"]; await assert.rejects(move(), /management tool/);
+	h.ctx.getActiveTools = () => ["subagent_tasks"];
+	const controls = h.tools.get("subagent_tasks"); h.tools.set("subagent_tasks", { name: "subagent_tasks", parameters: {} });
+	await assert.rejects(move(), /management tool/); h.tools.set("subagent_tasks", controls);
+	assert.match(await h.control("status", id), /running/);
+	await h.control("cancel", id); await assert.rejects(move(), /cancelling/); await assert.rejects(running, /aborted/);
+	for (const params of [{ agent: "scout", task: "hold-writer" }, { tasks: [{ agent: "scout", task: "hold-batch", readOnly: true }] }]) {
+		const call = h.run(params); void call.catch(() => {});
+		await startedChild(h.ctx.cwd, params.task ?? "hold-batch");
+		const nextId = (await h.control("list")).match(/[a-f0-9-]{36}-\d+/g)!.at(-1)!;
+		await assert.rejects(h.tools.get("tasks").execute("control", { action: "background", id: nextId }, undefined, undefined, h.ctx), params.task ? /isolated workspace/ : /batches\/chains/);
+		await h.control("cancel", nextId); await call.catch(() => {});
+	}
+	assert.equal(h.messages.length, 0);
+});
+
+test("foreground handoff supports queued work at full capacity and preserves session cancellation", { timeout: 10_000 }, async t => {
+	const h = harness(t);
+	await h.run({ background: true, tasks: Array.from({ length: 7 }, (_, i) => ({ agent: "scout", task: `hold-capacity-${i}`, readOnly: true })) });
+	const running = h.run({ agent: "scout", task: "queued-handoff", readOnly: true });
+	await tick();
+	const listing = await h.control("list"); const id = listing.match(/[a-f0-9-]{36}-\d+/g)!.at(-1)!;
+	assert.match(listing, /8\/8 active\/queued · 8\/8 reserved/);
+	h.ctx.mode = "rpc";
+	await h.tools.get("tasks").execute("control", { action: "background", id }, undefined, undefined, h.ctx);
+	assert.deepEqual(ids(await running), [id]);
+	assert.match(await h.control("list"), /8\/8 active\/queued · 8\/8 reserved/);
+	h.events.emit(SESSION_PERMISSION_EVENT, {});
+	await h.hooks.get("session_before_tree")();
+	assert.match(await h.control("status", id), /cancelled/); assert.equal(h.messages.length, 0);
+	assert.match(await h.control("list"), /0\/2 running · 0\/8 active\/queued · 0\/8 reserved/);
+});
+
+test("foreground owner resolves completion races once and removes its parent listener", async () => {
+	for (const mode of ["complete", "failure", "abort", "detach"] as const) {
+		const parent = new AbortController(); let updates = 0;
+		const owner = new ForegroundTask<string>(parent.signal, () => updates++); const wait = owner.takeWait();
+		if (mode === "failure") { const rejected = assert.rejects(wait, /fixture/); owner.fail(new Error("fixture")); await rejected; }
+		else {
+			if (mode === "abort") { parent.abort(); assert.equal(owner.signal.aborted, true); assert.throws(() => owner.detach("accepted")); }
+			if (mode === "detach") owner.detach("accepted");
+			owner.complete("done"); assert.equal(await wait, mode === "detach" ? "accepted" : "done");
+		}
+		assert.throws(() => owner.detach("again")); owner.publish("late"); assert.equal(updates, 0);
+		parent.abort(); assert.equal(getEventListeners(parent.signal, "abort").length, 0);
+		for (const key of ["parent", "update", "resolve", "reject", "waiting", "controller"]) assert.equal((owner as any)[key], undefined);
+	}
+});
+
+test("transferred foreground children keep failure, cancellation, authority and disposal ownership", { timeout: 15_000 }, async t => {
+	for (const mode of ["failure", "cancel", "permission", "tree", "shutdown"] as const) {
+		const h = harness(t); const parent = new AbortController();
+		const task = mode === "failure" ? "slow-fail-transferred" : `hold-transferred-${mode}`;
+		const running = h.run({ agent: "scout", task, readOnly: true }, undefined, parent.signal);
+		const pid = await startedChild(h.ctx.cwd, task);
+		const id = (await h.control("list")).match(/[a-f0-9-]{36}-\d+/)![0];
+		await h.tools.get("tasks").execute("control", { action: "background", id }, undefined, undefined, h.ctx);
+		await running; parent.abort();
+		if (mode === "cancel") await h.control("cancel", id);
+		else if (mode === "permission") h.events.emit(SESSION_PERMISSION_EVENT, {});
+		else if (mode === "tree") await h.hooks.get("session_before_tree")();
+		else if (mode === "shutdown") await h.hooks.get("session_shutdown")();
+		if (mode === "failure" || mode === "cancel") {
+			await h.notified(); assert.equal(h.messages.length, 1);
+			assert.match(await h.control("status", id), mode === "failure" ? /failed/ : /cancelled/);
+		} else {
+			if (mode === "permission") await h.control("wait", id, 3000);
+			assert.equal(h.messages.length, 0);
+		}
+		assert.throws(() => process.kill(pid, 0), /ESRCH/);
+	}
+});
 
 async function startedChild(cwd: string, task: string): Promise<number> {
 	for (let attempt = 0; attempt < 100; attempt++) {

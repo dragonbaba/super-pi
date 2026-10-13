@@ -10,6 +10,7 @@ export interface ManagedTaskProvider {
 	readonly guidance: string;
 	list(): string;
 	details?(task: ManagedSubagentTask): unknown;
+	background?(task: ManagedSubagentTask, ctx: ExtensionContext): void;
 }
 interface TaskDirectory {
 	providers: Map<Kind, ManagedTaskProvider>;
@@ -97,7 +98,7 @@ export function registerManagedTasks(pi: ExtensionAPI, kind: Kind, provider: Man
 	if (!directory) {
 		const owned = new Map<Kind, ManagedTaskProvider>();
 		const parameters = Type.Object({
-			action: Type.Union([Type.Literal("list"), Type.Literal("status"), Type.Literal("wait"), Type.Literal("cancel")]),
+			action: Type.Union([Type.Literal("list"), Type.Literal("status"), Type.Literal("wait"), Type.Literal("cancel"), Type.Literal("background")]),
 			id: Type.Optional(Type.String({ minLength: 1, maxLength: 80 })),
 			timeoutMs: Type.Optional(Type.Integer({ minimum: 0, maximum: 60_000 })),
 		}, { additionalProperties: false });
@@ -125,15 +126,20 @@ export function registerManagedTasks(pi: ExtensionAPI, kind: Kind, provider: Man
 			for (const item of owned.values()) item.tasks.assertHistoryAvailable();
 			throw new Error("Unknown or expired task ID. List current tasks.");
 		};
+		const background = (item: ManagedTaskProvider, task: ManagedSubagentTask, ctx: ExtensionContext): void => {
+			if (!item.background) throw new Error("This executor cannot transfer running foreground work. Shell commands must be launched with background: true.");
+			item.background(task, ctx);
+		};
 		pi.registerTool({
 			name: "tasks", label: "Tasks", modelOnly: true,
-			description: "Manage session shell/subagent tasks and bounded saved history: list, status, wait, cancel. Wait 0–60000ms (default 10000); at most 64 pending waits per kind. Timeout never cancels work. Persistent sessions restore historical results; unobserved completion becomes interrupted with unknown side effects. History grants no permissions or current verification evidence and never replays work. IDs expire on history eviction; memory-only sessions lose them on close. Prefer completion notifications over polling. Read capacities using list before launching background work.",
+			description: "Manage session shell/subagent tasks and bounded saved history: list, status, wait, cancel, background. Background transfers one eligible foreground single subagent without restarting it; batches/chains and shell handoff are unsupported. Wait 0–60000ms (default 10000); at most 64 pending waits per kind. Timeout never cancels work. Persistent sessions restore historical results; unobserved completion becomes interrupted with unknown side effects. History grants no permissions or current verification evidence and never replays work. IDs expire on history eviction; memory-only sessions lose them on close. Prefer completion notifications over polling. Read capacities using list before launching background work.",
 			parameters,
-			async execute(_id, args, signal): Promise<AgentToolResult<Record<string, unknown>>> {
+			async execute(_id, args, signal, _onUpdate, ctx): Promise<AgentToolResult<Record<string, unknown>>> {
 				if (args.action === "list") return { content: [{ type: "text", text: list() }], details: {} };
 				if (!args.id) throw new Error("A task ID is required.");
 				const [name, item, task] = find(args.id);
 				if (args.action === "cancel") item.tasks.cancel(task.id);
+				else if (args.action === "background") { signal?.throwIfAborted(); background(item, task, ctx); }
 				else if (args.action === "wait") await item.tasks.wait(task.id, args.timeoutMs ?? 10_000, signal);
 				return { content: [{ type: "text", text: taskText(task, item) + (name === "subagent" ? formatTaskCheckpoint(task) : "") }],
 					details: { task: { id: task.id, kind: name, agent: task.agent, state: task.state, historical: task.recovered === true, cwd: task.cwd, branchId: task.branchId,
@@ -142,15 +148,16 @@ export function registerManagedTasks(pi: ExtensionAPI, kind: Kind, provider: Man
 			},
 		});
 		pi.registerCommand("tasks", {
-			description: "List tasks/history; /tasks status <id> reads a result; /tasks cancel <id> stops active work",
+			description: "List tasks/history; /tasks status|cancel|background <id> inspects, stops, or transfers a single subagent",
 			async handler(args, ctx) {
 				try {
 					const parts = args.trim().split(/\s+/);
-					if ((parts[0] === "cancel" || parts[0] === "status") && parts.length === 2) {
+					if ((parts[0] === "cancel" || parts[0] === "status" || parts[0] === "background") && parts.length === 2) {
 						const [name, item, task] = find(parts[1]);
 						if (parts[0] === "cancel") item.tasks.cancel(task.id);
-						ctx.ui.notify(taskText(task, item) + (name === "subagent" ? formatTaskCheckpoint(task) : ""), "info");
-					} else if (args.trim()) ctx.ui.notify("Usage: /tasks or /tasks status|cancel <id>", "error");
+						else if (parts[0] === "background") background(item, task, ctx);
+						ctx.ui.notify((parts[0] === "background" ? "Foreground wait released; the same task continues in the background.\n" : "") + taskText(task, item) + (name === "subagent" ? formatTaskCheckpoint(task) : ""), "info");
+					} else if (args.trim()) ctx.ui.notify("Usage: /tasks or /tasks status|cancel|background <id>", "error");
 					else ctx.ui.notify(list(), "info");
 				} catch (error) { ctx.ui.notify(error instanceof Error ? error.message : String(error), "error"); }
 			},

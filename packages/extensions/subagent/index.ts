@@ -29,6 +29,7 @@ import {
 	VERSION,
 	type ExtensionAPI,
 	type ExtensionCommandContext,
+	type ExtensionContext,
 	withFileMutationQueue,
 } from "@super-pi/coding-agent";
 import { Text } from "@super-pi/tui";
@@ -39,6 +40,7 @@ import { consumeDelegatedTaskPolicies, type DelegatedTaskPolicy } from "./delega
 import { DELEGATION_GUIDANCE, describeSubagentLimits, loadSubagentLimits, SUBAGENT_LIMITS_PATH, type SubagentLimits } from "./limits.ts";
 import { SubagentScheduler } from "./scheduler.ts";
 import { SubagentTasks, type ManagedSubagentTask } from "./tasks.ts";
+import { ForegroundTask } from "./foreground.ts";
 import { CHECKPOINT_PLANNING, type TaskCheckpoint } from "./checkpoints.ts";
 import { SubagentControl } from "./control.ts";
 import { assignmentProperties, assertAssignments, formatAssignment, CHILD_RESPONSIBILITIES, MAX_TASK_CHARS } from "./assignments.ts";
@@ -1373,6 +1375,8 @@ export default function (pi: ExtensionAPI) {
 	const scheduler = new SubagentScheduler(limits);
 	const tasks = new SubagentTasks(limits.maxTasks);
 	const pending = new Set<Promise<unknown>>();
+	// One entry per eligible single call, bounded by the existing task reservation.
+	const foreground = new Map<string, { owner: ForegroundTask<AgentToolResult<SubagentDetails>>; policy: DelegatedTaskPolicy; workspace: string; signal: AbortSignal; agentScope: AgentScope }>();
 	let authority = new AbortController();
 	let closed = false;
 	let cleanupFailure: string | undefined;
@@ -1409,19 +1413,45 @@ export default function (pi: ExtensionAPI) {
 	});
 	const listTasks = (): string => {
 		let text = `${scheduler.active}/${limits.maxConcurrent} running · ${scheduler.outstanding}/${limits.maxTasks} active/queued · ${scheduler.reserved}/${limits.maxTasks} reserved`;
-		for (const task of tasks.values()) text += `\n${taskStatus(task)}`;
+		for (const task of tasks.values()) text += `\n${taskStatus(task)}${foreground.has(task.id) ? " · foreground single" : ""}`;
 		return text;
 	};
-	const taskRegistration = registerManagedTasks(pi, "subagent", { tasks, list: listTasks, guidance: describeSubagentLimits(limits) });
+	const controlParameters = Type.Object({
+		action: StringEnum(["list", "status", "wait", "cancel"] as const),
+		id: Type.Optional(Type.String({ minLength: 1, maxLength: 80 })),
+		timeoutMs: Type.Optional(Type.Integer({ minimum: 0, maximum: 60_000, description: "Wait only; default 10000 ms" })),
+	}, { additionalProperties: false });
+	const assertBackgroundContext = (ctx: ExtensionContext): void => {
+		if (ctx.mode !== "tui" && ctx.mode !== "rpc") throw new Error("Background subagents require a live TUI or RPC session. Use foreground execution in print/JSON mode.");
+		if (taskRegistration.controlsAvailable(ctx)) return;
+		if (ctx.getActiveTools().includes("subagent_tasks")) {
+			for (const tool of pi.getAllTools()) if (tool.name === "subagent_tasks" && tool.parameters === controlParameters) return;
+		}
+		throw new Error("Background subagents require the built-in tasks or subagent_tasks management tool. Enable one or use foreground execution.");
+	};
+	const taskRegistration = registerManagedTasks(pi, "subagent", {
+		tasks, list: listTasks, guidance: `${describeSubagentLimits(limits)} A foreground single subagent can be transferred with /tasks background <id>; list IDs with /tasks. Same-workspace writers, batches/chains and shell handoff are unsupported.`,
+		background(task, ctx) {
+			if (closed || changingSession || cleanupFailure) throw new Error("Subagent session is unavailable for handoff.");
+			assertBackgroundContext(ctx);
+			tasks.assertHistoryAvailable();
+			const entry = foreground.get(task.id);
+			if (!entry || entry.owner.background) throw new Error("Only a waiting foreground single subagent can transfer; finished/background tasks and batches/chains cannot.");
+			if (task.completedAt !== undefined || task.state === "cancelling") throw new Error("Completed or cancelling tasks cannot transfer to background.");
+			entry.signal.throwIfAborted(); task.controller?.signal.throwIfAborted();
+			if (entry.policy.allowMutation && (isPathInside(entry.policy.canonicalCwd, entry.workspace) || isPathInside(entry.workspace, entry.policy.canonicalCwd))) {
+				throw new Error("Background writers require an isolated workspace outside the parent's workspace.");
+			}
+			entry.owner.detach({ content: [{ type: "text", text: `Subagent transferred to background without restarting: ${task.id}. Continue independent work; completion will be notified. Use tasks or subagent_tasks to inspect or cancel it.` }],
+				details: { mode: "single", agentScope: entry.agentScope, projectAgentsDir: null, results: [], backgroundCount: 1 } });
+			foreground.delete(task.id);
+		},
+	});
 	pi.registerTool({
 		name: "subagent_tasks", label: "Subagent tasks",
 		description: `Manage session subagent tasks and saved history: list, status, wait, or cancel one ID. Waiting (0–60000ms, at most 64 pending waits) never cancels execution. Prefer completion notifications to polling. Keep the latest ${limits.maxTasks} terminal tasks, at most 12000 characters per result. Persistent sessions restore historical results and mark unfinished work interrupted; memory-only sessions lose history on close. No replay, new permissions or current verification evidence.`,
 		modelOnly: true,
-		parameters: Type.Object({
-			action: StringEnum(["list", "status", "wait", "cancel"] as const),
-			id: Type.Optional(Type.String({ minLength: 1, maxLength: 80 })),
-			timeoutMs: Type.Optional(Type.Integer({ minimum: 0, maximum: 60_000, description: "Wait only; default 10000 ms" })),
-		}, { additionalProperties: false }),
+		parameters: controlParameters,
 		async execute(_id, params, signal): Promise<AgentToolResult<Record<string, unknown>>> {
 			if (closed) throw new Error("Subagent session is closed.");
 			if (params.action === "list") return { content: [{ type: "text", text: `${listTasks()}\n${tasks.historyStatus}` }], details: {} };
@@ -1540,12 +1570,7 @@ export default function (pi: ExtensionAPI) {
 			assertTaskCount(params, limits);
 			assertAssignments(params);
 			signal?.throwIfAborted();
-			if (params.background && ctx.mode !== "tui" && ctx.mode !== "rpc") {
-				throw new Error("Background subagents require a live TUI or RPC session. Use foreground execution in print/JSON mode.");
-			}
-			if (params.background && !ctx.getActiveTools().includes("subagent_tasks") && !taskRegistration.controlsAvailable(ctx)) {
-				throw new Error("Background subagents require the tasks or subagent_tasks management tool. Enable one or use foreground execution.");
-			}
+			if (params.background) assertBackgroundContext(ctx);
 			const authoritySignal = authority.signal;
 			const foregroundSignal = signal ? AbortSignal.any([signal, authoritySignal]) : authoritySignal;
 			const defaultTimeoutMs = params.timeoutMs ?? DEFAULT_TASK_TIMEOUT_MS;
@@ -1652,8 +1677,13 @@ export default function (pi: ExtensionAPI) {
 					for (const record of ownedTasks) { record.controller?.abort(); tasks.finish(record, "Batch admission failed; no child was started.", true); }
 					throw error;
 				}
-				const executionSignal = params.background ? authoritySignal : foregroundSignal;
-				const publish = params.background ? undefined : onUpdate;
+				const foregroundOwner = !params.background && hasSingle ? new ForegroundTask<AgentToolResult<SubagentDetails>>(signal, onUpdate) : undefined;
+				const foregroundWait = foregroundOwner?.takeWait();
+				const executionSignal = params.background ? authoritySignal : foregroundOwner ? AbortSignal.any([authoritySignal, foregroundOwner.signal]) : foregroundSignal;
+				const publish = params.background ? undefined : foregroundOwner ? foregroundOwner.publish : onUpdate;
+				// Execution closures must not retain the original foreground observer after handoff.
+				onUpdate = undefined;
+				if (foregroundOwner) foreground.set(ownedTasks[0].id, { owner: foregroundOwner, policy: delegatedPolicies[0], workspace: trustedWorkspace, signal: executionSignal, agentScope });
 				const runManaged = async (index: number, task: string, step: number | undefined, update: OnUpdateCallback | undefined, details: (results: SingleResult[]) => SubagentDetails, timeoutMs: number): Promise<SingleResult> => {
 					const record = ownedTasks[index];
 					const childSignal = AbortSignal.any([executionSignal, record.controller!.signal]);
@@ -1700,11 +1730,23 @@ export default function (pi: ExtensionAPI) {
 							}
 						}
 						executions.clear();
+						if (foregroundOwner) foreground.delete(ownedTasks[0].id);
 						reservation.release();
 					}
 				};
 				const operation = runTasks();
 				pending.add(operation);
+				if (foregroundOwner) {
+					const complete = (result?: AgentToolResult<SubagentDetails>, error?: unknown, failed = false): void => {
+						pending.delete(operation);
+						if (failed) foregroundOwner.fail(error); else foregroundOwner.complete(result!);
+						if (!foregroundOwner.background || closed || authoritySignal.aborted) return;
+						try { pi.sendMessage({ customType: "subagent-completion", content: formatTaskCompletion("subagent", ownedTasks, toolCallId), display: true }, { triggerTurn: true, deliverAs: "followUp" }); }
+						catch { /* Session teardown can invalidate delivery after child cleanup. */ }
+					};
+					void operation.then(result => complete(result), error => complete(undefined, error, true));
+					return foregroundWait!;
+				}
 				if (params.background) {
 					const complete = () => {
 						pending.delete(operation);
