@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, realpathSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync, realpathSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { setImmediate as tick, setTimeout as delay } from "node:timers/promises";
@@ -192,6 +192,26 @@ test("real extension loading shares shell/subagent controls and keeps the legacy
 	await h.call("tasks", { action: "wait", id: shell, timeoutMs: 5000 });
 	const unsupported = await h.call("tasks", { action: "background", id: shell });
 	assert.equal(unsupported.isError, true); assert.match(text(unsupported), /executor cannot transfer/);
+	const shellSteer = await h.call("tasks", { action: "steer", id: shell, text: "inspect" });
+	assert.equal(shellSteer.isError, true); assert.match(text(shellSteer), /executor does not support steering/);
+	const guided = await h.call("subagent", { agent: "scout", task: "guidance-gate-integration", scope: "Fixture workspace", deliverable: "Fixture result", stopCondition: "Return when done", readOnly: true, checkpoint: true, background: true });
+	assert.equal(guided.isError, false, text(guided));
+	const guidedId = text(guided).match(/[a-f0-9-]{36}-\d+/)![0];
+	let guidedPid: number | undefined;
+	for (let n = 0; n < 100 && !guidedPid; n++) {
+		for (const file of readdirSync(h.cwd)) if (file.endsWith(".ready.json")) {
+			const marker = JSON.parse(readFileSync(join(h.cwd, file), "utf8"));
+			if (marker.task?.includes("guidance-gate-integration")) guidedPid = marker.pid;
+		}
+		if (!guidedPid) await delay(20);
+	}
+	assert.ok(guidedPid);
+	const correction = await h.call("tasks", { action: "steer", id: guidedId, text: "report the verified path" });
+	assert.equal(correction.isError, false, text(correction)); assert.match(text(correction), /1 accepted, 0 sent/);
+	assert.match(text(await h.call("tasks", { action: "status", id: guidedId })), /queued at parent/);
+	writeFileSync(join(h.cwd, `child-${guidedPid}.release`), "release");
+	const guidedResult = await h.call("subagent_tasks", { action: "wait", id: guidedId, timeoutMs: 5000 });
+	assert.match(text(guidedResult), /completed.*fixture received:.*source=parent.*report the verified path/s);
 	const foreground = h.call("subagent", { agent: "scout", task: "hold-transfer", scope: "Fixture workspace", deliverable: "Fixture result", stopCondition: "Return when done", readOnly: true });
 	let foregroundId: string | undefined;
 	let listing = "";

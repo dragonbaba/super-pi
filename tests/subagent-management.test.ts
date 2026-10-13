@@ -263,6 +263,43 @@ test("ordinary children have no turn/token quota or per-turn control writes, eve
 	assert.match(h.tools.get("subagent").description, /No token or turn quotas/);
 });
 
+test("task steering targets the same live checkpoint child and refuses stale, unowned or cancelled work", { timeout: 15_000 }, async t => {
+	const h = harness(t, { persistent: true });
+	const submit = async (name: string, checkpoint = true) => {
+		const result = await h.run({ agent: "scout", task: `guidance-gate-${name}`, checkpoint, background: true, readOnly: true });
+		return { id: ids(result)[0], pid: await startedChild(h.ctx.cwd, `guidance-gate-${name}`) };
+	};
+	const steer = (id: string, text: string, name = "tasks", signal?: AbortSignal) => h.tools.get(name).execute("steer", { action: "steer", id, text }, signal, undefined, h.ctx);
+	const first = await submit("first");
+	await assert.rejects(steer("missing-id", "inspect"), /Unknown or expired/);
+	await assert.rejects(steer(first.id, " "), /4096/);
+	await assert.rejects(steer(first.id, "x".repeat(4097)), /4096/);
+	await assert.rejects(steer(first.id, "cancelled caller", "tasks", AbortSignal.abort()), /aborted/i);
+	h.ctx.mode = "json"; await assert.rejects(steer(first.id, "inspect"), /live TUI or RPC/); h.ctx.mode = "tui";
+	await h.commands.get("tasks").handler(`steer ${first.id} report only\nthe verified path`, h.ctx);
+	assert.match(h.notices.at(-1)!.text, /Correction queued.*1 accepted, 0 sent/);
+	await assert.rejects(steer(first.id, "overwrite", "subagent_tasks"), /already pending/);
+	assert.doesNotThrow(() => process.kill(first.pid, 0));
+	writeFileSync(join(h.ctx.cwd, `child-${first.pid}.release`), "release");
+	await h.notified();
+	assert.match(await h.control("status", first.id), /completed.*fixture received:.*user_input=false.*report only/s);
+	assert.throws(() => process.kill(first.pid, 0), /ESRCH/);
+	await assert.rejects(steer(first.id, "restart"), /terminal/);
+	for (const kind of ["ordinary", "cancel", "permission", "tree"]) {
+		h.resetNotification();
+		const current = await submit(kind, kind !== "ordinary");
+		if (kind === "ordinary") await assert.rejects(steer(current.id, "inspect"), /no live checkpoint control/);
+		else assert.equal((await steer(current.id, "inspect", "subagent_tasks")).details.accepted, true);
+		if (kind === "permission") h.events.emit(SESSION_PERMISSION_EVENT, {});
+		else if (kind === "tree") await h.hooks.get("session_before_tree")();
+		else await h.control("cancel", current.id);
+		await assert.rejects(steer(current.id, "late"), /cancelling|terminal/);
+		await h.control("wait", current.id, 5000);
+		assert.throws(() => process.kill(current.pid, 0), /ESRCH/);
+	}
+	assert.match(await h.control("list"), /0\/2 running · 0\/8 active\/queued · 0\/8 reserved/);
+});
+
 test("responsibilities are required for every item before any child starts and reach its prompt", async t => {
 	const h = harness(t); const tool = h.tools.get("subagent");
 	assert.throws(() => tool.prepareArguments({ agent: "scout", task: "  ", ...responsibility }), /nonblank task objective/);
