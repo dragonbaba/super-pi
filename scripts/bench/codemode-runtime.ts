@@ -10,6 +10,11 @@ const { CodemodeSandbox } = await import(new URL(`../../packages/codemode/${runt
 const { loadQuickJSWasm } = await import(new URL(`../../packages/codemode/${runtimeRoot}/wasm.${extension}`, import.meta.url).href);
 const moduleImportMs = performance.now() - importStart;
 
+if (process.argv.includes("--stages")) {
+	assert.equal(mode, "compiled", "Stage diagnostics require --compiled and a current codemode build");
+	const { benchmarkRuntimeStages } = await import("./codemode-runtime-stages.ts");
+	await benchmarkRuntimeStages(CodemodeSandbox, loadQuickJSWasm, moduleImportMs);
+} else {
 const gc = (globalThis as { gc?: () => void }).gc;
 assert.ok(gc, "Run with --expose-gc");
 const references: WeakRef<object>[] = [];
@@ -70,3 +75,4 @@ try {
 		workersStarted, workersStopped, trackedReferences: references.length, retainedAfterGc: retained, sampledHostBytes: sampledBytes,
 		coverage: "real Worker and QuickJS; execution includes Worker startup, VM/prelude, execution, bridge and termination (not separately timed); warm=compiled WASM reused, fresh Worker/VM per run; sampling enabled for 30 warm no-ops and batch; excludes worker heaps, AgentSession, policy and UI; compiled is local tsc output, not an installed release" }) + "\n");
 } finally { inspector.disconnect(); }
+}
