@@ -372,6 +372,7 @@ test("SDK ask_user pauses mixed batch, then replans; cancellation preserves pend
 					{ triggerTurn: true, deliverAs: "followUp" });
 				deliveries.push(firstReport);
 				await entered;
+				assert.equal(f.session.isIdle, false, "a paused report owns persistence until its hooks finish");
 				const drain = (f.session as any)._customMessageFlush;
 				const secondReport = f.session.sendCustomMessage({ customType: "subagent-completion", content: "second report", display: true },
 					{ triggerTurn: true, deliverAs: "followUp" });

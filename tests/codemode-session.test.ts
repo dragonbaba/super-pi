@@ -692,6 +692,17 @@ test("actual Plan mode retains Codemode with read-only child authorization", asy
 	const outcome = await f.run(['text((await tools.read({path:"file.txt"})).content)', 'try { await callTool("write",{path:"bad",content:"bad"}) } catch {}']);
 	assert.equal(outcome.results[0]?.isError, false);
 	assert.equal(outcome.results[1]?.isError, true);
+	f.session.agent.streamFunction = () => {
+		const message: AssistantMessage = { role: "assistant", api: "openai-responses", provider: "fixture", model: "fixture", usage: USAGE,
+			content: [{ type: "text", text: "<proposed_plan>\nInspect the file, then verify the result.\n</proposed_plan>" }], stopReason: "stop", timestamp: 1 };
+		const stream = new AssistantMessageEventStream();
+		stream.push({ type: "done", reason: "stop", message });
+		return stream;
+	};
+	await f.session.prompt("Present the plan.");
+	await f.session.waitForIdle();
+	assert.equal(f.session.messages.filter(m => m.role === "custom" && m.customType === "proposed-plan").length, 1,
+		"the actual Plan settled handler must see admission-ready idle and publish its plan");
 });
 
 test("Goal/interaction controls remain model-only and cannot be called through a script", async t => {

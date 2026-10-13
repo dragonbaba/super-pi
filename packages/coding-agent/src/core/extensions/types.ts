@@ -345,7 +345,7 @@ export interface ExtensionContext {
 	scopedModels: readonly ScopedModel[];
 	/** Current thinking level, when provided by the session runtime. */
 	thinkingLevel?: ThinkingLevel;
-	/** Whether the agent is idle (not streaming) */
+	/** Whether the agent can accept a new run (not streaming). Settlement hooks may still be finishing; this is not a teardown signal. */
 	isIdle(): boolean;
 	/** Whether project-local trust is active. Explicit path consumers request identity revalidation before reading trusted resources. */
 	isProjectTrusted(revalidateIdentity?: boolean): boolean;

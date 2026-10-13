@@ -116,11 +116,13 @@ test("cancellation during retry backoff is reported despite an error as the last
 
 test("settlement snapshots cancellation before extension code changes the event or starts another run", async () => {
 	const extensionEvents: unknown[] = [];
+	const extensionIdle: boolean[] = [];
 	const beforeNested = gate(), startNested = gate(), afterNested = gate(), finishOuter = gate();
 	let nested: (() => Promise<void>) | undefined;
 	const f = await fixture(["stop", "stop"], pi => {
-		pi.on("agent_settled", async event => {
+		pi.on("agent_settled", async (event, ctx) => {
 			extensionEvents.push(structuredClone(event));
+			extensionIdle.push(ctx.isIdle());
 			if (extensionEvents.length === 1) {
 				event.aborted = false;
 				beforeNested.release(); await startNested.promise;
@@ -159,6 +161,7 @@ test("settlement snapshots cancellation before extension code changes the event 
 		assert.equal(f.session.isIdle, true);
 		assert.equal((f.session as any)._settlementDepth, 0);
 		assert.equal((f.session as any)._pendingSettledAborted, undefined);
+		assert.deepEqual(extensionIdle, [true, true], "Goal/Plan handlers must observe admission-ready idle during settlement");
 		assert.deepEqual(extensionEvents, [{ type: "agent_settled", aborted: true }, { type: "agent_settled", aborted: false }]);
 		assert.deepEqual(f.settled, [{ type: "agent_settled", aborted: false }], "public settlement describes only the latest admission");
 	} finally { startNested.release(); finishOuter.release(); await run; await disposal; nested = undefined; unsubscribe(); f.release(); }

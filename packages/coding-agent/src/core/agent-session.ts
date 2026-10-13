@@ -1374,14 +1374,23 @@ export class AgentSession {
 		return this._idleWaitPromise;
 	}
 
-	private _resolveIdleWaitIfIdle(): void {
-		if (!this.isIdle || !this._resolveIdleWait) {
-			return;
+	private _publishIdleIfReady(): void {
+		if (!this.isIdle) return;
+		try {
+			if (this._pendingSettledAborted !== undefined) {
+				const aborted = this._pendingSettledAborted;
+				this._pendingSettledAborted = undefined;
+				this._emit({ type: "agent_settled", aborted });
+			}
+		} finally {
+			// A public listener may synchronously admit another run or report.
+			if (this.isIdle && this._resolveIdleWait) {
+				const resolve = this._resolveIdleWait;
+				this._idleWaitPromise = undefined;
+				this._resolveIdleWait = undefined;
+				resolve();
+			}
 		}
-		const resolve = this._resolveIdleWait;
-		this._idleWaitPromise = undefined;
-		this._resolveIdleWait = undefined;
-		resolve();
 	}
 
 	private async _emitAgentSettled(continueQueued = false): Promise<boolean> {
@@ -1418,13 +1427,7 @@ export class AgentSession {
 				}
 			} finally {
 				this._settlementDepth--;
-				try {
-					if (this.isIdle && this._pendingSettledAborted !== undefined) {
-						const aborted = this._pendingSettledAborted;
-						this._pendingSettledAborted = undefined;
-						this._emit({ type: "agent_settled", aborted });
-					}
-				} finally { this._resolveIdleWaitIfIdle(); }
+				this._publishIdleIfReady();
 			}
 		}
 	}
@@ -1959,9 +1962,9 @@ export class AgentSession {
 		return this._isAgentRunActive;
 	}
 
-	/** Whether the session has no active run/continuation or unfinished settlement hooks. */
+	/** Whether runs, settlement hooks and custom-message persistence have all finished. */
 	get isIdle(): boolean {
-		return !this._isAgentRunActive && this._settlementDepth === 0;
+		return !this._isAgentRunActive && this._settlementDepth === 0 && !this._customMessageFlush;
 	}
 
 	/** Current effective system prompt (includes any per-turn extension modifications) */
@@ -3178,6 +3181,7 @@ export class AgentSession {
 			if (consumed === pending.length) pending.length = 0;
 			else pending.splice(0, consumed);
 			this._customMessageFlush = undefined;
+			this._publishIdleIfReady();
 		}
 	}
 
@@ -4403,7 +4407,9 @@ export class AgentSession {
 			{
 				getModel: () => this.model,
 				getScopedModels: () => this._scopedModels,
-				isIdle: () => this.isIdle,
+				// Extension idle means admission readiness (Goal/Plan settled handlers),
+				// while public isIdle/waitForIdle retain ownership through all cleanup.
+				isIdle: () => !this.isStreaming,
 				isProjectTrusted: (revalidateIdentity) => this.settingsManager.isProjectTrusted(revalidateIdentity),
 				getSignal: () => this.agent.signal,
 				abort: () => {

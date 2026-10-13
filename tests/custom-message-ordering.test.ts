@@ -176,15 +176,23 @@ test("idle custom-message drain precedes concurrent triggers without losing eith
 	let entered!: () => void, release!: () => void, calls = 0;
 	const ready = new Promise<void>(resolve => { entered = resolve; });
 	const done = new Promise<void>(resolve => { release = resolve; });
+	let teardownEntered!: () => void, releaseTeardown!: () => void;
+	const teardownReady = new Promise<void>(resolve => { teardownEntered = resolve; });
+	const teardownDone = new Promise<void>(resolve => { releaseTeardown = resolve; });
 	const resourceLoader = new DefaultResourceLoader({ cwd: root, agentDir: root, settingsManager: settings, noExtensions: true, noContextFiles: true, noSkills: true, noPromptTemplates: true, noThemes: true,
 		extensionFactories: [pi => { pi.on("message_end", async event => {
 			if (event.message.role === "custom" && event.message.content === "noted") { entered(); await done; }
+			if (event.message.role === "custom" && event.message.content === "teardown report") { teardownEntered(); await teardownDone; }
 		}); }] });
 	await resourceLoader.reload();
 	const sessionManager = SessionManager.inMemory(root);
 	const { session } = await createAgentSession({ cwd: root, agentDir: root, settingsManager: settings, sessionManager, resourceLoader, model: ALPHA_MODEL, modelRuntime: alphaModelRuntime(), noTools: "all" });
 	session.agent.streamFunction = model => { calls++; return response(model, [{ type: "text", text: "done" }]); };
 	const pending: Promise<void>[] = [];
+	const runtime = new AgentSessionRuntime(session, { cwd: root, agentDir: root } as never,
+		async () => { throw new Error("unexpected replacement"); });
+	let invalidated = false, disposal: Promise<void> | undefined;
+	runtime.setBeforeSessionInvalidate(() => { invalidated = true; });
 	try {
 		pending.push(sendNote(session)); await ready;
 		assert.deepEqual(session.messages.map((m: any) => m.role), ["custom"]);
@@ -194,8 +202,20 @@ test("idle custom-message drain precedes concurrent triggers without losing eith
 		assert.equal(calls, 2);
 		assert.deepEqual(sessionManager.getEntries().filter((entry: any) => entry.type === "custom_message").map((entry: any) => entry.content), ["noted", "first report", "second report"]);
 		assert.equal((session as any)._customMessageFlush, undefined);
+		pending.push(session.sendCustomMessage({ customType: "note", content: "teardown report", display: true }, { triggerTurn: false }));
+		await teardownReady;
+		assert.equal(session.isStreaming, false);
+		assert.equal(session.isIdle, false);
+		disposal = runtime.dispose();
+		await new Promise<void>(resolve => setImmediate(resolve));
+		assert.equal(invalidated, false, "teardown must join report persistence even with no agent run");
+		releaseTeardown(); await Promise.all(pending); await disposal;
+		assert.equal(invalidated, true);
+		assert.equal((session as any)._customMessageFlush, undefined);
+		assert.equal((session as any)._idleWaitPromise, undefined);
+		assert.equal(sessionManager.getEntries().filter((entry: any) => entry.type === "custom_message" && entry.content === "teardown report").length, 1);
 	} finally {
-		release(); await Promise.allSettled(pending);
+		release(); releaseTeardown(); await Promise.allSettled(pending); await disposal;
 		session.dispose();
 		rmSync(root, { recursive: true, force: true });
 	}

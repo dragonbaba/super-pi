@@ -2558,7 +2558,7 @@ export class InteractiveMode {
 			model: this.session.model,
 			scopedModels: this.session.scopedModels,
 			thinkingLevel: this.session.thinkingLevel,
-			isIdle: () => this.session.isIdle,
+			isIdle: () => !this.session.isStreaming,
 			isProjectTrusted: () => this.settingsManager.isProjectTrusted(),
 			signal: this.session.agent.signal,
 			abort: () => {
