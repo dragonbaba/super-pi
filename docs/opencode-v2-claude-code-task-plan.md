@@ -130,7 +130,7 @@ Claude Code 官方确认后台报告通过后续回合的自动通知到达，�
 - [x] 分别建立 shell 与子代理的执行所有权。单项子代理和符合启动条件的 shell 保留同一进程/任务 ID、输出、授权和调度槽，解除前台等待而不重启；shell 同时保留启动时后台选项。
 - [x] 单项移交覆盖完成、取消、容量满、权限撤销、树切换和 dispose；结果只走前台或一次后台完成通知，session pending operation 持续拥有执行和清理责任。
 - [x] 通过 `/tasks background <id>` 及 `tasks` action 暴露单项移交。TUI/RPC 和有效内置管理工具必需；Print/JSON、未满足启动条件的 shell、批次/chain、后台/终态/取消中任务拒绝，不新增快捷键或守护进程。
-- [x] 内置本地 shell 显式 cwd/有限 timeout（0 < 秒数 ≤7200）时，自启动即受有界会话调度；运行中可移交，queued shell 和输出收尾窗口拒绝。原前台正常结果与后台单次报告互斥，权限/目录身份重新核对。
+- [x] 主模型直接调用内置本地 shell、显式 cwd/有限 timeout（0 < 秒数 ≤7200）时，自启动即受有界会话调度；运行中可移交，queued shell 和进程退出后的输出收尾窗口拒绝。原前台正常结果与后台单次报告互斥，权限/目录身份重新核对。
 - [ ] parallel/chain 运行中移交仍未实现；需先定义单 ID 对整批执行的语义，不能将单项支持写成全部 OC04 完成。
 
 **性能与最小验证：** 强制执行 §2。复用 shell/subagent 管理测试及现有 child fixture，选择支持的执行器验证身份不变与单次完成；按受影响消费者运行已有 shell/subagent benchmark。移交仅允许生命周期分配，不新增输出复制、逐进度状态发布或计时器；平台特有进程树行为在相应 CI 验证。
@@ -145,9 +145,11 @@ Claude Code 官方确认后台报告通过后续回合的自动通知到达，�
 
 **Shell 本轮验收：** 真实 ExtensionRunner/Agent 派发 bash 与 PowerShell，通过运行时 `/tasks` 移交后 PID/ID 不变；中断原回合不终止子进程，后续 256 KiB 输出不再发往旧前台，临时日志清除且完成通知一次。原 timeout、显式 cancel、权限撤销、树切换、普通自然完成和 queued 取消均覆盖。完成校验根据 running 接纳事实保持 pending，终态先到时迟到接纳不能重新打开义务。
 
-[Shell 移交性能证据](performance/oc04-shell-handoff.json) 保存同机基线/候选、源码指纹与完整调用链。1000 个相同 chunk 的普通前台采样为 6134.880 → 6056.080 B/chunk，后台为 5231.888 → 5401.760；新增 managed foreground / 半途移交场景分别为 5509.848 / 5238.328。采样含启动/收尾，存在波动，不声称性能提升。每 chunk 的 Promise/controller/历史写入仍为 0；移交后发布为 0，历史只写接纳/启动/终态各一次。4 个仍运行的移交 owner 保留期间，16 个原前台 controller/signal/callback/wait 引用 GC 后为 0；结束后 152 个 owner/binding 等引用为 0，Windows Job 4 次创建/清理后句柄为 0。未加入对象池或新的输出副本。
+[Shell 移交性能证据](performance/oc04-shell-handoff.json) 保存同机基线/候选、源码指纹与完整调用链。1000 个相同 chunk 的普通前台采样为 6134.880 → 5997.664 B/chunk，后台为 5231.888 → 5395.640；新增 managed foreground / 半途移交场景分别为 5428.752 / 5216.328。采样含启动/收尾，存在波动，不声称性能提升。每 chunk 的 Promise/controller/历史写入仍为 0；移交后发布为 0，历史只写接纳/启动/终态各一次。4 个仍运行的移交 owner 保留期间，16 个原前台 controller/signal/callback/wait 引用 GC 后为 0；结束后 152 个 owner/binding 等引用为 0，Windows Job 4 次创建/清理后句柄为 0。未加入对象池或新的输出副本。
 
-复用既有测试文件新增 4 项表驱动/真实进程用例；相关管理和 shell AST 29/29、cwd/完成校验 44 pass + 1 平台 skip、共享前台代理 AST 1/1，合计 74 pass + 1 skip。修改 fixture 就绪标记后仅重跑真实移交项；benchmark 类型适配器曾因夹具闭包共同上下文保留 4 个回调，拆到独立 helper 后受控 GC 通过，生产代码未因此改变。根类型检查、coding-agent 单包构建和 benchmark 独立 strict typecheck 通过；无新测试文件，无本地全量测试。远端按 §2.3 等待自动 Codex 审查及最终 head CI，不仅为补写远端状态重复触发检查。
+首轮复用既有测试文件新增 4 项表驱动/真实进程用例；相关管理和 shell AST 29/29、cwd/完成校验 44 pass + 1 平台 skip、共享前台代理 AST 1/1，合计 74 pass + 1 skip。修改 fixture 就绪标记后仅重跑真实移交项；benchmark 类型适配器曾因夹具闭包共同上下文保留 4 个回调，拆到独立 helper 后受控 GC 通过，生产代码未因此改变。根类型检查、coding-agent 单包构建和 benchmark 独立 strict typecheck 通过；无新测试文件，无本地全量测试。远端按 §2.3 等待自动 Codex 审查及最终 head CI，不仅为补写远端状态重复触发检查。
+
+**PR #150 审查修复：** 首轮 Codex 指出嵌套 shell 可能提前解除依赖等待，以及进程已退出但输出仍排空时仍能移交。现在以 tool_call 的 parentToolCallId 区分主模型直接调用，嵌套 Codemode 保留前台语义；本地 backend 从 exit 事件同步关闭移交，finally 移除监听器。另自审修复目录异步准备期间已移交却重新启用快照的窗口（确定性复现 3 次快照，修复后只剩 1 次终态捕获），以及 CI 在 Linux/Windows 同时暴露的部分 SDK 宿主管理 API 不完整问题（普通前台保留原行为，后台入口仍严格拒绝）。新增生命周期 callback 位于 createLocalShellOperations.exec，每次调用一次，逐 data 回调无新增分配；原 stdout/stderr drain 与清理继续完成。增加 3 项回归且复用既有文件，追加两个 CI 失败用例和三个 Windows 清理用例，累计不同用例 82 pass + 1 平台 skip；修复轮只跑受影响检查、类型/单包构建和同一基准。性能证据已更新最终源码指纹及采样，GC/确定性计数不变。修复推送后按 §2.3 单独评论一次 `@codex review`。
 
 **历史子代理阶段实施前记录（基线 `769baee88`）：** 子代理前台调用已建立 session-owned task、reservation 和 pending operation，但执行 signal 永久组合父回合 signal，返回值只能等待 operation。`AgentSession.prompt → _tryExecuteExtensionCommand` 已允许流式期间立即执行 `/tasks`，无需新增 UI 轮询。先实现单项调用的显式移交，保留 PID/task ID/原超时/同一调度槽，通过可断开的父回合取消监听器和一次性前台 deferred 解除等待；authority 与 task controller 继续拥有取消权。移交前复核 TUI/RPC、有效内置管理工具、未完成/未取消、工作区写入隔离。并行/chain 不隐式整批移交。
 

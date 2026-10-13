@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { setImmediate as tick, setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { Type } from "typebox";
 
 const root = mkdtempSync(join(tmpdir(), "sp-background-shell-"));
 const oldAgentDir = process.env.SP_CODING_AGENT_DIR;
@@ -23,7 +24,10 @@ const { SESSION_PERMISSION_EVENT } = await import("../packages/extensions/resour
 const { createBashTool, createBashToolDefinition } = await import("../packages/coding-agent/src/core/tools/bash.ts");
 const { createPowerShellTool } = await import("../packages/coding-agent/src/core/tools/powershell.ts");
 const { OutputAccumulator } = await import("../packages/coding-agent/src/core/tools/output-accumulator.ts");
+const { registerLocalShellBackend } = await import("../packages/coding-agent/src/core/tools/shell-cwd.ts");
+const { attachForegroundShellLaunch } = await import("../packages/coding-agent/src/core/tools/shell-background.ts");
 const { Agent } = await import("../packages/agent/src/agent.ts");
+const { createAssistantMessageEventStream } = await import("../packages/ai/src/utils/event-stream.ts");
 const { createExtensionRuntime, ExtensionRunner, loadExtensionFromFactory, wrapRegisteredTools } = await import("../packages/coding-agent/src/core/extensions/index.ts");
 const { SessionManager } = await import("../packages/coding-agent/src/core/session-manager.ts");
 const { SettingsManager } = await import("../packages/coding-agent/src/core/settings-manager.ts");
@@ -115,9 +119,9 @@ async function fixture(t: test.TestContext, auxiliary?: any, preceding?: any, re
 	const runner = new ExtensionRunner(extensions, runtime, cwd, session, {} as never);
 	let beforeConsume = (_args: any) => {}, approvals = 0;
 	const messages: any[] = [];
-	const agent = new Agent({ streamFn: () => { throw new Error("offline test"); }, beforeToolCall: async ({ toolCall, args }) => {
-		const result = await runner.emitToolCall({ type: "tool_call", toolName: toolCall.name, toolCallId: toolCall.id, input: args } as never); beforeConsume(args); return result;
-	}, afterToolCall: ({ toolCall, args, result, isError }) => runner.emitToolResult({ type: "tool_result", toolName: toolCall.name, toolCallId: toolCall.id, input: args, content: result.content, details: result.details, isError } as never) });
+	const agent = new Agent({ streamFn: () => { throw new Error("offline test"); }, beforeToolCall: async ({ toolCall, args, parentToolCallId }) => {
+		const result = await runner.emitToolCall({ type: "tool_call", toolName: toolCall.name, toolCallId: toolCall.id, parentToolCallId, input: args } as never); beforeConsume(args); return result;
+	}, afterToolCall: ({ toolCall, args, result, isError, parentToolCallId }) => runner.emitToolResult({ type: "tool_result", toolName: toolCall.name, toolCallId: toolCall.id, parentToolCallId, input: args, content: result.content, details: result.details, isError } as never) });
 	const active = ["bash", "powershell", "tasks"];
 	runner.bindCore({ getThinkingLevel: () => "off", getActiveTools: () => active, getAllTools: () => runner.getAllRegisteredTools().map(tool => tool.definition), sendMessage: (message: any) => messages.push(message), appendEntry: (kind: string, data: any) => session.appendCustomEntry(kind, data) } as never,
 		{ getSignal: () => agent.signal, getModel: () => undefined, isProjectTrusted: (identity?: boolean) => settings.isProjectTrusted(identity), isIdle: () => true, hasPendingMessages: () => false } as never);
@@ -244,6 +248,61 @@ test("real bash and PowerShell foreground handoff keeps PID, stops progress and 
 		await tick(); assert.equal(h.messages.length, 1); assert.ok(h.messages[0].content.includes(id));
 		assert.throws(() => process.kill(pid, 0), /ESRCH/);
 	}
+});
+
+test("shell handoff during asynchronous startup does not resume foreground snapshots", async t => {
+	const h = harness(t);
+	let snapshots = 0;
+	const snapshot = OutputAccumulator.prototype.snapshot;
+	t.mock.method(OutputAccumulator.prototype, "snapshot", function(this: InstanceType<typeof OutputAccumulator>, options: Parameters<typeof snapshot>[0]) {
+		snapshots++; return snapshot.call(this, options);
+	});
+	const backend = registerLocalShellBackend({ async exec(_command: string, cwd: string, options: any) {
+		options.beforeSpawn?.(cwd);
+		for (let i = 0; i < 4; i++) options.onData(Buffer.from("startup output\n"));
+		return { exitCode: 0, termination: "exit" as const, observation: { started: true, cwd, exitCode: 0, signal: null, outputDrained: true } };
+	} });
+	const tool = createBashToolDefinition(root, { operations: backend, exposeSessionEnvironment: false });
+	const input = { command: "fixture", cwd: ".", timeout: 10 };
+	attachForegroundShellLaunch(input, h.owner.createForegroundLaunch("bash", "startup", "fixture", root, h.ctx, () => {}));
+	const foreground = tool.execute("startup", input, undefined, undefined, h.ctx);
+	const task = [...h.owner.tasks.values()][0];
+	// Transfer before the tool's awaited directory preparation can resume.
+	await h.tools.get("tasks").execute("transfer", { action: "background", id: task.id }, undefined, undefined, h.ctx);
+	assert.equal((await foreground).details!.backgroundTask!.id, task.id);
+	await h.owner.tasks.wait(task.id, 1000);
+	assert.equal(snapshots, 1, "only terminal capture may materialize output after handoff");
+	assert.equal(h.messages.length, 1);
+});
+
+test("nested shell awaits real completion and is never offered for foreground handoff", { timeout: 10_000 }, async t => {
+	const h = await fixture(t);
+	let listing = "", dependent = false;
+	h.runner.setUIContext({ ...h.runner.getUIContext(), notify: value => { listing = value; } }, "tui");
+	h.agent.state.tools.push({ name: "nested_fixture", label: "Nested fixture", description: "Fixture", parameters: Type.Object({}), orchestration: true,
+		async execute(_id, _args, _signal, _update, context) {
+			const result = await context!.callTool("bash", { command: "node fixture.mjs handoff small", cwd: ".", timeout: 10 });
+			assert.equal(result.isError, false, text(result)); assert.equal((result.details as any).backgroundTask, undefined);
+			dependent = true; return { content: result.content, details: result.details };
+		} });
+	let turns = 0;
+	h.agent.streamFunction = (() => {
+		const next = turns++ === 0;
+		const message: any = { role: "assistant", api: "fixture", provider: "fixture", model: "fixture", timestamp: 0,
+			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+			stopReason: next ? "toolUse" : "stop", content: next ? [{ type: "toolCall", id: "parent", name: "nested_fixture", arguments: {} }] : [] };
+		const stream = createAssistantMessageEventStream(); stream.push({ type: "start", partial: message });
+		stream.push({ type: "done", reason: message.stopReason, message }); return stream;
+	}) as any;
+	const foreground = h.agent.prompt("offline nested fixture");
+	await Promise.race([started(h.cwd, "handoff"), foreground.then(() => assert.fail("Nested task ended before its child started"))]);
+	await h.runner.getCommand("tasks")!.handler("", h.runner.createCommandContext());
+	assert.doesNotMatch(listing, /foreground shell/); assert.equal(dependent, false);
+	writeFileSync(join(h.cwd, "handoff.release"), "release");
+	await foreground;
+	const result = h.agent.state.messages.find(message => message.role === "toolResult") as any;
+	assert.equal(result.isError, false, text(result)); assert.match(text(result), /HANDOFF-PID:/); assert.equal(dependent, true);
+	assert.equal(h.messages.length, 0);
 });
 
 test("foreground transfer acceptance keeps verification pending until terminal facts", () => {

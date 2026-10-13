@@ -19,6 +19,24 @@ import type { ChildProcess } from "node:child_process";
 
 const operations = createLocalShellOperations("fixture", () => ({ shell: process.execPath, args: ["-e"] }));
 
+test("foreground shell closes handoff on child exit before output drains and releases its listener", async t => {
+  const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), signalCode: null });
+  let ready!: () => void, settled = false;
+  const spawned = new Promise<void>(resolve => { ready = resolve; });
+  t.mock.method(childProcess, "spawn", () => { setImmediate(() => { child.emit("spawn"); ready(); }); return child; });
+  syncBuiltinESMExports();
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  const foreground = { background: false, completing: false, stopUpdates: undefined };
+  const execution = operations.exec("fixture", process.cwd(), { onData() {}, foreground }).then(value => { settled = true; return value; });
+  await spawned;
+  try {
+    child.emit("exit", 0, null);
+    assert.equal(foreground.completing, true);
+    await tick(); assert.equal(settled, false, "stdio drain still owns execution");
+  } finally { child.stdout.end(); child.stderr.end(); child.emit("close", 0); await execution; }
+  for (const event of ["error", "spawn", "exit", "close"]) assert.equal(child.listenerCount(event), 0);
+});
+
 for (const killExit of [0, 1, "spawn-error"] as const) test(`Windows cancellation awaits its tree killer after the shell exits: ${killExit}`, { skip: process.platform !== "win32" }, async t => {
   const child = Object.assign(new EventEmitter(), { pid: 123, stdout: new PassThrough(), stderr: new PassThrough(), signalCode: null });
   const killer = Object.assign(new EventEmitter(), { stdout: null, stderr: null, signalCode: null });

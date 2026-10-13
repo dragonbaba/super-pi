@@ -122,6 +122,7 @@ export interface BashOperations {
 			env?: NodeJS.ProcessEnv;
 			beforeSpawn?: (cwd: string) => void;
 			managedBackground?: boolean;
+			foreground?: ShellForegroundControl;
 		},
 	) => Promise<ShellProcessResult>;
 }
@@ -150,7 +151,7 @@ class ShellInputObserver {
 /** Shared process execution used by the built-in shell tools. */
 export function createLocalShellOperations(shellName: string, resolveShellConfig: () => ShellConfig): BashOperations {
 	return registerLocalShellBackend({
-		exec: async (command, cwd, { onData, signal, timeout, env, beforeSpawn, managedBackground }) => {
+		exec: async (command, cwd, { onData, signal, timeout, env, beforeSpawn, managedBackground, foreground }) => {
 			const observation: ChildProcessObservation = { started: false, exitCode: null, signal: null, outputDrained: false };
 			let stopReason: ShellTermination | undefined;
 			let inputObserver: ShellInputObserver | undefined;
@@ -206,6 +207,7 @@ export function createLocalShellOperations(shellName: string, resolveShellConfig
 			};
 			const onStdoutData = (data: Buffer) => { onData(data, "stdout"); };
 			const onStderrData = (data: Buffer) => { onData(data, "stderr"); };
+			const onExit = () => { if (foreground) foreground.completing = true; };
 
 			try {
 				// Set timeout if provided.
@@ -219,6 +221,7 @@ export function createLocalShellOperations(shellName: string, resolveShellConfig
 				// Stream stdout and stderr.
 				child.stdout?.on("data", onStdoutData);
 				child.stderr?.on("data", onStderrData);
+				if (foreground) child.once("exit", onExit);
 				// Handle abort signal by killing the entire process tree.
 				if (signal) {
 					if (signal.aborted) onAbort();
@@ -247,6 +250,7 @@ export function createLocalShellOperations(shellName: string, resolveShellConfig
 				if (child.pid) untrackDetachedChildPid(child.pid);
 				if (timeoutHandle) clearTimeout(timeoutHandle);
 				if (signal) signal.removeEventListener("abort", onAbort);
+				child.removeListener("exit", onExit);
 				child.stdout?.removeListener("data", onStdoutData); child.stderr?.removeListener("data", onStderrData);
 				await inputObserver?.finish();
 			}
@@ -982,7 +986,9 @@ export function createShellToolDefinition(
 					updateTimer = undefined;
 				}
 			};
-			if (foreground) foreground.stopUpdates = () => {
+			// Handoff may have happened while directory preparation was awaiting.
+			if (foreground?.background) onUpdate = undefined;
+			else if (foreground) foreground.stopUpdates = () => {
 				onUpdate = undefined;
 				updateDirty = false;
 				clearUpdateTimer();
@@ -1072,6 +1078,7 @@ export function createShellToolDefinition(
 						env: spawnContext.env,
 						beforeSpawn: cwdBinding?.beforeSpawn,
 						managedBackground: input.background || foreground !== undefined,
+						foreground,
 					});
 				} catch (err) {
 					executionError = err; processResult = shellProcessResultFromError(err);

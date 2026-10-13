@@ -49,7 +49,7 @@ export class BackgroundShellTasks {
 		this.pi = pi;
 		const guidance = `Background shell limits: ${this.limits.maxConcurrent} running concurrently, ${this.limits.maxTasks} admitted commands including queued work; hard ceilings ${HARD_MAX_CONCURRENT}/${HARD_MAX_TASKS}. Config: ${BACKGROUND_SHELL_LIMITS_PATH}; reload after editing. Separate from subagent quotas. Use background: true with explicit cwd in bash/powershell; ordinary shell inspection and authorization still apply. Default runtime 1800s, maximum 7200s; queue time excluded. Read status with tasks; wait for terminal facts before reporting success. Retain the latest ${this.limits.maxTasks} completed records, at most 12000 characters each, with no durable output logs. Avoid overlapping edits/builds and use only independently useful concurrency.`;
 		this.taskRegistration = registerManagedTasks(pi, "shell", { tasks: this.tasks,
-			guidance: guidance + " Eligible foreground local commands (explicit cwd and timeout up to 7200s) share these slots in TUI/RPC. List their IDs with /tasks; /tasks background <id> transfers without restarting or extending the timeout.",
+			guidance: guidance + " Eligible top-level foreground local commands (not nested Codemode; explicit cwd and timeout up to 7200s) share these slots in TUI/RPC. List their IDs with /tasks; /tasks background <id> transfers without restarting or extending the timeout.",
 			list: this.list, details: this.details, background: this.background });
 		this.removePermissionListener = pi.events.on(SESSION_PERMISSION_EVENT, this.revoke);
 		pi.on("session_start", async (_event, ctx) => { await this.beginSession(); configureTaskHistory(this.tasks, "shell", ctx); });
@@ -88,8 +88,10 @@ export class BackgroundShellTasks {
 	}
 
 	canManageForeground(ctx: ExtensionContext): boolean {
-		return !this.closed && !this.changingSession && !this.cleanupBlocked
-			&& (ctx.mode === "tui" || ctx.mode === "rpc") && this.taskRegistration.controlsAvailable(ctx);
+		if (this.closed || this.changingSession || this.cleanupBlocked || (ctx.mode !== "tui" && ctx.mode !== "rpc")) return false;
+		// Optional discovery must not break ordinary foreground use by partial SDK hosts.
+		try { return this.taskRegistration.controlsAvailable(ctx); }
+		catch { return false; }
 	}
 
 	private readonly background = (task: ManagedSubagentTask, ctx: ExtensionContext): void => {

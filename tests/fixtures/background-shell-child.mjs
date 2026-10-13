@@ -6,7 +6,7 @@ if (mode === "handoff") {
   const watcher = watch(".", () => {
     if (!existsSync("handoff.release")) return;
     watcher.close();
-    process.stdout.write("x".repeat(256 * 1024) + "\nHANDOFF-PID:" + process.pid + "\n");
+    process.stdout.write("x".repeat(process.argv[3] === "small" ? 16 : 256 * 1024) + "\nHANDOFF-PID:" + process.pid + "\n");
   });
   writeFileSync(`${mode}.ready.json`, JSON.stringify({ pid: process.pid }));
 }
