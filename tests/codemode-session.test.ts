@@ -678,6 +678,9 @@ test("a completed write stays recoverable in /changes when its end event times o
 		assert.equal(changes[0]!.operation, "write");
 		assert.equal(changes[0]!.status, "succeeded");
 		assert.equal(changes[0]!.receipt?.sha256, sha256, "the receipt matches the file's current state");
+		const request = branch.find(entry => entry.type === "custom" && entry.customType === "codemode-tool-call-v1"
+			&& (entry.data as any)?.call?.id === changes[0]!.toolCallId);
+		assert.ok(request); assert.equal(changes[0]!.requestEntryId, request.id, "source is the persisted nested call, not the parent result");
 	}
 });
 

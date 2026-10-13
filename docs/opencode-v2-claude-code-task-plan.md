@@ -2,7 +2,7 @@
 
 先巩固 Super Pi 已有的后台完成通知与主会话续跑，再改进结果交付、子代理续跑和上下文压缩；Codemode 的工具发现与执行成本独立评估。需要改变会话持久化、远程协议或文件恢复语义的功能单独评估，不将上游实现整体移植进当前运行时。
 
-状态：2026-10-13（Asia/Tokyo）#136–#141 已按用户授权合并。#141 最终提交 `25b014859a` 的六项 CI 通过、Codex 首轮审查无重大问题，合并提交为 `1d2c43db92455e72c8043c5f20142de6b7c69400`。OC01、OC02、OC03 进程内窗口、OC04 单项子代理移交、OC05 已结束任务续跑发现、OC10 核查及 OC11 有界 Worker 池已完成。当前推进 OC07 重连状态核查；OC04 shell/批次移交、OC06 真实模型效果及 OC11 安装发布包/Bun 与真实负载仍待后续。继续沿用 §2.3 的 PR/审查流程。
+状态：2026-10-13（Asia/Tokyo）#136–#142 已按用户授权合并。#142 最终提交 `6a1579277` 的六项 CI 通过、Codex 自动审查无反馈，合并提交为 `7e05000f832f2f56633f6763ee4969c1efe12ab8`。OC01、OC02、OC03 进程内窗口、OC04 单项子代理移交、OC05 已结束任务续跑发现、OC07 客户端重连核查、OC10 核查及 OC11 有界 Worker 池已完成。当前推进 OC08 已有变更视图的来源核查；OC04 shell/批次移交、OC06 真实模型效果及 OC11 安装发布包/Bun 与真实负载仍待后续。继续沿用 §2.3 的 PR/审查流程。
 
 ## 1 对照基线与结论边界
 
@@ -186,11 +186,16 @@ shell 审计链为 final shell authorization → cwd binding → bash execute �
 
 入口：[原生文件操作](../packages/extensions/mutation-guard-write/index.ts)、[会话证据](../packages/extensions/mutation-guard-write/session-evidence.ts)、[session-manager](../packages/coding-agent/src/core/session-manager.ts)。参考 [O11]、[O12]。
 
-- [ ] 先复用现有操作收据与证据记录，将会话/任务/回合关联到实际文件变更；支持用户查看归属及 diff，不凭 shell 文本推断所有副作用均可撤销。
+- [x] 先核查并复用已有收据及 `/changes` diff：本轮补齐当前查看会话、唯一请求 entry 和结果/preparation/preview entry 的历史定位，支持原生工具和持久 Codemode nested call；没有另建 ledger。历史定位不等于执行归属，fork、子代理和旧记录没有可靠 origin/task 标记时明确不推断。
+- [ ] 若后续需要跨 Session/子代理任务归属，先定义可靠的生产者 lineage 与旧数据兼容，再实施；不能用当前查看 Session 或 tool-call ID 字符串冒充执行者。该扩展未在本轮实现。
 - [ ] 回退作为单独的用户显式操作，确定记录容量、保留时间和精确文件身份；检查用户或其他代理的后续修改，冲突不得覆盖。快照/恢复范围须说明未跟踪文件、删除/重命名、元数据、二进制及平台差异。
-- [ ] 对未覆盖的 shell、网络、数据库等副作用明确不可恢复；记录被淘汰时不承诺可回退，不将 Git reset/clean 或全工作区恢复用作隐式实现。
+- [x] 明确本轮为只读历史定位：shell、网络、数据库和未接入收据的子代理副作用不构成完整文件清单；记录淘汰后不保证重建，更不承诺回退。没有引入 Git reset/clean、工作区快照或自动执行。
 
 **性能与最小验证：** 强制执行 §2。先复用 [native-file-operations](../tests/native-file-operations.test.ts)、[native-file-metadata](../tests/native-file-metadata.test.ts) 的相关 fixture；只有采用恢复功能才增加对应冲突用例。复用 [native-files lifecycle benchmark](../scripts/bench/native-files-lifecycle.ts) 中适用部分，审计大文件读取/复制、存储上限与句柄释放；禁止逐 delta 扫描工作区、拍整仓快照或把常规验证升级成默认多进程成本采样。
+
+**本轮实施前记录（基线 `7e05000f8`）：** 已有 `/changes` 重建最近 512 个 Session entry 中最多 128 个文件条目，具备受限 diff、当前状态核验和剩余工作草稿；已有 request/intent/result 唯一性、顺序、hash 与权限边界。不重复建设 ledger 或恢复器。详情目前只显示 item ID/状态，未显示其唯一请求 entry 与结果 entry；先用既有真实 mutation fixture 的 `/changes View` 复现缺少来源信息，补充有界来源展示。当前查看的 Session 不等于历史执行 Session（fork 可复制历史）；任务/子代理归属没有可靠记录时不推断。只显示成功配对的请求 entry；截断、重复、失配保持 unavailable。
+
+完整调用链：native write/edit/file_batch → 持久 request/intent/result（及 Codemode nested custom call/result）→ Session index → 显式 `/changes` → recentMutationEntries → collectChanges/collectStructuredMutationReceipts → 唯一请求绑定 → 详情文字/batchExpandedSummary → ChangeViewer 缓存与可见行 → 现有 UI/frame queue → dispose。只在显式命令及弹窗准备阶段增加 primitive entry ID 字段和来源文字；不修改收据生产、Evidence Ledger lookup、render/input、逐帧队列、差异生成或文件提交。请求 map ≤512、返回条目 ≤128；新增字符串引用随命令结束释放，详情沿既有 64 KiB/行数和数值滚动索引上限销毁。保持热路径 closure/Promise/AbortController/wrapper/array 新增为 0。先复用 file-change-recovery 的真实命令/恢复 fixture、source-invariants 和 file-change-viewer 的 opt-in allocation/释放场景；不跑未受影响的原生提交多进程采样或完整 TUI benchmark，不新建测试文件。回退仍需独立的持久 preimage/身份冲突设计，现有收据和 diff 不构成恢复备份。
 
 ### OC09 进程重启后的执行恢复
 
@@ -227,6 +232,16 @@ shell 审计链为 final shell authorization → cwd binding → bash execute �
 **性能与最小验证：** 强制执行 §2。复用 [codemode-runtime](../tests/codemode-runtime.test.ts)、[worker-recovery](../tests/codemode-worker-recovery.test.ts)、[codemode-guardrails](../tests/codemode-guardrails.test.ts) 中实际受影响者；运行对应 [hot-path invariants](../tests/codemode-hot-paths.test.ts) 和 [runtime benchmark](../scripts/bench/codemode-runtime.ts)，涉及策略/展示时才扩大到已有 dispatch/session/tree 基准。提供每脚本 Worker/VM 次数、每调用复制与序列化字节、并发/队列峰值、allocation 和 GC/引用释放证据；若改到 Worker 内部分配，宿主 inspector 样本不够，须补该线程/VM 的相应证据。§6 是诊断基线，不是未来优化的验收结果。
 
 ## 5 完成与证据记录
+
+### 第七阶段：OC08 变更历史定位
+
+基线 `7e05000f8`，#142 已合并；本轮复用已有 `/changes`，没有替换原生提交或持久化格式。原详情没有显示请求 entry，扩展既有实际 View 用例在基线上失败；新增一项 bounded entry ID 引用，沿已有唯一性、顺序、request hash/intent 绑定投影到结果。缺失、截断、未来请求、重复 entry 或匹配失败保持来源不可用。普通 assistant 请求和 Codemode 持久 nested custom 请求均指向其真实 entry。
+
+详情展示 Session view / Request entry / Record entry，使用已有 metadata 转义和整体 report 预算，原差异、preview/未执行状态、核验及剩余草稿语义不变。重载及真实 Session fork 后 entry ID 保留，但当前查看会话不是历史执行归属；没有从任务名、shell 或路径猜测子代理任务，也没有将旧收据视为可回退备份。跨会话任务 lineage、冲突安全的恢复仍是独立条件项。
+
+性能分类：修改位于显式 `/changes` 的重建与弹窗准备阶段，属于冷生命周期。请求 map/ChangeRecord 仅增加 primitive ID 引用；无新增索引、I/O、事件订阅、定时器或对象池。最多 512 个请求/128 个返回条目，ID ≤256 code units；单次 View 才构造来源说明，再由既有 64 KiB/400 行预算限制完整展示。render/input 和帧链代码未改，既有 viewport fixture 是回归保护，不是新增命令成本的测量。基线/候选 20000 次稳定 render 都新增 0 行，200 次 viewport 变化总计 4422 行、scrollBytes ≤786444；采样分别 1329984/1270624 B，不据单次波动宣称提速。受控 GC 与 dispose 后 body/scroll/cache/lifecycle references 均为 0。完整结果见 [OC08 记录](performance/oc08-change-attribution.json)。
+
+验证复用 file-change-recovery：全文件首轮 111 pass、1 个 POSIX skip，新增 fork 夹具因展开无关 getter 而失败；改为只替换该上下文的 SessionManager 后仅重跑新增用例通过（最终覆盖 112 pass/1 skip）。另有真实 Codemode 嵌套写入恢复 1 项、相关 source invariants 2 项、viewer 7 项通过；类型检查通过。只新增一个测试用例、未新增测试文件，未运行本地全量套件。构建、最终 CI/Codex 审查与最终 head 在 PR 交付记录补充。
 
 ### 第六阶段：OC07 客户端重连与租约隔离
 

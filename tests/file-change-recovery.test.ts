@@ -331,7 +331,7 @@ test("N1 missing/forged history cannot redirect verification to an arbitrary pat
   const forged = records.find((r: any) => r.target.endsWith("forged"));
   if (forged) { assert.ok(forged.unavailable); await assert.rejects(() => verifyChange(forged, async () => { throw new Error("must not reach permission or disk"); }), /cannot authorize/); }
   const truncated = collectChanges(branch.filter(e => e.message?.role !== "assistant"), f.cwd);
-  for (const record of truncated) assert.ok(record.unavailable);
+  for (const record of truncated) { assert.ok(record.unavailable); assert.equal(record.requestEntryId, undefined); }
   assert.equal(result.isError, false);
 });
 
@@ -341,6 +341,7 @@ test("N1 preview is view-only and snapshot draft removes old evidence", async t 
   let ui = commandUI(f, "preview:0", "View");
   await f.runner.getCommand("changes")!.handler("", f.runner.createContext() as never);
   assert.match(ui.view(), /visible/);
+  assert.ok(collectChanges(f.session.getBranch(), f.cwd)[0].requestEntryId);
   ui = commandUI(f, "preview:0", "Verify current state");
   await f.runner.getCommand("changes")!.handler("", f.runner.createContext() as never);
   assert.match(ui.notices().join("\n"), /not a mutation receipt/);
@@ -396,11 +397,11 @@ test("N1 recovery requires an ordered call/intention/result and does not borrow 
   await f.call("delete", { path: single }, "ordered-single");
   await f.call("file_batch", { operations: [{ operation: "write", mode: "create", path: "batch", content: "new" }] }, "ordered-batch");
   const branch = f.session.getBranch() as any[];
-  assert.ok(collectChanges(branch, f.cwd).every((r: any) => !r.unavailable));
+  assert.ok(collectChanges(branch, f.cwd).every((r: any) => !r.unavailable && r.requestEntryId));
   const noIntents = branch.filter(e => e.customType !== "file-mutation-progress-v2");
-  assert.ok(collectChanges(noIntents, f.cwd).every((r: any) => r.unavailable));
+  assert.ok(collectChanges(noIntents, f.cwd).every((r: any) => r.unavailable && r.requestEntryId === undefined));
   const futureCalls = branch.filter(e => e.message?.role !== "assistant").concat(branch.filter(e => e.message?.role === "assistant"));
-  assert.ok(collectChanges(futureCalls, f.cwd).every((r: any) => r.unavailable));
+  assert.ok(collectChanges(futureCalls, f.cwd).every((r: any) => r.unavailable && r.requestEntryId === undefined));
   const futurePreparation = branch.filter(e => e.customType !== "file-mutation-progress-v2").concat(branch.filter(e => e.customType === "file-mutation-progress-v2" && e.data.phase === "prepared"));
   const oldResults = collectChanges(futurePreparation, f.cwd).filter((r: any) => r.status === "succeeded");
   // Later progress may supersede the result, but cannot retroactively bind that earlier result.
@@ -555,6 +556,7 @@ test("N1 duplicate history entry IDs cannot authenticate progress that precedes 
   const branch = Array.from({ length: 12 }, () => ({ id: "duplicate", type: "custom", customType: "unrelated", data: {} }));
   branch.push(intent, { id: "separator", type: "custom", customType: "unrelated", data: {} } as any, call, result);
   const records = collectChanges(branch, f.cwd); assert.equal(records.length, 1); assert.ok(records[0].unavailable);
+  assert.equal(records[0].requestEntryId, undefined);
   await assert.rejects(verifyChange(records[0], async () => { assert.fail("ambiguous history cannot authorize an observation"); }), /cannot authorize/);
 });
 
@@ -639,7 +641,38 @@ test("N1 standalone exact and snapshot View retain their actual committed patche
     const ui = commandUI(f, `${id}:0`, "View");
     await f.runner.getCommand("changes")!.handler("", f.runner.createContext() as never);
     assert.deepEqual(ui.notices(), []); assert.match(ui.view(), /VISIBLE_PATCH/);
+    const branch = f.session.getBranch();
+    const request = branch.find((entry: any) => entry.message?.role === "assistant" && entry.message.content.some((part: any) => part.id === id))!;
+    const record = collectChanges(branch, f.cwd).find((record: any) => record.toolCallId === id)!;
+    assert.equal(record.requestEntryId, request.id);
+    assert.ok(ui.view().includes(`Session view: ${f.session.getSessionId()}`));
+    assert.ok(ui.view().includes(`Request entry: ${request.id}`));
+    assert.ok(ui.view().includes(`Record entry: ${record.entryId}`));
   }
+});
+
+test("OC08 change locations survive reload and fork without claiming the viewing session executed them", async t => {
+  const f = await fixture(t);
+  await f.call("write", { path: "source", content: "retained" }, "source-call");
+  const original = collectChanges(f.session.getBranch(), f.cwd)[0];
+  const reopened = SessionManager.open(f.session.getSessionFile()!);
+  const fork = SessionManager.forkFrom(f.session.getSessionFile()!, f.cwd, join(f.cwd, "fork"));
+  assert.notEqual(fork.getSessionId(), f.session.getSessionId());
+  for (const sessionManager of [reopened, fork]) {
+    const record = collectChanges(sessionManager.getBranch(), f.cwd)[0];
+    assert.equal(record.requestEntryId, original.requestEntryId); assert.equal(record.entryId, original.entryId);
+    const leaf = sessionManager.getLeafId(), ui = commandUI(f, "source-call:0", "View", "existing input");
+    const ctx = f.runner.createContext();
+    Object.defineProperty(ctx, "sessionManager", { value: sessionManager });
+    await f.runner.getCommand("changes")!.handler("", ctx as never);
+    assert.deepEqual(ui.notices(), []);
+    assert.ok(ui.view().includes(`Session view: ${sessionManager.getSessionId()}`));
+    assert.ok(ui.view().includes(`Request entry: ${original.requestEntryId}`));
+    assert.match(ui.view(), /originating session\/task is not recorded/);
+    assert.equal(sessionManager.getLeafId(), leaf, "viewing writes no history or new ownership marker");
+    assert.equal(ui.input(), "existing input");
+  }
+  assert.equal(readFileSync(join(f.cwd, "source"), "utf8"), "retained");
 });
 
 test("N1 standalone progress prefix refuses unexpected phases before the terminal", async t => {

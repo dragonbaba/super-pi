@@ -1,0 +1,116 @@
+{
+  "schemaVersion": 1,
+  "task": "OC08 bounded change-history locations",
+  "date": "2026-10-13",
+  "baselineCommit": "7e05000f832f2f56633f6763ee4969c1efe12ab8",
+  "classification": "Explicit /changes reconstruction and View preparation (cold lifecycle). Mutation production, Evidence Ledger lookup, render/input and terminal delivery unchanged.",
+  "sourceSha256": {
+    "note": "Final working-file bytes; checkout line-ending normalization can change byte hashes.",
+    "packages/extensions/mutation-guard-write/changes.ts": "a942beaabd8804f630313dc08cf75c7931e803a832051245e3c6d5f219eadc1e",
+    "tests/file-change-recovery.test.ts": "d87834e74b12e822ffc169fcf0ef9d725f72f0cf8d32c4b795529a5dd741322f",
+    "tests/codemode-session.test.ts": "90e67f01a0ebe933e1dbe7b06674f381ef665bcaa32ef9059a234f384cb020db",
+    "tests/file-change-viewer.test.ts": "f28561adb38d71039ff11d9e76d67f906824f4969f00b49ca2da5ae2b8dc0d5f"
+  },
+  "audit": [
+    "Native request -> current authorization/path binding -> canonical intent/preparation -> commit -> Session receipt/result; nested Codemode persists custom call/result. Producers and durable schema are unchanged.",
+    "/changes (idle UI command) -> indexed recentMutationEntries (512) -> collectChanges -> collectStructuredMutationReceipts -> unique/order/hash/intent validation -> command selection -> displayMetadata -> batchExpandedSummary/PreviewBudget -> showChangeViewer -> cached visible rows -> existing UI/frame queue -> ChangeViewer.dispose.",
+    "collectChanges already owns bounded branch slices, request/entry/order maps, conflict sets, recovery objects and argument hashes at command time. Adds one existing entry-ID string reference per call and per projected record, no extra index/container/full-history scan.",
+    "View creates one bounded provenance string and adds it to the existing bounded heading once per explicit opening. It reads no files and adds no history writes, model requests, listeners, timers, pool, preimage backup or retry permission.",
+    "Normal render/input retain existing numeric indices, viewport output rows and cached array reuse. Closure/Promise/AbortController/wrapper/array additions per frame/update are zero; existing viewport rows are not claimed allocation-free.",
+    "Command-local branch/maps/records live only through the command/dialog. Report body, numeric scrolling state, cached rows and TUI/done references clear on dialog disposal. No new process or resource is created by the feature."
+  ],
+  "bounds": {
+    "inputHistoryEntries": 512,
+    "requestMapEntries": 512,
+    "returnedChanges": 128,
+    "entryIdCodeUnits": 256,
+    "recoveryArgumentBytes": 4194304,
+    "reportBytes": 65536,
+    "reportLines": 400,
+    "viewportNumericBytes": 786444,
+    "addedPersistenceBytes": 0,
+    "addedIO": 0,
+    "addedHistoryScans": 0,
+    "addedLiveListeners": 0,
+    "addedTimers": 0,
+    "addedObjectPools": 0
+  },
+  "regressionMeasurement": {
+    "scope": "Unchanged viewport regression guard only. Does not measure additional cold-command formatting cost or claim an optimization.",
+    "environment": {
+      "node": "v26.4.0",
+      "platform": "win32",
+      "arch": "x64"
+    },
+    "command": "SP_PREVIEW_PROFILE=1 node --expose-gc --experimental-strip-types --test --test-name-pattern='full bounded report' tests/file-change-viewer.test.ts",
+    "candidateCommandNote": "Candidate ran all seven cases in the same existing viewer file; profiling covers the same first case/workload as baseline.",
+    "baseline": {
+      "benchmark": "N1-change-viewport",
+      "node": "v26.4.0",
+      "stableRenders": 20000,
+      "changedViewports": 200,
+      "stableNewRows": 0,
+      "metrics": {
+        "bodyCodeUnits": 65536,
+        "scrollBytes": 786444,
+        "cachedRows": 23,
+        "rowsMaterialized": 4422,
+        "graphemesVisited": 148370,
+        "lifecycleReferences": 2
+      },
+      "released": {
+        "bodyCodeUnits": 0,
+        "scrollBytes": 0,
+        "cachedRows": 0,
+        "rowsMaterialized": 4422,
+        "graphemesVisited": 148370,
+        "lifecycleReferences": 0
+      },
+      "heapBefore": 42548704,
+      "heapAfterRelease": 42796520,
+      "sampledBytes": 1329984
+    },
+    "candidate": {
+      "benchmark": "N1-change-viewport",
+      "node": "v26.4.0",
+      "stableRenders": 20000,
+      "changedViewports": 200,
+      "stableNewRows": 0,
+      "metrics": {
+        "bodyCodeUnits": 65536,
+        "scrollBytes": 786444,
+        "cachedRows": 23,
+        "rowsMaterialized": 4422,
+        "graphemesVisited": 148370,
+        "lifecycleReferences": 2
+      },
+      "released": {
+        "bodyCodeUnits": 0,
+        "scrollBytes": 0,
+        "cachedRows": 0,
+        "rowsMaterialized": 4422,
+        "graphemesVisited": 148370,
+        "lifecycleReferences": 0
+      },
+      "heapBefore": 42479776,
+      "heapAfterRelease": 42757384,
+      "sampledBytes": 1270624
+    },
+    "interpretation": "Single samples vary. Stable renders create zero new rows; both profiles exercise 200 viewport changes. dispose counters are zero and controlled GC runs with the viewer owner still in scope. No cold-command throughput, new WeakRef census, native commit or real-model claim."
+  },
+  "verification": [
+    "Baseline actual View source assertion failed (undefined request entry); candidate passed for exact and snapshot edits.",
+    "file-change-recovery: 111 pass, 1 fixture failure, 1 POSIX skip in initial affected-file run. Fixed only the new fork fixture's accidental spread of an unconfigured context getter, then reran that one case: pass. Final distinct coverage 112 pass / 1 skip; no second full file run.",
+    "Existing Codemode persisted nested-call/write/reload case: 1 pass.",
+    "Existing file-change source invariants: 2 pass.",
+    "Existing viewer tests with optional profiling: 7 pass.",
+    "npm run check and coding-agent workspace build passed; git diff --check passed.",
+    "One new case; zero new test files; no local full-suite run."
+  ],
+  "limitations": [
+    "Locations are in the viewed Session history, not proof of original executor identity. Fork copies preserve entry IDs.",
+    "Cross-session/subagent task lineage and automatic/explicit rollback are not implemented. Native receipts and displayed diffs are not backup data.",
+    "Missing/ambiguous/unbound history suppresses request attribution. Preview/preparation entries remain non-execution facts.",
+    "Shell/network/database/unrecorded subagent side effects are outside this file ledger. Existing current-state verification does not grant replay authority."
+  ]
+}
