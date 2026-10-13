@@ -32,8 +32,8 @@ export type WorkerToHostMessage =
 	| { type: "call"; id: number; target: "tool" | "global"; name: string; args: string | undefined }
 	| { type: "output"; item: CodemodeOutputItem }
 	/** `writes` is a JSON array of `[key, json]` for `store()` and `[key]` for deletions. */
-	| { type: "done"; ok: true; value: string | undefined; writes: string }
-	| { type: "done"; ok: false; error: ScriptErrorJson }
+	| { type: "done"; ok: true; value: string | undefined; writes: string; reusable?: boolean }
+	| { type: "done"; ok: false; error: ScriptErrorJson; reusable?: boolean }
 	/** The VM failed outside the script's control, for example a wasm trap. */
 	| { type: "crash"; message: string };
 
@@ -53,7 +53,9 @@ export function isWorkerToHostMessage(value: unknown): value is WorkerToHostMess
 			return typeof item === "object" && item !== null && (item.type === "text" ? typeof item.text === "string" :
 				item.type === "image" && typeof item.data === "string" && typeof item.mimeType === "string");
 		}
-		case "done": return message.ok === true ? typeof message.writes === "string" &&
+		case "done":
+			if (message.reusable !== undefined && typeof message.reusable !== "boolean") return false;
+			return message.ok === true ? typeof message.writes === "string" &&
 			(message.value === undefined || typeof message.value === "string") : message.ok === false && typeof message.error === "string";
 		case "crash": return typeof message.message === "string";
 		default: return false;

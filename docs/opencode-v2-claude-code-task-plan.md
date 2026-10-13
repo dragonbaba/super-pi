@@ -2,7 +2,7 @@
 
 先巩固 Super Pi 已有的后台完成通知与主会话续跑，再改进结果交付、子代理续跑和上下文压缩；Codemode 的工具发现与执行成本独立评估。需要改变会话持久化、远程协议或文件恢复语义的功能单独评估，不将上游实现整体移植进当前运行时。
 
-状态：2026-10-13（Asia/Tokyo）第一批 #136、第二批 #137 / #138 已按用户授权依次合并。第二批最终提交的六项 CI 均通过，#137 自动审查通过，#138 两条反馈修复后手动复审确认无重大问题。当前基线为 #138 合并提交 `614218b0312de486728c5b6f1358884d890cb31d`（此前 #137 合并为 `2c673513c27bd2a73d66bcd76b66a9d121c51775`）。OC01、OC02、OC05 已结束任务续跑发现与 OC10 核查已完成；OC06 真实模型效果、OC11 内部成本拆分仍待后续。下一轮优先 OC03 的进程内通知失败边界，保留默认不跨重启重发、不自动执行。用户已授权继续实施并沿用 §2.3 的 PR/审查流程；新 PR 的合并仍需另行授权。
+状态：2026-10-13（Asia/Tokyo）#136、#137、#138、#139 已按用户授权依次合并。#139 最终提交 `2a8707e29` 的六项 CI 通过、Codex 手动复审无重大问题，合并提交为 `f099234ec938c3eafd31f7f458ca71acde1b23eb`。OC01、OC02、OC03 进程内窗口、OC05 已结束任务续跑发现与 OC10 核查已完成。当前 #140 完成 OC11 编译成本/数据边界核查，并按用户后续要求加入有界 Worker 池，宿主/Worker 采样与释放证据见 §5。OC06 真实模型效果、OC11 安装发布包/Bun 与真实负载仍待后续。继续沿用 §2.3 的 PR/审查流程；#140 合并仍需另行授权。
 
 ## 1 对照基线与结论边界
 
@@ -201,15 +201,67 @@ Claude Code 官方确认后台报告通过后续回合的自动通知到达，�
 
 入口：[host](../packages/codemode/src/runtime/host.ts)、[worker](../packages/codemode/src/runtime/worker.ts)、[prelude](../packages/codemode/src/runtime/prelude-source.ts)、[WASM 缓存](../packages/codemode/src/wasm.ts)、[controller](../packages/coding-agent/src/core/codemode.ts)、[嵌套调度](../packages/agent/src/nested-tool-dispatch.ts)、[结果处理](../packages/coding-agent/src/core/codemode-result.ts)。对照 §6，不直接照搬上游宿主内解释器。
 
-- [ ] 在实际使用的编译/打包运行模式中拆分首次模块加载、WASM 编译、Worker 创建、VM/prelude 初始化、执行/bridge 和退出成本。复用 §6 的短调用、批次和 CPU fixture；源码模式约 40 ms 不能直接当作发布版 SLA，也不能仅凭一次 no-op 决定重写。
-- [ ] 先改善既有批量使用方式、复用不变元数据及被 profiler 证明重复的准备工作。区分每段脚本固定成本、每次工具调用成本、工具自身 I/O 和模型回合；不把 N 次脚本启停与一次 N 工具批处理混为同一负载。不为减少计时数字绕过权限、guard 或模型读取证据。
-- [ ] 审计实际调用全链：脚本序列化 → Worker 消息 → host 参数解析 → controller/nested dispatch → 工具与 guard → 结果约束/收据 → bridge 序列化 → VM 解析 → 展示与释放。分别计数必要的信任边界复制与可消除的同一边界重复处理；不能因为 OpenCode 同进程就宣称零复制，或直接删除 Pi 的验证/持久化视图。
-- [ ] 优化必须保留脚本级取消、VM 内存/输出/bridge/调用上限、可信读最多 4 并发、修改串行、工具当前授权和明确副作用状态。区分 VM 已停与宿主工具已停；对忽略取消的宿主调用、未 await 调用、失败及迟到结果复用现有行为断言。可借鉴结构化错误位置和建议，但先验证 Pi 已有错误/取消事实，不把所有异步行为当成能力缺失。
-- [ ] 默认保留独立 Worker + QuickJS。仅当发布模式 profiler 和真实负载证实收益、且隔离/释放/取消验收完整时，才另行评估预热或复用；不能将对象池契约当成 Worker 池自动许可。没有足够收益时以证据关闭优化项，不新增双引擎、专用 DSL、直接执行旁路或常驻池。
+- [x] 在 Node CLI 使用的本地 tsc 编译模式拆分首次模块加载、WASM 读取/编译、Worker 创建、VM/prelude 初始化、执行/bridge 和退出成本，见 §5 第四阶段。复用短调用、批次和 CPU fixture；编译产物不是已安装发布包，执行/bridge 内部没有继续细分，不能当作发布版 SLA。
+- [x] 基线定位线程启动/模块加载成本后，按用户明确要求实现单槽 Worker 池，复用线程和模块，保持每脚本独立 VM。相同 30 个短脚本与 100 次工具批处理分别测量，未绕过权限、guard 或模型读取证据；真实模型/I/O 收益仍不外推。
+- [x] 完成脚本/Worker/host/controller/nested dispatch/guard/结果约束与收据/VM/展示释放的源码审计，实测启动 JSON 与参数/结果消息的字符和 UTF-8 字节。区分消息载荷计数与内部复制/总堆分配；未证明产品层重复验证可以安全删除，保留现有边界。后续优化仍需对应分配证据。
+- [x] 保留脚本级取消、VM 内存/输出/bridge/调用上限、可信读最多 4 并发、修改串行、工具当前授权和副作用状态。复用 runtime/session 用例核验未 await、忽略取消的宿主调用、迟到结果、目录/状态恢复；Worker 停止仍不等于任意宿主 JavaScript 已停止。
+- [x] 按用户后续授权加入有界 Worker 资源复用，保留 QuickJS；独立端口隔离执行，VM dispose 后才归还，错误/取消/过大内存淘汰，空闲和使用次数有界。宿主 allocation、Worker 内部采样/VM 引用释放及相同负载收益见 §5；安装发布包、Bun 与真实模型负载仍待测。
 
 **性能与最小验证：** 强制执行 §2。复用 [codemode-runtime](../tests/codemode-runtime.test.ts)、[worker-recovery](../tests/codemode-worker-recovery.test.ts)、[codemode-guardrails](../tests/codemode-guardrails.test.ts) 中实际受影响者；运行对应 [hot-path invariants](../tests/codemode-hot-paths.test.ts) 和 [runtime benchmark](../scripts/bench/codemode-runtime.ts)，涉及策略/展示时才扩大到已有 dispatch/session/tree 基准。提供每脚本 Worker/VM 次数、每调用复制与序列化字节、并发/队列峰值、allocation 和 GC/引用释放证据；若改到 Worker 内部分配，宿主 inspector 样本不够，须补该线程/VM 的相应证据。§6 是诊断基线，不是未来优化的验收结果。
 
 ## 5 完成与证据记录
+
+### 第四阶段：OC11 编译模式成本、数据边界与 Worker 池
+
+基线为 #139 合并提交 `f099234ec938c3eafd31f7f458ca71acde1b23eb`。CLI 的 bin 指向 `dist/cli.js`，产品 controller 使用默认 Codemode worker；本阶段使用源码生成的 `dist/runtime/host.js` / `worker.js`，不冒充安装包或 Bun 可执行文件。完整源码链审计覆盖 sandbox/catalog/wasm cache → Execution → Worker → QuickJS/prelude → host handleCall → controller runChild/recordInvocation → NestedToolDispatch/agent 授权 → boundCodemodeResult/收据与引用 → host bounded JSON → VM settle → controller 展示/store/释放。以下先记录未修改生产代码时的历史基线，再记录用户要求的 Worker 池实施与验收。
+
+**测量方式。** 复用 `scripts/bench/codemode-runtime.ts --compiled`，新增按需 `--stages` 分支及单个 benchmark helper。控制组运行原始编译 Worker；诊断组对当前编译文件作唯一锚点校验，生成只加时间戳/计数和绝对 import 的内存副本，经 data URL 启动。benchmark 内临时替换 Node Worker 构造器以传递 240 字节共享计数区，finally 关闭 sandbox 并恢复导出；无磁盘临时文件、常驻服务或生产诊断 API。计时与分配采样分开。每项预热 2 次原始执行，控制/诊断各 5 次、交替先后次序；这些是小样本定位数据，不是性能改善或稳定 p95 证明。
+
+| 同机编译模式 fixture | 原始 Worker 中位数 ms | 诊断组中位数 ms |
+| --- | ---: | ---: |
+| `return 1` | 31.48 | 30.93 |
+| 读取一次 4 KiB 后返回长度 | 30.45 | 30.41 |
+| 同脚本顺序读取 100 × 4 KiB | 36.40 | 36.18 |
+| 10 万次整数累加 | 32.57 | 32.00 |
+
+no-op 的诊断分段中位数：线程启动至 bootstrap 16.99 ms、Worker 模块加载 5.33 ms、VM create 2.46 ms、prelude 编译/安装/lockdown 与目录 JSON 4.28 ms、脚本编译 0.03 ms、执行及 bridge 0.28 ms、退出 0.93 ms。同步 Worker 构造约 0.17 ms，已包含在线程启动区间，不能重复相加；各分段的中位数之和也不等于总时延中位数。主线程模块导入 5.93 ms、WASM 读取及首次编译 2.39 ms 单独记录，不混入 warm 调用。诊断副本有额外 bootstrap/计数成本，不把其分段作为完全无探针的生产追踪。
+
+**数据边界与所有权。** 脚本字符串随 WorkerData 传递；已编译 WASM 缓存复用，但每次仍新建 Worker/VM。目录/全局/store 在 Worker 启动时各做一次既有 JSON 序列化进入 VM，本 fixture 分别为 50/2/2 字符。100 次顺序读取实测 100 条调用与 100 条响应，参数 200 字符/UTF-8 字节、结果 409800 字符/UTF-8 字节，pending 峰值 1、完成后 0。字符等于字节只因 fixture 为 ASCII，不能外推 Unicode。每个诊断脚本 VM create/完成各 1 次。
+
+| 路径 | 必要处理与本轮结论 |
+| --- | --- |
+| VM 参数 → Worker → host | prelude JSON 编码、VM handle 转字符串、消息交付、host JSON.parse；消息长度计数不能证明 V8/QuickJS 内部复制次数或总分配。 |
+| host → controller / nested dispatch | 参数大小核查、当前工具/权限/guard、可信读最多 4 并发与修改串行；本次顺序库 fixture 不冒充产品并发或授权基准。 |
+| 产品结果/修改收据 | 修改参数及执行收据保存、bounded details 副本、输出约束、结果引用/读取证据各有独立语义；即使看到再次序列化，也不能直接删除或绕过。 |
+| host 结果 → Worker → VM | BoundedJson 约束编码、消息交付、VM 字符串/JSON 解析。每响应载荷实测 4098 字符，未声称零复制或零分配。 |
+| 脚本完成/取消 → 产品收尾 | VM 终止与宿主工具停止分开；现有 pending/AbortController/期限、context.finish、结果保存和释放保持不变，不重放副作用。 |
+
+**验证与决定。** 诊断模式累计 48/48 Worker、1212 次 fixture 工具调用，91 个 Worker/buffer/sandbox/catalog/result 跟踪引用 GC 后保留 0。另运行一次原始编译模式 allocation 基准：32/32 Worker、100 次调用、128 引用保留 0，宿主采样 2701800 字节，warm 中位数 30.57 ms；采样不包含 Worker heap/QuickJS，也不与无 profiler 的小样本混算。37 项既有 runtime/worker recovery/AST 检查、类型检查及 codemode 单包构建通过。无新增测试文件、无本地全量测试；探索后补齐 VM/启动 JSON 计数，只以最终 harness 的样本验收。原始数据、指纹、命令与范围见 [OC11 证据](performance/oc11-runtime-costs.json)。
+
+根类型检查不包含 scripts，因此另对基准入口及其 helper 做一次独立 strict 类型检查，通过；未将按需测量加入默认 CI 测试集合。
+
+上述为用户要求 Worker 池之前的历史基线。其后按明确授权，在同一 #140 中实现并启用单槽 Worker 资源池；不将历史数据冒充池化后的结果。
+
+**池的所有权与退出。** coding-agent controller 显式启用 `reuseWorker`；低层库默认仍为独立 Worker，以兼容已有调用和自定义 worker。每个 sandbox 最多一个物理线程、一个执行 owner，无等待队列，跨 sandbox 不共享。每次租用创建独立 MessageChannel、interrupt buffer、QuickJS VM 和 BridgeBudget；端口提供物理隔离，旧结果不能进入新脚本。归还同时核对线程与 Execution 身份，重复归还及旧 owner 均无效。Worker 等 VM 调用栈/微任务排空后 dispose，清除消息监听和 WASI memory 引用，再发送完成；host 中止未 await 调用、清理 pending/maps/端口后释放 owner。脚本失败、超时、取消或线程故障终止线程，等待物理退出后才可新建；退出等待期间已经取消的 Execution 在取槽前再次核对完成状态，不得抢占后续执行。该窄窗口补充既有池用例验证，只增加生命周期 primitive 检查，不重跑未改动的 allocation 负载（采样提交为 d5e4a4fa2）。空闲 30 秒、累计 64 次执行或 WASM 线性内存超过 64 MiB 也回收；空闲 Worker/timer 均 unref，close 终止活动和空闲资源。
+
+**完整链路 allocation 审计。** 继续审计上表的 controller → sandbox → Worker/VM → host bridge → nested dispatch/权限/证据 → 序列化 → VM → 结果/状态保存及 close。新增分配仅在脚本/线程生命周期：每脚本一个 channel/端口对、启动消息和转移列表，acquire/start 的 Promise，VM 的固定回调及完成时 primitive 复用标记；每个 Worker 一个 owner/计数/稳定退出监听，空闲转换一个 deadline timer。消息交付、deliver、drain、host handleMessage 及进度链新增 callback/Promise/AbortController/包装数组均为 0。原有每实际工具调用的 pending/AbortController/执行 Promise、JSON 文本、结果对象继续保留；没有池化事件、结果、Promise 或 VM。64 MiB 判断从既有 WASI memory proxy 读取 buffer.byteLength，不复制内存或扫描 VM 对象图。AST 在既有 hot-path 文件中约束具名消息路径，生命周期例外明确为 main/captureMemory/bridge/API 初始化和 start/finish/acquire/retire。
+
+**同机编译模式对照。** `--compiled --pool` 在同一进程分别用新线程和复用线程运行同样的 30 个 warm no-op 与一次 100×4KiB bridge，进程 CPU 样本仍偏零，因此 CPU 门禁改用独立 Worker.cpuUsage 测量 30 组×10 次脚本；两组均加相同的 keepalive bootstrap，确保一次性线程退出前能够读取 CPU。额外 CPU 对照共 301/301 与 5/5 Worker；该探针仅用于 CPU，计时/allocation 使用无探针 Worker。只采样 warm no-op/bridge 的宿主分配，不把 CPU 组重复计入 allocation。
+
+| 指标 | 每次新 Worker | 单槽复用 |
+| --- | ---: | ---: |
+| warm 中位数 / p95 | 36.16 / 37.79 ms | 6.50 / 8.59 ms |
+| 100 次读取批处理 | 45.35 ms | 18.03 ms |
+| 宿主采样分配 | 2520120 B | 1200544 B（-52.4%） |
+| CPU 批次均摊 p95 | 7.5 ms/脚本 | 1.6 ms/脚本 |
+| 含 CPU 组的 Worker 启动/关闭 | 332/332 | 6/6 |
+| 关闭并 GC 后宿主 heapUsed | 10077152 B | 10123600 B（+0.46%） |
+
+宿主分配下降超过 20%、CPU p95 无回退、关闭后宿主 heap 增长低于 10%；这些是同机有限样本，不是端到端 SLA。空闲 RSS 约多 14.3 MiB（进程总量，带噪声），所以记录保留成本，并以空闲/次数/内存阈值限制；不声称池没有内存代价。首次脚本仍需要线程启动，warm 收益不能套用首次调用。
+
+**Worker 内部与释放证据。** benchmark-only data URL 副本对 31 个新 VM（其中 30 个各分配 8 MiB）采样：Worker V8 allocation 12611224 B，主要在 WebAssembly instantiate；WASM 线性内存峰值 10027008 B。此采样含探针，不是相对新线程的 Worker 分配下降证明，也不包含 QuickJS 内部 malloc 总量。31/31 VM dispose，31/31 依赖库 instance/module/hostCallbacks/ownedHandles 清空；248 个 VM、WASM instance/memory、data/catalog/store/interrupt/port WeakRef 在每轮受控 GC 后保留 0，close 后 Worker 保留 0。宿主对照各 33 引用保留 0。生产 AgentSession 基准 242 次真实 fixture 读取、11/11 Worker、55 引用保留 0、pending evidence 0，第二批中位数 21.18 ms；这是本地离线 provider/I/O，不冒充真实模型效果。
+
+**最小验证与限制。** 原有 runtime/recovery/hot-path 检查通过；只在已有 runtime/hot-path 文件加入 3 个行为用例和 1 个 AST 用例，覆盖复用、迟到结果、目录/配额/状态隔离、错误/超时/取消/close、重复与过期 owner、空闲淘汰、64 次/大内存淘汰，并复用 recovery 错误用例覆盖池线程加载失败。主脚本完成后会中断未 await 的无限 VM 微任务，保持已完成结果，再 dispose；最终对此变更重跑 28 项 runtime 检查通过。89 项既有 session 集成测试通过。修改后仅重跑受影响断言和 allocation/lifecycle 测量，未跑本地全量或新增测试文件。单包构建、根类型检查及基准独立 strict 检查通过；stage 探针适配后仍通过 48/48 Worker、1212 调用、91 引用保留 0。完整原始数据与当前指纹附于 [OC11 证据](performance/oc11-runtime-costs.json)。未测试安装包、Bun 及真实模型负载；Windows CPU 计时仍有粒度限制，不宣称细粒度 VM CPU 百分比。提交后按 §2.3 请求 Codex 手动复审，CI/审查结论记录到 PR，避免仅为状态反复提交触发全量 CI。
 
 ### 第三轮实施记录：OC03 进程内交付故障窗口
 
@@ -383,7 +435,7 @@ warm 指复用已编译 WASM，每次仍创建独立 Worker/VM；计时包含终
 
 主对照和 CPU 追加分别也计数 102/102、17/17 个 Worker 启停，结束时 active executions 均为 0；WeakRef 证据仅来自前述现有基准，不外推到未跟踪对象。宿主 allocation 采样不包含 Worker heap/QuickJS 内存，也未测 OpenCode allocation，**因此不比较两边总内存高低**。本次没有生产修改，不借此宣称全部热路径或所有失败/取消路径已验收。
 
-优先借鉴：有界、精确的工具发现；稳定执行说明与目录更新分离；结构化诊断；用分阶段成本解释短脚本与批次差异。对应 OC10/OC11，先核实本地已具备的部分，再优化已测出的成本。保留 Pi 的可终止 Worker、JS 引擎、证据/权限链和容量边界；不照搬逐进度整数组复制，不因微基准引入 Worker 池或双引擎。真实模型的 token/回合节省仍属待验证项。
+优先借鉴：有界、精确的工具发现；稳定执行说明与目录更新分离；结构化诊断；用分阶段成本解释短脚本与批次差异。对应 OC10/OC11，先核实本地已具备的部分，再优化已测出的成本。保留 Pi 的可终止 Worker、JS 引擎、证据/权限链和容量边界；不照搬逐进度整数组复制。用户后续要求的 Worker 复用按 §5 单独核验隔离、取消、容量、allocation 和释放。真实模型的 token/回合节省仍属待验证项。
 
 本次只增加本节与一份可复现测量记录；没有新增测试文件、安装仓库依赖或运行全量测试。上游下载、依赖和 harness 使用任务专属临时目录；按已记录身份提交的清理请求被工具自动审批拒绝（仅返回 `blocked by policy`），该目录暂时保留，身份记录在测量 JSON。文档和复现材料不依赖其继续存在。
 

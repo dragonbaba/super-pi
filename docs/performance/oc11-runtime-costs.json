@@ -1,0 +1,1687 @@
+{
+  "schemaVersion": 2,
+  "task": "OC11 compiled runtime cost decomposition and data-boundary audit",
+  "date": "2026-10-13",
+  "baselineCommit": "f099234ec938c3eafd31f7f458ca71acde1b23eb",
+  "environment": {
+    "node": "v26.4.0",
+    "platform": "win32",
+    "arch": "x64",
+    "osRelease": "10.0.22631",
+    "cpu": "Intel(R) Core(TM) i7-14700KF"
+  },
+  "fingerprints": {
+    "algorithm": "SHA-256 of working-tree file bytes",
+    "files": {
+      "scripts/bench/codemode-runtime.ts": "9c0ba475b8f463e3ab7d6f9b900ab16722d2a3cc9a0bd4b25951097340993c7d",
+      "scripts/bench/codemode-runtime-stages.ts": "fb48e526dc436dde20265929f7adfc73d25ac98cf0b6b2e76681e431f8824e9b",
+      "packages/codemode/src/runtime/host.ts": "30b09822e1eee0820141b630faa5f050ca27e4d961c3316d298285011f33ece1",
+      "packages/codemode/src/runtime/worker.ts": "6540b2cf1e810552d0e3be5808442fb49b2ac08e8e20e2fd96e75b8b94572422",
+      "packages/codemode/src/runtime/prelude-source.ts": "8743866734def03cbce8759f296bf01a89bff2b706462f17631215ed587eb4b5",
+      "packages/codemode/src/runtime/protocol.ts": "73ea0af049ecc2b85896f3bd603a9a0903cdc54a76c35035d827b401ea01e9b4",
+      "packages/codemode/src/wasm.ts": "88f8c0106cb476c29405148a7fd95b4f71fc91aa0965f18510be68c4b1051793",
+      "packages/codemode/src/bounded-json.ts": "a9703416ed568db5650d785f3d18a046faf3367388959bf52b6012156e7e9dd9",
+      "packages/codemode/dist/runtime/host.js": "1b64ed62c2b804f41d803e260edabde13ce25685ed83ce88b4e1207360a371df",
+      "packages/codemode/dist/runtime/worker.js": "d670c2fe5567ad694e340e17207e2c15c339b5ab36bef94f4923f35a5c59c1a7",
+      "packages/codemode/dist/runtime/prelude-source.js": "688362706c2a2874b9c2030edb5f29810814a30626a75fa7a6f28814c619b746",
+      "packages/coding-agent/src/core/codemode.ts": "8ccbea79c50200288319acdef102232fb2030a1ab98b6f76ddda6630dd23a860",
+      "packages/coding-agent/src/core/codemode-result.ts": "49605b094f4c080cd70c6f2338bc06e00659f46a283f0c3936f07e805f1b274f",
+      "packages/agent/src/nested-tool-dispatch.ts": "cd4a04a34b72c96c4d1cd447293c09517b29a39f901f12d00308d9116e40fcc2"
+    }
+  },
+  "decision": "Historical no-pool baseline superseded by explicit user request: bounded Worker reuse with fresh VMs, ownership, retirement and measured gates; see workerPool.",
+  "audit": {
+    "callChain": [
+      "CodemodeController.execute / ensureSandbox, store snapshot and catalog",
+      "CodemodeSandbox.execute, serializeStore, cached WASM, Execution.start and WorkerData",
+      "Worker main, QuickJS.create, PRELUDE_SOURCE lockdown/catalog, script compile/run",
+      "VM JSON arguments -> worker bridge -> Execution.handleMessage/handleCall -> host JSON.parse",
+      "CodemodeController.invoke/runChild/recordInvocation -> NestedToolDispatch -> agent tool authorization and guard",
+      "mutation receipts, boundCodemodeResult, retained refs/read evidence and output limits",
+      "BoundedJson -> thread result -> VM string / prelude settle JSON.parse",
+      "script done/abort -> host finish/Worker terminate; controller context.finish, pending children, output/store projection, finally release"
+    ],
+    "sourceAuditNotMeasured": "Production input size validation, mutation receipts, details isolation, retained result budgeting and read-evidence projections have distinct semantics. Their repeated serialization was not proven redundant, and no guard or persistence view was removed.",
+    "trustBoundaries": "Thread counters observe each argument/result JSON string once, and instrument existing metadata JSON serialization sites without encoding them twice. They do not count V8/QuickJS internal copies or total heap allocations.",
+    "productionDelta": "No files under packages/ or tests/ changed. New production per-delta/progress/frame allocations are zero by unchanged source; existing runtime-call Promise/AbortController/message allocations are not claimed to be zero.",
+    "lifecycle": "Production ownership is unchanged. Diagnostic Worker subclass owns one 240-byte shared buffer per sampled execution; timestamp/counter arrays are read after termination, currentTrace is cleared, sandbox closes and builtin Worker exports restore in finally. Only numeric snapshots survive to the report. No disk temporary files or spawned services.",
+    "poolDecision": "No object or Worker pool. Timing attribution alone does not satisfy release/isolation/real-workload/profile gates."
+  },
+  "verification": {
+    "commands": [
+      {
+        "command": "npm run build --workspace @super-pi/codemode",
+        "result": "passed"
+      },
+      {
+        "command": "npm run check",
+        "result": "passed"
+      },
+      {
+        "command": "node --expose-gc --experimental-strip-types --test tests/codemode-runtime.test.ts tests/codemode-worker-recovery.test.ts tests/codemode-hot-paths.test.ts",
+        "result": "37 passed, zero failures or skips"
+      },
+      {
+        "command": "node --expose-gc --experimental-strip-types scripts/bench/codemode-runtime.ts --compiled --stages",
+        "result": "all fixture result, bridge byte/count, stage ordering, Worker exit and GC assertions passed"
+      },
+      {
+        "command": "node --expose-gc --experimental-strip-types scripts/bench/codemode-runtime.ts --compiled",
+        "result": "existing allocation/GC assertions passed"
+      },
+      {
+        "command": "git diff --check",
+        "result": "passed"
+      },
+      {
+        "command": "node node_modules/typescript/bin/tsc --noEmit --target ES2023 --module NodeNext --moduleResolution NodeNext --allowImportingTsExtensions --skipLibCheck --strict scripts/bench/codemode-runtime.ts",
+        "result": "passed; root tsconfig excludes scripts"
+      }
+    ],
+    "newTestFiles": 0,
+    "localFullSuiteRuns": 0,
+    "captureNote": "An initial diagnostic run guided the measurement design. VM-create/completion and startup metadata counters were then added and the final harness measured once for this record. The raw result below is the final harness capture, not a selected fastest sample.",
+    "existingCoverage": "Runtime checks cover CPU/microtask cancellation, output/call/argument/store bounds, unawaited host calls, abort listener release, closed/overlapping use and source/dist worker recovery. Product permissions/concurrency/storage remain unchanged; these 37 checks are not a new full-product acceptance suite."
+  },
+  "limitations": [
+    "Local tsc output matches the Node CLI's dist entry pattern but is not an installed package or bundled executable measurement.",
+    "Four bounded library fixtures, five samples per variant after two control warmups; no real I/O, model, MCP or UI workload.",
+    "Diagnostic data-URL bootstrap, counters, Worker wrapper and probes add overhead. Control/diagnostic differences are calibration, not improvements.",
+    "Worker constructor overlaps thread-bootstrap time. Stage medians must not be summed and compared as if they were the median total.",
+    "Execution/bridge time groups VM serialization, message transport and host/fixture work; no per-component allocation attribution within this interval.",
+    "Host HeapProfiler sampling excludes Worker V8 heap and QuickJS allocations. No total-memory, zero-copy or zero-leak conclusion outside tracked owners.",
+    "Installed-release/Worker allocation and representative workload profiling are prerequisites to any future production optimization."
+  ],
+  "stageBenchmark": {
+    "benchmark": "codemode-runtime-stages",
+    "mode": "compiled",
+    "node": "v26.4.0",
+    "platform": "win32",
+    "moduleImportMs": 5.925699999999999,
+    "wasmReadAndCompileMs": 2.386999998241663,
+    "originalWorkerSha256": "d670c2fe5567ad694e340e17207e2c15c339b5ab36bef94f4923f35a5c59c1a7",
+    "instrumentedWorkerSha256": "46b615ca57bd6227d3a04bc2518e8345cfae48e1abe98fb07a8452ad072a4257",
+    "workersStarted": 48,
+    "workersStopped": 48,
+    "calls": 1212,
+    "results": [
+      {
+        "name": "noop",
+        "code": "return 1",
+        "controlMs": [
+          32.03310000151396,
+          31.246899999678135,
+          32.02370000258088,
+          30.545199997723103,
+          31.478499997407198
+        ],
+        "diagnosticMs": [
+          32.71549999713898,
+          29.78489999845624,
+          30.71670000255108,
+          30.934399999678135,
+          30.962600000202656
+        ],
+        "stages": [
+          {
+            "threadBootstrap": 17.85250000283122,
+            "workerModuleLoad": 5.326199997216463,
+            "workerSetup": 0.08840000256896019,
+            "vmCreate": 2.5,
+            "bridgeSetup": 0.11429999768733978,
+            "prelude": 5.253600001335144,
+            "listenerSetup": 0.09759999811649323,
+            "scriptCompile": 0.03220000118017197,
+            "executionAndBridge": 0.26660000160336494,
+            "doneDelivery": 0.08669999986886978,
+            "hostSettlement": 0.05959999933838844,
+            "termination": 0.9347000010311604,
+            "workerConstructor": 0.29590000212192535,
+            "hostFraming": 0.1030999943614006
+          },
+          {
+            "threadBootstrap": 16.39250000193715,
+            "workerModuleLoad": 5.127599999308586,
+            "workerSetup": 0.08810000121593475,
+            "vmCreate": 2.385599996894598,
+            "bridgeSetup": 0.11390000209212303,
+            "prelude": 4.2804000005126,
+            "listenerSetup": 0.1590999998152256,
+            "scriptCompile": 0.03139999881386757,
+            "executionAndBridge": 0.27329999953508377,
+            "doneDelivery": 0.036900002509355545,
+            "hostSettlement": 0.03519999980926514,
+            "termination": 0.8136999979615211,
+            "workerConstructor": 0.17680000141263008,
+            "hostFraming": 0.047199998050928116
+          },
+          {
+            "threadBootstrap": 16.990299999713898,
+            "workerModuleLoad": 5.447599999606609,
+            "workerSetup": 0.0917000025510788,
+            "vmCreate": 2.4554999992251396,
+            "bridgeSetup": 0.121799997985363,
+            "prelude": 4.231900002807379,
+            "listenerSetup": 0.09109999984502792,
+            "scriptCompile": 0.030799999833106995,
+            "executionAndBridge": 0.282600000500679,
+            "doneDelivery": 0.06419999897480011,
+            "hostSettlement": 0.04079999774694443,
+            "termination": 0.8269000016152859,
+            "workerConstructor": 0.14880000054836273,
+            "hostFraming": 0.04150000214576721
+          },
+          {
+            "threadBootstrap": 16.708599999547005,
+            "workerModuleLoad": 5.608500000089407,
+            "workerSetup": 0.10049999877810478,
+            "vmCreate": 2.5442000031471252,
+            "bridgeSetup": 0.12280000001192093,
+            "prelude": 4.253199998289347,
+            "listenerSetup": 0.10330000147223473,
+            "scriptCompile": 0.03370000049471855,
+            "executionAndBridge": 0.2832999974489212,
+            "doneDelivery": 0.05939999967813492,
+            "hostSettlement": 0.06469999998807907,
+            "termination": 0.9877000004053116,
+            "workerConstructor": 0.16519999876618385,
+            "hostFraming": 0.06450000032782555
+          },
+          {
+            "threadBootstrap": 17.068399999290705,
+            "workerModuleLoad": 5.310100000351667,
+            "workerSetup": 0.08920000120997429,
+            "vmCreate": 2.4461999982595444,
+            "bridgeSetup": 0.1119999997317791,
+            "prelude": 4.33669999986887,
+            "listenerSetup": 0.1063000001013279,
+            "scriptCompile": 0.03490000218153,
+            "executionAndBridge": 0.2832999974489212,
+            "doneDelivery": 0.058000002056360245,
+            "hostSettlement": 0.031199999153614044,
+            "termination": 1.0516999997198582,
+            "workerConstructor": 0.15679999813437462,
+            "hostFraming": 0.03460000082850456
+          }
+        ],
+        "counters": [
+          {
+            "vmCreates": 1,
+            "completions": 1,
+            "calls": 0,
+            "results": 0,
+            "argumentChars": 0,
+            "argumentUtf8Bytes": 0,
+            "resultChars": 0,
+            "resultUtf8Bytes": 0,
+            "pendingAfter": 0,
+            "pendingPeak": 0,
+            "codeChars": 8,
+            "codeUtf8Bytes": 8,
+            "toolsJsonChars": 50,
+            "globalsJsonChars": 2,
+            "storeJsonChars": 2,
+            "toolsJsonUtf8Bytes": 50,
+            "globalsJsonUtf8Bytes": 2,
+            "storeJsonUtf8Bytes": 2
+          },
+          {
+            "vmCreates": 1,
+            "completions": 1,
+            "calls": 0,
+            "results": 0,
+            "argumentChars": 0,
+            "argumentUtf8Bytes": 0,
+            "resultChars": 0,
+            "resultUtf8Bytes": 0,
+            "pendingAfter": 0,
+            "pendingPeak": 0,
+            "codeChars": 8,
+            "codeUtf8Bytes": 8,
+            "toolsJsonChars": 50,
+            "globalsJsonChars": 2,
+            "storeJsonChars": 2,
+            "toolsJsonUtf8Bytes": 50,
+            "globalsJsonUtf8Bytes": 2,
+            "storeJsonUtf8Bytes": 2
+          },
+          {
+            "vmCreates": 1,
+            "completions": 1,
+            "calls": 0,
+            "results": 0,
+            "argumentChars": 0,
+            "argumentUtf8Bytes": 0,
+            "resultChars": 0,
+            "resultUtf8Bytes": 0,
+            "pendingAfter": 0,
+            "pendingPeak": 0,
+            "codeChars": 8,
+            "codeUtf8Bytes": 8,
+            "toolsJsonChars": 50,
+            "globalsJsonChars": 2,
+            "storeJsonChars": 2,
+            "toolsJsonUtf8Bytes": 50,
+            "globalsJsonUtf8Bytes": 2,
+            "storeJsonUtf8Bytes": 2
+          },
+          {
+            "vmCreates": 1,
+            "completions": 1,
+            "calls": 0,
+            "results": 0,
+            "argumentChars": 0,
+            "argumentUtf8Bytes": 0,
+            "resultChars": 0,
+            "resultUtf8Bytes": 0,
+            "pendingAfter": 0,
+            "pendingPeak": 0,
+            "codeChars": 8,
+            "codeUtf8Bytes": 8,
+            "toolsJsonChars": 50,
+            "globalsJsonChars": 2,
+            "storeJsonChars": 2,
+            "toolsJsonUtf8Bytes": 50,
+            "globalsJsonUtf8Bytes": 2,
+            "storeJsonUtf8Bytes": 2
+          },
+          {
+            "vmCreates": 1,
+            "completions": 1,
+            "calls": 0,
+            "results": 0,
+            "argumentChars": 0,
+            "argumentUtf8Bytes": 0,
+            "resultChars": 0,
+            "resultUtf8Bytes": 0,
+            "pendingAfter": 0,
+            "pendingPeak": 0,
+            "codeChars": 8,
+            "codeUtf8Bytes": 8,
+            "toolsJsonChars": 50,
+            "globalsJsonChars": 2,
+            "storeJsonChars": 2,
+            "toolsJsonUtf8Bytes": 50,
+            "globalsJsonUtf8Bytes": 2,
+            "storeJsonUtf8Bytes": 2
+          }
+        ]
+      },
+      {
+        "name": "read-4k",
+        "code": "return (await tools.read({})).length",
+        "controlMs": [
+          30.734000001102686,
+          32.44700000062585,
+          30.45219999924302,
+          29.60359999909997,
+          29.908900000154972
+        ],
+        "diagnosticMs": [
+          30.62890000268817,
+          30.12049999833107,
+          30.60420000180602,
+          29.345399998128414,
+          30.411999996751547
+        ],
+        "stages": [
+          {
+            "threadBootstrap": 17.161900002509356,
+            "workerModuleLoad": 5.381899997591972,
+            "workerSetup": 0.08779999986290932,
+            "vmCreate": 2.3971999995410442,
+            "bridgeSetup": 0.11520000174641609,
+            "prelude": 3.8328000009059906,
+            "listenerSetup": 0.08809999749064445,
+            "scriptCompile": 0.02890000119805336,
+            "executionAndBridge": 0.6011000014841557,
+            "doneDelivery": 0.029599998146295547,
+            "hostSettlement": 0.021700002253055573,
+            "termination": 0.8544999994337559,
+            "workerConstructor": 0.13700000196695328,
+            "hostFraming": 0.028200000524520874
+          },
+          {
+            "threadBootstrap": 16.68359999731183,
+            "workerModuleLoad": 5.3454000018537045,
+            "workerSetup": 0.08839999884366989,
+            "vmCreate": 2.449700001627207,
+            "bridgeSetup": 0.11459999904036522,
+            "prelude": 3.941399998962879,
+            "listenerSetup": 0.08730000257492065,
+            "scriptCompile": 0.03009999915957451,
+            "executionAndBridge": 0.46869999915361404,
+            "doneDelivery": 0.033799998462200165,
+            "hostSettlement": 0.02460000291466713,
+            "termination": 0.8088000006973743,
+            "workerConstructor": 0.15709999948740005,
+            "hostFraming": 0.044099997729063034
+          },
+          {
+            "threadBootstrap": 17.001900002360344,
+            "workerModuleLoad": 5.423499997705221,
+            "workerSetup": 0.094200000166893,
+            "vmCreate": 2.5476000010967255,
+            "bridgeSetup": 0.1217000000178814,
+            "prelude": 3.737900000065565,
+            "listenerSetup": 0.09560000151395798,
+            "scriptCompile": 0.03269999846816063,
+            "executionAndBridge": 0.5648999996483326,
+            "doneDelivery": 0.020600002259016037,
+            "hostSettlement": 0.019299998879432678,
+            "termination": 0.9164999984204769,
+            "workerConstructor": 0.15790000185370445,
+            "hostFraming": 0.027800001204013824
+          },
+          {
+            "threadBootstrap": 16.496199999004602,
+            "workerModuleLoad": 5.134199999272823,
+            "workerSetup": 0.08839999884366989,
+            "vmCreate": 2.3324000015854836,
+            "bridgeSetup": 0.10850000008940697,
+            "prelude": 3.6847000010311604,
+            "listenerSetup": 0.08489999920129776,
+            "scriptCompile": 0.028200000524520874,
+            "executionAndBridge": 0.4644999988377094,
+            "doneDelivery": 0.025100000202655792,
+            "hostSettlement": 0.01850000023841858,
+            "termination": 0.8497000001370907,
+            "workerConstructor": 0.1476999968290329,
+            "hostFraming": 0.03009999915957451
+          },
+          {
+            "threadBootstrap": 16.546500001102686,
+            "workerModuleLoad": 5.591499999165535,
+            "workerSetup": 0.10260000079870224,
+            "vmCreate": 2.512200001627207,
+            "bridgeSetup": 0.11189999803900719,
+            "prelude": 3.9528999999165535,
+            "listenerSetup": 0.08860000222921371,
+            "scriptCompile": 0.028599999845027924,
+            "executionAndBridge": 0.44929999858140945,
+            "doneDelivery": 0.016199998557567596,
+            "hostSettlement": 0.016200002282857895,
+            "termination": 0.964699998497963,
+            "workerConstructor": 0.159000001847744,
+            "hostFraming": 0.030799996107816696
+          }
+        ],
+        "counters": [
+          {
+            "vmCreates": 1,
+            "completions": 1,
+            "calls": 1,
+            "results": 1,
+            "argumentChars": 2,
+            "argumentUtf8Bytes": 2,
+            "resultChars": 4098,
+            "resultUtf8Bytes": 4098,
+            "pendingAfter": 0,
+            "pendingPeak": 1,
+            "codeChars": 36,
+            "codeUtf8Bytes": 36,
+            "toolsJsonChars": 50,
+            "globalsJsonChars": 2,
+            "storeJsonChars": 2,
+            "toolsJsonUtf8Bytes": 50,
+            "globalsJsonUtf8Bytes": 2,
+            "storeJsonUtf8Bytes": 2
+          },
+          {
+            "vmCreates": 1,
+            "completions": 1,
+            "calls": 1,
+            "results": 1,
+            "argumentChars": 2,
+            "argumentUtf8Bytes": 2,
+            "resultChars": 4098,
+            "resultUtf8Bytes": 4098,
+            "pendingAfter": 0,
+            "pendingPeak": 1,
+            "codeChars": 36,
+            "codeUtf8Bytes": 36,
+            "toolsJsonChars": 50,
+            "globalsJsonChars": 2,
+            "storeJsonChars": 2,
+            "toolsJsonUtf8Bytes": 50,
+            "globalsJsonUtf8Bytes": 2,
+            "storeJsonUtf8Bytes": 2
+          },
+          {
+            "vmCreates": 1,
+            "completions": 1,
+            "calls": 1,
+            "results": 1,
+            "argumentChars": 2,
+            "argumentUtf8Bytes": 2,
+            "resultChars": 4098,
+            "resultUtf8Bytes": 4098,
+            "pendingAfter": 0,
+            "pendingPeak": 1,
+            "codeChars": 36,
+            "codeUtf8Bytes": 36,
+            "toolsJsonChars": 50,
+            "globalsJsonChars": 2,
+            "storeJsonChars": 2,
+            "toolsJsonUtf8Bytes": 50,
+            "globalsJsonUtf8Bytes": 2,
+            "storeJsonUtf8Bytes": 2
+          },
+          {
+            "vmCreates": 1,
+            "completions": 1,
+            "calls": 1,
+            "results": 1,
+            "argumentChars": 2,
+            "argumentUtf8Bytes": 2,
+            "resultChars": 4098,
+            "resultUtf8Bytes": 4098,
+            "pendingAfter": 0,
+            "pendingPeak": 1,
+            "codeChars": 36,
+            "codeUtf8Bytes": 36,
+            "toolsJsonChars": 50,
+            "globalsJsonChars": 2,
+            "storeJsonChars": 2,
+            "toolsJsonUtf8Bytes": 50,
+            "globalsJsonUtf8Bytes": 2,
+            "storeJsonUtf8Bytes": 2
+          },
+          {
+            "vmCreates": 1,
+            "completions": 1,
+            "calls": 1,
+            "results": 1,
+            "argumentChars": 2,
+            "argumentUtf8Bytes": 2,
+            "resultChars": 4098,
+            "resultUtf8Bytes": 4098,
+            "pendingAfter": 0,
+            "pendingPeak": 1,
+            "codeChars": 36,
+            "codeUtf8Bytes": 36,
+            "toolsJsonChars": 50,
+            "globalsJsonChars": 2,
+            "storeJsonChars": 2,
+            "toolsJsonUtf8Bytes": 50,
+            "globalsJsonUtf8Bytes": 2,
+            "storeJsonUtf8Bytes": 2
+          }
+        ]
+      },
+      {
+        "name": "batch-100x4k",
+        "code": "let n=0; for(let i=0;i<100;i++) n+=(await tools.read({})).length; return n",
+        "controlMs": [
+          35.66389999911189,
+          37.04459999874234,
+          36.396600000560284,
+          35.88580000028014,
+          36.65529999881983
+        ],
+        "diagnosticMs": [
+          35.4261000007391,
+          36.00180000066757,
+          36.60649999976158,
+          36.17630000039935,
+          36.63129999861121
+        ],
+        "stages": [
+          {
+            "threadBootstrap": 16.52140000090003,
+            "workerModuleLoad": 5.399000000208616,
+            "workerSetup": 0.08870000019669533,
+            "vmCreate": 2.356699999421835,
+            "bridgeSetup": 0.10810000076889992,
+            "prelude": 3.7032999992370605,
+            "listenerSetup": 0.08550000190734863,
+            "scriptCompile": 0.040300000458955765,
+            "executionAndBridge": 6.237900000065565,
+            "doneDelivery": 0.015299998223781586,
+            "hostSettlement": 0.015200000256299973,
+            "termination": 0.8236999996006489,
+            "workerConstructor": 0.14790000021457672,
+            "hostFraming": 0.03099999949336052
+          },
+          {
+            "threadBootstrap": 16.274599999189377,
+            "workerModuleLoad": 5.105700001120567,
+            "workerSetup": 0.08939999714493752,
+            "vmCreate": 2.461600001901388,
+            "bridgeSetup": 0.11329999938607216,
+            "prelude": 3.6534000001847744,
+            "listenerSetup": 0.08410000056028366,
+            "scriptCompile": 0.039400000125169754,
+            "executionAndBridge": 5.801899999380112,
+            "doneDelivery": 0.014899998903274536,
+            "hostSettlement": 0.016699999570846558,
+            "termination": 2.3141000010073185,
+            "workerConstructor": 0.18049999698996544,
+            "hostFraming": 0.03270000219345093
+          },
+          {
+            "threadBootstrap": 16.625700000673532,
+            "workerModuleLoad": 5.335899997502565,
+            "workerSetup": 0.09140000119805336,
+            "vmCreate": 2.36600000038743,
+            "bridgeSetup": 0.11409999802708626,
+            "prelude": 3.6779000014066696,
+            "listenerSetup": 0.0852000005543232,
+            "scriptCompile": 0.046299997717142105,
+            "executionAndBridge": 5.878500003367662,
+            "doneDelivery": 0.013899996876716614,
+            "hostSettlement": 0.016499999910593033,
+            "termination": 2.3293000012636185,
+            "workerConstructor": 0.1541999988257885,
+            "hostFraming": 0.025800000876188278
+          },
+          {
+            "threadBootstrap": 16.309299997985363,
+            "workerModuleLoad": 5.1689000017941,
+            "workerSetup": 0.093299999833107,
+            "vmCreate": 2.3819000013172626,
+            "bridgeSetup": 0.10809999704360962,
+            "prelude": 3.6364000029861927,
+            "listenerSetup": 0.08579999953508377,
+            "scriptCompile": 0.03830000013113022,
+            "executionAndBridge": 5.883600000292063,
+            "doneDelivery": 0.013099998235702515,
+            "hostSettlement": 0.017900001257658005,
+            "termination": 2.397299997508526,
+            "workerConstructor": 0.13829999789595604,
+            "hostFraming": 0.04240000247955322
+          },
+          {
+            "threadBootstrap": 16.736899998039007,
+            "workerModuleLoad": 5.255699999630451,
+            "workerSetup": 0.08750000223517418,
+            "vmCreate": 2.3801000006496906,
+            "bridgeSetup": 0.10989999771118164,
+            "prelude": 3.6781999990344048,
+            "listenerSetup": 0.08060000091791153,
+            "scriptCompile": 0.03869999945163727,
+            "executionAndBridge": 5.572500001639128,
+            "doneDelivery": 0.01419999822974205,
+            "hostSettlement": 0.01770000159740448,
+            "termination": 2.6312999986112118,
+            "workerConstructor": 0.14660000056028366,
+            "hostFraming": 0.02800000086426735
+          }
+        ],
+        "counters": [
+          {
+            "vmCreates": 1,
+            "completions": 1,
+            "calls": 100,
+            "results": 100,
+            "argumentChars": 200,
+            "argumentUtf8Bytes": 200,
+            "resultChars": 409800,
+            "resultUtf8Bytes": 409800,
+            "pendingAfter": 0,
+            "pendingPeak": 1,
+            "codeChars": 74,
+            "codeUtf8Bytes": 74,
+            "toolsJsonChars": 50,
+            "globalsJsonChars": 2,
+            "storeJsonChars": 2,
+            "toolsJsonUtf8Bytes": 50,
+            "globalsJsonUtf8Bytes": 2,
+            "storeJsonUtf8Bytes": 2
+          },
+          {
+            "vmCreates": 1,
+            "completions": 1,
+            "calls": 100,
+            "results": 100,
+            "argumentChars": 200,
+            "argumentUtf8Bytes": 200,
+            "resultChars": 409800,
+            "resultUtf8Bytes": 409800,
+            "pendingAfter": 0,
+            "pendingPeak": 1,
+            "codeChars": 74,
+            "codeUtf8Bytes": 74,
+            "toolsJsonChars": 50,
+            "globalsJsonChars": 2,
+            "storeJsonChars": 2,
+            "toolsJsonUtf8Bytes": 50,
+            "globalsJsonUtf8Bytes": 2,
+            "storeJsonUtf8Bytes": 2
+          },
+          {
+            "vmCreates": 1,
+            "completions": 1,
+            "calls": 100,
+            "results": 100,
+            "argumentChars": 200,
+            "argumentUtf8Bytes": 200,
+            "resultChars": 409800,
+            "resultUtf8Bytes": 409800,
+            "pendingAfter": 0,
+            "pendingPeak": 1,
+            "codeChars": 74,
+            "codeUtf8Bytes": 74,
+            "toolsJsonChars": 50,
+            "globalsJsonChars": 2,
+            "storeJsonChars": 2,
+            "toolsJsonUtf8Bytes": 50,
+            "globalsJsonUtf8Bytes": 2,
+            "storeJsonUtf8Bytes": 2
+          },
+          {
+            "vmCreates": 1,
+            "completions": 1,
+            "calls": 100,
+            "results": 100,
+            "argumentChars": 200,
+            "argumentUtf8Bytes": 200,
+            "resultChars": 409800,
+            "resultUtf8Bytes": 409800,
+            "pendingAfter": 0,
+            "pendingPeak": 1,
+            "codeChars": 74,
+            "codeUtf8Bytes": 74,
+            "toolsJsonChars": 50,
+            "globalsJsonChars": 2,
+            "storeJsonChars": 2,
+            "toolsJsonUtf8Bytes": 50,
+            "globalsJsonUtf8Bytes": 2,
+            "storeJsonUtf8Bytes": 2
+          },
+          {
+            "vmCreates": 1,
+            "completions": 1,
+            "calls": 100,
+            "results": 100,
+            "argumentChars": 200,
+            "argumentUtf8Bytes": 200,
+            "resultChars": 409800,
+            "resultUtf8Bytes": 409800,
+            "pendingAfter": 0,
+            "pendingPeak": 1,
+            "codeChars": 74,
+            "codeUtf8Bytes": 74,
+            "toolsJsonChars": 50,
+            "globalsJsonChars": 2,
+            "storeJsonChars": 2,
+            "toolsJsonUtf8Bytes": 50,
+            "globalsJsonUtf8Bytes": 2,
+            "storeJsonUtf8Bytes": 2
+          }
+        ]
+      },
+      {
+        "name": "cpu-100k",
+        "code": "let n=0; for(let i=0;i<100000;i++) n+=i; return n",
+        "controlMs": [
+          31.946100000292063,
+          33.284099999815226,
+          32.567899998277426,
+          32.19249999895692,
+          32.588099997490644
+        ],
+        "diagnosticMs": [
+          31.99940000101924,
+          31.561599999666214,
+          31.79850000143051,
+          32.139899998903275,
+          32.52010000124574
+        ],
+        "stages": [
+          {
+            "threadBootstrap": 16.57209999859333,
+            "workerModuleLoad": 5.277400001883507,
+            "workerSetup": 0.08989999815821648,
+            "vmCreate": 2.4767000004649162,
+            "bridgeSetup": 0.11160000041127205,
+            "prelude": 3.625500001013279,
+            "listenerSetup": 0.08259999752044678,
+            "scriptCompile": 0.036400001496076584,
+            "executionAndBridge": 2.819199997931719,
+            "doneDelivery": 0.03420000150799751,
+            "hostSettlement": 0.023600000888109207,
+            "termination": 0.8187000006437302,
+            "workerConstructor": 0.14399999752640724,
+            "hostFraming": 0.03150000050663948
+          },
+          {
+            "threadBootstrap": 16.382699999958277,
+            "workerModuleLoad": 5.1858999989926815,
+            "workerSetup": 0.0901000015437603,
+            "vmCreate": 2.3431000001728535,
+            "bridgeSetup": 0.1096000000834465,
+            "prelude": 3.5823999978601933,
+            "listenerSetup": 0.08449999988079071,
+            "scriptCompile": 0.03680000081658363,
+            "executionAndBridge": 2.80350000038743,
+            "doneDelivery": 0.07479999959468842,
+            "hostSettlement": 0.023099999874830246,
+            "termination": 0.8126000016927719,
+            "workerConstructor": 0.13039999827742577,
+            "hostFraming": 0.032499998807907104
+          },
+          {
+            "threadBootstrap": 16.405700001865625,
+            "workerModuleLoad": 5.162399999797344,
+            "workerSetup": 0.0885000005364418,
+            "vmCreate": 2.605799999088049,
+            "bridgeSetup": 0.1088000014424324,
+            "prelude": 3.5702999979257584,
+            "listenerSetup": 0.08310000225901604,
+            "scriptCompile": 0.0364999994635582,
+            "executionAndBridge": 2.8431000001728535,
+            "doneDelivery": 0.0348999984562397,
+            "hostSettlement": 0.021900001913309097,
+            "termination": 0.809299997985363,
+            "workerConstructor": 0.146100003272295,
+            "hostFraming": 0.028200000524520874
+          },
+          {
+            "threadBootstrap": 16.587099999189377,
+            "workerModuleLoad": 5.320700000971556,
+            "workerSetup": 0.09189999848604202,
+            "vmCreate": 2.438000001013279,
+            "bridgeSetup": 0.11699999868869781,
+            "prelude": 3.742800001055002,
+            "listenerSetup": 0.09219999983906746,
+            "scriptCompile": 0.036400001496076584,
+            "executionAndBridge": 2.7435999996960163,
+            "doneDelivery": 0.043699998408555984,
+            "hostSettlement": 0.026000000536441803,
+            "termination": 0.8692000024020672,
+            "workerConstructor": 0.13280000165104866,
+            "hostFraming": 0.03129999712109566
+          },
+          {
+            "threadBootstrap": 16.984400000423193,
+            "workerModuleLoad": 5.411100000143051,
+            "workerSetup": 0.08969999849796295,
+            "vmCreate": 2.421900000423193,
+            "bridgeSetup": 0.12370000034570694,
+            "prelude": 3.606699999421835,
+            "listenerSetup": 0.08300000056624413,
+            "scriptCompile": 0.03580000251531601,
+            "executionAndBridge": 2.891399998217821,
+            "doneDelivery": 0.03480000048875809,
+            "hostSettlement": 0.02459999918937683,
+            "termination": 0.7833000011742115,
+            "workerConstructor": 0.13419999927282333,
+            "hostFraming": 0.02969999983906746
+          }
+        ],
+        "counters": [
+          {
+            "vmCreates": 1,
+            "completions": 1,
+            "calls": 0,
+            "results": 0,
+            "argumentChars": 0,
+            "argumentUtf8Bytes": 0,
+            "resultChars": 0,
+            "resultUtf8Bytes": 0,
+            "pendingAfter": 0,
+            "pendingPeak": 0,
+            "codeChars": 49,
+            "codeUtf8Bytes": 49,
+            "toolsJsonChars": 50,
+            "globalsJsonChars": 2,
+            "storeJsonChars": 2,
+            "toolsJsonUtf8Bytes": 50,
+            "globalsJsonUtf8Bytes": 2,
+            "storeJsonUtf8Bytes": 2
+          },
+          {
+            "vmCreates": 1,
+            "completions": 1,
+            "calls": 0,
+            "results": 0,
+            "argumentChars": 0,
+            "argumentUtf8Bytes": 0,
+            "resultChars": 0,
+            "resultUtf8Bytes": 0,
+            "pendingAfter": 0,
+            "pendingPeak": 0,
+            "codeChars": 49,
+            "codeUtf8Bytes": 49,
+            "toolsJsonChars": 50,
+            "globalsJsonChars": 2,
+            "storeJsonChars": 2,
+            "toolsJsonUtf8Bytes": 50,
+            "globalsJsonUtf8Bytes": 2,
+            "storeJsonUtf8Bytes": 2
+          },
+          {
+            "vmCreates": 1,
+            "completions": 1,
+            "calls": 0,
+            "results": 0,
+            "argumentChars": 0,
+            "argumentUtf8Bytes": 0,
+            "resultChars": 0,
+            "resultUtf8Bytes": 0,
+            "pendingAfter": 0,
+            "pendingPeak": 0,
+            "codeChars": 49,
+            "codeUtf8Bytes": 49,
+            "toolsJsonChars": 50,
+            "globalsJsonChars": 2,
+            "storeJsonChars": 2,
+            "toolsJsonUtf8Bytes": 50,
+            "globalsJsonUtf8Bytes": 2,
+            "storeJsonUtf8Bytes": 2
+          },
+          {
+            "vmCreates": 1,
+            "completions": 1,
+            "calls": 0,
+            "results": 0,
+            "argumentChars": 0,
+            "argumentUtf8Bytes": 0,
+            "resultChars": 0,
+            "resultUtf8Bytes": 0,
+            "pendingAfter": 0,
+            "pendingPeak": 0,
+            "codeChars": 49,
+            "codeUtf8Bytes": 49,
+            "toolsJsonChars": 50,
+            "globalsJsonChars": 2,
+            "storeJsonChars": 2,
+            "toolsJsonUtf8Bytes": 50,
+            "globalsJsonUtf8Bytes": 2,
+            "storeJsonUtf8Bytes": 2
+          },
+          {
+            "vmCreates": 1,
+            "completions": 1,
+            "calls": 0,
+            "results": 0,
+            "argumentChars": 0,
+            "argumentUtf8Bytes": 0,
+            "resultChars": 0,
+            "resultUtf8Bytes": 0,
+            "pendingAfter": 0,
+            "pendingPeak": 0,
+            "codeChars": 49,
+            "codeUtf8Bytes": 49,
+            "toolsJsonChars": 50,
+            "globalsJsonChars": 2,
+            "storeJsonChars": 2,
+            "toolsJsonUtf8Bytes": 50,
+            "globalsJsonUtf8Bytes": 2,
+            "storeJsonUtf8Bytes": 2
+          }
+        ]
+      }
+    ],
+    "summary": [
+      {
+        "name": "noop",
+        "controlMedianMs": 31.478499997407198,
+        "diagnosticMedianMs": 30.934399999678135,
+        "stageMediansMs": {
+          "threadBootstrap": 16.990299999713898,
+          "workerModuleLoad": 5.326199997216463,
+          "workerSetup": 0.08920000120997429,
+          "vmCreate": 2.4554999992251396,
+          "bridgeSetup": 0.11429999768733978,
+          "prelude": 4.2804000005126,
+          "listenerSetup": 0.10330000147223473,
+          "scriptCompile": 0.03220000118017197,
+          "executionAndBridge": 0.282600000500679,
+          "doneDelivery": 0.05939999967813492,
+          "hostSettlement": 0.04079999774694443,
+          "termination": 0.9347000010311604,
+          "workerConstructor": 0.16519999876618385,
+          "hostFraming": 0.047199998050928116
+        }
+      },
+      {
+        "name": "read-4k",
+        "controlMedianMs": 30.45219999924302,
+        "diagnosticMedianMs": 30.411999996751547,
+        "stageMediansMs": {
+          "threadBootstrap": 16.68359999731183,
+          "workerModuleLoad": 5.381899997591972,
+          "workerSetup": 0.08839999884366989,
+          "vmCreate": 2.449700001627207,
+          "bridgeSetup": 0.11459999904036522,
+          "prelude": 3.8328000009059906,
+          "listenerSetup": 0.08809999749064445,
+          "scriptCompile": 0.02890000119805336,
+          "executionAndBridge": 0.46869999915361404,
+          "doneDelivery": 0.025100000202655792,
+          "hostSettlement": 0.019299998879432678,
+          "termination": 0.8544999994337559,
+          "workerConstructor": 0.15709999948740005,
+          "hostFraming": 0.03009999915957451
+        }
+      },
+      {
+        "name": "batch-100x4k",
+        "controlMedianMs": 36.396600000560284,
+        "diagnosticMedianMs": 36.17630000039935,
+        "stageMediansMs": {
+          "threadBootstrap": 16.52140000090003,
+          "workerModuleLoad": 5.255699999630451,
+          "workerSetup": 0.08939999714493752,
+          "vmCreate": 2.3801000006496906,
+          "bridgeSetup": 0.10989999771118164,
+          "prelude": 3.6779000014066696,
+          "listenerSetup": 0.0852000005543232,
+          "scriptCompile": 0.039400000125169754,
+          "executionAndBridge": 5.878500003367662,
+          "doneDelivery": 0.01419999822974205,
+          "hostSettlement": 0.016699999570846558,
+          "termination": 2.3293000012636185,
+          "workerConstructor": 0.14790000021457672,
+          "hostFraming": 0.03099999949336052
+        }
+      },
+      {
+        "name": "cpu-100k",
+        "controlMedianMs": 32.567899998277426,
+        "diagnosticMedianMs": 31.99940000101924,
+        "stageMediansMs": {
+          "threadBootstrap": 16.57209999859333,
+          "workerModuleLoad": 5.277400001883507,
+          "workerSetup": 0.08989999815821648,
+          "vmCreate": 2.438000001013279,
+          "bridgeSetup": 0.11160000041127205,
+          "prelude": 3.606699999421835,
+          "listenerSetup": 0.08310000225901604,
+          "scriptCompile": 0.036400001496076584,
+          "executionAndBridge": 2.819199997931719,
+          "doneDelivery": 0.0348999984562397,
+          "hostSettlement": 0.023600000888109207,
+          "termination": 0.8126000016927719,
+          "workerConstructor": 0.13419999927282333,
+          "hostFraming": 0.03129999712109566
+        }
+      }
+    ],
+    "coverage": "Local tsc output, real host/QuickJS and fresh Worker/VM per script; not an installed executable. Controls use the untouched compiled worker. Diagnostics run a guarded timestamp/counter copy via data-URL bootstrap and a benchmark-only Worker subclass. No production instrumentation or protocol/API change. Worker constructor overlaps threadBootstrap; other intervals partition construction through termination. Host framing is execute preflight/return overhead. Execution/bridge includes VM JSON, message transport, host dispatch and fixture tool work, not separately profiled. Five samples per fixture/variant after two control warmups; no inspector; timings are diagnostic, not statistical improvements. Counters count startup JSON once at existing serialization sites, and observed argument/result JSON at the thread boundary, not total copies or memory. No AgentSession, permissions, real I/O, UI, Worker allocation or QuickJS heap profile.",
+    "trackedReferences": 91,
+    "retainedAfterGc": 0
+  },
+  "allocationBenchmark": {
+    "benchmark": "codemode-runtime",
+    "mode": "compiled",
+    "node": "v26.4.0",
+    "platform": "win32",
+    "moduleImportMs": 5.915300000000002,
+    "catalogConstructionMs": 0.7835000000000392,
+    "closeMs": 0.24230000000009966,
+    "warmSamplesMs": [
+      35.61319999999999,
+      32.49019999999999,
+      32.102300000000014,
+      30.815499999999986,
+      31.66500000000002,
+      31.55699999999996,
+      30.22569999999996,
+      30.70210000000003,
+      31.20119999999997,
+      30.226499999999987,
+      30.73520000000002,
+      30.572600000000023,
+      30.229100000000017,
+      29.838700000000017,
+      30.944399999999973,
+      30.091000000000008,
+      29.950900000000047,
+      30.809599999999932,
+      29.93259999999998,
+      30.0557,
+      30.645099999999957,
+      30.34469999999999,
+      29.843399999999974,
+      30.540399999999977,
+      30.370699999999943,
+      30.204399999999964,
+      30.70240000000001,
+      29.555000000000064,
+      29.646999999999935,
+      31.84489999999994
+    ],
+    "wasmCompileMs": 3.0925999999999974,
+    "firstScriptMs": 65.3046,
+    "warmMedianMs": 30.572600000000023,
+    "warmP95Ms": 32.49019999999999,
+    "batchCalls": 100,
+    "batchMs": 39.25700000000006,
+    "workersStarted": 32,
+    "workersStopped": 32,
+    "trackedReferences": 128,
+    "retainedAfterGc": 0,
+    "sampledHostBytes": 2701800,
+    "coverage": "real Worker and QuickJS; execution includes Worker startup, VM/prelude, execution, bridge and termination (not separately timed); warm=compiled WASM reused, fresh Worker/VM per run; sampling enabled for 30 warm no-ops and batch; excludes worker heaps, AgentSession, policy and UI; compiled is local tsc output, not an installed release"
+  },
+  "recordScope": "fingerprints/audit/verification/stageBenchmark/allocationBenchmark outside workerPool are historical pre-pool evidence at f099234e / initial #140. workerPool contains current implementation evidence.",
+  "workerPool": {
+    "userAuthorization": "User explicitly requested a Worker pool after baseline diagnostics.",
+    "decision": "Enable a bounded single-slot Worker resource pool in the coding-agent controller; low-level library remains opt-in. Fresh VM, budget, interrupt and MessageChannel per script; no pooled results, messages, Promise or VM.",
+    "bounds": {
+      "capacityPerSandbox": 1,
+      "queue": 0,
+      "maxExecutionsPerWorker": 64,
+      "idleMs": 30000,
+      "maxReusableWasmLinearBytes": 67108864,
+      "reuseAfter": "Explicit successful completion after VM disposal; match physical Worker and Execution owner",
+      "retireOn": [
+        "script error",
+        "timeout",
+        "abort",
+        "Worker failure",
+        "oversized WASM",
+        "64 executions",
+        "30s idle",
+        "close"
+      ],
+      "physicalRetirement": "acquire waits for terminate/exit; close rejects new leases and awaits retirement"
+    },
+    "audit": "Same complete production chain as historical audit plus WorkerPool acquire/release/retire and fresh per-execution ports. No new per-tool/progress callback, Promise, AbortController, wrapper array, JSON encoding or full-result copy. Script startup owns a MessageChannel, transfer-list/start message, acquire/start Promise and fixed VM callbacks; finish owns explicit disposal/optional retirement; idle transition owns one deadline. Existing host-call allocations are unchanged.",
+    "comparison": {
+      "benchmark": "codemode-worker-pool",
+      "node": "v26.4.0",
+      "platform": "win32",
+      "results": [
+        {
+          "reuseWorker": false,
+          "firstMs": 38.65380000000002,
+          "latency": [
+            37.793600000000026,
+            36.06700000000001,
+            36.45169999999996,
+            36.22829999999999,
+            36.64979999999997,
+            36.07570000000004,
+            36.67920000000004,
+            37.90350000000001,
+            36.03600000000006,
+            35.391200000000026,
+            36.62519999999995,
+            35.369500000000016,
+            35.33240000000001,
+            36.7514000000001,
+            35.62799999999993,
+            35.09960000000001,
+            35.34609999999998,
+            36.15549999999996,
+            34.71199999999999,
+            36.662900000000036,
+            35.64059999999995,
+            37.01599999999996,
+            37.66429999999991,
+            35.497299999999996,
+            36.24180000000001,
+            35.78620000000001,
+            35.56129999999985,
+            36.705400000000054,
+            35.8913,
+            36.24420000000009
+          ],
+          "medianMs": 36.15549999999996,
+          "p95Ms": 37.793600000000026,
+          "cpuUs": [
+            1600,
+            3100,
+            6300,
+            3100,
+            3100,
+            3100,
+            6300,
+            0,
+            3100,
+            3100,
+            0,
+            0,
+            3200,
+            3100,
+            1600,
+            6200,
+            1600,
+            1600,
+            3100,
+            3100,
+            0,
+            1600,
+            1500,
+            1600,
+            0,
+            1600,
+            0,
+            0,
+            0,
+            0
+          ],
+          "cpuP95Us": 6300,
+          "cpuGroupSize": 10,
+          "cpuGroups": 30,
+          "batchMs": 45.34960000000001,
+          "closeMs": 0.011300000000119326,
+          "calls": 100,
+          "idle": {
+            "rss": 91463680,
+            "heapTotal": 18067456,
+            "heapUsed": 10149080,
+            "external": 6171646,
+            "arrayBuffers": 137491
+          },
+          "idleStats": {
+            "activeExecutions": 0,
+            "workersStarted": 332,
+            "workersStopped": 332
+          },
+          "closedStats": {
+            "activeExecutions": 0,
+            "workersStarted": 332,
+            "workersStopped": 332
+          },
+          "leadingSites": [
+            {
+              "name": "stringify file:///D:/RMProjects/Pi/packages/codemode/dist/bounded-json.js",
+              "bytes": 494664
+            },
+            {
+              "name": "post node:inspector",
+              "bytes": 117792
+            },
+            {
+              "name": "handleCall file:///D:/RMProjects/Pi/packages/codemode/dist/runtime/host.js",
+              "bytes": 82920
+            },
+            {
+              "name": "Worker node:internal/worker",
+              "bytes": 78848
+            },
+            {
+              "name": "(V8 API) ",
+              "bytes": 74624
+            },
+            {
+              "name": "setupPortReferencing node:internal/worker/io",
+              "bytes": 66104
+            },
+            {
+              "name": "setOwnProperty node:internal/util",
+              "bytes": 63280
+            },
+            {
+              "name": "addEventListener node:internal/event_target",
+              "bytes": 49536
+            },
+            {
+              "name": "Map ",
+              "bytes": 45928
+            },
+            {
+              "name": "setOwnProperty node:internal/util",
+              "bytes": 42056
+            },
+            {
+              "name": "execute file:///D:/RMProjects/Pi/packages/codemode/dist/runtime/host.js",
+              "bytes": 41688
+            },
+            {
+              "name": "Map ",
+              "bytes": 41672
+            }
+          ],
+          "sampledHostBytes": 2520120,
+          "before": {
+            "rss": 76255232,
+            "heapTotal": 12562432,
+            "heapUsed": 9533056,
+            "external": 6171590,
+            "arrayBuffers": 137475
+          },
+          "afterCloseGc": {
+            "rss": 91664384,
+            "heapTotal": 18067456,
+            "heapUsed": 10077152,
+            "external": 6202917,
+            "arrayBuffers": 137491
+          },
+          "trackedReferences": 33,
+          "retainedAfterGc": 0
+        },
+        {
+          "reuseWorker": true,
+          "firstMs": 47.839500000000044,
+          "latency": [
+            9.048899999999776,
+            6.376800000000003,
+            7.86659999999938,
+            6.501000000000204,
+            8.58560000000034,
+            7.471199999999953,
+            6.1995999999999185,
+            6.264000000001033,
+            6.42370000000119,
+            6.149300000000949,
+            4.983799999999974,
+            4.730299999999261,
+            6.665899999999965,
+            7.558000000000902,
+            8.032800000000861,
+            5.455700000000434,
+            5.087299999999232,
+            6.720699999999852,
+            6.35109999999986,
+            6.687799999999697,
+            7.740799999999581,
+            6.371900000000096,
+            6.05869999999959,
+            6.15440000000126,
+            6.8091999999996915,
+            6.275700000000143,
+            6.608400000000984,
+            6.183000000000902,
+            6.671800000000076,
+            7.21730000000025
+          ],
+          "medianMs": 6.501000000000204,
+          "p95Ms": 8.58560000000034,
+          "cpuUs": [
+            0,
+            3100,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "cpuP95Us": 0,
+          "cpuGroupSize": 10,
+          "cpuGroups": 30,
+          "batchMs": 18.02940000000126,
+          "closeMs": 2.148300000000745,
+          "calls": 100,
+          "idle": {
+            "rss": 106479616,
+            "heapTotal": 18329600,
+            "heapUsed": 10211584,
+            "external": 6202917,
+            "arrayBuffers": 137523
+          },
+          "idleStats": {
+            "activeExecutions": 0,
+            "workersStarted": 6,
+            "workersStopped": 5
+          },
+          "closedStats": {
+            "activeExecutions": 0,
+            "workersStarted": 6,
+            "workersStopped": 6
+          },
+          "leadingSites": [
+            {
+              "name": "stringify file:///D:/RMProjects/Pi/packages/codemode/dist/bounded-json.js",
+              "bytes": 403768
+            },
+            {
+              "name": "handleCall file:///D:/RMProjects/Pi/packages/codemode/dist/runtime/host.js",
+              "bytes": 112104
+            },
+            {
+              "name": "(V8 API) ",
+              "bytes": 62048
+            },
+            {
+              "name": "addEventListener node:internal/event_target",
+              "bytes": 53672
+            },
+            {
+              "name": "Map ",
+              "bytes": 37568
+            },
+            {
+              "name": "setOwnProperty node:internal/util",
+              "bytes": 33608
+            },
+            {
+              "name": " node:internal/event_target",
+              "bytes": 33008
+            },
+            {
+              "name": "execute file:///D:/RMProjects/Pi/packages/codemode/dist/runtime/host.js",
+              "bytes": 29272
+            },
+            {
+              "name": "start file:///D:/RMProjects/Pi/packages/codemode/dist/runtime/host.js",
+              "bytes": 29056
+            },
+            {
+              "name": "Map ",
+              "bytes": 25080
+            },
+            {
+              "name": "Execution file:///D:/RMProjects/Pi/packages/codemode/dist/runtime/host.js",
+              "bytes": 24792
+            },
+            {
+              "name": "delete ",
+              "bytes": 20824
+            }
+          ],
+          "sampledHostBytes": 1200544,
+          "before": {
+            "rss": 91664384,
+            "heapTotal": 18067456,
+            "heapUsed": 10078632,
+            "external": 6202917,
+            "arrayBuffers": 137491
+          },
+          "afterCloseGc": {
+            "rss": 94769152,
+            "heapTotal": 18329600,
+            "heapUsed": 10123600,
+            "external": 6202917,
+            "arrayBuffers": 137491
+          },
+          "trackedReferences": 33,
+          "retainedAfterGc": 0
+        }
+      ],
+      "workerLifecycle": {
+        "idleAfterOne": {
+          "diagnostic": true,
+          "created": 1,
+          "disposed": 1,
+          "cleared": 1,
+          "tracked": 8,
+          "retained": 0,
+          "memory": {
+            "rss": 101457920,
+            "heapTotal": 11640832,
+            "heapUsed": 6862312,
+            "external": 3556490,
+            "arrayBuffers": 78163
+          },
+          "peakWasmBytes": 1638400
+        },
+        "idleAfterLargeRuns": {
+          "diagnostic": true,
+          "created": 31,
+          "disposed": 31,
+          "cleared": 31,
+          "tracked": 248,
+          "retained": 0,
+          "memory": {
+            "rss": 102420480,
+            "heapTotal": 11902976,
+            "heapUsed": 7217608,
+            "external": 3556530,
+            "arrayBuffers": 78163
+          },
+          "peakWasmBytes": 10027008,
+          "allocation": {
+            "sampledWorkerBytes": 12611224,
+            "leadingSites": [
+              {
+                "name": "instantiate",
+                "bytes": 8761264
+              },
+              {
+                "name": "Immediate",
+                "bytes": 219680
+              },
+              {
+                "name": "createContext",
+                "bytes": 207856
+              },
+              {
+                "name": "initAsyncResource",
+                "bytes": 175184
+              },
+              {
+                "name": "QuickJS",
+                "bytes": 142976
+              },
+              {
+                "name": "(V8 API)",
+                "bytes": 140752
+              },
+              {
+                "name": "post",
+                "bytes": 94480
+              },
+              {
+                "name": "memoryUsage",
+                "bytes": 87048
+              }
+            ]
+          }
+        },
+        "closedStats": {
+          "activeExecutions": 0,
+          "workersStarted": 1,
+          "workersStopped": 1
+        },
+        "workersRetainedAfterClose": 0
+      },
+      "gates": {
+        "sampledHostReduction": 0.5236163357300446,
+        "cpuP95Ratio": 0.21333333333333335,
+        "finalHostHeapRatio": 1.004609238800804
+      },
+      "coverage": "Compiled Node runtime; timings/host allocation use unmodified compiled workers. Process CPU is too coarse for the gate; separate Worker.cpuUsage captures use a keepalive data-URL bootstrap in both modes. Worker allocation probe includes diagnostic overhead, VM linear-memory peaks and controlled-GC WeakRefs. No installed release/Bun/real-model claim.",
+      "workerCpu": [
+        {
+          "reuseWorker": false,
+          "groupSize": 10,
+          "samplesUs": [
+            0,
+            3100,
+            7500,
+            0,
+            0,
+            0,
+            7500,
+            4500,
+            3000,
+            1500,
+            3000,
+            3000,
+            3000,
+            0,
+            3000,
+            0,
+            0,
+            4500,
+            1500,
+            3000,
+            1500,
+            1500,
+            3000,
+            1500,
+            4500,
+            1500,
+            3000,
+            6000,
+            1500,
+            7600
+          ],
+          "p95Us": 7500,
+          "stats": {
+            "activeExecutions": 0,
+            "workersStarted": 301,
+            "workersStopped": 301
+          }
+        },
+        {
+          "reuseWorker": true,
+          "groupSize": 10,
+          "samplesUs": [
+            0,
+            0,
+            0,
+            1500,
+            0,
+            0,
+            0,
+            1500,
+            1600,
+            0,
+            1500,
+            1600,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1500,
+            0,
+            0,
+            0,
+            1600,
+            0,
+            1500,
+            0,
+            1600,
+            0,
+            0
+          ],
+          "p95Us": 1600,
+          "stats": {
+            "activeExecutions": 0,
+            "workersStarted": 5,
+            "workersStopped": 5
+          }
+        }
+      ]
+    },
+    "productionSession": {
+      "benchmark": "codemode-session",
+      "node": "v26.4.0",
+      "platform": "win32",
+      "sampledCycles": 10,
+      "excludedWarmupCycles": 1,
+      "startupMedianMs": 0.7557000000000471,
+      "startupP95Ms": 1.1048000000000684,
+      "firstBatchMedianMs": 51.084499999999935,
+      "firstBatchP95Ms": 54.97259999999994,
+      "warmBatchMedianMs": 21.176899999999932,
+      "warmBatchP95Ms": 23.467199999999934,
+      "childCalls": 242,
+      "progress": 0,
+      "workersStarted": 11,
+      "workersStopped": 11,
+      "trackedReferences": 55,
+      "retainedAfterGc": 0,
+      "pendingEvidenceAfterTurn": 0,
+      "sampledHostBytes": 25921584,
+      "leadingSites": [
+        {
+          "name": "split",
+          "bytes": 1387928
+        },
+        {
+          "name": "createContext",
+          "bytes": 725848
+        },
+        {
+          "name": "join",
+          "bytes": 722192
+        },
+        {
+          "name": "read",
+          "bytes": 481592
+        },
+        {
+          "name": "stringify",
+          "bytes": 463936
+        }
+      ],
+      "coverage": "real SDK, built-in reads, AgentSession policy/hooks/results/store, Worker, projection and disposal; offline provider; excludes UI, worker heap and disk sessions"
+    },
+    "stageCompatibility": {
+      "result": "Passed all existing stage/result/byte/order assertions with current compiled worker",
+      "workersStarted": 48,
+      "workersStopped": 48,
+      "hostCalls": 1212,
+      "trackedReferences": 91,
+      "retainedAfterGc": 0
+    },
+    "verification": {
+      "localFullSuiteRuns": 0,
+      "newTestFiles": 0,
+      "initialFocused": "40 runtime/recovery/hot-path tests passed; 89 existing session tests passed",
+      "incrementalFocused": "4 pool/AST checks; final 13 recovery/hot-path and 5 affected runtime checks passed after owner/protocol/memory edits",
+      "commands": [
+        "npm run build --workspace @super-pi/codemode",
+        "npm run check",
+        "node --expose-gc --experimental-strip-types scripts/bench/codemode-runtime.ts --compiled --pool",
+        "node --expose-gc --experimental-strip-types scripts/bench/codemode-runtime.ts --compiled --stages",
+        "node --expose-gc --experimental-strip-types scripts/bench/codemode-session.ts",
+        "node node_modules/typescript/bin/tsc --noEmit --target ES2023 --module NodeNext --moduleResolution NodeNext --allowImportingTsExtensions --skipLibCheck --strict scripts/bench/codemode-runtime.ts"
+      ],
+      "captureNotes": "Initial sample exposed quantized per-script Windows CPU readings; use 30 groups of 10 scripts, separate from allocation sampling. Final host sample followed production owner/protocol changes. Worker lifecycle probe was then extended with Worker-local HeapProfiler and linear-memory peak, and rerun alone via exported measureWorkerLifecycle(CodemodeSandbox), without repeating unchanged host comparison. Final runtime interruption change cancels unawaited VM jobs upon main completion. Rebuilt, ran all 28 relevant runtime tests once, then repeated only affected runtime allocation/lifecycle benchmark. Added thread-CPU probe and ran it separately rather than repeating host sampling again.",
+      "finalRuntime": "28 runtime tests passed after final completion-interrupt change",
+      "workerCpuNote": "Worker.cpuUsage from the actual thread supplies the CPU p95 gate: 30 groups x10 scripts, separate from allocation/timing. Both CPU modes use a keepalive bootstrap because one-shot production workers can exit before CPU inspection; host process CPU is retained as raw coarse data only. Initial CPU probe hit ERR_WORKER_NOT_RUNNING and cleaned up; no failed measurement is reported as a pass."
+    },
+    "limitations": [
+      "Local Node compiled runtime only; no installed release/Bun/real-model benchmark.",
+      "RSS is process-wide and noisy; idle snapshot in final sample is about 14.3 MiB higher with pool, bounded by idle/count/size retirement and close.",
+      "Windows CPU remains coarse even when grouped. Acceptance uses Worker.cpuUsage batch p95 (keepalive bootstrap on both modes), not zero-heavy process CPU readings.",
+      "Host allocation reduction gate and post-close heap gate cover host only. Worker sample includes diagnostic overhead and has no separate fresh-thread relative-allocation control; it is not a QuickJS malloc profile.",
+      "Controlled GC proves collection only for tracked owners. No untracked zero-leak claim.",
+      "The Worker resource pool crosses await with an explicit exclusive owner and physical-port fence; it does not pool asynchronous user objects."
+    ],
+    "fingerprints": {
+      "packages/codemode/src/runtime/host.ts": "9d1968a4b20ed3ed9eb069a3b5cf21f8939ff6326bfc50f25d3f4567d6c58aa4",
+      "packages/codemode/src/runtime/worker.ts": "a2b38c52d4ef2b568db116e722d66e8fc1d5d98c22303f7dbe741be30da58c23",
+      "packages/codemode/src/runtime/protocol.ts": "a192f819fd51fd3fc611565167a20030332f490820827e124d29119b357830e9",
+      "packages/codemode/src/runtime/worker-pool.ts": "6921cedd1cc43dd88c08f109d5dca7a24c4b036352c5b7977a9645f87bd76793",
+      "packages/codemode/src/types.ts": "6b9c0e3b697ea49352fa53306625fddb00b2f0f117e644bcf5a8f5fd624349e2",
+      "packages/coding-agent/src/core/codemode.ts": "5d038478ec8b897031d0a285e5fdae086006fa15a1b627edd4120580d188bb3a",
+      "packages/codemode/dist/runtime/host.js": "4d36680d64b5e640199e684e08332cae03eaf05970d3a8ba63d752f8af869581",
+      "packages/codemode/dist/runtime/worker.js": "83162498506f071abdc023bc64d40ce1b554f572f4818982d509f5cebf8f59a2",
+      "packages/codemode/dist/runtime/protocol.js": "d7ee3164609a7d8a4cdacb87699d764739e6169e16bb42b0554ed09d12097d49",
+      "packages/codemode/dist/runtime/worker-pool.js": "0701aaa43e8f72c6bc4a5779ffcf12a02d5b1064b0d4f6483757093a20a444ce",
+      "scripts/bench/codemode-runtime.ts": "1092b4fafc3799852d685683c00599ebd0a1aa670cc76c67f1a8f770c2a47ede",
+      "scripts/bench/codemode-runtime-stages.ts": "2cc31b12ddb4818c37c36e6da8e60de715ae60cc38df5f327b67aaee46973f3d",
+      "scripts/bench/codemode-worker-pool.ts": "288362e19dc3f8a6055270ecbe6bcfc4338ec400ef8acfaab1d431ef60533d96",
+      "scripts/bench/codemode-session.ts": "ea1bf22021f6b225a31cb1311108771c9733576ad110d1b74f2824cb033706de",
+      "tests/codemode-runtime.test.ts": "819612dc219e264f0b4f1cacf3102c8d88094e4b5b0f5f7d9297ad08c1a862e8",
+      "tests/codemode-worker-recovery.test.ts": "11ffc325f202558e303791f37bd33f5fd3a4294ed03f29eb4f2ce8422689a82d",
+      "tests/codemode-hot-paths.test.ts": "a06576447ad27f130932b73142f8ad6aa66f54cb15c5a7f67b27f5dccdf8a42b"
+    },
+    "profiledCommit": "d5e4a4fa2",
+    "postProfileCorrection": {
+      "change": "A cancelled Execution waiting for physical retirement must not acquire a replacement ahead of its successor. WorkerPool checks the existing owner's completed getter after awaiting retirement; no new normal-path allocation.",
+      "validation": "2 affected existing pool cancellation/ownership tests and codemode build passed; no repeated allocation run for this primitive lifecycle guard.",
+      "fingerprints": {
+        "packages/codemode/src/runtime/host.ts": "2f002efcb8e177016d9aad98f73d9d60b258ebbe1704e1b17c348cf96d5101ca",
+        "packages/codemode/src/runtime/worker-pool.ts": "a4de34312939313280ddaf56e758ae95fcff3d94526dea07838c9b0431a77137",
+        "tests/codemode-runtime.test.ts": "cb04d65dbcb9f58442c8b7d0ba8e30055ae3c26d3db57c7563a4766ca113ac90"
+      }
+    }
+  }
+}

@@ -19,8 +19,15 @@ Configured globals and namespaces must not shadow a VM built-in or bridge helper
 Limits are defined in `src/limits.ts`: 60 s default / 300 s maximum, 256 MiB VM
 memory, 256 bridge calls, 128 Ki UTF-16 source characters, 1 Mi output characters,
 and 8 Mi cumulative bridge characters in each direction. The host controller adds
-four-way trusted-read concurrency and serial mutation execution. No Worker or
-object pool is used; only the compiled WASM and unchanged catalog are reused.
+four-way trusted-read concurrency and serial mutation execution. The coding
+agent reuses one Worker per sandbox, with a fresh QuickJS VM, bridge budget and
+message port for every script. Low-level callers opt in with `reuseWorker: true`
+(default: false). Only a successful result sent after VM disposal returns a slot.
+Script errors, timeouts, cancellation, Worker failures, or WASM linear memory
+above 64 MiB retire the thread. A slot also expires after 30 idle seconds or
+64 executions; `close()` waits for termination. Idle threads do not keep Node alive.
+Overlapping executions still fail immediately; there is no pool queue or shared VM.
+This trades a bounded idle thread's memory for faster consecutive scripts.
 
 Terminating the Worker stops sandbox JavaScript. Host tools must honor their abort
 signal: arbitrary host JavaScript that ignores cancellation cannot be forcibly

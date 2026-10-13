@@ -2,12 +2,113 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { getEventListeners } from "node:events";
 import { CodemodeSandbox } from "../packages/codemode/src/runtime/host.ts";
+import { WorkerPool } from "../packages/codemode/src/runtime/worker-pool.ts";
 import { loadQuickJSWasm } from "../packages/codemode/src/wasm.ts";
 import { MAX_CALLS, MAX_CODE_CHARS, MAX_OUTPUT_ITEMS } from "../packages/codemode/src/limits.ts";
 import { parseCodemodeSource } from "../packages/codemode/src/source.ts";
 import { BoundedJson } from "../packages/codemode/src/bounded-json.ts";
 import { BridgeBudget, isWorkerToHostMessage } from "../packages/codemode/src/runtime/protocol.ts";
 import { assignCodemodeIdentifiers, renderToolSignature } from "../packages/codemode/src/declarations.ts";
+
+test("pooled scripts keep fresh VMs, catalogs, quotas and fenced late tool results", async () => {
+	let releaseLate!: (value: unknown) => void;
+	let lateSignal: AbortSignal | undefined;
+	const sandbox = new CodemodeSandbox({ reuseWorker: true, tools: [
+		{ name: "late", execute: (_args, { signal }) => { lateSignal = signal; return new Promise(resolve => { releaseLate = resolve; }); } },
+		{ name: "echo", execute: args => args },
+	] });
+	try {
+		const first = await sandbox.execute('globalThis.secret = 7; tools.late({}); store("secret", 1); for(let i=0;i<128;i++) text(i); return await tools.echo(3)');
+		assert.ok(first.ok, JSON.stringify(first));
+		assert.equal(lateSignal?.aborted, true);
+		assert.equal(first.calls[0]?.status, "cancelled");
+		assert.deepEqual(sandbox.stats, { activeExecutions: 0, workersStarted: 1, workersStopped: 0 });
+		sandbox.unregisterTool("late");
+		sandbox.registerTool({ name: "next", execute: () => { releaseLate("stale result"); return 9; } });
+		const second = await sandbox.execute('text("fresh budget"); return [typeof secret, load("secret"), load("input"), ALL_TOOLS.map(t => t.name), await tools.next(), await tools.echo(4)]', { store: { input: 2 } });
+		assert.ok(second.ok, JSON.stringify(second));
+		assert.deepEqual(second.value, ["undefined", null, 2, ["echo", "next"], 9, 4]);
+		assert.deepEqual(second.output, [{ type: "text", text: "fresh budget" }]);
+		assert.deepEqual(sandbox.stats, { activeExecutions: 0, workersStarted: 1, workersStopped: 0 });
+		// Bound the lifetime to 64 leases even when every execution is healthy.
+		for (let index = 2; index < 65; index++) assert.ok((await sandbox.execute("return 1")).ok);
+		assert.deepEqual(sandbox.stats, { activeExecutions: 0, workersStarted: 2, workersStopped: 1 });
+	} finally { releaseLate?.(undefined); await sandbox.close(); }
+	assert.deepEqual(sandbox.stats, { activeExecutions: 0, workersStarted: 2, workersStopped: 2 });
+	await sandbox.close();
+	await assert.rejects(sandbox.execute("return 1"), /closed/);
+});
+
+test("pooled workers are retired on failure, timeout, abort and active close", async () => {
+	const sandbox = new CodemodeSandbox({ reuseWorker: true });
+	try {
+		const unawaited = await sandbox.execute('void (async () => { while(true) await null; })(); return 42', { timeoutMs: 500 });
+		assert.ok(unawaited.ok, JSON.stringify(unawaited));
+		assert.equal(unawaited.value, 42, "completion cancels unawaited VM microtasks before reuse");
+		for (const code of ['throw new Error("bad")', "let = ;", "while(true) {}", "while(true) await null"]) {
+			assert.ok((await sandbox.execute("return 1")).ok);
+			const failed = await sandbox.execute(code, { timeoutMs: 200 });
+			assert.equal(failed.ok, false);
+			assert.equal(sandbox.stats.workersStarted, sandbox.stats.workersStopped);
+		}
+		const large = await sandbox.execute("const bytes = new Uint8Array(72 * 1024 * 1024); return bytes.length");
+		assert.ok(large.ok, JSON.stringify(large));
+		assert.equal(sandbox.stats.workersStarted, sandbox.stats.workersStopped, "oversized Worker is not retained");
+		let entered!: () => void;
+		let release!: () => void;
+		const started = new Promise<void>(resolve => { entered = resolve; });
+		const blocked = new Promise<void>(resolve => { release = resolve; });
+		sandbox.registerTool({ name: "block", execute: () => { entered(); return blocked; } });
+		const controller = new AbortController();
+		const executing = sandbox.execute("await tools.block()", { signal: controller.signal });
+		await started;
+		await assert.rejects(sandbox.execute("return 2"), /overlap|active|already|one/i);
+		controller.abort();
+		const aborted = await executing;
+		assert.ok(!aborted.ok && aborted.error.kind === "aborted");
+		assert.equal(getEventListeners(controller.signal, "abort").length, 0);
+		release();
+		assert.ok((await sandbox.execute("return 3")).ok);
+		const running = sandbox.execute("while(true) {}");
+		await sandbox.close();
+		const closed = await running;
+		assert.ok(!closed.ok && closed.error.kind === "aborted");
+	} finally { await sandbox.close(); }
+	assert.equal(sandbox.stats.workersStarted, sandbox.stats.workersStopped);
+});
+
+test("worker pool owns one slot through idle retirement and rejects double acquisition", async t => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const lifecycle = { workersStarted: 0, workersStopped: 0 };
+	const pool = new WorkerPool(new URL('data:text/javascript,import { parentPort } from "node:worker_threads"; parentPort.on("message", () => {});'), lifecycle);
+	const lease = { completed: false }, nextLease = { completed: false }, lastLease = { completed: false };
+	try {
+		const first = await pool.acquire(lease);
+		await assert.rejects(pool.acquire(nextLease), /already leased/);
+		await pool.release(first, lease, true);
+		await pool.release(first, lease, true); // Double release cannot add another idle slot/timer.
+		assert.equal(await pool.acquire(nextLease), first);
+		await pool.release(first, lease, true); // Stale owner, same physical Worker.
+		await assert.rejects(pool.acquire(lastLease), /already leased/);
+		await pool.release(first, nextLease, true);
+		t.mock.timers.tick(30_000);
+		const second = await pool.acquire(lastLease);
+		assert.notEqual(first, second);
+		assert.deepEqual(lifecycle, { workersStarted: 2, workersStopped: 1 });
+		await pool.release(first, nextLease, true); // A stale Worker cannot return the current slot.
+		await assert.rejects(pool.acquire(lease), /already leased/);
+		const retiring = pool.release(second, lastLease, false);
+		const cancelled = pool.acquire(lease);
+		lease.completed = true;
+		const replacement = pool.acquire(nextLease);
+		await assert.rejects(cancelled, /cancelled/);
+		await retiring;
+		await replacement; // The cancelled waiter never steals the replacement lease.
+		assert.deepEqual(lifecycle, { workersStarted: 3, workersStopped: 2 });
+	} finally { await pool.close(); }
+	assert.deepEqual(lifecycle, { workersStarted: 3, workersStopped: 3 });
+	await assert.rejects(pool.acquire(nextLease), /closed/);
+});
 
 test("Codemode shares the compiled WASM promise and runs isolated executions", async () => {
 	assert.equal(loadQuickJSWasm(), loadQuickJSWasm());
@@ -284,7 +385,7 @@ test("Codemode refuses invalid outer limits and bounds tool results before cross
 });
 
 test("Codemode validates protocol shapes and enforces cumulative budgets independently of VM helpers", () => {
-	for (const value of [{ type: "call" }, { type: "done", ok: true }, { type: "output", item: null }]) assert.equal(isWorkerToHostMessage(value), false);
+	for (const value of [{ type: "call" }, { type: "done", ok: true }, { type: "done", ok: true, writes: "[]", reusable: "yes" }, { type: "output", item: null }]) assert.equal(isWorkerToHostMessage(value), false);
 	const budget = new BridgeBudget();
 	for (let i = 0; i < MAX_OUTPUT_ITEMS; i++) assert.equal(budget.consume({ type: "output", item: { type: "text", text: "" } }), true);
 	assert.equal(budget.consume({ type: "output", item: { type: "text", text: "" } }), false);

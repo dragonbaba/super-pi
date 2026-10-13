@@ -122,6 +122,8 @@ export interface CodemodeSandboxOptions {
 	 * specifier of an embedded build entrypoint; other hosts usually use a URL.
 	 */
 	workerUrl?: string | URL;
+	/** Reuse one Worker with fresh VMs/ports. Default: false. Retire at 30 s idle, 64 runs or >64 MiB WASM. */
+	reuseWorker?: boolean;
 }
 
 export interface CodemodeExecuteOptions {
