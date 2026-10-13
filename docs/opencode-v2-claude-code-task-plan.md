@@ -2,7 +2,7 @@
 
 先巩固 Super Pi 已有的后台完成通知与主会话续跑，再改进结果交付、子代理续跑和上下文压缩；Codemode 的工具发现与执行成本独立评估。需要改变会话持久化、远程协议或文件恢复语义的功能单独评估，不将上游实现整体移植进当前运行时。
 
-状态：2026-10-14（Asia/Tokyo）#136–#147 已按用户授权合并。#147 最终提交 `360fb8af6` 的六项 CI 通过、Codex 自动审查无反馈，合并提交为 `0e31420b3fed9e939f3bce556ca0e5b403c67470`。OC01、OC02、OC03 进程内窗口、OC04 单项子代理移交、OC05 已结束任务续跑发现、OC07 客户端重连核查、OC08 只读变更来源、OC10 核查及 OC11 有界 Worker 池/源码 CLI 集成核查已完成；OC09 沿用显式检查点续跑、延期自动执行恢复。本轮推进 OC05 运行中检查点子代理的有界纠偏。普通一次性任务的纠偏保留候选，OC04 shell/批次移交、OC06 真实模型效果、OC08 跨任务归属/回退及 OC11 Bun 分配门禁与真实负载仍待后续；完整 CLI 发布包验收以未来实际发布形式为前提。继续沿用 §2.3 的 PR/审查流程。
+状态：2026-10-14（Asia/Tokyo）#136–#148 已按用户授权合并。#148 最终提交 `271ca6109` 的六项 CI 通过、Codex 自动审查无反馈，合并提交为 `8fa9c89d6ee796f5ce4aebe5351a96fefdd23f6d`。OC01、OC02、OC03 进程内窗口、OC04 单项子代理移交、OC05 已结束任务续跑发现及运行中检查点任务纠偏、OC07 客户端重连核查、OC08 只读变更来源、OC10 核查及 OC11 有界 Worker 池/源码 CLI 集成核查已完成；OC09 沿用显式检查点续跑、延期自动执行恢复。本轮补充 OC06 有限模型评估入口，但实际效果被 Codex 认证失败（HTTP 401）阻塞，尚未验收。普通一次性任务的纠偏保留候选，OC04 shell/批次移交、OC08 跨任务归属/回退及 OC11 Bun 分配门禁与真实负载仍待后续；完整 CLI 发布包验收以未来实际发布形式为前提。继续沿用 §2.3 的 PR/审查流程。
 
 ## 1 对照基线与结论边界
 
@@ -181,6 +181,31 @@ shell 审计链为 final shell authorization → cwd binding → bash execute �
 - [ ] 用少量代表性长任务样本比较多轮摘要的长度与事实保留。离线测试负责 prompt 组装和保存边界；真实模型效果采用有限次数的定向评估，记录模型、输入和遗漏，不把模型输出作为易抖动的常规 CI golden。
 
 **性能与最小验证：** 强制执行 §2。优先复用 [pi087-length-recovery](../tests/pi087-length-recovery.test.ts)、[compaction lifecycle](../tests/provider-contract/openai-compaction-lifecycle.contract.test.ts) 中受影响 fixture。只改提示策略时不跑全套渲染 benchmark；触及历史投影/大结果处理时使用 [prefix benchmark](../scripts/bench/prefix-build.ts) 或最接近的现有生产基准并补必要计数，证明没有新增整份历史复制、重复 token 估算或截断造成的约束丢失。没有实际模型评估时如实保留效果验收项。
+
+**本轮实施前记录（2026-10-14，基线 `8fa9c89d6`，PR #148 已合并）：** 剩余需求是实际模型的多轮语义效果，既有离线用例不能代替。限定两个合成长任务、三个连续摘要轮次，对照当前提示与初始基线 `af067d5efe3bc61128a4cda3162d23e908d3ece5` 的提示，最多 12 次逻辑模型请求；各方案携带自己的上一轮输出。固定事实清单先于调用建立，人工核查约束、任务 ID/状态/引用、决策理由、过期引用和未验证结论，不把字符串匹配等同语义保留。只发送脚本内合成消息，不读取用户会话或仓库正文作为输入。
+
+调用链：显式评估入口 → 当前 generateSummaryWithUsage → convertToLlm/serializeConversation → completeSummarization → 注入 streamFn（旧方案只替换末尾提示）→ 当前 ModelRuntime.streamSimple → provider SSE → summary/usage → 评估证据。选择本机已配置的 `openai-codex/gpt-5.6-sol`、high thinking；关闭模型目录联网刷新和两层重试，单请求超时、客户端输出保护与固定总次数。Codex 请求体没有传递 maxTokens，不能把请求选项写成已生效的服务端 token 硬上限。此实验直接评估文本摘要入口，不覆盖扩展覆盖策略、原生不透明压缩、完整长会话切分或生产延迟。现有 prefix benchmark 测前缀构建，不适合语义评估，增加一个显式启用的评估脚本与证据文件，不增加测试文件或 CI golden。
+
+本轮不改生产热路径，新增分配仅属于显式离线准备/有限网络评估；不增加生产缓存、池、计时器或逐事件工作。评估只保存合成输入/输出与允许列出的模型元数据，绝不记录认证内容。每请求独立 session ID，finally 清理 deadline 和对应 provider session 资源；失败保留部分证据并停止，不自动重跑。验证先用无网络准备模式核对组装、配额及旧提示替换，再运行一次有限模型评估、脚本 strict typecheck、证据一致性与 diff 检查；无生产改动时不重复生命周期/渲染/分配全套测试。
+
+**本轮结果：评估准备完成，效果验收阻塞。** [显式评估脚本](../scripts/bench/compaction-summary.ts) 已固定两类样本与逐轮人工事实核对清单：后台任务交接，以及带用户约束的迁移研究；每轮原始合成消息 16,160–17,606 字符（未计入上一轮摘要及提示），刻意包含重复日志、已推翻假设、未验证子代理报告、等待审批及引用失效。各轮输入、两版提示、源码指纹和实际失败记录保存在 [OC06 证据](performance/oc06-summary-evaluation.json)。样本只模拟上述边界，不代表真实长会话分布，也不测摘要后继续工作的成功率。
+
+原定 12 次调用在第一次失败后立即停止；由于初版未记录状态码，补齐安全诊断后只做一次单请求诊断。合计 **2 次逻辑请求、2 次模型 HTTP 请求、0 次自动重试、0 份完成摘要**。第二次明确返回 HTTP 401、authentication 分类；本地存在 OAuth 配置不代表远端认证有效。两次发送的摘要输入哈希相同，没有运行后续轮次。此证据不能推断新旧提示的长度、事实保留率、延迟或 token 成本。恢复 Pi 的 openai-codex 登录后才能继续；不改认证文件、不切换账户或自动尝试其他付费模型。
+
+准备模式不创建 runtime、不读取认证、不联网，已覆盖两个样本的初次/更新提示，共 12 种组装。真实路径关闭应用/适配器重试，使用 SSE、每请求 180 秒超时、64,000 个流式文本/可见推理字符的取消保护；该保护允许最后一个 chunk 越界，不限制隐藏推理，也不是服务端 token/费用硬上限。实际请求选项 maxTokens=6553、wire reasoning=high，Codex wire 未包含 max_output_tokens。失败摘要不进入后续轮次。每请求结束清理 timer 和该 session 的 provider 资源，两次进程均正常返回非零退出码；没有常驻子进程或新测试文件，没有测量或宣称生产分配改进。诊断共享同一合成输入，已合并进证据并删除本任务创建的重复文件。
+
+复现方式（先具备已构建的工作区依赖及基线 `af067d5efe3bc61128a4cda3162d23e908d3ece5` 的 Git 历史）：
+
+```sh
+# 离线核对，不调用模型
+node scripts/bench/compaction-summary.ts
+# 登录修复后，使用新的输出路径，执行一次完整配对评估
+node scripts/bench/compaction-summary.ts --run <new-output.json>
+# 仅在需要定位请求失败时，单次诊断，不启动后续调用
+node scripts/bench/compaction-summary.ts --diagnose <new-diagnostic.json>
+```
+
+输出路径已存在时拒绝覆盖；输出仅含合成输入/输出、允许列出的统计与错误类别，不记录 endpoint、headers、认证对象或原始 provider 错误正文。完成评估后应逐条人工对照 facts，报告遗漏和失真；不能用标识符匹配或“请求成功”替代语义验收。此次本地只做准备模式、脚本 strict typecheck、证据一致性及 diff 检查；没有重复全量测试、渲染或 allocation benchmark。PR 首轮自动审查与必要远端 CI 仍按 §2.3 处理。
 
 ### OC07 远程重连与事实补读
 
