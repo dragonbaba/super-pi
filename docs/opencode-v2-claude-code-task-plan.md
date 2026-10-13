@@ -229,6 +229,10 @@ Claude Code 官方确认后台报告通过后续回合的自动通知到达，�
 
 **第四轮审查修复（OC01）。** [空闲 SDK 投递过早返回成功](https://github.com/dragonbaba/super-pi/pull/136#discussion_r4254057651)改为让普通/暂停状态的并发 `sendCustomMessage` 调用等待同一个排空 owner；前一 hook 导致排空失败时，等待者得到拒绝，未消费消息保留到下一次显式排空。核实扩展 `pi.sendMessage` 的返回类型及 adapter 均为 void，回调内投递不会等待自己的 hook；现有 idle 用例加入真实扩展重入验证。仅新增一个有必要的失败传播用例，仍位于既有 custom-message-ordering 文件；覆盖等待者不早报成功、共同拒绝、owner 释放及后续排空只保存一次。连同 CI 用例调整，相关收尾/消息/交互/provider 契约 95 项、AST 门禁 12 项、真实 Plan 单项通过，构建和类型检查通过。SDK await 的 Promise reaction 属于低频投递生命周期，不新建逐消息 deferred、Promise tail 或计时器；消息/进度链仍未变化。session allocation 约 41.97/42.92 B/消息或工具事件，相关契约计数 0，12 个引用 GC 后保留 0。最新生产指纹和原始结果在 `deliveryPromiseReviewFix`，不重复本地全量测试。
 
+**第五轮审查修复（OC01 / 证据标识）。** `92403ff8c` 的六个 CI 分片通过后，复审指出[独立报告期间退出请求缺少唤醒](https://github.com/dragonbaba/super-pi/pull/136#discussion_r4254112305)。TUI 扩展及快捷键退出入口改为合并重复请求、等待现有共享 idle waiter，并在唤醒后重新检查当前会话，覆盖没有 agent_settled 事件的空闲/暂停报告保存。没有新增事件、计时器或容器；一次显式退出的 async 操作和稳定拒绝观察属于低频生命周期，已在 AST 契约中明确列出函数。现有 shutdown 文件增加空闲/暂停两个用例，验证重复请求只确认/退出一次、报告先保存、owner 与终端监听释放。相关收尾/退出 37 项通过；AST 豁免清单同步后 12 项通过；构建、类型检查通过。session 基准消息/工具约 43.89/37.59 B/事件，规定计数仍为 0，合并 9999/1，12 个引用 GC 后保留 0。未重跑本地全量测试。
+
+[证据指纹意见](https://github.com/dragonbaba/super-pi/pull/136#discussion_r4254112310)经核实属于历史记录标识不清：第四轮 `deliveryPromiseReviewFix` 的 17 个指纹均与当时源文件匹配，顶层旧指纹对应首个候选。现将顶层 `files` 更新为当前 17 个指纹，`currentEvidence` 明确指向 `shutdownReviewFix`；旧顶层指纹迁至 `initialCandidateIdentity`，每轮历史记录固定标注其 `measuredRevision`。逐个核对这些提交的 tracked source 内容，未覆盖旧测量或将旧样本冒充当前结果；未改动的 shell/subagent/Codemode 仍沿用已标识版本的数据。最新 head 的 CI 和手动复审结果继续在 PR 中记录。
+
 - 基线：`af067d5efe3bc61128a4cda3162d23e908d3ece5`；已有文档修改保留。范围：OC01 通知/收尾与等待输入边界、OC02 有界通知、OC06 摘要更新提示、OC11 编译模式基线。
 - OC01 调用链：任务完成 → extension sendMessage → AgentSession.sendCustomMessage → Agent 队列/提示 → agent-loop → agent_end → post-run retry/compaction → custom flush → agent_settled → UI/idle waiter。先复现最终 flush 到消息、settled 回调启动后继回合和等待输入边界；不改 provider delta/progress 的同步事件通道。仅在回合接纳/结束生命周期增加有界标量状态，禁止逐通知 timer/promise tail。
 - OC02 调用链：shell/subagent 终态 → 已有有界 task record → 一次完成通知 → custom 历史/模型投影。审计结果截断、来源、容量、旧会话路由和释放；不增加模型摘要调用，不复制完整任务日志。常规输出/进度路径保持原状。

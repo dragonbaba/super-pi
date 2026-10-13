@@ -3,6 +3,49 @@ import test from 'node:test';
 import { RELEASE_COMPONENT_RENDER_CACHE } from '@super-pi/tui';
 import { alphaSession } from './helpers/alpha-session.ts';
 
+for (const paused of [false, true]) {
+  test(`extension shutdown waits for standalone report persistence: paused=${paused}`, { timeout: 5000 }, async t => {
+    let entered!: () => void; let release!: () => void; let exited!: () => void;
+    const ready = new Promise<void>(resolve => { entered = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const exit = new Promise<void>(resolve => { exited = resolve; });
+    let confirmations = 0; let shutdowns = 0; let settled = 0;
+    const f = await alphaSession({ extensions: [(pi: any) => {
+      pi.on('message_end', async (event: any, ctx: any) => {
+        if (event.message.role !== 'custom') return;
+        ctx.shutdown(); ctx.shutdown(); entered(); await gate;
+      });
+      pi.on('session_before_shutdown', () => { confirmations++; });
+      pi.on('session_shutdown', () => {
+        shutdowns++;
+        assert.equal(f.sessionManager.getEntries().filter((entry: any) => entry.type === 'custom_message').length, 1);
+      });
+    }] });
+    const off = f.session.subscribe(event => { if (event.type === 'agent_settled') settled++; });
+    t.mock.method(process, 'exit', (code: number) => { assert.equal(code, 0); exited(); });
+    let delivery: Promise<void> | undefined;
+    try {
+      assert.equal(await f.mode.init(), true);
+      (f.session as any)._interactionPaused = paused;
+      delivery = f.session.sendCustomMessage({ customType: 'note', content: 'final report', display: true }, { triggerTurn: paused });
+      await ready;
+      assert.equal(f.session.isIdle, false);
+      assert.deepEqual([confirmations, shutdowns], [0, 0]);
+      const waiter = (f.session as any)._idleWaitPromise;
+      assert.ok(waiter);
+      f.internal.requestExtensionShutdown();
+      assert.equal((f.session as any)._idleWaitPromise, waiter, 'repeated shutdown requests join the same lifecycle');
+      release(); await delivery; await exit;
+      assert.deepEqual([confirmations, shutdowns, settled], [1, 1, 0]);
+      assert.equal((f.session as any)._customMessageFlush, undefined);
+      assert.equal((f.session as any)._idleWaitPromise, undefined);
+      assert.equal(f.input.isRaw, false);
+      assert.equal(f.input.listenerCount('data'), 0);
+      assert.equal(f.resizeSource.listenerCount('resize'), 0);
+    } finally { release(); await delivery; await f.internal.shutdownOperation; off(); await f.release(); }
+  });
+}
+
 for (const mode of ['regular', 'fullscreen'] as const) {
   for (const failure of ['none', 'component', 'runtime', 'both', 'disconnect'] as const) {
     test(`terminal restoration precedes held shutdown: ${mode} ${failure}`, async t => {
