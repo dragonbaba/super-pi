@@ -2,7 +2,7 @@
 
 先巩固 Super Pi 已有的后台完成通知与主会话续跑，再改进结果交付、子代理续跑和上下文压缩；Codemode 的工具发现与执行成本独立评估。需要改变会话持久化、远程协议或文件恢复语义的功能单独评估，不将上游实现整体移植进当前运行时。
 
-状态：2026-10-14（Asia/Tokyo）#136–#145 已按用户授权合并。#145 最终提交 `aef0bac61` 的六项 CI 通过、Codex 自动审查无反馈，合并提交为 `e32b39aa141fc2d344457a5e7a46bbf95a94ca77`。OC01、OC02、OC03 进程内窗口、OC04 单项子代理移交、OC05 已结束任务续跑发现、OC07 客户端重连核查、OC08 只读变更来源、OC10 核查及 OC11 有界 Worker 池已完成；OC09 沿用显式检查点续跑、延期自动执行恢复。本轮追加 OC11 Bun 库级源码与独立可执行文件验证，保留既有运行时和显式复用选项。OC04 shell/批次移交、OC05 运行中纠偏、OC06 真实模型效果、OC08 跨任务归属/回退及 OC11 完整 CLI 发布包、Bun 分配门禁与真实负载仍待后续。继续沿用 §2.3 的 PR/审查流程。
+状态：2026-10-14（Asia/Tokyo）#136–#146 已按用户授权合并。#146 最终提交 `ed6982ef5` 的六项 CI 通过、Codex 自动审查无反馈，合并提交为 `7e68cc3f3c0a67a6afdd4e17cbe184632422786b`。OC01、OC02、OC03 进程内窗口、OC04 单项子代理移交、OC05 已结束任务续跑发现、OC07 客户端重连核查、OC08 只读变更来源、OC10 核查及 OC11 有界 Worker 池已完成；OC09 沿用显式检查点续跑、延期自动执行恢复。本轮追加 OC11 正式源码 CLI 的 Codemode 集成核查，保留既有生产实现和运行方式。OC04 shell/批次移交、OC05 运行中纠偏、OC06 真实模型效果、OC08 跨任务归属/回退及 OC11 Bun 分配门禁与真实负载仍待后续；完整 CLI 发布包验收以未来实际发布形式为前提。继续沿用 §2.3 的 PR/审查流程。
 
 ## 1 对照基线与结论边界
 
@@ -264,6 +264,7 @@ node --experimental-strip-types --test --test-name-pattern='real completed check
 - [x] 按用户后续授权加入有界 Worker 资源复用，保留 QuickJS；独立端口隔离执行，VM dispose 后才归还，错误/取消/过大内存淘汰，空闲和使用次数有界。宿主 allocation、Worker 内部采样/VM 引用释放及相同负载收益见 §5；完整 CLI 发布包、Bun 分配门禁与真实模型负载仍待测。
 - [x] Node 本地打包安装核查：按 Codemode 的 files/exports 打包，在独立目录安装后从公共入口与同一 Worker/依赖/WASM 测量。池对照通过原有门禁，未发现需修改生产实现的安装问题；这是当前源码的库级 npm 包，不是已发布完整 CLI，见 §5 后续记录。
 - [x] Bun 1.4.0 / Windows 库级兼容核查：显式嵌入 Worker/WASM 的独立 EXE 完成短脚本、工具调用、隔离和关闭检查，宿主引用释放通过，见 §5。仅记录有界时延与存活堆；未完成 JSC/Worker 分配和 CPU 门禁，不改变运行时或池默认值。
+- [x] 当前正式源码 CLI 集成：沿用默认资源与真实原生工具，验证目录、读取证据约束、提交收据、跨脚本 VM/store 边界、错误后显式继续及自然退出的 Worker 关闭，见 §5。仓库尚无完整 CLI 发布包，不用库级 EXE 或私有扩展打包替代未来发布验收。
 
 **性能与最小验证：** 强制执行 §2。复用 [codemode-runtime](../tests/codemode-runtime.test.ts)、[worker-recovery](../tests/codemode-worker-recovery.test.ts)、[codemode-guardrails](../tests/codemode-guardrails.test.ts) 中实际受影响者；运行对应 [hot-path invariants](../tests/codemode-hot-paths.test.ts) 和 [runtime benchmark](../scripts/bench/codemode-runtime.ts)，涉及策略/展示时才扩大到已有 dispatch/session/tree 基准。提供每脚本 Worker/VM 次数、每调用复制与序列化字节、并发/队列峰值、allocation 和 GC/引用释放证据；若改到 Worker 内部分配，宿主 inspector 样本不够，须补该线程/VM 的相应证据。§6 是诊断基线，不是未来优化的验收结果。
 
@@ -272,6 +273,20 @@ node --experimental-strip-types --test --test-name-pattern='real completed check
 审计链为安装包 exports → host/defaultWorkerUrl → WASM resolver/cache → WorkerPool.acquire → 独立 MessageChannel → Worker/QuickJS/prelude → 工具 bridge/BoundedJson → VM dispose → pool release/retire → host close。产品 controller/nested dispatch 的权限、结果收据和 UI 链保持原有实现；此库级 fixture 不代表完整 CLI、Bun 打包或真实模型/I/O。生产代码和热路径预计不变；新增解析、指纹、采样及 WeakRef 只在按需 benchmark 生命周期，仍保持单槽/无等待队列、每脚本新 VM、相同短脚本和批次负载。已有 Node 环境可测，Bun 1.4.0 已安装但没有据此视为已验证其可执行文件。先复用既有 runtime/worker-recovery/hot-path 用例、基准独立 strict 类型检查和一次安装包池对照；不新增测试文件、不跑本地全量，只有复现产品缺口才扩大修复与性能范围。
 
 ## 5 完成与证据记录
+
+### OC11 后续：正式源码 CLI 集成核查
+
+2026-10-14（Asia/Tokyo），基线 `7e68cc3f3`，#146 已合并。仓库 README 与 coding-agent manifest 明确支持 `scripts/superpi.mjs` 源码启动，没有完整 CLI 发布包或既定 Bun 发布构建入口；不能把手工库级 EXE 当作产品发布产物。本轮继续验证实际可用的源码 CLI：默认资源装配 → 编译 CLI/main → JSON print session → model-facing Codemode → controller → pooled Worker/QuickJS → nested dispatch/原生读写 guard/收据 → 模型结果 → runtime dispose/Worker 退出。复用已有 `native-source-delivery` 和它的离线 provider/preload，在同一次有期限的 CLI 子进程中补齐工具目录、跨脚本 VM 隔离、错误后显式继续与 Worker 启停计数；不新增测试文件、不使用真实模型或网络，不建设发布系统。
+
+现有 native fixture 已验证 exact/overwrite/snapshot 提交，本轮保留这些行为及权限/证据链，优先观察自然退出是否释放同一个单槽池。只在显式测试生命周期追加有界计数和断言，不改生产逐消息/工具进度/UI 路径；未发现生产缺口前不重跑已验收的分配对照或修改退出语义。子进程、stdout/stderr 和私有工作目录由既有 fixture 持有，保持期限、输出上限与按身份清理。若复现运行时缺口，先记录反例，再按 §2 补生产调用链审计、最小修复、相关 AST/allocation/GC 证据。
+
+**实现与结果。** 只扩展既有 [source delivery 用例](../tests/native-source-delivery.test.ts)、[离线 provider](../tests/fixtures/native-source-entry.mjs) 和 [离线 preload](../tests/fixtures/native-offline-preload.mjs)，无生产改动、无新测试文件。一次真实 `scripts/superpi.mjs --mode json --print --no-session` 子进程使用默认资源，由离线 provider 顺序驱动 10 个脚本 / 11 次模型请求。provider 只看见 Codemode 入口，普通 read/edit/write 在 VM 的 `ALL_TOOLS` 与 `describeTools` 可用；四次原生 read 支撑原有三次 exact/overwrite/snapshot 提交，成功收据和最终文件内容断言保留。
+
+新增的首个脚本在没有展示读取证据时尝试编辑，实际得到 `READ_REQUIRED`；下一次 provider 请求前直接读取夹具文件确认仍为 `before\n`。该 guard 发生在工具内部，不能推断为 Agent 的 `not_executed` 阶段；初始断言误用该字段的两次失败只修正了夹具判断，没有修改生产分类或给结果补造标记。成功脚本的自定义 global 在下一脚本不存在，显式提交的 store 值则保留；异常脚本尝试改写 global/store 后抛错，后继脚本显式确认 global 未泄漏且 store 仍为上次成功值。没有自动重试原调用或重复已完成修改。
+
+可选 Worker 观察器只在此 CLI 测试的主线程启用，透传原 Worker 参数和消息，不改变 ref/unref、关闭或调度。10 次脚本复用/淘汰共启动 3 个 pooled Worker，物理退出 3 个，活动峰值 1、进程退出时活动数 0，网络尝试 0。stdout/stderr 各最多 2 MiB，子进程期限 55 秒、用例期限 60 秒，cwd/agent/HOME/USERPROFILE 隔离到单个已记录的临时目录；成功和断言失败均执行既有清理钩子。本轮未遗留探针目录或进程，之前轮次被策略拒绝清理的目录未触碰。
+
+**最小验证与边界。** coding-agent 单包构建、类型检查、上述单个 CLI 用例及 9 项既有 Codemode hot-path 不变量通过；共享 preload 未启用观察器时保持原 Worker 也已单独核对。没有重复打包用例、本地全量测试或 Node/Bun allocation 采样。计数、命令、14 个源码/fixture 指纹追加于 [OC11 证据](performance/oc11-runtime-costs.json) 的 `sourceCliIntegration`，16 个历史章节原样保留。此轮关闭当前支持的 Node 源码 CLI 集成边界，不宣称性能提升、完整 CLI 堆/VM 引用回收或发布版验收；真实模型/I/O、交互式终端和未来发布包仍需各自有限验证。最终 head 的远端 CI/Codex 结果记入 PR。
 
 ### OC11 后续：Bun 运行模式核查
 
