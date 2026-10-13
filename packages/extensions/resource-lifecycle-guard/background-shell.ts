@@ -1,11 +1,18 @@
 import { join } from "node:path";
-import { toolResultFromError } from "@super-pi/agent-core";
-import { getConfigDir, readShellExecution, type BackgroundShellExecution, type BackgroundShellLaunch, type BashToolDetails, type ExtensionAPI, type ExtensionContext } from "@super-pi/coding-agent";
+import { toolResultFromError, type AgentToolResult } from "@super-pi/agent-core";
+import { getConfigDir, readShellExecution, type BackgroundShellExecution, type BackgroundShellLaunch, type ForegroundShellLaunch, type ShellForegroundControl, type BashToolDetails, type ExtensionAPI, type ExtensionContext } from "@super-pi/coding-agent";
 import { registerManagedTasks, configureTaskHistory, formatManagedTask, formatTaskCompletion, SHELL_TASK_RESULT_EVENT, type ManagedTaskRegistration } from "../managed-tasks.ts";
 import { loadSubagentLimits, HARD_MAX_CONCURRENT, HARD_MAX_TASKS } from "../subagent/limits.ts";
 import { SubagentScheduler, type TaskReservation } from "../subagent/scheduler.ts";
 import { SubagentTasks, type ManagedSubagentTask } from "../subagent/tasks.ts";
 import { SESSION_PERMISSION_EVENT } from "./permission-contract.ts";
+import { ForegroundTask } from "../subagent/foreground.ts";
+
+interface ForegroundShell {
+	owner: ForegroundTask<AgentToolResult<BashToolDetails | undefined>>;
+	control: ShellForegroundControl;
+	assertCurrent(): void;
+}
 
 export const BACKGROUND_SHELL_LIMITS_PATH = join(getConfigDir(), "background-shell-limits.json");
 
@@ -26,6 +33,7 @@ export class BackgroundShellTasks {
 	readonly tasks = new SubagentTasks(this.limits.maxTasks, "Background shell");
 	private readonly results = new WeakMap<ManagedSubagentTask, BashToolDetails>();
 	private readonly pending = new Set<Promise<void>>();
+	private readonly foreground = new Map<string, ForegroundShell>();
 	private authority = new AbortController();
 	private sessionGeneration = 0;
 	private changingSession = 0;
@@ -40,7 +48,9 @@ export class BackgroundShellTasks {
 	constructor(pi: ExtensionAPI) {
 		this.pi = pi;
 		const guidance = `Background shell limits: ${this.limits.maxConcurrent} running concurrently, ${this.limits.maxTasks} admitted commands including queued work; hard ceilings ${HARD_MAX_CONCURRENT}/${HARD_MAX_TASKS}. Config: ${BACKGROUND_SHELL_LIMITS_PATH}; reload after editing. Separate from subagent quotas. Use background: true with explicit cwd in bash/powershell; ordinary shell inspection and authorization still apply. Default runtime 1800s, maximum 7200s; queue time excluded. Read status with tasks; wait for terminal facts before reporting success. Retain the latest ${this.limits.maxTasks} completed records, at most 12000 characters each, with no durable output logs. Avoid overlapping edits/builds and use only independently useful concurrency.`;
-		this.taskRegistration = registerManagedTasks(pi, "shell", { tasks: this.tasks, guidance, list: this.list, details: this.details });
+		this.taskRegistration = registerManagedTasks(pi, "shell", { tasks: this.tasks,
+			guidance: guidance + " Eligible foreground local commands (explicit cwd and timeout up to 7200s) share these slots in TUI/RPC. List their IDs with /tasks; /tasks background <id> transfers without restarting or extending the timeout.",
+			list: this.list, details: this.details, background: this.background });
 		this.removePermissionListener = pi.events.on(SESSION_PERMISSION_EVENT, this.revoke);
 		pi.on("session_start", async (_event, ctx) => { await this.beginSession(); configureTaskHistory(this.tasks, "shell", ctx); });
 		pi.on("session_before_tree", this.beginSession);
@@ -51,7 +61,7 @@ export class BackgroundShellTasks {
 	private readonly details = (task: ManagedSubagentTask): BashToolDetails | undefined => this.results.get(task);
 	private readonly list = (): string => {
 		let text = `${this.scheduler.active}/${this.limits.maxConcurrent} running · ${this.scheduler.outstanding}/${this.limits.maxTasks} active/queued · ${this.scheduler.queued} queued`;
-		for (const task of this.tasks.values()) text += `\n${formatManagedTask(task)}`;
+		for (const task of this.tasks.values()) text += `\n${formatManagedTask(task)}${this.foreground.has(task.id) ? " · foreground shell" : ""}`;
 		return text;
 	};
 	private readonly revoke = (): void => {
@@ -77,6 +87,49 @@ export class BackgroundShellTasks {
 		if (!this.taskRegistration.controlsAvailable(ctx)) throw new Error("Background commands require the built-in tasks management tool; enable it and remove conflicting tasks registrations, or use foreground execution.");
 	}
 
+	canManageForeground(ctx: ExtensionContext): boolean {
+		return !this.closed && !this.changingSession && !this.cleanupBlocked
+			&& (ctx.mode === "tui" || ctx.mode === "rpc") && this.taskRegistration.controlsAvailable(ctx);
+	}
+
+	private readonly background = (task: ManagedSubagentTask, ctx: ExtensionContext): void => {
+		this.assertAvailable(ctx);
+		const entry = this.foreground.get(task.id);
+		if (!entry || entry.owner.background || task.state !== "running" || entry.control.completing) {
+			throw new Error("Only a running foreground shell can transfer; queued, finishing, cancelled and background commands cannot.");
+		}
+		task.controller?.signal.throwIfAborted();
+		entry.assertCurrent();
+		entry.owner.detach({ content: [{ type: "text", text: "Shell transferred to background without restarting: " + task.id + ". Original timeout remains in effect; completion will be notified. Use tasks to inspect or cancel it." }],
+			details: { backgroundTask: { id: task.id, state: "running", kind: "shell" } } });
+		entry.control.background = true;
+		entry.control.stopUpdates?.();
+		entry.control.stopUpdates = undefined;
+		this.foreground.delete(task.id);
+	};
+
+	createForegroundLaunch(name: string, callId: string, command: string, cwd: string, ctx: ExtensionContext, assertCurrent: () => void, assertTransfer: () => void = assertCurrent): ForegroundShellLaunch {
+		return (execute, signal, publish, release) => {
+			signal?.throwIfAborted(); assertCurrent(); this.assertAvailable(ctx);
+			const reservation = this.scheduler.reserve([{ canonicalCwd: cwd, allowMutation: false }]);
+			let task: ManagedSubagentTask;
+			try { task = this.tasks.create(name, cwd, ctx.sessionManager?.getLeafId()); }
+			catch (error) { reservation.release(); throw error; }
+			const owner = new ForegroundTask<AgentToolResult<BashToolDetails | undefined>>(signal, publish);
+			const waiting = owner.takeWait();
+			const entry: ForegroundShell = { owner, control: { background: false, completing: false, stopUpdates: undefined }, assertCurrent: assertTransfer };
+			this.foreground.set(task.id, entry);
+			const operation = this.run(task, reservation, this.authority.signal,
+				(taskSignal) => execute(taskSignal, owner.publish, entry.control), release, assertCurrent, callId,
+				{ command, cwd, background: true }, ctx.cwd, this.sessionGeneration, entry);
+			signal = undefined; publish = undefined;
+			this.pending.add(operation);
+			void operation.then(() => { this.pending.delete(operation); this.foreground.delete(task.id); },
+				(error) => { this.pending.delete(operation); this.foreground.delete(task.id); owner.fail(error); });
+			return waiting;
+		};
+	}
+
 	createLaunch(name: string, callId: string, command: string, cwd: string, ctx: ExtensionContext, assertCurrent: () => void): BackgroundShellLaunch {
 		return (execute, signal, release) => {
 			signal?.throwIfAborted(); assertCurrent(); this.assertAvailable(ctx);
@@ -95,10 +148,11 @@ export class BackgroundShellTasks {
 	}
 
 	private async run(task: ManagedSubagentTask, reservation: TaskReservation, authority: AbortSignal, execute: BackgroundShellExecution, release: () => void,
-		assertCurrent: () => void, callId: string, input: { command: string; cwd: string; background: true }, sessionCwd: string, generation: number): Promise<void> {
-		const signal = AbortSignal.any([authority, task.controller!.signal]);
+		assertCurrent: () => void, callId: string, input: { command: string; cwd: string; background: true }, sessionCwd: string, generation: number, foreground?: ForegroundShell): Promise<void> {
+		const signal = AbortSignal.any(foreground ? [authority, task.controller!.signal, foreground.owner.signal] : [authority, task.controller!.signal]);
 		let failed = false, text = "";
 		let details: BashToolDetails | undefined;
+		let foregroundResult: AgentToolResult<BashToolDetails | undefined> | undefined, foregroundError: unknown;
 		try {
 			const result = await this.scheduler.run(signal, async () => {
 				assertCurrent(); this.tasks.start(task);
@@ -112,9 +166,11 @@ export class BackgroundShellTasks {
 				}
 			});
 			details = result.details;
+			if (foreground) foregroundResult = result;
 			for (const item of result.content) if (item.type === "text") text += item.text;
 		} catch (error) {
 			failed = true;
+			foregroundError = error;
 			const result = toolResultFromError(error);
 			details = result?.details as BashToolDetails | undefined;
 			text = error instanceof Error ? error.message : String(error);
@@ -125,6 +181,11 @@ export class BackgroundShellTasks {
 		details = { ...details, truncation: details?.truncation ? { ...details.truncation, content: "" } : undefined,
 			backgroundTask: { id: task.id, state: task.state as "completed" | "failed" | "cancelled", kind: "shell" } };
 		this.results.set(task, details);
+		if (foreground) {
+			foreground.control.completing = true; foreground.control.stopUpdates = undefined;
+			if (failed) foreground.owner.fail(foregroundError); else foreground.owner.complete(foregroundResult!);
+			if (!foreground.owner.background) return;
+		}
 		if (this.closed || generation !== this.sessionGeneration) return;
 		this.pi.events.emit(SHELL_TASK_RESULT_EVENT, { toolName: task.agent, toolCallId: callId, input, cwd: sessionCwd, details, isError: failed || signal.aborted });
 		if (authority.aborted) return;
@@ -150,7 +211,7 @@ export class BackgroundShellTasks {
 		this.removePermissionListener(); this.taskRegistration.unregister();
 		this.authority.abort(new Error("Background shell session closed.")); this.tasks.cancelAll(); this.scheduler.dispose();
 		await Promise.allSettled(this.pending);
-		this.pending.clear(); this.tasks.dispose();
+		this.pending.clear(); this.foreground.clear(); this.tasks.dispose();
 		if (this.processCleanupFailure) throw new Error(this.processCleanupFailure);
 	}
 }

@@ -130,7 +130,7 @@ export function registerManagedTasks(pi: ExtensionAPI, kind: Kind, provider: Man
 			throw new Error("Unknown or expired task ID. List current tasks.");
 		};
 		const background = (item: ManagedTaskProvider, task: ManagedSubagentTask, ctx: ExtensionContext): void => {
-			if (!item.background) throw new Error("This executor cannot transfer running foreground work. Shell commands must be launched with background: true.");
+			if (!item.background) throw new Error("This executor cannot transfer running foreground work.");
 			item.background(task, ctx);
 		};
 		const steer = (item: ManagedTaskProvider, task: ManagedSubagentTask, text: string, ctx: ExtensionContext): string => {
@@ -139,7 +139,7 @@ export function registerManagedTasks(pi: ExtensionAPI, kind: Kind, provider: Man
 		};
 		pi.registerTool({
 			name: "tasks", label: "Tasks", modelOnly: true,
-			description: "Manage session shell/subagent tasks and bounded saved history: list, status, wait, cancel, background, steer. Steer takes id/text for a running checkpoint subagent: one pending correction, 4096 characters, at most 8 per task; delivered after a complete turn, without interrupting tools or granting permissions. Acceptance is not consumption. Background transfers one eligible foreground single subagent without restarting it; batches/chains and shell handoff are unsupported. Wait 0–60000ms (default 10000); at most 64 pending waits per kind. Timeout never cancels work. Persistent sessions restore historical results; unobserved completion becomes interrupted with unknown side effects. History grants no permissions or current verification evidence and never replays work. IDs expire on history eviction; memory-only sessions lose them on close. Prefer completion notifications over polling. Read capacities using list before launching background work.",
+			description: "Manage session shell/subagent tasks and bounded saved history: list, status, wait, cancel, background, steer. Steer takes id/text for a running checkpoint subagent: one pending correction, 4096 characters, at most 8 per task; delivered after a complete turn, without interrupting tools or granting permissions. Acceptance is not consumption. Background transfers one eligible foreground single subagent or local shell command without restarting it. Shell requires explicit cwd/timeout (up to 7200s) at launch in TUI/RPC with active tasks controls; it shares shell capacity and keeps its original deadline. List eligible IDs with /tasks. Batches/chains are unsupported. Wait 0–60000ms (default 10000); at most 64 pending waits per kind. Timeout never cancels work. Persistent sessions restore historical results; unobserved completion becomes interrupted with unknown side effects. History grants no permissions or current verification evidence and never replays work. IDs expire on history eviction; memory-only sessions lose them on close. Prefer completion notifications over polling. Read capacities using list before launching background work.",
 			parameters,
 			async execute(_id, args, signal, _onUpdate, ctx): Promise<AgentToolResult<Record<string, unknown>>> {
 				if (args.action === "list") return { content: [{ type: "text", text: list() }], details: {} };

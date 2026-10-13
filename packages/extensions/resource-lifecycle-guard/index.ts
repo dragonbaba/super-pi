@@ -1,4 +1,4 @@
-import { getShellCwdBinding, attachShellCwdBinding, prepareShellCwd, attachBackgroundShellLaunch, validateBackgroundShellInput, type ShellCwdBinding } from "@super-pi/coding-agent";
+import { getShellCwdBinding, attachShellCwdBinding, prepareShellCwd, attachBackgroundShellLaunch, attachForegroundShellLaunch, validateBackgroundShellInput, type ShellCwdBinding } from "@super-pi/coding-agent";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
@@ -51,7 +51,10 @@ class BashInvocationAuthorization {
     if (getShellCwdBinding(args) !== binding || binding?.isReleased || (this.cwd !== undefined && !binding)) throw new Error(INVALIDATED);
     if (binding) {
       const sessionCwd = this.sessionCwd, sessionId = this.sessionId, generation = this.generation, sequence = this.sequence;
-      const invocationSignal = this.background === true ? undefined : signal;
+      const transferable = this.background !== true && typeof this.command === "string" && typeof this.cwd === "string"
+        && typeof this.timeout === "number" && Number.isFinite(this.timeout) && this.timeout > 0 && this.timeout <= 7200
+        && this.backgroundTasks?.canManageForeground(ctx);
+      const invocationSignal = this.background === true || transferable ? undefined : signal;
       const assertCurrent = () => {
         if (invocationSignal?.aborted || ctx.cwd !== sessionCwd || ctx.sessionManager.getSessionId() !== sessionId
           || permissions.authorityGeneration !== generation || permissions.state.sequence !== sequence) throw new Error(INVALIDATED);
@@ -61,6 +64,8 @@ class BashInvocationAuthorization {
       if (this.background === true) {
         if (!this.backgroundTasks || typeof this.command !== "string" || typeof this.cwd !== "string") throw new Error(INVALIDATED);
         attachBackgroundShellLaunch(approved, this.backgroundTasks.createLaunch(this.name, id, this.command, binding.canonical, ctx, assertCurrent));
+      } else if (transferable) {
+        attachForegroundShellLaunch(approved, this.backgroundTasks!.createForegroundLaunch(this.name, id, this.command as string, binding.canonical, ctx, assertCurrent, () => binding.beforeSpawn(binding.canonical)));
       }
     }
     this.transferred = true;

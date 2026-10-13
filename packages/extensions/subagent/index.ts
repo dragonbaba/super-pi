@@ -1443,7 +1443,7 @@ export default function (pi: ExtensionAPI) {
 		return `Correction queued for ${task.id} after the current complete turn; current tools are not interrupted. ${control.guidanceStatus}`;
 	};
 	const taskRegistration = registerManagedTasks(pi, "subagent", {
-		tasks, list: listTasks, guidance: `${describeSubagentLimits(limits)} A foreground single subagent can be transferred with /tasks background <id>; list IDs with /tasks. Same-workspace writers, batches/chains and shell handoff are unsupported.`,
+		tasks, list: listTasks, guidance: `${describeSubagentLimits(limits)} A foreground single subagent can be transferred with /tasks background <id>; list IDs with /tasks. Same-workspace subagent writers and batches/chains are unsupported.`,
 		steer: steerTask,
 		status: task => controls.has(task.id) ? `\n${controls.get(task.id)!.guidanceStatus}` : "",
 		background(task, ctx) {

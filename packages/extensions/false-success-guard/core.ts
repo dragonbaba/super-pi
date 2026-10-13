@@ -178,7 +178,8 @@ export function observeToolResult(state: FalseSuccessState, observation: ToolObs
   const scope = verificationScope(observation.toolName, observation.input, execution?.cwd ?? (shell ? fallbackShellVerificationCwd(observation.input, observation.cwd) : observation.cwd));
   const target = mutationTarget(observation.toolName, observation.input, observation.cwd);
   const text = (observation.text ?? "").slice(0, MAX_TOOL_TEXT_CHARS);
-  const background = shell && observation.input.background === true
+  // A foreground command can become background without changing its authorized input.
+  const background = shell
     ? (observation.details as { backgroundTask?: { id?: unknown; state?: unknown; kind?: unknown } } | undefined)?.backgroundTask : undefined;
   const backgroundId = background?.kind === "shell" && typeof background.id === "string" && background.id.length <= 80 ? background.id : undefined;
   const verification = scope ? verificationKey(scope) : undefined;
@@ -188,7 +189,7 @@ export function observeToolResult(state: FalseSuccessState, observation: ToolObs
   if (observation.toolCallId) state.verificationStarts.delete(observation.toolCallId);
   const backgroundCommand = scope && shell && typeof observation.input.command === "string"
     ? createHash("sha256").update(observation.input.command).digest("hex") : undefined;
-  if (backgroundId && background?.state === "queued" && !observation.isError) {
+  if (backgroundId && (background?.state === "queued" || background?.state === "running") && !observation.isError) {
     if (state.completedBackground?.has(backgroundId)) return;
     if (scope) {
       const obligation = makeObligation(pendingKey!, "verification", observation.toolName, "pending",

@@ -2,7 +2,7 @@
 
 先巩固 Super Pi 已有的后台完成通知与主会话续跑，再改进结果交付、子代理续跑和上下文压缩；Codemode 的工具发现与执行成本独立评估。需要改变会话持久化、远程协议或文件恢复语义的功能单独评估，不将上游实现整体移植进当前运行时。
 
-状态：2026-10-14（Asia/Tokyo）#136–#148 已按用户授权合并。#148 最终提交 `271ca6109` 的六项 CI 通过、Codex 自动审查无反馈，合并提交为 `8fa9c89d6ee796f5ce4aebe5351a96fefdd23f6d`。OC01、OC02、OC03 进程内窗口、OC04 单项子代理移交、OC05 已结束任务续跑发现及运行中检查点任务纠偏、OC07 客户端重连核查、OC08 只读变更来源、OC10 核查及 OC11 有界 Worker 池/源码 CLI 集成核查已完成；OC09 沿用显式检查点续跑、延期自动执行恢复。本轮补充 OC06 有限模型评估入口，但实际效果被 Codex 认证失败（HTTP 401）阻塞，尚未验收。普通一次性任务的纠偏保留候选，OC04 shell/批次移交、OC08 跨任务归属/回退及 OC11 Bun 分配门禁与真实负载仍待后续；完整 CLI 发布包验收以未来实际发布形式为前提。继续沿用 §2.3 的 PR/审查流程。
+状态：2026-10-14（Asia/Tokyo）#136–#149 已按用户授权合并，#149 合并提交为 `270a5489ad5932500ebe240760d857fe169f8ef3`，六项 CI 通过、Codex 自动审查无反馈。OC01、OC02、OC03 进程内窗口、OC04 单项子代理移交、OC05 已结束任务续跑发现及运行中检查点任务纠偏、OC07 客户端重连核查、OC08 只读变更来源、OC10 核查及 OC11 有界 Worker 池/源码 CLI 集成核查已完成；OC09 沿用显式检查点续跑、延期自动执行恢复。本轮完成 OC04 有条件的前台 shell 移交与本地验收，PR/远端验收见交付记录。OC06 有限模型评估入口已合并，但实际效果被 Codex 认证失败（HTTP 401）阻塞，尚未验收。普通一次性任务的纠偏保留候选，OC04 批次移交、OC08 跨任务归属/回退及 OC11 Bun 分配门禁与真实负载仍待后续；完整 CLI 发布包验收以未来实际发布形式为前提。继续沿用 §2.3 的 PR/审查流程。
 
 ## 1 对照基线与结论边界
 
@@ -127,14 +127,29 @@ Claude Code 官方确认后台报告通过后续回合的自动通知到达，�
 
 入口：[managed-tasks](../packages/extensions/managed-tasks.ts)、[subagent](../packages/extensions/subagent/index.ts)、[shell 后台接口](../packages/coding-agent/src/core/tools/shell-background.ts)、[后台 shell 所有者](../packages/extensions/resource-lifecycle-guard/background-shell.ts)。参考 [O8]。
 
-- [x] 分别核查 shell 与子代理的所有权。单项子代理保留同一进程/任务 ID、输出、授权和调度槽，解除前台等待而不重启；shell 的现有启动所有权不足以安全移交，保留启动时后台选项。
+- [x] 分别建立 shell 与子代理的执行所有权。单项子代理和符合启动条件的 shell 保留同一进程/任务 ID、输出、授权和调度槽，解除前台等待而不重启；shell 同时保留启动时后台选项。
 - [x] 单项移交覆盖完成、取消、容量满、权限撤销、树切换和 dispose；结果只走前台或一次后台完成通知，session pending operation 持续拥有执行和清理责任。
-- [x] 通过 `/tasks background <id>` 及 `tasks` action 暴露单项移交。TUI/RPC 和有效内置管理工具必需；Print/JSON、shell、批次/chain、后台/终态/取消中任务明确拒绝，不新增快捷键或守护进程。
-- [ ] shell 及 parallel/chain 的运行中移交仍未实现；需先解决 shell 启动时所有权以及单 ID 对整批执行的语义，不能将本轮单项支持写成全部 OC04 完成。
+- [x] 通过 `/tasks background <id>` 及 `tasks` action 暴露单项移交。TUI/RPC 和有效内置管理工具必需；Print/JSON、未满足启动条件的 shell、批次/chain、后台/终态/取消中任务拒绝，不新增快捷键或守护进程。
+- [x] 内置本地 shell 显式 cwd/有限 timeout（0 < 秒数 ≤7200）时，自启动即受有界会话调度；运行中可移交，queued shell 和输出收尾窗口拒绝。原前台正常结果与后台单次报告互斥，权限/目录身份重新核对。
+- [ ] parallel/chain 运行中移交仍未实现；需先定义单 ID 对整批执行的语义，不能将单项支持写成全部 OC04 完成。
 
 **性能与最小验证：** 强制执行 §2。复用 shell/subagent 管理测试及现有 child fixture，选择支持的执行器验证身份不变与单次完成；按受影响消费者运行已有 shell/subagent benchmark。移交仅允许生命周期分配，不新增输出复制、逐进度状态发布或计时器；平台特有进程树行为在相应 CI 验证。
 
-**本轮实施前记录（基线 `769baee88`）：** 子代理前台调用已建立 session-owned task、reservation 和 pending operation，但执行 signal 永久组合父回合 signal，返回值只能等待 operation。`AgentSession.prompt → _tryExecuteExtensionCommand` 已允许流式期间立即执行 `/tasks`，无需新增 UI 轮询。先实现单项调用的显式移交，保留 PID/task ID/原超时/同一调度槽，通过可断开的父回合取消监听器和一次性前台 deferred 解除等待；authority 与 task controller 继续拥有取消权。移交前复核 TUI/RPC、有效内置管理工具、未完成/未取消、工作区写入隔离。并行/chain 不隐式整批移交。
+**Shell 移交实施前记录（2026-10-14，基线 `270a5489a`，#149 已合并）：** 既有前台 shell 不由任务目录持有，授权 cwd 闭包捕获原回合 signal，Windows Job 只用于后台启动，因此不能在命令运行后仅修改一个 background 标记。本轮限定内置 bash/PowerShell、显式 cwd、显式有限 timeout（0 < 秒数 ≤7200）、有效 tasks 管理工具的 TUI/RPC 会话。符合条件的前台调用从启动时进入既有有界 shell scheduler/task owner，仍等待正常前台结果；无这些前置条件的调用保留原路径，替换后端不获移交能力。parallel/chain 不在本轮范围。
+
+复用现有 ForegroundTask 的一次性等待与可解除父 signal 监听器，借现有私有授权附件注册 shell 前台执行。会话权限/分支代次持续拥有取消权；移交复核当前授权与任务状态，不重启进程、不改变原 timeout、不增加并发槽。Windows 从启动时使用既有 Job，移交后立即解除前台更新回调及节流 timer，保留同一输出 accumulator/任务 ID，完成沿原有界后台结果及单次通知通道交付。原前台自然完成不发重复后台通知；开始收尾、取消、旧代次或无管理能力时拒绝移交。
+
+完整审计链：Agent 最终授权 → resource-lifecycle-guard / cwd binding → shell 私有启动附件 → BackgroundShellTasks / ForegroundTask / scheduler → createShellToolDefinition → local bash/PowerShell operations → Windows Job 或 POSIX process group → stdout/stderr / OutputAccumulator → 既有节流 progress → Agent observer → AgentSession → interactive tool renderer / frame queue；终态经进程树/日志清理 → task finish / history → 原前台结果或后台终态事件/通知 → owner/dispose 释放。变更只允许调用/移交/取消/收尾生命周期分配；逐 chunk/progress 不新增闭包、Promise、controller、wrapper/array 或快照。无对象池，无逐输出历史写盘。共享 shell 并发/队列/结果/日志预算不增加。
+
+先记录既有 background-shell-tasks allocation 基准；复用该基准增加移交、受控 GC/前台引用释放和槽/通知计数，真实进程行为扩展原 background-shell-tasks 测试与 child fixture，source gates 复用 shell-observation-hot-paths / bash-streaming-ansi-hot-paths。核对相关授权、工具结果与 cwd 回归；按改动跑类型/单包构建，避免本地全量与无关 TUI benchmark。新增测试文件目标为 0。基线 fetch 曾因连接关闭失败，当前工作分支明确基于上轮已核实的 #149 合并提交，不声称本次 fetch 成功。
+
+**Shell 本轮验收：** 真实 ExtensionRunner/Agent 派发 bash 与 PowerShell，通过运行时 `/tasks` 移交后 PID/ID 不变；中断原回合不终止子进程，后续 256 KiB 输出不再发往旧前台，临时日志清除且完成通知一次。原 timeout、显式 cancel、权限撤销、树切换、普通自然完成和 queued 取消均覆盖。完成校验根据 running 接纳事实保持 pending，终态先到时迟到接纳不能重新打开义务。
+
+[Shell 移交性能证据](performance/oc04-shell-handoff.json) 保存同机基线/候选、源码指纹与完整调用链。1000 个相同 chunk 的普通前台采样为 6134.880 → 6056.080 B/chunk，后台为 5231.888 → 5401.760；新增 managed foreground / 半途移交场景分别为 5509.848 / 5238.328。采样含启动/收尾，存在波动，不声称性能提升。每 chunk 的 Promise/controller/历史写入仍为 0；移交后发布为 0，历史只写接纳/启动/终态各一次。4 个仍运行的移交 owner 保留期间，16 个原前台 controller/signal/callback/wait 引用 GC 后为 0；结束后 152 个 owner/binding 等引用为 0，Windows Job 4 次创建/清理后句柄为 0。未加入对象池或新的输出副本。
+
+复用既有测试文件新增 4 项表驱动/真实进程用例；相关管理和 shell AST 29/29、cwd/完成校验 44 pass + 1 平台 skip、共享前台代理 AST 1/1，合计 74 pass + 1 skip。修改 fixture 就绪标记后仅重跑真实移交项；benchmark 类型适配器曾因夹具闭包共同上下文保留 4 个回调，拆到独立 helper 后受控 GC 通过，生产代码未因此改变。根类型检查、coding-agent 单包构建和 benchmark 独立 strict typecheck 通过；无新测试文件，无本地全量测试。远端按 §2.3 等待自动 Codex 审查及最终 head CI，不仅为补写远端状态重复触发检查。
+
+**历史子代理阶段实施前记录（基线 `769baee88`）：** 子代理前台调用已建立 session-owned task、reservation 和 pending operation，但执行 signal 永久组合父回合 signal，返回值只能等待 operation。`AgentSession.prompt → _tryExecuteExtensionCommand` 已允许流式期间立即执行 `/tasks`，无需新增 UI 轮询。先实现单项调用的显式移交，保留 PID/task ID/原超时/同一调度槽，通过可断开的父回合取消监听器和一次性前台 deferred 解除等待；authority 与 task controller 继续拥有取消权。移交前复核 TUI/RPC、有效内置管理工具、未完成/未取消、工作区写入隔离。并行/chain 不隐式整批移交。
 
 shell 审计链为 final shell authorization → cwd binding → bash execute → local operations → WindowsShellJob/child observation → output/log cleanup → background owner。前台尚无 managed task，cwd authority 固定捕获原 signal，Windows Job 只在后台启动时建立；本轮不假装已有安全移交能力，也不重启命令。替换执行器同样不支持。
 

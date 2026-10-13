@@ -128,7 +128,7 @@ async function fixture(t: test.TestContext, auxiliary?: any, preceding?: any, re
 	const call = (name: string, args: any) => agent.dispatchHostTool({ type: "toolCall", id: `task-${++sequence}`, name, arguments: args });
 	const shutdown = async () => { runner.invalidate(); await runner.emit({ type: "session_shutdown" } as never); agent.abort(); await agent.waitForIdle(); };
 	t.after(async () => { await shutdown(); events.clear(); });
-	return { cwd, session, call, runner, events, active, messages, shutdown, approvals: () => approvals, beforeConsume: (fn: (args: any) => void) => { beforeConsume = fn; } };
+	return { cwd, session, call, runner, events, active, messages, shutdown, agent, approvals: () => approvals, beforeConsume: (fn: (args: any) => void) => { beforeConsume = fn; } };
 }
 
 function text(result: any): string { return result.content.filter((item: any) => item.type === "text").map((item: any) => item.text).join("\n"); }
@@ -162,6 +162,138 @@ for (const shell of ["bash", "powershell"]) test(`${shell} authorized background
 	assert.ok(h.approvals() >= 1);
 });
 
+test("foreground shell ownership preserves cancellation, admission, terminal delivery and current controls", async t => {
+	for (const mode of ["complete", "fail", "transfer", "parent", "permission", "tree", "dispose", "finishing", "controls", "authority"]) {
+		const h = harness(t), parent = new AbortController();
+		let finish!: () => void, control: any, executionSignal!: AbortSignal, releases = 0, updates = 0, stopped = 0, current = true;
+		const gate = new Promise<void>(resolve => { finish = resolve; });
+		const result = h.owner.createForegroundLaunch("bash", "foreground", "fixture", root, h.ctx, () => {
+			if (!current) throw new Error("changed authority");
+		})(async (signal, publish, state) => {
+			executionSignal = signal; control = state; state.stopUpdates = () => { stopped++; };
+			publish({ content: [], details: undefined });
+			await gate; signal.throwIfAborted();
+			if (mode === "fail") throw new Error("foreground failure");
+			return { content: [{ type: "text", text: "original result" }], details: undefined };
+		}, parent.signal, () => { updates++; }, () => { releases++; });
+		// Attach observation before cancellation can reject the foreground promise.
+		const observed = result.then(value => ({ value, error: undefined }), error => ({ value: undefined, error }));
+		const task = [...h.owner.tasks.values()][0];
+		const transfer = () => h.tools.get("tasks").execute("transfer", { action: "background", id: task.id }, undefined, undefined, h.ctx);
+		let boundary: Promise<void> | undefined;
+		if (mode === "transfer") {
+			await transfer();
+			assert.equal((await observed).value!.details!.backgroundTask!.state, "running");
+			assert.equal(control.background, true); assert.equal(stopped, 1);
+			parent.abort(); assert.equal(executionSignal.aborted, false);
+			await assert.rejects(transfer(), /Only a running/);
+		} else if (mode === "parent") parent.abort();
+		else if (mode === "permission") h.events.emit(SESSION_PERMISSION_EVENT, {});
+		else if (mode === "tree") boundary = h.hooks.get("session_before_tree")![0]();
+		else if (mode === "dispose") boundary = h.owner.dispose();
+		else if (mode === "finishing") { control.completing = true; await assert.rejects(transfer(), /finishing/); }
+		else if (mode === "controls") { h.ctx.getActiveTools = () => ["bash"]; await assert.rejects(transfer(), /management tool/); }
+		else if (mode === "authority") { current = false; await assert.rejects(transfer(), /changed authority/); }
+		finish();
+		const completed = await observed;
+		if (boundary) await boundary;
+		else await h.owner.tasks.wait(task.id, 1000);
+		await tick();
+		if (["fail", "parent", "permission", "tree", "dispose"].includes(mode)) assert.ok(completed.error);
+		else if (mode !== "transfer") assert.equal(completed.value!.content[0].type, "text");
+		assert.equal(h.messages.length, mode === "transfer" ? 1 : 0);
+		assert.equal(releases, 1); assert.equal(updates, 1);
+		assert.equal((h.owner as any).foreground.size, 0); assert.equal((h.owner as any).pending.size, 0);
+		assert.equal(h.owner.scheduler.active + h.owner.scheduler.reserved + h.owner.scheduler.queued, 0);
+	}
+	const h = harness(t);
+	let finish!: () => void;
+	const active = h.start(async () => { await new Promise<void>(resolve => { finish = resolve; }); return { content: [], details: undefined }; });
+	const parent = new AbortController();
+	const queued = h.owner.createForegroundLaunch("bash", "queued", "fixture", root, h.ctx, () => {})(
+		async () => assert.fail("cancelled queued foreground must not start"), parent.signal, undefined, () => {});
+	const rejected = assert.rejects(queued);
+	const queuedTask = [...h.owner.tasks.values()].find(task => task.id !== active)!;
+	await assert.rejects(h.tools.get("tasks").execute("transfer", { action: "background", id: queuedTask.id }, undefined, undefined, h.ctx), /queued/);
+	parent.abort(); await rejected; finish(); await h.owner.tasks.wait(active, 1000);
+});
+
+test("real bash and PowerShell foreground handoff keeps PID, stops progress and delivers one bounded terminal result", { timeout: 20_000 }, async t => {
+	for (const name of process.platform === "win32" ? ["bash", "powershell"] : ["bash"]) {
+		const h = await fixture(t);
+		let publications = 0, listing = "";
+		const unsubscribe = h.agent.subscribe(event => { if (event.type === "tool_execution_update") publications++; });
+		t.after(unsubscribe);
+		h.runner.setUIContext({ ...h.runner.getUIContext(), notify: value => { listing = value; } }, "tui");
+		const foreground = h.call(name, { command: "node fixture.mjs handoff", cwd: ".", timeout: 10 });
+		const pid = await started(h.cwd, "handoff");
+		await h.runner.getCommand("tasks")!.handler("", h.runner.createCommandContext());
+		const id = listing.match(/([a-f0-9-]{36}-\d+)[^\n]*foreground shell/)?.[1];
+		assert.ok(id, listing);
+		await h.runner.getCommand("tasks")!.handler("background " + id, h.runner.createCommandContext());
+		const accepted = await foreground; assert.equal(taskId(accepted), id);
+		assert.equal((accepted.details as any).backgroundTask.state, "running");
+		const before = publications;
+		h.agent.abort(); process.kill(pid, 0);
+		writeFileSync(join(h.cwd, "handoff.release"), "release");
+		const status = await h.call("tasks", { action: "wait", id, timeoutMs: 5000 });
+		assert.match(text(status), /completed/); assert.ok(text(status).includes("HANDOFF-PID:" + pid));
+		assert.equal((status.details as any).result.shellExecution.output.cleanup, "removed");
+		assert.equal((status.details as any).result.fullOutputPath, undefined);
+		assert.equal(publications, before);
+		await tick(); assert.equal(h.messages.length, 1); assert.ok(h.messages[0].content.includes(id));
+		assert.throws(() => process.kill(pid, 0), /ESRCH/);
+	}
+});
+
+test("foreground transfer acceptance keeps verification pending until terminal facts", () => {
+	const state = createFalseSuccessState();
+	const input = { command: "npm test", cwd: root, timeout: 60 };
+	observeVerificationStart(state, "call");
+	observeToolResult(state, { toolName: "bash", toolCallId: "call", input, cwd: root, isError: false,
+		details: { backgroundTask: { id: "transferred", state: "running", kind: "shell" } } });
+	assert.equal([...state.obligations.values()][0].category, "pending");
+	observeToolResult(state, { toolName: "bash", toolCallId: "call", input: { ...input, background: true }, cwd: root, isError: false,
+		details: { backgroundTask: { id: "transferred", state: "completed", kind: "shell" }, shellExecution: shellFacts(0) } });
+	assert.equal(state.obligations.size, 0);
+	observeToolResult(state, { toolName: "bash", toolCallId: "call", input, cwd: root, isError: false,
+		details: { backgroundTask: { id: "transferred", state: "running", kind: "shell" } } });
+	assert.equal(state.obligations.size, 0, "late foreground acceptance cannot reopen a completed task");
+});
+
+test("foreground shell eligibility preserves ordinary execution and transfer keeps timeout/cancellation", { timeout: 20_000 }, async t => {
+	for (const [cwd, timeout, mode] of [[undefined, 10, "tui"], [".", undefined, "tui"], [".", 7201, "tui"], [".", 10, "print"], [".", 10, "tui"]] as const) {
+		const h = await fixture(t);
+		h.runner.setUIContext(h.runner.getUIContext(), mode);
+		const result = await h.call("bash", { command: "node fixture.mjs fast", cwd, timeout });
+		assert.equal(result.isError, false, text(result)); assert.match(text(result), /result:fast/);
+		assert.equal((result.details as any).backgroundTask, undefined);
+		const listing = text(await h.call("tasks", { action: "list" }));
+		assert.equal(/ · bash · completed/.test(listing), cwd === "." && timeout === 10 && mode === "tui");
+		assert.equal(h.messages.length, 0);
+	}
+	for (const finish of ["timeout", "cancel", "permission", "tree"]) {
+		const h = await fixture(t);
+		let listing = "";
+		h.runner.setUIContext({ ...h.runner.getUIContext(), notify: value => { listing = value; } }, "tui");
+		const foreground = h.call("bash", { command: "node fixture.mjs hold", cwd: ".", timeout: finish === "timeout" ? 2 : 10 });
+		const pid = await started(h.cwd, "hold");
+		await h.runner.getCommand("tasks")!.handler("", h.runner.createCommandContext());
+		const id = listing.match(/([a-f0-9-]{36}-\d+)[^\n]*foreground shell/)?.[1];
+		assert.ok(id, listing);
+		await h.runner.getCommand("tasks")!.handler("background " + id, h.runner.createCommandContext());
+		assert.equal(taskId(await foreground), id);
+		if (finish === "cancel") await h.call("tasks", { action: "cancel", id });
+		else if (finish === "permission") h.events.emit(SESSION_PERMISSION_EVENT, {});
+		else if (finish === "tree") await h.runner.emit({ type: "session_before_tree" } as never);
+		const status = await h.call("tasks", { action: "wait", id, timeoutMs: 5000 });
+		assert.equal((status.details as any).result.shellExecution.termination, finish === "timeout" ? "timeout" : "cancelled");
+		assert.throws(() => process.kill(pid, 0), /ESRCH/);
+		await tick();
+		assert.equal(h.messages.length, finish === "permission" || finish === "tree" ? 0 : 1);
+	}
+});
+
 test("final authorization binds background flag and rejects auxiliary disagreement", async t => {
 	const h = await fixture(t);
 	h.beforeConsume(args => { args.background = false; });
@@ -191,7 +323,7 @@ test("real extension loading shares shell/subagent controls and keeps the legacy
 	assert.match(text(await h.call("subagent_tasks", { action: "status", id })), /fixture result/);
 	await h.call("tasks", { action: "wait", id: shell, timeoutMs: 5000 });
 	const unsupported = await h.call("tasks", { action: "background", id: shell });
-	assert.equal(unsupported.isError, true); assert.match(text(unsupported), /executor cannot transfer/);
+	assert.equal(unsupported.isError, true); assert.match(text(unsupported), /Only a running foreground shell/);
 	const shellSteer = await h.call("tasks", { action: "steer", id: shell, text: "inspect" });
 	assert.equal(shellSteer.isError, true); assert.match(text(shellSteer), /executor does not support steering/);
 	const guided = await h.call("subagent", { agent: "scout", task: "guidance-gate-integration", scope: "Fixture workspace", deliverable: "Fixture result", stopCondition: "Return when done", readOnly: true, checkpoint: true, background: true });
