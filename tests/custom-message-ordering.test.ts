@@ -224,7 +224,7 @@ test("idle custom-message drain precedes concurrent triggers without losing eith
 	}
 });
 
-test("concurrent idle SDK sends await persistence and observe a failed shared drain", async t => {
+for (const mode of ["context", "trigger", "disposed"]) test(`concurrent idle SDK sends retain reports after a failed shared drain: ${mode}`, async t => {
 	const f = await customMessageSession(async () => {});
 	let entered!: () => void, release!: () => void;
 	const ready = new Promise<void>(resolve => { entered = resolve; });
@@ -235,21 +235,30 @@ test("concurrent idle SDK sends await persistence and observe a failed shared dr
 		await append(message); // Like a failed hook, the consumed entry is still persisted once.
 		if (message.content === "first") { entered(); await gate; throw failure; }
 	});
-	const send = (content: string) => f.session.sendCustomMessage({ customType: "note", content, display: true }, { triggerTurn: false });
+	const send = (content: string, triggerTurn = false) => f.session.sendCustomMessage({ customType: "note", content, display: true }, { triggerTurn, deliverAs: "followUp" });
 	let results: Promise<PromiseSettledResult<void>[]> | undefined;
 	try {
 		const first = send("first"); await ready;
 		let completed = false;
-		const second = send("second").then(() => { completed = true; });
+		const second = send("second", mode !== "context").then(() => { completed = true; });
 		results = Promise.allSettled([first, second]);
 		await Promise.resolve();
 		assert.equal(completed, false, "queue acceptance must not report successful SDK delivery");
+		if (mode === "disposed") f.session.dispose();
 		release();
 		assert.deepEqual(await results, [{ status: "rejected", reason: failure }, { status: "rejected", reason: failure }]);
 		assert.equal(f.session._customMessageFlush, undefined);
+		if (mode === "disposed") {
+			assert.equal(f.session._pendingCustomMessages.length, 0, "a failed waiter must not requeue into a disposed session");
+			assert.equal(f.payloads.length, 0);
+			return;
+		}
 		assert.equal(f.session._pendingCustomMessages.length, 1);
+		assert.equal(f.payloads.length, 0, "failure must not start an automatic model retry");
 		await send("retry drain");
 		assert.deepEqual(f.sessionManager.getEntries().filter((entry: any) => entry.type === "custom_message").map((entry: any) => entry.content), ["first", "second", "retry drain"]);
 		assert.equal(f.session._pendingCustomMessages.length, 0);
+		await f.session.prompt("Continue explicitly");
+		assert.equal(JSON.stringify(f.payloads[0].messages).split("second").length - 1, 1);
 	} finally { release(); await results; f.release(); }
 });
