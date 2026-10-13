@@ -1683,5 +1683,633 @@
         "tests/codemode-runtime.test.ts": "cb04d65dbcb9f58442c8b7d0ba8e30055ae3c26d3db57c7563a4766ca113ac90"
       }
     }
+  },
+  "installedNodePackage": {
+    "date": "2026-10-13",
+    "baselineCommit": "a812bb14f640d7c50d381ffb00f73865a3ed379b",
+    "scope": "Locally packed @super-pi/codemode npm archive installed into an isolated temporary consumer, with the lockfile-pinned quickjs-wasi registry archive. Not a published Super Pi CLI release, Bun executable, or real-model benchmark.",
+    "environment": {
+      "node": "v26.4.0",
+      "platform": "win32",
+      "arch": "x64",
+      "osRelease": "10.0.22631",
+      "cpu": "Intel(R) Core(TM) i7-14700KF",
+      "files": {
+        "scripts/bench/codemode-runtime.ts": "98cf8141755028526cf9351f4ef7367b4b00082a5c81f9313a914fe69cb14a56",
+        "scripts/bench/codemode-worker-pool.ts": "7ab5cf14905c2fff9289e85e025b057cda17c89653cef612e9ab41e999bc4f06"
+      }
+    },
+    "installation": {
+      "base": "a812bb14f640d7c50d381ffb00f73865a3ed379b",
+      "node": "v26.4.0",
+      "packageRoot": "<fixture>\\node_modules\\@super-pi\\codemode",
+      "dependency": "<fixture>\\node_modules\\quickjs-wasi\\dist\\index.js",
+      "wasm": "<fixture>\\node_modules\\quickjs-wasi\\quickjs.wasm",
+      "archive": {
+        "name": "super-pi-codemode-0.84.1.tgz",
+        "sha256": "5dc095ada5c11adb12665b63a090a610318ce0cd7c5db97647d78ac1621feca6",
+        "integrity": "sha512-7ijd+Ry78TFNe0gBmwygBhdxpZTxYBDKF54PGDXjUliEaKv/7bQ7ItZOH6So9Ug8xsB7RfeUR6PG1dDiS8hbcQ=="
+      },
+      "dependencyArchive": {
+        "name": "quickjs-wasi-3.6.2.tgz",
+        "sha256": "f1f4349f19a2d849e33ea0ae9bec2e7062b8839f4eceb17c9051ddbaa2720982",
+        "integrity": "sha512-FCqGtGOrMgzUiIrMNMA2YnsOxCNwo31dzqXvclXUC6xeT35NJLKXQJsvbeCTjvoFAwZgEAPg8U6+KAPDGXn8Mg=="
+      },
+      "files": {
+        "dist/index.js": "c191d498c95af31b80826063016a0a26c83e5612a9fcc54a40108270c1fcb5df",
+        "dist/runtime/host.js": "2459e70d7ba030ade5a1d2f00710a20224c368f2b31b9e6b71c5d79edd26a6d8",
+        "dist/runtime/worker.js": "83162498506f071abdc023bc64d40ce1b554f572f4818982d509f5cebf8f59a2",
+        "dist/runtime/worker-pool.js": "03390fac6d57a2e0cc3d8ea23d799f837fd287f9bd7f03fe7b9e5b3a86bad050",
+        "dist/runtime/protocol.js": "d7ee3164609a7d8a4cdacb87699d764739e6169e16bb42b0554ed09d12097d49",
+        "dist/runtime/prelude-source.js": "688362706c2a2874b9c2030edb5f29810814a30626a75fa7a6f28814c619b746",
+        "dist/wasm.js": "d06b1c066fcbd97615921b154f8b8ae2da28dcfb2c21287f382514b872d3ee22",
+        "dist/bounded-json.js": "af4d6ca6076b8336d3b4777a0c8b2ffa6ebea15214ecf97dde9def8b8b5c1ace",
+        "quickjs-wasi/dist/index.js": "91fcfc11e7f7372f3aee8d4373c0d4f969baac5cd12648663971550054217ae8",
+        "quickjs-wasi/quickjs.wasm": "d4c9375f2b1ca4dc95f72c8aa2982a7a9951ac8011490d79c6582df732b4bbd9"
+      }
+    },
+    "commands": [
+      {
+        "cwd": "repository",
+        "command": "npm.cmd run build --workspace @super-pi/codemode"
+      },
+      {
+        "cwd": "packages/codemode",
+        "command": "npm.cmd pack --ignore-scripts --offline --json --pack-destination <fixture>"
+      },
+      {
+        "cwd": "<fixture>",
+        "command": "npm.cmd pack quickjs-wasi@3.6.2 --ignore-scripts --json --pack-destination <fixture>"
+      },
+      {
+        "cwd": "<fixture>",
+        "command": "npm.cmd install --offline --ignore-scripts --no-audit --no-fund --save-exact ./quickjs-wasi-3.6.2.tgz ./super-pi-codemode-0.84.1.tgz"
+      },
+      {
+        "cwd": "repository",
+        "command": "node --expose-gc --experimental-strip-types scripts/bench/codemode-runtime.ts --package-root <fixture>/node_modules/@super-pi/codemode --pool"
+      },
+      {
+        "cwd": "repository",
+        "command": "node --expose-gc --experimental-strip-types scripts/bench/codemode-runtime.ts --compiled"
+      },
+      {
+        "cwd": "repository",
+        "command": "node --experimental-strip-types --test tests/codemode-runtime.test.ts tests/codemode-worker-recovery.test.ts tests/codemode-hot-paths.test.ts"
+      },
+      {
+        "cwd": "repository",
+        "command": "node node_modules/typescript/bin/tsc --noEmit --strict --skipLibCheck --target ES2023 --module NodeNext --moduleResolution NodeNext --allowImportingTsExtensions --types node scripts/bench/codemode-runtime.ts scripts/bench/codemode-worker-pool.ts"
+      }
+    ],
+    "installNote": "The initial offline dependency lookup returned ENOTCACHED. Fetched only quickjs-wasi@3.6.2, verified its SHA-512 integrity against repository package-lock.json, then installed both archives offline with lifecycle scripts disabled. No global install, npm publish, or repository dependency change.",
+    "provenanceChecks": {
+      "packageIsNotWorkspaceSymlink": true,
+      "dependencyAndWasmResolveUnderFixture": true,
+      "compiledFilesMatchRepositoryBuild": true,
+      "dependencyArchiveMatchesLockIntegrity": true,
+      "publicBareImportSmoke": {
+        "results": [
+          42,
+          "script error",
+          7
+        ],
+        "activeExecutions": 0,
+        "workersStarted": 2,
+        "workersStopped": 2
+      }
+    },
+    "comparison": {
+      "benchmark": "codemode-worker-pool",
+      "runtime": {
+        "mode": "package",
+        "packageVersion": "0.84.1",
+        "entry": "<fixture>\\node_modules\\@super-pi\\codemode\\dist\\index.js",
+        "worker": "<fixture>\\node_modules\\@super-pi\\codemode\\dist\\runtime\\worker.js",
+        "moduleImportMs": 5.223500000000001
+      },
+      "node": "v26.4.0",
+      "platform": "win32",
+      "results": [
+        {
+          "reuseWorker": false,
+          "firstMs": 33.398300000000006,
+          "latency": [
+            33.69640000000001,
+            32.326599999999985,
+            31.67439999999999,
+            32.290099999999995,
+            32.58689999999996,
+            32.05239999999998,
+            32.3956,
+            32.82280000000003,
+            31.976499999999987,
+            31.587499999999977,
+            31.84019999999998,
+            31.77019999999993,
+            31.89269999999999,
+            30.833600000000047,
+            31.709799999999973,
+            31.28989999999999,
+            32.383699999999976,
+            31.615699999999947,
+            31.121700000000033,
+            31.840299999999957,
+            31.830799999999954,
+            31.466800000000035,
+            30.709499999999935,
+            31.84929999999997,
+            31.829600000000028,
+            31.80409999999995,
+            33.53860000000009,
+            30.792699999999968,
+            31.743199999999888,
+            31.850400000000036
+          ],
+          "medianMs": 31.84019999999998,
+          "p95Ms": 33.53860000000009,
+          "cpuUs": [
+            14100,
+            6300,
+            4600,
+            9400,
+            7800,
+            10900,
+            9400,
+            4700,
+            17200,
+            4600,
+            12500,
+            18900,
+            10900,
+            7800,
+            7800,
+            4700,
+            9300,
+            9400,
+            14100,
+            20300,
+            12500,
+            6300,
+            9400,
+            7800,
+            14000,
+            14000,
+            7800,
+            12500,
+            15700,
+            10900
+          ],
+          "cpuP95Us": 18900,
+          "cpuGroupSize": 10,
+          "cpuGroups": 30,
+          "batchMs": 38.10400000000004,
+          "closeMs": 0.010500000000320142,
+          "calls": 100,
+          "idle": {
+            "rss": 90824704,
+            "heapTotal": 18329600,
+            "heapUsed": 10280320,
+            "external": 6171646,
+            "arrayBuffers": 137491
+          },
+          "idleStats": {
+            "activeExecutions": 0,
+            "workersStarted": 332,
+            "workersStopped": 332
+          },
+          "closedStats": {
+            "activeExecutions": 0,
+            "workersStarted": 332,
+            "workersStopped": 332
+          },
+          "leadingSites": [
+            {
+              "name": "stringify file:///<fixture>/node_modules/@super-pi/codemode/dist/bounded-json.js",
+              "bytes": 366960
+            },
+            {
+              "name": "post node:inspector",
+              "bytes": 120544
+            },
+            {
+              "name": "Worker node:internal/worker",
+              "bytes": 82704
+            },
+            {
+              "name": "setOwnProperty node:internal/util",
+              "bytes": 63280
+            },
+            {
+              "name": "handleCall file:///<fixture>/node_modules/@super-pi/codemode/dist/runtime/host.js",
+              "bytes": 62256
+            },
+            {
+              "name": "pushAsyncContext node:internal/async_hooks",
+              "bytes": 54120
+            },
+            {
+              "name": "addEventListener node:internal/event_target",
+              "bytes": 53624
+            },
+            {
+              "name": "Readable.pipe node:internal/streams/readable",
+              "bytes": 49728
+            },
+            {
+              "name": "(V8 API) ",
+              "bytes": 49720
+            },
+            {
+              "name": "setupPortReferencing node:internal/worker/io",
+              "bytes": 45416
+            },
+            {
+              "name": "Map ",
+              "bytes": 41672
+            },
+            {
+              "name": "addEventListener node:internal/event_target",
+              "bytes": 41312
+            }
+          ],
+          "sampledHostBytes": 2211664,
+          "before": {
+            "rss": 76734464,
+            "heapTotal": 12824576,
+            "heapUsed": 9670736,
+            "external": 6171590,
+            "arrayBuffers": 137475
+          },
+          "afterCloseGc": {
+            "rss": 91009024,
+            "heapTotal": 18329600,
+            "heapUsed": 10212632,
+            "external": 6202917,
+            "arrayBuffers": 137491
+          },
+          "trackedReferences": 33,
+          "retainedAfterGc": 0
+        },
+        {
+          "reuseWorker": true,
+          "firstMs": 29.916799999999057,
+          "latency": [
+            4.240400000000591,
+            4.244699999999284,
+            4.235099999999875,
+            4.499499999999898,
+            4.426800000001094,
+            4.810600000000704,
+            4.352699999999459,
+            4.224900000001071,
+            4.263800000000629,
+            4.361800000000585,
+            4.432600000000093,
+            4.21769999999924,
+            4.09900000000016,
+            4.2215999999989435,
+            4.091100000001461,
+            4.710700000001452,
+            4.641999999999825,
+            4.031499999999141,
+            3.92870000000039,
+            4.032400000000052,
+            4.090500000000247,
+            3.975300000000061,
+            4.024699999999939,
+            4.185699999999997,
+            4.641999999999825,
+            4.6159999999999854,
+            4.378700000001118,
+            4.1930000000011205,
+            4.279099999999744,
+            3.916900000000169
+          ],
+          "medianMs": 4.240400000000591,
+          "p95Ms": 4.710700000001452,
+          "cpuUs": [
+            1600,
+            1500,
+            0,
+            3100,
+            4700,
+            1600,
+            0,
+            1600,
+            1500,
+            4700,
+            1600,
+            3100,
+            3100,
+            3100,
+            1600,
+            1600,
+            0,
+            0,
+            1600,
+            0,
+            0,
+            3100,
+            1600,
+            1500,
+            0,
+            3100,
+            0,
+            1600,
+            1600,
+            0
+          ],
+          "cpuP95Us": 4700,
+          "cpuGroupSize": 10,
+          "cpuGroups": 30,
+          "batchMs": 9.255800000000818,
+          "closeMs": 1.5658000000003085,
+          "calls": 100,
+          "idle": {
+            "rss": 102617088,
+            "heapTotal": 18329600,
+            "heapUsed": 10343160,
+            "external": 6202917,
+            "arrayBuffers": 137523
+          },
+          "idleStats": {
+            "activeExecutions": 0,
+            "workersStarted": 6,
+            "workersStopped": 5
+          },
+          "closedStats": {
+            "activeExecutions": 0,
+            "workersStarted": 6,
+            "workersStopped": 6
+          },
+          "leadingSites": [
+            {
+              "name": "stringify file:///<fixture>/node_modules/@super-pi/codemode/dist/bounded-json.js",
+              "bytes": 469656
+            },
+            {
+              "name": "(V8 API) ",
+              "bytes": 66160
+            },
+            {
+              "name": "handleCall file:///<fixture>/node_modules/@super-pi/codemode/dist/runtime/host.js",
+              "bytes": 57960
+            },
+            {
+              "name": "addEventListener node:internal/event_target",
+              "bytes": 57768
+            },
+            {
+              "name": "setOwnProperty node:internal/util",
+              "bytes": 38144
+            },
+            {
+              "name": "setupPortReferencing node:internal/worker/io",
+              "bytes": 33024
+            },
+            {
+              "name": "execute file:///<fixture>/node_modules/@super-pi/codemode/dist/runtime/host.js",
+              "bytes": 29144
+            },
+            {
+              "name": "Map ",
+              "bytes": 24952
+            },
+            {
+              "name": "Map ",
+              "bytes": 20824
+            },
+            {
+              "name": "acquire file:///<fixture>/node_modules/@super-pi/codemode/dist/runtime/worker-pool.js",
+              "bytes": 20680
+            },
+            {
+              "name": "Execution file:///<fixture>/node_modules/@super-pi/codemode/dist/runtime/host.js",
+              "bytes": 20648
+            },
+            {
+              "name": "delete ",
+              "bytes": 16720
+            }
+          ],
+          "sampledHostBytes": 1112568,
+          "before": {
+            "rss": 91009024,
+            "heapTotal": 18329600,
+            "heapUsed": 10214112,
+            "external": 6202917,
+            "arrayBuffers": 137491
+          },
+          "afterCloseGc": {
+            "rss": 91398144,
+            "heapTotal": 18329600,
+            "heapUsed": 10259792,
+            "external": 6202917,
+            "arrayBuffers": 137491
+          },
+          "trackedReferences": 33,
+          "retainedAfterGc": 0
+        }
+      ],
+      "workerLifecycle": {
+        "idleAfterOne": {
+          "diagnostic": true,
+          "created": 1,
+          "disposed": 1,
+          "cleared": 1,
+          "tracked": 8,
+          "retained": 0,
+          "memory": {
+            "rss": 97685504,
+            "heapTotal": 11116544,
+            "heapUsed": 6868296,
+            "external": 3556490,
+            "arrayBuffers": 78163
+          },
+          "peakWasmBytes": 1638400
+        },
+        "idleAfterLargeRuns": {
+          "diagnostic": true,
+          "created": 31,
+          "disposed": 31,
+          "cleared": 31,
+          "tracked": 248,
+          "retained": 0,
+          "memory": {
+            "rss": 97693696,
+            "heapTotal": 11640832,
+            "heapUsed": 7224488,
+            "external": 3556530,
+            "arrayBuffers": 78163
+          },
+          "peakWasmBytes": 10027008,
+          "allocation": {
+            "sampledWorkerBytes": 12541056,
+            "leadingSites": [
+              {
+                "name": "instantiate",
+                "bytes": 8740392
+              },
+              {
+                "name": "createContext",
+                "bytes": 199432
+              },
+              {
+                "name": "QuickJS",
+                "bytes": 180440
+              },
+              {
+                "name": "Immediate",
+                "bytes": 157776
+              },
+              {
+                "name": "internalBinding",
+                "bytes": 138608
+              },
+              {
+                "name": "initAsyncResource",
+                "bytes": 117224
+              },
+              {
+                "name": "",
+                "bytes": 114144
+              },
+              {
+                "name": "(V8 API)",
+                "bytes": 111864
+              }
+            ]
+          }
+        },
+        "closedStats": {
+          "activeExecutions": 0,
+          "workersStarted": 1,
+          "workersStopped": 1
+        },
+        "workersRetainedAfterClose": 0
+      },
+      "workerCpu": [
+        {
+          "reuseWorker": false,
+          "groupSize": 10,
+          "samplesUs": [
+            10700,
+            9000,
+            12200,
+            9200,
+            10600,
+            9100,
+            7600,
+            7600,
+            7600,
+            7600,
+            7600,
+            7500,
+            7500,
+            7500,
+            7500,
+            7500,
+            7500,
+            9000,
+            9000,
+            7500,
+            7500,
+            1500,
+            7700,
+            12200,
+            7500,
+            1500,
+            10600,
+            4500,
+            7700,
+            4500
+          ],
+          "p95Us": 12200,
+          "stats": {
+            "activeExecutions": 0,
+            "workersStarted": 301,
+            "workersStopped": 301
+          }
+        },
+        {
+          "reuseWorker": true,
+          "groupSize": 10,
+          "samplesUs": [
+            0,
+            0,
+            1600,
+            0,
+            0,
+            0,
+            1500,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1500,
+            0,
+            0,
+            3100,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "p95Us": 1600,
+          "stats": {
+            "activeExecutions": 0,
+            "workersStarted": 5,
+            "workersStopped": 5
+          }
+        }
+      ],
+      "gates": {
+        "sampledHostReduction": 0.49695432940989226,
+        "cpuP95Ratio": 0.13114754098360656,
+        "finalHostHeapRatio": 1.0046178105702819
+      },
+      "coverage": "Same-process runtime selected by the benchmark entry, one owner/mode, 30 warm no-ops plus 100x4KiB bridge; host sampling excludes Worker heaps. Process CPU readings are coarse diagnostics only; CPU gate uses separate Worker.cpuUsage groups with a keepalive bootstrap in both modes. Separate diagnostic Worker reads the same runtime's exported worker and samples V8 allocation, WASM linear-memory peak and WeakRefs after fresh VMs; RSS is process-wide and noisy. Post-close heap gate is host only; idle Worker cost reported separately. No real model, full CLI release or OS I/O. Package archive/install provenance must be recorded separately."
+    },
+    "compatibility": {
+      "mode": "compiled",
+      "workersStarted": 32,
+      "workersStopped": 32,
+      "calls": 100,
+      "trackedReferences": 128,
+      "retainedAfterGc": 0,
+      "note": "One legacy compiled-entry run after changing entry selection; latency/allocation not used as another optimization comparison."
+    },
+    "verification": {
+      "existingTestsPassed": 41,
+      "newTestFiles": 0,
+      "localFullSuiteRuns": 0,
+      "build": "codemode only",
+      "strictBenchmarkTypes": "passed",
+      "productionChanges": 0
+    },
+    "limits": [
+      "Single-machine finite fixture; comparisons within this run only, not against older dated samples.",
+      "Priming executes once per mode; firstMs is first script of the measured sandbox after module/WASM warmup, not full process startup.",
+      "Host sampling covers 30 warm scripts and the sequential 100x4KiB bridge. 30x10 additional process-CPU scripts and separate Worker.cpuUsage scripts do not contribute to those allocation bytes.",
+      "Per-tool call JSON, Promise, AbortController and bounded result allocation still exist; no claim of zero allocation or zero copying.",
+      "Worker V8 sampling uses a diagnostic data-URL copy resolved from the selected installed worker. Includes probe overhead, excludes QuickJS internal malloc, and has no fresh-worker allocation comparison.",
+      "Both host modes release 33/33 references; diagnostic worker releases 248/248 VM/instance/memory/data/catalog/store/interrupt/port references across 31 VMs. Active/idle physical workers terminate on close.",
+      "Idle pooled RSS is approximately 11.25 MiB higher in this sample; process-wide RSS is noisy. Existing one-slot, 64-use, 30-second and 64-MiB retirement limits are unchanged.",
+      "Bun 1.4.0 presence was checked, but Bun executable and complete CLI release installation were not evaluated."
+    ],
+    "cleanup": "All benchmark processes completed and Worker/reference-release assertions passed. Recursive removal of the exact task-owned installation directory was rejected by automatic approval policy (blocked by policy). The directory, archives and intermediate results remain at the recorded task path; no alternate deletion or shared temp cleanup was attempted.",
+    "pathNormalization": "The unique temporary root is replaced by <fixture> in evidence paths; URLs use file:///<fixture>."
   }
 }

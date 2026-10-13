@@ -18,7 +18,8 @@ function sampledBytes(node: { selfSize: number; children: typeof node[] }): numb
 	return total;
 }
 
-export async function benchmarkWorkerPool(Sandbox: typeof CodemodeSandbox, loadWasm: typeof loadQuickJSWasm) {
+export async function benchmarkWorkerPool(Sandbox: typeof CodemodeSandbox, loadWasm: typeof loadQuickJSWasm,
+	workerUrl: URL, runtime: { mode: string; entry: string; worker: string; moduleImportMs: number; packageVersion?: string }) {
 	assert.ok(globalThis.gc, "Run with --expose-gc");
 	await loadWasm();
 	const results = [];
@@ -37,7 +38,7 @@ export async function benchmarkWorkerPool(Sandbox: typeof CodemodeSandbox, loadW
 		assert.equal(refs.filter(ref => ref.deref()).length, 0);
 		results.push({ ...report, before, afterCloseGc: after, trackedReferences: refs.length, retainedAfterGc: 0 });
 	}
-	const workerLifecycle = await measureWorkerLifecycle(Sandbox);
+	const workerLifecycle = await measureWorkerLifecycle(Sandbox, workerUrl);
 	const workerCpu = await measureWorkerCpu(Sandbox);
 	const fresh = results[0]!, pooled = results[1]!;
 	const gates = { sampledHostReduction: 1 - pooled.sampledHostBytes / fresh.sampledHostBytes,
@@ -45,9 +46,9 @@ export async function benchmarkWorkerPool(Sandbox: typeof CodemodeSandbox, loadW
 	assert.ok(gates.sampledHostReduction >= .2, JSON.stringify(gates));
 	assert.ok(gates.cpuP95Ratio <= 1.05, JSON.stringify(gates));
 	assert.ok(gates.finalHostHeapRatio <= 1.1, JSON.stringify(gates));
-	process.stdout.write(JSON.stringify({ benchmark: "codemode-worker-pool", node: process.version, platform: process.platform,
+	process.stdout.write(JSON.stringify({ benchmark: "codemode-worker-pool", runtime, node: process.version, platform: process.platform,
 		results, workerLifecycle, workerCpu, gates,
-		coverage: "Same-process compiled runtime, one owner/mode, 30 warm no-ops plus 100x4KiB bridge; host sampling excludes Worker heaps. Process CPU readings are coarse diagnostics only; CPU gate uses separate Worker.cpuUsage groups with a keepalive bootstrap in both modes. Separate diagnostic Worker samples V8 allocation, WASM linear-memory peak and WeakRefs after fresh VMs; RSS is process-wide and noisy. Post-close heap gate is host only; idle Worker cost reported separately. No real model, installed release or OS I/O." }) + "\n");
+		coverage: "Same-process runtime selected by the benchmark entry, one owner/mode, 30 warm no-ops plus 100x4KiB bridge; host sampling excludes Worker heaps. Process CPU readings are coarse diagnostics only; CPU gate uses separate Worker.cpuUsage groups with a keepalive bootstrap in both modes. Separate diagnostic Worker reads the same runtime's exported worker and samples V8 allocation, WASM linear-memory peak and WeakRefs after fresh VMs; RSS is process-wide and noisy. Post-close heap gate is host only; idle Worker cost reported separately. No real model, full CLI release or OS I/O. Package archive/install provenance must be recorded separately." }) + "\n");
 }
 
 /** Worker.cpuUsage isolates actual thread CPU; process accounting can be near-zero on Windows. */
@@ -156,8 +157,7 @@ async function measure(Sandbox: typeof CodemodeSandbox, reuseWorker: boolean) {
 	} finally { session.disconnect(); await sandbox.close(); }
 }
 
-export async function measureWorkerLifecycle(Sandbox: typeof CodemodeSandbox) {
-	const workerUrl = new URL("../../packages/codemode/dist/runtime/worker.js", import.meta.url);
+export async function measureWorkerLifecycle(Sandbox: typeof CodemodeSandbox, workerUrl: URL) {
 	const require = createRequire(workerUrl);
 	let source = readFileSync(workerUrl, "utf8").replace(/from "([^"]+)"/g, (_match, specifier: string) =>
 		`from ${JSON.stringify(specifier.startsWith(".") ? new URL(specifier, workerUrl).href

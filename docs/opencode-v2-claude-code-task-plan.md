@@ -2,7 +2,7 @@
 
 先巩固 Super Pi 已有的后台完成通知与主会话续跑，再改进结果交付、子代理续跑和上下文压缩；Codemode 的工具发现与执行成本独立评估。需要改变会话持久化、远程协议或文件恢复语义的功能单独评估，不将上游实现整体移植进当前运行时。
 
-状态：2026-10-13（Asia/Tokyo）#136–#143 已按用户授权合并。#143 最终提交 `6c240bd92` 的六项 CI 通过、Codex 审查无反馈，合并提交为 `3fdac32d8ba11ad43f47016c5ef0fda32fd04558`。OC01、OC02、OC03 进程内窗口、OC04 单项子代理移交、OC05 已结束任务续跑发现、OC07 客户端重连核查、OC08 只读变更来源、OC10 核查及 OC11 有界 Worker 池已完成；OC09 本轮决定沿用显式检查点续跑、延期自动执行恢复。OC04 shell/批次移交、OC06 真实模型效果、OC08 跨任务归属/回退及 OC11 安装发布包/Bun 与真实负载仍待后续。继续沿用 §2.3 的 PR/审查流程。
+状态：2026-10-13（Asia/Tokyo）#136–#144 已按用户授权合并。#144 最终提交 `7fb27fa5f` 的六项 CI 通过、Codex 自动审查无反馈，合并提交为 `a812bb14f640d7c50d381ffb00f73865a3ed379b`。OC01、OC02、OC03 进程内窗口、OC04 单项子代理移交、OC05 已结束任务续跑发现、OC07 客户端重连核查、OC08 只读变更来源、OC10 核查及 OC11 有界 Worker 池已完成；OC09 沿用显式检查点续跑、延期自动执行恢复。本轮追加 OC11 Node 本地打包安装后的库级验证。OC04 shell/批次移交、OC05 运行中纠偏、OC06 真实模型效果、OC08 跨任务归属/回退及 OC11 完整 CLI 发布包/Bun 与真实负载仍待后续。继续沿用 §2.3 的 PR/审查流程。
 
 ## 1 对照基线与结论边界
 
@@ -261,11 +261,39 @@ node --experimental-strip-types --test --test-name-pattern='real completed check
 - [x] 基线定位线程启动/模块加载成本后，按用户明确要求实现单槽 Worker 池，复用线程和模块，保持每脚本独立 VM。相同 30 个短脚本与 100 次工具批处理分别测量，未绕过权限、guard 或模型读取证据；真实模型/I/O 收益仍不外推。
 - [x] 完成脚本/Worker/host/controller/nested dispatch/guard/结果约束与收据/VM/展示释放的源码审计，实测启动 JSON 与参数/结果消息的字符和 UTF-8 字节。区分消息载荷计数与内部复制/总堆分配；未证明产品层重复验证可以安全删除，保留现有边界。后续优化仍需对应分配证据。
 - [x] 保留脚本级取消、VM 内存/输出/bridge/调用上限、可信读最多 4 并发、修改串行、工具当前授权和副作用状态。复用 runtime/session 用例核验未 await、忽略取消的宿主调用、迟到结果、目录/状态恢复；Worker 停止仍不等于任意宿主 JavaScript 已停止。
-- [x] 按用户后续授权加入有界 Worker 资源复用，保留 QuickJS；独立端口隔离执行，VM dispose 后才归还，错误/取消/过大内存淘汰，空闲和使用次数有界。宿主 allocation、Worker 内部采样/VM 引用释放及相同负载收益见 §5；安装发布包、Bun 与真实模型负载仍待测。
+- [x] 按用户后续授权加入有界 Worker 资源复用，保留 QuickJS；独立端口隔离执行，VM dispose 后才归还，错误/取消/过大内存淘汰，空闲和使用次数有界。宿主 allocation、Worker 内部采样/VM 引用释放及相同负载收益见 §5；完整 CLI 发布包、Bun 与真实模型负载仍待测。
+- [x] Node 本地打包安装核查：按 Codemode 的 files/exports 打包，在独立目录安装后从公共入口与同一 Worker/依赖/WASM 测量。池对照通过原有门禁，未发现需修改生产实现的安装问题；这是当前源码的库级 npm 包，不是已发布完整 CLI，见 §5 后续记录。
 
 **性能与最小验证：** 强制执行 §2。复用 [codemode-runtime](../tests/codemode-runtime.test.ts)、[worker-recovery](../tests/codemode-worker-recovery.test.ts)、[codemode-guardrails](../tests/codemode-guardrails.test.ts) 中实际受影响者；运行对应 [hot-path invariants](../tests/codemode-hot-paths.test.ts) 和 [runtime benchmark](../scripts/bench/codemode-runtime.ts)，涉及策略/展示时才扩大到已有 dispatch/session/tree 基准。提供每脚本 Worker/VM 次数、每调用复制与序列化字节、并发/队列峰值、allocation 和 GC/引用释放证据；若改到 Worker 内部分配，宿主 inspector 样本不够，须补该线程/VM 的相应证据。§6 是诊断基线，不是未来优化的验收结果。
 
+**安装包核查实施前记录（2026-10-13，基线 `a812bb14f`，#144 已合并）：** 现有成本数据来自仓库 dist；本轮验证按当前 `files`/exports 打出的 Codemode npm 包安装到独立目录后，Worker、依赖和 WASM 是否从该安装解析，单槽池是否仍满足已有计数/分配/释放门禁。复用现有 runtime benchmark 及 Worker pool helper，新增显式安装包入口，诊断 Worker 也必须读取同一安装文件，避免主线程测安装包而 Worker 探针仍读仓库 dist。仅按需构建 codemode、打包并在本任务独占临时目录离线安装，不发布 npm 包或改全局安装；记录包和运行文件指纹，最终按创建的准确身份清理。
+
+审计链为安装包 exports → host/defaultWorkerUrl → WASM resolver/cache → WorkerPool.acquire → 独立 MessageChannel → Worker/QuickJS/prelude → 工具 bridge/BoundedJson → VM dispose → pool release/retire → host close。产品 controller/nested dispatch 的权限、结果收据和 UI 链保持原有实现；此库级 fixture 不代表完整 CLI、Bun 打包或真实模型/I/O。生产代码和热路径预计不变；新增解析、指纹、采样及 WeakRef 只在按需 benchmark 生命周期，仍保持单槽/无等待队列、每脚本新 VM、相同短脚本和批次负载。已有 Node 环境可测，Bun 1.4.0 已安装但没有据此视为已验证其可执行文件。先复用既有 runtime/worker-recovery/hot-path 用例、基准独立 strict 类型检查和一次安装包池对照；不新增测试文件、不跑本地全量，只有复现产品缺口才扩大修复与性能范围。
+
 ## 5 完成与证据记录
+
+### OC11 后续：Node 本地打包安装核查
+
+基线 `a812bb14f`，#144 已合并。Codemode 单包构建后，用 `npm pack --ignore-scripts --offline` 生成 74278 字节的 `@super-pi/codemode@0.84.1` 包，在独占临时 consumer 安装；没有发布包或改全局环境。初次离线安装因 QuickJS 缓存缺失失败，随后仅下载锁定的 `quickjs-wasi@3.6.2` tarball，校验 SHA-512 与仓库 lockfile 一致，再对两个本地归档离线安装。Codemode 归档 SHA-256 为 `5dc095ada5c11adb12665b63a090a610318ce0cd7c5db97647d78ac1621feca6`。安装不是 workspace 链接，Worker、QuickJS 与 WASM 都在同一临时安装树；关键运行文件与本次 dist 的哈希一致。
+
+现有 `scripts/bench/codemode-runtime.ts` 增加 `--package-root <安装目录>/node_modules/@super-pi/codemode`，按 manifest 的公开 import 入口加载，输出实际入口、Worker 路径、版本及加载耗时。`--pool` 的 Worker/VM 诊断显式接收同一 worker URL，不能回落到仓库 dist。`--compiled` 和默认源码入口保留；安装包暂不支持 `--stages`，不混用现有仓库分段探针。基准之外用真实 bare import 验证公共导出，依次成功、失败、显式再执行后 2/2 Worker 关闭、活动执行为 0。
+
+Windows / Node v26.4.0 的一次同进程池对照复用原 fixture：每种模式先预热，再记录 30 个短脚本及 100×4KiB 顺序工具批次。宿主分配只采样这两段，额外的 CPU 分组不混入；CPU p95 使用两组相同 keepalive 探针的 Worker.cpuUsage，每组 30×10 次。以下仅比较本次两种模式，不与旧日期样本混算。
+
+| 指标 | 每次新 Worker | 单槽复用 |
+| --- | ---: | ---: |
+| warm 中位数 / p95 | 31.84 / 33.54 ms | 4.24 / 4.71 ms |
+| 100 次工具批处理 | 38.10 ms | 9.26 ms |
+| 宿主采样分配 | 2211664 B | 1112568 B（-49.7%） |
+| Worker CPU 批次均摊 p95 | 12.2 ms/脚本 | 1.6 ms/脚本 |
+| 关闭并 GC 后宿主 heapUsed | 10212632 B | 10259792 B（+0.46%） |
+| 宿主对照 Worker 启动/关闭 | 332/332 | 6/6 |
+
+两组宿主各 33 个跟踪引用最终保留 0；单独 CPU 探针为 301/301 与 5/5 Worker。安装后的 Worker 诊断创建/释放 31 个 VM，248 个 VM/实例/内存/data/catalog/store/interrupt/port 引用保留 0，close 后物理 Worker 引用为 0；WASM 线性内存峰值 10027008 B，Worker V8 采样 12541056 B、主要在 instantiate。该诊断包含探针开销，不代表 QuickJS 内部 malloc 总量或相对新线程的 Worker 分配改善。空闲池的进程 RSS 本次约多 11.25 MiB，数值有噪声，既有单槽、64 次、30 秒、64 MiB 淘汰约束不变。模块/WASM 已预热，不能把 warm 或新 sandbox 首次执行耗时写成 CLI 冷启动成本。
+
+本轮仅修改两个按需基准文件和已有文档/证据；生产 Worker/VM、每工具 JSON/Promise/AbortController 和有界结果处理、controller 的授权/收据及 UI 路径没有变化，不声称整链零分配、零复制或真实模型提速。完整原始样本、命令、安装/依赖/基准指纹见 [OC11 证据](performance/oc11-runtime-costs.json) 的 `installedNodePackage`；原有历史证据保留。
+
+最小验证：既有 runtime/worker-recovery/hot-path 共 41 项通过，codemode 单包构建和两个基准的独立 strict 类型检查通过。入口选择发生改变，因此另跑一次原 `--compiled` 入口确认 32/32 Worker、100 次调用、128 引用最终保留 0，不作为新一轮优化对照。没有新测试文件，没有本地全量、完整 TUI 或重复池采样。基准进程均已结束；按创建身份递归清理临时安装目录时被自动审批策略拒绝（blocked by policy），目录及归档保留，交付中提供准确位置。完整 CLI 发布安装、Bun 可执行文件及真实模型/I/O 仍待各自的有限验收；Bun 1.4.0 在场不算其运行模式已验证。最终 head 的 CI/Codex 结果记入 PR。
 
 ### 第七阶段：OC08 变更历史定位
 
