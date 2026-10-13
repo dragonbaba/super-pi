@@ -7,6 +7,8 @@ import test from "node:test";
 import { appendCheckpointTurn, assertCheckpointJson, decodeCheckpoint, encodeCheckpoint, type TaskCheckpoint } from "../packages/extensions/subagent/checkpoints.ts";
 import { SubagentTasks } from "../packages/extensions/subagent/tasks.ts";
 import { taskHistoryPath } from "../packages/extensions/task-history.ts";
+import { registerManagedTasks } from "../packages/extensions/managed-tasks.ts";
+import { createEventBus } from "../packages/coding-agent/src/core/event-bus.ts";
 
 const assistant: any = { role: "assistant", api: "test", provider: "test", model: "test", timestamp: 1, stopReason: "toolUse", content: [
 	{ type: "thinking", thinking: "private reasoning" }, { type: "toolCall", id: "c1", name: "read", arguments: { path: "file" }, backendSecret: "not-context" }], backendAuth: "not-context" };
@@ -32,7 +34,7 @@ test("context bounds are checked before serialization and unsupported data is no
 	assert.throws(() => appendCheckpointTurn(c, assistant, [result]), /128 messages/);
 	assert.throws(() => appendCheckpointTurn(checkpoint(), { ...assistant, content: [{ type: "image", data: "x" }] }, []), /unsupported content/);
 });
-test("checkpoint migrates v1 storage, survives interrupted recovery, and leaves original identity terminal", t => {
+test("checkpoint migrates v1 storage, survives interrupted recovery, and leaves original identity terminal", async t => {
 	const cwd = realpathSync(mkdtempSync(join(tmpdir(), "sp-checkpoint-")));
 	const session = { file: join(cwd, "session.jsonl"), id: "checkpoint", cwd };
 	const owners: SubagentTasks[] = [];
@@ -47,6 +49,17 @@ test("checkpoint migrates v1 storage, survives interrupted recovery, and leaves 
 	const identity = statSync(cwd, { bigint: true });
 	const c = { ...checkpoint(), id: fresh.id, cwd, device: String(identity.dev), inode: String(identity.ino) };
 	appendCheckpointTurn(c, assistant, [result]); current.saveCheckpoint(c);
+	const tools = new Map<string, any>();
+	const events = createEventBus();
+	const registration = registerManagedTasks({ events, registerTool: (tool: any) => tools.set(tool.name, tool), registerCommand() {}, on() {} } as any,
+		"subagent", { tasks: current, list: () => "fixture", guidance: "fixture" });
+	try {
+		const status = await tools.get("tasks").execute("status", { action: "status", id: fresh.id });
+		assert.equal(status.details.task.checkpointAvailable, true);
+		assert.match(status.content[0].text, /still active.*Wait for it to end or explicitly cancel/);
+		assert.doesNotMatch(status.content[0].text, /Checkpoint available/);
+		assert.throws(() => current.readCheckpoint(fresh.id), /Stop the original task/);
+	} finally { registration.unregister(); events.clear(); }
 	c.pending = true; current.saveCheckpoint(c); current.dispose();
 	const restored = new SubagentTasks(2); owners.push(restored); restored.configureHistory(session, "subagent");
 	assert.equal(restored.get(fresh.id).state, "interrupted"); assert.equal(restored.get(fresh.id).checkpointAvailable, true);

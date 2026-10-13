@@ -1,0 +1,286 @@
+{
+  "schemaVersion": 1,
+  "task": "OC05 terminal checkpoint discovery",
+  "baseCommit": "1f5e8c6ac6348f37027e6e0b89ff70dec8e7bd1e",
+  "branch": "codex/oc05-checkpoint-discovery",
+  "date": "2026-10-13T03:00:01.932Z",
+  "identity": "files identify the measured working tree; baseCommit is the pre-change baseline. No claim of a clean-tree benchmark at HEAD.",
+  "scope": "Explicit list/status queries and one terminal notification per batch. Existing boolean metadata only; no checkpoint decode, storage write, child progress, model admission, authorization or scheduling change. Full chain audited from bounded task records through controls/notification into session delivery and cleanup. No pool introduced.",
+  "checks": [
+    "subagent-management/task-checkpoints/subagent-hot-paths/task-history-hot-paths: 37 pass, 1 POSIX skip after correcting a Windows short-path test expectation and rerunning only that case",
+    "background-shell-tasks/task-history: 36 pass, 1 POSIX skip",
+    "npm run check: pass",
+    "git diff --check: pass"
+  ],
+  "limits": {
+    "notificationUtf16Chars": 8192,
+    "notificationUtf8Bytes": 24576,
+    "maxShownTasks": 8,
+    "excerptUtf16Chars": 512,
+    "checkpointBytes": 1048576,
+    "checkpointMessages": 128,
+    "retainedTaskResults": 64,
+    "hardCeilingRetainedTaskResults": 256
+  },
+  "allocationContract": "Status/terminal formatting adds fixed strings/boolean fields at explicit control and lifecycle boundaries. The existing bounded result wrapper/array allocations remain; no per-delta Promise, callback, controller, wrapper, copied transcript or persistence introduced. Baseline/candidate below profile the unchanged stdout ingestion lane to detect regression, not status formatting allocation. Named low-frequency functions: formatManagedTask, formatTaskCheckpoint, formatTaskCompletion and registered control execute/command handlers. Query templates are bounded by existing record limits. Single samples do not establish speedup, statistical memory improvement or whole-application leakage.",
+  "baseline": {
+    "baseline": "1f5e8c6ac6348f37027e6e0b89ff70dec8e7bd1e",
+    "node": "v26.4.0",
+    "platform": "win32",
+    "command": "node --expose-gc --experimental-strip-types scripts/bench/subagent-management.ts",
+    "profiles": [
+      {
+        "children": 8,
+        "updates": 1000,
+        "elapsedMs": 4.393500000000017,
+        "sampledBytes": 8889872,
+        "sampledBytesPerUpdate": 8889.872,
+        "snapshots": 0,
+        "fullMessageSerializations": 0,
+        "retainedMessages": 24,
+        "topSites": [
+          {
+            "function": "processLine",
+            "bytes": 4393648
+          },
+          {
+            "function": "onStdoutData",
+            "bytes": 3020520
+          },
+          {
+            "function": "write",
+            "bytes": 1450920
+          },
+          {
+            "function": "post",
+            "bytes": 12432
+          },
+          {
+            "function": "slice",
+            "bytes": 12352
+          }
+        ]
+      },
+      {
+        "children": 16,
+        "updates": 1000,
+        "elapsedMs": 4.2047999999999774,
+        "sampledBytes": 8848960,
+        "sampledBytesPerUpdate": 8848.96,
+        "snapshots": 0,
+        "fullMessageSerializations": 0,
+        "retainedMessages": 48,
+        "topSites": [
+          {
+            "function": "processLine",
+            "bytes": 4475624
+          },
+          {
+            "function": "onStdoutData",
+            "bytes": 4373336
+          }
+        ]
+      },
+      {
+        "children": 64,
+        "updates": 1000,
+        "elapsedMs": 4.241499999999974,
+        "sampledBytes": 8442272,
+        "sampledBytesPerUpdate": 8442.272,
+        "snapshots": 0,
+        "fullMessageSerializations": 0,
+        "retainedMessages": 192,
+        "topSites": [
+          {
+            "function": "processLine",
+            "bytes": 4279480
+          },
+          {
+            "function": "onStdoutData",
+            "bytes": 4158664
+          },
+          {
+            "function": "wrappedFn",
+            "bytes": 4128
+          }
+        ]
+      }
+    ],
+    "cleanup": [
+      {
+        "mode": "complete",
+        "highWaterMark": 16,
+        "queueHighWaterMark": 48,
+        "retainedAfterDispose": 0,
+        "notificationChars": 5691
+      },
+      {
+        "mode": "failure",
+        "highWaterMark": 16,
+        "queueHighWaterMark": 48,
+        "retainedAfterDispose": 0,
+        "notificationChars": 1610
+      },
+      {
+        "mode": "cancel",
+        "highWaterMark": 16,
+        "queueHighWaterMark": 48,
+        "retainedAfterDispose": 0,
+        "notificationChars": 5689
+      },
+      {
+        "mode": "dispose",
+        "highWaterMark": 16,
+        "queueHighWaterMark": 48,
+        "retainedAfterDispose": 0,
+        "notificationChars": 5690
+      }
+    ],
+    "weakReferences": {
+      "total": 344,
+      "liveResults": 0,
+      "liveTasks": 0
+    }
+  },
+  "candidate": {
+    "baseline": "working-tree",
+    "node": "v26.4.0",
+    "platform": "win32",
+    "coverage": "Production stdout/parse/retention methods; simulated baseline observer snapshot. Downstream TUI is covered separately by tui-tool-leaf-allocations.",
+    "profiles": [
+      {
+        "children": 8,
+        "updates": 1000,
+        "elapsedMs": 5.146100000000047,
+        "sampledBytes": 8705400,
+        "sampledBytesPerUpdate": 8705.4,
+        "snapshots": 0,
+        "fullMessageSerializations": 0,
+        "retainedMessages": 24,
+        "topSites": [
+          {
+            "function": "processLine",
+            "bytes": 4401320
+          },
+          {
+            "function": "onStdoutData",
+            "bytes": 2768336
+          },
+          {
+            "function": "write",
+            "bytes": 1506560
+          },
+          {
+            "function": "slice",
+            "bytes": 16448
+          },
+          {
+            "function": "post",
+            "bytes": 4448
+          }
+        ]
+      },
+      {
+        "children": 16,
+        "updates": 1000,
+        "elapsedMs": 4.686800000000062,
+        "sampledBytes": 8798152,
+        "sampledBytesPerUpdate": 8798.152,
+        "snapshots": 0,
+        "fullMessageSerializations": 0,
+        "retainedMessages": 48,
+        "topSites": [
+          {
+            "function": "processLine",
+            "bytes": 4442456
+          },
+          {
+            "function": "onStdoutData",
+            "bytes": 4355696
+          }
+        ]
+      },
+      {
+        "children": 64,
+        "updates": 1000,
+        "elapsedMs": 4.918500000000108,
+        "sampledBytes": 8441296,
+        "sampledBytesPerUpdate": 8441.296,
+        "snapshots": 0,
+        "fullMessageSerializations": 0,
+        "retainedMessages": 192,
+        "topSites": [
+          {
+            "function": "onStdoutData",
+            "bytes": 4223352
+          },
+          {
+            "function": "processLine",
+            "bytes": 4217944
+          }
+        ]
+      }
+    ],
+    "cleanup": [
+      {
+        "mode": "complete",
+        "highWaterMark": 16,
+        "queueHighWaterMark": 48,
+        "retainedAfterDispose": 0,
+        "notificationChars": 5691
+      },
+      {
+        "mode": "failure",
+        "highWaterMark": 16,
+        "queueHighWaterMark": 48,
+        "retainedAfterDispose": 0,
+        "notificationChars": 1610
+      },
+      {
+        "mode": "cancel",
+        "highWaterMark": 16,
+        "queueHighWaterMark": 48,
+        "retainedAfterDispose": 0,
+        "notificationChars": 5689
+      },
+      {
+        "mode": "dispose",
+        "highWaterMark": 16,
+        "queueHighWaterMark": 48,
+        "retainedAfterDispose": 0,
+        "notificationChars": 5690
+      }
+    ],
+    "weakReferences": {
+      "total": 344,
+      "liveResults": 0,
+      "liveTasks": 0
+    }
+  },
+  "files": [
+    {
+      "path": "packages/extensions/managed-tasks.ts",
+      "sha256": "23d236da931d4867f5b87a203675bdba8aeda104da353f4b8f9caf0887ac29de"
+    },
+    {
+      "path": "packages/extensions/subagent/index.ts",
+      "sha256": "5c859340ffbafe631ad538d4b5ca99e6e9183b88f5ec019244555d6790c9c60f"
+    },
+    {
+      "path": "packages/extensions/subagent/tasks.ts",
+      "sha256": "1c5ed74d008079e2084691a4ad09a02a68f08d65121936b70627a79e9f7dc8bf"
+    },
+    {
+      "path": "packages/extensions/subagent/checkpoints.ts",
+      "sha256": "a3a4e3b6392610f109107edcb3ce779300cd3cd230a0aefd5276c6e70ecc3c86"
+    },
+    {
+      "path": "packages/extensions/task-history.ts",
+      "sha256": "50028e917270fb70c01a661683e61cba21bd879c53267a6dc63e5f44183f309e"
+    },
+    {
+      "path": "scripts/bench/subagent-management.ts",
+      "sha256": "234f81c62571789add847ac428b24001729e612a52985b655a66884e8899ef7d"
+    }
+  ]
+}

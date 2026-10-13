@@ -318,10 +318,29 @@ test("capacity handoff reaches foreground/background results and stops dependent
 test("real completed checkpoint continues under a fresh ID and current authorization; memory sessions refuse storage", async t => {
 	const memory = harness(t);
 	await assert.rejects(memory.run({ agent: "scout", task: "persist", checkpoint: true }), /persistent parent session/);
+	const ordinary = await memory.run({ agent: "scout", task: "ordinary", background: true, readOnly: true });
+	await memory.notified();
+	const withoutCheckpoint = await memory.tools.get("tasks").execute("status", { action: "status", id: ids(ordinary)[0] });
+	assert.equal(withoutCheckpoint.details.task.checkpointAvailable, false);
+	assert.match(withoutCheckpoint.content[0].text, /No completed checkpoint.*fresh bounded subagent task/);
+	assert.doesNotMatch(memory.messages[0].content, /Checkpoint available|resumeTaskId/);
 	const h = harness(t, { persistent: true });
 	const first = await h.run({ agent: "scout", task: "original", checkpoint: true, background: true, readOnly: true });
 	const id = ids(first)[0]; await h.notified();
 	assert.match(await h.control("status", id), /Checkpoint available/);
+	assert.match(await h.control("list"), /checkpoint saved/);
+	assert.match(h.messages[0].content, /Checkpoint available:.*resumeTaskId.*scope\/deliverable\/stopCondition/);
+	for (const name of ["tasks", "subagent_tasks"]) {
+		const status = await h.tools.get(name).execute("status", { action: "status", id });
+		assert.equal(status.details.task.checkpointAvailable, true);
+		assert.equal(status.details.task.agent, "scout");
+		assert.equal(realpathSync.native(status.details.task.cwd), realpathSync.native(h.ctx.cwd));
+		assert.match(status.content[0].text, /new task ID.*near-capacity checkpoints/);
+	}
+	await h.commands.get("tasks").handler(`status ${id}`, h.ctx);
+	assert.match(h.notices.at(-1)!.text, /Checkpoint available/);
+	const otherParent = harness(t, { persistent: true });
+	await assert.rejects(otherParent.run({ agent: "scout", task: "resume", cwd: h.ctx.cwd, resumeTaskId: id, readOnly: true }), /Unknown or expired/);
 	await assert.rejects(h.run({ agent: "worker", task: "resume", resumeTaskId: id, readOnly: true }), /role\/workspace identity/);
 	const ungranted = { agent: "scout", task: "resume", resumeTaskId: id, ...responsibility };
 	await assert.rejects(h.tools.get("subagent").execute("no-grant", ungranted, undefined, undefined, h.ctx), /delegat|authoriz|permission/i);
@@ -415,7 +434,7 @@ test("terminal reports bound serialized control/Unicode excerpts without reading
 	for (const output of ["\u0000".repeat(12000), "结果😀".repeat(3000)]) {
 		let resultReads = 0;
 		const tasks = Array.from({ length: 256 }, (_, i) => ({ id: `task-${i}`, agent: "scout",
-			state: "completed" as const, createdAt: 1, branchId: "branch",
+			state: "completed" as const, createdAt: 1, completedAt: 2, checkpointAvailable: true, branchId: "branch",
 			get result() { resultReads++; return output; } }));
 		const report = formatTaskCompletion("subagent", tasks, "call");
 		assert.ok(report.length <= TASK_COMPLETION_CHARS);

@@ -1,4 +1,4 @@
-import { registerManagedTasks, configureTaskHistory, formatManagedTask, formatTaskCompletion } from "../managed-tasks.ts";
+import { registerManagedTasks, configureTaskHistory, formatManagedTask, formatTaskCompletion, formatTaskCheckpoint } from "../managed-tasks.ts";
 /**
  * Subagent Tool - Delegate tasks to specialized agents
  *
@@ -1428,8 +1428,9 @@ export default function (pi: ExtensionAPI) {
 			if (!params.id) throw new Error("A subagent task ID is required.");
 			const task = params.action === "cancel" ? tasks.cancel(params.id)
 				: params.action === "wait" ? await tasks.wait(params.id, params.timeoutMs ?? 10_000, signal) : tasks.get(params.id);
-			return { content: [{ type: "text", text: `${taskStatus(task)}${task.checkpointAvailable ? "\nCheckpoint available: use subagent single mode with resumeTaskId, the same agent/cwd and a fresh task instruction." : ""}${task.cwd ? `\nWorkspace: ${task.cwd}; branch: ${task.branchId ?? "root"}` : ""}${task.result === undefined ? "" : `\n\n${task.result}`}${tasks.historyError ? `\n\n${tasks.historyStatus}` : ""}` }],
-				details: { task: { id: task.id, state: task.state, historical: task.recovered === true }, historyError: tasks.historyError } };
+			return { content: [{ type: "text", text: `${taskStatus(task)}${formatTaskCheckpoint(task)}${task.cwd ? `\nWorkspace: ${task.cwd}; branch: ${task.branchId ?? "root"}` : ""}${task.result === undefined ? "" : `\n\n${task.result}`}${tasks.historyError ? `\n\n${tasks.historyStatus}` : ""}` }],
+				details: { task: { id: task.id, agent: task.agent, state: task.state, historical: task.recovered === true, cwd: task.cwd, branchId: task.branchId,
+					checkpointAvailable: task.checkpointAvailable === true }, historyError: tasks.historyError } };
 		},
 	});
 
