@@ -2,7 +2,7 @@
 
 先巩固 Super Pi 已有的后台完成通知与主会话续跑，再改进结果交付、子代理续跑和上下文压缩；Codemode 的工具发现与执行成本独立评估。需要改变会话持久化、远程协议或文件恢复语义的功能单独评估，不将上游实现整体移植进当前运行时。
 
-状态：2026-10-13（Asia/Tokyo）第一批 PR #136 已按用户授权合并，合并提交 `1f5e8c6ac6348f37027e6e0b89ff70dec8e7bd1e`，最终六个 CI 分片通过、Codex 复审无新增意见。OC01、OC02 已实现；OC06 提示策略已实现，真实模型效果待评估；OC11 已取得本地编译产物基线，内部阶段拆分和后续优化未开展。第二批选择 OC05 已结束子代理续跑发现与 OC10 工具发现/目录更新核查，按独立问题分别交付；跨重启自动恢复、运行中定向消息不在本批范围。用户已授权继续实施并按 §2.3 处理 PR 审查；后续 PR 的合并仍需另行授权。
+状态：2026-10-13（Asia/Tokyo）第一批 #136、第二批 #137 / #138 已按用户授权依次合并。第二批最终提交的六项 CI 均通过，#137 自动审查通过，#138 两条反馈修复后手动复审确认无重大问题。当前基线为 #138 合并提交 `614218b0312de486728c5b6f1358884d890cb31d`（此前 #137 合并为 `2c673513c27bd2a73d66bcd76b66a9d121c51775`）。OC01、OC02、OC05 已结束任务续跑发现与 OC10 核查已完成；OC06 真实模型效果、OC11 内部成本拆分仍待后续。下一轮优先 OC03 的进程内通知失败边界，保留默认不跨重启重发、不自动执行。用户已授权继续实施并沿用 §2.3 的 PR/审查流程；新 PR 的合并仍需另行授权。
 
 ## 1 对照基线与结论边界
 
@@ -116,10 +116,10 @@ Claude Code 官方确认后台报告通过后续回合的自动通知到达，�
 
 入口：[task-history](../packages/extensions/task-history.ts)、[任务所有者](../packages/extensions/subagent/tasks.ts)、[session-manager](../packages/coding-agent/src/core/session-manager.ts)。现有约定见 [任务历史方案](task-history-persistence-plan.md)；参考 [O2]、[O4]。
 
-- [ ] 先确定需要解决的故障窗口：终态已保存而通知未接纳、已接纳而确认未保存、已进入模型上下文后进程退出。分开定义“结果已保存”“通知已接纳”“模型已看到”“结果已处理”，不以一个 sent 标记宣称端到端 exactly-once。
+- [x] 确定终态保存、通知接纳、进入模型上下文与处理确认的不同故障窗口，见 §5 第三轮。修复 idle trigger 等待既有 drain 失败后丢失未消费报告的问题；不宣称端到端 exactly-once。
 - [ ] 如采用持久通知，优先复用现有有界历史/会话存储，设计稳定通知 ID、schema 迁移、接纳去重与确认边界。只保存足够恢复通知的有限字段，规定磁盘失败、容量满、任务历史淘汰及孤立引用策略。
-- [ ] 明确恢复策略：现有默认不重发历史通知、不自动运行；新策略若采用，须显式定义启用范围、用户暂停的保留、分支/权限代次校验和不再有效通知的处理。不恢复旧权限，不重放 shell 或工具副作用，不因投递结果就自动认可历史验证成功。
-- [ ] 无跨重启通知需求时，可只关闭已证实的进程内交付窗口并记录结论；不要因此重建全部事件存储或提前实现 OC09。
+- [x] 保留现有默认不重发历史通知、不自动运行的恢复策略。新策略若采用，仍须另行定义启用范围、暂停保留、分支/权限代次和过期处理，不恢复旧权限、重放副作用或自动认可历史验证成功。
+- [x] 本轮仅关闭已证实的进程内交付窗口。持久通知仍为上项条件候选，不新增 outbox/schema/确认标记，不提前实现 OC09。
 
 **性能与最小验证：** 强制执行 §2。复用 [task-history](../tests/task-history.test.ts) 及其已有退出 writer fixture、[task-history-hot-paths](../tests/task-history-hot-paths.test.ts)；仅在各持久边界注入必要失败。复用 [task-history benchmark](../scripts/bench/task-history.ts)，记录生命周期写入数、通知条目/字节上限、打开句柄和释放计数；逐 chunk/progress/frame 新增写入必须为零。投递语义变更追加 OC01 的相关用例，不重跑不受影响的完整渲染基准。
 
@@ -210,6 +210,32 @@ Claude Code 官方确认后台报告通过后续回合的自动通知到达，�
 **性能与最小验证：** 强制执行 §2。复用 [codemode-runtime](../tests/codemode-runtime.test.ts)、[worker-recovery](../tests/codemode-worker-recovery.test.ts)、[codemode-guardrails](../tests/codemode-guardrails.test.ts) 中实际受影响者；运行对应 [hot-path invariants](../tests/codemode-hot-paths.test.ts) 和 [runtime benchmark](../scripts/bench/codemode-runtime.ts)，涉及策略/展示时才扩大到已有 dispatch/session/tree 基准。提供每脚本 Worker/VM 次数、每调用复制与序列化字节、并发/队列峰值、allocation 和 GC/引用释放证据；若改到 Worker 内部分配，宿主 inspector 样本不够，须补该线程/VM 的相应证据。§6 是诊断基线，不是未来优化的验收结果。
 
 ## 5 完成与证据记录
+
+### 第三轮实施记录：OC03 进程内交付故障窗口
+
+实施前基线：`614218b0312de486728c5b6f1358884d890cb31d`。历史任务已有同步终态事务、失败时保留 live result 并阻止新任务、重启将未确认完成标为 interrupted；不新增持久 outbox。当前优先复现：idle triggerTurn 报告在等待前一个 custom drain 时，前一 drain 失败是否导致新报告既未接纳也未保留。目标是保留原有 SDK 拒绝语义，将未消费报告保留至下一次显式排空/用户输入；不失败后自动唤醒、不重试模型或重放任务。
+
+审计完整生产链：任务 finish / TaskHistory.save → shell/subagent sendMessage → 扩展 runtime adapter → AgentSession.sendCustomMessage → 共享 custom drain / _appendCustomMessage → SessionManager → prompt/队列消费 → provider 上下文、收尾与 dispose。普通 provider/message/tool progress → observer → InteractiveMode 同步通道继续按热路径合同检查。消息接纳/失败恢复属于具名低频生命周期，只允许复用已有队列和 drain owner；不增加 timer、Promise tail、持久写入或独立通知缓存。现有通用 custom 队列没有全局字节硬上限，本轮不把它描述为新的有界 outbox。
+
+最小验证候选：扩展现有 custom-message-ordering 的共享 drain 失败用例，覆盖 triggerTurn 与 dispose；复用 agent-settled-aborted、permission-interaction 和 tui-frame-hot-paths。沿用 session event allocation benchmark 和现有 GC 生命周期验证；只有实际改到任务存储/输出消费者时才运行对应历史/shell/subagent 基准，不重复本地全量测试。
+
+**实施结果与接纳语义。** 原代码在构造新报告之前 await 既有 drain；该 owner 拒绝时，新 triggerTurn 报告没有进入任何队列。已有故障注入用例扩展后，普通上下文消息保留 1 条，triggerTurn 分支实际为 0，复现遗漏。修复仅将已有 custom 消息构造前移，在等待失败且 session 未销毁时加入既有 pending custom 队列，仍向 SDK 调用者抛出原错误；下次显式排空/用户输入保存和投影该报告一次，不自动启动模型重试。dispose 时不重新入队。调用者收到拒绝不能当作没有任何本地接纳或副作用，不能盲目重发相同报告。
+
+| 故障窗口 | 当前保证与恢复 |
+| --- | --- |
+| 终态保存失败 | live result 留在本次进程，历史错误阻止新任务；重启只依据已保存记录，未确认完成为 interrupted。已有 task-history 夹具覆盖，本轮不改存储。 |
+| 终态保存成功，sendMessage 尚未接纳或因失效上下文拒绝 | 可查询有界任务历史；没有持久通知队列，重启不重发，不重放任务。 |
+| 新 idle trigger 等待旧 drain 失败 | 本轮保留未消费报告至既有内存队列；SDK 仍拒绝，模型请求为 0。恢复后报告在会话记录及下一 provider 请求中各出现一次。 |
+| 已进入运行中队列，尚未保存会话正文 | 进程内接纳不等于持久提交；进程退出可失去排队通知，任务历史仍按自己的事务恢复。 |
+| 已保存报告或模型已看到后退出 | 会话上下文存在不等于模型已完成处理，也不证明外部副作用可重放；不新增 sent/processed 标记或端到端 exactly-once 声明。 |
+
+**验证与性能。** 复用原测试文件，扩展共享 drain 的 trigger/disposed 两个分支，并在原 GC 生命周期用例中跟踪失败 drain 与未消费报告。74 项消息顺序、收尾、交互及 AST/source 约束通过，类型检查和 coding-agent 单包构建通过；0 新测试文件，没有本地全量测试。14 个 session/agent/signal/drain/report 引用受控 GC 后保留 0，dispose 后 pending 队列为 0。
+
+同机 10000 次普通消息/工具事件、预热 1000 次，分配采样分别为 39.1808/39.6776 → 42.8208/41.4504 B/事件；合并 observer 为 523.4832 → 523.372 B/原始更新，合并 9999 次、实际投递/快照 1 次。规定的逐进度 Promise、闭包、wrapper、Promise tail/array 计数仍为 0。这些采样约束未改动的普通事件通道，包含原有调度/隔离成本，不是异常通知路径零分配或统计性能改善证明。sendCustomMessage 的每次显式接纳仍为一个既有 appMessage 和 async 调用，失败分支只将该对象放入原队列；无新 timer、deferred、Promise 链、存储写入或对象池。完整数据与指纹见 [OC03 证据](performance/oc03-notification-boundaries.json)。
+
+**审查修复。** [PR #139 的 P2 反馈](https://github.com/dragonbaba/super-pi/pull/139#discussion_r4254601233)指出：保留队列没有活动 drain 时，新的 idle trigger 会先启动模型，旧报告才在 turn_end 追加。扩展同一个失败 fixture，复现会话保存顺序为 first/new/retained。现在 idle trigger 复用现有 `_flushPendingCustomMessages` 排空保留队列；等待期间若另一个回合开始，立即停止 idle 排空，交回运行中的队列机制，保留工具调用/结果配对。新的有效通知是新的唤醒，失败本身不自动重试。
+
+修复后，75 项原定向检查通过，首个 provider 请求按旧/新顺序各见报告一次；类型检查和单包构建通过，14 个跟踪引用保留 0。只重测受影响的 session event 基准：消息/工具为 38.3064/39.4704 B/事件，合并 observer 为 528.1464 B/原始更新，零逐事件分配约束及 9999 次合并/1 次快照投递不变；不将单次样本解释为性能提升。完整修复指纹与样本见证据 JSON 的 `reviewFix`。未新增测试文件或重跑其他子系统/本地全量测试，推送后请求一次手动复审。
 
 ### 第二批实施记录
 

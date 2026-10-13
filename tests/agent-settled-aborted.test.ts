@@ -334,6 +334,19 @@ test("settlement releases run signals and disposed owners", { skip: !global.gc }
 			await note;
 			assert.equal((f.session as any)._customMessageFlush, undefined);
 			await f.session.prompt("lifecycle");
+			if (reason === "error") {
+				const owner = f.session as any;
+				const append = owner._appendCustomMessage.bind(owner);
+				owner._appendCustomMessage = async (message: any) => { await append(message); throw new Error("fixture drain failure"); };
+				const first = owner.sendCustomMessage({ customType: "note", content: "failed drain", display: false }, { triggerTurn: false });
+				refs.push(new WeakRef(owner._customMessageFlush));
+				const second = owner.sendCustomMessage({ customType: "note", content: "unconsumed report", display: false }, { triggerTurn: true });
+				const results = await Promise.allSettled([first, second]);
+				assert.ok(results.every(result => result.status === "rejected"));
+				assert.equal(owner._pendingCustomMessages.length, 1);
+				refs.push(new WeakRef(owner._pendingCustomMessages[0]));
+				assert.equal(owner._customMessageFlush, undefined);
+			}
 		}
 		finally { unsubscribe(); f.release(); }
 	}
@@ -342,7 +355,7 @@ test("settlement releases run signals and disposed owners", { skip: !global.gc }
 		await new Promise<void>(resolve => setImmediate(resolve));
 		global.gc!();
 	}
-	assert.equal(refs.length, 12);
+	assert.equal(refs.length, 14);
 	assert.equal(refs.filter(ref => ref.deref() !== undefined).length, 0);
-	t.diagnostic("settlement lifecycle WeakRefs=12 retained=0 (includes custom-message drain owners)");
+	t.diagnostic("settlement lifecycle WeakRefs=14 retained=0 (includes failed drain and unconsumed report)");
 });

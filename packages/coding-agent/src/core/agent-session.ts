@@ -3107,11 +3107,6 @@ export class AgentSession {
 		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
 		options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" },
 	): Promise<void> {
-		// An idle trigger may have waited alongside another trigger. Re-evaluate
-		// streaming/interaction state below so only the first one starts a run.
-		if (options?.triggerTurn && options.deliverAs !== "nextTurn" && !this._interactionPaused && !this.isStreaming) {
-			while (this._customMessageFlush) await this._customMessageFlush;
-		}
 		if (this._operationDisposed) throw new Error("Cannot deliver a custom message to a disposed session");
 		const appMessage = {
 			role: "custom" as const,
@@ -3122,6 +3117,26 @@ export class AgentSession {
 			details: message.details,
 			timestamp: Date.now(),
 		} satisfies CustomMessage<T>;
+		// An idle trigger may have waited alongside another trigger. Re-evaluate
+		// streaming/interaction state below so only the first one starts a run.
+		if (options?.triggerTurn && options.deliverAs !== "nextTurn" && !this._interactionPaused && !this.isStreaming) {
+			try {
+				// A failed drain may have left reports queued without an active owner.
+				// Include them in this wake's first request; a concurrent run owns its
+				// own turn-end flush, so never drain across that run's tool results.
+				while (!this.isStreaming) {
+					const flush = this._flushPendingCustomMessages();
+					if (!flush) break;
+					await flush;
+				}
+			} catch (error) {
+				// Match context-only sends: preserve the unconsumed report, but expose
+				// the failed drain and wait for a later explicit flush instead of retrying.
+				if (!this._operationDisposed) this._pendingCustomMessages.push(appMessage);
+				throw error;
+			}
+		}
+		if (this._operationDisposed) throw new Error("Cannot deliver a custom message to a disposed session");
 		if (options?.deliverAs === "nextTurn") {
 			this._pendingNextTurnMessages.push(appMessage);
 		} else if (this._interactionPaused && options?.triggerTurn) {
