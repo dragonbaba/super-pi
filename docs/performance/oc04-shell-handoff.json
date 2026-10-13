@@ -1,0 +1,499 @@
+{
+  "schemaVersion": 1,
+  "task": "OC04 foreground shell handoff",
+  "date": "2026-10-14",
+  "baselineCommit": "270a5489ad5932500ebe240760d857fe169f8ef3",
+  "candidate": {
+    "node": "v26.4.0",
+    "platform": "win32",
+    "producer": "synthetic chunks through production shell tool and manager; no provider traffic",
+    "profiles": [
+      {
+        "mode": "foreground",
+        "updates": 1000,
+        "publications": 3,
+        "chunkWrites": 0,
+        "notifications": 0,
+        "notificationChars": 0,
+        "sampledBytesPerChunk": 5997.664,
+        "topSites": [
+          [
+            "createFromString:node:buffer:506",
+            2050616
+          ],
+          [
+            "decode:node:internal/encoding:481",
+            1149000
+          ],
+          [
+            "toString:node:buffer:901",
+            1024160
+          ],
+          [
+            "Uint8Array::0",
+            186664
+          ],
+          [
+            ":node:internal/modules/cjs/loader:2109",
+            142536
+          ]
+        ]
+      },
+      {
+        "mode": "background",
+        "updates": 1000,
+        "publications": 0,
+        "chunkWrites": 0,
+        "history": {
+          "opens": 1,
+          "writes": 3,
+          "checkpointWrites": 0,
+          "recovered": 0,
+          "openHandles": 0,
+          "rows": 1
+        },
+        "notifications": 1,
+        "notificationChars": 1165,
+        "sampledBytesPerChunk": 5395.64,
+        "topSites": [
+          [
+            "createFromString:node:buffer:506",
+            2050616
+          ],
+          [
+            "decode:node:internal/encoding:481",
+            1230408
+          ],
+          [
+            "toString:node:buffer:901",
+            1024160
+          ],
+          [
+            "Uint8Array::0",
+            273832
+          ],
+          [
+            "indexOf::0",
+            126632
+          ]
+        ]
+      },
+      {
+        "mode": "managed-foreground",
+        "updates": 1000,
+        "publications": 3,
+        "chunkWrites": 0,
+        "history": {
+          "opens": 1,
+          "writes": 3,
+          "checkpointWrites": 0,
+          "recovered": 0,
+          "openHandles": 0,
+          "rows": 1
+        },
+        "notifications": 0,
+        "notificationChars": 0,
+        "sampledBytesPerChunk": 5428.752,
+        "topSites": [
+          [
+            "createFromString:node:buffer:506",
+            2050616
+          ],
+          [
+            "decode:node:internal/encoding:481",
+            1171584
+          ],
+          [
+            "toString:node:buffer:901",
+            1024160
+          ],
+          [
+            "Uint8Array::0",
+            194984
+          ],
+          [
+            "indexOf::0",
+            126632
+          ]
+        ]
+      },
+      {
+        "mode": "handoff",
+        "updates": 1000,
+        "publications": 2,
+        "publicationsAfterHandoff": 0,
+        "chunkWrites": 0,
+        "history": {
+          "opens": 1,
+          "writes": 3,
+          "checkpointWrites": 0,
+          "recovered": 0,
+          "openHandles": 0,
+          "rows": 1
+        },
+        "notifications": 1,
+        "notificationChars": 1165,
+        "sampledBytesPerChunk": 5216.328,
+        "topSites": [
+          [
+            "createFromString:node:buffer:506",
+            2050616
+          ],
+          [
+            "decode:node:internal/encoding:481",
+            1194504
+          ],
+          [
+            "toString:node:buffer:901",
+            1024160
+          ],
+          [
+            "Uint8Array::0",
+            219840
+          ],
+          [
+            "indexOf::0",
+            126632
+          ]
+        ]
+      }
+    ],
+    "lifecycle": [
+      {
+        "mode": "complete",
+        "highWaterMark": 4,
+        "queueHighWaterMark": 4,
+        "releases": 8,
+        "retained": 0
+      },
+      {
+        "mode": "failure",
+        "highWaterMark": 4,
+        "queueHighWaterMark": 4,
+        "releases": 8,
+        "retained": 0
+      },
+      {
+        "mode": "cancel",
+        "highWaterMark": 4,
+        "queueHighWaterMark": 4,
+        "releases": 8,
+        "retained": 0
+      },
+      {
+        "mode": "dispose",
+        "highWaterMark": 4,
+        "queueHighWaterMark": 4,
+        "releases": 8,
+        "retained": 0
+      }
+    ],
+    "detachedForeground": {
+      "runningDuringGC": 4,
+      "trackedForegroundReferences": 16,
+      "parentListenersAfterDetach": 0,
+      "retainedForegroundFields": 0,
+      "liveForegroundReferences": 0,
+      "latePublications": 0,
+      "retainedAfterDispose": 0
+    },
+    "nativeJobs": {
+      "handles": 0,
+      "processHandles": 0,
+      "created": 4,
+      "cleanupChecks": 4,
+      "sampledBytesIncludingColdBindingLoad": 1013800
+    },
+    "perChunk": {
+      "promises": 0,
+      "controllers": 0
+    },
+    "references": {
+      "total": 152,
+      "live": 0
+    }
+  },
+  "fingerprints": [
+    {
+      "path": "packages/coding-agent/src/core/tools/bash.ts",
+      "sha256": "5774db88d5ab695916d052cfe6248f4961c1c03e35c575448b8cc11c38bb1698"
+    },
+    {
+      "path": "packages/coding-agent/src/core/tools/shell-background.ts",
+      "sha256": "58c87dbf63010124d2064d26baddfe0f1e997c4a39d0f0de3a90991edcffbfdf"
+    },
+    {
+      "path": "packages/coding-agent/src/index.ts",
+      "sha256": "2b9b59c10b7f63c9e4a64899357656232fdeeee86b742942cf378bae0ba53f8b"
+    },
+    {
+      "path": "packages/extensions/false-success-guard/core.ts",
+      "sha256": "4553b87c5f2d8dca7cf0420c2cf7705820ed39746409f3e4fccf5e23bd52d333"
+    },
+    {
+      "path": "packages/extensions/managed-tasks.ts",
+      "sha256": "ce1282e2ccdb530061cffaa229c5a95b179d0d39e5bdd0ca791d31e606199b28"
+    },
+    {
+      "path": "packages/extensions/resource-lifecycle-guard/background-shell.ts",
+      "sha256": "de524161c15e2b6d57242e1e8995f1b91949b5ac188c4694153952918400676d"
+    },
+    {
+      "path": "packages/extensions/resource-lifecycle-guard/index.ts",
+      "sha256": "c43f9bccbe65d0ecb02e539e0d9a03d9eaa07150e55674af9f06658a6fbb1c22"
+    },
+    {
+      "path": "packages/extensions/subagent/index.ts",
+      "sha256": "1551f7a387e591d4c57fe5eb6638d54a35b38c335ae2c56ab0a2917dbeb274e0"
+    },
+    {
+      "path": "scripts/bench/background-shell-tasks.ts",
+      "sha256": "c3b793df20a96d84ece3cc305a0624e3b28ddc3a4af92ebe9d6fa5627a75d2f7"
+    },
+    {
+      "path": "tests/background-shell-tasks.test.ts",
+      "sha256": "beccd637cc8b2549dcc34f32ef13eb798633edcdbbc12b26b2c3d73edd8b4e8c"
+    },
+    {
+      "path": "tests/fixtures/background-shell-child.mjs",
+      "sha256": "a1dd1248eda2fe51f15d1c226cd3bddf634ee890d062cd1da5e7fcf259511127"
+    },
+    {
+      "path": "tests/shell-process-observation.test.ts",
+      "sha256": "3e94a007d3e29458248e1751d922bb0bec7397469d8cfc7e067ae9035477e91d"
+    }
+  ],
+  "command": "node --expose-gc scripts/bench/background-shell-tasks.ts",
+  "coverage": "Synthetic bounded producer through real shell tool, accumulator, scheduler, task history and detachable foreground owner; real bash/PowerShell identity and cancellation in existing integration tests. Provider traffic and complete TUI performance not measured.",
+  "fixture": {
+    "updates": 1000,
+    "chunkBytes": 1153,
+    "handoffAfterChunks": 500,
+    "samplingIntervalBytes": 4096,
+    "includeCollectedObjects": true,
+    "gcCycles": 8
+  },
+  "productionChain": [
+    "Agent final authorization (top-level only; nested parentToolCallId remains foreground) -> BashInvocationAuthorization.consume -> ShellCwdBinding -> private one-use foreground launch",
+    "BackgroundShellTasks.createForegroundLaunch -> ForegroundTask.takeWait -> bounded SubagentScheduler -> createShellToolDefinition.executeForeground -> local bash/PowerShell exec -> Windows Job/POSIX group",
+    "stdout/stderr -> ShellInputObserver -> handleData -> OutputAccumulator -> stable throttled emitOutputUpdate -> ForegroundTask.publish -> Agent latest observer clone/freeze -> AgentSession -> InteractiveMode -> tool renderer -> bounded terminal frame queue",
+    "explicit tasks background -> current controls + original authority/cwd identity -> ForegroundTask.detach -> remove parent abort listener, clear update callback and timer; same output/process/deadline",
+    "child exit immediately marks foreground control completing -> existing stdio drain/process tree/output finalization -> bounded task history/results -> original foreground result OR SHELL_TASK_RESULT_EVENT/false-success guard -> single bounded followUp -> release/dispose"
+  ],
+  "allocations": {
+    "perChunk": {
+      "newClosures": 0,
+      "newPromises": 0,
+      "newAbortControllers": 0,
+      "newWrappers": 0,
+      "newArrays": 0,
+      "newOutputCopies": 0,
+      "historyWrites": 0
+    },
+    "existing": "OutputAccumulator decodes bounded <=64KiB windows (buffer views, decoder options, decoded strings); bounded tail trimming copies UTF-8 buffer/text. Existing <=50KiB foreground snapshots and delivered Agent clone/freeze remain. These allocations are measured, not claimed zero. Handoff clears onUpdate and cancels its one timer so later chunks no longer request foreground snapshots. No full accumulated output reconstruction or new tail copy.",
+    "lifecycleExemptions": [
+      "BashInvocationAuthorization.consume: one-use launch, authority and transfer validation closures per eligible invocation",
+      "BackgroundShellTasks.createForegroundLaunch: one ForegroundTask/deferred/controller, one control/entry, stable execute closure, two settlement callbacks per invocation; uses existing task/reservation/history",
+      "BackgroundShellTasks.run: invocation-only combined signal/options array; existing scheduler closure, bounded result details/truncation copy and one terminal text assembly",
+      "createShellToolDefinition.execute/executeForeground: invocation-only delegation/release and stopUpdates closures; no new callback per delivery",
+      "BackgroundShellTasks.background: explicit command acceptance result; clears foreground callback and timer without output snapshot/copy",
+      "ForegroundTask.detach/finish: explicit ownership transition clears original signal/update/wait references",
+      "false-success-guard.observeToolResult: terminal/admission event only, recognizes running background fact on original foreground input; existing bounded obligation maps/hash",
+      "createLocalShellOperations.exec: one stable exit callback per invocation, registered for managed foreground and removed in finally; marks completing synchronously before inherited stdio drain. No allocation in this callback.",
+      "BackgroundShellTasks.canManageForeground: optional startup capability discovery, failing to legacy foreground when partial SDK controls cannot be queried; explicit background admission still uses strict assertAvailable."
+    ],
+    "bounds": "Same limits: shell concurrency default16/hard64; active+queued default64/hard256; foreground map bounded by admitted tasks. Per shell 200KiB trim threshold, 64KiB decoding, 50KiB spill threshold, 5MiB spill cap. Retained text <=12000 chars per task, terminal notification <=8192 UTF-16 chars. Queued/running reservation and pending operation owned until cleanup; foreground map removes on handoff/settlement; close drains pending then clears.",
+    "terminalFrames": "No terminal queue changes or new frame allocation. Existing one active/one pending frame and zero application full-frame copies preserved by unchanged downstream path; no new full TUI benchmark run.",
+    "objectPool": "None; no profiler evidence or ownership need for one."
+  },
+  "baseline": {
+    "node": "v26.4.0",
+    "platform": "win32",
+    "producer": "synthetic chunks through production shell tool and manager; no provider traffic",
+    "profiles": [
+      {
+        "mode": "foreground",
+        "updates": 1000,
+        "publications": 3,
+        "chunkWrites": 0,
+        "notifications": 0,
+        "notificationChars": 0,
+        "sampledBytesPerChunk": 6134.88,
+        "topSites": [
+          [
+            "createFromString:node:buffer:506",
+            2050616
+          ],
+          [
+            "decode:node:internal/encoding:481",
+            1233672
+          ],
+          [
+            "toString:node:buffer:901",
+            1024160
+          ],
+          [
+            "Uint8Array::0",
+            165776
+          ],
+          [
+            "indexOf::0",
+            130760
+          ]
+        ]
+      },
+      {
+        "mode": "background",
+        "updates": 1000,
+        "publications": 0,
+        "chunkWrites": 0,
+        "history": {
+          "opens": 1,
+          "writes": 3,
+          "checkpointWrites": 0,
+          "recovered": 0,
+          "openHandles": 0,
+          "rows": 1
+        },
+        "notifications": 1,
+        "notificationChars": 1165,
+        "sampledBytesPerChunk": 5231.888,
+        "topSites": [
+          [
+            "createFromString:node:buffer:506",
+            2050616
+          ],
+          [
+            "decode:node:internal/encoding:481",
+            1235040
+          ],
+          [
+            "toString:node:buffer:901",
+            1024160
+          ],
+          [
+            "Uint8Array::0",
+            203320
+          ],
+          [
+            "indexOf::0",
+            126632
+          ]
+        ]
+      }
+    ],
+    "lifecycle": [
+      {
+        "mode": "complete",
+        "highWaterMark": 4,
+        "queueHighWaterMark": 4,
+        "releases": 8,
+        "retained": 0
+      },
+      {
+        "mode": "failure",
+        "highWaterMark": 4,
+        "queueHighWaterMark": 4,
+        "releases": 8,
+        "retained": 0
+      },
+      {
+        "mode": "cancel",
+        "highWaterMark": 4,
+        "queueHighWaterMark": 4,
+        "releases": 8,
+        "retained": 0
+      },
+      {
+        "mode": "dispose",
+        "highWaterMark": 4,
+        "queueHighWaterMark": 4,
+        "releases": 8,
+        "retained": 0
+      }
+    ],
+    "nativeJobs": {
+      "handles": 0,
+      "processHandles": 0,
+      "created": 4,
+      "cleanupChecks": 4,
+      "sampledBytesIncludingColdBindingLoad": 934224
+    },
+    "perChunk": {
+      "promises": 0,
+      "controllers": 0
+    },
+    "references": {
+      "total": 118,
+      "live": 0
+    }
+  },
+  "validation": {
+    "tests": [
+      {
+        "command": "node --test tests/background-shell-tasks.test.ts tests/shell-observation-hot-paths.test.ts tests/bash-streaming-ansi-hot-paths.test.ts",
+        "pass": 29,
+        "skip": 0
+      },
+      {
+        "command": "node --test tests/shell-explicit-cwd.test.ts tests/batch-false-success.test.ts",
+        "pass": 44,
+        "skip": 1
+      },
+      {
+        "command": "node --test --test-name-pattern='foreground publication proxy' tests/subagent-hot-paths.test.ts",
+        "pass": 1,
+        "skip": 0
+      },
+      {
+        "command": "node --test --test-name-pattern='real bash and PowerShell foreground handoff' tests/background-shell-tasks.test.ts",
+        "pass": 1,
+        "reason": "Only this test rerun after moving fixture ready marker after watcher registration; already included in unique test count."
+      }
+    ],
+    "uniquePassed": 82,
+    "uniqueSkipped": 1,
+    "newTestFiles": 0,
+    "typecheck": "npm.cmd run check passed",
+    "build": "npm.cmd run build --workspace @super-pi/coding-agent passed",
+    "benchmarkStrictTypecheck": "tsgo --ignoreConfig --noEmit --strict --skipLibCheck --target ES2022 --module NodeNext --moduleResolution NodeNext --allowImportingTsExtensions scripts/bench/background-shell-tasks.ts packages/coding-agent/src/utils/highlight-js.d.ts passed",
+    "localFullSuite": false,
+    "reviewFixes": {
+      "source": "PR #150 first Codex review on 9f51edd3f441d574b063dc52b9bf7172d6b276ec; local self-review and CI",
+      "findings": [
+        {
+          "commentId": 4264941733,
+          "fix": "Only top-level final authorization can install foreground launch. Real Agent nested dispatcher regression confirms dependent step awaits actual shell completion and no handoff ID is offered."
+        },
+        {
+          "commentId": 4264941742,
+          "fix": "Local shell exec registers a stable exit listener that marks completing before output drain and clears it in finally. Existing process observation test verifies still-pending drain and zero exit/error/spawn/close listeners after release."
+        },
+        {
+          "source": "self-review",
+          "fix": "Early handoff while prepareShellCwd awaits must keep onUpdate undefined during initialization. Regression produced three snapshots before fix, one terminal capture after fix."
+        },
+        {
+          "source": "Linux2/Windows4 CI",
+          "fix": "Partial SDK hosts cannot always query active task controls. Optional eligibility discovery now returns false, preserving original foreground path; strict background admission unchanged."
+        }
+      ],
+      "checks": [
+        "6 targeted tests after review changes: 5 passed initially; nested fixture initially used unsupported host-only dispatch, switched to real Agent prompt/nested dispatcher and passed",
+        "2 existing mutation recovery failures reproduced before fix, both passed after fix",
+        "3 availability/eligibility/ownership checks passed after optional SDK discovery fix",
+        "3 Windows process-tree cancellation checks passed",
+        "root typecheck and coding-agent build passed",
+        "allocation benchmark rerun on final production change; deterministic counters and GC unchanged"
+      ],
+      "newTestFiles": 0,
+      "additionalTestCases": 3
+    }
+  },
+  "limitations": [
+    "Sampling includes lifecycle/cold load overhead, benchmark callback type adaptation and synthetic explicit timeout parameter; same chunk payload but new modes have no pre-change implementation baseline. Do not infer speedup from one sample or compare warmed managed modes with cold legacy foreground as an optimization.",
+    "Earlier candidate sample passed; adding awaited callback types inside the loop caused four fixture callback references to remain via a shared lexical context. Adapter moved to its own function and final active-task GC passed without production change.",
+    "Local environment Windows Node26.4; initial Linux/Windows CI found optional SDK discovery failure (fixed and locally verified). Final-head CI and Codex re-review recorded on PR #150, without another docs-only push. Real model notification continuation uses existing tested session flow, no model request in this task.",
+    "parallel/chain handoff and process survival after application exit remain unsupported; eligible foreground tasks now share bounded shell admission and use Windows Job from startup."
+  ]
+}

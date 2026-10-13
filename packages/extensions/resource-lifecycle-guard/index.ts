@@ -1,4 +1,4 @@
-import { getShellCwdBinding, attachShellCwdBinding, prepareShellCwd, attachBackgroundShellLaunch, validateBackgroundShellInput, type ShellCwdBinding } from "@super-pi/coding-agent";
+import { getShellCwdBinding, attachShellCwdBinding, prepareShellCwd, attachBackgroundShellLaunch, attachForegroundShellLaunch, validateBackgroundShellInput, type ShellCwdBinding } from "@super-pi/coding-agent";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
@@ -27,7 +27,8 @@ class BashInvocationAuthorization {
     private permissions: SessionPermissionController | undefined,
     private readonly sessionCwd: string, private readonly sessionId: string,
     private readonly generation: number, private readonly sequence: number,
-    private readonly id: string, private readonly name: string, private backgroundTasks: BackgroundShellTasks | undefined, binding?: ShellCwdBinding,
+    private readonly id: string, private readonly name: string, private backgroundTasks: BackgroundShellTasks | undefined,
+    private readonly topLevel: boolean, binding?: ShellCwdBinding,
   ) { this.binding = binding; }
   consume(args: unknown, id: string, name: string, signal?: AbortSignal): unknown {
     try {
@@ -51,7 +52,10 @@ class BashInvocationAuthorization {
     if (getShellCwdBinding(args) !== binding || binding?.isReleased || (this.cwd !== undefined && !binding)) throw new Error(INVALIDATED);
     if (binding) {
       const sessionCwd = this.sessionCwd, sessionId = this.sessionId, generation = this.generation, sequence = this.sequence;
-      const invocationSignal = this.background === true ? undefined : signal;
+      const transferable = this.topLevel && this.background !== true && typeof this.command === "string" && typeof this.cwd === "string"
+        && typeof this.timeout === "number" && Number.isFinite(this.timeout) && this.timeout > 0 && this.timeout <= 7200
+        && this.backgroundTasks?.canManageForeground(ctx);
+      const invocationSignal = this.background === true || transferable ? undefined : signal;
       const assertCurrent = () => {
         if (invocationSignal?.aborted || ctx.cwd !== sessionCwd || ctx.sessionManager.getSessionId() !== sessionId
           || permissions.authorityGeneration !== generation || permissions.state.sequence !== sequence) throw new Error(INVALIDATED);
@@ -61,6 +65,8 @@ class BashInvocationAuthorization {
       if (this.background === true) {
         if (!this.backgroundTasks || typeof this.command !== "string" || typeof this.cwd !== "string") throw new Error(INVALIDATED);
         attachBackgroundShellLaunch(approved, this.backgroundTasks.createLaunch(this.name, id, this.command, binding.canonical, ctx, assertCurrent));
+      } else if (transferable) {
+        attachForegroundShellLaunch(approved, this.backgroundTasks!.createForegroundLaunch(this.name, id, this.command as string, binding.canonical, ctx, assertCurrent, () => binding.beforeSpawn(binding.canonical)));
       }
     }
     this.transferred = true;
@@ -161,6 +167,7 @@ export default function resourceLifecycleGuard(pi: ExtensionAPI): void {
     const bashCwd = shell ? (event.input as Record<string, unknown>).cwd : undefined;
     const bashPurpose = shell ? (event.input as Record<string, unknown>).purpose : undefined;
     const bashBackground = shell ? (event.input as Record<string, unknown>).background : undefined;
+    const topLevel = event.parentToolCallId === undefined;
     if (shell) validateBackgroundShellInput(event.input);
     if (bashBackground === true) backgroundTasks.assertAvailable(ctx);
     const bash = shell;
@@ -192,7 +199,7 @@ export default function resourceLifecycleGuard(pi: ExtensionAPI): void {
         reason: "Blocked by policy: command changed during permission handling. Submit the final exact command for current authorization; no replacement was executed.",
       };
       const finalAuthorization = new BashInvocationAuthorization(event.input, bashCommand, bashTimeout, bashCwd, bashPurpose, bashBackground,
-        ctx, permissions, cwd, sessionId, generation, permissions.state.sequence, id, shellName, backgroundTasks, preparedCwd);
+        ctx, permissions, cwd, sessionId, generation, permissions.state.sequence, id, shellName, backgroundTasks, topLevel, preparedCwd);
       transferred = true;
       return { finalAuthorization };
     }

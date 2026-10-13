@@ -4,6 +4,7 @@ import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { Session } from "node:inspector/promises";
 import { createHook } from "node:async_hooks";
+import { getEventListeners, once } from "node:events";
 import { setImmediate as tick } from "node:timers/promises";
 
 if (!globalThis.gc) throw new Error("Run with --expose-gc.");
@@ -17,7 +18,7 @@ const { BackgroundShellTasks } = await import("../../packages/extensions/resourc
 const { createEventBus } = await import("../../packages/coding-agent/src/core/event-bus.ts");
 const { createBashToolDefinition } = await import("../../packages/coding-agent/src/core/tools/bash.ts");
 const { registerLocalShellBackend, getShellCwdBinding } = await import("../../packages/coding-agent/src/core/tools/shell-cwd.ts");
-const { attachBackgroundShellLaunch } = await import("../../packages/coding-agent/src/core/tools/shell-background.ts");
+const { attachBackgroundShellLaunch, attachForegroundShellLaunch } = await import("../../packages/coding-agent/src/core/tools/shell-background.ts");
 const { TASK_COMPLETION_CHARS } = await import("../../packages/extensions/managed-tasks.ts");
 const updates = 1000, chunk = Buffer.from("evidence ".repeat(128) + "\n");
 let pumping = false, chunkPromises = 0, chunkControllers = 0;
@@ -54,28 +55,45 @@ function sampledSites(node: any, sites: Map<string, number>): number {
 	return bytes;
 }
 
-async function profile(background: boolean) {
-	const h = harness(background); let publications = 0, received = 0, chunkWrites = 0;
+function updateCallback(publish: (value: unknown) => void) {
+	// Keep the awaited adapter out of the fixture's execution closure context.
+	return Object.assign(publish, { awaited: async (value: unknown) => { publish(value); } });
+}
+
+async function profile(mode: "foreground" | "background" | "managed-foreground" | "handoff") {
+	const background = mode === "background", managed = mode === "managed-foreground" || mode === "handoff";
+	const h = harness(background || managed); let publications = 0, received = 0, chunkWrites = 0, publicationsAtHandoff: number | undefined;
 	const backend = registerLocalShellBackend({ async exec(_command: string, cwd: string, options: any) {
 		options.beforeSpawn?.(cwd);
 		// Synthetic producer; the consumer is the real shell handleData/accumulator.
 		const writes = (h.manager.tasks as any).history?.counters.writes ?? 0;
 		pumping = true;
-		try { for (let i = 0; i < updates; i++) { options.onData(chunk); received++; } }
+		try { for (let i = 0; i < updates; i++) {
+			if (mode === "handoff" && i === updates / 2) {
+				pumping = false;
+				const task = [...h.manager.tasks.values()][0];
+				await h.tools.get("tasks").execute("handoff", { action: "background", id: task.id }, undefined, undefined, h.ctx);
+				publicationsAtHandoff = publications;
+				pumping = true;
+			}
+			options.onData(chunk); received++;
+		} }
 		finally { pumping = false; }
 		chunkWrites += ((h.manager.tasks as any).history?.counters.writes ?? 0) - writes;
 		return { exitCode: 0, termination: "exit" as const, observation: { started: true, cwd, exitCode: 0, signal: null, outputDrained: true } };
 	} });
 	const tool = createBashToolDefinition(root, { operations: backend, exposeSessionEnvironment: false });
-	const input = { command: "fixture", cwd: ".", background };
+	const input = { command: "fixture", cwd: ".", background, timeout: 10 };
 	if (background) attachBackgroundShellLaunch(input, h.manager.createLaunch("bash", "fixture", input.command, root, h.ctx, () => {}));
+	if (managed) attachForegroundShellLaunch(input, h.manager.createForegroundLaunch("bash", "fixture", input.command, root, h.ctx, () => {}));
 	const inspector = new Session(); inspector.connect(); globalThis.gc!();
+	const publish = updateCallback(value => { structuredClone(value); publications++; });
 	await inspector.post("HeapProfiler.enable");
 	await inspector.post("HeapProfiler.startSampling", { samplingInterval: 4096, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true });
 	let result: any;
 	try {
-		result = await tool.execute("fixture", input, undefined, value => { structuredClone(value); publications++; }, h.ctx);
-		if (background) {
+		result = await tool.execute("fixture", input, undefined, publish, h.ctx);
+		if (background || mode === "handoff") {
 			const id = result.details.backgroundTask.id;
 			const task = await h.manager.tasks.wait(id, 60_000);
 			assert.equal(task.state, "completed"); assert.ok(task.result!.length <= 12_000);
@@ -86,9 +104,10 @@ async function profile(background: boolean) {
 		const { profile } = await inspector.post("HeapProfiler.stopSampling");
 		const sites = new Map<string, number>(), sampledBytes = sampledSites(profile.head, sites);
 		assert.equal(received, updates); assert.equal(chunkWrites, 0); if (background) assert.equal(publications, 0);
-		const weak = [new WeakRef(input), new WeakRef(backend), new WeakRef(tool), new WeakRef(h.manager)];
+		if (mode === "handoff") assert.equal(publications, publicationsAtHandoff);
+		const weak: WeakRef<object>[] = [new WeakRef(input), new WeakRef(backend), new WeakRef(tool), new WeakRef(h.manager)];
 		const binding = getShellCwdBinding(input); assert.ok(binding?.isReleased); weak.push(new WeakRef(binding!));
-		return { mode: background ? "background" : "foreground", updates: received, publications, chunkWrites,
+		return { mode, updates: received, publications, publicationsAfterHandoff: publicationsAtHandoff === undefined ? undefined : publications - publicationsAtHandoff, chunkWrites,
 			history: (h.manager.tasks as any).history?.counters, notifications: h.notifications(), notificationChars: h.notificationChars(), sampledBytesPerChunk: sampledBytes / updates,
 			topSites: [...sites].sort((a, b) => b[1] - a[1]).slice(0, 5), weak };
 	} finally {
@@ -119,10 +138,58 @@ async function lifecycle(mode: "complete" | "failure" | "cancel" | "dispose") {
 	return { mode, highWaterMark: s.highWaterMark, queueHighWaterMark: s.queueHighWaterMark, releases, retained, weak };
 }
 
+async function detachedForeground() {
+	const h = harness(), weak: WeakRef<object>[] = [], owners: WeakRef<object>[] = [], gates: Array<() => void> = [], ids: string[] = [];
+	let publications = 0, parentListeners = 0, started = 0;
+	for (let i = 0; i < 4; i++) {
+		let release!: () => void;
+		const gate = new Promise<void>(resolve => { release = resolve; }); gates.push(release);
+		const backend = registerLocalShellBackend({ async exec(_command: string, cwd: string, options: any) {
+			options.beforeSpawn?.(cwd); options.onData(chunk); started++;
+			await gate;
+			options.signal?.throwIfAborted();
+			if (i === 1) throw new Error("foreground lifecycle fixture failure");
+			options.onData(chunk);
+			return { exitCode: 0, termination: "exit" as const, observation: { started: true, cwd, exitCode: 0, signal: null, outputDrained: true } };
+		} });
+		const tool = createBashToolDefinition(root, { operations: backend, exposeSessionEnvironment: false });
+		const input = { command: "fixture", cwd: ".", timeout: 10 };
+		attachForegroundShellLaunch(input, h.manager.createForegroundLaunch("bash", "gc-" + i, input.command, root, h.ctx, () => {}));
+		const parent = new AbortController(), update = updateCallback(() => { publications++; });
+		const waiting = tool.execute("gc-" + i, input, parent.signal, update, h.ctx);
+		weak.push(new WeakRef(parent), new WeakRef(parent.signal), new WeakRef(update), new WeakRef(waiting));
+		while (started <= i) await tick();
+		const task = [...h.manager.tasks.values()][i], entry = (h.manager as any).foreground.get(task.id);
+		owners.push(new WeakRef(entry), new WeakRef(entry.owner), new WeakRef(entry.control), new WeakRef(input), new WeakRef(backend), new WeakRef(tool));
+		await h.tools.get("tasks").execute("detach-" + i, { action: "background", id: task.id }, undefined, undefined, h.ctx);
+		const accepted = await waiting;
+		assert.equal(accepted.details!.backgroundTask!.state, "running");
+		assert.equal(entry.control.stopUpdates, undefined);
+		for (const key of ["parent", "update", "resolve", "reject", "waiting"]) assert.equal(entry.owner[key], undefined);
+		parentListeners += getEventListeners(parent.signal, "abort").length;
+		parent.abort(); assert.equal(entry.owner.signal.aborted, false); ids.push(task.id);
+	}
+	assert.equal(h.manager.scheduler.active, 4); assert.equal((h.manager as any).foreground.size, 0);
+	return { weak, owners, counters: { runningDuringGC: 4, trackedForegroundReferences: weak.length, parentListenersAfterDetach: parentListeners, retainedForegroundFields: 0 },
+		async cleanup() { for (const release of gates) release(); await h.dispose(); },
+		async finish() {
+			const before = publications;
+			try {
+				gates[0](); await h.manager.tasks.wait(ids[0], 1000);
+				gates[1](); await h.manager.tasks.wait(ids[1], 1000);
+				h.manager.tasks.cancel(ids[2]); gates[2](); await h.manager.tasks.wait(ids[2], 1000);
+				gates[3](); await h.dispose();
+				assert.equal(publications, before);
+				const s = h.manager.scheduler;
+				assert.equal(s.active + s.queued + s.reserved + s.outstanding + h.manager.tasks.size, 0);
+				return { latePublications: publications - before, retainedAfterDispose: 0 };
+			} finally { for (const release of gates) release(); await h.dispose(); }
+		} };
+}
+
 async function nativeJobs() {
 	const { WindowsShellJob, windowsShellJobDiagnostics } = await import("../../packages/coding-agent/src/utils/windows-shell-job.ts");
 	const { waitForChildProcess } = await import("../../packages/coding-agent/src/utils/child-process.ts");
-	const { once } = await import("node:events");
 	const weak: WeakRef<object>[] = [];
 	const inspector = new Session(); inspector.connect(); globalThis.gc!();
 	await inspector.post("HeapProfiler.enable");
@@ -148,18 +215,28 @@ async function nativeJobs() {
 
 try {
 	hook.enable();
-	const profiles = [await profile(false), await profile(true)];
+	const profiles = [await profile("foreground"), await profile("background"), await profile("managed-foreground"), await profile("handoff")];
 	const lifecycles = [];
 	for (const mode of ["complete", "failure", "cancel", "dispose"] as const) lifecycles.push(await lifecycle(mode));
+	let detached: Awaited<ReturnType<typeof detachedForeground>> | undefined = await detachedForeground();
+	let detachedReport;
+	const detachedOwners = detached.owners;
+	try {
+		for (let i = 0; i < 8; i++) { await tick(); globalThis.gc!(); }
+		const live = detached.weak.filter(ref => ref.deref()).length;
+		assert.equal(live, 0, "detached shell must release original parent, callback and foreground wait while still running");
+		detachedReport = { ...detached.counters, liveForegroundReferences: live, ...await detached.finish() };
+	} finally { await detached.cleanup(); detached = undefined; }
 	const native = process.platform === "win32" ? await nativeJobs() : undefined;
 	hook.disable();
 	for (let i = 0; i < 8; i++) { await tick(); globalThis.gc!(); }
 	let total = 0, live = 0;
 	for (const item of [...profiles, ...lifecycles]) for (const ref of item.weak) { total++; if (ref.deref()) live++; }
 	if (native) for (const ref of native.weak) { total++; if (ref.deref()) live++; }
+	for (const ref of detachedOwners) { total++; if (ref.deref()) live++; }
 	assert.equal(live, 0); assert.equal(chunkPromises, 0); assert.equal(chunkControllers, 0);
 	console.log(JSON.stringify({ node: process.version, platform: process.platform, producer: "synthetic chunks through production shell tool and manager; no provider traffic",
-		profiles: profiles.map(({ weak, ...rest }) => rest), lifecycle: lifecycles.map(({ weak, ...rest }) => rest), nativeJobs: native && { ...native, weak: undefined }, perChunk: { promises: chunkPromises, controllers: chunkControllers }, references: { total, live } }, null, 2));
+		profiles: profiles.map(({ weak, ...rest }) => rest), lifecycle: lifecycles.map(({ weak, ...rest }) => rest), detachedForeground: detachedReport, nativeJobs: native && { ...native, weak: undefined }, perChunk: { promises: chunkPromises, controllers: chunkControllers }, references: { total, live } }, null, 2));
 } finally {
 	hook.disable(); globalThis.AbortController = NativeController;
 	assert.equal(dirname(root), tmpdir()); rmSync(root, { recursive: true, force: true });

@@ -1,10 +1,10 @@
 import { withMsysStdinBridge } from "./msys-stdin.ts";
-import { consumeBackgroundShellLaunch, validateBackgroundShellInput, DEFAULT_BACKGROUND_SHELL_TIMEOUT } from "./shell-background.ts";
+import { consumeBackgroundShellLaunch, consumeForegroundShellLaunch, validateBackgroundShellInput, DEFAULT_BACKGROUND_SHELL_TIMEOUT, type ShellForegroundControl } from "./shell-background.ts";
 import { boundedShellInput } from "./bounded-shell-input.ts";
 import { prepareShellCwd, getShellCwdBinding, isLocalShellBackend, registerLocalShellBackend } from "./shell-cwd.ts";
 import { constants } from "node:fs";
 import { access as fsAccess, realpath as fsRealpath } from "node:fs/promises";
-import { type AgentTool, ToolResultError, toolResultFromError } from "@super-pi/agent-core";
+import { type AgentTool, type AgentToolResult, ToolResultError, toolResultFromError } from "@super-pi/agent-core";
 import { type Component, Container, getCapabilities, RELEASE_COMPONENT_RENDER_CACHE, Text, truncateToWidth, visibleWidth } from "@super-pi/tui";
 import { spawn } from "child_process";
 import type { Writable } from "node:stream";
@@ -88,7 +88,7 @@ export const bashToolSystemPromptContribution = {
 export type BashToolInput = Static<typeof bashSchema>;
 
 export interface BashToolDetails {
-	backgroundTask?: { id: string; state: "queued" | "completed" | "failed" | "cancelled"; kind: "shell" };
+	backgroundTask?: { id: string; state: "queued" | "running" | "completed" | "failed" | "cancelled"; kind: "shell" };
 	cwd?: string;
 	shellExecution?: ShellExecutionFacts;
 	truncation?: TruncationResult;
@@ -122,6 +122,7 @@ export interface BashOperations {
 			env?: NodeJS.ProcessEnv;
 			beforeSpawn?: (cwd: string) => void;
 			managedBackground?: boolean;
+			foreground?: ShellForegroundControl;
 		},
 	) => Promise<ShellProcessResult>;
 }
@@ -150,7 +151,7 @@ class ShellInputObserver {
 /** Shared process execution used by the built-in shell tools. */
 export function createLocalShellOperations(shellName: string, resolveShellConfig: () => ShellConfig): BashOperations {
 	return registerLocalShellBackend({
-		exec: async (command, cwd, { onData, signal, timeout, env, beforeSpawn, managedBackground }) => {
+		exec: async (command, cwd, { onData, signal, timeout, env, beforeSpawn, managedBackground, foreground }) => {
 			const observation: ChildProcessObservation = { started: false, exitCode: null, signal: null, outputDrained: false };
 			let stopReason: ShellTermination | undefined;
 			let inputObserver: ShellInputObserver | undefined;
@@ -206,6 +207,7 @@ export function createLocalShellOperations(shellName: string, resolveShellConfig
 			};
 			const onStdoutData = (data: Buffer) => { onData(data, "stdout"); };
 			const onStderrData = (data: Buffer) => { onData(data, "stderr"); };
+			const onExit = () => { if (foreground) foreground.completing = true; };
 
 			try {
 				// Set timeout if provided.
@@ -219,6 +221,7 @@ export function createLocalShellOperations(shellName: string, resolveShellConfig
 				// Stream stdout and stderr.
 				child.stdout?.on("data", onStdoutData);
 				child.stderr?.on("data", onStderrData);
+				if (foreground) child.once("exit", onExit);
 				// Handle abort signal by killing the entire process tree.
 				if (signal) {
 					if (signal.aborted) onAbort();
@@ -247,6 +250,7 @@ export function createLocalShellOperations(shellName: string, resolveShellConfig
 				if (child.pid) untrackDetachedChildPid(child.pid);
 				if (timeoutHandle) clearTimeout(timeoutHandle);
 				if (signal) signal.removeEventListener("abort", onAbort);
+				child.removeListener("exit", onExit);
 				child.stdout?.removeListener("data", onStdoutData); child.stderr?.removeListener("data", onStderrData);
 				await inputObserver?.finish();
 			}
@@ -924,13 +928,14 @@ export function createShellToolDefinition(
 	const commandPrefix = options?.commandPrefix;
 	const exposeSessionEnvironment = options?.exposeSessionEnvironment ?? true;
 	const spawnHook = options?.spawnHook;
-	const executeForeground: ToolDefinition<typeof bashSchema, BashToolDetails | undefined>["execute"] = async (
-			_toolCallId,
+	const executeForeground = async (
+			_toolCallId: string,
 			input: BashToolInput,
 			signal?: AbortSignal,
-			onUpdate?,
-			ctx?,
-		) => {
+			onUpdate?: (value: AgentToolResult<BashToolDetails | undefined>) => void,
+			ctx?: ExtensionContext,
+			foreground?: ShellForegroundControl,
+		): Promise<AgentToolResult<BashToolDetails | undefined>> => {
 			const { command } = input;
 			const timeout = input.timeout ?? (input.background ? DEFAULT_BACKGROUND_SHELL_TIMEOUT : undefined);
             let cwdBinding = getShellCwdBinding(input);
@@ -981,6 +986,13 @@ export function createShellToolDefinition(
 					updateTimer = undefined;
 				}
 			};
+			// Handoff may have happened while directory preparation was awaiting.
+			if (foreground?.background) onUpdate = undefined;
+			else if (foreground) foreground.stopUpdates = () => {
+				onUpdate = undefined;
+				updateDirty = false;
+				clearUpdateTimer();
+			};
 
 			const onUpdateTimer = () => { updateTimer = undefined; emitOutputUpdate(); };
 			const scheduleOutputUpdate = () => {
@@ -1019,7 +1031,7 @@ export function createShellToolDefinition(
 					if (outputFailure) throw outputFailure;
 					const snapshot = output.snapshot({ persistIfTruncated: true });
 					await output.closeTempFile();
-					if (input.background) {
+					if (input.background || foreground?.background) {
 						try { cleanup = await output.discardTempFile(); snapshot.fullOutputPath = undefined; }
 						catch (failure) { cleanup = "failed"; cleanupError = (failure instanceof Error ? failure.message : String(failure)).slice(0, 1000); }
 					}
@@ -1040,7 +1052,7 @@ export function createShellToolDefinition(
 				const details: BashToolDetails = { cwd: spawnContext.cwd };
 				if (truncation.truncated) {
 					details.truncation = truncation; details.fullOutputPath = snapshot.fullOutputPath; details.spillFileCapped = snapshot.spillFileCapped;
-					const outputLabel = input.background && cleanup !== "failed" ? "Background capture retains this tail only; temporary log removed after completion" : snapshot.fullOutputPath ? `${snapshot.spillFileCapped ? "Capped output file (5 MiB; later output unavailable)" : "Full output"}: ${snapshot.fullOutputPath}` : "Output log unavailable";
+					const outputLabel = (input.background || foreground?.background) && cleanup !== "failed" ? "Background capture retains this tail only; temporary log removed after completion" : snapshot.fullOutputPath ? `${snapshot.spillFileCapped ? "Capped output file (5 MiB; later output unavailable)" : "Full output"}: ${snapshot.fullOutputPath}` : "Output log unavailable";
 					const startLine = truncation.totalLines - truncation.outputLines + 1;
 					const endLine = truncation.totalLines;
 					if (truncation.lastLinePartial) {
@@ -1065,12 +1077,14 @@ export function createShellToolDefinition(
 						timeout,
 						env: spawnContext.env,
 						beforeSpawn: cwdBinding?.beforeSpawn,
-						managedBackground: input.background,
+						managedBackground: input.background || foreground !== undefined,
+						foreground,
 					});
 				} catch (err) {
 					executionError = err; processResult = shellProcessResultFromError(err);
 				}
 
+				if (foreground) foreground.completing = true;
 				const snapshot = await finishOutput();
 				const { text, details } = formatOutput(snapshot, executionError ? "" : "(no output)");
 				let outputText = text, failure: string | undefined;
@@ -1127,7 +1141,7 @@ export function createShellToolDefinition(
 					outputText = failure ? appendShellStatus(outputText, status) : `${status}\n${outputText}`;
 				}
 				if (cleanupError) outputText = appendShellStatus(outputText, `[SHELL_LOG_CLEANUP_FAILED] ${cleanupError}`);
-				if (failure || logError || input.background && cleanupError) throw new ToolResultError(outputText, { content: [{ type: "text", text: outputText }], details });
+				if (failure || logError || (input.background || foreground?.background) && cleanupError) throw new ToolResultError(outputText, { content: [{ type: "text", text: outputText }], details });
 				return { content: [{ type: "text", text: outputText }], details };
 			} finally {
 				clearUpdateTimer();
@@ -1141,7 +1155,10 @@ export function createShellToolDefinition(
 						exitCode: null, signal: null, termination: executionEntered ? "unknown" : "not_started",
 						output: { complete: executionEntered ? "unknown" : true, tailTruncated: false, log: "not_needed", cleanup: "not_needed" } } };
 				throw new ToolResultError(message, { content: [{ type: "text", text: message }], details }, { cause: error });
-			} finally { cwdBinding?.release(); }
+			} finally {
+				if (foreground) { foreground.completing = true; foreground.stopUpdates = undefined; }
+				cwdBinding?.release();
+			}
 	};
 	return {
 		name: config.name,
@@ -1160,7 +1177,18 @@ export function createShellToolDefinition(
             return args as BashToolInput;
         },
 		async execute(id, input, signal, onUpdate, ctx) {
-			if (!input.background) return executeForeground(id, input, signal, onUpdate, ctx);
+			if (!input.background) {
+				const launch = consumeForegroundShellLaunch(input);
+				if (!launch || !isLocalShellBackend(ops) || commandPrefix || (spawnHook && spawnHook !== withMsysStdinBridge) || ops.exec !== backendExecute) {
+					return executeForeground(id, input, signal, onUpdate, ctx);
+				}
+				try {
+					const waiting = launch((taskSignal, publish, control) => executeForeground(id, input, taskSignal, publish, ctx, control),
+						signal, onUpdate, () => getShellCwdBinding(input)?.release());
+					signal = undefined; onUpdate = undefined;
+					return waiting;
+				} catch (error) { getShellCwdBinding(input)?.release(); throw error; }
+			}
 			try {
 				validateBackgroundShellInput(input);
 				if (!isLocalShellBackend(ops) || commandPrefix || (spawnHook && spawnHook !== withMsysStdinBridge) || ops.exec !== backendExecute) throw new Error("[SHELL_BACKGROUND_UNSUPPORTED] Background commands require the unchanged built-in local shell backend.");
