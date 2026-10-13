@@ -61,6 +61,7 @@
 
 ## 历史、来源和评估
 
+- [OpenCode v2 与 Claude Code 借鉴任务计划](opencode-v2-claude-code-task-plan.md)：后台通知与续跑复核、Codemode 实现及同机性能对照、分阶段任务、性能门禁、最小必要测试和 Codex 审查流程。
 - [Pi 0.84.1 → 0.86.1 定向评估](policy-diagnostics-pi-0.84.1-0.86.1-assessment.md)：当前 Super Pi 与固定上游 tag 的差异记录，不是整体升级。
 - [独立化状态记录](../MIGRATION.md)：历史迁移收尾和当前数据边界。
 - [来源与许可证](../NOTICE.md)：Pi 和其他保留来源的归属。

@@ -358,7 +358,17 @@ test("SDK ask_user pauses mixed batch, then replans; cancellation preserves pend
 			if (cancel) await f.session.followUp("must stay queued");
 			choose(cancel ? undefined : "yes"); choose("yes"); await run;
 			assert.equal(effects, 0); assert.equal(calls, cancel ? 1 : 2);
-			if (cancel) assert.equal(f.session.pendingMessageCount, 1);
+			if (cancel) {
+				assert.equal(f.session.pendingMessageCount, 1);
+				await f.session.sendCustomMessage({ customType: "subagent-completion", content: "background report", display: true },
+					{ triggerTurn: true, deliverAs: "followUp" });
+				assert.equal(calls, 1, "a background report must not answer the cancelled question");
+				assert.equal(f.session.pendingMessageCount, 1);
+				await f.session.prompt("Use A");
+				assert.equal(calls, 3, "the explicit answer resumes first, then the preserved follow-up runs");
+				assert.equal(f.session.pendingMessageCount, 0);
+				assert.equal(f.session.messages.filter(m => m.role === "custom" && m.content === "background report").length, 1);
+			}
 		} finally { f.close(); }
 	}
 });

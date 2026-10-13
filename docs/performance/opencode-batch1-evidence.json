@@ -1,0 +1,1316 @@
+{
+  "schemaVersion": 1,
+  "title": "OpenCode comparison batch 1: local implementation and allocation evidence",
+  "date": "2026-10-13T01:07:32.145Z",
+  "environment": {
+    "node": "v26.4.0",
+    "platform": "win32",
+    "arch": "x64",
+    "os": "10.0.22631",
+    "cpu": "Intel(R) Core(TM) i7-14700KF"
+  },
+  "files": [
+    {
+      "path": "packages/agent/src/agent.ts",
+      "sha256": "d2b9deb1269f2372e38f7be05bd1abc1ec8a5e9ed555cf52f794f6e91df0be5e"
+    },
+    {
+      "path": "packages/coding-agent/src/core/agent-session.ts",
+      "sha256": "562059d51a46b47b3962ed48365b9ff1a03c8e8d88a45ccb451489140ffa95e9"
+    },
+    {
+      "path": "packages/coding-agent/src/core/compaction/compaction.ts",
+      "sha256": "dbf114c7874dc375808da2ebda133bce2c3003e8cc350f9b2f65862822d26a77"
+    },
+    {
+      "path": "packages/extensions/managed-tasks.ts",
+      "sha256": "a465406494b970b3bb0860c896821238ec3e78ada40dc87156acde449c2f6432"
+    },
+    {
+      "path": "packages/extensions/subagent/index.ts",
+      "sha256": "afa9f44a3767efc7a8f523c510e6c74b407722922285e9058e3926f54297e19d"
+    },
+    {
+      "path": "packages/extensions/resource-lifecycle-guard/background-shell.ts",
+      "sha256": "4ebd0565af3a92e1db62bce655454efc1628f1458b7617eb2175726d0487afc2"
+    },
+    {
+      "path": "scripts/bench/codemode-runtime.ts",
+      "sha256": "44c5b90468c884970192ef1a9c6932a0797949f2ad39c23ea699bbe5bf1f70a8"
+    },
+    {
+      "path": "scripts/bench/background-shell-tasks.ts",
+      "sha256": "686918963a293a4200781ac9db6940af43af4d864f72962904df0ad9726f5fbd"
+    },
+    {
+      "path": "scripts/bench/subagent-management.ts",
+      "sha256": "234f81c62571789add847ac428b24001729e612a52985b655a66884e8899ef7d"
+    },
+    {
+      "path": "scripts/bench/tui-session-event-allocations.ts",
+      "sha256": "586164a25dd157d0710dd6ba75e0f2202e1ffd123a6662b388ec4c4b35067f55"
+    },
+    {
+      "path": "packages/codemode/dist/runtime/host.js",
+      "sha256": "1b64ed62c2b804f41d803e260edabde13ce25685ed83ce88b4e1207360a371df"
+    },
+    {
+      "path": "packages/codemode/dist/runtime/worker.js",
+      "sha256": "d670c2fe5567ad694e340e17207e2c15c339b5ab36bef94f4923f35a5c59c1a7"
+    }
+  ],
+  "baseCommit": "af067d5efe3bc61128a4cda3162d23e908d3ece5",
+  "branch": "codex/opencode-batch1",
+  "commands": {
+    "checks": [
+      "npm run check",
+      "npm run build:offline",
+      "npm test",
+      "npm run build --workspace packages/coding-agent"
+    ],
+    "session": "node --expose-gc --experimental-strip-types scripts/bench/tui-session-event-allocations.ts --updates 10000 --warmup 1000",
+    "subagent": "node --expose-gc --experimental-strip-types scripts/bench/subagent-management.ts",
+    "shell": "node --expose-gc --experimental-strip-types scripts/bench/background-shell-tasks.ts",
+    "codemodeSource": "node --expose-gc --experimental-strip-types scripts/bench/codemode-runtime.ts",
+    "codemodeCompiled": "node --expose-gc --experimental-strip-types scripts/bench/codemode-runtime.ts --compiled"
+  },
+  "method": {
+    "order": "Candidates and baselines ran sequentially, with no concurrent tests/builds. Single allocation profiles are diagnostic, not statistical performance or pool admission evidence.",
+    "baseline": "git show af067d5:packages/agent/src/agent.ts, agent-session.ts and background-shell.ts to identity-recorded temporary .ts siblings; copies of current session/shell benchmarks rewrote only those imports. Other dependencies and built dist stayed constant. Subagent used its --baseline flag. These are targeted runtime comparisons, not a whole clean baseline build.",
+    "cleanup": "All temporary baseline modules and harness copies removed by recorded identity, including the import-failure module. Earlier upstream comparison directory is outside this batch and remains as previously documented.",
+    "allocations": "Notification formatting occurs once per terminal shell task/subagent batch, never per chunk. Only bounded excerpts serialized, <=8 shown, <=8192 UTF-16 code units <=24576 UTF-8 bytes. Existing task retention <=12000 chars; no model summary call, pool, timer or per-notification deferred added. Existing generic Agent queues have no global byte/count cap; this change bounds each managed-task report, not arbitrary extension traffic.",
+    "prompt": "Only prompt constants changed. Real-model summary length/factual quality not measured.",
+    "codemode": "Local tsc dist and real compiled worker.js, not an installed tarball or whole application. Import/WASM phases measured separately; execute includes startup+VM/prelude+bridge+termination. No isolated internal phase or compiled CPU fixture measurement. Each execute has a fresh Worker/VM. Allocation sampling excludes Worker heaps.",
+    "validation": "Full npm test passed. Later custom-tail and post-await cancellation guards were rebuilt and verified using existing session/interaction/compaction/source invariant suites. Final 44 settlement and length-recovery cases pass; preceding targeted 135 and 158 (+1 expected Windows skip) cases passed. No second full suite. Final check and coding-agent build passed. Seven added cases in existing test files, no new test file."
+  },
+  "baseline": {
+    "session": {
+      "schemaVersion": 1,
+      "benchmark": "tui-session-event-allocations",
+      "commit": "af067d5efe3bc61128a4cda3162d23e908d3ece5",
+      "node": "v26.4.0",
+      "platform": "win32",
+      "arch": "x64",
+      "fixtures": [
+        {
+          "name": "agent-session-to-interactive-stub",
+          "coverage": {
+            "realAgentObserverDelivery": true,
+            "realStableReference": true,
+            "realProgramStatusReporter": true,
+            "realAssistantComponent": false,
+            "realToolComponent": false,
+            "markdown": false,
+            "frameQueue": false
+          },
+          "results": [
+            {
+              "name": "message_update",
+              "updates": 10000,
+              "warmup": 1000,
+              "metrics": {
+                "cpuP50MsPerUpdate": 0.00005319999999983338,
+                "cpuP95MsPerUpdate": 0.00009720000000015716,
+                "sampledAllocationBytes": 413728,
+                "sampledAllocationBytesPerUpdate": 41.3728,
+                "minorGcCount": 0,
+                "majorGcCount": 1,
+                "totalGcDurationMs": 4.696800000965595,
+                "heapBefore": 41290632,
+                "heapAfter": 41465304,
+                "controlledGcAfter": 41373336,
+                "controlledGcHeapDeltaBytes": 82704,
+                "builtInListenerPromisesPerUpdate": 0,
+                "programStatusReportsPerUpdate": 0,
+                "rejectionObserversPerUpdate": 0,
+                "finalUpdateCorrect": 1
+              },
+              "sourceInvariant": {
+                "toolWrapperObjectsPerUpdate": 0,
+                "inlineClosuresPerUpdate": 0,
+                "promiseTailsPerUpdate": 0,
+                "promiseArraysPerUpdate": 0,
+                "arraysPerUpdate": 0
+              },
+              "topAllocationSites": [
+                {
+                  "bytes": 393640,
+                  "functionName": "handleEvent",
+                  "url": "file:///D:/RMProjects/Pi/packages/coding-agent/src/modes/interactive/interactive-mode.ts",
+                  "line": 4150,
+                  "column": 21
+                },
+                {
+                  "bytes": 13352,
+                  "functionName": "post",
+                  "url": "node:inspector",
+                  "line": 115,
+                  "column": 7
+                },
+                {
+                  "bytes": 2576,
+                  "functionName": "measure",
+                  "url": "file:///D:/RMProjects/Pi/scripts/bench/.oc01-session-24356.ts",
+                  "line": 142,
+                  "column": 23
+                },
+                {
+                  "bytes": 2064,
+                  "functionName": "now",
+                  "url": "node:internal/perf/performance",
+                  "line": 137,
+                  "column": 6
+                },
+                {
+                  "bytes": 1056,
+                  "functionName": "wrappedFn",
+                  "url": "node:internal/errors",
+                  "line": 541,
+                  "column": 21
+                },
+                {
+                  "bytes": 1040,
+                  "functionName": "#onMessage",
+                  "url": "node:inspector",
+                  "line": 84,
+                  "column": 13
+                }
+              ]
+            },
+            {
+              "name": "tool_execution_update",
+              "updates": 10000,
+              "warmup": 1000,
+              "metrics": {
+                "cpuP50MsPerUpdate": 0.00007099999999991269,
+                "cpuP95MsPerUpdate": 0.0000784000000001015,
+                "sampledAllocationBytes": 409280,
+                "sampledAllocationBytesPerUpdate": 40.928,
+                "minorGcCount": 0,
+                "majorGcCount": 1,
+                "totalGcDurationMs": 4.6992999985814095,
+                "heapBefore": 41361128,
+                "heapAfter": 41462192,
+                "controlledGcAfter": 41390656,
+                "controlledGcHeapDeltaBytes": 29528,
+                "builtInListenerPromisesPerUpdate": 0,
+                "programStatusReportsPerUpdate": 0,
+                "rejectionObserversPerUpdate": 0,
+                "finalUpdateCorrect": 1
+              },
+              "sourceInvariant": {
+                "toolWrapperObjectsPerUpdate": 0,
+                "inlineClosuresPerUpdate": 0,
+                "promiseTailsPerUpdate": 0,
+                "promiseArraysPerUpdate": 0,
+                "arraysPerUpdate": 0
+              },
+              "topAllocationSites": [
+                {
+                  "bytes": 403040,
+                  "functionName": "handleEvent",
+                  "url": "file:///D:/RMProjects/Pi/packages/coding-agent/src/modes/interactive/interactive-mode.ts",
+                  "line": 4150,
+                  "column": 21
+                },
+                {
+                  "bytes": 4160,
+                  "functionName": "wrappedFn",
+                  "url": "node:internal/errors",
+                  "line": 541,
+                  "column": 21
+                },
+                {
+                  "bytes": 1040,
+                  "functionName": "measure",
+                  "url": "file:///D:/RMProjects/Pi/scripts/bench/.oc01-session-24356.ts",
+                  "line": 142,
+                  "column": 23
+                },
+                {
+                  "bytes": 1040,
+                  "functionName": "now",
+                  "url": "node:internal/perf/performance",
+                  "line": 137,
+                  "column": 6
+                }
+              ]
+            },
+            {
+              "name": "observer-coalesced-message_update",
+              "updates": 10000,
+              "warmup": 1000,
+              "metrics": {
+                "rawUpdates": 10000,
+                "coalescedUpdates": 9999,
+                "coalescedDeliveries": 1,
+                "snapshotCount": 1,
+                "extensionObserverPublishes": 1,
+                "promisesPerRawUpdate": 0,
+                "promisesPerDelivery": 0,
+                "observerBridgePromisesPerDelivery": 0,
+                "builtInInteractivePromisesPerDelivery": 0,
+                "programStatusReportsPerDelivery": 0,
+                "rejectionObserversPerDelivery": 0,
+                "sampledAllocationBytes": 5236104,
+                "sampledAllocationBytesPerRawUpdate": 523.6104,
+                "sampledAllocationBytesPerDelivery": 5236104,
+                "cpuP50MsPerRawUpdate": 0.0006140000000000327,
+                "cpuP95MsPerRawUpdate": 0.0011061999999999444,
+                "minorGcCount": 0,
+                "majorGcCount": 1,
+                "totalGcDurationMs": 4.552700001746416,
+                "heapBefore": 41420224,
+                "heapAfter": 42003016,
+                "controlledGcAfter": 41758560,
+                "controlledGcHeapDeltaBytes": 338336,
+                "finalUpdateCorrect": 1
+              },
+              "sourceInvariant": {
+                "toolWrapperObjectsPerUpdate": 0,
+                "inlineClosuresPerUpdate": 0,
+                "promiseTailsPerUpdate": 0,
+                "promiseArraysPerUpdate": 0
+              },
+              "topAllocationSites": [
+                {
+                  "bytes": 1920016,
+                  "functionName": "next",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 1517024,
+                  "functionName": "scheduleFlush",
+                  "url": "file:///D:/RMProjects/Pi/packages/agent/src/event-delivery.ts",
+                  "line": 258,
+                  "column": 23
+                },
+                {
+                  "bytes": 907368,
+                  "functionName": "now",
+                  "url": "node:internal/perf/performance",
+                  "line": 137,
+                  "column": 6
+                },
+                {
+                  "bytes": 435688,
+                  "functionName": "values",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 394680,
+                  "functionName": "entries",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 22704,
+                  "functionName": "min",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 17552,
+                  "functionName": "max",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 3480,
+                  "functionName": "structuredClone",
+                  "url": "node:internal/worker/js_transferable",
+                  "line": 113,
+                  "column": 25
+                },
+                {
+                  "bytes": 3240,
+                  "functionName": "deepFreezeSnapshot",
+                  "url": "file:///D:/RMProjects/Pi/packages/agent/src/.oc01-baseline-24356.ts",
+                  "line": 75,
+                  "column": 28
+                },
+                {
+                  "bytes": 2160,
+                  "functionName": "measureFullObserverChain",
+                  "url": "file:///D:/RMProjects/Pi/scripts/bench/.oc01-session-24356.ts",
+                  "line": 234,
+                  "column": 40
+                },
+                {
+                  "bytes": 1200,
+                  "functionName": "runFlush",
+                  "url": "file:///D:/RMProjects/Pi/packages/agent/src/event-delivery.ts",
+                  "line": 342,
+                  "column": 24
+                },
+                {
+                  "bytes": 1176,
+                  "functionName": "push",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 1152,
+                  "functionName": "insert",
+                  "url": "node:internal/timers",
+                  "line": 387,
+                  "column": 16
+                },
+                {
+                  "bytes": 1152,
+                  "functionName": "Timeout",
+                  "url": "node:internal/timers",
+                  "line": 179,
+                  "column": 14
+                },
+                {
+                  "bytes": 1120,
+                  "functionName": "(anonymous)",
+                  "url": "node:internal/webidl",
+                  "line": 712,
+                  "column": 18
+                },
+                {
+                  "bytes": 1088,
+                  "functionName": "handleEvent",
+                  "url": "file:///D:/RMProjects/Pi/packages/coding-agent/src/modes/interactive/program-status-reporter.ts",
+                  "line": 38,
+                  "column": 13
+                },
+                {
+                  "bytes": 1080,
+                  "functionName": "initAsyncResource",
+                  "url": "node:internal/timers",
+                  "line": 164,
+                  "column": 27
+                },
+                {
+                  "bytes": 1064,
+                  "functionName": "delete",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 1064,
+                  "functionName": "TimersList",
+                  "url": "node:internal/timers",
+                  "line": 267,
+                  "column": 14
+                },
+                {
+                  "bytes": 1056,
+                  "functionName": "publishLatest",
+                  "url": "file:///D:/RMProjects/Pi/packages/agent/src/event-delivery.ts",
+                  "line": 200,
+                  "column": 15
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "shell": {
+      "node": "v26.4.0",
+      "platform": "win32",
+      "producer": "synthetic chunks through production shell tool and manager; no provider traffic",
+      "profiles": [
+        {
+          "mode": "foreground",
+          "updates": 1000,
+          "publications": 3,
+          "chunkWrites": 0,
+          "notifications": 0,
+          "notificationChars": 0,
+          "sampledBytesPerChunk": 6021.312,
+          "topSites": [
+            [
+              "createFromString:node:buffer:506",
+              2050616
+            ],
+            [
+              "decode:node:internal/encoding:481",
+              1157808
+            ],
+            [
+              "toString:node:buffer:901",
+              1024160
+            ],
+            [
+              "Uint8Array::0",
+              195000
+            ],
+            [
+              "indexOf::0",
+              130776
+            ]
+          ]
+        },
+        {
+          "mode": "background",
+          "updates": 1000,
+          "publications": 0,
+          "chunkWrites": 0,
+          "history": {
+            "opens": 1,
+            "writes": 3,
+            "checkpointWrites": 0,
+            "recovered": 0,
+            "openHandles": 0,
+            "rows": 1
+          },
+          "notifications": 1,
+          "notificationChars": 151,
+          "sampledBytesPerChunk": 5353.552,
+          "topSites": [
+            [
+              "createFromString:node:buffer:506",
+              2050616
+            ],
+            [
+              "decode:node:internal/encoding:481",
+              1215096
+            ],
+            [
+              "toString:node:buffer:901",
+              1024160
+            ],
+            [
+              "Uint8Array::0",
+              306992
+            ],
+            [
+              "indexOf::0",
+              126632
+            ]
+          ]
+        }
+      ],
+      "lifecycle": [
+        {
+          "mode": "complete",
+          "highWaterMark": 4,
+          "queueHighWaterMark": 4,
+          "releases": 8,
+          "retained": 0
+        },
+        {
+          "mode": "failure",
+          "highWaterMark": 4,
+          "queueHighWaterMark": 4,
+          "releases": 8,
+          "retained": 0
+        },
+        {
+          "mode": "cancel",
+          "highWaterMark": 4,
+          "queueHighWaterMark": 4,
+          "releases": 8,
+          "retained": 0
+        },
+        {
+          "mode": "dispose",
+          "highWaterMark": 4,
+          "queueHighWaterMark": 4,
+          "releases": 8,
+          "retained": 0
+        }
+      ],
+      "nativeJobs": {
+        "handles": 0,
+        "processHandles": 0,
+        "created": 4,
+        "cleanupChecks": 4,
+        "sampledBytesIncludingColdBindingLoad": 854016
+      },
+      "perChunk": {
+        "promises": 0,
+        "controllers": 0
+      },
+      "references": {
+        "total": 118,
+        "live": 0
+      }
+    },
+    "subagent": {
+      "baseline": "af067d5efe3bc61128a4cda3162d23e908d3ece5",
+      "node": "v26.4.0",
+      "platform": "win32",
+      "coverage": "Production stdout/parse/retention methods; simulated baseline observer snapshot. Downstream TUI is covered separately by tui-tool-leaf-allocations.",
+      "profiles": [
+        {
+          "children": 8,
+          "updates": 1000,
+          "elapsedMs": 4.285199999999918,
+          "sampledBytes": 8733208,
+          "sampledBytesPerUpdate": 8733.208,
+          "snapshots": 0,
+          "fullMessageSerializations": 0,
+          "retainedMessages": 24,
+          "topSites": [
+            {
+              "function": "processLine",
+              "bytes": 4344928
+            },
+            {
+              "function": "onStdoutData",
+              "bytes": 2816088
+            },
+            {
+              "function": "write",
+              "bytes": 1536520
+            },
+            {
+              "function": "post",
+              "bytes": 18552
+            },
+            {
+              "function": "slice",
+              "bytes": 12352
+            }
+          ]
+        },
+        {
+          "children": 16,
+          "updates": 1000,
+          "elapsedMs": 3.959600000000023,
+          "sampledBytes": 8811512,
+          "sampledBytesPerUpdate": 8811.512,
+          "snapshots": 0,
+          "fullMessageSerializations": 0,
+          "retainedMessages": 48,
+          "topSites": [
+            {
+              "function": "processLine",
+              "bytes": 4425856
+            },
+            {
+              "function": "onStdoutData",
+              "bytes": 4385656
+            }
+          ]
+        },
+        {
+          "children": 64,
+          "updates": 1000,
+          "elapsedMs": 4.537800000000061,
+          "sampledBytes": 8759016,
+          "sampledBytesPerUpdate": 8759.016,
+          "snapshots": 0,
+          "fullMessageSerializations": 0,
+          "retainedMessages": 192,
+          "topSites": [
+            {
+              "function": "onStdoutData",
+              "bytes": 4402776
+            },
+            {
+              "function": "processLine",
+              "bytes": 4356240
+            }
+          ]
+        }
+      ],
+      "cleanup": [
+        {
+          "mode": "complete",
+          "highWaterMark": 16,
+          "queueHighWaterMark": 48,
+          "retainedAfterDispose": 0,
+          "notificationChars": 5647
+        },
+        {
+          "mode": "failure",
+          "highWaterMark": 16,
+          "queueHighWaterMark": 48,
+          "retainedAfterDispose": 0,
+          "notificationChars": 1566
+        },
+        {
+          "mode": "cancel",
+          "highWaterMark": 16,
+          "queueHighWaterMark": 48,
+          "retainedAfterDispose": 0,
+          "notificationChars": 5645
+        },
+        {
+          "mode": "dispose",
+          "highWaterMark": 16,
+          "queueHighWaterMark": 48,
+          "retainedAfterDispose": 0,
+          "notificationChars": 5646
+        }
+      ],
+      "weakReferences": {
+        "total": 344,
+        "liveResults": 0,
+        "liveTasks": 0
+      }
+    }
+  },
+  "candidate": {
+    "session": {
+      "schemaVersion": 1,
+      "benchmark": "tui-session-event-allocations",
+      "commit": "af067d5efe3bc61128a4cda3162d23e908d3ece5",
+      "node": "v26.4.0",
+      "platform": "win32",
+      "arch": "x64",
+      "fixtures": [
+        {
+          "name": "agent-session-to-interactive-stub",
+          "coverage": {
+            "realAgentObserverDelivery": true,
+            "realStableReference": true,
+            "realProgramStatusReporter": true,
+            "realAssistantComponent": false,
+            "realToolComponent": false,
+            "markdown": false,
+            "frameQueue": false
+          },
+          "results": [
+            {
+              "name": "message_update",
+              "updates": 10000,
+              "warmup": 1000,
+              "metrics": {
+                "cpuP50MsPerUpdate": 0.0000545999999999367,
+                "cpuP95MsPerUpdate": 0.00009600000000000363,
+                "sampledAllocationBytes": 430576,
+                "sampledAllocationBytesPerUpdate": 43.0576,
+                "minorGcCount": 0,
+                "majorGcCount": 1,
+                "totalGcDurationMs": 4.743200000375509,
+                "heapBefore": 40678568,
+                "heapAfter": 40854920,
+                "controlledGcAfter": 40762280,
+                "controlledGcHeapDeltaBytes": 83712,
+                "builtInListenerPromisesPerUpdate": 0,
+                "programStatusReportsPerUpdate": 0,
+                "rejectionObserversPerUpdate": 0,
+                "finalUpdateCorrect": 1
+              },
+              "sourceInvariant": {
+                "toolWrapperObjectsPerUpdate": 0,
+                "inlineClosuresPerUpdate": 0,
+                "promiseTailsPerUpdate": 0,
+                "promiseArraysPerUpdate": 0,
+                "arraysPerUpdate": 0
+              },
+              "topAllocationSites": [
+                {
+                  "bytes": 407200,
+                  "functionName": "handleEvent",
+                  "url": "file:///D:/RMProjects/Pi/packages/coding-agent/src/modes/interactive/interactive-mode.ts",
+                  "line": 4150,
+                  "column": 21
+                },
+                {
+                  "bytes": 13352,
+                  "functionName": "post",
+                  "url": "node:inspector",
+                  "line": 115,
+                  "column": 7
+                },
+                {
+                  "bytes": 4672,
+                  "functionName": "measure",
+                  "url": "file:///D:/RMProjects/Pi/scripts/bench/tui-session-event-allocations.ts",
+                  "line": 142,
+                  "column": 23
+                },
+                {
+                  "bytes": 4176,
+                  "functionName": "wrappedFn",
+                  "url": "node:internal/errors",
+                  "line": 541,
+                  "column": 21
+                },
+                {
+                  "bytes": 1176,
+                  "functionName": "push",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                }
+              ]
+            },
+            {
+              "name": "tool_execution_update",
+              "updates": 10000,
+              "warmup": 1000,
+              "metrics": {
+                "cpuP50MsPerUpdate": 0.00007000000000016371,
+                "cpuP95MsPerUpdate": 0.00009140000000002147,
+                "sampledAllocationBytes": 392544,
+                "sampledAllocationBytesPerUpdate": 39.2544,
+                "minorGcCount": 0,
+                "majorGcCount": 1,
+                "totalGcDurationMs": 3.960200000554323,
+                "heapBefore": 40748760,
+                "heapAfter": 40842568,
+                "controlledGcAfter": 40777392,
+                "controlledGcHeapDeltaBytes": 28632,
+                "builtInListenerPromisesPerUpdate": 0,
+                "programStatusReportsPerUpdate": 0,
+                "rejectionObserversPerUpdate": 0,
+                "finalUpdateCorrect": 1
+              },
+              "sourceInvariant": {
+                "toolWrapperObjectsPerUpdate": 0,
+                "inlineClosuresPerUpdate": 0,
+                "promiseTailsPerUpdate": 0,
+                "promiseArraysPerUpdate": 0,
+                "arraysPerUpdate": 0
+              },
+              "topAllocationSites": [
+                {
+                  "bytes": 386320,
+                  "functionName": "handleEvent",
+                  "url": "file:///D:/RMProjects/Pi/packages/coding-agent/src/modes/interactive/interactive-mode.ts",
+                  "line": 4150,
+                  "column": 21
+                },
+                {
+                  "bytes": 3120,
+                  "functionName": "wrappedFn",
+                  "url": "node:internal/errors",
+                  "line": 541,
+                  "column": 21
+                },
+                {
+                  "bytes": 3104,
+                  "functionName": "now",
+                  "url": "node:internal/perf/performance",
+                  "line": 137,
+                  "column": 6
+                }
+              ]
+            },
+            {
+              "name": "observer-coalesced-message_update",
+              "updates": 10000,
+              "warmup": 1000,
+              "metrics": {
+                "rawUpdates": 10000,
+                "coalescedUpdates": 9999,
+                "coalescedDeliveries": 1,
+                "snapshotCount": 1,
+                "extensionObserverPublishes": 1,
+                "promisesPerRawUpdate": 0,
+                "promisesPerDelivery": 0,
+                "observerBridgePromisesPerDelivery": 0,
+                "builtInInteractivePromisesPerDelivery": 0,
+                "programStatusReportsPerDelivery": 0,
+                "rejectionObserversPerDelivery": 0,
+                "sampledAllocationBytes": 5157664,
+                "sampledAllocationBytesPerRawUpdate": 515.7664,
+                "sampledAllocationBytesPerDelivery": 5157664,
+                "cpuP50MsPerRawUpdate": 0.0006295999999999821,
+                "cpuP95MsPerRawUpdate": 0.0010374000000001615,
+                "minorGcCount": 0,
+                "majorGcCount": 1,
+                "totalGcDurationMs": 4.543400000780821,
+                "heapBefore": 40806736,
+                "heapAfter": 41382192,
+                "controlledGcAfter": 41134704,
+                "controlledGcHeapDeltaBytes": 327968,
+                "finalUpdateCorrect": 1
+              },
+              "sourceInvariant": {
+                "toolWrapperObjectsPerUpdate": 0,
+                "inlineClosuresPerUpdate": 0,
+                "promiseTailsPerUpdate": 0,
+                "promiseArraysPerUpdate": 0
+              },
+              "topAllocationSites": [
+                {
+                  "bytes": 1960192,
+                  "functionName": "next",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 1454320,
+                  "functionName": "scheduleFlush",
+                  "url": "file:///D:/RMProjects/Pi/packages/agent/src/event-delivery.ts",
+                  "line": 258,
+                  "column": 23
+                },
+                {
+                  "bytes": 838464,
+                  "functionName": "now",
+                  "url": "node:internal/perf/performance",
+                  "line": 137,
+                  "column": 6
+                },
+                {
+                  "bytes": 423920,
+                  "functionName": "entries",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 423112,
+                  "functionName": "values",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 18576,
+                  "functionName": "max",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 17552,
+                  "functionName": "min",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 4240,
+                  "functionName": "get",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 3288,
+                  "functionName": "Timeout",
+                  "url": "node:internal/timers",
+                  "line": 179,
+                  "column": 14
+                },
+                {
+                  "bytes": 3216,
+                  "functionName": "deepFreezeSnapshot",
+                  "url": "file:///D:/RMProjects/Pi/packages/agent/src/agent.ts",
+                  "line": 75,
+                  "column": 28
+                },
+                {
+                  "bytes": 2112,
+                  "functionName": "wrappedFn",
+                  "url": "node:internal/errors",
+                  "line": 541,
+                  "column": 21
+                },
+                {
+                  "bytes": 2088,
+                  "functionName": "structuredClone",
+                  "url": "node:internal/worker/js_transferable",
+                  "line": 113,
+                  "column": 25
+                },
+                {
+                  "bytes": 1200,
+                  "functionName": "runFlush",
+                  "url": "file:///D:/RMProjects/Pi/packages/agent/src/event-delivery.ts",
+                  "line": 342,
+                  "column": 24
+                },
+                {
+                  "bytes": 1152,
+                  "functionName": "insert",
+                  "url": "node:internal/timers",
+                  "line": 387,
+                  "column": 16
+                },
+                {
+                  "bytes": 1064,
+                  "functionName": "delete",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 1064,
+                  "functionName": "TimersList",
+                  "url": "node:internal/timers",
+                  "line": 267,
+                  "column": 14
+                },
+                {
+                  "bytes": 1064,
+                  "functionName": "fn",
+                  "url": "node:internal/util",
+                  "line": 477,
+                  "column": 14
+                },
+                {
+                  "bytes": 1040,
+                  "functionName": "newAsyncId",
+                  "url": "node:internal/async_hooks",
+                  "line": 426,
+                  "column": 20
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "subagent": {
+      "baseline": "working-tree",
+      "node": "v26.4.0",
+      "platform": "win32",
+      "coverage": "Production stdout/parse/retention methods; simulated baseline observer snapshot. Downstream TUI is covered separately by tui-tool-leaf-allocations.",
+      "profiles": [
+        {
+          "children": 8,
+          "updates": 1000,
+          "elapsedMs": 4.5282000000000835,
+          "sampledBytes": 8678392,
+          "sampledBytesPerUpdate": 8678.392,
+          "snapshots": 0,
+          "fullMessageSerializations": 0,
+          "retainedMessages": 24,
+          "topSites": [
+            {
+              "function": "processLine",
+              "bytes": 4515360
+            },
+            {
+              "function": "onStdoutData",
+              "bytes": 2687352
+            },
+            {
+              "function": "write",
+              "bytes": 1438080
+            },
+            {
+              "function": "post",
+              "bytes": 17008
+            },
+            {
+              "function": "slice",
+              "bytes": 16448
+            }
+          ]
+        },
+        {
+          "children": 16,
+          "updates": 1000,
+          "elapsedMs": 4.484400000000051,
+          "sampledBytes": 8727368,
+          "sampledBytesPerUpdate": 8727.368,
+          "snapshots": 0,
+          "fullMessageSerializations": 0,
+          "retainedMessages": 48,
+          "topSites": [
+            {
+              "function": "processLine",
+              "bytes": 4400960
+            },
+            {
+              "function": "onStdoutData",
+              "bytes": 4326408
+            }
+          ]
+        },
+        {
+          "children": 64,
+          "updates": 1000,
+          "elapsedMs": 4.791299999999978,
+          "sampledBytes": 8853104,
+          "sampledBytesPerUpdate": 8853.104,
+          "snapshots": 0,
+          "fullMessageSerializations": 0,
+          "retainedMessages": 192,
+          "topSites": [
+            {
+              "function": "onStdoutData",
+              "bytes": 4484280
+            },
+            {
+              "function": "processLine",
+              "bytes": 4364720
+            },
+            {
+              "function": "delete",
+              "bytes": 4104
+            }
+          ]
+        }
+      ],
+      "cleanup": [
+        {
+          "mode": "complete",
+          "highWaterMark": 16,
+          "queueHighWaterMark": 48,
+          "retainedAfterDispose": 0,
+          "notificationChars": 5647
+        },
+        {
+          "mode": "failure",
+          "highWaterMark": 16,
+          "queueHighWaterMark": 48,
+          "retainedAfterDispose": 0,
+          "notificationChars": 1566
+        },
+        {
+          "mode": "cancel",
+          "highWaterMark": 16,
+          "queueHighWaterMark": 48,
+          "retainedAfterDispose": 0,
+          "notificationChars": 5645
+        },
+        {
+          "mode": "dispose",
+          "highWaterMark": 16,
+          "queueHighWaterMark": 48,
+          "retainedAfterDispose": 0,
+          "notificationChars": 5646
+        }
+      ],
+      "weakReferences": {
+        "total": 344,
+        "liveResults": 0,
+        "liveTasks": 0
+      }
+    },
+    "shell": {
+      "node": "v26.4.0",
+      "platform": "win32",
+      "producer": "synthetic chunks through production shell tool and manager; no provider traffic",
+      "profiles": [
+        {
+          "mode": "foreground",
+          "updates": 1000,
+          "publications": 3,
+          "chunkWrites": 0,
+          "notifications": 0,
+          "notificationChars": 0,
+          "sampledBytesPerChunk": 5844.248,
+          "topSites": [
+            [
+              "createFromString:node:buffer:506",
+              2050616
+            ],
+            [
+              "decode:node:internal/encoding:481",
+              1180200
+            ],
+            [
+              "toString:node:buffer:901",
+              1028288
+            ],
+            [
+              "Uint8Array::0",
+              145288
+            ],
+            [
+              "indexOf::0",
+              126632
+            ]
+          ]
+        },
+        {
+          "mode": "background",
+          "updates": 1000,
+          "publications": 0,
+          "chunkWrites": 0,
+          "history": {
+            "opens": 1,
+            "writes": 3,
+            "checkpointWrites": 0,
+            "recovered": 0,
+            "openHandles": 0,
+            "rows": 1
+          },
+          "notifications": 1,
+          "notificationChars": 1161,
+          "sampledBytesPerChunk": 5315.392,
+          "topSites": [
+            [
+              "createFromString:node:buffer:506",
+              2050616
+            ],
+            [
+              "decode:node:internal/encoding:481",
+              1259688
+            ],
+            [
+              "toString:node:buffer:901",
+              1032368
+            ],
+            [
+              "Uint8Array::0",
+              232320
+            ],
+            [
+              "indexOf::0",
+              126632
+            ]
+          ]
+        }
+      ],
+      "lifecycle": [
+        {
+          "mode": "complete",
+          "highWaterMark": 4,
+          "queueHighWaterMark": 4,
+          "releases": 8,
+          "retained": 0
+        },
+        {
+          "mode": "failure",
+          "highWaterMark": 4,
+          "queueHighWaterMark": 4,
+          "releases": 8,
+          "retained": 0
+        },
+        {
+          "mode": "cancel",
+          "highWaterMark": 4,
+          "queueHighWaterMark": 4,
+          "releases": 8,
+          "retained": 0
+        },
+        {
+          "mode": "dispose",
+          "highWaterMark": 4,
+          "queueHighWaterMark": 4,
+          "releases": 8,
+          "retained": 0
+        }
+      ],
+      "nativeJobs": {
+        "handles": 0,
+        "processHandles": 0,
+        "created": 4,
+        "cleanupChecks": 4,
+        "sampledBytesIncludingColdBindingLoad": 1032552
+      },
+      "perChunk": {
+        "promises": 0,
+        "controllers": 0
+      },
+      "references": {
+        "total": 118,
+        "live": 0
+      }
+    },
+    "codemodeSource": {
+      "benchmark": "codemode-runtime",
+      "mode": "source",
+      "node": "v26.4.0",
+      "platform": "win32",
+      "moduleImportMs": 12.614799999999995,
+      "catalogConstructionMs": 0.8981999999999033,
+      "closeMs": 0.2717999999999563,
+      "warmSamplesMs": [
+        46.50569999999999,
+        45.454800000000006,
+        43.990699999999975,
+        42.46289999999999,
+        43.22300000000001,
+        42.46629999999999,
+        43.00320000000005,
+        42.16820000000001,
+        41.52159999999998,
+        43.30200000000002,
+        42.008500000000026,
+        42.575399999999945,
+        41.444000000000074,
+        42.408000000000015,
+        41.54679999999996,
+        40.98530000000005,
+        42.15930000000003,
+        41.13149999999996,
+        41.16289999999992,
+        40.067699999999945,
+        40.31310000000008,
+        41.44939999999997,
+        40.53230000000008,
+        41.437999999999874,
+        42.202800000000025,
+        41.68269999999984,
+        41.00929999999994,
+        42.02970000000005,
+        40.95029999999997,
+        41.489900000000034
+      ],
+      "wasmCompileMs": 3.2276999999999987,
+      "firstScriptMs": 79.2082,
+      "warmMedianMs": 42.008500000000026,
+      "warmP95Ms": 45.454800000000006,
+      "batchCalls": 100,
+      "batchMs": 47.74160000000006,
+      "workersStarted": 32,
+      "workersStopped": 32,
+      "trackedReferences": 128,
+      "retainedAfterGc": 0,
+      "sampledHostBytes": 2652312,
+      "coverage": "real Worker and QuickJS; execution includes Worker startup, VM/prelude, execution, bridge and termination (not separately timed); warm=compiled WASM reused, fresh Worker/VM per run; sampling enabled for 30 warm no-ops and batch; excludes worker heaps, AgentSession, policy and UI; compiled is local tsc output, not an installed release"
+    },
+    "codemodeCompiled": {
+      "benchmark": "codemode-runtime",
+      "mode": "compiled",
+      "node": "v26.4.0",
+      "platform": "win32",
+      "moduleImportMs": 5.6152000000000015,
+      "catalogConstructionMs": 0.7658999999996894,
+      "closeMs": 0.24190000000031375,
+      "warmSamplesMs": [
+        36.03370000000001,
+        33.0317,
+        31.735600000000005,
+        31.267499999999984,
+        30.48440000000005,
+        30.819799999999987,
+        30.861800000000017,
+        30.514499999999998,
+        31.722500000000025,
+        31.7962,
+        30.475199999999973,
+        29.9495,
+        30.944500000000062,
+        30.448099999999954,
+        31.367200000000025,
+        31.44939999999997,
+        31.296400000000062,
+        30.670299999999997,
+        30.75720000000001,
+        31.12099999999998,
+        30.664300000000026,
+        31.223199999999906,
+        31.450899999999933,
+        30.01010000000008,
+        30.656599999999912,
+        30.81110000000001,
+        30.74090000000001,
+        30.151200000000017,
+        30.92899999999986,
+        30.855800000000045
+      ],
+      "wasmCompileMs": 3.018799999999999,
+      "firstScriptMs": 69.18639999999999,
+      "warmMedianMs": 30.861800000000017,
+      "warmP95Ms": 33.0317,
+      "batchCalls": 100,
+      "batchMs": 37.460199999999986,
+      "workersStarted": 32,
+      "workersStopped": 32,
+      "trackedReferences": 128,
+      "retainedAfterGc": 0,
+      "sampledHostBytes": 2728488,
+      "coverage": "real Worker and QuickJS; execution includes Worker startup, VM/prelude, execution, bridge and termination (not separately timed); warm=compiled WASM reused, fresh Worker/VM per run; sampling enabled for 30 warm no-ops and batch; excludes worker heaps, AgentSession, policy and UI; compiled is local tsc output, not an installed release"
+    }
+  }
+}

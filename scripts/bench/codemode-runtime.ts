@@ -1,25 +1,37 @@
 import assert from "node:assert/strict";
 import { Session } from "node:inspector/promises";
 import { setImmediate as nextTask } from "node:timers/promises";
-import { CodemodeSandbox } from "../../packages/codemode/src/runtime/host.ts";
-import { loadQuickJSWasm } from "../../packages/codemode/src/wasm.ts";
+
+const mode = process.argv.includes("--compiled") ? "compiled" : "source";
+const runtimeRoot = mode === "compiled" ? "dist" : "src";
+const extension = mode === "compiled" ? "js" : "ts";
+const importStart = performance.now();
+const { CodemodeSandbox } = await import(new URL(`../../packages/codemode/${runtimeRoot}/runtime/host.${extension}`, import.meta.url).href);
+const { loadQuickJSWasm } = await import(new URL(`../../packages/codemode/${runtimeRoot}/wasm.${extension}`, import.meta.url).href);
+const moduleImportMs = performance.now() - importStart;
 
 const gc = (globalThis as { gc?: () => void }).gc;
 assert.ok(gc, "Run with --expose-gc");
 const references: WeakRef<object>[] = [];
 const latencies: number[] = [];
+const rawLatencies: number[] = [];
+let catalogConstructionMs = 0, closeMs = 0;
 let workersStarted = 0, workersStopped = 0, calls = 0;
 const serializerPayload = "x".repeat(4096);
 function read() { calls++; return serializerPayload; }
 function compare(a: number, b: number) { return a - b; }
 async function cycle(code: string): Promise<number> {
 	const catalog = [{ name: "read", execute: read }];
+	const catalogStart = performance.now();
 	const sandbox = new CodemodeSandbox({ tools: catalog });
+	catalogConstructionMs += performance.now() - catalogStart;
 	const start = performance.now();
 	const result = await sandbox.execute(code);
 	const duration = performance.now() - start;
 	assert.ok(result.ok, JSON.stringify(result));
+	const closeStart = performance.now();
 	await sandbox.close();
+	closeMs += performance.now() - closeStart;
 	const stats = sandbox.stats;
 	assert.equal(stats.activeExecutions, 0);
 	assert.equal(stats.workersStarted, stats.workersStopped);
@@ -50,9 +62,11 @@ try {
 	assert.equal(calls, 100);
 	assert.equal(workersStarted, 32);
 	assert.equal(workersStopped, 32);
+	rawLatencies.push(...latencies);
 	latencies.sort(compare);
-	process.stdout.write(JSON.stringify({ benchmark: "codemode-runtime", node: process.version, platform: process.platform,
+	process.stdout.write(JSON.stringify({ benchmark: "codemode-runtime", mode, node: process.version, platform: process.platform,
+		moduleImportMs, catalogConstructionMs, closeMs, warmSamplesMs: rawLatencies,
 		wasmCompileMs, firstScriptMs, warmMedianMs: latencies[15], warmP95Ms: latencies[28], batchCalls: calls, batchMs,
 		workersStarted, workersStopped, trackedReferences: references.length, retainedAfterGc: retained, sampledHostBytes: sampledBytes,
-		coverage: "real Worker and QuickJS; host allocation sampling excludes worker heaps, AgentSession, policy and UI" }) + "\n");
+		coverage: "real Worker and QuickJS; execution includes Worker startup, VM/prelude, execution, bridge and termination (not separately timed); warm=compiled WASM reused, fresh Worker/VM per run; sampling enabled for 30 warm no-ops and batch; excludes worker heaps, AgentSession, policy and UI; compiled is local tsc output, not an installed release" }) + "\n");
 } finally { inspector.disconnect(); }

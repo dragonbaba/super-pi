@@ -9,6 +9,7 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 import { SubagentProcessRun } from "../../packages/extensions/subagent/index.ts";
 import { SubagentScheduler } from "../../packages/extensions/subagent/scheduler.ts";
 import { SubagentTasks } from "../../packages/extensions/subagent/tasks.ts";
+import { formatTaskCompletion, TASK_COMPLETION_CHARS } from "../../packages/extensions/managed-tasks.ts";
 
 if (!globalThis.gc) throw new Error("Run with --expose-gc.");
 const baselineIndex = process.argv.indexOf("--baseline");
@@ -21,8 +22,9 @@ if (baseline) {
 	const source = execFileSync("git", ["show", `${baseline}:packages/extensions/subagent/index.ts`], { encoding: "utf8" });
 	assert.ok(source.includes("class SubagentProcessRun {"));
 	baselinePath = fileURLToPath(new URL(`../../packages/extensions/subagent/.bench-baseline-${process.pid}.ts`, import.meta.url));
-	writeFileSync(baselinePath, source.replace("class SubagentProcessRun {", "export class SubagentProcessRun {"), { flag: "wx" });
-	Run = (await import(pathToFileURL(baselinePath).href)).SubagentProcessRun;
+	writeFileSync(baselinePath, source.replace(/^(?:export )?class SubagentProcessRun \{/m, "export class SubagentProcessRun {"), { flag: "wx" });
+	try { Run = (await import(pathToFileURL(baselinePath).href)).SubagentProcessRun; }
+	catch (error) { unlinkSync(baselinePath); throw error; }
 }
 
 function result() {
@@ -91,8 +93,10 @@ async function lifecycle() {
 		const workspace = { canonicalCwd: process.cwd(), allowMutation: false };
 		const reservation = scheduler.reserve(new Array(64).fill(workspace));
 		const jobs: Promise<void>[] = [];
+		const owned = [];
 		for (let i = 0; i < 64; i++) {
 			const task = tasks.create("scout"); weak.push(new WeakRef(task));
+			owned.push(task);
 			const signal = task.controller!.signal;
 			jobs.push(scheduler.run(signal, async () => { tasks.start(task); await tick(); if (mode === "failure") throw new Error("fixture"); }).then(
 				() => tasks.finish(task, text, false), () => tasks.finish(task, "ended", true),
@@ -101,10 +105,12 @@ async function lifecycle() {
 		if (mode === "cancel" || mode === "dispose") tasks.cancelAll();
 		if (mode === "dispose") scheduler.dispose();
 		await Promise.all(jobs); reservation.release(); jobs.length = 0;
+		const notificationChars = formatTaskCompletion("subagent", owned, mode).length;
+		assert.ok(notificationChars <= TASK_COMPLETION_CHARS); owned.length = 0;
 		tasks.dispose(); scheduler.dispose();
 		const released = scheduler.active + scheduler.queued + scheduler.outstanding + scheduler.reserved + scheduler.reservationCount + tasks.size + tasks.waiterCount;
 		assert.equal(released, 0);
-		counters.push({ mode, highWaterMark: scheduler.highWaterMark, queueHighWaterMark: scheduler.queueHighWaterMark, retainedAfterDispose: released });
+		counters.push({ mode, highWaterMark: scheduler.highWaterMark, queueHighWaterMark: scheduler.queueHighWaterMark, retainedAfterDispose: released, notificationChars });
 	}
 	return { weak, counters };
 }
