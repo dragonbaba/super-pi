@@ -10,7 +10,9 @@ export interface ManagedTaskProvider {
 	readonly guidance: string;
 	list(): string;
 	details?(task: ManagedSubagentTask): unknown;
+	status?(task: ManagedSubagentTask): string;
 	background?(task: ManagedSubagentTask, ctx: ExtensionContext): void;
+	steer?(task: ManagedSubagentTask, text: string, ctx: ExtensionContext): string;
 }
 interface TaskDirectory {
 	providers: Map<Kind, ManagedTaskProvider>;
@@ -85,7 +87,7 @@ export function configureTaskHistory(tasks: SubagentTasks, kind: Kind, ctx: Exte
 }
 
 function taskText(task: ManagedSubagentTask, item: ManagedTaskProvider): string {
-	return `${formatManagedTask(task)}${task.cwd ? `\nWorkspace: ${task.cwd}; branch: ${task.branchId ?? "root"}` : ""}${task.result === undefined ? "" : `\n\n${task.result}`}${item.tasks.historyError ? `\n\n${item.tasks.historyStatus}` : ""}`;
+	return `${formatManagedTask(task)}${item.status ? item.status(task) : ""}${task.cwd ? `\nWorkspace: ${task.cwd}; branch: ${task.branchId ?? "root"}` : ""}${task.result === undefined ? "" : `\n\n${task.result}`}${item.tasks.historyError ? `\n\n${item.tasks.historyStatus}` : ""}`;
 }
 
 /** Two bounded providers; registration and explicit control calls are lifecycle work. */
@@ -98,8 +100,9 @@ export function registerManagedTasks(pi: ExtensionAPI, kind: Kind, provider: Man
 	if (!directory) {
 		const owned = new Map<Kind, ManagedTaskProvider>();
 		const parameters = Type.Object({
-			action: Type.Union([Type.Literal("list"), Type.Literal("status"), Type.Literal("wait"), Type.Literal("cancel"), Type.Literal("background")]),
+			action: Type.Union([Type.Literal("list"), Type.Literal("status"), Type.Literal("wait"), Type.Literal("cancel"), Type.Literal("background"), Type.Literal("steer")]),
 			id: Type.Optional(Type.String({ minLength: 1, maxLength: 80 })),
+			text: Type.Optional(Type.String({ minLength: 1, maxLength: 4096, description: "Steer only: refine the existing assignment; no new permissions. Requires a running checkpoint subagent." })),
 			timeoutMs: Type.Optional(Type.Integer({ minimum: 0, maximum: 60_000 })),
 		}, { additionalProperties: false });
 		directory = { providers: owned, parameters, stopDiscovery: () => {} };
@@ -130,14 +133,22 @@ export function registerManagedTasks(pi: ExtensionAPI, kind: Kind, provider: Man
 			if (!item.background) throw new Error("This executor cannot transfer running foreground work. Shell commands must be launched with background: true.");
 			item.background(task, ctx);
 		};
+		const steer = (item: ManagedTaskProvider, task: ManagedSubagentTask, text: string, ctx: ExtensionContext): string => {
+			if (!item.steer) throw new Error("This executor does not support steering. Only running checkpoint subagents can receive corrections.");
+			return item.steer(task, text, ctx);
+		};
 		pi.registerTool({
 			name: "tasks", label: "Tasks", modelOnly: true,
-			description: "Manage session shell/subagent tasks and bounded saved history: list, status, wait, cancel, background. Background transfers one eligible foreground single subagent without restarting it; batches/chains and shell handoff are unsupported. Wait 0–60000ms (default 10000); at most 64 pending waits per kind. Timeout never cancels work. Persistent sessions restore historical results; unobserved completion becomes interrupted with unknown side effects. History grants no permissions or current verification evidence and never replays work. IDs expire on history eviction; memory-only sessions lose them on close. Prefer completion notifications over polling. Read capacities using list before launching background work.",
+			description: "Manage session shell/subagent tasks and bounded saved history: list, status, wait, cancel, background, steer. Steer takes id/text for a running checkpoint subagent: one pending correction, 4096 characters, at most 8 per task; delivered after a complete turn, without interrupting tools or granting permissions. Acceptance is not consumption. Background transfers one eligible foreground single subagent without restarting it; batches/chains and shell handoff are unsupported. Wait 0–60000ms (default 10000); at most 64 pending waits per kind. Timeout never cancels work. Persistent sessions restore historical results; unobserved completion becomes interrupted with unknown side effects. History grants no permissions or current verification evidence and never replays work. IDs expire on history eviction; memory-only sessions lose them on close. Prefer completion notifications over polling. Read capacities using list before launching background work.",
 			parameters,
 			async execute(_id, args, signal, _onUpdate, ctx): Promise<AgentToolResult<Record<string, unknown>>> {
 				if (args.action === "list") return { content: [{ type: "text", text: list() }], details: {} };
 				if (!args.id) throw new Error("A task ID is required.");
 				const [name, item, task] = find(args.id);
+				if (args.action === "steer") {
+					signal?.throwIfAborted();
+					return { content: [{ type: "text", text: steer(item, task, args.text!, ctx) }], details: { id: task.id, accepted: true } };
+				}
 				if (args.action === "cancel") item.tasks.cancel(task.id);
 				else if (args.action === "background") { signal?.throwIfAborted(); background(item, task, ctx); }
 				else if (args.action === "wait") await item.tasks.wait(task.id, args.timeoutMs ?? 10_000, signal);
@@ -148,16 +159,21 @@ export function registerManagedTasks(pi: ExtensionAPI, kind: Kind, provider: Man
 			},
 		});
 		pi.registerCommand("tasks", {
-			description: "List tasks/history; /tasks status|cancel|background <id> inspects, stops, or transfers a single subagent",
+			description: "List tasks/history; /tasks status|cancel|background <id>; /tasks steer <id> <text> corrects a running checkpoint subagent",
 			async handler(args, ctx) {
 				try {
+					const correction = /^steer\s+(\S+)\s+([\s\S]+)$/.exec(args.trim());
+					if (correction) {
+						const [, item, task] = find(correction[1]);
+						ctx.ui.notify(steer(item, task, correction[2], ctx), "info"); return;
+					}
 					const parts = args.trim().split(/\s+/);
 					if ((parts[0] === "cancel" || parts[0] === "status" || parts[0] === "background") && parts.length === 2) {
 						const [name, item, task] = find(parts[1]);
 						if (parts[0] === "cancel") item.tasks.cancel(task.id);
 						else if (parts[0] === "background") background(item, task, ctx);
 						ctx.ui.notify((parts[0] === "background" ? "Foreground wait released; the same task continues in the background.\n" : "") + taskText(task, item) + (name === "subagent" ? formatTaskCheckpoint(task) : ""), "info");
-					} else if (args.trim()) ctx.ui.notify("Usage: /tasks or /tasks status|cancel|background <id>", "error");
+					} else if (args.trim()) ctx.ui.notify("Usage: /tasks, /tasks status|cancel|background <id>, or /tasks steer <id> <text>", "error");
 					else ctx.ui.notify(list(), "info");
 				} catch (error) { ctx.ui.notify(error instanceof Error ? error.message : String(error), "error"); }
 			},

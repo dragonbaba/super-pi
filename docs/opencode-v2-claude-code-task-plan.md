@@ -2,7 +2,7 @@
 
 先巩固 Super Pi 已有的后台完成通知与主会话续跑，再改进结果交付、子代理续跑和上下文压缩；Codemode 的工具发现与执行成本独立评估。需要改变会话持久化、远程协议或文件恢复语义的功能单独评估，不将上游实现整体移植进当前运行时。
 
-状态：2026-10-14（Asia/Tokyo）#136–#146 已按用户授权合并。#146 最终提交 `ed6982ef5` 的六项 CI 通过、Codex 自动审查无反馈，合并提交为 `7e68cc3f3c0a67a6afdd4e17cbe184632422786b`。OC01、OC02、OC03 进程内窗口、OC04 单项子代理移交、OC05 已结束任务续跑发现、OC07 客户端重连核查、OC08 只读变更来源、OC10 核查及 OC11 有界 Worker 池已完成；OC09 沿用显式检查点续跑、延期自动执行恢复。本轮追加 OC11 正式源码 CLI 的 Codemode 集成核查，保留既有生产实现和运行方式。OC04 shell/批次移交、OC05 运行中纠偏、OC06 真实模型效果、OC08 跨任务归属/回退及 OC11 Bun 分配门禁与真实负载仍待后续；完整 CLI 发布包验收以未来实际发布形式为前提。继续沿用 §2.3 的 PR/审查流程。
+状态：2026-10-14（Asia/Tokyo）#136–#147 已按用户授权合并。#147 最终提交 `360fb8af6` 的六项 CI 通过、Codex 自动审查无反馈，合并提交为 `0e31420b3fed9e939f3bce556ca0e5b403c67470`。OC01、OC02、OC03 进程内窗口、OC04 单项子代理移交、OC05 已结束任务续跑发现、OC07 客户端重连核查、OC08 只读变更来源、OC10 核查及 OC11 有界 Worker 池/源码 CLI 集成核查已完成；OC09 沿用显式检查点续跑、延期自动执行恢复。本轮推进 OC05 运行中检查点子代理的有界纠偏。普通一次性任务的纠偏保留候选，OC04 shell/批次移交、OC06 真实模型效果、OC08 跨任务归属/回退及 OC11 Bun 分配门禁与真实负载仍待后续；完整 CLI 发布包验收以未来实际发布形式为前提。继续沿用 §2.3 的 PR/审查流程。
 
 ## 1 对照基线与结论边界
 
@@ -152,10 +152,24 @@ shell 审计链为 final shell authorization → cwd binding → bash execute �
 
 - [x] 优先改善已有 `checkpoint: true`、`resumeTaskId` 的发现和使用体验，保留每次续跑的新任务 ID。若需要稳定子代理身份，将其与本次运行 ID 区分；重名、旧代次和跨父会话目标明确拒绝或要求重新定位。
 - [x] 保留新任务的 scope/deliverable/stopCondition、当前角色/模型/权限核查、精确工作区身份及写入冲突检查。没有检查点、检查点损坏或达到交接线时给出可执行交接，不虚构完整上下文或绕过容量上限。
-- [ ] 将“已结束子代理的续跑”与“运行中定向纠偏”分阶段验收；后者只有在子进程已有安全输入边界或明确新增协议后采用，保证顺序、取消与消息源身份。代理消息不授予用户权限，不让已明确取消的任务被普通消息自动复活。
+- [x] 分阶段实现运行中检查点子代理的定向纠偏：复用现有完整回合确认，保持消息源标识、顺序与取消边界；不复活取消/终态任务，不授予新用户权限。普通一次性任务没有回合控制通道，仍不接收纠偏；需要时须在启动前选用检查点，不隐式改变轻量路径。
 - [x] 保留一次性任务的轻量路径；不默认长期保存全部子代理对话，不同时引入任意互发消息、代理团队和嵌套委派。
 
 **性能与最小验证：** 强制执行 §2。复用 [task-checkpoints](../tests/task-checkpoints.test.ts)、subagent 管理与热路径测试；当前 IPC 与检查点 fixture 足够时不新建服务。按修改范围复用 [subagent benchmark](../scripts/bench/subagent-management.ts) 或 [task-history benchmark](../scripts/bench/task-history.ts)，计数消息/检查点容量、IPC 字节、监听器与取消后的引用释放，不逐 token 保存完整历史。
+
+**本轮实施前记录（基线 `0e31420b3`，PR #147 已合并）：** 现有子进程控制协议只有 ready/begin/turn/handoff；普通任务只有初始化通信。先向已有安全回合边界的运行中检查点子代理提供 `tasks` / `subagent_tasks` 的 `steer` 和 `/tasks steer <id> <text>`。精确任务 ID 定位当前父会话拥有的控制器；仅接受仍运行、未取消、未交接、通信已初始化的任务。普通一次性任务、queued/终态/历史任务明确拒绝，保留轻量路径。消息只能细化原职责，不授予用户权限、不改变 workspace/model/工具策略、不扩大交接与时间预算。
+
+每任务一个待处理槽（包含已发送而尚未完成的纠偏）、每条 4096 UTF-16 字符、每运行最多 8 条；满载明确拒绝，不能覆盖旧消息。复用完整 turn 的现有 IPC 回复发送，子进程在完整工具结果之后排入既有 steer 队列；不取消当前工具，也不单独唤醒空闲进程。正文保留 parent/source 和 user_input=false 标识并引用原文。下一完整回合才把纠偏连同回答保存到检查点；此前失败/取消沿原 pending 副作用提示处理。接纳只表示排队，不保证模型已消费；结束前未投递的消息不重放。
+
+审计链：显式管理命令/工具 → 当前任务与权限世代 → 有界 control 槽 → 子进程完整 turn_end / parent checkpoint 保存与现有 IPC reply → child-control → AgentSession.sendCustomMessage → Agent steering queue → 下一回合消息插入 / 模型转换 → checkpoint 完整回合提交 → process/control/session 释放。stdout/provider delta/progress/render 链保持现有有界保留与生命周期快照。新增分配只在显式纠偏和已存在的拦截回合边界；无轮询、额外 IPC 往返、逐 token 写盘或对象池。复用 task-control、subagent-management、subagent-hot-paths 和现有真实 child fixture；现有 task-control allocation benchmark 先测基线，扩展同一基准给出候选计数、IPC 字节、受控 GC 与取消/异常/dispose 释放。不新增测试文件，不跑本地全量测试。
+
+**本轮验收：** 两个真实 SDK session/ExtensionRunner/Agent + 子进程 IPC 场景覆盖纯文本结束和工具调用回合；纠偏仅出现在第二次模型请求，不拆开 call/result，第二完整回合保存后才出现在持久检查点。真实管理入口验证 `tasks`、`subagent_tasks` 与 `/tasks steer`、相同 PID、查询状态、拒绝覆盖/超限/普通任务、取消、权限撤销和树切换；终态不重启。进入交接或退出前尚有未完成纠偏时报告失败，避免把“已排队”误报为已完成。模型文本包含来源标记不代表模型遵循指令已获证明。
+
+基线/候选的六个已有控制场景计数相同：普通 8 个任务仅有 8 次初始化回复、0 回合/检查点写入；完成场景 24 回合、56 回复、56 写入。新增纠偏完成场景同样为 56 回复/写入，8 条 4096 字符输入全部发送并随完整回合保存；IPC 回复总量 41,392 字节（无纠偏场景 6,232）。纠偏后取消为 accepted/sent/saved=8/8/0，异常及交接为 8/0/0；各阶段不再持有消息字段或 IPC listener，数据库句柄为 0。候选 622 个跟踪引用在 8 次受控 GC 后保留 0，基线 354 个保留 0。
+
+一次同机 parent/control/history 采样：普通任务 660,216 → 707,760 字节；完整检查点 2,495,752 → 2,434,280；新增纠偏完成 2,645,152。主要分配仍为文件身份检查、checkpoint encode/decode/投影；不能把单次波动写成优化收益。纠偏显式入口新增一个有界 message 和引用文本；最多 8 次 child delivery 使用既有 sendCustomMessage 异步边界及 custom/options 对象，普通 delta/progress/frame 新增闭包、Promise、controller、wrapper/array/计时器均为 0。没有对象池或额外每回合 IPC/写盘。详见 [OC05 原始证据与源码指纹](performance/oc05-task-guidance.json)。
+
+复用已有文件增加 4 个行为用例，扩展一项真实管理集成和既有 AST gate：task-control 18、subagent-management 36、hot-path 4、管理集成 1，共 59 pass，Windows 跳过一个 POSIX 专用项。根类型检查、coding-agent 单包构建、benchmark strict typecheck 和 diff 检查通过。没有本地全量测试、真实模型调用或新增测试文件；测试/benchmark 按创建身份清理子进程与私有目录。首次 PR 自动审查、远端 CI 与后续修复复审按 §2.3 执行，最终状态记于 PR，不为远端状态单独重复提交。
 
 ### OC06 摘要精简与任务状态保留
 

@@ -1,5 +1,5 @@
 // Offline child fixture: writes only a ready marker in its task-owned temporary cwd.
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, watch } from "node:fs";
 import { join } from "node:path";
 const task = process.argv.at(-1) ?? "";
 const delay = task.includes("slow") ? 800 : task.includes("hold") ? 30_000 : 10;
@@ -13,7 +13,9 @@ const promptIndex = process.argv.indexOf("--append-system-prompt");
 const systemPrompt = promptIndex < 0 ? "" : readFileSync(process.argv[promptIndex + 1], "utf8");
 const toolsIndex = process.argv.indexOf("--tools");
 const tools = toolsIndex < 0 ? undefined : process.argv[toolsIndex + 1];
-writeFileSync(join(process.cwd(), `child-${process.pid}.ready.json`), JSON.stringify({ pid: process.pid, task, systemPrompt, tools, allowBash: process.env.SP_SUBAGENT_ALLOW_BASH }));
+const guidanceMode = task.includes("guidance-gate");
+function markReady() { writeFileSync(join(process.cwd(), `child-${process.pid}.ready.json`), JSON.stringify({ pid: process.pid, task, systemPrompt, tools, allowBash: process.env.SP_SUBAGENT_ALLOW_BASH })); }
+if (!guidanceMode) markReady();
 let sequence = 0;
 async function control(kind, fields = {}) {
 	if (process.env.SP_SUBAGENT_CONTROL !== "1") return {};
@@ -30,13 +32,23 @@ async function control(kind, fields = {}) {
 try {
 	const init = await control("ready");
 	const capacityHandoff = task.includes("capacity-handoff");
-	const turns = task.includes("two-turn") || capacityHandoff ? 2 : 1;
+	const turns = task.includes("two-turn") || capacityHandoff || guidanceMode ? 2 : 1;
+	let guidance;
 	for (let turn = 0; turn < turns; turn++) {
 		if (init.checkpoint) await control("begin");
-		await new Promise(resolve => setTimeout(resolve, delay));
-		const response = capacityHandoff && turn === 0 ? { ...message, content: [{ type: "text", text: "large evidence ".repeat(60_000) }] } : message;
+		if (guidanceMode && turn === 0) {
+			await new Promise((resolve, reject) => {
+				const path = join(process.cwd(), `child-${process.pid}.release`);
+				const watcher = watch(process.cwd(), () => { if (existsSync(path)) finish(); });
+				const timer = setTimeout(() => finish(new Error("Guidance fixture gate timed out")), 10_000);
+				function finish(error) { clearTimeout(timer); watcher.close(); error ? reject(error) : resolve(); }
+				markReady(); if (existsSync(path)) finish();
+			});
+		} else await new Promise(resolve => setTimeout(resolve, delay));
+		const response = guidance ? { ...message, content: [{ type: "text", text: `fixture received: ${guidance}` }] }
+			: capacityHandoff && turn === 0 ? { ...message, content: [{ type: "text", text: "large evidence ".repeat(60_000) }] } : message;
 		process.stdout.write(`${JSON.stringify({ type: "message_end", message: response })}\n`);
-		if (init.checkpoint) await control("turn", { completed: true, message: response, results: [] });
+		if (init.checkpoint) guidance = (await control("turn", { completed: true, message: response, results: [] })).guidance;
 		if (task.includes("checkpoint-hold")) await new Promise(resolve => setTimeout(resolve, 30_000));
 	}
 	process.exitCode = task.includes("fail") ? 1 : 0;

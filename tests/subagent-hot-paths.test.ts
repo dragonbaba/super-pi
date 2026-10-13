@@ -21,6 +21,22 @@ test("child checkpoint guidance and IPC use only named intercepting/lifecycle ho
 		ts.forEachChild(node, visit);
 	}
 	visit(child); assert.ok(count > 0);
+	const textControl = readFileSync(new URL("../packages/extensions/subagent/control.ts", import.meta.url), "utf8");
+	const control = ts.createSourceFile("control.ts", textControl, ts.ScriptTarget.Latest, true);
+	let checked = false;
+	function checkQueue(node: ts.Node): void {
+		if (ts.isMethodDeclaration(node) && node.name.getText(control) === "queueGuidance") {
+			function inspect(body: ts.Node): void {
+				assert.ok(!ts.isArrowFunction(body) && !ts.isFunctionExpression(body), "explicit corrections need no callback or deferred");
+				if (ts.isNewExpression(body)) assert.equal(body.expression.getText(control), "Error");
+				if (ts.isCallExpression(body)) assert.ok(!/\b(send|request|saveCheckpoint|setTimeout|setInterval)\b/.test(body.expression.getText(control)), "corrections share the existing turn reply, without IPC, polling or writes on admission");
+				ts.forEachChild(body, inspect);
+			}
+			inspect(node.body!); checked = true;
+		}
+		ts.forEachChild(node, checkQueue);
+	}
+	checkQueue(control); assert.equal(checked, true);
 });
 
 test("child event ingestion and status rendering allocate no callbacks, promises or batch copies", () => {

@@ -1,7 +1,7 @@
 import type { Message } from "@super-pi/ai";
 import type { ExtensionAPI, ExtensionContext } from "@super-pi/coding-agent";
 import { checkpointMessage, CheckpointCapacityError, CHECKPOINT_BYTES, CHECKPOINT_MESSAGES, CHECKPOINT_PLANNING } from "./checkpoints.ts";
-import { decodeControl, encodeControl } from "./control.ts";
+import { decodeControl, encodeControl, TASK_GUIDANCE_MESSAGE_CHARS } from "./control.ts";
 
 /** One outstanding intercepting request; no IPC traffic on provider deltas or tool progress. */
 export class ChildControl {
@@ -125,7 +125,13 @@ export function installChildControl(pi: ExtensionAPI): void {
 				for (const result of event.toolResults) results.push(checkpointMessage(result));
 				fields.results = results;
 			}
-			newHandoff = updateChildStatus(control, pi, await control.request("turn", fields));
+			const reply = await control.request("turn", fields);
+			newHandoff = updateChildStatus(control, pi, reply);
+			if (reply.guidance !== undefined) {
+				if (!complete || control.handoff || typeof reply.guidance !== "string" || !reply.guidance.length || reply.guidance.length > TASK_GUIDANCE_MESSAGE_CHARS) throw new Error("Invalid parent task guidance.");
+				// The hook still owns the active turn. Omit triggerTurn: idle delivery cannot restart a task.
+				pi.sendMessage({ customType: "subagent-parent-guidance", content: reply.guidance, display: false }, { deliverAs: "steer" });
+			}
 		} catch (error) {
 			if (error instanceof CheckpointCapacityError) {
 				try { newHandoff = updateChildStatus(control, pi, await control.request("handoff")); }

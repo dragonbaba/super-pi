@@ -1,0 +1,560 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-14",
+  "timezone": "Asia/Tokyo",
+  "scope": "OC05 running checkpoint-subagent guidance; parent control allocation and lifecycle fixture, offline Windows",
+  "baselineCommit": "0e31420b3fed9e939f3bce556ca0e5b403c67470",
+  "provenance": {
+    "node": "v26.4.0",
+    "platform": "win32",
+    "arch": "x64",
+    "source": [
+      {
+        "path": "packages/extensions/subagent/control.ts",
+        "baseline": "f4264e7ec75ad8f223cec31f5bf735a08d5a120e51b6426dfcde1b462be4cb00",
+        "measuredCandidate": "8eb8c0525967601888c6c10c29f98a5bc16570097e43ff7779b722a63e994d5a",
+        "candidate": "f4c2180bd1532dbf7f195d085839647fe8123696d1305d6e03c913b5edf3928e",
+        "followUp": "Before commit, reject oversize input before trim; reran the bounded-slot regression. Allocation fixture inputs are unchanged, so no repeat sampling."
+      },
+      {
+        "path": "packages/extensions/subagent/child-control.ts",
+        "baseline": "46b415d41110664ab6c8345f8b95dafe545f3e5741adbdf2c34590223a34241b",
+        "candidate": "9fb68ff9103674edc8e9ce73c3e6129d35f9c156d617577f33e6fcdaac283e02"
+      },
+      {
+        "path": "packages/extensions/subagent/index.ts",
+        "baseline": "460ac69e76f8677763c1066fc00b1938465f2cb7014724d69e649b664630dbe8",
+        "candidate": "c0ec144eb5e1bc449394f313972ba123586d03799a9388b08141880578330a94"
+      },
+      {
+        "path": "packages/extensions/managed-tasks.ts",
+        "baseline": "b88d5b666ea2ab96fd610d60175db9334c99858f78fbb75ebb0061eeaa0810b5",
+        "candidate": "8ee265ae88f88f46e18246a64d492d902062ec3321b23009f5e2a14ade8bbcc2"
+      },
+      {
+        "path": "scripts/bench/task-control.ts",
+        "baseline": "7ac9051a8e5f6ea2d6a508ddcd2caa46dc7b7dfb7ca3ef63847cee912b2b7298",
+        "candidate": "a9b2872e4d73a30a3e1eaac82f816f5adc074d30269f15fd42809e9fe07d06e6"
+      }
+    ]
+  },
+  "command": "node --expose-gc --experimental-strip-types scripts/bench/task-control.ts",
+  "method": "Node HeapProfiler, samplingInterval=4096, include objects collected by major/minor GC, one run per version. Baseline executes six existing modes; candidate keeps them and adds four guidance modes. Each mode has eight tasks. Only parent control/history measured, not a subprocess heap or full UI. Hashes are raw filesystem/Git bytes.",
+  "baseline": {
+    "node": "v26.4.0",
+    "platform": "win32",
+    "results": [
+      {
+        "mode": "ordinary",
+        "tasks": 8,
+        "starts": 0,
+        "replies": 8,
+        "checkpointWrites": 0,
+        "failures": 0,
+        "handoffs": 0,
+        "sampledBytes": 660216,
+        "retainedHandles": 0
+      },
+      {
+        "mode": "complete",
+        "tasks": 8,
+        "starts": 24,
+        "replies": 56,
+        "checkpointWrites": 56,
+        "failures": 0,
+        "handoffs": 0,
+        "sampledBytes": 2495752,
+        "retainedHandles": 0
+      },
+      {
+        "mode": "abort",
+        "tasks": 8,
+        "starts": 8,
+        "replies": 16,
+        "checkpointWrites": 16,
+        "failures": 0,
+        "handoffs": 0,
+        "sampledBytes": 916112,
+        "retainedHandles": 0
+      },
+      {
+        "mode": "invalid",
+        "tasks": 8,
+        "starts": 8,
+        "replies": 16,
+        "checkpointWrites": 16,
+        "failures": 8,
+        "handoffs": 0,
+        "sampledBytes": 905384,
+        "retainedHandles": 0
+      },
+      {
+        "mode": "handoff",
+        "tasks": 8,
+        "starts": 16,
+        "replies": 40,
+        "checkpointWrites": 40,
+        "failures": 0,
+        "handoffs": 8,
+        "sampledBytes": 3916440,
+        "retainedHandles": 0
+      },
+      {
+        "mode": "overflow",
+        "tasks": 8,
+        "starts": 16,
+        "replies": 40,
+        "checkpointWrites": 16,
+        "failures": 0,
+        "handoffs": 8,
+        "sampledBytes": 20226320,
+        "retainedHandles": 0
+      }
+    ],
+    "references": {
+      "total": 354,
+      "retained": 0
+    }
+  },
+  "candidate": {
+    "node": "v26.4.0",
+    "platform": "win32",
+    "results": [
+      {
+        "mode": "ordinary",
+        "tasks": 8,
+        "starts": 0,
+        "replies": 8,
+        "checkpointWrites": 0,
+        "failures": 0,
+        "handoffs": 0,
+        "ipcReplyBytes": 520,
+        "guidance": {
+          "accepted": 0,
+          "sent": 0,
+          "saved": 0
+        },
+        "sampledBytes": 707760,
+        "leadingSites": [
+          [
+            "getStatsFromBinding",
+            82688
+          ],
+          [
+            "slice",
+            57544
+          ],
+          [
+            "wrappedFn",
+            37048
+          ],
+          [
+            "assertOwner",
+            33104
+          ],
+          [
+            "directoryIdentity",
+            32952
+          ]
+        ],
+        "retainedHandles": 0
+      },
+      {
+        "mode": "complete",
+        "tasks": 8,
+        "starts": 24,
+        "replies": 56,
+        "checkpointWrites": 56,
+        "failures": 0,
+        "handoffs": 0,
+        "ipcReplyBytes": 6232,
+        "guidance": {
+          "accepted": 0,
+          "sent": 0,
+          "saved": 0
+        },
+        "sampledBytes": 2434280,
+        "leadingSites": [
+          [
+            "getStatsFromBinding",
+            276648
+          ],
+          [
+            "encodeCheckpoint",
+            174088
+          ],
+          [
+            "slice",
+            131560
+          ],
+          [
+            "decodeCheckpoint",
+            125680
+          ],
+          [
+            "next",
+            115360
+          ]
+        ],
+        "retainedHandles": 0
+      },
+      {
+        "mode": "abort",
+        "tasks": 8,
+        "starts": 8,
+        "replies": 16,
+        "checkpointWrites": 16,
+        "failures": 0,
+        "handoffs": 0,
+        "ipcReplyBytes": 2032,
+        "guidance": {
+          "accepted": 0,
+          "sent": 0,
+          "saved": 0
+        },
+        "sampledBytes": 801552,
+        "leadingSites": [
+          [
+            "getStatsFromBinding",
+            140368
+          ],
+          [
+            "assertOwner",
+            70480
+          ],
+          [
+            "realpathSync",
+            65816
+          ],
+          [
+            "normalizeString",
+            61800
+          ],
+          [
+            "has",
+            33064
+          ]
+        ],
+        "retainedHandles": 0
+      },
+      {
+        "mode": "invalid",
+        "tasks": 8,
+        "starts": 8,
+        "replies": 16,
+        "checkpointWrites": 16,
+        "failures": 8,
+        "handoffs": 0,
+        "ipcReplyBytes": 2032,
+        "guidance": {
+          "accepted": 0,
+          "sent": 0,
+          "saved": 0
+        },
+        "sampledBytes": 937728,
+        "leadingSites": [
+          [
+            "getStatsFromBinding",
+            165152
+          ],
+          [
+            "realpathSync",
+            82368
+          ],
+          [
+            "assertOwner",
+            78632
+          ],
+          [
+            "slice",
+            57552
+          ],
+          [
+            "normalizeString",
+            53528
+          ]
+        ],
+        "retainedHandles": 0
+      },
+      {
+        "mode": "handoff",
+        "tasks": 8,
+        "starts": 16,
+        "replies": 40,
+        "checkpointWrites": 40,
+        "failures": 0,
+        "handoffs": 8,
+        "ipcReplyBytes": 4584,
+        "guidance": {
+          "accepted": 0,
+          "sent": 0,
+          "saved": 0
+        },
+        "sampledBytes": 3859728,
+        "leadingSites": [
+          [
+            "next",
+            675080
+          ],
+          [
+            "keys",
+            533312
+          ],
+          [
+            "checkpointMessage",
+            454072
+          ],
+          [
+            "decodeCheckpoint",
+            420400
+          ],
+          [
+            "encodeCheckpoint",
+            240640
+          ]
+        ],
+        "retainedHandles": 0
+      },
+      {
+        "mode": "overflow",
+        "tasks": 8,
+        "starts": 16,
+        "replies": 40,
+        "checkpointWrites": 16,
+        "failures": 0,
+        "handoffs": 8,
+        "ipcReplyBytes": 4480,
+        "guidance": {
+          "accepted": 0,
+          "sent": 0,
+          "saved": 0
+        },
+        "sampledBytes": 20141408,
+        "leadingSites": [
+          [
+            "encodeControl",
+            6422728
+          ],
+          [
+            "decodeControl",
+            6404800
+          ],
+          [
+            "visit",
+            4808384
+          ],
+          [
+            "charCodeAt",
+            1600032
+          ],
+          [
+            "getStatsFromBinding",
+            160776
+          ]
+        ],
+        "retainedHandles": 0
+      },
+      {
+        "mode": "guidance-complete",
+        "tasks": 8,
+        "starts": 24,
+        "replies": 56,
+        "checkpointWrites": 56,
+        "failures": 0,
+        "handoffs": 0,
+        "ipcReplyBytes": 41392,
+        "guidance": {
+          "accepted": 8,
+          "sent": 8,
+          "saved": 8
+        },
+        "sampledBytes": 2645152,
+        "leadingSites": [
+          [
+            "getStatsFromBinding",
+            297088
+          ],
+          [
+            "encodeCheckpoint",
+            266784
+          ],
+          [
+            "decodeCheckpoint",
+            265896
+          ],
+          [
+            "realpathSync",
+            160352
+          ],
+          [
+            "next",
+            152440
+          ]
+        ],
+        "retainedHandles": 0
+      },
+      {
+        "mode": "guidance-abort",
+        "tasks": 8,
+        "starts": 16,
+        "replies": 32,
+        "checkpointWrites": 32,
+        "failures": 0,
+        "handoffs": 0,
+        "ipcReplyBytes": 38872,
+        "guidance": {
+          "accepted": 8,
+          "sent": 8,
+          "saved": 0
+        },
+        "sampledBytes": 1589480,
+        "leadingSites": [
+          [
+            "getStatsFromBinding",
+            280656
+          ],
+          [
+            "normalizeString",
+            107016
+          ],
+          [
+            "assertOwner",
+            86664
+          ],
+          [
+            "next",
+            86520
+          ],
+          [
+            "visit",
+            76976
+          ]
+        ],
+        "retainedHandles": 0
+      },
+      {
+        "mode": "guidance-invalid",
+        "tasks": 8,
+        "starts": 8,
+        "replies": 16,
+        "checkpointWrites": 16,
+        "failures": 8,
+        "handoffs": 0,
+        "ipcReplyBytes": 2032,
+        "guidance": {
+          "accepted": 8,
+          "sent": 0,
+          "saved": 0
+        },
+        "sampledBytes": 1070016,
+        "leadingSites": [
+          [
+            "getStatsFromBinding",
+            181776
+          ],
+          [
+            "normalizeString",
+            119464
+          ],
+          [
+            "assertOwner",
+            70424
+          ],
+          [
+            "slice",
+            65832
+          ],
+          [
+            "realpathSync",
+            53456
+          ]
+        ],
+        "retainedHandles": 0
+      },
+      {
+        "mode": "guidance-handoff",
+        "tasks": 8,
+        "starts": 16,
+        "replies": 40,
+        "checkpointWrites": 40,
+        "failures": 8,
+        "handoffs": 8,
+        "ipcReplyBytes": 4584,
+        "guidance": {
+          "accepted": 8,
+          "sent": 0,
+          "saved": 0
+        },
+        "sampledBytes": 4661592,
+        "leadingSites": [
+          [
+            "checkpointMessage",
+            869040
+          ],
+          [
+            "keys",
+            624232
+          ],
+          [
+            "next",
+            568080
+          ],
+          [
+            "decodeCheckpoint",
+            547216
+          ],
+          [
+            "getStatsFromBinding",
+            346912
+          ]
+        ],
+        "retainedHandles": 0
+      }
+    ],
+    "references": {
+      "total": 622,
+      "retained": 0
+    }
+  },
+  "bounds": {
+    "inputUtf16Chars": 4096,
+    "formattedUtf16Chars": 25088,
+    "pendingGuidancePerTask": 1,
+    "guidancePerRun": 8,
+    "liveControllers": "scheduler.maxConcurrent <= 64; only checkpoint tasks",
+    "checkpointBytes": 1048576,
+    "checkpointMessages": 128,
+    "ipcPacketBytes": 2097152
+  },
+  "callChain": [
+    "tasks/subagent_tasks or /tasks steer -> exact current task, current control availability, running and un-aborted controller",
+    "SubagentControl.queueGuidance -> one in-memory prompt, no IPC/write/timer",
+    "complete turn_end -> existing turn IPC -> save current paired checkpoint -> reply.guidance",
+    "ChildControl -> real extension sendMessage(deliverAs=steer, triggerTurn omitted) -> AgentSession.sendCustomMessage -> existing steering queue",
+    "next turn_start pending checkpoint -> user/custom message placement -> convertToLlm -> model -> completed turn checkpoint save",
+    "child close/control.dispose -> controls.delete in finally -> scheduler/task/reservation release -> existing bounded terminal report/session/UI"
+  ],
+  "allocationAudit": {
+    "highFrequency": "No change to stdout parse/retention, provider deltas, progress snapshots, latest observers, render/frame queue; existing named source invariants pass. No new closure, Promise, AbortController, wrapper, array or timer per delta/progress/frame.",
+    "explicitCommand": "One bounded Message object and bounded quoted/formatted text; queue rejects overwrite; status formats only at explicit query.",
+    "existingCheckpointBoundaries": "Existing request Promise/executor, 30s timer, IPC JSON, projection arrays and checkpoint encode/decode remain opt-in per turn. No extra IPC roundtrip or checkpoint write; one reply property on dispatch.",
+    "guidanceDelivery": "One custom message and options object at at most eight guidance deliveries per task; existing async sendCustomMessage/extension error observer and steering queue insertion. No per-token subscription.",
+    "ownership": "queuedGuidance moves into pendingPrompt after successful complete-turn save; subsequent complete turn clears pendingPrompt/pendingGuidance; stop/dispose clears both. Process owner is removed in finally including startup failure.",
+    "pool": "No object pool introduced.",
+    "lifecycle": "Counters unchanged in six baseline modes. Four guidance modes track queued prompt objects by WeakRef. 622 tracked references retained=0 after eight controlled-GC turns; all history handles=0; field/listener assertions on disposed live owners."
+  },
+  "verification": [
+    "task-control 18 cases including two real SDK session/Agent/IPC modes and bounded cancellation/error/overflow scenarios",
+    "subagent-management 36 pass, POSIX-only case skipped on Windows",
+    "subagent-hot-paths 4 pass",
+    "extended existing real ExtensionRunner/Agent task-management integration 1 pass",
+    "root typecheck, coding-agent build, strict benchmark typecheck, git diff --check"
+  ],
+  "limits": [
+    "Only running checkpoint-enabled children; ordinary task per-turn IPC remains zero.",
+    "Acceptance/sending/saving does not prove model obedience. No live provider or model-quality evaluation.",
+    "Cancellation, handoff, late exit or failure can prevent correction completion; no replay or resurrection.",
+    "Single-run sampled allocation is descriptive, not a performance improvement or CPU/heap admission claim.",
+    "Platform process-tree coverage beyond Windows is deferred to required remote CI."
+  ]
+}

@@ -1375,6 +1375,8 @@ export default function (pi: ExtensionAPI) {
 	const scheduler = new SubagentScheduler(limits);
 	const tasks = new SubagentTasks(limits.maxTasks);
 	const pending = new Set<Promise<unknown>>();
+	// Only live checkpoint children; bounded by scheduler capacity and removed on every exit.
+	const controls = new Map<string, SubagentControl>();
 	// One entry per eligible single call, bounded by the existing task reservation.
 	const foreground = new Map<string, { owner: ForegroundTask<AgentToolResult<SubagentDetails>>; policy: DelegatedTaskPolicy; workspace: string; signal: AbortSignal; agentScope: AgentScope }>();
 	let authority = new AbortController();
@@ -1417,8 +1419,9 @@ export default function (pi: ExtensionAPI) {
 		return text;
 	};
 	const controlParameters = Type.Object({
-		action: StringEnum(["list", "status", "wait", "cancel"] as const),
+		action: StringEnum(["list", "status", "wait", "cancel", "steer"] as const),
 		id: Type.Optional(Type.String({ minLength: 1, maxLength: 80 })),
+		text: Type.Optional(Type.String({ minLength: 1, maxLength: 4096, description: "Steer only: refine the running checkpoint task within its original assignment and permissions." })),
 		timeoutMs: Type.Optional(Type.Integer({ minimum: 0, maximum: 60_000, description: "Wait only; default 10000 ms" })),
 	}, { additionalProperties: false });
 	const assertBackgroundContext = (ctx: ExtensionContext): void => {
@@ -1429,8 +1432,20 @@ export default function (pi: ExtensionAPI) {
 		}
 		throw new Error("Background subagents require the built-in tasks or subagent_tasks management tool. Enable one or use foreground execution.");
 	};
+	const steerTask = (task: ManagedSubagentTask, text: string, ctx: ExtensionContext): string => {
+		if (closed || changingSession || cleanupFailure) throw new Error("Subagent session is unavailable for steering.");
+		assertBackgroundContext(ctx); tasks.assertHistoryAvailable();
+		if (task.state !== "running" || task.completedAt !== undefined) throw new Error("Only a running checkpoint task can receive corrections; queued, cancelling, terminal and historical tasks cannot restart.");
+		task.controller?.signal.throwIfAborted();
+		const control = controls.get(task.id);
+		if (!control) throw new Error("This task has no live checkpoint control. Enable checkpoint: true before launching work that needs steering.");
+		control.queueGuidance(text);
+		return `Correction queued for ${task.id} after the current complete turn; current tools are not interrupted. ${control.guidanceStatus}`;
+	};
 	const taskRegistration = registerManagedTasks(pi, "subagent", {
 		tasks, list: listTasks, guidance: `${describeSubagentLimits(limits)} A foreground single subagent can be transferred with /tasks background <id>; list IDs with /tasks. Same-workspace writers, batches/chains and shell handoff are unsupported.`,
+		steer: steerTask,
+		status: task => controls.has(task.id) ? `\n${controls.get(task.id)!.guidanceStatus}` : "",
 		background(task, ctx) {
 			if (closed || changingSession || cleanupFailure) throw new Error("Subagent session is unavailable for handoff.");
 			assertBackgroundContext(ctx);
@@ -1449,16 +1464,20 @@ export default function (pi: ExtensionAPI) {
 	});
 	pi.registerTool({
 		name: "subagent_tasks", label: "Subagent tasks",
-		description: `Manage session subagent tasks and saved history: list, status, wait, or cancel one ID. Waiting (0–60000ms, at most 64 pending waits) never cancels execution. Prefer completion notifications to polling. Keep the latest ${limits.maxTasks} terminal tasks, at most 12000 characters per result. Persistent sessions restore historical results and mark unfinished work interrupted; memory-only sessions lose history on close. No replay, new permissions or current verification evidence.`,
+		description: `Manage session subagent tasks and saved history: list, status, wait, cancel, or steer one ID. Steer requires a running checkpoint task and text within its existing assignment: one pending correction, 4096 characters, at most 8 per task. It is delivered after a complete turn, without interrupting tools or granting permissions; acceptance is not consumption. Waiting (0–60000ms, at most 64 pending waits) never cancels execution. Prefer completion notifications to polling. Keep the latest ${limits.maxTasks} terminal tasks, at most 12000 characters per result. Persistent sessions restore historical results and mark unfinished work interrupted; memory-only sessions lose history on close. No replay, new permissions or current verification evidence.`,
 		modelOnly: true,
 		parameters: controlParameters,
-		async execute(_id, params, signal): Promise<AgentToolResult<Record<string, unknown>>> {
+		async execute(_id, params, signal, _onUpdate, ctx): Promise<AgentToolResult<Record<string, unknown>>> {
 			if (closed) throw new Error("Subagent session is closed.");
 			if (params.action === "list") return { content: [{ type: "text", text: `${listTasks()}\n${tasks.historyStatus}` }], details: {} };
 			if (!params.id) throw new Error("A subagent task ID is required.");
+			if (params.action === "steer") {
+				signal?.throwIfAborted();
+				return { content: [{ type: "text", text: steerTask(tasks.get(params.id), params.text!, ctx) }], details: { id: params.id, accepted: true } };
+			}
 			const task = params.action === "cancel" ? tasks.cancel(params.id)
 				: params.action === "wait" ? await tasks.wait(params.id, params.timeoutMs ?? 10_000, signal) : tasks.get(params.id);
-			return { content: [{ type: "text", text: `${taskStatus(task)}${formatTaskCheckpoint(task)}${task.cwd ? `\nWorkspace: ${task.cwd}; branch: ${task.branchId ?? "root"}` : ""}${task.result === undefined ? "" : `\n\n${task.result}`}${tasks.historyError ? `\n\n${tasks.historyStatus}` : ""}` }],
+			return { content: [{ type: "text", text: `${taskStatus(task)}${formatTaskCheckpoint(task)}${controls.has(task.id) ? `\n${controls.get(task.id)!.guidanceStatus}` : ""}${task.cwd ? `\nWorkspace: ${task.cwd}; branch: ${task.branchId ?? "root"}` : ""}${task.result === undefined ? "" : `\n\n${task.result}`}${tasks.historyError ? `\n\n${tasks.historyStatus}` : ""}` }],
 				details: { task: { id: task.id, agent: task.agent, state: task.state, historical: task.recovered === true, cwd: task.cwd, branchId: task.branchId,
 					checkpointAvailable: task.checkpointAvailable === true }, historyError: tasks.historyError } };
 		},
@@ -1701,6 +1720,7 @@ export default function (pi: ExtensionAPI) {
 							} : undefined;
 							const control = new SubagentControl(tasks, checkpoint, continuation?.messages, continuation?.pending,
 								continuation ? { role: "user", content: `Task: ${task}`, timestamp: Date.now() } : undefined);
+							if (checkpoint) controls.set(record.id, control);
 							try { return await runSingleAgent(policy, agents, requestedAgentNames[index], task, step, childSignal, update, details, executions.get(requestedAgentNames[index]), timeoutMs, control); }
 							catch (error) {
 								if (error instanceof SubagentProcessCleanupError || error instanceof Error && error.cause instanceof SubagentProcessCleanupError) {
@@ -1709,6 +1729,7 @@ export default function (pi: ExtensionAPI) {
 								}
 								throw error;
 							}
+							finally { controls.delete(record.id); control.dispose(); }
 						});
 						tasks.finish(record, getResultOutput(result), isFailedResult(result));
 						return result;
