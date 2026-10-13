@@ -17,7 +17,7 @@ import { SessionManager } from "../packages/coding-agent/src/core/session-manage
 import { AssistantMessageEventStream } from "../packages/ai/src/utils/event-stream.ts";
 import type { AssistantMessage, Context } from "../packages/ai/src/types.ts";
 import type { InlineExtension, ExtensionFactory } from "../packages/coding-agent/src/core/extensions/types.ts";
-import { CODEMODE_STORE_ENTRY } from "../packages/coding-agent/src/core/codemode-constants.ts";
+import { CODEMODE_DESCRIPTION, CODEMODE_STORE_ENTRY } from "../packages/coding-agent/src/core/codemode-constants.ts";
 import { CodemodeStore } from "../packages/coding-agent/src/core/codemode-store.ts";
 import { CodemodeController } from "../packages/coding-agent/src/core/codemode.ts";
 import { privateOutputFileSystem } from "../packages/coding-agent/src/utils/private-output-file.ts";
@@ -44,6 +44,7 @@ const { default: mutation } = await jiti.import<{ default: InlineExtension }>(".
 const { default: guardrails } = await jiti.import<{ default: InlineExtension }>("../packages/extensions/tool-loop-guardrails/index.ts");
 const { collectChanges } = await jiti.import<typeof import("../packages/extensions/mutation-guard-write/changes.ts")>("../packages/extensions/mutation-guard-write/changes.ts");
 const { default: planMode } = await jiti.import<{ default: ExtensionFactory }>("../packages/plan-mode/src/index.ts");
+const { default: toolClassification } = await jiti.import<{ default: InlineExtension }>("../packages/tool-classification/src/index.ts");
 const MODEL = { id: "fixture", name: "fixture", api: "openai-responses", provider: "fixture", baseUrl: "https://example.test", reasoning: false,
 	input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 4096 } as const;
 const USAGE = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
@@ -525,6 +526,27 @@ test("tool selection wildcard and denied activation preserve unavailable PowerSh
 	assert.equal(settings.getPowerShellStatus()?.available, false);
 });
 
+test("real tool_search activates allowed tools inside Codemode without exposing denied names", async t => {
+	const extension: InlineExtension = pi => {
+		for (const name of ["catalog_lookup", "catalog_delete"]) pi.registerTool({ name, label: name, description: "catalog fixture",
+			parameters: Type.Object({}), execute: async () => ({ content: [{ type: "text", text: name }], details: {} }) });
+	};
+	const f = await fixture(t, { toolSelection: { tools: ["tool_search", "catalog_*", "-catalog_delete"] } }, [toolClassification, extension]);
+	f.session.setActiveToolsByName(["tool_search"]);
+	const outcome = await f.run([
+		'const r=await tools.tool_search({query:"catalog",limit:1});text(r.details);text(ALL_TOOLS.some(t=>t.name==="catalog_lookup"));text((await callTool("catalog_lookup",{})).content);text(await describeTools(["catalog_delete"]));',
+		'text(ALL_TOOLS.map(t=>t.name));await callTool("catalog_delete",{});',
+	]);
+	assert.equal(outcome.results[0]?.isError, false, JSON.stringify(outcome.results));
+	const discovered = JSON.stringify(outcome.results[0]?.content);
+	assert.match(discovered, /catalog_lookup/);
+	assert.match(discovered, /false/); // The running script keeps its initial ALL_TOOLS snapshot.
+	assert.doesNotMatch(discovered, /catalog_delete/);
+	assert.equal(outcome.results[1]?.isError, true);
+	assert.match(JSON.stringify(outcome.results[1]?.content), /catalog_lookup/);
+	assert.deepEqual(f.session.getActiveToolNames().sort(), ["catalog_lookup", "codemode", "tool_search"]);
+});
+
 test("successful state writes persist as a versioned branch entry; failed script writes do not", async t => {
 	const f = await fixture(t, { tools: ["read"] });
 	const outcome = await f.run(['store("n",3)', 'store("n",4); throw new Error("fail")', 'text(load("n"))']);
@@ -738,6 +760,15 @@ test("real MCP adapter discovery executes in Codemode and ignores self-reported 
 	assert.equal(calls, 2); assert.equal(maximum, 1);
 	assert.match(JSON.stringify(outcome.results[0]?.content), /native MCP result/);
 	assert.equal(runtime.activeCalls.size, 0);
+	const controller = (f.session as any)._codemode;
+	const description = controller.definition.description;
+	runtime.registerRemoteTool(runtime.states.get("fixture"), { name: "lookup", description: "lookup updated", inputSchema: {
+		type: "object", properties: { revised: { type: "string" } }, required: ["revised"], additionalProperties: false } });
+	assert.equal(controller.definition.description, description, "MCP schema refresh keeps the inline prefix stable");
+	const updated = await f.run(['text(await describeTools(["mcp__fixture__lookup"]));', 'await callTool("mcp__fixture__lookup",{});']);
+	assert.match(JSON.stringify(updated.results.at(-2)?.content), /revised/);
+	assert.equal(updated.results.at(-1)?.isError, true, "current schema rejects stale arguments before the remote call");
+	assert.equal(calls, 2);
 });
 
 test("mandatory Codemode rejects exclusion before creating resources", async () => {
@@ -760,7 +791,48 @@ test("MCP activation keeps inline declarations stable; overflow remains explicit
 		owner.setTools(Array.from({ length: 100 }, (_, index) => ({ ...local, name: `tool_${index}`, parameters: largeSchema })));
 		assert.ok(owner.definition.description.length < 32768);
 		assert.match(owner.definition.description, /\d+ local declarations omitted.*ALL_TOOLS/);
-	} finally { await owner.close(); }
+	} finally {
+		await owner.close();
+		assert.equal((owner as any).identifiers.size, 0, "closed controllers release the catalog name maps");
+		assert.equal((owner as any).identifierNames.size, 0);
+		assert.doesNotMatch(owner.definition.description, /tool_\d+/);
+	}
+});
+
+test("controller releases catalog metadata even when sandbox shutdown rejects", async () => {
+	const owner = new CodemodeController(() => {});
+	owner.setTools([{ name: "catalog_cleanup", label: "cleanup", description: "cleanup", parameters: Type.Object({}), execute: async () => ({ content: [], details: {} }) }]);
+	const failure = new Error("fixture shutdown failure");
+	(owner as any).sandbox = { close: async () => { throw failure; } };
+	await assert.rejects(owner.close(), error => error === failure);
+	assert.equal((owner as any).sandbox, undefined);
+	assert.equal((owner as any).tools.length, 0);
+	assert.equal((owner as any).descriptors.length, 0);
+	assert.equal((owner as any).identifiers.size, 0);
+	assert.equal((owner as any).identifierNames.size, 0);
+	assert.doesNotMatch(owner.definition.description, /catalog_cleanup/);
+	await owner.close();
+});
+
+test("disposed sessions release wrapped declarations and ignore late catalog callbacks", async t => {
+	const f = await fixture(t, { tools: ["read"] });
+	const owner = (f.session as any)._codemode;
+	const previousTools = owner.tools;
+	const wrapper = (f.session as any)._toolRegistry.get("codemode");
+	assert.ok(wrapper.description.length > CODEMODE_DESCRIPTION.length);
+	f.session.dispose(); await owner.close();
+	assert.equal(wrapper.description, CODEMODE_DESCRIPTION);
+	assert.equal(f.session.agent.state.tools.find(tool => tool.name === "codemode")!.description, CODEMODE_DESCRIPTION);
+	assert.equal(f.session.agent.state.modelTools!.find(tool => tool.name === "codemode")!.description, CODEMODE_DESCRIPTION);
+	await new Promise(resolve => setImmediate(resolve));
+	f.session.setActiveToolsByName(["read"]);
+	(f.session as any)._refreshToolRegistry({ activeToolNames: ["read"] });
+	owner.setTools(previousTools);
+	assert.equal(owner.tools.length, 0);
+	assert.equal(owner.descriptors.length, 0);
+	assert.equal(owner.identifiers.size + owner.identifierNames.size, 0);
+	assert.equal(owner.definition.description, CODEMODE_DESCRIPTION);
+	assert.equal((f.session as any)._toolRegistry.get("codemode"), wrapper);
 });
 
 test("grammar and JSON models use the same Codemode runtime", async t => {

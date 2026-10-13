@@ -2,7 +2,7 @@ import { type AttachmentMessage, type ImageSubmission, snapshotImageSubmission, 
 import { createHash } from "node:crypto";
 import { CodemodeController } from "./codemode.ts";
 import type { ToolSelection } from "./tool-selection.ts";
-import { CODEMODE_NAME, CODEMODE_STORE_ENTRY, CODEMODE_CALL_ENTRY, CODEMODE_RESULT_ENTRY, DIRECT_CONTROL_NAMES } from "./codemode-constants.ts";
+import { CODEMODE_NAME, CODEMODE_DESCRIPTION, CODEMODE_STORE_ENTRY, CODEMODE_CALL_ENTRY, CODEMODE_RESULT_ENTRY, DIRECT_CONTROL_NAMES } from "./codemode-constants.ts";
 import type { CodemodeReadEvent } from "./extensions/types.ts";
 /**
  * AgentSession - Core abstraction for agent lifecycle and session management.
@@ -1876,7 +1876,13 @@ export class AgentSession {
 	 * Call this when completely done with the session.
 	 */
 	dispose(): void {
+		this._operationDisposed = true;
 		this._toolSelection = undefined;
+		const codemode = this._toolRegistry.get(CODEMODE_NAME);
+		if (codemode) codemode.description = CODEMODE_DESCRIPTION;
+		for (const tool of this.agent.state.tools) {
+			if (tool.name === CODEMODE_NAME) tool.description = CODEMODE_DESCRIPTION;
+		}
 		void this._codemode.close().catch(ignoreOrdinaryEventListenerRejection);
 		this._pendingCustomMessages.length = 0;
 		this._pendingCustomContextMessages.length = 0;
@@ -1887,7 +1893,6 @@ export class AgentSession {
 		this.agent.clearAllQueues();
 		this._steeringMessages.length = 0;
 		this._followUpMessages.length = 0;
-		this._operationDisposed = true;
 		this._operationJournal?.dispose();
 		if (!this._hostOperation) this._operationJournal = undefined;
 		const protectedDefinition = this._operationOptions && this._baseToolDefinitions.get("write");
@@ -2465,6 +2470,7 @@ export class AgentSession {
 	 * Changes take effect on the next agent turn.
 	 */
 	setActiveToolsByName(toolNames: string[]): void {
+		if (this._operationDisposed) return;
 		let powerShellWasActive = false;
 		for (const tool of this.agent.state.tools) {
 			if (tool.name !== "powershell") continue;
@@ -4673,6 +4679,7 @@ export class AgentSession {
 	}
 
 	private _refreshToolRegistry(options?: { activeToolNames?: string[]; includeAllExtensionTools?: boolean }): void {
+		if (this._operationDisposed) return;
 		this._clearEvidenceBranch();
 		if (this.settingsManager.getEvidenceLedgerEnabled() && !this._evidenceLedger) {
 			this._evidenceLedger = new EvidenceLedger();
