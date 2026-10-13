@@ -2311,5 +2311,257 @@
     ],
     "cleanup": "All benchmark processes completed and Worker/reference-release assertions passed. Recursive removal of the exact task-owned installation directory was rejected by automatic approval policy (blocked by policy). The directory, archives and intermediate results remain at the recorded task path; no alternate deletion or shared temp cleanup was attempted.",
     "pathNormalization": "The unique temporary root is replaced by <fixture> in evidence paths; URLs use file:///<fixture>."
+  },
+  "bunRuntime": {
+    "date": "2026-10-14",
+    "baselineCommit": "e32b39aa141fc2d344457a5e7a46bbf95a94ca77",
+    "scope": "Installed Codemode library bundled with Bun, explicit embedded Worker and WASM. No production changes or new pool admission.",
+    "environment": {
+      "bun": "1.4.0",
+      "node": "v26.4.0",
+      "platform": "win32",
+      "arch": "x64",
+      "osRelease": "10.0.22631",
+      "cpu": "Intel(R) Core(TM) i7-14700KF"
+    },
+    "provenance": {
+      "packageVersion": "0.84.1",
+      "quickjsVersion": "3.6.2",
+      "installedFilesVerifiedAgainst": "installedNodePackage.installation.files",
+      "installedDistMatchesRepositoryDist": true,
+      "files": {
+        "dist/index.js": "c191d498c95af31b80826063016a0a26c83e5612a9fcc54a40108270c1fcb5df",
+        "dist/runtime/host.js": "2459e70d7ba030ade5a1d2f00710a20224c368f2b31b9e6b71c5d79edd26a6d8",
+        "dist/runtime/worker.js": "83162498506f071abdc023bc64d40ce1b554f572f4818982d509f5cebf8f59a2",
+        "dist/runtime/worker-pool.js": "03390fac6d57a2e0cc3d8ea23d799f837fd287f9bd7f03fe7b9e5b3a86bad050",
+        "dist/runtime/protocol.js": "d7ee3164609a7d8a4cdacb87699d764739e6169e16bb42b0554ed09d12097d49",
+        "dist/runtime/prelude-source.js": "688362706c2a2874b9c2030edb5f29810814a30626a75fa7a6f28814c619b746",
+        "dist/wasm.js": "d06b1c066fcbd97615921b154f8b8ae2da28dcfb2c21287f382514b872d3ee22",
+        "dist/bounded-json.js": "af4d6ca6076b8336d3b4777a0c8b2ffa6ebea15214ecf97dde9def8b8b5c1ace",
+        "quickjs-wasi/dist/index.js": "91fcfc11e7f7372f3aee8d4373c0d4f969baac5cd12648663971550054217ae8",
+        "quickjs-wasi/quickjs.wasm": "d4c9375f2b1ca4dc95f72c8aa2982a7a9951ac8011490d79c6582df732b4bbd9"
+      },
+      "sourceFiles": {
+        "scripts/bench/codemode-bun.ts": "43b5affe60db07fca86f9478bdd86fe9b87afa869806ccf2f767b68f87680332",
+        "packages/codemode/src/runtime/host.ts": "2f002efcb8e177016d9aad98f73d9d60b258ebbe1704e1b17c348cf96d5101ca",
+        "packages/codemode/src/runtime/worker.ts": "a2b38c52d4ef2b568db116e722d66e8fc1d5d98c22303f7dbe741be30da58c23",
+        "packages/codemode/src/runtime/worker-pool.ts": "a4de34312939313280ddaf56e758ae95fcff3d94526dea07838c9b0431a77137",
+        "packages/codemode/src/runtime/prelude-source.ts": "8743866734def03cbce8759f296bf01a89bff2b706462f17631215ed587eb4b5",
+        "packages/codemode/src/runtime/protocol.ts": "a192f819fd51fd3fc611565167a20030332f490820827e124d29119b357830e9",
+        "packages/codemode/src/wasm.ts": "88f8c0106cb476c29405148a7fd95b4f71fc91aa0965f18510be68c4b1051793",
+        "packages/codemode/src/bounded-json.ts": "a9703416ed568db5650d785f3d18a046faf3367388959bf52b6012156e7e9dd9"
+      },
+      "executableSha256": "4d6b481cd6cab0e3aac58bc3ee3508269df20209f769db11a08d3a6a535ab9f5"
+    },
+    "reproduction": {
+      "precondition": "Use Bun 1.4.0 and the independently installed current library (installedNodePackage commands); replace <installed-root> and <repo> with absolute forward-slash paths. Create an owned probe directory and empty/ beneath it. Run node run-compiled.mjs in that directory, then remove only that recorded directory.",
+      "entryTs": "import { CodemodeSandbox, loadQuickJSWasm } from \"<installed-root>/node_modules/@super-pi/codemode/dist/index.js\";\nimport wasmPath from \"<installed-root>/node_modules/quickjs-wasi/quickjs.wasm\" with { type: \"file\" };\nimport { benchmarkBunRuntime } from \"<repo>/scripts/bench/codemode-bun.ts\";\nawait benchmarkBunRuntime(CodemodeSandbox, loadQuickJSWasm, \"./worker.ts\", wasmPath, import.meta.url);\n",
+      "workerTs": "import \"<installed-root>/node_modules/@super-pi/codemode/dist/runtime/worker.js\";\n",
+      "runnerMjs": "import {execFileSync} from 'node:child_process';\nimport {copyFileSync,readdirSync,writeFileSync} from 'node:fs';\nimport {fileURLToPath} from 'node:url';\nconst root=fileURLToPath(new URL('.',import.meta.url));\nexecFileSync('bun',['build','--compile','./entry.ts','./worker.ts','--outfile','./codemode-probe.exe'],{cwd:root,timeout:30000,windowsHide:true,stdio:'inherit'});\ncopyFileSync(new URL('./codemode-probe.exe',import.meta.url),new URL('./empty/codemode-probe.exe',import.meta.url));\nconst contents=readdirSync(new URL('./empty/',import.meta.url));\nif(contents.length!==1||contents[0]!=='codemode-probe.exe') throw Error('Expected only the executable');\nconst output=execFileSync(fileURLToPath(new URL('./empty/codemode-probe.exe',import.meta.url)),[],{cwd:fileURLToPath(new URL('./empty/',import.meta.url)),timeout:30000,windowsHide:true,encoding:'utf8'});\nconst result=JSON.parse(output);\nwriteFileSync(new URL('./bun-result.json',import.meta.url),JSON.stringify(result,null,2)+'\\n');\nconsole.log(JSON.stringify(result));\n",
+      "timeoutMs": 30000,
+      "checks": [
+        "Child cwd contains only the copied EXE",
+        "Embedded entry/WASM paths reported by the executable",
+        "30 no-ops and 100 sequential 4KiB tool returns per mode",
+        "Fresh VM global/store isolation",
+        "Failure/timeout/abort retire Worker before explicit next execution",
+        "Active close aborts host tool; zero external abort listeners; late host promises settled",
+        "39/39 fresh and 4/4 pooled Workers stopped; 36/36 tracked host references released per mode"
+      ]
+    },
+    "comparison": {
+      "benchmark": "codemode-bun",
+      "bun": "1.4.0",
+      "platform": "win32",
+      "entry": "file:///B:/%7EBUN/root/codemode-probe.exe",
+      "workerUrl": "./worker.ts",
+      "wasmPath": "B:/~BUN/root/quickjs-r1pq2107.wasm",
+      "wasmReadCompileMs": 5.572600000000001,
+      "priming": [
+        {
+          "activeExecutions": 0,
+          "workersStarted": 1,
+          "workersStopped": 1
+        },
+        {
+          "activeExecutions": 0,
+          "workersStarted": 1,
+          "workersStopped": 1
+        }
+      ],
+      "results": [
+        {
+          "reuseWorker": false,
+          "firstMs": 37.94460000000001,
+          "latency": [
+            23.50479999999999,
+            24.247600000000006,
+            24.510999999999996,
+            23.19670000000002,
+            23.275799999999947,
+            22.404600000000016,
+            25.25350000000003,
+            22.289600000000007,
+            22.852000000000032,
+            22.740599999999972,
+            23.100300000000004,
+            23.13749999999999,
+            24.366800000000012,
+            24.206999999999994,
+            22.62729999999999,
+            22.63670000000002,
+            23.007999999999925,
+            27.271600000000035,
+            22.346400000000017,
+            22.874500000000012,
+            21.352700000000027,
+            22.335899999999924,
+            22.88810000000001,
+            23.41629999999998,
+            22.33299999999997,
+            22.971499999999992,
+            22.687099999999987,
+            23.133899999999926,
+            22.96580000000006,
+            23.110700000000065
+          ],
+          "medianMs": 23.007999999999925,
+          "p95Ms": 25.25350000000003,
+          "batchMs": 30.1644,
+          "calls": 100,
+          "measuredStats": {
+            "activeExecutions": 0,
+            "workersStarted": 32,
+            "workersStopped": 32
+          },
+          "closedStats": {
+            "activeExecutions": 0,
+            "workersStarted": 39,
+            "workersStopped": 39
+          },
+          "lifecycle": [
+            "script failure",
+            "timeout",
+            "explicit abort",
+            "active close",
+            "closed rejection"
+          ],
+          "before": {
+            "heapSize": 1931909,
+            "heapCapacity": 2988581,
+            "extraMemorySize": 842133,
+            "objectCount": 13590
+          },
+          "afterCloseGc": {
+            "heapSize": 2556538,
+            "heapCapacity": 3698138,
+            "extraMemorySize": 1420618,
+            "objectCount": 14077
+          },
+          "trackedReferences": 36,
+          "retainedAfterGc": 0
+        },
+        {
+          "reuseWorker": true,
+          "firstMs": 21.883399999999938,
+          "latency": [
+            9.705899999999929,
+            8.371999999999844,
+            8.789600000000064,
+            9.607600000000048,
+            9.157300000000077,
+            9.68489999999997,
+            9.745400000000018,
+            10.265900000000101,
+            8.454800000000205,
+            9.14709999999991,
+            8.65800000000013,
+            9.511199999999917,
+            8.264900000000125,
+            8.392299999999977,
+            9.591900000000123,
+            8.694799999999987,
+            9.502099999999928,
+            8.449299999999994,
+            8.736200000000053,
+            9.54359999999997,
+            9.465400000000045,
+            8.98090000000002,
+            9.553300000000036,
+            10.008299999999963,
+            9.566300000000183,
+            8.399200000000064,
+            9.226100000000088,
+            8.56679999999983,
+            10.470699999999852,
+            10.070100000000139
+          ],
+          "medianMs": 9.465400000000045,
+          "p95Ms": 10.265900000000101,
+          "batchMs": 14.482799999999997,
+          "calls": 100,
+          "measuredStats": {
+            "activeExecutions": 0,
+            "workersStarted": 1,
+            "workersStopped": 0
+          },
+          "closedStats": {
+            "activeExecutions": 0,
+            "workersStarted": 4,
+            "workersStopped": 4
+          },
+          "lifecycle": [
+            "script failure",
+            "timeout",
+            "explicit abort",
+            "active close",
+            "closed rejection"
+          ],
+          "before": {
+            "heapSize": 2563077,
+            "heapCapacity": 3701653,
+            "extraMemorySize": 1424133,
+            "objectCount": 14101
+          },
+          "afterCloseGc": {
+            "heapSize": 2636958,
+            "heapCapacity": 3832238,
+            "extraMemorySize": 1489182,
+            "objectCount": 14175
+          },
+          "trackedReferences": 36,
+          "retainedAfterGc": 0
+        }
+      ],
+      "coverage": "Bun/JSC, original runtime and explicit worker/WASM; 30 warm no-ops plus 100x4KiB sequential bridge per mode, followed by failure/timeout/abort/active-close checks. Timing is within one process after priming; heapStats is retained heap, not cumulative allocation. No allocation-sampling or CPU-p95 admission claim, Worker-internal heap/VM WeakRefs, full CLI, policy/UI or real-model measurement."
+    },
+    "gcInvestigation": {
+      "initialObservation": "Five GC calls in Promise continuations retained tool objects (indices 2/3 of 36); sandbox, catalog array, 30 results, controller and signal were collected. Same failure from source and compiled entry.",
+      "controls": "Registration/no-op/tool-call and individual lifecycle probes released all references under Node 26.4.0 and Bun 1.4.0. The full measure sequence also released under a separate call site. This did not establish a production leak.",
+      "resolution": "Only the GC probe changed: each of five Bun.gc(true) calls now runs in a native setImmediate callback instead of an async continuation. All 36 references release under source and compiled modes without clearing tool objects or weakening assertions. The exact JSC retainer mechanism is not established.",
+      "limits": "WeakRefs cover host sandbox/catalog/tool/result/controller/signal objects, not Worker wrappers, Worker heaps or QuickJS VM native references."
+    },
+    "verification": {
+      "strictBenchmarkTypes": "passed",
+      "existingHotPathInvariantsPassed": 9,
+      "newTestFiles": 0,
+      "localFullSuiteRuns": 0,
+      "productionChanges": 0,
+      "compiledProbe": "passed from EXE-only directory",
+      "sourceProbe": "passed after GC callback correction"
+    },
+    "decision": "Bun 1.4.0 Windows library/executable compatibility demonstrated for this bounded fixture. Keep existing opt-in reuse and runtime selection; no default change or Bun performance admission claim.",
+    "limits": [
+      "One process, fresh then pooled order; timing includes existing execution boundaries, not process launch. No interleaved multi-process CPU gate.",
+      "heapStats measures retained host heap, not cumulative allocation; no JSC allocation sample and no Worker/VM allocation profile. Node profiler values cannot stand in for Bun.",
+      "Do not compare these timings to historical Node/OpenCode samples as an engine/product speed ranking.",
+      "No full CLI release artifact, interactive policy/UI integration, real models or real I/O workload."
+    ],
+    "sources": [
+      "https://bun.sh/docs/bundler/executables",
+      "https://bun.sh/docs/project/benchmarking",
+      "https://bun.sh/reference/bun/jsc/heapStats"
+    ],
+    "cleanup": "All probe child processes exited. Recursive removal of the exact current owned directory was rejected by automatic approval policy (blocked by policy); no cleanup fallback was attempted. Retained directory: C:/Users/Administrator/AppData/Local/Temp/pi-oc11-bun-PGOKlX. The previous installation was reused read-only and remains subject to its recorded policy-denied cleanup."
   }
 }
