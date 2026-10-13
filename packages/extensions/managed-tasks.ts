@@ -52,6 +52,7 @@ export function formatTaskCompletion(kind: Kind, tasks: readonly TaskObservation
 		if (shown === COMPLETION_TASKS) break;
 		let entry = `\nTask ${completionText(task.id, 80)}; agent=${JSON.stringify(completionText(task.agent, 64))}; state=${task.state}`
 			+ `; branch=${task.branchId == null ? "root" : JSON.stringify(completionText(task.branchId, 256))}.\n`;
+		if (kind === "subagent" && task.checkpointAvailable) entry += formatTaskCheckpoint(task) + "\n";
 		const facts = task.shellExecution;
 		if (facts) {
 			entry += `Shell: ${facts.executionStatus}; exit=${facts.exitCode ?? "unknown"}; termination=${facts.termination}; outputComplete=${facts.output.complete}; log=${facts.output.log}; cleanup=${facts.output.cleanup}.\n`;
@@ -67,7 +68,14 @@ export function formatTaskCompletion(kind: Kind, tasks: readonly TaskObservation
 }
 
 export function formatManagedTask(task: ManagedSubagentTask): string {
-	return `${task.id} · ${task.agent} · ${task.state}${task.recovered ? " · historical" : ""}${task.startedAt === undefined || task.state === "interrupted" ? "" : ` · ${Math.floor(((task.completedAt ?? Date.now()) - task.startedAt) / 1000)}s`}`;
+	return `${task.id} · ${task.agent} · ${task.state}${task.recovered ? " · historical" : ""}${task.checkpointAvailable ? " · checkpoint saved" : ""}${task.startedAt === undefined || task.state === "interrupted" ? "" : ` · ${Math.floor(((task.completedAt ?? Date.now()) - task.startedAt) / 1000)}s`}`;
+}
+
+/** Query/terminal hint only; never read or decode the saved transcript to display it. */
+export function formatTaskCheckpoint(task: TaskObservation): string {
+	if (!task.checkpointAvailable) return "\nNo completed checkpoint is saved. Start a fresh bounded subagent task; opt in with checkpoint: true before execution if continuation is needed.";
+	if (task.completedAt === undefined) return "\nCheckpoint saved; this task is still active. Wait for it to end or explicitly cancel it before requesting continuation.";
+	return "\nCheckpoint available: review the result and current workspace first, then use an authorized subagent single request with resumeTaskId, the same agent/cwd, a new task instruction and scope/deliverable/stopCondition. This creates a new task ID; near-capacity checkpoints need a fresh bounded task instead of repeated resume.";
 }
 
 export function configureTaskHistory(tasks: SubagentTasks, kind: Kind, ctx: ExtensionContext): void {
@@ -76,7 +84,7 @@ export function configureTaskHistory(tasks: SubagentTasks, kind: Kind, ctx: Exte
 }
 
 function taskText(task: ManagedSubagentTask, item: ManagedTaskProvider): string {
-	return `${formatManagedTask(task)}${task.cwd ? `\nWorkspace: ${task.cwd}; branch: ${task.branchId ?? "root"}` : ""}${task.checkpointAvailable ? "\nCheckpoint available: use a fresh authorized subagent request with resumeTaskId and new instructions; inspect any unobserved side effects first." : ""}${task.result === undefined ? "" : `\n\n${task.result}`}${item.tasks.historyError ? `\n\n${item.tasks.historyStatus}` : ""}`;
+	return `${formatManagedTask(task)}${task.cwd ? `\nWorkspace: ${task.cwd}; branch: ${task.branchId ?? "root"}` : ""}${task.result === undefined ? "" : `\n\n${task.result}`}${item.tasks.historyError ? `\n\n${item.tasks.historyStatus}` : ""}`;
 }
 
 /** Two bounded providers; registration and explicit control calls are lifecycle work. */
@@ -127,8 +135,9 @@ export function registerManagedTasks(pi: ExtensionAPI, kind: Kind, provider: Man
 				const [name, item, task] = find(args.id);
 				if (args.action === "cancel") item.tasks.cancel(task.id);
 				else if (args.action === "wait") await item.tasks.wait(task.id, args.timeoutMs ?? 10_000, signal);
-				return { content: [{ type: "text", text: taskText(task, item) }],
-					details: { task: { id: task.id, kind: name, state: task.state, historical: task.recovered === true, cwd: task.cwd, branchId: task.branchId },
+				return { content: [{ type: "text", text: taskText(task, item) + (name === "subagent" ? formatTaskCheckpoint(task) : "") }],
+					details: { task: { id: task.id, kind: name, agent: task.agent, state: task.state, historical: task.recovered === true, cwd: task.cwd, branchId: task.branchId,
+						checkpointAvailable: name === "subagent" ? task.checkpointAvailable === true : undefined },
 						historyError: item.tasks.historyError, result: structuredClone(item.details?.(task) ?? (task.shellExecution ? { shellExecution: task.shellExecution } : undefined)) } };
 			},
 		});
@@ -138,9 +147,9 @@ export function registerManagedTasks(pi: ExtensionAPI, kind: Kind, provider: Man
 				try {
 					const parts = args.trim().split(/\s+/);
 					if ((parts[0] === "cancel" || parts[0] === "status") && parts.length === 2) {
-						const [, item, task] = find(parts[1]);
+						const [name, item, task] = find(parts[1]);
 						if (parts[0] === "cancel") item.tasks.cancel(task.id);
-						ctx.ui.notify(taskText(task, item), "info");
+						ctx.ui.notify(taskText(task, item) + (name === "subagent" ? formatTaskCheckpoint(task) : ""), "info");
 					} else if (args.trim()) ctx.ui.notify("Usage: /tasks or /tasks status|cancel <id>", "error");
 					else ctx.ui.notify(list(), "info");
 				} catch (error) { ctx.ui.notify(error instanceof Error ? error.message : String(error), "error"); }

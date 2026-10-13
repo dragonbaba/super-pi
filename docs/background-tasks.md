@@ -139,7 +139,12 @@ scout 只查明事实，planner 只形成方案，reviewer 只报告可操作的
 和对应结果。默认不保存这些上下文；不额外保存授权、环境、认证配置或隐藏推理。
 文本本身可能包含敏感内容，应按会话数据管理。检查点需要持久会话，普通 shell 不支持续跑。
 
-`tasks status` 或 `subagent_tasks status` 会说明是否有检查点。续跑用新的单项 `subagent`
+`tasks list`、`subagent_tasks list` 和 `/tasks` 会用 `checkpoint saved` 标出已保存完整回合的任务；
+有检查点的完成报告也会给出续跑入口。`tasks status` 或 `subagent_tasks status` 的结构化
+`details.task.checkpointAvailable` 表示已有保存记录，文本区分仍在运行、已经结束和没有检查点。
+它不是当前权限或文件状态的保证；运行中任务须先结束或被显式取消，接近容量上限时应按交接创建新任务。
+缺少检查点则提交新的有限任务，需要后续续跑时在执行前设置 `checkpoint: true`。
+续跑用新的单项 `subagent`
 请求，提供 `agent`、`task`、本次的 `scope` / `deliverable` / `stopCondition`、原来的 `cwd` 和 `resumeTaskId`；`task` 写本次的新指令。
 当前角色、信任、模型配置及权限会重新检查，工作区精确身份必须匹配。原任务必须已经结束。
 续跑创建新 ID，原结果保留；历史工具调用只作为模型上下文，不自动重放。

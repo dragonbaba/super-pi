@@ -2,7 +2,7 @@
 
 先巩固 Super Pi 已有的后台完成通知与主会话续跑，再改进结果交付、子代理续跑和上下文压缩；Codemode 的工具发现与执行成本独立评估。需要改变会话持久化、远程协议或文件恢复语义的功能单独评估，不将上游实现整体移植进当前运行时。
 
-状态：2026-10-13（Asia/Tokyo）第一批本地实现与验证完成，进入 PR 交付审查：OC01、OC02 已实现；OC06 提示策略已实现，真实模型效果待评估；OC11 已取得本地编译产物基线，内部阶段拆分和后续优化未开展。其余任务未开始。用户已授权提交、推送和创建 PR，以及按 §2.3 修复反馈并手动请求复审；合并仍需另行授权。
+状态：2026-10-13（Asia/Tokyo）第一批 PR #136 已按用户授权合并，合并提交 `1f5e8c6ac6348f37027e6e0b89ff70dec8e7bd1e`，最终六个 CI 分片通过、Codex 复审无新增意见。OC01、OC02 已实现；OC06 提示策略已实现，真实模型效果待评估；OC11 已取得本地编译产物基线，内部阶段拆分和后续优化未开展。第二批选择 OC05 已结束子代理续跑发现与 OC10 工具发现/目录更新核查，按独立问题分别交付；跨重启自动恢复、运行中定向消息不在本批范围。用户已授权继续实施并按 §2.3 处理 PR 审查；后续 PR 的合并仍需另行授权。
 
 ## 1 对照基线与结论边界
 
@@ -137,10 +137,10 @@ Claude Code 官方确认后台报告通过后续回合的自动通知到达，�
 
 入口：[subagent](../packages/extensions/subagent/index.ts)、[统一任务入口](../packages/extensions/managed-tasks.ts)、[任务历史与检查点](../packages/extensions/task-history.ts)。现有边界见 [后台任务说明](background-tasks.md)；参考 [O9]、[C1]。
 
-- [ ] 优先改善已有 `checkpoint: true`、`resumeTaskId` 的发现和使用体验，保留每次续跑的新任务 ID。若需要稳定子代理身份，将其与本次运行 ID 区分；重名、旧代次和跨父会话目标明确拒绝或要求重新定位。
-- [ ] 保留新任务的 scope/deliverable/stopCondition、当前角色/模型/权限核查、精确工作区身份及写入冲突检查。没有检查点、检查点损坏或达到交接线时给出可执行交接，不虚构完整上下文或绕过容量上限。
+- [x] 优先改善已有 `checkpoint: true`、`resumeTaskId` 的发现和使用体验，保留每次续跑的新任务 ID。若需要稳定子代理身份，将其与本次运行 ID 区分；重名、旧代次和跨父会话目标明确拒绝或要求重新定位。
+- [x] 保留新任务的 scope/deliverable/stopCondition、当前角色/模型/权限核查、精确工作区身份及写入冲突检查。没有检查点、检查点损坏或达到交接线时给出可执行交接，不虚构完整上下文或绕过容量上限。
 - [ ] 将“已结束子代理的续跑”与“运行中定向纠偏”分阶段验收；后者只有在子进程已有安全输入边界或明确新增协议后采用，保证顺序、取消与消息源身份。代理消息不授予用户权限，不让已明确取消的任务被普通消息自动复活。
-- [ ] 保留一次性任务的轻量路径；不默认长期保存全部子代理对话，不同时引入任意互发消息、代理团队和嵌套委派。
+- [x] 保留一次性任务的轻量路径；不默认长期保存全部子代理对话，不同时引入任意互发消息、代理团队和嵌套委派。
 
 **性能与最小验证：** 强制执行 §2。复用 [task-checkpoints](../tests/task-checkpoints.test.ts)、subagent 管理与热路径测试；当前 IPC 与检查点 fixture 足够时不新建服务。按修改范围复用 [subagent benchmark](../scripts/bench/subagent-management.ts) 或 [task-history benchmark](../scripts/bench/task-history.ts)，计数消息/检查点容量、IPC 字节、监听器与取消后的引用释放，不逐 token 保存完整历史。
 
@@ -210,6 +210,18 @@ Claude Code 官方确认后台报告通过后续回合的自动通知到达，�
 **性能与最小验证：** 强制执行 §2。复用 [codemode-runtime](../tests/codemode-runtime.test.ts)、[worker-recovery](../tests/codemode-worker-recovery.test.ts)、[codemode-guardrails](../tests/codemode-guardrails.test.ts) 中实际受影响者；运行对应 [hot-path invariants](../tests/codemode-hot-paths.test.ts) 和 [runtime benchmark](../scripts/bench/codemode-runtime.ts)，涉及策略/展示时才扩大到已有 dispatch/session/tree 基准。提供每脚本 Worker/VM 次数、每调用复制与序列化字节、并发/队列峰值、allocation 和 GC/引用释放证据；若改到 Worker 内部分配，宿主 inspector 样本不够，须补该线程/VM 的相应证据。§6 是诊断基线，不是未来优化的验收结果。
 
 ## 5 完成与证据记录
+
+### 第二批实施记录
+
+**OC05 实施前。** 基线为第一批合并提交 `1f5e8c6ac`。已核实 `checkpoint: true` / `resumeTaskId` 完成上下文保存与新 ID 续跑，执行前重新检查当前委派、角色、模型、工作区精确身份及冲突，原任务必须终态；普通任务仍不保存上下文。缺口是 list 没有检查点标记，统一/legacy status 的结构化数据没有检查点状态，且运行中的可用检查点被提示为可立即续跑。最小范围：统一有界的查询提示、列表标记与结构化 `checkpointAvailable`，复用现有 single-mode 入口，不增加 resume 工具、队列或存储字段。先复用 `subagent-management` 的真实子进程/检查点续跑与权限用例、`task-checkpoints` 的恢复/损坏/淘汰边界。
+
+调用链：显式 tasks/subagent_tasks 或 /tasks 查询 → 有界 task record → 列表/状态投影 → 既有工具结果或 UI 通知；后续续跑仍走 subagent 授权 → readCheckpoint → scheduler → child IPC → 完整回合保存 → finish → dispose。查询与终态提示属于显式控制/低频生命周期，禁止在输出 chunk/progress 中读取、解析或保存检查点。状态只使用已有布尔值，不引入缓存、timer、Promise、对象池或额外 transcript 复制；受影响的 source invariants 和必要分配/释放证据按实际 diff 决定，不为文案重复全量测试。
+
+**OC10 范围。** OC05 后独立核查实际 session 的 ALL_TOOLS/describeTools、tool_search/MCP deferred、工具增删与当前授权。复用现有 Codemode 测试/benchmark 对小目录和代表性大目录计数声明字节、schema 访问、目录更新及释放。先测量再决定是否需要生产改动，不预设新搜索 API、Worker 池或引擎替换。
+
+**OC05 实施结果。** list 标出 checkpoint saved；统一 tasks、legacy subagent_tasks 与 /tasks 的状态明确区分没有完整检查点、已保存但仍在运行、已结束可提出新授权请求。结构化状态补充 agent/cwd/branchId 与 checkpointAvailable；可用检查点的终态报告给出既有续跑入口，仍受原来 8 项 / 8192 字符上限约束，不承诺当前权限或近容量检查点可无条件继续。查询仅读取任务记录布尔值，不加载或复制检查点正文。取消任务仍只能经新授权明确续跑，未增加运行中定向消息。
+
+已有测试扩展真实子进程续跑、两个管理入口与 /tasks、跨父会话拒绝、活动检查点不能续跑及 Unicode/转义后的报告上限。相关管理/检查点/source 检查 37 通过、1 POSIX 条件跳过（修正 Windows 长短路径测试预期后仅重跑该项）；共享 shell 控制与历史恢复检查 36 通过、1 POSIX 条件跳过；类型检查和 diff 检查通过。无新增测试文件，无本地全量测试。stdout allocation 基线/候选约为 8889.87/8705.40、8848.96/8798.15、8442.27/8441.30 B/更新（8/16/64 children），全消息序列化与进度快照计数维持 0；完成/失败/取消/dispose 后所有者计数 0、344 个跟踪引用 GC 后保留 0。此测量约束未改动的高频链，不冒充低频字符串格式化零分配或统计性能收益；完整样本、命令和源码指纹见 [OC05 证据](performance/oc05-checkpoint-discovery.json)。PR 与最终 CI/审查状态待交付后记录。
 
 ### 第一批实施记录（本地验证完成）
 
