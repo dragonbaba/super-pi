@@ -17,7 +17,7 @@ import { SessionManager } from "../packages/coding-agent/src/core/session-manage
 import { AssistantMessageEventStream } from "../packages/ai/src/utils/event-stream.ts";
 import type { AssistantMessage, Context } from "../packages/ai/src/types.ts";
 import type { InlineExtension, ExtensionFactory } from "../packages/coding-agent/src/core/extensions/types.ts";
-import { CODEMODE_STORE_ENTRY } from "../packages/coding-agent/src/core/codemode-constants.ts";
+import { CODEMODE_DESCRIPTION, CODEMODE_STORE_ENTRY } from "../packages/coding-agent/src/core/codemode-constants.ts";
 import { CodemodeStore } from "../packages/coding-agent/src/core/codemode-store.ts";
 import { CodemodeController } from "../packages/coding-agent/src/core/codemode.ts";
 import { privateOutputFileSystem } from "../packages/coding-agent/src/utils/private-output-file.ts";
@@ -812,6 +812,27 @@ test("controller releases catalog metadata even when sandbox shutdown rejects", 
 	assert.equal((owner as any).identifierNames.size, 0);
 	assert.doesNotMatch(owner.definition.description, /catalog_cleanup/);
 	await owner.close();
+});
+
+test("disposed sessions release wrapped declarations and ignore late catalog callbacks", async t => {
+	const f = await fixture(t, { tools: ["read"] });
+	const owner = (f.session as any)._codemode;
+	const previousTools = owner.tools;
+	const wrapper = (f.session as any)._toolRegistry.get("codemode");
+	assert.ok(wrapper.description.length > CODEMODE_DESCRIPTION.length);
+	f.session.dispose(); await owner.close();
+	assert.equal(wrapper.description, CODEMODE_DESCRIPTION);
+	assert.equal(f.session.agent.state.tools.find(tool => tool.name === "codemode")!.description, CODEMODE_DESCRIPTION);
+	assert.equal(f.session.agent.state.modelTools!.find(tool => tool.name === "codemode")!.description, CODEMODE_DESCRIPTION);
+	await new Promise(resolve => setImmediate(resolve));
+	f.session.setActiveToolsByName(["read"]);
+	(f.session as any)._refreshToolRegistry({ activeToolNames: ["read"] });
+	owner.setTools(previousTools);
+	assert.equal(owner.tools.length, 0);
+	assert.equal(owner.descriptors.length, 0);
+	assert.equal(owner.identifiers.size + owner.identifierNames.size, 0);
+	assert.equal(owner.definition.description, CODEMODE_DESCRIPTION);
+	assert.equal((f.session as any)._toolRegistry.get("codemode"), wrapper);
 });
 
 test("grammar and JSON models use the same Codemode runtime", async t => {

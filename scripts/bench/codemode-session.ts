@@ -125,12 +125,23 @@ async function catalogCycle(count: number) {
     const closedStats = sandbox.stats;
     assert.equal(closedStats.activeExecutions, 0); assert.equal(closedStats.workersStarted, closedStats.workersStopped);
     assert.equal(owner.descriptors.length, 0); assert.equal(owner.current, undefined);
+    const retainedNameMappingsAfterClose = owner.identifiers.size + owner.identifierNames.size;
+    const retainedDeclarationCharsAfterClose = Math.max(0, owner.definition.description.length - CODEMODE_DESCRIPTION.length);
+    session.dispose(); await owner.close();
+    const wrappedDeclarationCharsAfterDispose = {
+      registry: Math.max(0, ((session as any)._toolRegistry.get("codemode")?.description.length ?? 0) - CODEMODE_DESCRIPTION.length),
+      active: Math.max(0, (session.agent.state.tools.find(tool => tool.name === "codemode")?.description.length ?? 0) - CODEMODE_DESCRIPTION.length),
+      model: Math.max(0, (session.agent.state.modelTools?.find(tool => tool.name === "codemode")?.description.length ?? 0) - CODEMODE_DESCRIPTION.length),
+    };
+    // Simulate an already admitted callback reaching the session API after disposal.
+    await nextTask(); session.setActiveToolsByName(names);
+    const lateCallbackNameMappings = owner.identifiers.size + owner.identifierNames.size;
+    await owner.close();
     refs.push(new WeakRef(session), new WeakRef(owner), new WeakRef(sandbox), new WeakRef(descriptors), new WeakRef(snapshot), new WeakRef(catalog));
     return { count, localCount, activation, discovery: { scripts: 1, describeCalls: 1, ...first, schemaPropertyReads: discoveryReads },
       unchanged: { schemaPropertyReads: unchangedReads, descriptorReused: true, snapshotReused: true, catalogReused: true },
       wireCatalogBytes, afterRemoval: removed, ...closedStats,
-      retainedNameMappingsAfterClose: owner.identifiers.size + owner.identifierNames.size,
-      retainedDeclarationCharsAfterClose: Math.max(0, owner.definition.description.length - CODEMODE_DESCRIPTION.length) };
+      retainedNameMappingsAfterClose, retainedDeclarationCharsAfterClose, wrappedDeclarationCharsAfterDispose, lateCallbackNameMappings };
   } finally { await owner.close(); session.dispose(); }
 }
 const profiler = new Session(); profiler.connect();

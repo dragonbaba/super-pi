@@ -3,7 +3,7 @@
   "task": "OC10 tool catalog audit and closed controller metadata release",
   "date": "2026-10-13",
   "baselineCommit": "1f5e8c6ac6348f37027e6e0b89ff70dec8e7bd1e",
-  "scope": "Only CodemodeController.close changes production behavior. Other changes are existing-test/benchmark extensions and audit documentation.",
+  "scope": "Codemode controller/session catalog cleanup and refusal of updates after disposal; no normal event/progress changes.",
   "commands": {
     "catalog": "node --expose-gc --experimental-strip-types scripts/bench/codemode-session.ts --catalog",
     "session": "node --expose-gc --experimental-strip-types scripts/bench/codemode-session.ts",
@@ -302,5 +302,280 @@
       "tests/codemode-session.test.ts": "85382b6bd38f0db4250223d7c748f153e098e4a4d5634120a55439fcc7bcdea9"
     },
     "baselineController": "ce3a47acf67a708ee995b54e5f59aa75fdb58b4d3fcc55ba6b8af86b8c92af0b"
+  },
+  "initialCandidateCommit": "a909a5898a29ebeb762b7ef892863032dcb365ec",
+  "reviewFollowUp": {
+    "baseCommit": "a909a5898a29ebeb762b7ef892863032dcb365ec",
+    "findings": [
+      {
+        "id": 4254386719,
+        "fix": "Ignore closed controller updates and disposed session selection/registry refresh; stale extension API already invalidated, SDK/direct paths now guarded."
+      },
+      {
+        "id": 4254386726,
+        "fix": "Clear copied description on session registry and active Codemode wrappers; model tools share wrappers."
+      }
+    ],
+    "callChainAddition": "wrapToolDefinition -> wrapRegisteredTool -> AgentSession registry/current tools -> Agent modelTools selection -> dispose -> late setActiveToolsByName / _refreshToolRegistry / controller.setTools",
+    "validation": {
+      "sessionCases": 10,
+      "sourceInvariantCases": 8,
+      "newCaseInExistingFile": 1,
+      "totalNewCases": 3,
+      "newTestFiles": 0,
+      "types": "pass",
+      "packageBuild": "pass",
+      "fullLocalSuiteRun": false,
+      "benchmarkReproduction": "Before follow-up, wrapped descriptions retain 2380/29845 chars at each of 3 shared-object entry points; late SDK update repopulates 16/1024 map entries."
+    },
+    "benchmarkDelta": "Catalog mode now measures session disposal and a late SDK callback; compare these before/after measurements to each other, not directly to the initial catalog profile.",
+    "baselineCatalog": {
+      "benchmark": "codemode-session-catalog",
+      "node": "v26.4.0",
+      "platform": "win32",
+      "catalogs": [
+        {
+          "count": 8,
+          "localCount": 2,
+          "activation": {
+            "localSchemaPropertyReads": 6,
+            "remoteSchemaPropertyReads": 0,
+            "inlineChars": 5038,
+            "inlineUtf8Bytes": 5038
+          },
+          "discovery": {
+            "scripts": 1,
+            "describeCalls": 1,
+            "count": 8,
+            "name": "mcp__catalog__tool_7",
+            "declarationChars": 1116,
+            "schemaPropertyReads": {
+              "local": 0,
+              "remote": 3
+            }
+          },
+          "unchanged": {
+            "schemaPropertyReads": 0,
+            "descriptorReused": true,
+            "snapshotReused": true,
+            "catalogReused": true
+          },
+          "wireCatalogBytes": 765,
+          "afterRemoval": {
+            "count": 7,
+            "present": false,
+            "declaration": ""
+          },
+          "activeExecutions": 0,
+          "workersStarted": 3,
+          "workersStopped": 3,
+          "retainedNameMappingsAfterClose": 0,
+          "retainedDeclarationCharsAfterClose": 0,
+          "wrappedDeclarationCharsAfterDispose": {
+            "registry": 2380,
+            "active": 2380,
+            "model": 2380
+          },
+          "lateCallbackNameMappings": 16
+        },
+        {
+          "count": 512,
+          "localCount": 64,
+          "activation": {
+            "localSchemaPropertyReads": 192,
+            "remoteSchemaPropertyReads": 0,
+            "inlineChars": 32503,
+            "inlineUtf8Bytes": 32503
+          },
+          "discovery": {
+            "scripts": 1,
+            "describeCalls": 1,
+            "count": 512,
+            "name": "mcp__catalog__tool_511",
+            "declarationChars": 1120,
+            "schemaPropertyReads": {
+              "local": 0,
+              "remote": 3
+            }
+          },
+          "unchanged": {
+            "schemaPropertyReads": 0,
+            "descriptorReused": true,
+            "snapshotReused": true,
+            "catalogReused": true
+          },
+          "wireCatalogBytes": 52279,
+          "afterRemoval": {
+            "count": 511,
+            "present": false,
+            "declaration": ""
+          },
+          "activeExecutions": 0,
+          "workersStarted": 3,
+          "workersStopped": 3,
+          "retainedNameMappingsAfterClose": 0,
+          "retainedDeclarationCharsAfterClose": 0,
+          "wrappedDeclarationCharsAfterDispose": {
+            "registry": 29845,
+            "active": 29845,
+            "model": 29845
+          },
+          "lateCallbackNameMappings": 1024
+        }
+      ],
+      "trackedReferences": 12,
+      "retainedAfterGc": 0,
+      "sampledHostBytes": 19221184,
+      "coverage": "8/512 registered host tools (MCP names are metadata fixtures); real SDK, controller, describe bridge, compiled Worker and disposal. No real server/model, provider token/cache measurement or Worker heap."
+    },
+    "candidateCatalog": {
+      "benchmark": "codemode-session-catalog",
+      "node": "v26.4.0",
+      "platform": "win32",
+      "catalogs": [
+        {
+          "count": 8,
+          "localCount": 2,
+          "activation": {
+            "localSchemaPropertyReads": 6,
+            "remoteSchemaPropertyReads": 0,
+            "inlineChars": 5038,
+            "inlineUtf8Bytes": 5038
+          },
+          "discovery": {
+            "scripts": 1,
+            "describeCalls": 1,
+            "count": 8,
+            "name": "mcp__catalog__tool_7",
+            "declarationChars": 1116,
+            "schemaPropertyReads": {
+              "local": 0,
+              "remote": 3
+            }
+          },
+          "unchanged": {
+            "schemaPropertyReads": 0,
+            "descriptorReused": true,
+            "snapshotReused": true,
+            "catalogReused": true
+          },
+          "wireCatalogBytes": 765,
+          "afterRemoval": {
+            "count": 7,
+            "present": false,
+            "declaration": ""
+          },
+          "activeExecutions": 0,
+          "workersStarted": 3,
+          "workersStopped": 3,
+          "retainedNameMappingsAfterClose": 0,
+          "retainedDeclarationCharsAfterClose": 0,
+          "wrappedDeclarationCharsAfterDispose": {
+            "registry": 0,
+            "active": 0,
+            "model": 0
+          },
+          "lateCallbackNameMappings": 0
+        },
+        {
+          "count": 512,
+          "localCount": 64,
+          "activation": {
+            "localSchemaPropertyReads": 192,
+            "remoteSchemaPropertyReads": 0,
+            "inlineChars": 32503,
+            "inlineUtf8Bytes": 32503
+          },
+          "discovery": {
+            "scripts": 1,
+            "describeCalls": 1,
+            "count": 512,
+            "name": "mcp__catalog__tool_511",
+            "declarationChars": 1120,
+            "schemaPropertyReads": {
+              "local": 0,
+              "remote": 3
+            }
+          },
+          "unchanged": {
+            "schemaPropertyReads": 0,
+            "descriptorReused": true,
+            "snapshotReused": true,
+            "catalogReused": true
+          },
+          "wireCatalogBytes": 52279,
+          "afterRemoval": {
+            "count": 511,
+            "present": false,
+            "declaration": ""
+          },
+          "activeExecutions": 0,
+          "workersStarted": 3,
+          "workersStopped": 3,
+          "retainedNameMappingsAfterClose": 0,
+          "retainedDeclarationCharsAfterClose": 0,
+          "wrappedDeclarationCharsAfterDispose": {
+            "registry": 0,
+            "active": 0,
+            "model": 0
+          },
+          "lateCallbackNameMappings": 0
+        }
+      ],
+      "trackedReferences": 12,
+      "retainedAfterGc": 0,
+      "sampledHostBytes": 17078552,
+      "coverage": "8/512 registered host tools (MCP names are metadata fixtures); real SDK, controller, describe bridge, compiled Worker and disposal. No real server/model, provider token/cache measurement or Worker heap."
+    },
+    "candidateSession": {
+      "benchmark": "codemode-session",
+      "node": "v26.4.0",
+      "platform": "win32",
+      "sampledCycles": 10,
+      "excludedWarmupCycles": 1,
+      "startupMedianMs": 0.5855000000001382,
+      "startupP95Ms": 0.9755000000000109,
+      "firstBatchMedianMs": 44.13620000000003,
+      "firstBatchP95Ms": 46.58660000000009,
+      "warmBatchMedianMs": 44.199100000000044,
+      "warmBatchP95Ms": 46.129999999999995,
+      "childCalls": 242,
+      "progress": 0,
+      "workersStarted": 22,
+      "workersStopped": 22,
+      "trackedReferences": 55,
+      "retainedAfterGc": 0,
+      "pendingEvidenceAfterTurn": 0,
+      "sampledHostBytes": 26010816,
+      "leadingSites": [
+        {
+          "name": "split",
+          "bytes": 1386112
+        },
+        {
+          "name": "join",
+          "bytes": 818440
+        },
+        {
+          "name": "createContext",
+          "bytes": 655056
+        },
+        {
+          "name": "realpath",
+          "bytes": 481608
+        },
+        {
+          "name": "read",
+          "bytes": 437024
+        }
+      ],
+      "coverage": "real SDK, built-in reads, AgentSession policy/hooks/results/store, Worker, projection and disposal; offline provider; excludes UI, worker heap and disk sessions"
+    },
+    "candidateFingerprints": {
+      "packages/coding-agent/src/core/agent-session.ts": "4f033714f53e86d463e6584325de8e9657ad3070f880bc16e0909f79c735d6a3",
+      "packages/coding-agent/src/core/codemode.ts": "8ccbea79c50200288319acdef102232fb2030a1ab98b6f76ddda6630dd23a860",
+      "scripts/bench/codemode-session.ts": "0298692c106cd8d621ea0ea1ba80f19090bf2bc4cc214fc231929373d718fa48",
+      "tests/codemode-session.test.ts": "879fd6c5cad4938d077d1303cc018fdf6c55d7bbca48fef8f5cd26d9ccb79a32"
+    }
   }
 }

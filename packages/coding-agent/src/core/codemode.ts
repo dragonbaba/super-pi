@@ -146,7 +146,7 @@ export class CodemodeController {
 	}
 
 	setTools(tools: readonly AgentTool<any>[]): void {
-		if (this.tools === tools) return;
+		if (this.closed || this.tools === tools) return;
 		this.tools = tools;
 		const descriptors: CodemodeTool[] = [];
 		let description = CODEMODE_DESCRIPTION + DEFERRED_DECLARATIONS + "\nCurrent local tool declarations (each result is {content,details,isError,ref}):\n";

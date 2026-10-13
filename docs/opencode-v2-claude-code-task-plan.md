@@ -357,13 +357,22 @@ warm 指复用已编译 WASM，每次仍创建独立 Worker/VM；计时包含终
 
 现有注册预算是 4096 工具、名称最多 1024 字符、sandbox 目录最多 2 Mi UTF-16 字符；controller 内联说明限制 32768 字符，schema 声明有独立预算。局部声明可省略或退化为 `unknown`，所以 describe 不保证所有复杂 schema 都展开成精确 TypeScript 类型，实际调用仍由当前完整 schema 校验。显式搜索/注册属于低频入口，会扫描、排序或构建元数据；每个脚本仍新建 Worker 并传送目录，不能把宿主快照复用写成“零跨 Worker 复制”。此次未证明需要分页、新缓存、Worker 池或替换引擎。
 
-**唯一生产修复。** `CodemodeController.close` 原先清空 descriptors/tools，却保留两张名称映射和内联声明。补齐清理并放入 `finally`，sandbox 关闭异常也释放 controller 拥有的元数据。对仍被外部持有的已关闭 owner，8/512 项场景删除一项后，名称映射条目合计从 14/1022 降到 0，额外声明从 2380/29845 字符降到 0。这不是声称旧 owner 永远无法 GC；原来在整个 owner 被释放后同样可回收。
+**生产修复限于关闭生命周期。** `CodemodeController.close` 原先清空 descriptors/tools，却保留两张名称映射和内联声明。补齐清理并放入 `finally`，sandbox 关闭异常也释放 controller 拥有的元数据。对仍被外部持有的已关闭 owner，8/512 项场景删除一项后，名称映射条目合计从 14/1022 降到 0，额外声明从 2380/29845 字符降到 0。这不是声称旧 owner 永远无法 GC；原来在整个 owner 被释放后同样可回收。审查后另补 session 包装声明清理与关闭后的更新拒绝，见下文。
 
 **性能证据。** 扩展现有 [codemode-session benchmark](../scripts/bench/codemode-session.ts) 的按需 `--catalog` 模式，不新增测试文件。8/512 项中本地工具 2/64 项，其他是 MCP 名称的元数据夹具；真实 adapter 行为由 session 测试覆盖。注册时本地 schema 的 properties getter 访问 6/192 次，MCP 为 0；这是访问数，不把它混称为 signature 函数调用数。一次脚本的查找 + 一次 describe 得到目标声明，返回 1116/1120 字符；内联 5038/32503 字节，Worker 元数据 JSON 765/52279 字节。不变回合 schema 访问均为 0，descriptor/snapshot/catalog 身份保持，删除后目标查询为空。无改动生产高频路径，新增逐事件闭包、Promise、controller、wrapper/array 为 0；`close` 的既有 async 边界、store reset 和 sandbox abort 是具名销毁生命周期，不伪装成逐事件零分配。
 
 同机前后 catalog 宿主分配采样 16,071,232 → 16,675,432 字节，包含两次冷 session 与 6 个 Worker 启停，不代表速度或分配优化；确定性释放才是此次修复结论。两边 12 个跟踪引用在受控 GC 后均为 0，6/6 个 Worker 退出。现有完整 session benchmark 单次运行包含 242 次真实 read 子调用、22/22 Worker、55 个引用 GC 后保留 0、pending evidence 为 0；宿主采样 26,564,184 字节。原始数据、生产链、指纹和范围见 [OC10 证据](performance/oc10-catalog-audit.json)。没有测真实模型、provider token/cache、完整 UI、Worker heap、MCP 服务或总内存峰值，不外推这些收益。
 
 **最小验证。** 类型检查、coding-agent 单包构建、Codemode session/runtime/guardrails/hot-paths 与 tool-selection 共 129 项定向验证通过。新增关闭清理断言曾在旧生产代码上复现 100 项映射未释放；关闭异常和真实 tool_search 的两个新用例仍在原 session 测试文件。schema 更新断言首次取到了 fixture 累积历史中的旧结果，修正索引后仅重跑该 MCP 用例；其余 128 项不重复执行。AST/source invariants 复用既有文件；没有本地全量测试。测试/基准临时资源沿现有记录身份清理，未创建常驻服务或对象池。
+
+**PR #138 审查补充。** 初始 head `a909a5898a29ebeb762b7ef892863032dcb365ec` 的 Codex 审查发现两个所有权遗漏，均在同一个修复批次处理：
+
+| 反馈 | 处理与最小证据 |
+| --- | --- |
+| [关闭后目录可重新填充](https://github.com/dragonbaba/super-pi/pull/138#discussion_r4254386719) | controller 的 setTools 在 closed 时返回；session 的 setActiveToolsByName/registry refresh 在 disposed 时返回。真实扩展 API 原本会拒绝已失效上下文，本次额外关闭 SDK/控制器更新入口；通过下一事件循环回调复现原先恢复 16/1024 条映射，修复后为 0。 |
+| [包装对象仍持有声明](https://github.com/dragonbaba/super-pi/pull/138#discussion_r4254386726) | session.dispose 清理注册表和活动 Codemode wrapper 的声明；modelTools 共享相同 wrapper。补充审计 wrapToolDefinition → wrapRegisteredTool → registry → Agent state/modelTools，基准确认三入口分别仍持有的 2380/29845 字符均归零。 |
+
+沿用现有 session 测试文件增加一项真实会话关闭与迟到回调回归；本批累计 3 个新用例、0 个新测试文件。修复后仅运行 10 项受影响 session 用例、8 项既有 AST/source invariants、类型检查及单包构建。扩展后的同一 catalog 夹具在审查前 head/修复候选各运行一次，宿主分配采样 19,221,184 → 17,078,552 字节；仍不据单次样本宣称速度/分配优化。最终 session benchmark 为 242 子调用、22/22 Worker、55 引用 GC 后保留 0，pending evidence 0，宿主采样 26,010,816 字节；catalog 12 引用也保留 0。此次新增的拒绝分支与 wrapper 清理只位于显式工具集更新/销毁入口，不增加普通消息和进度分配。完整补充样本见同一证据 JSON 的 reviewFollowUp。按 §2.3 修复推送后只请求一次 `@codex review`，最终 head/CI/复审结果记录于 PR，避免为收尾状态重复触发 CI。
 
 ## 7 固定上游参考
 
