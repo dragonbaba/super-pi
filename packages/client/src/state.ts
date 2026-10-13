@@ -113,7 +113,8 @@ export class ClientState {
 	}
 
 	#notify<T>(listeners: Iterable<(value: T) => void> | undefined, value: T): void {
-		for (const listener of listeners ?? []) {
+		if (!listeners) return;
+		for (const listener of listeners) {
 			try {
 				listener(value);
 			} catch (error) {

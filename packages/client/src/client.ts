@@ -40,10 +40,13 @@ type SessionLeaseState = "active" | "releasing" | "released" | "invalidated";
 
 interface SessionLeaseToken {
 	readonly mode: SessionLeaseMode;
+	readonly connectionGeneration: number;
+	readonly sessionGeneration: number;
 }
 
 interface PendingRequest {
 	command: Command;
+	sessionGeneration: number | undefined;
 	resolve(result: CommandResult): void;
 	reject(error: Error): void;
 }
@@ -62,6 +65,7 @@ export class PiClient {
 	readonly #sessionReconciliations = new Map<string, Promise<void>>();
 	readonly #connectionStateListeners = new Set<(change: ConnectionStateChange) => void>();
 	#requestSequence = 0;
+	#connectionGeneration = 0;
 	#disposed = false;
 	#disposePromise: Promise<void> | undefined;
 
@@ -139,7 +143,11 @@ export class PiClient {
 	}
 
 	async createSession(options: CreateSessionOptions = {}): Promise<PiSessionHandle> {
+		const generation = this.#connectionGeneration;
 		const result = await this.#request({ command: "create", ...options });
+		this.#assertConnectionGeneration(generation);
+		// Created session IDs are fresh; removal before this continuation invalidates the result.
+		if ((this.#sessionLeaseGenerations.get(result.session.id) ?? 0) !== 0) throw new PiSessionDetachedError(result.session.id);
 		const token = this.#reserveSessionLease(result.session.id, "exclusive");
 		return this.#createSessionLease(result.session.id, token);
 	}
@@ -152,15 +160,18 @@ export class PiClient {
 		this.#assertNotDisposed();
 		const token = this.#reserveSessionLease(sessionId, options.mode);
 		try {
+			this.#assertSessionLeaseCurrent(sessionId, token);
 			const detachment = this.#sessionDetachments.get(sessionId);
 			if (detachment) await detachment.catch(() => {});
+			this.#assertSessionLeaseCurrent(sessionId, token);
 			const reconciled = this.#sessionCleanupRequired.has(sessionId)
-				? await this.#reconcileSessionCleanup(sessionId)
+				? await this.#reconcileSessionCleanup(sessionId, token)
 				: false;
+			this.#assertSessionLeaseCurrent(sessionId, token);
 			if (reconciled || !this.#state.isSessionAttached(sessionId)) {
 				let attachment = this.#sessionAttachments.get(sessionId);
 				if (!attachment) {
-					attachment = this.#attachSession(sessionId);
+					attachment = this.#attachSession(sessionId, token);
 					this.#sessionAttachments.set(sessionId, attachment);
 				}
 				try {
@@ -169,6 +180,7 @@ export class PiClient {
 					if (this.#sessionAttachments.get(sessionId) === attachment) this.#sessionAttachments.delete(sessionId);
 				}
 			}
+			this.#assertSessionLeaseCurrent(sessionId, token);
 			return this.#createSessionLease(sessionId, token);
 		} catch (error) {
 			this.#releaseSessionLease(sessionId, token);
@@ -176,12 +188,13 @@ export class PiClient {
 		}
 	}
 
-	async #attachSession(sessionId: string): Promise<void> {
+	async #attachSession(sessionId: string, token: SessionLeaseToken): Promise<void> {
 		const previous = this.#state.forgetSessionSnapshot(sessionId);
 		try {
 			await this.#request({ command: "attach", sessionId });
+			this.#assertSessionLeaseCurrent(sessionId, token);
 		} catch (error) {
-			if (previous) this.#state.restoreSessionSnapshot(previous);
+			if (previous && this.#isSessionLeaseCurrent(sessionId, token)) this.#state.restoreSessionSnapshot(previous);
 			throw error;
 		}
 	}
@@ -191,7 +204,12 @@ export class PiClient {
 		if (!this.connected) return Promise.reject(new PiDisconnectedError());
 		const id = `request-${++this.#requestSequence}`;
 		const { promise, resolve, reject } = createPromiseResolvers<CommandResult>();
-		this.#pendingRequests.set(id, { command, resolve, reject });
+		this.#pendingRequests.set(id, {
+			command,
+			resolve,
+			reject,
+			sessionGeneration: "sessionId" in command ? this.#sessionLeaseGenerations.get(command.sessionId) ?? 0 : undefined,
+		});
 		let frame: Uint8Array;
 		try {
 			frame = encodeClientMessage(
@@ -207,14 +225,12 @@ export class PiClient {
 	}
 
 	#createSessionLease(sessionId: string, token: SessionLeaseToken): PiSessionHandle {
-		const generation = this.#sessionLeaseGenerations.get(sessionId) ?? 0;
-		this.#sessionLeaseGenerations.set(sessionId, generation);
 		let state: SessionLeaseState = "active";
 		let releasePromise: Promise<void> | undefined;
 		const refreshState = () => {
 			if (
 				(state === "active" || state === "releasing") &&
-				this.#sessionLeaseGenerations.get(sessionId) !== generation
+				!this.#isSessionLeaseCurrent(sessionId, token)
 			) {
 				state = "invalidated";
 			}
@@ -314,14 +330,31 @@ export class PiClient {
 			this.#connection.fail(error);
 			return;
 		}
+		const resultSessionId = message.result.command === "list"
+			? undefined
+			: message.result.command === "detach" ? message.result.sessionId : message.result.session.id;
+		if ("sessionId" in pending.command && resultSessionId !== pending.command.sessionId) {
+			const error = new ProtocolValidationError("Response session does not match request");
+			pending.reject(error);
+			this.#connection.fail(error);
+			return;
+		}
+		if (resultSessionId && (pending.sessionGeneration ?? 0) !== (this.#sessionLeaseGenerations.get(resultSessionId) ?? 0)) {
+			pending.reject(new PiSessionDetachedError(resultSessionId));
+			return;
+		}
 		this.#state.applyResult(message.result);
 		pending.resolve(message.result);
 	}
 
 	#handleConnectionStateChange(change: ConnectionStateChange): void {
 		if (change.state === "disconnected") {
+			this.#connectionGeneration++;
 			this.#state.clearAttachments();
 			this.#invalidateAllSessionLeases();
+			this.#sessionAttachments.clear();
+			this.#sessionDetachments.clear();
+			this.#sessionReconciliations.clear();
 			this.#rejectPendingRequests(change.error ?? new PiDisconnectedError());
 		}
 		this.#notifyConnectionStateListeners(change);
@@ -360,17 +393,18 @@ export class PiClient {
 		if (this.#disposed) throw new PiClientDisposedError();
 	}
 
-	async #reconcileSessionCleanup(sessionId: string): Promise<boolean> {
+	async #reconcileSessionCleanup(sessionId: string, token: SessionLeaseToken): Promise<boolean> {
 		if (!this.#sessionCleanupRequired.has(sessionId)) return false;
 		let reconciliation = this.#sessionReconciliations.get(sessionId);
 		if (!reconciliation) {
 			reconciliation = this.#request({ command: "detach", sessionId })
 				.then(() => undefined)
 				.then(() => {
+					this.#assertSessionLeaseCurrent(sessionId, token);
 					this.#sessionCleanupRequired.delete(sessionId);
 				})
 				.finally(() => {
-					this.#sessionReconciliations.delete(sessionId);
+					if (this.#sessionReconciliations.get(sessionId) === reconciliation) this.#sessionReconciliations.delete(sessionId);
 				});
 			this.#sessionReconciliations.set(sessionId, reconciliation);
 		}
@@ -386,23 +420,46 @@ export class PiClient {
 		if (mode === "shared" && this.#exclusiveSessionLeases.has(sessionId)) {
 			throw new PiSessionOwnershipError(sessionId, `Session ${sessionId} has an exclusive lease`);
 		}
-		const token: SessionLeaseToken = { mode };
+		const token: SessionLeaseToken = {
+			mode,
+			connectionGeneration: this.#connectionGeneration,
+			sessionGeneration: this.#sessionLeaseGenerations.get(sessionId) ?? 0,
+		};
 		this.#sessionLeaseCounts.set(sessionId, count + 1);
 		if (mode === "exclusive") this.#exclusiveSessionLeases.set(sessionId, token);
 		return token;
 	}
 
 	#releaseSessionLease(sessionId: string, token: SessionLeaseToken): void {
+		if (!this.#isSessionLeaseCurrent(sessionId, token)) return;
 		const count = this.#sessionLeaseCounts.get(sessionId) ?? 0;
 		if (count <= 1) this.#sessionLeaseCounts.delete(sessionId);
 		else this.#sessionLeaseCounts.set(sessionId, count - 1);
 		if (this.#exclusiveSessionLeases.get(sessionId) === token) this.#exclusiveSessionLeases.delete(sessionId);
 	}
 
+	#isSessionLeaseCurrent(sessionId: string, token: SessionLeaseToken): boolean {
+		return token.connectionGeneration === this.#connectionGeneration
+			&& token.sessionGeneration === (this.#sessionLeaseGenerations.get(sessionId) ?? 0);
+	}
+
+	#assertConnectionGeneration(generation: number): void {
+		this.#assertNotDisposed();
+		if (!this.connected || generation !== this.#connectionGeneration) throw new PiDisconnectedError();
+	}
+
+	#assertSessionLeaseCurrent(sessionId: string, token: SessionLeaseToken): void {
+		this.#assertConnectionGeneration(token.connectionGeneration);
+		if (!this.#isSessionLeaseCurrent(sessionId, token)) throw new PiSessionDetachedError(sessionId);
+	}
+
 	#invalidateSessionLeases(sessionId: string): void {
 		this.#sessionLeaseCounts.delete(sessionId);
 		this.#exclusiveSessionLeases.delete(sessionId);
 		this.#sessionCleanupRequired.delete(sessionId);
+		this.#sessionAttachments.delete(sessionId);
+		this.#sessionDetachments.delete(sessionId);
+		this.#sessionReconciliations.delete(sessionId);
 		this.#sessionLeaseGenerations.set(sessionId, (this.#sessionLeaseGenerations.get(sessionId) ?? 0) + 1);
 	}
 

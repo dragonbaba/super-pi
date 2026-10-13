@@ -2,7 +2,7 @@
 
 先巩固 Super Pi 已有的后台完成通知与主会话续跑，再改进结果交付、子代理续跑和上下文压缩；Codemode 的工具发现与执行成本独立评估。需要改变会话持久化、远程协议或文件恢复语义的功能单独评估，不将上游实现整体移植进当前运行时。
 
-状态：2026-10-13（Asia/Tokyo）#136–#140 已按用户授权合并。#140 最终提交 `ceeec8ce4b` 的六项 CI 通过，Codex 手动复审无重大问题，合并提交为 `769baee88a454e815c262cc020146f371de04a0a`。OC01、OC02、OC03 进程内窗口、OC05 已结束任务续跑发现、OC10 核查及 OC11 有界 Worker 池已完成，证据见 §5。下一阶段推进 OC04 单项子代理前台转后台；shell 和批次移交另行评估。OC06 真实模型效果、OC11 安装发布包/Bun 与真实负载仍待后续。继续沿用 §2.3 的 PR/审查流程。
+状态：2026-10-13（Asia/Tokyo）#136–#141 已按用户授权合并。#141 最终提交 `25b014859a` 的六项 CI 通过、Codex 首轮审查无重大问题，合并提交为 `1d2c43db92455e72c8043c5f20142de6b7c69400`。OC01、OC02、OC03 进程内窗口、OC04 单项子代理移交、OC05 已结束任务续跑发现、OC10 核查及 OC11 有界 Worker 池已完成。当前推进 OC07 重连状态核查；OC04 shell/批次移交、OC06 真实模型效果及 OC11 安装发布包/Bun 与真实负载仍待后续。继续沿用 §2.3 的 PR/审查流程。
 
 ## 1 对照基线与结论边界
 
@@ -172,11 +172,15 @@ shell 审计链为 final shell authorization → cwd binding → bash execute �
 
 入口：[protocol](../packages/protocol/src/schemas.ts)、[server sessions](../packages/server/src/sessions.ts)、[client state](../packages/client/src/state.ts)。参考 [O10]。
 
-- [ ] 先验证现有 revision snapshot、重连/重新附着和 lease 行为是否会遗漏业务事实。progress 本来是临时 UI 提示，不因它不可回放就判为故障；当前 server 仍是实验性 core，不扩大为完整 daemon 产品。
-- [ ] 仅在存在已确认需求时添加有界、按会话序号补读的任务事实；规定快照与增量的衔接、重复/乱序、游标过期、慢客户端及版本兼容。历史回放与实时订阅之间不能丢失或重复接纳事实。
-- [ ] 重连不恢复旧的执行授权；租约、订阅、事件窗口与用户看见的状态来源明确。避免持久化每个 token/progress 或整体重写成 event-sourcing 架构。
+- [x] 完成现有 client revision snapshot、重连/重新附着和 lease 核查：快照可恢复已保存状态，低 revision 新 runtime 可重新附着，progress 保持临时提示；复现并修复旧连接余帧及租约异步续体越代问题。实验性 server 尚无 coding-agent 后台任务事实适配器，因此不声称已验证该业务的端到端恢复。
+- [x] 条件评估完成：本轮没有新增任务事实协议或事件回放的已确认需求，保留权威快照。若后续接入持久任务事实，仍须另行验收会话序号、快照/增量衔接、重复/乱序、游标过期、慢客户端和版本兼容，不以本轮 client 验证替代。
+- [x] 连接和会话代次隔离旧租约、pending acquisition、cleanup 与迟到响应；重连需显式获取新租约，不恢复旧执行授权。明确 snapshot 来源和订阅需 unsubscribe/client.dispose 的生命周期，不持久化 token/progress。
 
 **性能与最小验证：** 强制执行 §2。优先复用 [rpc-client-dispatch](../tests/rpc-client-dispatch.test.ts) 和现有协议/状态夹具；以可控断连和单个有界窗口验证。扩展最接近的事件交付 benchmark，记录每事件分配、积压字节、回放分页和断连/dispose 后订阅释放；现有基准不覆盖时增加最小场景并说明原因，不先建设独立压测框架。
+
+**本轮实施前记录（基线 `1d2c43db9`）：** 优先验证 client 的连接代次与 lease 所有权。已有 server/session revision 快照、断连后显式重连/重新附着、lease invalidation；server 仅为实验性 service 接口，没有完整 coding-agent daemon 或后台任务事实协议。代码审计发现两个待复现窗口：一次 decoder.push 产生多条旧帧时，第一条回调重连后余帧只检查 disconnected 布尔值；acquire/release 的异步续体则可能在断连清空计数后修改新连接同 ID 的 lease/缓存。先用真实 CBOR/Connection/PiClient 与可控内存 transport 在既有 rpc-client-dispatch 中复现，再决定最小代次隔离修复。暂不增加 replay、task schema、自动重新授权或进程恢复。
+
+完整链：ByteTransport.onData → Connection decoder/handleMessage → PiClient pending/result/event → ClientState revision gate/listeners → session handle；断连经 Connection.fail → 清除 attachment/失效 lease/拒绝 pending → 新 handshake/reset → 显式 acquire → 权威 snapshot。server 侧审计 acquire/attach/runOperation/snapshot、disconnect/maybeDispose；忙运行时继续由 server 持有，重新附着取当前 snapshot，idle 无连接时 dispose。普通消息交付为热路径，只允许增加 primitive generation/identity 判断；异步 acquire/release/reconcile 属显式生命周期。复用既有 dispatch/source invariant 文件；stream-events benchmark 新增小型 remote-client 模式，因为原 fixture 仅覆盖 Agent 事件，不覆盖 CBOR 客户端。需提供基线/候选采样、每帧回调/deferred/队列计数、断连/取消/dispose 的引用释放；不跑完整 TUI 基准，不新增测试文件。
 
 ### OC08 变更归属与用户回退
 
@@ -223,6 +227,20 @@ shell 审计链为 final shell authorization → cwd binding → bash execute �
 **性能与最小验证：** 强制执行 §2。复用 [codemode-runtime](../tests/codemode-runtime.test.ts)、[worker-recovery](../tests/codemode-worker-recovery.test.ts)、[codemode-guardrails](../tests/codemode-guardrails.test.ts) 中实际受影响者；运行对应 [hot-path invariants](../tests/codemode-hot-paths.test.ts) 和 [runtime benchmark](../scripts/bench/codemode-runtime.ts)，涉及策略/展示时才扩大到已有 dispatch/session/tree 基准。提供每脚本 Worker/VM 次数、每调用复制与序列化字节、并发/队列峰值、allocation 和 GC/引用释放证据；若改到 Worker 内部分配，宿主 inspector 样本不够，须补该线程/VM 的相应证据。§6 是诊断基线，不是未来优化的验收结果。
 
 ## 5 完成与证据记录
+
+### 第六阶段：OC07 客户端重连与租约隔离
+
+基线 `1d2c43db9`，对应 #141 已合并。初始真实 CBOR fixture 中，旧连接合并帧在回调重连后污染新握手、attach 响应与 async 续体之间断连却返回有效 lease 两项失败；权威 snapshot 恢复一项通过。修复使用既有连接 ID 和 lease/request 的 primitive generation，不增加 replay 队列、协议字段或自动重试。
+
+- Connection 每条已解码消息检查所属连接；同批旧帧不进入新握手。Pending response 验证 session ID/代次后才应用状态；session_removed 后迟到的高 revision 不覆盖新 attachment。
+- create/acquire/reconcile 在 async 续体检查代次，旧失败 cleanup 不扣减新连接同 ID 的 lease 数，不恢复旧 snapshot；断连和 session removal 释放 attachment/detachment/reconciliation 映射，finally 按 Promise 身份清理。
+- 明确订阅生命周期：失效租约阻止 snapshot 回调，但 unsubscribe 或 client.dispose 才释放注册的监听器。断连后缓存可供离线查看，connect 重置、显式 attach 恢复权威状态。旧命令可能已被服务端接纳，不能因断连就推断副作用已回滚。
+
+证据：[OC07 allocation/reference record](performance/oc07-reconnect-state.json)。同机 5000 次真实 CBOR progress 交付，采样分配由 **33849.8752** 到 **33900.7456 B/事件（约 +0.15%）**；不据此宣称性能加速或全链零分配。主要成本仍在既有 TypeBox 校验/CBOR decode，新增普通交付的 closure/Promise/AbortController/wrapper/array 均为 0，并移除无监听者时的空数组。没有新回放积压/分页、整份历史复制或 progress 写盘。客户端现有 pending/cache 容量与 numeric generation 历史未改写为有界存储，具体所有者/释放点见证据记录。
+
+受控 GC 保持 3 个 owner 存活，最终 4/4 transport 关闭、19 个跟踪引用剩余 0；包含实际 connect/attach/disconnect/transport error/reconnect/dispose，释放结论以最终 unsubscribe/dispose 为边界。既有 dispatch 文件 11 项通过后，仅补跑 3 个边界用例及关联 AST，共新增检查 4/4 通过（共覆盖 14 个不同用例），未新建测试文件。类型检查、client build、benchmark 独立严格类型检查、原 Agent 基准最小 smoke 与 diff 检查通过；未重复本地全量测试。PR 的最终 head、CI 与远端 Codex 审查结果在交付记录中补充。
+
+本轮关闭的是实验性 client 的 OC07 核查与已复现修复。完整后台任务事实适配、事件回放和服务重启续跑仍需具体需求；不据此提前关闭 OC09。
 
 ### 第四阶段：OC11 编译模式成本、数据边界与 Worker 池
 
