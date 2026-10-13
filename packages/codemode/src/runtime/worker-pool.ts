@@ -1,9 +1,11 @@
 import { Worker } from "node:worker_threads";
 
+interface LeaseOwner { readonly completed: boolean }
+
 /** One sandbox owns one slot. No queue, VM, result, or catalog is pooled. */
 export class WorkerPool {
 	private worker: Worker | undefined;
-	private owner: object | undefined;
+	private owner: LeaseOwner | undefined;
 	private uses = 0;
 	private closed = false;
 	private timer: NodeJS.Timeout | undefined;
@@ -16,8 +18,9 @@ export class WorkerPool {
 		this.lifecycle = lifecycle;
 	}
 
-	async acquire(owner: object): Promise<Worker> {
+	async acquire(owner: LeaseOwner): Promise<Worker> {
 		await this.retiring;
+		if (owner.completed) throw new Error("Worker lease cancelled");
 		if (this.closed) throw new Error("Worker pool is closed");
 		if (this.owner) throw new Error("Worker pool already leased");
 		clearTimeout(this.timer);
@@ -38,7 +41,7 @@ export class WorkerPool {
 	}
 
 	/** Only a completion sent after VM disposal may return a healthy slot. */
-	release(worker: Worker, owner: object, reusable: boolean): Promise<void> | undefined {
+	release(worker: Worker, owner: LeaseOwner, reusable: boolean): Promise<void> | undefined {
 		if (worker !== this.worker || owner !== this.owner) return this.retiring;
 		this.owner = undefined;
 		if (!reusable || this.closed || this.uses >= 64) return this.retire();

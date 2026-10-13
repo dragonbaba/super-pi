@@ -81,7 +81,7 @@ test("worker pool owns one slot through idle retirement and rejects double acqui
 	t.mock.timers.enable({ apis: ["setTimeout"] });
 	const lifecycle = { workersStarted: 0, workersStopped: 0 };
 	const pool = new WorkerPool(new URL('data:text/javascript,import { parentPort } from "node:worker_threads"; parentPort.on("message", () => {});'), lifecycle);
-	const lease = {}, nextLease = {}, lastLease = {};
+	const lease = { completed: false }, nextLease = { completed: false }, lastLease = { completed: false };
 	try {
 		const first = await pool.acquire(lease);
 		await assert.rejects(pool.acquire(nextLease), /already leased/);
@@ -97,9 +97,17 @@ test("worker pool owns one slot through idle retirement and rejects double acqui
 		assert.deepEqual(lifecycle, { workersStarted: 2, workersStopped: 1 });
 		await pool.release(first, nextLease, true); // A stale Worker cannot return the current slot.
 		await assert.rejects(pool.acquire(lease), /already leased/);
+		const retiring = pool.release(second, lastLease, false);
+		const cancelled = pool.acquire(lease);
+		lease.completed = true;
+		const replacement = pool.acquire(nextLease);
+		await assert.rejects(cancelled, /cancelled/);
+		await retiring;
+		await replacement; // The cancelled waiter never steals the replacement lease.
+		assert.deepEqual(lifecycle, { workersStarted: 3, workersStopped: 2 });
 	} finally { await pool.close(); }
-	assert.deepEqual(lifecycle, { workersStarted: 2, workersStopped: 2 });
-	await assert.rejects(pool.acquire(lease), /closed/);
+	assert.deepEqual(lifecycle, { workersStarted: 3, workersStopped: 3 });
+	await assert.rejects(pool.acquire(nextLease), /closed/);
 });
 
 test("Codemode shares the compiled WASM promise and runs isolated executions", async () => {

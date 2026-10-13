@@ -1672,6 +1672,16 @@
       "tests/codemode-runtime.test.ts": "819612dc219e264f0b4f1cacf3102c8d88094e4b5b0f5f7d9297ad08c1a862e8",
       "tests/codemode-worker-recovery.test.ts": "11ffc325f202558e303791f37bd33f5fd3a4294ed03f29eb4f2ce8422689a82d",
       "tests/codemode-hot-paths.test.ts": "a06576447ad27f130932b73142f8ad6aa66f54cb15c5a7f67b27f5dccdf8a42b"
+    },
+    "profiledCommit": "d5e4a4fa2",
+    "postProfileCorrection": {
+      "change": "A cancelled Execution waiting for physical retirement must not acquire a replacement ahead of its successor. WorkerPool checks the existing owner's completed getter after awaiting retirement; no new normal-path allocation.",
+      "validation": "2 affected existing pool cancellation/ownership tests and codemode build passed; no repeated allocation run for this primitive lifecycle guard.",
+      "fingerprints": {
+        "packages/codemode/src/runtime/host.ts": "2f002efcb8e177016d9aad98f73d9d60b258ebbe1704e1b17c348cf96d5101ca",
+        "packages/codemode/src/runtime/worker-pool.ts": "a4de34312939313280ddaf56e758ae95fcff3d94526dea07838c9b0431a77137",
+        "tests/codemode-runtime.test.ts": "cb04d65dbcb9f58442c8b7d0ba8e30055ae3c26d3db57c7563a4766ca113ac90"
+      }
     }
   }
 }

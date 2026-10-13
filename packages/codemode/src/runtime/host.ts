@@ -136,6 +136,7 @@ interface ExecutionOptions {
  */
 class Execution {
 	readonly promise: Promise<CodemodeResult>;
+	get completed(): boolean { return this.finished; }
 	private resolveResult!: (result: CodemodeResult) => void;
 	private worker: Worker | undefined;
 	private port: MessagePort | undefined;
