@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { writeFileSync, unlinkSync } from "node:fs";
 import { Session } from "node:inspector/promises";
+import { getEventListeners } from "node:events";
 import { performance } from "node:perf_hooks";
 import { StringDecoder } from "node:string_decoder";
 import { setImmediate as tick } from "node:timers/promises";
@@ -9,6 +10,7 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 import { SubagentProcessRun } from "../../packages/extensions/subagent/index.ts";
 import { SubagentScheduler } from "../../packages/extensions/subagent/scheduler.ts";
 import { SubagentTasks } from "../../packages/extensions/subagent/tasks.ts";
+import { ForegroundTask } from "../../packages/extensions/subagent/foreground.ts";
 import { formatTaskCompletion, TASK_COMPLETION_CHARS } from "../../packages/extensions/managed-tasks.ts";
 
 if (!globalThis.gc) throw new Error("Run with --expose-gc.");
@@ -115,11 +117,45 @@ async function lifecycle() {
 	return { weak, counters };
 }
 
+async function foregroundLifecycle() {
+	const weak: WeakRef<object>[] = [], owners: ForegroundTask<string>[] = [];
+	let publications = 0, parentListeners = 0, waits = 0, detached = 0;
+	for (const mode of ["complete", "failure", "abort", "detach"]) {
+		for (let i = 0; i < 64; i++) {
+			const parent = new AbortController();
+			const update = () => { publications++; };
+			const owner = new ForegroundTask<string>(parent.signal, update);
+			const wait = owner.takeWait(); waits++;
+			assert.equal(getEventListeners(parent.signal, "abort").length, 1);
+			weak.push(new WeakRef(parent.signal), new WeakRef(update), new WeakRef(wait));
+			owners.push(owner); owner.publish("started");
+			if (mode === "detach") { owner.detach("accepted"); detached++; }
+			if (mode === "abort") parent.abort();
+			if (mode === "failure") { const failure = assert.rejects(wait, /fixture/); owner.fail(new Error("fixture")); await failure; }
+			else if (mode !== "detach") { owner.complete("done"); await wait; }
+			else await wait; // Keep the detached execution owner alive during GC, before child completion.
+			owner.publish("late"); parent.abort();
+			if (mode === "detach") assert.equal(owner.signal.aborted, false);
+			else assert.equal((owner as any).controller, undefined);
+			for (const key of ["parent", "update", "resolve", "reject", "waiting"]) assert.equal((owner as any)[key], undefined);
+			parentListeners += getEventListeners(parent.signal, "abort").length;
+		}
+	}
+	assert.equal(publications, owners.length);
+	return { weak, owners, counters: { calls: owners.length, deferreds: waits, controllers: owners.length, detachments: detached,
+		publications, latePublications: publications - owners.length, parentListenersAfterRelease: parentListeners, retainedForegroundFields: 0, handoffTimers: 0 } };
+}
+
 try {
 	const profiles = [];
 	for (const count of [8, 16, 64]) profiles.push(await profile(count));
 	const cleanup = await lifecycle();
+	const foreground = await foregroundLifecycle();
 	for (let i = 0; i < 8; i++) { await tick(); globalThis.gc!(); }
+	const liveForegroundReferences = foreground.weak.filter(ref => ref.deref()).length;
+	assert.equal(liveForegroundReferences, 0, "foreground callbacks, signals and waits release even while detached execution owners remain alive");
+	for (const owner of foreground.owners) owner.complete("late child completion");
+	foreground.owners.length = 0;
 	const liveResults = profiles.reduce((sum, profile) => sum + profile.weak.filter(ref => ref.deref()).length, 0);
 	const liveTasks = cleanup.weak.filter(ref => ref.deref()).length;
 	assert.equal(liveResults + liveTasks, 0, "released owners must be collectible after normal/failure/cancel/dispose");
@@ -130,5 +166,6 @@ try {
 		coverage: "Production stdout/parse/retention methods; simulated baseline observer snapshot. Downstream TUI is covered separately by tui-tool-leaf-allocations.",
 		profiles: profiles.map(({ weak, ...profile }) => profile), cleanup: cleanup.counters,
 		weakReferences: { total: cleanup.weak.length + profiles.reduce((sum, p) => sum + p.weak.length, 0), liveResults, liveTasks },
+		foreground: { ...foreground.counters, weakReferences: foreground.weak.length, liveForegroundReferences },
 	}, null, 2));
 } finally { if (baselinePath) unlinkSync(baselinePath); }

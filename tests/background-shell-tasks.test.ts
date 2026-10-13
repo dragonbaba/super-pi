@@ -190,6 +190,23 @@ test("real extension loading shares shell/subagent controls and keeps the legacy
 	assert.match(text(result), /completed.*fixture result/s); assert.equal((result.details as any).task.kind, "subagent");
 	assert.match(text(await h.call("subagent_tasks", { action: "status", id })), /fixture result/);
 	await h.call("tasks", { action: "wait", id: shell, timeoutMs: 5000 });
+	const unsupported = await h.call("tasks", { action: "background", id: shell });
+	assert.equal(unsupported.isError, true); assert.match(text(unsupported), /executor cannot transfer/);
+	const foreground = h.call("subagent", { agent: "scout", task: "hold-transfer", scope: "Fixture workspace", deliverable: "Fixture result", stopCondition: "Return when done", readOnly: true });
+	let foregroundId: string | undefined;
+	let listing = "";
+	h.runner.setUIContext({ ...h.runner.getUIContext(), notify: value => { listing = value; } }, "tui");
+	for (let n = 0; n < 100 && !foregroundId; n++) {
+		await h.runner.getCommand("tasks")!.handler("", h.runner.createCommandContext());
+		foregroundId = listing.match(/([a-f0-9-]{36}-\d+)[^\n]*foreground single/)?.[1];
+		if (!foregroundId) await delay(20);
+	}
+	assert.ok(foregroundId);
+	await h.runner.getCommand("tasks")!.handler(`background ${foregroundId}`, h.runner.createCommandContext());
+	const transferred = await foreground; assert.equal(transferred.isError, false, text(transferred));
+	assert.ok(text(transferred).includes(foregroundId));
+	await h.call("tasks", { action: "cancel", id: foregroundId });
+	assert.match(text(await h.call("tasks", { action: "wait", id: foregroundId, timeoutMs: 5000 })), /cancelled/);
 });
 
 test("real reload restores both providers with historical facts but no notification, verification event or process replay", async t => {

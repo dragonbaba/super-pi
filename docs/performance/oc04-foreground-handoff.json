@@ -1,0 +1,294 @@
+{
+  "task": "OC04 single foreground subagent handoff",
+  "date": "2026-10-13",
+  "baselineCommit": "769baee88a454e815c262cc020146f371de04a0a",
+  "candidateSha256": {
+    "packages/extensions/subagent/foreground.ts": "cc445902b5092878039d7c93c6c985d675a5ca7a19d9a806664903ed3a0b56f2",
+    "packages/extensions/subagent/index.ts": "460ac69e76f8677763c1066fc00b1938465f2cb7014724d69e649b664630dbe8",
+    "packages/extensions/managed-tasks.ts": "b88d5b666ea2ab96fd610d60175db9334c99858f78fbb75ebb0061eeaa0810b5",
+    "scripts/bench/subagent-management.ts": "fd08b69c3132a2bc195f105db6ba2ff6c52896c826fcf4294fb782932bb5fe62"
+  },
+  "scope": "Single queued/running foreground subagents only. No shell, parallel or chain handoff. No live model calls, end-to-end UI timings, or installed package performance claim.",
+  "audit": {
+    "entry": "AgentSession.prompt -> _tryExecuteExtensionCommand (while streaming) -> managed-tasks command/background -> subagent provider policy/state/schema checks -> ForegroundTask.detach",
+    "execution": "delegation -> subagent.execute -> existing scheduler reservation/run -> runSingleAgent -> SubagentProcessRun -> processLine -> bounded messages; same process, signal authority, timeout and task record",
+    "publication": "runSingleAgent startup/terminal only -> ForegroundTask.publish -> Agent snapshotObserverEvent clone/freeze -> AgentSession synchronous bridge -> InteractiveMode tool renderer -> unchanged frame queue",
+    "release": "detach removes parent listener, parent signal and original progress callback, resolves and clears foreground deferred callbacks. Operation remains in session pending set. runTasks finally clears execution metadata/map entry/reservation, terminal handler clears proxy controller/pending and chooses foreground result or one bounded background report.",
+    "hotAllocations": "Existing UTF-8 decode/string framing, JSON.parse and at most 3 bounded messages/child remain. No new per-chunk callbacks, Promise, AbortController, arrays, wrappers, full-message serialization or publication. Downstream snapshot/render allocations unchanged and audited; not asserted zero total.",
+    "lifecycleAllocations": "One ForegroundTask, controller, deferred and fixed callbacks per foreground single; one map entry within existing maxTasks (hard 256), one additional composite execution signal and completion observers. Command return/report wrappers only at handoff/completion. No timer, queue reservation or process creation on handoff. No object pool.",
+    "capacity": "Existing maxTasks bounds pending operations and foreground map; detach removes map entry, operation keeps reservation through final process/prompt cleanup; outputs <=3 messages/child and saved task <=12000 chars, completion report <=8192 UTF-16 chars.",
+    "shellDecision": "Foreground shell has no managed task record, cwd binding captures parent signal and Windows Job owner is chosen at spawn. Transfer unsupported; startup background remains available. No unsafe cancellation/restart to emulate transfer."
+  },
+  "commands": {
+    "benchmark": "node --expose-gc --experimental-strip-types scripts/bench/subagent-management.ts",
+    "initialFocused": "node --experimental-strip-types --test tests/subagent-management.test.ts tests/subagent-hot-paths.test.ts",
+    "integration": "node --experimental-strip-types --test --test-name-pattern='real extension loading|unrelated tasks registration' tests/background-shell-tasks.test.ts",
+    "afterControllerCleanup": "node --experimental-strip-types --test --test-name-pattern='foreground|transferred|publication proxy' tests/subagent-management.test.ts tests/subagent-hot-paths.test.ts",
+    "types": "npm.cmd run check",
+    "build": "npm.cmd run build --workspace @super-pi/coding-agent",
+    "benchmarkTypes": "node node_modules/typescript/bin/tsc --noEmit --target ES2023 --module NodeNext --moduleResolution NodeNext --allowImportingTsExtensions --skipLibCheck --strict scripts/bench/subagent-management.ts"
+  },
+  "validation": {
+    "focused": {
+      "passed": 39,
+      "skipped": 1,
+      "skip": "POSIX cleanup on Windows"
+    },
+    "integrationPassed": 2,
+    "afterControllerCleanupPassed": 9,
+    "newTestFiles": 0,
+    "localFullSuites": 0,
+    "behavior": "PID/task ID preserved; one running/outstanding/reserved slot before/after; late parent abort independent; exactly one completion; no late foreground publication; 8/8 full capacity queued handoff uses no new reservation; cancel/failure/permission/tree/shutdown retain existing ownership.",
+    "diagnosedIterations": [
+      "Integration initially attempted a second Agent.dispatchHostTool while Agent was busy; corrected test to actual live /tasks command through ExtensionRunner, passed.",
+      "GC first showed 64 live parent signals only in aborted proxy owners. Clear proxy AbortController at terminal settlement rather than retaining its abort reason; all 768 parent/callback/wait references now collect while owners remain strongly held. No claim about untracked objects."
+    ]
+  },
+  "baseline": {
+    "baseline": "working-tree",
+    "node": "v26.4.0",
+    "platform": "win32",
+    "coverage": "Production stdout/parse/retention methods; simulated baseline observer snapshot. Downstream TUI is covered separately by tui-tool-leaf-allocations.",
+    "profiles": [
+      {
+        "children": 8,
+        "updates": 1000,
+        "elapsedMs": 4.415200000000027,
+        "sampledBytes": 8834696,
+        "sampledBytesPerUpdate": 8834.696,
+        "snapshots": 0,
+        "fullMessageSerializations": 0,
+        "retainedMessages": 24,
+        "topSites": [
+          {
+            "function": "processLine",
+            "bytes": 4373632
+          },
+          {
+            "function": "onStdoutData",
+            "bytes": 2935592
+          },
+          {
+            "function": "write",
+            "bytes": 1480880
+          },
+          {
+            "function": "slice",
+            "bytes": 20576
+          },
+          {
+            "function": "post",
+            "bytes": 10568
+          }
+        ]
+      },
+      {
+        "children": 16,
+        "updates": 1000,
+        "elapsedMs": 4.183299999999917,
+        "sampledBytes": 8541720,
+        "sampledBytesPerUpdate": 8541.72,
+        "snapshots": 0,
+        "fullMessageSerializations": 0,
+        "retainedMessages": 48,
+        "topSites": [
+          {
+            "function": "onStdoutData",
+            "bytes": 4283272
+          },
+          {
+            "function": "processLine",
+            "bytes": 4254304
+          },
+          {
+            "function": "jsonEventLimitReason",
+            "bytes": 4144
+          }
+        ]
+      },
+      {
+        "children": 64,
+        "updates": 1000,
+        "elapsedMs": 4.190300000000093,
+        "sampledBytes": 8524936,
+        "sampledBytesPerUpdate": 8524.936,
+        "snapshots": 0,
+        "fullMessageSerializations": 0,
+        "retainedMessages": 192,
+        "topSites": [
+          {
+            "function": "onStdoutData",
+            "bytes": 4274712
+          },
+          {
+            "function": "processLine",
+            "bytes": 4250224
+          }
+        ]
+      }
+    ],
+    "cleanup": [
+      {
+        "mode": "complete",
+        "highWaterMark": 16,
+        "queueHighWaterMark": 48,
+        "retainedAfterDispose": 0,
+        "notificationChars": 5691
+      },
+      {
+        "mode": "failure",
+        "highWaterMark": 16,
+        "queueHighWaterMark": 48,
+        "retainedAfterDispose": 0,
+        "notificationChars": 1610
+      },
+      {
+        "mode": "cancel",
+        "highWaterMark": 16,
+        "queueHighWaterMark": 48,
+        "retainedAfterDispose": 0,
+        "notificationChars": 5689
+      },
+      {
+        "mode": "dispose",
+        "highWaterMark": 16,
+        "queueHighWaterMark": 48,
+        "retainedAfterDispose": 0,
+        "notificationChars": 5690
+      }
+    ],
+    "weakReferences": {
+      "total": 344,
+      "liveResults": 0,
+      "liveTasks": 0
+    }
+  },
+  "candidate": {
+    "baseline": "working-tree",
+    "node": "v26.4.0",
+    "platform": "win32",
+    "coverage": "Production stdout/parse/retention methods; simulated baseline observer snapshot. Downstream TUI is covered separately by tui-tool-leaf-allocations.",
+    "profiles": [
+      {
+        "children": 8,
+        "updates": 1000,
+        "elapsedMs": 4.578599999999938,
+        "sampledBytes": 8731920,
+        "sampledBytesPerUpdate": 8731.92,
+        "snapshots": 0,
+        "fullMessageSerializations": 0,
+        "retainedMessages": 24,
+        "topSites": [
+          {
+            "function": "processLine",
+            "bytes": 4397440
+          },
+          {
+            "function": "onStdoutData",
+            "bytes": 2832536
+          },
+          {
+            "function": "write",
+            "bytes": 1493720
+          },
+          {
+            "function": "slice",
+            "bytes": 8224
+          }
+        ]
+      },
+      {
+        "children": 16,
+        "updates": 1000,
+        "elapsedMs": 4.302199999999971,
+        "sampledBytes": 8626616,
+        "sampledBytesPerUpdate": 8626.616,
+        "snapshots": 0,
+        "fullMessageSerializations": 0,
+        "retainedMessages": 48,
+        "topSites": [
+          {
+            "function": "processLine",
+            "bytes": 4372968
+          },
+          {
+            "function": "onStdoutData",
+            "bytes": 4253648
+          }
+        ]
+      },
+      {
+        "children": 64,
+        "updates": 1000,
+        "elapsedMs": 4.300999999999931,
+        "sampledBytes": 8728328,
+        "sampledBytesPerUpdate": 8728.328,
+        "snapshots": 0,
+        "fullMessageSerializations": 0,
+        "retainedMessages": 192,
+        "topSites": [
+          {
+            "function": "onStdoutData",
+            "bytes": 4565264
+          },
+          {
+            "function": "processLine",
+            "bytes": 4144800
+          },
+          {
+            "function": "post",
+            "bytes": 18264
+          }
+        ]
+      }
+    ],
+    "cleanup": [
+      {
+        "mode": "complete",
+        "highWaterMark": 16,
+        "queueHighWaterMark": 48,
+        "retainedAfterDispose": 0,
+        "notificationChars": 5691
+      },
+      {
+        "mode": "failure",
+        "highWaterMark": 16,
+        "queueHighWaterMark": 48,
+        "retainedAfterDispose": 0,
+        "notificationChars": 1610
+      },
+      {
+        "mode": "cancel",
+        "highWaterMark": 16,
+        "queueHighWaterMark": 48,
+        "retainedAfterDispose": 0,
+        "notificationChars": 5689
+      },
+      {
+        "mode": "dispose",
+        "highWaterMark": 16,
+        "queueHighWaterMark": 48,
+        "retainedAfterDispose": 0,
+        "notificationChars": 5690
+      }
+    ],
+    "weakReferences": {
+      "total": 344,
+      "liveResults": 0,
+      "liveTasks": 0
+    },
+    "foreground": {
+      "calls": 256,
+      "deferreds": 256,
+      "controllers": 256,
+      "detachments": 64,
+      "publications": 256,
+      "latePublications": 0,
+      "parentListenersAfterRelease": 0,
+      "retainedForegroundFields": 0,
+      "handoffTimers": 0,
+      "weakReferences": 768,
+      "liveForegroundReferences": 0
+    }
+  }
+}

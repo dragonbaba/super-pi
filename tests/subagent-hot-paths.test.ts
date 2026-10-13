@@ -47,6 +47,25 @@ test("child event ingestion and status rendering allocate no callbacks, promises
 	assert.deepEqual([...found].sort(), [...hot].sort(), "all named production bodies must be checked");
 });
 
+test("foreground publication proxy reuses its lifecycle callback without event allocations", () => {
+	const text = readFileSync(new URL("../packages/extensions/subagent/foreground.ts", import.meta.url), "utf8");
+	const tree = ts.createSourceFile("foreground.ts", text, ts.ScriptTarget.Latest, true);
+	let checked = false;
+	function visit(node: ts.Node): void {
+		if (ts.isPropertyDeclaration(node) && node.name.getText(tree) === "publish") {
+			assert.ok(node.initializer && ts.isArrowFunction(node.initializer));
+			function inspect(body: ts.Node): void {
+				assert.ok(!ts.isArrowFunction(body) && !ts.isFunctionExpression(body) && !ts.isNewExpression(body)
+					&& !ts.isObjectLiteralExpression(body) && !ts.isArrayLiteralExpression(body), "publication forwards the existing result without allocations");
+				ts.forEachChild(body, inspect);
+			}
+			inspect(node.initializer.body); checked = true;
+		}
+		ts.forEachChild(node, visit);
+	}
+	visit(tree); assert.equal(checked, true);
+});
+
 test("production retention passes measured line bytes and lifecycle publication is explicit", () => {
 	let retentionCalls = 0; let progressCalls = 0;
 	function visit(node: ts.Node): void {
