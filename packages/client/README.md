@@ -33,6 +33,10 @@ Calling `dispose()` or `detach()` releases only that lease. A lease rejects comm
 
 `subscribe()` observes authoritative snapshots. `onEvent()` observes protocol events. Both return an unsubscribe function. Structured errors returned by the server are exposed as `PiServerError`.
 
+After reconnecting, explicitly acquire fresh leases to recover runtime snapshots. A new attachment accepts its authoritative snapshot even if the runtime revision restarted below the old cached revision. Old leases remain invalid, and pending acquisitions or cleanup from the previous connection cannot grant ownership, detach a replacement, or restore an old snapshot. Frames left in an old delivery are ignored if a callback starts another connection. Session removal also invalidates pending operations for that attachment.
+
+Disconnection does not undo a command that the server may already have accepted. Reconcile the authoritative snapshot before deciding whether to retry a mutation. Progress is transient and is not replayed; this client does not restore execution authorization or retry commands automatically. Subscriptions are retained until their returned unsubscribe function is called or `client.dispose()` clears them. Invalidated lease snapshot subscriptions stop delivering, but callers must still release their subscriptions.
+
 ## Limits and security
 
 `PiClientOptions.maxFrameLength` bounds inbound and outbound CBOR payloads. Configure matching limits on the client and server. Transports should separately bound queued outbound bytes and preserve send order.

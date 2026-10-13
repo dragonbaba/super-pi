@@ -154,7 +154,8 @@ export class Connection {
 			return;
 		}
 		for (const message of messages) {
-			if (this.#lifecycle.state === "disconnected") return;
+			// A listener can disconnect and start a new handshake inside this delivery.
+			if (!this.#isCurrent(id)) return;
 			this.#handleMessage(message);
 		}
 	}

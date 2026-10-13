@@ -1,0 +1,179 @@
+{
+  "schemaVersion": 1,
+  "task": "OC07 client reconnect and lease isolation",
+  "date": "2026-10-13",
+  "baselineCommit": "1d2c43db92455e72c8043c5f20142de6b7c69400",
+  "environment": {
+    "node": "v26.4.0",
+    "platform": "win32",
+    "arch": "x64",
+    "cpu": "Intel(R) Core(TM) i7-14700KF"
+  },
+  "command": "node --expose-gc --experimental-strip-types scripts/bench/stream-events.ts --remote-client",
+  "sourceSha256": {
+    "note": "Final working-file bytes (CRLF/LF may differ after checkout). Profile preceded whitespace/comment-only formatting of client.ts; behavior and measured event path unchanged.",
+    "packages/client/src/client.ts": "01db3b495ee31c23b223e2899fabd1e1a37de879f65f642636ad4cec97251a75",
+    "packages/client/src/connection.ts": "20ab6f2d7589bd15bc3c41f54d8a27719983a6f4815d87f237f054cc2dd55cd3",
+    "packages/client/src/state.ts": "d0669113a77d6e7d293d83c0d3fc689d33550375d3c3e7706f975f8b904ef577",
+    "scripts/bench/stream-events.ts": "69b81354c15deb41e85caaa3f351f9ca0824c08f25fdc5668ddbe7f501ae8e6e",
+    "tests/rpc-client-dispatch.test.ts": "b736248fcd876958d3ec797e90906eeb15b59862714e98dcee06d0778be07c72"
+  },
+  "baseline": {
+    "mode": "remote-client",
+    "node": "v26.4.0",
+    "platform": "win32",
+    "updates": 5000,
+    "deliveries": 5000,
+    "frameBytes": 150,
+    "sampledBytes": 169249376,
+    "sampledBytesPerUpdate": 33849.8752,
+    "topSites": [
+      {
+        "function": "Check",
+        "bytes": 4428784
+      },
+      {
+        "function": "Set",
+        "bytes": 3014944
+      },
+      {
+        "function": "decode",
+        "bytes": 2920272
+      },
+      {
+        "function": "Set",
+        "bytes": 2874488
+      },
+      {
+        "function": "Set",
+        "bytes": 2828840
+      },
+      {
+        "function": "Check",
+        "bytes": 2783456
+      },
+      {
+        "function": "Set",
+        "bytes": 2769880
+      },
+      {
+        "function": "Set",
+        "bytes": 2342640
+      }
+    ],
+    "heapBefore": 16316616,
+    "heapAfterGc": 18926000,
+    "transports": 1,
+    "closed": 1,
+    "trackedReferences": 4,
+    "liveReferences": 0,
+    "coverage": "Actual Connection CBOR decode -> PiClient -> ClientState event delivery. Controlled ClientState unsubscribe/dispose reference fixture; no server runtime, model or UI claims."
+  },
+  "candidate": {
+    "mode": "remote-client",
+    "node": "v26.4.0",
+    "platform": "win32",
+    "updates": 5000,
+    "deliveries": 5000,
+    "frameBytes": 150,
+    "sampledBytes": 169503728,
+    "sampledBytesPerUpdate": 33900.7456,
+    "topSites": [
+      {
+        "function": "Check",
+        "bytes": 4251328
+      },
+      {
+        "function": "decode",
+        "bytes": 3189688
+      },
+      {
+        "function": "Set",
+        "bytes": 2902096
+      },
+      {
+        "function": "Set",
+        "bytes": 2873984
+      },
+      {
+        "function": "Set",
+        "bytes": 2719920
+      },
+      {
+        "function": "Set",
+        "bytes": 2629440
+      },
+      {
+        "function": "Check",
+        "bytes": 2570224
+      },
+      {
+        "function": "Set",
+        "bytes": 2401768
+      }
+    ],
+    "heapBefore": 16312680,
+    "heapAfterGc": 18966960,
+    "transports": 4,
+    "closed": 4,
+    "retainedOwners": 3,
+    "trackedReferences": 19,
+    "liveReferences": 0,
+    "coverage": "Actual Connection CBOR decode -> PiClient -> ClientState delivery. ClientState unsubscribe/dispose and real PiClient attach/disconnect/failure/reconnect/dispose references, owners strongly held. Lease listeners remain registered until unsubscribe or client.dispose by existing API. No server runtime, model or UI claims."
+  },
+  "sampledAllocationChangePercent": 0.15028238567922347,
+  "method": {
+    "warmupEvents": 100,
+    "measuredEvents": 5000,
+    "samplingInterval": 4096,
+    "includeCollectedObjects": true,
+    "fixture": "Repeated pre-encoded 150-byte progress frame; one global event listener; no session listener or retained transcript growth.",
+    "comparison": "Identical event workload. Candidate release fixture expanded from 4 to 19 refs after profiling; final heap is diagnostic only, not an equal-workload leak or speed claim."
+  },
+  "productionAudit": [
+    "ByteTransport.onData -> Connection.#handleData -> ServerMessageDecoder/FrameDecoder -> CBOR decode + TypeBox validation -> Connection.#handleMessage -> PiClient.#handleMessage -> ClientState.applyEvent/revision gates/#notify -> lease subscription callback. User listeners are outside the internal allocation claim.",
+    "Complete frame/decode/validation creates byte views or copies for fragmented input, decoded records/arrays/strings, validator Sets, and iterable machinery. Sampling includes these pre-existing allocations; this path is not globally allocation-free.",
+    "Client event dispatch adds a primitive lifecycle ID check per decoded message; response dispatch checks pending session identity/generation before applying state. ClientState avoids an empty fallback listener array.",
+    "Explicit connect/handshake/request/acquire/lease/release/reconciliation/dispose boundaries own existing async promises, callbacks and maps. Added generation fields are primitives on existing lease/request records. No new periodic timer, object pool, replay queue or persistent event log.",
+    "Server SessionManager acquire/attach/runOperation/runtime-event/disconnect/maybeDispose were audited. Busy runtime stays server-owned; idle unowned runtime can be disposed. No coding-agent service adapter is supplied by this experimental core; durable background-task completion is not claimed."
+  ],
+  "deterministicCounters": {
+    "deliveredEvents": 5000,
+    "addedClosuresPerOrdinaryEvent": 0,
+    "addedPromisesPerOrdinaryEvent": 0,
+    "addedAbortControllersPerOrdinaryEvent": 0,
+    "addedWrapperObjectsPerOrdinaryEvent": 0,
+    "addedArraysPerOrdinaryEvent": 0,
+    "addedFullHistoryCopiesPerEvent": 0,
+    "addedFullStringMaterializationsPerEvent": 0,
+    "addedReplayEntries": 0,
+    "addedReplayBytes": 0,
+    "progressWrites": 0,
+    "transportsOpened": 4,
+    "transportsClosed": 4,
+    "trackedReferences": 19,
+    "liveReferencesAfterGc": 0,
+    "ownersHeldDuringGc": 3
+  },
+  "capacityAndOwnership": [
+    "Existing frame payload default 16 MiB, decode depth 64 / collection entries 1,000,000; ordered transport must bound its outbound queue. Complete-frame fixture adds no outbound backlog, partial frame, replay cursor or replay pages.",
+    "Pending requests and lease/attachment/reconciliation maps retain the existing per-request/per-session ownership model. Disconnect clears pending lifecycle maps, rejects pending requests and invalidates leases; per-session removal clears its lifecycle entries. No new entry capacity is claimed.",
+    "Existing numeric session-generation tombstones remain per observed removed/invalidated session ID for the PiClient lifetime; this change does not introduce a bounded historical-ID cache.",
+    "Snapshot cache is intentionally retained across disconnect for offline inspection; connect resets it and dispose clears it. Fresh attach forgets prior revision before accepting the authoritative snapshot.",
+    "Lease subscriptions remain registered until explicit unsubscribe or client.dispose, even after detach/disconnect. Invalid leases suppress snapshot delivery. WeakRef fixture calls final client.dispose, holds owner objects strongly, yields then forces GC eight times; it proves release at these boundaries, not immediate unsubscribe on disconnect.",
+    "Invalidated leases cannot revive or release replacement ownership. Normal last-owner detach, failed detach retry, failed dispose reconciliation, session removal and explicit disconnection/transport failure are covered by behavior tests; no OS process or daemon cancellation claim."
+  ],
+  "verification": [
+    "Initial baseline: 2 reproduced failures (coalesced reconnect frames; attach resolved before disconnect continuation), 1 snapshot recovery pass.",
+    "Existing rpc-client-dispatch file: 11/11 passed, then only 3 additional edge cases + affected AST invariant ran, 4/4 passed; total 14 distinct cases checked. No new test file.",
+    "npm run check passed; npm run build --workspace @super-pi/client passed.",
+    "Strict TypeScript check of scripts/bench/stream-events.ts passed independently (root check excludes scripts).",
+    "Default Agent benchmark smoke --updates 2 --warmup 1 --runs 1 passed; not a performance comparison.",
+    "git diff --check passed; no repeated local full suite."
+  ],
+  "limitations": [
+    "Single allocation sample per compared implementation, not a latency/throughput SLA or statistically established speedup.",
+    "Top allocation cost is pre-existing protocol validation/decoding. No claim that all existing hot-path allocations were eliminated.",
+    "No event replay, automatic authorization, persisted task-fact adapter, server restart execution, real model, UI or daemon end-to-end validation."
+  ]
+}
