@@ -221,6 +221,8 @@ Claude Code 官方确认后台报告通过后续回合的自动通知到达，�
 
 修复验证复用已有测试文件：首轮定向 72 通过、1 项 POSIX 条件跳过；补充并发唤醒后相关顺序/收尾、后台 shell、状态及 AST/source 门禁 70 项通过。`npm run check` 与 coding-agent 构建通过，未再次运行 `npm test`。会话/子代理/shell 基准依次重测：消息/工具采样 41.18/39.99 B/事件，合并投递 9999/1；子代理 8881/8674/8604 B/更新，344 个引用保留 0；后台 shell 5322.62 B/chunk，通知 1 次、1165 字符，118 个引用保留 0，原生句柄归零。规定的逐进度 Promise/闭包/wrapper 等计数维持 0；噪声采样不作为性能提升结论。最新原始结果和指纹在证据 JSON 的 `reviewFix`，原有数据保留对应首个候选，未重测未改动的 Codemode 引擎。
 
+**第二轮审查修复（OC01）。** `596eaf458` 六个 CI 分片通过后，[手动复审](https://github.com/dragonbaba/super-pi/pull/136#issuecomment-6136199766)发现[异步 settled hook 期间过早空闲](https://github.com/dragonbaba/super-pi/pull/136#discussion_r4253913744)。增加收尾深度与待发布取消标记两个标量，将后继回合接纳和收尾所有权分离：`isIdle`/idle waiter 及公共 settled 事件均等待全部嵌套收尾结束；新接纳清除旧待发布标记。释放放在 finally 中，沿用原有共享 idle Promise，不增加 timer、Promise 链、容器或对象池。现有嵌套用例分别拦住后继接纳前及完成后，验证真实 AgentSessionRuntime.dispose 在 hook 结束前不会失效会话。相关顺序/收尾/状态检查 32 项通过；收尾/运行时销毁/宿主操作/AST 检查 57 通过、6 项平台条件跳过；长度恢复 27 项通过。构建和类型检查通过。只重测受影响的 session 基准：消息/工具约 38.87/38.85 B/事件，相关契约计数仍为 0，12 个引用 GC 后保留 0；原始样本和当前指纹见证据 JSON 的 `settlementReviewFix`。未重跑不受影响的 shell/subagent/Codemode 或本地全量测试。
+
 - 基线：`af067d5efe3bc61128a4cda3162d23e908d3ece5`；已有文档修改保留。范围：OC01 通知/收尾与等待输入边界、OC02 有界通知、OC06 摘要更新提示、OC11 编译模式基线。
 - OC01 调用链：任务完成 → extension sendMessage → AgentSession.sendCustomMessage → Agent 队列/提示 → agent-loop → agent_end → post-run retry/compaction → custom flush → agent_settled → UI/idle waiter。先复现最终 flush 到消息、settled 回调启动后继回合和等待输入边界；不改 provider delta/progress 的同步事件通道。仅在回合接纳/结束生命周期增加有界标量状态，禁止逐通知 timer/promise tail。
 - OC02 调用链：shell/subagent 终态 → 已有有界 task record → 一次完成通知 → custom 历史/模型投影。审计结果截断、来源、容量、旧会话路由和释放；不增加模型摘要调用，不复制完整任务日志。常规输出/进度路径保持原状。

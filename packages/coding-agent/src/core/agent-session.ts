@@ -773,6 +773,9 @@ export class AgentSession {
 	/** Admission identity: a settled callback may synchronously start a successor. */
 	private _agentRunGeneration = 0;
 	private _agentRunAbortRequested = false;
+	/** Nested runs may be admitted while earlier settlement hooks still own cleanup. */
+	private _settlementDepth = 0;
+	private _pendingSettledAborted: boolean | undefined;
 	private _idleWaitPromise: Promise<void> | undefined;
 	private _resolveIdleWait: (() => void) | undefined;
 
@@ -928,6 +931,7 @@ export class AgentSession {
 		this._hostOperation = request;
 		this._isAgentRunActive = true;
 		this._agentRunGeneration++;
+		this._pendingSettledAborted = undefined;
 		this._agentRunAbortRequested = false;
 		let dispatchFailed = false;
 		try {
@@ -1371,7 +1375,7 @@ export class AgentSession {
 	}
 
 	private _resolveIdleWaitIfIdle(): void {
-		if (this._isAgentRunActive || !this._resolveIdleWait) {
+		if (!this.isIdle || !this._resolveIdleWait) {
 			return;
 		}
 		const resolve = this._resolveIdleWait;
@@ -1382,6 +1386,7 @@ export class AgentSession {
 
 	private async _emitAgentSettled(continueQueued = false): Promise<boolean> {
 		const generation = this._agentRunGeneration;
+		this._settlementDepth++;
 		let continuing = false;
 		try {
 			this._flushPendingBashMessages();
@@ -1401,15 +1406,25 @@ export class AgentSession {
 			this._agentRunAbortRequested = false;
 			this._isAgentRunActive = false;
 			await this._extensionRunner.emit({ type: "agent_settled", aborted });
-			if (generation === this._agentRunGeneration) this._emit({ type: "agent_settled", aborted });
+			if (generation === this._agentRunGeneration) this._pendingSettledAborted = aborted;
 			return false;
 		} finally {
-			if (!continuing && generation === this._agentRunGeneration) {
-				this._settleLengthRecovery(false);
-				this._systemPromptOverride = undefined;
-				this._pendingCustomContextMessages.length = 0;
-				this._isAgentRunActive = false;
-				this._resolveIdleWaitIfIdle();
+			try {
+				if (!continuing && generation === this._agentRunGeneration) {
+					this._isAgentRunActive = false;
+					this._systemPromptOverride = undefined;
+					this._pendingCustomContextMessages.length = 0;
+					this._settleLengthRecovery(false);
+				}
+			} finally {
+				this._settlementDepth--;
+				try {
+					if (this.isIdle && this._pendingSettledAborted !== undefined) {
+						const aborted = this._pendingSettledAborted;
+						this._pendingSettledAborted = undefined;
+						this._emit({ type: "agent_settled", aborted });
+					}
+				} finally { this._resolveIdleWaitIfIdle(); }
 			}
 		}
 	}
@@ -1944,9 +1959,9 @@ export class AgentSession {
 		return this._isAgentRunActive;
 	}
 
-	/** Whether the session has no active agent run, retry, auto-compaction, or queued continuation. */
+	/** Whether the session has no active run/continuation or unfinished settlement hooks. */
 	get isIdle(): boolean {
-		return !this._isAgentRunActive;
+		return !this._isAgentRunActive && this._settlementDepth === 0;
 	}
 
 	/** Current effective system prompt (includes any per-turn extension modifications) */
@@ -2632,6 +2647,7 @@ export class AgentSession {
 				this._interactionPaused = false;
 				this._isAgentRunActive = true;
 				this._agentRunGeneration++;
+				this._pendingSettledAborted = undefined;
 				this._agentRunAbortRequested = false;
 				onAccepted?.(true);
 			});

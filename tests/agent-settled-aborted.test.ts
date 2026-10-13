@@ -7,6 +7,7 @@ import { createAssistantMessageEventStream } from "../packages/ai/src/utils/even
 import type { AssistantMessage } from "../packages/ai/src/types.ts";
 import { DefaultResourceLoader } from "../packages/coding-agent/src/core/resource-loader.ts";
 import { createAgentSession } from "../packages/coding-agent/src/core/sdk.ts";
+import { AgentSessionRuntime } from "../packages/coding-agent/src/core/agent-session-runtime.ts";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
 import { SettingsManager } from "../packages/coding-agent/src/core/settings-manager.ts";
 import { toJsonEvent } from "../packages/coding-agent/src/modes/json-event.ts";
@@ -115,25 +116,52 @@ test("cancellation during retry backoff is reported despite an error as the last
 
 test("settlement snapshots cancellation before extension code changes the event or starts another run", async () => {
 	const extensionEvents: unknown[] = [];
+	const beforeNested = gate(), startNested = gate(), afterNested = gate(), finishOuter = gate();
 	let nested: (() => Promise<void>) | undefined;
 	const f = await fixture(["stop", "stop"], pi => {
 		pi.on("agent_settled", async event => {
 			extensionEvents.push(structuredClone(event));
 			if (extensionEvents.length === 1) {
 				event.aborted = false;
+				beforeNested.release(); await startNested.promise;
 				await nested!();
+				afterNested.release(); await finishOuter.promise;
 			}
 		});
 	});
 	nested = () => f.session.prompt("nested");
+	const runtime = new AgentSessionRuntime(f.session, { cwd: process.cwd(), agentDir: process.cwd() } as never,
+		async () => { throw new Error("unexpected replacement"); });
+	let invalidated = false, disposal: Promise<void> | undefined;
+	runtime.setBeforeSessionInvalidate(() => { invalidated = true; });
 	const unsubscribe = f.session.subscribe(event => {
 		if (event.type === "agent_end" && f.calls() === 1) f.session.agent.abort();
 	});
+	const run = f.session.prompt("first");
 	try {
-		await f.session.prompt("first");
+		await beforeNested.promise;
+		assert.equal(f.session.isStreaming, false, "a settled hook may admit a successor");
+		assert.equal(f.session.isIdle, false, "cleanup still owns the session before successor admission");
+		let idle = false;
+		const waiting = f.session.waitForIdle().then(() => { idle = true; });
+		await Promise.resolve();
+		assert.equal(idle, false);
+		startNested.release(); await afterNested.promise;
+		assert.equal(f.session.isIdle, false, "nested completion must not release its enclosing cleanup");
+		assert.equal(idle, false);
+		assert.equal(f.settled.length, 0, "RPC/UI also wait for all settlement hooks");
+		disposal = runtime.dispose();
+		await new Promise<void>(resolve => setImmediate(resolve));
+		assert.equal(invalidated, false, "runtime disposal waits for the enclosing settlement hook");
+		finishOuter.release(); await run; await waiting; await disposal;
+		assert.equal(invalidated, true);
+		assert.equal(idle, true);
+		assert.equal(f.session.isIdle, true);
+		assert.equal((f.session as any)._settlementDepth, 0);
+		assert.equal((f.session as any)._pendingSettledAborted, undefined);
 		assert.deepEqual(extensionEvents, [{ type: "agent_settled", aborted: true }, { type: "agent_settled", aborted: false }]);
 		assert.deepEqual(f.settled, [{ type: "agent_settled", aborted: false }], "public settlement describes only the latest admission");
-	} finally { nested = undefined; unsubscribe(); f.release(); }
+	} finally { startNested.release(); finishOuter.release(); await run; await disposal; nested = undefined; unsubscribe(); f.release(); }
 });
 
 test("a successful automatic retry is not cancellation", async () => {

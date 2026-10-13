@@ -1959,5 +1959,385 @@
         "sha256": "d670c2fe5567ad694e340e17207e2c15c339b5ab36bef94f4923f35a5c59c1a7"
       }
     ]
+  },
+  "settlementReviewFix": {
+    "priorHead": "596eaf458fb8da40782d3380852be5ef66852dab",
+    "reviewComment": "https://github.com/dragonbaba/super-pi/pull/136#discussion_r4253913744",
+    "method": "Separate prompt admission from unfinished settlement ownership. Two scalar fields (depth, latest pending aborted status) defer idle waiters and public settlement until all enclosing hooks finish. Existing idle Promise is reused; no new per-event/settlement Promise, timer, callback, array or pool. Source chain audited through runtime disposal, public event, idle resolution and finally release. Only session allocation measurements rerun; reviewFix retains the preceding revision's evidence.",
+    "checks": [
+      "node --expose-gc --experimental-strip-types --test tests/agent-settled-aborted.test.ts tests/custom-message-ordering.test.ts tests/program-status-reporter.test.ts (32 pass)",
+      "node --expose-gc --experimental-strip-types --test tests/agent-settled-aborted.test.ts tests/operation-write-session.test.ts tests/alpha-runtime-dispose.test.ts tests/tui-frame-hot-paths.test.ts tests/length-recovery.test.ts (57 pass, 6 platform skips; length path matched no file, corrected separately below)",
+      "node --experimental-strip-types --test tests/pi087-length-recovery.test.ts (27 pass)",
+      "npm run build --workspace packages/coding-agent (pass)",
+      "npm run check (pass)",
+      "git diff --check (pass)"
+    ],
+    "command": "node --expose-gc --experimental-strip-types scripts/bench/tui-session-event-allocations.ts --updates 10000 --warmup 1000",
+    "lifecycle": {
+      "trackedWeakReferences": 12,
+      "retainedAfterGc": 0,
+      "settlementDepthAfterNestedRun": 0,
+      "pendingSettledAbortedAfterRelease": "undefined",
+      "runtimeInvalidatedBeforeHookRelease": false,
+      "runtimeInvalidatedAfterHookRelease": true
+    },
+    "session": {
+      "schemaVersion": 1,
+      "benchmark": "tui-session-event-allocations",
+      "commit": "596eaf458fb8da40782d3380852be5ef66852dab",
+      "node": "v26.4.0",
+      "platform": "win32",
+      "arch": "x64",
+      "fixtures": [
+        {
+          "name": "agent-session-to-interactive-stub",
+          "coverage": {
+            "realAgentObserverDelivery": true,
+            "realStableReference": true,
+            "realProgramStatusReporter": true,
+            "realAssistantComponent": false,
+            "realToolComponent": false,
+            "markdown": false,
+            "frameQueue": false
+          },
+          "results": [
+            {
+              "name": "message_update",
+              "updates": 10000,
+              "warmup": 1000,
+              "metrics": {
+                "cpuP50MsPerUpdate": 0.00016199999999980718,
+                "cpuP95MsPerUpdate": 0.00022160000000008039,
+                "sampledAllocationBytes": 388720,
+                "sampledAllocationBytesPerUpdate": 38.872,
+                "minorGcCount": 0,
+                "majorGcCount": 1,
+                "totalGcDurationMs": 4.757199998944998,
+                "heapBefore": 40741088,
+                "heapAfter": 40920632,
+                "controlledGcAfter": 40831520,
+                "controlledGcHeapDeltaBytes": 90432,
+                "builtInListenerPromisesPerUpdate": 0,
+                "programStatusReportsPerUpdate": 0,
+                "rejectionObserversPerUpdate": 0,
+                "finalUpdateCorrect": 1
+              },
+              "sourceInvariant": {
+                "toolWrapperObjectsPerUpdate": 0,
+                "inlineClosuresPerUpdate": 0,
+                "promiseTailsPerUpdate": 0,
+                "promiseArraysPerUpdate": 0,
+                "arraysPerUpdate": 0
+              },
+              "topAllocationSites": [
+                {
+                  "bytes": 369640,
+                  "functionName": "handleEvent",
+                  "url": "file:///D:/RMProjects/Pi/packages/coding-agent/src/modes/interactive/interactive-mode.ts",
+                  "line": 4150,
+                  "column": 21
+                },
+                {
+                  "bytes": 14888,
+                  "functionName": "post",
+                  "url": "node:inspector",
+                  "line": 115,
+                  "column": 7
+                },
+                {
+                  "bytes": 1056,
+                  "functionName": "invalidate",
+                  "url": "file:///D:/RMProjects/Pi/scripts/bench/tui-session-event-allocations.ts",
+                  "line": 116,
+                  "column": 23
+                },
+                {
+                  "bytes": 1056,
+                  "functionName": "fn",
+                  "url": "node:internal/util",
+                  "line": 477,
+                  "column": 14
+                },
+                {
+                  "bytes": 1040,
+                  "functionName": "now",
+                  "url": "node:internal/perf/performance",
+                  "line": 137,
+                  "column": 6
+                },
+                {
+                  "bytes": 1040,
+                  "functionName": "wrappedFn",
+                  "url": "node:internal/errors",
+                  "line": 541,
+                  "column": 21
+                }
+              ]
+            },
+            {
+              "name": "tool_execution_update",
+              "updates": 10000,
+              "warmup": 1000,
+              "metrics": {
+                "cpuP50MsPerUpdate": 0.00006420000000002802,
+                "cpuP95MsPerUpdate": 0.00008960000000001855,
+                "sampledAllocationBytes": 388520,
+                "sampledAllocationBytesPerUpdate": 38.852,
+                "minorGcCount": 0,
+                "majorGcCount": 1,
+                "totalGcDurationMs": 4.033999998122454,
+                "heapBefore": 40820296,
+                "heapAfter": 40890648,
+                "controlledGcAfter": 40849800,
+                "controlledGcHeapDeltaBytes": 29504,
+                "builtInListenerPromisesPerUpdate": 0,
+                "programStatusReportsPerUpdate": 0,
+                "rejectionObserversPerUpdate": 0,
+                "finalUpdateCorrect": 1
+              },
+              "sourceInvariant": {
+                "toolWrapperObjectsPerUpdate": 0,
+                "inlineClosuresPerUpdate": 0,
+                "promiseTailsPerUpdate": 0,
+                "promiseArraysPerUpdate": 0,
+                "arraysPerUpdate": 0
+              },
+              "topAllocationSites": [
+                {
+                  "bytes": 380080,
+                  "functionName": "handleEvent",
+                  "url": "file:///D:/RMProjects/Pi/packages/coding-agent/src/modes/interactive/interactive-mode.ts",
+                  "line": 4150,
+                  "column": 21
+                },
+                {
+                  "bytes": 6296,
+                  "functionName": "wrappedFn",
+                  "url": "node:internal/errors",
+                  "line": 541,
+                  "column": 21
+                },
+                {
+                  "bytes": 1088,
+                  "functionName": "post",
+                  "url": "node:inspector",
+                  "line": 115,
+                  "column": 7
+                },
+                {
+                  "bytes": 1056,
+                  "functionName": "fn",
+                  "url": "node:internal/util",
+                  "line": 477,
+                  "column": 14
+                }
+              ]
+            },
+            {
+              "name": "observer-coalesced-message_update",
+              "updates": 10000,
+              "warmup": 1000,
+              "metrics": {
+                "rawUpdates": 10000,
+                "coalescedUpdates": 9999,
+                "coalescedDeliveries": 1,
+                "snapshotCount": 1,
+                "extensionObserverPublishes": 1,
+                "promisesPerRawUpdate": 0,
+                "promisesPerDelivery": 0,
+                "observerBridgePromisesPerDelivery": 0,
+                "builtInInteractivePromisesPerDelivery": 0,
+                "programStatusReportsPerDelivery": 0,
+                "rejectionObserversPerDelivery": 0,
+                "sampledAllocationBytes": 5189568,
+                "sampledAllocationBytesPerRawUpdate": 518.9568,
+                "sampledAllocationBytesPerDelivery": 5189568,
+                "cpuP50MsPerRawUpdate": 0.0006423999999999523,
+                "cpuP95MsPerRawUpdate": 0.0011831999999999425,
+                "minorGcCount": 0,
+                "majorGcCount": 1,
+                "totalGcDurationMs": 4.439699999988079,
+                "heapBefore": 40879352,
+                "heapAfter": 41449456,
+                "controlledGcAfter": 41202352,
+                "controlledGcHeapDeltaBytes": 323000,
+                "finalUpdateCorrect": 1
+              },
+              "sourceInvariant": {
+                "toolWrapperObjectsPerUpdate": 0,
+                "inlineClosuresPerUpdate": 0,
+                "promiseTailsPerUpdate": 0,
+                "promiseArraysPerUpdate": 0
+              },
+              "topAllocationSites": [
+                {
+                  "bytes": 1963992,
+                  "functionName": "next",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 1502144,
+                  "functionName": "scheduleFlush",
+                  "url": "file:///D:/RMProjects/Pi/packages/agent/src/event-delivery.ts",
+                  "line": 258,
+                  "column": 23
+                },
+                {
+                  "bytes": 848112,
+                  "functionName": "now",
+                  "url": "node:internal/perf/performance",
+                  "line": 137,
+                  "column": 6
+                },
+                {
+                  "bytes": 456552,
+                  "functionName": "values",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 372760,
+                  "functionName": "entries",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 19616,
+                  "functionName": "max",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 12384,
+                  "functionName": "min",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 3264,
+                  "functionName": "initAsyncResource",
+                  "url": "node:internal/timers",
+                  "line": 164,
+                  "column": 27
+                },
+                {
+                  "bytes": 2176,
+                  "functionName": "structuredClone",
+                  "url": "node:internal/worker/js_transferable",
+                  "line": 113,
+                  "column": 25
+                },
+                {
+                  "bytes": 2096,
+                  "functionName": "deepFreezeSnapshot",
+                  "url": "file:///D:/RMProjects/Pi/packages/agent/src/agent.ts",
+                  "line": 75,
+                  "column": 28
+                },
+                {
+                  "bytes": 1200,
+                  "functionName": "runFlush",
+                  "url": "file:///D:/RMProjects/Pi/packages/agent/src/event-delivery.ts",
+                  "line": 342,
+                  "column": 24
+                },
+                {
+                  "bytes": 1064,
+                  "functionName": "delete",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 1056,
+                  "functionName": "flushAvailable",
+                  "url": "file:///D:/RMProjects/Pi/packages/agent/src/event-delivery.ts",
+                  "line": 309,
+                  "column": 30
+                },
+                {
+                  "bytes": 1056,
+                  "functionName": "TimersList",
+                  "url": "node:internal/timers",
+                  "line": 267,
+                  "column": 14
+                },
+                {
+                  "bytes": 1056,
+                  "functionName": "wrappedFn",
+                  "url": "node:internal/errors",
+                  "line": 541,
+                  "column": 21
+                },
+                {
+                  "bytes": 1040,
+                  "functionName": "Timeout",
+                  "url": "node:internal/timers",
+                  "line": 179,
+                  "column": 14
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "date": "2026-10-13T01:50:53.634Z",
+    "files": [
+      {
+        "path": "packages/agent/src/agent.ts",
+        "sha256": "d2b9deb1269f2372e38f7be05bd1abc1ec8a5e9ed555cf52f794f6e91df0be5e"
+      },
+      {
+        "path": "packages/coding-agent/src/core/agent-session.ts",
+        "sha256": "29d3a30fea5984ca3551cec124e397e0c15fff823181a3af5b0f09dc6cba83a9"
+      },
+      {
+        "path": "packages/coding-agent/src/core/compaction/compaction.ts",
+        "sha256": "dbf114c7874dc375808da2ebda133bce2c3003e8cc350f9b2f65862822d26a77"
+      },
+      {
+        "path": "packages/extensions/managed-tasks.ts",
+        "sha256": "9c26aead531b78282d98ccab20f93a83c6015c0ff76b7c7c10fd720f06e0ca66"
+      },
+      {
+        "path": "packages/extensions/subagent/index.ts",
+        "sha256": "afa9f44a3767efc7a8f523c510e6c74b407722922285e9058e3926f54297e19d"
+      },
+      {
+        "path": "packages/extensions/resource-lifecycle-guard/background-shell.ts",
+        "sha256": "4ebd0565af3a92e1db62bce655454efc1628f1458b7617eb2175726d0487afc2"
+      },
+      {
+        "path": "scripts/bench/codemode-runtime.ts",
+        "sha256": "44c5b90468c884970192ef1a9c6932a0797949f2ad39c23ea699bbe5bf1f70a8"
+      },
+      {
+        "path": "scripts/bench/background-shell-tasks.ts",
+        "sha256": "686918963a293a4200781ac9db6940af43af4d864f72962904df0ad9726f5fbd"
+      },
+      {
+        "path": "scripts/bench/subagent-management.ts",
+        "sha256": "234f81c62571789add847ac428b24001729e612a52985b655a66884e8899ef7d"
+      },
+      {
+        "path": "scripts/bench/tui-session-event-allocations.ts",
+        "sha256": "586164a25dd157d0710dd6ba75e0f2202e1ffd123a6662b388ec4c4b35067f55"
+      },
+      {
+        "path": "packages/codemode/dist/runtime/host.js",
+        "sha256": "1b64ed62c2b804f41d803e260edabde13ce25685ed83ce88b4e1207360a371df"
+      },
+      {
+        "path": "packages/codemode/dist/runtime/worker.js",
+        "sha256": "d670c2fe5567ad694e340e17207e2c15c339b5ab36bef94f4923f35a5c59c1a7"
+      }
+    ]
   }
 }
