@@ -156,15 +156,20 @@ export class McpSchemaCache {
     if (fingerprint === undefined) return false;
     const normalized = tools.map(normalizeCachedTool);
     if (normalized.some((tool) => tool === null)) return false;
-    this.entries.delete(fingerprint);
-    this.entries.set(fingerprint, {
+    const entry = {
       fingerprint,
       updatedAt: Date.now(),
       serverInfo: serverInfo ? { name: sanitizeText(serverInfo.name, 80), version: sanitizeText(serverInfo.version, 40) } : null,
       tools: normalized,
-    });
+    };
+    // Admission includes the cache envelope. An uncacheable server must not
+    // evict its previous entry or unrelated servers while trying to make room.
+    const isolatedPayload = `${JSON.stringify({ version: CACHE_VERSION, entries: [entry] })}\n`;
+    if (Buffer.byteLength(isolatedPayload, "utf8") > MAX_CACHE_BYTES) return false;
+    this.entries.delete(fingerprint);
+    this.entries.set(fingerprint, entry);
     while (this.entries.size > MAX_CACHE_ENTRIES) this.entries.delete(this.entries.keys().next().value);
-    let payload = this.serialize();
+    let payload = this.entries.size === 1 ? isolatedPayload : this.serialize();
     while (Buffer.byteLength(payload, "utf8") > MAX_CACHE_BYTES && this.entries.size > 0) {
       this.entries.delete(this.entries.keys().next().value);
       payload = this.serialize();

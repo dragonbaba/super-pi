@@ -119,6 +119,7 @@ export class CodemodeController {
 	private documentationVersions = new WeakMap<AgentTool<any>, number>();
 	private nextDocumentationVersion = 0;
 	private documentationRevisionPrefix: string | undefined;
+	private documentationCatalogRevision = 0;
 	private sandbox: CodemodeSandbox | undefined;
 	private current: Invocation | undefined;
 	private readonly store = new CodemodeStore();
@@ -155,6 +156,7 @@ export class CodemodeController {
 	setTools(tools: readonly AgentTool<any>[]): void {
 		if (this.closed || this.tools === tools) return;
 		this.tools = tools;
+		this.documentationCatalogRevision++;
 		const descriptors: CodemodeTool[] = [];
 		let description = CODEMODE_DESCRIPTION + DEFERRED_DECLARATIONS + "\nCurrent local tool declarations:\n" + TOOL_RESULT_DECLARATION;
 		let omitted = 0;
@@ -391,7 +393,7 @@ export class CodemodeController {
 		// page is materialized; no documentation cache or work in child/progress delivery is added.
 		const parts: string[] = [TOOL_RESULT_DECLARATION];
 		const described: AgentTool<any>[] = [];
-		let currentRevision = (this.documentationRevisionPrefix ??= randomUUID()) + ":" + format + ":";
+		let currentRevision = (this.documentationRevisionPrefix ??= randomUUID()) + ":" + this.documentationCatalogRevision + ":" + format + ":";
 		for (const requested of names) {
 			if (typeof requested !== "string") continue;
 			// ALL_TOOLS lists script identifiers; accept them as well as registered names.
@@ -424,7 +426,7 @@ export class CodemodeController {
 			position += part.length;
 		}
 		const end = Math.min(position, offset + text.length);
-		const continuation = end < position ? `\n[More tool documentation: call describeTools with the same names and format, offset:${end}, limit:${limit}, revision:"${currentRevision}".]` : "";
+		const continuation = end < position ? `\n[More tool documentation: describeTools with the same names/format, offset:${end}, limit:${limit}, revision:"${currentRevision}".]` : "";
 		return `[Tool documentation chars ${Math.min(offset, position)}..${end} of ${position}; format:${format}; revision:${currentRevision}]\n${text}${continuation}`;
 	}
 	private async ensureSandbox(): Promise<CodemodeSandbox> {

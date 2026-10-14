@@ -917,6 +917,28 @@ text(JSON.parse(fresh.split("Input JSON Schema:\\n")[1].split("\\nResult: ToolRe
 	assert.match(text, /live/); assert.doesNotMatch(text, /cached/);
 });
 
+test("Codemode documentation rejects continuation after identifier collisions change aliases", async t => {
+	const extension: InlineExtension = pi => {
+		for (const name of ["foo-bar", "foo_bar"]) pi.registerTool({ name, label: name, description: "detail ".repeat(250),
+			parameters: Type.Object({}), execute: async () => ({ content: [], details: {} }) });
+		pi.registerTool({ name: "activate_fixture", label: "Activate fixture", description: "activate an already registered collision",
+			parameters: Type.Object({}), execute: async () => { pi.setActiveTools([...pi.getActiveTools(), "foo_bar"]); return { content: [], details: {} }; } });
+	};
+	const f = await fixture(t, {}, [extension]);
+	f.session.setActiveToolsByName(["foo-bar", "activate_fixture"]);
+	const outcome = await f.run([`
+const names=["foo-bar"];
+const first=await describeTools(names,{limit:256}), revision=/; revision:([^\\]]+)\\]/.exec(first)[1];
+await tools.activate_fixture({});
+try { await describeTools(names,{offset:256,limit:256,revision}); throw new Error("mixed aliases accepted"); }
+catch(e) { if(!String(e).includes("TOOL_DOCUMENTATION_CHANGED")) throw e; text("mapping revision rejected"); }
+text(await describeTools(names));
+`]);
+	assert.equal(outcome.results[0]?.isError, false, JSON.stringify(outcome.results));
+	assert.match(JSON.stringify(outcome.results[0]?.content), /mapping revision rejected/);
+	assert.match(JSON.stringify(outcome.results[0]?.content), /foo_bar_2\(args:/);
+});
+
 test("MCP activation keeps inline declarations stable; overflow remains explicitly discoverable", async () => {
 	const owner = new CodemodeController(() => {});
 	let schemaVisits = 0;

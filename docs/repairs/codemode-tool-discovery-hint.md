@@ -341,3 +341,32 @@ name-map retention after close, and 0/12 tracked references after controlled GC.
 Raw output: `.git/pr151-catalog-metadata-final.json`. Final controller SHA-256:
 `4ff6ca0c03590816d955fbef6a69a53eec3e6ec79f62f7d89bd207428d6e4e05`.
 Other previously listed declaration/constants fingerprints are unchanged.
+
+### Third Codex review: alias revisions and cache admission
+
+Two boundary regressions were reproduced before fixing them. Activating a
+registered identifier collision can change a TypeScript signature while keeping
+the same AgentTool object. The continuation revision now includes the catalog
+mapping generation, advanced only by `setTools` at catalog boundaries. Old pages
+are rejected after this change as well as after definition replacement. The page
+body limit is unchanged; the continuation hint was shortened to retain the
+existing bounded-page assertion.
+
+A discovery-valid near-2-MiB catalog can exceed the cache limit once entry and
+envelope metadata are included. Cache put now checks the isolated serialized
+entry before any map mutation or eviction. An uncacheable entry returns false
+and preserves both prior server entries and disk contents. The single-entry
+payload is reused when possible; this is request-owned cold cache-admission work,
+with no retained buffer or processing in provider/progress/render paths.
+
+Both regressions failed before the changes and passed afterward, together with
+three related pagination/cache checks. Thirteen source invariants and the three
+MCP count/GC/source gates passed; root type checking and coding-agent build passed.
+No new test file or local full suite was introduced. Final same-machine catalog
+sample: 18,170,144 host bytes versus the original 16,989,528 (about +7.0%); candidate
+sampling varies and is not a timing or production-heap conclusion. Deterministic
+reuse, zero unchanged schema reads, 765/52,279 wire bytes, paired workers, zero
+post-close execution/mapping retention, and 0/12 tracked references after GC all
+remain unchanged. Raw output: `.git/pr151-catalog-mapping-final.json`.
+Final controller SHA-256:
+`9f2625b3bc82076eeac36cdc9cd2f614c564d98ddf703bedac0e140ae4ad14a0`.

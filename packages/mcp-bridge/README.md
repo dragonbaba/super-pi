@@ -59,6 +59,9 @@ the tool through registry wrappers into Codemode's paged `describeTools`; inline
 provider descriptions remain capped at 1,000 characters. Cache fingerprint
 domain separation invalidates earlier abbreviated entries so they are discovered
 again instead of pretending a truncated description is complete.
+Cache admission includes the entry metadata and JSON envelope. If one server's
+catalog cannot fit on its own, caching returns false without evicting its previous
+entry or another server's cache; the live catalog remains available.
 
 A transient connection or discovery failure keeps the last fully registered
 catalog searchable and its activated tools available. `/mcp-status` retains the
