@@ -53,7 +53,10 @@ extension lifetime and connection. Cleanup waits for active calls, uses only
 `BH_REQUIRE_EXISTING_DAEMON=1`, and has a shared five-second dispatch deadline
 (plus the runner's bounded process termination). It never starts a daemon,
 requests approval, or closes unowned targets. Failed cleanup retains the exact
-state for a later attempt and reports the limitation. Process crashes or a
+state for a later attempt and reports the limitation. `/browser-use release`
+stops before daemon disconnection if cleanup is incomplete. Omitted local
+sessions and an explicitly named `default` session have distinct ownership keys.
+Process crashes or a
 lost create-target response cannot guarantee automatic cleanup; never infer
 ownership by scanning and closing unrelated tabs.
 

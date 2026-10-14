@@ -264,7 +264,7 @@ export default function browserUseExtension(pi: ExtensionAPI): void {
   let runtimeVersion: InstanceType<BrowserRuntime[0]["BrowserHarnessVersionGate"]> | undefined;
 
   const ensureWorkspace = async (ctx: ExtensionContext, command: string, buildEnvironment: BrowserRuntime[0]["buildBrowserUseEnvironment"], session?: string): Promise<string> => {
-    const connection = `${session ?? "default"}\0${process.env.BU_CDP_URL ?? ""}\0${process.env.BU_CDP_WS ?? ""}\0${process.env.BU_BROWSER_ID ?? ""}`;
+    const connection = `${session === undefined ? "local" : "named:" + session}\0${process.env.BU_CDP_URL ?? ""}\0${process.env.BU_CDP_WS ?? ""}\0${process.env.BU_BROWSER_ID ?? ""}`;
     const desired = join(getAgentDir(), "cache", "browser-use", "workspace", workspaceKey(ctx, `${nonce}-${workspaceGeneration}-${connection}`));
     if (!ownedWorkspaces.has(desired)) {
       if (ownedWorkspaces.size >= 8) throw new Error("[BROWSER_WORKSPACES_LIMIT] Release existing browser workspaces before selecting more connections.");
@@ -286,11 +286,11 @@ export default function browserUseExtension(pi: ExtensionAPI): void {
     return result.exitCode === 0 && !result.killed && !result.timedOut && !result.aborted;
   };
 
-  const cleanupOwnedWorkspaces = async (remove = true, ctx?: ExtensionContext): Promise<void> => {
+  const cleanupOwnedWorkspaces = async (remove = true, ctx?: ExtensionContext): Promise<boolean> => {
     if (cleanupInProgress || activeRuns > 0) {
       cleanupPending ||= remove;
       tabCleanupPending = true;
-      return;
+      return false;
     }
     cleanupInProgress = true;
     tabCleanupPending = false;
@@ -312,8 +312,9 @@ export default function browserUseExtension(pi: ExtensionAPI): void {
       if (incomplete) ctx?.ui.notify("部分任务临时标签未能关闭，已保留标签归属记录；不会重新连接浏览器。可在连接恢复后执行 close_owned_tabs()。", "warning");
     } finally {
       cleanupInProgress = false;
-      if (cleanupPending && activeRuns === 0) { cleanupPending = false; await cleanupOwnedWorkspaces(); }
+      if (cleanupPending && activeRuns === 0) { cleanupPending = false; incomplete = !await cleanupOwnedWorkspaces() || incomplete; }
     }
+    return !incomplete;
   };
 
   pi.registerTool({
@@ -427,7 +428,10 @@ export default function browserUseExtension(pi: ExtensionAPI): void {
         }
         releaseInProgress = true;
         try {
-          await cleanupOwnedWorkspaces();
+          if (!await cleanupOwnedWorkspaces()) {
+            ctx.ui.notify("任务临时标签未全部关闭，已保留连接和标签归属记录；连接仍可用时请重试 /browser-use release。", "warning");
+            return;
+          }
           const [core, runner] = await loadBrowserRuntime();
           const executable = await core.findBrowserUseExecutable(getAgentDir());
           if (!executable) {

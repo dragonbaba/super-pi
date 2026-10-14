@@ -436,25 +436,29 @@ print(json.dumps({"queries": 3, "searchTabsCreated": 1, "searchNavigations": 1, 
 });
 
 test("browser extension preserves failure details and bounds cleanup without connecting or racing an active run", async () => {
- const hooks = new Map<string, Function>(), tools = new Map<string, any>(), removed: string[] = [], notices: string[] = [];
- let cleanupCalls = 0, stateSize = 20, failCleanup = true, resolveRun: ((value: any) => void) | undefined;
+ const hooks = new Map<string, Function>(), tools = new Map<string, any>(), commands = new Map<string, any>(), removed: string[] = [], notices: string[] = [];
+ const states = new Map<string, number>(), cleanedSessions: (string | undefined)[] = [];
+ let cleanupCalls = 0, reloads = 0, failCleanup = true, resolveRun: ((value: any) => void) | undefined;
  let signalStarted: (() => void) | undefined;
  const result = { stdout: "completed extraction", stderr: "Traceback (most recent call last):\nStopIteration: failed later", exitCode: 1,
   killed: false, timedOut: false, aborted: false, stdoutTruncated: false, stderrTruncated: false, stdoutBytes: 20, stderrBytes: 65 };
  const runner = { runBrowserUse: async (options: any) => {
+  if (options.args?.[0] === "--reload") { reloads++; return { ...result, exitCode: 0 }; }
   if (options.env.BH_REQUIRE_EXISTING_DAEMON === "1") {
    cleanupCalls++; assert.ok(options.timeoutMs > 0 && options.timeoutMs <= 5000); assert.equal(options.maxBytesPerStream, 1024);
-   if (!failCleanup) stateSize = 2;
+   cleanedSessions.push(options.env.BU_NAME);
+   if (!failCleanup) states.set(options.cwd, 2);
    return { ...result, exitCode: failCleanup ? 1 : 0, stdout: "", stderr: "" };
   }
+  states.set(options.cwd, 20);
   if (signalStarted) { signalStarted(); return new Promise(resolve => { resolveRun = resolve; }); }
   return result;
  } };
  const runtime = { findBrowserUseExecutable: async () => ({ command: "fixture-harness" }), browserUrlSafetyError: () => undefined,
-  buildBrowserUseEnvironment: (_env: unknown, workspace: string) => ({ BH_AGENT_WORKSPACE: workspace }),
+  buildBrowserUseEnvironment: (_env: unknown, workspace: string, session?: string) => ({ BH_AGENT_WORKSPACE: workspace, BU_NAME: session }),
   BrowserHarnessVersionGate: class { async check() {} clear() {} }, loadRecentScreenshot: async () => undefined, extractScreenshotCandidates: () => [] };
  const modules: Record<string, unknown> = { "node:crypto": crypto, "node:path": path,
-  "node:fs/promises": { mkdir: async () => {}, rm: async (target: string) => { removed.push(target); }, stat: async () => ({ size: stateSize }) },
+  "node:fs/promises": { mkdir: async () => {}, rm: async (target: string) => { removed.push(target); states.delete(target); }, stat: async (file: string) => ({ size: states.get(path.dirname(file)) ?? 2 }) },
   "@super-pi/coding-agent": { getAgentDir: () => path.resolve("fixture-agent") }, "@super-pi/tui": { Text: class {} }, typebox: { Type },
   "./tab-lifecycle.ts": { ownedTabsPrelude }, "./core.ts": runtime, "./runner.ts": runner,
   "../resource-lifecycle-guard/permission-contract.ts": { consumeBrowserExecAuthorization() {} } };
@@ -463,7 +467,7 @@ test("browser extension preserves failure details and bounds cleanup without con
   { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
  runInNewContext(source, { module, exports: module.exports, require(name: string) { assert.ok(name in modules, name); return modules[name]; },
   process: { pid: 1, env: {} }, Buffer });
- module.exports.default({ on: (name: string, callback: Function) => hooks.set(name, callback), registerTool: (tool: any) => tools.set(tool.name, tool), registerCommand() {} });
+ module.exports.default({ on: (name: string, callback: Function) => hooks.set(name, callback), registerTool: (tool: any) => tools.set(tool.name, tool), registerCommand: (name: string, command: any) => commands.set(name, command) });
  const ctx = { cwd: path.resolve("fixture-work"), sessionManager: { getSessionId: () => "fixture" }, ui: { notify: (message: string) => notices.push(message) } };
  const tool = tools.get("browser_exec");
  const failed = await tool.execute("first", { code: "print('fixture')" }, undefined, undefined, ctx);
@@ -471,22 +475,31 @@ test("browser extension preserves failure details and bounds cleanup without con
  assert.match(failed.content[1].text, /completed extraction/);
  await hooks.get("agent_end")!({}, ctx);
  assert.equal(cleanupCalls, 1); assert.equal(removed.length, 0); assert.match(notices.at(-1)!, /不会重新连接/);
+ await commands.get("browser-use").handler("release", ctx);
+ assert.equal(cleanupCalls, 2); assert.equal(reloads, 0); assert.equal(removed.length, 0);
+ assert.match(notices.at(-1)!, /已保留连接/);
  failCleanup = false;
  await hooks.get("agent_end")!({}, ctx);
  await hooks.get("agent_end")!({}, ctx);
- assert.equal(cleanupCalls, 2, "an empty ownership record must not launch another CLI");
- stateSize = 20;
+ assert.equal(cleanupCalls, 3, "an empty ownership record must not launch another CLI");
  const started = new Promise<void>(resolve => { signalStarted = resolve; });
  const active = tool.execute("active", { code: "print('fixture')" }, undefined, undefined, ctx);
  await started;
  await hooks.get("agent_end")!({}, ctx);
  await hooks.get("session_shutdown")!({}, ctx);
- assert.equal(cleanupCalls, 2); assert.equal(removed.length, 0, "never remove the workspace while its process is active");
+ assert.equal(cleanupCalls, 3); assert.equal(removed.length, 0, "never remove the workspace while its process is active");
  resolveRun!(result);
  await active;
- assert.equal(cleanupCalls, 3); assert.equal(removed.length, 1);
+ assert.equal(cleanupCalls, 4); assert.equal(removed.length, 1);
  await hooks.get("session_shutdown")!({}, ctx);
  assert.equal(removed.length, 1, "released workspaces must not retain cleanup references");
+ signalStarted = undefined;
+ const local = await tool.execute("local", { code: "print('fixture')" }, undefined, undefined, ctx);
+ const named = await tool.execute("named", { code: "print('fixture')", session: "default" }, undefined, undefined, ctx);
+ assert.notEqual(local.details.workspace, named.details.workspace, "omitted session and named default must not share tab ownership");
+ await commands.get("browser-use").handler("release", ctx);
+ assert.deepEqual(cleanedSessions.slice(-2), [undefined, "default"]);
+ assert.equal(removed.length, 3); assert.equal(reloads, 1); assert.equal(states.size, 0);
 });
 
 
