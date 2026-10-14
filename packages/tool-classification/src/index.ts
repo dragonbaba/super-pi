@@ -39,22 +39,26 @@ const CATEGORY_SEARCH_TEXT: Readonly<Record<string, string>> = Object.fromEntrie
 const TOKEN_SPLIT = /[^\p{L}\p{N}]+/u;
 const BROWSER_DEBUG_QUERY = /\b(?:browser_debug|cdp|devtools|localhost)\b|chrome_devtools_|\blocal (?:html|page|preview)\b|\b(?:browser|frontend|dom) debug(?:ging)?\b|\b(?:dom|javascript) inspection\b|\binspect (?:dom|javascript)\b|\bui validation\b|\bvalidate ui\b|本地(?:网页|页面|预览)|(?:浏览器|前端|网页|页面)调试|(?:dom|javascript)\s*检查|(?:ui|界面)\s*验证/iu;
 const BROWSER_APPROVAL_PAUSE = Object.freeze({ block: true,
-  reason: "[BROWSER_APPROVAL_PAUSED] Browser Harness reported incomplete Chrome approval. Stop this automatic browser workflow and wait for user direction; do not switch to another browser/profile to bypass it. DevTools is available for separately directed local preview and debugging, but does not prove approval of the original connection.",
+  reason: "[BROWSER_APPROVAL_PAUSED] Browser Harness reported incomplete Chrome approval. Stop this automatic browser workflow and wait for user direction; do not retry Browser Harness or switch to another browser/profile to bypass it. DevTools is available for separately directed local preview and debugging, but does not prove approval of the original connection.",
 });
 
 /** Primitive pause/session identity; stable hooks inspect failures, never progress. */
 class BrowserRoutingGuard {
   awaitingUser = false;
   sessionId: string | undefined;
-  readonly reset = (): void => { this.awaitingUser = false; };
-  readonly dispose = (): void => { this.awaitingUser = false; this.sessionId = undefined; };
+  approvalGeneration = 0;
+  readonly reset = (): void => { this.awaitingUser = false; this.approvalGeneration++; };
+  readonly dispose = (): void => { this.reset(); this.sessionId = undefined; };
   readonly observeSelection = (data: unknown): void => {
-    if (this.sessionId !== undefined && data !== null && typeof data === "object"
-      && "sessionId" in data && data.sessionId === this.sessionId) this.awaitingUser = false;
+    if (this.sessionId === undefined || data === null || typeof data !== "object"
+      || !("sessionId" in data) || data.sessionId !== this.sessionId
+      || !("phase" in data) || !("approvalGeneration" in data)) return;
+    if (data.phase === "begin") data.approvalGeneration = this.approvalGeneration;
+    else if (data.phase === "commit" && data.approvalGeneration === this.approvalGeneration) this.awaitingUser = false;
   };
   readonly observeInput = (event: InputEvent): void => {
     // A fresh user-directed task may choose CDP; this does not grant Chrome permission.
-    if (event.source !== "extension") this.awaitingUser = false;
+    if (event.source !== "extension") this.reset();
   };
   readonly observeResult = (event: ToolExecutionEndEvent): void => {
     if (event.toolName !== "browser_exec" || !event.isError) return;
@@ -65,12 +69,13 @@ class BrowserRoutingGuard {
       if (block.text.startsWith("[BROWSER_EXEC_PERMISSION_REQUIRED]")
         || block.text.startsWith("[BROWSER_EXEC_TIMEOUT] Browser deadline exceeded. An earlier Chrome approval prompt")) {
         this.awaitingUser = true;
+        this.approvalGeneration++;
         return;
       }
     }
   };
   readonly checkCall = (event: ToolCallEvent) => {
-    if (this.awaitingUser && event.toolName.startsWith("chrome_devtools_")) return BROWSER_APPROVAL_PAUSE;
+    if (this.awaitingUser && (event.toolName === "browser_exec" || event.toolName.startsWith("chrome_devtools_"))) return BROWSER_APPROVAL_PAUSE;
     return undefined;
   };
 }

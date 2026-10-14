@@ -534,3 +534,38 @@ in the current generation. This follow-up changes only the cold user-command
 predicate/primitive intent; routing hooks, ownership, event count and the profiled
 SDK/Worker path above are unchanged. Only the affected integration case and root/
 Chrome DevTools type checks were rerun; no new test file or full-suite rerun.
+
+### Follow-up review: retry pause and selection ordering
+
+Approval pauses now block `browser_exec` retries as well as CDP calls. Otherwise
+the model could repeat the original connection attempt before any user direction.
+The existing SDK regression verifies the original browser implementation runs
+only once and the retry receives `BROWSER_APPROVAL_PAUSED`.
+
+Explicit commands can run while a browser tool is still executing. A selection
+submitted before an approval failure must not clear that later pause just because
+its settings write finishes afterward. Before entering the existing transaction
+queue, the selector emits a begin receipt containing only session ID, phase and
+an initially empty generation field. The same stable routing handler synchronously
+fills in its current generation. After a valid positive selection persists, the
+selector commits that receipt; the guard resumes only for the same session and
+unchanged generation. Approval failures and input/lifecycle resets advance the
+counter. Failed/stale/negative selections never commit. The receipt is owned by
+the cold command transaction, released when it settles, and never retained by the
+guard. This adds no listener or object per tool event, and no new queue/pool.
+
+Both review cases were reproduced before fixing. The existing integration test
+holds the actual settings queue at its rename operation, submits an enable,
+delivers a browser approval failure, then releases the save: the older choice
+remains unable to resume the workflow, while a subsequent enable succeeds.
+Two affected integration cases, ten Codemode AST/source invariants and the root/
+two package type checks passed. No new test file or local full-suite rerun.
+
+The complete event path and stable observer bodies were re-audited. The final
+real SDK/Worker sample in `.git/pr151-browser-routing-generation.json` is
+28,491,224 sampled host bytes versus the original 26,875,160 (+6.0%); warm-batch
+p95 is 19.59 ms versus 18.02 ms. The sampled overhead is reported, not treated as
+a speedup or a production latency guarantee. Counts remain 242 child calls,
+zero progress events, 11/11 Workers, zero pending evidence, and 0/55 retained
+references after controlled GC. Final classification SHA-256:
+`c41646478bfbf2d9e7380411859beb67a3b2ddcf0a629eb15d15daf6d858c16a`.

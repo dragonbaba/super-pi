@@ -565,10 +565,10 @@ test("exact tool-name search outranks matching words in another tool description
 });
 
 test("browser search separates browsing and DevTools while approval failures pause automatic switching", async t => {
-	let devtoolsCalls = 0;
+	let devtoolsCalls = 0, browserCalls = 0;
 	const extension: InlineExtension = pi => {
 		pi.registerTool({ name: "browser_exec", label: "Browser Use", description: "browser web search",
-			parameters: Type.Object({}), execute: async () => { throw new Error("[BROWSER_EXEC_PERMISSION_REQUIRED] Chrome approval is incomplete."); } });
+			parameters: Type.Object({}), execute: async () => { browserCalls++; throw new Error("[BROWSER_EXEC_PERMISSION_REQUIRED] Chrome approval is incomplete."); } });
 		pi.registerTool({ name: "chrome_devtools_list_pages", label: "Chrome pages", description: "browser web search cdp",
 			parameters: Type.Object({}), execute: async () => { devtoolsCalls++; return { content: [{ type: "text", text: "explicit browser" }], details: {} }; } });
 	};
@@ -587,6 +587,10 @@ test("browser search separates browsing and DevTools while approval failures pau
 	assert.equal(outcome.results[2]?.isError, true);
 	assert.equal(devtoolsCalls, 0, "guessing a disabled name must not launch a second browser");
 	assert.equal(f.session.getActiveToolNames().includes("chrome_devtools_list_pages"), false);
+	const retry = await f.run(['await tools.browser_exec({});']);
+	assert.equal(retry.results.at(-1)?.isError, true);
+	assert.match(JSON.stringify(retry.results.at(-1)?.content), /BROWSER_APPROVAL_PAUSED/);
+	assert.equal(browserCalls, 1, "approval failure cannot cause another automatic connection attempt");
 	// Even a previously activated CDP tool cannot bypass an unresolved approval in this run.
 	f.session.setActiveToolsByName(["tool_search", "chrome_devtools_list_pages"]);
 	await (f.session as any)._extensionRunner.emitInput("continue automatically", undefined, "extension");
@@ -682,6 +686,29 @@ test("explicit DevTools enable and selection clear only their session approval p
 	const selected = await f.run(['await tools.chrome_devtools_list_pages({});']);
 	assert.equal(selected.results.at(-1)?.isError, false, JSON.stringify(selected.results.at(-1)));
 	assert.equal(calls, 3);
+	// Hold real settings I/O while a previously submitted choice is overtaken by
+	// a browser failure. Its eventual successful save is not newer user direction.
+	const { saveSettings } = await jiti.import<any>("../packages/chrome-devtools/src/settings.js");
+	const { updateChromeDevtoolsTools, allChromeDevtoolsTools } = await jiti.import<any>("../packages/chrome-devtools/src/tool-selector.ts");
+	const { rename } = await import("node:fs/promises");
+	let releaseSave!: () => void, reachedSave!: () => void;
+	const saveGate = new Promise<void>(resolve => { releaseSave = resolve; });
+	const saveEntered = new Promise<void>(resolve => { reachedSave = resolve; });
+	const heldSave = saveSettings({ tools: [], updatedAt: 0 }, { rename: async (from: string, to: string) => {
+		reachedSave(); await saveGate; await rename(from, to);
+	} });
+	let enabling: Promise<unknown> | undefined;
+	try {
+		await saveEntered;
+		enabling = updateChromeDevtoolsTools(api, selectionContext, allChromeDevtoolsTools(), "enabled all", true);
+		await f.run(['await tools.browser_exec({});']);
+	} finally { releaseSave(); await heldSave; await enabling; }
+	const overtaken = await f.run(['await tools.chrome_devtools_list_pages({});']);
+	assert.equal(overtaken.results.at(-1)?.isError, true, "pre-failure choice must not clear the later pause");
+	assert.equal(calls, 3);
+	await f.session.prompt("/chrome-devtools enable");
+	const freshEnable = await f.run(['await tools.chrome_devtools_list_pages({});']);
+	assert.equal(freshEnable.results.at(-1)?.isError, false); assert.equal(calls, 4);
 });
 
 test("successful state writes persist as a versioned branch entry; failed script writes do not", async t => {

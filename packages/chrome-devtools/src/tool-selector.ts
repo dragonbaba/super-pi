@@ -137,6 +137,12 @@ export async function setSelectedChromeDevtoolsTools(
 
 let toolTransactionQueue = Promise.resolve();
 
+interface BrowserSelectionIntent {
+	sessionId: string;
+	phase: "begin" | "commit";
+	approvalGeneration: number | undefined;
+}
+
 export async function waitForChromeDevtoolsSettings(): Promise<void> {
 	await toolTransactionQueue;
 }
@@ -148,8 +154,12 @@ function transactSelectedTools(
 	expectedGeneration: number,
 	explicitEnable = false,
 ): Promise<boolean> {
+	// Capture routing state at user intent submission, before either queue or I/O.
+	// The routing extension annotates this one cold, transaction-owned receipt.
+	const intent: BrowserSelectionIntent = { sessionId: ctx.sessionManager.getSessionId(), phase: "begin", approvalGeneration: undefined };
+	pi.events.emit("super-pi:chrome-devtools:user-selection", intent);
 	const operation = toolTransactionQueue.then(() =>
-		transactSelectedToolsNow(pi, ctx, selectedTools, expectedGeneration, explicitEnable),
+		transactSelectedToolsNow(pi, ctx, selectedTools, expectedGeneration, explicitEnable, intent),
 	);
 	toolTransactionQueue = operation.then(
 		() => undefined,
@@ -164,6 +174,7 @@ async function transactSelectedToolsNow(
 	selectedTools: readonly ChromeDevToolsToolName[],
 	expectedGeneration: number,
 	explicitEnable: boolean,
+	intent: BrowserSelectionIntent,
 ): Promise<boolean> {
 	if (expectedGeneration !== state.sessionGeneration) return false;
 	const previousActiveTools = pi.getActiveTools();
@@ -176,7 +187,8 @@ async function transactSelectedToolsNow(
 		// Startup restoration and automatic discovery do not use this transaction.
 		const activeTools = pi.getActiveTools();
 		if (selectedTools.some((name) => activeTools.includes(name) && (explicitEnable || !previousActiveTools.includes(name)))) {
-			pi.events.emit("super-pi:chrome-devtools:user-selection", { sessionId: ctx.sessionManager.getSessionId() });
+			intent.phase = "commit";
+			pi.events.emit("super-pi:chrome-devtools:user-selection", intent);
 		}
 		return true;
 	} catch (error) {
