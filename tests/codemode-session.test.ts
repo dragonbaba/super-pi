@@ -128,10 +128,15 @@ test("Codemode pre-execution edit failures suppress only the proven no-execution
     try {
       tree.updateParent(scripts[index]!, result as any, false, true, false);
       const text = stripVTControlCharacters(tree.render(160).join("\n"));
+      assert.doesNotMatch(text, /not rolled back/);
       if (index < 2) {
         assert.doesNotMatch(text, /not rolled back|exit=unknown/);
         assert.match(text, index === 0 ? /SNAPSHOT_REQUIRED/ : /TOOL_ARGS_INVALID/);
-      } else assert.match(text, /not rolled back/);
+      }
+      tree.updateParent(scripts[index]!, result as any, false, true, true);
+      const expanded = stripVTControlCharacters(tree.render(160).join("\n"));
+      if (index < 2) assert.doesNotMatch(expanded, /not rolled back/);
+      else assert.match(expanded, /not rolled back/);
     } finally { releaseComponentRenderCaches(tree); }
     assert.doesNotMatch(JSON.stringify(result.content), /edit: not_executed; exit=/);
     assert.match(JSON.stringify(result.content), /Do not automatically retry mutations/);
