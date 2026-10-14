@@ -667,10 +667,21 @@ test("explicit DevTools enable and selection clear only their session approval p
 	assert.equal(enabled.results.at(-1)?.isError, false, JSON.stringify(enabled.results.at(-1)));
 	assert.equal(calls, 1);
 	await f.run(['await tools.browser_exec({});']);
-	assert.equal(await setSelectedChromeDevtoolsTools(api, (f.session as any)._extensionRunner.createContext(), ["chrome_devtools_list_pages"]), true);
+	await f.session.prompt("/chrome-devtools enable");
+	const reenabled = await f.run(['await tools.chrome_devtools_list_pages({});']);
+	assert.equal(reenabled.results.at(-1)?.isError, false, "explicit enable resumes even if all tools were active");
+	assert.equal(calls, 2);
+	await f.run(['await tools.browser_exec({});']);
+	const selectionContext = (f.session as any)._extensionRunner.createContext();
+	for (const reason of ["partial deselection", "unchanged selection"]) {
+		assert.equal(await setSelectedChromeDevtoolsTools(api, selectionContext, ["chrome_devtools_list_pages"]), true);
+		const paused = await f.run(['await tools.chrome_devtools_list_pages({});']);
+		assert.equal(paused.results.at(-1)?.isError, true, reason); assert.equal(calls, 2, reason);
+	}
+	assert.equal(await setSelectedChromeDevtoolsTools(api, selectionContext, ["chrome_devtools_list_pages", "chrome_devtools_evaluate"]), true);
 	const selected = await f.run(['await tools.chrome_devtools_list_pages({});']);
 	assert.equal(selected.results.at(-1)?.isError, false, JSON.stringify(selected.results.at(-1)));
-	assert.equal(calls, 2);
+	assert.equal(calls, 3);
 });
 
 test("successful state writes persist as a versioned branch entry; failed script writes do not", async t => {

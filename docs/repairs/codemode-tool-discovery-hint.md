@@ -522,3 +522,15 @@ not a production performance guarantee. Deterministic counts remain 242 child
 calls, zero progress events, 11/11 Workers, zero pending read evidence and 0/55
 retained references after controlled GC. Source SHA-256:
 `36b4d98e214094ce6a5e354cd76b57966acf1dc45d300568ca1d5d69feb151b9`.
+
+The next review identified partial deselection as another negative intent: a
+nonempty remaining selection must not clear the pause. The existing integration
+case reproduced that failure and now checks partial and no-op selections remain
+paused, adding an active tool resumes, and an explicit enable command resumes
+even when all tools were already active. The command and both menu enable actions
+pass that explicit intent through the existing serial transaction. A positive
+result still requires a requested tool to be active after successful persistence
+in the current generation. This follow-up changes only the cold user-command
+predicate/primitive intent; routing hooks, ownership, event count and the profiled
+SDK/Worker path above are unchanged. Only the affected integration case and root/
+Chrome DevTools type checks were rerun; no new test file or full-suite rerun.

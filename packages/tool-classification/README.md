@@ -27,7 +27,9 @@ Generic browsing searches do not activate DevTools. An actual Browser Harness
 permission-required result (or a timeout after a reported approval prompt) pauses
 automatic CDP discovery and calls, including already active tools, until new user
 input or a successful explicit `/chrome-devtools enable`/tool selection in that
-session. Disabling tools, canceled/failed selections and another session's selection
+session. Selection must add an active tool; an explicit enable command/button can
+resume even when tools were already active. Partial or complete deselection,
+unchanged selections, canceled/failed selections and another session's selection
 do not clear it. Extension-generated continuations do not clear this pause. New user input
 allows task selection again; it does not approve Chrome or authorize bypassing a
 still-pending prompt. The model must follow that input and the tools' instructions.

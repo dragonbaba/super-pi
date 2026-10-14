@@ -92,7 +92,7 @@ export async function showToolSelector(pi: ExtensionAPI, ctx: CommandContext) {
 				return saved ? { kind: "stay" } : { kind: "rejected" };
 			},
 			enableAll: async () => {
-				const saved = await transactSelectedTools(pi, ctx, allChromeDevtoolsTools(), generation);
+				const saved = await transactSelectedTools(pi, ctx, allChromeDevtoolsTools(), generation, true);
 				return saved ? { kind: "stay" } : { kind: "rejected" };
 			},
 			disableAll: async () => {
@@ -117,9 +117,10 @@ export async function updateChromeDevtoolsTools(
 	ctx: CommandContext,
 	selectedTools: readonly ChromeDevToolsToolName[],
 	action: string,
+	explicitEnable = false,
 ) {
 	const generation = state.sessionGeneration;
-	const saved = await transactSelectedTools(pi, ctx, selectedTools, generation);
+	const saved = await transactSelectedTools(pi, ctx, selectedTools, generation, explicitEnable);
 	if (!saved || generation !== state.sessionGeneration) return;
 	const status = await buildToolStatusMessage(pi);
 	if (generation !== state.sessionGeneration) return;
@@ -145,9 +146,10 @@ function transactSelectedTools(
 	ctx: CommandContext,
 	selectedTools: readonly ChromeDevToolsToolName[],
 	expectedGeneration: number,
+	explicitEnable = false,
 ): Promise<boolean> {
 	const operation = toolTransactionQueue.then(() =>
-		transactSelectedToolsNow(pi, ctx, selectedTools, expectedGeneration),
+		transactSelectedToolsNow(pi, ctx, selectedTools, expectedGeneration, explicitEnable),
 	);
 	toolTransactionQueue = operation.then(
 		() => undefined,
@@ -161,6 +163,7 @@ async function transactSelectedToolsNow(
 	ctx: CommandContext,
 	selectedTools: readonly ChromeDevToolsToolName[],
 	expectedGeneration: number,
+	explicitEnable: boolean,
 ): Promise<boolean> {
 	if (expectedGeneration !== state.sessionGeneration) return false;
 	const previousActiveTools = pi.getActiveTools();
@@ -168,10 +171,11 @@ async function transactSelectedToolsNow(
 		applyChromeDevtoolsTools(pi, selectedTools);
 		await persistSettings(selectedTools);
 		if (expectedGeneration !== state.sessionGeneration) return false;
-		// Only a successful explicit choice resumes routing; startup restoration and
-		// automatic tool discovery do not pass through this user-command transaction.
+		// A new selection must add a tool; partial/no-op deselection cannot resume.
+		// An explicit enable action remains valid even when tools were already active.
+		// Startup restoration and automatic discovery do not use this transaction.
 		const activeTools = pi.getActiveTools();
-		if (selectedTools.some((name) => activeTools.includes(name))) {
+		if (selectedTools.some((name) => activeTools.includes(name) && (explicitEnable || !previousActiveTools.includes(name)))) {
 			pi.events.emit("super-pi:chrome-devtools:user-selection", { sessionId: ctx.sessionManager.getSessionId() });
 		}
 		return true;
