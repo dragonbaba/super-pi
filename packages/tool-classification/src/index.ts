@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@super-pi/coding-agent";
+import type { ExtensionAPI, InputEvent, ToolCallEvent, ToolExecutionEndEvent } from "@super-pi/coding-agent";
 import { Type } from "typebox";
 
 const CORE_TOOL_NAMES = [
@@ -22,7 +22,8 @@ const POLICY_OWNED_TOOL_NAMES = new Set<string>([
 ]);
 
 const CATEGORY_ALIASES: Readonly<Record<string, readonly string[]>> = {
-  browser: ["browser", "web", "chrome", "cdp", "page", "screenshot", "浏览器", "网页", "截图"],
+  browser: ["browser", "web", "chrome", "page", "screenshot", "浏览器", "网页", "截图"],
+  browser_debug: ["browser_debug", "devtools", "cdp", "chrome devtools", "local preview", "localhost", "browser debugging", "浏览器调试", "本地预览", "本地页面预览", "前端调试"],
   delegation: ["delegation", "delegate", "subagent", "agent", "parallel", "委派", "子代理", "并行"],
   memory: ["memory", "recall", "session", "history", "remember", "记忆", "回忆", "会话", "历史"],
   skills: ["skill", "skills", "procedure", "workflow", "技能", "流程"],
@@ -36,9 +37,41 @@ const CATEGORY_SEARCH_TEXT: Readonly<Record<string, string>> = Object.fromEntrie
   CATEGORY_ENTRIES.map(([category, aliases]) => [category, aliases.join(" ")]),
 );
 const TOKEN_SPLIT = /[^\p{L}\p{N}]+/u;
+const BROWSER_DEBUG_QUERY = /\b(?:cdp|devtools|localhost)\b|chrome_devtools_|\blocal (?:html|page|preview)\b|\b(?:browser|frontend|dom) debug(?:ging)?\b|本地(?:网页|页面|预览)|(?:浏览器|前端|网页|页面)调试/iu;
+const BROWSER_APPROVAL_PAUSE = Object.freeze({ block: true,
+  reason: "[BROWSER_APPROVAL_PAUSED] Browser Harness reported incomplete Chrome approval. Stop this automatic browser workflow and wait for user direction; do not switch to another browser/profile to bypass it. DevTools is available for separately directed local preview and debugging, but does not prove approval of the original connection.",
+});
+
+/** One primitive per extension; stable hooks inspect only browser failures, never progress. */
+class BrowserRoutingGuard {
+  awaitingUser = false;
+  readonly reset = (): void => { this.awaitingUser = false; };
+  readonly observeInput = (event: InputEvent): void => {
+    // A fresh user-directed task may choose CDP; this does not grant Chrome permission.
+    if (event.source !== "extension") this.awaitingUser = false;
+  };
+  readonly observeResult = (event: ToolExecutionEndEvent): void => {
+    if (event.toolName !== "browser_exec" || !event.isError) return;
+    const content = event.result?.content;
+    if (!Array.isArray(content)) return;
+    for (const block of content) {
+      if (block.type !== "text" || typeof block.text !== "string") continue;
+      if (block.text.startsWith("[BROWSER_EXEC_PERMISSION_REQUIRED]")
+        || block.text.startsWith("[BROWSER_EXEC_TIMEOUT] Browser deadline exceeded. An earlier Chrome approval prompt")) {
+        this.awaitingUser = true;
+        return;
+      }
+    }
+  };
+  readonly checkCall = (event: ToolCallEvent) => {
+    if (this.awaitingUser && event.toolName.startsWith("chrome_devtools_")) return BROWSER_APPROVAL_PAUSE;
+    return undefined;
+  };
+}
 
 function categoryFor(name: string): string {
-  if (name === "browser_exec" || name.startsWith("chrome_devtools_")) return "browser";
+  if (name === "browser_exec") return "browser";
+  if (name.startsWith("chrome_devtools_")) return "browser_debug";
   if (name === "subagent") return "delegation";
   if (name === "memory" || name === "memory_search" || name === "session_search") return "memory";
   if (name === "skill_manage") return "skills";
@@ -65,6 +98,13 @@ interface ToolCandidate {
   category: string;
   score: number;
 }
+interface ToolSearchDetails {
+  query: string;
+  matches: ToolCandidate[];
+  added: string[];
+  rejected: string[];
+  blocked?: "browser_approval";
+}
 
 function compareCandidates(left: ToolCandidate, right: ToolCandidate): number {
   if (left.score !== right.score) return right.score - left.score;
@@ -72,13 +112,19 @@ function compareCandidates(left: ToolCandidate, right: ToolCandidate): number {
 }
 
 export default function toolClassificationExtension(pi: ExtensionAPI): void {
+  const browserRouting = new BrowserRoutingGuard();
+  pi.on("input", browserRouting.observeInput);
+  pi.on("tool_execution_end", browserRouting.observeResult);
+  pi.on("tool_call", browserRouting.checkCall);
+  pi.on("session_tree", browserRouting.reset);
+  pi.on("session_shutdown", browserRouting.reset);
   pi.registerTool({
     name: "tool_search",
     label: "Tool Search",
-    description: "Search registered inactive Pi tools by capability and activate the best matches for this session. Use when the stable core tools cannot perform the task. Browser work uses browser_exec; Chrome DevTools requires the user's /chrome-devtools enable command and is never activated as an automatic fallback.",
+    description: "Search registered inactive Pi tools by capability and activate the best matches for this session. Use when the stable core tools cannot perform the task. Use browser/browser_exec for public-web reading and interaction in the user's browser. Use browser_debug or a chrome_devtools_* name for local HTML/localhost preview, DOM/JavaScript inspection, UI validation, or an explicitly requested CDP endpoint; these tools can be activated here and may launch an isolated browser. Choose by task and required login/profile, not by which connection failed. Incomplete Browser Harness approval pauses automatic browser switching until user direction; a new CDP profile does not inherit the original login or establish its approval.",
     promptSnippet: "Search and activate conditional tools when the stable core tool pack is insufficient",
     parameters: Type.Object({
-      query: Type.String({ minLength: 1, maxLength: 200, description: "Capability, tool name, or category such as browser, memory, delegation, graph, skills, or mcp." }),
+      query: Type.String({ minLength: 1, maxLength: 200, description: "Capability, exact tool name, or category: browser for ordinary web work; browser_debug for local preview/DOM/JavaScript/CDP; memory, delegation, graph, skills, or mcp." }),
       limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 12, description: "Maximum tools to activate; defaults to 6." })),
     }, { additionalProperties: false }),
     async execute(_toolCallId, params) {
@@ -86,25 +132,29 @@ export default function toolClassificationExtension(pi: ExtensionAPI): void {
       const activeSet = new Set(active);
       const query = params.query.trim().toLowerCase();
       const category = requestedCategory(params.query);
+      const browserDebug = category === "browser_debug" || BROWSER_DEBUG_QUERY.test(query);
       const terms = normalizedTerms(params.query);
       const limit = params.limit ?? 6;
       const candidates: ToolCandidate[] = [];
+      if (browserDebug && browserRouting.awaitingUser) return {
+        content: [{ type: "text", text: BROWSER_APPROVAL_PAUSE.reason }], isError: true,
+        details: { query: params.query, matches: [], added: [], rejected: [], blocked: "browser_approval" } as ToolSearchDetails,
+      };
       for (const tool of pi.getAllTools()) {
         if (
           tool.name === "tool_search"
           || activeSet.has(tool.name)
           || POLICY_OWNED_TOOL_NAMES.has(tool.name)
-          // A search issued by the model cannot select another browser/profile
-          // while Browser Use is waiting for Chrome's approval. The existing
-          // user command/settings remain the authority for enabling DevTools.
-          || tool.name.startsWith("chrome_devtools_")
         ) continue;
 
         const toolCategory = categoryFor(tool.name);
+        if (toolCategory === "browser_debug" && !browserDebug) continue;
+        if (toolCategory === "browser" && browserDebug) continue;
         if (category !== undefined && category !== toolCategory) continue;
         // A precise name must outrank incidental words in richer descriptions.
         // The 200-character query cannot produce 1,000 keyword matches.
         let score = tool.name.toLowerCase() === query ? 1_000 : category === toolCategory ? 100 : 0;
+        if (category === undefined && browserDebug && toolCategory === "browser_debug") score += 100;
         if (category === undefined) {
           const haystack = `${tool.name} ${tool.description} ${toolCategory} ${CATEGORY_SEARCH_TEXT[toolCategory] ?? ""}`.toLowerCase();
           for (const term of terms) {
@@ -158,6 +208,7 @@ export default function toolClassificationExtension(pi: ExtensionAPI): void {
   });
 
   pi.on("session_start", () => {
+    browserRouting.reset();
     const activeBeforeReset = pi.getActiveTools();
     const allTools = pi.getAllTools();
     const activeSet = new Set(activeBeforeReset);

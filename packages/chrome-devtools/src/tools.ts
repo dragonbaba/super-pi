@@ -15,6 +15,7 @@ import { formatScreenshotText, saveScreenshot, throwIfAborted } from "./screensh
 import { CHROME_DEVTOOLS_TOOL_NAMES } from "./tool-names.js";
 
 const MAX_CDP_TEXT_BYTES = 50 * 1024;
+const CDP_SCOPE = "Use for local HTML/localhost preview, DOM/JavaScript inspection, UI validation, or a requested CDP endpoint. These tools are discoverable through tool_search with browser_debug or their exact names; no manual enable command is required. A missing local endpoint may launch an isolated browser profile. Check list_pages and select the intended target; this profile may not share the user's login or Browser Harness connection. Do not switch here to bypass incomplete Browser Harness approval; wait for user direction for that workflow.";
 
 function boundedJson(value: unknown) {
 	let serialized: string;
@@ -30,7 +31,7 @@ function boundedJson(value: unknown) {
 export const listPagesTool = defineTool({
 	name: CHROME_DEVTOOLS_TOOL_NAMES[0],
 	label: "Chrome DevTools: List Pages",
-	description: "List Chrome tabs/pages from a running Chrome DevTools Protocol endpoint.",
+	description: `List Chrome tabs/pages from a Chrome DevTools Protocol endpoint. ${CDP_SCOPE}`,
 	parameters: Type.Object({}),
 	renderCall: renderToolCall("list pages"),
 	renderResult: renderTextResult,
@@ -46,7 +47,7 @@ export const listPagesTool = defineTool({
 export const selectPageTool = defineTool({
 	name: CHROME_DEVTOOLS_TOOL_NAMES[1],
 	label: "Chrome DevTools: Select Page",
-	description: "Select the active Chrome page for later chrome_devtools_* tool calls.",
+	description: `Select the active Chrome page for later chrome_devtools_* tool calls. ${CDP_SCOPE}`,
 	parameters: Type.Object({
 		pageId: Type.String({ description: "Page id from chrome_devtools_list_pages." }),
 	}),
@@ -67,7 +68,7 @@ export const navigateTool = defineTool({
 	name: CHROME_DEVTOOLS_TOOL_NAMES[2],
 	label: "Chrome DevTools: Navigate",
 	description:
-		"Navigate a Chrome page to a URL through Chrome DevTools Protocol, creating a page first if none is available.",
+		`Navigate a Chrome page to a URL through Chrome DevTools Protocol, creating a page first if none is available. ${CDP_SCOPE}`,
 	parameters: Type.Object({
 		url: Type.String({ description: "URL to navigate to." }),
 		pageId: Type.Optional(
@@ -98,7 +99,7 @@ export const navigateTool = defineTool({
 export const evaluateTool = defineTool({
 	name: CHROME_DEVTOOLS_TOOL_NAMES[3],
 	label: "Chrome DevTools: Evaluate",
-	description: "Evaluate JavaScript in a Chrome page through Chrome DevTools Protocol.",
+	description: `Evaluate JavaScript in a Chrome page through Chrome DevTools Protocol. ${CDP_SCOPE}`,
 	parameters: Type.Object({
 		expression: Type.String({ maxLength: 64 * 1024, description: "JavaScript expression to evaluate." }),
 		pageId: Type.Optional(
@@ -135,7 +136,7 @@ export const evaluateTool = defineTool({
 export const screenshotTool = defineTool({
 	name: CHROME_DEVTOOLS_TOOL_NAMES[4],
 	label: "Chrome DevTools: Screenshot",
-	description: "Capture a PNG screenshot from a Chrome page through Chrome DevTools Protocol.",
+	description: `Capture a PNG screenshot from a Chrome page through Chrome DevTools Protocol. ${CDP_SCOPE}`,
 	parameters: Type.Object({
 		pageId: Type.Optional(
 			Type.String({ description: "Optional page id. Defaults to selected or first page." }),

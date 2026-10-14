@@ -10,6 +10,7 @@ import { SessionManager } from "../../packages/coding-agent/src/core/session-man
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.ts";
 import { AssistantMessageEventStream } from "../../packages/ai/src/utils/event-stream.ts";
 import { CODEMODE_DESCRIPTION } from "../../packages/coding-agent/src/core/codemode-constants.ts";
+import toolClassification from "../../packages/tool-classification/src/index.ts";
 
 const gc = (globalThis as { gc?: () => void }).gc;
 assert.ok(gc, "Run with --expose-gc");
@@ -21,8 +22,9 @@ const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0
 const refs: WeakRef<object>[] = [], startupMs: number[] = [], firstMs: number[] = [], warmMs: number[] = [];
 let workersStarted = 0, workersStopped = 0, childCalls = 0, progress = 0, ledgerPending = 0;
 const settings = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } });
+const browserRouting = process.argv.includes("--browser-routing");
 let loader: DefaultResourceLoader | undefined = new DefaultResourceLoader({ cwd: root, agentDir: root, settingsManager: settings, noExtensions: true, noContextFiles: true,
-  noSkills: true, noPromptTemplates: true, noThemes: true });
+  noSkills: true, noPromptTemplates: true, noThemes: true, extensionFactories: browserRouting ? [toolClassification] : undefined });
 await loader.reload();
 async function cycle() {
   const start = performance.now();
@@ -185,7 +187,7 @@ try {
   let retained = 0; for (const ref of refs) if (ref.deref()) retained++;
   assert.equal(retained, 0); assert.equal(ledgerPending, 0); assert.equal(childCalls, 242); assert.equal(workersStarted, 11); assert.equal(workersStopped, 11);
   startupMs.sort(compare); firstMs.sort(compare); warmMs.sort(compare); sites.sort((a, b) => b.bytes - a.bytes);
-  process.stdout.write(JSON.stringify({ benchmark: "codemode-session", node: process.version, platform: process.platform, sampledCycles: 10, excludedWarmupCycles: 1,
+  process.stdout.write(JSON.stringify({ benchmark: "codemode-session", browserRouting, node: process.version, platform: process.platform, sampledCycles: 10, excludedWarmupCycles: 1,
     startupMedianMs: startupMs[5], startupP95Ms: startupMs[9], firstBatchMedianMs: firstMs[5], firstBatchP95Ms: firstMs[9], warmBatchMedianMs: warmMs[5], warmBatchP95Ms: warmMs[9],
     childCalls, progress, workersStarted, workersStopped, trackedReferences: refs.length, retainedAfterGc: retained, pendingEvidenceAfterTurn: ledgerPending,
     sampledHostBytes: bytes, leadingSites: sites.slice(0, 5), coverage: "real SDK, built-in reads, AgentSession policy/hooks/results/store, Worker, projection and disposal; offline provider; excludes UI, worker heap and disk sessions" }) + "\n");

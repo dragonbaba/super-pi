@@ -72,6 +72,8 @@ test("browser guidance preserves helper Python and states its actual scope", () 
  const description = definitions.get("browser_exec").description;
  assert.match(description, /new_tab/); assert.match(description, /Python variables do not/);
  assert.match(description, /os\.getcwd/); assert.match(description, /loopback/);
+ assert.match(description, /browser_debug/);
+ assert.doesNotMatch(description, /only be enabled explicitly by the user/);
  assert.ok(browserUrlSafetyError('new_tab("http://127.0.0.1:3000")'));
  assert.equal(browserUrlSafetyError('new_tab("https://example.com")'), undefined);
 });

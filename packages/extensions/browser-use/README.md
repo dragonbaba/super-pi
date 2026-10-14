@@ -14,7 +14,7 @@ Registers one sequential `browser_exec` tool for every model. It sends one bound
 - Python stdin/stdout is forced to UTF-8 so non-ASCII scripts and selectors survive Windows pipes unchanged.
 - Failure summaries remain capped at 1000 characters. Python failures put the final exception first so collapsed Codemode output retains the cause, followed by bounded traceback details.
 - Helpers are pre-imported synchronous functions: use `print(list_tabs())`, not top-level `await` or `browser.tabs.list()`. Call `wait_for_load()` after `new_tab`/`goto_url` before `page_info()` or DOM reads. After a failed browser script, inspect tabs before further actions; `page_info()` requires a loaded document.
-- `chrome_devtools_*` may use a separate managed browser profile. Its successful connection does not prove Browser Use has connected. `tool_search` never activates these tools; the user's `/chrome-devtools enable` command or saved selection controls them. After `permission-blocked` / `BROWSER_EXEC_PERMISSION_REQUIRED`, stop for the user's instruction; do not automatically retry, reload the daemon, or switch browsers.
+- Use `browser_exec` for public-web reading and interaction in the user's browser. For local HTML/localhost preview, DOM/JavaScript inspection or UI validation, discover `chrome_devtools_*` with `tool_search({query:"browser_debug"})` or an exact tool name; no manual enable command is required. DevTools may use a separate managed profile, so its connection does not prove Browser Harness connected or share the user's login. After `permission-blocked` / `BROWSER_EXEC_PERMISSION_REQUIRED`, stop for user direction; do not automatically retry, reload the daemon, or switch browsers.
 - The first local connection attempt displays a connection/approval notice before launching the CLI. This is guidance, not proof that Chrome displayed a prompt. Explicit setup failures carry bounded approval guidance. An old approval hint followed by a Python traceback remains a script failure; an outer deadline retains `BROWSER_EXEC_TIMEOUT` because the current approval state is unknown.
 - Navigation supports absolute public HTTP(S) URLs. Local HTML preview through `file:`, `data:`, `about:` or loopback requires another registered tool that explicitly supports it. Do not inject HTML with `document.open/write` or weaken CSP/Trusted Types to work around this boundary.
 - Each script should batch one coherent inspect/branch/act procedure and reacquire elements after UI rerenders; human CAPTCHA/OTP remains an explicit call boundary.
@@ -117,10 +117,13 @@ The same session's `tool_search("web search", limit=3)` activated both Browser
 Use and Chrome DevTools. After Browser Use reported `permission-blocked` and the
 user said no prompt was visible, the model called `chrome_devtools_list_pages`.
 That tool can launch a separate managed Chrome profile; success there did not
-resolve the original approval. Search now excludes inactive `chrome_devtools_*`
-tools even for exact-name requests, while explicit user activation remains valid.
-The real Codemode integration test proves the denied fallback executes zero
-DevTools calls, followed by one successful explicitly enabled call.
+resolve the original approval. The initial blanket search exclusion was too
+broad and has been replaced by task-based routing: general browsing discovers
+Browser Harness, while development/local-preview and exact CDP requests discover
+DevTools. Only an actual incomplete-approval result pauses automatic CDP discovery
+and execution until new user direction. The real Codemode integration verifies
+zero CDP calls during that pause, including previously enabled tools, followed by
+a successful model-selected CDP call in a fresh user-directed run.
 
 The installed Browser Use 0.13.7 depended on Browser Harness 0.1.8. Upstream
 [PR #737](https://github.com/browser-use/browser-harness/pull/737), released in

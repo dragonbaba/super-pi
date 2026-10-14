@@ -436,3 +436,54 @@ reuse, zero unchanged schema reads, 765/52,279 wire bytes, paired workers and
 provider timings, Worker heap measurements or production p95 conclusions.
 Final controller SHA-256:
 `9350fd4d380badd9096d51385e6dbb826609fcc31ffdaa3324a02d95dd236ec3`.
+
+### User correction: choose CDP by task, not a blanket activation ban
+
+The initial Chrome DevTools exclusion was broader than requested. It is replaced
+by two discoverable routes: `browser` for public-web interaction through Browser
+Harness, and `browser_debug`/CDP/exact DevTools names for local HTML/localhost
+preview, DOM/JavaScript inspection and UI validation. Model-driven CDP activation
+is allowed without `/chrome-devtools enable`. Both actual tool descriptions now
+explain target/profile selection; a managed profile does not inherit the user's
+login or prove the original Harness connection is authorized. The exposed native
+CDP tools remain list/select/navigate/evaluate/screenshot; no additional tracing
+or network-interception API is claimed.
+
+A narrow, per-extension pause is set only by the top-level Harness approval
+failure marker or its reported-approval timeout. The dispatch guard blocks CDP
+calls and discovery during that automatic workflow, including already active
+CDP tools. A fresh non-extension input allows task selection again, but does not
+grant browser permission: the model must follow the user's actual direction.
+Extension-generated continuation cannot clear the pause. Ordinary Python errors,
+including ones quoting the approval marker, do not set it. Session start, tree
+switch and shutdown clear the single boolean. No result/browser references,
+per-call listeners, timers, object pools or progress hooks are retained.
+
+Call-chain audit: agent-core beforeToolCall -> AgentSession/ExtensionRunner
+tool_call -> stable primitive guard; terminal tool_execution_end -> session event
+adapter -> stable approval-prefix observer; input/session lifecycle -> reset.
+This is a deliberate tool-call/failure boundary interception, not per-delta or
+progress work. The existing runner still creates hook contexts and async dispatch
+boundaries, so its cost is included rather than treated as free. The guard bodies
+introduce no per-event closures, arrays, wrapper objects, promises or copies;
+the blocked result is one frozen module object. Search/ranking remains cold,
+request-owned bounded metadata work with the existing active-tool policy.
+
+Eight focused integration/guidance checks and fourteen source invariants passed,
+including direct model discovery, active-CDP pause, extension-vs-user input,
+ordinary-error recovery, exact-name precedence and real tool descriptions reaching
+Codemode. Root and all three affected extension type checks passed. Existing test
+files were extended; no new test file or full local suite was added. No browser
+was launched by these metadata/fixture checks.
+
+The existing real SDK/controller/Worker benchmark now accepts `--browser-routing`
+to include the actual classification extension. Same-machine host allocation
+samples: 26,875,160 before and 28,452,840 after (about +5.9%). Warm-batch p95 samples
+were 18.02/20.26 ms; these short offline samples are not production latency or a
+speedup claim. Both runs retain the same deterministic counts: 242 child calls,
+zero progress events, 11/11 Worker start/stops, zero pending read evidence and
+0/55 tracked references after controlled GC. This new baseline is separate from
+the catalog and large-schema paging baselines above. Raw outputs:
+`.git/pr151-browser-routing-before.json` and `.git/pr151-browser-routing-after.json`.
+Final classification source SHA-256:
+`a6862d3836294a152f83d1b0de28373cbefdef99eec2eb4e18bcc3a970de93ae`.

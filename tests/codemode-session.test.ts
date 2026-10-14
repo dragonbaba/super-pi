@@ -564,7 +564,7 @@ test("exact tool-name search outranks matching words in another tool description
 	assert.deepEqual(f.session.getActiveToolNames().sort(), ["codemode", "file_batch", "tool_search"]);
 });
 
-test("browser search cannot activate a CDP fallback after permission failure; explicit selection still works", async t => {
+test("browser search separates browsing and DevTools while approval failures pause automatic switching", async t => {
 	let devtoolsCalls = 0;
 	const extension: InlineExtension = pi => {
 		pi.registerTool({ name: "browser_exec", label: "Browser Use", description: "browser web search",
@@ -587,10 +587,39 @@ test("browser search cannot activate a CDP fallback after permission failure; ex
 	assert.equal(outcome.results[2]?.isError, true);
 	assert.equal(devtoolsCalls, 0, "guessing a disabled name must not launch a second browser");
 	assert.equal(f.session.getActiveToolNames().includes("chrome_devtools_list_pages"), false);
-	// Same activation API used by the user's existing /chrome-devtools command.
+	// Even a previously activated CDP tool cannot bypass an unresolved approval in this run.
 	f.session.setActiveToolsByName(["tool_search", "chrome_devtools_list_pages"]);
-	await f.run(['await tools.tool_search({query:"web search"});text(await tools.chrome_devtools_list_pages({}));']);
-	assert.equal(devtoolsCalls, 1, "the explicit user selection remains available");
+	await (f.session as any)._extensionRunner.emitInput("continue automatically", undefined, "extension");
+	const blocked = await f.run(['await tools.chrome_devtools_list_pages({});']);
+	assert.equal(blocked.results.at(-1)?.isError, true);
+	assert.match(JSON.stringify(blocked.results.at(-1)?.content), /BROWSER_APPROVAL_PAUSED/);
+	assert.equal(devtoolsCalls, 0);
+	// A new user-directed run can select DevTools for its own task without a manual enable command.
+	f.session.setActiveToolsByName(["tool_search"]);
+	const directed = await f.run(['await tools.tool_search({query:"browser_debug"});text(await callTool("chrome_devtools_list_pages",{}));'], undefined, false, true);
+	assert.equal(directed.results.at(-1)?.isError, false, JSON.stringify(directed.results));
+	assert.equal(devtoolsCalls, 1);
+});
+
+test("DevTools is discoverable for local preview and exact names without enabling general browsing tools", async t => {
+	let browserCalls = 0, devtoolsCalls = 0;
+	const extension: InlineExtension = pi => {
+		pi.registerTool({ name: "browser_exec", label: "Browser", description: "browse web pages and screenshots",
+			parameters: Type.Object({}), execute: async () => { browserCalls++; throw new Error("[BROWSER_EXEC_FAILED] Python error quoting [BROWSER_EXEC_PERMISSION_REQUIRED]"); } });
+		pi.registerTool({ name: "chrome_devtools_list_pages", label: "Chrome pages", description: "list browser pages cdp",
+			parameters: Type.Object({}), execute: async () => { devtoolsCalls++; return { content: [], details: {} }; } });
+	};
+	const f = await fixture(t, {}, [toolClassification, extension]);
+	f.session.setActiveToolsByName(["tool_search", "browser_exec"]);
+	const failed = await f.run(['await tools.browser_exec({});']);
+	assert.equal(failed.results.at(-1)?.isError, true);
+	for (const query of ["browser_debug", "cdp", "local preview", "本地页面预览", "chrome_devtools_list_pages"]) {
+		f.session.setActiveToolsByName(["tool_search"]);
+		const outcome = await f.run([`text((await tools.tool_search({query:${JSON.stringify(query)}})).details);await callTool("chrome_devtools_list_pages",{});`]);
+		assert.equal(outcome.results.at(-1)?.isError, false, `${query}: ${JSON.stringify(outcome.results)}`);
+		assert.equal(f.session.getActiveToolNames().includes("browser_exec"), false, query);
+	}
+	assert.equal(devtoolsCalls, 5); assert.equal(browserCalls, 1, "an ordinary browser error does not pause DevTools");
 });
 
 test("successful state writes persist as a versioned branch entry; failed script writes do not", async t => {
@@ -841,6 +870,23 @@ test("Codemode exposes real browser instructions and constraints to the model wi
 	assert.doesNotMatch(text, /More tool documentation/);
 	assert.deepEqual((outcome.results[0]!.details as any).codemode.calls, []);
 	assert.match(outcome.wires[0]!.tools!.find(tool => tool.name === "codemode")!.description, /Drive a real browser/);
+});
+
+test("Codemode exposes the real DevTools task and browser-profile guidance after discovery", async t => {
+	const definitions = await jiti.import<Record<string, any>>("../packages/chrome-devtools/src/tools.ts");
+	const f = await fixture(t, {}, [toolClassification, pi => {
+		for (const key of ["listPagesTool", "selectPageTool", "navigateTool", "evaluateTool", "screenshotTool"]) pi.registerTool(definitions[key]);
+	}]);
+	f.session.setActiveToolsByName(["tool_search"]);
+	const outcome = await f.run(['text((await tools.tool_search({query:"browser_debug"})).details);',
+		'text(await describeTools(["chrome_devtools_navigate","chrome_devtools_evaluate"]));']);
+	assert.equal(outcome.results.at(-1)?.isError, false);
+	const text = JSON.stringify(outcome.results.at(-1)?.content);
+	assert.match(text, /local HTML\/localhost preview/);
+	assert.match(text, /no manual enable command is required/);
+	assert.match(text, /isolated browser profile/);
+	assert.match(text, /Do not switch here to bypass incomplete Browser Harness approval/);
+	assert.deepEqual((outcome.results.at(-1)?.details as any).codemode.calls, []);
 });
 
 test("Codemode documentation pages preserve long instructions and exact schemas without widening tool access", async t => {
