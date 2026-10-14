@@ -84,6 +84,7 @@ export default function toolClassificationExtension(pi: ExtensionAPI): void {
     async execute(_toolCallId, params) {
       const active = pi.getActiveTools();
       const activeSet = new Set(active);
+      const query = params.query.trim().toLowerCase();
       const category = requestedCategory(params.query);
       const terms = normalizedTerms(params.query);
       const limit = params.limit ?? 6;
@@ -101,7 +102,9 @@ export default function toolClassificationExtension(pi: ExtensionAPI): void {
 
         const toolCategory = categoryFor(tool.name);
         if (category !== undefined && category !== toolCategory) continue;
-        let score = category === toolCategory ? 100 : 0;
+        // A precise name must outrank incidental words in richer descriptions.
+        // The 200-character query cannot produce 1,000 keyword matches.
+        let score = tool.name.toLowerCase() === query ? 1_000 : category === toolCategory ? 100 : 0;
         if (category === undefined) {
           const haystack = `${tool.name} ${tool.description} ${toolCategory} ${CATEGORY_SEARCH_TEXT[toolCategory] ?? ""}`.toLowerCase();
           for (const term of terms) {

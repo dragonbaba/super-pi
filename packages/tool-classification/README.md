@@ -2,6 +2,10 @@
 
 Keeps Pi's initial model-visible tool surface small and deterministic, then activates conditional tools additively through `tool_search`.
 
+An exact tool name (case-insensitive, with surrounding whitespace ignored) ranks
+ahead of incidental description keywords. Normal activity and permission filters
+still apply, including the explicit-user-only Chrome DevTools boundary.
+
 ## Classes
 
 - Core: `read`, `bash`, `edit`, `write`, `structured_readonly_command`, `lsp_diagnostics`, `lsp_fix`, `lsp_navigate`, `tool_search`.

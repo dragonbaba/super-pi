@@ -547,6 +547,23 @@ test("real tool_search activates allowed tools inside Codemode without exposing 
 	assert.deepEqual(f.session.getActiveToolNames().sort(), ["catalog_lookup", "codemode", "tool_search"]);
 });
 
+test("exact tool-name search outranks matching words in another tool description", async t => {
+	let browserCalls = 0, batchCalls = 0;
+	const extension: InlineExtension = pi => {
+		pi.registerTool({ name: "browser_exec", label: "Browser", description: "file: navigation is unsupported; batch a browser procedure",
+			parameters: Type.Object({}), execute: async () => { browserCalls++; return { content: [], details: {} }; } });
+		pi.registerTool({ name: "file_batch", label: "File batch", description: "file batch fixture",
+			parameters: Type.Object({}), execute: async () => { batchCalls++; return { content: [], details: {} }; } });
+	};
+	const f = await fixture(t, {}, [toolClassification, extension]);
+	f.session.setActiveToolsByName(["tool_search"]);
+	const outcome = await f.run(['text((await tools.tool_search({query:"  FILE_BATCH  ",limit:1})).details);await callTool("file_batch",{});']);
+	assert.equal(outcome.results[0]?.isError, false, JSON.stringify(outcome.results));
+	assert.equal(batchCalls, 1);
+	assert.equal(browserCalls, 0);
+	assert.deepEqual(f.session.getActiveToolNames().sort(), ["codemode", "file_batch", "tool_search"]);
+});
+
 test("browser search cannot activate a CDP fallback after permission failure; explicit selection still works", async t => {
 	let devtoolsCalls = 0;
 	const extension: InlineExtension = pi => {

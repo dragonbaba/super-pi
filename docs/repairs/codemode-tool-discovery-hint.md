@@ -235,3 +235,24 @@ render/frame, or retained-reference work. Existing bounds and disposal remain
 intact. There is no new pool, timer, background process owner or cache to justify
 an unrelated benchmark. Linux/Windows integration remains subject to the normal
 PR CI; the recorded live Chrome approval check is not automatically repeated.
+
+### CI follow-up: exact-name discovery
+
+The first PR CI run exposed a gap in the selected local regressions: the existing
+N4 task matrix searched for `file_batch`, but the richer browser description now
+contained both words. Both tools scored two keyword matches and the name
+tie-break selected `browser_exec`. This reproduced on Linux and Windows; it was
+not a network failure despite the provider fixture's outer "Connection error".
+
+Exact tool-name matches now rank above description keywords after the existing
+activity/permission filters. Case and surrounding whitespace are normalized;
+Chrome DevTools remains excluded even for exact names. A new case in the
+existing Codemode session file failed before the fix and passed afterward.
+Three targeted discovery/permission cases passed, as did the previously failing
+N4 matrix with all 36 task scenarios. Its 36 recorded directories were removed,
+pending calls and final authorizations were zero, and extension type checking
+passed. No full local suite, extra test file, or real browser call was needed.
+
+The change adds only request-local normalization and a score at explicit search
+time. It adds no candidate collection, retained state, timer, listener or
+per-delta work; the catalog/Worker benchmark sources remain unchanged.
