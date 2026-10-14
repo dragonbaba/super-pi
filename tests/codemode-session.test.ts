@@ -788,14 +788,14 @@ test("Goal/interaction controls remain model-only and cannot be called through a
 	assert.doesNotMatch(JSON.stringify(outcome.results[0]?.content), /control was invoked indirectly/);
 });
 
-test("real MCP adapter discovery executes in Codemode and ignores self-reported read concurrency", async t => {
+test("real MCP adapter preserves long instructions and ignores self-reported read concurrency", async t => {
 	let runtime: any, active = 0, maximum = 0, calls = 0;
 	const extension: InlineExtension = pi => {
 		runtime = new McpBridgeRuntime(pi, "fixture");
 		const state = { status: "connected", catalogReady: true, config: { id: "fixture", toolTimeoutMs: 1000 }, tools: new Map([["lookup", {}]]), client: {
 			async callTool() { calls++; maximum = Math.max(maximum, ++active); await new Promise(resolve => setImmediate(resolve)); active--; return { content: [{ type: "text", text: "native MCP result" }] }; }, async close() {} } };
 		runtime.states.set("fixture", state);
-		runtime.registerRemoteTool(state, { name: "lookup", description: "lookup", annotations: { readOnlyHint: true }, inputSchema: { type: "object", properties: {} } });
+		runtime.registerRemoteTool(state, { name: "lookup", description: "lookup instructions ".repeat(250) + "FINAL_MCP_INSTRUCTION", annotations: { readOnlyHint: true }, inputSchema: { type: "object", properties: {} } });
 		pi.registerTool({ name: "mcp_search_tools", label: "search", description: "discovery fixture", parameters: Type.Object({}), execute: async () => {
 			pi.setActiveTools([...pi.getActiveTools(), ...runtime.searchTools("lookup")]); return { content: [], details: {} };
 		} });
@@ -804,10 +804,12 @@ test("real MCP adapter discovery executes in Codemode and ignores self-reported 
 	const f = await fixture(t, { toolResultPresentation: { enabled: true, budgetTokens: 8000 } }, [extension]);
 	t.after(() => runtime.close());
 	f.session.setActiveToolsByName(["mcp_search_tools"]);
-	const outcome = await f.run(['await tools.mcp_search_tools({}); const r=await Promise.all([callTool("mcp__fixture__lookup",{}),callTool("mcp__fixture__lookup",{})]);text(r[0].content);']);
+	const outcome = await f.run(['await tools.mcp_search_tools({}); const r=await Promise.all([callTool("mcp__fixture__lookup",{}),callTool("mcp__fixture__lookup",{})]);text(r[0].content);text(await describeTools(["mcp__fixture__lookup"]));']);
 	assert.equal(outcome.results[0]?.isError, false, JSON.stringify(outcome.results));
 	assert.equal(calls, 2); assert.equal(maximum, 1);
 	assert.match(JSON.stringify(outcome.results[0]?.content), /native MCP result/);
+	assert.match(JSON.stringify(outcome.results[0]?.content), /FINAL_MCP_INSTRUCTION/);
+	assert.ok(f.session.getAllTools().find(tool => tool.name === "mcp__fixture__lookup")!.description.length <= 1000);
 	assert.equal(runtime.activeCalls.size, 0);
 	const controller = (f.session as any)._codemode;
 	const description = controller.definition.description;

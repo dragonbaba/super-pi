@@ -53,6 +53,13 @@ same empty state. Invalid configuration, `--no-mcp`, cancelled requests, and a
 runtime that has not started or has stopped remain explicit failures. Discovery
 already in progress still waits instead of returning an empty result early.
 
+Tool descriptions keep their full sanitized instructions within the existing
+2 MiB complete-catalog and cache bounds. The host-only `fullDescription` follows
+the tool through registry wrappers into Codemode's paged `describeTools`; inline
+provider descriptions remain capped at 1,000 characters. Cache fingerprint
+domain separation invalidates earlier abbreviated entries so they are discovered
+again instead of pretending a truncated description is complete.
+
 A transient connection or discovery failure keeps the last fully registered
 catalog searchable and its activated tools available. `/mcp-status` retains the
 connection error; the next explicit tool call reconnects without requiring

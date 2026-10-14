@@ -298,3 +298,46 @@ Final constants SHA-256: `5b808e6770f39b7eda3ec3c04f20c06dbe82492bcccb37d35b51c5
 The declaration renderer fingerprint is unchanged. The new revision registry is
 accessed only by explicit documentation queries; catalog changes, deltas,
 progress, rendering and result projection gain no repeated allocation work.
+
+### Second Codex review: production discovery boundaries
+
+The second review found three additional production-path gaps. Unix uv tool
+entry points are symlinks, so discovery now resolves them first and validates
+the real executable regular target; Windows keeps its existing no-symlink rule.
+The returned command is the resolved path, so retargeting the entry-point link
+does not change an already admitted command. The Unix fixture also rejects
+dangling links, directories and non-executable targets; it is intentionally
+skipped on Windows and is exercised by Linux PR CI.
+
+MCP adapter and schema-cache normalization previously truncated descriptions
+before Codemode could paginate them. Full sanitized instructions now travel as
+host-only `fullDescription` through both ToolDefinition/AgentTool wrappers;
+model-facing descriptions and tool-search metadata stay summarized. The existing
+2 MiB complete-catalog and cache bounds are unchanged. A new cache fingerprint
+domain makes old abbreviated entries miss and rediscover. The real MCP adapter
+integration sees the final instruction after 5,000 characters while its ordinary
+description stays within 1,000; cache reopen retains the full description and
+rejects the old fingerprint. Metadata strings are referenced at catalog/query
+boundaries, not copied on provider deltas, execution progress or rendering.
+
+HTTP 404/501 now clears both persisted remote models and the active overlay,
+while preserving built-ins. Tests seed a stale remote-only model, verify its
+immediate removal for both statuses, and reopen offline without resurrecting it.
+Ordinary older HTTP 200/304 catalogs still retain missing models. This is a
+refresh-lifecycle update; cached `getModels` behavior is unchanged.
+
+Validation: seven model-catalog checks, four real-adapter/cache checks, two browser
+resolver/version checks (plus one Unix-only skip locally), seven MCP pagination/
+size-boundary checks, thirteen Codemode/global source invariants, and the MCP
+count/GC/source benchmark gates passed. Root/browser type checks and affected
+agent/coding-agent builds passed. No new test file or full local suite was added.
+
+The final catalog candidate sampled 17,813,192 host bytes (about 4.8% above the
+original 16,989,528 baseline). The variation from earlier candidate samples is
+not evidence of a speedup. Deterministic results remain unchanged: zero schema
+reads on MCP activation and unchanged scripts, reused descriptors/snapshots,
+wire sizes 765/52,279 bytes, paired worker start/stop, zero active executions or
+name-map retention after close, and 0/12 tracked references after controlled GC.
+Raw output: `.git/pr151-catalog-metadata-final.json`. Final controller SHA-256:
+`4ff6ca0c03590816d955fbef6a69a53eec3e6ec79f62f7d89bd207428d6e4e05`.
+Other previously listed declaration/constants fingerprints are unchanged.

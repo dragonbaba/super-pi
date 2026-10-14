@@ -38,7 +38,7 @@ Required runtime: standalone Browser Harness 0.1.13 or newer. Install the verifi
 uv tool install --force --python 3.12 browser-harness==0.1.13
 ```
 
-The resolver accepts only `browser-harness` (`browser-harness.exe` on Windows). It checks `SP_BROWSER_HARNESS_CLI`, the managed agent bin, uv's `%USERPROFILE%/.local/bin`, the AppData uv bin, then absolute PATH entries. An override must be an absolute path to an executable with that name. Relative PATH entries and symlinked executables are rejected. There is no `browser-use` executable fallback and `SP_BROWSER_USE_CLI` is no longer read. The obsolete Browser Use CLI environment flags are not forwarded; Browser Harness's own local/cloud settings remain supported.
+The resolver accepts only `browser-harness` (`browser-harness.exe` on Windows). It checks `SP_BROWSER_HARNESS_CLI`, the managed agent bin, uv's user `.local/bin`, the AppData uv bin, then absolute PATH entries. An override must be an absolute path to an executable with that name. Relative PATH entries are rejected. Unix symlink entry points, including uv's standard installation, resolve to an executable regular file before launch; dangling links, directories and non-executable targets are rejected. Windows symlink executables remain rejected. There is no `browser-use` executable fallback and `SP_BROWSER_USE_CLI` is no longer read. The obsolete Browser Use CLI environment flags are not forwarded; Browser Harness's own local/cloud settings remain supported.
 
 For an existing installation, release the old connection with `/browser-use release`, then remove the old tool with `uv tool uninstall browser-use`. Restart or `/reload` Super Pi afterward. Chrome remains open; the next new connection may request approval again.
 

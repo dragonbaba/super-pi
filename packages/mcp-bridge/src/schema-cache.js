@@ -3,12 +3,13 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { agentDir } from "./config.js";
 import { loadActivationKey } from "./activation-key.js";
-import { MAX_SCHEMA_BYTES, canonicalJsonShape, sanitizeText, validateJsonShape } from "./security.js";
+import { MAX_SCHEMA_BYTES, MAX_TOOL_CATALOG_BYTES, canonicalJsonShape, sanitizeText, validateJsonShape } from "./security.js";
 
 // v2 may contain a first-page-only catalog. Keep the safe path, invalidate its contents.
 const CACHE_VERSION = 3;
 const EMPTY_CACHE_PAYLOAD = `${JSON.stringify({ version: CACHE_VERSION, entries: [] })}\n`;
-const CACHE_FINGERPRINT_DOMAIN = "super-pi.mcp-schema-cache.v3\0";
+// Old keyed entries truncated tool instructions at 1,000 characters; rediscover them.
+const CACHE_FINGERPRINT_DOMAIN = "super-pi.mcp-schema-cache.v3.full-description\0";
 const MAX_CACHE_BYTES = 2 * 1024 * 1024;
 const MAX_CACHE_ENTRIES = 16;
 const MAX_CACHE_AGE_MS = 30 * 24 * 60 * 60 * 1000;
@@ -101,7 +102,7 @@ function normalizeCachedTool(tool) {
   if (!inputSchema || inputSchema.type !== "object" || Array.isArray(inputSchema)) return null;
   return {
     name: tool.name,
-    description: sanitizeText(tool.description ?? `MCP tool ${tool.name}`, 1000),
+    description: sanitizeText(tool.description ?? `MCP tool ${tool.name}`, MAX_TOOL_CATALOG_BYTES),
     inputSchema: canonicalJsonShape(inputSchema),
   };
 }

@@ -154,9 +154,14 @@ export function withRemoteCatalog(
 				await context.publish({
 					persist: {
 						...(stored ?? { models: [] }),
+						models: [],
 						checkedAt,
 						lastModified: 0,
 						etag: undefined,
+					},
+					update: () => {
+						dynamicModels = [];
+						mergedModels = undefined;
 					},
 				});
 				return;

@@ -161,7 +161,8 @@ export class CodemodeController {
 		for (const tool of tools) {
 			if (!nestedAllowed(tool)) continue;
 			const name = tool.name;
-			const summary = tool.description.length <= 1024 ? tool.description : tool.description.slice(0, 900) + "\n[Summary only; await describeTools([name]) for full instructions.]";
+			const fullDescription = tool.fullDescription ?? tool.description;
+			const summary = fullDescription.length <= 1024 ? fullDescription : fullDescription.slice(0, 900) + "\n[Summary only; await describeTools([name]) for full instructions.]";
 			descriptors.push({ name, description: summary, inputSchema: tool.parameters as never,
 				execute: args => this.invoke(name, args) });
 		}
@@ -402,7 +403,7 @@ export class CodemodeController {
 			if (version === undefined) this.documentationVersions.set(tool, version = ++this.nextDocumentationVersion);
 			currentRevision += version + ",";
 			const identifier = this.identifiers.get(tool.name);
-			parts.push(`\nTool: ${tool.name}\n`, tool.description, "\n");
+			parts.push(`\nTool: ${tool.name}\n`, tool.fullDescription ?? tool.description, "\n");
 			if (format === "json") {
 				let schema: string;
 				try { schema = this.serializer.stringify(tool.parameters, MAX_DESCRIBE_SCHEMA_CHARS) ?? "unknown"; }

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -101,6 +101,24 @@ test("browser runtime resolution requires harness and rejects legacy executables
  assert.equal(runtimeEnv.BROWSER_USE_HEADLESS, undefined);
  assert.equal(runtimeEnv.BROWSER_USE_CONFIG_PATH, undefined);
  assert.equal(runtimeEnv.BH_CHROME_PATH, "chosen-chrome");
+});
+
+test("browser resolver accepts uv Unix links only through executable regular targets", { skip: process.platform === "win32" }, async t => {
+ const root = mkdtempSync(join(tmpdir(), "pi-browser-uv-link-"));
+ t.after(() => rmSync(root, { recursive: true, force: true }));
+ const bin = join(root, ".local", "bin"), target = join(root, "runtime"), link = join(bin, "browser-harness");
+ mkdirSync(bin, { recursive: true }); writeFileSync(target, "fixture", { mode: 0o755 });
+ symlinkSync(target, link);
+ const env = { HOME: root, PATH: "" }, agentDir = join(root, "agent");
+ const found = await findBrowserUseExecutable(agentDir, env);
+ assert.equal(found?.command, realpathSync.native(target)); assert.equal(found?.source, "uv");
+ unlinkSync(link); symlinkSync(join(root, "missing"), link);
+ assert.equal(await findBrowserUseExecutable(agentDir, env), undefined);
+ assert.equal(found?.command, realpathSync.native(target), "a resolved command does not follow later link replacement");
+ unlinkSync(link); symlinkSync(bin, link);
+ assert.equal(await findBrowserUseExecutable(agentDir, env), undefined);
+ unlinkSync(link); chmodSync(target, 0o644); symlinkSync(target, link);
+ assert.equal(await findBrowserUseExecutable(agentDir, env), undefined);
 });
 
 test("browser version gate rejects old or unverifiable runtimes and reuses only the verified identity", async t => {

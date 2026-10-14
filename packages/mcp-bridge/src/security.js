@@ -16,6 +16,7 @@ export const MAX_CONFIG_BYTES = 256 * 1024;
 const requireHost = createRequire(import.meta.url);
 export const MAX_SERVERS = 16;
 export const MAX_SCHEMA_BYTES = 16 * 1024;
+export const MAX_TOOL_CATALOG_BYTES = 2 * 1024 * 1024;
 export const MAX_ACTIVATED_SCHEMA_BYTES = 48 * 1024;
 export const MAX_TEXT_BYTES = 50 * 1024;
 export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;

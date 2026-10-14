@@ -124,6 +124,36 @@ test("older HTTP catalogs preserve missing models through 200, 304 and offline r
 	}
 });
 
+test("removed catalog endpoints clear remote-only models immediately and on offline reopen", async () => {
+	for (const status of [404, 501]) {
+		const server = createServer((_request, response) => { response.writeHead(status).end(); });
+		const store = new InMemoryModelsStore(), credentials = new InMemoryCredentialStore();
+		await credentials.modify("fixture", async () => ({ type: "api_key", key: "fixture-only" }));
+		await store.write("fixture", { models: [model("remote-only")], lastModified: 1, etag: '"obsolete"', profileRevision: MODELS_STORE_PROFILE_REVISION });
+		const registry = createModels({ modelsStore: store, credentials });
+		await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+		try {
+			const address = server.address(); assert.ok(address && typeof address !== "string");
+			const endpoint = `http://127.0.0.1:${address.port}`;
+			const provider = withRemoteCatalog(fixtureProvider([model("built-in")]), endpoint, 2);
+			registry.setProvider(provider);
+			await registry.refresh({ allowNetwork: false });
+			assert.ok(registry.getModel("fixture", "remote-only"));
+			assert.equal((await registry.refresh({ allowNetwork: true, force: true })).errors.size, 0);
+			assert.equal(registry.getModel("fixture", "remote-only"), undefined);
+			assert.ok(registry.getModel("fixture", "built-in"));
+			assert.deepEqual((await store.read("fixture"))?.models, []);
+			assert.equal((await store.read("fixture"))?.etag, undefined);
+			registry.setProvider(withRemoteCatalog(fixtureProvider([model("built-in")]), endpoint, 2));
+			await registry.refresh({ allowNetwork: false });
+			assert.equal(registry.getModel("fixture", "remote-only"), undefined);
+		} finally {
+			registry.clearProviders(); server.closeAllConnections();
+			await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+		}
+	}
+});
+
 test("stale canonical aliases cannot replace a corrected built-in model", async () => {
 	const providerId = "cloudflare-ai-gateway";
 	const baseline = { ...model("claude-sonnet-4-5", "corrected"), provider: providerId, api: "anthropic-messages" as const };

@@ -174,7 +174,10 @@ async function regularExecutable(path: string): Promise<boolean> {
 
 async function firstExecutable(candidates: readonly string[], source: BrowserUseExecutable["source"]): Promise<BrowserUseExecutable | undefined> {
   for (const candidate of candidates) {
-    if (!isAbsolute(candidate) || !await regularExecutable(candidate)) continue;
+    if (!isAbsolute(candidate)) continue;
+    // uv installs Unix entry points as symlinks. Execute only the resolved,
+    // checked regular target, so later changes to the entry-point link are inert.
+    if (process.platform === "win32" && !await regularExecutable(candidate)) continue;
     try {
       const command = await realpath(candidate);
       if (await regularExecutable(command)) return { command, source };

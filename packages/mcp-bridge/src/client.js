@@ -4,10 +4,10 @@ import {
   CursorSchema, EmbeddedResourceSchema, ImageContentSchema, ListToolsResultSchema, ResourceLinkSchema,
   TextContentSchema, TextResourceContentsSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { MAX_CONTENT_ITEMS, canonicalJsonShape, validateJsonShape } from "./security.js";
+import { MAX_CONTENT_ITEMS, MAX_TOOL_CATALOG_BYTES, canonicalJsonShape, validateJsonShape } from "./security.js";
 
 export const MAX_TOOL_LIST_PAGES = 128;
-export const MAX_TOOL_CATALOG_BYTES = 2 * 1024 * 1024;
+export { MAX_TOOL_CATALOG_BYTES } from "./security.js";
 const ToolPageSchema = ListToolsResultSchema.extend({
   nextCursor: CursorSchema.max(4096).nullish(),
   tools: ListToolsResultSchema.shape.tools.max(128),

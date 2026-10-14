@@ -12,6 +12,7 @@ export function wrapToolDefinition<TDetails = unknown>(
 		name: definition.name,
 		label: definition.label,
 		description: definition.description,
+		fullDescription: definition.fullDescription,
 		parameters: definition.parameters,
 		constrainedSampling: definition.constrainedSampling,
 		prepareArguments: definition.prepareArguments && ctxFactory
@@ -50,6 +51,7 @@ export function createToolDefinitionFromAgentTool(tool: AgentTool<any>): ToolDef
 		name: tool.name,
 		label: tool.label,
 		description: tool.description,
+		fullDescription: tool.fullDescription,
 		parameters: tool.parameters as any,
 		constrainedSampling: tool.constrainedSampling,
 		prepareArguments: tool.prepareArguments,

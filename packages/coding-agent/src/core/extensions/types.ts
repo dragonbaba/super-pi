@@ -485,6 +485,8 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 	label: string;
 	/** Description for LLM */
 	description: string;
+	/** Host-only bounded instructions for on-demand documentation, when description is summarized. */
+	fullDescription?: string;
 	/** Optional one-line snippet for the Available tools section in the default system prompt. Custom tools are omitted from that section when this is not provided. */
 	promptSnippet?: string;
 	/** Optional guideline bullets appended to the default system prompt Guidelines section when this tool is active. */
