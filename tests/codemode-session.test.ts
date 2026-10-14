@@ -924,6 +924,67 @@ text(JSON.parse(fresh.split("Input JSON Schema:\\n")[1].split("\\nResult: ToolRe
 	assert.match(text, /live/); assert.doesNotMatch(text, /cached/);
 });
 
+test("Codemode JSON pagination serializes each selected schema once and releases its snapshot", async t => {
+	let schemaReads = 0;
+	const names: string[] = [];
+	const extension: InlineExtension = pi => {
+		for (let i = 0; i < 16; i++) {
+			const name = `mcp__paged__tool_${i}`;
+			names.push(name);
+			const properties = { value: { type: "string", description: "x".repeat(60_000) } };
+			pi.registerTool({ name, label: name, description: "large schema fixture",
+				parameters: { type: "object", get properties() { schemaReads++; return properties; } } as any,
+				execute: async () => { throw new Error("Metadata lookup must not execute a tool"); } });
+		}
+	};
+	const f = await fixture(t, {}, [extension]);
+	const owner = (f.session as any)._codemode;
+	schemaReads = 0;
+	const first = await f.run([`const p=await describeTools(${JSON.stringify(names)},{format:"json"});store("revision",/; revision:([^\\]]+)\\]/.exec(p)[1]);`]);
+	assert.equal(first.results[0]!.isError, false);
+	assert.equal(schemaReads, 16);
+	const rest = await f.run([`
+let offset=8000, pages=1;
+while(true) {
+  const page=await describeTools(${JSON.stringify(names)},{format:"json",offset,revision:load("revision")});
+  const h=/chars (\\d+)\\.\\.(\\d+) of (\\d+);/.exec(page);
+  if(Number(h[1])!==offset || Number(h[2])<=offset) throw new Error("bad continuation");
+  pages++;
+  if(h[2]===h[3]) break;
+  offset=Number(h[2]);
+}
+text("pages:"+pages);
+`]);
+	assert.equal(rest.results[0]!.isError, false, JSON.stringify(rest.results));
+	assert.equal(schemaReads, 16, "continuations must not reserialize preceding or following schemas");
+	assert.equal(owner.documentationSnapshot, undefined, "the final page releases serialized schemas");
+	await f.run([`await describeTools(${JSON.stringify(names)},{format:"json",limit:256});`]);
+	assert.ok(owner.documentationSnapshot);
+	f.session.setActiveToolsByName([names[0]!]);
+	assert.equal(owner.documentationSnapshot, undefined, "catalog changes release the snapshot");
+	await f.run([`await describeTools([${JSON.stringify(names[0])}],{format:"json",limit:256});`]);
+	assert.ok(owner.documentationSnapshot);
+	await f.run(['throw new Error("stop fixture")']);
+	assert.equal(owner.documentationSnapshot, undefined, "failed scripts release the snapshot");
+	await f.run([`await describeTools([${JSON.stringify(names[0])}],{format:"json",limit:256});`]);
+	assert.ok(owner.documentationSnapshot);
+	await owner.close();
+	assert.equal(owner.documentationSnapshot, undefined, "close releases the snapshot");
+});
+
+test("Codemode inline and catalog summaries preserve Unicode at both cutoffs", async () => {
+	const owner = new CodemodeController(() => {});
+	const description = "a".repeat(255) + "🚀" + "b".repeat(642) + "𠮷" + "c".repeat(200);
+	try {
+		owner.setTools([{ name: "unicode_fixture", label: "Unicode", description, parameters: Type.Object({}), execute: async () => ({ content: [], details: {} }) }]);
+		assert.equal(Buffer.from(owner.definition.description).toString("utf8"), owner.definition.description, "inline purpose must survive UTF-8 at 256");
+		const summary = (owner as any).descriptors[0].description;
+		assert.equal(Buffer.from(summary).toString("utf8"), summary, "catalog summary must survive UTF-8 at 900");
+		assert.match(summary, /Summary only/);
+		assert.equal(summary.slice(0, summary.indexOf("\n")).length, 899);
+	} finally { await owner.close(); }
+});
+
 test("Codemode documentation rejects continuation after identifier collisions change aliases", async t => {
 	const extension: InlineExtension = pi => {
 		for (const name of ["foo-bar", "foo_bar"]) pi.registerTool({ name, label: name, description: "detail ".repeat(250),
@@ -974,6 +1035,7 @@ test("controller releases catalog metadata even when sandbox shutdown rejects", 
 	const owner = new CodemodeController(() => {});
 	owner.setTools([{ name: "catalog_cleanup", label: "cleanup", description: "cleanup", parameters: Type.Object({}), execute: async () => ({ content: [], details: {} }) }]);
 	const failure = new Error("fixture shutdown failure");
+	(owner as any).documentationSnapshot = { revision: "fixture", schemas: ["retained schema"] };
 	(owner as any).sandbox = { close: async () => { throw failure; } };
 	await assert.rejects(owner.close(), error => error === failure);
 	assert.equal((owner as any).sandbox, undefined);
@@ -981,6 +1043,7 @@ test("controller releases catalog metadata even when sandbox shutdown rejects", 
 	assert.equal((owner as any).descriptors.length, 0);
 	assert.equal((owner as any).identifiers.size, 0);
 	assert.equal((owner as any).identifierNames.size, 0);
+	assert.equal((owner as any).documentationSnapshot, undefined);
 	assert.doesNotMatch(owner.definition.description, /catalog_cleanup/);
 	await owner.close();
 });
@@ -1082,16 +1145,19 @@ for (const tampered of [false, true]) test(`an admitted Codemode read ${tampered
 });
 
 test("a nested tool that ignores cancellation cannot wedge Codemode past its deadline", async t => {
-	const hang: InlineExtension = pi => pi.registerTool({ name: "hang", label: "hang", description: "ignores abort", parameters: Type.Object({}),
-		execute: () => new Promise<never>(() => {}) });
+	let owner: any;
+	const hang: InlineExtension = pi => pi.registerTool({ name: "hang", label: "hang", description: "ignores abort ".repeat(100), parameters: Type.Object({}),
+		execute: () => { assert.ok(owner.documentationSnapshot); return new Promise<never>(() => {}); } });
 	const f = await fixture(t, {}, [hang]);
+	owner = (f.session as any)._codemode;
 	const started = Date.now();
-	const outcome = await f.run(['// @options: {"timeout_ms":200}\nawait tools.hang({})']);
+	const outcome = await f.run(['// @options: {"timeout_ms":200}\nawait describeTools(["hang"],{limit:256});await tools.hang({})']);
 	assert.ok(Date.now() - started < 15_000, "bounded by the timeout plus the cancellation grace period");
 	const parent = outcome.results[0]!;
 	assert.equal(parent.isError, true);
 	assert.match(JSON.stringify(parent.content), /CODEMODE_TIMEOUT/);
 	assert.match(JSON.stringify(parent.content), /NESTED_TOOL_ABANDONED\] 1 child call/);
+	assert.equal(owner.documentationSnapshot, undefined, "deadline cancellation releases pending documentation");
 });
 
 test("Codemode image files remain addressable after a completed script and session reopen", async t => {

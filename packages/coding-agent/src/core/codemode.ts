@@ -55,6 +55,7 @@ const TOOL_SIGNATURE_OPTIONS = Object.freeze({ inputMaxChars: 2048, outputType: 
 const TOOL_RESULT_DECLARATION = 'type ToolResult = { content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>; details?: unknown; isError?: boolean; ref: string };\n';
 const MAX_DESCRIBE_PAGE_CHARS = 16_000;
 const MAX_DESCRIBE_SCHEMA_CHARS = 64 * 1024;
+const MAX_DESCRIBE_TOOLS = 16;
 const DEFERRED_DECLARATIONS = "\nMCP declarations are deferred. Filter ALL_TOOLS and use await describeTools([names]) for their current schemas.\n";
 
 function nestedAllowed(tool: AgentTool<any>): boolean {
@@ -69,6 +70,9 @@ function descriptorName(tool: CodemodeTool): string { return tool.name; }
 function splitsSurrogatePair(text: string, offset: number): boolean {
 	const before = text.charCodeAt(offset - 1), after = text.charCodeAt(offset);
 	return before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff;
+}
+function unicodePrefix(text: string, limit: number): string {
+	return text.slice(0, splitsSurrogatePair(text, limit) ? limit - 1 : limit);
 }
 /** Script copy of a result with large images: their data stays host-side and is attached whole by show(ref). */
 function scriptContent(content: readonly (TextContent | ImageContent)[]): (TextContent | ImageContent)[] {
@@ -124,6 +128,8 @@ export class CodemodeController {
 	private nextDocumentationVersion = 0;
 	private documentationRevisionPrefix: string | undefined;
 	private documentationCatalogRevision = 0;
+	/** One selection only: at most 16 x 65536 UTF-16 units; no description or tool references. */
+	private documentationSnapshot: { revision: string; schemas: string[] } | undefined;
 	private sandbox: CodemodeSandbox | undefined;
 	private current: Invocation | undefined;
 	private readonly store = new CodemodeStore();
@@ -161,6 +167,7 @@ export class CodemodeController {
 		if (this.closed || this.tools === tools) return;
 		this.tools = tools;
 		this.documentationCatalogRevision++;
+		this.documentationSnapshot = undefined;
 		const descriptors: CodemodeTool[] = [];
 		let description = CODEMODE_DESCRIPTION + DEFERRED_DECLARATIONS + "\nCurrent local tool declarations:\n" + TOOL_RESULT_DECLARATION;
 		let omitted = 0;
@@ -168,7 +175,7 @@ export class CodemodeController {
 			if (!nestedAllowed(tool)) continue;
 			const name = tool.name;
 			const fullDescription = tool.fullDescription ?? tool.description;
-			const summary = fullDescription.length <= 1024 ? fullDescription : fullDescription.slice(0, 900) + "\n[Summary only; await describeTools([name]) for full instructions.]";
+			const summary = fullDescription.length <= 1024 ? fullDescription : unicodePrefix(fullDescription, 900) + "\n[Summary only; await describeTools([name]) for full instructions.]";
 			descriptors.push({ name, description: summary, inputSchema: tool.parameters as never,
 				execute: args => this.invoke(name, args) });
 		}
@@ -176,7 +183,7 @@ export class CodemodeController {
 		for (const descriptor of descriptors) {
 			if (descriptor.name.startsWith("mcp__")) continue;
 			if (description.length >= MAX_CODEMODE_DESCRIPTION_CHARS - 256) { omitted++; continue; }
-			const purpose = (descriptor.description ?? "").slice(0, 256).replace(/[\r\n\u2028\u2029]/g, " ");
+			const purpose = unicodePrefix(descriptor.description ?? "", 256).replace(/[\r\n\u2028\u2029]/g, " ");
 			const signature = `// ${purpose}\n` + renderToolSignature(descriptor, { ...TOOL_SIGNATURE_OPTIONS, identifier: identifiers.get(descriptor.name) });
 			if (description.length + signature.length + 1 < MAX_CODEMODE_DESCRIPTION_CHARS - 256) description += signature + "\n";
 			else omitted++;
@@ -386,16 +393,15 @@ export class CodemodeController {
 	}
 	private describe(names: unknown, options?: unknown): string {
 		const invocation = this.requireInvocation();
-		if (!Array.isArray(names) || names.length > 16) throw new Error("describeTools expects up to 16 names");
+		if (!Array.isArray(names) || names.length > MAX_DESCRIBE_TOOLS) throw new Error("describeTools expects up to 16 names");
 		if (options !== undefined && (options === null || typeof options !== "object" || Array.isArray(options))) throw new Error("describeTools options must be an object");
 		const { offset = 0, limit = 8000, format = "typescript", revision } = (options ?? {}) as { offset?: number; limit?: number; format?: string; revision?: string };
 		if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 256 || limit > MAX_DESCRIBE_PAGE_CHARS || (format !== "typescript" && format !== "json") || (revision !== undefined && (typeof revision !== "string" || revision.length > 512))) {
 			throw new Error("describeTools expects offset >= 0, limit 256..16000, and format 'typescript' or 'json'");
 		}
 		if (offset > 0 && revision === undefined) throw new Error("describeTools continuation requires the revision returned by page one; restart at offset:0.");
-		// Query-owned segments reference full descriptions without copying them. Only the requested
-		// page is materialized; no documentation cache or work in child/progress delivery is added.
-		const parts: string[] = [TOOL_RESULT_DECLARATION];
+		// Revalidate the live selection before reusing serialized schema text. Full descriptions
+		// remain query-owned references; no work is added to child/progress delivery.
 		const described: AgentTool<any>[] = [];
 		let currentRevision = (this.documentationRevisionPrefix ??= randomUUID()) + ":" + this.documentationCatalogRevision + ":" + format + ":";
 		for (const requested of names) {
@@ -408,20 +414,36 @@ export class CodemodeController {
 			let version = this.documentationVersions.get(tool);
 			if (version === undefined) this.documentationVersions.set(tool, version = ++this.nextDocumentationVersion);
 			currentRevision += version + ",";
-			const identifier = this.identifiers.get(tool.name);
-			parts.push(`\nTool: ${tool.name}\n`, tool.fullDescription ?? tool.description, "\n");
-			if (format === "json") {
-				let schema: string;
-				try { schema = this.serializer.stringify(tool.parameters, MAX_DESCRIBE_SCHEMA_CHARS) ?? "unknown"; }
-				catch { schema = "[Schema exceeds the 65536-character structural safety limit or is not serializable; do not guess arguments.]"; }
-				parts.push("Input JSON Schema:\n", schema, "\nResult: ToolResult\n");
-			} else {
-				const signature = renderToolSignature({ name: tool.name, inputSchema: tool.parameters as never }, { inputMaxChars: 16_000, identifier, outputType: "ToolResult" });
-				parts.push(signature, "\n");
-			}
 		}
-		if (revision !== undefined && revision !== currentRevision) throw new Error("[TOOL_DOCUMENTATION_CHANGED] Tool definitions or selection changed. Discard earlier pages and restart describeTools at offset:0 without a revision.");
-		if (described.length === 0) return "";
+		if (revision !== undefined && revision !== currentRevision) {
+			this.documentationSnapshot = undefined;
+			throw new Error("[TOOL_DOCUMENTATION_CHANGED] Tool definitions or selection changed. Discard earlier pages and restart describeTools at offset:0 without a revision.");
+		}
+		if (described.length === 0) { this.documentationSnapshot = undefined; return ""; }
+		let snapshot = this.documentationSnapshot;
+		if (snapshot?.revision !== currentRevision) {
+			this.documentationSnapshot = undefined;
+			const schemas: string[] = [];
+			for (const tool of described) {
+				let schema: string;
+				if (format === "json") {
+					try { schema = this.serializer.stringify(tool.parameters, MAX_DESCRIBE_SCHEMA_CHARS) ?? "unknown"; }
+					catch { schema = "[Schema exceeds the 65536-character structural safety limit or is not serializable; do not guess arguments.]"; }
+				} else {
+					schema = renderToolSignature({ name: tool.name, inputSchema: tool.parameters as never }, { inputMaxChars: 16_000, identifier: this.identifiers.get(tool.name), outputType: "ToolResult" });
+					if (schema.length > MAX_DESCRIBE_SCHEMA_CHARS) schema = "[Signature exceeds the structural safety limit; use format:'json' for input constraints.]";
+				}
+				schemas.push(schema);
+			}
+			snapshot = this.documentationSnapshot = { revision: currentRevision, schemas };
+		}
+		const parts: string[] = [TOOL_RESULT_DECLARATION];
+		for (let index = 0; index < described.length; index++) {
+			const tool = described[index]!;
+			parts.push(`\nTool: ${tool.name}\n`, tool.fullDescription ?? tool.description, "\n");
+			if (format === "json") parts.push("Input JSON Schema:\n", snapshot.schemas[index]!, "\nResult: ToolResult\n");
+			else parts.push(snapshot.schemas[index]!, "\n");
+		}
 		parts.push("\nTypeScript is a summary; use format:'json' for exact input constraints, long defaults/patterns, or unknown types. Child failures return isError or throw; the parent remains failed even if caught.\n");
 		let position = 0, pageOffset = offset, text = "", pageComplete = false;
 		for (const part of parts) {
@@ -438,6 +460,7 @@ export class CodemodeController {
 			position += part.length;
 		}
 		const end = Math.min(position, pageOffset + text.length);
+		if (end === position) this.documentationSnapshot = undefined;
 		const continuation = end < position ? `\n[More tool documentation: describeTools with the same names/format, offset:${end}, limit:${limit}, revision:"${currentRevision}".]` : "";
 		return `[Tool documentation chars ${Math.min(pageOffset, position)}..${end} of ${position}; format:${format}; revision:${currentRevision}]\n${text}${continuation}`;
 	}
@@ -481,6 +504,7 @@ export class CodemodeController {
 			invocation.facts.sort(compareChildSequence);
 			let failed = invocation.failed || !result.ok || childFailed;
 			for (const call of result.calls) if (call.status !== "ok") failed = true;
+			if (failed) this.documentationSnapshot = undefined;
 			const content: (TextContent | ImageContent)[] = result.output;
 			if (result.ok && result.value !== undefined) content.push({ type: "text", text: typeof result.value === "string" ? result.value : JSON.stringify(result.value) });
 			if (!result.ok) content.push({ type: "text", text: `[CODEMODE_${result.error.kind.toUpperCase()}] ${result.error.message}` });
@@ -519,12 +543,14 @@ export class CodemodeController {
 			}
 			return { content: projected, isError: failed, details: { codemode: { version: 1, scriptOk: result.ok, summaryDigest: codemodeTextDigest(displayedSummary), calls: invocation.facts, runtimeCalls: result.calls, imageFiles } } };
 		} catch (error) {
+			this.documentationSnapshot = undefined;
 			await context.finish();
 			if (invocation.pending) await new Promise<void>(resolve => { invocation.resolveIdle = resolve; });
 			invocation.facts.sort(compareChildSequence);
 			return { content: [{ type: "text" as const, text: `[CODEMODE_FAILED] ${message(error)}. Completed tool side effects are not rolled back.` }],
 				isError: true, details: { codemode: { version: 1, scriptOk: false, calls: invocation.facts } } };
 		} finally {
+			if (signal?.aborted) this.documentationSnapshot = undefined;
 			invocation.records.clear();
 			invocation.shown.length = 0;
 			this.current = undefined;
@@ -534,6 +560,7 @@ export class CodemodeController {
 		this.closed = true;
 		this.pendingStore = undefined;
 		this.restoreError = undefined;
+		this.documentationSnapshot = undefined;
 		try {
 			await this.sandbox?.close();
 		} finally {

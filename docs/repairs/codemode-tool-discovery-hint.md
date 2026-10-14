@@ -393,3 +393,46 @@ post-close execution/mapping retention and 0/12 tracked references after GC are
 unchanged. Raw output: `.git/pr151-catalog-unicode-final.json`.
 Final controller SHA-256:
 `ef5d33005eeff84ce973546b532b025e3bdbec814ce6257778fd4da4a35b32e0`.
+
+### Fifth Codex review: summary Unicode and linear schema paging
+
+The 256-unit inline purpose and 900-unit catalog summary now share the same
+surrogate-safe prefix operation. A regression places non-BMP characters across
+both cutoffs and verifies that a real UTF-8 round trip preserves each result.
+
+The real SDK/Worker benchmark reproduced repeated serialization: 16 schemas with
+60,000-character fields required 121 pages and 1,936 schema property reads.
+`describeTools` now validates the live selection and revision before using one
+controller-owned snapshot of serialized schemas/signatures. Its hard capacity is
+16 strings of at most 65,536 UTF-16 units each (at most 2 MiB of UTF-16 payload),
+without description or tool-object references. It replaces the previous snapshot
+on a new selection, and releases it after the final page, catalog changes, runtime
+failure/cancellation or close, including failed sandbox close. This is not an
+object pool. Description segments remain request-owned references, and only the
+requested output page is materialized. Production call-chain review covers
+Worker describe bridge -> current permission lookup/revision -> bounded schema
+snapshot -> page slicing -> output, plus catalog update and execute/close cleanup.
+
+Both findings were reproduced before fixing. Eight distinct pagination, summary,
+revision and lifecycle regressions passed, including continuation across scripts,
+final-page release, changed catalog, runtime failure, deadline cancellation and
+failed close. Thirteen source invariants, root type checking and coding-agent
+build passed. Existing test and benchmark files were extended; no full local
+suite or new test file was introduced.
+
+The same documentation benchmark now makes exactly 16 schema reads across the
+same 121 pages/962,942 document units. Host allocation samples fell from
+124,283,824 bytes to 8,621,192 bytes (about 93% in this specific fixture).
+Snapshots retained after close: zero; workers started/stopped: 1/1; active
+executions and name maps after close: zero; controlled GC retained 0/6 tracked
+references. The benchmark now asserts the linear schema-read count. Raw samples:
+`.git/pr151-documentation-before.json` and `.git/pr151-documentation-gated.json`.
+
+The unchanged 8/512-tool catalog benchmark samples 18,163,856 host bytes versus
+the original 16,989,528 (about +6.9%, with sample variation); its deterministic
+reuse, zero unchanged schema reads, 765/52,279 wire bytes, paired workers and
+0/12 retained references remain unchanged. Raw output:
+`.git/pr151-catalog-snapshot-final.json`. These are host allocation samples, not
+provider timings, Worker heap measurements or production p95 conclusions.
+Final controller SHA-256:
+`9350fd4d380badd9096d51385e6dbb826609fcc31ffdaa3324a02d95dd236ec3`.
