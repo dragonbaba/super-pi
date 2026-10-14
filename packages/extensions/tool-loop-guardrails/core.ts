@@ -513,6 +513,9 @@ export async function failureRecoveryHint(
     }
   }
   if (category !== "path_not_found" || !input || typeof input !== "object") return undefined;
+  // Nested calls have already received their own recovery handling. The parent
+  // contains script source, not a filesystem target; do not invent a second path advisory.
+  if (toolName === "codemode") return undefined;
   const nearby = await nearestFailurePath(input as Record<PropertyKey, unknown>, cwd);
   return nearby
     ? `[Path recovery] The requested path does not exist. Nearest existing candidate: ${nearby}`

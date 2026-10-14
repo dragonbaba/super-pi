@@ -15,7 +15,7 @@ import { saveCodemodeImages } from "./codemode-images.ts";
 import { boundCodemodeResult, capCodemodeOutput, codemodeContentChars, codemodeImageChars } from "./codemode-result.ts";
 import { MUTATION_READ_SOURCE } from "./tools/read-window.ts";
 import { readShellExecution } from "./tools/shell-execution.ts";
-import { codemodeInputSummary, codemodeOutputDigests, codemodeTextDigest, CODEMODE_DISPLAY_PREVIEW_CHARS, type CodemodeChildDisplay } from "./codemode-display.ts";
+import { codemodeFailureReason, codemodeInputSummary, codemodeOutputDigests, codemodeTextDigest, CODEMODE_DISPLAY_PREVIEW_CHARS, type CodemodeChildDisplay } from "./codemode-display.ts";
 
 /** `chars` is retention (content, details, input); `contentChars` is what show() appends. */
 interface ChildRecord { result: ToolResultMessage; input: Record<string, unknown>; chars: number; contentChars: number; imageChars: number; }
@@ -56,6 +56,7 @@ const TOOL_RESULT_DECLARATION = 'type ToolResult = { content: Array<{ type: "tex
 const MAX_DESCRIBE_PAGE_CHARS = 16_000;
 const MAX_DESCRIBE_SCHEMA_CHARS = 64 * 1024;
 const MAX_DESCRIBE_TOOLS = 16;
+const UNAVAILABLE_DOCUMENTATION = "[TOOL_UNAVAILABLE] One or more requested tools are not active in this script. If tools.tool_search is available, search the exact name, then read describeTools again. Newly activated tools use callTool(name,args) in the same script. Excluded tools stay unavailable.";
 const DEFERRED_DECLARATIONS = "\nMCP declarations are deferred. Filter ALL_TOOLS and use await describeTools([names]) for their current schemas.\n";
 
 function nestedAllowed(tool: AgentTool<any>): boolean {
@@ -365,7 +366,27 @@ export class CodemodeController {
 		invocation.records.set(ref, { result, input, chars, contentChars, imageChars });
 		invocation.retainedChars += chars;
 		invocation.retainedImageChars += imageChars;
-		if (result.isError) throw new Error(`[${ref}] ${preview(result)}`);
+		if (result.isError) {
+			// Failure throws before the script can show(ref). Preserve partial browser
+			// receipts in the bounded parent output, without duplicating its traceback.
+			if (name === "browser_exec") for (let index = 1; index < result.content.length; index++) {
+				const block = result.content[index]!;
+				if (invocation.shown.length >= 256) break;
+				if (block.type === "text") {
+					const remaining = MAX_SHOWN_CHARS - invocation.shownChars;
+					if (remaining <= 0) break;
+					const notice = "\n… partial browser output truncated by the parent display budget";
+					const text = block.text.length > remaining
+						? unicodePrefix(block.text, Math.max(0, remaining - notice.length)) + notice.slice(0, remaining) : block.text;
+					invocation.shown.push(text === block.text ? block : { type: "text", text });
+					invocation.shownChars += text.length;
+				} else if (invocation.shownImageChars + block.data.length <= MAX_SHOWN_IMAGE_CHARS) {
+					invocation.shown.push(block);
+					invocation.shownImageChars += block.data.length;
+				}
+			}
+			throw new Error(`[${ref}] ${preview(result)}`);
+		}
 		const content = imageChars > MAX_SCRIPT_IMAGE_CHARS ? scriptContent(result.content) : result.content;
 		return { content, details: result.details, isError: false, ref };
 	}
@@ -403,23 +424,26 @@ export class CodemodeController {
 		// Revalidate the live selection before reusing serialized schema text. Full descriptions
 		// remain query-owned references; no work is added to child/progress delivery.
 		const described: AgentTool<any>[] = [];
+		let unavailable = false;
 		let currentRevision = (this.documentationRevisionPrefix ??= randomUUID()) + ":" + this.documentationCatalogRevision + ":" + format + ":";
 		for (const requested of names) {
 			if (typeof requested !== "string") continue;
 			// ALL_TOOLS lists script identifiers; accept them as well as registered names.
 			const alias = this.identifierNames.get(requested);
 			const tool = invocation.context.findTool(requested) ?? (alias === undefined ? undefined : invocation.context.findTool(alias));
-			if (!tool || !nestedAllowed(tool) || described.includes(tool)) continue;
+			if (!tool || !nestedAllowed(tool)) { unavailable = true; continue; }
+			if (described.includes(tool)) continue;
 			described.push(tool);
 			let version = this.documentationVersions.get(tool);
 			if (version === undefined) this.documentationVersions.set(tool, version = ++this.nextDocumentationVersion);
 			currentRevision += version + ",";
 		}
+		currentRevision += unavailable ? "unavailable" : "";
 		if (revision !== undefined && revision !== currentRevision) {
 			this.documentationSnapshot = undefined;
 			throw new Error("[TOOL_DOCUMENTATION_CHANGED] Tool definitions or selection changed. Discard earlier pages and restart describeTools at offset:0 without a revision.");
 		}
-		if (described.length === 0) { this.documentationSnapshot = undefined; return ""; }
+		if (described.length === 0) { this.documentationSnapshot = undefined; return unavailable ? UNAVAILABLE_DOCUMENTATION : ""; }
 		let snapshot = this.documentationSnapshot;
 		if (snapshot?.revision !== currentRevision) {
 			this.documentationSnapshot = undefined;
@@ -438,6 +462,7 @@ export class CodemodeController {
 			snapshot = this.documentationSnapshot = { revision: currentRevision, schemas };
 		}
 		const parts: string[] = [TOOL_RESULT_DECLARATION];
+		if (unavailable) parts.push(UNAVAILABLE_DOCUMENTATION, "\n");
 		for (let index = 0; index < described.length; index++) {
 			const tool = described[index]!;
 			parts.push(`\nTool: ${tool.name}\n`, tool.fullDescription ?? tool.description, "\n");
@@ -519,7 +544,7 @@ export class CodemodeController {
 			// and out of the trailing native-read group.
 			if (imageFiles) summary += "\n" + imageFiles.notice;
 			const imagePrefix = imageFiles ? summary.length : 0;
-			for (const fact of invocation.facts) summary += `\n${fact.toolName.slice(0, 80)}: ${fact.executionStatus ?? (fact.isError ? "failed" : "completed")}${fact.executionStatus && (fact.toolName === "bash" || fact.toolName === "powershell") ? "; exit=" + (fact.exitCode ?? "unknown") : ""}${fact.isError ? " — " + fact.preview.slice(0, 512) : ""}${fact.outputPath ? " Output: " + fact.outputPath : ""}`;
+			for (const fact of invocation.facts) summary += `\n${fact.toolName.slice(0, 80)}: ${fact.executionStatus ?? (fact.isError ? "failed" : "completed")}${fact.executionStatus && (fact.toolName === "bash" || fact.toolName === "powershell") ? "; exit=" + (fact.exitCode ?? "unknown") : ""}${fact.isError ? " — " + codemodeFailureReason(fact.preview, "model") : ""}${fact.outputPath ? " Output: " + fact.outputPath : ""}`;
 			if (failed) summary += "\nCompleted tool side effects are not rolled back. Do not automatically retry mutations.";
 			const summaryBlock: TextContent & { projectionPrefix?: number } = { type: "text", text: summary };
 			content.unshift(summaryBlock);

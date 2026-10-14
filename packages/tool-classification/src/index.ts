@@ -67,6 +67,8 @@ class BrowserRoutingGuard {
     for (const block of content) {
       if (block.type !== "text" || typeof block.text !== "string") continue;
       if (block.text.startsWith("[BROWSER_EXEC_PERMISSION_REQUIRED]")
+        || block.text.startsWith("[BROWSER_EXEC_ABORTED] [BROWSER_APPROVAL_PENDING]")
+        || block.text.startsWith("[BROWSER_EXEC_TIMEOUT] [BROWSER_APPROVAL_PENDING]")
         || block.text.startsWith("[BROWSER_EXEC_TIMEOUT] Browser deadline exceeded. An earlier Chrome approval prompt")) {
         this.awaitingUser = true;
         this.approvalGeneration++;

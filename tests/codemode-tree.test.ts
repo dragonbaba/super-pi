@@ -6,7 +6,7 @@ import { releaseComponentRenderCaches } from "@super-pi/tui";
 import { CodemodeTreeComponent } from "../packages/coding-agent/src/modes/interactive/components/codemode-tree.ts";
 import { ToolExecutionComponent } from "../packages/coding-agent/src/modes/interactive/components/tool-execution.ts";
 import { initTheme } from "../packages/coding-agent/src/modes/interactive/theme/theme.ts";
-import { codemodeTextDigest, codemodeOutputDigests } from "../packages/coding-agent/src/core/codemode-display.ts";
+import { codemodeFailureReason, codemodeTextDigest, codemodeOutputDigests } from "../packages/coding-agent/src/core/codemode-display.ts";
 import { alphaSession, ALPHA_MODEL } from "./helpers/alpha-session.ts";
 import { AssistantMessageEventStream } from "../packages/ai/src/utils/event-stream.ts";
 
@@ -59,7 +59,7 @@ test("all collapsed calls hide output equally, including the final script return
 	}
 	tree.updateParent("source", final, false, false, false);
 	const collapsed = plain(tree);
-	assert.doesNotMatch(collapsed, /detail|last script return|Script output/);
+	assert.doesNotMatch(collapsed, /first detail|middle detail|last detail|last script return|Script output/);
 	assert.equal(collapsed.split("\n").filter(line => /[├└]─/.test(line)).length, 3);
 	assert.equal(collapsed.split("\n").filter(line => line.trim()).length, 5, "header + three equal rows + expansion hint");
 	tree.updateParent("source", final, false, false, true);
@@ -86,10 +86,76 @@ test("first and last failed rows use the same compact error layout without outpu
 	const final = parent([0, 1, 2].map(index => ({ ...fact(`p:${index}`, "bash", error, true), outputPath: `output-${index}.log` })), [], true);
 	tree.updateParent("source", final, false, true, false);
 	const collapsed = plain(tree);
-	assert.equal(collapsed.split("\n").filter(line => /reason.*next action.*extra diagnostic/.test(line)).length, 3);
-	assert.doesNotMatch(collapsed, /output-[012]\.log/);
+	assert.equal(collapsed.split("\n").filter(line => line.trim() === "reason").length, 3);
+	assert.doesNotMatch(collapsed, /output-[012]\.log|next action|extra diagnostic/);
 	tree.updateParent("source", final, false, true, true);
 	for (let index = 0; index < 3; index++) assert.ok(plain(tree).includes(`output-${index}.log`));
+	releaseComponentRenderCaches(tree);
+});
+
+test("missing path renders only the failed instruction and one reason, including budgeted history", () => {
+	const error = "[SHELL_RUNTIME_FAILED]\n2026-10-15 07:21\nls: cannot access ''$'\\350\\247\\206': No such file or directory\nCommand exited with code 2";
+	const calls = [fact("p:1", "browser_exec", "browser succeeded"),
+		{ ...fact("p:2", "bash", error, true), inputSummary: "date && ls -d 视频创意", executionStatus: "exited", exitCode: 2 }];
+	const final = parent(calls, ["[CODEMODE_SCRIPT] [p:2] " + error, "browser succeeded",
+		"[Path recovery] codemode should verify the parent directory before retrying; do not guess another path."], true);
+	const canonical = JSON.stringify(final);
+	const component = new ToolExecutionComponent("codemode", "p", { code: "source" }, {}, undefined, { requestRender() {} } as never, process.cwd());
+	component.updateResult(final);
+	component.setToolResultPresentation("p", { version: 2, continuation: { version: 1, cursor: "fixture" },
+		truncation: { originalEstimatedTokens: 4674, modelEstimatedTokens: 542 } } as any);
+	const collapsed = plain(component);
+	assert.match(collapsed, /browser_exec — completed/);
+	assert.match(collapsed, /2\. bash  date && ls -d 视频创意 ×\s*\n\s*Path does not exist\./);
+	assert.equal(collapsed.split("×").length - 1, 1);
+	assert.doesNotMatch(collapsed, /CODEMODE_|SHELL_RUNTIME|Script error|Path recovery|not rolled back|bounded view|exit=2|07:21/);
+	const tree = (component as any).codemodeTree as CodemodeTreeComponent;
+	const projections = tree.getLifecycleCounts().failureProjections;
+	for (let index = 0; index < 32; index++) { component.setExpanded(true); component.setExpanded(false); plain(component); }
+	assert.equal(tree.getLifecycleCounts().failureProjections, projections, "redraw and expansion reuse the concise reason");
+	component.setExpanded(true);
+	const expanded = plain(component);
+	for (const detail of ["SHELL_RUNTIME_FAILED", "exit=2", "Path recovery", "bounded view", "not rolled back"]) assert.ok(expanded.includes(detail));
+	component.setExpanded(false);
+	releaseComponentRenderCaches(component); component.invalidate();
+	assert.equal(plain(component), collapsed);
+	assert.equal(JSON.stringify(final), canonical);
+	releaseComponentRenderCaches(component);
+	assert.equal(tree.getLifecycleCounts().textChars, 0);
+});
+
+test("failure reasons prefer actual diagnostics and never turn arbitrary missing-path prose into a diagnosis", () => {
+	assert.equal(codemodeFailureReason("[SHELL_RUNTIME_FAILED]\n0\nCommand exited with code 2"), "Command exited with code 2");
+	assert.equal(codemodeFailureReason("[BROWSER_EXEC_FAILED] Traceback (most recent call last):\n  File \"runner.py\", line 2\nRuntimeError: connection refused\nmore details"), "RuntimeError: connection refused");
+	assert.equal(codemodeFailureReason("report contains: No such file or directory\nPermission denied"), "report contains: No such file or directory");
+	assert.equal(codemodeFailureReason("ENOENT: no such file or directory, open 'missing.txt'"), "Path does not exist.");
+	assert.equal(codemodeFailureReason("Get-Item : Cannot find path 'missing' because it does not exist."), "Path does not exist.");
+	assert.equal(codemodeFailureReason("Unknown failure\n" + "x".repeat(10 * 1024 * 1024)), "Unknown failure");
+	assert.ok(codemodeFailureReason("x".repeat(4096)).length <= 160);
+	assert.equal(codemodeFailureReason("ENOENT: no such file or directory, open 'missing.txt'", "model"), "ENOENT: no such file or directory, open 'missing.txt'");
+	assert.equal(codemodeFailureReason("Error: " + "x".repeat(4096), "model").length, 512);
+});
+
+test("browser IPC timeout and inactive tool errors stay concise while expansion shows each stack once", () => {
+	const error = "[BROWSER_EXEC_FAILED] TimeoutError: timed out\nTraceback (most recent call last):\n  File \"helpers.py\", line 57\n" +
+		"browser_harness.helpers._IPCResponseTimeout: Page.navigate timed out after 5s waiting for the daemon";
+	assert.equal(codemodeFailureReason(error), "Page.navigate timed out after 5s; result unconfirmed.");
+	assert.match(codemodeFailureReason(error, "model"), /Page.navigate.*5s.*inspect list_tabs\(\).*Do not automatically retry/);
+	const final = parent([fact("p:1", "browser_exec", error, true)], ["[CODEMODE_SCRIPT] [p:1] " + error.slice(0, 512)], true);
+	const canonical = JSON.stringify(final);
+	const tree = new CodemodeTreeComponent();
+	tree.updateParent("await tools.browser_exec(args)", final, false, true, false);
+	const collapsed = plain(tree);
+	assert.match(collapsed, /browser_exec.*×\s*\n\s*Page.navigate timed out after 5s; result unconfirmed\./);
+	assert.doesNotMatch(collapsed, /Traceback|TimeoutError|Script output|not rolled back/);
+	tree.updateParent("await tools.browser_exec(args)", final, false, true, true);
+	assert.equal(plain(tree).split("Traceback (most recent call last):").length - 1, 1);
+	assert.doesNotMatch(plain(tree), /CODEMODE_SCRIPT|Script output/);
+	assert.equal(JSON.stringify(final), canonical);
+	releaseComponentRenderCaches(tree);
+	tree.updateParent("", parent([], ["[CODEMODE_SCRIPT] tools.browser_exec does not exist. Available: read, bash, tool_search. Filter ALL_TOOLS..."], true), false, true, false);
+	assert.match(plain(tree), /Script ×\s*\n\s*Tool browser_exec is unavailable in this script; check tool discovery\./);
+	assert.doesNotMatch(plain(tree), /Available:|ALL_TOOLS/);
 	releaseComponentRenderCaches(tree);
 });
 
@@ -121,8 +187,10 @@ test("failed child remains visible collapsed and hooks/unrecognized output are r
 	const tree = new CodemodeTreeComponent();
 	const final = parent([{ ...fact("p:1", "bash", "0\nCommand exited with code 1", true), executionStatus: "exited", exitCode: 1 }], ["custom hook output"], true);
 	tree.updateParent("query", final, false, true, false);
-	assert.match(plain(tree), /✗ 1\. bash — exited; exit=1/);
-	assert.match(plain(tree), /Command exited with code 1/); assert.match(plain(tree), /custom hook output/);
+	assert.match(plain(tree), /1\. bash.*×/);
+	assert.match(plain(tree), /Command exited with code 1/); assert.doesNotMatch(plain(tree), /custom hook output|exit=1/);
+	tree.updateParent("query", final, false, true, true);
+	assert.match(plain(tree), /custom hook output|exit=1/);
 	const legacy = result("[CODEMODE_FAILED] legacy error");
 	tree.updateParent("query", legacy, false, true, false);
 	assert.match(plain(tree), /legacy error/);
@@ -136,7 +204,7 @@ test("collapsed preflight failure shows one concise error and no partial-effects
 	const canonical = JSON.stringify(final);
 	tree.updateParent("await tools.bash(args)", final, false, true, false);
 	const collapsed = plain(tree);
-	assert.equal(collapsed.split("POLICY_BLOCKED:DYNAMIC_TARGET").length - 1, 1);
+	assert.equal(collapsed.split("target cannot be verified").length - 1, 1);
 	assert.doesNotMatch(collapsed, /Script output|Permission recovery|not rolled back|exit=unknown/);
 	assert.match(collapsed, /target cannot be verified/);
 	tree.updateParent("await tools.bash(args)", final, false, true, true);
@@ -144,17 +212,20 @@ test("collapsed preflight failure shows one concise error and no partial-effects
 	assert.equal(JSON.stringify(final), canonical);
 });
 
-test("collapsed script output is bounded while independent failures and partial effects stay visible", () => {
+test("independent script failures stay visible while partial-effects guidance requires expansion", () => {
 	const tree = new CodemodeTreeComponent();
 	const final = parent([{ ...fact("p:1", "bash", "done"), executionStatus: "exited", exitCode: 0 }],
 		["prior output\n".repeat(60), "[CODEMODE_SCRIPT] independent failure\n" + "verbose line\n".repeat(60)], true);
 	tree.updateParent("script", final, false, true, false);
 	const collapsed = plain(tree);
 	assert.match(collapsed, /independent failure/);
-	assert.match(collapsed, /not rolled back/);
+	assert.doesNotMatch(collapsed, /not rolled back|verbose line|prior output/);
 	assert.ok(collapsed.split("\n").length < 15);
 	tree.updateParent("script", final, false, true, true);
+	assert.match(plain(tree), /not rolled back/);
 	assert.equal(plain(tree).split("verbose line").length - 1, 60);
+	tree.updateParent("script", parent([fact("p:1", "bash", "done")], [], true), false, true, false);
+	assert.match(plain(tree), /Script ×\s*\n\s*Execution failed; no diagnostic was returned\./);
 });
 
 test("compact failed child bounds long diagnostics and releases the extra preview on restore", () => {
@@ -294,10 +365,11 @@ test("real Codemode preflight error stays compact live and after history reconst
 	const messages = JSON.stringify(f.session.messages);
 	const card = f.internal.chatContainer.children.find((child: unknown) => child instanceof ToolExecutionComponent);
 	const collapsed = plain(card);
-	assert.equal(collapsed.split("POLICY_BLOCKED:DYNAMIC_TARGET").length - 1, 1);
+	assert.equal(collapsed.split("target cannot be verified").length - 1, 1);
 	assert.doesNotMatch(collapsed, /CODEMODE_SCRIPT|Script output|not rolled back|exit=unknown/);
 	card.setExpanded(true);
-	assert.match(plain(card), /CODEMODE_SCRIPT/);
+	assert.match(plain(card), /target cannot be verified/);
+	assert.doesNotMatch(plain(card), /CODEMODE_SCRIPT/);
 	f.internal.rebuildChatFromMessages();
 	const restored = f.internal.chatContainer.children.find((child: unknown) => child instanceof ToolExecutionComponent);
 	restored.setExpanded(false);

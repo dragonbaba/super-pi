@@ -1,7 +1,7 @@
 import { Container, Text, RELEASE_COMPONENT_RENDER_CACHE, type Component } from "@super-pi/tui";
 import {
 	CODEMODE_DISPLAY_MAX_CALLS, CODEMODE_DISPLAY_PREVIEW_CHARS, CODEMODE_DISPLAY_JSON_CHARS,
-	codemodeInputSummary, codemodeTextDigest, type CodemodeChildDisplay,
+	codemodeFailureReason, codemodeInputSummary, codemodeTextDigest, type CodemodeChildDisplay,
 } from "../../../core/codemode-display.ts";
 import { readShellExecution } from "../../../core/tools/shell-execution.ts";
 import { theme } from "../theme/theme.ts";
@@ -10,14 +10,8 @@ import { keyHint } from "./keybinding-hints.ts";
 type Result = { content: readonly { type: string; text?: string }[]; details?: any; isError?: boolean };
 const PREVIEW_TRUNCATED_NOTICE = "\n… (preview truncated)";
 const PARTIAL_EFFECTS_NOTICE = "Completed tool side effects are not rolled back. Do not automatically retry mutations.";
-const COMPACT_CHARS = 320;
-const COMPACT_WHITESPACE = /[\r\n\t]+/g;
 const CHILD_SCRIPT_ERROR = /^\[CODEMODE_SCRIPT\] \[[^\]\r\n]{1,128}\] /;
-
-function compactText(text: string): string {
-	const bounded = text.length > COMPACT_CHARS ? text.slice(0, COMPACT_CHARS) + "…" : text;
-	return bounded.replace(COMPACT_WHITESPACE, " ");
-}
+const RECOVERY_NOTICE = /^\[[^\]\r\n]{1,64} recovery\] /;
 
 function shellStatus(status: string, exit: number | null | undefined): string {
 	return status === "not_executed" ? "not executed" : `${status}; exit=${exit ?? "unknown"}`;
@@ -44,6 +38,9 @@ class CodemodeTreeRow extends Container {
 	previewTruncated = false;
 	previewMaterializations = 0;
 	labelMaterializations = 0;
+	failureProjections = 0;
+	failureReason = "";
+	private failureSource = "";
 	outputPath = "";
 	reported = "";
 	status = "running";
@@ -74,12 +71,20 @@ class CodemodeTreeRow extends Container {
 	constructor(id: string, name: string, ordinal: number) {
 		super(); this.id = id; this.name = name; this.ordinal = ordinal; this.addChild(this.title);
 	}
+	projectFailure(source = this.failed ? this.preview || this.reported || this.status : ""): void {
+		if (source === this.failureSource) return;
+		this.failureSource = source;
+		this.failureReason = source ? codemodeFailureReason(source) : "";
+		this.failureProjections++;
+	}
 	refresh(): void {
 		if (!this.label || this.labelInput !== this.input || this.labelStatus !== this.status || this.labelDuration !== this.durationMs
 			|| this.labelFailed !== this.failed || this.labelLast !== this.last || this.labelOrdinal !== this.ordinal || this.labelExpanded !== this.expanded) {
 			const icon = this.failed ? "✗" : this.status === "running" ? "○" : "•";
 			const input = !this.expanded && this.input.length > 96 ? this.input.slice(0, 95) + "…" : this.input;
-			const label = `${this.last ? "└─" : "├─"} ${icon} ${this.ordinal}. ${this.name} — ${this.status}${this.durationMs === undefined || this.status === "not executed" ? "" : " (" + (this.durationMs / 1000).toFixed(1) + "s)"}${input ? "  " + input : ""}`;
+			const label = this.failed && !this.expanded
+				? `${this.last ? "└─" : "├─"} ${this.ordinal}. ${this.name}${input ? "  " + input : ""} ×`
+				: `${this.last ? "└─" : "├─"} ${icon} ${this.ordinal}. ${this.name} — ${this.status}${this.durationMs === undefined || this.status === "not executed" ? "" : " (" + (this.durationMs / 1000).toFixed(1) + "s)"}${input ? "  " + input : ""}`;
 			this.labelMaterializations++;
 			this.labelInput = this.input; this.labelStatus = this.status; this.labelDuration = this.durationMs;
 			this.labelFailed = this.failed; this.labelLast = this.last; this.labelOrdinal = this.ordinal;
@@ -88,20 +93,20 @@ class CodemodeTreeRow extends Container {
 		}
 		const visible = this.expanded || this.failed;
 		const shared = this.sharedOutput && !this.failed;
-		const body = visible ? shared ? "Identical output is shown under Script output." : this.reported || this.preview : "";
+		const body = !this.expanded ? this.failed ? this.failureReason : "" : shared ? "Identical output is shown under Script output." : this.reported || this.preview;
 		const path = this.expanded ? this.outputPath : "";
 		const truncated = visible && !shared && !this.reported && this.previewTruncated;
 		if (this.bodyDirty || this.bodySource !== body || this.bodyPath !== path || this.bodyFailed !== this.failed || this.bodyTruncated !== truncated || this.bodyExpanded !== this.expanded) {
 			this.bodyDirty = false; this.bodySource = body; this.bodyPath = path; this.bodyFailed = this.failed; this.bodyTruncated = truncated;
 			this.bodyExpanded = this.expanded;
-			const output = (this.expanded ? body : compactText(body)) + (truncated && this.expanded ? PREVIEW_TRUNCATED_NOTICE : "") + (path ? "\nOutput: " + path : "");
+			const output = body + (truncated && this.expanded ? PREVIEW_TRUNCATED_NOTICE : "") + (path ? "\nOutput: " + path : "");
 			this.shown = output; this.body.setText(theme.fg(this.failed ? "error" : "toolOutput", output));
 			this.children.length = 1; if (output) this.addChild(this.body);
 		}
 	}
 	override invalidate(): void { super.invalidate(); this.label = this.shown = ""; this.bodyDirty = true; this.refresh(); }
 	release(): void {
-		this.preview = this.reported = this.input = this.outputPath = this.label = this.shown = "";
+		this.preview = this.reported = this.input = this.outputPath = this.label = this.shown = this.failureSource = this.failureReason = "";
 		this.labelInput = this.labelStatus = this.bodySource = this.bodyPath = "";
 		this.title.setText(""); this.body.setText(""); this.children.length = 0;
 	}
@@ -122,6 +127,7 @@ export class CodemodeTreeComponent extends Container {
 	private expanded = false;
 	private partial = true;
 	private failed = false;
+	private hasFailedChild = false;
 	private script = "";
 	private scriptOutput = "";
 	private scriptPreview = "";
@@ -165,6 +171,7 @@ export class CodemodeTreeComponent extends Container {
 		if (partial && row.status !== "running") return;
 		this.progressUpdates++;
 		boundedPreview(row, result); row.failed = failed;
+		this.hasFailedChild ||= failed;
 		if (!partial) {
 			if (row.status === "running" && this.runningChildren > 0) this.runningChildren--;
 			if (this.runningChildren === 0) this.stopTimer();
@@ -172,6 +179,7 @@ export class CodemodeTreeComponent extends Container {
 		}
 		const execution = readShellExecution(result.details);
 		row.status = partial ? "running" : execution ? shellStatus(execution.executionStatus, execution.exitCode) : failed ? "failed" : "completed";
+		if (!partial) row.projectFailure();
 		row.refresh();
 	}
 	updateParent(code: unknown, result: Result | undefined, partial: boolean, failed: boolean, expanded: boolean): void {
@@ -192,15 +200,15 @@ export class CodemodeTreeComponent extends Container {
 		super.invalidate(); this.titleText = this.sourceText = this.outputText = this.hintText = ""; this.refreshHeader();
 	}
 	private refreshHeader(): void {
-		const title = `• Codemode (${this.rows.size} child ${this.rows.size === 1 ? "call" : "calls"}) — ${this.partial ? "running" : this.failed ? "failed" : "completed"}`;
-		if (title !== this.titleText) { this.titleText = title; this.title.setText(theme.fg(this.failed ? "error" : "toolTitle", theme.bold(title))); }
+		const title = `• Codemode (${this.rows.size} child ${this.rows.size === 1 ? "call" : "calls"})${!this.expanded && this.failed && !this.partial && (this.hasFailedChild || this.scriptPreview) ? "" : " — " + (this.partial ? "running" : this.failed ? "failed" : "completed")}`;
+		if (title !== this.titleText) { this.titleText = title; this.title.setText(theme.fg("toolTitle", theme.bold(title))); }
 		const source = this.expanded && this.script ? "Script\n" + this.script : "";
 		if (source !== this.sourceText) { this.sourceText = source; this.source.setText(source ? theme.fg("muted", source) : ""); }
 		const visibleOutput = this.expanded ? this.scriptOutput : this.failed ? this.scriptPreview : "";
-		const output = visibleOutput ? (this.expanded ? "Script output\n" : "Script error: ") + visibleOutput : "";
+		const output = visibleOutput ? (this.expanded ? "Script output\n" : "Script ×\n") + visibleOutput : "";
 		if (output !== this.outputText) { this.outputText = output; this.output.setText(output ? theme.fg(this.expanded ? "toolOutput" : "error", output) : ""); }
-		let hint = this.expanded ? "" : theme.fg("muted", keyHint("app.tools.expand", "to expand script and child output"));
-		if (this.failed && this.mayHaveSideEffects) hint += (hint ? "\n" : "") + theme.fg("warning", PARTIAL_EFFECTS_NOTICE);
+		let hint = this.expanded ? "" : theme.fg("muted", keyHint("app.tools.expand", "details"));
+		if (this.expanded && this.failed && this.mayHaveSideEffects) hint += (hint ? "\n" : "") + theme.fg("warning", PARTIAL_EFFECTS_NOTICE);
 		if (hint !== this.hintText) { this.hintText = hint; this.hint.setText(hint); }
 	}
 	/** Completion boundary: exact digests only; never remove unknown or hook-modified output. */
@@ -259,21 +267,36 @@ export class CodemodeTreeComponent extends Container {
 			this.appendScriptOutput(text);
 			if (text.length !== block.text.length) { this.scriptOutput += "\n… (display truncated; canonical result retained)"; break; }
 		}
+		this.hasFailedChild = false;
 		for (const row of this.rows.values()) {
 			if (row.status !== "not executed") this.mayHaveSideEffects = true;
-			if (!this.partial && row.status === "running") { row.status = "interrupted / result unavailable"; row.failed = true; }
+			if (!this.partial && row.status === "running") {
+				row.status = "interrupted / result unavailable"; row.failed = true; row.projectFailure(row.status);
+			} else row.projectFailure();
+			this.hasFailedChild ||= row.failed;
 			row.refresh();
 		}
+		if (this.failed && !this.partial && !this.hasFailedChild && !this.scriptPreview) this.scriptPreview = "Execution failed; no diagnostic was returned.";
 		owners.clear();
 	}
 	private appendScriptOutput(text: string): void {
-		this.scriptOutput += (this.scriptOutput ? "\n" : "") + text;
-		if (!this.failed || this.isRepeatedChildError(text)) return;
-		if (this.failed && text.startsWith("[CODEMODE_")) {
-			this.scriptPreview = compactText(text); this.hasScriptError = true; return;
+		// The original child diagnostic is already expandable in its row. Preserve
+		// distinct recovery advice, but do not render the same stack a second time.
+		if (this.isRepeatedChildError(text)) {
+			const recovery = text.indexOf("\n[Permission recovery] ");
+			if (recovery < 0) return;
+			text = text.slice(recovery + 1);
 		}
-		if (this.hasScriptError || this.scriptPreview.length >= COMPACT_CHARS) return;
-		this.scriptPreview = compactText(this.scriptPreview + (this.scriptPreview ? "\n" : "") + compactText(text));
+		this.scriptOutput += (this.scriptOutput ? "\n" : "") + text;
+		if (!this.failed || RECOVERY_NOTICE.test(text)) return;
+		if (this.failed && text.startsWith("[CODEMODE_")) {
+			this.scriptPreview = codemodeFailureReason(text); this.hasScriptError = true; return;
+		}
+		// Child failures already have their own reason. Arbitrary stdout/hook prose
+		// must not become a second script error; retain it in the expanded result.
+		if (this.hasScriptError || this.scriptPreview) return;
+		for (const row of this.rows.values()) if (row.failed) return;
+		this.scriptPreview = codemodeFailureReason(text);
 	}
 	private isRepeatedChildError(text: string): boolean {
 		const prefix = CHILD_SCRIPT_ERROR.exec(text);
@@ -291,7 +314,12 @@ export class CodemodeTreeComponent extends Container {
 		if (Array.isArray(owner)) {
 			for (const row of owner) row.sharedOutput = true;
 			this.appendScriptOutput(text);
-		} else owner.reported += (owner.reported ? "\n" : "") + text;
+		} else {
+			// A failed browser can now report partial stdout as a separate block.
+			// Keep its diagnostic ahead of that receipt in the expanded row too.
+			if (owner.failed && !owner.reported && owner.preview && !text.startsWith(owner.preview)) owner.reported = owner.preview;
+			owner.reported += (owner.reported ? "\n" : "") + text;
+		}
 	}
 	private projectContentArray(text: string, owners: Map<string, OutputOwner>): boolean {
 		if (!text.startsWith("[") || text.length > CODEMODE_DISPLAY_JSON_CHARS) return false;
@@ -314,6 +342,7 @@ export class CodemodeTreeComponent extends Container {
 		this.result = undefined;
 		this.script = this.scriptOutput = this.scriptPreview = this.sourceText = this.outputText = this.titleText = this.hintText = "";
 		this.mayHaveSideEffects = false;
+		this.hasFailedChild = false;
 		this.hasScriptError = false;
 		this.title.setText(""); this.source.setText(""); this.output.setText(""); this.hint.setText("");
 		this.released = true;
@@ -321,11 +350,12 @@ export class CodemodeTreeComponent extends Container {
 	/** Diagnostics are lifecycle-only, never called from render/update. */
 	getLifecycleCounts() {
 		let textChars = this.script.length + this.scriptOutput.length + this.scriptPreview.length;
-		let labelMaterializations = 0, previewMaterializations = 0;
+		let labelMaterializations = 0, previewMaterializations = 0, failureProjections = 0;
 		for (const row of this.rows.values()) {
-			textChars += row.preview.length + row.reported.length + row.input.length + row.outputPath.length;
+			textChars += row.preview.length + row.reported.length + row.input.length + row.outputPath.length + row.failureReason.length;
 			labelMaterializations += row.labelMaterializations; previewMaterializations += row.previewMaterializations;
+			failureProjections += row.failureProjections;
 		}
-		return { rows: this.rows.size, runningChildren: this.runningChildren, resultReferences: this.result ? 1 : 0, textChars, timers: this.timer ? 1 : 0, timerRefreshes: this.timerRefreshes, rowCreations: this.rowCreations, progressUpdates: this.progressUpdates, outputProjections: this.outputProjections, labelMaterializations, previewMaterializations };
+		return { rows: this.rows.size, runningChildren: this.runningChildren, resultReferences: this.result ? 1 : 0, textChars, timers: this.timer ? 1 : 0, timerRefreshes: this.timerRefreshes, rowCreations: this.rowCreations, progressUpdates: this.progressUpdates, outputProjections: this.outputProjections, labelMaterializations, previewMaterializations, failureProjections };
 	}
 }

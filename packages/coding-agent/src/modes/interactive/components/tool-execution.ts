@@ -1440,9 +1440,9 @@ export class ToolExecutionComponent extends Container {
 		if (this.allocationMetrics) this.allocationMetrics.updateDisplayCalls++;
 		const bgFn = this.isPartial ? toolPendingBackground : this.resultIsError ? toolErrorBackground : toolSuccessBackground;
 		if (this.codemodeTree) {
-			this.contentBox.setBgFn(bgFn);
+			this.contentBox.setBgFn(!this.isPartial && this.resultIsError ? undefined : bgFn);
 			this.codemodeTree.updateParent(typeof this.args === "string" ? this.args : this.args?.code, this.result, this.isPartial, this.resultIsError, this.expanded);
-			this.codemodeDiscovery!.setText(this.toolResultDiscovery ? formatToolResultDiscovery(this.toolResultDiscovery, this.expanded) : "");
+			this.codemodeDiscovery!.setText(this.expanded && this.toolResultDiscovery ? formatToolResultDiscovery(this.toolResultDiscovery, true) : "");
 			this.refreshImageTree();
 			return;
 		}

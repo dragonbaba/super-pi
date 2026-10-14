@@ -20,6 +20,7 @@ import type { InlineExtension, ExtensionFactory } from "../packages/coding-agent
 import { CODEMODE_DESCRIPTION, CODEMODE_STORE_ENTRY } from "../packages/coding-agent/src/core/codemode-constants.ts";
 import { CodemodeStore } from "../packages/coding-agent/src/core/codemode-store.ts";
 import { CodemodeController } from "../packages/coding-agent/src/core/codemode.ts";
+import { browserResultText, formatFailure } from "../packages/extensions/browser-use/index.ts";
 import { privateOutputFileSystem } from "../packages/coding-agent/src/utils/private-output-file.ts";
 import { CODEMODE_RESULT_ENTRY } from "../packages/coding-agent/src/core/codemode-constants.ts";
 import { convertResponsesTools } from "../packages/ai/src/api/openai-responses-shared.ts";
@@ -230,6 +231,25 @@ test("validation-hook failures retain failureRecoveryHint result transformation"
   assert.equal(executed, 0);
   assert.match(JSON.stringify(ended), /\[Read recovery\] Use dedicated read/);
   assert.equal((outcome.results[0]!.details as any).codemode.calls[0].executionStatus, "not_executed");
+});
+
+test("Codemode missing-path summary gives the model a direct cause without parent path-recovery boilerplate", async t => {
+	const diagnostic = "[SHELL_RUNTIME_FAILED]\n2026-10-15 07:21\nls: cannot access '视频创意': No such file or directory\nCommand exited with code 2";
+	const extension: InlineExtension = pi => pi.registerTool({ name: "missing_path_probe", label: "probe", description: "offline diagnostic fixture",
+		parameters: Type.Object({ command: Type.String() }), execute: async () => ({ content: [{ type: "text", text: diagnostic }], isError: true, details: {} }) });
+	const f = await fixture(t, {}, [extension, guardrails]);
+	const outcome = await f.run(['await tools.missing_path_probe({command:"date && ls -d 视频创意"})']);
+	const failed = outcome.results[0]!;
+	assert.equal(failed.isError, true);
+	assert.match((failed.content[0] as any).text, /missing_path_probe: .* — ls: cannot access '视频创意': No such file or directory/);
+	assert.doesNotMatch((failed.content[0] as any).text, /SHELL_RUNTIME_FAILED|07:21/);
+	assert.doesNotMatch(JSON.stringify(failed.content), /codemode should verify the parent/);
+	assert.match(JSON.stringify(failed.details), /ls: cannot access/);
+	const delivered = JSON.stringify(outcome.wires.at(-1));
+	assert.match(delivered, /ls: cannot access '视频创意': No such file or directory/);
+	assert.match(delivered, /SHELL_RUNTIME_FAILED/);
+	assert.match(delivered, /Command exited with code 2/);
+	assert.match(delivered, /Do not automatically retry mutations/);
 });
 
 for (const repeated of [false, true]) test(`budgeted default bundle accepts multiple shown native reads: repeated=${repeated}`, async t => {
@@ -605,6 +625,48 @@ test("browser search separates browsing and DevTools while approval failures pau
 	assert.equal(devtoolsCalls, 1);
 });
 
+test("parent cancellation preserves browser approval pause and partial browser output reaches the next model turn", async t => {
+	let devtoolsCalls = 0, started = false;
+	const evidence = 'browser-harness: Chrome is asking "Allow remote debugging?" — click Allow to continue.\npermission-pending: Chrome approval is pending';
+	const extension: InlineExtension = pi => {
+		pi.registerTool({ name: "browser_exec", label: "browser", description: "fixture", parameters: Type.Object({ wait: Type.Optional(Type.Boolean()) }),
+			execute: async (_id, args, signal) => {
+				started = true;
+				if (args.wait) await new Promise<void>(resolve => { if (signal?.aborted) resolve(); else signal?.addEventListener("abort", () => resolve(), { once: true }); });
+				return { content: browserResultText({ stdout: args.wait ? "" : "Partial NASA fact before navigation failed", stderr: args.wait ? evidence : "Traceback (most recent call last):\nTimeoutError: earlier\nTraceback (most recent call last):\nStopIteration: final cause",
+					exitCode: 1, killed: !!args.wait, timedOut: false, aborted: !!args.wait, stdoutTruncated: false, stderrTruncated: false, stdoutBytes: 48, stderrBytes: 180 }),
+					isError: true, details: { aborted: !!args.wait } };
+			} });
+		pi.registerTool({ name: "chrome_devtools_list_pages", label: "cdp", description: "fixture", parameters: Type.Object({}),
+			execute: async () => { devtoolsCalls++; return { content: [], details: {} }; } });
+	};
+	const f = await fixture(t, {}, [toolClassification, extension]);
+	f.session.setActiveToolsByName(["browser_exec", "chrome_devtools_list_pages"]);
+	const partial = await f.run(['await tools.browser_exec({});']);
+	const result = partial.results.at(-1)!;
+	assert.equal(result.isError, true);
+	assert.match(JSON.stringify(result.content), /Partial NASA fact/);
+	assert.match(JSON.stringify(partial.wires.at(-1)), /Partial NASA fact/);
+	assert.match(JSON.stringify(result.content[0]), /StopIteration: final cause/);
+	initTheme("dark");
+	const tree = new CodemodeTreeComponent();
+	tree.updateParent("await tools.browser_exec({})", result as any, false, true, false);
+	const collapsed = stripVTControlCharacters(tree.render(120).join("\n"));
+	assert.match(collapsed, /StopIteration: final cause/);
+	assert.doesNotMatch(collapsed, /Partial NASA fact|Traceback/);
+	tree.updateParent("await tools.browser_exec({})", result as any, false, true, true);
+	const expanded = stripVTControlCharacters(tree.render(120).join("\n"));
+	assert.match(expanded, /Partial NASA fact/); assert.match(expanded, /StopIteration: final cause/);
+	releaseComponentRenderCaches(tree);
+	started = false;
+	const cancelled = await f.run(['// @options: {"timeout_ms":1000}\nawait tools.browser_exec({wait:true});', 'await tools.chrome_devtools_list_pages({});']);
+	assert.equal(started, true);
+	assert.match(JSON.stringify(cancelled.results.at(-2)!.content), /BROWSER_APPROVAL_PENDING/);
+	assert.match(JSON.stringify(cancelled.results.at(-1)!.content), /BROWSER_APPROVAL_PAUSED/);
+	assert.equal(devtoolsCalls, 0);
+	assert.match(formatFailure("ABORTED", evidence), /current state is unknown/);
+});
+
 test("DevTools is discoverable for local preview and exact names without enabling general browsing tools", async t => {
 	let browserCalls = 0, devtoolsCalls = 0;
 	const extension: InlineExtension = pi => {
@@ -961,6 +1023,32 @@ test("Codemode exposes real browser instructions and constraints to the model wi
 	assert.match(outcome.wires[0]!.tools!.find(tool => tool.name === "codemode")!.description, /Drive a real browser/);
 });
 
+test("inactive browser documentation guides discovery after reload without executing or widening access", async t => {
+	let calls = 0;
+	const f = await fixture(t, {}, [toolClassification, pi => {
+		pi.registerTool({ name: "browser_exec", label: "Browser", description: "Browser fixture instructions",
+			parameters: Type.Object({}), execute: async () => { calls++; return { content: [], details: {} }; } });
+	}]);
+	f.session.setActiveToolsByName(["tool_search"]);
+	const described = await f.run(['text(await describeTools(["browser_exec"]));']);
+	assert.match(JSON.stringify(described.results[0]?.content), /TOOL_UNAVAILABLE.*tool_search/);
+	assert.equal(calls, 0);
+	assert.equal(f.session.getActiveToolNames().includes("browser_exec"), false);
+	const missing = await f.run(['await tools.browser_exec({});']);
+	assert.match(JSON.stringify(missing.results.at(-1)?.content), /does not exist.*tool_search.*callTool/);
+	assert.doesNotMatch(JSON.stringify(missing.results.at(-1)?.content), /Available:|Check for a member/);
+	assert.equal(calls, 0);
+	const recovered = await f.run(['await tools.tool_search({query:"browser_exec",limit:1});text(await describeTools(["browser_exec"]));await callTool("browser_exec",{});']);
+	assert.equal(recovered.results.at(-1)?.isError, false, JSON.stringify(recovered.results));
+	assert.match(JSON.stringify(recovered.results.at(-1)?.content), /Browser fixture instructions/);
+	assert.equal(calls, 1);
+	await f.session.reload();
+	f.session.setActiveToolsByName(["tool_search"]);
+	const reloaded = await f.run(['text(await describeTools(["browser_exec"]));']);
+	assert.match(JSON.stringify(reloaded.results.at(-1)?.content), /TOOL_UNAVAILABLE/);
+	assert.equal(calls, 1);
+});
+
 test("Codemode exposes the real DevTools task and browser-profile guidance after discovery", async t => {
 	const definitions = await jiti.import<Record<string, any>>("../packages/chrome-devtools/src/tools.ts");
 	const f = await fixture(t, {}, [toolClassification, pi => {
@@ -1024,7 +1112,8 @@ text({tail:ts.body.includes("FINAL_REQUIRED_INSTRUCTION"),unknown:ts.body.includ
 	assert.equal(data.tail, true); assert.equal(data.unknown, true);
 	assert.equal(data.fields, 60); assert.equal(data.pattern, "a🚀".repeat(33));
 	assert.equal(data.defaultValue, "𠮷🙂".repeat(25)); assert.equal(data.rockets, 2500);
-	assert.ok(data.pages > 10); assert.ok(data.maxPage < 4300); assert.equal(data.hidden, "");
+	assert.ok(data.pages > 10); assert.ok(data.maxPage < 4300); assert.match(data.hidden, /TOOL_UNAVAILABLE/);
+	assert.doesNotMatch(data.hidden, /not_registered|ask_user|Input JSON Schema/);
 	assert.deepEqual((outcome.results[0]!.details as any).codemode.calls, []);
 });
 

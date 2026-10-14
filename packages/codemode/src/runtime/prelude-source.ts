@@ -219,9 +219,8 @@ export const PRELUDE_SOURCE: string = `(function (bridge, toolsJson, globalsJson
 				const close = exact.length > 0 ? exact : names.filter((name) => wanted && (comparable(name).includes(wanted) || wanted.includes(comparable(name))));
 				let message = label + "." + property + " does not exist.";
 				if (close.length > 0) message += " Did you mean " + close.slice(0, 5).map((name) => label + "." + name).join(", ") + "?";
-				else if (names.length <= 20) message += " Available: " + names.join(", ") + ".";
+				else if (label !== "tools" && names.length <= 20) message += " Available: " + names.join(", ") + ".";
 				if (hint) message += " " + hint;
-				message += ' Check for a member with "' + property + '" in ' + label + ".";
 				throw new TypeErrorCtor(message);
 			},
 		});
@@ -230,7 +229,9 @@ export const PRELUDE_SOURCE: string = `(function (bridge, toolsJson, globalsJson
 		tools,
 		"tools",
 		allTools.map((tool) => tool.name),
-		"Filter ALL_TOOLS by name or description to find tools. If the host provides describeTools, use await describeTools([names]) for schemas.",
+		"tool_search" in tools
+			? "Discover inactive tools with tools.tool_search({query: '<exact tool name>'}); read describeTools([name]), then use callTool(name,args) in this script."
+			: "Filter ALL_TOOLS for available names. If provided, use await describeTools([names]) for schemas.",
 	);
 
 	const namespaces = new Map();
