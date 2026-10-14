@@ -14,6 +14,7 @@ export { convertMcpResult } from "./result.js";
 import {
   MAX_SSE_EVENT_BYTES,
   MAX_TRANSPORT_RESPONSE_BYTES,
+  MAX_TOOL_CATALOG_BYTES,
   canonicalJsonShape,
   piToolName,
   sanitizeText,
@@ -361,11 +362,13 @@ export class McpBridgeRuntime {
       `${name} ${state.config.id} ${remoteTool.name} ${remoteTool.description ?? ""}`.toLowerCase(),
     );
     const runtime = this;
+    const fullDescription = sanitizeText(remoteTool.description ?? `MCP tool ${remoteTool.name}`, MAX_TOOL_CATALOG_BYTES);
     this.pi.registerTool({
       name,
       requiresMcp: true,
       label: `MCP ${sanitizeText(state.config.id, 32)} / ${sanitizeText(remoteTool.name, 80)}`,
-      description: sanitizeText(remoteTool.description ?? `MCP tool ${remoteTool.name}`, 1000),
+      description: sanitizeText(fullDescription, 1000),
+      fullDescription,
       parameters,
       executionMode: "sequential",
       async execute(toolCallId, args, signal, onUpdate, ctx) {

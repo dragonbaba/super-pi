@@ -10,6 +10,7 @@ import { SessionManager } from "../../packages/coding-agent/src/core/session-man
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.ts";
 import { AssistantMessageEventStream } from "../../packages/ai/src/utils/event-stream.ts";
 import { CODEMODE_DESCRIPTION } from "../../packages/coding-agent/src/core/codemode-constants.ts";
+import toolClassification from "../../packages/tool-classification/src/index.ts";
 
 const gc = (globalThis as { gc?: () => void }).gc;
 assert.ok(gc, "Run with --expose-gc");
@@ -21,8 +22,9 @@ const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0
 const refs: WeakRef<object>[] = [], startupMs: number[] = [], firstMs: number[] = [], warmMs: number[] = [];
 let workersStarted = 0, workersStopped = 0, childCalls = 0, progress = 0, ledgerPending = 0;
 const settings = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } });
+const browserRouting = process.argv.includes("--browser-routing");
 let loader: DefaultResourceLoader | undefined = new DefaultResourceLoader({ cwd: root, agentDir: root, settingsManager: settings, noExtensions: true, noContextFiles: true,
-  noSkills: true, noPromptTemplates: true, noThemes: true });
+  noSkills: true, noPromptTemplates: true, noThemes: true, extensionFactories: browserRouting ? [toolClassification] : undefined });
 await loader.reload();
 async function cycle() {
   const start = performance.now();
@@ -64,15 +66,16 @@ async function cycle() {
 }
 function compare(a: number, b: number) { return a - b; }
 /** On-demand catalog audit; uses the real SDK, controller and compiled Worker. */
-async function catalogCycle(count: number) {
+async function catalogCycle(count: number, pagedJson = false) {
   let localReads = 0, remoteReads = 0;
-  const localCount = Math.min(64, Math.ceil(count / 4));
+  const localCount = pagedJson ? 0 : Math.min(64, Math.ceil(count / 4));
   const names: string[] = [];
   const customTools = Array.from({ length: count }, (_, index) => {
     const remote = index >= localCount;
     const name = remote ? `mcp__catalog__tool_${index}` : `catalog_local_${index}`;
     names.push(name);
-    const properties = { value: { type: "string", enum: Array.from({ length: 70 }, (_, n) => `literal_${n}`) } };
+    const properties = pagedJson ? { value: { type: "string", description: "x".repeat(60_000) } }
+      : { value: { type: "string", enum: Array.from({ length: 70 }, (_, n) => `literal_${n}`) } };
     const parameters = { type: "object", get properties() { if (remote) remoteReads++; else localReads++; return properties; } };
     return { name, label: name, description: `Catalog fixture ${index}`, parameters,
       execute: async () => ({ content: [{ type: "text" as const, text: name }], details: {} }) };
@@ -107,9 +110,16 @@ async function catalogCycle(count: number) {
     const descriptors = owner.descriptors;
     const target = names.at(-1)!;
     localReads = 0; remoteReads = 0;
-    const first = await run(`const found=ALL_TOOLS.find(t=>t.name===${JSON.stringify(target)}); const declaration=await describeTools([found.name]);text("CATALOG:"+JSON.stringify({count:ALL_TOOLS.length,name:found.name,declarationChars:declaration.length}));`);
+    const first = await run(pagedJson ? `let offset=0,revision,pages=0,total;
+while(true) { const page=await describeTools(${JSON.stringify(names)},{format:"json",offset,revision});
+const h=/chars (\\d+)\\.\\.(\\d+) of (\\d+); format:json; revision:([^\\]]+)\\]/.exec(page);
+if(!h || Number(h[1])!==offset || Number(h[2])<=offset) throw new Error("invalid page");
+offset=Number(h[2]);total=Number(h[3]);revision=h[4];pages++;if(offset===total) break; }
+text("CATALOG:"+JSON.stringify({count:ALL_TOOLS.length,name:${JSON.stringify(target)},declarationChars:total,pages}));`
+      : `const found=ALL_TOOLS.find(t=>t.name===${JSON.stringify(target)}); const declaration=await describeTools([found.name]);text("CATALOG:"+JSON.stringify({count:ALL_TOOLS.length,name:found.name,declarationChars:declaration.length}));`);
     assert.equal(first.count, count); assert.equal(first.name, target);
     const discoveryReads = { local: localReads, remote: remoteReads };
+    if (pagedJson) assert.equal(remoteReads, count, "one schema serialization per selected tool across all pages");
     const sandbox = owner.sandbox, snapshot = sandbox.toolSnapshot, catalog = sandbox.toolCatalog;
     localReads = 0; remoteReads = 0;
     const second = await run('text("CATALOG:"+JSON.stringify({count:ALL_TOOLS.length}));');
@@ -125,6 +135,8 @@ async function catalogCycle(count: number) {
     const closedStats = sandbox.stats;
     assert.equal(closedStats.activeExecutions, 0); assert.equal(closedStats.workersStarted, closedStats.workersStopped);
     assert.equal(owner.descriptors.length, 0); assert.equal(owner.current, undefined);
+    const retainedDocumentationSchemasAfterClose = owner.documentationSnapshot?.schemas.length ?? 0;
+    assert.equal(retainedDocumentationSchemasAfterClose, 0);
     const retainedNameMappingsAfterClose = owner.identifiers.size + owner.identifierNames.size;
     const retainedDeclarationCharsAfterClose = Math.max(0, owner.definition.description.length - CODEMODE_DESCRIPTION.length);
     session.dispose(); await owner.close();
@@ -138,18 +150,19 @@ async function catalogCycle(count: number) {
     const lateCallbackNameMappings = owner.identifiers.size + owner.identifierNames.size;
     await owner.close();
     refs.push(new WeakRef(session), new WeakRef(owner), new WeakRef(sandbox), new WeakRef(descriptors), new WeakRef(snapshot), new WeakRef(catalog));
-    return { count, localCount, activation, discovery: { scripts: 1, describeCalls: 1, ...first, schemaPropertyReads: discoveryReads },
+    return { count, localCount, activation, discovery: { scripts: 1, describeCalls: first.pages ?? 1, ...first, schemaPropertyReads: discoveryReads },
       unchanged: { schemaPropertyReads: unchangedReads, descriptorReused: true, snapshotReused: true, catalogReused: true },
       wireCatalogBytes, afterRemoval: removed, ...closedStats,
-      retainedNameMappingsAfterClose, retainedDeclarationCharsAfterClose, wrappedDeclarationCharsAfterDispose, lateCallbackNameMappings };
+      retainedNameMappingsAfterClose, retainedDeclarationCharsAfterClose, retainedDocumentationSchemasAfterClose, wrappedDeclarationCharsAfterDispose, lateCallbackNameMappings };
   } finally { await owner.close(); session.dispose(); }
 }
 const profiler = new Session(); profiler.connect();
 try {
-  if (process.argv.includes("--catalog")) {
+  if (process.argv.includes("--catalog") || process.argv.includes("--documentation")) {
+    const pagedJson = process.argv.includes("--documentation");
     await profiler.post("HeapProfiler.startSampling", { samplingInterval: 4096, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true });
     const catalogs = [];
-    for (const count of [8, 512]) catalogs.push(await catalogCycle(count));
+    for (const count of pagedJson ? [16] : [8, 512]) catalogs.push(await catalogCycle(count, pagedJson));
     const { profile } = await profiler.post("HeapProfiler.stopSampling");
     let bytes = 0; const stack = [profile.head];
     while (stack.length) { const node = stack.pop()!; bytes += node.selfSize; for (const child of node.children) stack.push(child); }
@@ -157,9 +170,9 @@ try {
     for (let i = 0; i < 8; i++) { await nextTask(); gc(); }
     let retained = 0; for (const ref of refs) if (ref.deref()) retained++;
     assert.equal(retained, 0);
-    process.stdout.write(JSON.stringify({ benchmark: "codemode-session-catalog", node: process.version, platform: process.platform,
+    process.stdout.write(JSON.stringify({ benchmark: pagedJson ? "codemode-session-documentation" : "codemode-session-catalog", node: process.version, platform: process.platform,
       catalogs, trackedReferences: refs.length, retainedAfterGc: retained, sampledHostBytes: bytes,
-      coverage: "8/512 registered host tools (MCP names are metadata fixtures); real SDK, controller, describe bridge, compiled Worker and disposal. No real server/model, provider token/cache measurement or Worker heap." }) + "\n");
+      coverage: `${pagedJson ? "16 large JSON schemas with 8000-unit pages" : "8/512 registered host tools"} (MCP names are metadata fixtures); real SDK, controller, describe bridge, compiled Worker and disposal. No real server/model, provider token/cache measurement or Worker heap.` }) + "\n");
   } else {
   await cycle(); startupMs.length = 0; firstMs.length = 0; warmMs.length = 0;
   await profiler.post("HeapProfiler.startSampling", { samplingInterval: 4096, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true });
@@ -174,7 +187,7 @@ try {
   let retained = 0; for (const ref of refs) if (ref.deref()) retained++;
   assert.equal(retained, 0); assert.equal(ledgerPending, 0); assert.equal(childCalls, 242); assert.equal(workersStarted, 11); assert.equal(workersStopped, 11);
   startupMs.sort(compare); firstMs.sort(compare); warmMs.sort(compare); sites.sort((a, b) => b.bytes - a.bytes);
-  process.stdout.write(JSON.stringify({ benchmark: "codemode-session", node: process.version, platform: process.platform, sampledCycles: 10, excludedWarmupCycles: 1,
+  process.stdout.write(JSON.stringify({ benchmark: "codemode-session", browserRouting, node: process.version, platform: process.platform, sampledCycles: 10, excludedWarmupCycles: 1,
     startupMedianMs: startupMs[5], startupP95Ms: startupMs[9], firstBatchMedianMs: firstMs[5], firstBatchP95Ms: firstMs[9], warmBatchMedianMs: warmMs[5], warmBatchP95Ms: warmMs[9],
     childCalls, progress, workersStarted, workersStopped, trackedReferences: refs.length, retainedAfterGc: retained, pendingEvidenceAfterTurn: ledgerPending,
     sampledHostBytes: bytes, leadingSites: sites.slice(0, 5), coverage: "real SDK, built-in reads, AgentSession policy/hooks/results/store, Worker, projection and disposal; offline provider; excludes UI, worker heap and disk sessions" }) + "\n");

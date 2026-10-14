@@ -11,6 +11,11 @@ const INDENT = "  ";
 export const DEFAULT_INPUT_SCHEMA_MAX_CHARS = 16_000;
 /** Local `$ref` expansions per rendered schema, so shared definitions cannot blow up the output. */
 const MAX_REF_EXPANSIONS = 32;
+const TAG_KEYWORDS = ["minimum", "exclusiveMinimum", "maximum", "exclusiveMaximum", "multipleOf", "minLength", "maxLength", "pattern", "format", "minItems", "maxItems"];
+const LOWER_BOUNDS = new Set(["minimum", "exclusiveMinimum", "minLength", "minItems"]);
+const UPPER_BOUNDS = new Set(["maximum", "exclusiveMaximum", "maxLength", "maxItems"]);
+const LINE_TERMINATORS = /[\r\n\u2028\u2029]/g;
+const MAX_TAG_CHARS = 80;
 
 /**
  * TypeScript types for MCP results, from the MCP `CallToolResult` schema, so `CallToolResult<T>`
@@ -134,18 +139,17 @@ export function renderDeclarations(options: RenderDeclarationsOptions): string {
  * One tool as a member of the `tools` object: `name(args: T): Promise<R>;` with the
  * name as the identifier scripts use (`identifier` from {@link assignCodemodeIdentifiers} when the
  * catalog has collisions). Input types longer than `inputMaxChars` render as `unknown`.
- * Tools whose output schema is an MCP `CallToolResult` render as `Promise<CallToolResult<T>>`,
- * which needs {@link MCP_TYPESCRIPT_PREAMBLE}.
+ * Output types are self-contained; hosts may override the type when they wrap native results.
  */
 export function renderToolSignature(
 	tool: Pick<CodemodeTool, "name" | "inputSchema" | "outputSchema">,
-	options: { inputMaxChars?: number; identifier?: string } = {},
+	options: { inputMaxChars?: number; identifier?: string; outputType?: string } = {},
 ): string {
 	const input =
 		tool.inputSchema === undefined
 			? "unknown"
 			: schemaToType(tool.inputSchema, { maxChars: options.inputMaxChars ?? DEFAULT_INPUT_SCHEMA_MAX_CHARS });
-	return `${options.identifier ?? toCodemodeIdentifier(tool.name)}(args: ${input}): Promise<${renderToolOutputType(tool.outputSchema)}>;`;
+	return `${options.identifier ?? toCodemodeIdentifier(tool.name)}(args: ${input}): Promise<${options.outputType ?? renderToolOutputType(tool.outputSchema)}>;`;
 }
 
 /**
@@ -177,16 +181,11 @@ export function mcpStructuredContentSchema(schema: CodemodeJsonSchema | undefine
 }
 
 /**
- * The type a tool call resolves to: `CallToolResult<T>` for MCP output schemas (needs
- * {@link MCP_TYPESCRIPT_PREAMBLE}), the schema's type otherwise, and `unknown` without a schema.
+ * The type a tool call resolves to, including MCP fields inline so standalone discovery
+ * never depends on an undeclared CallToolResult alias. The legacy preamble remains exported.
  */
 export function renderToolOutputType(schema: CodemodeJsonSchema | undefined): string {
-	const structured = mcpStructuredContentSchema(schema);
-	if (structured !== undefined) {
-		const type = schemaToType(structured);
-		return type === "unknown" ? "CallToolResult" : `CallToolResult<${type}>`;
-	}
-	return schema === undefined ? "unknown" : schemaToType(schema);
+	return schema === undefined ? "unknown" : schemaToType(schema, { maxChars: DEFAULT_INPUT_SCHEMA_MAX_CHARS });
 }
 
 function renderGlobal(head: string, global: CodemodeTool, indent: string): string {
@@ -231,8 +230,13 @@ export function schemaToType(schema: CodemodeJsonSchema, options: { maxChars?: n
 	// Tool-version boundary, never per delta: cap input before expanding descriptions/unions.
 	try {
 		new BoundedJson().stringify(schema, 64 * 1024);
-		const type = toType(schema, { root: schema, resolving: new Set(), expansions: 0, nodes: 0, depth: 0 });
-		return options.maxChars !== undefined && type.length > options.maxChars ? "unknown" : type;
+		const context: SchemaContext = { root: schema, resolving: new Set(), expansions: 0, nodes: 0, depth: 0, tags: true };
+		const type = toType(schema, context);
+		if (options.maxChars === undefined || type.length <= options.maxChars) return type;
+		// Preserve a usable compact signature when annotations alone exceed the inline budget.
+		context.expansions = 0; context.nodes = 0; context.tags = false;
+		const compact = toType(schema, context);
+		return compact.length <= options.maxChars ? compact : "unknown";
 	} catch { return "unknown"; }
 }
 
@@ -243,6 +247,7 @@ interface SchemaContext {
 	expansions: number;
 	nodes: number;
 	depth: number;
+	tags: boolean;
 }
 
 function resolveRef(ref: string, root: CodemodeJsonSchema): CodemodeJsonSchema | undefined {
@@ -338,6 +343,35 @@ function descriptionOf(property: unknown): string {
 	return isObject(property) && typeof property.description === "string" ? property.description.trim() : "";
 }
 
+/** Pi 1.2.0-style property tags. Rendering is bounded and runs only at catalog/query boundaries. */
+function constraintTags(property: unknown): string {
+	if (!isObject(property)) return "";
+	const variants = Array.isArray(property.anyOf) ? property.anyOf : property.oneOf;
+	const nonNull = Array.isArray(variants) ? variants.filter(variant => !isObject(variant) || variant.type !== "null") : [];
+	const branch = nonNull.length === 1 && isObject(nonNull[0]) ? nonNull[0] : undefined;
+	const schemas = (branch ? [property, branch] : [property]).map((schema): Record<string, unknown> => ({ ...schema,
+		...(schema.exclusiveMinimum === true ? { minimum: undefined, exclusiveMinimum: schema.minimum } : {}),
+		...(schema.exclusiveMaximum === true ? { maximum: undefined, exclusiveMaximum: schema.maximum } : {}),
+	}));
+	const tags: string[] = [];
+	if (schemas.some(schema => schema.type === "integer" || (Array.isArray(schema.type) && schema.type.includes("integer")))) tags.push("@integer");
+	for (const keyword of TAG_KEYWORDS) {
+		const values = schemas.map(schema => schema[keyword]);
+		if (LOWER_BOUNDS.has(keyword) || UPPER_BOUNDS.has(keyword)) {
+			const numbers = values.filter((value): value is number => typeof value === "number");
+			if (numbers.length) tags.push(`@${keyword} ${LOWER_BOUNDS.has(keyword) ? Math.max(...numbers) : Math.min(...numbers)}`);
+		} else {
+			for (const value of new Set(values)) if (typeof value === "number" || typeof value === "string") tags.push(`@${keyword} ${value}`);
+		}
+	}
+	if (schemas.some(schema => schema.uniqueItems === true)) tags.push("@uniqueItems");
+	if (property.default !== undefined) tags.push(`@default ${JSON.stringify(property.default)}`);
+	if (property.deprecated === true) tags.push("@deprecated");
+	return tags.map(tag => tag.replace(LINE_TERMINATORS, escapeLineTerminator)).filter(tag => tag.length <= MAX_TAG_CHARS).join(" ");
+}
+
+function escapeLineTerminator(char: string): string { return `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`; }
+
 function objectType(schema: Record<string, unknown>, context: SchemaContext): string {
 	const properties = isObject(schema.properties) ? schema.properties : {};
 	const required = new Set(Array.isArray(schema.required) ? schema.required : []);
@@ -354,11 +388,16 @@ function objectType(schema: Record<string, unknown>, context: SchemaContext): st
 		members.push("[key: string]: unknown;");
 	}
 	if (members.length === 0) return "{}";
-	if (!names.some((name) => descriptionOf(properties[name]))) return `{ ${members.join(" ")} }`;
+	const comments = names.map(name => {
+		const description = descriptionOf(properties[name]);
+		const tags = context.tags ? constraintTags(properties[name]) : "";
+		return tags ? `${description}\n${tags}` : description;
+	});
+	if (!comments.some(Boolean)) return `{ ${members.join(" ")} }`;
 
 	const lines = ["{"];
 	names.forEach((name, index) => {
-		for (const line of descriptionOf(properties[name]).split(/\r?\n/)) {
+		for (const line of comments[index].split(LINE_TERMINATORS)) {
 			if (line.trim()) lines.push(`${INDENT}// ${line.trim()}`);
 		}
 		lines.push(`${INDENT}${members[index].replaceAll("\n", `\n${INDENT}`)}`);

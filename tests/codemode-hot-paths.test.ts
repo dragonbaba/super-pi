@@ -207,3 +207,24 @@ test("user-message render has no per-frame callbacks or pattern/string construct
 	}
 	assert.equal(found, 1);
 });
+
+test("browser routing event guards use stable callbacks and primitive state without per-event allocations", () => {
+	const path = "packages/tool-classification/src/index.ts";
+	const source = ts.createSourceFile(path, readFileSync(path, "utf8"), ts.ScriptTarget.Latest, true);
+	const owner = source.statements.find(node => ts.isClassDeclaration(node) && node.name?.text === "BrowserRoutingGuard");
+	assert.ok(owner && ts.isClassDeclaration(owner));
+	const found = new Set<string>();
+	function audit(node: ts.Node): void {
+		assert.equal(ts.isArrowFunction(node) || ts.isFunctionExpression(node) || ts.isAwaitExpression(node)
+			|| ts.isNewExpression(node) || ts.isObjectLiteralExpression(node) || ts.isArrayLiteralExpression(node)
+			|| ts.isSpreadElement(node) || ts.isSpreadAssignment(node), false, node.getText(source));
+		if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+			assert.equal(["then", "catch", "finally", "bind", "map", "filter", "slice", "stringify"].includes(node.expression.name.text), false);
+		}
+		ts.forEachChild(node, audit);
+	}
+	for (const member of owner.members) if (ts.isPropertyDeclaration(member) && member.initializer && ts.isArrowFunction(member.initializer)) {
+		found.add(member.name.getText(source)); audit(member.initializer.body);
+	}
+	assert.deepEqual(found, new Set(["reset", "dispose", "observeSelection", "observeInput", "observeResult", "checkCall"]));
+});

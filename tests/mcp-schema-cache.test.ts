@@ -42,6 +42,36 @@ test("schema cache persists only domain-separated keyed identities and reopens w
 	assert.deepEqual(new McpSchemaCache().get(CONFIG, f.root).tools, cache.get(CONFIG, f.root).tools);
 });
 
+test("schema cache preserves long tool instructions and invalidates old truncated fingerprints", t => {
+	const f = fixture(t), key = Buffer.alloc(32, 7); writeFileSync(f.keyPath, key);
+	const description = "instructions ".repeat(500) + "FINAL_REQUIRED_INSTRUCTION";
+	const cache = new McpSchemaCache();
+	assert.equal(cache.put(CONFIG, f.root, [{ ...TOOLS[0], description }], null), true);
+	assert.equal(new McpSchemaCache().get(CONFIG, f.root).tools[0].description, description);
+	const data = JSON.parse(readFileSync(f.path, "utf8"));
+	data.entries[0].fingerprint = createHmac("sha256", key).update("super-pi.mcp-schema-cache.v3\0").update(configFingerprint(CONFIG, f.root)).digest("hex");
+	data.entries[0].tools[0].description = description.slice(0, 999) + "…";
+	writeFileSync(f.path, JSON.stringify(data));
+	assert.equal(new McpSchemaCache().get(CONFIG, f.root), null, "old abbreviated cache must be rediscovered");
+});
+
+test("an individually uncacheable catalog preserves existing server entries and disk contents", t => {
+	const f = fixture(t), cache = new McpSchemaCache();
+	const other = { ...CONFIG, url: "https://other.invalid/mcp" };
+	assert.equal(cache.put(CONFIG, f.root, TOOLS, null), true);
+	assert.equal(cache.put(other, f.root, TOOLS, null), true);
+	const before = readFileSync(f.path, "utf8"), beforeEntries = cache.serialize();
+	const large = { name: "large", inputSchema: { type: "object" }, description: "x".repeat(2 * 1024 * 1024 - 150) };
+	assert.ok(Buffer.byteLength(JSON.stringify(large), "utf8") < 2 * 1024 * 1024, "valid discovery payload leaves no room for cache envelope");
+	assert.equal(cache.put(CONFIG, f.root, [large], null), false);
+	assert.equal(cache.serialize(), beforeEntries);
+	assert.equal(readFileSync(f.path, "utf8"), before);
+	assert.equal(cache.entries.size, 2);
+	const reopened = new McpSchemaCache();
+	assert.equal(reopened.get(CONFIG, f.root).tools[0].name, "lookup");
+	assert.equal(reopened.get(other, f.root).tools[0].name, "lookup");
+});
+
 test("a different machine key cannot reuse an existing schema cache", t => {
 	const f = fixture(t); writeFileSync(f.keyPath, Buffer.alloc(32, 1));
 	const cache = new McpSchemaCache(); assert.equal(cache.put(CONFIG, f.root, TOOLS, null), true);

@@ -122,7 +122,7 @@ async function handleChromeDevtoolsCommand(
 			await showToolSelector(pi, ctx);
 			return;
 		case "enable":
-			await updateChromeDevtoolsTools(pi, ctx, allChromeDevtoolsTools(), "enabled all");
+			await updateChromeDevtoolsTools(pi, ctx, allChromeDevtoolsTools(), "enabled all", true);
 			return;
 		case "disable":
 			await updateChromeDevtoolsTools(pi, ctx, [], "disabled all");
@@ -184,7 +184,7 @@ async function showMenu(pi: ExtensionAPI, ctx: CommandContext, generation: numbe
 				return { kind: "close" };
 			},
 			enable: async () => {
-				await updateChromeDevtoolsTools(pi, ctx, allChromeDevtoolsTools(), "enabled all");
+				await updateChromeDevtoolsTools(pi, ctx, allChromeDevtoolsTools(), "enabled all", true);
 				return { kind: "close" };
 			},
 			disable: async () => {

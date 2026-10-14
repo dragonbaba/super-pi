@@ -92,7 +92,7 @@ export async function showToolSelector(pi: ExtensionAPI, ctx: CommandContext) {
 				return saved ? { kind: "stay" } : { kind: "rejected" };
 			},
 			enableAll: async () => {
-				const saved = await transactSelectedTools(pi, ctx, allChromeDevtoolsTools(), generation);
+				const saved = await transactSelectedTools(pi, ctx, allChromeDevtoolsTools(), generation, true);
 				return saved ? { kind: "stay" } : { kind: "rejected" };
 			},
 			disableAll: async () => {
@@ -117,9 +117,10 @@ export async function updateChromeDevtoolsTools(
 	ctx: CommandContext,
 	selectedTools: readonly ChromeDevToolsToolName[],
 	action: string,
+	explicitEnable = false,
 ) {
 	const generation = state.sessionGeneration;
-	const saved = await transactSelectedTools(pi, ctx, selectedTools, generation);
+	const saved = await transactSelectedTools(pi, ctx, selectedTools, generation, explicitEnable);
 	if (!saved || generation !== state.sessionGeneration) return;
 	const status = await buildToolStatusMessage(pi);
 	if (generation !== state.sessionGeneration) return;
@@ -136,6 +137,12 @@ export async function setSelectedChromeDevtoolsTools(
 
 let toolTransactionQueue = Promise.resolve();
 
+interface BrowserSelectionIntent {
+	sessionId: string;
+	phase: "begin" | "commit";
+	approvalGeneration: number | undefined;
+}
+
 export async function waitForChromeDevtoolsSettings(): Promise<void> {
 	await toolTransactionQueue;
 }
@@ -145,9 +152,14 @@ function transactSelectedTools(
 	ctx: CommandContext,
 	selectedTools: readonly ChromeDevToolsToolName[],
 	expectedGeneration: number,
+	explicitEnable = false,
 ): Promise<boolean> {
+	// Capture routing state at user intent submission, before either queue or I/O.
+	// The routing extension annotates this one cold, transaction-owned receipt.
+	const intent: BrowserSelectionIntent = { sessionId: ctx.sessionManager.getSessionId(), phase: "begin", approvalGeneration: undefined };
+	pi.events.emit("super-pi:chrome-devtools:user-selection", intent);
 	const operation = toolTransactionQueue.then(() =>
-		transactSelectedToolsNow(pi, ctx, selectedTools, expectedGeneration),
+		transactSelectedToolsNow(pi, ctx, selectedTools, expectedGeneration, explicitEnable, intent),
 	);
 	toolTransactionQueue = operation.then(
 		() => undefined,
@@ -161,13 +173,24 @@ async function transactSelectedToolsNow(
 	ctx: CommandContext,
 	selectedTools: readonly ChromeDevToolsToolName[],
 	expectedGeneration: number,
+	explicitEnable: boolean,
+	intent: BrowserSelectionIntent,
 ): Promise<boolean> {
 	if (expectedGeneration !== state.sessionGeneration) return false;
 	const previousActiveTools = pi.getActiveTools();
 	try {
 		applyChromeDevtoolsTools(pi, selectedTools);
 		await persistSettings(selectedTools);
-		return expectedGeneration === state.sessionGeneration;
+		if (expectedGeneration !== state.sessionGeneration) return false;
+		// A new selection must add a tool; partial/no-op deselection cannot resume.
+		// An explicit enable action remains valid even when tools were already active.
+		// Startup restoration and automatic discovery do not use this transaction.
+		const activeTools = pi.getActiveTools();
+		if (selectedTools.some((name) => activeTools.includes(name) && (explicitEnable || !previousActiveTools.includes(name)))) {
+			intent.phase = "commit";
+			pi.events.emit("super-pi:chrome-devtools:user-selection", intent);
+		}
+		return true;
 	} catch (error) {
 		let rollbackError: unknown;
 		try {

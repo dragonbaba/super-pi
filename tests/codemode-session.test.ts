@@ -547,6 +547,170 @@ test("real tool_search activates allowed tools inside Codemode without exposing 
 	assert.deepEqual(f.session.getActiveToolNames().sort(), ["catalog_lookup", "codemode", "tool_search"]);
 });
 
+test("exact tool-name search outranks matching words in another tool description", async t => {
+	let browserCalls = 0, batchCalls = 0;
+	const extension: InlineExtension = pi => {
+		pi.registerTool({ name: "browser_exec", label: "Browser", description: "file: navigation is unsupported; batch a browser procedure",
+			parameters: Type.Object({}), execute: async () => { browserCalls++; return { content: [], details: {} }; } });
+		pi.registerTool({ name: "file_batch", label: "File batch", description: "file batch fixture",
+			parameters: Type.Object({}), execute: async () => { batchCalls++; return { content: [], details: {} }; } });
+	};
+	const f = await fixture(t, {}, [toolClassification, extension]);
+	f.session.setActiveToolsByName(["tool_search"]);
+	const outcome = await f.run(['text((await tools.tool_search({query:"  FILE_BATCH  ",limit:1})).details);await callTool("file_batch",{});']);
+	assert.equal(outcome.results[0]?.isError, false, JSON.stringify(outcome.results));
+	assert.equal(batchCalls, 1);
+	assert.equal(browserCalls, 0);
+	assert.deepEqual(f.session.getActiveToolNames().sort(), ["codemode", "file_batch", "tool_search"]);
+});
+
+test("browser search separates browsing and DevTools while approval failures pause automatic switching", async t => {
+	let devtoolsCalls = 0, browserCalls = 0;
+	const extension: InlineExtension = pi => {
+		pi.registerTool({ name: "browser_exec", label: "Browser Use", description: "browser web search",
+			parameters: Type.Object({}), execute: async () => { browserCalls++; throw new Error("[BROWSER_EXEC_PERMISSION_REQUIRED] Chrome approval is incomplete."); } });
+		pi.registerTool({ name: "chrome_devtools_list_pages", label: "Chrome pages", description: "browser web search cdp",
+			parameters: Type.Object({}), execute: async () => { devtoolsCalls++; return { content: [{ type: "text", text: "explicit browser" }], details: {} }; } });
+	};
+	const f = await fixture(t, {}, [toolClassification, extension]);
+	f.session.setActiveToolsByName(["tool_search"]);
+	const outcome = await f.run([
+		'const r=await tools.tool_search({query:"web search",limit:3});text(r.details);',
+		'await tools.browser_exec({});',
+		'const r=await tools.tool_search({query:"chrome_devtools_list_pages",limit:12});text(r.details);await callTool("chrome_devtools_list_pages",{});',
+	]);
+	assert.equal(outcome.results[0]?.isError, false);
+	assert.match(JSON.stringify(outcome.results[0]?.content), /browser_exec/);
+	assert.doesNotMatch(JSON.stringify(outcome.results[0]?.content), /chrome_devtools/);
+	assert.equal(outcome.results[1]?.isError, true);
+	assert.match(JSON.stringify(outcome.results[1]?.content), /PERMISSION_REQUIRED/);
+	assert.equal(outcome.results[2]?.isError, true);
+	assert.equal(devtoolsCalls, 0, "guessing a disabled name must not launch a second browser");
+	assert.equal(f.session.getActiveToolNames().includes("chrome_devtools_list_pages"), false);
+	const retry = await f.run(['await tools.browser_exec({});']);
+	assert.equal(retry.results.at(-1)?.isError, true);
+	assert.match(JSON.stringify(retry.results.at(-1)?.content), /BROWSER_APPROVAL_PAUSED/);
+	assert.equal(browserCalls, 1, "approval failure cannot cause another automatic connection attempt");
+	// Even a previously activated CDP tool cannot bypass an unresolved approval in this run.
+	f.session.setActiveToolsByName(["tool_search", "chrome_devtools_list_pages"]);
+	await (f.session as any)._extensionRunner.emitInput("continue automatically", undefined, "extension");
+	const blocked = await f.run(['await tools.chrome_devtools_list_pages({});']);
+	assert.equal(blocked.results.at(-1)?.isError, true);
+	assert.match(JSON.stringify(blocked.results.at(-1)?.content), /BROWSER_APPROVAL_PAUSED/);
+	assert.equal(devtoolsCalls, 0);
+	// A new user-directed run can select DevTools for its own task without a manual enable command.
+	f.session.setActiveToolsByName(["tool_search"]);
+	const directed = await f.run(['await tools.tool_search({query:"browser_debug"});text(await callTool("chrome_devtools_list_pages",{}));'], undefined, false, true);
+	assert.equal(directed.results.at(-1)?.isError, false, JSON.stringify(directed.results));
+	assert.equal(devtoolsCalls, 1);
+});
+
+test("DevTools is discoverable for local preview and exact names without enabling general browsing tools", async t => {
+	let browserCalls = 0, devtoolsCalls = 0;
+	const extension: InlineExtension = pi => {
+		pi.registerTool({ name: "browser_exec", label: "Browser", description: "browse web pages and screenshots",
+			parameters: Type.Object({}), execute: async () => { browserCalls++; throw new Error("[BROWSER_EXEC_FAILED] Python error quoting [BROWSER_EXEC_PERMISSION_REQUIRED]"); } });
+		pi.registerTool({ name: "chrome_devtools_list_pages", label: "Chrome pages", description: "list browser pages cdp",
+			parameters: Type.Object({}), execute: async () => { devtoolsCalls++; return { content: [], details: {} }; } });
+	};
+	const f = await fixture(t, {}, [toolClassification, extension]);
+	f.session.setActiveToolsByName(["tool_search", "browser_exec"]);
+	const failed = await f.run(['await tools.browser_exec({});']);
+	assert.equal(failed.results.at(-1)?.isError, true);
+	const queries = ["browser_debug", "cdp", "local preview", "本地页面预览", "chrome_devtools_list_pages",
+		"DOM inspection", "JavaScript inspection", "UI validation", "inspect DOM", "validate UI", "DOM检查", "界面验证", "browser_debug screenshot"];
+	for (const query of queries) {
+		f.session.setActiveToolsByName(["tool_search"]);
+		const outcome = await f.run([`text((await tools.tool_search({query:${JSON.stringify(query)}})).details);await callTool("chrome_devtools_list_pages",{});`]);
+		assert.equal(outcome.results.at(-1)?.isError, false, `${query}: ${JSON.stringify(outcome.results)}`);
+		assert.equal(f.session.getActiveToolNames().includes("browser_exec"), false, query);
+	}
+	assert.equal(devtoolsCalls, queries.length); assert.equal(browserCalls, 1, "an ordinary browser error does not pause DevTools");
+});
+
+test("explicit DevTools enable and selection clear only their session approval pause", async t => {
+	const configRoot = mkdtempSync(join(tmpdir(), "sp-cdp-user-selection-"));
+	const previousAgentDir = process.env.SP_CODING_AGENT_DIR;
+	process.env.SP_CODING_AGENT_DIR = join(configRoot, "agent");
+	let f: Awaited<ReturnType<typeof fixture>> | undefined;
+	let selectionSubscriptions = 0;
+	t.after(async () => { try { await (f?.session as any)?._extensionRunner.emit({ type: "session_shutdown" });
+		assert.equal(selectionSubscriptions, 0, "shutdown releases the selection subscription"); }
+		finally { if (previousAgentDir === undefined) delete process.env.SP_CODING_AGENT_DIR; else process.env.SP_CODING_AGENT_DIR = previousAgentDir;
+			rmSync(configRoot, { recursive: true, force: true }); } });
+	const { default: chromeDevtools } = await jiti.import<{ default: ExtensionFactory }>("../packages/chrome-devtools/src/chrome-devtools.ts");
+	const { setSelectedChromeDevtoolsTools } = await jiti.import<any>("../packages/chrome-devtools/src/tool-selector.ts");
+	let api: any, calls = 0;
+	f = await fixture(t, {}, [pi => (toolClassification as ExtensionFactory)({ ...pi, events: { ...pi.events,
+		on: (channel, handler) => {
+			const stop = pi.events.on(channel, handler);
+			if (channel !== "super-pi:chrome-devtools:user-selection") return stop;
+			selectionSubscriptions++;
+			let subscribed = true;
+			return () => { stop(); if (subscribed) { selectionSubscriptions--; subscribed = false; } };
+		},
+	} }), pi => {
+		api = pi;
+		chromeDevtools({ ...pi, registerTool: definition => pi.registerTool({ ...definition,
+			execute: async () => { calls++; return { content: [], details: undefined as never }; } }) });
+		pi.registerTool({ name: "browser_exec", label: "Browser", description: "browser fixture", parameters: Type.Object({}),
+			execute: async () => { throw new Error("[BROWSER_EXEC_PERMISSION_REQUIRED] Pending approval"); } });
+	}]);
+	assert.equal(selectionSubscriptions, 1);
+	f.session.setActiveToolsByName(["browser_exec", "chrome_devtools_list_pages"]);
+	await f.run(['await tools.browser_exec({});']);
+	api.events.emit("super-pi:chrome-devtools:user-selection", { sessionId: "another-session" });
+	const denied = await f.run(['await tools.chrome_devtools_list_pages({});']);
+	assert.equal(denied.results.at(-1)?.isError, true); assert.equal(calls, 0);
+	await f.session.prompt("/chrome-devtools disable");
+	f.session.setActiveToolsByName(["browser_exec", "chrome_devtools_list_pages"]);
+	const stillDenied = await f.run(['await tools.chrome_devtools_list_pages({});']);
+	assert.equal(stillDenied.results.at(-1)?.isError, true); assert.equal(calls, 0);
+	await f.session.prompt("/chrome-devtools enable");
+	const enabled = await f.run(['await tools.chrome_devtools_list_pages({});']);
+	assert.equal(enabled.results.at(-1)?.isError, false, JSON.stringify(enabled.results.at(-1)));
+	assert.equal(calls, 1);
+	await f.run(['await tools.browser_exec({});']);
+	await f.session.prompt("/chrome-devtools enable");
+	const reenabled = await f.run(['await tools.chrome_devtools_list_pages({});']);
+	assert.equal(reenabled.results.at(-1)?.isError, false, "explicit enable resumes even if all tools were active");
+	assert.equal(calls, 2);
+	await f.run(['await tools.browser_exec({});']);
+	const selectionContext = (f.session as any)._extensionRunner.createContext();
+	for (const reason of ["partial deselection", "unchanged selection"]) {
+		assert.equal(await setSelectedChromeDevtoolsTools(api, selectionContext, ["chrome_devtools_list_pages"]), true);
+		const paused = await f.run(['await tools.chrome_devtools_list_pages({});']);
+		assert.equal(paused.results.at(-1)?.isError, true, reason); assert.equal(calls, 2, reason);
+	}
+	assert.equal(await setSelectedChromeDevtoolsTools(api, selectionContext, ["chrome_devtools_list_pages", "chrome_devtools_evaluate"]), true);
+	const selected = await f.run(['await tools.chrome_devtools_list_pages({});']);
+	assert.equal(selected.results.at(-1)?.isError, false, JSON.stringify(selected.results.at(-1)));
+	assert.equal(calls, 3);
+	// Hold real settings I/O while a previously submitted choice is overtaken by
+	// a browser failure. Its eventual successful save is not newer user direction.
+	const { saveSettings } = await jiti.import<any>("../packages/chrome-devtools/src/settings.js");
+	const { updateChromeDevtoolsTools, allChromeDevtoolsTools } = await jiti.import<any>("../packages/chrome-devtools/src/tool-selector.ts");
+	const { rename } = await import("node:fs/promises");
+	let releaseSave!: () => void, reachedSave!: () => void;
+	const saveGate = new Promise<void>(resolve => { releaseSave = resolve; });
+	const saveEntered = new Promise<void>(resolve => { reachedSave = resolve; });
+	const heldSave = saveSettings({ tools: [], updatedAt: 0 }, { rename: async (from: string, to: string) => {
+		reachedSave(); await saveGate; await rename(from, to);
+	} });
+	let enabling: Promise<unknown> | undefined;
+	try {
+		await saveEntered;
+		enabling = updateChromeDevtoolsTools(api, selectionContext, allChromeDevtoolsTools(), "enabled all", true);
+		await f.run(['await tools.browser_exec({});']);
+	} finally { releaseSave(); await heldSave; await enabling; }
+	const overtaken = await f.run(['await tools.chrome_devtools_list_pages({});']);
+	assert.equal(overtaken.results.at(-1)?.isError, true, "pre-failure choice must not clear the later pause");
+	assert.equal(calls, 3);
+	await f.session.prompt("/chrome-devtools enable");
+	const freshEnable = await f.run(['await tools.chrome_devtools_list_pages({});']);
+	assert.equal(freshEnable.results.at(-1)?.isError, false); assert.equal(calls, 4);
+});
+
 test("successful state writes persist as a versioned branch entry; failed script writes do not", async t => {
 	const f = await fixture(t, { tools: ["read"] });
 	const outcome = await f.run(['store("n",3)', 'store("n",4); throw new Error("fail")', 'text(load("n"))']);
@@ -742,14 +906,14 @@ test("Goal/interaction controls remain model-only and cannot be called through a
 	assert.doesNotMatch(JSON.stringify(outcome.results[0]?.content), /control was invoked indirectly/);
 });
 
-test("real MCP adapter discovery executes in Codemode and ignores self-reported read concurrency", async t => {
+test("real MCP adapter preserves long instructions and ignores self-reported read concurrency", async t => {
 	let runtime: any, active = 0, maximum = 0, calls = 0;
 	const extension: InlineExtension = pi => {
 		runtime = new McpBridgeRuntime(pi, "fixture");
 		const state = { status: "connected", catalogReady: true, config: { id: "fixture", toolTimeoutMs: 1000 }, tools: new Map([["lookup", {}]]), client: {
 			async callTool() { calls++; maximum = Math.max(maximum, ++active); await new Promise(resolve => setImmediate(resolve)); active--; return { content: [{ type: "text", text: "native MCP result" }] }; }, async close() {} } };
 		runtime.states.set("fixture", state);
-		runtime.registerRemoteTool(state, { name: "lookup", description: "lookup", annotations: { readOnlyHint: true }, inputSchema: { type: "object", properties: {} } });
+		runtime.registerRemoteTool(state, { name: "lookup", description: "lookup instructions ".repeat(250) + "FINAL_MCP_INSTRUCTION", annotations: { readOnlyHint: true }, inputSchema: { type: "object", properties: {} } });
 		pi.registerTool({ name: "mcp_search_tools", label: "search", description: "discovery fixture", parameters: Type.Object({}), execute: async () => {
 			pi.setActiveTools([...pi.getActiveTools(), ...runtime.searchTools("lookup")]); return { content: [], details: {} };
 		} });
@@ -758,10 +922,12 @@ test("real MCP adapter discovery executes in Codemode and ignores self-reported 
 	const f = await fixture(t, { toolResultPresentation: { enabled: true, budgetTokens: 8000 } }, [extension]);
 	t.after(() => runtime.close());
 	f.session.setActiveToolsByName(["mcp_search_tools"]);
-	const outcome = await f.run(['await tools.mcp_search_tools({}); const r=await Promise.all([callTool("mcp__fixture__lookup",{}),callTool("mcp__fixture__lookup",{})]);text(r[0].content);']);
+	const outcome = await f.run(['await tools.mcp_search_tools({}); const r=await Promise.all([callTool("mcp__fixture__lookup",{}),callTool("mcp__fixture__lookup",{})]);text(r[0].content);text(await describeTools(["mcp__fixture__lookup"]));']);
 	assert.equal(outcome.results[0]?.isError, false, JSON.stringify(outcome.results));
 	assert.equal(calls, 2); assert.equal(maximum, 1);
 	assert.match(JSON.stringify(outcome.results[0]?.content), /native MCP result/);
+	assert.match(JSON.stringify(outcome.results[0]?.content), /FINAL_MCP_INSTRUCTION/);
+	assert.ok(f.session.getAllTools().find(tool => tool.name === "mcp__fixture__lookup")!.description.length <= 1000);
 	assert.equal(runtime.activeCalls.size, 0);
 	const controller = (f.session as any)._codemode;
 	const description = controller.definition.description;
@@ -776,6 +942,204 @@ test("real MCP adapter discovery executes in Codemode and ignores self-reported 
 
 test("mandatory Codemode rejects exclusion before creating resources", async () => {
 	await assert.rejects(createAgentSession({ excludeTools: ["codemode"] }), /required default tool transport/);
+});
+
+test("Codemode exposes real browser instructions and constraints to the model without executing the browser", async t => {
+	const { default: browserUse } = await jiti.import<{ default: InlineExtension }>("../packages/extensions/browser-use/index.ts");
+	const f = await fixture(t, {}, [browserUse]);
+	const outcome = await f.run(['text(await describeTools(["browser_exec"]));']);
+	const text = outcome.results[0]!.content.filter(block => block.type === "text").map(block => block.text).join("\n");
+	assert.equal(outcome.results[0]!.isError, false, text);
+	assert.match(text, /Helpers are synchronous and pre-imported/);
+	assert.match(text, /page_info\(\) requires a loaded document/);
+	assert.match(text, /@maxLength 4000/);
+	assert.match(text, /@integer @minimum 5000 @maximum 300000 @default 120000/);
+	assert.match(text, /Promise<ToolResult>/);
+	assert.match(text, /type ToolResult = .*ref: string/);
+	assert.doesNotMatch(text, /More tool documentation/);
+	assert.deepEqual((outcome.results[0]!.details as any).codemode.calls, []);
+	assert.match(outcome.wires[0]!.tools!.find(tool => tool.name === "codemode")!.description, /Drive a real browser/);
+});
+
+test("Codemode exposes the real DevTools task and browser-profile guidance after discovery", async t => {
+	const definitions = await jiti.import<Record<string, any>>("../packages/chrome-devtools/src/tools.ts");
+	const f = await fixture(t, {}, [toolClassification, pi => {
+		for (const key of ["listPagesTool", "selectPageTool", "navigateTool", "evaluateTool", "screenshotTool"]) pi.registerTool(definitions[key]);
+	}]);
+	f.session.setActiveToolsByName(["tool_search"]);
+	const outcome = await f.run(['text((await tools.tool_search({query:"browser_debug"})).details);',
+		'text(await describeTools(["chrome_devtools_navigate","chrome_devtools_evaluate"]));']);
+	assert.equal(outcome.results.at(-1)?.isError, false);
+	const text = JSON.stringify(outcome.results.at(-1)?.content);
+	assert.match(text, /local HTML\/localhost preview/);
+	assert.match(text, /no manual enable command is required/);
+	assert.match(text, /isolated browser profile/);
+	assert.match(text, /Do not switch here to bypass incomplete Browser Harness approval/);
+	assert.deepEqual((outcome.results.at(-1)?.details as any).codemode.calls, []);
+});
+
+test("Codemode documentation pages preserve long instructions and exact schemas without widening tool access", async t => {
+	const description = "Long instructions. 🚀 ".repeat(2500) + "FINAL_REQUIRED_INSTRUCTION";
+	const properties: Record<string, any> = {};
+	for (let i = 0; i < 60; i++) properties[`field_${i}`] = { type: "string", description: "detail ".repeat(45), pattern: "a🚀".repeat(33), default: "𠮷🙂".repeat(25) };
+	const tools: InlineExtension = pi => pi.registerTool({ name: "mcp__fixture__large", label: "large", description,
+		parameters: { type: "object", properties, additionalProperties: false } as any,
+		execute: async () => { throw new Error("Discovery must not execute a tool"); } });
+	const f = await fixture(t, {}, [tools]);
+	const outcome = await f.run([`
+const names=["mcp__fixture__large"];
+async function readPages(format) {
+  let offset=0, body="", pages=0, maxPage=0, revision;
+  while(true) {
+    const page=await describeTools(names,{offset,limit:4000,format,revision});
+    if(!page.isWellFormed()) throw new Error("page splits a Unicode surrogate pair");
+    const header=/^\\[Tool documentation chars (\\d+)\\.\\.(\\d+) of (\\d+); format:\\w+; revision:([^\\]]+)\\]\\n/.exec(page);
+    if(!header || Number(header[1])!==offset) throw new Error("bad page offset");
+    revision=header[4];
+    const end=Number(header[2]), total=Number(header[3]);
+    body+=page.slice(header[0].length,header[0].length+end-offset);
+    maxPage=Math.max(maxPage,page.length);pages++;
+    if(end===total) break;
+    if(end<=offset || !page.includes("offset:"+end)) throw new Error("missing continuation");
+    offset=end;
+  }
+  const pair=body.indexOf("🚀");
+  const overlap=await describeTools(names,{offset:pair+1,limit:256,format,revision});
+  if(!overlap.startsWith("[Tool documentation chars "+pair+"..") || !overlap.isWellFormed()) throw new Error("mid-pair offset was not normalized");
+  if(!overlap.slice(overlap.indexOf("\\n")+1).startsWith("🚀")) throw new Error("normalized page lost the first code point");
+  return {body,pages,maxPage};
+}
+const ts=await readPages("typescript"), raw=await readPages("json");
+const schema=JSON.parse(raw.body.split("Input JSON Schema:\\n")[1].split("\\nResult: ToolResult")[0]);
+text({tail:ts.body.includes("FINAL_REQUIRED_INSTRUCTION"),unknown:ts.body.includes("args: unknown"),
+ fields:Object.keys(schema.properties).length,pattern:schema.properties.field_59.pattern,defaultValue:schema.properties.field_59.default,
+ rockets:ts.body.split("🚀").length-1,
+ pages:ts.pages,maxPage:Math.max(ts.maxPage,raw.maxPage),
+ hidden:await describeTools(["not_registered","ask_user","codemode"])});
+`]);
+	assert.equal(outcome.results[0]!.isError, false, JSON.stringify(outcome.results[0]!.content));
+	const block = outcome.results[0]!.content.find(block => block.type === "text" && block.text.startsWith('{"tail"'));
+	assert.ok(block?.type === "text");
+	const data = JSON.parse(block.text);
+	assert.equal(data.tail, true); assert.equal(data.unknown, true);
+	assert.equal(data.fields, 60); assert.equal(data.pattern, "a🚀".repeat(33));
+	assert.equal(data.defaultValue, "𠮷🙂".repeat(25)); assert.equal(data.rockets, 2500);
+	assert.ok(data.pages > 10); assert.ok(data.maxPage < 4300); assert.equal(data.hidden, "");
+	assert.deepEqual((outcome.results[0]!.details as any).codemode.calls, []);
+});
+
+test("Codemode documentation rejects mixed MCP revisions and requires a continuation token", async t => {
+	let runtime: any;
+	const extension: InlineExtension = pi => {
+		runtime = new McpBridgeRuntime(pi, "fixture");
+		const state = { config: { id: "fixture" } };
+		const register = (name: string) => runtime.registerRemoteTool(state, { name: "lookup", description: "paged metadata",
+			inputSchema: { type: "object", properties: { [name]: { type: "string", description: "detail ".repeat(200) } } } });
+		register("cached");
+		pi.registerTool({ name: "refresh_catalog", label: "Refresh fixture", description: "replace cached MCP schema",
+			parameters: Type.Object({}), execute: async () => { register("live"); return { content: [], details: {} }; } });
+	};
+	const f = await fixture(t, {}, [extension]);
+	t.after(() => runtime.close());
+	const outcome = await f.run([`
+const names=["mcp__fixture__lookup"], options={format:"json",limit:256};
+const first=await describeTools(names,options), revision=/; revision:([^\\]]+)\\]/.exec(first)[1];
+await tools.refresh_catalog({});
+try { await describeTools(names,{...options,offset:256,revision}); throw new Error("mixed revisions accepted"); }
+catch(e) { if(!String(e).includes("TOOL_DOCUMENTATION_CHANGED")) throw e; text("stale revision rejected"); }
+try { await describeTools(names,{...options,offset:256}); throw new Error("missing revision accepted"); }
+catch(e) { if(!String(e).includes("continuation requires")) throw e; text("missing revision rejected"); }
+const fresh=await describeTools(names,{format:"json",limit:8000});
+if(/; revision:([^\\]]+)\\]/.exec(fresh)[1]===revision) throw new Error("revision did not change");
+text(JSON.parse(fresh.split("Input JSON Schema:\\n")[1].split("\\nResult: ToolResult")[0]));
+`]);
+	assert.equal(outcome.results[0]?.isError, false, JSON.stringify(outcome.results));
+	const text = JSON.stringify(outcome.results[0]?.content);
+	assert.match(text, /stale revision rejected/); assert.match(text, /missing revision rejected/);
+	assert.match(text, /live/); assert.doesNotMatch(text, /cached/);
+});
+
+test("Codemode JSON pagination serializes each selected schema once and releases its snapshot", async t => {
+	let schemaReads = 0;
+	const names: string[] = [];
+	const extension: InlineExtension = pi => {
+		for (let i = 0; i < 16; i++) {
+			const name = `mcp__paged__tool_${i}`;
+			names.push(name);
+			const properties = { value: { type: "string", description: "x".repeat(60_000) } };
+			pi.registerTool({ name, label: name, description: "large schema fixture",
+				parameters: { type: "object", get properties() { schemaReads++; return properties; } } as any,
+				execute: async () => { throw new Error("Metadata lookup must not execute a tool"); } });
+		}
+	};
+	const f = await fixture(t, {}, [extension]);
+	const owner = (f.session as any)._codemode;
+	schemaReads = 0;
+	const first = await f.run([`const p=await describeTools(${JSON.stringify(names)},{format:"json"});store("revision",/; revision:([^\\]]+)\\]/.exec(p)[1]);`]);
+	assert.equal(first.results[0]!.isError, false);
+	assert.equal(schemaReads, 16);
+	const rest = await f.run([`
+let offset=8000, pages=1;
+while(true) {
+  const page=await describeTools(${JSON.stringify(names)},{format:"json",offset,revision:load("revision")});
+  const h=/chars (\\d+)\\.\\.(\\d+) of (\\d+);/.exec(page);
+  if(Number(h[1])!==offset || Number(h[2])<=offset) throw new Error("bad continuation");
+  pages++;
+  if(h[2]===h[3]) break;
+  offset=Number(h[2]);
+}
+text("pages:"+pages);
+`]);
+	assert.equal(rest.results[0]!.isError, false, JSON.stringify(rest.results));
+	assert.equal(schemaReads, 16, "continuations must not reserialize preceding or following schemas");
+	assert.equal(owner.documentationSnapshot, undefined, "the final page releases serialized schemas");
+	await f.run([`await describeTools(${JSON.stringify(names)},{format:"json",limit:256});`]);
+	assert.ok(owner.documentationSnapshot);
+	f.session.setActiveToolsByName([names[0]!]);
+	assert.equal(owner.documentationSnapshot, undefined, "catalog changes release the snapshot");
+	await f.run([`await describeTools([${JSON.stringify(names[0])}],{format:"json",limit:256});`]);
+	assert.ok(owner.documentationSnapshot);
+	await f.run(['throw new Error("stop fixture")']);
+	assert.equal(owner.documentationSnapshot, undefined, "failed scripts release the snapshot");
+	await f.run([`await describeTools([${JSON.stringify(names[0])}],{format:"json",limit:256});`]);
+	assert.ok(owner.documentationSnapshot);
+	await owner.close();
+	assert.equal(owner.documentationSnapshot, undefined, "close releases the snapshot");
+});
+
+test("Codemode inline and catalog summaries preserve Unicode at both cutoffs", async () => {
+	const owner = new CodemodeController(() => {});
+	const description = "a".repeat(255) + "🚀" + "b".repeat(642) + "𠮷" + "c".repeat(200);
+	try {
+		owner.setTools([{ name: "unicode_fixture", label: "Unicode", description, parameters: Type.Object({}), execute: async () => ({ content: [], details: {} }) }]);
+		assert.equal(Buffer.from(owner.definition.description).toString("utf8"), owner.definition.description, "inline purpose must survive UTF-8 at 256");
+		const summary = (owner as any).descriptors[0].description;
+		assert.equal(Buffer.from(summary).toString("utf8"), summary, "catalog summary must survive UTF-8 at 900");
+		assert.match(summary, /Summary only/);
+		assert.equal(summary.slice(0, summary.indexOf("\n")).length, 899);
+	} finally { await owner.close(); }
+});
+
+test("Codemode documentation rejects continuation after identifier collisions change aliases", async t => {
+	const extension: InlineExtension = pi => {
+		for (const name of ["foo-bar", "foo_bar"]) pi.registerTool({ name, label: name, description: "detail ".repeat(250),
+			parameters: Type.Object({}), execute: async () => ({ content: [], details: {} }) });
+		pi.registerTool({ name: "activate_fixture", label: "Activate fixture", description: "activate an already registered collision",
+			parameters: Type.Object({}), execute: async () => { pi.setActiveTools([...pi.getActiveTools(), "foo_bar"]); return { content: [], details: {} }; } });
+	};
+	const f = await fixture(t, {}, [extension]);
+	f.session.setActiveToolsByName(["foo-bar", "activate_fixture"]);
+	const outcome = await f.run([`
+const names=["foo-bar"];
+const first=await describeTools(names,{limit:256}), revision=/; revision:([^\\]]+)\\]/.exec(first)[1];
+await tools.activate_fixture({});
+try { await describeTools(names,{offset:256,limit:256,revision}); throw new Error("mixed aliases accepted"); }
+catch(e) { if(!String(e).includes("TOOL_DOCUMENTATION_CHANGED")) throw e; text("mapping revision rejected"); }
+text(await describeTools(names));
+`]);
+	assert.equal(outcome.results[0]?.isError, false, JSON.stringify(outcome.results));
+	assert.match(JSON.stringify(outcome.results[0]?.content), /mapping revision rejected/);
+	assert.match(JSON.stringify(outcome.results[0]?.content), /foo_bar_2\(args:/);
 });
 
 test("MCP activation keeps inline declarations stable; overflow remains explicitly discoverable", async () => {
@@ -806,6 +1170,7 @@ test("controller releases catalog metadata even when sandbox shutdown rejects", 
 	const owner = new CodemodeController(() => {});
 	owner.setTools([{ name: "catalog_cleanup", label: "cleanup", description: "cleanup", parameters: Type.Object({}), execute: async () => ({ content: [], details: {} }) }]);
 	const failure = new Error("fixture shutdown failure");
+	(owner as any).documentationSnapshot = { revision: "fixture", schemas: ["retained schema"] };
 	(owner as any).sandbox = { close: async () => { throw failure; } };
 	await assert.rejects(owner.close(), error => error === failure);
 	assert.equal((owner as any).sandbox, undefined);
@@ -813,6 +1178,7 @@ test("controller releases catalog metadata even when sandbox shutdown rejects", 
 	assert.equal((owner as any).descriptors.length, 0);
 	assert.equal((owner as any).identifiers.size, 0);
 	assert.equal((owner as any).identifierNames.size, 0);
+	assert.equal((owner as any).documentationSnapshot, undefined);
 	assert.doesNotMatch(owner.definition.description, /catalog_cleanup/);
 	await owner.close();
 });
@@ -820,10 +1186,15 @@ test("controller releases catalog metadata even when sandbox shutdown rejects", 
 test("disposed sessions release wrapped declarations and ignore late catalog callbacks", async t => {
 	const f = await fixture(t, { tools: ["read"] });
 	const owner = (f.session as any)._codemode;
+	await f.run(['await describeTools(["read"]);']);
+	const describedTool = f.session.agent.state.tools.find(tool => tool.name === "read")!;
+	assert.ok(owner.documentationVersions.has(describedTool));
 	const previousTools = owner.tools;
 	const wrapper = (f.session as any)._toolRegistry.get("codemode");
 	assert.ok(wrapper.description.length > CODEMODE_DESCRIPTION.length);
 	f.session.dispose(); await owner.close();
+	assert.equal(owner.documentationVersions.has(describedTool), false, "closed owner clears documentation revision identities");
+	assert.equal(owner.documentationRevisionPrefix, undefined);
 	assert.equal(wrapper.description, CODEMODE_DESCRIPTION);
 	assert.equal(f.session.agent.state.tools.find(tool => tool.name === "codemode")!.description, CODEMODE_DESCRIPTION);
 	assert.equal(f.session.agent.state.modelTools!.find(tool => tool.name === "codemode")!.description, CODEMODE_DESCRIPTION);
@@ -909,16 +1280,19 @@ for (const tampered of [false, true]) test(`an admitted Codemode read ${tampered
 });
 
 test("a nested tool that ignores cancellation cannot wedge Codemode past its deadline", async t => {
-	const hang: InlineExtension = pi => pi.registerTool({ name: "hang", label: "hang", description: "ignores abort", parameters: Type.Object({}),
-		execute: () => new Promise<never>(() => {}) });
+	let owner: any;
+	const hang: InlineExtension = pi => pi.registerTool({ name: "hang", label: "hang", description: "ignores abort ".repeat(100), parameters: Type.Object({}),
+		execute: () => { assert.ok(owner.documentationSnapshot); return new Promise<never>(() => {}); } });
 	const f = await fixture(t, {}, [hang]);
+	owner = (f.session as any)._codemode;
 	const started = Date.now();
-	const outcome = await f.run(['// @options: {"timeout_ms":200}\nawait tools.hang({})']);
+	const outcome = await f.run(['// @options: {"timeout_ms":200}\nawait describeTools(["hang"],{limit:256});await tools.hang({})']);
 	assert.ok(Date.now() - started < 15_000, "bounded by the timeout plus the cancellation grace period");
 	const parent = outcome.results[0]!;
 	assert.equal(parent.isError, true);
 	assert.match(JSON.stringify(parent.content), /CODEMODE_TIMEOUT/);
 	assert.match(JSON.stringify(parent.content), /NESTED_TOOL_ABANDONED\] 1 child call/);
+	assert.equal(owner.documentationSnapshot, undefined, "deadline cancellation releases pending documentation");
 });
 
 test("Codemode image files remain addressable after a completed script and session reopen", async t => {

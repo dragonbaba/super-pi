@@ -35,22 +35,27 @@ function parseCatalog(providerId: string, value: unknown): Model<Api>[] {
 		.map((model) => stripModelProfileMetadata({ ...model, provider: providerId }));
 }
 
+function remoteModelId(provider: Provider, model: Model<Api>): string {
+	// Old cached and newly downloaded catalogs can still carry models.dev's
+	// dotted Claude IDs. Canonicalize before precedence checks and merging;
+	// provider profile hooks also run on user-defined models and are too broad.
+	if (
+		provider.id === "cloudflare-ai-gateway" &&
+		model.api === "anthropic-messages" &&
+		model.id.startsWith("claude-") &&
+		model.id.includes(".")
+	) {
+		return model.id.replaceAll(".", "-");
+	}
+	return model.id;
+}
+
 function profileRemoteModel(provider: Provider, model: Model<Api>, legacyRuntimeProfile = false): Model<Api> {
 	const legacyDiagnostics = legacyRuntimeProfile ? legacyRuntimeProfileDiagnostics(model) : undefined;
 	const raw = legacyRuntimeProfile
 		? stripModelRuntimeProfile(model)
 		: stripModelProfileMetadata(model);
-	// Old cached and newly downloaded catalogs can still carry models.dev's
-	// dotted Claude IDs. Normalize this owned copy before exact-ID merging;
-	// provider profile hooks also run on user-defined models and are too broad.
-	if (
-		provider.id === "cloudflare-ai-gateway" &&
-		raw.api === "anthropic-messages" &&
-		raw.id.startsWith("claude-") &&
-		raw.id.includes(".")
-	) {
-		raw.id = raw.id.replaceAll(".", "-");
-	}
+	raw.id = remoteModelId(provider, raw);
 	const enriched = provider.profileModel?.(raw) ?? raw;
 	return withModelProfile(enriched, "provider-catalog", {
 		costKnown: enriched.costKnown ?? true,
@@ -59,12 +64,20 @@ function profileRemoteModel(provider: Provider, model: Model<Api>, legacyRuntime
 }
 
 function remoteModels(
+	provider: Provider,
 	entry: ModelsStoreEntry | undefined,
 	localGeneratedAt: number | undefined,
 ): readonly Model<Api>[] {
 	if (!entry) return [];
 	if (localGeneratedAt !== undefined && (entry.lastModified === undefined || entry.lastModified <= localGeneratedAt)) {
-		return [];
+		// A newer bundle can correct existing definitions without containing every
+		// remote model. Keep remote-only IDs; stale overlaps must not undo fixes.
+		// This index is refresh-local, and canonical IDs prevent renamed aliases
+		// from bypassing the built-in definition's precedence.
+		const builtinIds = new Set<string>();
+		for (const model of provider.getModels()) builtinIds.add(model.id);
+		return entry.models.filter((model) =>
+			model.provider === provider.id && !builtinIds.has(remoteModelId(provider, model)));
 	}
 	return entry.models;
 }
@@ -84,7 +97,7 @@ export function withRemoteCatalog(
 		refreshModels: async (context) => {
 			const stored = context.stored;
 			const legacyRuntimeProfile = stored !== undefined && stored.profileRevision !== MODELS_STORE_PROFILE_REVISION;
-			const restored = remoteModels(stored, localGeneratedAt)
+			const restored = remoteModels(provider, stored, localGeneratedAt)
 				.filter((model) => model.provider === provider.id)
 				.map((model) => profileRemoteModel(provider, model, legacyRuntimeProfile));
 			if (
@@ -141,9 +154,14 @@ export function withRemoteCatalog(
 				await context.publish({
 					persist: {
 						...(stored ?? { models: [] }),
+						models: [],
 						checkedAt,
 						lastModified: 0,
 						etag: undefined,
+					},
+					update: () => {
+						dynamicModels = [];
+						mergedModels = undefined;
 					},
 				});
 				return;
@@ -168,7 +186,7 @@ export function withRemoteCatalog(
 				lastModified: Number.isNaN(lastModified) ? 0 : lastModified,
 				etag: response.headers.get("etag") ?? undefined,
 			};
-			const published = remoteModels(entry, localGeneratedAt).map((model) => profileRemoteModel(provider, model));
+			const published = remoteModels(provider, entry, localGeneratedAt).map((model) => profileRemoteModel(provider, model));
 			await context.publish({
 				persist: entry,
 				update: () => {

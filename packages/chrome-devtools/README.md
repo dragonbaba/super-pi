@@ -6,6 +6,18 @@
 
 Use it to let the Pi agent inspect browser tabs, navigate pages, evaluate JavaScript, and capture screenshots while debugging web apps or validating UI behavior.
 
+The model can discover and activate these tools with
+`tool_search({query:"browser_debug"})`, a local-preview query, or an exact
+`chrome_devtools_*` name. `/chrome-devtools enable` is optional manual control.
+Use DevTools for local HTML/localhost preview, DOM/JavaScript inspection, UI
+validation, or an explicitly requested CDP endpoint. Use Browser Harness for
+ordinary public-web work in the user's browser, especially when its login state
+matters. Verify the target page/profile before interacting: an isolated CDP browser
+does not inherit that login or resolve a pending Browser Harness approval. When
+approval is pending, wait for user direction instead of changing browsers.
+The currently exposed operations are the five tools below; discovery does not add
+network interception or tracing APIs that these tools do not implement.
+
 This package is inspired by [`chrome-devtools-mcp`](https://github.com/ChromeDevTools/chrome-devtools-mcp), but it is implemented as native Pi tools instead of an MCP server.
 
 ## ✨ Features

@@ -31,6 +31,7 @@ import { AssistantMessageEventStream } from "../packages/ai/src/utils/event-stre
 import type { AssistantMessage } from "../packages/ai/src/types.ts";
 import { Type } from "typebox";
 import type { ExtensionAPI } from "../packages/coding-agent/src/core/extensions/types.ts";
+import toolClassification from "../packages/tool-classification/src/index.ts";
 
 const USAGE = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 
@@ -188,12 +189,80 @@ test("disabled bridge does not read or migrate invalid MCP config/cache", async 
 	writeFileSync(config, "invalid fixture config"); writeFileSync(cache, "invalid fixture cache");
 	await h.events.get("session_start")({ type: "session_start", reason: "startup", mcpEnabled: false }, h.ctx);
 	await h.events.get("session_tree")({}, h.ctx);
-	await assert.rejects(h.search(), /not started/);
+	await assert.rejects(h.search(), /MCP_DISABLED/);
 	assert.equal(f.endpoint.initializes, 0); assert.equal(f.endpoint.lists, 0); assert.equal(f.endpoint.calls, 0);
 	assert.deepEqual(h.notes, []);
 	assert.equal(readFileSync(config, "utf8"), "invalid fixture config");
 	assert.equal(readFileSync(cache, "utf8"), "invalid fixture cache");
 	assert.equal(existsSync(join(f.agentDir, "mcp-activation.key")), false);
+});
+
+for (const configuration of ["absent", "empty"]) test(`MCP search reports an unconfigured catalog: ${configuration}`, async t => {
+	const f = await fixture(t), h = f.host();
+	const configPath = join(f.agentDir, "config", "mcp.json");
+	if (configuration === "absent") unlinkSync(configPath);
+	else writeFileSync(configPath, JSON.stringify({ version: 1, servers: {} }));
+	await assert.rejects(h.search(), /MCP_NOT_READY/);
+	await h.start();
+	const before = h.active().slice(), entries = h.manager.getEntries().length;
+	const result = await h.search("web search");
+	assert.deepEqual(result.details, { status: "unconfigured", matches: [] });
+	assert.notEqual(result.isError, true);
+	assert.match(result.content[0].text, /No MCP servers are configured/);
+	assert.deepEqual(h.active(), before);
+	assert.equal(h.manager.getEntries().length, entries);
+	await h.commands.get("mcp-status")("", h.ctx);
+	await h.commands.get("mcp-tools")("", h.ctx);
+	assert.ok(h.notes.every(note => note.includes("No MCP servers are configured")));
+	const controller = new AbortController(); controller.abort(new Error("fixture search cancelled"));
+	await assert.rejects(h.search("web search", controller.signal), /fixture search cancelled/);
+	assert.equal(getEventListeners(controller.signal, "abort").length, 0);
+	await h.stop();
+	await assert.rejects(h.search(), /MCP_NOT_READY/);
+	assert.equal(f.endpoint.initializes, 0); assert.equal(f.endpoint.lists, 0); assert.equal(f.endpoint.calls, 0);
+});
+
+test("Codemode continues to an available browser after empty MCP search", async t => {
+	const f = await fixture(t);
+	writeFileSync(join(f.agentDir, "config", "mcp.json"), JSON.stringify({ version: 1, servers: {} }));
+	const settings = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } });
+	let browserCalls = 0;
+	const resources = new DefaultResourceLoader({ cwd: f.root, agentDir: f.agentDir, settingsManager: settings,
+		noExtensions: true, noContextFiles: true, noSkills: true, noPromptTemplates: true, noThemes: true,
+		extensionFactories: [mcpBridgeExtension, toolClassification, (pi: ExtensionAPI) => {
+			pi.registerTool({ name: "browser_exec", label: "browser fixture", description: "browser web search fixture",
+				parameters: Type.Object({}), execute: async () => { browserCalls++; return { content: [{ type: "text", text: "browser fixture completed" }], details: {} }; } });
+		}] });
+	await resources.reload();
+	assert.deepEqual(resources.getExtensions().errors, []);
+	const { session } = await createAgentSession({ cwd: f.root, agentDir: f.agentDir, resourceLoader: resources, settingsManager: settings,
+		sessionManager: SessionManager.inMemory(f.root),
+		model: { id: "fixture", name: "fixture", api: "openai-responses", provider: "fixture", baseUrl: "http://unused", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32000, maxTokens: 4096 },
+		modelRuntime: { hasConfiguredAuth: () => true, checkAuth: async () => ({ type: "api_key" }), isUsingOAuth: () => false, getModel: () => undefined, getAuth: async () => undefined } as never });
+	f.cleanup.push(async () => { try { await emitSessionShutdownEvent(session.extensionRunner, { type: "session_shutdown", reason: "quit" }); } finally { session.dispose(); } });
+	await session.bindExtensions({});
+	const scripts = [
+		'text(await tools.tool_search({query:"browser",limit:1}));text(await tools.tool_search({query:"mcp",limit:1}));',
+		'text(await tools.mcp_search_tools({query:"web search"}));text(await tools.browser_exec({}));',
+	];
+	let response = 0;
+	session.agent.streamFunction = () => {
+		const code = scripts[response++];
+		const message: AssistantMessage = { role: "assistant", api: "openai-responses", provider: "fixture", model: "fixture", usage: USAGE,
+			content: code === undefined ? [{ type: "text", text: "done" }] : [{ type: "toolCall", id: `script-${response}`, name: "codemode", arguments: { code } }],
+			stopReason: code === undefined ? "stop" : "toolUse", timestamp: response };
+		const stream = new AssistantMessageEventStream();
+		stream.push({ type: "done", reason: message.stopReason as "toolUse" | "stop", message });
+		return stream;
+	};
+	await session.prompt("run offline discovery fixture");
+	const results = session.agent.state.messages.filter(message => message.role === "toolResult");
+	assert.equal(results.length, 2);
+	assert.ok(results.every(result => !result.isError), JSON.stringify(results));
+	assert.match(JSON.stringify(results[1]!.content), /unconfigured/);
+	assert.match(JSON.stringify(results[1]!.content), /browser fixture completed/);
+	assert.equal(browserCalls, 1);
+	assert.equal(f.endpoint.initializes, 0); assert.equal(f.endpoint.lists, 0); assert.equal(f.endpoint.calls, 0);
 });
 
 for (const configuration of ["absent", "invalid"]) {
@@ -211,6 +280,7 @@ for (const configuration of ["absent", "invalid"]) {
 		assert.equal(existsSync(join(f.agentDir, "mcp-activation.key")), false);
 		if (configuration === "invalid") { assert.equal(h.notes.length, 1); assert.match(h.notes[0]!, /configuration error/); }
 		else assert.deepEqual(h.notes, []);
+		if (configuration === "invalid") await assert.rejects(h.search(), /MCP_CONFIG_INVALID/);
 		const after = readFileSync(cachePath, "utf8");
 		assert.equal(after.includes(fingerprint), false);
 		assert.deepEqual(JSON.parse(after), { version: 3, entries: [] });

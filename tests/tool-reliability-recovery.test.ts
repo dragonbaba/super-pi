@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -8,8 +9,8 @@ import { inspectBashPermissionScope } from "../packages/extensions/resource-life
 import { inspectBashResourceLifecycle } from "../packages/extensions/resource-lifecycle-guard/core.ts";
 import { validateToolArguments } from "../packages/ai/src/utils/validation.ts";
 import mutationExtension from "../packages/extensions/mutation-guard-write/index.ts";
-import browserExtension from "../packages/extensions/browser-use/index.ts";
-import { browserUrlSafetyError } from "../packages/extensions/browser-use/core.ts";
+import browserExtension, { formatFailure, withOwnedScreenshotDefault } from "../packages/extensions/browser-use/index.ts";
+import { BrowserHarnessVersionGate, browserUrlSafetyError, buildBrowserUseEnvironment, findBrowserUseExecutable } from "../packages/extensions/browser-use/core.ts";
 const { failureRecoveryHint } = await createJiti(import.meta.url).import<any>("../packages/extensions/tool-loop-guardrails/core.ts");
 const { default: toolLoopGuardrails } = await createJiti(import.meta.url).import<any>("../packages/extensions/tool-loop-guardrails/index.ts");
 const definitions = new Map<string, any>();
@@ -71,8 +72,197 @@ test("browser guidance preserves helper Python and states its actual scope", () 
  const description = definitions.get("browser_exec").description;
  assert.match(description, /new_tab/); assert.match(description, /Python variables do not/);
  assert.match(description, /os\.getcwd/); assert.match(description, /loopback/);
+ assert.match(description, /browser_debug/);
+ assert.doesNotMatch(description, /only be enabled explicitly by the user/);
  assert.ok(browserUrlSafetyError('new_tab("http://127.0.0.1:3000")'));
  assert.equal(browserUrlSafetyError('new_tab("https://example.com")'), undefined);
+});
+
+test("browser runtime resolution requires harness and rejects legacy executables and configuration", async t => {
+ const root = mkdtempSync(join(tmpdir(), "pi-browser-runtime-"));
+ t.after(() => rmSync(root, { recursive: true, force: true }));
+ const bin = join(root, ".local", "bin");
+ mkdirSync(bin, { recursive: true });
+ const suffix = process.platform === "win32" ? ".exe" : "";
+ const legacy = join(bin, `browser-use${suffix}`), harness = join(bin, `browser-harness${suffix}`);
+ const env = { USERPROFILE: root, PATH: "" };
+ writeFileSync(legacy, "fixture", { mode: 0o755 });
+ assert.equal(await findBrowserUseExecutable(join(root, "agent"), env), undefined);
+ assert.equal(await findBrowserUseExecutable(join(root, "agent"), { ...env, SP_BROWSER_USE_CLI: legacy }), undefined);
+ assert.equal(await findBrowserUseExecutable(join(root, "agent"), { ...env, SP_BROWSER_HARNESS_CLI: legacy }), undefined);
+ assert.equal(await findBrowserUseExecutable(join(root, "agent"), { PATH: bin }), undefined);
+ mkdirSync(join(root, "agent", "bin"), { recursive: true });
+ writeFileSync(join(root, "agent", "bin", `browser-use${suffix}`), "fixture", { mode: 0o755 });
+ assert.equal(await findBrowserUseExecutable(join(root, "agent"), env), undefined);
+ writeFileSync(harness, "fixture", { mode: 0o755 });
+ assert.equal((await findBrowserUseExecutable(join(root, "agent"), env))?.command, realpathSync.native(harness));
+ const configured = await findBrowserUseExecutable(join(root, "agent"), { PATH: "", SP_BROWSER_HARNESS_CLI: harness });
+ assert.equal(configured?.command, realpathSync.native(harness));
+ assert.equal(configured?.source, "configured");
+ const runtimeEnv = buildBrowserUseEnvironment({ BROWSER_USE_HEADLESS: "true", BROWSER_USE_CONFIG_PATH: "old-config", BH_CHROME_PATH: "chosen-chrome" }, root);
+ assert.equal(runtimeEnv.BROWSER_USE_HEADLESS, undefined);
+ assert.equal(runtimeEnv.BROWSER_USE_CONFIG_PATH, undefined);
+ assert.equal(runtimeEnv.BH_CHROME_PATH, "chosen-chrome");
+});
+
+test("browser resolver accepts uv Unix links only through executable regular targets", { skip: process.platform === "win32" }, async t => {
+ const root = mkdtempSync(join(tmpdir(), "pi-browser-uv-link-"));
+ t.after(() => rmSync(root, { recursive: true, force: true }));
+ const bin = join(root, ".local", "bin"), target = join(root, "runtime"), link = join(bin, "browser-harness");
+ mkdirSync(bin, { recursive: true }); writeFileSync(target, "fixture", { mode: 0o755 });
+ symlinkSync(target, link);
+ const env = { HOME: root, PATH: "" }, agentDir = join(root, "agent");
+ const found = await findBrowserUseExecutable(agentDir, env);
+ assert.equal(found?.command, realpathSync.native(target)); assert.equal(found?.source, "uv");
+ unlinkSync(link); symlinkSync(join(root, "missing"), link);
+ assert.equal(await findBrowserUseExecutable(agentDir, env), undefined);
+ assert.equal(found?.command, realpathSync.native(target), "a resolved command does not follow later link replacement");
+ unlinkSync(link); symlinkSync(bin, link);
+ assert.equal(await findBrowserUseExecutable(agentDir, env), undefined);
+ unlinkSync(link); chmodSync(target, 0o644); symlinkSync(target, link);
+ assert.equal(await findBrowserUseExecutable(agentDir, env), undefined);
+});
+
+test("browser version gate rejects old or unverifiable runtimes and reuses only the verified identity", async t => {
+ const root = mkdtempSync(join(tmpdir(), "pi-browser-version-")), command = join(root, "runtime");
+ t.after(() => rmSync(root, { recursive: true, force: true }));
+ writeFileSync(command, "fixture");
+ let version = "0.1.8", probes = 0, timedOut = false;
+ const gate = new BrowserHarnessVersionGate(async options => {
+  probes++; assert.deepEqual(options.args, ["--version"]); assert.equal(options.code, "");
+  assert.equal(options.env.UNRELATED_SECRET, undefined); assert.equal(options.env.BROWSER_USE_API_KEY, undefined);
+  assert.equal(options.timeoutMs, 5000); assert.equal(options.maxBytesPerStream, 1024);
+  return { stdout: version, stderr: "", exitCode: 0, killed: false, timedOut, aborted: false,
+   stdoutTruncated: false, stderrTruncated: false, stdoutBytes: version.length, stderrBytes: 0 };
+ });
+ const executable = { command, source: "configured" as const }, options = { cwd: root, env: { UNRELATED_SECRET: "fixture", BROWSER_USE_API_KEY: "fixture" } };
+ for (version of ["0.1.8", "0.1.12", "unknown", "0.1.13rc1"]) await assert.rejects(gate.check(executable, options), /BROWSER_EXEC_VERSION/);
+ version = "0.1.13"; assert.equal(await gate.check(executable, options), version);
+ const checked = probes;
+ assert.equal(await gate.check(executable, options), version); assert.equal(probes, checked);
+ writeFileSync(command, "replacement fixture"); version = "0.1.8";
+ await assert.rejects(gate.check(executable, options), /BROWSER_EXEC_VERSION/); assert.equal(probes, checked + 1);
+ version = "0.1.14"; assert.equal(await gate.check(executable, options), version);
+ gate.clear(); timedOut = true;
+ await assert.rejects(gate.check(executable, options), /BROWSER_EXEC_VERSION/);
+ const controller = new AbortController(); controller.abort(new Error("version probe cancelled"));
+ const beforeAbort = probes;
+ await assert.rejects(gate.check(executable, { ...options, signal: controller.signal }), /version probe cancelled/);
+ assert.equal(probes, beforeAbort);
+});
+
+test("browser approval failures retain actionable guidance inside the bounded model prefix", () => {
+ for (const evidence of [
+  "browser-harness: permission-blocked: wait for Allow",
+  'browser-harness: Chrome is asking "Allow remote debugging?" — click Allow to continue.\npermission-blocked: no approval\n' + "detail ".repeat(300),
+  "permission-pending: Chrome approval is pending",
+ ]) {
+  {
+   const message = formatFailure("FAILED", evidence);
+   assert.match(message, /^\[BROWSER_EXEC_PERMISSION_REQUIRED\]/);
+   assert.match(message.slice(0, 400), /Do not retry, reload the daemon, or switch/);
+   assert.ok(message.length <= 1000);
+  }
+  assert.match(formatFailure("ABORTED", evidence), /^\[BROWSER_EXEC_ABORTED\]/);
+ }
+ const earlierHint = 'browser-harness: Chrome is asking "Allow remote debugging?" — click Allow to continue.\n';
+ const timeout = formatFailure("TIMEOUT", earlierHint);
+ assert.match(timeout, /^\[BROWSER_EXEC_TIMEOUT\]/);
+ assert.match(timeout, /current state is unknown/);
+ assert.match(timeout, /do not automatically retry or switch browsers/);
+ const afterApproval = formatFailure("FAILED", earlierHint + "Traceback (most recent call last):\nAttributeError: bad script\n");
+ assert.match(afterApproval, /^\[BROWSER_EXEC_FAILED\] AttributeError: bad script/);
+ assert.doesNotMatch(afterApproval, /PERMISSION_REQUIRED/);
+});
+
+test("browser navigation accepts confirmed dual-stack Fake-IP without allowing private or literal benchmark addresses", t => {
+ const python = process.env.SP_TEST_PYTHON ?? "python";
+ const available = spawnSync(python, ["--version"], { encoding: "utf8", timeout: 5000 });
+ if (available.error || available.status !== 0) { t.skip("Python is unavailable; set SP_TEST_PYTHON to exercise the generated prelude"); return; }
+ const source = withOwnedScreenshotDefault("new_tab(_test_url); goto_url(_test_url)", "unused-test-screenshot.png");
+ const program = `
+import json, socket, sys
+source = json.load(sys.stdin)
+public = ["8.8.8.8", "2606:4700:4700::1111"]
+fake4 = ["198.18.0.90"]
+fake6 = ["2001:2::56"]
+mihomo6 = ["fdfe:dcba:9876::56"]
+dual = fake4 + fake6
+url = "https://www.remotion.dev/docs/ai/skills"
+cases = [
+    ("public", public, public, url, True, 0),
+    ("v4-only", fake4, fake4, url, True, 1),
+    ("v6-only", fake6, fake6, url, True, 1),
+    ("dual-stack", dual, ["198.18.0.89", "2001:2::55"], url, True, 1),
+    ("fake-with-public", dual + public, dual + public, url, True, 1),
+    ("mihomo-v6", mihomo6, mihomo6, url, True, 1),
+    ("mihomo-dual", fake4 + mihomo6, fake4 + mihomo6, url, True, 1),
+    ("mihomo-unconfirmed", mihomo6, public, url, False, 1),
+    ("mihomo-private-probe", mihomo6, mihomo6 + ["fd00::1"], url, False, 1),
+    ("mihomo-neighbor", ["fdfe:dcba:9876:1::1"], mihomo6, url, False, 0),
+    ("literal-mihomo", [], mihomo6, "http://[fdfe:dcba:9876::56]/", False, 0),
+    ("unconfirmed", dual, public, url, False, 1),
+    ("probe-failure", dual, None, url, False, 1),
+    ("probe-empty", dual, [], url, False, 1),
+    ("private-probe", dual, dual + ["192.168.1.1"], url, False, 1),
+    ("private-target", dual + ["192.168.1.1"], dual, url, False, 1),
+    ("ula-target", dual + ["fd00::1"], dual, url, False, 1),
+    ("metadata", [], dual, "http://169.254.169.254/", False, 0),
+    ("loopback", [], dual, "http://127.0.0.1/", False, 0),
+    ("literal-v4", [], dual, "http://198.18.0.90/", False, 0),
+    ("literal-v6", [], dual, "http://[2001:2::56]/", False, 0),
+]
+results = []
+for name, target, probe, target_url, allowed, expected_probes in cases:
+    counts = {"probe": 0, "target": 0, "navigation": 0}
+    def resolve(host, *args, **kwargs):
+        key = "probe" if host == "example.com" else "target"
+        counts[key] += 1
+        addresses = probe if key == "probe" else target
+        if addresses is None: raise socket.gaierror("fixture DNS failure")
+        return [(0, 0, 0, "", (address, 0)) for address in addresses]
+    def navigate(value, *args, **kwargs): counts["navigation"] += 1
+    socket.getaddrinfo = resolve
+    scope = {"capture_screenshot": navigate, "new_tab": navigate, "goto_url": navigate, "_test_url": target_url}
+    error = None
+    try: exec(source, scope)
+    except RuntimeError as failure: error = str(failure)
+    assert (error is None) == allowed, (name, error)
+    assert counts["navigation"] == (2 if allowed else 0), (name, counts)
+    assert counts["probe"] == expected_probes, (name, counts)
+    if not allowed: assert "[BROWSER_EXEC_URL]" in error, (name, error)
+    results.append({"case": name, "allowed": allowed, **counts})
+print(json.dumps(results))
+`;
+ const result = spawnSync(python, ["-c", program], { input: JSON.stringify(source), encoding: "utf8", timeout: 10000 });
+ assert.equal(result.status, 0, result.stderr || String(result.error));
+ const cases = JSON.parse(result.stdout);
+ assert.equal(cases.length, 21);
+ assert.equal(cases.filter((row: any) => row.allowed).length, 7);
+ for (const url of ["http://198.18.0.90", "http://[2001:2::56]", "http://[fdfe:dcba:9876::56]", "http://127.0.0.1", "http://[fd00::1]"]) {
+  assert.ok(browserUrlSafetyError(`new_tab(${JSON.stringify(url)})`));
+ }
+});
+
+test("browser Python failure puts the actual exception before bounded traceback details", () => {
+ for (const cause of [
+  "RuntimeError: JavaScript evaluation failed: TypeError: This document requires 'TrustedHTML' assignment.",
+  "RuntimeError: JavaScript evaluation failed: TypeError: Cannot read properties of null (reading 'scrollWidth')",
+ ]) {
+  const trace = `Traceback (most recent call last):\n${'  File "browser_harness/helpers.py", line 105, in _runtime_value\n'.repeat(40)}${cause}\n    at <anonymous>:1:26`;
+  const result = formatFailure("FAILED", trace);
+  assert.equal(result.split("\n", 1)[0], `[BROWSER_EXEC_FAILED] ${cause}`);
+  assert.ok(result.length <= 1000);
+  assert.match(result, /Traceback \(most recent call last\)/);
+  assert.match(result, /traceback truncated/);
+ }
+});
+
+test("browser chained exceptions prefer the last cause and keep plain failures unchanged", () => {
+ const result = formatFailure("FAILED", "Traceback (most recent call last):\nValueError: earlier\n\nDuring handling of the above exception, another exception occurred:\n\nTraceback (most recent call last):\nRuntimeError: final cause\n");
+ assert.match(result, /^\[BROWSER_EXEC_FAILED\] RuntimeError: final cause\n/);
+ assert.equal(formatFailure("TIMEOUT", "Browser deadline exceeded"), "[BROWSER_EXEC_TIMEOUT] Browser deadline exceeded");
+ assert.equal(formatFailure("FAILED", "[BROWSER_EXEC_SYNTAX] line 2:7: 'await' outside function"), "[BROWSER_EXEC_FAILED] [BROWSER_EXEC_SYNTAX] line 2:7: 'await' outside function");
 });
 
 

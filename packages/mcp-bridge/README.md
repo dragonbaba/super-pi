@@ -44,6 +44,25 @@ tool's server. Concurrent callers share the connection attempt. Cancelling a
 search or a cached-tool waiter stops that wait without cancelling another
 caller's connection. Shutdown/reload cancels and closes the old runtime.
 
+An absent or empty server configuration is a valid empty catalog. In that state,
+`mcp_search_tools` returns `details: { status: "unconfigured", matches: [] }`
+without connecting, activating tools, writing activation history, or failing the
+containing Codemode script. MCP search only discovers configured integrations;
+it is not itself a web search engine. `/mcp-status` and `/mcp-tools` report the
+same empty state. Invalid configuration, `--no-mcp`, cancelled requests, and a
+runtime that has not started or has stopped remain explicit failures. Discovery
+already in progress still waits instead of returning an empty result early.
+
+Tool descriptions keep their full sanitized instructions within the existing
+2 MiB complete-catalog and cache bounds. The host-only `fullDescription` follows
+the tool through registry wrappers into Codemode's paged `describeTools`; inline
+provider descriptions remain capped at 1,000 characters. Cache fingerprint
+domain separation invalidates earlier abbreviated entries so they are discovered
+again instead of pretending a truncated description is complete.
+Cache admission includes the entry metadata and JSON envelope. If one server's
+catalog cannot fit on its own, caching returns false without evicting its previous
+entry or another server's cache; the live catalog remains available.
+
 A transient connection or discovery failure keeps the last fully registered
 catalog searchable and its activated tools available. `/mcp-status` retains the
 connection error; the next explicit tool call reconnects without requiring
