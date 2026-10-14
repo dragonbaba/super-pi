@@ -370,3 +370,26 @@ post-close execution/mapping retention, and 0/12 tracked references after GC all
 remain unchanged. Raw output: `.git/pr151-catalog-mapping-final.json`.
 Final controller SHA-256:
 `9f2625b3bc82076eeac36cdc9cd2f614c564d98ddf703bedac0e140ae4ad14a0`.
+
+### Fourth Codex review: Unicode page boundaries
+
+The existing long-document integration reproduced split UTF-16 surrogate pairs
+in both instructions and exact JSON schemas. Page ends now rewind by one code
+unit when necessary, and explicit mid-pair offsets normalize to the preceding
+code-point boundary. Headers and continuation offsets reflect the actual slice;
+the body stays within its limit and does not skip into a later segment after a
+shortened end. The query still references description segments and materializes
+only its page; the fix adds primitive boundary checks, no retained state, buffer,
+callback or whole-document copy.
+
+The expanded existing test verifies well-formed pages, all 2,500 description
+emoji, exact non-BMP schema patterns/defaults and normalized manual offsets.
+All three pagination tests, thirteen source invariants, root type check and the
+coding-agent build passed. No test file or full-suite run was added. The final
+catalog allocation sample is 17,606,704 host bytes versus the original 16,989,528
+(about +3.6%; sampling varies, so this is not a timing or speedup claim). Reuse,
+zero unchanged schema reads, 765/52,279 wire bytes, paired worker start/stop, zero
+post-close execution/mapping retention and 0/12 tracked references after GC are
+unchanged. Raw output: `.git/pr151-catalog-unicode-final.json`.
+Final controller SHA-256:
+`ef5d33005eeff84ce973546b532b025e3bdbec814ce6257778fd4da4a35b32e0`.

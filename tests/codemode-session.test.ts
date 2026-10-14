@@ -844,9 +844,9 @@ test("Codemode exposes real browser instructions and constraints to the model wi
 });
 
 test("Codemode documentation pages preserve long instructions and exact schemas without widening tool access", async t => {
-	const description = "Long instructions. ".repeat(2500) + "FINAL_REQUIRED_INSTRUCTION";
+	const description = "Long instructions. 🚀 ".repeat(2500) + "FINAL_REQUIRED_INSTRUCTION";
 	const properties: Record<string, any> = {};
-	for (let i = 0; i < 60; i++) properties[`field_${i}`] = { type: "string", description: "detail ".repeat(45), pattern: "a".repeat(100) };
+	for (let i = 0; i < 60; i++) properties[`field_${i}`] = { type: "string", description: "detail ".repeat(45), pattern: "a🚀".repeat(33), default: "𠮷🙂".repeat(25) };
 	const tools: InlineExtension = pi => pi.registerTool({ name: "mcp__fixture__large", label: "large", description,
 		parameters: { type: "object", properties, additionalProperties: false } as any,
 		execute: async () => { throw new Error("Discovery must not execute a tool"); } });
@@ -857,6 +857,7 @@ async function readPages(format) {
   let offset=0, body="", pages=0, maxPage=0, revision;
   while(true) {
     const page=await describeTools(names,{offset,limit:4000,format,revision});
+    if(!page.isWellFormed()) throw new Error("page splits a Unicode surrogate pair");
     const header=/^\\[Tool documentation chars (\\d+)\\.\\.(\\d+) of (\\d+); format:\\w+; revision:([^\\]]+)\\]\\n/.exec(page);
     if(!header || Number(header[1])!==offset) throw new Error("bad page offset");
     revision=header[4];
@@ -867,12 +868,17 @@ async function readPages(format) {
     if(end<=offset || !page.includes("offset:"+end)) throw new Error("missing continuation");
     offset=end;
   }
+  const pair=body.indexOf("🚀");
+  const overlap=await describeTools(names,{offset:pair+1,limit:256,format,revision});
+  if(!overlap.startsWith("[Tool documentation chars "+pair+"..") || !overlap.isWellFormed()) throw new Error("mid-pair offset was not normalized");
+  if(!overlap.slice(overlap.indexOf("\\n")+1).startsWith("🚀")) throw new Error("normalized page lost the first code point");
   return {body,pages,maxPage};
 }
 const ts=await readPages("typescript"), raw=await readPages("json");
 const schema=JSON.parse(raw.body.split("Input JSON Schema:\\n")[1].split("\\nResult: ToolResult")[0]);
 text({tail:ts.body.includes("FINAL_REQUIRED_INSTRUCTION"),unknown:ts.body.includes("args: unknown"),
- fields:Object.keys(schema.properties).length,pattern:schema.properties.field_59.pattern,
+ fields:Object.keys(schema.properties).length,pattern:schema.properties.field_59.pattern,defaultValue:schema.properties.field_59.default,
+ rockets:ts.body.split("🚀").length-1,
  pages:ts.pages,maxPage:Math.max(ts.maxPage,raw.maxPage),
  hidden:await describeTools(["not_registered","ask_user","codemode"])});
 `]);
@@ -881,7 +887,8 @@ text({tail:ts.body.includes("FINAL_REQUIRED_INSTRUCTION"),unknown:ts.body.includ
 	assert.ok(block?.type === "text");
 	const data = JSON.parse(block.text);
 	assert.equal(data.tail, true); assert.equal(data.unknown, true);
-	assert.equal(data.fields, 60); assert.equal(data.pattern, "a".repeat(100));
+	assert.equal(data.fields, 60); assert.equal(data.pattern, "a🚀".repeat(33));
+	assert.equal(data.defaultValue, "𠮷🙂".repeat(25)); assert.equal(data.rockets, 2500);
 	assert.ok(data.pages > 10); assert.ok(data.maxPage < 4300); assert.equal(data.hidden, "");
 	assert.deepEqual((outcome.results[0]!.details as any).codemode.calls, []);
 });

@@ -66,6 +66,10 @@ function preview(result: ToolResultMessage): string {
 	return "";
 }
 function descriptorName(tool: CodemodeTool): string { return tool.name; }
+function splitsSurrogatePair(text: string, offset: number): boolean {
+	const before = text.charCodeAt(offset - 1), after = text.charCodeAt(offset);
+	return before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff;
+}
 /** Script copy of a result with large images: their data stays host-side and is attached whole by show(ref). */
 function scriptContent(content: readonly (TextContent | ImageContent)[]): (TextContent | ImageContent)[] {
 	const copy: (TextContent | ImageContent)[] = [];
@@ -419,15 +423,23 @@ export class CodemodeController {
 		if (revision !== undefined && revision !== currentRevision) throw new Error("[TOOL_DOCUMENTATION_CHANGED] Tool definitions or selection changed. Discard earlier pages and restart describeTools at offset:0 without a revision.");
 		if (described.length === 0) return "";
 		parts.push("\nTypeScript is a summary; use format:'json' for exact input constraints, long defaults/patterns, or unknown types. Child failures return isError or throw; the parent remains failed even if caught.\n");
-		let position = 0, text = "";
+		let position = 0, pageOffset = offset, text = "", pageComplete = false;
 		for (const part of parts) {
-			const start = Math.max(0, offset - position);
-			if (start < part.length && text.length < limit) text += part.slice(start, start + limit - text.length);
+			let start = Math.max(0, pageOffset - position);
+			if (!pageComplete && start < part.length && text.length < limit) {
+				// Rewind an explicit mid-pair offset; shorten the end to keep the body within its limit.
+				if (splitsSurrogatePair(part, start)) { start--; pageOffset--; }
+				let end = Math.min(part.length, start + limit - text.length);
+				if (splitsSurrogatePair(part, end)) end--;
+				text += part.slice(start, end);
+				// A shortened boundary must resume in this segment, not skip into the next one.
+				pageComplete = end < part.length;
+			}
 			position += part.length;
 		}
-		const end = Math.min(position, offset + text.length);
+		const end = Math.min(position, pageOffset + text.length);
 		const continuation = end < position ? `\n[More tool documentation: describeTools with the same names/format, offset:${end}, limit:${limit}, revision:"${currentRevision}".]` : "";
-		return `[Tool documentation chars ${Math.min(offset, position)}..${end} of ${position}; format:${format}; revision:${currentRevision}]\n${text}${continuation}`;
+		return `[Tool documentation chars ${Math.min(pageOffset, position)}..${end} of ${position}; format:${format}; revision:${currentRevision}]\n${text}${continuation}`;
 	}
 	private async ensureSandbox(): Promise<CodemodeSandbox> {
 		if (this.sandbox) return this.sandbox;

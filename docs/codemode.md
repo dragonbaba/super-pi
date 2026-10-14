@@ -78,6 +78,7 @@ text(await describeTools(["read"]));
 // TypeScript 是便于阅读的摘要；精确约束和无法展开的类型可查询原始 JSON Schema。
 text(await describeTools(["browser_exec"], { format: "json", limit: 8000 }));
 // 若返回续读提示，按其给出的 offset、limit 和 revision 发起下一次请求。
+// offset/limit 以 UTF-16 计数；分页保留完整 Unicode 字符，页尾可能比 limit 少一个代码单元。
 ```
 
 单个输入 Schema 沿用 65,536 字符及结构遍历保护；不可序列化或超限时明确报告限制，不能将 `unknown` 理解为任意参数都有效。工具目录变动后应从第一页重读。详情查询只读取当前工具元数据，不执行目标工具，也不激活被禁用的工具。资料较多时分轮展示，避免汇总全部文档后再次超过模型输出预算。
