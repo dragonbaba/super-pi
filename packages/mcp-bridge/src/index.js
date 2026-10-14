@@ -7,6 +7,7 @@ import { chooseMcpAction, withMcpAuthProgress } from "./manager.js";
 
 const ACTIVATION_ENTRY = "mcp-tool-activation-v1";
 const MAX_ACTIVATION_ENTRIES = MAX_SERVERS * 128;
+const NO_CONFIGURED_SERVERS = "No MCP servers are configured; no MCP tools are available to search. This is not a web search service. Continue with an appropriate available tool; MCP setup is only needed if the user requests an MCP integration.";
 
 export function toolActivationFingerprint(runtime, name, fingerprints) {
   const config = runtime.toolConfig(name);
@@ -160,12 +161,13 @@ export default function mcpBridgeExtension(pi) {
     if (clearNames) { knownRemoteToolNames.clear(); hostActivatedRemoteNames.clear(); }
   };
   const lifecycle = new McpRuntimeLifecycle(deactivateRemoteTools);
+  const hasEmptyConfiguration = () => mcpEnabled && managerEnabled && !configError && configInfo?.servers.length === 0;
 
   pi.registerTool({
     name: "mcp_search_tools",
     requiresMcp: true,
     label: "MCP tool search",
-    description: "Search configured MCP tools. After activation, use Codemode callTool(name, args) in this script; describeTools([name]) provides the current schema.",
+    description: "Search tools from configured MCP servers; this does not search the web itself. An empty configuration returns no matches. After activation, use Codemode callTool(name, args) in this script; describeTools([name]) provides the current schema.",
     parameters: {
       type: "object",
       properties: { query: { type: "string", description: "Words from the desired MCP server, tool, or capability" } },
@@ -173,8 +175,17 @@ export default function mcpBridgeExtension(pi) {
       additionalProperties: false,
     },
     async execute(_toolCallId, args, signal) {
+      signal?.throwIfAborted();
       const runtime = lifecycle.current;
-      if (!runtime) throw new Error("MCP runtime is not started");
+      if (!runtime) {
+        if (!mcpEnabled) throw new Error("[MCP_DISABLED] MCP is disabled for this session (--no-mcp).");
+        if (configError) throw new Error("[MCP_CONFIG_INVALID] MCP configuration could not be loaded. Check /mcp-status; no tools were searched.");
+        if (hasEmptyConfiguration()) return {
+          content: [{ type: "text", text: NO_CONFIGURED_SERVERS }],
+          details: { status: "unconfigured", matches: [] },
+        };
+        throw new Error("[MCP_NOT_READY] MCP runtime is not ready or has stopped. Check /mcp-status before another request.");
+      }
       const generation = activationGeneration;
       await runtime.waitForDiscovery(signal);
       if (lifecycle.current !== runtime || generation !== activationGeneration || signal?.aborted) throw new Error("MCP search was cancelled or replaced");
@@ -332,7 +343,7 @@ export default function mcpBridgeExtension(pi) {
       const header = configInfo
         ? `Global config: ${configInfo.globalPath}\nProject config: ${configInfo.allowProjectConfig ? "allowed when trusted" : "disabled globally"}`
         : "MCP configuration has not been loaded.";
-      const body = configError ? `Configuration error: ${configError}` : lifecycle.current?.statusText() ?? "MCP runtime is not started.";
+      const body = configError ? `Configuration error: ${configError}` : lifecycle.current?.statusText() ?? (hasEmptyConfiguration() ? NO_CONFIGURED_SERVERS : "MCP runtime is not started.");
       ctx.ui.notify(`${header}\n${body}`, configError ? "error" : "info");
     },
   });
@@ -340,7 +351,7 @@ export default function mcpBridgeExtension(pi) {
   pi.registerCommand("mcp-tools", {
     description: "List Pi tool names mapped to remote MCP server tools",
     handler: async (_args, ctx) => {
-      ctx.ui.notify(lifecycle.current?.toolsText() ?? "MCP runtime is not started.", "info");
+      ctx.ui.notify(lifecycle.current?.toolsText() ?? (hasEmptyConfiguration() ? NO_CONFIGURED_SERVERS : "MCP runtime is not started."), "info");
     },
   });
 

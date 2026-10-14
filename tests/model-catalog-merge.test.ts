@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
 import test from "node:test";
+import { InMemoryCredentialStore } from "../packages/ai/src/auth/credential-store.ts";
+import { InMemoryModelsStore, MODELS_STORE_PROFILE_REVISION } from "../packages/ai/src/models-store.ts";
+import { createModels, type Provider } from "../packages/ai/src/models.ts";
 import type { Api, Model } from "../packages/ai/src/types.ts";
 import { mergeCatalogModels } from "../packages/coding-agent/src/core/model-catalog-merge.ts";
 import { withRemoteCatalog } from "../packages/coding-agent/src/core/remote-catalog-provider.ts";
@@ -45,4 +49,96 @@ test("remote catalog getModels reuses the cached merged array", () => {
 	const first = provider.getModels();
 	for (let index = 0; index < 100; index++) assert.equal(provider.getModels(), first);
 	assert.equal(baselineReads, 1);
+});
+
+function fixtureProvider(baseline: readonly Model<Api>[]): Provider {
+	return { id: "fixture", name: "Fixture",
+		auth: { apiKey: { name: "fixture", resolve: async ({ credential }) =>
+			credential ? { auth: { apiKey: credential.key } } : undefined } }, getModels: () => baseline,
+		stream() { throw new Error("not used"); }, streamSimple() { throw new Error("not used"); } };
+}
+
+test("older catalogs retain missing model IDs without replacing newer built-in definitions", async () => {
+	for (const lastModified of [undefined, 0, 999, 1000, 1001]) {
+		const baseline = model("shared", "built-in");
+		const rows = [model("shared", "remote"), model("remote-only"),
+			{ ...model("foreign"), provider: "another-provider" }];
+		const store = new InMemoryModelsStore();
+		const registry = createModels({ modelsStore: store });
+		await store.write("fixture", { models: rows, lastModified, checkedAt: Date.now(),
+			profileRevision: MODELS_STORE_PROFILE_REVISION, etag: '"stored"' });
+		try {
+			const provider = withRemoteCatalog(fixtureProvider([baseline]), "http://127.0.0.1:1", 1000);
+			registry.setProvider(provider);
+			assert.equal((await registry.refresh({ allowNetwork: false })).errors.size, 0);
+			assert.ok(registry.getModel("fixture", "remote-only"), `missing model with timestamp ${lastModified}`);
+			assert.equal(registry.getModel("fixture", "shared")?.name,
+				lastModified !== undefined && lastModified > 1000 ? "remote" : "built-in");
+			assert.equal(registry.getModel("fixture", "foreign"), undefined);
+			const snapshot = provider.getModels();
+			for (let index = 0; index < 100; index++) assert.equal(provider.getModels(), snapshot);
+			assert.deepEqual((await store.read("fixture"))?.models, rows);
+		} finally {
+			registry.clearProviders();
+			await store.delete("fixture");
+		}
+	}
+});
+
+test("older HTTP catalogs preserve missing models through 200, 304 and offline reopen", async () => {
+	const rows = [model("shared", "remote"), model("remote-only")];
+	const requests: Array<string | undefined> = [];
+	const server = createServer((request, response) => {
+		requests.push(request.headers["if-none-match"]);
+		if (request.headers["if-none-match"]) {
+			response.writeHead(304);
+			response.end();
+		} else {
+			response.writeHead(200, { "content-type": "application/json", etag: '"old-catalog"',
+				"last-modified": new Date(1000).toUTCString() });
+			response.end(JSON.stringify({ models: rows }));
+		}
+	});
+	const store = new InMemoryModelsStore();
+	const credentials = new InMemoryCredentialStore();
+	await credentials.modify("fixture", async () => ({ type: "api_key", key: "fixture-only" }));
+	const registry = createModels({ modelsStore: store, credentials });
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	try {
+		const address = server.address();
+		assert.ok(address && typeof address !== "string");
+		for (const allowNetwork of [true, true, false]) {
+			registry.setProvider(withRemoteCatalog(fixtureProvider([model("shared", "built-in")]),
+				`http://127.0.0.1:${address.port}`, 2000));
+			assert.equal((await registry.refresh({ allowNetwork, force: true })).errors.size, 0);
+			assert.ok(registry.getModel("fixture", "remote-only"));
+			assert.equal(registry.getModel("fixture", "shared")?.name, "built-in");
+		}
+		assert.deepEqual(requests, [undefined, '"old-catalog"']);
+		assert.equal((await store.read("fixture"))?.lastModified, 1000);
+	} finally {
+		registry.clearProviders();
+		await store.delete("fixture");
+		server.closeAllConnections();
+		await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+	}
+});
+
+test("stale canonical aliases cannot replace a corrected built-in model", async () => {
+	const providerId = "cloudflare-ai-gateway";
+	const baseline = { ...model("claude-sonnet-4-5", "corrected"), provider: providerId, api: "anthropic-messages" as const };
+	const raw = { ...baseline, id: "claude-sonnet-4.5", name: "stale" };
+	const store = new InMemoryModelsStore();
+	const registry = createModels({ modelsStore: store });
+	await store.write(providerId, { models: [raw], lastModified: 1, profileRevision: MODELS_STORE_PROFILE_REVISION });
+	try {
+		registry.setProvider(withRemoteCatalog({ ...fixtureProvider([baseline]), id: providerId }, undefined, 2));
+		assert.equal((await registry.refresh({ allowNetwork: false })).errors.size, 0);
+		assert.equal(registry.getModel(providerId, baseline.id)?.name, "corrected");
+		assert.equal(registry.getModel(providerId, raw.id), undefined);
+		assert.deepEqual((await store.read(providerId))?.models, [raw]);
+	} finally {
+		registry.clearProviders();
+		await store.delete(providerId);
+	}
 });

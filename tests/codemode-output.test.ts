@@ -6,13 +6,48 @@ import test from "node:test";
 import { capCodemodeOutput, boundCodemodeResult } from "../packages/coding-agent/src/core/codemode-result.ts";
 import { estimateToolOutputTokens } from "../packages/coding-agent/src/core/tool-output-budget.ts";
 import { BoundedJson } from "../packages/codemode/src/bounded-json.ts";
-import { schemaToType } from "../packages/codemode/src/declarations.ts";
+import { schemaToType, renderToolSignature } from "../packages/codemode/src/declarations.ts";
 import { CodemodeStore } from "../packages/coding-agent/src/core/codemode-store.ts";
 
 function removeOwned(path: string) {
   assert.equal(readFileSync(path + ".sp-owned", "utf8"), "super-pi-output-spill-v2\n");
   unlinkSync(path); unlinkSync(path + ".sp-owned");
 }
+
+test("tool declarations retain input constraints, nullable bounds and safe comment lines", () => {
+  const rendered = schemaToType({ type: "object", properties: {
+    count: { anyOf: [{ type: "integer", minimum: 1, maximum: 10 }, { type: "null" }], minimum: 3, default: 5 },
+    legacy: { type: "number", minimum: 0, exclusiveMinimum: true, maximum: 20, exclusiveMaximum: true, multipleOf: 2 },
+    text: { type: "string", minLength: 1, maxLength: 64, pattern: "a\u2028b", format: "uri", description: "first\u2029second" },
+    items: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 3, uniqueItems: true },
+    enabled: { type: "boolean", default: false, deprecated: true },
+    absent: { type: ["integer", "null"], default: null },
+    choice: { anyOf: [{ type: "integer", minimum: 10 }, { type: "string", minLength: 20 }] },
+  } });
+  assert.match(rendered, /@integer @minimum 3 @maximum 10 @default 5/);
+  assert.match(rendered, /@exclusiveMinimum 0 @exclusiveMaximum 20 @multipleOf 2/);
+  assert.match(rendered, /@minLength 1 @maxLength 64 @pattern a\\u2028b @format uri/);
+  assert.match(rendered, /\/\/ first\n  \/\/ second/);
+  assert.match(rendered, /@minItems 1 @maxItems 3 @uniqueItems/);
+  assert.match(rendered, /@default false @deprecated/);
+  assert.match(rendered, /@integer @default null/);
+  assert.doesNotMatch(rendered, /@minimum 10|@minLength 20/);
+  const schema = { type: "object", properties: { value: { type: "integer", minimum: 1, default: 20 } } };
+  assert.equal(schemaToType(schema, { maxChars: 25 }), "{ value?: number; }");
+});
+
+test("standalone MCP declarations include result fields without an undefined shared type", () => {
+  const signature = renderToolSignature({ name: "mcp_lookup", inputSchema: { type: "object" }, outputSchema: {
+    type: "object", properties: {
+      content: { type: "array", items: { type: "object", properties: { type: { const: "text" }, text: { type: "string" } } } },
+      _meta: { type: "object" }, isError: { type: "boolean" }, structuredContent: true,
+    },
+  } });
+  assert.match(signature, /content\?: Array/);
+  assert.match(signature, /isError\?: boolean/);
+  assert.match(signature, /structuredContent\?: unknown/);
+  assert.doesNotMatch(signature, /CallToolResult|Promise<unknown>/);
+});
 
 test("Codemode token cap preserves a bounded preview and recoverable Unicode without rerunning tools", async () => {
   const text = "中文🙂".repeat(10000);

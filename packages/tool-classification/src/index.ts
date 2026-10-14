@@ -75,7 +75,7 @@ export default function toolClassificationExtension(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "tool_search",
     label: "Tool Search",
-    description: "Search registered inactive Pi tools by capability and activate the best matches for this session. Use when the stable core tools cannot perform the task.",
+    description: "Search registered inactive Pi tools by capability and activate the best matches for this session. Use when the stable core tools cannot perform the task. Browser work uses browser_exec; Chrome DevTools requires the user's /chrome-devtools enable command and is never activated as an automatic fallback.",
     promptSnippet: "Search and activate conditional tools when the stable core tool pack is insufficient",
     parameters: Type.Object({
       query: Type.String({ minLength: 1, maxLength: 200, description: "Capability, tool name, or category such as browser, memory, delegation, graph, skills, or mcp." }),
@@ -93,6 +93,10 @@ export default function toolClassificationExtension(pi: ExtensionAPI): void {
           tool.name === "tool_search"
           || activeSet.has(tool.name)
           || POLICY_OWNED_TOOL_NAMES.has(tool.name)
+          // A search issued by the model cannot select another browser/profile
+          // while Browser Use is waiting for Chrome's approval. The existing
+          // user command/settings remain the authority for enabling DevTools.
+          || tool.name.startsWith("chrome_devtools_")
         ) continue;
 
         const toolCategory = categoryFor(tool.name);

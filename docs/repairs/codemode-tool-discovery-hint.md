@@ -67,3 +67,171 @@ loads source worker/prelude; the session fixture loads the built Codemode packag
 so the package is rebuilt before candidate validation. No online provider or Bun
 executable is exercised; prototype-mutation compatibility (T09.2), output
 boundaries (T09.3) and installation replacement (T09.4) remain separate tasks.
+
+## Pi 1.2.0 tool-information follow-up (2026-10-14)
+
+Baseline: `fe3d0ea4be23c56d392add4a0583b2d1e36c439c`, with the unrelated local
+model-catalog and browser error-summary repairs retained. Upstream references:
+[v1.2.0 release](https://github.com/earendil-works/pi/releases/tag/v1.2.0) and
+[declaration renderer](https://github.com/earendil-works/pi/blob/v1.2.0/packages/codemode/src/declarations.ts).
+This adopts the relevant constraint-tag and self-contained result declaration
+improvements, not a whole-version upgrade or upstream runtime semantics.
+
+The observed browser session had explicitly requested `describeTools`, but its
+description stopped mid-sentence at 1,024 characters and its return type was
+`Promise<unknown>`. The same cap would cut off the newly clarified browser helper
+instructions. Local inline declarations also lacked tool purpose and discarded
+parameter constraints. A type exceeding 2,048 characters became `unknown` even
+on an explicit detail request.
+
+The controller now includes short purposes inline, makes shortened catalog
+descriptions explicit, and returns full descriptions through bounded documentation
+pages. Detailed types have a 16,000-character rendering budget; JSON mode preserves
+the exact input schema within the existing 65,536-character structural bound.
+The common result type describes Super Pi's content/details/isError/ref wrapper.
+The standalone renderer spells out MCP result fields rather than emitting an
+undefined shared alias. Browser code parameters include the synchronous Python
+example and navigation limitations, with timeout bounds/default in the schema.
+
+Audited route: registry/wrappers -> AgentSession tool catalog change ->
+CodemodeController.setTools -> bounded inline provider declaration and descriptor
+snapshot -> sandbox catalog -> Worker/QuickJS ALL_TOOLS -> describeTools host
+bridge -> current authorized findTool -> bounded schema renderer or serializer ->
+page -> existing result cap/projection -> provider context. Tool invocation,
+progress, event delivery, rendering and result-cap algorithms are unchanged.
+
+Catalog work remains at tool-version boundaries. Detail rendering occurs only on
+explicit metadata queries, for at most 16 tools. Each request references full
+descriptions in a request-owned segment array and materializes only its selected
+page; schemas are bounded before rendering. No document cache, object pool,
+background activity, or new controller state is added. Query-local segments and
+rendered strings become unreachable on return/throw; close/dispose still clears
+descriptors, identifier maps, the VM catalog and wrapped inline descriptions.
+Pagination re-renders the requested schemas; it does not copy or scan the full
+description text. This favors bounded retention and fresh metadata over a cache.
+
+Same-machine catalog allocation benchmark: Windows x64, Node v26.4.0,
+`node --expose-gc --experimental-strip-types scripts/bench/codemode-session.ts --catalog`.
+One baseline and one candidate run; 8/512 registered tools, actual SDK/controller,
+compiled Worker and disposal, metadata-only MCP fixtures, no live model/server.
+
+| Measure | Baseline | Candidate |
+| --- | ---: | ---: |
+| Inline chars, 8 tools | 5,038 | 5,652 |
+| Inline chars, 512 tools | 32,503 | 32,615 |
+| MCP schema reads on activation | 0 | 0 |
+| Schema reads on unchanged next script | 0 | 0 |
+| Catalog wire bytes, 8 / 512 tools | 765 / 52,279 | 765 / 52,279 |
+| Host sampled allocation bytes | 16,989,528 | 18,019,424 |
+| Tracked references remaining after controlled GC | 0 / 12 | 0 / 12 |
+| Active executions / name mappings / extra declaration chars after close | 0 | 0 |
+
+Both sizes reused descriptors/snapshots/catalogs on unchanged scripts, and each
+started and stopped one Worker. Host sampled bytes increased about 6.1% in this
+single run as documentation became richer; this is not proof of a runtime speedup
+or a production p95/heap regression. It excludes Worker heap and actual provider
+token/cache costs. The catalog cap remains 32,768 characters; very large tool sets
+still discover omitted declarations on demand. The final optional-details marker
+adds one character to the measured inline strings.
+
+Targeted verification uses the existing `codemode-output`, `codemode-session`
+and `codemode-hot-paths` files. Coverage includes actual browser metadata reaching
+the provider context without browser execution, paged long descriptions, exact
+large schemas, nullable/legacy bounds, comment safety, MCP result fields, name
+collisions, deferred activation, snapshot reuse and disposal. No new test file or
+full-suite run was added. Real-model adherence remains a separate manual check.
+
+Verification completed: 28 distinct relevant regression/source-invariant checks,
+root type check and browser-extension type check passed. The two first-run
+integration failures were fixture selection errors (`tools:["read"]` excluded
+the extension under test); correcting the fixture to include its registered tools
+made both pass without loosening production selection rules. No browser mutation,
+network inference or unrelated full test suite was run.
+
+Both affected packages were rebuilt. A compiled-controller/Worker smoke probe
+confirmed the full instruction tail, integer/bounds/default tags and ToolResult
+declaration with zero target-tool executions. The existing global `superpi`
+launcher starts from the rebuilt checkout (`--offline --version`: `0.84.1`);
+the package version was not bumped.
+
+Final production source SHA-256 fingerprints:
+
+| File | SHA-256 |
+| --- | --- |
+| `packages/codemode/src/declarations.ts` | `f7d9b3b2b73a35b949902256d47178c1a423f82731f035e11aca4dd1d79c7a76` |
+| `packages/coding-agent/src/core/codemode.ts` | `e519c6eff24c40a74471e41ea8bfe3d77ccd5d1f464f2094d50bc0d5045226d6` |
+| `packages/coding-agent/src/core/codemode-constants.ts` | `f9b399a8a0e72e06a85fc986c1db863933d058fb6012c2dcf8af704feb7ae1be` |
+
+## Empty MCP discovery and incident chronology (2026-10-15)
+
+The reported execution IDs were matched to the original session instead of
+inferring a new regression from copied terminal output. The MCP and browser
+failures occurred at 2026-10-14 18:21:20 and 18:21:24 UTC
+(October 15, 03:21:20 and 03:21:24 Asia/Tokyo).
+Both precede the Browser Harness migration. The same session subsequently
+received the current Harness tool description at 03:55:21 and recorded three
+successful browser calls at 03:55:46, 03:55:52 and 03:56:00, including Remotion
+documentation content. The old stack path is retained historical output; the
+removed Browser Use environment is not present on disk.
+
+There was still an independent MCP defect. The effective project configuration
+currently contains zero MCP servers, both with and without project trust.
+Startup deliberately does not create a runtime for this case, but the registered
+discovery tool used to throw whenever the runtime was absent. That turned a
+valid empty configuration into a failure and stopped the rest of a Codemode
+script before its browser call. Search now returns an explicit `unconfigured`
+empty catalog. Its description and status commands clarify that MCP discovery
+searches configured integrations. Invalid configuration, disabled MCP, startup/
+shutdown unavailability and cancellation remain failures; background discovery
+still waits for completion.
+
+The existing `mcp-background-activation.test.ts` covers absent/empty configuration,
+status output, unchanged activation/history, zero connections/list/calls,
+pre-aborted searches with zero retained abort listeners, and shutdown rejection.
+A real SDK/Codemode integration activates the actual discovery tools, executes
+MCP search followed by a browser fixture in one script, and observes both
+successfully complete. Browser fixture executions: 1; MCP connections, lists
+and remote calls: 0. The fixture never opens a real browser. Seven targeted
+checks passed, including the existing pending-discovery and disabled/invalid
+configuration cases; root type check, JavaScript syntax and diff checks passed.
+No new test file, full-suite run, real-browser retry or user-session rewrite was
+needed. Test-owned HTTP listeners, sessions and temporary directories are closed
+by the existing fixture cleanup.
+
+Performance scope is the explicit discovery/command boundary: current lifecycle
+state -> empty-configuration predicate -> one bounded result. The predicate is
+allocated once per extension instance and retains only that instance's existing
+state. There is no additional timer, event listener, cache, runtime, connection,
+or per-chunk processing. Provider deltas, progress delivery, rendering and large
+result handling are unchanged, so no hot-path allocation benchmark was repeated.
+
+## Combined pre-PR review (2026-10-15)
+
+The accompanying catalog repair retains remote-only model IDs even when the
+remote manifest is older than the built-in catalog. Built-in definitions still
+win for overlapping IDs, including canonicalized Cloudflare Claude aliases.
+The audited route is stored/network catalog -> refresh-time precedence and
+profiling -> published merged snapshot -> cached `getModels`. The temporary ID
+set and filtered rows belong to refresh only; repeated lookup still returns the
+same array without re-merging. Existing regression coverage exercises timestamp
+boundaries, HTTP 200/304, offline reopen, provider isolation and profile counts.
+The configured models appeared in the local offline catalog after rebuilding;
+this does not establish successful live model inference.
+
+Final combined verification passed 19 selected checks: six cross-module
+regressions plus thirteen Codemode/global source invariants. These cover the
+HTTP/offline catalog flow, actual browser instructions in model context,
+approval-failure fallback exclusion with explicit activation preserved, empty
+MCP search followed by browser execution, standalone runtime resolution, and
+the generated Python prelude's fifteen DNS cases. Root type checking and both
+browser/tool-classification extension type checks also passed. The final MCP
+fixture closed its listener/session and removed its recorded temporary directory.
+No test files were added and the full local suite was not repeated.
+
+The three Codemode production fingerprints above still match the benchmarked
+sources, so their allocation run was reused. Model refresh, browser admission/
+failure formatting and empty-MCP discovery add no provider-delta, progress,
+render/frame, or retained-reference work. Existing bounds and disposal remain
+intact. There is no new pool, timer, background process owner or cache to justify
+an unrelated benchmark. Linux/Windows integration remains subject to the normal
+PR CI; the recorded live Chrome approval check is not automatically repeated.

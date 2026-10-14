@@ -547,6 +547,35 @@ test("real tool_search activates allowed tools inside Codemode without exposing 
 	assert.deepEqual(f.session.getActiveToolNames().sort(), ["catalog_lookup", "codemode", "tool_search"]);
 });
 
+test("browser search cannot activate a CDP fallback after permission failure; explicit selection still works", async t => {
+	let devtoolsCalls = 0;
+	const extension: InlineExtension = pi => {
+		pi.registerTool({ name: "browser_exec", label: "Browser Use", description: "browser web search",
+			parameters: Type.Object({}), execute: async () => { throw new Error("[BROWSER_EXEC_PERMISSION_REQUIRED] Chrome approval is incomplete."); } });
+		pi.registerTool({ name: "chrome_devtools_list_pages", label: "Chrome pages", description: "browser web search cdp",
+			parameters: Type.Object({}), execute: async () => { devtoolsCalls++; return { content: [{ type: "text", text: "explicit browser" }], details: {} }; } });
+	};
+	const f = await fixture(t, {}, [toolClassification, extension]);
+	f.session.setActiveToolsByName(["tool_search"]);
+	const outcome = await f.run([
+		'const r=await tools.tool_search({query:"web search",limit:3});text(r.details);',
+		'await tools.browser_exec({});',
+		'const r=await tools.tool_search({query:"chrome_devtools_list_pages",limit:12});text(r.details);await callTool("chrome_devtools_list_pages",{});',
+	]);
+	assert.equal(outcome.results[0]?.isError, false);
+	assert.match(JSON.stringify(outcome.results[0]?.content), /browser_exec/);
+	assert.doesNotMatch(JSON.stringify(outcome.results[0]?.content), /chrome_devtools/);
+	assert.equal(outcome.results[1]?.isError, true);
+	assert.match(JSON.stringify(outcome.results[1]?.content), /PERMISSION_REQUIRED/);
+	assert.equal(outcome.results[2]?.isError, true);
+	assert.equal(devtoolsCalls, 0, "guessing a disabled name must not launch a second browser");
+	assert.equal(f.session.getActiveToolNames().includes("chrome_devtools_list_pages"), false);
+	// Same activation API used by the user's existing /chrome-devtools command.
+	f.session.setActiveToolsByName(["tool_search", "chrome_devtools_list_pages"]);
+	await f.run(['await tools.tool_search({query:"web search"});text(await tools.chrome_devtools_list_pages({}));']);
+	assert.equal(devtoolsCalls, 1, "the explicit user selection remains available");
+});
+
 test("successful state writes persist as a versioned branch entry; failed script writes do not", async t => {
 	const f = await fixture(t, { tools: ["read"] });
 	const outcome = await f.run(['store("n",3)', 'store("n",4); throw new Error("fail")', 'text(load("n"))']);
@@ -776,6 +805,65 @@ test("real MCP adapter discovery executes in Codemode and ignores self-reported 
 
 test("mandatory Codemode rejects exclusion before creating resources", async () => {
 	await assert.rejects(createAgentSession({ excludeTools: ["codemode"] }), /required default tool transport/);
+});
+
+test("Codemode exposes real browser instructions and constraints to the model without executing the browser", async t => {
+	const { default: browserUse } = await jiti.import<{ default: InlineExtension }>("../packages/extensions/browser-use/index.ts");
+	const f = await fixture(t, {}, [browserUse]);
+	const outcome = await f.run(['text(await describeTools(["browser_exec"]));']);
+	const text = outcome.results[0]!.content.filter(block => block.type === "text").map(block => block.text).join("\n");
+	assert.equal(outcome.results[0]!.isError, false, text);
+	assert.match(text, /Helpers are synchronous and pre-imported/);
+	assert.match(text, /page_info\(\) requires a loaded document/);
+	assert.match(text, /@maxLength 4000/);
+	assert.match(text, /@integer @minimum 5000 @maximum 300000 @default 120000/);
+	assert.match(text, /Promise<ToolResult>/);
+	assert.match(text, /type ToolResult = .*ref: string/);
+	assert.doesNotMatch(text, /More tool documentation/);
+	assert.deepEqual((outcome.results[0]!.details as any).codemode.calls, []);
+	assert.match(outcome.wires[0]!.tools!.find(tool => tool.name === "codemode")!.description, /Drive a real browser/);
+});
+
+test("Codemode documentation pages preserve long instructions and exact schemas without widening tool access", async t => {
+	const description = "Long instructions. ".repeat(2500) + "FINAL_REQUIRED_INSTRUCTION";
+	const properties: Record<string, any> = {};
+	for (let i = 0; i < 60; i++) properties[`field_${i}`] = { type: "string", description: "detail ".repeat(45), pattern: "a".repeat(100) };
+	const tools: InlineExtension = pi => pi.registerTool({ name: "mcp__fixture__large", label: "large", description,
+		parameters: { type: "object", properties, additionalProperties: false } as any,
+		execute: async () => { throw new Error("Discovery must not execute a tool"); } });
+	const f = await fixture(t, {}, [tools]);
+	const outcome = await f.run([`
+const names=["mcp__fixture__large"];
+async function readPages(format) {
+  let offset=0, body="", pages=0, maxPage=0;
+  while(true) {
+    const page=await describeTools(names,{offset,limit:4000,format});
+    const header=/^\\[Tool documentation chars (\\d+)\\.\\.(\\d+) of (\\d+); format:\\w+\\]\\n/.exec(page);
+    if(!header || Number(header[1])!==offset) throw new Error("bad page offset");
+    const end=Number(header[2]), total=Number(header[3]);
+    body+=page.slice(header[0].length,header[0].length+end-offset);
+    maxPage=Math.max(maxPage,page.length);pages++;
+    if(end===total) break;
+    if(end<=offset || !page.includes("offset:"+end)) throw new Error("missing continuation");
+    offset=end;
+  }
+  return {body,pages,maxPage};
+}
+const ts=await readPages("typescript"), raw=await readPages("json");
+const schema=JSON.parse(raw.body.split("Input JSON Schema:\\n")[1].split("\\nResult: ToolResult")[0]);
+text({tail:ts.body.includes("FINAL_REQUIRED_INSTRUCTION"),unknown:ts.body.includes("args: unknown"),
+ fields:Object.keys(schema.properties).length,pattern:schema.properties.field_59.pattern,
+ pages:ts.pages,maxPage:Math.max(ts.maxPage,raw.maxPage),
+ hidden:await describeTools(["not_registered","ask_user","codemode"])});
+`]);
+	assert.equal(outcome.results[0]!.isError, false, JSON.stringify(outcome.results[0]!.content));
+	const block = outcome.results[0]!.content.find(block => block.type === "text" && block.text.startsWith('{"tail"'));
+	assert.ok(block?.type === "text");
+	const data = JSON.parse(block.text);
+	assert.equal(data.tail, true); assert.equal(data.unknown, true);
+	assert.equal(data.fields, 60); assert.equal(data.pattern, "a".repeat(100));
+	assert.ok(data.pages > 10); assert.ok(data.maxPage < 4300); assert.equal(data.hidden, "");
+	assert.deepEqual((outcome.results[0]!.details as any).codemode.calls, []);
 });
 
 test("MCP activation keeps inline declarations stable; overflow remains explicitly discoverable", async () => {

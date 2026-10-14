@@ -5,7 +5,7 @@ Keeps Pi's initial model-visible tool surface small and deterministic, then acti
 ## Classes
 
 - Core: `read`, `bash`, `edit`, `write`, `structured_readonly_command`, `lsp_diagnostics`, `lsp_fix`, `lsp_navigate`, `tool_search`.
-- Browser: `browser_exec`, `chrome_devtools_*`.
+- Browser: `browser_exec` is discoverable. `chrome_devtools_*` is enabled only through the user's `/chrome-devtools` command or saved selection; model searches never activate an alternate browser/profile automatically, including exact-name searches after a Browser Use approval failure.
 - Delegation: `subagent`.
 - Memory/session: `memory`, `memory_search`, `session_search`.
 - Skill management: `skill_manage`.

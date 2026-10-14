@@ -308,19 +308,19 @@ test("remote catalog profiles each accepted fetched model exactly once", async (
 	assert.equal(profileCalls, remoteModels.length);
 });
 
-test("stale remote catalog profiles zero models and ignores invalid stale manifests", async () => {
+test("stale overlapping catalog profiles zero models and ignores invalid stale manifests", async () => {
 	let profileCalls = 0;
 	const providerId = "profile-count-stale";
+	const baseline = { ...rawCatalogModel(mistralProvider().getModels()[0]!), provider: providerId };
 	const invalid = {
-		...rawCatalogModel(mistralProvider().getModels()[0]!),
-		provider: providerId,
+		...baseline,
 		capabilities: { version: 999 },
 	} as unknown as Model<Api>;
 	const generatedAt = Date.now() + 120_000;
 	await withCatalogServer([invalid], async (baseUrl) => {
 		const models = createModels({ credentials: await configuredCredentials(providerId) });
 		models.setProvider(withRemoteCatalog(
-			countingCatalogProvider(providerId, () => profileCalls++),
+			{ ...countingCatalogProvider(providerId, () => profileCalls++), getModels: () => [baseline] },
 			baseUrl,
 			generatedAt,
 		));

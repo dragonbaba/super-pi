@@ -51,7 +51,10 @@ const MAX_RETAINED_IMAGE_CHARS = 16 * 1024 * 1024;
 const MAX_SHOWN_IMAGE_CHARS = 16 * 1024 * 1024;
 /** Image data handed to the script per result; larger images stay host-side behind show(ref). */
 const MAX_SCRIPT_IMAGE_CHARS = 256 * 1024;
-const TOOL_SIGNATURE_OPTIONS = Object.freeze({ inputMaxChars: 2048 });
+const TOOL_SIGNATURE_OPTIONS = Object.freeze({ inputMaxChars: 2048, outputType: "ToolResult" });
+const TOOL_RESULT_DECLARATION = 'type ToolResult = { content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>; details?: unknown; isError?: boolean; ref: string };\n';
+const MAX_DESCRIBE_PAGE_CHARS = 16_000;
+const MAX_DESCRIBE_SCHEMA_CHARS = 64 * 1024;
 const DEFERRED_DECLARATIONS = "\nMCP declarations are deferred. Filter ALL_TOOLS and use await describeTools([names]) for their current schemas.\n";
 
 function nestedAllowed(tool: AgentTool<any>): boolean {
@@ -149,19 +152,21 @@ export class CodemodeController {
 		if (this.closed || this.tools === tools) return;
 		this.tools = tools;
 		const descriptors: CodemodeTool[] = [];
-		let description = CODEMODE_DESCRIPTION + DEFERRED_DECLARATIONS + "\nCurrent local tool declarations (each result is {content,details,isError,ref}):\n";
+		let description = CODEMODE_DESCRIPTION + DEFERRED_DECLARATIONS + "\nCurrent local tool declarations:\n" + TOOL_RESULT_DECLARATION;
 		let omitted = 0;
 		for (const tool of tools) {
 			if (!nestedAllowed(tool)) continue;
 			const name = tool.name;
-			descriptors.push({ name, description: tool.description.slice(0, 1024), inputSchema: tool.parameters as never,
+			const summary = tool.description.length <= 1024 ? tool.description : tool.description.slice(0, 900) + "\n[Summary only; await describeTools([name]) for full instructions.]";
+			descriptors.push({ name, description: summary, inputSchema: tool.parameters as never,
 				execute: args => this.invoke(name, args) });
 		}
 		const identifiers = assignCodemodeIdentifiers(descriptors.map(descriptorName));
 		for (const descriptor of descriptors) {
 			if (descriptor.name.startsWith("mcp__")) continue;
 			if (description.length >= MAX_CODEMODE_DESCRIPTION_CHARS - 256) { omitted++; continue; }
-			const signature = renderToolSignature(descriptor, { ...TOOL_SIGNATURE_OPTIONS, identifier: identifiers.get(descriptor.name) });
+			const purpose = (descriptor.description ?? "").slice(0, 256).replace(/[\r\n\u2028\u2029]/g, " ");
+			const signature = `// ${purpose}\n` + renderToolSignature(descriptor, { ...TOOL_SIGNATURE_OPTIONS, identifier: identifiers.get(descriptor.name) });
 			if (description.length + signature.length + 1 < MAX_CODEMODE_DESCRIPTION_CHARS - 256) description += signature + "\n";
 			else omitted++;
 		}
@@ -368,10 +373,17 @@ export class CodemodeController {
 				requiredContentBlocks: requiredReadBlocks(record.result.content) });
 		}
 	}
-	private describe(names: unknown): string {
+	private describe(names: unknown, options?: unknown): string {
 		const invocation = this.requireInvocation();
 		if (!Array.isArray(names) || names.length > 16) throw new Error("describeTools expects up to 16 names");
-		let text = "";
+		if (options !== undefined && (options === null || typeof options !== "object" || Array.isArray(options))) throw new Error("describeTools options must be an object");
+		const { offset = 0, limit = 8000, format = "typescript" } = (options ?? {}) as { offset?: number; limit?: number; format?: string };
+		if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 256 || limit > MAX_DESCRIBE_PAGE_CHARS || (format !== "typescript" && format !== "json")) {
+			throw new Error("describeTools expects offset >= 0, limit 256..16000, and format 'typescript' or 'json'");
+		}
+		// Query-owned segments reference full descriptions without copying them. Only the requested
+		// page is materialized; no documentation cache or work in child/progress delivery is added.
+		const parts: string[] = [TOOL_RESULT_DECLARATION];
 		const described: AgentTool<any>[] = [];
 		for (const requested of names) {
 			if (typeof requested !== "string") continue;
@@ -381,9 +393,28 @@ export class CodemodeController {
 			if (!tool || !nestedAllowed(tool) || described.includes(tool)) continue;
 			described.push(tool);
 			const identifier = this.identifiers.get(tool.name);
-			text += tool.description.slice(0, 1024) + "\n" + renderToolSignature({ name: tool.name, inputSchema: tool.parameters as never }, { ...TOOL_SIGNATURE_OPTIONS, identifier }) + "\n";
+			parts.push(`\nTool: ${tool.name}\n`, tool.description, "\n");
+			if (format === "json") {
+				let schema: string;
+				try { schema = this.serializer.stringify(tool.parameters, MAX_DESCRIBE_SCHEMA_CHARS) ?? "unknown"; }
+				catch { schema = "[Schema exceeds the 65536-character structural safety limit or is not serializable; do not guess arguments.]"; }
+				parts.push("Input JSON Schema:\n", schema, "\nResult: ToolResult\n");
+			} else {
+				const signature = renderToolSignature({ name: tool.name, inputSchema: tool.parameters as never }, { inputMaxChars: 16_000, identifier, outputType: "ToolResult" });
+				parts.push(signature, "\n");
+			}
 		}
-		return text;
+		if (described.length === 0) return "";
+		parts.push("\nTypeScript is a summary; use format:'json' for exact input constraints, long defaults/patterns, or unknown types. Child failures return isError or throw; the parent remains failed even if caught.\n");
+		let position = 0, text = "";
+		for (const part of parts) {
+			const start = Math.max(0, offset - position);
+			if (start < part.length && text.length < limit) text += part.slice(start, start + limit - text.length);
+			position += part.length;
+		}
+		const end = Math.min(position, offset + text.length);
+		const continuation = end < position ? `\n[More tool documentation: call describeTools with the same names and format, offset:${end}, limit:${limit}.]` : "";
+		return `[Tool documentation chars ${Math.min(offset, position)}..${end} of ${position}; format:${format}]\n${text}${continuation}`;
 	}
 	private async ensureSandbox(): Promise<CodemodeSandbox> {
 		if (this.sandbox) return this.sandbox;
@@ -396,7 +427,10 @@ export class CodemodeController {
 				return this.invoke(name, input);
 			} },
 			{ name: "show", execute: ref => this.show(ref) },
-			{ name: "describeTools", execute: names => this.describe(names) },
+			{ name: "describeTools", spread: true, execute: args => {
+				const [names, options] = args as unknown[];
+				return this.describe(names, options);
+			} },
 		] });
 		return this.sandbox;
 	}

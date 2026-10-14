@@ -65,10 +65,23 @@ Shell 保留真实进程状态。grep 退出 1 通常表示无匹配；只有在
 
 当前本地工具的声明按有界预算列在 Codemode 描述中；省略时会给出提示。MCP 声明按需查看，远端工具加入活动集不会仅因名字增加而改变整段内联描述。
 
+内联声明包含简短用途、参数类型与可容纳的约束标签（如 `@integer`、`@minimum`、`@maxLength`、`@default`），返回值统一声明为实际的 `ToolResult`。`ALL_TOOLS` 用于找名字和简述；长说明会明确标记为摘要。使用不熟悉的工具前，先通过 `describeTools` 读取完整说明，不要根据名字猜测函数或参数。
+
 ```js
 text(ALL_TOOLS.filter(tool => tool.name.includes("search")));
 text(await describeTools(["read"]));
 ```
+
+`describeTools(names, options?)` 每次最多接受 16 个当前可用工具名，也接受目录中的脚本别名。默认返回最多 8,000 字符的文档正文；可用 `limit` 调整为 256–16,000 字符。长文档带有下一页 `offset`，按相同名字、格式和返回的 offset 继续读取，不会静默丢弃 1,024 字符后的操作要求。页头和续读提示不计入正文限额。
+
+```js
+// TypeScript 是便于阅读的摘要；精确约束和无法展开的类型可查询原始 JSON Schema。
+text(await describeTools(["browser_exec"], { format: "json", limit: 8000 }));
+// 只有上一页确实返回 offset:8000 时，才使用该 offset 继续。
+text(await describeTools(["browser_exec"], { format: "json", offset: 8000, limit: 8000 }));
+```
+
+单个输入 Schema 沿用 65,536 字符及结构遍历保护；不可序列化或超限时明确报告限制，不能将 `unknown` 理解为任意参数都有效。工具目录变动后应从第一页重读。详情查询只读取当前工具元数据，不执行目标工具，也不激活被禁用的工具。资料较多时分轮展示，避免汇总全部文档后再次超过模型输出预算。
 
 `ALL_TOOLS` 是本次脚本开始时的目录快照。`tools.tool_search(...)` 可以发现并激活允许使用的工具；MCP 搜索负责远端目录。激活后若工具不在脚本起始快照中，用 `await callTool(name, args)` 调用。发现结果不扩大权限，执行前仍检查当前活动工具和授权。
 

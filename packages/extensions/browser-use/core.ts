@@ -1,10 +1,9 @@
 import { access, lstat, open, realpath } from "node:fs/promises";
 import { constants } from "node:fs";
-import { delimiter, extname, isAbsolute, join, resolve } from "node:path";
+import { basename, delimiter, extname, isAbsolute, join, resolve } from "node:path";
 import { isIP } from "node:net";
 
-const WINDOWS_EXECUTABLE_NAMES = ["browser-use.exe"] as const;
-const POSIX_EXECUTABLE_NAMES = ["browser-use"] as const;
+const EXECUTABLE_NAME = process.platform === "win32" ? "browser-harness.exe" : "browser-harness";
 const IMAGE_PATH_RES = [
   /"((?:[A-Za-z]:[\\/]|\/)[^"\r\n]+?\.(?:png|jpe?g|webp))"/giu,
   /'((?:[A-Za-z]:[\\/]|\/)[^'\r\n]+?\.(?:png|jpe?g|webp))'/giu,
@@ -22,9 +21,6 @@ const ENV_EXACT = new Set([
   "BH_RUNTIME_DIR_SHARED", "BH_TELEMETRY", "BH_TMP_DIR", "BH_TMP_DIR_SHARED",
   "BROWSER_HARNESS_HOME", "BROWSER_HARNESS_TELEMETRY",
   "BU_AUTOSPAWN", "BU_BROWSER_ID", "BU_CDP_URL", "BU_CDP_WS",
-  "BROWSER_USE_ACTION_TIMEOUT_S", "BROWSER_USE_ALLOWED_DOMAINS", "BROWSER_USE_CDP_TIMEOUT_S",
-  "BROWSER_USE_CONFIG_DIR", "BROWSER_USE_CONFIG_PATH", "BROWSER_USE_DISABLE_EXTENSIONS",
-  "BROWSER_USE_HEADLESS", "BROWSER_USE_LOGGING_LEVEL", "BROWSER_USE_SETUP_LOGGING",
 ]);
 const URL_LITERAL_RE = /https?:\/\/[^\s'"\\)]+/giu;
 const URL_TRAILING_PUNCTUATION_RE = /[,.;}]+$/u;
@@ -123,10 +119,6 @@ export function browserUrlSafetyError(code: string): string | undefined {
   return undefined;
 }
 
-function executableNames(): readonly string[] {
-  return process.platform === "win32" ? WINDOWS_EXECUTABLE_NAMES : POSIX_EXECUTABLE_NAMES;
-}
-
 async function regularExecutable(path: string): Promise<boolean> {
   try {
     const info = await lstat(path);
@@ -152,13 +144,14 @@ async function firstExecutable(candidates: readonly string[], source: BrowserUse
 }
 
 export async function findBrowserUseExecutable(agentDir: string, env: NodeJS.ProcessEnv = process.env): Promise<BrowserUseExecutable | undefined> {
-  const configured = env.SP_BROWSER_USE_CLI?.trim();
-  if (configured && isAbsolute(configured)) {
+  const configured = env.SP_BROWSER_HARNESS_CLI?.trim();
+  if (configured && isAbsolute(configured)
+    && (process.platform === "win32" ? basename(configured).toLowerCase() : basename(configured)) === EXECUTABLE_NAME) {
     const found = await firstExecutable([resolve(configured)], "configured");
     if (found) return found;
   }
 
-  const managed = await firstExecutable(executableNames().map((name) => join(agentDir, "bin", name)), "managed");
+  const managed = await firstExecutable([join(agentDir, "bin", EXECUTABLE_NAME)], "managed");
   if (managed) return managed;
 
   const uvBinRoots: string[] = [];
@@ -166,14 +159,14 @@ export async function findBrowserUseExecutable(agentDir: string, env: NodeJS.Pro
   if (env.HOME && env.HOME !== env.USERPROFILE) uvBinRoots.push(join(env.HOME, ".local", "bin"));
   if (env.APPDATA) uvBinRoots.push(join(env.APPDATA, "uv", "bin"));
   const userUv = await firstExecutable(
-    uvBinRoots.flatMap((root) => executableNames().map((name) => join(root, name))),
+    uvBinRoots.map((root) => join(root, EXECUTABLE_NAME)),
     "uv",
   );
   if (userUv) return userUv;
 
   const pathEntries = (env.PATH ?? "").split(delimiter).filter(isAbsolute);
   const pathCandidates: string[] = [];
-  for (const entry of pathEntries) for (const name of executableNames()) pathCandidates.push(join(entry, name));
+  for (const entry of pathEntries) pathCandidates.push(join(entry, EXECUTABLE_NAME));
   return firstExecutable(pathCandidates, "path");
 }
 
