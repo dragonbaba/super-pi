@@ -10,7 +10,7 @@ import { inspectBashResourceLifecycle } from "../packages/extensions/resource-li
 import { validateToolArguments } from "../packages/ai/src/utils/validation.ts";
 import mutationExtension from "../packages/extensions/mutation-guard-write/index.ts";
 import browserExtension, { formatFailure, withOwnedScreenshotDefault } from "../packages/extensions/browser-use/index.ts";
-import { browserUrlSafetyError, buildBrowserUseEnvironment, findBrowserUseExecutable } from "../packages/extensions/browser-use/core.ts";
+import { BrowserHarnessVersionGate, browserUrlSafetyError, buildBrowserUseEnvironment, findBrowserUseExecutable } from "../packages/extensions/browser-use/core.ts";
 const { failureRecoveryHint } = await createJiti(import.meta.url).import<any>("../packages/extensions/tool-loop-guardrails/core.ts");
 const { default: toolLoopGuardrails } = await createJiti(import.meta.url).import<any>("../packages/extensions/tool-loop-guardrails/index.ts");
 const definitions = new Map<string, any>();
@@ -103,6 +103,34 @@ test("browser runtime resolution requires harness and rejects legacy executables
  assert.equal(runtimeEnv.BH_CHROME_PATH, "chosen-chrome");
 });
 
+test("browser version gate rejects old or unverifiable runtimes and reuses only the verified identity", async t => {
+ const root = mkdtempSync(join(tmpdir(), "pi-browser-version-")), command = join(root, "runtime");
+ t.after(() => rmSync(root, { recursive: true, force: true }));
+ writeFileSync(command, "fixture");
+ let version = "0.1.8", probes = 0, timedOut = false;
+ const gate = new BrowserHarnessVersionGate(async options => {
+  probes++; assert.deepEqual(options.args, ["--version"]); assert.equal(options.code, "");
+  assert.equal(options.env.UNRELATED_SECRET, undefined); assert.equal(options.env.BROWSER_USE_API_KEY, undefined);
+  assert.equal(options.timeoutMs, 5000); assert.equal(options.maxBytesPerStream, 1024);
+  return { stdout: version, stderr: "", exitCode: 0, killed: false, timedOut, aborted: false,
+   stdoutTruncated: false, stderrTruncated: false, stdoutBytes: version.length, stderrBytes: 0 };
+ });
+ const executable = { command, source: "configured" as const }, options = { cwd: root, env: { UNRELATED_SECRET: "fixture", BROWSER_USE_API_KEY: "fixture" } };
+ for (version of ["0.1.8", "0.1.12", "unknown", "0.1.13rc1"]) await assert.rejects(gate.check(executable, options), /BROWSER_EXEC_VERSION/);
+ version = "0.1.13"; assert.equal(await gate.check(executable, options), version);
+ const checked = probes;
+ assert.equal(await gate.check(executable, options), version); assert.equal(probes, checked);
+ writeFileSync(command, "replacement fixture"); version = "0.1.8";
+ await assert.rejects(gate.check(executable, options), /BROWSER_EXEC_VERSION/); assert.equal(probes, checked + 1);
+ version = "0.1.14"; assert.equal(await gate.check(executable, options), version);
+ gate.clear(); timedOut = true;
+ await assert.rejects(gate.check(executable, options), /BROWSER_EXEC_VERSION/);
+ const controller = new AbortController(); controller.abort(new Error("version probe cancelled"));
+ const beforeAbort = probes;
+ await assert.rejects(gate.check(executable, { ...options, signal: controller.signal }), /version probe cancelled/);
+ assert.equal(probes, beforeAbort);
+});
+
 test("browser approval failures retain actionable guidance inside the bounded model prefix", () => {
  for (const evidence of [
   "browser-harness: permission-blocked: wait for Allow",
@@ -138,6 +166,7 @@ source = json.load(sys.stdin)
 public = ["8.8.8.8", "2606:4700:4700::1111"]
 fake4 = ["198.18.0.90"]
 fake6 = ["2001:2::56"]
+mihomo6 = ["fdfe:dcba:9876::56"]
 dual = fake4 + fake6
 url = "https://www.remotion.dev/docs/ai/skills"
 cases = [
@@ -146,6 +175,12 @@ cases = [
     ("v6-only", fake6, fake6, url, True, 1),
     ("dual-stack", dual, ["198.18.0.89", "2001:2::55"], url, True, 1),
     ("fake-with-public", dual + public, dual + public, url, True, 1),
+    ("mihomo-v6", mihomo6, mihomo6, url, True, 1),
+    ("mihomo-dual", fake4 + mihomo6, fake4 + mihomo6, url, True, 1),
+    ("mihomo-unconfirmed", mihomo6, public, url, False, 1),
+    ("mihomo-private-probe", mihomo6, mihomo6 + ["fd00::1"], url, False, 1),
+    ("mihomo-neighbor", ["fdfe:dcba:9876:1::1"], mihomo6, url, False, 0),
+    ("literal-mihomo", [], mihomo6, "http://[fdfe:dcba:9876::56]/", False, 0),
     ("unconfirmed", dual, public, url, False, 1),
     ("probe-failure", dual, None, url, False, 1),
     ("probe-empty", dual, [], url, False, 1),
@@ -182,9 +217,9 @@ print(json.dumps(results))
  const result = spawnSync(python, ["-c", program], { input: JSON.stringify(source), encoding: "utf8", timeout: 10000 });
  assert.equal(result.status, 0, result.stderr || String(result.error));
  const cases = JSON.parse(result.stdout);
- assert.equal(cases.length, 15);
- assert.equal(cases.filter((row: any) => row.allowed).length, 5);
- for (const url of ["http://198.18.0.90", "http://[2001:2::56]", "http://127.0.0.1", "http://[fd00::1]"]) {
+ assert.equal(cases.length, 21);
+ assert.equal(cases.filter((row: any) => row.allowed).length, 7);
+ for (const url of ["http://198.18.0.90", "http://[2001:2::56]", "http://[fdfe:dcba:9876::56]", "http://127.0.0.1", "http://[fd00::1]"]) {
   assert.ok(browserUrlSafetyError(`new_tab(${JSON.stringify(url)})`));
  }
 });

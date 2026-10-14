@@ -72,13 +72,12 @@ text(ALL_TOOLS.filter(tool => tool.name.includes("search")));
 text(await describeTools(["read"]));
 ```
 
-`describeTools(names, options?)` 每次最多接受 16 个当前可用工具名，也接受目录中的脚本别名。默认返回最多 8,000 字符的文档正文；可用 `limit` 调整为 256–16,000 字符。长文档带有下一页 `offset`，按相同名字、格式和返回的 offset 继续读取，不会静默丢弃 1,024 字符后的操作要求。页头和续读提示不计入正文限额。
+`describeTools(names, options?)` 每次最多接受 16 个当前可用工具名，也接受目录中的脚本别名。默认返回最多 8,000 字符的文档正文；可用 `limit` 调整为 256–16,000 字符。长文档带有下一页 `offset` 和定义版本 `revision`；续页必须同时带回这两个值，并保持名字和格式一致。若 MCP 后台更新等原因使定义改变，会要求丢弃旧页、从 `offset:0` 重读，不会混合两个版本。页头和续读提示不计入正文限额。
 
 ```js
 // TypeScript 是便于阅读的摘要；精确约束和无法展开的类型可查询原始 JSON Schema。
 text(await describeTools(["browser_exec"], { format: "json", limit: 8000 }));
-// 只有上一页确实返回 offset:8000 时，才使用该 offset 继续。
-text(await describeTools(["browser_exec"], { format: "json", offset: 8000, limit: 8000 }));
+// 若返回续读提示，按其给出的 offset、limit 和 revision 发起下一次请求。
 ```
 
 单个输入 Schema 沿用 65,536 字符及结构遍历保护；不可序列化或超限时明确报告限制，不能将 `unknown` 理解为任意参数都有效。工具目录变动后应从第一页重读。详情查询只读取当前工具元数据，不执行目标工具，也不激活被禁用的工具。资料较多时分轮展示，避免汇总全部文档后再次超过模型输出预算。

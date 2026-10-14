@@ -852,11 +852,12 @@ test("Codemode documentation pages preserve long instructions and exact schemas 
 	const outcome = await f.run([`
 const names=["mcp__fixture__large"];
 async function readPages(format) {
-  let offset=0, body="", pages=0, maxPage=0;
+  let offset=0, body="", pages=0, maxPage=0, revision;
   while(true) {
-    const page=await describeTools(names,{offset,limit:4000,format});
-    const header=/^\\[Tool documentation chars (\\d+)\\.\\.(\\d+) of (\\d+); format:\\w+\\]\\n/.exec(page);
+    const page=await describeTools(names,{offset,limit:4000,format,revision});
+    const header=/^\\[Tool documentation chars (\\d+)\\.\\.(\\d+) of (\\d+); format:\\w+; revision:([^\\]]+)\\]\\n/.exec(page);
     if(!header || Number(header[1])!==offset) throw new Error("bad page offset");
+    revision=header[4];
     const end=Number(header[2]), total=Number(header[3]);
     body+=page.slice(header[0].length,header[0].length+end-offset);
     maxPage=Math.max(maxPage,page.length);pages++;
@@ -881,6 +882,37 @@ text({tail:ts.body.includes("FINAL_REQUIRED_INSTRUCTION"),unknown:ts.body.includ
 	assert.equal(data.fields, 60); assert.equal(data.pattern, "a".repeat(100));
 	assert.ok(data.pages > 10); assert.ok(data.maxPage < 4300); assert.equal(data.hidden, "");
 	assert.deepEqual((outcome.results[0]!.details as any).codemode.calls, []);
+});
+
+test("Codemode documentation rejects mixed MCP revisions and requires a continuation token", async t => {
+	let runtime: any;
+	const extension: InlineExtension = pi => {
+		runtime = new McpBridgeRuntime(pi, "fixture");
+		const state = { config: { id: "fixture" } };
+		const register = (name: string) => runtime.registerRemoteTool(state, { name: "lookup", description: "paged metadata",
+			inputSchema: { type: "object", properties: { [name]: { type: "string", description: "detail ".repeat(200) } } } });
+		register("cached");
+		pi.registerTool({ name: "refresh_catalog", label: "Refresh fixture", description: "replace cached MCP schema",
+			parameters: Type.Object({}), execute: async () => { register("live"); return { content: [], details: {} }; } });
+	};
+	const f = await fixture(t, {}, [extension]);
+	t.after(() => runtime.close());
+	const outcome = await f.run([`
+const names=["mcp__fixture__lookup"], options={format:"json",limit:256};
+const first=await describeTools(names,options), revision=/; revision:([^\\]]+)\\]/.exec(first)[1];
+await tools.refresh_catalog({});
+try { await describeTools(names,{...options,offset:256,revision}); throw new Error("mixed revisions accepted"); }
+catch(e) { if(!String(e).includes("TOOL_DOCUMENTATION_CHANGED")) throw e; text("stale revision rejected"); }
+try { await describeTools(names,{...options,offset:256}); throw new Error("missing revision accepted"); }
+catch(e) { if(!String(e).includes("continuation requires")) throw e; text("missing revision rejected"); }
+const fresh=await describeTools(names,{format:"json",limit:8000});
+if(/; revision:([^\\]]+)\\]/.exec(fresh)[1]===revision) throw new Error("revision did not change");
+text(JSON.parse(fresh.split("Input JSON Schema:\\n")[1].split("\\nResult: ToolResult")[0]));
+`]);
+	assert.equal(outcome.results[0]?.isError, false, JSON.stringify(outcome.results));
+	const text = JSON.stringify(outcome.results[0]?.content);
+	assert.match(text, /stale revision rejected/); assert.match(text, /missing revision rejected/);
+	assert.match(text, /live/); assert.doesNotMatch(text, /cached/);
 });
 
 test("MCP activation keeps inline declarations stable; overflow remains explicitly discoverable", async () => {
@@ -925,10 +957,15 @@ test("controller releases catalog metadata even when sandbox shutdown rejects", 
 test("disposed sessions release wrapped declarations and ignore late catalog callbacks", async t => {
 	const f = await fixture(t, { tools: ["read"] });
 	const owner = (f.session as any)._codemode;
+	await f.run(['await describeTools(["read"]);']);
+	const describedTool = f.session.agent.state.tools.find(tool => tool.name === "read")!;
+	assert.ok(owner.documentationVersions.has(describedTool));
 	const previousTools = owner.tools;
 	const wrapper = (f.session as any)._toolRegistry.get("codemode");
 	assert.ok(wrapper.description.length > CODEMODE_DESCRIPTION.length);
 	f.session.dispose(); await owner.close();
+	assert.equal(owner.documentationVersions.has(describedTool), false, "closed owner clears documentation revision identities");
+	assert.equal(owner.documentationRevisionPrefix, undefined);
 	assert.equal(wrapper.description, CODEMODE_DESCRIPTION);
 	assert.equal(f.session.agent.state.tools.find(tool => tool.name === "codemode")!.description, CODEMODE_DESCRIPTION);
 	assert.equal(f.session.agent.state.modelTools!.find(tool => tool.name === "codemode")!.description, CODEMODE_DESCRIPTION);

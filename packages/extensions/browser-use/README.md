@@ -23,21 +23,26 @@ Registers one sequential `browser_exec` tool for every model. It sends one bound
 
 `resource-lifecycle-guard` provides exact one-call authorization bound to the full code, session, timeout, purpose, and tool-call ID. `full-access + never-ask` may run silently; other applicable modes retain confirmation.
 
+The same independent-probe rule also recognizes Mihomo's documented
+[`fdfe:dcba:9876::/64` Fake-IP range](https://wiki.metacubex.one/en/config/dns/#fake-ip-range6).
+It does not admit adjacent subnets, other ULA ranges, or literal addresses in
+this range. The generated-prelude fixture covers 21 DNS cases after this addition.
+
 The extension entry stays lightweight: browser runtime modules and permission code load on first status/execute use. Each CLI invocation is owned by one disposable runner object that clears deadlines, abort hooks, child listeners, streams, and references on completion. A measured precompile experiment was rejected because it did not improve cold startup.
 
 ## Installation
 
-Required runtime: standalone Browser Harness 0.1.13. Install it in an isolated environment:
+Required runtime: standalone Browser Harness 0.1.13 or newer. Install the verified release in an isolated environment:
 
 ```text
-uv tool install --python 3.12 browser-harness==0.1.13
+uv tool install --force --python 3.12 browser-harness==0.1.13
 ```
 
 The resolver accepts only `browser-harness` (`browser-harness.exe` on Windows). It checks `SP_BROWSER_HARNESS_CLI`, the managed agent bin, uv's `%USERPROFILE%/.local/bin`, the AppData uv bin, then absolute PATH entries. An override must be an absolute path to an executable with that name. Relative PATH entries and symlinked executables are rejected. There is no `browser-use` executable fallback and `SP_BROWSER_USE_CLI` is no longer read. The obsolete Browser Use CLI environment flags are not forwarded; Browser Harness's own local/cloud settings remain supported.
 
 For an existing installation, release the old connection with `/browser-use release`, then remove the old tool with `uv tool uninstall browser-use`. Restart or `/reload` Super Pi afterward. Chrome remains open; the next new connection may request approval again.
 
-Use `/browser-use status` after `/reload`; it reports the selected executable, not a verified Chrome connection. `/browser-use release` runs the official daemon stop command and disconnects Chrome control when no browser call is active; it does not close Chrome. `/browser-use install` only prints instructions and never installs automatically.
+Use `/browser-use status` after `/reload`; it reports the selected executable and verified version, not a verified Chrome connection. Before Python execution, the extension checks `--version` with a five-second deadline and 1 KiB per stream. Old, unknown, prerelease or failed versions are rejected. A successful result is reused for the same file identity until replacement or reload/shutdown; no version subprocess or environment rebuild is added to repeated calls. `/browser-use release` runs the official daemon stop command and disconnects Chrome control when no browser call is active; it does not close Chrome. `/browser-use install` only prints instructions and never installs automatically.
 
 Local Chrome 144+ may require one Allow confirmation for each browser run or newly established debugging connection. Browser Harness 0.1.12+ keeps one pending approval per daemon name instead of replacing its connection on retries. Normal `browser_exec` calls reuse the persistent daemon and must not restart it. Super Pi still enforces the selected 5–300 second outer deadline and cancellation; on Windows its existing process-tree termination can also end a newly spawned pending daemon. This is not an unlimited approval wait. Do not automate the Chrome security prompt or edit Chrome Local State. A zero-prompt setup requires a separate automation profile launched with its own `--user-data-dir` and debugging port; it does not share the default profile's login state. Cloud authentication is optional. Local recordings are explicitly disabled unless the user opts in.
 
@@ -179,3 +184,23 @@ One diagnostic workspace was retained: immediate removal met Windows EBUSY,
 and the later exact-path cleanup command was blocked by automatic approval
 policy. No deletion workaround was attempted. Its recorded identity remains
 in the local task history; it is separate from project data and browser profiles.
+
+### PR review follow-up: runtime version admission
+
+Filename discovery alone did not establish that an existing standalone Harness
+contained the approval fixes. The extension now gates execution and status on
+the official `--version` result, using the existing disposable runner. One
+successful version/file-identity pair belongs to each extension instance and is
+cleared on shutdown. Only the first check or a changed executable launches the
+bounded probe; failures are not cached. Installation instructions force replacement
+of an older isolated tool. Official release remains available for disconnecting
+an old runtime before upgrading.
+
+The existing recovery test covers old/unknown/prerelease versions, successful
+reuse, changed files, timeout, pre-abort and reset. A production-runner probe of
+the installed 0.1.13 performed two checks with one subprocess, zero retained
+abort listeners, and cleared identity/version references. It used `--version`
+only, with the normal filtered environment and no browser connection. This adds
+one file-identity check per explicit browser invocation, no stream callbacks or
+per-delta work; process, deadline, stream and abort cleanup reuse the existing
+runner owner. The original user-assisted approval test was not repeated.

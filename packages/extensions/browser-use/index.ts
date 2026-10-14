@@ -138,9 +138,12 @@ _pi_metadata_hosts = {"metadata.google.internal", "metadata.goog", "instance-dat
 _pi_sensitive_keys = {"api_key", "apikey", "access_token", "auth", "authorization", "credential", "key", "password", "secret", "signature", "token"}
 _pi_fake_ipv4_network = _pi_ipaddress.ip_network("198.18.0.0/15")
 _pi_fake_ipv6_network = _pi_ipaddress.ip_network("2001:2::/48")
+_pi_mihomo_ipv6_network = _pi_ipaddress.ip_network("fdfe:dcba:9876::/64")
 _pi_fake_ip_mode = None
 def _pi_is_fake_ip(address):
-    return address in (_pi_fake_ipv4_network if address.version == 4 else _pi_fake_ipv6_network)
+    if address.version == 4:
+        return address in _pi_fake_ipv4_network
+    return address in _pi_fake_ipv6_network or address in _pi_mihomo_ipv6_network
 def _pi_fake_ip_mode_enabled():
     global _pi_fake_ip_mode
     if _pi_fake_ip_mode is not None:
@@ -209,6 +212,7 @@ export default function browserUseExtension(pi: ExtensionAPI): void {
   let releaseInProgress = false;
   let cleanupPending = false;
   let connectionNoticeShown = false;
+  let runtimeVersion: InstanceType<BrowserRuntime[0]["BrowserHarnessVersionGate"]> | undefined;
 
   const ensureWorkspace = async (ctx: ExtensionContext): Promise<string> => {
     const desired = join(getAgentDir(), "cache", "browser-use", "workspace", workspaceKey(ctx, `${nonce}-${workspaceGeneration}`));
@@ -248,6 +252,8 @@ export default function browserUseExtension(pi: ExtensionAPI): void {
         permission.consumeBrowserExecAuthorization(params, toolCallId);
         const executable = await core.findBrowserUseExecutable(getAgentDir());
         if (!executable) throw new Error("[BROWSER_EXEC_UNAVAILABLE] Browser Harness 0.1.13 is required. Run /browser-use install.");
+        runtimeVersion ??= new core.BrowserHarnessVersionGate(runner.runBrowserUse);
+        await runtimeVersion.check(executable, { cwd: ctx.cwd, env: process.env, signal });
         const currentWorkspace = await ensureWorkspace(ctx);
         const expectedScreenshotPath = ownedScreenshotPath(currentWorkspace, toolCallId);
         const startedAtMs = Date.now();
@@ -334,7 +340,7 @@ export default function browserUseExtension(pi: ExtensionAPI): void {
     handler: async (args, ctx) => {
       const action = args.trim() || "status";
       if (action === "install") {
-        ctx.ui.notify("Install uv, then run: uv tool install --python 3.12 browser-harness==0.1.13. Reload Pi afterward. This standalone runtime includes the Chrome pending-approval fixes.", "info");
+        ctx.ui.notify("Install uv, then run: uv tool install --force --python 3.12 browser-harness==0.1.13. Reload Pi afterward. This standalone runtime includes the Chrome pending-approval fixes.", "info");
         return;
       }
       if (action === "release") {
@@ -375,15 +381,22 @@ export default function browserUseExtension(pi: ExtensionAPI): void {
         ctx.ui.notify("Usage: /browser-use [status|install|release]", "warning");
         return;
       }
-      const [core] = await loadBrowserRuntime();
+      const [core, runner] = await loadBrowserRuntime();
       const executable = await core.findBrowserUseExecutable(getAgentDir());
-      ctx.ui.notify(executable ? `Browser runtime installed: ${executable.command}\nChrome connection and approval have not been checked.` : "Browser Harness CLI not found. Run /browser-use install.", executable ? "info" : "warning");
+      if (!executable) { ctx.ui.notify("Browser Harness CLI not found. Run /browser-use install.", "warning"); return; }
+      runtimeVersion ??= new core.BrowserHarnessVersionGate(runner.runBrowserUse);
+      try {
+        const version = await runtimeVersion.check(executable, { cwd: ctx.cwd, env: process.env, signal: ctx.signal });
+        ctx.ui.notify(`Browser runtime ${version}: ${executable.command}\nChrome connection and approval have not been checked.`, "info");
+      } catch (error) { ctx.ui.notify(bounded(error instanceof Error ? error.message : String(error)), "warning"); }
     },
   });
 
   pi.on("session_shutdown", async () => {
     workspaceGeneration += 1;
     connectionNoticeShown = false;
+    runtimeVersion?.clear();
+    runtimeVersion = undefined;
     if (activeRuns > 0) {
       cleanupPending = true;
       return;

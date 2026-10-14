@@ -154,7 +154,7 @@ declaration with zero target-tool executions. The existing global `superpi`
 launcher starts from the rebuilt checkout (`--offline --version`: `0.84.1`);
 the package version was not bumped.
 
-Final production source SHA-256 fingerprints:
+Initial pre-review production source SHA-256 fingerprints:
 
 | File | SHA-256 |
 | --- | --- |
@@ -256,3 +256,45 @@ passed. No full local suite, extra test file, or real browser call was needed.
 The change adds only request-local normalization and a score at explicit search
 time. It adds no candidate collection, retained state, timer, listener or
 per-delta work; the catalog/Worker benchmark sources remain unchanged.
+
+### Codex review follow-up: metadata revision and runtime admission
+
+The first review identified three actionable gaps: MCP definitions can change
+between documentation pages, an existing standalone Harness can still be too
+old, and the documented Mihomo IPv6 Fake-IP subnet was not recognized. All three
+were addressed. Browser version admission and the expanded 21-case DNS fixture
+are documented in the extension README.
+
+Documentation continuation now includes and requires a revision bound to the
+requested current definitions, controller instance and format. Replacement, removal or changed
+selection rejects stale continuation with `TOOL_DOCUMENTATION_CHANGED`; callers
+discard previous pages and start at zero. The revision registry uses weak tool
+keys and primitive IDs only, retains no document/schema text, and is replaced on
+close even if sandbox shutdown fails. Metadata queries still use live permission
+lookup; no document is served from a cached unauthorized definition. The real
+MCP adapter regression replaces a cached definition between awaited pages and
+verifies rejection, missing-token rejection and a parsable fresh live schema.
+
+Four focused review regressions, three catalog/disposal checks and thirteen
+source invariants passed. Root/browser type checks and the coding-agent build
+passed. The extended disposal test verifies that queried revision identities are
+cleared. No new test file or local full-suite run was added.
+
+Because the controller changed, the catalog allocation benchmark was refreshed
+on the same Windows/Node setup, including the final controller-instance token.
+Final host sampled allocation: 18,039,584 bytes
+(previous candidate 18,019,424; original baseline 16,989,528). This remains a
+single noisy sample, approximately 6.2% above the original baseline, not a speed
+or production heap claim. For 8/512 tools: wire bytes 765/52,279; schema reads on
+activation and unchanged scripts zero; descriptors/snapshots/catalogs reused;
+each worker started/stopped once; executions/maps/extra declaration retention
+zero after close; tracked references 0/12 after controlled GC. Inline lengths
+were 5,736/31,580: the larger introduction causes the fixed 32,768-character cap
+to omit another whole declaration in the large fixture, which remains available
+through explicit discovery. Raw final output: `.git/pr151-catalog-review-final.json`.
+
+Final controller SHA-256: `6833aa30a45eeed1077f5ff6d73790e5de92e6d58feccdc2b3f7905b5c0b287f`.
+Final constants SHA-256: `5b808e6770f39b7eda3ec3c04f20c06dbe82492bcccb37d35b51c5320e9a0f21`.
+The declaration renderer fingerprint is unchanged. The new revision registry is
+accessed only by explicit documentation queries; catalog changes, deltas,
+progress, rendering and result projection gain no repeated allocation work.

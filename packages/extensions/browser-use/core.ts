@@ -2,6 +2,7 @@ import { access, lstat, open, realpath } from "node:fs/promises";
 import { constants } from "node:fs";
 import { basename, delimiter, extname, isAbsolute, join, resolve } from "node:path";
 import { isIP } from "node:net";
+import type { BrowserUseRunOptions, BrowserUseRunResult } from "./runner.ts";
 
 const EXECUTABLE_NAME = process.platform === "win32" ? "browser-harness.exe" : "browser-harness";
 const IMAGE_PATH_RES = [
@@ -35,6 +36,47 @@ const SENSITIVE_QUERY_KEYS = new Set([
 export interface BrowserUseExecutable {
   command: string;
   source: "configured" | "managed" | "path" | "uv";
+}
+
+/** One successful version result per extension/executable identity; no retained process or output. */
+export class BrowserHarnessVersionGate {
+  private identity: string | undefined;
+  private version: string | undefined;
+  private readonly run: (options: BrowserUseRunOptions) => Promise<BrowserUseRunResult>;
+
+  constructor(run: (options: BrowserUseRunOptions) => Promise<BrowserUseRunResult>) { this.run = run; }
+
+  clear(): void { this.identity = undefined; this.version = undefined; }
+
+  private async fingerprint(command: string): Promise<string> {
+    const info = await lstat(command);
+    if (!info.isFile() || info.isSymbolicLink()) throw new Error("[BROWSER_EXEC_VERSION] Browser Harness executable changed; run /browser-use status.");
+    return `${command}\0${info.dev}:${info.ino}:${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
+  }
+
+  async check(executable: BrowserUseExecutable, options: Pick<BrowserUseRunOptions, "cwd" | "env" | "signal">): Promise<string> {
+    options.signal?.throwIfAborted();
+    const identity = await this.fingerprint(executable.command);
+    options.signal?.throwIfAborted();
+    if (identity === this.identity && this.version !== undefined) return this.version;
+    this.clear();
+    const result = await this.run({ ...options, env: buildBrowserUseEnvironment(options.env, options.cwd),
+      command: executable.command, args: ["--version"], code: "", timeoutMs: 5000, maxBytesPerStream: 1024 });
+    options.signal?.throwIfAborted();
+    const version = result.stdout.trim();
+    const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
+    const major = Number(match?.[1]), minor = Number(match?.[2]), patch = Number(match?.[3]);
+    if (result.exitCode !== 0 || result.killed || result.timedOut || result.aborted || result.stdoutTruncated
+      || !Number.isSafeInteger(major) || !Number.isSafeInteger(minor) || !Number.isSafeInteger(patch)
+      || !(major > 0 || minor > 1 || (minor === 1 && patch >= 13))) {
+      throw new Error("[BROWSER_EXEC_VERSION] Browser Harness 0.1.13 or newer is required; the installed runtime is outdated or could not be verified. Run /browser-use install, then reload Super Pi.");
+    }
+    if (identity !== await this.fingerprint(executable.command)) throw new Error("[BROWSER_EXEC_VERSION] Browser Harness changed during verification; run /browser-use status again.");
+    options.signal?.throwIfAborted();
+    this.identity = identity;
+    this.version = version;
+    return version;
+  }
 }
 
 export interface LoadedScreenshot {

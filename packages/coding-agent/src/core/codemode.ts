@@ -115,6 +115,10 @@ export class CodemodeController {
 	private identifiers = new Map<string, string>();
 	/** Script identifier to registered name, for describeTools. */
 	private identifierNames = new Map<string, string>();
+	/** Weak identities bind documentation pages to live definitions without retaining their text. */
+	private documentationVersions = new WeakMap<AgentTool<any>, number>();
+	private nextDocumentationVersion = 0;
+	private documentationRevisionPrefix: string | undefined;
 	private sandbox: CodemodeSandbox | undefined;
 	private current: Invocation | undefined;
 	private readonly store = new CodemodeStore();
@@ -377,14 +381,16 @@ export class CodemodeController {
 		const invocation = this.requireInvocation();
 		if (!Array.isArray(names) || names.length > 16) throw new Error("describeTools expects up to 16 names");
 		if (options !== undefined && (options === null || typeof options !== "object" || Array.isArray(options))) throw new Error("describeTools options must be an object");
-		const { offset = 0, limit = 8000, format = "typescript" } = (options ?? {}) as { offset?: number; limit?: number; format?: string };
-		if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 256 || limit > MAX_DESCRIBE_PAGE_CHARS || (format !== "typescript" && format !== "json")) {
+		const { offset = 0, limit = 8000, format = "typescript", revision } = (options ?? {}) as { offset?: number; limit?: number; format?: string; revision?: string };
+		if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 256 || limit > MAX_DESCRIBE_PAGE_CHARS || (format !== "typescript" && format !== "json") || (revision !== undefined && (typeof revision !== "string" || revision.length > 512))) {
 			throw new Error("describeTools expects offset >= 0, limit 256..16000, and format 'typescript' or 'json'");
 		}
+		if (offset > 0 && revision === undefined) throw new Error("describeTools continuation requires the revision returned by page one; restart at offset:0.");
 		// Query-owned segments reference full descriptions without copying them. Only the requested
 		// page is materialized; no documentation cache or work in child/progress delivery is added.
 		const parts: string[] = [TOOL_RESULT_DECLARATION];
 		const described: AgentTool<any>[] = [];
+		let currentRevision = (this.documentationRevisionPrefix ??= randomUUID()) + ":" + format + ":";
 		for (const requested of names) {
 			if (typeof requested !== "string") continue;
 			// ALL_TOOLS lists script identifiers; accept them as well as registered names.
@@ -392,6 +398,9 @@ export class CodemodeController {
 			const tool = invocation.context.findTool(requested) ?? (alias === undefined ? undefined : invocation.context.findTool(alias));
 			if (!tool || !nestedAllowed(tool) || described.includes(tool)) continue;
 			described.push(tool);
+			let version = this.documentationVersions.get(tool);
+			if (version === undefined) this.documentationVersions.set(tool, version = ++this.nextDocumentationVersion);
+			currentRevision += version + ",";
 			const identifier = this.identifiers.get(tool.name);
 			parts.push(`\nTool: ${tool.name}\n`, tool.description, "\n");
 			if (format === "json") {
@@ -404,6 +413,7 @@ export class CodemodeController {
 				parts.push(signature, "\n");
 			}
 		}
+		if (revision !== undefined && revision !== currentRevision) throw new Error("[TOOL_DOCUMENTATION_CHANGED] Tool definitions or selection changed. Discard earlier pages and restart describeTools at offset:0 without a revision.");
 		if (described.length === 0) return "";
 		parts.push("\nTypeScript is a summary; use format:'json' for exact input constraints, long defaults/patterns, or unknown types. Child failures return isError or throw; the parent remains failed even if caught.\n");
 		let position = 0, text = "";
@@ -413,8 +423,8 @@ export class CodemodeController {
 			position += part.length;
 		}
 		const end = Math.min(position, offset + text.length);
-		const continuation = end < position ? `\n[More tool documentation: call describeTools with the same names and format, offset:${end}, limit:${limit}.]` : "";
-		return `[Tool documentation chars ${Math.min(offset, position)}..${end} of ${position}; format:${format}]\n${text}${continuation}`;
+		const continuation = end < position ? `\n[More tool documentation: call describeTools with the same names and format, offset:${end}, limit:${limit}, revision:"${currentRevision}".]` : "";
+		return `[Tool documentation chars ${Math.min(offset, position)}..${end} of ${position}; format:${format}; revision:${currentRevision}]\n${text}${continuation}`;
 	}
 	private async ensureSandbox(): Promise<CodemodeSandbox> {
 		if (this.sandbox) return this.sandbox;
@@ -517,6 +527,8 @@ export class CodemodeController {
 			this.descriptors.length = 0;
 			this.identifiers.clear();
 			this.identifierNames.clear();
+			this.documentationVersions = new WeakMap();
+			this.documentationRevisionPrefix = undefined;
 			this.definition.description = CODEMODE_DESCRIPTION;
 			this.store.reset();
 			this.clearReadEvidence();
