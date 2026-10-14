@@ -37,15 +37,21 @@ const CATEGORY_SEARCH_TEXT: Readonly<Record<string, string>> = Object.fromEntrie
   CATEGORY_ENTRIES.map(([category, aliases]) => [category, aliases.join(" ")]),
 );
 const TOKEN_SPLIT = /[^\p{L}\p{N}]+/u;
-const BROWSER_DEBUG_QUERY = /\b(?:cdp|devtools|localhost)\b|chrome_devtools_|\blocal (?:html|page|preview)\b|\b(?:browser|frontend|dom) debug(?:ging)?\b|本地(?:网页|页面|预览)|(?:浏览器|前端|网页|页面)调试/iu;
+const BROWSER_DEBUG_QUERY = /\b(?:browser_debug|cdp|devtools|localhost)\b|chrome_devtools_|\blocal (?:html|page|preview)\b|\b(?:browser|frontend|dom) debug(?:ging)?\b|\b(?:dom|javascript) inspection\b|\binspect (?:dom|javascript)\b|\bui validation\b|\bvalidate ui\b|本地(?:网页|页面|预览)|(?:浏览器|前端|网页|页面)调试|(?:dom|javascript)\s*检查|(?:ui|界面)\s*验证/iu;
 const BROWSER_APPROVAL_PAUSE = Object.freeze({ block: true,
   reason: "[BROWSER_APPROVAL_PAUSED] Browser Harness reported incomplete Chrome approval. Stop this automatic browser workflow and wait for user direction; do not switch to another browser/profile to bypass it. DevTools is available for separately directed local preview and debugging, but does not prove approval of the original connection.",
 });
 
-/** One primitive per extension; stable hooks inspect only browser failures, never progress. */
+/** Primitive pause/session identity; stable hooks inspect failures, never progress. */
 class BrowserRoutingGuard {
   awaitingUser = false;
+  sessionId: string | undefined;
   readonly reset = (): void => { this.awaitingUser = false; };
+  readonly dispose = (): void => { this.awaitingUser = false; this.sessionId = undefined; };
+  readonly observeSelection = (data: unknown): void => {
+    if (this.sessionId !== undefined && data !== null && typeof data === "object"
+      && "sessionId" in data && data.sessionId === this.sessionId) this.awaitingUser = false;
+  };
   readonly observeInput = (event: InputEvent): void => {
     // A fresh user-directed task may choose CDP; this does not grant Chrome permission.
     if (event.source !== "extension") this.awaitingUser = false;
@@ -117,7 +123,9 @@ export default function toolClassificationExtension(pi: ExtensionAPI): void {
   pi.on("tool_execution_end", browserRouting.observeResult);
   pi.on("tool_call", browserRouting.checkCall);
   pi.on("session_tree", browserRouting.reset);
-  pi.on("session_shutdown", browserRouting.reset);
+  const stopUserSelection = pi.events.on("super-pi:chrome-devtools:user-selection", browserRouting.observeSelection);
+  pi.on("session_shutdown", browserRouting.dispose);
+  pi.on("session_shutdown", stopUserSelection);
   pi.registerTool({
     name: "tool_search",
     label: "Tool Search",
@@ -207,7 +215,8 @@ export default function toolClassificationExtension(pi: ExtensionAPI): void {
     },
   });
 
-  pi.on("session_start", () => {
+  pi.on("session_start", (_event, ctx) => {
+    browserRouting.sessionId = ctx.sessionManager.getSessionId();
     browserRouting.reset();
     const activeBeforeReset = pi.getActiveTools();
     const allTools = pi.getAllTools();

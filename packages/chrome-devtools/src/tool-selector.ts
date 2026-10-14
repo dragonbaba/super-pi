@@ -167,7 +167,14 @@ async function transactSelectedToolsNow(
 	try {
 		applyChromeDevtoolsTools(pi, selectedTools);
 		await persistSettings(selectedTools);
-		return expectedGeneration === state.sessionGeneration;
+		if (expectedGeneration !== state.sessionGeneration) return false;
+		// Only a successful explicit choice resumes routing; startup restoration and
+		// automatic tool discovery do not pass through this user-command transaction.
+		const activeTools = pi.getActiveTools();
+		if (selectedTools.some((name) => activeTools.includes(name))) {
+			pi.events.emit("super-pi:chrome-devtools:user-selection", { sessionId: ctx.sessionManager.getSessionId() });
+		}
+		return true;
 	} catch (error) {
 		let rollbackError: unknown;
 		try {

@@ -487,3 +487,38 @@ the catalog and large-schema paging baselines above. Raw outputs:
 `.git/pr151-browser-routing-before.json` and `.git/pr151-browser-routing-after.json`.
 Final classification source SHA-256:
 `a6862d3836294a152f83d1b0de28373cbefdef99eec2eb4e18bcc3a970de93ae`.
+
+### Follow-up review: capability phrases and explicit browser selection
+
+The debug route also recognizes advertised task phrases such as `DOM inspection`,
+`JavaScript inspection`, `UI validation`, reversed verb phrases and Chinese
+equivalents, plus compound `browser_debug` searches. The direct command path runs
+before `input`, so a successful explicit DevTools enable/tool selection now emits
+one session-scoped selection event after settings persistence and generation
+validation. A selection that activates no requested tools, a failure or a stale
+transaction does not resume routing. Automatic discovery and startup restoration
+do not emit this user-choice event. This resumes task selection; it does not grant
+the original Chrome connection permission.
+
+The guard retains only the pause boolean and current session ID. The stable
+selection callback validates that ID; shutdown clears it and unregisters the one
+event subscription. The complete added path is command/menu -> existing serial
+settings transaction -> EventBus -> stable selection callback. The single payload,
+array snapshot, event-bus async wrapper and selection predicate are confined to
+explicit user commands, an allowed cold boundary. No provider delta, progress,
+render, tool-result retention or per-call listener was added.
+
+Both review cases first failed against the previous implementation. Seven focused
+tests then passed, including natural capability discovery, actual command and
+selector transactions, cross-session rejection, disable-without-resume and
+subscription release on shutdown. Ten existing Codemode source invariants, the
+root type check and both affected extension type checks passed. Existing test
+files were extended; no real browser was launched and no full suite was repeated.
+
+Final same-machine SDK/Worker sample in `.git/pr151-browser-routing-final.json`:
+28,965,896 sampled host bytes versus 26,875,160 before this routing correction
+(about +7.8%); warm-batch p95 17.20 ms versus 18.02 ms. Samples fluctuate and are
+not a production performance guarantee. Deterministic counts remain 242 child
+calls, zero progress events, 11/11 Workers, zero pending read evidence and 0/55
+retained references after controlled GC. Source SHA-256:
+`36b4d98e214094ce6a5e354cd76b57966acf1dc45d300568ca1d5d69feb151b9`.

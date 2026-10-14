@@ -613,13 +613,64 @@ test("DevTools is discoverable for local preview and exact names without enablin
 	f.session.setActiveToolsByName(["tool_search", "browser_exec"]);
 	const failed = await f.run(['await tools.browser_exec({});']);
 	assert.equal(failed.results.at(-1)?.isError, true);
-	for (const query of ["browser_debug", "cdp", "local preview", "本地页面预览", "chrome_devtools_list_pages"]) {
+	const queries = ["browser_debug", "cdp", "local preview", "本地页面预览", "chrome_devtools_list_pages",
+		"DOM inspection", "JavaScript inspection", "UI validation", "inspect DOM", "validate UI", "DOM检查", "界面验证", "browser_debug screenshot"];
+	for (const query of queries) {
 		f.session.setActiveToolsByName(["tool_search"]);
 		const outcome = await f.run([`text((await tools.tool_search({query:${JSON.stringify(query)}})).details);await callTool("chrome_devtools_list_pages",{});`]);
 		assert.equal(outcome.results.at(-1)?.isError, false, `${query}: ${JSON.stringify(outcome.results)}`);
 		assert.equal(f.session.getActiveToolNames().includes("browser_exec"), false, query);
 	}
-	assert.equal(devtoolsCalls, 5); assert.equal(browserCalls, 1, "an ordinary browser error does not pause DevTools");
+	assert.equal(devtoolsCalls, queries.length); assert.equal(browserCalls, 1, "an ordinary browser error does not pause DevTools");
+});
+
+test("explicit DevTools enable and selection clear only their session approval pause", async t => {
+	const configRoot = mkdtempSync(join(tmpdir(), "sp-cdp-user-selection-"));
+	const previousAgentDir = process.env.SP_CODING_AGENT_DIR;
+	process.env.SP_CODING_AGENT_DIR = join(configRoot, "agent");
+	let f: Awaited<ReturnType<typeof fixture>> | undefined;
+	let selectionSubscriptions = 0;
+	t.after(async () => { try { await (f?.session as any)?._extensionRunner.emit({ type: "session_shutdown" });
+		assert.equal(selectionSubscriptions, 0, "shutdown releases the selection subscription"); }
+		finally { if (previousAgentDir === undefined) delete process.env.SP_CODING_AGENT_DIR; else process.env.SP_CODING_AGENT_DIR = previousAgentDir;
+			rmSync(configRoot, { recursive: true, force: true }); } });
+	const { default: chromeDevtools } = await jiti.import<{ default: ExtensionFactory }>("../packages/chrome-devtools/src/chrome-devtools.ts");
+	const { setSelectedChromeDevtoolsTools } = await jiti.import<any>("../packages/chrome-devtools/src/tool-selector.ts");
+	let api: any, calls = 0;
+	f = await fixture(t, {}, [pi => (toolClassification as ExtensionFactory)({ ...pi, events: { ...pi.events,
+		on: (channel, handler) => {
+			const stop = pi.events.on(channel, handler);
+			if (channel !== "super-pi:chrome-devtools:user-selection") return stop;
+			selectionSubscriptions++;
+			let subscribed = true;
+			return () => { stop(); if (subscribed) { selectionSubscriptions--; subscribed = false; } };
+		},
+	} }), pi => {
+		api = pi;
+		chromeDevtools({ ...pi, registerTool: definition => pi.registerTool({ ...definition,
+			execute: async () => { calls++; return { content: [], details: undefined as never }; } }) });
+		pi.registerTool({ name: "browser_exec", label: "Browser", description: "browser fixture", parameters: Type.Object({}),
+			execute: async () => { throw new Error("[BROWSER_EXEC_PERMISSION_REQUIRED] Pending approval"); } });
+	}]);
+	assert.equal(selectionSubscriptions, 1);
+	f.session.setActiveToolsByName(["browser_exec", "chrome_devtools_list_pages"]);
+	await f.run(['await tools.browser_exec({});']);
+	api.events.emit("super-pi:chrome-devtools:user-selection", { sessionId: "another-session" });
+	const denied = await f.run(['await tools.chrome_devtools_list_pages({});']);
+	assert.equal(denied.results.at(-1)?.isError, true); assert.equal(calls, 0);
+	await f.session.prompt("/chrome-devtools disable");
+	f.session.setActiveToolsByName(["browser_exec", "chrome_devtools_list_pages"]);
+	const stillDenied = await f.run(['await tools.chrome_devtools_list_pages({});']);
+	assert.equal(stillDenied.results.at(-1)?.isError, true); assert.equal(calls, 0);
+	await f.session.prompt("/chrome-devtools enable");
+	const enabled = await f.run(['await tools.chrome_devtools_list_pages({});']);
+	assert.equal(enabled.results.at(-1)?.isError, false, JSON.stringify(enabled.results.at(-1)));
+	assert.equal(calls, 1);
+	await f.run(['await tools.browser_exec({});']);
+	assert.equal(await setSelectedChromeDevtoolsTools(api, (f.session as any)._extensionRunner.createContext(), ["chrome_devtools_list_pages"]), true);
+	const selected = await f.run(['await tools.chrome_devtools_list_pages({});']);
+	assert.equal(selected.results.at(-1)?.isError, false, JSON.stringify(selected.results.at(-1)));
+	assert.equal(calls, 2);
 });
 
 test("successful state writes persist as a versioned branch entry; failed script writes do not", async t => {

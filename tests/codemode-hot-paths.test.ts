@@ -226,5 +226,5 @@ test("browser routing event guards use stable callbacks and primitive state with
 	for (const member of owner.members) if (ts.isPropertyDeclaration(member) && member.initializer && ts.isArrowFunction(member.initializer)) {
 		found.add(member.name.getText(source)); audit(member.initializer.body);
 	}
-	assert.deepEqual(found, new Set(["reset", "observeInput", "observeResult", "checkCall"]));
+	assert.deepEqual(found, new Set(["reset", "dispose", "observeSelection", "observeInput", "observeResult", "checkCall"]));
 });

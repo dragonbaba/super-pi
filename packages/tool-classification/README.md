@@ -11,7 +11,7 @@ pause after an incomplete Browser Harness approval.
 
 - Core: `read`, `bash`, `edit`, `write`, `structured_readonly_command`, `lsp_diagnostics`, `lsp_fix`, `lsp_navigate`, `tool_search`.
 - Browser: `browser` discovers `browser_exec` for public-web reading and interaction in the user's browser.
-- Browser debugging: `browser_debug`, `cdp`, local-preview queries and exact `chrome_devtools_*` names discover DevTools for local HTML/localhost preview, DOM/JavaScript inspection and UI validation. The model can activate these tools without a manual enable command. A missing endpoint may launch an isolated profile; choose the correct target and do not assume the user's login is present.
+- Browser debugging: `browser_debug`, `cdp`, local-preview queries, DOM/JavaScript inspection, UI validation and exact `chrome_devtools_*` names discover DevTools for those tasks. The model can activate these tools without a manual enable command. A missing endpoint may launch an isolated profile; choose the correct target and do not assume the user's login is present.
 - Delegation: `subagent`.
 - Memory/session: `memory`, `memory_search`, `session_search`.
 - Skill management: `skill_manage`.
@@ -26,12 +26,15 @@ Known conditional providers omit `promptSnippet` and `promptGuidelines`; their c
 Generic browsing searches do not activate DevTools. An actual Browser Harness
 permission-required result (or a timeout after a reported approval prompt) pauses
 automatic CDP discovery and calls, including already active tools, until new user
-input. Extension-generated continuations do not clear this pause. New user input
+input or a successful explicit `/chrome-devtools enable`/tool selection in that
+session. Disabling tools, canceled/failed selections and another session's selection
+do not clear it. Extension-generated continuations do not clear this pause. New user input
 allows task selection again; it does not approve Chrome or authorize bypassing a
 still-pending prompt. The model must follow that input and the tools' instructions.
-Other browser failures do not disable CDP. The pause owns one boolean and stable
+Other browser failures do not disable CDP. The pause owns one boolean, a session ID and stable
 callbacks; it retains no tool result, browser reference, timer or listener per call.
-Session replacement, branch switching and shutdown clear it. Existing explicit
+Session replacement, branch switching and shutdown clear it; shutdown also releases
+the one user-selection event subscription. Existing explicit
 tool allowlists and Plan-mode restrictions still govern every activation.
 
 A resumed restrictive Plan-mode tool set is preserved exactly. Active Goal tools and the model-driven `inspect_image` fallback are retained alongside the core pack instead of being erased by the final session-start reset.
