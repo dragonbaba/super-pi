@@ -4,12 +4,14 @@ const MAX_CHARS = 128 * 1024;
 const MAX_TOKENS = 2048;
 const MAX_NESTING = 64;
 const BASH = new Set(["bash", "sh", "zsh", "dash", "ksh", "fish"]);
-const LAUNCHERS = new Set(["powershell", "pwsh", "cmd", "invoke-expression", "iex", "invoke-command", "icm", "invoke-cimmethod", "invoke-wmimethod", "iwmi", "invoke-item", "ii", "set-alias", "new-alias", "sal", "nal", "function", "filter"]);
+const LAUNCHERS = new Set(["powershell", "pwsh", "cmd", "invoke-expression", "iex", "invoke-command", "icm", "invoke-cimmethod", "invoke-wmimethod", "iwmi", "invoke-item", "ii", "set-alias", "new-alias", "import-alias", "sal", "nal", "function", "filter"]);
 const DETACHED = new Set(["start-job", "sajb", "start-threadjob", "start-service", "sasv", "restart-service", "start-scheduledtask", "nohup", "disown", "setsid", "daemonize"]);
 const PROCESS = new Set(["start-process", "start", "saps"]);
-const CONTROL_BLOCK = new Set(["if", "elseif", "else", "for", "foreach", "while", "do", "switch", "try", "catch", "finally", "trap", "begin", "process", "end", "clean", "dynamicparam"]);
+const CONTROL_BLOCK = new Set(["if", "elseif", "else", "for", "foreach", "while", "do", "switch", "try", "catch", "finally", "trap", "begin", "process", "end", "clean", "dynamicparam", "data"]);
 const PROVIDER_MUTATORS = new Set(["set-item", "si", "new-item", "ni", "copy-item", "cpi", "cp", "copy", "move-item", "mi", "mv", "move", "rename-item", "rni", "ren", "set-location", "sl", "cd", "chdir", "push-location", "pushd"]);
-const EXECUTABLE_PROVIDER = /(?:^|[:,])(?:[^:,]*\\)?(?:alias|function):/i;
+const EXECUTABLE_PROVIDER = /(?:^|[:,])(?:[^:,]*\\)?(?:alias|function|variable):/i;
+const VARIABLE_MUTATORS = new Set(["set-variable", "sv", "set", "new-variable", "nv"]);
+const DEFAULT_PARAMETERS = /\bpsdefaultparametervalues\b/i;
 const SPACE = /\s/;
 const PUNCTUATION = /[;|\n\r{}()=&]/;
 // PowerShell accepts unambiguous parameter prefixes and these Unicode dashes.
@@ -179,6 +181,8 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		}
 		const dataPiece = equalsData && isArgumentSuffix(tokens, i);
 		equalsData = false;
+		// Ambient defaults can silently bind AsJob/Asynchronous on later commands.
+		if (token.dynamic && command[token.start] !== "'" && command[token.start] !== '"' && DEFAULT_PARAMETERS.test(value)) return UNCERTAIN;
 		if (!dataPiece && !token.quoted && (JOB_OPTION.test(value) || isAsyncOption(value))) return BACKGROUND;
 		// Splat contents can carry job switches even before a literal parameter.
 		// No local variable/dataflow evaluation is performed by this filter.
@@ -211,16 +215,18 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		const name = value.slice(Math.max(value.lastIndexOf("/"), value.lastIndexOf("\\")) + 1).toLowerCase().replace(/\.exe$/, "");
 		controlBlock = !token.quoted && CONTROL_BLOCK.has(name);
 		paramBlock = !token.quoted && name === "param";
-		if (!token.quoted && (name === "return" || name === "throw")) { head = true; continue; }
+		if (!token.quoted && (name === "return" || name === "throw" || name === "exit")) { head = true; continue; }
 		if (DETACHED.has(name)) return BACKGROUND;
 		if (LAUNCHERS.has(name) || name === ".") return UNCERTAIN;
-		if (PROVIDER_MUTATORS.has(name)) {
+		const variableMutation = VARIABLE_MUTATORS.has(name);
+		if (PROVIDER_MUTATORS.has(name) || variableMutation) {
 			for (let j = i + 1; j < tokens.length; j++) {
 				const arg = tokens[j]!;
 				if (arg.operator && arg.value === "=") continue;
 				if (arg.operator && (arg.value === "(" || arg.value === "{")) return UNCERTAIN;
 				if (arg.operator) break;
 				if (arg.dynamic || arg.value === "--%" || EXECUTABLE_PROVIDER.test(arg.value)) return UNCERTAIN;
+				if (variableMutation && DEFAULT_PARAMETERS.test(arg.value)) return UNCERTAIN;
 			}
 		}
 		if (name === "set-service") {

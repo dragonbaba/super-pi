@@ -289,6 +289,10 @@ These lifecycle cases do not relax the separate legacy permission scanner: inlin
 `param()` and some `for` forms still receive its `unverifiable_shell_state` refusal.
 Their lifecycle parsing is covered independently; real integration covers ordinary
 member/variable/increment execution and the existing permission checks unchanged.
+Alias import and default-parameter-table references/mutations remain opaque, so
+later invocations cannot silently acquire lifecycle switches. Variable-provider
+mutations and dynamic variable-setter arguments are also opaque. Exit pipelines
+and data-section closures retain command-head inspection.
 
 Bash-to-PowerShell recovery distinguishes an active native tool, a configured
 discoverable tool, and an unavailable tool. Discovery is suggested only when

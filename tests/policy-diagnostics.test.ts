@@ -47,6 +47,7 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "param() Write-Output safe", "param([string]$name='safe') Write-Output $name",
     "New-Item -Path file.txt -ItemType File", "Set-Item -Path Env:SP_FIXTURE -Value literal",
     "Set-Service -Name Missing -Description 'metadata'", "Set-Service -Name Missing -Status Stopped", "Set-Service -Name Missing -Status:'Paused'",
+    "exit 0", "data D {} Write-Output safe", "Set-Variable -Name Count -Value 1",
   ]) assert.equal(inspectPowerShellResourceLifecycle({ command }), undefined, command);
   for (const command of [
     "Start-Job { Write-Output 1 }", "$job = Start-ThreadJob { Write-Output 1 }", "if ($true) {} Start-Job {}",
@@ -93,6 +94,11 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "Set-Service -Name Missing -Status $state", "Set-Service -Name Missing -Status (Get-Status)",
     "Set-Item -Path ('Alias:' + 'sj') -Value Start-Job", "Set-Item -Value mode=data -Path Alias:sj",
     "Set-Service -Name (Get-Name) -Status Running",
+    "Import-Alias aliases.csv; sj { 1 }", "exit Start-Process missing.exe", "data D {} Start-Process missing.exe",
+    "$k='ForEach-Object:AsJob'; $PSDefaultParameterValues[$k]=$true; 1 | ForEach-Object -Parallel { 1 }",
+    "$global:PSDefaultParameterValues=@{ 'ForEach-Object:AsJob'=$true }", "${PSDefaultParameterValues}.Add('ForEach-Object:AsJob',$true)",
+    "Set-Variable -Name PSDefaultParameterValues -Value $defaults", "Set-Item Variable:PSDefaultParameterValues $defaults",
+    "$PSDefaultParameterValues.'Add'('ForEach-Object:AsJob',$true)",
   ]) assert.ok(inspectPowerShellResourceLifecycle({ command }), command);
 });
 
