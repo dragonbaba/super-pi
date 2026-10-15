@@ -378,11 +378,16 @@ post-`--` spellings do not prove a dry run. Nested argument commands still pass
 the main lifecycle walk, and redirected filenames cannot prove Wait ownership.
 Plain dotted SessionState/PSVariable labels remain argument data; variable,
 type and parenthesized-member capability expressions retain inspection.
+Tee-Object/tee Variable targets use native parameter metadata, including prefixes
+and colon values; preference-table and dynamic names are opaque. Ordinary capture
+variables and FilePath/Path/LiteralPath options retain their normal authorization.
 
 Unchanged scope: external module loading and native sc.exe/net.exe service control
 already passed the original Bash lifecycle and high-risk scanners at the PR base.
 The same baseline applies to Enable-ScheduledJob, Add-JobTrigger and Enable-JobTrigger;
 this change does not introduce or claim scheduler-state isolation.
+Literal wsl/wsl.exe commands also passed the original lifecycle/high-risk scanners;
+their nested Linux service scope remains part of ordinary opaque-command approval.
 They retain ordinary opaque-command authorization here; this filter does not
 claim complete executable-code or native-service isolation. This PR does not
 introduce a blanket ban on those existing authorized workflows.

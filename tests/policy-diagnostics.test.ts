@@ -92,6 +92,7 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "Start-Process tool.exe -ArgumentList `> -Wait",
     "Start-Process tool.exe -ArgumentList data> -Wait", 'Start-Process tool.exe -ArgumentList foo"bar"> -Wait',
     'Start-Process tool.exe -ArgumentList "data"`"> -Wait', "Start-Service Spooler>> -WhatIf",
+    "1 | Tee-Object -Variable captured", "1 | tee -Var: captured", "1 | Tee-Object -Path file.txt", "1 | tee -LiteralPath $file",
   ]) assert.equal(inspectPowerShellResourceLifecycle({ command }), undefined, command);
   for (const command of [
     "Start-Job { Write-Output 1 }", "$job = Start-ThreadJob { Write-Output 1 }", "if ($true) {} Start-Job {}",
@@ -210,6 +211,8 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "($ExecutionContext).SessionState", "([runspace]::DefaultRunspace).SessionStateProxy",
     "Start-Process tool.exe >", "Start-Process tool.exe -ArgumentList mode=-WhatIf",
     'Start-Process "tool.exe"> -Wai', "Start-Process 'tool.exe'> -Wait", "Start-Service 'Spooler'>> -WhatIf",
+    "$d=@{'ForEach-Object:AsJob'=$true}; $d | Tee-Object -Variable PSDefaultParameterValues",
+    "$d | tee -Var: PSDefaultParameterValues", "1 | Tee-Object -Variable $target", "1 | tee -Variable:($target)",
   ]) assert.ok(inspectPowerShellResourceLifecycle({ command }), command);
 });
 

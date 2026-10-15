@@ -50,6 +50,7 @@ const CONTENT_READER_PARAMETERS = ["readcount", "totalcount", "tail", "path", "l
 const CONTENT_READER_FLAGS = new Set(["force", "usetransaction", "wait", "raw", "asbytestream", "verbose", "debug"]);
 const SERVICE_START_PARAMETERS = ["name", "inputobject", "passthru", "displayname", "include", "exclude", "force", "whatif", "confirm", ...VARIABLE_LOOKUP_PARAMETERS.slice(5)];
 const SERVICE_SET_PARAMETERS = ["name", "inputobject", "displayname", "credential", "description", "startuptype", "securitydescriptorsddl", "status", "force", "passthru", "computername", "whatif", "confirm", ...VARIABLE_LOOKUP_PARAMETERS.slice(5)];
+const TEE_PARAMETERS = ["inputobject", "filepath", "literalpath", "append", "encoding", "variable", ...VARIABLE_LOOKUP_PARAMETERS.slice(5)];
 const WMI_CAPABILITY = /(?:^|\[|:)(?:wmiclass|(?:(?:System\.)?Management\.)?ManagementClass)(?:\]|,|$)/i;
 const SCRIPT_BLOCK_COMPILER = /\[(?:System\.Management\.Automation\.)?scriptblock\]::Create$/i;
 const SPACE = /\s/;
@@ -232,6 +233,31 @@ function inspectContentTargets(tokens: readonly Token[], start: number, command:
 	// Path can bind from pipeline object properties; require an explicit target
 	// rather than guessing the provider from uninspected upstream data.
 	return pathSeen ? undefined : UNCERTAIN;
+}
+
+/** Tee's Variable parameter is a variable sink, separate from common -OutVariable. */
+function inspectTeeVariable(tokens: readonly Token[], start: number, command: string): string | undefined {
+	let depth = 0;
+	for (let j = start; j < tokens.length; j++) {
+		const arg = tokens[j]!;
+		if (arg.operator && arg.value === "=") continue;
+		if (arg.operator) {
+			if (arg.value === "(" || arg.value === "{") { if (++depth > MAX_NESTING) return UNCERTAIN; }
+			else if (arg.value === ")" || arg.value === "}") { if (!depth) break; depth--; }
+			else if (!depth) break;
+			continue;
+		}
+		if (depth || isArgumentSuffix(tokens, j)) continue;
+		const raw = command.slice(arg.start, arg.end), colon = raw.indexOf(":");
+		if (!PARAMETER_DASH.test(raw)) continue;
+		const option = raw.slice(1, colon < 0 ? raw.length : colon).toLowerCase();
+		const parameter = option === "path" ? "filepath" : option === "lp" || option === "pspath" ? "literalpath" : lookupOption(option, TEE_PARAMETERS);
+		if (!parameter) return UNCERTAIN;
+		if (parameter !== "variable") continue;
+		const separate = colon < 0 || colon === raw.length - 1, target = separate ? tokens[++j] : arg;
+		if (!target || target.operator || target.dynamic || DEFAULT_PARAMETERS.test(separate ? target.value : target.value.slice(target.value.indexOf(":") + 1))) return UNCERTAIN;
+	}
+	return undefined;
 }
 
 /** Bounded native parameter metadata; exact names/common aliases precede prefixes. */
@@ -595,6 +621,10 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		const contentReader = CONTENT_READERS.has(name);
 		if ((CONTENT_MUTATORS.has(name) || contentReader) && !value.toLowerCase().endsWith(".exe")) {
 			const reason = inspectContentTargets(tokens, i + 1, command, contentReader);
+			if (reason) return reason;
+		}
+		if ((name === "tee-object" || name === "tee") && !value.toLowerCase().endsWith(".exe")) {
+			const reason = inspectTeeVariable(tokens, i + 1, command);
 			if (reason) return reason;
 		}
 		if (PROVIDER_READERS.has(name)) {
