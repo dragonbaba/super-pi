@@ -276,6 +276,14 @@ using native parameter metadata; literal false stays foreground. No blanket ban 
 attributes, remote-command types or member names is introduced. The independent
 legacy high-risk scanner already refuses some validation-attribute declarations;
 lifecycle acceptance is not evidence of whole-chain acceptance for those forms.
+Attribute argument names remain metadata; only their script-block bodies enter
+command position. A harmless custom attribute with a Start property confirms the
+distinction on native 5.1/7.6. systemctl enable plus --now is recognized on either
+side of the verb, while plain enable, disable/mask, option values and -- operands
+retain their normal meaning. Native parameter binding also confirms that a
+backtick touching -As/-InDis before a newline stays in the parameter name and
+fails binding; it must not be normalized into an async switch. Ordinary spaced
+line continuations already preserve the native switch and remain covered.
 These are invocation-only bounded scans, with no new progress/render work, retained
 owners, per-event callbacks or pools. Existing source/AST/allocation evidence for
 the unchanged render chain remains applicable.

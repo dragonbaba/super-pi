@@ -255,13 +255,14 @@ function isStreamMerge(tokens: readonly Token[], index: number): boolean {
 /** Recognize explicit start verbs after supported systemctl global options.
  * Unknown/dynamic options remain ordinary opaque execution, never a new ban. */
 function inspectSystemctl(tokens: readonly Token[], start: number): string | undefined {
-	let options = true;
+	let options = true, now = false, enable = false;
 	for (let i = start; i < tokens.length; i++) {
 		const token = tokens[i]!;
 		if (token.operator || token.dynamic) return undefined;
 		const value = token.value;
 		if (options && value === "--") { options = false; continue; }
 		if (options && value.startsWith("-")) {
+			if (value === "--now") { if (enable) return BACKGROUND; now = true; continue; }
 			if (SYSTEMCTL_FLAGS.has(value)) continue;
 			let offset = 1;
 			const long = value.startsWith("--");
@@ -277,7 +278,11 @@ function inspectSystemctl(tokens: readonly Token[], start: number): string | und
 			if (!operand || operand.operator || operand.dynamic) return undefined;
 			continue;
 		}
-		return SYSTEMCTL_START.has(value) ? BACKGROUND : undefined;
+		if (enable) continue; // Remaining plain operands are unit names.
+		if (SYSTEMCTL_START.has(value)) return BACKGROUND;
+		if (value !== "enable") return undefined;
+		if (now) return BACKGROUND;
+		enable = true;
 	}
 	return undefined;
 }
@@ -401,7 +406,7 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 	// Low bits: 0 paren, 1 control block, 2 hash key, 3 hash value, 4 block argument, 5 param list.
 	// 6 is a do body, 7 its trailing while/until condition.
 	// Flag 8 restores an enclosing control statement after its condition parentheses.
-	// 9 is an attribute boundary; its name is metadata, its argument bodies are code.
+	// 9/10 are attribute boundaries/arguments: names are metadata, script bodies code.
 	// 24/40 are foreach's variable/in states; flag 64 restores an assignment target.
 	// Primitive call-owned stack, capped at MAX_NESTING and never retained.
 	for (let i = 0; i < tokens.length; i++) {
@@ -418,16 +423,16 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 			if (value === "(" || value === "{" || value === "[") {
 				if (contexts.length === MAX_NESTING) return UNCERTAIN;
 				const previous = tokens[i - 1];
-				const kind = value === "[" ? 9 : value === "(" ? (doCondition ? 7 : paramBlock ? 5 : controlBlock ? foreachBlock ? 24 : 8 : 0) : previous?.value === "@" && !previous.quoted && previous.end === token.start ? 2 : doBlock ? 6 : controlBlock ? 1 : 4;
+				const kind = value === "[" ? 9 : value === "(" ? (contextKind === 9 || contextKind === 10 ? 10 : doCondition ? 7 : paramBlock ? 5 : controlBlock ? foreachBlock ? 24 : 8 : 0) : previous?.value === "@" && !previous.quoted && previous.end === token.start ? 2 : doBlock ? 6 : controlBlock ? 1 : 4;
 				contexts.push(kind | (assigning ? 64 : 0));
-				head = value !== "["; controlBlock = false; paramBlock = false; doBlock = false; doCondition = false; foreachBlock = false; continue;
+				head = value !== "[" && kind !== 10; controlBlock = false; paramBlock = false; doBlock = false; doCondition = false; foreachBlock = false; continue;
 			}
 			if (value === ")" || value === "}" || value === "]") {
 				const saved = contexts.pop(), context = saved === undefined ? undefined : saved & 63;
-				if (context === undefined || (context === 9 ? value !== "]" : value === "]" || (value === ")") !== ((context & 7) === 0 || context === 5 || context === 7))) return UNCERTAIN;
+				if (context === undefined || (context === 9 ? value !== "]" : value === "]" || (value === ")") !== ((context & 7) === 0 || context === 5 || context === 7 || context === 10))) return UNCERTAIN;
 				head = context === 1 || context === 5 || context === 6 || context === 7 || context === 9;
 				assignable = (saved! & 64) !== 0 || (context === 0 && assigning);
-				controlBlock = context !== 9 && (context & 8) !== 0; paramBlock = false; foreachBlock = false; afterDo = context === 6; continue;
+				controlBlock = context !== 9 && context !== 10 && (context & 8) !== 0; paramBlock = false; foreachBlock = false; afterDo = context === 6; continue;
 			}
 			if (value !== "\n" && value !== "\r") { controlBlock = false; foreachBlock = false; }
 			if ((value === ";" || value === "\n" || value === "\r") && (contextKind === 2 || contextKind === 3)) contexts[topIndex] = (top! & 64) | 2;
@@ -440,7 +445,7 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 			continue;
 		}
 		if (contextKind === 40 && !token.quoted && value.toLowerCase() === "in") { contexts[topIndex] = (top! & 64) | 8; head = true; assignable = false; continue; }
-		if (!head) continue;
+		if (!head || contextKind === 10) continue;
 		head = false;
 		if (contextKind === 2) { assignable = true; continue; }
 		if (token.typeOnly) { head = true; continue; }

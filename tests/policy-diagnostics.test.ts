@@ -128,6 +128,14 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "[ValidateScript({ $text='Start-Job'; $true })]$Value=1", "[CmdletBinding()]param([ValidateScript({ $_ -gt 0 })]$Value=1) Write-Output $Value",
     "Invoke-Command -ComputerName server -ScriptBlock { 1 } -InDisconnectedSession:$false",
     "icm -ComputerName server -ScriptBlock { 1 } -Discon:$false", "icm -ScriptBlock { 1 } -InputObject $data -InformationAction Continue",
+    "[ValidateSet(Start)]$Value='Start'", "[OutputType(Start)]param() Write-Output data",
+    "[MetadataFixture(Start)]$Value='Start'",
+    "[ValidateSet(\nStart, Stop)]$Value='Start'", "[ValidateScript({ $_ -eq 'Start' })]$Value='Start'",
+    "Invoke-Command -ScriptBlock { 1 } -As`\n -Verbose", "icm -ScriptBlock { 1 } -InDis`\r\n -Verbose",
+    "Start-Process tool.exe -Wai `\n -Verbose", "Start-Service Missing -WhatI `\r\n -Verbose",
+    "systemctl enable example.service", "systemctl --now disable example.service", "systemctl mask --now example.service",
+    "systemctl enable -- example.service --now", "systemctl --property --now enable example.service",
+    "systemctl enable example.service --property --now",
   ]) assert.equal(inspectPowerShellResourceLifecycle({ command }), undefined, command);
   // Runtime capabilities are not proof of detached execution. These still need
   // opaque-script authorization; the lifecycle filter is not a language sandbox.
@@ -187,6 +195,11 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "Invoke-Command -ComputerName server -ScriptBlock { 1 } -InDisconnectedSession",
     "icm -ComputerName server -ScriptBlock { 1 } -InDis", "icm -ComputerName server -ScriptBlock { 1 } -Disconnected",
     "icm -ComputerName server -ScriptBlock { 1 } -Discon:$true", "icm -ComputerName server -ScriptBlock { 1 } -Discon:$flag",
+    "[ValidateSet(Start)]$Value='Start'; Start-Job { 1 }", "[OutputType(Start)]param() Start-Job { 1 }",
+    "Invoke-Command -ScriptBlock { 1 } -As `\n -Verbose", "icm -ScriptBlock { 1 } -InDis `\r\n -Verbose",
+    "1 | ForEach-Object -Parallel { 1 } -As `\n -Verbose", "Start-BitsTransfer -Source a -Destination b -Su `\n -Verbose",
+    "systemctl --now enable example.service", "systemctl enable --now example.service",
+    "systemctl enable example.service --now", "systemctl -qlHserver --now enable example.service",
     "Write-Output 'unterminated", "x ".repeat(2049), "x".repeat(128 * 1024 + 1),
   ]) assert.ok(inspectPowerShellResourceLifecycle({ command }), command);
 });
