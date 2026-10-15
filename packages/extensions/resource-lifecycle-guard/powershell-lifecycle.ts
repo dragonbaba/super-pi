@@ -12,6 +12,7 @@ const JOB_OPTION = /^-asjob(?::|$)/i;
 const SIMPLE_VARIABLE = /^(?:\[[\w.,[\]]+\])*\$[\w:]+(?:\.[\w]+|\[[\w$]+\])*$/;
 const STREAM_REDIRECT = /^[1-6*]?>$/;
 const STREAM_NUMBER = /^[1-6]$/;
+const START_MEMBER = /(?:\.|::)Start(?:\.Invoke)?$/i;
 
 interface Token { value: string; quoted: boolean; dynamic: boolean; operator: boolean; start: number; end: number }
 
@@ -109,6 +110,12 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 			continue;
 		}
 		if (!token.quoted && JOB_OPTION.test(value)) return BACKGROUND;
+		// No receiver/type or wait/cleanup proof exists for .NET Start methods.
+		// Inspect argument/subexpression positions too, not only command heads.
+		if (command[token.start] !== "'" && command[token.start] !== '"' && START_MEMBER.test(value)
+			&& tokens[i + 1]?.operator && tokens[i + 1]?.value === "(") {
+			return refusal("SHELL_BACKGROUND", "member Start() ownership cannot be verified; use Start-Process with a literal -Wait for a foreground process");
+		}
 		if (!head) continue;
 		head = false;
 		// A quoted expression is data unless preceded by PowerShell's call operator.

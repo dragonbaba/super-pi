@@ -27,6 +27,7 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "& 'C:/Program Files/tool.exe' --help",
     "& { Write-Output 1 }; Write-Output 2 2>&1",
     "Write-Output `&; Write-Output `;", "Write-Output 1 && Write-Output 2",
+    "Write-Output -As'Job'", "Write-Output '-AsJob'", "$p.StartInfo.FileName = 'tool.exe'; $p.StartTime",
     "Start-Process -FilePath tool.exe -Wait; Start-Process -FilePath other.exe -Wait",
     "Start-Process tool.exe 2>&1 -Wait", "Start-Process tool.exe -Wait 2>&1",
     "echo $((1 + $null))",
@@ -42,6 +43,8 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "saps tool.exe", "Invoke-Expression $script", "cmd /c start tool.exe",
     "Write-Output 1 & & 'tool.exe'", "Write-Output 1 & '&'", "Write-Output '>' & 1",
     "Sta'rt'-Process tool.exe", 'Start-Proce"ss" tool.exe', "Start-Process tool.exe -Wa'it'",
+    "$p = New-Object System.Diagnostics.Process; $p.StartInfo.FileName = 'tool.exe'; $p.Start()",
+    "[System.Diagnostics.Process]::Start('tool.exe')", "Write-Output $p.Start()", "($p).Start()", "$p.St'art'()", "$p.Start.Invoke()",
     "bash -c 'sleep 30 &'", "docker run -d image", "ForEach-Object -Parallel {} -AsJob",
     "Write-Output 'unterminated", "x ".repeat(2049), "x".repeat(128 * 1024 + 1),
   ]) assert.ok(inspectPowerShellResourceLifecycle({ command }), command);
@@ -197,14 +200,18 @@ test("production extension preflight reaches the first refusal without backend o
     assert.doesNotMatch(JSON.stringify(unavailable.content), /Use tool_search/);
     configuredTools.push({ name: "powershell" });
     const discoverable = await agent.dispatchHostTool({ type: "toolCall", id: "wrapper-discoverable", name: "bash", arguments: { command: USER_COMMANDS[1] } });
-    assert.match(JSON.stringify(discoverable.content), /Use tool_search.*powershell.*read its schema/);
-    assert.match(JSON.stringify(discoverable.content), /describeTools.*callTool.*new script/);
-    assert.equal(catalogReads, 2);
+    if (process.platform === "win32") {
+      assert.match(JSON.stringify(discoverable.content), /Use tool_search.*powershell.*read its schema/);
+      assert.match(JSON.stringify(discoverable.content), /describeTools.*callTool.*new script/);
+    } else assert.doesNotMatch(JSON.stringify(discoverable.content), /Use tool_search|enabled native PowerShell/);
+    const expectedCatalogReads = process.platform === "win32" ? 2 : 0;
+    assert.equal(catalogReads, expectedCatalogReads);
     activeTools.push("powershell");
     const availableResult = await agent.dispatchHostTool({ type: "toolCall", id: "wrapper-available", name: "bash", arguments: { command: USER_COMMANDS[1] } });
     const availableText = availableResult.content.filter(c => c.type === "text").map(c => c.text).join("\n");
-    assert.match(availableText, /Use the enabled native PowerShell tool/);
-    assert.equal(catalogReads, 2, "active native tools do not enumerate the catalog");
+    if (process.platform === "win32") assert.match(availableText, /Use the enabled native PowerShell tool/);
+    else assert.match(availableText, /directly inspectable foreground command/);
+    assert.equal(catalogReads, expectedCatalogReads, "active or platform-unavailable native tools do not enumerate the catalog");
     assert.match(mutationText, /^\[POLICY_BLOCKED:CONFIRMATION_CANCELLED\] Not executed:/);
     const machineDetails = mutationResult.details as any;
     assert.equal(machineDetails.executionStatus, "not_executed");

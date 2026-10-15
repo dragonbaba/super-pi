@@ -251,6 +251,14 @@ Native PowerShell AST spot checks confirmed that spaced `& &` is not `&&`,
 quoted `>` is not stream redirection, and partially quoted command names still
 invoke commands. The lexer preserves operator provenance and source adjacency;
 literal stream merging remains valid before or after `-Wait`.
+Review follow-up: member/static `Start()` calls (including argument positions and
+partially quoted member names) are refused because the scanner cannot prove their
+receiver, wait and cleanup ownership. Process metadata reads remain valid. Native
+PowerShell discovery also checks Windows eligibility before querying the catalog.
+The reported `-As'Job'` parameter bypass was checked against the native AST and
+runtime: it is a string argument, and `ForEach-Object -Parallel { 1 } -As'Job'`
+fails with `PositionalParameterNotFound`; it does not bind the `AsJob` switch.
+Quoted/literal text remains data, while actual unquoted `-AsJob` is blocked.
 
 Bash-to-PowerShell recovery distinguishes an active native tool, a configured
 discoverable tool, and an unavailable tool. Discovery is suggested only when

@@ -145,6 +145,9 @@ export default function resourceLifecycleGuard(pi: ExtensionAPI): void {
   // Resolve only on a launcher refusal. Catalog materialization is never on
   // ordinary command/progress paths; the callback belongs to this extension.
   function nativePowerShellAvailability(): "active" | "discoverable" | "unavailable" {
+    // AgentSession refuses to activate this builtin on non-Windows hosts,
+    // even though its definition can still appear in the configured catalog.
+    if (process.platform !== "win32") return "unavailable";
     try {
       const active = pi.getActiveTools();
       if (active.includes("powershell")) return "active";
