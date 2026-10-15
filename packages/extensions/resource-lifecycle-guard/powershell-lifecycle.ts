@@ -2,21 +2,51 @@ import { inspectBashResourceLifecycle } from "./core.ts";
 
 const MAX_CHARS = 128 * 1024;
 const MAX_TOKENS = 2048;
+const MAX_NESTING = 64;
 const BASH = new Set(["bash", "sh", "zsh", "dash", "ksh", "fish"]);
-const LAUNCHERS = new Set(["powershell", "pwsh", "cmd", "invoke-expression", "iex", "invoke-command", "icm", "set-alias", "new-alias", "sal", "nal", "function", "filter"]);
-const DETACHED = new Set(["start-job", "sajb", "start-threadjob", "start-service", "sasv", "restart-service", "nohup", "disown", "setsid", "daemonize"]);
+const LAUNCHERS = new Set(["powershell", "pwsh", "cmd", "invoke-expression", "iex", "invoke-command", "icm", "invoke-cimmethod", "invoke-wmimethod", "iwmi", "set-alias", "new-alias", "sal", "nal", "function", "filter"]);
+const DETACHED = new Set(["start-job", "sajb", "start-threadjob", "start-service", "sasv", "restart-service", "start-scheduledtask", "nohup", "disown", "setsid", "daemonize"]);
 const PROCESS = new Set(["start-process", "start", "saps"]);
 const SPACE = /\s/;
 const PUNCTUATION = /[;|\n\r{}()=&]/;
-const JOB_OPTION = /^-asjob(?::|$)/i;
-// Bracket delimiters are excluded from identifier spans: repeated casts cannot
-// be repartitioned exponentially when a malformed variable follows them.
-const SIMPLE_VARIABLE = /^(?:\[[\w.,+]+(?:\[[\w.,]*\])?\])*\$[\w:]+(?:\.[\w]+|\[[\w$]+\])*$/;
+// PowerShell accepts unambiguous parameter prefixes and these Unicode dashes.
+const JOB_OPTION = /^[-\u2013\u2014\u2015]as(?:j(?:o(?:b)?)?)?(?::|$)/i;
+const PARAMETER_DASH = /^[-\u2013\u2014\u2015]/;
+const TYPE_CHARACTER = /[\w.,+]/;
+const SIMPLE_VARIABLE = /^\$[\w:]+(?:\.[\w]+|\[[\w$]+\])*$/;
 const STREAM_REDIRECT = /^[1-6*]?>$/;
 const STREAM_NUMBER = /^[1-6]$/;
-const OPAQUE_MEMBER = /(?:\.|::)(?:Start(?:New|Job|\.Invoke)?|Invoke(?:Script|Member|Expression)?|DynamicInvoke|BeginInvoke|ExpandString|Run(?:Async)?|Exec|ShellExecute(?:Ex)?)$/i;
+const OPAQUE_MEMBER = /(?:\.|::)(?:Start(?:New|Job|\.Invoke)?|Invoke(?:Script|Member|Method|Expression)?|DynamicInvoke|BeginInvoke|ExpandString|Run(?:Async)?|Exec|ShellExecute(?:Ex)?)$/i;
 
 interface Token { value: string; quoted: boolean; dynamic: boolean; operator: boolean; start: number; end: number }
+
+/** Balanced type prefixes are linear, including generics, jagged arrays and bad input. */
+function isSimpleVariable(value: string): boolean {
+	let index = 0;
+	while (value[index] === "[") {
+		let depth = 1, named = false; index++;
+		while (index < value.length && depth) {
+			const c = value[index++]!;
+			if (c === "[") { if (++depth > MAX_NESTING) return false; }
+			else if (c === "]") depth--;
+			else if (!TYPE_CHARACTER.test(c)) return false;
+			else named = true;
+		}
+		if (depth || !named) return false;
+	}
+	return SIMPLE_VARIABLE.test(index ? value.slice(index) : value);
+}
+
+function isAsyncOption(value: string): boolean {
+	if (!PARAMETER_DASH.test(value)) return false;
+	const colon = value.indexOf(":"), end = colon < 0 ? value.length : colon;
+	return end >= 4 && end <= 13 && "asynchronous".startsWith(value.slice(1, end).toLowerCase());
+}
+
+function isArgumentSuffix(tokens: readonly Token[], index: number): boolean {
+	const previous = tokens[index - 1];
+	return previous?.operator === true && previous.value === "=" && previous.end === tokens[index]!.start;
+}
 
 function isStreamMerge(tokens: readonly Token[], index: number): boolean {
 	const token = tokens[index]!, previous = tokens[index - 1], next = tokens[index + 1];
@@ -97,10 +127,31 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		if (value || quoted) tokens.push({ value, quoted, dynamic, operator: false, start, end: i });
 	}
 
-	let head = true;
+	let head = true, assignable = false, equalsData = false;
+	// 0: parentheses, 1: script block, 2: hashtable key, 3: hashtable value.
+	// Primitive call-owned stack, capped at MAX_NESTING and never retained.
+	const contexts: number[] = [];
 	for (let i = 0; i < tokens.length; i++) {
 		const token = tokens[i]!, value = token.value;
 		if (token.operator) {
+			if (value === "=") {
+				head = assignable; equalsData = !assignable;
+				if (assignable && contexts.at(-1) === 2) contexts[contexts.length - 1] = 3;
+				assignable = false; continue;
+			}
+			assignable = false; equalsData = false;
+			if (value === "(" || value === "{") {
+				if (contexts.length === MAX_NESTING) return UNCERTAIN;
+				const previous = tokens[i - 1];
+				contexts.push(value === "(" ? 0 : previous?.value === "@" && !previous.quoted && previous.end === token.start ? 2 : 1);
+				head = true; continue;
+			}
+			if (value === ")" || value === "}") {
+				const context = contexts.pop();
+				if (context === undefined || (value === ")") !== (context === 0)) return UNCERTAIN;
+				head = value === "}" && context === 1; continue;
+			}
+			if ((value === ";" || value === "\n" || value === "\r") && (contexts.at(-1) ?? 0) >= 2) contexts[contexts.length - 1] = 2;
 			if (value === "&") {
 				const next = tokens[i + 1];
 				if (isStreamMerge(tokens, i)) { i++; continue; }
@@ -108,26 +159,30 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 				if (!head) return BACKGROUND;
 				const target = tokens[i + 1];
 				if (!target || target.dynamic || target.value === "(") return refusal("SHELL_DYNAMIC_EXECUTABLE", "the call operator requires a literal executable or script block");
-			} else head = value !== ")";
+			} else head = true;
 			continue;
 		}
-		if (!token.quoted && JOB_OPTION.test(value)) return BACKGROUND;
+		const dataPiece = equalsData && isArgumentSuffix(tokens, i);
+		equalsData = false;
+		if (!dataPiece && !token.quoted && (JOB_OPTION.test(value) || isAsyncOption(value))) return BACKGROUND;
 		// Splat contents can carry job switches even before a literal parameter.
 		// No local variable/dataflow evaluation is performed by this filter.
-		if (!token.quoted && token.dynamic && value.startsWith("@") && value.length > 1) return refusal("SHELL_UNINSPECTABLE", "splatted PowerShell arguments may hide lifecycle options; pass explicit arguments");
+		if (!dataPiece && !token.quoted && token.dynamic && value.startsWith("@") && value.length > 1) return refusal("SHELL_UNINSPECTABLE", "splatted PowerShell arguments may hide lifecycle options; pass explicit arguments");
 		// Known launcher/evaluator members cannot prove ownership. Inspect argument
 		// positions too; dynamic member names must not hide these same entrypoints.
-		if (command[token.start] !== "'" && command[token.start] !== '"' && tokens[i + 1]?.operator && tokens[i + 1]?.value === "(") {
+		if (command[token.start] !== "'" && command[token.start] !== '"' && tokens[i + 1]?.operator && tokens[i + 1]?.value === "(" && token.end === tokens[i + 1]?.start) {
 			if (OPAQUE_MEMBER.test(value)) return refusal("SHELL_UNINSPECTABLE", "launcher or evaluator member ownership cannot be verified; use a literal foreground command (Start-Process requires -Wait)");
-			if (token.dynamic && value !== "$" && !SIMPLE_VARIABLE.test(value)) return UNCERTAIN;
+			if (token.dynamic && value !== "$" && value !== "@" && !isSimpleVariable(value)) return UNCERTAIN;
 		}
 		if (!head) continue;
 		head = false;
+		if (contexts.at(-1) === 2) { assignable = true; continue; }
 		// A quoted expression is data unless preceded by PowerShell's call operator.
 		if ((command[token.start] === "'" || command[token.start] === '"') && tokens[i - 1]?.value !== "&") continue;
 		if (token.dynamic) {
 			// A variable/member expression is not a Bash executable position.
-			if (SIMPLE_VARIABLE.test(value) || value === "$") continue;
+			if (isSimpleVariable(value)) { assignable = true; continue; }
+			if (value === "$" || (value === "@" && (tokens[i + 1]?.value === "(" || tokens[i + 1]?.value === "{"))) continue;
 			return UNCERTAIN;
 		}
 		const name = value.slice(Math.max(value.lastIndexOf("/"), value.lastIndexOf("\\")) + 1).toLowerCase().replace(/\.exe$/, "");
@@ -139,11 +194,12 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 			for (let j = i + 1; j < tokens.length; j++) {
 				const arg = tokens[j]!;
 				if (isStreamMerge(tokens, j)) { j++; continue; }
+				if (arg.operator && arg.value === "=") continue;
 				if (arg.operator) break;
 				if (arg.dynamic) return UNCERTAIN;
 				if (!arg.quoted && arg.value === "--%") return UNCERTAIN;
-				if (command.slice(arg.start, arg.end).toLowerCase() === "-wait") wait = true;
-				if (!arg.quoted && arg.value.toLowerCase().startsWith("-wait:")) return UNCERTAIN;
+				if (!isArgumentSuffix(tokens, j) && command.slice(arg.start, arg.end).toLowerCase() === "-wait") wait = true;
+				if (!isArgumentSuffix(tokens, j) && !arg.quoted && arg.value.toLowerCase().startsWith("-wait:")) return UNCERTAIN;
 			}
 			if (!wait) return BACKGROUND;
 		}
@@ -157,6 +213,7 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 			let end = token.end;
 			for (let j = i + 1; j < tokens.length; j++) {
 				const arg = tokens[j]!;
+				if (arg.operator && arg.value === "=") continue;
 				if (arg.operator) break;
 				if (arg.dynamic) return UNCERTAIN;
 				end = arg.end;
@@ -164,5 +221,5 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 			if (inspectBashResourceLifecycle({ command: command.slice(token.start, end) })) return BACKGROUND;
 		}
 	}
-	return undefined;
+	return contexts.length ? UNCERTAIN : undefined;
 }

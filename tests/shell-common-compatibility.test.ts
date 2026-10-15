@@ -1656,10 +1656,11 @@ test("native PowerShell assignments and member calls retain authorization and fo
   try {
     fixture = await guardedCwdBoundaryFixture(workspace, "", "powershell");
     await fixture.setMode("read-only");
-    const command = "$s = New-Object System.Text.StringBuilder; try { [void]$s.Append('inline-ok'); $s.ToString() | ForEach-Object { $_.ToUpper() } } finally { [void]$s.Clear() }";
+    const command = "$s = New-Object System.Text.StringBuilder; try { [void]$s.Append('inline-ok'); $s.ToString() | ForEach-Object { $_.ToUpper() } } finally { [void]$s.Clear() }; [int[][]]$items=$null; [System.Collections.Generic.Dictionary[string,System.Collections.Generic.List[int]]]$map=$null; Write-Output status=Start-Job report.Start (Get-Date); $h=@{Name='data';Value=1}; Write-Output $h.Name";
     const result = await fixture.agent.dispatchHostTool({ type: "toolCall", id: "native-members", name: "powershell", arguments: { command } });
     assert.equal(result.isError, false, JSON.stringify(result));
     assert.match(JSON.stringify(result.content), /INLINE-OK/);
+    assert.match(JSON.stringify(result.content), /status=Start-Job.*report.Start/s);
     assert.equal(fixture.executions, 1); assert.equal(fixture.approvals.length, 1);
     fixture.setDecision("拒绝");
     const denied = await fixture.agent.dispatchHostTool({ type: "toolCall", id: "native-denied", name: "powershell", arguments: { command } });
@@ -1669,7 +1670,9 @@ test("native PowerShell assignments and member calls retain authorization and fo
       "$p = New-Object System.Diagnostics.Process; $p.StartInfo.FileName = 'missing.exe'; $p.Start()",
       "[System.Diagnostics.Process]::Start('missing.exe')",
       "$p=New-Object hashtable; $p.AsJob=$true; 1 | ForEach-Object @p -Parallel { 1 }",
-      "$ExecutionContext.InvokeCommand.InvokeScript('Start-Job { 1 }')"]) {
+      "$ExecutionContext.InvokeCommand.InvokeScript('Start-Job { 1 }')",
+      "(Get-CimClass Win32_Process) | Invoke-CimMethod -MethodName Create -Arguments @{CommandLine='missing.exe'}",
+      "Start-ScheduledTask -TaskName MissingTask", "Start-BitsTransfer -Source a -Destination b -Asynchronous"]) {
       const blocked = await fixture.agent.dispatchHostTool({ type: "toolCall", id: "native-background", name: "powershell", arguments: { command } });
       assert.equal(blocked.isError, true); assert.equal(fixture.executions, 1); assert.equal(fixture.approvals.length, 2);
     }

@@ -259,12 +259,20 @@ The reported `-As'Job'` parameter bypass was checked against the native AST and
 runtime: it is a string argument, and `ForEach-Object -Parallel { 1 } -As'Job'`
 fails with `PositionalParameterNotFound`; it does not bind the `AsJob` switch.
 Quoted/literal text remains data, while actual unquoted `-AsJob` is blocked.
+Native switch-binding checks also cover PowerShell's `-As`/`-Asj` abbreviations
+and accepted en/em/horizontal-bar parameter dashes, without starting any jobs.
 Uninspected splats are refused because their values can hide lifecycle switches;
 use explicit arguments instead. Known launcher/evaluator members (including
 InvokeScript, Invoke/BeginInvoke, ExpandString and COM Run/Exec) and dynamic member
 invocation names also stay opaque, including in pipeline/argument positions.
 This prevents variable/member-expression acceptance from becoming an evaluator
 escape while ordinary object methods keep their normal authorization path.
+CIM/WMI method invocation remains opaque (including ManagementClass.InvokeMethod),
+while ordinary CIM queries remain available. Scheduled-task starts and asynchronous
+BITS/service switches are refused. Literal argument `=` characters do not become
+assignment boundaries or turn data into commands/options; hashtable values and real
+variable assignments still receive executable inspection. Member calls require
+source adjacency, so `report.Start (Get-Date)` remains ordinary argument data.
 
 Bash-to-PowerShell recovery distinguishes an active native tool, a configured
 discoverable tool, and an unavailable tool. Discovery is suggested only when
@@ -284,10 +292,13 @@ queue → release. Error projection occurs once when its bounded source changes;
 redraw/expand/collapse reuse it. Added regexes are module-owned. There are no new
 per-progress/frame closures, Promises, controllers, wrappers, arrays, full-frame
 copies or pools. The PowerShell lexer is invocation-local (128 KiB source, at most
-2,048 tokens, comment depth 16); source spans avoid per-character string building.
+2,048 tokens, comment depth 16, 64 primitive expression contexts); source spans avoid
+per-character string building.
 All parser references become unreachable on return/refusal/throw, before any await.
-Cast recognition excludes bracket delimiters from identifier spans; a long malformed
-cast chain has a regression case and cannot repartition overlapping bracket matches.
+Cast recognition balances type brackets linearly with depth capped at 64, preserving
+nested generics and jagged arrays. A long malformed cast chain has a regression case
+and cannot repartition overlapping regex matches. Context arrays are call-owned and
+become unreachable together with lexer tokens on every return/refusal/throw.
 
 Source-loaded validation on Windows x64 / Node 26.4.0, without a build or global
 runtime replacement, extended existing tests only. Real isolated PowerShell
