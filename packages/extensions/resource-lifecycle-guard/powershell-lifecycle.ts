@@ -31,7 +31,7 @@ const FOR_EACH_FLAGS = new Set(["asjob", "usenewrunspace", "whatif", "confirm", 
 const FOR_EACH_BLOCKS = new Set(["begin", "process", "end", "remainingscripts", "parallel"]);
 const OBJECT_PARAMETERS = ["typename", "comobject", "argumentlist", "strict", "property", ...VARIABLE_LOOKUP_PARAMETERS.slice(5)];
 const OBJECT_FLAGS = new Set(["strict", "verbose", "debug"]);
-const WMI_CAPABILITY = /(?:^|\[|:)(?:wmiclass|(?:System\.)?Management\.ManagementClass)(?:\]|$)/i;
+const WMI_CAPABILITY = /(?:^|\[|:)(?:wmiclass|(?:(?:System\.)?Management\.)?ManagementClass)(?:\]|,|$)/i;
 const SPACE = /\s/;
 const PUNCTUATION = /[;|\n\r{}()=&]/;
 // PowerShell accepts unambiguous parameter prefixes and these Unicode dashes.

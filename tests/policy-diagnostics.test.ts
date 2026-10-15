@@ -136,6 +136,7 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "Get-Item ('Vari' + 'able:PSDefaultParameterValues')", "Get-ChildItem -Path $path", 'Get-Item "FileSystem::$file",$other',
     "$type='System.Management.ManagementClass'; $c=New-Object -TypeName $type -ArgumentList 'Win32_Process'; $c.Create('missing.exe')",
     "New-Object -TypeName ('System.Management.' + 'ManagementClass')", "New-Object $type", "New-Object -t:$type", "New-Object -ComObject $progId",
+    "New-Object 'System.Management.ManagementClass, System.Management'", "using namespace System.Management; New-Object ManagementClass",
     "$c=Get-WmiObject -List -Class Win32_Process; $c.Create('missing.exe')", "gwmi -Li Win32_Process", "Get-WmiObject -List:$true",
     "Get-WmiObject -Class ('Win32_Process') -List",
     "$d=@{'ForEach-Object:AsJob'=$true}; $d | Write-Output -PipelineVariable PSDefaultParameterValues | ForEach-Object { 1 | ForEach-Object -Parallel { 1 } }",
