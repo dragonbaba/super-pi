@@ -4,12 +4,16 @@ const MAX_CHARS = 128 * 1024;
 const MAX_TOKENS = 2048;
 const MAX_NESTING = 64;
 const BASH = new Set(["bash", "sh", "zsh", "dash", "ksh", "fish"]);
-const LAUNCHERS = new Set(["powershell", "pwsh", "cmd", "invoke-expression", "iex", "invoke-command", "icm", "invoke-cimmethod", "invoke-wmimethod", "iwmi", "invoke-item", "ii", "set-alias", "new-alias", "import-alias", "sal", "nal", "function", "filter", "class", "enum", "workflow", "configuration"]);
+const LAUNCHERS = new Set(["powershell", "pwsh", "cmd", "invoke-expression", "iex", "invoke-command", "icm", "invoke-cimmethod", "icim", "invoke-wmimethod", "iwmi", "invoke-item", "ii", "set-alias", "new-alias", "import-alias", "ipal", "sal", "nal", "function", "filter", "class", "enum", "workflow", "configuration"]);
 const DETACHED = new Set(["start-job", "sajb", "start-threadjob", "start-service", "sasv", "restart-service", "resume-service", "rsv", "start-scheduledtask", "register-scheduledjob", "set-scheduledjob", "register-scheduledtask", "set-scheduledtask", "nohup", "disown", "setsid", "daemonize"]);
 const PROCESS = new Set(["start-process", "start", "saps"]);
 const CONTROL_BLOCK = new Set(["if", "elseif", "else", "for", "foreach", "while", "do", "switch", "try", "catch", "finally", "trap", "begin", "process", "end", "clean", "dynamicparam", "data"]);
 const PROVIDER_MUTATORS = new Set(["set-item", "si", "new-item", "ni", "copy-item", "cpi", "cp", "copy", "move-item", "mi", "mv", "move", "rename-item", "rni", "ren", "set-location", "sl", "cd", "chdir", "push-location", "pushd"]);
 const EXECUTABLE_PROVIDER = /(?:^|[:,])(?:[^:,]*\\)?(?:alias|function|variable):/i;
+const EXECUTABLE_VARIABLE = /\$(?:\{)?(?:alias|function):/i;
+// Braced names preserve raw escapes in the lexer. Control escapes are not their
+// literal letter; retaining those markers keeps them distinct from capability names.
+const VARIABLE_ESCAPE = /`([^0abefnrtvu])/g;
 const VARIABLE_MUTATORS = new Set(["set-variable", "sv", "set", "new-variable", "nv"]);
 const DEFAULT_PARAMETERS = /\bpsdefaultparametervalues\b/i;
 const SESSION_STATE = /(?:\.|::|\[)(?:sessionstate|sessionstateproxy|psvariable)\b/i;
@@ -129,7 +133,7 @@ function inspectNewObject(tokens: readonly Token[], start: number, command: stri
 			type = arg.value.slice(arg.value.indexOf(":") + 1);
 		}
 		if (parameter === "typename" || parameter === "comobject" || (!parameter && !typeSeen)) {
-			if (arg.dynamic || WMI_CAPABILITY.test(type)) return UNCERTAIN;
+			if (!type || arg.dynamic || WMI_CAPABILITY.test(type)) return UNCERTAIN;
 			typeSeen = true;
 		}
 		parameter = undefined;
@@ -292,9 +296,12 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		}
 		const dataPiece = equalsData && isArgumentSuffix(tokens, i);
 		equalsData = false;
+		const variableValue = token.dynamic && value.includes("`") ? value.replace(VARIABLE_ESCAPE, "$1") : value;
 		// Ambient defaults can silently bind AsJob/Asynchronous on later commands.
-		if (token.dynamic && command[token.start] !== "'" && command[token.start] !== '"' && DEFAULT_PARAMETERS.test(value)) return UNCERTAIN;
-		if (command[token.start] !== "'" && command[token.start] !== '"' && SESSION_STATE.test(value)) return UNCERTAIN;
+		if (token.dynamic && command[token.start] !== "'" && command[token.start] !== '"' && DEFAULT_PARAMETERS.test(variableValue)) return UNCERTAIN;
+		if (token.dynamic && command[token.start] !== "'" && command[token.start] !== '"'
+			&& EXECUTABLE_VARIABLE.test(variableValue)) return UNCERTAIN;
+		if (command[token.start] !== "'" && command[token.start] !== '"' && SESSION_STATE.test(variableValue)) return UNCERTAIN;
 		if (command[token.start] !== "'" && command[token.start] !== '"' && value.startsWith("[") && WMI_CAPABILITY.test(value)) return UNCERTAIN;
 		// Common variable-output parameters can install ambient defaults even on
 		// otherwise harmless commands; do not evaluate dynamic target names.
@@ -304,6 +311,7 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 			if (parameter && VARIABLE_OUTPUT_OPTIONS.has(parameter)) {
 				const target = colon < 0 ? tokens[i + 1] : token;
 				if (!target || target.operator || target.dynamic || DEFAULT_PARAMETERS.test(target.value)) return UNCERTAIN;
+				if (colon >= 0 && !target.value.slice(target.value.indexOf(":") + 1)) return UNCERTAIN;
 			}
 		}
 		if (!dataPiece && !token.quoted && (JOB_OPTION.test(value) || isAsyncOption(value))) return BACKGROUND;
@@ -443,13 +451,18 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 			}
 		}
 		if (PROCESS.has(name)) {
-			let wait = false;
+			let wait = false, depth = 0;
 			for (let j = i + 1; j < tokens.length; j++) {
 				const arg = tokens[j]!;
 				if (isStreamMerge(tokens, j)) { j++; continue; }
 				if (arg.operator && arg.value === "=") continue;
-				if (arg.operator) break;
-				if (arg.dynamic) return UNCERTAIN;
+				if (arg.operator) {
+					if (arg.value === "(" || arg.value === "{") { if (++depth > MAX_NESTING) return UNCERTAIN; }
+					else if (arg.value === ")" || arg.value === "}") { if (!depth) break; depth--; }
+					else if (!depth) break;
+					continue;
+				}
+				if (depth) continue;
 				if (!arg.quoted && arg.value === "--%") return UNCERTAIN;
 				if (!isArgumentSuffix(tokens, j) && command.slice(arg.start, arg.end).toLowerCase() === "-wait") wait = true;
 				if (!isArgumentSuffix(tokens, j) && !arg.quoted && arg.value.toLowerCase().startsWith("-wait:")) return UNCERTAIN;

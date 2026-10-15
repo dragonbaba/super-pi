@@ -328,6 +328,13 @@ data and property values. Get-WmiObject/gwmi class listings expose callable WMI
 capabilities and are opaque; ordinary instance queries remain available. Common
 variable-output parameters (including PipelineVariable/pv) cannot target the
 default-parameter table or an uninspectable variable name on any command.
+Unquoted Alias:/Function: provider-variable capabilities are opaque, including
+braced/escaped names and parenthesized assignment. Native alias metadata also
+covers icim/ipal. Start-Process retains its own literal -Wait while allowing
+dynamic executable/argument/directory data and bounded argument expressions;
+splats, unprovable waits and nested unowned launches remain refused. Existing
+permission/target inspection still applies. A real isolated cmd child completes
+under -Wait/-NoNewWindow; the active user session is never replayed.
 
 Unchanged scope: external module loading and native sc.exe/net.exe service control
 already passed the original Bash lifecycle and high-risk scanners at the PR base.

@@ -62,6 +62,9 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "New-Object -TypeName System.Text.StringBuilder -ArgumentList $capacity", "New-Object -ArgumentList ($capacity) -TypeName System.Text.StringBuilder",
     "New-Object System.Text.StringBuilder -Property @{Capacity=16}", "Get-WmiObject -Class Win32_OperatingSystem", "gwmi Win32_OperatingSystem",
     "Write-Output 1 -PipelineVariable observed", "Write-Output 1 -pv:observed",
+    "$arguments=@('--version'); Start-Process tool.exe -ArgumentList $arguments -Wait",
+    "Start-Process $executable -ArgumentList ($arguments) -Wait", "Start-Process tool.exe -Wait -WorkingDirectory $directory",
+    "${PSDef`aultParameterValues}=@{}",
   ]) assert.equal(inspectPowerShellResourceLifecycle({ command }), undefined, command);
   for (const command of [
     "Start-Job { Write-Output 1 }", "$job = Start-ThreadJob { Write-Output 1 }", "if ($true) {} Start-Job {}",
@@ -137,10 +140,16 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "$type='System.Management.ManagementClass'; $c=New-Object -TypeName $type -ArgumentList 'Win32_Process'; $c.Create('missing.exe')",
     "New-Object -TypeName ('System.Management.' + 'ManagementClass')", "New-Object $type", "New-Object -t:$type", "New-Object -ComObject $progId",
     "New-Object 'System.Management.ManagementClass, System.Management'", "using namespace System.Management; New-Object ManagementClass",
+    "New-Object -TypeName:($type)", "Write-Output 1 -pv:('PSDefaultParameterValues')",
     "$c=Get-WmiObject -List -Class Win32_Process; $c.Create('missing.exe')", "gwmi -Li Win32_Process", "Get-WmiObject -List:$true",
     "Get-WmiObject -Class ('Win32_Process') -List",
     "$d=@{'ForEach-Object:AsJob'=$true}; $d | Write-Output -PipelineVariable PSDefaultParameterValues | ForEach-Object { 1 | ForEach-Object -Parallel { 1 } }",
     "Write-Output 1 -pv PSDefaultParameterValues", "Write-Output 1 -PipelineV:PSDefaultParameterValues", "Write-Output 1 -pv $target",
+    "$Alias:sj='Start-Job'; sj { 1 }", "${Alias:sj}='Start-Job'", "(${Alias:sj})='Start-Job'", "${Al`ias:sj}='Start-Job'", "$Function:f=$block",
+    "${PSDefau`ltParameterValues}=@{'ForEach-Object:AsJob'=$true}",
+    "icim -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine='missing.exe'}", "ipal aliases.csv",
+    "Start-Process tool.exe -ArgumentList $arguments", "Start-Process tool.exe -ArgumentList ($arguments) -Wait:$flag",
+    "Start-Process tool.exe -ArgumentList (Start-Job {}) -Wait", "Start-Process tool.exe -ArgumentList ('-Wait')",
   ]) assert.ok(inspectPowerShellResourceLifecycle({ command }), command);
 });
 
