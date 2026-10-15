@@ -294,6 +294,9 @@ inside an executable name does not turn that program into a title. The guard is
 not an exhaustive command catalog: Disconnect-PSSession/dnsn and native sc.exe
 service controls were not covered by the preceding Bash gate and remain under
 normal authorization. No new blacklist for these command families is introduced.
+Dot invocation retains the following literal command position without splitting
+decimal/member/path dots. Class/enum declaration names stay metadata; method
+bodies and commands after a declaration still receive the existing checks.
 These are invocation-only bounded scans, with no new progress/render work, retained
 owners, per-event callbacks or pools. Existing source/AST/allocation evidence for
 the unchanged render chain remains applicable.

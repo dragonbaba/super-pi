@@ -435,12 +435,13 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 	}
 	if (contexts.length) return UNCERTAIN;
 
-	let head = true, assignable = false, controlBlock = false, paramBlock = false;
+	let head = true, assignable = false, controlBlock = false, paramBlock = false, classBlock = false;
 	let doBlock = false, afterDo = false, doCondition = false, foreachBlock = false;
 	// Low bits: 0 paren, 1 control block, 2 hash key, 3 hash value, 4 block argument, 5 param list.
 	// 6 is a do body, 7 its trailing while/until condition.
 	// Flag 8 restores an enclosing control statement after its condition parentheses.
 	// 9/10 are attribute boundaries/arguments: names are metadata, script bodies code.
+	// 11 is class/enum declaration metadata; method bodies use ordinary block contexts.
 	// 24/40 are foreach's variable/in states; flag 64 restores an assignment target.
 	// Primitive call-owned stack, capped at MAX_NESTING and never retained.
 	for (let i = 0; i < tokens.length; i++) {
@@ -448,7 +449,7 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		const topIndex = contexts.length - 1, top = contexts[topIndex], contextKind = top === undefined ? undefined : top & 63;
 		if (token.operator) {
 			if (value === "=") {
-				head = assignable; controlBlock = false; paramBlock = false; foreachBlock = false;
+				head = assignable; controlBlock = false; paramBlock = false; foreachBlock = false; classBlock = false;
 				if (assignable && contextKind === 2) contexts[topIndex] = (top! & 64) | 3;
 				assignable = false; continue;
 			}
@@ -457,18 +458,18 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 			if (value === "(" || value === "{" || value === "[") {
 				if (contexts.length === MAX_NESTING) return UNCERTAIN;
 				const previous = tokens[i - 1];
-				const kind = value === "[" ? 9 : value === "(" ? (contextKind === 9 || contextKind === 10 ? 10 : doCondition ? 7 : paramBlock ? 5 : controlBlock ? foreachBlock ? 24 : 8 : 0) : previous?.value === "@" && !previous.quoted && previous.end === token.start ? 2 : doBlock ? 6 : controlBlock ? 1 : 4;
+				const kind = value === "[" ? 9 : value === "(" ? (contextKind === 9 || contextKind === 10 ? 10 : doCondition ? 7 : paramBlock ? 5 : controlBlock ? foreachBlock ? 24 : 8 : 0) : classBlock ? 11 : previous?.value === "@" && !previous.quoted && previous.end === token.start ? 2 : doBlock ? 6 : controlBlock ? 1 : 4;
 				contexts.push(kind | (assigning ? 64 : 0));
-				head = value !== "[" && kind !== 10; controlBlock = false; paramBlock = false; doBlock = false; doCondition = false; foreachBlock = false; continue;
+				head = value !== "[" && kind !== 10; controlBlock = false; paramBlock = false; doBlock = false; doCondition = false; foreachBlock = false; classBlock = false; continue;
 			}
 			if (value === ")" || value === "}" || value === "]") {
 				const saved = contexts.pop(), context = saved === undefined ? undefined : saved & 63;
 				if (context === undefined || (context === 9 ? value !== "]" : value === "]" || (value === ")") !== ((context & 7) === 0 || context === 5 || context === 7 || context === 10))) return UNCERTAIN;
-				head = context === 1 || context === 5 || context === 6 || context === 7 || context === 9;
+				head = context === 1 || context === 5 || context === 6 || context === 7 || context === 9 || context === 11;
 				assignable = (saved! & 64) !== 0 || (context === 0 && assigning);
-				controlBlock = context !== 9 && context !== 10 && (context & 8) !== 0; paramBlock = false; foreachBlock = false; afterDo = context === 6; continue;
+				controlBlock = context === 8 || context === 24 || context === 40; paramBlock = false; foreachBlock = false; afterDo = context === 6; continue;
 			}
-			if (value !== "\n" && value !== "\r") { controlBlock = false; foreachBlock = false; }
+			if (value !== "\n" && value !== "\r") { controlBlock = false; foreachBlock = false; classBlock = false; }
 			if ((value === ";" || value === "\n" || value === "\r") && (contextKind === 2 || contextKind === 3)) contexts[topIndex] = (top! & 64) | 2;
 			if (value === "&") {
 				const next = tokens[i + 1];
@@ -483,12 +484,14 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		head = false;
 		if (contextKind === 2) { assignable = true; continue; }
 		if (token.typeOnly) { head = true; continue; }
+		if (contextKind === 11 && !token.dynamic) { paramBlock = true; continue; }
+		if (!token.quoted && value === ".") { head = true; continue; }
 		if (!token.quoted && value.startsWith(":")) {
 			if (!STATEMENT_LABEL.test(value)) return UNCERTAIN;
 			head = true; continue;
 		}
-		// A quoted expression is data unless preceded by PowerShell's call operator.
-		if ((command[token.start] === "'" || command[token.start] === '"') && tokens[i - 1]?.value !== "&") continue;
+		// A quoted expression is data unless preceded by an invocation operator.
+		if ((command[token.start] === "'" || command[token.start] === '"') && tokens[i - 1]?.value !== "&" && (tokens[i - 1]?.value !== "." || tokens[i - 1]?.quoted)) continue;
 		if (token.dynamic) {
 			// A variable/member expression is not a Bash executable position.
 			if (tokens[i - 1]?.value === "&") continue;
@@ -503,6 +506,7 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		const name = value.slice(Math.max(value.lastIndexOf("/"), value.lastIndexOf("\\")) + 1).toLowerCase();
 		const externalName = name.endsWith(".exe") ? name.slice(0, -4) : name;
 		controlBlock = !token.quoted && CONTROL_BLOCK.has(name);
+		classBlock = !token.quoted && (name === "class" || name === "enum");
 		foreachBlock = !token.quoted && name === "foreach";
 		paramBlock = !token.quoted && name === "param";
 		doBlock = !token.quoted && name === "do";
