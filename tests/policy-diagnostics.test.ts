@@ -42,6 +42,11 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "${name}='safe'; [string]${space name}='safe'; ${name}.ToUpper()",
     "${escaped`}}='safe'; Write-Output ${escaped`}}", "Write-Output { 1 } Start-Job",
     "if ((Write-Output { 1 } Start-Job)) { Write-Output safe } else { Write-Output { 2 } Start-Job }",
+    ":outer while ($false) { Write-Output safe }", "if ($true)\n{ Write-Output safe }",
+    "for ($i=0; $i -lt 2; $i++) { Write-Output $i }", "for ($i=2; $i -gt 0; --$i) { Write-Output $i }",
+    "param() Write-Output safe", "param([string]$name='safe') Write-Output $name",
+    "New-Item -Path file.txt -ItemType File", "Set-Item -Path Env:SP_FIXTURE -Value literal",
+    "Set-Service -Name Missing -Description 'metadata'", "Set-Service -Name Missing -Status Stopped", "Set-Service -Name Missing -Status:'Paused'",
   ]) assert.equal(inspectPowerShellResourceLifecycle({ command }), undefined, command);
   for (const command of [
     "Start-Job { Write-Output 1 }", "$job = Start-ThreadJob { Write-Output 1 }", "if ($true) {} Start-Job {}",
@@ -77,6 +82,17 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "${job}=Start-Job { 1 }", "[object]${space name}=Start-Job { 1 }", "${escaped`}}=Start-Job { 1 }",
     "Write-Output { 1 }; Start-Job {}", "if ((Write-Output { 1 })) {} Start-Job {}",
     "if ($true) { Write-Output { 1 } }; Start-Job {}", "Invoke-Item missing.exe", "ii missing.exe",
+    "if ($true)\n{} Start-Job { 1 }", ":outer while ($false) {} Start-Job { 1 }",
+    "do {} while ($false)\nStart-Job { 1 }",
+    "param() Start-Job { 1 }", "& { param() Start-Job { 1 } }", "param([Parameter()]$x=Start-Job {}) Write-Output $x",
+    "[scriptblock]::Create('Start-Job {}').InvokeReturnAsIs()", "$block.InvokeWithContext($null,$null)", "$block.GetSteppablePipeline()",
+    "Set-Item Alias:sj Start-Job; sj { 1 }", "New-Item -Path Alias: -Name sj -Value Start-Job; sj { 1 }",
+    "si -LiteralPath 'Alias:sj' Start-Job", "Set-Item -Path:Alias:sj -Value Start-Job",
+    "Copy-Item Alias:Start-Job Alias:sj", "Set-Location Alias:; Set-Item sj Start-Job", "New-Item $path -Value Start-Job",
+    "Set-Service -Name Missing -Status Running", "Set-Service -Name Missing -Stat:Running", "Set-Service -Name Missing —Status 'Running'",
+    "Set-Service -Name Missing -Status $state", "Set-Service -Name Missing -Status (Get-Status)",
+    "Set-Item -Path ('Alias:' + 'sj') -Value Start-Job", "Set-Item -Value mode=data -Path Alias:sj",
+    "Set-Service -Name (Get-Name) -Status Running",
   ]) assert.ok(inspectPowerShellResourceLifecycle({ command }), command);
 });
 

@@ -8,16 +8,19 @@ const LAUNCHERS = new Set(["powershell", "pwsh", "cmd", "invoke-expression", "ie
 const DETACHED = new Set(["start-job", "sajb", "start-threadjob", "start-service", "sasv", "restart-service", "start-scheduledtask", "nohup", "disown", "setsid", "daemonize"]);
 const PROCESS = new Set(["start-process", "start", "saps"]);
 const CONTROL_BLOCK = new Set(["if", "elseif", "else", "for", "foreach", "while", "do", "switch", "try", "catch", "finally", "trap", "begin", "process", "end", "clean", "dynamicparam"]);
+const PROVIDER_MUTATORS = new Set(["set-item", "si", "new-item", "ni", "copy-item", "cpi", "cp", "copy", "move-item", "mi", "mv", "move", "rename-item", "rni", "ren", "set-location", "sl", "cd", "chdir", "push-location", "pushd"]);
+const EXECUTABLE_PROVIDER = /(?:^|[:,])(?:[^:,]*\\)?(?:alias|function):/i;
 const SPACE = /\s/;
 const PUNCTUATION = /[;|\n\r{}()=&]/;
 // PowerShell accepts unambiguous parameter prefixes and these Unicode dashes.
 const JOB_OPTION = /^[-\u2013\u2014\u2015]as(?:j(?:o(?:b)?)?)?(?::|$)/i;
 const PARAMETER_DASH = /^[-\u2013\u2014\u2015]/;
 const TYPE_CHARACTER = /[\w.,+]/;
+const STATEMENT_LABEL = /^:[\w]+$/;
 const SIMPLE_VARIABLE = /^\$(?:[\w:]+|\{(?:[^`{}]|`[\s\S])+\})(?:\.[\w]+|\[[\w$]+\])*$/;
 const STREAM_REDIRECT = /^[1-6*]?>$/;
 const STREAM_NUMBER = /^[1-6]$/;
-const OPAQUE_MEMBER = /(?:\.|::)(?:Start(?:New|Job|\.Invoke)?|Invoke(?:Script|Member|Method|Expression)?|DynamicInvoke|BeginInvoke|ExpandString|Run(?:Async)?|Exec|ShellExecute(?:Ex)?)$/i;
+const OPAQUE_MEMBER = /(?:\.|::)(?:Start(?:New|Job|\.Invoke)?|Invoke[\w]*|DynamicInvoke|BeginInvoke|GetSteppablePipeline|ExpandString|Run(?:Async)?|Exec|ShellExecute(?:Ex)?)$/i;
 
 interface Token { value: string; quoted: boolean; dynamic: boolean; operator: boolean; start: number; end: number }
 
@@ -137,8 +140,8 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		if (value || quoted) tokens.push({ value, quoted, dynamic, operator: false, start, end: i });
 	}
 
-	let head = true, assignable = false, equalsData = false, controlBlock = false;
-	// Low bits: 0 paren, 1 control block, 2 hash key, 3 hash value, 4 block argument.
+	let head = true, assignable = false, equalsData = false, controlBlock = false, paramBlock = false;
+	// Low bits: 0 paren, 1 control block, 2 hash key, 3 hash value, 4 block argument, 5 param list.
 	// Flag 8 restores an enclosing control statement after its condition parentheses.
 	// Primitive call-owned stack, capped at MAX_NESTING and never retained.
 	const contexts: number[] = [];
@@ -146,7 +149,7 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		const token = tokens[i]!, value = token.value;
 		if (token.operator) {
 			if (value === "=") {
-				head = assignable; equalsData = !assignable; controlBlock = false;
+				head = assignable; equalsData = !assignable; controlBlock = false; paramBlock = false;
 				if (assignable && contexts.at(-1) === 2) contexts[contexts.length - 1] = 3;
 				assignable = false; continue;
 			}
@@ -154,15 +157,15 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 			if (value === "(" || value === "{") {
 				if (contexts.length === MAX_NESTING) return UNCERTAIN;
 				const previous = tokens[i - 1];
-				contexts.push(value === "(" ? (controlBlock ? 8 : 0) : previous?.value === "@" && !previous.quoted && previous.end === token.start ? 2 : controlBlock ? 1 : 4);
-				head = true; controlBlock = false; continue;
+				contexts.push(value === "(" ? (paramBlock ? 5 : controlBlock ? 8 : 0) : previous?.value === "@" && !previous.quoted && previous.end === token.start ? 2 : controlBlock ? 1 : 4);
+				head = true; controlBlock = false; paramBlock = false; continue;
 			}
 			if (value === ")" || value === "}") {
 				const context = contexts.pop();
-				if (context === undefined || (value === ")") !== ((context & 7) === 0)) return UNCERTAIN;
-				head = context === 1; controlBlock = (context & 8) !== 0; continue;
+				if (context === undefined || (value === ")") !== ((context & 7) === 0 || context === 5)) return UNCERTAIN;
+				head = context === 1 || context === 5; controlBlock = (context & 8) !== 0; paramBlock = false; continue;
 			}
-			controlBlock = false;
+			if (value !== "\n" && value !== "\r") controlBlock = false;
 			if ((value === ";" || value === "\n" || value === "\r") && (contexts.at(-1) === 2 || contexts.at(-1) === 3)) contexts[contexts.length - 1] = 2;
 			if (value === "&") {
 				const next = tokens[i + 1];
@@ -189,19 +192,53 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		if (!head) continue;
 		head = false;
 		if (contexts.at(-1) === 2) { assignable = true; continue; }
+		// Attribute constructors can hide parameter defaults behind further parens.
+		if (contexts.at(-1) === 5 && value.startsWith("[") && !isSimpleVariable(value)) return UNCERTAIN;
+		if (!token.quoted && value.startsWith(":")) {
+			if (!STATEMENT_LABEL.test(value)) return UNCERTAIN;
+			head = true; continue;
+		}
 		// A quoted expression is data unless preceded by PowerShell's call operator.
 		if ((command[token.start] === "'" || command[token.start] === '"') && tokens[i - 1]?.value !== "&") continue;
 		if (token.dynamic) {
 			// A variable/member expression is not a Bash executable position.
 			if (isSimpleVariable(value)) { assignable = true; continue; }
+			if ((value.startsWith("++") || value.startsWith("--")) && isSimpleVariable(value.slice(2))) continue;
+			if ((value.endsWith("++") || value.endsWith("--")) && isSimpleVariable(value.slice(0, -2))) continue;
 			if (value === "$" || (value === "@" && (tokens[i + 1]?.value === "(" || tokens[i + 1]?.value === "{"))) continue;
 			return UNCERTAIN;
 		}
 		const name = value.slice(Math.max(value.lastIndexOf("/"), value.lastIndexOf("\\")) + 1).toLowerCase().replace(/\.exe$/, "");
 		controlBlock = !token.quoted && CONTROL_BLOCK.has(name);
+		paramBlock = !token.quoted && name === "param";
 		if (!token.quoted && (name === "return" || name === "throw")) { head = true; continue; }
 		if (DETACHED.has(name)) return BACKGROUND;
 		if (LAUNCHERS.has(name) || name === ".") return UNCERTAIN;
+		if (PROVIDER_MUTATORS.has(name)) {
+			for (let j = i + 1; j < tokens.length; j++) {
+				const arg = tokens[j]!;
+				if (arg.operator && arg.value === "=") continue;
+				if (arg.operator && (arg.value === "(" || arg.value === "{")) return UNCERTAIN;
+				if (arg.operator) break;
+				if (arg.dynamic || arg.value === "--%" || EXECUTABLE_PROVIDER.test(arg.value)) return UNCERTAIN;
+			}
+		}
+		if (name === "set-service") {
+			for (let j = i + 1; j < tokens.length; j++) {
+				const arg = tokens[j]!;
+				if (arg.operator && arg.value === "=") continue;
+				if (arg.operator && (arg.value === "(" || arg.value === "{")) return UNCERTAIN;
+				if (arg.operator) break;
+				if (arg.value === "--%") return UNCERTAIN;
+				if (isArgumentSuffix(tokens, j)) continue;
+				const raw = command.slice(arg.start, arg.end), colon = raw.indexOf(":"), option = raw.slice(1, colon < 0 ? raw.length : colon).toLowerCase();
+				if (!PARAMETER_DASH.test(raw) || !option || !"status".startsWith(option)) continue;
+				const status = colon < 0 ? tokens[++j] : arg;
+				if (!status || status.operator || status.dynamic) return UNCERTAIN;
+				const state = (colon < 0 ? status.value : status.value.slice(status.value.indexOf(":") + 1)).toLowerCase();
+				if (state !== "stopped" && state !== "paused") return BACKGROUND;
+			}
+		}
 		if (PROCESS.has(name)) {
 			let wait = false;
 			for (let j = i + 1; j < tokens.length; j++) {

@@ -276,7 +276,19 @@ source adjacency, so `report.Start (Get-Date)` remains ordinary argument data.
 Braced variables remain one variable token (including casts and escaped name
 characters), so their assignment RHS is inspected. Script-block arguments restore
 argument mode; control blocks restore statement mode, including parenthesized
-conditions. `Invoke-Item`/`ii` are opaque launchers with no owned wait path.
+conditions, line breaks and literal loop labels. `Invoke-Item`/`ii` are opaque
+launchers with no owned wait path.
+Parameter lists restore statement mode on close; uninspected parameter attributes
+remain opaque. Bounded variable increment/decrement expressions remain valid.
+ScriptBlock invocation methods and steppable-pipeline acquisition remain opaque.
+Provider mutations/location changes reject alias/function providers and dynamic
+arguments that could conceal those providers; ordinary literal file/Env targets
+remain available. `Set-Service` metadata updates remain available, while starting
+or dynamically specified states are refused (literal Stopped/Paused are retained).
+These lifecycle cases do not relax the separate legacy permission scanner: inline
+`param()` and some `for` forms still receive its `unverifiable_shell_state` refusal.
+Their lifecycle parsing is covered independently; real integration covers ordinary
+member/variable/increment execution and the existing permission checks unchanged.
 
 Bash-to-PowerShell recovery distinguishes an active native tool, a configured
 discoverable tool, and an unavailable tool. Discovery is suggested only when
