@@ -32,7 +32,7 @@ async function sample(grouped: boolean) {
 	if (FAILED) {
 		const error = PREFLIGHT ? "[SHELL_BACKGROUND] PowerShell not executed: fixture reason.\nNext: submit a literal foreground command for normal authorization; do not retry the same blocked call."
 			: TERMINAL_EXCEPTION ? "[SHELL_RUNTIME_FAILED]\nnpm notice run project@1.0.0 typecheck\nsrc/old.ts(1,1): error TS1000: stale cached diagnostic.\nTimeoutError: compiler server did not respond\nCommand exited with code 1"
-			: QUOTED_ERRORS ? "[SHELL_RUNTIME_FAILED]\n> authentication failed\n> token expired\nCommand exited with code 1"
+			: QUOTED_ERRORS ? "[SHELL_RUNTIME_FAILED]\n> authentication failed\n> token expired\n> refresh denied\nCommand exited with code 1"
 			: VERSIONLESS_NPM ? "[SHELL_RUNTIME_FAILED]\n> check\n> missing-command\nsh: missing-command: not found\nCommand exited with code 127"
 			: COMPILER ? "[SHELL_RUNTIME_FAILED]\nnpm notice run project@1.0.0 typecheck\nnpm notice run tsc --noEmit\nsrc/winter/WinterVideo.tsx(153,10): error TS2657: JSX expressions must have one parent element.\nCommand exited with code 1"
 			: "[SHELL_RUNTIME_FAILED]\n2026-10-15 07:21\nls: cannot access '视频创意': No such file or directory\nCommand exited with code 2";

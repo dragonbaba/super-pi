@@ -8,7 +8,7 @@ const DETACHED = new Set(["start-job", "sajb", "start-threadjob", "start-service
 const EXTERNAL_DETACHED = new Set(["nohup", "disown", "setsid", "daemonize"]);
 const PROCESS = new Set(["start-process", "start", "saps"]);
 const SERVICE_STARTERS = new Set(["start-service", "sasv", "restart-service", "resume-service", "rsv"]);
-const CONTROL_BLOCK = new Set(["if", "elseif", "else", "for", "foreach", "while", "do", "switch", "try", "catch", "finally", "trap", "begin", "process", "end", "clean", "dynamicparam", "data", "function", "filter", "class", "enum", "workflow", "configuration"]);
+const CONTROL_BLOCK = new Set(["if", "elseif", "else", "for", "foreach", "while", "do", "switch", "try", "catch", "finally", "trap", "begin", "process", "end", "clean", "dynamicparam", "data", "function", "filter", "class", "enum", "workflow", "configuration", "parallel", "sequence", "inlinescript"]);
 const VARIABLE_LOOKUP_PARAMETERS = ["name", "valueonly", "include", "exclude", "scope", "verbose", "debug", "erroraction", "warningaction", "informationaction", "progressaction", "errorvariable", "warningvariable", "informationvariable", "outvariable", "outbuffer", "pipelinevariable"];
 const VARIABLE_LOOKUP_ALIASES = new Map([["vb", "verbose"], ["db", "debug"], ["ea", "erroraction"], ["wa", "warningaction"], ["infa", "informationaction"], ["proga", "progressaction"], ["ev", "errorvariable"], ["wv", "warningvariable"], ["iv", "informationvariable"], ["ov", "outvariable"], ["ob", "outbuffer"], ["pv", "pipelinevariable"]]);
 const FOR_EACH = new Set(["foreach-object", "foreach", "%"]);
@@ -177,7 +177,16 @@ function hasLiteralWhatIf(tokens: readonly Token[], start: number, command: stri
 		if (isFileRedirect(tokens, j, command)) { if (tokens[j + 1] && !tokens[j + 1]!.operator) j++; continue; }
 		if (isArgumentSuffix(tokens, j)) continue;
 		const raw = command.slice(arg.start, arg.end), colon = raw.indexOf(":");
-		if (!PARAMETER_DASH.test(raw) || lookupOption(raw.slice(1, colon < 0 ? raw.length : colon).toLowerCase(), parameters) !== "whatif") continue;
+		if (!PARAMETER_DASH.test(raw)) continue;
+		const option = raw.slice(1, colon < 0 ? raw.length : colon).toLowerCase();
+		if (lookupOption(option, parameters) !== "whatif") continue;
+		// Start-Process has no WhatIf in 5.1: bare -wi with a value binds WindowStyle.
+		// A bare -wi is either a modern dry run or a legacy binding failure.
+		// Literal boolean colon values cannot bind the legacy enum and stay safe.
+		// Do not guess the final engine: executable recovery may change it later.
+		const next = tokens[j + 1];
+		if (parameters === PROCESS_PARAMETERS && option === "wi" && colon < 0 && next
+			&& (next.value === "(" || (!next.operator && !PARAMETER_DASH.test(command.slice(next.start, next.end))))) continue;
 		enabled = literalSwitch(tokens, j, command) === true;
 		if (colon === raw.length - 1) j++;
 	}

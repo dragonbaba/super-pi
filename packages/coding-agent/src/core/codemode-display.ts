@@ -78,6 +78,9 @@ export function codemodeFailureReason(text: string, audience: "display" | "model
 			if (!first) first = shortHeader;
 			shortHeader = "";
 		}
+		// Retain the first quoted pair across a longer run; only a non-quoted
+		// cause may replace it. Canonical output retains every quoted line.
+		if (quotedHeader && line.startsWith("> ")) continue;
 		if (NPM_SCRIPT_HEADER.test(line)) { npmCommandPending = true; continue; }
 		if (NPM_STARTUP.test(line)) continue;
 		if (npmCommandPending) { npmCommandPending = false; if (NPM_SCRIPT_COMMAND.test(line)) continue; }

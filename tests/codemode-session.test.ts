@@ -276,10 +276,11 @@ test("Codemode delivers the compiler cause before npm banners while preserving f
 	assert.match(versionlessSummary, /compiler_probe: .* — sh: missing-command: not found/);
 	assert.doesNotMatch(versionlessSummary, /> check/);
 	assert.match(JSON.stringify(versionless.wires.at(-1)), /> check/);
-	diagnostic = "[SHELL_RUNTIME_FAILED]\n> authentication failed\n> token expired\nCommand exited with code 1";
+	diagnostic = "[SHELL_RUNTIME_FAILED]\n> authentication failed\n> token expired\n> refresh denied\nCommand exited with code 1";
 	const quoted = await f.run(["await tools.compiler_probe({})"]);
 	assert.match((quoted.results.at(-1)!.content[0] as any).text, /compiler_probe: .* — > authentication failed > token expired/);
 	assert.match(JSON.stringify(quoted.wires.at(-1)), /token expired/);
+	assert.match(JSON.stringify(quoted.wires.at(-1)), /refresh denied/);
 	diagnostic = "[SHELL_RUNTIME_FAILED]\nsrc/old.ts(1,1): error TS1000: stale cached diagnostic.\nTimeoutError: compiler server did not respond\nCommand exited with code 1";
 	const terminal = await f.run(["await tools.compiler_probe({})"]);
 	assert.match((terminal.results.at(-1)!.content[0] as any).text, /compiler_probe: .* — TimeoutError: compiler server did not respond/);

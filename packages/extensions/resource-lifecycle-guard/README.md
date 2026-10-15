@@ -370,6 +370,7 @@ Existing authorization and allocation source invariants cover the adjacent chain
 | Codemode compiler failure, collapsed | 4,096 | 1,620 | 0.0018 |
 | Codemode native PowerShell refusal, collapsed | 4,096 | 1,490 | 0.0018 |
 | Codemode compiler followed by terminal exception, collapsed | 4,096 | 1,585 | 0.0017 |
+| Codemode three consecutive quoted diagnostics, collapsed | 4,096 | 1,458 | 0.0020 |
 | Main production frame | 1,024 | 7,629 | 0.0602 |
 | Alt production frame | 1,024 | 11,796 | 0.0680 |
 | Terminal frame queue | 2,048 | 217 | 0.1767 |
@@ -410,3 +411,16 @@ fixture retains one row/output/failure projection, zero event Promises and 0/2
 weak owners after controlled GC; row/timer/text/result references clear to zero.
 Leading samples remain retained-item render, prepared-viewport cleanup/layout and
 benchmark timing. Unchanged Main/Alt/queue code reuses the recorded evidence.
+
+Longer quoted diagnostic runs retain the first pair as a bounded fallback; only
+a substantive non-quoted cause replaces it, while canonical output keeps all lines.
+The same completion-to-release audit and ten invariants pass. The three-line fixture
+above retains one row/output/failure projection, zero event Promises, zero released
+row/timer/text/result references and 0/2 weak owners after controlled GC. No new
+per-redraw scan, arrays, callbacks or pools; unchanged frame/queue evidence applies.
+Native grammar coverage also preserves switch patterns, Unicode loop variables and
+command position after workflow parallel/sequence/inlinescript blocks. Native 5.1
+metadata confirms Start-Process -wi with an operand binds WindowStyle, not WhatIf.
+Only that colliding form stops proving a dry run; explicit -WhatIf, standalone -wi,
+literal -wi:$true and foreground -Wait remain accepted. The boolean colon form
+cannot bind the legacy enum, as confirmed by a harmless proxy binding probe.
