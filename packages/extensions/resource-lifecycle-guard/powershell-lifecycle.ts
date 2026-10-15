@@ -9,7 +9,9 @@ const PROCESS = new Set(["start-process", "start", "saps"]);
 const SPACE = /\s/;
 const PUNCTUATION = /[;|\n\r{}()=&]/;
 const JOB_OPTION = /^-asjob(?::|$)/i;
-const SIMPLE_VARIABLE = /^(?:\[[\w.,[\]]+\])*\$[\w:]+(?:\.[\w]+|\[[\w$]+\])*$/;
+// Bracket delimiters are excluded from identifier spans: repeated casts cannot
+// be repartitioned exponentially when a malformed variable follows them.
+const SIMPLE_VARIABLE = /^(?:\[[\w.,+]+(?:\[[\w.,]*\])?\])*\$[\w:]+(?:\.[\w]+|\[[\w$]+\])*$/;
 const STREAM_REDIRECT = /^[1-6*]?>$/;
 const STREAM_NUMBER = /^[1-6]$/;
 const OPAQUE_MEMBER = /(?:\.|::)(?:Start(?:New|Job|\.Invoke)?|Invoke(?:Script|Member|Expression)?|DynamicInvoke|BeginInvoke|ExpandString|Run(?:Async)?|Exec|ShellExecute(?:Ex)?)$/i;

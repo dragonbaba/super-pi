@@ -286,6 +286,8 @@ per-progress/frame closures, Promises, controllers, wrappers, arrays, full-frame
 copies or pools. The PowerShell lexer is invocation-local (128 KiB source, at most
 2,048 tokens, comment depth 16); source spans avoid per-character string building.
 All parser references become unreachable on return/refusal/throw, before any await.
+Cast recognition excludes bracket delimiters from identifier spans; a long malformed
+cast chain has a regression case and cannot repartition overlapping bracket matches.
 
 Source-loaded validation on Windows x64 / Node 26.4.0, without a build or global
 runtime replacement, extended existing tests only. Real isolated PowerShell

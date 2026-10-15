@@ -31,6 +31,7 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "Start-Process -FilePath tool.exe -Wait; Start-Process -FilePath other.exe -Wait",
     "Start-Process tool.exe 2>&1 -Wait", "Start-Process tool.exe -Wait 2>&1",
     "echo $((1 + $null))",
+    "[void][object]$s.ToString()", "[System.Collections.Generic.List[string]]$items", "[string[]]$items",
   ]) assert.equal(inspectPowerShellResourceLifecycle({ command }), undefined, command);
   for (const command of [
     "Start-Job { Write-Output 1 }", "$job = Start-ThreadJob { Write-Output 1 }", "if ($true) {} Start-Job {}",
@@ -54,6 +55,7 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "Write-Output $receiver.$method('Start-Job {}')",
     "bash -c 'sleep 30 &'", "docker run -d image", "ForEach-Object -Parallel {} -AsJob",
     "Write-Output 'unterminated", "x ".repeat(2049), "x".repeat(128 * 1024 + 1),
+    "[x]".repeat(1024) + "$",
   ]) assert.ok(inspectPowerShellResourceLifecycle({ command }), command);
 });
 
