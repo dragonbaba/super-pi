@@ -46,6 +46,7 @@ const POWERSHELL_PREFLIGHT = /^\[SHELL_[A-Z_]+\] PowerShell not executed:\s*/;
 const COMPILER_DIAGNOSTIC = /^(?:.+(?:\(\d+,\d+\)|:\d+(?::\d+)?)(?::|\s+-)\s*(?:fatal )?error\b|error\s+(?:TS\d+|[A-Z]+\d+):)/i;
 const NPM_STARTUP = /^(?:npm (?:notice run|info run)\b|npm (?:notice|info)\s*$)/;
 const NPM_SCRIPT_HEADER = /^> (?:@[^/\s@]+\/)?[^@\s]+@\d+\.\d+\.\d+(?:[-+][^\s]+)? \S/;
+const NPM_VERSIONLESS_HEADER = /^> \S+(?: \S+)?$/;
 const NPM_SCRIPT_COMMAND = /^(?:>|\$)\s/;
 const ANSI_SGR = /\x1b\[[\d;]*m/g;
 const HTTP_EXCEPTION = /^(?:aiohttp\.client_exceptions\.)?(?:ClientResponseError|WSServerHandshakeError):\s*([45]\d{2}),\s*message=['"]([^'"\r\n]{1,100})['"]/;
@@ -59,7 +60,7 @@ export function codemodeFailureReason(text: string, audience: "display" | "model
 	// Browser execution already places the authoritative final exception first.
 	// Never replace it with an earlier chained exception from the retained trace.
 	const browserSummary = text.startsWith("[BROWSER_EXEC_") && bounded.includes("\n[Browser diagnostics]\n");
-	let first = "", diagnostic = "", compiler = "", exit = "", recovery = "";
+	let first = "", diagnostic = "", compiler = "", exit = "", recovery = "", shortHeader = "";
 	let preflight = false, npmCommandPending = false;
 	for (let start = 0; start < bounded.length;) {
 		const newline = bounded.indexOf("\n", start);
@@ -70,9 +71,15 @@ export function codemodeFailureReason(text: string, audience: "display" | "model
 		if (POWERSHELL_PREFLIGHT.test(line)) { preflight = true; if (audience === "display") line = line.replace(POWERSHELL_PREFLIGHT, ""); }
 		if (preflight && line.startsWith("Next:")) { recovery = line; continue; }
 		if (!line) continue;
+		if (shortHeader) {
+			if (line.startsWith("> ")) { shortHeader = ""; continue; }
+			if (!first) first = shortHeader;
+			shortHeader = "";
+		}
 		if (NPM_SCRIPT_HEADER.test(line)) { npmCommandPending = true; continue; }
 		if (NPM_STARTUP.test(line)) continue;
 		if (npmCommandPending) { npmCommandPending = false; if (NPM_SCRIPT_COMMAND.test(line)) continue; }
+		if (!first && NPM_VERSIONLESS_HEADER.test(line)) { shortHeader = line; continue; }
 		if (line === "Traceback (most recent call last):" || line.startsWith("File \"")) continue;
 		if (!compiler && COMPILER_DIAGNOSTIC.test(line)) compiler = line;
 		if (MISSING_PATH_DIAGNOSTIC.test(line)) diagnostic = audience === "model" ? line : "Path does not exist.";
@@ -81,6 +88,7 @@ export function codemodeFailureReason(text: string, audience: "display" | "model
 		if (!first || NUMERIC_OUTPUT_LINE.test(first)) first = line;
 		if (browserSummary) break;
 	}
+	if (!first && shortHeader) first = shortHeader;
 	// Unknown diagnostics (git/curl/compiler output) still carry more information
 	// than an exit code. Bare numeric stdout remains only a fallback.
 	const reason = compiler || diagnostic || (first && !NUMERIC_OUTPUT_LINE.test(first) ? first : "") || exit || first || "Tool call failed.";

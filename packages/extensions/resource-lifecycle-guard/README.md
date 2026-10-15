@@ -401,6 +401,16 @@ show that parameter names retain backticks (``-As`Job`` is not `-AsJob`), so raw
 parameter matching is intentional; decoding it would introduce false acceptance
 of ownership switches. No service, BITS transfer or detached job was started to
 verify these reported cases.
+ExecuteShellCommand shares opaque launcher handling, including property-table and
+ForEach-Object member dispatch. The verified WbemScripting.SWbemLocator ProgID and
+its registered .1 version are WMI capabilities. Add-Type permits its explicit
+literal AssemblyName parameter set under normal authorization; source, member and
+path forms remain opaque. Existing-assembly loading, like module loading, is not
+a sandbox boundary. Start-BitsTransfer checks Suspended and Asynchronous in the
+same bounded pass; literal false remains synchronous and unknown values refuse.
+Native metadata verifies AssemblyName prefixes on PowerShell 5.1/7.6. The real
+authorized fixture loads System.Runtime, while offline fixtures cover suspended
+BITS and COM capabilities without creating a transfer, COM host or background job.
 
 Unchanged scope: external module loading and native sc.exe/net.exe service control
 already passed the original Bash lifecycle and high-risk scanners at the PR base.
@@ -473,3 +483,14 @@ release; the leading samples remain retained-item render/viewport maintenance.
 The unchanged Main/Alt/queue chain uses the earlier evidence above.
 After tightening npm banner recognition, the compiler fixture was sampled again;
 the table records that latest run, with the same deterministic/release counters.
+Versionless npm output requires a header/command pair before suppression, with a
+single bounded temporary string reference and no per-line container or callback.
+Standalone `>` diagnostics remain visible, and provider-wire coverage verifies
+the actionable shell error alongside retained full output. The completion →
+Codemode/session → InteractiveMode → retained Text/Box → Main/Alt → terminal queue
+and release chain was re-audited; unchanged frame/queue evidence remains above.
+Ten related source/AST invariants pass. The versionless fixture sampled 1,620
+bytes/redraw and 0.0017 ms p95 across 4,096 redraws after 256 warmups, with one row,
+one output/failure projection, zero event Promises and 0/2 retained weak owners.
+Row/timer/text/result references are zero after release. Leading allocation sites
+remain retained-item render and prepared-viewport cleanup. No pools were added.

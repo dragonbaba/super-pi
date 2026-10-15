@@ -107,6 +107,9 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "New-Object PSObject -Property @{Data=@{Run='data'}}", "$value.ConvertTo[object]()",
     "<# outer <# marker #> Write-Output after-comment", "[ <# outer <# marker #> int ]$number=1",
     "<# outer <# nested #> outer #> Start-Process tool.exe",
+    "Add-Type -AssemblyName System.Speech", "Add-Type -Assem: System.Runtime -PassThru", "Add-Type -A:System.Runtime",
+    "Start-BitsTransfer -Source a -Destination b -Suspended:$false", "Start-BitsTransfer -Source a -Destination b -Su: $false",
+    "Write-Output report.ExecuteShellCommand WbemScripting.SWbemLocator",
   ]) assert.equal(inspectPowerShellResourceLifecycle({ command }), undefined, command);
   for (const command of [
     "Start-Job { Write-Output 1 }", "$job = Start-ThreadJob { Write-Output 1 }", "if ($true) {} Start-Job {}",
@@ -248,6 +251,14 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "$ps.Invoke[System.Collections.Generic.List[object]]()", "[PowerShell]::Invoke[object]()",
     "Get-WmiObject -Filter mode=data -Query 'SELECT * FROM meta_class'",
     "Get-Variable Name=Value -Name PSDefaultParameterValues",
+    "$mmc=New-Object -ComObject MMC20.Application; $mmc.Document.ActiveView.ExecuteShellCommand('missing.exe',$null,$null,'7')",
+    "$view | ForEach-Object ExecuteShellCommand", "New-Object PSObject -Property @{ExecuteShellCommand='missing.exe'}",
+    "New-Object -ComObject WbemScripting.SWbemLocator", "New-Object -Com: 'WbemScripting.SWbemLocator.1'",
+    "Add-Type -TypeDefinition 'public class X {}'", "Add-Type 'public class X {}'",
+    "Add-Type -Name X -MemberDefinition 'public static void Go() {}'", "Add-Type -Path code.cs", "Add-Type -LiteralPath code.cs",
+    "Add-Type -AssemblyName $assembly", "Add-Type -AssemblyName:($assembly)", "Add-Type 'public class X {}' > -AssemblyName",
+    "Start-BitsTransfer -Source a -Destination b -Suspended", "Start-BitsTransfer -Source a -Destination b -Su:$true",
+    "Start-BitsTransfer -Source a -Destination b -Suspended:$flag", "Start-BitsTransfer -Source a -Destination b -Suspended: $flag",
   ]) assert.ok(inspectPowerShellResourceLifecycle({ command }), command);
 });
 

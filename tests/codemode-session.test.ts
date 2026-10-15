@@ -258,7 +258,7 @@ test("Codemode missing-path summary gives the model a direct cause without paren
 });
 
 test("Codemode delivers the compiler cause before npm banners while preserving full diagnostics", async t => {
-	const diagnostic = "[SHELL_RUNTIME_FAILED]\nnpm notice run remotion-video-project@1.0.0 typecheck\nnpm notice run tsc --noEmit\nsrc/winter/WinterVideo.tsx(153,10): error TS2657: JSX expressions must have one parent element.\nsrc/winter/WinterVideo.tsx(162,95): error TS1003: Identifier expected.\nCommand exited with code 1";
+	let diagnostic = "[SHELL_RUNTIME_FAILED]\nnpm notice run remotion-video-project@1.0.0 typecheck\nnpm notice run tsc --noEmit\nsrc/winter/WinterVideo.tsx(153,10): error TS2657: JSX expressions must have one parent element.\nsrc/winter/WinterVideo.tsx(162,95): error TS1003: Identifier expected.\nCommand exited with code 1";
 	const extension: InlineExtension = pi => pi.registerTool({ name: "compiler_probe", label: "probe", description: "offline compiler fixture",
 		parameters: Type.Object({}), execute: async () => ({ content: [{ type: "text", text: diagnostic }], isError: true, details: {} }) });
 	const f = await fixture(t, {}, [extension, guardrails]);
@@ -270,6 +270,12 @@ test("Codemode delivers the compiler cause before npm banners while preserving f
 	assert.doesNotMatch(summary, /npm notice|TS1003/);
 	const delivered = JSON.stringify(outcome.wires.at(-1));
 	assert.match(delivered, /npm notice run/); assert.match(delivered, /TS1003/); assert.match(delivered, /Command exited with code 1/);
+	diagnostic = "[SHELL_RUNTIME_FAILED]\n> check\n> missing-command\nsh: missing-command: not found\nCommand exited with code 127";
+	const versionless = await f.run(["await tools.compiler_probe({})"]);
+	const versionlessSummary = (versionless.results.at(-1)!.content[0] as any).text;
+	assert.match(versionlessSummary, /compiler_probe: .* — sh: missing-command: not found/);
+	assert.doesNotMatch(versionlessSummary, /> check/);
+	assert.match(JSON.stringify(versionless.wires.at(-1)), /> check/);
 });
 
 test("Codemode delivers native PowerShell refusal recovery for an unshown child", async t => {

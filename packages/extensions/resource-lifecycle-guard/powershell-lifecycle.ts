@@ -57,7 +57,7 @@ const COMPUTER_JOB_COMMANDS = new Set(["restart-computer", "stop-computer", "tes
 // parameters do not affect its binding and retain ordinary argument inspection.
 const WMI_JOB_PARAMETERS = ["asjob", "authentication", "authority", "arguments"];
 const COMPUTER_JOB_PARAMETERS = ["asjob"];
-const WMI_CAPABILITY = /(?:^|\[|:)(?:wmiclass|(?:(?:System\.)?Management\.)?ManagementClass)(?:\]|,|$)/i;
+const WMI_CAPABILITY = /(?:^|\[|:)(?:wmiclass|WbemScripting\.SWbemLocator(?:\.1)?|(?:(?:System\.)?Management\.)?ManagementClass)(?:\]|,|$)/i;
 const SCRIPT_BLOCK_COMPILER = /\[(?:System\.Management\.Automation\.)?scriptblock\]::Create$/i;
 const SPACE = /\s/;
 const PUNCTUATION = /[;|\n\r{}()=&]/;
@@ -69,7 +69,7 @@ const SIMPLE_VARIABLE = /^\$(?:[\w:]+|\{(?:[^`{}]|`[\s\S])+\})(?:\.[\w]+|\[[\w$]
 const STREAM_REDIRECT = /^[1-6*]?>$/;
 const STREAM_NUMBER = /^[1-6]$/;
 const FILE_REDIRECT = /^[1-6*]?>>?$/;
-const OPAQUE_MEMBER = /(?:\.|::)(?:Start(?:New|Job|Service|\.Invoke)?|ResumeService|Invoke[\w]*|DynamicInvoke|BeginInvoke|GetSteppablePipeline|GetScriptBlock|NewScriptBlock|ExpandString|Run(?:Async)?|Exec|Continue|Shell(?:Execute(?:Ex)?)?)$/i;
+const OPAQUE_MEMBER = /(?:\.|::)(?:Start(?:New|Job|Service|\.Invoke)?|ResumeService|Invoke[\w]*|DynamicInvoke|BeginInvoke|GetSteppablePipeline|GetScriptBlock|NewScriptBlock|ExpandString|Run(?:Async)?|Exec|ExecuteShellCommand|Continue|Shell(?:Execute(?:Ex)?)?)$/i;
 
 interface Token { value: string; quoted: boolean; quotedEnd: number; dynamic: boolean; operator: boolean; typeOnly: boolean; start: number; end: number }
 
@@ -144,7 +144,7 @@ function hasLiteralWhatIf(tokens: readonly Token[], start: number, command: stri
 }
 
 /** Inspect only the command's own arguments; nested expressions get the main walk. */
-function inspectCommandSwitch(tokens: readonly Token[], start: number, command: string, parameters: readonly string[], optionName: "wait" | "asynchronous" | "asjob"): string | undefined {
+function inspectCommandSwitch(tokens: readonly Token[], start: number, command: string, parameters: readonly string[], optionName: "wait" | "asynchronous" | "asjob", additionalOption?: "suspended"): string | undefined {
 	let wait = false, depth = 0;
 	for (let j = start; j < tokens.length; j++) {
 		const arg = tokens[j]!;
@@ -163,13 +163,39 @@ function inspectCommandSwitch(tokens: readonly Token[], start: number, command: 
 		if (isArgumentSuffix(tokens, j)) continue;
 		const raw = command.slice(arg.start, arg.end), colon = raw.indexOf(":");
 		if (!PARAMETER_DASH.test(raw)) continue;
-		if (lookupOption(raw.slice(1, colon < 0 ? raw.length : colon).toLowerCase(), parameters) !== optionName) continue;
+		const option = lookupOption(raw.slice(1, colon < 0 ? raw.length : colon).toLowerCase(), parameters);
+		if (!option || (option !== optionName && option !== additionalOption)) continue;
 		const enabled = literalSwitch(tokens, j, command);
 		if (optionName === "wait") { if (enabled !== true) return UNCERTAIN; wait = true; }
 		else if (enabled !== false) return BACKGROUND;
 		if (colon === raw.length - 1) j++;
 	}
 	return optionName === "wait" && !wait ? BACKGROUND : undefined;
+}
+
+/** AssemblyName selects native assembly loading; other Add-Type sets can compile code. */
+function inspectAddType(tokens: readonly Token[], start: number, command: string): string | undefined {
+	let depth = 0, assemblyName = false;
+	for (let j = start; j < tokens.length; j++) {
+		const arg = tokens[j]!;
+		if (arg.operator && arg.value === "=") continue;
+		if (arg.operator) {
+			if (arg.value === "(" || arg.value === "{") { if (++depth > MAX_NESTING) return UNCERTAIN; }
+			else if (arg.value === ")" || arg.value === "}") { if (!depth) break; depth--; }
+			else if (!depth) break;
+			continue;
+		}
+		if (depth || isArgumentSuffix(tokens, j)) continue;
+		if (!arg.quoted && (arg.value === "--" || arg.value === "--%")) break;
+		if (isFileRedirect(tokens, j, command)) { if (tokens[j + 1] && !tokens[j + 1]!.operator) j++; continue; }
+		const raw = command.slice(arg.start, arg.end), colon = raw.indexOf(":"), option = raw.slice(1, colon < 0 ? raw.length : colon).toLowerCase();
+		// Verified 5.1/7.6 metadata: AssemblyName is the only parameter starting A.
+		if (!PARAMETER_DASH.test(raw) || !option || !"assemblyname".startsWith(option)) continue;
+		const separate = colon < 0 || colon === raw.length - 1, target = separate ? tokens[++j] : arg;
+		if (!target || target.operator || target.dynamic || !(separate ? target.value : target.value.slice(target.value.indexOf(":") + 1))) return UNCERTAIN;
+		assemblyName = true;
+	}
+	return assemblyName ? undefined : UNCERTAIN;
 }
 
 /** Literal WQL may still return class definitions. Quoted filter values are data. */
@@ -636,6 +662,10 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 			const reason = inspectNewObject(tokens, i + 1, command);
 			if (reason) return reason;
 		}
+		if (name === "add-type") {
+			const reason = inspectAddType(tokens, i + 1, command);
+			if (reason) return reason;
+		}
 		if (name === "get-wmiobject" || name === "gwmi") {
 			let depth = 0;
 			for (let j = i + 1; j < tokens.length; j++) {
@@ -741,7 +771,7 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 			if (reason) return reason;
 		}
 		if (name === "start-bitstransfer" || name === "resume-bitstransfer") {
-			const reason = inspectCommandSwitch(tokens, i + 1, command, name === "start-bitstransfer" ? BITS_START_PARAMETERS : BITS_RESUME_PARAMETERS, "asynchronous");
+			const reason = inspectCommandSwitch(tokens, i + 1, command, name === "start-bitstransfer" ? BITS_START_PARAMETERS : BITS_RESUME_PARAMETERS, "asynchronous", name === "start-bitstransfer" ? "suspended" : undefined);
 			if (reason) return reason;
 		}
 		if (BASH.has(name)) {

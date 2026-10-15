@@ -155,6 +155,12 @@ test("npm preambles and policy headings do not hide actionable causes or model r
 		}
 	}
 	for (const audience of ["display", "model"] as const) {
+		for (const header of ["> check", "> project check", "> @scope/project check"]) {
+			assert.equal(codemodeFailureReason(`${header}\n\n> missing-command\nsh: missing-command: not found\nCommand exited with code 127`, audience), "sh: missing-command: not found");
+			assert.equal(codemodeFailureReason(`${header}\n> tsc --noEmit\n${errors}`, audience), cause);
+		}
+		assert.equal(codemodeFailureReason("> denied", audience), "> denied");
+		assert.equal(codemodeFailureReason("> denied\nCommand exited with code 1", audience), "> denied");
 		assert.equal(codemodeFailureReason("> authentication failed\nCommand exited with code 1", audience), "> authentication failed");
 		assert.equal(codemodeFailureReason("$ authentication failed\nCommand exited with code 1", audience), "$ authentication failed");
 		assert.equal(codemodeFailureReason("> project@1.0.0 check\n> checker\n> authentication failed\nCommand exited with code 1", audience), "> authentication failed");
