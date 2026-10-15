@@ -67,6 +67,8 @@ first line before `[Browser diagnostics]` is the authoritative final exception;
 traceback details cannot replace it with an earlier chained exception. Collapsed
 TUI rows show the failed instruction and one short cause; expansion shows the
 diagnostic and partial output without duplicating the script's traceback.
+Unrecognized shell diagnostics such as Git, curl and compiler errors take
+precedence over generic exit-status lines in both model and collapsed views.
 
 ### Performance and offline verification (2026-10-15)
 
@@ -88,7 +90,7 @@ Source-loaded measurements on Windows / Node 26.4.0, without building:
 
 | Fixture | Work | Sampled allocation | CPU p95 |
 | --- | --- | --- | --- |
-| Failed collapsed Codemode | 4096 redraws | 1567 B/redraw | 0.0017 ms |
+| Failed collapsed Codemode | 4096 redraws | 1470 B/redraw | 0.0018 ms |
 | Expanded Codemode progress | 4096 updates | 74089 B/update | 0.1033 ms |
 | Main frame | 2000 frames, 5000 history items | 7436 B/frame | 0.0526 ms |
 | Alt frame, stable controls | 2000 frames, 5000 history items | 11724 B/frame | 0.0518 ms |

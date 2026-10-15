@@ -126,6 +126,13 @@ test("missing path renders only the failed instruction and one reason, including
 
 test("failure reasons prefer actual diagnostics and never turn arbitrary missing-path prose into a diagnosis", () => {
 	assert.equal(codemodeFailureReason("[SHELL_RUNTIME_FAILED]\n0\nCommand exited with code 2"), "Command exited with code 2");
+	for (const cause of ["fatal: not a git repository (or any of the parent directories): .git", "curl: (6) Could not resolve host: example.invalid", "src/main.ts(2,3): error TS2304: Cannot find name 'missing'."]) {
+		for (const audience of ["display", "model"] as const) {
+			for (const output of [`${cause}\nCommand exited with code 2`, `0\n${cause}\nCommand exited with code 2`, `Command exited with code 2\n${cause}`]) {
+				assert.equal(codemodeFailureReason(`[SHELL_RUNTIME_FAILED]\n${output}`, audience), cause);
+			}
+		}
+	}
 	assert.equal(codemodeFailureReason("[BROWSER_EXEC_FAILED] Traceback (most recent call last):\n  File \"runner.py\", line 2\nRuntimeError: connection refused\nmore details"), "RuntimeError: connection refused");
 	assert.equal(codemodeFailureReason("report contains: No such file or directory\nPermission denied"), "report contains: No such file or directory");
 	assert.equal(codemodeFailureReason("ENOENT: no such file or directory, open 'missing.txt'"), "Path does not exist.");

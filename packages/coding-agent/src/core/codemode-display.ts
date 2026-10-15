@@ -40,6 +40,7 @@ const EXCEPTION_DIAGNOSTIC = /^(?:[\w.]*Error|[\w.]*Exception|[\w.]*Timeout)(?:\
 const IPC_TIMEOUT_DIAGNOSTIC = /^browser_harness\.helpers\._IPCResponseTimeout: ([\w.]{1,64} timed out after [\d.]{1,12}s) waiting for the daemon/;
 const UNKNOWN_TOOL_DIAGNOSTIC = /^tools\.([\w$]{1,80}) does not exist\./;
 const EXIT_DIAGNOSTIC = /^Command exited with code -?\d+\.?$/;
+const NUMERIC_OUTPUT_LINE = /^[+-]?\d+(?:\.\d+)?$/;
 const PREFLIGHT_HEADING = /^(?:\[POLICY_BLOCKED(?::[A-Z_]+)?\]\s*)?Not executed:$/;
 const DIAGNOSTIC_WHITESPACE = /[\r\n\t]+/g;
 
@@ -60,11 +61,13 @@ export function codemodeFailureReason(text: string, audience: "display" | "model
 		if (!line || line === "Traceback (most recent call last):" || line.startsWith("File \"") || PREFLIGHT_HEADING.test(line)) continue;
 		if (MISSING_PATH_DIAGNOSTIC.test(line)) diagnostic = audience === "model" ? line : "Path does not exist.";
 		else if (EXCEPTION_DIAGNOSTIC.test(line)) diagnostic = line;
-		else if (EXIT_DIAGNOSTIC.test(line)) exit = line;
-		if (!first) first = line;
+		else if (EXIT_DIAGNOSTIC.test(line)) { exit = line; continue; }
+		if (!first || NUMERIC_OUTPUT_LINE.test(first)) first = line;
 		if (browserSummary) break;
 	}
-	const reason = diagnostic || exit || first || "Tool call failed.";
+	// Unknown diagnostics (git/curl/compiler output) still carry more information
+	// than an exit code. Bare numeric stdout remains only a fallback.
+	const reason = diagnostic || (first && !NUMERIC_OUTPUT_LINE.test(first) ? first : "") || exit || first || "Tool call failed.";
 	const ipcTimeout = IPC_TIMEOUT_DIAGNOSTIC.exec(reason);
 	if (ipcTimeout) return audience === "display" ? `${ipcTimeout[1]}; result unconfirmed.`
 		: `${ipcTimeout[0]}. Outcome unconfirmed; inspect list_tabs() before further actions. Do not automatically retry.`;
