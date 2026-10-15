@@ -142,6 +142,7 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     'cmd /c start /?', 'Write-Output cmd.exe /c start "" tool.exe',
     'cmd /c start "" /wait $program',
     'cmd /c start "" /d $directory /wait tool.exe',
+    'cmd /c start "$title" /wait tool.exe',
   ]) assert.equal(inspectPowerShellResourceLifecycle({ command }), undefined, command);
   // Runtime capabilities are not proof of detached execution. These still need
   // opaque-script authorization; the lifecycle filter is not a language sandbox.
@@ -212,6 +213,7 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     'cmd /c start "" /wait tool.exe; cmd /c start "" other.exe',
     'cmd /c start "" $program',
     'cmd /c start "" /d $directory tool.exe',
+    'cmd /c start "$title" tool.exe', 'cmd /c start tool".exe" /wait',
     "Write-Output 'unterminated", "x ".repeat(2049), "x".repeat(128 * 1024 + 1),
   ]) assert.ok(inspectPowerShellResourceLifecycle({ command }), command);
 });

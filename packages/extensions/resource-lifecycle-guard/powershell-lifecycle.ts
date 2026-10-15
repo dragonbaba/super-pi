@@ -305,8 +305,8 @@ function inspectCmdStart(tokens: readonly Token[], start: number): string | unde
 	for (i++; i < tokens.length; i++) {
 		const token = tokens[i]!;
 		if (token.operator) break;
+		if (token.quotedEnd) { if (!title) { title = true; continue; } break; }
 		if (token.dynamic) return wait ? undefined : BACKGROUND;
-		if (token.quoted) { if (!title) { title = true; continue; } break; }
 		const value = token.value.toLowerCase();
 		if (value === "/wait") { wait = true; continue; }
 		if (value === "/?") return undefined;

@@ -289,6 +289,11 @@ units. Literal flat cmd /c start restores the prior lifecycle check, accepting
 its own /wait before the program but not a title, directory or program argument
 spelled /wait. Plain cmd commands still reach normal authorization. Arbitrary
 batch source/indirection remains opaque; this does not add a general cmd parser.
+An expandable quoted title remains title data before the start options; a quote
+inside an executable name does not turn that program into a title. The guard is
+not an exhaustive command catalog: Disconnect-PSSession/dnsn and native sc.exe
+service controls were not covered by the preceding Bash gate and remain under
+normal authorization. No new blacklist for these command families is introduced.
 These are invocation-only bounded scans, with no new progress/render work, retained
 owners, per-event callbacks or pools. Existing source/AST/allocation evidence for
 the unchanged render chain remains applicable.
