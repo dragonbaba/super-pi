@@ -10,8 +10,9 @@ const WARMUP = 256;
 const EXPANDED = process.argv.includes("--expanded");
 const COMPILER = process.argv.includes("--compiler");
 const VERSIONLESS_NPM = process.argv.includes("--npm-versionless");
+const QUOTED_ERRORS = process.argv.includes("--quoted-errors");
 const PREFLIGHT = process.argv.includes("--powershell-refusal");
-const FAILED = PREFLIGHT || COMPILER || VERSIONLESS_NPM || process.argv.includes("--failed");
+const FAILED = PREFLIGHT || COMPILER || VERSIONLESS_NPM || QUOTED_ERRORS || process.argv.includes("--failed");
 function sites(node: any, entries: any[]): number {
 	let bytes = node.selfSize;
 	if (node.selfSize) entries.push({ bytes: node.selfSize, function: node.callFrame.functionName, url: node.callFrame.url, line: node.callFrame.lineNumber + 1 });
@@ -29,6 +30,7 @@ async function sample(grouped: boolean) {
 	f.internal.handleEvent({ type: "tool_execution_start", toolName, toolCallId: child, parentToolCallId: grouped ? parent : undefined, args: { command: "fixture" } });
 	if (FAILED) {
 		const error = PREFLIGHT ? "[SHELL_BACKGROUND] PowerShell not executed: fixture reason.\nNext: submit a literal foreground command for normal authorization; do not retry the same blocked call."
+			: QUOTED_ERRORS ? "[SHELL_RUNTIME_FAILED]\n> authentication failed\n> token expired\nCommand exited with code 1"
 			: VERSIONLESS_NPM ? "[SHELL_RUNTIME_FAILED]\n> check\n> missing-command\nsh: missing-command: not found\nCommand exited with code 127"
 			: COMPILER ? "[SHELL_RUNTIME_FAILED]\nnpm notice run project@1.0.0 typecheck\nnpm notice run tsc --noEmit\nsrc/winter/WinterVideo.tsx(153,10): error TS2657: JSX expressions must have one parent element.\nCommand exited with code 1"
 			: "[SHELL_RUNTIME_FAILED]\n2026-10-15 07:21\nls: cannot access '视频创意': No such file or directory\nCommand exited with code 2";
@@ -71,7 +73,7 @@ async function sample(grouped: boolean) {
 	}
 	const view = stripVTControlCharacters(cards[0].render(120).join("\n")); assert.match(view, FAILED ? /Codemode/ : /completed/);
 	if (FAILED && grouped) {
-		assert.match(view, EXPANDED ? PREFLIGHT ? /SHELL_BACKGROUND/ : /SHELL_RUNTIME_FAILED/ : PREFLIGHT ? /fixture reason/ : COMPILER ? /TS2657/ : VERSIONLESS_NPM ? /sh: missing-command: not found/ : /Path does not exist/);
+		assert.match(view, EXPANDED ? PREFLIGHT ? /SHELL_BACKGROUND/ : /SHELL_RUNTIME_FAILED/ : PREFLIGHT ? /fixture reason/ : COMPILER ? /TS2657/ : VERSIONLESS_NPM ? /sh: missing-command: not found/ : QUOTED_ERRORS ? /> authentication failed > token expired/ : /Path does not exist/);
 		assert.equal(counters.failureProjections, 1); assert.equal(counters.outputProjections, 1);
 	}
 	await f.release();

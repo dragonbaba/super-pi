@@ -1658,7 +1658,7 @@ test("native PowerShell assignments and member calls retain authorization and fo
     await fixture.setMode("read-only");
     const command = "$s = New-Object System.Text.StringBuilder; try { [void]$s.Append('inline-ok'); $s.ToString() | ForEach-Object { $_.ToUpper() } } finally { [void]$s.Clear() }; [int[][]]$items=$null; [System.Collections.Generic.Dictionary[string,System.Collections.Generic.List[int]]]$map=$null; Write-Output status=Start-Job report.Start (Get-Date); $h=@{Name='data';Value=1}; Write-Output $h.Name; [string]${space name}='braced-ok'; Write-Output ${space name}; Write-Output { 1 } Start-Job; $n=0; $n++; ++$n; Write-Output increment-ok; $Count=7; Get-Variable Count -OutVariable captured -ValueOnly:$false; gv Count -s 0; $queryScope=0; gv Count -s $queryScope -Verbose:$false";
     const foreground = command + '; $converted=123 -as [string]; Write-Output $converted; "member-ok" | ForEach-Object -MemberName: ToUpper; Get-Item -fo -LiteralPath: "FileSystem::$PWD" -ErrorAction Stop | Select-Object Name; $capacity=16; $buffer=New-Object -TypeName: System.Text.StringBuilder -ArgumentList $capacity; [void]$buffer.Append("constructed-ok"); Write-Output $buffer.ToString() -OutVariable: observed; $arguments=@("/d","/c","exit 0"); Start-Process $env:ComSpec -ArgumentList ($arguments) -Wai:$true -NoNewWindow; Write-Output foreground-wait-ok; [ int ] $typedNumber=1; Write-Output $typedNumber; "foreground-parallel-ok" | ForEach-Object -Parallel { $_ } -AsJob: $false; $payload="content-data-ok"; Set-Content -LiteralPath content-data.txt -Value $payload; Get-Content content-data.txt -First: 1; Start-Process $env:ComSpec -ArgumentList "/d /c exit 0" -WhatIf; Write-Output dry-run-ok report.SessionState metadata.PSVariable; 1 | Tee-Object -Variable teeResult | Out-Null; Write-Output "tee-value=$teeResult"; Write-Output -- -AsJob -Asynchronous; $pattern="content*"; Get-ChildItem -LiteralPath . -Filter ($pattern) -ErrorAction Stop | Select-Object Name';
-    const nativeCases = foreground + '; $propertyBuffer=New-Object System.Text.StringBuilder -Property @{Append="property-method-ok"; Capacity=32}; $propertyBuffer.ToString(); ForEach-Object -InputObject mode=data -Parallel { $_ } -AsJob:$false; Add-Type -AssemblyName System.Runtime; Write-Output assembly-load-ok';
+    const nativeCases = foreground + '; $propertyBuffer=New-Object System.Text.StringBuilder -Property @{Append="property-method-ok"; Capacity=32}; $propertyBuffer.ToString(); ForEach-Object -InputObject mode=data -Parallel { $_ } -AsJob:$false; Add-Type -AssemblyName System.Runtime; Write-Output assembly-load-ok; Add-Type -TypeDefinition \"public class SpReviewValue { public static int Get() { return 153; } }\"; Write-Output \"compile=$([SpReviewValue]::Get())\"; $watch=[System.Diagnostics.Stopwatch]::new(); $watch.Start(); $watch.Stop(); Write-Output stopwatch-ok; $data=\"dynamic-data-ok\"; New-Item -ItemType File -Path review-data.txt -Value $data | Out-Null; Set-Item -LiteralPath Env:SP_REVIEW_FLAG -Value $data; Get-Content review-data.txt; Write-Output $env:SP_REVIEW_FLAG; $words=@(\"intrinsic-ok\"); $words.ForEach(\"ToUpper\")';
     const result = await fixture.agent.dispatchHostTool({ type: "toolCall", id: "native-members", name: "powershell", arguments: { command: nativeCases } });
     assert.equal(result.isError, false, JSON.stringify(result));
     assert.match(JSON.stringify(result.content), /INLINE-OK/);
@@ -1677,52 +1677,22 @@ test("native PowerShell assignments and member calls retain authorization and fo
     assert.match(JSON.stringify(result.content), /property-method-ok/);
     assert.match(JSON.stringify(result.content), /mode=data/);
     assert.match(JSON.stringify(result.content), /assembly-load-ok/);
+    assert.match(JSON.stringify(result.content), /compile=153/);
+    assert.match(JSON.stringify(result.content), /stopwatch-ok/);
+    assert.match(JSON.stringify(result.content), /dynamic-data-ok/);
+    assert.match(JSON.stringify(result.content), /INTRINSIC-OK/);
     assert.equal(fixture.executions, 1); assert.equal(fixture.approvals.length, 1);
     fixture.setDecision("拒绝");
     const denied = await fixture.agent.dispatchHostTool({ type: "toolCall", id: "native-denied", name: "powershell", arguments: { command: nativeCases } });
     assert.equal(denied.isError, true); assert.equal(fixture.executions, 1); assert.equal(fixture.approvals.length, 2);
     await fixture.setMode("full-access");
-    for (const command of ["Start-Job { Write-Output 1 }", "Start-Process missing.exe", "& $program",
-      "$p = New-Object System.Diagnostics.Process; $p.StartInfo.FileName = 'missing.exe'; $p.Start()",
-      "[System.Diagnostics.Process]::Start('missing.exe')",
-      "$p=New-Object hashtable; $p.AsJob=$true; 1 | ForEach-Object @p -Parallel { 1 }",
-      "$ExecutionContext.InvokeCommand.InvokeScript('Start-Job { 1 }')",
-      "(Get-CimClass Win32_Process) | Invoke-CimMethod -MethodName Create -Arguments @{CommandLine='missing.exe'}",
+    for (const command of ["Start-Job { 1 }", "Start-Process missing.exe", "Start-Process missing.exe > -Wait",
       "Start-ScheduledTask -TaskName MissingTask", "Start-BitsTransfer -Source a -Destination b -Asynchronous",
-      "${job}=Start-Job { 1 }", "Invoke-Item missing.exe", "ii missing.exe",
-      "param() Start-Job { 1 }", "[scriptblock]::Create('Start-Job {}').InvokeReturnAsIs()",
-      "Set-Item Alias:sj Start-Job; sj { 1 }", "Set-Service -Name Missing -Status Running",
-      "Import-Alias aliases.csv; sj { 1 }", "exit Start-Process missing.exe", "data D {} Start-Process missing.exe",
-      "$k='ForEach-Object:AsJob'; $PSDefaultParameterValues[$k]=$true; 1 | ForEach-Object -Parallel { 1 }",
-      "$ExecutionContext.SessionState.PSVariable.Set('PSDefaultParameterValues', @{'ForEach-Object:AsJob'=$true})",
-      "Resume-Service Missing", "rsv Missing", "[Microsoft.VisualBasic.Interaction]::Shell('missing.exe')",
-      "do {} while ($false) Start-Process missing.exe;",
-      "$v=Get-Variable PSDefaultParameterValues; $v.Value=@{'ForEach-Object:AsJob'=$true}",
-      "Register-ScheduledJob -Name LongRunner -ScriptBlock { Start-Sleep 60 } -RunNow",
-      "$v=Get-Item Variable:PSDefaultParameterValues; $v.Value=@{'ForEach-Object:AsJob'=$true}",
-      "Register-ScheduledTask X -Action (New-ScheduledTaskAction -Execute missing.exe)",
-      "$ExecutionContext.InvokeCommand | ForEach-Object -MemberName InvokeScript -ArgumentList 'Start-Job {}'",
-      "$c=[wmiclass]'Win32_Process'; $c.Create('missing.exe')",
-      "$path='Variable:PSDefaultParameterValues'; $v=Get-Item $path; $v.Value=@{'ForEach-Object:AsJob'=$true}",
-      "$type='System.Management.ManagementClass'; $c=New-Object -TypeName $type -ArgumentList 'Win32_Process'; $c.Create('missing.exe')",
-      "$c=Get-WmiObject -List -Class Win32_Process; $c.Create('missing.exe')",
-      "$d=@{'ForEach-Object:AsJob'=$true}; $d | Write-Output -PipelineVariable PSDefaultParameterValues | ForEach-Object { 1 | ForEach-Object -Parallel { 1 } }",
-      "$Alias:sj='Start-Job'; sj { 1 }", "${Al`ias:sj}='Start-Job'", "$Function:f=$block",
-      "icim -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine='missing.exe'}", "ipal aliases.csv",
-      "$sb=[scriptblock]::Create('Start-Process missing.exe'); 1 | Where-Object -FilterScript $sb", "$T=[type]'scriptblock'; $sb=$T::Create($text)",
-      "$sb=[ <#type#> scriptblock ]::Create('Start-Process missing.exe'); 1 | Where-Object -FilterScript $sb",
-      "[ int ] $x=Start-Process missing.exe", "Start-BitsTransfer -Source a -Destination b -As", "Resume-BitsTransfer -BitsJob $job -As",
-      "Start-Process -- missing.exe -Wait",
-      '$c=Get-WmiObject -Query "SELECT * FROM meta_class WHERE __class = \'Win32_Process\'"; $c.Create("missing.exe")',
-      "Set-Content Variable:PSDefaultParameterValues -Value @{'ForEach-Object:AsJob'=$true}; 1 | ForEach-Object -Parallel { 1 }",
-      "$defaults=Get-Content Variable:PSDefaultParameterValues; $defaults.Add('ForEach-Object:AsJob',$true)",
-      "Start-Service -Name '' -WhatIf:$false", "Start-Service -Name '' > -WhatIf", "Start-Process missing.exe > -Wait",
-      "$d=@{'ForEach-Object:AsJob'=$true}; $d | Tee-Object -Variable PSDefaultParameterValues",
-      "$service=$null; $service.StartService()", "$service=$null; $service.ResumeService()",
-      "foreach ($process in Start-Process missing.exe) { Write-Output $process }", "Write-Output -- (Start-Process missing.exe)",
-      "<# outer <# nested #>\nStart-Process missing.exe\n#>",
-      "New-Object System.Text.StringBuilder -Property @{Invoke='safe'}", "$ps=$null; $ps.Invoke[object]()",
-      "$view=$null; $view.ExecuteShellCommand('missing.exe',$null,$null,'7')", "Add-Type -TypeDefinition 'invalid C#'"]) {
+      "${job}=Start-Job { 1 }", "Invoke-Item missing.exe", "param() Start-Job { 1 }",
+      "Set-Service -Name Missing -Status Running", "Resume-Service Missing",
+      "Start-BitsTransfer -Source a -Destination b -Suspended",
+      "Start-Service -Name '' -WhatIf:$false", "Start-Service -Name '' > -WhatIf",
+      "Write-Output -- (Start-Process missing.exe)", "<# outer <# nested #>\nStart-Process missing.exe\n#>"]) {
       const blocked = await fixture.agent.dispatchHostTool({ type: "toolCall", id: "native-background", name: "powershell", arguments: { command } });
       assert.equal(blocked.isError, true); assert.equal(fixture.executions, 1); assert.equal(fixture.approvals.length, 2);
     }

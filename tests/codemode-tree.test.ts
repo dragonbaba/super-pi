@@ -162,6 +162,8 @@ test("npm preambles and policy headings do not hide actionable causes or model r
 		assert.equal(codemodeFailureReason("> denied", audience), "> denied");
 		assert.equal(codemodeFailureReason("> denied\nCommand exited with code 1", audience), "> denied");
 		assert.equal(codemodeFailureReason("> authentication failed\nCommand exited with code 1", audience), "> authentication failed");
+		assert.equal(codemodeFailureReason("> authentication failed\n> token expired\nCommand exited with code 1", audience), "> authentication failed > token expired");
+		assert.equal(codemodeFailureReason("> authentication failed\n> token expired", audience), "> authentication failed > token expired");
 		assert.equal(codemodeFailureReason("$ authentication failed\nCommand exited with code 1", audience), "$ authentication failed");
 		assert.equal(codemodeFailureReason("> project@1.0.0 check\n> checker\n> authentication failed\nCommand exited with code 1", audience), "> authentication failed");
 	}

@@ -237,190 +237,47 @@ store cannot promote newly read on-disk project shell settings as trusted.
 
 ### Native PowerShell and failure summaries (2026-10-15)
 
-Native `powershell` now uses its own bounded lifecycle inspection before approval.
-Assignments, member calls, pipelines, script blocks and `try/finally` no longer
-enter the Bash executable-position scanner. Ordinary opaque-script approval,
-protected-target inspection, cwd binding and exact final invocation authorization
-remain in force. A successful lifecycle check grants no permission. Known job,
-service and detached-process forms are refused; each `Start-Process` requires its
-own literal `-Wait`. Dynamic call-operator targets, opaque evaluators/launchers,
-here-strings and executable interpolation that cannot be inspected are refused.
-Literal nested Bash scripts still receive Bash inspection. This is a bounded
-lifecycle filter, not a complete PowerShell parser or an isolation sandbox.
-Native PowerShell AST spot checks confirmed that spaced `& &` is not `&&`,
-quoted `>` is not stream redirection, and partially quoted command names still
-invoke commands. The lexer preserves operator provenance and source adjacency;
-literal stream merging remains valid before or after `-Wait`.
-Review follow-up: member/static `Start()` calls (including argument positions and
-partially quoted member names) are refused because the scanner cannot prove their
-receiver, wait and cleanup ownership. Process metadata reads remain valid. Native
-PowerShell discovery also checks Windows eligibility before querying the catalog.
-The reported `-As'Job'` parameter bypass was checked against the native AST and
-runtime: it is a string argument, and `ForEach-Object -Parallel { 1 } -As'Job'`
-fails with `PositionalParameterNotFound`; it does not bind the `AsJob` switch.
-Quoted/literal text remains data, while actual unquoted `-AsJob` is blocked.
-Native switch-binding checks also cover PowerShell's `-As`/`-Asj` abbreviations
-and accepted en/em/horizontal-bar parameter dashes, without starting any jobs.
-Uninspected splats are refused because their values can hide lifecycle switches;
-use explicit arguments instead. Known launcher/evaluator members (including
-InvokeScript, Invoke/BeginInvoke, ExpandString and COM Run/Exec) and dynamic member
-invocation names also stay opaque, including in pipeline/argument positions.
-This prevents variable/member-expression acceptance from becoming an evaluator
-escape while ordinary object methods keep their normal authorization path.
-CIM/WMI method invocation remains opaque (including ManagementClass.InvokeMethod),
-while ordinary CIM queries remain available. Scheduled-task starts and asynchronous
-BITS/service switches are refused. Literal argument `=` characters do not become
-assignment boundaries or turn data into commands/options; hashtable values and real
-variable assignments still receive executable inspection. Member calls require
-source adjacency, so `report.Start (Get-Date)` remains ordinary argument data.
-Braced variables remain one variable token (including casts and escaped name
-characters), so their assignment RHS is inspected. Script-block arguments restore
-argument mode; control blocks restore statement mode, including parenthesized
-conditions, line breaks and literal loop labels. `Invoke-Item`/`ii` are opaque
-launchers with no owned wait path.
-Parameter lists restore statement mode on close; uninspected parameter attributes
-remain opaque. Bounded variable increment/decrement expressions remain valid.
-ScriptBlock invocation methods and steppable-pipeline acquisition remain opaque.
-Provider mutations/location changes reject alias/function providers and dynamic
-arguments that could conceal those providers; ordinary literal file/Env targets
-remain available. `Set-Service` metadata updates remain available, while starting
-or dynamically specified states are refused (literal Stopped/Paused are retained).
-These lifecycle cases do not relax the separate legacy permission scanner: inline
-`param()` and some `for` forms still receive its `unverifiable_shell_state` refusal.
-Their lifecycle parsing is covered independently; real integration covers ordinary
-member/variable/increment execution and the existing permission checks unchanged.
-Alias import and default-parameter-table references/mutations remain opaque, so
-later invocations cannot silently acquire lifecycle switches. Variable-provider
-mutations and dynamic variable-setter arguments are also opaque. Exit pipelines
-and data-section closures retain command-head inspection.
-SessionState/PSVariable capability references are opaque, including copied receivers
-and runspace proxies. Service resume/Continue and Interaction.Shell are known
-unowned launchers. Do-loop trailing conditions restore statement mode, including
-nested loops; unsupported type/workflow definitions remain opaque like functions.
-Get-Variable/gv require bounded literal names and refuse the preference table,
-wildcard/enumerating and dynamic lookups that can return mutable PSVariable handles.
-Scheduled-job registration/updates remain unowned persistent work. Native refusal
-summaries retain their Next recovery for the model while the collapsed UI shows
-only the reason, using the same completion-only bounded projection cache.
-Literal Variable-provider reads/enumerations also expose mutable variable handles
-and are opaque. Get-Variable parameter metadata includes common parameters,
-aliases and unique prefixes (verified against native metadata); fixed unrelated
-names retain these ordinary forms. ScheduledTasks registrations/updates share the
-persistent-job refusal. npm command-line suppression requires a recognized
-package/version script header and consumes only its following command line, so
-standalone `> authentication failed` and later quoted diagnostics remain visible.
-Ordinary `-as` type conversion is not a job switch: the ambiguous abbreviation is
-checked only in ForEach-Object's own argument list. That command and its aliases
-also inspect literal method dispatch (including positional/member-name forms);
-ordinary methods such as ToUpper remain available, while evaluator names, wildcard
-or dynamic method names are opaque. Direct WMI class capabilities remain opaque.
-Dynamic provider-reader paths must explicitly identify FileSystem, for example
-`Get-Item -LiteralPath "FileSystem::$file"`; otherwise they can expose mutable
-variable handles. The refusal supplies this concrete recovery. Ordinary literal
-file paths, common parameter values and FileSystem-qualified strings remain valid.
-Get-Variable permits dynamic non-target metadata such as Scope/ErrorAction but
-still requires explicit names and output-variable targets. SessionState/PSVariable
-checks apply to capability/member syntax rather than ordinary argument words.
-HTTP shortening is limited to recognized aiohttp response/handshake exceptions
-with 4xx/5xx status codes; unrelated numeric exceptions retain their own meaning.
-New-Object requires a literal .NET type/COM identity but retains dynamic constructor
-data and property values. Get-WmiObject/gwmi class listings expose callable WMI
-capabilities and are opaque; ordinary instance queries remain available. Common
-variable-output parameters (including PipelineVariable/pv) cannot target the
-default-parameter table or an uninspectable variable name on any command.
-Unquoted Alias:/Function: provider-variable capabilities are opaque, including
-braced/escaped names and parenthesized assignment. Native alias metadata also
-covers icim/ipal. Start-Process retains its own literal -Wait while allowing
-dynamic executable/argument/directory data and bounded argument expressions;
-splats, unprovable waits and nested unowned launches remain refused. Existing
-permission/target inspection still applies. A real isolated cmd child completes
-under -Wait/-NoNewWindow; the active user session is never replayed.
-Known script compilers (ScriptBlock.Create, AST.GetScriptBlock and
-InvokeCommand.NewScriptBlock) and dynamic static-member calls are opaque before
-an indirect consumer can run their result. Ordinary ScriptBlock type tests/casts
-remain valid: native checks confirm string casts do not compile script text.
-Literal -Wait:$true and -Wait: $true have the same owned-wait acceptance as -Wait;
-false/dynamic switch values remain refused. Named values after a separated colon
-are consumed as values across the existing parameter inspectors, including output
-variables, constructor types and file paths; dynamic/preference targets remain
-subject to the same checks as inline values.
-Balanced type prefixes normalize whitespace and block comments before
-capability inspection, while preserving the original executed source. A separate
-type token retains the following assignment's command boundary. Native metadata
-resolves -Wai as Wait (but -Wa as WarningAction), and literal -AsJob:$false remains
-foreground. BITS start/resume inspect their own -As/Asynchronous arguments without
-mistaking a nested -as conversion for an asynchronous switch. Enabled or unknown
-job/async switches still refuse. Real integration covers spaced types, -Wai and
-foreground ForEach-Object; type comments remain subject to the separate legacy
-permission scanner's existing unverifiable-redirection limitation.
-Lifecycle-sensitive Wait/Asynchronous inspection refuses the end-of-parameters
-marker: a later -Wait is positional data and cannot prove ownership. Get-WmiObject
-literal queries distinguish schema keywords (meta_class, ClassDefsOnly, SchemaOnly)
-from quoted filter data; dynamic queries stay opaque. Ordinary literal instance
-queries remain eligible for normal authorization. Native read-only inspection
-confirmed meta_class returns a ManagementClass with Create, without invoking it.
-Content cmdlets and their native aliases also inspect provider targets. Set-Content
-can write hashtable values to the Variable provider on both Windows PowerShell
-5.1 and PowerShell 7; executable/variable-provider targets and unqualified dynamic
-paths are opaque. Ordinary literal/qualified file paths with dynamic content stay
-eligible for normal authorization. The Windows PowerShell sc alias is distinct
-from native sc.exe, whose existing service-control authorization scope is retained.
-Get-Content and its native aliases use the same target boundary: a Variable-provider
-read returns the original mutable object, as verified on both PowerShell versions.
-Reader-specific flags and First/Head/Last aliases retain their native bindings;
-normal literal/qualified file reads still follow ordinary authorization.
-Content paths must be explicit: native pipeline property binding can supply a
-Variable-provider path otherwise. Piped content with an explicit file target stays
-supported; uninspected upstream objects cannot establish target identity.
-Native service/process ShouldProcess dry runs accept their own literal enabled
-WhatIf (including the verified wi alias). False/dynamic, nested, redirected or
-post-`--` spellings do not prove a dry run. Nested argument commands still pass
-the main lifecycle walk, and redirected filenames cannot prove Wait ownership.
-Plain dotted SessionState/PSVariable labels remain argument data; variable,
-type and parenthesized-member capability expressions retain inspection.
-Tee-Object/tee Variable targets use native parameter metadata, including prefixes
-and colon values; preference-table and dynamic names are opaque. Ordinary capture
-variables and FilePath/Path/LiteralPath options retain their normal authorization.
-WMI StartService/ResumeService members are opaque like other unmanaged service
-launches. Job/async switches are inspected in their owning native cmdlets using
-verified prefix metadata, rather than as global argument keywords. The main walk
-preserves `--` data mode across nested arguments while still checking nested
-commands. Foreach's variable/in boundary restores collection-pipeline inspection.
-Provider readers reuse parameter-aware target inspection: computed filters/depths
-and common values remain data, while Path/LiteralPath expressions remain opaque.
-The separate legacy high-risk scanner still refuses foreach collection pipelines
-as unverifiable shell state. Native AST/source fixtures cover their lifecycle
-boundary; the real authorized fixture covers computed filters and `--` data.
-Block comments end at their first `#>`, including type trivia. Foreach argument
-scanning continues through data containing `=`; the other capability parameter
-scanners retain the same boundary. New-Object Property requires literal keys and
-checks known opaque method names, while ordinary setters and methods remain
-eligible for authorization. Explicit generic method arguments do not hide the
-opaque member name. Native AST and harmless binding checks on PowerShell 5.1/7.6
-show that parameter names retain backticks (``-As`Job`` is not `-AsJob`), so raw
-parameter matching is intentional; decoding it would introduce false acceptance
-of ownership switches. No service, BITS transfer or detached job was started to
-verify these reported cases.
-ExecuteShellCommand shares opaque launcher handling, including property-table and
-ForEach-Object member dispatch. The verified WbemScripting.SWbemLocator ProgID and
-its registered .1 version are WMI capabilities. Add-Type permits its explicit
-literal AssemblyName parameter set under normal authorization; source, member and
-path forms remain opaque. Existing-assembly loading, like module loading, is not
-a sandbox boundary. Start-BitsTransfer checks Suspended and Asynchronous in the
-same bounded pass; literal false remains synchronous and unknown values refuse.
-Native metadata verifies AssemblyName prefixes on PowerShell 5.1/7.6. The real
-authorized fixture loads System.Runtime, while offline fixtures cover suspended
-BITS and COM capabilities without creating a transfer, COM host or background job.
+Native `powershell` uses a bounded preflight for explicit lifecycle syntax before
+normal authorization. Assignments, types, ordinary member calls, dynamic data and
+compilation are not Bash executable positions and are not rejected simply because
+they can carry code. The previous review iteration incorrectly grew capability,
+provider and member-name blacklists; those rules have been removed. In particular,
+Add-Type compilation, COM/reflection metadata, New-Object data, provider cmdlet
+values and intrinsic ForEach dispatch retain ordinary permission classification.
+A method named Start may be Stopwatch.Start; its name does not establish a process
+launch. Native start.exe/cp.exe are not the start/cp PowerShell aliases.
 
-Unchanged scope: external module loading and native sc.exe/net.exe service control
-already passed the original Bash lifecycle and high-risk scanners at the PR base.
-The same baseline applies to Enable-ScheduledJob, Add-JobTrigger and Enable-JobTrigger;
-this change does not introduce or claim scheduler-state isolation.
-Literal wsl/wsl.exe commands also passed the original lifecycle/high-risk scanners;
-their nested Linux service scope remains part of ordinary opaque-command approval.
-They retain ordinary opaque-command authorization here; this filter does not
-claim complete executable-code or native-service isolation. This PR does not
-introduce a blanket ban on those existing authorized workflows.
+The preflight retains explicit Start-Job/thread-job/service/scheduled-task checks,
+trailing background `&`, owned Start-Process Wait checks, and cmdlet-specific AsJob,
+BITS Asynchronous/Suspended and literal WhatIf behavior. Nested expressions and
+script blocks within its supported grammar receive the same bounded token walk.
+Quoted flags, filenames after redirection, native executable arguments and data
+containing equals signs do not become cmdlet switches. Literal Bash operands still
+use the existing Bash lifecycle inspection. Parameter prefixes and colon-separated
+native boolean literals are checked against the relevant cmdlet metadata.
+
+This is a bounded preflight, not a complete PowerShell parser, dataflow analyzer or
+sandbox. Here-strings, expandable string subexpressions and indirect call targets
+defer to normal permission classification. It does not prove arbitrary authorized
+programs, reflection, aliases, preference tables, modules, scripts or COM methods
+cannot detach work. That broader claim cannot be established by a growing list of
+type/member names. Explicit background work still belongs in session-owned tasks.
+The local Windows Job Object is used for managed background execution; ordinary
+foreground execution has timeout/cancel process-tree cleanup, not a general
+normal-exit containment guarantee for indirect or external-service launches.
+
+Lifecycle acceptance grants no permission. Existing high-risk/protected-target
+analysis, opaque-script approval policy, cwd identity, exact Session rules, rejection
+handling and immutable final invocation authority remain unchanged. The normal
+permission policy may still reject unresolvable targets or unsupported shell state.
+For example, the older scanner refuses a bare `@(...).ForEach(...)` statement,
+whereas assigning the array before invoking its method reaches normal approval.
+Inline param(), some for/foreach pipeline forms and type block comments also retain
+those independent parser limits. Lifecycle-only fixtures must not be presented as
+proof that the entire authorization chain accepts a request. The real integration
+fixture covers harmless compilation, Stopwatch.Start, dynamic file/environment
+data, variable-based intrinsic ForEach, approval/denial and explicit job refusal.
+Reported WMI/process-launch examples are inspected as offline strings only.
 
 Bash-to-PowerShell recovery distinguishes an active native tool, a configured
 discoverable tool, and an unavailable tool. Discovery is suggested only when
@@ -448,8 +305,7 @@ copies or pools. The PowerShell lexer is invocation-local (128 KiB source, at mo
 per-character string building.
 All parser references become unreachable on return/refusal/throw, before any await.
 Cast recognition balances type brackets linearly with depth capped at 64, preserving
-nested generics and jagged arrays. A long malformed cast chain has a regression case
-and cannot repartition overlapping regex matches. Context arrays are call-owned and
+nested generics and jagged arrays. The balanced scan cannot repartition overlapping regex matches. Context arrays are call-owned and
 become unreachable together with lexer tokens on every return/refusal/throw.
 
 Source-loaded validation on Windows x64 / Node 26.4.0, without a build or global
@@ -483,14 +339,16 @@ release; the leading samples remain retained-item render/viewport maintenance.
 The unchanged Main/Alt/queue chain uses the earlier evidence above.
 After tightening npm banner recognition, the compiler fixture was sampled again;
 the table records that latest run, with the same deterministic/release counters.
-Versionless npm output requires a header/command pair before suppression, with a
-single bounded temporary string reference and no per-line container or callback.
-Standalone `>` diagnostics remain visible, and provider-wire coverage verifies
+Versionless npm output retains a possible header/command pair as two bounded
+string references until a substantive diagnostic is found. If only an exit code
+follows, the pair remains the cause instead of disappearing as presumed noise.
+Joining occurs only for the selected fallback; there is no per-line container or
+callback. Standalone and consecutive `>` diagnostics remain visible, and provider-wire coverage verifies
 the actionable shell error alongside retained full output. The completion →
 Codemode/session → InteractiveMode → retained Text/Box → Main/Alt → terminal queue
 and release chain was re-audited; unchanged frame/queue evidence remains above.
-Ten related source/AST invariants pass. The versionless fixture sampled 1,620
-bytes/redraw and 0.0017 ms p95 across 4,096 redraws after 256 warmups, with one row,
+Ten related source/AST invariants pass. The consecutive quoted-error fixture sampled
+1,700 bytes/redraw and 0.0018 ms p95 across 4,096 redraws after 256 warmups, with one row,
 one output/failure projection, zero event Promises and 0/2 retained weak owners.
 Row/timer/text/result references are zero after release. Leading allocation sites
 remain retained-item render and prepared-viewport cleanup. No pools were added.

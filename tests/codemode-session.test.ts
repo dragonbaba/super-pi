@@ -276,6 +276,10 @@ test("Codemode delivers the compiler cause before npm banners while preserving f
 	assert.match(versionlessSummary, /compiler_probe: .* — sh: missing-command: not found/);
 	assert.doesNotMatch(versionlessSummary, /> check/);
 	assert.match(JSON.stringify(versionless.wires.at(-1)), /> check/);
+	diagnostic = "[SHELL_RUNTIME_FAILED]\n> authentication failed\n> token expired\nCommand exited with code 1";
+	const quoted = await f.run(["await tools.compiler_probe({})"]);
+	assert.match((quoted.results.at(-1)!.content[0] as any).text, /compiler_probe: .* — > authentication failed > token expired/);
+	assert.match(JSON.stringify(quoted.wires.at(-1)), /token expired/);
 });
 
 test("Codemode delivers native PowerShell refusal recovery for an unshown child", async t => {

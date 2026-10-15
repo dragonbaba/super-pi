@@ -60,7 +60,7 @@ export function codemodeFailureReason(text: string, audience: "display" | "model
 	// Browser execution already places the authoritative final exception first.
 	// Never replace it with an earlier chained exception from the retained trace.
 	const browserSummary = text.startsWith("[BROWSER_EXEC_") && bounded.includes("\n[Browser diagnostics]\n");
-	let first = "", diagnostic = "", compiler = "", exit = "", recovery = "", shortHeader = "";
+	let first = "", diagnostic = "", compiler = "", exit = "", recovery = "", shortHeader = "", quotedHeader = "", quotedCommand = "";
 	let preflight = false, npmCommandPending = false;
 	for (let start = 0; start < bounded.length;) {
 		const newline = bounded.indexOf("\n", start);
@@ -72,7 +72,9 @@ export function codemodeFailureReason(text: string, audience: "display" | "model
 		if (preflight && line.startsWith("Next:")) { recovery = line; continue; }
 		if (!line) continue;
 		if (shortHeader) {
-			if (line.startsWith("> ")) { shortHeader = ""; continue; }
+			// A short pair can also be quoted diagnostics. Keep it until a real
+			// cause is found; an exit status alone must not discard the pair.
+			if (line.startsWith("> ")) { if (!quotedHeader) { quotedHeader = shortHeader; quotedCommand = line; } shortHeader = ""; continue; }
 			if (!first) first = shortHeader;
 			shortHeader = "";
 		}
@@ -91,7 +93,7 @@ export function codemodeFailureReason(text: string, audience: "display" | "model
 	if (!first && shortHeader) first = shortHeader;
 	// Unknown diagnostics (git/curl/compiler output) still carry more information
 	// than an exit code. Bare numeric stdout remains only a fallback.
-	const reason = compiler || diagnostic || (first && !NUMERIC_OUTPUT_LINE.test(first) ? first : "") || exit || first || "Tool call failed.";
+	const reason = compiler || diagnostic || (first && !NUMERIC_OUTPUT_LINE.test(first) ? first : "") || (quotedHeader ? quotedHeader + " " + quotedCommand : "") || exit || first || "Tool call failed.";
 	const httpException = audience === "display" ? HTTP_EXCEPTION.exec(reason) : null;
 	if (httpException) return `HTTP ${httpException[1]}: ${httpException[2]}.`;
 	const ipcTimeout = IPC_TIMEOUT_DIAGNOSTIC.exec(reason);
