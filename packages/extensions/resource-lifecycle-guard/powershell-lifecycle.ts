@@ -41,7 +41,7 @@ const PUNCTUATION = /[;|\n\r{}()=&]/;
 const PARAMETER_DASH = /^[-\u2013\u2014\u2015]/;
 const TYPE_CHARACTER = /[\p{L}\p{Nd}_.,+]/u;
 const STATEMENT_LABEL = /^:[\p{L}\p{Nd}_]+$/u;
-const SIMPLE_VARIABLE = /^\$(?:[\p{L}\p{Nd}_?:]+|\{(?:[^`{}]|`[\s\S])+\})(?:\.[\p{L}\p{Nd}_]+|\[[\p{L}\p{Nd}_$?]+\])*$/u;
+const SIMPLE_VARIABLE = /^\$(?:[\p{L}\p{Nd}_?:]+|[$^]|\{(?:[^`{}]|`[\s\S])+\})(?:\.[\p{L}\p{Nd}_]+|\[[\p{L}\p{Nd}_$?]+\])*$/u;
 const STREAM_REDIRECT = /^[1-6*]?>$/;
 const STREAM_NUMBER = /^[1-6]$/;
 const FILE_REDIRECT = /^[1-6*]?>>?$/;
@@ -394,6 +394,14 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 			i = end + 2;
 			continue;
 		}
+		// Leading redirects are syntax even without spaces before their target.
+		// Embedded unquoted data> remains argument text in native argument mode.
+		const redirect = ch === ">" ? i : (ch === "*" || (ch >= "1" && ch <= "6")) && command[i + 1] === ">" ? i + 1 : -1;
+		if (redirect >= 0) {
+			i = redirect + (command[redirect + 1] === ">" ? 2 : 1);
+			tokens.push({ value: command.slice(start, i), quoted: false, quotedEnd: 0, dynamic: false, operator: false, typeOnly: false, start, end: i });
+			continue;
+		}
 		if (PUNCTUATION.test(ch)) { tokens.push({ value: ch, quoted: false, quotedEnd: 0, dynamic: false, operator: true, typeOnly: false, start, end: ++i }); continue; }
 		if (SPACE.test(ch)) { i++; continue; }
 		if (ch === "@" && quoteKind(command[i + 1])) {
@@ -488,7 +496,20 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 	// 24/40 are foreach's variable/in states; flag 64 restores an assignment target.
 	// Primitive call-owned stack, capped at MAX_NESTING and never retained.
 	for (let i = 0; i < tokens.length; i++) {
-		const token = tokens[i]!, value = token.value;
+		let token = tokens[i]!, value = token.value, groupedInvocation = false;
+		const previous = tokens[i - 1];
+		if (head && token.operator && value === "(" && previous && !previous.quoted && (previous.value === "&" || previous.value === ".")) {
+			let target = i, depth = 0;
+			while (tokens[target]?.operator && tokens[target]!.value === "(") { target++; if (contexts.length + ++depth > MAX_NESTING) return UNCERTAIN; }
+			const literal = tokens[target];
+			if (literal?.quoted && !literal.dynamic && literal.quotedEnd === literal.end) {
+				let end = target + 1, remaining = depth;
+				while (remaining && tokens[end]?.operator && tokens[end]!.value === ")") { remaining--; end++; }
+				// Only grouping around one literal is transparent. Arbitrary expressions
+				// retain normal opaque-script policy; command arguments start after it.
+				if (!remaining) { token = literal; value = literal.value; i = end - 1; groupedInvocation = true; }
+			}
+		}
 		const topIndex = contexts.length - 1, top = contexts[topIndex], contextKind = top === undefined ? undefined : top & 63;
 		if (token.operator) {
 			if (value === "=") {
@@ -536,7 +557,7 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 			head = true; continue;
 		}
 		// A quoted expression is data unless preceded by an invocation operator.
-		if (quoteKind(command[token.start]) && tokens[i - 1]?.value !== "&" && (tokens[i - 1]?.value !== "." || tokens[i - 1]?.quoted)) continue;
+		if (!groupedInvocation && quoteKind(command[token.start]) && tokens[i - 1]?.value !== "&" && (tokens[i - 1]?.value !== "." || tokens[i - 1]?.quoted)) continue;
 		if (value.startsWith("[") && value.includes("]::")) { assignable = true; continue; }
 		if (token.dynamic) {
 			// A variable/member expression is not a Bash executable position.
@@ -572,7 +593,7 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 			const reason = inspectCommandSwitch(tokens, i + 1, command, REMOTE_JOB_PARAMETERS, "asjob", "indisconnectedsession");
 			if (reason) return reason;
 		}
-		if (FOR_EACH.has(name) && !(name === "foreach" && tokens[i + 1]?.value === "(")) {
+		if (FOR_EACH.has(name) && !(name === "foreach" && !token.quoted && tokens[i + 1]?.value === "(")) {
 			const reason = inspectCommandSwitch(tokens, i + 1, command, FOR_EACH_PARAMETERS, "asjob");
 			if (reason) return reason;
 		}

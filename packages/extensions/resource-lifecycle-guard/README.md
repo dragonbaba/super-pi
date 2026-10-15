@@ -294,6 +294,10 @@ inside an executable name does not turn that program into a title. The guard is
 not an exhaustive command catalog: Disconnect-PSSession/dnsn and native sc.exe
 service controls were not covered by the preceding Bash gate and remain under
 normal authorization. No new blacklist for these command families is introduced.
+The same scope applies to previously uncovered conditional systemctl restart verbs.
+Nested PowerShell interpreter source also follows normal opaque-script authorization;
+the former Bash-only launcher refusal is intentionally not restored on native calls.
+These are documented coverage limits, not claims that such commands cannot detach work.
 Dot invocation retains the following literal command position without splitting
 decimal/member/path dots. Class/enum declaration names stay metadata; method
 bodies and commands after a declaration still receive the existing checks.
@@ -429,3 +433,8 @@ lookahead also covers parenthesized and member-expression destinations. Native 5
 metadata permits Register-ScheduledJob WhatIf, but not guessed dry-run support for
 the other scheduled-task commands. Unicode labels/type names and static-property
 assignment targets preserve grammar without treating member names as capabilities.
+Special foreach targets $$/$^ retain the iterator command position. Grouping around
+one literal invocation target preserves the actual argument boundary, including Wait
+and quoted foreach aliases; arbitrary computed targets remain opaque. Leading file
+redirections also tokenize without whitespace before the destination. All these
+checks are bounded invocation-only work and reuse the existing token storage.
