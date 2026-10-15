@@ -267,6 +267,15 @@ banning their foreground forms. The native systemctl path recognizes explicit
 start/restart/reload-or-restart/isolate verbs after supported global options;
 option values are not verbs, and unknown/dynamic syntax remains ordinary opaque
 execution rather than a new command whitelist. No service or remote job was run.
+Combined systemctl short flags are consumed before the verb, including a final
+value-taking option. Attribute boundaries retain their argument tokens so literal
+ValidateScript bodies receive ordinary lifecycle inspection; the same bounded
+primitive stack is reused for lexical attribute ends and expression contexts.
+Invoke-Command also checks InDisconnectedSession and its Disconnected alias/prefixes
+using native parameter metadata; literal false stays foreground. No blanket ban on
+attributes, remote-command types or member names is introduced. The independent
+legacy high-risk scanner already refuses some validation-attribute declarations;
+lifecycle acceptance is not evidence of whole-chain acceptance for those forms.
 These are invocation-only bounded scans, with no new progress/render work, retained
 owners, per-event callbacks or pools. Existing source/AST/allocation evidence for
 the unchanged render chain remains applicable.

@@ -122,6 +122,12 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "systemctl --user status example.service", "systemctl --property start show example.service", "systemctl --host=server status example.service",
     "systemctl -Hserver --user status example.service", "systemctl --unknown status example.service",
     "systemctl --host $server status example.service",
+    "systemctl -ql status example.service", "systemctl -qlHserver status example.service", "systemctl -qlH server status example.service",
+    "systemctl -qlpstart show example.service",
+    "[ValidateScript({ $_ -gt 0 })]$Value=1", "[ValidateSet('Start-Job')]$Value='Start-Job'",
+    "[ValidateScript({ $text='Start-Job'; $true })]$Value=1", "[CmdletBinding()]param([ValidateScript({ $_ -gt 0 })]$Value=1) Write-Output $Value",
+    "Invoke-Command -ComputerName server -ScriptBlock { 1 } -InDisconnectedSession:$false",
+    "icm -ComputerName server -ScriptBlock { 1 } -Discon:$false", "icm -ScriptBlock { 1 } -InputObject $data -InformationAction Continue",
   ]) assert.equal(inspectPowerShellResourceLifecycle({ command }), undefined, command);
   // Runtime capabilities are not proof of detached execution. These still need
   // opaque-script authorization; the lifecycle filter is not a language sandbox.
@@ -175,6 +181,12 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "Invoke-WmiMethod -Class Win32_Process -Name Create -AsJob", "iwmi -Class Win32_Process -Name Create -As",
     "systemctl --user start example.service", "systemctl restart example.service", "systemctl --host=server --type service restart example.service",
     "systemctl.exe -Hserver --user reload-or-restart example.service",
+    "systemctl -ql restart example.service", "systemctl -qlHserver restart example.service", "systemctl -qlH server restart example.service",
+    "[ValidateScript({ Start-Job { 1 } | Out-Null; $true })]$Value=1",
+    "[CmdletBinding()]param([ValidateScript({ Start-Job { 1 }; $true })]$Value=1) Write-Output $Value",
+    "Invoke-Command -ComputerName server -ScriptBlock { 1 } -InDisconnectedSession",
+    "icm -ComputerName server -ScriptBlock { 1 } -InDis", "icm -ComputerName server -ScriptBlock { 1 } -Disconnected",
+    "icm -ComputerName server -ScriptBlock { 1 } -Discon:$true", "icm -ComputerName server -ScriptBlock { 1 } -Discon:$flag",
     "Write-Output 'unterminated", "x ".repeat(2049), "x".repeat(128 * 1024 + 1),
   ]) assert.ok(inspectPowerShellResourceLifecycle({ command }), command);
 });

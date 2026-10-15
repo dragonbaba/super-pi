@@ -25,7 +25,7 @@ const COMPUTER_JOB_COMMANDS = new Set(["restart-computer", "stop-computer", "tes
 // parameters do not affect its binding and retain ordinary argument inspection.
 const WMI_JOB_PARAMETERS = ["asjob", "authentication", "authority", "arguments"];
 const COMPUTER_JOB_PARAMETERS = ["asjob"];
-const REMOTE_JOB_PARAMETERS = ["asjob", "applicationname", "allowredirection", "authentication", "argumentlist"];
+const REMOTE_JOB_PARAMETERS = ["asjob", "applicationname", "allowredirection", "authentication", "argumentlist", "indisconnectedsession", "disconnected", "inputobject", ...VARIABLE_LOOKUP_PARAMETERS.slice(5)];
 const SYSTEMCTL_START = new Set(["start", "restart", "reload-or-restart", "isolate"]);
 const SYSTEMCTL_FLAGS = new Set(["--user", "--system", "--global", "--no-block", "--no-legend", "--no-pager", "--no-ask-password", "--quiet", "-q", "--all", "-a", "--full", "-l", "--force", "-f", "--runtime", "--wait", "--no-wall"]);
 const SYSTEMCTL_VALUES = new Set(["--host", "-H", "--machine", "-M", "--type", "-t", "--state", "--property", "-p", "--output", "-o", "--root", "--image", "--job-mode", "--lines", "-n", "--kill-whom", "--kill-who", "--signal", "-s", "--preset-mode"]);
@@ -91,7 +91,7 @@ function parenthesisEnd(source: string, start: number, depth: number): number {
 	return -1;
 }
 
-/** Attribute arguments are metadata, not the end of a script declaration. */
+/** Locate the attribute boundary; its argument/script tokens are still inspected. */
 function attributeEnd(source: string, start: number): number {
 	let i = skipTypeTrivia(source, start + 1);
 	if (i < 0) return -1;
@@ -159,8 +159,8 @@ function hasLiteralWhatIf(tokens: readonly Token[], start: number, command: stri
 		if (isStreamMerge(tokens, j)) { j++; continue; }
 		if (arg.operator && arg.value === "=") continue;
 		if (arg.operator) {
-			if (arg.value === "(" || arg.value === "{") { if (++depth > MAX_NESTING) return false; }
-			else if (arg.value === ")" || arg.value === "}") { if (!depth) break; depth--; }
+			if (arg.value === "(" || arg.value === "{" || arg.value === "[") { if (++depth > MAX_NESTING) return false; }
+			else if (arg.value === ")" || arg.value === "}" || arg.value === "]") { if (!depth) break; depth--; }
 			else if (!depth) break;
 			continue;
 		}
@@ -177,15 +177,15 @@ function hasLiteralWhatIf(tokens: readonly Token[], start: number, command: stri
 }
 
 /** Inspect only the command's own arguments; nested expressions get the main walk. */
-function inspectCommandSwitch(tokens: readonly Token[], start: number, command: string, parameters: readonly string[], optionName: "wait" | "asynchronous" | "asjob", additionalOption?: "suspended"): string | undefined {
+function inspectCommandSwitch(tokens: readonly Token[], start: number, command: string, parameters: readonly string[], optionName: "wait" | "asynchronous" | "asjob", additionalOption?: "suspended" | "indisconnectedsession"): string | undefined {
 	let wait = false, depth = 0;
 	for (let j = start; j < tokens.length; j++) {
 		const arg = tokens[j]!;
 		if (isStreamMerge(tokens, j)) { j++; continue; }
 		if (arg.operator && arg.value === "=") continue;
 		if (arg.operator) {
-			if (arg.value === "(" || arg.value === "{") { if (++depth > MAX_NESTING) return UNCERTAIN; }
-			else if (arg.value === ")" || arg.value === "}") { if (!depth) break; depth--; }
+			if (arg.value === "(" || arg.value === "{" || arg.value === "[") { if (++depth > MAX_NESTING) return UNCERTAIN; }
+			else if (arg.value === ")" || arg.value === "}" || arg.value === "]") { if (!depth) break; depth--; }
 			else if (!depth) break;
 			continue;
 		}
@@ -197,7 +197,8 @@ function inspectCommandSwitch(tokens: readonly Token[], start: number, command: 
 		if (isArgumentSuffix(tokens, j)) continue;
 		const raw = command.slice(arg.start, arg.end), colon = raw.indexOf(":");
 		if (!PARAMETER_DASH.test(raw)) continue;
-		const option = lookupOption(raw.slice(1, colon < 0 ? raw.length : colon).toLowerCase(), parameters);
+		const resolved = lookupOption(raw.slice(1, colon < 0 ? raw.length : colon).toLowerCase(), parameters);
+		const option = resolved === "disconnected" && parameters === REMOTE_JOB_PARAMETERS ? "indisconnectedsession" : resolved;
 		if (!option || (option !== optionName && option !== additionalOption)) continue;
 		const enabled = literalSwitch(tokens, j, command);
 		if (optionName === "wait") { if (enabled !== true) return UNCERTAIN; wait = true; }
@@ -262,9 +263,15 @@ function inspectSystemctl(tokens: readonly Token[], start: number): string | und
 		if (options && value === "--") { options = false; continue; }
 		if (options && value.startsWith("-")) {
 			if (SYSTEMCTL_FLAGS.has(value)) continue;
-			const short = value.startsWith("--") ? value : value.slice(0, 2);
+			let offset = 1;
+			const long = value.startsWith("--");
+			if (!long) {
+				while (offset < value.length && "qalf".includes(value[offset]!)) offset++;
+				if (offset === value.length) continue;
+			}
+			const short = long ? value : "-" + value[offset];
 			if (!SYSTEMCTL_VALUES.has(short)) return undefined;
-			if (short !== value) continue;
+			if (!long && offset + 1 < value.length) continue;
 			if (tokens[i + 1]?.value === "=") i++;
 			const operand = tokens[++i];
 			if (!operand || operand.operator || operand.dynamic) return undefined;
@@ -294,9 +301,16 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 	if (command.length > MAX_CHARS) return refusal("SHELL_INSPECTION_LIMIT", "command exceeds the inspection size limit");
 	// Call-owned, capped, never cached or retained by progress/render owners.
 	const tokens: Token[] = [];
+	// Reuse the bounded primitive stack: attribute ends while lexing, then contexts.
+	const contexts: number[] = [];
 	for (let i = 0; i < command.length;) {
 		if (tokens.length >= MAX_TOKENS) return refusal("SHELL_INSPECTION_LIMIT", "too many PowerShell tokens");
 		const start = i, ch = command[i]!;
+		if (i === contexts[contexts.length - 1]! - 1) {
+			contexts.pop();
+			tokens.push({ value: "]", quoted: false, quotedEnd: 0, dynamic: false, operator: true, typeOnly: false, start, end: ++i });
+			continue;
+		}
 		if (ch === "#") { while (i < command.length && command[i] !== "\n") i++; continue; }
 		if (command.startsWith("<#", i)) {
 			const end = command.indexOf("#>", i + 2);
@@ -315,8 +329,10 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		if (ch === "[") {
 			const end = attributeEnd(command, i);
 			if (end >= 0) {
-				tokens.push({ value: "", quoted: false, quotedEnd: 0, dynamic: false, operator: false, typeOnly: true, start, end });
-				i = end; continue;
+				if (contexts.length === MAX_NESTING) return UNCERTAIN;
+				contexts.push(end);
+				tokens.push({ value: "[", quoted: false, quotedEnd: 0, dynamic: false, operator: true, typeOnly: false, start, end: ++i });
+				continue;
 			}
 		}
 		let value = "", quoted = false, quotedEnd = 0, dynamic = false, span = i, typeOnly = false;
@@ -378,15 +394,16 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		value += command.slice(span, i);
 		if (value || quoted) tokens.push({ value, quoted, quotedEnd, dynamic, operator: false, typeOnly, start, end: i });
 	}
+	if (contexts.length) return UNCERTAIN;
 
 	let head = true, assignable = false, controlBlock = false, paramBlock = false;
 	let doBlock = false, afterDo = false, doCondition = false, foreachBlock = false;
 	// Low bits: 0 paren, 1 control block, 2 hash key, 3 hash value, 4 block argument, 5 param list.
 	// 6 is a do body, 7 its trailing while/until condition.
 	// Flag 8 restores an enclosing control statement after its condition parentheses.
+	// 9 is an attribute boundary; its name is metadata, its argument bodies are code.
 	// 24/40 are foreach's variable/in states; flag 64 restores an assignment target.
 	// Primitive call-owned stack, capped at MAX_NESTING and never retained.
-	const contexts: number[] = [];
 	for (let i = 0; i < tokens.length; i++) {
 		const token = tokens[i]!, value = token.value;
 		const topIndex = contexts.length - 1, top = contexts[topIndex], contextKind = top === undefined ? undefined : top & 63;
@@ -398,19 +415,19 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 			}
 			const assigning: boolean = assignable;
 			assignable = false;
-			if (value === "(" || value === "{") {
+			if (value === "(" || value === "{" || value === "[") {
 				if (contexts.length === MAX_NESTING) return UNCERTAIN;
 				const previous = tokens[i - 1];
-				const kind = value === "(" ? (doCondition ? 7 : paramBlock ? 5 : controlBlock ? foreachBlock ? 24 : 8 : 0) : previous?.value === "@" && !previous.quoted && previous.end === token.start ? 2 : doBlock ? 6 : controlBlock ? 1 : 4;
+				const kind = value === "[" ? 9 : value === "(" ? (doCondition ? 7 : paramBlock ? 5 : controlBlock ? foreachBlock ? 24 : 8 : 0) : previous?.value === "@" && !previous.quoted && previous.end === token.start ? 2 : doBlock ? 6 : controlBlock ? 1 : 4;
 				contexts.push(kind | (assigning ? 64 : 0));
-				head = true; controlBlock = false; paramBlock = false; doBlock = false; doCondition = false; foreachBlock = false; continue;
+				head = value !== "["; controlBlock = false; paramBlock = false; doBlock = false; doCondition = false; foreachBlock = false; continue;
 			}
-			if (value === ")" || value === "}") {
+			if (value === ")" || value === "}" || value === "]") {
 				const saved = contexts.pop(), context = saved === undefined ? undefined : saved & 63;
-				if (context === undefined || (value === ")") !== ((context & 7) === 0 || context === 5 || context === 7)) return UNCERTAIN;
-				head = context === 1 || context === 5 || context === 6 || context === 7;
+				if (context === undefined || (context === 9 ? value !== "]" : value === "]" || (value === ")") !== ((context & 7) === 0 || context === 5 || context === 7))) return UNCERTAIN;
+				head = context === 1 || context === 5 || context === 6 || context === 7 || context === 9;
 				assignable = (saved! & 64) !== 0 || (context === 0 && assigning);
-				controlBlock = (context & 8) !== 0; paramBlock = false; foreachBlock = false; afterDo = context === 6; continue;
+				controlBlock = context !== 9 && (context & 8) !== 0; paramBlock = false; foreachBlock = false; afterDo = context === 6; continue;
 			}
 			if (value !== "\n" && value !== "\r") { controlBlock = false; foreachBlock = false; }
 			if ((value === ";" || value === "\n" || value === "\r") && (contextKind === 2 || contextKind === 3)) contexts[topIndex] = (top! & 64) | 2;
@@ -459,7 +476,7 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 			if (reason) return reason;
 		}
 		if (REMOTE_COMMANDS.has(name)) {
-			const reason = inspectCommandSwitch(tokens, i + 1, command, REMOTE_JOB_PARAMETERS, "asjob");
+			const reason = inspectCommandSwitch(tokens, i + 1, command, REMOTE_JOB_PARAMETERS, "asjob", "indisconnectedsession");
 			if (reason) return reason;
 		}
 		if (FOR_EACH.has(name) && !(name === "foreach" && tokens[i + 1]?.value === "(")) {
@@ -472,8 +489,8 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 				const arg = tokens[j]!;
 				if (arg.operator && arg.value === "=") continue;
 				if (arg.operator) {
-					if (arg.value === "(" || arg.value === "{") { if (++depth > MAX_NESTING) return UNCERTAIN; }
-					else if (arg.value === ")" || arg.value === "}") { if (!depth) break; depth--; }
+					if (arg.value === "(" || arg.value === "{" || arg.value === "[") { if (++depth > MAX_NESTING) return UNCERTAIN; }
+					else if (arg.value === ")" || arg.value === "}" || arg.value === "]") { if (!depth) break; depth--; }
 					else if (!depth) break;
 					continue;
 				}
