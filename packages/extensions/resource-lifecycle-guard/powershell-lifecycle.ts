@@ -7,6 +7,7 @@ const BASH = new Set(["bash", "sh", "zsh", "dash", "ksh", "fish"]);
 const LAUNCHERS = new Set(["powershell", "pwsh", "cmd", "invoke-expression", "iex", "invoke-command", "icm", "invoke-cimmethod", "icim", "invoke-wmimethod", "iwmi", "invoke-item", "ii", "set-alias", "new-alias", "import-alias", "ipal", "sal", "nal", "function", "filter", "class", "enum", "workflow", "configuration"]);
 const DETACHED = new Set(["start-job", "sajb", "start-threadjob", "start-service", "sasv", "restart-service", "resume-service", "rsv", "start-scheduledtask", "register-scheduledjob", "set-scheduledjob", "register-scheduledtask", "set-scheduledtask", "nohup", "disown", "setsid", "daemonize"]);
 const PROCESS = new Set(["start-process", "start", "saps"]);
+const SERVICE_STARTERS = new Set(["start-service", "sasv", "restart-service", "resume-service", "rsv"]);
 const CONTROL_BLOCK = new Set(["if", "elseif", "else", "for", "foreach", "while", "do", "switch", "try", "catch", "finally", "trap", "begin", "process", "end", "clean", "dynamicparam", "data"]);
 const PROVIDER_MUTATORS = new Set(["set-item", "si", "new-item", "ni", "copy-item", "cpi", "cp", "copy", "move-item", "mi", "mv", "move", "rename-item", "rni", "ren", "set-location", "sl", "cd", "chdir", "push-location", "pushd"]);
 const EXECUTABLE_PROVIDER = /(?:^|[:,])(?:[^:,]*\\)?(?:alias|function|variable):/i;
@@ -44,6 +45,11 @@ const WORD_CHARACTER = /[\w]/;
 const CONTENT_MUTATORS = new Set(["set-content", "sc", "add-content", "ac", "clear-content", "clc"]);
 const CONTENT_PARAMETERS = ["value", "passthru", "path", "literalpath", "filter", "include", "exclude", "force", "credential", "whatif", "confirm", "usetransaction", "nonewline", "encoding", "asbytestream", "stream", ...VARIABLE_LOOKUP_PARAMETERS.slice(5)];
 const CONTENT_FLAGS = new Set(["passthru", "force", "whatif", "confirm", "usetransaction", "nonewline", "asbytestream", "verbose", "debug"]);
+const CONTENT_READERS = new Set(["get-content", "gc", "cat", "type"]);
+const CONTENT_READER_PARAMETERS = ["readcount", "totalcount", "tail", "path", "literalpath", "filter", "include", "exclude", "force", "credential", "usetransaction", "delimiter", "wait", "raw", "encoding", "asbytestream", "stream", ...VARIABLE_LOOKUP_PARAMETERS.slice(5)];
+const CONTENT_READER_FLAGS = new Set(["force", "usetransaction", "wait", "raw", "asbytestream", "verbose", "debug"]);
+const SERVICE_START_PARAMETERS = ["name", "inputobject", "passthru", "displayname", "include", "exclude", "force", "whatif", "confirm", ...VARIABLE_LOOKUP_PARAMETERS.slice(5)];
+const SERVICE_SET_PARAMETERS = ["name", "inputobject", "displayname", "credential", "description", "startuptype", "securitydescriptorsddl", "status", "force", "passthru", "computername", "whatif", "confirm", ...VARIABLE_LOOKUP_PARAMETERS.slice(5)];
 const WMI_CAPABILITY = /(?:^|\[|:)(?:wmiclass|(?:(?:System\.)?Management\.)?ManagementClass)(?:\]|,|$)/i;
 const SCRIPT_BLOCK_COMPILER = /\[(?:System\.Management\.Automation\.)?scriptblock\]::Create$/i;
 const SPACE = /\s/;
@@ -56,9 +62,10 @@ const STATEMENT_LABEL = /^:[\w]+$/;
 const SIMPLE_VARIABLE = /^\$(?:[\w:]+|\{(?:[^`{}]|`[\s\S])+\})(?:\.[\w]+|\[[\w$]+\])*$/;
 const STREAM_REDIRECT = /^[1-6*]?>$/;
 const STREAM_NUMBER = /^[1-6]$/;
+const FILE_REDIRECT = /^[1-6*]?>>?$/;
 const OPAQUE_MEMBER = /(?:\.|::)(?:Start(?:New|Job|\.Invoke)?|Invoke[\w]*|DynamicInvoke|BeginInvoke|GetSteppablePipeline|GetScriptBlock|NewScriptBlock|ExpandString|Run(?:Async)?|Exec|Continue|Shell(?:Execute(?:Ex)?)?)$/i;
 
-interface Token { value: string; quoted: boolean; dynamic: boolean; operator: boolean; typeOnly: boolean; start: number; end: number }
+interface Token { value: string; quoted: boolean; quotedEnd: number; dynamic: boolean; operator: boolean; typeOnly: boolean; start: number; end: number }
 
 /** Type trivia is syntax, not part of its identity. Never consume executable text. */
 function skipTypeTrivia(source: string, start: number): number {
@@ -101,6 +108,39 @@ function literalSwitch(tokens: readonly Token[], index: number, command: string)
 	return value === "$true" ? true : value === "$false" ? false : undefined;
 }
 
+function isFileRedirect(tokens: readonly Token[], index: number, command: string): boolean {
+	const token = tokens[index]!;
+	// Native argument mode distinguishes data> from "data">. Retain the closing
+	// boundary of leading quoted operands, without re-parsing or stripping escapes.
+	return !token.operator && FILE_REDIRECT.test(command.slice(token.quotedEnd || token.start, token.end))
+		&& !isStreamMerge(tokens, index + 1);
+}
+
+/** Literal ShouldProcess dry runs only; nested commands retain their own checks. */
+function hasLiteralWhatIf(tokens: readonly Token[], start: number, command: string, parameters: readonly string[]): boolean {
+	let depth = 0, enabled = false;
+	for (let j = start; j < tokens.length; j++) {
+		const arg = tokens[j]!;
+		if (isStreamMerge(tokens, j)) { j++; continue; }
+		if (arg.operator && arg.value === "=") continue;
+		if (arg.operator) {
+			if (arg.value === "(" || arg.value === "{") { if (++depth > MAX_NESTING) return false; }
+			else if (arg.value === ")" || arg.value === "}") { if (!depth) break; depth--; }
+			else if (!depth) break;
+			continue;
+		}
+		if (depth) continue;
+		if (!arg.quoted && (arg.value === "--" || arg.value === "--%")) return false;
+		if (isFileRedirect(tokens, j, command)) { if (tokens[j + 1] && !tokens[j + 1]!.operator) j++; continue; }
+		if (isArgumentSuffix(tokens, j)) continue;
+		const raw = command.slice(arg.start, arg.end), colon = raw.indexOf(":");
+		if (!PARAMETER_DASH.test(raw) || lookupOption(raw.slice(1, colon < 0 ? raw.length : colon).toLowerCase(), parameters) !== "whatif") continue;
+		enabled = literalSwitch(tokens, j, command) === true;
+		if (colon === raw.length - 1) j++;
+	}
+	return enabled;
+}
+
 /** Inspect only the command's own arguments; nested expressions get the main walk. */
 function inspectCommandSwitch(tokens: readonly Token[], start: number, command: string, parameters: readonly string[], optionName: "wait" | "asynchronous"): string | undefined {
 	let wait = false, depth = 0;
@@ -116,6 +156,7 @@ function inspectCommandSwitch(tokens: readonly Token[], start: number, command: 
 		}
 		if (depth) continue;
 		if (!arg.quoted && (arg.value === "--%" || arg.value === "--")) return UNCERTAIN;
+		if (isFileRedirect(tokens, j, command)) { if (tokens[j + 1] && !tokens[j + 1]!.operator) j++; continue; }
 		if (isArgumentSuffix(tokens, j)) continue;
 		const raw = command.slice(arg.start, arg.end), colon = raw.indexOf(":");
 		if (!PARAMETER_DASH.test(raw)) continue;
@@ -152,8 +193,10 @@ function hasWmiSchemaQuery(query: string): boolean {
 }
 
 /** Content data may be dynamic, but provider identity must be inspectable. */
-function inspectContentTargets(tokens: readonly Token[], start: number, command: string): string | undefined {
+function inspectContentTargets(tokens: readonly Token[], start: number, command: string, reader: boolean): string | undefined {
 	let depth = 0, pathSeen = false, parameter: string | undefined;
+	const parameters = reader ? CONTENT_READER_PARAMETERS : CONTENT_PARAMETERS;
+	const flags = reader ? CONTENT_READER_FLAGS : CONTENT_FLAGS;
 	for (let j = start; j < tokens.length; j++) {
 		const arg = tokens[j]!;
 		if (arg.operator) {
@@ -172,9 +215,11 @@ function inspectContentTargets(tokens: readonly Token[], start: number, command:
 		const colon = raw.indexOf(":");
 		if (!parameter && PARAMETER_DASH.test(raw) && (!arg.quoted || colon >= 0)) {
 			const option = raw.slice(1, colon < 0 ? raw.length : colon).toLowerCase();
-			parameter = option === "lp" || option === "pspath" ? "literalpath" : lookupOption(option, CONTENT_PARAMETERS);
+			parameter = option === "lp" || option === "pspath" ? "literalpath"
+				: reader && (option === "first" || option === "head") ? "totalcount"
+				: reader && option === "last" ? "tail" : lookupOption(option, parameters);
 			if (!parameter) return UNCERTAIN;
-			if (CONTENT_FLAGS.has(parameter) && colon !== raw.length - 1) { parameter = undefined; continue; }
+			if (flags.has(parameter) && colon !== raw.length - 1) { parameter = undefined; continue; }
 			if (colon < 0 || colon === raw.length - 1) continue;
 			target = arg.value.slice(arg.value.indexOf(":") + 1); raw = raw.slice(colon + 1);
 		}
@@ -184,11 +229,15 @@ function inspectContentTargets(tokens: readonly Token[], start: number, command:
 		}
 		parameter = undefined;
 	}
-	return undefined;
+	// Path can bind from pipeline object properties; require an explicit target
+	// rather than guessing the provider from uninspected upstream data.
+	return pathSeen ? undefined : UNCERTAIN;
 }
 
 /** Bounded native parameter metadata; exact names/common aliases precede prefixes. */
 function lookupOption(value: string, parameters: readonly string[]): string | undefined {
+	if (value === "wi" && parameters.includes("whatif")) return "whatif";
+	if (value === "cf" && parameters.includes("confirm")) return "confirm";
 	const alias = VARIABLE_LOOKUP_ALIASES.get(value);
 	if (alias) return alias;
 	let match: string | undefined;
@@ -229,8 +278,8 @@ function isArgumentSuffix(tokens: readonly Token[], index: number): boolean {
 }
 
 function isStreamMerge(tokens: readonly Token[], index: number): boolean {
-	const token = tokens[index]!, previous = tokens[index - 1], next = tokens[index + 1];
-	return token.operator && token.value === "&" && previous !== undefined && next !== undefined
+	const token = tokens[index], previous = tokens[index - 1], next = tokens[index + 1];
+	return token?.operator === true && token.value === "&" && previous !== undefined && next !== undefined
 		&& !previous.quoted && !next.quoted && previous.end === token.start && next.start === token.end
 		&& STREAM_REDIRECT.test(previous.value) && STREAM_NUMBER.test(next.value);
 }
@@ -345,10 +394,10 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 			if (depth) return UNCERTAIN;
 			continue;
 		}
-		if (PUNCTUATION.test(ch)) { tokens.push({ value: ch, quoted: false, dynamic: false, operator: true, typeOnly: false, start, end: ++i }); continue; }
+		if (PUNCTUATION.test(ch)) { tokens.push({ value: ch, quoted: false, quotedEnd: 0, dynamic: false, operator: true, typeOnly: false, start, end: ++i }); continue; }
 		if (SPACE.test(ch)) { i++; continue; }
 		if (ch === "@" && (command[i + 1] === "'" || command[i + 1] === '"')) return UNCERTAIN;
-		let value = "", quoted = false, dynamic = false, span = i, typeOnly = false;
+		let value = "", quoted = false, quotedEnd = 0, dynamic = false, span = i, typeOnly = false;
 		while (command[i] === "[") {
 			const type = readType(command, i);
 			if (!type) break;
@@ -381,6 +430,7 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 				continue;
 			}
 			if (c !== "'" && c !== '"') { if (c === "$" || c === "@") dynamic = true; continue; }
+			const quoteStart = i - 1;
 			value += command.slice(span, i - 1);
 			quoted = true;
 			span = i;
@@ -390,6 +440,7 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 				if (q === c) {
 					value += command.slice(span, i - 1);
 					if (c === "'" && command[i] === "'") { value += "'"; i++; span = i; continue; }
+					if (quoteStart === start || quoteStart === quotedEnd) quotedEnd = i;
 					span = i;
 					closed = true; break;
 				}
@@ -403,7 +454,7 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 			if (!closed) return UNCERTAIN;
 		}
 		value += command.slice(span, i);
-		if (value || quoted) tokens.push({ value, quoted, dynamic, operator: false, typeOnly, start, end: i });
+		if (value || quoted) tokens.push({ value, quoted, quotedEnd, dynamic, operator: false, typeOnly, start, end: i });
 	}
 
 	let head = true, assignable = false, equalsData = false, controlBlock = false, paramBlock = false;
@@ -453,7 +504,10 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		if (token.dynamic && command[token.start] !== "'" && command[token.start] !== '"' && DEFAULT_PARAMETERS.test(variableValue)) return UNCERTAIN;
 		if (token.dynamic && command[token.start] !== "'" && command[token.start] !== '"'
 			&& EXECUTABLE_VARIABLE.test(variableValue)) return UNCERTAIN;
-		if (command[token.start] !== "'" && command[token.start] !== '"' && SESSION_STATE.test(variableValue)) return UNCERTAIN;
+		const previous = tokens[i - 1];
+		const capabilityExpression = token.dynamic || value.startsWith("[")
+			|| ((value.startsWith(".") || value.startsWith("::")) && previous?.operator === true && (previous.value === ")" || previous.value === "}") && previous.end === token.start);
+		if (capabilityExpression && command[token.start] !== "'" && command[token.start] !== '"' && SESSION_STATE.test(variableValue)) return UNCERTAIN;
 		if (command[token.start] !== "'" && command[token.start] !== '"' && value.startsWith("[") && WMI_CAPABILITY.test(value)) return UNCERTAIN;
 		// Common variable-output parameters can install ambient defaults even on
 		// otherwise harmless commands; do not evaluate dynamic target names.
@@ -503,7 +557,7 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		doBlock = !token.quoted && name === "do";
 		doCondition = afterDo && !token.quoted && (name === "while" || name === "until"); afterDo = false;
 		if (!token.quoted && (name === "return" || name === "throw" || name === "exit")) { head = true; continue; }
-		if (DETACHED.has(name)) return BACKGROUND;
+		if (DETACHED.has(name) && !(SERVICE_STARTERS.has(name) && hasLiteralWhatIf(tokens, i + 1, command, SERVICE_START_PARAMETERS))) return BACKGROUND;
 		if (LAUNCHERS.has(name) || name === ".") return UNCERTAIN;
 		if (name === "new-object") {
 			const reason = inspectNewObject(tokens, i + 1, command);
@@ -538,8 +592,9 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		}
 		// Windows PowerShell's sc alias is Set-Content; native sc.exe is a separate
 		// existing service-control authorization path, not a provider cmdlet.
-		if (CONTENT_MUTATORS.has(name) && !value.toLowerCase().endsWith(".exe")) {
-			const reason = inspectContentTargets(tokens, i + 1, command);
+		const contentReader = CONTENT_READERS.has(name);
+		if ((CONTENT_MUTATORS.has(name) || contentReader) && !value.toLowerCase().endsWith(".exe")) {
+			const reason = inspectContentTargets(tokens, i + 1, command, contentReader);
 			if (reason) return reason;
 		}
 		if (PROVIDER_READERS.has(name)) {
@@ -601,7 +656,7 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 				if (variableMutation && DEFAULT_PARAMETERS.test(arg.value)) return UNCERTAIN;
 			}
 		}
-		if (name === "set-service") {
+		if (name === "set-service" && !hasLiteralWhatIf(tokens, i + 1, command, SERVICE_SET_PARAMETERS)) {
 			for (let j = i + 1; j < tokens.length; j++) {
 				const arg = tokens[j]!;
 				if (arg.operator && arg.value === "=") continue;
@@ -618,7 +673,7 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 				if (state !== "stopped" && state !== "paused") return BACKGROUND;
 			}
 		}
-		if (PROCESS.has(name)) {
+		if (PROCESS.has(name) && !hasLiteralWhatIf(tokens, i + 1, command, PROCESS_PARAMETERS)) {
 			const reason = inspectCommandSwitch(tokens, i + 1, command, PROCESS_PARAMETERS, "wait");
 			if (reason) return reason;
 		}

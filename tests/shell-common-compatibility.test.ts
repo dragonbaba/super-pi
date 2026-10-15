@@ -1657,7 +1657,7 @@ test("native PowerShell assignments and member calls retain authorization and fo
     fixture = await guardedCwdBoundaryFixture(workspace, "", "powershell");
     await fixture.setMode("read-only");
     const command = "$s = New-Object System.Text.StringBuilder; try { [void]$s.Append('inline-ok'); $s.ToString() | ForEach-Object { $_.ToUpper() } } finally { [void]$s.Clear() }; [int[][]]$items=$null; [System.Collections.Generic.Dictionary[string,System.Collections.Generic.List[int]]]$map=$null; Write-Output status=Start-Job report.Start (Get-Date); $h=@{Name='data';Value=1}; Write-Output $h.Name; [string]${space name}='braced-ok'; Write-Output ${space name}; Write-Output { 1 } Start-Job; $n=0; $n++; ++$n; Write-Output increment-ok; $Count=7; Get-Variable Count -OutVariable captured -ValueOnly:$false; gv Count -s 0; $queryScope=0; gv Count -s $queryScope -Verbose:$false";
-    const foreground = command + '; $converted=123 -as [string]; Write-Output $converted; "member-ok" | ForEach-Object -MemberName: ToUpper; Get-Item -fo -LiteralPath: "FileSystem::$PWD" -ErrorAction Stop | Select-Object Name; $capacity=16; $buffer=New-Object -TypeName: System.Text.StringBuilder -ArgumentList $capacity; [void]$buffer.Append("constructed-ok"); Write-Output $buffer.ToString() -OutVariable: observed; $arguments=@("/d","/c","exit 0"); Start-Process $env:ComSpec -ArgumentList ($arguments) -Wai:$true -NoNewWindow; Write-Output foreground-wait-ok; [ int ] $typedNumber=1; Write-Output $typedNumber; "foreground-parallel-ok" | ForEach-Object -Parallel { $_ } -AsJob: $false; $payload="content-data-ok"; Set-Content -LiteralPath content-data.txt -Value $payload; Get-Content content-data.txt';
+    const foreground = command + '; $converted=123 -as [string]; Write-Output $converted; "member-ok" | ForEach-Object -MemberName: ToUpper; Get-Item -fo -LiteralPath: "FileSystem::$PWD" -ErrorAction Stop | Select-Object Name; $capacity=16; $buffer=New-Object -TypeName: System.Text.StringBuilder -ArgumentList $capacity; [void]$buffer.Append("constructed-ok"); Write-Output $buffer.ToString() -OutVariable: observed; $arguments=@("/d","/c","exit 0"); Start-Process $env:ComSpec -ArgumentList ($arguments) -Wai:$true -NoNewWindow; Write-Output foreground-wait-ok; [ int ] $typedNumber=1; Write-Output $typedNumber; "foreground-parallel-ok" | ForEach-Object -Parallel { $_ } -AsJob: $false; $payload="content-data-ok"; Set-Content -LiteralPath content-data.txt -Value $payload; Get-Content content-data.txt -First: 1; Start-Process $env:ComSpec -ArgumentList "/d /c exit 0" -WhatIf; Write-Output dry-run-ok report.SessionState metadata.PSVariable';
     const result = await fixture.agent.dispatchHostTool({ type: "toolCall", id: "native-members", name: "powershell", arguments: { command: foreground } });
     assert.equal(result.isError, false, JSON.stringify(result));
     assert.match(JSON.stringify(result.content), /INLINE-OK/);
@@ -1669,6 +1669,8 @@ test("native PowerShell assignments and member calls retain authorization and fo
     assert.match(JSON.stringify(result.content), /foreground-wait-ok/);
     assert.match(JSON.stringify(result.content), /foreground-parallel-ok/);
     assert.match(JSON.stringify(result.content), /content-data-ok/);
+    assert.match(JSON.stringify(result.content), /dry-run-ok/);
+    assert.match(JSON.stringify(result.content), /report.SessionState/);
     assert.equal(fixture.executions, 1); assert.equal(fixture.approvals.length, 1);
     fixture.setDecision("拒绝");
     const denied = await fixture.agent.dispatchHostTool({ type: "toolCall", id: "native-denied", name: "powershell", arguments: { command: foreground } });
@@ -1706,7 +1708,9 @@ test("native PowerShell assignments and member calls retain authorization and fo
       "[ int ] $x=Start-Process missing.exe", "Start-BitsTransfer -Source a -Destination b -As", "Resume-BitsTransfer -BitsJob $job -As",
       "Start-Process -- missing.exe -Wait",
       '$c=Get-WmiObject -Query "SELECT * FROM meta_class WHERE __class = \'Win32_Process\'"; $c.Create("missing.exe")',
-      "Set-Content Variable:PSDefaultParameterValues -Value @{'ForEach-Object:AsJob'=$true}; 1 | ForEach-Object -Parallel { 1 }"]) {
+      "Set-Content Variable:PSDefaultParameterValues -Value @{'ForEach-Object:AsJob'=$true}; 1 | ForEach-Object -Parallel { 1 }",
+      "$defaults=Get-Content Variable:PSDefaultParameterValues; $defaults.Add('ForEach-Object:AsJob',$true)",
+      "Start-Service Spooler -WhatIf:$false", "Start-Service Spooler > -WhatIf", "Start-Process missing.exe > -Wait"]) {
       const blocked = await fixture.agent.dispatchHostTool({ type: "toolCall", id: "native-background", name: "powershell", arguments: { command } });
       assert.equal(blocked.isError, true); assert.equal(fixture.executions, 1); assert.equal(fixture.approvals.length, 2);
     }

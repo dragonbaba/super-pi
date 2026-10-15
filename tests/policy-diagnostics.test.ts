@@ -81,6 +81,17 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "Set-Content file.txt -Value $text", "Set-Content -Value ($text) -LiteralPath: file.txt",
     'Set-Content -LiteralPath "FileSystem::$file" -Value $text', "Set-Content file.txt -Value 'Variable:PSDefaultParameterValues'",
     "Add-Content file.txt -Value $text", "Clear-Content file.txt", "sc.exe query MyService",
+    "Get-Content file.txt -First: 1", "gc -Last $count -Path file.txt", 'Get-Content -LiteralPath "FileSystem::$file" -Raw',
+    "cat.exe file.txt", "Get-Content -ReadCount $batch file.txt",
+    "$content | Set-Content -LiteralPath file.txt",
+    "Start-Service -Name Spooler -WhatIf", "Start-Service -Name Spooler -WhatIf:$true", "Restart-Service Spooler -wi",
+    "Resume-Service Spooler -WhatIf: $true", "Set-Service Spooler -Status Running -WhatIf",
+    "Start-Process tool.exe -wi", "Start-Process tool.exe 2>&1 -WhatIf", "Start-Process tool.exe > output.txt -Wait",
+    "Write-Output report.SessionState metadata.PSVariable .SessionState",
+    "Start-Process tool.exe -ArgumentList mode=foreground -WhatIf",
+    "Start-Process tool.exe -ArgumentList `> -Wait",
+    "Start-Process tool.exe -ArgumentList data> -Wait", 'Start-Process tool.exe -ArgumentList foo"bar"> -Wait',
+    'Start-Process tool.exe -ArgumentList "data"`"> -Wait', "Start-Service Spooler>> -WhatIf",
   ]) assert.equal(inspectPowerShellResourceLifecycle({ command }), undefined, command);
   for (const command of [
     "Start-Job { Write-Output 1 }", "$job = Start-ThreadJob { Write-Output 1 }", "if ($true) {} Start-Job {}",
@@ -187,6 +198,18 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "sc -LiteralPath: Variable:PSDefaultParameterValues -Value $defaults", "Set-Content -Value $block -Path Function:f",
     "Set-Content -Path $path -Value $text", "Set-Content -Path:($path) -Value $text",
     "Add-Content Variable:PSDefaultParameterValues -Value $defaults", "Clear-Content Alias:sj",
+    "$defaults=Get-Content Variable:PSDefaultParameterValues; $defaults.Add('ForEach-Object:AsJob',$true)",
+    "gc -LP: Variable:PSDefaultParameterValues", "cat -Path Variable:PSDefaultParameterValues", "type Variable:PSDefaultParameterValues",
+    "Get-Content -LiteralPath $path", "Get-Content -Path:($path)",
+    "[pscustomobject]@{Path='Variable:PSDefaultParameterValues'} | Set-Content -Value $defaults",
+    "[pscustomobject]@{Path='Variable:PSDefaultParameterValues'} | Get-Content",
+    "Start-Service Spooler -WhatIf:$false", "Start-Service Spooler -wi: $flag", "Start-Service -- Spooler -WhatIf",
+    "Start-Service -Name (Start-Job {}) -WhatIf", "Start-Service Spooler > -WhatIf",
+    "Start-Process tool.exe > -Wait", "Start-Process tool.exe 2> -Wai", "Start-Process tool.exe > -WhatIf",
+    "Start-Process tool.exe -ArgumentList ('-WhatIf')", "Start-Process tool.exe -ArgumentList (Start-Job {}) -WhatIf",
+    "($ExecutionContext).SessionState", "([runspace]::DefaultRunspace).SessionStateProxy",
+    "Start-Process tool.exe >", "Start-Process tool.exe -ArgumentList mode=-WhatIf",
+    'Start-Process "tool.exe"> -Wai', "Start-Process 'tool.exe'> -Wait", "Start-Service 'Spooler'>> -WhatIf",
   ]) assert.ok(inspectPowerShellResourceLifecycle({ command }), command);
 });
 

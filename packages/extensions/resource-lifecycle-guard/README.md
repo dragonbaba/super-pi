@@ -365,6 +365,19 @@ can write hashtable values to the Variable provider on both Windows PowerShell
 paths are opaque. Ordinary literal/qualified file paths with dynamic content stay
 eligible for normal authorization. The Windows PowerShell sc alias is distinct
 from native sc.exe, whose existing service-control authorization scope is retained.
+Get-Content and its native aliases use the same target boundary: a Variable-provider
+read returns the original mutable object, as verified on both PowerShell versions.
+Reader-specific flags and First/Head/Last aliases retain their native bindings;
+normal literal/qualified file reads still follow ordinary authorization.
+Content paths must be explicit: native pipeline property binding can supply a
+Variable-provider path otherwise. Piped content with an explicit file target stays
+supported; uninspected upstream objects cannot establish target identity.
+Native service/process ShouldProcess dry runs accept their own literal enabled
+WhatIf (including the verified wi alias). False/dynamic, nested, redirected or
+post-`--` spellings do not prove a dry run. Nested argument commands still pass
+the main lifecycle walk, and redirected filenames cannot prove Wait ownership.
+Plain dotted SessionState/PSVariable labels remain argument data; variable,
+type and parenthesized-member capability expressions retain inspection.
 
 Unchanged scope: external module loading and native sc.exe/net.exe service control
 already passed the original Bash lifecycle and high-risk scanners at the PR base.
