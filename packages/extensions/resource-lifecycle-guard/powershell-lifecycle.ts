@@ -37,6 +37,7 @@ const CMD_START_FLAGS = new Set(["/i", "/min", "/max", "/separate", "/shared", "
 const CMD_START_VALUES = new Set(["/d", "/node", "/affinity", "/machine"]);
 const SPACE = /\s/;
 const PUNCTUATION = /[;|\n\r{}()=&]/;
+const STOP_PARSING_BOUNDARY = /[\s;|(){}&,]/;
 // PowerShell accepts unambiguous parameter prefixes and these Unicode dashes.
 const PARAMETER_DASH = /^[-\u2013\u2014\u2015]/;
 const TYPE_CHARACTER = /[\p{L}\p{Nd}_.,+]/u;
@@ -50,6 +51,13 @@ interface Token { value: string; quoted: boolean; quotedEnd: number; dynamic: bo
 
 function quoteKind(value: string | undefined): number {
 	return value === "'" || value === "‘" || value === "’" ? 1 : value === '"' || value === "“" || value === "”" ? 2 : 0;
+}
+
+function isCommaBoundary(source: string, index: number): boolean {
+	if (source[index] !== ",") return false;
+	let cursor = index;
+	while (source[cursor - 1] === "`") cursor--;
+	return ((index - cursor) & 1) === 0;
 }
 
 /** Skip opaque data only, preserving the following statement boundary. */
@@ -86,7 +94,7 @@ function parenthesisEnd(source: string, start: number, depth: number): number {
 		if (depth + nesting > MAX_NESTING) return -1;
 		const c = source[i++];
 		if (c === "`") { i++; continue; }
-		if (c === "#" && (SPACE.test(source[i - 2]!) || PUNCTUATION.test(source[i - 2]!))) { while (i < source.length && source[i] !== "\n") i++; continue; }
+		if (c === "#" && (SPACE.test(source[i - 2]!) || PUNCTUATION.test(source[i - 2]!) || isCommaBoundary(source, i - 2))) { while (i < source.length && source[i] !== "\n") i++; continue; }
 		if (c === "<" && source[i] === "#") {
 			const end = source.indexOf("#>", i + 1);
 			if (end < 0) return -1;
@@ -379,10 +387,12 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 	const tokens: Token[] = [];
 	// Reuse the bounded primitive stack: attribute ends while lexing, then contexts.
 	const contexts: number[] = [];
+	let commaContinuation = false;
 	for (let i = 0; i < command.length;) {
 		if (tokens.length >= MAX_TOKENS) return refusal("SHELL_INSPECTION_LIMIT", "too many PowerShell tokens");
 		const start = i, ch = command[i]!;
 		if (i === contexts[contexts.length - 1]! - 1) {
+			commaContinuation = false;
 			contexts.pop();
 			tokens.push({ value: "]", quoted: false, quotedEnd: 0, dynamic: false, operator: true, typeOnly: false, start, end: ++i });
 			continue;
@@ -392,6 +402,27 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 			const end = command.indexOf("#>", i + 2);
 			if (end < 0) return UNCERTAIN;
 			i = end + 2;
+			continue;
+		}
+		if ((ch === "\n" || ch === "\r") && commaContinuation) { i++; continue; }
+		if (SPACE.test(ch) && ch !== "\n" && ch !== "\r") { i++; continue; }
+		commaContinuation = false;
+		if (command.startsWith("--%", i) && (i + 3 === command.length || STOP_PARSING_BOUNDARY.test(command[i + 3]!))) {
+			i += 3;
+			tokens.push({ value: "--%", quoted: false, quotedEnd: 0, dynamic: false, operator: false, typeOnly: false, start, end: i });
+			// Native stop-parsing honors only double quotes around a pipe. Newlines
+			// always end it; semicolons, comments, escapes and braces are raw data.
+			const payload = i;
+			let inQuotes = false;
+			while (i < command.length && command[i] !== "\n" && command[i] !== "\r") {
+				if (command[i] === '"') inQuotes = !inQuotes;
+				else if (command[i] === "|" && !inQuotes) break;
+				i++;
+			}
+			if (i > payload) {
+				if (tokens.length === MAX_TOKENS) return refusal("SHELL_INSPECTION_LIMIT", "too many PowerShell tokens");
+				tokens.push({ value: "", quoted: true, quotedEnd: i, dynamic: false, operator: false, typeOnly: false, start: payload, end: i });
+			}
 			continue;
 		}
 		// Leading redirects are syntax even without spaces before their target.
@@ -419,7 +450,7 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 				continue;
 			}
 		}
-		let value = "", quoted = false, quotedEnd = 0, dynamic = false, span = i, typeOnly = false;
+		let value = "", quoted = false, quotedEnd = 0, dynamic = false, span = i, typeOnly = false, commaBoundary = false;
 		while (command[i] === "[") {
 			const type = readType(command, i);
 			if (!type) break;
@@ -435,6 +466,8 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 			span = i; typeOnly = false;
 		}
 		while (i < command.length && !SPACE.test(command[i]!) && !PUNCTUATION.test(command[i]!)) {
+			if (command[i] === "#" && commaBoundary) break;
+			commaBoundary = false;
 			if (quotedEnd === i && (command[i] === ">" || ((command[i] === "*" || (command[i]! >= "1" && command[i]! <= "6")) && command[i + 1] === ">"))) break;
 			typeOnly = false;
 			const c = command[i++]!;
@@ -457,7 +490,7 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 				continue;
 			}
 			const quote = quoteKind(c);
-			if (!quote) { if (c === "$" || c === "@") dynamic = true; continue; }
+			if (!quote) { if (c === "$" || c === "@") dynamic = true; commaBoundary = c === ","; continue; }
 			const quoteStart = i - 1;
 			value += command.slice(span, i - 1);
 			quoted = true;
@@ -482,6 +515,7 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 			if (!closed) return UNCERTAIN;
 		}
 		value += command.slice(span, i);
+		commaContinuation = commaBoundary;
 		if (value || quoted) tokens.push({ value, quoted, quotedEnd, dynamic, operator: false, typeOnly, start, end: i });
 	}
 	if (contexts.length) return UNCERTAIN;

@@ -344,8 +344,9 @@ discovery/refusal work, not progress/render work, and does not run another probe
 
 Collapsed Codemode errors skip policy headings and npm startup banners, prefer
 the first file/line compiler error (including colored output), and show short HTTP
-failure causes. A later specific exception or missing-path diagnostic supersedes
-compiler output; generic Error wrappers do not. Model summaries retain concrete diagnostics and policy recovery;
+failure causes. A later specific exception, concrete Node spawn/spawnSync OS error,
+or missing-path diagnostic supersedes compiler output; generic Error wrappers do
+not. Model summaries retain concrete diagnostics and policy recovery;
 expanded output and canonical results retain all diagnostics. Output scanning
 remains capped at 2,048 characters, with 160/512-character display/model limits.
 
@@ -373,7 +374,7 @@ Existing authorization and allocation source invariants cover the adjacent chain
 | --- | ---: | ---: | ---: |
 | Codemode compiler failure, collapsed | 4,096 | 1,620 | 0.0018 |
 | Codemode native PowerShell refusal, collapsed | 4,096 | 1,490 | 0.0018 |
-| Codemode compiler followed by terminal exception, collapsed | 4,096 | 1,585 | 0.0017 |
+| Codemode compiler followed by spawn failure, collapsed | 4,096 | 1,463 | 0.0017 |
 | Codemode three consecutive quoted diagnostics, collapsed | 4,096 | 1,564 | 0.0018 |
 | Main production frame | 1,024 | 7,629 | 0.0602 |
 | Alt production frame | 1,024 | 11,796 | 0.0680 |
@@ -441,3 +442,14 @@ checks are bounded invocation-only work and reuse the existing token storage.
 Grouped literal targets skip newline trivia only inside their parentheses; a newline
 after the group still ends the invocation. Redirections immediately after a leading
 quoted target are separate tokens, while embedded unquoted data> stays argument text.
+Native stop-parsing (`--%`) keeps its payload opaque through the next newline or
+unquoted pipe; double-quoted pipes remain payload. Semicolons and command-like text
+inside it do not become lifecycle commands. Unescaped commas establish comment
+boundaries and newline continuation, so commented `-Wait` text cannot prove a
+foreground launch. Escaped commas retain their literal meaning. These are bounded
+grammar fixes, not additions to the command/type catalog.
+The spawn-failure fixture reuses the same completion-to-release audit: one row,
+one output/failure projection, zero event Promises, zero released row/timer/text/
+result references and 0/2 retained weak owners after controlled GC. Four focused
+behavioral tests, type checking and all ten source/AST invariants pass. No new
+test file or unchanged frame/queue benchmark rerun was needed.

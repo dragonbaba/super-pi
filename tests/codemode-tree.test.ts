@@ -150,6 +150,8 @@ test("npm preambles and policy headings do not hide actionable causes or model r
 	assert.equal(codemodeFailureReason(`npm notice run tsc --noEmit\n${prettyCause}\nError: typecheck failed\nCommand exited with code 1`), prettyCause);
 	for (const audience of ["display", "model"] as const) {
 		assert.equal(codemodeFailureReason(`${cause}\nTimeoutError: compiler server did not respond\nError: typecheck failed`, audience), "TimeoutError: compiler server did not respond");
+		assert.equal(codemodeFailureReason(`${cause}\nError: spawn tsc ENOENT\nCommand exited with code 1`, audience), "Error: spawn tsc ENOENT");
+		assert.equal(codemodeFailureReason(`${cause}\nError: spawnSync C:/Program Files/tool.exe EACCES`, audience), "Error: spawnSync C:/Program Files/tool.exe EACCES");
 		assert.equal(codemodeFailureReason(`${cause}\nENOENT: no such file or directory, open 'input.ts'`, audience), audience === "display" ? "Path does not exist." : "ENOENT: no such file or directory, open 'input.ts'");
 	}
 	for (const banner of ["npm notice run remotion-video-project@1.0.0 typecheck\nnpm notice run tsc --noEmit", "> project@1.0.0 typecheck\n> tsc --noEmit", "npm info run project@1.0.0 typecheck", "> @scope/project@1.0.0-dev typecheck\n> tsc --noEmit"]) {

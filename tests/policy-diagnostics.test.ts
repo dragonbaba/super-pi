@@ -28,6 +28,11 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "& 'C:/Program Files/tool.exe' --help",
     "& { Write-Output 1 }; Write-Output 2 2>&1",
     "Write-Output `&; Write-Output `;", "Write-Output 1 && Write-Output 2",
+    "cmd.exe --% /c echo ; Start-Job {}", 'cmd.exe --% /c echo "a|b" ; Start-Job {}',
+    "cmd.exe --%; Start-Job {}", "Write-Output --% ; Start-Job {}",
+    "Write-Output a,# Start-Job {}\nb", "Write-Output a,\nStart-Job",
+    "Start-Process tool.exe -ArgumentList a,# comment\nb -Wait",
+    "Start-Process tool.exe -ArgumentList a`,# -Wait\nb",
     "Write-Output -As'Job'", "Write-Output '-AsJob'", "$p.StartInfo.FileName = 'tool.exe'; $p.StartTime",
     "Start-Process -FilePath tool.exe -Wait; Start-Process -FilePath other.exe -Wait",
     "Start-Process tool.exe 2>&1 -Wait", "Start-Process tool.exe -Wait 2>&1",
@@ -199,6 +204,10 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
   }
   for (const command of [
     "Start-Job { 1 }", "$job=Start-ThreadJob { 1 }", "Microsoft.PowerShell.Core\\Start-Job {}", "Sta`rt-Job {}",
+    "cmd.exe --% /c echo ; literal\nStart-Job {}", "cmd.exe --% /c echo raw | Start-Job {}",
+    'cmd.exe --% /c echo "a|b" | Start-Job {}', "cmd.exe --%foo ; Start-Job {}", "cmd.exe --%=foo ; Start-Job {}",
+    "Start-Process tool.exe -ArgumentList a,# -Wait\nb", "Start-Process tool.exe -ArgumentList 'a',# -Wait\nb",
+    "Write-Output a,# comment\nb\nStart-Job {}",
     "Start-Process tool.exe", "saps tool.exe", "Start-Process tool.exe -Wait; Start-Process other.exe",
     "Start-Process --% tool.exe -Wait", "Start-Process -- tool.exe -Wait", "Start-Process tool.exe -Wait:$false",
     "Start-Process tool.exe '-Wait'", "Start-Process tool.exe -Wa'it'", "Start-Process tool.exe @options -Wait",
