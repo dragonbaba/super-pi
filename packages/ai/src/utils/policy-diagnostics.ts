@@ -108,7 +108,7 @@ export function renderPolicyDiagnostic(diagnostic: PolicyDiagnostic): string {
 		const next = diagnostic.nativeToolAvailable === true
 			? "Use the enabled native PowerShell tool for this query; normal authorization still applies."
 			: diagnostic.nativeToolDiscoverable === true
-				? 'Use tool_search with query "powershell", then read its schema and call the discovered native tool; normal authorization still applies.'
+				? 'Use tool_search with query "powershell", then read its schema with describeTools(["powershell"]). Use callTool("powershell", args) in this Codemode script, or tools.powershell in a new script; normal authorization still applies.'
 			: "Use a directly inspectable foreground command; resubmit for authorization.";
 		return `${prefix}\nBash analysis cannot inspect ${launcher}.\nNext: ${next}`;
 	}

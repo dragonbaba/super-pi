@@ -198,6 +198,7 @@ test("production extension preflight reaches the first refusal without backend o
     configuredTools.push({ name: "powershell" });
     const discoverable = await agent.dispatchHostTool({ type: "toolCall", id: "wrapper-discoverable", name: "bash", arguments: { command: USER_COMMANDS[1] } });
     assert.match(JSON.stringify(discoverable.content), /Use tool_search.*powershell.*read its schema/);
+    assert.match(JSON.stringify(discoverable.content), /describeTools.*callTool.*new script/);
     assert.equal(catalogReads, 2);
     activeTools.push("powershell");
     const availableResult = await agent.dispatchHostTool({ type: "toolCall", id: "wrapper-available", name: "bash", arguments: { command: USER_COMMANDS[1] } });

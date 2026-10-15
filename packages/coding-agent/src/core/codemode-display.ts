@@ -42,7 +42,7 @@ const UNKNOWN_TOOL_DIAGNOSTIC = /^tools\.([\w$]{1,80}) does not exist\./;
 const EXIT_DIAGNOSTIC = /^Command exited with code -?\d+\.?$/;
 const NUMERIC_OUTPUT_LINE = /^[+-]?\d+(?:\.\d+)?$/;
 const PREFLIGHT_HEADING = /^(?:\[(?:POLICY_BLOCKED|SHELL_WRAPPER)(?::[A-Z_]+)?\]\s*)?Not executed:$/;
-const COMPILER_DIAGNOSTIC = /^(?:.+(?:\(\d+,\d+\)|:\d+(?::\d+)?):\s*(?:fatal )?error\b|error\s+(?:TS\d+|[A-Z]+\d+):)/i;
+const COMPILER_DIAGNOSTIC = /^(?:.+(?:\(\d+,\d+\)|:\d+(?::\d+)?)(?::|\s+-)\s*(?:fatal )?error\b|error\s+(?:TS\d+|[A-Z]+\d+):)/i;
 const NPM_STARTUP = /^(?:npm (?:notice run|info run)\b|>\s|\$\s|npm (?:notice|info)\s*$)/;
 const ANSI_SGR = /\x1b\[[\d;]*m/g;
 const HTTP_EXCEPTION = /^(?:[\w.]+Error|[\w.]+Exception):\s*(\d{3}),\s*message=['"]([^'"\r\n]{1,100})['"]/;
