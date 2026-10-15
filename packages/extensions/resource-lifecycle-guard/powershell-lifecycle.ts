@@ -18,6 +18,7 @@ const VARIABLE_PROVIDER = /(?:^|[:,])(?:[^:,]*\\)?variable:/i;
 const VARIABLE_WILDCARD = /[*?\[]/;
 const VARIABLE_LOOKUP_FLAGS = new Set(["valueonly", "verbose", "debug"]);
 const VARIABLE_REFERENCE_OPTIONS = new Set(["name", "errorvariable", "warningvariable", "informationvariable", "outvariable", "pipelinevariable"]);
+const VARIABLE_OUTPUT_OPTIONS = new Set(["errorvariable", "warningvariable", "informationvariable", "outvariable", "pipelinevariable"]);
 const VARIABLE_LOOKUP_PARAMETERS = ["name", "valueonly", "include", "exclude", "scope", "verbose", "debug", "erroraction", "warningaction", "informationaction", "progressaction", "errorvariable", "warningvariable", "informationvariable", "outvariable", "outbuffer", "pipelinevariable"];
 const VARIABLE_LOOKUP_ALIASES = new Map([["vb", "verbose"], ["db", "debug"], ["ea", "erroraction"], ["wa", "warningaction"], ["infa", "informationaction"], ["proga", "progressaction"], ["ev", "errorvariable"], ["wv", "warningvariable"], ["iv", "informationvariable"], ["ov", "outvariable"], ["ob", "outbuffer"], ["pv", "pipelinevariable"]]);
 const ITEM_READER_PARAMETERS = ["path", "literalpath", "filter", "include", "exclude", "force", "credential", "stream", ...VARIABLE_LOOKUP_PARAMETERS.slice(5)];
@@ -28,6 +29,8 @@ const FOR_EACH = new Set(["foreach-object", "foreach", "%"]);
 const FOR_EACH_PARAMETERS = ["inputobject", "begin", "process", "end", "remainingscripts", "membername", "argumentlist", "parallel", "throttlelimit", "timeoutseconds", "asjob", "usenewrunspace", "whatif", "confirm", ...VARIABLE_LOOKUP_PARAMETERS.slice(5)];
 const FOR_EACH_FLAGS = new Set(["asjob", "usenewrunspace", "whatif", "confirm", "verbose", "debug"]);
 const FOR_EACH_BLOCKS = new Set(["begin", "process", "end", "remainingscripts", "parallel"]);
+const OBJECT_PARAMETERS = ["typename", "comobject", "argumentlist", "strict", "property", ...VARIABLE_LOOKUP_PARAMETERS.slice(5)];
+const OBJECT_FLAGS = new Set(["strict", "verbose", "debug"]);
 const WMI_CAPABILITY = /(?:^|\[|:)(?:wmiclass|(?:System\.)?Management\.ManagementClass)(?:\]|$)/i;
 const SPACE = /\s/;
 const PUNCTUATION = /[;|\n\r{}()=&]/;
@@ -97,6 +100,42 @@ function refusal(code: string, reason: string): string {
 const UNCERTAIN = refusal("SHELL_UNINSPECTABLE", "this PowerShell invocation cannot be inspected");
 const BACKGROUND = refusal("SHELL_BACKGROUND", "unmanaged background work requires an owned task; Start-Process must use a literal -Wait");
 const PROVIDER_PATH = "[SHELL_UNINSPECTABLE] PowerShell not executed: this provider path may expose mutable variable handles.\nNext: for file reads, pass a literal path or an explicitly qualified string such as Get-Item -LiteralPath \"FileSystem::$file\" for normal authorization; do not retry the same blocked call.";
+
+/** Type/ProgID identity must be literal; constructor data can stay dynamic. */
+function inspectNewObject(tokens: readonly Token[], start: number, command: string): string | undefined {
+	let depth = 0, typeSeen = false, parameter: string | undefined;
+	for (let j = start; j < tokens.length; j++) {
+		const arg = tokens[j]!;
+		if (arg.operator) {
+			if (arg.value === "(" || arg.value === "{") {
+				if (!depth) {
+					if (parameter === "typename" || parameter === "comobject" || (!parameter && !typeSeen)) return UNCERTAIN;
+					parameter = undefined;
+				}
+				if (++depth > MAX_NESTING) return UNCERTAIN;
+			} else if (arg.value === ")" || arg.value === "}") { if (!depth) break; depth--; }
+			else if (!depth) break;
+			continue;
+		}
+		if (depth) continue;
+		const raw = command.slice(arg.start, arg.end), colon = raw.indexOf(":");
+		let type = arg.value;
+		if (!parameter && PARAMETER_DASH.test(raw) && (!arg.quoted || colon >= 0)) {
+			const option = raw.slice(1, colon < 0 ? raw.length : colon).toLowerCase();
+			parameter = option === "args" ? "argumentlist" : lookupOption(option, OBJECT_PARAMETERS);
+			if (!parameter) return UNCERTAIN;
+			if (OBJECT_FLAGS.has(parameter)) { parameter = undefined; continue; }
+			if (colon < 0) continue;
+			type = arg.value.slice(arg.value.indexOf(":") + 1);
+		}
+		if (parameter === "typename" || parameter === "comobject" || (!parameter && !typeSeen)) {
+			if (arg.dynamic || WMI_CAPABILITY.test(type)) return UNCERTAIN;
+			typeSeen = true;
+		}
+		parameter = undefined;
+	}
+	return undefined;
+}
 
 /** ForEach-Object can dispatch methods without parentheses. Inspect its own
  * arguments, leaving literal script blocks to the main bounded token walk. */
@@ -257,6 +296,16 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		if (token.dynamic && command[token.start] !== "'" && command[token.start] !== '"' && DEFAULT_PARAMETERS.test(value)) return UNCERTAIN;
 		if (command[token.start] !== "'" && command[token.start] !== '"' && SESSION_STATE.test(value)) return UNCERTAIN;
 		if (command[token.start] !== "'" && command[token.start] !== '"' && value.startsWith("[") && WMI_CAPABILITY.test(value)) return UNCERTAIN;
+		// Common variable-output parameters can install ambient defaults even on
+		// otherwise harmless commands; do not evaluate dynamic target names.
+		if (!dataPiece && PARAMETER_DASH.test(command[token.start]!) && (!token.quoted || value.includes(":"))) {
+			const raw = command.slice(token.start, token.end), colon = raw.indexOf(":");
+			const parameter = lookupOption(raw.slice(1, colon < 0 ? raw.length : colon).toLowerCase(), VARIABLE_LOOKUP_PARAMETERS);
+			if (parameter && VARIABLE_OUTPUT_OPTIONS.has(parameter)) {
+				const target = colon < 0 ? tokens[i + 1] : token;
+				if (!target || target.operator || target.dynamic || DEFAULT_PARAMETERS.test(target.value)) return UNCERTAIN;
+			}
+		}
 		if (!dataPiece && !token.quoted && (JOB_OPTION.test(value) || isAsyncOption(value))) return BACKGROUND;
 		// Splat contents can carry job switches even before a literal parameter.
 		// No local variable/dataflow evaluation is performed by this filter.
@@ -295,8 +344,23 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		if (DETACHED.has(name)) return BACKGROUND;
 		if (LAUNCHERS.has(name) || name === ".") return UNCERTAIN;
 		if (name === "new-object") {
-			for (let j = i + 1; j < tokens.length && !tokens[j]!.operator; j++) {
-				if (WMI_CAPABILITY.test(tokens[j]!.value)) return UNCERTAIN;
+			const reason = inspectNewObject(tokens, i + 1, command);
+			if (reason) return reason;
+		}
+		if (name === "get-wmiobject" || name === "gwmi") {
+			let depth = 0;
+			for (let j = i + 1; j < tokens.length; j++) {
+				const arg = tokens[j]!;
+				if (arg.operator) {
+					if (arg.value === "(" || arg.value === "{") { if (++depth > MAX_NESTING) return UNCERTAIN; }
+					else if (arg.value === ")" || arg.value === "}") { if (!depth) break; depth--; }
+					else if (!depth) break;
+					continue;
+				}
+				if (depth) continue;
+				const raw = command.slice(arg.start, arg.end), colon = raw.indexOf(":");
+				const option = raw.slice(1, colon < 0 ? raw.length : colon).toLowerCase();
+				if (PARAMETER_DASH.test(raw) && option && "list".startsWith(option)) return UNCERTAIN;
 			}
 		}
 		if (FOR_EACH.has(name) && !(name === "foreach" && tokens[i + 1]?.value === "(")) {

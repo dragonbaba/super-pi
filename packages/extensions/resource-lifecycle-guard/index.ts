@@ -150,9 +150,9 @@ export default function resourceLifecycleGuard(pi: ExtensionAPI): void {
     if (process.platform !== "win32") return "unavailable";
     try {
       const active = pi.getActiveTools();
-      if (active.includes("powershell")) return "active";
-      if (active.includes("tool_search")) {
-        for (const tool of pi.getAllTools()) if (tool.name === "powershell") return "discoverable";
+      const nativeActive = active.includes("powershell");
+      if (nativeActive || active.includes("tool_search")) {
+        for (const tool of pi.getAllTools()) if (tool.name === "powershell" && tool.available !== false) return nativeActive ? "active" : "discoverable";
       }
     } catch { /* Loading/offline contexts cannot establish tool availability. */ }
     return "unavailable";

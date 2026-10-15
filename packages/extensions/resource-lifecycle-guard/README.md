@@ -323,6 +323,11 @@ still requires explicit names and output-variable targets. SessionState/PSVariab
 checks apply to capability/member syntax rather than ordinary argument words.
 HTTP shortening is limited to recognized aiohttp response/handshake exceptions
 with 4xx/5xx status codes; unrelated numeric exceptions retain their own meaning.
+New-Object requires a literal .NET type/COM identity but retains dynamic constructor
+data and property values. Get-WmiObject/gwmi class listings expose callable WMI
+capabilities and are opaque; ordinary instance queries remain available. Common
+variable-output parameters (including PipelineVariable/pv) cannot target the
+default-parameter table or an uninspectable variable name on any command.
 
 Unchanged scope: external module loading and native sc.exe/net.exe service control
 already passed the original Bash lifecycle and high-risk scanners at the PR base.
@@ -335,6 +340,10 @@ discoverable tool, and an unavailable tool. Discovery is suggested only when
 `tool_search` is active and the filtered catalog contains `powershell`; neither
 tool activation nor authorization is automatic. Catalog lookup runs only on the
 relevant refusal, through one extension-owned callback, with no cached catalog.
+Catalog metadata also carries host/probe availability, including the current
+disabled runtime state. Recovery and tool_search exclude unavailable tools even
+when their definitions, or a stale active entry, remain present. This is explicit
+discovery/refusal work, not progress/render work, and does not run another probe.
 
 Collapsed Codemode errors skip policy headings and npm startup banners, prefer
 the first file/line compiler error (including colored output), and show short HTTP

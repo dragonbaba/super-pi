@@ -59,6 +59,9 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "ForEach-Object -InputObject (Get-Date) -MemberName ToString", "ForEach-Object -Parallel { 1 } -As'Job'",
     'Get-ChildItem -LiteralPath "FileSystem::$file" -Recurse -Depth $depth -ErrorAction $action',
     'Get-Item -fo -LiteralPath "FileSystem::$file"', "Get-Item foo=bar", "Write-Output wmiclass System.Management.ManagementClass",
+    "New-Object -TypeName System.Text.StringBuilder -ArgumentList $capacity", "New-Object -ArgumentList ($capacity) -TypeName System.Text.StringBuilder",
+    "New-Object System.Text.StringBuilder -Property @{Capacity=16}", "Get-WmiObject -Class Win32_OperatingSystem", "gwmi Win32_OperatingSystem",
+    "Write-Output 1 -PipelineVariable observed", "Write-Output 1 -pv:observed",
   ]) assert.equal(inspectPowerShellResourceLifecycle({ command }), undefined, command);
   for (const command of [
     "Start-Job { Write-Output 1 }", "$job = Start-ThreadJob { Write-Output 1 }", "if ($true) {} Start-Job {}",
@@ -131,6 +134,12 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "$c=New-Object 'System.Management.ManagementClass' 'Win32_Process'; $c.Create('missing.exe')",
     "$path='Variable:PSDefaultParameterValues'; $v=Get-Item $path; $v.Value=@{'ForEach-Object:AsJob'=$true}",
     "Get-Item ('Vari' + 'able:PSDefaultParameterValues')", "Get-ChildItem -Path $path", 'Get-Item "FileSystem::$file",$other',
+    "$type='System.Management.ManagementClass'; $c=New-Object -TypeName $type -ArgumentList 'Win32_Process'; $c.Create('missing.exe')",
+    "New-Object -TypeName ('System.Management.' + 'ManagementClass')", "New-Object $type", "New-Object -t:$type", "New-Object -ComObject $progId",
+    "$c=Get-WmiObject -List -Class Win32_Process; $c.Create('missing.exe')", "gwmi -Li Win32_Process", "Get-WmiObject -List:$true",
+    "Get-WmiObject -Class ('Win32_Process') -List",
+    "$d=@{'ForEach-Object:AsJob'=$true}; $d | Write-Output -PipelineVariable PSDefaultParameterValues | ForEach-Object { 1 | ForEach-Object -Parallel { 1 } }",
+    "Write-Output 1 -pv PSDefaultParameterValues", "Write-Output 1 -PipelineV:PSDefaultParameterValues", "Write-Output 1 -pv $target",
   ]) assert.ok(inspectPowerShellResourceLifecycle({ command }), command);
 });
 
@@ -295,7 +304,7 @@ test("production extension preflight reaches the first refusal without backend o
     const availableText = availableResult.content.filter(c => c.type === "text").map(c => c.text).join("\n");
     if (process.platform === "win32") assert.match(availableText, /Use the enabled native PowerShell tool/);
     else assert.match(availableText, /directly inspectable foreground command/);
-    assert.equal(catalogReads, expectedCatalogReads, "active or platform-unavailable native tools do not enumerate the catalog");
+    assert.equal(catalogReads, expectedCatalogReads + (process.platform === "win32" ? 1 : 0), "active native tools also check host availability on refusal; platform-unavailable tools do not enumerate");
     assert.match(mutationText, /^\[POLICY_BLOCKED:CONFIRMATION_CANCELLED\] Not executed:/);
     const machineDetails = mutationResult.details as any;
     assert.equal(machineDetails.executionStatus, "not_executed");

@@ -567,14 +567,32 @@ test("tool selection expressions constrain late MCP registration, explicit activ
 });
 
 test("tool selection wildcard and denied activation preserve unavailable PowerShell", async t => {
+	const { default: lifecycle } = await jiti.import<{ default: InlineExtension }>("../packages/extensions/resource-lifecycle-guard/index.ts");
 	const settings = SettingsManager.inMemory({ powershellStatus: { available: false, verified: false, path: "missing.exe" } });
-	const f = await fixture(t, { settingsManager: settings, toolSelection: { tools: ["*"] } });
+	const f = await fixture(t, { settingsManager: settings, toolSelection: { tools: ["*"] } }, [toolClassification, lifecycle]);
 	assert.equal(f.session.getActiveToolNames().includes("powershell"), false);
 	assert.equal(settings.getPowerShellStatus()?.available, false);
+	assert.equal(f.session.getAllTools().find(tool => tool.name === "powershell")?.available, false);
+	const blocked = await f.session.agent.dispatchHostTool({ type: "toolCall", id: "unavailable-recovery", name: "bash", arguments: { command: "powershell.exe -NoProfile -Command 'Write-Output fixture'" } });
+	assert.equal(blocked.isError, true);
+	assert.match(JSON.stringify(blocked.content), /directly inspectable foreground command/);
+	assert.doesNotMatch(JSON.stringify(blocked.content), /Use tool_search|enabled native PowerShell/);
+	const search = await f.session.agent.dispatchHostTool({ type: "toolCall", id: "unavailable-search", name: "tool_search", arguments: { query: "powershell" } });
+	assert.equal(search.isError, false);
+	assert.deepEqual((search.details as any)?.matches, []);
+	assert.equal(f.session.getActiveToolNames().includes("powershell"), false);
 	const denied = await fixture(t, { settingsManager: settings, toolSelection: { tools: ["read", "-powershell"] } });
 	denied.session.setActiveToolsByName(["powershell", "read"]);
 	assert.deepEqual(denied.session.getActiveToolNames().sort(), ["codemode", "read"]);
 	assert.equal(settings.getPowerShellStatus()?.available, false);
+	if (process.platform === "win32") {
+		f.session.setActiveToolsByName(["bash", "tool_search", "powershell"]);
+		assert.equal(f.session.getAllTools().find(tool => tool.name === "powershell")?.available, true);
+		(f.session as any)._powerShellToolState.disable("offline transient failure");
+		assert.equal(f.session.getAllTools().find(tool => tool.name === "powershell")?.available, false);
+		const unavailable = await f.session.agent.dispatchHostTool({ type: "toolCall", id: "disabled-active-recovery", name: "bash", arguments: { command: "powershell.exe -Command 'Write-Output fixture'" } });
+		assert.doesNotMatch(JSON.stringify(unavailable.content), /Use tool_search|enabled native PowerShell/);
+	}
 });
 
 test("real tool_search activates allowed tools inside Codemode without exposing denied names", async t => {
