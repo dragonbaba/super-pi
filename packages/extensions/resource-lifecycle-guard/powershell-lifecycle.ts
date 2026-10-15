@@ -51,12 +51,17 @@ const CONTENT_READER_FLAGS = new Set(["force", "usetransaction", "wait", "raw", 
 const SERVICE_START_PARAMETERS = ["name", "inputobject", "passthru", "displayname", "include", "exclude", "force", "whatif", "confirm", ...VARIABLE_LOOKUP_PARAMETERS.slice(5)];
 const SERVICE_SET_PARAMETERS = ["name", "inputobject", "displayname", "credential", "description", "startuptype", "securitydescriptorsddl", "status", "force", "passthru", "computername", "whatif", "confirm", ...VARIABLE_LOOKUP_PARAMETERS.slice(5)];
 const TEE_PARAMETERS = ["inputobject", "filepath", "literalpath", "append", "encoding", "variable", ...VARIABLE_LOOKUP_PARAMETERS.slice(5)];
+const WMI_JOB_COMMANDS = new Set(["get-wmiobject", "gwmi", "remove-wmiobject", "rwmi", "set-wmiinstance", "swmi"]);
+const COMPUTER_JOB_COMMANDS = new Set(["restart-computer", "stop-computer", "test-connection"]);
+// Native metadata: these are the names competing with the AsJob prefix. Other
+// parameters do not affect its binding and retain ordinary argument inspection.
+const WMI_JOB_PARAMETERS = ["asjob", "authentication", "authority", "arguments"];
+const COMPUTER_JOB_PARAMETERS = ["asjob"];
 const WMI_CAPABILITY = /(?:^|\[|:)(?:wmiclass|(?:(?:System\.)?Management\.)?ManagementClass)(?:\]|,|$)/i;
 const SCRIPT_BLOCK_COMPILER = /\[(?:System\.Management\.Automation\.)?scriptblock\]::Create$/i;
 const SPACE = /\s/;
 const PUNCTUATION = /[;|\n\r{}()=&]/;
 // PowerShell accepts unambiguous parameter prefixes and these Unicode dashes.
-const JOB_OPTION = /^[-\u2013\u2014\u2015]asj(?:o(?:b)?)?(?::|$)/i;
 const PARAMETER_DASH = /^[-\u2013\u2014\u2015]/;
 const TYPE_CHARACTER = /[\w.,+]/;
 const STATEMENT_LABEL = /^:[\w]+$/;
@@ -64,7 +69,7 @@ const SIMPLE_VARIABLE = /^\$(?:[\w:]+|\{(?:[^`{}]|`[\s\S])+\})(?:\.[\w]+|\[[\w$]
 const STREAM_REDIRECT = /^[1-6*]?>$/;
 const STREAM_NUMBER = /^[1-6]$/;
 const FILE_REDIRECT = /^[1-6*]?>>?$/;
-const OPAQUE_MEMBER = /(?:\.|::)(?:Start(?:New|Job|\.Invoke)?|Invoke[\w]*|DynamicInvoke|BeginInvoke|GetSteppablePipeline|GetScriptBlock|NewScriptBlock|ExpandString|Run(?:Async)?|Exec|Continue|Shell(?:Execute(?:Ex)?)?)$/i;
+const OPAQUE_MEMBER = /(?:\.|::)(?:Start(?:New|Job|Service|\.Invoke)?|ResumeService|Invoke[\w]*|DynamicInvoke|BeginInvoke|GetSteppablePipeline|GetScriptBlock|NewScriptBlock|ExpandString|Run(?:Async)?|Exec|Continue|Shell(?:Execute(?:Ex)?)?)$/i;
 
 interface Token { value: string; quoted: boolean; quotedEnd: number; dynamic: boolean; operator: boolean; typeOnly: boolean; start: number; end: number }
 
@@ -143,7 +148,7 @@ function hasLiteralWhatIf(tokens: readonly Token[], start: number, command: stri
 }
 
 /** Inspect only the command's own arguments; nested expressions get the main walk. */
-function inspectCommandSwitch(tokens: readonly Token[], start: number, command: string, parameters: readonly string[], optionName: "wait" | "asynchronous"): string | undefined {
+function inspectCommandSwitch(tokens: readonly Token[], start: number, command: string, parameters: readonly string[], optionName: "wait" | "asynchronous" | "asjob"): string | undefined {
 	let wait = false, depth = 0;
 	for (let j = start; j < tokens.length; j++) {
 		const arg = tokens[j]!;
@@ -156,7 +161,8 @@ function inspectCommandSwitch(tokens: readonly Token[], start: number, command: 
 			continue;
 		}
 		if (depth) continue;
-		if (!arg.quoted && (arg.value === "--%" || arg.value === "--")) return UNCERTAIN;
+		if (!arg.quoted && arg.value === "--%") return UNCERTAIN;
+		if (!arg.quoted && arg.value === "--") { if (optionName === "wait") return UNCERTAIN; break; }
 		if (isFileRedirect(tokens, j, command)) { if (tokens[j + 1] && !tokens[j + 1]!.operator) j++; continue; }
 		if (isArgumentSuffix(tokens, j)) continue;
 		const raw = command.slice(arg.start, arg.end), colon = raw.indexOf(":");
@@ -194,16 +200,18 @@ function hasWmiSchemaQuery(query: string): boolean {
 }
 
 /** Content data may be dynamic, but provider identity must be inspectable. */
-function inspectContentTargets(tokens: readonly Token[], start: number, command: string, reader: boolean): string | undefined {
+function inspectContentTargets(tokens: readonly Token[], start: number, command: string, reader: boolean, providerParameters?: readonly string[]): string | undefined {
 	let depth = 0, pathSeen = false, parameter: string | undefined;
-	const parameters = reader ? CONTENT_READER_PARAMETERS : CONTENT_PARAMETERS;
-	const flags = reader ? CONTENT_READER_FLAGS : CONTENT_FLAGS;
+	const parameters = providerParameters ?? (reader ? CONTENT_READER_PARAMETERS : CONTENT_PARAMETERS);
+	const flags = providerParameters ? PROVIDER_READER_FLAGS : reader ? CONTENT_READER_FLAGS : CONTENT_FLAGS;
+	const pathRefusal = providerParameters ? PROVIDER_PATH : UNCERTAIN;
 	for (let j = start; j < tokens.length; j++) {
 		const arg = tokens[j]!;
+		if (arg.operator && arg.value === "=") continue;
 		if (arg.operator) {
 			if (arg.value === "(" || arg.value === "{") {
 				if (!depth) {
-					if (parameter === "path" || parameter === "literalpath" || (!parameter && !pathSeen)) return UNCERTAIN;
+					if (parameter === "path" || parameter === "literalpath" || (!parameter && !pathSeen)) return pathRefusal;
 					parameter = undefined;
 				}
 				if (++depth > MAX_NESTING) return UNCERTAIN;
@@ -211,28 +219,28 @@ function inspectContentTargets(tokens: readonly Token[], start: number, command:
 			else if (!depth) break;
 			continue;
 		}
-		if (depth) continue;
+		if (depth || isArgumentSuffix(tokens, j)) continue;
 		let raw = command.slice(arg.start, arg.end), target = arg.value;
 		const colon = raw.indexOf(":");
 		if (!parameter && PARAMETER_DASH.test(raw) && (!arg.quoted || colon >= 0)) {
 			const option = raw.slice(1, colon < 0 ? raw.length : colon).toLowerCase();
 			parameter = option === "lp" || option === "pspath" ? "literalpath"
-				: reader && (option === "first" || option === "head") ? "totalcount"
-				: reader && option === "last" ? "tail" : lookupOption(option, parameters);
+				: reader && !providerParameters && (option === "first" || option === "head") ? "totalcount"
+				: reader && !providerParameters && option === "last" ? "tail" : lookupOption(option, parameters);
 			if (!parameter) return UNCERTAIN;
 			if (flags.has(parameter) && colon !== raw.length - 1) { parameter = undefined; continue; }
 			if (colon < 0 || colon === raw.length - 1) continue;
 			target = arg.value.slice(arg.value.indexOf(":") + 1); raw = raw.slice(colon + 1);
 		}
 		if (parameter === "path" || parameter === "literalpath" || (!parameter && !pathSeen)) {
-			if (EXECUTABLE_PROVIDER.test(target) || (arg.dynamic && !FILESYSTEM_STRING.test(raw))) return UNCERTAIN;
+			if ((providerParameters ? VARIABLE_PROVIDER : EXECUTABLE_PROVIDER).test(target) || (arg.dynamic && !FILESYSTEM_STRING.test(raw))) return pathRefusal;
 			pathSeen = true;
 		}
 		parameter = undefined;
 	}
 	// Path can bind from pipeline object properties; require an explicit target
 	// rather than guessing the provider from uninspected upstream data.
-	return pathSeen ? undefined : UNCERTAIN;
+	return pathSeen || providerParameters ? undefined : UNCERTAIN;
 }
 
 /** Tee's Variable parameter is a variable sink, separate from common -OutVariable. */
@@ -290,12 +298,6 @@ function isSimpleVariable(value: string): boolean {
 		if (depth || !named) return false;
 	}
 	return SIMPLE_VARIABLE.test(index ? value.slice(index) : value);
-}
-
-function isAsyncOption(value: string): boolean {
-	if (!PARAMETER_DASH.test(value)) return false;
-	const colon = value.indexOf(":"), end = colon < 0 ? value.length : colon;
-	return end >= 4 && end <= 13 && "asynchronous".startsWith(value.slice(1, end).toLowerCase());
 }
 
 function isArgumentSuffix(tokens: readonly Token[], index: number): boolean {
@@ -356,7 +358,7 @@ function inspectNewObject(tokens: readonly Token[], start: number, command: stri
 /** ForEach-Object can dispatch methods without parentheses. Inspect its own
  * arguments, leaving literal script blocks to the main bounded token walk. */
 function inspectForEach(tokens: readonly Token[], start: number, command: string): string | undefined {
-	let depth = 0, memberPending = true, parameter: string | undefined;
+	let depth = 0, memberPending = true, literalArguments = false, parameter: string | undefined;
 	for (let j = start; j < tokens.length; j++) {
 		const arg = tokens[j]!;
 		if (arg.operator) {
@@ -372,9 +374,10 @@ function inspectForEach(tokens: readonly Token[], start: number, command: string
 			continue;
 		}
 		if (depth) continue;
+		if (!parameter && !arg.quoted && arg.value === "--") { literalArguments = true; continue; }
 		const raw = command.slice(arg.start, arg.end), colon = raw.indexOf(":");
 		let member = arg.value;
-		if (!parameter && PARAMETER_DASH.test(raw) && (!arg.quoted || colon >= 0)) {
+		if (!literalArguments && !parameter && PARAMETER_DASH.test(raw) && (!arg.quoted || colon >= 0)) {
 			parameter = lookupOption(raw.slice(1, colon < 0 ? raw.length : colon).toLowerCase(), FOR_EACH_PARAMETERS);
 			if (!parameter) return UNCERTAIN;
 			if (parameter === "asjob") {
@@ -484,35 +487,38 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 	}
 
 	let head = true, assignable = false, equalsData = false, controlBlock = false, paramBlock = false;
-	let doBlock = false, afterDo = false, doCondition = false;
+	let doBlock = false, afterDo = false, doCondition = false, foreachBlock = false, argumentData = false;
 	// Low bits: 0 paren, 1 control block, 2 hash key, 3 hash value, 4 block argument, 5 param list.
 	// 6 is a do body, 7 its trailing while/until condition.
 	// Flag 8 restores an enclosing control statement after its condition parentheses.
+	// 24/40 are foreach's variable/in states; flag 64 saves enclosing -- argument mode.
 	// Primitive call-owned stack, capped at MAX_NESTING and never retained.
 	const contexts: number[] = [];
 	for (let i = 0; i < tokens.length; i++) {
 		const token = tokens[i]!, value = token.value;
+		const topIndex = contexts.length - 1, top = contexts[topIndex], contextKind = top === undefined ? undefined : top & 63;
 		if (token.operator) {
 			if (value === "=") {
-				head = assignable; equalsData = !assignable; controlBlock = false; paramBlock = false;
-				if (assignable && contexts.at(-1) === 2) contexts[contexts.length - 1] = 3;
+				head = assignable; equalsData = !assignable; controlBlock = false; paramBlock = false; foreachBlock = false;
+				if (assignable && contextKind === 2) contexts[topIndex] = (top! & 64) | 3;
 				assignable = false; continue;
 			}
 			assignable = false; equalsData = false;
 			if (value === "(" || value === "{") {
 				if (contexts.length === MAX_NESTING) return UNCERTAIN;
 				const previous = tokens[i - 1];
-				contexts.push(value === "(" ? (doCondition ? 7 : paramBlock ? 5 : controlBlock ? 8 : 0) : previous?.value === "@" && !previous.quoted && previous.end === token.start ? 2 : doBlock ? 6 : controlBlock ? 1 : 4);
-				head = true; controlBlock = false; paramBlock = false; doBlock = false; doCondition = false; continue;
+				const kind = value === "(" ? (doCondition ? 7 : paramBlock ? 5 : controlBlock ? foreachBlock ? 24 : 8 : 0) : previous?.value === "@" && !previous.quoted && previous.end === token.start ? 2 : doBlock ? 6 : controlBlock ? 1 : 4;
+				contexts.push(kind | (argumentData ? 64 : 0));
+				head = true; controlBlock = false; paramBlock = false; doBlock = false; doCondition = false; foreachBlock = false; argumentData = false; continue;
 			}
 			if (value === ")" || value === "}") {
-				const context = contexts.pop();
+				const saved = contexts.pop(), context = saved === undefined ? undefined : saved & 63;
 				if (context === undefined || (value === ")") !== ((context & 7) === 0 || context === 5 || context === 7)) return UNCERTAIN;
 				head = context === 1 || context === 5 || context === 6 || context === 7;
-				controlBlock = (context & 8) !== 0; paramBlock = false; afterDo = context === 6; continue;
+				controlBlock = (context & 8) !== 0; paramBlock = false; foreachBlock = false; afterDo = context === 6; argumentData = (saved! & 64) !== 0; continue;
 			}
-			if (value !== "\n" && value !== "\r") controlBlock = false;
-			if ((value === ";" || value === "\n" || value === "\r") && (contexts.at(-1) === 2 || contexts.at(-1) === 3)) contexts[contexts.length - 1] = 2;
+			if (value !== "\n" && value !== "\r") { controlBlock = false; foreachBlock = false; }
+			if ((value === ";" || value === "\n" || value === "\r") && (contextKind === 2 || contextKind === 3)) contexts[topIndex] = (top! & 64) | 2;
 			if (value === "&") {
 				const next = tokens[i + 1];
 				if (isStreamMerge(tokens, i)) { i++; continue; }
@@ -523,6 +529,8 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 			} else head = true;
 			continue;
 		}
+		if (head) argumentData = false;
+		if (!head && !token.quoted && value === "--") { argumentData = true; continue; }
 		const dataPiece = equalsData && isArgumentSuffix(tokens, i);
 		equalsData = false;
 		const variableValue = token.dynamic && value.includes("`") ? value.replace(VARIABLE_ESCAPE, "$1") : value;
@@ -537,7 +545,7 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		if (command[token.start] !== "'" && command[token.start] !== '"' && value.startsWith("[") && WMI_CAPABILITY.test(value)) return UNCERTAIN;
 		// Common variable-output parameters can install ambient defaults even on
 		// otherwise harmless commands; do not evaluate dynamic target names.
-		if (!dataPiece && PARAMETER_DASH.test(command[token.start]!) && (!token.quoted || value.includes(":"))) {
+		if (!argumentData && !dataPiece && PARAMETER_DASH.test(command[token.start]!) && (!token.quoted || value.includes(":"))) {
 			const raw = command.slice(token.start, token.end), colon = raw.indexOf(":");
 			const parameter = lookupOption(raw.slice(1, colon < 0 ? raw.length : colon).toLowerCase(), VARIABLE_LOOKUP_PARAMETERS);
 			if (parameter && VARIABLE_OUTPUT_OPTIONS.has(parameter)) {
@@ -547,7 +555,6 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 				if (!separate && !target.value.slice(target.value.indexOf(":") + 1)) return UNCERTAIN;
 			}
 		}
-		if (!dataPiece && !token.quoted && (JOB_OPTION.test(value) || isAsyncOption(value)) && literalSwitch(tokens, i, command) !== false) return BACKGROUND;
 		// Splat contents can carry job switches even before a literal parameter.
 		// No local variable/dataflow evaluation is performed by this filter.
 		if (!dataPiece && !token.quoted && token.dynamic && value.startsWith("@") && value.length > 1) return refusal("SHELL_UNINSPECTABLE", "splatted PowerShell arguments may hide lifecycle options; pass explicit arguments");
@@ -557,12 +564,13 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 			if (OPAQUE_MEMBER.test(value) || SCRIPT_BLOCK_COMPILER.test(value)) return refusal("SHELL_UNINSPECTABLE", "launcher or evaluator member ownership cannot be verified; use a literal foreground command (Start-Process requires -Wait)");
 			if (token.dynamic && value !== "$" && value !== "@" && (value.includes("::") || !isSimpleVariable(value))) return UNCERTAIN;
 		}
+		if (contextKind === 40 && !token.quoted && value.toLowerCase() === "in") { contexts[topIndex] = (top! & 64) | 8; head = true; assignable = false; continue; }
 		if (!head) continue;
 		head = false;
-		if (contexts.at(-1) === 2) { assignable = true; continue; }
+		if (contextKind === 2) { assignable = true; continue; }
 		if (token.typeOnly) { head = true; continue; }
 		// Attribute constructors can hide parameter defaults behind further parens.
-		if (contexts.at(-1) === 5 && value.startsWith("[") && !isSimpleVariable(value)) return UNCERTAIN;
+		if (contextKind === 5 && value.startsWith("[") && !isSimpleVariable(value)) return UNCERTAIN;
 		if (!token.quoted && value.startsWith(":")) {
 			if (!STATEMENT_LABEL.test(value)) return UNCERTAIN;
 			head = true; continue;
@@ -571,7 +579,7 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		if ((command[token.start] === "'" || command[token.start] === '"') && tokens[i - 1]?.value !== "&") continue;
 		if (token.dynamic) {
 			// A variable/member expression is not a Bash executable position.
-			if (isSimpleVariable(value)) { assignable = true; continue; }
+			if (isSimpleVariable(value)) { assignable = true; if (contextKind === 24) contexts[topIndex] = (top! & 64) | 40; continue; }
 			if ((value.startsWith("++") || value.startsWith("--")) && isSimpleVariable(value.slice(2))) continue;
 			if ((value.endsWith("++") || value.endsWith("--")) && isSimpleVariable(value.slice(0, -2))) continue;
 			if (value === "$" || (value === "@" && (tokens[i + 1]?.value === "(" || tokens[i + 1]?.value === "{"))) continue;
@@ -579,12 +587,17 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		}
 		const name = value.slice(Math.max(value.lastIndexOf("/"), value.lastIndexOf("\\")) + 1).toLowerCase().replace(/\.exe$/, "");
 		controlBlock = !token.quoted && CONTROL_BLOCK.has(name);
+		foreachBlock = !token.quoted && name === "foreach";
 		paramBlock = !token.quoted && name === "param";
 		doBlock = !token.quoted && name === "do";
 		doCondition = afterDo && !token.quoted && (name === "while" || name === "until"); afterDo = false;
 		if (!token.quoted && (name === "return" || name === "throw" || name === "exit")) { head = true; continue; }
 		if (DETACHED.has(name) && !(SERVICE_STARTERS.has(name) && hasLiteralWhatIf(tokens, i + 1, command, SERVICE_START_PARAMETERS))) return BACKGROUND;
 		if (LAUNCHERS.has(name) || name === ".") return UNCERTAIN;
+		if (WMI_JOB_COMMANDS.has(name) || COMPUTER_JOB_COMMANDS.has(name)) {
+			const reason = inspectCommandSwitch(tokens, i + 1, command, WMI_JOB_COMMANDS.has(name) ? WMI_JOB_PARAMETERS : COMPUTER_JOB_PARAMETERS, "asjob");
+			if (reason) return reason;
+		}
 		if (name === "new-object") {
 			const reason = inspectNewObject(tokens, i + 1, command);
 			if (reason) return reason;
@@ -600,6 +613,7 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 					continue;
 				}
 				if (depth) continue;
+				if (!arg.quoted && arg.value === "--") break;
 				const raw = command.slice(arg.start, arg.end), colon = raw.indexOf(":");
 				const option = raw.slice(1, colon < 0 ? raw.length : colon).toLowerCase();
 				if (!PARAMETER_DASH.test(raw)) continue;
@@ -629,25 +643,8 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		}
 		if (PROVIDER_READERS.has(name)) {
 			const parameters = name === "get-item" || name === "gi" ? ITEM_READER_PARAMETERS : CHILD_READER_PARAMETERS;
-			for (let j = i + 1; j < tokens.length; j++) {
-				let arg = tokens[j]!;
-				if (arg.operator) {
-					if (arg.value === "=") continue;
-					if (arg.value === "(" || arg.value === "{") return PROVIDER_PATH;
-					break;
-				}
-				let raw = command.slice(arg.start, arg.end), target = arg.value;
-				if (PARAMETER_DASH.test(raw)) {
-					const colon = raw.indexOf(":"), option = raw.slice(1, colon < 0 ? raw.length : colon).toLowerCase();
-					const parameter = option === "lp" || option === "pspath" ? "literalpath" : lookupOption(option, parameters);
-					if (!parameter) return UNCERTAIN;
-					if (PROVIDER_READER_FLAGS.has(parameter) && colon !== raw.length - 1) continue;
-					if (colon < 0 || colon === raw.length - 1) { arg = tokens[++j]!; if (!arg || arg.operator) return PROVIDER_PATH; target = arg.value; raw = command.slice(arg.start, arg.end); }
-					else { target = arg.value.slice(arg.value.indexOf(":") + 1); raw = raw.slice(colon + 1); }
-					if (parameter !== "path" && parameter !== "literalpath") continue;
-				}
-				if (VARIABLE_PROVIDER.test(target) || (arg.dynamic && !FILESYSTEM_STRING.test(raw))) return PROVIDER_PATH;
-			}
+			const reason = inspectContentTargets(tokens, i + 1, command, true, parameters);
+			if (reason) return reason;
 		}
 		if (name === "get-variable" || name === "gv") {
 			let literalName = false;

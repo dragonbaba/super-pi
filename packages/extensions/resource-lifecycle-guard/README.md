@@ -381,6 +381,16 @@ type and parenthesized-member capability expressions retain inspection.
 Tee-Object/tee Variable targets use native parameter metadata, including prefixes
 and colon values; preference-table and dynamic names are opaque. Ordinary capture
 variables and FilePath/Path/LiteralPath options retain their normal authorization.
+WMI StartService/ResumeService members are opaque like other unmanaged service
+launches. Job/async switches are inspected in their owning native cmdlets using
+verified prefix metadata, rather than as global argument keywords. The main walk
+preserves `--` data mode across nested arguments while still checking nested
+commands. Foreach's variable/in boundary restores collection-pipeline inspection.
+Provider readers reuse parameter-aware target inspection: computed filters/depths
+and common values remain data, while Path/LiteralPath expressions remain opaque.
+The separate legacy high-risk scanner still refuses foreach collection pipelines
+as unverifiable shell state. Native AST/source fixtures cover their lifecycle
+boundary; the real authorized fixture covers computed filters and `--` data.
 
 Unchanged scope: external module loading and native sc.exe/net.exe service control
 already passed the original Bash lifecycle and high-risk scanners at the PR base.

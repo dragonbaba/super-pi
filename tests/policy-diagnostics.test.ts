@@ -93,6 +93,14 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "Start-Process tool.exe -ArgumentList data> -Wait", 'Start-Process tool.exe -ArgumentList foo"bar"> -Wait',
     'Start-Process tool.exe -ArgumentList "data"`"> -Wait', "Start-Service Spooler>> -WhatIf",
     "1 | Tee-Object -Variable captured", "1 | tee -Var: captured", "1 | Tee-Object -Path file.txt", "1 | tee -LiteralPath $file",
+    "Write-Output -- -AsJob -Asynchronous", "example.exe -asynchronous", "1 | ForEach-Object -- ToString",
+    "Write-Output -- (Write-Output 1 -OutVariable captured) -OutVariable PSDefaultParameterValues",
+    "Get-WmiObject -Class Win32_Service -As:$false", "Test-Connection localhost -AsJob:$false",
+    "foreach ($item in Write-Output 1,2) { Write-Output $item }", "foreach ($item in $items) { Write-Output $item }",
+    "foreach ($a in @(1)) { foreach ($b in @(2)) { Write-Output $b } }",
+    "Get-ChildItem -LiteralPath . -Filter ($pattern)", "Get-ChildItem -Filter ($pattern) -LiteralPath . -Depth ($depth)",
+    "Get-Item -LiteralPath . -ErrorAction ($mode)", "Write-Output report.StartService report.ResumeService",
+    "Get-ChildItem -Filter mode=data -LiteralPath .",
   ]) assert.equal(inspectPowerShellResourceLifecycle({ command }), undefined, command);
   for (const command of [
     "Start-Job { Write-Output 1 }", "$job = Start-ThreadJob { Write-Output 1 }", "if ($true) {} Start-Job {}",
@@ -213,6 +221,15 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     'Start-Process "tool.exe"> -Wai', "Start-Process 'tool.exe'> -Wait", "Start-Service 'Spooler'>> -WhatIf",
     "$d=@{'ForEach-Object:AsJob'=$true}; $d | Tee-Object -Variable PSDefaultParameterValues",
     "$d | tee -Var: PSDefaultParameterValues", "1 | Tee-Object -Variable $target", "1 | tee -Variable:($target)",
+    "$s=Get-WmiObject -Class Win32_Service -Filter \"Name='Spooler'\"; $s.StartService()", "$s.ResumeService()", "$s | ForEach-Object StartService",
+    "Get-WmiObject -Class Win32_Service -AsJob", "rwmi -Path $path -As", "swmi -Class Example -AsJob",
+    "Restart-Computer -AsJob", "Stop-Computer -a", "Test-Connection localhost -a",
+    "foreach ($job in Start-Job { 1 }) { Write-Output $job.Id }", "foreach\n($job\nin Start-Job {}) {}",
+    "foreach ($item in @(1)) { foreach ($job in Start-Job {}) {} }",
+    "Write-Output -- (Write-Output 1 -OutVariable PSDefaultParameterValues)", "Write-Output -- (Start-Job {})",
+    "Write-Output -- -AsJob; Get-WmiObject -Class Win32_Service -AsJob", "1 | ForEach-Object -- InvokeScript",
+    "Get-ChildItem -LiteralPath . -Filter (Start-Job {})", "Get-ChildItem -LiteralPath ($path) -Filter '*.txt'",
+    "Get-Item -Filter mode=data -LiteralPath Variable:PSDefaultParameterValues",
   ]) assert.ok(inspectPowerShellResourceLifecycle({ command }), command);
 });
 
