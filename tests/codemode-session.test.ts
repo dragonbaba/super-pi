@@ -272,6 +272,17 @@ test("Codemode delivers the compiler cause before npm banners while preserving f
 	assert.match(delivered, /npm notice run/); assert.match(delivered, /TS1003/); assert.match(delivered, /Command exited with code 1/);
 });
 
+test("Codemode delivers native PowerShell refusal recovery for an unshown child", async t => {
+	const diagnostic = "[SHELL_BACKGROUND] PowerShell not executed: unmanaged background work requires an owned task.\nNext: submit a literal foreground command for normal authorization; do not retry the same blocked call.";
+	const extension: InlineExtension = pi => pi.registerTool({ name: "refusal_probe", label: "probe", description: "offline refusal fixture",
+		parameters: Type.Object({}), execute: async () => ({ content: [{ type: "text", text: diagnostic }], isError: true, details: {} }) });
+	const f = await fixture(t, {}, [extension, guardrails]);
+	const outcome = await f.run(["await tools.refusal_probe({})"]);
+	assert.equal(outcome.results[0]!.isError, true);
+	assert.match((outcome.results[0]!.content[0] as any).text, /refusal_probe: .*Next: submit a literal foreground command.*do not retry/);
+	assert.match(JSON.stringify(outcome.wires.at(-1)), /Next: submit a literal foreground command/);
+});
+
 for (const repeated of [false, true]) test(`budgeted default bundle accepts multiple shown native reads: repeated=${repeated}`, async t => {
 	const f = await fixture(t, { toolResultPresentation: { enabled: true, budgetTokens: 8000 } }, [], true);
 	writeFileSync(join(f.cwd, "other.txt"), "other\n");

@@ -1682,7 +1682,9 @@ test("native PowerShell assignments and member calls retain authorization and fo
       "$k='ForEach-Object:AsJob'; $PSDefaultParameterValues[$k]=$true; 1 | ForEach-Object -Parallel { 1 }",
       "$ExecutionContext.SessionState.PSVariable.Set('PSDefaultParameterValues', @{'ForEach-Object:AsJob'=$true})",
       "Resume-Service Missing", "rsv Missing", "[Microsoft.VisualBasic.Interaction]::Shell('missing.exe')",
-      "do {} while ($false) Start-Process missing.exe;"]) {
+      "do {} while ($false) Start-Process missing.exe;",
+      "$v=Get-Variable PSDefaultParameterValues; $v.Value=@{'ForEach-Object:AsJob'=$true}",
+      "Register-ScheduledJob -Name LongRunner -ScriptBlock { Start-Sleep 60 } -RunNow"]) {
       const blocked = await fixture.agent.dispatchHostTool({ type: "toolCall", id: "native-background", name: "powershell", arguments: { command } });
       assert.equal(blocked.isError, true); assert.equal(fixture.executions, 1); assert.equal(fixture.approvals.length, 2);
     }

@@ -42,6 +42,7 @@ const UNKNOWN_TOOL_DIAGNOSTIC = /^tools\.([\w$]{1,80}) does not exist\./;
 const EXIT_DIAGNOSTIC = /^Command exited with code -?\d+\.?$/;
 const NUMERIC_OUTPUT_LINE = /^[+-]?\d+(?:\.\d+)?$/;
 const PREFLIGHT_HEADING = /^(?:\[(?:POLICY_BLOCKED|SHELL_WRAPPER)(?::[A-Z_]+)?\]\s*)?Not executed:$/;
+const POWERSHELL_PREFLIGHT = /^\[SHELL_[A-Z_]+\] PowerShell not executed:\s*/;
 const COMPILER_DIAGNOSTIC = /^(?:.+(?:\(\d+,\d+\)|:\d+(?::\d+)?)(?::|\s+-)\s*(?:fatal )?error\b|error\s+(?:TS\d+|[A-Z]+\d+):)/i;
 const NPM_STARTUP = /^(?:npm (?:notice run|info run)\b|>\s|\$\s|npm (?:notice|info)\s*$)/;
 const ANSI_SGR = /\x1b\[[\d;]*m/g;
@@ -61,9 +62,10 @@ export function codemodeFailureReason(text: string, audience: "display" | "model
 	for (let start = 0; start < bounded.length;) {
 		const newline = bounded.indexOf("\n", start);
 		const end = newline < 0 ? bounded.length : newline;
-		const line = bounded.slice(start, end).trim();
+		let line = bounded.slice(start, end).trim();
 		start = end + 1;
 		if (PREFLIGHT_HEADING.test(line)) { preflight = true; continue; }
+		if (POWERSHELL_PREFLIGHT.test(line)) { preflight = true; if (audience === "display") line = line.replace(POWERSHELL_PREFLIGHT, ""); }
 		if (preflight && line.startsWith("Next:")) { recovery = line; continue; }
 		if (!line || line === "Traceback (most recent call last):" || line.startsWith("File \"") || NPM_STARTUP.test(line)) continue;
 		if (!compiler && COMPILER_DIAGNOSTIC.test(line)) compiler = line;

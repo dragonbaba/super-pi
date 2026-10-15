@@ -157,6 +157,11 @@ test("npm preambles and policy headings do not hide actionable causes or model r
 	const policy = '[SHELL_WRAPPER:LAUNCHER_UNSUPPORTED] Not executed:\nBash analysis cannot inspect the `powershell.exe` launcher.\nNext: Use tool_search with query "powershell", then read its schema; normal authorization still applies.';
 	assert.equal(codemodeFailureReason(policy), "Bash analysis cannot inspect the `powershell.exe` launcher.");
 	assert.match(codemodeFailureReason(policy, "model"), /cannot inspect.*Next: Use tool_search.*normal authorization/);
+	for (const code of ["SHELL_BACKGROUND", "SHELL_UNINSPECTABLE", "SHELL_DYNAMIC_EXECUTABLE", "SHELL_INSPECTION_LIMIT"]) {
+		const refusal = `[${code}] PowerShell not executed: fixture reason.\nNext: submit a literal foreground command for normal authorization; do not retry the same blocked call.`;
+		assert.equal(codemodeFailureReason(refusal), "fixture reason.");
+		assert.match(codemodeFailureReason(refusal, "model"), /PowerShell not executed: fixture reason.*Next: submit a literal foreground command.*do not retry/);
+	}
 	const http = "aiohttp.client_exceptions.WSServerHandshakeError: 403, message='Invalid response status', url='wss://example.invalid/long'";
 	assert.equal(codemodeFailureReason(http), "HTTP 403: Invalid response status.");
 	assert.equal(codemodeFailureReason(http, "model"), http);

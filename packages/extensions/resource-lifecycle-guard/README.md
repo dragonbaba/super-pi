@@ -297,6 +297,11 @@ SessionState/PSVariable capability references are opaque, including copied recei
 and runspace proxies. Service resume/Continue and Interaction.Shell are known
 unowned launchers. Do-loop trailing conditions restore statement mode, including
 nested loops; unsupported type/workflow definitions remain opaque like functions.
+Get-Variable/gv require bounded literal names and refuse the preference table,
+wildcard/enumerating and dynamic lookups that can return mutable PSVariable handles.
+Scheduled-job registration/updates remain unowned persistent work. Native refusal
+summaries retain their Next recovery for the model while the collapsed UI shows
+only the reason, using the same completion-only bounded projection cache.
 
 Bash-to-PowerShell recovery distinguishes an active native tool, a configured
 discoverable tool, and an unavailable tool. Discovery is suggested only when
@@ -334,6 +339,7 @@ Existing authorization and allocation source invariants cover the adjacent chain
 | Allocation fixture | Samples | Sampled bytes/update | CPU p95 (ms) |
 | --- | ---: | ---: | ---: |
 | Codemode compiler failure, collapsed | 4,096 | 1,585 | 0.0018 |
+| Codemode native PowerShell refusal, collapsed | 4,096 | 1,490 | 0.0018 |
 | Main production frame | 1,024 | 7,629 | 0.0602 |
 | Alt production frame | 1,024 | 11,796 | 0.0680 |
 | Terminal frame queue | 2,048 | 217 | 0.1767 |
@@ -347,3 +353,8 @@ Release clears rows, timers, text and result references; controlled GC retains
 and create zero frame Promises/controllers/wrappers. Active/pending frame bytes
 and retained references after disposal are zero, including four lifecycle cycles.
 No running user session, provider service or browser authorization was replayed.
+The native-refusal follow-up reran the affected summary/provider-wire tests,
+Codemode source invariants and its existing tree benchmark fixture. It retains
+one row/output/failure projection, zero event Promises and 0/2 weak owners after
+release; the leading samples remain retained-item render/viewport maintenance.
+The unchanged Main/Alt/queue chain uses the earlier evidence above.

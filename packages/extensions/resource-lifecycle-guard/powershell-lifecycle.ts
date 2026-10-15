@@ -5,7 +5,7 @@ const MAX_TOKENS = 2048;
 const MAX_NESTING = 64;
 const BASH = new Set(["bash", "sh", "zsh", "dash", "ksh", "fish"]);
 const LAUNCHERS = new Set(["powershell", "pwsh", "cmd", "invoke-expression", "iex", "invoke-command", "icm", "invoke-cimmethod", "invoke-wmimethod", "iwmi", "invoke-item", "ii", "set-alias", "new-alias", "import-alias", "sal", "nal", "function", "filter", "class", "enum", "workflow", "configuration"]);
-const DETACHED = new Set(["start-job", "sajb", "start-threadjob", "start-service", "sasv", "restart-service", "resume-service", "rsv", "start-scheduledtask", "nohup", "disown", "setsid", "daemonize"]);
+const DETACHED = new Set(["start-job", "sajb", "start-threadjob", "start-service", "sasv", "restart-service", "resume-service", "rsv", "start-scheduledtask", "register-scheduledjob", "set-scheduledjob", "nohup", "disown", "setsid", "daemonize"]);
 const PROCESS = new Set(["start-process", "start", "saps"]);
 const CONTROL_BLOCK = new Set(["if", "elseif", "else", "for", "foreach", "while", "do", "switch", "try", "catch", "finally", "trap", "begin", "process", "end", "clean", "dynamicparam", "data"]);
 const PROVIDER_MUTATORS = new Set(["set-item", "si", "new-item", "ni", "copy-item", "cpi", "cp", "copy", "move-item", "mi", "mv", "move", "rename-item", "rni", "ren", "set-location", "sl", "cd", "chdir", "push-location", "pushd"]);
@@ -13,6 +13,9 @@ const EXECUTABLE_PROVIDER = /(?:^|[:,])(?:[^:,]*\\)?(?:alias|function|variable):
 const VARIABLE_MUTATORS = new Set(["set-variable", "sv", "set", "new-variable", "nv"]);
 const DEFAULT_PARAMETERS = /\bpsdefaultparametervalues\b/i;
 const SESSION_STATE = /\b(?:sessionstate|sessionstateproxy|psvariable)\b/i;
+const VARIABLE_WILDCARD = /[*?\[]/;
+const VARIABLE_LOOKUP_FLAGS = new Set(["valueonly", "verbose", "debug"]);
+const VARIABLE_LOOKUP_OPTIONS = new Set(["scope", "include", "exclude", "erroraction", "warningaction", "informationaction", "progressaction", "ea", "wa"]);
 const SPACE = /\s/;
 const PUNCTUATION = /[;|\n\r{}()=&]/;
 // PowerShell accepts unambiguous parameter prefixes and these Unicode dashes.
@@ -225,6 +228,28 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		if (!token.quoted && (name === "return" || name === "throw" || name === "exit")) { head = true; continue; }
 		if (DETACHED.has(name)) return BACKGROUND;
 		if (LAUNCHERS.has(name) || name === ".") return UNCERTAIN;
+		if (name === "get-variable" || name === "gv") {
+			let literalName = false;
+			for (let j = i + 1; j < tokens.length; j++) {
+				let arg = tokens[j]!;
+				if (arg.operator) { if (arg.value === "(" || arg.value === "{") return UNCERTAIN; break; }
+				if (arg.dynamic || DEFAULT_PARAMETERS.test(arg.value)) return UNCERTAIN;
+				const raw = command.slice(arg.start, arg.end), colon = raw.indexOf(":"), option = raw.slice(1, colon < 0 ? raw.length : colon).toLowerCase();
+				let target = arg.value;
+				if (PARAMETER_DASH.test(raw)) {
+					if (VARIABLE_LOOKUP_FLAGS.has(option)) continue;
+					const named = !!option && "name".startsWith(option);
+					if (!named && !VARIABLE_LOOKUP_OPTIONS.has(option)) return UNCERTAIN;
+					if (colon < 0) { arg = tokens[++j]!; if (!arg || arg.operator || arg.dynamic) return UNCERTAIN; target = arg.value; }
+					else target = arg.value.slice(arg.value.indexOf(":") + 1);
+					if (DEFAULT_PARAMETERS.test(target)) return UNCERTAIN;
+					if (!named) continue;
+				}
+				if (!target || VARIABLE_WILDCARD.test(target)) return UNCERTAIN;
+				literalName = true;
+			}
+			if (!literalName) return UNCERTAIN;
+		}
 		const variableMutation = VARIABLE_MUTATORS.has(name);
 		if (PROVIDER_MUTATORS.has(name) || variableMutation) {
 			for (let j = i + 1; j < tokens.length; j++) {

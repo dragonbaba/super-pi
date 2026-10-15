@@ -49,6 +49,7 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "Set-Service -Name Missing -Description 'metadata'", "Set-Service -Name Missing -Status Stopped", "Set-Service -Name Missing -Status:'Paused'",
     "exit 0", "data D {} Write-Output safe", "Set-Variable -Name Count -Value 1",
     "do {} while ($false) Write-Output safe", "do {} until ($true) Write-Output safe",
+    "Get-Variable Count", "Get-Variable -Name Count -Scope Local -ValueOnly", "gv -Name:Count -ErrorAction Stop",
   ]) assert.equal(inspectPowerShellResourceLifecycle({ command }), undefined, command);
   for (const command of [
     "Start-Job { Write-Output 1 }", "$job = Start-ThreadJob { Write-Output 1 }", "if ($true) {} Start-Job {}",
@@ -107,6 +108,9 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.Interaction]::Shell('missing.exe')",
     "do {} while ($false) Start-Process missing.exe;", "do {} until ($true) Start-Job {}",
     "do { do {} until ($true) } while ($false) Start-Process missing.exe", "class C {} Start-Process missing.exe",
+    "$v=Get-Variable PSDefaultParameterValues; $v.Value=@{'ForEach-Object:AsJob'=$true}", "gv -Name 'PSDefaultParameterValues'",
+    "Get-Variable", "gv -Scope Global", "Get-Variable *Default*", "Get-Variable -Name $key",
+    "Register-ScheduledJob -Name LongRunner -ScriptBlock { Start-Sleep 60 } -RunNow", "Set-ScheduledJob -Name LongRunner -RunNow",
   ]) assert.ok(inspectPowerShellResourceLifecycle({ command }), command);
 });
 
