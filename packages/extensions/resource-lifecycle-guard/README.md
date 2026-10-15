@@ -273,6 +273,10 @@ BITS/service switches are refused. Literal argument `=` characters do not become
 assignment boundaries or turn data into commands/options; hashtable values and real
 variable assignments still receive executable inspection. Member calls require
 source adjacency, so `report.Start (Get-Date)` remains ordinary argument data.
+Braced variables remain one variable token (including casts and escaped name
+characters), so their assignment RHS is inspected. Script-block arguments restore
+argument mode; control blocks restore statement mode, including parenthesized
+conditions. `Invoke-Item`/`ii` are opaque launchers with no owned wait path.
 
 Bash-to-PowerShell recovery distinguishes an active native tool, a configured
 discoverable tool, and an unavailable tool. Discovery is suggested only when

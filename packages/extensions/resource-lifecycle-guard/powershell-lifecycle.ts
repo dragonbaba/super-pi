@@ -4,16 +4,17 @@ const MAX_CHARS = 128 * 1024;
 const MAX_TOKENS = 2048;
 const MAX_NESTING = 64;
 const BASH = new Set(["bash", "sh", "zsh", "dash", "ksh", "fish"]);
-const LAUNCHERS = new Set(["powershell", "pwsh", "cmd", "invoke-expression", "iex", "invoke-command", "icm", "invoke-cimmethod", "invoke-wmimethod", "iwmi", "set-alias", "new-alias", "sal", "nal", "function", "filter"]);
+const LAUNCHERS = new Set(["powershell", "pwsh", "cmd", "invoke-expression", "iex", "invoke-command", "icm", "invoke-cimmethod", "invoke-wmimethod", "iwmi", "invoke-item", "ii", "set-alias", "new-alias", "sal", "nal", "function", "filter"]);
 const DETACHED = new Set(["start-job", "sajb", "start-threadjob", "start-service", "sasv", "restart-service", "start-scheduledtask", "nohup", "disown", "setsid", "daemonize"]);
 const PROCESS = new Set(["start-process", "start", "saps"]);
+const CONTROL_BLOCK = new Set(["if", "elseif", "else", "for", "foreach", "while", "do", "switch", "try", "catch", "finally", "trap", "begin", "process", "end", "clean", "dynamicparam"]);
 const SPACE = /\s/;
 const PUNCTUATION = /[;|\n\r{}()=&]/;
 // PowerShell accepts unambiguous parameter prefixes and these Unicode dashes.
 const JOB_OPTION = /^[-\u2013\u2014\u2015]as(?:j(?:o(?:b)?)?)?(?::|$)/i;
 const PARAMETER_DASH = /^[-\u2013\u2014\u2015]/;
 const TYPE_CHARACTER = /[\w.,+]/;
-const SIMPLE_VARIABLE = /^\$[\w:]+(?:\.[\w]+|\[[\w$]+\])*$/;
+const SIMPLE_VARIABLE = /^\$(?:[\w:]+|\{(?:[^`{}]|`[\s\S])+\})(?:\.[\w]+|\[[\w$]+\])*$/;
 const STREAM_REDIRECT = /^[1-6*]?>$/;
 const STREAM_NUMBER = /^[1-6]$/;
 const OPAQUE_MEMBER = /(?:\.|::)(?:Start(?:New|Job|\.Invoke)?|Invoke(?:Script|Member|Method|Expression)?|DynamicInvoke|BeginInvoke|ExpandString|Run(?:Async)?|Exec|ShellExecute(?:Ex)?)$/i;
@@ -92,6 +93,15 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		let value = "", quoted = false, dynamic = false, span = i;
 		while (i < command.length && !SPACE.test(command[i]!) && !PUNCTUATION.test(command[i]!)) {
 			const c = command[i++]!;
+			if (c === "$" && command[i] === "{") {
+				dynamic = true; i++;
+				while (i < command.length && command[i] !== "}") {
+					if (command[i] === "{") return UNCERTAIN;
+					i += command[i] === "`" ? 2 : 1;
+				}
+				if (command[i] !== "}") return UNCERTAIN;
+				i++; continue;
+			}
 			if (c === "`") {
 				value += command.slice(span, i - 1);
 				if (i >= command.length) return UNCERTAIN;
@@ -127,15 +137,16 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		if (value || quoted) tokens.push({ value, quoted, dynamic, operator: false, start, end: i });
 	}
 
-	let head = true, assignable = false, equalsData = false;
-	// 0: parentheses, 1: script block, 2: hashtable key, 3: hashtable value.
+	let head = true, assignable = false, equalsData = false, controlBlock = false;
+	// Low bits: 0 paren, 1 control block, 2 hash key, 3 hash value, 4 block argument.
+	// Flag 8 restores an enclosing control statement after its condition parentheses.
 	// Primitive call-owned stack, capped at MAX_NESTING and never retained.
 	const contexts: number[] = [];
 	for (let i = 0; i < tokens.length; i++) {
 		const token = tokens[i]!, value = token.value;
 		if (token.operator) {
 			if (value === "=") {
-				head = assignable; equalsData = !assignable;
+				head = assignable; equalsData = !assignable; controlBlock = false;
 				if (assignable && contexts.at(-1) === 2) contexts[contexts.length - 1] = 3;
 				assignable = false; continue;
 			}
@@ -143,15 +154,16 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 			if (value === "(" || value === "{") {
 				if (contexts.length === MAX_NESTING) return UNCERTAIN;
 				const previous = tokens[i - 1];
-				contexts.push(value === "(" ? 0 : previous?.value === "@" && !previous.quoted && previous.end === token.start ? 2 : 1);
-				head = true; continue;
+				contexts.push(value === "(" ? (controlBlock ? 8 : 0) : previous?.value === "@" && !previous.quoted && previous.end === token.start ? 2 : controlBlock ? 1 : 4);
+				head = true; controlBlock = false; continue;
 			}
 			if (value === ")" || value === "}") {
 				const context = contexts.pop();
-				if (context === undefined || (value === ")") !== (context === 0)) return UNCERTAIN;
-				head = value === "}" && context === 1; continue;
+				if (context === undefined || (value === ")") !== ((context & 7) === 0)) return UNCERTAIN;
+				head = context === 1; controlBlock = (context & 8) !== 0; continue;
 			}
-			if ((value === ";" || value === "\n" || value === "\r") && (contexts.at(-1) ?? 0) >= 2) contexts[contexts.length - 1] = 2;
+			controlBlock = false;
+			if ((value === ";" || value === "\n" || value === "\r") && (contexts.at(-1) === 2 || contexts.at(-1) === 3)) contexts[contexts.length - 1] = 2;
 			if (value === "&") {
 				const next = tokens[i + 1];
 				if (isStreamMerge(tokens, i)) { i++; continue; }
@@ -186,6 +198,7 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 			return UNCERTAIN;
 		}
 		const name = value.slice(Math.max(value.lastIndexOf("/"), value.lastIndexOf("\\")) + 1).toLowerCase().replace(/\.exe$/, "");
+		controlBlock = !token.quoted && CONTROL_BLOCK.has(name);
 		if (!token.quoted && (name === "return" || name === "throw")) { head = true; continue; }
 		if (DETACHED.has(name)) return BACKGROUND;
 		if (LAUNCHERS.has(name) || name === ".") return UNCERTAIN;

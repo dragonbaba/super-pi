@@ -39,6 +39,9 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "$items=@(1,2); $options=@{Name='sample'; Value=1}; Write-Output $options.Name",
     "Write-Output @{Start-Job='data'; Label='safe'}", "Get-CimClass Win32_Process | Select-Object CimClassName",
     "Start-BitsTransfer -Source 'https://example.invalid/a' -Destination 'a.txt'",
+    "${name}='safe'; [string]${space name}='safe'; ${name}.ToUpper()",
+    "${escaped`}}='safe'; Write-Output ${escaped`}}", "Write-Output { 1 } Start-Job",
+    "if ((Write-Output { 1 } Start-Job)) { Write-Output safe } else { Write-Output { 2 } Start-Job }",
   ]) assert.equal(inspectPowerShellResourceLifecycle({ command }), undefined, command);
   for (const command of [
     "Start-Job { Write-Output 1 }", "$job = Start-ThreadJob { Write-Output 1 }", "if ($true) {} Start-Job {}",
@@ -71,6 +74,9 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "1 | ForEach-Object -Parallel { 1 } –AsJob", "1 | ForEach-Object -Parallel { 1 } —AsJo", "1 | ForEach-Object -Parallel { 1 } ―AsJob:$true",
     "Write-Output 'unterminated", "x ".repeat(2049), "x".repeat(128 * 1024 + 1),
     "[x]".repeat(1024) + "$",
+    "${job}=Start-Job { 1 }", "[object]${space name}=Start-Job { 1 }", "${escaped`}}=Start-Job { 1 }",
+    "Write-Output { 1 }; Start-Job {}", "if ((Write-Output { 1 })) {} Start-Job {}",
+    "if ($true) { Write-Output { 1 } }; Start-Job {}", "Invoke-Item missing.exe", "ii missing.exe",
   ]) assert.ok(inspectPowerShellResourceLifecycle({ command }), command);
 });
 
