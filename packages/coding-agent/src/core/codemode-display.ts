@@ -60,10 +60,11 @@ export function codemodeFailureReason(text: string, audience: "display" | "model
 	// Browser execution already places the authoritative final exception first.
 	// Never replace it with an earlier chained exception from the retained trace.
 	const browserSummary = text.startsWith("[BROWSER_EXEC_") && bounded.includes("\n[Browser diagnostics]\n");
-	let first = "", diagnostic = "", compiler = "", terminal = "", exit = "", recovery = "", shortHeader = "", quotedHeader = "", quotedCommand = "";
+	let first = "", diagnostic = "", compiler = "", terminal = "", exit = "", recovery = "", shortHeader = "";
+	let shortStart = 0, quotedStart = -1, quotedEnd = 0;
 	let preflight = false, npmCommandPending = false;
 	for (let start = 0; start < bounded.length;) {
-		const newline = bounded.indexOf("\n", start);
+		const lineStart = start, newline = bounded.indexOf("\n", start);
 		const end = newline < 0 ? bounded.length : newline;
 		let line = bounded.slice(start, end).trim();
 		start = end + 1;
@@ -74,17 +75,17 @@ export function codemodeFailureReason(text: string, audience: "display" | "model
 		if (shortHeader) {
 			// A short pair can also be quoted diagnostics. Keep it until a real
 			// cause is found; an exit status alone must not discard the pair.
-			if (line.startsWith("> ")) { if (!quotedHeader) { quotedHeader = shortHeader; quotedCommand = line; } shortHeader = ""; continue; }
+			if (line.startsWith("> ")) { if (quotedStart < 0) quotedStart = shortStart; quotedEnd = end; shortHeader = ""; continue; }
 			if (!first) first = shortHeader;
 			shortHeader = "";
 		}
-		// Retain the first quoted pair across a longer run; only a non-quoted
-		// cause may replace it. Canonical output retains every quoted line.
-		if (quotedHeader && line.startsWith("> ")) continue;
+		// A versionless npm preamble and quoted diagnostics are ambiguous. Keep
+		// one bounded source span, materialized only when selected as the fallback.
+		if (quotedStart >= 0 && line.startsWith("> ")) { quotedEnd = end; continue; }
 		if (NPM_SCRIPT_HEADER.test(line)) { npmCommandPending = true; continue; }
 		if (NPM_STARTUP.test(line)) continue;
 		if (npmCommandPending) { npmCommandPending = false; if (NPM_SCRIPT_COMMAND.test(line)) continue; }
-		if (!first && NPM_VERSIONLESS_HEADER.test(line)) { shortHeader = line; continue; }
+		if (!first && NPM_VERSIONLESS_HEADER.test(line)) { shortHeader = line; shortStart = lineStart; continue; }
 		if (line === "Traceback (most recent call last):" || line.startsWith("File \"")) continue;
 		if (!compiler && COMPILER_DIAGNOSTIC.test(line)) compiler = line;
 		if (MISSING_PATH_DIAGNOSTIC.test(line)) {
@@ -101,7 +102,7 @@ export function codemodeFailureReason(text: string, audience: "display" | "model
 	if (!first && shortHeader) first = shortHeader;
 	// Unknown diagnostics (git/curl/compiler output) still carry more information
 	// than an exit code. Bare numeric stdout remains only a fallback.
-	const reason = terminal || compiler || diagnostic || (first && !NUMERIC_OUTPUT_LINE.test(first) ? first : "") || (quotedHeader ? quotedHeader + " " + quotedCommand : "") || exit || first || "Tool call failed.";
+	const reason = terminal || compiler || diagnostic || (first && !NUMERIC_OUTPUT_LINE.test(first) ? first : "") || (quotedStart >= 0 ? bounded.slice(quotedStart, quotedEnd).trim() : "") || exit || first || "Tool call failed.";
 	const httpException = audience === "display" ? HTTP_EXCEPTION.exec(reason) : null;
 	if (httpException) return `HTTP ${httpException[1]}: ${httpException[2]}.`;
 	const ipcTimeout = IPC_TIMEOUT_DIAGNOSTIC.exec(reason);

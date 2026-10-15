@@ -19,6 +19,8 @@ const BITS_RESUME_PARAMETERS = ["bitsjob", "asynchronous", "whatif", "confirm", 
 const SERVICE_START_PARAMETERS = ["name", "inputobject", "passthru", "displayname", "include", "exclude", "force", "whatif", "confirm", ...VARIABLE_LOOKUP_PARAMETERS.slice(5)];
 const SERVICE_SET_PARAMETERS = ["name", "inputobject", "displayname", "credential", "description", "startuptype", "securitydescriptorsddl", "status", "force", "passthru", "computername", "whatif", "confirm", ...VARIABLE_LOOKUP_PARAMETERS.slice(5)];
 const ITEM_PARAMETERS = ["path", "literalpath", "filter", "include", "exclude", "credential", "whatif", "confirm", ...VARIABLE_LOOKUP_PARAMETERS.slice(5)];
+// Native 5.1 metadata: only these names compete with a WhatIf prefix.
+const SCHEDULED_JOB_WHATIF_PARAMETERS = ["whatif", "warningaction", "warningvariable"];
 const WMI_JOB_COMMANDS = new Set(["get-wmiobject", "gwmi", "remove-wmiobject", "rwmi", "set-wmiinstance", "swmi", "invoke-wmimethod", "iwmi"]);
 const REMOTE_COMMANDS = new Set(["invoke-command", "icm"]);
 const COMPUTER_JOB_COMMANDS = new Set(["restart-computer", "stop-computer", "test-connection"]);
@@ -37,8 +39,8 @@ const SPACE = /\s/;
 const PUNCTUATION = /[;|\n\r{}()=&]/;
 // PowerShell accepts unambiguous parameter prefixes and these Unicode dashes.
 const PARAMETER_DASH = /^[-\u2013\u2014\u2015]/;
-const TYPE_CHARACTER = /[\w.,+]/;
-const STATEMENT_LABEL = /^:[\w]+$/;
+const TYPE_CHARACTER = /[\p{L}\p{Nd}_.,+]/u;
+const STATEMENT_LABEL = /^:[\p{L}\p{Nd}_]+$/u;
 const SIMPLE_VARIABLE = /^\$(?:[\p{L}\p{Nd}_?:]+|\{(?:[^`{}]|`[\s\S])+\})(?:\.[\p{L}\p{Nd}_]+|\[[\p{L}\p{Nd}_$?]+\])*$/u;
 const STREAM_REDIRECT = /^[1-6*]?>$/;
 const STREAM_NUMBER = /^[1-6]$/;
@@ -159,6 +161,27 @@ function isFileRedirect(tokens: readonly Token[], index: number, command: string
 		&& !isStreamMerge(tokens, index + 1);
 }
 
+/** Redirection destinations are not parameter operands. No extra token container. */
+function argumentAfterRedirections(tokens: readonly Token[], start: number, command: string): Token | undefined {
+	let index = start;
+	while (index < tokens.length) {
+		if (isStreamMerge(tokens, index + 1)) { index += 3; continue; }
+		if (!isFileRedirect(tokens, index, command)) return tokens[index];
+		const target = tokens[++index];
+		if (!target || (target.operator && target.value !== "(")) return target;
+		let depth = 0, end = target.start;
+		do {
+			const part = tokens[index++]!;
+			if (part.operator && (part.value === "(" || part.value === "{" || part.value === "[")) depth++;
+			else if (part.operator && (part.value === ")" || part.value === "}" || part.value === "]")) depth--;
+			end = part.end;
+			const next = tokens[index];
+			if (!next || (!depth && (next.start !== end || (next.operator && next.value !== "(")))) break;
+		} while (index < tokens.length);
+	}
+	return undefined;
+}
+
 /** Literal ShouldProcess dry runs only; nested commands retain their own checks. */
 function hasLiteralWhatIf(tokens: readonly Token[], start: number, command: string, parameters: readonly string[]): boolean {
 	let depth = 0, enabled = false;
@@ -184,7 +207,7 @@ function hasLiteralWhatIf(tokens: readonly Token[], start: number, command: stri
 		// A bare -wi is either a modern dry run or a legacy binding failure.
 		// Literal boolean colon values cannot bind the legacy enum and stay safe.
 		// Do not guess the final engine: executable recovery may change it later.
-		const next = tokens[j + 1];
+		const next = parameters === PROCESS_PARAMETERS && option === "wi" && colon < 0 ? argumentAfterRedirections(tokens, j + 1, command) : undefined;
 		if (parameters === PROCESS_PARAMETERS && option === "wi" && colon < 0 && next
 			&& (next.value === "(" || (!next.operator && !PARAMETER_DASH.test(command.slice(next.start, next.end))))) continue;
 		enabled = literalSwitch(tokens, j, command) === true;
@@ -514,6 +537,7 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		}
 		// A quoted expression is data unless preceded by an invocation operator.
 		if (quoteKind(command[token.start]) && tokens[i - 1]?.value !== "&" && (tokens[i - 1]?.value !== "." || tokens[i - 1]?.quoted)) continue;
+		if (value.startsWith("[") && value.includes("]::")) { assignable = true; continue; }
 		if (token.dynamic) {
 			// A variable/member expression is not a Bash executable position.
 			if (tokens[i - 1]?.value === "&") continue;
@@ -536,7 +560,7 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		doCondition = afterDo && !token.quoted && (name === "while" || name === "until"); afterDo = false;
 		if (!token.quoted && (name === "return" || name === "throw" || name === "exit")) { head = true; continue; }
 		if (DETACHED.has(name)) {
-			const parameters = SERVICE_STARTERS.has(name) ? SERVICE_START_PARAMETERS : name === "invoke-item" || name === "ii" ? ITEM_PARAMETERS : undefined;
+			const parameters = SERVICE_STARTERS.has(name) ? SERVICE_START_PARAMETERS : name === "invoke-item" || name === "ii" ? ITEM_PARAMETERS : name === "register-scheduledjob" ? SCHEDULED_JOB_WHATIF_PARAMETERS : undefined;
 			if (!parameters || !hasLiteralWhatIf(tokens, i + 1, command, parameters)) return BACKGROUND;
 		}
 		if (EXTERNAL_DETACHED.has(externalName)) return BACKGROUND;

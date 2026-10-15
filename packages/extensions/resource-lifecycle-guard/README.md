@@ -370,7 +370,7 @@ Existing authorization and allocation source invariants cover the adjacent chain
 | Codemode compiler failure, collapsed | 4,096 | 1,620 | 0.0018 |
 | Codemode native PowerShell refusal, collapsed | 4,096 | 1,490 | 0.0018 |
 | Codemode compiler followed by terminal exception, collapsed | 4,096 | 1,585 | 0.0017 |
-| Codemode three consecutive quoted diagnostics, collapsed | 4,096 | 1,458 | 0.0020 |
+| Codemode three consecutive quoted diagnostics, collapsed | 4,096 | 1,564 | 0.0018 |
 | Main production frame | 1,024 | 7,629 | 0.0602 |
 | Alt production frame | 1,024 | 11,796 | 0.0680 |
 | Terminal frame queue | 2,048 | 217 | 0.1767 |
@@ -391,10 +391,10 @@ release; the leading samples remain retained-item render/viewport maintenance.
 The unchanged Main/Alt/queue chain uses the earlier evidence above.
 After tightening npm banner recognition, the compiler fixture was sampled again;
 the table records that latest run, with the same deterministic/release counters.
-Versionless npm output retains a possible header/command pair as two bounded
-string references until a substantive diagnostic is found. If only an exit code
-follows, the pair remains the cause instead of disappearing as presumed noise.
-Joining occurs only for the selected fallback; there is no per-line container or
+Versionless npm output retains possible headers and quoted diagnostics as bounded
+source offsets until a substantive diagnostic is found. If only an exit code
+follows, the quoted span remains the cause instead of disappearing as presumed noise.
+Materialization occurs only for the selected fallback; there is no per-line container or
 callback. Standalone and consecutive `>` diagnostics remain visible, and provider-wire coverage verifies
 the actionable shell error alongside retained full output. The completion →
 Codemode/session → InteractiveMode → retained Text/Box → Main/Alt → terminal queue
@@ -412,7 +412,7 @@ weak owners after controlled GC; row/timer/text/result references clear to zero.
 Leading samples remain retained-item render, prepared-viewport cleanup/layout and
 benchmark timing. Unchanged Main/Alt/queue code reuses the recorded evidence.
 
-Longer quoted diagnostic runs retain the first pair as a bounded fallback; only
+Longer quoted diagnostic runs retain their bounded source span as a fallback; only
 a substantive non-quoted cause replaces it, while canonical output keeps all lines.
 The same completion-to-release audit and ten invariants pass. The three-line fixture
 above retains one row/output/failure projection, zero event Promises, zero released
@@ -424,3 +424,8 @@ metadata confirms Start-Process -wi with an operand binds WindowStyle, not WhatI
 Only that colliding form stops proving a dry run; explicit -WhatIf, standalone -wi,
 literal -wi:$true and foreground -Wait remain accepted. The boolean colon form
 cannot bind the legacy enum, as confirmed by a harmless proxy binding probe.
+Redirection operators/destinations do not become WindowStyle operands; bounded
+lookahead also covers parenthesized and member-expression destinations. Native 5.1
+metadata permits Register-ScheduledJob WhatIf, but not guessed dry-run support for
+the other scheduled-task commands. Unicode labels/type names and static-property
+assignment targets preserve grammar without treating member names as capabilities.
