@@ -45,6 +45,13 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "Sta'rt'-Process tool.exe", 'Start-Proce"ss" tool.exe', "Start-Process tool.exe -Wa'it'",
     "$p = New-Object System.Diagnostics.Process; $p.StartInfo.FileName = 'tool.exe'; $p.Start()",
     "[System.Diagnostics.Process]::Start('tool.exe')", "Write-Output $p.Start()", "($p).Start()", "$p.St'art'()", "$p.Start.Invoke()",
+    "$p=New-Object hashtable; $p.AsJob=$true; 1 | ForEach-Object @p -Parallel { Start-Sleep 60 }",
+    "1 | ForEach-Object -Parallel { 1 } @p", "1 | % @p -Parallel { 1 }",
+    "$ExecutionContext.InvokeCommand.InvokeScript('Start-Job { Start-Sleep 60 }')",
+    "Write-Output $ExecutionContext.InvokeCommand.InvokeScript('Start-Job {}')",
+    "$ExecutionContext.InvokeCommand.ExpandString('$(Start-Job {})')", "[scriptblock]::Create('Start-Job {}').Invoke()",
+    "$method=$p.Start; $method.Invoke()", "$com.Run('tool.exe', 0, $false)", "$task.BeginInvoke()",
+    "Write-Output $receiver.$method('Start-Job {}')",
     "bash -c 'sleep 30 &'", "docker run -d image", "ForEach-Object -Parallel {} -AsJob",
     "Write-Output 'unterminated", "x ".repeat(2049), "x".repeat(128 * 1024 + 1),
   ]) assert.ok(inspectPowerShellResourceLifecycle({ command }), command);

@@ -1667,7 +1667,9 @@ test("native PowerShell assignments and member calls retain authorization and fo
     await fixture.setMode("full-access");
     for (const command of ["Start-Job { Write-Output 1 }", "Start-Process missing.exe", "& $program",
       "$p = New-Object System.Diagnostics.Process; $p.StartInfo.FileName = 'missing.exe'; $p.Start()",
-      "[System.Diagnostics.Process]::Start('missing.exe')"]) {
+      "[System.Diagnostics.Process]::Start('missing.exe')",
+      "$p=New-Object hashtable; $p.AsJob=$true; 1 | ForEach-Object @p -Parallel { 1 }",
+      "$ExecutionContext.InvokeCommand.InvokeScript('Start-Job { 1 }')"]) {
       const blocked = await fixture.agent.dispatchHostTool({ type: "toolCall", id: "native-background", name: "powershell", arguments: { command } });
       assert.equal(blocked.isError, true); assert.equal(fixture.executions, 1); assert.equal(fixture.approvals.length, 2);
     }

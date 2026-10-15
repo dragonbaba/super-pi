@@ -259,6 +259,12 @@ The reported `-As'Job'` parameter bypass was checked against the native AST and
 runtime: it is a string argument, and `ForEach-Object -Parallel { 1 } -As'Job'`
 fails with `PositionalParameterNotFound`; it does not bind the `AsJob` switch.
 Quoted/literal text remains data, while actual unquoted `-AsJob` is blocked.
+Uninspected splats are refused because their values can hide lifecycle switches;
+use explicit arguments instead. Known launcher/evaluator members (including
+InvokeScript, Invoke/BeginInvoke, ExpandString and COM Run/Exec) and dynamic member
+invocation names also stay opaque, including in pipeline/argument positions.
+This prevents variable/member-expression acceptance from becoming an evaluator
+escape while ordinary object methods keep their normal authorization path.
 
 Bash-to-PowerShell recovery distinguishes an active native tool, a configured
 discoverable tool, and an unavailable tool. Discovery is suggested only when

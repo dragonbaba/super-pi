@@ -12,7 +12,7 @@ const JOB_OPTION = /^-asjob(?::|$)/i;
 const SIMPLE_VARIABLE = /^(?:\[[\w.,[\]]+\])*\$[\w:]+(?:\.[\w]+|\[[\w$]+\])*$/;
 const STREAM_REDIRECT = /^[1-6*]?>$/;
 const STREAM_NUMBER = /^[1-6]$/;
-const START_MEMBER = /(?:\.|::)Start(?:\.Invoke)?$/i;
+const OPAQUE_MEMBER = /(?:\.|::)(?:Start(?:New|Job|\.Invoke)?|Invoke(?:Script|Member|Expression)?|DynamicInvoke|BeginInvoke|ExpandString|Run(?:Async)?|Exec|ShellExecute(?:Ex)?)$/i;
 
 interface Token { value: string; quoted: boolean; dynamic: boolean; operator: boolean; start: number; end: number }
 
@@ -110,11 +110,14 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 			continue;
 		}
 		if (!token.quoted && JOB_OPTION.test(value)) return BACKGROUND;
-		// No receiver/type or wait/cleanup proof exists for .NET Start methods.
-		// Inspect argument/subexpression positions too, not only command heads.
-		if (command[token.start] !== "'" && command[token.start] !== '"' && START_MEMBER.test(value)
-			&& tokens[i + 1]?.operator && tokens[i + 1]?.value === "(") {
-			return refusal("SHELL_BACKGROUND", "member Start() ownership cannot be verified; use Start-Process with a literal -Wait for a foreground process");
+		// Splat contents can carry job switches even before a literal parameter.
+		// No local variable/dataflow evaluation is performed by this filter.
+		if (!token.quoted && token.dynamic && value.startsWith("@") && value.length > 1) return refusal("SHELL_UNINSPECTABLE", "splatted PowerShell arguments may hide lifecycle options; pass explicit arguments");
+		// Known launcher/evaluator members cannot prove ownership. Inspect argument
+		// positions too; dynamic member names must not hide these same entrypoints.
+		if (command[token.start] !== "'" && command[token.start] !== '"' && tokens[i + 1]?.operator && tokens[i + 1]?.value === "(") {
+			if (OPAQUE_MEMBER.test(value)) return refusal("SHELL_UNINSPECTABLE", "launcher or evaluator member ownership cannot be verified; use a literal foreground command (Start-Process requires -Wait)");
+			if (token.dynamic && value !== "$" && !SIMPLE_VARIABLE.test(value)) return UNCERTAIN;
 		}
 		if (!head) continue;
 		head = false;
