@@ -50,7 +50,7 @@ const FILE_REDIRECT = /^[1-6*]?>>?$/;
 interface Token { value: string; quoted: boolean; quotedEnd: number; dynamic: boolean; operator: boolean; typeOnly: boolean; start: number; end: number }
 
 function quoteKind(value: string | undefined): number {
-	return value === "'" || value === "‘" || value === "’" ? 1 : value === '"' || value === "“" || value === "”" ? 2 : 0;
+	return value === "'" || value === "‘" || value === "’" ? 1 : value === '"' || value === "“" || value === "”" || value === "„" ? 2 : 0;
 }
 
 function isCommaBoundary(source: string, index: number): boolean {
@@ -335,8 +335,41 @@ function inspectSystemctl(tokens: readonly Token[], start: number): string | und
 	return undefined;
 }
 
+/** Expose only flat literal native arguments to the existing cmd check. Expansion,
+ * escapes and batch operators remain opaque, with no attempt to execute/evaluate.
+ * The additional capped tokens belong to this synchronous invocation only. */
+function inspectVerbatimCmdStart(tokens: readonly Token[], start: number, marker: number, source: string): string | undefined {
+	const payload = tokens[marker + 1];
+	if (!payload || payload.operator) return undefined;
+	const args: Token[] = [];
+	for (let i = start; i < marker; i++) args.push(tokens[i]!);
+	for (let i = payload.start; i < payload.end;) {
+		if (SPACE.test(source[i]!)) { i++; continue; }
+		if (args.length === MAX_TOKENS) return UNCERTAIN;
+		const begin = i;
+		let value = "", span = i, quoted = false, inQuotes = false;
+		while (i < payload.end && (inQuotes || !SPACE.test(source[i]!))) {
+			const c = source[i++]!;
+			if (c === "%" || c === "!" || c === "^" || (!inQuotes && (c === "&" || c === "|" || c === "<" || c === ">"))) return undefined;
+			// cmd quotes are ASCII even though PowerShell's verbatim boundary
+			// recognizes smart double quotes too. Preserve that distinction.
+			if (c === '"') { value += source.slice(span, i - 1); span = i; inQuotes = !inQuotes; if (i - 1 === begin) quoted = true; }
+		}
+		if (inQuotes) return undefined;
+		value += source.slice(span, i);
+		args.push({ value, quoted, quotedEnd: quoted ? i : 0, dynamic: false, operator: false, typeOnly: false, start: begin, end: i });
+	}
+	return inspectCmdStart(args, 0);
+}
+
 /** Literal cmd /c start keeps its own wait option; arbitrary batch code is opaque. */
-function inspectCmdStart(tokens: readonly Token[], start: number): string | undefined {
+function inspectCmdStart(tokens: readonly Token[], start: number, source?: string): string | undefined {
+	if (source !== undefined) {
+		for (let i = start; i < tokens.length && !tokens[i]!.operator; i++) {
+			const token = tokens[i]!;
+			if (!token.quoted && token.value === "--%") return inspectVerbatimCmdStart(tokens, start, i, source);
+		}
+	}
 	let i = start;
 	for (; i < tokens.length; i++) {
 		const token = tokens[i]!;
@@ -410,13 +443,13 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		if (command.startsWith("--%", i) && (i + 3 === command.length || STOP_PARSING_BOUNDARY.test(command[i + 3]!))) {
 			i += 3;
 			tokens.push({ value: "--%", quoted: false, quotedEnd: 0, dynamic: false, operator: false, typeOnly: false, start, end: i });
-			// Native stop-parsing honors only double quotes around a pipe. Newlines
-			// always end it; semicolons, comments, escapes and braces are raw data.
+			// Native stop-parsing honors PowerShell double quotes around pipeline
+			// boundaries. Newlines always end it; semicolons/braces are raw data.
 			const payload = i;
 			let inQuotes = false;
 			while (i < command.length && command[i] !== "\n" && command[i] !== "\r") {
-				if (command[i] === '"') inQuotes = !inQuotes;
-				else if (command[i] === "|" && !inQuotes) break;
+				if (quoteKind(command[i]) === 2) inQuotes = !inQuotes;
+				else if (!inQuotes && (command[i] === "|" || (command[i] === "&" && command[i + 1] === "&"))) break;
 				i++;
 			}
 			if (i > payload) {
@@ -467,7 +500,9 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		}
 		while (i < command.length && !SPACE.test(command[i]!) && !PUNCTUATION.test(command[i]!)) {
 			if (command[i] === "#" && commaBoundary) break;
-			commaBoundary = false;
+			// Escaped newlines are trivia; preserve a preceding comma's comment
+			// boundary. Other escaped characters (including comma) stay literal.
+			commaBoundary = commaBoundary && command[i] === "`" && (command[i + 1] === "\n" || command[i + 1] === "\r");
 			if (quotedEnd === i && (command[i] === ">" || ((command[i] === "*" || (command[i]! >= "1" && command[i]! <= "6")) && command[i + 1] === ">"))) break;
 			typeOnly = false;
 			const c = command[i++]!;
@@ -681,7 +716,7 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 			if (reason) return reason;
 		}
 		if (externalName === "cmd") {
-			const reason = inspectCmdStart(tokens, i + 1);
+			const reason = inspectCmdStart(tokens, i + 1, command);
 			if (reason) return reason;
 		}
 		if (externalName === "systemctl") {

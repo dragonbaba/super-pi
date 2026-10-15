@@ -374,7 +374,7 @@ Existing authorization and allocation source invariants cover the adjacent chain
 | --- | ---: | ---: | ---: |
 | Codemode compiler failure, collapsed | 4,096 | 1,620 | 0.0018 |
 | Codemode native PowerShell refusal, collapsed | 4,096 | 1,490 | 0.0018 |
-| Codemode compiler followed by spawn failure, collapsed | 4,096 | 1,463 | 0.0017 |
+| Codemode compiler followed by spawn UNKNOWN, collapsed | 4,096 | 1,704 | 0.0018 |
 | Codemode three consecutive quoted diagnostics, collapsed | 4,096 | 1,564 | 0.0018 |
 | Main production frame | 1,024 | 7,629 | 0.0602 |
 | Alt production frame | 1,024 | 11,796 | 0.0680 |
@@ -443,13 +443,20 @@ Grouped literal targets skip newline trivia only inside their parentheses; a new
 after the group still ends the invocation. Redirections immediately after a leading
 quoted target are separate tokens, while embedded unquoted data> stays argument text.
 Native stop-parsing (`--%`) keeps its payload opaque through the next newline or
-unquoted pipe; double-quoted pipes remain payload. Semicolons and command-like text
-inside it do not become lifecycle commands. Unescaped commas establish comment
-boundaries and newline continuation, so commented `-Wait` text cannot prove a
-foreground launch. Escaped commas retain their literal meaning. These are bounded
-grammar fixes, not additions to the command/type catalog.
+unquoted pipe/`&&`; ASCII and smart double quotes preserve those characters as
+payload. Semicolons and command-like text inside it do not become PowerShell
+lifecycle commands. Only the existing flat literal `cmd /c start` check reads its
+raw native arguments, preserving `/wait` and title boundaries. Its additional
+call-owned token list is capped at 2,048 and is never retained; expansion, escapes
+and arbitrary batch operators remain opaque. Unescaped commas establish comment
+boundaries and newline continuation, including escaped LF/CRLF trivia, so commented
+`-Wait` text cannot prove a foreground launch. Escaped commas retain their literal
+meaning. These are grammar fixes, not additions to the command/type catalog.
 The spawn-failure fixture reuses the same completion-to-release audit: one row,
 one output/failure projection, zero event Promises, zero released row/timer/text/
 result references and 0/2 retained weak owners after controlled GC. Four focused
 behavioral tests, type checking and all ten source/AST invariants pass. No new
 test file or unchanged frame/queue benchmark rerun was needed.
+The latest fixture also covers Windows `UNKNOWN`, with or without a target path,
+and provider-wire coverage preserves the full earlier compiler diagnostics. The
+table records its latest sample; source/AST and release counters are unchanged.

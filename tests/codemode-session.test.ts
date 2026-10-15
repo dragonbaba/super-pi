@@ -286,9 +286,9 @@ test("Codemode delivers the compiler cause before npm banners while preserving f
 	const terminal = await f.run(["await tools.compiler_probe({})"]);
 	assert.match((terminal.results.at(-1)!.content[0] as any).text, /compiler_probe: .* — TimeoutError: compiler server did not respond/);
 	assert.match(JSON.stringify(terminal.wires.at(-1)), /TS1000/);
-	diagnostic = "[SHELL_RUNTIME_FAILED]\nsrc/old.ts(1,1): error TS1000: stale cached diagnostic.\nError: spawn tsc ENOENT\nCommand exited with code 1";
+	diagnostic = "[SHELL_RUNTIME_FAILED]\nsrc/old.ts(1,1): error TS1000: stale cached diagnostic.\nError: spawnSync C:/path/tool.exe UNKNOWN\nCommand exited with code 1";
 	const spawn = await f.run(["await tools.compiler_probe({})"]);
-	assert.match((spawn.results.at(-1)!.content[0] as any).text, /compiler_probe: .* — Error: spawn tsc ENOENT/);
+	assert.match((spawn.results.at(-1)!.content[0] as any).text, /compiler_probe: .* — Error: spawnSync C:\/path\/tool.exe UNKNOWN/);
 	assert.match(JSON.stringify(spawn.wires.at(-1)), /TS1000/);
 });
 

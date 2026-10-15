@@ -31,7 +31,7 @@ async function sample(grouped: boolean) {
 	f.internal.handleEvent({ type: "tool_execution_start", toolName, toolCallId: child, parentToolCallId: grouped ? parent : undefined, args: { command: "fixture" } });
 	if (FAILED) {
 		const error = PREFLIGHT ? "[SHELL_BACKGROUND] PowerShell not executed: fixture reason.\nNext: submit a literal foreground command for normal authorization; do not retry the same blocked call."
-			: TERMINAL_EXCEPTION ? "[SHELL_RUNTIME_FAILED]\nnpm notice run project@1.0.0 typecheck\nsrc/old.ts(1,1): error TS1000: stale cached diagnostic.\nError: spawn tsc ENOENT\nCommand exited with code 1"
+			: TERMINAL_EXCEPTION ? "[SHELL_RUNTIME_FAILED]\nnpm notice run project@1.0.0 typecheck\nsrc/old.ts(1,1): error TS1000: stale cached diagnostic.\nError: spawnSync C:/path/tool.exe UNKNOWN\nCommand exited with code 1"
 			: QUOTED_ERRORS ? "[SHELL_RUNTIME_FAILED]\n> authentication failed\n> token expired\n> refresh denied\nCommand exited with code 1"
 			: VERSIONLESS_NPM ? "[SHELL_RUNTIME_FAILED]\n> check\n> missing-command\nsh: missing-command: not found\nCommand exited with code 127"
 			: COMPILER ? "[SHELL_RUNTIME_FAILED]\nnpm notice run project@1.0.0 typecheck\nnpm notice run tsc --noEmit\nsrc/winter/WinterVideo.tsx(153,10): error TS2657: JSX expressions must have one parent element.\nCommand exited with code 1"
@@ -75,7 +75,7 @@ async function sample(grouped: boolean) {
 	}
 	const view = stripVTControlCharacters(cards[0].render(120).join("\n")); assert.match(view, FAILED ? /Codemode/ : /completed/);
 	if (FAILED && grouped) {
-		assert.match(view, EXPANDED ? PREFLIGHT ? /SHELL_BACKGROUND/ : /SHELL_RUNTIME_FAILED/ : PREFLIGHT ? /fixture reason/ : TERMINAL_EXCEPTION ? /Error: spawn tsc ENOENT/ : COMPILER ? /TS2657/ : VERSIONLESS_NPM ? /sh: missing-command: not found/ : QUOTED_ERRORS ? /> authentication failed > token expired/ : /Path does not exist/);
+		assert.match(view, EXPANDED ? PREFLIGHT ? /SHELL_BACKGROUND/ : /SHELL_RUNTIME_FAILED/ : PREFLIGHT ? /fixture reason/ : TERMINAL_EXCEPTION ? /Error: spawnSync C:\/path\/tool.exe UNKNOWN/ : COMPILER ? /TS2657/ : VERSIONLESS_NPM ? /sh: missing-command: not found/ : QUOTED_ERRORS ? /> authentication failed > token expired/ : /Path does not exist/);
 		assert.equal(counters.failureProjections, 1); assert.equal(counters.outputProjections, 1);
 	}
 	await f.release();
