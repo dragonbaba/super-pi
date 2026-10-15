@@ -344,9 +344,20 @@ false/dynamic switch values remain refused. Named values after a separated colon
 are consumed as values across the existing parameter inspectors, including output
 variables, constructor types and file paths; dynamic/preference targets remain
 subject to the same checks as inline values.
+Balanced type prefixes normalize whitespace and nested block comments before
+capability inspection, while preserving the original executed source. A separate
+type token retains the following assignment's command boundary. Native metadata
+resolves -Wai as Wait (but -Wa as WarningAction), and literal -AsJob:$false remains
+foreground. BITS start/resume inspect their own -As/Asynchronous arguments without
+mistaking a nested -as conversion for an asynchronous switch. Enabled or unknown
+job/async switches still refuse. Real integration covers spaced types, -Wai and
+foreground ForEach-Object; type comments remain subject to the separate legacy
+permission scanner's existing unverifiable-redirection limitation.
 
 Unchanged scope: external module loading and native sc.exe/net.exe service control
 already passed the original Bash lifecycle and high-risk scanners at the PR base.
+The same baseline applies to Enable-ScheduledJob, Add-JobTrigger and Enable-JobTrigger;
+this change does not introduce or claim scheduler-state isolation.
 They retain ordinary opaque-command authorization here; this filter does not
 claim complete executable-code or native-service isolation. This PR does not
 introduce a blanket ban on those existing authorized workflows.

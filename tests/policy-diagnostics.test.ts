@@ -71,6 +71,11 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "Start-Process tool.exe -Wait:$true", "Start-Process tool.exe -Wait: $true", "Start-Process tool.exe —Wait:$TRUE",
     "Write-Output [scriptblock]", "Write-Output '[scriptblock]::Create'",
     "$sb=[scriptblock]$block", "$sb=$text -as [scriptblock]", "[scriptblock[]]$blocks=$items",
+    "[ int ] $number=1", "[System.Collections.Generic.List[ string ]] $items=$null", "[ <#type#> string ] $text='safe'",
+    "Start-Process tool.exe -Wai", "Start-Process tool.exe -Wai: $true", "Start-Process tool.exe -Wa Continue -Wai:$true",
+    "1 | ForEach-Object -Parallel { $_ } -AsJob:$false", "1 | % -Parallel { $_ } -As: $FALSE",
+    "Start-BitsTransfer -Source a -Destination b -As:$false", "Resume-BitsTransfer -BitsJob $job -As: $false",
+    "Start-BitsTransfer -Source ($source -as [string]) -Destination b",
   ]) assert.equal(inspectPowerShellResourceLifecycle({ command }), undefined, command);
   for (const command of [
     "Start-Job { Write-Output 1 }", "$job = Start-ThreadJob { Write-Output 1 }", "if ($true) {} Start-Job {}",
@@ -160,6 +165,14 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "Write-Output 1 -OutVariable: PSDefaultParameterValues", "Write-Output 1 -OutVariable: $target",
     "$T=[type]'scriptblock'; $sb=$T::Create($text)",
     "$sb=$ast.GetScriptBlock(); 1 | Where-Object -FilterScript $sb", "$sb=$ExecutionContext.InvokeCommand.NewScriptBlock($text)",
+    "$sb=[ scriptblock ]::Create('Start-Process missing.exe'); 1 | Where-Object -FilterScript $sb",
+    "$sb=[ <#type#> System.Management.Automation.ScriptBlock ]:: <#member#> Create($text)",
+    "$c=[ wmiclass ]'Win32_Process'", "[ int ] $x=Start-Process missing.exe", "[ <#type#> int ] $x=Start-Job {}",
+    "Start-Process tool.exe -Wa Continue", "Start-Process tool.exe -W", "Start-Process tool.exe -Wai:$false", "Start-Process tool.exe -Wai: $flag",
+    "1 | ForEach-Object -Parallel { $_ } -AsJob:$flag", "1 | % -Parallel { $_ } -As: $true",
+    "1 | ForEach-Object -Parallel { Start-Job {} } -AsJob:$false",
+    "Start-BitsTransfer -Source a -Destination b -As", "Resume-BitsTransfer -BitsJob $job -As", "Start-BitsTransfer -Source a -Destination b -As: $flag",
+    "Start-BitsTransfer -Source (Start-Job {}) -Destination b -As:$false",
   ]) assert.ok(inspectPowerShellResourceLifecycle({ command }), command);
 });
 

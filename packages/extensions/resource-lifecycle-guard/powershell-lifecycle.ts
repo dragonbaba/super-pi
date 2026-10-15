@@ -35,6 +35,9 @@ const FOR_EACH_FLAGS = new Set(["asjob", "usenewrunspace", "whatif", "confirm", 
 const FOR_EACH_BLOCKS = new Set(["begin", "process", "end", "remainingscripts", "parallel"]);
 const OBJECT_PARAMETERS = ["typename", "comobject", "argumentlist", "strict", "property", ...VARIABLE_LOOKUP_PARAMETERS.slice(5)];
 const OBJECT_FLAGS = new Set(["strict", "verbose", "debug"]);
+const PROCESS_PARAMETERS = ["filepath", "argumentlist", "credential", "workingdirectory", "loaduserprofile", "nonewwindow", "passthru", "redirectstandarderror", "redirectstandardinput", "redirectstandardoutput", "verb", "windowstyle", "wait", "usenewenvironment", "environment", "whatif", "confirm", ...VARIABLE_LOOKUP_PARAMETERS.slice(5)];
+const BITS_START_PARAMETERS = ["asynchronous", "dynamic", "customheaderswriteonly", "authentication", "credential", "description", "httpmethod", "destination", "displayname", "priority", "transferpolicy", "aclflags", "securityflags", "usestoredcredential", "proxyauthentication", "proxybypass", "proxycredential", "proxylist", "proxyusage", "retryinterval", "retrytimeout", "maxdownloadtime", "source", "suspended", "transfertype", "customheaders", "notifyflags", "notifycmdline", "certstorelocation", "certstorename", "certhash", "whatif", "confirm", ...VARIABLE_LOOKUP_PARAMETERS.slice(5)];
+const BITS_RESUME_PARAMETERS = ["bitsjob", "asynchronous", "whatif", "confirm", ...VARIABLE_LOOKUP_PARAMETERS.slice(5)];
 const WMI_CAPABILITY = /(?:^|\[|:)(?:wmiclass|(?:(?:System\.)?Management\.)?ManagementClass)(?:\]|,|$)/i;
 const SCRIPT_BLOCK_COMPILER = /\[(?:System\.Management\.Automation\.)?scriptblock\]::Create$/i;
 const SPACE = /\s/;
@@ -49,7 +52,75 @@ const STREAM_REDIRECT = /^[1-6*]?>$/;
 const STREAM_NUMBER = /^[1-6]$/;
 const OPAQUE_MEMBER = /(?:\.|::)(?:Start(?:New|Job|\.Invoke)?|Invoke[\w]*|DynamicInvoke|BeginInvoke|GetSteppablePipeline|GetScriptBlock|NewScriptBlock|ExpandString|Run(?:Async)?|Exec|Continue|Shell(?:Execute(?:Ex)?)?)$/i;
 
-interface Token { value: string; quoted: boolean; dynamic: boolean; operator: boolean; start: number; end: number }
+interface Token { value: string; quoted: boolean; dynamic: boolean; operator: boolean; typeOnly: boolean; start: number; end: number }
+
+/** Type trivia is syntax, not part of its identity. Never consume executable text. */
+function skipTypeTrivia(source: string, start: number): number {
+	let i = start;
+	while (i < source.length) {
+		if (SPACE.test(source[i]!)) { i++; continue; }
+		if (!source.startsWith("<#", i)) break;
+		let depth = 1; i += 2;
+		while (i < source.length && depth) {
+			if (source.startsWith("<#", i)) { if (++depth > 16) return -1; i += 2; }
+			else if (source.startsWith("#>", i)) { depth--; i += 2; }
+			else i++;
+		}
+		if (depth) return -1;
+	}
+	return i;
+}
+
+function readType(source: string, start: number): { value: string; end: number } | undefined {
+	let i = start, depth = 0, named = false, value = "", span = start;
+	while (i < source.length) {
+		const end = skipTypeTrivia(source, i);
+		if (end < 0) return undefined;
+		if (end !== i) { value += source.slice(span, i); i = end; span = i; }
+		const c = source[i++];
+		if (c === "[") { if (++depth > MAX_NESTING) return undefined; }
+		else if (c === "]") { if (!--depth) return named ? { value: value + source.slice(span, i), end: i } : undefined; }
+		else if (!c || !TYPE_CHARACTER.test(c)) return undefined;
+		else named = true;
+	}
+	return undefined;
+}
+
+/** Only native boolean literals prove a switch's value; quoted strings do not. */
+function literalSwitch(tokens: readonly Token[], index: number, command: string): boolean | undefined {
+	const token = tokens[index]!, raw = command.slice(token.start, token.end), colon = raw.indexOf(":");
+	if (colon < 0) return true;
+	const next = tokens[index + 1];
+	const value = (colon === raw.length - 1 && next ? command.slice(next.start, next.end) : raw.slice(colon + 1)).toLowerCase();
+	return value === "$true" ? true : value === "$false" ? false : undefined;
+}
+
+/** Inspect only the command's own arguments; nested expressions get the main walk. */
+function inspectCommandSwitch(tokens: readonly Token[], start: number, command: string, parameters: readonly string[], optionName: "wait" | "asynchronous"): string | undefined {
+	let wait = false, depth = 0;
+	for (let j = start; j < tokens.length; j++) {
+		const arg = tokens[j]!;
+		if (isStreamMerge(tokens, j)) { j++; continue; }
+		if (arg.operator && arg.value === "=") continue;
+		if (arg.operator) {
+			if (arg.value === "(" || arg.value === "{") { if (++depth > MAX_NESTING) return UNCERTAIN; }
+			else if (arg.value === ")" || arg.value === "}") { if (!depth) break; depth--; }
+			else if (!depth) break;
+			continue;
+		}
+		if (depth) continue;
+		if (!arg.quoted && arg.value === "--%") return UNCERTAIN;
+		if (isArgumentSuffix(tokens, j)) continue;
+		const raw = command.slice(arg.start, arg.end), colon = raw.indexOf(":");
+		if (!PARAMETER_DASH.test(raw)) continue;
+		if (lookupOption(raw.slice(1, colon < 0 ? raw.length : colon).toLowerCase(), parameters) !== optionName) continue;
+		const enabled = literalSwitch(tokens, j, command);
+		if (optionName === "wait") { if (enabled !== true) return UNCERTAIN; wait = true; }
+		else if (enabled !== false) return BACKGROUND;
+		if (colon === raw.length - 1) j++;
+	}
+	return optionName === "wait" && !wait ? BACKGROUND : undefined;
+}
 
 /** Bounded native parameter metadata; exact names/common aliases precede prefixes. */
 function lookupOption(value: string, parameters: readonly string[]): string | undefined {
@@ -166,7 +237,11 @@ function inspectForEach(tokens: readonly Token[], start: number, command: string
 		if (!parameter && PARAMETER_DASH.test(raw) && (!arg.quoted || colon >= 0)) {
 			parameter = lookupOption(raw.slice(1, colon < 0 ? raw.length : colon).toLowerCase(), FOR_EACH_PARAMETERS);
 			if (!parameter) return UNCERTAIN;
-			if (parameter === "asjob") return BACKGROUND;
+			if (parameter === "asjob") {
+				if (literalSwitch(tokens, j, command) !== false) return BACKGROUND;
+				if (colon === raw.length - 1) j++;
+				parameter = undefined; continue;
+			}
 			if (FOR_EACH_FLAGS.has(parameter) && colon !== raw.length - 1) { parameter = undefined; continue; }
 			if (colon < 0 || colon === raw.length - 1) continue;
 			member = arg.value.slice(arg.value.indexOf(":") + 1);
@@ -205,11 +280,22 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 			if (depth) return UNCERTAIN;
 			continue;
 		}
-		if (PUNCTUATION.test(ch)) { tokens.push({ value: ch, quoted: false, dynamic: false, operator: true, start, end: ++i }); continue; }
+		if (PUNCTUATION.test(ch)) { tokens.push({ value: ch, quoted: false, dynamic: false, operator: true, typeOnly: false, start, end: ++i }); continue; }
 		if (SPACE.test(ch)) { i++; continue; }
 		if (ch === "@" && (command[i + 1] === "'" || command[i + 1] === '"')) return UNCERTAIN;
-		let value = "", quoted = false, dynamic = false, span = i;
+		let value = "", quoted = false, dynamic = false, span = i, typeOnly = false;
+		while (command[i] === "[") {
+			const type = readType(command, i);
+			if (!type) break;
+			value += type.value; i = type.end; span = i; typeOnly = true;
+		}
+		if (typeOnly && command.startsWith("::", i)) {
+			value += "::"; i = skipTypeTrivia(command, i + 2);
+			if (i < 0) return UNCERTAIN;
+			span = i; typeOnly = false;
+		}
 		while (i < command.length && !SPACE.test(command[i]!) && !PUNCTUATION.test(command[i]!)) {
+			typeOnly = false;
 			const c = command[i++]!;
 			if (c === "$" && command[i] === "{") {
 				dynamic = true; i++;
@@ -252,7 +338,7 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 			if (!closed) return UNCERTAIN;
 		}
 		value += command.slice(span, i);
-		if (value || quoted) tokens.push({ value, quoted, dynamic, operator: false, start, end: i });
+		if (value || quoted) tokens.push({ value, quoted, dynamic, operator: false, typeOnly, start, end: i });
 	}
 
 	let head = true, assignable = false, equalsData = false, controlBlock = false, paramBlock = false;
@@ -316,7 +402,7 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 				if (!separate && !target.value.slice(target.value.indexOf(":") + 1)) return UNCERTAIN;
 			}
 		}
-		if (!dataPiece && !token.quoted && (JOB_OPTION.test(value) || isAsyncOption(value))) return BACKGROUND;
+		if (!dataPiece && !token.quoted && (JOB_OPTION.test(value) || isAsyncOption(value)) && literalSwitch(tokens, i, command) !== false) return BACKGROUND;
 		// Splat contents can carry job switches even before a literal parameter.
 		// No local variable/dataflow evaluation is performed by this filter.
 		if (!dataPiece && !token.quoted && token.dynamic && value.startsWith("@") && value.length > 1) return refusal("SHELL_UNINSPECTABLE", "splatted PowerShell arguments may hide lifecycle options; pass explicit arguments");
@@ -329,6 +415,7 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		if (!head) continue;
 		head = false;
 		if (contexts.at(-1) === 2) { assignable = true; continue; }
+		if (token.typeOnly) { head = true; continue; }
 		// Attribute constructors can hide parameter defaults behind further parens.
 		if (contexts.at(-1) === 5 && value.startsWith("[") && !isSimpleVariable(value)) return UNCERTAIN;
 		if (!token.quoted && value.startsWith(":")) {
@@ -454,31 +541,12 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 			}
 		}
 		if (PROCESS.has(name)) {
-			let wait = false, depth = 0;
-			for (let j = i + 1; j < tokens.length; j++) {
-				const arg = tokens[j]!;
-				if (isStreamMerge(tokens, j)) { j++; continue; }
-				if (arg.operator && arg.value === "=") continue;
-				if (arg.operator) {
-					if (arg.value === "(" || arg.value === "{") { if (++depth > MAX_NESTING) return UNCERTAIN; }
-					else if (arg.value === ")" || arg.value === "}") { if (!depth) break; depth--; }
-					else if (!depth) break;
-					continue;
-				}
-				if (depth) continue;
-				if (!arg.quoted && arg.value === "--%") return UNCERTAIN;
-				if (isArgumentSuffix(tokens, j)) continue;
-				const raw = command.slice(arg.start, arg.end);
-				if (!PARAMETER_DASH.test(raw)) continue;
-				const option = raw.slice(1).toLowerCase();
-				if (option === "wait" || option === "wait:$true") wait = true;
-				else if (option === "wait:") {
-					const flag = tokens[++j];
-					if (!flag || command.slice(flag.start, flag.end).toLowerCase() !== "$true") return UNCERTAIN;
-					wait = true;
-				} else if (option.startsWith("wait:")) return UNCERTAIN;
-			}
-			if (!wait) return BACKGROUND;
+			const reason = inspectCommandSwitch(tokens, i + 1, command, PROCESS_PARAMETERS, "wait");
+			if (reason) return reason;
+		}
+		if (name === "start-bitstransfer" || name === "resume-bitstransfer") {
+			const reason = inspectCommandSwitch(tokens, i + 1, command, name === "start-bitstransfer" ? BITS_START_PARAMETERS : BITS_RESUME_PARAMETERS, "asynchronous");
+			if (reason) return reason;
 		}
 		if (BASH.has(name)) {
 			const flag = tokens[i + 1], script = tokens[i + 2];
