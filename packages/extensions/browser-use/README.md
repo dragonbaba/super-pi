@@ -6,7 +6,7 @@ Registers one sequential `browser_exec` tool for every model. It sends one bound
 
 - `code`: 1–4000 characters; the complete model script fits the permission preview.
 - `session`: optional Browser Use cloud-session name. Local Chrome needs no cloud account.
-- `timeoutMs`: 5–300 seconds; default 120 seconds.
+- `timeoutMs`: 5–300 seconds; default 120 seconds, including connection/startup. Codemode has a separate parent deadline (60 seconds by default); use its `// @options: {"timeout_ms":150000}` directive when a child needs the full 120-second approval budget. The process-local adapter gives `Page.navigate` up to 30 seconds; other helper and screenshot timeouts remain unchanged. Creation and navigation never retry automatically. A timeout leaves the browser outcome unconfirmed: inspect `list_tabs()` before further actions.
 - `purpose`: optional concise permission context.
 - Browser output is untrusted and bounded to 50 KiB per stream.
 - A fixed trusted prelude redirects `capture_screenshot()`'s default output to a unique file in the extension-owned session workspace and validates standard navigation calls. The model script itself remains unchanged.
@@ -15,7 +15,7 @@ Registers one sequential `browser_exec` tool for every model. It sends one bound
 - Failure summaries remain capped at 1000 characters. Python failures put the final exception first so collapsed Codemode output retains the cause, followed by bounded traceback details.
 - Helpers are pre-imported synchronous functions: use `print(list_tabs())`, not top-level `await` or `browser.tabs.list()`. Call `wait_for_load()` after `new_tab`/`goto_url` before `page_info()` or DOM reads. After a failed browser script, inspect tabs before further actions; `page_info()` requires a loaded document.
 - Use `browser_exec` for public-web reading and interaction in the user's browser. For local HTML/localhost preview, DOM/JavaScript inspection or UI validation, discover `chrome_devtools_*` with `tool_search({query:"browser_debug"})` or an exact tool name; no manual enable command is required. DevTools may use a separate managed profile, so its connection does not prove Browser Harness connected or share the user's login. After `permission-blocked` / `BROWSER_EXEC_PERMISSION_REQUIRED`, stop for user direction; do not automatically retry, reload the daemon, or switch browsers.
-- The first local connection attempt displays a connection/approval notice before launching the CLI. This is guidance, not proof that Chrome displayed a prompt. Explicit setup failures carry bounded approval guidance. An old approval hint followed by a Python traceback remains a script failure; an outer deadline retains `BROWSER_EXEC_TIMEOUT` because the current approval state is unknown.
+- The first local connection attempt displays a connection/approval notice before launching the CLI. This is guidance, not proof that Chrome displayed a prompt. Explicit setup failures carry bounded approval guidance. An old approval hint followed by a Python traceback remains a script failure. Timeout or parent cancellation before approval is confirmed retains its original TIMEOUT/ABORTED status and an approval-pending marker; automatic retry and browser switching remain paused until user direction.
 - Navigation supports absolute public HTTP(S) URLs. Local HTML preview through `file:`, `data:`, `about:` or loopback requires another registered tool that explicitly supports it. Do not inject HTML with `document.open/write` or weaken CSP/Trusted Types to work around this boundary.
 - Each script should batch one coherent inspect/branch/act procedure and reacquire elements after UI rerenders; human CAPTCHA/OTP remains an explicit call boundary.
 - Model Python is compiled inside the existing Browser Harness process before execution; syntax failures return a short line/column error without launching another interpreter.
@@ -29,6 +29,91 @@ It does not admit adjacent subnets, other ULA ranges, or literal addresses in
 this range. The generated-prelude fixture covers 21 DNS cases after this addition.
 
 The extension entry stays lightweight: browser runtime modules and permission code load on first status/execute use. Each CLI invocation is owned by one disposable runner object that clears deadlines, abort hooks, child listeners, streams, and references on completion. A measured precompile experiment was rejected because it did not improve cold startup.
+
+## Search, tab ownership and failure output
+
+Use `open_tab(url)` for the reusable reference tab. For search, first use
+`open_tab(homepage, role="search")`, wait for load and inspect the actual input.
+Then use `search_page(query, selector)` for each query: it selects that same tab,
+clears/fills the observed input and presses Enter. Wait for load before reading
+results. Do not generate a new search URL/tab for each query. `new_tab(url)` is
+for additional references that must remain open; it reuses an identical owned
+URL or an owned blank tab without touching a user's blank tab.
+
+`owned_tabs()` reports exact target IDs and roles. `close_tab(target)` requires
+an owned ID; close completed references promptly. `keep_tab(target)` hands a
+requested result page to the user and excludes it from cleanup. At agent end,
+remaining temporary targets are closed. Session shutdown also removes owned
+workspaces. A failed navigation retains its already-created target ID so the
+next call can inspect/reuse/close it instead of creating a duplicate.
+
+The extension holds at most eight connection workspaces, each with at most
+eight target IDs in an 8 KiB maximum state file. Records are scoped to session,
+extension lifetime and connection. Cleanup waits for active calls, uses only
+`BH_REQUIRE_EXISTING_DAEMON=1`, and has a shared five-second dispatch deadline
+(plus the runner's bounded process termination). It never starts a daemon,
+requests approval, or closes unowned targets. Failed cleanup retains the exact
+state for a later attempt and reports the limitation. `/browser-use release`
+stops before daemon disconnection if cleanup is incomplete. Omitted local
+sessions and an explicitly named `default` session have distinct ownership keys.
+Process crashes or a
+lost create-target response cannot guarantee automatic cleanup; never infer
+ownership by scanning and closing unrelated tabs.
+
+Failures return structured exit/timeout/abort/truncation details and retain
+bounded partial stdout separately from the diagnostic. Codemode forwards these
+partial receipts even when the child throws before `show(ref)` can run. The
+first line before `[Browser diagnostics]` is the authoritative final exception;
+traceback details cannot replace it with an earlier chained exception. Collapsed
+TUI rows show the failed instruction and one short cause; expansion shows the
+diagnostic and partial output without duplicating the script's traceback.
+Unrecognized shell diagnostics such as Git, curl and compiler errors take
+precedence over generic exit-status lines in both model and collapsed views.
+
+### Performance and offline verification (2026-10-15)
+
+Audited chains: browser admission → runner → generated helpers → result bounding
+→ Codemode summary/child events → AgentSession → InteractiveMode → retained
+transcript → Text/Box wrapping → Main/Alt frame queue → terminal write/disposal.
+Tool discovery uses the live active catalog; descriptions do not activate tools.
+Browser approval guards retain primitive state and stable lifecycle callbacks.
+
+The ASCII wrapper now consumes runs instead of building per-grapheme records.
+Interrupted CSI/OSC/APC scans stop at a new escape, avoiding repeated scans of
+the remaining suffix. Instrumented source tests visit at most one character per
+input character across repeated malformed sequences of 128–1024 elements.
+Valid Unicode clusters, SGR, OSC hyperlinks and terminal column slicing retain
+their existing fixtures. No object pool, global output cache or per-event
+Promise/controller/wrapper was added.
+
+Source-loaded measurements on Windows / Node 26.4.0, without building:
+
+| Fixture | Work | Sampled allocation | CPU p95 |
+| --- | --- | --- | --- |
+| Failed collapsed Codemode | 4096 redraws | 1470 B/redraw | 0.0018 ms |
+| Expanded Codemode progress | 4096 updates | 74089 B/update | 0.1033 ms |
+| Main frame | 2000 frames, 5000 history items | 7436 B/frame | 0.0526 ms |
+| Alt frame, stable controls | 2000 frames, 5000 history items | 11724 B/frame | 0.0518 ms |
+| Queue only, prebuilt frame | 10000 frames | 189 B/frame | 0.0957 ms |
+
+Failed redraws perform one failure projection and one output projection, with
+one row/two labels and zero event Promises. Leading allocation sites remain
+retained-item rendering/viewport bookkeeping; expanded progress also includes
+Box background application and wrapping. Frames materialize once, with zero
+application full-frame copies, frame Promises/controllers/wrappers, or completed
+history renders. Queue high-water is one in the production fixtures; active and
+pending bytes/references are zero after flush. Three Main/Alt lifecycle cycles
+release all measured component/line/cache references. Codemode release clears
+rows, text, timers and result references; controlled GC retains 0/2 weak refs.
+Heap samples include warm runtime caches and are not a claim of zero heap growth.
+
+Regression cases extend existing test files only. The fake browser runs three
+search queries with one target/one initial navigation/six input actions, enforces
+the eight-tab bound, preserves targets across navigation failure, and closes zero
+user/kept tabs. Lifecycle fixtures verify no reconnection, no cleanup while a
+script is active, bounded retries and reference release. Session tests verify
+parent cancellation pauses CDP switching and partial stdout reaches the next
+model turn. No real browser, current session or global installation was changed.
 
 ## Installation
 

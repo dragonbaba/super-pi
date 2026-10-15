@@ -4,12 +4,19 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
+import ts from "typescript";
+import { Type } from "typebox";
+import * as crypto from "node:crypto";
+import * as path from "node:path";
+import { ownedTabsPrelude } from "../packages/extensions/browser-use/tab-lifecycle.ts";
 import { createJiti } from "jiti";
 import { inspectBashPermissionScope } from "../packages/extensions/resource-lifecycle-guard/permission-bash.ts";
 import { inspectBashResourceLifecycle } from "../packages/extensions/resource-lifecycle-guard/core.ts";
 import { validateToolArguments } from "../packages/ai/src/utils/validation.ts";
 import mutationExtension from "../packages/extensions/mutation-guard-write/index.ts";
-import browserExtension, { formatFailure, withOwnedScreenshotDefault } from "../packages/extensions/browser-use/index.ts";
+import browserExtension, { browserResultText, formatFailure, withOwnedScreenshotDefault } from "../packages/extensions/browser-use/index.ts";
+import { codemodeFailureReason } from "../packages/coding-agent/src/core/codemode-display.ts";
 import { BrowserHarnessVersionGate, browserUrlSafetyError, buildBrowserUseEnvironment, findBrowserUseExecutable } from "../packages/extensions/browser-use/core.ts";
 const { failureRecoveryHint } = await createJiti(import.meta.url).import<any>("../packages/extensions/tool-loop-guardrails/core.ts");
 const { default: toolLoopGuardrails } = await createJiti(import.meta.url).import<any>("../packages/extensions/tool-loop-guardrails/index.ts");
@@ -164,6 +171,7 @@ test("browser approval failures retain actionable guidance inside the bounded mo
    assert.ok(message.length <= 1000);
   }
   assert.match(formatFailure("ABORTED", evidence), /^\[BROWSER_EXEC_ABORTED\]/);
+  assert.match(formatFailure("ABORTED", evidence), /BROWSER_APPROVAL_PENDING/);
  }
  const earlierHint = 'browser-harness: Chrome is asking "Allow remote debugging?" — click Allow to continue.\n';
  const timeout = formatFailure("TIMEOUT", earlierHint);
@@ -173,6 +181,15 @@ test("browser approval failures retain actionable guidance inside the bounded mo
  const afterApproval = formatFailure("FAILED", earlierHint + "Traceback (most recent call last):\nAttributeError: bad script\n");
  assert.match(afterApproval, /^\[BROWSER_EXEC_FAILED\] AttributeError: bad script/);
  assert.doesNotMatch(afterApproval, /PERMISSION_REQUIRED/);
+ assert.doesNotMatch(formatFailure("ABORTED", earlierHint + "Traceback (most recent call last):\nStopIteration: script failed"), /BROWSER_APPROVAL_PENDING/);
+});
+
+test("browser partial stdout survives failure and final cause survives both Codemode projections", () => {
+ const content = browserResultText({ stdout: "NASA fact printed before failed navigation", stderr: "Traceback (most recent call last):\nTimeoutError: earlier failure\nTraceback (most recent call last):\nStopIteration: final cause",
+  exitCode: 1, killed: false, timedOut: false, aborted: false, stdoutBytes: 48, stderrBytes: 153, stdoutTruncated: true, stderrTruncated: false });
+ assert.equal(content.length, 2);
+ assert.match(content[1]!.text, /Untrusted partial.*\nNASA fact.*\n… stdout truncated/);
+ for (const audience of ["model", "display"] as const) assert.equal(codemodeFailureReason(content[0]!.text, audience), "StopIteration: final cause");
 });
 
 test("browser navigation accepts confirmed dual-stack Fake-IP without allowing private or literal benchmark addresses", t => {
@@ -181,7 +198,11 @@ test("browser navigation accepts confirmed dual-stack Fake-IP without allowing p
  if (available.error || available.status !== 0) { t.skip("Python is unavailable; set SP_TEST_PYTHON to exercise the generated prelude"); return; }
  const source = withOwnedScreenshotDefault("new_tab(_test_url); goto_url(_test_url)", "unused-test-screenshot.png");
  const program = `
-import json, socket, sys
+import json, socket, sys, types
+helpers = types.ModuleType("browser_harness.helpers")
+helpers.cdp = lambda *args, **kwargs: None
+sys.modules["browser_harness"] = types.ModuleType("browser_harness")
+sys.modules["browser_harness.helpers"] = helpers
 source = json.load(sys.stdin)
 public = ["8.8.8.8", "2606:4700:4700::1111"]
 fake4 = ["198.18.0.90"]
@@ -223,7 +244,7 @@ for name, target, probe, target_url, allowed, expected_probes in cases:
         return [(0, 0, 0, "", (address, 0)) for address in addresses]
     def navigate(value, *args, **kwargs): counts["navigation"] += 1
     socket.getaddrinfo = resolve
-    scope = {"capture_screenshot": navigate, "new_tab": navigate, "goto_url": navigate, "_test_url": target_url}
+    scope = {"capture_screenshot": navigate, "new_tab": lambda url: "fixture-tab", "goto_url": navigate, "_test_url": target_url}
     error = None
     try: exec(source, scope)
     except RuntimeError as failure: error = str(failure)
@@ -263,6 +284,222 @@ test("browser chained exceptions prefer the last cause and keep plain failures u
  assert.match(result, /^\[BROWSER_EXEC_FAILED\] RuntimeError: final cause\n/);
  assert.equal(formatFailure("TIMEOUT", "Browser deadline exceeded"), "[BROWSER_EXEC_TIMEOUT] Browser deadline exceeded");
  assert.equal(formatFailure("FAILED", "[BROWSER_EXEC_SYNTAX] line 2:7: 'await' outside function"), "[BROWSER_EXEC_FAILED] [BROWSER_EXEC_SYNTAX] line 2:7: 'await' outside function");
+ const timeout = formatFailure("FAILED", "Traceback (most recent call last):\nTimeoutError: timed out\n\nThe above exception was the direct cause of the following exception:\n\nTraceback (most recent call last):\n" + '  File "helpers.py", line 57\n'.repeat(50) + "browser_harness.helpers._IPCResponseTimeout: Page.navigate timed out after 5s waiting for the daemon\n");
+ assert.match(timeout.split("\n", 1)[0]!, /^\[BROWSER_EXEC_FAILED\] browser_harness\.helpers\._IPCResponseTimeout: Page.navigate timed out after 5s.*Outcome unconfirmed.*list_tabs\(\)/);
+ assert.ok(timeout.length <= 1000);
+ assert.match(timeout.slice(0, 512), /Do not automatically retry/);
+});
+
+test("browser navigation adapter extends only navigation waits and never retries a timed-out new tab", t => {
+ const python = process.env.SP_TEST_PYTHON ?? "python";
+ const available = spawnSync(python, ["--version"], { encoding: "utf8", timeout: 5000 });
+ if (available.error || available.status !== 0) { t.skip("Python is unavailable"); return; }
+ const source = withOwnedScreenshotDefault("", "unused-test-screenshot.png");
+ const short = withOwnedScreenshotDefault("", "unused-test-screenshot.png", 5000);
+ const program = `
+import json, sys, types
+sources = json.load(sys.stdin)
+for source, limit in zip(sources, [30, 5]):
+    helpers = types.ModuleType("browser_harness.helpers")
+    sys.modules["browser_harness"] = types.ModuleType("browser_harness")
+    sys.modules["browser_harness.helpers"] = helpers
+    calls, tabs = [], []
+    fail = False
+    def cdp(method, session_id=None, _response_timeout=5.0, **params):
+        calls.append((method, _response_timeout, params))
+        if fail and method == "Page.navigate": raise TimeoutError("fixture navigation timeout")
+        return {"ok": True}
+    helpers.cdp = cdp
+    def goto(url): return helpers.cdp("Page.navigate", url=url)
+    def new_tab(url):
+        if url != "about:blank":
+            try: goto(url); return "reused"
+            except Exception: pass
+        tabs.append("created")
+        if url != "about:blank": goto(url)
+        return "fixture-tab"
+    scope = {"new_tab": new_tab, "goto_url": goto, "capture_screenshot": lambda **kw: kw}
+    exec(source, scope)
+    assert scope["new_tab"]("https://8.8.8.8/") == "fixture-tab"
+    assert len(tabs) == 1 and len(calls) == 1
+    assert limit - 1 < calls[-1][1] <= limit, calls
+    helpers.cdp("Runtime.evaluate", expression="1")
+    assert calls[-1][1] == 5.0
+    helpers.cdp("Page.captureScreenshot", _response_timeout=60.0)
+    assert calls[-1][1] == 60.0
+    helpers.cdp("Page.navigate", _response_timeout=2.0, url="https://8.8.8.8/")
+    assert calls[-1][1] == 2.0
+    fail = True
+    before = len(calls)
+    try: scope["new_tab"]("https://8.8.8.8/"); raise AssertionError("swallowed timeout")
+    except TimeoutError: pass
+    assert len(calls) == before + 1 and len(tabs) == 2, (calls, tabs)
+    before = len(calls)
+    scope["_pi_browser_deadline"] = 0
+    try: scope["goto_url"]("https://8.8.8.8/"); raise AssertionError("deadline ignored")
+    except TimeoutError: pass
+    assert len(calls) == before
+print("navigation budgets, one dispatch per navigation, screenshot timeout, deadline verified")
+`;
+ const result = spawnSync(python, ["-c", program], { input: JSON.stringify([source, short]), encoding: "utf8", timeout: 10000 });
+ assert.equal(result.status, 0, result.stderr || String(result.error));
+});
+
+test("browser task tabs reuse search inputs, retain failed navigation ownership and clean only recorded IDs", t => {
+ const python = process.env.SP_TEST_PYTHON ?? "python";
+ if (spawnSync(python, ["--version"], { timeout: 5000 }).status !== 0) { t.skip("Python is unavailable"); return; }
+ const root = mkdtempSync(join(tmpdir(), "pi-browser-tabs-"));
+ t.after(() => rmSync(root, { recursive: true, force: true }));
+ const state = join(root, "tabs.json");
+ const prelude = withOwnedScreenshotDefault("", join(root, "shot.png"), 120000, state);
+ const program = `
+import json, sys, types
+source, state = json.load(sys.stdin)
+helpers = types.ModuleType("browser_harness.helpers")
+sys.modules["browser_harness"] = types.ModuleType("browser_harness")
+sys.modules["browser_harness.helpers"] = helpers
+tabs = {"user": {"targetId": "user", "url": "about:blank"}}
+calls, inputs, closes = [], [], []
+current, serial, fail = "user", 0, False
+def cdp(method, **params):
+    global serial
+    calls.append(method)
+    if method == "Target.createTarget":
+        serial += 1
+        target = "owned-" + str(serial)
+        tabs[target] = {"targetId": target, "url": "about:blank"}
+        return {"targetId": target}
+    if method == "Target.closeTarget":
+        target = params["targetId"]
+        closes.append(target)
+        del tabs[target]
+        return {"success": True}
+    if method == "Page.navigate":
+        if fail: raise TimeoutError("fixture navigation timeout")
+        tabs[current]["url"] = params["url"]
+    return {}
+def switch(target):
+    global current
+    current = target
+def goto(url): return helpers.cdp("Page.navigate", url=url)
+def fresh():
+    helpers.cdp = cdp
+    helpers._target_id = lambda target: target.get("targetId") if isinstance(target, dict) else target
+    scope = {"capture_screenshot": lambda **kw: None, "new_tab": lambda url: None,
+        "goto_url": goto, "switch_tab": switch, "list_tabs": lambda: list(tabs.values()),
+        "fill_input": lambda selector, query, **kw: inputs.append((current, selector, query, kw)),
+        "press_key": lambda key: inputs.append((current, key))}
+    exec(source, scope)
+    return scope
+s = fresh()
+search = s["open_tab"]("https://8.8.8.8/", role="search")
+for query in ["first", "second", "third"]:
+    s = fresh() # every CLI process has fresh Python globals
+    assert s["open_tab"]("https://8.8.8.8/", role="search") == search
+    s["search_page"](query, "input[name=q]")
+    tabs[search]["url"] = "https://8.8.8.8/results?query=" + query
+assert serial == 1 and calls.count("Page.navigate") == 1, calls
+assert len(inputs) == 6 and all(item[0] == search for item in inputs)
+assert all(item[3] == {"clear_first": True} for item in inputs[::2])
+ref = s["open_tab"]("https://8.8.4.4/")
+assert s["open_tab"]("https://8.8.4.4/next") == ref and serial == 2
+try: s["close_tab"]("user"); raise AssertionError("closed user tab")
+except RuntimeError as error: assert "NOT_OWNED" in str(error)
+s["keep_tab"](ref)
+fail = True
+before = calls.count("Page.navigate")
+try: s["new_tab"]("https://1.1.1.1/"); raise AssertionError("swallowed failure")
+except TimeoutError: pass
+assert calls.count("Page.navigate") == before + 1 and serial == 3
+assert "owned-3" in json.load(open(state)), "persist ownership before failing navigation"
+fail = False
+s = fresh()
+assert s["new_tab"]("https://1.1.1.1/") == "owned-3" and serial == 3, "reuse own blank, never user blank"
+for number in range(6): s["new_tab"]("https://1.0.0.1/" + str(number))
+before = serial
+try: s["new_tab"]("https://1.0.0.1/overflow"); raise AssertionError("unbounded tabs")
+except RuntimeError as error: assert "TABS_LIMIT" in str(error)
+assert serial == before
+del tabs[search] # user closed one owned tab; stale ID must not block cleanup
+s = fresh()
+s["close_owned_tabs"]()
+assert set(tabs) == {"user", ref} and "user" not in closes and ref not in closes
+assert json.load(open(state)) == {}
+print(json.dumps({"queries": 3, "searchTabsCreated": 1, "searchNavigations": 1, "inputActions": len(inputs), "maxOwned": 8, "remainingOwned": 0, "userTabsClosed": 0}))
+`;
+ const result = spawnSync(python, ["-c", program], { input: JSON.stringify([prelude, state]), encoding: "utf8", timeout: 10000 });
+ assert.equal(result.status, 0, result.stderr || String(result.error));
+ assert.equal(JSON.parse(result.stdout).remainingOwned, 0);
+ const description = definitions.get("browser_exec").description;
+ assert.match(description, /Follow-up searches must use that same input/);
+ assert.match(description, /never close a user tab/);
+});
+
+test("browser extension preserves failure details and bounds cleanup without connecting or racing an active run", async () => {
+ const hooks = new Map<string, Function>(), tools = new Map<string, any>(), commands = new Map<string, any>(), removed: string[] = [], notices: string[] = [];
+ const states = new Map<string, number>(), cleanedSessions: (string | undefined)[] = [];
+ let cleanupCalls = 0, reloads = 0, failCleanup = true, resolveRun: ((value: any) => void) | undefined;
+ let signalStarted: (() => void) | undefined;
+ const result = { stdout: "completed extraction", stderr: "Traceback (most recent call last):\nStopIteration: failed later", exitCode: 1,
+  killed: false, timedOut: false, aborted: false, stdoutTruncated: false, stderrTruncated: false, stdoutBytes: 20, stderrBytes: 65 };
+ const runner = { runBrowserUse: async (options: any) => {
+  if (options.args?.[0] === "--reload") { reloads++; return { ...result, exitCode: 0 }; }
+  if (options.env.BH_REQUIRE_EXISTING_DAEMON === "1") {
+   cleanupCalls++; assert.ok(options.timeoutMs > 0 && options.timeoutMs <= 5000); assert.equal(options.maxBytesPerStream, 1024);
+   cleanedSessions.push(options.env.BU_NAME);
+   if (!failCleanup) states.set(options.cwd, 2);
+   return { ...result, exitCode: failCleanup ? 1 : 0, stdout: "", stderr: "" };
+  }
+  states.set(options.cwd, 20);
+  if (signalStarted) { signalStarted(); return new Promise(resolve => { resolveRun = resolve; }); }
+  return result;
+ } };
+ const runtime = { findBrowserUseExecutable: async () => ({ command: "fixture-harness" }), browserUrlSafetyError: () => undefined,
+  buildBrowserUseEnvironment: (_env: unknown, workspace: string, session?: string) => ({ BH_AGENT_WORKSPACE: workspace, BU_NAME: session }),
+  BrowserHarnessVersionGate: class { async check() {} clear() {} }, loadRecentScreenshot: async () => undefined, extractScreenshotCandidates: () => [] };
+ const modules: Record<string, unknown> = { "node:crypto": crypto, "node:path": path,
+  "node:fs/promises": { mkdir: async () => {}, rm: async (target: string) => { removed.push(target); states.delete(target); }, stat: async (file: string) => ({ size: states.get(path.dirname(file)) ?? 2 }) },
+  "@super-pi/coding-agent": { getAgentDir: () => path.resolve("fixture-agent") }, "@super-pi/tui": { Text: class {} }, typebox: { Type },
+  "./tab-lifecycle.ts": { ownedTabsPrelude }, "./core.ts": runtime, "./runner.ts": runner,
+  "../resource-lifecycle-guard/permission-contract.ts": { consumeBrowserExecAuthorization() {} } };
+ const module = { exports: {} as any };
+ const source = ts.transpileModule(readFileSync(new URL("../packages/extensions/browser-use/index.ts", import.meta.url), "utf8"),
+  { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
+ runInNewContext(source, { module, exports: module.exports, require(name: string) { assert.ok(name in modules, name); return modules[name]; },
+  process: { pid: 1, env: {} }, Buffer });
+ module.exports.default({ on: (name: string, callback: Function) => hooks.set(name, callback), registerTool: (tool: any) => tools.set(tool.name, tool), registerCommand: (name: string, command: any) => commands.set(name, command) });
+ const ctx = { cwd: path.resolve("fixture-work"), sessionManager: { getSessionId: () => "fixture" }, ui: { notify: (message: string) => notices.push(message) } };
+ const tool = tools.get("browser_exec");
+ const failed = await tool.execute("first", { code: "print('fixture')" }, undefined, undefined, ctx);
+ assert.equal(failed.isError, true); assert.equal(failed.details.exitCode, 1); assert.equal(failed.details.stdoutBytes, 20);
+ assert.match(failed.content[1].text, /completed extraction/);
+ await hooks.get("agent_end")!({}, ctx);
+ assert.equal(cleanupCalls, 1); assert.equal(removed.length, 0); assert.match(notices.at(-1)!, /不会重新连接/);
+ await commands.get("browser-use").handler("release", ctx);
+ assert.equal(cleanupCalls, 2); assert.equal(reloads, 0); assert.equal(removed.length, 0);
+ assert.match(notices.at(-1)!, /已保留连接/);
+ failCleanup = false;
+ await hooks.get("agent_end")!({}, ctx);
+ await hooks.get("agent_end")!({}, ctx);
+ assert.equal(cleanupCalls, 3, "an empty ownership record must not launch another CLI");
+ const started = new Promise<void>(resolve => { signalStarted = resolve; });
+ const active = tool.execute("active", { code: "print('fixture')" }, undefined, undefined, ctx);
+ await started;
+ await hooks.get("agent_end")!({}, ctx);
+ await hooks.get("session_shutdown")!({}, ctx);
+ assert.equal(cleanupCalls, 3); assert.equal(removed.length, 0, "never remove the workspace while its process is active");
+ resolveRun!(result);
+ await active;
+ assert.equal(cleanupCalls, 4); assert.equal(removed.length, 1);
+ await hooks.get("session_shutdown")!({}, ctx);
+ assert.equal(removed.length, 1, "released workspaces must not retain cleanup references");
+ signalStarted = undefined;
+ const local = await tool.execute("local", { code: "print('fixture')" }, undefined, undefined, ctx);
+ const named = await tool.execute("named", { code: "print('fixture')", session: "default" }, undefined, undefined, ctx);
+ assert.notEqual(local.details.workspace, named.details.workspace, "omitted session and named default must not share tab ownership");
+ await commands.get("browser-use").handler("release", ctx);
+ assert.deepEqual(cleanedSessions.slice(-2), [undefined, "default"]);
+ assert.equal(removed.length, 3); assert.equal(reloads, 1); assert.equal(states.size, 0);
 });
 
 

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import {
 	Markdown,
@@ -9,6 +10,7 @@ import {
 	type MarkdownOptions,
 	type MarkdownTheme,
 } from "../packages/tui/src/components/markdown.ts";
+import { getGraphemeSegmenter, wrapTextWithAnsi, wrapTextWithAnsiTail } from "../packages/tui/src/utils.ts";
 
 const identityStyle = (text: string): string => text;
 const PLAIN_THEME: MarkdownTheme = {
@@ -501,7 +503,7 @@ test("incremental Markdown and wrapping hot functions do not add closures maps s
 		"scanIncrementalPlainTail",
 		"consumeIncrementalPlainToken",
 	]);
-	const functionNames = new Set(["splitIntoTokensWithAnsi", "wrapSingleLine"]);
+	const functionNames = new Set(["splitIntoTokensWithAnsi", "breakLongWord", "wrapSingleLine", "isPrintableAscii", "findTerminalSequenceEnd"]);
 	let methodsChecked = 0;
 	let functionsChecked = 0;
 	let closures = 0;
@@ -547,4 +549,51 @@ test("incremental Markdown benchmark labels CPU percentiles as 100-update batch 
 	assert.match(source, /cpuP95MsPerBatchMeanUpdate/);
 	assert.doesNotMatch(source, /cpuP50MsPerUpdate/);
 	assert.doesNotMatch(source, /cpuP95MsPerUpdate/);
+});
+
+test("shared wrapping preserves Unicode clusters, ANSI boundaries and hyperlink continuation", () => {
+	const link = "\x1b]8;;https://example.test\x07", close = "\x1b]8;;\x07";
+	for (const fixture of [
+		{ text: "abcdefghi", width: 4, lines: ["abcd", "efgh", "i"] },
+		{ text: "abcd\x1b[4mefgh\x1b[24mij", width: 4, lines: ["abcd\x1b[4m\x1b[24m", "\x1b[4mefgh\x1b[24m", "ij"] },
+		{ text: "ab e\u0301中文👨‍👩‍👧‍👦z", width: 4, lines: ["ab e\u0301", "中文", "👨‍👩‍👧‍👦z"] },
+		{ text: `${link}abcdefgh${close}`, width: 3, lines: [`${link}abc${close}`, `${link}def${close}`, `${link}gh${close}`] },
+		{ text: "中\x1b[31mabc", width: 1, lines: ["", "中", "\x1b[31ma", "\x1b[31mb", "\x1b[31mc"] },
+		{ text: "ab\tcd", width: 3, lines: ["ab", "", "cd"] },
+	]) {
+		assert.deepEqual(wrapTextWithAnsi(fixture.text, fixture.width), fixture.lines);
+		assert.deepEqual(wrapTextWithAnsiTail(fixture.text, fixture.width, 2), { lines: fixture.lines.slice(-2), skippedCount: fixture.lines.length - 2 });
+	}
+});
+
+test("long ASCII wrapping bypasses Unicode segmentation and keeps only the requested tail", () => {
+	const segmenter = getGraphemeSegmenter();
+	const original = segmenter.segment;
+	let segmentations = 0;
+	segmenter.segment = function (input: string) { segmentations++; return original.call(this, input); };
+	try {
+		const source = "a".repeat(128 * 1024);
+		const wrapped = wrapTextWithAnsi(source, 80);
+		assert.equal(wrapped.join(""), source);
+		assert.deepEqual(wrapTextWithAnsiTail(source, 80, 3), { lines: wrapped.slice(-3), skippedCount: wrapped.length - 3 });
+		assert.equal(segmentations, 0, "ASCII wrapping must not allocate one Intl segment record per character");
+	} finally { segmenter.segment = original; }
+});
+
+test("interrupted CSI OSC and APC scanning remains linear without retained scanner state", () => {
+	const file = ts.createSourceFile("utils.ts", readFileSync(resolve("packages/tui/src/utils.ts"), "utf8"), ts.ScriptTarget.Latest, true);
+	const scanner = file.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "findTerminalSequenceEnd")!;
+	const code = ts.transpileModule(scanner.getText(file), { compilerOptions: { target: ts.ScriptTarget.ESNext } }).outputText
+		.replaceAll("while (index < str.length) {", "while (index < str.length) { steps++;");
+	const scope = { steps: 0 };
+	const scan = runInNewContext(code + "; findTerminalSequenceEnd", scope) as (text: string, pos: number) => number;
+	for (const prefix of ["\x1b]", "\x1b_", "\x1b[123;"]) for (const count of [128, 256, 512, 1024]) {
+		const input = prefix.repeat(count);
+		scope.steps = 0;
+		for (let index = 0; index < input.length; index++) scan(input, index);
+		assert.ok(scope.steps <= input.length, `${prefix}: ${scope.steps} visits for ${input.length} characters`);
+	}
+	assert.equal(scan("\x1b]8;;https://example.test\x1b\\", 0), 27);
+	assert.equal(scan("\x1b[?25l", 0), 6);
+	assert.equal(scan("\x1b[31\x1b[0m", 0), 0);
 });

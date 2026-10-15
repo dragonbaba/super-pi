@@ -1,6 +1,5 @@
 import { eastAsianWidth } from "get-east-asian-width";
 import {
-	ANSI_SEQUENCE_FINAL_PATTERN,
 	CJK_BREAK_PATTERN,
 	LEADING_NON_PRINTING_PATTERN,
 	LINE_BREAK_PATTERN,
@@ -471,14 +470,21 @@ function findTerminalSequenceEnd(str: string, pos: number): number {
 	const next = str[pos + 1];
 	if (next === "[") {
 		let index = pos + 2;
-		while (index < str.length && !ANSI_SEQUENCE_FINAL_PATTERN.test(str[index]!)) index++;
-		return index < str.length ? index + 1 : 0;
+		while (index < str.length) {
+			const code = str.charCodeAt(index);
+			if (code >= 0x40 && code <= 0x7e) return index + 1;
+			// CSI parameters/intermediates only. An interrupted sequence must not
+			// scan across another ESC and rescan the same suffix at every position.
+			if (code < 0x20 || code > 0x3f) return 0;
+			index++;
+		}
+		return 0;
 	}
 	if (next === "]" || next === "_") {
 		let index = pos + 2;
 		while (index < str.length) {
 			if (str[index] === "\x07") return index + 1;
-			if (str[index] === "\x1b" && str[index + 1] === "\\") return index + 2;
+			if (str[index] === "\x1b") return str[index + 1] === "\\" ? index + 2 : 0;
 			index++;
 		}
 	}
@@ -792,20 +798,39 @@ function splitIntoTokensWithAnsi(text: string): string[] {
 	let i = 0;
 
 	while (i < text.length) {
-		const ansiResult = extractAnsiCode(text, i);
-		if (ansiResult) {
+		const ansiEnd = findTerminalSequenceEnd(text, i);
+		if (ansiEnd) {
 			// Hold ANSI codes separately - they'll be attached to the next visible char
-			pendingAnsi += ansiResult.code;
-			i += ansiResult.length;
+			pendingAnsi += text.slice(i, ansiEnd);
+			i = ansiEnd;
 			continue;
 		}
 
 		let end = i;
-		while (end < text.length && !extractAnsiCode(text, end)) {
+		while (end < text.length && !findTerminalSequenceEnd(text, end)) {
 			end++;
 		}
 
-		for (const { segment } of graphemeSegmenter.segment(text.slice(i, end))) {
+		const portion = text.slice(i, end);
+		// Only take this path for a complete ASCII run: a following Unicode mark
+		// can combine with its ASCII base, so mixed runs still use the segmenter.
+		if (isPrintableAscii(portion)) {
+			while (i < end) {
+				const kind = text.charCodeAt(i) === 0x20 ? "space" : "word";
+				let next = i + 1;
+				while (next < end && (text.charCodeAt(next) === 0x20) === (kind === "space")) next++;
+				if (current && currentKind !== kind) {
+					tokens.push(current);
+					current = "";
+				}
+				current += pendingAnsi + text.slice(i, next);
+				pendingAnsi = "";
+				currentKind = kind;
+				i = next;
+			}
+			continue;
+		}
+		for (const { segment } of graphemeSegmenter.segment(portion)) {
 			const segmentIsSpace = segment === " ";
 			if (!segmentIsSpace && cjkBreakRegex.test(segment)) {
 				if (current) {
@@ -1054,60 +1079,49 @@ function breakLongWord(word: string, width: number, tracker: AnsiCodeTracker, ta
 	let currentLine = tracker.getActiveCodes();
 	let currentWidth = 0;
 
-	// First, separate ANSI codes from visible content
-	// We need to handle ANSI codes specially since they're not graphemes
+	// Consume each run directly. Do not retain a per-grapheme record array,
+	// especially when the caller only wants a bounded visual tail.
 	let i = 0;
-	const segments: Array<{ type: "ansi" | "grapheme"; value: string }> = [];
-
 	while (i < word.length) {
-		const ansiResult = extractAnsiCode(word, i);
-		if (ansiResult) {
-			segments.push({ type: "ansi", value: ansiResult.code });
-			i += ansiResult.length;
-		} else {
-			// Find the next ANSI code or end of string
-			let end = i;
-			while (end < word.length) {
-				const nextAnsi = extractAnsiCode(word, end);
-				if (nextAnsi) break;
-				end++;
-			}
-			// Segment this non-ANSI portion into graphemes
-			const textPortion = word.slice(i, end);
-			for (const seg of graphemeSegmenter.segment(textPortion)) {
-				segments.push({ type: "grapheme", value: seg.segment });
-			}
-			i = end;
-		}
-	}
-
-	// Now process segments
-	for (const seg of segments) {
-		if (seg.type === "ansi") {
-			currentLine += seg.value;
-			tracker.process(seg.value);
+		const ansiEnd = findTerminalSequenceEnd(word, i);
+		if (ansiEnd) {
+			const code = word.slice(i, ansiEnd);
+			currentLine += code;
+			tracker.process(code);
+			i = ansiEnd;
 			continue;
 		}
-
-		const grapheme = seg.value;
-		// Skip empty graphemes to avoid issues with string-width calculation
-		if (!grapheme) continue;
-
-		const graphemeWidth = visibleWidth(grapheme);
-
-		if (currentWidth + graphemeWidth > width) {
-			// Add specific reset for underline only (preserves background)
-			const lineEndReset = tracker.getLineEndReset();
-			if (lineEndReset) {
-				currentLine += lineEndReset;
+		let end = i;
+		while (end < word.length && !findTerminalSequenceEnd(word, end)) end++;
+		const portion = word.slice(i, end);
+		if (isPrintableAscii(portion) && Number.isSafeInteger(width) && width > 0) {
+			while (i < end) {
+				if (currentWidth >= width) {
+					currentLine += tracker.getLineEndReset();
+					if (tail) tail.push(currentLine.trimEnd()); else lines.push(currentLine);
+					currentLine = tracker.getActiveCodes();
+					currentWidth = 0;
+				}
+				const next = Math.min(end, i + width - currentWidth);
+				currentLine += word.slice(i, next);
+				currentWidth += next - i;
+				i = next;
 			}
-			if (tail) tail.push(currentLine.trimEnd()); else lines.push(currentLine);
-			currentLine = tracker.getActiveCodes();
-			currentWidth = 0;
+			continue;
 		}
-
-		currentLine += grapheme;
-		currentWidth += graphemeWidth;
+		for (const { segment } of graphemeSegmenter.segment(portion)) {
+			if (!segment) continue;
+			const segmentWidth = visibleWidth(segment);
+			if (currentWidth + segmentWidth > width) {
+				currentLine += tracker.getLineEndReset();
+				if (tail) tail.push(currentLine.trimEnd()); else lines.push(currentLine);
+				currentLine = tracker.getActiveCodes();
+				currentWidth = 0;
+			}
+			currentLine += segment;
+			currentWidth += segmentWidth;
+		}
+		i = end;
 	}
 
 	if (currentLine) {
