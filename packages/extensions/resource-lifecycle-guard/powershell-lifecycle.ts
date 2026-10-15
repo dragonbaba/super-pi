@@ -435,6 +435,7 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 			span = i; typeOnly = false;
 		}
 		while (i < command.length && !SPACE.test(command[i]!) && !PUNCTUATION.test(command[i]!)) {
+			if (quotedEnd === i && (command[i] === ">" || ((command[i] === "*" || (command[i]! >= "1" && command[i]! <= "6")) && command[i + 1] === ">"))) break;
 			typeOnly = false;
 			const c = command[i++]!;
 			if (c === "$" && command[i] === "{") {
@@ -500,11 +501,21 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		const previous = tokens[i - 1];
 		if (head && token.operator && value === "(" && previous && !previous.quoted && (previous.value === "&" || previous.value === ".")) {
 			let target = i, depth = 0;
-			while (tokens[target]?.operator && tokens[target]!.value === "(") { target++; if (contexts.length + ++depth > MAX_NESTING) return UNCERTAIN; }
+			while (tokens[target]?.operator) {
+				const part = tokens[target]!.value;
+				if (part === "\n" || part === "\r") { target++; continue; }
+				if (part !== "(") break;
+				target++; if (contexts.length + ++depth > MAX_NESTING) return UNCERTAIN;
+			}
 			const literal = tokens[target];
 			if (literal?.quoted && !literal.dynamic && literal.quotedEnd === literal.end) {
 				let end = target + 1, remaining = depth;
-				while (remaining && tokens[end]?.operator && tokens[end]!.value === ")") { remaining--; end++; }
+				while (remaining && tokens[end]?.operator) {
+					const part = tokens[end]!.value;
+					if (part === "\n" || part === "\r") { end++; continue; }
+					if (part !== ")") break;
+					remaining--; end++;
+				}
 				// Only grouping around one literal is transparent. Arbitrary expressions
 				// retain normal opaque-script policy; command arguments start after it.
 				if (!remaining) { token = literal; value = literal.value; i = end - 1; groupedInvocation = true; }

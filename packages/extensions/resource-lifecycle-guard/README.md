@@ -438,3 +438,6 @@ one literal invocation target preserves the actual argument boundary, including 
 and quoted foreach aliases; arbitrary computed targets remain opaque. Leading file
 redirections also tokenize without whitespace before the destination. All these
 checks are bounded invocation-only work and reuse the existing token storage.
+Grouped literal targets skip newline trivia only inside their parentheses; a newline
+after the group still ends the invocation. Redirections immediately after a leading
+quoted target are separate tokens, while embedded unquoted data> stays argument text.
