@@ -2391,8 +2391,11 @@ export class AgentSession {
 	 * Get all configured tools with name, description, parameter schema, prompt guidelines, and source metadata.
 	 */
 	getAllTools(): ToolInfo[] {
+		const powerShellAvailable = process.platform === "win32" && this.settingsManager.getPowerShellStatus()?.available !== false
+			&& this._powerShellToolState.disabledReason === undefined;
 		return Array.from(this._toolDefinitions.values()).map(({ definition, sourceInfo }) => ({
 			name: definition.name,
+			available: definition.name !== "powershell" || powerShellAvailable,
 			description: definition.description,
 			parameters: definition.parameters,
 			promptGuidelines: definition.promptGuidelines,

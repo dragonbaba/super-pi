@@ -158,6 +158,7 @@ export default function toolClassificationExtension(pi: ExtensionAPI): void {
       for (const tool of pi.getAllTools()) {
         if (
           tool.name === "tool_search"
+          || tool.available === false
           || activeSet.has(tool.name)
           || POLICY_OWNED_TOOL_NAMES.has(tool.name)
         ) continue;

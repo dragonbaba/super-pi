@@ -143,6 +143,81 @@ test("failure reasons prefer actual diagnostics and never turn arbitrary missing
 	assert.equal(codemodeFailureReason("Error: " + "x".repeat(4096), "model").length, 512);
 });
 
+test("npm preambles and policy headings do not hide actionable causes or model recovery", () => {
+	const cause = "src/winter/WinterVideo.tsx(153,10): error TS2657: JSX expressions must have one parent element.";
+	const errors = cause + "\nsrc/winter/WinterVideo.tsx(162,95): error TS1003: Identifier expected.\nCommand exited with code 1";
+	const prettyCause = "src/winter/WinterVideo.tsx:153:10 - error TS2657: JSX expressions must have one parent element.";
+	assert.equal(codemodeFailureReason(`npm notice run tsc --noEmit\n${prettyCause}\nError: typecheck failed\nCommand exited with code 1`), prettyCause);
+	for (const audience of ["display", "model"] as const) {
+		assert.equal(codemodeFailureReason(`${cause}\nTimeoutError: compiler server did not respond\nError: typecheck failed`, audience), "TimeoutError: compiler server did not respond");
+		assert.equal(codemodeFailureReason(`${cause}\nError: spawn tsc ENOENT\nCommand exited with code 1`, audience), "Error: spawn tsc ENOENT");
+		assert.equal(codemodeFailureReason(`${cause}\nError: spawnSync C:/Program Files/tool.exe EACCES`, audience), "Error: spawnSync C:/Program Files/tool.exe EACCES");
+		assert.equal(codemodeFailureReason(`${cause}\nError: spawnSync C:/path/tool.exe UNKNOWN`, audience), "Error: spawnSync C:/path/tool.exe UNKNOWN");
+		assert.equal(codemodeFailureReason(`${cause}\nError: spawn UNKNOWN`, audience), "Error: spawn UNKNOWN");
+		assert.equal(codemodeFailureReason(`${cause}\nENOENT: no such file or directory, open 'input.ts'`, audience), audience === "display" ? "Path does not exist." : "ENOENT: no such file or directory, open 'input.ts'");
+	}
+	for (const banner of ["npm notice run remotion-video-project@1.0.0 typecheck\nnpm notice run tsc --noEmit", "> project@1.0.0 typecheck\n> tsc --noEmit", "npm info run project@1.0.0 typecheck", "> @scope/project@1.0.0-dev typecheck\n> tsc --noEmit"]) {
+		for (const audience of ["display", "model"] as const) {
+			assert.equal(codemodeFailureReason(`[SHELL_RUNTIME_FAILED]\n${banner}\n\u001b[31m${errors}\u001b[0m`, audience), cause);
+			assert.equal(codemodeFailureReason(`${banner}\nCommand exited with code 1`, audience), "Command exited with code 1");
+		}
+	}
+	for (const audience of ["display", "model"] as const) {
+		for (const header of ["> check", "> project check", "> @scope/project check"]) {
+			assert.equal(codemodeFailureReason(`${header}\n\n> missing-command\nsh: missing-command: not found\nCommand exited with code 127`, audience), "sh: missing-command: not found");
+			assert.equal(codemodeFailureReason(`${header}\n> tsc --noEmit\n${errors}`, audience), cause);
+		}
+		assert.equal(codemodeFailureReason("> denied", audience), "> denied");
+		assert.equal(codemodeFailureReason("> denied\nCommand exited with code 1", audience), "> denied");
+		assert.equal(codemodeFailureReason("> authentication failed\nCommand exited with code 1", audience), "> authentication failed");
+		assert.equal(codemodeFailureReason("> authentication failed\n> token expired\nCommand exited with code 1", audience), "> authentication failed > token expired");
+		assert.equal(codemodeFailureReason("> authentication failed\n> token expired", audience), "> authentication failed > token expired");
+		for (const tail of ["> refresh denied", "> refresh denied\n> contact the administrator"]) {
+			const run = `> authentication failed\n> token expired\n${tail}`;
+			assert.equal(codemodeFailureReason(`${run}\nCommand exited with code 1`, audience), run.replaceAll("\n", " "));
+			assert.equal(codemodeFailureReason(`${run}\nError: account disabled\nCommand exited with code 1`, audience), "Error: account disabled");
+		}
+		assert.equal(codemodeFailureReason("> project check\n> checker\n> authentication failed\nCommand exited with code 1", audience), "> project check > checker > authentication failed");
+		assert.equal(codemodeFailureReason("$ authentication failed\nCommand exited with code 1", audience), "$ authentication failed");
+		assert.equal(codemodeFailureReason("> project@1.0.0 check\n> checker\n> authentication failed\nCommand exited with code 1", audience), "> authentication failed");
+	}
+	const policy = '[SHELL_WRAPPER:LAUNCHER_UNSUPPORTED] Not executed:\nBash analysis cannot inspect the `powershell.exe` launcher.\nNext: Use tool_search with query "powershell", then read its schema; normal authorization still applies.';
+	assert.equal(codemodeFailureReason(policy), "Bash analysis cannot inspect the `powershell.exe` launcher.");
+	assert.match(codemodeFailureReason(policy, "model"), /cannot inspect.*Next: Use tool_search.*normal authorization/);
+	for (const code of ["SHELL_BACKGROUND", "SHELL_UNINSPECTABLE", "SHELL_DYNAMIC_EXECUTABLE", "SHELL_INSPECTION_LIMIT"]) {
+		const refusal = `[${code}] PowerShell not executed: fixture reason.\nNext: submit a literal foreground command for normal authorization; do not retry the same blocked call.`;
+		assert.equal(codemodeFailureReason(refusal), "fixture reason.");
+		assert.match(codemodeFailureReason(refusal, "model"), /PowerShell not executed: fixture reason.*Next: submit a literal foreground command.*do not retry/);
+	}
+	const http = "aiohttp.client_exceptions.WSServerHandshakeError: 403, message='Invalid response status', url='wss://example.invalid/long'";
+	assert.equal(codemodeFailureReason(http), "HTTP 403: Invalid response status.");
+	assert.equal(codemodeFailureReason(http, "model"), http);
+	for (const nonHttp of ["DatabaseError: 123, message='constraint failed'", "DatabaseError: 403, message='constraint failed'", "ClientResponseError: 123, message='invalid code'"]) {
+		assert.equal(codemodeFailureReason(nonHttp), nonHttp);
+	}
+	assert.equal(codemodeFailureReason("ModuleNotFoundError: No module named 'win32com'"), "ModuleNotFoundError: No module named 'win32com'");
+	const final = parent([fact("p:1", "bash", `[SHELL_RUNTIME_FAILED]\nnpm notice run project typecheck\n${errors}`, true)], [], true);
+	const canonical = JSON.stringify(final), tree = new CodemodeTreeComponent();
+	tree.updateParent("await tools.bash(args)", final, false, true, false);
+	assert.match(plain(tree), /bash.*×\s*\n\s*src\/winter\/WinterVideo.tsx.*TS2657/);
+	assert.doesNotMatch(plain(tree), /npm notice|TS1003|Not executed|Script output/);
+	const projections = tree.getLifecycleCounts().failureProjections;
+	for (let i = 0; i < 32; i++) { tree.updateParent("await tools.bash(args)", final, false, true, i % 2 === 0); plain(tree); }
+	assert.equal(tree.getLifecycleCounts().failureProjections, projections);
+	tree.updateParent("await tools.bash(args)", final, false, true, true);
+	assert.match(plain(tree), /npm notice/); assert.match(plain(tree), /TS1003/);
+	assert.equal(JSON.stringify(final), canonical);
+	const terminalResult = parent([fact("p:1", "bash", `${errors}\nTimeoutError: compiler server did not respond`, true)], [], true);
+	tree.updateParent("await tools.bash(args)", terminalResult, false, true, false);
+	assert.match(plain(tree), /TimeoutError: compiler server did not respond/);
+	assert.doesNotMatch(plain(tree), /TS2657/);
+	const terminalProjections = tree.getLifecycleCounts().failureProjections;
+	for (let i = 0; i < 32; i++) { tree.updateParent("await tools.bash(args)", terminalResult, false, true, false); plain(tree); }
+	assert.equal(tree.getLifecycleCounts().failureProjections, terminalProjections);
+	releaseComponentRenderCaches(tree);
+	assert.equal(tree.getLifecycleCounts().resultReferences, 0);
+});
+
 test("browser IPC timeout and inactive tool errors stay concise while expansion shows each stack once", () => {
 	const error = "[BROWSER_EXEC_FAILED] TimeoutError: timed out\nTraceback (most recent call last):\n  File \"helpers.py\", line 57\n" +
 		"browser_harness.helpers._IPCResponseTimeout: Page.navigate timed out after 5s waiting for the daemon";

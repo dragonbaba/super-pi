@@ -189,15 +189,16 @@ for (const command of ["env foo.bar=x bash -c 'printf INNER'", "env </dev/null b
 test("postmerge preflight adds zero argument-wrapper allocations", () => {
  const file = new URL("../packages/extensions/resource-lifecycle-guard/index.ts", import.meta.url);
  const source = ts.createSourceFile(file.pathname, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
- let scans = 0, wrappers = 0;
+ let bashScans = 0, powershellScans = 0, wrappers = 0;
  function visit(node: ts.Node) {
-  if (ts.isCallExpression(node) && node.expression.getText(source) === "inspectBashResourceLifecycle") {
-   scans++; if (ts.isObjectLiteralExpression(node.arguments[0]!)) wrappers++;
+  if (ts.isCallExpression(node) && ["inspectBashResourceLifecycle", "inspectPowerShellResourceLifecycle"].includes(node.expression.getText(source))) {
+   if (node.expression.getText(source) === "inspectBashResourceLifecycle") bashScans++; else powershellScans++;
+   if (ts.isObjectLiteralExpression(node.arguments[0]!)) wrappers++;
    assert.equal(node.arguments[0]!.getText(source), "event.input");
   }
   ts.forEachChild(node, visit);
  }
- visit(source); assert.equal(scans, 2); assert.equal(wrappers, 0);
+ visit(source); assert.equal(bashScans, 1); assert.equal(powershellScans, 1); assert.equal(wrappers, 0);
  const authorization = source.statements.find(node => ts.isClassDeclaration(node) && node.name?.text === "BashInvocationAuthorization") as ts.ClassDeclaration;
  const consume = authorization.members.find(node => ts.isMethodDeclaration(node) && node.name.getText(source) === "consume") as ts.MethodDeclaration;
  const containers: ts.ObjectLiteralExpression[] = [];

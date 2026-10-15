@@ -5,6 +5,7 @@ import { basename, dirname, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@super-pi/coding-agent";
 import { shutdownManagedBrowser } from "@super-pi/chrome-devtools/browser-manager";
 import { inspectBashResourceLifecycle } from "./core.ts";
+import { inspectPowerShellResourceLifecycle } from "./powershell-lifecycle.ts";
 import { SessionPermissionController } from "./permission-controller.ts";
 import { registerChanges } from "../mutation-guard-write/changes.ts";
 import { BackgroundShellTasks } from "./background-shell.ts";
@@ -141,6 +142,21 @@ class OwnedResourceCleaner {
 }
 
 export default function resourceLifecycleGuard(pi: ExtensionAPI): void {
+  // Resolve only on a launcher refusal. Catalog materialization is never on
+  // ordinary command/progress paths; the callback belongs to this extension.
+  function nativePowerShellAvailability(): "active" | "discoverable" | "unavailable" {
+    // AgentSession refuses to activate this builtin on non-Windows hosts,
+    // even though its definition can still appear in the configured catalog.
+    if (process.platform !== "win32") return "unavailable";
+    try {
+      const active = pi.getActiveTools();
+      const nativeActive = active.includes("powershell");
+      if (nativeActive || active.includes("tool_search")) {
+        for (const tool of pi.getAllTools()) if (tool.name === "powershell" && tool.available !== false) return nativeActive ? "active" : "discoverable";
+      }
+    } catch { /* Loading/offline contexts cannot establish tool availability. */ }
+    return "unavailable";
+  }
   const permissions = new SessionPermissionController(pi);
   const resources = new OwnedResourceCleaner();
   const backgroundTasks = new BackgroundShellTasks(pi);
@@ -176,9 +192,11 @@ export default function resourceLifecycleGuard(pi: ExtensionAPI): void {
     const sessionId = bash ? ctx.sessionManager.getSessionId() : "";
     const generation = permissions.authorityGeneration;
     if (event.toolName === "bash") {
-      let nativePowerShellAvailable = false;
-      try { nativePowerShellAvailable = ctx.getActiveTools().includes("powershell"); } catch { /* offline/loading contexts fail closed */ }
-      const reason = inspectBashResourceLifecycle(event.input, nativePowerShellAvailable);
+      const reason = inspectBashResourceLifecycle(event.input, nativePowerShellAvailability);
+      if (reason) return { block: true, reason };
+    }
+    if (event.toolName === "powershell") {
+      const reason = inspectPowerShellResourceLifecycle(event.input);
       if (reason) return { block: true, reason };
     }
     const preparedCwd = shell ? await prepareShellCwd(event.input as { cwd?: unknown }, ctx.cwd) : undefined;
@@ -188,7 +206,6 @@ export default function resourceLifecycleGuard(pi: ExtensionAPI): void {
     if (permissionBlock) return permissionBlock;
     // Neither lifecycle acceptance nor the original approval authorizes a replacement.
     if (bash) {
-      if (shellName === "powershell") { const reason = inspectBashResourceLifecycle(event.input); if (reason) return { block: true, reason }; }
       if (getShellCwdBinding(event.input) !== preparedCwd || event.toolName !== shellName || event.toolCallId !== id || event.input.command !== bashCommand
         || event.input.timeout !== bashTimeout || (event.input as Record<string, unknown>).cwd !== bashCwd
         || (event.input as Record<string, unknown>).purpose !== bashPurpose

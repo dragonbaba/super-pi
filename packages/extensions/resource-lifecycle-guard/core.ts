@@ -108,7 +108,8 @@ function dynamicExecutable(token: string | undefined): string {
  return lifecycleRefusal("SHELL_DYNAMIC_EXECUTABLE", `executable position uses a variable or dynamic expression${variable}`, "use the quoted literal executable path in a foreground command");
 }
 
-export function inspectBashResourceLifecycle(input: unknown, nativePowerShellAvailable = false): string | undefined {
+type NativePowerShellAvailability = boolean | (() => "active" | "discoverable" | "unavailable");
+export function inspectBashResourceLifecycle(input: unknown, nativePowerShellAvailable: NativePowerShellAvailability = false): string | undefined {
  if (!input || typeof input !== "object") return undefined;
  const command = (input as { command?: unknown }).command;
  if (typeof command !== "string" || command.length === 0) return undefined;
@@ -116,7 +117,7 @@ export function inspectBashResourceLifecycle(input: unknown, nativePowerShellAva
  return inspectLifecycleScript(command, 0, nativePowerShellAvailable);
 }
 
-function inspectLifecycleScript(source: string, depth: number, nativePowerShellAvailable = false): string | undefined {
+function inspectLifecycleScript(source: string, depth: number, nativePowerShellAvailable: NativePowerShellAvailability = false): string | undefined {
  if (depth > MAX_WRAPPER_DEPTH) return lifecycleRefusal("SHELL_INSPECTION_LIMIT", "wrapper/substitution nesting exceeds the inspection depth", "reduce nesting");
  if (isReadOnlyFindLoop(source)) return undefined;
  const input = depth === 0 && source.includes("<<") ? boundedShellInput(source) : undefined;
@@ -209,7 +210,8 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
    // operand grammars; never mistake their option/argument for the executable.
    if (name !== "env" && name !== "sudo" && name !== "doas") {
     if (POWERSHELL_WRAPPERS.has(name)) {
-     return renderPolicyDiagnostic({ code: "LAUNCHER_UNSUPPORTED", category: "SHELL_WRAPPER", launcher: name, nativeToolAvailable: nativePowerShellAvailable, retryable: false, action: "native_tool" });
+     const availability = typeof nativePowerShellAvailable === "function" ? nativePowerShellAvailable() : nativePowerShellAvailable ? "active" : "unavailable";
+     return renderPolicyDiagnostic({ code: "LAUNCHER_UNSUPPORTED", category: "SHELL_WRAPPER", launcher: name, nativeToolAvailable: availability === "active", nativeToolDiscoverable: availability === "discoverable", retryable: false, action: "native_tool" });
     }
     return lifecycleRefusal("SHELL_WRAPPER", "launcher operand grammar is uncertain/uninspectable", "use a directly inspectable foreground executable");
    }

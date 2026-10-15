@@ -257,6 +257,52 @@ test("Codemode missing-path summary gives the model a direct cause without paren
 	assert.match(delivered, /Do not automatically retry mutations/);
 });
 
+test("Codemode delivers the compiler cause before npm banners while preserving full diagnostics", async t => {
+	let diagnostic = "[SHELL_RUNTIME_FAILED]\nnpm notice run remotion-video-project@1.0.0 typecheck\nnpm notice run tsc --noEmit\nsrc/winter/WinterVideo.tsx(153,10): error TS2657: JSX expressions must have one parent element.\nsrc/winter/WinterVideo.tsx(162,95): error TS1003: Identifier expected.\nCommand exited with code 1";
+	const extension: InlineExtension = pi => pi.registerTool({ name: "compiler_probe", label: "probe", description: "offline compiler fixture",
+		parameters: Type.Object({}), execute: async () => ({ content: [{ type: "text", text: diagnostic }], isError: true, details: {} }) });
+	const f = await fixture(t, {}, [extension, guardrails]);
+	const outcome = await f.run(["await tools.compiler_probe({})"]);
+	const failed = outcome.results[0]!;
+	assert.equal(failed.isError, true);
+	const summary = (failed.content[0] as any).text;
+	assert.match(summary, /compiler_probe: .* — src\/winter\/WinterVideo.tsx\(153,10\): error TS2657/);
+	assert.doesNotMatch(summary, /npm notice|TS1003/);
+	const delivered = JSON.stringify(outcome.wires.at(-1));
+	assert.match(delivered, /npm notice run/); assert.match(delivered, /TS1003/); assert.match(delivered, /Command exited with code 1/);
+	diagnostic = "[SHELL_RUNTIME_FAILED]\n> check\n> missing-command\nsh: missing-command: not found\nCommand exited with code 127";
+	const versionless = await f.run(["await tools.compiler_probe({})"]);
+	const versionlessSummary = (versionless.results.at(-1)!.content[0] as any).text;
+	assert.match(versionlessSummary, /compiler_probe: .* — sh: missing-command: not found/);
+	assert.doesNotMatch(versionlessSummary, /> check/);
+	assert.match(JSON.stringify(versionless.wires.at(-1)), /> check/);
+	diagnostic = "[SHELL_RUNTIME_FAILED]\n> authentication failed\n> token expired\n> refresh denied\nCommand exited with code 1";
+	const quoted = await f.run(["await tools.compiler_probe({})"]);
+	assert.match((quoted.results.at(-1)!.content[0] as any).text, /compiler_probe: .* — > authentication failed > token expired/);
+	assert.match(JSON.stringify(quoted.wires.at(-1)), /token expired/);
+	assert.match(JSON.stringify(quoted.wires.at(-1)), /refresh denied/);
+	assert.match((quoted.results.at(-1)!.content[0] as any).text, /refresh denied/);
+	diagnostic = "[SHELL_RUNTIME_FAILED]\nsrc/old.ts(1,1): error TS1000: stale cached diagnostic.\nTimeoutError: compiler server did not respond\nCommand exited with code 1";
+	const terminal = await f.run(["await tools.compiler_probe({})"]);
+	assert.match((terminal.results.at(-1)!.content[0] as any).text, /compiler_probe: .* — TimeoutError: compiler server did not respond/);
+	assert.match(JSON.stringify(terminal.wires.at(-1)), /TS1000/);
+	diagnostic = "[SHELL_RUNTIME_FAILED]\nsrc/old.ts(1,1): error TS1000: stale cached diagnostic.\nError: spawnSync C:/path/tool.exe UNKNOWN\nCommand exited with code 1";
+	const spawn = await f.run(["await tools.compiler_probe({})"]);
+	assert.match((spawn.results.at(-1)!.content[0] as any).text, /compiler_probe: .* — Error: spawnSync C:\/path\/tool.exe UNKNOWN/);
+	assert.match(JSON.stringify(spawn.wires.at(-1)), /TS1000/);
+});
+
+test("Codemode delivers native PowerShell refusal recovery for an unshown child", async t => {
+	const diagnostic = "[SHELL_BACKGROUND] PowerShell not executed: unmanaged background work requires an owned task.\nNext: submit a literal foreground command for normal authorization; do not retry the same blocked call.";
+	const extension: InlineExtension = pi => pi.registerTool({ name: "refusal_probe", label: "probe", description: "offline refusal fixture",
+		parameters: Type.Object({}), execute: async () => ({ content: [{ type: "text", text: diagnostic }], isError: true, details: {} }) });
+	const f = await fixture(t, {}, [extension, guardrails]);
+	const outcome = await f.run(["await tools.refusal_probe({})"]);
+	assert.equal(outcome.results[0]!.isError, true);
+	assert.match((outcome.results[0]!.content[0] as any).text, /refusal_probe: .*Next: submit a literal foreground command.*do not retry/);
+	assert.match(JSON.stringify(outcome.wires.at(-1)), /Next: submit a literal foreground command/);
+});
+
 for (const repeated of [false, true]) test(`budgeted default bundle accepts multiple shown native reads: repeated=${repeated}`, async t => {
 	const f = await fixture(t, { toolResultPresentation: { enabled: true, budgetTokens: 8000 } }, [], true);
 	writeFileSync(join(f.cwd, "other.txt"), "other\n");
@@ -541,14 +587,32 @@ test("tool selection expressions constrain late MCP registration, explicit activ
 });
 
 test("tool selection wildcard and denied activation preserve unavailable PowerShell", async t => {
+	const { default: lifecycle } = await jiti.import<{ default: InlineExtension }>("../packages/extensions/resource-lifecycle-guard/index.ts");
 	const settings = SettingsManager.inMemory({ powershellStatus: { available: false, verified: false, path: "missing.exe" } });
-	const f = await fixture(t, { settingsManager: settings, toolSelection: { tools: ["*"] } });
+	const f = await fixture(t, { settingsManager: settings, toolSelection: { tools: ["*"] } }, [toolClassification, lifecycle]);
 	assert.equal(f.session.getActiveToolNames().includes("powershell"), false);
 	assert.equal(settings.getPowerShellStatus()?.available, false);
+	assert.equal(f.session.getAllTools().find(tool => tool.name === "powershell")?.available, false);
+	const blocked = await f.session.agent.dispatchHostTool({ type: "toolCall", id: "unavailable-recovery", name: "bash", arguments: { command: "powershell.exe -NoProfile -Command 'Write-Output fixture'" } });
+	assert.equal(blocked.isError, true);
+	assert.match(JSON.stringify(blocked.content), /directly inspectable foreground command/);
+	assert.doesNotMatch(JSON.stringify(blocked.content), /Use tool_search|enabled native PowerShell/);
+	const search = await f.session.agent.dispatchHostTool({ type: "toolCall", id: "unavailable-search", name: "tool_search", arguments: { query: "powershell" } });
+	assert.equal(search.isError, false);
+	assert.deepEqual((search.details as any)?.matches, []);
+	assert.equal(f.session.getActiveToolNames().includes("powershell"), false);
 	const denied = await fixture(t, { settingsManager: settings, toolSelection: { tools: ["read", "-powershell"] } });
 	denied.session.setActiveToolsByName(["powershell", "read"]);
 	assert.deepEqual(denied.session.getActiveToolNames().sort(), ["codemode", "read"]);
 	assert.equal(settings.getPowerShellStatus()?.available, false);
+	if (process.platform === "win32") {
+		f.session.setActiveToolsByName(["bash", "tool_search", "powershell"]);
+		assert.equal(f.session.getAllTools().find(tool => tool.name === "powershell")?.available, true);
+		(f.session as any)._powerShellToolState.disable("offline transient failure");
+		assert.equal(f.session.getAllTools().find(tool => tool.name === "powershell")?.available, false);
+		const unavailable = await f.session.agent.dispatchHostTool({ type: "toolCall", id: "disabled-active-recovery", name: "bash", arguments: { command: "powershell.exe -Command 'Write-Output fixture'" } });
+		assert.doesNotMatch(JSON.stringify(unavailable.content), /Use tool_search|enabled native PowerShell/);
+	}
 });
 
 test("real tool_search activates allowed tools inside Codemode without exposing denied names", async t => {

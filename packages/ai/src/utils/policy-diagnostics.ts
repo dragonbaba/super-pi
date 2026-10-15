@@ -24,6 +24,7 @@ export interface PolicyDiagnostic {
 	readonly retryable: boolean;
 	readonly action: "omit_syntax" | "native_tool" | "change_arguments" | "ask_user" | "stop";
 	readonly nativeToolAvailable?: boolean;
+	readonly nativeToolDiscoverable?: boolean;
 }
 
 const MAX_FEEDBACK_CHARS = 240;
@@ -86,11 +87,13 @@ export function readPolicyDiagnostic(value: unknown): PolicyDiagnostic | undefin
 	const syntax = boundedFragment(input.syntax);
 	const launcher = boundedFragment(input.launcher);
 	const nativeToolAvailable = typeof input.nativeToolAvailable === "boolean" ? input.nativeToolAvailable : undefined;
+	const nativeToolDiscoverable = typeof input.nativeToolDiscoverable === "boolean" ? input.nativeToolDiscoverable : undefined;
 	return {
 		...diagnostic,
 		...(syntax ? { syntax } : {}),
 		...(launcher ? { launcher } : {}),
 		...(nativeToolAvailable === undefined ? {} : { nativeToolAvailable }),
+		...(nativeToolDiscoverable === undefined ? {} : { nativeToolDiscoverable }),
 	};
 }
 
@@ -104,6 +107,8 @@ export function renderPolicyDiagnostic(diagnostic: PolicyDiagnostic): string {
 		const launcher = diagnostic.launcher ? `the \`${diagnostic.launcher}\` launcher` : "this launcher";
 		const next = diagnostic.nativeToolAvailable === true
 			? "Use the enabled native PowerShell tool for this query; normal authorization still applies."
+			: diagnostic.nativeToolDiscoverable === true
+				? 'Use tool_search with query "powershell", then read its schema with describeTools(["powershell"]). Use callTool("powershell", args) in this Codemode script, or tools.powershell in a new script; normal authorization still applies.'
 			: "Use a directly inspectable foreground command; resubmit for authorization.";
 		return `${prefix}\nBash analysis cannot inspect ${launcher}.\nNext: ${next}`;
 	}

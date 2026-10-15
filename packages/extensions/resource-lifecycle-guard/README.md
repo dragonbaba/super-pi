@@ -234,3 +234,229 @@ invocation/startup operations; no progress/render callback or regex was added.
 A memory/custom settings store without an identity assertion retains its ordinary
 trust boolean, but explicit identity-revalidated queries return false. Such a
 store cannot promote newly read on-disk project shell settings as trusted.
+
+### Native PowerShell and failure summaries (2026-10-15)
+
+Native `powershell` uses a bounded preflight for explicit lifecycle syntax before
+normal authorization. Assignments, types, ordinary member calls, dynamic data and
+compilation are not Bash executable positions and are not rejected simply because
+they can carry code. The previous review iteration incorrectly grew capability,
+provider and member-name blacklists; those rules have been removed. In particular,
+Add-Type compilation, COM/reflection metadata, New-Object data, provider cmdlet
+values and intrinsic ForEach dispatch retain ordinary permission classification.
+A method named Start may be Stopwatch.Start; its name does not establish a process
+launch. Native start.exe/cp.exe are not the start/cp PowerShell aliases.
+
+The preflight retains explicit Start-Job/thread-job/service/scheduled-task checks,
+trailing background `&`, owned Start-Process Wait checks, and cmdlet-specific AsJob,
+BITS Asynchronous/Suspended and literal WhatIf behavior. Nested expressions and
+script blocks within its supported grammar receive the same bounded token walk.
+Quoted flags, filenames after redirection, native executable arguments and data
+containing equals signs do not become cmdlet switches. Literal Bash operands still
+use the existing Bash lifecycle inspection. Parameter prefixes and colon-separated
+native boolean literals are checked against the relevant cmdlet metadata.
+
+Boundary follow-up: opaque string subexpressions, here-strings and indirect call
+targets no longer end inspection of the remaining command. Bounded delimiter
+scans retain the following statement; quoted and indexed assignment targets keep
+the right-hand command position, and attribute argument lists preserve declaration
+context before param(). Native AST checks confirm the reported forms are valid;
+ordinary counterparts remain accepted. Invoke-Command/icm and Invoke-WmiMethod/iwmi
+check their own AsJob option against native 5.1/7.6 parameter metadata, without
+banning their foreground forms. The native systemctl path recognizes explicit
+start/restart/reload-or-restart/isolate verbs after supported global options;
+option values are not verbs, and unknown/dynamic syntax remains ordinary opaque
+execution rather than a new command whitelist. No service or remote job was run.
+Combined systemctl short flags are consumed before the verb, including a final
+value-taking option. Attribute boundaries retain their argument tokens so literal
+ValidateScript bodies receive ordinary lifecycle inspection; the same bounded
+primitive stack is reused for lexical attribute ends and expression contexts.
+Invoke-Command also checks InDisconnectedSession and its Disconnected alias/prefixes
+using native parameter metadata; literal false stays foreground. No blanket ban on
+attributes, remote-command types or member names is introduced. The independent
+legacy high-risk scanner already refuses some validation-attribute declarations;
+lifecycle acceptance is not evidence of whole-chain acceptance for those forms.
+Attribute argument names remain metadata; only their script-block bodies enter
+command position. A harmless custom attribute with a Start property confirms the
+distinction on native 5.1/7.6. systemctl enable plus --now is recognized on either
+side of the verb, while plain enable, disable/mask, option values and -- operands
+retain their normal meaning. Native parameter binding also confirms that a
+backtick touching -As/-InDis before a newline stays in the parameter name and
+fails binding; it must not be normalized into an async switch. Ordinary spaced
+line continuations already preserve the native switch and remain covered.
+reenable plus --now also requires owned execution because it try-restarts active
+units. Literal flat cmd /c start restores the prior lifecycle check, accepting
+its own /wait before the program but not a title, directory or program argument
+spelled /wait. Plain cmd commands still reach normal authorization. Arbitrary
+batch source/indirection remains opaque; this does not add a general cmd parser.
+An expandable quoted title remains title data before the start options; a quote
+inside an executable name does not turn that program into a title. The guard is
+not an exhaustive command catalog: Disconnect-PSSession/dnsn and native sc.exe
+service controls were not covered by the preceding Bash gate and remain under
+normal authorization. No new blacklist for these command families is introduced.
+The same scope applies to previously uncovered conditional systemctl restart verbs.
+Nested PowerShell interpreter source also follows normal opaque-script authorization;
+the former Bash-only launcher refusal is intentionally not restored on native calls.
+These are documented coverage limits, not claims that such commands cannot detach work.
+Dot invocation retains the following literal command position without splitting
+decimal/member/path dots. Class/enum declaration names stay metadata; method
+bodies and commands after a declaration still receive the existing checks.
+Adjacent typed hashtables retain key/value context. Native smart quote groups
+use the same literal/data rules as ASCII quotes, including here-strings and
+doubled quote escapes. Invoke-Item/ii accepts its own literal enabled WhatIf,
+using native parameter metadata; false/dynamic values retain the existing check.
+These are invocation-only bounded scans, with no new progress/render work, retained
+owners, per-event callbacks or pools. Existing source/AST/allocation evidence for
+the unchanged render chain remains applicable.
+
+This is a bounded preflight, not a complete PowerShell parser, dataflow analyzer or
+sandbox. Here-strings, expandable string subexpressions and indirect call targets
+defer to normal permission classification. It does not prove arbitrary authorized
+programs, reflection, aliases, preference tables, modules, scripts or COM methods
+cannot detach work. That broader claim cannot be established by a growing list of
+type/member names. Explicit background work still belongs in session-owned tasks.
+The local Windows Job Object is used for managed background execution; ordinary
+foreground execution has timeout/cancel process-tree cleanup, not a general
+normal-exit containment guarantee for indirect or external-service launches.
+
+Lifecycle acceptance grants no permission. Existing high-risk/protected-target
+analysis, opaque-script approval policy, cwd identity, exact Session rules, rejection
+handling and immutable final invocation authority remain unchanged. The normal
+permission policy may still reject unresolvable targets or unsupported shell state.
+For example, the older scanner refuses a bare `@(...).ForEach(...)` statement,
+whereas assigning the array before invoking its method reaches normal approval.
+Inline param(), some for/foreach pipeline forms and type block comments also retain
+those independent parser limits. Lifecycle-only fixtures must not be presented as
+proof that the entire authorization chain accepts a request. The real integration
+fixture covers harmless compilation, Stopwatch.Start, dynamic file/environment
+data, variable-based intrinsic ForEach, approval/denial and explicit job refusal.
+Reported WMI/process-launch examples are inspected as offline strings only.
+
+Bash-to-PowerShell recovery distinguishes an active native tool, a configured
+discoverable tool, and an unavailable tool. Discovery is suggested only when
+`tool_search` is active and the filtered catalog contains `powershell`; neither
+tool activation nor authorization is automatic. Catalog lookup runs only on the
+relevant refusal, through one extension-owned callback, with no cached catalog.
+Catalog metadata also carries host/probe availability, including the current
+disabled runtime state. Recovery and tool_search exclude unavailable tools even
+when their definitions, or a stale active entry, remain present. This is explicit
+discovery/refusal work, not progress/render work, and does not run another probe.
+
+Collapsed Codemode errors skip policy headings and npm startup banners, prefer
+the first file/line compiler error (including colored output), and show short HTTP
+failure causes. A later specific exception, concrete Node spawn/spawnSync OS error,
+or missing-path diagnostic supersedes compiler output; generic Error wrappers do
+not. Model summaries retain concrete diagnostics and policy recovery;
+expanded output and canonical results retain all diagnostics. Output scanning
+remains capped at 2,048 characters, with 160/512-character display/model limits.
+
+Performance audit: shell completion → Codemode facts/model summary → session event
+delivery → InteractiveMode → retained tree/Text/Box → Main/Alt frame → terminal
+queue → release. Error projection occurs once when its bounded source changes;
+redraw/expand/collapse reuse it. Added regexes are module-owned. There are no new
+per-progress/frame closures, Promises, controllers, wrappers, arrays, full-frame
+copies or pools. The PowerShell lexer is invocation-local (128 KiB source, at most
+2,048 tokens, 64 primitive expression contexts); source spans avoid
+per-character string building.
+All parser references become unreachable on return/refusal/throw, before any await.
+Cast recognition balances type brackets linearly with depth capped at 64, preserving
+nested generics and jagged arrays. The balanced scan cannot repartition overlapping regex matches. Context arrays are call-owned and
+become unreachable together with lexer tokens on every return/refusal/throw.
+
+Source-loaded validation on Windows x64 / Node 26.4.0, without a build or global
+runtime replacement, extended existing tests only. Real isolated PowerShell
+execution covers member calls, ordinary approval/denial and refusal before spawn;
+Codemode provider-wire and retained-tree tests cover npm-before-TS diagnostics,
+policy recovery, full-output preservation, cached projection and reference release.
+Existing authorization and allocation source invariants cover the adjacent chain.
+
+| Allocation fixture | Samples | Sampled bytes/update | CPU p95 (ms) |
+| --- | ---: | ---: | ---: |
+| Codemode compiler failure, collapsed | 4,096 | 1,620 | 0.0018 |
+| Codemode native PowerShell refusal, collapsed | 4,096 | 1,490 | 0.0018 |
+| Codemode compiler followed by spawn UNKNOWN, collapsed | 4,096 | 1,704 | 0.0018 |
+| Codemode three consecutive quoted diagnostics, collapsed | 4,096 | 1,564 | 0.0018 |
+| Main production frame | 1,024 | 7,629 | 0.0602 |
+| Alt production frame | 1,024 | 11,796 | 0.0680 |
+| Terminal frame queue | 2,048 | 217 | 0.1767 |
+
+These are sampling observations, not an optimization claim. Leading sites remain
+retained-item render/viewport cleanup, Main image-line/reset handling, Alt layout,
+and benchmark timing in the queue fixture. The compiler fixture has one row, one
+output projection, one failure projection and zero event Promises across redraws.
+Release clears rows, timers, text and result references; controlled GC retains
+0/2 weak owners. Main/Alt each materialize one frame, make zero full-size copies,
+and create zero frame Promises/controllers/wrappers. Active/pending frame bytes
+and retained references after disposal are zero, including four lifecycle cycles.
+No running user session, provider service or browser authorization was replayed.
+The native-refusal follow-up reran the affected summary/provider-wire tests,
+Codemode source invariants and its existing tree benchmark fixture. It retains
+one row/output/failure projection, zero event Promises and 0/2 weak owners after
+release; the leading samples remain retained-item render/viewport maintenance.
+The unchanged Main/Alt/queue chain uses the earlier evidence above.
+After tightening npm banner recognition, the compiler fixture was sampled again;
+the table records that latest run, with the same deterministic/release counters.
+Versionless npm output retains possible headers and quoted diagnostics as bounded
+source offsets until a substantive diagnostic is found. If only an exit code
+follows, the quoted span remains the cause instead of disappearing as presumed noise.
+Materialization occurs only for the selected fallback; there is no per-line container or
+callback. Standalone and consecutive `>` diagnostics remain visible, and provider-wire coverage verifies
+the actionable shell error alongside retained full output. The completion →
+Codemode/session → InteractiveMode → retained Text/Box → Main/Alt → terminal queue
+and release chain was re-audited; unchanged frame/queue evidence remains above.
+Ten related source/AST invariants pass. The consecutive quoted-error fixture sampled
+1,700 bytes/redraw and 0.0018 ms p95 across 4,096 redraws after 256 warmups, with one row,
+one output/failure projection, zero event Promises and 0/2 retained weak owners.
+Row/timer/text/result references are zero after release. Leading allocation sites
+remain retained-item render and prepared-viewport cleanup. No pools were added.
+The terminal-exception follow-up re-audited the same completion-to-release chain.
+It adds one call-owned string reference, no scan or allocation per redraw. Four
+focused behavioral tests and all ten source/AST invariants pass. Its allocation
+fixture retains one row/output/failure projection, zero event Promises and 0/2
+weak owners after controlled GC; row/timer/text/result references clear to zero.
+Leading samples remain retained-item render, prepared-viewport cleanup/layout and
+benchmark timing. Unchanged Main/Alt/queue code reuses the recorded evidence.
+
+Longer quoted diagnostic runs retain their bounded source span as a fallback; only
+a substantive non-quoted cause replaces it, while canonical output keeps all lines.
+The same completion-to-release audit and ten invariants pass. The three-line fixture
+above retains one row/output/failure projection, zero event Promises, zero released
+row/timer/text/result references and 0/2 weak owners after controlled GC. No new
+per-redraw scan, arrays, callbacks or pools; unchanged frame/queue evidence applies.
+Native grammar coverage also preserves switch patterns, Unicode loop variables and
+command position after workflow parallel/sequence/inlinescript blocks. Native 5.1
+metadata confirms Start-Process -wi with an operand binds WindowStyle, not WhatIf.
+Only that colliding form stops proving a dry run; explicit -WhatIf, standalone -wi,
+literal -wi:$true and foreground -Wait remain accepted. The boolean colon form
+cannot bind the legacy enum, as confirmed by a harmless proxy binding probe.
+Redirection operators/destinations do not become WindowStyle operands; bounded
+lookahead also covers parenthesized and member-expression destinations. Native 5.1
+metadata permits Register-ScheduledJob WhatIf, but not guessed dry-run support for
+the other scheduled-task commands. Unicode labels/type names and static-property
+assignment targets preserve grammar without treating member names as capabilities.
+Special foreach targets $$/$^ retain the iterator command position. Grouping around
+one literal invocation target preserves the actual argument boundary, including Wait
+and quoted foreach aliases; arbitrary computed targets remain opaque. Leading file
+redirections also tokenize without whitespace before the destination. All these
+checks are bounded invocation-only work and reuse the existing token storage.
+Grouped literal targets skip newline trivia only inside their parentheses; a newline
+after the group still ends the invocation. Redirections immediately after a leading
+quoted target are separate tokens, while embedded unquoted data> stays argument text.
+Native stop-parsing (`--%`) keeps its payload opaque through the next newline or
+unquoted pipe/`&&`; ASCII and smart double quotes preserve those characters as
+payload. Semicolons and command-like text inside it do not become PowerShell
+lifecycle commands. Only the existing flat literal `cmd /c start` check reads its
+raw native arguments, preserving `/wait` and title boundaries. Its additional
+call-owned token list is capped at 2,048 and is never retained; expansion, escapes
+and arbitrary batch operators remain opaque. Unescaped commas establish comment
+boundaries and newline continuation, including escaped LF/CRLF trivia, so commented
+`-Wait` text cannot prove a foreground launch. Escaped commas retain their literal
+meaning. These are grammar fixes, not additions to the command/type catalog.
+The spawn-failure fixture reuses the same completion-to-release audit: one row,
+one output/failure projection, zero event Promises, zero released row/timer/text/
+result references and 0/2 retained weak owners after controlled GC. Four focused
+behavioral tests, type checking and all ten source/AST invariants pass. No new
+test file or unchanged frame/queue benchmark rerun was needed.
+The latest fixture also covers Windows `UNKNOWN`, with or without a target path,
+and provider-wire coverage preserves the full earlier compiler diagnostics. The
+table records its latest sample; source/AST and release counters are unchanged.
