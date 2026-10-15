@@ -36,6 +36,7 @@ const FOR_EACH_BLOCKS = new Set(["begin", "process", "end", "remainingscripts", 
 const OBJECT_PARAMETERS = ["typename", "comobject", "argumentlist", "strict", "property", ...VARIABLE_LOOKUP_PARAMETERS.slice(5)];
 const OBJECT_FLAGS = new Set(["strict", "verbose", "debug"]);
 const WMI_CAPABILITY = /(?:^|\[|:)(?:wmiclass|(?:(?:System\.)?Management\.)?ManagementClass)(?:\]|,|$)/i;
+const SCRIPT_BLOCK_COMPILER = /\[(?:System\.Management\.Automation\.)?scriptblock\]::Create$/i;
 const SPACE = /\s/;
 const PUNCTUATION = /[;|\n\r{}()=&]/;
 // PowerShell accepts unambiguous parameter prefixes and these Unicode dashes.
@@ -46,7 +47,7 @@ const STATEMENT_LABEL = /^:[\w]+$/;
 const SIMPLE_VARIABLE = /^\$(?:[\w:]+|\{(?:[^`{}]|`[\s\S])+\})(?:\.[\w]+|\[[\w$]+\])*$/;
 const STREAM_REDIRECT = /^[1-6*]?>$/;
 const STREAM_NUMBER = /^[1-6]$/;
-const OPAQUE_MEMBER = /(?:\.|::)(?:Start(?:New|Job|\.Invoke)?|Invoke[\w]*|DynamicInvoke|BeginInvoke|GetSteppablePipeline|ExpandString|Run(?:Async)?|Exec|Continue|Shell(?:Execute(?:Ex)?)?)$/i;
+const OPAQUE_MEMBER = /(?:\.|::)(?:Start(?:New|Job|\.Invoke)?|Invoke[\w]*|DynamicInvoke|BeginInvoke|GetSteppablePipeline|GetScriptBlock|NewScriptBlock|ExpandString|Run(?:Async)?|Exec|Continue|Shell(?:Execute(?:Ex)?)?)$/i;
 
 interface Token { value: string; quoted: boolean; dynamic: boolean; operator: boolean; start: number; end: number }
 
@@ -128,8 +129,8 @@ function inspectNewObject(tokens: readonly Token[], start: number, command: stri
 			const option = raw.slice(1, colon < 0 ? raw.length : colon).toLowerCase();
 			parameter = option === "args" ? "argumentlist" : lookupOption(option, OBJECT_PARAMETERS);
 			if (!parameter) return UNCERTAIN;
-			if (OBJECT_FLAGS.has(parameter)) { parameter = undefined; continue; }
-			if (colon < 0) continue;
+			if (OBJECT_FLAGS.has(parameter) && colon !== raw.length - 1) { parameter = undefined; continue; }
+			if (colon < 0 || colon === raw.length - 1) continue;
 			type = arg.value.slice(arg.value.indexOf(":") + 1);
 		}
 		if (parameter === "typename" || parameter === "comobject" || (!parameter && !typeSeen)) {
@@ -166,8 +167,8 @@ function inspectForEach(tokens: readonly Token[], start: number, command: string
 			parameter = lookupOption(raw.slice(1, colon < 0 ? raw.length : colon).toLowerCase(), FOR_EACH_PARAMETERS);
 			if (!parameter) return UNCERTAIN;
 			if (parameter === "asjob") return BACKGROUND;
-			if (FOR_EACH_FLAGS.has(parameter)) { parameter = undefined; continue; }
-			if (colon < 0) continue;
+			if (FOR_EACH_FLAGS.has(parameter) && colon !== raw.length - 1) { parameter = undefined; continue; }
+			if (colon < 0 || colon === raw.length - 1) continue;
 			member = arg.value.slice(arg.value.indexOf(":") + 1);
 		}
 		if (parameter === "membername" || (!parameter && memberPending)) {
@@ -309,9 +310,10 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 			const raw = command.slice(token.start, token.end), colon = raw.indexOf(":");
 			const parameter = lookupOption(raw.slice(1, colon < 0 ? raw.length : colon).toLowerCase(), VARIABLE_LOOKUP_PARAMETERS);
 			if (parameter && VARIABLE_OUTPUT_OPTIONS.has(parameter)) {
-				const target = colon < 0 ? tokens[i + 1] : token;
+				const separate = colon < 0 || colon === raw.length - 1;
+				const target = separate ? tokens[i + 1] : token;
 				if (!target || target.operator || target.dynamic || DEFAULT_PARAMETERS.test(target.value)) return UNCERTAIN;
-				if (colon >= 0 && !target.value.slice(target.value.indexOf(":") + 1)) return UNCERTAIN;
+				if (!separate && !target.value.slice(target.value.indexOf(":") + 1)) return UNCERTAIN;
 			}
 		}
 		if (!dataPiece && !token.quoted && (JOB_OPTION.test(value) || isAsyncOption(value))) return BACKGROUND;
@@ -321,8 +323,8 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		// Known launcher/evaluator members cannot prove ownership. Inspect argument
 		// positions too; dynamic member names must not hide these same entrypoints.
 		if (command[token.start] !== "'" && command[token.start] !== '"' && tokens[i + 1]?.operator && tokens[i + 1]?.value === "(" && token.end === tokens[i + 1]?.start) {
-			if (OPAQUE_MEMBER.test(value)) return refusal("SHELL_UNINSPECTABLE", "launcher or evaluator member ownership cannot be verified; use a literal foreground command (Start-Process requires -Wait)");
-			if (token.dynamic && value !== "$" && value !== "@" && !isSimpleVariable(value)) return UNCERTAIN;
+			if (OPAQUE_MEMBER.test(value) || SCRIPT_BLOCK_COMPILER.test(value)) return refusal("SHELL_UNINSPECTABLE", "launcher or evaluator member ownership cannot be verified; use a literal foreground command (Start-Process requires -Wait)");
+			if (token.dynamic && value !== "$" && value !== "@" && (value.includes("::") || !isSimpleVariable(value))) return UNCERTAIN;
 		}
 		if (!head) continue;
 		head = false;
@@ -389,8 +391,8 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 					const colon = raw.indexOf(":"), option = raw.slice(1, colon < 0 ? raw.length : colon).toLowerCase();
 					const parameter = option === "lp" || option === "pspath" ? "literalpath" : lookupOption(option, parameters);
 					if (!parameter) return UNCERTAIN;
-					if (PROVIDER_READER_FLAGS.has(parameter)) continue;
-					if (colon < 0) { arg = tokens[++j]!; if (!arg || arg.operator) return PROVIDER_PATH; target = arg.value; raw = command.slice(arg.start, arg.end); }
+					if (PROVIDER_READER_FLAGS.has(parameter) && colon !== raw.length - 1) continue;
+					if (colon < 0 || colon === raw.length - 1) { arg = tokens[++j]!; if (!arg || arg.operator) return PROVIDER_PATH; target = arg.value; raw = command.slice(arg.start, arg.end); }
 					else { target = arg.value.slice(arg.value.indexOf(":") + 1); raw = raw.slice(colon + 1); }
 					if (parameter !== "path" && parameter !== "literalpath") continue;
 				}
@@ -408,11 +410,11 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 				if (PARAMETER_DASH.test(raw)) {
 					const resolved = lookupOption(option, VARIABLE_LOOKUP_PARAMETERS);
 					if (!resolved) return UNCERTAIN;
-					if (VARIABLE_LOOKUP_FLAGS.has(resolved)) continue;
+					if (VARIABLE_LOOKUP_FLAGS.has(resolved) && colon !== raw.length - 1) continue;
 					const variableReference = VARIABLE_REFERENCE_OPTIONS.has(resolved);
 					if (variableReference && arg.dynamic) return UNCERTAIN;
 					const named = resolved === "name";
-					if (colon < 0) { arg = tokens[++j]!; if (!arg || arg.operator || (variableReference && arg.dynamic)) return UNCERTAIN; target = arg.value; }
+					if (colon < 0 || colon === raw.length - 1) { arg = tokens[++j]!; if (!arg || arg.operator || (variableReference && arg.dynamic)) return UNCERTAIN; target = arg.value; }
 					else target = arg.value.slice(arg.value.indexOf(":") + 1);
 					if (DEFAULT_PARAMETERS.test(target)) return UNCERTAIN;
 					if (!named) continue;
@@ -444,9 +446,10 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 				if (isArgumentSuffix(tokens, j)) continue;
 				const raw = command.slice(arg.start, arg.end), colon = raw.indexOf(":"), option = raw.slice(1, colon < 0 ? raw.length : colon).toLowerCase();
 				if (!PARAMETER_DASH.test(raw) || !option || !"status".startsWith(option)) continue;
-				const status = colon < 0 ? tokens[++j] : arg;
+				const separate = colon < 0 || colon === raw.length - 1;
+				const status = separate ? tokens[++j] : arg;
 				if (!status || status.operator || status.dynamic) return UNCERTAIN;
-				const state = (colon < 0 ? status.value : status.value.slice(status.value.indexOf(":") + 1)).toLowerCase();
+				const state = (separate ? status.value : status.value.slice(status.value.indexOf(":") + 1)).toLowerCase();
 				if (state !== "stopped" && state !== "paused") return BACKGROUND;
 			}
 		}
@@ -464,8 +467,16 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 				}
 				if (depth) continue;
 				if (!arg.quoted && arg.value === "--%") return UNCERTAIN;
-				if (!isArgumentSuffix(tokens, j) && command.slice(arg.start, arg.end).toLowerCase() === "-wait") wait = true;
-				if (!isArgumentSuffix(tokens, j) && !arg.quoted && arg.value.toLowerCase().startsWith("-wait:")) return UNCERTAIN;
+				if (isArgumentSuffix(tokens, j)) continue;
+				const raw = command.slice(arg.start, arg.end);
+				if (!PARAMETER_DASH.test(raw)) continue;
+				const option = raw.slice(1).toLowerCase();
+				if (option === "wait" || option === "wait:$true") wait = true;
+				else if (option === "wait:") {
+					const flag = tokens[++j];
+					if (!flag || command.slice(flag.start, flag.end).toLowerCase() !== "$true") return UNCERTAIN;
+					wait = true;
+				} else if (option.startsWith("wait:")) return UNCERTAIN;
 			}
 			if (!wait) return BACKGROUND;
 		}

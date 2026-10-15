@@ -1657,7 +1657,7 @@ test("native PowerShell assignments and member calls retain authorization and fo
     fixture = await guardedCwdBoundaryFixture(workspace, "", "powershell");
     await fixture.setMode("read-only");
     const command = "$s = New-Object System.Text.StringBuilder; try { [void]$s.Append('inline-ok'); $s.ToString() | ForEach-Object { $_.ToUpper() } } finally { [void]$s.Clear() }; [int[][]]$items=$null; [System.Collections.Generic.Dictionary[string,System.Collections.Generic.List[int]]]$map=$null; Write-Output status=Start-Job report.Start (Get-Date); $h=@{Name='data';Value=1}; Write-Output $h.Name; [string]${space name}='braced-ok'; Write-Output ${space name}; Write-Output { 1 } Start-Job; $n=0; $n++; ++$n; Write-Output increment-ok; $Count=7; Get-Variable Count -OutVariable captured -ValueOnly:$false; gv Count -s 0; $queryScope=0; gv Count -s $queryScope -Verbose:$false";
-    const foreground = command + '; $converted=123 -as [string]; Write-Output $converted; "member-ok" | ForEach-Object ToUpper; Get-Item -fo -LiteralPath "FileSystem::$PWD" -ErrorAction Stop | Select-Object Name; $capacity=16; $buffer=New-Object -TypeName System.Text.StringBuilder -ArgumentList $capacity; [void]$buffer.Append("constructed-ok"); Write-Output $buffer.ToString() -pv observed; $arguments=@("/d","/c","exit 0"); Start-Process $env:ComSpec -ArgumentList ($arguments) -Wait -NoNewWindow; Write-Output foreground-wait-ok';
+    const foreground = command + '; $converted=123 -as [string]; Write-Output $converted; "member-ok" | ForEach-Object -MemberName: ToUpper; Get-Item -fo -LiteralPath: "FileSystem::$PWD" -ErrorAction Stop | Select-Object Name; $capacity=16; $buffer=New-Object -TypeName: System.Text.StringBuilder -ArgumentList $capacity; [void]$buffer.Append("constructed-ok"); Write-Output $buffer.ToString() -OutVariable: observed; $arguments=@("/d","/c","exit 0"); Start-Process $env:ComSpec -ArgumentList ($arguments) -Wait:$true -NoNewWindow; Write-Output foreground-wait-ok';
     const result = await fixture.agent.dispatchHostTool({ type: "toolCall", id: "native-members", name: "powershell", arguments: { command: foreground } });
     assert.equal(result.isError, false, JSON.stringify(result));
     assert.match(JSON.stringify(result.content), /INLINE-OK/);
@@ -1698,7 +1698,8 @@ test("native PowerShell assignments and member calls retain authorization and fo
       "$c=Get-WmiObject -List -Class Win32_Process; $c.Create('missing.exe')",
       "$d=@{'ForEach-Object:AsJob'=$true}; $d | Write-Output -PipelineVariable PSDefaultParameterValues | ForEach-Object { 1 | ForEach-Object -Parallel { 1 } }",
       "$Alias:sj='Start-Job'; sj { 1 }", "${Al`ias:sj}='Start-Job'", "$Function:f=$block",
-      "icim -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine='missing.exe'}", "ipal aliases.csv"]) {
+      "icim -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine='missing.exe'}", "ipal aliases.csv",
+      "$sb=[scriptblock]::Create('Start-Process missing.exe'); 1 | Where-Object -FilterScript $sb", "$T=[type]'scriptblock'; $sb=$T::Create($text)"]) {
       const blocked = await fixture.agent.dispatchHostTool({ type: "toolCall", id: "native-background", name: "powershell", arguments: { command } });
       assert.equal(blocked.isError, true); assert.equal(fixture.executions, 1); assert.equal(fixture.approvals.length, 2);
     }

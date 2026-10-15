@@ -65,6 +65,12 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "$arguments=@('--version'); Start-Process tool.exe -ArgumentList $arguments -Wait",
     "Start-Process $executable -ArgumentList ($arguments) -Wait", "Start-Process tool.exe -Wait -WorkingDirectory $directory",
     "${PSDef`aultParameterValues}=@{}",
+    "Write-Output 1 -OutVariable: result", "Get-Variable -Name: Count -ValueOnly: $false",
+    "New-Object -TypeName: System.Text.StringBuilder", "'a' | ForEach-Object -MemberName: ToUpper -Verbose: $flag",
+    'Get-Item -LiteralPath: "FileSystem::$file" -Force: $force', "Set-Service -Name Missing -Status: Paused",
+    "Start-Process tool.exe -Wait:$true", "Start-Process tool.exe -Wait: $true", "Start-Process tool.exe —Wait:$TRUE",
+    "Write-Output [scriptblock]", "Write-Output '[scriptblock]::Create'",
+    "$sb=[scriptblock]$block", "$sb=$text -as [scriptblock]", "[scriptblock[]]$blocks=$items",
   ]) assert.equal(inspectPowerShellResourceLifecycle({ command }), undefined, command);
   for (const command of [
     "Start-Job { Write-Output 1 }", "$job = Start-ThreadJob { Write-Output 1 }", "if ($true) {} Start-Job {}",
@@ -150,6 +156,10 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "icim -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine='missing.exe'}", "ipal aliases.csv",
     "Start-Process tool.exe -ArgumentList $arguments", "Start-Process tool.exe -ArgumentList ($arguments) -Wait:$flag",
     "Start-Process tool.exe -ArgumentList (Start-Job {}) -Wait", "Start-Process tool.exe -ArgumentList ('-Wait')",
+    "$sb=[scriptblock]::Create('Start-Process missing.exe'); 1 | Where-Object -FilterScript $sb", "[System.Management.Automation.ScriptBlock]::Create($text)",
+    "Write-Output 1 -OutVariable: PSDefaultParameterValues", "Write-Output 1 -OutVariable: $target",
+    "$T=[type]'scriptblock'; $sb=$T::Create($text)",
+    "$sb=$ast.GetScriptBlock(); 1 | Where-Object -FilterScript $sb", "$sb=$ExecutionContext.InvokeCommand.NewScriptBlock($text)",
   ]) assert.ok(inspectPowerShellResourceLifecycle({ command }), command);
 });
 

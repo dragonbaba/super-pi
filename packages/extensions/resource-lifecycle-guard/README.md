@@ -335,6 +335,15 @@ dynamic executable/argument/directory data and bounded argument expressions;
 splats, unprovable waits and nested unowned launches remain refused. Existing
 permission/target inspection still applies. A real isolated cmd child completes
 under -Wait/-NoNewWindow; the active user session is never replayed.
+Known script compilers (ScriptBlock.Create, AST.GetScriptBlock and
+InvokeCommand.NewScriptBlock) and dynamic static-member calls are opaque before
+an indirect consumer can run their result. Ordinary ScriptBlock type tests/casts
+remain valid: native checks confirm string casts do not compile script text.
+Literal -Wait:$true and -Wait: $true have the same owned-wait acceptance as -Wait;
+false/dynamic switch values remain refused. Named values after a separated colon
+are consumed as values across the existing parameter inspectors, including output
+variables, constructor types and file paths; dynamic/preference targets remain
+subject to the same checks as inline values.
 
 Unchanged scope: external module loading and native sc.exe/net.exe service control
 already passed the original Bash lifecycle and high-risk scanners at the PR base.
