@@ -8,7 +8,8 @@ import { ToolExecutionComponent } from "../../packages/coding-agent/src/modes/in
 const UPDATES = 4096;
 const WARMUP = 256;
 const EXPANDED = process.argv.includes("--expanded");
-const FAILED = process.argv.includes("--failed");
+const COMPILER = process.argv.includes("--compiler");
+const FAILED = COMPILER || process.argv.includes("--failed");
 function sites(node: any, entries: any[]): number {
 	let bytes = node.selfSize;
 	if (node.selfSize) entries.push({ bytes: node.selfSize, function: node.callFrame.functionName, url: node.callFrame.url, line: node.callFrame.lineNumber + 1 });
@@ -24,7 +25,8 @@ async function sample(grouped: boolean) {
 	f.internal.handleEvent({ type: "tool_execution_start", toolName: "codemode", toolCallId: parent, args: { code: "await tools.bash({command:'fixture'})" } });
 	f.internal.handleEvent({ type: "tool_execution_start", toolName: "bash", toolCallId: child, parentToolCallId: grouped ? parent : undefined, args: { command: "fixture" } });
 	if (FAILED) {
-		const error = "[SHELL_RUNTIME_FAILED]\n2026-10-15 07:21\nls: cannot access '视频创意': No such file or directory\nCommand exited with code 2";
+		const error = COMPILER ? "[SHELL_RUNTIME_FAILED]\nnpm notice run project@1.0.0 typecheck\nnpm notice run tsc --noEmit\nsrc/winter/WinterVideo.tsx(153,10): error TS2657: JSX expressions must have one parent element.\nCommand exited with code 1"
+			: "[SHELL_RUNTIME_FAILED]\n2026-10-15 07:21\nls: cannot access '视频创意': No such file or directory\nCommand exited with code 2";
 		f.internal.handleEvent({ type: "tool_execution_end", toolName: "bash", toolCallId: child, parentToolCallId: grouped ? parent : undefined,
 			result: { content: [{ type: "text", text: error }] }, isError: true });
 		f.internal.handleEvent({ type: "tool_execution_end", toolName: "codemode", toolCallId: parent,
@@ -64,7 +66,7 @@ async function sample(grouped: boolean) {
 	}
 	const view = stripVTControlCharacters(cards[0].render(120).join("\n")); assert.match(view, FAILED ? /Codemode/ : /completed/);
 	if (FAILED && grouped) {
-		assert.match(view, EXPANDED ? /SHELL_RUNTIME_FAILED/ : /Path does not exist/);
+		assert.match(view, EXPANDED ? /SHELL_RUNTIME_FAILED/ : COMPILER ? /TS2657/ : /Path does not exist/);
 		assert.equal(counters.failureProjections, 1); assert.equal(counters.outputProjections, 1);
 	}
 	await f.release();

@@ -143,6 +143,37 @@ test("failure reasons prefer actual diagnostics and never turn arbitrary missing
 	assert.equal(codemodeFailureReason("Error: " + "x".repeat(4096), "model").length, 512);
 });
 
+test("npm preambles and policy headings do not hide actionable causes or model recovery", () => {
+	const cause = "src/winter/WinterVideo.tsx(153,10): error TS2657: JSX expressions must have one parent element.";
+	const errors = cause + "\nsrc/winter/WinterVideo.tsx(162,95): error TS1003: Identifier expected.\nCommand exited with code 1";
+	for (const banner of ["npm notice run remotion-video-project@1.0.0 typecheck\nnpm notice run tsc --noEmit", "> project@1.0.0 typecheck\n> tsc --noEmit", "npm info run project@1.0.0 typecheck"]) {
+		for (const audience of ["display", "model"] as const) {
+			assert.equal(codemodeFailureReason(`[SHELL_RUNTIME_FAILED]\n${banner}\n\u001b[31m${errors}\u001b[0m`, audience), cause);
+			assert.equal(codemodeFailureReason(`${banner}\nCommand exited with code 1`, audience), "Command exited with code 1");
+		}
+	}
+	const policy = '[SHELL_WRAPPER:LAUNCHER_UNSUPPORTED] Not executed:\nBash analysis cannot inspect the `powershell.exe` launcher.\nNext: Use tool_search with query "powershell", then read its schema; normal authorization still applies.';
+	assert.equal(codemodeFailureReason(policy), "Bash analysis cannot inspect the `powershell.exe` launcher.");
+	assert.match(codemodeFailureReason(policy, "model"), /cannot inspect.*Next: Use tool_search.*normal authorization/);
+	const http = "aiohttp.client_exceptions.WSServerHandshakeError: 403, message='Invalid response status', url='wss://example.invalid/long'";
+	assert.equal(codemodeFailureReason(http), "HTTP 403: Invalid response status.");
+	assert.equal(codemodeFailureReason(http, "model"), http);
+	assert.equal(codemodeFailureReason("ModuleNotFoundError: No module named 'win32com'"), "ModuleNotFoundError: No module named 'win32com'");
+	const final = parent([fact("p:1", "bash", `[SHELL_RUNTIME_FAILED]\nnpm notice run project typecheck\n${errors}`, true)], [], true);
+	const canonical = JSON.stringify(final), tree = new CodemodeTreeComponent();
+	tree.updateParent("await tools.bash(args)", final, false, true, false);
+	assert.match(plain(tree), /bash.*×\s*\n\s*src\/winter\/WinterVideo.tsx.*TS2657/);
+	assert.doesNotMatch(plain(tree), /npm notice|TS1003|Not executed|Script output/);
+	const projections = tree.getLifecycleCounts().failureProjections;
+	for (let i = 0; i < 32; i++) { tree.updateParent("await tools.bash(args)", final, false, true, i % 2 === 0); plain(tree); }
+	assert.equal(tree.getLifecycleCounts().failureProjections, projections);
+	tree.updateParent("await tools.bash(args)", final, false, true, true);
+	assert.match(plain(tree), /npm notice/); assert.match(plain(tree), /TS1003/);
+	assert.equal(JSON.stringify(final), canonical);
+	releaseComponentRenderCaches(tree);
+	assert.equal(tree.getLifecycleCounts().resultReferences, 0);
+});
+
 test("browser IPC timeout and inactive tool errors stay concise while expansion shows each stack once", () => {
 	const error = "[BROWSER_EXEC_FAILED] TimeoutError: timed out\nTraceback (most recent call last):\n  File \"helpers.py\", line 57\n" +
 		"browser_harness.helpers._IPCResponseTimeout: Page.navigate timed out after 5s waiting for the daemon";

@@ -257,6 +257,21 @@ test("Codemode missing-path summary gives the model a direct cause without paren
 	assert.match(delivered, /Do not automatically retry mutations/);
 });
 
+test("Codemode delivers the compiler cause before npm banners while preserving full diagnostics", async t => {
+	const diagnostic = "[SHELL_RUNTIME_FAILED]\nnpm notice run remotion-video-project@1.0.0 typecheck\nnpm notice run tsc --noEmit\nsrc/winter/WinterVideo.tsx(153,10): error TS2657: JSX expressions must have one parent element.\nsrc/winter/WinterVideo.tsx(162,95): error TS1003: Identifier expected.\nCommand exited with code 1";
+	const extension: InlineExtension = pi => pi.registerTool({ name: "compiler_probe", label: "probe", description: "offline compiler fixture",
+		parameters: Type.Object({}), execute: async () => ({ content: [{ type: "text", text: diagnostic }], isError: true, details: {} }) });
+	const f = await fixture(t, {}, [extension, guardrails]);
+	const outcome = await f.run(["await tools.compiler_probe({})"]);
+	const failed = outcome.results[0]!;
+	assert.equal(failed.isError, true);
+	const summary = (failed.content[0] as any).text;
+	assert.match(summary, /compiler_probe: .* — src\/winter\/WinterVideo.tsx\(153,10\): error TS2657/);
+	assert.doesNotMatch(summary, /npm notice|TS1003/);
+	const delivered = JSON.stringify(outcome.wires.at(-1));
+	assert.match(delivered, /npm notice run/); assert.match(delivered, /TS1003/); assert.match(delivered, /Command exited with code 1/);
+});
+
 for (const repeated of [false, true]) test(`budgeted default bundle accepts multiple shown native reads: repeated=${repeated}`, async t => {
 	const f = await fixture(t, { toolResultPresentation: { enabled: true, budgetTokens: 8000 } }, [], true);
 	writeFileSync(join(f.cwd, "other.txt"), "other\n");

@@ -14,9 +14,35 @@ import { convertToLlm } from "../packages/coding-agent/src/core/messages.ts";
 import { renderPolicyDiagnostic } from "../packages/extensions/resource-lifecycle-guard/policy-diagnostics.ts";
 import { sanitizePolicyFeedback } from "../packages/extensions/resource-lifecycle-guard/policy-diagnostics.ts";
 import { inspectBashResourceLifecycle, inspectHighRiskBashMutation } from "../packages/extensions/resource-lifecycle-guard/core.ts";
+import { inspectPowerShellResourceLifecycle } from "../packages/extensions/resource-lifecycle-guard/powershell-lifecycle.ts";
 import { inspectBashPermissionScope } from "../packages/extensions/resource-lifecycle-guard/permission-bash.ts";
 
 // Offline evidence strings. They are passed to scanners and fixtures only.
+test("native PowerShell lifecycle distinguishes expressions, data and owned foreground launches", () => {
+  for (const command of [
+    "Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.GetInstalledVoices() | ForEach-Object { $_.VoiceInfo | Select-Object Name,Culture }; $s.Dispose()",
+    "$s=New-Object System.Text.StringBuilder; try { [void]$s.Append('Start-Job'); $s.ToString() } finally { $s.Clear() }",
+    "Write-Output 'Start-Process foo; Start-Job {}'; # Start-Job\nWrite-Output 1",
+    "<# outer <# Start-Job #> nested #> Write-Output 1",
+    "& 'C:/Program Files/tool.exe' --help",
+    "& { Write-Output 1 }; Write-Output 2 2>&1",
+    "Start-Process -FilePath tool.exe -Wait; Start-Process -FilePath other.exe -Wait",
+    "echo $((1 + $null))",
+  ]) assert.equal(inspectPowerShellResourceLifecycle({ command }), undefined, command);
+  for (const command of [
+    "Start-Job { Write-Output 1 }", "$job = Start-ThreadJob { Write-Output 1 }", "if ($true) {} Start-Job {}",
+    "Start-Process tool.exe", "Start-Process tool.exe -Wait; Start-Process other.exe", "return Start-Process tool.exe",
+    "<# outer <# nested #> outer #> Start-Process tool.exe", "Start-Process --% tool.exe -Wait",
+    "Start-Process tool.exe -Wait:$false", "Start-Process tool.exe '-Wait'", "Start-Process tool.exe @options -Wait",
+    "& $exe", "& (Get-Command tool)", "Write-Output 1 &", "& { Start-Job {} }",
+    "Write-Output $(Start-Job {})", 'Write-Output "$(Start-Job {})"',
+    "Microsoft.PowerShell.Core\\Start-Job {}", "Sta`rt-Job {}", "Write-Output 1;`\nStart-Job {}",
+    "saps tool.exe", "Invoke-Expression $script", "cmd /c start tool.exe",
+    "bash -c 'sleep 30 &'", "docker run -d image", "ForEach-Object -Parallel {} -AsJob",
+    "Write-Output 'unterminated", "x ".repeat(2049), "x".repeat(128 * 1024 + 1),
+  ]) assert.ok(inspectPowerShellResourceLifecycle({ command }), command);
+});
+
 const USER_COMMANDS = [
   'tasklist /FI "PID eq 5064" /FO CSV 2>&1 | head -3; echo "---1352---"; tasklist /FI "PID eq 1352" /FO CSV 2>&1 | head -3',
   'echo "=== PID 1352 身份 ==="; wmic process where "ProcessId=1352" get Name,ExecutablePath 2>&1 | head -5; echo "--- 备用查询 ---"; powershell -NoProfile -Command "Get-Process -Id 1352 | Select-Object Id,ProcessName,Path | Format-List" 2>&1 | head -10',
@@ -141,7 +167,9 @@ test("production extension preflight reaches the first refusal without backend o
       type: "tool_call", toolName: toolCall.name, toolCallId: toolCall.id, input: args as Record<string, unknown>,
     } as never),
   });
-  runner.bindCore({ getThinkingLevel: () => "off", getActiveTools: () => activeTools } as never, {
+  let catalogReads = 0;
+  const configuredTools: any[] = [];
+  runner.bindCore({ getThinkingLevel: () => "off", getActiveTools: () => activeTools, getAllTools: () => { catalogReads++; return configuredTools; } } as never, {
     getSignal: () => agent.signal, isProjectTrusted: () => false, getModel: () => agent.state.model,
     isIdle: () => !agent.state.isStreaming, abort: () => agent.abort(), hasPendingMessages: () => false,
   } as never);
@@ -159,10 +187,19 @@ test("production extension preflight reaches the first refusal without backend o
     const mutationText = mutationResult.content.filter(c => c.type === "text").map(c => c.text).join("\n");
     assert.match(lifecycleText, /^\[SHELL_WRAPPER:LAUNCHER_UNSUPPORTED\] Not executed:/);
     assert.match(lifecycleText, /directly inspectable foreground command/);
+    assert.equal(catalogReads, 0);
+    activeTools.push("tool_search");
+    const unavailable = await agent.dispatchHostTool({ type: "toolCall", id: "wrapper-unavailable", name: "bash", arguments: { command: USER_COMMANDS[1] } });
+    assert.doesNotMatch(JSON.stringify(unavailable.content), /Use tool_search/);
+    configuredTools.push({ name: "powershell" });
+    const discoverable = await agent.dispatchHostTool({ type: "toolCall", id: "wrapper-discoverable", name: "bash", arguments: { command: USER_COMMANDS[1] } });
+    assert.match(JSON.stringify(discoverable.content), /Use tool_search.*powershell.*read its schema/);
+    assert.equal(catalogReads, 2);
     activeTools.push("powershell");
     const availableResult = await agent.dispatchHostTool({ type: "toolCall", id: "wrapper-available", name: "bash", arguments: { command: USER_COMMANDS[1] } });
     const availableText = availableResult.content.filter(c => c.type === "text").map(c => c.text).join("\n");
     assert.match(availableText, /Use the enabled native PowerShell tool/);
+    assert.equal(catalogReads, 2, "active native tools do not enumerate the catalog");
     assert.match(mutationText, /^\[POLICY_BLOCKED:CONFIRMATION_CANCELLED\] Not executed:/);
     const machineDetails = mutationResult.details as any;
     assert.equal(machineDetails.executionStatus, "not_executed");

@@ -234,3 +234,61 @@ invocation/startup operations; no progress/render callback or regex was added.
 A memory/custom settings store without an identity assertion retains its ordinary
 trust boolean, but explicit identity-revalidated queries return false. Such a
 store cannot promote newly read on-disk project shell settings as trusted.
+
+### Native PowerShell and failure summaries (2026-10-15)
+
+Native `powershell` now uses its own bounded lifecycle inspection before approval.
+Assignments, member calls, pipelines, script blocks and `try/finally` no longer
+enter the Bash executable-position scanner. Ordinary opaque-script approval,
+protected-target inspection, cwd binding and exact final invocation authorization
+remain in force. A successful lifecycle check grants no permission. Known job,
+service and detached-process forms are refused; each `Start-Process` requires its
+own literal `-Wait`. Dynamic call-operator targets, opaque evaluators/launchers,
+here-strings and executable interpolation that cannot be inspected are refused.
+Literal nested Bash scripts still receive Bash inspection. This is a bounded
+lifecycle filter, not a complete PowerShell parser or an isolation sandbox.
+
+Bash-to-PowerShell recovery distinguishes an active native tool, a configured
+discoverable tool, and an unavailable tool. Discovery is suggested only when
+`tool_search` is active and the filtered catalog contains `powershell`; neither
+tool activation nor authorization is automatic. Catalog lookup runs only on the
+relevant refusal, through one extension-owned callback, with no cached catalog.
+
+Collapsed Codemode errors skip policy headings and npm startup banners, prefer
+the first file/line compiler error (including colored output), and show short HTTP
+failure causes. Model summaries retain concrete diagnostics and policy recovery;
+expanded output and canonical results retain all diagnostics. Output scanning
+remains capped at 2,048 characters, with 160/512-character display/model limits.
+
+Performance audit: shell completion → Codemode facts/model summary → session event
+delivery → InteractiveMode → retained tree/Text/Box → Main/Alt frame → terminal
+queue → release. Error projection occurs once when its bounded source changes;
+redraw/expand/collapse reuse it. Added regexes are module-owned. There are no new
+per-progress/frame closures, Promises, controllers, wrappers, arrays, full-frame
+copies or pools. The PowerShell lexer is invocation-local (128 KiB source, at most
+2,048 tokens, comment depth 16); source spans avoid per-character string building.
+All parser references become unreachable on return/refusal/throw, before any await.
+
+Source-loaded validation on Windows x64 / Node 26.4.0, without a build or global
+runtime replacement, extended existing tests only. Real isolated PowerShell
+execution covers member calls, ordinary approval/denial and refusal before spawn;
+Codemode provider-wire and retained-tree tests cover npm-before-TS diagnostics,
+policy recovery, full-output preservation, cached projection and reference release.
+Existing authorization and allocation source invariants cover the adjacent chain.
+
+| Allocation fixture | Samples | Sampled bytes/update | CPU p95 (ms) |
+| --- | ---: | ---: | ---: |
+| Codemode compiler failure, collapsed | 4,096 | 1,585 | 0.0018 |
+| Main production frame | 1,024 | 7,629 | 0.0602 |
+| Alt production frame | 1,024 | 11,796 | 0.0680 |
+| Terminal frame queue | 2,048 | 217 | 0.1767 |
+
+These are sampling observations, not an optimization claim. Leading sites remain
+retained-item render/viewport cleanup, Main image-line/reset handling, Alt layout,
+and benchmark timing in the queue fixture. The compiler fixture has one row, one
+output projection, one failure projection and zero event Promises across redraws.
+Release clears rows, timers, text and result references; controlled GC retains
+0/2 weak owners. Main/Alt each materialize one frame, make zero full-size copies,
+and create zero frame Promises/controllers/wrappers. Active/pending frame bytes
+and retained references after disposal are zero, including four lifecycle cycles.
+No running user session, provider service or browser authorization was replayed.

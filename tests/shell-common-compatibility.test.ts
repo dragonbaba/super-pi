@@ -1649,6 +1649,29 @@ test("PowerShell arithmetic subexpressions use PowerShell approval rather than B
   }
 });
 
+test("native PowerShell assignments and member calls retain authorization and foreground lifecycle gates", async t => {
+  if (process.platform !== "win32") { t.skip("PowerShell tool execution is Windows-only"); return; }
+  const workspace = mkdtempSync(join(tmpdir(), "sp-shell-powershell-members-"));
+  let fixture: Awaited<ReturnType<typeof guardedCwdBoundaryFixture>> | undefined;
+  try {
+    fixture = await guardedCwdBoundaryFixture(workspace, "", "powershell");
+    await fixture.setMode("read-only");
+    const command = "$s = New-Object System.Text.StringBuilder; try { [void]$s.Append('inline-ok'); $s.ToString() | ForEach-Object { $_.ToUpper() } } finally { [void]$s.Clear() }";
+    const result = await fixture.agent.dispatchHostTool({ type: "toolCall", id: "native-members", name: "powershell", arguments: { command } });
+    assert.equal(result.isError, false, JSON.stringify(result));
+    assert.match(JSON.stringify(result.content), /INLINE-OK/);
+    assert.equal(fixture.executions, 1); assert.equal(fixture.approvals.length, 1);
+    fixture.setDecision("拒绝");
+    const denied = await fixture.agent.dispatchHostTool({ type: "toolCall", id: "native-denied", name: "powershell", arguments: { command } });
+    assert.equal(denied.isError, true); assert.equal(fixture.executions, 1); assert.equal(fixture.approvals.length, 2);
+    await fixture.setMode("full-access");
+    for (const command of ["Start-Job { Write-Output 1 }", "Start-Process missing.exe", "& $program"]) {
+      const blocked = await fixture.agent.dispatchHostTool({ type: "toolCall", id: "native-background", name: "powershell", arguments: { command } });
+      assert.equal(blocked.isError, true); assert.equal(fixture.executions, 1); assert.equal(fixture.approvals.length, 2);
+    }
+  } finally { await fixture?.close(); rmSync(workspace, { recursive: true, force: true }); }
+});
+
 test("subshell cwd never authorizes a later parent-shell write at the child path", async (t) => {
   const shellPath = findTestBash();
   if (!shellPath || !existsSync(shellPath)) {

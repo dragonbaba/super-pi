@@ -41,24 +41,32 @@ const IPC_TIMEOUT_DIAGNOSTIC = /^browser_harness\.helpers\._IPCResponseTimeout: 
 const UNKNOWN_TOOL_DIAGNOSTIC = /^tools\.([\w$]{1,80}) does not exist\./;
 const EXIT_DIAGNOSTIC = /^Command exited with code -?\d+\.?$/;
 const NUMERIC_OUTPUT_LINE = /^[+-]?\d+(?:\.\d+)?$/;
-const PREFLIGHT_HEADING = /^(?:\[POLICY_BLOCKED(?::[A-Z_]+)?\]\s*)?Not executed:$/;
+const PREFLIGHT_HEADING = /^(?:\[(?:POLICY_BLOCKED|SHELL_WRAPPER)(?::[A-Z_]+)?\]\s*)?Not executed:$/;
+const COMPILER_DIAGNOSTIC = /^(?:.+(?:\(\d+,\d+\)|:\d+(?::\d+)?):\s*(?:fatal )?error\b|error\s+(?:TS\d+|[A-Z]+\d+):)/i;
+const NPM_STARTUP = /^(?:npm (?:notice run|info run)\b|>\s|\$\s|npm (?:notice|info)\s*$)/;
+const ANSI_SGR = /\x1b\[[\d;]*m/g;
+const HTTP_EXCEPTION = /^(?:[\w.]+Error|[\w.]+Exception):\s*(\d{3}),\s*message=['"]([^'"\r\n]{1,100})['"]/;
 const DIAGNOSTIC_WHITESPACE = /[\r\n\t]+/g;
 
 /** Completion-only projection shared by the model summary and collapsed UI.
  * Scan a bounded prefix without splitting arbitrary tool output into a line array.
  * This is presentation, never a change to the recorded execution outcome. */
 export function codemodeFailureReason(text: string, audience: "display" | "model" = "display"): string {
-	const bounded = text.slice(0, CODEMODE_DISPLAY_PREVIEW_CHARS).replace(FAILURE_WRAPPER, "");
+	const bounded = text.slice(0, CODEMODE_DISPLAY_PREVIEW_CHARS).replace(ANSI_SGR, "").replace(FAILURE_WRAPPER, "");
 	// Browser execution already places the authoritative final exception first.
 	// Never replace it with an earlier chained exception from the retained trace.
 	const browserSummary = text.startsWith("[BROWSER_EXEC_") && bounded.includes("\n[Browser diagnostics]\n");
-	let first = "", diagnostic = "", exit = "";
+	let first = "", diagnostic = "", compiler = "", exit = "", recovery = "";
+	let preflight = false;
 	for (let start = 0; start < bounded.length;) {
 		const newline = bounded.indexOf("\n", start);
 		const end = newline < 0 ? bounded.length : newline;
 		const line = bounded.slice(start, end).trim();
 		start = end + 1;
-		if (!line || line === "Traceback (most recent call last):" || line.startsWith("File \"") || PREFLIGHT_HEADING.test(line)) continue;
+		if (PREFLIGHT_HEADING.test(line)) { preflight = true; continue; }
+		if (preflight && line.startsWith("Next:")) { recovery = line; continue; }
+		if (!line || line === "Traceback (most recent call last):" || line.startsWith("File \"") || NPM_STARTUP.test(line)) continue;
+		if (!compiler && COMPILER_DIAGNOSTIC.test(line)) compiler = line;
 		if (MISSING_PATH_DIAGNOSTIC.test(line)) diagnostic = audience === "model" ? line : "Path does not exist.";
 		else if (EXCEPTION_DIAGNOSTIC.test(line)) diagnostic = line;
 		else if (EXIT_DIAGNOSTIC.test(line)) { exit = line; continue; }
@@ -67,7 +75,9 @@ export function codemodeFailureReason(text: string, audience: "display" | "model
 	}
 	// Unknown diagnostics (git/curl/compiler output) still carry more information
 	// than an exit code. Bare numeric stdout remains only a fallback.
-	const reason = diagnostic || (first && !NUMERIC_OUTPUT_LINE.test(first) ? first : "") || exit || first || "Tool call failed.";
+	const reason = compiler || diagnostic || (first && !NUMERIC_OUTPUT_LINE.test(first) ? first : "") || exit || first || "Tool call failed.";
+	const httpException = audience === "display" ? HTTP_EXCEPTION.exec(reason) : null;
+	if (httpException) return `HTTP ${httpException[1]}: ${httpException[2]}.`;
 	const ipcTimeout = IPC_TIMEOUT_DIAGNOSTIC.exec(reason);
 	if (ipcTimeout) return audience === "display" ? `${ipcTimeout[1]}; result unconfirmed.`
 		: `${ipcTimeout[0]}. Outcome unconfirmed; inspect list_tabs() before further actions. Do not automatically retry.`;
@@ -76,7 +86,8 @@ export function codemodeFailureReason(text: string, audience: "display" | "model
 	// The model needs the exact target/code to recover; the visible row only
 	// needs a short reason. Neither view changes canonical diagnostics.
 	const limit = audience === "model" ? 512 : 160;
-	return (reason.length > limit ? reason.slice(0, limit - 1) + "…" : reason).replace(DIAGNOSTIC_WHITESPACE, " ");
+	const summary = audience === "model" && recovery ? `${reason} ${recovery}` : reason;
+	return (summary.length > limit ? summary.slice(0, limit - 1) + "…" : summary).replace(DIAGNOSTIC_WHITESPACE, " ");
 }
 
 /** Completion boundary only: hash without constructing another complete output string. */
