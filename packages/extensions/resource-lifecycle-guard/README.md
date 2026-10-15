@@ -256,6 +256,21 @@ containing equals signs do not become cmdlet switches. Literal Bash operands sti
 use the existing Bash lifecycle inspection. Parameter prefixes and colon-separated
 native boolean literals are checked against the relevant cmdlet metadata.
 
+Boundary follow-up: opaque string subexpressions, here-strings and indirect call
+targets no longer end inspection of the remaining command. Bounded delimiter
+scans retain the following statement; quoted and indexed assignment targets keep
+the right-hand command position, and attribute argument lists preserve declaration
+context before param(). Native AST checks confirm the reported forms are valid;
+ordinary counterparts remain accepted. Invoke-Command/icm and Invoke-WmiMethod/iwmi
+check their own AsJob option against native 5.1/7.6 parameter metadata, without
+banning their foreground forms. The native systemctl path recognizes explicit
+start/restart/reload-or-restart/isolate verbs after supported global options;
+option values are not verbs, and unknown/dynamic syntax remains ordinary opaque
+execution rather than a new command whitelist. No service or remote job was run.
+These are invocation-only bounded scans, with no new progress/render work, retained
+owners, per-event callbacks or pools. Existing source/AST/allocation evidence for
+the unchanged render chain remains applicable.
+
 This is a bounded preflight, not a complete PowerShell parser, dataflow analyzer or
 sandbox. Here-strings, expandable string subexpressions and indirect call targets
 defer to normal permission classification. It does not prove arbitrary authorized

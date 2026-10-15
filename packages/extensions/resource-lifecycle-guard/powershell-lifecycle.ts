@@ -18,12 +18,17 @@ const BITS_START_PARAMETERS = ["asynchronous", "dynamic", "customheaderswriteonl
 const BITS_RESUME_PARAMETERS = ["bitsjob", "asynchronous", "whatif", "confirm", ...VARIABLE_LOOKUP_PARAMETERS.slice(5)];
 const SERVICE_START_PARAMETERS = ["name", "inputobject", "passthru", "displayname", "include", "exclude", "force", "whatif", "confirm", ...VARIABLE_LOOKUP_PARAMETERS.slice(5)];
 const SERVICE_SET_PARAMETERS = ["name", "inputobject", "displayname", "credential", "description", "startuptype", "securitydescriptorsddl", "status", "force", "passthru", "computername", "whatif", "confirm", ...VARIABLE_LOOKUP_PARAMETERS.slice(5)];
-const WMI_JOB_COMMANDS = new Set(["get-wmiobject", "gwmi", "remove-wmiobject", "rwmi", "set-wmiinstance", "swmi"]);
+const WMI_JOB_COMMANDS = new Set(["get-wmiobject", "gwmi", "remove-wmiobject", "rwmi", "set-wmiinstance", "swmi", "invoke-wmimethod", "iwmi"]);
+const REMOTE_COMMANDS = new Set(["invoke-command", "icm"]);
 const COMPUTER_JOB_COMMANDS = new Set(["restart-computer", "stop-computer", "test-connection"]);
 // Native metadata: these are the names competing with the AsJob prefix. Other
 // parameters do not affect its binding and retain ordinary argument inspection.
 const WMI_JOB_PARAMETERS = ["asjob", "authentication", "authority", "arguments"];
 const COMPUTER_JOB_PARAMETERS = ["asjob"];
+const REMOTE_JOB_PARAMETERS = ["asjob", "applicationname", "allowredirection", "authentication", "argumentlist"];
+const SYSTEMCTL_START = new Set(["start", "restart", "reload-or-restart", "isolate"]);
+const SYSTEMCTL_FLAGS = new Set(["--user", "--system", "--global", "--no-block", "--no-legend", "--no-pager", "--no-ask-password", "--quiet", "-q", "--all", "-a", "--full", "-l", "--force", "-f", "--runtime", "--wait", "--no-wall"]);
+const SYSTEMCTL_VALUES = new Set(["--host", "-H", "--machine", "-M", "--type", "-t", "--state", "--property", "-p", "--output", "-o", "--root", "--image", "--job-mode", "--lines", "-n", "--kill-whom", "--kill-who", "--signal", "-s", "--preset-mode"]);
 const SPACE = /\s/;
 const PUNCTUATION = /[;|\n\r{}()=&]/;
 // PowerShell accepts unambiguous parameter prefixes and these Unicode dashes.
@@ -36,6 +41,70 @@ const STREAM_NUMBER = /^[1-6]$/;
 const FILE_REDIRECT = /^[1-6*]?>>?$/;
 
 interface Token { value: string; quoted: boolean; quotedEnd: number; dynamic: boolean; operator: boolean; typeOnly: boolean; start: number; end: number }
+
+/** Skip opaque data only, preserving the following statement boundary. */
+function hereStringEnd(source: string, start: number): number {
+	const quote = source[start + 1];
+	let i = start + 2;
+	while (source[i] === " " || source[i] === "\t" || source[i] === "\r") i++;
+	if (source[i] !== "\n") return -1;
+	for (; i < source.length; i++) if (source[i] === "\n" && source[i + 1] === quote && source[i + 2] === "@") return i + 3;
+	return -1;
+}
+
+function quotedStringEnd(source: string, start: number, depth: number): number {
+	if (depth > MAX_NESTING) return -1;
+	const quote = source[start];
+	for (let i = start + 1; i < source.length;) {
+		const c = source[i++];
+		if (c === quote) {
+			if (quote === "'" && source[i] === "'") { i++; continue; }
+			return i;
+		}
+		if (quote === '"' && c === "`") i++;
+		else if (quote === '"' && c === "$" && source[i] === "(") {
+			i = parenthesisEnd(source, i, depth + 1);
+			if (i < 0) return -1;
+		}
+	}
+	return -1;
+}
+
+function parenthesisEnd(source: string, start: number, depth: number): number {
+	let nesting = 1;
+	for (let i = start + 1; i < source.length;) {
+		if (depth + nesting > MAX_NESTING) return -1;
+		const c = source[i++];
+		if (c === "`") { i++; continue; }
+		if (c === "#" && (SPACE.test(source[i - 2]!) || PUNCTUATION.test(source[i - 2]!))) { while (i < source.length && source[i] !== "\n") i++; continue; }
+		if (c === "<" && source[i] === "#") {
+			const end = source.indexOf("#>", i + 1);
+			if (end < 0) return -1;
+			i = end + 2; continue;
+		}
+		if (c === "@" && (source[i] === "'" || source[i] === '"')) i = hereStringEnd(source, i - 1);
+		else if (c === "'" || c === '"') i = quotedStringEnd(source, i - 1, depth + nesting);
+		else if (c === "(") nesting++;
+		else if (c === ")" && !--nesting) return i;
+		if (i < 0) return -1;
+	}
+	return -1;
+}
+
+/** Attribute arguments are metadata, not the end of a script declaration. */
+function attributeEnd(source: string, start: number): number {
+	let i = skipTypeTrivia(source, start + 1);
+	if (i < 0) return -1;
+	const name = i;
+	while (i < source.length && TYPE_CHARACTER.test(source[i]!)) i++;
+	if (i === name) return -1;
+	i = skipTypeTrivia(source, i);
+	if (i < 0 || source[i] !== "(") return -1;
+	i = parenthesisEnd(source, i, 0);
+	if (i < 0) return -1;
+	i = skipTypeTrivia(source, i);
+	return i >= 0 && source[i] === "]" ? i + 1 : -1;
+}
 
 /** Type trivia is syntax, not part of its identity. Never consume executable text. */
 function skipTypeTrivia(source: string, start: number): number {
@@ -182,6 +251,30 @@ function isStreamMerge(tokens: readonly Token[], index: number): boolean {
 		&& STREAM_REDIRECT.test(previous.value) && STREAM_NUMBER.test(next.value);
 }
 
+/** Recognize explicit start verbs after supported systemctl global options.
+ * Unknown/dynamic options remain ordinary opaque execution, never a new ban. */
+function inspectSystemctl(tokens: readonly Token[], start: number): string | undefined {
+	let options = true;
+	for (let i = start; i < tokens.length; i++) {
+		const token = tokens[i]!;
+		if (token.operator || token.dynamic) return undefined;
+		const value = token.value;
+		if (options && value === "--") { options = false; continue; }
+		if (options && value.startsWith("-")) {
+			if (SYSTEMCTL_FLAGS.has(value)) continue;
+			const short = value.startsWith("--") ? value : value.slice(0, 2);
+			if (!SYSTEMCTL_VALUES.has(short)) return undefined;
+			if (short !== value) continue;
+			if (tokens[i + 1]?.value === "=") i++;
+			const operand = tokens[++i];
+			if (!operand || operand.operator || operand.dynamic) return undefined;
+			continue;
+		}
+		return SYSTEMCTL_START.has(value) ? BACKGROUND : undefined;
+	}
+	return undefined;
+}
+
 function refusal(code: string, reason: string): string {
 	return `[${code}] PowerShell not executed: ${reason}.\nNext: submit a literal foreground command for normal authorization; do not retry the same blocked call.`;
 }
@@ -190,8 +283,8 @@ const BACKGROUND = refusal("SHELL_BACKGROUND", "unmanaged background work requir
 /** Invocation-only bounded lexer, not an authorization or a PowerShell sandbox.
  * Unlike Bash, assignment, member access and script blocks are ordinary PS syntax.
  * Detect explicit job/process options; do not infer behavior from types or members.
- * Here-strings, string subexpressions and indirect calls defer to normal permission
- * classification. Unknown program behavior is not a lifecycle refusal by itself.
+ * Opaque fragments defer to normal permission classification without suppressing
+ * subsequent statements. Unknown program behavior is not itself a refusal.
  * Passing this preflight is not proof that arbitrary code cannot detach work.
  */
 export function inspectPowerShellResourceLifecycle(input: unknown): string | undefined {
@@ -213,7 +306,19 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		}
 		if (PUNCTUATION.test(ch)) { tokens.push({ value: ch, quoted: false, quotedEnd: 0, dynamic: false, operator: true, typeOnly: false, start, end: ++i }); continue; }
 		if (SPACE.test(ch)) { i++; continue; }
-		if (ch === "@" && (command[i + 1] === "'" || command[i + 1] === '"')) return undefined;
+		if (ch === "@" && (command[i + 1] === "'" || command[i + 1] === '"')) {
+			i = hereStringEnd(command, i);
+			if (i < 0) return UNCERTAIN;
+			tokens.push({ value: "", quoted: true, quotedEnd: i, dynamic: false, operator: false, typeOnly: false, start, end: i });
+			continue;
+		}
+		if (ch === "[") {
+			const end = attributeEnd(command, i);
+			if (end >= 0) {
+				tokens.push({ value: "", quoted: false, quotedEnd: 0, dynamic: false, operator: false, typeOnly: true, start, end });
+				i = end; continue;
+			}
+		}
 		let value = "", quoted = false, quotedEnd = 0, dynamic = false, span = i, typeOnly = false;
 		while (command[i] === "[") {
 			const type = readType(command, i);
@@ -264,7 +369,7 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 				if (c === '"' && q === "`") { if (i >= command.length) return UNCERTAIN; value += command.slice(span, i - 1) + command[i++]!; span = i; continue; }
 				if (c === '"' && q === "$") {
 					// Nested string expressions need normal opaque-script authorization.
-					if (command[i] === "(") return undefined;
+					if (command[i] === "(") { i = parenthesisEnd(command, i, 0); if (i < 0) return UNCERTAIN; }
 					dynamic = true;
 				}
 			}
@@ -279,45 +384,45 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 	// Low bits: 0 paren, 1 control block, 2 hash key, 3 hash value, 4 block argument, 5 param list.
 	// 6 is a do body, 7 its trailing while/until condition.
 	// Flag 8 restores an enclosing control statement after its condition parentheses.
-	// 24/40 are foreach's variable/in states.
+	// 24/40 are foreach's variable/in states; flag 64 restores an assignment target.
 	// Primitive call-owned stack, capped at MAX_NESTING and never retained.
 	const contexts: number[] = [];
 	for (let i = 0; i < tokens.length; i++) {
 		const token = tokens[i]!, value = token.value;
-		const topIndex = contexts.length - 1, top = contexts[topIndex], contextKind = top;
+		const topIndex = contexts.length - 1, top = contexts[topIndex], contextKind = top === undefined ? undefined : top & 63;
 		if (token.operator) {
 			if (value === "=") {
 				head = assignable; controlBlock = false; paramBlock = false; foreachBlock = false;
-				if (assignable && contextKind === 2) contexts[topIndex] = 3;
+				if (assignable && contextKind === 2) contexts[topIndex] = (top! & 64) | 3;
 				assignable = false; continue;
 			}
+			const assigning: boolean = assignable;
 			assignable = false;
 			if (value === "(" || value === "{") {
 				if (contexts.length === MAX_NESTING) return UNCERTAIN;
 				const previous = tokens[i - 1];
 				const kind = value === "(" ? (doCondition ? 7 : paramBlock ? 5 : controlBlock ? foreachBlock ? 24 : 8 : 0) : previous?.value === "@" && !previous.quoted && previous.end === token.start ? 2 : doBlock ? 6 : controlBlock ? 1 : 4;
-				contexts.push(kind);
+				contexts.push(kind | (assigning ? 64 : 0));
 				head = true; controlBlock = false; paramBlock = false; doBlock = false; doCondition = false; foreachBlock = false; continue;
 			}
 			if (value === ")" || value === "}") {
-				const context = contexts.pop();
+				const saved = contexts.pop(), context = saved === undefined ? undefined : saved & 63;
 				if (context === undefined || (value === ")") !== ((context & 7) === 0 || context === 5 || context === 7)) return UNCERTAIN;
 				head = context === 1 || context === 5 || context === 6 || context === 7;
+				assignable = (saved! & 64) !== 0 || (context === 0 && assigning);
 				controlBlock = (context & 8) !== 0; paramBlock = false; foreachBlock = false; afterDo = context === 6; continue;
 			}
 			if (value !== "\n" && value !== "\r") { controlBlock = false; foreachBlock = false; }
-			if ((value === ";" || value === "\n" || value === "\r") && (contextKind === 2 || contextKind === 3)) contexts[topIndex] = 2;
+			if ((value === ";" || value === "\n" || value === "\r") && (contextKind === 2 || contextKind === 3)) contexts[topIndex] = (top! & 64) | 2;
 			if (value === "&") {
 				const next = tokens[i + 1];
 				if (isStreamMerge(tokens, i)) { i++; continue; }
 				if (next?.operator && next.value === "&" && next.start === token.end) { i++; head = true; continue; }
 				if (!head) return BACKGROUND;
-				const target = tokens[i + 1];
-				if (!target || target.dynamic || target.value === "(") return undefined;
 			} else head = true;
 			continue;
 		}
-		if (contextKind === 40 && !token.quoted && value.toLowerCase() === "in") { contexts[topIndex] = 8; head = true; assignable = false; continue; }
+		if (contextKind === 40 && !token.quoted && value.toLowerCase() === "in") { contexts[topIndex] = (top! & 64) | 8; head = true; assignable = false; continue; }
 		if (!head) continue;
 		head = false;
 		if (contextKind === 2) { assignable = true; continue; }
@@ -330,7 +435,9 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		if ((command[token.start] === "'" || command[token.start] === '"') && tokens[i - 1]?.value !== "&") continue;
 		if (token.dynamic) {
 			// A variable/member expression is not a Bash executable position.
-			if (isSimpleVariable(value)) { assignable = true; if (contextKind === 24) contexts[topIndex] = 40; continue; }
+			if (tokens[i - 1]?.value === "&") continue;
+			if (isSimpleVariable(value)) { assignable = true; if (contextKind === 24) contexts[topIndex] = (top! & 64) | 40; continue; }
+			if (value.startsWith("$") || value.startsWith("[")) assignable = true;
 			if ((value.startsWith("++") || value.startsWith("--")) && isSimpleVariable(value.slice(2))) continue;
 			if ((value.endsWith("++") || value.endsWith("--")) && isSimpleVariable(value.slice(0, -2))) continue;
 			if (value === "$" || (value === "@" && (tokens[i + 1]?.value === "(" || tokens[i + 1]?.value === "{"))) continue;
@@ -349,6 +456,10 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		if (EXTERNAL_DETACHED.has(externalName)) return BACKGROUND;
 		if (WMI_JOB_COMMANDS.has(name) || COMPUTER_JOB_COMMANDS.has(name)) {
 			const reason = inspectCommandSwitch(tokens, i + 1, command, WMI_JOB_COMMANDS.has(name) ? WMI_JOB_PARAMETERS : COMPUTER_JOB_PARAMETERS, "asjob");
+			if (reason) return reason;
+		}
+		if (REMOTE_COMMANDS.has(name)) {
+			const reason = inspectCommandSwitch(tokens, i + 1, command, REMOTE_JOB_PARAMETERS, "asjob");
 			if (reason) return reason;
 		}
 		if (FOR_EACH.has(name) && !(name === "foreach" && tokens[i + 1]?.value === "(")) {
@@ -393,7 +504,11 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 			const reason = inspectBashResourceLifecycle({ command: script.value });
 			if (reason) return reason;
 		}
-		if (externalName === "docker" || externalName === "pm2" || externalName === "systemctl" || externalName === "service") {
+		if (externalName === "systemctl") {
+			const reason = inspectSystemctl(tokens, i + 1);
+			if (reason) return reason;
+		}
+		if (externalName === "docker" || externalName === "pm2" || externalName === "service") {
 			let end = token.end;
 			for (let j = i + 1; j < tokens.length; j++) {
 				const arg = tokens[j]!;

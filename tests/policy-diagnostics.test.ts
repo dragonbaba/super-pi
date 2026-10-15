@@ -112,6 +112,16 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "Add-Type -AssemblyName System.Speech", "Add-Type -Assem: System.Runtime -PassThru", "Add-Type -A:System.Runtime",
     "Start-BitsTransfer -Source a -Destination b -Suspended:$false", "Start-BitsTransfer -Source a -Destination b -Su: $false",
     "Write-Output report.ExecuteShellCommand WbemScripting.SWbemLocator",
+    'Write-Output "value=$($value)"; Write-Output done', 'Write-Output "value=$("nested $($value)")"; Write-Output done',
+    "Write-Output @'\nStart-Job is text\n'@; Write-Output done", 'Write-Output @"\ntext\n"@; Write-Output done',
+    "& $program mode=Start-Job; Write-Output done", "& (Get-Command tool) mode=Start-Job; Write-Output done",
+    "$h['some-key'] = Write-Output data", "$h[('some'+'-key')] = Write-Output data", "$object.'some-name' = 1",
+    "[CmdletBinding()] param() Write-Output data", "[CmdletBinding()]param() Write-Output data",
+    "Invoke-Command -ScriptBlock { 1 }", "icm -ScriptBlock { 1 } -AsJob:$false", "iwmi -Class Win32_Process -Name GetOwner -As:$false",
+    "Invoke-Command -ApplicationName app -Authentication Default -ArgumentList $args -ScriptBlock { 1 }",
+    "systemctl --user status example.service", "systemctl --property start show example.service", "systemctl --host=server status example.service",
+    "systemctl -Hserver --user status example.service", "systemctl --unknown status example.service",
+    "systemctl --host $server status example.service",
   ]) assert.equal(inspectPowerShellResourceLifecycle({ command }), undefined, command);
   // Runtime capabilities are not proof of detached execution. These still need
   // opaque-script authorization; the lifecycle filter is not a language sandbox.
@@ -156,6 +166,15 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "Start-Service Missing -WhatIf:$false", "Start-Service Missing > -WhatIf",
     "Start-ScheduledTask -TaskName Missing", "Register-ScheduledJob -Name Missing -ScriptBlock {1}", "Invoke-Item missing.exe",
     "bash -c 'sleep 30 &'", "docker run -d image", "docker.exe run --env mode=foreground -d image",
+    'Write-Output "value=$($value)"; Start-Job { 1 }', 'Write-Output "value=$("nested $($value)")"; Start-Job { 1 }',
+    "Write-Output @'\ntext\n'@; Start-Job { 1 }", 'Write-Output @"\ntext\n"@; Start-Process missing.exe',
+    "& $program; Start-Job { 1 }", "& (Get-Command tool); Start-Job { 1 }",
+    "$h['some-key'] = Start-Job { 1 }", "$h[('some'+'-key')] = Start-Job { 1 }", "$object.'some-name' = Start-Process missing.exe",
+    "($a,$b) = Start-Job { 1 }", "[CmdletBinding()] param() Start-Job { 1 }", "[CmdletBinding()]param() Start-Job { 1 }",
+    "Invoke-Command -ComputerName server -ScriptBlock { 1 } -AsJob", "icm -ComputerName server -ScriptBlock { 1 } -Asj",
+    "Invoke-WmiMethod -Class Win32_Process -Name Create -AsJob", "iwmi -Class Win32_Process -Name Create -As",
+    "systemctl --user start example.service", "systemctl restart example.service", "systemctl --host=server --type service restart example.service",
+    "systemctl.exe -Hserver --user reload-or-restart example.service",
     "Write-Output 'unterminated", "x ".repeat(2049), "x".repeat(128 * 1024 + 1),
   ]) assert.ok(inspectPowerShellResourceLifecycle({ command }), command);
 });
