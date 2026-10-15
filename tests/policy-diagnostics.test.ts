@@ -26,7 +26,9 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "<# outer <# Start-Job #> nested #> Write-Output 1",
     "& 'C:/Program Files/tool.exe' --help",
     "& { Write-Output 1 }; Write-Output 2 2>&1",
+    "Write-Output `&; Write-Output `;", "Write-Output 1 && Write-Output 2",
     "Start-Process -FilePath tool.exe -Wait; Start-Process -FilePath other.exe -Wait",
+    "Start-Process tool.exe 2>&1 -Wait", "Start-Process tool.exe -Wait 2>&1",
     "echo $((1 + $null))",
   ]) assert.equal(inspectPowerShellResourceLifecycle({ command }), undefined, command);
   for (const command of [
@@ -38,6 +40,8 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "Write-Output $(Start-Job {})", 'Write-Output "$(Start-Job {})"',
     "Microsoft.PowerShell.Core\\Start-Job {}", "Sta`rt-Job {}", "Write-Output 1;`\nStart-Job {}",
     "saps tool.exe", "Invoke-Expression $script", "cmd /c start tool.exe",
+    "Write-Output 1 & & 'tool.exe'", "Write-Output 1 & '&'", "Write-Output '>' & 1",
+    "Sta'rt'-Process tool.exe", 'Start-Proce"ss" tool.exe', "Start-Process tool.exe -Wa'it'",
     "bash -c 'sleep 30 &'", "docker run -d image", "ForEach-Object -Parallel {} -AsJob",
     "Write-Output 'unterminated", "x ".repeat(2049), "x".repeat(128 * 1024 + 1),
   ]) assert.ok(inspectPowerShellResourceLifecycle({ command }), command);

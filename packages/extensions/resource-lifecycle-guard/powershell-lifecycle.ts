@@ -10,8 +10,17 @@ const SPACE = /\s/;
 const PUNCTUATION = /[;|\n\r{}()=&]/;
 const JOB_OPTION = /^-asjob(?::|$)/i;
 const SIMPLE_VARIABLE = /^(?:\[[\w.,[\]]+\])*\$[\w:]+(?:\.[\w]+|\[[\w$]+\])*$/;
+const STREAM_REDIRECT = /^[1-6*]?>$/;
+const STREAM_NUMBER = /^[1-6]$/;
 
-interface Token { value: string; quoted: boolean; dynamic: boolean; start: number; end: number }
+interface Token { value: string; quoted: boolean; dynamic: boolean; operator: boolean; start: number; end: number }
+
+function isStreamMerge(tokens: readonly Token[], index: number): boolean {
+	const token = tokens[index]!, previous = tokens[index - 1], next = tokens[index + 1];
+	return token.operator && token.value === "&" && previous !== undefined && next !== undefined
+		&& !previous.quoted && !next.quoted && previous.end === token.start && next.start === token.end
+		&& STREAM_REDIRECT.test(previous.value) && STREAM_NUMBER.test(next.value);
+}
 
 function refusal(code: string, reason: string): string {
 	return `[${code}] PowerShell not executed: ${reason}.\nNext: submit a literal foreground command for normal authorization; do not retry the same blocked call.`;
@@ -44,7 +53,7 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 			if (depth) return UNCERTAIN;
 			continue;
 		}
-		if (PUNCTUATION.test(ch)) { tokens.push({ value: ch, quoted: false, dynamic: false, start, end: ++i }); continue; }
+		if (PUNCTUATION.test(ch)) { tokens.push({ value: ch, quoted: false, dynamic: false, operator: true, start, end: ++i }); continue; }
 		if (SPACE.test(ch)) { i++; continue; }
 		if (ch === "@" && (command[i + 1] === "'" || command[i + 1] === '"')) return UNCERTAIN;
 		let value = "", quoted = false, dynamic = false, span = i;
@@ -82,16 +91,17 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 			if (!closed) return UNCERTAIN;
 		}
 		value += command.slice(span, i);
-		if (value || quoted) tokens.push({ value, quoted, dynamic, start, end: i });
+		if (value || quoted) tokens.push({ value, quoted, dynamic, operator: false, start, end: i });
 	}
 
 	let head = true;
 	for (let i = 0; i < tokens.length; i++) {
 		const token = tokens[i]!, value = token.value;
-		if (!token.quoted && PUNCTUATION.test(value) && value.length === 1) {
+		if (token.operator) {
 			if (value === "&") {
-				if (tokens[i - 1]?.value.endsWith(">") && /^[1-6]$/.test(tokens[i + 1]?.value ?? "")) { i++; continue; }
-				if (tokens[i + 1]?.value === "&") { i++; head = true; continue; }
+				const next = tokens[i + 1];
+				if (isStreamMerge(tokens, i)) { i++; continue; }
+				if (next?.operator && next.value === "&" && next.start === token.end) { i++; head = true; continue; }
 				if (!head) return BACKGROUND;
 				const target = tokens[i + 1];
 				if (!target || target.dynamic || target.value === "(") return refusal("SHELL_DYNAMIC_EXECUTABLE", "the call operator requires a literal executable or script block");
@@ -102,7 +112,7 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		if (!head) continue;
 		head = false;
 		// A quoted expression is data unless preceded by PowerShell's call operator.
-		if (token.quoted && tokens[i - 1]?.value !== "&") continue;
+		if ((command[token.start] === "'" || command[token.start] === '"') && tokens[i - 1]?.value !== "&") continue;
 		if (token.dynamic) {
 			// A variable/member expression is not a Bash executable position.
 			if (SIMPLE_VARIABLE.test(value) || value === "$") continue;
@@ -116,10 +126,11 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 			let wait = false;
 			for (let j = i + 1; j < tokens.length; j++) {
 				const arg = tokens[j]!;
-				if (!arg.quoted && PUNCTUATION.test(arg.value) && arg.value.length === 1) break;
+				if (isStreamMerge(tokens, j)) { j++; continue; }
+				if (arg.operator) break;
 				if (arg.dynamic) return UNCERTAIN;
 				if (!arg.quoted && arg.value === "--%") return UNCERTAIN;
-				if (!arg.quoted && arg.value.toLowerCase() === "-wait") wait = true;
+				if (command.slice(arg.start, arg.end).toLowerCase() === "-wait") wait = true;
 				if (!arg.quoted && arg.value.toLowerCase().startsWith("-wait:")) return UNCERTAIN;
 			}
 			if (!wait) return BACKGROUND;
@@ -134,7 +145,7 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 			let end = token.end;
 			for (let j = i + 1; j < tokens.length; j++) {
 				const arg = tokens[j]!;
-				if (!arg.quoted && PUNCTUATION.test(arg.value) && arg.value.length === 1) break;
+				if (arg.operator) break;
 				if (arg.dynamic) return UNCERTAIN;
 				end = arg.end;
 			}

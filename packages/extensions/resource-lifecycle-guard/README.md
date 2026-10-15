@@ -247,6 +247,10 @@ own literal `-Wait`. Dynamic call-operator targets, opaque evaluators/launchers,
 here-strings and executable interpolation that cannot be inspected are refused.
 Literal nested Bash scripts still receive Bash inspection. This is a bounded
 lifecycle filter, not a complete PowerShell parser or an isolation sandbox.
+Native PowerShell AST spot checks confirmed that spaced `& &` is not `&&`,
+quoted `>` is not stream redirection, and partially quoted command names still
+invoke commands. The lexer preserves operator provenance and source adjacency;
+literal stream merging remains valid before or after `-Wait`.
 
 Bash-to-PowerShell recovery distinguishes an active native tool, a configured
 discoverable tool, and an unavailable tool. Discovery is suggested only when
