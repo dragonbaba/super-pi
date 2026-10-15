@@ -1702,7 +1702,9 @@ test("native PowerShell assignments and member calls retain authorization and fo
       "icim -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine='missing.exe'}", "ipal aliases.csv",
       "$sb=[scriptblock]::Create('Start-Process missing.exe'); 1 | Where-Object -FilterScript $sb", "$T=[type]'scriptblock'; $sb=$T::Create($text)",
       "$sb=[ <#type#> scriptblock ]::Create('Start-Process missing.exe'); 1 | Where-Object -FilterScript $sb",
-      "[ int ] $x=Start-Process missing.exe", "Start-BitsTransfer -Source a -Destination b -As", "Resume-BitsTransfer -BitsJob $job -As"]) {
+      "[ int ] $x=Start-Process missing.exe", "Start-BitsTransfer -Source a -Destination b -As", "Resume-BitsTransfer -BitsJob $job -As",
+      "Start-Process -- missing.exe -Wait",
+      '$c=Get-WmiObject -Query "SELECT * FROM meta_class WHERE __class = \'Win32_Process\'"; $c.Create("missing.exe")']) {
       const blocked = await fixture.agent.dispatchHostTool({ type: "toolCall", id: "native-background", name: "powershell", arguments: { command } });
       assert.equal(blocked.isError, true); assert.equal(fixture.executions, 1); assert.equal(fixture.approvals.length, 2);
     }

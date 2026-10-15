@@ -38,6 +38,9 @@ const OBJECT_FLAGS = new Set(["strict", "verbose", "debug"]);
 const PROCESS_PARAMETERS = ["filepath", "argumentlist", "credential", "workingdirectory", "loaduserprofile", "nonewwindow", "passthru", "redirectstandarderror", "redirectstandardinput", "redirectstandardoutput", "verb", "windowstyle", "wait", "usenewenvironment", "environment", "whatif", "confirm", ...VARIABLE_LOOKUP_PARAMETERS.slice(5)];
 const BITS_START_PARAMETERS = ["asynchronous", "dynamic", "customheaderswriteonly", "authentication", "credential", "description", "httpmethod", "destination", "displayname", "priority", "transferpolicy", "aclflags", "securityflags", "usestoredcredential", "proxyauthentication", "proxybypass", "proxycredential", "proxylist", "proxyusage", "retryinterval", "retrytimeout", "maxdownloadtime", "source", "suspended", "transfertype", "customheaders", "notifyflags", "notifycmdline", "certstorelocation", "certstorename", "certhash", "whatif", "confirm", ...VARIABLE_LOOKUP_PARAMETERS.slice(5)];
 const BITS_RESUME_PARAMETERS = ["bitsjob", "asynchronous", "whatif", "confirm", ...VARIABLE_LOOKUP_PARAMETERS.slice(5)];
+const WMI_PARAMETERS = ["class", "recurse", "property", "filter", "amended", "directread", "list", "query", "asjob", "impersonation", "authentication", "locale", "enableallprivileges", "authority", "credential", "throttlelimit", "computername", "namespace", ...VARIABLE_LOOKUP_PARAMETERS.slice(5)];
+const WMI_SCHEMA_WORD = /^(?:meta_class|classdefsonly|schemaonly)$/i;
+const WORD_CHARACTER = /[\w]/;
 const WMI_CAPABILITY = /(?:^|\[|:)(?:wmiclass|(?:(?:System\.)?Management\.)?ManagementClass)(?:\]|,|$)/i;
 const SCRIPT_BLOCK_COMPILER = /\[(?:System\.Management\.Automation\.)?scriptblock\]::Create$/i;
 const SPACE = /\s/;
@@ -109,7 +112,7 @@ function inspectCommandSwitch(tokens: readonly Token[], start: number, command: 
 			continue;
 		}
 		if (depth) continue;
-		if (!arg.quoted && arg.value === "--%") return UNCERTAIN;
+		if (!arg.quoted && (arg.value === "--%" || arg.value === "--")) return UNCERTAIN;
 		if (isArgumentSuffix(tokens, j)) continue;
 		const raw = command.slice(arg.start, arg.end), colon = raw.indexOf(":");
 		if (!PARAMETER_DASH.test(raw)) continue;
@@ -120,6 +123,29 @@ function inspectCommandSwitch(tokens: readonly Token[], start: number, command: 
 		if (colon === raw.length - 1) j++;
 	}
 	return optionName === "wait" && !wait ? BACKGROUND : undefined;
+}
+
+/** Literal WQL may still return class definitions. Quoted filter values are data. */
+function hasWmiSchemaQuery(query: string): boolean {
+	for (let i = 0; i < query.length;) {
+		const c = query[i++]!;
+		if (c === "'" || c === '"') {
+			let closed = false;
+			while (i < query.length) {
+				const q = query[i++]!;
+				if (q === "\\") { i++; continue; }
+				if (q !== c) continue;
+				if (query[i] === c) { i++; continue; }
+				closed = true; break;
+			}
+			if (!closed) return true;
+		} else if (WORD_CHARACTER.test(c)) {
+			const start = i - 1;
+			while (i < query.length && WORD_CHARACTER.test(query[i]!)) i++;
+			if (WMI_SCHEMA_WORD.test(query.slice(start, i))) return true;
+		}
+	}
+	return false;
 }
 
 /** Bounded native parameter metadata; exact names/common aliases precede prefixes. */
@@ -457,7 +483,14 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 				if (depth) continue;
 				const raw = command.slice(arg.start, arg.end), colon = raw.indexOf(":");
 				const option = raw.slice(1, colon < 0 ? raw.length : colon).toLowerCase();
-				if (PARAMETER_DASH.test(raw) && option && "list".startsWith(option)) return UNCERTAIN;
+				if (!PARAMETER_DASH.test(raw)) continue;
+				const parameter = lookupOption(option, WMI_PARAMETERS);
+				if (parameter === "list") return UNCERTAIN;
+				if (parameter === "query") {
+					const separate = colon < 0 || colon === raw.length - 1;
+					const query = separate ? tokens[++j] : arg;
+					if (!query || query.operator || query.dynamic || hasWmiSchemaQuery(separate ? query.value : query.value.slice(query.value.indexOf(":") + 1))) return UNCERTAIN;
+				}
 			}
 		}
 		if (FOR_EACH.has(name) && !(name === "foreach" && tokens[i + 1]?.value === "(")) {

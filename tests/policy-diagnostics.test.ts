@@ -76,6 +76,8 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "1 | ForEach-Object -Parallel { $_ } -AsJob:$false", "1 | % -Parallel { $_ } -As: $FALSE",
     "Start-BitsTransfer -Source a -Destination b -As:$false", "Resume-BitsTransfer -BitsJob $job -As: $false",
     "Start-BitsTransfer -Source ($source -as [string]) -Destination b",
+    'Get-WmiObject -Query "SELECT Name FROM Win32_Process WHERE Name = \'meta_class\'"',
+    'gwmi -Q: "SELECT Name FROM Win32_Process WHERE Name = \'ClassDefsOnly\'"',
   ]) assert.equal(inspectPowerShellResourceLifecycle({ command }), undefined, command);
   for (const command of [
     "Start-Job { Write-Output 1 }", "$job = Start-ThreadJob { Write-Output 1 }", "if ($true) {} Start-Job {}",
@@ -173,6 +175,11 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "1 | ForEach-Object -Parallel { Start-Job {} } -AsJob:$false",
     "Start-BitsTransfer -Source a -Destination b -As", "Resume-BitsTransfer -BitsJob $job -As", "Start-BitsTransfer -Source a -Destination b -As: $flag",
     "Start-BitsTransfer -Source (Start-Job {}) -Destination b -As:$false",
+    "Start-Process -- missing.exe -Wait", "Start-Process -- missing.exe -Wai:$true",
+    '$c=Get-WmiObject -Query "SELECT * FROM meta_class WHERE __class = \'Win32_Process\'"; $c.Create("missing.exe")',
+    'gwmi -Q:"SELECT * FROM MeTa_ClAsS"', 'Get-WmiObject -Query: "ASSOCIATORS OF {Win32_Process} WHERE SchemaOnly"',
+    'Get-WmiObject -Query "REFERENCES OF {Win32_Process} WHERE ClassDefsOnly"',
+    "Get-WmiObject -Query $query", "Get-WmiObject -Query:($query)",
   ]) assert.ok(inspectPowerShellResourceLifecycle({ command }), command);
 });
 

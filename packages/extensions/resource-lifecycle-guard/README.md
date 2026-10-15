@@ -353,6 +353,12 @@ mistaking a nested -as conversion for an asynchronous switch. Enabled or unknown
 job/async switches still refuse. Real integration covers spaced types, -Wai and
 foreground ForEach-Object; type comments remain subject to the separate legacy
 permission scanner's existing unverifiable-redirection limitation.
+Lifecycle-sensitive Wait/Asynchronous inspection refuses the end-of-parameters
+marker: a later -Wait is positional data and cannot prove ownership. Get-WmiObject
+literal queries distinguish schema keywords (meta_class, ClassDefsOnly, SchemaOnly)
+from quoted filter data; dynamic queries stay opaque. Ordinary literal instance
+queries remain eligible for normal authorization. Native read-only inspection
+confirmed meta_class returns a ManagementClass with Create, without invoking it.
 
 Unchanged scope: external module loading and native sc.exe/net.exe service control
 already passed the original Bash lifecycle and high-risk scanners at the PR base.
