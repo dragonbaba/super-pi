@@ -79,13 +79,9 @@ function skipTypeTrivia(source: string, start: number): number {
 	while (i < source.length) {
 		if (SPACE.test(source[i]!)) { i++; continue; }
 		if (!source.startsWith("<#", i)) break;
-		let depth = 1; i += 2;
-		while (i < source.length && depth) {
-			if (source.startsWith("<#", i)) { if (++depth > 16) return -1; i += 2; }
-			else if (source.startsWith("#>", i)) { depth--; i += 2; }
-			else i++;
-		}
-		if (depth) return -1;
+		const end = source.indexOf("#>", i + 2);
+		if (end < 0) return -1;
+		i = end + 2;
 	}
 	return i;
 }
@@ -305,6 +301,40 @@ function isArgumentSuffix(tokens: readonly Token[], index: number): boolean {
 	return previous?.operator === true && previous.value === "=" && previous.end === tokens[index]!.start;
 }
 
+/** Explicit generic method arguments do not change the member being invoked. */
+function isOpaqueMember(value: string): boolean {
+	let end = value.length;
+	if (value[end - 1] === "]") {
+		let depth = 0;
+		for (let i = end - 1; i >= 0; i--) {
+			if (value[i] === "]") { if (++depth > MAX_NESTING) return true; }
+			else if (value[i] === "[" && --depth === 0) { end = i; break; }
+		}
+	}
+	return OPAQUE_MEMBER.test(end === value.length ? value : value.slice(0, end));
+}
+
+/** New-Object property keys may dispatch methods, not just assign properties. */
+function inspectObjectProperties(tokens: readonly Token[], start: number): string | undefined {
+	let depth = 1, key = true;
+	for (let j = start + 1; j < tokens.length; j++) {
+		const arg = tokens[j]!;
+		if (arg.operator) {
+			if (arg.value === "{" || arg.value === "(") {
+				if (key && depth === 1) return UNCERTAIN;
+				if (++depth > MAX_NESTING) return UNCERTAIN;
+			} else if (arg.value === "}" || arg.value === ")") { if (!--depth) return undefined; }
+			else if (depth === 1 && (arg.value === ";" || arg.value === "\n" || arg.value === "\r")) key = true;
+			continue;
+		}
+		if (depth === 1 && key) {
+			if (arg.dynamic || isOpaqueMember("." + arg.value)) return UNCERTAIN;
+			key = false;
+		}
+	}
+	return UNCERTAIN;
+}
+
 function isStreamMerge(tokens: readonly Token[], index: number): boolean {
 	const token = tokens[index], previous = tokens[index - 1], next = tokens[index + 1];
 	return token?.operator === true && token.value === "&" && previous !== undefined && next !== undefined
@@ -324,10 +354,11 @@ function inspectNewObject(tokens: readonly Token[], start: number, command: stri
 	let depth = 0, typeSeen = false, parameter: string | undefined;
 	for (let j = start; j < tokens.length; j++) {
 		const arg = tokens[j]!;
+		if (arg.operator && arg.value === "=") continue;
 		if (arg.operator) {
 			if (arg.value === "(" || arg.value === "{") {
 				if (!depth) {
-					if (parameter === "typename" || parameter === "comobject" || (!parameter && !typeSeen)) return UNCERTAIN;
+					if (parameter === "typename" || parameter === "comobject" || parameter === "property" || (!parameter && !typeSeen)) return UNCERTAIN;
 					parameter = undefined;
 				}
 				if (++depth > MAX_NESTING) return UNCERTAIN;
@@ -335,7 +366,7 @@ function inspectNewObject(tokens: readonly Token[], start: number, command: stri
 			else if (!depth) break;
 			continue;
 		}
-		if (depth) continue;
+		if (depth || isArgumentSuffix(tokens, j)) continue;
 		const raw = command.slice(arg.start, arg.end), colon = raw.indexOf(":");
 		let type = arg.value;
 		if (!parameter && PARAMETER_DASH.test(raw) && (!arg.quoted || colon >= 0)) {
@@ -350,6 +381,12 @@ function inspectNewObject(tokens: readonly Token[], start: number, command: stri
 			if (!type || arg.dynamic || WMI_CAPABILITY.test(type)) return UNCERTAIN;
 			typeSeen = true;
 		}
+		if (parameter === "property") {
+			const next = tokens[j + 1];
+			if (type !== "@" || arg.quoted || next?.value !== "{" || next.start !== arg.end) return UNCERTAIN;
+			const reason = inspectObjectProperties(tokens, j + 1);
+			if (reason) return reason;
+		}
 		parameter = undefined;
 	}
 	return undefined;
@@ -361,6 +398,7 @@ function inspectForEach(tokens: readonly Token[], start: number, command: string
 	let depth = 0, memberPending = true, literalArguments = false, parameter: string | undefined;
 	for (let j = start; j < tokens.length; j++) {
 		const arg = tokens[j]!;
+		if (arg.operator && arg.value === "=") continue;
 		if (arg.operator) {
 			if (arg.value === "(" || arg.value === "{") {
 				if (!depth) {
@@ -373,7 +411,7 @@ function inspectForEach(tokens: readonly Token[], start: number, command: string
 			else if (!depth) break;
 			continue;
 		}
-		if (depth) continue;
+		if (depth || isArgumentSuffix(tokens, j)) continue;
 		if (!parameter && !arg.quoted && arg.value === "--") { literalArguments = true; continue; }
 		const raw = command.slice(arg.start, arg.end), colon = raw.indexOf(":");
 		let member = arg.value;
@@ -390,7 +428,7 @@ function inspectForEach(tokens: readonly Token[], start: number, command: string
 			member = arg.value.slice(arg.value.indexOf(":") + 1);
 		}
 		if (parameter === "membername" || (!parameter && memberPending)) {
-			if (arg.dynamic || VARIABLE_WILDCARD.test(member) || OPAQUE_MEMBER.test("." + member) || SESSION_STATE.test("." + member)) return UNCERTAIN;
+			if (arg.dynamic || VARIABLE_WILDCARD.test(member) || isOpaqueMember("." + member) || SESSION_STATE.test("." + member)) return UNCERTAIN;
 			memberPending = false;
 		} else if (parameter && FOR_EACH_BLOCKS.has(parameter)) return UNCERTAIN;
 		parameter = undefined;
@@ -414,13 +452,9 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		const start = i, ch = command[i]!;
 		if (ch === "#") { while (i < command.length && command[i] !== "\n") i++; continue; }
 		if (command.startsWith("<#", i)) {
-			let depth = 1; i += 2;
-			while (i < command.length && depth) {
-				if (command.startsWith("<#", i)) { if (++depth > 16) return UNCERTAIN; i += 2; }
-				else if (command.startsWith("#>", i)) { depth--; i += 2; }
-				else i++;
-			}
-			if (depth) return UNCERTAIN;
+			const end = command.indexOf("#>", i + 2);
+			if (end < 0) return UNCERTAIN;
+			i = end + 2;
 			continue;
 		}
 		if (PUNCTUATION.test(ch)) { tokens.push({ value: ch, quoted: false, quotedEnd: 0, dynamic: false, operator: true, typeOnly: false, start, end: ++i }); continue; }
@@ -561,7 +595,7 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		// Known launcher/evaluator members cannot prove ownership. Inspect argument
 		// positions too; dynamic member names must not hide these same entrypoints.
 		if (command[token.start] !== "'" && command[token.start] !== '"' && tokens[i + 1]?.operator && tokens[i + 1]?.value === "(" && token.end === tokens[i + 1]?.start) {
-			if (OPAQUE_MEMBER.test(value) || SCRIPT_BLOCK_COMPILER.test(value)) return refusal("SHELL_UNINSPECTABLE", "launcher or evaluator member ownership cannot be verified; use a literal foreground command (Start-Process requires -Wait)");
+			if (isOpaqueMember(value) || SCRIPT_BLOCK_COMPILER.test(value)) return refusal("SHELL_UNINSPECTABLE", "launcher or evaluator member ownership cannot be verified; use a literal foreground command (Start-Process requires -Wait)");
 			if (token.dynamic && value !== "$" && value !== "@" && (value.includes("::") || !isSimpleVariable(value))) return UNCERTAIN;
 		}
 		if (contextKind === 40 && !token.quoted && value.toLowerCase() === "in") { contexts[topIndex] = (top! & 64) | 8; head = true; assignable = false; continue; }
@@ -606,13 +640,14 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 			let depth = 0;
 			for (let j = i + 1; j < tokens.length; j++) {
 				const arg = tokens[j]!;
+				if (arg.operator && arg.value === "=") continue;
 				if (arg.operator) {
 					if (arg.value === "(" || arg.value === "{") { if (++depth > MAX_NESTING) return UNCERTAIN; }
 					else if (arg.value === ")" || arg.value === "}") { if (!depth) break; depth--; }
 					else if (!depth) break;
 					continue;
 				}
-				if (depth) continue;
+				if (depth || isArgumentSuffix(tokens, j)) continue;
 				if (!arg.quoted && arg.value === "--") break;
 				const raw = command.slice(arg.start, arg.end), colon = raw.indexOf(":");
 				const option = raw.slice(1, colon < 0 ? raw.length : colon).toLowerCase();
@@ -650,6 +685,7 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 			let literalName = false;
 			for (let j = i + 1; j < tokens.length; j++) {
 				let arg = tokens[j]!;
+				if (arg.operator && arg.value === "=") continue;
 				if (arg.operator) { if (arg.value === "(" || arg.value === "{") return UNCERTAIN; break; }
 				if (DEFAULT_PARAMETERS.test(arg.value)) return UNCERTAIN;
 				const raw = command.slice(arg.start, arg.end), colon = raw.indexOf(":"), option = raw.slice(1, colon < 0 ? raw.length : colon).toLowerCase();

@@ -344,7 +344,7 @@ false/dynamic switch values remain refused. Named values after a separated colon
 are consumed as values across the existing parameter inspectors, including output
 variables, constructor types and file paths; dynamic/preference targets remain
 subject to the same checks as inline values.
-Balanced type prefixes normalize whitespace and nested block comments before
+Balanced type prefixes normalize whitespace and block comments before
 capability inspection, while preserving the original executed source. A separate
 type token retains the following assignment's command boundary. Native metadata
 resolves -Wai as Wait (but -Wa as WarningAction), and literal -AsJob:$false remains
@@ -391,6 +391,16 @@ and common values remain data, while Path/LiteralPath expressions remain opaque.
 The separate legacy high-risk scanner still refuses foreach collection pipelines
 as unverifiable shell state. Native AST/source fixtures cover their lifecycle
 boundary; the real authorized fixture covers computed filters and `--` data.
+Block comments end at their first `#>`, including type trivia. Foreach argument
+scanning continues through data containing `=`; the other capability parameter
+scanners retain the same boundary. New-Object Property requires literal keys and
+checks known opaque method names, while ordinary setters and methods remain
+eligible for authorization. Explicit generic method arguments do not hide the
+opaque member name. Native AST and harmless binding checks on PowerShell 5.1/7.6
+show that parameter names retain backticks (``-As`Job`` is not `-AsJob`), so raw
+parameter matching is intentional; decoding it would introduce false acceptance
+of ownership switches. No service, BITS transfer or detached job was started to
+verify these reported cases.
 
 Unchanged scope: external module loading and native sc.exe/net.exe service control
 already passed the original Bash lifecycle and high-risk scanners at the PR base.
@@ -424,7 +434,7 @@ queue → release. Error projection occurs once when its bounded source changes;
 redraw/expand/collapse reuse it. Added regexes are module-owned. There are no new
 per-progress/frame closures, Promises, controllers, wrappers, arrays, full-frame
 copies or pools. The PowerShell lexer is invocation-local (128 KiB source, at most
-2,048 tokens, comment depth 16, 64 primitive expression contexts); source spans avoid
+2,048 tokens, 64 primitive expression contexts); source spans avoid
 per-character string building.
 All parser references become unreachable on return/refusal/throw, before any await.
 Cast recognition balances type brackets linearly with depth capped at 64, preserving

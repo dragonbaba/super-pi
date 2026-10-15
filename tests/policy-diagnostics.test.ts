@@ -101,11 +101,17 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "Get-ChildItem -LiteralPath . -Filter ($pattern)", "Get-ChildItem -Filter ($pattern) -LiteralPath . -Depth ($depth)",
     "Get-Item -LiteralPath . -ErrorAction ($mode)", "Write-Output report.StartService report.ResumeService",
     "Get-ChildItem -Filter mode=data -LiteralPath .",
+    "Get-WmiObject Win32_Process -As`Job", "Start-BitsTransfer -Source a -Destination b -As`ynchronous",
+    "ForEach-Object -InputObject mode=data -Parallel { $_ } -AsJob:$false",
+    "New-Object System.Text.StringBuilder -Property @{Append='property-method-ok';Capacity=32}",
+    "New-Object PSObject -Property @{Data=@{Run='data'}}", "$value.ConvertTo[object]()",
+    "<# outer <# marker #> Write-Output after-comment", "[ <# outer <# marker #> int ]$number=1",
+    "<# outer <# nested #> outer #> Start-Process tool.exe",
   ]) assert.equal(inspectPowerShellResourceLifecycle({ command }), undefined, command);
   for (const command of [
     "Start-Job { Write-Output 1 }", "$job = Start-ThreadJob { Write-Output 1 }", "if ($true) {} Start-Job {}",
     "Start-Process tool.exe", "Start-Process tool.exe -Wait; Start-Process other.exe", "return Start-Process tool.exe",
-    "<# outer <# nested #> outer #> Start-Process tool.exe", "Start-Process --% tool.exe -Wait",
+    "Start-Process --% tool.exe -Wait",
     "Start-Process tool.exe -Wait:$false", "Start-Process tool.exe '-Wait'", "Start-Process tool.exe @options -Wait",
     "& $exe", "& (Get-Command tool)", "Write-Output 1 &", "& { Start-Job {} }",
     "Write-Output $(Start-Job {})", 'Write-Output "$(Start-Job {})"',
@@ -230,6 +236,18 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "Write-Output -- -AsJob; Get-WmiObject -Class Win32_Service -AsJob", "1 | ForEach-Object -- InvokeScript",
     "Get-ChildItem -LiteralPath . -Filter (Start-Job {})", "Get-ChildItem -LiteralPath ($path) -Filter '*.txt'",
     "Get-Item -Filter mode=data -LiteralPath Variable:PSDefaultParameterValues",
+    "<# outer <# nested #>\nStart-Job { Start-Sleep 60 }\n#>",
+    "ForEach-Object -InputObject mode=data -Parallel { 1 } -AsJob",
+    "New-Object -ComObject WScript.Shell -Property @{Run='missing.exe'}",
+    "New-Object -ComObject WScript.Shell -Property: @{Capacity=1; 'Run'='missing.exe'}",
+    "New-Object -ComObject WScript.Shell -Property (@{Run='missing.exe'})",
+    "New-Object -ComObject WScript.Shell -Property $properties",
+    "New-Object PSObject -Property @{($key)='value'}",
+    "New-Object -ArgumentList mode=data -ComObject WScript.Shell -Property @{Run='missing.exe'}",
+    "$ps=[powershell]::Create().AddScript('Start-Process missing.exe'); $ps.Invoke[object]()",
+    "$ps.Invoke[System.Collections.Generic.List[object]]()", "[PowerShell]::Invoke[object]()",
+    "Get-WmiObject -Filter mode=data -Query 'SELECT * FROM meta_class'",
+    "Get-Variable Name=Value -Name PSDefaultParameterValues",
   ]) assert.ok(inspectPowerShellResourceLifecycle({ command }), command);
 });
 
