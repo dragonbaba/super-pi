@@ -280,6 +280,10 @@ test("Codemode delivers the compiler cause before npm banners while preserving f
 	const quoted = await f.run(["await tools.compiler_probe({})"]);
 	assert.match((quoted.results.at(-1)!.content[0] as any).text, /compiler_probe: .* — > authentication failed > token expired/);
 	assert.match(JSON.stringify(quoted.wires.at(-1)), /token expired/);
+	diagnostic = "[SHELL_RUNTIME_FAILED]\nsrc/old.ts(1,1): error TS1000: stale cached diagnostic.\nTimeoutError: compiler server did not respond\nCommand exited with code 1";
+	const terminal = await f.run(["await tools.compiler_probe({})"]);
+	assert.match((terminal.results.at(-1)!.content[0] as any).text, /compiler_probe: .* — TimeoutError: compiler server did not respond/);
+	assert.match(JSON.stringify(terminal.wires.at(-1)), /TS1000/);
 });
 
 test("Codemode delivers native PowerShell refusal recovery for an unshown child", async t => {

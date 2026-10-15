@@ -146,6 +146,10 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     '. Write-Output data', '. "Write-Output" data', 'Write-Output . Start-Job', '. ./fixture.ps1',
     'class Fixture { [void] Start() {} }', 'class Fixture { static [void] Start() { Write-Output data } }',
     'class Fixture { [void] Start([string]$text) { Write-Output $text } }', 'enum Fixture { Start; Stop }',
+    '[pscustomobject]@{ Start = 1; Nested = [pscustomobject]@{ Start = 2 } }', '[object[]]@(1,2)',
+    'Write-Output “Start-Job”', '‘Start-Job’', '& “Write-Output” data', '. ‘Write-Output’ data',
+    'Write-Output @“\nStart-Job is data\n”@; Write-Output done', 'Write-Output ‘a’’b’', '& "Sta""rt-Job"',
+    'Invoke-Item ./report.txt -WhatIf', 'ii ./report.txt -wi', 'ii ./report.txt -WhatI:$true',
   ]) assert.equal(inspectPowerShellResourceLifecycle({ command }), undefined, command);
   // Runtime capabilities are not proof of detached execution. These still need
   // opaque-script authorization; the lifecycle filter is not a language sandbox.
@@ -220,6 +224,8 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     '. Start-Job { 1 }', '. "Start-Job" { 1 }', '. Start-Process tool.exe',
     'class Fixture { [void] Start() { Start-Job { 1 } } }', 'class Fixture { [void] Start() {} } Start-Job { 1 }',
     'class Fixture { [void] Start() {} [void] Other() { Start-Job { 1 } } }',
+    '[pscustomobject]@{ Start = (Start-Job { 1 }) }', '& “Start-Job” { 1 }', '. ‘Start-Job’ { 1 }',
+    'Write-Output @‘\ndata\n’@; Start-Job { 1 }', 'Invoke-Item ./report.txt -WhatIf:$false', 'ii ./report.txt -wi:$flag',
     "Write-Output 'unterminated", "x ".repeat(2049), "x".repeat(128 * 1024 + 1),
   ]) assert.ok(inspectPowerShellResourceLifecycle({ command }), command);
 });

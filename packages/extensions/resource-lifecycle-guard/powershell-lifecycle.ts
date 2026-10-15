@@ -18,6 +18,7 @@ const BITS_START_PARAMETERS = ["asynchronous", "dynamic", "customheaderswriteonl
 const BITS_RESUME_PARAMETERS = ["bitsjob", "asynchronous", "whatif", "confirm", ...VARIABLE_LOOKUP_PARAMETERS.slice(5)];
 const SERVICE_START_PARAMETERS = ["name", "inputobject", "passthru", "displayname", "include", "exclude", "force", "whatif", "confirm", ...VARIABLE_LOOKUP_PARAMETERS.slice(5)];
 const SERVICE_SET_PARAMETERS = ["name", "inputobject", "displayname", "credential", "description", "startuptype", "securitydescriptorsddl", "status", "force", "passthru", "computername", "whatif", "confirm", ...VARIABLE_LOOKUP_PARAMETERS.slice(5)];
+const ITEM_PARAMETERS = ["path", "literalpath", "filter", "include", "exclude", "credential", "whatif", "confirm", ...VARIABLE_LOOKUP_PARAMETERS.slice(5)];
 const WMI_JOB_COMMANDS = new Set(["get-wmiobject", "gwmi", "remove-wmiobject", "rwmi", "set-wmiinstance", "swmi", "invoke-wmimethod", "iwmi"]);
 const REMOTE_COMMANDS = new Set(["invoke-command", "icm"]);
 const COMPUTER_JOB_COMMANDS = new Set(["restart-computer", "stop-computer", "test-connection"]);
@@ -45,27 +46,31 @@ const FILE_REDIRECT = /^[1-6*]?>>?$/;
 
 interface Token { value: string; quoted: boolean; quotedEnd: number; dynamic: boolean; operator: boolean; typeOnly: boolean; start: number; end: number }
 
+function quoteKind(value: string | undefined): number {
+	return value === "'" || value === "‘" || value === "’" ? 1 : value === '"' || value === "“" || value === "”" ? 2 : 0;
+}
+
 /** Skip opaque data only, preserving the following statement boundary. */
 function hereStringEnd(source: string, start: number): number {
-	const quote = source[start + 1];
+	const quote = quoteKind(source[start + 1]);
 	let i = start + 2;
 	while (source[i] === " " || source[i] === "\t" || source[i] === "\r") i++;
 	if (source[i] !== "\n") return -1;
-	for (; i < source.length; i++) if (source[i] === "\n" && source[i + 1] === quote && source[i + 2] === "@") return i + 3;
+	for (; i < source.length; i++) if (source[i] === "\n" && quoteKind(source[i + 1]) === quote && source[i + 2] === "@") return i + 3;
 	return -1;
 }
 
 function quotedStringEnd(source: string, start: number, depth: number): number {
 	if (depth > MAX_NESTING) return -1;
-	const quote = source[start];
+	const quote = quoteKind(source[start]);
 	for (let i = start + 1; i < source.length;) {
 		const c = source[i++];
-		if (c === quote) {
-			if (quote === "'" && source[i] === "'") { i++; continue; }
+		if (quoteKind(c) === quote) {
+			if (quoteKind(source[i]) === quote) { i++; continue; }
 			return i;
 		}
-		if (quote === '"' && c === "`") i++;
-		else if (quote === '"' && c === "$" && source[i] === "(") {
+		if (quote === 2 && c === "`") i++;
+		else if (quote === 2 && c === "$" && source[i] === "(") {
 			i = parenthesisEnd(source, i, depth + 1);
 			if (i < 0) return -1;
 		}
@@ -85,8 +90,8 @@ function parenthesisEnd(source: string, start: number, depth: number): number {
 			if (end < 0) return -1;
 			i = end + 2; continue;
 		}
-		if (c === "@" && (source[i] === "'" || source[i] === '"')) i = hereStringEnd(source, i - 1);
-		else if (c === "'" || c === '"') i = quotedStringEnd(source, i - 1, depth + nesting);
+		if (c === "@" && quoteKind(source[i])) i = hereStringEnd(source, i - 1);
+		else if (quoteKind(c)) i = quotedStringEnd(source, i - 1, depth + nesting);
 		else if (c === "(") nesting++;
 		else if (c === ")" && !--nesting) return i;
 		if (i < 0) return -1;
@@ -359,7 +364,7 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		}
 		if (PUNCTUATION.test(ch)) { tokens.push({ value: ch, quoted: false, quotedEnd: 0, dynamic: false, operator: true, typeOnly: false, start, end: ++i }); continue; }
 		if (SPACE.test(ch)) { i++; continue; }
-		if (ch === "@" && (command[i + 1] === "'" || command[i + 1] === '"')) {
+		if (ch === "@" && quoteKind(command[i + 1])) {
 			i = hereStringEnd(command, i);
 			if (i < 0) return UNCERTAIN;
 			tokens.push({ value: "", quoted: true, quotedEnd: i, dynamic: false, operator: false, typeOnly: false, start, end: i });
@@ -379,6 +384,10 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 			const type = readType(command, i);
 			if (!type) break;
 			value += type.value; i = type.end; span = i; typeOnly = true;
+		}
+		if (typeOnly && command[i] === "@" && (command[i + 1] === "{" || command[i + 1] === "(")) {
+			tokens.push({ value, quoted: false, quotedEnd: 0, dynamic: false, operator: false, typeOnly: true, start, end: i });
+			continue;
 		}
 		if (typeOnly && command.startsWith("::", i)) {
 			value += "::"; i = skipTypeTrivia(command, i + 2);
@@ -406,7 +415,8 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 				span = i;
 				continue;
 			}
-			if (c !== "'" && c !== '"') { if (c === "$" || c === "@") dynamic = true; continue; }
+			const quote = quoteKind(c);
+			if (!quote) { if (c === "$" || c === "@") dynamic = true; continue; }
 			const quoteStart = i - 1;
 			value += command.slice(span, i - 1);
 			quoted = true;
@@ -414,15 +424,15 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 			let closed = false;
 			while (i < command.length) {
 				const q = command[i++]!;
-				if (q === c) {
+				if (quoteKind(q) === quote) {
 					value += command.slice(span, i - 1);
-					if (c === "'" && command[i] === "'") { value += "'"; i++; span = i; continue; }
+					if (quoteKind(command[i]) === quote) { value += q; i++; span = i; continue; }
 					if (quoteStart === start || quoteStart === quotedEnd) quotedEnd = i;
 					span = i;
 					closed = true; break;
 				}
-				if (c === '"' && q === "`") { if (i >= command.length) return UNCERTAIN; value += command.slice(span, i - 1) + command[i++]!; span = i; continue; }
-				if (c === '"' && q === "$") {
+				if (quote === 2 && q === "`") { if (i >= command.length) return UNCERTAIN; value += command.slice(span, i - 1) + command[i++]!; span = i; continue; }
+				if (quote === 2 && q === "$") {
 					// Nested string expressions need normal opaque-script authorization.
 					if (command[i] === "(") { i = parenthesisEnd(command, i, 0); if (i < 0) return UNCERTAIN; }
 					dynamic = true;
@@ -491,7 +501,7 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 			head = true; continue;
 		}
 		// A quoted expression is data unless preceded by an invocation operator.
-		if ((command[token.start] === "'" || command[token.start] === '"') && tokens[i - 1]?.value !== "&" && (tokens[i - 1]?.value !== "." || tokens[i - 1]?.quoted)) continue;
+		if (quoteKind(command[token.start]) && tokens[i - 1]?.value !== "&" && (tokens[i - 1]?.value !== "." || tokens[i - 1]?.quoted)) continue;
 		if (token.dynamic) {
 			// A variable/member expression is not a Bash executable position.
 			if (tokens[i - 1]?.value === "&") continue;
@@ -512,7 +522,10 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		doBlock = !token.quoted && name === "do";
 		doCondition = afterDo && !token.quoted && (name === "while" || name === "until"); afterDo = false;
 		if (!token.quoted && (name === "return" || name === "throw" || name === "exit")) { head = true; continue; }
-		if (DETACHED.has(name) && !(SERVICE_STARTERS.has(name) && hasLiteralWhatIf(tokens, i + 1, command, SERVICE_START_PARAMETERS))) return BACKGROUND;
+		if (DETACHED.has(name)) {
+			const parameters = SERVICE_STARTERS.has(name) ? SERVICE_START_PARAMETERS : name === "invoke-item" || name === "ii" ? ITEM_PARAMETERS : undefined;
+			if (!parameters || !hasLiteralWhatIf(tokens, i + 1, command, parameters)) return BACKGROUND;
+		}
 		if (EXTERNAL_DETACHED.has(externalName)) return BACKGROUND;
 		if (WMI_JOB_COMMANDS.has(name) || COMPUTER_JOB_COMMANDS.has(name)) {
 			const reason = inspectCommandSwitch(tokens, i + 1, command, WMI_JOB_COMMANDS.has(name) ? WMI_JOB_PARAMETERS : COMPUTER_JOB_PARAMETERS, "asjob");

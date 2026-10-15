@@ -148,6 +148,10 @@ test("npm preambles and policy headings do not hide actionable causes or model r
 	const errors = cause + "\nsrc/winter/WinterVideo.tsx(162,95): error TS1003: Identifier expected.\nCommand exited with code 1";
 	const prettyCause = "src/winter/WinterVideo.tsx:153:10 - error TS2657: JSX expressions must have one parent element.";
 	assert.equal(codemodeFailureReason(`npm notice run tsc --noEmit\n${prettyCause}\nError: typecheck failed\nCommand exited with code 1`), prettyCause);
+	for (const audience of ["display", "model"] as const) {
+		assert.equal(codemodeFailureReason(`${cause}\nTimeoutError: compiler server did not respond\nError: typecheck failed`, audience), "TimeoutError: compiler server did not respond");
+		assert.equal(codemodeFailureReason(`${cause}\nENOENT: no such file or directory, open 'input.ts'`, audience), audience === "display" ? "Path does not exist." : "ENOENT: no such file or directory, open 'input.ts'");
+	}
 	for (const banner of ["npm notice run remotion-video-project@1.0.0 typecheck\nnpm notice run tsc --noEmit", "> project@1.0.0 typecheck\n> tsc --noEmit", "npm info run project@1.0.0 typecheck", "> @scope/project@1.0.0-dev typecheck\n> tsc --noEmit"]) {
 		for (const audience of ["display", "model"] as const) {
 			assert.equal(codemodeFailureReason(`[SHELL_RUNTIME_FAILED]\n${banner}\n\u001b[31m${errors}\u001b[0m`, audience), cause);
@@ -193,6 +197,13 @@ test("npm preambles and policy headings do not hide actionable causes or model r
 	tree.updateParent("await tools.bash(args)", final, false, true, true);
 	assert.match(plain(tree), /npm notice/); assert.match(plain(tree), /TS1003/);
 	assert.equal(JSON.stringify(final), canonical);
+	const terminalResult = parent([fact("p:1", "bash", `${errors}\nTimeoutError: compiler server did not respond`, true)], [], true);
+	tree.updateParent("await tools.bash(args)", terminalResult, false, true, false);
+	assert.match(plain(tree), /TimeoutError: compiler server did not respond/);
+	assert.doesNotMatch(plain(tree), /TS2657/);
+	const terminalProjections = tree.getLifecycleCounts().failureProjections;
+	for (let i = 0; i < 32; i++) { tree.updateParent("await tools.bash(args)", terminalResult, false, true, false); plain(tree); }
+	assert.equal(tree.getLifecycleCounts().failureProjections, terminalProjections);
 	releaseComponentRenderCaches(tree);
 	assert.equal(tree.getLifecycleCounts().resultReferences, 0);
 });

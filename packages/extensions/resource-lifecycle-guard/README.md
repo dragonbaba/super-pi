@@ -297,6 +297,10 @@ normal authorization. No new blacklist for these command families is introduced.
 Dot invocation retains the following literal command position without splitting
 decimal/member/path dots. Class/enum declaration names stay metadata; method
 bodies and commands after a declaration still receive the existing checks.
+Adjacent typed hashtables retain key/value context. Native smart quote groups
+use the same literal/data rules as ASCII quotes, including here-strings and
+doubled quote escapes. Invoke-Item/ii accepts its own literal enabled WhatIf,
+using native parameter metadata; false/dynamic values retain the existing check.
 These are invocation-only bounded scans, with no new progress/render work, retained
 owners, per-event callbacks or pools. Existing source/AST/allocation evidence for
 the unchanged render chain remains applicable.
@@ -336,7 +340,8 @@ discovery/refusal work, not progress/render work, and does not run another probe
 
 Collapsed Codemode errors skip policy headings and npm startup banners, prefer
 the first file/line compiler error (including colored output), and show short HTTP
-failure causes. Model summaries retain concrete diagnostics and policy recovery;
+failure causes. A later specific exception or missing-path diagnostic supersedes
+compiler output; generic Error wrappers do not. Model summaries retain concrete diagnostics and policy recovery;
 expanded output and canonical results retain all diagnostics. Output scanning
 remains capped at 2,048 characters, with 160/512-character display/model limits.
 
@@ -364,6 +369,7 @@ Existing authorization and allocation source invariants cover the adjacent chain
 | --- | ---: | ---: | ---: |
 | Codemode compiler failure, collapsed | 4,096 | 1,620 | 0.0018 |
 | Codemode native PowerShell refusal, collapsed | 4,096 | 1,490 | 0.0018 |
+| Codemode compiler followed by terminal exception, collapsed | 4,096 | 1,585 | 0.0017 |
 | Main production frame | 1,024 | 7,629 | 0.0602 |
 | Alt production frame | 1,024 | 11,796 | 0.0680 |
 | Terminal frame queue | 2,048 | 217 | 0.1767 |
@@ -397,3 +403,10 @@ Ten related source/AST invariants pass. The consecutive quoted-error fixture sam
 one output/failure projection, zero event Promises and 0/2 retained weak owners.
 Row/timer/text/result references are zero after release. Leading allocation sites
 remain retained-item render and prepared-viewport cleanup. No pools were added.
+The terminal-exception follow-up re-audited the same completion-to-release chain.
+It adds one call-owned string reference, no scan or allocation per redraw. Four
+focused behavioral tests and all ten source/AST invariants pass. Its allocation
+fixture retains one row/output/failure projection, zero event Promises and 0/2
+weak owners after controlled GC; row/timer/text/result references clear to zero.
+Leading samples remain retained-item render, prepared-viewport cleanup/layout and
+benchmark timing. Unchanged Main/Alt/queue code reuses the recorded evidence.

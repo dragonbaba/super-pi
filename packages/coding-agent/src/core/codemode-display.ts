@@ -60,7 +60,7 @@ export function codemodeFailureReason(text: string, audience: "display" | "model
 	// Browser execution already places the authoritative final exception first.
 	// Never replace it with an earlier chained exception from the retained trace.
 	const browserSummary = text.startsWith("[BROWSER_EXEC_") && bounded.includes("\n[Browser diagnostics]\n");
-	let first = "", diagnostic = "", compiler = "", exit = "", recovery = "", shortHeader = "", quotedHeader = "", quotedCommand = "";
+	let first = "", diagnostic = "", compiler = "", terminal = "", exit = "", recovery = "", shortHeader = "", quotedHeader = "", quotedCommand = "";
 	let preflight = false, npmCommandPending = false;
 	for (let start = 0; start < bounded.length;) {
 		const newline = bounded.indexOf("\n", start);
@@ -84,16 +84,21 @@ export function codemodeFailureReason(text: string, audience: "display" | "model
 		if (!first && NPM_VERSIONLESS_HEADER.test(line)) { shortHeader = line; continue; }
 		if (line === "Traceback (most recent call last):" || line.startsWith("File \"")) continue;
 		if (!compiler && COMPILER_DIAGNOSTIC.test(line)) compiler = line;
-		if (MISSING_PATH_DIAGNOSTIC.test(line)) diagnostic = audience === "model" ? line : "Path does not exist.";
-		else if (EXCEPTION_DIAGNOSTIC.test(line)) diagnostic = line;
-		else if (EXIT_DIAGNOSTIC.test(line)) { exit = line; continue; }
+		if (MISSING_PATH_DIAGNOSTIC.test(line)) {
+			diagnostic = audience === "model" ? line : "Path does not exist.";
+			if (compiler) terminal = diagnostic;
+		} else if (EXCEPTION_DIAGNOSTIC.test(line)) {
+			diagnostic = line;
+			// A later specific failure supersedes compiler output, not a generic wrapper.
+			if (compiler && !line.startsWith("Error:")) terminal = line;
+		} else if (EXIT_DIAGNOSTIC.test(line)) { exit = line; continue; }
 		if (!first || NUMERIC_OUTPUT_LINE.test(first)) first = line;
 		if (browserSummary) break;
 	}
 	if (!first && shortHeader) first = shortHeader;
 	// Unknown diagnostics (git/curl/compiler output) still carry more information
 	// than an exit code. Bare numeric stdout remains only a fallback.
-	const reason = compiler || diagnostic || (first && !NUMERIC_OUTPUT_LINE.test(first) ? first : "") || (quotedHeader ? quotedHeader + " " + quotedCommand : "") || exit || first || "Tool call failed.";
+	const reason = terminal || compiler || diagnostic || (first && !NUMERIC_OUTPUT_LINE.test(first) ? first : "") || (quotedHeader ? quotedHeader + " " + quotedCommand : "") || exit || first || "Tool call failed.";
 	const httpException = audience === "display" ? HTTP_EXCEPTION.exec(reason) : null;
 	if (httpException) return `HTTP ${httpException[1]}: ${httpException[2]}.`;
 	const ipcTimeout = IPC_TIMEOUT_DIAGNOSTIC.exec(reason);
