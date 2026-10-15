@@ -1657,7 +1657,7 @@ test("native PowerShell assignments and member calls retain authorization and fo
     fixture = await guardedCwdBoundaryFixture(workspace, "", "powershell");
     await fixture.setMode("read-only");
     const command = "$s = New-Object System.Text.StringBuilder; try { [void]$s.Append('inline-ok'); $s.ToString() | ForEach-Object { $_.ToUpper() } } finally { [void]$s.Clear() }; [int[][]]$items=$null; [System.Collections.Generic.Dictionary[string,System.Collections.Generic.List[int]]]$map=$null; Write-Output status=Start-Job report.Start (Get-Date); $h=@{Name='data';Value=1}; Write-Output $h.Name; [string]${space name}='braced-ok'; Write-Output ${space name}; Write-Output { 1 } Start-Job; $n=0; $n++; ++$n; Write-Output increment-ok; $Count=7; Get-Variable Count -OutVariable captured -ValueOnly:$false; gv Count -s 0; $queryScope=0; gv Count -s $queryScope -Verbose:$false";
-    const foreground = command + '; $converted=123 -as [string]; Write-Output $converted; "member-ok" | ForEach-Object ToUpper; Get-Item -LiteralPath "FileSystem::$PWD" -ErrorAction Stop | Select-Object Name';
+    const foreground = command + '; $converted=123 -as [string]; Write-Output $converted; "member-ok" | ForEach-Object ToUpper; Get-Item -fo -LiteralPath "FileSystem::$PWD" -ErrorAction Stop | Select-Object Name';
     const result = await fixture.agent.dispatchHostTool({ type: "toolCall", id: "native-members", name: "powershell", arguments: { command: foreground } });
     assert.equal(result.isError, false, JSON.stringify(result));
     assert.match(JSON.stringify(result.content), /INLINE-OK/);

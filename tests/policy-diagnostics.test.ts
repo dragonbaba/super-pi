@@ -58,6 +58,7 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "'a' | ForEach-Object ToUpper", "'a' | % -MemberName ToUpper", "'a' | foreach Length",
     "ForEach-Object -InputObject (Get-Date) -MemberName ToString", "ForEach-Object -Parallel { 1 } -As'Job'",
     'Get-ChildItem -LiteralPath "FileSystem::$file" -Recurse -Depth $depth -ErrorAction $action',
+    'Get-Item -fo -LiteralPath "FileSystem::$file"', "Get-Item foo=bar", "Write-Output wmiclass System.Management.ManagementClass",
   ]) assert.equal(inspectPowerShellResourceLifecycle({ command }), undefined, command);
   for (const command of [
     "Start-Job { Write-Output 1 }", "$job = Start-ThreadJob { Write-Output 1 }", "if ($true) {} Start-Job {}",

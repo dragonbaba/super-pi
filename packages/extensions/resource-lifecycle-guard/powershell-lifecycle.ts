@@ -20,7 +20,8 @@ const VARIABLE_LOOKUP_FLAGS = new Set(["valueonly", "verbose", "debug"]);
 const VARIABLE_REFERENCE_OPTIONS = new Set(["name", "errorvariable", "warningvariable", "informationvariable", "outvariable", "pipelinevariable"]);
 const VARIABLE_LOOKUP_PARAMETERS = ["name", "valueonly", "include", "exclude", "scope", "verbose", "debug", "erroraction", "warningaction", "informationaction", "progressaction", "errorvariable", "warningvariable", "informationvariable", "outvariable", "outbuffer", "pipelinevariable"];
 const VARIABLE_LOOKUP_ALIASES = new Map([["vb", "verbose"], ["db", "debug"], ["ea", "erroraction"], ["wa", "warningaction"], ["infa", "informationaction"], ["proga", "progressaction"], ["ev", "errorvariable"], ["wv", "warningvariable"], ["iv", "informationvariable"], ["ov", "outvariable"], ["ob", "outbuffer"], ["pv", "pipelinevariable"]]);
-const PROVIDER_READER_PARAMETERS = ["path", "literalpath", "filter", "include", "exclude", "recurse", "depth", "force", "name", "attributes", "directory", "file", "hidden", "readonly", "system", "followsymlink", "usestat", "stream", "credential", ...VARIABLE_LOOKUP_PARAMETERS.slice(5)];
+const ITEM_READER_PARAMETERS = ["path", "literalpath", "filter", "include", "exclude", "force", "credential", "stream", ...VARIABLE_LOOKUP_PARAMETERS.slice(5)];
+const CHILD_READER_PARAMETERS = ["path", "literalpath", "filter", "include", "exclude", "recurse", "depth", "force", "name", "attributes", "directory", "file", "hidden", "readonly", "system", "followsymlink", "usestat", ...VARIABLE_LOOKUP_PARAMETERS.slice(5)];
 const PROVIDER_READER_FLAGS = new Set(["recurse", "force", "name", "directory", "file", "hidden", "readonly", "system", "followsymlink", "usestat", "verbose", "debug"]);
 const FILESYSTEM_STRING = /^"(?:Microsoft\.PowerShell\.Core\\)?FileSystem::[^"\r\n]*"$/i;
 const FOR_EACH = new Set(["foreach-object", "foreach", "%"]);
@@ -255,7 +256,7 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		// Ambient defaults can silently bind AsJob/Asynchronous on later commands.
 		if (token.dynamic && command[token.start] !== "'" && command[token.start] !== '"' && DEFAULT_PARAMETERS.test(value)) return UNCERTAIN;
 		if (command[token.start] !== "'" && command[token.start] !== '"' && SESSION_STATE.test(value)) return UNCERTAIN;
-		if (command[token.start] !== "'" && command[token.start] !== '"' && WMI_CAPABILITY.test(value)) return UNCERTAIN;
+		if (command[token.start] !== "'" && command[token.start] !== '"' && value.startsWith("[") && WMI_CAPABILITY.test(value)) return UNCERTAIN;
 		if (!dataPiece && !token.quoted && (JOB_OPTION.test(value) || isAsyncOption(value))) return BACKGROUND;
 		// Splat contents can carry job switches even before a literal parameter.
 		// No local variable/dataflow evaluation is performed by this filter.
@@ -303,16 +304,18 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 			if (reason) return reason;
 		}
 		if (PROVIDER_READERS.has(name)) {
+			const parameters = name === "get-item" || name === "gi" ? ITEM_READER_PARAMETERS : CHILD_READER_PARAMETERS;
 			for (let j = i + 1; j < tokens.length; j++) {
 				let arg = tokens[j]!;
 				if (arg.operator) {
-					if (arg.value === "(" || arg.value === "{" || arg.value === "=") return PROVIDER_PATH;
+					if (arg.value === "=") continue;
+					if (arg.value === "(" || arg.value === "{") return PROVIDER_PATH;
 					break;
 				}
 				let raw = command.slice(arg.start, arg.end), target = arg.value;
 				if (PARAMETER_DASH.test(raw)) {
 					const colon = raw.indexOf(":"), option = raw.slice(1, colon < 0 ? raw.length : colon).toLowerCase();
-					const parameter = option === "lp" || option === "pspath" ? "literalpath" : lookupOption(option, PROVIDER_READER_PARAMETERS);
+					const parameter = option === "lp" || option === "pspath" ? "literalpath" : lookupOption(option, parameters);
 					if (!parameter) return UNCERTAIN;
 					if (PROVIDER_READER_FLAGS.has(parameter)) continue;
 					if (colon < 0) { arg = tokens[++j]!; if (!arg || arg.operator) return PROVIDER_PATH; target = arg.value; raw = command.slice(arg.start, arg.end); }
