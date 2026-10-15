@@ -359,6 +359,12 @@ literal queries distinguish schema keywords (meta_class, ClassDefsOnly, SchemaOn
 from quoted filter data; dynamic queries stay opaque. Ordinary literal instance
 queries remain eligible for normal authorization. Native read-only inspection
 confirmed meta_class returns a ManagementClass with Create, without invoking it.
+Content cmdlets and their native aliases also inspect provider targets. Set-Content
+can write hashtable values to the Variable provider on both Windows PowerShell
+5.1 and PowerShell 7; executable/variable-provider targets and unqualified dynamic
+paths are opaque. Ordinary literal/qualified file paths with dynamic content stay
+eligible for normal authorization. The Windows PowerShell sc alias is distinct
+from native sc.exe, whose existing service-control authorization scope is retained.
 
 Unchanged scope: external module loading and native sc.exe/net.exe service control
 already passed the original Bash lifecycle and high-risk scanners at the PR base.

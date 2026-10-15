@@ -78,6 +78,9 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "Start-BitsTransfer -Source ($source -as [string]) -Destination b",
     'Get-WmiObject -Query "SELECT Name FROM Win32_Process WHERE Name = \'meta_class\'"',
     'gwmi -Q: "SELECT Name FROM Win32_Process WHERE Name = \'ClassDefsOnly\'"',
+    "Set-Content file.txt -Value $text", "Set-Content -Value ($text) -LiteralPath: file.txt",
+    'Set-Content -LiteralPath "FileSystem::$file" -Value $text', "Set-Content file.txt -Value 'Variable:PSDefaultParameterValues'",
+    "Add-Content file.txt -Value $text", "Clear-Content file.txt", "sc.exe query MyService",
   ]) assert.equal(inspectPowerShellResourceLifecycle({ command }), undefined, command);
   for (const command of [
     "Start-Job { Write-Output 1 }", "$job = Start-ThreadJob { Write-Output 1 }", "if ($true) {} Start-Job {}",
@@ -180,6 +183,10 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     'gwmi -Q:"SELECT * FROM MeTa_ClAsS"', 'Get-WmiObject -Query: "ASSOCIATORS OF {Win32_Process} WHERE SchemaOnly"',
     'Get-WmiObject -Query "REFERENCES OF {Win32_Process} WHERE ClassDefsOnly"',
     "Get-WmiObject -Query $query", "Get-WmiObject -Query:($query)",
+    "Set-Content Variable:PSDefaultParameterValues -Value @{'ForEach-Object:AsJob'=$true}; 1 | ForEach-Object -Parallel { 1 }",
+    "sc -LiteralPath: Variable:PSDefaultParameterValues -Value $defaults", "Set-Content -Value $block -Path Function:f",
+    "Set-Content -Path $path -Value $text", "Set-Content -Path:($path) -Value $text",
+    "Add-Content Variable:PSDefaultParameterValues -Value $defaults", "Clear-Content Alias:sj",
   ]) assert.ok(inspectPowerShellResourceLifecycle({ command }), command);
 });
 

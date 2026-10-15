@@ -41,6 +41,9 @@ const BITS_RESUME_PARAMETERS = ["bitsjob", "asynchronous", "whatif", "confirm", 
 const WMI_PARAMETERS = ["class", "recurse", "property", "filter", "amended", "directread", "list", "query", "asjob", "impersonation", "authentication", "locale", "enableallprivileges", "authority", "credential", "throttlelimit", "computername", "namespace", ...VARIABLE_LOOKUP_PARAMETERS.slice(5)];
 const WMI_SCHEMA_WORD = /^(?:meta_class|classdefsonly|schemaonly)$/i;
 const WORD_CHARACTER = /[\w]/;
+const CONTENT_MUTATORS = new Set(["set-content", "sc", "add-content", "ac", "clear-content", "clc"]);
+const CONTENT_PARAMETERS = ["value", "passthru", "path", "literalpath", "filter", "include", "exclude", "force", "credential", "whatif", "confirm", "usetransaction", "nonewline", "encoding", "asbytestream", "stream", ...VARIABLE_LOOKUP_PARAMETERS.slice(5)];
+const CONTENT_FLAGS = new Set(["passthru", "force", "whatif", "confirm", "usetransaction", "nonewline", "asbytestream", "verbose", "debug"]);
 const WMI_CAPABILITY = /(?:^|\[|:)(?:wmiclass|(?:(?:System\.)?Management\.)?ManagementClass)(?:\]|,|$)/i;
 const SCRIPT_BLOCK_COMPILER = /\[(?:System\.Management\.Automation\.)?scriptblock\]::Create$/i;
 const SPACE = /\s/;
@@ -146,6 +149,42 @@ function hasWmiSchemaQuery(query: string): boolean {
 		}
 	}
 	return false;
+}
+
+/** Content data may be dynamic, but provider identity must be inspectable. */
+function inspectContentTargets(tokens: readonly Token[], start: number, command: string): string | undefined {
+	let depth = 0, pathSeen = false, parameter: string | undefined;
+	for (let j = start; j < tokens.length; j++) {
+		const arg = tokens[j]!;
+		if (arg.operator) {
+			if (arg.value === "(" || arg.value === "{") {
+				if (!depth) {
+					if (parameter === "path" || parameter === "literalpath" || (!parameter && !pathSeen)) return UNCERTAIN;
+					parameter = undefined;
+				}
+				if (++depth > MAX_NESTING) return UNCERTAIN;
+			} else if (arg.value === ")" || arg.value === "}") { if (!depth) break; depth--; }
+			else if (!depth) break;
+			continue;
+		}
+		if (depth) continue;
+		let raw = command.slice(arg.start, arg.end), target = arg.value;
+		const colon = raw.indexOf(":");
+		if (!parameter && PARAMETER_DASH.test(raw) && (!arg.quoted || colon >= 0)) {
+			const option = raw.slice(1, colon < 0 ? raw.length : colon).toLowerCase();
+			parameter = option === "lp" || option === "pspath" ? "literalpath" : lookupOption(option, CONTENT_PARAMETERS);
+			if (!parameter) return UNCERTAIN;
+			if (CONTENT_FLAGS.has(parameter) && colon !== raw.length - 1) { parameter = undefined; continue; }
+			if (colon < 0 || colon === raw.length - 1) continue;
+			target = arg.value.slice(arg.value.indexOf(":") + 1); raw = raw.slice(colon + 1);
+		}
+		if (parameter === "path" || parameter === "literalpath" || (!parameter && !pathSeen)) {
+			if (EXECUTABLE_PROVIDER.test(target) || (arg.dynamic && !FILESYSTEM_STRING.test(raw))) return UNCERTAIN;
+			pathSeen = true;
+		}
+		parameter = undefined;
+	}
+	return undefined;
 }
 
 /** Bounded native parameter metadata; exact names/common aliases precede prefixes. */
@@ -495,6 +534,12 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		}
 		if (FOR_EACH.has(name) && !(name === "foreach" && tokens[i + 1]?.value === "(")) {
 			const reason = inspectForEach(tokens, i + 1, command);
+			if (reason) return reason;
+		}
+		// Windows PowerShell's sc alias is Set-Content; native sc.exe is a separate
+		// existing service-control authorization path, not a provider cmdlet.
+		if (CONTENT_MUTATORS.has(name) && !value.toLowerCase().endsWith(".exe")) {
+			const reason = inspectContentTargets(tokens, i + 1, command);
 			if (reason) return reason;
 		}
 		if (PROVIDER_READERS.has(name)) {
