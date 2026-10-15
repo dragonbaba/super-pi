@@ -136,6 +136,12 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "systemctl enable example.service", "systemctl --now disable example.service", "systemctl mask --now example.service",
     "systemctl enable -- example.service --now", "systemctl --property --now enable example.service",
     "systemctl enable example.service --property --now",
+    "systemctl reenable example.service", "systemctl reenable -- example.service --now",
+    'cmd.exe /c echo start', 'cmd /d /c dir', 'cmd.exe /c start "" /wait tool.exe',
+    'cmd /d /s /c start /b /wait "title" tool.exe', 'cmd /c start "" /d "C:/Program Files" /wait tool.exe',
+    'cmd /c start /?', 'Write-Output cmd.exe /c start "" tool.exe',
+    'cmd /c start "" /wait $program',
+    'cmd /c start "" /d $directory /wait tool.exe',
   ]) assert.equal(inspectPowerShellResourceLifecycle({ command }), undefined, command);
   // Runtime capabilities are not proof of detached execution. These still need
   // opaque-script authorization; the lifecycle filter is not a language sandbox.
@@ -200,6 +206,12 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "1 | ForEach-Object -Parallel { 1 } -As `\n -Verbose", "Start-BitsTransfer -Source a -Destination b -Su `\n -Verbose",
     "systemctl --now enable example.service", "systemctl enable --now example.service",
     "systemctl enable example.service --now", "systemctl -qlHserver --now enable example.service",
+    "systemctl --now reenable example.service", "systemctl reenable --now example.service", "systemctl reenable example.service --now",
+    'cmd.exe /c start "" tool.exe', 'cmd /d /s /c start "" /b tool.exe',
+    'cmd /c start "/wait" tool.exe', 'cmd /c start "" /d "/wait" tool.exe', 'cmd /c start "" tool.exe /wait',
+    'cmd /c start "" /wait tool.exe; cmd /c start "" other.exe',
+    'cmd /c start "" $program',
+    'cmd /c start "" /d $directory tool.exe',
     "Write-Output 'unterminated", "x ".repeat(2049), "x".repeat(128 * 1024 + 1),
   ]) assert.ok(inspectPowerShellResourceLifecycle({ command }), command);
 });

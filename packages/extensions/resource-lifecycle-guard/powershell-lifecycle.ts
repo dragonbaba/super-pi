@@ -29,6 +29,9 @@ const REMOTE_JOB_PARAMETERS = ["asjob", "applicationname", "allowredirection", "
 const SYSTEMCTL_START = new Set(["start", "restart", "reload-or-restart", "isolate"]);
 const SYSTEMCTL_FLAGS = new Set(["--user", "--system", "--global", "--no-block", "--no-legend", "--no-pager", "--no-ask-password", "--quiet", "-q", "--all", "-a", "--full", "-l", "--force", "-f", "--runtime", "--wait", "--no-wall"]);
 const SYSTEMCTL_VALUES = new Set(["--host", "-H", "--machine", "-M", "--type", "-t", "--state", "--property", "-p", "--output", "-o", "--root", "--image", "--job-mode", "--lines", "-n", "--kill-whom", "--kill-who", "--signal", "-s", "--preset-mode"]);
+const CMD_OPTIONS = /^\/(?:d|s|q|a|u|[efv]:(?:on|off)|t:[\da-f]{2})$/i;
+const CMD_START_FLAGS = new Set(["/i", "/min", "/max", "/separate", "/shared", "/low", "/normal", "/high", "/realtime", "/abovenormal", "/belownormal", "/b"]);
+const CMD_START_VALUES = new Set(["/d", "/node", "/affinity", "/machine"]);
 const SPACE = /\s/;
 const PUNCTUATION = /[;|\n\r{}()=&]/;
 // PowerShell accepts unambiguous parameter prefixes and these Unicode dashes.
@@ -280,11 +283,42 @@ function inspectSystemctl(tokens: readonly Token[], start: number): string | und
 		}
 		if (enable) continue; // Remaining plain operands are unit names.
 		if (SYSTEMCTL_START.has(value)) return BACKGROUND;
-		if (value !== "enable") return undefined;
+		if (value !== "enable" && value !== "reenable") return undefined;
 		if (now) return BACKGROUND;
 		enable = true;
 	}
 	return undefined;
+}
+
+/** Literal cmd /c start keeps its own wait option; arbitrary batch code is opaque. */
+function inspectCmdStart(tokens: readonly Token[], start: number): string | undefined {
+	let i = start;
+	for (; i < tokens.length; i++) {
+		const token = tokens[i]!;
+		if (token.operator || token.dynamic) return undefined;
+		if (token.value.toLowerCase() === "/c") break;
+		if (!CMD_OPTIONS.test(token.value)) return undefined;
+	}
+	const launch = tokens[++i];
+	if (!launch || launch.operator || launch.dynamic || launch.value.toLowerCase() !== "start") return undefined;
+	let wait = false, title = false;
+	for (i++; i < tokens.length; i++) {
+		const token = tokens[i]!;
+		if (token.operator) break;
+		if (token.dynamic) return wait ? undefined : BACKGROUND;
+		if (token.quoted) { if (!title) { title = true; continue; } break; }
+		const value = token.value.toLowerCase();
+		if (value === "/wait") { wait = true; continue; }
+		if (value === "/?") return undefined;
+		if (CMD_START_FLAGS.has(value)) continue;
+		if (CMD_START_VALUES.has(value)) {
+			const operand = tokens[++i];
+			if (!operand || operand.operator) return undefined;
+			continue;
+		}
+		break; // The program and its parameters cannot supply start's /wait.
+	}
+	return wait ? undefined : BACKGROUND;
 }
 
 function refusal(code: string, reason: string): string {
@@ -524,6 +558,10 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 			const flag = tokens[i + 1], script = tokens[i + 2];
 			if (flag?.value !== "-c" || !script?.quoted || script.dynamic) return UNCERTAIN;
 			const reason = inspectBashResourceLifecycle({ command: script.value });
+			if (reason) return reason;
+		}
+		if (externalName === "cmd") {
+			const reason = inspectCmdStart(tokens, i + 1);
 			if (reason) return reason;
 		}
 		if (externalName === "systemctl") {

@@ -284,6 +284,11 @@ retain their normal meaning. Native parameter binding also confirms that a
 backtick touching -As/-InDis before a newline stays in the parameter name and
 fails binding; it must not be normalized into an async switch. Ordinary spaced
 line continuations already preserve the native switch and remain covered.
+reenable plus --now also requires owned execution because it try-restarts active
+units. Literal flat cmd /c start restores the prior lifecycle check, accepting
+its own /wait before the program but not a title, directory or program argument
+spelled /wait. Plain cmd commands still reach normal authorization. Arbitrary
+batch source/indirection remains opaque; this does not add a general cmd parser.
 These are invocation-only bounded scans, with no new progress/render work, retained
 owners, per-event callbacks or pools. Existing source/AST/allocation evidence for
 the unchanged render chain remains applicable.
