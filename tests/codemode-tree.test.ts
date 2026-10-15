@@ -148,11 +148,16 @@ test("npm preambles and policy headings do not hide actionable causes or model r
 	const errors = cause + "\nsrc/winter/WinterVideo.tsx(162,95): error TS1003: Identifier expected.\nCommand exited with code 1";
 	const prettyCause = "src/winter/WinterVideo.tsx:153:10 - error TS2657: JSX expressions must have one parent element.";
 	assert.equal(codemodeFailureReason(`npm notice run tsc --noEmit\n${prettyCause}\nError: typecheck failed\nCommand exited with code 1`), prettyCause);
-	for (const banner of ["npm notice run remotion-video-project@1.0.0 typecheck\nnpm notice run tsc --noEmit", "> project@1.0.0 typecheck\n> tsc --noEmit", "npm info run project@1.0.0 typecheck"]) {
+	for (const banner of ["npm notice run remotion-video-project@1.0.0 typecheck\nnpm notice run tsc --noEmit", "> project@1.0.0 typecheck\n> tsc --noEmit", "npm info run project@1.0.0 typecheck", "> @scope/project@1.0.0-dev typecheck\n> tsc --noEmit"]) {
 		for (const audience of ["display", "model"] as const) {
 			assert.equal(codemodeFailureReason(`[SHELL_RUNTIME_FAILED]\n${banner}\n\u001b[31m${errors}\u001b[0m`, audience), cause);
 			assert.equal(codemodeFailureReason(`${banner}\nCommand exited with code 1`, audience), "Command exited with code 1");
 		}
+	}
+	for (const audience of ["display", "model"] as const) {
+		assert.equal(codemodeFailureReason("> authentication failed\nCommand exited with code 1", audience), "> authentication failed");
+		assert.equal(codemodeFailureReason("$ authentication failed\nCommand exited with code 1", audience), "$ authentication failed");
+		assert.equal(codemodeFailureReason("> project@1.0.0 check\n> checker\n> authentication failed\nCommand exited with code 1", audience), "> authentication failed");
 	}
 	const policy = '[SHELL_WRAPPER:LAUNCHER_UNSUPPORTED] Not executed:\nBash analysis cannot inspect the `powershell.exe` launcher.\nNext: Use tool_search with query "powershell", then read its schema; normal authorization still applies.';
 	assert.equal(codemodeFailureReason(policy), "Bash analysis cannot inspect the `powershell.exe` launcher.");

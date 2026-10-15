@@ -44,7 +44,9 @@ const NUMERIC_OUTPUT_LINE = /^[+-]?\d+(?:\.\d+)?$/;
 const PREFLIGHT_HEADING = /^(?:\[(?:POLICY_BLOCKED|SHELL_WRAPPER)(?::[A-Z_]+)?\]\s*)?Not executed:$/;
 const POWERSHELL_PREFLIGHT = /^\[SHELL_[A-Z_]+\] PowerShell not executed:\s*/;
 const COMPILER_DIAGNOSTIC = /^(?:.+(?:\(\d+,\d+\)|:\d+(?::\d+)?)(?::|\s+-)\s*(?:fatal )?error\b|error\s+(?:TS\d+|[A-Z]+\d+):)/i;
-const NPM_STARTUP = /^(?:npm (?:notice run|info run)\b|>\s|\$\s|npm (?:notice|info)\s*$)/;
+const NPM_STARTUP = /^(?:npm (?:notice run|info run)\b|npm (?:notice|info)\s*$)/;
+const NPM_SCRIPT_HEADER = /^> (?:@[^/\s@]+\/)?[^@\s]+@\d+\.\d+\.\d+(?:[-+][^\s]+)? \S/;
+const NPM_SCRIPT_COMMAND = /^(?:>|\$)\s/;
 const ANSI_SGR = /\x1b\[[\d;]*m/g;
 const HTTP_EXCEPTION = /^(?:[\w.]+Error|[\w.]+Exception):\s*(\d{3}),\s*message=['"]([^'"\r\n]{1,100})['"]/;
 const DIAGNOSTIC_WHITESPACE = /[\r\n\t]+/g;
@@ -58,7 +60,7 @@ export function codemodeFailureReason(text: string, audience: "display" | "model
 	// Never replace it with an earlier chained exception from the retained trace.
 	const browserSummary = text.startsWith("[BROWSER_EXEC_") && bounded.includes("\n[Browser diagnostics]\n");
 	let first = "", diagnostic = "", compiler = "", exit = "", recovery = "";
-	let preflight = false;
+	let preflight = false, npmCommandPending = false;
 	for (let start = 0; start < bounded.length;) {
 		const newline = bounded.indexOf("\n", start);
 		const end = newline < 0 ? bounded.length : newline;
@@ -67,7 +69,11 @@ export function codemodeFailureReason(text: string, audience: "display" | "model
 		if (PREFLIGHT_HEADING.test(line)) { preflight = true; continue; }
 		if (POWERSHELL_PREFLIGHT.test(line)) { preflight = true; if (audience === "display") line = line.replace(POWERSHELL_PREFLIGHT, ""); }
 		if (preflight && line.startsWith("Next:")) { recovery = line; continue; }
-		if (!line || line === "Traceback (most recent call last):" || line.startsWith("File \"") || NPM_STARTUP.test(line)) continue;
+		if (!line) continue;
+		if (NPM_SCRIPT_HEADER.test(line)) { npmCommandPending = true; continue; }
+		if (NPM_STARTUP.test(line)) continue;
+		if (npmCommandPending) { npmCommandPending = false; if (NPM_SCRIPT_COMMAND.test(line)) continue; }
+		if (line === "Traceback (most recent call last):" || line.startsWith("File \"")) continue;
 		if (!compiler && COMPILER_DIAGNOSTIC.test(line)) compiler = line;
 		if (MISSING_PATH_DIAGNOSTIC.test(line)) diagnostic = audience === "model" ? line : "Path does not exist.";
 		else if (EXCEPTION_DIAGNOSTIC.test(line)) diagnostic = line;

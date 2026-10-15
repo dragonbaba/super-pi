@@ -302,6 +302,19 @@ wildcard/enumerating and dynamic lookups that can return mutable PSVariable hand
 Scheduled-job registration/updates remain unowned persistent work. Native refusal
 summaries retain their Next recovery for the model while the collapsed UI shows
 only the reason, using the same completion-only bounded projection cache.
+Literal Variable-provider reads/enumerations also expose mutable variable handles
+and are opaque. Get-Variable parameter metadata includes common parameters,
+aliases and unique prefixes (verified against native metadata); fixed unrelated
+names retain these ordinary forms. ScheduledTasks registrations/updates share the
+persistent-job refusal. npm command-line suppression requires a recognized
+package/version script header and consumes only its following command line, so
+standalone `> authentication failed` and later quoted diagnostics remain visible.
+
+Unchanged scope: external module loading and native sc.exe/net.exe service control
+already passed the original Bash lifecycle and high-risk scanners at the PR base.
+They retain ordinary opaque-command authorization here; this filter does not
+claim complete executable-code or native-service isolation. This PR does not
+introduce a blanket ban on those existing authorized workflows.
 
 Bash-to-PowerShell recovery distinguishes an active native tool, a configured
 discoverable tool, and an unavailable tool. Discovery is suggested only when
@@ -338,7 +351,7 @@ Existing authorization and allocation source invariants cover the adjacent chain
 
 | Allocation fixture | Samples | Sampled bytes/update | CPU p95 (ms) |
 | --- | ---: | ---: | ---: |
-| Codemode compiler failure, collapsed | 4,096 | 1,585 | 0.0018 |
+| Codemode compiler failure, collapsed | 4,096 | 1,458 | 0.0018 |
 | Codemode native PowerShell refusal, collapsed | 4,096 | 1,490 | 0.0018 |
 | Main production frame | 1,024 | 7,629 | 0.0602 |
 | Alt production frame | 1,024 | 11,796 | 0.0680 |
@@ -358,3 +371,5 @@ Codemode source invariants and its existing tree benchmark fixture. It retains
 one row/output/failure projection, zero event Promises and 0/2 weak owners after
 release; the leading samples remain retained-item render/viewport maintenance.
 The unchanged Main/Alt/queue chain uses the earlier evidence above.
+After tightening npm banner recognition, the compiler fixture was sampled again;
+the table records that latest run, with the same deterministic/release counters.

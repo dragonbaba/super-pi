@@ -1656,7 +1656,7 @@ test("native PowerShell assignments and member calls retain authorization and fo
   try {
     fixture = await guardedCwdBoundaryFixture(workspace, "", "powershell");
     await fixture.setMode("read-only");
-    const command = "$s = New-Object System.Text.StringBuilder; try { [void]$s.Append('inline-ok'); $s.ToString() | ForEach-Object { $_.ToUpper() } } finally { [void]$s.Clear() }; [int[][]]$items=$null; [System.Collections.Generic.Dictionary[string,System.Collections.Generic.List[int]]]$map=$null; Write-Output status=Start-Job report.Start (Get-Date); $h=@{Name='data';Value=1}; Write-Output $h.Name; [string]${space name}='braced-ok'; Write-Output ${space name}; Write-Output { 1 } Start-Job; $n=0; $n++; ++$n; Write-Output increment-ok";
+    const command = "$s = New-Object System.Text.StringBuilder; try { [void]$s.Append('inline-ok'); $s.ToString() | ForEach-Object { $_.ToUpper() } } finally { [void]$s.Clear() }; [int[][]]$items=$null; [System.Collections.Generic.Dictionary[string,System.Collections.Generic.List[int]]]$map=$null; Write-Output status=Start-Job report.Start (Get-Date); $h=@{Name='data';Value=1}; Write-Output $h.Name; [string]${space name}='braced-ok'; Write-Output ${space name}; Write-Output { 1 } Start-Job; $n=0; $n++; ++$n; Write-Output increment-ok; $Count=7; Get-Variable Count -OutVariable captured -ValueOnly:$false; gv Count -s 0";
     const result = await fixture.agent.dispatchHostTool({ type: "toolCall", id: "native-members", name: "powershell", arguments: { command } });
     assert.equal(result.isError, false, JSON.stringify(result));
     assert.match(JSON.stringify(result.content), /INLINE-OK/);
@@ -1684,7 +1684,9 @@ test("native PowerShell assignments and member calls retain authorization and fo
       "Resume-Service Missing", "rsv Missing", "[Microsoft.VisualBasic.Interaction]::Shell('missing.exe')",
       "do {} while ($false) Start-Process missing.exe;",
       "$v=Get-Variable PSDefaultParameterValues; $v.Value=@{'ForEach-Object:AsJob'=$true}",
-      "Register-ScheduledJob -Name LongRunner -ScriptBlock { Start-Sleep 60 } -RunNow"]) {
+      "Register-ScheduledJob -Name LongRunner -ScriptBlock { Start-Sleep 60 } -RunNow",
+      "$v=Get-Item Variable:PSDefaultParameterValues; $v.Value=@{'ForEach-Object:AsJob'=$true}",
+      "Register-ScheduledTask X -Action (New-ScheduledTaskAction -Execute missing.exe)"]) {
       const blocked = await fixture.agent.dispatchHostTool({ type: "toolCall", id: "native-background", name: "powershell", arguments: { command } });
       assert.equal(blocked.isError, true); assert.equal(fixture.executions, 1); assert.equal(fixture.approvals.length, 2);
     }

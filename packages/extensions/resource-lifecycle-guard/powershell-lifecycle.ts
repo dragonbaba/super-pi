@@ -5,7 +5,7 @@ const MAX_TOKENS = 2048;
 const MAX_NESTING = 64;
 const BASH = new Set(["bash", "sh", "zsh", "dash", "ksh", "fish"]);
 const LAUNCHERS = new Set(["powershell", "pwsh", "cmd", "invoke-expression", "iex", "invoke-command", "icm", "invoke-cimmethod", "invoke-wmimethod", "iwmi", "invoke-item", "ii", "set-alias", "new-alias", "import-alias", "sal", "nal", "function", "filter", "class", "enum", "workflow", "configuration"]);
-const DETACHED = new Set(["start-job", "sajb", "start-threadjob", "start-service", "sasv", "restart-service", "resume-service", "rsv", "start-scheduledtask", "register-scheduledjob", "set-scheduledjob", "nohup", "disown", "setsid", "daemonize"]);
+const DETACHED = new Set(["start-job", "sajb", "start-threadjob", "start-service", "sasv", "restart-service", "resume-service", "rsv", "start-scheduledtask", "register-scheduledjob", "set-scheduledjob", "register-scheduledtask", "set-scheduledtask", "nohup", "disown", "setsid", "daemonize"]);
 const PROCESS = new Set(["start-process", "start", "saps"]);
 const CONTROL_BLOCK = new Set(["if", "elseif", "else", "for", "foreach", "while", "do", "switch", "try", "catch", "finally", "trap", "begin", "process", "end", "clean", "dynamicparam", "data"]);
 const PROVIDER_MUTATORS = new Set(["set-item", "si", "new-item", "ni", "copy-item", "cpi", "cp", "copy", "move-item", "mi", "mv", "move", "rename-item", "rni", "ren", "set-location", "sl", "cd", "chdir", "push-location", "pushd"]);
@@ -13,9 +13,12 @@ const EXECUTABLE_PROVIDER = /(?:^|[:,])(?:[^:,]*\\)?(?:alias|function|variable):
 const VARIABLE_MUTATORS = new Set(["set-variable", "sv", "set", "new-variable", "nv"]);
 const DEFAULT_PARAMETERS = /\bpsdefaultparametervalues\b/i;
 const SESSION_STATE = /\b(?:sessionstate|sessionstateproxy|psvariable)\b/i;
+const PROVIDER_READERS = new Set(["get-item", "gi", "get-childitem", "gci", "ls", "dir"]);
+const VARIABLE_PROVIDER = /(?:^|[:,])(?:[^:,]*\\)?variable:/i;
 const VARIABLE_WILDCARD = /[*?\[]/;
 const VARIABLE_LOOKUP_FLAGS = new Set(["valueonly", "verbose", "debug"]);
-const VARIABLE_LOOKUP_OPTIONS = new Set(["scope", "include", "exclude", "erroraction", "warningaction", "informationaction", "progressaction", "ea", "wa"]);
+const VARIABLE_LOOKUP_PARAMETERS = ["name", "valueonly", "include", "exclude", "scope", "verbose", "debug", "erroraction", "warningaction", "informationaction", "progressaction", "errorvariable", "warningvariable", "informationvariable", "outvariable", "outbuffer", "pipelinevariable"];
+const VARIABLE_LOOKUP_ALIASES = new Map([["vb", "verbose"], ["db", "debug"], ["ea", "erroraction"], ["wa", "warningaction"], ["infa", "informationaction"], ["proga", "progressaction"], ["ev", "errorvariable"], ["wv", "warningvariable"], ["iv", "informationvariable"], ["ov", "outvariable"], ["ob", "outbuffer"], ["pv", "pipelinevariable"]]);
 const SPACE = /\s/;
 const PUNCTUATION = /[;|\n\r{}()=&]/;
 // PowerShell accepts unambiguous parameter prefixes and these Unicode dashes.
@@ -29,6 +32,19 @@ const STREAM_NUMBER = /^[1-6]$/;
 const OPAQUE_MEMBER = /(?:\.|::)(?:Start(?:New|Job|\.Invoke)?|Invoke[\w]*|DynamicInvoke|BeginInvoke|GetSteppablePipeline|ExpandString|Run(?:Async)?|Exec|Continue|Shell(?:Execute(?:Ex)?)?)$/i;
 
 interface Token { value: string; quoted: boolean; dynamic: boolean; operator: boolean; start: number; end: number }
+
+/** Native Get-Variable metadata; resolve exact names/aliases before unique prefixes. */
+function variableLookupOption(value: string): string | undefined {
+	const alias = VARIABLE_LOOKUP_ALIASES.get(value);
+	if (alias) return alias;
+	let match: string | undefined;
+	for (let index = 0; index < VARIABLE_LOOKUP_PARAMETERS.length; index++) {
+		const candidate = VARIABLE_LOOKUP_PARAMETERS[index]!;
+		if (candidate === value) return candidate;
+		if (value && candidate.startsWith(value)) { if (match) return undefined; match = candidate; }
+	}
+	return match;
+}
 
 /** Balanced type prefixes are linear, including generics, jagged arrays and bad input. */
 function isSimpleVariable(value: string): boolean {
@@ -228,23 +244,42 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		if (!token.quoted && (name === "return" || name === "throw" || name === "exit")) { head = true; continue; }
 		if (DETACHED.has(name)) return BACKGROUND;
 		if (LAUNCHERS.has(name) || name === ".") return UNCERTAIN;
+		if (PROVIDER_READERS.has(name)) {
+			let depth = 0;
+			for (let j = i + 1; j < tokens.length; j++) {
+				const arg = tokens[j]!;
+				if (arg.operator) {
+					if (arg.value === "=") continue;
+					if (arg.value === "(" || arg.value === "{") { if (++depth > MAX_NESTING) return UNCERTAIN; }
+					else if (arg.value === ")" || arg.value === "}") { if (!depth) break; depth--; }
+					else if (!depth) break;
+				} else if (VARIABLE_PROVIDER.test(arg.value)) return UNCERTAIN;
+			}
+		}
 		if (name === "get-variable" || name === "gv") {
 			let literalName = false;
 			for (let j = i + 1; j < tokens.length; j++) {
 				let arg = tokens[j]!;
 				if (arg.operator) { if (arg.value === "(" || arg.value === "{") return UNCERTAIN; break; }
-				if (arg.dynamic || DEFAULT_PARAMETERS.test(arg.value)) return UNCERTAIN;
+				if (DEFAULT_PARAMETERS.test(arg.value)) return UNCERTAIN;
 				const raw = command.slice(arg.start, arg.end), colon = raw.indexOf(":"), option = raw.slice(1, colon < 0 ? raw.length : colon).toLowerCase();
 				let target = arg.value;
 				if (PARAMETER_DASH.test(raw)) {
-					if (VARIABLE_LOOKUP_FLAGS.has(option)) continue;
-					const named = !!option && "name".startsWith(option);
-					if (!named && !VARIABLE_LOOKUP_OPTIONS.has(option)) return UNCERTAIN;
+					const resolved = variableLookupOption(option);
+					if (!resolved) return UNCERTAIN;
+					if (VARIABLE_LOOKUP_FLAGS.has(resolved)) {
+						const booleanValue = colon < 0 ? "" : arg.value.slice(arg.value.indexOf(":") + 1).toLowerCase();
+						if (arg.dynamic && booleanValue !== "$true" && booleanValue !== "$false") return UNCERTAIN;
+						continue;
+					}
+					if (arg.dynamic) return UNCERTAIN;
+					const named = resolved === "name";
 					if (colon < 0) { arg = tokens[++j]!; if (!arg || arg.operator || arg.dynamic) return UNCERTAIN; target = arg.value; }
 					else target = arg.value.slice(arg.value.indexOf(":") + 1);
 					if (DEFAULT_PARAMETERS.test(target)) return UNCERTAIN;
 					if (!named) continue;
 				}
+				if (arg.dynamic) return UNCERTAIN;
 				if (!target || VARIABLE_WILDCARD.test(target)) return UNCERTAIN;
 				literalName = true;
 			}
