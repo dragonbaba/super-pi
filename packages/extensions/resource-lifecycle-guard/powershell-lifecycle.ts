@@ -4,14 +4,15 @@ const MAX_CHARS = 128 * 1024;
 const MAX_TOKENS = 2048;
 const MAX_NESTING = 64;
 const BASH = new Set(["bash", "sh", "zsh", "dash", "ksh", "fish"]);
-const LAUNCHERS = new Set(["powershell", "pwsh", "cmd", "invoke-expression", "iex", "invoke-command", "icm", "invoke-cimmethod", "invoke-wmimethod", "iwmi", "invoke-item", "ii", "set-alias", "new-alias", "import-alias", "sal", "nal", "function", "filter"]);
-const DETACHED = new Set(["start-job", "sajb", "start-threadjob", "start-service", "sasv", "restart-service", "start-scheduledtask", "nohup", "disown", "setsid", "daemonize"]);
+const LAUNCHERS = new Set(["powershell", "pwsh", "cmd", "invoke-expression", "iex", "invoke-command", "icm", "invoke-cimmethod", "invoke-wmimethod", "iwmi", "invoke-item", "ii", "set-alias", "new-alias", "import-alias", "sal", "nal", "function", "filter", "class", "enum", "workflow", "configuration"]);
+const DETACHED = new Set(["start-job", "sajb", "start-threadjob", "start-service", "sasv", "restart-service", "resume-service", "rsv", "start-scheduledtask", "nohup", "disown", "setsid", "daemonize"]);
 const PROCESS = new Set(["start-process", "start", "saps"]);
 const CONTROL_BLOCK = new Set(["if", "elseif", "else", "for", "foreach", "while", "do", "switch", "try", "catch", "finally", "trap", "begin", "process", "end", "clean", "dynamicparam", "data"]);
 const PROVIDER_MUTATORS = new Set(["set-item", "si", "new-item", "ni", "copy-item", "cpi", "cp", "copy", "move-item", "mi", "mv", "move", "rename-item", "rni", "ren", "set-location", "sl", "cd", "chdir", "push-location", "pushd"]);
 const EXECUTABLE_PROVIDER = /(?:^|[:,])(?:[^:,]*\\)?(?:alias|function|variable):/i;
 const VARIABLE_MUTATORS = new Set(["set-variable", "sv", "set", "new-variable", "nv"]);
 const DEFAULT_PARAMETERS = /\bpsdefaultparametervalues\b/i;
+const SESSION_STATE = /\b(?:sessionstate|sessionstateproxy|psvariable)\b/i;
 const SPACE = /\s/;
 const PUNCTUATION = /[;|\n\r{}()=&]/;
 // PowerShell accepts unambiguous parameter prefixes and these Unicode dashes.
@@ -22,7 +23,7 @@ const STATEMENT_LABEL = /^:[\w]+$/;
 const SIMPLE_VARIABLE = /^\$(?:[\w:]+|\{(?:[^`{}]|`[\s\S])+\})(?:\.[\w]+|\[[\w$]+\])*$/;
 const STREAM_REDIRECT = /^[1-6*]?>$/;
 const STREAM_NUMBER = /^[1-6]$/;
-const OPAQUE_MEMBER = /(?:\.|::)(?:Start(?:New|Job|\.Invoke)?|Invoke[\w]*|DynamicInvoke|BeginInvoke|GetSteppablePipeline|ExpandString|Run(?:Async)?|Exec|ShellExecute(?:Ex)?)$/i;
+const OPAQUE_MEMBER = /(?:\.|::)(?:Start(?:New|Job|\.Invoke)?|Invoke[\w]*|DynamicInvoke|BeginInvoke|GetSteppablePipeline|ExpandString|Run(?:Async)?|Exec|Continue|Shell(?:Execute(?:Ex)?)?)$/i;
 
 interface Token { value: string; quoted: boolean; dynamic: boolean; operator: boolean; start: number; end: number }
 
@@ -143,7 +144,9 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 	}
 
 	let head = true, assignable = false, equalsData = false, controlBlock = false, paramBlock = false;
+	let doBlock = false, afterDo = false, doCondition = false;
 	// Low bits: 0 paren, 1 control block, 2 hash key, 3 hash value, 4 block argument, 5 param list.
+	// 6 is a do body, 7 its trailing while/until condition.
 	// Flag 8 restores an enclosing control statement after its condition parentheses.
 	// Primitive call-owned stack, capped at MAX_NESTING and never retained.
 	const contexts: number[] = [];
@@ -159,13 +162,14 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 			if (value === "(" || value === "{") {
 				if (contexts.length === MAX_NESTING) return UNCERTAIN;
 				const previous = tokens[i - 1];
-				contexts.push(value === "(" ? (paramBlock ? 5 : controlBlock ? 8 : 0) : previous?.value === "@" && !previous.quoted && previous.end === token.start ? 2 : controlBlock ? 1 : 4);
-				head = true; controlBlock = false; paramBlock = false; continue;
+				contexts.push(value === "(" ? (doCondition ? 7 : paramBlock ? 5 : controlBlock ? 8 : 0) : previous?.value === "@" && !previous.quoted && previous.end === token.start ? 2 : doBlock ? 6 : controlBlock ? 1 : 4);
+				head = true; controlBlock = false; paramBlock = false; doBlock = false; doCondition = false; continue;
 			}
 			if (value === ")" || value === "}") {
 				const context = contexts.pop();
-				if (context === undefined || (value === ")") !== ((context & 7) === 0 || context === 5)) return UNCERTAIN;
-				head = context === 1 || context === 5; controlBlock = (context & 8) !== 0; paramBlock = false; continue;
+				if (context === undefined || (value === ")") !== ((context & 7) === 0 || context === 5 || context === 7)) return UNCERTAIN;
+				head = context === 1 || context === 5 || context === 6 || context === 7;
+				controlBlock = (context & 8) !== 0; paramBlock = false; afterDo = context === 6; continue;
 			}
 			if (value !== "\n" && value !== "\r") controlBlock = false;
 			if ((value === ";" || value === "\n" || value === "\r") && (contexts.at(-1) === 2 || contexts.at(-1) === 3)) contexts[contexts.length - 1] = 2;
@@ -183,6 +187,7 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		equalsData = false;
 		// Ambient defaults can silently bind AsJob/Asynchronous on later commands.
 		if (token.dynamic && command[token.start] !== "'" && command[token.start] !== '"' && DEFAULT_PARAMETERS.test(value)) return UNCERTAIN;
+		if (command[token.start] !== "'" && command[token.start] !== '"' && SESSION_STATE.test(value)) return UNCERTAIN;
 		if (!dataPiece && !token.quoted && (JOB_OPTION.test(value) || isAsyncOption(value))) return BACKGROUND;
 		// Splat contents can carry job switches even before a literal parameter.
 		// No local variable/dataflow evaluation is performed by this filter.
@@ -215,6 +220,8 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		const name = value.slice(Math.max(value.lastIndexOf("/"), value.lastIndexOf("\\")) + 1).toLowerCase().replace(/\.exe$/, "");
 		controlBlock = !token.quoted && CONTROL_BLOCK.has(name);
 		paramBlock = !token.quoted && name === "param";
+		doBlock = !token.quoted && name === "do";
+		doCondition = afterDo && !token.quoted && (name === "while" || name === "until"); afterDo = false;
 		if (!token.quoted && (name === "return" || name === "throw" || name === "exit")) { head = true; continue; }
 		if (DETACHED.has(name)) return BACKGROUND;
 		if (LAUNCHERS.has(name) || name === ".") return UNCERTAIN;

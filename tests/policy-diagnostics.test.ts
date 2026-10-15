@@ -48,6 +48,7 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "New-Item -Path file.txt -ItemType File", "Set-Item -Path Env:SP_FIXTURE -Value literal",
     "Set-Service -Name Missing -Description 'metadata'", "Set-Service -Name Missing -Status Stopped", "Set-Service -Name Missing -Status:'Paused'",
     "exit 0", "data D {} Write-Output safe", "Set-Variable -Name Count -Value 1",
+    "do {} while ($false) Write-Output safe", "do {} until ($true) Write-Output safe",
   ]) assert.equal(inspectPowerShellResourceLifecycle({ command }), undefined, command);
   for (const command of [
     "Start-Job { Write-Output 1 }", "$job = Start-ThreadJob { Write-Output 1 }", "if ($true) {} Start-Job {}",
@@ -99,6 +100,13 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "$global:PSDefaultParameterValues=@{ 'ForEach-Object:AsJob'=$true }", "${PSDefaultParameterValues}.Add('ForEach-Object:AsJob',$true)",
     "Set-Variable -Name PSDefaultParameterValues -Value $defaults", "Set-Item Variable:PSDefaultParameterValues $defaults",
     "$PSDefaultParameterValues.'Add'('ForEach-Object:AsJob',$true)",
+    "$ExecutionContext.SessionState.PSVariable.Set('PSDefaultParameterValues', @{'ForEach-Object:AsJob'=$true})",
+    "$vars=$ExecutionContext.SessionState.PSVariable; $vars.Set('PSDefaultParameterValues',$defaults)",
+    "[runspace]::DefaultRunspace.SessionStateProxy.SetVariable('PSDefaultParameterValues',$defaults)",
+    "Resume-Service Missing", "rsv Missing", "(Get-Service Missing).Continue()",
+    "Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.Interaction]::Shell('missing.exe')",
+    "do {} while ($false) Start-Process missing.exe;", "do {} until ($true) Start-Job {}",
+    "do { do {} until ($true) } while ($false) Start-Process missing.exe", "class C {} Start-Process missing.exe",
   ]) assert.ok(inspectPowerShellResourceLifecycle({ command }), command);
 });
 

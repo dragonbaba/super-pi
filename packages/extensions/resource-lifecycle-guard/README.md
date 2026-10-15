@@ -293,6 +293,10 @@ Alias import and default-parameter-table references/mutations remain opaque, so
 later invocations cannot silently acquire lifecycle switches. Variable-provider
 mutations and dynamic variable-setter arguments are also opaque. Exit pipelines
 and data-section closures retain command-head inspection.
+SessionState/PSVariable capability references are opaque, including copied receivers
+and runspace proxies. Service resume/Continue and Interaction.Shell are known
+unowned launchers. Do-loop trailing conditions restore statement mode, including
+nested loops; unsupported type/workflow definitions remain opaque like functions.
 
 Bash-to-PowerShell recovery distinguishes an active native tool, a configured
 discoverable tool, and an unavailable tool. Discovery is suggested only when
