@@ -51,7 +51,13 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "do {} while ($false) Write-Output safe", "do {} until ($true) Write-Output safe",
     "Get-Variable Count", "Get-Variable -Name Count -Scope Local -ValueOnly", "gv -Name:Count -ErrorAction Stop",
     "Get-Variable Count -OutVariable result", "gv Count -s 0", "gv Count -ov result -vb:$false", "gv Count -ValueO:$true",
-    "Get-Item $file", "Get-ChildItem -Path ./src -Recurse",
+    'Get-Item -LiteralPath "FileSystem::$file"', "Get-ChildItem -Path ./src -Recurse",
+    "Write-Output SessionState PSVariable SessionStateProxy", "Get-Variable SessionState -ValueOnly",
+    "Get-Variable Count -Scope $scope -ErrorAction $action", "gv Count -Verbose:$flag",
+    "$text=123 -as [string]; Write-Output $text", "Write-Output ($text -as 'string')",
+    "'a' | ForEach-Object ToUpper", "'a' | % -MemberName ToUpper", "'a' | foreach Length",
+    "ForEach-Object -InputObject (Get-Date) -MemberName ToString", "ForEach-Object -Parallel { 1 } -As'Job'",
+    'Get-ChildItem -LiteralPath "FileSystem::$file" -Recurse -Depth $depth -ErrorAction $action',
   ]) assert.equal(inspectPowerShellResourceLifecycle({ command }), undefined, command);
   for (const command of [
     "Start-Job { Write-Output 1 }", "$job = Start-ThreadJob { Write-Output 1 }", "if ($true) {} Start-Job {}",
@@ -117,6 +123,13 @@ test("native PowerShell lifecycle distinguishes expressions, data and owned fore
     "Get-ChildItem Variable:", "gci -Path:Microsoft.PowerShell.Core\\Variable::", "Get-Item ('Variable:PSDefaultParameterValues')",
     "Get-Variable Count -ov PSDefaultParameterValues", "Get-Variable Count -OutVariable $target",
     "Register-ScheduledTask X -Action (New-ScheduledTaskAction -Execute missing.exe)", "Set-ScheduledTask X -Action $action",
+    "$ExecutionContext.InvokeCommand | ForEach-Object -MemberName InvokeScript -ArgumentList 'Start-Job {}'",
+    "$ExecutionContext.InvokeCommand | % InvokeScript 'Start-Job {}'", "$ExecutionContext.InvokeCommand | foreach -m:InvokeScript 'Start-Job {}'",
+    "$ExecutionContext.InvokeCommand | ForEach-Object -MemberName 'Invoke*'", "$objects | % $method",
+    "$c=[wmiclass]'Win32_Process'; $c.Create('missing.exe')", "$c=New-Object System.Management.ManagementClass 'Win32_Process'; $c.Create('missing.exe')",
+    "$c=New-Object 'System.Management.ManagementClass' 'Win32_Process'; $c.Create('missing.exe')",
+    "$path='Variable:PSDefaultParameterValues'; $v=Get-Item $path; $v.Value=@{'ForEach-Object:AsJob'=$true}",
+    "Get-Item ('Vari' + 'able:PSDefaultParameterValues')", "Get-ChildItem -Path $path", 'Get-Item "FileSystem::$file",$other',
   ]) assert.ok(inspectPowerShellResourceLifecycle({ command }), command);
 });
 

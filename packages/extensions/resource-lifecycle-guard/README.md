@@ -309,6 +309,20 @@ names retain these ordinary forms. ScheduledTasks registrations/updates share th
 persistent-job refusal. npm command-line suppression requires a recognized
 package/version script header and consumes only its following command line, so
 standalone `> authentication failed` and later quoted diagnostics remain visible.
+Ordinary `-as` type conversion is not a job switch: the ambiguous abbreviation is
+checked only in ForEach-Object's own argument list. That command and its aliases
+also inspect literal method dispatch (including positional/member-name forms);
+ordinary methods such as ToUpper remain available, while evaluator names, wildcard
+or dynamic method names are opaque. Direct WMI class capabilities remain opaque.
+Dynamic provider-reader paths must explicitly identify FileSystem, for example
+`Get-Item -LiteralPath "FileSystem::$file"`; otherwise they can expose mutable
+variable handles. The refusal supplies this concrete recovery. Ordinary literal
+file paths, common parameter values and FileSystem-qualified strings remain valid.
+Get-Variable permits dynamic non-target metadata such as Scope/ErrorAction but
+still requires explicit names and output-variable targets. SessionState/PSVariable
+checks apply to capability/member syntax rather than ordinary argument words.
+HTTP shortening is limited to recognized aiohttp response/handshake exceptions
+with 4xx/5xx status codes; unrelated numeric exceptions retain their own meaning.
 
 Unchanged scope: external module loading and native sc.exe/net.exe service control
 already passed the original Bash lifecycle and high-risk scanners at the PR base.
@@ -351,7 +365,7 @@ Existing authorization and allocation source invariants cover the adjacent chain
 
 | Allocation fixture | Samples | Sampled bytes/update | CPU p95 (ms) |
 | --- | ---: | ---: | ---: |
-| Codemode compiler failure, collapsed | 4,096 | 1,458 | 0.0018 |
+| Codemode compiler failure, collapsed | 4,096 | 1,620 | 0.0018 |
 | Codemode native PowerShell refusal, collapsed | 4,096 | 1,490 | 0.0018 |
 | Main production frame | 1,024 | 7,629 | 0.0602 |
 | Alt production frame | 1,024 | 11,796 | 0.0680 |

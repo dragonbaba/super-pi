@@ -170,6 +170,9 @@ test("npm preambles and policy headings do not hide actionable causes or model r
 	const http = "aiohttp.client_exceptions.WSServerHandshakeError: 403, message='Invalid response status', url='wss://example.invalid/long'";
 	assert.equal(codemodeFailureReason(http), "HTTP 403: Invalid response status.");
 	assert.equal(codemodeFailureReason(http, "model"), http);
+	for (const nonHttp of ["DatabaseError: 123, message='constraint failed'", "DatabaseError: 403, message='constraint failed'", "ClientResponseError: 123, message='invalid code'"]) {
+		assert.equal(codemodeFailureReason(nonHttp), nonHttp);
+	}
 	assert.equal(codemodeFailureReason("ModuleNotFoundError: No module named 'win32com'"), "ModuleNotFoundError: No module named 'win32com'");
 	const final = parent([fact("p:1", "bash", `[SHELL_RUNTIME_FAILED]\nnpm notice run project typecheck\n${errors}`, true)], [], true);
 	const canonical = JSON.stringify(final), tree = new CodemodeTreeComponent();

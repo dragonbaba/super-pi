@@ -48,7 +48,7 @@ const NPM_STARTUP = /^(?:npm (?:notice run|info run)\b|npm (?:notice|info)\s*$)/
 const NPM_SCRIPT_HEADER = /^> (?:@[^/\s@]+\/)?[^@\s]+@\d+\.\d+\.\d+(?:[-+][^\s]+)? \S/;
 const NPM_SCRIPT_COMMAND = /^(?:>|\$)\s/;
 const ANSI_SGR = /\x1b\[[\d;]*m/g;
-const HTTP_EXCEPTION = /^(?:[\w.]+Error|[\w.]+Exception):\s*(\d{3}),\s*message=['"]([^'"\r\n]{1,100})['"]/;
+const HTTP_EXCEPTION = /^(?:aiohttp\.client_exceptions\.)?(?:ClientResponseError|WSServerHandshakeError):\s*([45]\d{2}),\s*message=['"]([^'"\r\n]{1,100})['"]/;
 const DIAGNOSTIC_WHITESPACE = /[\r\n\t]+/g;
 
 /** Completion-only projection shared by the model summary and collapsed UI.

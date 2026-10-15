@@ -12,17 +12,26 @@ const PROVIDER_MUTATORS = new Set(["set-item", "si", "new-item", "ni", "copy-ite
 const EXECUTABLE_PROVIDER = /(?:^|[:,])(?:[^:,]*\\)?(?:alias|function|variable):/i;
 const VARIABLE_MUTATORS = new Set(["set-variable", "sv", "set", "new-variable", "nv"]);
 const DEFAULT_PARAMETERS = /\bpsdefaultparametervalues\b/i;
-const SESSION_STATE = /\b(?:sessionstate|sessionstateproxy|psvariable)\b/i;
+const SESSION_STATE = /(?:\.|::|\[)(?:sessionstate|sessionstateproxy|psvariable)\b/i;
 const PROVIDER_READERS = new Set(["get-item", "gi", "get-childitem", "gci", "ls", "dir"]);
 const VARIABLE_PROVIDER = /(?:^|[:,])(?:[^:,]*\\)?variable:/i;
 const VARIABLE_WILDCARD = /[*?\[]/;
 const VARIABLE_LOOKUP_FLAGS = new Set(["valueonly", "verbose", "debug"]);
+const VARIABLE_REFERENCE_OPTIONS = new Set(["name", "errorvariable", "warningvariable", "informationvariable", "outvariable", "pipelinevariable"]);
 const VARIABLE_LOOKUP_PARAMETERS = ["name", "valueonly", "include", "exclude", "scope", "verbose", "debug", "erroraction", "warningaction", "informationaction", "progressaction", "errorvariable", "warningvariable", "informationvariable", "outvariable", "outbuffer", "pipelinevariable"];
 const VARIABLE_LOOKUP_ALIASES = new Map([["vb", "verbose"], ["db", "debug"], ["ea", "erroraction"], ["wa", "warningaction"], ["infa", "informationaction"], ["proga", "progressaction"], ["ev", "errorvariable"], ["wv", "warningvariable"], ["iv", "informationvariable"], ["ov", "outvariable"], ["ob", "outbuffer"], ["pv", "pipelinevariable"]]);
+const PROVIDER_READER_PARAMETERS = ["path", "literalpath", "filter", "include", "exclude", "recurse", "depth", "force", "name", "attributes", "directory", "file", "hidden", "readonly", "system", "followsymlink", "usestat", "stream", "credential", ...VARIABLE_LOOKUP_PARAMETERS.slice(5)];
+const PROVIDER_READER_FLAGS = new Set(["recurse", "force", "name", "directory", "file", "hidden", "readonly", "system", "followsymlink", "usestat", "verbose", "debug"]);
+const FILESYSTEM_STRING = /^"(?:Microsoft\.PowerShell\.Core\\)?FileSystem::[^"\r\n]*"$/i;
+const FOR_EACH = new Set(["foreach-object", "foreach", "%"]);
+const FOR_EACH_PARAMETERS = ["inputobject", "begin", "process", "end", "remainingscripts", "membername", "argumentlist", "parallel", "throttlelimit", "timeoutseconds", "asjob", "usenewrunspace", "whatif", "confirm", ...VARIABLE_LOOKUP_PARAMETERS.slice(5)];
+const FOR_EACH_FLAGS = new Set(["asjob", "usenewrunspace", "whatif", "confirm", "verbose", "debug"]);
+const FOR_EACH_BLOCKS = new Set(["begin", "process", "end", "remainingscripts", "parallel"]);
+const WMI_CAPABILITY = /(?:^|\[|:)(?:wmiclass|(?:System\.)?Management\.ManagementClass)(?:\]|$)/i;
 const SPACE = /\s/;
 const PUNCTUATION = /[;|\n\r{}()=&]/;
 // PowerShell accepts unambiguous parameter prefixes and these Unicode dashes.
-const JOB_OPTION = /^[-\u2013\u2014\u2015]as(?:j(?:o(?:b)?)?)?(?::|$)/i;
+const JOB_OPTION = /^[-\u2013\u2014\u2015]asj(?:o(?:b)?)?(?::|$)/i;
 const PARAMETER_DASH = /^[-\u2013\u2014\u2015]/;
 const TYPE_CHARACTER = /[\w.,+]/;
 const STATEMENT_LABEL = /^:[\w]+$/;
@@ -33,13 +42,13 @@ const OPAQUE_MEMBER = /(?:\.|::)(?:Start(?:New|Job|\.Invoke)?|Invoke[\w]*|Dynami
 
 interface Token { value: string; quoted: boolean; dynamic: boolean; operator: boolean; start: number; end: number }
 
-/** Native Get-Variable metadata; resolve exact names/aliases before unique prefixes. */
-function variableLookupOption(value: string): string | undefined {
+/** Bounded native parameter metadata; exact names/common aliases precede prefixes. */
+function lookupOption(value: string, parameters: readonly string[]): string | undefined {
 	const alias = VARIABLE_LOOKUP_ALIASES.get(value);
 	if (alias) return alias;
 	let match: string | undefined;
-	for (let index = 0; index < VARIABLE_LOOKUP_PARAMETERS.length; index++) {
-		const candidate = VARIABLE_LOOKUP_PARAMETERS[index]!;
+	for (let index = 0; index < parameters.length; index++) {
+		const candidate = parameters[index]!;
 		if (candidate === value) return candidate;
 		if (value && candidate.startsWith(value)) { if (match) return undefined; match = candidate; }
 	}
@@ -86,6 +95,45 @@ function refusal(code: string, reason: string): string {
 }
 const UNCERTAIN = refusal("SHELL_UNINSPECTABLE", "this PowerShell invocation cannot be inspected");
 const BACKGROUND = refusal("SHELL_BACKGROUND", "unmanaged background work requires an owned task; Start-Process must use a literal -Wait");
+const PROVIDER_PATH = "[SHELL_UNINSPECTABLE] PowerShell not executed: this provider path may expose mutable variable handles.\nNext: for file reads, pass a literal path or an explicitly qualified string such as Get-Item -LiteralPath \"FileSystem::$file\" for normal authorization; do not retry the same blocked call.";
+
+/** ForEach-Object can dispatch methods without parentheses. Inspect its own
+ * arguments, leaving literal script blocks to the main bounded token walk. */
+function inspectForEach(tokens: readonly Token[], start: number, command: string): string | undefined {
+	let depth = 0, memberPending = true, parameter: string | undefined;
+	for (let j = start; j < tokens.length; j++) {
+		const arg = tokens[j]!;
+		if (arg.operator) {
+			if (arg.value === "(" || arg.value === "{") {
+				if (!depth) {
+					if (parameter === "membername" || (!parameter && arg.value !== "{") || (parameter && FOR_EACH_BLOCKS.has(parameter) && arg.value !== "{")) return UNCERTAIN;
+					if (!parameter || FOR_EACH_BLOCKS.has(parameter)) memberPending = false;
+					parameter = undefined;
+				}
+				if (++depth > MAX_NESTING) return UNCERTAIN;
+			} else if (arg.value === ")" || arg.value === "}") { if (!depth) break; depth--; }
+			else if (!depth) break;
+			continue;
+		}
+		if (depth) continue;
+		const raw = command.slice(arg.start, arg.end), colon = raw.indexOf(":");
+		let member = arg.value;
+		if (!parameter && PARAMETER_DASH.test(raw) && (!arg.quoted || colon >= 0)) {
+			parameter = lookupOption(raw.slice(1, colon < 0 ? raw.length : colon).toLowerCase(), FOR_EACH_PARAMETERS);
+			if (!parameter) return UNCERTAIN;
+			if (parameter === "asjob") return BACKGROUND;
+			if (FOR_EACH_FLAGS.has(parameter)) { parameter = undefined; continue; }
+			if (colon < 0) continue;
+			member = arg.value.slice(arg.value.indexOf(":") + 1);
+		}
+		if (parameter === "membername" || (!parameter && memberPending)) {
+			if (arg.dynamic || VARIABLE_WILDCARD.test(member) || OPAQUE_MEMBER.test("." + member) || SESSION_STATE.test("." + member)) return UNCERTAIN;
+			memberPending = false;
+		} else if (parameter && FOR_EACH_BLOCKS.has(parameter)) return UNCERTAIN;
+		parameter = undefined;
+	}
+	return undefined;
+}
 
 /** Invocation-only bounded lexer, not an authorization or a PowerShell sandbox.
  * Unlike Bash, assignment, member access and script blocks are ordinary PS syntax.
@@ -207,6 +255,7 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		// Ambient defaults can silently bind AsJob/Asynchronous on later commands.
 		if (token.dynamic && command[token.start] !== "'" && command[token.start] !== '"' && DEFAULT_PARAMETERS.test(value)) return UNCERTAIN;
 		if (command[token.start] !== "'" && command[token.start] !== '"' && SESSION_STATE.test(value)) return UNCERTAIN;
+		if (command[token.start] !== "'" && command[token.start] !== '"' && WMI_CAPABILITY.test(value)) return UNCERTAIN;
 		if (!dataPiece && !token.quoted && (JOB_OPTION.test(value) || isAsyncOption(value))) return BACKGROUND;
 		// Splat contents can carry job switches even before a literal parameter.
 		// No local variable/dataflow evaluation is performed by this filter.
@@ -244,16 +293,33 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		if (!token.quoted && (name === "return" || name === "throw" || name === "exit")) { head = true; continue; }
 		if (DETACHED.has(name)) return BACKGROUND;
 		if (LAUNCHERS.has(name) || name === ".") return UNCERTAIN;
+		if (name === "new-object") {
+			for (let j = i + 1; j < tokens.length && !tokens[j]!.operator; j++) {
+				if (WMI_CAPABILITY.test(tokens[j]!.value)) return UNCERTAIN;
+			}
+		}
+		if (FOR_EACH.has(name) && !(name === "foreach" && tokens[i + 1]?.value === "(")) {
+			const reason = inspectForEach(tokens, i + 1, command);
+			if (reason) return reason;
+		}
 		if (PROVIDER_READERS.has(name)) {
-			let depth = 0;
 			for (let j = i + 1; j < tokens.length; j++) {
-				const arg = tokens[j]!;
+				let arg = tokens[j]!;
 				if (arg.operator) {
-					if (arg.value === "=") continue;
-					if (arg.value === "(" || arg.value === "{") { if (++depth > MAX_NESTING) return UNCERTAIN; }
-					else if (arg.value === ")" || arg.value === "}") { if (!depth) break; depth--; }
-					else if (!depth) break;
-				} else if (VARIABLE_PROVIDER.test(arg.value)) return UNCERTAIN;
+					if (arg.value === "(" || arg.value === "{" || arg.value === "=") return PROVIDER_PATH;
+					break;
+				}
+				let raw = command.slice(arg.start, arg.end), target = arg.value;
+				if (PARAMETER_DASH.test(raw)) {
+					const colon = raw.indexOf(":"), option = raw.slice(1, colon < 0 ? raw.length : colon).toLowerCase();
+					const parameter = option === "lp" || option === "pspath" ? "literalpath" : lookupOption(option, PROVIDER_READER_PARAMETERS);
+					if (!parameter) return UNCERTAIN;
+					if (PROVIDER_READER_FLAGS.has(parameter)) continue;
+					if (colon < 0) { arg = tokens[++j]!; if (!arg || arg.operator) return PROVIDER_PATH; target = arg.value; raw = command.slice(arg.start, arg.end); }
+					else { target = arg.value.slice(arg.value.indexOf(":") + 1); raw = raw.slice(colon + 1); }
+					if (parameter !== "path" && parameter !== "literalpath") continue;
+				}
+				if (VARIABLE_PROVIDER.test(target) || (arg.dynamic && !FILESYSTEM_STRING.test(raw))) return PROVIDER_PATH;
 			}
 		}
 		if (name === "get-variable" || name === "gv") {
@@ -265,16 +331,13 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 				const raw = command.slice(arg.start, arg.end), colon = raw.indexOf(":"), option = raw.slice(1, colon < 0 ? raw.length : colon).toLowerCase();
 				let target = arg.value;
 				if (PARAMETER_DASH.test(raw)) {
-					const resolved = variableLookupOption(option);
+					const resolved = lookupOption(option, VARIABLE_LOOKUP_PARAMETERS);
 					if (!resolved) return UNCERTAIN;
-					if (VARIABLE_LOOKUP_FLAGS.has(resolved)) {
-						const booleanValue = colon < 0 ? "" : arg.value.slice(arg.value.indexOf(":") + 1).toLowerCase();
-						if (arg.dynamic && booleanValue !== "$true" && booleanValue !== "$false") return UNCERTAIN;
-						continue;
-					}
-					if (arg.dynamic) return UNCERTAIN;
+					if (VARIABLE_LOOKUP_FLAGS.has(resolved)) continue;
+					const variableReference = VARIABLE_REFERENCE_OPTIONS.has(resolved);
+					if (variableReference && arg.dynamic) return UNCERTAIN;
 					const named = resolved === "name";
-					if (colon < 0) { arg = tokens[++j]!; if (!arg || arg.operator || arg.dynamic) return UNCERTAIN; target = arg.value; }
+					if (colon < 0) { arg = tokens[++j]!; if (!arg || arg.operator || (variableReference && arg.dynamic)) return UNCERTAIN; target = arg.value; }
 					else target = arg.value.slice(arg.value.indexOf(":") + 1);
 					if (DEFAULT_PARAMETERS.test(target)) return UNCERTAIN;
 					if (!named) continue;
