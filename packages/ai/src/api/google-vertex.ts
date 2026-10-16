@@ -21,7 +21,6 @@ import type {
 	StreamFunction,
 	StreamOptions,
 	TextContent,
-	ThinkingBudgets,
 	ThinkingContent,
 	ToolCall,
 } from "../types.ts";
@@ -44,7 +43,7 @@ import {
 	retainThoughtSignature,
 	retryGoogleRequest,
 } from "./google-shared.ts";
-import { buildBaseOptions, clampMaxTokensToContext } from "./simple-options.ts";
+import { buildBaseOptions, clampMaxTokensToContext, getGoogleThinkingBudget } from "./simple-options.ts";
 
 export interface GoogleVertexOptions extends StreamOptions {
 	toolChoice?: "auto" | "none" | "any";
@@ -354,7 +353,7 @@ export const streamSimple: StreamFunction<"google-vertex", SimpleStreamOptions> 
 		...base,
 		thinking: {
 			enabled: true,
-			budgetTokens: getGoogleBudget(model, effort, options?.thinkingBudgets),
+			budgetTokens: getGoogleThinkingBudget(model, effort, options?.thinkingBudgets),
 		},
 	} satisfies GoogleVertexOptions);
 };
@@ -524,9 +523,8 @@ function buildParams(
 	if (options.temperature !== undefined) {
 		generationConfig.temperature = options.temperature;
 	}
-	if (options.maxTokens !== undefined) {
-		generationConfig.maxOutputTokens = clampMaxTokensToContext(model, context, options.maxTokens);
-	}
+	generationConfig.maxOutputTokens = clampMaxTokensToContext(model, context, options.maxTokens ?? model.maxTokens, undefined,
+		capabilities.reasoning.mode !== "none" && options.thinking?.enabled && options.thinking.level === undefined && options.thinking.budgetTokens !== undefined ? Math.max(0, options.thinking.budgetTokens) : 0);
 
 	const functionCallingMode = wireContext.tools?.length
 		? resolveGoogleFunctionCallingMode(wireContext.tools, options.toolChoice, supportsStrictMode)
@@ -594,15 +592,3 @@ function getThinkingLevel(effort: ClampedThinkingLevel, model: Model<"google-ver
 	}
 }
 
-function getGoogleBudget(
-	model: Model<"google-vertex">,
-	effort: ClampedThinkingLevel,
-	customBudgets?: ThinkingBudgets,
-): number {
-	const budgetLevel = effort === "xhigh" || effort === "max" ? "high" : effort;
-	if (customBudgets?.[budgetLevel] !== undefined) {
-		return customBudgets[budgetLevel]!;
-	}
-
-	return model.thinkingBudgetMap?.[effort] ?? model.thinkingBudgetMap?.high ?? -1;
-}

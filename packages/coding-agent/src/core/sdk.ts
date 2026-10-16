@@ -12,7 +12,7 @@ import {
 	compactOpenAICodexRequest,
 } from "@super-pi/ai/api/openai-codex-responses";
 import { clampThinkingLevel, type Message, type Model, streamSimple } from "@super-pi/ai/compat";
-import { CONTEXT_SAFETY_TOKENS, minimumRequestOutputTokens, resolveRequestOutputTokens, usesAdaptiveRequestBudget } from "@super-pi/ai/api/simple-options";
+import { CONTEXT_SAFETY_TOKENS, resolveRequestOutputFloor, requestThinkingTokens, resolveRequestOutputTokens, usesAdaptiveRequestBudget } from "@super-pi/ai/api/simple-options";
 import { buildOpenAIResponsesRequestBody } from "@super-pi/ai/api/openai-responses";
 import { getAgentDir, getConfigDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
@@ -388,6 +388,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		const requestPlanning = usesAdaptiveRequestBudget(conversionModel?.api);
 		const toolCalling = requestPlanning && conversionModel ? getModelCapabilities(conversionModel).toolCalling : true;
 		const output = requestPlanning && conversionModel ? resolveRequestOutputTokens(conversionModel, requestedMaxTokens ?? conversionModel.maxTokens) : conversionModel?.maxTokens;
+		const outputFloor = requestPlanning && conversionModel ? resolveRequestOutputFloor(conversionModel, output!, requestThinkingTokens(conversionModel, agent.state.thinkingLevel, agent.thinkingBudgets)) : undefined;
 		const converted = convertToLlm(messages);
 		// Check setting dynamically so mid-session changes take effect
 		const blockImages = settingsManager.getBlockImages();
@@ -401,13 +402,14 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			output,
 			requestPlanning,
 			toolCalling,
+			outputFloor,
 		);
 		return blockImages ? replaceBlockedImagesInMessages(projected) : projected;
 		} catch (error) {
 			if (error instanceof ToolResultContinuationError && error.code === "budget-too-small" && !error.message.startsWith("Request preparation blocked:")) {
 				const configuredBudget = options.toolResultPresentation?.budgetTokens;
 				const cause = configuredBudget !== undefined && error.minimumTokens !== undefined && error.minimumTokens > configuredBudget ? "result-batch-budget" : "tool-result-projection";
-				throw new ToolResultContinuationError("budget-too-small", `Request preparation blocked: ${cause} cannot retain its required content (context=${conversionModel?.contextWindow}, inputEstimate=${estimateContextTokensFromParts(systemPrompt, converted, tools, toolCalling).tokens}, requestedOutput=${output}, responseFloorAndSafety=${requestPlanning ? minimumRequestOutputTokens(output ?? 0) + CONTEXT_SAFETY_TOKENS : output}, batchBudget=${configuredBudget}, minimumTokens=${error.minimumTokens}). ${error.message.substring(0, 600)} Prior tool outcomes are unchanged. Use the reported capacity and recovery details before retrying the request; do not repeat completed tools.`, error.minimumTokens);
+				throw new ToolResultContinuationError("budget-too-small", `Request preparation blocked: ${cause} cannot retain its required content (context=${conversionModel?.contextWindow}, inputEstimate=${estimateContextTokensFromParts(systemPrompt, converted, tools, toolCalling).tokens}, requestedOutput=${output}, responseFloorAndSafety=${requestPlanning ? outputFloor! + CONTEXT_SAFETY_TOKENS : output}, batchBudget=${configuredBudget}, minimumTokens=${error.minimumTokens}). ${error.message.substring(0, 600)} Prior tool outcomes are unchanged. Use the reported capacity and recovery details before retrying the request; do not repeat completed tools.`, error.minimumTokens);
 			}
 			throw error;
 		}

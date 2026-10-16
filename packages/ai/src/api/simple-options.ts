@@ -38,6 +38,25 @@ export function minimumRequestOutputTokens(maxTokens: number): number {
 	return Math.min(MIN_ANSWER_TOKENS, maxTokens);
 }
 
+/** Shared by Google simple senders and request preparation; -1 stays dynamic. */
+export function getGoogleThinkingBudget(model: Model<Api>, effort: ThinkingLevel, customBudgets?: ThinkingBudgets): number {
+	const budgetLevel = effort === "xhigh" || effort === "max" ? "high" : effort;
+	return customBudgets?.[budgetLevel] ?? model.thinkingBudgetMap?.[effort] ?? model.thinkingBudgetMap?.high ?? -1;
+}
+
+export function requestThinkingTokens(model: Model<Api>, reasoning: ModelThinkingLevel = "off", customBudgets?: ThinkingBudgets): number {
+	if (model.api !== "google-generative-ai" && model.api !== "google-vertex") return 0;
+	if (getModelCapabilities(model).reasoning.mode !== "budget") return 0;
+	const effort = clampThinkingLevel(model, reasoning);
+	return effort === "off" ? 0 : Math.max(0, getGoogleThinkingBudget(model, effort, customBudgets));
+}
+
+export function resolveRequestOutputFloor(model: Model<Api>, requested: number, thinkingTokens = 0): number {
+	const floor = minimumRequestOutputTokens(requested) + thinkingTokens;
+	if (!Number.isSafeInteger(floor) || floor <= 0 || floor > requested) throw new RequestBudgetError(model.contextWindow, 0, requested, requested - thinkingTokens, "output-reservation", floor);
+	return floor;
+}
+
 /** Host request preparation failed; this says nothing about prior tool effects. */
 export class RequestBudgetError extends Error {
 	readonly code = "request-budget-blocked";
@@ -45,15 +64,17 @@ export class RequestBudgetError extends Error {
 	readonly inputTokens: number;
 	readonly requestedOutputTokens: number;
 	readonly availableOutputTokens: number;
+	readonly minimumOutputTokens: number;
 	readonly reason: "context-headroom" | "model-parameters" | "output-reservation";
 	constructor(contextWindow: number, inputTokens: number, requestedOutputTokens: number, availableOutputTokens: number,
-		reason: "context-headroom" | "model-parameters" | "output-reservation" = "context-headroom") {
-		super(`Request preparation blocked: ${reason}; insufficient response capacity (context=${contextWindow}, input=${inputTokens}, requestedOutput=${requestedOutputTokens}, availableOutput=${availableOutputTokens}, minimumOutput=${minimumRequestOutputTokens(requestedOutputTokens)}, safety=${CONTEXT_SAFETY_TOKENS}). Prior tool outcomes are unchanged; ${reason === "model-parameters" ? "correct the model context/output parameters" : reason === "output-reservation" ? "correct the requested output allowance" : "reduce request context or explicitly compact"} before retrying the request. Do not repeat completed tools.`);
+		reason: "context-headroom" | "model-parameters" | "output-reservation" = "context-headroom", minimumOutputTokens = minimumRequestOutputTokens(requestedOutputTokens)) {
+		super(`Request preparation blocked: ${reason}; insufficient response capacity (context=${contextWindow}, input=${inputTokens}, requestedOutput=${requestedOutputTokens}, availableOutput=${availableOutputTokens}, minimumOutput=${minimumOutputTokens}, safety=${CONTEXT_SAFETY_TOKENS}). Prior tool outcomes are unchanged; ${reason === "model-parameters" ? "correct the model context/output parameters" : reason === "output-reservation" ? "correct the requested output allowance" : "reduce request context or explicitly compact"} before retrying the request. Do not repeat completed tools.`);
 		this.name = "RequestBudgetError";
 		this.contextWindow = contextWindow;
 		this.inputTokens = inputTokens;
 		this.requestedOutputTokens = requestedOutputTokens;
 		this.availableOutputTokens = availableOutputTokens;
+		this.minimumOutputTokens = minimumOutputTokens;
 		this.reason = reason;
 	}
 }
@@ -69,13 +90,14 @@ export function resolveRequestOutputTokens(model: Model<Api>, maxTokens: number,
 	return requested;
 }
 
-export function clampMaxTokensToContext(model: Model<Api>, context: Context, maxTokens: number, providerMinimum = minimumProviderOutputTokens(model.api)): number {
+export function clampMaxTokensToContext(model: Model<Api>, context: Context, maxTokens: number, providerMinimum = minimumProviderOutputTokens(model.api), thinkingTokens = 0): number {
 	const adaptive = usesAdaptiveRequestBudget(model.api);
 	const requested = resolveRequestOutputTokens(model, maxTokens, providerMinimum);
 	if (model.contextWindow <= 0) return Math.max(1, requested);
 	const input = estimateContextTokens(context, adaptive ? getModelCapabilities(model).toolCalling : true).tokens;
 	const available = model.contextWindow - input - CONTEXT_SAFETY_TOKENS;
-	if (adaptive && available < minimumRequestOutputTokens(requested)) throw new RequestBudgetError(model.contextWindow, input, requested, available);
+	const minimum = adaptive ? resolveRequestOutputFloor(model, requested, thinkingTokens) : 0;
+	if (adaptive && available < minimum) throw new RequestBudgetError(model.contextWindow, input, requested, available, "context-headroom", minimum);
 	return Math.min(requested, Math.max(1, available));
 }
 
@@ -101,7 +123,7 @@ export function buildBaseOptions(
 	return {
 		temperature: options?.temperature,
 		samplingParams,
-		maxTokens: clampMaxTokensToContext(model, context, options?.maxTokens ?? model.maxTokens),
+		maxTokens: clampMaxTokensToContext(model, context, options?.maxTokens ?? model.maxTokens, undefined, requestThinkingTokens(model, options?.reasoning, options?.thinkingBudgets)),
 		signal: options?.signal,
 		telemetryContext: options?.telemetryContext,
 		apiKey: apiKey || options?.apiKey,

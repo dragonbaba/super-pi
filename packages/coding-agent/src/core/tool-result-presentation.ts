@@ -2514,6 +2514,7 @@ export class ToolResultPresentationOwner {
 		sources?: Map<object, ToolResultProjectedUiSource | null>,
 		observer?: ToolResultProjectionObserver,
 		toolCalling = true,
+		minimumOutputTokens?: number,
 	): Message[] {
 		let assistantIndex = -1;
 		for (let index = messages.length - 1; index >= 0; index--) {
@@ -2573,8 +2574,11 @@ export class ToolResultPresentationOwner {
 			// Reserve a viable response before projecting results. The sender then
 			// clamps the requested ceiling against the finished input, once. Legacy
 			// callers can still supply an explicit fixed reserve without this policy.
+			if (requestPlanning && minimumOutputTokens !== undefined && (!Number.isSafeInteger(minimumOutputTokens) || minimumOutputTokens < minimumRequestOutputTokens(requestedOutput) || minimumOutputTokens > requestedOutput)) {
+				throw new ToolResultContinuationError("budget-too-small", `Request preparation blocked: output-reservation (requestedOutput=${requestedOutput}, minimumOutput=${minimumOutputTokens}). Correct the answer and thinking reservation; prior tool outcomes are unchanged. Do not repeat completed tools.`, Math.max(1, minimumRequestOutputTokens(requestedOutput)));
+			}
 			const outputReserve = requestPlanning
-				? minimumRequestOutputTokens(requestedOutput) + CONTEXT_SAFETY_TOKENS
+				? (minimumOutputTokens ?? minimumRequestOutputTokens(requestedOutput)) + CONTEXT_SAFETY_TOKENS
 				: requestedOutput;
 			let remainingContextTokens = hasContextLimit
 				? Math.max(0, contextWindow - outputReserve - nonCurrentContextTokens)
@@ -2757,6 +2761,7 @@ export class ToolResultPresentationOwner {
 		sources?: Map<object, ToolResultProjectedUiSource | null>,
 		observer?: ToolResultProjectionObserver,
 		toolCalling = true,
+		minimumOutputTokens?: number,
 	): Message[] {
 		if (!this.accepting || this.budgetTokens === undefined) return messages;
 		if (contextWindow !== undefined) {
@@ -2771,6 +2776,7 @@ export class ToolResultPresentationOwner {
 				sources,
 				observer,
 				toolCalling,
+				minimumOutputTokens,
 			);
 		}
 		for (let index = 0; index < messages.length; index++) {
