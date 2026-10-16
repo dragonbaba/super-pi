@@ -2,7 +2,7 @@ import { createHash, type Hash } from "node:crypto";
 import type { ImageContent, Message, TextContent, ToolResultMessage } from "@super-pi/ai/compat";
 import { estimateContextTokensFromParts, estimateMessageTokens, type Tool } from "@super-pi/ai";
 import { CONTEXT_SAFETY_TOKENS, minimumRequestOutputTokens } from "@super-pi/ai/api/simple-options";
-import { estimateToolOutputTokens, type ToolOutputTokenEstimate } from "./tool-output-budget.ts";
+import { estimateToolOutputTokens, estimateToolOutputTextRange, type ToolOutputTokenEstimate } from "./tool-output-budget.ts";
 import { MCP_INLINE_BYTES, type McpTypedSource, verifiedMcpSource, mcpTextDigest, mcpImageDigest } from "./tool-result-source.ts";
 import { ToolResultBudgetSelection } from "./tool-result-budget-selection.ts";
 
@@ -2887,6 +2887,17 @@ export class ToolResultPresentationOwner {
 		const sourceTextCodeUnits = record.sourceScan.textCodeUnits;
 		let requestedTextCodeUnits = Math.max(1, Math.floor((sourceTextCodeUnits * budgetTokens) / Math.max(estimate.estimatedTokens, budgetTokens)));
 		if (record.sourceScan.mcpInput) requestedTextCodeUnits = Math.min(requestedTextCodeUnits, Math.floor(MCP_INLINE_BYTES / 3));
+		// Atomic read lines can be arbitrarily large. Check an oversized first
+		// unit by range before candidate construction would copy it repeatedly.
+		const firstBlock = sourceContent[start.blockIndex];
+		if (firstBlock?.type === "text" && firstBlock.readBoundary && firstBlock.text.length - start.textOffset > requestedTextCodeUnits) {
+			let firstEnd = readSuffixOffset(firstBlock, safeIndexedSuffixOffset(firstBlock.text, start.textOffset + 1, start.blockIndex, record.sourceScan, this.counters), start.blockIndex, record.sourceScan, this.counters);
+			if (end.blockIndex === start.blockIndex) firstEnd = Math.min(firstEnd, end.textOffset);
+			if (firstEnd - start.textOffset > requestedTextCodeUnits) {
+				const minimumTokens = estimateToolOutputTextRange(firstBlock.text, start.textOffset, firstEnd);
+				if (minimumTokens > budgetTokens) throw new ToolResultContinuationError("budget-too-small", `Continuation budget ${budgetTokens} cannot make forward progress.`, minimumTokens);
+			}
+		}
 		let chunkEnd = advancePosition(
 			sourceContent,
 			start,
@@ -2937,15 +2948,14 @@ export class ToolResultPresentationOwner {
 			// Failure-only diagnostic: measure the first complete legal unit, rather
 			// than reporting zero tokens for the empty candidate that could not move.
 			const block = sourceContent[start.blockIndex];
+			let minimumTokens = chunkEstimate.estimatedTokens;
 			if (block?.type === "text" && comparePositions(start, chunkEnd) >= 0) {
 				const offset = readSuffixOffset(block, safeIndexedSuffixOffset(block.text, start.textOffset + 1, start.blockIndex, record.sourceScan, this.counters), start.blockIndex, record.sourceScan, this.counters);
 				chunkEnd = { blockIndex: start.blockIndex, textOffset: offset };
 				if (comparePositions(chunkEnd, end) > 0) chunkEnd = end;
-				chunkContent = [];
-				appendRegion(chunkContent, sourceContent, start, chunkEnd, this.counters);
-				chunkEstimate = estimateToolOutputTokens(chunkContent);
+				minimumTokens = estimateToolOutputTextRange(block.text, start.textOffset, chunkEnd.textOffset);
 			}
-			throw new ToolResultContinuationError("budget-too-small", `Continuation budget ${budgetTokens} cannot make forward progress.`, Math.max(1, chunkEstimate.estimatedTokens));
+			throw new ToolResultContinuationError("budget-too-small", `Continuation budget ${budgetTokens} cannot make forward progress.`, Math.max(1, minimumTokens));
 		}
 		const done = samePosition(chunkEnd, end);
 		const nextCursor = done ? undefined : createCursor(
