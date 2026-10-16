@@ -49,6 +49,8 @@ const MAX_WRAPPER_DEPTH = 4;
 const SCRIPT_WRAPPERS = new Set(["bash", "bash.exe", "sh", "sh.exe", "zsh", "zsh.exe", "dash", "dash.exe", "ksh", "ksh.exe", "fish", "fish.exe"]);
 const POWERSHELL_WRAPPERS = new Set(["powershell", "powershell.exe", "pwsh", "pwsh.exe"]);
 const NODE_COMMANDS = new Set(["node", "node.exe"]);
+// Documented zero-value switches; unknown option arity retains both interpretations.
+const NODE_VALUE_FREE_FLAGS = new Set(["--no-warnings", "--trace-warnings", "--no-deprecation", "--trace-deprecation", "--throw-deprecation", "--trace-uncaught", "--enable-source-maps", "--preserve-symlinks", "--preserve-symlinks-main", "--expose-gc", "--jitless"]);
 const PYTHON_COMMANDS = new Set(["python", "python.exe", "python3", "python3.exe", "py", "py.exe"]);
 const RM_RECURSIVE_OPTIONS = new Set(["--recursive"]);
 const POWERSHELL_RECURSIVE_OPTIONS = new Set(["-recurse", "-r"]);
@@ -451,8 +453,9 @@ function inspectShellScript(script: string, initialCwd: string, depth: number, b
 		const consumers = heredocDocumentConsumers(document, analysis.command), body = heredocExecutableBody(document, analysis.command);
 		if (consumers && (document.priorSource || document.pipelineHeader || heredocHasUntrackedCwd(document.header))) markUnverifiable(builder);
 		if (consumers & 1 && body !== undefined) inspectShellScript(body, initialCwd, depth + 1, builder, "bash");
-		if (consumers & 2 && body !== undefined) inspectEmbeddedCode(body, "node", initialCwd, builder);
-		if (consumers & 4 && body !== undefined) inspectEmbeddedCode(body, "python", initialCwd, builder);
+		if (consumers & 6 && document.expanded) { addPrimitive(builder, "heredoc_expanded_source"); markUnverifiable(builder); }
+		if (consumers & 2 && body !== undefined && !document.expanded) inspectEmbeddedCode(body, "node", initialCwd, builder);
+		if (consumers & 4 && body !== undefined && !document.expanded) inspectEmbeddedCode(body, "python", initialCwd, builder);
 		if (consumers & 8) markUnverifiable(builder);
 	}
 	for (const nested of analysis.substitutions) inspectShellScript(nested, initialCwd, depth + 1, builder, shellOperation);
@@ -863,6 +866,7 @@ function nodeMayReadStdin(tokens: readonly string[], start: number, descriptor =
 		if (word === "--check" || word === "-c" || word === "--help" || word === "-h" || word === "--version" || word === "-v"
 			|| word === "--eval" || word.startsWith("--eval=") || word === "--print" || word.startsWith("--print=") || word.startsWith("-e") || word.startsWith("-p")) continue;
 		options = true;
+		if (NODE_VALUE_FREE_FLAGS.has(word)) continue;
 		if (!word.includes("=") && (word.startsWith("--") || word.length === 2)) valuePending = true;
 	}
 	return descriptor === 0 && (options || valuePending || afterOptions);
@@ -1050,9 +1054,11 @@ function isTransparentStdinStage(tokens: ShellSegment): boolean {
  * segment / four-level bounds. -1 means no matching definition, not a refusal. */
 function functionStdinConsumers(segments: ShellSegment[], name: string, descriptor: number, depth: number): number {
 	if (segments.length > MAX_SCRIPT_SEGMENTS) return -1;
-	let consumers = -1;
+	let consumers = -1, conditionalDepth = 0;
 	for (let definition = 0; definition < segments.length; definition++) {
 		const declaration = segments[definition]!;
+		if (declaration[0] === "fi" || declaration[0] === "done" || declaration[0] === "esac") conditionalDepth = Math.max(0, conditionalDepth - 1);
+		if (declaration[0] === "if" || declaration[0] === "for" || declaration[0] === "while" || declaration[0] === "until" || declaration[0] === "case" || declaration[0] === "select") conditionalDepth++;
 		let word = 0;
 		while (declaration[word] === "{" || declaration[word] === "then" || declaration[word] === "else" || declaration[word] === "do") word++;
 		let bodySegment = definition, bodyWord = -1;
@@ -1060,7 +1066,7 @@ function functionStdinConsumers(segments: ShellSegment[], name: string, descript
 		else if (declaration[word] === name && declaration.length === word + 1 && declaration.separatorAfter === "(") { bodySegment++; bodyWord = 0; }
 		if (bodyWord < 0 || !segments[bodySegment] || segments[bodySegment]![bodyWord] !== "{") continue;
 		if (depth > MAX_WRAPPER_DEPTH) return 0;
-		if (consumers < 0) consumers = 0;
+		if (consumers < 0 || conditionalDepth === 0 && !declaration.conditionalMember && !declaration.subshellDepth) consumers = 0;
 		let braces = 0;
 		for (let cursor = bodySegment; cursor < segments.length; cursor++) {
 			const tokens = segments[cursor]!, start = cursor === bodySegment ? bodyWord : 0;

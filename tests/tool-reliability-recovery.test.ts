@@ -201,7 +201,9 @@ test("browser navigation accepts confirmed dual-stack Fake-IP without allowing p
  if (available.error || available.status !== 0) { t.skip("Python is unavailable; set SP_TEST_PYTHON to exercise the generated prelude"); return; }
  const source = withOwnedScreenshotDefault("new_tab(_test_url); goto_url(_test_url)", "unused-test-screenshot.png");
  const program = `
-import json, socket, sys, types
+import faulthandler, json, socket, sys, types
+print("Fake-IP probe runtime: " + sys.version, file=sys.stderr, flush=True)
+faulthandler.dump_traceback_later(3, repeat=True)
 helpers = types.ModuleType("browser_harness.helpers")
 helpers.cdp = lambda *args, **kwargs: None
 sys.modules["browser_harness"] = types.ModuleType("browser_harness")
@@ -257,9 +259,10 @@ for name, target, probe, target_url, allowed, expected_probes in cases:
     if not allowed: assert "[BROWSER_EXEC_URL]" in error, (name, error)
     results.append({"case": name, "allowed": allowed, **counts})
 print(json.dumps(results))
+faulthandler.cancel_dump_traceback_later()
 `;
  const result = spawnSync(python, ["-c", program], { input: JSON.stringify(source), encoding: "utf8", timeout: 10000 });
- assert.equal(result.status, 0, result.stderr || String(result.error));
+ assert.equal(result.status, 0, [result.error && String(result.error), result.stderr].filter(Boolean).join("\n"));
  const cases = JSON.parse(result.stdout);
  assert.equal(cases.length, 21);
  assert.equal(cases.filter((row: any) => row.allowed).length, 7);

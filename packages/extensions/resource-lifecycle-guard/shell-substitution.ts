@@ -169,7 +169,7 @@ export interface ShellAnalysisView {
   substitutionUncertain?: boolean;
   /** Unknown body boundaries may hide executable input or following commands. */
   unboundedHeredoc?: boolean;
-  hereDocuments?: { header: string; pipelineHeader?: string; contextEnd: number; bodyEnd: number; body: string; priorSource: boolean; descriptor: number }[];
+  hereDocuments?: { header: string; pipelineHeader?: string; contextEnd: number; bodyEnd: number; body: string; expanded: boolean; priorSource: boolean; descriptor: number }[];
 }
 
 function maskShellRange(output: string[] | undefined, start: number, end: number): void {
@@ -180,6 +180,7 @@ function maskShellRange(output: string[] | undefined, start: number, end: number
 }
 
 interface HereDelimiter {
+  active: boolean;
   value: string;
   quoted: boolean;
   stripTabs: boolean;
@@ -239,38 +240,45 @@ function collectHereDelimiters(command: string, start: number, end: number): Her
       while (pendingHeader < delimiters.length) delimiters[pendingHeader++]!.headerEnd = index;
       if (comment) break;
     }
-    if (c !== "<" || command[index + 1] !== "<" || command[index + 2] === "<") continue;
+    if (c !== "<" && c !== ">") continue;
     let maskStart = index;
-    let descriptor = 0;
+    let descriptor = c === "<" ? 0 : 1;
     let fdStart = index;
     while (fdStart > 0 && command.charCodeAt(fdStart - 1) >= 48 && command.charCodeAt(fdStart - 1) <= 57) fdStart--;
     if (fdStart < index && isShellWordBoundary(command[fdStart - 1])) {
       descriptor = Number(command.slice(fdStart, index));
       maskStart = fdStart;
     }
+    // Left-to-right redirection replaces earlier input on the same descriptor.
+    // Only records in this simple command are candidates; quoted data is skipped above.
+    for (let prior = pendingHeader; prior < delimiters.length; prior++) {
+      if (delimiters[prior]!.descriptor === descriptor || c === ">" && command[index - 1] === "&" && delimiters[prior]!.descriptor === 2) delimiters[prior]!.active = false;
+    }
+    if (c !== "<" || command[index + 1] !== "<") continue;
+    if (command[index + 2] === "<") { index += 2; continue; }
     let cursor = index + 2;
     const stripTabs = command[cursor] === "-";
     if (stripTabs) cursor++;
     while (command[cursor] === " " || command[cursor] === "\t") cursor++;
     let quoted = false;
     let value = "";
-    if (command[cursor] === "'" || command[cursor] === '"') {
-      quoted = true;
-      const delimiterQuote = command[cursor]!;
-      cursor++;
-      const valueStart = cursor;
-      while (cursor < end && command[cursor] !== delimiterQuote) cursor++;
-      if (cursor >= end) return { delimiters, uncertain: true };
-      value = command.slice(valueStart, cursor);
-      cursor++;
-      if (value.includes("$") || value.includes("`") || value.includes("\\")) uncertain = true;
-    } else {
-      const valueStart = cursor;
-      while (cursor < end && !isShellWordBoundary(command[cursor])) cursor++;
-      value = command.slice(valueStart, cursor);
-      if (value.includes("$") || value.includes("`") || value.includes("\\")) uncertain = true;
+    while (cursor < end && !isShellWordBoundary(command[cursor])) {
+      if (command[cursor] === "'" || command[cursor] === '"') {
+        quoted = true;
+        const delimiterQuote = command[cursor++]!;
+        const valueStart = cursor;
+        while (cursor < end && command[cursor] !== delimiterQuote) cursor++;
+        if (cursor >= end) return { delimiters, uncertain: true };
+        value += command.slice(valueStart, cursor++);
+      } else {
+        const valueStart = cursor;
+        while (cursor < end && !isShellWordBoundary(command[cursor]) && command[cursor] !== "'" && command[cursor] !== '"') cursor++;
+        value += command.slice(valueStart, cursor);
+      }
     }
-    if (value) delimiters.push({ value, quoted, stripTabs, maskStart, maskEnd: cursor, headerEnd: end, pipelineEnd: end, descriptor });
+    if (value.includes("$") || value.includes("`") || value.includes("\\")) uncertain = true;
+    if (delimiters.length === MAX_SUBSTITUTIONS) return { delimiters, uncertain: true };
+    if (value) delimiters.push({ active: true, value, quoted, stripTabs, maskStart, maskEnd: cursor, headerEnd: end, pipelineEnd: end, descriptor });
     else uncertain = true;
     index = cursor - 1;
   }
@@ -403,8 +411,13 @@ export function prepareShellAnalysis(command: string): ShellAnalysisView {
         bodyStart = command.length;
         break;
       }
+      const body = command.slice(contentStart, delimiterLineStart);
+      let expanded = false;
       if (!delimiter.quoted) {
-        const body = command.slice(contentStart, delimiterLineStart);
+        for (let cursor = 0; cursor < body.length; cursor++) {
+          if (body[cursor] === "\\") { cursor++; continue; }
+          if (body[cursor] === "$" || body[cursor] === "`") { expanded = true; break; }
+        }
         const nested = extractCommandSubstitutions(body, true);
         for (const script of nested.scripts) {
           if (substitutions.length < MAX_SUBSTITUTIONS) substitutions.push(script);
@@ -413,8 +426,9 @@ export function prepareShellAnalysis(command: string): ShellAnalysisView {
         if (nested.unterminated || nested.unsupported) substitutionUncertain = uncertain = true;
       }
       hereDocuments ??= [];
-      if (hereDocuments.length < MAX_SUBSTITUTIONS) {
-        hereDocuments.push({ header: command.slice(logicalLineStart, delimiter.headerEnd), pipelineHeader: delimiter.pipelineEnd > delimiter.headerEnd ? command.slice(logicalLineStart, delimiter.pipelineEnd) : undefined, contextEnd: delimiter.pipelineEnd, bodyEnd, body: command.slice(contentStart, delimiterLineStart), priorSource: logicalLineStart > 0, descriptor: delimiter.descriptor });
+      if (!delimiter.active) { /* Its expansions above still execute, but its body is not supplied to the consumer. */ }
+      else if (hereDocuments.length < MAX_SUBSTITUTIONS) {
+        hereDocuments.push({ header: command.slice(logicalLineStart, delimiter.headerEnd), pipelineHeader: delimiter.pipelineEnd > delimiter.headerEnd ? command.slice(logicalLineStart, delimiter.pipelineEnd) : undefined, contextEnd: delimiter.pipelineEnd, bodyEnd, body, expanded, priorSource: logicalLineStart > 0, descriptor: delimiter.descriptor });
       } else substitutionUncertain = uncertain = true;
       maskShellRange(output, contentStart, bodyEnd);
       const delimiterLineEnd = command.indexOf("\n", bodyEnd);

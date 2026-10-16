@@ -362,6 +362,10 @@ test("trap action expansion cannot defer inspection of executable source", async
 });
 
 const d3ReadOnlyCases = [
+  ["Node value-free flag data", "node --no-warnings script.js <<'EOF'\nfs.rmSync(target,{recursive:true})\nEOF"],
+  ["redefined function data", "f(){ source /dev/stdin; }; f(){ cat; }; f <<'EOF'\nsleep 100 &\nEOF"],
+  ["superseded heredoc data", "source /dev/stdin <<'A' <<'B'\nsleep 100 &\nA\nprintf ok\nB"],
+  ["superseded heredoc by input file", "source /dev/stdin <<'A' </dev/null\nsleep 100 &\nA"],
   ["unrelated function and read", "f(){ :; }; read x <<'EOF'\nhello\nEOF"],
   ["persistent descriptor readonly source", "exec 3<<'EOF'\nprintf ok\nEOF\nsource /dev/fd/3"],
   ["persistent descriptor data", "exec 3<<'EOF'\nsleep 100 &\nEOF\ncat /dev/fd/3"],
@@ -378,6 +382,9 @@ const d3ReadOnlyCases = [
   ["unrelated executable function", "f(){ source /dev/stdin; }; wc -c <<'EOF'\nsleep 100 &\nEOF"],
 ] as const;
 const d3RejectedCases = [
+  ["concatenated delimiter mutation", "bash", 'node <<";""EOF"\n;\nfs.rmSync(target,{recursive:true})\n;EOF'],
+  ["final function executable body", "bash", "f(){ cat; }; f(){ source /dev/stdin; }; f <<'EOF'\nsleep 100 &\nEOF"],
+  ["final heredoc executable body", "bash", "source /dev/stdin <<'A' <<'B'\nprintf ok\nA\nsleep 100 &\nB"],
   ["persistent descriptor launch", "bash", "exec 3<<'EOF'\nsleep 100 &\nEOF\nsource /dev/fd/3"],
   ["persistent descriptor mutation", "bash", "exec 3<<'EOF'\nrm -rf \"$X\"\nEOF\nsource /dev/fd/3"],
   ["python interactive mutation", "bash", "python3 -i -c 'pass' <<'EOF'\nimport shutil; shutil.rmtree('/protected')\nEOF"],
@@ -416,3 +423,36 @@ test("literal source resolution is bounded and does not reuse uncertain assignme
   assert.equal(literalStoredScripts('ACTION=\'sleep 100 &\'; ACTION="$OTHER"; trap "$ACTION" EXIT'), undefined);
   assert.deepEqual(literalStoredScripts('ACTION=\'printf ok\'; trap "$ACTION" EXIT'), ["printf ok"]);
 });
+
+const d3UnanalyzedPrograms = [
+  ["Perl heredoc", "perl <<'EOF'\nsystem(\"sleep 100 &\")\nEOF"],
+  ["Ruby heredoc", "ruby <<'EOF'\nsystem(\"sleep 100 &\")\nEOF"],
+  ["Perl -e", "perl -e 'system(\"sleep 100 &\")'"],
+  ["Ruby -e", "ruby -e 'system(\"sleep 100 &\")'"],
+  ["Node parameter body", 'PAYLOAD="require(\'node:fs\').rmSync(\'/protected\',{recursive:true})"; node <<EOF\n$PAYLOAD\nEOF'],
+  ["Python parameter body", 'PAYLOAD="import shutil; shutil.rmtree(\'/protected\')"; python <<EOF\n$PAYLOAD\nEOF'],
+  ["Node substitution body", "node <<EOF\n$(printf '%s' 'fs.rmSync(target,{recursive:true})')\nEOF"],
+  ["Python substitution body", "python <<EOF\n$(printf '%s' 'shutil.rmtree(target)')\nEOF"],
+] as const;
+for (const mode of ["full-access", "workspace-write"] as const) {
+  for (const [name, command] of d3UnanalyzedPrograms) test(`D3 ${mode}: unanalyzed ${name} follows permission mode`, async t => {
+    assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "opaque-script");
+    const mutation = inspectHighRiskBashMutation({ command }, process.cwd());
+    assert.notEqual(mutation?.mutationDetected, true);
+    if (name.startsWith("Node") || name.startsWith("Python")) {
+      assert.equal(prepareShellAnalysis(command).hereDocuments?.[0]?.expanded, true);
+      assert.ok(mutation?.primitives.includes("heredoc_expanded_source"), "expanded executable text is recorded as unanalyzed, not safe");
+    }
+    const f = await shellHookFixture(t, mode, "active");
+    assertFinalAuthorization(await f.authorize(command));
+    assert.equal(f.dialogs(), mode === "full-access" ? 0 : 1);
+  });
+  test(`D3 ${mode}: outer Perl launch and original eval refusal remain blocked`, async t => {
+    for (const command of ["perl -e 'print 1' &", 'eval "$SCRIPT"']) {
+      const refusal = inspectBashResourceLifecycle({ command });
+      assert.match(refusal ?? "", command.startsWith("eval") ? /\[SHELL_WRAPPER\]/ : /Blocked an unmanaged long-lived process/);
+      const f = await shellHookFixture(t, mode, "active"), call = await f.authorize(command);
+      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+  });
+}

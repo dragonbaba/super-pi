@@ -95,6 +95,8 @@ lossless processing of filenames containing whitespace. Original bytes execute u
 | Literal shell wrappers and bounded substitutions | Their source is inspected recursively. Unsupported wrapper grammar, malformed executable substitutions and inspection limits retain their existing refusal codes; these are not general Bash parsing guarantees. |
 | Native PowerShell | Uses its own lifecycle and permission classifier. Nested Bash source receives Bash checks; recursive deletion with unknown targets remains blocked. |
 
+D3 interpreter recognition is limited to the supported Shell, Node and Python forms. Other interpreters, including Perl/Ruby heredocs and `-e` programs, are opaque scripts; this does not mean their bodies were inspected or found safe. Node/Python heredoc bodies expanded by the shell through unquoted `$VAR` or `$(...)` likewise remain unanalyzed executable source. Without a separately recognized mutation or lifecycle violation, `workspace-write` asks once and `full-access + never-ask` allows them. Visible command-substitution operations retain their own checks, and an outer background operator such as `perl -e '...' &` still refuses. The original `eval` `[SHELL_WRAPPER]` refusal for unsupported/dynamic operands is unchanged.
+
 The real-chain regressions are in `tests/shell-common-compatibility.test.ts`; they use synthetic temporary workspaces and run on Linux Bash and Windows Git Bash in required CI. Native delete/move and explicit per-call Bash/PowerShell cwd are separate future scopes, not features of PR #43.
 
 ## Resource lifecycle

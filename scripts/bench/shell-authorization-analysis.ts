@@ -12,6 +12,12 @@ const cwd = process.cwd(), iterations = 512, warmup = 64, samplingInterval = 409
 const literalInputs = process.argv.includes("--literal-inputs");
 const substitution = "$(grep -c -E '(class|function|const|var|let) GCSystem\\b' pixi/pixi.js)";
 const cases = literalInputs ? [
+  ["expanded-node-input", 'PAYLOAD="console.log(1)"; node <<EOF\n$PAYLOAD\nEOF', 1],
+  ["expanded-python-input", "python <<EOF\n$(printf '%s' 'print(1)')\nEOF", 2],
+  ["concatenated-delimiter", 'node <<"E""OF"\nconsole.log(1)\nEOF', 1],
+  ["superseded-heredoc", "source /dev/stdin <<'A' <<'B'\nsleep 100 &\nA\nprintf ok\nB", 2],
+  ["redefined-function", "f(){ source /dev/stdin; }; f(){ cat; }; f <<'EOF'\nsleep 100 &\nEOF", 1],
+  ["node-value-free-option", "node --no-warnings script.js <<'EOF'\nfs.rmSync(target,{recursive:true})\nEOF", 1],
   ["persistent-descriptor", "exec 3<<'EOF'\nprintf ok\nEOF\nsource /dev/fd/3", 2],
   ["literal-process-source", "source <(echo 'printf ok')", 2],
   ["python-interactive", "python3 -i -c 'pass' <<'EOF'\nprint(1)\nEOF", 1],
