@@ -424,7 +424,11 @@ export class CodemodeController {
 					invocation.shownImageChars += block.data.length;
 				}
 			}
-			throw new Error(`[${ref}] ${codemodeFailureReason(fact.preview, "model")}\n${truncateTail(fact.preview.slice(-1024), FAILURE_TAIL_OPTIONS).content}${fact.outputPath ? "\nOutput: " + fact.outputPath : ""}`);
+			// Complete short diagnostics preserve native wrapper identity used by the UI
+			// to recognize a child exception. Long output needs cause plus bounded tail.
+			const diagnostic = fact.preview.length <= 512 ? fact.preview
+				: codemodeFailureReason(fact.preview, "model") + "\n" + truncateTail(fact.preview.slice(-1024), FAILURE_TAIL_OPTIONS).content;
+			throw new Error(`[${ref}] ${diagnostic}${fact.outputPath ? "\nOutput: " + fact.outputPath : ""}`);
 		}
 		const content = imageChars > MAX_SCRIPT_IMAGE_CHARS ? scriptContent(result.content) : result.content;
 		return { content, details: result.details, isError: result.isError, ref, executed: fact.executed, resultComplete: fact.resultComplete, failureHandled };
