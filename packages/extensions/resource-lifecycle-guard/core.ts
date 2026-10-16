@@ -165,7 +165,8 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
  if (!SHELL_WRAPPER_TEXT_PATTERN.test(command) && !EXECUTABLE_EXPANSION_TEXT_PATTERN.test(command) && !command.includes("[[") && !command.includes("((") && !command.includes("for") && !command.includes("select")) return undefined;
  const segments = parseShellSegments(command);
  if (segments.length > MAX_SCRIPT_SEGMENTS) return lifecycleRefusal("SHELL_INSPECTION_LIMIT", "too many command segments", "reduce the number of segments");
- for (const tokens of segments) {
+ for (let segment = 0; segment < segments.length; segment++) {
+  const tokens = segments[segment]!;
   if (tokens.bashTestProcessSubstitution) return lifecycleRefusal("SHELL_UNINSPECTABLE", "process substitution inside a Bash test cannot be safely inspected", "split the process substitution into separately inspectable commands");
   // Assignment, arithmetic and lookup uncertainty is classified by permissions.
   // It cannot turn a visible detached launch into an authorized foreground job.
@@ -272,9 +273,13 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
    let actionIndex = skipRedirections(tokens, index + 1);
    const endOfOptions = tokens[actionIndex] === "--";
    if (endOfOptions) actionIndex = skipRedirections(tokens, actionIndex + 1);
-   const action = tokens[actionIndex];
+   let action = tokens[actionIndex];
    if (action && action !== "-" && (endOfOptions || action !== "-p" && action !== "-l")) {
-    if (tokens.expansions?.[actionIndex]) continue;
+    if (tokens.expansions?.[actionIndex]) {
+     const literal = literalAdjacentSource(segments[segment - 1], action);
+     if (literal === undefined) return lifecycleRefusal("SHELL_WRAPPER", "trap action cannot be inspected as literal executable source", "supply a literal inspectable trap action");
+     action = literal;
+    }
     const result = inspectLifecycleScript(action, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) return result;
    }
    continue;
@@ -897,7 +902,7 @@ export function literalAliasSource(tokens: ShellSegment, index: number): string 
 }
 
 /** Resolve only a direct variable whose immediately preceding command consists
- * entirely of literal assignments. Other state remains permission evidence.
+ * entirely of literal assignments. Unresolved trap actions are lifecycle refusals.
  * At most 16 sources, 128 KiB total, owned only by the synchronous caller. */
 export function literalStoredScripts(command: string): string[] | undefined {
 	if (!command.includes("$") || !command.includes("trap") && !command.includes("alias")) return undefined;
@@ -918,14 +923,18 @@ export function literalStoredScripts(command: string): string[] | undefined {
 			if (!tokens.expansions?.[operand]) continue;
 			const word = tokens[operand]!, equals = alias ? word.indexOf("=") : -1;
 			if (alias && equals < 1) continue;
-			const match = DIRECT_SHELL_VARIABLE_PATTERN.exec(alias ? word.slice(equals + 1) : word);
-			if (!match || previous.pipelineMember || previous.conditionalMember || previous.subshellDepth) continue;
-			const source = literalPreviousAssignment(previous, match[1] ?? match[2]!);
+			const source = literalAdjacentSource(previous, alias ? word.slice(equals + 1) : word);
 			if (source === undefined || bytes + source.length > MAX_INSPECTED_COMMAND_CHARS || (scripts?.length ?? 0) >= MAX_SUBSTITUTIONS) continue;
 			scripts ??= []; scripts.push(source); bytes += source.length;
 		}
 	}
 	return scripts;
+}
+
+function literalAdjacentSource(previous: ShellSegment | undefined, word: string): string | undefined {
+	if (!previous || previous.pipelineMember || previous.conditionalMember || previous.subshellDepth) return undefined;
+	const match = DIRECT_SHELL_VARIABLE_PATTERN.exec(word);
+	return match ? literalPreviousAssignment(previous, match[1] ?? match[2]!) : undefined;
 }
 
 function literalPreviousAssignment(tokens: ShellSegment, name: string): string | undefined {

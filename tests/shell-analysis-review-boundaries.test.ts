@@ -377,7 +377,6 @@ const d3ReadOnlyCases = [
   ["function data consumer", "f(){ cat; }; f <<'EOF'\nhello\nEOF"],
   ["unrelated function and wc", "f(){ printf ok; }; wc -c <<'EOF'\nhello\nEOF"],
   ["encoded read-only script", "base64 -d <<'EOF' | source /dev/stdin\ncHJpbnRmIG9rCg==\nEOF"],
-  ["unresolved trap", 'trap "$UNKNOWN_ACTION" EXIT'],
   ["expanded alias", 'ACTION=\'printf ok\'; alias run="$ACTION"\nrun'],
   ["unresolved alias", 'alias run="$UNKNOWN_ACTION"\nrun'],
   ["unrelated executable function", "f(){ source /dev/stdin; }; wc -c <<'EOF'\nsleep 100 &\nEOF"],
@@ -423,6 +422,29 @@ test("literal source resolution is bounded and does not reuse uncertain assignme
   assert.equal(literalStoredScripts('ACTION=\'sleep 100 &\'; unset ACTION; trap "$ACTION" EXIT'), undefined);
   assert.equal(literalStoredScripts('ACTION=\'sleep 100 &\'; ACTION="$OTHER"; trap "$ACTION" EXIT'), undefined);
   assert.deepEqual(literalStoredScripts('ACTION=\'printf ok\'; trap "$ACTION" EXIT'), ["printf ok"]);
+});
+
+for (const mode of ["full-access", "workspace-write"] as const) {
+  test(`D3 ${mode}: unresolved trap retains main lifecycle refusal`, async t => {
+    // main 1581af873 rejects the first two via SHELL_UNINSPECTABLE; this PR
+    // retains refusal with the specific SHELL_WRAPPER diagnostic, like eval.
+    for (const command of [
+      'ACTION=\'sleep 100 &\'; true; trap "$ACTION" EXIT',
+      'trap "$ACTION" EXIT',
+      'trap "$(printf ok)" EXIT',
+      'builtin trap -- "$ACTION" EXIT',
+      'ACTION=\'printf ok\'; trap "$ACTION" EXIT; trap "$OTHER" INT',
+    ]) {
+      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_WRAPPER\]/, command);
+      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
+      assert.equal(call.outcome?.block, true, command); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+  });
+}
+
+test("D3 Python f-string expressions remain opaque executable source", () => {
+  const command = `python3 <<'EOF'\nimport shutil\nf"{shutil.rmtree('/protected')}"\nEOF`;
+  assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "opaque-script");
 });
 
 const d3UnanalyzedPrograms = [
