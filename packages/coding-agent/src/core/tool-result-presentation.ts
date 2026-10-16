@@ -4,6 +4,7 @@ import { estimateContextTokensFromParts, estimateMessageTokens, type Tool } from
 import { CONTEXT_SAFETY_TOKENS, minimumRequestOutputTokens } from "@super-pi/ai/api/simple-options";
 import { estimateToolOutputTokens, type ToolOutputTokenEstimate } from "./tool-output-budget.ts";
 import { MCP_INLINE_BYTES, type McpTypedSource, verifiedMcpSource, mcpTextDigest, mcpImageDigest } from "./tool-result-source.ts";
+import { ToolResultBudgetSelection } from "./tool-result-budget-selection.ts";
 
 export const TOOL_RESULT_PRESENTATION_VERSION = 1 as const;
 export const TOOL_RESULT_PRESENTATION_V2_VERSION = 2 as const;
@@ -205,6 +206,14 @@ export interface ToolResultPresentationCounters {
 	contextualPreparedRecords?: number;
 	contextualPreparedRecordsHighWaterMark?: number;
 	contextualMinimumMeasurements?: number;
+	contextualChoiceCalls?: number;
+	contextualChoiceStates?: number;
+	contextualChoiceSteps?: number;
+	contextualChoiceActivePlans?: number;
+	contextualChoiceActiveBytes?: number;
+	contextualChoicePeakBytes?: number;
+	contextualChoiceResourceFailures?: number;
+	contextualChoiceAllocatedBackingBytes?: number;
 	ownerDisposeCalls: number;
 }
 
@@ -388,6 +397,14 @@ export function createToolResultPresentationCounters(): ToolResultPresentationCo
 		contextualContextTokensConsumed: 0,
 		activeContextualCoordinators: 0,
 		contextualCoordinatorsHighWaterMark: 0,
+		contextualChoiceCalls: 0,
+		contextualChoiceStates: 0,
+		contextualChoiceSteps: 0,
+		contextualChoiceActivePlans: 0,
+		contextualChoiceActiveBytes: 0,
+		contextualChoicePeakBytes: 0,
+		contextualChoiceResourceFailures: 0,
+		contextualChoiceAllocatedBackingBytes: 0,
 		ownerDisposeCalls: 0,
 	};
 }
@@ -2535,6 +2552,7 @@ export class ToolResultPresentationOwner {
 		let preparedHead: ProjectionRecord | undefined;
 		let preparedTail: ProjectionRecord | undefined;
 		let preparedCount = 0;
+		let exactSelection: ToolResultBudgetSelection | undefined;
 		const generation = ++this.contextualGeneration;
 		try {
 			for (let index = 0; index <= assistantIndex; index++) {
@@ -2624,6 +2642,31 @@ export class ToolResultPresentationOwner {
 				}
 			}
 			if (!keepFullBatch && (minimumToolTokens > remainingToolTokens || minimumContextTokens > remainingContextTokens)) {
+				// The ordinary path and its counters stay unchanged. Only a greedy
+				// rejection pays for exact, explicitly bounded combination selection.
+				exactSelection = new ToolResultBudgetSelection(currentResultCount, this.counters);
+				let choiceIndex = 0;
+				alternative = preparedHead;
+				for (let index = assistantIndex + 1; index < messages.length; index++) {
+					const message = messages[index]!;
+					if (message.role !== "toolResult") continue;
+					let record: ProjectionRecord;
+					if (alternative?.toolCallId === message.toolCallId && alternative.sourceContent === message.content) {
+						record = alternative;
+						alternative = alternative.contextualNext;
+					} else {
+						record = this.getOrCreateProjectionRecord(message.content, message.toolCallId, "provider");
+						this.measureContextualMinimum(message, record, imagePolicy, toolCalling);
+					}
+					exactSelection.set(choiceIndex++, record.contextualMinimumToolTokens, record.contextualMinimumContextTokens,
+						record.contextualFullToolTokens, record.contextualFullContextTokens, record.contextualMinimumIsSource);
+				}
+				exactSelection.solve(remainingToolTokens, remainingContextTokens);
+				minimumToolTokens = exactSelection.toolTokens;
+				minimumContextTokens = exactSelection.contextTokens;
+				bodyResults = exactSelection.bodyResults;
+			}
+			if (!keepFullBatch && (minimumToolTokens > remainingToolTokens || minimumContextTokens > remainingContextTokens)) {
 				this.counters.contextualBudgetFailures++;
 				const resultLimited = minimumToolTokens > remainingToolTokens;
 				this.failContextualBudget(new ToolResultContinuationError("budget-too-small",
@@ -2632,6 +2675,7 @@ export class ToolResultPresentationOwner {
 					remainingToolTokens, remainingContextTokens, remainingResults, resultLimited ? "result-batch-budget" : outputReserve >= contextWindow ? "output-reservation" : "context-headroom");
 			}
 			let prepared = preparedHead;
+			let exactIndex = 0;
 			// Pass two shares only the surplus among results needing more body.
 			// Actual consumption is subtracted, so unused allowance flows onward.
 			for (let index = 0; index < messages.length; index++) {
@@ -2648,7 +2692,8 @@ export class ToolResultPresentationOwner {
 				}
 				// Replay scalar choices rather than retaining an unbounded selection
 				// table. Overflow records may have been evicted between these passes.
-				const keepSource = !keepFullBatch && this.preferFullContextualSource(record, replayMinimumToolTokens, replayMinimumContextTokens, initialToolBudget, initialContextBudget);
+				const keepSource = exactSelection ? exactSelection.keepsFullSource(exactIndex) : !keepFullBatch && this.preferFullContextualSource(record, replayMinimumToolTokens, replayMinimumContextTokens, initialToolBudget, initialContextBudget);
+				exactIndex++;
 				const minimumToolCost = keepSource ? record.contextualFullToolTokens : record.contextualMinimumToolTokens;
 				const minimumContextCost = keepSource ? record.contextualFullContextTokens : record.contextualMinimumContextTokens;
 				if (keepSource) {
@@ -2688,6 +2733,7 @@ export class ToolResultPresentationOwner {
 			}
 			return messages;
 		} finally {
+			exactSelection?.dispose();
 			while (preparedHead) {
 				const next = preparedHead.contextualNext;
 				preparedHead.contextualNext = undefined;

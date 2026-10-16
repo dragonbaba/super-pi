@@ -24,7 +24,7 @@ test("R1.3 two-pass helpers create no asynchronous state or unbounded scratch co
   visit(ast);
   assert.deepEqual(found,methods);
   assert.match(source,/preparedCount < MAX_PROJECTION_RECORD_ENTRIES/);
-  assert.match(source,/finally\s*\{\s*while \(preparedHead\)/);
+  assert.match(source,/finally\s*\{\s*exactSelection\?\.dispose\(\);\s*while \(preparedHead\)/);
   assert.match(source,/preparedHead\.contextualNext = undefined/);
   assert.match(source,/this\.counters\.contextualPreparedRecords = 0/);
 });
