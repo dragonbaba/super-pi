@@ -74,9 +74,10 @@ function nestedAllowed(tool: AgentTool<any>): boolean {
 }
 function message(error: unknown): string { return error instanceof Error ? error.message : "Codemode execution failed"; }
 const FAILURE_TAIL_OPTIONS = Object.freeze({ maxLines: 4, maxBytes: 1024 });
+const SUMMARY_TAIL_OPTIONS = Object.freeze({ maxLines: 3, maxBytes: 256 });
 function preview(result: ToolResultMessage): string {
 	for (const block of result.content) if (block.type === "text") return result.isError
-		? codemodeFailureReason(block.text, "model") + "\n" + truncateTail(codemodeFailureWindow(block.text).slice(-1024), FAILURE_TAIL_OPTIONS).content
+		? codemodeFailureWindow(block.text)
 		: block.text.slice(0, CODEMODE_DISPLAY_PREVIEW_CHARS);
 	return "";
 }
@@ -423,7 +424,7 @@ export class CodemodeController {
 					invocation.shownImageChars += block.data.length;
 				}
 			}
-			throw new Error(`[${ref}] ${fact.preview}${fact.outputPath ? "\nOutput: " + fact.outputPath : ""}`);
+			throw new Error(`[${ref}] ${codemodeFailureReason(fact.preview, "model")}\n${truncateTail(fact.preview.slice(-1024), FAILURE_TAIL_OPTIONS).content}${fact.outputPath ? "\nOutput: " + fact.outputPath : ""}`);
 		}
 		const content = imageChars > MAX_SCRIPT_IMAGE_CHARS ? scriptContent(result.content) : result.content;
 		return { content, details: result.details, isError: result.isError, ref, executed: fact.executed, resultComplete: fact.resultComplete, failureHandled };
@@ -609,6 +610,10 @@ export class CodemodeController {
 			const content: (TextContent | ImageContent)[] = result.output;
 			if (result.ok && result.value !== undefined) content.push({ type: "text", text: typeof result.value === "string" ? result.value : JSON.stringify(result.value) });
 			if (!result.ok) content.push({ type: "text", text: `[CODEMODE_${result.error.kind.toUpperCase()}] ${result.error.message}` });
+			// Compact causes stay in the summary. A separate bounded tail preserves status
+			// and secondary diagnostics without changing collapsed UI cause selection.
+			if (result.ok) for (const fact of invocation.facts) if (fact.isError) content.push({ type: "text",
+				text: `[Child output tail ${fact.ref}]\n${truncateTail(fact.preview.slice(-1024), SUMMARY_TAIL_OPTIONS).content}` });
 			// The summary is unshifted below; capping keeps every block before the cut (and only images
 			// after it), so retained text blocks keep these positions.
 			const shownOffset = content.length + 1;
@@ -624,7 +629,7 @@ export class CodemodeController {
 			// and out of the trailing native-read group.
 			if (imageFiles) summary += "\n" + imageFiles.notice;
 			const imagePrefix = imageFiles ? summary.length : 0;
-			for (const fact of invocation.facts) summary += `\n${fact.toolName.slice(0, 80)}: ${fact.executionStatus ?? (fact.isError ? "failed" : "completed")}${fact.executionStatus && (fact.toolName === "bash" || fact.toolName === "powershell") ? "; exit=" + (fact.exitCode ?? "unknown") : ""}${fact.isError ? " — " + fact.preview + " [" + fact.ref + "]" : ""}${fact.outputPath ? " Output: " + fact.outputPath : ""}`;
+			for (const fact of invocation.facts) summary += `\n${fact.toolName.slice(0, 80)}: ${fact.executionStatus ?? (fact.isError ? "failed" : "completed")}${fact.executionStatus && (fact.toolName === "bash" || fact.toolName === "powershell") ? "; exit=" + (fact.exitCode ?? "unknown") : ""}${fact.isError ? " — " + codemodeFailureReason(fact.preview, "model") + " [" + fact.ref + "]" : ""}${fact.outputPath ? " Output: " + fact.outputPath : ""}`;
 			for (const fact of invocation.facts) if (fact.recoveryError) summary += `\n[CODEMODE_RECOVERY_UNAVAILABLE] ${fact.ref}: ${fact.recoveryError}. Do not repeat completed tools.`;
 			for (const fact of invocation.facts) if (fact.evicted && fact.displayLimited) summary += `\n[CODEMODE_REF_EVICTED] ${fact.ref}: result left the memory cache.${fact.outputPath ? " Recover with read: " + fact.outputPath : " Recovery unavailable."}`;
 			if (failed) summary += "\nCompleted tool side effects are not rolled back. Do not automatically retry mutations.";
