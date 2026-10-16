@@ -71,7 +71,7 @@ test("bounded quoted data and Node source execute original UTF-8 bytes through r
  assert.equal(existsSync(join(cwd, "forbidden")), false);
 });
 
-test("bounded input preserves limits and rejects extra executable framing", () => {
+test("stdin bridge keeps its limits while broader heredoc forms require opaque permission", () => {
  const overhead = Buffer.byteLength("cat <<'END'\n\nEND");
  assert.ok(boundedShellInput(`cat <<'END'\n${"x".repeat(MAX_BOUND_SHELL_INPUT_BYTES - overhead)}\nEND`));
  for (const command of [
@@ -79,12 +79,17 @@ test("bounded input preserves limits and rejects extra executable framing", () =
   "cat <<END\nx\nEND", "cat <<'END' > file\nx\nEND", "cat <<'END'\nx\nEND\necho later",
   "cat <<'END'\nEND\necho hidden\nEND", "node <<'END'\r\nconsole.log(1)\r\nEND", "cat file <<'END'\nx\nEND",
   "cat <<'END' | node\nx\nEND", "cat <<'ONE' <<'TWO'\nx\nONE\nx\nTWO",
- ]) { assert.equal(boundedShellInput(command), undefined); assert.match(inspectBashResourceLifecycle({ command })!, /SHELL_HEREDOC/); }
+ ]) { assert.equal(boundedShellInput(command), undefined); assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "opaque-script"); }
 });
 
 test("fallback: executable quoted operands are not accepted as inert data", async () => {
- for (const command of [`bash -c "cat <<'EOF'\nprintf DATA\nEOF"`, `eval "cat <<'EOF'\nprintf DATA\nEOF"`, "command bash -c 'sleep 100 &'", `echo "$(coproc case x in x) : ;; esac; printf REACHED)"`]) {
+ for (const command of ["command bash -c 'sleep 100 &'", `echo "$(coproc case x in x) : ;; esac; printf REACHED)"`]) {
   const outcome = await dispatch(process.cwd(), command);
+  assert.equal(outcome.result.isError, true); assert.equal(outcome.processes, 0);
+ }
+ for (const command of [`bash -c "cat <<'EOF'\nprintf DATA\nEOF"`, `eval "cat <<'EOF'\nprintf DATA\nEOF"`]) {
+  assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "opaque-script");
+  const outcome = await dispatch(process.cwd(), command, {}, true);
   assert.equal(outcome.result.isError, true); assert.equal(outcome.processes, 0);
  }
 });

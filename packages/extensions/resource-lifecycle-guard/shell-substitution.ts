@@ -166,6 +166,8 @@ export interface ShellAnalysisView {
   /** The body or delimiter could not be bounded without executing the shell. */
   uncertain: boolean;
   hasHeredoc: boolean;
+  substitutionUncertain?: boolean;
+  hereDocuments?: { header: string; body: string }[];
 }
 
 function maskShellRange(output: string[] | undefined, start: number, end: number): void {
@@ -263,12 +265,20 @@ export function prepareShellAnalysis(command: string): ShellAnalysisView {
   let arithmeticDepth = 0;
   let hasHeredoc = false;
   let uncertain = false;
+  let substitutionUncertain = false;
+  let hereDocuments: ShellAnalysisView["hereDocuments"];
   for (let index = 0; index < command.length; index++) {
     const c = command[index]!;
     if (escaped) { escaped = false; continue; }
     if (c === "\\" && quote !== "'") { escaped = true; continue; }
     if (quote) { if (c === quote) quote = ""; continue; }
     if (c === "'" || c === '"') { quote = c; continue; }
+    if (c === "#" && (index === 0 || COMMENT_BOUNDARY_PATTERN.test(command[index - 1]!))) {
+      const newline = command.indexOf("\n", index);
+      if (newline < 0) break;
+      index = newline;
+      continue;
+    }
     if (c === "$" && command[index + 1] === "(" && command[index + 2] === "(") {
       arithmeticDepth = 2;
       index += 2;
@@ -284,6 +294,10 @@ export function prepareShellAnalysis(command: string): ShellAnalysisView {
     output ??= command.split("");
     const operatorStart = index;
     const lineEnd = command.indexOf("\n", index + 2);
+    if (lineEnd >= 0) {
+      const headerSubstitutions = extractCommandSubstitutions(command.slice(operatorStart, lineEnd));
+      if (headerSubstitutions.unterminated || headerSubstitutions.unsupported) substitutionUncertain = uncertain = true;
+    }
     const delimiterScan = lineEnd < 0 ? { delimiters: [], uncertain: true } : collectHereDelimiters(command, operatorStart, lineEnd);
     const delimiters = delimiterScan.delimiters;
     uncertain ||= delimiterScan.uncertain;
@@ -335,9 +349,17 @@ export function prepareShellAnalysis(command: string): ShellAnalysisView {
       if (!delimiter.quoted) {
         const body = command.slice(contentStart, delimiterLineStart);
         const nested = extractCommandSubstitutions(body, true);
-        for (const script of nested.scripts) if (substitutions.length < MAX_SUBSTITUTIONS) substitutions.push(script);
-        if (nested.unterminated || nested.unsupported) uncertain = true;
+        for (const script of nested.scripts) {
+          if (substitutions.length < MAX_SUBSTITUTIONS) substitutions.push(script);
+          else substitutionUncertain = uncertain = true;
+        }
+        if (nested.unterminated || nested.unsupported) substitutionUncertain = uncertain = true;
       }
+      hereDocuments ??= [];
+      if (hereDocuments.length < MAX_SUBSTITUTIONS) {
+        const headerStart = command.lastIndexOf("\n", operatorStart) + 1;
+        hereDocuments.push({ header: command.slice(headerStart, operatorStart), body: command.slice(contentStart, delimiterLineStart) });
+      } else substitutionUncertain = uncertain = true;
       maskShellRange(output, contentStart, bodyEnd);
       const delimiterLineEnd = command.indexOf("\n", bodyEnd);
       bodyStart = delimiterLineEnd < 0 ? command.length : delimiterLineEnd + 1;
@@ -346,5 +368,5 @@ export function prepareShellAnalysis(command: string): ShellAnalysisView {
     index = bodyStart - 1;
   }
   if (arithmeticDepth !== 0) uncertain = true;
-  return { command: output ? output.join("") : command, substitutions, uncertain, hasHeredoc };
+  return { command: output ? output.join("") : command, substitutions, uncertain, hasHeredoc, substitutionUncertain, hereDocuments };
 }

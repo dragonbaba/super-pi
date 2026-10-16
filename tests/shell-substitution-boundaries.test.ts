@@ -63,12 +63,13 @@ test("substitution bodies retain mutation targets and outer cwd isolation", () =
 });
 
 test("executable substitutions, dynamic targets and uninspectable bodies stay conservative", () => {
-  for (const command of ["$(printf echo) safe", "env $(printf echo) safe", "printf '%s' $(sleep 1 &)",
+  for (const command of ["env $(printf echo) safe", "printf '%s' $(sleep 1 &)",
     "printf '%s' $(time printf 1)", "printf '%s' $(case x in x) printf 1;; esac)",
-    "printf '%s' $(printf 1", "printf '%s' $(printf '%s' \"$(sleep 1 &)\")",
-    "cd nested && printf '%s' $(printf data > .git/config)"]) {
+    "printf '%s' $(printf 1", "printf '%s' $(printf '%s' \"$(sleep 1 &)\")"]) {
     assert.ok(inspectBashResourceLifecycle({ command }), command);
   }
+  assert.equal(inspectBashPermissionScope({ command: "$(printf echo) safe" }, cwd)?.kind, "opaque-script");
+  assert.equal(inspectHighRiskBashMutation({ command: "cd nested && printf '%s' $(printf data > .git/config)" }, cwd)?.unverifiableScope, true);
   const dynamic = inspectBashPermissionScope({ command: "printf data > $(printf target)" }, cwd)!;
   assert.equal(dynamic.kind, "opaque-script");
   assert.equal(dynamic.dynamicScope, true);

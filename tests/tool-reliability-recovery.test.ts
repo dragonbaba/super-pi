@@ -41,7 +41,10 @@ for (const [name, command] of [
  ["double quoted", 'cat <<"EOF"\nconst pixel = value & 255;\nEOF'],
  ["tab stripped", "cat <<-'EOF'\n\tvalue & 255\n\tEOF"],
  ["unquoted data", "cat <<EOF\nvalue & 255\nEOF"],
-]) test(`heredoc ${name} acceptance is deferred`, () => assert.ok(inspectBashResourceLifecycle({ command })));
+]) test(`heredoc ${name} acceptance requires permission`, () => {
+ assert.equal(inspectBashResourceLifecycle({ command }), undefined);
+ assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "opaque-script");
+});
 
 for (const command of [
  "cat <<'EOF' &\nvalue & 255\nEOF", "cat <<EOF\n$(sleep 1 &)\nEOF",
@@ -49,7 +52,7 @@ for (const command of [
  "cat <<'EOF'\ndata\nEOF\nnohup sleep 1", "bash -c 'sleep 1 &'", "sleep 1 & wait", "sleep 1 & echo 'kill wait trap'",
 ]) test(`executable/detached lifecycle remains blocked: ${command.slice(0, 30)}`, () => assert.ok(inspectBashResourceLifecycle({ command })));
 
-test("unterminated heredoc is explicitly uncertain", () => assert.match(inspectBashResourceLifecycle({ command: "cat <<'EOF'\ntext" })!, /uncertain|uninspectable|unterminated/i));
+test("unterminated heredoc is explicitly uncertain", () => assert.equal(inspectBashPermissionScope({ command: "cat <<'EOF'\ntext" }, process.cwd())?.kind, "opaque-script"));
 
 test("active browser schema identifies unexpected fields without values", () => {
  const tool = definitions.get("browser_exec");
@@ -505,8 +508,9 @@ test("browser extension preserves failure details and bounds cleanup without con
 
 test("heredoc literal substitutions, multiple bodies and conservative unsupported folding", () => {
  assert.equal(inspectBashResourceLifecycle({ command: "cat <<'EOF'\n$(nohup sleep 1)\nEOF" }), undefined, "bounded single-quoted data has no executable substitution");
- assert.ok(inspectBashResourceLifecycle({ command: "cat <<'A' <<'B'\nx & 255\nA\nnohup data\nB" }));
- assert.ok(inspectBashResourceLifecycle({ command: "cat <<EOF\nx\\\nEOF\nEOF" }));
+ for (const command of ["cat <<'A' <<'B'\nx & 255\nA\nnohup data\nB", "cat <<EOF\nx\\\nEOF\nEOF"]) {
+  assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "opaque-script");
+ }
  assert.ok(inspectBashResourceLifecycle({ command: "x".repeat(128 * 1024 + 1) }));
 });
 
@@ -576,7 +580,8 @@ test("review: lifecycle denial has structural recovery, not permission escalatio
 
 
 test("review2: nested/evaluator heredocs never hide executable input", () => {
- for (const command of ["cat <<EOF $(\nnohup sleep 100 &\nEOF\n)\ndata\nEOF", "source /dev/stdin <<'EOF'\nnohup sleep 100 &\nEOF", "python3.12 <<'EOF'\npass\nEOF"]) assert.ok(inspectBashResourceLifecycle({ command }));
+ for (const command of ["cat <<EOF $(\nnohup sleep 100 &\nEOF\n)\ndata\nEOF", "source /dev/stdin <<'EOF'\nnohup sleep 100 &\nEOF"]) assert.ok(inspectBashResourceLifecycle({ command }));
+ assert.equal(inspectBashPermissionScope({ command: "python3.12 <<'EOF'\npass\nEOF" }, process.cwd())?.kind, "opaque-script");
 });
 test("review2: versioned interpreters are not owned foreground jobs", () => {
  for (const name of ["python3.12", "python3.12.exe", "nodejs"]) assert.ok(inspectBashResourceLifecycle({ command: `${name} script & pid=$!; trap 'kill "$pid"; wait "$pid"' EXIT; wait "$pid"` }));
@@ -592,13 +597,13 @@ test("review2: validation escapes all display controls", () => {
 test("review3: bare arithmetic is not a heredoc but can change shell state", () => {
  for (const command of ["((value << 2))", "for ((i=0; i < 2; i++)); do ((value << 2)); done"]) {
   const refusal = inspectBashResourceLifecycle({ command }) ?? "";
-  assert.match(refusal, /SHELL_UNINSPECTABLE/);
+  assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "opaque-script");
   assert.doesNotMatch(refusal, /SHELL_HEREDOC/);
  }
  assert.equal(inspectBashResourceLifecycle({ command: "echo $((1 << 2))" }), undefined);
 });
 test("review3: shadowed consumers and staged execution are uncertain", () => {
- for (const command of [`cat(){ eval "$(command cat)"; }\ncat <<'EOF'\nnohup sleep 100 &\nEOF`, "cat > ./runner <<'EOF'\n#!/bin/sh\nnohup sleep 100 &\nEOF\nchmod +x ./runner; ./runner"]) assert.ok(inspectBashResourceLifecycle({ command }));
+ for (const command of [`cat(){ eval "$(command cat)"; }\ncat <<'EOF'\nnohup sleep 100 &\nEOF`, "cat > ./runner <<'EOF'\n#!/bin/sh\nnohup sleep 100 &\nEOF\nchmod +x ./runner; ./runner"]) assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "opaque-script");
 });
 
 
@@ -611,7 +616,8 @@ test("review5: owned work cannot detach wget", () => {
 });
 test("review5: substitution comments cannot terminate executable inspection", () => {
  assert.ok(inspectBashResourceLifecycle({ command: "cat <<EOF\n$(# )\nnohup sleep 100 &\n)\nEOF" }));
- assert.ok(inspectBashResourceLifecycle({ command: "cat <<EOF\n$(# )\necho safe\n)\nEOF" }));
+ assert.equal(inspectBashResourceLifecycle({ command: "cat <<EOF\n$(# )\necho safe\n)\nEOF" }), undefined);
+ assert.equal(inspectBashPermissionScope({ command: "cat <<EOF\n$(# )\necho safe\n)\nEOF" }, process.cwd())?.kind, "opaque-script");
 });
 
 test("owned use cannot replace the captured PID through printf", () => {

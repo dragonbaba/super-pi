@@ -24,15 +24,16 @@ const { default: loopGuardrails } = await jiti.import<any>("../packages/extensio
 const { failureRecoveryHint, classifyFailureText } = await jiti.import<any>("../packages/extensions/tool-loop-guardrails/core.ts");
 const shellPath = process.platform === "win32" && existsSync("D:/Git/bin/bash.exe") ? "D:/Git/bin/bash.exe" : getShellConfig().shell;
 
-test("dynamic executable preflight has zero backend effects; literal correction still needs current authorization", async t => {
+test("denied dynamic executable has zero backend effects; literal correction still needs current authorization", async t => {
  let effects = 0;
  const f = await fixture(t, undefined, undefined, false, { async exec() { effects++; return { exitCode: 0 }; } });
+ f.deny();
  const dynamic = await f.call('CHROME="/fixture/Program Files/chrome.exe"; "$CHROME" --headless; echo after');
- assert.match(dynamic.text, /SHELL_DYNAMIC_EXECUTABLE/);
- assert.deepEqual(f.counts(), { approvals: 0, spawns: 0 }); assert.equal(effects, 0);
+ assert.match(dynamic.text, /POLICY_BLOCKED/);
+ assert.deepEqual(f.counts(), { approvals: 1, spawns: 0 }); assert.equal(effects, 0);
  f.deny();
  const literal = await f.call('"/fixture/Program Files/chrome.exe" --headless');
- assert.equal(literal.error, true); assert.deepEqual(f.counts(), { approvals: 1, spawns: 0 }); assert.equal(effects, 0);
+ assert.equal(literal.error, true); assert.deepEqual(f.counts(), { approvals: 2, spawns: 0 }); assert.equal(effects, 0);
 });
 
 async function fixture(t: test.TestContext, lateCommand?: string | ((event: any) => any), before?: (event: any) => any, noGuard = false, profileBackend?: any) {
@@ -470,9 +471,11 @@ test("review: result transforms cannot erase a final authorization veto", async 
  assert.equal(transforms, 1); assert.equal(f.counts().spawns, 1); f.assertReleased();
 });
 
-test("postmerge dynamic executable position is lifecycle-uncertain", () => {
- assert.ok(inspectBashResourceLifecycle({ command: "cmd=bash; $cmd -c 'printf shell'" }));
- assert.ok(inspectBashResourceLifecycle({ command: "program=printf; $program OK" }));
+test("postmerge dynamic executable position is permission-opaque", () => {
+ for (const command of ["cmd=bash; $cmd -c 'printf shell'", "program=printf; $program OK"]) {
+  assert.equal(inspectBashResourceLifecycle({ command }), undefined);
+  assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "opaque-script");
+ }
  assert.ok(inspectBashResourceLifecycle({ command: 'env LABEL="$VALUE" $program OK' }));
  for (const command of ['env LABEL=$VALUE printenv LABEL', 'env BASH_ENV="$VALUE" printenv LABEL', 'env LABEL="$(printf safe)" printenv LABEL']) {
   assert.ok(inspectBashResourceLifecycle({ command }), command);
@@ -486,10 +489,13 @@ test("postmerge env assignment expansion is data for a fixed executable", async 
 
 test("postmerge bounded launcher and dynamic-wrapper negatives never spawn", async t => {
  const f = await fixture(t);
- for (const command of ["env -- LABEL=sh bash -c 'sleep 10 &'", "sudo LABEL=sh bash -c 'sleep 10 &'", "echo bash; timeout 1 bash -c 'sleep 10 &'", "env -S 'bash -c x'", 'bash -c "$SCRIPT"', "command bash -c 'sleep 10 &'", 'echo "$(coproc echo safe)"', 'echo "$(echo safe', "cat -n <<'EOF'\nx\nEOF"]) {
+ for (const command of ["env -- LABEL=sh bash -c 'sleep 10 &'", "sudo LABEL=sh bash -c 'sleep 10 &'", "echo bash; timeout 1 bash -c 'sleep 10 &'", "env -S 'bash -c x'", 'bash -c "$SCRIPT"', "command bash -c 'sleep 10 &'", 'echo "$(coproc echo safe)"', 'echo "$(echo safe']) {
   const result = await f.call(command); assert.equal(result.error, true, command);
  }
  assert.deepEqual(f.counts(), { approvals: 0, spawns: 0 });
+ f.deny();
+ assert.equal((await f.call("cat -n <<'EOF'\nx\nEOF")).error, true);
+ assert.deepEqual(f.counts(), { approvals: 1, spawns: 0 });
 });
 
 test("postmerge one-layer escapes and line continuations preserve target consumers", async t => {
@@ -511,11 +517,11 @@ test("postmerge one-layer escapes and line continuations preserve target consume
 });
 
 test("postmerge uncertain refusal has bounded policy recovery", async () => {
- const reason = inspectBashResourceLifecycle({ command: "cat -n <<'EOF'\nSECRET_PAYLOAD\nEOF" })!;
+ const reason = inspectBashResourceLifecycle({ command: 'echo "$(time echo SECRET_PAYLOAD)"' })!;
  assert.equal(classifyFailureText(reason, {}, "bash"), "policy_blocked");
  const hint = await failureRecoveryHint("bash", { command: "SECRET_PAYLOAD" }, reason, process.cwd());
  assert.equal(hint, undefined, "producer guidance must not be appended twice");
- assert.match(reason, /Lifecycle recovery/); assert.match(reason, /not executed/); assert.match(reason, /permission/i);
+ assert.match(reason, /Retry/); assert.match(reason, /not executed/); assert.match(reason, /authorization/i);
  assert.ok(reason.length < 700); assert.doesNotMatch(reason, /SECRET_PAYLOAD/);
  assert.equal(classifyFailureText("ordinary runtime failure: blocked buffer", {}, "bash"), "runtime_error");
 });

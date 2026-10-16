@@ -5,13 +5,14 @@ import { join } from "node:path";
 import test from "node:test";
 import { createBashTool } from "../packages/coding-agent/src/core/tools/bash.ts";
 import { inspectBashResourceLifecycle } from "../packages/extensions/resource-lifecycle-guard/core.ts";
+import { inspectBashPermissionScope } from "../packages/extensions/resource-lifecycle-guard/permission-bash.ts";
 
 const FIND = 'find . -maxdepth 3 -iname "nw.exe" -o -maxdepth 3 -iname "nw" -o -maxdepth 3 -iname "nwjs*"';
 
 test("reported cd and find alternatives are inspectable without rewriting the script", () => {
 	assert.equal(inspectBashResourceLifecycle({ command: `cd /d 2>/dev/null; ${FIND} | head; echo "--- exit ---"; echo "search done"` }), undefined);
 	assert.equal(inspectBashResourceLifecycle({ command: `cd sub; find js -name '*.js' | sort -u` }), undefined);
-	assert.match(inspectBashResourceLifecycle({ command: `cd sub; find js -name '*.js' | sort -o .git/config` }) ?? "", /SHELL_UNINSPECTABLE/);
+	assert.equal(inspectBashPermissionScope({ command: `cd sub; find js -name '*.js' | sort -o .git/config` }, process.cwd())?.kind, "opaque-script");
 });
 
 for (const expression of [
@@ -34,12 +35,12 @@ for (const expression of [
 	'-name "nw*" -ok rm {} \\;',
 	'-name "nw*" > changed',
 	'-name "${CDPATH:=..}"',
-]) test(`independent cd must still reject effectful or stateful find: ${expression}`, () => {
-	assert.match(inspectBashResourceLifecycle({ command: `cd sub; find . ${expression}` }) ?? "", /SHELL_UNINSPECTABLE/);
+]) test(`independent cd retains effectful or stateful find permission uncertainty: ${expression}`, () => {
+	assert.equal(inspectBashPermissionScope({ command: `cd sub; find . ${expression}` }, process.cwd())?.kind, "opaque-script");
 });
 
 test("accepting readonly alternatives does not accept a later independent mutation", () => {
-	assert.match(inspectBashResourceLifecycle({ command: `cd sub; ${FIND}; printf data >.git/config` }) ?? "", /SHELL_UNINSPECTABLE/);
+	assert.equal(inspectBashPermissionScope({ command: `cd sub; ${FIND}; printf data >.git/config` }, process.cwd())?.unverifiableMutation, true);
 });
 
 test("real Bash preserves both successful and failed cd semantics for readonly find", async () => {

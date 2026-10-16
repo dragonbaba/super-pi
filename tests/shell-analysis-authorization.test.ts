@@ -4,6 +4,33 @@ import { inspectBashResourceLifecycle, inspectHighRiskBashMutation } from "../pa
 import { inspectBashPermissionScope } from "../packages/extensions/resource-lifecycle-guard/permission-bash.ts";
 import { MAX_ANALYSIS_BYTES, MAX_ANALYSIS_ENTRIES, ShellAnalysisOwner } from "../packages/extensions/resource-lifecycle-guard/shell-analysis.ts";
 import { shellAnalysisCounters } from "../packages/extensions/resource-lifecycle-guard/shell-substitution.ts";
+import { shellHookFixture, assertFinalAuthorization } from "./codemode-recovery/shell-hook-fixture.ts";
+
+for (const command of ["export PATH=/usr/bin:$PATH; node -v", "source .venv/bin/activate && python --version", "(cd sub && make)", "echo $((UNRESOLVED_VALUE))", "((PATH=0)); cat", '"$FFMPEG" -version']) {
+  test(`unknown state without an identified mutation follows permission mode: ${command}`, async t => {
+    const high = inspectHighRiskBashMutation({ command }, process.cwd());
+    assert.notEqual(high?.mutationDetected, true);
+    assert.notEqual(high?.unverifiableScope, true);
+    assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "opaque-script");
+    for (const mode of ["full-access", "workspace-write"] as const) {
+      const fixture = await shellHookFixture(t, mode);
+      assertFinalAuthorization(await fixture.authorize(command));
+      assert.equal(fixture.dialogs(), mode === "full-access" ? 0 : 1);
+    }
+  });
+}
+
+for (const command of ['rm -rf "$X"', 'rm "$X"', 'printf x > "$X"', "source missing; rm -rf target", "(cd sub && make); printf x > target", "cd sub; touch target", "export PATH=/tmp; rm -rf target"]) {
+  test(`identified mutation with unknown target or cwd cannot be approved: ${command}`, async t => {
+    for (const mode of ["full-access", "workspace-write"] as const) {
+      const fixture = await shellHookFixture(t, mode);
+      const { outcome } = await fixture.authorize(command);
+      assert.equal(outcome?.block, true, command);
+      assert.equal(outcome?.finalAuthorization, undefined);
+      assert.equal(fixture.dialogs(), 0);
+    }
+  });
+}
 
 test("one authorization reuses actual scanners across preflight, mutation and permission", () => {
   const command = "printf '%s' \"$(git rev-parse HEAD)\"", cwd = process.cwd();

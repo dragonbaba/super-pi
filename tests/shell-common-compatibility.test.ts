@@ -117,8 +117,8 @@ test("command -v/-V query names and variables without treating them as executabl
     assert.equal(scope.unverifiableScope, false, command);
     assert.equal(inspectHighRiskBashMutation({ command }, cwd), undefined, command);
   }
-  assert.match(inspectBashResourceLifecycle({ command: 'command "$candidate" --help' }) ?? "", /SHELL_DYNAMIC_EXECUTABLE/);
-  assert.match(inspectBashResourceLifecycle({ command: 'exec "$candidate" --help' }) ?? "", /SHELL_DYNAMIC_EXECUTABLE/);
+  assert.equal(inspectBashPermissionScope({ command: 'command "$candidate" --help' }, cwd)?.kind, "opaque-script");
+  assert.equal(inspectBashPermissionScope({ command: 'exec "$candidate" --help' }, cwd)?.kind, "opaque-script");
   assert.ok(inspectHighRiskBashMutation({ command: 'command rm -rf synthetic' }, cwd)?.primitives.includes("rm_recursive"));
   assert.ok(inspectHighRiskBashMutation({ command: 'exec rm -rf synthetic' }, cwd)?.primitives.includes("rm_recursive"));
   assert.ok(inspectHighRiskBashMutation({ command: 'for t in synthetic; do rm -rf "$t"; done' }, cwd)?.primitives.includes("rm_recursive"));
@@ -128,8 +128,8 @@ test("command -v/-V query names and variables without treating them as executabl
     "command -v 2>/dev/null ${CDPATH:=..}; cd synthetic; printf data >.git/config",
     "command -v \"${CDPATH:=..}\"; cd synthetic; printf data >.git/config",
   ]) {
-    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/, command);
-    assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.unverifiableScope, true, command);
+    assert.equal(inspectBashPermissionScope({ command }, cwd)?.kind, "opaque-script");
+    assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.contextUncertain, true, command);
     assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableScope, true, command);
   }
 });
@@ -141,8 +141,8 @@ test("Bash test arithmetic and state-changing operands stay unverifiable", () =>
     "[[ -n ${CDPATH:=..} ]]; cd synthetic; printf data >.git/config",
     ...["-eq", "-ne", "-lt", "-le", "-gt", "-ge"].map(operator => `[[ 0 ${operator} 'x[$(printf data >.git/config)]' ]]`),
   ]) {
-    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/, command);
-    assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.unverifiableScope, true, command);
+    assert.equal(inspectBashPermissionScope({ command }, cwd)?.kind, "opaque-script");
+    assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.contextUncertain, true, command);
     assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableScope, true, command);
   }
   for (const command of ["[[ 1 -eq 1 ]]", '[[ -n "$candidate" ]]']) {
@@ -182,9 +182,9 @@ test("lookup-sensitive Bash for variables cannot make later command lookup read-
     "for EXECIGNORE in /usr/bin/cat; do echo ok; done; cat",
     "for BASH_CMDS in 0; do echo ok; done; 0",
   ]) {
-    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/, command);
+    assert.equal(inspectBashPermissionScope({ command }, cwd)?.kind, "opaque-script");
     const high = inspectHighRiskBashMutation({ command }, cwd);
-    assert.equal(high?.unverifiableScope, true, command);
+    assert.equal(high?.contextUncertain, true, command);
     assert.ok(high?.primitives.includes("stateful_loop_variable_assignment"), command);
     assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableScope, true, command);
   }
@@ -204,9 +204,9 @@ test("C-style Bash for headers cannot make later command lookup read-only", () =
     "for (( EXECIGNORE=0; 0; )); do printf ok; done; cat",
     "for (( BASH_CMDS=0; 0; )); do printf ok; done; 0",
   ]) {
-    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/, command);
+    assert.equal(inspectBashPermissionScope({ command }, cwd)?.kind, "opaque-script");
     const high = inspectHighRiskBashMutation({ command }, cwd);
-    assert.equal(high?.unverifiableScope, true, command);
+    assert.equal(high?.contextUncertain, true, command);
     assert.ok(high?.primitives.includes("stateful_loop_variable_assignment"), command);
     assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableScope, true, command);
   }
@@ -234,9 +234,9 @@ test("expansions that assign shell variables cannot make later commands read-onl
     "printf %s $((++n)); cat",
     "echo ${ cd ..; }; printf data >.git/config",
   ]) {
-    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/, command);
+    assert.equal(inspectBashPermissionScope({ command }, cwd)?.kind, "opaque-script");
     const high = inspectHighRiskBashMutation({ command }, cwd);
-    assert.equal(high?.unverifiableScope, true, command);
+    assert.equal(high?.contextUncertain, true, command);
     assert.ok(high?.primitives.includes("stateful_shell_expansion"), command);
     assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableScope, true, command);
   }
@@ -245,7 +245,7 @@ test("expansions that assign shell variables cannot make later commands read-onl
   for (const command of ["printf %s ${!ref}; cat", "for v in PATH=0; do printf %s $((v)); done; cat", "echo ${arr[$i]}", "for i in 1 2; do echo $((i*2)); done"]) {
     assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
     assert.ok(inspectHighRiskBashMutation({ command }, cwd)?.primitives.includes("stateful_shell_expansion"), command);
-    assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.unverifiableScope, true, command);
+    assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.contextUncertain, true, command);
     assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableScope, true, command);
   }
   for (const command of ["printf %s $x ${y} $1 $@ ${#z} ${!}", "echo $((1 + (2 * 3) >= 4))", "printf %s ${HOME:-/tmp} ${f%.txt} ${g/a/b} ${h:1:2} ${arr[0]} ${arr[@]}", "printf %s '$((PATH=0))'",
@@ -272,8 +272,8 @@ test("indirect or redefined cd cannot authorize the scanned cwd", () => {
     "set -P; cd link/..; printf data >.git/config",
     "set -o physical; cd link/..; printf data >.git/config",
   ]) {
-    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/, command);
-    assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.unverifiableScope, true, command);
+    assert.equal(inspectBashPermissionScope({ command }, cwd)?.kind, "opaque-script");
+    assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.contextUncertain, true, command);
     assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableScope, true, command);
   }
   for (const command of ["set -e; cd sub && printf data >.git/config", "set -euo pipefail; cd sub && printf data >.git/config"]) {
@@ -299,7 +299,7 @@ test("negated and timed prefixes before Bash tests keep comparisons out of redir
 
 test("length-modified printf %n conversions stay stateful", () => {
   for (const command of ["printf '%ln' PATH; cat", "printf '%hn' PATH; cat", "printf '%zn' PATH; cat", "printf 'x%lln' PATH; cat", "printf '%-3jn' PATH; cat", "printf -- '%Ltn' PATH; cat"]) {
-    assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.unverifiableScope, true, command);
+    assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.contextUncertain, true, command);
     assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableScope, true, command);
   }
   for (const command of ["printf '%ld\n' 1", "printf '%q' PATH", "printf '%%ln' PATH"]) {
@@ -310,15 +310,15 @@ test("length-modified printf %n conversions stay stateful", () => {
 test("Bash network-device input redirections are not read-only file inputs", () => {
   for (const command of ["cat </dev/tcp/127.0.0.1/1234", "cat 0</dev/udp/example.invalid/53", "cd sub && cat </dev/tcp/127.0.0.1/1234"]) {
     assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableScope, true, command);
-    assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.unverifiableScope, true, command);
+    assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.contextUncertain, true, command);
   }
   assert.equal(inspectBashPermissionScope({ command: "cat <fixture.bin" }, cwd)?.kind, "read-only");
 });
 
 test("cd success is required before an independent target, even with an infallible redirect", () => {
   for (const command of ["9>&8 cd sub; printf data >.git/config", "cd sub 9>&8; printf data >.git/config", "cd sub <missing.txt; printf data >.git/config", "cd sub >out/log; printf data >.git/config", "cd sub 2>&9; printf data >.git/config", "99999>/dev/null cd sub; printf data >.git/config", "cd sub 10>/dev/null; printf data >.git/config", "01>/dev/null cd sub; printf data >.git/config", "cd sub 2>/dev/null; printf data >.git/config", ">/dev/null cd sub; printf data >.git/config", "9>/dev/null cd sub; printf data >.git/config", "cd sub 2>&1; printf data >.git/config"]) {
-    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/, command);
-    assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.unverifiableScope, true, command);
+    assert.equal(inspectBashPermissionScope({ command }, cwd)?.kind, "opaque-script");
+    assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.contextUncertain, true, command);
     assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableScope, true, command);
   }
   for (const command of ["9>&8 cd sub && printf data >.git/config", "cd sub 2>/dev/null && printf data >.git/config", ">/dev/null cd sub && printf data >.git/config", "9>/dev/null cd sub && printf data >.git/config", "cd sub 2>&1 && printf data >.git/config"]) {
@@ -341,7 +341,7 @@ test("cd guarded by || exit keeps the requested cwd for the rest of the script",
     "function exit { :; }; cd sub || exit 1; printf data >.git/config",
     "(cd sub || exit 1); printf data >.git/config",
   ]) {
-    assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.unverifiableScope, true, command);
+    assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.contextUncertain, true, command);
   }
 });
 
@@ -381,8 +381,8 @@ test("cd reached through an OR edge cannot authorize dependent commands", () => 
   // Bash groups left to right: `(true || cd sub) && next` skips cd but still runs next.
   for (const command of ["true || cd sub && printf data >.git/config", "(true) || cd sub && printf data >.git/config",
     "{ true; } || cd sub && printf data >.git/config", "true || cd sub || exit 1; printf data >.git/config"]) {
-    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/, command);
-    assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.unverifiableScope, true, command);
+    assert.equal(inspectBashPermissionScope({ command }, cwd)?.kind, "opaque-script");
+    assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.contextUncertain, true, command);
     assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableScope, true, command);
   }
   // An incoming `&&` skips cd and its `&&` dependents together.
@@ -394,8 +394,8 @@ test("cd reached through an OR edge cannot authorize dependent commands", () => 
 
 test("cd with extra operands cannot authorize the requested cwd", () => {
   for (const command of ["cd sub extra; printf data >.git/config", "cd sub 2>/dev/null extra; printf data >.git/config", "cd sub extra && printf data >.git/config", "cd . extra; printf data >.git/config"]) {
-    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/, command);
-    assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.unverifiableScope, true, command);
+    assert.equal(inspectBashPermissionScope({ command }, cwd)?.kind, "opaque-script");
+    assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.contextUncertain, true, command);
     assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableScope, true, command);
   }
   for (const command of ["cd 2>/dev/null sub && printf data >.git/config", "cd sub 2>/dev/null && printf data >.git/config"]) {
@@ -411,12 +411,12 @@ test("prompt transformations and PS4 loop values cannot run hidden command subst
     "echo ${arr[0]@P}",
     "echo ${X@Z}",
   ]) {
-    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/, command);
-    assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.unverifiableScope, true, command);
+    assert.equal(inspectBashPermissionScope({ command }, cwd)?.kind, "opaque-script");
+    assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.contextUncertain, true, command);
     assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableScope, true, command);
   }
   const ps4 = "for PS4 in '$(printf data >.git/config)'; do set -x; :; done";
-  assert.match(inspectBashResourceLifecycle({ command: ps4 }) ?? "", /SHELL_UNINSPECTABLE/);
+  assert.equal(inspectBashPermissionScope({ command: ps4 }, cwd)?.kind, "opaque-script");
   assert.equal(inspectBashPermissionScope({ command: ps4 }, cwd)?.unverifiableScope, true);
   for (const command of ["echo ${X@Q} ${X@E} ${X@A} ${X@U} ${X@L} ${X@a} ${arr[@]@K}"]) {
     assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
@@ -433,13 +433,13 @@ test("negated Bash string comparisons remain read-only", () => {
   const redirected = "! [[ a < b ]] >.git/config";
   assert.ok(inspectHighRiskBashMutation({ command: redirected }, cwd)?.targets.some(target => target.endsWith("config")));
   assert.equal(inspectBashPermissionScope({ command: redirected }, cwd)?.kind, "known-mutation");
-  assert.match(inspectBashResourceLifecycle({ command: "! [[ -v 'x[CDPATH=1]' ]]" }) ?? "", /SHELL_UNINSPECTABLE/);
+  assert.equal(inspectBashPermissionScope({ command: "! [[ -v 'x[CDPATH=1]' ]]" }, cwd)?.kind, "opaque-script");
   assert.equal(inspectBashPermissionScope({ command: "! '[[' a b ]]" }, cwd)?.unverifiableScope, true);
 });
 
 test("printf variable assignment remains stateful through command prefix", () => {
   for (const command of ["printf -v PATH .; cat", "command printf -v PATH .; cat", "command printf -vPATH .; cat", "printf '%n' PATH; cat", "command printf '%1$n' PATH; cat", "printf \"$format\" PATH; cat"]) {
-    assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.unverifiableScope, true, command);
+    assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.contextUncertain, true, command);
     assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableScope, true, command);
   }
   assert.equal(inspectBashPermissionScope({ command: "command printf '%s' synthetic" }, cwd)?.kind, "read-only");
@@ -452,7 +452,7 @@ test("simple ANSI-C quoted printf formats stay literal while encoded conversions
     assert.equal(inspectBashPermissionScope({ command }, cwd)?.kind, "read-only", command);
   }
   for (const command of ["printf $'%n' PATH; cat", "printf $'%\\x6e' PATH; cat"]) {
-    assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.unverifiableScope, true, command);
+    assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.contextUncertain, true, command);
     assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableScope, true, command);
   }
 });
@@ -463,8 +463,8 @@ test("a list separator after a closed subshell ends conditional cwd dependence",
     "cd missing-synthetic && ( echo x )\nprintf data >.git/config",
     "cd missing-synthetic && ( echo x ) || printf data >.git/config",
   ]) {
-    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/, command);
-    assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.unverifiableScope, true, command);
+    assert.equal(inspectBashPermissionScope({ command }, cwd)?.kind, "opaque-script");
+    assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.contextUncertain, true, command);
     assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableScope, true, command);
   }
   assert.notEqual(inspectHighRiskBashMutation({ command: "cd missing-synthetic && ( echo x ) && cat" }, cwd)?.unverifiableScope, true);
@@ -488,7 +488,7 @@ test("static descriptor and input-file redirections preserve bounded targets and
   }
   for (const command of ["2>&$fd", "2>&-", "{fd}>&1", "2>&1-"]) {
     const high = inspectHighRiskBashMutation({ command: `printf x ${command}` }, cwd);
-    assert.equal(high?.unverifiableScope, true, command);
+    assert.equal(high?.contextUncertain, true, command);
   }
   const compact = inspectHighRiskBashMutation({ command: 'printf out 2>&1>compact.log' }, cwd);
   assert.ok(compact?.targets.some(target => target.endsWith("compact.log")));
@@ -499,7 +499,7 @@ test("static descriptor and input-file redirections preserve bounded targets and
   }
   assert.equal(inspectHighRiskBashMutation({ command: "cd subdir && cat <fixture.bin" }, cwd), undefined);
   for (const command of ["cat <$path", "cat <", "cat <>fixture.bin", "cat <&-"]) {
-    assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.unverifiableScope, true, command);
+    assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.contextUncertain, true, command);
     assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableScope, true, command);
   }
   assert.ok(inspectHighRiskBashMutation({ command: "cat < fixture.bin >.git/config" }, cwd)?.targets.some(target => target.endsWith(".git\\config") || target.endsWith(".git/config")));
@@ -846,7 +846,7 @@ async function guardedCwdBoundaryFixture(workspace: string, shellPath: string, s
   return {
     agent, approvals,
     get executions() { return executions; },
-    setDecision(choice: string) { decision = choice; },
+    setDecision(choice: string) { const previous = decision; decision = choice; return previous; },
     async setMode(mode: "read-only" | "workspace-write" | "full-access") {
       await runner.getCommand("permissions")!.handler(mode, runner.createContext() as never);
     },
@@ -1108,9 +1108,18 @@ async function assertBoundaryRefusedBeforeSpawn(
 ) {
   const executions = fixture.executions;
   const approvals = fixture.approvals.length;
-  const result = await fixture.agent.dispatchHostTool({ type: "toolCall", id, name: "bash", arguments: { command } });
+  // D3: uncertainty alone reaches permission review; an explicit denial must
+  // still produce zero backend effects. Recognized unknown targets never ask.
+  const previousDecision = fixture.setDecision("拒绝");
+  let result;
+  try { result = await fixture.agent.dispatchHostTool({ type: "toolCall", id, name: "bash", arguments: { command } }); }
+  finally { fixture.setDecision(previousDecision); }
   assert.equal(fixture.executions, executions, JSON.stringify({ result, approvals: fixture.approvals, predicted: inspectHighRiskBashMutation({ command }, workspace) }));
-  assert.equal(fixture.approvals.length, approvals, "unsafe cwd must be refused before authorization choices");
+  const high = inspectHighRiskBashMutation({ command }, workspace);
+  const scope = inspectBashPermissionScope({ command }, workspace);
+  if (high?.unverifiableScope || scope?.unverifiableMutation || inspectBashResourceLifecycle({ command })) {
+    assert.equal(fixture.approvals.length, approvals, "recognized unknown targets and lifecycle violations must refuse before approval");
+  } else assert.ok(fixture.approvals.length === approvals || fixture.approvals.length === approvals + 1);
   assert.equal(result.isError, true);
   assert.equal((result.details as any).executionStatus, "not_executed");
   for (const path of paths) assert.equal(existsSync(path), false, path);
@@ -1134,7 +1143,7 @@ test("cwd recovery uses one verified same-shell call, not a grouped or later cal
     await fixture.setMode("read-only");
     const grouped = await assertBoundaryRefusedBeforeSpawn(fixture, workspace, "grouped-recovery",
       "(cd sub && ls)", []);
-    assert.match((grouped.content[0] as { text: string }).text, /working directory.*cannot be (?:established|tracked)/);
+    assert.match((grouped.content[0] as { text: string }).text, /POLICY_BLOCKED/);
     const listed = await fixture.agent.dispatchHostTool({ type: "toolCall", id: "same-shell-recovery", name: "bash", arguments: {
       command: "cd sub && ls",
     } });
@@ -1148,7 +1157,7 @@ test("cwd recovery uses one verified same-shell call, not a grouped or later cal
     assert.match((later.content[0] as { text: string }).text, /outer-fixture\.txt/);
     assert.doesNotMatch((later.content[0] as { text: string }).text, /recovery-fixture\.txt/);
     assert.equal(fixture.executions, 3);
-    assert.equal(fixture.approvals.length, 0);
+    assert.equal(fixture.approvals.length, 1);
     assert.doesNotMatch((grouped.content[0] as { text: string }).text, /separately inspectable commands/);
   } finally {
     await fixture?.close();
@@ -1194,9 +1203,9 @@ test("real Bash guard keeps ordinary data and unbounded recursive expansions dis
     }
     const blocked = await assertBoundaryRefusedBeforeSpawn(fixture, workspace, "stateful-expansion",
       ": ${CDPATH:=..}; printf ok", [protectedTarget, wrongTarget]);
-    assert.match((blocked.content[0] as { text: string }).text, /cannot|assigns|uninspectable/);
+    assert.match((blocked.content[0] as { text: string }).text, /POLICY_BLOCKED/);
     assert.equal(fixture.executions, 1);
-    assert.equal(fixture.approvals.length, 0);
+    assert.equal(fixture.approvals.length, 2, "one rejection is reused across mode changes; the distinct stateful request asks separately");
   } finally {
     await fixture?.close();
     if (originalReviewValue === undefined) delete process.env.SP_TEST_ARITH_REVIEW;
@@ -1225,6 +1234,7 @@ test("inherited recursive arithmetic cannot approve a hidden protected write", a
     unlinkSync(target);
 
     fixture = await guardedCwdBoundaryFixture(workspace, shellPath);
+    fixture.setDecision("拒绝");
     for (const mode of ["read-only", "workspace-write"] as const) {
       await fixture.setMode(mode);
       const executions: number = fixture.executions;
@@ -1232,7 +1242,7 @@ test("inherited recursive arithmetic cannot approve a hidden protected write", a
       const result = await fixture.agent.dispatchHostTool({ type: "toolCall", id: `recursive-hidden-${mode}`, name: "bash", arguments: { command } });
       assert.equal(existsSync(target), false, JSON.stringify({ result, actual: existsSync(target) ? readFileSync(target, "utf8") : undefined }));
       assert.equal(fixture.executions, executions);
-      assert.equal(fixture.approvals.length, approvals);
+      assert.ok(fixture.approvals.length === approvals || fixture.approvals.length === approvals + 1);
       assert.equal(result.isError, true);
       assert.equal((result.details as any).executionStatus, "not_executed");
     }
@@ -1275,7 +1285,7 @@ test("Bash wrapper and reserved prefixes cannot hide inherited recursive evaluat
         for (const mode of ["read-only", "workspace-write"] as const) {
           await fixture.setMode(mode);
           await assertBoundaryRefusedBeforeSpawn(fixture, workspace, `${mode}-${id}`, command, [target]);
-          assert.equal(inspectHighRiskBashMutation({ command }, workspace)?.unverifiableScope, true);
+          assert.equal(inspectHighRiskBashMutation({ command }, workspace)?.contextUncertain, true);
         }
       } finally {
         await fixture?.close();
@@ -1379,10 +1389,9 @@ test("Bash stateful commands cannot hide a changed executable lookup", async (t)
         await fixture.setMode(mode);
         await assertBoundaryRefusedBeforeSpawn(fixture, workspace, `${mode}-${id}-arithmetic-lookup`, command, [target]);
       }
-      assert.match(inspectBashResourceLifecycle({ command }) ?? "",
-        id === "bash-cmds-index" ? /SHELL_DYNAMIC_EXECUTABLE/ : /SHELL_UNINSPECTABLE/, id);
+      assert.equal(inspectBashPermissionScope({ command }, cwd)?.kind, "opaque-script");
       if (id !== "bash-cmds-index") {
-        assert.equal(inspectHighRiskBashMutation({ command }, workspace)?.unverifiableScope, true, id);
+        assert.equal(inspectHighRiskBashMutation({ command }, workspace)?.contextUncertain, true, id);
         assert.equal(inspectBashPermissionScope({ command }, workspace)?.unverifiableScope, true, id);
       }
     });
@@ -1396,8 +1405,8 @@ test("Bash stateful commands cannot hide a changed executable lookup", async (t)
           await fixture!.setMode(mode);
           await assertBoundaryRefusedBeforeSpawn(fixture!, workspace, `${mode}-${id}`, command, [target]);
         }
-        assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/);
-        assert.equal(inspectHighRiskBashMutation({ command }, workspace)?.unverifiableScope, true);
+        assert.equal(inspectBashPermissionScope({ command }, cwd)?.kind, "opaque-script");
+        assert.equal(inspectHighRiskBashMutation({ command }, workspace)?.contextUncertain, true);
         assert.equal(inspectBashPermissionScope({ command }, workspace)?.unverifiableScope, true);
       });
     }
@@ -1450,8 +1459,8 @@ test("BASH_CMDS assignments cannot hide a workspace executable", async (t) => {
     ] as const) for (const mode of ["read-only", "workspace-write"] as const) {
       await fixture.setMode(mode);
       await assertBoundaryRefusedBeforeSpawn(fixture, workspace, `${mode}-${id}-bash-cmds`, unsafe, [target]);
-      assert.match(inspectBashResourceLifecycle({ command: unsafe }) ?? "", /SHELL_UNINSPECTABLE/);
-      assert.equal(inspectHighRiskBashMutation({ command: unsafe }, workspace)?.unverifiableScope, true);
+      assert.equal(inspectBashPermissionScope({ command: unsafe }, cwd)?.kind, "opaque-script");
+      assert.equal(inspectHighRiskBashMutation({ command: unsafe }, workspace)?.contextUncertain, true);
       assert.equal(inspectBashPermissionScope({ command: unsafe }, workspace)?.unverifiableScope, true);
     }
   } finally {
@@ -1531,8 +1540,8 @@ test("bounded temporary CDPATH queries and closed-subshell hash execute through 
       ["sh-query", "sh -c 'CDPATH=.. export -n CDPATH; cd sub && cat fixture.txt'"],
       ["bash-posix-query", "bash --posix -c 'CDPATH=.. export -n CDPATH; cd sub && cat fixture.txt'"],
     ] as const) {
-      assert.ok(inspectBashResourceLifecycle({ command }), id);
-      assert.equal(inspectHighRiskBashMutation({ command }, workspace)?.unverifiableScope, true, id);
+      assert.equal(inspectBashPermissionScope({ command }, workspace)?.kind, "opaque-script", id);
+      assert.equal(inspectHighRiskBashMutation({ command }, workspace)?.contextUncertain, true, id);
       assert.equal(inspectBashPermissionScope({ command }, workspace)?.unverifiableScope, true, id);
       await assertBoundaryRefusedBeforeSpawn(fixture, workspace, id, command, [target]);
     }
@@ -1579,8 +1588,8 @@ test("configured Bash invoked as sh keeps special-builtin CDPATH assignments and
 test("persistent lookup assignments are stateful while ordinary assignment text remains data", () => {
   for (const name of ["PATH", "EXECIGNORE", "BASH_CMDS", "BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "PS4"]) {
     const command = `${name}=value; cat`;
-    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/, command);
-    assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.unverifiableScope, true, command);
+    assert.equal(inspectBashPermissionScope({ command }, cwd)?.kind, "opaque-script");
+    assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.contextUncertain, true, command);
     assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableScope, true, command);
   }
   assert.equal(inspectBashResourceLifecycle({ command: "CANDIDATE=value; printf ok" }), undefined);
@@ -1589,8 +1598,8 @@ test("persistent lookup assignments are stateful while ordinary assignment text 
 
 test("PowerShell high-risk scan preserves the inner Bash boundary", () => {
   assert.equal(inspectHighRiskBashMutation({ command: "echo $((1 + $null))" }, cwd, "powershell"), undefined);
-  assert.equal(inspectHighRiskBashMutation({ command: "bash -c 'echo $((SP_SHELL_RECURSIVE_VALUE))'" }, cwd, "powershell")?.unverifiableScope, true);
-  assert.equal(inspectHighRiskBashMutation({ command: "bash -c -- 'echo $((SP_SHELL_RECURSIVE_VALUE))'" }, cwd, "powershell")?.unverifiableScope, true);
+  assert.equal(inspectHighRiskBashMutation({ command: "bash -c 'echo $((SP_SHELL_RECURSIVE_VALUE))'" }, cwd, "powershell")?.contextUncertain, true);
+  assert.equal(inspectHighRiskBashMutation({ command: "bash -c -- 'echo $((SP_SHELL_RECURSIVE_VALUE))'" }, cwd, "powershell")?.contextUncertain, true);
 });
 
 test("PowerShell arithmetic subexpressions use PowerShell approval rather than Bash expansion refusal", async (t) => {
@@ -1620,16 +1629,18 @@ test("PowerShell arithmetic subexpressions use PowerShell approval rather than B
     assert.equal(fixture.approvals.length, 1, "dynamic PowerShell syntax follows ordinary opaque-script approval");
     assert.doesNotMatch(fixture.approvals[0]!, /stateful_shell_expansion/);
 
+    fixture.setDecision("拒绝");
     for (const [id, nestedBash] of [
       ["powershell-nested-bash", "bash -c 'echo $((SP_SHELL_RECURSIVE_VALUE))'"],
       ["powershell-nested-bash-separator", "bash -c -- 'echo $((SP_SHELL_RECURSIVE_VALUE))'"],
     ] as const) {
-      assert.equal(inspectHighRiskBashMutation({ command: nestedBash }, workspace, "powershell")?.unverifiableScope, true);
+      assert.equal(inspectHighRiskBashMutation({ command: nestedBash }, workspace, "powershell")?.contextUncertain, true);
+      const beforeNested: number = fixture.approvals.length;
       const nested = await fixture.agent.dispatchHostTool({ type: "toolCall", id, name: "powershell", arguments: { command: nestedBash } });
       assert.equal(nested.isError, true);
       assert.equal((nested.details as any).executionStatus, "not_executed");
       assert.equal(fixture.executions, 1);
-      assert.equal(fixture.approvals.length, 1);
+      assert.ok(fixture.approvals.length === beforeNested || fixture.approvals.length === beforeNested + 1, "an unchanged rejection can be reused");
     }
 
     fixture.setDecision("拒绝");
@@ -1640,8 +1651,8 @@ test("PowerShell arithmetic subexpressions use PowerShell approval rather than B
     assert.equal(denied.isError, true);
     assert.equal((denied.details as any).executionStatus, "not_executed");
     assert.equal(fixture.executions, beforeExecutions);
-    assert.equal(fixture.approvals.length, 2);
-    assert.match(fixture.approvals[1]!, /powershell_remove_recursive/);
+    assert.equal(fixture.approvals.length, 3);
+    assert.match(fixture.approvals[2]!, /powershell_remove_recursive/);
     assert.equal(readFileSync(protectedTarget, "utf8"), "synthetic");
   } finally {
     await fixture?.close();
@@ -1726,8 +1737,8 @@ test("subshell cwd never authorizes a later parent-shell write at the child path
 
     fixture = await guardedCwdBoundaryFixture(workspace, shellPath);
     await fixture.setMode("read-only");
-    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/);
-    assert.equal(inspectHighRiskBashMutation({ command }, workspace)?.unverifiableScope, true);
+    assert.equal(inspectBashPermissionScope({ command }, cwd)?.kind, "opaque-script");
+    assert.equal(inspectHighRiskBashMutation({ command }, workspace)?.contextUncertain, true);
     assert.equal(inspectBashPermissionScope({ command }, workspace)?.unverifiableScope, true);
     const blocked = await assertBoundaryRefusedBeforeSpawn(fixture, workspace, "subshell-cwd", command, [marker, wrongMarker]);
     const protectedRoot = join(workspace, ".git", "config");
@@ -1921,8 +1932,8 @@ test("for-list assignment expansion cannot authorize the wrong cwd", async (t) =
 
     fixture = await guardedCwdBoundaryFixture(workspace, shellPath);
     await fixture.setMode("read-only");
-    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/);
-    assert.equal(inspectHighRiskBashMutation({ command }, workspace)?.unverifiableScope, true);
+    assert.equal(inspectBashPermissionScope({ command }, cwd)?.kind, "opaque-script");
+    assert.equal(inspectHighRiskBashMutation({ command }, workspace)?.contextUncertain, true);
     assert.equal(inspectBashPermissionScope({ command }, workspace)?.unverifiableScope, true);
     const blocked = await assertBoundaryRefusedBeforeSpawn(fixture, workspace, "for-list-cwd", command, [marker, wrongMarker]);
     const quoted = "for candidate in \"${CDPATH:=..}\"; do printf ok; done; cd workspace; printf marker >double-marker.txt";
@@ -1933,7 +1944,7 @@ test("for-list assignment expansion cannot authorize the wrong cwd", async (t) =
       ["for-list-substitution", "$(printf ..)"],
     ]) {
       const unsafe = `for candidate in ${list}; do printf ok; done; cd workspace; printf marker >${id}.txt`;
-      assert.equal(inspectHighRiskBashMutation({ command: unsafe }, workspace)?.unverifiableScope, true);
+      assert.equal(inspectHighRiskBashMutation({ command: unsafe }, workspace)?.contextUncertain, true);
       assert.equal(inspectBashPermissionScope({ command: unsafe }, workspace)?.unverifiableScope, true);
       await assertBoundaryRefusedBeforeSpawn(fixture, workspace, id, unsafe,
         [join(workspace, `${id}.txt`), join(workspace, "workspace", `${id}.txt`)]);
@@ -2069,7 +2080,7 @@ test("reviewed cwd and loop-header variants refuse before authorizing a differen
         fixture = await guardedCwdBoundaryFixture(workspace, shellPath);
         await fixture.setMode(variant.mode);
         const blocked = await assertBoundaryRefusedBeforeSpawn(fixture, workspace, variant.name, variant.command, [actual, wrong]);
-        assert.equal(inspectHighRiskBashMutation({ command: variant.command }, workspace)?.unverifiableScope, true);
+        assert.equal(inspectHighRiskBashMutation({ command: variant.command }, workspace)?.contextUncertain, true);
         assert.equal(inspectBashPermissionScope({ command: variant.command }, workspace)?.unverifiableScope, true);
         await fixture.setMode(variant.mode === "read-only" ? "workspace-write" : "read-only");
         await assertBoundaryRefusedBeforeSpawn(fixture, workspace, `${variant.name}-other-mode`, variant.command, [actual, wrong]);
@@ -2205,7 +2216,7 @@ test("assignment-prefixed cd cannot authorize a different protected cwd", async 
       await fixture.setMode("read-only");
       const blocked = await assertBoundaryRefusedBeforeSpawn(fixture, workspace, id, command, [actual, wrong]);
       assert.equal((blocked.details as any).executionStatus, "not_executed");
-      assert.equal(inspectHighRiskBashMutation({ command }, workspace)?.unverifiableScope, true);
+      assert.equal(inspectHighRiskBashMutation({ command }, workspace)?.contextUncertain, true);
       assert.equal(inspectBashPermissionScope({ command }, workspace)?.unverifiableScope, true);
       await fixture.setMode("workspace-write");
       await assertBoundaryRefusedBeforeSpawn(fixture, workspace, `${id}-workspace`, command, [actual, wrong]);
@@ -2467,8 +2478,8 @@ print(struct.unpack_from('<H', d, 0)[0])
       ["wrapped-loop-cd", "bash -c 'for x in; do cd subdir; done; printf data >.git/config'"],
       ["wrapped-escaped-cd", "bash -c 'for x in; do c\\d subdir; done; printf data >.git/config'"],
     ]) {
-      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/);
-      assert.equal(inspectHighRiskBashMutation({ command }, fixture)?.unverifiableScope, true);
+      assert.equal(inspectBashPermissionScope({ command }, cwd)?.kind, "opaque-script");
+      assert.equal(inspectHighRiskBashMutation({ command }, fixture)?.contextUncertain, true);
       assert.equal(inspectBashPermissionScope({ command }, fixture)?.unverifiableScope, true);
       const result = await agent.dispatchHostTool({ type: "toolCall", id, name: "bash", arguments: { command } });
       assert.equal(result.isError, true);
@@ -2567,12 +2578,12 @@ print(struct.unpack_from('<H', d, 0)[0])
     assert.equal(negatedWrite.isError, true, JSON.stringify(negatedWrite));
     assert.equal(executions, 13);
     assert.equal(existsSync(join(fixture, ".git", "config")), false);
-    decision = "仅允许本次";
+    decision = "拒绝";
     for (const name of ["command", "exec"]) {
       writeFileSync(join(fixture, name), "#!/usr/bin/env bash\nprintf synthetic >.git/config\n");
       const command = `./${name} -v harmless`;
       assert.equal(inspectBashResourceLifecycle({ command }), undefined);
-      assert.equal(inspectHighRiskBashMutation({ command }, fixture)?.unverifiableScope, true);
+      assert.equal(inspectHighRiskBashMutation({ command }, fixture)?.contextUncertain, true);
       const scope = inspectBashPermissionScope({ command }, fixture);
       assert.equal(scope?.unverifiableScope, true);
       assert.notEqual(scope?.kind, "read-only");
@@ -2582,6 +2593,7 @@ print(struct.unpack_from('<H', d, 0)[0])
       assert.equal(executions, 13);
       assert.equal(existsSync(join(fixture, ".git", "config")), false);
     }
+    decision = "仅允许本次";
     const safeChain = await agent.dispatchHostTool({ type: "toolCall", id: "safe-conditional-cd", name: "bash", arguments: {
       command: "cd subdir && printf synthetic >local.log; echo after",
     } });
@@ -2603,8 +2615,8 @@ print(struct.unpack_from('<H', d, 0)[0])
       "[[ 0 -eq 'x[$(printf data >.git/config)]' ]]",
       "[[ -n ${CDPATH:=..} ]]; cd " + basename(fixture) + "; printf data >.git/config",
     ].entries()) {
-      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/);
-      assert.equal(inspectHighRiskBashMutation({ command }, fixture)?.unverifiableScope, true);
+      assert.equal(inspectBashPermissionScope({ command }, cwd)?.kind, "opaque-script");
+      assert.equal(inspectHighRiskBashMutation({ command }, fixture)?.contextUncertain, true);
       assert.equal(inspectBashPermissionScope({ command }, fixture)?.unverifiableScope, true);
       const result = await agent.dispatchHostTool({ type: "toolCall", id: `process-substitution-${index}`, name: "bash", arguments: { command } });
       assert.equal(result.isError, true);

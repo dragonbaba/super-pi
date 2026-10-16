@@ -937,11 +937,16 @@ export class SessionPermissionController {
     try {
       analysis?.assertCurrent(shellInput.command, effectiveCwd, this.#authorityGeneration);
       high = inspectHighRiskBashMutation(event.input, effectiveCwd, shellOperation, analysis);
+      if (high && !high.mutationDetected) high = undefined;
       scope = shellOperation === "powershell"
         ? inspectPowerShellPermissionScope(event.input, effectiveCwd)
         : inspectBashPermissionScope(event.input, effectiveCwd, analysis);
     } finally { if (analysis !== analysisOwner) analysis?.release(); }
     if (!scope) return undefined;
+    if (scope.unverifiableMutation && !high?.unverifiableScope) {
+      high = { risk: "HIGH", mutationDetected: true, contextUncertain: true, primitives: scope.primitives, targets: scope.targets,
+        dynamicScope: true, unverifiableScope: true, workspaceWide: false };
+    }
     if (high?.unverifiableScope) {
       const roots = await protectedRootViolations(high, effectiveCwd);
       return this.#dynamicHighRequest(event, purpose, high, roots, scope.classes, shellOperation, effectiveCwd, hasExplicitCwd);

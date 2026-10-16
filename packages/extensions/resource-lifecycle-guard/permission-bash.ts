@@ -34,11 +34,15 @@ export interface BashPermissionScope {
   classes: string[];
   dynamicScope: boolean;
   unverifiableScope: boolean;
+  /** A recognized write/delete exists but its target or shell context is unknown. */
+  unverifiableMutation?: boolean;
 }
 
 interface ScopeBuilder extends BashPermissionScope {
   segmentCount: number;
   analysisOwner?: ShellAnalysisOwner;
+  mutationDetected: boolean;
+  uncertainContext: boolean;
 }
 
 function commandName(value: string): string {
@@ -72,7 +76,7 @@ function addClass(builder: ScopeBuilder, value: string): void {
 }
 
 function addTarget(builder: ScopeBuilder, value: string, cwd: string): void {
-  if (hasDynamicSyntax(value)) {
+  if (value !== cwd && hasDynamicSyntax(value)) {
     builder.dynamicScope = true;
     markOpaque(builder, "dynamic_target");
     return;
@@ -87,6 +91,7 @@ function addTarget(builder: ScopeBuilder, value: string, cwd: string): void {
 }
 
 function markMutation(builder: ScopeBuilder, primitive: string): void {
+  builder.mutationDetected = true;
   if (builder.kind === "read-only") builder.kind = "known-mutation";
   addPrimitive(builder, primitive);
   addClass(builder, `mutation:${primitive}`);
@@ -432,12 +437,12 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
     markOpaque(builder, "command_substitution_depth");
     return;
   }
-  if (hasUninspectableBashState(command)) {
-    markOpaque(builder, "unverifiable_shell_state");
-    return;
-  }
   const prepared = builder.analysisOwner ? builder.analysisOwner.get(command) : analyzeShellSource(command);
   const analysis = prepared.view;
+  if (hasUninspectableBashState(analysis.command)) {
+    markOpaque(builder, "unverifiable_shell_state");
+    builder.uncertainContext = true;
+  }
   if (prepared.stdin) markOpaque(builder, `stdin_${prepared.stdin.kind}:${prepared.stdin.consumer}`);
   if (analysis.hasHeredoc) markOpaque(builder, "heredoc_uninspectable");
   if (analysis.uncertain) markOpaque(builder, "shell_context_uninspectable");
@@ -640,6 +645,7 @@ function publicScope(builder: ScopeBuilder): BashPermissionScope {
     classes: builder.classes,
     dynamicScope: builder.dynamicScope,
     unverifiableScope: builder.unverifiableScope,
+    unverifiableMutation: builder.mutationDetected && (builder.uncertainContext || builder.dynamicScope),
   };
 }
 
@@ -656,6 +662,8 @@ export function inspectBashPermissionScope(input: unknown, cwd: string, analysis
     unverifiableScope: false,
     segmentCount: 0,
     analysisOwner,
+    mutationDetected: false,
+    uncertainContext: false,
   };
   if (command.length > MAX_COMMAND_CHARS) {
     markOpaque(builder, "oversized_command");

@@ -97,7 +97,6 @@ function hasBoundedOwnedUse(work: string | undefined): boolean {
  for (const command of commands) if (!OWNED_USE_COMMAND_PATTERN.test(command.trim())) return false;
  return true;
 }
-const EMPTY_SUBSTITUTIONS: readonly string[] = [];
 export const UNCERTAIN_LIFECYCLE = "[SHELL_UNINSPECTABLE] This Bash call was not executed: uncertain/uninspectable shell structure.\nRetry: use an inspectable foreground command and resubmit for authorization.";
 function lifecycleRefusal(code: string, reason: string, recovery: string): string {
  return `[${code}] This Bash call was not executed: ${reason}.\nRetry: ${recovery}; resubmit for authorization.`;
@@ -124,11 +123,18 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
  const here = prepared.view;
  const command = here.command;
  const substitutions = prepared.substitutions;
+ if (here.substitutionUncertain) return lifecycleRefusal("SHELL_SUBSTITUTION", "uncertain/uninspectable executable heredoc substitution", "simplify the substitution into inspectable foreground commands");
  if (substitutions.limitExceeded === "count") return `[SHELL_INSPECTION_LIMIT] Bash not executed: more than ${MAX_SUBSTITUTIONS} command substitutions per script.\nRetry: split into smaller calls (max ${MAX_SUBSTITUTIONS} each).`;
  if (substitutions.limitExceeded === "nesting") return `[SHELL_INSPECTION_LIMIT] Bash not executed: command substitution nesting exceeds ${MAX_SUBSTITUTION_NESTING} levels.\nRetry: reduce nesting.`;
  if (substitutions.unterminated || substitutions.unsupported) return lifecycleRefusal("SHELL_SUBSTITUTION", substitutions.unterminated ? "unterminated command substitution" : "uncertain/uninspectable command substitution grammar", "simplify the substitution into inspectable foreground commands");
  for (const script of here.substitutions) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) return result; }
  for (const script of substitutions.scripts) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) return result; }
+ if (here.hereDocuments) for (const document of here.hereDocuments) {
+  if (heredocConsumer(document.header) === "bash") {
+   const result = inspectLifecycleScript(document.body, depth + 1, nativePowerShellAvailable, analysisOwner);
+   if (result) return result;
+  }
+ }
  // Unknown cwd/lookup state is permission evidence, not a process lifetime.
  // Still inspect visible launches below, including those after state changes.
  if (DETACH_UTILITY_PATTERN.test(command)) return BLOCK_REASON;
@@ -141,14 +147,10 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
  if (!SHELL_WRAPPER_TEXT_PATTERN.test(command) && !EXECUTABLE_EXPANSION_TEXT_PATTERN.test(command) && !command.includes("[[") && !command.includes("((") && !command.includes("for") && !command.includes("select")) return undefined;
  const segments = parseShellSegments(command);
  if (segments.length > MAX_SCRIPT_SEGMENTS) return lifecycleRefusal("SHELL_INSPECTION_LIMIT", "too many command segments", "reduce the number of segments");
- const loopReason = unsafeBashLoopHeaders(segments);
- if (loopReason) return lifecycleRefusal("SHELL_UNINSPECTABLE", loopReason === "stateful_loop_list_expansion" ? "loop list expansion can change later shell state" : "loop variable can change later executable lookup", "use a literal list, or a bounded read-only find loop such as for f in $(find js -name '*.js' | sort); do node --check -- \"$f\"; done; assignments and dynamic input redirections are not supported");
  for (const tokens of segments) {
   if (tokens.bashTestProcessSubstitution) return lifecycleRefusal("SHELL_UNINSPECTABLE", "process substitution inside a Bash test cannot be safely inspected", "split the process substitution into separately inspectable commands");
-  if (hasUnsafeBashTestOperand(tokens)) return lifecycleRefusal("SHELL_UNINSPECTABLE", "Bash test operand may change shell state or evaluate arithmetic", "use simple variable tests or literal numeric comparisons");
-  // Possible assignment through a referenced value is left to permission review.
-  if (shellExpansionRisk(tokens) === 2) return lifecycleRefusal("SHELL_UNINSPECTABLE", "expansion assigns shell variables or runs code in the current shell", "use literal values or simple variable references");
-  if (hasBareBashArithmeticCommand(tokens)) return lifecycleRefusal("SHELL_UNINSPECTABLE", "arithmetic command can change later shell state", "use an inspectable foreground command without a bare arithmetic command");
+  // Assignment, arithmetic and lookup uncertainty is classified by permissions.
+  // It cannot turn a visible detached launch into an authorized foreground job.
   // The global filter is only an optimization; unrelated segments supply no
   // shell/evaluator evidence. No closure or reconstructed segment string.
   let shellText = false;
@@ -245,6 +247,9 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
 
 export interface HighRiskMutationScan {
 	risk: "HIGH";
+	/** True only for a recognized mutation, never for parser uncertainty alone. */
+	mutationDetected: boolean;
+	contextUncertain: boolean;
 	primitives: string[];
 	targets: string[];
 	dynamicScope: boolean;
@@ -269,6 +274,7 @@ interface ScanBuilder {
 	workspaceWide: boolean;
 	segmentsVisited: number;
 	analysisOwner?: ShellAnalysisOwner;
+	mutationDetected: boolean;
 	diagnostic?: PolicyDiagnosticMetadata;
 }
 
@@ -279,6 +285,8 @@ export function inspectHighRiskBashMutation(input: unknown, cwd: string, shellOp
 	if (command.length > MAX_INSPECTED_COMMAND_CHARS) {
 		return {
 			risk: "HIGH",
+			mutationDetected: false,
+			contextUncertain: true,
 			primitives: ["oversized_uninspectable"],
 			targets: [],
 			dynamicScope: true,
@@ -298,15 +306,20 @@ export function inspectHighRiskBashMutation(input: unknown, cwd: string, shellOp
 		workspaceWide: false,
 		segmentsVisited: 0,
 		analysisOwner,
+		mutationDetected: false,
 	};
 	inspectShellScript(command, resolve(cwd), 0, builder, shellOperation);
+	// Parser uncertainty is not itself evidence of a mutation. The permission
+	// classifier retains that uncertainty as opaque input in every access mode.
 	if (builder.primitives.length === 0) return undefined;
 	return {
 		risk: "HIGH",
+		mutationDetected: builder.mutationDetected,
+		contextUncertain: builder.unverifiableScope,
 		primitives: builder.primitives,
 		targets: builder.targets,
 		dynamicScope: builder.dynamicScope,
-		unverifiableScope: builder.unverifiableScope,
+		unverifiableScope: builder.mutationDetected && builder.unverifiableScope,
 		workspaceWide: builder.workspaceWide,
 		diagnostic: builder.diagnostic,
 	};
@@ -366,7 +379,7 @@ function inspectOutputRedirections(tokens: ShellSegment, cwd: string, builder: S
 			continue;
 		}
 		if (target === "/dev/null") continue;
-		addPrimitive(builder, "output_redirection");
+		addMutationPrimitive(builder, "output_redirection");
 		if (!target || hasDynamicSyntax(target)) {
 			markUnverifiable(builder);
 			continue;
@@ -382,20 +395,20 @@ function inspectShellScript(script: string, initialCwd: string, depth: number, b
 		builder.unverifiableScope = true;
 		return;
 	}
-	if (hasUninspectableBashState(script)) {
-		addPrimitive(builder, "unverifiable_shell_state");
-		markUnverifiable(builder);
-		return;
-	}
 	const prepared = builder.analysisOwner ? builder.analysisOwner.get(script) : analyzeShellSource(script);
 	const analysis = prepared.view;
-	if (analysis.hasHeredoc) {
-		addPrimitive(builder, "heredoc_uninspectable");
+	if (hasUninspectableBashState(analysis.command)) {
+		addPrimitive(builder, "unverifiable_shell_state");
 		markUnverifiable(builder);
 	}
 	if (analysis.uncertain) {
 		addPrimitive(builder, "shell_context_uninspectable");
 		markUnverifiable(builder);
+	}
+	if (analysis.hereDocuments) for (const document of analysis.hereDocuments) {
+		const consumer = heredocConsumer(document.header);
+		if (consumer === "bash") inspectShellScript(document.body, initialCwd, depth + 1, builder, "bash");
+		else if (consumer) inspectEmbeddedCode(document.body, consumer, initialCwd, builder);
 	}
 	for (const nested of analysis.substitutions) inspectShellScript(nested, initialCwd, depth + 1, builder, shellOperation);
 	const substitutions = prepared.substitutions;
@@ -419,7 +432,14 @@ function inspectShellScript(script: string, initialCwd: string, depth: number, b
 		const tokens = segment;
 		if (tokens.length === 0) continue;
 		if (tokens.bashTestProcessSubstitution) { addPrimitive(builder, "unverifiable_process_substitution"); markUnverifiable(builder); continue; }
-		if (hasUnsafeBashTestOperand(tokens)) { addPrimitive(builder, "unverifiable_bash_test_operand"); markUnverifiable(builder); }
+		if (hasUnsafeBashTestOperand(tokens)) {
+			addPrimitive(builder, "unverifiable_bash_test_operand"); markUnverifiable(builder);
+			// Bash evaluates arithmetic/test subscripts even when the source word
+			// was quoted. Inspect visible substitutions in those evaluated words.
+			for (const token of tokens) if (token.includes("$(") || token.includes("`")) {
+				inspectShellScript(token, workingDirectory, depth + 1, builder, shellOperation);
+			}
+		}
 		if (shellOperation === "bash" && shellExpansionRisk(tokens) !== 0) { addPrimitive(builder, "stateful_shell_expansion"); markUnverifiable(builder); }
 		if (shellOperation === "bash" && hasBareBashArithmeticCommand(tokens)) {
 			addPrimitive(builder, "unverifiable_arithmetic_command"); markUnverifiable(builder); continue;
@@ -482,6 +502,14 @@ function inspectCommand(
 		if (depth >= MAX_WRAPPER_DEPTH || sourceIndex + 1 !== tokens.length || tokens.expansions?.[sourceIndex]) {
 			addPrimitive(builder, "unverifiable_eval"); markUnverifiable(builder);
 		} else inspectShellScript(tokens[sourceIndex]!, cwd, depth + 1, builder, "bash");
+		return;
+	}
+	if (shellOperation === "bash" && command === "trap" && tokens[commandIndex] === "trap") {
+		const actionIndex = tokens[commandIndex + 1] === "--" ? commandIndex + 2 : commandIndex + 1;
+		const action = tokens[actionIndex];
+		if (action && action !== "-" && action !== "-p" && action !== "-l" && !tokens.expansions?.[actionIndex]) {
+			inspectShellScript(action, cwd, depth + 1, builder, "bash");
+		}
 		return;
 	}
 	if (SCRIPT_WRAPPERS.has(command)) {
@@ -578,7 +606,7 @@ function inspectCodeCall(
 ): void {
 	const match = pattern.exec(masked);
 	if (!match) return;
-	addPrimitive(builder, primitive);
+	addMutationPrimitive(builder, primitive);
 	const open = source.indexOf("(", match.index);
 	const literal = open >= 0 ? literalFirstArgument(source, open) : undefined;
 	if (literal === undefined) {
@@ -603,7 +631,7 @@ function inspectRm(tokens: readonly string[], start: number, cwd: string, builde
 		}
 	}
 	if (!recursive) return;
-	addPrimitive(builder, "rm_recursive");
+	addMutationPrimitive(builder, "rm_recursive");
 	collectPositionalTargets(tokens, start, cwd, builder, "dash");
 }
 
@@ -613,7 +641,7 @@ function inspectPowerShellRemove(tokens: readonly string[], start: number, cwd: 
 		if (POWERSHELL_RECURSIVE_OPTIONS.has(tokens[index]!.toLowerCase())) recursive = true;
 	}
 	if (!recursive) return;
-	addPrimitive(builder, "powershell_remove_recursive");
+	addMutationPrimitive(builder, "powershell_remove_recursive");
 	let explicitTarget = false;
 	for (let index = start; index < tokens.length; index++) {
 		const value = tokens[index]!;
@@ -640,7 +668,7 @@ function inspectWindowsRmdir(tokens: readonly string[], start: number, cwd: stri
 		if (WINDOWS_RMDIR_RECURSIVE_OPTIONS.has(tokens[index]!.toLowerCase())) recursive = true;
 	}
 	if (!recursive) return;
-	addPrimitive(builder, "windows_rmdir_recursive");
+	addMutationPrimitive(builder, "windows_rmdir_recursive");
 	let found = false;
 	for (let index = start; index < tokens.length; index++) {
 		const value = tokens[index]!;
@@ -660,7 +688,7 @@ function inspectFind(tokens: readonly string[], start: number, cwd: string, buil
 		else if (value === "-exec" || value === "-execdir") execAction = true;
 	}
 	if (!deleteAction && !execAction) return;
-	addPrimitive(builder, deleteAction ? "find_delete" : "find_exec");
+	addMutationPrimitive(builder, deleteAction ? "find_delete" : "find_exec");
 	if (execAction) markUnverifiable(builder);
 	const target = findSearchRoot(tokens, start);
 	if (target) addTarget(builder, target, cwd);
@@ -681,7 +709,7 @@ function findSearchRoot(tokens: readonly string[], start: number): string | unde
 function inspectXargs(tokens: readonly string[], start: number, builder: ScanBuilder): void {
 	for (let index = start; index < tokens.length; index++) {
 		if (commandName(tokens[index]!) !== "rm") continue;
-		addPrimitive(builder, "xargs_rm");
+		addMutationPrimitive(builder, "xargs_rm");
 		markUnverifiable(builder);
 		return;
 	}
@@ -692,7 +720,7 @@ function inspectGit(tokens: readonly string[], start: number, builder: ScanBuild
 	if (subcommand === "reset") {
 		for (let index = start + 1; index < tokens.length; index++) {
 			if (tokens[index]!.toLowerCase() !== "--hard") continue;
-			addPrimitive(builder, "git_reset_hard");
+			addMutationPrimitive(builder, "git_reset_hard");
 			builder.workspaceWide = true;
 			return;
 		}
@@ -707,7 +735,7 @@ function inspectGit(tokens: readonly string[], start: number, builder: ScanBuild
 		if (GIT_CLEAN_DIRECTORY_OPTIONS.has(option) || shortOptionContains(option, "d")) directories = true;
 	}
 	if (!force || !directories) return;
-	addPrimitive(builder, "git_clean");
+	addMutationPrimitive(builder, "git_clean");
 	builder.workspaceWide = true;
 }
 
@@ -755,6 +783,26 @@ function addResolvedTarget(builder: ScanBuilder, target: string): void {
 	}
 	builder.targetSet.add(target);
 	builder.targets.push(target);
+}
+
+function addMutationPrimitive(builder: ScanBuilder, primitive: string): void {
+	builder.mutationDetected = true;
+	addPrimitive(builder, primitive);
+}
+
+/** Literal interpreter stdin is executable source; data consumers remain opaque
+ * data. This is analysis only and never reconstructs the command for execution. */
+function heredocConsumer(header: string): "bash" | "node" | "python" | undefined {
+	const segments = parseShellSegments(header);
+	const tokens = segments[segments.length - 1];
+	if (!tokens) return undefined;
+	const index = commandTokenIndex(tokens);
+	if (index < 0 || index >= tokens.length) return undefined;
+	const name = commandName(tokens[index]!);
+	if (SCRIPT_WRAPPERS.has(name) || name === "source" || name === ".") return "bash";
+	if (NODE_COMMANDS.has(name)) return "node";
+	if (PYTHON_COMMANDS.has(name)) return "python";
+	return undefined;
 }
 
 function addPrimitive(builder: ScanBuilder, primitive: string): void {

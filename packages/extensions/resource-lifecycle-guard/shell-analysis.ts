@@ -3,6 +3,10 @@ import { extractCommandSubstitutions, prepareShellAnalysis, type CommandSubstitu
 
 export const MAX_ANALYSIS_ENTRIES = 128;
 export const MAX_ANALYSIS_BYTES = 512 * 1024;
+export const shellAnalysisOwnership = {
+  created: 0, released: 0, liveOwners: 0, liveEntries: 0, liveBytes: 0,
+  hits: 0, misses: 0, overflows: 0,
+};
 
 export interface PreparedShellAnalysis {
   view: ShellAnalysisView;
@@ -36,6 +40,8 @@ export class ShellAnalysisOwner {
     this.command = command;
     this.cwd = cwd;
     this.generation = generation;
+    shellAnalysisOwnership.created++;
+    shellAnalysisOwnership.liveOwners++;
   }
 
   get size(): number { return this.entries.size; }
@@ -50,20 +56,29 @@ export class ShellAnalysisOwner {
   get(source: string): PreparedShellAnalysis {
     if (this.released) throw new Error("Shell analysis owner is released");
     const cached = this.entries.get(source);
-    if (cached) { this.hits++; return cached; }
+    if (cached) { this.hits++; shellAnalysisOwnership.hits++; return cached; }
     this.misses++;
+    shellAnalysisOwnership.misses++;
     const analysis = analyzeShellSource(source);
     let bytes = 2 * (source.length + analysis.view.command.length + (analysis.stdin?.analysisCommand.length ?? 0));
     for (const nested of analysis.view.substitutions) bytes += nested.length * 2;
     for (const nested of analysis.substitutions.scripts) bytes += nested.length * 2;
+    if (analysis.view.hereDocuments) for (const document of analysis.view.hereDocuments) bytes += 2 * (document.header.length + document.body.length);
     if (this.entries.size < MAX_ANALYSIS_ENTRIES && this.retainedBytes + bytes <= MAX_ANALYSIS_BYTES) {
       this.entries.set(source, analysis);
       this.retainedBytes += bytes;
-    } else this.overflows++;
+      shellAnalysisOwnership.liveEntries++;
+      shellAnalysisOwnership.liveBytes += bytes;
+    } else { this.overflows++; shellAnalysisOwnership.overflows++; }
     return analysis;
   }
 
   release(): void {
+    if (this.released) return;
+    shellAnalysisOwnership.released++;
+    shellAnalysisOwnership.liveOwners--;
+    shellAnalysisOwnership.liveEntries -= this.entries.size;
+    shellAnalysisOwnership.liveBytes -= this.retainedBytes;
     this.entries.clear();
     this.command = undefined;
     this.cwd = undefined;
