@@ -59,7 +59,7 @@ const NODE_VALUE_FREE_FLAGS = new Set([
 	// Documented operand-free CLI options (Node 24/26). Unknown arities still
 	// retain both interpretations; this catalog does not infer arbitrary flags.
 	"--allow-addons", "--allow-child-process", "--allow-ffi", "--allow-inspector", "--allow-net", "--allow-wasi", "--allow-worker",
-	"--build-snapshot", "--completion-bash", "--cpu-prof", "--disable-sigusr1", "--disable-wasm-trap-handler",
+	"--build-snapshot", "--cpu-prof", "--disable-sigusr1", "--disable-wasm-trap-handler",
 	"--disallow-code-generation-from-strings", "--enable-etw-stack-walking", "--enable-fips", "--entry-url",
 	"--experimental-addon-modules", "--experimental-eventsource", "--experimental-ffi", "--experimental-import-meta-resolve",
 	"--experimental-inspector-network-resource", "--experimental-network-inspection", "--experimental-print-required-tla",
@@ -197,6 +197,7 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
   const tokens = segments[segment]!;
   if (tokens.bashTestProcessSubstitution) return lifecycleRefusal("SHELL_UNINSPECTABLE", "process substitution inside a Bash test cannot be safely inspected", "split the process substitution into separately inspectable commands");
   if (hasUnsafeBashTestOperand(tokens) || hasUnsafeBashBuiltinOperand(tokens)) return lifecycleRefusal("SHELL_UNINSPECTABLE", "Bash test, callback or name operand may execute uninspected arithmetic or source", "use callback-free reads, simple variable tests and literal numeric subscripts/comparisons");
+  if (hasBareBashArithmeticCommand(tokens)) return lifecycleRefusal("SHELL_UNINSPECTABLE", "arithmetic command can change later shell state", "use an inspectable foreground command without a bare arithmetic command");
   // Assignment, arithmetic and lookup uncertainty is classified by permissions.
   // It cannot turn a visible detached launch into an authorized foreground job.
   // The global filter is only an optimization; unrelated segments supply no
@@ -921,7 +922,7 @@ function nodeMayReadStdin(tokens: readonly string[], start: number, descriptor =
 		if (word === "-") { if (options & 1 && descriptor === 0) return true; continue; }
 		if (word === "--") { states |= options << 5; continue; }
 		if (!word.startsWith("-")) { if (options & 1 && isHeredocDescriptorPath(word, descriptor)) return true; continue; }
-		if (word === "--check" || word === "-c" || word === "--help" || word === "-h" || word === "--version" || word === "-v" || word === "--test") { if (!states) interactive = false; continue; }
+		if (word === "--check" || word === "-c" || word === "--help" || word === "-h" || word === "--version" || word === "-v" || word === "--test" || word === "--completion-bash") { if (!states) interactive = false; continue; }
 		if (word === "--interactive" || word === "-i") { interactive = true; states |= options; continue; }
 		if (word === "--eval" || word === "--print" || word === "-e" || word === "-p") { states |= 16; continue; }
 		if (word.startsWith("--eval=") || word.startsWith("--print=") || word.startsWith("-e") || word.startsWith("-p")) { states |= 2; continue; }
@@ -1445,8 +1446,10 @@ function simpleStdinConsumers(tokens: ShellSegment, descriptor: number, depth: n
 			}
 		} else {
 			if (option === "--rcfile" || option === "--init-file") { cursor++; continue; }
+			if ((name === "bash" || name === "bash.exe") && (option === "--dump-strings" || option === "--dump-po-strings")) return 16;
 			let scriptOption = false;
 			if (!option.startsWith("--")) for (let flag = 1; flag < option.length; flag++) {
+				if ((name === "bash" || name === "bash.exe") && option[flag] === "D") return 16;
 				if (option[flag] === "n") shellNoexec = option[0] === "-";
 				if (option[flag] === "i") shellInteractive = option[0] === "-";
 				if (option[flag] === "c") scriptOption = true;

@@ -25,7 +25,24 @@ export const shellAnalysisCounters = {
   prepareCalls: 0, prepareInputBytes: 0,
   substitutionCalls: 0, substitutionInputBytes: 0,
   functionBoundaryCalls: 0, functionBoundaryChars: 0, crComparisons: 0,
+  subscriptTextChars: 0,
 };
+
+/** Primitive state for literal identifier[...executable-marker...] text.
+ * Bits zero/one remember an identifier/execution marker; higher bits count brackets. */
+export function subscriptTextState(state: number, code: number, next: number): number {
+  let depth = state >>> 2;
+  if (depth) {
+    let marker = state & 2;
+    if (code === 96 || (code === 36 || code === 60 || code === 62) && next === 40) marker = 2;
+    if (code === 91) depth++;
+    else if (code === 93 && --depth === 0) return marker ? -1 : 0;
+    return (depth << 2) | marker;
+  }
+  if (code === 91 && (state & 1)) return 4;
+  return code === 95 || code >= 65 && code <= 90 || code >= 97 && code <= 122
+    || (state & 1) !== 0 && code >= 48 && code <= 57 ? 1 : 0;
+}
 
 /** Bash 5.3 function substitution; parameter words do not satisfy this prefix. */
 export function isFunctionSubstitutionStart(command: string, index: number): boolean {
@@ -150,9 +167,27 @@ export function extractCommandSubstitutions(command: string, heredocData = false
   const scripts: string[] = [];
   let quote = 0;
   let escaped = false;
+  let subscriptState = 0;
   for (let index = 0; index < command.length; index++) {
     const code = command.charCodeAt(index);
     if (code === 92 && command.charCodeAt(index + 1) === 13) return { scripts, unterminated: false, unsupported: true, limitExceeded: false, boundaryRefusal: 2 };
+    if (!heredocData && !escaped && quote === 0 && code === 35 && (index === 0 || COMMENT_BOUNDARY_PATTERN.test(command[index - 1]!))) {
+      const newline = command.indexOf("\n", index);
+      if (newline < 0) break;
+      subscriptState = 0; index = newline; continue;
+    }
+    if (!heredocData) {
+      shellAnalysisCounters.subscriptTextChars++;
+      // Quoting does not make stored arithmetic text inert. Quote delimiters
+      // and removed backslashes do not split the existing shell word.
+      if (!escaped && (code === quote || quote === 0 && (code === 39 || code === 34) || code === 92 && quote !== 39)) {
+        // Preserve primitive state across syntax-only quote/escape characters.
+      } else {
+        if (!escaped && quote === 0 && (code === 32 || code === 9 || code === 10 || code === 13 || code === 59 || code === 124 || code === 38)) subscriptState = 0;
+        else subscriptState = subscriptTextState(subscriptState, code, command.charCodeAt(index + 1));
+        if (subscriptState < 0) return { scripts, unterminated: false, unsupported: true, limitExceeded: false, boundaryRefusal: 1 };
+      }
+    }
     if (escaped) {
       escaped = false;
       continue;
@@ -164,11 +199,6 @@ export function extractCommandSubstitutions(command: string, heredocData = false
     if (quote === 39) {
       if (code === 39) quote = 0;
       continue;
-    }
-    if (!heredocData && quote === 0 && code === 35 && (index === 0 || COMMENT_BOUNDARY_PATTERN.test(command[index - 1]!))) {
-      const newline = command.indexOf("\n", index);
-      if (newline < 0) break;
-      index = newline; continue;
     }
     if (!heredocData && code === 39 && quote === 0) {
       quote = 39;

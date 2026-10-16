@@ -162,8 +162,8 @@ function inspectKnownMutation(command: string, tokens: PermissionTokens, start: 
         markMutation(builder, tokens[index] === "-delete" ? "find_delete" : "find_exec");
         if (root === undefined) addResolvedTarget(builder, cwd);
         else addTarget(builder, root, cwd, true);
-        if (tokens[index] !== "-delete") markOpaque(builder, "find_exec_scope");
-        return true;
+        if (tokens[index] !== "-delete") { markOpaque(builder, "find_exec_scope"); return true; }
+        continue;
       }
     }
     return true;

@@ -6,7 +6,7 @@ import { MAX_ANALYSIS_BYTES, MAX_ANALYSIS_ENTRIES, ShellAnalysisOwner } from "..
 import { shellAnalysisCounters } from "../packages/extensions/resource-lifecycle-guard/shell-substitution.ts";
 import { shellHookFixture, assertFinalAuthorization } from "./codemode-recovery/shell-hook-fixture.ts";
 
-for (const command of ["export PATH=/usr/bin:$PATH; node -v", "source .venv/bin/activate && python --version", "(cd sub && make)", "echo $((UNRESOLVED_VALUE))", "((PATH=0)); cat", '"$FFMPEG" -version']) {
+for (const command of ["export PATH=/usr/bin:$PATH; node -v", "source .venv/bin/activate && python --version", "(cd sub && make)", "echo $((UNRESOLVED_VALUE))", '"$FFMPEG" -version']) {
   test(`unknown state without an identified mutation follows permission mode: ${command}`, async t => {
     const high = inspectHighRiskBashMutation({ command }, process.cwd());
     assert.notEqual(high?.mutationDetected, true);
@@ -19,6 +19,16 @@ for (const command of ["export PATH=/usr/bin:$PATH; node -v", "source .venv/bin/
     }
   });
 }
+
+test("standalone arithmetic retains main's lifecycle refusal even without visible substitution", async t => {
+  for (const command of ["((PATH=0)); cat", "(( 1+1 ))", "(( x ))"]) {
+    for (const mode of ["full-access", "workspace-write"] as const) {
+      const fixture = await shellHookFixture(t, mode), { outcome } = await fixture.authorize(command);
+      assert.equal(outcome?.block, true); assert.equal(outcome?.finalAuthorization, undefined);
+      assert.match(outcome?.reason ?? "", /\[SHELL_UNINSPECTABLE\]/); assert.equal(fixture.dialogs(), 0);
+    }
+  }
+});
 
 for (const command of ['rm -rf "$X"', 'rm "$X"', 'printf x > "$X"', "source missing; rm -rf target", "(cd sub && make); printf x > target", "cd sub; touch target", "export PATH=/tmp; rm -rf target", 'sort -o "$X"', 'sort --output="$X"', 'find . -fprint "$X"', "(cd sub); sort -o target", "(cd sub); find . -fprintf target '%p'"]) {
   test(`identified mutation with unknown target or cwd cannot be approved: ${command}`, async t => {

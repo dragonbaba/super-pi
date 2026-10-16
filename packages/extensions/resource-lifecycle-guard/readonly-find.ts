@@ -10,7 +10,7 @@ const SORT_OPTIONS = /^-[urnVf]+$/;
 const FIND_NEWER_PREDICATE = /^-newer[acmBt][acmBt]$/;
 const FIND_OPERAND_PREDICATES = new Set([
 	"-name", "-iname", "-path", "-ipath", "-wholename", "-iwholename", "-regex", "-iregex", "-lname", "-ilname",
-	"-type", "-xtype", "-uid", "-gid", "-user", "-group", "-perm", "-links", "-inum", "-size", "-used",
+	"-type", "-xtype", "-fstype", "-uid", "-gid", "-user", "-group", "-perm", "-links", "-inum", "-size", "-used",
 	"-amin", "-atime", "-cmin", "-ctime", "-mmin", "-mtime", "-newer", "-anewer", "-cnewer", "-samefile",
 	"-maxdepth", "-mindepth", "-regextype", "-context", "-printf",
 ]);

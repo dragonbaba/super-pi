@@ -12,6 +12,13 @@ const cwd = process.cwd(), iterations = 512, warmup = 64, samplingInterval = 409
 const literalInputs = process.argv.includes("--literal-inputs");
 const substitution = "$(grep -c -E '(class|function|const|var|let) GCSystem\\b' pixi/pixi.js)";
 const cases = literalInputs ? [
+  ["stored-arithmetic-subscript", "x='a[$(sleep 100 &)]'; echo $((x))", 1],
+  ["literal-bare-arithmetic", "((1+1))", 1],
+  ["arithmetic-for-control", "for ((i=0;i<3;i++)); do :; done", 1],
+  ["find-delete-then-output", "find scratch -delete -fprint output", 1],
+  ["find-fstype-data", "find . -fstype -fprint", 1],
+  ["bash-dump-strings", "bash --dump-strings <<'EOF'\nsleep 100 &\nEOF", 1],
+  ["node-completion", "node --completion-bash <<'EOF'\nfs.rmSync(target,{recursive:true})\nEOF", 1],
   ["find-backtick-output", 'find . -maxdepth 0 -fprint `pwd`/../outside', 2],
   ["unknown-shell-transform", "cat <<'EOF' | tr X '&' | source /dev/stdin\nsleep 100 X\nEOF", 1],
   ["python-escaped-target", 'python3 <<\'EOF\'\nshutil.rmtree("\\x2egit")\nEOF', 1],
@@ -158,6 +165,7 @@ for (const [name, command, uniqueSources] of cases) {
   } finally { session.disconnect(); }
   const counters = Object.fromEntries(Object.entries(shellAnalysisCounters).map(([key, value]) => [key, value - before[key as keyof typeof before]]));
   assert.equal(counters.prepareCalls, iterations * uniqueSources);
+  assert.ok(counters.subscriptTextChars <= counters.substitutionInputBytes / 2);
   assert.equal(shellAnalysisOwnership.misses - ownership.misses, iterations * uniqueSources);
   assert.equal(shellAnalysisOwnership.liveOwners, 0);
   assert.equal(shellAnalysisOwnership.liveEntries, 0);

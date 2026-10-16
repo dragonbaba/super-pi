@@ -7,7 +7,77 @@ import { extractCommandSubstitutions, prepareShellAnalysis, shellAnalysisCounter
 import { shellHookFixture, assertFinalAuthorization } from "./codemode-recovery/shell-hook-fixture.ts";
 import { SessionPermissionController, workspace } from "./codemode-recovery/guard-fixture.ts";
 
+test("subscript text checks share the substitution scan and retain no source", () => {
+  const command = "printf '%s' 'a[0-9]' \"b[12]\" $'c[3]'";
+  const beforeCalls = shellAnalysisCounters.substitutionCalls, beforeChars = shellAnalysisCounters.subscriptTextChars;
+  assert.equal(extractCommandSubstitutions(command).unsupported, false);
+  assert.equal(shellAnalysisCounters.substitutionCalls - beforeCalls, 1);
+  assert.equal(shellAnalysisCounters.subscriptTextChars - beforeChars, command.length);
+  const beforeComment = shellAnalysisCounters.subscriptTextChars;
+  assert.equal(extractCommandSubstitutions("# a[$(sleep 100 &)]\nprintf ok").unsupported, false);
+  assert.equal(shellAnalysisCounters.subscriptTextChars - beforeComment, "printf ok".length);
+  const beforeData = shellAnalysisCounters.subscriptTextChars;
+  extractCommandSubstitutions("literal a[$(printf ok)]", true);
+  assert.equal(shellAnalysisCounters.subscriptTextChars, beforeData, "heredoc data uses its existing consumer boundary");
+});
+
 for (const mode of ["full-access", "workspace-write"] as const) {
+  test(`review twenty ${mode}: stored executable subscript text refuses before arithmetic use`, async t => {
+    const assignment = "x='a[$(sleep 100 &)]'";
+    for (const use of ["(( x ))", "echo $(( x ))", "echo $(( $x ))", "for ((i=0;i<x;i++)); do :; done", "let 'y=x'", "[[ x -eq 0 ]]", "echo ${b[x]}", "declare -i z; z=x"]) {
+      const command = `${assignment}; ${use}`;
+      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_UNINSPECTABLE\]/, command);
+      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
+      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+    for (const word of ["'a[$(sleep 100 &)]'", '"a[$(sleep 100 &)]"', "$'a[$(sleep 100 &)]'", "a[$(sleep 100 &)]", "'a[`sleep 100 &`]'", "'a[<(sleep 100 &)]'", "'a[>(sleep 100 &)]'", "'a[b[$(sleep 100 &)]]'"]) {
+      assert.match(inspectBashResourceLifecycle({ command: `printf '%s' ${word}` }) ?? "", /\[SHELL_UNINSPECTABLE\]/, word);
+    }
+    for (const command of ["(( 1+1 ))", "(( x ))"]) assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_UNINSPECTABLE\]/);
+    for (const command of ["echo $(( 1+2 ))", "for ((i=0;i<3;i++)); do :; done", "grep 'a[0-9]' f", "printf '%s' 'a[0] $(sleep 100 &)'", "printf '%s' 'a[' '$(sleep 100 &)'", "printf '%s' 'a[$(sleep 100 &)'"]) {
+      assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
+    }
+  });
+  test(`review twenty ${mode}: find continues after delete and treats fstype as data`, async t => {
+    for (const action of ["-fprint", "-fprint0", "-fprintf", "-fls"]) {
+      const command = `find scratch -delete ${action} .git/config${action === "-fprintf" ? " '%p'" : ""}`;
+      const scope = inspectBashPermissionScope({ command }, process.cwd());
+      assert.ok(scope?.targets.some(target => target.endsWith(".git/config") || target.endsWith(".git\\config")), command);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
+      assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
+    }
+    for (const command of ["find . -fstype -fprint", "find . -fstype -delete", "find . -fstype -exec"]) {
+      assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.unverifiableMutation, false, command);
+      assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
+    }
+  });
+  test(`review twenty ${mode}: reported init-file and here-string payloads already refuse`, async t => {
+    for (const command of ["bash --init-file /dev/fd/3 -i 3<<'EOF'\nsleep 100 &\nEOF", "bash --rcfile /dev/fd/3 -i 3<<'EOF'\nsleep 100 &\nEOF\necho done", "source /dev/stdin <<< 'sleep 100 >/dev/null 2>&1 &'; true"]) {
+      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_(?:WRAPPER|HEREDOC)\]/, command);
+      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
+      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+  });
+  test(`review twenty ${mode}: Bash dump and Node completion modes do not execute stdin`, async t => {
+    for (const header of ["bash -D", "bash +D", "bash -nD", "bash -Di", "bash --dump-strings", "bash --dump-po-strings", "bash -D +n", "bash --dump-strings -i", "node --completion-bash", "node --completion-bash -i", "node -i --completion-bash"]) {
+      const body = header.startsWith("bash") ? "sleep 100 &" : "fs.rmSync('/protected',{recursive:true})";
+      const command = `${header} <<'EOF'\n${body}\nEOF`;
+      assert.equal(heredocConsumer(header), undefined, header);
+      assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
+      assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
+      assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
+    }
+    for (const header of ["bash --rcfile --dump-strings", "bash --init-file -D", "node --title --completion-bash -"]) {
+      assert.ok(heredocConsumer(header), header);
+      const body = header.startsWith("bash") ? "sleep 100 &" : "fs.rmSync(target,{recursive:true})";
+      const command = `${header} <<'EOF'\n${body}\nEOF`;
+      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
+      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+  });
   test(`review nineteen ${mode}: find output targets retain expansion flags`, async t => {
     for (const action of ["-fprint", "-fprint0", "-fprintf", "-fls"]) {
       const command = `find . -maxdepth 0 ${action} \u0060pwd\u0060/../outside${action === "-fprintf" ? " '%p'" : ""}`;
@@ -76,7 +146,7 @@ for (const mode of ["full-access", "workspace-write"] as const) {
       const f = await shellHookFixture(t, mode), call = await f.authorize(command);
       assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
     }
-    assert.match(inspectBashResourceLifecycle({ command: "(( a[$(sleep 100 &)] ))" }) ?? "", /Blocked an unmanaged long-lived process/);
+    assert.match(inspectBashResourceLifecycle({ command: "(( a[$(sleep 100 &)] ))" }) ?? "", /\[SHELL_UNINSPECTABLE\]/);
     for (const command of ["[[ -v HOME ]]", "[ -v HOME ]", "test -v HOME", "[[ 1 -eq 1 ]]", "printf '%s' '[[ -v a[x] ]]'"]) {
       assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
       const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
@@ -95,7 +165,7 @@ for (const mode of ["full-access", "workspace-write"] as const) {
       const f = await shellHookFixture(t, mode), call = await f.authorize(command);
       assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
     }
-    for (const command of ["printf -v 'a[0]' '%s' 'a[x]'", "printf -v first -v 'a[0]' '%s' 'a[x]'", "read -p 'a[x]' 'a[0]' < f.txt", "unset 'a[0]'", "declare 'a[123]=1'", "let 'a[0]=1'", "let '-a[0]'", "let '+a[0]'", "printf '%s' 'a[$(sleep 100 &)]'"]) {
+    for (const command of ["printf -v 'a[0]' '%s' 'a[x]'", "printf -v first -v 'a[0]' '%s' 'a[x]'", "read -p 'a[x]' 'a[0]' < f.txt", "unset 'a[0]'", "declare 'a[123]=1'", "let 'a[0]=1'", "let '-a[0]'", "let '+a[0]'"]) {
       assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
       const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
     }
@@ -552,8 +622,8 @@ test("state-changing builtins and expansions taint later mutation context", asyn
       const f = await shellHookFixture(t, mode), { outcome } = await f.authorize(command);
       assert.equal(outcome?.block, true); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
       const standalone = await f.authorize(prefix);
-      if (prefix.startsWith("[[")) {
-        // The user restored main's complete test-operand lifecycle boundary.
+      if (prefix.startsWith("[[") || prefix.startsWith("((")) {
+        // The user restored main's test-operand and standalone arithmetic boundaries.
         assert.equal(standalone.outcome?.block, true); assert.equal(standalone.outcome?.finalAuthorization, undefined);
         assert.match(standalone.outcome?.reason ?? "", /\[SHELL_UNINSPECTABLE\]/);
       } else assertFinalAuthorization(standalone);

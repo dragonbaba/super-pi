@@ -15,6 +15,8 @@ test("authorization scanners and cache methods add no callbacks, promises or Buf
     ["timeout-wrapper.ts", new Set(["parseTimeoutInvocation"])],
   ]);
   for (const name of ["hasUnsafeBashBuiltinOperand", "hasNonliteralBashSubscript", "skipRedirections", "afterLeadingRedirection"]) targets.get("core.ts")!.add(name);
+  targets.get("core.ts")!.add("hasBareBashArithmeticCommand");
+  targets.get("shell-substitution.ts")!.add("subscriptTextState");
   for (const [file, names] of targets) {
     const source = ts.createSourceFile(file, readFileSync(`packages/extensions/resource-lifecycle-guard/${file}`, "utf8"), ts.ScriptTarget.Latest, true);
     const seen = new Set<string>();
@@ -49,6 +51,17 @@ test("builtin operand checks use primitive state without source copies or tempor
     seen.add(statement.name.text); ts.forEachChild(statement.body!, audit);
   }
   assert.deepEqual(seen, names);
+});
+
+test("subscript text judgment creates only primitive state in the existing scan", () => {
+  const source = ts.createSourceFile("shell-substitution.ts", readFileSync("packages/extensions/resource-lifecycle-guard/shell-substitution.ts", "utf8"), ts.ScriptTarget.Latest, true);
+  const helper = source.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === "subscriptTextState");
+  assert.ok(helper && ts.isFunctionDeclaration(helper));
+  function audit(node: ts.Node): void {
+    assert.equal(ts.isNewExpression(node) || ts.isObjectLiteralExpression(node) || ts.isArrayLiteralExpression(node) || ts.isArrowFunction(node) || ts.isFunctionExpression(node) || ts.isRegularExpressionLiteral(node) || ts.isCallExpression(node), false, node.getText(source));
+    ts.forEachChild(node, audit);
+  }
+  ts.forEachChild(helper.body!, audit);
 });
 
 test("builtin heredoc gate allocates no AST, source copy, container or callback", () => {
