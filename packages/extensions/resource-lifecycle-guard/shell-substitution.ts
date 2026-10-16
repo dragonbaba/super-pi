@@ -4,7 +4,7 @@ import {
 	COMMENT_BOUNDARY_PATTERN,
 	SUBSTITUTION_COMMENT_BOUNDARY_PATTERN,
 } from "./regex.ts";
-import { isSimpleBashAnsiCQuote } from "./shell-redirection.ts";
+import { isSimpleBashAnsiCQuote, shellRedirectionLength } from "./shell-redirection.ts";
 export interface CommandSubstitutionScan {
   scripts: string[];
   unterminated: boolean;
@@ -180,7 +180,7 @@ function maskShellRange(output: string[] | undefined, start: number, end: number
 }
 
 interface HereDelimiter {
-  active: boolean;
+  descriptors: number[];
   value: string;
   quoted: boolean;
   stripTabs: boolean;
@@ -188,7 +188,6 @@ interface HereDelimiter {
   maskEnd: number;
   headerEnd: number;
   pipelineEnd: number;
-  descriptor: number;
 }
 
 interface HereDelimiterScan {
@@ -198,6 +197,31 @@ interface HereDelimiterScan {
 
 function isShellWordBoundary(c: string | undefined): boolean {
   return c === undefined || c === " " || c === "\t" || c === "\r" || c === "\n" || c === ";" || c === "|" || c === "&" || c === "(" || c === ")" || c === "<" || c === ">";
+}
+
+/** Numeric literal copy, including quoted digits; moves encode -(fd + 2).
+ * -1 means unknown/closure. No shell expansion or retained binding state. */
+function heredocDescriptorCopy(command: string, start: number, end: number): number {
+  while (start < end && (command[start] === " " || command[start] === "\t")) start++;
+  let quote = "", value = 0, digits = 0, move = false;
+  for (; start < end; start++) {
+    let c = command[start]!;
+    if (quote) { if (c === quote) { quote = ""; continue; } }
+    else {
+      if (c === "'" || c === '"') { quote = c; continue; }
+      if (isShellWordBoundary(c)) break;
+      if (c === "\\") {
+        c = command[++start] ?? "";
+        if (c === "\n") continue;
+      }
+    }
+    if (c === "-" && digits && !move) { move = true; continue; }
+    const code = c.charCodeAt(0);
+    if (move || code < 48 || code > 57) return -1;
+    value = value * 10 + code - 48; digits++;
+    if (!Number.isSafeInteger(value + 2)) return -1;
+  }
+  return quote || !digits ? -1 : move ? -(value + 2) : value;
 }
 
 function collectHereDelimiters(command: string, start: number, end: number): HereDelimiterScan {
@@ -249,12 +273,22 @@ function collectHereDelimiters(command: string, start: number, end: number): Her
       descriptor = Number(command.slice(fdStart, index));
       maskStart = fdStart;
     }
-    // Left-to-right redirection replaces earlier input on the same descriptor.
-    // Only records in this simple command are candidates; quoted data is skipped above.
+    // Preserve aliases before rebinding/closing a descriptor. Only this simple
+    // command participates; each call-owned list is capped at 16 descriptors.
+    const copy = command[index + 1] === "&" ? heredocDescriptorCopy(command, index + 2, end) : -1;
+    const sourceDescriptor = copy < -1 ? -copy - 2 : copy;
     for (let prior = pendingHeader; prior < delimiters.length; prior++) {
-      if (delimiters[prior]!.descriptor === descriptor || c === ">" && command[index - 1] === "&" && delimiters[prior]!.descriptor === 2) delimiters[prior]!.active = false;
+      const descriptors = delimiters[prior]!.descriptors;
+      const copied = sourceDescriptor >= 0 && descriptors.includes(sourceDescriptor);
+      let kept = 0;
+      for (const bound of descriptors) if (bound !== descriptor && !(copy < -1 && bound === sourceDescriptor) && !(c === ">" && command[index - 1] === "&" && bound === 2)) descriptors[kept++] = bound;
+      descriptors.length = kept;
+      if (copied) {
+        if (descriptors.length === MAX_SUBSTITUTIONS) uncertain = true;
+        else descriptors.push(descriptor);
+      }
     }
-    if (c !== "<" || command[index + 1] !== "<") continue;
+    if (c !== "<" || command[index + 1] !== "<") { index += shellRedirectionLength(command, index) - 1; continue; }
     if (command[index + 2] === "<") { index += 2; continue; }
     let cursor = index + 2;
     const stripTabs = command[cursor] === "-";
@@ -278,7 +312,7 @@ function collectHereDelimiters(command: string, start: number, end: number): Her
     }
     if (value.includes("$") || value.includes("`") || value.includes("\\")) uncertain = true;
     if (delimiters.length === MAX_SUBSTITUTIONS) return { delimiters, uncertain: true };
-    if (value) delimiters.push({ active: true, value, quoted, stripTabs, maskStart, maskEnd: cursor, headerEnd: end, pipelineEnd: end, descriptor });
+    if (value) delimiters.push({ descriptors: [descriptor], value, quoted, stripTabs, maskStart, maskEnd: cursor, headerEnd: end, pipelineEnd: end });
     else uncertain = true;
     index = cursor - 1;
   }
@@ -431,10 +465,14 @@ export function prepareShellAnalysis(command: string): ShellAnalysisView {
         if (nested.unterminated || nested.unsupported) substitutionUncertain = uncertain = true;
       }
       hereDocuments ??= [];
-      if (!delimiter.active) { /* Its expansions above still execute, but its body is not supplied to the consumer. */ }
-      else if (hereDocuments.length < MAX_SUBSTITUTIONS) {
-        hereDocuments.push({ header: command.slice(logicalLineStart, delimiter.headerEnd), pipelineHeader: delimiter.pipelineEnd > delimiter.headerEnd ? command.slice(logicalLineStart, delimiter.pipelineEnd) : undefined, contextEnd: delimiter.pipelineEnd, bodyEnd, body, expanded, priorSource: logicalLineStart > 0, descriptor: delimiter.descriptor });
-      } else substitutionUncertain = uncertain = true;
+      if (delimiter.descriptors.length) {
+        const header = command.slice(logicalLineStart, delimiter.headerEnd);
+        const pipelineHeader = delimiter.pipelineEnd > delimiter.headerEnd ? command.slice(logicalLineStart, delimiter.pipelineEnd) : undefined;
+        for (const descriptor of delimiter.descriptors) {
+          if (hereDocuments.length < MAX_SUBSTITUTIONS) hereDocuments.push({ header, pipelineHeader, contextEnd: delimiter.pipelineEnd, bodyEnd, body, expanded, priorSource: logicalLineStart > 0, descriptor });
+          else substitutionUncertain = uncertain = true;
+        }
+      }
       maskShellRange(output, contentStart, bodyEnd);
       const delimiterLineEnd = command.indexOf("\n", bodyEnd);
       bodyStart = delimiterLineEnd < 0 ? command.length : delimiterLineEnd + 1;

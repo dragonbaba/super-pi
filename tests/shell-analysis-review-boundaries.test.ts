@@ -645,3 +645,45 @@ for (const mode of ["full-access", "workspace-write"] as const) {
     }
   });
 }
+
+test("heredoc descriptor bindings retain order within a fixed inspection bound", () => {
+  const command = "source /dev/fd/4 <<'EOF' 3<&0 4<&3 </dev/null\nprintf ok\nEOF";
+  const documents = prepareShellAnalysis(command).hereDocuments!;
+  assert.deepEqual(documents.map(document => document.descriptor), [3, 4]);
+  assert.equal(documents[0]!.body, documents[1]!.body);
+  const overflow = `cat <<'EOF' ${Array.from({ length: 17 }, (_, index) => `${index + 3}<&0`).join(" ")}\ndata\nEOF`;
+  assert.match(inspectBashResourceLifecycle({ command: overflow }) ?? "", /\[SHELL_HEREDOC\]/);
+});
+
+for (const mode of ["full-access", "workspace-write"] as const) {
+  test(`review twelve ${mode}: heredoc descriptor copies retain executable source`, async t => {
+    for (const header of ["source /dev/fd/3 <<'EOF' 3<&0", "source /dev/fd/3 <<'EOF' 3>&0", "source /dev/fd/3 3<<'EOF' 3<&3-", "source /dev/fd/3 <<'EOF' 3<&\\0", "source /dev/fd/4 <<'EOF' 3<&0 4<&3", "source /dev/fd/3 <<'EOF' 3<&'0' 0<&-", "source /dev/fd/3 <<'EOF' 3<&0-", "source /dev/fd/3 <<'EOF' 3<&0 </dev/null"]) {
+      const command = `${header}\nsleep 100 &\nEOF`;
+      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /Blocked an unmanaged long-lived process/, command);
+      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
+      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+    const replaced = "source /dev/fd/3 <<'A' 3<&0 <<'B'\nsleep 100 &\nA\nprintf ok\nB";
+    assert.match(inspectBashResourceLifecycle({ command: replaced }) ?? "", /Blocked an unmanaged long-lived process/);
+    for (const [interpreter, body] of [["node", "fs.rmSync(target,{recursive:true})"], ["python", "shutil.rmtree(target)"]]) {
+      const command = `${interpreter} 3<<'EOF' 0<&3 3<&-\n${body}\nEOF`;
+      assert.equal(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true);
+      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
+      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+  });
+  test(`review twelve ${mode}: descriptor ordering and data keep D3 admission`, async t => {
+    for (const command of [
+      "source /dev/fd/3 <<'EOF' 3<&0\nprintf ok\nEOF",
+      "source /dev/fd/3 3<&0 <<'EOF'\nsleep 100 &\nEOF",
+      "source /dev/fd/3 <<'EOF' 3<&0 3</dev/null\nsleep 100 &\nEOF",
+      "source /dev/stdin <<'EOF' 3<&0 </dev/null\nsleep 100 &\nEOF",
+      "source /dev/fd/3 <<'A' 3<&0 3<<'B'\nsleep 100 &\nA\nprintf ok\nB",
+      "cat <<'EOF' 3<&0\nsleep 100 &\nEOF",
+    ]) {
+      assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
+      assert.equal(f.dialogs(), mode === "full-access" ? 0 : 1);
+    }
+  });
+}
