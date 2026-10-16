@@ -983,7 +983,7 @@ test("Anthropic wire start delta delta end sequence satisfies the mutation owner
 	const model = {
 		id: "test", name: "test", api: "anthropic-messages", provider: "anthropic",
 		baseUrl: "https://example.invalid", reasoning: false, input: ["text"],
-		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 1000, maxTokens: 100,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 8192, maxTokens: 100,
 	};
 	const metrics = createMetrics();
 	const tui = createTui();
