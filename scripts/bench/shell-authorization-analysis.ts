@@ -12,6 +12,9 @@ const cwd = process.cwd(), iterations = 512, warmup = 64, samplingInterval = 409
 const literalInputs = process.argv.includes("--literal-inputs");
 const substitution = "$(grep -c -E '(class|function|const|var|let) GCSystem\\b' pixi/pixi.js)";
 const cases = literalInputs ? [
+  ["sort-backtick-output", 'sort -o `pwd`/../outside input', 2],
+  ["sort-backtick-temporary", 'sort --te=`pwd`/../outside input', 2],
+  ["sort-literal-backticks", "sort --out='`pwd`/../outside' input", 1],
   ["function-substitution", "echo ${ printf hi; }", 2],
   ["function-substitution-quoted", 'echo "${ printf hi; }"', 1],
   ["function-substitution-heredoc", "echo ${ bash <<'EOF'\nprintf hi\nEOF\n; }", 1],

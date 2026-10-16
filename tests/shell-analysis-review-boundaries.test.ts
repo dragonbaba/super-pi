@@ -8,6 +8,27 @@ import { shellHookFixture, assertFinalAuthorization } from "./codemode-recovery/
 import { SessionPermissionController, workspace } from "./codemode-recovery/guard-fixture.ts";
 
 for (const mode of ["full-access", "workspace-write"] as const) {
+  test(`review seventeen ${mode}: sort targets retain executable expansion metadata`, async t => {
+    for (const command of [
+      'sort -o `pwd`/../outside input', 'sort -o"`pwd`/../outside" input', 'sort -ro`pwd`/../outside input',
+      'sort --output=`pwd`/../outside input', 'sort --out `pwd`/../outside input', 'sort -T tmp --o=`pwd`/../outside input',
+      'sort -T `pwd`/../outside input', 'sort -T`pwd`/../outside input', 'sort --te=`pwd`/../outside input',
+      'sort --temporary-directory "`pwd`/../outside" input', 'sort > /dev/null -o `pwd`/../outside input',
+    ]) {
+      const scope = inspectBashPermissionScope({ command }, process.cwd());
+      assert.equal(scope?.unverifiableMutation, true, command); assert.equal(scope?.dynamicScope, true);
+      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
+      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+    for (const command of ["sort -o '`pwd`/../outside' input", "sort --out='`pwd`/../outside' input", "sort -T'`pwd`/../outside' input", 'sort -o \\`pwd\\`/../outside input']) {
+      const scope = inspectBashPermissionScope({ command }, process.cwd());
+      assert.equal(scope?.kind, "known-mutation", command); assert.equal(scope?.unverifiableMutation, false); assert.equal(scope?.dynamicScope, false);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), 0);
+    }
+    const command = 'sort -- --out=`pwd`/../outside';
+    assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "read-only");
+    const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), 0);
+  });
   test(`review sixteen ${mode}: function substitutions retain main lifecycle boundaries`, async t => {
     const script = "sleep 100 &";
     for (const consumer of ["source /dev/stdin", "bash", "sh", ". /dev/stdin"]) {

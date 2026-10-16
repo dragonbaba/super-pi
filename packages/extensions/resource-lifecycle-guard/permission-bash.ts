@@ -77,8 +77,8 @@ function addClass(builder: ScopeBuilder, value: string): void {
   }
 }
 
-function addTarget(builder: ScopeBuilder, value: string, cwd: string, mutation = false): void {
-  if (hasDynamicSyntax(value)) {
+function addTarget(builder: ScopeBuilder, value: string, cwd: string, mutation = false, expansion = 0): void {
+  if (expansion || hasDynamicSyntax(value)) {
     builder.dynamicScope = true;
     if (mutation) builder.unverifiableMutation = true;
     markOpaque(builder, "dynamic_target");
@@ -145,7 +145,7 @@ function addPositionalTargets(
   return count;
 }
 
-function inspectKnownMutation(command: string, tokens: readonly string[], start: number, cwd: string, builder: ScopeBuilder): boolean {
+function inspectKnownMutation(command: string, tokens: PermissionTokens, start: number, cwd: string, builder: ScopeBuilder): boolean {
   if (command === "find") {
     const root = findSearchRoot(tokens, start);
     for (let index = start; index < tokens.length; index++) {
@@ -200,7 +200,9 @@ function inspectKnownMutation(command: string, tokens: readonly string[], start:
       } else continue;
       output = true;
       markMutation(builder, temporary ? "sort_temporary_directory" : "sort_output");
-      if (target) addTarget(builder, target, cwd, true);
+      // The value may share an option word or occupy the following word. Keep
+      // its expansion flags: quoted/escaped backticks are literal path bytes.
+      if (target) addTarget(builder, target, cwd, true, tokens.expansions?.[index]);
       else { builder.dynamicScope = true; builder.unverifiableMutation = true; markOpaque(builder, "missing_output_target"); }
     }
     return output || inertLongOption;
