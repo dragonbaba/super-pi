@@ -48,7 +48,8 @@ const {profile}=await inspector.post("HeapProfiler.stopSampling");inspector.disc
 const sites:any[]=[];let sampledBytes=0;
 function collect(node:any):void {sampledBytes+=node.selfSize??0;if(node.selfSize)sites.push({bytes:node.selfSize,functionName:node.callFrame.functionName,url:node.callFrame.url,line:node.callFrame.lineNumber+1});for(const child of node.children??[])collect(child);}
 collect(profile.head);sites.sort((a,b)=>b.bytes-a.bytes);
-assert.equal(f.owner.counters.fullSourceEstimatorScans-scansBefore,0);
+const steadyFullSourceScans=f.owner.counters.fullSourceEstimatorScans-scansBefore;
+assert.equal(steadyFullSourceScans,0);
 f.owner.dispose();
 const pressure=fixture(256);
 pressure.owner.projectMessagesForModel(pressure.messages.slice(),undefined,undefined,undefined,128000,4096);
@@ -62,5 +63,6 @@ const lifecycleResults=endings.map(({mode,refs,counters})=>({mode,retainedRefere
 for(const result of lifecycleResults)assert.equal(result.retainedReferences,0,result.mode);
 console.log(JSON.stringify({benchmark:"codemode-budget-batch",commit:execFileSync("git",["rev-parse","HEAD"],{encoding:"utf8"}).trim(),
   node:process.version,v8:process.versions.v8,warmupRuns:5,measuredRuns:20,samplingIntervalBytes:1024,durationMs,sampledBytes,
-  bytesPerRequest:sampledBytes/20,leadingAllocations:sites.slice(0,20),steadyFullSourceScans:0,fullResultCopies:0,fullResultSerializations:0,
+  bytesPerRequest:sampledBytes/20,leadingAllocations:sites.slice(0,20),steadyFullSourceScans,
+  copyEvidence:"AST/source invariant checks; no runtime copy/serialization counter",
   counters:f.owner.counters,pressure:pressure.owner.counters,lifecycles:lifecycleResults},null,2));
