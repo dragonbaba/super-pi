@@ -168,22 +168,30 @@ export function extractCommandSubstitutions(command: string, heredocData = false
   let quote = 0;
   let escaped = false;
   let subscriptState = 0;
+  let subscriptProcessDepth = 0;
   for (let index = 0; index < command.length; index++) {
     const code = command.charCodeAt(index);
     if (code === 92 && command.charCodeAt(index + 1) === 13) return { scripts, unterminated: false, unsupported: true, limitExceeded: false, boundaryRefusal: 2 };
     if (!heredocData && !escaped && quote === 0 && code === 35 && (index === 0 || COMMENT_BOUNDARY_PATTERN.test(command[index - 1]!))) {
       const newline = command.indexOf("\n", index);
       if (newline < 0) break;
-      subscriptState = 0; index = newline; continue;
+      if (!subscriptProcessDepth) subscriptState = 0;
+      index = newline; continue;
     }
     if (!heredocData) {
       shellAnalysisCounters.subscriptTextChars++;
+      // Spaces inside an unquoted process substitution belong to this word.
+      // Balance only its textual parentheses; do not evaluate its contents.
+      if (!escaped && quote === 0) {
+        if (code === 40 && (subscriptProcessDepth || subscriptState >>> 2 && (command.charCodeAt(index - 1) === 60 || command.charCodeAt(index - 1) === 62))) subscriptProcessDepth++;
+        else if (code === 41 && subscriptProcessDepth) subscriptProcessDepth--;
+      }
       // Quoting does not make stored arithmetic text inert. Quote delimiters
       // and removed backslashes do not split the existing shell word.
       if (!escaped && (code === quote || quote === 0 && (code === 39 || code === 34) || code === 92 && quote !== 39)) {
         // Preserve primitive state across syntax-only quote/escape characters.
       } else {
-        if (!escaped && quote === 0 && (code === 32 || code === 9 || code === 10 || code === 13 || code === 59 || code === 124 || code === 38)) subscriptState = 0;
+        if (!escaped && quote === 0 && !subscriptProcessDepth && (code === 32 || code === 9 || code === 10 || code === 13 || code === 59 || code === 124 || code === 38)) subscriptState = 0;
         else subscriptState = subscriptTextState(subscriptState, code, command.charCodeAt(index + 1));
         if (subscriptState < 0) return { scripts, unterminated: false, unsupported: true, limitExceeded: false, boundaryRefusal: 1 };
       }

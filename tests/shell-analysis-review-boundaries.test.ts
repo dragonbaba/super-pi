@@ -33,6 +33,12 @@ for (const mode of ["full-access", "workspace-write"] as const) {
     for (const word of ["'a[$(sleep 100 &)]'", '"a[$(sleep 100 &)]"', "$'a[$(sleep 100 &)]'", "a[$(sleep 100 &)]", "'a[`sleep 100 &`]'", "'a[<(sleep 100 &)]'", "'a[>(sleep 100 &)]'", "'a[b[$(sleep 100 &)]]'"]) {
       assert.match(inspectBashResourceLifecycle({ command: `printf '%s' ${word}` }) ?? "", /\[SHELL_UNINSPECTABLE\]/, word);
     }
+    for (const marker of ["$(sleep 100 &)", "`sleep 100 &`", "<(sleep 100 &)", ">(sleep 100 &)", "<(printf ok)", ">(printf ok)", "<(printf ok # comment\n)", "<((printf ok); printf done)"]) {
+      for (const quote of ["'", '"', "$'", ""]) {
+        const word = `${quote}a[${marker}]${quote === "$'" ? "'" : quote}`;
+        assert.match(inspectBashResourceLifecycle({ command: `printf '%s' ${word}` }) ?? "", /\[SHELL_UNINSPECTABLE\]/, word);
+      }
+    }
     for (const command of ["(( 1+1 ))", "(( x ))"]) assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_UNINSPECTABLE\]/);
     for (const command of ["echo $(( 1+2 ))", "for ((i=0;i<3;i++)); do :; done", "grep 'a[0-9]' f", "printf '%s' 'a[0] $(sleep 100 &)'", "printf '%s' 'a[' '$(sleep 100 &)'", "printf '%s' 'a[$(sleep 100 &)'"]) {
       assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);

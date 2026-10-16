@@ -13,6 +13,7 @@ const literalInputs = process.argv.includes("--literal-inputs");
 const substitution = "$(grep -c -E '(class|function|const|var|let) GCSystem\\b' pixi/pixi.js)";
 const cases = literalInputs ? [
   ["stored-arithmetic-subscript", "x='a[$(sleep 100 &)]'; echo $((x))", 1],
+  ["unquoted-process-subscript", "printf %s a[<(printf ok)]", 1],
   ["literal-bare-arithmetic", "((1+1))", 1],
   ["arithmetic-for-control", "for ((i=0;i<3;i++)); do :; done", 1],
   ["find-delete-then-output", "find scratch -delete -fprint output", 1],
