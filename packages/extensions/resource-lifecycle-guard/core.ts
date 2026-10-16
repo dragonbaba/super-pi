@@ -23,6 +23,7 @@ import {
 	SERVICE_START_PATTERN,
 	SHELL_WRAPPER_TEXT_PATTERN,
 	SIMPLE_VARIABLE_PATTERN,
+	SOURCE_DESCRIPTOR_PATTERN,
 	WINDOWS_DETACH_PATTERN,
 	WINDOWS_START_BACKGROUND_PATTERN,
 	WINDOWS_WAIT_PATTERN,
@@ -57,7 +58,6 @@ const GIT_CLEAN_DIRECTORY_OPTIONS = new Set(["-d"]);
 const SHELL_SCRIPT_FLAGS = new Set(["-c"]);
 const CMD_SCRIPT_FLAGS = new Set(["/c"]);
 const POWERSHELL_SCRIPT_FLAGS = new Set(["-command", "-c"]);
-const SOURCE_DESCRIPTOR_PATTERN = /^\/(?:dev\/fd|proc\/self\/fd)\/([0-9]+)$/u;
 
 function hasUnquotedBackgroundOperator(command: string): boolean {
 	let quote: "'" | '"' | undefined;
