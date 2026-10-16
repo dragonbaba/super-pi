@@ -644,11 +644,11 @@ export class CodemodeController {
 				(first as TextContent & { projectionPrefix?: number }).projectionPrefix = imagePrefix;
 			}
 			const displayedSummary = first?.type === "text" && summary.startsWith(first.text) ? first.text : summary;
-			if (result.ok && !failed) {
+			if (result.ok && !failed && !this.closed) {
 				this.pendingStore = { id: context.parentToolCallId, writes: result.storeWrites };
 			}
 			if (this.readsProjected) { this.displayedReads.clear(); this.readsProjected = false; }
-			if (invocation.reads.length) {
+			if (invocation.reads.length && !this.closed) {
 				for (const read of invocation.reads) read.parentContentIndex += shownOffset;
 				if (this.displayedReads.size >= MAX_PENDING_READ_PARENTS) this.displayedReads.delete(this.displayedReads.keys().next().value!);
 				this.displayedReads.set(context.parentToolCallId, invocation.reads);

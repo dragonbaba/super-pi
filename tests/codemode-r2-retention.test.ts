@@ -3,6 +3,9 @@ import { readFileSync, unlinkSync } from "node:fs";
 import test, { type TestContext } from "node:test";
 import { executionFixture } from "./codemode-recovery/execution-fixture.ts";
 import { body, sessionFixture } from "./codemode-recovery/fixture.ts";
+import { CodemodeController } from "../packages/coding-agent/src/core/codemode.ts";
+import { NestedToolDispatch } from "../packages/agent/src/nested-tool-dispatch.ts";
+import { MUTATION_READ_SOURCE } from "../packages/coding-agent/src/core/tools/read-window.ts";
 
 function own(t: TestContext, path: string): void {
   t.after(() => { assert.equal(readFileSync(path + ".sp-owned", "utf8"), "super-pi-output-spill-v2\n"); unlinkSync(path); unlinkSync(path + ".sp-owned"); });
@@ -20,6 +23,31 @@ test("R2.3 show overflow keeps successful status, bounded blocks and a readable 
   await (f.session as any)._codemode.close();
   assert.match(readFileSync(fact.outputPath, "utf8"), /block-99/);
   assert.equal(f.calls.length, 3);
+});
+
+test("R2.4 close during a pending child cannot repopulate native-read references", async () => {
+  let started!: () => void;
+  const waiting = new Promise<void>(resolve => { started = resolve; });
+  const owner = new CodemodeController(() => assert.fail("closed store must not commit"));
+  const catalog = ["read", "wait"].map(name => ({ name, label: name, description: name, parameters: { type: "object" }, execute: async () => ({ content: [], details: {} }) }));
+  owner.setTools(catalog);
+  const dispatch = new NestedToolDispatch("close", () => catalog, async (call, _tool, signal) => {
+    if (call.name === "wait") {
+      started();
+      await new Promise<void>(resolve => { if (signal.aborted) resolve(); else signal.addEventListener("abort", () => resolve(), { once: true }); });
+    }
+    const content = [{ type: "text" as const, text: "native read" }];
+    Object.defineProperty(content, MUTATION_READ_SOURCE, { value: true });
+    return { role: "toolResult", toolCallId: call.id, toolName: call.name, isError: false, timestamp: 1, content, details: {} };
+  });
+  try {
+    const work = (owner as any).execute('await show((await tools.read({path:"fixture"})).ref);await tools.wait({});store("late",true);', dispatch);
+    await waiting; await owner.close();
+    assert.equal((await work).isError, true);
+    assert.equal((owner as any).displayedReads.size, 0);
+    assert.equal((owner as any).current, undefined);
+    assert.equal((owner as any).pendingStore, undefined);
+  } finally { await owner.close(); }
 });
 
 test("R2.4 input is absent from cached results; eviction returns a persistent location without replay", async t => {
