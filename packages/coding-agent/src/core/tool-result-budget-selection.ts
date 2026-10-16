@@ -141,13 +141,15 @@ export class ToolResultBudgetSelection {
     }
     let selected = -1;
     let bestGain = 0;
+    let bestUsed = 0;
     for (let used = 0; used < width; used++) {
       const gain = rows[previous + used]!;
-      bestGain = Math.max(bestGain, gain);
+      if (gain > bestGain) { bestGain = gain; bestUsed = used; }
       if (this.contextTokens - gain <= contextBudget && selected < 0) selected = used;
       this.checkedSteps++;
     }
     if (selected < 0) {
+      this.toolTokens += bestUsed;
       this.contextTokens -= bestGain;
       return false;
     }

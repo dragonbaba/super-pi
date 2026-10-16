@@ -107,6 +107,15 @@ test("R1.3 common-path allocation and structural counters match the pre-fallback
   }
 });
 
+test("R1.3 exhausted search reports tool and context costs from one attainable selection",()=>{
+  const plan=new ToolResultBudgetSelection(2,createToolResultPresentationCounters());
+  try {
+    plan.set(0,2,100,5,30,false);plan.set(1,2,100,6,20,false);
+    assert.equal(plan.solve(8,100),false);
+    assert.equal(plan.toolTokens,8);assert.equal(plan.contextTokens,120);
+  }finally{plan.dispose();}
+});
+
 test("R1.3 exact selection agrees with exhaustive enumeration for both input orders",()=>{
   let seed=42;
   function nextInt(max:number){seed=(Math.imul(seed,1664525)+1013904223)>>>0;return seed%max;}

@@ -2615,7 +2615,7 @@ export class ToolResultPresentationOwner {
 			}
 			// An already affordable batch needs no recovery envelopes at all. This
 			// also preserves image-only results whose text estimate is very small.
-			const keepFullBatch = fullToolTokens <= Math.min(remainingToolTokens, remainingContextTokens) && fullContextTokens <= remainingContextTokens;
+			const keepFullBatch = fullToolTokens <= remainingToolTokens && fullContextTokens <= remainingContextTokens;
 			// Image and non-ASCII estimates can trade text-budget cost for context
 			// cost. Keep a full result when that relieves the exhausted dimension
 			// and the other dimension has enough capacity for the exact delta.

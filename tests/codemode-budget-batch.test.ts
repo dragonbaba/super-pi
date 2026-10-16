@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createToolResultPresentationOwner } from "../packages/coding-agent/src/core/tool-result-presentation.ts";
 import { estimateToolOutputTokens } from "../packages/coding-agent/src/core/tool-output-budget.ts";
-import { estimateContextTokensFromParts } from "../packages/ai/src/utils/estimate.ts";
+import { estimateContextTokensFromParts, estimateMessageTokens } from "../packages/ai/src/utils/estimate.ts";
 import { assistant, toolResult, longText } from "./codemode-recovery/fixture.ts";
 import { assertTextRecovery } from "./codemode-recovery/assertions.ts";
 
@@ -37,6 +37,22 @@ test("R1.3 affordable image results do not need more expensive text recovery not
       assert.ok(estimateContextTokensFromParts(undefined,result,undefined).tokens+1024<=10000);
     } finally {owner.dispose();}
   }
+});
+
+test("R1.3 a full CJK batch uses independent tool and request-context costs",()=>{
+  const source=[assistant(["a","b"]),toolResult("a",[{type:"text",text:"中".repeat(1000)}]),toolResult("b",[{type:"text",text:"文".repeat(1000)}])];
+  const toolCost=source.slice(1).reduce((n,m)=>n+estimateToolOutputTokens(m.content as never).estimatedTokens,0);
+  const contextCost=source.slice(1).reduce((n,m)=>n+estimateMessageTokens(m),0);
+  assert.ok(toolCost>contextCost);
+  const owner=createToolResultPresentationOwner({enabled:true,budgetTokens:toolCost},"full-cjk")!;
+  try {
+    const result=owner.projectMessagesForModel(source.slice(),undefined,undefined,undefined,
+      estimateContextTokensFromParts(undefined,source,undefined).tokens+1024,1024);
+    assert.equal(result[1],source[1]);assert.equal(result[2],source[2]);
+    assert.equal(owner.counters.contextualChoiceCalls,0);
+    assert.equal(owner.counters.contextualToolTokensConsumed,toolCost);
+    assert.equal(owner.counters.contextualContextTokensConsumed,contextCost);
+  }finally{owner.dispose();}
 });
 
 test("R1.3 preparation links are released after observer failure and cancellation", () => {
