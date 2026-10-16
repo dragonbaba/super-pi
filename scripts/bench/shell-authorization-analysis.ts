@@ -12,6 +12,14 @@ const cwd = process.cwd(), iterations = 512, warmup = 64, samplingInterval = 409
 const literalInputs = process.argv.includes("--literal-inputs");
 const substitution = "$(grep -c -E '(class|function|const|var|let) GCSystem\\b' pixi/pixi.js)";
 const cases = literalInputs ? [
+  ["newline-function", "function f\n{ source /dev/stdin; }; f <<'EOF'\nprintf ok\nEOF", 2],
+  ["node-value-free-data", "node --no-addons script.js <<'EOF'\nfs.rmSync(target,{recursive:true})\nEOF", 1],
+  ["lost-wrapped-descriptor", "exec 3<<'EOF'\nprintf ok\nEOF\necho ok; bash -c 'source /dev/fd/3'", 2],
+  ["known-wrapped-descriptor", "exec 3<<'EOF'\nprintf ok\nEOF\ntrue; bash -c 'source /dev/fd/3'", 3],
+  ["disconnected-heredoc-pipe", "cat <<'EOF' >out | source /dev/stdin\nsleep 100 &\nEOF", 1],
+  ["restored-heredoc-pipe", "cat <<'EOF' 3>&1 >out >&3 | source /dev/stdin\nprintf ok\nEOF", 2],
+  ["inherited-script-descriptor", "source /dev/fd/63", 1],
+  ["sourced-alias-setup", "source /dev/stdin <<'SETUP'\nshopt -s expand_aliases; alias node='source /dev/stdin'\nSETUP\nnode <<'EOF'\nsleep 100 &\nEOF", 2],
   ["lost-heredoc-descriptor", "exec 3<<'EOF'\nsleep 100 &\nEOF\necho ok; source /dev/fd/3", 1],
   ["known-heredoc-descriptor", "exec 3<<'EOF'\nprintf ok\nEOF\ntrue; source /dev/fd/3", 2],
   ["alias-heredoc", "shopt -s expand_aliases; BASH_ALIASES[node]='source /dev/stdin'; node <<'EOF'\nsleep 100 &\nEOF", 1],

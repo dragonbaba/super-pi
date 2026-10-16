@@ -8,6 +8,68 @@ import { shellHookFixture, assertFinalAuthorization } from "./codemode-recovery/
 import { SessionPermissionController, workspace } from "./codemode-recovery/guard-fixture.ts";
 
 for (const mode of ["full-access", "workspace-write"] as const) {
+  test(`review fourteen ${mode}: newline function bodies retain executable stdin`, async t => {
+    for (const definition of ["function f\n{ source /dev/stdin; }", "function f\n\n# trivia\n{ source /dev/stdin; }", "f()\n{ source /dev/stdin; }"]) {
+      const command = `${definition}; f <<'EOF'\nsleep 100 &\nEOF`;
+      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /Blocked an unmanaged long-lived process/);
+      const f = await shellHookFixture(t, mode), call = await f.authorize(command); assert.equal(call.outcome?.block, true); assert.equal(f.dialogs(), 0);
+    }
+    const command = "function f\n{ cat; }; f <<'EOF'\nsleep 100 &\nEOF";
+    const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
+  });
+  test(`review fourteen ${mode}: operand-free Node flags preserve program file data`, async t => {
+    for (const flag of ["--no-addons", "--no-experimental-repl-await", "--permission", "--experimental-strip-types", "--zero-fill-buffers"]) {
+      const command = `node ${flag} script.js <<'EOF'\nfs.rmSync('/protected',{recursive:true})\nEOF`;
+      assert.equal(heredocConsumer(`node ${flag} script.js`), undefined);
+      assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
+      const stdin = `node ${flag} <<'EOF'\nfs.rmSync(target,{recursive:true})\nEOF`;
+      const deny = await shellHookFixture(t, mode), call = await deny.authorize(stdin); assert.equal(call.outcome?.block, true); assert.equal(deny.dialogs(), 0);
+    }
+  });
+  test(`review fourteen ${mode}: wrapped lost descriptors refuse and known contents recurse`, async t => {
+    for (const reader of ["bash -c 'source /dev/fd/3'", 'bash -c \'bash -c "source /dev/fd/3"\'']) {
+      for (const body of ["sleep 100 &", "echo hi"]) {
+        const command = `exec 3<<'EOF'\n${body}\nEOF\necho ok; ${reader}`;
+        assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_HEREDOC\]/);
+        const f = await shellHookFixture(t, mode), call = await f.authorize(command); assert.equal(call.outcome?.block, true); assert.equal(f.dialogs(), 0);
+      }
+      const command = `exec 3<<'EOF'\necho hi\nEOF\ntrue; ${reader}`;
+      assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
+    }
+  });
+  test(`review fourteen ${mode}: disconnected pipeline data does not become a script`, async t => {
+    for (const pipeline of ["cat <<'EOF' >out | source /dev/stdin", "cat <<'EOF' | cat >out | source /dev/stdin", "cat <<'EOF' 1>&2 | source /dev/stdin", "cat <<'EOF' | source /dev/stdin </dev/null"]) {
+      const command = `${pipeline}\nsleep 100 &\nEOF`;
+      assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
+    }
+    for (const redirection of ["2>errors", "3>&1 >out 1>&3", "2>&1 >out 1>&2", "3>&1 >out 1>&3-"]) {
+      const command = `cat <<'EOF' ${redirection} | source /dev/stdin\nsleep 100 &\nEOF`;
+      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /Blocked an unmanaged long-lived process/, command);
+      const f = await shellHookFixture(t, mode), call = await f.authorize(command); assert.equal(call.outcome?.block, true); assert.equal(f.dialogs(), 0);
+    }
+  });
+  test(`D3 ${mode}: sourced setup heredocs cannot change later consumers through aliases`, async t => {
+    for (const setup of ["shopt -s expand_aliases\nalias node='source /dev/stdin'", "BASH_ALIASES[node]='source /dev/stdin'", "source ./aliases.sh", "eval 'alias node=source'"]) {
+      const command = `source /dev/stdin <<'SETUP'\n${setup}\nSETUP\nnode <<'EOF'\nsleep 100 &\nEOF`;
+      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_HEREDOC\]/);
+      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
+      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+    const command = "source /dev/stdin <<'SETUP'\nprintf ok\nSETUP\nnode <<'EOF'\nconsole.log(1)\nEOF";
+    assert.equal(inspectBashResourceLifecycle({ command }), undefined);
+    const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
+  });
+  test(`D3 ${mode}: unbound inherited script descriptors retain lifecycle refusal`, async t => {
+    for (const command of ["source /dev/fd/3", ". /proc/self/fd/63", "builtin -- source /dev/fd/7", "command . /dev/fd/63", "exec 3<<'EOF'\necho hi\nEOF\nsource /dev/fd/4", "source /dev/fd/3; exec 3<<'EOF'\necho hi\nEOF"]) {
+      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_HEREDOC\]/, command);
+      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
+      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+    for (const command of ["cat /dev/fd/63", "source /dev/fd/3 3<input", "exec 3<input; source /dev/fd/3", "source /dev/fd/3 3<<'EOF'\necho hi\nEOF"]) assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
+  });
   test(`D3 ${mode}: possible alias changes retain heredoc lifecycle refusal`, async t => {
     for (const prefix of [
       "shopt -s expand_aliases", 'shopt -s "$OPTION"', 'shopt "$FLAGS" expand_aliases',
@@ -68,7 +130,7 @@ for (const mode of ["full-access", "workspace-write"] as const) {
       "exec 3<<'A'\nsleep 100 &\nA\nexec 3<<'B'\necho hi\nB\nsource /dev/fd/3",
       "exec 3<<'EOF'\nsleep 100 &\nEOF\necho ok",
       "exec 3<<'EOF'\nsleep 100 &\nEOF\necho ok; cat /dev/fd/3",
-      "exec 3<<'EOF'\nsleep 100 &\nEOF\necho ok; source /dev/fd/4",
+      "exec 3<<'EOF'\nsleep 100 &\nEOF\necho ok; cat /dev/fd/4",
       "cat <<'EOF'\nsleep 100 &\nEOF\necho ok",
     ]) {
       assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);

@@ -102,12 +102,12 @@ function findTestBash(): string | undefined {
   return existsSync(local) ? local : undefined;
 }
 
-test("built-in Bash does not inherit parent descriptors above stderr", t => {
+test("built-in Bash descriptor inheritance is measured and unbound script reads refuse", t => {
   const shellPath = findTestBash();
   if (!shellPath) { if (process.env.CI) assert.fail("Bash unavailable"); t.skip("Bash unavailable"); return; }
   const fixture = mkdtempSync(join(tmpdir(), "sp-shell-fd-"));
   const marker = join(fixture, "parent-input");
-  writeFileSync(marker, "parent-descriptor-sentinel");
+  writeFileSync(marker, "parent-descriptor-sentinel".repeat(16));
   const fd = fs.openSync(marker, "r");
   const stdio: ("ignore" | "pipe" | number)[] = Array(64).fill("ignore");
   stdio[1] = stdio[2] = "pipe"; stdio[3] = stdio[7] = stdio[63] = fd;
@@ -126,9 +126,11 @@ test("built-in Bash does not inherit parent descriptors above stderr", t => {
       if (managedBackground && process.platform !== 'win32') continue;
       const ops=createLocalShellOperations('bash',()=>({shell,args:[transport==='stdin'?'-s':'-c'],commandTransport:transport}));
       let output='';
-      const result=await ops.exec('for fd in 3 7 63; do if { true <&"$fd"; } 2>/dev/null; then printf "inherited:%s\\n" "$fd"; fi; done; printf isolated',process.cwd(),{timeout:10,managedBackground,onData:data=>{output+=data.toString();}});
+      const result=await ops.exec('for fd in 3 7 63; do value=; if { IFS= read -r -N 26 -t 1 -u "$fd" value; } 2>/dev/null && [ "$value" = "parent-descriptor-sentinel" ]; then printf "inherited:%s\\n" "$fd"; fi; done; printf checked',process.cwd(),{timeout:10,managedBackground,onData:data=>{output+=data.toString();}});
       assert.equal(result.exitCode,0); assert.equal(result.observationError,undefined);
-      assert.equal(output,'isolated'); reports.push({transport,managedBackground,output});
+      if(process.platform==='win32') assert.equal(output,'checked');
+      assert.match(output,/^(?:inherited:(?:3|7|63)\\n)*checked$/);
+      reports.push({transport,managedBackground,output});
     }
     console.log(JSON.stringify(reports));
   `;
@@ -136,6 +138,7 @@ test("built-in Bash does not inherit parent descriptors above stderr", t => {
     const result = execFileSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", script], { cwd: process.cwd(), stdio, encoding: "utf8", timeout: 30_000 });
     const reports = JSON.parse(result);
     assert.equal(reports.length, process.platform === "win32" ? 4 : 2);
+    for (const descriptor of [3, 7, 63]) assert.match(inspectBashResourceLifecycle({ command: `source /dev/fd/${descriptor}` }) ?? "", /\[SHELL_HEREDOC\]/);
     t.diagnostic(JSON.stringify({ parentDescriptors: [3, 7, 63], reports }));
   } finally { fs.closeSync(fd); rmSync(fixture, { recursive: true }); }
 });
