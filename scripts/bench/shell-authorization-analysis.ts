@@ -12,6 +12,8 @@ const cwd = process.cwd(), iterations = 512, warmup = 64, samplingInterval = 409
 const literalInputs = process.argv.includes("--literal-inputs");
 const substitution = "$(grep -c -E '(class|function|const|var|let) GCSystem\\b' pixi/pixi.js)";
 const cases = literalInputs ? [
+  ["launcher-node-input", "env LABEL=literal node <<'EOF'\nconsole.log(1)\nEOF", 1],
+  ["launcher-shell-input", "timeout 5 bash <<'EOF'\nprintf ok\nEOF", 2],
   ["unresolved-trap", 'ACTION=\'sleep 100 &\'; true; trap "$ACTION" EXIT', 1],
   ["node-test-mode", "node --test script.js <<'EOF'\nfs.rmSync(target,{recursive:true})\nEOF", 1],
   ["sort-option-operand", "sort --random-sort --random-source -o", 1],

@@ -1176,9 +1176,29 @@ function simpleStdinConsumers(tokens: ShellSegment, descriptor: number, depth: n
 		if (tokens[index] === "--") index++;
 		if (!tokens[index] || tokens[index]!.startsWith("-")) return 0;
 	}
-	const name = commandName(tokens[index] ?? "");
+	let name = commandName(tokens[index] ?? "");
 	const functionConsumers = functionsAllowed && functions ? functionStdinConsumers(functions, tokens[index] ?? "", descriptor, depth + 1) : undefined;
 	if (functionConsumers !== undefined && functionConsumers !== -1) return functionConsumers;
+	// Match lifecycle preflight's existing supported launcher grammar. External
+	// launchers forward stdin but cannot dispatch the caller's shell functions.
+	let launchers = 0;
+	while (name === "env" || name === "sudo" || name === "doas" || name === "timeout" || name === "timeout.exe") {
+		if (++launchers > MAX_WRAPPER_DEPTH) return 8;
+		if (name === "timeout" || name === "timeout.exe") {
+			const parsed = parseTimeoutInvocation(tokens, index);
+			if (!parsed.supported) return 0;
+			index = parsed.commandIndex;
+		} else {
+			index++;
+			if (tokens[index] === "--") index++;
+			if (name === "env" || name === "sudo") while (index < tokens.length && tokens[index]!.includes("=")) {
+				if (uncertainAssignment(tokens, index)) return 0;
+				index++;
+			}
+		}
+		if (!tokens[index] || tokens[index]!.startsWith("-") || tokens.expansions?.[index] || hasDynamicSyntax(tokens[index]!)) return 0;
+		name = commandName(tokens[index]!);
+	}
 	if (name === "alias" && tokens[index] === "alias") {
 		let consumers = 0;
 		for (let operand = index + 1; operand < tokens.length; operand++) {

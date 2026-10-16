@@ -101,6 +101,8 @@ Literal Node interactive eval/print input and all three supported brace-body fun
 
 D3 trap actions are inspected recursively when literal, including a direct variable resolved from an immediately adjacent literal assignment. Nonadjacent assignments, unknown variables and command substitutions do not establish a literal action; these retain main's lifecycle refusal, reported as `[SHELL_WRAPPER]` like unsupported `eval` operands, before permission-mode handling. No cross-statement binding tracking is added.
 
+Heredoc consumer recognition follows the existing supported `env`, `sudo`, `doas` and literal-duration `timeout` launcher operands, up to four levels, before selecting Shell/Node/Python execution versus data input. Unsupported launcher grammar retains its existing lifecycle handling. This does not add general launcher option parsing or dynamic executable resolution.
+
 Python recognition covers only supported ordinary calls, without evaluating f-string expressions. F-string executable source remains opaque and follows permission mode, without a claim that its body was checked or found safe. Python process lifecycle recognition remains limited: main also does not recognize an ordinary `subprocess.Popen` call. This PR does not expand that existing boundary into general Python lifecycle analysis.
 
 Node test-runner mode does not execute heredoc bytes as a stdin program. Sort option operands are consumed before output-option matching, and explicit temporary directories are assessed as write targets alongside output files. Unquoted heredoc backslash-newline continuations are joined before matching an end delimiter and inspecting the effective body; quoted bodies preserve their literal newlines. The submitted command remains unchanged.

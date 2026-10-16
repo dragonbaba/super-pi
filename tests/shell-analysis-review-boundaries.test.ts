@@ -617,3 +617,31 @@ test("review ten: workspace never-ask cannot authorize an outside sort temporary
   }
   assert.equal(dialogs, 0);
 });
+
+for (const mode of ["full-access", "workspace-write"] as const) {
+  test(`review eleven ${mode}: supported launchers preserve executable heredoc consumers`, async t => {
+    for (const prefix of ["env", "env --", "env LABEL=literal", "timeout 5", "sudo", "doas", "env timeout 5", "command env"]) {
+      assert.equal(heredocConsumer(`${prefix} bash`), "bash", prefix);
+      const shell = `${prefix} bash <<'EOF'\nsleep 100 &\nEOF`;
+      assert.match(inspectBashResourceLifecycle({ command: shell }) ?? "", /Blocked an unmanaged long-lived process/, prefix);
+      for (const [interpreter, body] of [["node", "fs.rmSync(target,{recursive:true})"], ["python", "shutil.rmtree(target)"]]) {
+        const command = `${prefix} ${interpreter} <<'EOF'\n${body}\nEOF`;
+        assert.equal(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
+        const f = await shellHookFixture(t, mode), call = await f.authorize(command);
+        assert.equal(call.outcome?.block, true, command); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+      }
+    }
+  });
+  test(`review eleven ${mode}: launcher data and readonly input keep D3 admission`, async t => {
+    for (const header of ["env node script.js", "timeout 5 node --test test.js", "sudo python script.py", "env cat"]) {
+      assert.equal(heredocConsumer(header), undefined, header);
+      const command = `${header} <<'EOF'\nfs.rmSync(target,{recursive:true})\nEOF`;
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
+      assert.equal(f.dialogs(), mode === "full-access" ? 0 : 1);
+    }
+    for (const command of ["env node <<'EOF'\nconsole.log(1)\nEOF", "env python <<'EOF'\nprint(1)\nEOF"]) {
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
+      assert.equal(f.dialogs(), mode === "full-access" ? 0 : 1);
+    }
+  });
+}

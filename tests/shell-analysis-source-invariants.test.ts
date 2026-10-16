@@ -11,6 +11,7 @@ test("authorization scanners and cache methods add no callbacks, promises or Buf
     ["permission-bash.ts", new Set(["inspectScript", "inspectBashPermissionScope", "inspectKnownMutation", "markMutation", "markUncertainContext", "addResolvedTarget", "addTarget"])],
     ["shell-redirection.ts", new Set(["isShellOutputFileRedirection", "isShellFileDescriptor"])],
     ["readonly-find.ts", new Set(["findPredicateHasOperand"])],
+    ["timeout-wrapper.ts", new Set(["parseTimeoutInvocation"])],
   ]);
   for (const [file, names] of targets) {
     const source = ts.createSourceFile(file, readFileSync(`packages/extensions/resource-lifecycle-guard/${file}`, "utf8"), ts.ScriptTarget.Latest, true);
