@@ -177,3 +177,71 @@ test("state-changing builtins and expansions taint later mutation context", asyn
     }
   }
 });
+
+test("compound commands and literal wrappers propagate executable heredoc input", async t => {
+  for (const header of ["{ source /dev/stdin; }", "{ { source /dev/stdin; }; }", "(source /dev/stdin)", "{ cat; source /dev/stdin; }", "{ ! source /dev/stdin; }", "{ time source /dev/stdin; }", "X=value source /dev/stdin", "bash -c 'source /dev/stdin'", "bash -c 'builtin source /dev/stdin'", "bash -c 'eval source /dev/stdin'"]) {
+    const command = `${header} <<'EOF'\nsleep 100 &\nEOF`;
+    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /Blocked an unmanaged long-lived process/, command);
+    for (const mode of ["full-access", "workspace-write"] as const) {
+      const f = await shellHookFixture(t, mode), { outcome } = await f.authorize(command);
+      assert.equal(outcome?.block, true); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+  }
+  for (const header of ["{ cat; }", "(cat)", "bash -c 'cat'"]) {
+    assert.equal(heredocConsumer(`${header} <<'EOF'`), undefined);
+    const command = `${header} <<'EOF'\nsleep 100 &\nEOF`;
+    assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
+    const f = await shellHookFixture(t, "full-access"); assertFinalAuthorization(await f.authorize(command));
+  }
+  for (const header of ["source /dev/stdin; { cat; }", "source /dev/stdin; (cat)"]) {
+    assert.equal(heredocConsumer(`${header} <<'EOF'`), undefined, "an earlier list member does not inherit the later group's input");
+  }
+});
+
+test("literal pipeline consumers receive heredoc analysis without borrowing earlier lists", async t => {
+  for (const header of ["cat <<'EOF' | source /dev/stdin", "cat <<'EOF' | >out source /dev/stdin", "cat <<'EOF' | bash -c 'source /dev/stdin'"]) {
+    const command = `${header}\nsleep 100 &\nEOF`;
+    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /Blocked an unmanaged long-lived process/, command);
+    for (const mode of ["full-access", "workspace-write"] as const) {
+      const f = await shellHookFixture(t, mode), { outcome } = await f.authorize(command);
+      assert.equal(outcome?.block, true); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+  }
+  for (const header of ["cat <<'EOF' | cat", "source /dev/stdin; cat <<'EOF' | cat"]) {
+    assert.equal(inspectBashResourceLifecycle({ command: `${header}\nsleep 100 &\nEOF` }), undefined);
+  }
+});
+
+test("nested stdin readers keep mutation context and all interpreter languages", async t => {
+  assert.equal(inspectHighRiskBashMutation({ command: "{ node; python; } <<'EOF'\nfs.rmSync(target,{recursive:true})\nEOF" }, process.cwd())?.mutationDetected, true);
+  for (const command of ["{ source /dev/stdin; } <<'EOF'\ntouch \"$X\"\nEOF", "bash -c 'cd sub; source /dev/stdin' <<'EOF'\ntouch target\nEOF"]) {
+    assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.unverifiableMutation, true);
+    for (const mode of ["full-access", "workspace-write"] as const) {
+      const f = await shellHookFixture(t, mode), { outcome } = await f.authorize(command);
+      assert.equal(outcome?.block, true); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+  }
+});
+
+test("literal multiword eval and trap actions preserve mutation targets", async t => {
+  for (const command of ["eval rm -rf '\"$X\"'", "eval -- rm -rf '\"$X\"'", "builtin eval rm -rf '\"$X\"'", "eval >out rm -rf '\"$X\"'"]) {
+    assert.equal(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
+    for (const mode of ["full-access", "workspace-write"] as const) {
+      const f = await shellHookFixture(t, mode), { outcome } = await f.authorize(command);
+      assert.equal(outcome?.block, true, command); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+  }
+  const literal = inspectHighRiskBashMutation({ command: "eval rm -rf /protected" }, process.cwd());
+  assert.equal(literal?.mutationDetected, true);
+  assert.ok(literal?.targets.includes(resolve("/protected")), "literal eval deletion reaches the existing target assessment with its real target");
+  for (const command of ["eval touch target", "builtin eval touch target"]) {
+    const scope = inspectBashPermissionScope({ command }, process.cwd());
+    assert.ok(scope?.primitives.includes("touch"), command);
+    assert.ok(scope?.targets.includes(resolve("target")), command);
+  }
+  for (const command of ["eval 'touch' '\"$X\"'", "trap 'touch \"$X\"' EXIT", "builtin trap 'touch \"$X\"' EXIT"]) {
+    assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.unverifiableMutation, true, command);
+    const f = await shellHookFixture(t, "full-access"), { outcome } = await f.authorize(command);
+    assert.equal(outcome?.block, true); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+  }
+});

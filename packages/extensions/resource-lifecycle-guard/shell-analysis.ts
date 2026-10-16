@@ -63,7 +63,7 @@ export class ShellAnalysisOwner {
     let bytes = 2 * (source.length + analysis.view.command.length + (analysis.stdin?.analysisCommand.length ?? 0));
     for (const nested of analysis.view.substitutions) bytes += nested.length * 2;
     for (const nested of analysis.substitutions.scripts) bytes += nested.length * 2;
-    if (analysis.view.hereDocuments) for (const document of analysis.view.hereDocuments) bytes += 2 * (document.header.length + document.body.length);
+    if (analysis.view.hereDocuments) for (const document of analysis.view.hereDocuments) bytes += 2 * (document.header.length + (document.pipelineHeader?.length ?? 0) + document.body.length);
     if (this.entries.size < MAX_ANALYSIS_ENTRIES && this.retainedBytes + bytes <= MAX_ANALYSIS_BYTES) {
       this.entries.set(source, analysis);
       this.retainedBytes += bytes;

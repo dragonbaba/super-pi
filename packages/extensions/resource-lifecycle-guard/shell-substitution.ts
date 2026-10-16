@@ -169,7 +169,7 @@ export interface ShellAnalysisView {
   substitutionUncertain?: boolean;
   /** Unknown body boundaries may hide executable input or following commands. */
   unboundedHeredoc?: boolean;
-  hereDocuments?: { header: string; body: string; priorSource: boolean; descriptor: number }[];
+  hereDocuments?: { header: string; pipelineHeader?: string; body: string; priorSource: boolean; descriptor: number }[];
 }
 
 function maskShellRange(output: string[] | undefined, start: number, end: number): void {
@@ -186,6 +186,7 @@ interface HereDelimiter {
   maskStart: number;
   maskEnd: number;
   headerEnd: number;
+  pipelineEnd: number;
   descriptor: number;
 }
 
@@ -205,6 +206,7 @@ function collectHereDelimiters(command: string, start: number, end: number): Her
   let arithmeticDepth = 0;
   let uncertain = false;
   let pendingHeader = 0;
+  let pendingPipeline = 0;
   for (let index = start; index < end; index++) {
     const c = command[index]!;
     if (escaped) { escaped = false; continue; }
@@ -227,6 +229,10 @@ function collectHereDelimiters(command: string, start: number, end: number): Her
       continue;
     }
     const comment = c === "#" && (index === 0 || COMMENT_BOUNDARY_PATTERN.test(command[index - 1]!));
+    if (comment || c === ";" || c === "(" || c === ")" || c === "&" && command[index - 1] !== ">" && command[index - 1] !== "<"
+      || c === "|" && (command[index + 1] === "|" || command[index - 1] === "|")) {
+      while (pendingPipeline < delimiters.length) delimiters[pendingPipeline++]!.pipelineEnd = index;
+    }
     if (comment || c === ";" || c === "|" || c === "(" || c === ")" || c === "&" && command[index - 1] !== ">" && command[index - 1] !== "<") {
       // A redirect may precede its executable. Retain its entire simple command,
       // but never borrow a consumer from the following pipeline/list member.
@@ -264,7 +270,7 @@ function collectHereDelimiters(command: string, start: number, end: number): Her
       value = command.slice(valueStart, cursor);
       if (value.includes("$") || value.includes("`") || value.includes("\\")) uncertain = true;
     }
-    if (value) delimiters.push({ value, quoted, stripTabs, maskStart, maskEnd: cursor, headerEnd: end, descriptor });
+    if (value) delimiters.push({ value, quoted, stripTabs, maskStart, maskEnd: cursor, headerEnd: end, pipelineEnd: end, descriptor });
     else uncertain = true;
     index = cursor - 1;
   }
@@ -408,7 +414,7 @@ export function prepareShellAnalysis(command: string): ShellAnalysisView {
       }
       hereDocuments ??= [];
       if (hereDocuments.length < MAX_SUBSTITUTIONS) {
-        hereDocuments.push({ header: command.slice(logicalLineStart, delimiter.headerEnd), body: command.slice(contentStart, delimiterLineStart), priorSource: logicalLineStart > 0, descriptor: delimiter.descriptor });
+        hereDocuments.push({ header: command.slice(logicalLineStart, delimiter.headerEnd), pipelineHeader: delimiter.pipelineEnd > delimiter.headerEnd ? command.slice(logicalLineStart, delimiter.pipelineEnd) : undefined, body: command.slice(contentStart, delimiterLineStart), priorSource: logicalLineStart > 0, descriptor: delimiter.descriptor });
       } else substitutionUncertain = uncertain = true;
       maskShellRange(output, contentStart, bodyEnd);
       const delimiterLineEnd = command.indexOf("\n", bodyEnd);

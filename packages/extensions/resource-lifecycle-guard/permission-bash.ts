@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { basename, resolve } from "node:path";
-import { hasUninspectableBashState, heredocConsumer, heredocHasUntrackedCwd, unsafeBashLoopHeaderReason } from "./core.ts";
+import { hasUninspectableBashState, heredocDocumentConsumers, heredocHasUntrackedCwd, literalEvalScript, unsafeBashLoopHeaderReason } from "./core.ts";
 import { commandSubstitutionEnd } from "./shell-substitution.ts";
 import { analyzeShellSource, type ShellAnalysisOwner } from "./shell-analysis.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
@@ -344,7 +344,7 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
     addTarget(builder, tokens[index]!, cwd);
     return cwd;
   }
-  if (command === "command" || command === "exec") {
+  if (command === "command" || command === "exec" || command === "builtin") {
     if (tokens[index] !== command) {
       markOpaque(builder, "explicit_path_named_shell_builtin");
       addTarget(builder, tokens[index]!, cwd);
@@ -355,11 +355,27 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
       addClass(builder, "read:command-query");
       return cwd;
     }
-    if (depth >= MAX_DEPTH || !tokens[index + 1] || tokens[index + 1]!.startsWith("-")) {
+    let nextIndex = index + 1;
+    if (command === "command" && tokens[nextIndex] === "-p") nextIndex++;
+    if (tokens[nextIndex] === "--") nextIndex++;
+    if (depth >= MAX_DEPTH || !tokens[nextIndex] || tokens[nextIndex]!.startsWith("-")) {
       markOpaque(builder, "unverifiable_launcher");
       return cwd;
     }
-    return inspectSegment(tokens, cwd, depth + 1, builder, index + 1);
+    return inspectSegment(tokens, cwd, depth + 1, builder, nextIndex);
+  }
+  if (command === "eval") {
+    const source = literalEvalScript(tokens, index + 1);
+    markOpaque(builder, "opaque_eval");
+    if (source === undefined || depth >= MAX_DEPTH) { builder.uncertainContext = true; return cwd; }
+    inspectScript(source, cwd, depth + 1, builder);
+    return cwd;
+  }
+  if (command === "trap") {
+    const actionIndex = index + (tokens[index + 1] === "--" ? 2 : 1), action = tokens[actionIndex];
+    markOpaque(builder, "opaque_trap");
+    if (action && action !== "-" && action !== "-p" && action !== "-l" && !tokens.expansions?.[actionIndex]) inspectScript(action, cwd, depth + 1, builder);
+    return cwd;
   }
   // A launched `cd` (`env cd`, `sudo cd`) is an external program and cannot move this shell.
   if (command === "cd" && index !== start) return cwd;
@@ -471,6 +487,7 @@ function inspectTokenBuffer(tokens: PermissionTokens, cwd: string, depth: number
       else markUncertainContext(builder, "redirection_target_unverifiable");
     }
     stripShellRedirections(tokens, redirections);
+    redirections.length = 0;
   }
   if (arithmeticHead) { markUncertainContext(builder, "unverifiable_arithmetic_command"); return cwd; }
   return tokens.length > 0 ? inspectSegment(tokens, cwd, depth, builder) : cwd;
@@ -491,8 +508,8 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
   if (analysis.hasHeredoc) markOpaque(builder, "heredoc_uninspectable");
   if (analysis.uncertain) markOpaque(builder, "shell_context_uninspectable");
   if (analysis.hereDocuments) for (const document of analysis.hereDocuments) {
-    if (heredocConsumer(document.header, document.descriptor) === "bash") {
-      if (document.priorSource || heredocHasUntrackedCwd(document.header)) builder.uncertainContext = true;
+    if (heredocDocumentConsumers(document) & 1) {
+      if (document.priorSource || document.pipelineHeader || heredocHasUntrackedCwd(document.header)) builder.uncertainContext = true;
       inspectScript(document.body, initialCwd, depth + 1, builder);
     }
   }

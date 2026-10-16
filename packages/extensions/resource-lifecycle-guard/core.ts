@@ -132,7 +132,9 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
  for (const script of here.substitutions) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) return result; }
  for (const script of substitutions.scripts) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) return result; }
  if (here.hereDocuments) for (const document of here.hereDocuments) {
-  if (heredocConsumer(document.header, document.descriptor) === "bash") {
+  const consumers = heredocDocumentConsumers(document);
+  if (consumers & 8) return lifecycleRefusal("SHELL_HEREDOC", "heredoc consumer nesting cannot be inspected", "use a direct literal stdin consumer");
+  if (consumers & 1) {
    const result = inspectLifecycleScript(document.body, depth + 1, nativePowerShellAvailable, analysisOwner);
    if (result) return result;
   }
@@ -238,13 +240,8 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
   if (changedLookup && SCRIPT_WRAPPERS.has(name)) return lifecycleRefusal("SHELL_WRAPPER", "shell lookup was changed by a prefix", "remove the lookup-changing prefix from the shell wrapper");
   if (tokens.dynamic && (SCRIPT_WRAPPERS.has(name) || name === "eval")) return lifecycleRefusal("SHELL_WRAPPER", "shell/eval operand contains dynamic expansion", "supply a literal inspectable script operand");
   if (name === "eval" && tokens[index] === "eval") {
-   let script = "";
-   let operand = skipRedirections(tokens, index + 1);
-   if (tokens[operand] === "--") operand = skipRedirections(tokens, operand + 1);
-   for (; operand < tokens.length; operand = skipRedirections(tokens, operand + 1)) {
-    if (tokens[operand]!.includes("<<")) return lifecycleRefusal("SHELL_WRAPPER", "eval operand cannot be inspected as literal executable source", "use directly inspectable foreground commands");
-    script += (script ? " " : "") + tokens[operand]!;
-   }
+   const script = literalEvalScript(tokens, index + 1);
+   if (script === undefined || script.includes("<<")) return lifecycleRefusal("SHELL_WRAPPER", "eval operand cannot be inspected as literal executable source", "use directly inspectable foreground commands");
    const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) return result;
    continue;
   }
@@ -410,6 +407,7 @@ function inspectOutputRedirections(tokens: ShellSegment, cwd: string, builder: S
 		addTarget(builder, target, cwd);
 	}
 	stripShellRedirections(tokens, redirections);
+	redirections.length = 0;
 }
 
 function inspectShellScript(script: string, initialCwd: string, depth: number, builder: ScanBuilder, shellOperation: "bash" | "powershell"): void {
@@ -429,10 +427,12 @@ function inspectShellScript(script: string, initialCwd: string, depth: number, b
 		markUnverifiable(builder);
 	}
 	if (analysis.hereDocuments) for (const document of analysis.hereDocuments) {
-		const consumer = heredocConsumer(document.header, document.descriptor);
-		if (consumer && (document.priorSource || heredocHasUntrackedCwd(document.header))) markUnverifiable(builder);
-		if (consumer === "bash") inspectShellScript(document.body, initialCwd, depth + 1, builder, "bash");
-		else if (consumer) inspectEmbeddedCode(document.body, consumer, initialCwd, builder);
+		const consumers = heredocDocumentConsumers(document);
+		if (consumers && (document.priorSource || document.pipelineHeader || heredocHasUntrackedCwd(document.header))) markUnverifiable(builder);
+		if (consumers & 1) inspectShellScript(document.body, initialCwd, depth + 1, builder, "bash");
+		if (consumers & 2) inspectEmbeddedCode(document.body, "node", initialCwd, builder);
+		if (consumers & 4) inspectEmbeddedCode(document.body, "python", initialCwd, builder);
+		if (consumers & 8) markUnverifiable(builder);
 	}
 	for (const nested of analysis.substitutions) inspectShellScript(nested, initialCwd, depth + 1, builder, shellOperation);
 	const substitutions = prepared.substitutions;
@@ -522,10 +522,10 @@ function inspectCommand(
 		return;
 	}
 	if (shellOperation === "bash" && command === "eval" && tokens[commandIndex] === "eval") {
-		const sourceIndex = commandIndex + 1;
-		if (depth >= MAX_WRAPPER_DEPTH || sourceIndex + 1 !== tokens.length || tokens.expansions?.[sourceIndex]) {
+		const source = literalEvalScript(tokens, commandIndex + 1);
+		if (depth >= MAX_WRAPPER_DEPTH || source === undefined) {
 			addPrimitive(builder, "unverifiable_eval"); markUnverifiable(builder);
-		} else inspectShellScript(tokens[sourceIndex]!, cwd, depth + 1, builder, "bash");
+		} else inspectShellScript(source, cwd, depth + 1, builder, "bash");
 		return;
 	}
 	if (shellOperation === "bash" && command === "trap" && tokens[commandIndex] === "trap") {
@@ -840,63 +840,142 @@ function nodeMayReadStdin(tokens: readonly string[], start: number): boolean {
 	return options || valuePending || afterOptions;
 }
 
-export function heredocConsumer(header: string, descriptor = 0): "bash" | "node" | "python" | undefined {
+/** Eval joins literal argv with spaces before parsing; never use it for execution. */
+export function literalEvalScript(tokens: ShellSegment, start: number): string | undefined {
+	let script = "", first = true;
+	let index = skipRedirections(tokens, start);
+	if (tokens[index] === "--") index = skipRedirections(tokens, index + 1);
+	for (; index < tokens.length; index = skipRedirections(tokens, index + 1)) {
+		if (tokens.expansions?.[index]) return undefined;
+		if (!first) script += " ";
+		script += tokens[index]!;
+		first = false;
+	}
+	return script;
+}
+
+/** Bits: shell=1, Node=2, Python=4, bounded inspection exhausted=8. */
+export function heredocConsumers(header: string, descriptor = 0, depth = 0, pipeline = false): number {
+	if (depth > MAX_WRAPPER_DEPTH) return 8;
 	const segments = parseShellSegments(header);
 	const tokens = segments[segments.length - 1];
-	if (!tokens) return undefined;
-	if (tokens.redirections) stripShellRedirections(tokens, tokens.redirections);
+	if (!tokens) return 0;
+	if (tokens.redirections) { stripShellRedirections(tokens, tokens.redirections); tokens.redirections.length = 0; }
+	if (pipeline) {
+		let start = segments.length - 1;
+		while (start > 0 && (segments[start - 1]!.separatorAfter === "|" || segments[start - 1]!.separatorAfter === "|&")) start--;
+		return stdinScriptConsumers(segments, descriptor, depth + 1, start);
+	}
+	if (tokens[0] === "}" || tokens[0] === "fi" || tokens[0] === "done" || tokens[0] === "esac"
+		|| tokens.length === 0 && segments.length > 1 && segments[segments.length - 2]!.subshellClosedAfter) {
+		let start = 0;
+		if (tokens[0] === "}") {
+			let braces = 1;
+			for (let cursor = segments.length - 2; cursor >= 0; cursor--) {
+				const segment = segments[cursor]!;
+				if (segment.firstWordQuoted) continue;
+				if (segment[0] === "}") braces++;
+				for (let word = 0; segment[word] === "{"; word++) braces--;
+				if (braces <= 0) { start = cursor; break; }
+			}
+		} else if (tokens.length === 0) {
+			start = segments.length - 2;
+			const subshellDepth = segments[start]!.subshellDepth ?? 0;
+			while (start > 0 && (segments[start - 1]!.subshellDepth ?? 0) >= subshellDepth) start--;
+		}
+		return stdinScriptConsumers(segments, descriptor, depth + 1, start);
+	}
+	return simpleStdinConsumers(tokens, descriptor, depth);
+}
+
+export function heredocDocumentConsumers(document: { header: string; pipelineHeader?: string; descriptor: number }): number {
+	return heredocConsumers(document.header, document.descriptor)
+		| (document.pipelineHeader ? heredocConsumers(document.pipelineHeader, document.descriptor, 0, true) : 0);
+}
+
+export function heredocConsumer(header: string, descriptor = 0): "bash" | "node" | "python" | undefined {
+	const consumers = heredocConsumers(header, descriptor);
+	return consumers & 1 ? "bash" : consumers & 2 ? "node" : consumers & 4 ? "python" : undefined;
+}
+
+function stdinScriptConsumers(segments: ShellSegment[], descriptor: number, depth: number, start = 0): number {
+	if (depth > MAX_WRAPPER_DEPTH || segments.length > MAX_SCRIPT_SEGMENTS) return 8;
+	let consumers = 0;
+	for (let index = start; index < segments.length; index++) {
+		const tokens = segments[index]!;
+		if (tokens.redirections) stripShellRedirections(tokens, tokens.redirections);
+		consumers |= simpleStdinConsumers(tokens, descriptor, depth);
+	}
+	return consumers;
+}
+
+function simpleStdinConsumers(tokens: ShellSegment, descriptor: number, depth: number): number {
+	if (depth > MAX_WRAPPER_DEPTH) return 8;
 	let index = commandTokenIndex(tokens);
-	if (index < 0 || index >= tokens.length) return undefined;
+	if (index < 0 || index >= tokens.length) return 0;
+	while (tokens[index] === "{" || tokens[index] === "do" || tokens[index] === "then" || tokens[index] === "else" || tokens[index] === "if" || tokens[index] === "elif" || tokens[index] === "while" || tokens[index] === "until") index++;
+	index = bashPipelinePrefixEnd(tokens, index);
+	if (index < 0) return 8;
 	// Prefix dispatch is a linear token walk, bounded by the command-size limit.
 	// Stopping partway would misclassify a later stdin consumer as ordinary data.
 	while (index < tokens.length) {
 		const prefix = tokens[index];
+		if (LEADING_ASSIGNMENT_PATTERN.test(prefix!)) { index++; continue; }
 		if (prefix !== "command" && prefix !== "builtin" && prefix !== "exec") break;
 		index++;
 		if (prefix === "command" && tokens[index] === "-p") index++;
 		if (tokens[index] === "--") index++;
-		if (!tokens[index] || tokens[index]!.startsWith("-")) return undefined;
+		if (!tokens[index] || tokens[index]!.startsWith("-")) return 0;
 	}
 	const name = commandName(tokens[index] ?? "");
+	if (name === "eval" && tokens[index] === "eval") {
+		const script = literalEvalScript(tokens, index + 1);
+		return script === undefined ? 8 : stdinScriptConsumers(parseShellSegments(script), descriptor, depth + 1);
+	}
 	if (name === "source" || name === ".") {
 		const operand = tokens[index + (tokens[index + 1] === "--" ? 2 : 1)];
-		if (operand === "/dev/stdin") return descriptor === 0 ? "bash" : undefined;
+		if (operand === "/dev/stdin") return descriptor === 0 ? 1 : 0;
 		const match = operand && SOURCE_DESCRIPTOR_PATTERN.exec(operand);
-		return match && Number(match[1]) === descriptor ? "bash" : undefined;
+		return match && Number(match[1]) === descriptor ? 1 : 0;
 	}
-	if (descriptor !== 0) return undefined;
 	const language = SCRIPT_WRAPPERS.has(name) ? "bash" : NODE_COMMANDS.has(name) ? "node" : PYTHON_COMMANDS.has(name) ? "python" : undefined;
-	if (!language) return undefined;
-	if (language === "node") return nodeMayReadStdin(tokens, index + 1) ? language : undefined;
+	if (!language) return 0;
+	if (language === "node") return descriptor === 0 && nodeMayReadStdin(tokens, index + 1) ? 2 : 0;
+	const stdinMask = descriptor !== 0 ? 0 : language === "bash" ? 1 : 4;
 	let shellStdin = false;
 	for (let cursor = index + 1; cursor < tokens.length; cursor++) {
 		const option = tokens[cursor]!;
-		if (option === "-") return language;
-		if (option === "--") return shellStdin || cursor + 1 === tokens.length || tokens[cursor + 1] === "-" ? language : undefined;
-		if (!option.startsWith("-") && !(language === "bash" && option.startsWith("+"))) return shellStdin ? language : undefined;
-		if (option === "--help" || option === "--version" || language !== "bash" && option === "-h" || language === "python" && option === "-V") return undefined;
+		if (option === "-") return stdinMask;
+		if (option === "--") return shellStdin || cursor + 1 === tokens.length || tokens[cursor + 1] === "-" ? stdinMask : 0;
+		if (!option.startsWith("-") && !(language === "bash" && option.startsWith("+"))) return shellStdin ? stdinMask : 0;
+		if (option === "--help" || option === "--version" || language !== "bash" && option === "-h" || language === "python" && option === "-V") return 0;
 		if (language === "python") {
 			if (option === "--check-hash-based-pycs") { cursor++; continue; }
 			if (!option.startsWith("--")) for (let flag = 1; flag < option.length; flag++) {
-				if (option[flag] === "c" || option[flag] === "m") return undefined;
+				if (option[flag] === "c" || option[flag] === "m") return 0;
 				if (option[flag] === "W" || option[flag] === "X") { if (flag + 1 === option.length) cursor++; break; }
 			}
 		} else {
 			if (option === "--rcfile" || option === "--init-file") { cursor++; continue; }
 			if (!option.startsWith("--")) for (let flag = 1; flag < option.length; flag++) {
-				if (option[flag] === "c") return undefined;
+				if (option[flag] === "c") {
+					const sourceIndex = cursor + 1;
+					if (!tokens[sourceIndex] || tokens.expansions?.[sourceIndex]) return 8;
+					return stdinScriptConsumers(parseShellSegments(tokens[sourceIndex]!), descriptor, depth + 1);
+				}
 				if (option[flag] === "s") shellStdin = true;
 				if (option[flag] === "o" || option[flag] === "O") { if (flag + 1 === option.length) cursor++; break; }
 			}
 		}
 	}
-	return language;
+	return stdinMask;
 }
 
 // Bodies are inspected separately from their declaration's surrounding flow.
 // Do not assign initial cwd to a mutation after earlier commands or pipeline stages.
 export function heredocHasUntrackedCwd(header: string): boolean {
-	return parseShellSegments(header).length !== 1;
+	const segments = parseShellSegments(header);
+	return segments.length !== 1 || segments[0]!.includes("-c") || segments[0]!.includes("eval");
 }
 
 function addPrimitive(builder: ScanBuilder, primitive: string): void {
