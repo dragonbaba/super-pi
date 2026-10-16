@@ -21,6 +21,10 @@ export interface CodemodeChildDisplay {
 	exitCode?: number | null;
 	outputDigests?: string[];
 	ref?: string;
+	executed?: boolean | "unknown";
+	resultComplete?: boolean | "unknown";
+	displayLimited?: boolean;
+	failureHandled?: boolean;
 }
 
 export function codemodeInputSummary(input: unknown): string {
