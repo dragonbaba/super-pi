@@ -176,8 +176,8 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
     if (!redirection[1]) { if (!tokens[index]) return UNCERTAIN_LIFECYCLE; index++; }
     continue;
    }
-   const prefix = token === "command" || token === "exec" ? token : "";
-   if (prefix !== "command" && prefix !== "exec") break;
+   const prefix = token === "command" || token === "exec" || token === "builtin" ? token : "";
+   if (!prefix) break;
    if (prefix === "command" && (tokens[index + 1] === "-v" || tokens[index + 1] === "-V")) {
     // Query operands are names to inspect, never executable positions. Nested
     // substitutions were inspected above before this branch.
@@ -185,7 +185,9 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
     index = tokens.length;
     break;
    }
-   if (++index > MAX_WRAPPER_DEPTH || !tokens[index] || tokens[index]!.startsWith("-")) return lifecycleRefusal("SHELL_WRAPPER", "unsupported command/exec prefix depth or operand", "use a direct foreground executable");
+   index++;
+   if (prefix === "builtin" && tokens[index] === "--") index++;
+   if (index > MAX_WRAPPER_DEPTH || !tokens[index] || tokens[index]!.startsWith("-")) return lifecycleRefusal("SHELL_WRAPPER", "unsupported command/exec prefix depth or operand", "use a direct foreground executable");
   }
   if (index >= tokens.length) continue;
   if (tokens.bashTestOpenAt === index && tokens.bashTestClosed && tokens[index] === "[[") continue;
@@ -234,8 +236,26 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
   // Resolve only this segment; unrelated text in another command is not authority or uncertainty.
   if (changedLookup && SCRIPT_WRAPPERS.has(name)) return lifecycleRefusal("SHELL_WRAPPER", "shell lookup was changed by a prefix", "remove the lookup-changing prefix from the shell wrapper");
   if (tokens.dynamic && (SCRIPT_WRAPPERS.has(name) || name === "eval")) return lifecycleRefusal("SHELL_WRAPPER", "shell/eval operand contains dynamic expansion", "supply a literal inspectable script operand");
-  if (name === "eval") for (let operand = index + 1; operand < tokens.length; operand++) {
-   if (tokens[operand]!.includes("<<")) return lifecycleRefusal("SHELL_WRAPPER", "eval operand cannot be inspected as literal executable source", "use directly inspectable foreground commands");
+  if (name === "eval" && tokens[index] === "eval") {
+   let script = "";
+   let operand = skipRedirections(tokens, index + 1);
+   if (tokens[operand] === "--") operand = skipRedirections(tokens, operand + 1);
+   for (; operand < tokens.length; operand = skipRedirections(tokens, operand + 1)) {
+    if (tokens[operand]!.includes("<<")) return lifecycleRefusal("SHELL_WRAPPER", "eval operand cannot be inspected as literal executable source", "use directly inspectable foreground commands");
+    script += (script ? " " : "") + tokens[operand]!;
+   }
+   const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) return result;
+   continue;
+  }
+  if (name === "trap" && tokens[index] === "trap") {
+   let actionIndex = skipRedirections(tokens, index + 1);
+   const endOfOptions = tokens[actionIndex] === "--";
+   if (endOfOptions) actionIndex = skipRedirections(tokens, actionIndex + 1);
+   const action = tokens[actionIndex];
+   if (action && action !== "-" && (endOfOptions || action !== "-p" && action !== "-l") && !tokens.expansions?.[actionIndex]) {
+    const result = inspectLifecycleScript(action, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) return result;
+   }
+   continue;
   }
   if (!SCRIPT_WRAPPERS.has(name)) continue;
   const flag = index + 1;

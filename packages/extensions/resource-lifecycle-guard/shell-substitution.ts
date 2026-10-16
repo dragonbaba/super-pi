@@ -185,6 +185,7 @@ interface HereDelimiter {
   stripTabs: boolean;
   maskStart: number;
   maskEnd: number;
+  headerEnd: number;
 }
 
 interface HereDelimiterScan {
@@ -202,6 +203,7 @@ function collectHereDelimiters(command: string, start: number, end: number): Her
   let escaped = false;
   let arithmeticDepth = 0;
   let uncertain = false;
+  let pendingHeader = 0;
   for (let index = start; index < end; index++) {
     const c = command[index]!;
     if (escaped) { escaped = false; continue; }
@@ -222,6 +224,13 @@ function collectHereDelimiters(command: string, start: number, end: number): Her
       if (c === "(") arithmeticDepth++;
       else if (c === ")") arithmeticDepth--;
       continue;
+    }
+    const comment = c === "#" && (index === 0 || COMMENT_BOUNDARY_PATTERN.test(command[index - 1]!));
+    if (comment || c === ";" || c === "|" || c === "(" || c === ")" || c === "&" && command[index - 1] !== ">" && command[index - 1] !== "<") {
+      // A redirect may precede its executable. Retain its entire simple command,
+      // but never borrow a consumer from the following pipeline/list member.
+      while (pendingHeader < delimiters.length) delimiters[pendingHeader++]!.headerEnd = index;
+      if (comment) break;
     }
     if (c !== "<" || command[index + 1] !== "<" || command[index + 2] === "<") continue;
     const maskStart = index;
@@ -247,7 +256,7 @@ function collectHereDelimiters(command: string, start: number, end: number): Her
       value = command.slice(valueStart, cursor);
       if (value.includes("$") || value.includes("`") || value.includes("\\")) uncertain = true;
     }
-    if (value) delimiters.push({ value, quoted, stripTabs, maskStart, maskEnd: cursor });
+    if (value) delimiters.push({ value, quoted, stripTabs, maskStart, maskEnd: cursor, headerEnd: end });
     else uncertain = true;
     index = cursor - 1;
   }
@@ -374,7 +383,7 @@ export function prepareShellAnalysis(command: string): ShellAnalysisView {
       hereDocuments ??= [];
       if (hereDocuments.length < MAX_SUBSTITUTIONS) {
         const headerStart = command.lastIndexOf("\n", operatorStart) + 1;
-        hereDocuments.push({ header: command.slice(headerStart, delimiter.maskStart), body: command.slice(contentStart, delimiterLineStart), priorSource: headerStart > 0 });
+        hereDocuments.push({ header: command.slice(headerStart, delimiter.headerEnd), body: command.slice(contentStart, delimiterLineStart), priorSource: headerStart > 0 });
       } else substitutionUncertain = uncertain = true;
       maskShellRange(output, contentStart, bodyEnd);
       const delimiterLineEnd = command.indexOf("\n", bodyEnd);

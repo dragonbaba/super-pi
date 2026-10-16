@@ -6,7 +6,7 @@ import ts from "typescript";
 test("authorization scanners and cache methods add no callbacks, promises or temporary byte buffers", () => {
   const targets = new Map([
     ["shell-analysis.ts", new Set(["analyzeShellSource", "get", "assertCurrent", "release"])],
-    ["shell-substitution.ts", new Set(["prepareShellAnalysis", "extractCommandSubstitutions", "commandSubstitutionEnd"])],
+    ["shell-substitution.ts", new Set(["prepareShellAnalysis", "collectHereDelimiters", "extractCommandSubstitutions", "commandSubstitutionEnd"])],
     ["core.ts", new Set(["inspectBashResourceLifecycle", "inspectLifecycleScript", "inspectHighRiskBashMutation", "inspectShellScript", "heredocConsumer", "heredocHasUntrackedCwd", "addMutationPrimitive"])],
     ["permission-bash.ts", new Set(["inspectScript", "inspectBashPermissionScope", "inspectKnownMutation", "markMutation", "addResolvedTarget", "addTarget"])],
   ]);
