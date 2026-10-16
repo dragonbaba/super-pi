@@ -40,7 +40,7 @@ export const OWNED_FOREGROUND_JOB_PATTERN = /^\s*([A-Za-z0-9_./-]+)(?:[ \t]+[A-Z
 export const OPAQUE_JOB_LAUNCHER_PATTERN = /^(?:env|sudo|doas|nice|nohup|setsid|timeout|stdbuf|command|exec|busybox|xargs|sh|bash|zsh|dash|fish|ksh|powershell|pwsh|cmd)(?:\.exe)?$/iu;
 export const OPAQUE_JOB_INTERPRETER_PATTERN = /^(?:python(?:[0-9]+(?:\.[0-9]+)*)?|py|node(?:js)?)(?:\.exe)?$/iu;
 export const OWNED_USE_COMMAND_PATTERN = /^(?:curl|test|true|false|echo)(?:[ \t]+[A-Za-z0-9_./:%?=,+-]+)*$/u;
-export const SHELL_WRAPPER_TEXT_PATTERN = /sh|eval|trap|timeout/iu;
+export const SHELL_WRAPPER_TEXT_PATTERN = /sh|eval|trap|alias|timeout/iu;
 export const EXECUTABLE_EXPANSION_TEXT_PATTERN = /[$`*?\[\]{}%]/u;
 export const LOOKUP_ASSIGNMENT_PATTERN = /^(?:PATH|EXECIGNORE|BASH_CMDS|BASH_ENV|ENV|SHELLOPTS|BASHOPTS|CDPATH|PS4|POSIXLY_CORRECT)=/u;
 export const TEMPORARY_CDPATH_QUERY_PATTERN = /^CDPATH=[A-Za-z0-9_./:-]{0,1024}$/u;

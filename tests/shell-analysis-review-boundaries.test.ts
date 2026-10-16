@@ -212,6 +212,18 @@ test("literal pipeline consumers receive heredoc analysis without borrowing earl
   }
 });
 
+test("nested eval stdin consumers retain argv after redirection removal", async t => {
+  for (const header of ["bash -c 'eval >out source /dev/stdin'", "{ eval >out source /dev/stdin; }", "bash -c 'eval 2>errors builtin source /dev/stdin'"]) {
+    const command = `${header} <<'EOF'\nsleep 100 &\nEOF`;
+    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /Blocked an unmanaged long-lived process/, command);
+    for (const mode of ["full-access", "workspace-write"] as const) {
+      const f = await shellHookFixture(t, mode), { outcome } = await f.authorize(command);
+      assert.equal(outcome?.block, true); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+  }
+  assert.equal(inspectBashResourceLifecycle({ command: "bash -c 'eval >out cat' <<'EOF'\nsleep 100 &\nEOF" }), undefined);
+});
+
 test("nested stdin readers keep mutation context and all interpreter languages", async t => {
   assert.equal(inspectHighRiskBashMutation({ command: "{ node; python; } <<'EOF'\nfs.rmSync(target,{recursive:true})\nEOF" }, process.cwd())?.mutationDetected, true);
   for (const command of ["{ source /dev/stdin; } <<'EOF'\ntouch \"$X\"\nEOF", "bash -c 'cd sub; source /dev/stdin' <<'EOF'\ntouch target\nEOF"]) {
@@ -221,6 +233,61 @@ test("nested stdin readers keep mutation context and all interpreter languages",
       assert.equal(outcome?.block, true); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
     }
   }
+});
+
+test("interpreter script paths matching heredoc descriptors receive body inspection", async t => {
+  for (const interpreter of ["bash", "node", "python"]) {
+    for (const [path, descriptor] of [["/dev/stdin", 0], ["/dev/fd/3", 3], ["/proc/self/fd/4", 4]] as const) {
+      for (const boundary of ["", "-- "]) assert.equal(heredocConsumer(`${interpreter} ${boundary}${path} ${descriptor}<<'EOF'`, descriptor), interpreter);
+      assert.equal(heredocConsumer(`${interpreter} ${path} <<'EOF'`, descriptor + 1), undefined);
+    }
+    assert.equal(heredocConsumer(`${interpreter} script-file <<'EOF'`), undefined);
+  }
+  for (const header of ["bash /dev/stdin", "bash -- /dev/stdin", "bash /dev/fd/3 3", "bash /proc/self/fd/4 4"]) {
+    const command = `${header}<<'EOF'\nsleep 100 &\nEOF`;
+    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /Blocked an unmanaged long-lived process/, command);
+    for (const mode of ["full-access", "workspace-write"] as const) {
+      const f = await shellHookFixture(t, mode), { outcome } = await f.authorize(command);
+      assert.equal(outcome?.block, true); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+  }
+  for (const interpreter of ["node", "python"]) {
+    const body = interpreter === "node" ? "fs.rmSync(target,{recursive:true})" : "shutil.rmtree(target)";
+    const command = `${interpreter} /dev/fd/3 3<<'EOF'\n${body}\nEOF`;
+    assert.equal(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
+    const f = await shellHookFixture(t, "full-access"), { outcome } = await f.authorize(command);
+    assert.equal(outcome?.block, true); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+  }
+});
+
+test("combined output redirects do not detach heredoc input from its consumer", async t => {
+  for (const operator of ["&>", "&>>"]) {
+    const command = `<<'EOF' ${operator}out source /dev/stdin\nsleep 100 &\nEOF`;
+    assert.ok(prepareShellAnalysis(command).hereDocuments?.[0]?.header.includes("source /dev/stdin"));
+    for (const mode of ["full-access", "workspace-write"] as const) {
+      const f = await shellHookFixture(t, mode), { outcome } = await f.authorize(command);
+      assert.equal(outcome?.block, true); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+    assert.equal(inspectBashResourceLifecycle({ command: `<<'EOF' ${operator}out cat\nsleep 100 &\nEOF` }), undefined);
+  }
+});
+
+test("literal alias definitions retain lifecycle and mutation inspection", async t => {
+  for (const definition of ["alias run='sleep 30 >/dev/null 2>&1 &'", "builtin alias run='sleep 30 &'", "alias run='eval sleep 30 \\&'", "alias run='rm -rf \"$X\"'", "alias run='touch \"$X\"'"]) {
+    const command = `shopt -s expand_aliases\n${definition}\nrun`;
+    for (const mode of ["full-access", "workspace-write"] as const) {
+      const f = await shellHookFixture(t, mode), { outcome } = await f.authorize(command);
+      assert.equal(outcome?.block, true, command); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+  }
+  for (const command of ["alias -p", "shopt -s expand_aliases\nalias run='printf ok'\nrun", "printf '%s' 'alias run=sleep'"]) {
+    assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
+    for (const mode of ["full-access", "workspace-write"] as const) {
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
+    }
+  }
+  assert.match(inspectBashResourceLifecycle({ command: 'alias run="$SCRIPT"\nrun' }) ?? "", /SHELL_WRAPPER/);
+  assert.match(inspectBashResourceLifecycle({ command: "{ alias run='source /dev/stdin'; run; } <<'EOF'\nsleep 30 &\nEOF" }) ?? "", /Blocked an unmanaged long-lived process/);
 });
 
 test("literal multiword eval and trap actions preserve mutation targets", async t => {

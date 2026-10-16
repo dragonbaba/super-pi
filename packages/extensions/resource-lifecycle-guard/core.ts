@@ -239,6 +239,15 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
   // Resolve only this segment; unrelated text in another command is not authority or uncertainty.
   if (changedLookup && SCRIPT_WRAPPERS.has(name)) return lifecycleRefusal("SHELL_WRAPPER", "shell lookup was changed by a prefix", "remove the lookup-changing prefix from the shell wrapper");
   if (tokens.dynamic && (SCRIPT_WRAPPERS.has(name) || name === "eval")) return lifecycleRefusal("SHELL_WRAPPER", "shell/eval operand contains dynamic expansion", "supply a literal inspectable script operand");
+  if (name === "alias" && tokens[index] === "alias") {
+   for (let operand = skipRedirections(tokens, index + 1); operand < tokens.length; operand = skipRedirections(tokens, operand + 1)) {
+    if (tokens[operand]!.indexOf("=") < 1) continue;
+    const script = literalAliasSource(tokens, operand);
+    if (script === undefined) return lifecycleRefusal("SHELL_WRAPPER", "alias definition contains dynamic executable source", "use a literal inspectable alias definition");
+    const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) return result;
+   }
+   continue;
+  }
   if (name === "eval" && tokens[index] === "eval") {
    const script = literalEvalScript(tokens, index + 1);
    if (script === undefined || script.includes("<<")) return lifecycleRefusal("SHELL_WRAPPER", "eval operand cannot be inspected as literal executable source", "use directly inspectable foreground commands");
@@ -519,6 +528,13 @@ function inspectCommand(
 	if (command === "printf" && hasStatefulBashPrintf(tokens, commandIndex)) {
 		addPrimitive(builder, "stateful_printf_variable_assignment");
 		markUnverifiable(builder);
+		return;
+	}
+	if (shellOperation === "bash" && command === "alias" && tokens[commandIndex] === "alias") {
+		for (let operand = commandIndex + 1; operand < tokens.length; operand++) {
+			const source = literalAliasSource(tokens, operand);
+			if (source !== undefined) { markUnverifiable(builder); inspectShellScript(source, cwd, depth + 1, builder, "bash"); }
+		}
 		return;
 	}
 	if (shellOperation === "bash" && command === "eval" && tokens[commandIndex] === "eval") {
@@ -816,28 +832,40 @@ function addMutationPrimitive(builder: ScanBuilder, primitive: string): void {
 
 /** Literal interpreter stdin is executable source; data consumers remain opaque
  * data. This is analysis only and never reconstructs the command for execution. */
-function nodeMayReadStdin(tokens: readonly string[], start: number): boolean {
+function nodeMayReadStdin(tokens: readonly string[], start: number, descriptor = 0): boolean {
 	// Unknown Node/V8 options may take zero or one value. Track both possible
 	// argv interpretations with primitive states; a value is never proof of a
 	// program operand, even when that value itself resembles a source flag.
 	let options = true, valuePending = false, afterOptions = false;
 	for (let index = start; index < tokens.length; index++) {
 		const word = tokens[index]!;
-		if (afterOptions && word === "-") return true;
+		if (afterOptions && (word === "-" && descriptor === 0 || isHeredocDescriptorPath(word, descriptor))) return true;
 		const parseOption = options;
 		options = valuePending;
 		valuePending = false;
 		afterOptions = false;
 		if (!parseOption) continue;
-		if (word === "-") return true;
+		if (word === "-") { if (descriptor === 0) return true; continue; }
 		if (word === "--") { afterOptions = true; continue; }
-		if (!word.startsWith("-")) continue;
+		if (!word.startsWith("-")) { if (isHeredocDescriptorPath(word, descriptor)) return true; continue; }
 		if (word === "--check" || word === "-c" || word === "--help" || word === "-h" || word === "--version" || word === "-v"
 			|| word === "--eval" || word.startsWith("--eval=") || word === "--print" || word.startsWith("--print=") || word.startsWith("-e") || word.startsWith("-p")) continue;
 		options = true;
 		if (!word.includes("=") && (word.startsWith("--") || word.length === 2)) valuePending = true;
 	}
-	return options || valuePending || afterOptions;
+	return descriptor === 0 && (options || valuePending || afterOptions);
+}
+
+function isHeredocDescriptorPath(operand: string | undefined, descriptor: number): boolean {
+	if (operand === "/dev/stdin") return descriptor === 0;
+	const match = operand && SOURCE_DESCRIPTOR_PATTERN.exec(operand);
+	return Boolean(match && Number(match[1]) === descriptor);
+}
+
+/** Literal alias definitions are stored executable source, not plain argv data. */
+export function literalAliasSource(tokens: ShellSegment, index: number): string | undefined {
+	const word = tokens[index], equals = word?.indexOf("=") ?? -1;
+	return equals > 0 && !tokens.expansions?.[index] ? word!.slice(equals + 1) : undefined;
 }
 
 /** Eval joins literal argv with spaces before parsing; never use it for execution. */
@@ -903,7 +931,7 @@ function stdinScriptConsumers(segments: ShellSegment[], descriptor: number, dept
 	let consumers = 0;
 	for (let index = start; index < segments.length; index++) {
 		const tokens = segments[index]!;
-		if (tokens.redirections) stripShellRedirections(tokens, tokens.redirections);
+		if (tokens.redirections) { stripShellRedirections(tokens, tokens.redirections); tokens.redirections.length = 0; }
 		consumers |= simpleStdinConsumers(tokens, descriptor, depth);
 	}
 	return consumers;
@@ -928,26 +956,33 @@ function simpleStdinConsumers(tokens: ShellSegment, descriptor: number, depth: n
 		if (!tokens[index] || tokens[index]!.startsWith("-")) return 0;
 	}
 	const name = commandName(tokens[index] ?? "");
+	if (name === "alias" && tokens[index] === "alias") {
+		let consumers = 0;
+		for (let operand = index + 1; operand < tokens.length; operand++) {
+			const script = literalAliasSource(tokens, operand);
+			if (script !== undefined) consumers |= stdinScriptConsumers(parseShellSegments(script), descriptor, depth + 1);
+		}
+		return consumers;
+	}
 	if (name === "eval" && tokens[index] === "eval") {
 		const script = literalEvalScript(tokens, index + 1);
 		return script === undefined ? 8 : stdinScriptConsumers(parseShellSegments(script), descriptor, depth + 1);
 	}
 	if (name === "source" || name === ".") {
 		const operand = tokens[index + (tokens[index + 1] === "--" ? 2 : 1)];
-		if (operand === "/dev/stdin") return descriptor === 0 ? 1 : 0;
-		const match = operand && SOURCE_DESCRIPTOR_PATTERN.exec(operand);
-		return match && Number(match[1]) === descriptor ? 1 : 0;
+		return isHeredocDescriptorPath(operand, descriptor) ? 1 : 0;
 	}
 	const language = SCRIPT_WRAPPERS.has(name) ? "bash" : NODE_COMMANDS.has(name) ? "node" : PYTHON_COMMANDS.has(name) ? "python" : undefined;
 	if (!language) return 0;
-	if (language === "node") return descriptor === 0 && nodeMayReadStdin(tokens, index + 1) ? 2 : 0;
+	if (language === "node") return nodeMayReadStdin(tokens, index + 1, descriptor) ? 2 : 0;
+	const languageMask = language === "bash" ? 1 : 4;
 	const stdinMask = descriptor !== 0 ? 0 : language === "bash" ? 1 : 4;
 	let shellStdin = false;
 	for (let cursor = index + 1; cursor < tokens.length; cursor++) {
 		const option = tokens[cursor]!;
 		if (option === "-") return stdinMask;
-		if (option === "--") return shellStdin || cursor + 1 === tokens.length || tokens[cursor + 1] === "-" ? stdinMask : 0;
-		if (!option.startsWith("-") && !(language === "bash" && option.startsWith("+"))) return shellStdin ? stdinMask : 0;
+		if (option === "--") return shellStdin || cursor + 1 === tokens.length || tokens[cursor + 1] === "-" ? stdinMask : isHeredocDescriptorPath(tokens[cursor + 1], descriptor) ? languageMask : 0;
+		if (!option.startsWith("-") && !(language === "bash" && option.startsWith("+"))) return shellStdin ? stdinMask : isHeredocDescriptorPath(option, descriptor) ? languageMask : 0;
 		if (option === "--help" || option === "--version" || language !== "bash" && option === "-h" || language === "python" && option === "-V") return 0;
 		if (language === "python") {
 			if (option === "--check-hash-based-pycs") { cursor++; continue; }

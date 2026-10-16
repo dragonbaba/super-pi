@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { basename, resolve } from "node:path";
-import { hasUninspectableBashState, heredocDocumentConsumers, heredocHasUntrackedCwd, literalEvalScript, unsafeBashLoopHeaderReason } from "./core.ts";
+import { hasUninspectableBashState, heredocDocumentConsumers, heredocHasUntrackedCwd, literalAliasSource, literalEvalScript, unsafeBashLoopHeaderReason } from "./core.ts";
 import { commandSubstitutionEnd } from "./shell-substitution.ts";
 import { analyzeShellSource, type ShellAnalysisOwner } from "./shell-analysis.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
@@ -363,6 +363,14 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
       return cwd;
     }
     return inspectSegment(tokens, cwd, depth + 1, builder, nextIndex);
+  }
+  if (command === "alias") {
+    markOpaque(builder, "opaque_alias");
+    for (let operand = index + 1; operand < tokens.length; operand++) {
+      const source = literalAliasSource(tokens, operand);
+      if (source !== undefined) { builder.uncertainContext = true; inspectScript(source, cwd, depth + 1, builder); }
+    }
+    return cwd;
   }
   if (command === "eval") {
     const source = literalEvalScript(tokens, index + 1);

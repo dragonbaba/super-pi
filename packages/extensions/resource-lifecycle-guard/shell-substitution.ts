@@ -229,11 +229,11 @@ function collectHereDelimiters(command: string, start: number, end: number): Her
       continue;
     }
     const comment = c === "#" && (index === 0 || COMMENT_BOUNDARY_PATTERN.test(command[index - 1]!));
-    if (comment || c === ";" || c === "(" || c === ")" || c === "&" && command[index - 1] !== ">" && command[index - 1] !== "<"
+    if (comment || c === ";" || c === "(" || c === ")" || c === "&" && command[index - 1] !== ">" && command[index - 1] !== "<" && command[index - 1] !== "|" && command[index + 1] !== ">"
       || c === "|" && (command[index + 1] === "|" || command[index - 1] === "|")) {
       while (pendingPipeline < delimiters.length) delimiters[pendingPipeline++]!.pipelineEnd = index;
     }
-    if (comment || c === ";" || c === "|" || c === "(" || c === ")" || c === "&" && command[index - 1] !== ">" && command[index - 1] !== "<") {
+    if (comment || c === ";" || c === "|" || c === "(" || c === ")" || c === "&" && command[index - 1] !== ">" && command[index - 1] !== "<" && command[index + 1] !== ">") {
       // A redirect may precede its executable. Retain its entire simple command,
       // but never borrow a consumer from the following pipeline/list member.
       while (pendingHeader < delimiters.length) delimiters[pendingHeader++]!.headerEnd = index;

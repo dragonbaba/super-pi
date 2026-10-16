@@ -7,7 +7,7 @@ test("authorization scanners and cache methods add no callbacks, promises or tem
   const targets = new Map([
     ["shell-analysis.ts", new Set(["analyzeShellSource", "get", "assertCurrent", "release"])],
     ["shell-substitution.ts", new Set(["prepareShellAnalysis", "heredocDeclarationEnd", "collectHereDelimiters", "extractCommandSubstitutions", "commandSubstitutionEnd"])],
-    ["core.ts", new Set(["inspectBashResourceLifecycle", "inspectLifecycleScript", "inspectHighRiskBashMutation", "inspectShellScript", "heredocConsumer", "heredocConsumers", "heredocDocumentConsumers", "stdinScriptConsumers", "simpleStdinConsumers", "literalEvalScript", "nodeMayReadStdin", "heredocHasUntrackedCwd", "addMutationPrimitive"])],
+    ["core.ts", new Set(["inspectBashResourceLifecycle", "inspectLifecycleScript", "inspectHighRiskBashMutation", "inspectShellScript", "heredocConsumer", "heredocConsumers", "heredocDocumentConsumers", "stdinScriptConsumers", "simpleStdinConsumers", "literalEvalScript", "literalAliasSource", "isHeredocDescriptorPath", "nodeMayReadStdin", "heredocHasUntrackedCwd", "addMutationPrimitive"])],
     ["permission-bash.ts", new Set(["inspectScript", "inspectBashPermissionScope", "inspectKnownMutation", "markMutation", "markUncertainContext", "addResolvedTarget", "addTarget"])],
     ["shell-redirection.ts", new Set(["isShellOutputFileRedirection", "isShellFileDescriptor"])],
   ]);
