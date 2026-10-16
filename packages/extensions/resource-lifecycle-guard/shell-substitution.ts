@@ -25,8 +25,40 @@ export const shellAnalysisCounters = {
   prepareCalls: 0, prepareInputBytes: 0,
   substitutionCalls: 0, substitutionInputBytes: 0,
   functionBoundaryCalls: 0, functionBoundaryChars: 0, crComparisons: 0,
-  subscriptTextChars: 0,
+  subscriptTextChars: 0, promptParameterCalls: 0, promptParameterChars: 0,
 };
+
+/** Recognize only the parameter head before @P, without evaluating its value.
+ * Called at an already-discovered ${ in the existing substitution scan. */
+export function isPromptParameterExpansion(command: string, start: number): boolean {
+  shellAnalysisCounters.promptParameterCalls++;
+  let index = start;
+  let code = command.charCodeAt(index);
+  if (code === 33 || code === 35) code = command.charCodeAt(++index);
+  if (code === 95 || code >= 65 && code <= 90 || code >= 97 && code <= 122) {
+    do {
+      shellAnalysisCounters.promptParameterChars++;
+      code = command.charCodeAt(++index);
+    } while (code === 95 || code >= 65 && code <= 90 || code >= 97 && code <= 122 || code >= 48 && code <= 57);
+  } else if (code >= 48 && code <= 57) {
+    do {
+      shellAnalysisCounters.promptParameterChars++;
+      code = command.charCodeAt(++index);
+    } while (code >= 48 && code <= 57);
+  } else if (code === 64 || code === 42 || code === 63 || code === 36 || code === 45) code = command.charCodeAt(++index);
+  else return false;
+  if (code === 91) {
+    let depth = 1;
+    while (++index < command.length) {
+      shellAnalysisCounters.promptParameterChars++;
+      code = command.charCodeAt(index);
+      if (code === 91) depth++;
+      else if (code === 93 && --depth === 0) break;
+    }
+    code = command.charCodeAt(++index);
+  }
+  return code === 64 && command.charCodeAt(index + 1) === 80 && command.charCodeAt(index + 2) === 125;
+}
 
 /** Primitive state for literal identifier[...executable-marker...] text.
  * Bits zero/one remember an identifier/execution marker; higher bits count brackets. */
@@ -216,6 +248,7 @@ export function extractCommandSubstitutions(command: string, heredocData = false
       quote = quote === 34 ? 0 : 34;
       continue;
     }
+    if (code === 36 && command.charCodeAt(index + 1) === 123 && isPromptParameterExpansion(command, index + 2)) return { scripts, unterminated: false, unsupported: true, limitExceeded: false, boundaryRefusal: 1 };
     const functionBody = isFunctionSubstitutionStart(command, index);
     if (!functionBody && code !== 96 && (code !== 36 || command.charCodeAt(index + 1) !== 40 || command.charCodeAt(index + 2) === 40)) continue;
     if (scripts.length === MAX_SUBSTITUTIONS) return { scripts, unterminated: false, unsupported: true, limitExceeded: "count" };

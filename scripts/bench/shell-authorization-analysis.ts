@@ -12,6 +12,12 @@ const cwd = process.cwd(), iterations = 512, warmup = 64, samplingInterval = 409
 const literalInputs = process.argv.includes("--literal-inputs");
 const substitution = "$(grep -c -E '(class|function|const|var|let) GCSystem\\b' pixi/pixi.js)";
 const cases = literalInputs ? [
+  ["prompt-transform", 'x=\'$(sleep 100 &)\'; echo "${x@P}"', 1],
+  ["quote-transform-control", 'x=\'$(sleep 100 &)\'; echo "${x@Q}"', 1],
+  ["ps4-xtrace-boundary", "PS4='$(sleep 100 &)'; set -x; :", 1],
+  ["later-heredoc-copy", "exec 3<<'EOF'\nsleep 100 &\nEOF\nexec 4<&3; source /dev/fd/4", 1],
+  ["chained-heredoc-copy", "exec 3<<'EOF'\nsleep 100 &\nEOF\nexec 4<&3; exec 5<&4; source /dev/fd/5", 1],
+  ["ordinary-file-copy", "exec 3<file; exec 4<&3; source /dev/fd/4", 1],
   ["stored-arithmetic-subscript", "x='a[$(sleep 100 &)]'; echo $((x))", 1],
   ["unquoted-process-subscript", "printf %s a[<(printf ok)]", 1],
   ["literal-bare-arithmetic", "((1+1))", 1],

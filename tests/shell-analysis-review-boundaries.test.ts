@@ -21,7 +21,59 @@ test("subscript text checks share the substitution scan and retain no source", (
   assert.equal(shellAnalysisCounters.subscriptTextChars, beforeData, "heredoc data uses its existing consumer boundary");
 });
 
+test("prompt checks inspect only discovered parameter heads and retain primitive counters", () => {
+  const beforeCalls = shellAnalysisCounters.substitutionCalls, beforeHeads = shellAnalysisCounters.promptParameterCalls, beforeChars = shellAnalysisCounters.promptParameterChars;
+  extractCommandSubstitutions("printf ok");
+  assert.equal(shellAnalysisCounters.promptParameterCalls, beforeHeads);
+  assert.equal(extractCommandSubstitutions('echo "${x@P}"').boundaryRefusal, 1);
+  assert.equal(shellAnalysisCounters.substitutionCalls - beforeCalls, 2);
+  assert.equal(shellAnalysisCounters.promptParameterCalls - beforeHeads, 1);
+  assert.equal(shellAnalysisCounters.promptParameterChars - beforeChars, 1);
+});
+
 for (const mode of ["full-access", "workspace-write"] as const) {
+  test(`review twenty-two ${mode}: parameter transforms preserve main's boundary`, async t => {
+    for (const operator of ["P", "E", "A", "K", "k", "Q", "U", "u", "L", "a"]) {
+      for (const payload of ["$(sleep 100 &)", "`sleep 100 &`", "hello"]) for (const quote of ['"', ""]) {
+        const command = `x='${payload}'; echo ${quote}\${x@${operator}}${quote}`;
+        if (operator !== "P") { assert.equal(inspectBashResourceLifecycle({ command }), undefined, command); continue; }
+        assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_UNINSPECTABLE\]/, command);
+        const f = await shellHookFixture(t, mode), call = await f.authorize(command);
+        assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+      }
+    }
+    for (const command of ['echo "${a[0]@P}"', 'echo "${1@P}"', 'echo "${x:-${y@P}}"', "bash <<'EOF'\necho \"${x@P}\"\nEOF", "node <<EOF\n${x@P}\nEOF"]) assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_UNINSPECTABLE\]/, command);
+    for (const command of ["echo '${x@P}'", 'echo "\\${x@P}"', 'echo "${x:-literal@P}"', "cat <<'EOF'\n${x@P}\nEOF"]) assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
+  });
+  test(`review twenty-two ${mode}: PS4 delayed xtrace remains opaque`, async t => {
+    for (const toggle of ["set -x", "set -o xtrace"]) for (const payload of ["$(sleep 100 &)", "`sleep 100 &`"]) {
+      const command = `PS4='${payload}'; ${toggle}; :`;
+      assert.equal(inspectBashResourceLifecycle({ command }), undefined);
+      assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "opaque-script");
+      const f = await shellHookFixture(t, mode, "active");
+      assertFinalAuthorization(await f.authorize(command));
+      assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
+    }
+    for (const payload of ["$(sleep 100 &)", "`sleep 100 &`"]) {
+      const command = `export PS4='${payload}'; bash -xc :`;
+      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_WRAPPER\]/);
+      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
+      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+  });
+  test(`review twenty-one ${mode}: later descriptor copies cannot hide heredoc source`, async t => {
+    for (const body of ["sleep 100 &", "echo hi"]) for (const tail of ["exec 4<&3; source /dev/fd/4", "exec 4>&3; . /dev/fd/4", "exec 4<&3-; source /dev/fd/4", "exec 4<&3; exec 5<&4; source /dev/fd/5", "exec 4<&3; exec 5<&3; source /dev/fd/4"]) {
+      const command = `exec 3<<'EOF'\n${body}\nEOF\n${tail}`;
+      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_HEREDOC\]/, command);
+      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
+      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+    for (const command of ["exec 3<<'EOF'\necho hi\nEOF\ntrue; source /dev/fd/3", "exec 3<<'EOF' 4<&3\necho hi\nEOF\nsource /dev/fd/4", "exec 3<<'EOF'\nsleep 100 &\nEOF\nexec 4<&3; cat <&4", "exec 3<file; exec 4<&3; source /dev/fd/4", "exec 9<<'EOF'\necho hi\nEOF\nexec 3<file; exec 4<&3; source /dev/fd/4"]) {
+      assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
+    }
+    assert.match(inspectBashResourceLifecycle({ command: "exec 4<&3; source /dev/fd/4" }) ?? "", /\[SHELL_HEREDOC\]/);
+  });
   test(`review twenty ${mode}: stored executable subscript text refuses before arithmetic use`, async t => {
     const assignment = "x='a[$(sleep 100 &)]'";
     for (const use of ["(( x ))", "echo $(( x ))", "echo $(( $x ))", "for ((i=0;i<x;i++)); do :; done", "let 'y=x'", "[[ x -eq 0 ]]", "echo ${b[x]}", "declare -i z; z=x"]) {
@@ -907,6 +959,7 @@ test("D3 Python f-string expressions remain opaque executable source", () => {
 
 const d3UnanalyzedPrograms = [
   ["dynamic executable", 'CMD=setsid; $CMD -f sleep 100'],
+  ["dynamic shell wrapper", 'X=bash; "$X" -c \'sleep 100 >/dev/null 2>&1 &\''],
   ["Perl heredoc", "perl <<'EOF'\nsystem(\"sleep 100 &\")\nEOF"],
   ["Ruby heredoc", "ruby <<'EOF'\nsystem(\"sleep 100 &\")\nEOF"],
   ["Perl -e", "perl -e 'system(\"sleep 100 &\")'"],

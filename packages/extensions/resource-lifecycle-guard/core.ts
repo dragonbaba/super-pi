@@ -968,11 +968,6 @@ function hasUnboundDescriptorSource(command: string, documents?: readonly Heredo
 }
 
 function descriptorBoundAt(segments: ShellSegment[], current: number, documents: readonly HeredocBinding[] | undefined, descriptor: number): boolean {
-	for (let before = 0; before <= current; before++) {
-		const declaration = segments[before]!;
-		if (before !== current && (declaration[skipRedirections(declaration, 0)] !== "exec" || declaration.subshellDepth || declaration.pipelineMember)) continue;
-		if (declaration.redirectionFds) for (const fd of declaration.redirectionFds) if (fd !== undefined && Number(fd) === descriptor) return true;
-	}
 	const sourceStart = segments[current]!.sourceStart!;
 	if (documents) for (const document of documents) {
 		if (document.descriptor !== descriptor) continue;
@@ -981,7 +976,42 @@ function descriptorBoundAt(segments: ShellSegment[], current: number, documents:
 		const start = document.contextEnd - document.header.length + (owner?.sourceStart ?? 0);
 		if (owner && sourceStart >= start && sourceStart < document.contextEnd) return true;
 	}
-	return false;
+	// Follow only descriptor provenance, backwards through existing token views.
+	// A later copy does not restore analyzable heredoc contents across exec.
+	let heredocBoundary = -1;
+	for (let before = current; before >= 0; before--) {
+		const declaration = segments[before]!;
+		if (declaration.sourceStart! < heredocBoundary) return false;
+		if (before !== current && (declaration[skipRedirections(declaration, 0)] !== "exec" || declaration.subshellDepth || declaration.pipelineMember)) continue;
+		for (let redirect = (declaration.redirections?.length ?? 0) - 1; redirect >= 0; redirect--) {
+			const index = declaration.redirections![redirect]!, operator = declaration[index]!;
+			const explicit = declaration.redirectionFds?.[redirect];
+			const destination = explicit === undefined ? (operator.startsWith("<") ? 0 : 1) : Number(explicit);
+			if (destination !== descriptor) continue;
+			if (operator !== "<&" && operator !== ">&") return true;
+			descriptor = descriptorCopyOrigin(declaration[index + 1] ?? "");
+			if (descriptor < 0) return false;
+			heredocBoundary = -1;
+			if (documents) for (const document of documents) {
+				if (document.descriptor === descriptor && document.bodyEnd < declaration.sourceStart!
+					&& isPersistentHeredocDeclaration(document.header)) heredocBoundary = Math.max(heredocBoundary, document.bodyEnd);
+			}
+		}
+	}
+	// Standard input/output are tool-owned; an inherited extra descriptor is not.
+	return descriptor < 3 && heredocBoundary < 0;
+}
+
+function descriptorCopyOrigin(target: string): number {
+	const end = target.length - (target.endsWith("-") ? 1 : 0);
+	if (!end) return -1;
+	let value = 0;
+	for (let index = 0; index < end; index++) {
+		const code = target.charCodeAt(index);
+		if (code < 48 || code > 57) return -1;
+		value = value * 10 + code - 48;
+	}
+	return Number.isSafeInteger(value) ? value : -1;
 }
 
 /** No alias-value tracking. The masked outer source cannot prove a consumer when
