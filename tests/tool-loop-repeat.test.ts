@@ -151,6 +151,31 @@ test("two transient errors can recover, success clears only that operation, and 
   f.close();
 });
 
+for (const command of ["rg", "git"]) test(`structured ${command} timeout_or_aborted uses bounded recovery without deterministic lockout`, async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const f = fixture(), input = { command, args: command === "rg" ? ["pattern", "."] : ["status"], timeoutMs: 10 };
+  const text = JSON.stringify({ ok: false, category: "timeout_or_aborted", command, stateChanged: false, killed: true, retryable: true, output: "" });
+  assert.equal(core.classifyFailureText(text, input, "structured_readonly_command"), "timeout_or_aborted");
+  for (let i = 0; i < 5; i++) {
+    const admission = f.call(`interrupted${i}`, input, `parent${i}`, "structured_readonly_command");
+    if (i) { await setImmediate(); t.mock.timers.tick(1000 * 2 ** (i - 1)); }
+    assert.equal(await admission, undefined);
+    await f.result(`interrupted${i}`, input, text, true, "structured_readonly_command");
+  }
+  const refusal = JSON.parse((await f.call("sixth", input, "last", "structured_readonly_command")).reason);
+  assert.equal(refusal.category, "TRANSIENT_RETRY_EXHAUSTED");
+  assert.equal(refusal.attempts, 5); assert.equal(refusal.waitMs, 15000);
+  f.close();
+  const cancelled = fixture();
+  await cancelled.call("initial", input, "p1", "structured_readonly_command");
+  await cancelled.result("initial", input, text, true, "structured_readonly_command");
+  const waiting = cancelled.call("wait", input, "p2", "structured_readonly_command"); await setImmediate();
+  cancelled.controller.abort(); assert.match((await waiting).reason, /aborted/); cancelled.close();
+  const state = core.createGuardState();
+  core.recordResult(state, "structured_readonly_command", input, true, "Operation aborted");
+  assert.equal(state.retry.operations.size + state.failuresBySignature.size, 0);
+});
+
 for (const cancel of ["signal", "parent", "agent"] as const) test(`backoff ${cancel} cancellation releases timers and pending state`, async () => {
   const f = fixture(), input = { resource: "offline" };
   assert.equal(await f.call("first", input, "p"), undefined);

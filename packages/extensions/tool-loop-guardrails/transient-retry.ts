@@ -21,8 +21,10 @@ const TRANSIENT_NETWORK_RE = /\b(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|E
 export function isTransientFailure(category: string, text: string, details?: unknown): boolean {
   const execution = readShellExecution(details);
   if (execution) return execution.termination === "timeout";
-  if (category !== "runtime_error" && category !== "provider_error" && category !== "timeout") return false;
-  return category === "timeout" || TRANSIENT_HTTP_RE.test(text) || TRANSIENT_NETWORK_RE.test(text);
+  if (category !== "runtime_error" && category !== "provider_error" && category !== "timeout" && category !== "timeout_or_aborted") return false;
+  // The structured readonly tool reports both interrupt causes under one category.
+  // Neither proves a deterministic failure; any newly requested retry remains bounded.
+  return category === "timeout" || category === "timeout_or_aborted" || TRANSIENT_HTTP_RE.test(text) || TRANSIENT_NETWORK_RE.test(text);
 }
 
 /** Configuration is read at extension startup; malformed/zero/unbounded budgets are rejected. */
