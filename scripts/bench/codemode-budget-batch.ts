@@ -79,7 +79,9 @@ for(let i=0;i<20;i++)assert.equal(estimateContextTokens(capabilityContext,false)
 const capabilityDurationMs=performance.now()-capabilityStart;
 const capabilityProfile=await capabilityInspector.post("HeapProfiler.stopSampling");capabilityInspector.disconnect();
 const previousSites=sites.slice();sites.length=0;sampledBytes=0;collect(capabilityProfile.profile.head);sites.sort((a,b)=>b.bytes-a.bytes);
-const capabilityEstimate={sourceTextCodeUnits:1100000,omittedSchemaCodeUnits:700000,imageBlocks:20,measuredRuns:20,expectedTokens:expectedCapabilityTokens,durationMs:capabilityDurationMs,sampledBytes,leadingAllocations:sites.slice(0,20)};
+const capabilityEstimate={sourceTextCodeUnits:(capabilityContext.messages[0]!.content[0] as {text:string}).text.length,
+  omittedSchemaCodeUnits:capabilityContext.tools[0]!.description.length,imageBlocks:capabilityContext.messages[0]!.content.length-1,
+  measuredRuns:20,expectedTokens:expectedCapabilityTokens,durationMs:capabilityDurationMs,sampledBytes,leadingAllocations:sites.slice(0,20)};
 console.log(JSON.stringify({benchmark:"codemode-budget-batch",commit:execFileSync("git",["rev-parse","HEAD"],{encoding:"utf8"}).trim(),
   node:process.version,v8:process.versions.v8,warmupRuns:5,measuredRuns:20,samplingIntervalBytes:1024,durationMs,sampledBytes:projectionSampledBytes,
   bytesPerRequest:projectionSampledBytes/20,leadingAllocations:previousSites.slice(0,20),steadyFullSourceScans,capabilityEstimate,
