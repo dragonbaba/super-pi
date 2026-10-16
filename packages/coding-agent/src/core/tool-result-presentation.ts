@@ -2320,6 +2320,7 @@ export class ToolResultPresentationOwner {
 							this.counters,
 						);
 			} catch (error) {
+				if (error instanceof ToolResultContinuationError && error.code === "budget-too-small") break;
 				this.rethrowContextualProjectionFailure(error);
 			}
 			if (projection) this.ensureArtifactDescriptor(record);
@@ -2359,6 +2360,7 @@ export class ToolResultPresentationOwner {
 					projected = filtered as ToolResultMessage;
 				}
 			} catch (error) {
+				if (error instanceof ToolResultContinuationError && error.code === "budget-too-small") break;
 				this.rethrowContextualProjectionFailure(error);
 			}
 			const toolEstimate = estimateToolOutputTokens(projected.content).estimatedTokens;
@@ -2437,6 +2439,14 @@ export class ToolResultPresentationOwner {
 		const cause = causeOverride ?? (toolShare <= contextShare ? "result-batch-budget" : reserve >= contextWindow ? "output-reservation" : "context-headroom");
 		throw new ToolResultContinuationError("budget-too-small",
 			`Request preparation blocked: ${cause} cannot fit a required tool-result envelope (context=${contextWindow}, nonCurrentInput=${input}, requestedOutput=${output}, responseFloorAndSafety=${reserve}, batchBudget=${this.budgetTokens}, remainingResults=${remainingResults}, toolShare=${toolShare}, contextShare=${contextShare}, minimumNotice=${error.minimumTokens}). ${error.message.substring(0, 600)} Prior tool outcomes are unchanged. ${cause === "result-batch-budget" ? "Adjust the result budget" : cause === "output-reservation" ? "Correct the output reservation" : "Reduce request context or explicitly compact"} before retrying the request; do not repeat completed tools.`, error.minimumTokens);
+	}
+
+	private preferFullContextualSource(record: ProjectionRecord, minimumToolTokens: number, minimumContextTokens: number, toolBudget: number, contextBudget: number): boolean {
+		if (record.contextualMinimumIsSource) return false;
+		const toolDelta = record.contextualFullToolTokens - record.contextualMinimumToolTokens;
+		const contextDelta = record.contextualFullContextTokens - record.contextualMinimumContextTokens;
+		return minimumToolTokens > toolBudget && toolDelta < 0 && minimumContextTokens + contextDelta <= contextBudget ||
+			minimumContextTokens > contextBudget && contextDelta < 0 && minimumToolTokens + toolDelta <= toolBudget;
 	}
 
 	/** Explicit-change provenance owns at most 128 final views in its separate
@@ -2591,23 +2601,27 @@ export class ToolResultPresentationOwner {
 			// Image and non-ASCII estimates can trade text-budget cost for context
 			// cost. Keep a full result when that relieves the exhausted dimension
 			// and the other dimension has enough capacity for the exact delta.
+			let replayMinimumToolTokens = minimumToolTokens;
+			let replayMinimumContextTokens = minimumContextTokens;
+			const initialToolBudget = remainingToolTokens;
+			const initialContextBudget = remainingContextTokens;
 			let alternative = preparedHead;
-			while (!keepFullBatch && alternative && (minimumToolTokens > remainingToolTokens || minimumContextTokens > remainingContextTokens)) {
-				const toolDelta = alternative.contextualFullToolTokens - alternative.contextualMinimumToolTokens;
-				const contextDelta = alternative.contextualFullContextTokens - alternative.contextualMinimumContextTokens;
-				if (!alternative.contextualMinimumIsSource && (
-					minimumToolTokens > remainingToolTokens && toolDelta < 0 && minimumContextTokens + contextDelta <= remainingContextTokens ||
-					minimumContextTokens > remainingContextTokens && contextDelta < 0 && minimumToolTokens + toolDelta <= remainingToolTokens
-				)) {
-					minimumToolTokens += toolDelta;
-					minimumContextTokens += contextDelta;
-					alternative.contextualMinimumToolTokens = alternative.contextualFullToolTokens;
-					alternative.contextualMinimumContextTokens = alternative.contextualFullContextTokens;
-					alternative.contextualMinimumIsSource = true;
-					alternative.contextualMinimumUnfiltered = false;
+			for (let index = assistantIndex + 1; !keepFullBatch && index < messages.length && (minimumToolTokens > remainingToolTokens || minimumContextTokens > remainingContextTokens); index++) {
+				const message = messages[index]!;
+				if (message.role !== "toolResult") continue;
+				let record: ProjectionRecord;
+				if (alternative?.toolCallId === message.toolCallId && alternative.sourceContent === message.content) {
+					record = alternative;
+					alternative = alternative.contextualNext;
+				} else {
+					record = this.getOrCreateProjectionRecord(message.content, message.toolCallId, "provider");
+					this.measureContextualMinimum(message, record, imagePolicy, toolCalling);
+				}
+				if (this.preferFullContextualSource(record, minimumToolTokens, minimumContextTokens, remainingToolTokens, remainingContextTokens)) {
+					minimumToolTokens += record.contextualFullToolTokens - record.contextualMinimumToolTokens;
+					minimumContextTokens += record.contextualFullContextTokens - record.contextualMinimumContextTokens;
 					bodyResults--;
 				}
-				alternative = alternative.contextualNext;
 			}
 			if (!keepFullBatch && (minimumToolTokens > remainingToolTokens || minimumContextTokens > remainingContextTokens)) {
 				this.counters.contextualBudgetFailures++;
@@ -2632,9 +2646,18 @@ export class ToolResultPresentationOwner {
 					record = this.getOrCreateProjectionRecord(message.content, message.toolCallId, "provider");
 					this.measureContextualMinimum(message, record, imagePolicy, toolCalling);
 				}
-				const needsBody = !record.contextualMinimumIsSource;
-				const toolBudget = record.contextualMinimumToolTokens + (needsBody ? Math.floor((remainingToolTokens - minimumToolTokens) / bodyResults) : 0);
-				const contextBudget = record.contextualMinimumContextTokens + (needsBody ? Math.floor((remainingContextTokens - minimumContextTokens) / bodyResults) : 0);
+				// Replay scalar choices rather than retaining an unbounded selection
+				// table. Overflow records may have been evicted between these passes.
+				const keepSource = !keepFullBatch && this.preferFullContextualSource(record, replayMinimumToolTokens, replayMinimumContextTokens, initialToolBudget, initialContextBudget);
+				const minimumToolCost = keepSource ? record.contextualFullToolTokens : record.contextualMinimumToolTokens;
+				const minimumContextCost = keepSource ? record.contextualFullContextTokens : record.contextualMinimumContextTokens;
+				if (keepSource) {
+					replayMinimumToolTokens += minimumToolCost - record.contextualMinimumToolTokens;
+					replayMinimumContextTokens += minimumContextCost - record.contextualMinimumContextTokens;
+				}
+				const needsBody = !record.contextualMinimumIsSource && !keepSource;
+				const toolBudget = minimumToolCost + (needsBody ? Math.floor((remainingToolTokens - minimumToolTokens) / bodyResults) : 0);
+				const contextBudget = minimumContextCost + (needsBody ? Math.floor((remainingContextTokens - minimumContextTokens) / bodyResults) : 0);
 				let projected: ToolResultMessage;
 				try {
 					projected = this.projectMessageWithinContextualBudget(
@@ -2645,7 +2668,7 @@ export class ToolResultPresentationOwner {
 						sources,
 						observer,
 						record,
-						keepFullBatch,
+						keepFullBatch || keepSource,
 						toolCalling,
 					);
 				} catch (error) {
@@ -2657,8 +2680,8 @@ export class ToolResultPresentationOwner {
 				remainingToolTokens = Math.max(0, remainingToolTokens - consumedToolTokens);
 				remainingContextTokens = Math.max(0, remainingContextTokens - consumedContextTokens);
 				remainingResults--;
-				minimumToolTokens -= record.contextualMinimumToolTokens;
-				minimumContextTokens -= record.contextualMinimumContextTokens;
+				minimumToolTokens -= minimumToolCost;
+				minimumContextTokens -= minimumContextCost;
 				if (needsBody) bodyResults--;
 				this.counters.contextualToolTokensConsumed += consumedToolTokens;
 				this.counters.contextualContextTokensConsumed += consumedContextTokens;

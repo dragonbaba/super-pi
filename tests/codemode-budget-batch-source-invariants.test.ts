@@ -6,7 +6,7 @@ import ts from "typescript";
 test("R1.3 two-pass helpers create no asynchronous state or unbounded scratch collections",()=>{
   const source=readFileSync("packages/coding-agent/src/core/tool-result-presentation.ts","utf8");
   const ast=ts.createSourceFile("presentation.ts",source,ts.ScriptTarget.Latest,true);
-  const methods=new Set(["measureContextualMinimum","projectMessagesWithinContextualBudget","projectMessageWithinContextualBudget"]);
+  const methods=new Set(["measureContextualMinimum","projectMessagesWithinContextualBudget","projectMessageWithinContextualBudget","preferFullContextualSource"]);
   const found=new Set<string>();
   function visit(node:ts.Node):void {
     if(ts.isMethodDeclaration(node)&&methods.has(node.name.getText(ast))) {
