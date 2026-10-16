@@ -3,11 +3,91 @@ import { resolve } from "node:path";
 import test from "node:test";
 import { decodeLiteralBase64, heredocConsumer, inspectBashResourceLifecycle, inspectHighRiskBashMutation, literalStoredScripts } from "../packages/extensions/resource-lifecycle-guard/core.ts";
 import { inspectBashPermissionScope } from "../packages/extensions/resource-lifecycle-guard/permission-bash.ts";
-import { prepareShellAnalysis } from "../packages/extensions/resource-lifecycle-guard/shell-substitution.ts";
+import { extractCommandSubstitutions, prepareShellAnalysis, shellAnalysisCounters } from "../packages/extensions/resource-lifecycle-guard/shell-substitution.ts";
 import { shellHookFixture, assertFinalAuthorization } from "./codemode-recovery/shell-hook-fixture.ts";
 import { SessionPermissionController, workspace } from "./codemode-recovery/guard-fixture.ts";
 
 for (const mode of ["full-access", "workspace-write"] as const) {
+  test(`review sixteen ${mode}: function substitutions retain main lifecycle boundaries`, async t => {
+    const script = "sleep 100 &";
+    for (const consumer of ["source /dev/stdin", "bash", "sh", ". /dev/stdin"]) {
+      const substitution = `\u0024{ ${consumer} <<'EOF'\n${script}\nEOF\n; }`;
+      for (const command of [`echo ${substitution}`, `echo "${substitution}"`, `VALUE=${substitution}`, `echo \u0024{ echo ${substitution}; }`, `echo $(echo ${substitution})`]) {
+        assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_HEREDOC\]/, command);
+        const f = await shellHookFixture(t, mode), call = await f.authorize(command);
+        assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+      }
+    }
+    for (const command of ['echo "${ sleep 100 & }"', 'echo "${| sleep 100 & REPLY=1; }"', 'echo ${ echo "${ printf hi; }"; }', 'echo ${ printf hi', 'echo ${ case x in x) printf hi;; esac; }']) {
+      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_UNINSPECTABLE\]/, command);
+      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
+      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+    for (const command of ["echo ${ sleep 100 & }", "echo ${| sleep 100 & REPLY=1; }", "echo ${ echo ${ sleep 100 & }; }", "echo $(echo ${ sleep 100 & })", "echo $(sleep 100 &)", "echo ${ bash -c 'sleep 100 &'; }"]) {
+      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /Blocked an unmanaged long-lived process/, command);
+    }
+    for (const command of ["echo ${ printf hi; }", "echo ${| REPLY=hi; }", "echo ${ echo ${ printf hi; }; }", "echo ${ echo $((1 << 3)); }", "echo '${ sleep 100 & }'", "echo ${x:-literal}", '# echo "${ sleep 100 & }"\nprintf hi']) {
+      assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
+    }
+    assert.match(inspectBashResourceLifecycle({ command: "echo ${ bash <\\\n<'EOF'\nsleep 100 &\nEOF\n; }" }) ?? "", /\[SHELL_HEREDOC\]/);
+  });
+  test(`review sixteen ${mode}: CR-dependent heredoc boundaries retain main refusal`, async t => {
+    const commands = [
+      "cat <<'EOF'\nbody\nEOF\r\nsleep 100 &\nEOF", "node <<'EOF'\nbody\nEOF\r\nsleep 100 &\nEOF",
+      "cat <<'EOF'\nbody\nE\rOF\nsleep 100 &\nEOF", "cat <<'EO\rF'\nbody\nEO\rF",
+      "cat <<EOF\nbody\\\r\nmore\nEOF", "echo text\\\r\nnext", "printf '%s' '\\\r'",
+    ];
+    for (const consumer of ["bash", "sh", "source /dev/stdin", ". /dev/stdin", "cat | source /dev/stdin"]) commands.push(`${consumer} <<'EOF'\nprintf h\ri\nEOF`);
+    for (const command of commands) {
+      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_HEREDOC\]/, command);
+      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
+      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+    for (const command of ["cat <<'EOF'\na\rb\nEOF", "cat <<EOF\na\rb\nEOF", "node <<'EOF'\n/*a\rb*/\nconsole.log('ok')\nEOF"]) {
+      assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
+    }
+  });
+  test(`review sixteen ${mode}: syntax-only Bash and help-only Python do not execute stdin`, async t => {
+    for (const header of ["bash -n", "bash -en", "bash -n -s", "bash -o noexec", "bash -n +n -n", "python3 --help-env", "python3 --help-xoptions", "python3 --help-all"]) {
+      const body = header.startsWith("bash") ? "sleep 100 &" : "shutil.rmtree(target)";
+      const command = `${header} <<'EOF'\n${body}\nEOF`;
+      assert.equal(heredocConsumer(header), undefined, header);
+      assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
+      assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
+      assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
+    }
+    for (const header of ["bash -n +n", "bash -o noexec +o noexec", "bash -ni", "bash -in", "python3 -W --help-env", "python3 -X --help-all"]) assert.ok(heredocConsumer(header), header);
+    for (const command of ["bash -n +n <<'EOF'\nsleep 100 &\nEOF", "bash -n <<EOF\n$(sleep 100 &)\nEOF", "bash -n -c +n 'source /dev/stdin' <<'EOF'\nsleep 100 &\nEOF"]) {
+      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
+      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+  });
+  test(`review sixteen ${mode}: CR-bearing lines cannot close an LF heredoc early`, async t => {
+    for (const delimiter of ["'EOF'", "EOF"]) {
+      const body = "/*\nEOF\r\n*/\nfs.rmSync(target,{recursive:true})\n";
+      const command = `node <<${delimiter}\n${body}EOF`;
+      assert.equal(prepareShellAnalysis(command).unboundedHeredoc, true);
+      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_HEREDOC\]/);
+      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
+      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+  });
+  test(`review sixteen ${mode}: leading blank lines and comments do not change fixed heredoc targets`, async t => {
+    for (const prefix of ["\n", " \t\n\n", "# comment\n", "\n  # comment\n\t\n", "\\\n\n"]) {
+      const command = `${prefix}node <<'EOF'\nfs.rmSync('./scratch',{recursive:true})\nEOF`;
+      assert.equal(prepareShellAnalysis(command).hereDocuments?.[0]?.priorSource, false);
+      assert.equal(inspectHighRiskBashMutation({ command }, process.cwd())?.unverifiableScope, false);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
+      assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
+    }
+    const command = "cd elsewhere\nnode <<'EOF'\nfs.rmSync('./scratch',{recursive:true})\nEOF";
+    assert.equal(prepareShellAnalysis(command).hereDocuments?.[0]?.priorSource, true);
+    const f = await shellHookFixture(t, mode), call = await f.authorize(command);
+    assert.equal(call.outcome?.block, true); assert.equal(f.dialogs(), 0);
+  });
   test(`review fifteen ${mode}: later lookup state cannot invalidate earlier mutation targets`, async t => {
     for (const command of ["rm -r scratch; PATH=/tmp; echo ok", "touch scratch; PATH=/tmp; echo ok", "rm -r scratch; export PATH=/tmp; echo ok", "rm -r scratch; hash -p /tmp/echo echo; echo ok"]) {
       assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.unverifiableScope, true, command);
@@ -123,6 +203,29 @@ for (const mode of ["full-access", "workspace-write"] as const) {
     }
   });
 }
+
+test("review sixteen: heredoc delimiters and continuations preserve literal CR bytes", () => {
+  for (const command of ["cat <<'EOF'\r\nx\r\nEOF\r\n", "cat <<EOF\r\nx\r\nEOF\r\n"]) {
+    const view = prepareShellAnalysis(command);
+    assert.equal(view.unboundedHeredoc, true);
+  }
+  const command = "cat <<EOF\na\\\r\nb\nEOF";
+  assert.equal(prepareShellAnalysis(command).unboundedHeredoc, true);
+  assert.equal(prepareShellAnalysis("cat <<'EOF'\nx\nEOF\r\n").unboundedHeredoc, true);
+});
+
+test("review sixteen: function and CR judgments reuse existing scans and primitive counters", () => {
+  const command = "echo ${ printf hi; }";
+  const calls = shellAnalysisCounters.functionBoundaryCalls, chars = shellAnalysisCounters.functionBoundaryChars;
+  assert.deepEqual(extractCommandSubstitutions(command).scripts, [" printf hi; "]);
+  assert.equal(shellAnalysisCounters.functionBoundaryCalls - calls, 1);
+  assert.ok(shellAnalysisCounters.functionBoundaryChars - chars <= command.length);
+  const source = "cat <<'EOF'\na\rb\nEOF", comparisons = shellAnalysisCounters.crComparisons;
+  const view = prepareShellAnalysis(source);
+  assert.equal(view.hereDocuments?.[0]?.hasCarriageReturn, true);
+  assert.equal(view.hereDocuments?.[0]?.body, "a\rb\n");
+  assert.equal(shellAnalysisCounters.crComparisons - comparisons, 6, "each non-newline body/delimiter character is compared once");
+});
 
 for (const mode of ["full-access", "workspace-write"] as const) {
   test(`D3 ${mode}: lost heredoc descriptor source retains lifecycle refusal`, async t => {

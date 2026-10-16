@@ -12,6 +12,15 @@ const cwd = process.cwd(), iterations = 512, warmup = 64, samplingInterval = 409
 const literalInputs = process.argv.includes("--literal-inputs");
 const substitution = "$(grep -c -E '(class|function|const|var|let) GCSystem\\b' pixi/pixi.js)";
 const cases = literalInputs ? [
+  ["function-substitution", "echo ${ printf hi; }", 2],
+  ["function-substitution-quoted", 'echo "${ printf hi; }"', 1],
+  ["function-substitution-heredoc", "echo ${ bash <<'EOF'\nprintf hi\nEOF\n; }", 1],
+  ["cr-heredoc-boundary", "cat <<'EOF'\nbody\nE\rOF\nsleep 100 &\nEOF", 1],
+  ["cr-shell-heredoc", "source /dev/stdin <<'EOF'\nprintf h\ri\nEOF", 2],
+  ["cr-data-heredoc", "cat <<'EOF'\na\rb\nEOF", 1],
+  ["shell-noexec-heredoc", "bash -n <<'EOF'\nsleep 100 &\nEOF", 1],
+  ["python-help-heredoc", "python3 --help-env <<'EOF'\nshutil.rmtree(target)\nEOF", 1],
+  ["heredoc-leading-trivia", "\n# comment\nnode <<'EOF'\nfs.rmSync('./scratch',{recursive:true})\nEOF", 1],
   ["ordered-lookup-state", "rm -r scratch; PATH=/tmp; echo ok", 1],
   ["prior-lookup-state", "PATH=/tmp; rm -r scratch", 1],
   ["nested-lookup-state", "echo ok; PATH=/tmp; echo $(rm -r scratch)", 2],

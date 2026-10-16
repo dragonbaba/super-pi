@@ -12,6 +12,8 @@ const cases = [
   ["quoted-and-arithmetic", "echo 'a << b' $((1 << 3))", 0],
   ["parameter-data", "echo ${x:-${y:-(a<<b)}}", 0],
   ["parameter-heredoc", "echo ${x:-$(cat <<'E'\nx\nE\n)}", 1],
+  ["function-heredoc", 'echo "${ bash <<\'E\'\nprintf hi\nE\n; }"', 1],
+  ["function-parameter-data", 'echo "${ printf \'a<<b\'; }"', 0],
   ["large-ordinary", `echo ${"x".repeat(128 * 1024)}`, 0],
   ["compound-heredoc", "cd . && node <<'EOF'\nconsole.log(1)\nEOF", 1],
   ["trailing-heredoc", "node <<'EOF'\nconsole.log(1)\nEOF\necho done", 1],

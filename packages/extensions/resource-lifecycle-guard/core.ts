@@ -155,7 +155,8 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
  const here = prepared.view;
  const command = here.command;
  const substitutions = prepared.substitutions;
- if (here.unboundedHeredoc) return lifecycleRefusal("SHELL_HEREDOC", "heredoc body boundaries cannot be inspected for executable input or following commands", "use a bounded literal heredoc delimiter");
+ if (here.unboundedHeredoc || substitutions.boundaryRefusal === 2) return lifecycleRefusal("SHELL_HEREDOC", "heredoc or CR-sensitive source boundaries cannot be inspected for executable input or following commands", "use a bounded literal heredoc outside function substitution, without CR-sensitive delimiters or escapes");
+ if (here.uninspectableFunction || substitutions.boundaryRefusal === 1) return UNCERTAIN_LIFECYCLE;
  if (here.hasHeredoc && heredocHasAliasRisk(command)) return lifecycleRefusal("SHELL_HEREDOC", "alias expansion or definitions may change the heredoc consumer", "use a separate call without alias changes, file sourcing or eval");
  if (hasUnboundDescriptorSource(command, here.hereDocuments, descriptorContext)) return lifecycleRefusal("SHELL_HEREDOC", "a script descriptor has no inspectable binding in this command and may be inherited", "bind the descriptor explicitly in this call or use an inspectable literal script");
  if (here.substitutionUncertain) return lifecycleRefusal("SHELL_SUBSTITUTION", "uncertain/uninspectable executable heredoc substitution", "simplify the substitution into inspectable foreground commands");
@@ -170,6 +171,7 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
  if (processScripts) for (const script of processScripts) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) return result; }
  if (here.hereDocuments) for (const document of here.hereDocuments) {
   const consumers = heredocDocumentConsumers(document, command, here.hereDocuments);
+  if (consumers & 1 && document.hasCarriageReturn) return lifecycleRefusal("SHELL_HEREDOC", "CR-bearing shell heredoc source has transport-dependent semantics", "use an LF-only shell body and resubmit for authorization");
   if (consumers & 8) return lifecycleRefusal("SHELL_HEREDOC", "heredoc executable input or consumer nesting cannot be inspected", "use a direct literal stdin consumer without transforming its input");
   const body = heredocExecutableBody(document, command);
   if (consumers & 1 && body !== undefined) {
@@ -310,6 +312,9 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
    continue;
   }
   if (!SCRIPT_WRAPPERS.has(name)) continue;
+  // A bounded heredoc passed to a syntax-only shell is data. Keep the general
+  // wrapper grammar unchanged outside this explicitly identified mode.
+  if (here.hasHeredoc && simpleStdinConsumers(tokens, 0, depth, undefined, index) === 16) continue;
   const flag = index + 1;
   const scriptIndex = tokens[flag] === "-c" ? bashScriptOperandIndex(tokens, flag) : -1;
   if (scriptIndex < 0) return lifecycleRefusal("SHELL_WRAPPER", "shell wrapper requires a direct literal -c script operand", "use a supported direct -c operand");
@@ -493,7 +498,7 @@ function inspectShellScript(script: string, initialCwd: string, depth: number, b
 	if (processScripts) for (const source of processScripts) { markUnverifiable(builder); inspectShellScript(source, initialCwd, depth + 1, builder, shellOperation); }
 	if (analysis.hereDocuments) for (const document of analysis.hereDocuments) {
 		const consumers = heredocDocumentConsumers(document, analysis.command, analysis.hereDocuments), body = heredocExecutableBody(document, analysis.command);
-		if (consumers && (document.priorSource || document.pipelineHeader || heredocHasUntrackedCwd(document.header))) markUnverifiable(builder);
+		if (consumers & 15 && (document.priorSource || document.pipelineHeader || heredocHasUntrackedCwd(document.header))) markUnverifiable(builder);
 		if (consumers & 1 && body !== undefined) inspectShellScript(body, initialCwd, depth + 1, builder, "bash");
 		if (consumers & 6 && document.expanded) { addPrimitive(builder, "heredoc_expanded_source"); markUnverifiable(builder); }
 		if (consumers & 2 && body !== undefined && !document.expanded) inspectEmbeddedCode(body, "node", initialCwd, builder);
@@ -1091,7 +1096,7 @@ export function literalEvalScript(tokens: ShellSegment, start: number): string |
 	return script;
 }
 
-/** Bits: shell=1, Node=2, Python=4, executable input cannot be inspected=8. */
+/** Bits: shell=1, Node=2, Python=4, uninspectable input=8, shell noexec=16. */
 export function heredocConsumers(header: string, descriptor = 0, depth = 0, pipeline = false, functions?: ShellSegment[], pipelineStart?: number): number {
 	if (depth > MAX_WRAPPER_DEPTH) return 8;
 	const segments = parseShellSegments(header);
@@ -1421,14 +1426,15 @@ function simpleStdinConsumers(tokens: ShellSegment, descriptor: number, depth: n
 	if (language === "node") return nodeMayReadStdin(tokens, index + 1, descriptor) ? 2 : 0;
 	const languageMask = language === "bash" ? 1 : 4;
 	const stdinMask = descriptor !== 0 ? 0 : language === "bash" ? 1 : 4;
-	let shellStdin = false;
+	let shellStdin = false, shellNoexec = false, shellInteractive = false;
 	for (let cursor = index + 1; cursor < tokens.length; cursor++) {
 		const option = tokens[cursor]!;
-		if (option === "-") return stdinMask;
-		if (option === "--") return shellStdin || cursor + 1 === tokens.length || tokens[cursor + 1] === "-" ? stdinMask : isHeredocDescriptorPath(tokens[cursor + 1], descriptor) ? languageMask : 0;
-		if (!option.startsWith("-") && !(language === "bash" && option.startsWith("+"))) return shellStdin ? stdinMask : isHeredocDescriptorPath(option, descriptor) ? languageMask : 0;
+		if (option === "-") return shellNoexec && !shellInteractive ? 16 : stdinMask;
+		if (option === "--") return shellNoexec && !shellInteractive ? 16 : shellStdin || cursor + 1 === tokens.length || tokens[cursor + 1] === "-" ? stdinMask : isHeredocDescriptorPath(tokens[cursor + 1], descriptor) ? languageMask : 0;
+		if (!option.startsWith("-") && !(language === "bash" && option.startsWith("+"))) return shellNoexec && !shellInteractive ? 16 : shellStdin ? stdinMask : isHeredocDescriptorPath(option, descriptor) ? languageMask : 0;
 		if (option === "--help" || option === "--version" || language !== "bash" && option === "-h" || language === "python" && option === "-V") return 0;
 		if (language === "python") {
+			if (option === "--help-env" || option === "--help-xoptions" || option === "--help-all") return 0;
 			if (option === "--check-hash-based-pycs") { cursor++; continue; }
 			if (!option.startsWith("--")) for (let flag = 1; flag < option.length; flag++) {
 				if (option[flag] === "i") shellStdin = true;
@@ -1437,18 +1443,32 @@ function simpleStdinConsumers(tokens: ShellSegment, descriptor: number, depth: n
 			}
 		} else {
 			if (option === "--rcfile" || option === "--init-file") { cursor++; continue; }
+			let scriptOption = false;
 			if (!option.startsWith("--")) for (let flag = 1; flag < option.length; flag++) {
-				if (option[flag] === "c") {
-					const sourceIndex = cursor + 1;
-					if (!tokens[sourceIndex] || tokens.expansions?.[sourceIndex]) return 8;
-					return stdinScriptConsumers(parseShellSegments(tokens[sourceIndex]!), descriptor, depth + 1, 0, functions);
+				if (option[flag] === "n") shellNoexec = option[0] === "-";
+				if (option[flag] === "i") shellInteractive = option[0] === "-";
+				if (option[flag] === "c") scriptOption = true;
+				if (option[flag] === "s") shellStdin = option[0] === "-";
+				if (option[flag] === "o" || option[flag] === "O") {
+					if (flag + 1 === option.length) {
+						cursor++;
+						if (option[flag] === "o" && tokens[cursor] === "noexec") shellNoexec = option[0] === "-";
+					}
+					break;
 				}
-				if (option[flag] === "s") shellStdin = true;
-				if (option[flag] === "o" || option[flag] === "O") { if (flag + 1 === option.length) cursor++; break; }
+			}
+			if (scriptOption) {
+				const sourceIndex = cursor + 1;
+				if (!tokens[sourceIndex] || tokens.expansions?.[sourceIndex]) return 8;
+				// Bash keeps parsing options after -c until its literal script word.
+				// Do not infer noexec when a following option may re-enable it.
+				if (tokens[sourceIndex]!.startsWith("-") || tokens[sourceIndex]!.startsWith("+")) return 8;
+				if (shellNoexec && !shellInteractive) return 16;
+				return stdinScriptConsumers(parseShellSegments(tokens[sourceIndex]!), descriptor, depth + 1, 0, functions);
 			}
 		}
 	}
-	return stdinMask;
+	return shellNoexec && !shellInteractive ? 16 : stdinMask;
 }
 
 // Bodies are inspected separately from their declaration's surrounding flow.

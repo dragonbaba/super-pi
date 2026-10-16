@@ -11,6 +11,7 @@ export function shellHeredocKind(command: string): number {
 
 function scanHeredocSyntax(command: string, start: number, closing: number, depth: number): number {
   let arithmetic = closing === 256 ? 2 : 0;
+  let braces = 1;
   const nameEnd = start === 0 && closing === 0 ? command.startsWith("cat") ? 3 : command.startsWith("node") ? 4 : 0 : 0;
   let boundedPrefix = nameEnd > 0;
   for (let index = start; index < command.length; index++) {
@@ -21,10 +22,12 @@ function scanHeredocSyntax(command: string, start: number, closing: number, dept
       if (code === 60 && next === 60 && command.charCodeAt(index + 2) !== 60) return -1;
       continue;
     }
+    if (closing === 257 && code === 125) { if (--braces === 0) return index; continue; }
     if (closing !== 0 && closing !== 256 && code === closing) return index;
     if (code === 92) { boundedPrefix = false; index++; continue; }
     if (code === 36 && next === 123) {
-      const end = scanHeredocSyntax(command, index + 2, 125, depth + 1);
+      const first = command.charCodeAt(index + 2);
+      const end = scanHeredocSyntax(command, index + 2, first === 32 || first === 9 || first === 10 || first === 124 ? 257 : 125, depth + 1);
       if (end < 0) return end;
       boundedPrefix = false; index = end; continue;
     }
@@ -74,6 +77,7 @@ function scanHeredocSyntax(command: string, start: number, closing: number, dept
     // Parameter words are expanded data. Only the nested substitutions handled
     // above introduce executable shell syntax; literal << is not a redirection.
     if (closing === 125) continue;
+    if (closing === 257 && code === 123) braces++;
     const previous = command.charCodeAt(index - 1);
     if (code === 35 && (index === start || previous <= 32 || previous === 59 || previous === 124 || previous === 38 || previous === 40 || previous === 41)) {
       boundedPrefix = false;

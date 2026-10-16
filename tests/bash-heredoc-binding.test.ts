@@ -16,6 +16,30 @@ import { shellHeredocKind } from "../packages/coding-agent/src/core/tools/shell-
 const shellPath = process.platform === "win32" && existsSync("D:/Git/bin/bash.exe") ? "D:/Git/bin/bash.exe" : getShellConfig().shell;
 const literal = "cat <<'EOF'\nprintf BODY_EXECUTED\nEOF";
 
+test("review sixteen: function-substitution heredocs cannot bypass configured Bash preparation or execution", async () => {
+ for (const command of [
+  "echo ${ bash <<'EOF'\nprintf ok\nEOF\n; }", 'echo "${ bash <<\'EOF\'\nprintf ok\nEOF\n; }"',
+  "VALUE=${| source /dev/stdin <<'EOF'\nprintf ok\nEOF\n; }", 'echo "${ { echo hi; }; bash <<\'EOF\'\nprintf ok\nEOF\n; }"',
+  "echo $(echo ${ sh <<'EOF'\nprintf ok\nEOF\n; })", "echo ${x:-${ bash <<'EOF'\nprintf ok\nEOF\n; }}",
+ ]) {
+  assert.equal(shellHeredocKind(command), 1, command);
+  for (const options of [{ commandPrefix: "true" }, { spawnHook: (context: any) => context }, { operations: { exec: async () => ({ exitCode: 0 }) } }]) {
+   const denied = await dispatch(process.cwd(), command, options, false, 0);
+   assert.equal(denied.processes, 0); assert.match(denied.text, /\[SHELL_HEREDOC\]/);
+   const tool = createBashTool(process.cwd(), { shellPath, ...options });
+   await assert.rejects(tool.execute("function-recheck", { command }), /\[SHELL_HEREDOC\]/);
+  }
+ }
+});
+
+test("review sixteen: ordinary CR-bearing cat and Node bodies retain D3 execution", async () => {
+ for (const command of ["cat <<'EOF'\na\rb\nEOF", "cat <<EOF\na\rb\nEOF", "node <<'EOF'\n/*a\rb*/\nconsole.log('ok')\nEOF"]) {
+  const admitted = await dispatch(process.cwd(), command);
+  assert.equal(admitted.result.isError, false, admitted.text); assert.equal(admitted.processes, 1);
+  assert.equal(admitted.text.replaceAll("\r", "").trim(), command.startsWith("node") ? "ok" : "ab");
+ }
+});
+
 test("review fifteen: parameter words are data while nested executable substitutions retain the heredoc gate", async () => {
  for (const command of ["echo ${x:-a<<b}", "echo ${x:-${y:-a<<b}}", "echo ${x:-(a<<b)}", "echo ${x:-'a<<b'}", 'echo "${x:-a<<b}"', "echo ${x:-$(printf '%s' 'a<<b')}"]) {
   assert.equal(shellHeredocKind(command), 0, command);
