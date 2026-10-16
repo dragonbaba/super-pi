@@ -16,7 +16,7 @@ test("unbounded heredocs cannot conceal executable input or following launches",
 });
 
 test("builtin dispatch cannot hide executable stdin", async t => {
-  for (const prefix of ["builtin source", "command source", "builtin -- source", "command builtin source", "builtin ."]) {
+  for (const prefix of ["builtin source", "command source", "builtin -- source", "command builtin source", "builtin .", `${"builtin ".repeat(70)}source`]) {
     const command = `${prefix} /dev/stdin <<'EOF'\nsleep 100 &\nEOF`;
     assert.match(inspectBashResourceLifecycle({ command }) ?? "", /Blocked an unmanaged long-lived process/);
     const f = await shellHookFixture(t, "full-access"), { outcome } = await f.authorize(command);

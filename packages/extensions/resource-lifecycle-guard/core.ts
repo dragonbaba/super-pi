@@ -801,7 +801,9 @@ export function heredocConsumer(header: string): "bash" | "node" | "python" | un
 	if (tokens.redirections) stripShellRedirections(tokens, tokens.redirections);
 	let index = commandTokenIndex(tokens);
 	if (index < 0 || index >= tokens.length) return undefined;
-	for (let depth = 0; depth < MAX_SCRIPT_SEGMENTS; depth++) {
+	// Prefix dispatch is a linear token walk, bounded by the command-size limit.
+	// Stopping partway would misclassify a later stdin consumer as ordinary data.
+	while (index < tokens.length) {
 		const prefix = tokens[index];
 		if (prefix !== "command" && prefix !== "builtin" && prefix !== "exec") break;
 		index++;
