@@ -5,6 +5,7 @@ import { basename, dirname, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@super-pi/coding-agent";
 import { shutdownManagedBrowser } from "@super-pi/chrome-devtools/browser-manager";
 import { inspectBashResourceLifecycle } from "./core.ts";
+import { ShellAnalysisOwner } from "./shell-analysis.ts";
 import { inspectPowerShellResourceLifecycle } from "./powershell-lifecycle.ts";
 import { SessionPermissionController } from "./permission-controller.ts";
 import { registerChanges } from "../mutation-guard-write/changes.ts";
@@ -191,18 +192,21 @@ export default function resourceLifecycleGuard(pi: ExtensionAPI): void {
     const cwd = bash ? ctx.cwd : "";
     const sessionId = bash ? ctx.sessionManager.getSessionId() : "";
     const generation = permissions.authorityGeneration;
+    const preparedCwd = shell ? await prepareShellCwd(event.input as { cwd?: unknown }, ctx.cwd) : undefined;
+    const analysis = event.toolName === "bash" && typeof bashCommand === "string"
+      ? new ShellAnalysisOwner(bashCommand, preparedCwd?.canonical ?? cwd, generation) : undefined;
+    let transferred = false;
+    try {
     if (event.toolName === "bash") {
-      const reason = inspectBashResourceLifecycle(event.input, nativePowerShellAvailability);
+      analysis?.assertCurrent(event.input.command, preparedCwd?.canonical ?? ctx.cwd, permissions.authorityGeneration);
+      const reason = inspectBashResourceLifecycle(event.input, nativePowerShellAvailability, analysis);
       if (reason) return { block: true, reason };
     }
     if (event.toolName === "powershell") {
       const reason = inspectPowerShellResourceLifecycle(event.input);
       if (reason) return { block: true, reason };
     }
-    const preparedCwd = shell ? await prepareShellCwd(event.input as { cwd?: unknown }, ctx.cwd) : undefined;
-    let transferred = false;
-    try {
-    const permissionBlock = await permissions.authorizeToolCall(event, ctx);
+    const permissionBlock = await permissions.authorizeToolCall(event, ctx, analysis);
     if (permissionBlock) return permissionBlock;
     // Neither lifecycle acceptance nor the original approval authorizes a replacement.
     if (bash) {
@@ -221,7 +225,10 @@ export default function resourceLifecycleGuard(pi: ExtensionAPI): void {
       return { finalAuthorization };
     }
     return undefined;
-    } finally { if (!transferred) preparedCwd?.release(); }
+    } finally {
+      analysis?.release();
+      if (!transferred) preparedCwd?.release();
+    }
   });
 
   pi.on("tool_result", (event) => {

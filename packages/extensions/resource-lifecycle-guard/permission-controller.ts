@@ -5,6 +5,7 @@ import { dirname, isAbsolute, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@super-pi/coding-agent";
 import { inspectHighRiskBashMutation, type HighRiskMutationScan } from "./core.ts";
 import { inspectBashPermissionScope } from "./permission-bash.ts";
+import { ShellAnalysisOwner } from "./shell-analysis.ts";
 import { inspectPowerShellPermissionScope } from "./permission-powershell.ts";
 import {
   attachBrowserExecAuthorization,
@@ -393,7 +394,7 @@ export class SessionPermissionController {
     return `Filesystem permissions: mode=${this.#state.mode}; approval=${this.#state.approvalPolicy}; writable roots=${workspaces}. Use /permissions before accessing outside these roots; session command allow rules may apply.`;
   }
 
-  async authorizeToolCall(event: ToolCallEventShape, ctx: ExtensionContext): Promise<ToolCallBlock | undefined> {
+  async authorizeToolCall(event: ToolCallEventShape, ctx: ExtensionContext, analysisOwner?: ShellAnalysisOwner): Promise<ToolCallBlock | undefined> {
     if (event.toolName !== "write" && event.toolName !== "edit" && event.toolName !== "lsp_fix" && event.toolName !== "delete" && event.toolName !== "move" && event.toolName !== "file_batch"
       && event.toolName !== "bash" && event.toolName !== "powershell" && event.toolName !== "browser_exec"
       && event.toolName !== "subagent" && event.toolName !== "structured_readonly_command") return undefined;
@@ -411,7 +412,7 @@ export class SessionPermissionController {
     assertCurrent();
     if (event.toolName === "structured_readonly_command") return this.#authorizeStructuredReadonlyDelegation(event, ctx, assertCurrent);
     if (event.toolName === "subagent") return this.#authorizeSubagentDelegation(event, ctx, assertCurrent);
-    const request = await this.#buildRequest(event, ctx);
+    const request = await this.#buildRequest(event, ctx, analysisOwner);
     assertCurrent();
     if (!request) return undefined;
     if (hasUnverifiableAssessment(request.targetAssessments)) {
@@ -835,7 +836,7 @@ export class SessionPermissionController {
     }
   }
 
-  async #buildRequest(event: ToolCallEventShape, ctx: ExtensionContext): Promise<OperationRequest | undefined> {
+  async #buildRequest(event: ToolCallEventShape, ctx: ExtensionContext, analysisOwner?: ShellAnalysisOwner): Promise<OperationRequest | undefined> {
     const purpose = operationPurpose(event, ctx);
     if (event.toolName === "browser_exec") {
       if (!event.input || typeof event.input !== "object") return undefined;
@@ -929,10 +930,17 @@ export class SessionPermissionController {
     const hasExplicitCwd = cwdBinding !== undefined;
     if (cwdBinding && !cwdBinding.matchesSessionRoot(this.#state.primary.canonicalPath, this.#state.primary.device, this.#state.primary.inode)) throw new Error("[SHELL_CWD_CHANGED] Session workspace identity changed before authorization.");
     const effectiveCwd = cwdBinding?.canonical ?? ctx.cwd;
-    const high = inspectHighRiskBashMutation(event.input, effectiveCwd, shellOperation);
-    const scope = shellOperation === "powershell"
-      ? inspectPowerShellPermissionScope(event.input, effectiveCwd)
-      : inspectBashPermissionScope(event.input, effectiveCwd);
+    const analysis = shellOperation === "bash"
+      ? analysisOwner ?? new ShellAnalysisOwner(shellInput.command, effectiveCwd, this.#authorityGeneration) : undefined;
+    let high: ReturnType<typeof inspectHighRiskBashMutation>;
+    let scope: ReturnType<typeof inspectBashPermissionScope>;
+    try {
+      analysis?.assertCurrent(shellInput.command, effectiveCwd, this.#authorityGeneration);
+      high = inspectHighRiskBashMutation(event.input, effectiveCwd, shellOperation, analysis);
+      scope = shellOperation === "powershell"
+        ? inspectPowerShellPermissionScope(event.input, effectiveCwd)
+        : inspectBashPermissionScope(event.input, effectiveCwd, analysis);
+    } finally { if (analysis !== analysisOwner) analysis?.release(); }
     if (!scope) return undefined;
     if (high?.unverifiableScope) {
       const roots = await protectedRootViolations(high, effectiveCwd);

@@ -27,8 +27,8 @@ import {
 	WINDOWS_START_BACKGROUND_PATTERN,
 	WINDOWS_WAIT_PATTERN,
 } from "./regex.ts";
-import { commandSubstitutionEnd, extractCommandSubstitutions, inspectHereDocuments, MAX_SUBSTITUTIONS, MAX_SUBSTITUTION_NESTING, prepareShellAnalysis } from "./shell-substitution.ts";
-import { boundedShellInput } from "@super-pi/coding-agent";
+import { commandSubstitutionEnd, MAX_SUBSTITUTIONS, MAX_SUBSTITUTION_NESTING } from "./shell-substitution.ts";
+import { analyzeShellSource, type ShellAnalysisOwner } from "./shell-analysis.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
 import { isReadOnlyFindTail, isReadOnlySortTail } from "./readonly-find.ts";
 import { isReadOnlyFindLoop } from "./readonly-find-loop.ts";
@@ -109,31 +109,28 @@ function dynamicExecutable(token: string | undefined): string {
 }
 
 type NativePowerShellAvailability = boolean | (() => "active" | "discoverable" | "unavailable");
-export function inspectBashResourceLifecycle(input: unknown, nativePowerShellAvailable: NativePowerShellAvailability = false): string | undefined {
+export function inspectBashResourceLifecycle(input: unknown, nativePowerShellAvailable: NativePowerShellAvailability = false, analysisOwner?: ShellAnalysisOwner): string | undefined {
  if (!input || typeof input !== "object") return undefined;
  const command = (input as { command?: unknown }).command;
  if (typeof command !== "string" || command.length === 0) return undefined;
  if (command.length > MAX_INSPECTED_COMMAND_CHARS) return lifecycleRefusal("SHELL_INSPECTION_LIMIT", "command exceeds the inspection size limit", "reduce this command's size");
- return inspectLifecycleScript(command, 0, nativePowerShellAvailable);
+ return inspectLifecycleScript(command, 0, nativePowerShellAvailable, analysisOwner);
 }
 
-function inspectLifecycleScript(source: string, depth: number, nativePowerShellAvailable: NativePowerShellAvailability = false): string | undefined {
+function inspectLifecycleScript(source: string, depth: number, nativePowerShellAvailable: NativePowerShellAvailability = false, analysisOwner?: ShellAnalysisOwner): string | undefined {
  if (depth > MAX_WRAPPER_DEPTH) return lifecycleRefusal("SHELL_INSPECTION_LIMIT", "wrapper/substitution nesting exceeds the inspection depth", "reduce nesting");
  if (isReadOnlyFindLoop(source)) return undefined;
- const input = depth === 0 && source.includes("<<") ? boundedShellInput(source) : undefined;
- if (input) return inspectLifecycleScript(input.analysisCommand, depth + 1, nativePowerShellAvailable);
- const here = source.includes("<<") ? inspectHereDocuments(source) : undefined;
- if (here?.uncertain) return here.heredoc
-  ? "[SHELL_HEREDOC] This Bash call was not executed: heredoc is uncertain/uninspectable.\n[Lifecycle recovery] Create/edit the diagnostic script natively with its own read/path permissions, then resubmit foreground execution for authorization."
-  : lifecycleRefusal("SHELL_UNINSPECTABLE", "arithmetic structure could not be inspected", "correct or simplify the arithmetic expression");
- const command = here?.command ?? source;
- const substitutions = extractCommandSubstitutions(command);
+ const prepared = analysisOwner ? analysisOwner.get(source) : analyzeShellSource(source);
+ const here = prepared.view;
+ const command = here.command;
+ const substitutions = prepared.substitutions;
  if (substitutions.limitExceeded === "count") return `[SHELL_INSPECTION_LIMIT] Bash not executed: more than ${MAX_SUBSTITUTIONS} command substitutions per script.\nRetry: split into smaller calls (max ${MAX_SUBSTITUTIONS} each).`;
  if (substitutions.limitExceeded === "nesting") return `[SHELL_INSPECTION_LIMIT] Bash not executed: command substitution nesting exceeds ${MAX_SUBSTITUTION_NESTING} levels.\nRetry: reduce nesting.`;
  if (substitutions.unterminated || substitutions.unsupported) return lifecycleRefusal("SHELL_SUBSTITUTION", substitutions.unterminated ? "unterminated command substitution" : "uncertain/uninspectable command substitution grammar", "simplify the substitution into inspectable foreground commands");
- for (const script of here?.substitutions ?? EMPTY_SUBSTITUTIONS) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable); if (result) return result; }
- for (const script of substitutions.scripts) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable); if (result) return result; }
- if (hasUninspectableBashState(command)) return lifecycleRefusal("SHELL_UNINSPECTABLE", "working directory, command lookup, evaluator state, or reserved-prefix syntax cannot be established (conditional, grouped or indirect cd, source/eval, traps, hash, lookup-sensitive assignments, or an ambiguous prefix)", "submit an inspectable foreground command; when cwd changes, keep a supported bare cd and its dependent operation in one Bash call (for example, cd sub && ls); each new call receives fresh checks");
+ for (const script of here.substitutions) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) return result; }
+ for (const script of substitutions.scripts) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) return result; }
+ // Unknown cwd/lookup state is permission evidence, not a process lifetime.
+ // Still inspect visible launches below, including those after state changes.
  if (DETACH_UTILITY_PATTERN.test(command)) return BLOCK_REASON;
  if ((WINDOWS_DETACH_PATTERN.test(command) || WINDOWS_START_BACKGROUND_PATTERN.test(command)) && !WINDOWS_WAIT_PATTERN.test(command)) return BLOCK_REASON;
  if (DOCKER_DETACHED_PATTERN.test(command) || SERVICE_START_PATTERN.test(command)) return BLOCK_REASON;
@@ -168,7 +165,6 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
    if (++prefixes > MAX_SCRIPT_SEGMENTS) return lifecycleRefusal("SHELL_INSPECTION_LIMIT", "too many command prefixes", "reduce prefixes");
    if (LEADING_ASSIGNMENT_PATTERN.test(token)) {
     // Shell assignment words do not undergo field splitting (unlike env argv).
-    if (uncertainAssignment(tokens, index, true)) return lifecycleRefusal("SHELL_UNINSPECTABLE", "uncertain assignment expansion or executable lookup", "use literal assignments that do not change executable lookup");
     changedLookup = true; index++; continue;
    }
    const redirection = LEADING_REDIRECTION_PATTERN.exec(token);
@@ -191,7 +187,7 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
   if (index >= tokens.length) continue;
   if (tokens.bashTestOpenAt === index && tokens.bashTestClosed && tokens[index] === "[[") continue;
   if (REDIRECTION_OPERATOR_PATTERN.test(tokens[index] ?? "")) return UNCERTAIN_LIFECYCLE;
-  if (tokens.expansions?.[index] || hasDynamicSyntax(tokens[index] ?? "")) return dynamicExecutable(tokens[index]);
+  if (tokens.expansions?.[index] || hasDynamicSyntax(tokens[index] ?? "")) continue;
   let name = commandName(tokens[index] ?? "");
   // Only literal, option-free launcher operands are resolved. env assignments are
   // data, not executable names; split-string/options/dynamic lookup stay unknown.
@@ -242,7 +238,7 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
   const flag = index + 1;
   const scriptIndex = tokens[flag] === "-c" ? bashScriptOperandIndex(tokens, flag) : -1;
   if (scriptIndex < 0) return lifecycleRefusal("SHELL_WRAPPER", "shell wrapper requires a direct literal -c script operand", "use a supported direct -c operand");
-  const result = inspectLifecycleScript(tokens[scriptIndex]!, depth + 1, nativePowerShellAvailable); if (result) return result;
+  const result = inspectLifecycleScript(tokens[scriptIndex]!, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) return result;
  }
  return undefined;
 }
@@ -272,10 +268,11 @@ interface ScanBuilder {
 	unverifiableScope: boolean;
 	workspaceWide: boolean;
 	segmentsVisited: number;
+	analysisOwner?: ShellAnalysisOwner;
 	diagnostic?: PolicyDiagnosticMetadata;
 }
 
-export function inspectHighRiskBashMutation(input: unknown, cwd: string, shellOperation: "bash" | "powershell" = "bash"): HighRiskMutationScan | undefined {
+export function inspectHighRiskBashMutation(input: unknown, cwd: string, shellOperation: "bash" | "powershell" = "bash", analysisOwner?: ShellAnalysisOwner): HighRiskMutationScan | undefined {
 	if (!input || typeof input !== "object") return undefined;
 	const command = (input as { command?: unknown }).command;
 	if (typeof command !== "string" || command.length === 0) return undefined;
@@ -300,9 +297,9 @@ export function inspectHighRiskBashMutation(input: unknown, cwd: string, shellOp
 		unverifiableScope: false,
 		workspaceWide: false,
 		segmentsVisited: 0,
+		analysisOwner,
 	};
-	const stdin = shellOperation === "bash" && command.includes("<<") ? boundedShellInput(command) : undefined;
-	inspectShellScript(stdin?.analysisCommand ?? command, resolve(cwd), 0, builder, shellOperation);
+	inspectShellScript(command, resolve(cwd), 0, builder, shellOperation);
 	if (builder.primitives.length === 0) return undefined;
 	return {
 		risk: "HIGH",
@@ -390,7 +387,8 @@ function inspectShellScript(script: string, initialCwd: string, depth: number, b
 		markUnverifiable(builder);
 		return;
 	}
-	const analysis = prepareShellAnalysis(script);
+	const prepared = builder.analysisOwner ? builder.analysisOwner.get(script) : analyzeShellSource(script);
+	const analysis = prepared.view;
 	if (analysis.hasHeredoc) {
 		addPrimitive(builder, "heredoc_uninspectable");
 		markUnverifiable(builder);
@@ -400,7 +398,7 @@ function inspectShellScript(script: string, initialCwd: string, depth: number, b
 		markUnverifiable(builder);
 	}
 	for (const nested of analysis.substitutions) inspectShellScript(nested, initialCwd, depth + 1, builder, shellOperation);
-	const substitutions = extractCommandSubstitutions(analysis.command);
+	const substitutions = prepared.substitutions;
 	if (substitutions.unterminated) {
 		addPrimitive(builder, "unterminated_command_substitution");
 		markUnverifiable(builder);

@@ -1,12 +1,12 @@
 import { createHash } from "node:crypto";
 import { basename, resolve } from "node:path";
 import { hasUninspectableBashState, unsafeBashLoopHeaderReason } from "./core.ts";
-import { commandSubstitutionEnd, extractCommandSubstitutions, prepareShellAnalysis } from "./shell-substitution.ts";
+import { commandSubstitutionEnd } from "./shell-substitution.ts";
+import { analyzeShellSource, type ShellAnalysisOwner } from "./shell-analysis.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
 import { isLiteralReadLoop } from "./readonly-loop.ts";
 import { isReadOnlyFindLoop } from "./readonly-find-loop.ts";
 import { isReadOnlySortTail } from "./readonly-find.ts";
-import { boundedShellInput } from "@super-pi/coding-agent";
 import { bashPipelinePrefixEnd, bashScriptOperandIndex, hasStatefulBashPrintf, isBashArithmeticCommandHead, isBashNetworkRedirectionTarget, shellExpansionRisk, hasUnsafeBashTestOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 
 const MAX_COMMAND_CHARS = 128 * 1024;
@@ -38,6 +38,7 @@ export interface BashPermissionScope {
 
 interface ScopeBuilder extends BashPermissionScope {
   segmentCount: number;
+  analysisOwner?: ShellAnalysisOwner;
 }
 
 function commandName(value: string): string {
@@ -435,11 +436,13 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
     markOpaque(builder, "unverifiable_shell_state");
     return;
   }
-  const analysis = prepareShellAnalysis(command);
+  const prepared = builder.analysisOwner ? builder.analysisOwner.get(command) : analyzeShellSource(command);
+  const analysis = prepared.view;
+  if (prepared.stdin) markOpaque(builder, `stdin_${prepared.stdin.kind}:${prepared.stdin.consumer}`);
   if (analysis.hasHeredoc) markOpaque(builder, "heredoc_uninspectable");
   if (analysis.uncertain) markOpaque(builder, "shell_context_uninspectable");
   for (const nested of analysis.substitutions) inspectScript(nested, initialCwd, depth + 1, builder);
-  const substitutions = extractCommandSubstitutions(analysis.command);
+  const substitutions = prepared.substitutions;
   if (substitutions.unterminated) markOpaque(builder, "unterminated_command_substitution");
   if (substitutions.unsupported) markOpaque(builder, "uninspectable_command_substitution");
   for (const nested of substitutions.scripts) inspectScript(nested, initialCwd, depth + 1, builder);
@@ -640,7 +643,7 @@ function publicScope(builder: ScopeBuilder): BashPermissionScope {
   };
 }
 
-export function inspectBashPermissionScope(input: unknown, cwd: string): BashPermissionScope | undefined {
+export function inspectBashPermissionScope(input: unknown, cwd: string, analysisOwner?: ShellAnalysisOwner): BashPermissionScope | undefined {
   if (!input || typeof input !== "object") return undefined;
   const command = (input as { command?: unknown }).command;
   if (typeof command !== "string" || command.length === 0) return undefined;
@@ -652,6 +655,7 @@ export function inspectBashPermissionScope(input: unknown, cwd: string): BashPer
     dynamicScope: false,
     unverifiableScope: false,
     segmentCount: 0,
+    analysisOwner,
   };
   if (command.length > MAX_COMMAND_CHARS) {
     markOpaque(builder, "oversized_command");
@@ -665,12 +669,6 @@ export function inspectBashPermissionScope(input: unknown, cwd: string): BashPer
     addClass(builder, "read:find-loop");
     return publicScope(builder);
   }
-  const stdin = command.includes("<<") ? boundedShellInput(command) : undefined;
-  if (stdin) {
-    inspectScript(stdin.analysisCommand, resolve(cwd), 0, builder);
-    // Never infer harmless input from the delimiter or consumer name. The full
-    // original command/body remains in approval hashing and the final binding.
-    markOpaque(builder, `stdin_${stdin.kind}:${stdin.consumer}`);
-  } else inspectScript(command, resolve(cwd), 0, builder);
+  inspectScript(command, resolve(cwd), 0, builder);
   return publicScope(builder);
 }

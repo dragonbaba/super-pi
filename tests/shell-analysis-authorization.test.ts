@@ -1,0 +1,65 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { inspectBashResourceLifecycle, inspectHighRiskBashMutation } from "../packages/extensions/resource-lifecycle-guard/core.ts";
+import { inspectBashPermissionScope } from "../packages/extensions/resource-lifecycle-guard/permission-bash.ts";
+import { MAX_ANALYSIS_BYTES, MAX_ANALYSIS_ENTRIES, ShellAnalysisOwner } from "../packages/extensions/resource-lifecycle-guard/shell-analysis.ts";
+import { shellAnalysisCounters } from "../packages/extensions/resource-lifecycle-guard/shell-substitution.ts";
+
+test("one authorization reuses actual scanners across preflight, mutation and permission", () => {
+  const command = "printf '%s' \"$(git rev-parse HEAD)\"", cwd = process.cwd();
+  const owner = new ShellAnalysisOwner(command, cwd, 7);
+  const before = { ...shellAnalysisCounters };
+  try {
+    owner.assertCurrent(command, cwd, 7);
+    assert.equal(inspectBashResourceLifecycle({ command }, false, owner), undefined);
+    inspectHighRiskBashMutation({ command }, cwd, "bash", owner);
+    inspectBashPermissionScope({ command }, cwd, owner);
+    assert.equal(owner.size, 2);
+    assert.equal(owner.misses, 2);
+    assert.equal(owner.hits, 4);
+    assert.equal(shellAnalysisCounters.prepareCalls - before.prepareCalls, 2);
+    assert.equal(shellAnalysisCounters.substitutionCalls - before.substitutionCalls, 2);
+    const bytes = 2 * (command.length + "git rev-parse HEAD".length);
+    assert.equal(shellAnalysisCounters.prepareInputBytes - before.prepareInputBytes, bytes);
+    assert.equal(shellAnalysisCounters.substitutionInputBytes - before.substitutionInputBytes, bytes);
+  } finally { owner.release(); }
+  assert.equal(owner.size, 0);
+  assert.equal(owner.retainedBytes, 0);
+  assert.throws(() => owner.get(command), /released/);
+});
+
+test("command, cwd and permission generation changes invalidate every retained analysis", () => {
+  for (const [command, cwd, generation] of [["printf changed", "cwd", 1], ["printf ok", "other", 1], ["printf ok", "cwd", 2]] as const) {
+    const owner = new ShellAnalysisOwner("printf ok", "cwd", 1);
+    owner.get("printf ok");
+    assert.throws(() => owner.assertCurrent(command, cwd, generation), /SHELL_ANALYSIS_CHANGED/);
+    assert.equal(owner.size, 0);
+    assert.equal(owner.retainedBytes, 0);
+    const fresh = new ShellAnalysisOwner(command, cwd, generation);
+    const before = shellAnalysisCounters.prepareCalls;
+    try { fresh.get(command); assert.equal(shellAnalysisCounters.prepareCalls, before + 1); }
+    finally { fresh.release(); }
+  }
+});
+
+test("authorization analysis capacity is bounded and overflow never skips inspection", () => {
+  const owner = new ShellAnalysisOwner("root", "cwd", 0);
+  try {
+    for (let i = 0; i <= MAX_ANALYSIS_ENTRIES; i++) owner.get(`printf ${i}`);
+    assert.equal(owner.size, MAX_ANALYSIS_ENTRIES);
+    assert.equal(owner.overflows, 1);
+    const before = shellAnalysisCounters.prepareCalls;
+    owner.get("x".repeat(MAX_ANALYSIS_BYTES));
+    assert.equal(shellAnalysisCounters.prepareCalls, before + 1);
+    assert.ok(owner.retainedBytes <= MAX_ANALYSIS_BYTES);
+  } finally { owner.release(); }
+  assert.equal(owner.size, 0);
+  assert.equal(owner.retainedBytes, 0);
+});
+
+test("bounded heredoc data cannot hide visible lifecycle violations or create fake ones", () => {
+  assert.equal(inspectBashResourceLifecycle({ command: "cat > f <<'EOF'\nnohup node server.js &\nEOF" }), undefined);
+  for (const command of ["export PATH=/tmp; npm run dev &", "cat <<EOF\n$(nohup node server.js)\nEOF", "cat <<'EOF'\ndata\nEOF\nnohup node server.js"]) {
+    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /Blocked an unmanaged long-lived process/);
+  }
+});

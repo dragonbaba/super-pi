@@ -16,6 +16,14 @@ export interface CommandSubstitutionScan {
 export const MAX_SUBSTITUTIONS = 16;
 export const MAX_SUBSTITUTION_NESTING = 4;
 
+// Numeric-only instrumentation at the real scanner entries. Input bytes count
+// UTF-16 code units submitted to each scan, including recursive invocations;
+// they do not claim to count regex engine reads or V8 backing-store bytes.
+export const shellAnalysisCounters = {
+  prepareCalls: 0, prepareInputBytes: 0,
+  substitutionCalls: 0, substitutionInputBytes: 0,
+};
+
 /** Closing delimiter index, -1 for unterminated input, -2 for unsupported grammar, -3 for nesting exhaustion.
  * Shared with argv scanners so substitution operators never become outer segments.
  * Returns only a primitive; callers retain the original word and inspect its body separately.
@@ -89,6 +97,8 @@ export function commandSubstitutionEnd(command: string, start: number, nesting =
  * nested substitutions remain visible to the outer scan.
  */
 export function extractCommandSubstitutions(command: string, heredocData = false): CommandSubstitutionScan {
+  shellAnalysisCounters.substitutionCalls++;
+  shellAnalysisCounters.substitutionInputBytes += command.length * 2;
   const scripts: string[] = [];
   let quote = 0;
   let escaped = false;
@@ -241,6 +251,8 @@ function collectHereDelimiters(command: string, start: number, end: number): Her
  * Unquoted bodies still expose command substitutions to the recursive scanner.
  */
 export function prepareShellAnalysis(command: string): ShellAnalysisView {
+  shellAnalysisCounters.prepareCalls++;
+  shellAnalysisCounters.prepareInputBytes += command.length * 2;
   if (command.indexOf("<<") < 0 && command.indexOf("((") < 0) {
     return { command, substitutions: [], uncertain: false, hasHeredoc: false };
   }
