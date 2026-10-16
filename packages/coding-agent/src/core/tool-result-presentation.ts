@@ -1228,7 +1228,7 @@ function projectContent(
 	omission.content.push({ type: "text", text: `[MCP content retained in local session artifact ${omission.artifact.id}.]` });
 	omission.estimate = estimateToolOutputTokens(omission.content);
 	if (omission.estimate.estimatedTokens > budgetTokens || omission.estimate.rawUtf8Bytes > MCP_INLINE_BYTES) {
-		throw new ToolResultContinuationError("budget-too-small", "Configured budget cannot contain the MCP recovery notice.");
+		throw new ToolResultContinuationError("budget-too-small", "Configured budget cannot contain the MCP recovery notice.", omission.estimate.estimatedTokens);
 	}
 	return omission;
 }
@@ -1467,7 +1467,7 @@ export class ToolResultPresentationOwner {
 	get mcpInputConfigured(): boolean { return this.accepting && this.budgetTokens !== undefined && this.sessionId.length > 0; }
 
 	admitMcpInput(content: readonly ToolResultPresentationContent[], toolCallId: string): void {
-		if (!this.mcpInputConfigured) throw new ToolResultContinuationError("budget-too-small", "MCP recovery requires configured tool-result presentation and token budget.");
+		if (!this.mcpInputConfigured) throw new ToolResultContinuationError("budget-too-small", "MCP recovery requires configured tool-result presentation and token budget.", 1);
 		this.getOrCreateProjectionRecord(content, toolCallId);
 	}
 
@@ -2050,6 +2050,7 @@ export class ToolResultPresentationOwner {
 			throw new ToolResultContinuationError(
 				"budget-too-small",
 				`Tool-result budget ${budgetTokens} cannot contain the fixed continuation notice.`,
+				projection.estimate.estimatedTokens,
 			);
 		}
 		const records = this.projectionRecords;
@@ -2178,6 +2179,7 @@ export class ToolResultPresentationOwner {
 			throw new ToolResultContinuationError(
 				"budget-too-small",
 				`Tool-result budget ${budgetTokens} cannot contain the fixed continuation notice.`,
+				estimate.estimatedTokens,
 			);
 		}
 		if (capture) capture.projection = omission;
@@ -2243,17 +2245,18 @@ export class ToolResultPresentationOwner {
 		observer?: ToolResultProjectionObserver,
 	): ToolResultMessage {
 		let candidateBudget = Math.min(toolBudgetTokens, contextBudgetTokens);
+		const resident = this.projectionRecords?.get(message.toolCallId);
+		if (resident?.sourceContent === message.content) this.counters.residentReadHits++;
+		else this.counters.providerReadMisses++;
+		const record = this.getOrCreateProjectionRecord(message.content, message.toolCallId, "provider");
 		if (!Number.isSafeInteger(candidateBudget) || candidateBudget <= 0) {
 			this.counters.contextualBudgetFailures++;
 			throw new ToolResultContinuationError(
 				"budget-too-small",
 				"The remaining turn/context budget cannot contain a tool-result continuation notice.",
+				Math.min(record.sourceScan.estimate.estimatedTokens, this.getImagePolicyProjection(record, Number.MAX_SAFE_INTEGER).estimate.estimatedTokens),
 			);
 		}
-		const resident = this.projectionRecords?.get(message.toolCallId);
-		if (resident?.sourceContent === message.content) this.counters.residentReadHits++;
-		else this.counters.providerReadMisses++;
-		const record = this.getOrCreateProjectionRecord(message.content, message.toolCallId, "provider");
 		const capture: ToolResultProjectedUiSource | undefined = sources ? { toolCallId: message.toolCallId, budgetTokens: candidateBudget, projection: undefined, retainedCodeUnits: 0 } : undefined;
 		for (let pass = 0; pass <= MAX_PROJECTION_SHRINK_PASSES; pass++) {
 			this.counters.contextualProjectionPasses++;
@@ -2333,6 +2336,7 @@ export class ToolResultPresentationOwner {
 		throw new ToolResultContinuationError(
 			"budget-too-small",
 			"The remaining turn/context budget cannot contain a tool-result continuation notice.",
+			Math.min(record.sourceScan.estimate.estimatedTokens, this.getImagePolicyProjection(record, Number.MAX_SAFE_INTEGER).estimate.estimatedTokens),
 		);
 	}
 
@@ -2435,6 +2439,9 @@ export class ToolResultPresentationOwner {
 			const requestedOutput = Number.isSafeInteger(maxOutputTokens) && maxOutputTokens! > 0
 				? maxOutputTokens!
 				: 0;
+			if (!hasContextLimit || (maxOutputTokens !== undefined && requestedOutput === 0) || (requestPlanning && requestedOutput === 0)) {
+				throw new ToolResultContinuationError("budget-too-small", `Request preparation blocked: model-parameters (context=${contextWindow}, nonCurrentInput=${nonCurrentContextTokens}, requestedOutput=${maxOutputTokens}, batchBudget=${this.budgetTokens}, minimumTokens=1). Correct the model context/output parameters; prior tool outcomes are unchanged. Do not repeat completed tools.`, 1);
+			}
 			// Reserve a viable response before projecting results. The sender then
 			// clamps the requested ceiling against the finished input, once. Legacy
 			// callers can still supply an explicit fixed reserve without this policy.
@@ -2463,10 +2470,10 @@ export class ToolResultPresentationOwner {
 						observer,
 					);
 				} catch (error) {
-					if (!requestPlanning || !(error instanceof ToolResultContinuationError) || error.code !== "budget-too-small") throw error;
-					const cause = toolBudget <= contextBudget ? "result-batch-budget" : "context-headroom";
+					if (!(error instanceof ToolResultContinuationError) || error.code !== "budget-too-small") throw error;
+					const cause = toolBudget <= contextBudget ? "result-batch-budget" : outputReserve >= contextWindow ? "output-reservation" : "context-headroom";
 					throw new ToolResultContinuationError("budget-too-small",
-						`Request preparation blocked: ${cause} cannot fit a required tool-result envelope (context=${contextWindow}, nonCurrentInput=${nonCurrentContextTokens}, requestedOutput=${requestedOutput}, responseFloorAndSafety=${outputReserve}, batchBudget=${this.budgetTokens}, remainingResults=${remainingResults}, toolShare=${toolBudget}, contextShare=${contextBudget}, minimumNotice=${error.minimumTokens ?? "unavailable"}). ${error.message.substring(0, 600)} Prior tool outcomes are unchanged. Reduce request context or adjust the result budget before retrying the request; do not repeat completed tools.`, error.minimumTokens);
+						`Request preparation blocked: ${cause} cannot fit a required tool-result envelope (context=${contextWindow}, nonCurrentInput=${nonCurrentContextTokens}, requestedOutput=${requestedOutput}, responseFloorAndSafety=${outputReserve}, batchBudget=${this.budgetTokens}, remainingResults=${remainingResults}, toolShare=${toolBudget}, contextShare=${contextBudget}, minimumNotice=${error.minimumTokens}). ${error.message.substring(0, 600)} Prior tool outcomes are unchanged. ${cause === "result-batch-budget" ? "Adjust the result budget" : cause === "output-reservation" ? "Correct the output reservation" : "Reduce request context or explicitly compact"} before retrying the request; do not repeat completed tools.`, error.minimumTokens);
 				}
 				if (projected !== message) messages[index] = projected;
 				const consumedToolTokens = estimateToolOutputTokens(projected.content).estimatedTokens;
@@ -2604,7 +2611,7 @@ export class ToolResultPresentationOwner {
 			throw new ToolResultContinuationError("stale-cursor", "Tool-result continuation owner is disposed.");
 		}
 		if (!Number.isSafeInteger(budgetTokens) || budgetTokens <= 0) {
-			throw new ToolResultContinuationError("budget-too-small", "Continuation budget must be a positive integer.");
+			throw new ToolResultContinuationError("budget-too-small", "Continuation budget must be a positive integer.", 1);
 		}
 		const state = parseCursor(cursor);
 		if (!state) throw new ToolResultContinuationError("invalid-cursor", "Malformed tool-result continuation cursor.");
@@ -2670,7 +2677,18 @@ export class ToolResultPresentationOwner {
 			}
 		}
 		if (chunkEstimate.estimatedTokens > budgetTokens || comparePositions(start, chunkEnd) >= 0) {
-			throw new ToolResultContinuationError("budget-too-small", `Continuation budget ${budgetTokens} cannot make forward progress.`);
+			// Failure-only diagnostic: measure the first complete legal unit, rather
+			// than reporting zero tokens for the empty candidate that could not move.
+			const block = sourceContent[start.blockIndex];
+			if (block?.type === "text" && comparePositions(start, chunkEnd) >= 0) {
+				const offset = readSuffixOffset(block, safeIndexedSuffixOffset(block.text, start.textOffset + 1, start.blockIndex, record.sourceScan, this.counters), start.blockIndex, record.sourceScan, this.counters);
+				chunkEnd = { blockIndex: start.blockIndex, textOffset: offset };
+				if (comparePositions(chunkEnd, end) > 0) chunkEnd = end;
+				chunkContent = [];
+				appendRegion(chunkContent, sourceContent, start, chunkEnd, this.counters);
+				chunkEstimate = estimateToolOutputTokens(chunkContent);
+			}
+			throw new ToolResultContinuationError("budget-too-small", `Continuation budget ${budgetTokens} cannot make forward progress.`, Math.max(1, chunkEstimate.estimatedTokens));
 		}
 		const done = samePosition(chunkEnd, end);
 		const nextCursor = done ? undefined : createCursor(

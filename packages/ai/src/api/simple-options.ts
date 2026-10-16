@@ -35,21 +35,25 @@ export class RequestBudgetError extends Error {
 	readonly inputTokens: number;
 	readonly requestedOutputTokens: number;
 	readonly availableOutputTokens: number;
-	constructor(contextWindow: number, inputTokens: number, requestedOutputTokens: number, availableOutputTokens: number) {
-		super(`Request preparation blocked: insufficient response capacity (context=${contextWindow}, input=${inputTokens}, requestedOutput=${requestedOutputTokens}, availableOutput=${availableOutputTokens}, safety=${CONTEXT_SAFETY_TOKENS}). Prior tool outcomes are unchanged; reduce request context or explicitly compact before retrying the request. Do not repeat completed tools.`);
+	readonly reason: "context-headroom" | "model-parameters" | "output-reservation";
+	constructor(contextWindow: number, inputTokens: number, requestedOutputTokens: number, availableOutputTokens: number,
+		reason: "context-headroom" | "model-parameters" | "output-reservation" = "context-headroom") {
+		super(`Request preparation blocked: ${reason}; insufficient response capacity (context=${contextWindow}, input=${inputTokens}, requestedOutput=${requestedOutputTokens}, availableOutput=${availableOutputTokens}, minimumOutput=${minimumRequestOutputTokens(requestedOutputTokens)}, safety=${CONTEXT_SAFETY_TOKENS}). Prior tool outcomes are unchanged; ${reason === "model-parameters" ? "correct the model context/output parameters" : reason === "output-reservation" ? "correct the requested output allowance" : "reduce request context or explicitly compact"} before retrying the request. Do not repeat completed tools.`);
 		this.name = "RequestBudgetError";
 		this.contextWindow = contextWindow;
 		this.inputTokens = inputTokens;
 		this.requestedOutputTokens = requestedOutputTokens;
 		this.availableOutputTokens = availableOutputTokens;
+		this.reason = reason;
 	}
 }
 
 export function clampMaxTokensToContext(model: Model<Api>, context: Context, maxTokens: number, providerMinimum = 1): number {
 	const adaptive = usesAdaptiveRequestBudget(model.api);
-	if (adaptive && (!Number.isSafeInteger(maxTokens) || maxTokens <= 0)) throw new RequestBudgetError(model.contextWindow, 0, maxTokens, 0);
+	if (adaptive && (!Number.isSafeInteger(model.contextWindow) || model.contextWindow <= 0 || !Number.isSafeInteger(model.maxTokens) || model.maxTokens <= 0)) throw new RequestBudgetError(model.contextWindow, 0, model.maxTokens, 0, "model-parameters");
+	if (adaptive && (!Number.isSafeInteger(maxTokens) || maxTokens <= 0)) throw new RequestBudgetError(model.contextWindow, 0, maxTokens, 0, "output-reservation");
 	const requested = adaptive ? Math.min(Math.max(maxTokens, providerMinimum), model.maxTokens) : maxTokens;
-	if (requested < providerMinimum) throw new RequestBudgetError(model.contextWindow, 0, requested, 0);
+	if (requested < providerMinimum) throw new RequestBudgetError(model.contextWindow, 0, requested, 0, "model-parameters");
 	if (adaptive && (!Number.isSafeInteger(requested) || requested <= 0)) throw new RequestBudgetError(model.contextWindow, 0, requested, 0);
 	if (model.contextWindow <= 0) return Math.max(1, requested);
 	const input = estimateContextTokens(context).tokens;

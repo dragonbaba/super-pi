@@ -6,13 +6,13 @@ import {
 	setDefaultStreamFn,
 	type ThinkingLevel,
 } from "@super-pi/agent-core";
-import type { EffectiveDispatchObservation } from "@super-pi/ai";
+import { estimateContextTokensFromParts, type EffectiveDispatchObservation } from "@super-pi/ai";
 import {
 	buildOpenAICodexRequestBody,
 	compactOpenAICodexRequest,
 } from "@super-pi/ai/api/openai-codex-responses";
 import { clampThinkingLevel, type Message, type Model, streamSimple } from "@super-pi/ai/compat";
-import { usesAdaptiveRequestBudget } from "@super-pi/ai/api/simple-options";
+import { CONTEXT_SAFETY_TOKENS, minimumRequestOutputTokens, usesAdaptiveRequestBudget } from "@super-pi/ai/api/simple-options";
 import { buildOpenAIResponsesRequestBody } from "@super-pi/ai/api/openai-responses";
 import { getAgentDir, getConfigDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
@@ -402,7 +402,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		return blockImages ? replaceBlockedImagesInMessages(projected) : projected;
 		} catch (error) {
 			if (error instanceof ToolResultContinuationError && error.code === "budget-too-small" && !error.message.startsWith("Request preparation blocked:")) {
-				throw new ToolResultContinuationError("budget-too-small", `Request preparation blocked: configured result budget cannot fit a required recovery notice (minimumNotice=${error.minimumTokens ?? "unavailable"}). ${error.message.substring(0, 600)} Prior tool outcomes are unchanged. Adjust the result budget before retrying the request; do not repeat completed tools.`, error.minimumTokens);
+				const configuredBudget = options.toolResultPresentation?.budgetTokens;
+				const output = requestedMaxTokens ?? conversionModel?.maxTokens ?? 0;
+				const cause = configuredBudget !== undefined && error.minimumTokens !== undefined && error.minimumTokens > configuredBudget ? "result-batch-budget" : "tool-result-projection";
+				throw new ToolResultContinuationError("budget-too-small", `Request preparation blocked: ${cause} cannot retain its required content (context=${conversionModel?.contextWindow}, inputEstimate=${estimateContextTokensFromParts(systemPrompt, converted, tools).tokens}, requestedOutput=${output}, responseFloorAndSafety=${requestPlanning ? minimumRequestOutputTokens(output) + CONTEXT_SAFETY_TOKENS : output}, batchBudget=${configuredBudget}, minimumTokens=${error.minimumTokens}). ${error.message.substring(0, 600)} Prior tool outcomes are unchanged. Use the reported capacity and recovery details before retrying the request; do not repeat completed tools.`, error.minimumTokens);
 			}
 			throw error;
 		}
