@@ -91,6 +91,14 @@ test("bounded heredoc data cannot hide visible lifecycle violations or create fa
   }
 });
 
+test("masked multiline heredoc keeps service launches at following boundaries visible", () => {
+  const data = `cat > out <<'EOF'\n${"literal data & $HOME\n".repeat(512)}EOF`;
+  assert.equal(inspectBashResourceLifecycle({ command: data }), undefined);
+  for (const suffix of ["\n  systemctl start daemon", "\r\n\t sudo service daemon start", "; pm2 serve ./site"]) {
+    assert.match(inspectBashResourceLifecycle({ command: data + "\n" + suffix }) ?? "", /Blocked an unmanaged long-lived process/);
+  }
+});
+
 test("each executable heredoc keeps its own consumer and cannot borrow an earlier cwd", async t => {
   const detached = "cat <<A; bash <<'B'\ndata\nA\nnohup node server.js\nB";
   assert.match(inspectBashResourceLifecycle({ command: detached }) ?? "", /Blocked an unmanaged long-lived process/);
