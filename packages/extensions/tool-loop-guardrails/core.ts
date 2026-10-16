@@ -382,7 +382,7 @@ export async function failureRecoveryHint(
   }
   if ((toolName === "bash" || toolName === "powershell") && (failureText === UNCERTAIN_LIFECYCLE || (failureText.startsWith("[SHELL_") && category === "policy_blocked"))) return undefined;
   if (failureText.includes("Blocked an uncertain/uninspectable shell lifecycle")) {
-    return "[Lifecycle recovery] The lifecycle guard refused unsupported or uninspectable shell syntax before execution. Use a simpler inspectable foreground operation; for file work, a registered native read/write/edit tool still requires its own target permission and qualifying prior read. Broader permissions do not resolve parser limits. Do not retry unchanged or evade the guard by changing language or launcher.";
+    return "[Lifecycle recovery] This shell syntax could not be analyzed before execution. Use an equivalent inspectable foreground form or a registered native tool for the same authorized operation. Every form still requires target permission, qualifying prior reads for mutations, and a managed process lifetime. Inspect the diagnostic before retrying unchanged.";
   }
   if (failureText.includes("Blocked an unmanaged long-lived process")) {
     return "[Lifecycle recovery] A permission change cannot authorize an unmanaged process. Keep bounded use and cleanup in one foreground call with the captured PID, or use an available managed capability. Do not evade this boundary with another launcher.";
