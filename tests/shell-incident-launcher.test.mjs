@@ -119,8 +119,8 @@ test('launcher denied approval: no spawn or file change', { timeout: 40000 }, t 
   runFixture(t, { name: 'denied', command: commands[0], preexisting: true, denied: true }));
 test('launcher paired-backslash bridge preserves heredoc bytes and files', { timeout: 40000 }, t =>
   runFixture(t, { name: 'bridge', command: bridged, preexisting: true, shim: process.env.SP_INCIDENT_SHIM }));
-test('launcher preflight refusal: no spawn, approval or file change', { timeout: 40000 }, t =>
-  runFixture(t, { name: 'preflight', command: "node -n <<'NODE'\nconsole.log('unreachable')\nNODE", preexisting: true, refused: true }));
+test('launcher unmanaged lifecycle refusal: no spawn, approval or file change', { timeout: 40000 }, t =>
+  runFixture(t, { name: 'preflight', command: "node <<'NODE'\nconsole.log('unreachable')\nNODE\nnpm run dev &", preexisting: true, refused: true }));
 test('launcher authorized external redirection retains normal semantics', { timeout: 40000 }, t =>
   runFixture(t, { name: 'redirect', command: "printf authorized > authorized.txt", preexisting: true, redirect: true }));
 if (process.env.SP_INCIDENT_SHIM) for (const preexisting of [false, true]) for (const index of [0, 1]) {
