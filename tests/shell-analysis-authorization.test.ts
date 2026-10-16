@@ -20,7 +20,7 @@ for (const command of ["export PATH=/usr/bin:$PATH; node -v", "source .venv/bin/
   });
 }
 
-for (const command of ['rm -rf "$X"', 'rm "$X"', 'printf x > "$X"', "source missing; rm -rf target", "(cd sub && make); printf x > target", "cd sub; touch target", "export PATH=/tmp; rm -rf target"]) {
+for (const command of ['rm -rf "$X"', 'rm "$X"', 'printf x > "$X"', "source missing; rm -rf target", "(cd sub && make); printf x > target", "cd sub; touch target", "export PATH=/tmp; rm -rf target", 'sort -o "$X"', 'sort --output="$X"', 'find . -fprint "$X"', "(cd sub); sort -o target", "(cd sub); find . -fprintf target '%p'"]) {
   test(`identified mutation with unknown target or cwd cannot be approved: ${command}`, async t => {
     for (const mode of ["full-access", "workspace-write"] as const) {
       const fixture = await shellHookFixture(t, mode);

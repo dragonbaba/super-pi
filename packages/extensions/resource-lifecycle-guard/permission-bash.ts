@@ -135,6 +135,14 @@ function inspectKnownMutation(command: string, tokens: readonly string[], start:
   if (command === "find") {
     const root = findSearchRoot(tokens, start);
     for (let index = start; index < tokens.length; index++) {
+      if (tokens[index] === "-fprint" || tokens[index] === "-fprint0" || tokens[index] === "-fprintf" || tokens[index] === "-fls") {
+        markMutation(builder, "find_output");
+        const target = tokens[++index];
+        if (target) addTarget(builder, target, cwd);
+        else { builder.dynamicScope = true; markOpaque(builder, "missing_output_target"); }
+        if (tokens[index - 1] === "-fprintf") index++;
+        continue;
+      }
       if (tokens[index] === "-delete" || tokens[index] === "-exec" || tokens[index] === "-execdir") {
         markMutation(builder, tokens[index] === "-delete" ? "find_delete" : "find_exec");
         addTarget(builder, root ?? cwd, cwd);
@@ -143,6 +151,23 @@ function inspectKnownMutation(command: string, tokens: readonly string[], start:
       }
     }
     return true;
+  }
+  if (command === "sort") {
+    let output = false;
+    for (let index = start; index < tokens.length; index++) {
+      const token = tokens[index]!;
+      if (token === "--") break;
+      let target: string | undefined;
+      if (token === "-o" || token === "--output") target = tokens[++index];
+      else if (token.startsWith("--output=")) target = token.slice(9);
+      else if (token.startsWith("-o")) target = token.slice(2);
+      else continue;
+      output = true;
+      markMutation(builder, "sort_output");
+      if (target) addTarget(builder, target, cwd);
+      else { builder.dynamicScope = true; markOpaque(builder, "missing_output_target"); }
+    }
+    return output;
   }
   if (SIMPLE_MUTATIONS.has(command)) {
     markMutation(builder, command);
