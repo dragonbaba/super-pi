@@ -10,7 +10,8 @@ import {
 	LEADING_REDIRECTION_PATTERN,
 	LOOKUP_ASSIGNMENT_PATTERN,
 	TEMPORARY_CDPATH_QUERY_PATTERN,
-	NODE_RECURSIVE_RM_PATTERN,
+	NODE_RM_CALL_PATTERN,
+	NODE_RECURSIVE_OPTION_PATTERN,
 	NODE_UNLINK_PATTERN,
 	NONNEGATIVE_INTEGER_PATTERN,
 	SIMPLE_BASH_LET_ASSIGNMENT_PATTERN,
@@ -699,7 +700,7 @@ function inspectEmbeddedCode(source: string, language: "node" | "python", cwd: s
 		inspectCodeCall(source, masked, PYTHON_UNLINK_PATTERN, "python_unlink", cwd, builder);
 		return;
 	}
-	inspectCodeCall(source, masked, NODE_RECURSIVE_RM_PATTERN, "node_recursive_rm", cwd, builder);
+	inspectCodeCall(source, masked, NODE_RM_CALL_PATTERN, "node_recursive_rm", cwd, builder);
 	inspectCodeCall(source, masked, NODE_UNLINK_PATTERN, "node_unlink", cwd, builder);
 }
 
@@ -717,14 +718,32 @@ function inspectCodeCall(
 	try {
 		let calls = 0;
 		for (let match = pattern.exec(masked); match; match = pattern.exec(masked)) {
-			addMutationPrimitive(builder, primitive);
 			if (++calls > MAX_SCRIPT_SEGMENTS) { markUnverifiable(builder, true); return; }
 			const open = source.indexOf("(", match.index);
-			const literal = open >= 0 ? literalFirstArgument(source, open) : undefined;
+			if (pattern === NODE_RM_CALL_PATTERN && !nodeHasRecursiveOption(masked, open)) continue;
+			addMutationPrimitive(builder, primitive);
+			const literal = open >= 0 ? literalFirstArgument(source, open, primitive === "python_unlink") : undefined;
 			if (literal === undefined) markUnverifiable(builder, true);
 			else addTarget(builder, literal, cwd);
 		}
 	} finally { pattern.lastIndex = 0; }
+}
+
+/** The existing mask removes strings/comments. Balance this call's parentheses
+ * only; do not decode or evaluate nested arguments or borrow a later call's flag. */
+function nodeHasRecursiveOption(masked: string, open: number): boolean {
+	let depth = 1;
+	try {
+		for (let index = open + 1; index < masked.length; index++) {
+			const code = masked.charCodeAt(index);
+			if (code === 40) depth++;
+			else if (code === 41 && --depth === 0) return false;
+			if (code !== 82 && code !== 114) continue;
+			NODE_RECURSIVE_OPTION_PATTERN.lastIndex = index;
+			if (NODE_RECURSIVE_OPTION_PATTERN.test(masked)) return true;
+		}
+		return false;
+	} finally { NODE_RECURSIVE_OPTION_PATTERN.lastIndex = 0; }
 }
 
 function inspectRm(tokens: readonly string[], start: number, cwd: string, builder: ScanBuilder): void {
@@ -2392,7 +2411,7 @@ function maskCodeStringsAndComments(source: string, language: "node" | "python")
 	return output.join("");
 }
 
-function literalFirstArgument(source: string, openParen: number): string | undefined {
+function literalFirstArgument(source: string, openParen: number, singleArgument = false): string | undefined {
 	let index = openParen + 1;
 	while (index < source.length) {
 		const code = source.charCodeAt(index);
@@ -2421,7 +2440,11 @@ function literalFirstArgument(source: string, openParen: number): string | undef
 		if (code === quote) {
 			let end = index + 1;
 			while (source.charCodeAt(end) === 32 || source.charCodeAt(end) === 9 || source.charCodeAt(end) === 10 || source.charCodeAt(end) === 13) end++;
-			return source.charCodeAt(end) === 44 || source.charCodeAt(end) === 41 ? value : undefined;
+			if (singleArgument && source.charCodeAt(end) === 44) {
+				end++;
+				while (source.charCodeAt(end) === 32 || source.charCodeAt(end) === 9 || source.charCodeAt(end) === 10 || source.charCodeAt(end) === 13) end++;
+			}
+			return source.charCodeAt(end) === 41 || !singleArgument && source.charCodeAt(end) === 44 ? value : undefined;
 		}
 		value += source[index];
 	}

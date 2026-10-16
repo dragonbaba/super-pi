@@ -32,6 +32,29 @@ test("prompt checks inspect only discovered parameter heads and retain primitive
 });
 
 for (const mode of ["full-access", "workspace-write"] as const) {
+  test(`review twenty-four ${mode}: nested Node and multipart Path targets stay unverifiable`, async t => {
+    for (const command of [
+      "node - <<'EOF'\nfs.rmSync(('/protected'), {recursive:true})\nEOF",
+      "node - <<'EOF'\nfs.rm(path.join('.', '/protected'), {recursive:true}, done)\nEOF",
+      "python - <<'EOF'\nPath('.', '/protected').unlink()\nEOF",
+      "python - <<'EOF'\npathlib.Path('.', '/protected').unlink()\nEOF",
+      "python - <<'EOF'\nPath('scratch', dynamic).unlink()\nEOF",
+    ]) {
+      const mutation = inspectHighRiskBashMutation({ command }, process.cwd());
+      assert.equal(mutation?.mutationDetected, true, command); assert.equal(mutation?.unverifiableScope, true, command); assert.deepEqual(mutation?.targets, []);
+      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
+      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+    for (const command of ["node - <<'EOF'\nfs.rmSync('scratch',{recursive:true})\nEOF", "python - <<'EOF'\nPath('scratch').unlink()\nEOF", "python - <<'EOF'\nPath('scratch',).unlink()\nEOF"]) {
+      assert.ok(inspectHighRiskBashMutation({ command }, process.cwd())?.targets.includes(resolve(process.cwd(), "scratch")), command);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
+    }
+    for (const body of ["fs.rmSync('scratch',{recursive:false})", "fs.rmSync('scratch'); other({recursive:true})", "console.log('fs.rmSync(target,{recursive:true})')", "// fs.rmSync(target,{recursive:true})"]) {
+      const command = `node - <<'EOF'\n${body}\nEOF`;
+      assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
+    }
+  });
   test(`review twenty-three ${mode}: positional, redirection and find-root targets retain expansion flags`, async t => {
     for (const command of ['touch `pwd`/../escaped', 'mkdir `pwd`/../escaped', 'cp source `pwd`/../escaped', 'mv source `pwd`/../escaped', 'tee `pwd`/../escaped', "sed -i 's/a/b/' `pwd`/../escaped", 'rm -r `pwd`/../escaped', 'printf x > `pwd`/../escaped', 'find `pwd`/../victim -delete', 'find -H -- `pwd`/../victim -delete']) {
       const scope = inspectBashPermissionScope({ command }, process.cwd());

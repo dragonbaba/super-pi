@@ -12,6 +12,10 @@ const cwd = process.cwd(), iterations = 512, warmup = 64, samplingInterval = 409
 const literalInputs = process.argv.includes("--literal-inputs");
 const substitution = "$(grep -c -E '(class|function|const|var|let) GCSystem\\b' pixi/pixi.js)";
 const cases = literalInputs ? [
+  ["node-nested-delete-target", "node - <<'EOF'\nfs.rmSync(('/protected'),{recursive:true})\nEOF", 1],
+  ["node-later-recursive-control", "node - <<'EOF'\nfs.rmSync('scratch'); other({recursive:true})\nEOF", 1],
+  ["python-multipart-path", "python - <<'EOF'\nPath('.', '/protected').unlink()\nEOF", 1],
+  ["python-trailing-comma-path", "python - <<'EOF'\nPath('scratch',).unlink()\nEOF", 1],
   ["positional-backtick-target", 'touch `pwd`/../escaped', 2],
   ["copy-backtick-target", 'cp source `pwd`/../escaped', 2],
   ["redirect-backtick-target", 'printf x > `pwd`/../escaped', 2],

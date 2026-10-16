@@ -20,6 +20,7 @@ test("authorization scanners and cache methods add no callbacks, promises or Buf
   targets.get("shell-substitution.ts")!.add("subscriptTextState");
   targets.get("shell-substitution.ts")!.add("isPromptParameterExpansion");
   targets.get("core.ts")!.add("findSearchRootIndex");
+  targets.get("core.ts")!.add("nodeHasRecursiveOption");
   for (const name of ["addPositionalTargets", "findSearchRootIndex", "inspectTokenBuffer"]) targets.get("permission-bash.ts")!.add(name);
   for (const [file, names] of targets) {
     const source = ts.createSourceFile(file, readFileSync(`packages/extensions/resource-lifecycle-guard/${file}`, "utf8"), ts.ScriptTarget.Latest, true);
@@ -87,6 +88,18 @@ test("prompt transform recognition adds no strings or temporary containers", () 
   function audit(node: ts.Node): void {
     assert.equal(ts.isNewExpression(node) || ts.isObjectLiteralExpression(node) || ts.isArrayLiteralExpression(node) || ts.isArrowFunction(node) || ts.isFunctionExpression(node) || ts.isRegularExpressionLiteral(node), false, node.getText(source));
     if (ts.isCallExpression(node)) assert.ok(ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "charCodeAt", node.getText(source));
+    ts.forEachChild(node, audit);
+  }
+  ts.forEachChild(helper.body!, audit);
+});
+
+test("Node call-boundary checks allocate no source copies or temporary containers", () => {
+  const source = ts.createSourceFile("core.ts", readFileSync("packages/extensions/resource-lifecycle-guard/core.ts", "utf8"), ts.ScriptTarget.Latest, true);
+  const helper = source.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === "nodeHasRecursiveOption");
+  assert.ok(helper && ts.isFunctionDeclaration(helper));
+  function audit(node: ts.Node): void {
+    assert.equal(ts.isNewExpression(node) || ts.isObjectLiteralExpression(node) || ts.isArrayLiteralExpression(node) || ts.isArrowFunction(node) || ts.isFunctionExpression(node) || ts.isRegularExpressionLiteral(node), false, node.getText(source));
+    if (ts.isCallExpression(node)) assert.ok(ts.isPropertyAccessExpression(node.expression) && ["charCodeAt", "test"].includes(node.expression.name.text), node.getText(source));
     ts.forEachChild(node, audit);
   }
   ts.forEachChild(helper.body!, audit);
