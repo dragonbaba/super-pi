@@ -88,13 +88,14 @@ for (const mode of ["full-access", "workspace-write"] as const) {
       `printf -v '${operand}' '%s' value`, `printf -v'${operand}' '%s' value`, `read '${operand}' < f.txt`, `read -ra '${operand}' < f.txt`,
       `unset '${operand}'`, `declare '${operand}=1'`, `local '${operand}=1'`, `typeset '${operand}=1'`,
       `readonly '${operand}=1'`, `export '${operand}=1'`, `let '${operand}=1'`, `let 'x=${operand}'`,
+      `let '-${operand}'`, `let '+${operand}'`, `printf -v first -v '${operand}' '%s' value`, `printf -vfirst -v'${operand}' '%s' value`,
       "printf -v a[x] '%s' value", "read a[x] < f.txt", "declare -i 'x=a[y]'",
     ]) {
       assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_UNINSPECTABLE\]/, command);
       const f = await shellHookFixture(t, mode), call = await f.authorize(command);
       assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
     }
-    for (const command of ["printf -v 'a[0]' '%s' 'a[x]'", "read -p 'a[x]' 'a[0]' < f.txt", "unset 'a[0]'", "declare 'a[123]=1'", "let 'a[0]=1'", "printf '%s' 'a[$(sleep 100 &)]'"]) {
+    for (const command of ["printf -v 'a[0]' '%s' 'a[x]'", "printf -v first -v 'a[0]' '%s' 'a[x]'", "read -p 'a[x]' 'a[0]' < f.txt", "unset 'a[0]'", "declare 'a[123]=1'", "let 'a[0]=1'", "let '-a[0]'", "let '+a[0]'", "printf '%s' 'a[$(sleep 100 &)]'"]) {
       assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
       const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
     }

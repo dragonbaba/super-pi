@@ -24,6 +24,8 @@ const cases = literalInputs ? [
   ["unsafe-single-test", "test -v a[x]", 1],
   ["unsafe-name-operand", "printf -v a[x] '%s' value", 1],
   ["unsafe-let-operand", "let 'x=a[y]'", 1],
+  ["unsafe-signed-let-operand", "let '-a[x]'", 1],
+  ["unsafe-repeated-printf-destination", "printf -v first -v a[x] '%s' value", 1],
   ["sort-backtick-output", 'sort -o `pwd`/../outside input', 2],
   ["sort-backtick-temporary", 'sort --te=`pwd`/../outside input', 2],
   ["sort-literal-backticks", "sort --out='`pwd`/../outside' input", 1],

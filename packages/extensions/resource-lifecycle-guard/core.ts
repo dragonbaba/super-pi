@@ -1585,15 +1585,18 @@ function hasUnsafeBashBuiltinOperand(tokens: ShellSegment): boolean {
 	if (name === "test" || name === "[") return hasUnsafeBashTestOperand(tokens, index);
 	if (name === "printf") {
 		index = skipRedirections(tokens, index + 1);
-		const option = tokens[index];
-		if (!option?.startsWith("-v")) return false;
-		if (option.length > 2) return hasNonliteralBashSubscript(option, 2);
-		return hasNonliteralBashSubscript(tokens[skipRedirections(tokens, index + 1)] ?? "");
+		while (tokens[index]?.startsWith("-v")) {
+			const attached = tokens[index]!.length > 2;
+			if (!attached) index = skipRedirections(tokens, index + 1);
+			if (hasNonliteralBashSubscript(tokens[index] ?? "", attached ? 2 : 0)) return true;
+			index = skipRedirections(tokens, index + 1);
+		}
+		return false;
 	}
 	const reads = name === "read" || name === "mapfile" || name === "readarray";
 	if (!reads && name !== "unset" && name !== "declare" && name !== "local" && name !== "typeset"
 		&& name !== "readonly" && name !== "export" && name !== "let") return false;
-	let options = true;
+	let options = name !== "let"; // Leading +/- are arithmetic operators for let.
 	for (let operand = skipRedirections(tokens, index + 1); operand < tokens.length; operand = skipRedirections(tokens, operand + 1)) {
 		const word = tokens[operand]!;
 		if (options && word === "--") { options = false; continue; }
