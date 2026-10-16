@@ -20,7 +20,7 @@ export const RM_RECURSIVE_PATTERN = /\brm\b(?=[^;&|\r\n]*(?:\s-[A-Za-z]*r[A-Za-z
 export const POWERSHELL_REMOVE_RECURSIVE_PATTERN = /\bremove-item\b(?=[^;&|\r\n]*\s-(?:recurse|r)\b)/iu;
 export const WINDOWS_RMDIR_RECURSIVE_PATTERN = /\brmdir\b(?=[^;&|\r\n]*\s\/s\b)/iu;
 export const PYTHON_RMTREE_PATTERN = /\bshutil\.rmtree\s*\(/giu;
-export const PYTHON_UNLINK_PATTERN = /(?:\bpathlib\.Path\s*\([^)]*\)|\bPath\s*\([^)]*\)|[A-Za-z_$][\w$.[\]]*)\.unlink\s*\(/giu;
+export const PYTHON_UNLINK_PATTERN = /\.\s*unlink\s*\(/giu;
 export const NODE_RM_CALL_PATTERN = /\b(?:fs\.)?(?:rm|rmSync)\s*\(/giu;
 export const NODE_RECURSIVE_OPTION_PATTERN = /\brecursive\s*:\s*true/iy;
 export const NODE_UNLINK_PATTERN = /\b(?:fs\.)?(?:unlink|unlinkSync)\s*\(/giu;

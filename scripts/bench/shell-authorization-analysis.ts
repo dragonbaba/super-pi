@@ -12,6 +12,11 @@ const cwd = process.cwd(), iterations = 512, warmup = 64, samplingInterval = 409
 const literalInputs = process.argv.includes("--literal-inputs");
 const substitution = "$(grep -c -E '(class|function|const|var|let) GCSystem\\b' pixi/pixi.js)";
 const cases = literalInputs ? [
+  ["python-nested-constructor", "python - <<'EOF'\nPath(('/protected')).unlink()\nEOF", 1],
+  ["python-unknown-receiver", "python - <<'EOF'\np.unlink('scratch')\nEOF", 1],
+  ["node-v8-options", "node --v8-options <<'EOF'\nfs.rmSync('/protected',{recursive:true})\nEOF", 1],
+  ["python-double-version", "python -VV <<'EOF'\nPath('/protected').unlink()\nEOF", 1],
+  ["python-version-operand", "python -W -VV <<'EOF'\nPath(target).unlink()\nEOF", 1],
   ["node-nested-delete-target", "node - <<'EOF'\nfs.rmSync(('/protected'),{recursive:true})\nEOF", 1],
   ["node-later-recursive-control", "node - <<'EOF'\nfs.rmSync('scratch'); other({recursive:true})\nEOF", 1],
   ["python-multipart-path", "python - <<'EOF'\nPath('.', '/protected').unlink()\nEOF", 1],

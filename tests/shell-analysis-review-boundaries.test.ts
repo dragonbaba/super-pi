@@ -32,6 +32,36 @@ test("prompt checks inspect only discovered parameter heads and retain primitive
 });
 
 for (const mode of ["full-access", "workspace-write"] as const) {
+  test(`review twenty-five ${mode}: unlink receiver boundaries retain unknown targets`, async t => {
+    for (const body of ["Path(('/protected')).unlink()", "pathlib.Path((('/protected'))).unlink()", "(Path('/protected')).unlink()", "get_path().unlink()", "p.unlink('scratch')", "NotPath('scratch').unlink()", "Path('scratch').absolute().unlink()"]) {
+      const command = `python - <<'EOF'\n${body}\nEOF`, mutation = inspectHighRiskBashMutation({ command }, process.cwd());
+      assert.equal(mutation?.mutationDetected, true, command); assert.equal(mutation?.unverifiableScope, true, command); assert.deepEqual(mutation?.targets, []);
+      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
+      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+    for (const body of ["Path('scratch').unlink(missing_ok=True)", "pathlib.Path('scratch',).unlink()", "Path('scratch') . unlink()", "Path(\n 'scratch'\n).unlink()"] ) {
+      const command = `python - <<'EOF'\n${body}\nEOF`;
+      assert.ok(inspectHighRiskBashMutation({ command }, process.cwd())?.targets.includes(resolve(process.cwd(), "scratch")), command);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
+    }
+    for (const body of ["Path('scratch').exists()", "print(\"Path(('/protected')).unlink()\")", "# Path(('/protected')).unlink()"] ) {
+      const command = `python - <<'EOF'\n${body}\nEOF`;
+      assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
+    }
+  });
+  test(`review twenty-five ${mode}: V8 and doubled Python version flags do not execute stdin`, async t => {
+    for (const prefix of ["node --v8-options", "node -i --v8-options", "node --v8-options -i", "python -VV", "python -iVV", "python -VV -i"]) {
+      const command = `${prefix} <<'EOF'\nfs.rmSync('/protected',{recursive:true})\nPath('/protected').unlink()\nEOF`;
+      assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
+    }
+    for (const prefix of ["node --require --v8-options", "python -W -VV", "python -X -VV", "python -iWV", "python -iXV"]) {
+      const body = prefix.startsWith("node") ? "fs.rmSync(target,{recursive:true})" : "Path(target).unlink()", command = `${prefix} <<'EOF'\n${body}\nEOF`;
+      assert.equal(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
+      const f = await shellHookFixture(t, mode), call = await f.authorize(command); assert.equal(call.outcome?.block, true); assert.equal(f.dialogs(), 0);
+    }
+  });
   test(`review twenty-four ${mode}: nested Node and multipart Path targets stay unverifiable`, async t => {
     for (const command of [
       "node - <<'EOF'\nfs.rmSync(('/protected'), {recursive:true})\nEOF",

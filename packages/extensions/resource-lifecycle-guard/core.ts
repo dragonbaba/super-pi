@@ -719,7 +719,7 @@ function inspectCodeCall(
 		let calls = 0;
 		for (let match = pattern.exec(masked); match; match = pattern.exec(masked)) {
 			if (++calls > MAX_SCRIPT_SEGMENTS) { markUnverifiable(builder, true); return; }
-			const open = source.indexOf("(", match.index);
+			const open = pattern === PYTHON_UNLINK_PATTERN ? pythonPathArgumentOpen(masked, match.index) : source.indexOf("(", match.index);
 			if (pattern === NODE_RM_CALL_PATTERN && !nodeHasRecursiveOption(masked, open)) continue;
 			addMutationPrimitive(builder, primitive);
 			const literal = open >= 0 ? literalFirstArgument(source, open, primitive === "python_unlink") : undefined;
@@ -727,6 +727,35 @@ function inspectCodeCall(
 			else addTarget(builder, literal, cwd);
 		}
 	} finally { pattern.lastIndex = 0; }
+}
+
+/** Resolve only a direct Path constructor receiver. The existing mask preserves
+ * offsets while hiding strings/comments; other receivers keep unknown scope. */
+function pythonPathArgumentOpen(masked: string, methodDot: number): number {
+	let index = methodDot - 1;
+	while (index >= 0) {
+		const code = masked.charCodeAt(index);
+		if (code !== 32 && code !== 9 && code !== 10 && code !== 13) break;
+		index--;
+	}
+	if (masked.charCodeAt(index) !== 41) return -1;
+	let depth = 1;
+	while (--index >= 0) {
+		const code = masked.charCodeAt(index);
+		if (code === 41) depth++;
+		else if (code === 40 && --depth === 0) break;
+	}
+	if (index < 0) return -1;
+	const open = index;
+	while (index > 0) {
+		const code = masked.charCodeAt(index - 1);
+		if (code !== 32 && code !== 9 && code !== 10 && code !== 13) break;
+		index--;
+	}
+	if (!masked.endsWith("Path", index)) return -1;
+	const before = masked.charCodeAt(index - 5);
+	if (before === 95 || before >= 48 && before <= 57 || before >= 65 && before <= 90 || before >= 97 && before <= 122) return -1;
+	return open;
 }
 
 /** The existing mask removes strings/comments. Balance this call's parentheses
@@ -942,7 +971,7 @@ function nodeMayReadStdin(tokens: readonly string[], start: number, descriptor =
 		if (word === "-") { if (options & 1 && descriptor === 0) return true; continue; }
 		if (word === "--") { states |= options << 5; continue; }
 		if (!word.startsWith("-")) { if (options & 1 && isHeredocDescriptorPath(word, descriptor)) return true; continue; }
-		if (word === "--check" || word === "-c" || word === "--help" || word === "-h" || word === "--version" || word === "-v" || word === "--test" || word === "--completion-bash") { if (!states) interactive = false; continue; }
+		if (word === "--check" || word === "-c" || word === "--help" || word === "-h" || word === "--version" || word === "-v" || word === "--test" || word === "--completion-bash" || word === "--v8-options") { if (!states) interactive = false; continue; }
 		if (word === "--interactive" || word === "-i") { interactive = true; states |= options; continue; }
 		if (word === "--eval" || word === "--print" || word === "-e" || word === "-p") { states |= 16; continue; }
 		if (word.startsWith("--eval=") || word.startsWith("--print=") || word.startsWith("-e") || word.startsWith("-p")) { states |= 2; continue; }
@@ -1490,6 +1519,7 @@ function simpleStdinConsumers(tokens: ShellSegment, descriptor: number, depth: n
 			if (option === "--help-env" || option === "--help-xoptions" || option === "--help-all") return 0;
 			if (option === "--check-hash-based-pycs") { cursor++; continue; }
 			if (!option.startsWith("--")) for (let flag = 1; flag < option.length; flag++) {
+				if (option[flag] === "V") return 0;
 				if (option[flag] === "i") shellStdin = true;
 				if (option[flag] === "c" || option[flag] === "m") return shellStdin ? stdinMask : 0;
 				if (option[flag] === "W" || option[flag] === "X") { if (flag + 1 === option.length) cursor++; break; }
