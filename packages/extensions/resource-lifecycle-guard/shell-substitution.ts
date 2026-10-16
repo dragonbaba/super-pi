@@ -167,7 +167,7 @@ export interface ShellAnalysisView {
   uncertain: boolean;
   hasHeredoc: boolean;
   substitutionUncertain?: boolean;
-  hereDocuments?: { header: string; body: string }[];
+  hereDocuments?: { header: string; body: string; priorSource: boolean }[];
 }
 
 function maskShellRange(output: string[] | undefined, start: number, end: number): void {
@@ -358,7 +358,7 @@ export function prepareShellAnalysis(command: string): ShellAnalysisView {
       hereDocuments ??= [];
       if (hereDocuments.length < MAX_SUBSTITUTIONS) {
         const headerStart = command.lastIndexOf("\n", operatorStart) + 1;
-        hereDocuments.push({ header: command.slice(headerStart, operatorStart), body: command.slice(contentStart, delimiterLineStart) });
+        hereDocuments.push({ header: command.slice(headerStart, delimiter.maskStart), body: command.slice(contentStart, delimiterLineStart), priorSource: headerStart > 0 });
       } else substitutionUncertain = uncertain = true;
       maskShellRange(output, contentStart, bodyEnd);
       const delimiterLineEnd = command.indexOf("\n", bodyEnd);

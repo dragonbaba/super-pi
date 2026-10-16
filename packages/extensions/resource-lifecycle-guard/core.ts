@@ -407,6 +407,7 @@ function inspectShellScript(script: string, initialCwd: string, depth: number, b
 	}
 	if (analysis.hereDocuments) for (const document of analysis.hereDocuments) {
 		const consumer = heredocConsumer(document.header);
+		if (consumer && (document.priorSource || heredocHasUntrackedCwd(document.header))) markUnverifiable(builder);
 		if (consumer === "bash") inspectShellScript(document.body, initialCwd, depth + 1, builder, "bash");
 		else if (consumer) inspectEmbeddedCode(document.body, consumer, initialCwd, builder);
 	}
@@ -792,7 +793,7 @@ function addMutationPrimitive(builder: ScanBuilder, primitive: string): void {
 
 /** Literal interpreter stdin is executable source; data consumers remain opaque
  * data. This is analysis only and never reconstructs the command for execution. */
-function heredocConsumer(header: string): "bash" | "node" | "python" | undefined {
+export function heredocConsumer(header: string): "bash" | "node" | "python" | undefined {
 	const segments = parseShellSegments(header);
 	const tokens = segments[segments.length - 1];
 	if (!tokens) return undefined;
@@ -803,6 +804,12 @@ function heredocConsumer(header: string): "bash" | "node" | "python" | undefined
 	if (NODE_COMMANDS.has(name)) return "node";
 	if (PYTHON_COMMANDS.has(name)) return "python";
 	return undefined;
+}
+
+// Bodies are inspected separately from their declaration's surrounding flow.
+// Do not assign initial cwd to a mutation after earlier commands or pipeline stages.
+export function heredocHasUntrackedCwd(header: string): boolean {
+	return parseShellSegments(header).length !== 1;
 }
 
 function addPrimitive(builder: ScanBuilder, primitive: string): void {

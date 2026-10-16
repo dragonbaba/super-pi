@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { basename, resolve } from "node:path";
-import { hasUninspectableBashState, unsafeBashLoopHeaderReason } from "./core.ts";
+import { hasUninspectableBashState, heredocConsumer, heredocHasUntrackedCwd, unsafeBashLoopHeaderReason } from "./core.ts";
 import { commandSubstitutionEnd } from "./shell-substitution.ts";
 import { analyzeShellSource, type ShellAnalysisOwner } from "./shell-analysis.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
@@ -471,6 +471,12 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
   if (prepared.stdin) markOpaque(builder, `stdin_${prepared.stdin.kind}:${prepared.stdin.consumer}`);
   if (analysis.hasHeredoc) markOpaque(builder, "heredoc_uninspectable");
   if (analysis.uncertain) markOpaque(builder, "shell_context_uninspectable");
+  if (analysis.hereDocuments) for (const document of analysis.hereDocuments) {
+    if (heredocConsumer(document.header) === "bash") {
+      if (document.priorSource || heredocHasUntrackedCwd(document.header)) builder.uncertainContext = true;
+      inspectScript(document.body, initialCwd, depth + 1, builder);
+    }
+  }
   for (const nested of analysis.substitutions) inspectScript(nested, initialCwd, depth + 1, builder);
   const substitutions = prepared.substitutions;
   if (substitutions.unterminated) markOpaque(builder, "unterminated_command_substitution");

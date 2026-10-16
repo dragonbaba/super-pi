@@ -90,3 +90,17 @@ test("bounded heredoc data cannot hide visible lifecycle violations or create fa
     assert.match(inspectBashResourceLifecycle({ command }) ?? "", /Blocked an unmanaged long-lived process/);
   }
 });
+
+test("each executable heredoc keeps its own consumer and cannot borrow an earlier cwd", async t => {
+  const detached = "cat <<A; bash <<'B'\ndata\nA\nnohup node server.js\nB";
+  assert.match(inspectBashResourceLifecycle({ command: detached }) ?? "", /Blocked an unmanaged long-lived process/);
+  for (const command of ["bash <<'EOF'\nrm \"$X\"\nEOF", "cat <<A; bash <<'B'\ndata\nA\nrm \"$X\"\nB", "cd sub && bash <<'EOF'\ntouch target\nEOF", "cd sub && printf ready\nbash <<'EOF'\nrm -rf target\nEOF"]) {
+    for (const mode of ["full-access", "workspace-write"] as const) {
+      const fixture = await shellHookFixture(t, mode);
+      const { outcome } = await fixture.authorize(command);
+      assert.equal(outcome?.block, true, command);
+      assert.equal(outcome?.finalAuthorization, undefined);
+      assert.equal(fixture.dialogs(), 0);
+    }
+  }
+});
