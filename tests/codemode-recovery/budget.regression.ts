@@ -6,6 +6,7 @@ import { createToolResultPresentationOwner, type ToolResultPresentationContent }
 import { estimateToolOutputTokens } from "../../packages/coding-agent/src/core/tool-output-budget.ts";
 import { ALPHA_MODEL } from "../helpers/alpha-session.ts";
 import { assistant, body, longText, sessionFixture, toolResult } from "./fixture.ts";
+import { assertTextRecovery } from "./assertions.ts";
 
 // These acceptance tests intentionally fail on b44dc096. They are run explicitly by
 // test:codemode-recovery; rename/promote fixed cases into the ordinary suite in R1.
@@ -22,6 +23,22 @@ for (const [name, contextWindow, reportedTokens] of [
     assert.equal(projected.length, messages.length);
     assert.match(body(projected[1]!.content as never), /completed once/);
     assert.equal(f.session.messages.filter(m => m.role === "toolResult").length, 0, "conversion must not execute tools");
+  });
+  test(`F-B3/B4 ${name}: oversized SDK results stay bounded and recoverable`, async t => {
+    const f = await sessionFixture(t);
+    const model = { ...ALPHA_MODEL, api: "openai-codex-responses", provider: "openai-codex",
+      id: "r0-codex", contextWindow, maxTokens: 128000 } as Model<"openai-codex-responses">;
+    const source = `completed once\n${longText}`;
+    const messages = [assistant(["completed"], reportedTokens), toolResult("completed", [{ type: "text", text: source }])];
+    assert.ok(estimateToolOutputTokens(messages[1]!.content as never).estimatedTokens > 1024);
+    for (const message of messages) f.sessionManager.appendMessage(message);
+    f.session.agent.state.messages = f.sessionManager.buildSessionContext().messages;
+    const canonicalBefore = structuredClone(f.session.messages);
+    const projected = await f.session.agent.convertToLlm(f.session.messages, undefined, undefined, model);
+    assert.equal(projected.length, messages.length);
+    assert.match(body(projected[1]!.content as never), /completed once/);
+    assertTextRecovery(projected[1]!.content as never, source, cursor => f.session.readToolResultContinuation(cursor, 1024));
+    assert.deepEqual(f.session.messages, canonicalBefore, "projection and recovery must not replay or alter the canonical result");
   });
 }
 
@@ -57,14 +74,22 @@ test("F-B9 historical expansion must be stable or included in context accounting
     const ids = Array.from({ length: 8 }, (_, i) => `old-${i}`);
     const original = [assistant(ids), ...ids.map(id => toolResult(id, [{ type: "text", text: longText }]))];
     const first = owner.projectMessagesForModel(original.slice(), undefined, undefined, undefined, 128000, 4096, true);
+    const firstHistory = structuredClone(first);
     const suffix = [assistant(["new"], 10000, 3), toolResult("new", [{ type: "text", text: "ok" }], 4)];
-    const before = [...first, ...suffix];
+    const before = [...firstHistory, ...suffix];
     const after = owner.projectMessagesForModel([...original, ...suffix], undefined, undefined, undefined, 128000, 4096, true);
     const historySize = (messages: Message[]) => messages.slice(1, 9).reduce((sum, m) => sum + estimateMessageTokens(m), 0);
     const growth = historySize(after) - historySize(before);
     const estimateBefore = estimateContextTokensFromParts(undefined, before, undefined).tokens;
     const estimateAfter = estimateContextTokensFromParts(undefined, after, undefined).tokens;
-    assert.ok(growth <= 0 || estimateAfter - estimateBefore >= growth,
+    assert.ok(growth >= 0, "unchanged budgets must not silently shrink historical model content");
+    for (const history of [firstHistory, after.slice(0, original.length)]) {
+      for (const message of history.slice(1)) assertTextRecovery(message.content as never, longText,
+        cursor => owner.readContinuation(cursor, original, 1024));
+    }
+    if (growth === 0) assert.deepEqual(after.slice(0, original.length), firstHistory,
+      "zero token growth must not conceal replaced historical content");
+    assert.ok(growth === 0 || estimateAfter - estimateBefore >= growth,
       JSON.stringify({ growth, estimateBefore, estimateAfter, before: historySize(before), after: historySize(after) }));
   } finally { owner.dispose(); }
 });
@@ -98,7 +123,7 @@ test("F-B12 session recovery still works after the source is compacted out of mo
   const projected = await f.session.agent.convertToLlm(f.session.messages, undefined, undefined, ALPHA_MODEL);
   const cursor = body(projected[1]!.content as never).match(/cursor (tr1\.[^.]+(?:\.[^\s.]+)+)\./)?.[1];
   assert.ok(cursor, "fixture must produce a real model-visible recovery cursor");
-  const expected = f.session.readToolResultContinuation(cursor, 1024);
+  assertTextRecovery(projected[1]!.content as never, longText, value => f.session.readToolResultContinuation(value, 1024));
   const keep = f.sessionManager.appendMessage({ role: "user", content: "retained turn", timestamp: 3 });
   f.sessionManager.appendCompaction("earlier result summarized", keep, 5000);
   f.session.agent.state.messages = f.sessionManager.buildSessionContext().messages;
@@ -107,8 +132,7 @@ test("F-B12 session recovery still works after the source is compacted out of mo
   // Compaction clears resident projection records. Public idle reconfiguration
   // also removes that cache, preventing a cached source from hiding a missing persistent lookup.
   f.session.configureToolResultBudget({ enabled: true, budgetTokens: 1024 });
-  const chunk = f.session.readToolResultContinuation(cursor, 1024);
-  assert.deepEqual(chunk, expected, "recover the original content, not a replacement notice or the compaction summary");
+  assertTextRecovery(projected[1]!.content as never, longText, value => f.session.readToolResultContinuation(value, 1024));
 });
 
 test("F-B10 the model has a callable route for the recovery cursor it receives", async t => {

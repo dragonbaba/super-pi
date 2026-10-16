@@ -28,6 +28,8 @@ test("F-C2 explicitly handled failure + successful alternative commits the store
   assert.equal((first.result.details as any).codemode.scriptOk, true);
   assert.deepEqual({ failed: first.result.isError, saved: body(second.result.content).includes('"recovered":"yes"') },
     { failed: false, saved: true }, "a recovered script must commit its store while preserving the failed child record");
+  const visible = body(first.requests.at(-1)!.find(m => m.role === "toolResult")!.content as never);
+  assert.match(visible, /expected fixture failure/, "the next model request must retain the handled child's original diagnostic");
 });
 
 test("F-C4 displaying 300 successful blocks does not fail the task or discard the store", async t => {
@@ -37,6 +39,10 @@ test("F-C4 displaying 300 successful blocks does not fail the task or discard th
   assert.deepEqual(f.calls, ["blocks", "blocks", "blocks"]);
   assert.ok((first.result.details as any).codemode.calls.every((c: any) => !c.isError));
   assert.deepEqual({ failed: first.result.isError, saved: body(second.result.content).includes('"displayed":true') }, { failed: false, saved: true });
+  const visible = body(first.requests.at(-1)!.find(m => m.role === "toolResult")!.content as never);
+  assert.match(visible, /\bblock-\d+\b/, "display degradation must retain source output for the model");
+  assert.match(visible, /truncat(?:ed|ion)|omitted|display (?:limit|budget)|output (?:limit|budget)|展示受限|截断|省略/i,
+    "display degradation must explicitly report omitted or limited output");
 });
 
 test("F-C5 large inputs do not evict six tiny results before show(first.ref)", async t => {
