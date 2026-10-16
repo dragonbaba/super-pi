@@ -1,6 +1,6 @@
 # CodeMode 执行、预算与恢复修复计划
 
-状态：2026-10-16，D1–D4 已由用户确认；R0 功能基线已获第二轮复审通过，新增性能交接材料已完成采集，待复核。四轮交叉审查（Claude ×2、Codex ×2）后形成本清单；Codex 负责实施，Claude 负责逐任务复审。勾选框表示实施、验收和复审全部完成，不能用“已查过源码”或“现有测试通过”代替。
+状态：2026-10-16，D1–D4 已由用户确认；R0 功能基线与性能交接材料已获复审认可，本轮补齐构建身份和采样比较规则，R0.1–R0.3 完成，R0 关闭；PR #154 尚未合并，合并须用户授权。R1–R5 尚未开始，已知产品缺陷仍待修复。四轮交叉审查（Claude ×2、Codex ×2）后形成本清单；Codex 负责实施，Claude 负责逐任务复审。勾选框表示实施、验收和复审全部完成，不能用“已查过源码”或“现有测试通过”代替。
 
 **核心要求：已授权的正常任务，应能在局部、可恢复的错误之后继续完成。** 不得因为解析器不认识某种写法、某次结果需要缩减、展示额度不足或内部缓存淘汰，就把整轮任务堵死；也不得用吞掉退出码、统一改成成功、关闭预算检查或单纯调大数字来“修复”。
 
@@ -120,6 +120,16 @@
 
 以 [hot-path-allocation-contract.md](performance/hot-path-allocation-contract.md) 为准，审计从生产者到释放边界的完整调用链，包括现有 helper。R0 未修改生产热路径；R0.3 采集修复前数据，为后续任务提供比较起点，不把采集本身当成生产修复。
 
+本地运行 R0 回归测试或本节基准前，必须先在对应检出版本执行并确认以下构建成功；修复前、修复后两侧都须执行，不能依赖工作区已有 dist 或以 CI 会构建为由省略：
+
+```text
+npm run build:offline
+```
+
+源码入口不等于依赖也从源码加载。coding-agent 源码按包名导入 `@super-pi/ai`、`@super-pi/agent-core`、`@super-pi/codemode` 时，package exports 解析到各包的 dist；两个 tool-result 基准、session 基准和 R0 回归测试均依赖这些编译产物。修改 `packages/ai/src`、`packages/agent/src` 或 `packages/codemode/src` 后未重建，会测到旧实现。
+
+修复前后两侧的交接清单均须记录 commit、构建命令及退出码、实际包解析路径，以及 `packages/ai/dist`、`packages/agent/dist`、`packages/codemode/dist` 的逐文件相对路径与 SHA256（覆盖实际加载的 JS）。`codemode-dispatch` 直接导入 agent 的 `src/nested-tool-dispatch.ts`，session 则通过工作区包使用 agent 的 dist；两种加载模式分别记录、分别比较，不混用其结果，也不以 dispatch 通过推断 session 已运行新代码。
+
 | 任务 | 必须纳入审计的路径 | 必须显式核对的源码约束文件（位于 `tests/`） |
 | --- | --- | --- |
 | R1 | 提供方转换 → 预算估算/结果投影 → continuation/artifact 查找 → 会话持久条目/Evidence Ledger → clear/dispose | `tool-result-presentation-source-invariants.test.ts`、`tool-result-contextual-budget-source-invariants.test.ts`、`tool-token-estimator-source-invariants.test.ts`、`evidence-ledger-source-invariants.test.ts`；涉及 CodeMode 父子投影时加 `codemode-hot-paths.test.ts` |
@@ -148,7 +158,11 @@ node --experimental-strip-types --test --test-reporter=tap --test-concurrency=1 
 | R2/R5 改树形展示或进度时 | `npm run bench:tool-progress`；`npm run bench:tui-tool-leaf-allocations` | 进度交付、叶子更新/布局分配与释放 |
 | R5 改帧/布局时 | `npm run bench:tui-frame-allocations`，并按 Main/Alt 路径追加对应生产基准 | 帧物化/复制、活动与待处理字节、flush/abort/dispose |
 
-基准串行采样，记录相同机器、Node/V8、输入、模式、预热和采样参数；源代码模式与编译产物模式分开比较。改变场景或计数口径时，在相同旧生产代码上补旧侧测量并保留原始基线，不能因迁移而重置基线。每次交付均须有确定性结构计数、分配剖析/精确计数、受控 GC 和正常完成/异常/取消/关闭的生命周期证据；耗时或一次 heap 数值不能单独证明合规。对象池仍须满足契约全部准入条件。
+确定性结构计数作为硬门槛，按契约及对应任务的计数约束验收；采样分配字节、heap 数值和 CPU 时间不能用单次运行结果判定改善或回归。R0.3 的这类数据均为“单次采样，仅供参考”，基准内部已有预热或多个样本也不能代替独立重复运行。fixture 很小的场景（例如历史 1 条）的采样值只作参考，不作为比较门槛。
+
+比较采样字节和 CPU 时间时，在同一台机器、同一次测量会话内，旧侧独立检出 `b44dc0962684a937835064fde130580ebc7a520c`，新侧检出待验收的修复 commit；按上述要求分别构建并记录三个包的 dist 身份。两侧分别串行运行 N 次（N≥5），使用相同的 Node/V8、输入、加载模式、预热和采样参数，保存每次原始结果，报告中位数、最小值和最大值。源代码模式与编译产物模式分开比较。对象池“分配至少降低 20%、堆增长不超过 10%”等准入条件须基于这种重复比较及契约要求的完整证据判断，不能拿 R0.3 单次采样值作阈值；波动不足以支持结论时不得宣称已达标。
+
+改变场景或计数口径时，在相同旧生产代码上补旧侧测量并保留原始基线，不能因迁移而重置基线。每次交付均须有确定性结构计数、分配剖析/精确计数、受控 GC 和正常完成/异常/取消/关闭的生命周期证据；对象池仍须满足契约全部准入条件。本次文档补充不要求重新采集 R0.3。
 
 现有基准的证据范围必须如实说明：Shell 基准的 `analysisCalls` 当前由外层迭代数计算，不是 `prepareShellAnalysis` 的内部调用探针；R3 须补实际分析调用/扫描字节计数。`codemode-dispatch` 的弱引用只覆盖调度器、目录和输入参数；R1/R2 的结果、展示块和 ref 释放还须在 session/专用场景中追踪，不能仅凭该项 `retainedAfterGc=0` 宣称结果存储也已释放。runtime/session 的宿主采样不覆盖 Worker heap，触及 Worker 内存时须另交对应证据。
 
@@ -172,7 +186,7 @@ node --experimental-strip-types --test --test-reporter=tap --test-concurrency=1 
   - Shell：F-S3 列出的 8 种写法 + `python -c` + `node <<'EOF'`，分别断言预检、高风险分析、权限控制器；另通过真实扩展 `tool_call` 钩子验证 `full-access` 与 `workspace-write` 下的最终决策，得到并消费 `finalAuthorization`、检查 cwd 绑定，但不执行命令；生命周期违规（`npm run dev &`、`nohup`、`docker run -d`、`Start-Process` 无 `-Wait`）与目标不明的删除还必须在完整钩子下返回 `block`，不能拿到最终授权；
   - 重复调用：等长 5,024/5,564 字符、仅中间不同的 Bash 命令与 CodeMode 脚本（F-S6），父子交替失败（F-S7），503 暂时性失败（F-S8）。
 - [x] R0.2 测试不得依赖网络、真实提供方或业务项目。
-- [ ] R0.3 性能基线交接：在修改生产代码前，同一机器串行采集 §4.2 的 R1–R4 八项现有基准，保存原始 stdout/stderr、完整 JSON、确切命令、退出码、commit、Node/V8/平台/CPU、预热/采样参数和 SHA256。没有自带 commit 的输出由独立采集清单关联，不改写原始输出。交接包采用可携带文件名和校验值，不在仓库文档嵌入本机路径。把现有场景与 R1–R4 尚须新增的验收场景分开记录，补齐材料后复审；R0.1/R0.2 已获第二轮功能复审通过，不代表新增性能材料也已获审。
+- [x] R0.3 性能基线交接：在修改生产代码前，同一机器串行采集 §4.2 的 R1–R4 八项现有基准，保存原始 stdout/stderr、完整 JSON、确切命令、退出码、commit、Node/V8/平台/CPU、预热/采样参数和 SHA256。没有自带 commit 的输出由独立采集清单关联，不改写原始输出。交接包采用可携带文件名和校验值，不在仓库文档嵌入本机路径。现有场景与 R1–R4 尚须新增的验收场景已分开记录；复审确认数据完整、确定性计数可复现，并独立核实三个包的 dist 与源码一致。已补齐 §4.2 的构建和重复采样要求：本次确定性计数可作为基线，采样字节和 CPU 时间为单次采样、仅供参考；未重新采集数据。复审交接与身份校验范围见 §7。
 
 ### R1 预算与恢复（P0）
 
@@ -266,7 +280,7 @@ R5 验收：覆盖 Windows 实际终端、长输出、窗口缩放与历史恢�
 
 | 任务 | 分支 / PR | 状态 | Claude 复审 | 备注 |
 | --- | --- | --- | --- | --- |
-| R0 | [PR #154](https://github.com/dragonbaba/super-pi/pull/154)，`test/codemode-recovery-r0` | R0.1/R0.2 已完成；R0.3 材料已采集，待复核 | 第二轮确认功能基线与首轮修订通过；要求补性能交接 | 124 项：49 通过、75 预期失败；普通对照 19 项全过；八项性能基准与两组源码门禁全过；生产逻辑未修改 |
+| R0 | [PR #154](https://github.com/dragonbaba/super-pi/pull/154)，`test/codemode-recovery-r0` | R0.1–R0.3 已完成，R0 关闭；PR 待授权合并 | 功能基线通过；性能数据获认可，本轮补齐复审要求的两处文档 | 124 项：49 通过、75 预期失败；普通对照 19 项全过；八项性能基准与两组源码门禁全过；采样值仅供参考，生产逻辑未修改 |
 | R1 | | 未开始 | | |
 | R2 | | 未开始 | | |
 | R3 | | 未开始 | | |
@@ -302,7 +316,9 @@ R5 验收：覆盖 Windows 实际终端、长输出、窗口缩放与历史恢�
 - 修复前采集 commit：`8cc40b6134300c1426f5e6e858956eeb612ff045`；跟踪的生产代码和基准脚本相对 `b44dc096` 无差异。环境：Node `v26.4.0`、V8 `14.6.202.34-node.21`、Windows x64、Intel Core i7-14700KF。由 Codex 在本机独立串行重测，不冒充 Claude scratchpad 的原始输出，也不把两次采样数值的差异视为代码回归。
 - 检查：hot 组 **13 个文件**全过；单独执行 R1 四个 source-invariant 文件，**13 项**全过。性能采样期间未由采集器并行启动其他测试或基准；系统/桌面后台负载未被控制。
 - 交接文件：`super-pi-r0-performance-baseline.zip`，SHA256：`a9048a02f57c265d5420631d871b74397553e4ec5236ada42c94672874086539`。压缩包随任务交接，不是仓库内路径。内含 `manifest.json`、`summary.json`、八份带采集元数据的完整 JSON、未改写的 stdout/stderr 与源码检查日志；每项记录确切命令、退出码、采样时间与文件校验值。部分基准没有内置 commit，已由外层清单关联，不能称它们原本自带 commit。
-- 模式与产物：runtime 基准使用源码 host/worker；session 基准通过工作区包加载已编译 dist。清单记录了实际 dist JS 和基准源码的哈希，这用于固定本次实测身份，不是重新构建或发行包来源证明。后续比较须保持模式一致；若重建导致产物不同，须为对应旧侧补测并保留本次数据。
+- 模式与产物：runtime 基准使用源码 host/worker，dispatch 直接使用 agent 源码；session 通过工作区包加载 agent 的 dist。两个 tool-result 基准及 R0 回归测试也会经包名依赖加载 dist，不能按入口为 `.ts` 就认定全部运行源码。原始清单记录了八份基准源码及 codemode 的 14 个 dist JS 哈希，未记录 ai/agent 的 dist 哈希。后续复审中，Claude 独立将当前源码编译到临时目录，确认 ai 194 个、agent 49 个、codemode 14 个 JS 文件与现有 dist 逐字节一致；该验证由复审方完成，支持此次基线对应 `b44dc096` 的生产代码。原始交接包不改写，后续两侧的构建与三个包的完整身份记录按 §4.2 执行。
+
+下表的分配字节、heap 和 CPU/耗时值均为**单次采样，仅供参考**，不是 §4.2 要求的 N≥5 独立运行比较；基准内部的 p50/p95 不改变这一边界。小 fixture（如历史 1 条）的采样值不作门槛；确定性计数与生命周期结果按其各自契约使用。
 
 | 基准 | 本次关键数据（完整字段见 JSON） |
 | --- | --- |
@@ -316,3 +332,10 @@ R5 验收：覆盖 Windows 实际终端、长输出、窗口缩放与历史恢�
 | `tool-result-budgeted-model-view` | continuationChain 100 段；首次扫描 1、查找探测 50,000，后续每段两项均为 0；dispose 后条目为 0；历史、恢复查找、artifact 与生命周期完整计数已保存 |
 
 - 基线边界：历史结果数 1/10/100 时每请求整源扫描为 0，129/256 的容量压力场景分别为 **1/128**，不能把全部历史场景报告为零；各场景 dispose 后条目与驻留 code units 均为 0。`resumedHistoryLookup` 的首次查找仍为 50,000 次探测/1 次扫描，不能替代“压缩后从持久条目恢复”的未来验收。10 MiB `readBoundary: "lines"`、新增结果/ref 生命周期、真实内部 Shell 分析次数、完整输入哈希复用和新计时路径仍须在 R1–R4 实施时补测，本轮没有改基准来假装已有这些证据。
+
+### R0 性能交接复审与关闭（2026-10-16）
+
+- 复审方确认交接包 SHA256 一致、八项基准及两组检查退出码均为 0；与其在 `8cc40b613` 独立采集的 model-view 结果比较，1,682 个确定性计数字段完全一致，受控 GC 的 heap 采样值有波动。复审认可这些数据作为确定性计数基线，不将独立采样值不同视为代码回归。
+- 校验范围澄清：压缩包共 31 个文件，`manifest.json` 逐文件记录并校验其中 28 个；`manifest.json`、`README.txt`、`summary.json` 由 zip 整体 SHA256 保护。“31 个文件”是包内文件总数，不是 manifest 内逐项校验的数量。
+- 按复审要求补齐 §4.2：运行本地回归/基准前先构建，两侧记录 ai/agent/codemode 的 dist 哈希，分开比较 dispatch 源码与 session dist 模式；确定性计数作硬门槛，采样比较须同机同会话两侧各 N≥5，报告中位数与范围。R0.3 的单次采样和小 fixture 只作参考。本轮只改本文，不重跑测试、构建或性能采集，不修改原始交接包。
+- 两处文档补充完成后，依照本轮复审结论勾选 R0.3、关闭 R0。历史记录中的“待复核”描述保留为当时状态，以本节为准；R1–R5 仍未开始。PR 的最终 head 仍须完成 CI 与审查，合并另需用户授权。
