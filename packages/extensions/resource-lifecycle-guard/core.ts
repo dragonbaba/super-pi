@@ -39,7 +39,7 @@ import { diagnosticForPrimitives, policyMetadata, renderPolicyDiagnostic, type P
 
 const MAX_INSPECTED_COMMAND_CHARS = 128 * 1024;
 const BLOCK_REASON =
-	"Blocked an unmanaged long-lived process before execution; this Bash call was not executed.\nRetry: keep setup and bounded use in one inspectable foreground call with a recorded PID, EXIT trap, kill and wait; resubmit for authorization.";
+	"Blocked an unmanaged long-lived process before execution; this Bash call was not executed.\nRetry: keep setup and bounded use in one inspectable foreground call with a recorded PID, EXIT trap, kill and wait; resubmit for authorization. For session-managed background execution, keep the command itself foreground and set background: true with explicit cwd in a live TUI/RPC session with the tasks tool available. Otherwise use foreground execution.";
 const MAX_MUTATION_PRIMITIVES = 16;
 const MAX_MUTATION_TARGETS = 16;
 const MAX_SCRIPT_SEGMENTS = 64;
