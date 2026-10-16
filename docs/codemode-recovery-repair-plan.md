@@ -8,17 +8,17 @@
 
 | 项目 | 值 |
 | --- | --- |
-| 仓库 | `D:\RMProjects\Pi`，`main` = `b44dc0962684a937835064fde130580ebc7a520c`（PR #153 已合并） |
-| 现场业务项目 | `D:\RMProjects\ModelTest\GPTTest`（只作现场背景，不重跑其中有副作用的命令） |
+| 仓库 | `dragonbaba/super-pi`，`main` = `b44dc0962684a937835064fde130580ebc7a520c`（PR #153 已合并） |
+| 现场业务项目 | 用户的独立 Remotion 项目（只作现场背景，不重跑其中有副作用的命令） |
 | 现场权限 | `full-access + never-ask` |
 | 现场配置 | `toolResultPresentation.budgetTokens = 1024`（该功能默认关闭，属用户显式配置） |
 | 现场模型 API | `openai-codex-responses` |
 | 原有工作区变动 | `docs/README.md`（已修改）、`docs/upstream-pi-1.1.0-task-plan.md`（未跟踪），实施中不得覆盖 |
 
-证据文件（Codex 审查产物，离线探针，不含真实提供方请求）：
+证据文件（Codex 审查交接材料中的文件名，未纳入仓库；离线探针，不含真实提供方请求）：
 
-- `C:\Users\Administrator\Documents\Codex\2026-10-16\1-bash-exited-exit-8-0\outputs\super-pi-third-review-evidence.json`
-- `C:\Users\Administrator\Documents\Codex\2026-10-16\1-bash-exited-exit-8-0\outputs\super-pi-fourth-review-evidence.json`
+- `super-pi-third-review-evidence.json`
+- `super-pi-fourth-review-evidence.json`
 
 ## 2. 已确认事实（实施依据）
 
@@ -62,7 +62,7 @@
 | F-S1 | 生命周期预检先于统一权限决策运行并可直接拒绝 | `resource-lifecycle-guard/index.ts:194-206` |
 | F-S2 | 预检对任何 `<<`（除单独的 `cat <<'X'` / `node <<'X'`）判定无法分析；同文件已有正确的 `prepareShellAnalysis`，权限层和高风险分析在用，唯独预检没用 | `shell-substitution.ts:129-149, 243`；`tools/bounded-shell-input.ts:8-21`；`core.ts:124-127` |
 | F-S3 | 预检拒绝且与进程生命周期无关的写法：`python - <<'EOF'`、`cat > f <<'EOF'`、`git commit -F - <<'EOF'`、`"$FFMPEG" -version`、`x=$(git rev-parse HEAD)`、`export PATH=…; node -v`、`source .venv/bin/activate && …`、`( cd sub && make )`；PowerShell 等价写法（`& $ff`、here-string 管道、`Invoke-Expression`）全部放行 | `core.ts:105-109, 131-200` |
-| F-S4 | 绕过预检后，高风险分析把“Shell 状态无法分析 / heredoc”标为 `unverifiable`，权限控制器在判断权限模式前硬拒：9 种写法中 Python heredoc、重定向 heredoc、修改 PATH、激活虚拟环境、子 Shell 切换目录 5 种在 `full-access` 下仍被拒。对照：`python -c "import os; os.remove('a')"` 放行，同样代码写成 heredoc 被拒 | `core.ts:385-395`；`permission-controller.ts:416-423, 932-972` |
+| F-S4 | 绕过预检后，高风险分析把“Shell 状态无法分析 / heredoc”标为 `unverifiable`，权限控制器在判断权限模式前硬拒：R0 的 10 种写法中 Python heredoc、重定向 heredoc、`git commit -F -` heredoc、修改 PATH、激活虚拟环境、子 Shell 切换目录 6 种在 `full-access` 下仍被拒。对照：`python -c "import os; os.remove('a')"` 放行，同样代码写成 heredoc 被拒 | `core.ts:385-395`；`permission-controller.ts:416-423, 932-972` |
 | F-S5 | 权限范围分析已把上述写法都归为 `opaque-script`（`full-access` 放行，其他模式询问） | `permission-bash.ts:643`；`permission-controller.ts:1040-1046` |
 | F-S6 | 重复调用标识对超过 4096 字符的字符串只取前 2048 + 后 2048 字符；等长、仅中间修正的命令或 CodeMode 脚本得到相同标识，修正版被 `REPEATED_CALL_BLOCKED`，同批内被 `DUPLICATE_CALL` | `tool-loop-guardrails/core.ts:116-127, 589-613`；`index.ts:225-255` |
 | F-S7 | 失败计数只有一个槽位；父、子结果交替写入互相重置，CodeMode 内连续失败计数反复停在 1 | `tool-loop-guardrails/core.ts:618-655` |
@@ -84,9 +84,16 @@
 - 历史失败记录在升级后仍显示失败，本身不是新故障。
 - 离线投影通过不等于真实提供方请求成功；R1 结束必须做真实会话端到端验收。
 
-## 3. 待用户确认的决定
+## 3. 用户已确认的决定
 
-未确认前，相关任务**不得开工**；实施者遇到需要决定的情形应停下询问，不自行选择。
+以下四项已确认；若实施需要偏离已确认范围，须重新询问用户，不自行选择。
+
+确认来源为 **2026-10-16 用户与 Codex 的本任务会话**中四项选择题的逐项答复，不是 Claude 复审会话。Codex 已根据会话中的用户消息核实，原文如下：
+
+- D1：“按子调用计算，父结果另设总上限（计划建议）”。
+- D2：“暂不放开，明确说明须在更早轮次读取（计划建议）”。
+- D3：“交给权限模式，full-access 放行（计划建议）”；原问题明确已识别到变更且目标不确定的命令仍拒绝。
+- D4：“采用上述拆分方式（计划建议）”；原问题明确拆分脚本计算、子工具执行、排队与审批等待，审批等待不消耗脚本时限。
 
 | ID | 决定 | 建议 | 阻塞任务 | 状态 |
 | --- | --- | --- | --- | --- |
@@ -137,7 +144,7 @@
   - 预算：spark 首条结果（F-B3）、272k/128k + 约 144k 历史（F-B4）、结果顺序（F-B8，8 条与 20 条两组）、历史重新投影的估算增量（F-B9）、长单行续读（F-B11）、压缩后续读（F-B12）、CodeMode 父结果投影（F-B13）；
   - 错误：FFmpeg 风格输出（横幅约 1.9k 字符，末尾 `No such filter: 'volumedetect'` + `Command exited with code 1`）的模型正文（F-C1）；
   - 失败语义：捕获失败 → 替代成功 → store 写入（F-C2）、三个成功子调用各返回 100 块后 `show` 超限（F-C4）、6 次约 220,000 字符输入后 `show(first.ref)`（F-C5）、缩短时限下的串行累计与审批等待（F-C6）；
-  - Shell：F-S3 列出的 8 种写法 + `python -c` + `node <<'EOF'`，分别断言预检、高风险分析、`full-access` 与 `workspace-write` 下的最终决策；生命周期违规（`npm run dev &`、`nohup`、`docker run -d`、`Start-Process` 无 `-Wait`）与 `rm -rf "$X"` 必须保持拒绝；
+  - Shell：F-S3 列出的 8 种写法 + `python -c` + `node <<'EOF'`，分别断言预检、高风险分析、权限控制器；另通过真实扩展 `tool_call` 钩子验证 `full-access` 与 `workspace-write` 下的最终决策，得到并消费 `finalAuthorization`、检查 cwd 绑定，但不执行命令；生命周期违规（`npm run dev &`、`nohup`、`docker run -d`、`Start-Process` 无 `-Wait`）与目标不明的删除还必须在完整钩子下返回 `block`，不能拿到最终授权；
   - 重复调用：等长 5,024/5,564 字符、仅中间不同的 Bash 命令与 CodeMode 脚本（F-S6），父子交替失败（F-S7），503 暂时性失败（F-S8）。
 - [ ] R0.2 测试不得依赖网络、真实提供方或业务项目。
 
@@ -180,7 +187,7 @@ R2 验收：FFmpeg 样例的模型正文包含 `No such filter`；“捕获失�
 - [ ] R3.1 生命周期预检：heredoc 改用 `prepareShellAnalysis`；与进程生命周期无关的“无法分析”不再在预检拒绝，交给权限层（已归类为 opaque）。真正的生命周期违规保持拒绝。（F-S1–S3）
 - [ ] R3.2 高风险分析（依赖 D3）：区分“存在变更动作且目标无法验证”（继续硬拒，如 `rm -rf "$X"`、`Remove-Item -Recurse $x`）与“Shell 状态无法分析但未发现变更动作”（交给权限模式：`full-access` 放行，其他模式询问）。（F-S4）
 - [ ] R3.3 提示措辞：解析器限制后改用其他写法不得称为“规避”；后台拒绝提示写明 `background: true` 及其适用条件（TUI/RPC + tasks 工具）。（F-S9）
-- [ ] R3.4 重复调用：硬拒改用完整内容哈希（输入上限已有界），首尾采样只用于提醒；暂时性失败类别（5xx、超时、网络）不进入硬拒；失败计数按父调用作用域分开。（F-S6–S8）
+- [ ] R3.4 重复调用：硬拒改用完整内容哈希（输入上限已有界），首尾采样只用于提醒；暂时性失败类别（5xx、超时、网络）不进入永久的重复失败硬拒，但使用独立、有界的重试预算（总尝试次数与累计等待时间），支持退避和取消。预算耗尽必须结束本轮自动重试并报告可恢复原因，不能靠切换父调用作用域重置同一操作的额度；确定性失败计数按父调用作用域分开。R3 实施时明确默认额度及配置口径，并增加连续 503 的离线对照：两次失败后仍可成功，持续失败在指定额度内停止，记录实际调用次数及等待上限；R0 不先行修改重试策略。（F-S6–S8）
 
 R3 验收：R0 的 Shell 组在 `full-access` 下全部可执行、在 `workspace-write` 下全部询问；生命周期违规与动态递归删除仍拒绝；修正中间内容的长命令与长脚本不再被拦；真正连续三次完全相同的确定性失败仍被拦。**风险重点：**`#scopeAllows` 对“无原语、非 opaque”的 Bash 直接放行（`permission-controller.ts:1042`），必须证明放开预检后没有命令被误判为只读。
 
@@ -216,16 +223,16 @@ R5 验收：覆盖 Windows 实际终端、长输出、窗口缩放与历史恢�
 
 | 任务 | 分支 / PR | 状态 | Claude 复审 | 备注 |
 | --- | --- | --- | --- | --- |
-| R0 | `test/codemode-recovery-r0` | 已建立修复前基线，待复审 | 待 Claude 复审 | 98 项（含子用例）：39 通过、59 预期失败、0 跳过；生产逻辑未修改；用户已授权提交、推送和创建 PR |
+| R0 | [PR #154](https://github.com/dragonbaba/super-pi/pull/154)，`test/codemode-recovery-r0` | 已补充首轮复审要求，待再次复审 | 首轮要求补充，尚未通过 | 当前 124 项（含子用例）：49 通过、75 预期失败、0 跳过；其中 19 项普通回归对照全过；生产逻辑未修改 |
 | R1 | | 未开始 | | |
 | R2 | | 未开始 | | |
 | R3 | | 未开始 | | |
 | R4 | | 未开始 | | |
 | R5 | | 未开始 | | |
 
-### R0 复审记录（2026-10-16）
+### R0 初版复审记录（2026-10-16，head `98f5c174`）
 
-- 用户已在当前会话逐项确认 D1–D4，按 §3 的建议执行。
+- 用户已在与 Codex 的本任务会话中逐项确认 D1–D4；确认原文及上下文见 §3。
 - 新增 `tests/codemode-recovery/`：预算与恢复、执行与失败语义、Shell 权限与重复调用三组回归，以及共享的离线会话夹具。命令字符串仅交给分析器和权限控制器，不执行 Shell 命令；执行组使用真实 CodeMode 调度器、模拟子工具和模拟模型流。
 - 运行 `npm run test:codemode-recovery`，退出码 **1** 是修复前的失败基线；断言要求恢复和授权后的任务完成，没有用 `skip`、`todo` 或“预期拒绝”掩盖待修问题。98 项包含 10 个命令分组及其 50 个子用例；其中 59 个失败包含 8 个因子用例失败而失败的分组。
 - `.regression.ts` 通过独立入口运行，暂不由普通测试发现器纳入。后续每项修复应使用同一用例记录转绿输出，并将已修复用例纳入常规回归；不得把这次基线失败报告为产品修复通过。
@@ -233,4 +240,15 @@ R5 验收：覆盖 Windows 实际终端、长输出、窗口缩放与历史恢�
 - 未改生产热路径，热路径基准不适用于本次仅新增测试的差异。没有提供方请求，也没有对现场业务项目执行任何命令；真实提供方与 Windows 实际终端验收仍留在 R1/R5。
 - 接口约定：F-B10 要求可发现的续读工具接受 `cursor` 并说明 `tr1.`，随后实际从 CodeMode 调用且检查模型收到遗漏文本、原工具仅执行一次；R2 的显式失败处理用例采用计划示例 `callTool(name, args, { allowFailure: true })`。若实现阶段改 API 形状，可适配调用方式，不能削弱完成任务和不重放的断言。
 - 原有 `docs/README.md` 与 `docs/upstream-pi-1.1.0-task-plan.md` 的 SHA256 与开工前一致。R0 勾选框待复审后再更新。
-- 复审材料目录：`C:\Users\Administrator\Documents\Codex\2026-10-16\1-bash-exited-exit-8-0\outputs`，包含 `super-pi-r0-baseline.txt`、`super-pi-r0-existing-tests.txt`、`super-pi-r0-typecheck.txt`、`super-pi-r0-review.json`、`super-pi-r0-changes.patch`。
+- 初版复审材料由任务交接提供：`super-pi-r0-baseline.txt`、`super-pi-r0-existing-tests.txt`、`super-pi-r0-typecheck.txt`、`super-pi-r0-review.json`、`super-pi-r0-changes.patch`。仓库文档仅记录文件名，不依赖审查机器的绝对路径。
+
+### R0 首轮复审修订（2026-10-16）
+
+- 补齐 Shell 最终授权测试：10 条命令 × 2 种权限模式通过真实 `ExtensionRunner.emitToolCall`，覆盖生产的生命周期预检、cwd 准备、权限决策、参数复检与最终授权；成功时消费授权并验证 cwd 绑定。使用临时工作区和真实权限命令设置模式，不提供 Shell 执行器。另有 Windows 原生 PowerShell 的 active / discoverable / unavailable 回调分支对照；未宣称已在 Linux 实测。
+- 生命周期违规和目标不明的删除同时要求完整钩子返回 `block`、无 `finalAuthorization`、无审批弹窗。已支持的前台命令有完整授权交付的普通回归对照，防止“所有命令一律拒绝”误通过。
+- F-C2 必须输出 `{"handled":true}`，且不得走 `caught failure`。新增仅用 `try/catch`、不开 `allowFailure` 的对照：替代子调用确实成功且脚本完成，但父调用仍失败，store 不提交。
+- D1–D4 已根据用户与 Codex 会话的逐项回答核实，原文见 §3。修正 F-S4 为 10 种写法中 6 种被权限层拒绝，补上 git stdin heredoc。移除本文全部本机绝对路径。
+- 在 R3.4 补充独立有界重试预算及持续 503 的停止验收；具体策略属于 R3，未在 R0 实施。
+- 原 39 个通过项包含混合分组内的诊断断言，并非全是独立对照。将全部 13 个原有核心对照移入 `tests/codemode-recovery/controls.test.ts`，加上 6 个新对照，共 19 项，普通测试发现器和 Windows/Linux CI 均会纳入；显式 R0 命令也包含它们。混合分组的分层诊断仍随基线执行，修复后再升格，不隐藏其失败。
+- 本地验证：`npm run test:codemode-recovery` 为 124 项（54 顶层 + 70 子用例），49 通过、75 已知失败、0 skip/todo/cancelled。相对初版增加 20 项完整钩子验收和 6 项对照；16 项新增失败来自已记录的预检拒绝，另外 4 项钩子验收通过。75 个失败含 8 个失败分组，实际失败叶子为 67 项。
+- 普通入口验证：`node scripts/test.mjs --suite unit --root tests/codemode-recovery --skip-memory --jobs 1` 发现并执行 `controls.test.ts`，19 项全部通过；类型检查通过。修订输出使用 `super-pi-r0-review-fixes-` 前缀交接，初版输出保留用于比较。没有生产修复后的全绿输出，R0 勾选仍待 Claude 再次复审。

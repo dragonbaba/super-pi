@@ -1,53 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import test, { type TestContext } from "node:test";
-import { createJiti } from "jiti";
+import test from "node:test";
+import { commands, workspace, permission, inspectBashResourceLifecycle, inspectHighRiskBashMutation,
+  inspectBashPermissionScope, guard, guardExtension } from "./guard-fixture.ts";
+import { shellHookFixture, assertFinalAuthorization } from "./shell-hook-fixture.ts";
 
-const jiti = createJiti(import.meta.url);
-const { inspectBashResourceLifecycle, inspectHighRiskBashMutation } = await jiti.import<typeof import("../../packages/extensions/resource-lifecycle-guard/core.ts")>("../../packages/extensions/resource-lifecycle-guard/core.ts");
-const { inspectPowerShellResourceLifecycle } = await jiti.import<typeof import("../../packages/extensions/resource-lifecycle-guard/powershell-lifecycle.ts")>("../../packages/extensions/resource-lifecycle-guard/powershell-lifecycle.ts");
-const { inspectBashPermissionScope } = await jiti.import<typeof import("../../packages/extensions/resource-lifecycle-guard/permission-bash.ts")>("../../packages/extensions/resource-lifecycle-guard/permission-bash.ts");
-const { SessionPermissionController } = await jiti.import<typeof import("../../packages/extensions/resource-lifecycle-guard/permission-controller.ts")>("../../packages/extensions/resource-lifecycle-guard/permission-controller.ts");
-const guard = await jiti.import<typeof import("../../packages/extensions/tool-loop-guardrails/core.ts")>("../../packages/extensions/tool-loop-guardrails/core.ts");
-const { default: guardExtension } = await jiti.import<typeof import("../../packages/extensions/tool-loop-guardrails/index.ts")>("../../packages/extensions/tool-loop-guardrails/index.ts");
-
-const commands = [
-  ["Python heredoc", "python - <<'EOF'\nprint(1)\nEOF"],
-  ["redirected heredoc", "cat > f <<'EOF'\nhello\nEOF"],
-  ["git commit stdin", "git commit -F - <<'EOF'\nfixture message\nEOF"],
-  ["variable executable", '"$FFMPEG" -version'],
-  ["substitution", "x=$(git rev-parse HEAD)"],
-  ["PATH assignment", "export PATH=/usr/bin:$PATH; node -v"],
-  ["environment activation", "source .venv/bin/activate && python --version"],
-  ["subshell cwd", "( cd sub && make )"],
-  ["Python -c control", 'python -c "print(1)"'],
-  ["Node heredoc control", "node <<'EOF'\nconsole.log(1)\nEOF"],
-] as const;
-
-function workspace(t: TestContext) {
-  const root = mkdtempSync(join(tmpdir(), "sp-r0-permissions-"));
-  t.after(() => { assert.equal(dirname(root), resolve(tmpdir())); rmSync(root, { recursive: true, force: true }); });
-  return root;
-}
-
-async function permission(cwd: string, mode: "full-access" | "workspace-write") {
-  let dialogs = 0;
-  const audit: unknown[] = [];
-  const controller = new SessionPermissionController({ appendEntry: (_kind: string, data: unknown) => audit.push(data) } as never);
-  const ctx = { cwd, hasUI: true, sessionManager: { getBranch: () => [], getSessionId: () => `r0-${mode}` },
-    ui: { setStatus() {}, select: async (_title: string, choices: string[]) => {
-      dialogs++; assert.ok(choices.includes("仅允许本次")); return "仅允许本次";
-    } } };
-  await controller.restore(ctx as never);
-  controller.state.setMode(mode); controller.state.setApprovalPolicy(mode === "full-access" ? "never-ask" : "ask");
-  return { dialogs: () => dialogs, audit, async authorize(command: string, toolName = "bash") {
-    return controller.authorizeToolCall({ type: "tool_call", toolName, toolCallId: "fixture", input: { command } } as never, ctx as never);
-  } };
-}
-
-// Commands are parser/authorization input only; this file has no command executor.
+// Layer checks diagnose a failure; only the real extension-hook checks below
+// establish final authorization. Command strings are never executed.
 for (const [name, command] of commands) {
   test(`F-S1/S4 D3 ${name}: all decision layers admit the authorized foreground command`, async t => {
     const cwd = workspace(t), input = { command };
@@ -68,22 +26,13 @@ for (const [name, command] of commands) {
       const outcome = await f.authorize(command);
       assert.deepEqual({ block: outcome, dialogs: f.dialogs() }, { block: undefined, dialogs: 1 });
     });
-  });
-}
-
-for (const command of ["npm run dev &", "nohup node server.js", "docker run -d alpine"]) {
-  test(`control: unmanaged lifecycle remains blocked: ${command}`, () => {
-    assert.ok(inspectBashResourceLifecycle({ command }));
-  });
-}
-test("control: PowerShell Start-Process without -Wait remains blocked", () => {
-  assert.ok(inspectPowerShellResourceLifecycle({ command: 'Start-Process -FilePath "node" -ArgumentList "server.js"' }));
-});
-for (const [toolName, command] of [["bash", 'rm -rf "$X"'], ["powershell", "Remove-Item -Recurse $x"]]) {
-  test(`control: a recognized recursive deletion with unknown targets is still blocked (${toolName})`, async t => {
-    const cwd = workspace(t), f = await permission(cwd, "full-access");
-    const decision = await f.authorize(command!, toolName);
-    assert.equal(decision?.block, true); assert.equal(f.dialogs(), 0);
+    for (const mode of ["full-access", "workspace-write"] as const) {
+      await t.test(`complete tool_call hook: ${mode} returns consumable finalAuthorization`, async child => {
+        const f = await shellHookFixture(child, mode);
+        assertFinalAuthorization(await f.authorize(command));
+        assert.equal(f.dialogs(), mode === "full-access" ? 0 : 1);
+      });
+    }
   });
 }
 
@@ -152,13 +101,4 @@ test("F-S8 two transient HTTP 503 responses still allow a successful third attem
   assert.equal(guard.inspectBeforeCall(state, "http_read", input), undefined);
   guard.recordResult(state, "http_read", input, false, "recovered");
   assert.equal(state.activeFailureCount, 0);
-});
-
-test("control: a third identical deterministic failure remains blocked", () => {
-  const state = guard.createGuardState(), input = { path: "missing-fixture" };
-  for (let i = 0; i < 2; i++) {
-    assert.equal(guard.inspectBeforeCall(state, "read", input), undefined);
-    guard.recordResult(state, "read", input, true, "ENOENT: no such file or directory");
-  }
-  assert.match(guard.inspectBeforeCall(state, "read", input)!, /REPEATED_CALL_BLOCKED/);
 });

@@ -19,7 +19,7 @@
 		"test:unit": "node ./scripts/test.mjs --suite unit",
 		"test:hot": "node ./scripts/test.mjs --suite hot",
 		"test:contract": "node ./scripts/test.mjs --suite contract",
-		"test:codemode-recovery": "node --experimental-strip-types --test --test-reporter=tap --test-concurrency=1 tests/codemode-recovery/budget.regression.ts tests/codemode-recovery/execution.regression.ts tests/codemode-recovery/guards.regression.ts",
+		"test:codemode-recovery": "node --experimental-strip-types --test --test-reporter=tap --test-concurrency=1 tests/codemode-recovery/budget.regression.ts tests/codemode-recovery/execution.regression.ts tests/codemode-recovery/guards.regression.ts tests/codemode-recovery/controls.test.ts",
 		"test": "node ./scripts/test.mjs --suite all",
 		"verify": "npm run check && npm run build:offline && npm test",
 		"bench:stream": "node --experimental-strip-types ./scripts/bench/stream-events.ts",

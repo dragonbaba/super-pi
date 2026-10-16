@@ -69,33 +69,6 @@ test("F-B9 historical expansion must be stable or included in context accounting
   } finally { owner.dispose(); }
 });
 
-test("control: a genuinely insufficient result budget is not silently bypassed", () => {
-  const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 1 }, "insufficient")!;
-  try {
-    assert.throws(() => owner.projectMessagesForModel([assistant(["one"]), toolResult("one", [{ type: "text", text: longText }])],
-      undefined, undefined, undefined, 128000, 4096), (error: unknown) => (error as { code: string }).code === "budget-too-small");
-  } finally { owner.dispose(); }
-});
-
-test("control: ordinary bounded text is recoverable exactly without replay", () => {
-  const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 1024 }, "ordinary-text")!;
-  try {
-    const source = toolResult("source", [{ type: "text", text: longText }]);
-    const p = owner.create(source.content, "source")!; owner.release();
-    assert.equal(p.version, 2); if (p.version !== 2) return;
-    let cursor: string | undefined = p.continuation.cursor, restored = "", count = 0;
-    while (cursor) {
-      assert.ok(++count < 100);
-      const chunk = owner.readContinuation(cursor, [source], 1024);
-      assert.ok(chunk.estimatedTokens <= 1024); assert.notEqual(chunk.nextCursor, cursor);
-      restored += chunk.content.filter(b => b.type === "text").map(b => b.text).join(""); cursor = chunk.nextCursor;
-    }
-    const index = p.truncation.noticeBlockIndex;
-    const text = (blocks: readonly { type: string; text?: string }[]) => blocks.filter(b => b.type === "text").map(b => b.text).join("");
-    assert.equal(text(p.modelContent.slice(0, index)) + restored + text(p.modelContent.slice(index + 1)), longText);
-  } finally { owner.dispose(); }
-});
-
 test("F-B11 a long source line can be recovered exactly through bounded historical chunks", () => {
   const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 1024 }, "long-line")!;
   try {
