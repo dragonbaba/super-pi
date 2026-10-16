@@ -25,6 +25,7 @@ export interface CodemodeChildDisplay {
 	resultComplete?: boolean | "unknown";
 	displayLimited?: boolean;
 	failureHandled?: boolean;
+	recoveryError?: string;
 }
 
 export function codemodeInputSummary(input: unknown): string {

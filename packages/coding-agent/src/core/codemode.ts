@@ -12,14 +12,16 @@ import { CODEMODE_DESCRIPTION, CODEMODE_NAME, CODEMODE_PARAMETERS, CODEMODE_SAMP
 import { CODEMODE_MUTATION_NAMES } from "./codemode-constants.ts";
 import { CodemodeStore } from "./codemode-store.ts";
 import { saveCodemodeImages } from "./codemode-images.ts";
-import { boundCodemodeResult, capCodemodeOutput, codemodeContentChars, codemodeImageChars } from "./codemode-result.ts";
+import { boundCodemodeResult, capCodemodeOutput, codemodeContentChars, codemodeImageChars, persistCodemodeResult } from "./codemode-result.ts";
 import { MUTATION_READ_SOURCE } from "./tools/read-window.ts";
 import { readShellExecution } from "./tools/shell-execution.ts";
 import { truncateTail } from "./tools/truncate.ts";
 import { codemodeFailureReason, codemodeFailureWindow, codemodeInputSummary, codemodeOutputDigests, codemodeTextDigest, CODEMODE_DISPLAY_PREVIEW_CHARS, type CodemodeChildDisplay } from "./codemode-display.ts";
 
 /** `chars` is retention (content, details, input); `contentChars` is what show() appends. */
-interface ChildRecord { result: ToolResultMessage; input: Record<string, unknown>; chars: number; contentChars: number; imageChars: number; }
+interface ChildRecord { result: ToolResultMessage; input: Record<string, unknown>; chars: number; contentChars: number; imageChars: number;
+	fact: ChildFact; recovery: { path: string; capped: boolean } | undefined;
+	recoveryAttempted: boolean; recoveryPending: Promise<{ path: string; capped: boolean }> | undefined; }
 /** Durable mutation outcome; `observationError` is kept outside the receipt-bearing result. */
 interface CodemodeResultEntry { version: 1; parentToolCallId: string; result: ToolResultMessage; observationError?: string; }
 type ChildFact = CodemodeChildDisplay;
@@ -39,6 +41,7 @@ interface Invocation {
 	reads: DisplayedRead[];
 	facts: ChildFact[];
 	failed: boolean;
+	displayLimited: boolean;
 	pending: number;
 	resolveIdle: (() => void) | undefined;
 }
@@ -378,7 +381,7 @@ export class CodemodeController {
 		}
 		const ref = `${invocation.prefix}:${++invocation.issued}`;
 		fact.ref = ref;
-		invocation.records.set(ref, { result, input, chars, contentChars, imageChars });
+		invocation.records.set(ref, { result, input, chars, contentChars, imageChars, fact, recovery: undefined, recoveryAttempted: false, recoveryPending: undefined });
 		invocation.retainedChars += chars;
 		invocation.retainedImageChars += imageChars;
 		if (result.isError && !failureHandled) {
@@ -405,27 +408,59 @@ export class CodemodeController {
 		const content = imageChars > MAX_SCRIPT_IMAGE_CHARS ? scriptContent(result.content) : result.content;
 		return { content, details: result.details, isError: result.isError, ref, executed: fact.executed, resultComplete: fact.resultComplete, failureHandled };
 	}
-	private show(ref: unknown): void {
+	private async show(ref: unknown): Promise<void> {
 		const invocation = this.requireInvocation();
+		invocation.pending++;
+		try { await this.showRecord(invocation, ref); }
+		catch (error) { invocation.failed = true; throw error; }
+		finally { if (--invocation.pending === 0) { invocation.resolveIdle?.(); invocation.resolveIdle = undefined; } }
+	}
+	private async showRecord(invocation: Invocation, ref: unknown): Promise<void> {
 		const record = typeof ref === "string" ? invocation.records.get(ref) : undefined;
 		if (!record) { invocation.failed = true; throw new Error("Unknown or expired result reference; references belong to the current script"); }
-		if (invocation.shownChars + record.contentChars > MAX_SHOWN_CHARS || invocation.shown.length + record.result.content.length > 256) {
-			invocation.failed = true; throw new Error("Shown results exceed the display budget; read smaller ranges");
+		const limited = invocation.shownChars + record.contentChars > MAX_SHOWN_CHARS
+			|| invocation.shown.length + record.result.content.length > 256
+			|| invocation.shownImageChars + record.imageChars > MAX_SHOWN_IMAGE_CHARS;
+		if (limited) {
+			invocation.displayLimited = record.fact.displayLimited = true;
+			await this.recoverRecord(record);
 		}
-		if (invocation.shownImageChars + record.imageChars > MAX_SHOWN_IMAGE_CHARS) {
-			invocation.failed = true; throw new Error("Shown images exceed the display budget; show fewer or smaller images");
-		}
-		invocation.shownChars += record.contentChars;
-		invocation.shownImageChars += record.imageChars;
 		const shownIndex = invocation.shown.length;
-		for (const block of record.result.content) invocation.shown.push(block);
-		if (record.result.toolName === "read" && !record.result.isError &&
+		for (const block of record.result.content) {
+			if (invocation.shown.length >= 256) break;
+			if (block.type === "image") {
+				if (invocation.shownImageChars + block.data.length > MAX_SHOWN_IMAGE_CHARS) continue;
+				invocation.shownImageChars += block.data.length;
+				invocation.shown.push(block);
+			} else {
+				const remaining = MAX_SHOWN_CHARS - invocation.shownChars;
+				if (remaining <= 0) continue;
+				const text = block.text.length > remaining ? unicodePrefix(block.text, remaining) : block.text;
+				invocation.shownChars += text.length;
+				invocation.shown.push(text === block.text ? block : { type: "text", text });
+			}
+		}
+		if (!limited && record.result.toolName === "read" && !record.result.isError &&
 			(record.result.content as unknown as Record<symbol, unknown>)[MUTATION_READ_SOURCE] && invocation.reads.length < MAX_SHOWN_READS) {
 			// Offset within shown blocks; execute() adds the final position of the first shown block.
 			invocation.reads.push({ type: "codemode_read", toolCallId: record.result.toolCallId, parentToolCallId: invocation.context.parentToolCallId,
 				input: record.input, content: record.result.content, details: record.result.details, parentContentIndex: shownIndex, projectedContentIndex: -1,
 				requiredContentBlocks: requiredReadBlocks(record.result.content) });
 		}
+	}
+	private async recoverRecord(record: ChildRecord): Promise<void> {
+		if (!record.recoveryAttempted) {
+			record.recoveryAttempted = true;
+			record.recoveryPending = persistCodemodeResult(record.result, this.serializer);
+		}
+		try {
+			if (record.recoveryPending) record.recovery = await record.recoveryPending;
+			if (record.recovery) {
+				record.fact.outputPath = record.recovery.path;
+				if (record.recovery.capped) record.fact.resultComplete = false;
+			}
+		} catch (error) { record.fact.recoveryError = message(error).slice(0, 512); }
+		finally { record.recoveryPending = undefined; }
 	}
 	private describe(names: unknown, options?: unknown): string {
 		const invocation = this.requireInvocation();
@@ -533,7 +568,7 @@ export class CodemodeController {
 		const outputTokens = parsed.options.maxOutputTokens ?? 8000;
 		if (outputTokens < 256 || outputTokens > 16384) throw new Error("Codemode max_output_tokens must be 256..16384; no tools were executed");
 		const invocation: Invocation = { context, signal, prefix: randomUUID(), issued: 0, started: 0, records: new Map(), retainedChars: 0, retainedImageChars: 0,
-			shownChars: 0, shownImageChars: 0, shown: [], reads: [], facts: [], failed: false, pending: 0, resolveIdle: undefined };
+			shownChars: 0, shownImageChars: 0, shown: [], reads: [], facts: [], failed: false, displayLimited: false, pending: 0, resolveIdle: undefined };
 		this.current = invocation;
 		let result: CodemodeResult;
 		try {
@@ -556,6 +591,7 @@ export class CodemodeController {
 			let handledFailures = 0;
 			for (const fact of invocation.facts) if (fact.failureHandled) handledFailures++;
 			if (handledFailures) summary += ` Handled failures: ${handledFailures}.`;
+			if (invocation.displayLimited) summary += "\n[CODEMODE_DISPLAY_LIMITED] Display budget reached; output omitted/truncated. Use read on the saved Output paths below; do not repeat completed tools. Each saved result is capped at 5 MiB, with an explicit marker if later bytes were not saved.";
 			const imageSave = saveCodemodeImages(content);
 			const imageFiles = imageSave ? await imageSave : undefined;
 			// Keep the path in the retained head, before variable child previews,
@@ -563,6 +599,7 @@ export class CodemodeController {
 			if (imageFiles) summary += "\n" + imageFiles.notice;
 			const imagePrefix = imageFiles ? summary.length : 0;
 			for (const fact of invocation.facts) summary += `\n${fact.toolName.slice(0, 80)}: ${fact.executionStatus ?? (fact.isError ? "failed" : "completed")}${fact.executionStatus && (fact.toolName === "bash" || fact.toolName === "powershell") ? "; exit=" + (fact.exitCode ?? "unknown") : ""}${fact.isError ? " — " + fact.preview + " [" + fact.ref + "]" : ""}${fact.outputPath ? " Output: " + fact.outputPath : ""}`;
+			for (const fact of invocation.facts) if (fact.recoveryError) summary += `\n[CODEMODE_RECOVERY_UNAVAILABLE] ${fact.ref}: ${fact.recoveryError}. Do not repeat completed tools.`;
 			if (failed) summary += "\nCompleted tool side effects are not rolled back. Do not automatically retry mutations.";
 			const summaryBlock: TextContent & { projectionPrefix?: number } = { type: "text", text: summary };
 			content.unshift(summaryBlock);
@@ -584,7 +621,7 @@ export class CodemodeController {
 				if (this.displayedReads.size >= MAX_PENDING_READ_PARENTS) this.displayedReads.delete(this.displayedReads.keys().next().value!);
 				this.displayedReads.set(context.parentToolCallId, invocation.reads);
 			}
-			return { content: projected, isError: failed, details: { codemode: { version: 1, scriptOk: result.ok, handledFailures, summaryDigest: codemodeTextDigest(displayedSummary), calls: invocation.facts, runtimeCalls: result.calls, imageFiles } } };
+			return { content: projected, isError: failed, details: { codemode: { version: 1, scriptOk: result.ok, handledFailures, displayLimited: invocation.displayLimited || projected !== content, summaryDigest: codemodeTextDigest(displayedSummary), calls: invocation.facts, runtimeCalls: result.calls, imageFiles } } };
 		} catch (error) {
 			this.documentationSnapshot = undefined;
 			await context.finish();
