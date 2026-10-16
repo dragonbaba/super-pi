@@ -174,6 +174,7 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
   if (consumers & 1 && document.hasCarriageReturn) return lifecycleRefusal("SHELL_HEREDOC", "CR-bearing shell heredoc source has transport-dependent semantics", "use an LF-only shell body and resubmit for authorization");
   if (consumers & 8) return lifecycleRefusal("SHELL_HEREDOC", "heredoc executable input or consumer nesting cannot be inspected", "use a direct literal stdin consumer without transforming its input");
   const body = heredocExecutableBody(document, command);
+  if (consumers & 1 && body === undefined) return lifecycleRefusal("SHELL_HEREDOC", "a shell heredoc consumer receives an uninspectable transformed body", "use a supported literal transform or an inspectable literal shell body");
   if (consumers & 1 && body !== undefined) {
    if (heredocHasAliasRisk(body)) return lifecycleRefusal("SHELL_HEREDOC", "sourced heredoc input may change aliases or later consumers", "use a separate call without alias changes, file sourcing or eval");
    const result = inspectLifecycleScript(body, depth + 1, nativePowerShellAvailable, analysisOwner);
@@ -195,6 +196,7 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
  for (let segment = 0; segment < segments.length; segment++) {
   const tokens = segments[segment]!;
   if (tokens.bashTestProcessSubstitution) return lifecycleRefusal("SHELL_UNINSPECTABLE", "process substitution inside a Bash test cannot be safely inspected", "split the process substitution into separately inspectable commands");
+  if (hasUnsafeBashTestOperand(tokens) || hasUnsafeBashBuiltinOperand(tokens)) return lifecycleRefusal("SHELL_UNINSPECTABLE", "Bash test, callback or name operand may execute uninspected arithmetic or source", "use callback-free reads, simple variable tests and literal numeric subscripts/comparisons");
   // Assignment, arithmetic and lookup uncertainty is classified by permissions.
   // It cannot turn a visible detached launch into an authorized foreground job.
   // The global filter is only an optimization; unrelated segments supply no
@@ -1311,7 +1313,7 @@ export function decodeLiteralBase64(source: string): string | undefined {
 }
 
 /** Decode only supported literal transforms before the first executable reader.
- * Unresolved transformations remain opaque; they are not a mutation by themselves. */
+ * Undefined is uninspected source; lifecycle refuses it for recognized shells. */
 export function heredocExecutableBody(document: { header: string; pipelineHeader?: string; contextEnd?: number; body: string; descriptor: number }, command?: string): string | undefined {
 	if (!document.pipelineHeader) return document.body;
 	const segments = parseShellSegments(document.pipelineHeader);
@@ -1559,6 +1561,83 @@ function isExitOnFailure(segments: readonly ShellSegment[], cdIndex: number): bo
 function skipRedirections(tokens: ShellSegment, index: number): number {
 	for (let after = afterLeadingRedirection(tokens, index); after !== index; after = afterLeadingRedirection(tokens, index)) index = after;
 	return index;
+}
+
+/** Reuse the existing argv view; callbacks and recursive arithmetic are not evaluated. */
+function hasUnsafeBashBuiltinOperand(tokens: ShellSegment): boolean {
+	let index = skipRedirections(tokens, 0);
+	if (index === 0 && !tokens.firstWordQuoted && (tokens[index] === "if" || tokens[index] === "elif" || tokens[index] === "while"
+		|| tokens[index] === "until" || tokens[index] === "then" || tokens[index] === "else" || tokens[index] === "do" || tokens[index] === "{")) index = skipRedirections(tokens, index + 1);
+	for (let prefixes = 0; prefixes <= MAX_WRAPPER_DEPTH; prefixes++) {
+		const pipeline = bashPipelinePrefixEnd(tokens, index);
+		if (pipeline < 0) return false; // Existing prefix checks own unsupported grammar.
+		index = skipRedirections(tokens, pipeline);
+		const word = tokens[index];
+		if (!word) return false;
+		if (LEADING_ASSIGNMENT_PATTERN.test(word)) { index = skipRedirections(tokens, index + 1); continue; }
+		if (word !== "builtin" && word !== "command" && word !== "exec") break;
+		index = skipRedirections(tokens, index + 1);
+		if (word === "command" && (tokens[index] === "-v" || tokens[index] === "-V")) return false;
+		if (word === "command" && tokens[index] === "-p") index = skipRedirections(tokens, index + 1);
+		if (tokens[index] === "--") index = skipRedirections(tokens, index + 1);
+	}
+	const name = tokens[index];
+	if (name === "test" || name === "[") return hasUnsafeBashTestOperand(tokens, index);
+	if (name === "printf") {
+		index = skipRedirections(tokens, index + 1);
+		const option = tokens[index];
+		if (!option?.startsWith("-v")) return false;
+		if (option.length > 2) return hasNonliteralBashSubscript(option, 2);
+		return hasNonliteralBashSubscript(tokens[skipRedirections(tokens, index + 1)] ?? "");
+	}
+	const reads = name === "read" || name === "mapfile" || name === "readarray";
+	if (!reads && name !== "unset" && name !== "declare" && name !== "local" && name !== "typeset"
+		&& name !== "readonly" && name !== "export" && name !== "let") return false;
+	let options = true;
+	for (let operand = skipRedirections(tokens, index + 1); operand < tokens.length; operand = skipRedirections(tokens, operand + 1)) {
+		const word = tokens[operand]!;
+		if (options && word === "--") { options = false; continue; }
+		if (options && word.length > 1 && (word[0] === "-" || !reads && word[0] === "+")) {
+			if (!reads) continue;
+			for (let flag = 1; flag < word.length; flag++) {
+				const option = word[flag]!;
+				if (name !== "read" && option === "C") return true;
+				if (!(name === "read" ? "adinNptu" : "dnOscu").includes(option)) continue;
+				const attached = flag + 1 < word.length;
+				const valueIndex = attached ? operand : skipRedirections(tokens, operand + 1);
+				if (name === "read" && option === "a"
+					&& hasNonliteralBashSubscript(tokens[valueIndex] ?? "", attached ? flag + 1 : 0)) return true;
+				if (!attached) operand = valueIndex;
+				break; // Remaining characters are an option operand, not more flags.
+			}
+			continue;
+		}
+		if (!tokens.expansions?.[operand]) options = false;
+		if ((!reads || name === "read") && hasNonliteralBashSubscript(word, 0, !reads)) return true;
+	}
+	return false;
+}
+
+/** Name/assignment arithmetic may recurse through values; only digits are bounded. */
+function hasNonliteralBashSubscript(word: string, start = 0, expression = false): boolean {
+	for (let index = start; index < word.length; index++) {
+		let code = word.charCodeAt(index);
+		if (code !== 95 && !(code >= 65 && code <= 90) && !(code >= 97 && code <= 122)) {
+			if (!expression) return false;
+			continue;
+		}
+		do {
+			code = word.charCodeAt(++index);
+		} while (code === 95 || code >= 65 && code <= 90 || code >= 97 && code <= 122 || code >= 48 && code <= 57);
+		if (code === 91) {
+			const first = ++index;
+			while (word.charCodeAt(index) >= 48 && word.charCodeAt(index) <= 57) index++;
+			if (index === first || word.charCodeAt(index) !== 93 || word.charCodeAt(index + 1) === 91) return true;
+			if (!expression && index + 1 < word.length) return true;
+		}
+		if (!expression) return false;
+	}
+	return false;
 }
 
 function hasBareBashArithmeticCommand(tokens: ShellSegment): boolean {
@@ -2295,10 +2374,18 @@ function literalFirstArgument(source: string, openParen: number): string | undef
 			continue;
 		}
 		if (code === 92) {
+			const next = source.charCodeAt(index + 1);
+			// Only quote/backslash escapes share these literal semantics in both
+			// supported languages. Never guess hex, Unicode, octal or other escapes.
+			if (next !== 92 && next !== 34 && next !== 39) return undefined;
 			escaped = true;
 			continue;
 		}
-		if (code === quote) return value;
+		if (code === quote) {
+			let end = index + 1;
+			while (source.charCodeAt(end) === 32 || source.charCodeAt(end) === 9 || source.charCodeAt(end) === 10 || source.charCodeAt(end) === 13) end++;
+			return source.charCodeAt(end) === 44 || source.charCodeAt(end) === 41 ? value : undefined;
+		}
 		value += source[index];
 	}
 	return undefined;

@@ -153,7 +153,7 @@ function inspectKnownMutation(command: string, tokens: PermissionTokens, start: 
       if (tokens[index] === "-fprint" || tokens[index] === "-fprint0" || tokens[index] === "-fprintf" || tokens[index] === "-fls") {
         markMutation(builder, "find_output");
         const target = tokens[++index];
-        if (target) addTarget(builder, target, cwd, true);
+        if (target) addTarget(builder, target, cwd, true, tokens.expansions?.[index]);
         else { builder.dynamicScope = true; builder.unverifiableMutation = true; markOpaque(builder, "missing_output_target"); }
         if (tokens[index - 1] === "-fprintf") index++;
         continue;

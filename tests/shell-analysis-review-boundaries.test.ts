@@ -8,6 +8,97 @@ import { shellHookFixture, assertFinalAuthorization } from "./codemode-recovery/
 import { SessionPermissionController, workspace } from "./codemode-recovery/guard-fixture.ts";
 
 for (const mode of ["full-access", "workspace-write"] as const) {
+  test(`review nineteen ${mode}: find output targets retain expansion flags`, async t => {
+    for (const action of ["-fprint", "-fprint0", "-fprintf", "-fls"]) {
+      const command = `find . -maxdepth 0 ${action} \u0060pwd\u0060/../outside${action === "-fprintf" ? " '%p'" : ""}`;
+      assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.unverifiableMutation, true, command);
+      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
+      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+    for (const command of ["find . -fprint '`pwd`/../outside'", "find . -name -fprint", "find . -fprintf output '`pwd`/../outside'"]) {
+      assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.unverifiableMutation, false, command);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
+    }
+  });
+  test(`review nineteen ${mode}: unknown transforms cannot hide shell heredoc source`, async t => {
+    for (const consumer of ["source /dev/stdin", ". /dev/stdin", "bash", "sh"]) {
+      const command = `cat <<'EOF' | tr X '&' | ${consumer}\nsleep 100 X\nEOF`;
+      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_HEREDOC\]/, command);
+      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
+      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+    for (const command of ["cat <<'EOF' | tr X '&' | cat\nsleep 100 X\nEOF", "cat <<'EOF' | tr X '&' >output | source /dev/stdin\nsleep 100 X\nEOF"]) {
+      assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
+    }
+  });
+  test(`review nineteen ${mode}: encoded and partial literal targets remain unverifiable`, async t => {
+    for (const body of ['shutil.rmtree("\\x2egit")', 'shutil.rmtree("\\u002egit")', 'shutil.rmtree("\\056git")', 'shutil.rmtree(".gi" "t")']) {
+      const command = `python3 <<'EOF'\n${body}\nEOF`;
+      assert.equal(inspectHighRiskBashMutation({ command }, process.cwd())?.unverifiableScope, true, command);
+      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
+      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+    for (const command of ["node <<'EOF'\nfs.rmSync('\\x2egit',{recursive:true})\nEOF", "node <<'EOF'\nfs.rmSync('.gi'+'t',{recursive:true})\nEOF"]) {
+      assert.equal(inspectHighRiskBashMutation({ command }, process.cwd())?.unverifiableScope, true);
+      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
+      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+    for (const body of ['shutil.rmtree("scratch")', 'shutil.rmtree("say\\\"hi")']) {
+      const command = `python3 <<'EOF'\n${body}\nEOF`;
+      assert.equal(inspectHighRiskBashMutation({ command }, process.cwd())?.unverifiableScope, false, command);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
+    }
+  });
+  test(`review eighteen ${mode}: mapfile callbacks always retain lifecycle refusal`, async t => {
+    for (const name of ["mapfile", "readarray"]) for (const command of [
+      `${name} -C 'sleep 100 &' -c 1 a < f.txt; echo ok`, `${name} -C 'sleep 100 &' -c 1 a < f.txt`,
+      `${name} -tC 'sleep 100 &' -c 1 a < f.txt`, `${name} -C"sleep 100 &" -c 1 a < f.txt`,
+      `builtin ${name} -C 'sleep 100 &' -c 1 a < f.txt`, `if ${name} -tC 'sleep 100 &' a < f.txt; then :; fi`,
+    ]) {
+      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_UNINSPECTABLE\]/, command);
+      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
+      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+    for (const command of ["mapfile -t a < f.txt", "readarray -d C -n 1 -s 0 -c 1 -u 0 a < f.txt", "mapfile -dC a < f.txt", "mapfile -- a < f.txt", "echo 'mapfile -C sleep'"]) {
+      assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
+      assert.equal(f.dialogs(), command.startsWith("echo") || mode === "full-access" ? 0 : 1);
+    }
+  });
+  test(`review eighteen ${mode}: unsafe Bash test operands retain main refusal`, async t => {
+    for (const command of [
+      "[[ -v 'a[$(sleep 100 &)]' ]]", "[ -v 'a[$(sleep 100 &)]' ]", "test -v 'a[$(sleep 100 &)]'",
+      "[[ 'a[$(sleep 100 &)]' -eq 0 ]]", "[[ x -eq y ]]", "[[ -v a[x] ]]", "[[ -v 'a[0]' ]]",
+      "builtin test -v 'a[$(sleep 100 &)]'", "if test -v a[x]; then :; fi", "! [ -v a[x] ]",
+    ]) {
+      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_UNINSPECTABLE\]/, command);
+      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
+      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+    assert.match(inspectBashResourceLifecycle({ command: "(( a[$(sleep 100 &)] ))" }) ?? "", /Blocked an unmanaged long-lived process/);
+    for (const command of ["[[ -v HOME ]]", "[ -v HOME ]", "test -v HOME", "[[ 1 -eq 1 ]]", "printf '%s' '[[ -v a[x] ]]'"]) {
+      assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
+    }
+  });
+  test(`review eighteen ${mode}: builtin name subscripts cannot conceal arithmetic execution`, async t => {
+    const operand = "a[$(sleep 100 &)]";
+    for (const command of [
+      `printf -v '${operand}' '%s' value`, `printf -v'${operand}' '%s' value`, `read '${operand}' < f.txt`, `read -ra '${operand}' < f.txt`,
+      `unset '${operand}'`, `declare '${operand}=1'`, `local '${operand}=1'`, `typeset '${operand}=1'`,
+      `readonly '${operand}=1'`, `export '${operand}=1'`, `let '${operand}=1'`, `let 'x=${operand}'`,
+      "printf -v a[x] '%s' value", "read a[x] < f.txt", "declare -i 'x=a[y]'",
+    ]) {
+      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_UNINSPECTABLE\]/, command);
+      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
+      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+    for (const command of ["printf -v 'a[0]' '%s' 'a[x]'", "read -p 'a[x]' 'a[0]' < f.txt", "unset 'a[0]'", "declare 'a[123]=1'", "let 'a[0]=1'", "printf '%s' 'a[$(sleep 100 &)]'"]) {
+      assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
+    }
+  });
   test(`review seventeen ${mode}: sort targets retain executable expansion metadata`, async t => {
     for (const command of [
       'sort -o `pwd`/../outside input', 'sort -o"`pwd`/../outside" input', 'sort -ro`pwd`/../outside input',
@@ -459,7 +550,12 @@ test("state-changing builtins and expansions taint later mutation context", asyn
     for (const mode of ["full-access", "workspace-write"] as const) {
       const f = await shellHookFixture(t, mode), { outcome } = await f.authorize(command);
       assert.equal(outcome?.block, true); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-      assertFinalAuthorization(await f.authorize(prefix));
+      const standalone = await f.authorize(prefix);
+      if (prefix.startsWith("[[")) {
+        // The user restored main's complete test-operand lifecycle boundary.
+        assert.equal(standalone.outcome?.block, true); assert.equal(standalone.outcome?.finalAuthorization, undefined);
+        assert.match(standalone.outcome?.reason ?? "", /\[SHELL_UNINSPECTABLE\]/);
+      } else assertFinalAuthorization(standalone);
     }
   }
 });

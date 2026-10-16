@@ -12,6 +12,18 @@ const cwd = process.cwd(), iterations = 512, warmup = 64, samplingInterval = 409
 const literalInputs = process.argv.includes("--literal-inputs");
 const substitution = "$(grep -c -E '(class|function|const|var|let) GCSystem\\b' pixi/pixi.js)";
 const cases = literalInputs ? [
+  ["find-backtick-output", 'find . -maxdepth 0 -fprint `pwd`/../outside', 2],
+  ["unknown-shell-transform", "cat <<'EOF' | tr X '&' | source /dev/stdin\nsleep 100 X\nEOF", 1],
+  ["python-escaped-target", 'python3 <<\'EOF\'\nshutil.rmtree("\\x2egit")\nEOF', 1],
+  ["mapfile-callback-followed", "mapfile -C 'sleep 100 &' -c 1 a < f.txt; echo ok", 1],
+  ["mapfile-callback-final", "mapfile -C 'sleep 100 &' -c 1 a < f.txt", 1],
+  ["readarray-callback-clustered", "readarray -tC 'sleep 100 &' -c 1 a < f.txt", 1],
+  ["mapfile-callback-attached", 'mapfile -C"sleep 100 &" -c 1 a < f.txt', 1],
+  ["mapfile-without-callback", "mapfile -t a < f.txt", 1],
+  ["unsafe-indirect-test", "[[ -v a[x] ]]", 1],
+  ["unsafe-single-test", "test -v a[x]", 1],
+  ["unsafe-name-operand", "printf -v a[x] '%s' value", 1],
+  ["unsafe-let-operand", "let 'x=a[y]'", 1],
   ["sort-backtick-output", 'sort -o `pwd`/../outside input', 2],
   ["sort-backtick-temporary", 'sort --te=`pwd`/../outside input', 2],
   ["sort-literal-backticks", "sort --out='`pwd`/../outside' input", 1],
