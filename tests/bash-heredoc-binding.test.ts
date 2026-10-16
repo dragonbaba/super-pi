@@ -16,6 +16,26 @@ import { shellHeredocKind } from "../packages/coding-agent/src/core/tools/shell-
 const shellPath = process.platform === "win32" && existsSync("D:/Git/bin/bash.exe") ? "D:/Git/bin/bash.exe" : getShellConfig().shell;
 const literal = "cat <<'EOF'\nprintf BODY_EXECUTED\nEOF";
 
+test("review fifteen: parameter words are data while nested executable substitutions retain the heredoc gate", async () => {
+ for (const command of ["echo ${x:-a<<b}", "echo ${x:-${y:-a<<b}}", "echo ${x:-(a<<b)}", "echo ${x:-'a<<b'}", 'echo "${x:-a<<b}"', "echo ${x:-$(printf '%s' 'a<<b')}"]) {
+  assert.equal(shellHeredocKind(command), 0, command);
+  const input = { command };
+  for (const options of [{ commandPrefix: "true" }, { spawnHook: (context: any) => context }, { operations: { exec: async () => ({ exitCode: 0 }) } }]) {
+   const tool = createBashTool(process.cwd(), { shellPath, ...options });
+   assert.strictEqual(tool.prepareArguments!(input), input);
+   const result = await tool.execute("parameter-data", input);
+   assert.equal(result.isError, undefined, command);
+  }
+ }
+ const actual = await createBashTool(process.cwd(), { shellPath, commandPrefix: "true" }).execute("parameter-output", { command: "unset sp_gate_value; echo ${sp_gate_value:-a<<b}" });
+ assert.equal(actual.content.filter(c => c.type === "text").map(c => c.text).join("\n").trim(), "a<<b");
+ for (const command of ["echo ${x:-$(cat <<'E'\nx\nE\n)}", "echo ${x:-${y:-$(cat <<'E'\nx\nE\n)}}", "echo ${x:-a<<b}; cat <<'E'\nx\nE"]) {
+  assert.equal(shellHeredocKind(command), 1, command);
+  const denied = await dispatch(process.cwd(), command, { commandPrefix: "true" }, false, 0);
+  assert.equal(denied.processes, 0); assert.match(denied.text, /\[SHELL_HEREDOC\]/);
+ }
+});
+
 test("heredoc gate preserves bounded diagnostics and scans only executable syntax", () => {
  for (const consumer of ["cat", "node"]) for (const delimiter of ["E", "EOF", "_long123", "Z".repeat(32)]) {
   for (const body of ["", "data\n", "EOF\n", "中文😀\n", "\ud800\n", "a\r\n", "a\0\n", "x".repeat(12270) + "\n"]) {

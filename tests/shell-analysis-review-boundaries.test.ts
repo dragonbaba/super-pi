@@ -8,6 +8,18 @@ import { shellHookFixture, assertFinalAuthorization } from "./codemode-recovery/
 import { SessionPermissionController, workspace } from "./codemode-recovery/guard-fixture.ts";
 
 for (const mode of ["full-access", "workspace-write"] as const) {
+  test(`review fifteen ${mode}: later lookup state cannot invalidate earlier mutation targets`, async t => {
+    for (const command of ["rm -r scratch; PATH=/tmp; echo ok", "touch scratch; PATH=/tmp; echo ok", "rm -r scratch; export PATH=/tmp; echo ok", "rm -r scratch; hash -p /tmp/echo echo; echo ok"]) {
+      assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.unverifiableScope, true, command);
+      assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.unverifiableMutation, false, command);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
+      assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
+    }
+    for (const command of ["PATH=/tmp; rm -r scratch", "rm -r first; PATH=/tmp; rm -r second", "for x in 1 2; do rm -r scratch; PATH=/tmp; done; echo ok"]) {
+      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
+      assert.equal(call.outcome?.block, true, command); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+  });
   test(`review fourteen ${mode}: newline function bodies retain executable stdin`, async t => {
     for (const definition of ["function f\n{ source /dev/stdin; }", "function f\n\n# trivia\n{ source /dev/stdin; }", "f()\n{ source /dev/stdin; }"]) {
       const command = `${definition}; f <<'EOF'\nsleep 100 &\nEOF`;

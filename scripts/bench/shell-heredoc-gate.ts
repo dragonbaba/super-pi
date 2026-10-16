@@ -10,6 +10,8 @@ const tool = createBashTool(process.cwd(), { commandPrefix: "true", exposeSessio
 const cases = [
   ["ordinary", "printf ok", 0],
   ["quoted-and-arithmetic", "echo 'a << b' $((1 << 3))", 0],
+  ["parameter-data", "echo ${x:-${y:-(a<<b)}}", 0],
+  ["parameter-heredoc", "echo ${x:-$(cat <<'E'\nx\nE\n)}", 1],
   ["large-ordinary", `echo ${"x".repeat(128 * 1024)}`, 0],
   ["compound-heredoc", "cd . && node <<'EOF'\nconsole.log(1)\nEOF", 1],
   ["trailing-heredoc", "node <<'EOF'\nconsole.log(1)\nEOF\necho done", 1],

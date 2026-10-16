@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { basename, resolve } from "node:path";
-import { hasUninspectableBashState, heredocDocumentConsumers, heredocExecutableBody, heredocHasUntrackedCwd, literalAliasSource, literalEvalScript, literalProcessSources, literalStoredScripts, unsafeBashLoopHeaderReason } from "./core.ts";
+import { uninspectableBashStateStart, heredocDocumentConsumers, heredocExecutableBody, heredocHasUntrackedCwd, literalAliasSource, literalEvalScript, literalProcessSources, literalStoredScripts, unsafeBashLoopHeaderReason } from "./core.ts";
 import { commandSubstitutionEnd } from "./shell-substitution.ts";
 import { analyzeShellSource, type ShellAnalysisOwner } from "./shell-analysis.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
@@ -527,7 +527,9 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
   }
   const prepared = builder.analysisOwner ? builder.analysisOwner.get(command) : analyzeShellSource(command);
   const analysis = prepared.view;
-  if (hasUninspectableBashState(analysis.command)) {
+  let uncertainStateStart = uninspectableBashStateStart(analysis.command);
+  if (uncertainStateStart === 0) {
+    uncertainStateStart = -1;
     markOpaque(builder, "unverifiable_shell_state");
     builder.uncertainContext = true;
   }
@@ -565,6 +567,9 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
   let redirectionTargetPending = false;
   let bashDoubleBracket = false;
   for (let index = 0; index < command.length; index++) {
+    if (uncertainStateStart >= 0 && index >= uncertainStateStart) {
+      markUncertainContext(builder, "unverifiable_shell_state"); uncertainStateStart = -1;
+    }
     const code = command.charCodeAt(index);
     if (escaped) {
       literalWord = false;

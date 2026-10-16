@@ -474,7 +474,9 @@ function inspectShellScript(script: string, initialCwd: string, depth: number, b
 	}
 	const prepared = builder.analysisOwner ? builder.analysisOwner.get(script) : analyzeShellSource(script);
 	const analysis = prepared.view;
-	if (hasUninspectableBashState(analysis.command)) {
+	let uncertainStateStart = uninspectableBashStateStart(analysis.command);
+	if (uncertainStateStart === 0) {
+		uncertainStateStart = -1;
 		addPrimitive(builder, "unverifiable_shell_state");
 		markUnverifiable(builder);
 	}
@@ -503,11 +505,14 @@ function inspectShellScript(script: string, initialCwd: string, depth: number, b
 	}
 	if (substitutions.unsupported) markUnverifiable(builder);
 	for (const nested of substitutions.scripts) inspectShellScript(nested, initialCwd, depth + 1, builder, shellOperation);
-	const segments = parseShellSegments(analysis.command);
+	const segments = parseShellSegments(analysis.command, true);
 	const loopReason = unsafeBashLoopHeaders(segments);
 	if (loopReason) { addPrimitive(builder, loopReason); markUnverifiable(builder); }
 	let workingDirectory = initialCwd;
 	for (const segment of segments) {
+		if (uncertainStateStart >= 0 && segment.sourceStart! >= uncertainStateStart) {
+			addPrimitive(builder, "unverifiable_shell_state"); markUnverifiable(builder); uncertainStateStart = -1;
+		}
 		builder.segmentsVisited++;
 		if (builder.segmentsVisited > MAX_SCRIPT_SEGMENTS) {
 			markUnverifiable(builder, builder.mutationDetected);
@@ -1629,7 +1634,12 @@ function isTemporaryCdpathQuery(tokens: ShellSegment, index: number): boolean {
 
 /** Reject bounded command lists whose later cwd or executable lookup cannot be established. */
 export function hasUninspectableBashState(command: string): boolean {
-	const segments = parseShellSegments(command);
+	return uninspectableBashStateStart(command) >= 0;
+}
+
+/** First affected simple-command source offset; compound state stays conservative. */
+export function uninspectableBashStateStart(command: string): number {
+	const segments = parseShellSegments(command, true);
 	let loopDepth = 0;
 	let conditionalDepth = 0;
 	let braceDepth = 0;
@@ -1645,9 +1655,9 @@ export function hasUninspectableBashState(command: string): boolean {
 		for (let ancestor = 0; ancestor <= depth; ancestor++) if (cdSemanticsChanges[ancestor]) cdSemanticsChanged = true;
 		// An inherited or prior CDPATH change reaches a nested evaluator, and
 		// command substitutions can observe the same changed shell state.
-		if (cdSemanticsChanged && tokens.expansions) for (const flags of tokens.expansions) if ((flags & 4) !== 0) return true;
+		if (cdSemanticsChanged && tokens.expansions) for (const flags of tokens.expansions) if ((flags & 4) !== 0) return 0;
 		const controlIndex = skipBashReservedPrefixes(tokens, 0);
-		if (controlIndex < 0) return true;
+		if (controlIndex < 0) return 0;
 		const first = tokens[controlIndex];
 		if (first === "done" && loopDepth > 0) loopDepth--;
 		if ((first === "fi" || first === "esac") && conditionalDepth > 0) conditionalDepth--;
@@ -1657,6 +1667,7 @@ export function hasUninspectableBashState(command: string): boolean {
 		if (first === "{") braceDepth++;
 		const simpleSegment = loopDepth === 0 && conditionalDepth === 0 && braceDepth === 0
 			&& !tokens.subshellDepth && !tokens.pipelineMember && !tokens.conditionalMember && controlIndex === 0;
+		const stateStart = simpleSegment ? tokens.sourceStart! : 0;
 		let index = commandTokenIndex(tokens);
 		if (index < 0) continue;
 		// A launcher such as `env` or `sudo` runs an external program, never a shell builtin.
@@ -1665,17 +1676,17 @@ export function hasUninspectableBashState(command: string): boolean {
 			let controlPrefixes = 0;
 			while (index < tokens.length) {
 				index = skipBashReservedPrefixes(tokens, index);
-				if (index < 0) return true;
+				if (index < 0) return stateStart;
 				if (tokens[index] !== "do" && tokens[index] !== "{" && tokens[index] !== "then" && tokens[index] !== "else"
 					&& tokens[index] !== "if" && tokens[index] !== "elif" && tokens[index] !== "while" && tokens[index] !== "until") break;
 				// Prefixes and control words can alternate (`! if cd ...`). Beyond
 				// the retained quote provenance, do not guess whether a word is syntax.
-				if (index > 2 || ++controlPrefixes > MAX_WRAPPER_DEPTH) return true;
+				if (index > 2 || ++controlPrefixes > MAX_WRAPPER_DEPTH) return stateStart;
 				if (index === 0 ? tokens.firstWordQuoted : index === 1 ? tokens.secondWordQuoted : tokens.thirdWordQuoted) break;
 				index++;
 			}
 		} else index = skipBashReservedPrefixes(tokens, index);
-		if (index < 0) return true;
+		if (index < 0) return stateStart;
 		let builtinPrefixes = 0;
 		let leadingAssignment = false;
 		let cdpathAssignment = false;
@@ -1692,7 +1703,7 @@ export function hasUninspectableBashState(command: string): boolean {
 			}
 			// `command command cd`, `command -p cd` and `builtin -- cd` still dispatch to cd.
 			if (tokens[index] === "command" || tokens[index] === "builtin") {
-				if (++builtinPrefixes > MAX_WRAPPER_DEPTH) return true;
+				if (++builtinPrefixes > MAX_WRAPPER_DEPTH) return stateStart;
 				index++;
 				while (tokens[index] === "-p" || tokens[index] === "--") index++;
 				continue;
@@ -1706,7 +1717,7 @@ export function hasUninspectableBashState(command: string): boolean {
 		// assignment before an executable is not evidence of the later shell cwd.
 		if (index >= tokens.length) {
 			if (cdpathAssignment && mayPersist) cdSemanticsChanges[depth] = true;
-			if (lookupAssignment && hasLaterBashCommandInShell(segments, segmentIndex)) return true;
+			if (lookupAssignment && hasLaterBashCommandInShell(segments, segmentIndex)) return stateStart;
 			continue;
 		}
 		// Builtins are exact bare words: `./cd`, `/opt/cd` and `CD` are external executables.
@@ -1716,15 +1727,15 @@ export function hasUninspectableBashState(command: string): boolean {
 		// calling shell. A later command (including a final eval) may call one.
 		if ((name === "function" && !tokens.firstWordQuoted
 			|| tokens.separatorAfter === "(" && index + 1 === tokens.length && !tokens.firstWordQuoted && !tokens.dynamic)
-			&& hasLaterBashCommandInShell(segments, segmentIndex)) return true;
+			&& hasLaterBashCommandInShell(segments, segmentIndex)) return stateStart;
 		// A temporary lookup assignment also affects the executable selected by
 		// this very command; do not authorize it using the inherited PATH.
-		if (lookupAssignment) return true;
+		if (lookupAssignment) return stateStart;
 		// A definition on an earlier line can replace a later command. The
 		// bounded scanner does not propagate alias definitions or removals.
 		if ((name === "alias" || name === "unalias") && hasLaterBashCommandInShell(segments, segmentIndex)) {
 			for (let operand = skipRedirections(tokens, index + 1); operand < tokens.length; operand = skipRedirections(tokens, operand + 1)) {
-				if (name === "unalias" || tokens[operand]!.includes("=") || tokens.expansions?.[operand]) return true;
+				if (name === "unalias" || tokens[operand]!.includes("=") || tokens.expansions?.[operand]) return stateStart;
 			}
 		}
 		if (cdpathAssignment && mayPersist && !isTemporaryCdpathQuery(tokens, index)
@@ -1736,34 +1747,34 @@ export function hasUninspectableBashState(command: string): boolean {
 				const after = afterLeadingRedirection(tokens, operand);
 				if (after !== operand) { operand = after - 1; continue; }
 				if (tokens[operand]!.startsWith("CDPATH=") || tokens[operand]!.startsWith("CDPATH+=")) cdSemanticsChanges[depth] = cdSemanticsChanged = true;
-				if (changesBashExecutableLookup(tokens[operand]!) && hasLaterBashCommandInShell(segments, segmentIndex)) return true;
+				if (changesBashExecutableLookup(tokens[operand]!) && hasLaterBashCommandInShell(segments, segmentIndex)) return stateStart;
 			}
 		}
-		if (cdSemanticsChanged && (SCRIPT_WRAPPERS.has(commandName(effectiveName)) || name === "eval" || name === "source" || name === "." || name === "exec")) return true;
+		if (cdSemanticsChanged && (SCRIPT_WRAPPERS.has(commandName(effectiveName)) || name === "eval" || name === "source" || name === "." || name === "exec")) return stateStart;
 		if ((name === "declare" || name === "typeset" || name === "local")
 			&& hasLaterBashCommandInShell(segments, segmentIndex)) {
 			for (let operand = index + 1; operand < tokens.length; operand++) {
 				const word = tokens[operand]!;
-				if ((word.startsWith("-") || word.startsWith("+")) && word.charCodeAt(1) !== 45 && word.includes("n")) return true;
+				if ((word.startsWith("-") || word.startsWith("+")) && word.charCodeAt(1) !== 45 && word.includes("n")) return stateStart;
 			}
 		}
 		if (name === "let" && hasLaterBashCommandInShell(segments, segmentIndex)
-			&& hasUninspectableBashLet(tokens, index)) return true;
+			&& hasUninspectableBashLet(tokens, index)) return stateStart;
 		if ((name === "read" || name === "readarray" || name === "mapfile")
 			&& hasLaterBashCommandInShell(segments, segmentIndex)
-			&& hasUninspectableBashReadDestination(tokens, index, name)) return true;
+			&& hasUninspectableBashReadDestination(tokens, index, name)) return stateStart;
 		if (name === "getopts" && hasLaterBashCommandInShell(segments, segmentIndex)) {
 			const optionsIndex = skipRedirections(tokens, index + 1);
 			const destinationIndex = skipRedirections(tokens, optionsIndex + 1);
 			const destination = tokens[destinationIndex];
 			if (!tokens[optionsIndex] || !destination
-				|| isUncertainBashReadDestination(destination, tokens.expansions?.[destinationIndex] ?? 0)) return true;
+				|| isUncertainBashReadDestination(destination, tokens.expansions?.[destinationIndex] ?? 0)) return stateStart;
 		}
 		// The scans track only a direct literal `cd`; directory stacks are not followed.
-		if (name === "pushd" || name === "popd") return true;
+		if (name === "pushd" || name === "popd") return stateStart;
 		// hash with operands can pin or clear a lookup for a later command. A
 		// bare `hash` only lists entries and does not change the table.
-		if (name === "hash" && skipRedirections(tokens, index + 1) < tokens.length && hasLaterBashCommandInShell(segments, segmentIndex)) return true;
+		if (name === "hash" && skipRedirections(tokens, index + 1) < tokens.length && hasLaterBashCommandInShell(segments, segmentIndex)) return stateStart;
 		if (changesBashCdSemantics(tokens, index, name)) { cdSemanticsChanges[depth] = true; continue; }
 		// Trap actions are executable source, including EXIT actions at shutdown.
 		// A pipeline's last member can also persist a trap under `lastpipe`.
@@ -1773,11 +1784,11 @@ export function hasUninspectableBashState(command: string): boolean {
 			if (endOfOptions) actionIndex = skipRedirections(tokens, actionIndex + 1);
 			const action = tokens[actionIndex];
 			if (action !== undefined && (endOfOptions || action !== "-p" && action !== "-l") && action !== "-"
-				&& (action !== "" || tokens.expansions?.[actionIndex]) && !OWNED_FOREGROUND_JOB_PATTERN.test(command)) return true;
+				&& (action !== "" || tokens.expansions?.[actionIndex]) && !OWNED_FOREGROUND_JOB_PATTERN.test(command)) return stateStart;
 		}
 		// A sourced file or evaluated source runs in this shell. Without bounded
 		// state propagation, a later command could use a different cwd or lookup.
-		if ((name === "source" || name === "." || name === "eval") && segmentIndex + 1 < segments.length) return true;
+		if ((name === "source" || name === "." || name === "eval") && segmentIndex + 1 < segments.length) return stateStart;
 		if (name === "function" ? tokens[index + 1] === "exit" : name === "exit" && tokens.separatorAfter === "(") exitRedefined = true;
 		if (name === "cd") {
 			// Redirections may surround the operand; Bash rejects a second operand
@@ -1786,10 +1797,10 @@ export function hasUninspectableBashState(command: string): boolean {
 			const target = tokens[operandIndex];
 			if (leadingAssignment || builtinPrefixes > 0 || cdSemanticsChanged
 				|| !target || target.startsWith("-") || hasDynamicSyntax(target)
-				|| skipRedirections(tokens, operandIndex + 1) < tokens.length) return true;
+				|| skipRedirections(tokens, operandIndex + 1) < tokens.length) return stateStart;
 			// cd itself can fail even when its redirections succeed. An independent
 			// later target must therefore be read-only or gated on successful cd.
-			if (target !== "." && hasLaterBashCommandSubstitution(segments, segmentIndex)) return true;
+			if (target !== "." && hasLaterBashCommandSubstitution(segments, segmentIndex)) return stateStart;
 			if (simpleSegment && (segmentIndex + 1 === segments.length || hasOnlyReadOnlyConditionalTail(segments, segmentIndex))) continue;
 			// After `a || cd`, a true `a` skips cd while later `&&`/`||` commands still run:
 			// `(a || cd dir) && next`. An incoming `&&` skips both cd and its dependents.
@@ -1800,15 +1811,15 @@ export function hasUninspectableBashState(command: string): boolean {
 			// A literal `cd .` leaves relative targets at the same path whether it
 			// succeeds or fails; other conditional cd targets can change the cwd.
 			if (target === ".") continue;
-			if (controlIndex > 0) return true;
+			if (controlIndex > 0) return stateStart;
 			// The RHS of `cd path && ...` only runs after a successful cd. A later
 			// independent command is safe only when its effects are provably read-only.
 			if (!skippedByOr && !tokens.subshellDepth && !tokens.pipelineMember && tokens.separatorAfter === "&&"
 				&& hasOnlyReadOnlyConditionalTail(segments, segmentIndex)) continue;
-			return true;
+			return stateStart;
 		}
 	}
-	return false;
+	return -1;
 }
 
 /**
