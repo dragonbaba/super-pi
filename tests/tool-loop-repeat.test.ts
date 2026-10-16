@@ -5,10 +5,11 @@ import test from "node:test";
 import { createJiti } from "jiti";
 import { callKey, IdentityCounters, MAX_IDENTITY_CHARACTERS } from "../packages/extensions/tool-loop-guardrails/call-identity.ts";
 import { CallLedger, MAX_PENDING_CALLS, MAX_RELEASED_CALLS } from "../packages/extensions/tool-loop-guardrails/call-ledger.ts";
+import { CLI_EXTENSION_HOST_POLICY } from "../packages/coding-agent/src/core/extension-host-policy.ts";
 const jiti = createJiti(import.meta.url);
 const core = await jiti.import<typeof import("../packages/extensions/tool-loop-guardrails/core.ts")>("../packages/extensions/tool-loop-guardrails/core.ts");
 const { default: guard } = await jiti.import<typeof import("../packages/extensions/tool-loop-guardrails/index.ts")>("../packages/extensions/tool-loop-guardrails/index.ts");
-const { parseRetryPolicy, DEFAULT_RETRY_POLICY } = await jiti.import<typeof import("../packages/extensions/tool-loop-guardrails/transient-retry.ts")>("../packages/extensions/tool-loop-guardrails/transient-retry.ts");
+const { parseRetryPolicy, DEFAULT_RETRY_POLICY, MAX_RETRY_DELAY_MS } = await jiti.import<typeof import("../packages/extensions/tool-loop-guardrails/transient-retry.ts")>("../packages/extensions/tool-loop-guardrails/transient-retry.ts");
 
 function fixture(config?: string) {
   const hooks = new Map<string, (...args: any[]) => any>();
@@ -187,13 +188,15 @@ test("cancelled or vetoed retries consume the attempt reservation even without a
   f.close();
 });
 
-for (const finish of ["result", "cancel"] as const) test(`an earlier unreserved sibling ${finish} cannot release another parent's retry`, async t => {
+for (const finish of ["result", "success", "cancel"] as const) test(`an earlier unreserved sibling ${finish} cannot release another parent's retry`, async t => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const f = fixture(), input = { x: 1 };
   await f.call("a", input, "pa"); await f.call("b", input, "pb");
   await f.result("a", input, "HTTP 503", true);
   const waiting = f.call("retry", input, "pc"); await setImmediate();
-  if (finish === "result") await f.result("b", input, "HTTP 503", true); else f.end("pb");
+  if (finish === "result") await f.result("b", input, "HTTP 503", true);
+  else if (finish === "success") await f.result("b", input);
+  else f.end("pb");
   const overlap = f.call("overlap", input, "pd"); await setImmediate();
   t.mock.timers.tick(15000);
   assert.equal(await waiting, undefined);
@@ -201,20 +204,61 @@ for (const finish of ["result", "cancel"] as const) test(`an earlier unreserved 
   f.close();
 });
 
-test("a late retry from before successful recovery cannot release a new retry owner", async t => {
+for (const outcome of ["success", "failure"] as const) test(`a stale retry ${outcome} cannot erase or release a newer generation`, () => {
+  const state = core.createGuardState(), input = { x: 1 }, key = core.callKey("child", input);
+  core.recordResult(state, "child", input, true, "HTTP 503", key);
+  const old = state.retry.operations.get(key)!;
+  core.recordResult(state, "child", input, false, "ok", key, undefined, old);
+  core.recordResult(state, "child", input, true, "HTTP 503", key);
+  const current = state.retry.operations.get(key)!;
+  assert.notEqual(current, old);
+  current.inFlight = true; current.attempts++; current.waitMs = 1000;
+  core.recordResult(state, "child", input, outcome === "failure", "HTTP 503", key, undefined, old);
+  assert.equal(state.retry.operations.get(key), current);
+  assert.equal(current.inFlight, true);
+  assert.equal(current.attempts, outcome === "failure" ? 3 : 2);
+  assert.equal(current.waitMs, 1000);
+  assert.match(core.inspectBeforeCall(state, "child", input)!, /already waiting or executing/);
+  // The stale success also cannot erase accounting after the new owner settles.
+  current.inFlight = false;
+  core.recordResult(state, "child", input, false, "ok", key, undefined, old);
+  assert.equal(state.retry.operations.get(key), current);
+  core.recordResult(state, "child", input, false, "ok", key, undefined, current);
+  assert.equal(state.retry.operations.has(key), false);
+});
+
+test("camelCase and JSON HTTP 5xx use the transient ledger without changing deterministic refusals", async t => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
-  const f = fixture(), input = { x: 1 };
-  await f.call("a", input, "pa"); await f.call("b", input, "pb");
-  await f.result("a", input, "HTTP 503", true);
-  const oldRetry = f.call("old", input, "pc"); await setImmediate();
-  await f.result("b", input); // Clears this operation's failure budget, including the old generation.
-  await f.call("fresh", input, "pd"); await f.result("fresh", input, "HTTP 503", true);
-  const newRetry = f.call("new", input, "pe"); await setImmediate();
-  t.mock.timers.tick(1000); assert.equal(await oldRetry, undefined); assert.equal(await newRetry, undefined);
-  await f.result("old", input, "HTTP 503", true);
-  const overlap = JSON.parse((await f.call("overlap", input, "pf")).reason);
-  assert.match(overlap.cause, /already waiting or executing/);
-  assert.equal(overlap.attempts, 3);
+  for (const text of ['{"statusCode":503}', "Request failed with statusCode: 503", '{"status":502}', "status code = 504"]) {
+    const f = fixture('{"baseDelayMs":1,"maxDelayMs":1}'), input = { url: "offline" };
+    for (let i = 0; i < 5; i++) {
+      const admission = f.call(`c${i}`, input, `p${i}`);
+      if (i) { await setImmediate(); t.mock.timers.tick(1); }
+      assert.equal(await admission, undefined, text);
+      await f.result(`c${i}`, input, text, true);
+    }
+    const refused = JSON.parse((await f.call("last", input, "last-parent")).reason);
+    assert.equal(refused.category, "TRANSIENT_RETRY_EXHAUSTED", text);
+    assert.equal(refused.attempts, 5); assert.equal(refused.waitMs, 4);
+    f.close();
+  }
+  for (const text of ['{"statusCode":400}', "SyntaxError: statusCode: 503"]) {
+    const state = core.createGuardState();
+    for (let i = 0; i < 2; i++) core.recordResult(state, "bash", {}, true, text);
+    assert.equal(state.retry.operations.size, 0);
+    assert.match(core.inspectBeforeCall(state, "bash", {})!, /REPEATED_CALL_BLOCKED/);
+  }
+});
+
+test("accepted retry delays remain well below the standard safety-hook deadline", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  assert.ok(MAX_RETRY_DELAY_MS <= CLI_EXTENSION_HOST_POLICY.hookTimeouts.safety.timeoutMs / 3);
+  const config = JSON.stringify({ baseDelayMs: MAX_RETRY_DELAY_MS, maxDelayMs: MAX_RETRY_DELAY_MS });
+  assert.equal(parseRetryPolicy(config).maxDelayMs, MAX_RETRY_DELAY_MS);
+  const f = fixture(config), input = { x: 1 };
+  await f.call("first", input, "p1"); await f.result("first", input, "HTTP 503", true);
+  const retry = f.call("retry", input, "p2"); await setImmediate();
+  t.mock.timers.tick(MAX_RETRY_DELAY_MS); assert.equal(await retry, undefined);
   f.close();
 });
 
@@ -248,7 +292,7 @@ test("pending/release tables have hard bounds and parent/end cleanup", () => {
 
 test("configuration defaults match the user choice and malformed budgets fail closed", async () => {
   assert.deepEqual(DEFAULT_RETRY_POLICY, { maxAttempts: 5, maxWaitMs: 15000, baseDelayMs: 1000, maxDelayMs: 8000 });
-  for (const value of ['{"maxAttempts":0}', '{"maxWaitMs":120001}', '{"other":1}', "[]", "null", '{"baseDelayMs":9000}']) {
+  for (const value of ['{"maxAttempts":0}', '{"maxWaitMs":120001}', '{"other":1}', "[]", "null", '{"baseDelayMs":9000}', '{"maxDelayMs":10001}', '{"baseDelayMs":30000,"maxDelayMs":30000}']) {
     assert.throws(() => parseRetryPolicy(value));
     const f = fixture(value); assert.match((await f.call("blocked", {})).reason, /TOOL_RETRY_CONFIG/); f.close();
   }

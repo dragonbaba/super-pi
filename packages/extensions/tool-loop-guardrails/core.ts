@@ -578,7 +578,12 @@ export function recordResult(
   state.activeFailureSignature = undefined;
   state.activeFailureCount = 0;
   const call = canonicalCallKey ?? callKey(toolName, input);
-  state.retry.operations.delete(call);
+  const retry = state.retry.operations.get(call);
+  // A stale retry must not erase a newer generation. An ordinary sibling may
+  // report recovery, but cannot remove another invocation's live reservation.
+  if (retry === reservedRetryOperation || (!reservedRetryOperation && !retry?.inFlight)) {
+    state.retry.operations.delete(call);
+  }
   const prefix = `${call}:`;
   for (const key of state.failuresBySignature.keys()) if (key.startsWith(prefix)) state.failuresBySignature.delete(key);
   state.failuresByTool.delete(boundedToolName(toolName));

@@ -12,7 +12,10 @@ export const DEFAULT_RETRY_POLICY: Readonly<RetryPolicy> = Object.freeze({
   maxAttempts: 5, maxWaitMs: 15_000, baseDelayMs: 1_000, maxDelayMs: 8_000,
 });
 export const MAX_RETRY_OPERATIONS = 64;
-const TRANSIENT_HTTP_RE = /\b(?:HTTP(?:\/\d(?:\.\d)?)?\s+|status(?:\s+code)?\s*[:=]?\s*)5\d\d\b/iu;
+// Standard CLI safety hooks have a 30s deadline, including preparation overhead.
+// Keep configurable backoff well below it rather than racing the host timer.
+export const MAX_RETRY_DELAY_MS = 10_000;
+const TRANSIENT_HTTP_RE = /\b(?:HTTP(?:\/\d(?:\.\d)?)?\s+|status(?:\s*code)?["']?\s*[:=]?\s*)5\d\d\b/iu;
 const TRANSIENT_NETWORK_RE = /\b(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH)\b|fetch failed|socket hang up|network (?:error|unavailable)|connection (?:reset|termination)|upstream connect error/iu;
 
 export function isTransientFailure(category: string, text: string, details?: unknown): boolean {
@@ -32,7 +35,7 @@ export function parseRetryPolicy(value: unknown): Readonly<RetryPolicy> {
   for (const key of Object.keys(input)) {
     if (!Object.hasOwn(policy, key)) throw new Error(`Unknown tool-transient-retry field: ${key}`);
     const number = input[key];
-    const maximum = key === "maxAttempts" ? 20 : key === "maxWaitMs" ? 120_000 : 30_000;
+    const maximum = key === "maxAttempts" ? 20 : key === "maxWaitMs" ? 120_000 : MAX_RETRY_DELAY_MS;
     if (typeof number !== "number" || !Number.isSafeInteger(number) || number < 1 || number > maximum) {
       throw new Error(`tool-transient-retry ${key} must be an integer from 1 through ${maximum}`);
     }
