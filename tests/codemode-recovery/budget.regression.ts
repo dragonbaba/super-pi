@@ -6,7 +6,7 @@ import { createToolResultPresentationOwner, type ToolResultPresentationContent }
 import { estimateToolOutputTokens } from "../../packages/coding-agent/src/core/tool-output-budget.ts";
 import { ALPHA_MODEL } from "../helpers/alpha-session.ts";
 import { assistant, body, longText, sessionFixture, toolResult } from "./fixture.ts";
-import { assertTextRecovery } from "./assertions.ts";
+import { assertTextRecovery, assertTextRecoveryAsync, modelRecoveryChunk } from "./assertions.ts";
 
 // These acceptance tests intentionally fail on b44dc096. They are run explicitly by
 // test:codemode-recovery; rename/promote fixed cases into the ordinary suite in R1.
@@ -58,7 +58,7 @@ for (const count of [8, 20]) {
         const content = count === 8 ? longLine : [{ type: "text" as const, text: longText }];
         const messages = [assistant(ids), ...ids.map((id, i) => toolResult(id,
           (first ? i === 0 : i === count - 1) ? content : [{ type: "text", text: "ok" }]))];
-        const projected = owner.projectMessagesForModel(messages, undefined, undefined, undefined, 128000, 4096);
+        const projected = owner.projectMessagesForModel(messages.slice(), undefined, undefined, undefined, 128000, 4096);
         const tokens = projected.slice(1).reduce((sum, m) => sum + estimateToolOutputTokens(m.content as never).estimatedTokens, 0);
         const oversizedId = ids[first ? 0 : count - 1];
         const oversized = projected.find(m => m.role === "toolResult" && m.toolCallId === oversizedId);
@@ -87,7 +87,7 @@ test("F-B9 historical expansion must be stable or included in context accounting
     const growth = historySize(after) - historySize(before);
     const estimateBefore = estimateContextTokensFromParts(undefined, before, undefined).tokens;
     const estimateAfter = estimateContextTokensFromParts(undefined, after, undefined).tokens;
-    assert.ok(growth >= 0, "unchanged budgets must not silently shrink historical model content");
+    assert.ok(growth >= 0, "unchanged budgets must not shrink historical model content");
     for (const history of [firstHistory, after.slice(0, original.length)]) {
       for (const message of history.slice(1)) assertTextRecovery(message.content as never, longText,
         cursor => owner.readContinuation(cursor, original, 1024));
@@ -142,13 +142,40 @@ test("F-B12 session recovery still works after the source is compacted out of mo
   assertTextRecovery(projected[1]!.content as never, longText, value => f.session.readToolResultContinuation(value, 1024));
 });
 
-test("F-B10 the model has a callable route for the recovery cursor it receives", async t => {
+test("F-B12 artifacts remain readable after compaction and resident-cache replacement", async t => {
+  const f = await sessionFixture(t);
+  const source = [{ type: "text" as const, text: longText }];
+  f.sessionManager.appendMessage(assistant(["artifact-saved"]));
+  f.sessionManager.appendMessage(toolResult("artifact-saved", source));
+  f.session.agent.state.messages = f.sessionManager.buildSessionContext().messages;
+  const canonical = f.session.messages.find(m => m.role === "toolResult");
+  assert.ok(canonical?.role === "toolResult");
+  const view = f.session.getToolResultPresentationForUi(canonical);
+  assert.equal(view?.version, 2);
+  assert.ok(view?.version === 2 && view.artifact);
+  const descriptor = structuredClone(view.artifact);
+  const before = f.session.readToolResultArtifact(descriptor.id);
+  assert.deepEqual(before.content, source);
+  assert.deepEqual(before.descriptor, descriptor);
+  const keep = f.sessionManager.appendMessage({ role: "user", content: "retained artifact turn", timestamp: 3 });
+  f.sessionManager.appendCompaction("artifact source summarized", keep, 5000);
+  f.session.agent.state.messages = f.sessionManager.buildSessionContext().messages;
+  assert.ok(!f.session.messages.some(m => m.role === "toolResult"));
+  assert.ok(f.sessionManager.getEntries().some(e => e.type === "message" && e.message.role === "toolResult"
+    && e.message.toolCallId === "artifact-saved"));
+  f.session.configureToolResultBudget({ enabled: true, budgetTokens: 1024 });
+  const after = f.session.readToolResultArtifact(descriptor.id);
+  assert.deepEqual(after.content, source, "recover every original artifact block from persistent entries");
+  assert.deepEqual(after.descriptor, descriptor, "artifact identity and source digest must survive compaction");
+});
+
+test("F-B10 the model-facing tool recovers every omitted character through all cursors without replay", async t => {
   let executions = 0;
   const f = await sessionFixture(t, { customTools: [{ name: "large_probe", label: "large", description: "offline fixture",
     parameters: { type: "object", properties: {} }, execute: async () => {
       executions++; return { content: [{ type: "text", text: longText }], details: {} };
     } }] });
-  const { requests } = await f.run('await show((await tools.large_probe({})).ref);');
+  const { result: canonical, requests } = await f.run('await show((await tools.large_probe({})).ref);');
   const result = requests.at(-1)?.find(m => m.role === "toolResult");
   assert.ok(result && /tr1\./.test(body(result.content as never)), "fixture must deliver a truncated model result");
   const cursor = body(result.content as never).match(/cursor (tr1\.[^.]+(?:\.[^\s.]+)+)\./)?.[1];
@@ -157,11 +184,25 @@ test("F-B10 the model has a callable route for the recovery cursor it receives",
     (tool.parameters as { properties?: Record<string, unknown> }).properties?.cursor &&
     /tr1\./.test(`${tool.description} ${JSON.stringify(tool.parameters)}`));
   assert.ok(recovery, "no advertised model tool accepts the tr1 recovery cursor (a mention in codemode's code description is not an API)");
-  const expected = body(f.session.readToolResultContinuation(cursor, 512).content).match(/ROW_\d+/)?.[0];
-  assert.ok(expected && !body(result.content as never).includes(expected), "the oracle must identify previously omitted text");
-  const recovered = await f.run(`await show((await callTool(${JSON.stringify(recovery.name)}, ${JSON.stringify({ cursor })})).ref);`);
-  assert.equal(recovered.result.isError, false);
-  assert.ok(body(recovered.requests.at(-1)!.filter(m => m.role === "toolResult").at(-1)!.content as never).includes(expected));
+  const source = canonical.content.filter(b => b.type === "text").map(b => b.text).join("");
+  assert.ok(source.includes(longText), "the canonical parent must retain the independent original fixture");
+  let chunks = 0;
+  const properties = (recovery.parameters as { properties?: Record<string, unknown> }).properties;
+  await assertTextRecoveryAsync(result.content as never, source, async value => {
+    const args = { cursor: value, ...(properties?.budgetTokens ? { budgetTokens: 512 } : {}) };
+    const recovered = await f.run(`text({recovery:await callTool(${JSON.stringify(recovery.name)}, ${JSON.stringify(args)})});`);
+    chunks++;
+    assert.equal(recovered.result.isError, false);
+    const visible = recovered.requests.at(-1)!.find(m => m.role === "toolResult" && m.toolCallId === recovered.result.toolCallId);
+    assert.ok(visible, "each recovery result must reach the model");
+    assert.ok(estimateToolOutputTokens(visible.content as never).estimatedTokens <= 1024);
+    assert.equal(executions, 1, "each continuation must leave the original tool execution count unchanged");
+    const chunk = modelRecoveryChunk(visible.content as never);
+    if (properties?.budgetTokens) assert.ok(chunk.estimatedTokens <= 512
+      && estimateToolOutputTokens(chunk.content).estimatedTokens <= 512, "the recovery tool must honor the requested chunk budget");
+    return chunk;
+  });
+  assert.ok(chunks > 1, "the fixture must exercise a multi-chunk model-facing recovery chain");
   assert.equal(executions, 1, "recovering a saved result must not replay the original tool");
 });
 

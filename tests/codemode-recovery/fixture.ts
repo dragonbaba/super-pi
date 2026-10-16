@@ -30,25 +30,27 @@ export async function sessionFixture(t: TestContext, options: Parameters<typeof 
     settings: { compaction: { enabled: false }, retry: { enabled: false }, ...options.settings } });
   t.after(() => f.release());
   let sequence = 0;
-  async function run(code: string) {
+  async function run(code: string | readonly string[]) {
     const start = f.session.messages.length;
     const requests: Message[][] = [];
-    let sent = false;
+    const scripts = typeof code === "string" ? [code] : code;
+    let sent = 0;
     f.session.agent.streamFunction = (_model, context) => {
       requests.push(context.messages.slice());
       const message = assistant([`r0-${++sequence}`], 0, Date.now());
-      message.content = sent ? [{ type: "text", text: "fixture complete" }]
-        : [{ type: "toolCall", id: `r0-${sequence}`, name: "codemode", arguments: { code } }];
-      message.stopReason = sent ? "stop" : "toolUse";
-      sent = true;
+      const next = scripts[sent++];
+      message.content = next === undefined ? [{ type: "text", text: "fixture complete" }]
+        : [{ type: "toolCall", id: `r0-${sequence}`, name: "codemode", arguments: { code: next } }];
+      message.stopReason = next === undefined ? "stop" : "toolUse";
       const stream = new AssistantMessageEventStream();
       stream.push({ type: "done", reason: message.stopReason, message });
       return stream;
     };
     await f.session.prompt("Run the isolated regression fixture.");
-    const result = f.session.messages.slice(start).find(m => m.role === "toolResult") as ToolResultMessage | undefined;
+    const results = f.session.messages.slice(start).filter(m => m.role === "toolResult") as ToolResultMessage[];
+    const result = results[0];
     assert.ok(result, "the real dispatcher must produce a canonical parent result");
-    return { result, requests };
+    return { result, results, requests };
   }
   return { ...f, run };
 }
