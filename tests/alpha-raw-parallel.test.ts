@@ -70,7 +70,11 @@ async function runParallel(mode: 'regular' | 'fullscreen', enabled: boolean, cou
       const project = owner.projectMessageWithinContextualBudget;
       owner.projectMessageWithinContextualBudget = function (...args: any[]) {
         if (!firstShare) firstShare = args[1];
-        try { return project.apply(this, args); }
+        return project.apply(this, args);
+      };
+      const coordinate = owner.projectMessagesForModel;
+      owner.projectMessagesForModel = function (...args: any[]) {
+        try { return coordinate.apply(this, args); }
         catch (error) {
           assert.ok(error instanceof ToolResultContinuationError);
           typedCode = error.code; projectionFailures++; throw error;
@@ -100,9 +104,10 @@ async function runParallel(mode: 'regular' | 'fullscreen', enabled: boolean, cou
       assert.equal(f.session.isStreaming, false);
       assert.equal(f.internal.activeStatusIndicator, undefined, 'no working indicator owner after terminal turn');
       if (boundary) {
-        assert.equal(firstShare, Math.floor(1024 / 129));
+        assert.equal(firstShare, 0, 'minimum batch exhaustion is detected before allocating any body');
         assert.equal(typedCode, 'budget-too-small'); assert.equal(projectionFailures, 1);
         assert.equal(errors.length, 1);
+        assert.match(errors[0]!, /result-batch-budget.*batchBudget=1024.*Required batch minima/);
         assert.equal(projectedTotal, 0, 'no partial provider payload');
       } else { assert.equal(errors.length, 0); assert.equal(projectionFailures, 0); }
       assert.equal(owner?.counters.activeContextualCoordinators ?? 0, 0);

@@ -121,7 +121,7 @@ for (const presentationBudget of [1024,1]) test(`real SDK write persists across 
    const result=await execute(...args);effects++;return result;
   };
   const convert=session.agent.convertToLlm;
-  if(presentationBudget===1024)assert.throws(()=>convert(messages(620_000),undefined,[],{...fullModel,api:"openai-codex-responses"}),/Request preparation blocked/);
+  if(presentationBudget===1024)assert.doesNotThrow(()=>convert(messages(620_000),undefined,[],{...fullModel,api:"openai-codex-responses"}));
   let inject=presentationBudget===1024,blockAfterResults=1;
   session.agent.convertToLlm=(m,s,tools,model,cap)=>{
    if(inject&&m.filter(x=>x.role==='toolResult'&&!x.isError).length>=blockAfterResults)throw new RequestBudgetError(1_000_000,999_000,384_000,-3096);
@@ -136,7 +136,7 @@ for (const presentationBudget of [1024,1]) test(`real SDK write persists across 
   if(presentationBudget===1){
    await session.prompt("Do not repeat the completed write; budget remains too small.");
    assert.equal(sends,1);assert.equal(effects,1);
-   assert.match((session.messages.at(-1) as any).errorMessage,/Request preparation blocked: configured result budget/);
+   assert.match((session.messages.at(-1) as any).errorMessage,/Request preparation blocked: result-batch-budget.*batchBudget=1.*minimumTokens=\d+/);
    return;
   }
   inject=false;
