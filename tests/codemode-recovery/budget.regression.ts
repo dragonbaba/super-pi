@@ -60,6 +60,11 @@ for (const count of [8, 20]) {
           (first ? i === 0 : i === count - 1) ? content : [{ type: "text", text: "ok" }]))];
         const projected = owner.projectMessagesForModel(messages, undefined, undefined, undefined, 128000, 4096);
         const tokens = projected.slice(1).reduce((sum, m) => sum + estimateToolOutputTokens(m.content as never).estimatedTokens, 0);
+        const oversizedId = ids[first ? 0 : count - 1];
+        const oversized = projected.find(m => m.role === "toolResult" && m.toolCallId === oversizedId);
+        assert.ok(oversized, "projection must retain the oversized result's identity");
+        assertTextRecovery(oversized.content as never, content.filter(b => b.type === "text").map(b => b.text).join(""),
+          cursor => owner.readContinuation(cursor, messages, 1024));
         outcomes.push({ first, tokens });
       } catch (error) { outcomes.push({ first, error: (error as Error).message }); }
       finally { owner.dispose(); }
@@ -106,6 +111,8 @@ test("F-B11 a long source line can be recovered exactly through bounded historic
       assert.ok(!seen.has(cursor) && seen.size < 100, "recovery must make bounded forward progress"); seen.add(cursor);
       const chunk = owner.readContinuation(cursor, [source], 1024);
       assert.ok(chunk.estimatedTokens <= 1024);
+      assert.ok(estimateToolOutputTokens(chunk.content).estimatedTokens <= 1024,
+        "the recovered payload itself must fit the chunk budget");
       assert.equal(chunk.content.some(b => "readBoundary" in b), false, "historical chunks do not grant edit authority");
       recovered.push(...chunk.content); cursor = chunk.nextCursor;
     }
