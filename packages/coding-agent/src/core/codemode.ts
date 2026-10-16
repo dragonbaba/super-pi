@@ -545,7 +545,7 @@ export class CodemodeController {
 			if (format === "json") parts.push("Input JSON Schema:\n", snapshot.schemas[index]!, "\nResult: ToolResult\n");
 			else parts.push(snapshot.schemas[index]!, "\n");
 		}
-		parts.push("\nTypeScript is a summary; use format:'json' for exact input constraints, long defaults/patterns, or unknown types. Child failures return isError or throw; the parent remains failed even if caught.\n");
+		parts.push("\nTypeScript is a summary; use format:'json' for exact input constraints, long defaults/patterns, or unknown types. Child failures throw by default and keep the parent failed even if caught. callTool(name,args,{allowFailure:true}) returns the true isError outcome, including tool_call refusals; inspect it and select an alternative. Ref values belong only to this script; show(ref) reports eviction with a saved path. Display limits do not change execution status.\n");
 		let position = 0, pageOffset = offset, text = "", pageComplete = false;
 		for (const part of parts) {
 			let start = Math.max(0, pageOffset - position);
