@@ -68,12 +68,14 @@ test("agent loop and SDK pass the request envelope without allocating a context 
 	function inspect(node: ts.Node): void {
 		if (ts.isCallExpression(node) && node.expression.getText(ast) === "session.projectToolResultMessagesForModel") {
 			assert.deepEqual(node.arguments.map(argument => argument.getText(ast)), ["converted", "blockImages ? replaceBlockedImages : undefined", "systemPrompt", "tools", "conversionModel?.contextWindow",
-				"requestPlanning && requestedMaxTokens !== undefined ? Math.min(requestedMaxTokens, conversionModel?.maxTokens ?? requestedMaxTokens) : conversionModel?.maxTokens", "requestPlanning"]);
+				"output", "requestPlanning", "toolCalling"]);
 			projections++;
 		}
 		ts.forEachChild(node, inspect);
 	}
 	inspect(ast); assert.equal(projections, 1);
+	assert.match(sdk, /resolveRequestOutputTokens\(conversionModel, requestedMaxTokens \?\? conversionModel.maxTokens\)/);
+	assert.match(sdk, /const toolCalling = requestPlanning && conversionModel \? getModelCapabilities\(conversionModel\).toolCalling : true/);
 	assert.match(sdk, /convertToLlmWithBlockImages\(messages, systemPrompt, tools, model\)/);
 	assert.equal(sdk.includes("ToolResultBudgetContext"), false);
 	assert.equal(sdk.includes("LlmConversionContext"), false);

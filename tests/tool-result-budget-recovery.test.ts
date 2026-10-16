@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { Session } from "node:inspector/promises";
 import { estimateContextTokensFromParts } from "../packages/ai/src/utils/estimate.ts";
 import { clampMaxTokensToContext } from "../packages/ai/src/api/simple-options.ts";
+import { REQUEST_ESTIMATE_MODEL } from "./fixtures/request-input-estimate.ts";
 
 // Source-only loading permits a deterministic red before building this checkout.
 const jiti = createJiti(import.meta.url, { alias: {
@@ -17,7 +18,7 @@ const jiti = createJiti(import.meta.url, { alias: {
  "@super-pi/ai/api/simple-options": resolve("packages/ai/src/api/simple-options.ts"),
 } });
 const { createToolResultPresentationOwner } = await jiti.import<any>("../packages/coding-agent/src/core/tool-result-presentation.ts");
-const model: any = { api: "openai-completions", contextWindow: 1_000_000, maxTokens: 384_000 };
+const model = { ...REQUEST_ESTIMATE_MODEL, contextWindow: 1_000_000, maxTokens: 384_000 };
 const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: {input:0,output:0,cacheRead:0,cacheWrite:0,total:0} };
 // One bounded corpus is shared, not regenerated for every boundary case.
 const corpus = "abcd".repeat(620_000);
