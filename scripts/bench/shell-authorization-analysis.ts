@@ -12,6 +12,12 @@ const cwd = process.cwd(), iterations = 512, warmup = 64, samplingInterval = 409
 const literalInputs = process.argv.includes("--literal-inputs");
 const substitution = "$(grep -c -E '(class|function|const|var|let) GCSystem\\b' pixi/pixi.js)";
 const cases = literalInputs ? [
+  ["lost-heredoc-descriptor", "exec 3<<'EOF'\nsleep 100 &\nEOF\necho ok; source /dev/fd/3", 1],
+  ["known-heredoc-descriptor", "exec 3<<'EOF'\nprintf ok\nEOF\ntrue; source /dev/fd/3", 2],
+  ["alias-heredoc", "shopt -s expand_aliases; BASH_ALIASES[node]='source /dev/stdin'; node <<'EOF'\nsleep 100 &\nEOF", 1],
+  ["find-target-overflow", `find . ${Array.from({ length: 17 }, (_, i) => `-fprint output-${i}`).join(" ")}`, 1],
+  ["sort-abbreviated-output", "sort -T tmp --out=../outside", 1],
+  ["sort-unknown-option", "sort -T tmp --unknown-option", 1],
   ["ordered-high-risk-state", "rm -r scratch; printf -v X foo", 1],
   ["mid-pipeline-heredoc", "printf 'printf ok' | source /dev/stdin | cat <<'EOF' | cat\ndata\nEOF", 1],
   ["sort-equals-compressor", "sort --compress-program=./codec -o output input", 1],

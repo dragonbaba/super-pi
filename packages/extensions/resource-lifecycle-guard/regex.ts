@@ -1,4 +1,5 @@
 export const DETACH_UTILITY_PATTERN = /(?:^|[\s;|()])(?:nohup|disown|setsid|daemonize)(?=$|[\s;|()])/iu;
+export const BASH_ALIASES_ASSIGNMENT = /^BASH_ALIASES(?:\[[^]*\])?\+?=/u;
 export const WINDOWS_DETACH_PATTERN = /(?:^|[\s;|()])(?:start-process|cmd(?:\.exe)?\s+\/c\s+start)(?=$|[\s;|()])/iu;
 export const WINDOWS_START_BACKGROUND_PATTERN = /(?:^|[\s;|()])start\s+(?:"[^"]*"\s+)?\/b(?=$|[\s;|()])/iu;
 export const WINDOWS_WAIT_PATTERN = /(?:^|[\s;|()])(?:start-process\b[^\r\n;|]*\s-wait\b|start\b[^\r\n;|]*\s\/wait\b)/iu;

@@ -102,6 +102,44 @@ function findTestBash(): string | undefined {
   return existsSync(local) ? local : undefined;
 }
 
+test("built-in Bash does not inherit parent descriptors above stderr", t => {
+  const shellPath = findTestBash();
+  if (!shellPath) { if (process.env.CI) assert.fail("Bash unavailable"); t.skip("Bash unavailable"); return; }
+  const fixture = mkdtempSync(join(tmpdir(), "sp-shell-fd-"));
+  const marker = join(fixture, "parent-input");
+  writeFileSync(marker, "parent-descriptor-sentinel");
+  const fd = fs.openSync(marker, "r");
+  const stdio: ("ignore" | "pipe" | number)[] = Array(64).fill("ignore");
+  stdio[1] = stdio[2] = "pipe"; stdio[3] = stdio[7] = stdio[63] = fd;
+  const backend = new URL("../packages/coding-agent/src/core/tools/bash.ts", import.meta.url).href;
+  const script = `
+    import assert from 'node:assert/strict';
+    import {readSync} from 'node:fs';
+    import {createLocalShellOperations} from ${JSON.stringify(backend)};
+    const shell=${JSON.stringify(shellPath)};
+    for (const fd of [3,7,63]) {
+      const data=Buffer.alloc(26); const n=readSync(fd,data,0,data.length,0);
+      assert.equal(data.toString('utf8',0,n),'parent-descriptor-sentinel');
+    }
+    const reports=[];
+    for (const transport of ['argv','stdin']) for (const managedBackground of [false,true]) {
+      if (managedBackground && process.platform !== 'win32') continue;
+      const ops=createLocalShellOperations('bash',()=>({shell,args:[transport==='stdin'?'-s':'-c'],commandTransport:transport}));
+      let output='';
+      const result=await ops.exec('for fd in 3 7 63; do if { true <&"$fd"; } 2>/dev/null; then printf "inherited:%s\\n" "$fd"; fi; done; printf isolated',process.cwd(),{timeout:10,managedBackground,onData:data=>{output+=data.toString();}});
+      assert.equal(result.exitCode,0); assert.equal(result.observationError,undefined);
+      assert.equal(output,'isolated'); reports.push({transport,managedBackground,output});
+    }
+    console.log(JSON.stringify(reports));
+  `;
+  try {
+    const result = execFileSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", script], { cwd: process.cwd(), stdio, encoding: "utf8", timeout: 30_000 });
+    const reports = JSON.parse(result);
+    assert.equal(reports.length, process.platform === "win32" ? 4 : 2);
+    t.diagnostic(JSON.stringify({ parentDescriptors: [3, 7, 63], reports }));
+  } finally { fs.closeSync(fd); rmSync(fixture, { recursive: true }); }
+});
+
 test("command -v/-V query names and variables without treating them as executables", () => {
   for (const command of [
     'command -v bash',

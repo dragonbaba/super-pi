@@ -7,10 +7,11 @@ test("authorization scanners and cache methods add no callbacks, promises or Buf
   const targets = new Map([
     ["shell-analysis.ts", new Set(["analyzeShellSource", "get", "assertCurrent", "release"])],
     ["shell-substitution.ts", new Set(["prepareShellAnalysis", "removeHeredocContinuations", "heredocDeclarationEnd", "collectHereDelimiters", "heredocDescriptorCopy", "isShellWordBoundary", "extractCommandSubstitutions", "commandSubstitutionEnd"])],
-    ["core.ts", new Set(["inspectBashResourceLifecycle", "inspectLifecycleScript", "inspectHighRiskBashMutation", "inspectShellScript", "heredocConsumer", "heredocConsumers", "heredocDocumentConsumers", "heredocExecutableBody", "decodeLiteralBase64", "stdinScriptConsumers", "simpleStdinConsumers", "functionStdinConsumers", "persistedHeredocConsumers", "literalProcessSources", "isTransparentStdinStage", "literalStoredScripts", "literalAdjacentSource", "literalPreviousAssignment", "literalEvalScript", "literalAliasSource", "isHeredocDescriptorPath", "nodeMayReadStdin", "heredocHasUntrackedCwd", "addMutationPrimitive", "inspectEmbeddedCode", "inspectCodeCall", "inspectOutputRedirections", "inspectPowerShellRemove", "inspectWindowsRmdir", "inspectXargs", "collectPositionalTargets", "addPrimitive", "addTarget", "addResolvedTarget", "markUnverifiable", "maskCodeStringsAndComments", "literalFirstArgument", "inspectFind"])],
+    ["core.ts", new Set(["inspectBashResourceLifecycle", "inspectLifecycleScript", "inspectHighRiskBashMutation", "inspectShellScript", "heredocConsumer", "heredocConsumers", "heredocDocumentConsumers", "heredocExecutableBody", "decodeLiteralBase64", "stdinScriptConsumers", "simpleStdinConsumers", "functionStdinConsumers", "persistedHeredocConsumers", "isPersistentHeredocDeclaration", "heredocHasAliasRisk", "literalProcessSources", "isTransparentStdinStage", "literalStoredScripts", "literalAdjacentSource", "literalPreviousAssignment", "literalEvalScript", "literalAliasSource", "isHeredocDescriptorPath", "nodeMayReadStdin", "heredocHasUntrackedCwd", "addMutationPrimitive", "inspectEmbeddedCode", "inspectCodeCall", "inspectOutputRedirections", "inspectPowerShellRemove", "inspectWindowsRmdir", "inspectXargs", "collectPositionalTargets", "addPrimitive", "addTarget", "addResolvedTarget", "markUnverifiable", "maskCodeStringsAndComments", "literalFirstArgument", "inspectFind"])],
     ["permission-bash.ts", new Set(["inspectScript", "inspectBashPermissionScope", "inspectKnownMutation", "markMutation", "markUncertainContext", "addResolvedTarget", "addTarget"])],
     ["shell-redirection.ts", new Set(["isShellOutputFileRedirection", "isShellFileDescriptor", "shellRedirectionLength"])],
     ["readonly-find.ts", new Set(["findPredicateHasOperand"])],
+    ["sort-options.ts", new Set(["sortLongOption", "sortOptionRequiresValue"])],
     ["timeout-wrapper.ts", new Set(["parseTimeoutInvocation"])],
   ]);
   for (const [file, names] of targets) {
@@ -33,4 +34,23 @@ test("authorization scanners and cache methods add no callbacks, promises or Buf
     visit(source);
     assert.deepEqual(seen, names, file);
   }
+});
+
+test("builtin heredoc gate allocates no AST, source copy, container or callback", () => {
+  const file = "packages/coding-agent/src/core/tools/shell-heredoc-gate.ts";
+  const source = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
+  const names = new Set(["shellHeredocKind", "scanHeredocSyntax", "classifyBoundedBody"]), seen = new Set<string>();
+  function audit(node: ts.Node): void {
+    assert.equal(ts.isArrowFunction(node) || ts.isFunctionExpression(node) || ts.isFunctionDeclaration(node) || ts.isNewExpression(node) || ts.isObjectLiteralExpression(node) || ts.isArrayLiteralExpression(node) || ts.isTemplateExpression(node) || ts.isRegularExpressionLiteral(node), false, node.getText(source));
+    if (ts.isCallExpression(node)) {
+      const callee = node.expression;
+      if (ts.isPropertyAccessExpression(callee)) assert.ok(["charCodeAt", "startsWith"].includes(callee.name.text), node.getText(source));
+      else assert.ok(names.has(callee.getText(source)), node.getText(source));
+    }
+    ts.forEachChild(node, audit);
+  }
+  for (const statement of source.statements) if (ts.isFunctionDeclaration(statement) && statement.name && statement.body) {
+    assert.ok(names.has(statement.name.text)); seen.add(statement.name.text); ts.forEachChild(statement.body, audit);
+  }
+  assert.deepEqual(seen, names);
 });

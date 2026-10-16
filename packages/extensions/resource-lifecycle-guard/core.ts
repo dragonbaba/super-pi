@@ -1,5 +1,6 @@
 import { basename, resolve } from "node:path";
 import {
+	BASH_ALIASES_ASSIGNMENT,
 	DETACH_UTILITY_PATTERN,
 	DIRECT_SHELL_VARIABLE_PATTERN,
 	DOCKER_DETACHED_PATTERN,
@@ -134,6 +135,7 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
  const command = here.command;
  const substitutions = prepared.substitutions;
  if (here.unboundedHeredoc) return lifecycleRefusal("SHELL_HEREDOC", "heredoc body boundaries cannot be inspected for executable input or following commands", "use a bounded literal heredoc delimiter");
+ if (here.hasHeredoc && heredocHasAliasRisk(command)) return lifecycleRefusal("SHELL_HEREDOC", "alias expansion or definitions may change the heredoc consumer", "use a separate call without alias changes, file sourcing or eval");
  if (here.substitutionUncertain) return lifecycleRefusal("SHELL_SUBSTITUTION", "uncertain/uninspectable executable heredoc substitution", "simplify the substitution into inspectable foreground commands");
  if (substitutions.limitExceeded === "count") return `[SHELL_INSPECTION_LIMIT] Bash not executed: more than ${MAX_SUBSTITUTIONS} command substitutions per script.\nRetry: split into smaller calls (max ${MAX_SUBSTITUTIONS} each).`;
  if (substitutions.limitExceeded === "nesting") return `[SHELL_INSPECTION_LIMIT] Bash not executed: command substitution nesting exceeds ${MAX_SUBSTITUTION_NESTING} levels.\nRetry: reduce nesting.`;
@@ -145,7 +147,7 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
  const processScripts = literalProcessSources(command);
  if (processScripts) for (const script of processScripts) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) return result; }
  if (here.hereDocuments) for (const document of here.hereDocuments) {
-  const consumers = heredocDocumentConsumers(document, command);
+  const consumers = heredocDocumentConsumers(document, command, here.hereDocuments);
   if (consumers & 8) return lifecycleRefusal("SHELL_HEREDOC", "heredoc executable input or consumer nesting cannot be inspected", "use a direct literal stdin consumer without transforming its input");
   const body = heredocExecutableBody(document, command);
   if (consumers & 1 && body !== undefined) {
@@ -461,7 +463,7 @@ function inspectShellScript(script: string, initialCwd: string, depth: number, b
 	const processScripts = literalProcessSources(analysis.command);
 	if (processScripts) for (const source of processScripts) { markUnverifiable(builder); inspectShellScript(source, initialCwd, depth + 1, builder, shellOperation); }
 	if (analysis.hereDocuments) for (const document of analysis.hereDocuments) {
-		const consumers = heredocDocumentConsumers(document, analysis.command), body = heredocExecutableBody(document, analysis.command);
+		const consumers = heredocDocumentConsumers(document, analysis.command, analysis.hereDocuments), body = heredocExecutableBody(document, analysis.command);
 		if (consumers && (document.priorSource || document.pipelineHeader || heredocHasUntrackedCwd(document.header))) markUnverifiable(builder);
 		if (consumers & 1 && body !== undefined) inspectShellScript(body, initialCwd, depth + 1, builder, "bash");
 		if (consumers & 6 && document.expanded) { addPrimitive(builder, "heredoc_expanded_source"); markUnverifiable(builder); }
@@ -897,6 +899,54 @@ function isHeredocDescriptorPath(operand: string | undefined, descriptor: number
 	return Boolean(match && Number(match[1]) === descriptor);
 }
 
+/** No alias-value tracking. The masked outer source cannot prove a consumer when
+ * alias state may change. Descriptor sourcing is checked separately against its
+ * document, preserving known literal stdin and persisted-descriptor consumers. */
+function heredocHasAliasRisk(command: string, depth = 0): boolean {
+	if (depth > MAX_WRAPPER_DEPTH) return true;
+	const segments = parseShellSegments(command);
+	if (segments.length > MAX_SCRIPT_SEGMENTS) return true;
+	for (const tokens of segments) {
+		if (tokens.redirections) stripShellRedirections(tokens, tokens.redirections);
+		let index = 0;
+		while (index < tokens.length) {
+			const word = tokens[index]!;
+			if (BASH_ALIASES_ASSIGNMENT.test(word)) return true;
+			if (word === "function" && tokens[index + 2] === "{") { index += 3; continue; }
+			if (LEADING_ASSIGNMENT_PATTERN.test(word) || word === "{" || word === "do" || word === "then" || word === "else" || word === "if" || word === "elif" || word === "while" || word === "until" || word === "!" || word === "time") { index++; continue; }
+			if (word !== "builtin" && word !== "command") break;
+			index++; if (tokens[index] === "-p") index++; if (tokens[index] === "--") index++;
+		}
+		const name = tokens[index];
+		if (name === "alias" || name === "eval") return true;
+		if (name === "source" || name === ".") {
+			const operand = tokens[index + (tokens[index + 1] === "--" ? 2 : 1)];
+			if (operand !== "/dev/stdin" && !(operand && SOURCE_DESCRIPTOR_PATTERN.test(operand))) return true;
+		}
+		if (name === "declare" || name === "typeset" || name === "local" || name === "export" || name === "readonly") {
+			for (let operand = index + 1; operand < tokens.length; operand++) if (BASH_ALIASES_ASSIGNMENT.test(tokens[operand]!)) return true;
+		}
+		if (name === "shopt") {
+			let enabling = false, relevant = false;
+			for (let operand = index + 1; operand < tokens.length; operand++) {
+				const word = tokens[operand]!;
+				if (tokens.expansions?.[operand] || hasDynamicSyntax(word)) { enabling = true; relevant = true; }
+				if (word.startsWith("-") && shortOptionContains(word, "s")) enabling = true;
+				if (word === "expand_aliases") relevant = true;
+			}
+			if (enabling && relevant) return true;
+		}
+		if (name && SCRIPT_WRAPPERS.has(commandName(name))) {
+			for (let option = index + 1; option < tokens.length; option++) if (tokens[option] === "-c") {
+				const operand = bashScriptOperandIndex(tokens, option);
+				if (operand >= 0 && tokens[operand] !== undefined && heredocHasAliasRisk(tokens[operand]!, depth + 1)) return true;
+				break;
+			}
+		}
+	}
+	return false;
+}
+
 /** Literal alias definitions are stored executable source, not plain argv data. */
 export function literalAliasSource(tokens: ShellSegment, index: number): string | undefined {
 	const word = tokens[index], equals = word?.indexOf("=") ?? -1;
@@ -999,30 +1049,47 @@ export function heredocConsumers(header: string, descriptor = 0, depth = 0, pipe
 	return simpleStdinConsumers(tokens, descriptor, depth, functions);
 }
 
-export function heredocDocumentConsumers(document: { header: string; pipelineHeader?: string; contextEnd?: number; bodyEnd?: number; descriptor: number }, command?: string): number {
+type HeredocBinding = { header: string; contextEnd: number; bodyEnd: number; descriptor: number };
+export function heredocDocumentConsumers(document: { header: string; pipelineHeader?: string; contextEnd?: number; bodyEnd?: number; descriptor: number }, command?: string, documents?: readonly HeredocBinding[]): number {
 	const functions = command && (command.includes("(") || command.includes("function")) ? parseShellSegments(command.slice(0, document.contextEnd)) : undefined;
 	const pipelineStart = document.pipelineHeader ? parseShellSegments(document.header).length - 1 : undefined;
 	return heredocConsumers(document.header, document.descriptor, 0, false, functions)
 		| (document.pipelineHeader ? heredocConsumers(document.pipelineHeader, document.descriptor, 0, true, functions, pipelineStart) : 0)
-		| persistedHeredocConsumers(document, command);
+		| persistedHeredocConsumers(document, command, documents);
 }
 
-/** A literal exec-only redirection persists until a later exec/redirection or
- * scope boundary. Unknown intervening state is opaque, never a new refusal. */
-function persistedHeredocConsumers(document: { header: string; bodyEnd?: number; descriptor: number }, command?: string): number {
-	if (!command || document.bodyEnd === undefined || !document.header.includes("exec")) return 0;
-	const declarations = parseShellSegments(document.header), declaration = declarations[declarations.length - 1];
-	if (!declaration || declaration.pipelineMember || declaration.subshellDepth) return 0;
+function isPersistentHeredocDeclaration(header: string): boolean {
+	if (!header.includes("exec")) return false;
+	const declarations = parseShellSegments(header), declaration = declarations[declarations.length - 1];
+	if (!declaration || declaration.pipelineMember || declaration.subshellDepth || declaration.conditionalMember) return false;
 	if (declaration.redirections) stripShellRedirections(declaration, declaration.redirections);
-	if (declaration.length !== 1 || declaration[0] !== "exec") return 0;
-	const tail = parseShellSegments(command.slice(document.bodyEnd));
+	return declaration.length === 1 && declaration[0] === "exec";
+}
+
+/** Only true/: preserve known persistent input. After other commands, a matching
+ * source/. read refuses; binding alone or reading as data is not a violation. */
+function persistedHeredocConsumers(document: { header: string; bodyEnd?: number; descriptor: number }, command?: string, documents?: readonly HeredocBinding[]): number {
+	if (!command || document.bodyEnd === undefined || !isPersistentHeredocDeclaration(document.header)) return 0;
+	let end = command.length;
+	// A later unconditional literal heredoc rebinding has its own inspected body.
+	if (documents) for (const next of documents) {
+		if (next.bodyEnd > document.bodyEnd && next.descriptor === document.descriptor && isPersistentHeredocDeclaration(next.header)) {
+			end = Math.min(end, next.contextEnd - next.header.length);
+		}
+	}
+	const tail = parseShellSegments(command.slice(document.bodyEnd, end));
 	if (tail.length > MAX_SCRIPT_SEGMENTS) return 0;
+	let uncertain = false;
 	for (const tokens of tail) {
-		if (tokens.redirections?.length || tokens.subshellDepth || tokens[0] === "exec") return 0;
+		if (tokens.redirections?.length || tokens.subshellDepth || tokens.pipelineMember || tokens[0] === "exec") uncertain = true;
+		if (tokens.redirections) { stripShellRedirections(tokens, tokens.redirections); tokens.redirections.length = 0; }
+		if (uncertain) {
+			if (simpleStdinConsumers(tokens, document.descriptor, 0, undefined, 0, true)) return 8;
+			continue;
+		}
 		const consumers = simpleStdinConsumers(tokens, document.descriptor, 0);
 		if (consumers) return consumers;
-		// Only known commands that cannot rebind descriptors may be crossed.
-		if (tokens.length && tokens[0] !== "true" && tokens[0] !== ":") return 0;
+		if (tokens.length && tokens[0] !== "true" && tokens[0] !== ":") uncertain = true;
 	}
 	return 0;
 }
@@ -1161,13 +1228,13 @@ function stdinScriptConsumers(segments: ShellSegment[], descriptor: number, dept
 	return consumers;
 }
 
-function simpleStdinConsumers(tokens: ShellSegment, descriptor: number, depth: number, functions?: ShellSegment[], start = 0): number {
+function simpleStdinConsumers(tokens: ShellSegment, descriptor: number, depth: number, functions?: ShellSegment[], start = 0, sourceOnly = false): number {
 	if (depth > MAX_WRAPPER_DEPTH) return 8;
 	let index = start || commandTokenIndex(tokens);
 	if (index < 0 || index >= tokens.length) return 0;
 	while (tokens[index] === "{" || tokens[index] === "do" || tokens[index] === "then" || tokens[index] === "else" || tokens[index] === "if" || tokens[index] === "elif" || tokens[index] === "while" || tokens[index] === "until") index++;
 	index = bashPipelinePrefixEnd(tokens, index);
-	if (index < 0) return 8;
+	if (index < 0) return sourceOnly ? 0 : 8;
 	let functionsAllowed = true;
 	// Prefix dispatch is a linear token walk, bounded by the command-size limit.
 	// Stopping partway would misclassify a later stdin consumer as ordinary data.
@@ -1182,6 +1249,8 @@ function simpleStdinConsumers(tokens: ShellSegment, descriptor: number, depth: n
 		if (!tokens[index] || tokens[index]!.startsWith("-")) return 0;
 	}
 	let name = commandName(tokens[index] ?? "");
+	if (sourceOnly) return (tokens[index] === "source" || tokens[index] === ".")
+		&& isHeredocDescriptorPath(tokens[index + (tokens[index + 1] === "--" ? 2 : 1)], descriptor) ? 1 : 0;
 	const functionConsumers = functionsAllowed && functions ? functionStdinConsumers(functions, tokens[index] ?? "", descriptor, depth + 1) : undefined;
 	if (functionConsumers !== undefined && functionConsumers !== -1) return functionConsumers;
 	// Match lifecycle preflight's existing supported launcher grammar. External

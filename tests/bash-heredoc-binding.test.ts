@@ -11,9 +11,37 @@ import { inspectBashPermissionScope } from "../packages/extensions/resource-life
 import { inspectBashResourceLifecycle } from "../packages/extensions/resource-lifecycle-guard/core.ts";
 import { boundedShellInput, MAX_BOUND_SHELL_INPUT_BYTES } from "../packages/coding-agent/src/core/tools/bounded-shell-input.ts";
 import { withMsysStdinBridge } from "../packages/coding-agent/src/core/tools/msys-stdin.ts";
+import { shellHeredocKind } from "../packages/coding-agent/src/core/tools/shell-heredoc-gate.ts";
 
 const shellPath = process.platform === "win32" && existsSync("D:/Git/bin/bash.exe") ? "D:/Git/bin/bash.exe" : getShellConfig().shell;
 const literal = "cat <<'EOF'\nprintf BODY_EXECUTED\nEOF";
+
+test("heredoc gate preserves bounded diagnostics and scans only executable syntax", () => {
+ for (const consumer of ["cat", "node"]) for (const delimiter of ["E", "EOF", "_long123", "Z".repeat(32)]) {
+  for (const body of ["", "data\n", "EOF\n", "中文😀\n", "\ud800\n", "a\r\n", "a\0\n", "x".repeat(12270) + "\n"]) {
+   for (const ending of ["", "\n", "\necho done"]) {
+    const command = `${consumer} \t<<'${delimiter}'\n${body}${delimiter}${ending}`;
+    assert.equal(shellHeredocKind(command), boundedShellInput(command) ? 2 : 1, command);
+   }
+  }
+ }
+ for (const command of ["cat <<EOF\nx\nEOF", "cat<<'E'\nx\nE", "echo \"$(cat <<'E'\nx\nE\n)\"", "echo $((1 + $(cat <<'E'\n2\nE\n)))", "cat <\\\n<'E'\nx\nE", "# comment\ncat <<'E'\nx\nE", "cat <<<'data'; cat <<'E'\nx\nE"]) assert.equal(shellHeredocKind(command), 1, command);
+ for (const command of ["printf '%s' 'a << b'", 'echo "a << b"', "echo $((1 << 3))", "((x = 1 << 3))", "echo $[1 << 3]", "# cat <<'E'\necho hi", "cat <<<'data'", "node -e 'console.log(1 << 3)'", "echo \\<<data"]) assert.equal(shellHeredocKind(command), 0, command);
+});
+
+test("preparation scans once without a command copy, including large inputs", () => {
+ const original = String.prototype.charCodeAt;
+ let reads = 0;
+ String.prototype.charCodeAt = function(index) { reads++; return original.call(this, index); };
+ try {
+  for (const length of [1024, 128 * 1024, 1024 * 1024]) {
+   const command = "echo " + "x".repeat(length), input = { command };
+   const tool = createBashTool(process.cwd(), { shellPath, commandPrefix: "true" });
+   reads = 0; assert.strictEqual(tool.prepareArguments!(input), input);
+   assert.ok(reads <= 4 * command.length + 16, `${reads} character reads for ${command.length}`);
+  }
+ } finally { String.prototype.charCodeAt = original; }
+});
 
 async function dispatch(cwd: string, command: string, options: BashToolOptions = {}, deny = false, expectedPermissions = 1) {
  let processes = 0; let permissions = 0; let providers = 0;
@@ -53,6 +81,27 @@ test("bounded input refuses custom hooks/backend/prefix before execution on ever
   assert.equal(outcome.result.isError, true); assert.equal(outcome.processes, 0); assert.match(outcome.text, /SHELL_INPUT_UNSUPPORTED/);
  }
  assert.equal(hooks, 0); assert.equal(backends, 0); assert.equal(existsSync(join(cwd, "marker")), false);
+});
+
+test("compound and trailing heredocs refuse changed Bash semantics before spawn", async () => {
+ let hooks = 0, backends = 0;
+ const options: BashToolOptions[] = [
+  { commandPrefix: "shopt -s expand_aliases" },
+  { spawnHook: context => { hooks++; return { ...context, env: { ...context.env, "BASH_FUNC_node%%": "() { source /dev/stdin; }" } }; } },
+  { operations: { exec: async () => { backends++; return { exitCode: 0 }; } } },
+ ];
+ for (const command of ["cd . && cat <<'EOF'\necho hi\nEOF", "node <<'EOF'\nconsole.log('hi')\nEOF\necho done", "cd . && node <<'EOF'\nconsole.log('hi')\nEOF", "cat <<'EOF'\necho hi\nEOF\necho done"]) {
+  for (const configuration of options) {
+   const outcome = await dispatch(process.cwd(), command, configuration, false, 0);
+   assert.equal(outcome.result.isError, true); assert.match(outcome.text, /\[SHELL_HEREDOC\]/); assert.equal(outcome.processes, 0);
+   // Direct invocation must repeat the preparation guard before the hook/backend.
+   const tool = createBashTool(process.cwd(), { shellPath, ...configuration });
+   await assert.rejects(tool.execute("recheck", { command }), /\[SHELL_HEREDOC\]/);
+  }
+  const admitted = await dispatch(process.cwd(), command);
+  assert.equal(admitted.result.isError, false, admitted.text); assert.equal(admitted.processes, 1);
+ }
+ assert.equal(hooks, 0); assert.equal(backends, 0);
 });
 
 test("bounded quoted data and Node source execute original UTF-8 bytes through real Bash", async t => {

@@ -7,6 +7,7 @@ import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
 import { isLiteralReadLoop } from "./readonly-loop.ts";
 import { isReadOnlyFindLoop } from "./readonly-find-loop.ts";
 import { findPredicateHasOperand, isReadOnlySortTail } from "./readonly-find.ts";
+import { sortLongOption, sortOptionRequiresValue } from "./sort-options.ts";
 import { bashPipelinePrefixEnd, bashScriptOperandIndex, hasStatefulBashPrintf, isBashArithmeticCommandHead, isBashNetworkRedirectionTarget, shellExpansionRisk, hasUnsafeBashTestOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 
 const MAX_COMMAND_CHARS = 128 * 1024;
@@ -24,7 +25,6 @@ const SIMPLE_MUTATIONS = new Set(["del", "erase", "mkdir", "md", "rm", "rmdir", 
 const COPY_COMMANDS = new Set(["cp", "copy"]);
 const MOVE_COMMANDS = new Set(["mv", "move", "rename", "ren"]);
 const GIT_READ_ONLY = new Set(["status", "diff", "log", "show", "ls-files", "rev-parse"]);
-const SORT_VALUE_OPTIONS = new Set(["--key", "--field-separator", "--buffer-size", "--random-source", "--parallel", "--batch-size", "--compress-program", "--sort", "--files0-from"]);
 
 export type BashPermissionKind = "read-only" | "known-mutation" | "opaque-script";
 
@@ -91,6 +91,7 @@ function addTarget(builder: ScopeBuilder, value: string, cwd: string, mutation =
 function addResolvedTarget(builder: ScopeBuilder, target: string): void {
   for (const current of builder.targets) if (current === target) return;
   if (builder.targets.length >= MAX_TARGETS) {
+    if (builder.mutationDetected) builder.unverifiableMutation = true;
     markOpaque(builder, "too_many_targets");
     return;
   }
@@ -169,20 +170,23 @@ function inspectKnownMutation(command: string, tokens: readonly string[], start:
   }
   if (command === "sort") {
     let output = false;
+    let inertLongOption = false;
     for (let index = start; index < tokens.length; index++) {
       const token = tokens[index]!;
-      if (token === "--") break;
-      if (token.startsWith("--compress-program=")) { markOpaque(builder, "sort_compress_program"); continue; }
-      if (SORT_VALUE_OPTIONS.has(token)) {
-        if (token === "--compress-program") markOpaque(builder, "sort_compress_program");
-        index++; continue;
-      }
+      if (token === "--") { inertLongOption = true; break; }
       let target: string | undefined;
       let temporary = false;
-      if (token === "-o" || token === "--output") target = tokens[++index];
-      else if (token.startsWith("--output=")) target = token.slice(9);
-      else if (token === "-T" || token === "--temporary-directory") { temporary = true; target = tokens[++index]; }
-      else if (token.startsWith("--temporary-directory=")) { temporary = true; target = token.slice(22); }
+      if (token.startsWith("--")) {
+        const equals = token.indexOf("="), name = sortLongOption(token, equals < 0 ? token.length : equals);
+        if (name === undefined) { markOpaque(builder, "sort_unknown_option"); continue; }
+        if (name === "") { inertLongOption = true; continue; }
+        if (name === "compress-program") markOpaque(builder, "sort_compress_program");
+        const value = equals >= 0 ? token.slice(equals + 1) : sortOptionRequiresValue(name) ? tokens[++index] : undefined;
+        if (name !== "output" && name !== "temporary-directory") continue;
+        temporary = name === "temporary-directory"; target = value;
+      }
+      else if (token === "-o") target = tokens[++index];
+      else if (token === "-T") { temporary = true; target = tokens[++index]; }
       else if (token.startsWith("-") && !token.startsWith("--")) {
         let outputFlag = -1;
         for (let flag = 1; flag < token.length; flag++) {
@@ -199,7 +203,7 @@ function inspectKnownMutation(command: string, tokens: readonly string[], start:
       if (target) addTarget(builder, target, cwd, true);
       else { builder.dynamicScope = true; builder.unverifiableMutation = true; markOpaque(builder, "missing_output_target"); }
     }
-    return output;
+    return output || inertLongOption;
   }
   if (SIMPLE_MUTATIONS.has(command)) {
     markMutation(builder, command);
@@ -536,7 +540,7 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
   if (processScripts) for (const source of processScripts) { markUncertainContext(builder, "resolved_process_source"); inspectScript(source, initialCwd, depth + 1, builder); }
   if (analysis.hereDocuments) for (const document of analysis.hereDocuments) {
     const body = heredocExecutableBody(document, analysis.command);
-    if (heredocDocumentConsumers(document, analysis.command) & 1 && body !== undefined) {
+    if (heredocDocumentConsumers(document, analysis.command, analysis.hereDocuments) & 1 && body !== undefined) {
       if (document.priorSource || document.pipelineHeader || heredocHasUntrackedCwd(document.header)) builder.uncertainContext = true;
       inspectScript(body, initialCwd, depth + 1, builder);
     }
