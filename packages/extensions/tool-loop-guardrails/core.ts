@@ -1,4 +1,4 @@
-import { RetryBudget, isTransientFailure } from "./transient-retry.ts";
+import { RetryBudget, isTransientFailure, type RetryOperation } from "./transient-retry.ts";
 import { callKey } from "./call-identity.ts";
 export { callKey } from "./call-identity.ts";
 import { access, opendir, stat } from "node:fs/promises";
@@ -542,7 +542,7 @@ export function recordResult(
   failureText = "",
   canonicalCallKey?: string,
   details?: unknown,
-  retryAttemptReserved = false,
+  reservedRetryOperation?: RetryOperation,
 ): string | undefined {
   if (isError) {
     const execution = readShellExecution(details);
@@ -554,7 +554,7 @@ export function recordResult(
     const call = canonicalCallKey ?? callKey(toolName, input);
     if (category === "aborted") return undefined;
     if (isTransientFailure(category, failureText, details)) {
-      state.retry.record(call, retryAttemptReserved);
+      state.retry.record(call, reservedRetryOperation);
       return undefined;
     }
     const key = signatureKey(call, category);

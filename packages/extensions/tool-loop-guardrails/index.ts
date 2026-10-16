@@ -197,7 +197,7 @@ export default function toolLoopGuardrails(pi: ExtensionAPI): void {
       const pending = calls.pending.get(id)!;
       if (id === event.toolCallId || pending.parent === event.toolCallId) {
         const retry = state.retry.operations.get(pending.key);
-        if (retry) retry.inFlight = false;
+        if (retry && pending.retryOperation === retry) retry.inFlight = false;
       }
     }
     calls.end(event.toolCallId);
@@ -245,7 +245,7 @@ export default function toolLoopGuardrails(pi: ExtensionAPI): void {
       // Reserve the scheduled delay before yielding; simultaneous parents cannot spend it twice.
       retry.waitMs += delay;
       retry.attempts++;
-      pending.retryAttemptReserved = true;
+      pending.retryOperation = retry;
       const started = performance.now();
       const wait = pending.wait = new RetryWait();
       const completed = await wait.start(delay, ctx.signal);
@@ -270,10 +270,10 @@ export default function toolLoopGuardrails(pi: ExtensionAPI): void {
     if (!pending) return undefined;
     const key = pending.key;
     const retry = state.retry.operations.get(key);
-    if (retry) retry.inFlight = false;
+    if (retry && pending.retryOperation === retry) retry.inFlight = false;
     const repeatReminder = observeRepeatedCall(state, event.toolName, event.input, key);
     const failureText = event.isError ? boundedFailureText(event.content) : "";
-    const warning = recordResult(state, event.toolName, event.input, event.isError, failureText, key, event.details, pending.retryAttemptReserved);
+    const warning = recordResult(state, event.toolName, event.input, event.isError, failureText, key, event.details, pending.retryOperation);
     const recoveryHint = event.isError
       ? await failureRecoveryHint(event.toolName, event.input, failureText, getShellCwdBinding(event.input)?.canonical ?? ctx.cwd, event.details)
       : undefined;

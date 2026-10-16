@@ -187,6 +187,37 @@ test("cancelled or vetoed retries consume the attempt reservation even without a
   f.close();
 });
 
+for (const finish of ["result", "cancel"] as const) test(`an earlier unreserved sibling ${finish} cannot release another parent's retry`, async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const f = fixture(), input = { x: 1 };
+  await f.call("a", input, "pa"); await f.call("b", input, "pb");
+  await f.result("a", input, "HTTP 503", true);
+  const waiting = f.call("retry", input, "pc"); await setImmediate();
+  if (finish === "result") await f.result("b", input, "HTTP 503", true); else f.end("pb");
+  const overlap = f.call("overlap", input, "pd"); await setImmediate();
+  t.mock.timers.tick(15000);
+  assert.equal(await waiting, undefined);
+  assert.match((await overlap).reason, /already waiting or executing/);
+  f.close();
+});
+
+test("a late retry from before successful recovery cannot release a new retry owner", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const f = fixture(), input = { x: 1 };
+  await f.call("a", input, "pa"); await f.call("b", input, "pb");
+  await f.result("a", input, "HTTP 503", true);
+  const oldRetry = f.call("old", input, "pc"); await setImmediate();
+  await f.result("b", input); // Clears this operation's failure budget, including the old generation.
+  await f.call("fresh", input, "pd"); await f.result("fresh", input, "HTTP 503", true);
+  const newRetry = f.call("new", input, "pe"); await setImmediate();
+  t.mock.timers.tick(1000); assert.equal(await oldRetry, undefined); assert.equal(await newRetry, undefined);
+  await f.result("old", input, "HTTP 503", true);
+  const overlap = JSON.parse((await f.call("overlap", input, "pf")).reason);
+  assert.match(overlap.cause, /already waiting or executing/);
+  assert.equal(overlap.attempts, 3);
+  f.close();
+});
+
 test("failure and retry eviction is counted and cannot renew an evicted allowance", () => {
   for (const text of ["SyntaxError", "HTTP 503"]) {
     const s = core.createGuardState();

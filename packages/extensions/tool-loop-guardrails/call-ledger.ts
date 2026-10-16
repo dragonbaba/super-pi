@@ -1,4 +1,4 @@
-import { RetryWait } from "./transient-retry.ts";
+import { RetryWait, type RetryOperation } from "./transient-retry.ts";
 
 export const MAX_PENDING_CALLS = 256;
 export const MAX_RELEASED_CALLS = 4096;
@@ -8,7 +8,7 @@ export class PendingCall {
   repairNote: string | undefined;
   nestedKey: string | undefined;
   wait: RetryWait | undefined;
-  retryAttemptReserved = false;
+  retryOperation: RetryOperation | undefined;
   key: string;
   readonly parent: string | undefined;
   constructor(key: string, parent: string | undefined) { this.key = key; this.parent = parent; }

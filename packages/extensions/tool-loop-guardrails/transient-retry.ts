@@ -55,8 +55,9 @@ export class RetryBudget {
   evictions = 0;
   saturated = false;
 
-  record(key: string, attemptReserved = false): void {
+  record(key: string, reservedOperation?: RetryOperation): void {
     let operation = this.operations.get(key);
+    const ownsReservation = operation !== undefined && operation === reservedOperation;
     if (!operation) {
       if (this.saturated) return;
       if (this.operations.size >= MAX_RETRY_OPERATIONS) {
@@ -70,8 +71,10 @@ export class RetryBudget {
       operation = new RetryOperation();
       this.operations.set(key, operation);
     }
-    operation.inFlight = false;
-    if (!attemptReserved) operation.attempts++;
+    // An earlier ordinary sibling can finish while a later retry owns admission.
+    // Only the invocation that reserved that retry may release its reservation.
+    if (ownsReservation) operation.inFlight = false;
+    if (!ownsReservation) operation.attempts++;
   }
 
   delay(operation: RetryOperation): number {
