@@ -14,6 +14,7 @@ const substitution = "$(grep -c -E '(class|function|const|var|let) GCSystem\\b' 
 const cases = literalInputs ? [
   ["ordered-lookup-state", "rm -r scratch; PATH=/tmp; echo ok", 1],
   ["prior-lookup-state", "PATH=/tmp; rm -r scratch", 1],
+  ["nested-lookup-state", "echo ok; PATH=/tmp; echo $(rm -r scratch)", 2],
   ["newline-function", "function f\n{ source /dev/stdin; }; f <<'EOF'\nprintf ok\nEOF", 2],
   ["node-value-free-data", "node --no-addons script.js <<'EOF'\nfs.rmSync(target,{recursive:true})\nEOF", 1],
   ["lost-wrapped-descriptor", "exec 3<<'EOF'\nprintf ok\nEOF\necho ok; bash -c 'source /dev/fd/3'", 2],

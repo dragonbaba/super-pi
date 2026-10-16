@@ -475,6 +475,9 @@ function inspectShellScript(script: string, initialCwd: string, depth: number, b
 	const prepared = builder.analysisOwner ? builder.analysisOwner.get(script) : analyzeShellSource(script);
 	const analysis = prepared.view;
 	let uncertainStateStart = uninspectableBashStateStart(analysis.command);
+	// Nested substitutions are inspected before the outer segment walk. Preserve
+	// their prior conservative context until that source ordering is modeled.
+	if (uncertainStateStart >= 0 && (analysis.substitutions.length || prepared.substitutions.scripts.length)) uncertainStateStart = 0;
 	if (uncertainStateStart === 0) {
 		uncertainStateStart = -1;
 		addPrimitive(builder, "unverifiable_shell_state");

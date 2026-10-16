@@ -528,6 +528,8 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
   const prepared = builder.analysisOwner ? builder.analysisOwner.get(command) : analyzeShellSource(command);
   const analysis = prepared.view;
   let uncertainStateStart = uninspectableBashStateStart(analysis.command);
+  // These nested sources are visited before the outer token walk.
+  if (uncertainStateStart >= 0 && (analysis.substitutions.length || prepared.substitutions.scripts.length)) uncertainStateStart = 0;
   if (uncertainStateStart === 0) {
     uncertainStateStart = -1;
     markOpaque(builder, "unverifiable_shell_state");

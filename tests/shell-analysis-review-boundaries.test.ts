@@ -15,7 +15,7 @@ for (const mode of ["full-access", "workspace-write"] as const) {
       const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
       assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
     }
-    for (const command of ["PATH=/tmp; rm -r scratch", "rm -r first; PATH=/tmp; rm -r second", "for x in 1 2; do rm -r scratch; PATH=/tmp; done; echo ok"]) {
+    for (const command of ["PATH=/tmp; rm -r scratch", "rm -r first; PATH=/tmp; rm -r second", "for x in 1 2; do rm -r scratch; PATH=/tmp; done; echo ok", "echo ok; PATH=/tmp; echo $(rm -r scratch)", "rm -r first; PATH=/tmp; echo $(rm -r second)", "echo ok; PATH=/tmp; bash -c 'rm -r scratch'"]) {
       const f = await shellHookFixture(t, mode), call = await f.authorize(command);
       assert.equal(call.outcome?.block, true, command); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
     }
