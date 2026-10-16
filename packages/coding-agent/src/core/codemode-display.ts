@@ -26,6 +26,8 @@ export interface CodemodeChildDisplay {
 	displayLimited?: boolean;
 	failureHandled?: boolean;
 	recoveryError?: string;
+	recoveryCapped?: boolean;
+	evicted?: boolean;
 }
 
 export function codemodeInputSummary(input: unknown): string {
