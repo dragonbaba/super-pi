@@ -42,7 +42,6 @@ export class ToolResultBudgetSelection {
   private bytes = 0;
   private checkedStates = 0;
   private checkedSteps = 0;
-  private deltaSum = 0;
   toolTokens = 0;
   contextTokens = 0;
   bodyResults = 0;
@@ -88,7 +87,6 @@ export class ToolResultBudgetSelection {
     data[offset + 5] = minimumIsSource ? 1 : 0;
     this.toolTokens += baseTool;
     this.contextTokens += baseContext;
-    if (Number.isFinite(delta) && gain > 0) this.deltaSum += delta;
     this.checkedSteps++;
   }
 
@@ -101,7 +99,33 @@ export class ToolResultBudgetSelection {
       this.countBodies();
       return true;
     }
-    const width = Math.min(toolBudget - this.toolTokens, this.deltaSum) + 1;
+    const remaining = toolBudget - this.toolTokens;
+    let deltaSum = 0;
+    let gainSum = 0;
+    for (let index = 0; index < this.count; index++) {
+      const offset = index * COST_FIELDS;
+      const delta = data[offset + 3]!;
+      if (delta <= remaining) {
+        deltaSum += delta;
+        gainSum += data[offset + 4]!;
+      }
+      this.checkedSteps++;
+    }
+    // This optimistic gain bound proves infeasibility even when the eligible
+    // alternatives cannot all coexist. Keep the attainable base costs on failure.
+    if (this.contextTokens - gainSum > contextBudget) return false;
+    if (deltaSum <= remaining) {
+      for (let index = 0; index < this.count; index++) {
+        const offset = index * COST_FIELDS;
+        if (data[offset + 4]! > 0 && data[offset + 3]! <= remaining) data[offset] = data[offset] === 1 ? 0 : 1;
+        this.checkedSteps++;
+      }
+      this.toolTokens += deltaSum;
+      this.contextTokens -= gainSum;
+      this.countBodies();
+      return true;
+    }
+    const width = Math.min(remaining, deltaSum) + 1;
     const states = this.count * width;
     const steps = this.checkedSteps + 4 * states + 3 * width + 2 * this.count;
     const rowBytes = 2 * width * Float64Array.BYTES_PER_ELEMENT;

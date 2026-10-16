@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import {Session} from "node:inspector/promises";
 import {execFileSync} from "node:child_process";
 import {setImmediate as yieldLoop} from "node:timers/promises";
-import {createToolResultPresentationOwner,ToolResultContinuationError} from "../../packages/coding-agent/src/core/tool-result-presentation.ts";
+import {createToolResultPresentationOwner,createToolResultPresentationCounters,ToolResultContinuationError} from "../../packages/coding-agent/src/core/tool-result-presentation.ts";
 import {ToolResultBudgetSelection,ToolResultBudgetComputationError,RESULT_SELECTION_MAX_BYTES,RESULT_SELECTION_MAX_STATES,RESULT_SELECTION_MAX_STEPS} from "../../packages/coding-agent/src/core/tool-result-budget-selection.ts";
 import {estimateContextTokensFromParts,estimateMessageTokens} from "@super-pi/ai";
 import {assistant,toolResult} from "../../tests/codemode-recovery/fixture.ts";
@@ -91,8 +91,25 @@ function lifecycle(mode:string) {
   return {mode,refs,counters:f.owner.counters};
 }
 let endings:ReturnType<typeof lifecycle>[];
+function linearLifecycle(mode:string) {
+  const counters=createToolResultPresentationCounters(),refs:WeakRef<object>[]=[];
+  const plan=new ToolResultBudgetSelection(3,counters);
+  currentRefs=refs;
+  try {
+    for(let index=0;index<3;index++)plan.set(index,100,5000,30000,4000,false);
+    assert.equal(plan.solve(100000,mode==="linear-reject"?10000:13000),mode==="linear-select-all");
+  } finally {plan.dispose();currentRefs=undefined;}
+  assert.equal(counters.contextualChoiceStates,0);
+  assert.equal(counters.contextualChoiceAllocatedBackingBytes,144);
+  assert.equal(counters.contextualChoiceActiveBytes,0);
+  assert.equal(counters.contextualChoiceActivePlans,0);
+  return {mode,refs,counters};
+}
 ToolResultBudgetSelection.prototype.dispose=observedDispose;
-try {endings=["normal","budget-failure","failure","cancel","clear","dispose","resource-limit"].map(lifecycle);}
+try {
+  endings=["normal","budget-failure","failure","cancel","clear","dispose","resource-limit"].map(lifecycle);
+  endings.push(linearLifecycle("linear-reject"),linearLifecycle("linear-select-all"));
+}
 finally {ToolResultBudgetSelection.prototype.dispose=originalDispose;}
 for(let i=0;i<6;i++){await yieldLoop();globalThis.gc();}
 const lifecycles=endings.map(x=>({mode:x.mode,trackedReferences:x.refs.length,retainedAfterGc:x.refs.filter(ref=>ref.deref()).length,counters:x.counters}));

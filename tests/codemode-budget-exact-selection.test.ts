@@ -80,7 +80,9 @@ test("R1.3 state, step and memory limits are separate and release allocated scra
         const count=kind==="states"?256:kind==="steps"?1024:30000;
         plan=new ToolResultBudgetSelection(count,counters);
         for(let i=0;i<count;i++)plan.set(i,kind==="steps"?1024:56,31,1,1201,false);
-        plan.solve(kind==="steps"?2047:8000,100);
+        // The optimistic gain bound must remain feasible so the solver really
+        // needs DP; an impossible bound is now rejected before resource checks.
+        plan.solve(kind==="steps"?2047:8000,100000);
       },e=>{
         assert.ok(e instanceof ToolResultBudgetComputationError);assert.equal(e.limit,kind);
         assert.equal(e.checkedStates,0);assert.equal(e.stateLimit,RESULT_SELECTION_MAX_STATES);
