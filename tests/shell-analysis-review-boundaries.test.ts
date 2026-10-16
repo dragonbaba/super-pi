@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import test from "node:test";
-import { heredocConsumer, inspectBashResourceLifecycle, inspectHighRiskBashMutation } from "../packages/extensions/resource-lifecycle-guard/core.ts";
+import { decodeLiteralBase64, heredocConsumer, inspectBashResourceLifecycle, inspectHighRiskBashMutation, literalStoredScripts } from "../packages/extensions/resource-lifecycle-guard/core.ts";
 import { inspectBashPermissionScope } from "../packages/extensions/resource-lifecycle-guard/permission-bash.ts";
 import { prepareShellAnalysis } from "../packages/extensions/resource-lifecycle-guard/shell-substitution.ts";
 import { shellHookFixture, assertFinalAuthorization } from "./codemode-recovery/shell-hook-fixture.ts";
@@ -286,7 +286,7 @@ test("literal alias definitions retain lifecycle and mutation inspection", async
       const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
     }
   }
-  assert.match(inspectBashResourceLifecycle({ command: 'alias run="$SCRIPT"\nrun' }) ?? "", /SHELL_WRAPPER/);
+  assert.equal(inspectBashResourceLifecycle({ command: 'alias run="$SCRIPT"\nrun' }), undefined);
   assert.match(inspectBashResourceLifecycle({ command: "{ alias run='source /dev/stdin'; run; } <<'EOF'\nsleep 30 &\nEOF" }) ?? "", /Blocked an unmanaged long-lived process/);
 });
 
@@ -316,7 +316,7 @@ test("literal multiword eval and trap actions preserve mutation targets", async 
 test("function-dependent heredoc consumers cannot hide executable input", async t => {
   for (const header of ["f(){ source /dev/stdin; }; f", "function f { source /dev/stdin; }; f", "f(){ source /dev/stdin; }\nf", "{ f(){ source /dev/stdin; }; }; f", "if true; then f(){ source /dev/stdin; }; fi; f", "cat(){ source /dev/stdin; }\ncat"]) {
     const command = `${header} <<'EOF'\nsleep 100 &\nEOF`;
-    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_HEREDOC/, command);
+    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /Blocked an unmanaged long-lived process/, command);
     for (const mode of ["full-access", "workspace-write"] as const) {
       const f = await shellHookFixture(t, mode), { outcome } = await f.authorize(command);
       assert.equal(outcome?.block, true); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
@@ -328,10 +328,17 @@ test("function-dependent heredoc consumers cannot hide executable input", async 
   }
 });
 
-test("transformed heredoc streams are not mistaken for literal executable input", async t => {
-  for (const header of ["base64 -d <<'EOF' | source /dev/stdin", "cat <<'EOF' | base64 -d | source /dev/stdin", "sed 's/X/sleep/' <<'EOF' | bash -c 'source /dev/stdin'", "base64 -d <<'EOF' | node", "base64 -d <<'EOF' | python"]) {
+test("supported transformed heredoc streams inspect the decoded executable input", async t => {
+  for (const header of ["base64 -d <<'EOF' | source /dev/stdin", "cat <<'EOF' | base64 -d | source /dev/stdin"]) {
     const command = `${header}\nc2xlZXAgMTAwICYK\nEOF`;
-    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_HEREDOC/, command);
+    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /Blocked an unmanaged long-lived process/, command);
+    for (const mode of ["full-access", "workspace-write"] as const) {
+      const f = await shellHookFixture(t, mode), { outcome } = await f.authorize(command);
+      assert.equal(outcome?.block, true); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+  }
+  for (const [consumer, script] of [["node", "fs.rmSync(target,{recursive:true})"], ["python", "shutil.rmtree(target)"]]) {
+    const command = `base64 -d <<'EOF' | ${consumer}\n${Buffer.from(script!).toString("base64")}\nEOF`;
     for (const mode of ["full-access", "workspace-write"] as const) {
       const f = await shellHookFixture(t, mode), { outcome } = await f.authorize(command);
       assert.equal(outcome?.block, true); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
@@ -344,12 +351,68 @@ test("transformed heredoc streams are not mistaken for literal executable input"
 });
 
 test("trap action expansion cannot defer inspection of executable source", async t => {
-  for (const command of ['ACTION=\'sleep 100 &\'; trap "$ACTION" EXIT; true', 'trap -- "$ACTION" EXIT', 'builtin trap "$ACTION" EXIT']) {
-    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_WRAPPER/, command);
+  for (const command of ['ACTION=\'sleep 100 &\'; trap "$ACTION" EXIT; true', 'ACTION=\'sleep 100 &\'; trap -- "$ACTION" EXIT', 'ACTION=\'sleep 100 &\'; builtin trap "$ACTION" EXIT']) {
+    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /Blocked an unmanaged long-lived process/, command);
     for (const mode of ["full-access", "workspace-write"] as const) {
       const f = await shellHookFixture(t, mode), { outcome } = await f.authorize(command);
       assert.equal(outcome?.block, true); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
     }
   }
   for (const command of ["trap 'printf ok' EXIT", "trap - EXIT", 'trap -p "$SIGNAL"']) assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
+});
+
+const d3ReadOnlyCases = [
+  ["unrelated function and read", "f(){ :; }; read x <<'EOF'\nhello\nEOF"],
+  ["persistent descriptor readonly source", "exec 3<<'EOF'\nprintf ok\nEOF\nsource /dev/fd/3"],
+  ["persistent descriptor data", "exec 3<<'EOF'\nsleep 100 &\nEOF\ncat /dev/fd/3"],
+  ["literal process source readonly", "source <(echo 'printf ok')"],
+  ["literal process source data", "cat <(echo 'sleep 100 &')"],
+  ["python interactive readonly", "python3 -i -c 'pass' <<'EOF'\nprint(1)\nEOF"],
+  ["expanded trap", 'ACTION=\'printf ok\'; trap "$ACTION" EXIT; true'],
+  ["function data consumer", "f(){ cat; }; f <<'EOF'\nhello\nEOF"],
+  ["unrelated function and wc", "f(){ printf ok; }; wc -c <<'EOF'\nhello\nEOF"],
+  ["encoded read-only script", "base64 -d <<'EOF' | source /dev/stdin\ncHJpbnRmIG9rCg==\nEOF"],
+  ["unresolved trap", 'trap "$UNKNOWN_ACTION" EXIT'],
+  ["expanded alias", 'ACTION=\'printf ok\'; alias run="$ACTION"\nrun'],
+  ["unresolved alias", 'alias run="$UNKNOWN_ACTION"\nrun'],
+  ["unrelated executable function", "f(){ source /dev/stdin; }; wc -c <<'EOF'\nsleep 100 &\nEOF"],
+] as const;
+const d3RejectedCases = [
+  ["persistent descriptor launch", "bash", "exec 3<<'EOF'\nsleep 100 &\nEOF\nsource /dev/fd/3"],
+  ["persistent descriptor mutation", "bash", "exec 3<<'EOF'\nrm -rf \"$X\"\nEOF\nsource /dev/fd/3"],
+  ["python interactive mutation", "bash", "python3 -i -c 'pass' <<'EOF'\nimport shutil; shutil.rmtree('/protected')\nEOF"],
+  ["literal process source launch", "bash", "source <(echo 'sleep 100 &')"],
+  ["literal process source mutation", "bash", "source <(printf '%s' 'rm -rf \"$X\"')"],
+  ["dynamic rm", "bash", 'rm -rf "$X"'],
+  ["dynamic PowerShell remove", "powershell", "Remove-Item -Recurse $x"],
+  ["function dynamic rm", "bash", 'f(){ rm -rf "$X"; }; f <<\'EOF\'\nhello\nEOF'],
+  ["trap dynamic rm", "bash", 'ACTION=\'rm -rf "$X"\'; trap "$ACTION" EXIT; true'],
+  ["encoded dynamic rm", "bash", `base64 -d <<'EOF' | source /dev/stdin\n${Buffer.from('rm -rf "$X"\n').toString("base64")}\nEOF`],
+  ["function unmanaged launch", "bash", "f(){ source /dev/stdin; }; f <<'EOF'\nsleep 100 &\nEOF"],
+  ["encoded unmanaged launch", "bash", "base64 -d <<'EOF' | source /dev/stdin\nc2xlZXAgMTAwICYK\nEOF"],
+  ["expanded trap unmanaged launch", "bash", 'ACTION=\'sleep 100 &\'; trap "$ACTION" EXIT; true'],
+  ["expanded alias unmanaged launch", "bash", 'ACTION=\'sleep 100 &\'; alias run="$ACTION"\nrun'],
+  ["expanded alias dynamic rm", "bash", 'ACTION=\'rm -rf "$X"\'; alias run="$ACTION"\nrun'],
+] as const;
+for (const mode of ["full-access", "workspace-write"] as const) {
+  for (const [name, command] of d3ReadOnlyCases) test(`D3 ${mode}: readonly ${name} follows permission mode`, async t => {
+    const f = await shellHookFixture(t, mode, "active");
+    assertFinalAuthorization(await f.authorize(command));
+    assert.equal(f.dialogs(), mode === "full-access" ? 0 : 1);
+  });
+  for (const [name, tool, command] of d3RejectedCases) test(`D3 ${mode}: recognized ${name} cannot receive authority`, async t => {
+    const f = await shellHookFixture(t, mode, "active"), call = await f.authorize(command, tool);
+    try { assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0); }
+    finally { call.outcome?.finalAuthorization?.release(); }
+  });
+}
+
+test("literal source resolution is bounded and does not reuse uncertain assignment state", () => {
+  assert.equal(decodeLiteralBase64(Buffer.from("printf 日本語\n").toString("base64")), "printf 日本語\n");
+  assert.equal(decodeLiteralBase64("a".repeat(128 * 1024 + 1)), undefined);
+  assert.equal(decodeLiteralBase64("%%%"), undefined);
+  assert.equal(decodeLiteralBase64("/w=="), undefined, "invalid UTF-8 remains opaque");
+  assert.equal(literalStoredScripts('ACTION=\'sleep 100 &\'; unset ACTION; trap "$ACTION" EXIT'), undefined);
+  assert.equal(literalStoredScripts('ACTION=\'sleep 100 &\'; ACTION="$OTHER"; trap "$ACTION" EXIT'), undefined);
+  assert.deepEqual(literalStoredScripts('ACTION=\'printf ok\'; trap "$ACTION" EXIT'), ["printf ok"]);
 });

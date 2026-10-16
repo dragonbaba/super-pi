@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { basename, resolve } from "node:path";
-import { hasUninspectableBashState, heredocDocumentConsumers, heredocHasUntrackedCwd, literalAliasSource, literalEvalScript, unsafeBashLoopHeaderReason } from "./core.ts";
+import { hasUninspectableBashState, heredocDocumentConsumers, heredocExecutableBody, heredocHasUntrackedCwd, literalAliasSource, literalEvalScript, literalProcessSources, literalStoredScripts, unsafeBashLoopHeaderReason } from "./core.ts";
 import { commandSubstitutionEnd } from "./shell-substitution.ts";
 import { analyzeShellSource, type ShellAnalysisOwner } from "./shell-analysis.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
@@ -515,10 +515,15 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
   if (prepared.stdin) markOpaque(builder, `stdin_${prepared.stdin.kind}:${prepared.stdin.consumer}`);
   if (analysis.hasHeredoc) markOpaque(builder, "heredoc_uninspectable");
   if (analysis.uncertain) markOpaque(builder, "shell_context_uninspectable");
+  const storedScripts = literalStoredScripts(analysis.command);
+  if (storedScripts) for (const source of storedScripts) { markUncertainContext(builder, "resolved_stored_action"); inspectScript(source, initialCwd, depth + 1, builder); }
+  const processScripts = literalProcessSources(analysis.command);
+  if (processScripts) for (const source of processScripts) { markUncertainContext(builder, "resolved_process_source"); inspectScript(source, initialCwd, depth + 1, builder); }
   if (analysis.hereDocuments) for (const document of analysis.hereDocuments) {
-    if (heredocDocumentConsumers(document) & 1) {
+    const body = heredocExecutableBody(document, analysis.command);
+    if (heredocDocumentConsumers(document, analysis.command) & 1 && body !== undefined) {
       if (document.priorSource || document.pipelineHeader || heredocHasUntrackedCwd(document.header)) builder.uncertainContext = true;
-      inspectScript(document.body, initialCwd, depth + 1, builder);
+      inspectScript(body, initialCwd, depth + 1, builder);
     }
   }
   for (const nested of analysis.substitutions) inspectScript(nested, initialCwd, depth + 1, builder);

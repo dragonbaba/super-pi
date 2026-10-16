@@ -169,7 +169,7 @@ export interface ShellAnalysisView {
   substitutionUncertain?: boolean;
   /** Unknown body boundaries may hide executable input or following commands. */
   unboundedHeredoc?: boolean;
-  hereDocuments?: { header: string; pipelineHeader?: string; body: string; priorSource: boolean; descriptor: number }[];
+  hereDocuments?: { header: string; pipelineHeader?: string; contextEnd: number; bodyEnd: number; body: string; priorSource: boolean; descriptor: number }[];
 }
 
 function maskShellRange(output: string[] | undefined, start: number, end: number): void {
@@ -414,7 +414,7 @@ export function prepareShellAnalysis(command: string): ShellAnalysisView {
       }
       hereDocuments ??= [];
       if (hereDocuments.length < MAX_SUBSTITUTIONS) {
-        hereDocuments.push({ header: command.slice(logicalLineStart, delimiter.headerEnd), pipelineHeader: delimiter.pipelineEnd > delimiter.headerEnd ? command.slice(logicalLineStart, delimiter.pipelineEnd) : undefined, body: command.slice(contentStart, delimiterLineStart), priorSource: logicalLineStart > 0, descriptor: delimiter.descriptor });
+        hereDocuments.push({ header: command.slice(logicalLineStart, delimiter.headerEnd), pipelineHeader: delimiter.pipelineEnd > delimiter.headerEnd ? command.slice(logicalLineStart, delimiter.pipelineEnd) : undefined, contextEnd: delimiter.pipelineEnd, bodyEnd, body: command.slice(contentStart, delimiterLineStart), priorSource: logicalLineStart > 0, descriptor: delimiter.descriptor });
       } else substitutionUncertain = uncertain = true;
       maskShellRange(output, contentStart, bodyEnd);
       const delimiterLineEnd = command.indexOf("\n", bodyEnd);
