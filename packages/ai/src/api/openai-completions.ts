@@ -65,7 +65,7 @@ import {
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.ts";
 import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.ts";
 import { OPENAI_CHAT_SAMPLING_RESERVED_KEYS } from "./openai-sampling-reserved.ts";
-import { buildBaseOptions, clampReasoning, MIN_ANSWER_TOKENS, resolveSamplingParams } from "./simple-options.ts";
+import { buildBaseOptions, clampMaxTokensToContext, clampReasoning, MIN_ANSWER_TOKENS, resolveSamplingParams } from "./simple-options.ts";
 import { transformMessages } from "./transform-messages.ts";
 
 /**
@@ -894,10 +894,11 @@ function buildParams(
 	}
 
 	if (options?.maxTokens) {
+		const maxTokens = clampMaxTokensToContext(model, context, options.maxTokens);
 		if (compat.maxTokensField === "max_tokens") {
-			(params as any).max_tokens = options.maxTokens;
+			(params as any).max_tokens = maxTokens;
 		} else {
-			params.max_completion_tokens = options.maxTokens;
+			params.max_completion_tokens = maxTokens;
 		}
 	}
 

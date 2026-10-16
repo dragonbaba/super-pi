@@ -28,7 +28,7 @@ test("Anthropic stream routes sparse provider block indexes without linear looku
 		reasoning: false,
 		input: ["text"],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-		contextWindow: 1000,
+		contextWindow: 8192,
 		maxTokens: 100,
 	};
 	const events: Array<{ type: string; contentIndex?: number; content?: string; delta?: string }> = [];
@@ -65,7 +65,7 @@ test("pi-messages tool completion ignores unexpected prototype fields", async ()
 		reasoning: false,
 		input: ["text"],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-		contextWindow: 1000,
+		contextWindow: 8192,
 		maxTokens: 100,
 	};
 	let toolCall: Record<string, unknown> | undefined;

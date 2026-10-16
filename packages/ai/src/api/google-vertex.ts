@@ -44,7 +44,7 @@ import {
 	retainThoughtSignature,
 	retryGoogleRequest,
 } from "./google-shared.ts";
-import { buildBaseOptions } from "./simple-options.ts";
+import { buildBaseOptions, clampMaxTokensToContext } from "./simple-options.ts";
 
 export interface GoogleVertexOptions extends StreamOptions {
 	toolChoice?: "auto" | "none" | "any";
@@ -525,7 +525,7 @@ function buildParams(
 		generationConfig.temperature = options.temperature;
 	}
 	if (options.maxTokens !== undefined) {
-		generationConfig.maxOutputTokens = options.maxTokens;
+		generationConfig.maxOutputTokens = clampMaxTokensToContext(model, context, options.maxTokens);
 	}
 
 	const functionCallingMode = wireContext.tools?.length

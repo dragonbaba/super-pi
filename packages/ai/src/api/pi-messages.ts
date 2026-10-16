@@ -33,6 +33,7 @@ import { headersToRecord, providerHeadersToRecord } from "../utils/headers.ts";
 import { parseStreamingJson } from "../utils/json-parse.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { CRLF_PATTERN, TRAILING_SLASHES_PATTERN } from "./pi-messages-regex.ts";
+import { clampMaxTokensToContext } from "./simple-options.ts";
 
 export interface PiMessagesOptions extends StreamOptions {
 	reasoning?: ThinkingLevel;
@@ -384,7 +385,7 @@ export const stream: StreamFunction<"pi-messages", PiMessagesOptions> = (
 				context: wireContext,
 				options: {
 					temperature: options?.temperature,
-					maxTokens: options?.maxTokens,
+					maxTokens: clampMaxTokensToContext(model, context, options?.maxTokens ?? model.maxTokens),
 					reasoning: capabilities.reasoning.mode !== "none" ? options?.reasoning : undefined,
 					cacheRetention: capabilityCacheRetention(
 						model,

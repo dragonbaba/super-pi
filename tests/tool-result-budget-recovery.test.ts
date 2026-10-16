@@ -50,8 +50,8 @@ test("explicit output overrides and model ceilings bound the finished request", 
  assert.throws(()=>clampMaxTokensToContext(model,context,0));
 });
 
-test("unrelated APIs retain their existing clamp contract", () => {
- assert.equal(clampMaxTokensToContext({...model,api:"openai-codex-responses",contextWindow:620_100},{messages:messages(620_000)},384_000),1);
+test("Codex requests reject genuine exhaustion instead of a one-token success", () => {
+ assert.throws(()=>clampMaxTokensToContext({...model,api:"openai-codex-responses",contextWindow:620_100},{messages:messages(620_000)},384_000), /Request preparation blocked/);
 });
 
 test("request blocks distinguish genuine batch exhaustion from context headroom", () => {

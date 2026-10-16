@@ -245,7 +245,8 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 				model,
 				resolveCacheRetention(options.cacheRetention, options.env),
 			);
-			const inferenceMaxTokens = options.maxTokens ?? (isAnthropicClaudeModel(model) ? model.maxTokens : undefined);
+			const requestedMaxTokens = options.maxTokens ?? (isAnthropicClaudeModel(model) ? model.maxTokens : undefined);
+			const inferenceMaxTokens = requestedMaxTokens === undefined ? undefined : clampMaxTokensToContext(model, context, requestedMaxTokens);
 			const capabilities = getModelCapabilities(model);
 			const govCloud = isGovCloudBedrockTarget(model, region);
 			const additionalModelRequestFields = buildAdditionalModelRequestFields(model, options, govCloud);

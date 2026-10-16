@@ -109,11 +109,11 @@ test("unserializable tool arguments keep a bounded fallback", () => {
 	assert.equal(estimateMessageTokens(assistant), Math.ceil("tool[unserializable]".length / 3.5));
 });
 
-test("request minimum, caller ceiling and legacy one-token clamp keep their contracts", () => {
+test("request minimum and caller ceiling apply across provider APIs", () => {
 	const context: Context = { messages: [{ role: "user", content: "x".repeat(3500), timestamp: 1 }] };
 	assert.equal(clampMaxTokensToContext(REQUEST_ESTIMATE_MODEL, context, 16), 16);
 	assert.equal(clampMaxTokensToContext({ ...REQUEST_ESTIMATE_MODEL, maxTokens: 2048 }, context, 9000), 2048);
 	assert.equal(clampMaxTokensToContext({ ...REQUEST_ESTIMATE_MODEL, contextWindow: 1000 + CONTEXT_SAFETY_TOKENS + 1024 }, context, 9000), 1024);
 	assert.throws(() => clampMaxTokensToContext({ ...REQUEST_ESTIMATE_MODEL, contextWindow: 6120 - 1 }, context, 9000), /Request preparation blocked/);
-	assert.equal(clampMaxTokensToContext({ ...REQUEST_ESTIMATE_MODEL, api: "openai-responses", contextWindow: 1000 }, context, 9000), 1);
+	assert.throws(() => clampMaxTokensToContext({ ...REQUEST_ESTIMATE_MODEL, api: "openai-responses", contextWindow: 1000 }, context, 9000), /Request preparation blocked/);
 });
