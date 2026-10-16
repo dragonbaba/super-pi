@@ -13,15 +13,15 @@ export const SERVICE_START_PATTERN = /(?:^|[;&|()\r\n])[^\S\r\n]*(?:sudo\s+)?(?:
 export const SERVICE_CLEANUP_PATTERN = /(?:^|[;&|()\r\n])\s*(?:sudo\s+)?(?:systemctl\s+stop|service\s+\S+\s+stop|pm2\s+(?:stop|delete|kill))(?=$|[\s;|()])/iu;
 
 // High-risk mutation primitives from the script-safety policy. Keep these
-// module-scoped and non-global so hot-path scans allocate no regular expressions
-// and retain no lastIndex state.
+// module-scoped so hot-path scans allocate no regular expressions. Embedded-call
+// iterators are global; their synchronous owner resets lastIndex in finally.
 export const RM_RECURSIVE_PATTERN = /\brm\b(?=[^;&|\r\n]*(?:\s-[A-Za-z]*r[A-Za-z]*\b|\s--recursive\b))/iu;
 export const POWERSHELL_REMOVE_RECURSIVE_PATTERN = /\bremove-item\b(?=[^;&|\r\n]*\s-(?:recurse|r)\b)/iu;
 export const WINDOWS_RMDIR_RECURSIVE_PATTERN = /\brmdir\b(?=[^;&|\r\n]*\s\/s\b)/iu;
-export const PYTHON_RMTREE_PATTERN = /\bshutil\.rmtree\s*\(/iu;
-export const PYTHON_UNLINK_PATTERN = /(?:\bpathlib\.Path\s*\([^)]*\)|\bPath\s*\([^)]*\)|[A-Za-z_$][\w$.[\]]*)\.unlink\s*\(/iu;
-export const NODE_RECURSIVE_RM_PATTERN = /\b(?:fs\.)?(?:rm|rmSync)\s*\([^)]*\brecursive\s*:\s*true/iu;
-export const NODE_UNLINK_PATTERN = /\b(?:fs\.)?(?:unlink|unlinkSync)\s*\(/iu;
+export const PYTHON_RMTREE_PATTERN = /\bshutil\.rmtree\s*\(/giu;
+export const PYTHON_UNLINK_PATTERN = /(?:\bpathlib\.Path\s*\([^)]*\)|\bPath\s*\([^)]*\)|[A-Za-z_$][\w$.[\]]*)\.unlink\s*\(/giu;
+export const NODE_RECURSIVE_RM_PATTERN = /\b(?:fs\.)?(?:rm|rmSync)\s*\([^)]*\brecursive\s*:\s*true/giu;
+export const NODE_UNLINK_PATTERN = /\b(?:fs\.)?(?:unlink|unlinkSync)\s*\(/giu;
 export const FIND_DELETE_PATTERN = /\bfind\b[^;&|\r\n]*\s-delete\b/iu;
 export const XARGS_RM_PATTERN = /\bxargs\b[^;&|\r\n]*\brm\b/iu;
 export const GIT_CLEAN_PATTERN = /\bgit\s+clean\b(?=[^;&|\r\n]*\s-[A-Za-z]*f[A-Za-z]*\b)(?=[^;&|\r\n]*\s-[A-Za-z]*d[A-Za-z]*\b|[^;&|\r\n]*\s-[A-Za-z]*fd[A-Za-z]*\b)/iu;

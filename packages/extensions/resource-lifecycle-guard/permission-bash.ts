@@ -6,7 +6,7 @@ import { analyzeShellSource, type ShellAnalysisOwner } from "./shell-analysis.ts
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
 import { isLiteralReadLoop } from "./readonly-loop.ts";
 import { isReadOnlyFindLoop } from "./readonly-find-loop.ts";
-import { isReadOnlySortTail } from "./readonly-find.ts";
+import { findPredicateHasOperand, isReadOnlySortTail } from "./readonly-find.ts";
 import { bashPipelinePrefixEnd, bashScriptOperandIndex, hasStatefulBashPrintf, isBashArithmeticCommandHead, isBashNetworkRedirectionTarget, shellExpansionRisk, hasUnsafeBashTestOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 
 const MAX_COMMAND_CHARS = 128 * 1024;
@@ -43,6 +43,7 @@ interface ScopeBuilder extends BashPermissionScope {
   analysisOwner?: ShellAnalysisOwner;
   mutationDetected: boolean;
   uncertainContext: boolean;
+  unverifiableMutation: boolean;
 }
 
 function commandName(value: string): string {
@@ -75,9 +76,10 @@ function addClass(builder: ScopeBuilder, value: string): void {
   }
 }
 
-function addTarget(builder: ScopeBuilder, value: string, cwd: string): void {
+function addTarget(builder: ScopeBuilder, value: string, cwd: string, mutation = false): void {
   if (hasDynamicSyntax(value)) {
     builder.dynamicScope = true;
+    if (mutation) builder.unverifiableMutation = true;
     markOpaque(builder, "dynamic_target");
     return;
   }
@@ -96,6 +98,7 @@ function addResolvedTarget(builder: ScopeBuilder, target: string): void {
 
 function markMutation(builder: ScopeBuilder, primitive: string): void {
   builder.mutationDetected = true;
+  if (builder.uncertainContext || builder.dynamicScope) builder.unverifiableMutation = true;
   if (builder.kind === "read-only") builder.kind = "known-mutation";
   addPrimitive(builder, primitive);
   addClass(builder, `mutation:${primitive}`);
@@ -133,9 +136,9 @@ function addPositionalTargets(
     if (!optionsEnded && token.startsWith("-")) continue;
     count += 1;
     if (lastOnly) last = token;
-    else if (count > skip) addTarget(builder, token, cwd);
+    else if (count > skip) addTarget(builder, token, cwd, true);
   }
-  if (lastOnly && last !== undefined && count > skip) addTarget(builder, last, cwd);
+  if (lastOnly && last !== undefined && count > skip) addTarget(builder, last, cwd, true);
   if (count === 0) markOpaque(builder, "missing_static_target");
   return count;
 }
@@ -144,18 +147,19 @@ function inspectKnownMutation(command: string, tokens: readonly string[], start:
   if (command === "find") {
     const root = findSearchRoot(tokens, start);
     for (let index = start; index < tokens.length; index++) {
+      if (findPredicateHasOperand(tokens[index]!)) { index++; continue; }
       if (tokens[index] === "-fprint" || tokens[index] === "-fprint0" || tokens[index] === "-fprintf" || tokens[index] === "-fls") {
         markMutation(builder, "find_output");
         const target = tokens[++index];
-        if (target) addTarget(builder, target, cwd);
-        else { builder.dynamicScope = true; markOpaque(builder, "missing_output_target"); }
+        if (target) addTarget(builder, target, cwd, true);
+        else { builder.dynamicScope = true; builder.unverifiableMutation = true; markOpaque(builder, "missing_output_target"); }
         if (tokens[index - 1] === "-fprintf") index++;
         continue;
       }
       if (tokens[index] === "-delete" || tokens[index] === "-exec" || tokens[index] === "-execdir") {
         markMutation(builder, tokens[index] === "-delete" ? "find_delete" : "find_exec");
         if (root === undefined) addResolvedTarget(builder, cwd);
-        else addTarget(builder, root, cwd);
+        else addTarget(builder, root, cwd, true);
         if (tokens[index] !== "-delete") markOpaque(builder, "find_exec_scope");
         return true;
       }
@@ -182,8 +186,8 @@ function inspectKnownMutation(command: string, tokens: readonly string[], start:
       } else continue;
       output = true;
       markMutation(builder, "sort_output");
-      if (target) addTarget(builder, target, cwd);
-      else { builder.dynamicScope = true; markOpaque(builder, "missing_output_target"); }
+      if (target) addTarget(builder, target, cwd, true);
+      else { builder.dynamicScope = true; builder.unverifiableMutation = true; markOpaque(builder, "missing_output_target"); }
     }
     return output;
   }
@@ -440,7 +444,7 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
     }
     if (GIT_READ_ONLY.has(subcommand)) return cwd;
     markMutation(builder, `git_${subcommand}`);
-    addTarget(builder, ".git", cwd);
+    addTarget(builder, ".git", cwd, true);
     return cwd;
   }
   if (READ_ONLY_COMMANDS.has(command) || command === "sort" && isReadOnlySortTail(tokens, index)) {
@@ -482,6 +486,7 @@ function inspectTokenBuffer(tokens: PermissionTokens, cwd: string, depth: number
       if (writesFile && target !== "/dev/null") markMutation(builder, "output_redirection");
       if (isStaticDescriptorCopy(operator, target, descriptorFd)) continue;
       if (descriptorFd && isShellDynamicDescriptor(descriptorFd)) {
+        if (writesFile) builder.unverifiableMutation = true;
         markUncertainContext(builder, "unverifiable_redirection");
         continue;
       }
@@ -491,8 +496,8 @@ function inspectTokenBuffer(tokens: PermissionTokens, cwd: string, depth: number
         continue;
       }
       if (target === "/dev/null") continue;
-      if (target) addTarget(builder, target, cwd);
-      else markUncertainContext(builder, "redirection_target_unverifiable");
+      if (target) addTarget(builder, target, cwd, true);
+      else { builder.unverifiableMutation = true; markUncertainContext(builder, "redirection_target_unverifiable"); }
     }
     stripShellRedirections(tokens, redirections);
     redirections.length = 0;
@@ -725,7 +730,7 @@ function publicScope(builder: ScopeBuilder): BashPermissionScope {
     classes: builder.classes,
     dynamicScope: builder.dynamicScope,
     unverifiableScope: builder.unverifiableScope,
-    unverifiableMutation: builder.mutationDetected && (builder.uncertainContext || builder.dynamicScope),
+    unverifiableMutation: builder.unverifiableMutation,
   };
 }
 
@@ -744,6 +749,7 @@ export function inspectBashPermissionScope(input: unknown, cwd: string, analysis
     analysisOwner,
     mutationDetected: false,
     uncertainContext: false,
+    unverifiableMutation: false,
   };
   if (command.length > MAX_COMMAND_CHARS) {
     markOpaque(builder, "oversized_command");

@@ -425,6 +425,7 @@ test("literal source resolution is bounded and does not reuse uncertain assignme
 });
 
 const d3UnanalyzedPrograms = [
+  ["dynamic executable", 'CMD=setsid; $CMD -f sleep 100'],
   ["Perl heredoc", "perl <<'EOF'\nsystem(\"sleep 100 &\")\nEOF"],
   ["Ruby heredoc", "ruby <<'EOF'\nsystem(\"sleep 100 &\")\nEOF"],
   ["Perl -e", "perl -e 'system(\"sleep 100 &\")'"],
@@ -456,3 +457,73 @@ for (const mode of ["full-access", "workspace-write"] as const) {
     }
   });
 }
+
+for (const mode of ["full-access", "workspace-write"] as const) {
+  test(`review nine ${mode}: later state cannot invalidate an earlier fixed mutation`, async t => {
+    for (const command of ["touch target; printf -v X foo", 'touch target; printf "%s" "${X:=foo}"']) {
+      assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.unverifiableMutation, false, command);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
+      assert.equal(f.dialogs(), mode === "full-access" ? 0 : 1);
+    }
+    for (const command of ["printf -v X foo; touch target", "touch first; printf -v X foo; touch second", 'touch first; rm "$X"']) {
+      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
+      assert.equal(call.outcome?.block, true, command); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+  });
+  test(`review nine ${mode}: Node interactive eval and print preserve executable stdin`, async t => {
+    for (const header of ["node --interactive --eval 'void 0'", "node -i -p '0'", "node --eval 'void 0' -i", "node --print=0 --interactive", "node --require helper.js -i -e 'void 0'"]) {
+      assert.equal(heredocConsumer(header), "node", header);
+      const command = `${header} <<'EOF'\nfs.rmSync(target,{recursive:true})\nEOF`;
+      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
+      assert.equal(call.outcome?.block, true, header); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+    for (const header of ["node -e 'void 0'", "node --eval 'void 0' --no-warnings", "node script.js -i", "node -e 'void 0' -- -i"]) assert.equal(heredocConsumer(header), undefined, header);
+  });
+  test(`review nine ${mode}: parenthesized function keyword preserves source consumption`, async t => {
+    const command = "function f() { source /dev/stdin; }; f <<'EOF'\nsleep 100 &\nEOF";
+    const f = await shellHookFixture(t, mode), call = await f.authorize(command);
+    assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    const data = "function f() { source /dev/stdin; }; function f() { cat; }; f <<'EOF'\nsleep 100 &\nEOF";
+    const read = await shellHookFixture(t, mode); assertFinalAuthorization(await read.authorize(data));
+    assert.equal(read.dialogs(), mode === "full-access" ? 0 : 1);
+  });
+  test(`review nine ${mode}: every embedded mutation call contributes its target`, async t => {
+    for (const [header, source] of [
+      ["node --input-type=commonjs", "fs.rmSync('./scratch',{recursive:true}); fs.rmSync('/',{recursive:true})"],
+      ["node", "fs.unlinkSync('./scratch'); fs.unlinkSync('/')"],
+      ["python", "shutil.rmtree('./scratch'); shutil.rmtree('/')"],
+      ["python", "Path('./scratch').unlink(); Path('/').unlink()"],
+    ]) {
+      const command = `${header} <<'EOF'\n${source}\nEOF`, scan = inspectHighRiskBashMutation({ command }, process.cwd());
+      assert.deepEqual(scan?.targets, [resolve('./scratch'), resolve('/')], header);
+      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
+      assertFinalAuthorization(call);
+      assert.equal(f.dialogs(), mode === "full-access" ? 0 : 1, "fixed targets retain existing permission policy");
+    }
+    const command = "node <<'EOF'\nfs.rmSync('./scratch',{recursive:true}); fs.rmSync(target,{recursive:true})\nEOF";
+    const f = await shellHookFixture(t, mode), call = await f.authorize(command);
+    assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+  });
+  test(`review nine ${mode}: find predicate operands are data`, async t => {
+    for (const command of ["find . -name -fprint", "find . -iname -delete", "find . -path -fprint0", "find . -regex -fls", "find . -printf -fprintf"]) {
+      assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.unverifiableMutation, false, command);
+      assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
+      assert.equal(f.dialogs(), 0);
+    }
+    for (const command of ['find . -name -fprint -fprint "$X"', 'find . -path -delete -fprintf "$X" "%p"']) {
+      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
+      assert.equal(call.outcome?.block, true, command); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+  });
+}
+
+test("embedded mutation iteration stays bounded and resets between calls", () => {
+  const command = `node <<'EOF'\n${"fs.unlinkSync('./scratch');".repeat(65)}\nEOF`;
+  assert.equal(inspectHighRiskBashMutation({ command }, process.cwd())?.unverifiableScope, true);
+  for (let iteration = 0; iteration < 2; iteration++) {
+    const scan = inspectHighRiskBashMutation({ command: "python <<'EOF'\nshutil.rmtree('./a'); shutil.rmtree('./b')\nEOF" }, process.cwd());
+    assert.deepEqual(scan?.targets, [resolve('./a'), resolve('./b')]);
+    assert.equal(scan?.unverifiableScope, false);
+  }
+});

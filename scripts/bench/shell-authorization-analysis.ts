@@ -12,6 +12,12 @@ const cwd = process.cwd(), iterations = 512, warmup = 64, samplingInterval = 409
 const literalInputs = process.argv.includes("--literal-inputs");
 const substitution = "$(grep -c -E '(class|function|const|var|let) GCSystem\\b' pixi/pixi.js)";
 const cases = literalInputs ? [
+  ["node-interactive", "node -i -e 'void 0' <<'EOF'\nconsole.log(1)\nEOF", 1],
+  ["keyword-function", "function f() { source /dev/stdin; }; f <<'EOF'\nprintf ok\nEOF", 2],
+  ["embedded-mutations-64", `node <<'EOF'\n${"fs.rmSync('./scratch',{recursive:true});".repeat(64)}\nEOF`, 1],
+  ["ordered-state", "touch target; printf -v X foo", 1],
+  ["find-predicate-operand", "find . -name -fprint", 1],
+  ["dynamic-executable", 'CMD=setsid; $CMD -f sleep 100', 1],
   ["expanded-node-input", 'PAYLOAD="console.log(1)"; node <<EOF\n$PAYLOAD\nEOF', 1],
   ["expanded-python-input", "python <<EOF\n$(printf '%s' 'print(1)')\nEOF", 2],
   ["concatenated-delimiter", 'node <<"E""OF"\nconsole.log(1)\nEOF', 1],

@@ -32,7 +32,7 @@ import {
 import { commandSubstitutionEnd, MAX_SUBSTITUTIONS, MAX_SUBSTITUTION_NESTING } from "./shell-substitution.ts";
 import { analyzeShellSource, type ShellAnalysisOwner } from "./shell-analysis.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
-import { isReadOnlyFindTail, isReadOnlySortTail } from "./readonly-find.ts";
+import { findPredicateHasOperand, isReadOnlyFindTail, isReadOnlySortTail } from "./readonly-find.ts";
 import { isReadOnlyFindLoop } from "./readonly-find-loop.ts";
 import { isLiteralReadLoop } from "./readonly-loop.ts";
 import { bashArithmeticForHeader, bashLoopVariableIndex, bashPipelinePrefixEnd, bashScriptOperandIndex, unsafeBashForHeaderReason, hasStatefulBashPrintf, shellExpansionRisk, hasUnsafeBashTestOperand, hasUnsafeBashLoopListOperand, hasUnsafeCommandQueryOperand, isBashArithmeticCommandHead, isBashDoubleBracketCloseBoundary, isBashNetworkRedirectionTarget, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isLookupSensitiveBashVariable, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
@@ -659,17 +659,20 @@ function inspectCodeCall(
 	cwd: string,
 	builder: ScanBuilder,
 ): void {
-	const match = pattern.exec(masked);
-	if (!match) return;
-	addMutationPrimitive(builder, primitive);
-	const open = source.indexOf("(", match.index);
-	const literal = open >= 0 ? literalFirstArgument(source, open) : undefined;
-	if (literal === undefined) {
-		builder.dynamicScope = true;
-		builder.unverifiableScope = true;
-		return;
-	}
-	addTarget(builder, literal, cwd);
+	// Module regexes are borrowed only for this synchronous scan. Reset on every
+	// exit, including the bounded overflow path; no per-call regex or source copy.
+	pattern.lastIndex = 0;
+	try {
+		let calls = 0;
+		for (let match = pattern.exec(masked); match; match = pattern.exec(masked)) {
+			addMutationPrimitive(builder, primitive);
+			if (++calls > MAX_SCRIPT_SEGMENTS) { markUnverifiable(builder); return; }
+			const open = source.indexOf("(", match.index);
+			const literal = open >= 0 ? literalFirstArgument(source, open) : undefined;
+			if (literal === undefined) markUnverifiable(builder);
+			else addTarget(builder, literal, cwd);
+		}
+	} finally { pattern.lastIndex = 0; }
 }
 
 function inspectRm(tokens: readonly string[], start: number, cwd: string, builder: ScanBuilder): void {
@@ -739,6 +742,8 @@ function inspectFind(tokens: readonly string[], start: number, cwd: string, buil
 	let execAction = false;
 	for (let index = start; index < tokens.length; index++) {
 		const value = tokens[index]!;
+		if (findPredicateHasOperand(value) || value === "-fprint" || value === "-fprint0" || value === "-fls") { index++; continue; }
+		if (value === "-fprintf") { index += 2; continue; }
 		if (value === "-delete") deleteAction = true;
 		else if (value === "-exec" || value === "-execdir") execAction = true;
 	}
@@ -851,25 +856,27 @@ function nodeMayReadStdin(tokens: readonly string[], start: number, descriptor =
 	// Unknown Node/V8 options may take zero or one value. Track both possible
 	// argv interpretations with primitive states; a value is never proof of a
 	// program operand, even when that value itself resembles a source flag.
-	let options = true, valuePending = false, afterOptions = false;
+	// Bits: option parsing without/with eval=1/2, unknown option value=4/8,
+	// eval source=16, first operand after -- without/with eval=32/64.
+	let states = 1, interactive = false;
 	for (let index = start; index < tokens.length; index++) {
 		const word = tokens[index]!;
-		if (afterOptions && (word === "-" && descriptor === 0 || isHeredocDescriptorPath(word, descriptor))) return true;
-		const parseOption = options;
-		options = valuePending;
-		valuePending = false;
-		afterOptions = false;
-		if (!parseOption) continue;
-		if (word === "-") { if (descriptor === 0) return true; continue; }
-		if (word === "--") { afterOptions = true; continue; }
-		if (!word.startsWith("-")) { if (isHeredocDescriptorPath(word, descriptor)) return true; continue; }
-		if (word === "--check" || word === "-c" || word === "--help" || word === "-h" || word === "--version" || word === "-v"
-			|| word === "--eval" || word.startsWith("--eval=") || word === "--print" || word.startsWith("--print=") || word.startsWith("-e") || word.startsWith("-p")) continue;
-		options = true;
+		if (states & 32 && (word === "-" && descriptor === 0 || isHeredocDescriptorPath(word, descriptor))) return true;
+		const options = states & 3;
+		states = (states & 12) >> 2 | (states & 16 ? 2 : 0);
+		if (!options) continue;
+		if (word === "-") { if (options & 1 && descriptor === 0) return true; continue; }
+		if (word === "--") { states |= options << 5; continue; }
+		if (!word.startsWith("-")) { if (options & 1 && isHeredocDescriptorPath(word, descriptor)) return true; continue; }
+		if (word === "--check" || word === "-c" || word === "--help" || word === "-h" || word === "--version" || word === "-v") { if (!states) interactive = false; continue; }
+		if (word === "--interactive" || word === "-i") { interactive = true; states |= options; continue; }
+		if (word === "--eval" || word === "--print" || word === "-e" || word === "-p") { states |= 16; continue; }
+		if (word.startsWith("--eval=") || word.startsWith("--print=") || word.startsWith("-e") || word.startsWith("-p")) { states |= 2; continue; }
+		states |= options;
 		if (NODE_VALUE_FREE_FLAGS.has(word)) continue;
-		if (!word.includes("=") && (word.startsWith("--") || word.length === 2)) valuePending = true;
+		if (!word.includes("=") && (word.startsWith("--") || word.length === 2)) states |= options << 2;
 	}
-	return descriptor === 0 && (options || valuePending || afterOptions);
+	return descriptor === 0 && (interactive || (states & 37) !== 0);
 }
 
 function isHeredocDescriptorPath(operand: string | undefined, descriptor: number): boolean {
@@ -1062,7 +1069,10 @@ function functionStdinConsumers(segments: ShellSegment[], name: string, descript
 		let word = 0;
 		while (declaration[word] === "{" || declaration[word] === "then" || declaration[word] === "else" || declaration[word] === "do") word++;
 		let bodySegment = definition, bodyWord = -1;
-		if (declaration[word] === "function" && declaration[word + 1] === name) bodyWord = declaration.indexOf("{", word + 2);
+		if (declaration[word] === "function" && declaration[word + 1] === name) {
+			bodyWord = declaration.indexOf("{", word + 2);
+			if (bodyWord < 0 && declaration.length === word + 2 && declaration.separatorAfter === "(") { bodySegment++; bodyWord = 0; }
+		}
 		else if (declaration[word] === name && declaration.length === word + 1 && declaration.separatorAfter === "(") { bodySegment++; bodyWord = 0; }
 		if (bodyWord < 0 || !segments[bodySegment] || segments[bodySegment]![bodyWord] !== "{") continue;
 		if (depth > MAX_WRAPPER_DEPTH) return 0;
