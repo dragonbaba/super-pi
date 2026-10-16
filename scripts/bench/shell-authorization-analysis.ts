@@ -19,7 +19,8 @@ const cases = literalInputs ? [
   ["disconnected-heredoc-pipe", "cat <<'EOF' >out | source /dev/stdin\nsleep 100 &\nEOF", 1],
   ["restored-heredoc-pipe", "cat <<'EOF' 3>&1 >out >&3 | source /dev/stdin\nprintf ok\nEOF", 2],
   ["inherited-script-descriptor", "source /dev/fd/63", 1],
-  ["sourced-alias-setup", "source /dev/stdin <<'SETUP'\nshopt -s expand_aliases; alias node='source /dev/stdin'\nSETUP\nnode <<'EOF'\nsleep 100 &\nEOF", 2],
+  // Permission analysis visits the root, sourced setup, and literal alias action.
+  ["sourced-alias-setup", "source /dev/stdin <<'SETUP'\nshopt -s expand_aliases; alias node='source /dev/stdin'\nSETUP\nnode <<'EOF'\nsleep 100 &\nEOF", 3],
   ["lost-heredoc-descriptor", "exec 3<<'EOF'\nsleep 100 &\nEOF\necho ok; source /dev/fd/3", 1],
   ["known-heredoc-descriptor", "exec 3<<'EOF'\nprintf ok\nEOF\ntrue; source /dev/fd/3", 2],
   ["alias-heredoc", "shopt -s expand_aliases; BASH_ALIASES[node]='source /dev/stdin'; node <<'EOF'\nsleep 100 &\nEOF", 1],
