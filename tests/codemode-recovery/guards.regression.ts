@@ -67,18 +67,29 @@ test("F-S7 parent result events do not erase the repeated deterministic child fa
   guardExtension({ on: (name: string, callback: (...args: any[]) => any) => hooks.set(name, callback),
     registerTool() {}, sendMessage() {} } as never);
   const context = { cwd: process.cwd() };
-  const parentInput = { code: 'await tools.fixture_operation({kind:"failure"});' };
   let repeatedBlocked = false;
   hooks.get("agent_start")!();
   for (let round = 0; round < 3; round++) {
     hooks.get("turn_start")!();
     const parentId = `parent-${round}`;
+    // Vary only the wrapper: the repeated child must reach admission without
+    // the parent's independent failure count masking a lost child count.
+    const parentInput = { code: `// wrapper ${round}\nawait tools.fixture_operation({kind:"failure"});` };
     for (const [id, toolName, input, parentToolCallId] of [
       [parentId, "codemode", parentInput, undefined], [`child-${round}`, "fixture_operation", { kind: "failure" }, parentId],
     ] as const) {
       const event = { type: "tool_call", toolCallId: id, toolName, input, parentToolCallId };
       const admission = await hooks.get("tool_call")!(event, context);
-      if (admission?.block) { assert.match(admission.reason, /REPEATED_CALL_BLOCKED/); repeatedBlocked = true; break; }
+      if (toolName === "codemode") assert.notEqual(admission?.block, true, "distinct parent wrappers must remain admitted");
+      if (admission?.block) {
+        assert.equal(toolName, "fixture_operation");
+        assert.equal(id, `child-${round}`);
+        assert.equal(parentToolCallId, parentId);
+        assert.match(admission.reason, /REPEATED_CALL_BLOCKED/);
+        assert.equal(round, 2, "the child must be admitted twice before repeated-failure blocking");
+        repeatedBlocked = true;
+        break;
+      }
     }
     if (repeatedBlocked) break;
     for (const [id, toolName, input, parentToolCallId] of [
@@ -89,7 +100,7 @@ test("F-S7 parent result events do not erase the repeated deterministic child fa
       hooks.get("tool_execution_end")!({ toolCallId: id, toolName, isError: true });
     }
   }
-  assert.equal(repeatedBlocked, true, "three identical deterministic failures must not disappear between child and parent events");
+  assert.equal(repeatedBlocked, true, "the third child admission must be blocked after two identical deterministic child failures");
 });
 
 test("F-S8 two transient HTTP 503 responses still allow a successful third attempt", () => {
