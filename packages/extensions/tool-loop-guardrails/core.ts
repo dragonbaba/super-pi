@@ -547,9 +547,9 @@ export function recordResult(
     let category = classifyFailureText(failureText, input, toolName, details);
     if (execution?.producer === "agent" && execution.started === false
       && (category === "duplicate_call" || category === "repeated_call_blocked")) return undefined;
+    if (category === "aborted") return undefined;
     setBounded(state.failuresByTool, boundedToolName(toolName), (state.failuresByTool.get(boundedToolName(toolName)) ?? 0) + 1);
     const call = canonicalCallKey ?? callKey(toolName, input);
-    if (category === "aborted") return undefined;
     if (isTransientFailure(category, failureText, details)) {
       if (state.retry.record(call, reservedRetryOperation)) return undefined;
       // A single overflow category also bounds mixed HTTP/network/timeout failures.

@@ -173,7 +173,34 @@ for (const command of ["rg", "git"]) test(`structured ${command} timeout_or_abor
   cancelled.controller.abort(); assert.match((await waiting).reason, /aborted/); cancelled.close();
   const state = core.createGuardState();
   core.recordResult(state, "structured_readonly_command", input, true, "Operation aborted");
-  assert.equal(state.retry.operations.size + state.failuresBySignature.size, 0);
+  assert.equal(state.retry.operations.size + state.failuresBySignature.size + state.failuresByTool.size, 0);
+});
+
+test("DNS and common transport error forms receive bounded retries across parents", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  for (const failure of ["getaddrinfo ENOTFOUND example.test", "getaddrinfo failed", "ENOTFOUND", "connection refused", "connection lost", "connection error", "socket connection was closed", "reset before headers", "other side closed", "websocket closed", "upstream connect failure"]) {
+    const f = fixture('{"baseDelayMs":1,"maxDelayMs":1}'), input = { url: "https://example.test" };
+    for (let i = 0; i < 5; i++) {
+      const admission = f.call(`c${i}`, input, `p${i}`);
+      if (i) { await setImmediate(); t.mock.timers.tick(1); }
+      assert.equal(await admission, undefined, failure);
+      await f.result(`c${i}`, input, failure, true);
+    }
+    const refusal = JSON.parse((await f.call("sixth", input, "last")).reason);
+    assert.equal(refusal.category, "TRANSIENT_RETRY_EXHAUSTED", failure);
+    assert.equal(refusal.attempts, 5); assert.equal(refusal.waitMs, 4);
+    f.close();
+  }
+});
+
+test("explicit cancellation cannot add or evict failure summaries", () => {
+  const state = core.createGuardState();
+  core.recordResult(state, "genuine_failure", {}, true, "SyntaxError");
+  for (let i = 0; i < 65; i++) core.recordResult(state, `cancelled${i}`, {}, true, "Operation aborted");
+  assert.deepEqual([...state.failuresByTool], [["genuine_failure", 1]]);
+  assert.equal(state.failuresBySignature.size, 1);
+  assert.equal(state.retry.operations.size, 0);
+  assert.match(core.guardStatus(state), /trackedTools=1/);
 });
 
 for (const cancel of ["signal", "parent", "agent"] as const) test(`backoff ${cancel} cancellation releases timers and pending state`, async () => {

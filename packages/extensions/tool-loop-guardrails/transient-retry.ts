@@ -16,7 +16,8 @@ export const MAX_RETRY_OPERATIONS = 64;
 // Keep configurable backoff well below it rather than racing the host timer.
 export const MAX_RETRY_DELAY_MS = 10_000;
 const TRANSIENT_HTTP_RE = /\b(?:HTTP(?:\/\d(?:\.\d)?)?\s+|status(?:\s*code)?["']?\s*[:=]?\s*)5\d\d\b/iu;
-const TRANSIENT_NETWORK_RE = /\b(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH)\b|fetch failed|socket hang up|network (?:error|unavailable)|connection (?:reset|termination)|upstream connect error/iu;
+// Include the concrete DNS/socket/connection forms recognized by the provider layer.
+const TRANSIENT_NETWORK_RE = /\b(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|ENOTFOUND|getaddrinfo)\b|fetch failed|socket hang up|socket connection was closed|network.?(?:error|unavailable)|connection.?(?:error|refused|lost|reset|termination)|upstream.?connect|reset before headers|other side closed|websocket.?(?:closed|error)/iu;
 
 export function isTransientFailure(category: string, text: string, details?: unknown): boolean {
   const execution = readShellExecution(details);
