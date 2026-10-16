@@ -12,6 +12,11 @@ const cwd = process.cwd(), iterations = 512, warmup = 64, samplingInterval = 409
 const literalInputs = process.argv.includes("--literal-inputs");
 const substitution = "$(grep -c -E '(class|function|const|var|let) GCSystem\\b' pixi/pixi.js)";
 const cases = literalInputs ? [
+  ["positional-backtick-target", 'touch `pwd`/../escaped', 2],
+  ["copy-backtick-target", 'cp source `pwd`/../escaped', 2],
+  ["redirect-backtick-target", 'printf x > `pwd`/../escaped', 2],
+  ["find-backtick-root", 'find `pwd`/../victim -delete', 2],
+  ["sort-terminal-mode", "sort --help --output=.git/config", 1],
   ["prompt-transform", 'x=\'$(sleep 100 &)\'; echo "${x@P}"', 1],
   ["quote-transform-control", 'x=\'$(sleep 100 &)\'; echo "${x@Q}"', 1],
   ["ps4-xtrace-boundary", "PS4='$(sleep 100 &)'; set -x; :", 1],

@@ -12,6 +12,7 @@ export function shellHeredocKind(command: string): number {
 function scanHeredocSyntax(command: string, start: number, closing: number, depth: number): number {
   let arithmetic = closing === 256 ? 2 : 0;
   let braces = 1;
+  let wordStart = true;
   const nameEnd = start === 0 && closing === 0 ? command.startsWith("cat") ? 3 : command.startsWith("node") ? 4 : 0 : 0;
   let boundedPrefix = nameEnd > 0;
   for (let index = start; index < command.length; index++) {
@@ -24,23 +25,23 @@ function scanHeredocSyntax(command: string, start: number, closing: number, dept
     }
     if (closing === 257 && code === 125) { if (--braces === 0) return index; continue; }
     if (closing !== 0 && closing !== 256 && code === closing) return index;
-    if (code === 92) { boundedPrefix = false; index++; continue; }
+    if (code === 92) { boundedPrefix = false; if (next !== 10) wordStart = false; index++; continue; }
     if (code === 36 && next === 123) {
       const first = command.charCodeAt(index + 2);
       const end = scanHeredocSyntax(command, index + 2, first === 32 || first === 9 || first === 10 || first === 124 ? 257 : 125, depth + 1);
       if (end < 0) return end;
-      boundedPrefix = false; index = end; continue;
+      boundedPrefix = false; wordStart = false; index = end; continue;
     }
     if (code === 36 && next === 40) {
       const nestedArithmetic = command.charCodeAt(index + 2) === 40;
       const end = scanHeredocSyntax(command, index + (nestedArithmetic ? 3 : 2), nestedArithmetic ? 256 : 41, depth + 1);
       if (end < 0) return end;
-      boundedPrefix = false; index = end; continue;
+      boundedPrefix = false; wordStart = false; index = end; continue;
     }
     if (code === 96) {
       const end = scanHeredocSyntax(command, index + 1, 96, depth + 1);
       if (end < 0) return end;
-      boundedPrefix = false; index = end; continue;
+      boundedPrefix = false; wordStart = false; index = end; continue;
     }
     if (arithmetic) {
       if (code === 40) arithmetic++;
@@ -48,19 +49,19 @@ function scanHeredocSyntax(command: string, start: number, closing: number, dept
       continue;
     }
     if (closing === 93 || closing === 34) continue;
-    if (closing === 125 && (code === 60 || code === 62) && next === 40) {
+    if ((code === 60 || code === 62) && next === 40) {
       const end = scanHeredocSyntax(command, index + 2, 41, depth + 1);
       if (end < 0) return end;
-      index = end; continue;
+      boundedPrefix = false; wordStart = false; index = end; continue;
     }
     if (code === 36 && next === 91 || code === 40 && closing !== 125) {
       const arithmeticStart = code === 40 && next === 40;
       const end = scanHeredocSyntax(command, index + (code === 36 || arithmeticStart ? 2 : 1), code === 36 ? 93 : arithmeticStart ? 256 : 41, depth + 1);
       if (end < 0) return end;
-      boundedPrefix = false; index = end; continue;
+      boundedPrefix = false; wordStart = code === 40; index = end; continue;
     }
     if (code === 39 || code === 34) {
-      boundedPrefix = false;
+      boundedPrefix = false; wordStart = false;
       if (code === 34) {
         const end = scanHeredocSyntax(command, index + 1, 34, depth + 1);
         if (end < 0) return end;
@@ -78,10 +79,10 @@ function scanHeredocSyntax(command: string, start: number, closing: number, dept
     // above introduce executable shell syntax; literal << is not a redirection.
     if (closing === 125) continue;
     if (closing === 257 && code === 123) braces++;
-    const previous = command.charCodeAt(index - 1);
-    if (code === 35 && (index === start || previous <= 32 || previous === 59 || previous === 124 || previous === 38 || previous === 40 || previous === 41)) {
+    if (code === 35 && wordStart) {
       boundedPrefix = false;
       while (index < command.length && command.charCodeAt(index) !== 10) index++;
+      wordStart = true;
       continue;
     }
     if (code === 60) {
@@ -93,6 +94,7 @@ function scanHeredocSyntax(command: string, start: number, closing: number, dept
       }
     }
     if (index >= nameEnd && code !== 32 && code !== 9) boundedPrefix = false;
+    wordStart = code === 32 || code === 9 || code === 10 || code === 13 || code === 59 || code === 124 || code === 38 || code === 60 || code === 62 || code === 41;
   }
   return command.length;
 }

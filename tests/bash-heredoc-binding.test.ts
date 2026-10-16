@@ -16,6 +16,22 @@ import { shellHeredocKind } from "../packages/coding-agent/src/core/tools/shell-
 const shellPath = process.platform === "win32" && existsSync("D:/Git/bin/bash.exe") ? "D:/Git/bin/bash.exe" : getShellConfig().shell;
 const literal = "cat <<'EOF'\nprintf BODY_EXECUTED\nEOF";
 
+test("review twenty-three: a word-internal hash cannot hide a configured heredoc", async () => {
+ for (const word of ["$(printf x)#", "`printf x`#", "<(printf x)#", ">(printf x)#", "a\\ #", "'x'#", '"x"#', "$((1+2))#", "${x:-y}#"]) {
+  const command = `echo ${word} <<'EOF'\nhi\nEOF`;
+  assert.equal(shellHeredocKind(command), 1, command);
+  for (const options of [{ commandPrefix: "true" }, { spawnHook: (context: any) => context }, { operations: { exec: async () => ({ exitCode: 0 }) } }]) {
+   const denied = await dispatch(process.cwd(), command, options, false, 0);
+   assert.equal(denied.processes, 0); assert.match(denied.text, /\[SHELL_HEREDOC\]/);
+   const tool = createBashTool(process.cwd(), { shellPath, ...options });
+   await assert.rejects(tool.execute("word-hash-recheck", { command }), /\[SHELL_HEREDOC\]/);
+  }
+ }
+ for (const command of ["echo $(printf x) # <<'EOF'", "(printf x)# <<'EOF'", "echo x;# <<'EOF'", "echo x \\\n# <<'EOF'"]) assert.equal(shellHeredocKind(command), 0, command);
+ const admitted = await dispatch(process.cwd(), "echo $(printf x)# <<'EOF'\nhi\nEOF");
+ assert.equal(admitted.result.isError, false, admitted.text); assert.equal(admitted.processes, 1); assert.equal(admitted.text.trim(), "x#");
+});
+
 test("review sixteen: function-substitution heredocs cannot bypass configured Bash preparation or execution", async () => {
  for (const command of [
   "echo ${ bash <<'EOF'\nprintf ok\nEOF\n; }", 'echo "${ bash <<\'EOF\'\nprintf ok\nEOF\n; }"',

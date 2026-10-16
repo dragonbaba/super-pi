@@ -8,6 +8,10 @@ const gc = (globalThis as { gc?: () => void }).gc;
 assert.ok(gc, "run with --expose-gc");
 const tool = createBashTool(process.cwd(), { commandPrefix: "true", exposeSessionEnvironment: false });
 const cases = [
+  ["command-substitution-hash", "echo $(printf x)# <<'EOF'\nhi\nEOF", 1],
+  ["process-substitution-hash", "echo <(printf x)# <<'EOF'\nhi\nEOF", 1],
+  ["escaped-space-hash", "echo a\\ # <<'EOF'\nhi\nEOF", 1],
+  ["comment-after-word", "echo $(printf x) # <<'EOF'", 0],
   ["ordinary", "printf ok", 0],
   ["quoted-and-arithmetic", "echo 'a << b' $((1 << 3))", 0],
   ["parameter-data", "echo ${x:-${y:-(a<<b)}}", 0],

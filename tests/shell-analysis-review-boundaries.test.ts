@@ -32,6 +32,30 @@ test("prompt checks inspect only discovered parameter heads and retain primitive
 });
 
 for (const mode of ["full-access", "workspace-write"] as const) {
+  test(`review twenty-three ${mode}: positional, redirection and find-root targets retain expansion flags`, async t => {
+    for (const command of ['touch `pwd`/../escaped', 'mkdir `pwd`/../escaped', 'cp source `pwd`/../escaped', 'mv source `pwd`/../escaped', 'tee `pwd`/../escaped', "sed -i 's/a/b/' `pwd`/../escaped", 'rm -r `pwd`/../escaped', 'printf x > `pwd`/../escaped', 'find `pwd`/../victim -delete', 'find -H -- `pwd`/../victim -delete']) {
+      const scope = inspectBashPermissionScope({ command }, process.cwd());
+      assert.equal(scope?.unverifiableMutation, true, command);
+      assert.ok(!scope?.targets.includes(resolve(process.cwd(), command.includes("victim") ? "victim" : "escaped")), command);
+      if (command.startsWith("find") || command.startsWith("rm") || command.startsWith("printf")) assert.equal(inspectHighRiskBashMutation({ command }, process.cwd())?.unverifiableScope, true, command);
+      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
+      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+    for (const command of ["touch '`pwd`/../escaped'", "cp source '`pwd`/../escaped'", "printf x > '`pwd`/../escaped'", "find '`pwd`/../victim' -delete", 'touch \\`pwd\\`/../escaped']) {
+      assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.unverifiableMutation, false, command);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
+    }
+  });
+  test(`review twenty-three ${mode}: terminal sort options do not invent later writes`, async t => {
+    for (const option of ["--help", "--he", "--version"]) {
+      const command = `sort ${option} --output=.git/config --temporary-directory=../outside`;
+      const scope = inspectBashPermissionScope({ command }, process.cwd());
+      assert.equal(scope?.kind, "read-only", command); assert.deepEqual(scope?.targets, []);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), 0);
+    }
+    for (const command of ["sort --random-source --help --output=output", "sort --help >output"]) assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "known-mutation", command);
+    assert.equal(inspectBashPermissionScope({ command: "sort -- --help --output=.git/config" }, process.cwd())?.kind, "read-only");
+  });
   test(`review twenty-two ${mode}: parameter transforms preserve main's boundary`, async t => {
     for (const operator of ["P", "E", "A", "K", "k", "Q", "U", "u", "L", "a"]) {
       for (const payload of ["$(sleep 100 &)", "`sleep 100 &`", "hello"]) for (const quote of ['"', ""]) {

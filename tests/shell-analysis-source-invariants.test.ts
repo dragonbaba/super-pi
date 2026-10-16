@@ -19,6 +19,8 @@ test("authorization scanners and cache methods add no callbacks, promises or Buf
   targets.get("core.ts")!.add("descriptorCopyOrigin");
   targets.get("shell-substitution.ts")!.add("subscriptTextState");
   targets.get("shell-substitution.ts")!.add("isPromptParameterExpansion");
+  targets.get("core.ts")!.add("findSearchRootIndex");
+  for (const name of ["addPositionalTargets", "findSearchRootIndex", "inspectTokenBuffer"]) targets.get("permission-bash.ts")!.add(name);
   for (const [file, names] of targets) {
     const source = ts.createSourceFile(file, readFileSync(`packages/extensions/resource-lifecycle-guard/${file}`, "utf8"), ts.ScriptTarget.Latest, true);
     const seen = new Set<string>();

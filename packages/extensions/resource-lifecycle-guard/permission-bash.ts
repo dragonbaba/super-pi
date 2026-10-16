@@ -119,7 +119,7 @@ function markUncertainContext(builder: ScopeBuilder, primitive: string): void {
 }
 
 function addPositionalTargets(
-  tokens: readonly string[],
+  tokens: PermissionTokens,
   start: number,
   builder: ScopeBuilder,
   cwd: string,
@@ -128,7 +128,7 @@ function addPositionalTargets(
 ): number {
   let optionsEnded = false;
   let count = 0;
-  let last: string | undefined;
+  let last = -1;
   for (let index = start; index < tokens.length; index++) {
     const token = tokens[index]!;
     if (!optionsEnded && token === "--") {
@@ -137,17 +137,17 @@ function addPositionalTargets(
     }
     if (!optionsEnded && token.startsWith("-")) continue;
     count += 1;
-    if (lastOnly) last = token;
-    else if (count > skip) addTarget(builder, token, cwd, true);
+    if (lastOnly) last = index;
+    else if (count > skip) addTarget(builder, token, cwd, true, tokens.expansions?.[index]);
   }
-  if (lastOnly && last !== undefined && count > skip) addTarget(builder, last, cwd, true);
+  if (lastOnly && last >= 0 && count > skip) addTarget(builder, tokens[last]!, cwd, true, tokens.expansions?.[last]);
   if (count === 0) markOpaque(builder, "missing_static_target");
   return count;
 }
 
 function inspectKnownMutation(command: string, tokens: PermissionTokens, start: number, cwd: string, builder: ScopeBuilder): boolean {
   if (command === "find") {
-    const root = findSearchRoot(tokens, start);
+    const root = findSearchRootIndex(tokens, start);
     for (let index = start; index < tokens.length; index++) {
       if (findPredicateHasOperand(tokens[index]!)) { index++; continue; }
       if (tokens[index] === "-fprint" || tokens[index] === "-fprint0" || tokens[index] === "-fprintf" || tokens[index] === "-fls") {
@@ -160,8 +160,8 @@ function inspectKnownMutation(command: string, tokens: PermissionTokens, start: 
       }
       if (tokens[index] === "-delete" || tokens[index] === "-exec" || tokens[index] === "-execdir") {
         markMutation(builder, tokens[index] === "-delete" ? "find_delete" : "find_exec");
-        if (root === undefined) addResolvedTarget(builder, cwd);
-        else addTarget(builder, root, cwd, true);
+        if (root < 0) addResolvedTarget(builder, cwd);
+        else addTarget(builder, tokens[root]!, cwd, true, tokens.expansions?.[root]);
         if (tokens[index] !== "-delete") { markOpaque(builder, "find_exec_scope"); return true; }
         continue;
       }
@@ -180,6 +180,7 @@ function inspectKnownMutation(command: string, tokens: PermissionTokens, start: 
         const equals = token.indexOf("="), name = sortLongOption(token, equals < 0 ? token.length : equals);
         if (name === undefined) { markOpaque(builder, "sort_unknown_option"); continue; }
         if (name === "") { inertLongOption = true; continue; }
+        if (name === "help" || name === "version") return true;
         if (name === "compress-program") markOpaque(builder, "sort_compress_program");
         const value = equals >= 0 ? token.slice(equals + 1) : sortOptionRequiresValue(name) ? tokens[++index] : undefined;
         if (name !== "output" && name !== "temporary-directory") continue;
@@ -241,15 +242,15 @@ function inspectKnownMutation(command: string, tokens: PermissionTokens, start: 
   return false;
 }
 
-function findSearchRoot(tokens: readonly string[], start: number): string | undefined {
+function findSearchRootIndex(tokens: readonly string[], start: number): number {
   for (let index = start; index < tokens.length; index++) {
     const value = tokens[index]!;
-    if (value === "--") return tokens[index + 1] && !tokens[index + 1]!.startsWith("-") ? tokens[index + 1] : undefined;
+    if (value === "--") return tokens[index + 1] && !tokens[index + 1]!.startsWith("-") ? index + 1 : -1;
     if (value === "-H" || value === "-L" || value === "-P") continue;
-    if (value.startsWith("-")) return undefined;
-    return value;
+    if (value.startsWith("-")) return -1;
+    return index;
   }
-  return undefined;
+  return -1;
 }
 
 function commandIndex(tokens: readonly string[], start = 0): number {
@@ -512,7 +513,7 @@ function inspectTokenBuffer(tokens: PermissionTokens, cwd: string, depth: number
         continue;
       }
       if (target === "/dev/null") continue;
-      if (target) addTarget(builder, target, cwd, true);
+      if (target) addTarget(builder, target, cwd, true, tokens.expansions?.[index + 1]);
       else { builder.unverifiableMutation = true; markUncertainContext(builder, "redirection_target_unverifiable"); }
     }
     stripShellRedirections(tokens, redirections);

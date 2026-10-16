@@ -465,7 +465,7 @@ function inspectOutputRedirections(tokens: ShellSegment, cwd: string, builder: S
 			continue;
 		}
 		if (target === "/dev/null") continue;
-		if (!target || hasDynamicSyntax(target)) {
+		if (!target || tokens.expansions?.[index + 1] || hasDynamicSyntax(target)) {
 			markUnverifiable(builder, true);
 			continue;
 		}
@@ -789,7 +789,7 @@ function inspectWindowsRmdir(tokens: readonly string[], start: number, cwd: stri
 	if (!found) markUnverifiable(builder, true);
 }
 
-function inspectFind(tokens: readonly string[], start: number, cwd: string, builder: ScanBuilder): void {
+function inspectFind(tokens: readonly string[] & { expansions?: readonly number[] }, start: number, cwd: string, builder: ScanBuilder): void {
 	let deleteAction = false;
 	let execAction = false;
 	for (let index = start; index < tokens.length; index++) {
@@ -802,20 +802,20 @@ function inspectFind(tokens: readonly string[], start: number, cwd: string, buil
 	if (!deleteAction && !execAction) return;
 	addMutationPrimitive(builder, deleteAction ? "find_delete" : "find_exec");
 	if (execAction) markUnverifiable(builder, true);
-	const target = findSearchRoot(tokens, start);
-	if (target) addTarget(builder, target, cwd);
+	const target = findSearchRootIndex(tokens, start);
+	if (target >= 0) addTarget(builder, tokens[target]!, cwd, tokens.expansions?.[target]);
 	else markUnverifiable(builder, true);
 }
 
-function findSearchRoot(tokens: readonly string[], start: number): string | undefined {
+function findSearchRootIndex(tokens: readonly string[], start: number): number {
 	for (let index = start; index < tokens.length; index++) {
 		const value = tokens[index]!;
-		if (value === "--") return tokens[index + 1] && !tokens[index + 1]!.startsWith("-") ? tokens[index + 1] : undefined;
+		if (value === "--") return tokens[index + 1] && !tokens[index + 1]!.startsWith("-") ? index + 1 : -1;
 		if (value === "-H" || value === "-L" || value === "-P") continue;
-		if (value.startsWith("-")) return undefined;
-		return value;
+		if (value.startsWith("-")) return -1;
+		return index;
 	}
-	return undefined;
+	return -1;
 }
 
 function inspectXargs(tokens: readonly string[], start: number, builder: ScanBuilder): void {
@@ -852,7 +852,7 @@ function inspectGit(tokens: readonly string[], start: number, builder: ScanBuild
 }
 
 function collectPositionalTargets(
-	tokens: readonly string[],
+	tokens: readonly string[] & { expansions?: readonly number[] },
 	start: number,
 	cwd: string,
 	builder: ScanBuilder,
@@ -867,13 +867,14 @@ function collectPositionalTargets(
 			continue;
 		}
 		if (!optionsEnded && optionStyle === "dash" && value.startsWith("-")) continue;
-		addTarget(builder, value, cwd);
+		addTarget(builder, value, cwd, tokens.expansions?.[index]);
 		found = true;
 	}
 	if (!found) markUnverifiable(builder, true);
 }
 
-function addTarget(builder: ScanBuilder, rawTarget: string, cwd: string): void {
+function addTarget(builder: ScanBuilder, rawTarget: string, cwd: string, expansion = 0): void {
+	if (expansion) { builder.dynamicScope = true; markUnverifiable(builder, true); return; }
 	if (hasDynamicSyntax(rawTarget)) {
 		builder.dynamicScope = true;
 		const prefix = staticTargetPrefix(rawTarget);
