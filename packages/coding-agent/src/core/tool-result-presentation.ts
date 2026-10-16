@@ -294,6 +294,7 @@ interface ProjectionRecord {
 	contextualMinimumContextTokens: number;
 	contextualMinimumIsSource: boolean;
 	contextualMinimumUnfiltered: boolean;
+	contextualMinimumToolCalling: boolean;
 	contextualFullToolTokens: number;
 	contextualFullContextTokens: number;
 	evidenceGeneration: number;
@@ -1600,6 +1601,7 @@ export class ToolResultPresentationOwner {
 			contextualMinimumContextTokens: 0,
 			contextualMinimumIsSource: false,
 			contextualMinimumUnfiltered: false,
+			contextualMinimumToolCalling: true,
 			contextualFullToolTokens: 0,
 			contextualFullContextTokens: 0,
 			evidenceGeneration: ++this.evidenceGeneration,
@@ -1681,6 +1683,7 @@ export class ToolResultPresentationOwner {
 			contextualMinimumContextTokens: 0,
 			contextualMinimumIsSource: false,
 			contextualMinimumUnfiltered: false,
+			contextualMinimumToolCalling: true,
 			contextualFullToolTokens: 0,
 			contextualFullContextTokens: 0,
 			evidenceGeneration: ++this.evidenceGeneration,
@@ -2278,6 +2281,7 @@ export class ToolResultPresentationOwner {
 		observer?: ToolResultProjectionObserver,
 		preparedRecord?: ProjectionRecord,
 		keepFull = false,
+		toolCalling = true,
 	): ToolResultMessage {
 		let candidateBudget = Math.min(toolBudgetTokens, contextBudgetTokens);
 		const resident = this.projectionRecords?.get(message.toolCallId);
@@ -2358,7 +2362,7 @@ export class ToolResultPresentationOwner {
 				this.rethrowContextualProjectionFailure(error);
 			}
 			const toolEstimate = estimateToolOutputTokens(projected.content).estimatedTokens;
-			const contextEstimate = estimateMessageTokens(projected);
+			const contextEstimate = estimateMessageTokens(projected, toolCalling);
 			if (toolEstimate <= toolBudgetTokens && contextEstimate <= contextBudgetTokens) {
 				if (capture) this.recordProjectedUiSource(message, projected, capture, sources!);
 				if (!projectionObserved) observer?.recordToolResultProjection(message, projection?.content ?? message.content, projection ? record.sourceContent : message.content, transport, projected.content);
@@ -2379,7 +2383,7 @@ export class ToolResultPresentationOwner {
 		const minimum = this.getImagePolicyProjection(record, Number.MAX_SAFE_INTEGER);
 		const transport = this.createModelMessage(message, minimum.content);
 		const fallback = imagePolicy ? imagePolicy(transport) as ToolResultMessage : transport;
-		if (estimateToolOutputTokens(fallback.content).estimatedTokens <= toolBudgetTokens && estimateMessageTokens(fallback) <= contextBudgetTokens) {
+		if (estimateToolOutputTokens(fallback.content).estimatedTokens <= toolBudgetTokens && estimateMessageTokens(fallback, toolCalling) <= contextBudgetTokens) {
 			this.ensureArtifactDescriptor(record);
 			if (capture) { capture.projection = minimum; this.recordProjectedUiSource(message, fallback, capture, sources!); }
 			observer?.recordToolResultProjection(message, minimum.content, record.sourceContent, transport.content, fallback.content);
@@ -2401,18 +2405,18 @@ export class ToolResultPresentationOwner {
 	}
 
 	/** Only scalar costs survive this call; no policy callback or model view is cached. */
-	private measureContextualMinimum(message: ToolResultMessage, record: ProjectionRecord, imagePolicy?: (message: Message) => Message): void {
-		if (!imagePolicy && record.contextualMinimumUnfiltered) return;
+	private measureContextualMinimum(message: ToolResultMessage, record: ProjectionRecord, imagePolicy?: (message: Message) => Message, toolCalling = true): void {
+		if (!imagePolicy && record.contextualMinimumUnfiltered && record.contextualMinimumToolCalling === toolCalling) return;
 		this.counters.contextualMinimumMeasurements = (this.counters.contextualMinimumMeasurements ?? 0) + 1;
 		const omission = this.getImagePolicyProjection(record, Number.MAX_SAFE_INTEGER);
 		const transport = this.createModelMessage(message, omission.content);
 		const minimum = imagePolicy ? imagePolicy(transport) as ToolResultMessage : transport;
 		let toolTokens = estimateToolOutputTokens(minimum.content).estimatedTokens;
-		let contextTokens = estimateMessageTokens(minimum);
+		let contextTokens = estimateMessageTokens(minimum, toolCalling);
 		let isSource = false;
 		const full = imagePolicy ? imagePolicy(message) as ToolResultMessage : message;
 		record.contextualFullToolTokens = record.sourceScan.mcpInput ? Number.POSITIVE_INFINITY : full === message ? record.sourceScan.estimate.estimatedTokens : estimateToolOutputTokens(full.content).estimatedTokens;
-		record.contextualFullContextTokens = estimateMessageTokens(full);
+		record.contextualFullContextTokens = estimateMessageTokens(full, toolCalling);
 		if (!record.sourceScan.mcpInput && record.contextualFullToolTokens <= toolTokens) {
 			if (record.contextualFullContextTokens <= contextTokens) {
 				toolTokens = record.contextualFullToolTokens;
@@ -2424,6 +2428,7 @@ export class ToolResultPresentationOwner {
 		record.contextualMinimumContextTokens = contextTokens;
 		record.contextualMinimumIsSource = isSource;
 		record.contextualMinimumUnfiltered = imagePolicy === undefined;
+		record.contextualMinimumToolCalling = toolCalling;
 	}
 
 	private failContextualBudget(error: unknown, contextWindow: number, input: number, output: number, reserve: number,
@@ -2481,6 +2486,7 @@ export class ToolResultPresentationOwner {
 		requestPlanning = false,
 		sources?: Map<object, ToolResultProjectedUiSource | null>,
 		observer?: ToolResultProjectionObserver,
+		toolCalling = true,
 	): Message[] {
 		let assistantIndex = -1;
 		for (let index = messages.length - 1; index >= 0; index--) {
@@ -2500,7 +2506,7 @@ export class ToolResultPresentationOwner {
 				const message = messages[index]!;
 				if (message.role !== "toolResult") continue;
 				currentResultCount++;
-				currentResultContextTokens += estimateMessageTokens(message);
+				currentResultContextTokens += estimateMessageTokens(message, toolCalling);
 			}
 		}
 		if (currentResultCount === 0) return this.projectMessagesForModel(messages, imagePolicy, undefined, undefined, undefined, undefined, false, sources, observer);
@@ -2527,7 +2533,7 @@ export class ToolResultPresentationOwner {
 				const projected = this.projectMessageForConfiguredBudget(message, imagePolicy, sources, observer);
 				if (projected !== message) messages[index] = projected;
 			}
-			const contextEstimate = estimateContextTokensFromParts(systemPrompt, messages, tools).tokens;
+			const contextEstimate = estimateContextTokensFromParts(systemPrompt, messages, tools, toolCalling).tokens;
 			const nonCurrentContextTokens = Math.max(0, contextEstimate - currentResultContextTokens);
 			const hasContextLimit = Number.isSafeInteger(contextWindow) && contextWindow > 0;
 			const requestedOutput = Number.isSafeInteger(maxOutputTokens) && maxOutputTokens! > 0
@@ -2559,7 +2565,7 @@ export class ToolResultPresentationOwner {
 				if (message.role !== "toolResult") continue;
 				try {
 					const record = this.getOrCreateProjectionRecord(message.content, message.toolCallId, "provider");
-					this.measureContextualMinimum(message, record, imagePolicy);
+					this.measureContextualMinimum(message, record, imagePolicy, toolCalling);
 					minimumToolTokens += record.contextualMinimumToolTokens;
 					minimumContextTokens += record.contextualMinimumContextTokens;
 					fullToolTokens += record.contextualFullToolTokens;
@@ -2624,7 +2630,7 @@ export class ToolResultPresentationOwner {
 					prepared = prepared.contextualNext;
 				} else {
 					record = this.getOrCreateProjectionRecord(message.content, message.toolCallId, "provider");
-					this.measureContextualMinimum(message, record, imagePolicy);
+					this.measureContextualMinimum(message, record, imagePolicy, toolCalling);
 				}
 				const needsBody = !record.contextualMinimumIsSource;
 				const toolBudget = record.contextualMinimumToolTokens + (needsBody ? Math.floor((remainingToolTokens - minimumToolTokens) / bodyResults) : 0);
@@ -2640,13 +2646,14 @@ export class ToolResultPresentationOwner {
 						observer,
 						record,
 						keepFullBatch,
+						toolCalling,
 					);
 				} catch (error) {
 					this.failContextualBudget(error, contextWindow, nonCurrentContextTokens, requestedOutput, outputReserve, toolBudget, contextBudget, remainingResults);
 				}
 				if (projected !== message) messages[index] = projected;
 				const consumedToolTokens = estimateToolOutputTokens(projected.content).estimatedTokens;
-				const consumedContextTokens = estimateMessageTokens(projected);
+				const consumedContextTokens = estimateMessageTokens(projected, toolCalling);
 				remainingToolTokens = Math.max(0, remainingToolTokens - consumedToolTokens);
 				remainingContextTokens = Math.max(0, remainingContextTokens - consumedContextTokens);
 				remainingResults--;
@@ -2680,6 +2687,7 @@ export class ToolResultPresentationOwner {
 		requestPlanning = false,
 		sources?: Map<object, ToolResultProjectedUiSource | null>,
 		observer?: ToolResultProjectionObserver,
+		toolCalling = true,
 	): Message[] {
 		if (!this.accepting || this.budgetTokens === undefined) return messages;
 		if (contextWindow !== undefined) {
@@ -2693,6 +2701,7 @@ export class ToolResultPresentationOwner {
 				requestPlanning,
 				sources,
 				observer,
+				toolCalling,
 			);
 		}
 		for (let index = 0; index < messages.length; index++) {

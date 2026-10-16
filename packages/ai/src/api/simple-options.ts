@@ -1,4 +1,5 @@
 import { clampThinkingLevel } from "../models.ts";
+import { getModelCapabilities } from "../model-capabilities.ts";
 import type {
 	Api,
 	Context,
@@ -16,7 +17,16 @@ export const CONTEXT_SAFETY_TOKENS = 4096;
 
 /** Request preparation reserves a viable answer; senders cap their final output. */
 export function usesAdaptiveRequestBudget(api: Api | undefined): boolean {
-	return api !== undefined;
+	switch (api) {
+		case "openai-completions": case "openai-responses": case "azure-openai-responses":
+		case "openai-codex-responses": case "anthropic-messages": case "bedrock-converse-stream":
+		case "google-generative-ai": case "google-vertex": case "mistral-conversations": case "pi-messages": return true;
+		default: return false;
+	}
+}
+
+export function minimumProviderOutputTokens(api: Api): number {
+	return api === "openai-responses" || api === "azure-openai-responses" ? 16 : 1;
 }
 
 export function isRequestBudgetBlock(message: string | undefined): boolean {
@@ -48,15 +58,22 @@ export class RequestBudgetError extends Error {
 	}
 }
 
-export function clampMaxTokensToContext(model: Model<Api>, context: Context, maxTokens: number, providerMinimum = 1): number {
+/** Shared by projection planning and senders, including wire-specific floors. */
+export function resolveRequestOutputTokens(model: Model<Api>, maxTokens: number, providerMinimum = minimumProviderOutputTokens(model.api)): number {
 	const adaptive = usesAdaptiveRequestBudget(model.api);
 	if (adaptive && (!Number.isSafeInteger(model.contextWindow) || model.contextWindow <= 0 || !Number.isSafeInteger(model.maxTokens) || model.maxTokens <= 0)) throw new RequestBudgetError(model.contextWindow, 0, model.maxTokens, 0, "model-parameters");
 	if (adaptive && (!Number.isSafeInteger(maxTokens) || maxTokens <= 0)) throw new RequestBudgetError(model.contextWindow, 0, maxTokens, 0, "output-reservation");
 	const requested = adaptive ? Math.min(Math.max(maxTokens, providerMinimum), model.maxTokens) : maxTokens;
 	if (requested < providerMinimum) throw new RequestBudgetError(model.contextWindow, 0, requested, 0, "model-parameters");
 	if (adaptive && (!Number.isSafeInteger(requested) || requested <= 0)) throw new RequestBudgetError(model.contextWindow, 0, requested, 0);
+	return requested;
+}
+
+export function clampMaxTokensToContext(model: Model<Api>, context: Context, maxTokens: number, providerMinimum = minimumProviderOutputTokens(model.api)): number {
+	const adaptive = usesAdaptiveRequestBudget(model.api);
+	const requested = resolveRequestOutputTokens(model, maxTokens, providerMinimum);
 	if (model.contextWindow <= 0) return Math.max(1, requested);
-	const input = estimateContextTokens(context).tokens;
+	const input = estimateContextTokens(context, adaptive ? getModelCapabilities(model).toolCalling : true).tokens;
 	const available = model.contextWindow - input - CONTEXT_SAFETY_TOKENS;
 	if (adaptive && available < minimumRequestOutputTokens(requested)) throw new RequestBudgetError(model.contextWindow, input, requested, available);
 	return Math.min(requested, Math.max(1, available));

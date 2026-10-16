@@ -44,11 +44,18 @@ export function estimateTextAndImageContentTokens(content: string | Array<TextCo
 	return Math.ceil(estimateTextAndImageContentChars(content) / CHARS_PER_TOKEN);
 }
 
-export function estimateMessageTokens(message: Message): number {
+export function estimateMessageTokens(message: Message, toolCalling = true): number {
 	let chars = 0;
 
 	if (message.role === "user") return estimateTextAndImageContentTokens(message.content);
-	if (message.role === "toolResult") return estimateTextAndImageContentTokens(message.content);
+	if (message.role === "toolResult") {
+		if (toolCalling) return estimateTextAndImageContentTokens(message.content);
+		// Count contextForModelCapabilities' plain history without joining or
+		// copying the complete result just to estimate it.
+		let outputChars = Math.max(0, message.content.length - 1);
+		for (const block of message.content) outputChars += block.type === "text" ? block.text.length : 16 + block.mimeType.length;
+		return Math.ceil((15 + message.toolName.length + (outputChars || 11)) / CHARS_PER_TOKEN);
+	}
 
 	for (const block of message.content) {
 		if (block.type === "text") {
@@ -56,13 +63,14 @@ export function estimateMessageTokens(message: Message): number {
 		} else if (block.type === "thinking") {
 			chars += block.thinking.length;
 		} else {
-			chars += block.name.length + safeJsonStringify(block.arguments).length;
+			const args: unknown = block.arguments;
+			chars += block.name.length + (!toolCalling && typeof args === "string" ? args.length : safeJsonStringify(args).length) + (toolCalling ? 0 : 13);
 		}
 	}
 	return Math.ceil(chars / CHARS_PER_TOKEN);
 }
 
-function getLastAssistantUsageInfo(messages: readonly Message[]): { usage: Usage; index: number } | undefined {
+function getLastAssistantUsageInfo(messages: readonly Message[], toolCalling = true): { usage: Usage; index: number } | undefined {
 	let latestPrefixTimestamp = Number.NEGATIVE_INFINITY;
 	let usageInfo: { usage: Usage; index: number } | undefined;
 
@@ -70,6 +78,11 @@ function getLastAssistantUsageInfo(messages: readonly Message[]): { usage: Usage
 		const message = messages[i];
 		if (message.role === "assistant") {
 			const assistant = message as AssistantMessage;
+			if (!toolCalling) {
+				let retained = false;
+				for (const block of assistant.content) if (block.type !== "thinking" || block.thinking) { retained = true; break; }
+				if (!retained) continue;
+			}
 			// A newer prefix message was inserted after this response (for example, a
 			// compaction summary), so its usage cannot describe the current prefix.
 			const usageAppliesToPrefix = assistant.timestamp >= latestPrefixTimestamp;
@@ -88,19 +101,19 @@ function getLastAssistantUsageInfo(messages: readonly Message[]): { usage: Usage
 	return usageInfo;
 }
 
-function estimateMessages(messages: readonly Message[]): ContextUsageEstimate {
-	const usageInfo = getLastAssistantUsageInfo(messages);
+function estimateMessages(messages: readonly Message[], toolCalling = true): ContextUsageEstimate {
+	const usageInfo = getLastAssistantUsageInfo(messages, toolCalling);
 	if (usageInfo) {
 		const usageTokens = calculateContextTokens(usageInfo.usage);
 		let trailingTokens = 0;
 		for (let i = usageInfo.index + 1; i < messages.length; i++) {
-			trailingTokens += estimateMessageTokens(messages[i]);
+			trailingTokens += estimateMessageTokens(messages[i], toolCalling);
 		}
 		return { tokens: usageTokens + trailingTokens, usageTokens, trailingTokens, lastUsageIndex: usageInfo.index };
 	}
 
 	let tokens = 0;
-	for (const message of messages) tokens += estimateMessageTokens(message);
+	for (const message of messages) tokens += estimateMessageTokens(message, toolCalling);
 	return { tokens, usageTokens: 0, trailingTokens: tokens, lastUsageIndex: null };
 }
 
@@ -152,17 +165,19 @@ function isMessageArray(value: Context | readonly Message[]): value is readonly 
 	return Array.isArray(value);
 }
 
-export function estimateContextTokens(context: Context | readonly Message[]): ContextUsageEstimate {
-	if (isMessageArray(context)) return estimateMessages(context);
-	return estimateContextTokensFromParts(context.systemPrompt, context.messages, context.tools);
+export function estimateContextTokens(context: Context | readonly Message[], toolCalling = true): ContextUsageEstimate {
+	if (isMessageArray(context)) return estimateMessages(context, toolCalling);
+	return estimateContextTokensFromParts(context.systemPrompt, context.messages, context.tools, toolCalling);
 }
 
 export function estimateContextTokensFromParts(
 	systemPrompt: string | undefined,
 	messages: readonly Message[],
 	tools: readonly Tool[] | undefined,
+	toolCalling = true,
 ): ContextUsageEstimate {
-	const estimate = estimateMessages(messages);
+	const estimate = estimateMessages(messages, toolCalling);
+	if (!toolCalling) tools = undefined;
 	if (estimate.lastUsageIndex !== null) {
 		const addedToolTokens = estimateAddedToolsTokens(messages, estimate.lastUsageIndex + 1, tools);
 		return {

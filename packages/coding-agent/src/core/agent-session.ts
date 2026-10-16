@@ -2072,17 +2072,17 @@ export class AgentSession {
 
 	/** SDK final-request conversion uses the current owner after an explicit change. */
 	projectToolResultMessagesForModel(messages: Message[], imagePolicy?: (message: Message) => Message,
-		systemPrompt?: string, tools?: readonly AgentTool<any>[], contextWindow?: number, maxOutputTokens?: number, requestPlanning = false): Message[] {
+		systemPrompt?: string, tools?: readonly AgentTool<any>[], contextWindow?: number, maxOutputTokens?: number, requestPlanning = false, toolCalling = true): Message[] {
 		const owner = this._toolResultPresentation;
 		if (!owner) {
 			if (this._toolBudgetPayloadPreviewDepth === 0) this._codemode.recordProjection(messages);
 			return messages;
 		}
-		if (this._toolBudgetPayloadPreviewDepth !== 0) return owner.projectMessagesForModel(messages, imagePolicy, systemPrompt, tools, contextWindow, maxOutputTokens, requestPlanning);
+		if (this._toolBudgetPayloadPreviewDepth !== 0) return owner.projectMessagesForModel(messages, imagePolicy, systemPrompt, tools, contextWindow, maxOutputTokens, requestPlanning, undefined, undefined, toolCalling);
 		this.discardPendingToolResultBudgetSources();
 		const sources = this._toolBudgetProjectionPending ? this._captureBudgetProjectionSources() : undefined;
 		try {
-			const projected = owner.projectMessagesForModel(messages, imagePolicy, systemPrompt, tools, contextWindow, maxOutputTokens, requestPlanning, sources, this._codemode);
+			const projected = owner.projectMessagesForModel(messages, imagePolicy, systemPrompt, tools, contextWindow, maxOutputTokens, requestPlanning, sources, this._codemode, toolCalling);
 			this._codemode.recordProjection(projected, owner.getEvidenceBudgetTokens() !== undefined);
 			this._toolBudgetLastRequest = owner.getEvidenceBudgetTokens() === undefined ? "not-observed" : "applied";
 			if (sources) {
