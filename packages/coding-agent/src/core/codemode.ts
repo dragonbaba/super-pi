@@ -15,7 +15,8 @@ import { saveCodemodeImages } from "./codemode-images.ts";
 import { boundCodemodeResult, capCodemodeOutput, codemodeContentChars, codemodeImageChars } from "./codemode-result.ts";
 import { MUTATION_READ_SOURCE } from "./tools/read-window.ts";
 import { readShellExecution } from "./tools/shell-execution.ts";
-import { codemodeFailureReason, codemodeInputSummary, codemodeOutputDigests, codemodeTextDigest, CODEMODE_DISPLAY_PREVIEW_CHARS, type CodemodeChildDisplay } from "./codemode-display.ts";
+import { truncateTail } from "./tools/truncate.ts";
+import { codemodeFailureReason, codemodeFailureWindow, codemodeInputSummary, codemodeOutputDigests, codemodeTextDigest, CODEMODE_DISPLAY_PREVIEW_CHARS, type CodemodeChildDisplay } from "./codemode-display.ts";
 
 /** `chars` is retention (content, details, input); `contentChars` is what show() appends. */
 interface ChildRecord { result: ToolResultMessage; input: Record<string, unknown>; chars: number; contentChars: number; imageChars: number; }
@@ -63,8 +64,11 @@ function nestedAllowed(tool: AgentTool<any>): boolean {
 	return !tool.orchestration && !tool.modelOnly && !tool.interactionBoundary;
 }
 function message(error: unknown): string { return error instanceof Error ? error.message : "Codemode execution failed"; }
+const FAILURE_TAIL_OPTIONS = Object.freeze({ maxLines: 4, maxBytes: 1024 });
 function preview(result: ToolResultMessage): string {
-	for (const block of result.content) if (block.type === "text") return block.text.slice(0, 512);
+	for (const block of result.content) if (block.type === "text") return result.isError
+		? codemodeFailureReason(block.text, "model") + "\n" + truncateTail(codemodeFailureWindow(block.text).slice(-1024), FAILURE_TAIL_OPTIONS).content
+		: block.text.slice(0, CODEMODE_DISPLAY_PREVIEW_CHARS);
 	return "";
 }
 function descriptorName(tool: CodemodeTool): string { return tool.name; }
@@ -344,7 +348,7 @@ export class CodemodeController {
 		try { result = await boundCodemodeResult(raw, this.serializer); }
 		catch (error) { invocation.failed = true; throw error; }
 		for (const block of result.content) if (block.type === "text") {
-			fact.preview = block.text.slice(0, CODEMODE_DISPLAY_PREVIEW_CHARS);
+			if (!raw.isError) fact.preview = block.text.slice(0, CODEMODE_DISPLAY_PREVIEW_CHARS);
 			fact.previewTruncated = block.text.length > CODEMODE_DISPLAY_PREVIEW_CHARS;
 			break;
 		}
@@ -363,6 +367,7 @@ export class CodemodeController {
 			invocation.records.delete(oldest);
 		}
 		const ref = `${invocation.prefix}:${++invocation.issued}`;
+		fact.ref = ref;
 		invocation.records.set(ref, { result, input, chars, contentChars, imageChars });
 		invocation.retainedChars += chars;
 		invocation.retainedImageChars += imageChars;
@@ -385,7 +390,7 @@ export class CodemodeController {
 					invocation.shownImageChars += block.data.length;
 				}
 			}
-			throw new Error(`[${ref}] ${preview(result)}`);
+			throw new Error(`[${ref}] ${fact.preview}${fact.outputPath ? "\nOutput: " + fact.outputPath : ""}`);
 		}
 		const content = imageChars > MAX_SCRIPT_IMAGE_CHARS ? scriptContent(result.content) : result.content;
 		return { content, details: result.details, isError: false, ref };
@@ -544,7 +549,7 @@ export class CodemodeController {
 			// and out of the trailing native-read group.
 			if (imageFiles) summary += "\n" + imageFiles.notice;
 			const imagePrefix = imageFiles ? summary.length : 0;
-			for (const fact of invocation.facts) summary += `\n${fact.toolName.slice(0, 80)}: ${fact.executionStatus ?? (fact.isError ? "failed" : "completed")}${fact.executionStatus && (fact.toolName === "bash" || fact.toolName === "powershell") ? "; exit=" + (fact.exitCode ?? "unknown") : ""}${fact.isError ? " — " + codemodeFailureReason(fact.preview, "model") : ""}${fact.outputPath ? " Output: " + fact.outputPath : ""}`;
+			for (const fact of invocation.facts) summary += `\n${fact.toolName.slice(0, 80)}: ${fact.executionStatus ?? (fact.isError ? "failed" : "completed")}${fact.executionStatus && (fact.toolName === "bash" || fact.toolName === "powershell") ? "; exit=" + (fact.exitCode ?? "unknown") : ""}${fact.isError ? " — " + fact.preview + " [" + fact.ref + "]" : ""}${fact.outputPath ? " Output: " + fact.outputPath : ""}`;
 			if (failed) summary += "\nCompleted tool side effects are not rolled back. Do not automatically retry mutations.";
 			const summaryBlock: TextContent & { projectionPrefix?: number } = { type: "text", text: summary };
 			content.unshift(summaryBlock);
