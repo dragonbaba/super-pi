@@ -5,6 +5,7 @@ import { decodeLiteralBase64, heredocConsumer, inspectBashResourceLifecycle, ins
 import { inspectBashPermissionScope } from "../packages/extensions/resource-lifecycle-guard/permission-bash.ts";
 import { prepareShellAnalysis } from "../packages/extensions/resource-lifecycle-guard/shell-substitution.ts";
 import { shellHookFixture, assertFinalAuthorization } from "./codemode-recovery/shell-hook-fixture.ts";
+import { SessionPermissionController, workspace } from "./codemode-recovery/guard-fixture.ts";
 
 test("unbounded heredocs cannot conceal executable input or following launches", async t => {
   for (const command of ["source /dev/stdin <<E\\OF\nsleep 100 &\nEOF", "cat <<E\\OF\ndata\nEOF\nnohup node server.js", "source /dev/stdin <<'EOF'\nrm \"$X\""]) {
@@ -526,4 +527,71 @@ test("embedded mutation iteration stays bounded and resets between calls", () =>
     assert.deepEqual(scan?.targets, [resolve('./a'), resolve('./b')]);
     assert.equal(scan?.unverifiableScope, false);
   }
+});
+
+for (const mode of ["full-access", "workspace-write"] as const) {
+  test(`review ten ${mode}: Node test mode leaves heredoc input as data`, async t => {
+    for (const header of ["node --test script.js", "node --test", "node --test-only script.js", "node --test-update-snapshots script.js"]) {
+      assert.equal(heredocConsumer(header), undefined, header);
+      const command = `${header} <<'EOF'\nfs.rmSync(target,{recursive:true})\nEOF`;
+      assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
+      assert.equal(f.dialogs(), mode === "full-access" ? 0 : 1);
+    }
+  });
+  test(`review ten ${mode}: sort long operands do not become output options`, async t => {
+    for (const command of ["sort --random-sort --random-source -o", "sort --field-separator -o", "sort --key -o", "sort --buffer-size -o", "sort --random-source=-o"]) {
+      assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.unverifiableMutation, false, command);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
+      assert.equal(f.dialogs(), mode === "full-access" ? 0 : 1);
+    }
+    const f = await shellHookFixture(t, mode), call = await f.authorize('sort --random-source -o -o "$X"');
+    assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+  });
+  test(`review ten ${mode}: sort temporary directories are mutation targets`, async t => {
+    for (const command of ["sort -S1K -T ../outside -o output input", "sort --temporary-directory=../outside -o output input", "sort --temporary-directory ../outside -Tother -o output input"]) {
+      const scope = inspectBashPermissionScope({ command }, process.cwd());
+      assert.equal(scope?.kind, "known-mutation"); assert.ok(scope?.targets.includes(resolve('../outside')), command);
+      assert.ok(scope?.targets.includes(resolve('output')), command);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
+      assert.equal(f.dialogs(), mode === "full-access" ? 0 : 1);
+    }
+    for (const command of ['sort -T "$X" -o output', 'sort --temporary-directory="$X"']) {
+      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
+      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+  });
+  test(`review ten ${mode}: unquoted heredoc continuations precede delimiter matching`, async t => {
+    const command = "node <<EOF\n// \\\nEOF\nfs.rmSync(target,{recursive:true})\nEOF";
+    const view = prepareShellAnalysis(command);
+    assert.equal(view.unboundedHeredoc, false);
+    assert.equal(view.hereDocuments?.[0]?.body, "// EOF\nfs.rmSync(target,{recursive:true})\n");
+    const f = await shellHookFixture(t, mode), call = await f.authorize(command);
+    assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    const joined = "cat <<EOF\ndata\nE\\\nOF\nprintf ok";
+    assert.equal(prepareShellAnalysis(joined).unboundedHeredoc, false);
+    assert.equal(prepareShellAnalysis(joined).hereDocuments?.[0]?.body, "data\n");
+    const read = await shellHookFixture(t, mode); assertFinalAuthorization(await read.authorize(joined));
+    assert.equal(read.dialogs(), mode === "full-access" ? 0 : 1);
+    const tabJoined = "cat <<-EOF\ndata\nE\\\n\tOF\nprintf ok";
+    assert.equal(prepareShellAnalysis(tabJoined).unboundedHeredoc, true, "tabs inside a joined logical line are not leading tabs");
+    const quoted = "cat <<'EOF'\nraw \\\nEOF\nprintf ok";
+    assert.equal(prepareShellAnalysis(quoted).hereDocuments?.[0]?.body, "raw \\\n");
+    const escaped = "cat <<EOF\nraw \\\\\nEOF\nprintf ok";
+    assert.equal(prepareShellAnalysis(escaped).hereDocuments?.[0]?.body, "raw \\\\\n");
+  });
+}
+
+test("review ten: workspace never-ask cannot authorize an outside sort temporary directory", async t => {
+  const cwd = workspace(t), controller = new SessionPermissionController({ appendEntry() {} } as never);
+  let dialogs = 0;
+  const ctx = { cwd, hasUI: true, sessionManager: { getBranch: () => [], getSessionId: () => 'sort-temp-never-ask' },
+    ui: { setStatus() {}, select: async () => { dialogs++; return '仅允许本次'; } } };
+  await controller.restore(ctx as never);
+  controller.state.setMode('workspace-write'); controller.state.setApprovalPolicy('never-ask');
+  for (const command of ['sort -S1K -T ../outside -o output input', 'sort --temporary-directory=../outside -o output input']) {
+    const result = await controller.authorizeToolCall({ type: 'tool_call', toolName: 'bash', toolCallId: 'sort-temp', input: { command } } as never, ctx as never);
+    assert.equal(result?.block, true, command);
+  }
+  assert.equal(dialogs, 0);
 });

@@ -383,26 +383,30 @@ export function prepareShellAnalysis(command: string): ShellAnalysisView {
       let bodyEnd = bodyStart;
       let delimiterLineStart = bodyStart;
       let foundDelimiter = false;
+      let logicalBodyLineStart = bodyStart, delimiterMatched = 0, delimiterMatches = true;
       while (bodyStart <= command.length) {
-        const lineStart = bodyStart;
         const nextLine = command.indexOf("\n", bodyStart);
         const end = nextLine < 0 ? command.length : nextLine;
-        const rawLine = command.slice(bodyStart, end);
-        const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
-        let delimiterLine = line;
-        if (delimiter.stripTabs) {
-          let firstNonTab = 0;
-          while (firstNonTab < line.length && line.charCodeAt(firstNonTab) === 9) firstNonTab++;
-          delimiterLine = line.slice(firstNonTab);
+        let contentEnd = end > bodyStart && command.charCodeAt(end - 1) === 13 ? end - 1 : end;
+        let backslashes = 0;
+        if (!delimiter.quoted && nextLine >= 0) for (let cursor = contentEnd - 1; cursor >= bodyStart && command.charCodeAt(cursor) === 92; cursor--) backslashes++;
+        const continued = backslashes % 2 === 1;
+        if (continued) contentEnd--;
+        let cursor = bodyStart;
+        if (delimiter.stripTabs && delimiterMatched === 0) while (cursor < contentEnd && command.charCodeAt(cursor) === 9) cursor++;
+        for (; cursor < contentEnd; cursor++) {
+          if (command[cursor] !== delimiter.value[delimiterMatched]) delimiterMatches = false;
+          delimiterMatched++;
         }
-        if (delimiterLine === delimiter.value && (!delimiter.stripTabs || line === delimiter.value || line.length !== delimiterLine.length)) {
-          delimiterLineStart = lineStart;
+        if (!continued && delimiterMatches && delimiterMatched === delimiter.value.length) {
+          delimiterLineStart = logicalBodyLineStart;
           bodyEnd = end;
           foundDelimiter = true;
           break;
         }
         bodyEnd = nextLine < 0 ? command.length : nextLine + 1;
         bodyStart = nextLine < 0 ? command.length + 1 : nextLine + 1;
+        if (!continued) { logicalBodyLineStart = bodyStart; delimiterMatched = 0; delimiterMatches = true; }
       }
       if (!foundDelimiter) {
         uncertain = true;
@@ -411,7 +415,8 @@ export function prepareShellAnalysis(command: string): ShellAnalysisView {
         bodyStart = command.length;
         break;
       }
-      const body = command.slice(contentStart, delimiterLineStart);
+      const rawBody = command.slice(contentStart, delimiterLineStart);
+      const body = delimiter.quoted ? rawBody : removeHeredocContinuations(rawBody);
       let expanded = false;
       if (!delimiter.quoted) {
         for (let cursor = 0; cursor < body.length; cursor++) {
@@ -440,4 +445,18 @@ export function prepareShellAnalysis(command: string): ShellAnalysisView {
   }
   if (arithmeticDepth !== 0) uncertain = true;
   return { command: output ? output.join("") : command, substitutions, uncertain, hasHeredoc, substitutionUncertain, unboundedHeredoc, hereDocuments };
+}
+
+/** One bounded normalized body only when Bash removes a continuation. The
+ * original input/mask offsets remain unchanged; no line array is retained. */
+function removeHeredocContinuations(source: string): string {
+  let result = "", start = 0;
+  for (let cursor = 0; cursor < source.length; cursor++) {
+    if (source.charCodeAt(cursor) !== 92) continue;
+    const next = source.charCodeAt(cursor + 1);
+    const width = next === 10 ? 2 : next === 13 && source.charCodeAt(cursor + 2) === 10 ? 3 : 0;
+    if (width) { result += source.slice(start, cursor); cursor += width - 1; start = cursor + 1; }
+    else cursor++;
+  }
+  return start === 0 ? source : result + source.slice(start);
 }

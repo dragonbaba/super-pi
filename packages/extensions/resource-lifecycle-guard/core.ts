@@ -50,7 +50,12 @@ const SCRIPT_WRAPPERS = new Set(["bash", "bash.exe", "sh", "sh.exe", "zsh", "zsh
 const POWERSHELL_WRAPPERS = new Set(["powershell", "powershell.exe", "pwsh", "pwsh.exe"]);
 const NODE_COMMANDS = new Set(["node", "node.exe"]);
 // Documented zero-value switches; unknown option arity retains both interpretations.
-const NODE_VALUE_FREE_FLAGS = new Set(["--no-warnings", "--trace-warnings", "--no-deprecation", "--trace-deprecation", "--throw-deprecation", "--trace-uncaught", "--enable-source-maps", "--preserve-symlinks", "--preserve-symlinks-main", "--expose-gc", "--jitless"]);
+const NODE_VALUE_FREE_FLAGS = new Set([
+	"--no-warnings", "--trace-warnings", "--no-deprecation", "--trace-deprecation", "--throw-deprecation", "--trace-uncaught",
+	"--enable-source-maps", "--preserve-symlinks", "--preserve-symlinks-main", "--expose-gc", "--jitless",
+	"--test", "--test-only", "--test-force-exit", "--test-update-snapshots", "--experimental-test-coverage",
+	"--watch", "--watch-preserve-output", "--trace-exit", "--trace-sync-io", "--abort-on-uncaught-exception",
+]);
 const PYTHON_COMMANDS = new Set(["python", "python.exe", "python3", "python3.exe", "py", "py.exe"]);
 const RM_RECURSIVE_OPTIONS = new Set(["--recursive"]);
 const POWERSHELL_RECURSIVE_OPTIONS = new Set(["-recurse", "-r"]);
@@ -868,7 +873,7 @@ function nodeMayReadStdin(tokens: readonly string[], start: number, descriptor =
 		if (word === "-") { if (options & 1 && descriptor === 0) return true; continue; }
 		if (word === "--") { states |= options << 5; continue; }
 		if (!word.startsWith("-")) { if (options & 1 && isHeredocDescriptorPath(word, descriptor)) return true; continue; }
-		if (word === "--check" || word === "-c" || word === "--help" || word === "-h" || word === "--version" || word === "-v") { if (!states) interactive = false; continue; }
+		if (word === "--check" || word === "-c" || word === "--help" || word === "-h" || word === "--version" || word === "-v" || word === "--test") { if (!states) interactive = false; continue; }
 		if (word === "--interactive" || word === "-i") { interactive = true; states |= options; continue; }
 		if (word === "--eval" || word === "--print" || word === "-e" || word === "-p") { states |= 16; continue; }
 		if (word.startsWith("--eval=") || word.startsWith("--print=") || word.startsWith("-e") || word.startsWith("-p")) { states |= 2; continue; }

@@ -24,6 +24,7 @@ const SIMPLE_MUTATIONS = new Set(["del", "erase", "mkdir", "md", "rm", "rmdir", 
 const COPY_COMMANDS = new Set(["cp", "copy"]);
 const MOVE_COMMANDS = new Set(["mv", "move", "rename", "ren"]);
 const GIT_READ_ONLY = new Set(["status", "diff", "log", "show", "ls-files", "rev-parse"]);
+const SORT_VALUE_OPTIONS = new Set(["--key", "--field-separator", "--buffer-size", "--random-source", "--parallel", "--batch-size", "--compress-program", "--sort", "--files0-from"]);
 
 export type BashPermissionKind = "read-only" | "known-mutation" | "opaque-script";
 
@@ -171,21 +172,29 @@ function inspectKnownMutation(command: string, tokens: readonly string[], start:
     for (let index = start; index < tokens.length; index++) {
       const token = tokens[index]!;
       if (token === "--") break;
+      if (SORT_VALUE_OPTIONS.has(token)) {
+        if (token === "--compress-program") markOpaque(builder, "sort_compress_program");
+        index++; continue;
+      }
       let target: string | undefined;
+      let temporary = false;
       if (token === "-o" || token === "--output") target = tokens[++index];
       else if (token.startsWith("--output=")) target = token.slice(9);
+      else if (token === "-T" || token === "--temporary-directory") { temporary = true; target = tokens[++index]; }
+      else if (token.startsWith("--temporary-directory=")) { temporary = true; target = token.slice(22); }
       else if (token.startsWith("-") && !token.startsWith("--")) {
         let outputFlag = -1;
         for (let flag = 1; flag < token.length; flag++) {
           if (token[flag] === "o") { outputFlag = flag; break; }
+          if (token[flag] === "T") { outputFlag = flag; temporary = true; break; }
           // These options consume the remainder as an operand, not more flags.
-          if (token[flag] === "k" || token[flag] === "t" || token[flag] === "S" || token[flag] === "T") { if (flag + 1 === token.length) index++; break; }
+          if (token[flag] === "k" || token[flag] === "t" || token[flag] === "S") { if (flag + 1 === token.length) index++; break; }
         }
         if (outputFlag < 0) continue;
         target = outputFlag + 1 < token.length ? token.slice(outputFlag + 1) : tokens[++index];
       } else continue;
       output = true;
-      markMutation(builder, "sort_output");
+      markMutation(builder, temporary ? "sort_temporary_directory" : "sort_output");
       if (target) addTarget(builder, target, cwd, true);
       else { builder.dynamicScope = true; builder.unverifiableMutation = true; markOpaque(builder, "missing_output_target"); }
     }

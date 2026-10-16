@@ -99,6 +99,8 @@ D3 interpreter recognition is limited to the supported Shell, Node and Python fo
 
 Literal Node interactive eval/print input and all three supported brace-body function declaration forms retain executable-stdin checks. Embedded Node/Python mutation scanning collects each recognized call, with at most 64 calls per pattern and 16 targets; overflow remains unverifiable. A later locally detected shell-state change does not retrospectively invalidate an earlier fixed mutation target. `find` predicate and format operands remain data when they spell output actions. Dynamic executable names, including a variable assigned immediately beforehand, retain the D3 opaque-input boundary; no general executable-variable resolver is provided.
 
+Node test-runner mode does not execute heredoc bytes as a stdin program. Sort option operands are consumed before output-option matching, and explicit temporary directories are assessed as write targets alongside output files. Unquoted heredoc backslash-newline continuations are joined before matching an end delimiter and inspecting the effective body; quoted bodies preserve their literal newlines. The submitted command remains unchanged.
+
 The real-chain regressions are in `tests/shell-common-compatibility.test.ts`; they use synthetic temporary workspaces and run on Linux Bash and Windows Git Bash in required CI. Native delete/move and explicit per-call Bash/PowerShell cwd are separate future scopes, not features of PR #43.
 
 ## Resource lifecycle
