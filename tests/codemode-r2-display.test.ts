@@ -12,6 +12,27 @@ test("R2.1 diagnostic scan preserves the tail of a 10 MiB line within a fixed wi
   assert.doesNotMatch(codemodeFailureWindow("🙂".repeat(3000)), /\ud800(?![\udc00-\udfff])/);
 });
 
+test("R2.3 ordinary show has no Promise, callback or asynchronous factory", () => {
+  const source = ts.createSourceFile("codemode.ts", readFileSync("packages/coding-agent/src/core/codemode.ts", "utf8"), ts.ScriptTarget.Latest, true);
+  const expected = new Set(["show", "appendShown"]), found = new Set<string>();
+  function audit(node: ts.Node): void {
+    assert.equal(ts.isAwaitExpression(node) || ts.isArrowFunction(node) || ts.isFunctionExpression(node), false, node.getText(source));
+    // Exact cold-error exemption: an invalid/expired ref throws before output processing.
+    if (ts.isNewExpression(node)) {
+      assert.equal(node.expression.getText(source), "Error");
+      assert.ok(ts.isThrowStatement(node.parent));
+      assert.equal(node.arguments?.[0]?.getText(source), '"Unknown or expired result reference; references belong to the current script"');
+    }
+    ts.forEachChild(node, audit);
+  }
+  for (const statement of source.statements) if (ts.isClassDeclaration(statement)) for (const member of statement.members) {
+    if (!ts.isMethodDeclaration(member) || !expected.has(member.name.getText(source))) continue;
+    assert.equal(member.modifiers?.some(modifier => modifier.kind === ts.SyntaxKind.AsyncKeyword) ?? false, false);
+    found.add(member.name.getText(source)); audit(member.body!);
+  }
+  assert.deepEqual(found, expected);
+});
+
 test("R2.1 bounded diagnostic helper has no hot factories or temporary containers", () => {
   const source = ts.createSourceFile("display.ts", readFileSync("packages/coding-agent/src/core/codemode-display.ts", "utf8"), ts.ScriptTarget.Latest, true);
   let found = 0;

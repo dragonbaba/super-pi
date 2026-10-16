@@ -366,6 +366,8 @@ export class CodemodeController {
 		let result: ToolResultMessage;
 		try { result = await boundCodemodeResult(raw, this.serializer); }
 		catch (error) { invocation.failed = true; throw error; }
+		if (result.details?.codemodeOutput?.capped === true) fact.resultComplete = false;
+		fact.displayLimited = result.content !== raw.content;
 		for (const block of result.content) if (block.type === "text") {
 			if (!raw.isError) fact.preview = block.text.slice(0, CODEMODE_DISPLAY_PREVIEW_CHARS);
 			fact.previewTruncated = block.text.length > CODEMODE_DISPLAY_PREVIEW_CHARS;
@@ -433,14 +435,8 @@ export class CodemodeController {
 		const content = imageChars > MAX_SCRIPT_IMAGE_CHARS ? scriptContent(result.content) : result.content;
 		return { content, details: result.details, isError: result.isError, ref, executed: fact.executed, resultComplete: fact.resultComplete, failureHandled };
 	}
-	private async show(ref: unknown): Promise<unknown> {
+	private show(ref: unknown): unknown {
 		const invocation = this.requireInvocation();
-		invocation.pending++;
-		try { return await this.showRecord(invocation, ref); }
-		catch (error) { invocation.failed = true; throw error; }
-		finally { if (--invocation.pending === 0) { invocation.resolveIdle?.(); invocation.resolveIdle = undefined; } }
-	}
-	private async showRecord(invocation: Invocation, ref: unknown): Promise<unknown> {
 		const record = typeof ref === "string" ? invocation.records.get(ref) ?? invocation.recovering.get(ref) : undefined;
 		if (!record) {
 			const evicted = typeof ref === "string" ? invocation.evicted.get(ref) : undefined;
@@ -451,10 +447,18 @@ export class CodemodeController {
 		const limited = invocation.shownChars + record.contentChars > MAX_SHOWN_CHARS
 			|| invocation.shown.length + record.result.content.length > 256
 			|| invocation.shownImageChars + record.imageChars > MAX_SHOWN_IMAGE_CHARS;
-		if (limited) {
-			invocation.displayLimited = record.fact.displayLimited = true;
-			await this.recoverRecord(record);
-		}
+		if (limited) return this.showLimited(invocation, record);
+		this.appendShown(invocation, record, false);
+	}
+	/** Only display overflow crosses an I/O boundary. Ordinary show remains synchronous. */
+	private async showLimited(invocation: Invocation, record: ChildRecord): Promise<void> {
+		invocation.pending++;
+		invocation.displayLimited = record.fact.displayLimited = true;
+		try { await this.recoverRecord(record); this.appendShown(invocation, record, true); }
+		catch (error) { invocation.failed = true; throw error; }
+		finally { if (--invocation.pending === 0) { invocation.resolveIdle?.(); invocation.resolveIdle = undefined; } }
+	}
+	private appendShown(invocation: Invocation, record: ChildRecord, limited: boolean): void {
 		const shownIndex = invocation.shown.length;
 		for (const block of record.result.content) {
 			if (invocation.shown.length >= 256) break;
