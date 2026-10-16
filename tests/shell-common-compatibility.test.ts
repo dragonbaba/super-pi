@@ -192,9 +192,11 @@ test("Bash test arithmetic and state-changing operands stay unverifiable", () =>
     assert.equal(inspectBashPermissionScope({ command }, cwd)?.kind, "read-only", command);
   }
   const quotedData = "[[ foo == 'x[$(printf data >.git/config)]' ]]";
-  assert.equal(inspectBashResourceLifecycle({ command: quotedData }), undefined);
-  assert.equal(inspectHighRiskBashMutation({ command: quotedData }, cwd), undefined);
-  assert.equal(inspectBashPermissionScope({ command: quotedData }, cwd)?.kind, "read-only");
+  // The approved literal-text boundary includes data operands, without
+  // inventing a mutation from text protected by single quotes.
+  assert.match(inspectBashResourceLifecycle({ command: quotedData }) ?? "", /\[SHELL_UNINSPECTABLE\]/);
+  assert.notEqual(inspectHighRiskBashMutation({ command: quotedData }, cwd)?.mutationDetected, true);
+  assert.equal(inspectBashPermissionScope({ command: quotedData }, cwd)?.kind, "opaque-script");
 });
 
 test("else introduces an inspectable Bash string comparison", () => {
