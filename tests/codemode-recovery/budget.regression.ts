@@ -145,6 +145,7 @@ test("F-B12 session recovery still works after the source is compacted out of mo
 test("F-B12 artifacts remain readable after compaction and resident-cache replacement", async t => {
   const f = await sessionFixture(t);
   const source = [{ type: "text" as const, text: longText }];
+  const expectedSource = structuredClone(source);
   f.sessionManager.appendMessage(assistant(["artifact-saved"]));
   f.sessionManager.appendMessage(toolResult("artifact-saved", source));
   f.session.agent.state.messages = f.sessionManager.buildSessionContext().messages;
@@ -155,7 +156,7 @@ test("F-B12 artifacts remain readable after compaction and resident-cache replac
   assert.ok(view?.version === 2 && view.artifact);
   const descriptor = structuredClone(view.artifact);
   const before = f.session.readToolResultArtifact(descriptor.id);
-  assert.deepEqual(before.content, source);
+  assert.deepEqual(before.content, expectedSource);
   assert.deepEqual(before.descriptor, descriptor);
   const keep = f.sessionManager.appendMessage({ role: "user", content: "retained artifact turn", timestamp: 3 });
   f.sessionManager.appendCompaction("artifact source summarized", keep, 5000);
@@ -165,7 +166,7 @@ test("F-B12 artifacts remain readable after compaction and resident-cache replac
     && e.message.toolCallId === "artifact-saved"));
   f.session.configureToolResultBudget({ enabled: true, budgetTokens: 1024 });
   const after = f.session.readToolResultArtifact(descriptor.id);
-  assert.deepEqual(after.content, source, "recover every original artifact block from persistent entries");
+  assert.deepEqual(after.content, expectedSource, "recover every original artifact block from persistent entries");
   assert.deepEqual(after.descriptor, descriptor, "artifact identity and source digest must survive compaction");
 });
 
