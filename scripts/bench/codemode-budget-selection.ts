@@ -66,8 +66,8 @@ function observedDispose(this:ToolResultBudgetSelection):void {
   }
   originalDispose.call(this);
 }
-function lifecycle(mode:string) {
-  const f=fixture(1),refs:WeakRef<object>[]=[new WeakRef(f.owner)];
+function lifecycle(mode:string,pairs=1) {
+  const f=fixture(pairs),refs:WeakRef<object>[]=[new WeakRef(f.owner)];
   currentRefs=refs;
   const error=mode==="cancel"?new DOMException("cancelled","AbortError"):new Error("observer failed");
   try {
@@ -88,7 +88,8 @@ function lifecycle(mode:string) {
     if(mode==="clear")f.owner.clearProjectionRecords();
   } finally {currentRefs=undefined;f.owner.dispose();}
   assert.equal(f.owner.counters.contextualChoiceActivePlans,0);assert.equal(f.owner.counters.contextualChoiceActiveBytes,0);
-  return {mode,refs,counters:f.owner.counters};
+  if(pairs>1)assert.ok(f.owner.counters.contextualChoiceStates!>0,"DP release scenarios must allocate and search the DP workspace");
+  return {mode:pairs>1?"dp-"+mode:mode,refs,counters:f.owner.counters};
 }
 let endings:ReturnType<typeof lifecycle>[];
 function linearLifecycle(mode:string) {
@@ -107,7 +108,8 @@ function linearLifecycle(mode:string) {
 }
 ToolResultBudgetSelection.prototype.dispose=observedDispose;
 try {
-  endings=["normal","budget-failure","failure","cancel","clear","dispose","resource-limit"].map(lifecycle);
+  endings=["normal","budget-failure","failure","cancel","clear","dispose","resource-limit"].map(mode=>lifecycle(mode));
+  for(const mode of ["normal","budget-failure","failure","cancel","clear","dispose"])endings.push(lifecycle(mode,64));
   endings.push(linearLifecycle("linear-reject"),linearLifecycle("linear-select-all"));
 }
 finally {ToolResultBudgetSelection.prototype.dispose=originalDispose;}
