@@ -55,21 +55,19 @@ export class RetryOperation {
 export class RetryBudget {
   readonly operations = new Map<string, RetryOperation>();
   policy: Readonly<RetryPolicy> = DEFAULT_RETRY_POLICY;
-  evictions = 0;
+  overflowFailures = 0;
   saturated = false;
 
-  record(key: string, reservedOperation?: RetryOperation): void {
+  record(key: string, reservedOperation?: RetryOperation): boolean {
     let operation = this.operations.get(key);
     const ownsReservation = operation !== undefined && operation === reservedOperation;
     if (!operation) {
-      if (this.saturated) return;
-      if (this.operations.size >= MAX_RETRY_OPERATIONS) {
-        // Eviction is visible and closes admissions for missing identities until agent_end.
-        // Churning parents/identities can never re-create an evicted retry allowance.
-        const oldest = this.operations.keys().next().value;
-        if (oldest !== undefined) this.operations.delete(oldest);
-        this.evictions++;
+      if (this.saturated || this.operations.size >= MAX_RETRY_OPERATIONS) {
+        // Preserve existing reservations. Unknown identities may execute, but their
+        // transient failures use the deterministic ledger's two-failure threshold.
         this.saturated = true;
+        this.overflowFailures++;
+        return false;
       }
       operation = new RetryOperation();
       this.operations.set(key, operation);
@@ -78,6 +76,7 @@ export class RetryBudget {
     // Only the invocation that reserved that retry may release its reservation.
     if (ownsReservation) operation.inFlight = false;
     if (!ownsReservation) operation.attempts++;
+    return true;
   }
 
   delay(operation: RetryOperation): number {
@@ -86,7 +85,7 @@ export class RetryBudget {
 
   refusal(key: string): string | undefined {
     const operation = this.operations.get(key);
-    if (!operation) return this.saturated ? "The bounded retry ledger reached capacity; start a fresh user run after inspecting the failures." : undefined;
+    if (!operation) return undefined;
     if (operation.inFlight) return "A retry of this identical operation is already waiting or executing; await its result.";
     if (operation.attempts >= this.policy.maxAttempts || operation.waitMs + this.delay(operation) > this.policy.maxWaitMs) {
       return "The transient retry budget is exhausted for this operation in this agent run. Preserve the failure, stop automatic retries, and retry in a new user run after the service recovers.";
@@ -94,7 +93,7 @@ export class RetryBudget {
     return undefined;
   }
 
-  clear(): void { this.operations.clear(); this.evictions = 0; this.saturated = false; }
+  clear(): void { this.operations.clear(); this.overflowFailures = 0; this.saturated = false; }
 }
 
 /** One low-frequency backoff lifecycle owns one timer, Promise and abort listener. */

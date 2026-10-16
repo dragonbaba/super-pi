@@ -18,6 +18,7 @@ import {
   callKey,
   createGuardState,
   failureRecoveryHint,
+  guardCapacityReason,
   inspectBatchCall,
   inspectBeforeCall,
   observeRepeatedCall,
@@ -206,7 +207,7 @@ export default function toolLoopGuardrails(pi: ExtensionAPI): void {
   pi.on("tool_call", async (event, ctx) => {
     if (configurationError) return { block: true, reason: `[TOOL_RETRY_CONFIG] ${configurationError}` };
     if (!calls.canAdmit(event.toolCallId, event.parentToolCallId)) {
-      return { block: true, reason: "[GUARD_CAPACITY] Invocation metadata capacity or identity limit reached; await pending calls or start a fresh user run." };
+      return { block: true, reason: guardCapacityReason(event.toolName, "Invocation metadata capacity or identity limit reached; await pending calls or start a fresh user run.") };
     }
     const pending = calls.remember(event.toolCallId, "", event.parentToolCallId);
     try {
@@ -273,7 +274,7 @@ export default function toolLoopGuardrails(pi: ExtensionAPI): void {
     if (retry && pending.retryOperation === retry) retry.inFlight = false;
     const repeatReminder = observeRepeatedCall(state, event.toolName, event.input, key);
     const failureText = event.isError ? boundedFailureText(event.content) : "";
-    const warning = recordResult(state, event.toolName, event.input, event.isError, failureText, key, event.details, pending.retryOperation);
+    const warning = recordResult(state, event.toolName, event.input, event.isError, failureText, key, event.details, pending.retryOperation, !pending.hasChildren);
     const recoveryHint = event.isError
       ? await failureRecoveryHint(event.toolName, event.input, failureText, getShellCwdBinding(event.input)?.canonical ?? ctx.cwd, event.details)
       : undefined;

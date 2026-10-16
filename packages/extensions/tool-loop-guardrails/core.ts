@@ -48,7 +48,6 @@ export interface GuardState {
   failuresByTool: Map<string, number>;
   retry: RetryBudget;
   failureEvictions: number;
-  failureSaturated: boolean;
   failuresBySignature: Map<string, number>;
   batchCalls: Map<string, true>;
   warnings: number;
@@ -66,7 +65,6 @@ export function createGuardState(): GuardState {
     failuresByTool: new Map(),
     retry: new RetryBudget(),
     failureEvictions: 0,
-    failureSaturated: false,
     failuresBySignature: new Map(),
     batchCalls: new Map(),
     warnings: 0,
@@ -80,6 +78,11 @@ export function createGuardState(): GuardState {
 
 function boundedToolName(value: string): string {
   return value.length <= 80 ? value : value.slice(0, 80);
+}
+
+export function guardCapacityReason(toolName: string, cause: string): string {
+  return JSON.stringify({ ok: false, category: "GUARD_CAPACITY", operation: boundedToolName(toolName),
+    retryable: true, stateChanged: false, cause });
 }
 
 function setBounded<T>(map: Map<string, T>, key: string, value: T): void {
@@ -453,7 +456,7 @@ export function inspectBatchCall(
   }
   if (calls.size >= 256) {
     state.blocked++;
-    return "[GUARD_CAPACITY] The bounded batch identity table is full; await calls or start a fresh turn.";
+    return guardCapacityReason(toolName, "The bounded batch identity table is full; await calls or start a fresh turn.");
   }
   calls.set(key, true);
   return undefined;
@@ -506,17 +509,15 @@ export function inspectBeforeCall(
   if (retryReason) {
     state.blocked++;
     const retry = state.retry.operations.get(key);
-    return JSON.stringify({ ok: false, category: "TRANSIENT_RETRY_EXHAUSTED", operation: boundedToolName(toolName),
-      retryable: true, stateChanged: false, attempts: retry?.attempts ?? 0,
+    return JSON.stringify({ ok: false, category: retry?.inFlight ? "TRANSIENT_RETRY_IN_FLIGHT" : "TRANSIENT_RETRY_EXHAUSTED", operation: boundedToolName(toolName),
+      retryable: retry?.inFlight === true, stateChanged: false, attempts: retry?.attempts ?? 0,
       waitMs: retry?.waitMs ?? 0, maxAttempts: state.retry.policy.maxAttempts,
       maxWaitMs: state.retry.policy.maxWaitMs, cause: retryReason });
   }
   const prefix = `${key}:`;
-  let known = false;
   for (const signature of state.failuresBySignature.keys()) {
     const count = state.failuresBySignature.get(signature)!;
     if (!signature.startsWith(prefix)) continue;
-    known = true;
     if (count < REPEATED_FAILURE_THRESHOLD) continue;
     state.blocked++;
     return JSON.stringify({
@@ -525,11 +526,6 @@ export function inspectBeforeCall(
       cause: "The identical call already failed repeatedly in this agent run, across parent scripts.",
       nextAction: "Inspect the original failure and change the arguments or method before retrying.",
     });
-  }
-  if (state.failureSaturated && !known) {
-    state.blocked++;
-    return JSON.stringify({ ok: false, category: "GUARD_CAPACITY", retryable: true, stateChanged: false,
-      cause: "The bounded failure ledger evicted an identity. Missing identities cannot regain an allowance in this run; inspect failures and start a new user run." });
   }
   return undefined;
 }
@@ -543,25 +539,26 @@ export function recordResult(
   canonicalCallKey?: string,
   details?: unknown,
   reservedRetryOperation?: RetryOperation,
+  isLeaf = true,
 ): string | undefined {
   if (isError) {
     const execution = readShellExecution(details);
     if (!execution && GUARD_BLOCK_CATEGORY_RE.test(failureText)) return undefined;
-    const category = classifyFailureText(failureText, input, toolName, details);
+    let category = classifyFailureText(failureText, input, toolName, details);
     if (execution?.producer === "agent" && execution.started === false
       && (category === "duplicate_call" || category === "repeated_call_blocked")) return undefined;
     setBounded(state.failuresByTool, boundedToolName(toolName), (state.failuresByTool.get(boundedToolName(toolName)) ?? 0) + 1);
     const call = canonicalCallKey ?? callKey(toolName, input);
     if (category === "aborted") return undefined;
     if (isTransientFailure(category, failureText, details)) {
-      state.retry.record(call, reservedRetryOperation);
-      return undefined;
+      if (state.retry.record(call, reservedRetryOperation)) return undefined;
+      // A single overflow category also bounds mixed HTTP/network/timeout failures.
+      category = "transient_retry_overflow";
     }
     const key = signatureKey(call, category);
     const count = (state.failuresBySignature.get(key) ?? 0) + 1;
     if (!state.failuresBySignature.has(key) && state.failuresBySignature.size >= MAX_TRACKED_KEYS) {
       state.failureEvictions++;
-      state.failureSaturated = true;
     }
     setBounded(state.failuresBySignature, key, count);
     // Compatibility diagnostics only; admission consults the bounded per-identity table.
@@ -584,16 +581,21 @@ export function recordResult(
   if (retry === reservedRetryOperation || (!reservedRetryOperation && !retry?.inFlight)) {
     state.retry.operations.delete(call);
   }
-  const prefix = `${call}:`;
-  for (const key of state.failuresBySignature.keys()) if (key.startsWith(prefix)) state.failuresBySignature.delete(key);
-  state.failuresByTool.delete(boundedToolName(toolName));
+  if (isLeaf && (toolName === "edit" || toolName === "write" || toolName === "bash" || toolName === "powershell")) {
+    // Known workspace mutations invalidate deterministic evidence, not transport budgets.
+    state.failuresBySignature.clear();
+    state.failuresByTool.clear();
+  } else {
+    const prefix = `${call}:`;
+    for (const key of state.failuresBySignature.keys()) if (key.startsWith(prefix)) state.failuresBySignature.delete(key);
+    state.failuresByTool.delete(boundedToolName(toolName));
+  }
   return undefined;
 }
 
 export function resetGuardState(state: GuardState): void {
   state.retry.clear();
   state.failureEvictions = 0;
-  state.failureSaturated = false;
   state.failuresByTool.clear();
   state.failuresBySignature.clear();
   state.batchCalls.clear();

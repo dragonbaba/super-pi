@@ -8,7 +8,7 @@ const targets: Record<string, string[]> = {
   "call-identity.ts": ["InputHash.text", "InputHash.visit", "callKey"],
   "call-ledger.ts": ["CallLedger.canAdmit", "CallLedger.remember", "CallLedger.rememberRepair", "CallLedger.finish", "CallLedger.end", "CallLedger.clear"],
   "transient-retry.ts": ["isTransientFailure", "RetryBudget.record", "RetryBudget.delay", "RetryBudget.refusal", "RetryBudget.clear", "RetryWait.start", "RetryWait.cancel", "RetryWait.finish"],
-  "core.ts": ["boundedToolName", "setBounded", "inspectBatchCall", "resetBatchState", "classifyFailureText", "observeRepeatedCall", "warningText", "signatureKey", "inspectBeforeCall", "recordResult", "resetGuardState",
+  "core.ts": ["boundedToolName", "guardCapacityReason", "setBounded", "inspectBatchCall", "resetBatchState", "classifyFailureText", "observeRepeatedCall", "warningText", "signatureKey", "inspectBeforeCall", "recordResult", "resetGuardState",
     "prepareDeterministicCall", "bashWorkdirFailure", "bashStaticCdFailure", "staticLeadingCdDirectory", "npmManifestDirectory", "commandPrefixTokens", "toolPath", "structuredRgBraceFailure", "structuredRgPathOperands",
     "failureRecoveryHint", "isMsysRegexArgvFailure", "nearestFailurePath", "nearestExistingPath", "boundedEditDistance"],
   "index.ts": ["boundedFailureText", "sendHiddenAdvisory", "tool_call", "tool_result", "tool_execution_end"],

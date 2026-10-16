@@ -5,6 +5,7 @@ export const MAX_RELEASED_CALLS = 4096;
 export const MAX_CALL_ID_CHARACTERS = 512;
 
 export class PendingCall {
+  hasChildren = false;
   repairNote: string | undefined;
   nestedKey: string | undefined;
   wait: RetryWait | undefined;
@@ -33,6 +34,8 @@ export class CallLedger {
   }
 
   remember(id: string, key: string, parent?: string): PendingCall {
+    const owner = parent === undefined ? undefined : this.pending.get(parent);
+    if (owner) owner.hasChildren = true;
     const pending = new PendingCall(key, parent);
     this.pending.set(id, pending);
     return pending;

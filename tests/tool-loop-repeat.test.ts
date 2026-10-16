@@ -128,7 +128,7 @@ test("continuous HTTP 503 stops at five executions across different parents and 
   const reason = JSON.parse(blocked.reason);
   assert.deepEqual({ executions, waited, attempts: reason.attempts, waitMs: reason.waitMs }, { executions: 5, waited: 15000, attempts: 5, waitMs: 15000 });
   assert.equal(reason.category, "TRANSIENT_RETRY_EXHAUSTED");
-  assert.equal(reason.retryable, true);
+  assert.equal(reason.retryable, false);
   f.close();
 });
 
@@ -167,7 +167,10 @@ test("identical retry reservations cannot be doubled through another parent", as
   const f = fixture(), input = { x: 1 };
   await f.call("first", input, "p"); await f.result("first", input, "HTTP 503", true);
   const wait = f.call("wait", input, "q"); await setImmediate();
-  assert.match((await f.call("overlap", input, "r")).reason, /already waiting or executing/);
+  const refusal = JSON.parse((await f.call("overlap", input, "r")).reason);
+  assert.match(refusal.cause, /already waiting or executing/);
+  assert.equal(refusal.category, "TRANSIENT_RETRY_IN_FLIGHT");
+  assert.equal(refusal.retryable, true);
   t.mock.timers.tick(1000); assert.equal(await wait, undefined);
   await f.result("wait", input, "ok"); f.close();
 });
@@ -262,18 +265,105 @@ test("accepted retry delays remain well below the standard safety-hook deadline"
   f.close();
 });
 
-test("failure and retry eviction is counted and cannot renew an evicted allowance", () => {
-  for (const text of ["SyntaxError", "HTTP 503"]) {
-    const s = core.createGuardState();
-    for (let i = 0; i < 65; i++) core.recordResult(s, "child", { i }, true, text);
-    assert.ok(s.failuresBySignature.size <= 64 && s.retry.operations.size <= 64);
-    assert.equal(s.failureEvictions + s.retry.evictions, 1);
-    assert.match(core.inspectBeforeCall(s, "child", { i: 0 })!, /capacity|evicted/);
-    core.recordResult(s, "codemode", { code: "new parent" }, false);
-    assert.ok(core.inspectBeforeCall(s, "child", { i: 0 }));
-    core.resetGuardState(s);
-    assert.equal(core.inspectBeforeCall(s, "child", { i: 0 }), undefined);
+test("65 different deterministic failures evict FIFO and still admit a fresh read", () => {
+  const state = core.createGuardState();
+  for (let i = 0; i < 65; i++) core.recordResult(state, "child", { i }, true, "SyntaxError");
+  assert.equal(state.failuresBySignature.size, 64);
+  assert.equal(state.failureEvictions, 1);
+  assert.equal(core.inspectBeforeCall(state, "read", { path: "src/index.ts" }), undefined);
+  assert.equal(core.inspectBeforeCall(state, "child", { i: 0 }), undefined);
+  core.recordResult(state, "child", { i: 1 }, true, "SyntaxError");
+  assert.match(core.inspectBeforeCall(state, "child", { i: 1 })!, /REPEATED_CALL_BLOCKED/);
+  assert.equal(state.failureEvictions, 1);
+});
+
+test("a full retry ledger preserves owners, admits fresh calls and caps overflow failures at two", () => {
+  const state = core.createGuardState();
+  for (let i = 0; i < 64; i++) core.recordResult(state, "child", { i }, true, "HTTP 503");
+  const first = state.retry.operations.get(core.callKey("child", { i: 0 }))!;
+  first.inFlight = true; first.attempts = 4; first.waitMs = 7000;
+  assert.equal(core.inspectBeforeCall(state, "child", { i: 64 }), undefined);
+  core.recordResult(state, "child", { i: 64 }, true, "HTTP 503");
+  assert.equal(state.retry.operations.size, 64);
+  assert.equal(state.retry.operations.get(core.callKey("child", { i: 0 })), first);
+  assert.deepEqual({ attempts: first.attempts, waitMs: first.waitMs, inFlight: first.inFlight }, { attempts: 4, waitMs: 7000, inFlight: true });
+  assert.equal(core.inspectBeforeCall(state, "read", { path: "src/index.ts" }), undefined);
+  assert.equal(core.inspectBeforeCall(state, "child", { i: 64 }), undefined);
+  // Freeing a slot cannot promote the overflow identity into a fresh five-attempt budget.
+  core.recordResult(state, "child", { i: 1 }, false);
+  core.recordResult(state, "child", { i: 64 }, true, "Operation timed out");
+  assert.equal(state.retry.overflowFailures, 2);
+  const refusal = JSON.parse(core.inspectBeforeCall(state, "child", { i: 64 })!);
+  assert.equal(refusal.category, "REPEATED_CALL_BLOCKED");
+  assert.equal(refusal.failureCount, 2);
+  assert.equal(state.retry.operations.has(core.callKey("child", { i: 64 })), false);
+  assert.equal(core.inspectBeforeCall(state, "child", { i: 65 }), undefined);
+  core.resetGuardState(state);
+  assert.equal(core.inspectBeforeCall(state, "child", { i: 64 }), undefined);
+  core.recordResult(state, "child", { i: 64 }, true, "HTTP 503");
+  assert.equal(state.retry.operations.size, 1);
+});
+
+for (const failure of ["SyntaxError", "HTTP 503"]) test(`real hooks admit a new read after 65 distinct ${failure} failures`, async () => {
+  const f = fixture();
+  for (let i = 0; i < 65; i++) {
+    const input = { i };
+    assert.equal(await f.call(`call${i}`, input, `parent${i}`), undefined);
+    await f.result(`call${i}`, input, failure, true);
+    f.end(`parent${i}`);
   }
+  assert.equal(await f.call("read", { path: "src/index.ts" }, "fresh-parent", "read"), undefined);
+  f.close();
+});
+
+for (const mutation of ["edit", "write", "bash", "powershell"]) test(`npm test twice → ${mutation} leaf success → test admission recovers`, async () => {
+  const f = fixture(), input = { command: "npm test" };
+  for (let i = 0; i < 2; i++) {
+    assert.equal(await f.call(`test${i}`, input, `parent${i}`, "bash"), undefined);
+    await f.result(`test${i}`, input, "Command exited with code 1", true, "bash");
+  }
+  const blocked = JSON.parse((await f.call("blocked", input, "parent2", "bash")).reason);
+  assert.equal(blocked.failureCategory, "test_failed");
+  const edit = mutation === "bash" || mutation === "powershell" ? { command: "echo repaired" } : { path: "src/index.ts", content: "repaired" };
+  assert.equal(await f.call("repair", edit, "repair-parent", mutation), undefined);
+  await f.result("repair", edit, "ok", false, mutation);
+  assert.equal(await f.call("after-repair", input, "parent3", "bash"), undefined);
+  f.close();
+});
+
+test("parent success and failed mutations preserve failures; mutation success preserves unrelated retry accounting", async () => {
+  const f = fixture(), input = { command: "npm test" };
+  for (let i = 0; i < 2; i++) {
+    await f.call(`test${i}`, input, `p${i}`, "bash");
+    await f.result(`test${i}`, input, "Command exited with code 1", true, "bash");
+  }
+  const parentInput = { command: "echo parent" };
+  await f.call("parent", parentInput, "outer", "bash");
+  await f.call("child", {}, "parent"); await f.result("child", {}); f.end("child");
+  await f.result("parent", parentInput, "ok", false, "bash");
+  await f.call("failed-edit", {}, "pedit", "edit"); await f.result("failed-edit", {}, "edit failed", true, "edit");
+  assert.match((await f.call("blocked", input, "p3", "bash")).reason, /REPEATED_CALL_BLOCKED/);
+  f.close();
+  for (const mutation of ["edit", "write", "bash", "powershell"]) {
+    const state = core.createGuardState(), key = core.callKey("http_read", {});
+    core.recordResult(state, "http_read", {}, true, "HTTP 503", key);
+    const retry = state.retry.operations.get(key)!;
+    retry.attempts = 5; retry.waitMs = 15000;
+    core.recordResult(state, mutation, {}, false);
+    assert.equal(state.retry.operations.get(key), retry);
+    const reason = JSON.parse(core.inspectBeforeCall(state, "http_read", {})!);
+    assert.equal(reason.attempts, 5); assert.equal(reason.waitMs, 15000);
+  }
+});
+
+test("capacity refusals include the bounded operation name", async () => {
+  const state = core.createGuardState();
+  for (let i = 0; i < 256; i++) core.inspectBatchCall(state, "child", { i });
+  assert.equal(JSON.parse(core.inspectBatchCall(state, "read", {})!).operation, "read");
+  const f = fixture();
+  const refusal = JSON.parse((await f.call("x".repeat(513), {}, undefined, "read")).reason);
+  assert.equal(refusal.operation, "read"); assert.equal(refusal.category, "GUARD_CAPACITY");
+  f.close();
 });
 
 test("pending/release tables have hard bounds and parent/end cleanup", () => {
