@@ -1,6 +1,6 @@
 # CodeMode 执行、预算与恢复修复计划
 
-状态：2026-10-16 审查收敛，D1–D4 已由用户确认，R0 修复前回归基线已建立，待复审。四轮交叉审查（Claude ×2、Codex ×2）后形成本清单；Codex 负责实施，Claude 负责逐任务复审。勾选框表示实施、验收和复审全部完成，不能用“已查过源码”或“现有测试通过”代替。
+状态：2026-10-16，D1–D4 已由用户确认；R0 功能基线已获第二轮复审通过，新增性能交接材料已完成采集，待复核。四轮交叉审查（Claude ×2、Codex ×2）后形成本清单；Codex 负责实施，Claude 负责逐任务复审。勾选框表示实施、验收和复审全部完成，不能用“已查过源码”或“现有测试通过”代替。
 
 **核心要求：已授权的正常任务，应能在局部、可恢复的错误之后继续完成。** 不得因为解析器不认识某种写法、某次结果需要缩减、展示额度不足或内部缓存淘汰，就把整轮任务堵死；也不得用吞掉退出码、统一改成成功、关闭预算检查或单纯调大数字来“修复”。
 
@@ -118,14 +118,39 @@
 
 ### 4.2 热路径门禁
 
-`tool-result-presentation.ts`、提供方请求转换、CodeMode 进度/结果交付、`codemode-tree.ts`、`scroll-view.ts`、交互渲染属于热路径。修改前先读 `docs/performance/hot-path-allocation-contract.md` 并审计完整生产调用链；修改后至少运行：
+以 [hot-path-allocation-contract.md](performance/hot-path-allocation-contract.md) 为准，审计从生产者到释放边界的完整调用链，包括现有 helper。R0 未修改生产热路径；R0.3 采集修复前数据，为后续任务提供比较起点，不把采集本身当成生产修复。
 
-- `npm run test:hot`
-- `npm run bench:tool-result-contextual-budget`
-- `npm run bench:tool-result-budgeted-model-view`
-- 触及 TUI 时：`bench:tui-tool-leaf-allocations`、`bench:tui-frame-allocations` 等相关项
+| 任务 | 必须纳入审计的路径 | 必须显式核对的源码约束文件（位于 `tests/`） |
+| --- | --- | --- |
+| R1 | 提供方转换 → 预算估算/结果投影 → continuation/artifact 查找 → 会话持久条目/Evidence Ledger → clear/dispose | `tool-result-presentation-source-invariants.test.ts`、`tool-result-contextual-budget-source-invariants.test.ts`、`tool-token-estimator-source-invariants.test.ts`、`evidence-ledger-source-invariants.test.ts`；涉及 CodeMode 父子投影时加 `codemode-hot-paths.test.ts` |
+| R2 | 子调用完成 → `codemode.ts` 状态/输出/ref → `codemode-display.ts` 的 `codemodeFailureReason` → 树形展示/释放 | `codemode-hot-paths.test.ts`；涉及结果投影时加 R1 四个文件；涉及渲染时加 `tool-renderer-source-invariants.test.ts` |
+| R3 | 生命周期预检 → `prepareShellAnalysis`/替换分析 → 高风险/权限判断 → 完整内容标识 → 准入/结果/`agent_end` 清理 | `shell-observation-hot-paths.test.ts`（覆盖 `core.ts`、`permission-bash.ts`、`shell-substitution.ts` 的指定函数）；循环防护新增热方法仍须按契约补对应精确 AST/计数门禁，现有检查不代表覆盖整文件 |
+| R4 | `host.ts` 的 `Execution` 计时/`post`/`handleMessage` → `nested-tool-dispatch.ts` 的 `pump` → 子工具/审批等待 → 完成/取消/关闭 | `codemode-hot-paths.test.ts`；若同时调整会话耗时事件则加 `duration-source-invariants.test.ts` |
+| R5 | CodeMode 树 → 工具进度 → `scroll-view.ts`/交互更新 → 布局/终端帧 → 释放 | `codemode-hot-paths.test.ts`、`tool-renderer-source-invariants.test.ts`、`tui-retained-source-invariants.test.ts`，以及 `test:hot` 中对应 TUI 检查 |
 
-提供确定性计数和生命周期/引用释放证据。不引入对象池，除非满足契约中的 profiler 门槛。
+`npm run test:hot` 是共同门禁，不能代替表中的文件清单。`scripts/test.mjs` 的命名规则不会把带前缀的 `*-source-invariants.test.ts` 全部归入 hot 组；上表 R1 四个文件当前属于 **unit**，须另行执行（不能因 CI 最终会跑到就省略本地验收）：
+
+```text
+npm run test:hot
+node --experimental-strip-types --test --test-reporter=tap --test-concurrency=1 tests/tool-result-presentation-source-invariants.test.ts tests/tool-result-contextual-budget-source-invariants.test.ts tests/tool-token-estimator-source-invariants.test.ts tests/evidence-ledger-source-invariants.test.ts
+```
+
+按任务实际修改范围追加表中其他文件，命令为 `node --experimental-strip-types --test --test-concurrency=1 <明确列出的测试文件>`；不得用泛匹配或省略号代替交付记录里的实际命令。
+
+| 适用任务 | 基准命令 | 主要证据 |
+| --- | --- | --- |
+| R1 | `npm run bench:tool-token-estimator` | 10 MiB 单行、1 MiB 日志的 CPU/分配、无整份复制/巨型行数组、受控 GC |
+| R1；R2 涉及结果展示/保留时 | `npm run bench:tool-result-budgeted-model-view`；`npm run bench:tool-result-contextual-budget` | `fullSourceEstimatorScans`、查找探测次数、历史稳态计数、投影字节容量、clear/dispose 后条目与引用 |
+| R1.7、R2、R4 | `node --expose-gc --experimental-strip-types scripts/bench/codemode-dispatch.ts` | 调度调用次数、并发上限、每调用分配、`retainedAfterGc` |
+| R2、R4 | `node --expose-gc --experimental-strip-types scripts/bench/codemode-runtime.ts` | Worker/VM 执行、批量桥接、计时、Worker 启停与宿主引用释放 |
+| R1.7、R2、R4 | `node --expose-gc --experimental-strip-types scripts/bench/codemode-session.ts` | 真实 SDK/控制器/读取/store 的离线会话链路、pending evidence 与会话释放 |
+| R3 | `node --expose-gc --experimental-strip-types scripts/bench/shell-substitution-inspection.ts`；`npm run bench:shell-common-compatibility` | Shell 分析分配/引用释放、输出 append/snapshot、spill 与释放计数 |
+| R2/R5 改树形展示或进度时 | `npm run bench:tool-progress`；`npm run bench:tui-tool-leaf-allocations` | 进度交付、叶子更新/布局分配与释放 |
+| R5 改帧/布局时 | `npm run bench:tui-frame-allocations`，并按 Main/Alt 路径追加对应生产基准 | 帧物化/复制、活动与待处理字节、flush/abort/dispose |
+
+基准串行采样，记录相同机器、Node/V8、输入、模式、预热和采样参数；源代码模式与编译产物模式分开比较。改变场景或计数口径时，在相同旧生产代码上补旧侧测量并保留原始基线，不能因迁移而重置基线。每次交付均须有确定性结构计数、分配剖析/精确计数、受控 GC 和正常完成/异常/取消/关闭的生命周期证据；耗时或一次 heap 数值不能单独证明合规。对象池仍须满足契约全部准入条件。
+
+现有基准的证据范围必须如实说明：Shell 基准的 `analysisCalls` 当前由外层迭代数计算，不是 `prepareShellAnalysis` 的内部调用探针；R3 须补实际分析调用/扫描字节计数。`codemode-dispatch` 的弱引用只覆盖调度器、目录和输入参数；R1/R2 的结果、展示块和 ref 释放还须在 session/专用场景中追踪，不能仅凭该项 `retainedAfterGc=0` 宣称结果存储也已释放。runtime/session 的宿主采样不覆盖 Worker heap，触及 Worker 内存时须另交对应证据。
 
 ### 4.3 禁止的“修复”
 
@@ -140,13 +165,14 @@
 
 ### R0 回归基线（先做，所有后续任务依赖）
 
-- [ ] R0.1 把以下离线场景固化为测试；断言目标是**任务能完成**，而不只是“按设计拒绝”。修复前这些测试应以已知方式失败，记录失败输出作为基线：
+- [x] R0.1 把以下离线场景固化为测试；断言目标是**任务能完成**，而不只是“按设计拒绝”。修复前这些测试应以已知方式失败，记录失败输出作为基线：
   - 预算：spark 首条结果（F-B3）、272k/128k + 约 144k 历史（F-B4）、结果顺序（F-B8，8 条与 20 条两组）、历史重新投影的估算增量（F-B9）、长单行续读（F-B11）、压缩后续读（F-B12）、CodeMode 父结果投影（F-B13）；
   - 错误：FFmpeg 风格输出（横幅约 1.9k 字符，末尾 `No such filter: 'volumedetect'` + `Command exited with code 1`）的模型正文（F-C1）；
   - 失败语义：捕获失败 → 替代成功 → store 写入（F-C2）、三个成功子调用各返回 100 块后 `show` 超限（F-C4）、6 次约 220,000 字符输入后 `show(first.ref)`（F-C5）、缩短时限下的串行累计与审批等待（F-C6）；
   - Shell：F-S3 列出的 8 种写法 + `python -c` + `node <<'EOF'`，分别断言预检、高风险分析、权限控制器；另通过真实扩展 `tool_call` 钩子验证 `full-access` 与 `workspace-write` 下的最终决策，得到并消费 `finalAuthorization`、检查 cwd 绑定，但不执行命令；生命周期违规（`npm run dev &`、`nohup`、`docker run -d`、`Start-Process` 无 `-Wait`）与目标不明的删除还必须在完整钩子下返回 `block`，不能拿到最终授权；
   - 重复调用：等长 5,024/5,564 字符、仅中间不同的 Bash 命令与 CodeMode 脚本（F-S6），父子交替失败（F-S7），503 暂时性失败（F-S8）。
-- [ ] R0.2 测试不得依赖网络、真实提供方或业务项目。
+- [x] R0.2 测试不得依赖网络、真实提供方或业务项目。
+- [ ] R0.3 性能基线交接：在修改生产代码前，同一机器串行采集 §4.2 的 R1–R4 八项现有基准，保存原始 stdout/stderr、完整 JSON、确切命令、退出码、commit、Node/V8/平台/CPU、预热/采样参数和 SHA256。没有自带 commit 的输出由独立采集清单关联，不改写原始输出。交接包采用可携带文件名和校验值，不在仓库文档嵌入本机路径。把现有场景与 R1–R4 尚须新增的验收场景分开记录，补齐材料后复审；R0.1/R0.2 已获第二轮功能复审通过，不代表新增性能材料也已获审。
 
 ### R1 预算与恢复（P0）
 
@@ -172,6 +198,13 @@ R1 验收：
 - 每次请求最多自动恢复一次，计数器证明无循环。
 - 投影、实际请求、提供方接受三层都要验证；R1 末尾用真实会话做一次端到端验收（需用户授权）。
 
+R1 性能验收（须在实施对应修复时补场景，R0 本轮不改测试或基准）：
+
+- F-B11：在 `tool-result-budgeted-model-view` 加入 **10 MiB、`readBoundary: "lines"`** 的长单行续读。初始化/建立索引成本单列；之后每段 `fullSourceEstimatorScans = 0`，每段扫描字节有界、游标持续前进，不从源头重复扫描或产生无界行数组。报告整链总扫描量，防止 O(n²)。现有普通 10 MiB 文本场景不等价于此读取边界场景。
+- F-B12：增加“源结果已移出活动上下文、仍在持久会话条目中”的续读场景。允许按生命周期单独记录一次有界索引构建；后续每段查找探测次数有固定上界，不随历史条目数线性增长。索引只保留必要定位/校验元数据，不复制或另存源正文；容量、clear/dispose 后条目数和新增引用计数均须证明有界并归零。
+- F-B9：容量内历史稳态的 `steadyCountersPerRequest.fullSourceEstimatorScans = 0`、`fullResultCopies = 0`；正确计入变化不等于每轮重新估算整段历史。增量更新成本与首次投影成本分别计数。另测超过容量的工作集，单列未命中/降级成本和重扫次数，保持有界并与旧侧比较，不能隐藏为“稳态零扫描”。
+- F-B13：按子调用投影仍须明确父结果总字节上限、每脚本驻留字节/条目上限、计量编码与所有者；额度耗尽走可恢复截断/取回，不能无限累积。对照 dispatch 和 session 的计数，并新增结果/ref 的弱引用覆盖；完成、失败、取消、dispose 后全部非持久拥有的引用归零，`retainedAfterGc = 0`。
+
 ### R2 错误正文与失败状态（P0）
 
 - [ ] R2.1 失败摘要：异常文本与模型摘要改为“首个诊断行 + 输出末尾若干行 + 状态行 + ref/完整输出路径”，复用 Bash 已有的末尾截断；显示端同步。（F-C1）
@@ -182,6 +215,8 @@ R1 验收：
 
 R2 验收：FFmpeg 样例的模型正文包含 `No such filter`；“捕获失败 → 替代成功 → store”最终成功且 store 已提交，摘要仍列出原始失败；全部成功的子调用不会因展示超限变成父失败；未处理的失败仍使父调用失败。
 
+R2 性能验收：`codemodeFailureReason` 及其 helper 按 `codemode-hot-paths.test.ts` 约束，不新增热调用内的闭包、对象/数组字面量、`new` 或 map/filter。F-C1 用有界的诊断定位和尾部扫描，不拼接全部子结果再截尾。F-C4/F-C5 明确展示、结果和 ref 的条目及字节上限、所有者、淘汰后的可取回方式；超大输入不能无界保留在 ref 存储中。补充 show/ref 压力场景与正常、失败、取消、close/dispose 的引用释放测量；dispatch 的 `retainedAfterGc = 0` 和 session 内结果/ref 引用归零须同时成立。持久 store 与当前调用的临时状态分别计量，不能以延长 ref 寿命为由长期保留结果正文。
+
 ### R3 Shell 预检、权限与重复调用（P1）
 
 - [ ] R3.1 生命周期预检：heredoc 改用 `prepareShellAnalysis`；与进程生命周期无关的“无法分析”不再在预检拒绝，交给权限层（已归类为 opaque）。真正的生命周期违规保持拒绝。（F-S1–S3）
@@ -191,12 +226,20 @@ R2 验收：FFmpeg 样例的模型正文包含 `No such filter`；“捕获失�
 
 R3 验收：R0 的 Shell 组在 `full-access` 下全部可执行、在 `workspace-write` 下全部询问；生命周期违规与动态递归删除仍拒绝；修正中间内容的长命令与长脚本不再被拦；真正连续三次完全相同的确定性失败仍被拦。**风险重点：**`#scopeAllows` 对“无原语、非 opaque”的 Bash 直接放行（`permission-controller.ts:1042`），必须证明放开预检后没有命令被误判为只读。
 
+R3 性能验收：
+
+- R3.1/R3.2：同一次授权里的预检、高风险和权限层共享同一份受限分析；分析只对同一命令/cwd/权限世代有效，变更后必须失效并复检。实际底层分析调用次数和扫描字节数不得因接入预检而翻倍；外层循环推导的 `analysisCalls` 不能替代该证据。分析缓存有容量上限，调用完成/失败/取消后释放源字符串与扫描结果。
+- F-S6：对完整内容增量哈希，逐段 `hash.update`，不先构造完整 canonical 字符串、首尾拼接字符串或整份临时 Buffer。准入时计算一次标识，结果阶段按 `toolCallId` 复用；统计完整输入扫描/序列化次数，证明结果阶段没有第二次完整序列化。绑定准入时的确切输入，不能把被修改输入的旧标识误用为授权依据。
+- F-S7：父作用域失败计数表、待处理标识表与暂时重试状态均有明确条目/字节上限；完成、取消和 `agent_end` 后清空相应状态，不保留源参数/结果。增加容量压力与受控 GC 验证；达到容量上限不能无声重置重试预算而变成无限重试。
+
 ### R4 总时限（P1，依赖 D4）
 
 - [ ] R4.1 按 D4 拆分计量；审批等待期间暂停脚本计时；子工具遵守各自 `timeout`。
 - [ ] R4.2 超时报错区分耗时所在（脚本计算 / 子工具 / 排队 / 等待审批），并按运行环境给出可用退路（无交互环境明确说明后台不可用）。
 
 R4 验收：2 分钟前台子任务不写 `@options` 可完成；多个子调用串行、等待审批均不被误判超时；用户取消仍能传到子进程；脚本自身死循环仍受时限约束。
+
+R4 性能验收：`Execution.post`、`Execution.handleMessage`、`NestedToolDispatch.pump` 及相关 helper 继续通过精确 AST 门禁。计时暂停/恢复使用每实例一次创建的稳定回调和数值字段，记录剩余计算时间/等待时间；不得每次子调用新增计时闭包、Promise executor、Promise tail 或 AbortController。允许的生命周期截止分配须在测试中逐个点名真实所属函数（如现有 `Execution.constructor` 的脚本级截止边界）；新增截止处理函数同样须精确列名，不能豁免整文件/整类。用串行、并发、审批取消、超时、abort/close 场景测量活动定时器/监听器上界；结束后引用与定时器归零，Worker 启停匹配、`retainedAfterGc = 0`。dispatch/runtime/session 三项基准均须与 R0.3 的同机基线比较。
 
 ### R5 显示、模型参数与读写契约（P2）
 
@@ -223,7 +266,7 @@ R5 验收：覆盖 Windows 实际终端、长输出、窗口缩放与历史恢�
 
 | 任务 | 分支 / PR | 状态 | Claude 复审 | 备注 |
 | --- | --- | --- | --- | --- |
-| R0 | [PR #154](https://github.com/dragonbaba/super-pi/pull/154)，`test/codemode-recovery-r0` | 已补充首轮复审要求，待再次复审 | 首轮要求补充，尚未通过 | 当前 124 项（含子用例）：49 通过、75 预期失败、0 跳过；其中 19 项普通回归对照全过；生产逻辑未修改 |
+| R0 | [PR #154](https://github.com/dragonbaba/super-pi/pull/154)，`test/codemode-recovery-r0` | R0.1/R0.2 已完成；R0.3 材料已采集，待复核 | 第二轮确认功能基线与首轮修订通过；要求补性能交接 | 124 项：49 通过、75 预期失败；普通对照 19 项全过；八项性能基准与两组源码门禁全过；生产逻辑未修改 |
 | R1 | | 未开始 | | |
 | R2 | | 未开始 | | |
 | R3 | | 未开始 | | |
@@ -252,3 +295,24 @@ R5 验收：覆盖 Windows 实际终端、长输出、窗口缩放与历史恢�
 - 原 39 个通过项包含混合分组内的诊断断言，并非全是独立对照。将全部 13 个原有核心对照移入 `tests/codemode-recovery/controls.test.ts`，加上 6 个新对照，共 19 项，普通测试发现器和 Windows/Linux CI 均会纳入；显式 R0 命令也包含它们。混合分组的分层诊断仍随基线执行，修复后再升格，不隐藏其失败。
 - 本地验证：`npm run test:codemode-recovery` 为 124 项（54 顶层 + 70 子用例），49 通过、75 已知失败、0 skip/todo/cancelled。相对初版增加 20 项完整钩子验收和 6 项对照；16 项新增失败来自已记录的预检拒绝，另外 4 项钩子验收通过。75 个失败含 8 个失败分组，实际失败叶子为 67 项。
 - 普通入口验证：`node scripts/test.mjs --suite unit --root tests/codemode-recovery --skip-memory --jobs 1` 发现并执行 `controls.test.ts`，19 项全部通过；类型检查通过。修订输出使用 `super-pi-r0-review-fixes-` 前缀交接，初版输出保留用于比较。没有生产修复后的全绿输出，R0 勾选仍待 Claude 再次复审。
+
+### R0 第二轮复审修订与性能交接（2026-10-16）
+
+- 第二轮复审确认首轮七项已修好、功能基线通过；据此勾选 R0.1/R0.2。复核 GitHub 后确认 `8cc40b613` 的六个 CI 分片全部成功。本轮只修改本文，没有修改测试、基准脚本、生产代码或依赖；R0.3 尚待新增材料复核，不宣称 Claude 已审过这些新数据。
+- 修复前采集 commit：`8cc40b6134300c1426f5e6e858956eeb612ff045`；跟踪的生产代码和基准脚本相对 `b44dc096` 无差异。环境：Node `v26.4.0`、V8 `14.6.202.34-node.21`、Windows x64、Intel Core i7-14700KF。由 Codex 在本机独立串行重测，不冒充 Claude scratchpad 的原始输出，也不把两次采样数值的差异视为代码回归。
+- 检查：hot 组 **13 个文件**全过；单独执行 R1 四个 source-invariant 文件，**13 项**全过。性能采样期间未由采集器并行启动其他测试或基准；系统/桌面后台负载未被控制。
+- 交接文件：`super-pi-r0-performance-baseline.zip`，SHA256：`a9048a02f57c265d5420631d871b74397553e4ec5236ada42c94672874086539`。压缩包随任务交接，不是仓库内路径。内含 `manifest.json`、`summary.json`、八份带采集元数据的完整 JSON、未改写的 stdout/stderr 与源码检查日志；每项记录确切命令、退出码、采样时间与文件校验值。部分基准没有内置 commit，已由外层清单关联，不能称它们原本自带 commit。
+- 模式与产物：runtime 基准使用源码 host/worker；session 基准通过工作区包加载已编译 dist。清单记录了实际 dist JS 和基准源码的哈希，这用于固定本次实测身份，不是重新构建或发行包来源证明。后续比较须保持模式一致；若重建导致产物不同，须为对应旧侧补测并保留本次数据。
+
+| 基准 | 本次关键数据（完整字段见 JSON） |
+| --- | --- |
+| `codemode-dispatch` | 800 次调用，最大并发 4；采样 4,639.38 B/调用；`retainedAfterGc = 0` |
+| `codemode-runtime` | source 模式，warm p50 43.69 ms、p95 46.54 ms；Worker 启停 32/32；`retainedAfterGc = 0` |
+| `codemode-session` | 242 次子调用；Worker 启停 11/11；`retainedAfterGc = 0`、`pendingEvidenceAfterTurn = 0` |
+| `shell-substitution-inspection` | ordinary 6,562 B/轮（上限 65,536）；quoted-16 235,741 B/轮（上限 393,216）；`liveReferences = 0`；外层 `analysisCalls = 2308` |
+| `shell-common-compatibility` | append/snapshot 各 96；采样 5,678 B/append；spill 5 MiB 且有界；20 次生命周期释放，`liveOwnersAfterGc = 0` |
+| `tool-token-estimator` | 10 MiB 单行 p50 60.12 ms、p95 61.00 ms；1 MiB 日志 p50 14.82 ms、p95 15.11 ms |
+| `tool-result-contextual-budget` | clear 后条目/驻留 code units 为 0；dispose 后协调器/弱引用为 0；全部场景计数已保存 |
+| `tool-result-budgeted-model-view` | continuationChain 100 段；首次扫描 1、查找探测 50,000，后续每段两项均为 0；dispose 后条目为 0；历史、恢复查找、artifact 与生命周期完整计数已保存 |
+
+- 基线边界：历史结果数 1/10/100 时每请求整源扫描为 0，129/256 的容量压力场景分别为 **1/128**，不能把全部历史场景报告为零；各场景 dispose 后条目与驻留 code units 均为 0。`resumedHistoryLookup` 的首次查找仍为 50,000 次探测/1 次扫描，不能替代“压缩后从持久条目恢复”的未来验收。10 MiB `readBoundary: "lines"`、新增结果/ref 生命周期、真实内部 Shell 分析次数、完整输入哈希复用和新计时路径仍须在 R1–R4 实施时补测，本轮没有改基准来假装已有这些证据。
