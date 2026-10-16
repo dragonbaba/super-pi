@@ -132,8 +132,9 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
  for (const script of here.substitutions) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) return result; }
  for (const script of substitutions.scripts) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) return result; }
  if (here.hereDocuments) for (const document of here.hereDocuments) {
+  if (hasUnresolvedHeredocFunction(command, document.pipelineHeader ?? document.header)) return lifecycleRefusal("SHELL_HEREDOC", "heredoc consumer depends on uninspected function state", "use a direct literal stdin consumer without function definitions");
   const consumers = heredocDocumentConsumers(document);
-  if (consumers & 8) return lifecycleRefusal("SHELL_HEREDOC", "heredoc consumer nesting cannot be inspected", "use a direct literal stdin consumer");
+  if (consumers & 8) return lifecycleRefusal("SHELL_HEREDOC", "heredoc executable input or consumer nesting cannot be inspected", "use a direct literal stdin consumer without transforming its input");
   if (consumers & 1) {
    const result = inspectLifecycleScript(document.body, depth + 1, nativePowerShellAvailable, analysisOwner);
    if (result) return result;
@@ -259,7 +260,8 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
    const endOfOptions = tokens[actionIndex] === "--";
    if (endOfOptions) actionIndex = skipRedirections(tokens, actionIndex + 1);
    const action = tokens[actionIndex];
-   if (action && action !== "-" && (endOfOptions || action !== "-p" && action !== "-l") && !tokens.expansions?.[actionIndex]) {
+   if (action && action !== "-" && (endOfOptions || action !== "-p" && action !== "-l")) {
+    if (tokens.expansions?.[actionIndex]) return lifecycleRefusal("SHELL_WRAPPER", "trap action contains dynamic executable source", "use a literal inspectable trap action");
     const result = inspectLifecycleScript(action, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) return result;
    }
    continue;
@@ -882,7 +884,7 @@ export function literalEvalScript(tokens: ShellSegment, start: number): string |
 	return script;
 }
 
-/** Bits: shell=1, Node=2, Python=4, bounded inspection exhausted=8. */
+/** Bits: shell=1, Node=2, Python=4, executable input cannot be inspected=8. */
 export function heredocConsumers(header: string, descriptor = 0, depth = 0, pipeline = false): number {
 	if (depth > MAX_WRAPPER_DEPTH) return 8;
 	const segments = parseShellSegments(header);
@@ -892,7 +894,7 @@ export function heredocConsumers(header: string, descriptor = 0, depth = 0, pipe
 	if (pipeline) {
 		let start = segments.length - 1;
 		while (start > 0 && (segments[start - 1]!.separatorAfter === "|" || segments[start - 1]!.separatorAfter === "|&")) start--;
-		return stdinScriptConsumers(segments, descriptor, depth + 1, start);
+		return pipelineStdinConsumers(segments, descriptor, depth + 1, start);
 	}
 	if (tokens[0] === "}" || tokens[0] === "fi" || tokens[0] === "done" || tokens[0] === "esac"
 		|| tokens.length === 0 && segments.length > 1 && segments[segments.length - 2]!.subshellClosedAfter) {
@@ -924,6 +926,48 @@ export function heredocDocumentConsumers(document: { header: string; pipelineHea
 export function heredocConsumer(header: string, descriptor = 0): "bash" | "node" | "python" | undefined {
 	const consumers = heredocConsumers(header, descriptor);
 	return consumers & 1 ? "bash" : consumers & 2 ? "node" : consumers & 4 ? "python" : undefined;
+}
+
+function isTransparentStdinStage(tokens: ShellSegment): boolean {
+	if (tokens[0] !== "cat" || tokens.expansions?.[0]) return false;
+	let index = tokens[1] === "--" ? 2 : 1;
+	for (; index < tokens.length; index++) if (tokens[index] !== "-" || tokens.expansions?.[index]) return false;
+	return true;
+}
+
+function hasUnresolvedHeredocFunction(command: string, header: string): boolean {
+	if (!command.includes("(") && !command.includes("function")) return false;
+	const segments = parseShellSegments(command);
+	let hasFunction = false, shadowsCat = false;
+	for (const tokens of segments) {
+		let index = 0;
+		while (tokens[index] === "{" || tokens[index] === "then" || tokens[index] === "else" || tokens[index] === "do" || tokens[index] === "if" || tokens[index] === "elif" || tokens[index] === "while" || tokens[index] === "until") index++;
+		index = bashPipelinePrefixEnd(tokens, index);
+		if (index < 0) continue;
+		const quoted = index === 0 ? tokens.firstWordQuoted : index === 1 ? tokens.secondWordQuoted : index === 2 ? tokens.thirdWordQuoted : false;
+		const name = tokens[index] === "function" && !quoted ? tokens[index + 1] : tokens.length === index + 1 && tokens.separatorAfter === "(" ? tokens[index] : undefined;
+		if (name) { hasFunction = true; if (name === "cat") shadowsCat = true; }
+	}
+	if (!hasFunction) return false;
+	const consumers = parseShellSegments(header), tokens = consumers[consumers.length - 1];
+	const previous = consumers[consumers.length - 2];
+	if (!tokens || shadowsCat || previous?.separatorAfter === "|" || previous?.separatorAfter === "|&") return true;
+	if (tokens.redirections) { stripShellRedirections(tokens, tokens.redirections); tokens.redirections.length = 0; }
+	return !isTransparentStdinStage(tokens);
+}
+
+function pipelineStdinConsumers(segments: ShellSegment[], descriptor: number, depth: number, start: number): number {
+	if (depth > MAX_WRAPPER_DEPTH || segments.length > MAX_SCRIPT_SEGMENTS) return 8;
+	let consumers = 0, transformed = false;
+	for (let index = start; index < segments.length; index++) {
+		const tokens = segments[index]!;
+		if (tokens.redirections) { stripShellRedirections(tokens, tokens.redirections); tokens.redirections.length = 0; }
+		const current = simpleStdinConsumers(tokens, descriptor, depth);
+		consumers |= current;
+		if (transformed && current) return consumers | 8;
+		if (!isTransparentStdinStage(tokens)) transformed = true;
+	}
+	return consumers;
 }
 
 function stdinScriptConsumers(segments: ShellSegment[], descriptor: number, depth: number, start = 0): number {

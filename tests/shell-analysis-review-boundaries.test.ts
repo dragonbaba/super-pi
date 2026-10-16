@@ -312,3 +312,44 @@ test("literal multiword eval and trap actions preserve mutation targets", async 
     assert.equal(outcome?.block, true); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
   }
 });
+
+test("function-dependent heredoc consumers cannot hide executable input", async t => {
+  for (const header of ["f(){ source /dev/stdin; }; f", "function f { source /dev/stdin; }; f", "f(){ source /dev/stdin; }\nf", "{ f(){ source /dev/stdin; }; }; f", "if true; then f(){ source /dev/stdin; }; fi; f", "cat(){ source /dev/stdin; }\ncat"]) {
+    const command = `${header} <<'EOF'\nsleep 100 &\nEOF`;
+    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_HEREDOC/, command);
+    for (const mode of ["full-access", "workspace-write"] as const) {
+      const f = await shellHookFixture(t, mode), { outcome } = await f.authorize(command);
+      assert.equal(outcome?.block, true); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+  }
+  for (const command of ["f(){ printf ok; }; f", "f(){ printf ok; }; cat <<'EOF'\nsleep 100 &\nEOF", "f(){ printf ok; }\ncat <<'EOF'\nsleep 100 &\nEOF"]) {
+    assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
+    const f = await shellHookFixture(t, "full-access"); assertFinalAuthorization(await f.authorize(command));
+  }
+});
+
+test("transformed heredoc streams are not mistaken for literal executable input", async t => {
+  for (const header of ["base64 -d <<'EOF' | source /dev/stdin", "cat <<'EOF' | base64 -d | source /dev/stdin", "sed 's/X/sleep/' <<'EOF' | bash -c 'source /dev/stdin'", "base64 -d <<'EOF' | node", "base64 -d <<'EOF' | python"]) {
+    const command = `${header}\nc2xlZXAgMTAwICYK\nEOF`;
+    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_HEREDOC/, command);
+    for (const mode of ["full-access", "workspace-write"] as const) {
+      const f = await shellHookFixture(t, mode), { outcome } = await f.authorize(command);
+      assert.equal(outcome?.block, true); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+  }
+  for (const command of ["cat <<'EOF' | cat - | source /dev/stdin\nprintf ok\nEOF", "base64 -d <<'EOF' | cat\nc2xlZXAgMTAwICYK\nEOF"]) {
+    assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
+    const f = await shellHookFixture(t, "full-access"); assertFinalAuthorization(await f.authorize(command));
+  }
+});
+
+test("trap action expansion cannot defer inspection of executable source", async t => {
+  for (const command of ['ACTION=\'sleep 100 &\'; trap "$ACTION" EXIT; true', 'trap -- "$ACTION" EXIT', 'builtin trap "$ACTION" EXIT']) {
+    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_WRAPPER/, command);
+    for (const mode of ["full-access", "workspace-write"] as const) {
+      const f = await shellHookFixture(t, mode), { outcome } = await f.authorize(command);
+      assert.equal(outcome?.block, true); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+  }
+  for (const command of ["trap 'printf ok' EXIT", "trap - EXIT", 'trap -p "$SIGNAL"']) assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
+});
