@@ -167,6 +167,8 @@ export interface ShellAnalysisView {
   uncertain: boolean;
   hasHeredoc: boolean;
   substitutionUncertain?: boolean;
+  /** Unknown body boundaries may hide executable input or following commands. */
+  unboundedHeredoc?: boolean;
   hereDocuments?: { header: string; body: string; priorSource: boolean }[];
 }
 
@@ -209,6 +211,11 @@ function collectHereDelimiters(command: string, start: number, end: number): Her
     if (c === "$" && command[index + 1] === "(" && command[index + 2] === "(") {
       arithmeticDepth = 2;
       index += 2;
+      continue;
+    }
+    if (!arithmeticDepth && c === "(" && command[index + 1] === "(") {
+      arithmeticDepth = 2;
+      index++;
       continue;
     }
     if (arithmeticDepth) {
@@ -266,6 +273,7 @@ export function prepareShellAnalysis(command: string): ShellAnalysisView {
   let hasHeredoc = false;
   let uncertain = false;
   let substitutionUncertain = false;
+  let unboundedHeredoc = false;
   let hereDocuments: ShellAnalysisView["hereDocuments"];
   for (let index = 0; index < command.length; index++) {
     const c = command[index]!;
@@ -282,6 +290,11 @@ export function prepareShellAnalysis(command: string): ShellAnalysisView {
     if (c === "$" && command[index + 1] === "(" && command[index + 2] === "(") {
       arithmeticDepth = 2;
       index += 2;
+      continue;
+    }
+    if (!arithmeticDepth && c === "(" && command[index + 1] === "(") {
+      arithmeticDepth = 2;
+      index++;
       continue;
     }
     if (arithmeticDepth) {
@@ -304,6 +317,7 @@ export function prepareShellAnalysis(command: string): ShellAnalysisView {
     for (const delimiter of delimiters) maskShellRange(output, delimiter.maskStart, delimiter.maskEnd);
     if (delimiters.length === 0 || lineEnd < 0) {
       uncertain = true;
+      unboundedHeredoc = true;
       maskShellRange(output, operatorStart, Math.min(command.length, operatorStart + 2));
       break;
     }
@@ -311,6 +325,7 @@ export function prepareShellAnalysis(command: string): ShellAnalysisView {
     for (const delimiter of delimiters) {
       if (delimiterScan.uncertain) {
         uncertain = true;
+        unboundedHeredoc = true;
         maskShellRange(output, bodyStart, command.length);
         bodyStart = command.length;
         break;
@@ -342,6 +357,7 @@ export function prepareShellAnalysis(command: string): ShellAnalysisView {
       }
       if (!foundDelimiter) {
         uncertain = true;
+        unboundedHeredoc = true;
         maskShellRange(output, contentStart, command.length);
         bodyStart = command.length;
         break;
@@ -368,5 +384,5 @@ export function prepareShellAnalysis(command: string): ShellAnalysisView {
     index = bodyStart - 1;
   }
   if (arithmeticDepth !== 0) uncertain = true;
-  return { command: output ? output.join("") : command, substitutions, uncertain, hasHeredoc, substitutionUncertain, hereDocuments };
+  return { command: output ? output.join("") : command, substitutions, uncertain, hasHeredoc, substitutionUncertain, unboundedHeredoc, hereDocuments };
 }

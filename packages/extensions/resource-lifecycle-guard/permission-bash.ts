@@ -76,12 +76,16 @@ function addClass(builder: ScopeBuilder, value: string): void {
 }
 
 function addTarget(builder: ScopeBuilder, value: string, cwd: string): void {
-  if (value !== cwd && hasDynamicSyntax(value)) {
+  if (hasDynamicSyntax(value)) {
     builder.dynamicScope = true;
     markOpaque(builder, "dynamic_target");
     return;
   }
-  const target = resolve(cwd, value);
+  addResolvedTarget(builder, resolve(cwd, value));
+}
+
+/** Only classifier-synthesized paths bypass operand expansion checks. */
+function addResolvedTarget(builder: ScopeBuilder, target: string): void {
   for (const current of builder.targets) if (current === target) return;
   if (builder.targets.length >= MAX_TARGETS) {
     markOpaque(builder, "too_many_targets");
@@ -145,7 +149,8 @@ function inspectKnownMutation(command: string, tokens: readonly string[], start:
       }
       if (tokens[index] === "-delete" || tokens[index] === "-exec" || tokens[index] === "-execdir") {
         markMutation(builder, tokens[index] === "-delete" ? "find_delete" : "find_exec");
-        addTarget(builder, root ?? cwd, cwd);
+        if (root === undefined) addResolvedTarget(builder, cwd);
+        else addTarget(builder, root, cwd);
         if (tokens[index] !== "-delete") markOpaque(builder, "find_exec_scope");
         return true;
       }
@@ -160,8 +165,16 @@ function inspectKnownMutation(command: string, tokens: readonly string[], start:
       let target: string | undefined;
       if (token === "-o" || token === "--output") target = tokens[++index];
       else if (token.startsWith("--output=")) target = token.slice(9);
-      else if (token.startsWith("-o")) target = token.slice(2);
-      else continue;
+      else if (token.startsWith("-") && !token.startsWith("--")) {
+        let outputFlag = -1;
+        for (let flag = 1; flag < token.length; flag++) {
+          if (token[flag] === "o") { outputFlag = flag; break; }
+          // These options consume the remainder as an operand, not more flags.
+          if (token[flag] === "k" || token[flag] === "t" || token[flag] === "S" || token[flag] === "T") { if (flag + 1 === token.length) index++; break; }
+        }
+        if (outputFlag < 0) continue;
+        target = outputFlag + 1 < token.length ? token.slice(outputFlag + 1) : tokens[++index];
+      } else continue;
       output = true;
       markMutation(builder, "sort_output");
       if (target) addTarget(builder, target, cwd);
@@ -372,7 +385,7 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
     const source = wrapperScript(tokens, index + 1, command === "bash" || command === "bash.exe" || command === "sh" || command === "zsh");
     if (!source || depth >= MAX_DEPTH) {
       markOpaque(builder, "opaque_shell_wrapper");
-      addTarget(builder, cwd, cwd);
+      addResolvedTarget(builder, cwd);
       return cwd;
     }
     inspectScript(source, cwd, depth + 1, builder);
@@ -385,7 +398,7 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
       if (checkIndex >= 0 && tokens[checkIndex + 1] && !hasDynamicSyntax(tokens[checkIndex + 1]!)) return cwd;
     }
     markOpaque(builder, `opaque_${command.replaceAll(".", "_")}`);
-    addTarget(builder, cwd, cwd);
+    addResolvedTarget(builder, cwd);
     return cwd;
   }
   if (command === "git") {
@@ -393,7 +406,7 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
     addClass(builder, `git:${safeClassToken(subcommand ?? "unknown")}`);
     if (!subcommand || subcommand.startsWith("-")) {
       markOpaque(builder, "opaque_git_global_options");
-      addTarget(builder, cwd, cwd);
+      addResolvedTarget(builder, cwd);
       return cwd;
     }
     if (GIT_READ_ONLY.has(subcommand)) return cwd;
@@ -408,7 +421,7 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
   if (inspectKnownMutation(command, tokens, index + 1, cwd, builder)) return cwd;
   addClass(builder, `command:${safeClassToken(command || "command")}`);
   markOpaque(builder, `opaque_${command || "command"}`);
-  addTarget(builder, cwd, cwd);
+  addResolvedTarget(builder, cwd);
   return cwd;
 }
 

@@ -123,6 +123,7 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
  const here = prepared.view;
  const command = here.command;
  const substitutions = prepared.substitutions;
+ if (here.unboundedHeredoc) return lifecycleRefusal("SHELL_HEREDOC", "heredoc body boundaries cannot be inspected for executable input or following commands", "use a bounded literal heredoc delimiter");
  if (here.substitutionUncertain) return lifecycleRefusal("SHELL_SUBSTITUTION", "uncertain/uninspectable executable heredoc substitution", "simplify the substitution into inspectable foreground commands");
  if (substitutions.limitExceeded === "count") return `[SHELL_INSPECTION_LIMIT] Bash not executed: more than ${MAX_SUBSTITUTIONS} command substitutions per script.\nRetry: split into smaller calls (max ${MAX_SUBSTITUTIONS} each).`;
  if (substitutions.limitExceeded === "nesting") return `[SHELL_INSPECTION_LIMIT] Bash not executed: command substitution nesting exceeds ${MAX_SUBSTITUTION_NESTING} levels.\nRetry: reduce nesting.`;
@@ -797,13 +798,51 @@ export function heredocConsumer(header: string): "bash" | "node" | "python" | un
 	const segments = parseShellSegments(header);
 	const tokens = segments[segments.length - 1];
 	if (!tokens) return undefined;
-	const index = commandTokenIndex(tokens);
+	if (tokens.redirections) stripShellRedirections(tokens, tokens.redirections);
+	let index = commandTokenIndex(tokens);
 	if (index < 0 || index >= tokens.length) return undefined;
-	const name = commandName(tokens[index]!);
-	if (SCRIPT_WRAPPERS.has(name) || name === "source" || name === ".") return "bash";
-	if (NODE_COMMANDS.has(name)) return "node";
-	if (PYTHON_COMMANDS.has(name)) return "python";
-	return undefined;
+	for (let depth = 0; depth < MAX_SCRIPT_SEGMENTS; depth++) {
+		const prefix = tokens[index];
+		if (prefix !== "command" && prefix !== "builtin" && prefix !== "exec") break;
+		index++;
+		if (prefix === "command" && tokens[index] === "-p") index++;
+		if (tokens[index] === "--") index++;
+		if (!tokens[index] || tokens[index]!.startsWith("-")) return undefined;
+	}
+	const name = commandName(tokens[index] ?? "");
+	if (name === "source" || name === ".") {
+		const operand = tokens[index + (tokens[index + 1] === "--" ? 2 : 1)];
+		return operand === "/dev/stdin" || operand === "/dev/fd/0" || operand === "/proc/self/fd/0" ? "bash" : undefined;
+	}
+	const language = SCRIPT_WRAPPERS.has(name) ? "bash" : NODE_COMMANDS.has(name) ? "node" : PYTHON_COMMANDS.has(name) ? "python" : undefined;
+	if (!language) return undefined;
+	let shellStdin = false;
+	for (let cursor = index + 1; cursor < tokens.length; cursor++) {
+		const option = tokens[cursor]!;
+		if (option === "-") return language;
+		if (option === "--") return shellStdin || cursor + 1 === tokens.length || tokens[cursor + 1] === "-" ? language : undefined;
+		if (!option.startsWith("-") && !(language === "bash" && option.startsWith("+"))) return shellStdin ? language : undefined;
+		if (option === "--help" || option === "--version" || language !== "bash" && option === "-h" || language === "python" && option === "-V" || language === "node" && option === "-v") return undefined;
+		if (language === "node") {
+			if (option === "--check" || option === "-c") return undefined;
+			if (option === "--eval" || option.startsWith("--eval=") || option === "--print" || option.startsWith("--print=") || option.startsWith("-e") || option.startsWith("-p")) return undefined;
+			if (option === "-r" || option === "--require" || option === "--import" || option === "--loader" || option === "--experimental-loader" || option === "--input-type") cursor++;
+		} else if (language === "python") {
+			if (option === "--check-hash-based-pycs") { cursor++; continue; }
+			if (!option.startsWith("--")) for (let flag = 1; flag < option.length; flag++) {
+				if (option[flag] === "c" || option[flag] === "m") return undefined;
+				if (option[flag] === "W" || option[flag] === "X") { if (flag + 1 === option.length) cursor++; break; }
+			}
+		} else {
+			if (option === "--rcfile" || option === "--init-file") { cursor++; continue; }
+			if (!option.startsWith("--")) for (let flag = 1; flag < option.length; flag++) {
+				if (option[flag] === "c") return undefined;
+				if (option[flag] === "s") shellStdin = true;
+				if (option[flag] === "o" || option[flag] === "O") { if (flag + 1 === option.length) cursor++; break; }
+			}
+		}
+	}
+	return language;
 }
 
 // Bodies are inspected separately from their declaration's surrounding flow.

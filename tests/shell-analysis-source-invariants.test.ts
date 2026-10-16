@@ -8,7 +8,7 @@ test("authorization scanners and cache methods add no callbacks, promises or tem
     ["shell-analysis.ts", new Set(["analyzeShellSource", "get", "assertCurrent", "release"])],
     ["shell-substitution.ts", new Set(["prepareShellAnalysis", "extractCommandSubstitutions", "commandSubstitutionEnd"])],
     ["core.ts", new Set(["inspectBashResourceLifecycle", "inspectLifecycleScript", "inspectHighRiskBashMutation", "inspectShellScript", "heredocConsumer", "heredocHasUntrackedCwd", "addMutationPrimitive"])],
-    ["permission-bash.ts", new Set(["inspectScript", "inspectBashPermissionScope", "inspectKnownMutation", "markMutation"])],
+    ["permission-bash.ts", new Set(["inspectScript", "inspectBashPermissionScope", "inspectKnownMutation", "markMutation", "addResolvedTarget", "addTarget"])],
   ]);
   for (const [file, names] of targets) {
     const source = ts.createSourceFile(file, readFileSync(`packages/extensions/resource-lifecycle-guard/${file}`, "utf8"), ts.ScriptTarget.Latest, true);
