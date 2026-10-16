@@ -57,6 +57,7 @@ const GIT_CLEAN_DIRECTORY_OPTIONS = new Set(["-d"]);
 const SHELL_SCRIPT_FLAGS = new Set(["-c"]);
 const CMD_SCRIPT_FLAGS = new Set(["/c"]);
 const POWERSHELL_SCRIPT_FLAGS = new Set(["-command", "-c"]);
+const SOURCE_DESCRIPTOR_PATTERN = /^\/(?:dev\/fd|proc\/self\/fd)\/([0-9]+)$/u;
 
 function hasUnquotedBackgroundOperator(command: string): boolean {
 	let quote: "'" | '"' | undefined;
@@ -131,7 +132,7 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
  for (const script of here.substitutions) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) return result; }
  for (const script of substitutions.scripts) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) return result; }
  if (here.hereDocuments) for (const document of here.hereDocuments) {
-  if (heredocConsumer(document.header) === "bash") {
+  if (heredocConsumer(document.header, document.descriptor) === "bash") {
    const result = inspectLifecycleScript(document.body, depth + 1, nativePowerShellAvailable, analysisOwner);
    if (result) return result;
   }
@@ -378,6 +379,8 @@ function inspectOutputRedirections(tokens: ShellSegment, cwd: string, builder: S
 		const operator = tokens[index]!;
 		const target = index + 1 === redirections[position + 1] ? undefined : tokens[index + 1];
 		const descriptorFd = tokens.redirectionFds?.[position];
+		const writesFile = isShellOutputFileRedirection(operator, target, descriptorFd);
+		if (writesFile && target !== "/dev/null") addMutationPrimitive(builder, "output_redirection");
 		if (descriptorFd && isShellDynamicDescriptor(descriptorFd)) {
 			addPrimitive(builder, "unverifiable_redirection");
 			markUnverifiable(builder);
@@ -389,7 +392,7 @@ function inspectOutputRedirections(tokens: ShellSegment, cwd: string, builder: S
 		if (isStaticDescriptorCopy(operator, target, descriptorFd)) continue;
 		if (operator === "<" && target && !hasDynamicSyntax(target) && !isBashNetworkRedirectionTarget(target)) continue;
 		// Here-documents, descriptor moves/closures and dynamic copies stay opaque.
-		if (!isShellOutputFileRedirection(operator)) {
+		if (!writesFile) {
 			addPrimitive(builder, "unverifiable_redirection");
 			const descriptor = descriptorFd ? `${descriptorFd}${operator}${target ?? ""}` : `${operator}${target ?? ""}`;
 			if (builder.diagnostic === undefined && FD_DUPLICATION_PATTERN.test(descriptor)) {
@@ -400,7 +403,6 @@ function inspectOutputRedirections(tokens: ShellSegment, cwd: string, builder: S
 			continue;
 		}
 		if (target === "/dev/null") continue;
-		addMutationPrimitive(builder, "output_redirection");
 		if (!target || hasDynamicSyntax(target)) {
 			markUnverifiable(builder);
 			continue;
@@ -427,7 +429,7 @@ function inspectShellScript(script: string, initialCwd: string, depth: number, b
 		markUnverifiable(builder);
 	}
 	if (analysis.hereDocuments) for (const document of analysis.hereDocuments) {
-		const consumer = heredocConsumer(document.header);
+		const consumer = heredocConsumer(document.header, document.descriptor);
 		if (consumer && (document.priorSource || heredocHasUntrackedCwd(document.header))) markUnverifiable(builder);
 		if (consumer === "bash") inspectShellScript(document.body, initialCwd, depth + 1, builder, "bash");
 		else if (consumer) inspectEmbeddedCode(document.body, consumer, initialCwd, builder);
@@ -814,7 +816,31 @@ function addMutationPrimitive(builder: ScanBuilder, primitive: string): void {
 
 /** Literal interpreter stdin is executable source; data consumers remain opaque
  * data. This is analysis only and never reconstructs the command for execution. */
-export function heredocConsumer(header: string): "bash" | "node" | "python" | undefined {
+function nodeMayReadStdin(tokens: readonly string[], start: number): boolean {
+	// Unknown Node/V8 options may take zero or one value. Track both possible
+	// argv interpretations with primitive states; a value is never proof of a
+	// program operand, even when that value itself resembles a source flag.
+	let options = true, valuePending = false, afterOptions = false;
+	for (let index = start; index < tokens.length; index++) {
+		const word = tokens[index]!;
+		if (afterOptions && word === "-") return true;
+		const parseOption = options;
+		options = valuePending;
+		valuePending = false;
+		afterOptions = false;
+		if (!parseOption) continue;
+		if (word === "-") return true;
+		if (word === "--") { afterOptions = true; continue; }
+		if (!word.startsWith("-")) continue;
+		if (word === "--check" || word === "-c" || word === "--help" || word === "-h" || word === "--version" || word === "-v"
+			|| word === "--eval" || word.startsWith("--eval=") || word === "--print" || word.startsWith("--print=") || word.startsWith("-e") || word.startsWith("-p")) continue;
+		options = true;
+		if (!word.includes("=") && (word.startsWith("--") || word.length === 2)) valuePending = true;
+	}
+	return options || valuePending || afterOptions;
+}
+
+export function heredocConsumer(header: string, descriptor = 0): "bash" | "node" | "python" | undefined {
 	const segments = parseShellSegments(header);
 	const tokens = segments[segments.length - 1];
 	if (!tokens) return undefined;
@@ -834,22 +860,22 @@ export function heredocConsumer(header: string): "bash" | "node" | "python" | un
 	const name = commandName(tokens[index] ?? "");
 	if (name === "source" || name === ".") {
 		const operand = tokens[index + (tokens[index + 1] === "--" ? 2 : 1)];
-		return operand === "/dev/stdin" || operand === "/dev/fd/0" || operand === "/proc/self/fd/0" ? "bash" : undefined;
+		if (operand === "/dev/stdin") return descriptor === 0 ? "bash" : undefined;
+		const match = operand && SOURCE_DESCRIPTOR_PATTERN.exec(operand);
+		return match && Number(match[1]) === descriptor ? "bash" : undefined;
 	}
+	if (descriptor !== 0) return undefined;
 	const language = SCRIPT_WRAPPERS.has(name) ? "bash" : NODE_COMMANDS.has(name) ? "node" : PYTHON_COMMANDS.has(name) ? "python" : undefined;
 	if (!language) return undefined;
+	if (language === "node") return nodeMayReadStdin(tokens, index + 1) ? language : undefined;
 	let shellStdin = false;
 	for (let cursor = index + 1; cursor < tokens.length; cursor++) {
 		const option = tokens[cursor]!;
 		if (option === "-") return language;
 		if (option === "--") return shellStdin || cursor + 1 === tokens.length || tokens[cursor + 1] === "-" ? language : undefined;
 		if (!option.startsWith("-") && !(language === "bash" && option.startsWith("+"))) return shellStdin ? language : undefined;
-		if (option === "--help" || option === "--version" || language !== "bash" && option === "-h" || language === "python" && option === "-V" || language === "node" && option === "-v") return undefined;
-		if (language === "node") {
-			if (option === "--check" || option === "-c") return undefined;
-			if (option === "--eval" || option.startsWith("--eval=") || option === "--print" || option.startsWith("--print=") || option.startsWith("-e") || option.startsWith("-p")) return undefined;
-			if (option === "-r" || option === "--require" || option === "--import" || option === "--loader" || option === "--experimental-loader" || option === "--input-type") cursor++;
-		} else if (language === "python") {
+		if (option === "--help" || option === "--version" || language !== "bash" && option === "-h" || language === "python" && option === "-V") return undefined;
+		if (language === "python") {
 			if (option === "--check-hash-based-pycs") { cursor++; continue; }
 			if (!option.startsWith("--")) for (let flag = 1; flag < option.length; flag++) {
 				if (option[flag] === "c" || option[flag] === "m") return undefined;

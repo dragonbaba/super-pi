@@ -167,8 +167,9 @@ export function isShellDynamicDescriptor(value: string): boolean {
   return value.length > 2 && value.charCodeAt(0) === 123 && value.charCodeAt(value.length - 1) === 125;
 }
 
-export function isShellOutputFileRedirection(operator: string): boolean {
-  return operator === ">" || operator === ">>" || operator === ">|" || operator === "&>" || operator === "&>>";
+export function isShellOutputFileRedirection(operator: string, target?: string, sourceFd?: string): boolean {
+  return operator === ">" || operator === ">>" || operator === ">|" || operator === "&>" || operator === "&>>" || operator === "<>"
+    || operator === ">&" && sourceFd === undefined && target !== "-" && !(target && (isShellFileDescriptor(target) || target.endsWith("-") && isShellFileDescriptor(target.slice(0, -1))));
 }
 
 export function isShellFileDescriptor(value: string): boolean {

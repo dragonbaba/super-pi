@@ -104,3 +104,76 @@ test("literal eval and trap actions retain lifecycle inspection", async t => {
     const f = await shellHookFixture(t, "full-access"); assertFinalAuthorization(await f.authorize(command));
   }
 });
+
+test("heredoc declaration binding follows escaped logical lines", async t => {
+  for (const header of ["source /dev/stdin \\\n<<'EOF'", "<<'EOF' \\\nsource /dev/stdin", "source \\\n<<'EOF' \\\n/dev/stdin"]) {
+    const command = `${header}\nsleep 100 &\nEOF`;
+    const document = prepareShellAnalysis(command).hereDocuments![0]!;
+    assert.equal(document.body, "sleep 100 &\n");
+    assert.equal(heredocConsumer(document.header, document.descriptor), "bash");
+    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /Blocked an unmanaged long-lived process/);
+    for (const mode of ["full-access", "workspace-write"] as const) {
+      const f = await shellHookFixture(t, mode), { outcome } = await f.authorize(command);
+      assert.equal(outcome?.block, true); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+  }
+  assert.equal(inspectBashResourceLifecycle({ command: "cat \\\n<<'EOF'\nsleep 100 &\nEOF" }), undefined);
+});
+
+test("heredoc source descriptors identify executable input without leaking fd words", async t => {
+  for (const header of ["source /dev/fd/3 3<<'EOF'", "3<<'EOF' source /proc/self/fd/3", "builtin source /dev/fd/19 19<<'EOF'"]) {
+    const command = `${header}\nsleep 100 &\nEOF`;
+    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /Blocked an unmanaged long-lived process/);
+    for (const mode of ["full-access", "workspace-write"] as const) {
+      const f = await shellHookFixture(t, mode), { outcome } = await f.authorize(command);
+      assert.equal(outcome?.block, true); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+  }
+  for (const header of ["source /dev/fd/4 3<<'EOF'", "source /dev/stdin 3<<'EOF'", "node 3<<'EOF'"]) {
+    const doc = prepareShellAnalysis(`${header}\nsleep 100 &\nEOF`).hereDocuments![0]!;
+    assert.equal(doc.descriptor, 3); assert.equal(heredocConsumer(doc.header, doc.descriptor), undefined);
+  }
+  assert.equal(prepareShellAnalysis("cat 3<<'EOF'\ndata\nEOF").command.trim(), "cat");
+});
+
+test("Node option values cannot conceal stdin mutations", async t => {
+  for (const options of ["--title worker", "--title=worker", "--stack-trace-limit 10", "--require helper.js", "--unknown-future-flag value", "--no-warnings --title worker", "--title --eval"]) {
+    assert.equal(heredocConsumer(`node ${options}`), "node");
+    assert.equal(heredocConsumer(`node ${options} script.js`), undefined);
+    const command = `node ${options} <<'EOF'\nconst fs=require('node:fs'); fs.rmSync(target,{recursive:true})\nEOF`;
+    assert.equal(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true);
+    for (const mode of ["full-access", "workspace-write"] as const) {
+      const f = await shellHookFixture(t, mode), { outcome } = await f.authorize(command);
+      assert.equal(outcome?.block, true); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+  }
+});
+
+test("file-opening read/write and combined redirects retain mutation identity", async t => {
+  for (const command of ["printf X 1<>target", "printf X <>target", "printf X >&target", "printf X {fd}>target"]) {
+    assert.equal(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
+    assert.ok(inspectBashPermissionScope({ command }, process.cwd())?.primitives.includes("output_redirection"), command);
+  }
+  for (const command of ['printf X 1<>"$X"', 'printf X >&"$X"', 'printf X {fd}>"$X"']) {
+    assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.unverifiableMutation, true);
+    for (const mode of ["full-access", "workspace-write"] as const) {
+      const f = await shellHookFixture(t, mode), { outcome } = await f.authorize(command);
+      assert.equal(outcome?.block, true); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+  }
+  for (const command of ["printf X 1>&2", "printf X 2>&-", "printf X <input", "printf X <>/dev/null"]) {
+    assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
+  }
+});
+
+test("state-changing builtins and expansions taint later mutation context", async t => {
+  for (const prefix of ["printf -v CDPATH ..", "((CDPATH=1))", "echo $((CDPATH=1))", "[[ -v 'a[CDPATH=1]' ]]"]) {
+    const command = `${prefix}; cd sub && touch target`;
+    assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.unverifiableMutation, true, command);
+    for (const mode of ["full-access", "workspace-write"] as const) {
+      const f = await shellHookFixture(t, mode), { outcome } = await f.authorize(command);
+      assert.equal(outcome?.block, true); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+      assertFinalAuthorization(await f.authorize(prefix));
+    }
+  }
+});

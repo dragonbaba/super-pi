@@ -108,6 +108,11 @@ function markOpaque(builder: ScopeBuilder, primitive: string): void {
   addClass(builder, `opaque:${primitive}`);
 }
 
+function markUncertainContext(builder: ScopeBuilder, primitive: string): void {
+  builder.uncertainContext = true;
+  markOpaque(builder, primitive);
+}
+
 function addPositionalTargets(
   tokens: readonly string[],
   start: number,
@@ -333,7 +338,7 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
   const bareControl = index === 0 && !tokens.firstWordQuoted && tokens[index] === command;
   if (bareControl && (command === "for" || command === "done" || command === "}")) return cwd;
   if (bareControl && (command === "do" || command === "{")) return index + 1 < tokens.length ? inspectSegment(tokens, cwd, depth + 1, builder, index + 1) : cwd;
-  if (isBashArithmeticCommandHead(tokens, index)) { markOpaque(builder, "unverifiable_arithmetic_command"); return cwd; }
+  if (isBashArithmeticCommandHead(tokens, index)) { markUncertainContext(builder, "unverifiable_arithmetic_command"); return cwd; }
   if (tokens[index] !== command && command !== "command" && command !== "exec") {
     markOpaque(builder, "explicit_or_cased_executable");
     addTarget(builder, tokens[index]!, cwd);
@@ -367,7 +372,7 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
     return resolve(cwd, target);
   }
   if (command === "printf" && hasStatefulBashPrintf(tokens, index)) {
-    markOpaque(builder, "stateful_printf_variable_assignment");
+    markUncertainContext(builder, "stateful_printf_variable_assignment");
     return cwd;
   }
   const testOpen = bashPipelinePrefixEnd(tokens, index);
@@ -439,8 +444,8 @@ function inspectTokenBuffer(tokens: PermissionTokens, cwd: string, depth: number
     markOpaque(builder, "unverifiable_process_substitution");
     return cwd;
   }
-  if (hasUnsafeBashTestOperand(tokens)) markOpaque(builder, "unverifiable_bash_test_operand");
-  if (shellExpansionRisk(tokens) !== 0) markOpaque(builder, "stateful_shell_expansion");
+  if (hasUnsafeBashTestOperand(tokens)) markUncertainContext(builder, "unverifiable_bash_test_operand");
+  if (shellExpansionRisk(tokens) !== 0) markUncertainContext(builder, "stateful_shell_expansion");
   const arithmeticHead = isBashArithmeticCommandHead(tokens, bashPipelinePrefixEnd(tokens, 0));
   const redirections = tokens.redirections;
   if (redirections) {
@@ -449,24 +454,25 @@ function inspectTokenBuffer(tokens: PermissionTokens, cwd: string, depth: number
       const operator = tokens[index]!;
       const target = index + 1 === redirections[position + 1] ? undefined : tokens[index + 1];
       const descriptorFd = tokens.redirectionFds?.[position];
+      const writesFile = isShellOutputFileRedirection(operator, target, descriptorFd);
+      if (writesFile && target !== "/dev/null") markMutation(builder, "output_redirection");
       if (isStaticDescriptorCopy(operator, target, descriptorFd)) continue;
       if (descriptorFd && isShellDynamicDescriptor(descriptorFd)) {
-        markOpaque(builder, "unverifiable_redirection");
+        markUncertainContext(builder, "unverifiable_redirection");
         continue;
       }
       if (operator === "<" && target && !hasDynamicSyntax(target) && !isBashNetworkRedirectionTarget(target)) continue;
-      if (!isShellOutputFileRedirection(operator)) {
+      if (!writesFile) {
         markOpaque(builder, "unverifiable_redirection");
         continue;
       }
       if (target === "/dev/null") continue;
-      markMutation(builder, "output_redirection");
       if (target) addTarget(builder, target, cwd);
-      else markOpaque(builder, "redirection_target_unverifiable");
+      else markUncertainContext(builder, "redirection_target_unverifiable");
     }
     stripShellRedirections(tokens, redirections);
   }
-  if (arithmeticHead) { markOpaque(builder, "unverifiable_arithmetic_command"); return cwd; }
+  if (arithmeticHead) { markUncertainContext(builder, "unverifiable_arithmetic_command"); return cwd; }
   return tokens.length > 0 ? inspectSegment(tokens, cwd, depth, builder) : cwd;
 }
 
@@ -485,7 +491,7 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
   if (analysis.hasHeredoc) markOpaque(builder, "heredoc_uninspectable");
   if (analysis.uncertain) markOpaque(builder, "shell_context_uninspectable");
   if (analysis.hereDocuments) for (const document of analysis.hereDocuments) {
-    if (heredocConsumer(document.header) === "bash") {
+    if (heredocConsumer(document.header, document.descriptor) === "bash") {
       if (document.priorSource || heredocHasUntrackedCwd(document.header)) builder.uncertainContext = true;
       inspectScript(document.body, initialCwd, depth + 1, builder);
     }
@@ -497,7 +503,7 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
   for (const nested of substitutions.scripts) inspectScript(nested, initialCwd, depth + 1, builder);
   command = analysis.command;
   const loopReason = unsafeBashLoopHeaderReason(command);
-  if (loopReason) markOpaque(builder, loopReason);
+  if (loopReason) markUncertainContext(builder, loopReason);
   let cwd = initialCwd;
   const tokens: PermissionTokens = [];
   let value = "";

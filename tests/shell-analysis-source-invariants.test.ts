@@ -6,9 +6,10 @@ import ts from "typescript";
 test("authorization scanners and cache methods add no callbacks, promises or temporary byte buffers", () => {
   const targets = new Map([
     ["shell-analysis.ts", new Set(["analyzeShellSource", "get", "assertCurrent", "release"])],
-    ["shell-substitution.ts", new Set(["prepareShellAnalysis", "collectHereDelimiters", "extractCommandSubstitutions", "commandSubstitutionEnd"])],
-    ["core.ts", new Set(["inspectBashResourceLifecycle", "inspectLifecycleScript", "inspectHighRiskBashMutation", "inspectShellScript", "heredocConsumer", "heredocHasUntrackedCwd", "addMutationPrimitive"])],
-    ["permission-bash.ts", new Set(["inspectScript", "inspectBashPermissionScope", "inspectKnownMutation", "markMutation", "addResolvedTarget", "addTarget"])],
+    ["shell-substitution.ts", new Set(["prepareShellAnalysis", "heredocDeclarationEnd", "collectHereDelimiters", "extractCommandSubstitutions", "commandSubstitutionEnd"])],
+    ["core.ts", new Set(["inspectBashResourceLifecycle", "inspectLifecycleScript", "inspectHighRiskBashMutation", "inspectShellScript", "heredocConsumer", "nodeMayReadStdin", "heredocHasUntrackedCwd", "addMutationPrimitive"])],
+    ["permission-bash.ts", new Set(["inspectScript", "inspectBashPermissionScope", "inspectKnownMutation", "markMutation", "markUncertainContext", "addResolvedTarget", "addTarget"])],
+    ["shell-redirection.ts", new Set(["isShellOutputFileRedirection", "isShellFileDescriptor"])],
   ]);
   for (const [file, names] of targets) {
     const source = ts.createSourceFile(file, readFileSync(`packages/extensions/resource-lifecycle-guard/${file}`, "utf8"), ts.ScriptTarget.Latest, true);

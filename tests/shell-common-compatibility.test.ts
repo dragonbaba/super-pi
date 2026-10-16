@@ -498,10 +498,14 @@ test("static descriptor and input-file redirections preserve bounded targets and
     assert.equal(inspectBashPermissionScope({ command }, cwd)?.kind, "read-only", command);
   }
   assert.equal(inspectHighRiskBashMutation({ command: "cd subdir && cat <fixture.bin" }, cwd), undefined);
-  for (const command of ["cat <$path", "cat <", "cat <>fixture.bin", "cat <&-"]) {
+  for (const command of ["cat <$path", "cat <", "cat <&-"]) {
     assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.contextUncertain, true, command);
     assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableScope, true, command);
   }
+  const readWrite = inspectHighRiskBashMutation({ command: "cat <>fixture.bin" }, cwd);
+  assert.equal(readWrite?.mutationDetected, true);
+  assert.ok(readWrite?.targets.some(target => target.endsWith("fixture.bin")));
+  assert.equal(inspectBashPermissionScope({ command: "cat <>fixture.bin" }, cwd)?.kind, "known-mutation");
   assert.ok(inspectHighRiskBashMutation({ command: "cat < fixture.bin >.git/config" }, cwd)?.targets.some(target => target.endsWith(".git\\config") || target.endsWith(".git/config")));
   for (const command of ["[[ a < b ]]", "[[ b > a ]]", "[[ a < b && c > d ]]", "[[\na < b\n]]", "[[\na < b\n]] && printf ok"]) {
     assert.notEqual(inspectHighRiskBashMutation({ command }, cwd)?.unverifiableScope, true, command);
