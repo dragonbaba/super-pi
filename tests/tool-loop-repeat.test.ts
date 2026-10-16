@@ -223,6 +223,20 @@ test("configuration defaults match the user choice and malformed budgets fail cl
   }
 });
 
+test("loaded CLI policy survives session replacement without calling a stale extension API", async () => {
+  const hooks = new Map<string, (...args: any[]) => any>();
+  let reads = 0;
+  guard({ on(name: string, hook: any) { hooks.set(name, hook); }, registerTool() {}, registerFlag() {}, sendMessage() {},
+    getFlag() { if (++reads > 1) throw new Error("stale extension API"); return '{"maxAttempts":3}'; } } as any);
+  hooks.get("session_start")!();
+  for (let run = 0; run < 3; run++) {
+    hooks.get("agent_start")!();
+    assert.equal(await hooks.get("tool_call")!({ toolName: "fixture", toolCallId: `run${run}`, input: {} }, { cwd: process.cwd() }), undefined);
+    hooks.get("agent_end")!();
+  }
+  assert.equal(reads, 1);
+});
+
 test("known limitation: a post-admission generic argument rewrite is accounted to the admitted identity", async () => {
   const f = fixture();
   for (let i = 0; i < 2; i++) {

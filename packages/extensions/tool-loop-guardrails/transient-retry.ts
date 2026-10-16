@@ -22,7 +22,7 @@ export function isTransientFailure(category: string, text: string, details?: unk
   return category === "timeout" || TRANSIENT_HTTP_RE.test(text) || TRANSIENT_NETWORK_RE.test(text);
 }
 
-/** Configuration is read at agent_start; malformed/zero/unbounded budgets are rejected. */
+/** Configuration is read at extension startup; malformed/zero/unbounded budgets are rejected. */
 export function parseRetryPolicy(value: unknown): Readonly<RetryPolicy> {
   if (value === undefined || value === "") return DEFAULT_RETRY_POLICY;
   if (typeof value !== "string") throw new Error("tool-transient-retry must be a JSON object");

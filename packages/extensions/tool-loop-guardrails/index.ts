@@ -81,7 +81,16 @@ export default function toolLoopGuardrails(pi: ExtensionAPI): void {
   const state = createGuardState();
   const calls = new CallLedger();
   let configurationError: string | undefined;
+  let configured = false;
   pi.registerFlag?.("tool-transient-retry", { type: "string", description: "JSON transient tool retry policy: maxAttempts, maxWaitMs, baseDelayMs, maxDelayMs" });
+  // CLI flags belong to the loaded extension, not to a resumed agent run. A resource
+  // loader can reuse these handlers after its original Session API becomes stale.
+  const configureRetry = (): void => {
+    if (configured) return;
+    configured = true;
+    try { state.retry.policy = parseRetryPolicy(pi.getFlag?.("tool-transient-retry")); }
+    catch (error) { configurationError = String(error).slice(0, 512); }
+  };
   let nativeReadCwd = process.cwd();
   let nativeRead = createReadToolDefinition(nativeReadCwd);
   const upstreamRead = nativeRead;
@@ -175,12 +184,11 @@ export default function toolLoopGuardrails(pi: ExtensionAPI): void {
     },
   });
 
+  pi.on("session_start", configureRetry);
   pi.on("agent_start", () => {
     resetGuardState(state);
     calls.clear();
-    configurationError = undefined;
-    try { state.retry.policy = parseRetryPolicy(pi.getFlag?.("tool-transient-retry")); }
-    catch (error) { configurationError = String(error).slice(0, 512); }
+    configureRetry();
   });
   pi.on("turn_start", () => { resetBatchState(state); });
   pi.on("agent_end", () => { calls.clear(); resetGuardState(state); });
