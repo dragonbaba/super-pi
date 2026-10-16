@@ -12,6 +12,9 @@ const cwd = process.cwd(), iterations = 512, warmup = 64, samplingInterval = 409
 const literalInputs = process.argv.includes("--literal-inputs");
 const substitution = "$(grep -c -E '(class|function|const|var|let) GCSystem\\b' pixi/pixi.js)";
 const cases = literalInputs ? [
+  ["ordered-high-risk-state", "rm -r scratch; printf -v X foo", 1],
+  ["mid-pipeline-heredoc", "printf 'printf ok' | source /dev/stdin | cat <<'EOF' | cat\ndata\nEOF", 1],
+  ["sort-equals-compressor", "sort --compress-program=./codec -o output input", 1],
   ["copied-heredoc-source", "source /dev/fd/3 <<'EOF' 3<&0 </dev/null\nprintf ok\nEOF", 2],
   ["copied-heredoc-stdin", "node 3<<'EOF' 0<&3 3<&-\nconsole.log(1)\nEOF", 1],
   ["launcher-node-input", "env LABEL=literal node <<'EOF'\nconsole.log(1)\nEOF", 1],

@@ -656,6 +656,53 @@ test("heredoc descriptor bindings retain order within a fixed inspection bound",
 });
 
 for (const mode of ["full-access", "workspace-write"] as const) {
+  test(`review thirteen ${mode}: later state cannot invalidate an earlier high-risk target`, async t => {
+    for (const command of ["rm -r scratch; printf -v X foo", 'rm -r scratch; printf "%s" "${X:=foo}"']) {
+      assert.equal(inspectHighRiskBashMutation({ command }, process.cwd())?.unverifiableScope, false, command);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
+      assert.equal(f.dialogs(), mode === "full-access" ? 0 : 1);
+    }
+    for (const command of ["printf -v X foo; rm -r scratch", "rm -r first; printf -v X foo; rm -r second", 'rm -r first; rm -r "$X"', 'rm -r first; node -e "fs.rmSync(target,{recursive:true})"']) {
+      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
+      assert.equal(call.outcome?.block, true, command); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+  });
+  test(`review thirteen ${mode}: heredoc pipeline consumers begin at the owning stage`, async t => {
+    const data = "printf 'printf ok' | source /dev/stdin | cat <<'EOF' | cat\nsleep 100 &\nEOF";
+    assert.equal(inspectBashResourceLifecycle({ command: data }), undefined);
+    const read = await shellHookFixture(t, mode); assertFinalAuthorization(await read.authorize(data));
+    assert.equal(read.dialogs(), mode === "full-access" ? 0 : 1);
+    for (const command of [
+      "printf ignored | cat <<'EOF' | source /dev/stdin\nsleep 100 &\nEOF",
+      "printf ignored | base64 -d <<'EOF' | source /dev/stdin\nc2xlZXAgMTAwICYK\nEOF",
+    ]) {
+      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /Blocked an unmanaged long-lived process/);
+      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
+      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+  });
+  test(`review thirteen ${mode}: sort compressor spellings retain opaque permissions`, async t => {
+    for (const option of ["--compress-program ./codec", "--compress-program=./codec"]) {
+      const command = `sort -S16K ${option} -o output input`;
+      assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "opaque-script", option);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
+      assert.equal(f.dialogs(), mode === "full-access" ? 0 : 1);
+    }
+  });
+}
+
+test("sort equals compressor cannot receive workspace never-ask authority", async t => {
+  const cwd = workspace(t), controller = new SessionPermissionController({ appendEntry() {} } as never);
+  const ctx = { cwd, hasUI: false, sessionManager: { getBranch: () => [], getSessionId: () => 'sort-compressor-never-ask' }, ui: { setStatus() {} } };
+  await controller.restore(ctx as never);
+  controller.state.setMode('workspace-write'); controller.state.setApprovalPolicy('never-ask');
+  for (const option of ['--compress-program ./codec', '--compress-program=./codec']) {
+    const result = await controller.authorizeToolCall({ type: 'tool_call', toolName: 'bash', toolCallId: 'compressor', input: { command: `sort ${option} -o output input` } } as never, ctx as never);
+    assert.equal(result?.block, true, option);
+  }
+});
+
+for (const mode of ["full-access", "workspace-write"] as const) {
   test(`review twelve ${mode}: heredoc descriptor copies retain executable source`, async t => {
     for (const header of ["source /dev/fd/3 <<'EOF' 3<&0", "source /dev/fd/3 <<'EOF' 3>&0", "source /dev/fd/3 3<<'EOF' 3<&3-", "source /dev/fd/3 <<'EOF' 3<&\\0", "source /dev/fd/4 <<'EOF' 3<&0 4<&3", "source /dev/fd/3 <<'EOF' 3<&'0' 0<&-", "source /dev/fd/3 <<'EOF' 3<&0-", "source /dev/fd/3 <<'EOF' 3<&0 </dev/null"]) {
       const command = `${header}\nsleep 100 &\nEOF`;

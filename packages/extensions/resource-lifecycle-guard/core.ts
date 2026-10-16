@@ -323,6 +323,7 @@ interface ScanBuilder {
 	segmentsVisited: number;
 	analysisOwner?: ShellAnalysisOwner;
 	mutationDetected: boolean;
+	unverifiableMutation: boolean;
 	diagnostic?: PolicyDiagnosticMetadata;
 }
 
@@ -355,6 +356,7 @@ export function inspectHighRiskBashMutation(input: unknown, cwd: string, shellOp
 		segmentsVisited: 0,
 		analysisOwner,
 		mutationDetected: false,
+		unverifiableMutation: false,
 	};
 	inspectShellScript(command, resolve(cwd), 0, builder, shellOperation);
 	// Parser uncertainty is not itself evidence of a mutation. The permission
@@ -367,7 +369,7 @@ export function inspectHighRiskBashMutation(input: unknown, cwd: string, shellOp
 		primitives: builder.primitives,
 		targets: builder.targets,
 		dynamicScope: builder.dynamicScope,
-		unverifiableScope: builder.mutationDetected && builder.unverifiableScope,
+		unverifiableScope: builder.unverifiableMutation,
 		workspaceWide: builder.workspaceWide,
 		diagnostic: builder.diagnostic,
 	};
@@ -409,7 +411,7 @@ function inspectOutputRedirections(tokens: ShellSegment, cwd: string, builder: S
 		if (writesFile && target !== "/dev/null") addMutationPrimitive(builder, "output_redirection");
 		if (descriptorFd && isShellDynamicDescriptor(descriptorFd)) {
 			addPrimitive(builder, "unverifiable_redirection");
-			markUnverifiable(builder);
+			markUnverifiable(builder, writesFile && target !== "/dev/null");
 			continue;
 		}
 		// Input redirections and heredocs remain with the existing lifecycle parser.
@@ -430,7 +432,7 @@ function inspectOutputRedirections(tokens: ShellSegment, cwd: string, builder: S
 		}
 		if (target === "/dev/null") continue;
 		if (!target || hasDynamicSyntax(target)) {
-			markUnverifiable(builder);
+			markUnverifiable(builder, true);
 			continue;
 		}
 		addTarget(builder, target, cwd);
@@ -441,8 +443,7 @@ function inspectOutputRedirections(tokens: ShellSegment, cwd: string, builder: S
 
 function inspectShellScript(script: string, initialCwd: string, depth: number, builder: ScanBuilder, shellOperation: "bash" | "powershell"): void {
 	if (depth > MAX_WRAPPER_DEPTH) {
-		builder.dynamicScope = true;
-		builder.unverifiableScope = true;
+		markUnverifiable(builder, builder.mutationDetected);
 		return;
 	}
 	const prepared = builder.analysisOwner ? builder.analysisOwner.get(script) : analyzeShellSource(script);
@@ -483,8 +484,7 @@ function inspectShellScript(script: string, initialCwd: string, depth: number, b
 	for (const segment of segments) {
 		builder.segmentsVisited++;
 		if (builder.segmentsVisited > MAX_SCRIPT_SEGMENTS) {
-			builder.dynamicScope = true;
-			builder.unverifiableScope = true;
+			markUnverifiable(builder, builder.mutationDetected);
 			return;
 		}
 		const tokens = segment;
@@ -676,10 +676,10 @@ function inspectCodeCall(
 		let calls = 0;
 		for (let match = pattern.exec(masked); match; match = pattern.exec(masked)) {
 			addMutationPrimitive(builder, primitive);
-			if (++calls > MAX_SCRIPT_SEGMENTS) { markUnverifiable(builder); return; }
+			if (++calls > MAX_SCRIPT_SEGMENTS) { markUnverifiable(builder, true); return; }
 			const open = source.indexOf("(", match.index);
 			const literal = open >= 0 ? literalFirstArgument(source, open) : undefined;
-			if (literal === undefined) markUnverifiable(builder);
+			if (literal === undefined) markUnverifiable(builder, true);
 			else addTarget(builder, literal, cwd);
 		}
 	} finally { pattern.lastIndex = 0; }
@@ -727,7 +727,7 @@ function inspectPowerShellRemove(tokens: readonly string[], start: number, cwd: 
 			explicitTarget = true;
 		}
 	}
-	if (!explicitTarget) markUnverifiable(builder);
+	if (!explicitTarget) markUnverifiable(builder, true);
 }
 
 function inspectWindowsRmdir(tokens: readonly string[], start: number, cwd: string, builder: ScanBuilder): void {
@@ -744,7 +744,7 @@ function inspectWindowsRmdir(tokens: readonly string[], start: number, cwd: stri
 		addTarget(builder, value, cwd);
 		found = true;
 	}
-	if (!found) markUnverifiable(builder);
+	if (!found) markUnverifiable(builder, true);
 }
 
 function inspectFind(tokens: readonly string[], start: number, cwd: string, builder: ScanBuilder): void {
@@ -759,10 +759,10 @@ function inspectFind(tokens: readonly string[], start: number, cwd: string, buil
 	}
 	if (!deleteAction && !execAction) return;
 	addMutationPrimitive(builder, deleteAction ? "find_delete" : "find_exec");
-	if (execAction) markUnverifiable(builder);
+	if (execAction) markUnverifiable(builder, true);
 	const target = findSearchRoot(tokens, start);
 	if (target) addTarget(builder, target, cwd);
-	else markUnverifiable(builder);
+	else markUnverifiable(builder, true);
 }
 
 function findSearchRoot(tokens: readonly string[], start: number): string | undefined {
@@ -780,7 +780,7 @@ function inspectXargs(tokens: readonly string[], start: number, builder: ScanBui
 	for (let index = start; index < tokens.length; index++) {
 		if (commandName(tokens[index]!) !== "rm") continue;
 		addMutationPrimitive(builder, "xargs_rm");
-		markUnverifiable(builder);
+		markUnverifiable(builder, true);
 		return;
 	}
 }
@@ -828,7 +828,7 @@ function collectPositionalTargets(
 		addTarget(builder, value, cwd);
 		found = true;
 	}
-	if (!found) markUnverifiable(builder);
+	if (!found) markUnverifiable(builder, true);
 }
 
 function addTarget(builder: ScanBuilder, rawTarget: string, cwd: string): void {
@@ -837,6 +837,7 @@ function addTarget(builder: ScanBuilder, rawTarget: string, cwd: string): void {
 		const prefix = staticTargetPrefix(rawTarget);
 		if (!prefix) {
 			builder.unverifiableScope = true;
+			builder.unverifiableMutation = true;
 			return;
 		}
 		addResolvedTarget(builder, resolve(cwd, prefix));
@@ -848,7 +849,7 @@ function addTarget(builder: ScanBuilder, rawTarget: string, cwd: string): void {
 function addResolvedTarget(builder: ScanBuilder, target: string): void {
 	if (builder.targetSet.has(target)) return;
 	if (builder.targets.length >= MAX_MUTATION_TARGETS) {
-		markUnverifiable(builder);
+		markUnverifiable(builder, true);
 		return;
 	}
 	builder.targetSet.add(target);
@@ -857,6 +858,7 @@ function addResolvedTarget(builder: ScanBuilder, target: string): void {
 
 function addMutationPrimitive(builder: ScanBuilder, primitive: string): void {
 	builder.mutationDetected = true;
+	if (builder.unverifiableScope) builder.unverifiableMutation = true;
 	addPrimitive(builder, primitive);
 }
 
@@ -963,15 +965,16 @@ export function literalEvalScript(tokens: ShellSegment, start: number): string |
 }
 
 /** Bits: shell=1, Node=2, Python=4, executable input cannot be inspected=8. */
-export function heredocConsumers(header: string, descriptor = 0, depth = 0, pipeline = false, functions?: ShellSegment[]): number {
+export function heredocConsumers(header: string, descriptor = 0, depth = 0, pipeline = false, functions?: ShellSegment[], pipelineStart?: number): number {
 	if (depth > MAX_WRAPPER_DEPTH) return 8;
 	const segments = parseShellSegments(header);
 	const tokens = segments[segments.length - 1];
 	if (!tokens) return 0;
 	if (tokens.redirections) { stripShellRedirections(tokens, tokens.redirections); tokens.redirections.length = 0; }
 	if (pipeline) {
-		let start = segments.length - 1;
-		while (start > 0 && (segments[start - 1]!.separatorAfter === "|" || segments[start - 1]!.separatorAfter === "|&")) start--;
+		let start = pipelineStart ?? segments.length - 1;
+		if (pipelineStart === undefined) while (start > 0 && (segments[start - 1]!.separatorAfter === "|" || segments[start - 1]!.separatorAfter === "|&")) start--;
+		if (start < 0 || start >= segments.length) return 8;
 		return stdinScriptConsumers(segments, descriptor, depth + 1, start, functions);
 	}
 	if (tokens[0] === "}" || tokens[0] === "fi" || tokens[0] === "done" || tokens[0] === "esac"
@@ -998,8 +1001,9 @@ export function heredocConsumers(header: string, descriptor = 0, depth = 0, pipe
 
 export function heredocDocumentConsumers(document: { header: string; pipelineHeader?: string; contextEnd?: number; bodyEnd?: number; descriptor: number }, command?: string): number {
 	const functions = command && (command.includes("(") || command.includes("function")) ? parseShellSegments(command.slice(0, document.contextEnd)) : undefined;
+	const pipelineStart = document.pipelineHeader ? parseShellSegments(document.header).length - 1 : undefined;
 	return heredocConsumers(document.header, document.descriptor, 0, false, functions)
-		| (document.pipelineHeader ? heredocConsumers(document.pipelineHeader, document.descriptor, 0, true, functions) : 0)
+		| (document.pipelineHeader ? heredocConsumers(document.pipelineHeader, document.descriptor, 0, true, functions, pipelineStart) : 0)
 		| persistedHeredocConsumers(document, command);
 }
 
@@ -1131,8 +1135,9 @@ export function heredocExecutableBody(document: { header: string; pipelineHeader
 	const segments = parseShellSegments(document.pipelineHeader);
 	if (segments.length > MAX_SCRIPT_SEGMENTS) return undefined;
 	const functions = command && (command.includes("(") || command.includes("function")) ? parseShellSegments(command.slice(0, document.contextEnd)) : undefined;
-	let start = segments.length - 1, body: string | undefined = document.body;
-	while (start > 0 && (segments[start - 1]!.separatorAfter === "|" || segments[start - 1]!.separatorAfter === "|&")) start--;
+	const start = parseShellSegments(document.header).length - 1;
+	if (start < 0 || start >= segments.length) return undefined;
+	let body: string | undefined = document.body;
 	for (let index = start; index < segments.length - 1; index++) {
 		const tokens = segments[index]!;
 		if (tokens.redirections) { stripShellRedirections(tokens, tokens.redirections); tokens.redirections.length = 0; }
@@ -1262,15 +1267,16 @@ function addPrimitive(builder: ScanBuilder, primitive: string): void {
 		if (existing === primitive) return;
 	}
 	if (builder.primitives.length >= MAX_MUTATION_PRIMITIVES) {
-		markUnverifiable(builder);
+		markUnverifiable(builder, builder.mutationDetected);
 		return;
 	}
 	builder.primitives.push(primitive);
 }
 
-function markUnverifiable(builder: ScanBuilder): void {
+function markUnverifiable(builder: ScanBuilder, mutation = false): void {
 	builder.dynamicScope = true;
 	builder.unverifiableScope = true;
+	if (mutation) builder.unverifiableMutation = true;
 }
 
 /** Follow only newline continuations of a for/select in-list; all other shell state remains local to its segment. */

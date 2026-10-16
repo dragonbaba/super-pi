@@ -172,6 +172,7 @@ function inspectKnownMutation(command: string, tokens: readonly string[], start:
     for (let index = start; index < tokens.length; index++) {
       const token = tokens[index]!;
       if (token === "--") break;
+      if (token.startsWith("--compress-program=")) { markOpaque(builder, "sort_compress_program"); continue; }
       if (SORT_VALUE_OPTIONS.has(token)) {
         if (token === "--compress-program") markOpaque(builder, "sort_compress_program");
         index++; continue;
