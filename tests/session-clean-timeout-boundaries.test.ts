@@ -431,10 +431,10 @@ test("redirection analysis keeps arithmetic and heredoc data out of file targets
   assert.equal(herePermission?.targets.length, 0);
   assert.ok(herePermission?.primitives.includes("stdin_data:cat"));
   assert.equal(herePermission?.unverifiableScope, true, "data still needs opaque authorization");
-  assert.match(inspectBashResourceLifecycle({ command: quotedHere.replace("cat <<", "cat -n <<") }) ?? "", /SHELL_HEREDOC/);
+  assert.equal(inspectBashResourceLifecycle({ command: quotedHere.replace("cat <<", "cat -n <<") }), undefined);
 
   const multipleHere = "cat <<A <<B\nbody > one.txt\nA\nbody >> two.txt\nB";
-  assert.equal(inspectHighRiskBashMutation({ command: multipleHere }, process.cwd())?.targets.length, 0);
+  assert.equal(inspectHighRiskBashMutation({ command: multipleHere }, process.cwd()), undefined);
   assert.equal(inspectBashPermissionScope({ command: multipleHere }, process.cwd())?.targets.length, 0);
 
   const followingWrite = "cat <<'EOF'\nliteral > victim.txt\nEOF\necho x > after.txt";
@@ -475,9 +475,9 @@ test("heredoc analysis preserves real declaration-line and following-command red
       assert.ok(mutation?.targets.some(candidate => candidate.endsWith(target)), `${name}: mutation ${target}`);
       assert.ok(permission?.targets.some(candidate => candidate.endsWith(target)), `${name}: permission ${target}`);
     }
-    assert.ok(mutation?.primitives.includes("heredoc_uninspectable"), `${name}: mutation classification`);
+    assert.ok(mutation?.primitives.includes("output_redirection"), `${name}: mutation classification`);
     assert.equal(permission?.kind, "opaque-script", `${name}: permission classification`);
-    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_HEREDOC/, `${name}: lifecycle classification`);
+    assert.equal(inspectBashResourceLifecycle({ command }), undefined, `${name}: lifecycle classification`);
   }
 
   const quotedBody = "cat <<'EOF'\nliteral > fake.txt\nliteral >> fake-two.txt\nEOF";
@@ -495,7 +495,7 @@ test("heredoc analysis preserves real declaration-line and following-command red
   const dynamicDelimiter = "cat <<$TAG\npayload > unknown-body.txt\n$TAG\necho data > after-unknown.txt";
   const dynamicView = prepareShellAnalysis(dynamicDelimiter);
   assert.equal(dynamicView.uncertain, true);
-  assert.ok(inspectHighRiskBashMutation({ command: dynamicDelimiter }, process.cwd())?.unverifiableScope);
+  assert.ok(inspectHighRiskBashMutation({ command: dynamicDelimiter }, process.cwd())?.contextUncertain);
   assert.equal(inspectBashPermissionScope({ command: dynamicDelimiter }, process.cwd())?.kind, "opaque-script");
 });
 
