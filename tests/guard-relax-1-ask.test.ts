@@ -24,6 +24,7 @@ test("PR1 representative allow / ask / deny acceptance", async t => {
     ["rm -rf . $BUILD_DIR", "deny", "deny"], ["echo > .git/config", "allow", "ask"],
     ["printf x > out; mv .git moved", "deny", "deny"],
     ["printf x > .git; rm -rf out", "allow", "ask"],
+    ["mv /tmp/report .", "allow", "ask"],
     ["find . -exec echo {} +", "once", "once"],
     ["Remove-Item -Recurse .git", "deny", "deny", "powershell"],
     ["Remove-Item -Recurse ~", "deny", "deny", "powershell"],

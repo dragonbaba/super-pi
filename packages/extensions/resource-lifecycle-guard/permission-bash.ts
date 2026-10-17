@@ -35,6 +35,7 @@ export interface BashPermissionScope {
   targets: string[];
   /** Actual operands of already-recognized delete/move commands, excluding opaque cwd. */
   destructiveTargets?: string[];
+  moveDestinations?: string[];
   primitives: string[];
   classes: string[];
   dynamicScope: boolean;
@@ -83,7 +84,7 @@ function addClass(builder: ScopeBuilder, value: string): void {
   }
 }
 
-function addTarget(builder: ScopeBuilder, value: string, cwd: string, mutation = false, expansion = 0, destructive = false): void {
+function addTarget(builder: ScopeBuilder, value: string, cwd: string, mutation = false, expansion = 0, destructive = false): string | undefined {
   const target = staticMutationTarget(value, cwd, expansion);
   if (target === undefined) {
     builder.dynamicScope = true;
@@ -92,10 +93,13 @@ function addTarget(builder: ScopeBuilder, value: string, cwd: string, mutation =
     return;
   }
   addResolvedTarget(builder, target);
-  if (destructive) {
-    const targets = builder.destructiveTargets ??= [];
-    if (targets.length < MAX_TARGETS && !targets.includes(target)) targets.push(target);
-  }
+  if (destructive) addDestructiveTarget(builder, target);
+  return target;
+}
+
+function addDestructiveTarget(builder: ScopeBuilder, target: string): void {
+  const targets = builder.destructiveTargets ??= [];
+  if (targets.length < MAX_TARGETS && !targets.includes(target)) targets.push(target);
 }
 
 /** Only classifier-synthesized paths bypass operand expansion checks. */
@@ -136,11 +140,12 @@ function addPositionalTargets(
   cwd: string,
   skip: number,
   lastOnly: boolean,
-  destructive = false,
+  destructive: boolean | "move" = false,
 ): number {
   let optionsEnded = false;
   let count = 0;
   let last = -1;
+  let moveTarget: string | undefined;
   for (let index = start; index < tokens.length; index++) {
     const token = tokens[index]!;
     if (!optionsEnded && token === "--") {
@@ -150,9 +155,16 @@ function addPositionalTargets(
     if (!optionsEnded && token.startsWith("-")) continue;
     count += 1;
     if (lastOnly) last = index;
-    else if (count > skip) addTarget(builder, token, cwd, true, tokens.expansions?.[index], destructive);
+    else if (count > skip) {
+      if (destructive === "move" && moveTarget !== undefined) addDestructiveTarget(builder, moveTarget);
+      moveTarget = addTarget(builder, token, cwd, true, tokens.expansions?.[index], destructive === true);
+    }
   }
-  if (lastOnly && last >= 0 && count > skip) addTarget(builder, tokens[last]!, cwd, true, tokens.expansions?.[last], destructive);
+  if (lastOnly && last >= 0 && count > skip) addTarget(builder, tokens[last]!, cwd, true, tokens.expansions?.[last], destructive === true);
+  if (destructive === "move" && moveTarget !== undefined) {
+    const targets = builder.moveDestinations ??= [];
+    if (targets.length < MAX_TARGETS && !targets.includes(moveTarget)) targets.push(moveTarget);
+  }
   if (count === 0) markOpaque(builder, "missing_static_target");
   return count;
 }
@@ -234,7 +246,7 @@ function inspectKnownMutation(command: string, tokens: PermissionTokens, start: 
   }
   if (MOVE_COMMANDS.has(command)) {
     markMutation(builder, command);
-    addPositionalTargets(tokens, start, builder, cwd, 0, false, true);
+    addPositionalTargets(tokens, start, builder, cwd, 0, false, "move");
     return true;
   }
   if (command === "tee") {
@@ -773,6 +785,7 @@ function publicScope(builder: ScopeBuilder): BashPermissionScope {
     kind: builder.kind,
     targets: builder.targets,
     destructiveTargets: builder.destructiveTargets,
+    moveDestinations: builder.moveDestinations,
     primitives: builder.primitives,
     classes: builder.classes,
     dynamicScope: builder.dynamicScope,
