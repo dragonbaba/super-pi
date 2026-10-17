@@ -102,16 +102,20 @@ test("control: PowerShell Start-Process without -Wait remains blocked", async t 
   }
 });
 for (const [toolName, command] of [["bash", 'rm -rf "$X"'], ["powershell", "Remove-Item -Recurse $x"]] as const) {
-  test(`control: a recognized recursive deletion with unknown targets is still blocked (${toolName})`, async t => {
-    const cwd = workspace(t), f = await permission(cwd, "full-access");
+  test(`control: user rejection of an unknown deletion target never grants execution (${toolName})`, async t => {
+    const cwd = workspace(t), f = await permission(cwd, "full-access", "拒绝");
     const decision = await f.authorize(command!, toolName);
-    assert.equal(decision?.block, true); assert.equal(f.dialogs(), 0);
+    assert.equal(decision?.block, true); assert.equal(f.dialogs(), 1);
+    assert.match(decision?.reason ?? "", /user_rejected/);
     for (const mode of ["full-access", "workspace-write"] as const) {
       const hook = await shellHookFixture(t, mode);
+      const ui = hook.runner.getUIContext();
+      hook.runner.setUIContext({ ...ui, select: async (...args) => { await ui.select(...args); return "拒绝"; } }, "tui");
       const { outcome } = await hook.authorize(command, toolName);
       assert.equal(outcome?.block, true);
       assert.equal(outcome?.finalAuthorization, undefined);
-      assert.equal(hook.dialogs(), 0);
+      assert.match(outcome?.reason ?? "", /user_rejected/);
+      assert.equal(hook.dialogs(), 1);
     }
   });
 }

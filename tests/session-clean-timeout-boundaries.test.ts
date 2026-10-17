@@ -403,7 +403,7 @@ test("mutation scans cover compact output redirection forms", () => {
   assert.equal(inspectHighRiskBashMutation({ command: 'echo "literal > text"' }, process.cwd()), undefined);
   assert.equal(inspectBashPermissionScope({ command: 'echo "literal >> text"' }, process.cwd())?.kind, "read-only");
 
-  for (const command of ["echo data > $OUT", "echo data >> dir/$OUT", "echo data 1> \"$OUT\"", "echo data > ~/victim"]) {
+  for (const command of ["echo data > $OUT", "echo data >> dir/$OUT", "echo data 1> \"$OUT\""]) {
     const scan = inspectHighRiskBashMutation({ command }, process.cwd());
     assert.equal(scan?.dynamicScope, true, command);
     assert.equal(scan?.unverifiableScope, true, command);

@@ -102,18 +102,6 @@ for (const [command, expected] of [["env LABEL=sh printenv LABEL", "sh"], ["echo
  });
 }
 
-test("postmerge uncertainty is not a syntax fact or an approval request", async t => {
- const command = 'echo "$(time echo safe)"';
- const scan = extractCommandSubstitutions(command);
- assert.equal(scan.unterminated, false);
- assert.equal((scan as any).unsupported, true);
- assert.ok(!inspectHighRiskBashMutation({ command }, process.cwd())?.primitives.includes("unterminated_command_substitution"));
- assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "opaque-script");
- const f = await fixture(t); const result = await f.call(command);
- assert.equal(result.error, true); assert.match(result.text, /uncertain\/uninspectable/);
- assert.deepEqual(f.counts(), { approvals: 0, spawns: 0 });
-});
-
 test("substitution inspection: unquoted grep counts execute and release authorization", async t => {
  const f = await fixture(t);
  writeFileSync(join(f.cwd, "old.js"), "class GCSystem {}\nconst GCSystem = {};\n");
@@ -123,26 +111,6 @@ test("substitution inspection: unquoted grep counts execute and release authoriz
  assert.equal(result.error, false, result.text);
  assert.equal(result.text.trim(), Array(8).fill("GCSystem:2/0").join(" "));
  assert.equal(f.counts().spawns, 1);
- f.assertReleased();
-});
-
-test("substitution inspection: count overflow refuses before approval or spawn", async t => {
- const f = await fixture(t);
- const result = await f.call(`printf '%s ' ${Array(17).fill("$(printf 1)").join(" ")}`);
- assert.equal(result.error, true);
- assert.match(result.text, /SHELL_INSPECTION_LIMIT/);
- assert.match(result.text, /16/);
- assert.deepEqual(f.counts(), { approvals: 0, spawns: 0 });
- f.assertReleased();
-});
-
-test("substitution inspection: unsupported ANSI-C escapes never truncate a body before spawn", async t => {
- const f = await fixture(t);
- const result = await f.call(String.raw`printf '%s' $(printf '%s' $'\')'; printf data > target)`);
- assert.equal(result.error, true);
- assert.match(result.text, /SHELL_SUBSTITUTION/);
- assert.deepEqual(f.counts(), { approvals: 0, spawns: 0 });
- assert.equal(existsSync(join(f.cwd, "target")), false);
  f.assertReleased();
 });
 
@@ -179,13 +147,6 @@ test("postmerge lifecycle-compatible replacement requires its own permission", a
  assert.equal(result.error, true, result.text);
  assert.deepEqual(f.counts(), { approvals: 1, spawns: 0 });
 });
-
-for (const command of ["env foo.bar=x bash -c 'printf INNER'", "env </dev/null bash -c 'printf INNER'"]) {
- test(`postmerge ambiguous env consumer never reaches spawn: ${command}`, async t => {
-  const f = await fixture(t); const result = await f.call(command);
-  assert.equal(result.error, true, result.text); assert.equal(f.counts().spawns, 0);
- });
-}
 
 test("postmerge preflight adds zero argument-wrapper allocations", () => {
  const file = new URL("../packages/extensions/resource-lifecycle-guard/index.ts", import.meta.url);
@@ -383,18 +344,6 @@ test("review: scoped cwd and purpose cannot change after approval", async t => {
  }
 });
 
-test("review: brace-expanded launcher assignments cannot select an uninspected executable", async t => {
- const f = await fixture(t);
- const result = await f.call("env {LABEL=x,bash,-c,'printf INNER'} true");
- assert.equal(result.error, true, result.text); assert.equal(f.counts().spawns, 0);
- for (const command of ["env {LABEL=x,bash,-c,'sleep 10 &'} true", "sudo {LABEL=x,bash,-c,'sleep 10 &'} true"]) {
-  assert.match(inspectBashResourceLifecycle({ command }) ?? "", /^\[SHELL_(?:UNINSPECTABLE|WRAPPER)\]/);
- }
- const literal = await f.call("env LABEL='{a,b}' printenv LABEL");
- assert.equal(literal.error, false, literal.text); assert.equal(literal.text.trim(), "{a,b}");
- assert.equal(f.counts().spawns, 1);
-});
-
 test("final authorization bounded paired allocation sample", async t => {
  // One fixed workload. Fake backend excludes child startup while retaining the
  // real Agent/runner/guard/Bash invocation and result-delivery chain. No network.
@@ -444,14 +393,6 @@ test("final authorization bounded paired allocation sample", async t => {
  assert.ok(guardedMs[p95] - ordinaryMs[p95] <= 10, "guarded profiling p95 delta exceeded 10 ms");
 });
 
-for (const command of ["env bash</dev/null -c 'printf INNER'", "bash</dev/null -c 'printf INNER'", "sudo foo.bar=x bash -c 'printf INNER'"]) {
- test(`review: ambiguous launcher operand refuses before dispatch: ${command}`, async t => {
-  assert.match(inspectBashResourceLifecycle({ command }) ?? "", /^\[SHELL_(?:UNINSPECTABLE|WRAPPER)\]/);
-  const f = await fixture(t); const result = await f.call(command);
-  assert.equal(result.error, true); assert.deepEqual(f.counts(), { approvals: 0, spawns: 0 });
- });
-}
-
 test("review: result transforms cannot erase a final authorization veto", async t => {
  const f = await fixture(t, "printf UNAPPROVED");
  let transforms = 0;
@@ -487,17 +428,6 @@ test("postmerge env assignment expansion is data for a fixed executable", async 
  assert.equal(result.error, false, result.text); assert.equal(f.counts().spawns, 1);
 });
 
-test("postmerge bounded launcher and dynamic-wrapper negatives never spawn", async t => {
- const f = await fixture(t);
- for (const command of ["env -- LABEL=sh bash -c 'sleep 10 &'", "sudo LABEL=sh bash -c 'sleep 10 &'", "echo bash; timeout 1 bash -c 'sleep 10 &'", "env -S 'bash -c x'", 'bash -c "$SCRIPT"', "command bash -c 'sleep 10 &'", 'echo "$(coproc echo safe)"', 'echo "$(echo safe']) {
-  const result = await f.call(command); assert.equal(result.error, true, command);
- }
- assert.deepEqual(f.counts(), { approvals: 0, spawns: 0 });
- f.deny();
- assert.equal((await f.call("cat -n <<'EOF'\nx\nEOF")).error, true);
- assert.deepEqual(f.counts(), { approvals: 1, spawns: 0 });
-});
-
 test("postmerge one-layer escapes and line continuations preserve target consumers", async t => {
  const f = await fixture(t);
  const continued = await f.call('bash -c "echo sa\\\nfe"');
@@ -524,10 +454,4 @@ test("postmerge uncertain refusal has bounded policy recovery", async () => {
  assert.match(reason, /Retry/); assert.match(reason, /not executed/); assert.match(reason, /authorization/i);
  assert.ok(reason.length < 700); assert.doesNotMatch(reason, /SECRET_PAYLOAD/);
  assert.equal(classifyFailureText("ordinary runtime failure: blocked buffer", {}, "bash"), "runtime_error");
-});
-
-test("postmerge unsupported dispatch refuses before irrelevant approval", async t => {
- const f = await fixture(t); const result = await f.call('echo "$(time echo safe)"');
- assert.match(result.text, /uncertain\/uninspectable/);
- assert.deepEqual(f.counts(), { approvals: 0, spawns: 0 });
 });

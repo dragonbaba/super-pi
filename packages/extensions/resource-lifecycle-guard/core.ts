@@ -1,4 +1,5 @@
 import { basename, resolve } from "node:path";
+import { homedir } from "node:os";
 import {
 	BASH_ALIASES_ASSIGNMENT,
 	DETACH_UTILITY_PATTERN,
@@ -50,6 +51,11 @@ import { diagnosticForPrimitives, policyMetadata, renderPolicyDiagnostic, type P
 const MAX_INSPECTED_COMMAND_CHARS = 128 * 1024;
 const BLOCK_REASON =
 	"Blocked an unmanaged long-lived process before execution; this Bash call was not executed.\nRetry: keep setup and bounded use in one inspectable foreground call with a recorded PID, EXIT trap, kill and wait; resubmit for authorization. For session-managed background execution, keep the command itself foreground and set background: true with explicit cwd in a live TUI/RPC session with the tasks tool available. Otherwise use foreground execution.";
+
+/** Parser diagnostics are opacity evidence; only lifecycle and native routing block. */
+export function isBlockingLifecycleReason(reason: string): boolean {
+	return reason === BLOCK_REASON || reason.startsWith("[SHELL_BACKGROUND]") || reason.startsWith("[SHELL_WRAPPER:LAUNCHER_UNSUPPORTED]");
+}
 const MAX_MUTATION_PRIMITIVES = 16;
 const MAX_MUTATION_TARGETS = 16;
 const MAX_SCRIPT_SEGMENTS = 64;
@@ -162,6 +168,16 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
  const substitutions = prepared.substitutions;
  if (here.unboundedHeredoc || substitutions.boundaryRefusal === 2) return lifecycleRefusal("SHELL_HEREDOC", "heredoc or CR-sensitive source boundaries cannot be inspected for executable input or following commands", "use a bounded literal heredoc outside function substitution, without CR-sensitive delimiters or escapes");
  if (here.uninspectableFunction || substitutions.boundaryRefusal === 1) return UNCERTAIN_LIFECYCLE;
+ // Check already-visible launches before deferring parser diagnostics to permissions.
+ if (DETACH_UTILITY_PATTERN.test(command)) return BLOCK_REASON;
+ if ((WINDOWS_DETACH_PATTERN.test(command) || WINDOWS_START_BACKGROUND_PATTERN.test(command)) && !WINDOWS_WAIT_PATTERN.test(command)) return BLOCK_REASON;
+ if (DOCKER_DETACHED_PATTERN.test(command) || SERVICE_START_PATTERN.test(command)) return BLOCK_REASON;
+ if (hasUnquotedBackgroundOperator(command)) {
+  const owned = OWNED_FOREGROUND_JOB_PATTERN.exec(command);
+  if (!owned || !hasBoundedOwnedUse(owned[2])) return BLOCK_REASON;
+  const ownedName = commandName(owned[1]!);
+  if (OPAQUE_JOB_LAUNCHER_PATTERN.test(ownedName) || PYTHON_COMMAND_PATTERN.test(ownedName) || NODE_COMMAND_PATTERN.test(ownedName)) return BLOCK_REASON;
+ }
  if (here.hasHeredoc && heredocHasAliasRisk(command)) return lifecycleRefusal("SHELL_HEREDOC", "alias expansion or definitions may change the heredoc consumer", "use a separate call without alias changes, file sourcing or eval");
  if (hasUnboundDescriptorSource(command, here.hereDocuments, descriptorContext)) return lifecycleRefusal("SHELL_HEREDOC", "a script descriptor has no inspectable binding in this command and may be inherited", "bind the descriptor explicitly in this call or use an inspectable literal script");
  if (here.substitutionUncertain) return lifecycleRefusal("SHELL_SUBSTITUTION", "uncertain/uninspectable executable heredoc substitution", "simplify the substitution into inspectable foreground commands");
@@ -189,17 +205,6 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
    const result = inspectLifecycleScript(body, depth + 1, nativePowerShellAvailable, analysisOwner);
    if (result) return result;
   }
- }
- // Unknown cwd/lookup state is permission evidence, not a process lifetime.
- // Still inspect visible launches below, including those after state changes.
- if (DETACH_UTILITY_PATTERN.test(command)) return BLOCK_REASON;
- if ((WINDOWS_DETACH_PATTERN.test(command) || WINDOWS_START_BACKGROUND_PATTERN.test(command)) && !WINDOWS_WAIT_PATTERN.test(command)) return BLOCK_REASON;
- if (DOCKER_DETACHED_PATTERN.test(command) || SERVICE_START_PATTERN.test(command)) return BLOCK_REASON;
- if (hasUnquotedBackgroundOperator(command)) {
-  const owned = OWNED_FOREGROUND_JOB_PATTERN.exec(command);
-  if (!owned || !hasBoundedOwnedUse(owned[2])) return BLOCK_REASON;
-  const ownedName = commandName(owned[1]!);
-  if (OPAQUE_JOB_LAUNCHER_PATTERN.test(ownedName) || PYTHON_COMMAND_PATTERN.test(ownedName) || NODE_COMMAND_PATTERN.test(ownedName)) return BLOCK_REASON;
  }
  if (!SHELL_WRAPPER_TEXT_PATTERN.test(command) && !EXECUTABLE_EXPANSION_TEXT_PATTERN.test(command) && !command.includes("[[") && !command.includes("((") && !command.includes("for") && !command.includes("select") && !command.includes("coproc")) return undefined;
  const segments = parseShellSegments(command, true);
@@ -348,6 +353,8 @@ export interface HighRiskMutationScan {
 	contextUncertain: boolean;
 	primitives: string[];
 	targets: string[];
+	destructiveTargets?: string[];
+	findDeleteScopes?: string[];
 	dynamicScope: boolean;
 	unverifiableScope: boolean;
 	workspaceWide: boolean;
@@ -364,6 +371,8 @@ function uncertainAssignment(tokens: ShellSegment, index: number, shellAssignmen
 interface ScanBuilder {
 	primitives: string[];
 	targets: string[];
+	destructiveTargets?: string[];
+	findDeleteScopes?: string[];
 	targetSet: Set<string>;
 	dynamicScope: boolean;
 	unverifiableScope: boolean;
@@ -416,6 +425,8 @@ export function inspectHighRiskBashMutation(input: unknown, cwd: string, shellOp
 		contextUncertain: builder.unverifiableScope,
 		primitives: builder.primitives,
 		targets: builder.targets,
+		destructiveTargets: builder.destructiveTargets,
+		findDeleteScopes: builder.findDeleteScopes,
 		dynamicScope: builder.dynamicScope,
 		unverifiableScope: builder.unverifiableMutation,
 		workspaceWide: builder.workspaceWide,
@@ -483,7 +494,7 @@ function inspectOutputRedirections(tokens: ShellSegment, cwd: string, builder: S
 			markUnverifiable(builder, true);
 			continue;
 		}
-		addTarget(builder, target, cwd);
+		addTarget(builder, target, cwd, 0, false);
 	}
 	stripShellRedirections(tokens, redirections);
 	redirections.length = 0;
@@ -830,13 +841,13 @@ function inspectRm(tokens: readonly string[], start: number, cwd: string, builde
 	collectPositionalTargets(tokens, start, cwd, builder, "dash");
 }
 
-function inspectPowerShellRemove(tokens: readonly string[], start: number, cwd: string, builder: ScanBuilder): void {
+function inspectPowerShellRemove(tokens: readonly string[] & { expansions?: readonly number[] }, start: number, cwd: string, builder: ScanBuilder): void {
 	let recursive = false;
 	for (let index = start; index < tokens.length; index++) {
 		if (POWERSHELL_RECURSIVE_OPTIONS.has(tokens[index]!.toLowerCase())) recursive = true;
 	}
-	if (!recursive) return;
-	addMutationPrimitive(builder, "powershell_remove_recursive");
+	// A worktree's .git pointer is removable without recursive deletion.
+	addMutationPrimitive(builder, recursive ? "powershell_remove_recursive" : "powershell_remove");
 	let explicitTarget = false;
 	for (let index = start; index < tokens.length; index++) {
 		const value = tokens[index]!;
@@ -844,13 +855,13 @@ function inspectPowerShellRemove(tokens: readonly string[], start: number, cwd: 
 		if (POWERSHELL_TARGET_OPTIONS.has(lower)) {
 			const target = tokens[++index];
 			if (target) {
-				addTarget(builder, target, cwd);
+				addTarget(builder, target, cwd, tokens.expansions?.[index]);
 				explicitTarget = true;
 			}
 			continue;
 		}
 		if (!value.startsWith("-")) {
-			addTarget(builder, value, cwd);
+			addTarget(builder, value, cwd, tokens.expansions?.[index]);
 			explicitTarget = true;
 		}
 	}
@@ -889,7 +900,7 @@ function inspectFind(tokens: readonly string[] & { expansions?: readonly number[
 	addMutationPrimitive(builder, deleteAction ? "find_delete" : "find_exec");
 	if (execAction) markUnverifiable(builder, true);
 	const target = findSearchRootIndex(tokens, start);
-	if (target >= 0) addTarget(builder, tokens[target]!, cwd, tokens.expansions?.[target]);
+	if (target >= 0) addTarget(builder, tokens[target]!, cwd, tokens.expansions?.[target], deleteAction ? "find" : false);
 	else markUnverifiable(builder, true);
 }
 
@@ -959,20 +970,15 @@ function collectPositionalTargets(
 	if (!found) markUnverifiable(builder, true);
 }
 
-function addTarget(builder: ScanBuilder, rawTarget: string, cwd: string, expansion = 0): void {
-	if (expansion) { builder.dynamicScope = true; markUnverifiable(builder, true); return; }
-	if (hasDynamicSyntax(rawTarget)) {
-		builder.dynamicScope = true;
-		const prefix = staticTargetPrefix(rawTarget);
-		if (!prefix) {
-			builder.unverifiableScope = true;
-			builder.unverifiableMutation = true;
-			return;
-		}
-		addResolvedTarget(builder, resolve(cwd, prefix));
-		return;
+function addTarget(builder: ScanBuilder, rawTarget: string, cwd: string, expansion = 0, destructive: boolean | "find" = true): void {
+	const target = staticMutationTarget(rawTarget, cwd, expansion);
+	if (target === undefined) { builder.dynamicScope = true; markUnverifiable(builder, true); return; }
+	addResolvedTarget(builder, target);
+	if (destructive && builder.targetSet.has(target)) {
+		// find's search scope describes its contents, not an operand being removed.
+		const targets = destructive === "find" ? builder.findDeleteScopes ??= [] : builder.destructiveTargets ??= [];
+		if (!targets.includes(target)) targets.push(target);
 	}
-	addResolvedTarget(builder, resolve(cwd, rawTarget));
 }
 
 function addResolvedTarget(builder: ScanBuilder, target: string): void {
@@ -2420,6 +2426,10 @@ function parseShellSegments(command: string, positions = false): ShellSegment[] 
 			const expansions = tokens.expansions ??= [];
 			expansions[tokens.length] = (expansions[tokens.length] ?? 0) | 8;
 		}
+		if (quote === 0 && !tokenStarted && code === 126) {
+			const expansions = tokens.expansions ??= [];
+			expansions[tokens.length] = (expansions[tokens.length] ?? 0) | 32;
+		}
 		// Preserve actual unquoted pathname expansion for unresolved heredoc argv.
 		// Reuse the existing per-word flags; quoted/escaped query text stays data.
 		if (quote === 0 && !bashDoubleBracket && (code === 42 || code === 63
@@ -2637,21 +2647,24 @@ function hasDynamicSyntax(value: string): boolean {
 	return false;
 }
 
-function staticTargetPrefix(target: string): string | undefined {
-	let end = target.length;
+/** Only a leading unquoted HOME tilde and a final-segment glob are bounded. */
+export function staticMutationTarget(target: string, cwd: string, expansion = 0): string | undefined {
+	if (expansion & ~48) return undefined;
+	if (expansion & 32) {
+		if (target !== "~" && !target.startsWith("~/")) return undefined;
+		cwd = homedir();
+		target = "." + target.slice(1); // The OS-provided HOME is a path, not shell source.
+	}
+	const separator = Math.max(target.lastIndexOf("/"), target.lastIndexOf("\\"));
+	let glob = false;
 	for (let index = 0; index < target.length; index++) {
 		const code = target.charCodeAt(index);
-		if (code === 36 || code === 37 || code === 42 || code === 63 || code === 91 || code === 123) {
-			end = index;
-			break;
-		}
+		if (code === 42 || code === 63 || code === 91) {
+			if (!(expansion & 16) || index < separator) return undefined;
+			glob = true;
+		} else if (code === 36 || code === 37 || code === 123 || code === 125 || code === 126) return undefined;
 	}
-	while (end > 0) {
-		const code = target.charCodeAt(end - 1);
-		if (code !== 47 && code !== 92) break;
-		end--;
-	}
-	return end > 0 ? target.slice(0, end) : undefined;
+	return resolve(cwd, glob ? separator < 0 ? "." : target.slice(0, separator + 1) : target);
 }
 
 function maskCodeStringsAndComments(source: string, language: "node" | "python", builder: ScanBuilder): string {

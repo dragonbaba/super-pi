@@ -141,6 +141,7 @@ interface OperationRequest {
   classes: readonly string[];
   pathApproval?: { canonicalTarget: string; protectedRoots: string[] };
   highRisk: boolean;
+  catastrophicRoots?: string[];
   opaqueScript: boolean;
   primitives: string[];
   fingerprintMaterial: string;
@@ -239,36 +240,6 @@ function structuredPermissionBlock(
     retryable: options.retryable ?? true,
     ...(workspaceEscape ? { legalNextStep } : {}),
   });
-}
-
-function modelPolicyBlock(request: OperationRequest, mode: SessionPermissionMode): { reason: string; details: unknown } {
-  const legacy = {
-    ok: false,
-    category: "POLICY_BLOCKED",
-    operation: request.operation,
-    permissionMode: mode,
-    policyReason: "unverifiable_target",
-    highRisk: request.highRisk,
-    opaqueScript: request.opaqueScript,
-    primitives: request.primitives,
-    stateChanged: false,
-    retryable: request.diagnostic?.diagnostic.retryable ?? false,
-  };
-  if (!request.diagnostic) {
-    return {
-      reason: structuredPermissionBlock(request.operation, mode, "unverifiable_target", {
-        highRisk: request.highRisk,
-        opaqueScript: request.opaqueScript,
-        retryable: false,
-        primitives: request.primitives,
-      }),
-      details: legacy,
-    };
-  }
-  return { reason: request.diagnostic.modelText, details: {
-    ...legacy,
-    diagnostic: request.diagnostic.diagnostic,
-  } };
 }
 
 function structuredInputValidationBlock(operation: string, message: string): string {
@@ -394,7 +365,7 @@ export class SessionPermissionController {
     return `Filesystem permissions: mode=${this.#state.mode}; approval=${this.#state.approvalPolicy}; writable roots=${workspaces}. Use /permissions before accessing outside these roots; session command allow rules may apply.`;
   }
 
-  async authorizeToolCall(event: ToolCallEventShape, ctx: ExtensionContext, analysisOwner?: ShellAnalysisOwner): Promise<ToolCallBlock | undefined> {
+  async authorizeToolCall(event: ToolCallEventShape, ctx: ExtensionContext, analysisOwner?: ShellAnalysisOwner, opaqueScript = false): Promise<ToolCallBlock | undefined> {
     if (event.toolName !== "write" && event.toolName !== "edit" && event.toolName !== "lsp_fix" && event.toolName !== "delete" && event.toolName !== "move" && event.toolName !== "file_batch"
       && event.toolName !== "bash" && event.toolName !== "powershell" && event.toolName !== "browser_exec"
       && event.toolName !== "subagent" && event.toolName !== "structured_readonly_command") return undefined;
@@ -415,18 +386,35 @@ export class SessionPermissionController {
     const request = await this.#buildRequest(event, ctx, analysisOwner);
     assertCurrent();
     if (!request) return undefined;
-    if (hasUnverifiableAssessment(request.targetAssessments)) {
-      this.#appendAudit(request, "blocked", "unverifiable_target", this.#state.mode, this.#state.mode, false);
-      const block = modelPolicyBlock(request, this.#state.mode);
+    request.opaqueScript ||= opaqueScript;
+    if (request.catastrophicRoots?.length) {
+      this.#appendAudit(request, "blocked", "protected_root", this.#state.mode, this.#state.mode, false);
       return {
         block: true,
-        reason: block.reason, details: block.details,
+        reason: structuredPermissionBlock(request.operation, this.#state.mode, "protected_root", {
+          highRisk: true, retryable: false, primitives: request.catastrophicRoots,
+        }),
+      };
+    }
+    const uncertainTarget = hasUnverifiableAssessment(request.targetAssessments);
+    const fingerprint = createHash("sha256")
+      .update(`${request.operation}\u0000${request.fingerprintMaterial}\u0000${request.purpose ?? ""}`)
+      .digest("hex");
+    const priorRejection = this.#rejections.get(fingerprint);
+    if (priorRejection) {
+      this.#appendAudit(request, "blocked", "unchanged_rejected_request", this.#state.mode, this.#state.mode, Boolean(priorRejection.reason));
+      return {
+        block: true,
+        reason: structuredPermissionBlock(request.operation, this.#state.mode, "unchanged_rejected_request", {
+          highRisk: request.highRisk, opaqueScript: request.opaqueScript,
+          rejectionReason: priorRejection.reason, primitives: request.primitives,
+        }),
       };
     }
 
     const ruleCwd = request.effectiveCwd === ctx.cwd ? this.#state.primary.canonicalPath : request.effectiveCwd ?? ctx.cwd;
     const scopeAllowed = this.#scopeAllows(request);
-    if (request.shellCommand && this.#ruleScopeAllows(request)) {
+    if (!uncertainTarget && request.shellCommand && this.#ruleScopeAllows(request)) {
       for (const rule of this.#state.allowRules) {
         if (!rule.cwd && ruleCwd !== this.#state.primary.canonicalPath) continue;
         if (rule.kind === "prefix" && request.highRisk) continue;
@@ -435,7 +423,7 @@ export class SessionPermissionController {
         return undefined;
       }
     }
-    if (this.#state.approvalPolicy === "never-ask") {
+    if (!uncertainTarget && this.#state.approvalPolicy === "never-ask") {
       if (scopeAllowed) {
         this.#attachPathApproval(event, request);
         return undefined;
@@ -452,27 +440,11 @@ export class SessionPermissionController {
         };
       }
     }
-    if (scopeAllowed && !request.highRisk && !request.opaqueScript) {
+    if (!uncertainTarget && scopeAllowed && !request.highRisk && !request.opaqueScript) {
       this.#attachPathApproval(event, request);
       return undefined;
     }
 
-    const fingerprint = createHash("sha256")
-      .update(`${request.operation}\u0000${request.fingerprintMaterial}\u0000${request.purpose ?? ""}`)
-      .digest("hex");
-    const priorRejection = this.#rejections.get(fingerprint);
-    if (priorRejection) {
-      this.#appendAudit(request, "blocked", "unchanged_rejected_request", this.#state.mode, this.#state.mode, Boolean(priorRejection.reason));
-      return {
-        block: true,
-        reason: structuredPermissionBlock(request.operation, this.#state.mode, "unchanged_rejected_request", {
-          highRisk: request.highRisk,
-          opaqueScript: request.opaqueScript,
-          rejectionReason: priorRejection.reason,
-          primitives: request.primitives,
-        }),
-      };
-    }
     if (!ctx.hasUI) {
       this.#appendAudit(request, "blocked", "confirmation_required", this.#state.mode, this.#state.mode, false);
       return {
@@ -493,11 +465,11 @@ export class SessionPermissionController {
     const modeBefore = this.#state.mode;
     const choices = [ALLOW_ONCE];
     const commandPrefix = request.shellCommand && !request.highRisk ? simpleCommandPrefix(request.shellCommand) : undefined;
-    if (this.#state.approvalPolicy === "ask" && request.shellCommand) {
+    if (!uncertainTarget && this.#state.approvalPolicy === "ask" && request.shellCommand) {
       choices.push(ALLOW_SESSION_EXACT);
       if (commandPrefix) choices.push(`${ALLOW_SESSION_PREFIX}：${commandPrefix} *`);
     }
-    if (!request.highRisk && !request.opaqueScript) {
+    if (!uncertainTarget && !request.highRisk && !request.opaqueScript) {
       const insideAuthorizedWorkspace = allTargetsInsideWorkspaces(request.targetAssessments);
       if (modeBefore === "read-only" && insideAuthorizedWorkspace) choices.push(SWITCH_WORKSPACE);
       if (modeBefore !== "full-access") choices.push(SWITCH_FULL);
@@ -516,7 +488,7 @@ export class SessionPermissionController {
     assertCurrent();
     const prefixChoice = commandPrefix ? `${ALLOW_SESSION_PREFIX}：${commandPrefix} *` : undefined;
     const chosePrefix = prefixChoice !== undefined && choice === prefixChoice;
-    if (choice === ALLOW_ONCE || choice === ALLOW_SESSION_EXACT || chosePrefix || choice === SWITCH_WORKSPACE || choice === SWITCH_FULL) {
+    if (choice && choices.includes(choice) && (choice === ALLOW_ONCE || choice === ALLOW_SESSION_EXACT || chosePrefix || choice === SWITCH_WORKSPACE || choice === SWITCH_FULL)) {
       // Selection is settled; its own approved state update must not revoke itself.
       if (this.#pendingApproval === approval) this.#pendingApproval = undefined;
       let policyReason = "user_approved_once";
@@ -863,7 +835,9 @@ export class SessionPermissionController {
       const exactTargets: string[] = [];
       const primitives: string[] = [];
       let highRisk = false;
+      const destructiveTargets: string[] = [];
       for (const item of batch.items) {
+        if (item.native) destructiveTargets.push(item.native.source.canonical, ...(item.native.destination ? [item.native.destination] : []));
         if (item.operation === "delete") { highRisk = true; primitives.push("irreversible_delete_no_backup"); }
         if (item.operation === "move" && !primitives.includes("exclusive_link_then_unlink_non_atomic")) primitives.push("exclusive_link_then_unlink_non_atomic");
         const paths = item.native ? item.native.protectedPaths : [item.approval];
@@ -878,6 +852,7 @@ export class SessionPermissionController {
         }
       }
       return { operation: "file_batch", batch: true, readOnlyPreview: batch.input.dryRun === true, requestHash: batch.requestHash,
+        catastrophicRoots: batch.input.dryRun ? [] : await protectedRootViolations({ targets: destructiveTargets }, ctx.cwd, this.#state.additional),
         purpose, summary: `file_batch ${batch.items.length} independent items`, exactTargets, targetAssessments,
         classes: ["file:batch"], highRisk: !batch.input.dryRun && highRisk, opaqueScript: false, primitives,
         fingerprintMaterial: batch.requestHash, pathApproval: { canonicalTarget: batch.items[0].target, protectedRoots: [] } };
@@ -891,6 +866,7 @@ export class SessionPermissionController {
       const primitives = [event.toolName === "delete" ? "irreversible_delete_no_backup" : "exclusive_link_then_unlink_non_atomic"];
       for (const target of targets) for (const root of target.protectedRoots) if (!primitives.includes(root)) primitives.push(root);
       return { operation: event.toolName, purpose, summary: `${event.toolName} ${nativePlan.source.canonical}`,
+        catastrophicRoots: await protectedRootViolations({ targets: [nativePlan.source.canonical, ...(nativePlan.destination ? [nativePlan.destination] : [])] }, ctx.cwd, this.#state.additional),
         nativePlan, requestHash, exactTargets: targets.map((target) => target.canonicalTarget), targetAssessments,
         classes: [`file:${event.toolName}`], highRisk: event.toolName === "delete" || targets.some((target) => sensitiveProtectedRoots(target.protectedRoots.filter((root) => root !== "workspace_root"))),
         opaqueScript: false, primitives, fingerprintMaterial: requestHash,
@@ -943,12 +919,16 @@ export class SessionPermissionController {
         : inspectBashPermissionScope(event.input, effectiveCwd, analysis);
     } finally { if (analysis !== analysisOwner) analysis?.release(); }
     if (!scope) return undefined;
+    const roots = high ? await protectedRootViolations({ targets: high.destructiveTargets ?? [], findDeleteScopes: high.findDeleteScopes }, ctx.cwd, this.#state.additional) : [];
+    // Permission-scan cwd and write destinations are not deletion operands.
+    if (scope.destructiveTargets || scope.moveDestinations) for (const root of await protectedRootViolations({ targets: scope.destructiveTargets ?? [], moveDestinations: scope.moveDestinations }, ctx.cwd, this.#state.additional)) {
+      if (!roots.includes(root)) roots.push(root);
+    }
     if (scope.unverifiableMutation && !high?.unverifiableScope) {
-      high = { risk: "HIGH", mutationDetected: true, contextUncertain: true, primitives: scope.primitives, targets: scope.targets,
-        dynamicScope: true, unverifiableScope: true, workspaceWide: false };
+      high = { risk: "HIGH", mutationDetected: true, contextUncertain: true, primitives: high?.primitives ?? scope.primitives, targets: high?.targets ?? scope.targets,
+        dynamicScope: true, unverifiableScope: true, workspaceWide: high?.workspaceWide ?? false };
     }
     if (high?.unverifiableScope) {
-      const roots = await protectedRootViolations(high, effectiveCwd);
       return this.#dynamicHighRequest(event, purpose, high, roots, scope.classes, shellOperation, effectiveCwd, hasExplicitCwd);
     }
     const targets: string[] = [];
@@ -983,6 +963,7 @@ export class SessionPermissionController {
       targetAssessments,
       classes: scope.classes,
       highRisk: high !== undefined || protectedTarget,
+      catastrophicRoots: roots,
       opaqueScript: scope.kind === "opaque-script",
       primitives,
       fingerprintMaterial: `${effectiveCwd}\u0000${command}`,
@@ -1014,6 +995,7 @@ export class SessionPermissionController {
       targetAssessments: [{ unverifiableReason: "unverifiable_target" }],
       classes,
       highRisk: true,
+      catastrophicRoots: roots,
       opaqueScript: true,
       primitives,
       fingerprintMaterial: `${effectiveCwd}\u0000${command}`,
