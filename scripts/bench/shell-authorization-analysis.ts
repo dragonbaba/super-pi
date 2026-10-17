@@ -6,6 +6,7 @@ import { inspectBashPermissionScope } from "../../packages/extensions/resource-l
 import { ShellAnalysisOwner, shellAnalysisOwnership, MAX_ANALYSIS_BYTES, MAX_ANALYSIS_ENTRIES } from "../../packages/extensions/resource-lifecycle-guard/shell-analysis.ts";
 import { shellAnalysisCounters } from "../../packages/extensions/resource-lifecycle-guard/shell-substitution.ts";
 import { codeMethodNameCounters } from "../../packages/extensions/resource-lifecycle-guard/code-method-names.ts";
+import { aliasRiskCounters } from "../../packages/extensions/resource-lifecycle-guard/core.ts";
 
 const gc = (globalThis as { gc?: () => void }).gc;
 assert.ok(gc, "run with --expose-gc");
@@ -13,6 +14,10 @@ const cwd = process.cwd(), iterations = 512, warmup = 64, samplingInterval = 409
 const literalInputs = process.argv.includes("--literal-inputs");
 const substitution = "$(grep -c -E '(class|function|const|var|let) GCSystem\\b' pixi/pixi.js)";
 const cases = literalInputs ? [
+  ["aliased-process-producer", "shopt -s expand_aliases\nalias echo='printf marker'\nsource <(echo ':')", 2],
+  ["python-missing-interactive-command", "python3 -i -c <<'EOF'\nshutil.rmtree(target)\nEOF", 1],
+  ["python-missing-interactive-module", "python3 -i -m <<'EOF'\nshutil.rmtree(target)\nEOF", 1],
+  ["sort-terminal-value", "sort -o .git/config --help=x", 1],
   ["node-identity-key", "node <<'EOF'\nfs['r\\mSync'](target,{recursive:true})\nEOF", 1],
   ["node-octal-key", "node <<'EOF'\nfs['r\\155Sync'](target,{recursive:true})\nEOF", 1],
   ["node-continuation-key", "node <<'EOF'\nfs['rm\\\nSync'](target,{recursive:true})\nEOF", 1],
@@ -260,7 +265,7 @@ function analyze(command: string, lifecycle = "complete"): void {
 for (const [name, command, uniqueSources] of cases) {
   for (let i = 0; i < warmup; i++) analyze(command);
   gc();
-  const before = { ...shellAnalysisCounters }, methodNamesBefore = { ...codeMethodNameCounters }, descriptorsBefore = { ...persistentDescriptorCounters }, ownership = { ...shellAnalysisOwnership }, consumerCalls = heredocConsumerCounters.tailCalls, consumerWords = heredocConsumerCounters.tailWords;
+  const before = { ...shellAnalysisCounters }, methodNamesBefore = { ...codeMethodNameCounters }, descriptorsBefore = { ...persistentDescriptorCounters }, aliasesBefore = { ...aliasRiskCounters }, ownership = { ...shellAnalysisOwnership }, consumerCalls = heredocConsumerCounters.tailCalls, consumerWords = heredocConsumerCounters.tailWords;
   const session = new Session(); session.connect();
   let sampledBytes = 0;
   let consumerHelperSampledBytes = 0;
@@ -283,6 +288,8 @@ for (const [name, command, uniqueSources] of cases) {
   const counters = Object.fromEntries(Object.entries(shellAnalysisCounters).map(([key, value]) => [key, value - before[key as keyof typeof before]]));
   const methodNameCounters = Object.fromEntries(Object.entries(codeMethodNameCounters).map(([key, value]) => [key, value - methodNamesBefore[key as keyof typeof methodNamesBefore]]));
   const descriptorCounters = Object.fromEntries(Object.entries(persistentDescriptorCounters).map(([key, value]) => [key, value - descriptorsBefore[key as keyof typeof descriptorsBefore]]));
+  const aliasCounters = Object.fromEntries(Object.entries(aliasRiskCounters).map(([key, value]) => [key, value - aliasesBefore[key as keyof typeof aliasesBefore]]));
+  assert.equal(aliasCounters.viewsCreated, aliasCounters.viewsReleased); assert.equal(aliasRiskCounters.liveViews, 0);
   assert.equal(descriptorCounters.arraysCreated, descriptorCounters.arraysReleased); assert.equal(persistentDescriptorCounters.liveArrays, 0); assert.ok(persistentDescriptorCounters.maxEntries <= 16);
   if (name === "node-ascii-template-key") for (const value of Object.values(methodNameCounters)) assert.equal(value, 0);
   if (name === "node-ascii-methods" || name === "python-ascii-methods" || name === "python-unrelated-unicode" || name === "nodejs-eval" || name === "nodejs-heredoc" || name === "node-array-string-data") for (const value of Object.values(methodNameCounters)) assert.equal(value, 0);
@@ -293,7 +300,7 @@ for (const [name, command, uniqueSources] of cases) {
   assert.equal(shellAnalysisOwnership.liveEntries, 0);
   assert.equal(shellAnalysisOwnership.liveBytes, 0);
   sites.sort((a, b) => b.bytes - a.bytes); times.sort((a, b) => a - b);
-  console.log(JSON.stringify({ name, iterations, warmup, samplingInterval, counters, methodNameCounters, descriptorCounters,
+  console.log(JSON.stringify({ name, iterations, warmup, samplingInterval, counters, methodNameCounters, descriptorCounters, aliasCounters,
     consumerTailCalls: heredocConsumerCounters.tailCalls - consumerCalls, consumerTailWords: heredocConsumerCounters.tailWords - consumerWords, consumerHelperSampledBytesPerAnalysis: consumerHelperSampledBytes / iterations,
     cacheHits: shellAnalysisOwnership.hits - ownership.hits, cacheMisses: shellAnalysisOwnership.misses - ownership.misses,
     sampledBytesPerAnalysis: Math.round(sampledBytes / iterations), p50Ms: times[256], p95Ms: times[486], topSites: sites.slice(0, 8) }));
@@ -317,7 +324,7 @@ const liveDecodedBuffers = decodedBuffers.filter(reference => reference.deref())
 assert.equal(liveDecodedBuffers, 0);
 assert.ok(maxDecodedBufferBytes <= 96 * 1024);
 assert.equal(shellAnalysisOwnership.created, shellAnalysisOwnership.released);
-console.log(JSON.stringify({ ownership: shellAnalysisOwnership, persistentDescriptorCounters, weakReferences: references.length, liveReferences,
+console.log(JSON.stringify({ ownership: shellAnalysisOwnership, persistentDescriptorCounters, aliasRiskCounters, weakReferences: references.length, liveReferences,
   literalInputs, decodedBuffersObserved: decodedBuffers.length, maxDecodedBufferBytes, liveDecodedBuffers,
   maxEntriesPerAuthorization: MAX_ANALYSIS_ENTRIES, maxRetainedReferenceBytes: MAX_ANALYSIS_BYTES,
   counterByteUnit: "UTF-16 bytes submitted at real scanner entries; not total character accesses", node: process.version, v8: process.versions.v8, platform: process.platform }));

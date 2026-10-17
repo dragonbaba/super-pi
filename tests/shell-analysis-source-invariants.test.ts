@@ -18,6 +18,7 @@ test("authorization scanners and cache methods add no callbacks, promises or Buf
   for (const name of ["hasUnsafeBashBuiltinOperand", "hasNonliteralBashSubscript", "skipRedirections", "afterLeadingRedirection"]) targets.get("core.ts")!.add(name);
   targets.get("core.ts")!.add("hasBareBashArithmeticCommand");
   targets.get("core.ts")!.add("descriptorCopyOrigin");
+  targets.get("core.ts")!.add("shellSegmentsHaveAliasRisk");
   for (const name of ["persistentHeredocDescriptor", "descriptorPathNumber", "addDescriptorCandidate", "isPersistentExecSegment", "redirectionDescriptor", "removePersistentDescriptor", "updatePersistentDescriptors", "descriptorReadState"]) targets.get("core.ts")!.add(name);
   targets.get("code-method-names.ts")!.add("plainNodeDeletionName");
   targets.get("shell-substitution.ts")!.add("subscriptTextState");

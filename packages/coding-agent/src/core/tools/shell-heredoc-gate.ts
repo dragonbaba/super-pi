@@ -105,7 +105,7 @@ function scanHeredocSyntax(command: string, start: number, closing: number, dept
       }
     }
     if (index >= nameEnd && code !== 32 && code !== 9) boundedPrefix = false;
-    wordStart = code === 32 || code === 9 || code === 10 || code === 13 || code === 59 || code === 124 || code === 38 || code === 60 || code === 62 || code === 41;
+    wordStart = code === 32 || code === 9 || code === 10 || code === 59 || code === 124 || code === 38 || code === 60 || code === 62 || code === 41;
   }
   return command.length;
 }

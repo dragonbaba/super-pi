@@ -8,6 +8,7 @@ const gc = (globalThis as { gc?: () => void }).gc;
 assert.ok(gc, "run with --expose-gc");
 const tool = createBashTool(process.cwd(), { commandPrefix: "true", exposeSessionEnvironment: false });
 const cases = [
+  ["cr-word-hash", "source /dev/stdin \r#x <<'EOF'\nprintf ok\nEOF", 1],
   ["deep-continued-heredoc", "( ".repeat(64) + "cat <\\\n<'E'\nx\nE\n" + " )".repeat(64), 1],
   ["deep-continued-here-string", "( ".repeat(64) + "cat <\\\n<\\\n<'data'" + " )".repeat(64), 0],
   ["deep-long-continuation", "( ".repeat(64) + "cat <" + "\\\n".repeat(8192) + "<'E'\nx\nE\n" + " )".repeat(64), 1],

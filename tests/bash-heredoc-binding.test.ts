@@ -37,7 +37,7 @@ test("review thirty-three: continued here-string redirects are not configured he
 });
 
 test("review twenty-three: a word-internal hash cannot hide a configured heredoc", async () => {
- for (const word of ["$(printf x)#", "`printf x`#", "<(printf x)#", ">(printf x)#", "a\\ #", "'x'#", '"x"#', "$((1+2))#", "${x:-y}#"]) {
+ for (const word of ["\r#", "a\r#", "$(printf x)#", "`printf x`#", "<(printf x)#", ">(printf x)#", "a\\ #", "'x'#", '"x"#', "$((1+2))#", "${x:-y}#"]) {
   const command = `echo ${word} <<'EOF'\nhi\nEOF`;
   assert.equal(shellHeredocKind(command), 1, command);
   for (const options of [{ commandPrefix: "true" }, { spawnHook: (context: any) => context }, { operations: { exec: async () => ({ exitCode: 0 }) } }]) {

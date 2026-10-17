@@ -1121,11 +1121,22 @@ function descriptorCopyOrigin(target: string): number {
 /** No alias-value tracking. The masked outer source cannot prove a consumer when
  * alias state may change. Descriptor sourcing is checked separately against its
  * document, preserving known literal stdin and persisted-descriptor consumers. */
+export const aliasRiskCounters = { prefixChecks: 0, viewsCreated: 0, viewsReleased: 0, liveViews: 0, sourceChars: 0 };
 function heredocHasAliasRisk(command: string, depth = 0): boolean {
-	if (depth > MAX_WRAPPER_DEPTH) return true;
 	const segments = parseShellSegments(command);
+	aliasRiskCounters.viewsCreated++; aliasRiskCounters.liveViews++; aliasRiskCounters.sourceChars += command.length;
+	try { return shellSegmentsHaveAliasRisk(segments, depth); }
+	finally { segments.length = 0; aliasRiskCounters.viewsReleased++; aliasRiskCounters.liveViews--; }
+}
+
+/** Reuse an already parsed prefix when checking a literal process producer. */
+function shellSegmentsHaveAliasRisk(segments: ShellSegment[], depth: number, end = segments.length, inspectedProcesses = false): boolean {
+	aliasRiskCounters.prefixChecks++;
+	if (depth > MAX_WRAPPER_DEPTH) return true;
 	if (segments.length > MAX_SCRIPT_SEGMENTS) return true;
-	for (const tokens of segments) {
+	for (let segment = 0; segment < end; segment++) {
+		const tokens = segments[segment]!;
+		const processSource = inspectedProcesses && tokens.separatorAfter === "(" && tokens[tokens.length - 1] === "<";
 		if (tokens.redirections) stripShellRedirections(tokens, tokens.redirections);
 		let index = 0;
 		while (index < tokens.length) {
@@ -1138,7 +1149,7 @@ function heredocHasAliasRisk(command: string, depth = 0): boolean {
 		}
 		const name = tokens[index];
 		if (name === "alias" || name === "eval") return true;
-		if (name === "source" || name === ".") {
+		if ((name === "source" || name === ".") && !processSource) {
 			const operand = tokens[index + (tokens[index + 1] === "--" ? 2 : 1)];
 			if (operand !== "/dev/stdin" && !(operand && SOURCE_DESCRIPTOR_PATTERN.test(operand))) return true;
 		}
@@ -1472,7 +1483,7 @@ function descriptorReadState(tokens: ShellSegment, descriptor: number, bindings:
 export function literalProcessSources(command: string): string[] | false | null | undefined {
 	if (!command.includes("<(")) return undefined;
 	if (command.length > MAX_INSPECTED_COMMAND_CHARS) return null;
-	let quote = 0, escaped = false, sources: string[] | undefined, bytes = 0;
+	let quote = 0, escaped = false, sources: string[] | undefined, bytes = 0, producerAliasRisk = false;
 	for (let index = 0; index < command.length; index++) {
 		const code = command.charCodeAt(index);
 		if (escaped) { escaped = false; continue; }
@@ -1492,12 +1503,16 @@ export function literalProcessSources(command: string): string[] | false | null 
 				if (cursor === consumer.length) {
 					const producers = parseShellSegments(command.slice(index + 2, end)), producer = producers[0];
 					if (producers.length === 1 && producer && !producer.redirections?.length && !producer.dynamic) {
-						if ((producer[0] === "echo" || producer[0] === "printf") && functionStdinConsumers(prefixes, producer[0], 0, 1) !== -1) return false;
+						if ((producer[0] === "echo" || producer[0] === "printf") && (producerAliasRisk || functionStdinConsumers(prefixes, producer[0], 0, 1) !== -1
+							|| shellSegmentsHaveAliasRisk(prefixes, 0, prefixes.length - 1, true))) return false;
 						const source = producer[0] === "echo" && producer.length === 2 && !producer[1]!.startsWith("-") && !producer[1]!.includes("\\") ? producer[1]
 							: producer[0] === "printf" && producer.length === 3 && (producer[1] === "%s" || producer[1] === "%s\\n") ? producer[2] : undefined;
 						if (source !== undefined) {
 							if (bytes + source.length > MAX_INSPECTED_COMMAND_CHARS || (sources?.length ?? 0) >= MAX_SUBSTITUTIONS) return null;
 							sources ??= []; sources.push(source); bytes += source.length;
+							// A literal sourced setup can invalidate later producer semantics.
+							// Retain only uncertainty, never alias names/values or a symbol map.
+							producerAliasRisk = heredocHasAliasRisk(source);
 						} else return false;
 					} else return false;
 				}
@@ -1771,7 +1786,7 @@ function simpleStdinConsumers(tokens: ShellSegment, descriptor: number, depth: n
 			if (!option.startsWith("--")) for (let flag = 1; flag < option.length; flag++) {
 				if (option[flag] === "V") return 0;
 				if (option[flag] === "i") shellStdin = true;
-				if (option[flag] === "c" || option[flag] === "m") return shellStdin ? stdinMask : 0;
+				if (option[flag] === "c" || option[flag] === "m") return flag + 1 === option.length && cursor + 1 >= tokens.length ? 16 : shellStdin ? stdinMask : 0;
 				if (option[flag] === "W" || option[flag] === "X") { if (flag + 1 === option.length) { if (++cursor >= tokens.length) return 16; if (tokens.expansions?.[cursor]) return languageMask; } break; }
 			}
 		} else {

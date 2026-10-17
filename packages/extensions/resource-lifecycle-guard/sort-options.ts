@@ -42,7 +42,9 @@ export function sortHasTerminalOption(tokens: readonly string[] & { expansions?:
       const equals = word.indexOf("="), name = sortLongOption(word, equals < 0 ? word.length : equals);
       if (name === undefined) return false;
       if (name === "") return true;
-      if (name === "help" || name === "version") return equals < 0;
+      // check has an optional attached value; other non-value options reject
+      // an equals operand before sort opens any output or temporary file.
+      if (name === "help" || name === "version" || equals >= 0 && name !== "check" && !sortOptionRequiresValue(name)) return true;
       if (equals < 0 && sortOptionRequiresValue(name)) { index++; if (tokens.expansions?.[index]) return false; }
     } else if (word.startsWith("-")) {
       for (let flag = 1; flag < word.length; flag++) {

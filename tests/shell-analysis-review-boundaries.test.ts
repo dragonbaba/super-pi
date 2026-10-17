@@ -7,7 +7,7 @@ import { extractCommandSubstitutions, prepareShellAnalysis, shellAnalysisCounter
 import { shellHookFixture, assertFinalAuthorization } from "./codemode-recovery/shell-hook-fixture.ts";
 import { SessionPermissionController, workspace } from "./codemode-recovery/guard-fixture.ts";
 import { codeMethodNameCounters } from "../packages/extensions/resource-lifecycle-guard/code-method-names.ts";
-import { persistentDescriptorCounters } from "../packages/extensions/resource-lifecycle-guard/core.ts";
+import { persistentDescriptorCounters, aliasRiskCounters } from "../packages/extensions/resource-lifecycle-guard/core.ts";
 import { NODE_COMMAND_PATTERN, NODE_LITERAL_METHOD_KEY_PATTERN, NODE_RM_CALL_PATTERN, NODE_UNLINK_PATTERN, PYTHON_COMMAND_PATTERN, PYTHON_RMTREE_PATTERN, PYTHON_UNLINK_PATTERN } from "../packages/extensions/resource-lifecycle-guard/regex.ts";
 
 function literalProgram(interpreter: string, body: string, heredoc: boolean): string {
@@ -46,7 +46,58 @@ test("persistent descriptor scratch is bounded and released on every result", ()
   assert.equal(persistentDescriptorCounters.arraysCreated - before.arraysCreated, persistentDescriptorCounters.arraysReleased - before.arraysReleased);
 });
 
+test("literal source alias-risk views release without retaining source or alias values", () => {
+  const before = { ...aliasRiskCounters };
+  for (const command of ["source <(echo ':')", "source <(echo ':'); source <(echo ':')", "source <(echo 'shopt -s expand_aliases'); source <(echo ':')"]) {
+    literalProcessSources(command); assert.equal(aliasRiskCounters.liveViews, 0);
+  }
+  assert.ok(aliasRiskCounters.viewsCreated > before.viewsCreated);
+  assert.equal(aliasRiskCounters.viewsCreated - before.viewsCreated, aliasRiskCounters.viewsReleased - before.viewsReleased);
+  assert.ok(Object.values(aliasRiskCounters).every(value => typeof value === "number"));
+});
+
 for (const mode of ["full-access", "workspace-write"] as const) {
+  test(`review forty-one ${mode}: alias state invalidates literal process producers`, async t => {
+    for (const producer of ["echo ':'", "printf '%s' ':'"]) for (const setup of [
+      "shopt -s expand_aliases\nalias echo='printf \"%s\" \"rm -rf /protected\"'\nalias printf='echo \"rm -rf /protected\"'",
+      "shopt -s expand_aliases\nBASH_ALIASES[echo]='printf payload'", "source ./aliases.sh", 'shopt -s "$OPTION"', "source <(echo 'shopt -s expand_aliases')",
+    ]) {
+      const command = `${setup}\nsource <(${producer})`;
+      assert.equal(literalProcessSources(command), false, command);
+      assert.ok(inspectBashResourceLifecycle({ command }), command);
+      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
+      assert.equal(call.outcome?.block, true, command); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+    for (const command of ["source <(echo ':')", "true; source <(printf '%s' ':')", "shopt -u expand_aliases; source <(echo ':')"]) {
+      assert.deepEqual(literalProcessSources(command), [":"], command);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
+      assert.equal(f.dialogs(), mode === "full-access" ? 0 : 1);
+    }
+  });
+  test(`review forty-one ${mode}: missing interactive Python source operands remain data`, async t => {
+    for (const name of ["python", "python3.12", "env python312.exe", "py -V:Company/Tag"]) for (const option of ["-i -c", "-i -m", "-ic", "-im"]) {
+      const command = `${name} ${option} <<'EOF'\nshutil.rmtree(target)\nEOF`;
+      assert.equal(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected ?? false, false, command);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
+      assert.equal(f.dialogs(), mode === "full-access" ? 0 : 1);
+    }
+    for (const option of ["-i -c pass", "-i -cpass", "-icpass", "-i -m code", "-imcode"]) {
+      const command = `python3 ${option} <<'EOF'\nshutil.rmtree(target)\nEOF`;
+      assert.equal(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
+      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
+      assert.equal(call.outcome?.block, true, command); assert.equal(f.dialogs(), 0);
+    }
+  });
+  test(`review forty-one ${mode}: values on no-argument sort options terminate before effects`, async t => {
+    for (const option of ["--help=x", "--he=x", "--version=x", "--reverse=x", "--numeric-sort=x"]) for (const flags of [`-o .git/config ${option}`, `${option} -o .git/config`, `-T ../outside ${option}`]) {
+      const command = `sort ${flags}`;
+      assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "read-only", command);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), 0);
+    }
+    for (const command of ["sort --help=x > .git/config", "echo data > .git/config; sort --help=x", "sort --check=quiet -o .git/config", "sort -- --help=x -o .git/config"]) {
+      assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, command.includes("sort -- --") ? "read-only" : "known-mutation", command);
+    }
+  });
   test(`review forty ${mode}: persistent interpreter descriptor reads reject lost or dynamic bodies`, async t => {
     for (const [name, body] of [["node", "fs.unlinkSync(target)"], ["nodejs", "fs.unlinkSync(target)"], ["env NODEJS.exe", "fs.unlinkSync(target)"],
       ["python3", "shutil.rmtree(target)"], ["/usr/bin/python3.12", "shutil.rmtree(target)"], ["env python312.exe", "shutil.rmtree(target)"]]) {
