@@ -12,6 +12,18 @@ const cwd = process.cwd(), iterations = 512, warmup = 64, samplingInterval = 409
 const literalInputs = process.argv.includes("--literal-inputs");
 const substitution = "$(grep -c -E '(class|function|const|var|let) GCSystem\\b' pixi/pixi.js)";
 const cases = literalInputs ? [
+  ["shadowed-process-producer", "echo() { printf '%s\\n' 'sleep 100 &'; }; source <(echo ':')", 1],
+  ["node-optional-rm", "node <<'EOF'\nfs.rmSync?.(target,{recursive:true})\nEOF", 1],
+  ["node-literal-method-key", "node <<'EOF'\nfs?.['unlinkSync']?.(target)\nEOF", 1],
+  ["node-indirect-call", "node <<'EOF'\nfs.rmSync.call(null,target,{recursive:true})\nEOF", 1],
+  ["node-masked-call-data", "node <<'EOF'\nconsole.log(\"fs['rmSync']?.(target)\")\nEOF", 1],
+  ["python-versioned-stdin", "env python3.12 <<'EOF'\nshutil.rmtree(target)\nEOF", 1],
+  ["python-versioned-command", "python312 -c 'shutil.rmtree(target)'", 1],
+  ["python-wrapped-method", "python <<'EOF'\n(shutil . rmtree)(target)\nEOF", 1],
+  ["python-continuation-method", "python <<'EOF'\nshutil\\\n.rmtree(target)\nEOF", 1],
+  ["python-comment-method", "python <<'EOF'\n(shutil # comment\n.rmtree)(target)\nEOF", 1],
+  ["python-wrapped-unlink", "python <<'EOF'\n(Path(target) . unlink)()\nEOF", 1],
+  ["unrecognized-interpreter", "pypy3 <<'EOF'\nshutil.rmtree(target)\nEOF", 1],
   ["sort-terminal-help", "sort -o .git/config --help", 1],
   ["find-terminal-help", "find --help -fprint .git/config", 1],
   ["unresolved-process-source", "source <(printf '%b' 'sleep 100 &')", 1],

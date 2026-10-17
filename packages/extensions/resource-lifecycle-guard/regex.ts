@@ -19,12 +19,15 @@ export const SERVICE_CLEANUP_PATTERN = /(?:^|[;&|()\r\n])\s*(?:sudo\s+)?(?:syste
 export const RM_RECURSIVE_PATTERN = /\brm\b(?=[^;&|\r\n]*(?:\s-[A-Za-z]*r[A-Za-z]*\b|\s--recursive\b))/iu;
 export const POWERSHELL_REMOVE_RECURSIVE_PATTERN = /\bremove-item\b(?=[^;&|\r\n]*\s-(?:recurse|r)\b)/iu;
 export const WINDOWS_RMDIR_RECURSIVE_PATTERN = /\brmdir\b(?=[^;&|\r\n]*\s\/s\b)/iu;
-export const PYTHON_RMTREE_PATTERN = /\bshutil\.rmtree\s*\(/giu;
-export const PYTHON_UNLINK_PATTERN = /\.\s*unlink\s*\(/giu;
-export const NODE_RM_CALL_PATTERN = /\b(?:fs\.)?(?:rm|rmSync)\s*\(/giu;
+export const PYTHON_RMTREE_PATTERN = /\bshutil\s*\.\s*rmtree\s*(?:\)\s*)*\(/giu;
+export const PYTHON_UNLINK_PATTERN = /\.\s*unlink\s*(?:\)\s*)*\(/giu;
+export const NODE_RM_CALL_PATTERN = /(?:\b(?:fs\.)?(?:rm|rmSync)|\[\s*(?:"(?:rm|rmSync)"|'(?:rm|rmSync)')\s*\])\s*(?:(?:\?\.|\.)\s*(?:call|apply)\s*)?(?:\?\.\s*)?\(/giu;
 export const NODE_RECURSIVE_OPTION_PATTERN = /\brecursive\s*:\s*true/iy;
 export const NODE_NONRECURSIVE_OPTIONS_PATTERN = /\s*\{\s*(?:(?:recursive\s*:\s*false|force\s*:\s*(?:true|false)|(?:maxRetries|retryDelay)\s*:\s*\d+)\s*(?:,\s*|(?=\})))*\}\s*(?=[,)])/y;
-export const NODE_UNLINK_PATTERN = /\b(?:fs\.)?(?:unlink|unlinkSync)\s*\(/giu;
+export const NODE_UNLINK_PATTERN = /(?:\b(?:fs\.)?(?:unlink|unlinkSync)|\[\s*(?:"(?:unlink|unlinkSync)"|'(?:unlink|unlinkSync)')\s*\])\s*(?:(?:\?\.|\.)\s*(?:call|apply)\s*)?(?:\?\.\s*)?\(/giu;
+// Borrowed synchronously by the existing mask; test() does not expose a match
+// array and lastIndex is reset before returning. All other strings stay hidden.
+export const NODE_LITERAL_METHOD_KEY_PATTERN = /(?:"(?:rm|rmSync|unlink|unlinkSync)"|'(?:rm|rmSync|unlink|unlinkSync)')(?=\s*\])/y;
 export const FIND_DELETE_PATTERN = /\bfind\b[^;&|\r\n]*\s-delete\b/iu;
 export const XARGS_RM_PATTERN = /\bxargs\b[^;&|\r\n]*\brm\b/iu;
 export const GIT_CLEAN_PATTERN = /\bgit\s+clean\b(?=[^;&|\r\n]*\s-[A-Za-z]*f[A-Za-z]*\b)(?=[^;&|\r\n]*\s-[A-Za-z]*d[A-Za-z]*\b|[^;&|\r\n]*\s-[A-Za-z]*fd[A-Za-z]*\b)/iu;
@@ -41,7 +44,9 @@ export const COMMAND_WORD_SEPARATOR_PATTERN = /[ \t]/u;
 export const INTEGER_SECONDS_PATTERN = /^[1-9][0-9]{0,8}$/u;
 export const OWNED_FOREGROUND_JOB_PATTERN = /^\s*([A-Za-z0-9_./-]+)(?:[ \t]+[A-Za-z0-9_./:-]+)*[ \t]+&[ \t]*pid=\$!;[ \t]*trap 'kill "\$pid"; wait "\$pid"' EXIT;[ \t]*(?:(.{1,4096});[ \t]*kill "\$pid";[ \t]*)?wait "\$pid"\s*$/;
 export const OPAQUE_JOB_LAUNCHER_PATTERN = /^(?:env|sudo|doas|nice|nohup|setsid|timeout|stdbuf|command|exec|busybox|xargs|sh|bash|zsh|dash|fish|ksh|powershell|pwsh|cmd)(?:\.exe)?$/iu;
-export const OPAQUE_JOB_INTERPRETER_PATTERN = /^(?:python(?:[0-9]+(?:\.[0-9]+)*)?|py|node(?:js)?)(?:\.exe)?$/iu;
+export const PYTHON_COMMAND_PATTERN = /^(?:python(?:[0-9]+(?:\.[0-9]+)*)?|py)(?:\.exe)?$/iu;
+// Python ownership, code and permission classification share the matcher above.
+export const OPAQUE_JOB_INTERPRETER_PATTERN = /^node(?:js)?(?:\.exe)?$/iu;
 export const OWNED_USE_COMMAND_PATTERN = /^(?:curl|test|true|false|echo)(?:[ \t]+[A-Za-z0-9_./:%?=,+-]+)*$/u;
 export const SHELL_WRAPPER_TEXT_PATTERN = /sh|eval|trap|alias|timeout|mapfile|readarray|test/iu;
 export const EXECUTABLE_EXPANSION_TEXT_PATTERN = /[$`*?\[\]{}%]/u;

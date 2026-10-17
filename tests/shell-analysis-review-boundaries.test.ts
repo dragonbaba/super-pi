@@ -6,6 +6,20 @@ import { inspectBashPermissionScope } from "../packages/extensions/resource-life
 import { extractCommandSubstitutions, prepareShellAnalysis, shellAnalysisCounters } from "../packages/extensions/resource-lifecycle-guard/shell-substitution.ts";
 import { shellHookFixture, assertFinalAuthorization } from "./codemode-recovery/shell-hook-fixture.ts";
 import { SessionPermissionController, workspace } from "./codemode-recovery/guard-fixture.ts";
+import { NODE_LITERAL_METHOD_KEY_PATTERN, NODE_RM_CALL_PATTERN, NODE_UNLINK_PATTERN, PYTHON_COMMAND_PATTERN } from "../packages/extensions/resource-lifecycle-guard/regex.ts";
+
+function literalProgram(interpreter: string, body: string, heredoc: boolean): string {
+  return heredoc ? `${interpreter} <<'EOF'\n${body}\nEOF` : `${interpreter} ${interpreter === "node" ? "-e" : "-c"} '${body.replaceAll("'", "'\\''")}'`;
+}
+
+test("bounded interpreter matchers reset borrowed regex state", () => {
+  for (const body of ["fs['rmSync']?.(target,{recursive:true})", "fs.rmSync.call('receiver',target,{recursive:true})", "fs.rmSync.call\u00a0('receiver',target,{recursive:true})", "fs?.[\u2000'unlinkSync']?.(target)"]) {
+    const scan = inspectHighRiskBashMutation({ command: literalProgram("node", body, true) }, process.cwd());
+    assert.equal(scan?.mutationDetected, true, body); assert.equal(scan?.unverifiableScope, true); assert.deepEqual(scan?.targets, []);
+    assert.equal(NODE_LITERAL_METHOD_KEY_PATTERN.lastIndex, 0); assert.equal(NODE_RM_CALL_PATTERN.lastIndex, 0); assert.equal(NODE_UNLINK_PATTERN.lastIndex, 0);
+  }
+  assert.equal(PYTHON_COMMAND_PATTERN.global, false); assert.equal(PYTHON_COMMAND_PATTERN.sticky, false);
+});
 
 test("subscript text checks share the substitution scan and retain no source", () => {
   const command = "printf '%s' 'a[0-9]' \"b[12]\" $'c[3]'";
@@ -32,6 +46,69 @@ test("prompt checks inspect only discovered parameter heads and retain primitive
 });
 
 for (const mode of ["full-access", "workspace-write"] as const) {
+  test(`review thirty-two ${mode}: shadowed process producers retain unresolved source refusal`, async t => {
+    for (const name of ["echo", "printf"]) for (const declaration of [`${name}() {`, `function ${name} {`, `function ${name}() {`, `${name}() (`]) {
+      const command = `${declaration} printf '%s\\n' 'sleep 100 &'; ${declaration.endsWith("(") ? ")" : "}"}; source <(${name}${name === "printf" ? " '%s'" : ""} ':')`;
+      assert.equal(literalProcessSources(command), false); assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_UNINSPECTABLE\]/);
+      const f = await shellHookFixture(t, mode), result = await f.authorize(command); assert.equal(result.outcome?.block, true); assert.equal(f.dialogs(), 0);
+    }
+    for (const command of ["source <(echo ':')", "source <(printf '%s' ':')", "other() { printf ignored; }; source <(echo ':')"]) {
+      assert.deepEqual(literalProcessSources(command), [":"]);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
+    }
+  });
+  test(`review thirty-one ${mode}: optional, literal-key and indirect Node deletion calls`, async t => {
+    for (const heredoc of [false, true]) {
+      for (const method of ["rmSync", "rm", "unlinkSync", "unlink"]) {
+        const args = method.startsWith("rm") ? "process.argv[1],{recursive:true}" : "process.argv[1]";
+        for (const call of [`fs.${method}?.(`, `fs.${method} \n ?. \n (`, `fs['${method}'](`, `fs["${method}"]?.(`, `fs?.['${method}'] ?. (`, `fs.${method}.call(null,`, `fs['${method}'].apply(null,[`]) {
+          const body = `${call}${args}${call.includes("apply") ? "]" : ""})`, command = literalProgram("node", body, heredoc);
+          const scan = inspectHighRiskBashMutation({ command }, process.cwd()); assert.equal(scan?.mutationDetected, true, body); assert.equal(scan?.unverifiableScope, true, body); assert.deepEqual(scan?.targets, []);
+          const f = await shellHookFixture(t, mode), result = await f.authorize(command); assert.equal(result.outcome?.block, true, command); assert.equal(f.dialogs(), 0);
+        }
+      }
+      for (const body of ["fs.rmSync?.('scratch',{recursive:true})", "fs['rmSync']('scratch',{recursive:true})", "fs?.['unlinkSync']?.('scratch')"]) {
+        const scan = inspectHighRiskBashMutation({ command: literalProgram("node", body, heredoc) }, process.cwd());
+        assert.equal(scan?.mutationDetected, true); assert.deepEqual(scan?.targets, [resolve('scratch')]); assert.equal(scan?.unverifiableScope, false);
+      }
+      for (const body of ["console.log(1)", "fs.rmSync('a.txt')", "fs.rmSync?.('a.txt')", "fs['rmSync']('a.txt')", "console.log(\"rmSync?.(\")", "// fs.rmSync?.(target,{recursive:true})", "const remove=fs.rmSync; remove(target,{recursive:true})", "const {rmSync:remove}=fs; remove(target,{recursive:true})", "fs[name](target,{recursive:true})"]) {
+        const command = literalProgram("node", body, heredoc); assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, body);
+        assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "opaque-script");
+        const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
+      }
+    }
+  });
+  test(`review thirty-one ${mode}: Python names share one bounded interpreter grammar`, async t => {
+    for (const interpreter of ["python3.12", "python3.12.exe", "python312", "/usr/bin/python3.12", "env python3.12", "PYTHON3.12.EXE", "py", "python", "python3"]) for (const heredoc of [false, true]) {
+      const command = literalProgram(interpreter, "import shutil; shutil.rmtree(sys.argv[1])", heredoc);
+      assert.equal(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
+      const f = await shellHookFixture(t, mode), result = await f.authorize(command); assert.equal(result.outcome?.block, true, command); assert.equal(f.dialogs(), 0);
+      const safe = literalProgram(interpreter, "print(1)", heredoc), g = await shellHookFixture(t, mode); assertFinalAuthorization(await g.authorize(safe)); assert.equal(g.dialogs(), mode === "workspace-write" ? 1 : 0);
+    }
+    for (const interpreter of ["pypy3", "python3-dbg", "python3.12-config"]) for (const heredoc of [false, true]) {
+      const command = literalProgram(interpreter, "shutil.rmtree(sys.argv[1])", heredoc);
+      assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
+      assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "opaque-script");
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
+    }
+  });
+  test(`review thirty-one ${mode}: Python attribute whitespace and wrapped methods`, async t => {
+    for (const heredoc of [false, true]) {
+      for (const body of ["shutil . rmtree(target)", "(shutil\n.rmtree)(target)", "shutil\\\n.rmtree(target)", "(shutil # c\n.rmtree)(target)", "((shutil . rmtree)) (target)", "Path(target) . unlink()", "(Path(target)\n. unlink)()", "(Path(target) # c\n. unlink)()", "Path(target)\\\n.unlink()"] ) {
+        const command = literalProgram("python", body, heredoc), scan = inspectHighRiskBashMutation({ command }, process.cwd());
+        assert.equal(scan?.mutationDetected, true, body); assert.equal(scan?.unverifiableScope, true, body); assert.deepEqual(scan?.targets, []);
+        const f = await shellHookFixture(t, mode), result = await f.authorize(command); assert.equal(result.outcome?.block, true, command); assert.equal(f.dialogs(), 0);
+      }
+      for (const body of ["(shutil . rmtree)('scratch')", "shutil\\\n.rmtree('scratch')", "(Path('scratch') . unlink)()"] ) {
+        const scan = inspectHighRiskBashMutation({ command: literalProgram("python", body, heredoc) }, process.cwd()); assert.equal(scan?.mutationDetected, true, body); assert.deepEqual(scan?.targets, [resolve('scratch')]); assert.equal(scan?.unverifiableScope, false);
+      }
+      for (const body of ["print(1)", "print(\"shutil . rmtree(\")", "# shutil.rmtree(target)", "from shutil import rmtree; rmtree(target)", "getattr(shutil,'rmtree')(target)", "os.remove(target)", "os.rmdir(target)", "remove=shutil.rmtree; remove(target)"]) {
+        const command = literalProgram("python", body, heredoc); assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, body);
+        assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "opaque-script");
+        const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
+      }
+    }
+  });
   test(`review thirty ${mode}: terminal help retains only actual preceding effects`, async t => {
     for (const command of ["find --help -fprint .git/config", "find --version -delete", "sort -o .git/config --help", "sort -T .git --version", "sort --out=.git/config --he", "sort -ro.git/config --help"]) {
       const scope = inspectBashPermissionScope({ command }, process.cwd());

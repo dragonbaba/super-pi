@@ -14,6 +14,7 @@ import {
 	NODE_RECURSIVE_OPTION_PATTERN,
 	NODE_NONRECURSIVE_OPTIONS_PATTERN,
 	NODE_UNLINK_PATTERN,
+	NODE_LITERAL_METHOD_KEY_PATTERN,
 	NONNEGATIVE_INTEGER_PATTERN,
 	SIMPLE_BASH_LET_ASSIGNMENT_PATTERN,
 	OPAQUE_JOB_INTERPRETER_PATTERN,
@@ -22,6 +23,7 @@ import {
 	OWNED_USE_COMMAND_PATTERN,
 	POWERSHELL_REMOVE_RECURSIVE_PATTERN,
 	PYTHON_RMTREE_PATTERN,
+	PYTHON_COMMAND_PATTERN,
 	PYTHON_UNLINK_PATTERN,
 	REDIRECTION_OPERATOR_PATTERN,
 	SERVICE_START_PATTERN,
@@ -80,7 +82,6 @@ const NODE_VALUE_FREE_FLAGS = new Set([
 	"--trace-env-native-stack", "--trace-promises", "--trace-sigint", "--trace-tls", "--track-heap-objects",
 	"--use-bundled-ca", "--use-env-proxy", "--use-openssl-ca", "--use-system-ca", "--v8-options", "--zero-fill-buffers",
 ]);
-const PYTHON_COMMANDS = new Set(["python", "python.exe", "python3", "python3.exe", "py", "py.exe"]);
 const RM_RECURSIVE_OPTIONS = new Set(["--recursive"]);
 const POWERSHELL_RECURSIVE_OPTIONS = new Set(["-recurse", "-r"]);
 const POWERSHELL_TARGET_OPTIONS = new Set(["-path", "-literalpath"]);
@@ -194,7 +195,9 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
  if (DOCKER_DETACHED_PATTERN.test(command) || SERVICE_START_PATTERN.test(command)) return BLOCK_REASON;
  if (hasUnquotedBackgroundOperator(command)) {
   const owned = OWNED_FOREGROUND_JOB_PATTERN.exec(command);
-  if (!owned || !hasBoundedOwnedUse(owned[2]) || OPAQUE_JOB_LAUNCHER_PATTERN.test(commandName(owned[1]!)) || OPAQUE_JOB_INTERPRETER_PATTERN.test(commandName(owned[1]!))) return BLOCK_REASON;
+  if (!owned || !hasBoundedOwnedUse(owned[2])) return BLOCK_REASON;
+  const ownedName = commandName(owned[1]!);
+  if (OPAQUE_JOB_LAUNCHER_PATTERN.test(ownedName) || PYTHON_COMMAND_PATTERN.test(ownedName) || OPAQUE_JOB_INTERPRETER_PATTERN.test(ownedName)) return BLOCK_REASON;
  }
  if (!SHELL_WRAPPER_TEXT_PATTERN.test(command) && !EXECUTABLE_EXPANSION_TEXT_PATTERN.test(command) && !command.includes("[[") && !command.includes("((") && !command.includes("for") && !command.includes("select") && !command.includes("coproc")) return undefined;
  const segments = parseShellSegments(command, true);
@@ -646,7 +649,7 @@ function inspectCommand(
 		inspectCodeWrapper(tokens, commandIndex + 1, "node", cwd, builder);
 		return;
 	}
-	if (PYTHON_COMMANDS.has(command)) {
+	if (PYTHON_COMMAND_PATTERN.test(command)) {
 		inspectCodeWrapper(tokens, commandIndex + 1, "python", cwd, builder);
 		return;
 	}
@@ -729,8 +732,9 @@ function inspectCodeCall(
 		let calls = 0;
 		for (let match = pattern.exec(masked); match; match = pattern.exec(masked)) {
 			if (++calls > MAX_SCRIPT_SEGMENTS) { markUnverifiable(builder, true); return; }
-			const open = pattern === PYTHON_UNLINK_PATTERN ? pythonPathArgumentOpen(masked, match.index) : source.indexOf("(", match.index);
-			const recursive = pattern === NODE_RM_CALL_PATTERN ? nodeHasRecursiveOption(masked, open) : 1;
+			const open = pattern === PYTHON_UNLINK_PATTERN ? pythonPathArgumentOpen(masked, match.index) : pattern.lastIndex - 1;
+			const indirect = (pattern === NODE_RM_CALL_PATTERN || pattern === NODE_UNLINK_PATTERN) && nodeIndirectCall(masked, open);
+			const recursive = indirect ? -1 : pattern === NODE_RM_CALL_PATTERN ? nodeHasRecursiveOption(masked, open) : 1;
 			if (!recursive) continue;
 			addMutationPrimitive(builder, primitive);
 			const literal = open >= 0 && recursive > 0 ? literalFirstArgument(source, open, primitive === "python_unlink") : undefined;
@@ -738,6 +742,15 @@ function inspectCodeCall(
 			else addTarget(builder, literal, cwd);
 		}
 	} finally { pattern.lastIndex = 0; }
+}
+
+/** No positional interpretation of call/apply receiver/argument lists. */
+function nodeIndirectCall(masked: string, open: number): boolean {
+	let end = open;
+	while (end > 0 && isCodeWhitespace(masked.charCodeAt(end - 1))) end--;
+	if (masked.charCodeAt(end - 1) === 46 && masked.charCodeAt(end - 2) === 63) end -= 2;
+	while (end > 0 && isCodeWhitespace(masked.charCodeAt(end - 1))) end--;
+	return masked.endsWith("call", end) || masked.endsWith("apply", end);
 }
 
 /** Resolve only a direct Path constructor receiver. The existing mask preserves
@@ -1359,6 +1372,7 @@ export function literalProcessSources(command: string): string[] | false | null 
 				if (cursor === consumer.length) {
 					const producers = parseShellSegments(command.slice(index + 2, end)), producer = producers[0];
 					if (producers.length === 1 && producer && !producer.redirections?.length && !producer.dynamic) {
+						if ((producer[0] === "echo" || producer[0] === "printf") && functionStdinConsumers(prefixes, producer[0], 0, 1) !== -1) return false;
 						const source = producer[0] === "echo" && producer.length === 2 && !producer[1]!.startsWith("-") && !producer[1]!.includes("\\") ? producer[1]
 							: producer[0] === "printf" && producer.length === 3 && (producer[1] === "%s" || producer[1] === "%s\\n") ? producer[2] : undefined;
 						if (source !== undefined) {
@@ -1590,7 +1604,7 @@ function simpleStdinConsumers(tokens: ShellSegment, descriptor: number, depth: n
 		const operand = tokens[index + (tokens[index + 1] === "--" ? 2 : 1)];
 		return isHeredocDescriptorPath(operand, descriptor) ? 1 : 0;
 	}
-	const language = SCRIPT_WRAPPERS.has(name) ? "bash" : NODE_COMMANDS.has(name) ? "node" : PYTHON_COMMANDS.has(name) ? "python" : undefined;
+	const language = SCRIPT_WRAPPERS.has(name) ? "bash" : NODE_COMMANDS.has(name) ? "node" : PYTHON_COMMAND_PATTERN.test(name) ? "python" : undefined;
 	if (!language) return 0;
 	if (language === "node") return nodeMayReadStdin(tokens, index + 1, descriptor) ? 2 : 0;
 	const languageMask = language === "bash" ? 1 : 4;
@@ -2514,7 +2528,15 @@ function maskCodeStringsAndComments(source: string, language: "node" | "python")
 			lineComment = true;
 			continue;
 		}
+		if (language === "python" && code === 92 && (next === 10 || next === 13 && source.charCodeAt(index + 2) === 10)) {
+			output[index] = " "; continue;
+		}
 		if (code === 34 || code === 39 || (language === "node" && code === 96)) {
+			const keyEnd = language === "node" ? nodeLiteralMethodKeyEnd(source, index) : index;
+			if (keyEnd > index) {
+				for (; index < keyEnd; index++) output[index] = source[index]!;
+				index--; continue;
+			}
 			quote = code;
 			triple = language === "python" && next === code && source.charCodeAt(index + 2) === code;
 			output[index] = " ";
@@ -2528,6 +2550,23 @@ function maskCodeStringsAndComments(source: string, language: "node" | "python")
 		output[index] = source[index]!;
 	}
 	return output.join("");
+}
+
+/** Preserve only an exact quoted deletion key after [, inside this mask's
+ * code state. Literal strings/comments outside property keys remain masked. */
+function nodeLiteralMethodKeyEnd(source: string, start: number): number {
+	let before = start - 1;
+	while (before >= 0 && isCodeWhitespace(source.charCodeAt(before))) before--;
+	if (source.charCodeAt(before) !== 91) return start;
+	NODE_LITERAL_METHOD_KEY_PATTERN.lastIndex = start;
+	try { return NODE_LITERAL_METHOD_KEY_PATTERN.test(source) ? NODE_LITERAL_METHOD_KEY_PATTERN.lastIndex : start; }
+	finally { NODE_LITERAL_METHOD_KEY_PATTERN.lastIndex = 0; }
+}
+
+function isCodeWhitespace(code: number): boolean {
+	return code === 32 || code >= 9 && code <= 13 || code === 160 || code === 5760
+		|| code >= 8192 && code <= 8202 || code === 8232 || code === 8233 || code === 8239
+		|| code === 8287 || code === 12288 || code === 65279;
 }
 
 function literalFirstArgument(source: string, openParen: number, singleArgument = false): string | undefined {

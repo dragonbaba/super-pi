@@ -24,6 +24,7 @@ test("authorization scanners and cache methods add no callbacks, promises or Buf
   targets.get("core.ts")!.add("pythonPathArgumentOpen");
   targets.get("core.ts")!.add("coprocBodyIndex");
   targets.get("core.ts")!.add("coprocHeredocContext");
+  for (const name of ["nodeIndirectCall", "nodeLiteralMethodKeyEnd", "isCodeWhitespace"]) targets.get("core.ts")!.add(name);
   for (const name of ["addPositionalTargets", "findSearchRootIndex", "inspectTokenBuffer"]) targets.get("permission-bash.ts")!.add(name);
   for (const [file, names] of targets) {
     const source = ts.createSourceFile(file, readFileSync(`packages/extensions/resource-lifecycle-guard/${file}`, "utf8"), ts.ScriptTarget.Latest, true);
@@ -82,6 +83,20 @@ test("sort terminal preflight adds no source copies or temporary containers", ()
     ts.forEachChild(node, audit);
   }
   ts.forEachChild(helper.body!, audit);
+});
+
+test("interpreter call helpers allocate no per-call regexes, strings or containers", () => {
+  const source = ts.createSourceFile("core.ts", readFileSync("packages/extensions/resource-lifecycle-guard/core.ts", "utf8"), ts.ScriptTarget.Latest, true);
+  const names = new Set(["nodeIndirectCall", "nodeLiteralMethodKeyEnd", "isCodeWhitespace"]), seen = new Set<string>();
+  function audit(node: ts.Node): void {
+    assert.equal(ts.isNewExpression(node) || ts.isObjectLiteralExpression(node) || ts.isArrayLiteralExpression(node) || ts.isArrowFunction(node) || ts.isFunctionExpression(node) || ts.isRegularExpressionLiteral(node) || ts.isTemplateExpression(node), false, node.getText(source));
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) assert.ok(["charCodeAt", "endsWith", "test"].includes(node.expression.name.text), node.getText(source));
+    ts.forEachChild(node, audit);
+  }
+  for (const statement of source.statements) if (ts.isFunctionDeclaration(statement) && statement.name && names.has(statement.name.text)) { seen.add(statement.name.text); ts.forEachChild(statement.body!, audit); }
+  assert.deepEqual(seen, names);
+  for (const file of ["core.ts", "permission-bash.ts"]) assert.ok(readFileSync(`packages/extensions/resource-lifecycle-guard/${file}`, "utf8").includes("PYTHON_COMMAND_PATTERN.test("));
+  assert.equal(readFileSync("packages/extensions/resource-lifecycle-guard/core.ts", "utf8").includes("PYTHON_COMMANDS"), false);
 });
 
 test("descriptor origin decoding adds no strings or temporary containers", () => {
