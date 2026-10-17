@@ -511,7 +511,7 @@ export class SessionPermissionController {
     // One presentation materialization per actual approval. Never use the bounded
     // summary as the authority or as a substitute for inspectable request values.
     const fullRequest = JSON.stringify(event.input, null, 2);
-    const details = `${header}\n操作尚未执行\n将保存的精确规则: ${request.shellCommand ?? "不适用"}\n将保存的前缀规则: ${commandPrefix ? `${commandPrefix} *（允许参数变化，包括无参数调用）` : "不适用"}\n本 Session 规则范围: ${request.operation}; cwd=${ruleCwd}\n模型提供的说明 (未经验证): ${request.purpose ?? "未提供"}\n目标范围:\n${request.exactTargets.join("\n") || "未确定"}\n风险依据: ${request.primitives.join(", ")}\n完整请求:\n${fullRequest}`;
+    const details = `${header}\n操作尚未执行\n将保存的精确规则: ${request.shellCommand ?? "不适用"}\n将保存的前缀规则: ${commandPrefix ? `${commandPrefix} *（仅匹配单条简单命令，允许参数变化及无参数调用；复合命令仍需确认）` : "不适用"}\n本 Session 规则范围: ${request.operation}; cwd=${ruleCwd}\n模型提供的说明 (未经验证): ${request.purpose ?? "未提供"}\n目标范围:\n${request.exactTargets.join("\n") || "未确定"}\n风险依据: ${request.primitives.join(", ")}\n完整请求:\n${fullRequest}`;
     const choice = await ctx.ui.select(header, choices, { signal, details });
     assertCurrent();
     const prefixChoice = commandPrefix ? `${ALLOW_SESSION_PREFIX}：${commandPrefix} *` : undefined;

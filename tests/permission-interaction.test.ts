@@ -502,21 +502,20 @@ test("RPC error serialization preserves distinct invocation identities", async (
  assert.equal("toolCallId" in JSON.parse(JSON.stringify(formatRpcExtensionError(common))), false);
 });
 
-
 test("PR2: prefix approval acceptance, scope, persistence and suggestion boundaries", async t => {
  const scope = { backend: "bash" as const, cwd: process.cwd() };
  const rule = createSessionAllowRule("prefix", "ls *", scope);
- for (const value of ["ls", "ls -la", "ls ./src", "ls ./tests"]) assert.equal(sessionAllowRuleMatches(rule, value, scope), true);
  for (const value of ["lsof", "lsblk", "ls ./src && touch out", "ls; pwd", 'ls "$(pwd)"', "ls > out", "ls | cat", "./ls", "/untrusted/ls"]) assert.equal(sessionAllowRuleMatches(rule, value, scope), false, value);
  for (const other of [{ ...scope, backend: "powershell" }, { ...scope, cwd: join(scope.cwd, "other") }]) assert.equal(sessionAllowRuleMatches(rule, "ls", other), false);
  for (const tool of ["git", "npm", "pnpm", "yarn", "bun", "cargo", "go", "dotnet", "uv", "pip", "docker", "kubectl"]) {
   assert.equal(simpleCommandPrefix(`${tool} run target`), `${tool} run`); assert.equal(simpleCommandPrefix(`${tool} --version`), undefined); assert.equal(simpleCommandPrefix(tool), undefined);
  }
- for (const tool of ["bash", "sh", "zsh", "pwsh", "python", "python3", "python3.12", "node", "deno", "ruby", "perl", "sudo", "doas", "env", "xargs", "timeout", "nice", "npx", "bunx", "pnpx", "uvx", "pipx"]) assert.equal(simpleCommandPrefix(`${tool} script`), undefined, tool);
+ for (const tool of ["bash", "sh", "zsh", "pwsh", "powershell", "python", "python3", "python3.12", "node", "deno", "ruby", "perl", "sudo", "doas", "env", "xargs", "timeout", "nice", "npx", "bunx", "pnpx", "uvx", "pipx"]) assert.equal(simpleCommandPrefix(`${tool} script`), undefined, tool);
  for (const tool of ["make", "pytest", "tsc", "jest", "vitest"]) assert.equal(simpleCommandPrefix(`${tool} target`), tool);
  // Each row is one behavior in workspace-write + ask. Commands are never executed.
  for (const [first, kind, command, prefix, asks] of [
   ["npm test", "prefix", "npm test -- --watch=false", undefined, 0],
+  ["npm test", "prefix", "npm test && echo done", "npm test", 1],
   ["npm run lint", "prefix", "npm run build", undefined, 0],
   ["npm run lint", "prefix", "npm install lodash", "npm install", 1],
   ["npm run lint", "prefix", "npm run build && rm -rf x", undefined, 1],
@@ -525,12 +524,13 @@ test("PR2: prefix approval acceptance, scope, persistence and suggestion boundar
   ["", "", "python3 a.py", undefined, 1],
   ["python3 *", "manual", "python3 b.py", undefined, 0],
   ["python3 *", "manual", `python3 -c "import shutil; shutil.rmtree('x')"`, undefined, 1],
-  ["", "", "rm -rf node_modules", undefined, 1],
+  ["rm *", "manual", "rm -rf node_modules", undefined, 1],
   ["touch ./new.txt", "exact", "touch ./new.txt", undefined, 0],
  ] as const) {
   const f = await permissionFixture(t, true); let shown = 0, selecting = false;
-  f.runner.setUIContext({ ...f.runner.getUIContext(), select: async (_title, choices) => {
+  f.runner.setUIContext({ ...f.runner.getUIContext(), select: async (_title, choices, options) => {
    shown++; assert.ok(choices.includes("将当前完整指令加入 Session 白名单")); const offered = choices.find(value => value.includes("指令前缀"));
+   if (offered) assert.match(options?.details ?? "", /复合命令仍需确认/);
    if (!selecting) { assert.equal(offered, prefix ? `将当前指令前缀加入 Session 白名单：${prefix} *` : undefined, command); return "仅允许本次"; }
    const selected = kind === "exact" ? choices.find(value => value.includes("完整指令")) : offered;
    assert.equal(selected, kind === "exact" ? "将当前完整指令加入 Session 白名单" : `将当前指令前缀加入 Session 白名单：${simpleCommandPrefix(first)} *`); return selected;
@@ -540,8 +540,8 @@ test("PR2: prefix approval acceptance, scope, persistence and suggestion boundar
   const before = shown; assert.equal(await f.call("bash", { command }), undefined, command); assert.equal(shown - before, asks, command);
   if (!asks) assert.equal(f.audits.at(-1)?.policyReason, "session_rule_match", command);
   const saved = f.permission.state.allowRules[0]; if (first) {
-   assert.equal(saved.kind, kind === "exact" ? "exact" : "prefix"); assert.equal(saved.pattern, kind === "exact" ? first : kind === "manual" ? "python3" : simpleCommandPrefix(first));
-   assert.equal(saved.backend, "bash"); assert.equal(saved.cwd, kind === "manual" ? f.cwd : realpathSync.native(f.cwd)); assert.deepEqual(f.permission.state.serialized().allowRules[0], saved);
+   assert.equal(saved.kind, kind === "exact" ? "exact" : "prefix"); assert.equal(saved.pattern, kind === "exact" ? first : kind === "manual" ? first.slice(0, -2) : simpleCommandPrefix(first));
+   assert.equal(saved.backend, "bash"); assert.equal(saved.cwd, kind === "manual" ? f.cwd : realpathSync.native(f.cwd)); assert.deepEqual(f.permission.state.serialized().allowRules[0], saved); assert.equal(sessionAllowRuleMatches(saved, saved.pattern), true);
    assert.equal(f.permission.state.removeAllowRule(saved.id)?.id, saved.id); assert.equal(f.permission.state.allowRules.length, 0);
   }
  }

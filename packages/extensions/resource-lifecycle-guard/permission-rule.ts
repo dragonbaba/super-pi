@@ -7,7 +7,7 @@ const MAX_RULE_PATTERN_CHARS = 4_096;
 const MAX_RULE_LABEL_CHARS = 320;
 const SUBCOMMAND_PREFIX_TOOLS = new Set(["git", "npm", "pnpm", "yarn", "bun", "cargo", "go", "dotnet", "uv", "pip", "docker", "kubectl"]);
 const NO_PREFIX_SUGGESTION_TOOLS = new Set([
-  "bash", "sh", "zsh", "pwsh", "node", "deno", "ruby", "perl",
+  "bash", "sh", "zsh", "pwsh", "powershell", "node", "deno", "ruby", "perl",
   "sudo", "doas", "env", "xargs", "timeout", "nice", "npx", "bunx", "pnpx", "uvx", "pipx",
 ]);
 
