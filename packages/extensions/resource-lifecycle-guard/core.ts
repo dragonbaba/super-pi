@@ -973,7 +973,7 @@ function addMutationPrimitive(builder: ScanBuilder, primitive: string): void {
 
 /** Literal interpreter stdin is executable source; data consumers remain opaque
  * data. This is analysis only and never reconstructs the command for execution. */
-function nodeMayReadStdin(tokens: readonly string[], start: number, descriptor = 0): boolean {
+function nodeMayReadStdin(tokens: readonly string[] & { expansions?: readonly number[] }, start: number, descriptor = 0): boolean {
 	// Unknown Node/V8 options may take zero or one value. Track both possible
 	// argv interpretations with primitive states; a value is never proof of a
 	// program operand, even when that value itself resembles a source flag.
@@ -982,6 +982,9 @@ function nodeMayReadStdin(tokens: readonly string[], start: number, descriptor =
 	let states = 1, interactive = false;
 	for (let index = start; index < tokens.length; index++) {
 		const word = tokens[index]!;
+		// A forwarded expansion can disappear or supply flags/descriptor paths.
+		// It cannot establish a definite program operand in any live argv state.
+		if (states && tokens.expansions?.[index]) return true;
 		if (states & 32 && (word === "-" && descriptor === 0 || isHeredocDescriptorPath(word, descriptor))) return true;
 		const options = states & 3;
 		states = (states & 12) >> 2 | (states & 16 ? 2 : 0);
@@ -1591,18 +1594,19 @@ function simpleStdinConsumers(tokens: ShellSegment, descriptor: number, depth: n
 	let shellStdin = false, shellNoexec = false, shellInteractive = false, shellPrettyPrint = false;
 	for (let cursor = index + 1; cursor < tokens.length; cursor++) {
 		const option = tokens[cursor]!;
+		if (tokens.expansions?.[cursor]) return language === "bash" ? 8 : languageMask;
 		if (option === "-") return (shellNoexec || shellPrettyPrint) && !shellInteractive ? 16 : stdinMask;
-		if (option === "--") return (shellNoexec || shellPrettyPrint) && !shellInteractive ? 16 : shellStdin || cursor + 1 === tokens.length || tokens[cursor + 1] === "-" ? stdinMask : isHeredocDescriptorPath(tokens[cursor + 1], descriptor) ? languageMask : 0;
+		if (option === "--") return tokens.expansions?.[cursor + 1] ? language === "bash" ? 8 : languageMask : (shellNoexec || shellPrettyPrint) && !shellInteractive ? 16 : shellStdin || cursor + 1 === tokens.length || tokens[cursor + 1] === "-" ? stdinMask : isHeredocDescriptorPath(tokens[cursor + 1], descriptor) ? languageMask : 0;
 		if (!option.startsWith("-") && !(language === "bash" && option.startsWith("+"))) return (shellNoexec || shellPrettyPrint) && !shellInteractive ? 16 : shellStdin ? stdinMask : isHeredocDescriptorPath(option, descriptor) ? languageMask : 0;
 		if (option === "--help" || option === "--version" || language !== "bash" && option === "-h" || language === "python" && option === "-V") return 0;
 		if (language === "python") {
 			if (option === "--help-env" || option === "--help-xoptions" || option === "--help-all") return 0;
-			if (option === "--check-hash-based-pycs") { cursor++; continue; }
+			if (option === "--check-hash-based-pycs") { cursor++; if (tokens.expansions?.[cursor]) return languageMask; continue; }
 			if (!option.startsWith("--")) for (let flag = 1; flag < option.length; flag++) {
 				if (option[flag] === "V") return 0;
 				if (option[flag] === "i") shellStdin = true;
 				if (option[flag] === "c" || option[flag] === "m") return shellStdin ? stdinMask : 0;
-				if (option[flag] === "W" || option[flag] === "X") { if (flag + 1 === option.length) cursor++; break; }
+				if (option[flag] === "W" || option[flag] === "X") { if (flag + 1 === option.length) { cursor++; if (tokens.expansions?.[cursor]) return languageMask; } break; }
 			}
 		} else {
 			if (option === "--rcfile" || option === "--init-file") { cursor++; continue; }

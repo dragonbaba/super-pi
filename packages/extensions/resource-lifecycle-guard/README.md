@@ -207,6 +207,8 @@ Recognized Node `rm`/`rmSync` calls with quoted/computed recursive keys, spreads
 
 A matching function declaration with an unsupported body, including a parenthesized body, remains an unknown consumer rather than evidence that the external executable will run. Function lookup beyond its segment/depth bounds also retains the conservative heredoc refusal. This does not extend function-body grammar recognition.
 
+Interpreter argument expansions, including function forwarding through `"$@"`, cannot prove that stdin is data: they may disappear or supply flags or descriptor paths. Existing token expansion flags preserve possible Node/Python stdin execution until a definite literal program operand is found. Single-quoted literal `$@` and expansions after a definite program filename retain their data-input behavior. No argument values are tracked or reconstructed.
+
 ### Post-merge classification compatibility
 
 The global shell-text prefilter selects work only. Literal option-free `env`/`sudo`/`doas` operands are resolved within their own segment (`env` NAME=VALUE operands, including non-Bash names, `sudo` assignments and an initial `--` are recognized); ambiguous options, interleaved redirections, other launcher grammars and launcher-selected shells remain conservative refusals. Unrelated `sh` text does not turn a plain `env ... printenv` or `env echo` into a shell wrapper. This does not grant permission or validate arbitrary executable behavior.

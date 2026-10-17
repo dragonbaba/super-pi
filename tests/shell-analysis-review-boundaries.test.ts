@@ -32,6 +32,22 @@ test("prompt checks inspect only discovered parameter heads and retain primitive
 });
 
 for (const mode of ["full-access", "workspace-write"] as const) {
+  test(`review twenty-nine ${mode}: expanded forwarding retains possible interpreter stdin`, async t => {
+    for (const [interpreter, body] of [["python", "shutil.rmtree(target)"], ["node", "fs.rmSync(target,{recursive:true})"]]) {
+      for (const args of ['"$@"', '-- "$@"', '"$ARGS"', interpreter === "python" ? '-W "$@"' : '--title "$@"']) {
+        const command = `${interpreter}() { command ${interpreter} ${args}; }; ${interpreter} <<'EOF'\n${body}\nEOF`;
+        assert.equal(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
+        const f = await shellHookFixture(t, mode), call = await f.authorize(command);
+        assert.equal(call.outcome?.block, true, command); assert.equal(f.dialogs(), 0);
+      }
+      for (const args of ['script.file "$@"', "'$@'", "-- '$@'"]) {
+        const command = `${interpreter}() { command ${interpreter} ${args}; }; ${interpreter} <<'EOF'\n${body}\nEOF`;
+        assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
+        const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
+        assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
+      }
+    }
+  });
   test(`review twenty-eight ${mode}: uncertain recursive options retain mutation evidence`, async t => {
     for (const options of ["{'recursive':true}", '{"recursive":true}', "{['recursive']:true}", "{[key]:true}", "options", "{...options}", "{recursive:flag}", "{recursive:false,...options}"]) {
       const command = `node <<'EOF'\nfs.rmSync('scratch',${options})\nEOF`, mutation = inspectHighRiskBashMutation({ command }, process.cwd());

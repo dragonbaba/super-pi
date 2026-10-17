@@ -47,12 +47,12 @@ test("authorization scanners and cache methods add no callbacks, promises or Buf
   }
 });
 
-test("builtin and coproc operand checks use primitive state without source copies or temporary containers", () => {
+test("builtin, coproc and Node argv checks use primitive state without source copies or temporary containers", () => {
   const source = ts.createSourceFile("core.ts", readFileSync("packages/extensions/resource-lifecycle-guard/core.ts", "utf8"), ts.ScriptTarget.Latest, true);
-  const names = new Set(["hasUnsafeBashBuiltinOperand", "hasNonliteralBashSubscript", "skipRedirections", "afterLeadingRedirection", "coprocBodyIndex", "coprocHeredocContext"]), seen = new Set<string>();
+  const names = new Set(["hasUnsafeBashBuiltinOperand", "hasNonliteralBashSubscript", "skipRedirections", "afterLeadingRedirection", "coprocBodyIndex", "coprocHeredocContext", "nodeMayReadStdin"]), seen = new Set<string>();
   function audit(node: ts.Node): void {
     assert.equal(ts.isNewExpression(node) || ts.isObjectLiteralExpression(node) || ts.isArrayLiteralExpression(node) || ts.isArrowFunction(node) || ts.isFunctionExpression(node) || ts.isRegularExpressionLiteral(node), false, node.getText(source));
-    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) assert.ok(["charCodeAt", "startsWith", "includes", "test"].includes(node.expression.name.text), node.getText(source));
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) assert.ok(["charCodeAt", "startsWith", "includes", "test", "has"].includes(node.expression.name.text), node.getText(source));
     ts.forEachChild(node, audit);
   }
   for (const statement of source.statements) if (ts.isFunctionDeclaration(statement) && statement.name && names.has(statement.name.text)) {
