@@ -33,13 +33,13 @@ export function workspace(t: TestContext) {
   return root;
 }
 
-export async function permission(cwd: string, mode: "full-access" | "workspace-write") {
+export async function permission(cwd: string, mode: "full-access" | "workspace-write", decision = "仅允许本次") {
   let dialogs = 0;
   const audit: unknown[] = [];
   const controller = new SessionPermissionController({ appendEntry: (_kind: string, data: unknown) => audit.push(data) } as never);
   const ctx = { cwd, hasUI: true, sessionManager: { getBranch: () => [], getSessionId: () => `r0-${mode}` },
     ui: { setStatus() {}, select: async (_title: string, choices: string[]) => {
-      dialogs++; assert.ok(choices.includes("仅允许本次")); return "仅允许本次";
+      dialogs++; assert.ok(choices.includes("仅允许本次")); return decision;
     } } };
   await controller.restore(ctx as never);
   controller.state.setMode(mode); controller.state.setApprovalPolicy(mode === "full-access" ? "never-ask" : "ask");
