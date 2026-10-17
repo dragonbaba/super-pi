@@ -5,6 +5,11 @@ import { SIMPLE_COMMAND_PATTERN, DISPLAY_WHITESPACE_PATTERN, COMMAND_COMPOUND_SY
 const RULE_SCHEMA = "permission-rule-v2";
 const MAX_RULE_PATTERN_CHARS = 4_096;
 const MAX_RULE_LABEL_CHARS = 320;
+const SUBCOMMAND_PREFIX_TOOLS = new Set(["git", "npm", "pnpm", "yarn", "bun", "cargo", "go", "dotnet", "uv", "pip", "docker", "kubectl"]);
+const NO_PREFIX_SUGGESTION_TOOLS = new Set([
+  "bash", "sh", "zsh", "pwsh", "node", "deno", "ruby", "perl",
+  "sudo", "doas", "env", "xargs", "timeout", "nice", "npx", "bunx", "pnpx", "uvx", "pipx",
+]);
 
 function normalizedPattern(kind: SessionAllowRuleKind, value: string): string {
   let pattern = value.trim();
@@ -59,7 +64,8 @@ export function simpleCommandPrefix(command: string): string | undefined {
   }
   const executable = value.slice(0, end);
   if (!SIMPLE_COMMAND_PATTERN.test(executable)) return undefined;
-  if (executable === "git") {
+  if (executable.startsWith("python") || NO_PREFIX_SUGGESTION_TOOLS.has(executable)) return undefined;
+  if (SUBCOMMAND_PREFIX_TOOLS.has(executable)) {
     const subcommand = value.slice(end).trimStart().split(COMMAND_WORD_SEPARATOR_PATTERN, 1)[0];
     return subcommand && SIMPLE_COMMAND_PATTERN.test(subcommand) && !subcommand.startsWith("-") ? `${executable} ${subcommand}` : undefined;
   }

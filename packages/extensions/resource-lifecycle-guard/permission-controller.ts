@@ -429,7 +429,7 @@ export class SessionPermissionController {
     if (request.shellCommand && this.#ruleScopeAllows(request)) {
       for (const rule of this.#state.allowRules) {
         if (!rule.cwd && ruleCwd !== this.#state.primary.canonicalPath) continue;
-        if (rule.kind === "prefix" && (request.highRisk || request.opaqueScript)) continue;
+        if (rule.kind === "prefix" && request.highRisk) continue;
         if (!sessionAllowRuleMatches(rule, request.shellCommand, { backend: request.operation, cwd: rule.cwd === ctx.cwd && ruleCwd === this.#state.primary.canonicalPath ? ctx.cwd : ruleCwd })) continue;
         this.#appendAudit(request, "approved", "session_rule_match", this.#state.mode, this.#state.mode, false);
         return undefined;
@@ -492,7 +492,7 @@ export class SessionPermissionController {
     try {
     const modeBefore = this.#state.mode;
     const choices = [ALLOW_ONCE];
-    const commandPrefix = request.shellCommand && !request.highRisk && !request.opaqueScript ? simpleCommandPrefix(request.shellCommand) : undefined;
+    const commandPrefix = request.shellCommand && !request.highRisk ? simpleCommandPrefix(request.shellCommand) : undefined;
     if (this.#state.approvalPolicy === "ask" && request.shellCommand) {
       choices.push(ALLOW_SESSION_EXACT);
       if (commandPrefix) choices.push(`${ALLOW_SESSION_PREFIX}：${commandPrefix} *`);
@@ -966,6 +966,8 @@ export class SessionPermissionController {
       targetAssessments.push(assessment);
       // cwd is an access scope, not a mutation of the directory itself.
       if (hasExplicitCwd && target === effectiveCwd && !scope.targets.includes(target) && !high?.targets.includes(target)) continue;
+      // Opaque execution scope alone does not establish a mutation of its cwd.
+      if (scope.kind === "opaque-script" && !scope.mutationDetected && !high?.targets.includes(target)) continue;
       const protectedAssessment = await assessProtectedMutationPath(ctx.cwd, assessment.canonicalTarget ?? target);
       if (sensitiveProtectedRoots(protectedAssessment.violations)) protectedTarget = true;
       for (const violation of protectedAssessment.violations) appendUniqueBounded(primitives, violation);

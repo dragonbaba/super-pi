@@ -36,6 +36,8 @@ export interface BashPermissionScope {
   classes: string[];
   dynamicScope: boolean;
   unverifiableScope: boolean;
+  /** Distinguishes recognized mutations from synthesized opaque execution scope. */
+  mutationDetected?: boolean;
   /** A recognized write/delete exists but its target or shell context is unknown. */
   unverifiableMutation?: boolean;
 }
@@ -761,6 +763,7 @@ function publicScope(builder: ScopeBuilder): BashPermissionScope {
     classes: builder.classes,
     dynamicScope: builder.dynamicScope,
     unverifiableScope: builder.unverifiableScope,
+    mutationDetected: builder.mutationDetected,
     unverifiableMutation: builder.unverifiableMutation,
   };
 }
