@@ -32,6 +32,29 @@ test("prompt checks inspect only discovered parameter heads and retain primitive
 });
 
 for (const mode of ["full-access", "workspace-write"] as const) {
+  test(`review twenty-six ${mode}: profiler and pretty-print modes retain data-only stdin`, async t => {
+    for (const prefix of ["node --prof-process", "node -i --prof-process", "node --prof-process -i", "bash --pretty-print", "bash --pretty-print +n", "bash --pretty-print -n +n", "bash --pretty-print -- -"]) {
+      const body = prefix.startsWith("node") ? "fs.rmSync('/protected',{recursive:true})" : "sleep 100 &\nrm -rf /protected", command = `${prefix} <<'EOF'\n${body}\nEOF`;
+      assert.equal(inspectBashResourceLifecycle({ command }), undefined, command); assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
+    }
+    for (const prefix of ["bash --pretty-print -i", "bash --rcfile --pretty-print", "bash --init-file --pretty-print"]) {
+      const command = `${prefix} <<'EOF'\nsleep 100 &\nEOF`;
+      assert.ok(inspectBashResourceLifecycle({ command }), command);
+      const f = await shellHookFixture(t, mode), call = await f.authorize(command); assert.equal(call.outcome?.block, true); assert.equal(f.dialogs(), 0);
+    }
+    const command = "node --require --prof-process <<'EOF'\nfs.rmSync(target,{recursive:true})\nEOF";
+    assert.equal(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true);
+    const f = await shellHookFixture(t, mode), call = await f.authorize(command); assert.equal(call.outcome?.block, true); assert.equal(f.dialogs(), 0);
+  });
+  test(`review twenty-six ${mode}: source process-substitution heredocs already refuse at preflight`, async t => {
+    for (const prefix of ["bash -c 'source <(cat)'", "bash -c '. <(cat)'", 'bash -c "source <(cat)"', 'bash -c "source <(printf \'echo hi\')"']) for (const body of ["sleep 100 &", "rm -rf /protected"]) {
+      const command = `${prefix} <<'EOF'\n${body}\nEOF`;
+      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_HEREDOC\]/, command);
+      const f = await shellHookFixture(t, mode), call = await f.authorize(command); assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+    }
+    const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize("cat <<'EOF'\nsource <(cat)\nEOF")); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
+  });
   test(`review twenty-five ${mode}: unlink receiver boundaries retain unknown targets`, async t => {
     for (const body of ["Path(('/protected')).unlink()", "pathlib.Path((('/protected'))).unlink()", "(Path('/protected')).unlink()", "get_path().unlink()", "p.unlink('scratch')", "NotPath('scratch').unlink()", "Path('scratch').absolute().unlink()"]) {
       const command = `python - <<'EOF'\n${body}\nEOF`, mutation = inspectHighRiskBashMutation({ command }, process.cwd());

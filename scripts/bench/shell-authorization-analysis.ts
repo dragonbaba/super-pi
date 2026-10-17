@@ -12,6 +12,11 @@ const cwd = process.cwd(), iterations = 512, warmup = 64, samplingInterval = 409
 const literalInputs = process.argv.includes("--literal-inputs");
 const substitution = "$(grep -c -E '(class|function|const|var|let) GCSystem\\b' pixi/pixi.js)";
 const cases = literalInputs ? [
+  ["node-prof-process", "node --prof-process <<'EOF'\nfs.rmSync('/protected',{recursive:true})\nEOF", 1],
+  ["bash-pretty-print", "bash --pretty-print <<'EOF'\nsleep 100 &\nEOF", 1],
+  ["bash-pretty-print-plus-n", "bash --pretty-print +n <<'EOF'\nsleep 100 &\nEOF", 1],
+  ["bash-pretty-print-interactive", "bash --pretty-print -i <<'EOF'\nsleep 100 &\nEOF", 2],
+  ["source-process-substitution", "bash -c 'source <(cat)' <<'EOF'\nsleep 100 &\nEOF", 2],
   ["python-nested-constructor", "python - <<'EOF'\nPath(('/protected')).unlink()\nEOF", 1],
   ["python-unknown-receiver", "python - <<'EOF'\np.unlink('scratch')\nEOF", 1],
   ["node-v8-options", "node --v8-options <<'EOF'\nfs.rmSync('/protected',{recursive:true})\nEOF", 1],

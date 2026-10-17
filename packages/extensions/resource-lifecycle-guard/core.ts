@@ -971,7 +971,7 @@ function nodeMayReadStdin(tokens: readonly string[], start: number, descriptor =
 		if (word === "-") { if (options & 1 && descriptor === 0) return true; continue; }
 		if (word === "--") { states |= options << 5; continue; }
 		if (!word.startsWith("-")) { if (options & 1 && isHeredocDescriptorPath(word, descriptor)) return true; continue; }
-		if (word === "--check" || word === "-c" || word === "--help" || word === "-h" || word === "--version" || word === "-v" || word === "--test" || word === "--completion-bash" || word === "--v8-options") { if (!states) interactive = false; continue; }
+		if (word === "--check" || word === "-c" || word === "--help" || word === "-h" || word === "--version" || word === "-v" || word === "--test" || word === "--completion-bash" || word === "--v8-options" || word === "--prof-process") { if (!states) interactive = false; continue; }
 		if (word === "--interactive" || word === "-i") { interactive = true; states |= options; continue; }
 		if (word === "--eval" || word === "--print" || word === "-e" || word === "-p") { states |= 16; continue; }
 		if (word.startsWith("--eval=") || word.startsWith("--print=") || word.startsWith("-e") || word.startsWith("-p")) { states |= 2; continue; }
@@ -1508,12 +1508,12 @@ function simpleStdinConsumers(tokens: ShellSegment, descriptor: number, depth: n
 	if (language === "node") return nodeMayReadStdin(tokens, index + 1, descriptor) ? 2 : 0;
 	const languageMask = language === "bash" ? 1 : 4;
 	const stdinMask = descriptor !== 0 ? 0 : language === "bash" ? 1 : 4;
-	let shellStdin = false, shellNoexec = false, shellInteractive = false;
+	let shellStdin = false, shellNoexec = false, shellInteractive = false, shellPrettyPrint = false;
 	for (let cursor = index + 1; cursor < tokens.length; cursor++) {
 		const option = tokens[cursor]!;
-		if (option === "-") return shellNoexec && !shellInteractive ? 16 : stdinMask;
-		if (option === "--") return shellNoexec && !shellInteractive ? 16 : shellStdin || cursor + 1 === tokens.length || tokens[cursor + 1] === "-" ? stdinMask : isHeredocDescriptorPath(tokens[cursor + 1], descriptor) ? languageMask : 0;
-		if (!option.startsWith("-") && !(language === "bash" && option.startsWith("+"))) return shellNoexec && !shellInteractive ? 16 : shellStdin ? stdinMask : isHeredocDescriptorPath(option, descriptor) ? languageMask : 0;
+		if (option === "-") return (shellNoexec || shellPrettyPrint) && !shellInteractive ? 16 : stdinMask;
+		if (option === "--") return (shellNoexec || shellPrettyPrint) && !shellInteractive ? 16 : shellStdin || cursor + 1 === tokens.length || tokens[cursor + 1] === "-" ? stdinMask : isHeredocDescriptorPath(tokens[cursor + 1], descriptor) ? languageMask : 0;
+		if (!option.startsWith("-") && !(language === "bash" && option.startsWith("+"))) return (shellNoexec || shellPrettyPrint) && !shellInteractive ? 16 : shellStdin ? stdinMask : isHeredocDescriptorPath(option, descriptor) ? languageMask : 0;
 		if (option === "--help" || option === "--version" || language !== "bash" && option === "-h" || language === "python" && option === "-V") return 0;
 		if (language === "python") {
 			if (option === "--help-env" || option === "--help-xoptions" || option === "--help-all") return 0;
@@ -1526,6 +1526,7 @@ function simpleStdinConsumers(tokens: ShellSegment, descriptor: number, depth: n
 			}
 		} else {
 			if (option === "--rcfile" || option === "--init-file") { cursor++; continue; }
+			if ((name === "bash" || name === "bash.exe") && option === "--pretty-print") { shellPrettyPrint = true; continue; }
 			if ((name === "bash" || name === "bash.exe") && (option === "--dump-strings" || option === "--dump-po-strings")) return 16;
 			let scriptOption = false;
 			if (!option.startsWith("--")) for (let flag = 1; flag < option.length; flag++) {
@@ -1548,12 +1549,12 @@ function simpleStdinConsumers(tokens: ShellSegment, descriptor: number, depth: n
 				// Bash keeps parsing options after -c until its literal script word.
 				// Do not infer noexec when a following option may re-enable it.
 				if (tokens[sourceIndex]!.startsWith("-") || tokens[sourceIndex]!.startsWith("+")) return 8;
-				if (shellNoexec && !shellInteractive) return 16;
+				if ((shellNoexec || shellPrettyPrint) && !shellInteractive) return 16;
 				return stdinScriptConsumers(parseShellSegments(tokens[sourceIndex]!), descriptor, depth + 1, 0, functions);
 			}
 		}
 	}
-	return shellNoexec && !shellInteractive ? 16 : stdinMask;
+	return (shellNoexec || shellPrettyPrint) && !shellInteractive ? 16 : stdinMask;
 }
 
 // Bodies are inspected separately from their declaration's surrounding flow.
