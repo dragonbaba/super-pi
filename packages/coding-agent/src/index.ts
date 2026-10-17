@@ -49,6 +49,7 @@ export {
 	type ToolOutputShadowTelemetrySink,
 	type ToolOutputTokenEstimate,
 } from "./core/tool-output-budget.ts";
+export { ToolResultBudgetComputationError } from "./core/tool-result-budget-selection.ts";
 export {
 	createToolResultPresentationCounters,
 	createToolResultPresentationOwner,

@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { Session } from "node:inspector/promises";
 import { estimateContextTokensFromParts } from "../packages/ai/src/utils/estimate.ts";
 import { clampMaxTokensToContext } from "../packages/ai/src/api/simple-options.ts";
+import { REQUEST_ESTIMATE_MODEL } from "./fixtures/request-input-estimate.ts";
 
 // Source-only loading permits a deterministic red before building this checkout.
 const jiti = createJiti(import.meta.url, { alias: {
@@ -17,7 +18,7 @@ const jiti = createJiti(import.meta.url, { alias: {
  "@super-pi/ai/api/simple-options": resolve("packages/ai/src/api/simple-options.ts"),
 } });
 const { createToolResultPresentationOwner } = await jiti.import<any>("../packages/coding-agent/src/core/tool-result-presentation.ts");
-const model: any = { api: "openai-completions", contextWindow: 1_000_000, maxTokens: 384_000 };
+const model = { ...REQUEST_ESTIMATE_MODEL, contextWindow: 1_000_000, maxTokens: 384_000 };
 const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: {input:0,output:0,cacheRead:0,cacheWrite:0,total:0} };
 // One bounded corpus is shared, not regenerated for every boundary case.
 const corpus = "abcd".repeat(620_000);
@@ -50,8 +51,8 @@ test("explicit output overrides and model ceilings bound the finished request", 
  assert.throws(()=>clampMaxTokensToContext(model,context,0));
 });
 
-test("unrelated APIs retain their existing clamp contract", () => {
- assert.equal(clampMaxTokensToContext({...model,api:"openai-codex-responses",contextWindow:620_100},{messages:messages(620_000)},384_000),1);
+test("Codex requests reject genuine exhaustion instead of a one-token success", () => {
+ assert.throws(()=>clampMaxTokensToContext({...model,api:"openai-codex-responses",contextWindow:620_100},{messages:messages(620_000)},384_000), /Request preparation blocked/);
 });
 
 test("request blocks distinguish genuine batch exhaustion from context headroom", () => {
@@ -121,7 +122,7 @@ for (const presentationBudget of [1024,1]) test(`real SDK write persists across 
    const result=await execute(...args);effects++;return result;
   };
   const convert=session.agent.convertToLlm;
-  if(presentationBudget===1024)assert.throws(()=>convert(messages(620_000),undefined,[],{...fullModel,api:"openai-codex-responses"}),/Request preparation blocked/);
+  if(presentationBudget===1024)assert.doesNotThrow(()=>convert(messages(620_000),undefined,[],{...fullModel,api:"openai-codex-responses"}));
   let inject=presentationBudget===1024,blockAfterResults=1;
   session.agent.convertToLlm=(m,s,tools,model,cap)=>{
    if(inject&&m.filter(x=>x.role==='toolResult'&&!x.isError).length>=blockAfterResults)throw new RequestBudgetError(1_000_000,999_000,384_000,-3096);
@@ -136,7 +137,7 @@ for (const presentationBudget of [1024,1]) test(`real SDK write persists across 
   if(presentationBudget===1){
    await session.prompt("Do not repeat the completed write; budget remains too small.");
    assert.equal(sends,1);assert.equal(effects,1);
-   assert.match((session.messages.at(-1) as any).errorMessage,/Request preparation blocked: configured result budget/);
+   assert.match((session.messages.at(-1) as any).errorMessage,/Request preparation blocked: result-batch-budget.*batchBudget=1.*minimumTokens=\d+/);
    return;
   }
   inject=false;

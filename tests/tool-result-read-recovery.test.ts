@@ -296,7 +296,7 @@ test("minimum recovery notice cannot fit: user receives the reason, canonical re
  assert.ok(f.userErrors.at(-1)!.length < 1400);
  await f.session.prompt("Keep the result; the budget has not changed yet.");
  assert.equal(f.requests.length, 1); assert.equal(f.readCalls(), 1);
- assert.match(f.userErrors.at(-1)!, /Request preparation blocked: configured result budget.*Read budget 1/);
+ assert.match(f.userErrors.at(-1)!, /Request preparation blocked: result-batch-budget.*batchBudget=1.*minimumTokens=\d+.*Read budget 1/);
  assert.equal(f.counters.activeContextualCoordinators, 0);
  const saved = SessionManager.open(f.manager.getSessionFile()!);
  assert.equal(saved.buildSessionContext().messages.filter((m: any) => m.role === "toolResult" && !m.isError).length, 1);
@@ -326,7 +326,7 @@ for (const budget of [256, 512]) test(`real simultaneous reads: contextual share
  for (const delivery of f.deliveries) assert.equal(delivery.message.isError, false);
  if (budget === 256) {
   assert.equal(f.requests.length, 1);
-  assert.match(f.userErrors.at(-1)!, /Request preparation blocked: result-batch-budget.*toolShare=128.*Read budget 128/);
+  assert.match(f.userErrors.at(-1)!, /Request preparation blocked: result-batch-budget.*batchBudget=256.*minimumNotice=304.*Required batch minima are tool=304/);
   assert.match(f.userErrors.at(-1)!, /offset\/limit.*increase the tool-result budget/);
   f.session.dispose();
   const resumed = await f.open(512, SessionManager.open(f.manager.getSessionFile()!));
@@ -367,17 +367,17 @@ test("real SDK conversion context headroom reports the read cause to the user an
  f.session.agent.convertToLlm = (messages, systemPrompt, tools, conversionModel, cap) => {
   if (constrained && messages.some(m => m.role === "toolResult")) {
    const nonCurrent = estimateContextTokensFromParts(systemPrompt, convertToLlm(messages.filter(m => m.role !== "toolResult")), tools).tokens;
-   // A real context envelope with only 128 tokens left after response reserve;
+   // A real context envelope with only 64 tokens left after response reserve;
    // use the production conversion/coordinator, never inject a fabricated error.
-   return convert(messages, systemPrompt, tools, { ...conversionModel!, contextWindow: nonCurrent + 1024 + 4096 + 128 }, cap);
+   return convert(messages, systemPrompt, tools, { ...conversionModel!, contextWindow: nonCurrent + 1024 + 4096 + 64 }, cap);
   }
   return convert(messages, systemPrompt, tools, conversionModel, cap);
  };
  f.setNext(() => f.requests.length === 1 ? [{ path: "fixture.txt" }] : undefined);
  await f.session.prompt("Read before constructing the constrained next request.");
  assert.equal(f.requests.length, 1); assert.equal(f.readCalls(), 1);
- assert.match(f.userErrors.at(-1)!, /Request preparation blocked: context-headroom.*Read budget/);
- assert.match(f.userErrors.at(-1)!, /read recovery notice.*offset\/limit/);
+ assert.match(f.userErrors.at(-1)!, /Request preparation blocked: context-headroom.*contextShare=64.*Required batch minima/);
+ assert.match(f.userErrors.at(-1)!, /offset\/limit/);
  assert.equal(f.deliveries[0].message.isError, false);
  constrained = false;
  await f.session.prompt("Context capacity restored; keep the recorded read.");

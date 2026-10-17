@@ -164,13 +164,14 @@ test("single small results stay byte-for-byte unchanged while one large result k
 test("context remaining constrains the turn and fails explicitly below the fixed notice", () => {
 	const canonical = toolResult("context-call", 40);
 	const source = [assistantToolTurn([canonical.toolCallId]), canonical];
+	assert.ok(estimateContextTokensFromParts(undefined, source, undefined).tokens + 64 > 150, "the actual request must require projection");
 	const owner = createToolResultPresentationOwner(
 		{ enabled: true, budgetTokens: 256 },
 		SESSION_ID,
 	)!;
 	owner.create(canonical.content as ToolResultPresentationContent[], canonical.toolCallId);
 	const bounded = projectContextually(owner, source.slice(), {
-		contextWindow: 220,
+		contextWindow: 150,
 		maxOutputTokens: 64,
 	});
 	assert.ok(totalToolResultTokens(bounded) < 156);
@@ -333,6 +334,7 @@ test("usage-based added-tool estimation scans each trailing result once", () => 
 test("context clone rebinding accepts canonical content once and rejects modification", () => {
 	const canonical = toolResult("clone-call");
 	const source = [assistantToolTurn([canonical.toolCallId]), canonical];
+	assert.ok(estimateContextTokensFromParts(undefined, source, undefined).tokens + 256 > 550, "the clone fixture must actually require a cursor");
 	const owner = createToolResultPresentationOwner(
 		{ enabled: true, budgetTokens: 1_024 },
 		"contextual-clone",
@@ -340,7 +342,7 @@ test("context clone rebinding accepts canonical content once and rejects modific
 	owner.create(canonical.content, canonical.toolCallId);
 	owner.clearProjectionRecords();
 	const clone = structuredClone(source);
-	const projected = projectContextually(owner, clone, { contextWindow: 700, maxOutputTokens: 256 });
+	const projected = projectContextually(owner, clone, { contextWindow: 550, maxOutputTokens: 256 });
 	const cursor = continuationCursor(projected[1] as ToolResultMessage);
 	assert.ok(cursor);
 	assert.ok(owner.readContinuation(cursor, source, 128).content.length > 0);
@@ -349,7 +351,7 @@ test("context clone rebinding accepts canonical content once and rejects modific
 	const modified = structuredClone(source);
 	const modifiedResult = modified[1] as ToolResultMessage;
 	modifiedResult.content[0] = { type: "text", text: `changed-${(modifiedResult.content[0] as { text: string }).text}` };
-	const rejected = projectContextually(owner, modified, { contextWindow: 700, maxOutputTokens: 256 });
+	const rejected = projectContextually(owner, modified, { contextWindow: 550, maxOutputTokens: 256 });
 	const rejectedCursor = continuationCursor(rejected[1] as ToolResultMessage);
 	assert.ok(rejectedCursor);
 	assert.throws(
@@ -362,6 +364,7 @@ test("context clone rebinding accepts canonical content once and rejects modific
 test("model/context changes recompute envelopes without retaining a prior turn deduction", () => {
 	const canonical = toolResult("model-switch-call");
 	const source = [assistantToolTurn([canonical.toolCallId]), canonical];
+	assert.ok(estimateContextTokensFromParts(undefined, source, undefined).tokens + 256 > 550, "the smaller window must genuinely constrain the source");
 	const owner = createToolResultPresentationOwner(
 		{ enabled: true, budgetTokens: 1_024 },
 		"model-switch-budget",
@@ -372,7 +375,7 @@ test("model/context changes recompute envelopes without retaining a prior turn d
 		maxOutputTokens: 4_096,
 	});
 	const smallWindow = projectContextually(owner, source.slice(), {
-		contextWindow: 700,
+		contextWindow: 550,
 		maxOutputTokens: 256,
 	});
 	assert.ok(totalToolResultTokens(smallWindow) < totalToolResultTokens(largeWindow));

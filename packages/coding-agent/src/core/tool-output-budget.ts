@@ -339,10 +339,10 @@ function isCombiningOrJoiner(codePoint: number): boolean {
 	);
 }
 
-function scanText(state: ScanState, text: string): void {
-	state.characters += text.length;
-	if (text.length > 0) state.hasVisibleText = true;
-	for (let index = 0; index < text.length; index++) {
+function scanText(state: ScanState, text: string, start = 0, end = text.length): void {
+	state.characters += end - start;
+	if (end > start) state.hasVisibleText = true;
+	for (let index = start; index < end; index++) {
 		const first = text.charCodeAt(index);
 		if (first <= 0x7f) {
 			state.rawUtf8Bytes++;
@@ -358,7 +358,7 @@ function scanText(state: ScanState, text: string): void {
 		const followsLineBreak = state.endsWithLineBreak;
 		state.endsWithLineBreak = false;
 		if (first >= 0xd800 && first <= 0xdbff) {
-			const second = index + 1 < text.length ? text.charCodeAt(index + 1) : 0;
+			const second = index + 1 < end ? text.charCodeAt(index + 1) : 0;
 			if (second >= 0xdc00 && second <= 0xdfff) {
 				const codePoint = 0x10000 + ((first - 0xd800) << 10) + (second - 0xdc00);
 				state.rawUtf8Bytes += 4;
@@ -390,6 +390,29 @@ function scanText(state: ScanState, text: string): void {
 		else if (isCombiningOrJoiner(first)) state.combiningCharacters++;
 		else state.otherBmpCharacters++;
 	}
+}
+
+function finishTokenEstimate(state: ScanState): number {
+	addAsciiRunTokens(state);
+	state.estimatedTokens += Math.ceil((state.cjkCharacters * 11) / 4);
+	state.estimatedTokens += state.cjkExtensionCharacters * 4;
+	state.estimatedTokens += state.kanaCharacters * 2;
+	state.estimatedTokens += state.hangulCharacters * 2;
+	state.estimatedTokens += state.otherBmpCharacters * 2;
+	state.estimatedTokens += state.emojiCharacters * 3;
+	state.estimatedTokens += state.combiningCharacters * 2;
+	state.estimatedTokens += Math.ceil((state.controlCharacters * 3) / 2);
+	state.estimatedTokens += state.lowSurrogateJoins;
+	state.estimatedTokens += state.lineBreaks;
+	if (state.modelVisibleUtf8Bytes > 0 && state.estimatedTokens === 0) state.estimatedTokens = 1;
+	return state.estimatedTokens;
+}
+
+/** Failure diagnostics scan the legal range without materializing its text. */
+export function estimateToolOutputTextRange(text: string, start: number, end: number): number {
+	const state = createScanState();
+	scanText(state, text, start, end);
+	return finishTokenEstimate(state);
 }
 
 function createScanState(): ScanState {
@@ -519,20 +542,7 @@ export function estimateToolOutputTokens(
 		textBlocks++;
 	}
 	if (!state.hasVisibleText && imageCount > 0) scanText(state, IMAGE_ONLY_PLACEHOLDER);
-	addAsciiRunTokens(state);
-	state.estimatedTokens += Math.ceil((state.cjkCharacters * 11) / 4);
-	state.estimatedTokens += state.cjkExtensionCharacters * 4;
-	state.estimatedTokens += state.kanaCharacters * 2;
-	state.estimatedTokens += state.hangulCharacters * 2;
-	state.estimatedTokens += state.otherBmpCharacters * 2;
-	state.estimatedTokens += state.emojiCharacters * 3;
-	state.estimatedTokens += state.combiningCharacters * 2;
-	state.estimatedTokens += Math.ceil((state.controlCharacters * 3) / 2);
-	state.estimatedTokens += state.lowSurrogateJoins;
-	state.estimatedTokens += state.lineBreaks;
-	if (state.modelVisibleUtf8Bytes > 0 && state.estimatedTokens === 0) state.estimatedTokens = 1;
-
-	let estimatedTokens = state.estimatedTokens;
+	let estimatedTokens = finishTokenEstimate(state);
 	let estimatorId = TOOL_OUTPUT_FALLBACK_ESTIMATOR_ID;
 	let confidence: ToolOutputEstimateConfidence = "conservative-fallback";
 	if (exactEstimator) {

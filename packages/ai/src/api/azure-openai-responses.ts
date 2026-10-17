@@ -23,7 +23,7 @@ import { createGrammarToolInputProperties } from "./constrained-sampling.ts";
 import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.ts";
 import { OPENAI_RESPONSES_SAMPLING_RESERVED_KEYS } from "./openai-sampling-reserved.ts";
 import { convertResponsesMessages, convertResponsesTools, processResponsesStream } from "./openai-responses-shared.ts";
-import { buildBaseOptions, resolveSamplingParams } from "./simple-options.ts";
+import { buildBaseOptions, clampMaxTokensToContext, resolveSamplingParams } from "./simple-options.ts";
 
 const AZURE_TOOL_CALL_PROVIDERS = new Set(["openai", "openai-codex", "opencode", "azure-openai-responses"]);
 // OpenAI Responses rejects max_output_tokens below 16: https://github.com/earendil-works/pi/issues/6265
@@ -244,7 +244,7 @@ function buildParams(
 	};
 
 	if (options?.maxTokens) {
-		params.max_output_tokens = Math.max(options.maxTokens, OPENAI_RESPONSES_MIN_OUTPUT_TOKENS);
+		params.max_output_tokens = clampMaxTokensToContext(model, context, options.maxTokens, OPENAI_RESPONSES_MIN_OUTPUT_TOKENS);
 	}
 
 	if (options?.temperature !== undefined) {

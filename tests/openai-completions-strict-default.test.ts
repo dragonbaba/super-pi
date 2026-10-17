@@ -39,7 +39,10 @@ function context(): Context {
 
 async function captureWire(entry: Model<"openai-completions">): Promise<Record<string, any>> {
 	let wire: Record<string, any> | undefined;
-	const stream = streamCompletions(entry, context(), {
+	// This fixture checks strict-schema metadata at the wire. Some catalog
+	// windows are smaller than the shared safety reserve; budget edges have
+	// their own tests and must not prevent this serializer from being reached.
+	const stream = streamCompletions({ ...entry, contextWindow: Math.max(entry.contextWindow, 8192) }, context(), {
 		apiKey: "fixture-key",
 		// Azure catalog models need a tenant endpoint even when fetch is intercepted.
 		azureBaseUrl: "https://azure-fixture.invalid/openai/v1",
@@ -57,7 +60,7 @@ async function captureWire(entry: Model<"openai-completions">): Promise<Record<s
 		},
 	});
 	const result = await stream.result();
-	assert.ok(wire, "the serializer must reach the fixture wire");
+	assert.ok(wire, `${entry.provider}/${entry.id}: the serializer must reach the fixture wire: ${result.errorMessage}`);
 	return { wire, result };
 }
 

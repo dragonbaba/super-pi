@@ -24,7 +24,7 @@ import { parseStreamingJson } from "../utils/json-parse.ts";
 import { getPiUserAgent } from "../utils/pi-user-agent.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import { getJsonSchemaToolParameters, resolveJsonSchemaStrictSampling } from "./constrained-sampling.ts";
-import { buildBaseOptions } from "./simple-options.ts";
+import { buildBaseOptions, clampMaxTokensToContext } from "./simple-options.ts";
 import { transformMessages } from "./transform-messages.ts";
 
 const MISTRAL_TOOL_CALL_ID_LENGTH = 9;
@@ -737,7 +737,7 @@ function buildChatPayload(
 
 	if (context.tools?.length) payload.tools = toFunctionTools(context.tools, capabilities.strictToolSchema);
 	if (options?.temperature !== undefined) payload.temperature = options.temperature;
-	if (options?.maxTokens !== undefined) payload.maxTokens = options.maxTokens;
+	if (options?.maxTokens !== undefined) payload.maxTokens = clampMaxTokensToContext(model, context, options.maxTokens);
 	if (capabilities.toolCalling && options?.toolChoice) payload.toolChoice = mapToolChoice(options.toolChoice);
 	if (options?.promptMode) payload.promptMode = options.promptMode;
 	if (capabilities.reasoning.mode !== "none" && options?.reasoningEffort) payload.reasoningEffort = options.reasoningEffort;

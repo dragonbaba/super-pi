@@ -1106,7 +1106,7 @@ function buildParams(
 			deferredToolNames,
 			normalizeToolName,
 		),
-		max_tokens: options?.maxTokens ?? model.maxTokens,
+		max_tokens: clampMaxTokensToContext(model, context, options?.maxTokens ?? model.maxTokens),
 		stream: true,
 		...(inline ? { betas: [INLINE_TOOLS_BETA] } : {}),
 	};
