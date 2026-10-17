@@ -89,7 +89,9 @@ function scanHeredocSyntax(command: string, start: number, closing: number, dept
       let second = index + 1;
       while (command.charCodeAt(second) === 92 && command.charCodeAt(second + 1) === 10) second += 2;
       if (command.charCodeAt(second) === 60) {
-        if (command.charCodeAt(second + 1) === 60) { boundedPrefix = false; index = second + 1; continue; }
+        let third = second + 1;
+        while (command.charCodeAt(third) === 92 && command.charCodeAt(third + 1) === 10) third += 2;
+        if (command.charCodeAt(third) === 60) { boundedPrefix = false; index = third; continue; }
         return boundedPrefix && second === index + 1 && index > nameEnd ? -classifyBoundedBody(command, second + 1) : -1;
       }
     }

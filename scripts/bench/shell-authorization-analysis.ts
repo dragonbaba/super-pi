@@ -13,6 +13,8 @@ const literalInputs = process.argv.includes("--literal-inputs");
 const substitution = "$(grep -c -E '(class|function|const|var|let) GCSystem\\b' pixi/pixi.js)";
 const cases = literalInputs ? [
   ["shadowed-process-producer", "echo() { printf '%s\\n' 'sleep 100 &'; }; source <(echo ':')", 1],
+  ["find-files0-filename", "find -files0-from -delete", 1],
+  ["find-files0-help-data", "find -files0-from --help -delete", 1],
   ["node-optional-rm", "node <<'EOF'\nfs.rmSync?.(target,{recursive:true})\nEOF", 1],
   ["node-literal-method-key", "node <<'EOF'\nfs?.['unlinkSync']?.(target)\nEOF", 1],
   ["node-indirect-call", "node <<'EOF'\nfs.rmSync.call(null,target,{recursive:true})\nEOF", 1],

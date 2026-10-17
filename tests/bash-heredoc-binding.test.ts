@@ -16,6 +16,26 @@ import { shellHeredocKind } from "../packages/coding-agent/src/core/tools/shell-
 const shellPath = process.platform === "win32" && existsSync("D:/Git/bin/bash.exe") ? "D:/Git/bin/bash.exe" : getShellConfig().shell;
 const literal = "cat <<'EOF'\nprintf BODY_EXECUTED\nEOF";
 
+test("review thirty-three: continued here-string redirects are not configured heredocs", async () => {
+ for (const redirect of ["<<\\\n<", "<\\\n<<", "<\\\n<\\\n<", "<<\\\n\\\n<"]) {
+  const command = `read x ${redirect}word; printf '%s' "$x"`, input = { command };
+  assert.equal(shellHeredocKind(command), 0, command);
+  let backendCalls = 0;
+  for (const options of [{ commandPrefix: "true" }, { spawnHook: (context: any) => context }, { operations: { exec: async () => { backendCalls++; return { exitCode: 0 }; } } }]) {
+   const tool = createBashTool(process.cwd(), { shellPath, exposeSessionEnvironment: false, ...options });
+   assert.strictEqual(tool.prepareArguments!(input), input);
+   const result = await tool.execute("continued-here-string", input);
+   assert.equal(result.isError, undefined, command);
+   if (!("operations" in options)) assert.equal(result.content.filter(c => c.type === "text").map(c => c.text).join("\n").trim(), "word");
+  }
+  assert.equal(backendCalls, 1);
+  const heredoc = `${command}; cat <<'EOF'\nhi\nEOF`;
+  assert.equal(shellHeredocKind(heredoc), 1);
+  const denied = await dispatch(process.cwd(), heredoc, { commandPrefix: "true" }, false, 0);
+  assert.equal(denied.processes, 0); assert.match(denied.text, /\[SHELL_HEREDOC\]/);
+ }
+});
+
 test("review twenty-three: a word-internal hash cannot hide a configured heredoc", async () => {
  for (const word of ["$(printf x)#", "`printf x`#", "<(printf x)#", ">(printf x)#", "a\\ #", "'x'#", '"x"#', "$((1+2))#", "${x:-y}#"]) {
   const command = `echo ${word} <<'EOF'\nhi\nEOF`;

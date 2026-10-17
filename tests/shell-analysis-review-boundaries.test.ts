@@ -46,6 +46,19 @@ test("prompt checks inspect only discovered parameter heads and retain primitive
 });
 
 for (const mode of ["full-access", "workspace-write"] as const) {
+  test(`review thirty-three ${mode}: find files0-from filenames are data`, async t => {
+    for (const filename of ["-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprintf", "--help", "--version"]) {
+      const command = `find -files0-from ${filename}`;
+      assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
+      assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "read-only");
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), 0);
+    }
+    for (const filename of ["--help", "--version", "-delete"]) {
+      const command = `find -files0-from ${filename} -delete`;
+      assert.equal(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
+      const f = await shellHookFixture(t, mode), result = await f.authorize(command); assert.equal(result.outcome?.block, true); assert.equal(f.dialogs(), 0);
+    }
+  });
   test(`review thirty-two ${mode}: shadowed process producers retain unresolved source refusal`, async t => {
     for (const name of ["echo", "printf"]) for (const declaration of [`${name}() {`, `function ${name} {`, `function ${name}() {`, `${name}() (`]) {
       const command = `${declaration} printf '%s\\n' 'sleep 100 &'; ${declaration.endsWith("(") ? ")" : "}"}; source <(${name}${name === "printf" ? " '%s'" : ""} ':')`;
