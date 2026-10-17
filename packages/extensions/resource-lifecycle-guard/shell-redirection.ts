@@ -167,8 +167,9 @@ export function isShellDynamicDescriptor(value: string): boolean {
   return value.length > 2 && value.charCodeAt(0) === 123 && value.charCodeAt(value.length - 1) === 125;
 }
 
-export function isShellOutputFileRedirection(operator: string): boolean {
-  return operator === ">" || operator === ">>" || operator === ">|" || operator === "&>" || operator === "&>>";
+export function isShellOutputFileRedirection(operator: string, target?: string, sourceFd?: string): boolean {
+  return operator === ">" || operator === ">>" || operator === ">|" || operator === "&>" || operator === "&>>" || operator === "<>"
+    || operator === ">&" && sourceFd === undefined && target !== "-" && !(target && (isShellFileDescriptor(target) || target.endsWith("-") && isShellFileDescriptor(target.slice(0, -1))));
 }
 
 export function isShellFileDescriptor(value: string): boolean {
@@ -376,9 +377,12 @@ function hasUnsafeExpansionOperand(tokens: readonly string[] & { expansions?: re
 }
 
 /** Bash tests can evaluate arithmetic operands and parameter assignments after quote removal. */
-export function hasUnsafeBashTestOperand(tokens: readonly string[] & { bashTestOpenAt?: number; bashTestClosed?: boolean; expansions?: readonly number[] }): boolean {
-  const open = tokens.bashTestOpenAt;
-  if (open === undefined || !tokens.bashTestClosed) return false;
+export function hasUnsafeBashTestOperand(tokens: readonly string[] & { bashTestOpenAt?: number; bashTestClosed?: boolean; expansions?: readonly number[] }, commandIndex = 0): boolean {
+  let open = tokens.bashTestOpenAt;
+  if (open === undefined) {
+    if (tokens[commandIndex] !== "test" && tokens[commandIndex] !== "[") return false;
+    open = commandIndex;
+  } else if (!tokens.bashTestClosed) return false;
   for (let index = open + 1; index < tokens.length; index++) {
     const value = tokens[index]!;
     const flags = tokens.expansions?.[index] ?? 0;

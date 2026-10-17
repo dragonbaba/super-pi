@@ -67,8 +67,12 @@ test("N3 native protocol SDK: quoted source/data require approval and changed ap
     assert.equal(result.content[0].text, expected); assert.equal(readShellExecution(result.details)?.started, true);
     assert.equal(readShellExecution(result.details)?.cwd, realpathSync.native(cwd));
   }
+  approve = false;
+  const beforeExport = approvals;
   const unsafeExport = await call("export-query", "CDPATH=.. export -n CDPATH; cd sub && cat query.txt");
   assert.equal(unsafeExport.isError, true); assert.equal(readShellExecution(unsafeExport.details)?.started, false);
+  assert.equal(approvals, beforeExport + 1);
+  approve = true;
   const repeatedCommand = "printf duplicate-fixture";
   pendingCall = [0, 1, 2].map(index => ({ type: "toolCall", id: `duplicate-${index}`, name: "bash", arguments: { command: repeatedCommand, cwd } }));
   await session.prompt("Exercise duplicate siblings once."); await session.agent.waitForIdle();

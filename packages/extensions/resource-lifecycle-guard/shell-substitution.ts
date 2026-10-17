@@ -4,28 +4,97 @@ import {
 	COMMENT_BOUNDARY_PATTERN,
 	SUBSTITUTION_COMMENT_BOUNDARY_PATTERN,
 } from "./regex.ts";
-import { isSimpleBashAnsiCQuote } from "./shell-redirection.ts";
+import { isSimpleBashAnsiCQuote, shellRedirectionLength } from "./shell-redirection.ts";
 export interface CommandSubstitutionScan {
   scripts: string[];
   unterminated: boolean;
   /** Grammar or budget could not be inspected; not proof of termination or safety. */
   unsupported: boolean;
   limitExceeded: false | "count" | "nesting";
+  /** Primitive refusal evidence from the existing lexical pass. */
+  boundaryRefusal?: number;
 }
 
 export const MAX_SUBSTITUTIONS = 16;
 export const MAX_SUBSTITUTION_NESTING = 4;
 
-/** Closing delimiter index, -1 for unterminated input, -2 for unsupported grammar, -3 for nesting exhaustion.
+// Numeric-only instrumentation at the real scanner entries. Input bytes count
+// UTF-16 code units submitted to each scan, including recursive invocations;
+// they do not claim to count regex engine reads or V8 backing-store bytes.
+export const shellAnalysisCounters = {
+  prepareCalls: 0, prepareInputBytes: 0,
+  substitutionCalls: 0, substitutionInputBytes: 0,
+  functionBoundaryCalls: 0, functionBoundaryChars: 0, crComparisons: 0,
+  subscriptTextChars: 0, promptParameterCalls: 0, promptParameterChars: 0,
+};
+
+/** Recognize only the parameter head before @P, without evaluating its value.
+ * Called at an already-discovered ${ in the existing substitution scan. */
+export function isPromptParameterExpansion(command: string, start: number): boolean {
+  shellAnalysisCounters.promptParameterCalls++;
+  let index = start;
+  let code = command.charCodeAt(index);
+  if (code === 33 || code === 35) code = command.charCodeAt(++index);
+  if (code === 95 || code >= 65 && code <= 90 || code >= 97 && code <= 122) {
+    do {
+      shellAnalysisCounters.promptParameterChars++;
+      code = command.charCodeAt(++index);
+    } while (code === 95 || code >= 65 && code <= 90 || code >= 97 && code <= 122 || code >= 48 && code <= 57);
+  } else if (code >= 48 && code <= 57) {
+    do {
+      shellAnalysisCounters.promptParameterChars++;
+      code = command.charCodeAt(++index);
+    } while (code >= 48 && code <= 57);
+  } else if (code === 64 || code === 42 || code === 63 || code === 36 || code === 45) code = command.charCodeAt(++index);
+  else return false;
+  if (code === 91) {
+    let depth = 1;
+    while (++index < command.length) {
+      shellAnalysisCounters.promptParameterChars++;
+      code = command.charCodeAt(index);
+      if (code === 91) depth++;
+      else if (code === 93 && --depth === 0) break;
+    }
+    code = command.charCodeAt(++index);
+  }
+  return code === 64 && command.charCodeAt(index + 1) === 80 && command.charCodeAt(index + 2) === 125;
+}
+
+/** Primitive state for literal identifier[...executable-marker...] text.
+ * Bits zero/one remember an identifier/execution marker; higher bits count brackets. */
+export function subscriptTextState(state: number, code: number, next: number): number {
+  let depth = state >>> 2;
+  if (depth) {
+    let marker = state & 2;
+    if (code === 96 || (code === 36 || code === 60 || code === 62) && next === 40) marker = 2;
+    if (code === 91) depth++;
+    else if (code === 93 && --depth === 0) return marker ? -1 : 0;
+    return (depth << 2) | marker;
+  }
+  if (code === 91 && (state & 1)) return 4;
+  return code === 95 || code >= 65 && code <= 90 || code >= 97 && code <= 122
+    || (state & 1) !== 0 && code >= 48 && code <= 57 ? 1 : 0;
+}
+
+/** Bash 5.3 function substitution; parameter words do not satisfy this prefix. */
+export function isFunctionSubstitutionStart(command: string, index: number): boolean {
+  if (command.charCodeAt(index) !== 36 || command.charCodeAt(index + 1) !== 123) return false;
+  const next = command.charCodeAt(index + 2);
+  return next === 32 || next === 9 || next === 10 || next === 124;
+}
+
+/** Closing index; -1 unterminated, -2 unsupported, -3 nesting exhausted,
+ * -4 function heredoc, -5 uninspectable function substitution, -6 CR escape.
  * Shared with argv scanners so substitution operators never become outer segments.
  * Returns only a primitive; callers retain the original word and inspect its body separately.
  */
-export function commandSubstitutionEnd(command: string, start: number, nesting = 0): number {
+export function commandSubstitutionEnd(command: string, start: number, nesting = 0, functionContext = false): number {
   if (nesting >= MAX_SUBSTITUTION_NESTING) return -3;
   if (command.charCodeAt(start) === 96) {
     let escaped = false;
     for (let end = start + 1; end < command.length; end++) {
       const inner = command.charCodeAt(end);
+      if (inner === 92 && command.charCodeAt(end + 1) === 13) return -6;
       if (escaped) { escaped = false; continue; }
       if (inner === 92) { escaped = true; continue; }
       if (inner === 96) return end;
@@ -36,8 +105,14 @@ export function commandSubstitutionEnd(command: string, start: number, nesting =
   let quote = 0;
   let escaped = false;
   let commandStart = true;
+  const functionBody = command.charCodeAt(start + 1) === 123;
+  if (functionBody) shellAnalysisCounters.functionBoundaryCalls++;
+  let uninspectableFunction = false;
+  let functionArithmeticDepth = 0;
   for (let end = start + 2; end < command.length; end++) {
     const inner = command.charCodeAt(end);
+    if (functionBody) shellAnalysisCounters.functionBoundaryChars++;
+    if (inner === 92 && command.charCodeAt(end + 1) === 13) return -6;
     if (escaped) { escaped = false; continue; }
     if (inner === 92 && quote !== 39) {
       if (command[end + 1] !== "\n") commandStart = false;
@@ -46,14 +121,34 @@ export function commandSubstitutionEnd(command: string, start: number, nesting =
     }
     if (quote === 39) { if (inner === 39) quote = 0; continue; }
     // Nested substitutions have their own quoting context, even inside double quotes.
-    if (inner === 96 || inner === 36 && command.charCodeAt(end + 1) === 40 && command.charCodeAt(end + 2) !== 40) {
-      const nestedEnd = commandSubstitutionEnd(command, end, nesting + 1);
+    const nestedFunction = isFunctionSubstitutionStart(command, end);
+    if (inner === 96 || inner === 36 && command.charCodeAt(end + 1) === 40 && command.charCodeAt(end + 2) !== 40 || nestedFunction) {
+      const nestedEnd = commandSubstitutionEnd(command, end, nesting + 1, functionContext || functionBody);
       if (nestedEnd < 0) return nestedEnd;
+      if (nestedFunction && quote === 34) uninspectableFunction = true;
       end = nestedEnd;
       commandStart = false;
       continue;
     }
     if (quote === 34) { if (inner === 34) quote = 0; continue; }
+    if (functionBody || functionContext) {
+      if (!functionArithmeticDepth && (inner === 36 && command.charCodeAt(end + 1) === 40 && command.charCodeAt(end + 2) === 40 || inner === 40 && command.charCodeAt(end + 1) === 40)) {
+        functionArithmeticDepth = 2; end += inner === 36 ? 2 : 1; commandStart = false; continue;
+      }
+      if (functionArithmeticDepth) {
+        if (inner === 40) functionArithmeticDepth++;
+        else if (inner === 41) functionArithmeticDepth--;
+        continue;
+      }
+      if (inner === 60) {
+        let second = end + 1;
+        while (command.charCodeAt(second) === 92 && command.charCodeAt(second + 1) === 10) second += 2;
+        if (command.charCodeAt(second) === 60) {
+          if (command.charCodeAt(second + 1) !== 60) return -4;
+          end = second + 1; commandStart = false; continue;
+        }
+      }
+    }
     // An escaped apostrophe in ANSI-C quoting is not a closing quote. Refuse
     // escapes the argv scanners cannot decode instead of truncating the body.
     if (inner === 36 && command.charCodeAt(end + 1) === 39 && !isSimpleBashAnsiCQuote(command, end)) return -2;
@@ -67,19 +162,29 @@ export function commandSubstitutionEnd(command: string, start: number, nesting =
     }
     if (inner === 32 || inner === 9 || inner === 13) continue;
     if (inner === 10 || inner === 59 || inner === 124 || inner === 38) { commandStart = true; continue; }
+    if (functionBody && inner === 123) { depth++; commandStart = true; continue; }
+    if (functionBody && inner === 125) {
+      if (--depth === 0) return uninspectableFunction || !commandStart ? -5 : end;
+      continue;
+    }
     if (inner === 123 && CASE_WORD_END_PATTERN.test(command[end + 1] ?? "")) { commandStart = true; continue; }
     if (commandStart) {
       if ((command.startsWith("time", end) && CASE_WORD_END_PATTERN.test(command[end + 4] ?? ""))
         || (command.startsWith("coproc", end) && CASE_WORD_END_PATTERN.test(command[end + 6] ?? ""))
-        || (command.startsWith("case", end) && CASE_WORD_END_PATTERN.test(command[end + 4] ?? ""))) return -2;
-      const keyword = COMMAND_START_KEYWORD_PATTERN.exec(command.slice(end, end + 7));
-      if (keyword) { end += keyword[0].length - 1; continue; }
+        || (command.startsWith("case", end) && CASE_WORD_END_PATTERN.test(command[end + 4] ?? ""))) {
+        if (!functionBody) return -2;
+        uninspectableFunction = true;
+      }
+      if (!functionBody) {
+        const keyword = COMMAND_START_KEYWORD_PATTERN.exec(command.slice(end, end + 7));
+        if (keyword) { end += keyword[0].length - 1; continue; }
+      }
       commandStart = false;
     }
-    if (inner === 40) { depth++; commandStart = true; }
-    else if (inner === 41 && --depth === 0) return end;
+    if (!functionBody && inner === 40) { depth++; commandStart = true; }
+    else if (!functionBody && inner === 41 && --depth === 0) return uninspectableFunction ? -5 : end;
   }
-  return -1;
+  return functionBody ? -5 : -1;
 }
 
 /**
@@ -89,11 +194,40 @@ export function commandSubstitutionEnd(command: string, start: number, nesting =
  * nested substitutions remain visible to the outer scan.
  */
 export function extractCommandSubstitutions(command: string, heredocData = false): CommandSubstitutionScan {
+  shellAnalysisCounters.substitutionCalls++;
+  shellAnalysisCounters.substitutionInputBytes += command.length * 2;
   const scripts: string[] = [];
   let quote = 0;
   let escaped = false;
+  let subscriptState = 0;
+  let subscriptProcessDepth = 0;
   for (let index = 0; index < command.length; index++) {
     const code = command.charCodeAt(index);
+    if (code === 92 && command.charCodeAt(index + 1) === 13) return { scripts, unterminated: false, unsupported: true, limitExceeded: false, boundaryRefusal: 2 };
+    if (!heredocData && !escaped && quote === 0 && code === 35 && (index === 0 || COMMENT_BOUNDARY_PATTERN.test(command[index - 1]!))) {
+      const newline = command.indexOf("\n", index);
+      if (newline < 0) break;
+      if (!subscriptProcessDepth) subscriptState = 0;
+      index = newline; continue;
+    }
+    if (!heredocData) {
+      shellAnalysisCounters.subscriptTextChars++;
+      // Spaces inside an unquoted process substitution belong to this word.
+      // Balance only its textual parentheses; do not evaluate its contents.
+      if (!escaped && quote === 0) {
+        if (code === 40 && (subscriptProcessDepth || subscriptState >>> 2 && (command.charCodeAt(index - 1) === 60 || command.charCodeAt(index - 1) === 62))) subscriptProcessDepth++;
+        else if (code === 41 && subscriptProcessDepth) subscriptProcessDepth--;
+      }
+      // Quoting does not make stored arithmetic text inert. Quote delimiters
+      // and removed backslashes do not split the existing shell word.
+      if (!escaped && (code === quote || quote === 0 && (code === 39 || code === 34) || code === 92 && quote !== 39)) {
+        // Preserve primitive state across syntax-only quote/escape characters.
+      } else {
+        if (!escaped && quote === 0 && !subscriptProcessDepth && (code === 32 || code === 9 || code === 10 || code === 13 || code === 59 || code === 124 || code === 38)) subscriptState = 0;
+        else subscriptState = subscriptTextState(subscriptState, code, command.charCodeAt(index + 1));
+        if (subscriptState < 0) return { scripts, unterminated: false, unsupported: true, limitExceeded: false, boundaryRefusal: 1 };
+      }
+    }
     if (escaped) {
       escaped = false;
       continue;
@@ -114,11 +248,13 @@ export function extractCommandSubstitutions(command: string, heredocData = false
       quote = quote === 34 ? 0 : 34;
       continue;
     }
-    if (code !== 96 && (code !== 36 || command.charCodeAt(index + 1) !== 40 || command.charCodeAt(index + 2) === 40)) continue;
+    if (code === 36 && command.charCodeAt(index + 1) === 123 && isPromptParameterExpansion(command, index + 2)) return { scripts, unterminated: false, unsupported: true, limitExceeded: false, boundaryRefusal: 1 };
+    const functionBody = isFunctionSubstitutionStart(command, index);
+    if (!functionBody && code !== 96 && (code !== 36 || command.charCodeAt(index + 1) !== 40 || command.charCodeAt(index + 2) === 40)) continue;
     if (scripts.length === MAX_SUBSTITUTIONS) return { scripts, unterminated: false, unsupported: true, limitExceeded: "count" };
     const end = commandSubstitutionEnd(command, index);
-    if (end < 0) return { scripts, unterminated: end === -1, unsupported: end !== -1, limitExceeded: end === -3 ? "nesting" : false };
-    scripts.push(command.slice(index + (code === 96 ? 1 : 2), end));
+    if (end < 0 || functionBody && quote === 34) return { scripts, unterminated: end === -1, unsupported: end !== -1, limitExceeded: end === -3 ? "nesting" : false, boundaryRefusal: end === -4 || end === -6 ? 2 : end === -5 || functionBody ? 1 : 0 };
+    scripts.push(command.slice(index + (code === 96 ? 1 : functionBody && command.charCodeAt(index + 2) === 124 ? 3 : 2), end));
     index = end;
   }
   return { scripts, unterminated: false, unsupported: false, limitExceeded: false };
@@ -156,6 +292,11 @@ export interface ShellAnalysisView {
   /** The body or delimiter could not be bounded without executing the shell. */
   uncertain: boolean;
   hasHeredoc: boolean;
+  substitutionUncertain?: boolean;
+  /** Unknown body boundaries may hide executable input or following commands. */
+  unboundedHeredoc?: boolean;
+  uninspectableFunction?: boolean;
+  hereDocuments?: { header: string; pipelineHeader?: string; contextEnd: number; bodyEnd: number; body: string; expanded: boolean; priorSource: boolean; descriptor: number; hasCarriageReturn: boolean }[];
 }
 
 function maskShellRange(output: string[] | undefined, start: number, end: number): void {
@@ -166,11 +307,14 @@ function maskShellRange(output: string[] | undefined, start: number, end: number
 }
 
 interface HereDelimiter {
+  descriptors: number[];
   value: string;
   quoted: boolean;
   stripTabs: boolean;
   maskStart: number;
   maskEnd: number;
+  headerEnd: number;
+  pipelineEnd: number;
 }
 
 interface HereDelimiterScan {
@@ -179,7 +323,32 @@ interface HereDelimiterScan {
 }
 
 function isShellWordBoundary(c: string | undefined): boolean {
-  return c === undefined || c === " " || c === "\t" || c === "\r" || c === "\n" || c === ";" || c === "|" || c === "&" || c === "(" || c === ")" || c === "<" || c === ">";
+  return c === undefined || c === " " || c === "\t" || c === "\n" || c === ";" || c === "|" || c === "&" || c === "(" || c === ")" || c === "<" || c === ">";
+}
+
+/** Numeric literal copy, including quoted digits; moves encode -(fd + 2).
+ * -1 means unknown/closure. No shell expansion or retained binding state. */
+function heredocDescriptorCopy(command: string, start: number, end: number): number {
+  while (start < end && (command[start] === " " || command[start] === "\t")) start++;
+  let quote = "", value = 0, digits = 0, move = false;
+  for (; start < end; start++) {
+    let c = command[start]!;
+    if (quote) { if (c === quote) { quote = ""; continue; } }
+    else {
+      if (c === "'" || c === '"') { quote = c; continue; }
+      if (isShellWordBoundary(c)) break;
+      if (c === "\\") {
+        c = command[++start] ?? "";
+        if (c === "\n") continue;
+      }
+    }
+    if (c === "-" && digits && !move) { move = true; continue; }
+    const code = c.charCodeAt(0);
+    if (move || code < 48 || code > 57) return -1;
+    value = value * 10 + code - 48; digits++;
+    if (!Number.isSafeInteger(value + 2)) return -1;
+  }
+  return quote || !digits ? -1 : move ? -(value + 2) : value;
 }
 
 function collectHereDelimiters(command: string, start: number, end: number): HereDelimiterScan {
@@ -188,6 +357,8 @@ function collectHereDelimiters(command: string, start: number, end: number): Her
   let escaped = false;
   let arithmeticDepth = 0;
   let uncertain = false;
+  let pendingHeader = 0;
+  let pendingPipeline = 0;
   for (let index = start; index < end; index++) {
     const c = command[index]!;
     if (escaped) { escaped = false; continue; }
@@ -199,40 +370,95 @@ function collectHereDelimiters(command: string, start: number, end: number): Her
       index += 2;
       continue;
     }
+    if (!arithmeticDepth && c === "(" && command[index + 1] === "(") {
+      arithmeticDepth = 2;
+      index++;
+      continue;
+    }
     if (arithmeticDepth) {
       if (c === "(") arithmeticDepth++;
       else if (c === ")") arithmeticDepth--;
       continue;
     }
-    if (c !== "<" || command[index + 1] !== "<" || command[index + 2] === "<") continue;
-    const maskStart = index;
+    const comment = c === "#" && (index === 0 || COMMENT_BOUNDARY_PATTERN.test(command[index - 1]!));
+    if (comment || c === ";" || c === "(" || c === ")" || c === "&" && command[index - 1] !== ">" && command[index - 1] !== "<" && command[index - 1] !== "|" && command[index + 1] !== ">"
+      || c === "|" && (command[index + 1] === "|" || command[index - 1] === "|")) {
+      while (pendingPipeline < delimiters.length) delimiters[pendingPipeline++]!.pipelineEnd = index;
+    }
+    if (comment || c === ";" || c === "|" || c === "(" || c === ")" || c === "&" && command[index - 1] !== ">" && command[index - 1] !== "<" && command[index + 1] !== ">") {
+      // A redirect may precede its executable. Retain its entire simple command,
+      // but never borrow a consumer from the following pipeline/list member.
+      while (pendingHeader < delimiters.length) delimiters[pendingHeader++]!.headerEnd = index;
+      if (comment) break;
+    }
+    if (c !== "<" && c !== ">") continue;
+    let maskStart = index;
+    let descriptor = c === "<" ? 0 : 1;
+    let fdStart = index;
+    while (fdStart > 0 && command.charCodeAt(fdStart - 1) >= 48 && command.charCodeAt(fdStart - 1) <= 57) fdStart--;
+    if (fdStart < index && isShellWordBoundary(command[fdStart - 1])) {
+      descriptor = Number(command.slice(fdStart, index));
+      maskStart = fdStart;
+    }
+    // Preserve aliases before rebinding/closing a descriptor. Only this simple
+    // command participates; each call-owned list is capped at 16 descriptors.
+    const copy = command[index + 1] === "&" ? heredocDescriptorCopy(command, index + 2, end) : -1;
+    const sourceDescriptor = copy < -1 ? -copy - 2 : copy;
+    for (let prior = pendingHeader; prior < delimiters.length; prior++) {
+      const descriptors = delimiters[prior]!.descriptors;
+      const copied = sourceDescriptor >= 0 && descriptors.includes(sourceDescriptor);
+      let kept = 0;
+      for (const bound of descriptors) if (bound !== descriptor && !(copy < -1 && bound === sourceDescriptor) && !(c === ">" && command[index - 1] === "&" && bound === 2)) descriptors[kept++] = bound;
+      descriptors.length = kept;
+      if (copied) {
+        if (descriptors.length === MAX_SUBSTITUTIONS) uncertain = true;
+        else descriptors.push(descriptor);
+      }
+    }
+    if (c !== "<" || command[index + 1] !== "<") { index += shellRedirectionLength(command, index) - 1; continue; }
+    if (command[index + 2] === "<") { index += 2; continue; }
     let cursor = index + 2;
     const stripTabs = command[cursor] === "-";
     if (stripTabs) cursor++;
     while (command[cursor] === " " || command[cursor] === "\t") cursor++;
     let quoted = false;
     let value = "";
-    if (command[cursor] === "'" || command[cursor] === '"') {
-      quoted = true;
-      const delimiterQuote = command[cursor]!;
-      cursor++;
-      const valueStart = cursor;
-      while (cursor < end && command[cursor] !== delimiterQuote) cursor++;
-      if (cursor >= end) return { delimiters, uncertain: true };
-      value = command.slice(valueStart, cursor);
-      cursor++;
-      if (value.includes("$") || value.includes("`") || value.includes("\\")) uncertain = true;
-    } else {
-      const valueStart = cursor;
-      while (cursor < end && !isShellWordBoundary(command[cursor])) cursor++;
-      value = command.slice(valueStart, cursor);
-      if (value.includes("$") || value.includes("`") || value.includes("\\")) uncertain = true;
+    while (cursor < end && !isShellWordBoundary(command[cursor])) {
+      if (command[cursor] === "'" || command[cursor] === '"') {
+        quoted = true;
+        const delimiterQuote = command[cursor++]!;
+        const valueStart = cursor;
+        while (cursor < end && command[cursor] !== delimiterQuote) { if (command.charCodeAt(cursor) === 13) uncertain = true; cursor++; }
+        if (cursor >= end) return { delimiters, uncertain: true };
+        value += command.slice(valueStart, cursor++);
+      } else {
+        const valueStart = cursor;
+        while (cursor < end && !isShellWordBoundary(command[cursor]) && command[cursor] !== "'" && command[cursor] !== '"') { if (command.charCodeAt(cursor) === 13) uncertain = true; cursor++; }
+        value += command.slice(valueStart, cursor);
+      }
     }
-    if (value) delimiters.push({ value, quoted, stripTabs, maskStart, maskEnd: cursor });
+    if (value.includes("$") || value.includes("`") || value.includes("\\")) uncertain = true;
+    if (delimiters.length === MAX_SUBSTITUTIONS) return { delimiters, uncertain: true };
+    if (value) delimiters.push({ descriptors: [descriptor], value, quoted, stripTabs, maskStart, maskEnd: cursor, headerEnd: end, pipelineEnd: end });
     else uncertain = true;
     index = cursor - 1;
   }
   return { delimiters, uncertain };
+}
+
+/** A heredoc body begins after the logical declaration, not a quoted/escaped LF. */
+function heredocDeclarationEnd(command: string, start: number): number {
+  let quote = "", escaped = false;
+  for (let index = start; index < command.length; index++) {
+    const c = command[index]!;
+    if (escaped) { escaped = false; continue; }
+    if (c === "\\" && quote !== "'") { escaped = true; continue; }
+    if (quote) { if (c === quote) quote = ""; continue; }
+    if (c === "'" || c === '"') { quote = c; continue; }
+    if (c === "#" && (index === 0 || COMMENT_BOUNDARY_PATTERN.test(command[index - 1]!))) return command.indexOf("\n", index);
+    if (c === "\n") return index;
+  }
+  return -1;
 }
 
 /**
@@ -241,7 +467,9 @@ function collectHereDelimiters(command: string, start: number, end: number): Her
  * Unquoted bodies still expose command substitutions to the recursive scanner.
  */
 export function prepareShellAnalysis(command: string): ShellAnalysisView {
-  if (command.indexOf("<<") < 0 && command.indexOf("((") < 0) {
+  shellAnalysisCounters.prepareCalls++;
+  shellAnalysisCounters.prepareInputBytes += command.length * 2;
+  if (command.indexOf("<") < 0 && command.indexOf("((") < 0) {
     return { command, substitutions: [], uncertain: false, hasHeredoc: false };
   }
   let output: string[] | undefined;
@@ -251,15 +479,45 @@ export function prepareShellAnalysis(command: string): ShellAnalysisView {
   let arithmeticDepth = 0;
   let hasHeredoc = false;
   let uncertain = false;
+  let substitutionUncertain = false;
+  let unboundedHeredoc = false;
+  let uninspectableFunction = false;
+  let logicalLineStart = 0;
+  let priorSource = false, lineHasSource = false;
+  let hereDocuments: ShellAnalysisView["hereDocuments"];
   for (let index = 0; index < command.length; index++) {
     const c = command[index]!;
+    if (c === "\\" && command.charCodeAt(index + 1) === 13) { unboundedHeredoc = true; break; }
     if (escaped) { escaped = false; continue; }
-    if (c === "\\" && quote !== "'") { escaped = true; continue; }
+    if (c === "\\" && quote !== "'") { if (command[index + 1] !== "\n") lineHasSource = true; escaped = true; continue; }
+    if (quote !== "'" && isFunctionSubstitutionStart(command, index)) {
+      const end = commandSubstitutionEnd(command, index);
+      lineHasSource = true;
+      if (end === -4 || end === -6) { unboundedHeredoc = true; break; }
+      if (end < 0 || quote === '"') uninspectableFunction = true;
+      if (end < 0) break;
+      index = end; continue;
+    }
     if (quote) { if (c === quote) quote = ""; continue; }
-    if (c === "'" || c === '"') { quote = c; continue; }
+    if (c === "'" || c === '"') { lineHasSource = true; quote = c; continue; }
+    if (c === "\n") { priorSource ||= lineHasSource; lineHasSource = false; logicalLineStart = index + 1; continue; }
+    if (c === "#" && (index === 0 || COMMENT_BOUNDARY_PATTERN.test(command[index - 1]!))) {
+      const newline = command.indexOf("\n", index);
+      if (newline < 0) break;
+      index = newline;
+      priorSource ||= lineHasSource; lineHasSource = false;
+      logicalLineStart = newline + 1;
+      continue;
+    }
+    if (c !== " " && c !== "\t") lineHasSource = true;
     if (c === "$" && command[index + 1] === "(" && command[index + 2] === "(") {
       arithmeticDepth = 2;
       index += 2;
+      continue;
+    }
+    if (!arithmeticDepth && c === "(" && command[index + 1] === "(") {
+      arithmeticDepth = 2;
+      index++;
       continue;
     }
     if (arithmeticDepth) {
@@ -267,17 +525,34 @@ export function prepareShellAnalysis(command: string): ShellAnalysisView {
       else if (c === ")") arithmeticDepth--;
       continue;
     }
-    if (c !== "<" || command[index + 1] !== "<" || command[index + 2] === "<") continue;
+    if (c !== "<") continue;
+    // Bash removes continuations before forming the redirect operator. Keep
+    // split heredoc operators uninspectable without normalizing/copying source
+    // or teaching the bounded delimiter/argv parsers another representation.
+    let second = index + 1;
+    while (command.charCodeAt(second) === 92 && command.charCodeAt(second + 1) === 10) second += 2;
+    if (command.charCodeAt(second) !== 60) continue;
+    let third = second + 1;
+    while (command.charCodeAt(third) === 92 && command.charCodeAt(third + 1) === 10) third += 2;
+    if (command.charCodeAt(third) === 60) continue;
+    if (second !== index + 1) { hasHeredoc = unboundedHeredoc = true; break; }
     hasHeredoc = true;
     output ??= command.split("");
     const operatorStart = index;
-    const lineEnd = command.indexOf("\n", index + 2);
+    const lineEnd = heredocDeclarationEnd(command, index + 2);
+    if (lineEnd >= 0) {
+      const headerSubstitutions = extractCommandSubstitutions(command.slice(operatorStart, lineEnd));
+      if (headerSubstitutions.boundaryRefusal === 2) unboundedHeredoc = true;
+      if (headerSubstitutions.boundaryRefusal === 1) uninspectableFunction = true;
+      if (headerSubstitutions.unterminated || headerSubstitutions.unsupported) substitutionUncertain = uncertain = true;
+    }
     const delimiterScan = lineEnd < 0 ? { delimiters: [], uncertain: true } : collectHereDelimiters(command, operatorStart, lineEnd);
     const delimiters = delimiterScan.delimiters;
     uncertain ||= delimiterScan.uncertain;
     for (const delimiter of delimiters) maskShellRange(output, delimiter.maskStart, delimiter.maskEnd);
     if (delimiters.length === 0 || lineEnd < 0) {
       uncertain = true;
+      unboundedHeredoc = true;
       maskShellRange(output, operatorStart, Math.min(command.length, operatorStart + 2));
       break;
     }
@@ -285,6 +560,7 @@ export function prepareShellAnalysis(command: string): ShellAnalysisView {
     for (const delimiter of delimiters) {
       if (delimiterScan.uncertain) {
         uncertain = true;
+        unboundedHeredoc = true;
         maskShellRange(output, bodyStart, command.length);
         bodyStart = command.length;
         break;
@@ -293,38 +569,79 @@ export function prepareShellAnalysis(command: string): ShellAnalysisView {
       let bodyEnd = bodyStart;
       let delimiterLineStart = bodyStart;
       let foundDelimiter = false;
+      let hasCarriageReturn = false;
+      let logicalBodyLineStart = bodyStart, delimiterMatched = 0, delimiterMatches = true;
+      let withoutCrMatched = 0, withoutCrMatches = true, lineHasCr = false;
       while (bodyStart <= command.length) {
-        const lineStart = bodyStart;
         const nextLine = command.indexOf("\n", bodyStart);
         const end = nextLine < 0 ? command.length : nextLine;
-        const rawLine = command.slice(bodyStart, end);
-        const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
-        let delimiterLine = line;
-        if (delimiter.stripTabs) {
-          let firstNonTab = 0;
-          while (firstNonTab < line.length && line.charCodeAt(firstNonTab) === 9) firstNonTab++;
-          delimiterLine = line.slice(firstNonTab);
+        let contentEnd = end;
+        let backslashes = 0;
+        if (!delimiter.quoted && nextLine >= 0) for (let cursor = contentEnd - 1; cursor >= bodyStart && command.charCodeAt(cursor) === 92; cursor--) backslashes++;
+        const continued = backslashes % 2 === 1;
+        if (continued) contentEnd--;
+        let cursor = bodyStart;
+        if (delimiter.stripTabs && delimiterMatched === 0) while (cursor < contentEnd && command.charCodeAt(cursor) === 9) cursor++;
+        for (; cursor < contentEnd; cursor++) {
+          shellAnalysisCounters.crComparisons++;
+          if (command.charCodeAt(cursor) === 13) {
+            hasCarriageReturn = lineHasCr = true;
+            if (!delimiter.quoted && command.charCodeAt(cursor - 1) === 92) unboundedHeredoc = true;
+          } else {
+            if (command[cursor] !== delimiter.value[withoutCrMatched]) withoutCrMatches = false;
+            withoutCrMatched++;
+          }
+          if (command[cursor] !== delimiter.value[delimiterMatched]) delimiterMatches = false;
+          delimiterMatched++;
         }
-        if (delimiterLine === delimiter.value && (!delimiter.stripTabs || line === delimiter.value || line.length !== delimiterLine.length)) {
-          delimiterLineStart = lineStart;
+        if (lineHasCr && withoutCrMatches && withoutCrMatched === delimiter.value.length && (!delimiterMatches || delimiterMatched !== delimiter.value.length)) unboundedHeredoc = true;
+        if (unboundedHeredoc) break;
+        if (!continued && delimiterMatches && delimiterMatched === delimiter.value.length) {
+          delimiterLineStart = logicalBodyLineStart;
           bodyEnd = end;
           foundDelimiter = true;
           break;
         }
         bodyEnd = nextLine < 0 ? command.length : nextLine + 1;
         bodyStart = nextLine < 0 ? command.length + 1 : nextLine + 1;
+        if (!continued) { logicalBodyLineStart = bodyStart; delimiterMatched = withoutCrMatched = 0; delimiterMatches = withoutCrMatches = true; lineHasCr = false; }
       }
       if (!foundDelimiter) {
         uncertain = true;
+        unboundedHeredoc = true;
         maskShellRange(output, contentStart, command.length);
         bodyStart = command.length;
         break;
       }
+      const rawBody = command.slice(contentStart, delimiterLineStart);
+      const body = delimiter.quoted ? rawBody : removeHeredocContinuations(rawBody);
+      let expanded = false;
       if (!delimiter.quoted) {
-        const body = command.slice(contentStart, delimiterLineStart);
+        for (let cursor = 0; cursor < body.length; cursor++) {
+          if (body[cursor] === "\\") {
+            const next = body.charCodeAt(cursor + 1);
+            if (next === 36 || next === 96 || next === 92) expanded = true;
+            cursor++; continue;
+          }
+          if (body[cursor] === "$" || body[cursor] === "`") { expanded = true; break; }
+        }
         const nested = extractCommandSubstitutions(body, true);
-        for (const script of nested.scripts) if (substitutions.length < MAX_SUBSTITUTIONS) substitutions.push(script);
-        if (nested.unterminated || nested.unsupported) uncertain = true;
+        if (nested.boundaryRefusal === 2) unboundedHeredoc = true;
+        if (nested.boundaryRefusal === 1) uninspectableFunction = true;
+        for (const script of nested.scripts) {
+          if (substitutions.length < MAX_SUBSTITUTIONS) substitutions.push(script);
+          else substitutionUncertain = uncertain = true;
+        }
+        if (nested.unterminated || nested.unsupported) substitutionUncertain = uncertain = true;
+      }
+      hereDocuments ??= [];
+      if (delimiter.descriptors.length) {
+        const header = command.slice(logicalLineStart, delimiter.headerEnd);
+        const pipelineHeader = delimiter.pipelineEnd > delimiter.headerEnd ? command.slice(logicalLineStart, delimiter.pipelineEnd) : undefined;
+        for (const descriptor of delimiter.descriptors) {
+          if (hereDocuments.length < MAX_SUBSTITUTIONS) hereDocuments.push({ header, pipelineHeader, contextEnd: delimiter.pipelineEnd, bodyEnd, body, expanded, priorSource, descriptor, hasCarriageReturn });
+          else substitutionUncertain = uncertain = true;
+        }
       }
       maskShellRange(output, contentStart, bodyEnd);
       const delimiterLineEnd = command.indexOf("\n", bodyEnd);
@@ -332,7 +649,23 @@ export function prepareShellAnalysis(command: string): ShellAnalysisView {
       maskShellRange(output, bodyEnd, bodyStart);
     }
     index = bodyStart - 1;
+    priorSource = true; lineHasSource = false;
+    logicalLineStart = bodyStart;
   }
   if (arithmeticDepth !== 0) uncertain = true;
-  return { command: output ? output.join("") : command, substitutions, uncertain, hasHeredoc };
+  return { command: output ? output.join("") : command, substitutions, uncertain, hasHeredoc, substitutionUncertain, unboundedHeredoc, uninspectableFunction, hereDocuments };
+}
+
+/** One bounded normalized body only when Bash removes a continuation. The
+ * original input/mask offsets remain unchanged; no line array is retained. */
+function removeHeredocContinuations(source: string): string {
+  let result = "", start = 0;
+  for (let cursor = 0; cursor < source.length; cursor++) {
+    if (source.charCodeAt(cursor) !== 92) continue;
+    const next = source.charCodeAt(cursor + 1);
+    const width = next === 10 ? 2 : 0;
+    if (width) { result += source.slice(start, cursor); cursor += width - 1; start = cursor + 1; }
+    else cursor++;
+  }
+  return start === 0 ? source : result + source.slice(start);
 }

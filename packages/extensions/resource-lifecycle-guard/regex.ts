@@ -1,4 +1,5 @@
 export const DETACH_UTILITY_PATTERN = /(?:^|[\s;|()])(?:nohup|disown|setsid|daemonize)(?=$|[\s;|()])/iu;
+export const BASH_ALIASES_ASSIGNMENT = /^BASH_ALIASES(?:\[[^]*\])?\+?=/u;
 export const WINDOWS_DETACH_PATTERN = /(?:^|[\s;|()])(?:start-process|cmd(?:\.exe)?\s+\/c\s+start)(?=$|[\s;|()])/iu;
 export const WINDOWS_START_BACKGROUND_PATTERN = /(?:^|[\s;|()])start\s+(?:"[^"]*"\s+)?\/b(?=$|[\s;|()])/iu;
 export const WINDOWS_WAIT_PATTERN = /(?:^|[\s;|()])(?:start-process\b[^\r\n;|]*\s-wait\b|start\b[^\r\n;|]*\s\/wait\b)/iu;
@@ -7,19 +8,28 @@ export const EXIT_TRAP_PATTERN = /(?:^|[;&|()\r\n])\s*trap\b[^\r\n]*(?:EXIT|\b0\
 export const PROCESS_CLEANUP_PATTERN = /(?:^|[;&|()\r\n])\s*(?:(?:kill|pkill|taskkill|stop-process)(?=$|[\s;|()])|trap\b\s*['"]\s*(?:kill|pkill|taskkill|stop-process)(?=$|[\s;|()]))/iu;
 export const DOCKER_DETACHED_PATTERN = /\bdocker(?:\s+compose)?\b[^;\r\n&|]*(?:\s-d\b|\s--detach\b)/iu;
 export const DOCKER_CLEANUP_PATTERN = /(?:^|[;&|()\r\n])\s*(?:sudo\s+)?docker(?:\s+compose)?\b[^;\r\n&|]*(?:\sdown\b|\sstop\b|\srm\b)/iu;
-export const SERVICE_START_PATTERN = /(?:^|[;&|()\r\n])\s*(?:sudo\s+)?(?:systemctl\s+start|service\s+\S+\s+start|pm2\s+(?:start|serve))(?=$|[\s;|()])/iu;
+// Newlines are already start boundaries. Never rescan all following masked
+// heredoc lines as whitespace from every earlier newline.
+export const SERVICE_START_PATTERN = /(?:^|[;&|()\r\n])[^\S\r\n]*(?:sudo\s+)?(?:systemctl\s+start|service\s+\S+\s+start|pm2\s+(?:start|serve))(?=$|[\s;|()])/iu;
 export const SERVICE_CLEANUP_PATTERN = /(?:^|[;&|()\r\n])\s*(?:sudo\s+)?(?:systemctl\s+stop|service\s+\S+\s+stop|pm2\s+(?:stop|delete|kill))(?=$|[\s;|()])/iu;
 
 // High-risk mutation primitives from the script-safety policy. Keep these
-// module-scoped and non-global so hot-path scans allocate no regular expressions
-// and retain no lastIndex state.
+// module-scoped so hot-path scans allocate no regular expressions. Embedded-call
+// iterators are global; their synchronous owner resets lastIndex in finally.
 export const RM_RECURSIVE_PATTERN = /\brm\b(?=[^;&|\r\n]*(?:\s-[A-Za-z]*r[A-Za-z]*\b|\s--recursive\b))/iu;
 export const POWERSHELL_REMOVE_RECURSIVE_PATTERN = /\bremove-item\b(?=[^;&|\r\n]*\s-(?:recurse|r)\b)/iu;
 export const WINDOWS_RMDIR_RECURSIVE_PATTERN = /\brmdir\b(?=[^;&|\r\n]*\s\/s\b)/iu;
-export const PYTHON_RMTREE_PATTERN = /\bshutil\.rmtree\s*\(/iu;
-export const PYTHON_UNLINK_PATTERN = /(?:\bpathlib\.Path\s*\([^)]*\)|\bPath\s*\([^)]*\)|[A-Za-z_$][\w$.[\]]*)\.unlink\s*\(/iu;
-export const NODE_RECURSIVE_RM_PATTERN = /\b(?:fs\.)?(?:rm|rmSync)\s*\([^)]*\brecursive\s*:\s*true/iu;
-export const NODE_UNLINK_PATTERN = /\b(?:fs\.)?(?:unlink|unlinkSync)\s*\(/iu;
+// A single direct __call__ retains the same argument/receiver offsets. Do not
+// follow aliases, dynamic properties or repeated __call__ chains.
+export const PYTHON_RMTREE_PATTERN = /\bshutil\s*(?:\)\s*)*\.\s*rmtree\s*(?:\)\s*)*(?:\.\s*__call__\s*(?:\)\s*)*)?\(/giu;
+export const PYTHON_UNLINK_PATTERN = /\.\s*unlink\s*(?:\)\s*)*(?:\.\s*__call__\s*(?:\)\s*)*)?\(/giu;
+export const NODE_RM_CALL_PATTERN = /(?:\b(?:fs\.)?(?:rm|rmSync)|\[\s*(?:"(?:rm|rmSync)"|'(?:rm|rmSync)'|`(?:rm|rmSync)`)\s*\])\s*(?:\)\s*)*(?:(?:\?\.|\.)\s*(?:call|apply)\s*(?:\)\s*)*)?(?:\?\.\s*)?\(/giu;
+export const NODE_RECURSIVE_OPTION_PATTERN = /\brecursive\s*:\s*true/iy;
+export const NODE_NONRECURSIVE_OPTIONS_PATTERN = /\s*\{\s*(?:(?:recursive\s*:\s*false|force\s*:\s*(?:true|false)|(?:maxRetries|retryDelay)\s*:\s*\d+)\s*(?:,\s*|(?=\})))*\}\s*(?=[,)])/y;
+export const NODE_UNLINK_PATTERN = /(?:\b(?:fs\.)?(?:unlink|unlinkSync)|\[\s*(?:"(?:unlink|unlinkSync)"|'(?:unlink|unlinkSync)'|`(?:unlink|unlinkSync)`)\s*\])\s*(?:\)\s*)*(?:(?:\?\.|\.)\s*(?:call|apply)\s*(?:\)\s*)*)?(?:\?\.\s*)?\(/giu;
+// Borrowed synchronously by the existing mask; test() does not expose a match
+// array and lastIndex is reset before returning. All other strings stay hidden.
+export const NODE_LITERAL_METHOD_KEY_PATTERN = /(?:"(?:rm|rmSync|unlink|unlinkSync)"|'(?:rm|rmSync|unlink|unlinkSync)'|`(?:rm|rmSync|unlink|unlinkSync)`)(?=\s*\])/y;
 export const FIND_DELETE_PATTERN = /\bfind\b[^;&|\r\n]*\s-delete\b/iu;
 export const XARGS_RM_PATTERN = /\bxargs\b[^;&|\r\n]*\brm\b/iu;
 export const GIT_CLEAN_PATTERN = /\bgit\s+clean\b(?=[^;&|\r\n]*\s-[A-Za-z]*f[A-Za-z]*\b)(?=[^;&|\r\n]*\s-[A-Za-z]*d[A-Za-z]*\b|[^;&|\r\n]*\s-[A-Za-z]*fd[A-Za-z]*\b)/iu;
@@ -36,15 +46,22 @@ export const COMMAND_WORD_SEPARATOR_PATTERN = /[ \t]/u;
 export const INTEGER_SECONDS_PATTERN = /^[1-9][0-9]{0,8}$/u;
 export const OWNED_FOREGROUND_JOB_PATTERN = /^\s*([A-Za-z0-9_./-]+)(?:[ \t]+[A-Za-z0-9_./:-]+)*[ \t]+&[ \t]*pid=\$!;[ \t]*trap 'kill "\$pid"; wait "\$pid"' EXIT;[ \t]*(?:(.{1,4096});[ \t]*kill "\$pid";[ \t]*)?wait "\$pid"\s*$/;
 export const OPAQUE_JOB_LAUNCHER_PATTERN = /^(?:env|sudo|doas|nice|nohup|setsid|timeout|stdbuf|command|exec|busybox|xargs|sh|bash|zsh|dash|fish|ksh|powershell|pwsh|cmd)(?:\.exe)?$/iu;
-export const OPAQUE_JOB_INTERPRETER_PATTERN = /^(?:python(?:[0-9]+(?:\.[0-9]+)*)?|py|node(?:js)?)(?:\.exe)?$/iu;
+// Accept an existing basename or a complete argv word without allocating a
+// basename/lowercase copy. All interpreter callers share this one matcher.
+export const PYTHON_COMMAND_PATTERN = /(?:^|[\\/])(?:python(?:[0-9]+(?:\.[0-9]+)*)?|py)(?:\.exe)?$/iu;
+export const HEREDOC_SHELL_COMMAND_PATTERN = /(?:^|[\\/])(?:bash|sh|zsh|dash|ksh|fish)(?:\.exe)?$/iu;
+export const NODE_COMMAND_PATTERN = /(?:^|[\\/])node(?:js)?(?:\.exe)?$/iu;
+export const HEREDOC_SOURCE_COMMAND_PATTERN = /(?:^|[\\/])(?:source|\.)(?:\.exe)?$/iu;
+// Python ownership, code and permission classification share the matcher above.
 export const OWNED_USE_COMMAND_PATTERN = /^(?:curl|test|true|false|echo)(?:[ \t]+[A-Za-z0-9_./:%?=,+-]+)*$/u;
-export const SHELL_WRAPPER_TEXT_PATTERN = /sh|eval|timeout/iu;
+export const SHELL_WRAPPER_TEXT_PATTERN = /sh|eval|trap|alias|timeout|mapfile|readarray|test/iu;
 export const EXECUTABLE_EXPANSION_TEXT_PATTERN = /[$`*?\[\]{}%]/u;
 export const LOOKUP_ASSIGNMENT_PATTERN = /^(?:PATH|EXECIGNORE|BASH_CMDS|BASH_ENV|ENV|SHELLOPTS|BASHOPTS|CDPATH|PS4|POSIXLY_CORRECT)=/u;
 export const TEMPORARY_CDPATH_QUERY_PATTERN = /^CDPATH=[A-Za-z0-9_./:-]{0,1024}$/u;
 export const LEADING_REDIRECTION_PATTERN = /^(?:[0-9]+|\{[^}]+\})?[<>]{1,2}(.*)$/u;
 export const LEADING_ASSIGNMENT_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*\+?=/u;
 export const SIMPLE_VARIABLE_PATTERN = /^\$[A-Za-z_][A-Za-z0-9_]{0,63}$/u;
+export const SOURCE_DESCRIPTOR_PATTERN = /^\/(?:dev\/fd|proc\/self\/fd)\/([0-9]+)$/u;
 export const REDIRECTION_OPERATOR_PATTERN = /[<>]/u;
 export const FD_DUPLICATION_PATTERN = /^(?:[0-9]+|\{[^}]+\})?[<>]&[0-9]+$/u;
 export const NONNEGATIVE_INTEGER_PATTERN = /^[0-9]+$/u;
@@ -57,3 +74,4 @@ export const CASE_WORD_END_PATTERN = /[ \t\r\n]/u;
 export const COMMAND_START_KEYWORD_PATTERN = /^(?:then|do|else|elif|if|while|until|time|!)(?=[ \t\r\n])/u;
 export const SUBSTITUTION_COMMENT_BOUNDARY_PATTERN = /[ \t\r\n;|&()]/u;
 export const COMMENT_BOUNDARY_PATTERN = /[ \t\r\n;|&]/u;
+export const DIRECT_SHELL_VARIABLE_PATTERN = /^\$(?:([A-Za-z_][A-Za-z_0-9]*)|\{([A-Za-z_][A-Za-z_0-9]*)\})$/u;

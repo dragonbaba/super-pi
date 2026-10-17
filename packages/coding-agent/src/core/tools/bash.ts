@@ -1,6 +1,6 @@
 import { withMsysStdinBridge } from "./msys-stdin.ts";
 import { consumeBackgroundShellLaunch, consumeForegroundShellLaunch, validateBackgroundShellInput, DEFAULT_BACKGROUND_SHELL_TIMEOUT, type ShellForegroundControl } from "./shell-background.ts";
-import { boundedShellInput } from "./bounded-shell-input.ts";
+import { shellHeredocKind, CUSTOM_HEREDOC_REFUSAL } from "./shell-heredoc-gate.ts";
 import { prepareShellCwd, getShellCwdBinding, isLocalShellBackend, registerLocalShellBackend } from "./shell-cwd.ts";
 import { constants } from "node:fs";
 import { access as fsAccess, realpath as fsRealpath } from "node:fs/promises";
@@ -941,7 +941,11 @@ export function createShellToolDefinition(
             let cwdBinding = getShellCwdBinding(input);
             let executionEntered = false;
             try {
-            if (boundedShellInput(command) && (config.name !== "bash" || !isLocalShellBackend(ops) || commandPrefix || (spawnHook && spawnHook !== withMsysStdinBridge) || ops.exec !== backendExecute)) throw new Error("[SHELL_INPUT_UNSUPPORTED] Bounded heredoc backend or transport changed before execution.");
+            if (config.name !== "bash" || !isLocalShellBackend(ops) || commandPrefix || (spawnHook && spawnHook !== withMsysStdinBridge) || ops.exec !== backendExecute) {
+                const heredoc = shellHeredocKind(command);
+                if (heredoc === 2) throw new Error("[SHELL_INPUT_UNSUPPORTED] Bounded heredoc backend or transport changed before execution.");
+                if (heredoc && config.name === "bash") throw new Error(CUSTOM_HEREDOC_REFUSAL);
+            }
 			if (input.cwd !== undefined && (!isLocalShellBackend(ops) || commandPrefix || (spawnHook && spawnHook !== withMsysStdinBridge) || ops.exec !== backendExecute)) throw new Error("[SHELL_CWD_UNSUPPORTED] Explicit cwd requires the built-in local backend without commandPrefix or spawnHook.");
 			if (input.cwd === undefined && cwdBinding && !cwdBinding.isReleased) throw new Error("[SHELL_CWD_CHANGED] Bound cwd was removed before execution.");
             cwdBinding = input.cwd === undefined && !cwdBinding ? undefined : await prepareShellCwd(input, ctx?.cwd ?? cwd);
@@ -1170,8 +1174,12 @@ export function createShellToolDefinition(
         prepareArguments(args) {
             if (args && typeof args === "object") validateBackgroundShellInput(args as BashToolInput);
             if ((args as BashToolInput)?.background && (!isLocalShellBackend(ops) || commandPrefix || (spawnHook && spawnHook !== withMsysStdinBridge) || ops.exec !== backendExecute)) throw new Error("[SHELL_BACKGROUND_UNSUPPORTED] Background commands require the unchanged built-in local shell backend.");
-            if (args && typeof args === "object" && typeof (args as BashToolInput).command === "string" && boundedShellInput((args as BashToolInput).command)
-              && (config.name !== "bash" || !isLocalShellBackend(ops) || commandPrefix || (spawnHook && spawnHook !== withMsysStdinBridge) || ops.exec !== backendExecute)) throw new Error("[SHELL_INPUT_UNSUPPORTED] Bounded heredoc input requires the unchanged built-in Bash backend and transport.");
+            if (args && typeof args === "object" && typeof (args as BashToolInput).command === "string"
+              && (config.name !== "bash" || !isLocalShellBackend(ops) || commandPrefix || (spawnHook && spawnHook !== withMsysStdinBridge) || ops.exec !== backendExecute)) {
+                const heredoc = shellHeredocKind((args as BashToolInput).command);
+                if (heredoc === 2) throw new Error("[SHELL_INPUT_UNSUPPORTED] Bounded heredoc input requires the unchanged built-in Bash backend and transport.");
+                if (heredoc && config.name === "bash") throw new Error(CUSTOM_HEREDOC_REFUSAL);
+            }
             if (args && typeof args === "object" && (args as BashToolInput).cwd !== undefined
               && (!isLocalShellBackend(ops) || commandPrefix || (spawnHook && spawnHook !== withMsysStdinBridge) || ops.exec !== backendExecute)) throw new Error("[SHELL_CWD_UNSUPPORTED] Explicit cwd requires an unchanged built-in local backend without commandPrefix or spawnHook.");
             return args as BashToolInput;

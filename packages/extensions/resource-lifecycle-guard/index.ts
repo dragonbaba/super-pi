@@ -5,6 +5,7 @@ import { basename, dirname, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@super-pi/coding-agent";
 import { shutdownManagedBrowser } from "@super-pi/chrome-devtools/browser-manager";
 import { inspectBashResourceLifecycle } from "./core.ts";
+import { ShellAnalysisOwner } from "./shell-analysis.ts";
 import { inspectPowerShellResourceLifecycle } from "./powershell-lifecycle.ts";
 import { SessionPermissionController } from "./permission-controller.ts";
 import { registerChanges } from "../mutation-guard-write/changes.ts";
@@ -170,7 +171,7 @@ export default function resourceLifecycleGuard(pi: ExtensionAPI): void {
     await permissions.restore(ctx);
   });
   pi.on("before_agent_start", (event) => ({
-    systemPrompt: `${event.systemPrompt}\n\n${permissions.systemGuidance()}\nBash input: one standalone cat or node command with a single-quoted heredoc delimiter is supported, up to 12 KiB UTF-8 for the complete command. No extra arguments, redirects, pipelines or surrounding commands; other heredoc forms remain unsupported. Node source receives the existing script checks; both code and data require the normal opaque-input authorization. The original command and body are executed unchanged. Timeout is seconds: 60 means one minute. For authorized script diagnostics, native creation/editing, foreground execution and cleanup each retain their own read, path, permission and lifecycle requirements. Changing tools or language cannot authorize forbidden behavior.`,
+    systemPrompt: `${event.systemPrompt}\n\n${permissions.systemGuidance()}\nBash input: bounded heredoc bodies are distinguished from executable substitutions; literal interpreter input receives script checks. Shell state or lookup uncertainty without a recognized mutation follows opaque-input permissions: full-access with never-ask allows it; workspace-write requires approval. Recognized mutations with unverifiable targets and unmanaged process lifecycles remain blocked. The original command and body are executed unchanged. Timeout is seconds: 60 means one minute. For long work, background: true with explicit cwd is available in a live TUI/RPC session with the tasks tool; keep the command itself foreground and use tasks to observe completion or cancel it. Other environments require foreground execution. Native creation/editing, execution and cleanup retain their own read, path, permission and lifecycle requirements. Changing tools or language cannot authorize forbidden behavior.`,
   }));
 
   pi.on("tool_call", async (event, ctx) => {
@@ -191,18 +192,21 @@ export default function resourceLifecycleGuard(pi: ExtensionAPI): void {
     const cwd = bash ? ctx.cwd : "";
     const sessionId = bash ? ctx.sessionManager.getSessionId() : "";
     const generation = permissions.authorityGeneration;
+    const preparedCwd = shell ? await prepareShellCwd(event.input as { cwd?: unknown }, ctx.cwd) : undefined;
+    const analysis = event.toolName === "bash" && typeof bashCommand === "string"
+      ? new ShellAnalysisOwner(bashCommand, preparedCwd?.canonical ?? cwd, generation) : undefined;
+    let transferred = false;
+    try {
     if (event.toolName === "bash") {
-      const reason = inspectBashResourceLifecycle(event.input, nativePowerShellAvailability);
+      analysis?.assertCurrent(event.input.command, preparedCwd?.canonical ?? ctx.cwd, permissions.authorityGeneration);
+      const reason = inspectBashResourceLifecycle(event.input, nativePowerShellAvailability, analysis);
       if (reason) return { block: true, reason };
     }
     if (event.toolName === "powershell") {
       const reason = inspectPowerShellResourceLifecycle(event.input);
       if (reason) return { block: true, reason };
     }
-    const preparedCwd = shell ? await prepareShellCwd(event.input as { cwd?: unknown }, ctx.cwd) : undefined;
-    let transferred = false;
-    try {
-    const permissionBlock = await permissions.authorizeToolCall(event, ctx);
+    const permissionBlock = await permissions.authorizeToolCall(event, ctx, analysis);
     if (permissionBlock) return permissionBlock;
     // Neither lifecycle acceptance nor the original approval authorizes a replacement.
     if (bash) {
@@ -221,7 +225,10 @@ export default function resourceLifecycleGuard(pi: ExtensionAPI): void {
       return { finalAuthorization };
     }
     return undefined;
-    } finally { if (!transferred) preparedCwd?.release(); }
+    } finally {
+      analysis?.release();
+      if (!transferred) preparedCwd?.release();
+    }
   });
 
   pi.on("tool_result", (event) => {

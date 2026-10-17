@@ -322,8 +322,9 @@ test("redirection evidence distinguishes syntax from quoted and heredoc data", (
   const inputScope = inspectBashPermissionScope({ command: boundedData }, process.cwd());
   assert.ok(inputScope); assert.ok(inputScope.primitives.includes("stdin_data:cat")); assert.equal(inputScope.unverifiableScope, true, "literal data still needs opaque-input authorization");
   const heredoc = inspectHighRiskBashMutation({ command: "cat -n <<'EOF'\n2>&1\nEOF" }, process.cwd());
-  assert.ok(heredoc?.primitives.includes("heredoc_uninspectable"));
   assert.notEqual(heredoc?.diagnostic?.diagnostic.code, "FD_DUP_UNSUPPORTED");
+  assert.equal(heredoc, undefined, "literal heredoc data is not a mutation");
+  assert.equal(inspectBashPermissionScope({ command: "cat -n <<'EOF'\n2>&1\nEOF" }, process.cwd())?.kind, "opaque-script");
   assert.equal(inspectBashPermissionScope({ command: "printf '%s' '2>&1'" }, process.cwd())?.unverifiableScope, false);
 });
 
@@ -336,7 +337,8 @@ test("multiple causes retain parser order and do not let full-access bypass veri
 
 test("unsupported descriptor syntax stays opaque after static copies", () => {
   const scan = inspectHighRiskBashMutation({ command: "echo x 2>&1 3>&$fd | head" }, process.cwd());
-  assert.equal(scan?.unverifiableScope, true);
+  assert.equal(scan?.contextUncertain, true);
+  assert.equal(scan?.unverifiableScope, false);
   assert.ok(scan?.primitives.includes("unverifiable_redirection"));
   assert.notEqual(scan?.diagnostic?.diagnostic.syntax, "2>&1");
 });

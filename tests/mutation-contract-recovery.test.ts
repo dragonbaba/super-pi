@@ -367,12 +367,12 @@ test("affected recovery is concise and repeated validation emits at most one ste
   () => call("bad-3", "edit", bad),
   m => { assert.ok(f.advisories.length <= 1, JSON.stringify(f.advisories)); assert.equal(readFileSync(path, "utf8"), "one\ntwo\n"); return call("fixed", "edit", { path, snapshot: snapshot(read), edits: [{ kind: "insert_after", start: anchor(read, 1), newLines: ["inserted"] }] }); },
   m => { assert.match(text(lastResult(m)), /pre-mutation snapshots/); return call("used", "edit", { path, snapshot: snapshot(read), edits: [{ kind: "delete", start: anchor(read, 1) }] }); },
-  m => { const failure = text(lastResult(m)); assert.match(failure, /SNAPSHOT_EDIT_UNKNOWN/); assert.equal(failure.split("\n").length, 2); assert.match(failure, /snapshot.*LINE#ID/); return call("unsupported", "bash", { command: "python - <<'PY'\nprint('diagnostic')\nPY" }); },
+  m => { const failure = text(lastResult(m)); assert.match(failure, /SNAPSHOT_EDIT_UNKNOWN/); assert.equal(failure.split("\n").length, 2); assert.match(failure, /snapshot.*LINE#ID/); return call("unsupported", "bash", { command: 'bash -c "$SCRIPT"' }); },
  ]);
  const refusal = text(lastResult(contexts.at(-1)!)); assert.ok(refusal.length < 330, refusal); assert.equal(refusal.split("\n").length, 2);
  assert.equal(text(results[1]), text(results[2]), "unchanged requests keep stable canonical validation failures");
  assert.match(text(results[3]), /REPEATED_CALL_BLOCKED/); assert.equal(f.invocations.has("bad-3"), false, "existing repetition guard blocks before execution");
- assert.equal(refusal.match(/\[Lifecycle recovery\]/g)?.length, 1); assert.equal(f.invocations.has("unsupported"), false);
+ assert.equal(refusal.match(/\[SHELL_WRAPPER\]/g)?.length, 1); assert.equal(f.invocations.has("unsupported"), false);
  assert.equal(results.filter(r => (r.details as any)?.stateChanged).length, 1); assert.equal(f.counts().processes, 0);
  const steering = contexts[4].filter(m => m.role === "user" && Array.isArray(m.content) && m.content.some((c: any) => c.text?.startsWith("[Tool-loop")));
  assert.equal(steering.length, 1, "one hidden steering message reaches the next provider request");
@@ -558,16 +558,16 @@ test("repeated-line intent is never repaired away; explicit covered replacement 
  assert.deepEqual(results.map(r => r.isError), [false, true, false]); assert.equal(readFileSync(path, "utf8"), "repeat\nrepeat\ntail\n");
 });
 
-test("real preflight heredoc veto reaches next model once without result transforms or process/file effects", async t => {
+test("uninspectable executable heredoc substitution veto reaches next model once without effects", async t => {
  const f = await fixture(t);
  const { results, contexts } = await f.run([
-  () => call("heredoc", "bash", { command: "cat > diagnostic.js <<'EOF'\nconsole.log('never');\nEOF\nnode diagnostic.js", timeout: 60000 }),
+  () => call("heredoc", "bash", { command: "cat > diagnostic.js <<EOF\n$(echo unfinished\nEOF\nnode diagnostic.js", timeout: 60 }),
  ]);
  const delivered = lastResult(contexts.at(-1)!);
- assert.equal(delivered.isError, true); assert.equal(text(delivered).match(/\[Lifecycle recovery\]/g)?.length, 1);
- assert.match(text(delivered), /resubmit foreground execution for authorization/);
+ assert.equal(delivered.isError, true); assert.equal(text(delivered).match(/\[SHELL_SUBSTITUTION\]/g)?.length, 1);
+ assert.match(text(delivered), /resubmit for authorization/);
  // The final fake-provider request is captured even when it returns no tools.
- assert.equal(results.length, 1); assert.match(text(results[0]), /\[Lifecycle recovery\]/);
+ assert.equal(results.length, 1); assert.match(text(results[0]), /\[SHELL_SUBSTITUTION\]/);
  assert.equal(f.invocations.has("heredoc"), false); assert.deepEqual(f.counts(), { processes: 0, transforms: 0, approvals: 0 }); assert.deepEqual(readdirSync(f.cwd), []);
  assert.equal(await failureRecoveryHint("bash", {}, text(results[0]), f.cwd), undefined);
 });
@@ -698,7 +698,7 @@ test("boundary error classification explains ambiguous intent without mandating 
  assert.equal(result.category, "input_validation"); assert.match(result.cause, /意图不明确/); assert.doesNotMatch(result.cause, /应从 newLines 移除/);
 });
 
-for (const command of ['bash -c "$SCRIPT"', 'echo "$(time echo safe)"', 'echo $((1 << 2)']) test(`generic lifecycle uncertainty has a generic next step: ${command}`, async t => {
+for (const command of ['bash -c "$SCRIPT"', 'echo "$(time echo safe)"']) test(`generic lifecycle uncertainty has a generic next step: ${command}`, async t => {
  const f = await fixture(t);
  const { contexts } = await f.run([() => call("uncertain", "bash", { command })]);
  const failure = text(lastResult(contexts.at(-1)!));
@@ -707,6 +707,16 @@ for (const command of ['bash -c "$SCRIPT"', 'echo "$(time echo safe)"', 'echo $(
  assert.doesNotMatch(failure, /heredoc/i);
  assert.deepEqual(f.counts(), { processes: 0, transforms: 0, approvals: 0 });
  assert.equal(f.invocations.size, 0); assert.deepEqual(readdirSync(f.cwd), []);
+});
+
+test("non-lifecycle arithmetic syntax errors retain their actual shell failure", async t => {
+ const f = await fixture(t);
+ const { results } = await f.run([() => call("arithmetic", "bash", { command: 'echo $((1 << 2)' })]);
+ assert.equal(results[0].isError, true);
+ assert.match(text(results[0]), /SHELL_RUNTIME_FAILED/);
+ assert.match(text(results[0]), /Command exited with code 2/);
+ assert.equal(f.counts().processes, 1);
+ assert.deepEqual(readdirSync(f.cwd), []);
 });
 
 test("syntax parser resolves the pinned host dependency without a global Node-directory parser", async t => {

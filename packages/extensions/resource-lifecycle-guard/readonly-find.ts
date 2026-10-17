@@ -7,6 +7,18 @@ const READ_ONLY_OPERATORS: ReadonlySet<string> = new Set([
 ]);
 const RELATIVE_ROOT = /^[A-Za-z0-9_.][A-Za-z0-9_. /-]*$/;
 const SORT_OPTIONS = /^-[urnVf]+$/;
+const FIND_NEWER_PREDICATE = /^-newer[acmBt][acmBt]$/;
+const FIND_OPERAND_PREDICATES = new Set([
+	"-name", "-iname", "-path", "-ipath", "-wholename", "-iwholename", "-regex", "-iregex", "-lname", "-ilname",
+	"-type", "-xtype", "-fstype", "-uid", "-gid", "-user", "-group", "-perm", "-links", "-inum", "-size", "-used",
+	"-amin", "-atime", "-cmin", "-ctime", "-mmin", "-mtime", "-newer", "-anewer", "-cnewer", "-samefile",
+	"-maxdepth", "-mindepth", "-regextype", "-context", "-printf", "-files0-from",
+]);
+
+/** Predicate/format arguments are data even when they spell an action. */
+export function findPredicateHasOperand(word: string): boolean {
+	return FIND_OPERAND_PREDICATES.has(word) || FIND_NEWER_PREDICATE.test(word);
+}
 
 /** One literal relative root; no options, devices, drives, expansion or UNC paths. */
 export function isReadOnlyFindRoot(value: string | undefined): boolean {

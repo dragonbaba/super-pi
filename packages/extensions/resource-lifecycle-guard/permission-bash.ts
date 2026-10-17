@@ -1,12 +1,14 @@
 import { createHash } from "node:crypto";
 import { basename, resolve } from "node:path";
-import { hasUninspectableBashState, unsafeBashLoopHeaderReason } from "./core.ts";
-import { commandSubstitutionEnd, extractCommandSubstitutions, prepareShellAnalysis } from "./shell-substitution.ts";
+import { uninspectableBashStateStart, heredocDocumentConsumers, heredocExecutableBody, heredocHasUntrackedCwd, literalAliasSource, literalEvalScript, literalProcessSources, literalStoredScripts, unsafeBashLoopHeaderReason } from "./core.ts";
+import { commandSubstitutionEnd } from "./shell-substitution.ts";
+import { analyzeShellSource, type ShellAnalysisOwner } from "./shell-analysis.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
 import { isLiteralReadLoop } from "./readonly-loop.ts";
 import { isReadOnlyFindLoop } from "./readonly-find-loop.ts";
-import { isReadOnlySortTail } from "./readonly-find.ts";
-import { boundedShellInput } from "@super-pi/coding-agent";
+import { findPredicateHasOperand, isReadOnlySortTail } from "./readonly-find.ts";
+import { sortHasTerminalOption, sortLongOption, sortOptionRequiresValue } from "./sort-options.ts";
+import { NODE_COMMAND_PATTERN, PYTHON_COMMAND_PATTERN } from "./regex.ts";
 import { bashPipelinePrefixEnd, bashScriptOperandIndex, hasStatefulBashPrintf, isBashArithmeticCommandHead, isBashNetworkRedirectionTarget, shellExpansionRisk, hasUnsafeBashTestOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 
 const MAX_COMMAND_CHARS = 128 * 1024;
@@ -18,7 +20,7 @@ const READ_ONLY_COMMANDS = new Set([
 ]);
 const SCRIPT_WRAPPERS = new Set(["bash", "bash.exe", "sh", "zsh", "cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "pwsh.exe"]);
 const OPAQUE_RUNNERS = new Set([
-  "bun", "bun.exe", "deno", "deno.exe", "node", "node.exe", "npm", "npm.cmd", "npx", "npx.cmd", "pnpm", "pnpm.cmd", "py", "py.exe", "python", "python.exe", "python3", "python3.exe", "yarn", "yarn.cmd",
+  "bun", "bun.exe", "deno", "deno.exe", "npm", "npm.cmd", "npx", "npx.cmd", "pnpm", "pnpm.cmd", "yarn", "yarn.cmd",
 ]);
 const SIMPLE_MUTATIONS = new Set(["del", "erase", "mkdir", "md", "rm", "rmdir", "rd", "touch"]);
 const COPY_COMMANDS = new Set(["cp", "copy"]);
@@ -34,10 +36,16 @@ export interface BashPermissionScope {
   classes: string[];
   dynamicScope: boolean;
   unverifiableScope: boolean;
+  /** A recognized write/delete exists but its target or shell context is unknown. */
+  unverifiableMutation?: boolean;
 }
 
 interface ScopeBuilder extends BashPermissionScope {
   segmentCount: number;
+  analysisOwner?: ShellAnalysisOwner;
+  mutationDetected: boolean;
+  uncertainContext: boolean;
+  unverifiableMutation: boolean;
 }
 
 function commandName(value: string): string {
@@ -70,15 +78,21 @@ function addClass(builder: ScopeBuilder, value: string): void {
   }
 }
 
-function addTarget(builder: ScopeBuilder, value: string, cwd: string): void {
-  if (hasDynamicSyntax(value)) {
+function addTarget(builder: ScopeBuilder, value: string, cwd: string, mutation = false, expansion = 0): void {
+  if (expansion || hasDynamicSyntax(value)) {
     builder.dynamicScope = true;
+    if (mutation) builder.unverifiableMutation = true;
     markOpaque(builder, "dynamic_target");
     return;
   }
-  const target = resolve(cwd, value);
+  addResolvedTarget(builder, resolve(cwd, value));
+}
+
+/** Only classifier-synthesized paths bypass operand expansion checks. */
+function addResolvedTarget(builder: ScopeBuilder, target: string): void {
   for (const current of builder.targets) if (current === target) return;
   if (builder.targets.length >= MAX_TARGETS) {
+    if (builder.mutationDetected) builder.unverifiableMutation = true;
     markOpaque(builder, "too_many_targets");
     return;
   }
@@ -86,6 +100,8 @@ function addTarget(builder: ScopeBuilder, value: string, cwd: string): void {
 }
 
 function markMutation(builder: ScopeBuilder, primitive: string): void {
+  builder.mutationDetected = true;
+  if (builder.uncertainContext || builder.dynamicScope) builder.unverifiableMutation = true;
   if (builder.kind === "read-only") builder.kind = "known-mutation";
   addPrimitive(builder, primitive);
   addClass(builder, `mutation:${primitive}`);
@@ -98,8 +114,13 @@ function markOpaque(builder: ScopeBuilder, primitive: string): void {
   addClass(builder, `opaque:${primitive}`);
 }
 
+function markUncertainContext(builder: ScopeBuilder, primitive: string): void {
+  builder.uncertainContext = true;
+  markOpaque(builder, primitive);
+}
+
 function addPositionalTargets(
-  tokens: readonly string[],
+  tokens: PermissionTokens,
   start: number,
   builder: ScopeBuilder,
   cwd: string,
@@ -108,7 +129,7 @@ function addPositionalTargets(
 ): number {
   let optionsEnded = false;
   let count = 0;
-  let last: string | undefined;
+  let last = -1;
   for (let index = start; index < tokens.length; index++) {
     const token = tokens[index]!;
     if (!optionsEnded && token === "--") {
@@ -117,26 +138,78 @@ function addPositionalTargets(
     }
     if (!optionsEnded && token.startsWith("-")) continue;
     count += 1;
-    if (lastOnly) last = token;
-    else if (count > skip) addTarget(builder, token, cwd);
+    if (lastOnly) last = index;
+    else if (count > skip) addTarget(builder, token, cwd, true, tokens.expansions?.[index]);
   }
-  if (lastOnly && last !== undefined && count > skip) addTarget(builder, last, cwd);
+  if (lastOnly && last >= 0 && count > skip) addTarget(builder, tokens[last]!, cwd, true, tokens.expansions?.[last]);
   if (count === 0) markOpaque(builder, "missing_static_target");
   return count;
 }
 
-function inspectKnownMutation(command: string, tokens: readonly string[], start: number, cwd: string, builder: ScopeBuilder): boolean {
+function inspectKnownMutation(command: string, tokens: PermissionTokens, start: number, cwd: string, builder: ScopeBuilder): boolean {
   if (command === "find") {
-    const root = findSearchRoot(tokens, start);
+    const root = findSearchRootIndex(tokens, start);
     for (let index = start; index < tokens.length; index++) {
+      if (!tokens.expansions?.[index] && (tokens[index] === "--help" || tokens[index] === "--version")) return true;
+      if (findPredicateHasOperand(tokens[index]!)) { index++; continue; }
+      if (tokens[index] === "-fprint" || tokens[index] === "-fprint0" || tokens[index] === "-fprintf" || tokens[index] === "-fls") {
+        markMutation(builder, "find_output");
+        const target = tokens[++index];
+        if (target) addTarget(builder, target, cwd, true, tokens.expansions?.[index]);
+        else { builder.dynamicScope = true; builder.unverifiableMutation = true; markOpaque(builder, "missing_output_target"); }
+        if (tokens[index - 1] === "-fprintf") index++;
+        continue;
+      }
       if (tokens[index] === "-delete" || tokens[index] === "-exec" || tokens[index] === "-execdir") {
         markMutation(builder, tokens[index] === "-delete" ? "find_delete" : "find_exec");
-        addTarget(builder, root ?? cwd, cwd);
-        if (tokens[index] !== "-delete") markOpaque(builder, "find_exec_scope");
-        return true;
+        if (root < 0) addResolvedTarget(builder, cwd);
+        else addTarget(builder, tokens[root]!, cwd, true, tokens.expansions?.[root]);
+        if (tokens[index] !== "-delete") { markOpaque(builder, "find_exec_scope"); return true; }
+        continue;
       }
     }
     return true;
+  }
+  if (command === "sort") {
+    if (sortHasTerminalOption(tokens, start)) return true;
+    let output = false;
+    let inertLongOption = false;
+    for (let index = start; index < tokens.length; index++) {
+      const token = tokens[index]!;
+      if (token === "--") { inertLongOption = true; break; }
+      let target: string | undefined;
+      let temporary = false;
+      if (token.startsWith("--")) {
+        const equals = token.indexOf("="), name = sortLongOption(token, equals < 0 ? token.length : equals);
+        if (name === undefined) { markOpaque(builder, "sort_unknown_option"); continue; }
+        if (name === "") { inertLongOption = true; continue; }
+        if (name === "help" || name === "version") return true;
+        if (name === "compress-program") markOpaque(builder, "sort_compress_program");
+        const value = equals >= 0 ? token.slice(equals + 1) : sortOptionRequiresValue(name) ? tokens[++index] : undefined;
+        if (name !== "output" && name !== "temporary-directory") continue;
+        temporary = name === "temporary-directory"; target = value;
+      }
+      else if (token === "-o") target = tokens[++index];
+      else if (token === "-T") { temporary = true; target = tokens[++index]; }
+      else if (token.startsWith("-") && !token.startsWith("--")) {
+        let outputFlag = -1;
+        for (let flag = 1; flag < token.length; flag++) {
+          if (token[flag] === "o") { outputFlag = flag; break; }
+          if (token[flag] === "T") { outputFlag = flag; temporary = true; break; }
+          // These options consume the remainder as an operand, not more flags.
+          if (token[flag] === "k" || token[flag] === "t" || token[flag] === "S") { if (flag + 1 === token.length) index++; break; }
+        }
+        if (outputFlag < 0) continue;
+        target = outputFlag + 1 < token.length ? token.slice(outputFlag + 1) : tokens[++index];
+      } else continue;
+      output = true;
+      markMutation(builder, temporary ? "sort_temporary_directory" : "sort_output");
+      // The value may share an option word or occupy the following word. Keep
+      // its expansion flags: quoted/escaped backticks are literal path bytes.
+      if (target) addTarget(builder, target, cwd, true, tokens.expansions?.[index]);
+      else { builder.dynamicScope = true; builder.unverifiableMutation = true; markOpaque(builder, "missing_output_target"); }
+    }
+    return output || inertLongOption;
   }
   if (SIMPLE_MUTATIONS.has(command)) {
     markMutation(builder, command);
@@ -172,15 +245,15 @@ function inspectKnownMutation(command: string, tokens: readonly string[], start:
   return false;
 }
 
-function findSearchRoot(tokens: readonly string[], start: number): string | undefined {
+function findSearchRootIndex(tokens: readonly string[], start: number): number {
   for (let index = start; index < tokens.length; index++) {
     const value = tokens[index]!;
-    if (value === "--") return tokens[index + 1] && !tokens[index + 1]!.startsWith("-") ? tokens[index + 1] : undefined;
+    if (value === "--") return tokens[index + 1] && !tokens[index + 1]!.startsWith("-") ? index + 1 : -1;
     if (value === "-H" || value === "-L" || value === "-P") continue;
-    if (value.startsWith("-")) return undefined;
-    return value;
+    if (value.startsWith("-")) return -1;
+    return index;
   }
-  return undefined;
+  return -1;
 }
 
 function commandIndex(tokens: readonly string[], start = 0): number {
@@ -289,13 +362,13 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
   const bareControl = index === 0 && !tokens.firstWordQuoted && tokens[index] === command;
   if (bareControl && (command === "for" || command === "done" || command === "}")) return cwd;
   if (bareControl && (command === "do" || command === "{")) return index + 1 < tokens.length ? inspectSegment(tokens, cwd, depth + 1, builder, index + 1) : cwd;
-  if (isBashArithmeticCommandHead(tokens, index)) { markOpaque(builder, "unverifiable_arithmetic_command"); return cwd; }
+  if (isBashArithmeticCommandHead(tokens, index)) { markUncertainContext(builder, "unverifiable_arithmetic_command"); return cwd; }
   if (tokens[index] !== command && command !== "command" && command !== "exec") {
     markOpaque(builder, "explicit_or_cased_executable");
     addTarget(builder, tokens[index]!, cwd);
     return cwd;
   }
-  if (command === "command" || command === "exec") {
+  if (command === "command" || command === "exec" || command === "builtin") {
     if (tokens[index] !== command) {
       markOpaque(builder, "explicit_path_named_shell_builtin");
       addTarget(builder, tokens[index]!, cwd);
@@ -306,11 +379,35 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
       addClass(builder, "read:command-query");
       return cwd;
     }
-    if (depth >= MAX_DEPTH || !tokens[index + 1] || tokens[index + 1]!.startsWith("-")) {
+    let nextIndex = index + 1;
+    if (command === "command" && tokens[nextIndex] === "-p") nextIndex++;
+    if (tokens[nextIndex] === "--") nextIndex++;
+    if (depth >= MAX_DEPTH || !tokens[nextIndex] || tokens[nextIndex]!.startsWith("-")) {
       markOpaque(builder, "unverifiable_launcher");
       return cwd;
     }
-    return inspectSegment(tokens, cwd, depth + 1, builder, index + 1);
+    return inspectSegment(tokens, cwd, depth + 1, builder, nextIndex);
+  }
+  if (command === "alias") {
+    markOpaque(builder, "opaque_alias");
+    for (let operand = index + 1; operand < tokens.length; operand++) {
+      const source = literalAliasSource(tokens, operand);
+      if (source !== undefined) { builder.uncertainContext = true; inspectScript(source, cwd, depth + 1, builder); }
+    }
+    return cwd;
+  }
+  if (command === "eval") {
+    const source = literalEvalScript(tokens, index + 1);
+    markOpaque(builder, "opaque_eval");
+    if (source === undefined || depth >= MAX_DEPTH) { builder.uncertainContext = true; return cwd; }
+    inspectScript(source, cwd, depth + 1, builder);
+    return cwd;
+  }
+  if (command === "trap") {
+    const actionIndex = index + (tokens[index + 1] === "--" ? 2 : 1), action = tokens[actionIndex];
+    markOpaque(builder, "opaque_trap");
+    if (action && action !== "-" && action !== "-p" && action !== "-l" && !tokens.expansions?.[actionIndex]) inspectScript(action, cwd, depth + 1, builder);
+    return cwd;
   }
   // A launched `cd` (`env cd`, `sudo cd`) is an external program and cannot move this shell.
   if (command === "cd" && index !== start) return cwd;
@@ -323,7 +420,7 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
     return resolve(cwd, target);
   }
   if (command === "printf" && hasStatefulBashPrintf(tokens, index)) {
-    markOpaque(builder, "stateful_printf_variable_assignment");
+    markUncertainContext(builder, "stateful_printf_variable_assignment");
     return cwd;
   }
   const testOpen = bashPipelinePrefixEnd(tokens, index);
@@ -341,20 +438,20 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
     const source = wrapperScript(tokens, index + 1, command === "bash" || command === "bash.exe" || command === "sh" || command === "zsh");
     if (!source || depth >= MAX_DEPTH) {
       markOpaque(builder, "opaque_shell_wrapper");
-      addTarget(builder, cwd, cwd);
+      addResolvedTarget(builder, cwd);
       return cwd;
     }
     inspectScript(source, cwd, depth + 1, builder);
     return cwd;
   }
-  if (OPAQUE_RUNNERS.has(command)) {
+  if (PYTHON_COMMAND_PATTERN.test(command) || NODE_COMMAND_PATTERN.test(command) || OPAQUE_RUNNERS.has(command)) {
     addClass(builder, runnerClass(command, tokens, index + 1));
-    if (command === "node" || command === "node.exe") {
+    if (NODE_COMMAND_PATTERN.test(command)) {
       const checkIndex = tokens.indexOf("--check", index + 1);
       if (checkIndex >= 0 && tokens[checkIndex + 1] && !hasDynamicSyntax(tokens[checkIndex + 1]!)) return cwd;
     }
     markOpaque(builder, `opaque_${command.replaceAll(".", "_")}`);
-    addTarget(builder, cwd, cwd);
+    addResolvedTarget(builder, cwd);
     return cwd;
   }
   if (command === "git") {
@@ -362,12 +459,12 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
     addClass(builder, `git:${safeClassToken(subcommand ?? "unknown")}`);
     if (!subcommand || subcommand.startsWith("-")) {
       markOpaque(builder, "opaque_git_global_options");
-      addTarget(builder, cwd, cwd);
+      addResolvedTarget(builder, cwd);
       return cwd;
     }
     if (GIT_READ_ONLY.has(subcommand)) return cwd;
     markMutation(builder, `git_${subcommand}`);
-    addTarget(builder, ".git", cwd);
+    addTarget(builder, ".git", cwd, true);
     return cwd;
   }
   if (READ_ONLY_COMMANDS.has(command) || command === "sort" && isReadOnlySortTail(tokens, index)) {
@@ -377,7 +474,7 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
   if (inspectKnownMutation(command, tokens, index + 1, cwd, builder)) return cwd;
   addClass(builder, `command:${safeClassToken(command || "command")}`);
   markOpaque(builder, `opaque_${command || "command"}`);
-  addTarget(builder, cwd, cwd);
+  addResolvedTarget(builder, cwd);
   return cwd;
 }
 
@@ -395,8 +492,8 @@ function inspectTokenBuffer(tokens: PermissionTokens, cwd: string, depth: number
     markOpaque(builder, "unverifiable_process_substitution");
     return cwd;
   }
-  if (hasUnsafeBashTestOperand(tokens)) markOpaque(builder, "unverifiable_bash_test_operand");
-  if (shellExpansionRisk(tokens) !== 0) markOpaque(builder, "stateful_shell_expansion");
+  if (hasUnsafeBashTestOperand(tokens)) markUncertainContext(builder, "unverifiable_bash_test_operand");
+  if (shellExpansionRisk(tokens) !== 0) markUncertainContext(builder, "stateful_shell_expansion");
   const arithmeticHead = isBashArithmeticCommandHead(tokens, bashPipelinePrefixEnd(tokens, 0));
   const redirections = tokens.redirections;
   if (redirections) {
@@ -405,24 +502,27 @@ function inspectTokenBuffer(tokens: PermissionTokens, cwd: string, depth: number
       const operator = tokens[index]!;
       const target = index + 1 === redirections[position + 1] ? undefined : tokens[index + 1];
       const descriptorFd = tokens.redirectionFds?.[position];
+      const writesFile = isShellOutputFileRedirection(operator, target, descriptorFd);
+      if (writesFile && target !== "/dev/null") markMutation(builder, "output_redirection");
       if (isStaticDescriptorCopy(operator, target, descriptorFd)) continue;
       if (descriptorFd && isShellDynamicDescriptor(descriptorFd)) {
-        markOpaque(builder, "unverifiable_redirection");
+        if (writesFile) builder.unverifiableMutation = true;
+        markUncertainContext(builder, "unverifiable_redirection");
         continue;
       }
       if (operator === "<" && target && !hasDynamicSyntax(target) && !isBashNetworkRedirectionTarget(target)) continue;
-      if (!isShellOutputFileRedirection(operator)) {
+      if (!writesFile) {
         markOpaque(builder, "unverifiable_redirection");
         continue;
       }
       if (target === "/dev/null") continue;
-      markMutation(builder, "output_redirection");
-      if (target) addTarget(builder, target, cwd);
-      else markOpaque(builder, "redirection_target_unverifiable");
+      if (target) addTarget(builder, target, cwd, true, tokens.expansions?.[index + 1]);
+      else { builder.unverifiableMutation = true; markUncertainContext(builder, "redirection_target_unverifiable"); }
     }
     stripShellRedirections(tokens, redirections);
+    redirections.length = 0;
   }
-  if (arithmeticHead) { markOpaque(builder, "unverifiable_arithmetic_command"); return cwd; }
+  if (arithmeticHead) { markUncertainContext(builder, "unverifiable_arithmetic_command"); return cwd; }
   return tokens.length > 0 ? inspectSegment(tokens, cwd, depth, builder) : cwd;
 }
 
@@ -431,21 +531,42 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
     markOpaque(builder, "command_substitution_depth");
     return;
   }
-  if (hasUninspectableBashState(command)) {
+  const prepared = builder.analysisOwner ? builder.analysisOwner.get(command) : analyzeShellSource(command);
+  const analysis = prepared.view;
+  let uncertainStateStart = uninspectableBashStateStart(analysis.command);
+  // These nested sources are visited before the outer token walk.
+  if (uncertainStateStart >= 0 && (analysis.substitutions.length || prepared.substitutions.scripts.length)) uncertainStateStart = 0;
+  if (uncertainStateStart === 0) {
+    uncertainStateStart = -1;
     markOpaque(builder, "unverifiable_shell_state");
-    return;
+    builder.uncertainContext = true;
   }
-  const analysis = prepareShellAnalysis(command);
+  if (prepared.stdin) markOpaque(builder, `stdin_${prepared.stdin.kind}:${prepared.stdin.consumer}`);
   if (analysis.hasHeredoc) markOpaque(builder, "heredoc_uninspectable");
   if (analysis.uncertain) markOpaque(builder, "shell_context_uninspectable");
+  const storedScripts = literalStoredScripts(analysis.command);
+  if (storedScripts === null) markUncertainContext(builder, "stored_source_limit");
+  if (storedScripts) for (const source of storedScripts) { markUncertainContext(builder, "resolved_stored_action"); inspectScript(source, initialCwd, depth + 1, builder); }
+  const processScripts = literalProcessSources(analysis.command);
+  if (processScripts === null) markUncertainContext(builder, "process_source_limit");
+  if (processScripts === false) markUncertainContext(builder, "process_source_unresolved");
+  if (processScripts) for (const source of processScripts) { markUncertainContext(builder, "resolved_process_source"); inspectScript(source, initialCwd, depth + 1, builder); }
+  if (analysis.hereDocuments) for (const document of analysis.hereDocuments) {
+    const body = heredocExecutableBody(document, analysis.command);
+    if (heredocDocumentConsumers(document, analysis.command, analysis.hereDocuments) & 1 && body !== undefined) {
+      if (document.expanded) { markUncertainContext(builder, "heredoc_expanded_source"); continue; }
+      if (document.priorSource || document.pipelineHeader || heredocHasUntrackedCwd(document.header)) builder.uncertainContext = true;
+      inspectScript(body, initialCwd, depth + 1, builder);
+    }
+  }
   for (const nested of analysis.substitutions) inspectScript(nested, initialCwd, depth + 1, builder);
-  const substitutions = extractCommandSubstitutions(analysis.command);
+  const substitutions = prepared.substitutions;
   if (substitutions.unterminated) markOpaque(builder, "unterminated_command_substitution");
   if (substitutions.unsupported) markOpaque(builder, "uninspectable_command_substitution");
   for (const nested of substitutions.scripts) inspectScript(nested, initialCwd, depth + 1, builder);
   command = analysis.command;
   const loopReason = unsafeBashLoopHeaderReason(command);
-  if (loopReason) markOpaque(builder, loopReason);
+  if (loopReason) markUncertainContext(builder, loopReason);
   let cwd = initialCwd;
   const tokens: PermissionTokens = [];
   let value = "";
@@ -458,6 +579,9 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
   let redirectionTargetPending = false;
   let bashDoubleBracket = false;
   for (let index = 0; index < command.length; index++) {
+    if (uncertainStateStart >= 0 && index >= uncertainStateStart) {
+      markUncertainContext(builder, "unverifiable_shell_state"); uncertainStateStart = -1;
+    }
     const code = command.charCodeAt(index);
     if (escaped) {
       literalWord = false;
@@ -637,10 +761,11 @@ function publicScope(builder: ScopeBuilder): BashPermissionScope {
     classes: builder.classes,
     dynamicScope: builder.dynamicScope,
     unverifiableScope: builder.unverifiableScope,
+    unverifiableMutation: builder.unverifiableMutation,
   };
 }
 
-export function inspectBashPermissionScope(input: unknown, cwd: string): BashPermissionScope | undefined {
+export function inspectBashPermissionScope(input: unknown, cwd: string, analysisOwner?: ShellAnalysisOwner): BashPermissionScope | undefined {
   if (!input || typeof input !== "object") return undefined;
   const command = (input as { command?: unknown }).command;
   if (typeof command !== "string" || command.length === 0) return undefined;
@@ -652,6 +777,10 @@ export function inspectBashPermissionScope(input: unknown, cwd: string): BashPer
     dynamicScope: false,
     unverifiableScope: false,
     segmentCount: 0,
+    analysisOwner,
+    mutationDetected: false,
+    uncertainContext: false,
+    unverifiableMutation: false,
   };
   if (command.length > MAX_COMMAND_CHARS) {
     markOpaque(builder, "oversized_command");
@@ -665,12 +794,6 @@ export function inspectBashPermissionScope(input: unknown, cwd: string): BashPer
     addClass(builder, "read:find-loop");
     return publicScope(builder);
   }
-  const stdin = command.includes("<<") ? boundedShellInput(command) : undefined;
-  if (stdin) {
-    inspectScript(stdin.analysisCommand, resolve(cwd), 0, builder);
-    // Never infer harmless input from the delimiter or consumer name. The full
-    // original command/body remains in approval hashing and the final binding.
-    markOpaque(builder, `stdin_${stdin.kind}:${stdin.consumer}`);
-  } else inspectScript(command, resolve(cwd), 0, builder);
+  inspectScript(command, resolve(cwd), 0, builder);
   return publicScope(builder);
 }
