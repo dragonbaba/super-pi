@@ -19,12 +19,12 @@ export const SERVICE_CLEANUP_PATTERN = /(?:^|[;&|()\r\n])\s*(?:sudo\s+)?(?:syste
 export const RM_RECURSIVE_PATTERN = /\brm\b(?=[^;&|\r\n]*(?:\s-[A-Za-z]*r[A-Za-z]*\b|\s--recursive\b))/iu;
 export const POWERSHELL_REMOVE_RECURSIVE_PATTERN = /\bremove-item\b(?=[^;&|\r\n]*\s-(?:recurse|r)\b)/iu;
 export const WINDOWS_RMDIR_RECURSIVE_PATTERN = /\brmdir\b(?=[^;&|\r\n]*\s\/s\b)/iu;
-export const PYTHON_RMTREE_PATTERN = /\bshutil\s*\.\s*rmtree\s*(?:\)\s*)*\(/giu;
+export const PYTHON_RMTREE_PATTERN = /\bshutil\s*(?:\)\s*)*\.\s*rmtree\s*(?:\)\s*)*\(/giu;
 export const PYTHON_UNLINK_PATTERN = /\.\s*unlink\s*(?:\)\s*)*\(/giu;
-export const NODE_RM_CALL_PATTERN = /(?:\b(?:fs\.)?(?:rm|rmSync)|\[\s*(?:"(?:rm|rmSync)"|'(?:rm|rmSync)')\s*\])\s*(?:(?:\?\.|\.)\s*(?:call|apply)\s*)?(?:\?\.\s*)?\(/giu;
+export const NODE_RM_CALL_PATTERN = /(?:\b(?:fs\.)?(?:rm|rmSync)|\[\s*(?:"(?:rm|rmSync)"|'(?:rm|rmSync)')\s*\])\s*(?:\)\s*)*(?:(?:\?\.|\.)\s*(?:call|apply)\s*(?:\)\s*)*)?(?:\?\.\s*)?\(/giu;
 export const NODE_RECURSIVE_OPTION_PATTERN = /\brecursive\s*:\s*true/iy;
 export const NODE_NONRECURSIVE_OPTIONS_PATTERN = /\s*\{\s*(?:(?:recursive\s*:\s*false|force\s*:\s*(?:true|false)|(?:maxRetries|retryDelay)\s*:\s*\d+)\s*(?:,\s*|(?=\})))*\}\s*(?=[,)])/y;
-export const NODE_UNLINK_PATTERN = /(?:\b(?:fs\.)?(?:unlink|unlinkSync)|\[\s*(?:"(?:unlink|unlinkSync)"|'(?:unlink|unlinkSync)')\s*\])\s*(?:(?:\?\.|\.)\s*(?:call|apply)\s*)?(?:\?\.\s*)?\(/giu;
+export const NODE_UNLINK_PATTERN = /(?:\b(?:fs\.)?(?:unlink|unlinkSync)|\[\s*(?:"(?:unlink|unlinkSync)"|'(?:unlink|unlinkSync)')\s*\])\s*(?:\)\s*)*(?:(?:\?\.|\.)\s*(?:call|apply)\s*(?:\)\s*)*)?(?:\?\.\s*)?\(/giu;
 // Borrowed synchronously by the existing mask; test() does not expose a match
 // array and lastIndex is reset before returning. All other strings stay hidden.
 export const NODE_LITERAL_METHOD_KEY_PATTERN = /(?:"(?:rm|rmSync|unlink|unlinkSync)"|'(?:rm|rmSync|unlink|unlinkSync)')(?=\s*\])/y;

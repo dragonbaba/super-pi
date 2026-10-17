@@ -12,6 +12,10 @@ const cwd = process.cwd(), iterations = 512, warmup = 64, samplingInterval = 409
 const literalInputs = process.argv.includes("--literal-inputs");
 const substitution = "$(grep -c -E '(class|function|const|var|let) GCSystem\\b' pixi/pixi.js)";
 const cases = literalInputs ? [
+  ["node-parenthesized-method", "node <<'EOF'\n((fs.rmSync))(target,{recursive:true})\nEOF", 1],
+  ["node-parenthesized-indirect", "node <<'EOF'\n((fs.rmSync).call)('receiver',target,{recursive:true})\nEOF", 1],
+  ["python-parenthesized-receiver", "python <<'EOF'\n((shutil)).rmtree(target)\nEOF", 1],
+  ["node-unicode-comment-end", "node <<'EOF'\n// comment\u2028fs.rmSync(target,{recursive:true})\nEOF", 1],
   ["shadowed-process-producer", "echo() { printf '%s\\n' 'sleep 100 &'; }; source <(echo ':')", 1],
   ["find-files0-filename", "find -files0-from -delete", 1],
   ["find-files0-help-data", "find -files0-from --help -delete", 1],

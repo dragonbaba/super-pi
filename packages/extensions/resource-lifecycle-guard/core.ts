@@ -748,9 +748,9 @@ function inspectCodeCall(
 /** No positional interpretation of call/apply receiver/argument lists. */
 function nodeIndirectCall(masked: string, open: number): boolean {
 	let end = open;
-	while (end > 0 && isCodeWhitespace(masked.charCodeAt(end - 1))) end--;
+	while (end > 0 && (isCodeWhitespace(masked.charCodeAt(end - 1)) || masked.charCodeAt(end - 1) === 41)) end--;
 	if (masked.charCodeAt(end - 1) === 46 && masked.charCodeAt(end - 2) === 63) end -= 2;
-	while (end > 0 && isCodeWhitespace(masked.charCodeAt(end - 1))) end--;
+	while (end > 0 && (isCodeWhitespace(masked.charCodeAt(end - 1)) || masked.charCodeAt(end - 1) === 41)) end--;
 	return masked.endsWith("call", end) || masked.endsWith("apply", end);
 }
 
@@ -2497,8 +2497,9 @@ function maskCodeStringsAndComments(source: string, language: "node" | "python")
 		const code = source.charCodeAt(index);
 		const next = source.charCodeAt(index + 1);
 		if (lineComment) {
-			output[index] = code === 10 || code === 13 ? source[index]! : " ";
-			if (code === 10 || code === 13) lineComment = false;
+			const lineEnd = code === 10 || code === 13 || language === "node" && (code === 8232 || code === 8233);
+			output[index] = lineEnd ? source[index]! : " ";
+			if (lineEnd) lineComment = false;
 			continue;
 		}
 		if (blockComment) {

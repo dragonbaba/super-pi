@@ -46,6 +46,43 @@ test("prompt checks inspect only discovered parameter heads and retain primitive
 });
 
 for (const mode of ["full-access", "workspace-write"] as const) {
+  test(`review thirty-four ${mode}: parenthesized direct interpreter calls retain targets`, async t => {
+    for (const heredoc of [false, true]) {
+      for (const [interpreter, body] of [
+        ["python", "(shutil).rmtree(target)"], ["python", "((shutil)) . rmtree(target)"], ["python", "((shutil # comment\n)) . rmtree(target)"],
+        ["node", "(fs.rmSync)(target,{recursive:true})"], ["node", "((fs . rmSync)) ?. (target,{recursive:true})"],
+        ["node", "(fs['rmSync'])(target,{recursive:true})"], ["node", "(fs?.['unlinkSync'])?.(target)"], ["node", "(fs.unlinkSync)(target)"],
+        ["node", "((fs.rmSync).call)('receiver',target,{recursive:true})"], ["node", "((fs.unlinkSync).apply)?.('receiver',[target])"],
+      ]) {
+        const command = literalProgram(interpreter, body, heredoc), scan = inspectHighRiskBashMutation({ command }, process.cwd());
+        assert.equal(scan?.mutationDetected, true, command); assert.equal(scan?.unverifiableScope, true, command); assert.deepEqual(scan?.targets, []);
+        const f = await shellHookFixture(t, mode), result = await f.authorize(command); assert.equal(result.outcome?.block, true, command); assert.equal(f.dialogs(), 0);
+      }
+      for (const [interpreter, body] of [["python", "((shutil)).rmtree('scratch')"], ["node", "((fs.rmSync))('scratch',{recursive:true})"], ["node", "(fs['unlinkSync'])('scratch')"]]) {
+        const scan = inspectHighRiskBashMutation({ command: literalProgram(interpreter, body, heredoc) }, process.cwd());
+        assert.equal(scan?.mutationDetected, true); assert.equal(scan?.unverifiableScope, false); assert.deepEqual(scan?.targets, [resolve('scratch')]);
+      }
+      for (const [interpreter, body] of [["node", "(console.log)(1)"], ["node", "(fs.rmSync)('a.txt')"], ["node", "console.log(\"(fs.rmSync)(target,{recursive:true})\")"], ["node", "// (fs.rmSync)(target,{recursive:true})"], ["python", "print(\"(shutil).rmtree(target)\")"], ["python", "# (shutil).rmtree(target)"]]) {
+        const command = literalProgram(interpreter, body, heredoc); assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
+        const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
+      }
+    }
+  });
+  test(`review thirty-four ${mode}: Node Unicode line terminators end line comments`, async t => {
+    for (const heredoc of [false, true]) for (const end of ["\u2028", "\u2029"]) {
+      for (const body of [`// comment${end}fs.rmSync(target,{recursive:true})`, `// comment${end}fs.unlinkSync(target)`]) {
+        const command = literalProgram("node", body, heredoc), scan = inspectHighRiskBashMutation({ command }, process.cwd());
+        assert.equal(scan?.mutationDetected, true, command); assert.equal(scan?.unverifiableScope, true);
+        const f = await shellHookFixture(t, mode), result = await f.authorize(command); assert.equal(result.outcome?.block, true); assert.equal(f.dialogs(), 0);
+      }
+      const literal = inspectHighRiskBashMutation({ command: literalProgram("node", `// comment${end}fs.unlinkSync('scratch')`, heredoc) }, process.cwd());
+      assert.deepEqual(literal?.targets, [resolve('scratch')]); assert.equal(literal?.unverifiableScope, false);
+      for (const [interpreter, body] of [["node", `/* comment${end}fs.rmSync(target,{recursive:true}) */`], ["node", `console.log("// comment${end}fs.rmSync(target,{recursive:true})")`], ["python", `# comment${end}shutil.rmtree(target)`]]) {
+        const command = literalProgram(interpreter, body, heredoc); assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
+        const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
+      }
+    }
+  });
   test(`review thirty-three ${mode}: unparsed env options retain heredoc refusal`, async t => {
     for (const option of ["-u FOO", "-C .", "-S 'X'"]) for (const [interpreter, body] of [["node", "unlinkSync(process.argv[1])"], ["python3 -", "shutil.rmtree(sys.argv[1])"], ["bash", "sleep 100 &"]]) {
       for (const prefix of ["", "command ", "true; "]) {
