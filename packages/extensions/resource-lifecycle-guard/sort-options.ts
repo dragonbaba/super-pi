@@ -31,3 +31,26 @@ export function sortLongOption(token: string, end: number): string | undefined {
 }
 
 export function sortOptionRequiresValue(name: string): boolean { return SORT_REQUIRED_VALUES.has(name); }
+
+/** Help/version exit before sort opens output. Check argv before committing this
+ * invocation's effects; existing shell redirections and earlier calls survive. */
+export function sortHasTerminalOption(tokens: readonly string[] & { expansions?: readonly number[] }, start: number): boolean {
+  for (let index = start; index < tokens.length; index++) {
+    const word = tokens[index]!;
+    if (tokens.expansions?.[index] || word === "--") return false;
+    if (word.startsWith("--")) {
+      const equals = word.indexOf("="), name = sortLongOption(word, equals < 0 ? word.length : equals);
+      if (!name) return false;
+      if (name === "help" || name === "version") return equals < 0;
+      if (equals < 0 && sortOptionRequiresValue(name)) { index++; if (tokens.expansions?.[index]) return false; }
+    } else if (word.startsWith("-")) {
+      for (let flag = 1; flag < word.length; flag++) {
+        const code = word.charCodeAt(flag);
+        if (code !== 111 && code !== 84 && code !== 107 && code !== 116 && code !== 83) continue;
+        if (flag + 1 === word.length) { index++; if (tokens.expansions?.[index]) return false; }
+        break;
+      }
+    }
+  }
+  return false;
+}

@@ -7,7 +7,7 @@ import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
 import { isLiteralReadLoop } from "./readonly-loop.ts";
 import { isReadOnlyFindLoop } from "./readonly-find-loop.ts";
 import { findPredicateHasOperand, isReadOnlySortTail } from "./readonly-find.ts";
-import { sortLongOption, sortOptionRequiresValue } from "./sort-options.ts";
+import { sortHasTerminalOption, sortLongOption, sortOptionRequiresValue } from "./sort-options.ts";
 import { bashPipelinePrefixEnd, bashScriptOperandIndex, hasStatefulBashPrintf, isBashArithmeticCommandHead, isBashNetworkRedirectionTarget, shellExpansionRisk, hasUnsafeBashTestOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 
 const MAX_COMMAND_CHARS = 128 * 1024;
@@ -149,6 +149,7 @@ function inspectKnownMutation(command: string, tokens: PermissionTokens, start: 
   if (command === "find") {
     const root = findSearchRootIndex(tokens, start);
     for (let index = start; index < tokens.length; index++) {
+      if (!tokens.expansions?.[index] && (tokens[index] === "--help" || tokens[index] === "--version")) return true;
       if (findPredicateHasOperand(tokens[index]!)) { index++; continue; }
       if (tokens[index] === "-fprint" || tokens[index] === "-fprint0" || tokens[index] === "-fprintf" || tokens[index] === "-fls") {
         markMutation(builder, "find_output");
@@ -169,6 +170,7 @@ function inspectKnownMutation(command: string, tokens: PermissionTokens, start: 
     return true;
   }
   if (command === "sort") {
+    if (sortHasTerminalOption(tokens, start)) return true;
     let output = false;
     let inertLongOption = false;
     for (let index = start; index < tokens.length; index++) {
@@ -546,6 +548,7 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
   if (storedScripts) for (const source of storedScripts) { markUncertainContext(builder, "resolved_stored_action"); inspectScript(source, initialCwd, depth + 1, builder); }
   const processScripts = literalProcessSources(analysis.command);
   if (processScripts === null) markUncertainContext(builder, "process_source_limit");
+  if (processScripts === false) markUncertainContext(builder, "process_source_unresolved");
   if (processScripts) for (const source of processScripts) { markUncertainContext(builder, "resolved_process_source"); inspectScript(source, initialCwd, depth + 1, builder); }
   if (analysis.hereDocuments) for (const document of analysis.hereDocuments) {
     const body = heredocExecutableBody(document, analysis.command);

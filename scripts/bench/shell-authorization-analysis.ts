@@ -12,6 +12,10 @@ const cwd = process.cwd(), iterations = 512, warmup = 64, samplingInterval = 409
 const literalInputs = process.argv.includes("--literal-inputs");
 const substitution = "$(grep -c -E '(class|function|const|var|let) GCSystem\\b' pixi/pixi.js)";
 const cases = literalInputs ? [
+  ["sort-terminal-help", "sort -o .git/config --help", 1],
+  ["find-terminal-help", "find --help -fprint .git/config", 1],
+  ["unresolved-process-source", "source <(printf '%b' 'sleep 100 &')", 1],
+  ["expanded-shell-source", "source /dev/stdin <<EOF\n$PAYLOAD\nEOF", 1],
   ["forwarded-python-stdin", "python() { command python \"$@\"; }; python <<'EOF'\nshutil.rmtree(target)\nEOF", 1],
   ["forwarded-node-stdin", "node() { command node -- \"$@\"; }; node <<'EOF'\nfs.rmSync(target,{recursive:true})\nEOF", 1],
   ["unknown-function-body", "base64() ( printf '%s\\n' 'sleep 100 &'; ); base64 -d <<'EOF' | source /dev/stdin\ncHJpbnRmIG9r\nEOF", 1],

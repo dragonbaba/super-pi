@@ -209,6 +209,10 @@ A matching function declaration with an unsupported body, including a parenthesi
 
 Interpreter argument expansions, including function forwarding through `"$@"`, cannot prove that stdin is data: they may disappear or supply flags or descriptor paths. Existing token expansion flags preserve possible Node/Python stdin execution until a definite literal program operand is found. Single-quoted literal `$@` and expansions after a definite program filename retain their data-input behavior. No argument values are tracked or reconstructed.
 
+Unresolved process-substitution producers read by `source`/`.` retain main's `[SHELL_UNINSPECTABLE]`, including unsupported `printf` formats and dynamic output. Literal supported `echo`/`printf` producers remain recursively inspected. Expanded heredoc bodies consumed as Shell source retain `[SHELL_HEREDOC]`; only a known literal body is recursively inspected. Expanded Node/Python bodies and data consumers retain the separately documented D3 boundary.
+
+Literal sort help/version options terminate before any sort output is opened, including output options appearing earlier in that invocation. A bounded token preflight honors option operands and `--`; shell redirections and earlier commands retain their effects. Find help/version stops only later actions: `find -fprint file --help` can already truncate the file while parsing, so that earlier write remains checked. Predicate operands spelling `--help` are data.
+
 ### Post-merge classification compatibility
 
 The global shell-text prefilter selects work only. Literal option-free `env`/`sudo`/`doas` operands are resolved within their own segment (`env` NAME=VALUE operands, including non-Bash names, `sudo` assignments and an initial `--` are recognized); ambiguous options, interleaved redirections, other launcher grammars and launcher-selected shells remain conservative refusals. Unrelated `sh` text does not turn a plain `env ... printenv` or `env echo` into a shell wrapper. This does not grant permission or validate arbitrary executable behavior.

@@ -11,7 +11,7 @@ test("authorization scanners and cache methods add no callbacks, promises or Buf
     ["permission-bash.ts", new Set(["inspectScript", "inspectBashPermissionScope", "inspectKnownMutation", "markMutation", "markUncertainContext", "addResolvedTarget", "addTarget"])],
     ["shell-redirection.ts", new Set(["isShellOutputFileRedirection", "isShellFileDescriptor", "shellRedirectionLength", "hasUnsafeBashTestOperand", "isBashIntegerLiteral", "hasOnlySimpleQueryVariables", "isQueryVariableStart", "isQueryVariablePart", "isQueryVariableDigit", "isReadOnlySpecialParameter", "bashPipelinePrefixEnd", "bashTimeOptionsEnd", "isQuotedBashWord"])],
     ["readonly-find.ts", new Set(["findPredicateHasOperand"])],
-    ["sort-options.ts", new Set(["sortLongOption", "sortOptionRequiresValue"])],
+    ["sort-options.ts", new Set(["sortLongOption", "sortOptionRequiresValue", "sortHasTerminalOption"])],
     ["timeout-wrapper.ts", new Set(["parseTimeoutInvocation"])],
   ]);
   for (const name of ["hasUnsafeBashBuiltinOperand", "hasNonliteralBashSubscript", "skipRedirections", "afterLeadingRedirection"]) targets.get("core.ts")!.add(name);
@@ -67,6 +67,18 @@ test("subscript text judgment creates only primitive state in the existing scan"
   assert.ok(helper && ts.isFunctionDeclaration(helper));
   function audit(node: ts.Node): void {
     assert.equal(ts.isNewExpression(node) || ts.isObjectLiteralExpression(node) || ts.isArrayLiteralExpression(node) || ts.isArrowFunction(node) || ts.isFunctionExpression(node) || ts.isRegularExpressionLiteral(node) || ts.isCallExpression(node), false, node.getText(source));
+    ts.forEachChild(node, audit);
+  }
+  ts.forEachChild(helper.body!, audit);
+});
+
+test("sort terminal preflight adds no source copies or temporary containers", () => {
+  const source = ts.createSourceFile("sort-options.ts", readFileSync("packages/extensions/resource-lifecycle-guard/sort-options.ts", "utf8"), ts.ScriptTarget.Latest, true);
+  const helper = source.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === "sortHasTerminalOption");
+  assert.ok(helper && ts.isFunctionDeclaration(helper));
+  function audit(node: ts.Node): void {
+    assert.equal(ts.isNewExpression(node) || ts.isObjectLiteralExpression(node) || ts.isArrayLiteralExpression(node) || ts.isArrowFunction(node) || ts.isFunctionExpression(node) || ts.isRegularExpressionLiteral(node), false, node.getText(source));
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) assert.ok(["charCodeAt", "startsWith", "indexOf"].includes(node.expression.name.text), node.getText(source));
     ts.forEachChild(node, audit);
   }
   ts.forEachChild(helper.body!, audit);

@@ -172,9 +172,11 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
  if (trapScripts) for (const script of trapScripts) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) return result; }
  const processScripts = literalProcessSources(command);
  if (processScripts === null) return lifecycleRefusal("SHELL_INSPECTION_LIMIT", "sourced process-substitution bodies exceed the source count or size limit", "split sourced input into smaller inspectable calls");
+ if (processScripts === false) return UNCERTAIN_LIFECYCLE;
  if (processScripts) for (const script of processScripts) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) return result; }
  if (here.hereDocuments) for (const document of here.hereDocuments) {
   const consumers = heredocDocumentConsumers(document, command, here.hereDocuments);
+  if (consumers & 1 && document.expanded) return lifecycleRefusal("SHELL_HEREDOC", "expanded shell heredoc source cannot be inspected as literal input", "use a quoted delimiter with an inspectable literal shell body");
   if (consumers & 1 && document.hasCarriageReturn) return lifecycleRefusal("SHELL_HEREDOC", "CR-bearing shell heredoc source has transport-dependent semantics", "use an LF-only shell body and resubmit for authorization");
   if (consumers & 8) return lifecycleRefusal("SHELL_HEREDOC", "heredoc executable input or consumer nesting cannot be inspected", "use a direct literal stdin consumer without transforming its input");
   const body = heredocExecutableBody(document, command);
@@ -506,6 +508,7 @@ function inspectShellScript(script: string, initialCwd: string, depth: number, b
 	if (trapScripts) for (const source of trapScripts) { markUnverifiable(builder); inspectShellScript(source, initialCwd, depth + 1, builder, shellOperation); }
 	const processScripts = literalProcessSources(analysis.command);
 	if (processScripts === null) markUnverifiable(builder, true);
+	if (processScripts === false) markUnverifiable(builder);
 	if (processScripts) for (const source of processScripts) { markUnverifiable(builder); inspectShellScript(source, initialCwd, depth + 1, builder, shellOperation); }
 	if (analysis.hereDocuments) for (const document of analysis.hereDocuments) {
 		const consumers = heredocDocumentConsumers(document, analysis.command, analysis.hereDocuments), body = heredocExecutableBody(document, analysis.command);
@@ -860,6 +863,7 @@ function inspectFind(tokens: readonly string[] & { expansions?: readonly number[
 	let execAction = false;
 	for (let index = start; index < tokens.length; index++) {
 		const value = tokens[index]!;
+		if (!execAction && !tokens.expansions?.[index] && (value === "--help" || value === "--version")) return;
 		if (findPredicateHasOperand(value) || value === "-fprint" || value === "-fprint0" || value === "-fls") { index++; continue; }
 		if (value === "-fprintf") { index += 2; continue; }
 		if (value === "-delete") deleteAction = true;
@@ -1332,7 +1336,7 @@ function persistedHeredocConsumers(document: { header: string; bodyEnd?: number;
 
 /** Literal echo/printf producers used directly by source. No shell execution,
  * retained state, or guessing of dynamic output; at most 16 call-owned strings. */
-export function literalProcessSources(command: string): string[] | null | undefined {
+export function literalProcessSources(command: string): string[] | false | null | undefined {
 	if (!command.includes("<(")) return undefined;
 	if (command.length > MAX_INSPECTED_COMMAND_CHARS) return null;
 	let quote = 0, escaped = false, sources: string[] | undefined, bytes = 0;
@@ -1360,8 +1364,8 @@ export function literalProcessSources(command: string): string[] | null | undefi
 						if (source !== undefined) {
 							if (bytes + source.length > MAX_INSPECTED_COMMAND_CHARS || (sources?.length ?? 0) >= MAX_SUBSTITUTIONS) return null;
 							sources ??= []; sources.push(source); bytes += source.length;
-						}
-					}
+						} else return false;
+					} else return false;
 				}
 			}
 		}

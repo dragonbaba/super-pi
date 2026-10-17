@@ -32,6 +32,38 @@ test("prompt checks inspect only discovered parameter heads and retain primitive
 });
 
 for (const mode of ["full-access", "workspace-write"] as const) {
+  test(`review thirty ${mode}: terminal help retains only actual preceding effects`, async t => {
+    for (const command of ["find --help -fprint .git/config", "find --version -delete", "sort -o .git/config --help", "sort -T .git --version", "sort --out=.git/config --he", "sort -ro.git/config --help"]) {
+      const scope = inspectBashPermissionScope({ command }, process.cwd());
+      assert.equal(scope?.kind, "read-only", command); assert.deepEqual(scope?.targets, []);
+      assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), 0);
+    }
+    for (const command of ["find -fprint .git/config --help", "find -name --help -fprint .git/config", "sort -o .git/config -- --help", "sort -o .git/config --random-source --help", "sort -o .git/config --help >.git/HEAD", "rm -rf /protected; sort -o .git/config --help"]) {
+      const scope = inspectBashPermissionScope({ command }, process.cwd()); assert.notEqual(scope?.kind, "read-only", command); assert.ok(scope?.targets.length, command);
+    }
+    assert.equal(inspectHighRiskBashMutation({ command: "find . -exec printf --help ';'" }, process.cwd())?.mutationDetected, true);
+  });
+  test(`review thirty ${mode}: unresolved sourced input retains main refusals`, async t => {
+    for (const producer of ["printf '%b' 'sleep 100 &'", "printf '%b' 'rm -rf /protected'", "printf '%b' 'echo ok'", "cat", 'printf "%s" "$SCRIPT"']) {
+      for (const consumer of ["source", "."]) {
+        const command = `${consumer} <(${producer})`;
+        assert.equal(literalProcessSources(command), false);
+        assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_UNINSPECTABLE\]/, command);
+        const f = await shellHookFixture(t, mode), call = await f.authorize(command);
+        assert.equal(call.outcome?.block, true, command); assert.equal(f.dialogs(), 0);
+      }
+    }
+    for (const consumer of ["source /dev/stdin", ". /dev/stdin"]) {
+      const command = `PAYLOAD='rm -rf /protected'; ${consumer} <<EOF\n$PAYLOAD\nEOF`;
+      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_HEREDOC\]/);
+      const f = await shellHookFixture(t, mode), call = await f.authorize(command); assert.equal(call.outcome?.block, true); assert.equal(f.dialogs(), 0);
+    }
+    for (const command of ["source <(printf '%s' 'echo ok')", "source /dev/stdin <<'EOF'\necho ok\nEOF", 'node <<EOF\n$PAYLOAD\nEOF', 'cat <<EOF\n$PAYLOAD\nEOF']) {
+      assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
+    }
+  });
   test(`review twenty-nine ${mode}: expanded forwarding retains possible interpreter stdin`, async t => {
     for (const [interpreter, body] of [["python", "shutil.rmtree(target)"], ["node", "fs.rmSync(target,{recursive:true})"]]) {
       for (const args of ['"$@"', '-- "$@"', '"$ARGS"', interpreter === "python" ? '-W "$@"' : '--title "$@"']) {
