@@ -12,6 +12,10 @@ const cwd = process.cwd(), iterations = 512, warmup = 64, samplingInterval = 409
 const literalInputs = process.argv.includes("--literal-inputs");
 const substitution = "$(grep -c -E '(class|function|const|var|let) GCSystem\\b' pixi/pixi.js)";
 const cases = literalInputs ? [
+  ["continued-node-heredoc", "node <\\\n<'EOF'\nunlinkSync(target)\nEOF", 1],
+  ["continued-cat-heredoc", "cat <\\\n<'EOF'\nordinary data\nEOF", 1],
+  ["missing-bash-startup-file", "bash --rcfile <<'EOF'\nsleep 100 &\nEOF", 1],
+  ["ordinary-input-redirection", "wc -l < README.md", 1],
   ["unknown-prefix-shell", "ionice -c3 bash <<'EOF'\nsleep 100 &\nEOF", 1],
   ["unknown-prefix-versioned-python", "foo /usr/bin/PYTHON3.12.EXE <<'EOF'\nshutil.rmtree(target)\nEOF", 1],
   ["unknown-prefix-dynamic", 'foo "$TOOL" <<\'EOF\'\nordinary data\nEOF', 1],

@@ -469,7 +469,7 @@ function heredocDeclarationEnd(command: string, start: number): number {
 export function prepareShellAnalysis(command: string): ShellAnalysisView {
   shellAnalysisCounters.prepareCalls++;
   shellAnalysisCounters.prepareInputBytes += command.length * 2;
-  if (command.indexOf("<<") < 0 && command.indexOf("((") < 0) {
+  if (command.indexOf("<") < 0 && command.indexOf("((") < 0) {
     return { command, substitutions: [], uncertain: false, hasHeredoc: false };
   }
   let output: string[] | undefined;
@@ -525,7 +525,17 @@ export function prepareShellAnalysis(command: string): ShellAnalysisView {
       else if (c === ")") arithmeticDepth--;
       continue;
     }
-    if (c !== "<" || command[index + 1] !== "<" || command[index + 2] === "<") continue;
+    if (c !== "<") continue;
+    // Bash removes continuations before forming the redirect operator. Keep
+    // split heredoc operators uninspectable without normalizing/copying source
+    // or teaching the bounded delimiter/argv parsers another representation.
+    let second = index + 1;
+    while (command.charCodeAt(second) === 92 && command.charCodeAt(second + 1) === 10) second += 2;
+    if (command.charCodeAt(second) !== 60) continue;
+    let third = second + 1;
+    while (command.charCodeAt(third) === 92 && command.charCodeAt(third + 1) === 10) third += 2;
+    if (command.charCodeAt(third) === 60) continue;
+    if (second !== index + 1) { hasHeredoc = unboundedHeredoc = true; break; }
     hasHeredoc = true;
     output ??= command.split("");
     const operatorStart = index;

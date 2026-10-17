@@ -186,6 +186,23 @@ test("builtin heredoc gate allocates no AST, source copy, container or callback"
   assert.deepEqual(seen, names);
 });
 
+test("continued heredoc decision adds only primitive locals in the existing scan", () => {
+  const file = "packages/extensions/resource-lifecycle-guard/shell-substitution.ts";
+  const source = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
+  const prepare = source.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "prepareShellAnalysis") as ts.FunctionDeclaration;
+  const loop = prepare.body!.statements.find(ts.isForStatement)!;
+  const statements = (loop.statement as ts.Block).statements;
+  const start = statements.findIndex(node => ts.isIfStatement(node) && node.expression.getText(source) === 'c !== "<"');
+  const end = statements.findIndex((node, index) => index > start && ts.isExpressionStatement(node) && node.expression.getText(source) === "hasHeredoc = true");
+  assert.ok(start >= 0 && end > start);
+  function primitive(node: ts.Node): void {
+    assert.equal(ts.isNewExpression(node) || ts.isObjectLiteralExpression(node) || ts.isArrayLiteralExpression(node) || ts.isArrowFunction(node) || ts.isFunctionExpression(node) || ts.isRegularExpressionLiteral(node) || ts.isTemplateExpression(node), false, node.getText(source));
+    if (ts.isCallExpression(node)) assert.ok(ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "charCodeAt", node.getText(source));
+    ts.forEachChild(node, primitive);
+  }
+  for (let index = start; index < end; index++) primitive(statements[index]!);
+});
+
 test("function-boundary and CR decisions add no source copies or temporary objects", () => {
   const file = "packages/extensions/resource-lifecycle-guard/shell-substitution.ts";
   const source = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);

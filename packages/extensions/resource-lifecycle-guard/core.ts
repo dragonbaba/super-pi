@@ -1656,7 +1656,7 @@ function simpleStdinConsumers(tokens: ShellSegment, descriptor: number, depth: n
 				if (option[flag] === "W" || option[flag] === "X") { if (flag + 1 === option.length) { cursor++; if (tokens.expansions?.[cursor]) return languageMask; } break; }
 			}
 		} else {
-			if (option === "--rcfile" || option === "--init-file") { cursor++; continue; }
+			if (option === "--rcfile" || option === "--init-file") { if (++cursor >= tokens.length) return 16; continue; }
 			if ((name === "bash" || name === "bash.exe") && option === "--pretty-print") { shellPrettyPrint = true; continue; }
 			if ((name === "bash" || name === "bash.exe") && (option === "--dump-strings" || option === "--dump-po-strings")) return 16;
 			let scriptOption = false;

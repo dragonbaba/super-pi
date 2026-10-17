@@ -27,6 +27,21 @@ test("unresolved heredoc tails count existing argv words without retained source
   assert.deepEqual(Object.keys(heredocConsumerCounters), ["tailCalls", "tailWords"]);
 });
 
+test("continued heredoc detection uses the existing preparation scan without a source copy", () => {
+  const original = String.prototype.charCodeAt; let reads = 0;
+  String.prototype.charCodeAt = function(index) { reads++; return original.call(this, index); };
+  try {
+    for (const count of [16, 1024, 8192]) {
+      const command = "node <" + "\\\n".repeat(count) + "<'EOF'\nconsole.log(1)\nEOF";
+      const calls = shellAnalysisCounters.prepareCalls; reads = 0;
+      const view = prepareShellAnalysis(command);
+      assert.equal(shellAnalysisCounters.prepareCalls - calls, 1); assert.strictEqual(view.command, command);
+      assert.equal(view.unboundedHeredoc, true); assert.equal(view.hereDocuments, undefined);
+      assert.ok(reads <= 2 * command.length + 16, `${reads}/${command.length}`);
+    }
+  } finally { String.prototype.charCodeAt = original; }
+});
+
 test("bounded interpreter matchers reset borrowed regex state", () => {
   for (const body of ["fs['rmSync']?.(target,{recursive:true})", "fs.rmSync.call('receiver',target,{recursive:true})", "fs.rmSync.call\u00a0('receiver',target,{recursive:true})", "fs?.[\u2000'unlinkSync']?.(target)"]) {
     const scan = inspectHighRiskBashMutation({ command: literalProgram("node", body, true) }, process.cwd());
@@ -61,6 +76,26 @@ test("prompt checks inspect only discovered parameter heads and retain primitive
 });
 
 for (const mode of ["full-access", "workspace-write"] as const) {
+  test(`review thirty-six ${mode}: continued heredoc operators retain conservative refusal`, async t => {
+    for (const redirect of ["<\\\n<'EOF'", "<\\\n\\\n<'EOF'"]) for (const [name, body] of [["node", "require('fs').unlinkSync(process.argv[1])"], ["python3 -", "shutil.rmtree(sys.argv[1])"], ["bash", "sleep 100 &"], ["cat", "ordinary data"]]) {
+      const command = `${name} ${redirect}\n${body}\nEOF`;
+      const view = prepareShellAnalysis(command); assert.equal(view.hasHeredoc, true); assert.equal(view.unboundedHeredoc, true);
+      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_HEREDOC\]/, command);
+      const f = await shellHookFixture(t, mode), result = await f.authorize(command); assert.equal(result.outcome?.block, true, command); assert.equal(f.dialogs(), 0);
+    }
+    for (const command of [literalProgram("cat", "sleep 100 &", true), literalProgram("node", "console.log(1)", true)]) {
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
+    }
+  });
+  test(`review thirty-six ${mode}: missing Bash startup-file operands never execute stdin`, async t => {
+    for (const option of ["--rcfile", "--init-file"]) for (const body of ["sleep 100 &", "rm -rf /protected"]) {
+      const command = literalProgram(`bash ${option}`, body, true);
+      assert.equal(inspectBashResourceLifecycle({ command }), undefined, command); assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
+      const executable = literalProgram(`bash ${option} /dev/null`, body, true), g = await shellHookFixture(t, mode), result = await g.authorize(executable);
+      assert.equal(result.outcome?.block, true, executable); assert.equal(g.dialogs(), 0);
+    }
+  });
   test(`review thirty-five ${mode}: template expressions remain opaque across shell input shapes`, async t => {
     for (const command of nodeInputShapes("`${require('fs').unlinkSync(process.argv[1])}`")) {
       assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
