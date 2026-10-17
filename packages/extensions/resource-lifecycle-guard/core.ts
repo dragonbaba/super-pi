@@ -2642,7 +2642,8 @@ export function staticMutationTarget(target: string, cwd: string, expansion = 0)
 	if (expansion & ~48) return undefined;
 	if (expansion & 32) {
 		if (target !== "~" && !target.startsWith("~/")) return undefined;
-		target = homedir() + target.slice(1);
+		cwd = homedir();
+		target = "." + target.slice(1); // The OS-provided HOME is a path, not shell source.
 	}
 	const separator = Math.max(target.lastIndexOf("/"), target.lastIndexOf("\\"));
 	let glob = false;

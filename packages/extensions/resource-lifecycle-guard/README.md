@@ -72,6 +72,7 @@ The representative table is exercised by one table-driven test in `tests/guard-r
 | `rm -rf /`, `~`, `~/*`, `.`, `./*`, `..`, `.git`, `sub/../.git`, absolute HOME | Deny | Deny |
 | `rm -rf ~/.cache/foo`, `rm -rf /tmp/x` | Allow | Ask |
 | `rm -rf ./out/*`, `rm -rf node_modules`, `rm -rf dist build` | Allow | Ask |
+| `printf x > out; mv .git moved` (combined existing scan evidence) | Deny | Deny |
 | `rm -rf $BUILD_DIR`, `rm -rf "$TMPDIR/foo"`, `rm -rf "$HOME"`, `rm -rf */node_modules` | Ask once only | Ask once only |
 | `bash scripts/build.sh`, `sh -x scripts/build.sh`, `$CMD --version` | Allow | Ask |
 | Expanded Bash heredoc containing `$X`; command exceeding inspection length | Allow | Ask |
