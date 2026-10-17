@@ -24,7 +24,7 @@ test("authorization scanners and cache methods add no callbacks, promises or Buf
   targets.get("core.ts")!.add("pythonPathArgumentOpen");
   targets.get("core.ts")!.add("coprocBodyIndex");
   targets.get("core.ts")!.add("coprocHeredocContext");
-  for (const name of ["nodeIndirectCall", "nodeLiteralMethodKeyEnd", "isCodeWhitespace"]) targets.get("core.ts")!.add(name);
+  for (const name of ["nodeIndirectCall", "nodeLiteralMethodKeyEnd", "isCodeWhitespace", "hasUninspectableEnvLauncher", "commandTokenIndex"]) targets.get("core.ts")!.add(name);
   for (const name of ["addPositionalTargets", "findSearchRootIndex", "inspectTokenBuffer"]) targets.get("permission-bash.ts")!.add(name);
   for (const [file, names] of targets) {
     const source = ts.createSourceFile(file, readFileSync(`packages/extensions/resource-lifecycle-guard/${file}`, "utf8"), ts.ScriptTarget.Latest, true);
@@ -50,7 +50,7 @@ test("authorization scanners and cache methods add no callbacks, promises or Buf
 
 test("builtin, coproc and Node argv checks use primitive state without source copies or temporary containers", () => {
   const source = ts.createSourceFile("core.ts", readFileSync("packages/extensions/resource-lifecycle-guard/core.ts", "utf8"), ts.ScriptTarget.Latest, true);
-  const names = new Set(["hasUnsafeBashBuiltinOperand", "hasNonliteralBashSubscript", "skipRedirections", "afterLeadingRedirection", "coprocBodyIndex", "coprocHeredocContext", "nodeMayReadStdin"]), seen = new Set<string>();
+  const names = new Set(["hasUnsafeBashBuiltinOperand", "hasNonliteralBashSubscript", "skipRedirections", "afterLeadingRedirection", "coprocBodyIndex", "coprocHeredocContext", "nodeMayReadStdin", "hasUninspectableEnvLauncher"]), seen = new Set<string>();
   function audit(node: ts.Node): void {
     assert.equal(ts.isNewExpression(node) || ts.isObjectLiteralExpression(node) || ts.isArrayLiteralExpression(node) || ts.isArrowFunction(node) || ts.isFunctionExpression(node) || ts.isRegularExpressionLiteral(node), false, node.getText(source));
     if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) assert.ok(["charCodeAt", "startsWith", "includes", "test", "has"].includes(node.expression.name.text), node.getText(source));
@@ -60,6 +60,10 @@ test("builtin, coproc and Node argv checks use primitive state without source co
     seen.add(statement.name.text); ts.forEachChild(statement.body!, audit);
   }
   assert.deepEqual(seen, names);
+  for (const name of ["inspectLifecycleScript", "simpleStdinConsumers", "commandTokenIndex"]) {
+    const caller = source.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === name);
+    assert.ok(caller?.getText(source).includes("hasUninspectableEnvLauncher("), `${name} must share the env uncertainty condition`);
+  }
 });
 
 test("subscript text judgment creates only primitive state in the existing scan", () => {

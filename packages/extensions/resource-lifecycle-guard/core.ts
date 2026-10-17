@@ -275,6 +275,7 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
     }
     return lifecycleRefusal("SHELL_WRAPPER", "launcher operand grammar is uncertain/uninspectable", "use a directly inspectable foreground executable");
    }
+   if (name === "env" && hasUninspectableEnvLauncher(tokens, index)) return lifecycleRefusal("SHELL_WRAPPER", "launcher operand grammar is uncertain/uninspectable", "use a directly inspectable foreground executable");
    index++;
    if (tokens[index] === "--") index++;
    if (name === "env" || name === "sudo") {
@@ -1535,7 +1536,8 @@ function simpleStdinConsumers(tokens: ShellSegment, descriptor: number, depth: n
 	if (depth > MAX_WRAPPER_DEPTH) return 8;
 	const coprocBody = coprocBodyIndex(tokens);
 	if (coprocBody === -2) return 8;
-	let index = start || (coprocBody >= 0 ? coprocBody : commandTokenIndex(tokens));
+	let index = start || (coprocBody >= 0 ? coprocBody : commandTokenIndex(tokens, true));
+	if (index === -2) return 8;
 	if (coprocBody >= 0 && index >= tokens.length) return 8;
 	if (index < 0 || index >= tokens.length) return 0;
 	while (tokens[index] === "{" || tokens[index] === "do" || tokens[index] === "then" || tokens[index] === "else" || tokens[index] === "if" || tokens[index] === "elif" || tokens[index] === "while" || tokens[index] === "until") index++;
@@ -1573,6 +1575,7 @@ function simpleStdinConsumers(tokens: ShellSegment, descriptor: number, depth: n
 	let launchers = 0;
 	while (name === "env" || name === "sudo" || name === "doas" || name === "timeout" || name === "timeout.exe") {
 		if (++launchers > MAX_WRAPPER_DEPTH) return 8;
+		if (name === "env" && hasUninspectableEnvLauncher(tokens, index)) return 8;
 		if (name === "timeout" || name === "timeout.exe") {
 			const parsed = parseTimeoutInvocation(tokens, index);
 			if (!parsed.supported) return 0;
@@ -2398,7 +2401,25 @@ function parseShellSegments(command: string, positions = false): ShellSegment[] 
 	return segments;
 }
 
-function commandTokenIndex(tokens: readonly string[]): number {
+// Only retain the already-recognized single-token env forms. An unsupported
+// option may consume the next word; do not mistake that operand for a command.
+// Shared by CLI lifecycle refusal and heredoc consumer lookup; no argv parsing
+// or reconstruction of option values is added.
+function hasUninspectableEnvLauncher(tokens: readonly string[], start: number): boolean {
+	for (let index = start + 1; index < tokens.length; index++) {
+		const value = tokens[index]!;
+		if (value === "--") return false;
+		if (!value.startsWith("-")) {
+			if (value.includes("=")) continue;
+			return false;
+		}
+		if (value === "-i" || value === "-0" || value.startsWith("--unset=") || value.startsWith("-u") && value.length > 2) continue;
+		return true;
+	}
+	return false;
+}
+
+function commandTokenIndex(tokens: readonly string[], inspectEnv = false): number {
 	let index = 0;
 	let wrapperDepth = 0;
 	while (index < tokens.length) {
@@ -2410,6 +2431,7 @@ function commandTokenIndex(tokens: readonly string[]): number {
 			continue;
 		}
 		if (name === "env") {
+			if (inspectEnv && hasUninspectableEnvLauncher(tokens, index)) return -2;
 			index++;
 			if (tokens[index] === "--") index++;
 			while (index < tokens.length) {

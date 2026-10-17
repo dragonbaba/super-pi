@@ -46,6 +46,26 @@ test("prompt checks inspect only discovered parameter heads and retain primitive
 });
 
 for (const mode of ["full-access", "workspace-write"] as const) {
+  test(`review thirty-three ${mode}: unparsed env options retain heredoc refusal`, async t => {
+    for (const option of ["-u FOO", "-C .", "-S 'X'"]) for (const [interpreter, body] of [["node", "unlinkSync(process.argv[1])"], ["python3 -", "shutil.rmtree(sys.argv[1])"], ["bash", "sleep 100 &"]]) {
+      for (const prefix of ["", "command ", "true; "]) {
+        const command = `${prefix}env ${option} ${interpreter} <<'EOF'\n${body}\nEOF`;
+        assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_HEREDOC\]/, command);
+        const f = await shellHookFixture(t, mode), result = await f.authorize(command); assert.equal(result.outcome?.block, true); assert.equal(f.dialogs(), 0);
+      }
+    }
+    for (const option of ["-u FOO", "-C .", "-S 'X'"]) for (const [interpreter, body] of [["node -e", "unlinkSync(process.argv[1])"], ["python3 -c", "shutil.rmtree(sys.argv[1])"]]) {
+      const command = `env ${option} ${interpreter} '${body}'`;
+      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_WRAPPER\]/, command);
+      const f = await shellHookFixture(t, mode), result = await f.authorize(command); assert.equal(result.outcome?.block, true); assert.equal(f.dialogs(), 0);
+    }
+    for (const option of ["", "FOO=1", "-i", "--unset=FOO", "-uFOO", "--", "-0"]) for (const [interpreter, body] of [["node", "console.log(1)"], ["python3 -", "print(1)"], ["cat", "ordinary data"]]) {
+      const command = `env ${option} ${interpreter} <<'EOF'\n${body}\nEOF`;
+      assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
+      assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "opaque-script");
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
+    }
+  });
   test(`review thirty-three ${mode}: find files0-from filenames are data`, async t => {
     for (const filename of ["-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprintf", "--help", "--version"]) {
       const command = `find -files0-from ${filename}`;
