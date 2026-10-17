@@ -919,15 +919,15 @@ export class SessionPermissionController {
         : inspectBashPermissionScope(event.input, effectiveCwd, analysis);
     } finally { if (analysis !== analysisOwner) analysis?.release(); }
     if (!scope) return undefined;
+    const roots = high ? await protectedRootViolations(high, ctx.cwd) : [];
+    // Permission-scan cwd and write destinations are not deletion operands.
+    if (scope.destructiveTargets) for (const root of await protectedRootViolations({ targets: scope.destructiveTargets, workspaceWide: false }, ctx.cwd)) {
+      if (!roots.includes(root)) roots.push(root);
+    }
     if (scope.unverifiableMutation && !high?.unverifiableScope) {
       high = { risk: "HIGH", mutationDetected: true, contextUncertain: true, primitives: high?.primitives ?? scope.primitives, targets: high?.targets ?? scope.targets,
         dynamicScope: true, unverifiableScope: true, workspaceWide: high?.workspaceWide ?? false };
     }
-    const roots = await protectedRootViolations({
-      targets: high ? [...new Set([...high.targets, ...scope.targets])] : scope.targets,
-      primitives: high ? [...high.primitives, ...scope.primitives] : scope.primitives,
-      workspaceWide: high?.workspaceWide ?? false,
-    }, ctx.cwd);
     if (high?.unverifiableScope) {
       return this.#dynamicHighRequest(event, purpose, high, roots, scope.classes, shellOperation, effectiveCwd, hasExplicitCwd);
     }
