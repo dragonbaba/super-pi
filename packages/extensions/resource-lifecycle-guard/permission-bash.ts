@@ -22,7 +22,8 @@ const SCRIPT_WRAPPERS = new Set(["bash", "bash.exe", "sh", "zsh", "cmd", "cmd.ex
 const OPAQUE_RUNNERS = new Set([
   "bun", "bun.exe", "deno", "deno.exe", "npm", "npm.cmd", "npx", "npx.cmd", "pnpm", "pnpm.cmd", "yarn", "yarn.cmd",
 ]);
-const SIMPLE_MUTATIONS = new Set(["del", "erase", "mkdir", "md", "rm", "rmdir", "rd", "touch"]);
+const SIMPLE_DELETIONS = new Set(["del", "erase", "rm", "rmdir", "rd"]);
+const SIMPLE_MUTATIONS = new Set([...SIMPLE_DELETIONS, "mkdir", "md", "touch"]);
 const COPY_COMMANDS = new Set(["cp", "copy"]);
 const MOVE_COMMANDS = new Set(["mv", "move", "rename", "ren"]);
 const GIT_READ_ONLY = new Set(["status", "diff", "log", "show", "ls-files", "rev-parse"]);
@@ -32,6 +33,8 @@ export type BashPermissionKind = "read-only" | "known-mutation" | "opaque-script
 export interface BashPermissionScope {
   kind: BashPermissionKind;
   targets: string[];
+  /** Actual operands of already-recognized delete/move commands, excluding opaque cwd. */
+  destructiveTargets?: string[];
   primitives: string[];
   classes: string[];
   dynamicScope: boolean;
@@ -80,7 +83,7 @@ function addClass(builder: ScopeBuilder, value: string): void {
   }
 }
 
-function addTarget(builder: ScopeBuilder, value: string, cwd: string, mutation = false, expansion = 0): void {
+function addTarget(builder: ScopeBuilder, value: string, cwd: string, mutation = false, expansion = 0, destructive = false): void {
   const target = staticMutationTarget(value, cwd, expansion);
   if (target === undefined) {
     builder.dynamicScope = true;
@@ -89,6 +92,10 @@ function addTarget(builder: ScopeBuilder, value: string, cwd: string, mutation =
     return;
   }
   addResolvedTarget(builder, target);
+  if (destructive) {
+    const targets = builder.destructiveTargets ??= [];
+    if (targets.length < MAX_TARGETS && !targets.includes(target)) targets.push(target);
+  }
 }
 
 /** Only classifier-synthesized paths bypass operand expansion checks. */
@@ -129,6 +136,7 @@ function addPositionalTargets(
   cwd: string,
   skip: number,
   lastOnly: boolean,
+  destructive = false,
 ): number {
   let optionsEnded = false;
   let count = 0;
@@ -142,9 +150,9 @@ function addPositionalTargets(
     if (!optionsEnded && token.startsWith("-")) continue;
     count += 1;
     if (lastOnly) last = index;
-    else if (count > skip) addTarget(builder, token, cwd, true, tokens.expansions?.[index]);
+    else if (count > skip) addTarget(builder, token, cwd, true, tokens.expansions?.[index], destructive);
   }
-  if (lastOnly && last >= 0 && count > skip) addTarget(builder, tokens[last]!, cwd, true, tokens.expansions?.[last]);
+  if (lastOnly && last >= 0 && count > skip) addTarget(builder, tokens[last]!, cwd, true, tokens.expansions?.[last], destructive);
   if (count === 0) markOpaque(builder, "missing_static_target");
   return count;
 }
@@ -216,7 +224,7 @@ function inspectKnownMutation(command: string, tokens: PermissionTokens, start: 
   }
   if (SIMPLE_MUTATIONS.has(command)) {
     markMutation(builder, command);
-    addPositionalTargets(tokens, start, builder, cwd, 0, false);
+    addPositionalTargets(tokens, start, builder, cwd, 0, false, SIMPLE_DELETIONS.has(command));
     return true;
   }
   if (COPY_COMMANDS.has(command)) {
@@ -226,7 +234,7 @@ function inspectKnownMutation(command: string, tokens: PermissionTokens, start: 
   }
   if (MOVE_COMMANDS.has(command)) {
     markMutation(builder, command);
-    addPositionalTargets(tokens, start, builder, cwd, 0, false);
+    addPositionalTargets(tokens, start, builder, cwd, 0, false, true);
     return true;
   }
   if (command === "tee") {
@@ -764,6 +772,7 @@ function publicScope(builder: ScopeBuilder): BashPermissionScope {
   return {
     kind: builder.kind,
     targets: builder.targets,
+    destructiveTargets: builder.destructiveTargets,
     primitives: builder.primitives,
     classes: builder.classes,
     dynamicScope: builder.dynamicScope,
