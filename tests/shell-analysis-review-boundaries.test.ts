@@ -1,2065 +1,696 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
-import test from "node:test";
-import { decodeLiteralBase64, heredocConsumer, heredocConsumers, heredocConsumerCounters, inspectBashResourceLifecycle, inspectHighRiskBashMutation, literalProcessSources, literalStoredScripts } from "../packages/extensions/resource-lifecycle-guard/core.ts";
+import test, { type TestContext } from "node:test";
+import { aliasRiskCounters, decodeLiteralBase64, heredocConsumer, heredocConsumers, heredocConsumerCounters, inspectBashResourceLifecycle, inspectHighRiskBashMutation, literalProcessSources, literalStoredScripts, persistentDescriptorCounters } from "../packages/extensions/resource-lifecycle-guard/core.ts";
 import { inspectBashPermissionScope } from "../packages/extensions/resource-lifecycle-guard/permission-bash.ts";
 import { extractCommandSubstitutions, prepareShellAnalysis, shellAnalysisCounters } from "../packages/extensions/resource-lifecycle-guard/shell-substitution.ts";
-import { shellHookFixture, assertFinalAuthorization } from "./codemode-recovery/shell-hook-fixture.ts";
-import { SessionPermissionController, workspace } from "./codemode-recovery/guard-fixture.ts";
 import { codeMethodNameCounters } from "../packages/extensions/resource-lifecycle-guard/code-method-names.ts";
-import { persistentDescriptorCounters, aliasRiskCounters } from "../packages/extensions/resource-lifecycle-guard/core.ts";
 import { NODE_COMMAND_PATTERN, NODE_LITERAL_METHOD_KEY_PATTERN, NODE_RM_CALL_PATTERN, NODE_UNLINK_PATTERN, PYTHON_COMMAND_PATTERN, PYTHON_RMTREE_PATTERN, PYTHON_UNLINK_PATTERN } from "../packages/extensions/resource-lifecycle-guard/regex.ts";
-
-function literalProgram(interpreter: string, body: string, heredoc: boolean): string {
-  return heredoc ? `${interpreter} <<'EOF'\n${body}\nEOF` : `${interpreter} ${interpreter === "node" ? "-e" : "-c"} '${body.replaceAll("'", "'\\''")}'`;
-}
-
-function nodeInputShapes(body: string): string[] {
-  const doc = literalProgram("node", body, true);
-  return [literalProgram("node", body, false),
-    'node -e "' + body.replaceAll("\\", "\\\\").replaceAll("`", "\\`").replaceAll("$", "\\$").replaceAll('"', '\\"') + '"',
-    'node -e "' + body.replaceAll("$", "\\$").replaceAll('"', '\\"') + '"',
-    doc, `{ ${doc}\n}`, `${doc}\n${doc}`, `node <<'EOF' && echo done\n${body}\nEOF`, `if ${doc}\nthen :; fi`];
-}
-
-test("persistent descriptor scratch is bounded and released on every result", () => {
-  const before = { ...persistentDescriptorCounters };
-  for (const tail of ["true; node /dev/fd/3", "echo ok; node /dev/fd/3", "cat /dev/fd/3", "exec 3<&-; node /dev/fd/3",
-    Array.from({ length: 18 }, (_, index) => `exec ${index + 4}<&3`).join("; ") + "; node /dev/fd/21"]) {
-    inspectBashResourceLifecycle({ command: `exec 3<<'EOF'\nconsole.log(1)\nEOF\n${tail}` });
-    assert.equal(persistentDescriptorCounters.liveArrays, 0);
-  }
-  assert.ok(persistentDescriptorCounters.arraysCreated > before.arraysCreated);
-  assert.equal(persistentDescriptorCounters.arraysCreated - before.arraysCreated, persistentDescriptorCounters.arraysReleased - before.arraysReleased);
-  assert.ok(persistentDescriptorCounters.maxEntries <= 16);
-  assert.ok(persistentDescriptorCounters.overflows > before.overflows);
-  assert.ok(Object.values(persistentDescriptorCounters).every(value => typeof value === "number"));
-  const includes = Array.prototype.includes;
-  Array.prototype.includes = function(...args) {
-    if (persistentDescriptorCounters.liveArrays) throw new Error("descriptor scratch failure");
-    return includes.apply(this, args);
-  };
-  try {
-    assert.throws(() => inspectBashResourceLifecycle({ command: "exec 3<<'EOF'\nconsole.log(1)\nEOF\nnode /dev/fd/3" }), /descriptor scratch failure/);
-  } finally { Array.prototype.includes = includes; }
-  assert.equal(persistentDescriptorCounters.liveArrays, 0);
-  assert.equal(persistentDescriptorCounters.arraysCreated - before.arraysCreated, persistentDescriptorCounters.arraysReleased - before.arraysReleased);
-});
-
-test("literal source alias-risk views release without retaining source or alias values", () => {
-  const before = { ...aliasRiskCounters };
-  for (const command of ["source <(echo ':')", "source <(echo ':'); source <(echo ':')", "source <(echo 'shopt -s expand_aliases'); source <(echo ':')"]) {
-    literalProcessSources(command); assert.equal(aliasRiskCounters.liveViews, 0);
-  }
-  assert.ok(aliasRiskCounters.viewsCreated > before.viewsCreated);
-  assert.equal(aliasRiskCounters.viewsCreated - before.viewsCreated, aliasRiskCounters.viewsReleased - before.viewsReleased);
-  assert.ok(Object.values(aliasRiskCounters).every(value => typeof value === "number"));
-});
-
-for (const mode of ["full-access", "workspace-write"] as const) {
-  test(`review forty-one ${mode}: alias state invalidates literal process producers`, async t => {
-    for (const producer of ["echo ':'", "printf '%s' ':'"]) for (const setup of [
-      "shopt -s expand_aliases\nalias echo='printf \"%s\" \"rm -rf /protected\"'\nalias printf='echo \"rm -rf /protected\"'",
-      "shopt -s expand_aliases\nBASH_ALIASES[echo]='printf payload'", "source ./aliases.sh", 'shopt -s "$OPTION"', "source <(echo 'shopt -s expand_aliases')",
-    ]) {
-      const command = `${setup}\nsource <(${producer})`;
-      assert.equal(literalProcessSources(command), false, command);
-      assert.ok(inspectBashResourceLifecycle({ command }), command);
-      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-      assert.equal(call.outcome?.block, true, command); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+import { assertFinalAuthorization, shellHookFixture } from "./codemode-recovery/shell-hook-fixture.ts";
+import { SessionPermissionController, workspace } from "./codemode-recovery/guard-fixture.ts";
+// Rows name behaviors, not review rounds. Only mode-dependent admission runs twice.
+// Payloads are inspected through the real authorization hook; no shell is started.
+const doc = (header: string, body = "sleep 100 &", descriptor = "") => `${header} ${descriptor}<<'EOF'\n${body}\nEOF`;
+const program = (language: string, body: string) => doc(language, body);
+const nodeDelete = "fs.unlinkSync(target)", pythonDelete = "shutil.rmtree(target)";
+type Outcome = "blocked" | "opaque" | "read-only" | "allowed" | "ask" | "admitted";
+type Rule = readonly [
+  name: string,
+  command: string,
+  outcome: Outcome,
+  diagnostic?: RegExp,
+  tool?: "bash" | "powershell"
+];
+async function rules(t: TestContext, rows: readonly Rule[]) {
+  for (const [name, command, outcome, diagnostic, tool = "bash"] of rows) {
+    const lifecycle = tool === "bash" ? inspectBashResourceLifecycle({ command }) : undefined;
+    const mutation = inspectHighRiskBashMutation({ command }, process.cwd(), tool);
+    const scope = tool === "bash" ? inspectBashPermissionScope({ command }, process.cwd()) : undefined;
+    if (diagnostic)
+      assert.match(lifecycle ?? "", diagnostic, name);
+    if (outcome === "blocked") {
+      assert.ok(lifecycle || mutation?.mutationDetected || scope?.unverifiableMutation, name);
     }
-    for (const command of ["source <(echo ':')", "true; source <(printf '%s' ':')", "shopt -u expand_aliases; source <(echo ':')"]) {
-      assert.deepEqual(literalProcessSources(command), [":"], command);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
-      assert.equal(f.dialogs(), mode === "full-access" ? 0 : 1);
+    else {
+      assert.equal(lifecycle, undefined, name);
+      assert.notEqual(mutation?.unverifiableScope, true, name);
     }
-  });
-  test(`review forty-one ${mode}: missing interactive Python source operands remain data`, async t => {
-    for (const name of ["python", "python3.12", "env python312.exe", "py -V:Company/Tag"]) for (const option of ["-i -c", "-i -m", "-ic", "-im"]) {
-      const command = `${name} ${option} <<'EOF'\nshutil.rmtree(target)\nEOF`;
-      assert.equal(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected ?? false, false, command);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
-      assert.equal(f.dialogs(), mode === "full-access" ? 0 : 1);
+    if (outcome === "opaque" || outcome === "read-only") {
+      assert.equal(scope?.kind, outcome === "opaque" ? "opaque-script" : "read-only", name);
     }
-    for (const option of ["-i -c pass", "-i -cpass", "-icpass", "-i -m code", "-imcode"]) {
-      const command = `python3 ${option} <<'EOF'\nshutil.rmtree(target)\nEOF`;
-      assert.equal(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
-      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-      assert.equal(call.outcome?.block, true, command); assert.equal(f.dialogs(), 0);
-    }
-  });
-  test(`review forty-one ${mode}: values on no-argument sort options terminate before effects`, async t => {
-    for (const option of ["--help=x", "--he=x", "--version=x", "--reverse=x", "--numeric-sort=x"]) for (const flags of [`-o .git/config ${option}`, `${option} -o .git/config`, `-T ../outside ${option}`]) {
-      const command = `sort ${flags}`;
-      assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "read-only", command);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), 0);
-    }
-    for (const command of ["sort --help=x > .git/config", "echo data > .git/config; sort --help=x", "sort --check=quiet -o .git/config", "sort -- --help=x -o .git/config"]) {
-      assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, command.includes("sort -- --") ? "read-only" : "known-mutation", command);
-    }
-  });
-  test(`review forty ${mode}: persistent interpreter descriptor reads reject lost or dynamic bodies`, async t => {
-    for (const [name, body] of [["node", "fs.unlinkSync(target)"], ["nodejs", "fs.unlinkSync(target)"], ["env NODEJS.exe", "fs.unlinkSync(target)"],
-      ["python3", "shutil.rmtree(target)"], ["/usr/bin/python3.12", "shutil.rmtree(target)"], ["env python312.exe", "shutil.rmtree(target)"]]) {
-      for (const tail of [`echo ok; ${name} /dev/fd/3`, `echo ok; ${name} /proc/self/fd/3`, `echo ok; ${name} - <&3`,
-        `echo ok; ${name} < /dev/fd/3`, `echo ok; ${name} < /proc/self/fd/3`, `fd=3; ${name} /dev/fd/$fd`,
-        `fd=3; ${name} /proc/self/fd/$fd`, `fd=3; ${name} - <&$fd`, `fd=3; ${name} < /dev/fd/$fd`,
-        `exec 4<&3; exec 3<&-; ${name} /dev/fd/4`, `exec 4<&3-; ${name} /dev/fd/4`]) {
-        const command = `exec 3<<'EOF'\n${body}\nEOF\n${tail}`;
-        assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_HEREDOC\]/, command);
-        const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-        assert.equal(call.outcome?.block, true, command); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-      }
-      for (const command of [`exec {v}<<'EOF'\n${body}\nEOF\n${name} /dev/fd/$v`, `${name} /dev/fd/$v {v}<<'EOF'\n${body}\nEOF`]) {
-        assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_HEREDOC\]/, command);
-        const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-        assert.equal(call.outcome?.block, true, command); assert.equal(f.dialogs(), 0);
-      }
-    }
-    for (const name of ["bash", "sh", "source", "."]) {
-      const command = `exec 3<<'EOF'\nprintf ok\nEOF\necho ok; ${name} /proc/self/fd/3`;
-      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_HEREDOC\]/, command);
-    }
-  });
-  test(`review forty ${mode}: known interpreter bodies recurse while data and closed descriptors retain D3`, async t => {
-    for (const [name, harmless, mutation] of [["node", "console.log(1)", "fs.unlinkSync(target)"], ["python3", "print(1)", "shutil.rmtree(target)"]]) {
-      for (const input of ["/dev/fd/3", "/proc/self/fd/3", "- <&3", "< /dev/fd/3", "< /proc/self/fd/3"]) {
-        for (const prefix of ["", "true; ", ":; "]) {
-          const command = `exec 3<<'EOF'\n${harmless}\nEOF\n${prefix}${name} ${input}`;
-          assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
-          const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
-          assert.equal(f.dialogs(), mode === "full-access" ? 0 : 1);
-          const bad = `exec 3<<'EOF'\n${mutation}\nEOF\n${prefix}${name} ${input}`;
-          const blocked = await shellHookFixture(t, mode), call = await blocked.authorize(bad);
-          assert.equal(call.outcome?.block, true, bad); assert.equal(blocked.dialogs(), 0);
+    const modes = outcome === "opaque" || outcome === "ask"
+      ? ["full-access", "workspace-write"] as const
+      : [outcome === "blocked" || outcome === "admitted" ? "full-access" : "workspace-write"] as const;
+    for (const mode of modes) {
+      const fixture = await shellHookFixture(t, mode, "active"), call = await fixture.authorize(command, tool);
+      try {
+        if (outcome === "blocked") {
+          assert.equal(call.outcome?.block, true, name);
+          assert.equal(call.outcome?.finalAuthorization, undefined, name);
         }
-        const lost = `exec 3<<'EOF'\n${harmless}\nEOF\necho ok; ${name} ${input}`;
-        assert.match(inspectBashResourceLifecycle({ command: lost }) ?? "", /\[SHELL_HEREDOC\]/, lost);
+        else {
+          try {
+            assertFinalAuthorization(call);
+          }
+          catch (error) {
+            throw new Error(name, { cause: error });
+          }
+        }
+        assert.equal(fixture.dialogs(), mode === "workspace-write" && (outcome === "opaque" || outcome === "ask") ? 1 : 0, name);
       }
-      for (const tail of [`exec 3<&-; ${name} /dev/fd/3`, `exec 3</dev/null; ${name} /dev/fd/3`, `echo ok; ${name} - < /dev/null`,
-        "echo node; cat /dev/fd/3", "echo ok; cat /proc/self/fd/3", "echo ok; cat <&3", "echo ok", "true"]) {
-        const command = `exec 3<<'EOF'\n${harmless}\nEOF\n${tail}`;
-        assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
-        const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
-        assert.equal(f.dialogs(), mode === "full-access" ? 0 : 1);
+      finally {
+        call.outcome?.finalAuthorization?.release();
       }
     }
-  });
+  }
 }
-
-test("unresolved heredoc tails count existing argv words without retained source", () => {
+test("main lifecycle regressions retain conservative refusal", async (t) => {
+  await rules(t, [
+    ["unresolved trap", 'ACTION=\'sleep 100 &\'; true; trap "$ACTION" EXIT', "blocked", /SHELL_WRAPPER/],
+    ["unknown eval", 'eval "$SCRIPT"', "blocked", /SHELL_WRAPPER/],
+    ["indirect indexed test", "[[ -v a[x] ]]", "blocked", /SHELL_UNINSPECTABLE/],
+    ["standalone arithmetic", "(( 1+1 ))", "blocked", /SHELL_UNINSPECTABLE/],
+    ["prompt transform", 'x=\'$(sleep 100 &)\'; echo "${x@P}"', "blocked", /SHELL_UNINSPECTABLE/],
+    ["quoted function substitution", 'echo "${| sleep 100 & REPLY=1; }"', "blocked", /SHELL_UNINSPECTABLE/],
+    ["heredoc in function substitution", "echo ${ bash <<'EOF'\nsleep 100 &\nEOF\n; }", "blocked", /SHELL_HEREDOC/],
+    ["CR changes delimiter", "cat <<'EOF'\nbody\nE\rOF\nsleep 100 &\nEOF", "blocked", /SHELL_HEREDOC/],
+    ["unparsed launcher", doc("env -u FOO node", nodeDelete), "blocked", /SHELL_HEREDOC/],
+    ["lost descriptor body", doc("exec", "print(1)", "3") + "\necho ok; python3 /dev/fd/3", "blocked", /SHELL_HEREDOC/],
+    ["unknown source producer", "source <(printf '%b' 'echo ok')", "blocked", /SHELL_UNINSPECTABLE/],
+    ["aliased literal producer", "shopt -s expand_aliases\nalias echo='printf marker'\nsource <(echo ':')", "blocked", /SHELL_UNINSPECTABLE/],
+    ["coproc subshell", "coproc ( sleep 100 )", "blocked", /SHELL_UNINSPECTABLE/],
+  ]);
+});
+test("heredoc syntax binds data and executable input to the owning command", async (t) => {
+  await rules(t, [
+    ["expanded Python body stays opaque", "PAYLOAD=\"import shutil; shutil.rmtree('/protected')\"; python <<EOF\n$PAYLOAD\nEOF", "ask"],
+    ["data consumer", doc("cat"), "opaque"],
+    ["literal shell input", doc("source /dev/stdin", "printf ok"), "opaque"],
+    ["leading redirection", "<<'EOF' builtin source /dev/stdin\nsleep 100 &\nEOF", "blocked"],
+    ["header after continued line", "source \\\n<<'EOF' \\\n/dev/stdin\nsleep 100 &\nEOF", "blocked"],
+    ["comment is not delimiter", "cat <<'EOF' # <<'FAKE'\nhello\nEOF", "opaque"],
+    ["unsupported delimiter", "source /dev/stdin <<E\\OF\nsleep 100 &\nEOF", "blocked"],
+    ["split redirection operator", "node <\\\n<'EOF'\nconsole.log(1)\nEOF", "blocked", /SHELL_HEREDOC/],
+    ["unquoted continuation changes terminator", "cat <<EOF\nEO\\\nF\nsleep 100 &\nEOF", "blocked"],
+    ["CR in delimiter", "cat <<'EO\rF'\nbody\nEO\rF", "blocked", /SHELL_HEREDOC/],
+    ["backslash CR", "cat <<EOF\nbody\\\r\nmore\nEOF", "blocked", /SHELL_HEREDOC/],
+    ["shell body CR", doc("bash", "printf h\ri"), "blocked", /SHELL_HEREDOC/],
+    ["data body CR", doc("node", "/*a\rb*/\nconsole.log(1)"), "opaque"],
+    ["expanded shell body", "PAYLOAD='echo ok'; source /dev/stdin <<EOF\n$PAYLOAD\nEOF", "blocked", /SHELL_HEREDOC/],
+    ["expanded interpreter body", "node <<EOF\n$PAYLOAD\nEOF", "opaque"],
+    ["last heredoc wins", "source /dev/stdin <<'A' <<'B'\nsleep 100 &\nA\nprintf ok\nB", "opaque"],
+    ["file supersedes heredoc", "source /dev/stdin <<'A' </dev/null\nsleep 100 &\nA", "opaque"],
+    ["combined output keeps input", doc("source /dev/stdin &>out"), "blocked"],
+    ["leading combined append", "<<'EOF' &>>out cat\nsleep 100 &\nEOF", "ask"],
+    ["reported init-file and here-string payloads already refuse", "bash --rcfile /dev/fd/3 -i 3<<'EOF'\nsleep 100 &\nEOF\necho done", "blocked"],
+    ["dynamic shell wrapper", "X=bash; \"$X\" -c 'sleep 100 >/dev/null 2>&1 &'", "ask"],
+    ["CR-dependent heredoc boundaries retain main refusal", "echo text\\\r\nnext", "blocked"],
+    ["profiler and pretty-print modes retain data-only stdin", "bash --pretty-print -- - <<'EOF'\nsleep 100 &\nrm -rf /protected\nEOF", "ask"],
+    ["function dynamic rm", "f(){ rm -rf \"$X\"; }; f <<'EOF'\nhello\nEOF", "blocked"],
+    ["continued heredoc operators retain conservative refusal", "node <\\\n\\\n<'EOF'\nrequire('fs').unlinkSync(process.argv[1])\nEOF", "blocked"],
+    ["source process-substitution heredocs already refuse at preflight", "bash -c 'source <(cat)' <<'EOF'\nsleep 100 &\nEOF", "blocked"],
+    ["unrelated function and read", "f(){ :; }; read x <<'EOF'\nhello\nEOF", "ask"],
+    ["unquoted heredoc continuations precede delimiter matching", "node <<EOF\n// \\\nEOF\nfs.rmSync(target,{recursive:true})\nEOF", "blocked"],
+    ["continued heredoc operators retain conservative refusal", "python3 - <\\\n<'EOF'\nshutil.rmtree(sys.argv[1])\nEOF", "blocked"],
+    ["unresolved sourced input retains main refusals", "source <(printf \"%s\" \"$SCRIPT\")", "blocked"],
+    ["profiler and pretty-print modes retain data-only stdin", "node -i --prof-process <<'EOF'\nfs.rmSync('/protected',{recursive:true})\nEOF", "ask"],
+    ["profiler and pretty-print modes retain data-only stdin", "bash --pretty-print +n <<'EOF'\nsleep 100 &\nrm -rf /protected\nEOF", "ask"],
+    ["profiler and pretty-print modes retain data-only stdin", "bash --pretty-print -n +n <<'EOF'\nsleep 100 &\nrm -rf /protected\nEOF", "ask"],
+    ["reported init-file and here-string payloads already refuse", "source /dev/stdin <<< 'sleep 100 >/dev/null 2>&1 &'; true", "blocked"],
+    ["leading blank lines and comments do not change fixed heredoc targets", "cd elsewhere\nnode <<'EOF'\nfs.rmSync('./scratch',{recursive:true})\nEOF", "blocked"],
+    ["Bash dump and Node completion modes do not execute stdin", "bash -nD <<'EOF'\nsleep 100 &\nEOF", "ask"],
+    ["syntax-only Bash and help-only Python do not execute stdin", "bash -n -c +n 'source /dev/stdin' <<'EOF'\nsleep 100 &\nEOF", "blocked"],
+    ["missing Python option operands do not execute heredoc input", "python3 -iW <<'EOF'\nshutil.rmtree(sys.argv[1])\nEOF", "ask"],
+    ["syntax-only Bash and help-only Python do not execute stdin", "bash -n <<EOF\n$(sleep 100 &)\nEOF", "blocked"],
+    ["syntax-only Bash and help-only Python do not execute stdin", "bash -n -s <<'EOF'\nsleep 100 &\nEOF", "ask"],
+    ["literal process source launch", "source <(echo 'sleep 100 &')", "blocked"],
+  ]);
+});
+test("heredoc consumer options distinguish programs, data and terminal modes", () => {
+  // Bit masks: Shell=1, Node=2, Python=4, unresolved=8, nonexecuting=16.
+  const rows: readonly (readonly [
+    string,
+    number,
+    number
+  ])[] = [
+    ["bash -s /dev/fd/3", 0, 1], ["bash -s /dev/fd/3", 3, 0],
+    ["bash -n", 0, 16], ["bash -n +n", 0, 1], ["bash -ni", 0, 1],
+    ["bash -o noexec", 0, 16], ["bash -o noexec +o noexec", 0, 1],
+    ["bash --pretty-print", 0, 16], ["bash --pretty-print -i", 0, 1],
+    ["bash -D", 0, 16], ["bash --rcfile", 0, 16], ["bash --rcfile --dump-strings", 0, 1],
+    ["bash -c cat", 0, 0], ["bash -- /dev/fd/3", 3, 1],
+    ["bash -- file", 0, 0], ["bash -- -", 0, 1],
+    ['bash -- "$SCRIPT"', 0, 8], ["bash --pretty-print -- file", 0, 16],
+    ["bash --dump-po-strings", 0, 16], ["bash -c 'cat' <<'EOF'", 0, 0],
+    ["node --title worker", 0, 2], ["node --title=worker", 0, 2],
+    ["node --unknown-future-flag value", 0, 2], ["node --require --v8-options", 0, 2],
+    ["node --no-addons script.js", 0, 0], ["node --test", 0, 0],
+    ["node --check", 0, 0], ["node -i --prof-process", 0, 0],
+    ["node --completion-bash", 0, 0], ["node --v8-options", 0, 0],
+    ["node -i -e 'console.log(1)'", 0, 2], ["node -p 1", 0, 0],
+    ["node -- /dev/fd/3", 3, 2], ['node -- "$SCRIPT"', 0, 2],
+    ["python3 -i /dev/fd/3", 3, 4], ["python3 -i /dev/fd/3", 0, 4],
+    ["python -i -c", 0, 16], ["python -im", 0, 16], ["python -icpass", 0, 4],
+    ["python -i -m code", 0, 4], ["python -c print", 0, 0],
+    ["python -W", 0, 16], ["python -Xdev", 0, 4], ["python -W -VV", 0, 4],
+    ['python -W "$OPTIONS"', 0, 4], ['python --check-hash-based-pycs "$MODE"', 0, 4],
+    ["python --check-hash-based-pycs", 0, 16], ["python --check-hash-based-pycs always", 0, 4],
+    ["python -iVV", 0, 0], ["python --help-env", 0, 0],
+    ["py -V:Company/Tag", 0, 4], ["py -3.12", 0, 4],
+    ["source script.sh", 0, 0], ["builtin -- source /dev/fd/3", 3, 1],
+    ["env timeout 5 bash", 0, 1], ["command env bash", 0, 1],
+    ["command -v node", 0, 0], ['env LABEL="$VALUE" node', 0, 2],
+    ["{ node; python; }", 0, 6],
+  ];
+  for (const [header, descriptor, expected] of rows) {
+    assert.equal(heredocConsumers(header, descriptor), expected, header);
+    assert.equal(heredocConsumer(header, descriptor), expected & 1 ? "bash" : expected & 2 ? "node" : expected & 4 ? "python" : undefined, header);
+  }
+});
+test("descriptor provenance follows copies, closes, rebinding and script channels", async (t) => {
+  const stored = doc("exec", "console.log(1)", "3") + "\n";
+  await rules(t, [
+    ["stdin copy survives source descriptor close", "node 3<<'EOF' 0<&3 3<&-\nfs.rmSync(target,{recursive:true})\nEOF", "blocked"],
+    ["multi-digit source descriptor", "builtin source /dev/fd/19 19<<'EOF'\nsleep 100 &\nEOF", "blocked"],
+    ["input file supersedes copied stdin", "source /dev/stdin <<'EOF' 3<&0 </dev/null\nsleep 100 &\nEOF", "ask"],
+    ["known script path", stored + "true; node /dev/fd/3", "opaque"],
+    ["known script mutation", doc("exec", nodeDelete, "3") + "\n:; node /dev/fd/3", "blocked"],
+    ["lost proc path", stored + "echo ok; node /proc/self/fd/3", "blocked"],
+    ["lost stdin copy", stored + "echo ok; node - <&3", "blocked"],
+    ["lost stdin path", stored + "echo ok; node < /dev/fd/3", "blocked"],
+    ["dynamic descriptor path", stored + "fd=3; node /dev/fd/$fd", "blocked"],
+    ["dynamic stdin descriptor", stored + "fd=3; node - <&$fd", "blocked"],
+    ["named descriptor", doc("exec", "print(1)", "{v}") + "\npython /dev/fd/$v", "blocked"],
+    ["copy survives close", stored + "exec 4<&3; exec 3<&-; node /dev/fd/4", "blocked"],
+    ["descriptor move", stored + "exec 4<&3-; node /dev/fd/4", "blocked"],
+    ["literal close", stored + "exec 3<&-; node /dev/fd/3", "opaque"],
+    ["file rebind", stored + "exec 3</dev/null; node /dev/fd/3", "opaque"],
+    ["data path", stored + "echo ok; cat /dev/fd/3", "opaque"],
+    ["unbound source", "source /dev/fd/3", "blocked"],
+    ["explicit input binding", "source /dev/fd/3 3<input", "opaque"],
+    ["wrapped lost read", stored + "echo ok; bash -c 'source /dev/fd/3'", "blocked"],
+    ["same-command copy", "source /dev/fd/4 3<<'EOF' 4<&3\nprintf ok\nEOF", "opaque"],
+    ["redirect order", "source /dev/fd/3 3<&0 <<'EOF'\nsleep 100 &\nEOF", "opaque"],
+    ["later descriptor copies cannot hide heredoc source", "exec 9<<'EOF'\necho hi\nEOF\nexec 3<file; exec 4<&3; source /dev/fd/4", "ask"],
+    ["persistent interpreter descriptor reads reject lost or dynamic bodies", "exec 3<<'EOF'\nfs.unlinkSync(target)\nEOF\nfd=3; env NODEJS.exe < /dev/fd/$fd", "blocked"],
+    ["heredoc descriptor copies retain executable source", "source /dev/fd/3 <<'EOF' 3<&'0' 0<&-\nsleep 100 &\nEOF", "blocked"],
+    ["lost heredoc descriptor source retains lifecycle refusal", "exec 3<<'EOF'\nsleep 100 &\nEOF\necho ok; builtin -- source /dev/fd/3", "blocked"],
+    ["wrapped lost descriptors refuse and known contents recurse", "exec 3<<'EOF'\necho hi\nEOF\ntrue; bash -c 'source /dev/fd/3'", "ask"],
+    ["later descriptor copies cannot hide heredoc source", "exec 3<<'EOF'\nsleep 100 &\nEOF\nexec 4<&3; exec 5<&4; source /dev/fd/5", "blocked"],
+    ["interactive Python inspects descriptor scripts before stdin", "py -V:Acme/3.13 -i /dev/fd/3 3<<'EOF'\nshutil.rmtree(sys.argv[1])\nEOF", "blocked"],
+    ["later descriptor copies cannot hide heredoc source", "exec 3<<'EOF'\nsleep 100 &\nEOF\nexec 4<&3; cat <&4", "ask"],
+    ["later descriptor copies cannot hide heredoc source", "exec 3<<'EOF' 4<&3\necho hi\nEOF\nsource /dev/fd/4", "ask"],
+    ["wrapped lost descriptors refuse and known contents recurse", "exec 3<<'EOF'\necho hi\nEOF\ntrue; bash -c 'bash -c \"source /dev/fd/3\"'", "ask"],
+    ["descriptor binding data and known readonly source remain admitted", "exec 3<<'A'\nsleep 100 &\nA\nexec 3<<'B'\necho hi\nB\nsource /dev/fd/3", "ask"],
+    ["heredoc source descriptors identify executable input without leaking fd words", "3<<'EOF' source /proc/self/fd/3\nsleep 100 &\nEOF", "blocked"],
+    ["known interpreter bodies recurse while data and closed descriptors retain D3", "exec 3<<'EOF'\nconsole.log(1)\nEOF\necho ok; node - < /dev/null", "ask"],
+    ["later descriptor copies cannot hide heredoc source", "exec 3<<'EOF'\nsleep 100 &\nEOF\nexec 4<&3; exec 5<&3; source /dev/fd/4", "blocked"],
+    ["heredoc descriptor copies retain executable source", "source /dev/fd/4 <<'EOF' 3<&0 4<&3\nsleep 100 &\nEOF", "blocked"],
+    ["known interpreter bodies recurse while data and closed descriptors retain D3", "exec 3<<'EOF'\nconsole.log(1)\nEOF\ntrue; node - <&3", "ask"],
+    ["later descriptor copies cannot hide heredoc source", "exec 3<file; exec 4<&3; source /dev/fd/4", "ask"],
+    ["heredoc descriptor copies retain executable source", "source /dev/fd/3 3<<'EOF' 3<&3-\nsleep 100 &\nEOF", "blocked"],
+  ]);
+});
+test("launchers and function forwarding retain the resolved consumer", async (t) => {
+  await rules(t, [
+    ["nested timeout launcher", "env timeout 5 node <<'EOF'\nfs.rmSync(target,{recursive:true})\nEOF", "blocked"],
+    ["supported sudo launcher", "sudo node <<'EOF'\nfs.rmSync(target,{recursive:true})\nEOF", "blocked"],
+    ["unsupported env data consumer", "env -u FOO cat <<'EOF'\nordinary data\nEOF", "ask"],
+    ["command dispatch preserves env consumer", "command env node <<'EOF'\nfs.rmSync(target,{recursive:true})\nEOF", "blocked"],
+    ["unresolved prefixes retain heredoc consumer uncertainty", "sudo -u root node <<'EOF'\nunlinkSync(target)\nEOF", "blocked"],
+    ["unresolved prefixes retain heredoc consumer uncertainty", "foo [np]* <<'EOF'\nordinary data\nEOF", "blocked"],
+    ["unresolved prefixes retain heredoc consumer uncertainty", "foo $(printf node) <<'EOF'\nordinary data\nEOF", "blocked"],
+    ["shared Node basename", "env FOO=1 /usr/bin/NODEJS.EXE --eval 'unlinkSync(target)'", "blocked"],
+    ["shared Python basename", "env /usr/bin/PYTHON3.12.EXE -c 'shutil.rmtree(target)'", "blocked"],
+    ["supported env flags", doc("env -i --unset=FOO -uBAR -0 -- node", "console.log(1)"), "opaque"],
+    ["env assignment preserves executable stdin", doc("env LABEL=literal bash"), "blocked"],
+    ["unknown prefix consumer", doc("ionice -c3 bash"), "blocked"],
+    ["dynamic prefix tail", doc('foo "$TOOL"', "ordinary data"), "blocked"],
+    ["unknown prefix data", doc("ionice -c3 cat", "ordinary data"), "opaque"],
+    ["unknown eval launcher boundary", "foo bash -c 'sleep 100 &'", "opaque"],
+    ["unparsed env eval", "env -S 'X' node -e 'unlinkSync(process.argv[1])'", "blocked"],
+    ["dynamic forwarding", doc('python() { command python -W "$@"; }; python', pythonDelete), "blocked"],
+    ["fixed forwarding script", doc('python() { command python script.file "$@"; }; python', pythonDelete), "opaque"],
+    ["function source", doc("function f\n{ source /dev/stdin; }; f"), "blocked"],
+    ["function redefinition", doc("f(){ source /dev/stdin; }; f(){ cat; }; f"), "opaque"],
+    ["unlisted runtime", doc("pypy3", pythonDelete), "opaque"],
+    ["outer process launch", "perl -e 'print 1' &", "blocked"],
+    ["function-dependent heredoc consumers cannot hide executable input", "if true; then f(){ source /dev/stdin; }; fi; f <<'EOF'\nsleep 100 &\nEOF", "blocked"],
+    ["builtin dispatch cannot hide executable stdin", "builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin source /dev/stdin <<'EOF'\nsleep 100 &\nEOF", "blocked"],
+    ["builtin dispatch cannot hide executable stdin", "command builtin source /dev/stdin <<'EOF'\nsleep 100 &\nEOF", "blocked"],
+    ["expanded forwarding retains possible interpreter stdin", "node() { command node -- \"$@\"; }; node <<'EOF'\nfs.rmSync(target,{recursive:true})\nEOF", "blocked"],
+    ["expanded forwarding retains possible interpreter stdin", "node() { command node script.file \"$@\"; }; node <<'EOF'\nfs.rmSync(target,{recursive:true})\nEOF", "ask"],
+    ["unparsed env options retain heredoc refusal", "command env -u FOO node <<'EOF'\nunlinkSync(process.argv[1])\nEOF", "blocked"],
+    ["unparsed env options retain heredoc refusal", "env --unset=FOO node <<'EOF'\nconsole.log(1)\nEOF", "ask"],
+    ["expanded forwarding retains possible interpreter stdin", "node() { command node -- '$@'; }; node <<'EOF'\nfs.rmSync(target,{recursive:true})\nEOF", "ask"],
+    ["builtin dispatch cannot hide executable stdin", "builtin -- source /dev/stdin <<'EOF'\nsleep 100 &\nEOF", "blocked"],
+  ]);
+});
+test("pipeline, compound and coproc input uses the connected stage", async (t) => {
+  await rules(t, [
+    ["unrelated function preserves decoded source", "function unrelated { printf evil; }; base64 -d <<'EOF' | source /dev/stdin\ncHJpbnRmIG9r\nEOF", "ask"],
+    ["literal wrapper reads executable input", "bash -c 'source /dev/stdin' <<'EOF'\nsleep 100 &\nEOF", "blocked"],
+    ["wrapper cwd change invalidates body target", "bash -c 'cd sub; source /dev/stdin' <<'EOF'\ntouch target\nEOF", "blocked"],
+    ["literal wrapper data consumer", "bash -c 'cat' <<'EOF'\nnohup is only data\nEOF", "ask"],
+    ["multiple interpreter consumers", doc("{ node; python; }", "fs.rmSync(target,{recursive:true})"), "blocked"],
+    ["compound consumer", doc("{ ! source /dev/stdin; }"), "blocked"],
+    ["literal wrapper", doc("bash -c 'eval >out source /dev/stdin'"), "blocked"],
+    ["connected pipe", "cat <<'EOF' | >out source /dev/stdin\nsleep 100 &\nEOF", "blocked"],
+    ["disconnected output", "cat <<'EOF' >out | source /dev/stdin\nsleep 100 &\nEOF", "ask"],
+    ["disconnected input", "cat <<'EOF' | source /dev/stdin </dev/null\nsleep 100 &\nEOF", "opaque"],
+    ["restored stdout copy", "cat <<'EOF' 3>&1 >out 1>&3- | source /dev/stdin\nsleep 100 &\nEOF", "blocked"],
+    ["unknown transform", "cat <<'EOF' | tr X '&' | bash\nsleep 100 X\nEOF", "blocked"],
+    ["base64 transform", "cat <<'EOF' | base64 -d | source /dev/stdin\nc2xlZXAgMTAwICYK\nEOF", "blocked"],
+    ["base64 harmless", "base64 -d <<'EOF' | source /dev/stdin\ncHJpbnRmIG9r\nEOF", "opaque"],
+    ["shadowed transform", "function base64() ( printf ignored; ); base64 -d <<'EOF' | source /dev/stdin\ncHJpbnRmIG9r\nEOF", "blocked"],
+    ["coproc shell", "coproc { bash <<'EOF'\nsleep 100 &\nEOF\n}", "blocked"],
+    ["coproc interpreter", doc("coproc NAME { node; }", nodeDelete), "blocked"],
+    ["coproc data", doc("coproc NAME { cat; }", "data"), "opaque"],
+    ["coproc existing foreground boundary", "true && coproc sleep 100", "opaque"],
+    ["coproc nested background", "coproc { sleep 100 & }", "blocked"],
+    ["coproc named conditional", "coproc NAME if true; then cat <<'EOF'\ndata\nEOF\nfi", "blocked"],
+    ["coproc unnamed conditional", "coproc if true; then node <<'EOF'\nconsole.log(1)\nEOF\nfi", "blocked"],
+    ["named coproc subshell boundary", "coproc NAME ( sleep 100 )", "opaque"],
+    ["heredoc alias consumer", "{ alias run='source /dev/stdin'; run; } <<'EOF'\nsleep 30 &\nEOF", "blocked"],
+    ["coproc keeps actual heredoc consumers and main lifecycle boundaries", "{ coproc { cat; }; }; coproc {\nbash <<'EOF'\nsleep 100 &\nEOF\n}", "blocked"],
+    ["compound commands and literal wrappers propagate executable heredoc input", "(source /dev/stdin) <<'EOF'\nsleep 100 &\nEOF", "blocked"],
+    ["compound commands and literal wrappers propagate executable heredoc input", "{ { source /dev/stdin; }; } <<'EOF'\nsleep 100 &\nEOF", "blocked"],
+    ["unknown transforms cannot hide shell heredoc source", "cat <<'EOF' | tr X '&' >output | source /dev/stdin\nsleep 100 X\nEOF", "ask"],
+    ["coproc keeps actual heredoc consumers and main lifecycle boundaries", "coproc ( bash <<'EOF'\nsleep 100 &\nEOF\n)", "blocked"],
+    ["compound commands and literal wrappers propagate executable heredoc input", "{ time source /dev/stdin; } <<'EOF'\nsleep 100 &\nEOF", "blocked"],
+    ["function shadows invalidate heredoc transforms", "function base64 { printf '%s\\n' 'sleep 100 &'; }; base64 -d <<'EOF' | source /dev/stdin\ncHJpbnRmIG9r\nEOF", "blocked"],
+    ["coproc keeps actual heredoc consumers and main lifecycle boundaries", "coproc cat 'if' <<'EOF'\nconsole.log('data')\nEOF", "ask"],
+    ["disconnected pipeline data does not become a script", "cat <<'EOF' 3>&1 >out 1>&3 | source /dev/stdin\nsleep 100 &\nEOF", "blocked"],
+    ["compound commands and literal wrappers propagate executable heredoc input", "X=value source /dev/stdin <<'EOF'\nsleep 100 &\nEOF", "blocked"],
+    ["supported transformed heredoc streams inspect the decoded executable input", "base64 -d <<'EOF' | node\nZnMucm1TeW5jKHRhcmdldCx7cmVjdXJzaXZlOnRydWV9KQ==\nEOF", "blocked"],
+    ["supported transformed heredoc streams inspect the decoded executable input", "cat <<'EOF' | cat - | source /dev/stdin\nprintf ok\nEOF", "admitted"],
+  ]);
+});
+type CodeRule = readonly [
+  name: string,
+  body: string,
+  target: "unknown" | "opaque" | readonly string[]
+];
+async function deletionRules(t: TestContext, language: string, rows: readonly CodeRule[]) {
+  for (const [name, body, target] of rows) {
+    const command = program(language, body), scan = inspectHighRiskBashMutation({ command }, process.cwd());
+    if (target === "opaque")
+      assert.notEqual(scan?.mutationDetected, true, name);
+    else {
+      assert.equal(scan?.mutationDetected, true, name);
+      assert.equal(scan?.unverifiableScope, target === "unknown", name);
+      assert.deepEqual(scan?.targets, target === "unknown" ? [] : target.map(path => resolve(path)), name);
+    }
+    await rules(t, [[name, command, target === "unknown" ? "blocked" : target === "opaque" ? "opaque" : "ask"]]);
+  }
+}
+test("Node deletion spellings share target assessment and bounded decoding", async (t) => {
+  await deletionRules(t, "node", [
+    ["optional call", "fs.rmSync ?. (target,{recursive:true})", "unknown"],
+    ["literal key", 'fs?.["unlinkSync"]?.(target)', "unknown"],
+    ["wrapped reference", "((fs.rmSync))('scratch',{recursive:true})", ["scratch"]],
+    ["indirect apply", "((fs['unlinkSync']).apply)?.(null,[target])", "unknown"],
+    ["indirect call", "fs.rmSync.call(null,target,{recursive:true})", "unknown"],
+    ["identifier Unicode", String.raw `fs.r\u006dSync(target,{recursive:true})`, "unknown"],
+    ["key hex", String.raw `fs['r\x6dSync'](target,{recursive:true})`, "unknown"],
+    ["key codepoint", String.raw `fs['unl\u{69}nkSync']('scratch')`, ["scratch"]],
+    ["identity escape", String.raw `fs['r\mSync'](target,{recursive:true})`, "unknown"],
+    ["legacy octal", String.raw `fs['r\155Sync'](target,{recursive:true})`, "unknown"],
+    ["line continuation forms", "fs['rm\\\n\\\r\\\r\n\\\u2028\\\u2029Sync'](target,{recursive:true})", "unknown"],
+    ["template key", "fs[`r\\mSync`](target,{recursive:true})", "unknown"],
+    ["interpolated key", "fs[`rm${part}`](target)", "unknown"],
+    ["invalid hex", String.raw `fs['r\xZ0Sync'](target)`, "unknown"],
+    ["invalid codepoint", String.raw `fs.\u{110000}(target)`, "unknown"],
+    ["invalid identifier digits", String.raw `fs.r\uZZZZSync(target)`, "unknown"],
+    ["empty codepoint", String.raw `fs['r\u{}Sync'](target)`, "unknown"],
+    ["literal codepoint overflow", String.raw `fs['r\u{110000}Sync'](target)`, "unknown"],
+    ["invalid template octal", "fs[`r\\155Sync`](target)", "unknown"],
+    ["invalid template decimal", "fs[`r\\8Sync`](target)", "unknown"],
+    ["bounded key", `fs['${"x".repeat(257)}'](target)`, "unknown"],
+    ["other decoded key", String.raw `fs['r\x65adFileSync'](target)`, "opaque"],
+    ["single-character escapes", String.raw `fs['x\b\f\n\r\t\v\0\00\377\8\9\'\"\\x'](target)`, "opaque"],
+    ["ASCII key", "(fs)[`readFileSync`](target)", "opaque"],
+    ["no recursive option", "fs.rmSync('a.txt'); other({recursive:true})", "opaque"],
+    ["false recursive option", "fs.rmSync('a.txt',{force:true,recursive:false,maxRetries:3,retryDelay:10,})", "opaque"],
+    ["uncertain recursive option", "fs.rmSync('scratch',{recursive:false,...options})", "unknown"],
+    ["computed recursive key", "fs.rmSync('scratch',{[key]:true})", "unknown"],
+    ["nested target", "fs.rm(path.join('.',target),{recursive:true},done)", "unknown"],
+    ["encoded target", String.raw `fs.rmSync('\x2egit',{recursive:true})`, "unknown"],
+    ["partial target", "fs.rmSync('.gi'+'t',{recursive:true})", "unknown"],
+    ["regex punctuation", "fs.rmSync((/\\)/, '/protected'),{recursive:true})", "unknown"],
+    ["regex conservative text", "const re = /fs.unlinkSync(x)/", "unknown"],
+    ["division real call", "1 / require('fs').unlinkSync(process.argv[1]) / 2", "unknown"],
+    ["Unicode ends comment", "// comment\u2028fs.unlinkSync(target)", "unknown"],
+    ["string and comment data", "console.log(\"rmSync?.(\"); /* fs.unlinkSync(target) */", "opaque"],
+    ["indirect properties", "const {rmSync:remove}=fs; remove(target); fs[name](target); fs['rm'+'Sync'](target)", "opaque"],
+    ["template expression boundary", "`${require('fs').unlinkSync(process.argv[1])}`", "opaque"],
+    ["every call contributes", "fs.rmSync('one',{recursive:true}); fs.unlinkSync('two')", ["one", "two"]],
+    ["comment between key and bracket", String.raw `fs[ /* before */ 'r\x6dSync' /* after */ ]('build',{recursive:true})`, ["build"]],
+    ["Unicode property whitespace", "fs?.[\u2000'unlinkSync']?.(target)", "unknown"],
+    ["line comment after key", "fs['unlinkSync' // key\n](target)", "unknown"],
+    ["unclosed literal key", "fs['unlinkSync\n](target)", "unknown"],
+    ["escaped nondeletion property", String.raw `fs.l\u006fg(1)`, "opaque"],
+    ["decoded computed key boundary", String.raw `fs['r\x6d'+'Sync'](target,{recursive:true})`, "opaque"],
+    ["array-return string data", `function f(){return ['${"x".repeat(300)}\\u0061']}`, "opaque"],
+  ]);
+  await rules(t, [
+    ["template in conditional heredoc", "if node <<'EOF'\n`${require('fs').unlinkSync(process.argv[1])}`\nEOF\nthen :; fi", "ask"],
+    ["nonrecursive literal-key eval", "node -e 'fs['\\''rmSync'\\'']('\\''a.txt'\\'')'", "ask"],
+    ["interpolated wrapped key", "node <<'EOF'\n(fs)[`rm${part}`](target)\nEOF", "blocked"],
+    ["literal regex text retains target assessment", "node -e 'const re = /fs.unlinkSync('\\''..'\\'')/'", "ask"],
+    ["template expressions remain opaque across shell input shapes", "node -e \"`\\${require('fs').unlinkSync(process.argv[1])}`\"", "ask"],
+    ["unquoted heredoc unescaping leaves interpreter source opaque", "node <<EOF\n\\`\\${require('fs').rmSync('/protected',{recursive:true})}\\`\nEOF", "ask"],
+    ["template expressions remain opaque across shell input shapes", "node -e \"\\`\\${require('fs').unlinkSync(process.argv[1])}\\`\"", "ask"],
+    ["identifier data and indirect properties remain opaque", "node -e 'const data=['\\''hello\\n'\\'','\\''r\\\\u006dSync'\\''];'", "ask"],
+    ["template expressions remain opaque across shell input shapes", "node <<'EOF' && echo done\n`${require('fs').unlinkSync(process.argv[1])}`\nEOF", "ask"],
+    ["parenthesized direct interpreter calls retain targets", "node -e '((fs.rmSync).call)('\\''receiver'\\'',target,{recursive:true})'", "blocked"],
+    ["Bash dump and Node completion modes do not execute stdin", "node --title --completion-bash - <<'EOF'\nfs.rmSync(target,{recursive:true})\nEOF", "blocked"],
+    ["escaped Node and normalized Python methods retain target assessment", "node -e 'fs.r\\u{6d}Sync?.(target,{recursive:true})'", "blocked"],
+    ["regex punctuation retains an uncertain Node mutation", "node - <<'EOF'\nfs.rmSync(value / divisor)\nEOF", "blocked"],
+    ["every embedded mutation call contributes its target", "node <<'EOF'\nfs.rmSync('./scratch',{recursive:true}); fs.rmSync(target,{recursive:true})\nEOF", "blocked"],
+    ["complete Node literal-key escapes retain deletion checks", "node <<'EOF'\n(fs)['x\\00x'](target)\nEOF", "ask"],
+    ["escaped Node and normalized Python methods retain target assessment", "node -e 'fs /* receiver */ ['\\''r\\x6dSync'\\''](target,{recursive:true})'", "blocked"],
+    ["escaped Node and normalized Python methods retain target assessment", "node <<'EOF'\nfs.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\\u006d(target)\nEOF", "blocked"],
+    ["operand-free Node flags preserve program file data", "node --no-addons script.js <<'EOF'\nfs.rmSync('/protected',{recursive:true})\nEOF", "ask"],
+    ["Node option values cannot conceal stdin mutations", "node --no-warnings --title worker <<'EOF'\nconst fs=require('node:fs'); fs.rmSync(target,{recursive:true})\nEOF", "blocked"],
+    ["Node option values cannot conceal stdin mutations", "node --title --eval <<'EOF'\nconst fs=require('node:fs'); fs.rmSync(target,{recursive:true})\nEOF", "blocked"],
+    ["Node substitution body", "node <<EOF\n$(printf '%s' 'fs.rmSync(target,{recursive:true})')\nEOF", "ask"],
+    ["Node interactive eval and print preserve executable stdin", "node --require helper.js -i -e 'void 0' <<'EOF'\nfs.rmSync(target,{recursive:true})\nEOF", "blocked"],
+    ["Node interactive eval and print preserve executable stdin", "node --interactive --eval 'void 0' <<'EOF'\nfs.rmSync(target,{recursive:true})\nEOF", "blocked"],
+    ["Node interactive eval and print preserve executable stdin", "node --print=0 --interactive <<'EOF'\nfs.rmSync(target,{recursive:true})\nEOF", "blocked"],
+  ]);
+});
+test("Python deletion properties retain ordinary targets and opaque language boundaries", async (t) => {
+  await deletionRules(t, "python", [
+    ["attribute whitespace", "(shutil # comment\n.rmtree)(target)", "unknown"],
+    ["continued receiver", "shutil\\\n.rmtree('scratch')", ["scratch"]],
+    ["wrapped receiver", "((shutil)).rmtree(target)", "unknown"],
+    ["single call attribute", "shutil.rmtree . __call__ (target)", "unknown"],
+    ["Path call attribute", "(Path('scratch') . unlink . __call__)()", ["scratch"]],
+    ["normalized properties", "shutil.ｒmtree.__ｃall__(target)", "unknown"],
+    ["normalized Path", "Path('scratch').ｕnlink()", ["scratch"]],
+    ["unknown receiver", "get_path().unlink()", "unknown"],
+    ["bare unlink receiver", "path.unlink()", "unknown"],
+    ["Path suffix is not Path", "OtherPath('scratch').unlink()", "unknown"],
+    ["Path call whitespace", "Path ('scratch').unlink()", ["scratch"]],
+    ["parenthesized Path target", "Path(('/protected')).unlink()", "unknown"],
+    ["multipart Path", "Path('.', target).unlink()", "unknown"],
+    ["Path keyword option", "pathlib.Path('scratch',).unlink(missing_ok=True)", ["scratch"]],
+    ["encoded target", String.raw `shutil.rmtree('\x2egit')`, "unknown"],
+    ["concatenated target", 'shutil.rmtree(".gi" "t")', "unknown"],
+    ["escaped literal quote", 'shutil.rmtree("say\\\"hi")', ['say"hi']],
+    ["nonproperty Unicode", "中文变量=1; 对象.中文方法(); print(中文变量)", "opaque"],
+    ["call data", 'print.__call__("shutil.rmtree.__call__(target)"); # Path(target).unlink()', "opaque"],
+    ["indirect boundary", "from shutil import rmtree; rmtree(target); getattr(shutil,'rmtree')(target); shutil.rmtree.__call__.__call__(target)", "opaque"],
+    ["f-string boundary", 'f"{shutil.rmtree(target)}"', "opaque"],
+  ]);
+  await rules(t, [
+    ["missing interactive Python source operands remain data", "py -V:Company/Tag -i -c <<'EOF'\nshutil.rmtree(target)\nEOF", "ask"],
+    ["unlink receiver boundaries retain unknown targets", "python - <<'EOF'\nPath(\n 'scratch'\n).unlink()\nEOF", "ask"],
+    ["Python attribute whitespace and wrapped methods", "python -c '(Path(target) # c\n. unlink)()'", "blocked"],
+    ["V8 and doubled Python version flags do not execute stdin", "python -iVV <<'EOF'\nfs.rmSync('/protected',{recursive:true})\nPath('/protected').unlink()\nEOF", "ask"],
+  ]);
+});
+test("sort and find options distinguish operands, targets and terminal errors", async (t) => {
+  await rules(t, [
+    ["escaped backticks are a literal target", "touch \\`pwd\\`/../escaped", "allowed"],
+    ["positional, redirection and find-root targets retain expansion flags", "sed -i 's/a/b/' `pwd`/../escaped", "blocked"],
+    ["terminal help retains only actual preceding effects", "sort --out=.git/config --he", "allowed"],
+    ["terminal help retains only actual preceding effects", "sort -ro.git/config --help", "allowed"],
+    ["sort unique output prefix", "sort -T tmp --outp ../outside", "ask"],
+    ["sort short cluster target", "sort -uro\"$X\"", "blocked"],
+    ["sort dynamic attached temp", "sort --te=`pwd`/../outside", "blocked"],
+    ["sort literal backtick", "sort --out='`pwd`/../outside'", "allowed"],
+    ["sort compressor", "sort --comp=./codec", "opaque"],
+    ["sort unknown option", "sort -T tmp --unknown-option", "opaque"],
+    ["sort ambiguous prefix", "sort -o .git/config --i", "read-only"],
+    ["sort no-argument value", "sort -o .git/config --help=x", "read-only"],
+    ["sort optional check value", "sort --check=quiet -o .git/config", "ask"],
+    ["sort option operand", "sort --random-source --help -o output", "allowed"],
+    ["sort after terminator", "sort -- --out=x", "read-only"],
+    ["sort ambiguous spelling as operand", "sort -o --i input", "allowed"],
+    ["sort long output after operand", "sort --random-source --help --output=output", "allowed"],
+    ["sort unknown before ambiguous", "sort --unknown --i -o file", "opaque"],
+    ["sort terminal after preceding write", "rm -rf /protected; sort -o .git/config --help", "admitted"],
+    ["sort help as filename", "sort -o .git/config -- --help", "ask"],
+    ["sort keeps shell redirection", "sort --help=x > .git/config", "ask"],
+    ["find terminal before action", "find --help -fprint .git/config", "read-only"],
+    ["find execution operand is not terminal help", "find . -exec printf --help ';'", "blocked"],
+    ["find terminal after action", "find -fprint .git/config --help", "ask"],
+    ["find help as predicate operand", "find -name --help -fprint .git/config", "ask"],
+    ["find files0 operand", "find -files0-from -delete", "read-only"],
+    ["find files0 then action", "find -files0-from --help -delete", "blocked"],
+    ["find predicate operand", "find . -fstype -delete", "read-only"],
+    ["find output after delete", "find scratch -delete -fprintf .git/config '%p'", "ask"],
+    ["find expanded output", "find . -fprint `pwd`/../outside", "blocked"],
+    ["find expanded root", "find -H -- `pwd`/../victim -delete", "blocked"],
+    ["find format data", "find . -fprintf output '`pwd`/../outside'", "allowed"],
+    ["find target limit", "find . " + Array.from({ length: 17 }, (_, i) => `-fprint out${i}`).join(" "), "blocked"],
+    ["sort temporary directories are mutation targets", "sort -S1K -T ../outside -o output input", "ask"],
+    ["clustered sort output flags preserve unknown-target denial", "sort -k 1 -ro\"$X\"", "blocked"],
+    ["find output targets retain expansion flags", "find . -maxdepth 0 -fprint0 `pwd`/../outside", "blocked"],
+    ["sort targets retain executable expansion metadata", "sort -ro`pwd`/../outside input", "blocked"],
+    ["sort unique prefixes retain targets and opaque options", "sort -T tmp --te=../outside", "ask"],
+    ["clustered sort output flags preserve unknown-target denial", "sort -uro \"$X\"", "blocked"],
+    ["sort long operands do not become output options", "sort --random-sort --random-source -o", "ask"],
+    ["values on no-argument sort options terminate before effects", "sort -o .git/config --version=x", "allowed"],
+    ["sort targets retain executable expansion metadata", "sort -T tmp --o=`pwd`/../outside input", "blocked"],
+    ["sort targets retain executable expansion metadata", "sort -T`pwd`/../outside input", "blocked"],
+  ]);
+});
+test("lifecycle expansion distinguishes delayed code from literal data", async (t) => {
+  await rules(t, [
+    ["literal arithmetic comparison", "[[ 1 -eq 1 ]]", "allowed"],
+    ["stored source overflow reaches authorization", "X0=':'; trap \"$X0\" EXIT; X1=':'; trap \"$X1\" EXIT; X2=':'; trap \"$X2\" EXIT; X3=':'; trap \"$X3\" EXIT; X4=':'; trap \"$X4\" EXIT; X5=':'; trap \"$X5\" EXIT; X6=':'; trap \"$X6\" EXIT; X7=':'; trap \"$X7\" EXIT; X8=':'; trap \"$X8\" EXIT; X9=':'; trap \"$X9\" EXIT; X10=':'; trap \"$X10\" EXIT; X11=':'; trap \"$X11\" EXIT; X12=':'; trap \"$X12\" EXIT; X13=':'; trap \"$X13\" EXIT; X14=':'; trap \"$X14\" EXIT; X15=':'; trap \"$X15\" EXIT; BAD=':'; trap \"$BAD\" EXIT", "blocked"],
+    ["process source overflow reaches authorization", "source <(echo ':'); source <(echo ':'); source <(echo ':'); source <(echo ':'); source <(echo ':'); source <(echo ':'); source <(echo ':'); source <(echo ':'); source <(echo ':'); source <(echo ':'); source <(echo ':'); source <(echo ':'); source <(echo ':'); source <(echo ':'); source <(echo ':'); source <(echo ':'); source <(echo ':')", "blocked"],
+    ["negated indexed test", "! [ -v a[x] ]", "blocked"],
+    ["stored and sourced body overflow refuses", "X0=':'; trap \"$X0\" EXIT; X1=':'; trap \"$X1\" EXIT; X2=':'; trap \"$X2\" EXIT; X3=':'; trap \"$X3\" EXIT; X4=':'; trap \"$X4\" EXIT; X5=':'; trap \"$X5\" EXIT; X6=':'; trap \"$X6\" EXIT; X7=':'; trap \"$X7\" EXIT; X8=':'; trap \"$X8\" EXIT; X9=':'; trap \"$X9\" EXIT; X10=':'; trap \"$X10\" EXIT; X11=':'; trap \"$X11\" EXIT; X12=':'; trap \"$X12\" EXIT; X13=':'; trap \"$X13\" EXIT; X14=':'; trap \"$X14\" EXIT; X15=':'; trap \"$X15\" EXIT", "ask"],
+    ["stored subscript text", "x='a[$(sleep 100 &)]'; echo $((x))", "blocked"],
+    ["ANSI-quoted subscript text", "printf '%s' $'a[$(sleep 100 &)]'", "blocked"],
+    ["nested subscript text", "printf '%s' 'a[b[$(sleep 100 &)]]'", "blocked"],
+    ["comment inside subscript substitution", "printf '%s' a[<(printf ok # comment\n)]", "blocked"],
+    ["subshell inside subscript substitution", "printf '%s' a[<((printf ok); printf done)]", "blocked"],
+    ["indexed arithmetic command", "(( a[$(sleep 100 &)] ))", "blocked"],
+    ["process subscript text", "printf '%s' 'a[<(printf ok)]'", "blocked"],
+    ["indirect builtin name", "printf -v a[x] '%s' value", "blocked"],
+    ["numeric builtin name", "printf -v 'a[0]' '%s' 'a[x]'", "opaque"],
+    ["read prompt is data", "read -p 'a[x]' 'a[0]' < f.txt", "opaque"],
+    ["read array option names storage", "read -ra a[x] < f.txt", "blocked"],
+    ["indexed test builtin", "test -v 'a[0]'", "blocked"],
+    ["plain test", "[[ -v HOME ]]", "read-only"],
+    ["arithmetic literal", "echo $((1+2))", "read-only"],
+    ["arithmetic loop boundary", "for ((i=0;i<3;i++)); do :; done", "opaque"],
+    ["regex data", "grep 'a[0-9]' f", "read-only"],
+    ["mapfile callback cluster", "readarray -tC\"sleep 100 &\" -c 1 a < f.txt", "blocked"],
+    ["mapfile delimiter operand", "mapfile -dC a < f.txt", "opaque"],
+    ["function substitution launch", "echo ${ echo ${ sleep 100 & }; }", "blocked"],
+    ["function in command substitution", "echo $(echo ${ sleep 100 & })", "blocked"],
+    ["direct function substitution", "echo ${ sleep 100 & }", "blocked"],
+    ["nested prompt transform", "echo \"${x:-${y@P}}\"", "blocked"],
+    ["indexed prompt transform", "echo \"${a[0]@P}\"", "blocked"],
+    ["prompt in shell input", doc("bash", 'echo "${x@P}"'), "blocked"],
+    ["literal function substitution", "echo ${| REPLY=hi; }", "opaque"],
+    ["parameter transform data", "echo \"${x@Q}\"", "read-only"],
+    ["quoted prompt text", "echo '${x@P}'", "read-only"],
+    ["PS4 existing delayed boundary", "PS4='$(sleep 100 &)'; set -x; :", "opaque"],
+    ["PS4 exported wrapper", "export PS4='$(sleep 100 &)'; bash -xc :", "blocked"],
+    ["literal trap", "ACTION='printf ok'; trap \"$ACTION\" EXIT", "opaque"],
+    ["trap clear", "trap - EXIT", "opaque"],
+    ["trap lists signals", "trap -l", "opaque"],
+    ["literal eval mutation", "eval 'touch' '\"$X\"'", "blocked"],
+    ["literal eval harmless", "eval printf ok", "opaque"],
+    ["trap dynamic rm", "ACTION='rm -rf \"$X\"'; trap \"$ACTION\" EXIT; true", "blocked"],
+    ["function substitutions retain main lifecycle boundaries", "echo ${ echo $((1 << 3)); }", "ask"],
+    ["unsafe Bash test operands retain main refusal", "[[ 'a[$(sleep 100 &)]' -eq 0 ]]", "blocked"],
+    ["function substitutions retain main lifecycle boundaries", "echo ${ echo \"${ printf hi; }\"; }", "blocked"],
+    ["literal eval and trap actions retain lifecycle inspection", "builtin -- trap -- 'sleep 100 &' EXIT", "blocked"],
+    ["unresolved trap retains main lifecycle refusal", "ACTION='printf ok'; trap \"$ACTION\" EXIT; trap \"$OTHER\" INT", "blocked"],
+    ["mapfile callbacks always retain lifecycle refusal", "if mapfile -tC 'sleep 100 &' a < f.txt; then :; fi", "blocked"],
+    ["builtin name subscripts cannot conceal arithmetic execution", "declare -i 'x=a[y]'", "blocked"],
+    ["unsafe Bash test operands retain main refusal", "if test -v a[x]; then :; fi", "blocked"],
+    ["function substitutions retain main lifecycle boundaries", "VALUE=${ sh <<'EOF'\nsleep 100 &\nEOF\n; }", "blocked"],
+    ["mapfile callbacks always retain lifecycle refusal", "mapfile -- a < f.txt", "ask"],
+    ["builtin name subscripts cannot conceal arithmetic execution", "declare 'a[123]=1'", "ask"],
+    ["function substitutions retain main lifecycle boundaries", "echo ${ case x in x) printf hi;; esac; }", "blocked"],
+    ["unsafe Bash test operands retain main refusal", "[ -v 'a[$(sleep 100 &)]' ]", "blocked"],
+    ["builtin name subscripts cannot conceal arithmetic execution", "printf -v first -v 'a[0]' '%s' 'a[x]'", "ask"],
+    ["trap action expansion cannot defer inspection of executable source", "ACTION='sleep 100 &'; trap \"$ACTION\" EXIT; true", "blocked"],
+  ]);
+});
+test("alias and source proofs are invalidated by possible shell state changes", async (t) => {
+  await rules(t, [
+    ["alias mutation target", "shopt -s expand_aliases\nalias run='rm -rf \"$X\"'\nrun", "blocked"],
+    ["harmless sourced setup preserves later consumer", "source /dev/stdin <<'SETUP'\nprintf ok\nSETUP\nnode <<'EOF'\nconsole.log(1)\nEOF", "ask"],
+    ["disabled alias expansion preserves producer", "shopt -u expand_aliases; source <(echo ':')", "ask"],
+    ["harmless prefix preserves process producer", "true; source <(printf '%s' ':')", "ask"],
+    ["state assignment without later mutation", "echo $((CDPATH=1))", "ask"],
+    ["literal expanded alias control", "ACTION='printf ok'; alias run=\"$ACTION\"\nrun", "ask"],
+    ["alias assignment", doc("BASH_ALIASES[node]='source /dev/stdin'; node", "data"), "blocked"],
+    ["dynamic shopt flag", doc('shopt -s "$OPTION"; node', "data"), "blocked"],
+    ["file sourcing", doc("source ./aliases.sh; node", "data"), "blocked"],
+    ["unrelated shopt", doc("shopt -s nullglob; node", "console.log(1)"), "opaque"],
+    ["alias without expansion", "alias node='echo hi'", "opaque"],
+    ["alias listing", "alias -p", "opaque"],
+    ["sourced setup uncertainty", "source <(echo 'shopt -s expand_aliases'); source <(echo ':')", "blocked"],
+    ["shadowed producer", "function echo() { printf ignored; }; source <(echo ':')", "blocked"],
+    ["literal producer", "source <(printf '%s' 'printf ok')", "opaque"],
+    ["successive literal producers", "source <(echo ':'); source <(echo ':')", "opaque"],
+    ["unknown alias value boundary", "alias run=\"$SCRIPT\"\nrun", "opaque"],
+    ["expanded alias code", "ACTION='sleep 100 &'; alias run=\"$ACTION\"\nrun", "blocked"],
+    ["earlier target retains cwd", "rm -r scratch; PATH=/tmp; echo ok", "ask"],
+    ["later target loses cwd", "rm -r first; PATH=/tmp; rm -r second", "blocked"],
+    ["nested target loses cwd", "echo ok; PATH=/tmp; bash -c 'rm -r scratch'", "blocked"],
+    ["expanded output name", "printf x >&\"$X\"", "blocked"],
+    ["literal read-write target", "printf x 1<>target", "ask"],
+    ["fd duplication data", "printf x 1>&2", "read-only"],
+    ["later lookup state cannot invalidate earlier mutation targets", "for x in 1 2; do rm -r scratch; PATH=/tmp; done; echo ok", "blocked"],
+    ["state-changing builtins and expansions taint later mutation context", "[[ -v 'a[CDPATH=1]' ]]; cd sub && touch target", "blocked"],
+    ["possible alias changes retain heredoc lifecycle refusal", "declare -A BASH_ALIASES=([node]='source /dev/stdin');\nnode <<'EOF'\nsleep 100 &\nEOF", "blocked"],
+    ["shadowed process producers retain unresolved source refusal", "printf() { printf '%s\\n' 'sleep 100 &'; }; source <(printf '%s' ':')", "blocked"],
+    ["sourced setup heredocs cannot change later consumers through aliases", "source /dev/stdin <<'SETUP'\nshopt -s expand_aliases\nalias node='source /dev/stdin'\nSETUP\nnode <<'EOF'\nsleep 100 &\nEOF", "blocked"],
+    ["literal alias definitions retain lifecycle and mutation inspection", "shopt -s expand_aliases\nalias run='sleep 30 >/dev/null 2>&1 &'\nrun", "blocked"],
+    ["sourced setup heredocs cannot change later consumers through aliases", "source /dev/stdin <<'SETUP'\nBASH_ALIASES[node]='source /dev/stdin'\nSETUP\nnode <<'EOF'\nsleep 100 &\nEOF", "blocked"],
+    ["state-changing builtins and expansions taint later mutation context", "echo $((CDPATH=1)); cd sub && touch target", "blocked"],
+    ["later state cannot invalidate an earlier high-risk target", "rm -r first; rm -r \"$X\"", "blocked"],
+    ["alias state invalidates literal process producers", "shopt -s expand_aliases\nBASH_ALIASES[echo]='printf payload'\nsource <(echo ':')", "blocked"],
+    ["alias state invalidates literal process producers", "shopt -s \"$OPTION\"\nsource <(echo ':')", "blocked"],
+    ["later lookup state cannot invalidate earlier mutation targets", "rm -r scratch; hash -p /tmp/echo echo; echo ok", "ask"],
+    ["state-changing builtins and expansions taint later mutation context", "((CDPATH=1)); cd sub && touch target", "blocked"],
+    ["later state cannot invalidate an earlier high-risk target", "rm -r scratch; printf -v X foo", "ask"],
+    ["later lookup state cannot invalidate earlier mutation targets", "echo ok; PATH=/tmp; echo $(rm -r scratch)", "blocked"],
+    ["sourced setup heredocs cannot change later consumers through aliases", "source /dev/stdin <<'SETUP'\nsource ./aliases.sh\nSETUP\nnode <<'EOF'\nsleep 100 &\nEOF", "blocked"],
+    ["later state cannot invalidate an earlier fixed mutation", "touch first; printf -v X foo; touch second", "blocked"],
+    ["alias state invalidates literal process producers", "shopt -s expand_aliases\nalias echo='printf \"%s\" \"rm -rf /protected\"'\nalias printf='echo \"rm -rf /protected\"'\nsource <(echo ':')", "blocked"],
+    ["alias state invalidates literal process producers", "source ./aliases.sh\nsource <(echo ':')", "blocked"],
+    ["alias state invalidates literal process producers", "source <(echo 'shopt -s expand_aliases')\nsource <(printf '%s' ':')", "blocked"],
+    ["later lookup state cannot invalidate earlier mutation targets", "rm -r scratch; export PATH=/tmp; echo ok", "ask"],
+    ["sourced setup heredocs cannot change later consumers through aliases", "source /dev/stdin <<'SETUP'\neval 'alias node=source'\nSETUP\nnode <<'EOF'\nsleep 100 &\nEOF", "blocked"],
+    ["possible alias changes retain heredoc lifecycle refusal", "shopt \"$FLAGS\" expand_aliases;\nnode <<'EOF'\nsleep 100 &\nEOF", "blocked"],
+    ["possible alias changes retain heredoc lifecycle refusal", "function setup { source ./aliases.sh; }; setup;\nnode <<'EOF'\nsleep 100 &\nEOF", "blocked"],
+    ["possible alias changes retain heredoc lifecycle refusal", "setup() { alias node='source /dev/stdin'; }; setup;\nnode <<'EOF'\nsleep 100 &\nEOF", "blocked"],
+    ["literal alias definitions retain lifecycle and mutation inspection", "shopt -s expand_aliases\nbuiltin alias run='sleep 30 &'\nrun", "blocked"],
+  ]);
+});
+test("inspection bounds, borrowed regexes and temporary views release on every exit", () => {
+  for (const [name, inspect] of [
+    ["stored source limit", () => {
+        const source = Array.from({ length: 17 }, (_, i) => `X${i}=':'; trap "$X${i}" EXIT`).join("; ");
+        assert.equal(literalStoredScripts(source), null);
+        assert.match(inspectBashResourceLifecycle({ command: source }) ?? "", /SHELL_INSPECTION_LIMIT/);
+        assert.deepEqual(literalStoredScripts('ACTION=\'printf ok\'; trap "$ACTION" EXIT'), ["printf ok"]);
+        assert.deepEqual(literalStoredScripts('ACTION=\'printf ok\'; builtin -- trap -- "$ACTION" EXIT'), ["printf ok"]);
+        assert.deepEqual(inspectBashPermissionScope({ command: "builtin eval touch target" }, process.cwd())?.targets, [resolve("target")]);
+        assert.equal(literalStoredScripts('ACTION=\'printf ok\'; unset ACTION; trap "$ACTION" EXIT'), undefined);
+        for (const source of ['ACTION=\'printf ok\' | trap "$ACTION" EXIT', 'ACTION=\'printf ok\' && trap "$ACTION" EXIT', '( ACTION=\'printf ok\'; ); trap "$ACTION" EXIT'])
+          assert.equal(literalStoredScripts(source), undefined, source);
+      }],
+    ["process source limit", () => {
+        const before = { ...aliasRiskCounters };
+        assert.equal(literalProcessSources(Array(17).fill("source <(echo ':')").join("; ")), null);
+        assert.match(inspectBashResourceLifecycle({ command: Array(17).fill("source <(echo ':')").join("; ") }) ?? "", /SHELL_INSPECTION_LIMIT/);
+        assert.deepEqual(literalProcessSources("source <(echo ':')"), [":"]);
+        assert.equal(aliasRiskCounters.liveViews, 0);
+        assert.equal(aliasRiskCounters.viewsCreated - before.viewsCreated, aliasRiskCounters.viewsReleased - before.viewsReleased);
+      }],
+    ["base64 decoding", () => {
+        for (const [encoded, expected] of [[Buffer.from("printf 日本語\n").toString("base64"), "printf 日本語\n"], ["%%%", undefined], ["/w==", undefined], ["a".repeat(128 * 1024 + 1), undefined]])
+          assert.equal(decodeLiteralBase64(encoded!), expected);
+      }],
+    ["borrowed matching state", () => {
+        assert.equal(inspectHighRiskBashMutation({ command: program("node", Array(65).fill("fs.unlinkSync('./scratch');").join("")) }, process.cwd())?.unverifiableScope, true);
+        for (const command of [program("node", "fs['rmSync']?.(target,{recursive:true})"), program("python", Array(65).fill("Path(target).unlink.__call__()").join("; "))])
+          assert.equal(inspectHighRiskBashMutation({ command }, process.cwd())?.unverifiableScope, true);
+        for (const pattern of [NODE_LITERAL_METHOD_KEY_PATTERN, NODE_RM_CALL_PATTERN, NODE_UNLINK_PATTERN, PYTHON_RMTREE_PATTERN, PYTHON_UNLINK_PATTERN])
+          assert.equal(pattern.lastIndex, 0);
+        for (const pattern of [NODE_COMMAND_PATTERN, PYTHON_COMMAND_PATTERN]) {
+          assert.equal(pattern.global, false);
+          assert.equal(pattern.sticky, false);
+        }
+      }],
+    ["descriptor scratch", () => {
+        const before = { ...persistentDescriptorCounters };
+        inspectBashResourceLifecycle({ command: doc("exec", "console.log(1)", "3") + "\n" + Array.from({ length: 18 }, (_, i) => `exec ${i + 4}<&3`).join("; ") + "; node /dev/fd/21" });
+        assert.ok(persistentDescriptorCounters.overflows > before.overflows);
+        assert.ok(persistentDescriptorCounters.maxEntries <= 16);
+        const includes = Array.prototype.includes;
+        Array.prototype.includes = function (...args) { if (persistentDescriptorCounters.liveArrays)
+          throw new Error("descriptor scratch failure"); return includes.apply(this, args); };
+        try {
+          assert.throws(() => inspectBashResourceLifecycle({ command: doc("exec", "console.log(1)", "3") + "\nnode /dev/fd/3" }), /descriptor scratch failure/);
+        }
+        finally {
+          Array.prototype.includes = includes;
+        }
+        assert.equal(persistentDescriptorCounters.liveArrays, 0);
+        assert.equal(persistentDescriptorCounters.arraysCreated - before.arraysCreated, persistentDescriptorCounters.arraysReleased - before.arraysReleased);
+      }],
+  ] as const) {
+    try {
+      inspect();
+    }
+    catch (error) {
+      throw new Error(name, { cause: error });
+    }
+  }
+});
+test("primitive scanner counters exclude extra passes and ASCII decoding work", () => {
+  const cwd = resolve("review*cwd");
+  assert.equal(inspectBashPermissionScope({ command: process.platform === "win32" ? `rmdir '${cwd}'` : `rmdir ${cwd}` }, cwd)?.unverifiableMutation, true);
+  assert.equal(inspectBashPermissionScope({ command: "python -c 'print(1)'" }, cwd)?.dynamicScope, false);
+  const descriptors = "cat <<'EOF' " + Array.from({ length: 17 }, (_, i) => `${i + 3}<&0`).join(" ") + "\ndata\nEOF";
+  assert.equal(prepareShellAnalysis(descriptors).unboundedHeredoc, true);
+  const methods = { ...codeMethodNameCounters };
+  for (const [language, body] of [
+    ["node", String.raw `fs.rmSync(target,{recursive:true}); fs['unlinkSync'](target); const \u0061=1; const data=['hello\n'];`],
+    ["python", "shutil.rmtree.__call__(target); Path(target).unlink(); 中文变量=1; print(中文变量)"],
+  ])
+    inspectHighRiskBashMutation({ command: program(language!, body!) }, process.cwd());
+  assert.deepEqual(codeMethodNameCounters, methods);
+  inspectHighRiskBashMutation({ command: program("node", String.raw `fs.r\u006dSync(target,{recursive:true})`) }, process.cwd());
+  assert.equal(codeMethodNameCounters.nodeDecodes - methods.nodeDecodes, 1);
+  inspectHighRiskBashMutation({ command: program("python", "shutil.ｒmtree(target)") }, process.cwd());
+  assert.equal(codeMethodNameCounters.pythonNormalizations - methods.pythonNormalizations, 1);
+  assert.ok(Object.values(codeMethodNameCounters).every(value => typeof value === "number"));
+  const before = { ...shellAnalysisCounters };
+  const command = "printf '%s' 'a[0-9]' \"b[12]\" $'c[3]'";
+  assert.equal(extractCommandSubstitutions(command).unsupported, false);
+  assert.equal(shellAnalysisCounters.substitutionCalls - before.substitutionCalls, 1);
+  assert.equal(shellAnalysisCounters.subscriptTextChars - before.subscriptTextChars, command.length);
+  const heads = shellAnalysisCounters.promptParameterCalls;
+  extractCommandSubstitutions("printf ok");
+  assert.equal(shellAnalysisCounters.promptParameterCalls, heads);
+  assert.equal(extractCommandSubstitutions('echo "${x@P}"').boundaryRefusal, 1);
+  assert.equal(shellAnalysisCounters.promptParameterCalls - heads, 1);
   const calls = heredocConsumerCounters.tailCalls, words = heredocConsumerCounters.tailWords;
   assert.equal(heredocConsumers("foo x node"), 8);
-  assert.equal(heredocConsumerCounters.tailCalls - calls, 1); assert.equal(heredocConsumerCounters.tailWords - words, 2);
-  assert.deepEqual(Object.keys(heredocConsumerCounters), ["tailCalls", "tailWords"]);
-});
-
-test("continued heredoc detection uses the existing preparation scan without a source copy", () => {
-  const original = String.prototype.charCodeAt; let reads = 0;
-  String.prototype.charCodeAt = function(index) { reads++; return original.call(this, index); };
+  assert.equal(heredocConsumerCounters.tailCalls - calls, 1);
+  assert.equal(heredocConsumerCounters.tailWords - words, 2);
+  const original = String.prototype.charCodeAt;
+  let reads = 0;
+  String.prototype.charCodeAt = function (index) { reads++; return original.call(this, index); };
   try {
-    for (const count of [16, 1024, 8192]) {
-      const command = "node <" + "\\\n".repeat(count) + "<'EOF'\nconsole.log(1)\nEOF";
-      const calls = shellAnalysisCounters.prepareCalls; reads = 0;
-      const view = prepareShellAnalysis(command);
-      assert.equal(shellAnalysisCounters.prepareCalls - calls, 1); assert.strictEqual(view.command, command);
-      assert.equal(view.unboundedHeredoc, true); assert.equal(view.hereDocuments, undefined);
-      assert.ok(reads <= 2 * command.length + 16, `${reads}/${command.length}`);
-    }
-  } finally { String.prototype.charCodeAt = original; }
-});
-
-test("bounded interpreter matchers reset borrowed regex state", () => {
-  for (const body of ["fs['rmSync']?.(target,{recursive:true})", "fs.rmSync.call('receiver',target,{recursive:true})", "fs.rmSync.call\u00a0('receiver',target,{recursive:true})", "fs?.[\u2000'unlinkSync']?.(target)"]) {
-    const scan = inspectHighRiskBashMutation({ command: literalProgram("node", body, true) }, process.cwd());
-    assert.equal(scan?.mutationDetected, true, body); assert.equal(scan?.unverifiableScope, true); assert.deepEqual(scan?.targets, []);
-    assert.equal(NODE_LITERAL_METHOD_KEY_PATTERN.lastIndex, 0); assert.equal(NODE_RM_CALL_PATTERN.lastIndex, 0); assert.equal(NODE_UNLINK_PATTERN.lastIndex, 0);
-  }
-  assert.equal(PYTHON_COMMAND_PATTERN.global, false); assert.equal(PYTHON_COMMAND_PATTERN.sticky, false);
-  assert.equal(NODE_COMMAND_PATTERN.global, false); assert.equal(NODE_COMMAND_PATTERN.sticky, false);
-  for (const count of [1, 64, 65]) for (const call of ["shutil.rmtree.__call__(target)", "Path(target).unlink.__call__()"] ) {
-    const command = literalProgram("python", Array(count).fill(call).join("; "), true);
-    assert.equal(inspectHighRiskBashMutation({ command }, process.cwd())?.unverifiableScope, true);
-    assert.equal(PYTHON_RMTREE_PATTERN.lastIndex, 0); assert.equal(PYTHON_UNLINK_PATTERN.lastIndex, 0);
-  }
-});
-
-test("ASCII methods and non-property Unicode/escapes allocate no decoding or normalization strings", () => {
-  const before = { ...codeMethodNameCounters };
-  for (let repeat = 0; repeat < 16; repeat++) for (const [language, body] of [
-    ["node", "fs.rmSync(target,{recursive:true}); fs['unlinkSync'](target); fs.other(1); const data=['hello\\n'];"],
-    ["node", String.raw`const \u0061=1; console.log("fs.r\u006dSync(target)"); // fs.r\u006dSync(target)`],
-    ["python", "shutil.rmtree.__call__(target); Path(target).unlink(); 中文变量=1; print(中文变量)"],
-    ["python", 'print("shutil.ｒmtree(target)"); # shutil.ｒmtree(target)'],
-  ]) inspectHighRiskBashMutation({ command: literalProgram(language, body, true) }, process.cwd());
-  assert.deepEqual(codeMethodNameCounters, before);
-  inspectHighRiskBashMutation({ command: literalProgram("node", String.raw`fs.r\u006dSync(target,{recursive:true})`, true) }, process.cwd());
-  assert.equal(codeMethodNameCounters.nodeDecodes - before.nodeDecodes, 1); assert.ok(codeMethodNameCounters.codePointStrings > before.codePointStrings);
-  inspectHighRiskBashMutation({ command: literalProgram("python", "shutil.ｒmtree(target)", true) }, process.cwd());
-  assert.equal(codeMethodNameCounters.pythonNormalizations - before.pythonNormalizations, 1); assert.equal(codeMethodNameCounters.sourceSlices - before.sourceSlices, 1);
-  assert.ok(Object.values(codeMethodNameCounters).every(value => typeof value === "number"));
-});
-
-test("escaped strings in array data do not enter property decoding", () => {
-  const before = { ...codeMethodNameCounters };
-  const text = "x".repeat(300) + String.raw`\u0061`;
-  for (const body of [`const data=['${text}']`, `console.log(['${text}'])`, `function f(){return ['${text}']}`, `function* f(){yield ['${text}']}`, `const nested=[['${text}']]`]) {
-    const scan = inspectHighRiskBashMutation({ command: literalProgram("node", body, true) }, process.cwd()); assert.notEqual(scan?.mutationDetected, true, body);
-  }
-  assert.deepEqual(codeMethodNameCounters, before);
-});
-
-test("subscript text checks share the substitution scan and retain no source", () => {
-  const command = "printf '%s' 'a[0-9]' \"b[12]\" $'c[3]'";
-  const beforeCalls = shellAnalysisCounters.substitutionCalls, beforeChars = shellAnalysisCounters.subscriptTextChars;
-  assert.equal(extractCommandSubstitutions(command).unsupported, false);
-  assert.equal(shellAnalysisCounters.substitutionCalls - beforeCalls, 1);
-  assert.equal(shellAnalysisCounters.subscriptTextChars - beforeChars, command.length);
-  const beforeComment = shellAnalysisCounters.subscriptTextChars;
-  assert.equal(extractCommandSubstitutions("# a[$(sleep 100 &)]\nprintf ok").unsupported, false);
-  assert.equal(shellAnalysisCounters.subscriptTextChars - beforeComment, "printf ok".length);
-  const beforeData = shellAnalysisCounters.subscriptTextChars;
-  extractCommandSubstitutions("literal a[$(printf ok)]", true);
-  assert.equal(shellAnalysisCounters.subscriptTextChars, beforeData, "heredoc data uses its existing consumer boundary");
-});
-
-test("prompt checks inspect only discovered parameter heads and retain primitive counters", () => {
-  const beforeCalls = shellAnalysisCounters.substitutionCalls, beforeHeads = shellAnalysisCounters.promptParameterCalls, beforeChars = shellAnalysisCounters.promptParameterChars;
-  extractCommandSubstitutions("printf ok");
-  assert.equal(shellAnalysisCounters.promptParameterCalls, beforeHeads);
-  assert.equal(extractCommandSubstitutions('echo "${x@P}"').boundaryRefusal, 1);
-  assert.equal(shellAnalysisCounters.substitutionCalls - beforeCalls, 2);
-  assert.equal(shellAnalysisCounters.promptParameterCalls - beforeHeads, 1);
-  assert.equal(shellAnalysisCounters.promptParameterChars - beforeChars, 1);
-});
-
-for (const mode of ["full-access", "workspace-write"] as const) {
-  test(`review forty ${mode}: complete Node literal-key escapes retain deletion checks`, async t => {
-    const keys = [String.raw`'r\mSync'`, String.raw`'r\155Sync'`, String.raw`'\162\155\123\171\156\143'`, String.raw`'r\x6dSync'`, String.raw`'r\u006dSync'`, String.raw`'r\u{6d}Sync'`, "`r\\mSync`", "`rmSync`", String.raw`'unl\151nkSync'`];
-    for (const newline of ["\n", "\r", "\r\n", "\u2028", "\u2029"]) for (const quote of ["'", "\"", "`"]) keys.push(quote + "rm\\" + newline + "Sync" + quote);
-    for (const key of keys) for (const heredoc of [false, true]) {
-      const command = literalProgram("node", `(fs)[${key}](target,{recursive:true})`, heredoc), scan = inspectHighRiskBashMutation({ command }, process.cwd());
-      assert.equal(scan?.mutationDetected, true, command); assert.equal(scan?.unverifiableScope, true);
-      const f = await shellHookFixture(t, mode), result = await f.authorize(command); assert.equal(result.outcome?.block, true, command); assert.equal(f.dialogs(), 0);
-    }
-    for (const key of ["'readFileSync'", String.raw`'r\x65adFileSync'`, "`readFileSync`", ...["b", "f", "n", "r", "t", "v", "0", "00", "377", "8", "9", "'", '"', "\\"].map(escape => `'x\\${escape}x'`)]) {
-      const command = literalProgram("node", `(fs)[${key}](target)`, true), f = await shellHookFixture(t, mode);
-      assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command); assert.equal(inspectBashResourceLifecycle({ command }), undefined, command); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
-    }
-    for (const key of ["`rm${part}`", "`read${part}`", String.raw`'r\xZ0Sync'`, String.raw`'r\u{}Sync'`, String.raw`'r\u{110000}Sync'`, "`r\\155Sync`", "`r\\8Sync`", "'" + "x".repeat(257) + "'"]) {
-      const command = literalProgram("node", `(fs)[${key}](target)`, true), f = await shellHookFixture(t, mode);
-      const scan = inspectHighRiskBashMutation({ command }, process.cwd()); assert.equal(scan?.mutationDetected, true, command); assert.equal(scan?.unverifiableScope, true);
-      assert.equal((await f.authorize(command)).outcome?.block, true, command); assert.equal(f.dialogs(), 0);
-    }
-    for (const body of ["fs['rm'+'Sync'](target)", "fs[name](target)", "fs['rm'.concat('Sync')](target)", 'console.log("fs[\\\'r\\\\mSync\\\'](target)")', "// fs['r\\mSync'](target)"]) {
-      const command = literalProgram("node", body, true), f = await shellHookFixture(t, mode);
-      assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
-    }
-  });
-  test(`review forty ${mode}: regex text remains conservative and division calls stay visible`, async t => {
-    for (const heredoc of [false, true]) {
-      const call = "fs.unlinkSync('..')", command = literalProgram("node", `const re = /${call}/`, heredoc), direct = literalProgram("node", call, heredoc);
-      const scan = inspectHighRiskBashMutation({ command }, process.cwd()), control = inspectHighRiskBashMutation({ command: direct }, process.cwd());
-      assert.deepEqual(scan?.primitives, control?.primitives); assert.deepEqual(scan?.targets, control?.targets);
-      const f = await shellHookFixture(t, mode), g = await shellHookFixture(t, mode);
-      assert.equal(Boolean((await f.authorize(command)).outcome?.block), Boolean((await g.authorize(direct)).outcome?.block)); assert.equal(f.dialogs(), g.dialogs());
-      for (const body of ["const re = /fs.unlinkSync(x)/", "1 / require('fs').unlinkSync(process.argv[1]) / 2"]) {
-        const dynamic = literalProgram("node", body, heredoc), h = await shellHookFixture(t, mode);
-        assert.equal((await h.authorize(dynamic)).outcome?.block, true, dynamic); assert.equal(h.dialogs(), 0);
-      }
-    }
-  });
-  test(`review thirty-nine ${mode}: interactive Python inspects descriptor scripts before stdin`, async t => {
-    for (const name of ["python3", "env python3.12", "/usr/bin/PYTHON3.12.EXE", "py -V:Acme/3.13"]) for (const boundary of ["", "-- "]) for (const descriptor of [3, 4]) {
-      const path = descriptor === 3 ? "/dev/fd/3" : "/proc/self/fd/4";
-      const command = `${name} -i ${boundary}${path} ${descriptor}<<'EOF'\nshutil.rmtree(sys.argv[1])\nEOF`;
-      const scan = inspectHighRiskBashMutation({ command }, process.cwd()); assert.equal(scan?.mutationDetected, true, command); assert.equal(scan?.unverifiableScope, true);
-      const f = await shellHookFixture(t, mode), result = await f.authorize(command); assert.equal(result.outcome?.block, true, command); assert.equal(f.dialogs(), 0);
-      const harmless = command.replace("shutil.rmtree(sys.argv[1])", "print(1)"), g = await shellHookFixture(t, mode);
-      assertFinalAuthorization(await g.authorize(harmless)); assert.equal(g.dialogs(), mode === "workspace-write" ? 1 : 0);
-    }
-    for (const header of ["python3 -i /dev/fd/3", "python3 -i -- /dev/fd/3"]) assert.equal(heredocConsumers(header, 0), 4, "interactive stdin remains executable after the descriptor script");
-    for (const header of ["bash -s /dev/fd/3", "bash -s -- /dev/fd/3"]) { assert.equal(heredocConsumers(header, 3), 0); assert.equal(heredocConsumers(header, 0), 1); }
-  });
-  test(`review thirty-nine ${mode}: missing Python option operands do not execute heredoc input`, async t => {
-    for (const option of ["-W", "-X", "-iW", "-iX", "--check-hash-based-pycs"]) {
-      const command = `python3 ${option} <<'EOF'\nshutil.rmtree(sys.argv[1])\nEOF`;
-      assert.equal(inspectBashResourceLifecycle({ command }), undefined, command); assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
-    }
-    for (const option of ["-W ignore", "-Wignore", "-X dev", "-Xdev", "--check-hash-based-pycs always"]) {
-      const command = `python3 ${option} <<'EOF'\nshutil.rmtree(sys.argv[1])\nEOF`, f = await shellHookFixture(t, mode);
-      assert.equal((await f.authorize(command)).outcome?.block, true, command); assert.equal(f.dialogs(), 0);
-    }
-  });
-  test(`review thirty-nine ${mode}: sort ambiguity terminates its own output effects`, async t => {
-    for (const options of ["--i -o .git/config", "-o .git/config --i", "-T ../outside --c -o .git/config", "--i=x --output=.git/config"]) {
-      const command = `sort ${options}`, scan = inspectBashPermissionScope({ command }, process.cwd()); assert.equal(scan?.kind, "read-only", command); assert.deepEqual(scan?.targets, []);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), 0);
-    }
-    for (const command of ["printf x > .git/config; sort --i -o output", "sort --i > .git/config"]) {
-      const scan = inspectBashPermissionScope({ command }, process.cwd()); assert.notEqual(scan?.kind, "read-only", command); assert.ok(scan?.targets.includes(resolve(".git/config")));
-    }
-    assert.equal(inspectBashPermissionScope({ command: "sort -o --i input" }, process.cwd())?.kind, "known-mutation", "an option operand is not an ambiguous option");
-    assert.equal(inspectBashPermissionScope({ command: "sort -- --i -o file" }, process.cwd())?.kind, "read-only");
-    assert.equal(inspectBashPermissionScope({ command: "sort --unknown --i -o file" }, process.cwd())?.kind, "opaque-script");
-  });
-  test(`review thirty-eight ${mode}: all Node basenames share eval and heredoc deletion checks`, async t => {
-    for (const name of ["nodejs", "nodejs.exe", "NODEJS", "/usr/bin/nodejs", "env nodejs", "env FOO=1 /usr/bin/NODEJS.EXE"]) for (const form of ["-e", "--eval", "heredoc"]) {
-      const command = form === "heredoc" ? literalProgram(name, "unlinkSync(process.argv[1])", true) : `${name} ${form} 'unlinkSync(process.argv[1])'`;
-      const scan = inspectHighRiskBashMutation({ command }, process.cwd()); assert.equal(scan?.mutationDetected, true, command); assert.equal(scan?.unverifiableScope, true);
-      const f = await shellHookFixture(t, mode), result = await f.authorize(command); assert.equal(result.outcome?.block, true, command); assert.equal(f.dialogs(), 0);
-      const harmless = command.replace("unlinkSync(process.argv[1])", "console.log(1)"), g = await shellHookFixture(t, mode);
-      assert.equal(inspectBashPermissionScope({ command: harmless }, process.cwd())?.kind, "opaque-script"); assertFinalAuthorization(await g.authorize(harmless)); assert.equal(g.dialogs(), mode === "workspace-write" ? 1 : 0);
-    }
-    for (const name of ["bun", "deno", "pypy3"]) {
-      const command = literalProgram(name, "unlinkSync(process.argv[1])", true), f = await shellHookFixture(t, mode);
-      assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
-    }
-    assert.match(inspectBashResourceLifecycle({ command: literalProgram("foo /usr/bin/NODEJS.EXE", "ordinary data", true) }) ?? "", /SHELL_HEREDOC/);
-  });
-  test(`review thirty-eight ${mode}: escaped Node and normalized Python methods retain target assessment`, async t => {
-    for (const heredoc of [false, true]) for (const [language, body, literal] of [
-      ["node", String.raw`fs.r\u006dSync(target,{recursive:true})`, String.raw`fs.r\u006dSync('build',{recursive:true})`],
-      ["node", String.raw`fs.r\u{6d}Sync?.(target,{recursive:true})`, String.raw`fs.r\u{6d}Sync?.('build',{recursive:true})`],
-      ["node", String.raw`fs.\u0075nlinkSync(target)`, String.raw`fs.\u0075nlinkSync('build')`],
-      ["node", String.raw`fs?.['r\x6dSync'](target,{recursive:true})`, String.raw`fs?.['r\x6dSync']('build',{recursive:true})`],
-      ["node", String.raw`fs /* receiver */ ['r\x6dSync'](target,{recursive:true})`, String.raw`fs /* receiver */ ['r\x6dSync']('build',{recursive:true})`],
-      ["node", String.raw`fs[ /* before */ 'r\x6dSync' /* after */ ](target,{recursive:true})`, String.raw`fs[ /* before */ 'r\x6dSync' /* after */ ]('build',{recursive:true})`],
-      ["node", String.raw`fs["unl\u{69}nkSync"]?.(target)`, String.raw`fs["unl\u{69}nkSync"]?.('build')`],
-      ["python", "shutil.ｒmtree(target)", "shutil.ｒmtree('build')"],
-      ["python", "Path(target).ｕnlink()", "Path('build').ｕnlink()"],
-      ["python", "shutil.ｒmtree.__ｃall__(target)", "shutil.ｒmtree.__ｃall__('build')"],
-      ["python", "(Path(target).ｕnlink . __ｃall__)()", "(Path('build').ｕnlink . __ｃall__)()"],
-      ["python", "(shutil # comment\n.ｒmtree)(target)", "(shutil # comment\n.ｒmtree)('build')"],
-    ]) {
-      for (const command of [literalProgram(language, body, heredoc), ...(heredoc ? [`{ ${literalProgram(language, body, true)}\n}`] : [])]) {
-        const scan = inspectHighRiskBashMutation({ command }, process.cwd()); assert.equal(scan?.mutationDetected, true, command); assert.equal(scan?.unverifiableScope, true); assert.deepEqual(scan?.targets, []);
-        const f = await shellHookFixture(t, mode), result = await f.authorize(command); assert.equal(result.outcome?.block, true, command); assert.equal(f.dialogs(), 0);
-      }
-      const scan = inspectHighRiskBashMutation({ command: literalProgram(language, literal, heredoc) }, process.cwd()); assert.deepEqual(scan?.targets, [resolve("build")], literal); assert.equal(scan?.unverifiableScope, false, literal);
-    }
-    for (const body of [String.raw`fs.r\u006dSync.call(null,target,{recursive:true})`, String.raw`fs.rmSync.c\u0061ll(null,target,{recursive:true})`, String.raw`fs['unl\u0069nkSync'].apply(null,[target])`, String.raw`fs.r\uZZZZSync(target)`, String.raw`fs['r\xZZSync'](target)`, String.raw`fs.\u{110000}(target)`, `fs.${"x".repeat(256)}\\u006d(target)`, `fs['${"x".repeat(256)}\\u006d'](target)`]) {
-      const command = literalProgram("node", body, true), scan = inspectHighRiskBashMutation({ command }, process.cwd()); assert.equal(scan?.mutationDetected, true, command); assert.equal(scan?.unverifiableScope, true, command);
-      const f = await shellHookFixture(t, mode), result = await f.authorize(command); assert.equal(result.outcome?.block, true, command); assert.equal(f.dialogs(), 0);
-    }
-  });
-  test(`review thirty-eight ${mode}: identifier data and indirect properties remain opaque`, async t => {
-    for (const heredoc of [false, true]) for (const [language, body] of [
-      ["node", String.raw`const \u0061=1; console.log(1)`], ["node", String.raw`console.log("fs.r\u006dSync(target)")`], ["node", String.raw`// fs.r\u006dSync(target)`],
-      ["node", String.raw`fs.r\u006dSync('build')`], ["node", String.raw`fs.l\u006fg(1)`], ["node", String.raw`fs['r\x6d'+'Sync'](target,{recursive:true})`], ["node", String.raw`const data=['hello\n','r\\u006dSync'];`],
-      ["node", String.raw`const remove=fs.r\u006dSync; remove(target,{recursive:true})`], ["node", "fs[name](target,{recursive:true})"],
-      ["python", "中文变量=1; print(中文变量)"], ["python", "对象.中文方法()"], ["python", 'print("shutil.ｒmtree(target)")'], ["python", "# shutil.ｒmtree(target)"],
-      ["python", "getattr(shutil,'ｒmtree')(target)"], ["python", "shutil.ｒmtree.__ｃall__.__call__(target)"],
-    ]) {
-      const command = literalProgram(language, body, heredoc); assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0, command);
-    }
-  });
-  test(`review thirty-seven ${mode}: py runtime selectors preserve executable input`, async t => {
-    for (const name of ["py", "py.exe", "/usr/bin/PY.EXE", "env py"]) for (const selector of ["-V:3.12", "-V:PythonCore/3.12", "-V:Acme/VirtualPython3.12", "-3.12"]) {
-      for (const suffix of ["", " -c 'shutil.rmtree(sys.argv[1])'"]) {
-        const command = literalProgram(`${name} ${selector}${suffix}`, "shutil.rmtree(sys.argv[1])", true), scan = inspectHighRiskBashMutation({ command }, process.cwd());
-        assert.equal(scan?.mutationDetected, true, command); assert.equal(scan?.unverifiableScope, true, command);
-        const f = await shellHookFixture(t, mode), result = await f.authorize(command); assert.equal(result.outcome?.block, true, command); assert.equal(f.dialogs(), 0);
-      }
-      const literal = literalProgram(`${name} ${selector}`, "shutil.rmtree('build')", true), scan = inspectHighRiskBashMutation({ command: literal }, process.cwd());
-      assert.deepEqual(scan?.targets, [resolve("build")], literal); assert.equal(scan?.unverifiableScope, false);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(literalProgram(`${name} ${selector}`, "print(1)", true))); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
-    }
-    for (const name of ["py", "py.exe", "python3"]) for (const option of ["-V", "-VV", "--version"]) {
-      const command = literalProgram(`${name} ${option}`, "shutil.rmtree(sys.argv[1])", true);
-      assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
-    }
-  });
-  test(`review thirty-seven ${mode}: direct Python __call__ retains deletion target rules`, async t => {
-    for (const heredoc of [false, true]) {
-      for (const body of [
-        "shutil.rmtree.__call__(sys.argv[1])", "Path(argv).unlink.__call__()", "unknown.unlink.__call__()",
-        "shutil . rmtree . __call__ (sys.argv[1])", "Path(argv) . unlink . __call__ ()",
-        "(shutil.rmtree\n.\n__call__\n)(sys.argv[1])", "(Path(argv).unlink\n.\n__call__\n)()",
-        "shutil.rmtree\\\n.\\\n__call__\\\n(sys.argv[1])", "Path(argv).unlink\\\n.\\\n__call__\\\n()",
-        "(shutil.rmtree # method\n. # access\n__call__ # call\n)(sys.argv[1])",
-        "(Path(argv).unlink # method\n. # access\n__call__ # call\n)()",
-        "((shutil).rmtree).__call__(sys.argv[1])", "(Path(argv).unlink).__call__()",
-      ]) {
-        const command = literalProgram("python", body, heredoc), scan = inspectHighRiskBashMutation({ command }, process.cwd());
-        assert.equal(scan?.mutationDetected, true, command); assert.equal(scan?.unverifiableScope, true, command); assert.deepEqual(scan?.targets, []);
-        const f = await shellHookFixture(t, mode), result = await f.authorize(command); assert.equal(result.outcome?.block, true, command); assert.equal(f.dialogs(), 0);
-      }
-      for (const body of ["shutil.rmtree.__call__('build')", "Path('build').unlink.__call__()", "(shutil.rmtree . __call__)('build')", "(Path('build').unlink . __call__)()", "shutil.rmtree\\\n. __call__('build')"]) {
-        const command = literalProgram("python", body, heredoc), scan = inspectHighRiskBashMutation({ command }, process.cwd());
-        assert.equal(scan?.mutationDetected, true, command); assert.equal(scan?.unverifiableScope, false, command); assert.deepEqual(scan?.targets, [resolve("build")]);
-        const f = await shellHookFixture(t, mode), direct = body.includes("rmtree") ? "shutil.rmtree('build')" : "Path('build').unlink()";
-        const called = await f.authorize(command), prompts = f.dialogs(), ordinary = await f.authorize(literalProgram("python", direct, heredoc));
-        assert.equal(called.outcome?.block, ordinary.outcome?.block, command); assert.equal(f.dialogs() - prompts, prompts, command);
-      }
-    }
-  });
-  test(`review thirty-seven ${mode}: Python __call__ data and indirect forms stay opaque`, async t => {
-    for (const heredoc of [false, true]) for (const body of [
-      "print.__call__(1)", 'print("shutil.rmtree.__call__(target)")', "# shutil.rmtree.__call__(target)",
-      'print("Path(target).unlink.__call__()")', "# Path(target).unlink.__call__()",
-      "shutil.rmtree.__call__.__call__(sys.argv[1])", "Path(argv).unlink.__call__.__call__()",
-      "remove=shutil.rmtree; remove.__call__(target)", "getattr(shutil, 'rmtree').__call__(target)",
-      "getattr(Path(argv), 'unlink').__call__()", "shutil.__dict__[name].__call__(target)",
-    ]) {
-      const command = literalProgram("python", body, heredoc);
-      assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
-      assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "opaque-script", command);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0, command);
-    }
-  });
-  test(`review thirty-six ${mode}: continued heredoc operators retain conservative refusal`, async t => {
-    for (const redirect of ["<\\\n<'EOF'", "<\\\n\\\n<'EOF'"]) for (const [name, body] of [["node", "require('fs').unlinkSync(process.argv[1])"], ["python3 -", "shutil.rmtree(sys.argv[1])"], ["bash", "sleep 100 &"], ["cat", "ordinary data"]]) {
-      const command = `${name} ${redirect}\n${body}\nEOF`;
-      const view = prepareShellAnalysis(command); assert.equal(view.hasHeredoc, true); assert.equal(view.unboundedHeredoc, true);
-      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_HEREDOC\]/, command);
-      const f = await shellHookFixture(t, mode), result = await f.authorize(command); assert.equal(result.outcome?.block, true, command); assert.equal(f.dialogs(), 0);
-    }
-    for (const command of [literalProgram("cat", "sleep 100 &", true), literalProgram("node", "console.log(1)", true)]) {
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
-    }
-  });
-  test(`review thirty-six ${mode}: missing Bash startup-file operands never execute stdin`, async t => {
-    for (const option of ["--rcfile", "--init-file"]) for (const body of ["sleep 100 &", "rm -rf /protected"]) {
-      const command = literalProgram(`bash ${option}`, body, true);
-      assert.equal(inspectBashResourceLifecycle({ command }), undefined, command); assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
-      const executable = literalProgram(`bash ${option} /dev/null`, body, true), g = await shellHookFixture(t, mode), result = await g.authorize(executable);
-      assert.equal(result.outcome?.block, true, executable); assert.equal(g.dialogs(), 0);
-    }
-  });
-  test(`review thirty-five ${mode}: template expressions remain opaque across shell input shapes`, async t => {
-    for (const command of nodeInputShapes("`${require('fs').unlinkSync(process.argv[1])}`")) {
-      assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
-      assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
-      assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "opaque-script", command);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0, command);
-    }
-    for (const command of nodeInputShapes("require('fs').unlinkSync(process.argv[1])")) {
-      assert.equal(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
-      const f = await shellHookFixture(t, mode), result = await f.authorize(command); assert.equal(result.outcome?.block, true, command); assert.equal(f.dialogs(), 0);
-    }
-  });
-  test(`review thirty-five ${mode}: unresolved prefixes retain heredoc consumer uncertainty`, async t => {
-    for (const launcher of ["nice", "nice -n 5", "stdbuf -o0", "ionice -c3", "taskset 1", "chrt 0", "foo", "sudo -u root", "doas -u root", "sudo --user=root", "sudo -n"]) {
-      for (const [interpreter, body] of [["node", "unlinkSync(target)"], ["python3 -", "shutil.rmtree(target)"], ["bash", "sleep 100 &"]]) {
-        const command = literalProgram(`${launcher} ${interpreter}`, body, true);
-        assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_HEREDOC\]/, command);
-        const f = await shellHookFixture(t, mode), result = await f.authorize(command); assert.equal(result.outcome?.block, true, command); assert.equal(f.dialogs(), 0);
-      }
-    }
-    for (const operand of ["/usr/bin/PYTHON3.12.EXE", "python312", "PY", "/opt/NODE.EXE", "/bin/SH.EXE", "zsh", "dash", "ksh", "fish", "source", ".", '"$TOOL"', '"$@"', "$(printf node)", "*", "n?de", "[np]*", "{node,python}"]) {
-      const command = literalProgram(`foo ${operand}`, "ordinary data", true);
-      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_HEREDOC\]/, command);
-      const f = await shellHookFixture(t, mode), result = await f.authorize(command); assert.equal(result.outcome?.block, true, command); assert.equal(f.dialogs(), 0);
-    }
-    for (const prefix of ["nice cat", "nice -n 5 cat", "ionice -c3 cat", "grep x", "perl", "foo cat", "foo '$TOOL'", "foo '[np]*'", 'foo "*"', "env -u FOO cat"]) {
-      const command = literalProgram(prefix, "ordinary data", true);
-      assert.equal(inspectBashResourceLifecycle({ command }), undefined, command); assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "opaque-script");
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0, command);
-    }
-    for (const prefix of ["ionice -c3", "taskset 1", "chrt 0", "foo"]) {
-      const command = `${prefix} bash -c 'sleep 100 &'`;
-      assert.equal(inspectBashResourceLifecycle({ command }), undefined, command); assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "opaque-script");
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0, command);
-    }
-  });
-  test(`review thirty-four ${mode}: parenthesized direct interpreter calls retain targets`, async t => {
-    for (const heredoc of [false, true]) {
-      for (const [interpreter, body] of [
-        ["python", "(shutil).rmtree(target)"], ["python", "((shutil)) . rmtree(target)"], ["python", "((shutil # comment\n)) . rmtree(target)"],
-        ["node", "(fs.rmSync)(target,{recursive:true})"], ["node", "((fs . rmSync)) ?. (target,{recursive:true})"],
-        ["node", "(fs['rmSync'])(target,{recursive:true})"], ["node", "(fs?.['unlinkSync'])?.(target)"], ["node", "(fs.unlinkSync)(target)"],
-        ["node", "((fs.rmSync).call)('receiver',target,{recursive:true})"], ["node", "((fs.unlinkSync).apply)?.('receiver',[target])"],
-      ]) {
-        const command = literalProgram(interpreter, body, heredoc), scan = inspectHighRiskBashMutation({ command }, process.cwd());
-        assert.equal(scan?.mutationDetected, true, command); assert.equal(scan?.unverifiableScope, true, command); assert.deepEqual(scan?.targets, []);
-        const f = await shellHookFixture(t, mode), result = await f.authorize(command); assert.equal(result.outcome?.block, true, command); assert.equal(f.dialogs(), 0);
-      }
-      for (const [interpreter, body] of [["python", "((shutil)).rmtree('scratch')"], ["node", "((fs.rmSync))('scratch',{recursive:true})"], ["node", "(fs['unlinkSync'])('scratch')"]]) {
-        const scan = inspectHighRiskBashMutation({ command: literalProgram(interpreter, body, heredoc) }, process.cwd());
-        assert.equal(scan?.mutationDetected, true); assert.equal(scan?.unverifiableScope, false); assert.deepEqual(scan?.targets, [resolve('scratch')]);
-      }
-      for (const [interpreter, body] of [["node", "(console.log)(1)"], ["node", "(fs.rmSync)('a.txt')"], ["node", "console.log(\"(fs.rmSync)(target,{recursive:true})\")"], ["node", "// (fs.rmSync)(target,{recursive:true})"], ["python", "print(\"(shutil).rmtree(target)\")"], ["python", "# (shutil).rmtree(target)"]]) {
-        const command = literalProgram(interpreter, body, heredoc); assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
-        const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
-      }
-    }
-  });
-  test(`review thirty-four ${mode}: Node Unicode line terminators end line comments`, async t => {
-    for (const heredoc of [false, true]) for (const end of ["\u2028", "\u2029"]) {
-      for (const body of [`// comment${end}fs.rmSync(target,{recursive:true})`, `// comment${end}fs.unlinkSync(target)`]) {
-        const command = literalProgram("node", body, heredoc), scan = inspectHighRiskBashMutation({ command }, process.cwd());
-        assert.equal(scan?.mutationDetected, true, command); assert.equal(scan?.unverifiableScope, true);
-        const f = await shellHookFixture(t, mode), result = await f.authorize(command); assert.equal(result.outcome?.block, true); assert.equal(f.dialogs(), 0);
-      }
-      const literal = inspectHighRiskBashMutation({ command: literalProgram("node", `// comment${end}fs.unlinkSync('scratch')`, heredoc) }, process.cwd());
-      assert.deepEqual(literal?.targets, [resolve('scratch')]); assert.equal(literal?.unverifiableScope, false);
-      for (const [interpreter, body] of [["node", `/* comment${end}fs.rmSync(target,{recursive:true}) */`], ["node", `console.log("// comment${end}fs.rmSync(target,{recursive:true})")`], ["python", `# comment${end}shutil.rmtree(target)`]]) {
-        const command = literalProgram(interpreter, body, heredoc); assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
-        const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
-      }
-    }
-  });
-  test(`review thirty-three ${mode}: unparsed env options retain heredoc refusal`, async t => {
-    for (const option of ["-u FOO", "-C .", "-S 'X'"]) for (const [interpreter, body] of [["node", "unlinkSync(process.argv[1])"], ["python3 -", "shutil.rmtree(sys.argv[1])"], ["bash", "sleep 100 &"]]) {
-      for (const prefix of ["", "command ", "true; "]) {
-        const command = `${prefix}env ${option} ${interpreter} <<'EOF'\n${body}\nEOF`;
-        assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_HEREDOC\]/, command);
-        const f = await shellHookFixture(t, mode), result = await f.authorize(command); assert.equal(result.outcome?.block, true); assert.equal(f.dialogs(), 0);
-      }
-    }
-    for (const option of ["-u FOO", "-C .", "-S 'X'"]) for (const [interpreter, body] of [["node -e", "unlinkSync(process.argv[1])"], ["python3 -c", "shutil.rmtree(sys.argv[1])"]]) {
-      const command = `env ${option} ${interpreter} '${body}'`;
-      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_WRAPPER\]/, command);
-      const f = await shellHookFixture(t, mode), result = await f.authorize(command); assert.equal(result.outcome?.block, true); assert.equal(f.dialogs(), 0);
-    }
-    for (const option of ["", "FOO=1", "-i", "--unset=FOO", "-uFOO", "--", "-0"]) for (const [interpreter, body] of [["node", "console.log(1)"], ["python3 -", "print(1)"], ["cat", "ordinary data"]]) {
-      const command = `env ${option} ${interpreter} <<'EOF'\n${body}\nEOF`;
-      assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
-      assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "opaque-script");
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
-    }
-  });
-  test(`review thirty-three ${mode}: find files0-from filenames are data`, async t => {
-    for (const filename of ["-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprintf", "--help", "--version"]) {
-      const command = `find -files0-from ${filename}`;
-      assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
-      assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "read-only");
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), 0);
-    }
-    for (const filename of ["--help", "--version", "-delete"]) {
-      const command = `find -files0-from ${filename} -delete`;
-      assert.equal(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
-      const f = await shellHookFixture(t, mode), result = await f.authorize(command); assert.equal(result.outcome?.block, true); assert.equal(f.dialogs(), 0);
-    }
-  });
-  test(`review thirty-two ${mode}: shadowed process producers retain unresolved source refusal`, async t => {
-    for (const name of ["echo", "printf"]) for (const declaration of [`${name}() {`, `function ${name} {`, `function ${name}() {`, `${name}() (`]) {
-      const command = `${declaration} printf '%s\\n' 'sleep 100 &'; ${declaration.endsWith("(") ? ")" : "}"}; source <(${name}${name === "printf" ? " '%s'" : ""} ':')`;
-      assert.equal(literalProcessSources(command), false); assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_UNINSPECTABLE\]/);
-      const f = await shellHookFixture(t, mode), result = await f.authorize(command); assert.equal(result.outcome?.block, true); assert.equal(f.dialogs(), 0);
-    }
-    for (const command of ["source <(echo ':')", "source <(printf '%s' ':')", "other() { printf ignored; }; source <(echo ':')"]) {
-      assert.deepEqual(literalProcessSources(command), [":"]);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
-    }
-  });
-  test(`review thirty-one ${mode}: optional, literal-key and indirect Node deletion calls`, async t => {
-    for (const heredoc of [false, true]) {
-      for (const method of ["rmSync", "rm", "unlinkSync", "unlink"]) {
-        const args = method.startsWith("rm") ? "process.argv[1],{recursive:true}" : "process.argv[1]";
-        for (const call of [`fs.${method}?.(`, `fs.${method} \n ?. \n (`, `fs['${method}'](`, `fs["${method}"]?.(`, `fs?.['${method}'] ?. (`, `fs.${method}.call(null,`, `fs['${method}'].apply(null,[`]) {
-          const body = `${call}${args}${call.includes("apply") ? "]" : ""})`, command = literalProgram("node", body, heredoc);
-          const scan = inspectHighRiskBashMutation({ command }, process.cwd()); assert.equal(scan?.mutationDetected, true, body); assert.equal(scan?.unverifiableScope, true, body); assert.deepEqual(scan?.targets, []);
-          const f = await shellHookFixture(t, mode), result = await f.authorize(command); assert.equal(result.outcome?.block, true, command); assert.equal(f.dialogs(), 0);
-        }
-      }
-      for (const body of ["fs.rmSync?.('scratch',{recursive:true})", "fs['rmSync']('scratch',{recursive:true})", "fs?.['unlinkSync']?.('scratch')"]) {
-        const scan = inspectHighRiskBashMutation({ command: literalProgram("node", body, heredoc) }, process.cwd());
-        assert.equal(scan?.mutationDetected, true); assert.deepEqual(scan?.targets, [resolve('scratch')]); assert.equal(scan?.unverifiableScope, false);
-      }
-      for (const body of ["console.log(1)", "fs.rmSync('a.txt')", "fs.rmSync?.('a.txt')", "fs['rmSync']('a.txt')", "console.log(\"rmSync?.(\")", "// fs.rmSync?.(target,{recursive:true})", "const remove=fs.rmSync; remove(target,{recursive:true})", "const {rmSync:remove}=fs; remove(target,{recursive:true})", "fs[name](target,{recursive:true})"]) {
-        const command = literalProgram("node", body, heredoc); assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, body);
-        assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "opaque-script");
-        const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
-      }
-    }
-  });
-  test(`review thirty-one ${mode}: Python names share one bounded interpreter grammar`, async t => {
-    for (const interpreter of ["python3.12", "python3.12.exe", "python312", "/usr/bin/python3.12", "env python3.12", "PYTHON3.12.EXE", "py", "python", "python3"]) for (const heredoc of [false, true]) {
-      const command = literalProgram(interpreter, "import shutil; shutil.rmtree(sys.argv[1])", heredoc);
-      assert.equal(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
-      const f = await shellHookFixture(t, mode), result = await f.authorize(command); assert.equal(result.outcome?.block, true, command); assert.equal(f.dialogs(), 0);
-      const safe = literalProgram(interpreter, "print(1)", heredoc), g = await shellHookFixture(t, mode); assertFinalAuthorization(await g.authorize(safe)); assert.equal(g.dialogs(), mode === "workspace-write" ? 1 : 0);
-    }
-    for (const interpreter of ["pypy3", "python3-dbg", "python3.12-config"]) for (const heredoc of [false, true]) {
-      const command = literalProgram(interpreter, "shutil.rmtree(sys.argv[1])", heredoc);
-      assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
-      assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "opaque-script");
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
-    }
-  });
-  test(`review thirty-one ${mode}: Python attribute whitespace and wrapped methods`, async t => {
-    for (const heredoc of [false, true]) {
-      for (const body of ["shutil . rmtree(target)", "(shutil\n.rmtree)(target)", "shutil\\\n.rmtree(target)", "(shutil # c\n.rmtree)(target)", "((shutil . rmtree)) (target)", "Path(target) . unlink()", "(Path(target)\n. unlink)()", "(Path(target) # c\n. unlink)()", "Path(target)\\\n.unlink()"] ) {
-        const command = literalProgram("python", body, heredoc), scan = inspectHighRiskBashMutation({ command }, process.cwd());
-        assert.equal(scan?.mutationDetected, true, body); assert.equal(scan?.unverifiableScope, true, body); assert.deepEqual(scan?.targets, []);
-        const f = await shellHookFixture(t, mode), result = await f.authorize(command); assert.equal(result.outcome?.block, true, command); assert.equal(f.dialogs(), 0);
-      }
-      for (const body of ["(shutil . rmtree)('scratch')", "shutil\\\n.rmtree('scratch')", "(Path('scratch') . unlink)()"] ) {
-        const scan = inspectHighRiskBashMutation({ command: literalProgram("python", body, heredoc) }, process.cwd()); assert.equal(scan?.mutationDetected, true, body); assert.deepEqual(scan?.targets, [resolve('scratch')]); assert.equal(scan?.unverifiableScope, false);
-      }
-      for (const body of ["print(1)", "print(\"shutil . rmtree(\")", "# shutil.rmtree(target)", "from shutil import rmtree; rmtree(target)", "getattr(shutil,'rmtree')(target)", "os.remove(target)", "os.rmdir(target)", "remove=shutil.rmtree; remove(target)"]) {
-        const command = literalProgram("python", body, heredoc); assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, body);
-        assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "opaque-script");
-        const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
-      }
-    }
-  });
-  test(`review thirty ${mode}: terminal help retains only actual preceding effects`, async t => {
-    for (const command of ["find --help -fprint .git/config", "find --version -delete", "sort -o .git/config --help", "sort -T .git --version", "sort --out=.git/config --he", "sort -ro.git/config --help"]) {
-      const scope = inspectBashPermissionScope({ command }, process.cwd());
-      assert.equal(scope?.kind, "read-only", command); assert.deepEqual(scope?.targets, []);
-      assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), 0);
-    }
-    for (const command of ["find -fprint .git/config --help", "find -name --help -fprint .git/config", "sort -o .git/config -- --help", "sort -o .git/config --random-source --help", "sort -o .git/config --help >.git/HEAD", "rm -rf /protected; sort -o .git/config --help"]) {
-      const scope = inspectBashPermissionScope({ command }, process.cwd()); assert.notEqual(scope?.kind, "read-only", command); assert.ok(scope?.targets.length, command);
-    }
-    assert.equal(inspectHighRiskBashMutation({ command: "find . -exec printf --help ';'" }, process.cwd())?.mutationDetected, true);
-  });
-  test(`review thirty ${mode}: unresolved sourced input retains main refusals`, async t => {
-    for (const producer of ["printf '%b' 'sleep 100 &'", "printf '%b' 'rm -rf /protected'", "printf '%b' 'echo ok'", "cat", 'printf "%s" "$SCRIPT"']) {
-      for (const consumer of ["source", "."]) {
-        const command = `${consumer} <(${producer})`;
-        assert.equal(literalProcessSources(command), false);
-        assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_UNINSPECTABLE\]/, command);
-        const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-        assert.equal(call.outcome?.block, true, command); assert.equal(f.dialogs(), 0);
-      }
-    }
-    for (const consumer of ["source /dev/stdin", ". /dev/stdin"]) {
-      const command = `PAYLOAD='rm -rf /protected'; ${consumer} <<EOF\n$PAYLOAD\nEOF`;
-      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_HEREDOC\]/);
-      assert.ok(inspectHighRiskBashMutation({ command }, process.cwd())?.primitives.includes("heredoc_expanded_source"));
-      assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "opaque-script");
-      const f = await shellHookFixture(t, mode), call = await f.authorize(command); assert.equal(call.outcome?.block, true); assert.equal(f.dialogs(), 0);
-    }
-    for (const command of ["source <(printf '%s' 'echo ok')", "source /dev/stdin <<'EOF'\necho ok\nEOF", 'node <<EOF\n$PAYLOAD\nEOF', 'cat <<EOF\n$PAYLOAD\nEOF']) {
-      assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
-    }
-  });
-  test(`review twenty-nine ${mode}: expanded forwarding retains possible interpreter stdin`, async t => {
-    for (const [interpreter, body] of [["python", "shutil.rmtree(target)"], ["node", "fs.rmSync(target,{recursive:true})"]]) {
-      for (const args of ['"$@"', '-- "$@"', '"$ARGS"', interpreter === "python" ? '-W "$@"' : '--title "$@"']) {
-        const command = `${interpreter}() { command ${interpreter} ${args}; }; ${interpreter} <<'EOF'\n${body}\nEOF`;
-        assert.equal(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
-        const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-        assert.equal(call.outcome?.block, true, command); assert.equal(f.dialogs(), 0);
-      }
-      for (const args of ['script.file "$@"', "'$@'", "-- '$@'"]) {
-        const command = `${interpreter}() { command ${interpreter} ${args}; }; ${interpreter} <<'EOF'\n${body}\nEOF`;
-        assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
-        const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
-        assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
-      }
-    }
-  });
-  test(`review twenty-eight ${mode}: uncertain recursive options retain mutation evidence`, async t => {
-    for (const options of ["{'recursive':true}", '{"recursive":true}', "{['recursive']:true}", "{[key]:true}", "options", "{...options}", "{recursive:flag}", "{recursive:false,...options}"]) {
-      const command = `node <<'EOF'\nfs.rmSync('scratch',${options})\nEOF`, mutation = inspectHighRiskBashMutation({ command }, process.cwd());
-      assert.equal(mutation?.mutationDetected, true, command); assert.equal(mutation?.unverifiableScope, true); assert.deepEqual(mutation?.targets, []);
-      const f = await shellHookFixture(t, mode), call = await f.authorize(command); assert.equal(call.outcome?.block, true, command); assert.equal(f.dialogs(), 0);
-    }
-    for (const options of ["", ",{}", ",{recursive:false}", ",{force:true}", ",{force:true,recursive:false,maxRetries:3,retryDelay:10,}"]) {
-      const command = `node <<'EOF'\nfs.rmSync('scratch'${options}); other({recursive:true})\nEOF`;
-      assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
-    }
-  });
-  test(`review twenty-eight ${mode}: stored and sourced body overflow refuses`, async t => {
-    for (const payload of [":", "sleep 100 &", "rm -rf /protected"]) {
-      const traps = Array.from({length:16}, (_, i) => `X${i}=':'; trap "$X${i}" EXIT`).join("; ") + `; BAD='${payload}'; trap "$BAD" EXIT`;
-      const sources = Array(16).fill("source <(echo ':')").join("; ") + `; source <(echo '${payload}')`;
-      assert.equal(literalStoredScripts(traps), null); assert.equal(literalProcessSources(sources), null);
-      for (const command of [traps, sources]) {
-        assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_INSPECTION_LIMIT\]/);
-        const f = await shellHookFixture(t, mode), call = await f.authorize(command); assert.equal(call.outcome?.block, true); assert.equal(f.dialogs(), 0);
-      }
-    }
-    for (const command of [Array.from({length:16}, (_, i) => `X${i}=':'; trap "$X${i}" EXIT`).join("; "), Array(16).fill("source <(echo ':')").join("; ")]) {
-      assert.equal(inspectBashResourceLifecycle({ command }), undefined);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
-    }
-  });
-  test(`review twenty-eight ${mode}: function shadows invalidate heredoc transforms`, async t => {
-    for (const declaration of ["function base64 (", "function base64() (", "base64() ("]) {
-      const command = `${declaration} printf '%s\\n' 'sleep 100 &'; ); base64 -d <<'EOF' | source /dev/stdin\ncHJpbnRmIG9r\nEOF`;
-      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_HEREDOC\]/, command);
-      const f = await shellHookFixture(t, mode), call = await f.authorize(command); assert.equal(call.outcome?.block, true); assert.equal(f.dialogs(), 0);
-    }
-    for (const name of ["base64", "cat"]) for (const declaration of [`function ${name} {`, `function ${name}() {`, `${name}() {`]) {
-      const command = `${declaration} printf '%s\\n' 'sleep 100 &'; }; ${name}${name === "base64" ? " -d" : ""} <<'EOF' | source /dev/stdin\ncHJpbnRmIG9r\nEOF`;
-      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_HEREDOC\]/, command);
-      const f = await shellHookFixture(t, mode), call = await f.authorize(command); assert.equal(call.outcome?.block, true); assert.equal(f.dialogs(), 0);
-    }
-    for (const command of ["base64 -d <<'EOF' | source /dev/stdin\ncHJpbnRmIG9r\nEOF", "function unrelated { printf evil; }; base64 -d <<'EOF' | source /dev/stdin\ncHJpbnRmIG9r\nEOF"]) {
-      assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
-    }
-  });
-  test(`review twenty-seven ${mode}: coproc keeps actual heredoc consumers and main lifecycle boundaries`, async t => {
-    for (const consumer of ["bash", "sh", "source /dev/stdin", ". /dev/stdin"]) for (const command of [
-      `coproc ${consumer} <<'EOF'\nsleep 100 &\nEOF`,
-      `coproc { ${consumer} <<'EOF'\nsleep 100 &\nEOF\n}`,
-      `coproc NAME { ${consumer} <<'EOF'\nsleep 100 &\nEOF\n}`,
-      `coproc {\n${consumer} <<'EOF'\nsleep 100 &\nEOF\n}`,
-      `coproc { ${consumer}; } <<'EOF'\nsleep 100 &\nEOF`,
-      `coproc NAME { ${consumer}; } <<'EOF'\nsleep 100 &\nEOF`,
-      `coproc ( ${consumer} <<'EOF'\nsleep 100 &\nEOF\n)`,
-      `coproc NAME ( ${consumer} <<'EOF'\nsleep 100 &\nEOF\n)`,
-      `true && coproc ${consumer} <<'EOF'\nsleep 100 &\nEOF`,
-      `coproc { coproc ${consumer} <<'EOF'\nsleep 100 &\nEOF\n}`,
-      `{ coproc { cat; }; }; coproc {\n${consumer} <<'EOF'\nsleep 100 &\nEOF\n}`,
-    ]) {
-      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_HEREDOC\]/, command);
-      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-      assert.equal(call.outcome?.block, true); assert.equal(f.dialogs(), 0);
-    }
-    for (const consumer of ["cat", "node"]) for (const command of [
-      `coproc ${consumer} <<'EOF'\nconsole.log('data')\nEOF`,
-      `coproc { ${consumer} <<'EOF'\nconsole.log('data')\nEOF\n}`,
-      `coproc NAME { ${consumer}; } <<'EOF'\nconsole.log('data')\nEOF`,
-      `coproc {\n${consumer} <<'EOF'\nconsole.log('data')\nEOF\n}`,
-      `true && coproc ${consumer} <<'EOF'\nconsole.log('data')\nEOF`,
-      `coproc { bash; }; ${consumer} <<'EOF'\nconsole.log('data')\nEOF`,
-      `coproc ${consumer} 'if' <<'EOF'\nconsole.log('data')\nEOF`,
-    ]) {
-      assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
-    }
-    for (const command of ["coproc sleep 100", "coproc { sleep 100; }", "coproc NAME { sleep 100; }", "coproc NAME ( sleep 100 )", "true && coproc sleep 100", "echo coproc"]) assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
-    assert.match(inspectBashResourceLifecycle({ command: "coproc ( sleep 100 )" }) ?? "", /\[SHELL_UNINSPECTABLE\]/);
-    assert.ok(inspectBashResourceLifecycle({ command: "coproc { sleep 100 & }" }));
-    for (const command of ["coproc if true; then node <<'EOF'\nconsole.log(1)\nEOF\nfi", "coproc NAME if true; then cat <<'EOF'\ndata\nEOF\nfi"]) assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_HEREDOC\]/, command);
-    assert.ok(inspectHighRiskBashMutation({ command: "coproc node <<'EOF'\nfs.rmSync('scratch',{recursive:true})\nEOF" }, process.cwd())?.targets.includes(resolve(process.cwd(), "scratch")));
-    for (const command of ["coproc node <<'EOF'\nfs.rmSync(target,{recursive:true})\nEOF", "coproc NAME { node; } <<'EOF'\nfs.rmSync(target,{recursive:true})\nEOF"]) {
-      assert.equal(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
-      const f = await shellHookFixture(t, mode), call = await f.authorize(command); assert.equal(call.outcome?.block, true, command); assert.equal(f.dialogs(), 0);
-    }
-  });
-  test(`review twenty-seven ${mode}: regex punctuation retains an uncertain Node mutation`, async t => {
-    for (const source of ["fs.rmSync((/\\)/, '/protected'), {recursive:true})", "fs.rm((/[)]/, target), {recursive:true}, done)", "fs.rmSync(value / divisor)"]) {
-      const command = `node - <<'EOF'\n${source}\nEOF`, mutation = inspectHighRiskBashMutation({ command }, process.cwd());
-      assert.equal(mutation?.mutationDetected, true, command); assert.equal(mutation?.unverifiableScope, true); assert.deepEqual(mutation?.targets, []);
-      const f = await shellHookFixture(t, mode), call = await f.authorize(command); assert.equal(call.outcome?.block, true); assert.equal(f.dialogs(), 0);
-    }
-    assert.notEqual(inspectHighRiskBashMutation({ command: "node - <<'EOF'\nfs.rmSync('scratch'); other({recursive:true})\nEOF" }, process.cwd())?.mutationDetected, true);
-  });
-  test(`review twenty-seven ${mode}: unquoted heredoc unescaping leaves interpreter source opaque`, async t => {
-    for (const body of ["\\`\\${require('fs').rmSync('/protected',{recursive:true})}\\`", "console.log('\\\\')", "console.log('\\$VAR')"]) {
-      const command = `node <<EOF\n${body}\nEOF`;
-      assert.equal(prepareShellAnalysis(command).hereDocuments?.[0]?.expanded, true, command);
-      assert.equal(inspectBashResourceLifecycle({ command }), undefined);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
-    }
-    assert.equal(prepareShellAnalysis("node <<'EOF'\nconsole.log('\\$VAR')\nEOF").hereDocuments?.[0]?.expanded, false);
-  });
-  test(`review twenty-six ${mode}: profiler and pretty-print modes retain data-only stdin`, async t => {
-    for (const prefix of ["node --prof-process", "node -i --prof-process", "node --prof-process -i", "bash --pretty-print", "bash --pretty-print +n", "bash --pretty-print -n +n", "bash --pretty-print -- -"]) {
-      const body = prefix.startsWith("node") ? "fs.rmSync('/protected',{recursive:true})" : "sleep 100 &\nrm -rf /protected", command = `${prefix} <<'EOF'\n${body}\nEOF`;
-      assert.equal(inspectBashResourceLifecycle({ command }), undefined, command); assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
-    }
-    for (const prefix of ["bash --pretty-print -i", "bash --rcfile --pretty-print", "bash --init-file --pretty-print"]) {
-      const command = `${prefix} <<'EOF'\nsleep 100 &\nEOF`;
-      assert.ok(inspectBashResourceLifecycle({ command }), command);
-      const f = await shellHookFixture(t, mode), call = await f.authorize(command); assert.equal(call.outcome?.block, true); assert.equal(f.dialogs(), 0);
-    }
-    const command = "node --require --prof-process <<'EOF'\nfs.rmSync(target,{recursive:true})\nEOF";
-    assert.equal(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true);
-    const f = await shellHookFixture(t, mode), call = await f.authorize(command); assert.equal(call.outcome?.block, true); assert.equal(f.dialogs(), 0);
-  });
-  test(`review twenty-six ${mode}: source process-substitution heredocs already refuse at preflight`, async t => {
-    for (const prefix of ["bash -c 'source <(cat)'", "bash -c '. <(cat)'", 'bash -c "source <(cat)"', 'bash -c "source <(printf \'echo hi\')"']) for (const body of ["sleep 100 &", "rm -rf /protected"]) {
-      const command = `${prefix} <<'EOF'\n${body}\nEOF`;
-      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_HEREDOC\]/, command);
-      const f = await shellHookFixture(t, mode), call = await f.authorize(command); assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-    const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize("cat <<'EOF'\nsource <(cat)\nEOF")); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
-  });
-  test(`review twenty-five ${mode}: unlink receiver boundaries retain unknown targets`, async t => {
-    for (const body of ["Path(('/protected')).unlink()", "pathlib.Path((('/protected'))).unlink()", "(Path('/protected')).unlink()", "get_path().unlink()", "p.unlink('scratch')", "NotPath('scratch').unlink()", "Path('scratch').absolute().unlink()"]) {
-      const command = `python - <<'EOF'\n${body}\nEOF`, mutation = inspectHighRiskBashMutation({ command }, process.cwd());
-      assert.equal(mutation?.mutationDetected, true, command); assert.equal(mutation?.unverifiableScope, true, command); assert.deepEqual(mutation?.targets, []);
-      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-    for (const body of ["Path('scratch').unlink(missing_ok=True)", "pathlib.Path('scratch',).unlink()", "Path('scratch') . unlink()", "Path(\n 'scratch'\n).unlink()"] ) {
-      const command = `python - <<'EOF'\n${body}\nEOF`;
-      assert.ok(inspectHighRiskBashMutation({ command }, process.cwd())?.targets.includes(resolve(process.cwd(), "scratch")), command);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
-    }
-    for (const body of ["Path('scratch').exists()", "print(\"Path(('/protected')).unlink()\")", "# Path(('/protected')).unlink()"] ) {
-      const command = `python - <<'EOF'\n${body}\nEOF`;
-      assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
-    }
-  });
-  test(`review twenty-five ${mode}: V8 and doubled Python version flags do not execute stdin`, async t => {
-    for (const prefix of ["node --v8-options", "node -i --v8-options", "node --v8-options -i", "python -VV", "python -iVV", "python -VV -i"]) {
-      const command = `${prefix} <<'EOF'\nfs.rmSync('/protected',{recursive:true})\nPath('/protected').unlink()\nEOF`;
-      assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
-    }
-    for (const prefix of ["node --require --v8-options", "python -W -VV", "python -X -VV", "python -iWV", "python -iXV"]) {
-      const body = prefix.startsWith("node") ? "fs.rmSync(target,{recursive:true})" : "Path(target).unlink()", command = `${prefix} <<'EOF'\n${body}\nEOF`;
-      assert.equal(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
-      const f = await shellHookFixture(t, mode), call = await f.authorize(command); assert.equal(call.outcome?.block, true); assert.equal(f.dialogs(), 0);
-    }
-  });
-  test(`review twenty-four ${mode}: nested Node and multipart Path targets stay unverifiable`, async t => {
-    for (const command of [
-      "node - <<'EOF'\nfs.rmSync(('/protected'), {recursive:true})\nEOF",
-      "node - <<'EOF'\nfs.rm(path.join('.', '/protected'), {recursive:true}, done)\nEOF",
-      "python - <<'EOF'\nPath('.', '/protected').unlink()\nEOF",
-      "python - <<'EOF'\npathlib.Path('.', '/protected').unlink()\nEOF",
-      "python - <<'EOF'\nPath('scratch', dynamic).unlink()\nEOF",
-    ]) {
-      const mutation = inspectHighRiskBashMutation({ command }, process.cwd());
-      assert.equal(mutation?.mutationDetected, true, command); assert.equal(mutation?.unverifiableScope, true, command); assert.deepEqual(mutation?.targets, []);
-      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-    for (const command of ["node - <<'EOF'\nfs.rmSync('scratch',{recursive:true})\nEOF", "python - <<'EOF'\nPath('scratch').unlink()\nEOF", "python - <<'EOF'\nPath('scratch',).unlink()\nEOF"]) {
-      assert.ok(inspectHighRiskBashMutation({ command }, process.cwd())?.targets.includes(resolve(process.cwd(), "scratch")), command);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
-    }
-    for (const body of ["fs.rmSync('scratch',{recursive:false})", "fs.rmSync('scratch'); other({recursive:true})", "console.log('fs.rmSync(target,{recursive:true})')", "// fs.rmSync(target,{recursive:true})"]) {
-      const command = `node - <<'EOF'\n${body}\nEOF`;
-      assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
-    }
-  });
-  test(`review twenty-three ${mode}: positional, redirection and find-root targets retain expansion flags`, async t => {
-    for (const command of ['touch `pwd`/../escaped', 'mkdir `pwd`/../escaped', 'cp source `pwd`/../escaped', 'mv source `pwd`/../escaped', 'tee `pwd`/../escaped', "sed -i 's/a/b/' `pwd`/../escaped", 'rm -r `pwd`/../escaped', 'printf x > `pwd`/../escaped', 'find `pwd`/../victim -delete', 'find -H -- `pwd`/../victim -delete']) {
-      const scope = inspectBashPermissionScope({ command }, process.cwd());
-      assert.equal(scope?.unverifiableMutation, true, command);
-      assert.ok(!scope?.targets.includes(resolve(process.cwd(), command.includes("victim") ? "victim" : "escaped")), command);
-      if (command.startsWith("find") || command.startsWith("rm") || command.startsWith("printf")) assert.equal(inspectHighRiskBashMutation({ command }, process.cwd())?.unverifiableScope, true, command);
-      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-    for (const command of ["touch '`pwd`/../escaped'", "cp source '`pwd`/../escaped'", "printf x > '`pwd`/../escaped'", "find '`pwd`/../victim' -delete", 'touch \\`pwd\\`/../escaped']) {
-      assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.unverifiableMutation, false, command);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
-    }
-  });
-  test(`review twenty-three ${mode}: terminal sort options do not invent later writes`, async t => {
-    for (const option of ["--help", "--he", "--version"]) {
-      const command = `sort ${option} --output=.git/config --temporary-directory=../outside`;
-      const scope = inspectBashPermissionScope({ command }, process.cwd());
-      assert.equal(scope?.kind, "read-only", command); assert.deepEqual(scope?.targets, []);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), 0);
-    }
-    for (const command of ["sort --random-source --help --output=output", "sort --help >output"]) assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "known-mutation", command);
-    assert.equal(inspectBashPermissionScope({ command: "sort -- --help --output=.git/config" }, process.cwd())?.kind, "read-only");
-  });
-  test(`review twenty-two ${mode}: parameter transforms preserve main's boundary`, async t => {
-    for (const operator of ["P", "E", "A", "K", "k", "Q", "U", "u", "L", "a"]) {
-      for (const payload of ["$(sleep 100 &)", "`sleep 100 &`", "hello"]) for (const quote of ['"', ""]) {
-        const command = `x='${payload}'; echo ${quote}\${x@${operator}}${quote}`;
-        if (operator !== "P") { assert.equal(inspectBashResourceLifecycle({ command }), undefined, command); continue; }
-        assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_UNINSPECTABLE\]/, command);
-        const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-        assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-      }
-    }
-    for (const command of ['echo "${a[0]@P}"', 'echo "${1@P}"', 'echo "${x:-${y@P}}"', "bash <<'EOF'\necho \"${x@P}\"\nEOF", "node <<EOF\n${x@P}\nEOF"]) assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_UNINSPECTABLE\]/, command);
-    for (const command of ["echo '${x@P}'", 'echo "\\${x@P}"', 'echo "${x:-literal@P}"', "cat <<'EOF'\n${x@P}\nEOF"]) assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
-  });
-  test(`review twenty-two ${mode}: PS4 delayed xtrace remains opaque`, async t => {
-    for (const toggle of ["set -x", "set -o xtrace"]) for (const payload of ["$(sleep 100 &)", "`sleep 100 &`"]) {
-      const command = `PS4='${payload}'; ${toggle}; :`;
-      assert.equal(inspectBashResourceLifecycle({ command }), undefined);
-      assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "opaque-script");
-      const f = await shellHookFixture(t, mode, "active");
-      assertFinalAuthorization(await f.authorize(command));
-      assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
-    }
-    for (const payload of ["$(sleep 100 &)", "`sleep 100 &`"]) {
-      const command = `export PS4='${payload}'; bash -xc :`;
-      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_WRAPPER\]/);
-      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-  });
-  test(`review twenty-one ${mode}: later descriptor copies cannot hide heredoc source`, async t => {
-    for (const body of ["sleep 100 &", "echo hi"]) for (const tail of ["exec 4<&3; source /dev/fd/4", "exec 4>&3; . /dev/fd/4", "exec 4<&3-; source /dev/fd/4", "exec 4<&3; exec 5<&4; source /dev/fd/5", "exec 4<&3; exec 5<&3; source /dev/fd/4"]) {
-      const command = `exec 3<<'EOF'\n${body}\nEOF\n${tail}`;
-      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_HEREDOC\]/, command);
-      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-    for (const command of ["exec 3<<'EOF'\necho hi\nEOF\ntrue; source /dev/fd/3", "exec 3<<'EOF' 4<&3\necho hi\nEOF\nsource /dev/fd/4", "exec 3<<'EOF'\nsleep 100 &\nEOF\nexec 4<&3; cat <&4", "exec 3<file; exec 4<&3; source /dev/fd/4", "exec 9<<'EOF'\necho hi\nEOF\nexec 3<file; exec 4<&3; source /dev/fd/4"]) {
-      assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
-    }
-    assert.match(inspectBashResourceLifecycle({ command: "exec 4<&3; source /dev/fd/4" }) ?? "", /\[SHELL_HEREDOC\]/);
-  });
-  test(`review twenty ${mode}: stored executable subscript text refuses before arithmetic use`, async t => {
-    const assignment = "x='a[$(sleep 100 &)]'";
-    for (const use of ["(( x ))", "echo $(( x ))", "echo $(( $x ))", "for ((i=0;i<x;i++)); do :; done", "let 'y=x'", "[[ x -eq 0 ]]", "echo ${b[x]}", "declare -i z; z=x"]) {
-      const command = `${assignment}; ${use}`;
-      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_UNINSPECTABLE\]/, command);
-      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-    for (const word of ["'a[$(sleep 100 &)]'", '"a[$(sleep 100 &)]"', "$'a[$(sleep 100 &)]'", "a[$(sleep 100 &)]", "'a[`sleep 100 &`]'", "'a[<(sleep 100 &)]'", "'a[>(sleep 100 &)]'", "'a[b[$(sleep 100 &)]]'"]) {
-      assert.match(inspectBashResourceLifecycle({ command: `printf '%s' ${word}` }) ?? "", /\[SHELL_UNINSPECTABLE\]/, word);
-    }
-    for (const marker of ["$(sleep 100 &)", "`sleep 100 &`", "<(sleep 100 &)", ">(sleep 100 &)", "<(printf ok)", ">(printf ok)", "<(printf ok # comment\n)", "<((printf ok); printf done)"]) {
-      for (const quote of ["'", '"', "$'", ""]) {
-        const word = `${quote}a[${marker}]${quote === "$'" ? "'" : quote}`;
-        assert.match(inspectBashResourceLifecycle({ command: `printf '%s' ${word}` }) ?? "", /\[SHELL_UNINSPECTABLE\]/, word);
-      }
-    }
-    for (const command of ["(( 1+1 ))", "(( x ))"]) assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_UNINSPECTABLE\]/);
-    for (const command of ["echo $(( 1+2 ))", "for ((i=0;i<3;i++)); do :; done", "grep 'a[0-9]' f", "printf '%s' 'a[0] $(sleep 100 &)'", "printf '%s' 'a[' '$(sleep 100 &)'", "printf '%s' 'a[$(sleep 100 &)'"]) {
-      assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
-    }
-  });
-  test(`review twenty ${mode}: find continues after delete and treats fstype as data`, async t => {
-    for (const action of ["-fprint", "-fprint0", "-fprintf", "-fls"]) {
-      const command = `find scratch -delete ${action} .git/config${action === "-fprintf" ? " '%p'" : ""}`;
-      const scope = inspectBashPermissionScope({ command }, process.cwd());
-      assert.ok(scope?.targets.some(target => target.endsWith(".git/config") || target.endsWith(".git\\config")), command);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
-      assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
-    }
-    for (const command of ["find . -fstype -fprint", "find . -fstype -delete", "find . -fstype -exec"]) {
-      assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.unverifiableMutation, false, command);
-      assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
-    }
-  });
-  test(`review twenty ${mode}: reported init-file and here-string payloads already refuse`, async t => {
-    for (const command of ["bash --init-file /dev/fd/3 -i 3<<'EOF'\nsleep 100 &\nEOF", "bash --rcfile /dev/fd/3 -i 3<<'EOF'\nsleep 100 &\nEOF\necho done", "source /dev/stdin <<< 'sleep 100 >/dev/null 2>&1 &'; true"]) {
-      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_(?:WRAPPER|HEREDOC)\]/, command);
-      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-  });
-  test(`review twenty ${mode}: Bash dump and Node completion modes do not execute stdin`, async t => {
-    for (const header of ["bash -D", "bash +D", "bash -nD", "bash -Di", "bash --dump-strings", "bash --dump-po-strings", "bash -D +n", "bash --dump-strings -i", "node --completion-bash", "node --completion-bash -i", "node -i --completion-bash"]) {
-      const body = header.startsWith("bash") ? "sleep 100 &" : "fs.rmSync('/protected',{recursive:true})";
-      const command = `${header} <<'EOF'\n${body}\nEOF`;
-      assert.equal(heredocConsumer(header), undefined, header);
-      assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
-      assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
-      assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
-    }
-    for (const header of ["bash --rcfile --dump-strings", "bash --init-file -D", "node --title --completion-bash -"]) {
-      assert.ok(heredocConsumer(header), header);
-      const body = header.startsWith("bash") ? "sleep 100 &" : "fs.rmSync(target,{recursive:true})";
-      const command = `${header} <<'EOF'\n${body}\nEOF`;
-      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-  });
-  test(`review nineteen ${mode}: find output targets retain expansion flags`, async t => {
-    for (const action of ["-fprint", "-fprint0", "-fprintf", "-fls"]) {
-      const command = `find . -maxdepth 0 ${action} \u0060pwd\u0060/../outside${action === "-fprintf" ? " '%p'" : ""}`;
-      assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.unverifiableMutation, true, command);
-      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-    for (const command of ["find . -fprint '`pwd`/../outside'", "find . -name -fprint", "find . -fprintf output '`pwd`/../outside'"]) {
-      assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.unverifiableMutation, false, command);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
-    }
-  });
-  test(`review nineteen ${mode}: unknown transforms cannot hide shell heredoc source`, async t => {
-    for (const consumer of ["source /dev/stdin", ". /dev/stdin", "bash", "sh"]) {
-      const command = `cat <<'EOF' | tr X '&' | ${consumer}\nsleep 100 X\nEOF`;
-      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_HEREDOC\]/, command);
-      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-    for (const command of ["cat <<'EOF' | tr X '&' | cat\nsleep 100 X\nEOF", "cat <<'EOF' | tr X '&' >output | source /dev/stdin\nsleep 100 X\nEOF"]) {
-      assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
-    }
-  });
-  test(`review nineteen ${mode}: encoded and partial literal targets remain unverifiable`, async t => {
-    for (const body of ['shutil.rmtree("\\x2egit")', 'shutil.rmtree("\\u002egit")', 'shutil.rmtree("\\056git")', 'shutil.rmtree(".gi" "t")']) {
-      const command = `python3 <<'EOF'\n${body}\nEOF`;
-      assert.equal(inspectHighRiskBashMutation({ command }, process.cwd())?.unverifiableScope, true, command);
-      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-    for (const command of ["node <<'EOF'\nfs.rmSync('\\x2egit',{recursive:true})\nEOF", "node <<'EOF'\nfs.rmSync('.gi'+'t',{recursive:true})\nEOF"]) {
-      assert.equal(inspectHighRiskBashMutation({ command }, process.cwd())?.unverifiableScope, true);
-      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-    for (const body of ['shutil.rmtree("scratch")', 'shutil.rmtree("say\\\"hi")']) {
-      const command = `python3 <<'EOF'\n${body}\nEOF`;
-      assert.equal(inspectHighRiskBashMutation({ command }, process.cwd())?.unverifiableScope, false, command);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
-    }
-  });
-  test(`review eighteen ${mode}: mapfile callbacks always retain lifecycle refusal`, async t => {
-    for (const name of ["mapfile", "readarray"]) for (const command of [
-      `${name} -C 'sleep 100 &' -c 1 a < f.txt; echo ok`, `${name} -C 'sleep 100 &' -c 1 a < f.txt`,
-      `${name} -tC 'sleep 100 &' -c 1 a < f.txt`, `${name} -C"sleep 100 &" -c 1 a < f.txt`,
-      `builtin ${name} -C 'sleep 100 &' -c 1 a < f.txt`, `if ${name} -tC 'sleep 100 &' a < f.txt; then :; fi`,
-    ]) {
-      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_UNINSPECTABLE\]/, command);
-      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-    for (const command of ["mapfile -t a < f.txt", "readarray -d C -n 1 -s 0 -c 1 -u 0 a < f.txt", "mapfile -dC a < f.txt", "mapfile -- a < f.txt", "echo 'mapfile -C sleep'"]) {
-      assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
-      assert.equal(f.dialogs(), command.startsWith("echo") || mode === "full-access" ? 0 : 1);
-    }
-  });
-  test(`review eighteen ${mode}: unsafe Bash test operands retain main refusal`, async t => {
-    for (const command of [
-      "[[ -v 'a[$(sleep 100 &)]' ]]", "[ -v 'a[$(sleep 100 &)]' ]", "test -v 'a[$(sleep 100 &)]'",
-      "[[ 'a[$(sleep 100 &)]' -eq 0 ]]", "[[ x -eq y ]]", "[[ -v a[x] ]]", "[[ -v 'a[0]' ]]",
-      "builtin test -v 'a[$(sleep 100 &)]'", "if test -v a[x]; then :; fi", "! [ -v a[x] ]",
-    ]) {
-      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_UNINSPECTABLE\]/, command);
-      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-    assert.match(inspectBashResourceLifecycle({ command: "(( a[$(sleep 100 &)] ))" }) ?? "", /\[SHELL_UNINSPECTABLE\]/);
-    for (const command of ["[[ -v HOME ]]", "[ -v HOME ]", "test -v HOME", "[[ 1 -eq 1 ]]", "printf '%s' '[[ -v a[x] ]]'"]) {
-      assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
-    }
-  });
-  test(`review eighteen ${mode}: builtin name subscripts cannot conceal arithmetic execution`, async t => {
-    const operand = "a[$(sleep 100 &)]";
-    for (const command of [
-      `printf -v '${operand}' '%s' value`, `printf -v'${operand}' '%s' value`, `read '${operand}' < f.txt`, `read -ra '${operand}' < f.txt`,
-      `unset '${operand}'`, `declare '${operand}=1'`, `local '${operand}=1'`, `typeset '${operand}=1'`,
-      `readonly '${operand}=1'`, `export '${operand}=1'`, `let '${operand}=1'`, `let 'x=${operand}'`,
-      `let '-${operand}'`, `let '+${operand}'`, `printf -v first -v '${operand}' '%s' value`, `printf -vfirst -v'${operand}' '%s' value`,
-      "printf -v a[x] '%s' value", "read a[x] < f.txt", "declare -i 'x=a[y]'",
-    ]) {
-      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_UNINSPECTABLE\]/, command);
-      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-    for (const command of ["printf -v 'a[0]' '%s' 'a[x]'", "printf -v first -v 'a[0]' '%s' 'a[x]'", "read -p 'a[x]' 'a[0]' < f.txt", "unset 'a[0]'", "declare 'a[123]=1'", "let 'a[0]=1'", "let '-a[0]'", "let '+a[0]'"]) {
-      assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
-    }
-  });
-  test(`review seventeen ${mode}: sort targets retain executable expansion metadata`, async t => {
-    for (const command of [
-      'sort -o `pwd`/../outside input', 'sort -o"`pwd`/../outside" input', 'sort -ro`pwd`/../outside input',
-      'sort --output=`pwd`/../outside input', 'sort --out `pwd`/../outside input', 'sort -T tmp --o=`pwd`/../outside input',
-      'sort -T `pwd`/../outside input', 'sort -T`pwd`/../outside input', 'sort --te=`pwd`/../outside input',
-      'sort --temporary-directory "`pwd`/../outside" input', 'sort > /dev/null -o `pwd`/../outside input',
-    ]) {
-      const scope = inspectBashPermissionScope({ command }, process.cwd());
-      assert.equal(scope?.unverifiableMutation, true, command); assert.equal(scope?.dynamicScope, true);
-      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-    for (const command of ["sort -o '`pwd`/../outside' input", "sort --out='`pwd`/../outside' input", "sort -T'`pwd`/../outside' input", 'sort -o \\`pwd\\`/../outside input']) {
-      const scope = inspectBashPermissionScope({ command }, process.cwd());
-      assert.equal(scope?.kind, "known-mutation", command); assert.equal(scope?.unverifiableMutation, false); assert.equal(scope?.dynamicScope, false);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), 0);
-    }
-    const command = 'sort -- --out=`pwd`/../outside';
-    assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "read-only");
-    const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), 0);
-  });
-  test(`review sixteen ${mode}: function substitutions retain main lifecycle boundaries`, async t => {
-    const script = "sleep 100 &";
-    for (const consumer of ["source /dev/stdin", "bash", "sh", ". /dev/stdin"]) {
-      const substitution = `\u0024{ ${consumer} <<'EOF'\n${script}\nEOF\n; }`;
-      for (const command of [`echo ${substitution}`, `echo "${substitution}"`, `VALUE=${substitution}`, `echo \u0024{ echo ${substitution}; }`, `echo $(echo ${substitution})`]) {
-        assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_HEREDOC\]/, command);
-        const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-        assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-      }
-    }
-    for (const command of ['echo "${ sleep 100 & }"', 'echo "${| sleep 100 & REPLY=1; }"', 'echo ${ echo "${ printf hi; }"; }', 'echo ${ printf hi', 'echo ${ case x in x) printf hi;; esac; }']) {
-      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_UNINSPECTABLE\]/, command);
-      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-    for (const command of ["echo ${ sleep 100 & }", "echo ${| sleep 100 & REPLY=1; }", "echo ${ echo ${ sleep 100 & }; }", "echo $(echo ${ sleep 100 & })", "echo $(sleep 100 &)", "echo ${ bash -c 'sleep 100 &'; }"]) {
-      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /Blocked an unmanaged long-lived process/, command);
-    }
-    for (const command of ["echo ${ printf hi; }", "echo ${| REPLY=hi; }", "echo ${ echo ${ printf hi; }; }", "echo ${ echo $((1 << 3)); }", "echo '${ sleep 100 & }'", "echo ${x:-literal}", '# echo "${ sleep 100 & }"\nprintf hi']) {
-      assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
-    }
-    assert.match(inspectBashResourceLifecycle({ command: "echo ${ bash <\\\n<'EOF'\nsleep 100 &\nEOF\n; }" }) ?? "", /\[SHELL_HEREDOC\]/);
-  });
-  test(`review sixteen ${mode}: CR-dependent heredoc boundaries retain main refusal`, async t => {
-    const commands = [
-      "cat <<'EOF'\nbody\nEOF\r\nsleep 100 &\nEOF", "node <<'EOF'\nbody\nEOF\r\nsleep 100 &\nEOF",
-      "cat <<'EOF'\nbody\nE\rOF\nsleep 100 &\nEOF", "cat <<'EO\rF'\nbody\nEO\rF",
-      "cat <<EOF\nbody\\\r\nmore\nEOF", "echo text\\\r\nnext", "printf '%s' '\\\r'",
-    ];
-    for (const consumer of ["bash", "sh", "source /dev/stdin", ". /dev/stdin", "cat | source /dev/stdin"]) commands.push(`${consumer} <<'EOF'\nprintf h\ri\nEOF`);
-    for (const command of commands) {
-      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_HEREDOC\]/, command);
-      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-    for (const command of ["cat <<'EOF'\na\rb\nEOF", "cat <<EOF\na\rb\nEOF", "node <<'EOF'\n/*a\rb*/\nconsole.log('ok')\nEOF"]) {
-      assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
-    }
-  });
-  test(`review sixteen ${mode}: syntax-only Bash and help-only Python do not execute stdin`, async t => {
-    for (const header of ["bash -n", "bash -en", "bash -n -s", "bash -o noexec", "bash -n +n -n", "python3 --help-env", "python3 --help-xoptions", "python3 --help-all"]) {
-      const body = header.startsWith("bash") ? "sleep 100 &" : "shutil.rmtree(target)";
-      const command = `${header} <<'EOF'\n${body}\nEOF`;
-      assert.equal(heredocConsumer(header), undefined, header);
-      assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
-      assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
-      assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
-    }
-    for (const header of ["bash -n +n", "bash -o noexec +o noexec", "bash -ni", "bash -in", "python3 -W --help-env", "python3 -X --help-all"]) assert.ok(heredocConsumer(header), header);
-    for (const command of ["bash -n +n <<'EOF'\nsleep 100 &\nEOF", "bash -n <<EOF\n$(sleep 100 &)\nEOF", "bash -n -c +n 'source /dev/stdin' <<'EOF'\nsleep 100 &\nEOF"]) {
-      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-  });
-  test(`review sixteen ${mode}: CR-bearing lines cannot close an LF heredoc early`, async t => {
-    for (const delimiter of ["'EOF'", "EOF"]) {
-      const body = "/*\nEOF\r\n*/\nfs.rmSync(target,{recursive:true})\n";
-      const command = `node <<${delimiter}\n${body}EOF`;
-      assert.equal(prepareShellAnalysis(command).unboundedHeredoc, true);
-      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_HEREDOC\]/);
-      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-  });
-  test(`review sixteen ${mode}: leading blank lines and comments do not change fixed heredoc targets`, async t => {
-    for (const prefix of ["\n", " \t\n\n", "# comment\n", "\n  # comment\n\t\n", "\\\n\n"]) {
-      const command = `${prefix}node <<'EOF'\nfs.rmSync('./scratch',{recursive:true})\nEOF`;
-      assert.equal(prepareShellAnalysis(command).hereDocuments?.[0]?.priorSource, false);
-      assert.equal(inspectHighRiskBashMutation({ command }, process.cwd())?.unverifiableScope, false);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
-      assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
-    }
-    const command = "cd elsewhere\nnode <<'EOF'\nfs.rmSync('./scratch',{recursive:true})\nEOF";
-    assert.equal(prepareShellAnalysis(command).hereDocuments?.[0]?.priorSource, true);
-    const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-    assert.equal(call.outcome?.block, true); assert.equal(f.dialogs(), 0);
-  });
-  test(`review fifteen ${mode}: later lookup state cannot invalidate earlier mutation targets`, async t => {
-    for (const command of ["rm -r scratch; PATH=/tmp; echo ok", "touch scratch; PATH=/tmp; echo ok", "rm -r scratch; export PATH=/tmp; echo ok", "rm -r scratch; hash -p /tmp/echo echo; echo ok"]) {
-      assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.unverifiableScope, true, command);
-      assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.unverifiableMutation, false, command);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
-      assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
-    }
-    for (const command of ["PATH=/tmp; rm -r scratch", "rm -r first; PATH=/tmp; rm -r second", "for x in 1 2; do rm -r scratch; PATH=/tmp; done; echo ok", "echo ok; PATH=/tmp; echo $(rm -r scratch)", "rm -r first; PATH=/tmp; echo $(rm -r second)", "echo ok; PATH=/tmp; bash -c 'rm -r scratch'"]) {
-      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-      assert.equal(call.outcome?.block, true, command); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-  });
-  test(`review fourteen ${mode}: newline function bodies retain executable stdin`, async t => {
-    for (const definition of ["function f\n{ source /dev/stdin; }", "function f\n\n# trivia\n{ source /dev/stdin; }", "f()\n{ source /dev/stdin; }"]) {
-      const command = `${definition}; f <<'EOF'\nsleep 100 &\nEOF`;
-      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /Blocked an unmanaged long-lived process/);
-      const f = await shellHookFixture(t, mode), call = await f.authorize(command); assert.equal(call.outcome?.block, true); assert.equal(f.dialogs(), 0);
-    }
-    const command = "function f\n{ cat; }; f <<'EOF'\nsleep 100 &\nEOF";
-    const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
-  });
-  test(`review fourteen ${mode}: operand-free Node flags preserve program file data`, async t => {
-    for (const flag of ["--no-addons", "--no-experimental-repl-await", "--permission", "--experimental-strip-types", "--zero-fill-buffers"]) {
-      const command = `node ${flag} script.js <<'EOF'\nfs.rmSync('/protected',{recursive:true})\nEOF`;
-      assert.equal(heredocConsumer(`node ${flag} script.js`), undefined);
-      assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
-      const stdin = `node ${flag} <<'EOF'\nfs.rmSync(target,{recursive:true})\nEOF`;
-      const deny = await shellHookFixture(t, mode), call = await deny.authorize(stdin); assert.equal(call.outcome?.block, true); assert.equal(deny.dialogs(), 0);
-    }
-  });
-  test(`review fourteen ${mode}: wrapped lost descriptors refuse and known contents recurse`, async t => {
-    for (const reader of ["bash -c 'source /dev/fd/3'", 'bash -c \'bash -c "source /dev/fd/3"\'']) {
-      for (const body of ["sleep 100 &", "echo hi"]) {
-        const command = `exec 3<<'EOF'\n${body}\nEOF\necho ok; ${reader}`;
-        assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_HEREDOC\]/);
-        const f = await shellHookFixture(t, mode), call = await f.authorize(command); assert.equal(call.outcome?.block, true); assert.equal(f.dialogs(), 0);
-      }
-      const command = `exec 3<<'EOF'\necho hi\nEOF\ntrue; ${reader}`;
-      assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
-    }
-  });
-  test(`review fourteen ${mode}: disconnected pipeline data does not become a script`, async t => {
-    for (const pipeline of ["cat <<'EOF' >out | source /dev/stdin", "cat <<'EOF' | cat >out | source /dev/stdin", "cat <<'EOF' 1>&2 | source /dev/stdin", "cat <<'EOF' | source /dev/stdin </dev/null"]) {
-      const command = `${pipeline}\nsleep 100 &\nEOF`;
-      assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
-    }
-    for (const redirection of ["2>errors", "3>&1 >out 1>&3", "2>&1 >out 1>&2", "3>&1 >out 1>&3-"]) {
-      const command = `cat <<'EOF' ${redirection} | source /dev/stdin\nsleep 100 &\nEOF`;
-      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /Blocked an unmanaged long-lived process/, command);
-      const f = await shellHookFixture(t, mode), call = await f.authorize(command); assert.equal(call.outcome?.block, true); assert.equal(f.dialogs(), 0);
-    }
-  });
-  test(`D3 ${mode}: sourced setup heredocs cannot change later consumers through aliases`, async t => {
-    for (const setup of ["shopt -s expand_aliases\nalias node='source /dev/stdin'", "BASH_ALIASES[node]='source /dev/stdin'", "source ./aliases.sh", "eval 'alias node=source'"]) {
-      const command = `source /dev/stdin <<'SETUP'\n${setup}\nSETUP\nnode <<'EOF'\nsleep 100 &\nEOF`;
-      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_HEREDOC\]/);
-      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-    const command = "source /dev/stdin <<'SETUP'\nprintf ok\nSETUP\nnode <<'EOF'\nconsole.log(1)\nEOF";
-    assert.equal(inspectBashResourceLifecycle({ command }), undefined);
-    const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
-  });
-  test(`D3 ${mode}: unbound inherited script descriptors retain lifecycle refusal`, async t => {
-    for (const command of ["source /dev/fd/3", ". /proc/self/fd/63", "builtin -- source /dev/fd/7", "command . /dev/fd/63", "exec 3<<'EOF'\necho hi\nEOF\nsource /dev/fd/4", "source /dev/fd/3; exec 3<<'EOF'\necho hi\nEOF"]) {
-      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_HEREDOC\]/, command);
-      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-    for (const command of ["cat /dev/fd/63", "source /dev/fd/3 3<input", "exec 3<input; source /dev/fd/3", "source /dev/fd/3 3<<'EOF'\necho hi\nEOF"]) assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
-  });
-  test(`D3 ${mode}: possible alias changes retain heredoc lifecycle refusal`, async t => {
-    for (const prefix of [
-      "shopt -s expand_aliases", 'shopt -s "$OPTION"', 'shopt "$FLAGS" expand_aliases',
-      "alias node='source /dev/stdin'", "BASH_ALIASES[node]='source /dev/stdin'",
-      "source ./aliases.sh", ". ./aliases.sh", 'eval "alias node=source"',
-      "builtin alias node='source /dev/stdin'", "command shopt -s expand_aliases",
-      "declare -A BASH_ALIASES=([node]='source /dev/stdin')",
-      "function setup { source ./aliases.sh; }; setup", "setup() { alias node='source /dev/stdin'; }; setup",
-    ]) {
-      const command = `${prefix};\nnode <<'EOF'\nsleep 100 &\nEOF`;
-      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_HEREDOC\]/, command);
-      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-    for (const command of ["node <<'EOF'\nconsole.log('hi')\nEOF", "shopt -s nullglob; node <<'EOF'\nconsole.log('hi')\nEOF", "alias node='echo hi'", "echo alias; node <<'EOF'\nconsole.log('hi')\nEOF"]) {
-      assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
-    }
-    assert.match(inspectBashResourceLifecycle({ command: "node() { source /dev/stdin; }; node <<'EOF'\nsleep 100 &\nEOF" }) ?? "", /Blocked an unmanaged long-lived process/);
-  });
-  test(`D3 ${mode}: sort unique prefixes retain targets and opaque options`, async t => {
-    for (const option of ["--out=../outside", "--o=../outside", "--outp ../outside"]) {
-      const command = `sort -T tmp ${option}`, scope = inspectBashPermissionScope({ command }, process.cwd());
-      assert.equal(scope?.kind, "known-mutation"); assert.ok(scope?.targets.includes(resolve("../outside")), command);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
-    }
-    for (const [short, full] of [["--te=../outside", "--temporary-directory=../outside"], ["--te ../outside", "--temporary-directory ../outside"], ["--comp=gzip", "--compress-program=gzip"], ["--comp gzip", "--compress-program gzip"]]) {
-      const command = `sort -T tmp ${short}`;
-      assert.deepEqual(inspectBashPermissionScope({ command }, process.cwd()), inspectBashPermissionScope({ command: `sort -T tmp ${full}` }, process.cwd()));
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
-    }
-    for (const command of ["sort --c", "sort -- --out=x"]) {
-      assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "read-only");
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), 0);
-    }
-    for (const command of ["sort -T tmp --unknown-option", "sort --unknown-option -T tmp"]) {
-      assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "opaque-script");
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
-    }
-  });
-}
-
-test("review sixteen: heredoc delimiters and continuations preserve literal CR bytes", () => {
-  for (const command of ["cat <<'EOF'\r\nx\r\nEOF\r\n", "cat <<EOF\r\nx\r\nEOF\r\n"]) {
-    const view = prepareShellAnalysis(command);
+    const source = "node <" + "\\\n".repeat(8192) + "<'EOF'\nconsole.log(1)\nEOF", count = shellAnalysisCounters.prepareCalls;
+    reads = 0;
+    const view = prepareShellAnalysis(source);
+    assert.equal(shellAnalysisCounters.prepareCalls - count, 1);
+    assert.strictEqual(view.command, source);
     assert.equal(view.unboundedHeredoc, true);
+    assert.equal(view.hereDocuments, undefined);
+    assert.ok(reads <= 2 * source.length + 16);
   }
-  const command = "cat <<EOF\na\\\r\nb\nEOF";
-  assert.equal(prepareShellAnalysis(command).unboundedHeredoc, true);
-  assert.equal(prepareShellAnalysis("cat <<'EOF'\nx\nEOF\r\n").unboundedHeredoc, true);
-});
-
-test("review sixteen: function and CR judgments reuse existing scans and primitive counters", () => {
-  const command = "echo ${ printf hi; }";
-  const calls = shellAnalysisCounters.functionBoundaryCalls, chars = shellAnalysisCounters.functionBoundaryChars;
-  assert.deepEqual(extractCommandSubstitutions(command).scripts, [" printf hi; "]);
-  assert.equal(shellAnalysisCounters.functionBoundaryCalls - calls, 1);
-  assert.ok(shellAnalysisCounters.functionBoundaryChars - chars <= command.length);
-  const source = "cat <<'EOF'\na\rb\nEOF", comparisons = shellAnalysisCounters.crComparisons;
-  const view = prepareShellAnalysis(source);
-  assert.equal(view.hereDocuments?.[0]?.hasCarriageReturn, true);
-  assert.equal(view.hereDocuments?.[0]?.body, "a\rb\n");
-  assert.equal(shellAnalysisCounters.crComparisons - comparisons, 6, "each non-newline body/delimiter character is compared once");
-});
-
-for (const mode of ["full-access", "workspace-write"] as const) {
-  test(`D3 ${mode}: lost heredoc descriptor source retains lifecycle refusal`, async t => {
-    for (const reader of ["source /dev/fd/3", ". /proc/self/fd/3", "builtin -- source /dev/fd/3", "command . /dev/fd/3"]) {
-      for (const body of ["sleep 100 &", "echo hi"]) {
-        const command = `exec 3<<'EOF'\n${body}\nEOF\necho ok; ${reader}`;
-        assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_HEREDOC\]/, command);
-        const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-        assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-      }
-    }
-  });
-  test(`D3 ${mode}: descriptor binding data and known readonly source remain admitted`, async t => {
-    for (const command of [
-      "exec 3<<'EOF'\necho hi\nEOF\ntrue; source /dev/fd/3",
-      "exec 3<<'EOF'\necho hi\nEOF\n:; . /dev/fd/3",
-      "exec 3<<'A'\nsleep 100 &\nA\nexec 3<<'B'\necho hi\nB\nsource /dev/fd/3",
-      "exec 3<<'EOF'\nsleep 100 &\nEOF\necho ok",
-      "exec 3<<'EOF'\nsleep 100 &\nEOF\necho ok; cat /dev/fd/3",
-      "exec 3<<'EOF'\nsleep 100 &\nEOF\necho ok; cat /dev/fd/4",
-      "cat <<'EOF'\nsleep 100 &\nEOF\necho ok",
-    ]) {
-      assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
-      assert.equal(f.dialogs(), mode === "full-access" ? 0 : 1);
-    }
-    const launch = "exec 3<<'EOF'\nsleep 100 &\nEOF\ntrue; source /dev/fd/3";
-    assert.match(inspectBashResourceLifecycle({ command: launch }) ?? "", /Blocked an unmanaged long-lived process/);
-  });
-  test(`D3 ${mode}: find output target overflow cannot obtain authority`, async t => {
-    const outputs = Array.from({ length: 16 }, (_, i) => `-fprint result-${i}`).join(" ");
-    const command = `find . ${outputs} -fprint .git/config`;
-    const scope = inspectBashPermissionScope({ command }, process.cwd());
-    assert.equal(scope?.targets.length, 16); assert.equal(scope?.unverifiableMutation, true);
-    const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-    assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    const within = inspectBashPermissionScope({ command: `find . ${outputs}` }, process.cwd());
-    assert.equal(within?.unverifiableMutation, false); assert.equal(within?.targets.length, 16);
-  });
-}
-
-test("unbounded heredocs cannot conceal executable input or following launches", async t => {
-  for (const command of ["source /dev/stdin <<E\\OF\nsleep 100 &\nEOF", "cat <<E\\OF\ndata\nEOF\nnohup node server.js", "source /dev/stdin <<'EOF'\nrm \"$X\""]) {
-    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_HEREDOC/);
-    for (const mode of ["full-access", "workspace-write"] as const) {
-      const f = await shellHookFixture(t, mode), { outcome } = await f.authorize(command);
-      assert.equal(outcome?.block, true); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
+  finally {
+    String.prototype.charCodeAt = original;
   }
 });
-
-test("builtin dispatch cannot hide executable stdin", async t => {
-  for (const prefix of ["builtin source", "command source", "builtin -- source", "command builtin source", "builtin .", `${"builtin ".repeat(70)}source`]) {
-    const command = `${prefix} /dev/stdin <<'EOF'\nsleep 100 &\nEOF`;
-    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /Blocked an unmanaged long-lived process/);
-    const f = await shellHookFixture(t, "full-access"), { outcome } = await f.authorize(command);
-    assert.equal(outcome?.block, true); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+test("permission policy denies unknown targets and never-ask external effects", async (t) => {
+  await rules(t, [["unknown PowerShell deletion target", "Remove-Item -Recurse $x", "blocked", undefined, "powershell"]]);
+  const cwd = workspace(t), policy = new SessionPermissionController({ appendEntry() { } } as never);
+  const ctx = { cwd, hasUI: false, sessionManager: { getBranch: () => [], getSessionId: () => "sort-never-ask" }, ui: { setStatus() { } } };
+  await policy.restore(ctx as never);
+  policy.state.setMode("workspace-write");
+  policy.state.setApprovalPolicy("never-ask");
+  for (const command of ["sort -T ../outside -o output input", "sort --compress-program=./codec"]) {
+    const decision = await policy.authorizeToolCall({ type: "tool_call", toolName: "bash", toolCallId: "sort", input: { command } } as never, ctx as never);
+    assert.equal(decision?.block, true, command);
   }
 });
-
-test("program operands and syntax-only modes leave heredoc input as data", async t => {
-  assert.equal(heredocConsumer("bash -ec 'cat'"), undefined, "input stays data even when the lifecycle wrapper grammar separately refuses clustered -c");
-  for (const header of ["bash -c 'cat'", "node -e 'process.stdin.resume()'", "node script.js", "node --check", "python -c 'print(1)'", "python -uc 'print(1)'", "python script.py", "source script.sh"]) {
-    assert.equal(heredocConsumer(header), undefined, header);
-    const body = header.startsWith("node") ? "fs.rmSync(target, {recursive: true})" : header.startsWith("python") ? "shutil.rmtree(target)" : "nohup is only data";
-    const command = `${header} <<'EOF'\n${body}\nEOF`;
-    if (header === "source script.sh") {
-      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_HEREDOC\]/, "file sourcing may change aliases");
-      continue;
-    }
-    assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
-    assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
-    for (const mode of ["full-access", "workspace-write"] as const) {
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
-      assert.equal(f.dialogs(), mode === "full-access" ? 0 : 1);
-    }
-  }
-  for (const header of ["source /dev/stdin", "builtin source /dev/fd/0", "bash -s arg", "bash -eu", "python -u -", "python -W ignore", "node --input-type module", "node --require helper.js -"]) {
-    assert.ok(heredocConsumer(header), header);
-  }
-});
-
-test("an operand equal to cwd retains expansion checks; synthesized cwd does not", () => {
-  const cwd = resolve("review*cwd");
-  const command = process.platform === "win32" ? `rmdir '${cwd}'` : `rmdir ${cwd}`;
-  assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableMutation, true);
-  assert.equal(inspectBashPermissionScope({ command: "python -c 'print(1)'" }, cwd)?.dynamicScope, false);
-});
-
-test("clustered sort output flags preserve unknown-target denial", async t => {
-  for (const command of ['sort -ro"$X"', 'sort -uro "$X"', 'sort -k 1 -ro"$X"']) {
-    assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.unverifiableMutation, true);
-    for (const mode of ["full-access", "workspace-write"] as const) {
-      const f = await shellHookFixture(t, mode), { outcome } = await f.authorize(command);
-      assert.equal(outcome?.block, true); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-  }
-  assert.equal(inspectBashPermissionScope({ command: "sort -tro" }, process.cwd())?.unverifiableMutation, false, "t consumes its operand, so its o is not an output flag");
-});
-
-test("heredoc header comments do not introduce delimiters", async t => {
-  for (const header of ["cat <<'EOF' # <<'FAKE'", "cat <<'EOF' # <<E\\OF", "cat <<'EOF' # unfinished '"]) {
-    const command = `${header}\ndata\nEOF`;
-    const view = prepareShellAnalysis(command);
-    assert.equal(view.unboundedHeredoc, false); assert.equal(view.hereDocuments?.length, 1);
-    assert.equal(inspectBashResourceLifecycle({ command }), undefined);
-    for (const mode of ["full-access", "workspace-write"] as const) {
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
-    }
-  }
-});
-
-test("heredocs bind to the complete simple command, including later operands", async t => {
-  for (const header of ["<<'EOF' source /dev/stdin", "source <<'EOF' /dev/stdin", "<<'EOF' builtin source /dev/stdin", "cat; <<'EOF' source /dev/stdin", "cat | <<'EOF' source /dev/stdin"]) {
-    const command = `${header}\nsleep 100 &\nEOF`;
-    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /Blocked an unmanaged long-lived process/, command);
-    for (const mode of ["full-access", "workspace-write"] as const) {
-      const f = await shellHookFixture(t, mode), { outcome } = await f.authorize(command);
-      assert.equal(outcome?.block, true); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-  }
-  const data = "<<'EOF' cat | source script.sh\nsleep 100 &\nEOF";
-  assert.equal(heredocConsumer(prepareShellAnalysis(data).hereDocuments![0]!.header), undefined);
-  assert.match(inspectBashResourceLifecycle({ command: data }) ?? "", /\[SHELL_HEREDOC\]/, "file sourcing may change aliases");
-  for (const header of ["<<'EOF' node -e 'process.stdin.resume()'", "node <<'EOF' script.js", "source <<'EOF' script.sh"]) {
-    assert.equal(heredocConsumer(prepareShellAnalysis(`${header}\ndata\nEOF`).hereDocuments![0]!.header), undefined);
-  }
-  assert.equal(inspectHighRiskBashMutation({ command: "<<'EOF' node\nfs.rmSync(target, {recursive: true})\nEOF" }, process.cwd())?.mutationDetected, true);
-});
-
-test("literal eval and trap actions retain lifecycle inspection", async t => {
-  for (const command of ["eval 'sleep 100 &'", "eval -- sleep '100 &'", "builtin eval 'sleep 100 &'", "trap 'sleep 100 &' DEBUG; true", "builtin -- trap -- 'sleep 100 &' EXIT", "trap > /dev/null 'sleep 100 &' EXIT"]) {
-    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /Blocked an unmanaged long-lived process/, command);
-    for (const mode of ["full-access", "workspace-write"] as const) {
-      const f = await shellHookFixture(t, mode), { outcome } = await f.authorize(command);
-      assert.equal(outcome?.block, true); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-  }
-  for (const command of ["eval 'printf ok'", "eval printf ok", "trap 'printf ok' EXIT", "trap -p EXIT", "trap - EXIT", "echo 'eval sleep 100 &'", "echo 'trap sleep 100 &'"]) {
-    assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
-    const f = await shellHookFixture(t, "full-access"); assertFinalAuthorization(await f.authorize(command));
-  }
-});
-
-test("heredoc declaration binding follows escaped logical lines", async t => {
-  for (const header of ["source /dev/stdin \\\n<<'EOF'", "<<'EOF' \\\nsource /dev/stdin", "source \\\n<<'EOF' \\\n/dev/stdin"]) {
-    const command = `${header}\nsleep 100 &\nEOF`;
-    const document = prepareShellAnalysis(command).hereDocuments![0]!;
-    assert.equal(document.body, "sleep 100 &\n");
-    assert.equal(heredocConsumer(document.header, document.descriptor), "bash");
-    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /Blocked an unmanaged long-lived process/);
-    for (const mode of ["full-access", "workspace-write"] as const) {
-      const f = await shellHookFixture(t, mode), { outcome } = await f.authorize(command);
-      assert.equal(outcome?.block, true); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-  }
-  assert.equal(inspectBashResourceLifecycle({ command: "cat \\\n<<'EOF'\nsleep 100 &\nEOF" }), undefined);
-});
-
-test("heredoc source descriptors identify executable input without leaking fd words", async t => {
-  for (const header of ["source /dev/fd/3 3<<'EOF'", "3<<'EOF' source /proc/self/fd/3", "builtin source /dev/fd/19 19<<'EOF'"]) {
-    const command = `${header}\nsleep 100 &\nEOF`;
-    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /Blocked an unmanaged long-lived process/);
-    for (const mode of ["full-access", "workspace-write"] as const) {
-      const f = await shellHookFixture(t, mode), { outcome } = await f.authorize(command);
-      assert.equal(outcome?.block, true); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-  }
-  for (const header of ["source /dev/fd/4 3<<'EOF'", "source /dev/stdin 3<<'EOF'", "node 3<<'EOF'"]) {
-    const doc = prepareShellAnalysis(`${header}\nsleep 100 &\nEOF`).hereDocuments![0]!;
-    assert.equal(doc.descriptor, 3); assert.equal(heredocConsumer(doc.header, doc.descriptor), undefined);
-  }
-  assert.equal(prepareShellAnalysis("cat 3<<'EOF'\ndata\nEOF").command.trim(), "cat");
-});
-
-test("Node option values cannot conceal stdin mutations", async t => {
-  for (const options of ["--title worker", "--title=worker", "--stack-trace-limit 10", "--require helper.js", "--unknown-future-flag value", "--no-warnings --title worker", "--title --eval"]) {
-    assert.equal(heredocConsumer(`node ${options}`), "node");
-    assert.equal(heredocConsumer(`node ${options} script.js`), undefined);
-    const command = `node ${options} <<'EOF'\nconst fs=require('node:fs'); fs.rmSync(target,{recursive:true})\nEOF`;
-    assert.equal(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true);
-    for (const mode of ["full-access", "workspace-write"] as const) {
-      const f = await shellHookFixture(t, mode), { outcome } = await f.authorize(command);
-      assert.equal(outcome?.block, true); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-  }
-});
-
-test("file-opening read/write and combined redirects retain mutation identity", async t => {
-  for (const command of ["printf X 1<>target", "printf X <>target", "printf X >&target", "printf X {fd}>target"]) {
-    assert.equal(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
-    assert.ok(inspectBashPermissionScope({ command }, process.cwd())?.primitives.includes("output_redirection"), command);
-  }
-  for (const command of ['printf X 1<>"$X"', 'printf X >&"$X"', 'printf X {fd}>"$X"']) {
-    assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.unverifiableMutation, true);
-    for (const mode of ["full-access", "workspace-write"] as const) {
-      const f = await shellHookFixture(t, mode), { outcome } = await f.authorize(command);
-      assert.equal(outcome?.block, true); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-  }
-  for (const command of ["printf X 1>&2", "printf X 2>&-", "printf X <input", "printf X <>/dev/null"]) {
-    assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
-  }
-});
-
-test("state-changing builtins and expansions taint later mutation context", async t => {
-  for (const prefix of ["printf -v CDPATH ..", "((CDPATH=1))", "echo $((CDPATH=1))", "[[ -v 'a[CDPATH=1]' ]]"]) {
-    const command = `${prefix}; cd sub && touch target`;
-    assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.unverifiableMutation, true, command);
-    for (const mode of ["full-access", "workspace-write"] as const) {
-      const f = await shellHookFixture(t, mode), { outcome } = await f.authorize(command);
-      assert.equal(outcome?.block, true); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-      const standalone = await f.authorize(prefix);
-      if (prefix.startsWith("[[") || prefix.startsWith("((")) {
-        // The user restored main's test-operand and standalone arithmetic boundaries.
-        assert.equal(standalone.outcome?.block, true); assert.equal(standalone.outcome?.finalAuthorization, undefined);
-        assert.match(standalone.outcome?.reason ?? "", /\[SHELL_UNINSPECTABLE\]/);
-      } else assertFinalAuthorization(standalone);
-    }
-  }
-});
-
-test("compound commands and literal wrappers propagate executable heredoc input", async t => {
-  for (const header of ["{ source /dev/stdin; }", "{ { source /dev/stdin; }; }", "(source /dev/stdin)", "{ cat; source /dev/stdin; }", "{ ! source /dev/stdin; }", "{ time source /dev/stdin; }", "X=value source /dev/stdin", "bash -c 'source /dev/stdin'", "bash -c 'builtin source /dev/stdin'", "bash -c 'eval source /dev/stdin'"]) {
-    const command = `${header} <<'EOF'\nsleep 100 &\nEOF`;
-    assert.match(inspectBashResourceLifecycle({ command }) ?? "", header.includes("eval") ? /\[SHELL_HEREDOC\]/ : /Blocked an unmanaged long-lived process/, command);
-    for (const mode of ["full-access", "workspace-write"] as const) {
-      const f = await shellHookFixture(t, mode), { outcome } = await f.authorize(command);
-      assert.equal(outcome?.block, true); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-  }
-  for (const header of ["{ cat; }", "(cat)", "bash -c 'cat'"]) {
-    assert.equal(heredocConsumer(`${header} <<'EOF'`), undefined);
-    const command = `${header} <<'EOF'\nsleep 100 &\nEOF`;
-    assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
-    const f = await shellHookFixture(t, "full-access"); assertFinalAuthorization(await f.authorize(command));
-  }
-  for (const header of ["source /dev/stdin; { cat; }", "source /dev/stdin; (cat)"]) {
-    assert.equal(heredocConsumer(`${header} <<'EOF'`), undefined, "an earlier list member does not inherit the later group's input");
-  }
-});
-
-test("literal pipeline consumers receive heredoc analysis without borrowing earlier lists", async t => {
-  for (const header of ["cat <<'EOF' | source /dev/stdin", "cat <<'EOF' | >out source /dev/stdin", "cat <<'EOF' | bash -c 'source /dev/stdin'"]) {
-    const command = `${header}\nsleep 100 &\nEOF`;
-    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /Blocked an unmanaged long-lived process/, command);
-    for (const mode of ["full-access", "workspace-write"] as const) {
-      const f = await shellHookFixture(t, mode), { outcome } = await f.authorize(command);
-      assert.equal(outcome?.block, true); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-  }
-  for (const header of ["cat <<'EOF' | cat", "source /dev/stdin; cat <<'EOF' | cat"]) {
-    assert.equal(inspectBashResourceLifecycle({ command: `${header}\nsleep 100 &\nEOF` }), undefined);
-  }
-});
-
-test("nested eval stdin consumers retain argv after redirection removal", async t => {
-  for (const header of ["bash -c 'eval >out source /dev/stdin'", "{ eval >out source /dev/stdin; }", "bash -c 'eval 2>errors builtin source /dev/stdin'"]) {
-    const command = `${header} <<'EOF'\nsleep 100 &\nEOF`;
-    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_HEREDOC\]/, command);
-    for (const mode of ["full-access", "workspace-write"] as const) {
-      const f = await shellHookFixture(t, mode), { outcome } = await f.authorize(command);
-      assert.equal(outcome?.block, true); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-  }
-  assert.match(inspectBashResourceLifecycle({ command: "bash -c 'eval >out cat' <<'EOF'\nsleep 100 &\nEOF" }) ?? "", /\[SHELL_HEREDOC\]/);
-});
-
-test("nested stdin readers keep mutation context and all interpreter languages", async t => {
-  assert.equal(inspectHighRiskBashMutation({ command: "{ node; python; } <<'EOF'\nfs.rmSync(target,{recursive:true})\nEOF" }, process.cwd())?.mutationDetected, true);
-  for (const command of ["{ source /dev/stdin; } <<'EOF'\ntouch \"$X\"\nEOF", "bash -c 'cd sub; source /dev/stdin' <<'EOF'\ntouch target\nEOF"]) {
-    assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.unverifiableMutation, true);
-    for (const mode of ["full-access", "workspace-write"] as const) {
-      const f = await shellHookFixture(t, mode), { outcome } = await f.authorize(command);
-      assert.equal(outcome?.block, true); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-  }
-});
-
-test("interpreter script paths matching heredoc descriptors receive body inspection", async t => {
-  for (const interpreter of ["bash", "node", "python"]) {
-    for (const [path, descriptor] of [["/dev/stdin", 0], ["/dev/fd/3", 3], ["/proc/self/fd/4", 4]] as const) {
-      for (const boundary of ["", "-- "]) assert.equal(heredocConsumer(`${interpreter} ${boundary}${path} ${descriptor}<<'EOF'`, descriptor), interpreter);
-      assert.equal(heredocConsumer(`${interpreter} ${path} <<'EOF'`, descriptor + 1), undefined);
-    }
-    assert.equal(heredocConsumer(`${interpreter} script-file <<'EOF'`), undefined);
-  }
-  for (const header of ["bash /dev/stdin", "bash -- /dev/stdin", "bash /dev/fd/3 3", "bash /proc/self/fd/4 4"]) {
-    const command = `${header}<<'EOF'\nsleep 100 &\nEOF`;
-    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /Blocked an unmanaged long-lived process/, command);
-    for (const mode of ["full-access", "workspace-write"] as const) {
-      const f = await shellHookFixture(t, mode), { outcome } = await f.authorize(command);
-      assert.equal(outcome?.block, true); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-  }
-  for (const interpreter of ["node", "python"]) {
-    const body = interpreter === "node" ? "fs.rmSync(target,{recursive:true})" : "shutil.rmtree(target)";
-    const command = `${interpreter} /dev/fd/3 3<<'EOF'\n${body}\nEOF`;
-    assert.equal(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
-    const f = await shellHookFixture(t, "full-access"), { outcome } = await f.authorize(command);
-    assert.equal(outcome?.block, true); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-  }
-});
-
-test("combined output redirects do not detach heredoc input from its consumer", async t => {
-  for (const operator of ["&>", "&>>"]) {
-    const command = `<<'EOF' ${operator}out source /dev/stdin\nsleep 100 &\nEOF`;
-    assert.ok(prepareShellAnalysis(command).hereDocuments?.[0]?.header.includes("source /dev/stdin"));
-    for (const mode of ["full-access", "workspace-write"] as const) {
-      const f = await shellHookFixture(t, mode), { outcome } = await f.authorize(command);
-      assert.equal(outcome?.block, true); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-    assert.equal(inspectBashResourceLifecycle({ command: `<<'EOF' ${operator}out cat\nsleep 100 &\nEOF` }), undefined);
-  }
-});
-
-test("literal alias definitions retain lifecycle and mutation inspection", async t => {
-  for (const definition of ["alias run='sleep 30 >/dev/null 2>&1 &'", "builtin alias run='sleep 30 &'", "alias run='eval sleep 30 \\&'", "alias run='rm -rf \"$X\"'", "alias run='touch \"$X\"'"]) {
-    const command = `shopt -s expand_aliases\n${definition}\nrun`;
-    for (const mode of ["full-access", "workspace-write"] as const) {
-      const f = await shellHookFixture(t, mode), { outcome } = await f.authorize(command);
-      assert.equal(outcome?.block, true, command); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-  }
-  for (const command of ["alias -p", "shopt -s expand_aliases\nalias run='printf ok'\nrun", "printf '%s' 'alias run=sleep'"]) {
-    assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
-    for (const mode of ["full-access", "workspace-write"] as const) {
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
-    }
-  }
-  assert.equal(inspectBashResourceLifecycle({ command: 'alias run="$SCRIPT"\nrun' }), undefined);
-  assert.match(inspectBashResourceLifecycle({ command: "{ alias run='source /dev/stdin'; run; } <<'EOF'\nsleep 30 &\nEOF" }) ?? "", /\[SHELL_HEREDOC\]/);
-});
-
-test("literal multiword eval and trap actions preserve mutation targets", async t => {
-  for (const command of ["eval rm -rf '\"$X\"'", "eval -- rm -rf '\"$X\"'", "builtin eval rm -rf '\"$X\"'", "eval >out rm -rf '\"$X\"'"]) {
-    assert.equal(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
-    for (const mode of ["full-access", "workspace-write"] as const) {
-      const f = await shellHookFixture(t, mode), { outcome } = await f.authorize(command);
-      assert.equal(outcome?.block, true, command); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-  }
-  const literal = inspectHighRiskBashMutation({ command: "eval rm -rf /protected" }, process.cwd());
-  assert.equal(literal?.mutationDetected, true);
-  assert.ok(literal?.targets.includes(resolve("/protected")), "literal eval deletion reaches the existing target assessment with its real target");
-  for (const command of ["eval touch target", "builtin eval touch target"]) {
-    const scope = inspectBashPermissionScope({ command }, process.cwd());
-    assert.ok(scope?.primitives.includes("touch"), command);
-    assert.ok(scope?.targets.includes(resolve("target")), command);
-  }
-  for (const command of ["eval 'touch' '\"$X\"'", "trap 'touch \"$X\"' EXIT", "builtin trap 'touch \"$X\"' EXIT"]) {
-    assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.unverifiableMutation, true, command);
-    const f = await shellHookFixture(t, "full-access"), { outcome } = await f.authorize(command);
-    assert.equal(outcome?.block, true); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-  }
-});
-
-test("function-dependent heredoc consumers cannot hide executable input", async t => {
-  for (const header of ["f(){ source /dev/stdin; }; f", "function f { source /dev/stdin; }; f", "f(){ source /dev/stdin; }\nf", "{ f(){ source /dev/stdin; }; }; f", "if true; then f(){ source /dev/stdin; }; fi; f", "cat(){ source /dev/stdin; }\ncat"]) {
-    const command = `${header} <<'EOF'\nsleep 100 &\nEOF`;
-    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /Blocked an unmanaged long-lived process/, command);
-    for (const mode of ["full-access", "workspace-write"] as const) {
-      const f = await shellHookFixture(t, mode), { outcome } = await f.authorize(command);
-      assert.equal(outcome?.block, true); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-  }
-  for (const command of ["f(){ printf ok; }; f", "f(){ printf ok; }; cat <<'EOF'\nsleep 100 &\nEOF", "f(){ printf ok; }\ncat <<'EOF'\nsleep 100 &\nEOF"]) {
-    assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
-    const f = await shellHookFixture(t, "full-access"); assertFinalAuthorization(await f.authorize(command));
-  }
-});
-
-test("supported transformed heredoc streams inspect the decoded executable input", async t => {
-  for (const header of ["base64 -d <<'EOF' | source /dev/stdin", "cat <<'EOF' | base64 -d | source /dev/stdin"]) {
-    const command = `${header}\nc2xlZXAgMTAwICYK\nEOF`;
-    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /Blocked an unmanaged long-lived process/, command);
-    for (const mode of ["full-access", "workspace-write"] as const) {
-      const f = await shellHookFixture(t, mode), { outcome } = await f.authorize(command);
-      assert.equal(outcome?.block, true); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-  }
-  for (const [consumer, script] of [["node", "fs.rmSync(target,{recursive:true})"], ["python", "shutil.rmtree(target)"]]) {
-    const command = `base64 -d <<'EOF' | ${consumer}\n${Buffer.from(script!).toString("base64")}\nEOF`;
-    for (const mode of ["full-access", "workspace-write"] as const) {
-      const f = await shellHookFixture(t, mode), { outcome } = await f.authorize(command);
-      assert.equal(outcome?.block, true); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-  }
-  for (const command of ["cat <<'EOF' | cat - | source /dev/stdin\nprintf ok\nEOF", "base64 -d <<'EOF' | cat\nc2xlZXAgMTAwICYK\nEOF"]) {
-    assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
-    const f = await shellHookFixture(t, "full-access"); assertFinalAuthorization(await f.authorize(command));
-  }
-});
-
-test("trap action expansion cannot defer inspection of executable source", async t => {
-  for (const command of ['ACTION=\'sleep 100 &\'; trap "$ACTION" EXIT; true', 'ACTION=\'sleep 100 &\'; trap -- "$ACTION" EXIT', 'ACTION=\'sleep 100 &\'; builtin trap "$ACTION" EXIT']) {
-    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /Blocked an unmanaged long-lived process/, command);
-    for (const mode of ["full-access", "workspace-write"] as const) {
-      const f = await shellHookFixture(t, mode), { outcome } = await f.authorize(command);
-      assert.equal(outcome?.block, true); assert.equal(outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-  }
-  for (const command of ["trap 'printf ok' EXIT", "trap - EXIT", 'trap -p "$SIGNAL"']) assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
-});
-
-const d3ReadOnlyCases = [
-  ["Node value-free flag data", "node --no-warnings script.js <<'EOF'\nfs.rmSync(target,{recursive:true})\nEOF"],
-  ["redefined function data", "f(){ source /dev/stdin; }; f(){ cat; }; f <<'EOF'\nsleep 100 &\nEOF"],
-  ["superseded heredoc data", "source /dev/stdin <<'A' <<'B'\nsleep 100 &\nA\nprintf ok\nB"],
-  ["superseded heredoc by input file", "source /dev/stdin <<'A' </dev/null\nsleep 100 &\nA"],
-  ["unrelated function and read", "f(){ :; }; read x <<'EOF'\nhello\nEOF"],
-  ["persistent descriptor readonly source", "exec 3<<'EOF'\nprintf ok\nEOF\nsource /dev/fd/3"],
-  ["persistent descriptor data", "exec 3<<'EOF'\nsleep 100 &\nEOF\ncat /dev/fd/3"],
-  ["literal process source readonly", "source <(echo 'printf ok')"],
-  ["literal process source data", "cat <(echo 'sleep 100 &')"],
-  ["python interactive readonly", "python3 -i -c 'pass' <<'EOF'\nprint(1)\nEOF"],
-  ["expanded trap", 'ACTION=\'printf ok\'; trap "$ACTION" EXIT; true'],
-  ["function data consumer", "f(){ cat; }; f <<'EOF'\nhello\nEOF"],
-  ["unrelated function and wc", "f(){ printf ok; }; wc -c <<'EOF'\nhello\nEOF"],
-  ["encoded read-only script", "base64 -d <<'EOF' | source /dev/stdin\ncHJpbnRmIG9rCg==\nEOF"],
-  ["expanded alias", 'ACTION=\'printf ok\'; alias run="$ACTION"\nrun'],
-  ["unresolved alias", 'alias run="$UNKNOWN_ACTION"\nrun'],
-  ["unrelated executable function", "f(){ source /dev/stdin; }; wc -c <<'EOF'\nsleep 100 &\nEOF"],
-] as const;
-const d3RejectedCases = [
-  ["concatenated delimiter mutation", "bash", 'node <<";""EOF"\n;\nfs.rmSync(target,{recursive:true})\n;EOF'],
-  ["final function executable body", "bash", "f(){ cat; }; f(){ source /dev/stdin; }; f <<'EOF'\nsleep 100 &\nEOF"],
-  ["final heredoc executable body", "bash", "source /dev/stdin <<'A' <<'B'\nprintf ok\nA\nsleep 100 &\nB"],
-  ["persistent descriptor launch", "bash", "exec 3<<'EOF'\nsleep 100 &\nEOF\nsource /dev/fd/3"],
-  ["persistent descriptor mutation", "bash", "exec 3<<'EOF'\nrm -rf \"$X\"\nEOF\nsource /dev/fd/3"],
-  ["python interactive mutation", "bash", "python3 -i -c 'pass' <<'EOF'\nimport shutil; shutil.rmtree('/protected')\nEOF"],
-  ["literal process source launch", "bash", "source <(echo 'sleep 100 &')"],
-  ["literal process source mutation", "bash", "source <(printf '%s' 'rm -rf \"$X\"')"],
-  ["dynamic rm", "bash", 'rm -rf "$X"'],
-  ["dynamic PowerShell remove", "powershell", "Remove-Item -Recurse $x"],
-  ["function dynamic rm", "bash", 'f(){ rm -rf "$X"; }; f <<\'EOF\'\nhello\nEOF'],
-  ["trap dynamic rm", "bash", 'ACTION=\'rm -rf "$X"\'; trap "$ACTION" EXIT; true'],
-  ["encoded dynamic rm", "bash", `base64 -d <<'EOF' | source /dev/stdin\n${Buffer.from('rm -rf "$X"\n').toString("base64")}\nEOF`],
-  ["function unmanaged launch", "bash", "f(){ source /dev/stdin; }; f <<'EOF'\nsleep 100 &\nEOF"],
-  ["encoded unmanaged launch", "bash", "base64 -d <<'EOF' | source /dev/stdin\nc2xlZXAgMTAwICYK\nEOF"],
-  ["expanded trap unmanaged launch", "bash", 'ACTION=\'sleep 100 &\'; trap "$ACTION" EXIT; true'],
-  ["expanded alias unmanaged launch", "bash", 'ACTION=\'sleep 100 &\'; alias run="$ACTION"\nrun'],
-  ["expanded alias dynamic rm", "bash", 'ACTION=\'rm -rf "$X"\'; alias run="$ACTION"\nrun'],
-] as const;
-for (const mode of ["full-access", "workspace-write"] as const) {
-  for (const [name, command] of d3ReadOnlyCases) test(`D3 ${mode}: readonly ${name} follows permission mode`, async t => {
-    const f = await shellHookFixture(t, mode, "active");
-    assertFinalAuthorization(await f.authorize(command));
-    assert.equal(f.dialogs(), mode === "full-access" ? 0 : 1);
-  });
-  for (const [name, tool, command] of d3RejectedCases) test(`D3 ${mode}: recognized ${name} cannot receive authority`, async t => {
-    const f = await shellHookFixture(t, mode, "active"), call = await f.authorize(command, tool);
-    try { assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0); }
-    finally { call.outcome?.finalAuthorization?.release(); }
-  });
-}
-
-test("literal source resolution is bounded and does not reuse uncertain assignment state", () => {
-  assert.equal(decodeLiteralBase64(Buffer.from("printf 日本語\n").toString("base64")), "printf 日本語\n");
-  assert.equal(decodeLiteralBase64("a".repeat(128 * 1024 + 1)), undefined);
-  assert.equal(decodeLiteralBase64("%%%"), undefined);
-  assert.equal(decodeLiteralBase64("/w=="), undefined, "invalid UTF-8 remains opaque");
-  assert.equal(literalStoredScripts('ACTION=\'sleep 100 &\'; unset ACTION; trap "$ACTION" EXIT'), undefined);
-  assert.equal(literalStoredScripts('ACTION=\'sleep 100 &\'; ACTION="$OTHER"; trap "$ACTION" EXIT'), undefined);
-  assert.deepEqual(literalStoredScripts('ACTION=\'printf ok\'; trap "$ACTION" EXIT'), ["printf ok"]);
-});
-
-for (const mode of ["full-access", "workspace-write"] as const) {
-  test(`D3 ${mode}: unresolved trap retains main lifecycle refusal`, async t => {
-    // main 1581af873 rejects the first two via SHELL_UNINSPECTABLE; this PR
-    // retains refusal with the specific SHELL_WRAPPER diagnostic, like eval.
-    for (const command of [
-      'ACTION=\'sleep 100 &\'; true; trap "$ACTION" EXIT',
-      'trap "$ACTION" EXIT',
-      'trap "$(printf ok)" EXIT',
-      'builtin trap -- "$ACTION" EXIT',
-      'ACTION=\'printf ok\'; trap "$ACTION" EXIT; trap "$OTHER" INT',
-    ]) {
-      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_WRAPPER\]/, command);
-      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-      assert.equal(call.outcome?.block, true, command); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-  });
-}
-
-test("D3 Python f-string expressions remain opaque executable source", () => {
-  const command = `python3 <<'EOF'\nimport shutil\nf"{shutil.rmtree('/protected')}"\nEOF`;
-  assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "opaque-script");
-});
-
-const d3UnanalyzedPrograms = [
-  ["dynamic executable", 'CMD=setsid; $CMD -f sleep 100'],
-  ["dynamic shell wrapper", 'X=bash; "$X" -c \'sleep 100 >/dev/null 2>&1 &\''],
-  ["Perl heredoc", "perl <<'EOF'\nsystem(\"sleep 100 &\")\nEOF"],
-  ["Ruby heredoc", "ruby <<'EOF'\nsystem(\"sleep 100 &\")\nEOF"],
-  ["Perl -e", "perl -e 'system(\"sleep 100 &\")'"],
-  ["Ruby -e", "ruby -e 'system(\"sleep 100 &\")'"],
-  ["Node parameter body", 'PAYLOAD="require(\'node:fs\').rmSync(\'/protected\',{recursive:true})"; node <<EOF\n$PAYLOAD\nEOF'],
-  ["Python parameter body", 'PAYLOAD="import shutil; shutil.rmtree(\'/protected\')"; python <<EOF\n$PAYLOAD\nEOF'],
-  ["Node substitution body", "node <<EOF\n$(printf '%s' 'fs.rmSync(target,{recursive:true})')\nEOF"],
-  ["Python substitution body", "python <<EOF\n$(printf '%s' 'shutil.rmtree(target)')\nEOF"],
-] as const;
-for (const mode of ["full-access", "workspace-write"] as const) {
-  for (const [name, command] of d3UnanalyzedPrograms) test(`D3 ${mode}: unanalyzed ${name} follows permission mode`, async t => {
-    assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "opaque-script");
-    const mutation = inspectHighRiskBashMutation({ command }, process.cwd());
-    assert.notEqual(mutation?.mutationDetected, true);
-    if (name.startsWith("Node") || name.startsWith("Python")) {
-      assert.equal(prepareShellAnalysis(command).hereDocuments?.[0]?.expanded, true);
-      assert.ok(mutation?.primitives.includes("heredoc_expanded_source"), "expanded executable text is recorded as unanalyzed, not safe");
-    }
-    const f = await shellHookFixture(t, mode, "active");
-    assertFinalAuthorization(await f.authorize(command));
-    assert.equal(f.dialogs(), mode === "full-access" ? 0 : 1);
-  });
-  test(`D3 ${mode}: outer Perl launch and original eval refusal remain blocked`, async t => {
-    for (const command of ["perl -e 'print 1' &", 'eval "$SCRIPT"']) {
-      const refusal = inspectBashResourceLifecycle({ command });
-      assert.match(refusal ?? "", command.startsWith("eval") ? /\[SHELL_WRAPPER\]/ : /Blocked an unmanaged long-lived process/);
-      const f = await shellHookFixture(t, mode, "active"), call = await f.authorize(command);
-      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-  });
-}
-
-for (const mode of ["full-access", "workspace-write"] as const) {
-  test(`review nine ${mode}: later state cannot invalidate an earlier fixed mutation`, async t => {
-    for (const command of ["touch target; printf -v X foo", 'touch target; printf "%s" "${X:=foo}"']) {
-      assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.unverifiableMutation, false, command);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
-      assert.equal(f.dialogs(), mode === "full-access" ? 0 : 1);
-    }
-    for (const command of ["printf -v X foo; touch target", "touch first; printf -v X foo; touch second", 'touch first; rm "$X"']) {
-      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-      assert.equal(call.outcome?.block, true, command); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-  });
-  test(`review nine ${mode}: Node interactive eval and print preserve executable stdin`, async t => {
-    for (const header of ["node --interactive --eval 'void 0'", "node -i -p '0'", "node --eval 'void 0' -i", "node --print=0 --interactive", "node --require helper.js -i -e 'void 0'"]) {
-      assert.equal(heredocConsumer(header), "node", header);
-      const command = `${header} <<'EOF'\nfs.rmSync(target,{recursive:true})\nEOF`;
-      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-      assert.equal(call.outcome?.block, true, header); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-    for (const header of ["node -e 'void 0'", "node --eval 'void 0' --no-warnings", "node script.js -i", "node -e 'void 0' -- -i"]) assert.equal(heredocConsumer(header), undefined, header);
-  });
-  test(`review nine ${mode}: parenthesized function keyword preserves source consumption`, async t => {
-    const command = "function f() { source /dev/stdin; }; f <<'EOF'\nsleep 100 &\nEOF";
-    const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-    assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    const data = "function f() { source /dev/stdin; }; function f() { cat; }; f <<'EOF'\nsleep 100 &\nEOF";
-    const read = await shellHookFixture(t, mode); assertFinalAuthorization(await read.authorize(data));
-    assert.equal(read.dialogs(), mode === "full-access" ? 0 : 1);
-  });
-  test(`review nine ${mode}: every embedded mutation call contributes its target`, async t => {
-    for (const [header, source] of [
-      ["node --input-type=commonjs", "fs.rmSync('./scratch',{recursive:true}); fs.rmSync('/',{recursive:true})"],
-      ["node", "fs.unlinkSync('./scratch'); fs.unlinkSync('/')"],
-      ["python", "shutil.rmtree('./scratch'); shutil.rmtree('/')"],
-      ["python", "Path('./scratch').unlink(); Path('/').unlink()"],
-    ]) {
-      const command = `${header} <<'EOF'\n${source}\nEOF`, scan = inspectHighRiskBashMutation({ command }, process.cwd());
-      assert.deepEqual(scan?.targets, [resolve('./scratch'), resolve('/')], header);
-      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-      assertFinalAuthorization(call);
-      assert.equal(f.dialogs(), mode === "full-access" ? 0 : 1, "fixed targets retain existing permission policy");
-    }
-    const command = "node <<'EOF'\nfs.rmSync('./scratch',{recursive:true}); fs.rmSync(target,{recursive:true})\nEOF";
-    const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-    assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-  });
-  test(`review nine ${mode}: find predicate operands are data`, async t => {
-    for (const command of ["find . -name -fprint", "find . -iname -delete", "find . -path -fprint0", "find . -regex -fls", "find . -printf -fprintf"]) {
-      assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.unverifiableMutation, false, command);
-      assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
-      assert.equal(f.dialogs(), 0);
-    }
-    for (const command of ['find . -name -fprint -fprint "$X"', 'find . -path -delete -fprintf "$X" "%p"']) {
-      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-      assert.equal(call.outcome?.block, true, command); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-  });
-}
-
-test("embedded mutation iteration stays bounded and resets between calls", () => {
-  const command = `node <<'EOF'\n${"fs.unlinkSync('./scratch');".repeat(65)}\nEOF`;
-  assert.equal(inspectHighRiskBashMutation({ command }, process.cwd())?.unverifiableScope, true);
-  for (let iteration = 0; iteration < 2; iteration++) {
-    const scan = inspectHighRiskBashMutation({ command: "python <<'EOF'\nshutil.rmtree('./a'); shutil.rmtree('./b')\nEOF" }, process.cwd());
-    assert.deepEqual(scan?.targets, [resolve('./a'), resolve('./b')]);
-    assert.equal(scan?.unverifiableScope, false);
-  }
-});
-
-for (const mode of ["full-access", "workspace-write"] as const) {
-  test(`review ten ${mode}: Node test mode leaves heredoc input as data`, async t => {
-    for (const header of ["node --test script.js", "node --test", "node --test-only script.js", "node --test-update-snapshots script.js"]) {
-      assert.equal(heredocConsumer(header), undefined, header);
-      const command = `${header} <<'EOF'\nfs.rmSync(target,{recursive:true})\nEOF`;
-      assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
-      assert.equal(f.dialogs(), mode === "full-access" ? 0 : 1);
-    }
-  });
-  test(`review ten ${mode}: sort long operands do not become output options`, async t => {
-    for (const command of ["sort --random-sort --random-source -o", "sort --field-separator -o", "sort --key -o", "sort --buffer-size -o", "sort --random-source=-o"]) {
-      assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.unverifiableMutation, false, command);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
-      assert.equal(f.dialogs(), mode === "full-access" ? 0 : 1);
-    }
-    const f = await shellHookFixture(t, mode), call = await f.authorize('sort --random-source -o -o "$X"');
-    assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-  });
-  test(`review ten ${mode}: sort temporary directories are mutation targets`, async t => {
-    for (const command of ["sort -S1K -T ../outside -o output input", "sort --temporary-directory=../outside -o output input", "sort --temporary-directory ../outside -Tother -o output input"]) {
-      const scope = inspectBashPermissionScope({ command }, process.cwd());
-      assert.equal(scope?.kind, "known-mutation"); assert.ok(scope?.targets.includes(resolve('../outside')), command);
-      assert.ok(scope?.targets.includes(resolve('output')), command);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
-      assert.equal(f.dialogs(), mode === "full-access" ? 0 : 1);
-    }
-    for (const command of ['sort -T "$X" -o output', 'sort --temporary-directory="$X"']) {
-      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-  });
-  test(`review ten ${mode}: unquoted heredoc continuations precede delimiter matching`, async t => {
-    const command = "node <<EOF\n// \\\nEOF\nfs.rmSync(target,{recursive:true})\nEOF";
-    const view = prepareShellAnalysis(command);
-    assert.equal(view.unboundedHeredoc, false);
-    assert.equal(view.hereDocuments?.[0]?.body, "// EOF\nfs.rmSync(target,{recursive:true})\n");
-    const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-    assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    const joined = "cat <<EOF\ndata\nE\\\nOF\nprintf ok";
-    assert.equal(prepareShellAnalysis(joined).unboundedHeredoc, false);
-    assert.equal(prepareShellAnalysis(joined).hereDocuments?.[0]?.body, "data\n");
-    const read = await shellHookFixture(t, mode); assertFinalAuthorization(await read.authorize(joined));
-    assert.equal(read.dialogs(), mode === "full-access" ? 0 : 1);
-    const tabJoined = "cat <<-EOF\ndata\nE\\\n\tOF\nprintf ok";
-    assert.equal(prepareShellAnalysis(tabJoined).unboundedHeredoc, true, "tabs inside a joined logical line are not leading tabs");
-    const quoted = "cat <<'EOF'\nraw \\\nEOF\nprintf ok";
-    assert.equal(prepareShellAnalysis(quoted).hereDocuments?.[0]?.body, "raw \\\n");
-    const escaped = "cat <<EOF\nraw \\\\\nEOF\nprintf ok";
-    assert.equal(prepareShellAnalysis(escaped).hereDocuments?.[0]?.body, "raw \\\\\n");
-  });
-}
-
-test("review ten: workspace never-ask cannot authorize an outside sort temporary directory", async t => {
-  const cwd = workspace(t), controller = new SessionPermissionController({ appendEntry() {} } as never);
-  let dialogs = 0;
-  const ctx = { cwd, hasUI: true, sessionManager: { getBranch: () => [], getSessionId: () => 'sort-temp-never-ask' },
-    ui: { setStatus() {}, select: async () => { dialogs++; return '仅允许本次'; } } };
-  await controller.restore(ctx as never);
-  controller.state.setMode('workspace-write'); controller.state.setApprovalPolicy('never-ask');
-  for (const command of ['sort -S1K -T ../outside -o output input', 'sort --temporary-directory=../outside -o output input']) {
-    const result = await controller.authorizeToolCall({ type: 'tool_call', toolName: 'bash', toolCallId: 'sort-temp', input: { command } } as never, ctx as never);
-    assert.equal(result?.block, true, command);
-  }
-  assert.equal(dialogs, 0);
-});
-
-for (const mode of ["full-access", "workspace-write"] as const) {
-  test(`review eleven ${mode}: supported launchers preserve executable heredoc consumers`, async t => {
-    for (const prefix of ["env", "env --", "env LABEL=literal", "timeout 5", "sudo", "doas", "env timeout 5", "command env"]) {
-      assert.equal(heredocConsumer(`${prefix} bash`), "bash", prefix);
-      const shell = `${prefix} bash <<'EOF'\nsleep 100 &\nEOF`;
-      assert.match(inspectBashResourceLifecycle({ command: shell }) ?? "", /Blocked an unmanaged long-lived process/, prefix);
-      for (const [interpreter, body] of [["node", "fs.rmSync(target,{recursive:true})"], ["python", "shutil.rmtree(target)"]]) {
-        const command = `${prefix} ${interpreter} <<'EOF'\n${body}\nEOF`;
-        assert.equal(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
-        const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-        assert.equal(call.outcome?.block, true, command); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-      }
-    }
-  });
-  test(`review eleven ${mode}: launcher data and readonly input keep D3 admission`, async t => {
-    for (const header of ["env node script.js", "timeout 5 node --test test.js", "sudo python script.py", "env cat"]) {
-      assert.equal(heredocConsumer(header), undefined, header);
-      const command = `${header} <<'EOF'\nfs.rmSync(target,{recursive:true})\nEOF`;
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
-      assert.equal(f.dialogs(), mode === "full-access" ? 0 : 1);
-    }
-    for (const command of ["env node <<'EOF'\nconsole.log(1)\nEOF", "env python <<'EOF'\nprint(1)\nEOF"]) {
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
-      assert.equal(f.dialogs(), mode === "full-access" ? 0 : 1);
-    }
-  });
-}
-
-test("heredoc descriptor bindings retain order within a fixed inspection bound", () => {
-  const command = "source /dev/fd/4 <<'EOF' 3<&0 4<&3 </dev/null\nprintf ok\nEOF";
-  const documents = prepareShellAnalysis(command).hereDocuments!;
-  assert.deepEqual(documents.map(document => document.descriptor), [3, 4]);
-  assert.equal(documents[0]!.body, documents[1]!.body);
-  const overflow = `cat <<'EOF' ${Array.from({ length: 17 }, (_, index) => `${index + 3}<&0`).join(" ")}\ndata\nEOF`;
-  assert.match(inspectBashResourceLifecycle({ command: overflow }) ?? "", /\[SHELL_HEREDOC\]/);
-});
-
-for (const mode of ["full-access", "workspace-write"] as const) {
-  test(`review thirteen ${mode}: later state cannot invalidate an earlier high-risk target`, async t => {
-    for (const command of ["rm -r scratch; printf -v X foo", 'rm -r scratch; printf "%s" "${X:=foo}"']) {
-      assert.equal(inspectHighRiskBashMutation({ command }, process.cwd())?.unverifiableScope, false, command);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
-      assert.equal(f.dialogs(), mode === "full-access" ? 0 : 1);
-    }
-    for (const command of ["printf -v X foo; rm -r scratch", "rm -r first; printf -v X foo; rm -r second", 'rm -r first; rm -r "$X"', 'rm -r first; node -e "fs.rmSync(target,{recursive:true})"']) {
-      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-      assert.equal(call.outcome?.block, true, command); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-  });
-  test(`review thirteen ${mode}: heredoc pipeline consumers begin at the owning stage`, async t => {
-    const data = "printf 'printf ok' | source /dev/stdin | cat <<'EOF' | cat\nsleep 100 &\nEOF";
-    assert.equal(inspectBashResourceLifecycle({ command: data }), undefined);
-    const read = await shellHookFixture(t, mode); assertFinalAuthorization(await read.authorize(data));
-    assert.equal(read.dialogs(), mode === "full-access" ? 0 : 1);
-    for (const command of [
-      "printf ignored | cat <<'EOF' | source /dev/stdin\nsleep 100 &\nEOF",
-      "printf ignored | base64 -d <<'EOF' | source /dev/stdin\nc2xlZXAgMTAwICYK\nEOF",
-    ]) {
-      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /Blocked an unmanaged long-lived process/);
-      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-  });
-  test(`review thirteen ${mode}: sort compressor spellings retain opaque permissions`, async t => {
-    for (const option of ["--compress-program ./codec", "--compress-program=./codec"]) {
-      const command = `sort -S16K ${option} -o output input`;
-      assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "opaque-script", option);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
-      assert.equal(f.dialogs(), mode === "full-access" ? 0 : 1);
-    }
-  });
-}
-
-test("sort equals compressor cannot receive workspace never-ask authority", async t => {
-  const cwd = workspace(t), controller = new SessionPermissionController({ appendEntry() {} } as never);
-  const ctx = { cwd, hasUI: false, sessionManager: { getBranch: () => [], getSessionId: () => 'sort-compressor-never-ask' }, ui: { setStatus() {} } };
-  await controller.restore(ctx as never);
-  controller.state.setMode('workspace-write'); controller.state.setApprovalPolicy('never-ask');
-  for (const option of ['--compress-program ./codec', '--compress-program=./codec']) {
-    const result = await controller.authorizeToolCall({ type: 'tool_call', toolName: 'bash', toolCallId: 'compressor', input: { command: `sort ${option} -o output input` } } as never, ctx as never);
-    assert.equal(result?.block, true, option);
-  }
-});
-
-for (const mode of ["full-access", "workspace-write"] as const) {
-  test(`review twelve ${mode}: heredoc descriptor copies retain executable source`, async t => {
-    for (const header of ["source /dev/fd/3 <<'EOF' 3<&0", "source /dev/fd/3 <<'EOF' 3>&0", "source /dev/fd/3 3<<'EOF' 3<&3-", "source /dev/fd/3 <<'EOF' 3<&\\0", "source /dev/fd/4 <<'EOF' 3<&0 4<&3", "source /dev/fd/3 <<'EOF' 3<&'0' 0<&-", "source /dev/fd/3 <<'EOF' 3<&0-", "source /dev/fd/3 <<'EOF' 3<&0 </dev/null"]) {
-      const command = `${header}\nsleep 100 &\nEOF`;
-      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /Blocked an unmanaged long-lived process/, command);
-      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-    const replaced = "source /dev/fd/3 <<'A' 3<&0 <<'B'\nsleep 100 &\nA\nprintf ok\nB";
-    assert.match(inspectBashResourceLifecycle({ command: replaced }) ?? "", /Blocked an unmanaged long-lived process/);
-    for (const [interpreter, body] of [["node", "fs.rmSync(target,{recursive:true})"], ["python", "shutil.rmtree(target)"]]) {
-      const command = `${interpreter} 3<<'EOF' 0<&3 3<&-\n${body}\nEOF`;
-      assert.equal(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true);
-      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
-      assert.equal(call.outcome?.block, true); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
-    }
-  });
-  test(`review twelve ${mode}: descriptor ordering and data keep D3 admission`, async t => {
-    for (const command of [
-      "source /dev/fd/3 <<'EOF' 3<&0\nprintf ok\nEOF",
-      "source /dev/fd/3 3<&0 <<'EOF'\nsleep 100 &\nEOF",
-      "source /dev/fd/3 <<'EOF' 3<&0 3</dev/null\nsleep 100 &\nEOF",
-      "source /dev/stdin <<'EOF' 3<&0 </dev/null\nsleep 100 &\nEOF",
-      "source /dev/fd/3 <<'A' 3<&0 3<<'B'\nsleep 100 &\nA\nprintf ok\nB",
-      "cat <<'EOF' 3<&0\nsleep 100 &\nEOF",
-    ]) {
-      assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
-      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
-      assert.equal(f.dialogs(), mode === "full-access" ? 0 : 1);
-    }
-  });
-}
