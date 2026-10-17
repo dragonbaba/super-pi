@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import test from "node:test";
-import { decodeLiteralBase64, heredocConsumer, inspectBashResourceLifecycle, inspectHighRiskBashMutation, literalProcessSources, literalStoredScripts } from "../packages/extensions/resource-lifecycle-guard/core.ts";
+import { decodeLiteralBase64, heredocConsumer, heredocConsumers, heredocConsumerCounters, inspectBashResourceLifecycle, inspectHighRiskBashMutation, literalProcessSources, literalStoredScripts } from "../packages/extensions/resource-lifecycle-guard/core.ts";
 import { inspectBashPermissionScope } from "../packages/extensions/resource-lifecycle-guard/permission-bash.ts";
 import { extractCommandSubstitutions, prepareShellAnalysis, shellAnalysisCounters } from "../packages/extensions/resource-lifecycle-guard/shell-substitution.ts";
 import { shellHookFixture, assertFinalAuthorization } from "./codemode-recovery/shell-hook-fixture.ts";
@@ -11,6 +11,21 @@ import { NODE_LITERAL_METHOD_KEY_PATTERN, NODE_RM_CALL_PATTERN, NODE_UNLINK_PATT
 function literalProgram(interpreter: string, body: string, heredoc: boolean): string {
   return heredoc ? `${interpreter} <<'EOF'\n${body}\nEOF` : `${interpreter} ${interpreter === "node" ? "-e" : "-c"} '${body.replaceAll("'", "'\\''")}'`;
 }
+
+function nodeInputShapes(body: string): string[] {
+  const doc = literalProgram("node", body, true);
+  return [literalProgram("node", body, false),
+    'node -e "' + body.replaceAll("\\", "\\\\").replaceAll("`", "\\`").replaceAll("$", "\\$").replaceAll('"', '\\"') + '"',
+    'node -e "' + body.replaceAll("$", "\\$").replaceAll('"', '\\"') + '"',
+    doc, `{ ${doc}\n}`, `${doc}\n${doc}`, `node <<'EOF' && echo done\n${body}\nEOF`, `if ${doc}\nthen :; fi`];
+}
+
+test("unresolved heredoc tails count existing argv words without retained source", () => {
+  const calls = heredocConsumerCounters.tailCalls, words = heredocConsumerCounters.tailWords;
+  assert.equal(heredocConsumers("foo x node"), 8);
+  assert.equal(heredocConsumerCounters.tailCalls - calls, 1); assert.equal(heredocConsumerCounters.tailWords - words, 2);
+  assert.deepEqual(Object.keys(heredocConsumerCounters), ["tailCalls", "tailWords"]);
+});
 
 test("bounded interpreter matchers reset borrowed regex state", () => {
   for (const body of ["fs['rmSync']?.(target,{recursive:true})", "fs.rmSync.call('receiver',target,{recursive:true})", "fs.rmSync.call\u00a0('receiver',target,{recursive:true})", "fs?.[\u2000'unlinkSync']?.(target)"]) {
@@ -46,6 +61,42 @@ test("prompt checks inspect only discovered parameter heads and retain primitive
 });
 
 for (const mode of ["full-access", "workspace-write"] as const) {
+  test(`review thirty-five ${mode}: template expressions remain opaque across shell input shapes`, async t => {
+    for (const command of nodeInputShapes("`${require('fs').unlinkSync(process.argv[1])}`")) {
+      assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
+      assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
+      assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "opaque-script", command);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0, command);
+    }
+    for (const command of nodeInputShapes("require('fs').unlinkSync(process.argv[1])")) {
+      assert.equal(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
+      const f = await shellHookFixture(t, mode), result = await f.authorize(command); assert.equal(result.outcome?.block, true, command); assert.equal(f.dialogs(), 0);
+    }
+  });
+  test(`review thirty-five ${mode}: unresolved prefixes retain heredoc consumer uncertainty`, async t => {
+    for (const launcher of ["nice", "nice -n 5", "stdbuf -o0", "ionice -c3", "taskset 1", "chrt 0", "foo", "sudo -u root", "doas -u root", "sudo --user=root", "sudo -n"]) {
+      for (const [interpreter, body] of [["node", "unlinkSync(target)"], ["python3 -", "shutil.rmtree(target)"], ["bash", "sleep 100 &"]]) {
+        const command = literalProgram(`${launcher} ${interpreter}`, body, true);
+        assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_HEREDOC\]/, command);
+        const f = await shellHookFixture(t, mode), result = await f.authorize(command); assert.equal(result.outcome?.block, true, command); assert.equal(f.dialogs(), 0);
+      }
+    }
+    for (const operand of ["/usr/bin/PYTHON3.12.EXE", "python312", "PY", "/opt/NODE.EXE", "/bin/SH.EXE", "zsh", "dash", "ksh", "fish", "source", ".", '"$TOOL"', '"$@"', "$(printf node)", "*", "n?de", "[np]*", "{node,python}"]) {
+      const command = literalProgram(`foo ${operand}`, "ordinary data", true);
+      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_HEREDOC\]/, command);
+      const f = await shellHookFixture(t, mode), result = await f.authorize(command); assert.equal(result.outcome?.block, true, command); assert.equal(f.dialogs(), 0);
+    }
+    for (const prefix of ["nice cat", "nice -n 5 cat", "ionice -c3 cat", "grep x", "perl", "foo cat", "foo '$TOOL'", "foo '[np]*'", 'foo "*"', "env -u FOO cat"]) {
+      const command = literalProgram(prefix, "ordinary data", true);
+      assert.equal(inspectBashResourceLifecycle({ command }), undefined, command); assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "opaque-script");
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0, command);
+    }
+    for (const prefix of ["ionice -c3", "taskset 1", "chrt 0", "foo"]) {
+      const command = `${prefix} bash -c 'sleep 100 &'`;
+      assert.equal(inspectBashResourceLifecycle({ command }), undefined, command); assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "opaque-script");
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0, command);
+    }
+  });
   test(`review thirty-four ${mode}: parenthesized direct interpreter calls retain targets`, async t => {
     for (const heredoc of [false, true]) {
       for (const [interpreter, body] of [

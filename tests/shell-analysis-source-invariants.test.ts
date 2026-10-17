@@ -24,7 +24,7 @@ test("authorization scanners and cache methods add no callbacks, promises or Buf
   targets.get("core.ts")!.add("pythonPathArgumentOpen");
   targets.get("core.ts")!.add("coprocBodyIndex");
   targets.get("core.ts")!.add("coprocHeredocContext");
-  for (const name of ["nodeIndirectCall", "nodeLiteralMethodKeyEnd", "isCodeWhitespace", "hasUninspectableEnvLauncher", "commandTokenIndex"]) targets.get("core.ts")!.add(name);
+  for (const name of ["nodeIndirectCall", "nodeLiteralMethodKeyEnd", "isCodeWhitespace", "hasUninspectableEnvLauncher", "commandTokenIndex", "heredocConsumerKind", "uninspectableHeredocTail"]) targets.get("core.ts")!.add(name);
   for (const name of ["addPositionalTargets", "findSearchRootIndex", "inspectTokenBuffer"]) targets.get("permission-bash.ts")!.add(name);
   for (const [file, names] of targets) {
     const source = ts.createSourceFile(file, readFileSync(`packages/extensions/resource-lifecycle-guard/${file}`, "utf8"), ts.ScriptTarget.Latest, true);
@@ -101,6 +101,22 @@ test("interpreter call helpers allocate no per-call regexes, strings or containe
   assert.deepEqual(seen, names);
   for (const file of ["core.ts", "permission-bash.ts"]) assert.ok(readFileSync(`packages/extensions/resource-lifecycle-guard/${file}`, "utf8").includes("PYTHON_COMMAND_PATTERN.test("));
   assert.equal(readFileSync("packages/extensions/resource-lifecycle-guard/core.ts", "utf8").includes("PYTHON_COMMANDS"), false);
+});
+
+test("heredoc consumer fallback shares name classification without path copies or temporary containers", () => {
+  const source = ts.createSourceFile("core.ts", readFileSync("packages/extensions/resource-lifecycle-guard/core.ts", "utf8"), ts.ScriptTarget.Latest, true);
+  const names = new Set(["heredocConsumerKind", "uninspectableHeredocTail"]), seen = new Set<string>();
+  function audit(node: ts.Node): void {
+    assert.equal(ts.isNewExpression(node) || ts.isObjectLiteralExpression(node) || ts.isArrayLiteralExpression(node) || ts.isArrowFunction(node) || ts.isFunctionExpression(node) || ts.isRegularExpressionLiteral(node) || ts.isTemplateExpression(node), false, node.getText(source));
+    if (ts.isCallExpression(node)) assert.ok(ts.isPropertyAccessExpression(node.expression) ? node.expression.name.text === "test" : node.expression.getText(source) === "heredocConsumerKind", node.getText(source));
+    ts.forEachChild(node, audit);
+  }
+  for (const statement of source.statements) if (ts.isFunctionDeclaration(statement) && statement.name && names.has(statement.name.text)) { seen.add(statement.name.text); ts.forEachChild(statement.body!, audit); }
+  assert.deepEqual(seen, names);
+  for (const name of ["simpleStdinConsumers", "uninspectableHeredocTail"]) {
+    const caller = source.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === name);
+    assert.ok(caller?.getText(source).includes("heredocConsumerKind("), `${name} must share the same consumer classifier`);
+  }
 });
 
 test("descriptor origin decoding adds no strings or temporary containers", () => {

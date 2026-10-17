@@ -6,6 +6,9 @@ import {
 	DOCKER_DETACHED_PATTERN,
 	EXECUTABLE_EXPANSION_TEXT_PATTERN,
 	HEAD_COUNT_OPTION_PATTERN,
+	HEREDOC_SHELL_COMMAND_PATTERN,
+	HEREDOC_NODE_COMMAND_PATTERN,
+	HEREDOC_SOURCE_COMMAND_PATTERN,
 	LEADING_ASSIGNMENT_PATTERN,
 	LEADING_REDIRECTION_PATTERN,
 	LOOKUP_ASSIGNMENT_PATTERN,
@@ -1532,14 +1535,36 @@ function stdinScriptConsumers(segments: ShellSegment[], descriptor: number, dept
 	return consumers;
 }
 
+export const heredocConsumerCounters = { tailCalls: 0, tailWords: 0 };
+
+/** One name classification for direct consumers and unresolved argv tails.
+ * Raw argv words can include paths/case/.exe; regex test creates no path copies. */
+function heredocConsumerKind(value: string): number {
+	if (HEREDOC_SOURCE_COMMAND_PATTERN.test(value)) return 16;
+	if (HEREDOC_SHELL_COMMAND_PATTERN.test(value)) return 1;
+	if (HEREDOC_NODE_COMMAND_PATTERN.test(value)) return 2;
+	return PYTHON_COMMAND_PATTERN.test(value) ? 4 : 0;
+}
+
+/** Unknown prefix/option grammar cannot establish which later word executes.
+ * Keep data-only tails opaque; visible consumer names/expansions are uncertain. */
+function uninspectableHeredocTail(tokens: ShellSegment, start: number): number {
+	heredocConsumerCounters.tailCalls++;
+	for (let index = start; index < tokens.length; index++) {
+		heredocConsumerCounters.tailWords++;
+		if (tokens.expansions?.[index] || heredocConsumerKind(tokens[index]!)) return 8;
+	}
+	return 0;
+}
+
 function simpleStdinConsumers(tokens: ShellSegment, descriptor: number, depth: number, functions?: ShellSegment[], start = 0, sourceOnly = false): number {
 	if (depth > MAX_WRAPPER_DEPTH) return 8;
 	const coprocBody = coprocBodyIndex(tokens);
 	if (coprocBody === -2) return 8;
 	let index = start || (coprocBody >= 0 ? coprocBody : commandTokenIndex(tokens, true));
-	if (index === -2) return 8;
 	if (coprocBody >= 0 && index >= tokens.length) return 8;
-	if (index < 0 || index >= tokens.length) return 0;
+	if (index < 0) return sourceOnly ? 0 : uninspectableHeredocTail(tokens, start + 1);
+	if (index >= tokens.length) return 0;
 	while (tokens[index] === "{" || tokens[index] === "do" || tokens[index] === "then" || tokens[index] === "else" || tokens[index] === "if" || tokens[index] === "elif" || tokens[index] === "while" || tokens[index] === "until") index++;
 	if (coprocBody >= 0 && tokens[index] === "coproc") return 8;
 	index = bashPipelinePrefixEnd(tokens, index);
@@ -1575,20 +1600,20 @@ function simpleStdinConsumers(tokens: ShellSegment, descriptor: number, depth: n
 	let launchers = 0;
 	while (name === "env" || name === "sudo" || name === "doas" || name === "timeout" || name === "timeout.exe") {
 		if (++launchers > MAX_WRAPPER_DEPTH) return 8;
-		if (name === "env" && hasUninspectableEnvLauncher(tokens, index)) return 8;
+		if (name === "env" && hasUninspectableEnvLauncher(tokens, index)) return uninspectableHeredocTail(tokens, index + 1);
 		if (name === "timeout" || name === "timeout.exe") {
 			const parsed = parseTimeoutInvocation(tokens, index);
-			if (!parsed.supported) return 0;
+			if (!parsed.supported) return uninspectableHeredocTail(tokens, index + 1);
 			index = parsed.commandIndex;
 		} else {
 			index++;
 			if (tokens[index] === "--") index++;
-			if (name === "env" || name === "sudo") while (index < tokens.length && tokens[index]!.includes("=")) {
-				if (uncertainAssignment(tokens, index)) return 0;
+			if (name === "env" || name === "sudo") while (index < tokens.length && !tokens[index]!.startsWith("-") && tokens[index]!.includes("=")) {
+				if (uncertainAssignment(tokens, index)) return uninspectableHeredocTail(tokens, index);
 				index++;
 			}
 		}
-		if (!tokens[index] || tokens[index]!.startsWith("-") || tokens.expansions?.[index] || hasDynamicSyntax(tokens[index]!)) return 0;
+		if (!tokens[index] || tokens[index]!.startsWith("-") || tokens.expansions?.[index] || hasDynamicSyntax(tokens[index]!)) return uninspectableHeredocTail(tokens, index);
 		name = commandName(tokens[index]!);
 	}
 	if (name === "alias" && tokens[index] === "alias") {
@@ -1603,12 +1628,13 @@ function simpleStdinConsumers(tokens: ShellSegment, descriptor: number, depth: n
 		const script = literalEvalScript(tokens, index + 1);
 		return script === undefined ? 8 : stdinScriptConsumers(parseShellSegments(script), descriptor, depth + 1, 0, functions);
 	}
-	if (name === "source" || name === ".") {
+	const kind = heredocConsumerKind(name);
+	if (kind === 16) {
 		const operand = tokens[index + (tokens[index + 1] === "--" ? 2 : 1)];
 		return isHeredocDescriptorPath(operand, descriptor) ? 1 : 0;
 	}
-	const language = SCRIPT_WRAPPERS.has(name) ? "bash" : NODE_COMMANDS.has(name) ? "node" : PYTHON_COMMAND_PATTERN.test(name) ? "python" : undefined;
-	if (!language) return 0;
+	const language = kind === 1 ? "bash" : kind === 2 ? "node" : kind === 4 ? "python" : undefined;
+	if (!language) return uninspectableHeredocTail(tokens, index + 1);
 	if (language === "node") return nodeMayReadStdin(tokens, index + 1, descriptor) ? 2 : 0;
 	const languageMask = language === "bash" ? 1 : 4;
 	const stdinMask = descriptor !== 0 ? 0 : language === "bash" ? 1 : 4;
@@ -2260,6 +2286,13 @@ function parseShellSegments(command: string, positions = false): ShellSegment[] 
 			const expansions = tokens.expansions ??= [];
 			expansions[tokens.length] = (expansions[tokens.length] ?? 0) | 8;
 		}
+		// Preserve actual unquoted pathname expansion for unresolved heredoc argv.
+		// Reuse the existing per-word flags; quoted/escaped query text stays data.
+		if (quote === 0 && !bashDoubleBracket && (code === 42 || code === 63
+			|| code === 91 && command.charCodeAt(index + 1) !== 91 && !isBashTestWhitespace(command.charCodeAt(index + 1)))) {
+			const expansions = tokens.expansions ??= [];
+			expansions[tokens.length] = (expansions[tokens.length] ?? 0) | 16;
+		}
 		if (quote !== 0) {
 			// Decode the \n, \r and \t escapes a simple $'...' quote may contain, as Bash does,
 			// so a path operand names the real file rather than its escaped spelling.
@@ -2419,19 +2452,20 @@ function hasUninspectableEnvLauncher(tokens: readonly string[], start: number): 
 	return false;
 }
 
-function commandTokenIndex(tokens: readonly string[], inspectEnv = false): number {
+function commandTokenIndex(tokens: readonly string[], inspectHeredoc = false): number {
 	let index = 0;
 	let wrapperDepth = 0;
 	while (index < tokens.length) {
 		const name = commandName(tokens[index] ?? "");
 		if (++wrapperDepth > MAX_WRAPPER_DEPTH) return -1;
 		if (name === "sudo" || name === "doas") {
+			if (inspectHeredoc && tokens[index + 1]?.startsWith("-") && tokens[index + 1] !== "--") return index;
 			index++;
 			while (index < tokens.length && tokens[index]!.startsWith("-")) index++;
 			continue;
 		}
 		if (name === "env") {
-			if (inspectEnv && hasUninspectableEnvLauncher(tokens, index)) return -2;
+			if (inspectHeredoc && hasUninspectableEnvLauncher(tokens, index)) return index;
 			index++;
 			if (tokens[index] === "--") index++;
 			while (index < tokens.length) {
@@ -2443,7 +2477,7 @@ function commandTokenIndex(tokens: readonly string[], inspectEnv = false): numbe
 		}
 		if (name === "timeout" || name === "timeout.exe") {
 			const parsed = parseTimeoutInvocation(tokens, index);
-			if (!parsed.supported) return -1;
+			if (!parsed.supported) return inspectHeredoc ? index : -1;
 			index = parsed.commandIndex;
 			continue;
 		}

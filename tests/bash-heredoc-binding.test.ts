@@ -48,7 +48,11 @@ test("review twenty-three: a word-internal hash cannot hide a configured heredoc
   }
  }
  for (const command of ["echo $(printf x) # <<'EOF'", "(printf x)# <<'EOF'", "echo x;# <<'EOF'", "echo x \\\n# <<'EOF'"]) assert.equal(shellHeredocKind(command), 0, command);
- const admitted = await dispatch(process.cwd(), "echo $(printf x)# <<'EOF'\nhi\nEOF");
+ // Unknown-prefix heredocs with dynamic argv retain the approved conservative
+ // rule even when this particular expansion only produces an echo argument.
+ const dynamic = await dispatch(process.cwd(), "echo $(printf x)# <<'EOF'\nhi\nEOF");
+ assert.equal(dynamic.processes, 0); assert.match(dynamic.text, /\[SHELL_HEREDOC\]/);
+ const admitted = await dispatch(process.cwd(), "echo x# <<'EOF'\nhi\nEOF");
  assert.equal(admitted.result.isError, false, admitted.text); assert.equal(admitted.processes, 1); assert.equal(admitted.text.trim(), "x#");
 });
 

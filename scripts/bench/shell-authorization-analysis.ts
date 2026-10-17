@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { Session } from "node:inspector/promises";
 import { setImmediate } from "node:timers/promises";
-import { decodeLiteralBase64, inspectBashResourceLifecycle, inspectHighRiskBashMutation, literalProcessSources, literalStoredScripts } from "../../packages/extensions/resource-lifecycle-guard/core.ts";
+import { decodeLiteralBase64, heredocConsumerCounters, inspectBashResourceLifecycle, inspectHighRiskBashMutation, literalProcessSources, literalStoredScripts } from "../../packages/extensions/resource-lifecycle-guard/core.ts";
 import { inspectBashPermissionScope } from "../../packages/extensions/resource-lifecycle-guard/permission-bash.ts";
 import { ShellAnalysisOwner, shellAnalysisOwnership, MAX_ANALYSIS_BYTES, MAX_ANALYSIS_ENTRIES } from "../../packages/extensions/resource-lifecycle-guard/shell-analysis.ts";
 import { shellAnalysisCounters } from "../../packages/extensions/resource-lifecycle-guard/shell-substitution.ts";
@@ -12,6 +12,13 @@ const cwd = process.cwd(), iterations = 512, warmup = 64, samplingInterval = 409
 const literalInputs = process.argv.includes("--literal-inputs");
 const substitution = "$(grep -c -E '(class|function|const|var|let) GCSystem\\b' pixi/pixi.js)";
 const cases = literalInputs ? [
+  ["unknown-prefix-shell", "ionice -c3 bash <<'EOF'\nsleep 100 &\nEOF", 1],
+  ["unknown-prefix-versioned-python", "foo /usr/bin/PYTHON3.12.EXE <<'EOF'\nshutil.rmtree(target)\nEOF", 1],
+  ["unknown-prefix-dynamic", 'foo "$TOOL" <<\'EOF\'\nordinary data\nEOF', 1],
+  ["unknown-prefix-glob", "foo [np]* <<'EOF'\nordinary data\nEOF", 1],
+  ["unknown-prefix-data", "nice cat <<'EOF'\nordinary data\nEOF", 1],
+  ["sudo-user-heredoc", "sudo -u root node <<'EOF'\nunlinkSync(target)\nEOF", 1],
+  ["node-template-boundary", "{ node <<'EOF'\n`${require('fs').unlinkSync(process.argv[1])}`\nEOF\n}", 1],
   ["node-parenthesized-method", "node <<'EOF'\n((fs.rmSync))(target,{recursive:true})\nEOF", 1],
   ["node-parenthesized-indirect", "node <<'EOF'\n((fs.rmSync).call)('receiver',target,{recursive:true})\nEOF", 1],
   ["python-parenthesized-receiver", "python <<'EOF'\n((shutil)).rmtree(target)\nEOF", 1],
@@ -213,9 +220,10 @@ function analyze(command: string, lifecycle = "complete"): void {
 for (const [name, command, uniqueSources] of cases) {
   for (let i = 0; i < warmup; i++) analyze(command);
   gc();
-  const before = { ...shellAnalysisCounters }, ownership = { ...shellAnalysisOwnership };
+  const before = { ...shellAnalysisCounters }, ownership = { ...shellAnalysisOwnership }, consumerCalls = heredocConsumerCounters.tailCalls, consumerWords = heredocConsumerCounters.tailWords;
   const session = new Session(); session.connect();
   let sampledBytes = 0;
+  let consumerHelperSampledBytes = 0;
   const sites: { name: string; bytes: number }[] = [];
   const times: number[] = [];
   try {
@@ -227,6 +235,7 @@ for (const [name, command, uniqueSources] of cases) {
     const stack = [profile.head];
     while (stack.length) {
       const node = stack.pop()!; sampledBytes += node.selfSize;
+      if (node.callFrame.functionName === "heredocConsumerKind" || node.callFrame.functionName === "uninspectableHeredocTail") consumerHelperSampledBytes += node.selfSize;
       if (node.selfSize) sites.push({ name: node.callFrame.functionName, bytes: node.selfSize });
       for (const child of node.children) stack.push(child);
     }
@@ -240,6 +249,7 @@ for (const [name, command, uniqueSources] of cases) {
   assert.equal(shellAnalysisOwnership.liveBytes, 0);
   sites.sort((a, b) => b.bytes - a.bytes); times.sort((a, b) => a - b);
   console.log(JSON.stringify({ name, iterations, warmup, samplingInterval, counters,
+    consumerTailCalls: heredocConsumerCounters.tailCalls - consumerCalls, consumerTailWords: heredocConsumerCounters.tailWords - consumerWords, consumerHelperSampledBytesPerAnalysis: consumerHelperSampledBytes / iterations,
     cacheHits: shellAnalysisOwnership.hits - ownership.hits, cacheMisses: shellAnalysisOwnership.misses - ownership.misses,
     sampledBytesPerAnalysis: Math.round(sampledBytes / iterations), p50Ms: times[256], p95Ms: times[486], topSites: sites.slice(0, 8) }));
 }

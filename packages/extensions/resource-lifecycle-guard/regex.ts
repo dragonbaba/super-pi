@@ -44,7 +44,12 @@ export const COMMAND_WORD_SEPARATOR_PATTERN = /[ \t]/u;
 export const INTEGER_SECONDS_PATTERN = /^[1-9][0-9]{0,8}$/u;
 export const OWNED_FOREGROUND_JOB_PATTERN = /^\s*([A-Za-z0-9_./-]+)(?:[ \t]+[A-Za-z0-9_./:-]+)*[ \t]+&[ \t]*pid=\$!;[ \t]*trap 'kill "\$pid"; wait "\$pid"' EXIT;[ \t]*(?:(.{1,4096});[ \t]*kill "\$pid";[ \t]*)?wait "\$pid"\s*$/;
 export const OPAQUE_JOB_LAUNCHER_PATTERN = /^(?:env|sudo|doas|nice|nohup|setsid|timeout|stdbuf|command|exec|busybox|xargs|sh|bash|zsh|dash|fish|ksh|powershell|pwsh|cmd)(?:\.exe)?$/iu;
-export const PYTHON_COMMAND_PATTERN = /^(?:python(?:[0-9]+(?:\.[0-9]+)*)?|py)(?:\.exe)?$/iu;
+// Accept an existing basename or a complete argv word without allocating a
+// basename/lowercase copy. All interpreter callers share this one matcher.
+export const PYTHON_COMMAND_PATTERN = /(?:^|[\\/])(?:python(?:[0-9]+(?:\.[0-9]+)*)?|py)(?:\.exe)?$/iu;
+export const HEREDOC_SHELL_COMMAND_PATTERN = /(?:^|[\\/])(?:bash|sh|zsh|dash|ksh|fish)(?:\.exe)?$/iu;
+export const HEREDOC_NODE_COMMAND_PATTERN = /(?:^|[\\/])node(?:\.exe)?$/iu;
+export const HEREDOC_SOURCE_COMMAND_PATTERN = /(?:^|[\\/])(?:source|\.)(?:\.exe)?$/iu;
 // Python ownership, code and permission classification share the matcher above.
 export const OPAQUE_JOB_INTERPRETER_PATTERN = /^node(?:js)?(?:\.exe)?$/iu;
 export const OWNED_USE_COMMAND_PATTERN = /^(?:curl|test|true|false|echo)(?:[ \t]+[A-Za-z0-9_./:%?=,+-]+)*$/u;
