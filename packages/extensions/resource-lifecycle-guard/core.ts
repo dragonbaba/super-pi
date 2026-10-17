@@ -1648,6 +1648,9 @@ function simpleStdinConsumers(tokens: ShellSegment, descriptor: number, depth: n
 		if (option === "--help" || option === "--version" || language !== "bash" && option === "-h" || language === "python" && option === "-V") return 0;
 		if (language === "python") {
 			if (option === "--help-env" || option === "--help-xoptions" || option === "--help-all") return 0;
+			// py's attached runtime selector is one operand, not a cluster of
+			// Python flags; V/c/m/i inside Company/Tag cannot change stdin mode.
+			if ((name === "py" || name === "py.exe") && option.startsWith("-V:")) continue;
 			if (option === "--check-hash-based-pycs") { cursor++; if (tokens.expansions?.[cursor]) return languageMask; continue; }
 			if (!option.startsWith("--")) for (let flag = 1; flag < option.length; flag++) {
 				if (option[flag] === "V") return 0;

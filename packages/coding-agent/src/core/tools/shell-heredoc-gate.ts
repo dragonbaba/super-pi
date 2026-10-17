@@ -20,7 +20,16 @@ function scanHeredocSyntax(command: string, start: number, closing: number, dept
     // Extremely nested syntax is scanned conservatively, without an unbounded
     // recursion stack. It still does not refuse source lacking a << candidate.
     if (depth >= 64) {
-      if (code === 60 && next === 60 && command.charCodeAt(index + 2) !== 60) return -1;
+      if (code === 60) {
+        let second = index + 1;
+        while (command.charCodeAt(second) === 92 && command.charCodeAt(second + 1) === 10) second += 2;
+        if (command.charCodeAt(second) === 60) {
+          let third = second + 1;
+          while (command.charCodeAt(third) === 92 && command.charCodeAt(third + 1) === 10) third += 2;
+          if (command.charCodeAt(third) !== 60) return -1;
+          index = third;
+        }
+      }
       continue;
     }
     if (closing === 257 && code === 125) { if (--braces === 0) return index; continue; }

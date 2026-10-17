@@ -89,6 +89,23 @@ test("sort terminal preflight adds no source copies or temporary containers", ()
   ts.forEachChild(helper.body!, audit);
 });
 
+test("Python deletion matchers remain module literals without per-call construction", () => {
+  const source = ts.createSourceFile("regex.ts", readFileSync("packages/extensions/resource-lifecycle-guard/regex.ts", "utf8"), ts.ScriptTarget.Latest, true);
+  const names = new Set(["PYTHON_RMTREE_PATTERN", "PYTHON_UNLINK_PATTERN"]), seen = new Set<string>();
+  for (const statement of source.statements) if (ts.isVariableStatement(statement)) for (const declaration of statement.declarationList.declarations) {
+    if (names.has(declaration.name.getText(source))) { assert.ok(declaration.initializer && ts.isRegularExpressionLiteral(declaration.initializer)); seen.add(declaration.name.getText(source)); }
+  }
+  assert.deepEqual(seen, names);
+  const core = ts.createSourceFile("core.ts", readFileSync("packages/extensions/resource-lifecycle-guard/core.ts", "utf8"), ts.ScriptTarget.Latest, true);
+  const scan = core.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === "inspectCodeCall");
+  assert.ok(scan && ts.isFunctionDeclaration(scan));
+  function audit(node: ts.Node): void {
+    assert.equal(ts.isNewExpression(node) || ts.isRegularExpressionLiteral(node) || ts.isArrayLiteralExpression(node) || ts.isObjectLiteralExpression(node) || ts.isArrowFunction(node) || ts.isFunctionExpression(node), false, node.getText(core));
+    ts.forEachChild(node, audit);
+  }
+  ts.forEachChild(scan.body!, audit);
+});
+
 test("interpreter call helpers allocate no per-call regexes, strings or containers", () => {
   const source = ts.createSourceFile("core.ts", readFileSync("packages/extensions/resource-lifecycle-guard/core.ts", "utf8"), ts.ScriptTarget.Latest, true);
   const names = new Set(["nodeIndirectCall", "nodeLiteralMethodKeyEnd", "isCodeWhitespace"]), seen = new Set<string>();

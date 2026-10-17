@@ -12,6 +12,12 @@ const cwd = process.cwd(), iterations = 512, warmup = 64, samplingInterval = 409
 const literalInputs = process.argv.includes("--literal-inputs");
 const substitution = "$(grep -c -E '(class|function|const|var|let) GCSystem\\b' pixi/pixi.js)";
 const cases = literalInputs ? [
+  ["python-launcher-selector", "py -V:Acme/VirtualPython3.12 <<'EOF'\nshutil.rmtree(target)\nEOF", 1],
+  ["python-rmtree-call-dynamic", "python <<'EOF'\nshutil.rmtree.__call__(sys.argv[1])\nEOF", 1],
+  ["python-unlink-call-dynamic", "python <<'EOF'\nPath(argv).unlink.__call__()\nEOF", 1],
+  ["python-call-literal", "python -c \"shutil.rmtree.__call__('build')\"", 1],
+  ["python-call-whitespace", "python <<'EOF'\n(shutil.rmtree # method\n. __call__)(target)\nEOF", 1],
+  ["python-call-chain-opaque", "python <<'EOF'\nshutil.rmtree.__call__.__call__(target)\nEOF", 1],
   ["continued-node-heredoc", "node <\\\n<'EOF'\nunlinkSync(target)\nEOF", 1],
   ["continued-cat-heredoc", "cat <\\\n<'EOF'\nordinary data\nEOF", 1],
   ["missing-bash-startup-file", "bash --rcfile <<'EOF'\nsleep 100 &\nEOF", 1],

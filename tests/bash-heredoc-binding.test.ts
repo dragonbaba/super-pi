@@ -100,6 +100,37 @@ test("review fifteen: parameter words are data while nested executable substitut
  }
 });
 
+test("review thirty-seven: deeply nested continued heredocs refuse configured transports before spawn", async () => {
+ let hooks = 0, backends = 0;
+ const options: BashToolOptions[] = [{ commandPrefix: "true" }, { spawnHook: context => { hooks++; return context; } }, { operations: { exec: async () => { backends++; return { exitCode: 0 }; } } }];
+ for (const depth of [63, 64, 65, 1024]) {
+  const command = "( ".repeat(depth) + "cat <\\\n<'EOF'\nprintf MARKER\nEOF\n" + " )".repeat(depth);
+  assert.equal(shellHeredocKind(command), 1);
+  for (const configuration of options) {
+   const outcome = await dispatch(process.cwd(), command, configuration, false, 0);
+   assert.equal(outcome.processes, 0); assert.equal(outcome.result.isError, true); assert.match(outcome.text, /\[SHELL_HEREDOC\]/);
+   const tool = createBashTool(process.cwd(), { shellPath, ...configuration });
+   await assert.rejects(tool.execute("deep-recheck", { command }), /\[SHELL_HEREDOC\]/);
+  }
+  for (const redirect of ["<\\\n<\\\n<'data'", "<<<'data'", "<file"]) assert.equal(shellHeredocKind("( ".repeat(depth) + `cat ${redirect}` + " )".repeat(depth)), 0);
+  assert.equal(shellHeredocKind("( ".repeat(depth) + "cat <\\\n<\\\n<'data'; cat <\\\n<'E'\nx\nE\n" + " )".repeat(depth)), 1);
+ }
+ assert.equal(hooks, 0); assert.equal(backends, 0);
+});
+
+test("deep heredoc fallback scans continuations linearly without copying source", () => {
+ const original = String.prototype.charCodeAt; let reads = 0;
+ String.prototype.charCodeAt = function(index) { reads++; return original.call(this, index); };
+ try {
+  for (const length of [16, 1024, 8192]) {
+   const command = "( ".repeat(64) + "cat <" + "\\\n".repeat(length) + "<'E'\nx\nE\n" + " )".repeat(64), input = { command };
+   const tool = createBashTool(process.cwd(), { shellPath, commandPrefix: "true" });
+   reads = 0; assert.throws(() => tool.prepareArguments!(input), /\[SHELL_HEREDOC\]/); assert.strictEqual(input.command, command);
+   assert.ok(reads <= 4 * command.length + 16, `${reads}/${command.length}`);
+  }
+ } finally { String.prototype.charCodeAt = original; }
+});
+
 test("heredoc gate preserves bounded diagnostics and scans only executable syntax", () => {
  for (const consumer of ["cat", "node"]) for (const delimiter of ["E", "EOF", "_long123", "Z".repeat(32)]) {
   for (const body of ["", "data\n", "EOF\n", "中文😀\n", "\ud800\n", "a\r\n", "a\0\n", "x".repeat(12270) + "\n"]) {
