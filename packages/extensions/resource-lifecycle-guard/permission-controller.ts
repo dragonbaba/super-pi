@@ -921,7 +921,7 @@ export class SessionPermissionController {
     if (!scope) return undefined;
     const roots = high ? await protectedRootViolations({ targets: high.destructiveTargets ?? [], workspaceWide: high.workspaceWide }, ctx.cwd) : [];
     // Permission-scan cwd and write destinations are not deletion operands.
-    if (scope.destructiveTargets) for (const root of await protectedRootViolations({ targets: scope.destructiveTargets, workspaceWide: false }, ctx.cwd)) {
+    if (scope.destructiveTargets || scope.moveDestinations) for (const root of await protectedRootViolations({ targets: scope.destructiveTargets ?? [], moveDestinations: scope.moveDestinations, workspaceWide: false }, ctx.cwd)) {
       if (!roots.includes(root)) roots.push(root);
     }
     if (scope.unverifiableMutation && !high?.unverifiableScope) {
