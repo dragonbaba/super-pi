@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import test from "node:test";
 import { shellHookFixture, assertFinalAuthorization } from "./codemode-recovery/shell-hook-fixture.ts";
 import { mutationFixture } from "./helpers/mutation-fixture.ts";
@@ -10,7 +10,7 @@ test("PR1 representative allow / ask / deny acceptance", async t => {
   type Result = "allow" | "ask" | "once" | "deny";
   const rows: readonly (readonly [string, Result, Result, ("bash" | "powershell")?])[] = [
     ...["/", "~", "~/*", ".", "./*", "..", ".git", "sub/../.git", ".sp",
-      JSON.stringify(homedir().replaceAll("\\", "/")), JSON.stringify(dirname(homedir()).replaceAll("\\", "/"))]
+      JSON.stringify(realpathSync.native(homedir()).replaceAll("\\", "/")), JSON.stringify(dirname(realpathSync.native(homedir())).replaceAll("\\", "/"))]
       .map(target => [`rm -rf ${target}`, "deny", "deny"] as const),
     ...["~/.cache/foo", "/tmp/x", "./out/*", "node_modules", "dist build"]
       .map(target => [`rm -rf ${target}`, "allow", "ask"] as const),
@@ -21,6 +21,7 @@ test("PR1 representative allow / ask / deny acceptance", async t => {
     ["git status && git diff", "allow", "allow"], ["ls -la", "allow", "allow"],
     ["npm run dev &", "deny", "deny"], ["docker compose up -d", "deny", "deny"],
     ["rm -rf . $BUILD_DIR", "deny", "deny"], ["echo > .git/config", "allow", "ask"],
+    ["printf x > out; mv .git moved", "deny", "deny"],
     ["find . -exec echo {} +", "once", "once"],
     ["Remove-Item -Recurse .git", "deny", "deny", "powershell"],
     ["Remove-Item -Recurse ~", "deny", "deny", "powershell"],

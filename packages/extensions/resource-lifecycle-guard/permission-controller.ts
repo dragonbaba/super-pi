@@ -923,7 +923,11 @@ export class SessionPermissionController {
       high = { risk: "HIGH", mutationDetected: true, contextUncertain: true, primitives: high?.primitives ?? scope.primitives, targets: high?.targets ?? scope.targets,
         dynamicScope: true, unverifiableScope: true, workspaceWide: high?.workspaceWide ?? false };
     }
-    const roots = await protectedRootViolations(high ?? { targets: scope.targets, primitives: scope.primitives, workspaceWide: false }, ctx.cwd);
+    const roots = await protectedRootViolations({
+      targets: high ? [...new Set([...high.targets, ...scope.targets])] : scope.targets,
+      primitives: high ? [...high.primitives, ...scope.primitives] : scope.primitives,
+      workspaceWide: high?.workspaceWide ?? false,
+    }, ctx.cwd);
     if (high?.unverifiableScope) {
       return this.#dynamicHighRequest(event, purpose, high, roots, scope.classes, shellOperation, effectiveCwd, hasExplicitCwd);
     }
