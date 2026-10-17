@@ -9,6 +9,7 @@ const WORKSPACE_METADATA_ROOTS = [".git", ".sp"] as const;
 export async function protectedRootViolations(
   scan: Pick<HighRiskMutationScan, "targets" | "workspaceWide"> & { moveDestinations?: readonly string[] },
   cwd: string,
+  additionalWorkspaces: readonly { canonicalPath: string }[] = [],
 ): Promise<string[]> {
   // Callers provide actual destructive operands, excluding opaque cwd and writes.
   let workspace: string;
@@ -23,6 +24,10 @@ export async function protectedRootViolations(
   if (scan.workspaceWide) violations.add("workspace_root");
   const protectedRoots = [["workspace_root", workspace], ["home_root", homedir()],
     ...WORKSPACE_METADATA_ROOTS.map(name => [`workspace_${name.slice(1)}_root`, resolve(workspace, name)])];
+  for (const grant of additionalWorkspaces) {
+    protectedRoots.push(["workspace_root", grant.canonicalPath]);
+    for (const name of WORKSPACE_METADATA_ROOTS) protectedRoots.push([`workspace_${name.slice(1)}_root`, resolve(grant.canonicalPath, name)]);
+  }
   for (const root of protectedRoots) {
     try { root[1] = await canonicalizeProspectivePath(root[1]); } catch { /* No known canonical root. */ }
   }

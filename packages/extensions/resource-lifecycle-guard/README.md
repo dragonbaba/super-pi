@@ -43,9 +43,9 @@ TUI and RPC use Pi's structured `select` and `input` protocol. Dialogs have no a
 
 ## High-risk and script policy
 
-A bounded quote/escape/command-boundary parser recognizes recursive deletion, PowerShell/Windows deletion, Python/Node deletion calls, `find -delete`, `xargs rm`, `git clean -fd`, and `git reset --hard`. Known catastrophic deletion or recursive-mutation targets are denied before allow-rule or approval-policy handling: filesystem roots, HOME, the Session workspace root, `.git` and `.sp`, or a canonical target containing any of those roots. Descendant files such as `.git/config` retain high-risk approval handling. The same root rule covers native `delete`, `move` and destructive `file_batch` items; their parent-directory access is not itself deletion. Batch dry-run remains a preview.
+A bounded quote/escape/command-boundary parser recognizes recursive deletion, PowerShell/Windows deletion, Python/Node deletion calls, `find -delete`, `xargs rm`, `git clean -fd`, and `git reset --hard`. Known catastrophic deletion or recursive-mutation targets are denied before allow-rule or approval-policy handling: filesystem roots, HOME, the primary and registered workspace roots, their `.git` and `.sp` roots, or a canonical target containing any of those roots. Descendant files such as `.git/config` retain high-risk approval handling. The same root rule covers native `delete`, `move` and destructive `file_batch` items; their parent-directory access is not itself deletion. Ordinary shell moves into an existing directory add a child without replacing that root. Batch dry-run remains a preview.
 
-Unknown targets (variables, `~user`, intermediate wildcards, over 16 targets or an unverifiable target assessment) always ask, including `full-access + never-ask`. The only choices are **allow once**, **reject**, and **reject with a reason**. No exact/prefix rule can match these requests, and the dialog cannot create a rule or switch modes. Allowing once does not suppress the next question; rejecting remembers the unchanged request. With no UI, the result is `confirmation_required`.
+Unknown targets (variables, `~user`, intermediate wildcards, over 16 targets, uninspected move options or an unverifiable target assessment) always ask, including `full-access + never-ask`. Move option grammar is not expanded: source/destination roles are uncertain when options have not been interpreted. The only choices are **allow once**, **reject**, and **reject with a reason**. No exact/prefix rule can match these requests, and the dialog cannot create a rule or switch modes. Allowing once does not suppress the next question; rejecting remembers the unchanged request. With no UI, the result is `confirmation_required`.
 
 An unquoted leading `~` or `~/...` resolves to HOME. An unquoted wildcard (`*`, `?`, `[`) only in the last path segment is bounded by its parent directory: `./out/*` targets `./out`, while `~/*` targets HOME and is denied. Other dynamic forms remain uncertain. Known non-catastrophic high-risk requests still follow the selected approval policy and may use an exact Session rule.
 
@@ -73,6 +73,8 @@ The representative table is exercised by one table-driven test in `tests/guard-r
 | `printf x > out; mv .git moved` (combined existing scan evidence) | Deny | Deny |
 | `printf x > .git; rm -rf out` (write and deletion retain separate targets) | Allow | Ask |
 | `mv /tmp/report .` (existing destination directory receives a child) | Allow | Ask |
+| `mv --target-directory=/tmp .git` (uninspected move options) | Ask once only | Ask once only |
+| `rm -rf .git` with explicit cwd in an added workspace | Deny | Deny |
 | `rm -rf $BUILD_DIR`, `rm -rf "$TMPDIR/foo"`, `rm -rf "$HOME"`, `rm -rf */node_modules` | Ask once only | Ask once only |
 | `bash scripts/build.sh`, `sh -x scripts/build.sh`, `$CMD --version` | Allow | Ask |
 | Expanded Bash heredoc containing `$X`; command exceeding inspection length | Allow | Ask |

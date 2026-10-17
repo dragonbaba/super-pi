@@ -8,7 +8,7 @@ import { mutationFixture } from "./helpers/mutation-fixture.ts";
 
 test("PR1 representative allow / ask / deny acceptance", async t => {
   type Result = "allow" | "ask" | "once" | "deny";
-  const rows: readonly (readonly [string, Result, Result, ("bash" | "powershell")?])[] = [
+  const rows: readonly (readonly [string, Result, Result, ("bash" | "powershell")?, string?])[] = [
     ...["/", "~", "~/*", ".", "./*", "..", ".git", "sub/../.git", ".sp",
       JSON.stringify(realpathSync.native(homedir()).replaceAll("\\", "/")), JSON.stringify(dirname(realpathSync.native(homedir())).replaceAll("\\", "/"))]
       .map(target => [`rm -rf ${target}`, "deny", "deny"] as const),
@@ -25,6 +25,7 @@ test("PR1 representative allow / ask / deny acceptance", async t => {
     ["printf x > out; mv .git moved", "deny", "deny"],
     ["printf x > .git; rm -rf out", "allow", "ask"],
     ["mv /tmp/report .", "allow", "ask"],
+    ["mv --target-directory=/tmp .git", "once", "once"], ["rm -rf .git", "deny", "deny", "bash", "sub"],
     ["find . -exec echo {} +", "once", "once"],
     ["Remove-Item -Recurse .git", "deny", "deny", "powershell"],
     ["Remove-Item -Recurse ~", "deny", "deny", "powershell"],
@@ -35,14 +36,15 @@ test("PR1 representative allow / ask / deny acceptance", async t => {
   ];
   for (const mode of ["full-access", "workspace-write"] as const) {
     const f = await shellHookFixture(t, mode);
+    await f.runner.getCommand("add_workspace")!.handler(join(f.cwd, "sub"), f.runner.createCommandContext());
     const ui = f.runner.getUIContext();
     let options: string[] = [], answer = "仅允许本次";
     f.runner.setUIContext({ ...ui, select: async (title, choices, context) => {
       options = choices; await ui.select(title, choices, context); return answer;
     } }, "tui");
-    for (const [command, full, workspace, tool] of rows) {
+    for (const [command, full, workspace, tool, relativeCwd] of rows) {
       const expected = mode === "full-access" ? full : workspace, before = f.dialogs();
-      const call = await f.authorize(command, tool);
+      const call = await f.authorize(command, tool, relativeCwd ? join(f.cwd, relativeCwd) : undefined);
       if (expected === "deny") {
         assert.equal(call.outcome?.block, true, command); assert.equal(call.outcome?.finalAuthorization, undefined);
       } else assertFinalAuthorization(call);
