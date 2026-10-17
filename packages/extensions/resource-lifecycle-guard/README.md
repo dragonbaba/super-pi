@@ -77,7 +77,7 @@ The representative table is exercised by one table-driven test in `tests/guard-r
 | `bash scripts/build.sh`, `sh -x scripts/build.sh`, `$CMD --version` | Allow | Ask |
 | Expanded Bash heredoc containing `$X`; command exceeding inspection length | Allow | Ask |
 | `git status && git diff`, `ls -la` | Allow | Allow |
-| `npm run dev &`, `docker compose up -d` | Deny (until PR3) | Deny |
+| `npm run dev &`, `docker compose up -d`, visible `&` after a parser-opaque substitution | Deny (until PR3) | Deny |
 | No UI: `rm -rf $BUILD_DIR` | confirmation_required | confirmation_required |
 
 The same test covers PowerShell, native destructive operations, repeated one-time approval, rejection memory and a manually installed exact rule. Existing R0 F-S1/S4 admission assertions remain unchanged. Unusual-spelling findings remain accepted boundaries under [#161](https://github.com/dragonbaba/super-pi/issues/161), without parsing fixes or additional spelling matrices.

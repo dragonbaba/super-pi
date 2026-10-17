@@ -20,6 +20,7 @@ test("PR1 representative allow / ask / deny acceptance", async t => {
     ["bash <<EOF\n$X\nEOF", "allow", "ask"], ["echo " + "x".repeat(128 * 1024), "allow", "ask"],
     ["git status && git diff", "allow", "allow"], ["ls -la", "allow", "allow"],
     ["npm run dev &", "deny", "deny"], ["docker compose up -d", "deny", "deny"],
+    ["printf '%s' $(time printf 1); npm run dev &", "deny", "deny"],
     ["rm -rf . $BUILD_DIR", "deny", "deny"], ["echo > .git/config", "allow", "ask"],
     ["printf x > out; mv .git moved", "deny", "deny"],
     ["find . -exec echo {} +", "once", "once"],

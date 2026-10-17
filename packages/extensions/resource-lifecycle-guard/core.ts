@@ -168,6 +168,16 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
  const substitutions = prepared.substitutions;
  if (here.unboundedHeredoc || substitutions.boundaryRefusal === 2) return lifecycleRefusal("SHELL_HEREDOC", "heredoc or CR-sensitive source boundaries cannot be inspected for executable input or following commands", "use a bounded literal heredoc outside function substitution, without CR-sensitive delimiters or escapes");
  if (here.uninspectableFunction || substitutions.boundaryRefusal === 1) return UNCERTAIN_LIFECYCLE;
+ // Check already-visible launches before deferring parser diagnostics to permissions.
+ if (DETACH_UTILITY_PATTERN.test(command)) return BLOCK_REASON;
+ if ((WINDOWS_DETACH_PATTERN.test(command) || WINDOWS_START_BACKGROUND_PATTERN.test(command)) && !WINDOWS_WAIT_PATTERN.test(command)) return BLOCK_REASON;
+ if (DOCKER_DETACHED_PATTERN.test(command) || SERVICE_START_PATTERN.test(command)) return BLOCK_REASON;
+ if (hasUnquotedBackgroundOperator(command)) {
+  const owned = OWNED_FOREGROUND_JOB_PATTERN.exec(command);
+  if (!owned || !hasBoundedOwnedUse(owned[2])) return BLOCK_REASON;
+  const ownedName = commandName(owned[1]!);
+  if (OPAQUE_JOB_LAUNCHER_PATTERN.test(ownedName) || PYTHON_COMMAND_PATTERN.test(ownedName) || NODE_COMMAND_PATTERN.test(ownedName)) return BLOCK_REASON;
+ }
  if (here.hasHeredoc && heredocHasAliasRisk(command)) return lifecycleRefusal("SHELL_HEREDOC", "alias expansion or definitions may change the heredoc consumer", "use a separate call without alias changes, file sourcing or eval");
  if (hasUnboundDescriptorSource(command, here.hereDocuments, descriptorContext)) return lifecycleRefusal("SHELL_HEREDOC", "a script descriptor has no inspectable binding in this command and may be inherited", "bind the descriptor explicitly in this call or use an inspectable literal script");
  if (here.substitutionUncertain) return lifecycleRefusal("SHELL_SUBSTITUTION", "uncertain/uninspectable executable heredoc substitution", "simplify the substitution into inspectable foreground commands");
@@ -195,17 +205,6 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
    const result = inspectLifecycleScript(body, depth + 1, nativePowerShellAvailable, analysisOwner);
    if (result) return result;
   }
- }
- // Unknown cwd/lookup state is permission evidence, not a process lifetime.
- // Still inspect visible launches below, including those after state changes.
- if (DETACH_UTILITY_PATTERN.test(command)) return BLOCK_REASON;
- if ((WINDOWS_DETACH_PATTERN.test(command) || WINDOWS_START_BACKGROUND_PATTERN.test(command)) && !WINDOWS_WAIT_PATTERN.test(command)) return BLOCK_REASON;
- if (DOCKER_DETACHED_PATTERN.test(command) || SERVICE_START_PATTERN.test(command)) return BLOCK_REASON;
- if (hasUnquotedBackgroundOperator(command)) {
-  const owned = OWNED_FOREGROUND_JOB_PATTERN.exec(command);
-  if (!owned || !hasBoundedOwnedUse(owned[2])) return BLOCK_REASON;
-  const ownedName = commandName(owned[1]!);
-  if (OPAQUE_JOB_LAUNCHER_PATTERN.test(ownedName) || PYTHON_COMMAND_PATTERN.test(ownedName) || NODE_COMMAND_PATTERN.test(ownedName)) return BLOCK_REASON;
  }
  if (!SHELL_WRAPPER_TEXT_PATTERN.test(command) && !EXECUTABLE_EXPANSION_TEXT_PATTERN.test(command) && !command.includes("[[") && !command.includes("((") && !command.includes("for") && !command.includes("select") && !command.includes("coproc")) return undefined;
  const segments = parseShellSegments(command, true);
