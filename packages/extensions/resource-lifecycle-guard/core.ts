@@ -846,8 +846,8 @@ function inspectPowerShellRemove(tokens: readonly string[] & { expansions?: read
 	for (let index = start; index < tokens.length; index++) {
 		if (POWERSHELL_RECURSIVE_OPTIONS.has(tokens[index]!.toLowerCase())) recursive = true;
 	}
-	if (!recursive) return;
-	addMutationPrimitive(builder, "powershell_remove_recursive");
+	// A worktree's .git pointer is removable without recursive deletion.
+	addMutationPrimitive(builder, recursive ? "powershell_remove_recursive" : "powershell_remove");
 	let explicitTarget = false;
 	for (let index = start; index < tokens.length; index++) {
 		const value = tokens[index]!;

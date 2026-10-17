@@ -32,6 +32,7 @@ test("PR1 representative allow / ask / deny acceptance", async t => {
     ["mv --target-directory=/tmp .git", "once", "once"], ["rm -rf .git", "deny", "deny", "bash", "sub"],
     ["find . -exec echo {} +", "once", "once"],
     ["Remove-Item -Recurse .git", "deny", "deny", "powershell"],
+    ["Remove-Item .git", "deny", "deny", "powershell", "sub"], ["Remove-Item ordinary", "allow", "ask", "powershell"],
     ["Remove-Item -Recurse ~", "deny", "deny", "powershell"],
     ["Remove-Item -Recurse $BUILD_DIR", "once", "once", "powershell"],
     ["Start-Process tool.exe -Wait:$flag", "allow", "ask", "powershell"],
@@ -41,6 +42,7 @@ test("PR1 representative allow / ask / deny acceptance", async t => {
   for (const mode of ["full-access", "workspace-write"] as const) {
     const f = await shellHookFixture(t, mode);
     mkdirSync(join(f.cwd, ".git"));
+    writeFileSync(join(f.cwd, "sub", ".git"), "gitdir: fixture");
     await f.runner.getCommand("add_workspace")!.handler(join(f.cwd, "sub"), f.runner.createCommandContext());
     const ui = f.runner.getUIContext();
     let options: string[] = [], answer = "仅允许本次";

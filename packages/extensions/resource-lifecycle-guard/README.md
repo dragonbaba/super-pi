@@ -49,6 +49,8 @@ A bounded quote/escape/command-boundary parser recognizes recursive deletion, Po
 
 Content scopes are not operands being removed. `workspaceWide` keeps `git reset --hard` and `git clean -fd`/`-fdx` high risk without declaring the workspace root deleted. A `find -delete` search scope is denied only when it is the filesystem root, equals or contains HOME, or is equal to or inside a workspace `.git`/`.sp` root. Searching the workspace root or an ordinary child directory follows normal high-risk policy: F allows, W asks. These distinctions reuse existing bounded scan evidence without new parsing or another command scan.
 
+The existing Remove-Item operand walk also supplies root checks without `-Recurse`: `.git` can be a worktree pointer file. Ordinary non-root operands retain F allow / W ask.
+
 Unknown targets (variables, `~user`, intermediate wildcards, over 16 targets, uninspected move options or an unverifiable target assessment) always ask, including `full-access + never-ask`. Move option grammar is not expanded: source/destination roles are uncertain when options have not been interpreted. The only choices are **allow once**, **reject**, and **reject with a reason**. No exact/prefix rule can match these requests, and the dialog cannot create a rule or switch modes. Allowing once does not suppress the next question; rejecting remembers the unchanged request. With no UI, the result is `confirmation_required`.
 
 An unquoted leading `~` or `~/...` resolves to HOME. An unquoted wildcard (`*`, `?`, `[`) only in the last path segment is bounded by its parent directory: `./out/*` targets `./out`, while `~/*` targets HOME and is denied. Other dynamic forms remain uncertain. Known non-catastrophic high-risk requests still follow the selected approval policy and may use an exact Session rule.
@@ -77,6 +79,7 @@ The representative table is exercised by one table-driven test in `tests/guard-r
 | `git reset --hard HEAD~1`, `git clean -fd`, `git clean -fdx`, `find . -name '*.log' -delete` | Allow | Ask |
 | `find .git -name x -delete`, `find / -name x -delete`, `find ~ -name x -delete` | Deny | Deny |
 | `rm -rf ./*`, `rm -rf .`, `rename git moved .git`, `mv .git/* /tmp/x` | Deny | Deny |
+| `Remove-Item .git` where `.git` is a worktree pointer file | Deny | Deny |
 | `printf x > out; mv .git moved` (combined existing scan evidence) | Deny | Deny |
 | `printf x > .git; rm -rf out` (write and deletion retain separate targets) | Allow | Ask |
 | `mv /tmp/report .` (existing destination directory receives a child) | Allow | Ask |
