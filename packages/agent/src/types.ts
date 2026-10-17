@@ -482,7 +482,7 @@ export interface NestedToolResultMessage extends ToolResultMessage {
 export interface AgentToolExecutionContext {
 	readonly parentToolCallId: string;
 	/** Executes through the current run's hooks; never creates a new Agent run. */
-	callTool(name: string, args: Record<string, unknown>): Promise<NestedToolResultMessage>;
+	callTool(name: string, args: Record<string, unknown>, options?: { allowFailure?: boolean }): Promise<NestedToolResultMessage>;
 	/**
 	 * Tools of the active turn context (the live tools when there is none). These host objects never
 	 * enter the sandbox. Later live changes are not reflected here; authorize a name with findTool().
@@ -490,7 +490,7 @@ export interface AgentToolExecutionContext {
 	getTools(): readonly AgentTool<any>[];
 	/** The tool a nested call to this name would run now, or undefined; never allocates. */
 	findTool(name: string): AgentTool<any> | undefined;
-	/** Stop admitting children, cancel unawaited work and wait for its final facts. Returns whether any child failed. */
+	/** Stop admitting children, cancel unawaited work and wait for final facts. Returns whether any unhandled child failed. */
 	finish(): Promise<boolean>;
 }
 

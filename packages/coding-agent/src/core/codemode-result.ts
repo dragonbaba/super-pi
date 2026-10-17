@@ -85,6 +85,26 @@ export function codemodeImageChars(content: readonly (TextContent | ImageContent
 	return chars;
 }
 
+/** A recovery artifact owns bytes on disk, never the source objects. Native spill cap is 5 MiB. */
+export async function persistCodemodeResult(result: ToolResultMessage, serializer: BoundedJson): Promise<{ path: string; capped: boolean }> {
+	const output = new OutputAccumulator(FORCE_SPILL_OPTIONS);
+	try {
+		appendText(output, `Tool: ${result.toolName}; call: ${result.toolCallId}; isError: ${result.isError}\n`);
+		for (const block of result.content) {
+			appendText(output, block.type === "text" ? block.text : `data:${block.mimeType};base64,`);
+			if (block.type === "image") appendText(output, block.data);
+			appendText(output, "\n");
+		}
+		if (result.details !== undefined) appendText(output, "\nResult details: " + (serializer.stringify(result.details, 128 * 1024) ?? ""));
+		output.finish();
+		const snapshot = output.snapshot({ persistIfTruncated: true });
+		await output.closeTempFile();
+		if (!snapshot.fullOutputPath) throw new Error("Result recovery file was not created");
+		return { path: snapshot.fullOutputPath, capped: snapshot.spillFileCapped };
+	} catch (error) { await output.discardTempFile(); throw error; }
+	finally { await output.closeTempFile(); }
+}
+
 /** One bounded scratch block/array per result, reused by synchronous estimation. */
 export async function capCodemodeOutput(content: (TextContent | ImageContent)[], tokens: number, imageNotice?: string, imageFiles?: CodemodeImageFiles): Promise<(TextContent | ImageContent)[]> {
 	if (estimateToolOutputTokens(content).estimatedTokens <= tokens) return content;

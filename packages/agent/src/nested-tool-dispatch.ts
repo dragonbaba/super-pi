@@ -13,6 +13,7 @@ interface PendingCall {
 	reject: (error: unknown) => void;
 	/** `performance.now()` when the orchestrator issued the call, before any queueing. */
 	issuedAt: number;
+	allowFailure: boolean;
 }
 function observeRejection(): void {}
 function findByName(tools: readonly AgentTool<any>[], name: string): AgentTool<any> | undefined {
@@ -112,7 +113,7 @@ export class NestedToolDispatch implements AgentToolExecutionContext {
 		return this.findTool(tool.name) === tool;
 	}
 
-	callTool(name: string, args: Record<string, unknown>): Promise<NestedToolResultMessage> {
+	callTool(name: string, args: Record<string, unknown>, options?: { allowFailure?: boolean }): Promise<NestedToolResultMessage> {
 		if (!this.accepting || this.signal.aborted || this.issued >= MAX_NESTED_TOOL_CALLS) {
 			this.hasErrors = true;
 			const rejected = Promise.reject<NestedToolResultMessage>(new Error("Nested tool dispatch is closed, cancelled, or at its 256-call limit"));
@@ -121,8 +122,9 @@ export class NestedToolDispatch implements AgentToolExecutionContext {
 		}
 		const call: AgentToolCall = { type: "toolCall", id: `${this.parentToolCallId}:nested:${++this.issued}`, name, arguments: args };
 		const issuedAt = performance.now();
+		const allowFailure = options?.allowFailure === true;
 		const result = new Promise<NestedToolResultMessage>((resolve, reject) => {
-			this.pending.push({ call, resolve, reject, issuedAt });
+			this.pending.push({ call, resolve, reject, issuedAt, allowFailure });
 		});
 		// Scripts may intentionally omit await. The owner still observes every failure.
 		void result.catch(observeRejection);
@@ -155,7 +157,9 @@ export class NestedToolDispatch implements AgentToolExecutionContext {
 		this.running.add(entry);
 		try {
 			const result = await this.invoke!(entry.call, tool, this.signal);
-			this.hasErrors ||= result.isError;
+			// Opt-in handles both execution and admission failures, without rewriting the
+			// observed result. Cancellation and observer failures still poison the parent.
+			this.hasErrors ||= result.isError && (!entry.allowFailure || !!result.observationFailure || this.signal.aborted);
 			entry.resolve(result);
 		} catch (error) {
 			this.hasErrors = true;

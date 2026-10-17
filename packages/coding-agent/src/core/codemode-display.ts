@@ -20,6 +20,14 @@ export interface CodemodeChildDisplay {
 	executionStatus?: string;
 	exitCode?: number | null;
 	outputDigests?: string[];
+	ref?: string;
+	executed?: boolean | "unknown";
+	resultComplete?: boolean | "unknown";
+	displayLimited?: boolean;
+	failureHandled?: boolean;
+	recoveryError?: string;
+	recoveryCapped?: boolean;
+	evicted?: boolean;
 }
 
 export function codemodeInputSummary(input: unknown): string {
@@ -52,12 +60,22 @@ const NPM_SCRIPT_COMMAND = /^(?:>|\$)\s/;
 const ANSI_SGR = /\x1b\[[\d;]*m/g;
 const HTTP_EXCEPTION = /^(?:aiohttp\.client_exceptions\.)?(?:ClientResponseError|WSServerHandshakeError):\s*([45]\d{2}),\s*message=['"]([^'"\r\n]{1,100})['"]/;
 const DIAGNOSTIC_WHITESPACE = /[\r\n\t]+/g;
+const TOOL_DIAGNOSTIC = /(?:\bNo such (?:filter|file|encoder|format)\b|\bUnknown (?:encoder|decoder|format)\b|^Error (?:opening|initializing|while|writing)\b)/i;
+
+/** At most 2048 code units inspected, including both ends of arbitrarily large output. */
+export function codemodeFailureWindow(text: string): string {
+	if (text.length <= CODEMODE_DISPLAY_PREVIEW_CHARS) return text;
+	let head = 1024, tail = text.length - 1020;
+	if (text.charCodeAt(head - 1) >= 0xd800 && text.charCodeAt(head - 1) <= 0xdbff) head--;
+	if (text.charCodeAt(tail) >= 0xdc00 && text.charCodeAt(tail) <= 0xdfff) tail++;
+	return text.slice(0, head) + "\n…\n" + text.slice(tail);
+}
 
 /** Completion-only projection shared by the model summary and collapsed UI.
  * Scan a bounded prefix without splitting arbitrary tool output into a line array.
  * This is presentation, never a change to the recorded execution outcome. */
 export function codemodeFailureReason(text: string, audience: "display" | "model" = "display"): string {
-	const bounded = text.slice(0, CODEMODE_DISPLAY_PREVIEW_CHARS).replace(ANSI_SGR, "").replace(FAILURE_WRAPPER, "");
+	const bounded = codemodeFailureWindow(text).replace(ANSI_SGR, "").replace(FAILURE_WRAPPER, "");
 	// Browser execution already places the authoritative final exception first.
 	// Never replace it with an earlier chained exception from the retained trace.
 	const browserSummary = text.startsWith("[BROWSER_EXEC_") && bounded.includes("\n[Browser diagnostics]\n");
@@ -96,7 +114,8 @@ export function codemodeFailureReason(text: string, audience: "display" | "model
 			diagnostic = line;
 			// A later specific failure supersedes compiler output, not a generic wrapper.
 			if (compiler && (!line.startsWith("Error:") || SPAWN_DIAGNOSTIC.test(line))) terminal = line;
-		} else if (EXIT_DIAGNOSTIC.test(line)) { exit = line; continue; }
+		} else if (!diagnostic && TOOL_DIAGNOSTIC.test(line)) diagnostic = line;
+		else if (EXIT_DIAGNOSTIC.test(line)) { exit = line; continue; }
 		if (!first || NUMERIC_OUTPUT_LINE.test(first)) first = line;
 		if (browserSummary) break;
 	}
