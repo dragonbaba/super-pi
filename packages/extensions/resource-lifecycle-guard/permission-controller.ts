@@ -429,7 +429,7 @@ export class SessionPermissionController {
     if (request.shellCommand && this.#ruleScopeAllows(request)) {
       for (const rule of this.#state.allowRules) {
         if (!rule.cwd && ruleCwd !== this.#state.primary.canonicalPath) continue;
-        if (rule.kind === "prefix" && (request.highRisk || request.opaqueScript)) continue;
+        if (rule.kind === "prefix" && request.highRisk) continue;
         if (!sessionAllowRuleMatches(rule, request.shellCommand, { backend: request.operation, cwd: rule.cwd === ctx.cwd && ruleCwd === this.#state.primary.canonicalPath ? ctx.cwd : ruleCwd })) continue;
         this.#appendAudit(request, "approved", "session_rule_match", this.#state.mode, this.#state.mode, false);
         return undefined;
@@ -492,7 +492,7 @@ export class SessionPermissionController {
     try {
     const modeBefore = this.#state.mode;
     const choices = [ALLOW_ONCE];
-    const commandPrefix = request.shellCommand && !request.highRisk && !request.opaqueScript ? simpleCommandPrefix(request.shellCommand) : undefined;
+    const commandPrefix = request.shellCommand && !request.highRisk ? simpleCommandPrefix(request.shellCommand) : undefined;
     if (this.#state.approvalPolicy === "ask" && request.shellCommand) {
       choices.push(ALLOW_SESSION_EXACT);
       if (commandPrefix) choices.push(`${ALLOW_SESSION_PREFIX}：${commandPrefix} *`);
@@ -511,7 +511,7 @@ export class SessionPermissionController {
     // One presentation materialization per actual approval. Never use the bounded
     // summary as the authority or as a substitute for inspectable request values.
     const fullRequest = JSON.stringify(event.input, null, 2);
-    const details = `${header}\n操作尚未执行\n将保存的精确规则: ${request.shellCommand ?? "不适用"}\n将保存的前缀规则: ${commandPrefix ? `${commandPrefix} *（允许参数变化，包括无参数调用）` : "不适用"}\n本 Session 规则范围: ${request.operation}; cwd=${ruleCwd}\n模型提供的说明 (未经验证): ${request.purpose ?? "未提供"}\n目标范围:\n${request.exactTargets.join("\n") || "未确定"}\n风险依据: ${request.primitives.join(", ")}\n完整请求:\n${fullRequest}`;
+    const details = `${header}\n操作尚未执行\n将保存的精确规则: ${request.shellCommand ?? "不适用"}\n将保存的前缀规则: ${commandPrefix ? `${commandPrefix} *（仅匹配单条简单命令，允许参数变化及无参数调用；复合命令仍需确认）` : "不适用"}\n本 Session 规则范围: ${request.operation}; cwd=${ruleCwd}\n模型提供的说明 (未经验证): ${request.purpose ?? "未提供"}\n目标范围:\n${request.exactTargets.join("\n") || "未确定"}\n风险依据: ${request.primitives.join(", ")}\n完整请求:\n${fullRequest}`;
     const choice = await ctx.ui.select(header, choices, { signal, details });
     assertCurrent();
     const prefixChoice = commandPrefix ? `${ALLOW_SESSION_PREFIX}：${commandPrefix} *` : undefined;
@@ -966,6 +966,8 @@ export class SessionPermissionController {
       targetAssessments.push(assessment);
       // cwd is an access scope, not a mutation of the directory itself.
       if (hasExplicitCwd && target === effectiveCwd && !scope.targets.includes(target) && !high?.targets.includes(target)) continue;
+      // Opaque execution scope alone does not establish a mutation of its cwd.
+      if (scope.kind === "opaque-script" && !scope.mutationDetected && !high?.targets.includes(target)) continue;
       const protectedAssessment = await assessProtectedMutationPath(ctx.cwd, assessment.canonicalTarget ?? target);
       if (sensitiveProtectedRoots(protectedAssessment.violations)) protectedTarget = true;
       for (const violation of protectedAssessment.violations) appendUniqueBounded(primitives, violation);
