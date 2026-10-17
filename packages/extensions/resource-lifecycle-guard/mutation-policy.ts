@@ -5,19 +5,12 @@ import type { HighRiskMutationScan } from "./core.ts";
 import { LEADING_PATH_SEPARATOR_PATTERN } from "./regex.ts";
 
 const WORKSPACE_METADATA_ROOTS = [".git", ".sp"] as const;
-const DESTRUCTIVE_PRIMITIVES = new Set([
-  "rm", "rmdir", "rd", "del", "erase", "mv", "move", "rename", "ren",
-  "rm_recursive", "powershell_remove_recursive", "windows_rmdir_recursive", "find_delete",
-  "python_rmtree", "python_unlink", "node_recursive_rm", "node_unlink", "git_clean", "git_reset_hard",
-]);
 
 export async function protectedRootViolations(
-  scan: Pick<HighRiskMutationScan, "targets" | "workspaceWide"> & { primitives?: readonly string[] },
+  scan: Pick<HighRiskMutationScan, "targets" | "workspaceWide">,
   cwd: string,
 ): Promise<string[]> {
-  // Unknown find -exec and write/output targets are not known destructive roots.
-  // Native delete/move callers pass their actual source/destination without primitives.
-  if (scan.primitives && !scan.primitives.some(primitive => DESTRUCTIVE_PRIMITIVES.has(primitive))) return [];
+  // Callers provide actual destructive operands, excluding opaque cwd and writes.
   let workspace: string;
   try {
     workspace = await realpath(resolve(cwd));

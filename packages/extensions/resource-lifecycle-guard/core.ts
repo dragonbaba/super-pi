@@ -353,6 +353,7 @@ export interface HighRiskMutationScan {
 	contextUncertain: boolean;
 	primitives: string[];
 	targets: string[];
+	destructiveTargets?: string[];
 	dynamicScope: boolean;
 	unverifiableScope: boolean;
 	workspaceWide: boolean;
@@ -369,6 +370,7 @@ function uncertainAssignment(tokens: ShellSegment, index: number, shellAssignmen
 interface ScanBuilder {
 	primitives: string[];
 	targets: string[];
+	destructiveTargets?: string[];
 	targetSet: Set<string>;
 	dynamicScope: boolean;
 	unverifiableScope: boolean;
@@ -421,6 +423,7 @@ export function inspectHighRiskBashMutation(input: unknown, cwd: string, shellOp
 		contextUncertain: builder.unverifiableScope,
 		primitives: builder.primitives,
 		targets: builder.targets,
+		destructiveTargets: builder.destructiveTargets,
 		dynamicScope: builder.dynamicScope,
 		unverifiableScope: builder.unverifiableMutation,
 		workspaceWide: builder.workspaceWide,
@@ -488,7 +491,7 @@ function inspectOutputRedirections(tokens: ShellSegment, cwd: string, builder: S
 			markUnverifiable(builder, true);
 			continue;
 		}
-		addTarget(builder, target, cwd);
+		addTarget(builder, target, cwd, 0, false);
 	}
 	stripShellRedirections(tokens, redirections);
 	redirections.length = 0;
@@ -894,7 +897,7 @@ function inspectFind(tokens: readonly string[] & { expansions?: readonly number[
 	addMutationPrimitive(builder, deleteAction ? "find_delete" : "find_exec");
 	if (execAction) markUnverifiable(builder, true);
 	const target = findSearchRootIndex(tokens, start);
-	if (target >= 0) addTarget(builder, tokens[target]!, cwd, tokens.expansions?.[target]);
+	if (target >= 0) addTarget(builder, tokens[target]!, cwd, tokens.expansions?.[target], deleteAction);
 	else markUnverifiable(builder, true);
 }
 
@@ -964,10 +967,14 @@ function collectPositionalTargets(
 	if (!found) markUnverifiable(builder, true);
 }
 
-function addTarget(builder: ScanBuilder, rawTarget: string, cwd: string, expansion = 0): void {
+function addTarget(builder: ScanBuilder, rawTarget: string, cwd: string, expansion = 0, destructive = true): void {
 	const target = staticMutationTarget(rawTarget, cwd, expansion);
 	if (target === undefined) { builder.dynamicScope = true; markUnverifiable(builder, true); return; }
 	addResolvedTarget(builder, target);
+	if (destructive && builder.targetSet.has(target)) {
+		const targets = builder.destructiveTargets ??= [];
+		if (!targets.includes(target)) targets.push(target);
+	}
 }
 
 function addResolvedTarget(builder: ScanBuilder, target: string): void {

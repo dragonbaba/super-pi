@@ -919,7 +919,7 @@ export class SessionPermissionController {
         : inspectBashPermissionScope(event.input, effectiveCwd, analysis);
     } finally { if (analysis !== analysisOwner) analysis?.release(); }
     if (!scope) return undefined;
-    const roots = high ? await protectedRootViolations(high, ctx.cwd) : [];
+    const roots = high ? await protectedRootViolations({ targets: high.destructiveTargets ?? [], workspaceWide: high.workspaceWide }, ctx.cwd) : [];
     // Permission-scan cwd and write destinations are not deletion operands.
     if (scope.destructiveTargets) for (const root of await protectedRootViolations({ targets: scope.destructiveTargets, workspaceWide: false }, ctx.cwd)) {
       if (!roots.includes(root)) roots.push(root);
