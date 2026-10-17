@@ -1,4 +1,6 @@
-import { createHash } from "node:crypto";
+import { RetryBudget, isTransientFailure, type RetryOperation } from "./transient-retry.ts";
+import { callKey } from "./call-identity.ts";
+export { callKey } from "./call-identity.ts";
 import { access, opendir, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { UNCERTAIN_LIFECYCLE } from "../resource-lifecycle-guard/core.ts";
@@ -23,10 +25,6 @@ import {
 } from "./regex.js";
 
 const MAX_TRACKED_KEYS = 64;
-const MAX_HASH_DEPTH = 16;
-const MAX_HASH_NODES = 2_048;
-const MAX_HASH_STRING_CHARS = 4_096;
-const MAX_HASH_TOTAL_CHARS = 16_384;
 const REPEATED_FAILURE_THRESHOLD = 2;
 const FIRST_REPEAT_REMINDER_THRESHOLD = 3;
 const SECOND_REPEAT_REMINDER_THRESHOLD = 5;
@@ -45,21 +43,11 @@ const BATCH_DUPLICATE_ACTION = "Reuse the first sibling result; do not issue ano
 const NESTED_DUPLICATE_CAUSE = "An identical call from the same Codemode script is still running.";
 const NESTED_DUPLICATE_ACTION = "Await the first call and reuse its result; repeat it only after that call completes.";
 const GENTLE_REPEAT_REMINDER = "You are repeating the same bounded canonical tool call. Re-read the latest result before calling it again; change the arguments or method, or finish if the available evidence is sufficient.";
-const READ_ONLY_TOOLS = new Set([
-  "read",
-  "grep",
-  "find",
-  "ls",
-  "codegraph",
-  "lsp_diagnostics",
-  "lsp_navigate",
-  "memory_search",
-  "session_search",
-  "structured_readonly_command",
-]);
 
 export interface GuardState {
   failuresByTool: Map<string, number>;
+  retry: RetryBudget;
+  failureEvictions: number;
   failuresBySignature: Map<string, number>;
   batchCalls: Map<string, true>;
   warnings: number;
@@ -75,6 +63,8 @@ export interface GuardState {
 export function createGuardState(): GuardState {
   return {
     failuresByTool: new Map(),
+    retry: new RetryBudget(),
+    failureEvictions: 0,
     failuresBySignature: new Map(),
     batchCalls: new Map(),
     warnings: 0,
@@ -90,99 +80,17 @@ function boundedToolName(value: string): string {
   return value.length <= 80 ? value : value.slice(0, 80);
 }
 
+export function guardCapacityReason(toolName: string, cause: string): string {
+  return JSON.stringify({ ok: false, category: "GUARD_CAPACITY", operation: boundedToolName(toolName),
+    retryable: true, stateChanged: false, cause });
+}
+
 function setBounded<T>(map: Map<string, T>, key: string, value: T): void {
   if (!map.has(key) && map.size >= MAX_TRACKED_KEYS) {
     const oldest = map.keys().next().value;
     if (oldest !== undefined) map.delete(oldest);
   }
   map.set(key, value);
-}
-
-interface CanonicalizeState {
-  nodes: number;
-  characters: number;
-  seen: Set<object>;
-}
-
-interface CanonicalKeyEntry {
-  bounded: string;
-  original: string;
-}
-
-function compareCanonicalKeys(left: CanonicalKeyEntry, right: CanonicalKeyEntry): number {
-  return left.bounded < right.bounded ? -1 : left.bounded > right.bounded ? 1 : 0;
-}
-
-function boundedCanonicalString(value: string, state: CanonicalizeState, label = "string"): string {
-  const remaining = Math.max(0, MAX_HASH_TOTAL_CHARS - state.characters);
-  const inspected = Math.min(value.length, MAX_HASH_STRING_CHARS, remaining);
-  state.characters += inspected;
-  if (inspected === value.length) return value;
-  if (inspected === 0) return `[${label}:${value.length}:bounded]`;
-  const headLength = Math.ceil(inspected / 2);
-  const sample = value.slice(0, headLength) + value.slice(value.length - (inspected - headLength));
-  const digest = createHash("sha256").update(sample).digest("base64url").slice(0, 12);
-  return `[${label}:${value.length}:${digest}]`;
-}
-
-function visitCanonical(item: unknown, depth: number, state: CanonicalizeState): unknown {
-  state.nodes++;
-  if (state.nodes > MAX_HASH_NODES || depth > MAX_HASH_DEPTH) return "[bounded]";
-  if (item === null || typeof item === "boolean") return item;
-  if (typeof item === "string") return boundedCanonicalString(item, state);
-  if (typeof item === "number") return Number.isFinite(item) ? item : "[number]";
-  if (typeof item === "bigint") return `${item}n`;
-  if (typeof item !== "object") return `[${typeof item}]`;
-  if (state.seen.has(item)) return "[cycle]";
-  state.seen.add(item);
-  if (Array.isArray(item)) {
-    const limit = Math.max(0, Math.min(item.length, MAX_HASH_NODES - state.nodes));
-    const result = new Array<unknown>(limit + (limit < item.length ? 1 : 0));
-    for (let index = 0; index < limit; index++) result[index] = visitCanonical(item[index], depth + 1, state);
-    if (limit < item.length) result[limit] = `[items:${item.length - limit}]`;
-    state.seen.delete(item);
-    return result;
-  }
-  const object = item as Record<string, unknown>;
-  const result: Record<string, unknown> = Object.create(null);
-  const keys: CanonicalKeyEntry[] = [];
-  const keyLimit = Math.max(0, MAX_HASH_NODES - state.nodes);
-  let scanned = 0;
-  let boundedKeys = false;
-  const objectKeys = Object.keys(object);
-  for (let index = 0; index < objectKeys.length; index++) {
-    const key = objectKeys[index]!;
-    scanned++;
-    if (scanned > MAX_HASH_NODES || keys.length >= keyLimit) {
-      boundedKeys = true;
-      break;
-    }
-    if (Object.hasOwn(object, key)) {
-      keys.push({ bounded: boundedCanonicalString(key, state, "key"), original: key });
-    }
-  }
-  keys.sort(compareCanonicalKeys);
-  for (let index = 0; index < keys.length; index++) {
-    const key = keys[index];
-    const boundedKey = Object.hasOwn(result, key.bounded) ? `${key.bounded}:${index}` : key.bounded;
-    result[boundedKey] = visitCanonical(object[key.original], depth + 1, state);
-  }
-  if (boundedKeys) result["[bounded-keys]"] = true;
-  state.seen.delete(item);
-  return result;
-}
-
-function canonicalize(value: unknown): string {
-  const state: CanonicalizeState = { nodes: 0, characters: 0, seen: new Set<object>() };
-  try {
-    return JSON.stringify(visitCanonical(value, 0, state));
-  } catch {
-    return "[unserializable]";
-  }
-}
-
-export function callKey(toolName: string, input: unknown): string {
-  return `${boundedToolName(toolName)}:${createHash("sha256").update(canonicalize(input)).digest("base64url").slice(0, 16)}`;
 }
 
 export interface DeterministicCallPreparation {
@@ -477,7 +385,7 @@ export async function failureRecoveryHint(
   }
   if ((toolName === "bash" || toolName === "powershell") && (failureText === UNCERTAIN_LIFECYCLE || (failureText.startsWith("[SHELL_") && category === "policy_blocked"))) return undefined;
   if (failureText.includes("Blocked an uncertain/uninspectable shell lifecycle")) {
-    return "[Lifecycle recovery] The lifecycle guard refused unsupported or uninspectable shell syntax before execution. Use a simpler inspectable foreground operation; for file work, a registered native read/write/edit tool still requires its own target permission and qualifying prior read. Broader permissions do not resolve parser limits. Do not retry unchanged or evade the guard by changing language or launcher.";
+    return "[Lifecycle recovery] This shell syntax could not be analyzed before execution. Use an equivalent inspectable foreground form or a registered native tool for the same authorized operation. Every form still requires target permission, qualifying prior reads for mutations, and a managed process lifetime. Inspect the diagnostic before retrying unchanged.";
   }
   if (failureText.includes("Blocked an unmanaged long-lived process")) {
     return "[Lifecycle recovery] A permission change cannot authorize an unmanaged process. Keep bounded use and cleanup in one foreground call with the captured PID, or use an available managed capability. Do not evade this boundary with another launcher.";
@@ -546,7 +454,11 @@ export function inspectBatchCall(
       nextAction: nested ? NESTED_DUPLICATE_ACTION : BATCH_DUPLICATE_ACTION,
     });
   }
-  setBounded(calls, key, true);
+  if (calls.size >= 256) {
+    state.blocked++;
+    return guardCapacityReason(toolName, "The bounded batch identity table is full; await calls or start a fresh turn.");
+  }
+  calls.set(key, true);
   return undefined;
 }
 
@@ -578,8 +490,8 @@ export function observeRepeatedCall(
   return `[Tool-loop reminder] ${boundedToolName(toolName)} has been called ${count} consecutive times with the same bounded canonical arguments. Re-read the latest result and change arguments or method, or finish if enough evidence has been gathered.`;
 }
 
-function warningText(toolName: string, reasons: string[]): string {
-  const text = `[Tool-loop guardrail] ${boundedToolName(toolName)}: ${reasons.join("; ")}. Stop repeating the same approach: inspect the error/state, change arguments or method, or explain the blocker.`;
+function warningText(toolName: string, reason: string): string {
+  const text = `[Tool-loop guardrail] ${boundedToolName(toolName)}: ${reason}. Stop repeating the same approach: inspect the error/state, change arguments or method, or explain the blocker.`;
   return text.length <= MAX_WARNING_CHARS ? text : text.slice(0, MAX_WARNING_CHARS);
 }
 
@@ -593,26 +505,29 @@ export function inspectBeforeCall(
   input: unknown,
   key = callKey(toolName, input),
 ): string | undefined {
-  const prefix = `${key}:`;
-  if (!state.activeFailureSignature?.startsWith(prefix)) {
-    state.activeFailureSignature = undefined;
-    state.activeFailureCount = 0;
-    return undefined;
+  const retryReason = state.retry.refusal(key);
+  if (retryReason) {
+    state.blocked++;
+    const retry = state.retry.operations.get(key);
+    return JSON.stringify({ ok: false, category: retry?.inFlight ? "TRANSIENT_RETRY_IN_FLIGHT" : "TRANSIENT_RETRY_EXHAUSTED", operation: boundedToolName(toolName),
+      retryable: retry?.inFlight === true, stateChanged: false, attempts: retry?.attempts ?? 0,
+      waitMs: retry?.waitMs ?? 0, maxAttempts: state.retry.policy.maxAttempts,
+      maxWaitMs: state.retry.policy.maxWaitMs, cause: retryReason });
   }
-  if (state.activeFailureCount < REPEATED_FAILURE_THRESHOLD) return undefined;
-  const category = state.activeFailureSignature.slice(prefix.length);
-  state.blocked++;
-  return JSON.stringify({
-    ok: false,
-    category: "REPEATED_CALL_BLOCKED",
-    operation: boundedToolName(toolName),
-    retryable: false,
-    stateChanged: false,
-    failureCategory: category,
-    failureCount: state.activeFailureCount,
-    cause: "The identical call already failed repeatedly and remains blocked until its arguments or method change.",
-    nextAction: "Inspect the original failure and change the arguments or method before retrying.",
-  });
+  const prefix = `${key}:`;
+  for (const signature of state.failuresBySignature.keys()) {
+    const count = state.failuresBySignature.get(signature)!;
+    if (!signature.startsWith(prefix)) continue;
+    if (count < REPEATED_FAILURE_THRESHOLD) continue;
+    state.blocked++;
+    return JSON.stringify({
+      ok: false, category: "REPEATED_CALL_BLOCKED", operation: boundedToolName(toolName),
+      retryable: false, stateChanged: false, failureCategory: signature.slice(prefix.length), failureCount: count,
+      cause: "The identical call already failed repeatedly in this agent run, across parent scripts.",
+      nextAction: "Inspect the original failure and change the arguments or method before retrying.",
+    });
+  }
+  return undefined;
 }
 
 export function recordResult(
@@ -623,44 +538,64 @@ export function recordResult(
   failureText = "",
   canonicalCallKey?: string,
   details?: unknown,
+  reservedRetryOperation?: RetryOperation,
+  isLeaf = true,
 ): string | undefined {
   if (isError) {
     const execution = readShellExecution(details);
     if (!execution && GUARD_BLOCK_CATEGORY_RE.test(failureText)) return undefined;
-    const category = classifyFailureText(failureText, input, toolName, details);
+    let category = classifyFailureText(failureText, input, toolName, details);
     if (execution?.producer === "agent" && execution.started === false
       && (category === "duplicate_call" || category === "repeated_call_blocked")) return undefined;
-    setBounded(state.failuresByTool, toolName, (state.failuresByTool.get(toolName) ?? 0) + 1);
-    const key = signatureKey(canonicalCallKey ?? callKey(toolName, input), category);
-    state.activeFailureCount = state.activeFailureSignature === key ? state.activeFailureCount + 1 : 1;
+    if (category === "aborted") return undefined;
+    setBounded(state.failuresByTool, boundedToolName(toolName), (state.failuresByTool.get(boundedToolName(toolName)) ?? 0) + 1);
+    const call = canonicalCallKey ?? callKey(toolName, input);
+    if (isTransientFailure(category, failureText, details)) {
+      if (state.retry.record(call, reservedRetryOperation)) return undefined;
+      // A single overflow category also bounds mixed HTTP/network/timeout failures.
+      category = "transient_retry_overflow";
+    }
+    const key = signatureKey(call, category);
+    const count = (state.failuresBySignature.get(key) ?? 0) + 1;
+    if (!state.failuresBySignature.has(key) && state.failuresBySignature.size >= MAX_TRACKED_KEYS) {
+      state.failureEvictions++;
+    }
+    setBounded(state.failuresBySignature, key, count);
+    // Compatibility diagnostics only; admission consults the bounded per-identity table.
+    state.activeFailureCount = count;
     state.activeFailureSignature = key;
-    setBounded(state.failuresBySignature, key, state.activeFailureCount);
-    if (state.activeFailureCount < REPEATED_FAILURE_THRESHOLD) return undefined;
+    if (count < REPEATED_FAILURE_THRESHOLD) return undefined;
     state.warnings++;
     if (state.activeFailureCount > REPEATED_FAILURE_THRESHOLD) {
       return `[TLG: identical ${boundedToolName(toolName)}/${category} failure still active; change approach.]`;
     }
-    return warningText(toolName, [`the identical call failed ${state.activeFailureCount} consecutive times with category ${category}`]);
+    return warningText(toolName, `the identical call failed ${state.activeFailureCount} times with category ${category}`);
   }
 
   state.activeFailureSignature = undefined;
   state.activeFailureCount = 0;
-  clearFailuresForTool(state, toolName);
-  if (READ_ONLY_TOOLS.has(toolName)) return undefined;
-  // Successful state-changing tools invalidate stale failure evidence, but the
-  // consecutive-call reminder remains independent and observes every result.
-  state.failuresByTool.clear();
-  state.failuresBySignature.clear();
+  const call = canonicalCallKey ?? callKey(toolName, input);
+  const retry = state.retry.operations.get(call);
+  // A stale retry must not erase a newer generation. An ordinary sibling may
+  // report recovery, but cannot remove another invocation's live reservation.
+  if (retry === reservedRetryOperation || (!reservedRetryOperation && !retry?.inFlight)) {
+    state.retry.operations.delete(call);
+  }
+  if (isLeaf && (toolName === "edit" || toolName === "write" || toolName === "bash" || toolName === "powershell")) {
+    // Known workspace mutations invalidate deterministic evidence, not transport budgets.
+    state.failuresBySignature.clear();
+    state.failuresByTool.clear();
+  } else {
+    const prefix = `${call}:`;
+    for (const key of state.failuresBySignature.keys()) if (key.startsWith(prefix)) state.failuresBySignature.delete(key);
+    state.failuresByTool.delete(boundedToolName(toolName));
+  }
   return undefined;
 }
 
-function clearFailuresForTool(state: GuardState, toolName: string): void {
-  state.failuresByTool.delete(toolName);
-  const prefix = `${boundedToolName(toolName)}:`;
-  for (const key of state.failuresBySignature.keys()) if (key.startsWith(prefix)) state.failuresBySignature.delete(key);
-}
-
 export function resetGuardState(state: GuardState): void {
+  state.retry.clear();
+  state.failureEvictions = 0;
   state.failuresByTool.clear();
   state.failuresBySignature.clear();
   state.batchCalls.clear();

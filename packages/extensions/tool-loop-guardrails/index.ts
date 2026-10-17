@@ -1,3 +1,5 @@
+import { CallLedger } from "./call-ledger.ts";
+import { parseRetryPolicy, RetryWait } from "./transient-retry.ts";
 import { MUTATION_READ_SOURCE } from "../../coding-agent/src/core/tools/read-window.ts";
 import process from "node:process";
 import { realpathSync } from "node:fs";
@@ -16,6 +18,7 @@ import {
   callKey,
   createGuardState,
   failureRecoveryHint,
+  guardCapacityReason,
   inspectBatchCall,
   inspectBeforeCall,
   observeRepeatedCall,
@@ -31,7 +34,6 @@ import { SNAPSHOT_FAILURE_RE } from "./regex.ts";
 import { MAX_SUBSTITUTIONS, MAX_SUBSTITUTION_NESTING } from "../resource-lifecycle-guard/shell-substitution.ts";
 
 const GUARDRAIL_CONTENT_TYPE = "text" as const;
-const MAX_PENDING_REPAIR_NOTES = 64;
 const MAX_FAILURE_TEXT_CHARS = 8_192;
 const LOOP_REMINDER_CUSTOM_TYPE = "tool-loop-reminder-v1";
 const FAILURE_ADVISORY_CUSTOM_TYPE = "tool-failure-advisory-v1";
@@ -78,19 +80,17 @@ function sendHiddenAdvisory(pi: ExtensionAPI, customType: string, content: strin
 
 export default function toolLoopGuardrails(pi: ExtensionAPI): void {
   const state = createGuardState();
-  const pendingCalls = new Map<string, { key?: string; repairNote?: string; nestedKey?: string; nestedParent?: string }>();
-  // Nested scripts may intentionally repeat a completed call after changing state.
-  // Only overlapping identical children are siblings; native batches retain their turn scope.
-  const nestedCalls = new Map<string, true>();
-  // Release time of each completed nested child, per parent. The dispatcher serializes identical
-  // siblings, so one issued before that time overlapped the first call even though it is admitted
-  // later. Times live until the parent ends; a parent issues at most 256 children, so none is evicted.
-  const nestedReleased = new Map<string, Map<string, number>>();
-  const releaseNested = (parent: string, nestedKey: string): void => {
-    nestedCalls.delete(nestedKey);
-    let released = nestedReleased.get(parent);
-    if (!released) nestedReleased.set(parent, released = new Map());
-    released.set(nestedKey, performance.now());
+  const calls = new CallLedger();
+  let configurationError: string | undefined;
+  let configured = false;
+  pi.registerFlag?.("tool-transient-retry", { type: "string", description: "JSON transient tool retry policy: maxAttempts, maxWaitMs, baseDelayMs, maxDelayMs" });
+  // CLI flags belong to the loaded extension, not to a resumed agent run. A resource
+  // loader can reuse these handlers after its original Session API becomes stale.
+  const configureRetry = (): void => {
+    if (configured) return;
+    configured = true;
+    try { state.retry.policy = parseRetryPolicy(pi.getFlag?.("tool-transient-retry")); }
+    catch (error) { configurationError = String(error).slice(0, 512); }
   };
   let nativeReadCwd = process.cwd();
   let nativeRead = createReadToolDefinition(nativeReadCwd);
@@ -115,24 +115,6 @@ export default function toolLoopGuardrails(pi: ExtensionAPI): void {
       nativeBash = createConfiguredMsysBashDefinition(cwd, projectTrusted);
     }
     return nativeBash;
-  };
-
-  const ensurePendingCapacity = (toolCallId: string): void => {
-    if (pendingCalls.has(toolCallId) || pendingCalls.size < MAX_PENDING_REPAIR_NOTES) return;
-    const oldest = pendingCalls.keys().next().value;
-    if (oldest !== undefined) pendingCalls.delete(oldest);
-  };
-  const rememberCallKey = (toolCallId: string, key: string): void => {
-    ensurePendingCapacity(toolCallId);
-    const pending = pendingCalls.get(toolCallId);
-    if (pending) pending.key = key;
-    else pendingCalls.set(toolCallId, { key });
-  };
-  const rememberRepairNote = (toolCallId: string, repairNote: string): void => {
-    ensurePendingCapacity(toolCallId);
-    const pending = pendingCalls.get(toolCallId);
-    if (pending) pending.repairNote = repairNote;
-    else pendingCalls.set(toolCallId, { repairNote });
   };
 
   pi.registerTool({
@@ -190,7 +172,7 @@ export default function toolLoopGuardrails(pi: ExtensionAPI): void {
         if (!note) throw error;
         result = await read.execute(toolCallId, input, signal, onUpdate, ctx);
         attachRepairKind(input, "read_offset_clamped");
-        rememberRepairNote(toolCallId, note);
+        calls.rememberRepair(toolCallId, note);
       }
       const sessionId = ctx.sessionManager?.getSessionId?.();
       if (!sessionId) return result;
@@ -203,65 +185,96 @@ export default function toolLoopGuardrails(pi: ExtensionAPI): void {
     },
   });
 
+  pi.on("session_start", configureRetry);
   pi.on("agent_start", () => {
     resetGuardState(state);
-    pendingCalls.clear();
-    nestedCalls.clear();
-    nestedReleased.clear();
+    calls.clear();
+    configureRetry();
   });
-  pi.on("turn_start", () => { resetBatchState(state); nestedCalls.clear(); nestedReleased.clear(); });
-  pi.on("agent_end", () => { pendingCalls.clear(); nestedCalls.clear(); nestedReleased.clear(); });
-  // Blocked, aborted and vetoed calls never reach tool_result; execution end is terminal
-  // for every call and follows tool_result when the tool actually ran.
+  pi.on("turn_start", () => { resetBatchState(state); });
+  pi.on("agent_end", () => { calls.clear(); resetGuardState(state); });
   pi.on("tool_execution_end", (event) => {
-    // A finished parent dispatches no further children.
-    nestedReleased.delete(event.toolCallId);
-    const pending = pendingCalls.get(event.toolCallId);
-    if (!pending) return;
-    pendingCalls.delete(event.toolCallId);
-    if (pending.nestedKey) releaseNested(pending.nestedParent!, pending.nestedKey);
+    for (const id of calls.pending.keys()) {
+      const pending = calls.pending.get(id)!;
+      if (id === event.toolCallId || pending.parent === event.toolCallId) {
+        const retry = state.retry.operations.get(pending.key);
+        if (retry && pending.retryOperation === retry) retry.inFlight = false;
+      }
+    }
+    calls.end(event.toolCallId);
   });
 
   pi.on("tool_call", async (event, ctx) => {
+    if (configurationError) return { block: true, reason: `[TOOL_RETRY_CONFIG] ${configurationError}` };
+    if (!calls.canAdmit(event.toolCallId, event.parentToolCallId)) {
+      return { block: true, reason: guardCapacityReason(event.toolName, "Invocation metadata capacity or identity limit reached; await pending calls or start a fresh user run.") };
+    }
+    const pending = calls.remember(event.toolCallId, "", event.parentToolCallId);
+    try {
+    const effectiveCwd = event.toolName === "bash" || event.toolName === "powershell"
+      ? resolveBashCallCwd(event.input, ctx.cwd) : ctx.cwd;
+    const preparation = await prepareDeterministicCall(event.toolName, event.input, effectiveCwd);
+    if (ctx.signal?.aborted || calls.pending.get(event.toolCallId) !== pending) {
+      calls.finish(event.toolCallId);
+      return { block: true, reason: "Operation aborted before tool admission" };
+    }
+    // Hash after preparation: a synchronous admission decision uses exactly this input.
     const key = callKey(event.toolName, event.input);
-    rememberCallKey(event.toolCallId, key);
+    pending.key = key;
     const nestedKey = event.parentToolCallId ? `${event.parentToolCallId}\0${key}` : undefined;
-    const releasedAt = nestedKey ? nestedReleased.get(event.parentToolCallId!)?.get(nestedKey) : undefined;
+    const releasedAt = nestedKey ? calls.released.get(event.parentToolCallId!)?.get(nestedKey) : undefined;
     const overlapped = releasedAt !== undefined && event.nestedIssuedAt !== undefined && event.nestedIssuedAt <= releasedAt;
-    const duplicate = inspectBatchCall(state, event.toolName, event.input, nestedKey ?? key, nestedKey ? nestedCalls : state.batchCalls, overlapped);
+    const duplicate = inspectBatchCall(state, event.toolName, event.input, nestedKey ?? key, nestedKey ? calls.nested : state.batchCalls, overlapped);
     if (duplicate) {
-      if (event.input && typeof event.input === "object") {
-        attachRepairKind(event.input as Record<PropertyKey, unknown>, "batch_duplicate_blocked");
-      }
+      if (event.input && typeof event.input === "object") attachRepairKind(event.input as Record<PropertyKey, unknown>, "batch_duplicate_blocked");
+      calls.finish(event.toolCallId);
       return { block: true, reason: duplicate };
     }
-    if (nestedKey) {
-      const pending = pendingCalls.get(event.toolCallId)!;
-      pending.nestedKey = nestedKey;
-      pending.nestedParent = event.parentToolCallId;
-    }
-    const effectiveCwd = event.toolName === "bash" || event.toolName === "powershell"
-      ? resolveBashCallCwd(event.input, ctx.cwd)
-      : ctx.cwd;
-    const preparation = await prepareDeterministicCall(event.toolName, event.input, effectiveCwd);
+    pending.nestedKey = nestedKey;
+    if (preparation.repairNote) calls.rememberRepair(event.toolCallId, preparation.repairNote);
     if (preparation.blockReason) return { block: true, reason: preparation.blockReason };
-    if (preparation.repairNote) rememberRepairNote(event.toolCallId, preparation.repairNote);
     const reason = inspectBeforeCall(state, event.toolName, event.input, key);
-    if (!reason) return undefined;
-    if (event.input && typeof event.input === "object") {
-      attachRepairKind(event.input as Record<PropertyKey, unknown>, "repeated_call_blocked");
+    if (reason) {
+      if (event.input && typeof event.input === "object") attachRepairKind(event.input as Record<PropertyKey, unknown>, "repeated_call_blocked");
+      calls.finish(event.toolCallId);
+      return { block: true, reason };
     }
-    return { block: true, reason };
+    const retry = state.retry.operations.get(key);
+    if (retry) {
+      retry.inFlight = true;
+      const delay = state.retry.delay(retry);
+      // Reserve the scheduled delay before yielding; simultaneous parents cannot spend it twice.
+      retry.waitMs += delay;
+      retry.attempts++;
+      pending.retryOperation = retry;
+      const started = performance.now();
+      const wait = pending.wait = new RetryWait();
+      const completed = await wait.start(delay, ctx.signal);
+      retry.elapsedWaitMs += performance.now() - started;
+      pending.wait = undefined;
+      if (!completed || calls.pending.get(event.toolCallId) !== pending) {
+        retry.inFlight = false;
+        calls.finish(event.toolCallId);
+        return { block: true, reason: "Operation aborted during transient retry backoff" };
+      }
+    }
+    return undefined;
+    } catch (error) {
+      calls.finish(event.toolCallId);
+      throw error;
+    }
   });
 
   pi.on("tool_result", async (event: ToolResultEvent, ctx) => {
-    const pending = pendingCalls.get(event.toolCallId);
-    pendingCalls.delete(event.toolCallId);
-    if (pending?.nestedKey) releaseNested(pending.nestedParent!, pending.nestedKey);
-    const key = pending?.key ?? callKey(event.toolName, event.input);
+    const pending = calls.finish(event.toolCallId);
+    // Unadmitted/blocked calls have no identity to record. Do not hash result-stage inputs.
+    if (!pending) return undefined;
+    const key = pending.key;
+    const retry = state.retry.operations.get(key);
+    if (retry && pending.retryOperation === retry) retry.inFlight = false;
     const repeatReminder = observeRepeatedCall(state, event.toolName, event.input, key);
     const failureText = event.isError ? boundedFailureText(event.content) : "";
-    const warning = recordResult(state, event.toolName, event.input, event.isError, failureText, key, event.details);
+    const warning = recordResult(state, event.toolName, event.input, event.isError, failureText, key, event.details, pending.retryOperation, !pending.hasChildren);
     const recoveryHint = event.isError
       ? await failureRecoveryHint(event.toolName, event.input, failureText, getShellCwdBinding(event.input)?.canonical ?? ctx.cwd, event.details)
       : undefined;

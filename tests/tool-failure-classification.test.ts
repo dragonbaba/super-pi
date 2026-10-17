@@ -72,6 +72,8 @@ for (const tool of ["bash", "powershell"]) {
     const ctx = { cwd };
     handlers.get("agent_start")!();
     for (let index = 0; index < 2; index++) {
+      handlers.get("turn_start")!();
+      assert.equal(await handlers.get("tool_call")!({ toolName: tool, toolCallId: `failed-${index}`, input }, ctx), undefined);
       const result = await handlers.get("tool_result")!({ toolName: tool, toolCallId: `failed-${index}`,
         input, isError: true, content: [{ type: "text", text }], details }, ctx);
       assert.equal(result.content[0].text, text);
@@ -79,6 +81,7 @@ for (const tool of ["bash", "powershell"]) {
       assert.doesNotMatch(result.content[1].text, /Permission recovery|Node script|Path recovery/);
     }
     assert.ok(advisories.some(message => message.customType === "tool-failure-advisory-v1" && message.content.includes("test_failed")));
+    handlers.get("turn_start")!();
     const blocked = await handlers.get("tool_call")!({ toolName: tool, toolCallId: "repeat", input }, ctx);
     assert.equal(blocked.block, true);
     assert.equal(JSON.parse(blocked.reason).failureCategory, "test_failed");
