@@ -32,6 +32,63 @@ test("prompt checks inspect only discovered parameter heads and retain primitive
 });
 
 for (const mode of ["full-access", "workspace-write"] as const) {
+  test(`review twenty-seven ${mode}: coproc keeps actual heredoc consumers and main lifecycle boundaries`, async t => {
+    for (const consumer of ["bash", "sh", "source /dev/stdin", ". /dev/stdin"]) for (const command of [
+      `coproc ${consumer} <<'EOF'\nsleep 100 &\nEOF`,
+      `coproc { ${consumer} <<'EOF'\nsleep 100 &\nEOF\n}`,
+      `coproc NAME { ${consumer} <<'EOF'\nsleep 100 &\nEOF\n}`,
+      `coproc {\n${consumer} <<'EOF'\nsleep 100 &\nEOF\n}`,
+      `coproc { ${consumer}; } <<'EOF'\nsleep 100 &\nEOF`,
+      `coproc NAME { ${consumer}; } <<'EOF'\nsleep 100 &\nEOF`,
+      `coproc ( ${consumer} <<'EOF'\nsleep 100 &\nEOF\n)`,
+      `coproc NAME ( ${consumer} <<'EOF'\nsleep 100 &\nEOF\n)`,
+      `true && coproc ${consumer} <<'EOF'\nsleep 100 &\nEOF`,
+      `coproc { coproc ${consumer} <<'EOF'\nsleep 100 &\nEOF\n}`,
+      `{ coproc { cat; }; }; coproc {\n${consumer} <<'EOF'\nsleep 100 &\nEOF\n}`,
+    ]) {
+      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_HEREDOC\]/, command);
+      const f = await shellHookFixture(t, mode), call = await f.authorize(command);
+      assert.equal(call.outcome?.block, true); assert.equal(f.dialogs(), 0);
+    }
+    for (const consumer of ["cat", "node"]) for (const command of [
+      `coproc ${consumer} <<'EOF'\nconsole.log('data')\nEOF`,
+      `coproc { ${consumer} <<'EOF'\nconsole.log('data')\nEOF\n}`,
+      `coproc NAME { ${consumer}; } <<'EOF'\nconsole.log('data')\nEOF`,
+      `coproc {\n${consumer} <<'EOF'\nconsole.log('data')\nEOF\n}`,
+      `true && coproc ${consumer} <<'EOF'\nconsole.log('data')\nEOF`,
+      `coproc { bash; }; ${consumer} <<'EOF'\nconsole.log('data')\nEOF`,
+      `coproc ${consumer} 'if' <<'EOF'\nconsole.log('data')\nEOF`,
+    ]) {
+      assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
+    }
+    for (const command of ["coproc sleep 100", "coproc { sleep 100; }", "coproc NAME { sleep 100; }", "coproc NAME ( sleep 100 )", "true && coproc sleep 100", "echo coproc"]) assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
+    assert.match(inspectBashResourceLifecycle({ command: "coproc ( sleep 100 )" }) ?? "", /\[SHELL_UNINSPECTABLE\]/);
+    assert.ok(inspectBashResourceLifecycle({ command: "coproc { sleep 100 & }" }));
+    for (const command of ["coproc if true; then node <<'EOF'\nconsole.log(1)\nEOF\nfi", "coproc NAME if true; then cat <<'EOF'\ndata\nEOF\nfi"]) assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_HEREDOC\]/, command);
+    assert.ok(inspectHighRiskBashMutation({ command: "coproc node <<'EOF'\nfs.rmSync('scratch',{recursive:true})\nEOF" }, process.cwd())?.targets.includes(resolve(process.cwd(), "scratch")));
+    for (const command of ["coproc node <<'EOF'\nfs.rmSync(target,{recursive:true})\nEOF", "coproc NAME { node; } <<'EOF'\nfs.rmSync(target,{recursive:true})\nEOF"]) {
+      assert.equal(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
+      const f = await shellHookFixture(t, mode), call = await f.authorize(command); assert.equal(call.outcome?.block, true, command); assert.equal(f.dialogs(), 0);
+    }
+  });
+  test(`review twenty-seven ${mode}: regex punctuation retains an uncertain Node mutation`, async t => {
+    for (const source of ["fs.rmSync((/\\)/, '/protected'), {recursive:true})", "fs.rm((/[)]/, target), {recursive:true}, done)", "fs.rmSync(value / divisor)"]) {
+      const command = `node - <<'EOF'\n${source}\nEOF`, mutation = inspectHighRiskBashMutation({ command }, process.cwd());
+      assert.equal(mutation?.mutationDetected, true, command); assert.equal(mutation?.unverifiableScope, true); assert.deepEqual(mutation?.targets, []);
+      const f = await shellHookFixture(t, mode), call = await f.authorize(command); assert.equal(call.outcome?.block, true); assert.equal(f.dialogs(), 0);
+    }
+    assert.notEqual(inspectHighRiskBashMutation({ command: "node - <<'EOF'\nfs.rmSync('scratch'); other({recursive:true})\nEOF" }, process.cwd())?.mutationDetected, true);
+  });
+  test(`review twenty-seven ${mode}: unquoted heredoc unescaping leaves interpreter source opaque`, async t => {
+    for (const body of ["\\`\\${require('fs').rmSync('/protected',{recursive:true})}\\`", "console.log('\\\\')", "console.log('\\$VAR')"]) {
+      const command = `node <<EOF\n${body}\nEOF`;
+      assert.equal(prepareShellAnalysis(command).hereDocuments?.[0]?.expanded, true, command);
+      assert.equal(inspectBashResourceLifecycle({ command }), undefined);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
+    }
+    assert.equal(prepareShellAnalysis("node <<'EOF'\nconsole.log('\\$VAR')\nEOF").hereDocuments?.[0]?.expanded, false);
+  });
   test(`review twenty-six ${mode}: profiler and pretty-print modes retain data-only stdin`, async t => {
     for (const prefix of ["node --prof-process", "node -i --prof-process", "node --prof-process -i", "bash --pretty-print", "bash --pretty-print +n", "bash --pretty-print -n +n", "bash --pretty-print -- -"]) {
       const body = prefix.startsWith("node") ? "fs.rmSync('/protected',{recursive:true})" : "sleep 100 &\nrm -rf /protected", command = `${prefix} <<'EOF'\n${body}\nEOF`;

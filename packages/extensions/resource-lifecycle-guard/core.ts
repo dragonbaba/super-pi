@@ -191,11 +191,13 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
   const owned = OWNED_FOREGROUND_JOB_PATTERN.exec(command);
   if (!owned || !hasBoundedOwnedUse(owned[2]) || OPAQUE_JOB_LAUNCHER_PATTERN.test(commandName(owned[1]!)) || OPAQUE_JOB_INTERPRETER_PATTERN.test(commandName(owned[1]!))) return BLOCK_REASON;
  }
- if (!SHELL_WRAPPER_TEXT_PATTERN.test(command) && !EXECUTABLE_EXPANSION_TEXT_PATTERN.test(command) && !command.includes("[[") && !command.includes("((") && !command.includes("for") && !command.includes("select")) return undefined;
+ if (!SHELL_WRAPPER_TEXT_PATTERN.test(command) && !EXECUTABLE_EXPANSION_TEXT_PATTERN.test(command) && !command.includes("[[") && !command.includes("((") && !command.includes("for") && !command.includes("select") && !command.includes("coproc")) return undefined;
  const segments = parseShellSegments(command, true);
  if (segments.length > MAX_SCRIPT_SEGMENTS) return lifecycleRefusal("SHELL_INSPECTION_LIMIT", "too many command segments", "reduce the number of segments");
  for (let segment = 0; segment < segments.length; segment++) {
   const tokens = segments[segment]!;
+  const coprocBody = coprocBodyIndex(tokens);
+  if (coprocBody >= tokens.length && tokens[coprocBody - 1] === "coproc" && tokens.separatorAfter === "(") return UNCERTAIN_LIFECYCLE;
   if (tokens.bashTestProcessSubstitution) return lifecycleRefusal("SHELL_UNINSPECTABLE", "process substitution inside a Bash test cannot be safely inspected", "split the process substitution into separately inspectable commands");
   if (hasUnsafeBashTestOperand(tokens) || hasUnsafeBashBuiltinOperand(tokens)) return lifecycleRefusal("SHELL_UNINSPECTABLE", "Bash test, callback or name operand may execute uninspected arithmetic or source", "use callback-free reads, simple variable tests and literal numeric subscripts/comparisons");
   if (hasBareBashArithmeticCommand(tokens)) return lifecycleRefusal("SHELL_UNINSPECTABLE", "arithmetic command can change later shell state", "use an inspectable foreground command without a bare arithmetic command");
@@ -720,9 +722,10 @@ function inspectCodeCall(
 		for (let match = pattern.exec(masked); match; match = pattern.exec(masked)) {
 			if (++calls > MAX_SCRIPT_SEGMENTS) { markUnverifiable(builder, true); return; }
 			const open = pattern === PYTHON_UNLINK_PATTERN ? pythonPathArgumentOpen(masked, match.index) : source.indexOf("(", match.index);
-			if (pattern === NODE_RM_CALL_PATTERN && !nodeHasRecursiveOption(masked, open)) continue;
+			const recursive = pattern === NODE_RM_CALL_PATTERN ? nodeHasRecursiveOption(masked, open) : 1;
+			if (!recursive) continue;
 			addMutationPrimitive(builder, primitive);
-			const literal = open >= 0 ? literalFirstArgument(source, open, primitive === "python_unlink") : undefined;
+			const literal = open >= 0 && recursive > 0 ? literalFirstArgument(source, open, primitive === "python_unlink") : undefined;
 			if (literal === undefined) markUnverifiable(builder, true);
 			else addTarget(builder, literal, cwd);
 		}
@@ -760,18 +763,21 @@ function pythonPathArgumentOpen(masked: string, methodDot: number): number {
 
 /** The existing mask removes strings/comments. Balance this call's parentheses
  * only; do not decode or evaluate nested arguments or borrow a later call's flag. */
-function nodeHasRecursiveOption(masked: string, open: number): boolean {
+function nodeHasRecursiveOption(masked: string, open: number): number {
 	let depth = 1;
 	try {
 		for (let index = open + 1; index < masked.length; index++) {
 			const code = masked.charCodeAt(index);
+			// A remaining slash can start a regex literal or division. Neither is
+			// parsed by this mask; do not let its punctuation erase a known rm call.
+			if (code === 47) return -1;
 			if (code === 40) depth++;
-			else if (code === 41 && --depth === 0) return false;
+			else if (code === 41 && --depth === 0) return 0;
 			if (code !== 82 && code !== 114) continue;
 			NODE_RECURSIVE_OPTION_PATTERN.lastIndex = index;
-			if (NODE_RECURSIVE_OPTION_PATTERN.test(masked)) return true;
+			if (NODE_RECURSIVE_OPTION_PATTERN.test(masked)) return 1;
 		}
-		return false;
+		return 0;
 	} finally { NODE_RECURSIVE_OPTION_PATTERN.lastIndex = 0; }
 }
 
@@ -1215,11 +1221,61 @@ export function heredocConsumers(header: string, descriptor = 0, depth = 0, pipe
 
 type HeredocBinding = { header: string; contextEnd: number; bodyEnd: number; descriptor: number };
 export function heredocDocumentConsumers(document: { header: string; pipelineHeader?: string; contextEnd?: number; bodyEnd?: number; descriptor: number }, command?: string, documents?: readonly HeredocBinding[]): number {
-	const functions = command && (command.includes("(") || command.includes("function")) ? parseShellSegments(command.slice(0, document.contextEnd)) : undefined;
+	const functions = command && (command.includes("(") || command.includes("function") || command.includes("coproc")) ? parseShellSegments(command.slice(0, document.contextEnd)) : undefined;
 	const pipelineStart = document.pipelineHeader ? parseShellSegments(document.header).length - 1 : undefined;
-	return heredocConsumers(document.header, document.descriptor, 0, false, functions)
+	const consumers = heredocConsumers(document.header, document.descriptor, 0, false, functions)
 		| (document.pipelineHeader ? heredocConsumers(document.pipelineHeader, document.descriptor, 0, true, functions, pipelineStart) : 0)
 		| persistedHeredocConsumers(document, command, documents);
+	const coprocContext = functions ? coprocHeredocContext(functions) : 0;
+	return coprocContext === 2 || consumers & 1 && coprocContext ? consumers | 8 : consumers;
+}
+
+/** Locate a literal coproc keyword at a command head, never an argv occurrence.
+ * Return its body offset, -1 for ordinary argv, or -2 for unbounded syntax. */
+function coprocBodyIndex(tokens: ShellSegment): number {
+	let index = 0;
+	while (tokens[index] === "{" || tokens[index] === "then" || tokens[index] === "else" || tokens[index] === "do"
+		|| tokens[index] === "if" || tokens[index] === "elif" || tokens[index] === "while" || tokens[index] === "until") {
+		if (index > 2 || (index === 0 ? tokens.firstWordQuoted : index === 1 ? tokens.secondWordQuoted : tokens.thirdWordQuoted)) return -1;
+		index++;
+	}
+	index = bashPipelinePrefixEnd(tokens, index);
+	if (index < 0 || tokens[index] !== "coproc") return -1;
+	if (index > 2) return -2;
+	if (index === 0 ? tokens.firstWordQuoted : index === 1 ? tokens.secondWordQuoted : tokens.thirdWordQuoted) return -1;
+	index++;
+	// Other compound grammars need their own nesting proof. Keep main's heredoc
+	// refusal rather than treating a partially scanned body as ordinary input.
+	for (let word = index; word <= index + 1; word++) {
+		if (word === 1 && tokens.secondWordQuoted || word === 2 && tokens.thirdWordQuoted) continue;
+		const value = tokens[word];
+		if (value === "if" || value === "while" || value === "until" || value === "for" || value === "select" || value === "case") return -2;
+	}
+	// A name precedes a compound command, not an ordinary simple command.
+	if (tokens[index + 1] === "{" || tokens.length === index + 1 && tokens.separatorAfter === "(") index++;
+	return index;
+}
+
+/** Reuse the bounded prefix's segment view. Only primitive brace/subshell state
+ * survives between segments; no alias, variable or process tracking is added. */
+function coprocHeredocContext(segments: readonly ShellSegment[]): number {
+	let braces = 0, coprocBrace = 0, coprocSubshell = -1, piped = false, current = false;
+	for (const tokens of segments) {
+		const body = coprocBodyIndex(tokens);
+		if (body === -2) return 2;
+		current = coprocBrace > 0 || coprocSubshell >= 0 && (tokens.subshellDepth ?? 0) > coprocSubshell || piped || body >= 0;
+		if (body >= 0) for (let word = 0; tokens[word] === "{"; word++) braces++;
+		if (body >= 0 && tokens[body] === "{") { if (!coprocBrace) coprocBrace = braces + 1; }
+		if (body >= tokens.length && tokens.separatorAfter === "(") coprocSubshell = tokens.subshellDepth ?? 0;
+		let word = body >= 0 ? body : 0;
+		if (!tokens.firstWordQuoted || body >= 0) {
+			while (tokens[word] === "{") { braces++; word++; }
+			if (tokens[0] === "}") { if (braces > 0) braces--; if (braces < coprocBrace) coprocBrace = 0; }
+		}
+		if (coprocSubshell >= 0 && tokens.subshellClosedAfter && (tokens.subshellDepth ?? 0) === coprocSubshell + 1) coprocSubshell = -1;
+		piped = current && (tokens.separatorAfter === "|" || tokens.separatorAfter === "|&");
+	}
+	return current ? 1 : 0;
 }
 
 function isPersistentHeredocDeclaration(header: string): boolean {
@@ -1436,9 +1492,13 @@ function stdinScriptConsumers(segments: ShellSegment[], descriptor: number, dept
 
 function simpleStdinConsumers(tokens: ShellSegment, descriptor: number, depth: number, functions?: ShellSegment[], start = 0, sourceOnly = false): number {
 	if (depth > MAX_WRAPPER_DEPTH) return 8;
-	let index = start || commandTokenIndex(tokens);
+	const coprocBody = coprocBodyIndex(tokens);
+	if (coprocBody === -2) return 8;
+	let index = start || (coprocBody >= 0 ? coprocBody : commandTokenIndex(tokens));
+	if (coprocBody >= 0 && index >= tokens.length) return 8;
 	if (index < 0 || index >= tokens.length) return 0;
 	while (tokens[index] === "{" || tokens[index] === "do" || tokens[index] === "then" || tokens[index] === "else" || tokens[index] === "if" || tokens[index] === "elif" || tokens[index] === "while" || tokens[index] === "until") index++;
+	if (coprocBody >= 0 && tokens[index] === "coproc") return 8;
 	index = bashPipelinePrefixEnd(tokens, index);
 	if (index < 0) return sourceOnly ? 0 : 8;
 	let functionsAllowed = true;

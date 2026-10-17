@@ -608,7 +608,11 @@ export function prepareShellAnalysis(command: string): ShellAnalysisView {
       let expanded = false;
       if (!delimiter.quoted) {
         for (let cursor = 0; cursor < body.length; cursor++) {
-          if (body[cursor] === "\\") { cursor++; continue; }
+          if (body[cursor] === "\\") {
+            const next = body.charCodeAt(cursor + 1);
+            if (next === 36 || next === 96 || next === 92) expanded = true;
+            cursor++; continue;
+          }
           if (body[cursor] === "$" || body[cursor] === "`") { expanded = true; break; }
         }
         const nested = extractCommandSubstitutions(body, true);

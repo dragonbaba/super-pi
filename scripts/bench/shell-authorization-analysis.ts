@@ -12,6 +12,14 @@ const cwd = process.cwd(), iterations = 512, warmup = 64, samplingInterval = 409
 const literalInputs = process.argv.includes("--literal-inputs");
 const substitution = "$(grep -c -E '(class|function|const|var|let) GCSystem\\b' pixi/pixi.js)";
 const cases = literalInputs ? [
+  ["coproc-shell-heredoc", "coproc bash <<'EOF'\nsleep 100 &\nEOF", 2],
+  ["coproc-brace-shell", "coproc {\nbash <<'EOF'\nsleep 100 &\nEOF\n}", 2],
+  ["coproc-node-heredoc", "coproc NAME { node; } <<'EOF'\nfs.rmSync(target,{recursive:true})\nEOF", 1],
+  ["coproc-data-heredoc", "coproc cat <<'EOF'\nsleep 100 &\nEOF", 1],
+  ["coproc-subshell", "coproc ( sleep 100 )", 1],
+  ["coproc-existing-boundary", "coproc NAME { sleep 100; }", 1],
+  ["node-regex-argument", "node <<'EOF'\nfs.rmSync((/\\)/, '/protected'),{recursive:true})\nEOF", 1],
+  ["node-heredoc-unescape", "node <<EOF\n\\`\\${require('fs').rmSync('/protected',{recursive:true})}\\`\nEOF", 1],
   ["node-prof-process", "node --prof-process <<'EOF'\nfs.rmSync('/protected',{recursive:true})\nEOF", 1],
   ["bash-pretty-print", "bash --pretty-print <<'EOF'\nsleep 100 &\nEOF", 1],
   ["bash-pretty-print-plus-n", "bash --pretty-print +n <<'EOF'\nsleep 100 &\nEOF", 1],
