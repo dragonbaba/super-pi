@@ -553,6 +553,7 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
   if (analysis.hereDocuments) for (const document of analysis.hereDocuments) {
     const body = heredocExecutableBody(document, analysis.command);
     if (heredocDocumentConsumers(document, analysis.command, analysis.hereDocuments) & 1 && body !== undefined) {
+      if (document.expanded) { markUncertainContext(builder, "heredoc_expanded_source"); continue; }
       if (document.priorSource || document.pipelineHeader || heredocHasUntrackedCwd(document.header)) builder.uncertainContext = true;
       inspectScript(body, initialCwd, depth + 1, builder);
     }

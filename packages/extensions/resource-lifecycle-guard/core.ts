@@ -513,8 +513,8 @@ function inspectShellScript(script: string, initialCwd: string, depth: number, b
 	if (analysis.hereDocuments) for (const document of analysis.hereDocuments) {
 		const consumers = heredocDocumentConsumers(document, analysis.command, analysis.hereDocuments), body = heredocExecutableBody(document, analysis.command);
 		if (consumers & 15 && (document.priorSource || document.pipelineHeader || heredocHasUntrackedCwd(document.header))) markUnverifiable(builder);
-		if (consumers & 1 && body !== undefined) inspectShellScript(body, initialCwd, depth + 1, builder, "bash");
-		if (consumers & 6 && document.expanded) { addPrimitive(builder, "heredoc_expanded_source"); markUnverifiable(builder); }
+		if (consumers & 1 && body !== undefined && !document.expanded) inspectShellScript(body, initialCwd, depth + 1, builder, "bash");
+		if (consumers & 7 && document.expanded) { addPrimitive(builder, "heredoc_expanded_source"); markUnverifiable(builder); }
 		if (consumers & 2 && body !== undefined && !document.expanded) inspectEmbeddedCode(body, "node", initialCwd, builder);
 		if (consumers & 4 && body !== undefined && !document.expanded) inspectEmbeddedCode(body, "python", initialCwd, builder);
 		if (consumers & 8) markUnverifiable(builder);

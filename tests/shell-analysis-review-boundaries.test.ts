@@ -57,6 +57,8 @@ for (const mode of ["full-access", "workspace-write"] as const) {
     for (const consumer of ["source /dev/stdin", ". /dev/stdin"]) {
       const command = `PAYLOAD='rm -rf /protected'; ${consumer} <<EOF\n$PAYLOAD\nEOF`;
       assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_HEREDOC\]/);
+      assert.ok(inspectHighRiskBashMutation({ command }, process.cwd())?.primitives.includes("heredoc_expanded_source"));
+      assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "opaque-script");
       const f = await shellHookFixture(t, mode), call = await f.authorize(command); assert.equal(call.outcome?.block, true); assert.equal(f.dialogs(), 0);
     }
     for (const command of ["source <(printf '%s' 'echo ok')", "source /dev/stdin <<'EOF'\necho ok\nEOF", 'node <<EOF\n$PAYLOAD\nEOF', 'cat <<EOF\n$PAYLOAD\nEOF']) {
