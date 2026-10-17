@@ -8,7 +8,7 @@ import { isLiteralReadLoop } from "./readonly-loop.ts";
 import { isReadOnlyFindLoop } from "./readonly-find-loop.ts";
 import { findPredicateHasOperand, isReadOnlySortTail } from "./readonly-find.ts";
 import { sortHasTerminalOption, sortLongOption, sortOptionRequiresValue } from "./sort-options.ts";
-import { PYTHON_COMMAND_PATTERN } from "./regex.ts";
+import { NODE_COMMAND_PATTERN, PYTHON_COMMAND_PATTERN } from "./regex.ts";
 import { bashPipelinePrefixEnd, bashScriptOperandIndex, hasStatefulBashPrintf, isBashArithmeticCommandHead, isBashNetworkRedirectionTarget, shellExpansionRisk, hasUnsafeBashTestOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 
 const MAX_COMMAND_CHARS = 128 * 1024;
@@ -20,7 +20,7 @@ const READ_ONLY_COMMANDS = new Set([
 ]);
 const SCRIPT_WRAPPERS = new Set(["bash", "bash.exe", "sh", "zsh", "cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "pwsh.exe"]);
 const OPAQUE_RUNNERS = new Set([
-  "bun", "bun.exe", "deno", "deno.exe", "node", "node.exe", "npm", "npm.cmd", "npx", "npx.cmd", "pnpm", "pnpm.cmd", "yarn", "yarn.cmd",
+  "bun", "bun.exe", "deno", "deno.exe", "npm", "npm.cmd", "npx", "npx.cmd", "pnpm", "pnpm.cmd", "yarn", "yarn.cmd",
 ]);
 const SIMPLE_MUTATIONS = new Set(["del", "erase", "mkdir", "md", "rm", "rmdir", "rd", "touch"]);
 const COPY_COMMANDS = new Set(["cp", "copy"]);
@@ -444,9 +444,9 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
     inspectScript(source, cwd, depth + 1, builder);
     return cwd;
   }
-  if (PYTHON_COMMAND_PATTERN.test(command) || OPAQUE_RUNNERS.has(command)) {
+  if (PYTHON_COMMAND_PATTERN.test(command) || NODE_COMMAND_PATTERN.test(command) || OPAQUE_RUNNERS.has(command)) {
     addClass(builder, runnerClass(command, tokens, index + 1));
-    if (command === "node" || command === "node.exe") {
+    if (NODE_COMMAND_PATTERN.test(command)) {
       const checkIndex = tokens.indexOf("--check", index + 1);
       if (checkIndex >= 0 && tokens[checkIndex + 1] && !hasDynamicSyntax(tokens[checkIndex + 1]!)) return cwd;
     }

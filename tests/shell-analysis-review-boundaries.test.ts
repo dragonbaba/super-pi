@@ -6,7 +6,8 @@ import { inspectBashPermissionScope } from "../packages/extensions/resource-life
 import { extractCommandSubstitutions, prepareShellAnalysis, shellAnalysisCounters } from "../packages/extensions/resource-lifecycle-guard/shell-substitution.ts";
 import { shellHookFixture, assertFinalAuthorization } from "./codemode-recovery/shell-hook-fixture.ts";
 import { SessionPermissionController, workspace } from "./codemode-recovery/guard-fixture.ts";
-import { NODE_LITERAL_METHOD_KEY_PATTERN, NODE_RM_CALL_PATTERN, NODE_UNLINK_PATTERN, PYTHON_COMMAND_PATTERN, PYTHON_RMTREE_PATTERN, PYTHON_UNLINK_PATTERN } from "../packages/extensions/resource-lifecycle-guard/regex.ts";
+import { codeMethodNameCounters } from "../packages/extensions/resource-lifecycle-guard/code-method-names.ts";
+import { NODE_COMMAND_PATTERN, NODE_LITERAL_METHOD_KEY_PATTERN, NODE_RM_CALL_PATTERN, NODE_UNLINK_PATTERN, PYTHON_COMMAND_PATTERN, PYTHON_RMTREE_PATTERN, PYTHON_UNLINK_PATTERN } from "../packages/extensions/resource-lifecycle-guard/regex.ts";
 
 function literalProgram(interpreter: string, body: string, heredoc: boolean): string {
   return heredoc ? `${interpreter} <<'EOF'\n${body}\nEOF` : `${interpreter} ${interpreter === "node" ? "-e" : "-c"} '${body.replaceAll("'", "'\\''")}'`;
@@ -49,11 +50,37 @@ test("bounded interpreter matchers reset borrowed regex state", () => {
     assert.equal(NODE_LITERAL_METHOD_KEY_PATTERN.lastIndex, 0); assert.equal(NODE_RM_CALL_PATTERN.lastIndex, 0); assert.equal(NODE_UNLINK_PATTERN.lastIndex, 0);
   }
   assert.equal(PYTHON_COMMAND_PATTERN.global, false); assert.equal(PYTHON_COMMAND_PATTERN.sticky, false);
+  assert.equal(NODE_COMMAND_PATTERN.global, false); assert.equal(NODE_COMMAND_PATTERN.sticky, false);
   for (const count of [1, 64, 65]) for (const call of ["shutil.rmtree.__call__(target)", "Path(target).unlink.__call__()"] ) {
     const command = literalProgram("python", Array(count).fill(call).join("; "), true);
     assert.equal(inspectHighRiskBashMutation({ command }, process.cwd())?.unverifiableScope, true);
     assert.equal(PYTHON_RMTREE_PATTERN.lastIndex, 0); assert.equal(PYTHON_UNLINK_PATTERN.lastIndex, 0);
   }
+});
+
+test("ASCII methods and non-property Unicode/escapes allocate no decoding or normalization strings", () => {
+  const before = { ...codeMethodNameCounters };
+  for (let repeat = 0; repeat < 16; repeat++) for (const [language, body] of [
+    ["node", "fs.rmSync(target,{recursive:true}); fs['unlinkSync'](target); fs.other(1); const data=['hello\\n'];"],
+    ["node", String.raw`const \u0061=1; console.log("fs.r\u006dSync(target)"); // fs.r\u006dSync(target)`],
+    ["python", "shutil.rmtree.__call__(target); Path(target).unlink(); 中文变量=1; print(中文变量)"],
+    ["python", 'print("shutil.ｒmtree(target)"); # shutil.ｒmtree(target)'],
+  ]) inspectHighRiskBashMutation({ command: literalProgram(language, body, true) }, process.cwd());
+  assert.deepEqual(codeMethodNameCounters, before);
+  inspectHighRiskBashMutation({ command: literalProgram("node", String.raw`fs.r\u006dSync(target,{recursive:true})`, true) }, process.cwd());
+  assert.equal(codeMethodNameCounters.nodeDecodes - before.nodeDecodes, 1); assert.ok(codeMethodNameCounters.codePointStrings > before.codePointStrings);
+  inspectHighRiskBashMutation({ command: literalProgram("python", "shutil.ｒmtree(target)", true) }, process.cwd());
+  assert.equal(codeMethodNameCounters.pythonNormalizations - before.pythonNormalizations, 1); assert.equal(codeMethodNameCounters.sourceSlices - before.sourceSlices, 1);
+  assert.ok(Object.values(codeMethodNameCounters).every(value => typeof value === "number"));
+});
+
+test("escaped strings in array data do not enter property decoding", () => {
+  const before = { ...codeMethodNameCounters };
+  const text = "x".repeat(300) + String.raw`\u0061`;
+  for (const body of [`const data=['${text}']`, `console.log(['${text}'])`, `function f(){return ['${text}']}`, `function* f(){yield ['${text}']}`, `const nested=[['${text}']]`]) {
+    const scan = inspectHighRiskBashMutation({ command: literalProgram("node", body, true) }, process.cwd()); assert.notEqual(scan?.mutationDetected, true, body);
+  }
+  assert.deepEqual(codeMethodNameCounters, before);
 });
 
 test("subscript text checks share the substitution scan and retain no source", () => {
@@ -81,6 +108,58 @@ test("prompt checks inspect only discovered parameter heads and retain primitive
 });
 
 for (const mode of ["full-access", "workspace-write"] as const) {
+  test(`review thirty-eight ${mode}: all Node basenames share eval and heredoc deletion checks`, async t => {
+    for (const name of ["nodejs", "nodejs.exe", "NODEJS", "/usr/bin/nodejs", "env nodejs", "env FOO=1 /usr/bin/NODEJS.EXE"]) for (const form of ["-e", "--eval", "heredoc"]) {
+      const command = form === "heredoc" ? literalProgram(name, "unlinkSync(process.argv[1])", true) : `${name} ${form} 'unlinkSync(process.argv[1])'`;
+      const scan = inspectHighRiskBashMutation({ command }, process.cwd()); assert.equal(scan?.mutationDetected, true, command); assert.equal(scan?.unverifiableScope, true);
+      const f = await shellHookFixture(t, mode), result = await f.authorize(command); assert.equal(result.outcome?.block, true, command); assert.equal(f.dialogs(), 0);
+      const harmless = command.replace("unlinkSync(process.argv[1])", "console.log(1)"), g = await shellHookFixture(t, mode);
+      assert.equal(inspectBashPermissionScope({ command: harmless }, process.cwd())?.kind, "opaque-script"); assertFinalAuthorization(await g.authorize(harmless)); assert.equal(g.dialogs(), mode === "workspace-write" ? 1 : 0);
+    }
+    for (const name of ["bun", "deno", "pypy3"]) {
+      const command = literalProgram(name, "unlinkSync(process.argv[1])", true), f = await shellHookFixture(t, mode);
+      assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
+    }
+    assert.match(inspectBashResourceLifecycle({ command: literalProgram("foo /usr/bin/NODEJS.EXE", "ordinary data", true) }) ?? "", /SHELL_HEREDOC/);
+  });
+  test(`review thirty-eight ${mode}: escaped Node and normalized Python methods retain target assessment`, async t => {
+    for (const heredoc of [false, true]) for (const [language, body, literal] of [
+      ["node", String.raw`fs.r\u006dSync(target,{recursive:true})`, String.raw`fs.r\u006dSync('build',{recursive:true})`],
+      ["node", String.raw`fs.r\u{6d}Sync?.(target,{recursive:true})`, String.raw`fs.r\u{6d}Sync?.('build',{recursive:true})`],
+      ["node", String.raw`fs.\u0075nlinkSync(target)`, String.raw`fs.\u0075nlinkSync('build')`],
+      ["node", String.raw`fs?.['r\x6dSync'](target,{recursive:true})`, String.raw`fs?.['r\x6dSync']('build',{recursive:true})`],
+      ["node", String.raw`fs /* receiver */ ['r\x6dSync'](target,{recursive:true})`, String.raw`fs /* receiver */ ['r\x6dSync']('build',{recursive:true})`],
+      ["node", String.raw`fs[ /* before */ 'r\x6dSync' /* after */ ](target,{recursive:true})`, String.raw`fs[ /* before */ 'r\x6dSync' /* after */ ]('build',{recursive:true})`],
+      ["node", String.raw`fs["unl\u{69}nkSync"]?.(target)`, String.raw`fs["unl\u{69}nkSync"]?.('build')`],
+      ["python", "shutil.ｒmtree(target)", "shutil.ｒmtree('build')"],
+      ["python", "Path(target).ｕnlink()", "Path('build').ｕnlink()"],
+      ["python", "shutil.ｒmtree.__ｃall__(target)", "shutil.ｒmtree.__ｃall__('build')"],
+      ["python", "(Path(target).ｕnlink . __ｃall__)()", "(Path('build').ｕnlink . __ｃall__)()"],
+      ["python", "(shutil # comment\n.ｒmtree)(target)", "(shutil # comment\n.ｒmtree)('build')"],
+    ]) {
+      for (const command of [literalProgram(language, body, heredoc), ...(heredoc ? [`{ ${literalProgram(language, body, true)}\n}`] : [])]) {
+        const scan = inspectHighRiskBashMutation({ command }, process.cwd()); assert.equal(scan?.mutationDetected, true, command); assert.equal(scan?.unverifiableScope, true); assert.deepEqual(scan?.targets, []);
+        const f = await shellHookFixture(t, mode), result = await f.authorize(command); assert.equal(result.outcome?.block, true, command); assert.equal(f.dialogs(), 0);
+      }
+      const scan = inspectHighRiskBashMutation({ command: literalProgram(language, literal, heredoc) }, process.cwd()); assert.deepEqual(scan?.targets, [resolve("build")], literal); assert.equal(scan?.unverifiableScope, false, literal);
+    }
+    for (const body of [String.raw`fs.r\u006dSync.call(null,target,{recursive:true})`, String.raw`fs.rmSync.c\u0061ll(null,target,{recursive:true})`, String.raw`fs['unl\u0069nkSync'].apply(null,[target])`, String.raw`fs.r\uZZZZSync(target)`, String.raw`fs['r\xZZSync'](target)`, String.raw`fs.\u{110000}(target)`, `fs.${"x".repeat(256)}\\u006d(target)`, `fs['${"x".repeat(256)}\\u006d'](target)`]) {
+      const command = literalProgram("node", body, true), scan = inspectHighRiskBashMutation({ command }, process.cwd()); assert.equal(scan?.mutationDetected, true, command); assert.equal(scan?.unverifiableScope, true, command);
+      const f = await shellHookFixture(t, mode), result = await f.authorize(command); assert.equal(result.outcome?.block, true, command); assert.equal(f.dialogs(), 0);
+    }
+  });
+  test(`review thirty-eight ${mode}: identifier data and indirect properties remain opaque`, async t => {
+    for (const heredoc of [false, true]) for (const [language, body] of [
+      ["node", String.raw`const \u0061=1; console.log(1)`], ["node", String.raw`console.log("fs.r\u006dSync(target)")`], ["node", String.raw`// fs.r\u006dSync(target)`],
+      ["node", String.raw`fs.r\u006dSync('build')`], ["node", String.raw`fs.l\u006fg(1)`], ["node", String.raw`fs['r\x6d'+'Sync'](target,{recursive:true})`], ["node", String.raw`const data=['hello\n','r\\u006dSync'];`],
+      ["node", String.raw`const remove=fs.r\u006dSync; remove(target,{recursive:true})`], ["node", "fs[name](target,{recursive:true})"],
+      ["python", "中文变量=1; print(中文变量)"], ["python", "对象.中文方法()"], ["python", 'print("shutil.ｒmtree(target)")'], ["python", "# shutil.ｒmtree(target)"],
+      ["python", "getattr(shutil,'ｒmtree')(target)"], ["python", "shutil.ｒmtree.__ｃall__.__call__(target)"],
+    ]) {
+      const command = literalProgram(language, body, heredoc); assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0, command);
+    }
+  });
   test(`review thirty-seven ${mode}: py runtime selectors preserve executable input`, async t => {
     for (const name of ["py", "py.exe", "/usr/bin/PY.EXE", "env py"]) for (const selector of ["-V:3.12", "-V:PythonCore/3.12", "-V:Acme/VirtualPython3.12", "-3.12"]) {
       for (const suffix of ["", " -c 'shutil.rmtree(sys.argv[1])'"]) {

@@ -8,6 +8,7 @@ test("authorization scanners and cache methods add no callbacks, promises or Buf
     ["shell-analysis.ts", new Set(["analyzeShellSource", "get", "assertCurrent", "release"])],
     ["shell-substitution.ts", new Set(["prepareShellAnalysis", "removeHeredocContinuations", "heredocDeclarationEnd", "collectHereDelimiters", "heredocDescriptorCopy", "isShellWordBoundary", "isFunctionSubstitutionStart", "extractCommandSubstitutions", "commandSubstitutionEnd"])],
     ["core.ts", new Set(["inspectBashResourceLifecycle", "inspectLifecycleScript", "inspectHighRiskBashMutation", "inspectShellScript", "heredocConsumer", "heredocConsumers", "heredocDocumentConsumers", "heredocExecutableBody", "decodeLiteralBase64", "stdinScriptConsumers", "simpleStdinConsumers", "functionStdinConsumers", "persistedHeredocConsumers", "isPersistentHeredocDeclaration", "heredocHasAliasRisk", "hasUninspectableBashState", "uninspectableBashStateStart", "hasUnboundDescriptorSource", "descriptorBoundAt", "pipelineDescriptorConnected", "parseShellSegments", "literalProcessSources", "isTransparentStdinStage", "literalStoredScripts", "literalAdjacentSource", "literalPreviousAssignment", "literalEvalScript", "literalAliasSource", "isHeredocDescriptorPath", "nodeMayReadStdin", "heredocHasUntrackedCwd", "addMutationPrimitive", "inspectEmbeddedCode", "inspectCodeCall", "inspectOutputRedirections", "inspectPowerShellRemove", "inspectWindowsRmdir", "inspectXargs", "collectPositionalTargets", "addPrimitive", "addTarget", "addResolvedTarget", "markUnverifiable", "maskCodeStringsAndComments", "literalFirstArgument", "inspectFind"])],
+    ["code-method-names.ts", new Set(["isCodeMethodNamePart", "hexDigit", "writeCodeMethodName", "writeEscapedNodeMethodKey", "nodeDeletionName", "nodeKeyTriviaEnd", "hasBracketReceiver", "keyWhitespace", "failedName", "decodeNodeName", "writeName"])],
     ["permission-bash.ts", new Set(["inspectScript", "inspectBashPermissionScope", "inspectKnownMutation", "markMutation", "markUncertainContext", "addResolvedTarget", "addTarget"])],
     ["shell-redirection.ts", new Set(["isShellOutputFileRedirection", "isShellFileDescriptor", "shellRedirectionLength", "hasUnsafeBashTestOperand", "isBashIntegerLiteral", "hasOnlySimpleQueryVariables", "isQueryVariableStart", "isQueryVariablePart", "isQueryVariableDigit", "isReadOnlySpecialParameter", "bashPipelinePrefixEnd", "bashTimeOptionsEnd", "isQuotedBashWord"])],
     ["readonly-find.ts", new Set(["findPredicateHasOperand"])],
@@ -117,7 +118,20 @@ test("interpreter call helpers allocate no per-call regexes, strings or containe
   for (const statement of source.statements) if (ts.isFunctionDeclaration(statement) && statement.name && names.has(statement.name.text)) { seen.add(statement.name.text); ts.forEachChild(statement.body!, audit); }
   assert.deepEqual(seen, names);
   for (const file of ["core.ts", "permission-bash.ts"]) assert.ok(readFileSync(`packages/extensions/resource-lifecycle-guard/${file}`, "utf8").includes("PYTHON_COMMAND_PATTERN.test("));
+  for (const file of ["core.ts", "permission-bash.ts"]) assert.ok(readFileSync(`packages/extensions/resource-lifecycle-guard/${file}`, "utf8").includes("NODE_COMMAND_PATTERN.test("));
   assert.equal(readFileSync("packages/extensions/resource-lifecycle-guard/core.ts", "utf8").includes("PYTHON_COMMANDS"), false);
+  assert.equal(readFileSync("packages/extensions/resource-lifecycle-guard/core.ts", "utf8").includes("NODE_COMMANDS"), false);
+});
+
+test("method-name ASCII helpers contain no string construction or per-call allocation", () => {
+  const source = ts.createSourceFile("code-method-names.ts", readFileSync("packages/extensions/resource-lifecycle-guard/code-method-names.ts", "utf8"), ts.ScriptTarget.Latest, true);
+  const names = new Set(["isCodeMethodNamePart", "hexDigit", "nodeDeletionName", "keyWhitespace", "failedName", "writeName"]), seen = new Set<string>();
+  function audit(node: ts.Node): void {
+    assert.equal(ts.isNewExpression(node) || ts.isObjectLiteralExpression(node) || ts.isArrayLiteralExpression(node) || ts.isArrowFunction(node) || ts.isFunctionExpression(node) || ts.isRegularExpressionLiteral(node) || ts.isTemplateExpression(node) || ts.isCallExpression(node), false, node.getText(source));
+    ts.forEachChild(node, audit);
+  }
+  for (const statement of source.statements) if (ts.isFunctionDeclaration(statement) && statement.name && names.has(statement.name.text)) { seen.add(statement.name.text); ts.forEachChild(statement.body!, audit); }
+  assert.deepEqual(seen, names);
 });
 
 test("heredoc consumer fallback shares name classification without path copies or temporary containers", () => {

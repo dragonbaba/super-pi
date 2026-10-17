@@ -5,6 +5,7 @@ import { decodeLiteralBase64, heredocConsumerCounters, inspectBashResourceLifecy
 import { inspectBashPermissionScope } from "../../packages/extensions/resource-lifecycle-guard/permission-bash.ts";
 import { ShellAnalysisOwner, shellAnalysisOwnership, MAX_ANALYSIS_BYTES, MAX_ANALYSIS_ENTRIES } from "../../packages/extensions/resource-lifecycle-guard/shell-analysis.ts";
 import { shellAnalysisCounters } from "../../packages/extensions/resource-lifecycle-guard/shell-substitution.ts";
+import { codeMethodNameCounters } from "../../packages/extensions/resource-lifecycle-guard/code-method-names.ts";
 
 const gc = (globalThis as { gc?: () => void }).gc;
 assert.ok(gc, "run with --expose-gc");
@@ -12,6 +13,18 @@ const cwd = process.cwd(), iterations = 512, warmup = 64, samplingInterval = 409
 const literalInputs = process.argv.includes("--literal-inputs");
 const substitution = "$(grep -c -E '(class|function|const|var|let) GCSystem\\b' pixi/pixi.js)";
 const cases = literalInputs ? [
+  ["node-array-string-data", "node <<'EOF'\nconst data=['" + "x".repeat(300) + "\\u0061'];\nEOF", 1],
+  ["node-escaped-key-trivia", "node <<'EOF'\nfs[ /* before */ 'unl\\u{69}nkSync' /* after */ ](target)\nEOF", 1],
+  ["node-ascii-methods", "node <<'EOF'\nfs.rmSync(target,{recursive:true}); fs['unlinkSync'](target)\nEOF", 1],
+  ["python-ascii-methods", "python <<'EOF'\nshutil.rmtree.__call__(target); Path(target).unlink()\nEOF", 1],
+  ["nodejs-heredoc", "env /usr/bin/NODEJS.EXE <<'EOF'\nunlinkSync(target)\nEOF", 1],
+  ["nodejs-eval", "nodejs --eval 'unlinkSync(target)'", 1],
+  ["node-escaped-method", "node <<'EOF'\nfs.r\\u006dSync(target,{recursive:true})\nEOF", 1],
+  ["node-escaped-key", "node <<'EOF'\nfs['unl\\u{69}nkSync'](target)\nEOF", 1],
+  ["node-escape-failure", "node <<'EOF'\nfs.r\\uZZZZSync(target)\nEOF", 1],
+  ["python-normalized-method", "python <<'EOF'\nshutil.ｒmtree.__ｃall__(target)\nEOF", 1],
+  ["python-unrelated-unicode", "python <<'EOF'\n中文变量=1; print(中文变量)\nEOF", 1],
+  ["python-unrelated-property", "python <<'EOF'\n对象.中文方法()\nEOF", 1],
   ["python-launcher-selector", "py -V:Acme/VirtualPython3.12 <<'EOF'\nshutil.rmtree(target)\nEOF", 1],
   ["python-rmtree-call-dynamic", "python <<'EOF'\nshutil.rmtree.__call__(sys.argv[1])\nEOF", 1],
   ["python-unlink-call-dynamic", "python <<'EOF'\nPath(argv).unlink.__call__()\nEOF", 1],
@@ -230,7 +243,7 @@ function analyze(command: string, lifecycle = "complete"): void {
 for (const [name, command, uniqueSources] of cases) {
   for (let i = 0; i < warmup; i++) analyze(command);
   gc();
-  const before = { ...shellAnalysisCounters }, ownership = { ...shellAnalysisOwnership }, consumerCalls = heredocConsumerCounters.tailCalls, consumerWords = heredocConsumerCounters.tailWords;
+  const before = { ...shellAnalysisCounters }, methodNamesBefore = { ...codeMethodNameCounters }, ownership = { ...shellAnalysisOwnership }, consumerCalls = heredocConsumerCounters.tailCalls, consumerWords = heredocConsumerCounters.tailWords;
   const session = new Session(); session.connect();
   let sampledBytes = 0;
   let consumerHelperSampledBytes = 0;
@@ -251,6 +264,8 @@ for (const [name, command, uniqueSources] of cases) {
     }
   } finally { session.disconnect(); }
   const counters = Object.fromEntries(Object.entries(shellAnalysisCounters).map(([key, value]) => [key, value - before[key as keyof typeof before]]));
+  const methodNameCounters = Object.fromEntries(Object.entries(codeMethodNameCounters).map(([key, value]) => [key, value - methodNamesBefore[key as keyof typeof methodNamesBefore]]));
+  if (name === "node-ascii-methods" || name === "python-ascii-methods" || name === "python-unrelated-unicode" || name === "nodejs-eval" || name === "nodejs-heredoc" || name === "node-array-string-data") for (const value of Object.values(methodNameCounters)) assert.equal(value, 0);
   assert.equal(counters.prepareCalls, iterations * uniqueSources);
   assert.ok(counters.subscriptTextChars <= counters.substitutionInputBytes / 2);
   assert.equal(shellAnalysisOwnership.misses - ownership.misses, iterations * uniqueSources);
@@ -258,7 +273,7 @@ for (const [name, command, uniqueSources] of cases) {
   assert.equal(shellAnalysisOwnership.liveEntries, 0);
   assert.equal(shellAnalysisOwnership.liveBytes, 0);
   sites.sort((a, b) => b.bytes - a.bytes); times.sort((a, b) => a - b);
-  console.log(JSON.stringify({ name, iterations, warmup, samplingInterval, counters,
+  console.log(JSON.stringify({ name, iterations, warmup, samplingInterval, counters, methodNameCounters,
     consumerTailCalls: heredocConsumerCounters.tailCalls - consumerCalls, consumerTailWords: heredocConsumerCounters.tailWords - consumerWords, consumerHelperSampledBytesPerAnalysis: consumerHelperSampledBytes / iterations,
     cacheHits: shellAnalysisOwnership.hits - ownership.hits, cacheMisses: shellAnalysisOwnership.misses - ownership.misses,
     sampledBytesPerAnalysis: Math.round(sampledBytes / iterations), p50Ms: times[256], p95Ms: times[486], topSites: sites.slice(0, 8) }));

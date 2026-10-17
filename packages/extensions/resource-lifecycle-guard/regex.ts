@@ -50,10 +50,9 @@ export const OPAQUE_JOB_LAUNCHER_PATTERN = /^(?:env|sudo|doas|nice|nohup|setsid|
 // basename/lowercase copy. All interpreter callers share this one matcher.
 export const PYTHON_COMMAND_PATTERN = /(?:^|[\\/])(?:python(?:[0-9]+(?:\.[0-9]+)*)?|py)(?:\.exe)?$/iu;
 export const HEREDOC_SHELL_COMMAND_PATTERN = /(?:^|[\\/])(?:bash|sh|zsh|dash|ksh|fish)(?:\.exe)?$/iu;
-export const HEREDOC_NODE_COMMAND_PATTERN = /(?:^|[\\/])node(?:\.exe)?$/iu;
+export const NODE_COMMAND_PATTERN = /(?:^|[\\/])node(?:js)?(?:\.exe)?$/iu;
 export const HEREDOC_SOURCE_COMMAND_PATTERN = /(?:^|[\\/])(?:source|\.)(?:\.exe)?$/iu;
 // Python ownership, code and permission classification share the matcher above.
-export const OPAQUE_JOB_INTERPRETER_PATTERN = /^node(?:js)?(?:\.exe)?$/iu;
 export const OWNED_USE_COMMAND_PATTERN = /^(?:curl|test|true|false|echo)(?:[ \t]+[A-Za-z0-9_./:%?=,+-]+)*$/u;
 export const SHELL_WRAPPER_TEXT_PATTERN = /sh|eval|trap|alias|timeout|mapfile|readarray|test/iu;
 export const EXECUTABLE_EXPANSION_TEXT_PATTERN = /[$`*?\[\]{}%]/u;

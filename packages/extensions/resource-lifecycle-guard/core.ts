@@ -7,7 +7,7 @@ import {
 	EXECUTABLE_EXPANSION_TEXT_PATTERN,
 	HEAD_COUNT_OPTION_PATTERN,
 	HEREDOC_SHELL_COMMAND_PATTERN,
-	HEREDOC_NODE_COMMAND_PATTERN,
+	NODE_COMMAND_PATTERN,
 	HEREDOC_SOURCE_COMMAND_PATTERN,
 	LEADING_ASSIGNMENT_PATTERN,
 	LEADING_REDIRECTION_PATTERN,
@@ -20,7 +20,6 @@ import {
 	NODE_LITERAL_METHOD_KEY_PATTERN,
 	NONNEGATIVE_INTEGER_PATTERN,
 	SIMPLE_BASH_LET_ASSIGNMENT_PATTERN,
-	OPAQUE_JOB_INTERPRETER_PATTERN,
 	OPAQUE_JOB_LAUNCHER_PATTERN,
 	OWNED_FOREGROUND_JOB_PATTERN,
 	OWNED_USE_COMMAND_PATTERN,
@@ -45,6 +44,7 @@ import { isReadOnlyFindLoop } from "./readonly-find-loop.ts";
 import { isLiteralReadLoop } from "./readonly-loop.ts";
 import { bashArithmeticForHeader, bashLoopVariableIndex, bashPipelinePrefixEnd, bashScriptOperandIndex, unsafeBashForHeaderReason, hasStatefulBashPrintf, shellExpansionRisk, hasUnsafeBashTestOperand, hasUnsafeBashLoopListOperand, hasUnsafeCommandQueryOperand, isBashArithmeticCommandHead, isBashDoubleBracketCloseBoundary, isBashNetworkRedirectionTarget, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isLookupSensitiveBashVariable, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 import { FD_DUPLICATION_PATTERN } from "./regex.ts";
+import { isCodeMethodNamePart, writeCodeMethodName, writeEscapedNodeMethodKey } from "./code-method-names.ts";
 import { diagnosticForPrimitives, policyMetadata, renderPolicyDiagnostic, type PolicyDiagnosticMetadata } from "./policy-diagnostics.ts";
 
 const MAX_INSPECTED_COMMAND_CHARS = 128 * 1024;
@@ -56,7 +56,6 @@ const MAX_SCRIPT_SEGMENTS = 64;
 const MAX_WRAPPER_DEPTH = 4;
 const SCRIPT_WRAPPERS = new Set(["bash", "bash.exe", "sh", "sh.exe", "zsh", "zsh.exe", "dash", "dash.exe", "ksh", "ksh.exe", "fish", "fish.exe"]);
 const POWERSHELL_WRAPPERS = new Set(["powershell", "powershell.exe", "pwsh", "pwsh.exe"]);
-const NODE_COMMANDS = new Set(["node", "node.exe"]);
 // Documented zero-value switches; unknown option arity retains both interpretations.
 const NODE_VALUE_FREE_FLAGS = new Set([
 	"--no-warnings", "--trace-warnings", "--no-deprecation", "--trace-deprecation", "--throw-deprecation", "--trace-uncaught",
@@ -200,7 +199,7 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
   const owned = OWNED_FOREGROUND_JOB_PATTERN.exec(command);
   if (!owned || !hasBoundedOwnedUse(owned[2])) return BLOCK_REASON;
   const ownedName = commandName(owned[1]!);
-  if (OPAQUE_JOB_LAUNCHER_PATTERN.test(ownedName) || PYTHON_COMMAND_PATTERN.test(ownedName) || OPAQUE_JOB_INTERPRETER_PATTERN.test(ownedName)) return BLOCK_REASON;
+  if (OPAQUE_JOB_LAUNCHER_PATTERN.test(ownedName) || PYTHON_COMMAND_PATTERN.test(ownedName) || NODE_COMMAND_PATTERN.test(ownedName)) return BLOCK_REASON;
  }
  if (!SHELL_WRAPPER_TEXT_PATTERN.test(command) && !EXECUTABLE_EXPANSION_TEXT_PATTERN.test(command) && !command.includes("[[") && !command.includes("((") && !command.includes("for") && !command.includes("select") && !command.includes("coproc")) return undefined;
  const segments = parseShellSegments(command, true);
@@ -649,7 +648,7 @@ function inspectCommand(
 		inspectScriptWrapper(tokens, commandIndex + 1, POWERSHELL_SCRIPT_FLAGS, cwd, depth, builder, "powershell");
 		return;
 	}
-	if (NODE_COMMANDS.has(command)) {
+	if (NODE_COMMAND_PATTERN.test(command)) {
 		inspectCodeWrapper(tokens, commandIndex + 1, "node", cwd, builder);
 		return;
 	}
@@ -711,7 +710,7 @@ function inspectCodeWrapper(
 }
 
 function inspectEmbeddedCode(source: string, language: "node" | "python", cwd: string, builder: ScanBuilder): void {
-	const masked = maskCodeStringsAndComments(source, language);
+	const masked = maskCodeStringsAndComments(source, language, builder);
 	if (language === "python") {
 		inspectCodeCall(source, masked, PYTHON_RMTREE_PATTERN, "python_rmtree", cwd, builder);
 		inspectCodeCall(source, masked, PYTHON_UNLINK_PATTERN, "python_unlink", cwd, builder);
@@ -1542,7 +1541,7 @@ export const heredocConsumerCounters = { tailCalls: 0, tailWords: 0 };
 function heredocConsumerKind(value: string): number {
 	if (HEREDOC_SOURCE_COMMAND_PATTERN.test(value)) return 16;
 	if (HEREDOC_SHELL_COMMAND_PATTERN.test(value)) return 1;
-	if (HEREDOC_NODE_COMMAND_PATTERN.test(value)) return 2;
+	if (NODE_COMMAND_PATTERN.test(value)) return 2;
 	return PYTHON_COMMAND_PATTERN.test(value) ? 4 : 0;
 }
 
@@ -2523,13 +2522,14 @@ function staticTargetPrefix(target: string): string | undefined {
 	return end > 0 ? target.slice(0, end) : undefined;
 }
 
-function maskCodeStringsAndComments(source: string, language: "node" | "python"): string {
+function maskCodeStringsAndComments(source: string, language: "node" | "python", builder: ScanBuilder): string {
 	const output = new Array<string>(source.length);
 	let quote = 0;
 	let triple = false;
 	let lineComment = false;
 	let blockComment = false;
 	let escaped = false;
+	let propertyStart = -2; // -2: not a property; -1: after a dot, before its name.
 	for (let index = 0; index < source.length; index++) {
 		const code = source.charCodeAt(index);
 		const next = source.charCodeAt(index + 1);
@@ -2570,6 +2570,7 @@ function maskCodeStringsAndComments(source: string, language: "node" | "python")
 			continue;
 		}
 		if (language === "node" && code === 47 && next === 47) {
+			if (propertyStart >= 0) propertyStart = -2;
 			output[index] = " ";
 			output[index + 1] = " ";
 			index++;
@@ -2577,6 +2578,7 @@ function maskCodeStringsAndComments(source: string, language: "node" | "python")
 			continue;
 		}
 		if (language === "node" && code === 47 && next === 42) {
+			if (propertyStart >= 0) propertyStart = -2;
 			output[index] = " ";
 			output[index + 1] = " ";
 			index++;
@@ -2584,6 +2586,7 @@ function maskCodeStringsAndComments(source: string, language: "node" | "python")
 			continue;
 		}
 		if (language === "python" && code === 35) {
+			if (propertyStart >= 0) propertyStart = -2;
 			output[index] = " ";
 			lineComment = true;
 			continue;
@@ -2592,10 +2595,16 @@ function maskCodeStringsAndComments(source: string, language: "node" | "python")
 			output[index] = " "; continue;
 		}
 		if (code === 34 || code === 39 || (language === "node" && code === 96)) {
+			propertyStart = -2;
 			const keyEnd = language === "node" ? nodeLiteralMethodKeyEnd(source, index) : index;
 			if (keyEnd > index) {
 				for (; index < keyEnd; index++) output[index] = source[index]!;
 				index--; continue;
+			}
+			if (language === "node" && code !== 96) {
+				const decodedEnd = writeEscapedNodeMethodKey(source, output, index);
+				if (decodedEnd < 0) { addMutationPrimitive(builder, "node_unresolved_method"); markUnverifiable(builder, true); }
+				else if (decodedEnd > 0) { index = decodedEnd - 1; continue; }
 			}
 			quote = code;
 			triple = language === "python" && next === code && source.charCodeAt(index + 2) === code;
@@ -2606,6 +2615,16 @@ function maskCodeStringsAndComments(source: string, language: "node" | "python")
 				index += 2;
 			}
 			continue;
+		}
+		if (code === 46) propertyStart = -1;
+		else if (propertyStart !== -2) {
+			if (language === "node" && code === 92 && next === 117 || language === "python" && code >= 128 && isCodeMethodNamePart(code)) {
+				const end = writeCodeMethodName(source, output, propertyStart < 0 ? index : propertyStart, language);
+				propertyStart = -2;
+				if (end < 0) { addMutationPrimitive(builder, "node_unresolved_method"); markUnverifiable(builder, true); }
+				else { index = end - 1; continue; }
+			} else if (isCodeMethodNamePart(code)) { if (propertyStart === -1) propertyStart = index; }
+			else if (propertyStart >= 0 || !isCodeWhitespace(code)) propertyStart = -2;
 		}
 		output[index] = source[index]!;
 	}
