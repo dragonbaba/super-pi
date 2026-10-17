@@ -108,6 +108,41 @@ test("prompt checks inspect only discovered parameter heads and retain primitive
 });
 
 for (const mode of ["full-access", "workspace-write"] as const) {
+  test(`review thirty-nine ${mode}: interactive Python inspects descriptor scripts before stdin`, async t => {
+    for (const name of ["python3", "env python3.12", "/usr/bin/PYTHON3.12.EXE", "py -V:Acme/3.13"]) for (const boundary of ["", "-- "]) for (const descriptor of [3, 4]) {
+      const path = descriptor === 3 ? "/dev/fd/3" : "/proc/self/fd/4";
+      const command = `${name} -i ${boundary}${path} ${descriptor}<<'EOF'\nshutil.rmtree(sys.argv[1])\nEOF`;
+      const scan = inspectHighRiskBashMutation({ command }, process.cwd()); assert.equal(scan?.mutationDetected, true, command); assert.equal(scan?.unverifiableScope, true);
+      const f = await shellHookFixture(t, mode), result = await f.authorize(command); assert.equal(result.outcome?.block, true, command); assert.equal(f.dialogs(), 0);
+      const harmless = command.replace("shutil.rmtree(sys.argv[1])", "print(1)"), g = await shellHookFixture(t, mode);
+      assertFinalAuthorization(await g.authorize(harmless)); assert.equal(g.dialogs(), mode === "workspace-write" ? 1 : 0);
+    }
+    for (const header of ["python3 -i /dev/fd/3", "python3 -i -- /dev/fd/3"]) assert.equal(heredocConsumers(header, 0), 4, "interactive stdin remains executable after the descriptor script");
+    for (const header of ["bash -s /dev/fd/3", "bash -s -- /dev/fd/3"]) { assert.equal(heredocConsumers(header, 3), 0); assert.equal(heredocConsumers(header, 0), 1); }
+  });
+  test(`review thirty-nine ${mode}: missing Python option operands do not execute heredoc input`, async t => {
+    for (const option of ["-W", "-X", "-iW", "-iX", "--check-hash-based-pycs"]) {
+      const command = `python3 ${option} <<'EOF'\nshutil.rmtree(sys.argv[1])\nEOF`;
+      assert.equal(inspectBashResourceLifecycle({ command }), undefined, command); assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
+    }
+    for (const option of ["-W ignore", "-Wignore", "-X dev", "-Xdev", "--check-hash-based-pycs always"]) {
+      const command = `python3 ${option} <<'EOF'\nshutil.rmtree(sys.argv[1])\nEOF`, f = await shellHookFixture(t, mode);
+      assert.equal((await f.authorize(command)).outcome?.block, true, command); assert.equal(f.dialogs(), 0);
+    }
+  });
+  test(`review thirty-nine ${mode}: sort ambiguity terminates its own output effects`, async t => {
+    for (const options of ["--i -o .git/config", "-o .git/config --i", "-T ../outside --c -o .git/config", "--i=x --output=.git/config"]) {
+      const command = `sort ${options}`, scan = inspectBashPermissionScope({ command }, process.cwd()); assert.equal(scan?.kind, "read-only", command); assert.deepEqual(scan?.targets, []);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), 0);
+    }
+    for (const command of ["printf x > .git/config; sort --i -o output", "sort --i > .git/config"]) {
+      const scan = inspectBashPermissionScope({ command }, process.cwd()); assert.notEqual(scan?.kind, "read-only", command); assert.ok(scan?.targets.includes(resolve(".git/config")));
+    }
+    assert.equal(inspectBashPermissionScope({ command: "sort -o --i input" }, process.cwd())?.kind, "known-mutation", "an option operand is not an ambiguous option");
+    assert.equal(inspectBashPermissionScope({ command: "sort -- --i -o file" }, process.cwd())?.kind, "read-only");
+    assert.equal(inspectBashPermissionScope({ command: "sort --unknown --i -o file" }, process.cwd())?.kind, "opaque-script");
+  });
   test(`review thirty-eight ${mode}: all Node basenames share eval and heredoc deletion checks`, async t => {
     for (const name of ["nodejs", "nodejs.exe", "NODEJS", "/usr/bin/nodejs", "env nodejs", "env FOO=1 /usr/bin/NODEJS.EXE"]) for (const form of ["-e", "--eval", "heredoc"]) {
       const command = form === "heredoc" ? literalProgram(name, "unlinkSync(process.argv[1])", true) : `${name} ${form} 'unlinkSync(process.argv[1])'`;

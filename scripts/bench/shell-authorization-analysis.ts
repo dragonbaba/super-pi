@@ -13,6 +13,9 @@ const cwd = process.cwd(), iterations = 512, warmup = 64, samplingInterval = 409
 const literalInputs = process.argv.includes("--literal-inputs");
 const substitution = "$(grep -c -E '(class|function|const|var|let) GCSystem\\b' pixi/pixi.js)";
 const cases = literalInputs ? [
+  ["python-interactive-descriptor", "python3 -i /dev/fd/3 3<<'EOF'\nshutil.rmtree(target)\nEOF", 1],
+  ["python-missing-warning-option", "python3 -W <<'EOF'\nshutil.rmtree(target)\nEOF", 1],
+  ["sort-ambiguous-output", "sort -o .git/config --i", 1],
   ["node-array-string-data", "node <<'EOF'\nconst data=['" + "x".repeat(300) + "\\u0061'];\nEOF", 1],
   ["node-escaped-key-trivia", "node <<'EOF'\nfs[ /* before */ 'unl\\u{69}nkSync' /* after */ ](target)\nEOF", 1],
   ["node-ascii-methods", "node <<'EOF'\nfs.rmSync(target,{recursive:true}); fs['unlinkSync'](target)\nEOF", 1],

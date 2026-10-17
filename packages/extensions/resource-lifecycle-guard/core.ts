@@ -1642,20 +1642,30 @@ function simpleStdinConsumers(tokens: ShellSegment, descriptor: number, depth: n
 		const option = tokens[cursor]!;
 		if (tokens.expansions?.[cursor]) return language === "bash" ? 8 : languageMask;
 		if (option === "-") return (shellNoexec || shellPrettyPrint) && !shellInteractive ? 16 : stdinMask;
-		if (option === "--") return tokens.expansions?.[cursor + 1] ? language === "bash" ? 8 : languageMask : (shellNoexec || shellPrettyPrint) && !shellInteractive ? 16 : shellStdin || cursor + 1 === tokens.length || tokens[cursor + 1] === "-" ? stdinMask : isHeredocDescriptorPath(tokens[cursor + 1], descriptor) ? languageMask : 0;
-		if (!option.startsWith("-") && !(language === "bash" && option.startsWith("+"))) return (shellNoexec || shellPrettyPrint) && !shellInteractive ? 16 : shellStdin ? stdinMask : isHeredocDescriptorPath(option, descriptor) ? languageMask : 0;
+		if (option === "--") {
+			if (tokens.expansions?.[cursor + 1]) return language === "bash" ? 8 : languageMask;
+			if ((shellNoexec || shellPrettyPrint) && !shellInteractive) return 16;
+			if (shellStdin && language === "bash" || cursor + 1 === tokens.length || tokens[cursor + 1] === "-") return stdinMask;
+			return isHeredocDescriptorPath(tokens[cursor + 1], descriptor) ? languageMask : shellStdin ? stdinMask : 0;
+		}
+		if (!option.startsWith("-") && !(language === "bash" && option.startsWith("+"))) {
+			if ((shellNoexec || shellPrettyPrint) && !shellInteractive) return 16;
+			if (shellStdin && language === "bash") return stdinMask;
+			// Python -i executes its script before reading interactive stdin.
+			return isHeredocDescriptorPath(option, descriptor) ? languageMask : shellStdin ? stdinMask : 0;
+		}
 		if (option === "--help" || option === "--version" || language !== "bash" && option === "-h" || language === "python" && option === "-V") return 0;
 		if (language === "python") {
 			if (option === "--help-env" || option === "--help-xoptions" || option === "--help-all") return 0;
 			// py's attached runtime selector is one operand, not a cluster of
 			// Python flags; V/c/m/i inside Company/Tag cannot change stdin mode.
 			if ((name === "py" || name === "py.exe") && option.startsWith("-V:")) continue;
-			if (option === "--check-hash-based-pycs") { cursor++; if (tokens.expansions?.[cursor]) return languageMask; continue; }
+			if (option === "--check-hash-based-pycs") { if (++cursor >= tokens.length) return 16; if (tokens.expansions?.[cursor]) return languageMask; continue; }
 			if (!option.startsWith("--")) for (let flag = 1; flag < option.length; flag++) {
 				if (option[flag] === "V") return 0;
 				if (option[flag] === "i") shellStdin = true;
 				if (option[flag] === "c" || option[flag] === "m") return shellStdin ? stdinMask : 0;
-				if (option[flag] === "W" || option[flag] === "X") { if (flag + 1 === option.length) { cursor++; if (tokens.expansions?.[cursor]) return languageMask; } break; }
+				if (option[flag] === "W" || option[flag] === "X") { if (flag + 1 === option.length) { if (++cursor >= tokens.length) return 16; if (tokens.expansions?.[cursor]) return languageMask; } break; }
 			}
 		} else {
 			if (option === "--rcfile" || option === "--init-file") { if (++cursor >= tokens.length) return 16; continue; }

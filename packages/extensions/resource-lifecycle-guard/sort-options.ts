@@ -32,7 +32,7 @@ export function sortLongOption(token: string, end: number): string | undefined {
 
 export function sortOptionRequiresValue(name: string): boolean { return SORT_REQUIRED_VALUES.has(name); }
 
-/** Help/version exit before sort opens output. Check argv before committing this
+/** Help/version and ambiguous options exit before sort opens output. Check argv before committing this
  * invocation's effects; existing shell redirections and earlier calls survive. */
 export function sortHasTerminalOption(tokens: readonly string[] & { expansions?: readonly number[] }, start: number): boolean {
   for (let index = start; index < tokens.length; index++) {
@@ -40,7 +40,8 @@ export function sortHasTerminalOption(tokens: readonly string[] & { expansions?:
     if (tokens.expansions?.[index] || word === "--") return false;
     if (word.startsWith("--")) {
       const equals = word.indexOf("="), name = sortLongOption(word, equals < 0 ? word.length : equals);
-      if (!name) return false;
+      if (name === undefined) return false;
+      if (name === "") return true;
       if (name === "help" || name === "version") return equals < 0;
       if (equals < 0 && sortOptionRequiresValue(name)) { index++; if (tokens.expansions?.[index]) return false; }
     } else if (word.startsWith("-")) {
