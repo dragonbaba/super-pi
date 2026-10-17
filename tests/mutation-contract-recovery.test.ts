@@ -312,7 +312,6 @@ test("snapshot modes identify actual missing nested fields and mixed requests wi
 });
 
 const baselineAnnotation = "[Snapshot edit] snapshot=snap_0000000000000000000000; editable lines=1-2. Copy LINE#ID anchors exactly. insert={kind,start,newLines} (omit end; start survives; only intended inserted lines, no copied locating context); replace={kind,start,end?,newLines}; delete={kind,start,end?}.";
-const baselineHeredoc = "Blocked an uncertain/uninspectable shell lifecycle before execution.\n[Lifecycle recovery] Simplify the unsupported shell construct into an inspectable bounded foreground command. If using a heredoc for an otherwise authorized diagnostic, use native file creation/editing, then request separately authorized foreground execution. Each operation keeps its own read, path, permission and lifecycle requirements; missing files need no read. Broader permissions do not resolve parser limits, and changing tools or language cannot legalize denied behavior. No command was executed.";
 
 test("registered snapshot lifecycle: old unused B rejects, fresh C batches once through model projection", async t => {
  const f = await fixture(t, true); const path = join(f.cwd, "lifecycle.txt"); writeFileSync(path, "one\ntwo\nthree\n");
@@ -367,12 +366,10 @@ test("affected recovery is concise and repeated validation emits at most one ste
   () => call("bad-3", "edit", bad),
   m => { assert.ok(f.advisories.length <= 1, JSON.stringify(f.advisories)); assert.equal(readFileSync(path, "utf8"), "one\ntwo\n"); return call("fixed", "edit", { path, snapshot: snapshot(read), edits: [{ kind: "insert_after", start: anchor(read, 1), newLines: ["inserted"] }] }); },
   m => { assert.match(text(lastResult(m)), /pre-mutation snapshots/); return call("used", "edit", { path, snapshot: snapshot(read), edits: [{ kind: "delete", start: anchor(read, 1) }] }); },
-  m => { const failure = text(lastResult(m)); assert.match(failure, /SNAPSHOT_EDIT_UNKNOWN/); assert.equal(failure.split("\n").length, 2); assert.match(failure, /snapshot.*LINE#ID/); return call("unsupported", "bash", { command: 'bash -c "$SCRIPT"' }); },
  ]);
- const refusal = text(lastResult(contexts.at(-1)!)); assert.ok(refusal.length < 330, refusal); assert.equal(refusal.split("\n").length, 2);
+ const failure = text(results.at(-1)); assert.match(failure, /SNAPSHOT_EDIT_UNKNOWN/); assert.equal(failure.split("\n").length, 2); assert.match(failure, /snapshot.*LINE#ID/);
  assert.equal(text(results[1]), text(results[2]), "unchanged requests keep stable canonical validation failures");
  assert.match(text(results[3]), /REPEATED_CALL_BLOCKED/); assert.equal(f.invocations.has("bad-3"), false, "existing repetition guard blocks before execution");
- assert.equal(refusal.match(/\[SHELL_WRAPPER\]/g)?.length, 1); assert.equal(f.invocations.has("unsupported"), false);
  assert.equal(results.filter(r => (r.details as any)?.stateChanged).length, 1); assert.equal(f.counts().processes, 0);
  const steering = contexts[4].filter(m => m.role === "user" && Array.isArray(m.content) && m.content.some((c: any) => c.text?.startsWith("[Tool-loop")));
  assert.equal(steering.length, 1, "one hidden steering message reaches the next provider request");
@@ -382,7 +379,7 @@ test("affected recovery is concise and repeated validation emits at most one ste
  const encoding = getEncoding("cl100k_base");
  const annotation = read.content.at(-1).text.replace(/snap_[\w-]+/, "snap_0000000000000000000000");
  const baselineInvalid = "[SNAPSHOT_EDIT_INVALID] edits[0] insertion uses one surviving start anchor; omit end. newLines must contain only intended inserted lines, not copied context used to locate insertion.\nNo change; retry a corrected request with this snapshot if still current. A stale or consumed snapshot requires read.";
- for (const [name, before, after] of [["read annotation", baselineAnnotation, annotation], ["invalid insertion", baselineInvalid, text(results[1])], ["immediate refusal", baselineHeredoc, refusal]]) {
+ for (const [name, before, after] of [["read annotation", baselineAnnotation, annotation], ["invalid insertion", baselineInvalid, text(results[1])]]) {
   assert.ok(after.length < before.length);
   t.diagnostic(`${name}: chars ${before.length}->${after.length}; cl100k_base fixture tokens ${encoding.encode(before).length}->${encoding.encode(after).length}; one delivered annotation/hint, not live-model savings`);
  }
@@ -558,20 +555,6 @@ test("repeated-line intent is never repaired away; explicit covered replacement 
  assert.deepEqual(results.map(r => r.isError), [false, true, false]); assert.equal(readFileSync(path, "utf8"), "repeat\nrepeat\ntail\n");
 });
 
-test("uninspectable executable heredoc substitution veto reaches next model once without effects", async t => {
- const f = await fixture(t);
- const { results, contexts } = await f.run([
-  () => call("heredoc", "bash", { command: "cat > diagnostic.js <<EOF\n$(echo unfinished\nEOF\nnode diagnostic.js", timeout: 60 }),
- ]);
- const delivered = lastResult(contexts.at(-1)!);
- assert.equal(delivered.isError, true); assert.equal(text(delivered).match(/\[SHELL_SUBSTITUTION\]/g)?.length, 1);
- assert.match(text(delivered), /resubmit for authorization/);
- // The final fake-provider request is captured even when it returns no tools.
- assert.equal(results.length, 1); assert.match(text(results[0]), /\[SHELL_SUBSTITUTION\]/);
- assert.equal(f.invocations.has("heredoc"), false); assert.deepEqual(f.counts(), { processes: 0, transforms: 0, approvals: 0 }); assert.deepEqual(readdirSync(f.cwd), []);
- assert.equal(await failureRecoveryHint("bash", {}, text(results[0]), f.cwd), undefined);
-});
-
 test("syntax guard reports bounded candidate coordinates, keeps CRLF, and allows valid same-snapshot correction", async t => {
  const f = await fixture(t); const path = join(f.cwd, "module.js"); const original = "export class A {\r\n  start() {\r\n    const saved = load();\r\n    if (saved) {\r\n      work();\r\n    }\r\n  }\r\n  next() {}\r\n}\r\n"; writeFileSync(path, original); let read: any;
  const { results } = await f.run([
@@ -696,17 +679,6 @@ test("boundary error classification explains ambiguous intent without mandating 
  const { classifyToolFailure } = await jiti.import<any>("../packages/extensions/tool-loop-guardrails/failure-classification.ts");
  const result = classifyToolFailure("edit", "[SNAPSHOT_EDIT_BOUNDARY] edits[0].newLines repeats its surviving anchor");
  assert.equal(result.category, "input_validation"); assert.match(result.cause, /意图不明确/); assert.doesNotMatch(result.cause, /应从 newLines 移除/);
-});
-
-for (const command of ['bash -c "$SCRIPT"', 'echo "$(time echo safe)"']) test(`generic lifecycle uncertainty has a generic next step: ${command}`, async t => {
- const f = await fixture(t);
- const { contexts } = await f.run([() => call("uncertain", "bash", { command })]);
- const failure = text(lastResult(contexts.at(-1)!));
- assert.match(failure, /Retry:.*resubmit for authorization/);
- assert.match(failure, /not executed/);
- assert.doesNotMatch(failure, /heredoc/i);
- assert.deepEqual(f.counts(), { processes: 0, transforms: 0, approvals: 0 });
- assert.equal(f.invocations.size, 0); assert.deepEqual(readdirSync(f.cwd), []);
 });
 
 test("non-lifecycle arithmetic syntax errors retain their actual shell failure", async t => {

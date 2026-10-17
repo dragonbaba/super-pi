@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { basename, resolve } from "node:path";
-import { uninspectableBashStateStart, heredocDocumentConsumers, heredocExecutableBody, heredocHasUntrackedCwd, literalAliasSource, literalEvalScript, literalProcessSources, literalStoredScripts, unsafeBashLoopHeaderReason } from "./core.ts";
+import { staticMutationTarget, uninspectableBashStateStart, heredocDocumentConsumers, heredocExecutableBody, heredocHasUntrackedCwd, literalAliasSource, literalEvalScript, literalProcessSources, literalStoredScripts, unsafeBashLoopHeaderReason } from "./core.ts";
 import { commandSubstitutionEnd } from "./shell-substitution.ts";
 import { analyzeShellSource, type ShellAnalysisOwner } from "./shell-analysis.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
@@ -22,7 +22,8 @@ const SCRIPT_WRAPPERS = new Set(["bash", "bash.exe", "sh", "zsh", "cmd", "cmd.ex
 const OPAQUE_RUNNERS = new Set([
   "bun", "bun.exe", "deno", "deno.exe", "npm", "npm.cmd", "npx", "npx.cmd", "pnpm", "pnpm.cmd", "yarn", "yarn.cmd",
 ]);
-const SIMPLE_MUTATIONS = new Set(["del", "erase", "mkdir", "md", "rm", "rmdir", "rd", "touch"]);
+const SIMPLE_DELETIONS = new Set(["del", "erase", "rm", "rmdir", "rd"]);
+const SIMPLE_MUTATIONS = new Set([...SIMPLE_DELETIONS, "mkdir", "md", "touch"]);
 const COPY_COMMANDS = new Set(["cp", "copy"]);
 const MOVE_COMMANDS = new Set(["mv", "move", "rename", "ren"]);
 const GIT_READ_ONLY = new Set(["status", "diff", "log", "show", "ls-files", "rev-parse"]);
@@ -32,6 +33,9 @@ export type BashPermissionKind = "read-only" | "known-mutation" | "opaque-script
 export interface BashPermissionScope {
   kind: BashPermissionKind;
   targets: string[];
+  /** Actual operands of already-recognized delete/move commands, excluding opaque cwd. */
+  destructiveTargets?: string[];
+  moveDestinations?: string[];
   primitives: string[];
   classes: string[];
   dynamicScope: boolean;
@@ -78,14 +82,22 @@ function addClass(builder: ScopeBuilder, value: string): void {
   }
 }
 
-function addTarget(builder: ScopeBuilder, value: string, cwd: string, mutation = false, expansion = 0): void {
-  if (expansion || hasDynamicSyntax(value)) {
+function addTarget(builder: ScopeBuilder, value: string, cwd: string, mutation = false, expansion = 0, destructive = false): string | undefined {
+  const target = staticMutationTarget(value, cwd, expansion);
+  if (target === undefined) {
     builder.dynamicScope = true;
     if (mutation) builder.unverifiableMutation = true;
     markOpaque(builder, "dynamic_target");
     return;
   }
-  addResolvedTarget(builder, resolve(cwd, value));
+  addResolvedTarget(builder, target);
+  if (destructive) addDestructiveTarget(builder, target);
+  return target;
+}
+
+function addDestructiveTarget(builder: ScopeBuilder, target: string): void {
+  const targets = builder.destructiveTargets ??= [];
+  if (targets.length < MAX_TARGETS && !targets.includes(target)) targets.push(target);
 }
 
 /** Only classifier-synthesized paths bypass operand expansion checks. */
@@ -126,22 +138,38 @@ function addPositionalTargets(
   cwd: string,
   skip: number,
   lastOnly: boolean,
+  destructive: boolean | "move" = false,
 ): number {
   let optionsEnded = false;
   let count = 0;
   let last = -1;
+  let moveTarget: string | undefined;
+  let unknownMoveOptions = false;
   for (let index = start; index < tokens.length; index++) {
     const token = tokens[index]!;
     if (!optionsEnded && token === "--") {
       optionsEnded = true;
       continue;
     }
-    if (!optionsEnded && token.startsWith("-")) continue;
+    if (!optionsEnded && token.startsWith("-")) {
+      if (destructive === "move") {
+        unknownMoveOptions = true; builder.unverifiableMutation = true;
+        markOpaque(builder, "unverifiable_move_options");
+      }
+      continue;
+    }
     count += 1;
     if (lastOnly) last = index;
-    else if (count > skip) addTarget(builder, token, cwd, true, tokens.expansions?.[index]);
+    else if (count > skip) {
+      if (destructive === "move" && !unknownMoveOptions && moveTarget !== undefined) addDestructiveTarget(builder, moveTarget);
+      moveTarget = addTarget(builder, token, cwd, true, tokens.expansions?.[index], destructive === true);
+    }
   }
-  if (lastOnly && last >= 0 && count > skip) addTarget(builder, tokens[last]!, cwd, true, tokens.expansions?.[last]);
+  if (lastOnly && last >= 0 && count > skip) addTarget(builder, tokens[last]!, cwd, true, tokens.expansions?.[last], destructive === true);
+  if (destructive === "move" && !unknownMoveOptions && moveTarget !== undefined) {
+    const targets = builder.moveDestinations ??= [];
+    if (targets.length < MAX_TARGETS && !targets.includes(moveTarget)) targets.push(moveTarget);
+  }
   if (count === 0) markOpaque(builder, "missing_static_target");
   return count;
 }
@@ -213,7 +241,7 @@ function inspectKnownMutation(command: string, tokens: PermissionTokens, start: 
   }
   if (SIMPLE_MUTATIONS.has(command)) {
     markMutation(builder, command);
-    addPositionalTargets(tokens, start, builder, cwd, 0, false);
+    addPositionalTargets(tokens, start, builder, cwd, 0, false, SIMPLE_DELETIONS.has(command));
     return true;
   }
   if (COPY_COMMANDS.has(command)) {
@@ -223,7 +251,7 @@ function inspectKnownMutation(command: string, tokens: PermissionTokens, start: 
   }
   if (MOVE_COMMANDS.has(command)) {
     markMutation(builder, command);
-    addPositionalTargets(tokens, start, builder, cwd, 0, false);
+    addPositionalTargets(tokens, start, builder, cwd, 0, false, "move");
     return true;
   }
   if (command === "tee") {
@@ -623,6 +651,10 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
       const expansions = tokens.expansions ??= [];
       expansions[tokens.length] = (expansions[tokens.length] ?? 0) | 8;
     }
+    if (quote === 0 && (!tokenStarted && code === 126 || code === 42 || code === 63 || code === 91)) {
+      const expansions = tokens.expansions ??= [];
+      expansions[tokens.length] = (expansions[tokens.length] ?? 0) | (code === 126 ? 32 : 16);
+    }
     if (quote !== 0) {
       // Decode the \n, \r and \t escapes a simple $'...' quote may contain, as Bash does,
       // so a path operand names the real file rather than its escaped spelling.
@@ -757,6 +789,8 @@ function publicScope(builder: ScopeBuilder): BashPermissionScope {
   return {
     kind: builder.kind,
     targets: builder.targets,
+    destructiveTargets: builder.destructiveTargets,
+    moveDestinations: builder.moveDestinations,
     primitives: builder.primitives,
     classes: builder.classes,
     dynamicScope: builder.dynamicScope,
