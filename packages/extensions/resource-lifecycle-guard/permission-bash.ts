@@ -146,22 +146,29 @@ function addPositionalTargets(
   let count = 0;
   let last = -1;
   let moveTarget: string | undefined;
+  let unknownMoveOptions = false;
   for (let index = start; index < tokens.length; index++) {
     const token = tokens[index]!;
     if (!optionsEnded && token === "--") {
       optionsEnded = true;
       continue;
     }
-    if (!optionsEnded && token.startsWith("-")) continue;
+    if (!optionsEnded && token.startsWith("-")) {
+      if (destructive === "move") {
+        unknownMoveOptions = true; builder.unverifiableMutation = true;
+        markOpaque(builder, "unverifiable_move_options");
+      }
+      continue;
+    }
     count += 1;
     if (lastOnly) last = index;
     else if (count > skip) {
-      if (destructive === "move" && moveTarget !== undefined) addDestructiveTarget(builder, moveTarget);
+      if (destructive === "move" && !unknownMoveOptions && moveTarget !== undefined) addDestructiveTarget(builder, moveTarget);
       moveTarget = addTarget(builder, token, cwd, true, tokens.expansions?.[index], destructive === true);
     }
   }
   if (lastOnly && last >= 0 && count > skip) addTarget(builder, tokens[last]!, cwd, true, tokens.expansions?.[last], destructive === true);
-  if (destructive === "move" && moveTarget !== undefined) {
+  if (destructive === "move" && !unknownMoveOptions && moveTarget !== undefined) {
     const targets = builder.moveDestinations ??= [];
     if (targets.length < MAX_TARGETS && !targets.includes(moveTarget)) targets.push(moveTarget);
   }
