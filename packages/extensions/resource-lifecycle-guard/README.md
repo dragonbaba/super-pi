@@ -205,6 +205,8 @@ Resolved stored actions and literal sourced process-substitution bodies are limi
 
 Recognized Node `rm`/`rmSync` calls with quoted/computed recursive keys, spreads, variable options or nonliteral recursive values retain an unverifiable mutation. Only absent options or a complete supported literal object (literal `recursive:false`, boolean `force`, decimal `maxRetries`/`retryDelay`) prove nonrecursive input. This is a conservative options boundary, not JavaScript evaluation.
 
+A matching function declaration with an unsupported body, including a parenthesized body, remains an unknown consumer rather than evidence that the external executable will run. Function lookup beyond its segment/depth bounds also retains the conservative heredoc refusal. This does not extend function-body grammar recognition.
+
 ### Post-merge classification compatibility
 
 The global shell-text prefilter selects work only. Literal option-free `env`/`sudo`/`doas` operands are resolved within their own segment (`env` NAME=VALUE operands, including non-Bash names, `sudo` assignments and an initial `--` are recognized); ambiguous options, interleaved redirections, other launcher grammars and launcher-selected shells remain conservative refusals. Unrelated `sh` text does not turn a plain `env ... printenv` or `env echo` into a shell wrapper. This does not grant permission or validate arbitrary executable behavior.

@@ -1415,7 +1415,7 @@ function pipelineDescriptorConnected(tokens: ShellSegment, descriptor: number): 
 /** Resolve named literal brace-body functions only, within the existing 64
  * segment / four-level bounds. -1 means no matching definition, not a refusal. */
 function functionStdinConsumers(segments: ShellSegment[], name: string, descriptor: number, depth: number): number {
-	if (segments.length > MAX_SCRIPT_SEGMENTS) return -1;
+	if (segments.length > MAX_SCRIPT_SEGMENTS) return 8;
 	let consumers = -1, conditionalDepth = 0;
 	for (let definition = 0; definition < segments.length; definition++) {
 		const declaration = segments[definition]!;
@@ -1424,13 +1424,15 @@ function functionStdinConsumers(segments: ShellSegment[], name: string, descript
 		let word = 0;
 		while (declaration[word] === "{" || declaration[word] === "then" || declaration[word] === "else" || declaration[word] === "do") word++;
 		let bodySegment = definition, bodyWord = -1;
+		let declared = false;
 		if (declaration[word] === "function" && declaration[word + 1] === name) {
+			declared = true;
 			bodyWord = declaration.indexOf("{", word + 2);
 			if (bodyWord < 0 && declaration.length === word + 2 && (declaration.separatorAfter === "(" || declaration.separatorAfter === "\n" || declaration.separatorAfter === "\r")) { bodySegment++; bodyWord = 0; }
 		}
-		else if (declaration[word] === name && declaration.length === word + 1 && declaration.separatorAfter === "(") { bodySegment++; bodyWord = 0; }
-		if (bodyWord < 0 || !segments[bodySegment] || segments[bodySegment]![bodyWord] !== "{") continue;
-		if (depth > MAX_WRAPPER_DEPTH) return 0;
+		else if (declaration[word] === name && declaration.length === word + 1 && declaration.separatorAfter === "(") { declared = true; bodySegment++; bodyWord = 0; }
+		if (!declared) continue;
+		if (bodyWord < 0 || !segments[bodySegment] || segments[bodySegment]![bodyWord] !== "{" || depth > MAX_WRAPPER_DEPTH) return 8;
 		if (consumers < 0 || conditionalDepth === 0 && !declaration.conditionalMember && !declaration.subshellDepth) consumers = 0;
 		let braces = 0;
 		for (let cursor = bodySegment; cursor < segments.length; cursor++) {

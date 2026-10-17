@@ -12,6 +12,7 @@ const cwd = process.cwd(), iterations = 512, warmup = 64, samplingInterval = 409
 const literalInputs = process.argv.includes("--literal-inputs");
 const substitution = "$(grep -c -E '(class|function|const|var|let) GCSystem\\b' pixi/pixi.js)";
 const cases = literalInputs ? [
+  ["unknown-function-body", "base64() ( printf '%s\\n' 'sleep 100 &'; ); base64 -d <<'EOF' | source /dev/stdin\ncHJpbnRmIG9r\nEOF", 1],
   ["node-quoted-recursive-option", "node <<'EOF'\nfs.rmSync('scratch',{'recursive':true})\nEOF", 1],
   ["node-known-nonrecursive-options", "node <<'EOF'\nfs.rmSync('scratch',{force:true,recursive:false})\nEOF", 1],
   ["stored-source-overflow", Array.from({length:17}, (_, i) => `X${i}=':'; trap "$X${i}" EXIT`).join("; "), 1],

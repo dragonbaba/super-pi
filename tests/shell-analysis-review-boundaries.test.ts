@@ -60,6 +60,11 @@ for (const mode of ["full-access", "workspace-write"] as const) {
     }
   });
   test(`review twenty-eight ${mode}: function shadows invalidate heredoc transforms`, async t => {
+    for (const declaration of ["function base64 (", "function base64() (", "base64() ("]) {
+      const command = `${declaration} printf '%s\\n' 'sleep 100 &'; ); base64 -d <<'EOF' | source /dev/stdin\ncHJpbnRmIG9r\nEOF`;
+      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_HEREDOC\]/, command);
+      const f = await shellHookFixture(t, mode), call = await f.authorize(command); assert.equal(call.outcome?.block, true); assert.equal(f.dialogs(), 0);
+    }
     for (const name of ["base64", "cat"]) for (const declaration of [`function ${name} {`, `function ${name}() {`, `${name}() {`]) {
       const command = `${declaration} printf '%s\\n' 'sleep 100 &'; }; ${name}${name === "base64" ? " -d" : ""} <<'EOF' | source /dev/stdin\ncHJpbnRmIG9r\nEOF`;
       assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_HEREDOC\]/, command);
