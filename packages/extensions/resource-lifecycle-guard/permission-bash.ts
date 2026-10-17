@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { basename, resolve } from "node:path";
-import { uninspectableBashStateStart, heredocDocumentConsumers, heredocExecutableBody, heredocHasUntrackedCwd, literalAliasSource, literalEvalScript, literalProcessSources, literalStoredScripts, unsafeBashLoopHeaderReason } from "./core.ts";
+import { staticMutationTarget, uninspectableBashStateStart, heredocDocumentConsumers, heredocExecutableBody, heredocHasUntrackedCwd, literalAliasSource, literalEvalScript, literalProcessSources, literalStoredScripts, unsafeBashLoopHeaderReason } from "./core.ts";
 import { commandSubstitutionEnd } from "./shell-substitution.ts";
 import { analyzeShellSource, type ShellAnalysisOwner } from "./shell-analysis.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
@@ -79,13 +79,14 @@ function addClass(builder: ScopeBuilder, value: string): void {
 }
 
 function addTarget(builder: ScopeBuilder, value: string, cwd: string, mutation = false, expansion = 0): void {
-  if (expansion || hasDynamicSyntax(value)) {
+  const target = staticMutationTarget(value, cwd, expansion);
+  if (target === undefined) {
     builder.dynamicScope = true;
     if (mutation) builder.unverifiableMutation = true;
     markOpaque(builder, "dynamic_target");
     return;
   }
-  addResolvedTarget(builder, resolve(cwd, value));
+  addResolvedTarget(builder, target);
 }
 
 /** Only classifier-synthesized paths bypass operand expansion checks. */
@@ -622,6 +623,10 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
     if (quote === 0 && (code === 123 || code === 125)) {
       const expansions = tokens.expansions ??= [];
       expansions[tokens.length] = (expansions[tokens.length] ?? 0) | 8;
+    }
+    if (quote === 0 && (!tokenStarted && code === 126 || code === 42 || code === 63 || code === 91)) {
+      const expansions = tokens.expansions ??= [];
+      expansions[tokens.length] = (expansions[tokens.length] ?? 0) | (code === 126 ? 32 : 16);
     }
     if (quote !== 0) {
       // Decode the \n, \r and \t escapes a simple $'...' quote may contain, as Bash does,

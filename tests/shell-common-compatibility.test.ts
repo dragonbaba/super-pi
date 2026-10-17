@@ -1155,18 +1155,13 @@ async function assertBoundaryRefusedBeforeSpawn(
 ) {
   const executions = fixture.executions;
   const approvals = fixture.approvals.length;
-  // D3: uncertainty alone reaches permission review; an explicit denial must
-  // still produce zero backend effects. Recognized unknown targets never ask.
+  // Uncertain targets reach permission review; user denial still has zero effects.
   const previousDecision = fixture.setDecision("拒绝");
   let result;
   try { result = await fixture.agent.dispatchHostTool({ type: "toolCall", id, name: "bash", arguments: { command } }); }
   finally { fixture.setDecision(previousDecision); }
   assert.equal(fixture.executions, executions, JSON.stringify({ result, approvals: fixture.approvals, predicted: inspectHighRiskBashMutation({ command }, workspace) }));
-  const high = inspectHighRiskBashMutation({ command }, workspace);
-  const scope = inspectBashPermissionScope({ command }, workspace);
-  if (high?.unverifiableScope || scope?.unverifiableMutation || inspectBashResourceLifecycle({ command })) {
-    assert.equal(fixture.approvals.length, approvals, "recognized unknown targets and lifecycle violations must refuse before approval");
-  } else assert.ok(fixture.approvals.length === approvals || fixture.approvals.length === approvals + 1);
+  assert.ok(fixture.approvals.length === approvals || fixture.approvals.length === approvals + 1);
   assert.equal(result.isError, true);
   assert.equal((result.details as any).executionStatus, "not_executed");
   for (const path of paths) assert.equal(existsSync(path), false, path);
@@ -1252,7 +1247,7 @@ test("real Bash guard keeps ordinary data and unbounded recursive expansions dis
       ": ${CDPATH:=..}; printf ok", [protectedTarget, wrongTarget]);
     assert.match((blocked.content[0] as { text: string }).text, /POLICY_BLOCKED/);
     assert.equal(fixture.executions, 1);
-    assert.equal(fixture.approvals.length, 2, "one rejection is reused across mode changes; the distinct stateful request asks separately");
+    assert.equal(fixture.approvals.length, 4, "each distinct uncertain request asks once; its rejection is reused across mode changes");
   } finally {
     await fixture?.close();
     if (originalReviewValue === undefined) delete process.env.SP_TEST_ARITH_REVIEW;
@@ -1698,8 +1693,8 @@ test("PowerShell arithmetic subexpressions use PowerShell approval rather than B
     assert.equal(denied.isError, true);
     assert.equal((denied.details as any).executionStatus, "not_executed");
     assert.equal(fixture.executions, beforeExecutions);
-    assert.equal(fixture.approvals.length, 3);
-    assert.match(fixture.approvals[2]!, /powershell_remove_recursive/);
+    assert.equal(fixture.approvals.length, 4);
+    assert.match(fixture.approvals[3]!, /powershell_remove_recursive/);
     assert.equal(readFileSync(protectedTarget, "utf8"), "synthetic");
   } finally {
     await fixture?.close();
@@ -2654,6 +2649,7 @@ print(struct.unpack_from('<H', d, 0)[0])
     assert.equal(multilineTest.isError, false, JSON.stringify(multilineTest.content));
     assert.match((multilineTest.content[0] as { text: string }).text, /newline-ok/);
     assert.equal(executions, 15);
+    decision = "拒绝";
     for (const [index, command] of [
       "[[ -e <(printf data >.git/config) ]]",
       "[[ -e >(printf data >.git/config) ]]",
@@ -2671,6 +2667,7 @@ print(struct.unpack_from('<H', d, 0)[0])
       assert.equal(executions, 15);
       assert.equal(existsSync(join(fixture, ".git", "config")), false);
     }
+    decision = "仅允许本次";
     for (const [id, command, expected] of [
       ["time-bracket", "time -p [[ a < b ]] && printf timed-ok", "timed-ok"],
       ["comment-comparison", "printf comment-ok # compare a < b", "comment-ok"],

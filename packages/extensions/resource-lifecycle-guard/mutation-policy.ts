@@ -1,53 +1,51 @@
 import { realpath } from "node:fs/promises";
+import { homedir } from "node:os";
 import { dirname, isAbsolute, parse, relative, resolve } from "node:path";
 import type { HighRiskMutationScan } from "./core.ts";
 import { LEADING_PATH_SEPARATOR_PATTERN } from "./regex.ts";
 
 const WORKSPACE_METADATA_ROOTS = [".git", ".sp"] as const;
+const DESTRUCTIVE_PRIMITIVES = new Set([
+  "rm", "rmdir", "rd", "del", "erase", "mv", "move", "rename", "ren",
+  "rm_recursive", "powershell_remove_recursive", "windows_rmdir_recursive", "find_delete",
+  "python_rmtree", "python_unlink", "node_recursive_rm", "node_unlink", "git_clean", "git_reset_hard",
+]);
 
 export async function protectedRootViolations(
-  scan: HighRiskMutationScan,
+  scan: Pick<HighRiskMutationScan, "targets" | "workspaceWide"> & { primitives?: readonly string[] },
   cwd: string,
 ): Promise<string[]> {
+  // Unknown find -exec and write/output targets are not known destructive roots.
+  // Native delete/move callers pass their actual source/destination without primitives.
+  if (scan.primitives && !scan.primitives.some(primitive => DESTRUCTIVE_PRIMITIVES.has(primitive))) return [];
   let workspace: string;
   try {
     workspace = await realpath(resolve(cwd));
   } catch {
-    return ["unverifiable_workspace"];
+    return [];
   }
 
   const violations = new Set<string>();
-  // Workspace-wide mutations necessarily include the protected workspace root.
-  // A recognized mutation whose target cannot be statically bounded could also
-  // resolve to workspace metadata or an escape, so it fails closed before UI.
+  // Only known catastrophic roots are unapprovable. Uncertainty belongs to UI.
   if (scan.workspaceWide) violations.add("workspace_root");
-  if (scan.unverifiableScope) violations.add("unverifiable_dynamic_scope");
+  const protectedRoots = [["workspace_root", workspace], ["home_root", homedir()],
+    ...WORKSPACE_METADATA_ROOTS.map(name => [`workspace_${name.slice(1)}_root`, resolve(workspace, name)])];
+  for (const root of protectedRoots) {
+    try { root[1] = await canonicalizeProspectivePath(root[1]); } catch { /* No known canonical root. */ }
+  }
   for (const target of scan.targets) {
     let canonical: string;
     try {
       canonical = await canonicalizeProspectivePath(target);
     } catch {
-      violations.add("unverifiable_target");
       continue;
     }
     if (canonical === parse(canonical).root) {
       violations.add("filesystem_root");
       continue;
     }
-    if (canonical === workspace) {
-      violations.add("workspace_root");
-      continue;
-    }
-    if (!isInside(workspace, canonical)) {
-      violations.add("workspace_escape");
-      continue;
-    }
-    for (const name of WORKSPACE_METADATA_ROOTS) {
-      const protectedRoot = resolve(workspace, name);
-      if (canonical === protectedRoot || isInside(protectedRoot, canonical)) {
-        violations.add(`workspace_${name.slice(1)}_root`);
-      }
-    }
+    // A target containing a protected root destroys it; a child file does not.
+    for (const [name, root] of protectedRoots) if (isInside(canonical, root)) violations.add(name);
   }
   return [...violations].sort();
 }
