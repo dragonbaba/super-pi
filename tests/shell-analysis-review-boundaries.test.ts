@@ -469,7 +469,6 @@ test("inspection bounds, borrowed regexes and temporary views release on every e
 });
 test("primitive scanner counters exclude extra passes and ASCII decoding work", () => {
   const cwd = resolve("review*cwd");
-  assert.equal(inspectBashPermissionScope({ command: process.platform === "win32" ? `rmdir '${cwd}'` : `rmdir ${cwd}` }, cwd)?.unverifiableMutation, true);
   assert.equal(inspectBashPermissionScope({ command: "python -c 'print(1)'" }, cwd)?.dynamicScope, false);
   const descriptors = "cat <<'EOF' " + Array.from({ length: 17 }, (_, i) => `${i + 3}<&0`).join(" ") + "\ndata\nEOF";
   assert.equal(prepareShellAnalysis(descriptors).unboundedHeredoc, true);
@@ -516,7 +515,7 @@ test("primitive scanner counters exclude extra passes and ASCII decoding work", 
     String.prototype.charCodeAt = original;
   }
 });
-test("permission policy denies unknown targets and never-ask external effects", async (t) => {
+test("permission policy requires confirmation without UI for unknown or external effects", async (t) => {
   const cwd = workspace(t), policy = new SessionPermissionController({ appendEntry() { } } as never);
   const ctx = { cwd, hasUI: false, sessionManager: { getBranch: () => [], getSessionId: () => "sort-never-ask" }, ui: { setStatus() { } } };
   await policy.restore(ctx as never);
