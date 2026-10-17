@@ -354,6 +354,7 @@ export interface HighRiskMutationScan {
 	primitives: string[];
 	targets: string[];
 	destructiveTargets?: string[];
+	findDeleteScopes?: string[];
 	dynamicScope: boolean;
 	unverifiableScope: boolean;
 	workspaceWide: boolean;
@@ -371,6 +372,7 @@ interface ScanBuilder {
 	primitives: string[];
 	targets: string[];
 	destructiveTargets?: string[];
+	findDeleteScopes?: string[];
 	targetSet: Set<string>;
 	dynamicScope: boolean;
 	unverifiableScope: boolean;
@@ -424,6 +426,7 @@ export function inspectHighRiskBashMutation(input: unknown, cwd: string, shellOp
 		primitives: builder.primitives,
 		targets: builder.targets,
 		destructiveTargets: builder.destructiveTargets,
+		findDeleteScopes: builder.findDeleteScopes,
 		dynamicScope: builder.dynamicScope,
 		unverifiableScope: builder.unverifiableMutation,
 		workspaceWide: builder.workspaceWide,
@@ -897,7 +900,7 @@ function inspectFind(tokens: readonly string[] & { expansions?: readonly number[
 	addMutationPrimitive(builder, deleteAction ? "find_delete" : "find_exec");
 	if (execAction) markUnverifiable(builder, true);
 	const target = findSearchRootIndex(tokens, start);
-	if (target >= 0) addTarget(builder, tokens[target]!, cwd, tokens.expansions?.[target], deleteAction);
+	if (target >= 0) addTarget(builder, tokens[target]!, cwd, tokens.expansions?.[target], deleteAction ? "find" : false);
 	else markUnverifiable(builder, true);
 }
 
@@ -967,12 +970,13 @@ function collectPositionalTargets(
 	if (!found) markUnverifiable(builder, true);
 }
 
-function addTarget(builder: ScanBuilder, rawTarget: string, cwd: string, expansion = 0, destructive = true): void {
+function addTarget(builder: ScanBuilder, rawTarget: string, cwd: string, expansion = 0, destructive: boolean | "find" = true): void {
 	const target = staticMutationTarget(rawTarget, cwd, expansion);
 	if (target === undefined) { builder.dynamicScope = true; markUnverifiable(builder, true); return; }
 	addResolvedTarget(builder, target);
 	if (destructive && builder.targetSet.has(target)) {
-		const targets = builder.destructiveTargets ??= [];
+		// find's search scope describes its contents, not an operand being removed.
+		const targets = destructive === "find" ? builder.findDeleteScopes ??= [] : builder.destructiveTargets ??= [];
 		if (!targets.includes(target)) targets.push(target);
 	}
 }

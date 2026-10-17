@@ -1,17 +1,16 @@
 import { realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, parse, relative, resolve } from "node:path";
-import type { HighRiskMutationScan } from "./core.ts";
 import { LEADING_PATH_SEPARATOR_PATTERN } from "./regex.ts";
 
 const WORKSPACE_METADATA_ROOTS = [".git", ".sp"] as const;
 
 export async function protectedRootViolations(
-  scan: Pick<HighRiskMutationScan, "targets" | "workspaceWide"> & { moveDestinations?: readonly string[] },
+  scan: { targets: readonly string[]; moveDestinations?: readonly string[]; findDeleteScopes?: readonly string[] },
   cwd: string,
   additionalWorkspaces: readonly { canonicalPath: string }[] = [],
 ): Promise<string[]> {
-  // Callers provide actual destructive operands, excluding opaque cwd and writes.
+  // Operand deletion and find's content scope retain their existing scan evidence.
   let workspace: string;
   try {
     workspace = await realpath(resolve(cwd));
@@ -21,7 +20,6 @@ export async function protectedRootViolations(
 
   const violations = new Set<string>();
   // Only known catastrophic roots are unapprovable. Uncertainty belongs to UI.
-  if (scan.workspaceWide) violations.add("workspace_root");
   const protectedRoots = [["workspace_root", workspace], ["home_root", homedir()],
     ...WORKSPACE_METADATA_ROOTS.map(name => [`workspace_${name.slice(1)}_root`, resolve(workspace, name)])];
   for (const grant of additionalWorkspaces) {
@@ -32,9 +30,12 @@ export async function protectedRootViolations(
     try { root[1] = await canonicalizeProspectivePath(root[1]); } catch { /* No known canonical root. */ }
   }
   const targetCount = scan.targets.length;
-  for (let index = 0; index < targetCount + (scan.moveDestinations?.length ?? 0); index++) {
-    const destination = index >= targetCount;
-    const target = destination ? scan.moveDestinations![index - targetCount]! : scan.targets[index]!;
+  const operandCount = targetCount + (scan.moveDestinations?.length ?? 0);
+  for (let index = 0; index < operandCount + (scan.findDeleteScopes?.length ?? 0); index++) {
+    const findScope = index >= operandCount;
+    const destination = index >= targetCount && !findScope;
+    const target = findScope ? scan.findDeleteScopes![index - operandCount]!
+      : destination ? scan.moveDestinations![index - targetCount]! : scan.targets[index]!;
     let canonical: string;
     try {
       canonical = await canonicalizeProspectivePath(target);
@@ -49,8 +50,14 @@ export async function protectedRootViolations(
       violations.add("filesystem_root");
       continue;
     }
-    // A target containing a protected root destroys it; a child file does not.
-    for (const [name, root] of protectedRoots) if (isInside(canonical, root)) violations.add(name);
+    for (const [name, root] of protectedRoots) {
+      // find at a workspace is ordinary high risk; HOME ancestors and metadata
+      // scopes (including descendants) remain catastrophic content deletions.
+      const protectedTarget = findScope
+        ? name === "home_root" ? isInside(canonical, root) : name !== "workspace_root" && isInside(root, canonical)
+        : isInside(canonical, root);
+      if (protectedTarget) violations.add(name);
+    }
   }
   return [...violations].sort();
 }

@@ -45,7 +45,9 @@ TUI and RPC use Pi's structured `select` and `input` protocol. Dialogs have no a
 
 ## High-risk and script policy
 
-A bounded quote/escape/command-boundary parser recognizes recursive deletion, PowerShell/Windows deletion, Python/Node deletion calls, `find -delete`, `xargs rm`, `git clean -fd`, and `git reset --hard`. Known catastrophic deletion or recursive-mutation targets are denied before allow-rule or approval-policy handling: filesystem roots, HOME, the primary and registered workspace roots, their `.git` and `.sp` roots, or a canonical target containing any of those roots. Descendant files such as `.git/config` retain high-risk approval handling. The same root rule covers native `delete`, `move` and destructive `file_batch` items; their parent-directory access is not itself deletion. Ordinary shell moves into an existing directory add a child without replacing that root. Batch dry-run remains a preview.
+A bounded quote/escape/command-boundary parser recognizes recursive deletion, PowerShell/Windows deletion, Python/Node deletion calls, `find -delete`, `xargs rm`, `git clean -fd`, and `git reset --hard`. Catastrophic root checks apply to operands themselves being deleted or moved: filesystem roots, HOME, the primary and registered workspace roots, their `.git` and `.sp` roots, or a canonical operand containing any of those roots. These are denied before allow-rule or approval-policy handling. Descendant files such as `.git/config` retain high-risk approval handling. The same root rule covers native `delete`, `move` and destructive `file_batch` items; their parent-directory access is not itself deletion. Ordinary `mv`/`move` into an existing directory adds a child without replacing that root; rename operands retain root checks. Batch dry-run remains a preview.
+
+Content scopes are not operands being removed. `workspaceWide` keeps `git reset --hard` and `git clean -fd`/`-fdx` high risk without declaring the workspace root deleted. A `find -delete` search scope is denied only when it is the filesystem root, equals or contains HOME, or is equal to or inside a workspace `.git`/`.sp` root. Searching the workspace root or an ordinary child directory follows normal high-risk policy: F allows, W asks. These distinctions reuse existing bounded scan evidence without new parsing or another command scan.
 
 Unknown targets (variables, `~user`, intermediate wildcards, over 16 targets, uninspected move options or an unverifiable target assessment) always ask, including `full-access + never-ask`. Move option grammar is not expanded: source/destination roles are uncertain when options have not been interpreted. The only choices are **allow once**, **reject**, and **reject with a reason**. No exact/prefix rule can match these requests, and the dialog cannot create a rule or switch modes. Allowing once does not suppress the next question; rejecting remembers the unchanged request. With no UI, the result is `confirmation_required`.
 
@@ -72,6 +74,9 @@ The representative table is exercised by one table-driven test in `tests/guard-r
 | `rm -rf /`, `~`, `~/*`, `.`, `./*`, `..`, `.git`, `sub/../.git`, absolute HOME | Deny | Deny |
 | `rm -rf ~/.cache/foo`, `rm -rf /tmp/x` | Allow | Ask |
 | `rm -rf ./out/*`, `rm -rf node_modules`, `rm -rf dist build` | Allow | Ask |
+| `git reset --hard HEAD~1`, `git clean -fd`, `git clean -fdx`, `find . -name '*.log' -delete` | Allow | Ask |
+| `find .git -name x -delete`, `find / -name x -delete`, `find ~ -name x -delete` | Deny | Deny |
+| `rm -rf ./*`, `rm -rf .`, `rename git moved .git`, `mv .git/* /tmp/x` | Deny | Deny |
 | `printf x > out; mv .git moved` (combined existing scan evidence) | Deny | Deny |
 | `printf x > .git; rm -rf out` (write and deletion retain separate targets) | Allow | Ask |
 | `mv /tmp/report .` (existing destination directory receives a child) | Allow | Ask |
@@ -281,11 +286,11 @@ normal-exit containment guarantee for indirect or external-service launches.
 Lifecycle acceptance grants no permission. Existing high-risk/protected-target
 analysis, opaque-script approval policy, cwd identity, exact Session rules, rejection
 handling and immutable final invocation authority remain unchanged. The normal
-permission policy may still reject unresolvable targets or unsupported shell state.
-For example, the older scanner refuses a bare `@(...).ForEach(...)` statement,
-whereas assigning the array before invoking its method reaches normal approval.
-Inline param(), some for/foreach pipeline forms and type block comments also retain
-those independent parser limits. Lifecycle-only fixtures must not be presented as
+permission policy treats unresolvable high-risk targets as one-time decisions and
+unsupported shell state as opaque execution. Bare `@(...).ForEach(...)`, inline
+param(), some for/foreach pipeline forms and type block comments retain their
+independent parser limits, without those limits directly denying authorization.
+Lifecycle-only fixtures must not be presented as
 proof that the entire authorization chain accepts a request. The real integration
 fixture covers harmless compilation, Stopwatch.Start, dynamic file/environment
 data, variable-based intrinsic ForEach, approval/denial and explicit job refusal.

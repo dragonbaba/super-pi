@@ -852,7 +852,7 @@ export class SessionPermissionController {
         }
       }
       return { operation: "file_batch", batch: true, readOnlyPreview: batch.input.dryRun === true, requestHash: batch.requestHash,
-        catastrophicRoots: batch.input.dryRun ? [] : await protectedRootViolations({ targets: destructiveTargets, workspaceWide: false }, ctx.cwd, this.#state.additional),
+        catastrophicRoots: batch.input.dryRun ? [] : await protectedRootViolations({ targets: destructiveTargets }, ctx.cwd, this.#state.additional),
         purpose, summary: `file_batch ${batch.items.length} independent items`, exactTargets, targetAssessments,
         classes: ["file:batch"], highRisk: !batch.input.dryRun && highRisk, opaqueScript: false, primitives,
         fingerprintMaterial: batch.requestHash, pathApproval: { canonicalTarget: batch.items[0].target, protectedRoots: [] } };
@@ -866,7 +866,7 @@ export class SessionPermissionController {
       const primitives = [event.toolName === "delete" ? "irreversible_delete_no_backup" : "exclusive_link_then_unlink_non_atomic"];
       for (const target of targets) for (const root of target.protectedRoots) if (!primitives.includes(root)) primitives.push(root);
       return { operation: event.toolName, purpose, summary: `${event.toolName} ${nativePlan.source.canonical}`,
-        catastrophicRoots: await protectedRootViolations({ targets: [nativePlan.source.canonical, ...(nativePlan.destination ? [nativePlan.destination] : [])], workspaceWide: false }, ctx.cwd, this.#state.additional),
+        catastrophicRoots: await protectedRootViolations({ targets: [nativePlan.source.canonical, ...(nativePlan.destination ? [nativePlan.destination] : [])] }, ctx.cwd, this.#state.additional),
         nativePlan, requestHash, exactTargets: targets.map((target) => target.canonicalTarget), targetAssessments,
         classes: [`file:${event.toolName}`], highRisk: event.toolName === "delete" || targets.some((target) => sensitiveProtectedRoots(target.protectedRoots.filter((root) => root !== "workspace_root"))),
         opaqueScript: false, primitives, fingerprintMaterial: requestHash,
@@ -919,9 +919,9 @@ export class SessionPermissionController {
         : inspectBashPermissionScope(event.input, effectiveCwd, analysis);
     } finally { if (analysis !== analysisOwner) analysis?.release(); }
     if (!scope) return undefined;
-    const roots = high ? await protectedRootViolations({ targets: high.destructiveTargets ?? [], workspaceWide: high.workspaceWide }, ctx.cwd, this.#state.additional) : [];
+    const roots = high ? await protectedRootViolations({ targets: high.destructiveTargets ?? [], findDeleteScopes: high.findDeleteScopes }, ctx.cwd, this.#state.additional) : [];
     // Permission-scan cwd and write destinations are not deletion operands.
-    if (scope.destructiveTargets || scope.moveDestinations) for (const root of await protectedRootViolations({ targets: scope.destructiveTargets ?? [], moveDestinations: scope.moveDestinations, workspaceWide: false }, ctx.cwd, this.#state.additional)) {
+    if (scope.destructiveTargets || scope.moveDestinations) for (const root of await protectedRootViolations({ targets: scope.destructiveTargets ?? [], moveDestinations: scope.moveDestinations }, ctx.cwd, this.#state.additional)) {
       if (!roots.includes(root)) roots.push(root);
     }
     if (scope.unverifiableMutation && !high?.unverifiableScope) {

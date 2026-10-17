@@ -19,6 +19,10 @@ test("PR1 representative allow / ask / deny acceptance", async t => {
     ["bash scripts/build.sh", "allow", "ask"], ["sh -x scripts/build.sh", "allow", "ask"], ["$CMD --version", "allow", "ask"],
     ["bash <<EOF\n$X\nEOF", "allow", "ask"], ["echo " + "x".repeat(128 * 1024), "allow", "ask"],
     ["git status && git diff", "allow", "allow"], ["ls -la", "allow", "allow"],
+    ...["git reset --hard HEAD~1", "git clean -fd", "git clean -fdx", "find . -name '*.log' -delete", "find sub -name x -delete"]
+      .map(command => [command, "allow", "ask"] as const),
+    ...["find .git -name x -delete", "find .sp/cache -name x -delete", "find / -name x -delete", "find ~ -name x -delete", "rename git moved .git", "mv .git/* /tmp/x"]
+      .map(command => [command, "deny", "deny"] as const),
     ["npm run dev &", "deny", "deny"], ["docker compose up -d", "deny", "deny"],
     ["printf '%s' $(time printf 1); npm run dev &", "deny", "deny"],
     ["rm -rf . $BUILD_DIR", "deny", "deny"], ["echo > .git/config", "allow", "ask"],
@@ -36,6 +40,7 @@ test("PR1 representative allow / ask / deny acceptance", async t => {
   ];
   for (const mode of ["full-access", "workspace-write"] as const) {
     const f = await shellHookFixture(t, mode);
+    mkdirSync(join(f.cwd, ".git"));
     await f.runner.getCommand("add_workspace")!.handler(join(f.cwd, "sub"), f.runner.createCommandContext());
     const ui = f.runner.getUIContext();
     let options: string[] = [], answer = "仅允许本次";

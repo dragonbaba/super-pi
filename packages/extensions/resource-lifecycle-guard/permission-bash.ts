@@ -253,7 +253,7 @@ function inspectKnownMutation(command: string, tokens: PermissionTokens, start: 
   }
   if (MOVE_COMMANDS.has(command)) {
     markMutation(builder, command);
-    addPositionalTargets(tokens, start, builder, cwd, 0, false, "move");
+    addPositionalTargets(tokens, start, builder, cwd, 0, false, command === "mv" || command === "move" ? "move" : true);
     return true;
   }
   if (command === "tee") {
