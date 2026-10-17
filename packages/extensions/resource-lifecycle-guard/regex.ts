@@ -23,6 +23,7 @@ export const PYTHON_RMTREE_PATTERN = /\bshutil\.rmtree\s*\(/giu;
 export const PYTHON_UNLINK_PATTERN = /\.\s*unlink\s*\(/giu;
 export const NODE_RM_CALL_PATTERN = /\b(?:fs\.)?(?:rm|rmSync)\s*\(/giu;
 export const NODE_RECURSIVE_OPTION_PATTERN = /\brecursive\s*:\s*true/iy;
+export const NODE_NONRECURSIVE_OPTIONS_PATTERN = /\s*\{\s*(?:(?:recursive\s*:\s*false|force\s*:\s*(?:true|false)|(?:maxRetries|retryDelay)\s*:\s*\d+)\s*(?:,\s*|(?=\})))*\}\s*(?=[,)])/y;
 export const NODE_UNLINK_PATTERN = /\b(?:fs\.)?(?:unlink|unlinkSync)\s*\(/giu;
 export const FIND_DELETE_PATTERN = /\bfind\b[^;&|\r\n]*\s-delete\b/iu;
 export const XARGS_RM_PATTERN = /\bxargs\b[^;&|\r\n]*\brm\b/iu;

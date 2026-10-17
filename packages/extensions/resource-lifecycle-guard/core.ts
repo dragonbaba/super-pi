@@ -12,6 +12,7 @@ import {
 	TEMPORARY_CDPATH_QUERY_PATTERN,
 	NODE_RM_CALL_PATTERN,
 	NODE_RECURSIVE_OPTION_PATTERN,
+	NODE_NONRECURSIVE_OPTIONS_PATTERN,
 	NODE_UNLINK_PATTERN,
 	NONNEGATIVE_INTEGER_PATTERN,
 	SIMPLE_BASH_LET_ASSIGNMENT_PATTERN,
@@ -167,8 +168,10 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
  for (const script of here.substitutions) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) return result; }
  for (const script of substitutions.scripts) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) return result; }
  const trapScripts = literalStoredScripts(command);
+ if (trapScripts === null) return lifecycleRefusal("SHELL_INSPECTION_LIMIT", "resolved stored actions exceed the source count or size limit", "split stored actions into smaller inspectable calls");
  if (trapScripts) for (const script of trapScripts) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) return result; }
  const processScripts = literalProcessSources(command);
+ if (processScripts === null) return lifecycleRefusal("SHELL_INSPECTION_LIMIT", "sourced process-substitution bodies exceed the source count or size limit", "split sourced input into smaller inspectable calls");
  if (processScripts) for (const script of processScripts) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) return result; }
  if (here.hereDocuments) for (const document of here.hereDocuments) {
   const consumers = heredocDocumentConsumers(document, command, here.hereDocuments);
@@ -499,8 +502,10 @@ function inspectShellScript(script: string, initialCwd: string, depth: number, b
 		markUnverifiable(builder);
 	}
 	const trapScripts = literalStoredScripts(analysis.command);
+	if (trapScripts === null) markUnverifiable(builder, true);
 	if (trapScripts) for (const source of trapScripts) { markUnverifiable(builder); inspectShellScript(source, initialCwd, depth + 1, builder, shellOperation); }
 	const processScripts = literalProcessSources(analysis.command);
+	if (processScripts === null) markUnverifiable(builder, true);
 	if (processScripts) for (const source of processScripts) { markUnverifiable(builder); inspectShellScript(source, initialCwd, depth + 1, builder, shellOperation); }
 	if (analysis.hereDocuments) for (const document of analysis.hereDocuments) {
 		const consumers = heredocDocumentConsumers(document, analysis.command, analysis.hereDocuments), body = heredocExecutableBody(document, analysis.command);
@@ -764,7 +769,7 @@ function pythonPathArgumentOpen(masked: string, methodDot: number): number {
 /** The existing mask removes strings/comments. Balance this call's parentheses
  * only; do not decode or evaluate nested arguments or borrow a later call's flag. */
 function nodeHasRecursiveOption(masked: string, open: number): number {
-	let depth = 1;
+	let depth = 1, options = false;
 	try {
 		for (let index = open + 1; index < masked.length; index++) {
 			const code = masked.charCodeAt(index);
@@ -772,13 +777,20 @@ function nodeHasRecursiveOption(masked: string, open: number): number {
 			// parsed by this mask; do not let its punctuation erase a known rm call.
 			if (code === 47) return -1;
 			if (code === 40) depth++;
-			else if (code === 41 && --depth === 0) return 0;
+			else if (code === 41 && --depth === 0) return options ? -1 : 0;
+			if (code === 44 && depth === 1 && !options) {
+				options = true;
+				NODE_NONRECURSIVE_OPTIONS_PATTERN.lastIndex = index + 1;
+				// Only an entire bounded literal nonrecursive options object proves
+				// absence. Quoted/computed keys, spreads and variables stay unknown.
+				if (NODE_NONRECURSIVE_OPTIONS_PATTERN.test(masked)) return 0;
+			}
 			if (code !== 82 && code !== 114) continue;
 			NODE_RECURSIVE_OPTION_PATTERN.lastIndex = index;
 			if (NODE_RECURSIVE_OPTION_PATTERN.test(masked)) return 1;
 		}
-		return 0;
-	} finally { NODE_RECURSIVE_OPTION_PATTERN.lastIndex = 0; }
+		return options ? -1 : 0;
+	} finally { NODE_RECURSIVE_OPTION_PATTERN.lastIndex = NODE_NONRECURSIVE_OPTIONS_PATTERN.lastIndex = 0; }
 }
 
 function inspectRm(tokens: readonly string[], start: number, cwd: string, builder: ScanBuilder): void {
@@ -1126,10 +1138,10 @@ export function literalAliasSource(tokens: ShellSegment, index: number): string 
 /** Resolve only a direct variable whose immediately preceding command consists
  * entirely of literal assignments. Unresolved trap actions are lifecycle refusals.
  * At most 16 sources, 128 KiB total, owned only by the synchronous caller. */
-export function literalStoredScripts(command: string): string[] | undefined {
+export function literalStoredScripts(command: string): string[] | null | undefined {
 	if (!command.includes("$") || !command.includes("trap") && !command.includes("alias")) return undefined;
 	const segments = parseShellSegments(command);
-	if (segments.length > MAX_SCRIPT_SEGMENTS) return undefined;
+	if (segments.length > MAX_SCRIPT_SEGMENTS) return null;
 	let scripts: string[] | undefined, bytes = 0;
 	for (let segment = 1; segment < segments.length; segment++) {
 		const tokens = segments[segment]!, previous = segments[segment - 1]!;
@@ -1146,7 +1158,8 @@ export function literalStoredScripts(command: string): string[] | undefined {
 			const word = tokens[operand]!, equals = alias ? word.indexOf("=") : -1;
 			if (alias && equals < 1) continue;
 			const source = literalAdjacentSource(previous, alias ? word.slice(equals + 1) : word);
-			if (source === undefined || bytes + source.length > MAX_INSPECTED_COMMAND_CHARS || (scripts?.length ?? 0) >= MAX_SUBSTITUTIONS) continue;
+			if (source === undefined) continue;
+			if (bytes + source.length > MAX_INSPECTED_COMMAND_CHARS || (scripts?.length ?? 0) >= MAX_SUBSTITUTIONS) return null;
 			scripts ??= []; scripts.push(source); bytes += source.length;
 		}
 	}
@@ -1316,8 +1329,9 @@ function persistedHeredocConsumers(document: { header: string; bodyEnd?: number;
 
 /** Literal echo/printf producers used directly by source. No shell execution,
  * retained state, or guessing of dynamic output; at most 16 call-owned strings. */
-export function literalProcessSources(command: string): string[] | undefined {
-	if (!command.includes("<(") || command.length > MAX_INSPECTED_COMMAND_CHARS) return undefined;
+export function literalProcessSources(command: string): string[] | null | undefined {
+	if (!command.includes("<(")) return undefined;
+	if (command.length > MAX_INSPECTED_COMMAND_CHARS) return null;
 	let quote = 0, escaped = false, sources: string[] | undefined, bytes = 0;
 	for (let index = 0; index < command.length; index++) {
 		const code = command.charCodeAt(index);
@@ -1340,7 +1354,10 @@ export function literalProcessSources(command: string): string[] | undefined {
 					if (producers.length === 1 && producer && !producer.redirections?.length && !producer.dynamic) {
 						const source = producer[0] === "echo" && producer.length === 2 && !producer[1]!.startsWith("-") && !producer[1]!.includes("\\") ? producer[1]
 							: producer[0] === "printf" && producer.length === 3 && (producer[1] === "%s" || producer[1] === "%s\\n") ? producer[2] : undefined;
-						if (source !== undefined && bytes + source.length <= MAX_INSPECTED_COMMAND_CHARS && (sources?.length ?? 0) < MAX_SUBSTITUTIONS) { sources ??= []; sources.push(source); bytes += source.length; }
+						if (source !== undefined) {
+							if (bytes + source.length > MAX_INSPECTED_COMMAND_CHARS || (sources?.length ?? 0) >= MAX_SUBSTITUTIONS) return null;
+							sources ??= []; sources.push(source); bytes += source.length;
+						}
 					}
 				}
 			}
@@ -1463,6 +1480,7 @@ export function heredocExecutableBody(document: { header: string; pipelineHeader
 		if (index > start && !pipelineDescriptorConnected(tokens, 0)) return undefined;
 		const outputConnected = pipelineDescriptorConnected(tokens, 1);
 		if (tokens.redirections) { stripShellRedirections(tokens, tokens.redirections); tokens.redirections.length = 0; }
+		if (functions && (tokens[0] === "cat" || tokens[0] === "base64") && functionStdinConsumers(functions, tokens[0], document.descriptor, 1) !== -1) return undefined;
 		if (simpleStdinConsumers(tokens, document.descriptor, 0, functions)) return body;
 		if (!outputConnected) return undefined;
 		if (isTransparentStdinStage(tokens)) continue;

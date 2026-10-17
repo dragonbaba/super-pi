@@ -12,6 +12,11 @@ const cwd = process.cwd(), iterations = 512, warmup = 64, samplingInterval = 409
 const literalInputs = process.argv.includes("--literal-inputs");
 const substitution = "$(grep -c -E '(class|function|const|var|let) GCSystem\\b' pixi/pixi.js)";
 const cases = literalInputs ? [
+  ["node-quoted-recursive-option", "node <<'EOF'\nfs.rmSync('scratch',{'recursive':true})\nEOF", 1],
+  ["node-known-nonrecursive-options", "node <<'EOF'\nfs.rmSync('scratch',{force:true,recursive:false})\nEOF", 1],
+  ["stored-source-overflow", Array.from({length:17}, (_, i) => `X${i}=':'; trap "$X${i}" EXIT`).join("; "), 1],
+  ["process-source-overflow", Array(17).fill("source <(echo ':')").join("; "), 1],
+  ["shadowed-heredoc-transform", "function base64 { printf '%s\\n' 'sleep 100 &'; }; base64 -d <<'EOF' | source /dev/stdin\ncHJpbnRmIG9r\nEOF", 1],
   ["coproc-shell-heredoc", "coproc bash <<'EOF'\nsleep 100 &\nEOF", 2],
   ["coproc-brace-shell", "coproc {\nbash <<'EOF'\nsleep 100 &\nEOF\n}", 2],
   ["coproc-node-heredoc", "coproc NAME { node; } <<'EOF'\nfs.rmSync(target,{recursive:true})\nEOF", 1],

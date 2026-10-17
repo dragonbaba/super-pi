@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import test from "node:test";
-import { decodeLiteralBase64, heredocConsumer, inspectBashResourceLifecycle, inspectHighRiskBashMutation, literalStoredScripts } from "../packages/extensions/resource-lifecycle-guard/core.ts";
+import { decodeLiteralBase64, heredocConsumer, inspectBashResourceLifecycle, inspectHighRiskBashMutation, literalProcessSources, literalStoredScripts } from "../packages/extensions/resource-lifecycle-guard/core.ts";
 import { inspectBashPermissionScope } from "../packages/extensions/resource-lifecycle-guard/permission-bash.ts";
 import { extractCommandSubstitutions, prepareShellAnalysis, shellAnalysisCounters } from "../packages/extensions/resource-lifecycle-guard/shell-substitution.ts";
 import { shellHookFixture, assertFinalAuthorization } from "./codemode-recovery/shell-hook-fixture.ts";
@@ -32,6 +32,44 @@ test("prompt checks inspect only discovered parameter heads and retain primitive
 });
 
 for (const mode of ["full-access", "workspace-write"] as const) {
+  test(`review twenty-eight ${mode}: uncertain recursive options retain mutation evidence`, async t => {
+    for (const options of ["{'recursive':true}", '{"recursive":true}', "{['recursive']:true}", "{[key]:true}", "options", "{...options}", "{recursive:flag}", "{recursive:false,...options}"]) {
+      const command = `node <<'EOF'\nfs.rmSync('scratch',${options})\nEOF`, mutation = inspectHighRiskBashMutation({ command }, process.cwd());
+      assert.equal(mutation?.mutationDetected, true, command); assert.equal(mutation?.unverifiableScope, true); assert.deepEqual(mutation?.targets, []);
+      const f = await shellHookFixture(t, mode), call = await f.authorize(command); assert.equal(call.outcome?.block, true, command); assert.equal(f.dialogs(), 0);
+    }
+    for (const options of ["", ",{}", ",{recursive:false}", ",{force:true}", ",{force:true,recursive:false,maxRetries:3,retryDelay:10,}"]) {
+      const command = `node <<'EOF'\nfs.rmSync('scratch'${options}); other({recursive:true})\nEOF`;
+      assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
+    }
+  });
+  test(`review twenty-eight ${mode}: stored and sourced body overflow refuses`, async t => {
+    for (const payload of [":", "sleep 100 &", "rm -rf /protected"]) {
+      const traps = Array.from({length:16}, (_, i) => `X${i}=':'; trap "$X${i}" EXIT`).join("; ") + `; BAD='${payload}'; trap "$BAD" EXIT`;
+      const sources = Array(16).fill("source <(echo ':')").join("; ") + `; source <(echo '${payload}')`;
+      assert.equal(literalStoredScripts(traps), null); assert.equal(literalProcessSources(sources), null);
+      for (const command of [traps, sources]) {
+        assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_INSPECTION_LIMIT\]/);
+        const f = await shellHookFixture(t, mode), call = await f.authorize(command); assert.equal(call.outcome?.block, true); assert.equal(f.dialogs(), 0);
+      }
+    }
+    for (const command of [Array.from({length:16}, (_, i) => `X${i}=':'; trap "$X${i}" EXIT`).join("; "), Array(16).fill("source <(echo ':')").join("; ")]) {
+      assert.equal(inspectBashResourceLifecycle({ command }), undefined);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
+    }
+  });
+  test(`review twenty-eight ${mode}: function shadows invalidate heredoc transforms`, async t => {
+    for (const name of ["base64", "cat"]) for (const declaration of [`function ${name} {`, `function ${name}() {`, `${name}() {`]) {
+      const command = `${declaration} printf '%s\\n' 'sleep 100 &'; }; ${name}${name === "base64" ? " -d" : ""} <<'EOF' | source /dev/stdin\ncHJpbnRmIG9r\nEOF`;
+      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_HEREDOC\]/, command);
+      const f = await shellHookFixture(t, mode), call = await f.authorize(command); assert.equal(call.outcome?.block, true); assert.equal(f.dialogs(), 0);
+    }
+    for (const command of ["base64 -d <<'EOF' | source /dev/stdin\ncHJpbnRmIG9r\nEOF", "function unrelated { printf evil; }; base64 -d <<'EOF' | source /dev/stdin\ncHJpbnRmIG9r\nEOF"]) {
+      assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
+      const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
+    }
+  });
   test(`review twenty-seven ${mode}: coproc keeps actual heredoc consumers and main lifecycle boundaries`, async t => {
     for (const consumer of ["bash", "sh", "source /dev/stdin", ". /dev/stdin"]) for (const command of [
       `coproc ${consumer} <<'EOF'\nsleep 100 &\nEOF`,

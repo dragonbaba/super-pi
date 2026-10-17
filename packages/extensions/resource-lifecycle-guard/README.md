@@ -201,6 +201,10 @@ The unchanged local Bash transport, including its existing Windows MSYS paired-b
 
 Current prefix/case/coprocess protections and bounded validation/recovery guidance remain. Timed/coprocess substitutions and case pattern ambiguity stay uncertain; quoted words remain data. The recognizer is policy evidence, not a shell sandbox or a proof of arbitrary program behavior. A refusal is not permission to switch language or launcher around policy.
 
+Resolved stored actions and literal sourced process-substitution bodies are limited to 16 sources and 128 KiB total. Overflow returns an explicit limit result and lifecycle refuses with `[SHELL_INSPECTION_LIMIT]`; later bodies are never silently dropped. Bounded literal `cat`/`base64` pipeline transformations are invalidated by a matching shell function definition, preserving `[SHELL_HEREDOC]` for an executable Shell consumer. Ordinary external transforms and unrelated function definitions keep their existing handling.
+
+Recognized Node `rm`/`rmSync` calls with quoted/computed recursive keys, spreads, variable options or nonliteral recursive values retain an unverifiable mutation. Only absent options or a complete supported literal object (literal `recursive:false`, boolean `force`, decimal `maxRetries`/`retryDelay`) prove nonrecursive input. This is a conservative options boundary, not JavaScript evaluation.
+
 ### Post-merge classification compatibility
 
 The global shell-text prefilter selects work only. Literal option-free `env`/`sudo`/`doas` operands are resolved within their own segment (`env` NAME=VALUE operands, including non-Bash names, `sudo` assignments and an initial `--` are recognized); ambiguous options, interleaved redirections, other launcher grammars and launcher-selected shells remain conservative refusals. Unrelated `sh` text does not turn a plain `env ... printenv` or `env echo` into a shell wrapper. This does not grant permission or validate arbitrary executable behavior.

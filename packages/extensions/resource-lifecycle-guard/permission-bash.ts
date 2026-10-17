@@ -542,8 +542,10 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
   if (analysis.hasHeredoc) markOpaque(builder, "heredoc_uninspectable");
   if (analysis.uncertain) markOpaque(builder, "shell_context_uninspectable");
   const storedScripts = literalStoredScripts(analysis.command);
+  if (storedScripts === null) markUncertainContext(builder, "stored_source_limit");
   if (storedScripts) for (const source of storedScripts) { markUncertainContext(builder, "resolved_stored_action"); inspectScript(source, initialCwd, depth + 1, builder); }
   const processScripts = literalProcessSources(analysis.command);
+  if (processScripts === null) markUncertainContext(builder, "process_source_limit");
   if (processScripts) for (const source of processScripts) { markUncertainContext(builder, "resolved_process_source"); inspectScript(source, initialCwd, depth + 1, builder); }
   if (analysis.hereDocuments) for (const document of analysis.hereDocuments) {
     const body = heredocExecutableBody(document, analysis.command);
