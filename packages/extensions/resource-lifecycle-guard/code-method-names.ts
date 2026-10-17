@@ -45,8 +45,8 @@ export function writeCodeMethodName(source: string, output: string[], start: num
   return end;
 }
 
-/** Exact bracket literal only: concatenation and dynamic keys remain opaque.
- * ASCII keys take no decoding/string path. Escaped unknown keys stay masked. */
+/** Exact bracket literals only: concatenation and computed keys stay opaque.
+ * ASCII keys take no decoding/string path. Interpolated template keys refuse. */
 export function writeEscapedNodeMethodKey(source: string, output: string[], start: number): number {
   let before = start - 1;
   while (before >= 0 && keyWhitespace(output[before]?.charCodeAt(0) ?? -1)) before--;
@@ -56,15 +56,24 @@ export function writeEscapedNodeMethodKey(source: string, output: string[], star
   let end = start + 1, escape = false;
   for (; end < source.length; end++) {
     const code = source.charCodeAt(end);
-    if (code === 92) { const kind = source.charCodeAt(end + 1); if (kind === 117 || kind === 120) escape = true; end++; continue; }
+    if (quote === 96 && code === 36 && source.charCodeAt(end + 1) === 123) return failedName();
+    if (code === 92) {
+      escape = true;
+      // Every string escape, including a line continuation, belongs to the
+      // same bounded decoder. Preserve the original closing-quote position.
+      if (++end >= source.length) return failedName();
+      if (source.charCodeAt(end) === 13 && source.charCodeAt(end + 1) === 10) end++;
+      continue;
+    }
     if (code === quote) break;
-    if (code === 10 || code === 13) return escape ? failedName() : 0;
+    if (quote !== 96 && (code === 10 || code === 13)) return failedName();
   }
-  if (!escape) return 0;
   if (source.charCodeAt(end) !== quote) return failedName();
   const after = nodeKeyTriviaEnd(source, end + 1);
   if (source.charCodeAt(after) !== 93) return 0;
-  const name = decodeNodeName(source, start + 1, end, true);
+  if (end - start - 1 > MAX_NODE_NAME_CHARS) return failedName();
+  const name = escape ? decodeNodeName(source, start + 1, end, true, quote === 96) : plainNodeDeletionName(source, start + 1, end);
+  if (!escape && name === undefined) return 0;
   if (name === undefined) return failedName();
   writeName(output, start, end + 1, nodeDeletionName(name) ? name : "", quote);
   return end + 1;
@@ -72,6 +81,15 @@ export function writeEscapedNodeMethodKey(source: string, output: string[], star
 
 function nodeDeletionName(name: string): boolean {
   return name === "rm" || name === "rmSync" || name === "unlink" || name === "unlinkSync";
+}
+
+function plainNodeDeletionName(source: string, start: number, end: number): string | undefined {
+  const length = end - start;
+  if (length === 2 && source.startsWith("rm", start)) return "rm";
+  if (length === 6 && source.startsWith("rmSync", start)) return "rmSync";
+  if (length === 6 && source.startsWith("unlink", start)) return "unlink";
+  if (length === 10 && source.startsWith("unlinkSync", start)) return "unlinkSync";
+  return undefined;
 }
 
 function nodeKeyTriviaEnd(source: string, index: number): number {
@@ -115,7 +133,7 @@ function keyWhitespace(code: number): boolean {
 
 function failedName(): number { codeMethodNameCounters.failures++; return -1; }
 
-function decodeNodeName(source: string, start: number, end: number, literal: boolean): string | undefined {
+function decodeNodeName(source: string, start: number, end: number, literal: boolean, template = false): string | undefined {
   codeMethodNameCounters.nodeDecodes++;
   if (end - start > MAX_NODE_NAME_CHARS || end > source.length) return undefined;
   let name = "";
@@ -138,14 +156,29 @@ function decodeNodeName(source: string, start: number, end: number, literal: boo
         if (!digits || braced && source.charCodeAt(index) !== 125 || !braced && digits !== (kind === 120 ? 2 : 4)) return undefined;
         code = value;
       } else if (literal) {
-        if (kind === 10 || kind === 13 && source.charCodeAt(index + 1) === 10) { if (kind === 13) index++; continue; }
-        if (kind >= 48 && kind <= 57) { if (kind !== 48 || source.charCodeAt(index + 1) >= 48 && source.charCodeAt(index + 1) <= 57) return undefined; code = 0; }
+        if (kind === 10 || kind === 13 || kind === 8232 || kind === 8233) { if (kind === 13 && source.charCodeAt(index + 1) === 10) index++; continue; }
+        if (kind >= 48 && kind <= 55) {
+          // Annex B octal escapes exist in non-strict quoted strings. Template
+          // literals permit only \0 without a following decimal digit.
+          if (template && (kind !== 48 || source.charCodeAt(index + 1) >= 48 && source.charCodeAt(index + 1) <= 57)) return undefined;
+          code = kind - 48;
+          if (!template) for (let digits = 1; digits < (kind <= 51 ? 3 : 2) && index + 1 < end; digits++) {
+            const digit = source.charCodeAt(index + 1);
+            if (digit < 48 || digit > 55) break;
+            code = code * 8 + digit - 48; index++;
+          }
+        }
+        else if (kind === 56 || kind === 57) { if (template) return undefined; code = kind; }
         else code = kind === 110 ? 10 : kind === 114 ? 13 : kind === 116 ? 9 : kind === 98 ? 8 : kind === 102 ? 12 : kind === 118 ? 11 : kind;
       }
       else return undefined;
       codeMethodNameCounters.codePointStrings++; codeMethodNameCounters.stringAppends++;
       name += String.fromCodePoint(code);
-    } else { codeMethodNameCounters.stringAppends++; name += source[index]; }
+    } else {
+      codeMethodNameCounters.stringAppends++;
+      if (template && code === 13) { if (source.charCodeAt(index + 1) === 10) index++; name += "\n"; }
+      else name += source[index];
+    }
   }
   return name;
 }

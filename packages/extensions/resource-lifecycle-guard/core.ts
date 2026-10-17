@@ -1024,9 +1024,23 @@ function nodeMayReadStdin(tokens: readonly string[] & { expansions?: readonly nu
 }
 
 function isHeredocDescriptorPath(operand: string | undefined, descriptor: number): boolean {
-	if (operand === "/dev/stdin") return descriptor === 0;
-	const match = operand && SOURCE_DESCRIPTOR_PATTERN.exec(operand);
-	return Boolean(match && Number(match[1]) === descriptor);
+	const value = descriptorPathNumber(operand);
+	return value >= -1 && (descriptor < 0 ? operand !== "/dev/stdin" : value === descriptor);
+}
+
+/** -2 is not a descriptor path; -1 is a path whose descriptor is unknown. */
+function descriptorPathNumber(operand: string | undefined): number {
+	if (operand === "/dev/stdin") return 0;
+	if (!operand) return -2;
+	let index = operand.startsWith("/dev/fd/") ? 8 : operand.startsWith("/proc/self/fd/") ? 14 : -1;
+	if (index < 0) return -2;
+	if (index === operand.length) return -1;
+	let value = 0;
+	for (; index < operand.length; index++) {
+		const code = operand.charCodeAt(index); if (code < 48 || code > 57) return -1;
+		value = value * 10 + code - 48;
+	}
+	return Number.isSafeInteger(value) ? value : -1;
 }
 
 /** Extra POSIX descriptors can survive exec when a parent supplied them without
@@ -1226,6 +1240,7 @@ export function heredocConsumers(header: string, descriptor = 0, depth = 0, pipe
 	const segments = parseShellSegments(header);
 	const tokens = segments[segments.length - 1];
 	if (!tokens) return 0;
+	if (tokens.redirectionFds) for (const fd of tokens.redirectionFds) if (fd && isShellDynamicDescriptor(fd)) descriptor = -1;
 	if (pipeline) {
 		let start = pipelineStart ?? segments.length - 1;
 		if (pipelineStart === undefined) while (start > 0 && (segments[start - 1]!.separatorAfter === "|" || segments[start - 1]!.separatorAfter === "|&")) start--;
@@ -1252,7 +1267,8 @@ export function heredocConsumers(header: string, descriptor = 0, depth = 0, pipe
 		}
 		return stdinScriptConsumers(segments, descriptor, depth + 1, start, functions);
 	}
-	return simpleStdinConsumers(tokens, descriptor, depth, functions);
+	const consumers = simpleStdinConsumers(tokens, descriptor, depth, functions);
+	return descriptor < 0 && consumers & 7 ? 8 : consumers;
 }
 
 type HeredocBinding = { header: string; contextEnd: number; bodyEnd: number; descriptor: number };
@@ -1315,39 +1331,140 @@ function coprocHeredocContext(segments: readonly ShellSegment[]): number {
 }
 
 function isPersistentHeredocDeclaration(header: string): boolean {
-	if (!header.includes("exec")) return false;
+	return persistentHeredocDescriptor(header, 0) >= -1;
+}
+
+function persistentHeredocDescriptor(header: string, descriptor: number): number {
+	if (!header.includes("exec")) return -2;
 	const declarations = parseShellSegments(header), declaration = declarations[declarations.length - 1];
-	if (!declaration || declaration.pipelineMember || declaration.subshellDepth || declaration.conditionalMember) return false;
+	if (!declaration || declaration.pipelineMember || declaration.subshellDepth || declaration.conditionalMember) return -2;
+	if (declaration.redirectionFds) for (const fd of declaration.redirectionFds) if (fd && isShellDynamicDescriptor(fd)) descriptor = -1;
 	if (declaration.redirections) stripShellRedirections(declaration, declaration.redirections);
-	return declaration.length === 1 && declaration[0] === "exec";
+	return declaration.length === 1 && declaration[0] === "exec" ? descriptor : -2;
 }
 
 /** Only true/: preserve known persistent input. After other commands, a matching
- * source/. read refuses; binding alone or reading as data is not a violation. */
+ * interpreter read refuses; binding alone or reading data is not a violation.
+ * Two numeric scratch lists are call-owned, capped at16 and cleared in finally. */
 function persistedHeredocConsumers(document: { header: string; bodyEnd?: number; descriptor: number }, command?: string, documents?: readonly HeredocBinding[]): number {
-	if (!command || document.bodyEnd === undefined || !isPersistentHeredocDeclaration(document.header)) return 0;
+	if (!command || document.bodyEnd === undefined) return 0;
+	const descriptor = persistentHeredocDescriptor(document.header, document.descriptor);
+	if (descriptor < -1) return 0;
 	let end = command.length;
 	// A later unconditional literal heredoc rebinding has its own inspected body.
 	if (documents) for (const next of documents) {
-		if (next.bodyEnd > document.bodyEnd && next.descriptor === document.descriptor && isPersistentHeredocDeclaration(next.header)) {
+		if (descriptor >= 0 && next.bodyEnd > document.bodyEnd && next.descriptor === descriptor && persistentHeredocDescriptor(next.header, next.descriptor) === descriptor) {
 			end = Math.min(end, next.contextEnd - next.header.length);
 		}
 	}
 	const tail = parseShellSegments(command.slice(document.bodyEnd, end));
-	if (tail.length > MAX_SCRIPT_SEGMENTS) return 0;
-	let uncertain = false;
-	for (const tokens of tail) {
-		if (tokens.redirections?.length || tokens.subshellDepth || tokens.pipelineMember || tokens[0] === "exec") uncertain = true;
-		if (tokens.redirections) { stripShellRedirections(tokens, tokens.redirections); tokens.redirections.length = 0; }
-		if (uncertain) {
-			if (simpleStdinConsumers(tokens, document.descriptor, 0, undefined, 0, true)) return 8;
-			continue;
+	const bindings = [descriptor], candidates: number[] = [];
+	persistentDescriptorCounters.arraysCreated += 2; persistentDescriptorCounters.liveArrays += 2;
+	let uncertain = descriptor < 0 || tail.length > MAX_SCRIPT_SEGMENTS, consumers = 0;
+	try {
+		for (const tokens of tail) {
+			const persistent = isPersistentExecSegment(tokens);
+			if (persistent) {
+				updatePersistentDescriptors(tokens, bindings);
+				uncertain = true;
+				if (!bindings.length) return consumers;
+				continue;
+			}
+			for (const bound of bindings) addDescriptorCandidate(candidates, bound, descriptorReadState(tokens, bound, bindings));
+			addDescriptorCandidate(candidates, 0, descriptorReadState(tokens, 0, bindings));
+			for (const word of tokens) {
+				const path = descriptorPathNumber(word);
+				if (path >= -1) addDescriptorCandidate(candidates, path, descriptorReadState(tokens, path, bindings));
+			}
+			if (tokens.subshellDepth || tokens.pipelineMember || tokens.conditionalMember) uncertain = true;
+			if (tokens.redirections) { stripShellRedirections(tokens, tokens.redirections); tokens.redirections.length = 0; }
+			for (const candidate of candidates) {
+				const input = candidate >= 0 ? candidate : candidate === -1 ? -1 : -candidate - 2;
+				const read = simpleStdinConsumers(tokens, input, 0, undefined, 0, true);
+				if (!(read & 15)) continue;
+				if (uncertain || candidate < 0 || read & 8) return 8;
+				consumers |= read;
+			}
+			candidates.length = 0;
+			if (tokens.length && tokens[0] !== "true" && tokens[0] !== ":") uncertain = true;
 		}
-		const consumers = simpleStdinConsumers(tokens, document.descriptor, 0);
-		if (consumers) return consumers;
-		if (tokens.length && tokens[0] !== "true" && tokens[0] !== ":") uncertain = true;
+		return consumers;
+	} finally {
+		bindings.length = 0; candidates.length = 0;
+		persistentDescriptorCounters.arraysReleased += 2; persistentDescriptorCounters.liveArrays -= 2;
 	}
-	return 0;
+}
+
+export const persistentDescriptorCounters = { arraysCreated: 0, arraysReleased: 0, liveArrays: 0, maxEntries: 0, lookups: 0, redirections: 0, overflows: 0 };
+
+function addDescriptorCandidate(candidates: number[], descriptor: number, state: number): void {
+	if (!state || candidates.includes(-1)) return;
+	const value = state === 2 ? descriptor < 0 ? -1 : -descriptor - 2 : descriptor;
+	if (candidates.includes(value)) return;
+	if (candidates.length === 16) { candidates.length = 1; candidates[0] = -1; persistentDescriptorCounters.overflows++; return; }
+	candidates.push(value);
+	persistentDescriptorCounters.maxEntries = Math.max(persistentDescriptorCounters.maxEntries, candidates.length);
+}
+
+function isPersistentExecSegment(tokens: ShellSegment): boolean {
+	let index = skipRedirections(tokens, 0);
+	while (tokens[index] === "command" || tokens[index] === "builtin") {
+		index = skipRedirections(tokens, index + 1);
+		if (tokens[index] === "-p" || tokens[index] === "--") index = skipRedirections(tokens, index + 1);
+	}
+	return tokens[index] === "exec" && skipRedirections(tokens, index + 1) >= tokens.length && !tokens.subshellDepth && !tokens.pipelineMember && !tokens.conditionalMember;
+}
+
+function redirectionDescriptor(tokens: ShellSegment, position: number): number {
+	const fd = tokens.redirectionFds?.[position];
+	if (fd === undefined) return tokens[tokens.redirections![position]!]!.startsWith("<") ? 0 : 1;
+	return isShellDynamicDescriptor(fd) ? -1 : Number(fd);
+}
+
+function removePersistentDescriptor(bindings: number[], descriptor: number): void {
+	let kept = 0;
+	for (const bound of bindings) if (bound !== descriptor) bindings[kept++] = bound;
+	bindings.length = kept;
+}
+
+function updatePersistentDescriptors(tokens: ShellSegment, bindings: number[]): void {
+	for (let position = 0; position < (tokens.redirections?.length ?? 0); position++) {
+		persistentDescriptorCounters.redirections++;
+		const index = tokens.redirections![position]!, operator = tokens[index]!, target = tokens[index + 1] ?? "", destination = redirectionDescriptor(tokens, position);
+		const copy = operator === "<&" || operator === ">&";
+		const origin = copy ? descriptorCopyOrigin(target) : operator === "<" ? descriptorPathNumber(target) : -2;
+		const unknown = destination < 0 || origin === -1 && target !== "-" && Boolean(tokens.expansions?.[index + 1] || hasDynamicSyntax(target));
+		const copied = unknown ? bindings.length > 0 : origin >= 0 && (bindings.includes(origin) || bindings.includes(-1));
+		if (destination >= 0) removePersistentDescriptor(bindings, destination);
+		if (copied && !bindings.includes(destination)) {
+			if (bindings.length === 16) { bindings.length = 1; bindings[0] = -1; persistentDescriptorCounters.overflows++; }
+			else bindings.push(destination);
+		}
+		if (copy && target.endsWith("-") && origin >= 0) removePersistentDescriptor(bindings, origin);
+		persistentDescriptorCounters.maxEntries = Math.max(persistentDescriptorCounters.maxEntries, bindings.length);
+	}
+}
+
+/** Follow this command's redirects backwards against persistent numeric bindings.
+ * Return0 for unrelated/closed input,1 for a known binding,2 for uncertainty. */
+function descriptorReadState(tokens: ShellSegment, descriptor: number, bindings: readonly number[]): number {
+	persistentDescriptorCounters.lookups++;
+	if (descriptor < 0) {
+		for (const bound of bindings) if (bound < 0 || descriptorReadState(tokens, bound, bindings)) return 2;
+		return 0;
+	}
+	for (let position = (tokens.redirections?.length ?? 0) - 1; position >= 0; position--) {
+		persistentDescriptorCounters.redirections++;
+		const index = tokens.redirections![position]!, operator = tokens[index]!, target = tokens[index + 1] ?? "", destination = redirectionDescriptor(tokens, position);
+		const copy = operator === "<&" || operator === ">&";
+		const origin = copy ? descriptorCopyOrigin(target) : operator === "<" ? descriptorPathNumber(target) : -2;
+		if (copy && target.endsWith("-") && origin === descriptor && destination !== descriptor) return 0;
+		if (destination < 0) return bindings.length ? 2 : 0;
+		if (destination !== descriptor) continue;
+		if (origin >= 0) { descriptor = origin; continue; }
+		return origin === -1 && target !== "-" && Boolean(tokens.expansions?.[index + 1] || hasDynamicSyntax(target)) && bindings.length ? 2 : 0;
+	}
+	return bindings.includes(descriptor) ? 1 : bindings.includes(-1) ? 2 : 0;
 }
 
 /** Literal echo/printf producers used directly by source. No shell execution,
@@ -1517,7 +1634,7 @@ export function heredocExecutableBody(document: { header: string; pipelineHeader
 	return body;
 }
 
-function stdinScriptConsumers(segments: ShellSegment[], descriptor: number, depth: number, start = 0, functions?: ShellSegment[], sourceOnly = false): number {
+function stdinScriptConsumers(segments: ShellSegment[], descriptor: number, depth: number, start = 0, functions?: ShellSegment[], descriptorOnly = false): number {
 	if (depth > MAX_WRAPPER_DEPTH || segments.length > MAX_SCRIPT_SEGMENTS) return 8;
 	let consumers = 0;
 	let disconnected = false;
@@ -1528,10 +1645,10 @@ function stdinScriptConsumers(segments: ShellSegment[], descriptor: number, dept
 		if (index > start && (segments[index - 1]!.separatorAfter === "|" || segments[index - 1]!.separatorAfter === "|&") && !pipelineDescriptorConnected(tokens, 0)) { disconnected = pipeAfter; continue; }
 		const outputConnected = !pipeAfter || pipelineDescriptorConnected(tokens, 1);
 		if (tokens.redirections) { stripShellRedirections(tokens, tokens.redirections); tokens.redirections.length = 0; }
-		consumers |= simpleStdinConsumers(tokens, descriptor, depth, functions, 0, sourceOnly);
+		consumers |= simpleStdinConsumers(tokens, descriptor, depth, functions, 0, descriptorOnly);
 		if (!outputConnected) disconnected = true;
 	}
-	return consumers;
+	return descriptor < 0 && consumers & 7 ? 8 : consumers;
 }
 
 export const heredocConsumerCounters = { tailCalls: 0, tailWords: 0 };
@@ -1556,18 +1673,18 @@ function uninspectableHeredocTail(tokens: ShellSegment, start: number): number {
 	return 0;
 }
 
-function simpleStdinConsumers(tokens: ShellSegment, descriptor: number, depth: number, functions?: ShellSegment[], start = 0, sourceOnly = false): number {
+function simpleStdinConsumers(tokens: ShellSegment, descriptor: number, depth: number, functions?: ShellSegment[], start = 0, descriptorOnly = false): number {
 	if (depth > MAX_WRAPPER_DEPTH) return 8;
 	const coprocBody = coprocBodyIndex(tokens);
 	if (coprocBody === -2) return 8;
 	let index = start || (coprocBody >= 0 ? coprocBody : commandTokenIndex(tokens, true));
 	if (coprocBody >= 0 && index >= tokens.length) return 8;
-	if (index < 0) return sourceOnly ? 0 : uninspectableHeredocTail(tokens, start + 1);
+	if (index < 0) return descriptorOnly ? 0 : uninspectableHeredocTail(tokens, start + 1);
 	if (index >= tokens.length) return 0;
 	while (tokens[index] === "{" || tokens[index] === "do" || tokens[index] === "then" || tokens[index] === "else" || tokens[index] === "if" || tokens[index] === "elif" || tokens[index] === "while" || tokens[index] === "until") index++;
 	if (coprocBody >= 0 && tokens[index] === "coproc") return 8;
 	index = bashPipelinePrefixEnd(tokens, index);
-	if (index < 0) return sourceOnly ? 0 : 8;
+	if (index < 0) return descriptorOnly ? 0 : 8;
 	let functionsAllowed = true;
 	// Prefix dispatch is a linear token walk, bounded by the command-size limit.
 	// Stopping partway would misclassify a later stdin consumer as ordinary data.
@@ -1582,16 +1699,6 @@ function simpleStdinConsumers(tokens: ShellSegment, descriptor: number, depth: n
 		if (!tokens[index] || tokens[index]!.startsWith("-")) return 0;
 	}
 	let name = commandName(tokens[index] ?? "");
-	if (sourceOnly) {
-		if (tokens[index] === "source" || tokens[index] === ".") return isHeredocDescriptorPath(tokens[index + (tokens[index + 1] === "--" ? 2 : 1)], descriptor) ? 1 : 0;
-		if (SCRIPT_WRAPPERS.has(name)) for (let option = index + 1; option < tokens.length; option++) {
-			if (tokens[option] !== "-c") continue;
-			const operand = bashScriptOperandIndex(tokens, option);
-			return operand < 0 || tokens[operand] === undefined || tokens.expansions?.[operand] ? 8
-				: stdinScriptConsumers(parseShellSegments(tokens[operand]!), descriptor, depth + 1, 0, undefined, true);
-		}
-		return 0;
-	}
 	const functionConsumers = functionsAllowed && functions ? functionStdinConsumers(functions, tokens[index] ?? "", descriptor, depth + 1) : undefined;
 	if (functionConsumers !== undefined && functionConsumers !== -1) return functionConsumers;
 	// Match lifecycle preflight's existing supported launcher grammar. External
@@ -1599,33 +1706,33 @@ function simpleStdinConsumers(tokens: ShellSegment, descriptor: number, depth: n
 	let launchers = 0;
 	while (name === "env" || name === "sudo" || name === "doas" || name === "timeout" || name === "timeout.exe") {
 		if (++launchers > MAX_WRAPPER_DEPTH) return 8;
-		if (name === "env" && hasUninspectableEnvLauncher(tokens, index)) return uninspectableHeredocTail(tokens, index + 1);
+		if (name === "env" && hasUninspectableEnvLauncher(tokens, index)) return descriptorOnly ? 0 : uninspectableHeredocTail(tokens, index + 1);
 		if (name === "timeout" || name === "timeout.exe") {
 			const parsed = parseTimeoutInvocation(tokens, index);
-			if (!parsed.supported) return uninspectableHeredocTail(tokens, index + 1);
+			if (!parsed.supported) return descriptorOnly ? 0 : uninspectableHeredocTail(tokens, index + 1);
 			index = parsed.commandIndex;
 		} else {
 			index++;
 			if (tokens[index] === "--") index++;
 			if (name === "env" || name === "sudo") while (index < tokens.length && !tokens[index]!.startsWith("-") && tokens[index]!.includes("=")) {
-				if (uncertainAssignment(tokens, index)) return uninspectableHeredocTail(tokens, index);
+				if (uncertainAssignment(tokens, index)) return descriptorOnly ? 0 : uninspectableHeredocTail(tokens, index);
 				index++;
 			}
 		}
-		if (!tokens[index] || tokens[index]!.startsWith("-") || tokens.expansions?.[index] || hasDynamicSyntax(tokens[index]!)) return uninspectableHeredocTail(tokens, index);
+		if (!tokens[index] || tokens[index]!.startsWith("-") || tokens.expansions?.[index] || hasDynamicSyntax(tokens[index]!)) return descriptorOnly ? 0 : uninspectableHeredocTail(tokens, index);
 		name = commandName(tokens[index]!);
 	}
 	if (name === "alias" && tokens[index] === "alias") {
 		let consumers = 0;
 		for (let operand = index + 1; operand < tokens.length; operand++) {
 			const script = literalAliasSource(tokens, operand);
-			if (script !== undefined) consumers |= stdinScriptConsumers(parseShellSegments(script), descriptor, depth + 1, 0, functions);
+			if (script !== undefined) consumers |= stdinScriptConsumers(parseShellSegments(script), descriptor, depth + 1, 0, functions, descriptorOnly);
 		}
 		return consumers;
 	}
 	if (name === "eval" && tokens[index] === "eval") {
 		const script = literalEvalScript(tokens, index + 1);
-		return script === undefined ? 8 : stdinScriptConsumers(parseShellSegments(script), descriptor, depth + 1, 0, functions);
+		return script === undefined ? 8 : stdinScriptConsumers(parseShellSegments(script), descriptor, depth + 1, 0, functions, descriptorOnly);
 	}
 	const kind = heredocConsumerKind(name);
 	if (kind === 16) {
@@ -1633,7 +1740,7 @@ function simpleStdinConsumers(tokens: ShellSegment, descriptor: number, depth: n
 		return isHeredocDescriptorPath(operand, descriptor) ? 1 : 0;
 	}
 	const language = kind === 1 ? "bash" : kind === 2 ? "node" : kind === 4 ? "python" : undefined;
-	if (!language) return uninspectableHeredocTail(tokens, index + 1);
+	if (!language) return descriptorOnly ? 0 : uninspectableHeredocTail(tokens, index + 1);
 	if (language === "node") return nodeMayReadStdin(tokens, index + 1, descriptor) ? 2 : 0;
 	const languageMask = language === "bash" ? 1 : 4;
 	const stdinMask = descriptor !== 0 ? 0 : language === "bash" ? 1 : 4;
@@ -1693,7 +1800,7 @@ function simpleStdinConsumers(tokens: ShellSegment, descriptor: number, depth: n
 				// Do not infer noexec when a following option may re-enable it.
 				if (tokens[sourceIndex]!.startsWith("-") || tokens[sourceIndex]!.startsWith("+")) return 8;
 				if ((shellNoexec || shellPrettyPrint) && !shellInteractive) return 16;
-				return stdinScriptConsumers(parseShellSegments(tokens[sourceIndex]!), descriptor, depth + 1, 0, functions);
+				return stdinScriptConsumers(parseShellSegments(tokens[sourceIndex]!), descriptor, depth + 1, 0, functions, descriptorOnly);
 			}
 		}
 	}
@@ -2611,7 +2718,7 @@ function maskCodeStringsAndComments(source: string, language: "node" | "python",
 				for (; index < keyEnd; index++) output[index] = source[index]!;
 				index--; continue;
 			}
-			if (language === "node" && code !== 96) {
+			if (language === "node") {
 				const decodedEnd = writeEscapedNodeMethodKey(source, output, index);
 				if (decodedEnd < 0) { addMutationPrimitive(builder, "node_unresolved_method"); markUnverifiable(builder, true); }
 				else if (decodedEnd > 0) { index = decodedEnd - 1; continue; }

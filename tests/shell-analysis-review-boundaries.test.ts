@@ -7,6 +7,7 @@ import { extractCommandSubstitutions, prepareShellAnalysis, shellAnalysisCounter
 import { shellHookFixture, assertFinalAuthorization } from "./codemode-recovery/shell-hook-fixture.ts";
 import { SessionPermissionController, workspace } from "./codemode-recovery/guard-fixture.ts";
 import { codeMethodNameCounters } from "../packages/extensions/resource-lifecycle-guard/code-method-names.ts";
+import { persistentDescriptorCounters } from "../packages/extensions/resource-lifecycle-guard/core.ts";
 import { NODE_COMMAND_PATTERN, NODE_LITERAL_METHOD_KEY_PATTERN, NODE_RM_CALL_PATTERN, NODE_UNLINK_PATTERN, PYTHON_COMMAND_PATTERN, PYTHON_RMTREE_PATTERN, PYTHON_UNLINK_PATTERN } from "../packages/extensions/resource-lifecycle-guard/regex.ts";
 
 function literalProgram(interpreter: string, body: string, heredoc: boolean): string {
@@ -19,6 +20,80 @@ function nodeInputShapes(body: string): string[] {
     'node -e "' + body.replaceAll("\\", "\\\\").replaceAll("`", "\\`").replaceAll("$", "\\$").replaceAll('"', '\\"') + '"',
     'node -e "' + body.replaceAll("$", "\\$").replaceAll('"', '\\"') + '"',
     doc, `{ ${doc}\n}`, `${doc}\n${doc}`, `node <<'EOF' && echo done\n${body}\nEOF`, `if ${doc}\nthen :; fi`];
+}
+
+test("persistent descriptor scratch is bounded and released on every result", () => {
+  const before = { ...persistentDescriptorCounters };
+  for (const tail of ["true; node /dev/fd/3", "echo ok; node /dev/fd/3", "cat /dev/fd/3", "exec 3<&-; node /dev/fd/3",
+    Array.from({ length: 18 }, (_, index) => `exec ${index + 4}<&3`).join("; ") + "; node /dev/fd/21"]) {
+    inspectBashResourceLifecycle({ command: `exec 3<<'EOF'\nconsole.log(1)\nEOF\n${tail}` });
+    assert.equal(persistentDescriptorCounters.liveArrays, 0);
+  }
+  assert.ok(persistentDescriptorCounters.arraysCreated > before.arraysCreated);
+  assert.equal(persistentDescriptorCounters.arraysCreated - before.arraysCreated, persistentDescriptorCounters.arraysReleased - before.arraysReleased);
+  assert.ok(persistentDescriptorCounters.maxEntries <= 16);
+  assert.ok(persistentDescriptorCounters.overflows > before.overflows);
+  assert.ok(Object.values(persistentDescriptorCounters).every(value => typeof value === "number"));
+  const includes = Array.prototype.includes;
+  Array.prototype.includes = function(...args) {
+    if (persistentDescriptorCounters.liveArrays) throw new Error("descriptor scratch failure");
+    return includes.apply(this, args);
+  };
+  try {
+    assert.throws(() => inspectBashResourceLifecycle({ command: "exec 3<<'EOF'\nconsole.log(1)\nEOF\nnode /dev/fd/3" }), /descriptor scratch failure/);
+  } finally { Array.prototype.includes = includes; }
+  assert.equal(persistentDescriptorCounters.liveArrays, 0);
+  assert.equal(persistentDescriptorCounters.arraysCreated - before.arraysCreated, persistentDescriptorCounters.arraysReleased - before.arraysReleased);
+});
+
+for (const mode of ["full-access", "workspace-write"] as const) {
+  test(`review forty ${mode}: persistent interpreter descriptor reads reject lost or dynamic bodies`, async t => {
+    for (const [name, body] of [["node", "fs.unlinkSync(target)"], ["nodejs", "fs.unlinkSync(target)"], ["env NODEJS.exe", "fs.unlinkSync(target)"],
+      ["python3", "shutil.rmtree(target)"], ["/usr/bin/python3.12", "shutil.rmtree(target)"], ["env python312.exe", "shutil.rmtree(target)"]]) {
+      for (const tail of [`echo ok; ${name} /dev/fd/3`, `echo ok; ${name} /proc/self/fd/3`, `echo ok; ${name} - <&3`,
+        `echo ok; ${name} < /dev/fd/3`, `echo ok; ${name} < /proc/self/fd/3`, `fd=3; ${name} /dev/fd/$fd`,
+        `fd=3; ${name} /proc/self/fd/$fd`, `fd=3; ${name} - <&$fd`, `fd=3; ${name} < /dev/fd/$fd`,
+        `exec 4<&3; exec 3<&-; ${name} /dev/fd/4`, `exec 4<&3-; ${name} /dev/fd/4`]) {
+        const command = `exec 3<<'EOF'\n${body}\nEOF\n${tail}`;
+        assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_HEREDOC\]/, command);
+        const f = await shellHookFixture(t, mode), call = await f.authorize(command);
+        assert.equal(call.outcome?.block, true, command); assert.equal(call.outcome?.finalAuthorization, undefined); assert.equal(f.dialogs(), 0);
+      }
+      for (const command of [`exec {v}<<'EOF'\n${body}\nEOF\n${name} /dev/fd/$v`, `${name} /dev/fd/$v {v}<<'EOF'\n${body}\nEOF`]) {
+        assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_HEREDOC\]/, command);
+        const f = await shellHookFixture(t, mode), call = await f.authorize(command);
+        assert.equal(call.outcome?.block, true, command); assert.equal(f.dialogs(), 0);
+      }
+    }
+    for (const name of ["bash", "sh", "source", "."]) {
+      const command = `exec 3<<'EOF'\nprintf ok\nEOF\necho ok; ${name} /proc/self/fd/3`;
+      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /\[SHELL_HEREDOC\]/, command);
+    }
+  });
+  test(`review forty ${mode}: known interpreter bodies recurse while data and closed descriptors retain D3`, async t => {
+    for (const [name, harmless, mutation] of [["node", "console.log(1)", "fs.unlinkSync(target)"], ["python3", "print(1)", "shutil.rmtree(target)"]]) {
+      for (const input of ["/dev/fd/3", "/proc/self/fd/3", "- <&3", "< /dev/fd/3", "< /proc/self/fd/3"]) {
+        for (const prefix of ["", "true; ", ":; "]) {
+          const command = `exec 3<<'EOF'\n${harmless}\nEOF\n${prefix}${name} ${input}`;
+          assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
+          const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
+          assert.equal(f.dialogs(), mode === "full-access" ? 0 : 1);
+          const bad = `exec 3<<'EOF'\n${mutation}\nEOF\n${prefix}${name} ${input}`;
+          const blocked = await shellHookFixture(t, mode), call = await blocked.authorize(bad);
+          assert.equal(call.outcome?.block, true, bad); assert.equal(blocked.dialogs(), 0);
+        }
+        const lost = `exec 3<<'EOF'\n${harmless}\nEOF\necho ok; ${name} ${input}`;
+        assert.match(inspectBashResourceLifecycle({ command: lost }) ?? "", /\[SHELL_HEREDOC\]/, lost);
+      }
+      for (const tail of [`exec 3<&-; ${name} /dev/fd/3`, `exec 3</dev/null; ${name} /dev/fd/3`, `echo ok; ${name} - < /dev/null`,
+        "echo node; cat /dev/fd/3", "echo ok; cat /proc/self/fd/3", "echo ok; cat <&3", "echo ok", "true"]) {
+        const command = `exec 3<<'EOF'\n${harmless}\nEOF\n${tail}`;
+        assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
+        const f = await shellHookFixture(t, mode); assertFinalAuthorization(await f.authorize(command));
+        assert.equal(f.dialogs(), mode === "full-access" ? 0 : 1);
+      }
+    }
+  });
 }
 
 test("unresolved heredoc tails count existing argv words without retained source", () => {
@@ -108,6 +183,41 @@ test("prompt checks inspect only discovered parameter heads and retain primitive
 });
 
 for (const mode of ["full-access", "workspace-write"] as const) {
+  test(`review forty ${mode}: complete Node literal-key escapes retain deletion checks`, async t => {
+    const keys = [String.raw`'r\mSync'`, String.raw`'r\155Sync'`, String.raw`'\162\155\123\171\156\143'`, String.raw`'r\x6dSync'`, String.raw`'r\u006dSync'`, String.raw`'r\u{6d}Sync'`, "`r\\mSync`", "`rmSync`", String.raw`'unl\151nkSync'`];
+    for (const newline of ["\n", "\r", "\r\n", "\u2028", "\u2029"]) for (const quote of ["'", "\"", "`"]) keys.push(quote + "rm\\" + newline + "Sync" + quote);
+    for (const key of keys) for (const heredoc of [false, true]) {
+      const command = literalProgram("node", `(fs)[${key}](target,{recursive:true})`, heredoc), scan = inspectHighRiskBashMutation({ command }, process.cwd());
+      assert.equal(scan?.mutationDetected, true, command); assert.equal(scan?.unverifiableScope, true);
+      const f = await shellHookFixture(t, mode), result = await f.authorize(command); assert.equal(result.outcome?.block, true, command); assert.equal(f.dialogs(), 0);
+    }
+    for (const key of ["'readFileSync'", String.raw`'r\x65adFileSync'`, "`readFileSync`", ...["b", "f", "n", "r", "t", "v", "0", "00", "377", "8", "9", "'", '"', "\\"].map(escape => `'x\\${escape}x'`)]) {
+      const command = literalProgram("node", `(fs)[${key}](target)`, true), f = await shellHookFixture(t, mode);
+      assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command); assert.equal(inspectBashResourceLifecycle({ command }), undefined, command); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
+    }
+    for (const key of ["`rm${part}`", "`read${part}`", String.raw`'r\xZ0Sync'`, String.raw`'r\u{}Sync'`, String.raw`'r\u{110000}Sync'`, "`r\\155Sync`", "`r\\8Sync`", "'" + "x".repeat(257) + "'"]) {
+      const command = literalProgram("node", `(fs)[${key}](target)`, true), f = await shellHookFixture(t, mode);
+      const scan = inspectHighRiskBashMutation({ command }, process.cwd()); assert.equal(scan?.mutationDetected, true, command); assert.equal(scan?.unverifiableScope, true);
+      assert.equal((await f.authorize(command)).outcome?.block, true, command); assert.equal(f.dialogs(), 0);
+    }
+    for (const body of ["fs['rm'+'Sync'](target)", "fs[name](target)", "fs['rm'.concat('Sync')](target)", 'console.log("fs[\\\'r\\\\mSync\\\'](target)")', "// fs['r\\mSync'](target)"]) {
+      const command = literalProgram("node", body, true), f = await shellHookFixture(t, mode);
+      assert.notEqual(inspectHighRiskBashMutation({ command }, process.cwd())?.mutationDetected, true, command); assertFinalAuthorization(await f.authorize(command)); assert.equal(f.dialogs(), mode === "workspace-write" ? 1 : 0);
+    }
+  });
+  test(`review forty ${mode}: regex text remains conservative and division calls stay visible`, async t => {
+    for (const heredoc of [false, true]) {
+      const call = "fs.unlinkSync('..')", command = literalProgram("node", `const re = /${call}/`, heredoc), direct = literalProgram("node", call, heredoc);
+      const scan = inspectHighRiskBashMutation({ command }, process.cwd()), control = inspectHighRiskBashMutation({ command: direct }, process.cwd());
+      assert.deepEqual(scan?.primitives, control?.primitives); assert.deepEqual(scan?.targets, control?.targets);
+      const f = await shellHookFixture(t, mode), g = await shellHookFixture(t, mode);
+      assert.equal(Boolean((await f.authorize(command)).outcome?.block), Boolean((await g.authorize(direct)).outcome?.block)); assert.equal(f.dialogs(), g.dialogs());
+      for (const body of ["const re = /fs.unlinkSync(x)/", "1 / require('fs').unlinkSync(process.argv[1]) / 2"]) {
+        const dynamic = literalProgram("node", body, heredoc), h = await shellHookFixture(t, mode);
+        assert.equal((await h.authorize(dynamic)).outcome?.block, true, dynamic); assert.equal(h.dialogs(), 0);
+      }
+    }
+  });
   test(`review thirty-nine ${mode}: interactive Python inspects descriptor scripts before stdin`, async t => {
     for (const name of ["python3", "env python3.12", "/usr/bin/PYTHON3.12.EXE", "py -V:Acme/3.13"]) for (const boundary of ["", "-- "]) for (const descriptor of [3, 4]) {
       const path = descriptor === 3 ? "/dev/fd/3" : "/proc/self/fd/4";

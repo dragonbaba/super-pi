@@ -18,6 +18,8 @@ test("authorization scanners and cache methods add no callbacks, promises or Buf
   for (const name of ["hasUnsafeBashBuiltinOperand", "hasNonliteralBashSubscript", "skipRedirections", "afterLeadingRedirection"]) targets.get("core.ts")!.add(name);
   targets.get("core.ts")!.add("hasBareBashArithmeticCommand");
   targets.get("core.ts")!.add("descriptorCopyOrigin");
+  for (const name of ["persistentHeredocDescriptor", "descriptorPathNumber", "addDescriptorCandidate", "isPersistentExecSegment", "redirectionDescriptor", "removePersistentDescriptor", "updatePersistentDescriptors", "descriptorReadState"]) targets.get("core.ts")!.add(name);
+  targets.get("code-method-names.ts")!.add("plainNodeDeletionName");
   targets.get("shell-substitution.ts")!.add("subscriptTextState");
   targets.get("shell-substitution.ts")!.add("isPromptParameterExpansion");
   targets.get("core.ts")!.add("findSearchRootIndex");
@@ -47,6 +49,24 @@ test("authorization scanners and cache methods add no callbacks, promises or Buf
     visit(source);
     assert.deepEqual(seen, names, file);
   }
+});
+
+test("persistent descriptor provenance uses two bounded call-owned lists released in finally", () => {
+  const source = ts.createSourceFile("core.ts", readFileSync("packages/extensions/resource-lifecycle-guard/core.ts", "utf8"), ts.ScriptTarget.Latest, true);
+  const names = new Set(["descriptorPathNumber", "addDescriptorCandidate", "isPersistentExecSegment", "redirectionDescriptor", "removePersistentDescriptor", "updatePersistentDescriptors", "descriptorReadState"]), seen = new Set<string>();
+  function audit(node: ts.Node): void {
+    assert.equal(ts.isNewExpression(node) || ts.isObjectLiteralExpression(node) || ts.isArrayLiteralExpression(node) || ts.isArrowFunction(node) || ts.isFunctionExpression(node) || ts.isRegularExpressionLiteral(node), false, node.getText(source));
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) assert.ok(["charCodeAt", "startsWith", "endsWith", "includes", "push", "max", "isSafeInteger"].includes(node.expression.name.text), node.getText(source));
+    ts.forEachChild(node, audit);
+  }
+  for (const statement of source.statements) if (ts.isFunctionDeclaration(statement) && statement.name && names.has(statement.name.text)) {
+    seen.add(statement.name.text); ts.forEachChild(statement.body!, audit);
+  }
+  assert.deepEqual(seen, names);
+  const owner = source.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === "persistedHeredocConsumers");
+  assert.ok(owner && ts.isFunctionDeclaration(owner));
+  const cleanup = owner.body!.statements.find(ts.isTryStatement)?.finallyBlock?.getText(source);
+  assert.ok(cleanup?.includes("bindings.length = 0") && cleanup.includes("candidates.length = 0") && cleanup.includes("arraysReleased += 2"));
 });
 
 test("builtin, coproc and Node argv checks use primitive state without source copies or temporary containers", () => {
@@ -132,6 +152,14 @@ test("method-name ASCII helpers contain no string construction or per-call alloc
   }
   for (const statement of source.statements) if (ts.isFunctionDeclaration(statement) && statement.name && names.has(statement.name.text)) { seen.add(statement.name.text); ts.forEachChild(statement.body!, audit); }
   assert.deepEqual(seen, names);
+  const literal = source.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === "plainNodeDeletionName");
+  assert.ok(literal && ts.isFunctionDeclaration(literal));
+  function auditLiteral(node: ts.Node): void {
+    assert.equal(ts.isNewExpression(node) || ts.isObjectLiteralExpression(node) || ts.isArrayLiteralExpression(node) || ts.isArrowFunction(node) || ts.isFunctionExpression(node) || ts.isRegularExpressionLiteral(node) || ts.isTemplateExpression(node), false, node.getText(source));
+    if (ts.isCallExpression(node)) assert.ok(ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "startsWith", node.getText(source));
+    ts.forEachChild(node, auditLiteral);
+  }
+  ts.forEachChild(literal.body!, auditLiteral);
 });
 
 test("heredoc consumer fallback shares name classification without path copies or temporary containers", () => {
