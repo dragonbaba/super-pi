@@ -176,6 +176,25 @@ Source uncertainty and nonblocking recursive results are deferred while visible 
 
 Behavior changes confirmed against main: quoted subscript text in the `grep` row, `echo 'a[$(date)]'`, and `[[ foo == 'x[$(printf data >.git/config)]' ]]` no longer asks in W. A Bash heredoc containing `rm -rf node_modules` followed by CR now asks once in F and W (previously allow/ask). With managed tasks, the heredoc followed by an unclosed substitution, the two `bash -c` segments above, and `echo $(date)` followed by backslash-CR-LF and `nohup node server.js &` now produce lifecycle refusal instead of allow/ask. The CR-bearing background heredoc remains refused as on main. Catastrophic-root and dynamic-target outcomes remain unchanged.
 
+### CRLF heredoc boundaries (PR6)
+
+A CR immediately before the declaration's LF is excluded from the delimiter word. When matching a body line, its final CR before LF or end of input is excluded from the comparison. CR still marks the shared view uncertain, but a bounded body remains available for existing recursive checks and commands after its delimiter remain visible. Internal delimiter CR and backslash-CR retain their existing uncertainty behavior. The original body is retained without removing CR; the existing loops use only index and character comparisons, with no additional scan or per-line allocation.
+
+`tests/guard-relax-6-crlf-heredoc.test.ts` covers eight representative rows through the complete hook. F/W use TUI without managed tasks; FM/WM have managed tasks available. CRLF applies to the whole heredoc unless stated otherwise.
+
+| Command | F | W | FM | WM |
+| --- | --- | --- | --- | --- |
+| Bash heredoc body `rm -rf .git` | Protected-root deny | Deny | Deny | Deny |
+| Cat heredoc followed by `rm -rf .git` | Protected-root deny | Deny | Deny | Deny |
+| Bash heredoc body `npm run dev &` | Allow | Ask | Lifecycle deny | Deny |
+| Cat heredoc followed by `npm run dev &` | Allow | Ask | Lifecycle deny | Deny |
+| Bash heredoc body `rm -rf node_modules` | Ask once | Ask once | Ask once | Ask once |
+| LF cat declaration, CRLF delimiter, then `npm run dev &` | Allow | Ask | Lifecycle deny | Deny |
+| Cat writes `start server & echo ok` to `run.bat` | Ask once | Ask once | Ask once | Ask once |
+| Pure-LF `git commit -m "$(cat <<'EOF'…EOF…)"` | Allow | Ask | Allow | Ask |
+
+Mixed LF/CRLF boundary recognition may inspect a superset of the executed text. Data-only bodies do not become lifecycle scripts. Pure-LF behavior, PR5's 13 acceptance rows, source invariants and the existing ownership/release rules are unchanged. Nested `$(… <<X …)` inside `${ …; }` remains an accepted boundary under [#161](https://github.com/dragonbaba/super-pi/issues/161), without additional modeling.
+
 ### Explicit Shell cwd
 
 Bash and PowerShell accept optional literal `cwd`, relative to the Session cwd.

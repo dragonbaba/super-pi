@@ -198,6 +198,7 @@ function isShellWordBoundary(c: string | undefined): boolean {
 }
 
 function collectHereDelimiters(command: string, start: number, end: number): HereDelimiterScan {
+  if (end > start && command.charCodeAt(end - 1) === 13) end--;
   const delimiters: HereDelimiter[] = [];
   let quote = "";
   let escaped = false;
@@ -349,6 +350,7 @@ export function prepareShellAnalysis(command: string): ShellAnalysisView {
     const operatorStart = index;
     const lineEnd = heredocDeclarationEnd(command, index + 2);
     if (lineEnd >= 0) {
+      if (command.charCodeAt(lineEnd - 1) === 13) uncertain = true;
       const headerSubstitutions = extractCommandSubstitutions(command.slice(operatorStart, lineEnd));
       if (headerSubstitutions.uncertain) uncertain = true;
     }
@@ -381,6 +383,7 @@ export function prepareShellAnalysis(command: string): ShellAnalysisView {
         let backslashes = 0;
         if (!delimiter.quoted && nextLine >= 0) for (let cursor = contentEnd - 1; cursor >= bodyStart && command.charCodeAt(cursor) === 92; cursor--) backslashes++;
         const continued = backslashes % 2 === 1;
+        if (contentEnd > bodyStart && command.charCodeAt(contentEnd - 1) === 13) { uncertain = true; contentEnd--; }
         if (continued) contentEnd--;
         let cursor = bodyStart;
         if (delimiter.stripTabs && delimiterMatched === 0) while (cursor < contentEnd && command.charCodeAt(cursor) === 9) cursor++;
