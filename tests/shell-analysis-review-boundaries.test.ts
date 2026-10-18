@@ -42,7 +42,7 @@ async function rules(t: TestContext, rows: readonly Rule[]) {
       ? ["full-access", "workspace-write"] as const
       : [outcome === "blocked" || outcome === "admitted" ? "full-access" : "workspace-write"] as const;
     for (const mode of modes) {
-      const fixture = await shellHookFixture(t, mode, "active"), call = await fixture.authorize(command, tool);
+      const fixture = await shellHookFixture(t, mode, "active", true), call = await fixture.authorize(command, tool);
       try {
         if (outcome === "blocked") {
           assert.equal(call.outcome?.block, true, name);
