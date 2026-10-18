@@ -23,7 +23,6 @@ import {
 	OPAQUE_JOB_LAUNCHER_PATTERN,
 	OWNED_FOREGROUND_JOB_PATTERN,
 	OWNED_USE_COMMAND_PATTERN,
-	POWERSHELL_REMOVE_RECURSIVE_PATTERN,
 	PYTHON_RMTREE_PATTERN,
 	PYTHON_COMMAND_PATTERN,
 	PYTHON_UNLINK_PATTERN,
@@ -428,30 +427,6 @@ export function inspectHighRiskBashMutation(input: unknown, cwd: string, shellOp
 		workspaceWide: builder.workspaceWide,
 		diagnostic: builder.diagnostic,
 	};
-}
-
-export function structuredMutationBlock(
-	scan: HighRiskMutationScan,
-	policyReason: "protected_root" | "confirmation_required" | "user_rejected",
-	protectedRoots: readonly string[] = [],
-): string {
-	return JSON.stringify({
-		ok: false,
-		category: "POLICY_BLOCKED",
-		operation: "bash",
-		risk: scan.risk,
-		policyReason,
-		parserVersion: 2,
-		primitives: scan.primitives,
-		protectedRoots,
-		targetsInspected: scan.targets.length,
-		dynamicScope: scan.dynamicScope,
-		unverifiableScope: scan.unverifiableScope,
-		workspaceWide: scan.workspaceWide,
-		stateChanged: false,
-		retryable: policyReason !== "protected_root",
-		requiresConfirmation: policyReason === "confirmation_required",
-	});
 }
 
 function inspectOutputRedirections(tokens: ShellSegment, cwd: string, builder: ScanBuilder): void {

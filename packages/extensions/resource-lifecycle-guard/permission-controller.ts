@@ -188,17 +188,6 @@ function operationPurpose(event: ToolCallEventShape, ctx: ExtensionContext): str
   return undefined;
 }
 
-function targetLines(targets: readonly string[]): string {
-  if (targets.length === 0) return "- 无静态目标";
-  let output = "";
-  for (let index = 0; index < targets.length; index++) {
-    const next = `- ${targets[index]}\n`;
-    if (output.length + next.length > MAX_COMMAND_DISPLAY_CHARS) return `${output}- …`;
-    output += next;
-  }
-  return output.trimEnd();
-}
-
 function structuredPermissionBlock(
   operation: string,
   mode: SessionPermissionMode,

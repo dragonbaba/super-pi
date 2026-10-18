@@ -2,7 +2,7 @@ import {
   DISPLAY_WHITESPACE_PATTERN,
   FD_DUPLICATION_PATTERN,
 } from "./regex.ts";
-import type { PolicyDiagnostic, PolicyDiagnosticCode } from "@super-pi/ai";
+import type { PolicyDiagnostic } from "@super-pi/ai";
 
 export { renderPolicyDiagnostic, sanitizePolicyFeedback } from "@super-pi/ai";
 export type { PolicyDiagnostic, PolicyDiagnosticCode } from "@super-pi/ai";

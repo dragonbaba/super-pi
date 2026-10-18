@@ -261,29 +261,6 @@ export function extractCommandSubstitutions(command: string, heredocData = false
 }
 
 
-/** Detection only: actual heredocs are unsupported; never remove source/body text. */
-export function inspectHereDocuments(command: string): { command: string; substitutions: string[]; uncertain: boolean; heredoc?: true } {
- let quote = ""; let escaped = false; let arithmeticDepth = 0;
- for (let index = 0; index < command.length; index++) {
-  const c = command[index];
-  if (escaped) { escaped = false; continue; }
-  if (c === "\\" && quote !== "'") { escaped = true; continue; }
-  if (quote) { if (c === quote) quote = ""; continue; }
-  if (c === "'" || c === '"') { quote = c; continue; }
-  if (c === "#" && (index === 0 || COMMENT_BOUNDARY_PATTERN.test(command[index - 1]!))) {
-   const end = command.indexOf("\n", index); if (end < 0) break; index = end - 1; continue;
-  }
-  if (c === "$" && command[index + 1] === "(" && command[index + 2] === "(") { arithmeticDepth += 2; index += 2; continue; }
-  if (c === "(" && command[index + 1] === "(") { arithmeticDepth += 2; index++; continue; }
-  if (arithmeticDepth) { if (c === "(") arithmeticDepth++; else if (c === ")") arithmeticDepth--; continue; }
-  if (c === "<" && command[index + 1] === "<") {
-   if (command[index + 2] === "<") { index += 2; continue; }
-   return { command, substitutions: [], uncertain: true, heredoc: true };
-  }
- }
- return { command, substitutions: [], uncertain: arithmeticDepth !== 0 };
-}
-
 export interface ShellAnalysisView {
   /** Source-shaped text with heredoc bodies blanked, preserving command newlines. */
   command: string;
