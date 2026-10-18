@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { basename, resolve } from "node:path";
-import { staticMutationTarget, uninspectableBashStateStart, heredocDocumentConsumers, heredocExecutableBody, heredocHasUntrackedCwd, literalAliasSource, literalEvalScript, literalProcessSources, literalStoredScripts, unsafeBashLoopHeaderReason } from "./core.ts";
+import { staticMutationTarget, uninspectableBashStateStart, heredocScriptLanguages, literalAliasSource, literalEvalScript, literalProcessSources, literalStoredScripts, unsafeBashLoopHeaderReason } from "./core.ts";
 import { commandSubstitutionEnd } from "./shell-substitution.ts";
 import { analyzeShellSource, type ShellAnalysisOwner } from "./shell-analysis.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
@@ -581,14 +581,6 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
   if (processScripts === null) markUncertainContext(builder, "process_source_limit");
   if (processScripts === false) markUncertainContext(builder, "process_source_unresolved");
   if (processScripts) for (const source of processScripts) { markUncertainContext(builder, "resolved_process_source"); inspectScript(source, initialCwd, depth + 1, builder); }
-  if (analysis.hereDocuments) for (const document of analysis.hereDocuments) {
-    const body = heredocExecutableBody(document, analysis.command);
-    if (heredocDocumentConsumers(document, analysis.command, analysis.hereDocuments) & 1 && body !== undefined) {
-      if (document.expanded) { markUncertainContext(builder, "heredoc_expanded_source"); continue; }
-      if (document.priorSource || document.pipelineHeader || heredocHasUntrackedCwd(document.header)) builder.uncertainContext = true;
-      inspectScript(body, initialCwd, depth + 1, builder);
-    }
-  }
   for (const nested of analysis.substitutions) inspectScript(nested, initialCwd, depth + 1, builder);
   const substitutions = prepared.substitutions;
   if (substitutions.unterminated) markOpaque(builder, "unterminated_command_substitution");
@@ -608,6 +600,9 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
   let literalWord = true;
   let redirectionTargetPending = false;
   let bashDoubleBracket = false;
+  const classifyHeredoc = analysis.hereDocuments !== undefined && prepared.heredocLanguages === undefined;
+  let heredocLanguages = prepared.heredocLanguages ?? 0;
+  let heredocSegments = 0, heredocUncertainContext = false;
   for (let index = 0; index < command.length; index++) {
     if (uncertainStateStart >= 0 && index >= uncertainStateStart) {
       markUncertainContext(builder, "unverifiable_shell_state"); uncertainStateStart = -1;
@@ -755,6 +750,8 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
         if (!literalWord && tokens.length === 2) tokens.thirdWordQuoted = true;
         tokens.push(value);
       }
+      if (classifyHeredoc) heredocLanguages |= heredocScriptLanguages(tokens);
+      if (analysis.hereDocuments && tokens.length && (++heredocSegments > 1 || tokens.includes("-c") || tokens.includes("eval"))) heredocUncertainContext = true;
       cwd = inspectTokenBuffer(tokens, cwd, depth, builder);
       tokens.length = 0;
       if (tokens.redirections) tokens.redirections.length = 0;
@@ -783,8 +780,18 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
     if (!literalWord && tokens.length === 2) tokens.thirdWordQuoted = true;
     tokens.push(value);
   }
+  if (classifyHeredoc) heredocLanguages |= heredocScriptLanguages(tokens);
+  if (analysis.hereDocuments && tokens.length && (++heredocSegments > 1 || tokens.includes("-c") || tokens.includes("eval"))) heredocUncertainContext = true;
   inspectTokenBuffer(tokens, cwd, depth, builder);
   if (quote !== 0 || escaped) markOpaque(builder, "unterminated_shell_syntax");
+  if (analysis.hereDocuments) {
+    prepared.heredocLanguages = heredocLanguages;
+    if (heredocLanguages & 1) for (const document of analysis.hereDocuments) {
+      if (heredocUncertainContext) markUncertainContext(builder, "heredoc_execution_context");
+      if (document.expanded) markUncertainContext(builder, "heredoc_expanded_source");
+      inspectScript(document.body, initialCwd, depth + 1, builder);
+    }
+  }
 }
 
 function publicScope(builder: ScopeBuilder): BashPermissionScope {

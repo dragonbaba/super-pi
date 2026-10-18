@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import test, { type TestContext } from "node:test";
-import { aliasRiskCounters, decodeLiteralBase64, heredocConsumer, heredocConsumers, heredocConsumerCounters, inspectBashResourceLifecycle, inspectHighRiskBashMutation, literalProcessSources, literalStoredScripts, persistentDescriptorCounters } from "../packages/extensions/resource-lifecycle-guard/core.ts";
+import { aliasRiskCounters, inspectBashResourceLifecycle, inspectHighRiskBashMutation, literalProcessSources, literalStoredScripts, } from "../packages/extensions/resource-lifecycle-guard/core.ts";
 import { inspectBashPermissionScope } from "../packages/extensions/resource-lifecycle-guard/permission-bash.ts";
 import { extractCommandSubstitutions, prepareShellAnalysis, shellAnalysisCounters } from "../packages/extensions/resource-lifecycle-guard/shell-substitution.ts";
 import { codeMethodNameCounters } from "../packages/extensions/resource-lifecycle-guard/code-method-names.ts";
@@ -12,7 +12,6 @@ import { SessionPermissionController, workspace } from "./codemode-recovery/guar
 // Payloads are inspected through the real authorization hook; no shell is started.
 const doc = (header: string, body = "sleep 100 &", descriptor = "") => `${header} ${descriptor}<<'EOF'\n${body}\nEOF`;
 const program = (language: string, body: string) => doc(language, body);
-const nodeDelete = "fs.unlinkSync(target)", pythonDelete = "shutil.rmtree(target)";
 type Outcome = "blocked" | "opaque" | "read-only" | "allowed" | "ask" | "admitted" | "once";
 type Rule = readonly [
   name: string,
@@ -64,147 +63,30 @@ async function rules(t: TestContext, rows: readonly Rule[]) {
     }
   }
 }
-test("heredoc syntax binds data and executable input to the owning command", async (t) => {
+test("non-heredoc controls: heredoc syntax binds data and executable input to the owning command", async (t) => {
   await rules(t, [
-    ["expanded Python body stays opaque", "PAYLOAD=\"import shutil; shutil.rmtree('/protected')\"; python <<EOF\n$PAYLOAD\nEOF", "ask"],
-    ["data consumer", doc("cat"), "opaque"],
-    ["literal shell input", doc("source /dev/stdin", "printf ok"), "opaque"],
-    ["leading redirection", "<<'EOF' builtin source /dev/stdin\nsleep 100 &\nEOF", "blocked"],
-    ["header after continued line", "source \\\n<<'EOF' \\\n/dev/stdin\nsleep 100 &\nEOF", "blocked"],
-    ["comment is not delimiter", "cat <<'EOF' # <<'FAKE'\nhello\nEOF", "opaque"],
-    ["unquoted continuation changes terminator", "cat <<EOF\nEO\\\nF\nsleep 100 &\nEOF", "blocked"],
-    ["data body CR", doc("node", "/*a\rb*/\nconsole.log(1)"), "opaque"],
-    ["expanded interpreter body", "node <<EOF\n$PAYLOAD\nEOF", "opaque"],
-    ["last heredoc wins", "source /dev/stdin <<'A' <<'B'\nsleep 100 &\nA\nprintf ok\nB", "opaque"],
-    ["file supersedes heredoc", "source /dev/stdin <<'A' </dev/null\nsleep 100 &\nA", "opaque"],
-    ["combined output keeps input", doc("source /dev/stdin &>out"), "blocked"],
-    ["leading combined append", "<<'EOF' &>>out cat\nsleep 100 &\nEOF", "ask"],
     ["dynamic shell wrapper", "X=bash; \"$X\" -c 'sleep 100 >/dev/null 2>&1 &'", "ask"],
-    ["profiler and pretty-print modes retain data-only stdin", "bash --pretty-print -- - <<'EOF'\nsleep 100 &\nrm -rf /protected\nEOF", "ask"],
-    ["unrelated function and read", "f(){ :; }; read x <<'EOF'\nhello\nEOF", "ask"],
-    ["profiler and pretty-print modes retain data-only stdin", "node -i --prof-process <<'EOF'\nfs.rmSync('/protected',{recursive:true})\nEOF", "ask"],
-    ["profiler and pretty-print modes retain data-only stdin", "bash --pretty-print +n <<'EOF'\nsleep 100 &\nrm -rf /protected\nEOF", "ask"],
-    ["profiler and pretty-print modes retain data-only stdin", "bash --pretty-print -n +n <<'EOF'\nsleep 100 &\nrm -rf /protected\nEOF", "ask"],
-    ["Bash dump and Node completion modes do not execute stdin", "bash -nD <<'EOF'\nsleep 100 &\nEOF", "ask"],
-    ["missing Python option operands do not execute heredoc input", "python3 -iW <<'EOF'\nshutil.rmtree(sys.argv[1])\nEOF", "ask"],
-    ["syntax-only Bash and help-only Python do not execute stdin", "bash -n <<EOF\n$(sleep 100 &)\nEOF", "blocked"],
-    ["syntax-only Bash and help-only Python do not execute stdin", "bash -n -s <<'EOF'\nsleep 100 &\nEOF", "ask"],
     ["literal process source launch", "source <(echo 'sleep 100 &')", "blocked"],
   ]);
 });
-test("heredoc consumer options distinguish programs, data and terminal modes", () => {
-  // Bit masks: Shell=1, Node=2, Python=4, unresolved=8, nonexecuting=16.
-  const rows: readonly (readonly [
-    string,
-    number,
-    number
-  ])[] = [
-    ["bash -s /dev/fd/3", 0, 1], ["bash -s /dev/fd/3", 3, 0],
-    ["bash -n", 0, 16], ["bash -n +n", 0, 1], ["bash -ni", 0, 1],
-    ["bash -o noexec", 0, 16], ["bash -o noexec +o noexec", 0, 1],
-    ["bash --pretty-print", 0, 16], ["bash --pretty-print -i", 0, 1],
-    ["bash -D", 0, 16], ["bash --rcfile", 0, 16], ["bash --rcfile --dump-strings", 0, 1],
-    ["bash -c cat", 0, 0], ["bash -- /dev/fd/3", 3, 1],
-    ["bash -- file", 0, 0], ["bash -- -", 0, 1],
-    ['bash -- "$SCRIPT"', 0, 8], ["bash --pretty-print -- file", 0, 16],
-    ["bash --dump-po-strings", 0, 16], ["bash -c 'cat' <<'EOF'", 0, 0],
-    ["node --title worker", 0, 2], ["node --title=worker", 0, 2],
-    ["node --unknown-future-flag value", 0, 2], ["node --require --v8-options", 0, 2],
-    ["node --no-addons script.js", 0, 0], ["node --test", 0, 0],
-    ["node --check", 0, 0], ["node -i --prof-process", 0, 0],
-    ["node --completion-bash", 0, 0], ["node --v8-options", 0, 0],
-    ["node -i -e 'console.log(1)'", 0, 2], ["node -p 1", 0, 0],
-    ["node -- /dev/fd/3", 3, 2], ['node -- "$SCRIPT"', 0, 2],
-    ["python3 -i /dev/fd/3", 3, 4], ["python3 -i /dev/fd/3", 0, 4],
-    ["python -i -c", 0, 16], ["python -im", 0, 16], ["python -icpass", 0, 4],
-    ["python -i -m code", 0, 4], ["python -c print", 0, 0],
-    ["python -W", 0, 16], ["python -Xdev", 0, 4], ["python -W -VV", 0, 4],
-    ['python -W "$OPTIONS"', 0, 4], ['python --check-hash-based-pycs "$MODE"', 0, 4],
-    ["python --check-hash-based-pycs", 0, 16], ["python --check-hash-based-pycs always", 0, 4],
-    ["python -iVV", 0, 0], ["python --help-env", 0, 0],
-    ["py -V:Company/Tag", 0, 4], ["py -3.12", 0, 4],
-    ["source script.sh", 0, 0], ["builtin -- source /dev/fd/3", 3, 1],
-    ["env timeout 5 bash", 0, 1], ["command env bash", 0, 1],
-    ["command -v node", 0, 0], ['env LABEL="$VALUE" node', 0, 2],
-    ["{ node; python; }", 0, 6],
-  ];
-  for (const [header, descriptor, expected] of rows) {
-    assert.equal(heredocConsumers(header, descriptor), expected, header);
-    assert.equal(heredocConsumer(header, descriptor), expected & 1 ? "bash" : expected & 2 ? "node" : expected & 4 ? "python" : undefined, header);
-  }
-});
-test("descriptor provenance follows copies, closes, rebinding and script channels", async (t) => {
+test("non-heredoc controls: descriptor provenance follows copies, closes, rebinding and script channels", async (t) => {
   const stored = doc("exec", "console.log(1)", "3") + "\n";
   await rules(t, [
-    ["multi-digit source descriptor", "builtin source /dev/fd/19 19<<'EOF'\nsleep 100 &\nEOF", "blocked"],
-    ["input file supersedes copied stdin", "source /dev/stdin <<'EOF' 3<&0 </dev/null\nsleep 100 &\nEOF", "ask"],
-    ["known script path", stored + "true; node /dev/fd/3", "opaque"],
-    ["literal close", stored + "exec 3<&-; node /dev/fd/3", "opaque"],
-    ["file rebind", stored + "exec 3</dev/null; node /dev/fd/3", "opaque"],
-    ["data path", stored + "echo ok; cat /dev/fd/3", "opaque"],
     ["explicit input binding", "source /dev/fd/3 3<input", "opaque"],
-    ["same-command copy", "source /dev/fd/4 3<<'EOF' 4<&3\nprintf ok\nEOF", "opaque"],
-    ["redirect order", "source /dev/fd/3 3<&0 <<'EOF'\nsleep 100 &\nEOF", "opaque"],
-    ["later descriptor copies cannot hide heredoc source", "exec 9<<'EOF'\necho hi\nEOF\nexec 3<file; exec 4<&3; source /dev/fd/4", "ask"],
-    ["heredoc descriptor copies retain executable source", "source /dev/fd/3 <<'EOF' 3<&'0' 0<&-\nsleep 100 &\nEOF", "blocked"],
-    ["wrapped lost descriptors refuse and known contents recurse", "exec 3<<'EOF'\necho hi\nEOF\ntrue; bash -c 'source /dev/fd/3'", "ask"],
-    ["later descriptor copies cannot hide heredoc source", "exec 3<<'EOF'\nsleep 100 &\nEOF\nexec 4<&3; cat <&4", "ask"],
-    ["later descriptor copies cannot hide heredoc source", "exec 3<<'EOF' 4<&3\necho hi\nEOF\nsource /dev/fd/4", "ask"],
-    ["wrapped lost descriptors refuse and known contents recurse", "exec 3<<'EOF'\necho hi\nEOF\ntrue; bash -c 'bash -c \"source /dev/fd/3\"'", "ask"],
-    ["descriptor binding data and known readonly source remain admitted", "exec 3<<'A'\nsleep 100 &\nA\nexec 3<<'B'\necho hi\nB\nsource /dev/fd/3", "ask"],
-    ["heredoc source descriptors identify executable input without leaking fd words", "3<<'EOF' source /proc/self/fd/3\nsleep 100 &\nEOF", "blocked"],
-    ["known interpreter bodies recurse while data and closed descriptors retain D3", "exec 3<<'EOF'\nconsole.log(1)\nEOF\necho ok; node - < /dev/null", "ask"],
-    ["heredoc descriptor copies retain executable source", "source /dev/fd/4 <<'EOF' 3<&0 4<&3\nsleep 100 &\nEOF", "blocked"],
-    ["known interpreter bodies recurse while data and closed descriptors retain D3", "exec 3<<'EOF'\nconsole.log(1)\nEOF\ntrue; node - <&3", "ask"],
     ["later descriptor copies cannot hide heredoc source", "exec 3<file; exec 4<&3; source /dev/fd/4", "ask"],
-    ["heredoc descriptor copies retain executable source", "source /dev/fd/3 3<<'EOF' 3<&3-\nsleep 100 &\nEOF", "blocked"],
   ]);
 });
-test("launchers and function forwarding retain the resolved consumer", async (t) => {
+test("non-heredoc controls: launchers and function forwarding retain the resolved consumer", async (t) => {
   await rules(t, [
-    ["unsupported env data consumer", "env -u FOO cat <<'EOF'\nordinary data\nEOF", "ask"],
-    ["supported env flags", doc("env -i --unset=FOO -uBAR -0 -- node", "console.log(1)"), "opaque"],
-    ["env assignment preserves executable stdin", doc("env LABEL=literal bash"), "blocked"],
-    ["unknown prefix data", doc("ionice -c3 cat", "ordinary data"), "opaque"],
     ["unknown eval launcher boundary", "foo bash -c 'sleep 100 &'", "opaque"],
-    ["fixed forwarding script", doc('python() { command python script.file "$@"; }; python', pythonDelete), "opaque"],
-    ["function source", doc("function f\n{ source /dev/stdin; }; f"), "blocked"],
-    ["function redefinition", doc("f(){ source /dev/stdin; }; f(){ cat; }; f"), "opaque"],
-    ["unlisted runtime", doc("pypy3", pythonDelete), "opaque"],
     ["outer process launch", "perl -e 'print 1' &", "blocked"],
-    ["function-dependent heredoc consumers cannot hide executable input", "if true; then f(){ source /dev/stdin; }; fi; f <<'EOF'\nsleep 100 &\nEOF", "blocked"],
-    ["builtin dispatch cannot hide executable stdin", "builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin builtin source /dev/stdin <<'EOF'\nsleep 100 &\nEOF", "blocked"],
-    ["builtin dispatch cannot hide executable stdin", "command builtin source /dev/stdin <<'EOF'\nsleep 100 &\nEOF", "blocked"],
-    ["expanded forwarding retains possible interpreter stdin", "node() { command node script.file \"$@\"; }; node <<'EOF'\nfs.rmSync(target,{recursive:true})\nEOF", "ask"],
-    ["unparsed env options retain heredoc refusal", "env --unset=FOO node <<'EOF'\nconsole.log(1)\nEOF", "ask"],
-    ["expanded forwarding retains possible interpreter stdin", "node() { command node -- '$@'; }; node <<'EOF'\nfs.rmSync(target,{recursive:true})\nEOF", "ask"],
-    ["builtin dispatch cannot hide executable stdin", "builtin -- source /dev/stdin <<'EOF'\nsleep 100 &\nEOF", "blocked"],
   ]);
 });
-test("pipeline, compound and coproc input uses the connected stage", async (t) => {
+test("non-heredoc controls: pipeline, compound and coproc input uses the connected stage", async (t) => {
   await rules(t, [
-    ["unrelated function preserves decoded source", "function unrelated { printf evil; }; base64 -d <<'EOF' | source /dev/stdin\ncHJpbnRmIG9r\nEOF", "ask"],
-    ["literal wrapper reads executable input", "bash -c 'source /dev/stdin' <<'EOF'\nsleep 100 &\nEOF", "blocked"],
-    ["literal wrapper data consumer", "bash -c 'cat' <<'EOF'\nnohup is only data\nEOF", "ask"],
-    ["compound consumer", doc("{ ! source /dev/stdin; }"), "blocked"],
-    ["connected pipe", "cat <<'EOF' | >out source /dev/stdin\nsleep 100 &\nEOF", "blocked"],
-    ["disconnected output", "cat <<'EOF' >out | source /dev/stdin\nsleep 100 &\nEOF", "ask"],
-    ["disconnected input", "cat <<'EOF' | source /dev/stdin </dev/null\nsleep 100 &\nEOF", "opaque"],
-    ["restored stdout copy", "cat <<'EOF' 3>&1 >out 1>&3- | source /dev/stdin\nsleep 100 &\nEOF", "blocked"],
-    ["base64 transform", "cat <<'EOF' | base64 -d | source /dev/stdin\nc2xlZXAgMTAwICYK\nEOF", "blocked"],
-    ["base64 harmless", "base64 -d <<'EOF' | source /dev/stdin\ncHJpbnRmIG9r\nEOF", "opaque"],
-    ["coproc data", doc("coproc NAME { cat; }", "data"), "opaque"],
     ["coproc existing foreground boundary", "true && coproc sleep 100", "opaque"],
     ["coproc nested background", "coproc { sleep 100 & }", "blocked"],
     ["named coproc subshell boundary", "coproc NAME ( sleep 100 )", "opaque"],
-    ["compound commands and literal wrappers propagate executable heredoc input", "(source /dev/stdin) <<'EOF'\nsleep 100 &\nEOF", "blocked"],
-    ["compound commands and literal wrappers propagate executable heredoc input", "{ { source /dev/stdin; }; } <<'EOF'\nsleep 100 &\nEOF", "blocked"],
-    ["unknown transforms cannot hide shell heredoc source", "cat <<'EOF' | tr X '&' >output | source /dev/stdin\nsleep 100 X\nEOF", "ask"],
-    ["compound commands and literal wrappers propagate executable heredoc input", "{ time source /dev/stdin; } <<'EOF'\nsleep 100 &\nEOF", "blocked"],
-    ["coproc keeps actual heredoc consumers and main lifecycle boundaries", "coproc cat 'if' <<'EOF'\nconsole.log('data')\nEOF", "ask"],
-    ["disconnected pipeline data does not become a script", "cat <<'EOF' 3>&1 >out 1>&3 | source /dev/stdin\nsleep 100 &\nEOF", "blocked"],
-    ["compound commands and literal wrappers propagate executable heredoc input", "X=value source /dev/stdin <<'EOF'\nsleep 100 &\nEOF", "blocked"],
-    ["supported transformed heredoc streams inspect the decoded executable input", "cat <<'EOF' | cat - | source /dev/stdin\nprintf ok\nEOF", "admitted"],
   ]);
 });
 type CodeRule = readonly [
@@ -313,9 +195,7 @@ test("Python deletion properties retain ordinary targets and opaque language bou
     ["f-string boundary", 'f"{shutil.rmtree(target)}"', "opaque"],
   ]);
   await rules(t, [
-    ["missing interactive Python source operands remain data", "py -V:Company/Tag -i -c <<'EOF'\nshutil.rmtree(target)\nEOF", "ask"],
     ["unlink receiver boundaries retain unknown targets", "python - <<'EOF'\nPath(\n 'scratch'\n).unlink()\nEOF", "ask"],
-    ["V8 and doubled Python version flags do not execute stdin", "python -iVV <<'EOF'\nfs.rmSync('/protected',{recursive:true})\nPath('/protected').unlink()\nEOF", "ask"],
   ]);
 });
 test("sort and find options distinguish operands, targets and terminal errors", async (t) => {
@@ -426,10 +306,6 @@ test("inspection bounds, borrowed regexes and temporary views release on every e
         assert.equal(aliasRiskCounters.liveViews, 0);
         assert.equal(aliasRiskCounters.viewsCreated - before.viewsCreated, aliasRiskCounters.viewsReleased - before.viewsReleased);
       }],
-    ["base64 decoding", () => {
-        for (const [encoded, expected] of [[Buffer.from("printf 日本語\n").toString("base64"), "printf 日本語\n"], ["%%%", undefined], ["/w==", undefined], ["a".repeat(128 * 1024 + 1), undefined]])
-          assert.equal(decodeLiteralBase64(encoded!), expected);
-      }],
     ["borrowed matching state", () => {
         assert.equal(inspectHighRiskBashMutation({ command: program("node", Array(65).fill("fs.unlinkSync('./scratch');").join("")) }, process.cwd())?.unverifiableScope, true);
         for (const command of [program("node", "fs['rmSync']?.(target,{recursive:true})"), program("python", Array(65).fill("Path(target).unlink.__call__()").join("; "))])
@@ -440,23 +316,6 @@ test("inspection bounds, borrowed regexes and temporary views release on every e
           assert.equal(pattern.global, false);
           assert.equal(pattern.sticky, false);
         }
-      }],
-    ["descriptor scratch", () => {
-        const before = { ...persistentDescriptorCounters };
-        inspectBashResourceLifecycle({ command: doc("exec", "console.log(1)", "3") + "\n" + Array.from({ length: 18 }, (_, i) => `exec ${i + 4}<&3`).join("; ") + "; node /dev/fd/21" });
-        assert.ok(persistentDescriptorCounters.overflows > before.overflows);
-        assert.ok(persistentDescriptorCounters.maxEntries <= 16);
-        const includes = Array.prototype.includes;
-        Array.prototype.includes = function (...args) { if (persistentDescriptorCounters.liveArrays)
-          throw new Error("descriptor scratch failure"); return includes.apply(this, args); };
-        try {
-          assert.throws(() => inspectBashResourceLifecycle({ command: doc("exec", "console.log(1)", "3") + "\nnode /dev/fd/3" }), /descriptor scratch failure/);
-        }
-        finally {
-          Array.prototype.includes = includes;
-        }
-        assert.equal(persistentDescriptorCounters.liveArrays, 0);
-        assert.equal(persistentDescriptorCounters.arraysCreated - before.arraysCreated, persistentDescriptorCounters.arraysReleased - before.arraysReleased);
       }],
   ] as const) {
     try {
@@ -470,8 +329,6 @@ test("inspection bounds, borrowed regexes and temporary views release on every e
 test("primitive scanner counters exclude extra passes and ASCII decoding work", () => {
   const cwd = resolve("review*cwd");
   assert.equal(inspectBashPermissionScope({ command: "python -c 'print(1)'" }, cwd)?.dynamicScope, false);
-  const descriptors = "cat <<'EOF' " + Array.from({ length: 17 }, (_, i) => `${i + 3}<&0`).join(" ") + "\ndata\nEOF";
-  assert.equal(prepareShellAnalysis(descriptors).unboundedHeredoc, true);
   const methods = { ...codeMethodNameCounters };
   for (const [language, body] of [
     ["node", String.raw `fs.rmSync(target,{recursive:true}); fs['unlinkSync'](target); const \u0061=1; const data=['hello\n'];`],
@@ -494,10 +351,6 @@ test("primitive scanner counters exclude extra passes and ASCII decoding work", 
   assert.equal(shellAnalysisCounters.promptParameterCalls, heads);
   assert.equal(extractCommandSubstitutions('echo "${x@P}"').boundaryRefusal, 1);
   assert.equal(shellAnalysisCounters.promptParameterCalls - heads, 1);
-  const calls = heredocConsumerCounters.tailCalls, words = heredocConsumerCounters.tailWords;
-  assert.equal(heredocConsumers("foo x node"), 8);
-  assert.equal(heredocConsumerCounters.tailCalls - calls, 1);
-  assert.equal(heredocConsumerCounters.tailWords - words, 2);
   const original = String.prototype.charCodeAt;
   let reads = 0;
   String.prototype.charCodeAt = function (index) { reads++; return original.call(this, index); };

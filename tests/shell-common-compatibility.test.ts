@@ -138,7 +138,7 @@ test("built-in Bash descriptor inheritance is measured and unbound script reads 
     const result = execFileSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", script], { cwd: process.cwd(), stdio, encoding: "utf8", timeout: 30_000 });
     const reports = JSON.parse(result);
     assert.equal(reports.length, process.platform === "win32" ? 4 : 2);
-    for (const descriptor of [3, 7, 63]) assert.match(inspectBashResourceLifecycle({ command: `source /dev/fd/${descriptor}` }) ?? "", /\[SHELL_HEREDOC\]/);
+    for (const descriptor of [3, 7, 63]) assert.equal(inspectBashPermissionScope({ command: `source /dev/fd/${descriptor}` }, cwd)?.kind, "opaque-script");
     t.diagnostic(JSON.stringify({ parentDescriptors: [3, 7, 63], reports }));
   } finally { fs.closeSync(fd); rmSync(fixture, { recursive: true }); }
 });
