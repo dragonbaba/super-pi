@@ -77,23 +77,22 @@ export class BackgroundShellTasks {
 		finally { this.changingSession--; }
 	};
 
-	assertAvailable(ctx: ExtensionContext): void {
+	assertAvailable(ctx: ExtensionContext, toolName?: string): void {
 		if (this.closed) throw new Error("Background shell session is closed.");
 		if (this.changingSession) throw new Error("Background shell session is changing; wait for previous tasks to stop.");
 		configureTaskHistory(this.tasks, "shell", ctx);
 		this.tasks.assertHistoryAvailable();
 		if (this.cleanupBlocked) throw new Error("Background shell cleanup failed; inspect the reported process/log diagnostics and reload after resolving it.");
 		if (ctx.mode !== "tui" && ctx.mode !== "rpc") throw new Error("Background commands require a live TUI or RPC session; use foreground execution here.");
-		if (!this.taskRegistration.controlsAvailable(ctx)) throw new Error("Background commands require the built-in tasks management tool; enable it and remove conflicting tasks registrations, or use foreground execution.");
+		if (!this.taskRegistration.controlsAvailable(ctx, toolName)) throw new Error("Background commands require the built-in tasks management tool; enable it and remove conflicting tasks registrations, or use foreground execution.");
 	}
 
 	canManageForeground(ctx: ExtensionContext, toolName?: string): boolean {
 		if (this.closed || this.changingSession || this.cleanupBlocked || (ctx.mode !== "tui" && ctx.mode !== "rpc")) return false;
 		// Unavailable management must not block ordinary foreground execution.
 		try {
-			this.assertAvailable(ctx);
-			if (!toolName) return true;
-			return this.pi.getAllTools().find(tool => tool.name === toolName)?.supportsManagedBackground === true;
+			this.assertAvailable(ctx, toolName);
+			return true;
 		}
 		catch { return false; }
 	}

@@ -11,6 +11,7 @@ test("PR3 representative lifecycle availability and managed handoff acceptance",
   type Result = "allow" | "ask" | "deny" | "confirmation_required" | "managed";
   type Row = readonly [string, "tui" | "rpc" | "print" | "json", boolean | "history-error" | "unsupported-backend" | "replacement-tool" | "changed-backend" | "restored-tasks", Result, Result, ("bash" | "powershell")?];
   const rows: readonly Row[] = [
+    ["npm test", "tui", true, "allow", "ask"],
     ...["docker run -d nginx", "docker compose up -d", "systemctl restart nginx", "systemctl start nginx", "service nginx start", "pm2 start server.js"]
       .map(command => [command, "tui", true, "allow", "ask"] as const),
     ["systemctl restart nginx", "tui", true, "allow", "ask", "powershell"],
@@ -73,5 +74,6 @@ test("PR3 representative lifecycle availability and managed handoff acceptance",
       finally { getShellCwdBinding(approved)?.release(); outcome.finalAuthorization.release(); }
     } else assertFinalAuthorization({ outcome, input: input as typeof input & { cwd: string }, id, toolName });
     assert.equal(f.dialogs(), expected === "ask" || (expected === "managed" && mode === "workspace-write") ? 1 : 0, label);
+    if (command === "npm test") assert.ok(f.catalogReads() <= 1, `${label}: authorization and consume read the catalog at most once (got ${f.catalogReads()})`);
   }
 });
