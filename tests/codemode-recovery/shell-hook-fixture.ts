@@ -11,7 +11,7 @@ const jiti = createJiti(import.meta.url);
 const { default: lifecycle } = await jiti.import<typeof import("../../packages/extensions/resource-lifecycle-guard/index.ts")>("../../packages/extensions/resource-lifecycle-guard/index.ts");
 
 export async function shellHookFixture(t: TestContext, mode: "full-access" | "workspace-write",
-  nativePowerShell: "active" | "discoverable" | "unavailable" = process.platform === "win32" ? "active" : "unavailable") {
+  nativePowerShell: "active" | "discoverable" | "unavailable" = process.platform === "win32" ? "active" : "unavailable", managedTasks = false) {
   const cwd = workspace(t), runtime = createExtensionRuntime(), manager = SessionManager.inMemory(cwd);
   const runner = new ExtensionRunner(
     [await loadExtensionFromFactory(lifecycle, cwd, createEventBus(), runtime)], runtime, cwd, manager, {} as never,
@@ -20,8 +20,8 @@ export async function shellHookFixture(t: TestContext, mode: "full-access" | "wo
   let dialogs = 0, sequence = 0, catalogReads = 0;
   // Only metadata is exposed: this fixture has no shell tool implementation or provider.
   runner.bindCore({ getThinkingLevel: () => "off",
-    getActiveTools: () => ["bash", ...(nativePowerShell === "active" ? ["powershell"] : nativePowerShell === "discoverable" ? ["tool_search"] : [])],
-    getAllTools: () => { catalogReads++; return [{ name: "powershell", available: nativePowerShell !== "unavailable" }]; },
+    getActiveTools: () => ["bash", ...(managedTasks ? ["tasks"] : []), ...(nativePowerShell === "active" ? ["powershell"] : nativePowerShell === "discoverable" ? ["tool_search"] : [])],
+    getAllTools: () => { catalogReads++; return [{ name: "powershell", available: nativePowerShell !== "unavailable" }, ...runner.getAllRegisteredTools().map(tool => tool.definition)]; },
     appendEntry: (kind: string, data: unknown) => { manager.appendCustomEntry(kind, data); },
   } as never, {
     getSignal: () => controller.signal, isProjectTrusted: () => false, getModel: () => undefined,

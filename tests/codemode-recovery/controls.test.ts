@@ -78,11 +78,11 @@ test("control: user cancellation still reaches a waiting child", { timeout: 5000
   const { result } = await pending;
   assert.equal(result.isError, true); assert.deepEqual(f.calls, ["delay"]); assert.deepEqual(f.aborted, ["delay"]);
 });
-for (const command of ["npm run dev &", "nohup node server.js", "docker run -d alpine"]) {
+for (const command of ["npm run dev &", "nohup node server.js", "setsid node server.js"]) {
   test(`control: unmanaged lifecycle remains blocked: ${command}`, async t => {
     assert.ok(inspectBashResourceLifecycle({ command }));
     for (const mode of ["full-access", "workspace-write"] as const) {
-      const f = await shellHookFixture(t, mode);
+      const f = await shellHookFixture(t, mode, undefined, true);
       const { outcome } = await f.authorize(command);
       assert.equal(outcome?.block, true);
       assert.equal(outcome?.finalAuthorization, undefined);
@@ -94,7 +94,7 @@ test("control: PowerShell Start-Process without -Wait remains blocked", async t 
   const command = 'Start-Process -FilePath "node" -ArgumentList "server.js"';
   assert.ok(inspectPowerShellResourceLifecycle({ command }));
   for (const mode of ["full-access", "workspace-write"] as const) {
-    const f = await shellHookFixture(t, mode);
+    const f = await shellHookFixture(t, mode, undefined, true);
     const { outcome } = await f.authorize(command, "powershell");
     assert.equal(outcome?.block, true);
     assert.equal(outcome?.finalAuthorization, undefined);
