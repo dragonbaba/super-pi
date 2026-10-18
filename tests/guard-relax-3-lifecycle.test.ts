@@ -77,3 +77,10 @@ test("PR3 representative lifecycle availability and managed handoff acceptance",
     if (command === "npm test") assert.ok(f.catalogReads() <= 1, `${label}: authorization and consume read the catalog at most once (got ${f.catalogReads()})`);
   }
 });
+
+test("PR3 explicit background requires the shell tool's declared managed capability", async t => {
+  const f = await shellHookFixture(t, "full-access", undefined, true, {});
+  await assert.rejects(f.runner.emitToolCall({ type: "tool_call", toolName: "bash", toolCallId: "undeclared",
+    input: { command: "npm run dev", cwd: f.cwd, timeout: 60, background: true } }), /managed background support/);
+  assert.equal(f.dialogs(), 0);
+});

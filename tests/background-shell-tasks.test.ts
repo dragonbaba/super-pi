@@ -53,7 +53,7 @@ function harness(t: test.TestContext, expectedDisposalError?: RegExp) {
 	const messages: any[] = [];
 	const pi: any = { events, registerTool: (tool: any) => tools.set(tool.name, tool), registerCommand: (name: string, command: any) => commands.set(name, command), on: (name: string, hook: any) => { const list = hooks.get(name) ?? []; list.push(hook); hooks.set(name, list); }, sendMessage: (message: any) => messages.push(message) };
 	const owner = new BackgroundShellTasks(pi);
-	pi.getAllTools = () => [...tools.values()];
+	pi.getAllTools = () => [{ name: "bash", supportsManagedBackground: true }, ...tools.values()];
 	const ctx: any = { cwd: root, mode: "tui", getActiveTools: () => ["bash", "tasks"] };
 	t.after(async () => { if (expectedDisposalError) await assert.rejects(owner.dispose(), expectedDisposalError); else await owner.dispose(); events.clear(); });
 	const start = (execute: any, signal?: AbortSignal, release = () => {}, check = () => {}) => owner.createLaunch("bash", "call", "npm test", root, ctx, check)(execute, signal, release).details.backgroundTask!.id;
