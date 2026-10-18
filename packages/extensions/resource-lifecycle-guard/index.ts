@@ -186,7 +186,7 @@ export default function resourceLifecycleGuard(pi: ExtensionAPI): void {
     const bashBackground = shell ? (event.input as Record<string, unknown>).background : undefined;
     const topLevel = event.parentToolCallId === undefined;
     if (shell) validateBackgroundShellInput(event.input);
-    if (bashBackground === true) backgroundTasks.assertAvailable(ctx);
+    if (bashBackground === true) backgroundTasks.assertAvailable(ctx, shellName);
     const bash = shell;
     const id = event.toolCallId;
     const cwd = bash ? ctx.cwd : "";

@@ -84,7 +84,7 @@ export class BackgroundShellTasks {
 		this.tasks.assertHistoryAvailable();
 		if (this.cleanupBlocked) throw new Error("Background shell cleanup failed; inspect the reported process/log diagnostics and reload after resolving it.");
 		if (ctx.mode !== "tui" && ctx.mode !== "rpc") throw new Error("Background commands require a live TUI or RPC session; use foreground execution here.");
-		if (!this.taskRegistration.controlsAvailable(ctx, toolName)) throw new Error("Background commands require the built-in tasks management tool; enable it and remove conflicting tasks registrations, or use foreground execution.");
+		if (!this.taskRegistration.controlsAvailable(ctx, toolName)) throw new Error("Background commands require the built-in tasks management tool and a shell tool declaring managed background support; enable tasks, remove conflicting tasks registrations or the replacement shell tool, or use foreground execution.");
 	}
 
 	canManageForeground(ctx: ExtensionContext, toolName?: string): boolean {
@@ -115,7 +115,7 @@ export class BackgroundShellTasks {
 
 	createForegroundLaunch(name: string, callId: string, command: string, cwd: string, ctx: ExtensionContext, assertCurrent: () => void, assertTransfer: () => void = assertCurrent): ForegroundShellLaunch {
 		return (execute, signal, publish, release) => {
-			signal?.throwIfAborted(); assertCurrent(); this.assertAvailable(ctx);
+			signal?.throwIfAborted(); assertCurrent(); this.assertAvailable(ctx, name);
 			const reservation = this.scheduler.reserve([{ canonicalCwd: cwd, allowMutation: false }]);
 			let task: ManagedSubagentTask;
 			try { task = this.tasks.create(name, cwd, ctx.sessionManager?.getLeafId()); }
@@ -137,7 +137,7 @@ export class BackgroundShellTasks {
 
 	createLaunch(name: string, callId: string, command: string, cwd: string, ctx: ExtensionContext, assertCurrent: () => void): BackgroundShellLaunch {
 		return (execute, signal, release) => {
-			signal?.throwIfAborted(); assertCurrent(); this.assertAvailable(ctx);
+			signal?.throwIfAborted(); assertCurrent(); this.assertAvailable(ctx, name);
 			// Slot admission only; normal permission checks own filesystem authority.
 			const reservation = this.scheduler.reserve([{ canonicalCwd: cwd, allowMutation: false }]);
 			let task: ManagedSubagentTask;
