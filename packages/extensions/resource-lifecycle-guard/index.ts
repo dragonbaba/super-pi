@@ -30,7 +30,7 @@ class BashInvocationAuthorization {
     private readonly sessionCwd: string, private readonly sessionId: string,
     private readonly generation: number, private readonly sequence: number,
     private readonly id: string, private readonly name: string, private backgroundTasks: BackgroundShellTasks | undefined,
-    private readonly topLevel: boolean, binding?: ShellCwdBinding,
+    private readonly foregroundEligible: boolean, binding?: ShellCwdBinding,
   ) { this.binding = binding; }
   consume(args: unknown, id: string, name: string, signal?: AbortSignal): unknown {
     try {
@@ -54,7 +54,7 @@ class BashInvocationAuthorization {
     if (getShellCwdBinding(args) !== binding || binding?.isReleased || (this.cwd !== undefined && !binding)) throw new Error(INVALIDATED);
     if (binding) {
       const sessionCwd = this.sessionCwd, sessionId = this.sessionId, generation = this.generation, sequence = this.sequence;
-      const transferable = this.topLevel && this.background !== true && typeof this.command === "string" && typeof this.cwd === "string"
+      const transferable = this.foregroundEligible && this.background !== true && typeof this.command === "string" && typeof this.cwd === "string"
         && typeof this.timeout === "number" && Number.isFinite(this.timeout) && this.timeout > 0 && this.timeout <= 7200
         && this.backgroundTasks?.canManageForeground(ctx, this.name);
       const invocationSignal = this.background === true || transferable ? undefined : signal;
@@ -205,7 +205,8 @@ export default function resourceLifecycleGuard(pi: ExtensionAPI): void {
     if (event.toolName === "powershell") {
       lifecycleReason = inspectPowerShellResourceLifecycle(event.input);
     }
-    if (lifecycleReason && isBlockingLifecycleReason(lifecycleReason)
+    const unmanagedLifecycle = lifecycleReason !== undefined && isBlockingLifecycleReason(lifecycleReason);
+    if (lifecycleReason && unmanagedLifecycle
       && (lifecycleReason.startsWith("[SHELL_WRAPPER:LAUNCHER_UNSUPPORTED]") || backgroundTasks.canManageForeground(ctx, event.toolName))) return { block: true, reason: lifecycleReason };
     const permissionBlock = await permissions.authorizeToolCall(event, ctx, analysis, lifecycleReason !== undefined);
     if (permissionBlock) return permissionBlock;
@@ -221,7 +222,7 @@ export default function resourceLifecycleGuard(pi: ExtensionAPI): void {
         reason: "Blocked by policy: command changed during permission handling. Submit the final exact command for current authorization; no replacement was executed.",
       };
       const finalAuthorization = new BashInvocationAuthorization(event.input, bashCommand, bashTimeout, bashCwd, bashPurpose, bashBackground,
-        ctx, permissions, cwd, sessionId, generation, permissions.state.sequence, id, shellName, backgroundTasks, topLevel, preparedCwd);
+        ctx, permissions, cwd, sessionId, generation, permissions.state.sequence, id, shellName, backgroundTasks, topLevel && !unmanagedLifecycle, preparedCwd);
       transferred = true;
       return { finalAuthorization };
     }

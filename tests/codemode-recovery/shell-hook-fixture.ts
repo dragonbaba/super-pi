@@ -38,7 +38,7 @@ export async function shellHookFixture(t: TestContext, mode: "full-access" | "wo
   const permissions = runner.getCommand("permissions")!;
   await permissions.handler(mode, runner.createCommandContext());
   await permissions.handler(mode === "full-access" ? "never-ask" : "ask", runner.createCommandContext());
-  return { runner, cwd, dialogs: () => dialogs, catalogReads: () => catalogReads,
+  return { runner, cwd, dialogs: () => dialogs, catalogReads: () => catalogReads, setManagedTasks: (available: boolean) => { managedTasks = available; },
     async authorize(command: string, toolName: "bash" | "powershell" = "bash", executionCwd = cwd) {
       const input = { command, cwd: executionCwd, timeout: 60 }, id = `hook-${++sequence}`;
       const outcome = await runner.emitToolCall({ type: "tool_call", toolName, toolCallId: id, input });
