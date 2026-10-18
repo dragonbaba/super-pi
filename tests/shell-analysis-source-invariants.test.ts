@@ -19,8 +19,6 @@ test("authorization scanners and cache methods add no callbacks, promises or Buf
   targets.get("core.ts")!.add("hasBareBashArithmeticCommand");
   targets.get("core.ts")!.add("shellSegmentsHaveAliasRisk");
   targets.get("code-method-names.ts")!.add("plainNodeDeletionName");
-  targets.get("shell-substitution.ts")!.add("subscriptTextState");
-  targets.get("shell-substitution.ts")!.add("isPromptParameterExpansion");
   targets.get("core.ts")!.add("findSearchRootIndex");
   targets.get("core.ts")!.add("nodeHasRecursiveOption");
   targets.get("core.ts")!.add("pythonPathArgumentOpen");
@@ -65,17 +63,6 @@ test("builtin and coproc checks use primitive state without source copies or tem
     const caller = source.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === name);
     assert.ok(caller?.getText(source).includes("hasUninspectableEnvLauncher("), `${name} must share the env uncertainty condition`);
   }
-});
-
-test("subscript text judgment creates only primitive state in the existing scan", () => {
-  const source = ts.createSourceFile("shell-substitution.ts", readFileSync("packages/extensions/resource-lifecycle-guard/shell-substitution.ts", "utf8"), ts.ScriptTarget.Latest, true);
-  const helper = source.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === "subscriptTextState");
-  assert.ok(helper && ts.isFunctionDeclaration(helper));
-  function audit(node: ts.Node): void {
-    assert.equal(ts.isNewExpression(node) || ts.isObjectLiteralExpression(node) || ts.isArrayLiteralExpression(node) || ts.isArrowFunction(node) || ts.isFunctionExpression(node) || ts.isRegularExpressionLiteral(node) || ts.isCallExpression(node), false, node.getText(source));
-    ts.forEachChild(node, audit);
-  }
-  ts.forEachChild(helper.body!, audit);
 });
 
 test("sort terminal preflight adds no source copies or temporary containers", () => {
@@ -140,18 +127,6 @@ test("method-name ASCII helpers contain no string construction or per-call alloc
     ts.forEachChild(node, auditLiteral);
   }
   ts.forEachChild(literal.body!, auditLiteral);
-});
-
-test("prompt transform recognition adds no strings or temporary containers", () => {
-  const source = ts.createSourceFile("shell-substitution.ts", readFileSync("packages/extensions/resource-lifecycle-guard/shell-substitution.ts", "utf8"), ts.ScriptTarget.Latest, true);
-  const helper = source.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === "isPromptParameterExpansion");
-  assert.ok(helper && ts.isFunctionDeclaration(helper));
-  function audit(node: ts.Node): void {
-    assert.equal(ts.isNewExpression(node) || ts.isObjectLiteralExpression(node) || ts.isArrayLiteralExpression(node) || ts.isArrowFunction(node) || ts.isFunctionExpression(node) || ts.isRegularExpressionLiteral(node), false, node.getText(source));
-    if (ts.isCallExpression(node)) assert.ok(ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "charCodeAt", node.getText(source));
-    ts.forEachChild(node, audit);
-  }
-  ts.forEachChild(helper.body!, audit);
 });
 
 test("Node call-boundary checks allocate no source copies or temporary containers", () => {

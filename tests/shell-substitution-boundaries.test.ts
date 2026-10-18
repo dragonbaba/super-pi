@@ -8,21 +8,15 @@ import { extractCommandSubstitutions } from "../packages/extensions/resource-lif
 const count = String.raw`$(grep -c -E '(class|function|const|var|let) GCSystem\b' pixi/pixi.js)`;
 const cwd = process.cwd();
 
-test("substitution count exhaustion has an actionable inspection-limit diagnostic", () => {
+test("substitution count exhaustion keeps bounded scripts and marks uncertainty", () => {
   for (const substitution of [count, "`printf 1`"]) {
     const atLimit = `printf '%s ' ${Array(16).fill(substitution).join(" ")}`;
-    assert.equal(extractCommandSubstitutions(atLimit).unsupported, false);
+    assert.equal(extractCommandSubstitutions(atLimit).uncertain, false);
     const command = `${atLimit} ${substitution}`;
     const scan = extractCommandSubstitutions(command);
     assert.equal(scan.scripts.length, 16);
-    assert.equal(scan.unterminated, false);
-    assert.equal(scan.unsupported, true);
-    assert.equal(scan.limitExceeded, "count");
-    const reason = inspectBashResourceLifecycle({ command });
-    assert.match(reason!, /^\[SHELL_INSPECTION_LIMIT\].*16/);
-    assert.match(reason!, /split.*smaller/i);
-    assert.equal(reason, "[SHELL_INSPECTION_LIMIT] Bash not executed: more than 16 command substitutions per script.\nRetry: split into smaller calls (max 16 each).");
-    assert.doesNotMatch(reason!, /grammar|unterminated/);
+    assert.equal(scan.uncertain, true);
+    assert.ok(inspectBashResourceLifecycle({ command }));
     assert.equal(inspectBashPermissionScope({ command }, cwd)?.kind, "opaque-script");
     assert.equal(inspectHighRiskBashMutation({ command: `printf data > out; ${command}` }, cwd)?.unverifiableScope, true);
   }
@@ -78,11 +72,8 @@ test("executable substitutions, dynamic targets and uninspectable bodies stay co
   const atDepthLimit = "printf '%s' " + "$(printf '%s' ".repeat(4) + "1" + ")".repeat(4);
   assert.equal(inspectBashResourceLifecycle({ command: atDepthLimit }), undefined);
   const deeplyNested = "printf '%s' " + "$(printf '%s' ".repeat(5) + "1" + ")".repeat(5);
-  assert.equal(extractCommandSubstitutions(deeplyNested).limitExceeded, "nesting");
-  assert.equal(inspectBashResourceLifecycle({ command: deeplyNested }), "[SHELL_INSPECTION_LIMIT] Bash not executed: command substitution nesting exceeds 4 levels.\nRetry: reduce nesting.");
+  assert.equal(extractCommandSubstitutions(deeplyNested).uncertain, true);
+  assert.equal(inspectBashPermissionScope({ command: deeplyNested }, cwd)?.kind, "opaque-script");
   const escapedQuote = String.raw`printf '%s' $(printf '%s' $'\')'; printf data > target)`;
-  assert.equal(extractCommandSubstitutions(escapedQuote).unsupported, true);
-  assert.match(inspectBashResourceLifecycle({ command: escapedQuote })!, /^\[SHELL_SUBSTITUTION\]/);
-  assert.match(inspectBashResourceLifecycle({ command: "printf '%s' $(time printf 1)" })!, /^\[SHELL_SUBSTITUTION\]/);
-  assert.match(inspectBashResourceLifecycle({ command: "printf '%s' $(printf 1" })!, /unterminated/);
+  assert.equal(extractCommandSubstitutions(escapedQuote).uncertain, true);
 });

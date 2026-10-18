@@ -12,6 +12,7 @@ import { inspectBashResourceLifecycle } from "../packages/extensions/resource-li
 import { boundedShellInput, MAX_BOUND_SHELL_INPUT_BYTES } from "../packages/coding-agent/src/core/tools/bounded-shell-input.ts";
 import { withMsysStdinBridge } from "../packages/coding-agent/src/core/tools/msys-stdin.ts";
 import { shellHeredocKind } from "../packages/coding-agent/src/core/tools/shell-heredoc-gate.ts";
+import { assertFinalAuthorization, shellHookFixture } from "./codemode-recovery/shell-hook-fixture.ts";
 
 const shellPath = process.platform === "win32" && existsSync("D:/Git/bin/bash.exe") ? "D:/Git/bin/bash.exe" : getShellConfig().shell;
 const literal = "cat <<'EOF'\nprintf BODY_EXECUTED\nEOF";
@@ -71,11 +72,14 @@ test("review sixteen: function-substitution heredocs cannot bypass configured Ba
  }
 });
 
-test("review sixteen: ordinary CR-bearing cat and Node bodies retain D3 execution", async () => {
+test("ordinary CR-bearing bodies retain full-access authorization and transport", async t => {
  for (const command of ["cat <<'EOF'\na\rb\nEOF", "cat <<EOF\na\rb\nEOF", "node <<'EOF'\n/*a\rb*/\nconsole.log('ok')\nEOF"]) {
-  const admitted = await dispatch(process.cwd(), command);
-  assert.equal(admitted.result.isError, false, admitted.text); assert.equal(admitted.processes, 1);
-  assert.equal(admitted.text.replaceAll("\r", "").trim(), command.startsWith("node") ? "ok" : "ab");
+  const fixture = await shellHookFixture(t, "full-access");
+  assertFinalAuthorization(await fixture.authorize(command)); assert.equal(fixture.dialogs(), 0);
+  const result = await createBashTool(process.cwd(), { shellPath, exposeSessionEnvironment: false }).execute("cr-transport", { command });
+  assert.notEqual(result.isError, true);
+  const text = result.content.filter(c => c.type === "text").map(c => c.text).join("\n");
+  assert.equal(text.replaceAll("\r", "").trim(), command.startsWith("node") ? "ok" : "ab");
  }
 });
 

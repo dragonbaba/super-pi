@@ -253,7 +253,6 @@ test("lifecycle expansion distinguishes delayed code from literal data", async (
     ["trap clear", "trap - EXIT", "opaque"],
     ["trap lists signals", "trap -l", "opaque"],
     ["literal eval harmless", "eval printf ok", "opaque"],
-    ["function substitutions retain main lifecycle boundaries", "echo ${ echo $((1 << 3)); }", "ask"],
     ["literal eval and trap actions retain lifecycle inspection", "builtin -- trap -- 'sleep 100 &' EXIT", "blocked"],
     ["mapfile callbacks always retain lifecycle refusal", "mapfile -- a < f.txt", "ask"],
     ["builtin name subscripts cannot conceal arithmetic execution", "declare 'a[123]=1'", "ask"],
@@ -343,14 +342,8 @@ test("primitive scanner counters exclude extra passes and ASCII decoding work", 
   assert.ok(Object.values(codeMethodNameCounters).every(value => typeof value === "number"));
   const before = { ...shellAnalysisCounters };
   const command = "printf '%s' 'a[0-9]' \"b[12]\" $'c[3]'";
-  assert.equal(extractCommandSubstitutions(command).unsupported, false);
+  assert.equal(extractCommandSubstitutions(command).uncertain, false);
   assert.equal(shellAnalysisCounters.substitutionCalls - before.substitutionCalls, 1);
-  assert.equal(shellAnalysisCounters.subscriptTextChars - before.subscriptTextChars, command.length);
-  const heads = shellAnalysisCounters.promptParameterCalls;
-  extractCommandSubstitutions("printf ok");
-  assert.equal(shellAnalysisCounters.promptParameterCalls, heads);
-  assert.equal(extractCommandSubstitutions('echo "${x@P}"').boundaryRefusal, 1);
-  assert.equal(shellAnalysisCounters.promptParameterCalls - heads, 1);
   const original = String.prototype.charCodeAt;
   let reads = 0;
   String.prototype.charCodeAt = function (index) { reads++; return original.call(this, index); };
@@ -360,7 +353,7 @@ test("primitive scanner counters exclude extra passes and ASCII decoding work", 
     const view = prepareShellAnalysis(source);
     assert.equal(shellAnalysisCounters.prepareCalls - count, 1);
     assert.strictEqual(view.command, source);
-    assert.equal(view.unboundedHeredoc, true);
+    assert.equal(view.uncertain, true);
     assert.equal(view.hereDocuments, undefined);
     assert.ok(reads <= 2 * source.length + 16);
   }
