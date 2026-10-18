@@ -21,7 +21,7 @@ export default function incidentProvider(pi) {
   pi.on('session_start', async (_event, ctx) => {
     const model = ctx.modelRegistry.find('shell-incident-fixture', 'fixture');
     if (!model || !await pi.setModel(model)) throw new Error('Fixture model unavailable');
-    pi.setActiveTools(['bash']);
+    pi.setActiveTools(call.id === 'preflight' ? ['bash', 'tasks'] : ['bash']);
   });
   pi.on('tool_call', event => {
     appendFileSync(process.env.SP_INCIDENT_REPORT, JSON.stringify({ phase: 'tool_call', event }) + '\n');
