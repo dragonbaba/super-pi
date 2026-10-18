@@ -14,7 +14,7 @@ export function wrapToolDefinition<TDetails = unknown>(
 		description: definition.description,
 		fullDescription: definition.fullDescription,
 		parameters: definition.parameters,
-		supportsManagedBackground: definition.supportsManagedBackground,
+		get supportsManagedBackground() { return definition.supportsManagedBackground; },
 		constrainedSampling: definition.constrainedSampling,
 		prepareArguments: definition.prepareArguments && ctxFactory
 			? (args) => definition.prepareArguments!(args, ctxFactory())
@@ -54,7 +54,7 @@ export function createToolDefinitionFromAgentTool(tool: AgentTool<any>): ToolDef
 		description: tool.description,
 		fullDescription: tool.fullDescription,
 		parameters: tool.parameters as any,
-		supportsManagedBackground: tool.supportsManagedBackground,
+		get supportsManagedBackground() { return tool.supportsManagedBackground; },
 		constrainedSampling: tool.constrainedSampling,
 		prepareArguments: tool.prepareArguments,
 		validateInput: tool.validateInput,

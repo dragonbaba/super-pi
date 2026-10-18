@@ -112,7 +112,7 @@ PR3 uses one representative table-driven test in `tests/guard-relax-3-lifecycle.
 | Raw launch without explicit cwd; TUI with unsupported backend or replacement tool without managed capability | Allow | Ask |
 | `npm run dev` with `background: true` and explicit cwd; live TUI with tasks | Managed execution | Managed execution after approval |
 
-The table also covers existing service/PowerShell paths, RPC, catastrophic deletion and native-tool routing. It adds no syntax grammar or command-wide scan and reuses `ShellAnalysisOwner`. R0's obsolete Docker-denial control is separately migrated to `setsid` with real tasks availability; all refusal assertions and F-S1/S4 remain intact.
+The table also covers existing service/PowerShell paths, RPC, catastrophic deletion and native-tool routing. Managed capability is read live through tool wrapping, so replacing a registered backend's executor invalidates it using the execution path's existing identity checks. It adds no syntax grammar or command-wide scan and reuses `ShellAnalysisOwner`. R0's obsolete Docker-denial control is separately migrated to `setsid` with real tasks availability; all refusal assertions and F-S1/S4 remain intact.
 
 The owned-job recipe permits up to 16 literal `curl`, `test`, `true`, `false` or `echo` use commands (4096 characters total) between installing cleanup and explicitly killing/waiting on the captured PID. Expansion, PID reassignment and arbitrary runners in this interval are unsupported; do not interpret an unsupported recipe as permission to detach or switch launchers.
 

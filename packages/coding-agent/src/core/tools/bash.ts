@@ -1173,7 +1173,7 @@ export function createShellToolDefinition(
 		promptSnippet: config.promptSnippet,
 		promptGuidelines: exposeSessionEnvironment && config.promptGuidelines ? [...config.promptGuidelines] : undefined,
 		parameters,
-		supportsManagedBackground: supportsBackground,
+		get supportsManagedBackground() { return supportsBackground && isLocalShellBackend(ops) && ops.exec === backendExecute; },
         prepareArguments(args) {
             if (args && typeof args === "object") validateBackgroundShellInput(args as BashToolInput);
             if ((args as BashToolInput)?.background && (!isLocalShellBackend(ops) || commandPrefix || (spawnHook && spawnHook !== withMsysStdinBridge) || ops.exec !== backendExecute)) throw new Error("[SHELL_BACKGROUND_UNSUPPORTED] Background commands require the unchanged built-in local shell backend.");
