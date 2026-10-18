@@ -11,7 +11,7 @@ const jiti = createJiti(import.meta.url);
 const { default: lifecycle } = await jiti.import<typeof import("../../packages/extensions/resource-lifecycle-guard/index.ts")>("../../packages/extensions/resource-lifecycle-guard/index.ts");
 
 export async function shellHookFixture(t: TestContext, mode: "full-access" | "workspace-write",
-  nativePowerShell: "active" | "discoverable" | "unavailable" = process.platform === "win32" ? "active" : "unavailable", managedTasks = false, bashParameters?: object) {
+  nativePowerShell: "active" | "discoverable" | "unavailable" = process.platform === "win32" ? "active" : "unavailable", managedTasks = false, bashCapability: { supportsManagedBackground?: boolean } = { supportsManagedBackground: true }) {
   const cwd = workspace(t), runtime = createExtensionRuntime(), manager = SessionManager.inMemory(cwd);
   const runner = new ExtensionRunner(
     [await loadExtensionFromFactory(lifecycle, cwd, createEventBus(), runtime)], runtime, cwd, manager, {} as never,
@@ -21,7 +21,7 @@ export async function shellHookFixture(t: TestContext, mode: "full-access" | "wo
   // Only metadata is exposed: this fixture has no shell tool implementation or provider.
   runner.bindCore({ getThinkingLevel: () => "off",
     getActiveTools: () => ["bash", ...(managedTasks ? ["tasks"] : []), ...(nativePowerShell === "active" ? ["powershell"] : nativePowerShell === "discoverable" ? ["tool_search"] : [])],
-    getAllTools: () => { catalogReads++; return [{ name: "bash", parameters: bashParameters }, { name: "powershell", available: nativePowerShell !== "unavailable" }, ...runner.getAllRegisteredTools().map(tool => tool.definition)]; },
+    getAllTools: () => { catalogReads++; return [{ name: "bash", supportsManagedBackground: bashCapability.supportsManagedBackground }, { name: "powershell", supportsManagedBackground: true, available: nativePowerShell !== "unavailable" }, ...runner.getAllRegisteredTools().map(tool => tool.definition)]; },
     appendEntry: (kind: string, data: unknown) => { manager.appendCustomEntry(kind, data); },
   } as never, {
     getSignal: () => controller.signal, isProjectTrusted: () => false, getModel: () => undefined,

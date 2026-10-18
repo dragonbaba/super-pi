@@ -93,8 +93,7 @@ export class BackgroundShellTasks {
 		try {
 			this.assertAvailable(ctx);
 			if (!toolName) return true;
-			const schema = this.pi.getAllTools().find(tool => tool.name === toolName)?.parameters as { properties?: { background?: { const?: unknown } } } | undefined;
-			return schema?.properties?.background?.const !== false;
+			return this.pi.getAllTools().find(tool => tool.name === toolName)?.supportsManagedBackground === true;
 		}
 		catch { return false; }
 	}

@@ -2398,6 +2398,7 @@ export class AgentSession {
 			available: definition.name !== "powershell" || powerShellAvailable,
 			description: definition.description,
 			parameters: definition.parameters,
+			supportsManagedBackground: definition.supportsManagedBackground,
 			promptGuidelines: definition.promptGuidelines,
 			sourceInfo,
 		}));
