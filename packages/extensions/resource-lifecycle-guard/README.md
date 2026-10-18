@@ -97,7 +97,7 @@ The same test covers PowerShell, native destructive operations, repeated one-tim
 
 Docker detached containers and system-managed services follow ordinary opaque-command permissions: F allows, W asks. They are owned by Docker or the service manager, so they do not trigger unmanaged-process refusals. This includes the existing Bash docker/service/pm2 cases and PowerShell's systemctl and service-cmdlet paths; their lifecycle-only special parsing has been removed.
 
-Raw `&`, `nohup`, `setsid`, `disown`, and Start-Process without literal `-Wait` retain lifecycle evidence. When the existing background manager can offer live TUI/RPC control through the registered `tasks` tool, they are refused with one line: remove `&` or the detaching launcher, set `background: true` with explicit `cwd`. Without that capability (print/JSON/headless, missing or conflicting tasks tool), the same evidence becomes opaque permission input: F allows; W asks if a UI is present, otherwise returns `confirmation_required`. Missing tasks alone does not remove an existing UI. Catastrophic targets and native PowerShell routing still take precedence.
+Raw `&`, `nohup`, `setsid`, `disown`, and Start-Process without literal `-Wait` retain lifecycle evidence. When the existing background manager can offer live TUI/RPC control through the registered `tasks` tool, they are refused with one line: remove `&` or the detaching launcher, set `background: true` with explicit `cwd`. Availability uses the same checks as managed launch, including task-history health. Without that capability (print/JSON/headless, missing or conflicting tasks tool, or failed history), the same evidence becomes opaque permission input: F allows; W asks if a UI is present, otherwise returns `confirmation_required`. Missing tasks alone does not remove an existing UI. Catastrophic targets and native PowerShell routing still take precedence.
 
 The `background: true` managed path, its availability checks, process ownership, timeout, cancellation and cleanup are unchanged. Submit the foreground command with explicit `cwd`, and use `tasks` to observe completion or cancel. Default managed Chrome screenshots and managed Chrome itself are cleaned by exact identity at `agent_settled` and `session_shutdown`.
 
@@ -108,7 +108,7 @@ PR3 uses one representative table-driven test in `tests/guard-relax-3-lifecycle.
 | `docker run -d nginx`, `docker compose up -d`, `systemctl restart nginx` | Allow | Ask |
 | `npm run dev &`, `nohup node s.js > log 2>&1 &`; live TUI with tasks | Deny with one-line `background: true` guidance | Deny |
 | Same raw launches; print/JSON/headless with or without tasks | Allow | confirmation_required |
-| Same raw launches; TUI without tasks | Allow | Ask |
+| Same raw launches; TUI without tasks or with failed task history | Allow | Ask |
 | `npm run dev` with `background: true` and explicit cwd; live TUI with tasks | Managed execution | Managed execution after approval |
 
 The table also covers existing service/PowerShell paths, RPC, catastrophic deletion and native-tool routing. It adds no syntax grammar or command-wide scan and reuses `ShellAnalysisOwner`. R0's obsolete Docker-denial control is separately migrated to `setsid` with real tasks availability; all refusal assertions and F-S1/S4 remain intact.

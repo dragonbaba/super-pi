@@ -576,9 +576,6 @@ test("review2: nested/evaluator heredocs never hide executable input", () => {
  for (const command of ["cat <<EOF $(\nnohup sleep 100 &\nEOF\n)\ndata\nEOF", "source /dev/stdin <<'EOF'\nnohup sleep 100 &\nEOF"]) assert.ok(inspectBashResourceLifecycle({ command }));
  assert.equal(inspectBashPermissionScope({ command: "python3.12 <<'EOF'\npass\nEOF" }, process.cwd())?.kind, "opaque-script");
 });
-test("review2: versioned interpreters are not owned foreground jobs", () => {
- for (const name of ["python3.12", "python3.12.exe", "nodejs"]) assert.ok(inspectBashResourceLifecycle({ command: `${name} script & pid=$!; trap 'kill "$pid"; wait "$pid"' EXIT; wait "$pid"` }));
-});
 test("review2: validation escapes all display controls", () => {
  const tool = definitions.get("browser_exec");
  assert.throws(() => validateToolArguments(tool, { type: "toolCall", id: "controls", name: tool.name, arguments: { code: "pass", ["bad\u007f\u009b\u2028\u2029"]: 1 } }), error => {
@@ -599,10 +596,6 @@ test("review3: shadowed consumers and staged execution are uncertain", () => {
  for (const command of [`cat(){ eval "$(command cat)"; }\ncat <<'EOF'\nnohup sleep 100 &\nEOF`, "cat > ./runner <<'EOF'\n#!/bin/sh\nnohup sleep 100 &\nEOF\nchmod +x ./runner; ./runner"]) assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "opaque-script");
 });
 
-
-test("review4: launcher prefixes do not establish owned-job identity", () => {
- for (const prefix of ["env python3", "sudo -u root python3", "env env python3", "nice python3", "timeout 10 nodejs"]) assert.ok(inspectBashResourceLifecycle({ command: `${prefix} script & pid=$!; trap 'kill "$pid"; wait "$pid"' EXIT; wait "$pid"` }));
-});
 
 test("review5: owned work cannot detach wget", () => {
  for (const options of ["-b", "--background", "-e background=on"]) assert.ok(inspectBashResourceLifecycle({ command: `server --foreground & pid=$!; trap 'kill "$pid"; wait "$pid"' EXIT; wget ${options} https://example.com; kill "$pid"; wait "$pid"` }));

@@ -89,8 +89,8 @@ export class BackgroundShellTasks {
 
 	canManageForeground(ctx: ExtensionContext): boolean {
 		if (this.closed || this.changingSession || this.cleanupBlocked || (ctx.mode !== "tui" && ctx.mode !== "rpc")) return false;
-		// Optional discovery must not break ordinary foreground use by partial SDK hosts.
-		try { return this.taskRegistration.controlsAvailable(ctx); }
+		// Unavailable management must not block ordinary foreground execution.
+		try { this.assertAvailable(ctx); return true; }
 		catch { return false; }
 	}
 
