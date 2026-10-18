@@ -87,10 +87,15 @@ export class BackgroundShellTasks {
 		if (!this.taskRegistration.controlsAvailable(ctx)) throw new Error("Background commands require the built-in tasks management tool; enable it and remove conflicting tasks registrations, or use foreground execution.");
 	}
 
-	canManageForeground(ctx: ExtensionContext): boolean {
+	canManageForeground(ctx: ExtensionContext, toolName?: string): boolean {
 		if (this.closed || this.changingSession || this.cleanupBlocked || (ctx.mode !== "tui" && ctx.mode !== "rpc")) return false;
 		// Unavailable management must not block ordinary foreground execution.
-		try { this.assertAvailable(ctx); return true; }
+		try {
+			this.assertAvailable(ctx);
+			if (!toolName) return true;
+			const schema = this.pi.getAllTools().find(tool => tool.name === toolName)?.parameters as { properties?: { background?: { const?: unknown } } } | undefined;
+			return schema?.properties?.background?.const !== false;
+		}
 		catch { return false; }
 	}
 

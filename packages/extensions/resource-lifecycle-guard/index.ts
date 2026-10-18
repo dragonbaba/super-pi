@@ -56,7 +56,7 @@ class BashInvocationAuthorization {
       const sessionCwd = this.sessionCwd, sessionId = this.sessionId, generation = this.generation, sequence = this.sequence;
       const transferable = this.topLevel && this.background !== true && typeof this.command === "string" && typeof this.cwd === "string"
         && typeof this.timeout === "number" && Number.isFinite(this.timeout) && this.timeout > 0 && this.timeout <= 7200
-        && this.backgroundTasks?.canManageForeground(ctx);
+        && this.backgroundTasks?.canManageForeground(ctx, this.name);
       const invocationSignal = this.background === true || transferable ? undefined : signal;
       const assertCurrent = () => {
         if (invocationSignal?.aborted || ctx.cwd !== sessionCwd || ctx.sessionManager.getSessionId() !== sessionId
@@ -171,7 +171,7 @@ export default function resourceLifecycleGuard(pi: ExtensionAPI): void {
     await permissions.restore(ctx);
   });
   pi.on("before_agent_start", (event) => ({
-    systemPrompt: `${event.systemPrompt}\n\n${permissions.systemGuidance()}\nBash input: bounded heredoc bodies are distinguished from executable substitutions; literal interpreter input receives script checks. Shell state or lookup uncertainty without a recognized mutation follows opaque-input permissions: full-access with never-ask allows it; workspace-write requires approval. Recognized mutations with uncertain targets require one-time approval in every mode. Known catastrophic targets and unchanged user-rejected requests remain blocked. Raw background launches are refused only when session background management is available; otherwise they follow opaque-input permissions. Docker and system-managed services follow ordinary permissions. The original command and body are executed unchanged. Timeout is seconds: 60 means one minute. For long work, background: true with explicit cwd is available in a live TUI/RPC session with the tasks tool; keep the command itself foreground and use tasks to observe completion or cancel it. Without managed background capability, opaque commands follow the selected permission mode; requests needing confirmation still require a UI. Native creation/editing, execution and cleanup retain their own read, path, permission and lifecycle requirements. Changing tools or language cannot authorize forbidden behavior.`,
+    systemPrompt: `${event.systemPrompt}\n\n${permissions.systemGuidance()}\nBash input: bounded heredoc bodies are distinguished from executable substitutions; literal interpreter input receives script checks. Shell state or lookup uncertainty without a recognized mutation follows opaque-input permissions: full-access with never-ask allows it; workspace-write requires approval. Recognized mutations with uncertain targets require one-time approval in every mode. Known catastrophic targets and unchanged user-rejected requests remain blocked. Raw background launches are refused only when session background management is available; otherwise they follow opaque-input permissions. Docker and system-managed services follow ordinary permissions. The original command and body are executed unchanged. Timeout is seconds: 60 means one minute. For long work, background: true with explicit cwd is available on supported local shell backends in a live TUI/RPC session with the tasks tool; keep the command itself foreground and use tasks to observe completion or cancel it. Without managed background capability, opaque commands follow the selected permission mode; requests needing confirmation still require a UI. Native creation/editing, execution and cleanup retain their own read, path, permission and lifecycle requirements. Changing tools or language cannot authorize forbidden behavior.`,
   }));
 
   pi.on("tool_call", async (event, ctx) => {
@@ -206,7 +206,7 @@ export default function resourceLifecycleGuard(pi: ExtensionAPI): void {
       lifecycleReason = inspectPowerShellResourceLifecycle(event.input);
     }
     if (lifecycleReason && isBlockingLifecycleReason(lifecycleReason)
-      && (lifecycleReason.startsWith("[SHELL_WRAPPER:LAUNCHER_UNSUPPORTED]") || backgroundTasks.canManageForeground(ctx))) return { block: true, reason: lifecycleReason };
+      && (lifecycleReason.startsWith("[SHELL_WRAPPER:LAUNCHER_UNSUPPORTED]") || backgroundTasks.canManageForeground(ctx, event.toolName))) return { block: true, reason: lifecycleReason };
     const permissionBlock = await permissions.authorizeToolCall(event, ctx, analysis, lifecycleReason !== undefined);
     if (permissionBlock) return permissionBlock;
     // Neither lifecycle acceptance nor the original approval authorizes a replacement.
