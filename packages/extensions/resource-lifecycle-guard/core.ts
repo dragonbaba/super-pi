@@ -4,7 +4,6 @@ import {
 	BASH_ALIASES_ASSIGNMENT,
 	DETACH_UTILITY_PATTERN,
 	DIRECT_SHELL_VARIABLE_PATTERN,
-	DOCKER_DETACHED_PATTERN,
 	EXECUTABLE_EXPANSION_TEXT_PATTERN,
 	HEAD_COUNT_OPTION_PATTERN,
 	HEREDOC_SHELL_COMMAND_PATTERN,
@@ -29,7 +28,6 @@ import {
 	PYTHON_COMMAND_PATTERN,
 	PYTHON_UNLINK_PATTERN,
 	REDIRECTION_OPERATOR_PATTERN,
-	SERVICE_START_PATTERN,
 	SHELL_WRAPPER_TEXT_PATTERN,
 	SIMPLE_VARIABLE_PATTERN,
 	SOURCE_DESCRIPTOR_PATTERN,
@@ -49,8 +47,7 @@ import { isCodeMethodNamePart, writeCodeMethodName, writeEscapedNodeMethodKey } 
 import { diagnosticForPrimitives, policyMetadata, renderPolicyDiagnostic, type PolicyDiagnosticMetadata } from "./policy-diagnostics.ts";
 
 const MAX_INSPECTED_COMMAND_CHARS = 128 * 1024;
-const BLOCK_REASON =
-	"Blocked an unmanaged long-lived process before execution; this Bash call was not executed.\nRetry: keep setup and bounded use in one inspectable foreground call with a recorded PID, EXIT trap, kill and wait; resubmit for authorization. For session-managed background execution, keep the command itself foreground and set background: true with explicit cwd in a live TUI/RPC session with the tasks tool available. Otherwise use foreground execution.";
+export const BLOCK_REASON = "Blocked an unmanaged long-lived process: remove '&' or the detaching launcher, set background: true with explicit cwd.";
 
 /** Parser diagnostics are opacity evidence; only lifecycle and native routing block. */
 export function isBlockingLifecycleReason(reason: string): boolean {
@@ -171,7 +168,6 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
  // Check already-visible launches before deferring parser diagnostics to permissions.
  if (DETACH_UTILITY_PATTERN.test(command)) return BLOCK_REASON;
  if ((WINDOWS_DETACH_PATTERN.test(command) || WINDOWS_START_BACKGROUND_PATTERN.test(command)) && !WINDOWS_WAIT_PATTERN.test(command)) return BLOCK_REASON;
- if (DOCKER_DETACHED_PATTERN.test(command) || SERVICE_START_PATTERN.test(command)) return BLOCK_REASON;
  if (hasUnquotedBackgroundOperator(command)) {
   const owned = OWNED_FOREGROUND_JOB_PATTERN.exec(command);
   if (!owned || !hasBoundedOwnedUse(owned[2])) return BLOCK_REASON;

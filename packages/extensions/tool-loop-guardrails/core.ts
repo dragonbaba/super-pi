@@ -388,7 +388,7 @@ export async function failureRecoveryHint(
     return "[Lifecycle recovery] This shell syntax could not be analyzed before execution. Use an equivalent inspectable foreground form or a registered native tool for the same authorized operation. Every form still requires target permission, qualifying prior reads for mutations, and a managed process lifetime. Inspect the diagnostic before retrying unchanged.";
   }
   if (failureText.includes("Blocked an unmanaged long-lived process")) {
-    return "[Lifecycle recovery] A permission change cannot authorize an unmanaged process. Keep bounded use and cleanup in one foreground call with the captured PID, or use an available managed capability. Do not evade this boundary with another launcher.";
+    return "[Lifecycle recovery] Remove '&' or the detaching launcher, set background: true with explicit cwd, and manage the command with tasks.";
   }
   if (category === "policy_blocked") {
     return "[Permission recovery] Resolve the permission or policy failure for this exact operation before retrying. Do not evade it by changing language, launcher, or tool; use only a registered capability allowed for the target.";

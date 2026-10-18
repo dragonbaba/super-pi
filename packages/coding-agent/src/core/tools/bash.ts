@@ -928,6 +928,8 @@ export function createShellToolDefinition(
 	const commandPrefix = options?.commandPrefix;
 	const exposeSessionEnvironment = options?.exposeSessionEnvironment ?? true;
 	const spawnHook = options?.spawnHook;
+	const supportsBackground = isLocalShellBackend(ops) && !commandPrefix && (!spawnHook || spawnHook === withMsysStdinBridge);
+	const parameters = supportsBackground ? bashSchema : { ...bashSchema, properties: { ...bashSchema.properties, background: { ...bashSchema.properties.background, const: false } } };
 	const executeForeground = async (
 			_toolCallId: string,
 			input: BashToolInput,
@@ -1170,7 +1172,8 @@ export function createShellToolDefinition(
 		description: `Execute a ${config.shellName} command in the current working directory. Returns stdout and stderr. Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Foreground truncated output is saved to a temp file, capped at 5 MiB. Background mode returns a task ID, retains bounded result text and removes its temporary log on completion. Optionally provide a timeout in seconds.`,
 		promptSnippet: config.promptSnippet,
 		promptGuidelines: exposeSessionEnvironment && config.promptGuidelines ? [...config.promptGuidelines] : undefined,
-		parameters: bashSchema,
+		parameters,
+		get supportsManagedBackground() { return supportsBackground && isLocalShellBackend(ops) && ops.exec === backendExecute; },
         prepareArguments(args) {
             if (args && typeof args === "object") validateBackgroundShellInput(args as BashToolInput);
             if ((args as BashToolInput)?.background && (!isLocalShellBackend(ops) || commandPrefix || (spawnHook && spawnHook !== withMsysStdinBridge) || ops.exec !== backendExecute)) throw new Error("[SHELL_BACKGROUND_UNSUPPORTED] Background commands require the unchanged built-in local shell backend.");

@@ -21,7 +21,7 @@ interface TaskDirectory {
 }
 export interface ManagedTaskRegistration {
 	unregister(): void;
-	controlsAvailable(ctx: ExtensionContext): boolean;
+	controlsAvailable(ctx: ExtensionContext, toolName?: string): boolean;
 }
 const DIRECTORY_EVENT = "super-pi:managed-tasks-directory";
 export const SHELL_TASK_RESULT_EVENT = "super-pi:shell-task-result";
@@ -190,12 +190,16 @@ export function registerManagedTasks(pi: ExtensionAPI, kind: Kind, provider: Man
 			owned.providers.delete(kind);
 			if (owned.providers.size === 0) owned.stopDiscovery();
 		},
-		controlsAvailable(ctx) {
+		controlsAvailable(ctx, toolName) {
 			if (!ctx.getActiveTools().includes("tasks")) return false;
 			// Effective tool metadata preserves the registered schema reference;
 			// a same-named tool or a copied schema is not this controller.
-			for (const tool of pi.getAllTools()) if (tool.name === "tasks") return tool.parameters === owned.parameters;
-			return false;
+			let controls = false, managedShell = toolName === undefined;
+			for (const tool of pi.getAllTools()) {
+				if (tool.name === "tasks") controls = tool.parameters === owned.parameters;
+				if (tool.name === toolName) managedShell = tool.supportsManagedBackground === true;
+			}
+			return controls && managedShell;
 		},
 	};
 }

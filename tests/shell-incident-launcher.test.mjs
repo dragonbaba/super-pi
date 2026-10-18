@@ -119,7 +119,7 @@ test('launcher denied approval: no spawn or file change', { timeout: 40000 }, t 
   runFixture(t, { name: 'denied', command: commands[0], preexisting: true, denied: true }));
 test('launcher paired-backslash bridge preserves heredoc bytes and files', { timeout: 40000 }, t =>
   runFixture(t, { name: 'bridge', command: bridged, preexisting: true, shim: process.env.SP_INCIDENT_SHIM }));
-test('launcher unmanaged lifecycle refusal: no spawn, approval or file change', { timeout: 40000 }, t =>
+test('launcher unmanaged lifecycle refusal with live tasks: no spawn, approval or file change', { timeout: 40000 }, t =>
   runFixture(t, { name: 'preflight', command: "node <<'NODE'\nconsole.log('unreachable')\nNODE\nnpm run dev &", preexisting: true, refused: true }));
 test('launcher authorized external redirection retains normal semantics', { timeout: 40000 }, t =>
   runFixture(t, { name: 'redirect', command: "printf authorized > authorized.txt", preexisting: true, redirect: true }));

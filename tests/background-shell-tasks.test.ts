@@ -123,7 +123,7 @@ async function fixture(t: test.TestContext, auxiliary?: any, preceding?: any, re
 		const result = await runner.emitToolCall({ type: "tool_call", toolName: toolCall.name, toolCallId: toolCall.id, parentToolCallId, input: args } as never); beforeConsume(args); return result;
 	}, afterToolCall: ({ toolCall, args, result, isError, parentToolCallId }) => runner.emitToolResult({ type: "tool_result", toolName: toolCall.name, toolCallId: toolCall.id, parentToolCallId, input: args, content: result.content, details: result.details, isError } as never) });
 	const active = ["bash", "powershell", "tasks"];
-	runner.bindCore({ getThinkingLevel: () => "off", getActiveTools: () => active, getAllTools: () => runner.getAllRegisteredTools().map(tool => tool.definition), sendMessage: (message: any) => messages.push(message), appendEntry: (kind: string, data: any) => session.appendCustomEntry(kind, data) } as never,
+	runner.bindCore({ getThinkingLevel: () => "off", getActiveTools: () => active, getAllTools: () => agent.state.tools, sendMessage: (message: any) => messages.push(message), appendEntry: (kind: string, data: any) => session.appendCustomEntry(kind, data) } as never,
 		{ getSignal: () => agent.signal, getModel: () => undefined, isProjectTrusted: (identity?: boolean) => settings.isProjectTrusted(identity), isIdle: () => true, hasPendingMessages: () => false } as never);
 	runner.setUIContext({ ...runner.getUIContext(), select: async () => { approvals++; return "仅允许本次"; } }, "tui");
 	agent.state.tools = [createBashTool(cwd, { shellPath: bashPath }), createPowerShellTool(cwd), ...wrapRegisteredTools(runner.getAllRegisteredTools(), runner)];

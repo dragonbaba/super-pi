@@ -477,6 +477,8 @@ export interface ToolRenderContext<TState = any, TArgs = any> {
  * Tool definition for registerTool().
  */
 export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = unknown, TState = any> {
+	/** Host capability: consumes the session-managed shell launch handoff. Omission means unsupported. */
+	supportsManagedBackground?: boolean;
 	/** MCP bridge/discovery tool; omitted from the host registry when MCP is disabled. */
 	requiresMcp?: boolean;
 	/** Tool name (used in LLM tool calls) */
@@ -1777,7 +1779,7 @@ export type GetSessionNameHandler = () => string | undefined;
 export type GetActiveToolsHandler = () => string[];
 
 /** Tool info with name, description, parameter schema, prompt guidelines, and source metadata. */
-export type ToolInfo = Pick<ToolDefinition, "name" | "description" | "parameters" | "promptGuidelines"> & {
+export type ToolInfo = Pick<ToolDefinition, "name" | "description" | "parameters" | "promptGuidelines" | "supportsManagedBackground"> & {
 	/** False when host/probe state prevents ordinary activation; does not grant authorization. */
 	available?: boolean;
 	sourceInfo: SourceInfo;

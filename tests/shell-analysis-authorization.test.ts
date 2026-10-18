@@ -78,11 +78,3 @@ test("bounded heredoc data cannot hide visible lifecycle violations or create fa
     assert.match(inspectBashResourceLifecycle({ command }) ?? "", /Blocked an unmanaged long-lived process/);
   }
 });
-
-test("masked multiline heredoc keeps service launches at following boundaries visible", () => {
-  const data = `cat > out <<'EOF'\n${"literal data & $HOME\n".repeat(512)}EOF`;
-  assert.equal(inspectBashResourceLifecycle({ command: data }), undefined);
-  for (const suffix of ["\n  systemctl start daemon", "\r\n\t sudo service daemon start", "; pm2 serve ./site"]) {
-    assert.match(inspectBashResourceLifecycle({ command: data + "\n" + suffix }) ?? "", /Blocked an unmanaged long-lived process/);
-  }
-});

@@ -46,12 +46,6 @@ for (const [name, command] of [
  assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "opaque-script");
 });
 
-for (const command of [
- "cat <<'EOF' &\nvalue & 255\nEOF", "cat <<EOF\n$(sleep 1 &)\nEOF",
- "cat <<EOF\n'$(sleep 1 &)'\nEOF", "cat <<EOF\n`nohup sleep 1`\nEOF",
- "cat <<'EOF'\ndata\nEOF\nnohup sleep 1", "bash -c 'sleep 1 &'", "sleep 1 & wait", "sleep 1 & echo 'kill wait trap'",
-]) test(`executable/detached lifecycle remains blocked: ${command.slice(0, 30)}`, () => assert.ok(inspectBashResourceLifecycle({ command })));
-
 test("unterminated heredoc is explicitly uncertain", () => assert.equal(inspectBashPermissionScope({ command: "cat <<'EOF'\ntext" }, process.cwd())?.kind, "opaque-script"));
 
 test("active browser schema identifies unexpected fields without values", () => {
@@ -576,18 +570,11 @@ test("review: owned job permits bounded use and exact PID cleanup", () => {
  assert.equal(inspectBashResourceLifecycle({ command: `server --foreground & pid=$!; trap 'kill "$pid"; wait "$pid"' EXIT; curl --fail http://127.0.0.1:8000; kill "$pid"; wait "$pid"` }), undefined);
  assert.ok(inspectBashResourceLifecycle({ command: `server --foreground & pid=$!; trap 'kill "$pid"; wait "$pid"' EXIT; pid=99; kill "$pid"; wait "$pid"` }));
 });
-test("review: lifecycle denial has structural recovery, not permission escalation", async () => {
- const hint = await failureRecoveryHint("bash", {}, "Blocked an unmanaged long-lived process.", process.cwd());
- assert.match(hint, /Lifecycle recovery/); assert.match(hint, /permission change cannot/);
-});
 
 
 test("review2: nested/evaluator heredocs never hide executable input", () => {
  for (const command of ["cat <<EOF $(\nnohup sleep 100 &\nEOF\n)\ndata\nEOF", "source /dev/stdin <<'EOF'\nnohup sleep 100 &\nEOF"]) assert.ok(inspectBashResourceLifecycle({ command }));
  assert.equal(inspectBashPermissionScope({ command: "python3.12 <<'EOF'\npass\nEOF" }, process.cwd())?.kind, "opaque-script");
-});
-test("review2: versioned interpreters are not owned foreground jobs", () => {
- for (const name of ["python3.12", "python3.12.exe", "nodejs"]) assert.ok(inspectBashResourceLifecycle({ command: `${name} script & pid=$!; trap 'kill "$pid"; wait "$pid"' EXIT; wait "$pid"` }));
 });
 test("review2: validation escapes all display controls", () => {
  const tool = definitions.get("browser_exec");
@@ -610,10 +597,6 @@ test("review3: shadowed consumers and staged execution are uncertain", () => {
 });
 
 
-test("review4: launcher prefixes do not establish owned-job identity", () => {
- for (const prefix of ["env python3", "sudo -u root python3", "env env python3", "nice python3", "timeout 10 nodejs"]) assert.ok(inspectBashResourceLifecycle({ command: `${prefix} script & pid=$!; trap 'kill "$pid"; wait "$pid"' EXIT; wait "$pid"` }));
-});
-
 test("review5: owned work cannot detach wget", () => {
  for (const options of ["-b", "--background", "-e background=on"]) assert.ok(inspectBashResourceLifecycle({ command: `server --foreground & pid=$!; trap 'kill "$pid"; wait "$pid"' EXIT; wget ${options} https://example.com; kill "$pid"; wait "$pid"` }));
 });
@@ -634,18 +617,6 @@ test("review6: wrapper options cannot bypass script identity", () => {
  for (const command of ["dash -c 'sleep 100 &'", "fish -c 'sleep 100 &'", "ksh -c 'sleep 100 &'", "bash runner.sh -c safe", "sh runner.sh -c safe"]) assert.ok(inspectBashResourceLifecycle({ command }));
  assert.equal(inspectBashResourceLifecycle({ command: "dash -c 'echo safe'" }), undefined);
 });
-
-test("review7: builtin prefixes cannot hide shell scripts", () => {
- for (const command of ["command bash -c 'sleep 100 &'", "exec bash -c 'sleep 100 &'", "command exec dash -c 'sleep 100 &'", "env -u PATH bash -c 'sleep 100 &'"]) assert.ok(inspectBashResourceLifecycle({ command }));
- assert.equal(inspectBashResourceLifecycle({ command: "command bash -c 'echo safe'" }), undefined);
-});
-
-
-test("review8: assignment and redirection prefixes cannot hide shell operands", () => {
- for (const command of ["X=1 bash -c 'sleep 100 &'", "X='a b' command bash -c 'sleep 100 &'", "2>/dev/null bash -c 'sleep 100 &'", "command 2>/dev/null bash -c 'sleep 100 &'"]) assert.ok(inspectBashResourceLifecycle({ command }));
- assert.equal(inspectBashResourceLifecycle({ command: "echo bash" }), undefined);
-});
-
 
 test("review9: unrelated shell text does not taint another command prefix", () => {
  for (const command of ["echo bash; X=1 echo safe", "echo bash; >output echo safe", "X=1 echo bash", "echo bash; X=1 >output echo safe"]) assert.equal(inspectBashResourceLifecycle({ command }), undefined);

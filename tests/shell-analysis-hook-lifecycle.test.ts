@@ -17,7 +17,7 @@ for (const lifecycle of ["complete", "denied", "cancel", "throw", "command-chang
     const runner = new ExtensionRunner([await loadExtensionFromFactory(guard, cwd, createEventBus(), runtime)], runtime, cwd, manager, {} as never);
     const cancellation = new AbortController();
     const input = { command: lifecycle === "lifecycle-block" ? "npm run dev &" : "python -c 'print(1)'", cwd, timeout: 60 };
-    runner.bindCore({ getThinkingLevel: () => "off", getActiveTools: () => ["bash"],
+    runner.bindCore({ getThinkingLevel: () => "off", getActiveTools: () => ["bash", "tasks"], getAllTools: () => [{ name: "bash", supportsManagedBackground: true }, ...runner.getAllRegisteredTools().map(tool => tool.definition)],
       appendEntry: (kind: string, data: unknown) => manager.appendCustomEntry(kind, data) } as never,
     { getSignal: () => cancellation.signal, isProjectTrusted: () => false, getModel: () => undefined,
       isIdle: () => true, abort: () => cancellation.abort(), hasPendingMessages: () => false } as never);

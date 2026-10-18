@@ -496,6 +496,8 @@ export interface AgentToolExecutionContext {
 
 /** Tool definition used by the agent runtime. */
 export interface AgentTool<TParameters extends TSchema = TSchema, TDetails = any> extends Tool<TParameters> {
+	/** Host capability: executes the session-managed shell launch protocol. Omission means unsupported. */
+	supportsManagedBackground?: boolean;
 	/** Host-only bounded instructions for on-demand documentation; never an inline provider description. */
 	fullDescription?: string;
 	/** Human-readable label for UI display. */

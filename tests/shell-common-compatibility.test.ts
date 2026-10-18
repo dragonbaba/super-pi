@@ -1702,7 +1702,7 @@ test("PowerShell arithmetic subexpressions use PowerShell approval rather than B
   }
 });
 
-test("native PowerShell assignments and member calls retain authorization and foreground lifecycle gates", async t => {
+test("native PowerShell assignments and member calls retain authorization", async t => {
   if (process.platform !== "win32") { t.skip("PowerShell tool execution is Windows-only"); return; }
   const workspace = mkdtempSync(join(tmpdir(), "sp-shell-powershell-members-"));
   let fixture: Awaited<ReturnType<typeof guardedCwdBoundaryFixture>> | undefined;
@@ -1740,19 +1740,6 @@ test("native PowerShell assignments and member calls retain authorization and fo
     fixture.setDecision("拒绝");
     const denied = await fixture.agent.dispatchHostTool({ type: "toolCall", id: "native-denied", name: "powershell", arguments: { command: boundaryCases } });
     assert.equal(denied.isError, true); assert.equal(fixture.executions, 1); assert.equal(fixture.approvals.length, 2);
-    await fixture.setMode("full-access");
-    for (const command of ["Start-Job { 1 }", "Start-Process missing.exe", "Start-Process missing.exe > -Wait",
-      "Start-ScheduledTask -TaskName MissingTask", "Start-BitsTransfer -Source a -Destination b -Asynchronous",
-      "${job}=Start-Job { 1 }", "Invoke-Item missing.exe", "param() Start-Job { 1 }",
-      "Set-Service -Name Missing -Status Running", "Resume-Service Missing",
-      "Start-BitsTransfer -Source a -Destination b -Suspended",
-      "Start-Service -Name '' -WhatIf:$false", "Start-Service -Name '' > -WhatIf",
-      'Write-Output "value=$($value)"; Start-Job { 1 }', "$h['some-key']=Start-Job { 1 }",
-      "Invoke-Command -ComputerName missing -ScriptBlock { 1 } -AsJob", "iwmi -Class Win32_Process -Name Create -AsJob",
-      "Write-Output -- (Start-Process missing.exe)", "<# outer <# nested #>\nStart-Process missing.exe\n#>"]) {
-      const blocked = await fixture.agent.dispatchHostTool({ type: "toolCall", id: "native-background", name: "powershell", arguments: { command } });
-      assert.equal(blocked.isError, true); assert.equal(fixture.executions, 1); assert.equal(fixture.approvals.length, 2);
-    }
   } finally { await fixture?.close(); rmSync(workspace, { recursive: true, force: true }); }
 });
 

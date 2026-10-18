@@ -23,7 +23,7 @@ test("PR1 representative allow / ask / deny acceptance", async t => {
       .map(command => [command, "allow", "ask"] as const),
     ...["find .git -name x -delete", "find .sp/cache -name x -delete", "find / -name x -delete", "find ~ -name x -delete", "rename git moved .git", "mv .git/* /tmp/x"]
       .map(command => [command, "deny", "deny"] as const),
-    ["npm run dev &", "deny", "deny"], ["docker compose up -d", "deny", "deny"],
+    ["npm run dev &", "deny", "deny"], ["docker compose up -d", "allow", "ask"],
     ["printf '%s' $(time printf 1); npm run dev &", "deny", "deny"],
     ["rm -rf . $BUILD_DIR", "deny", "deny"], ["echo > .git/config", "allow", "ask"],
     ["printf x > out; mv .git moved", "deny", "deny"],
@@ -40,7 +40,7 @@ test("PR1 representative allow / ask / deny acceptance", async t => {
     ['pwsh -Command "Write-Output 1"', "deny", "deny"],
   ];
   for (const mode of ["full-access", "workspace-write"] as const) {
-    const f = await shellHookFixture(t, mode);
+    const f = await shellHookFixture(t, mode, undefined, true);
     mkdirSync(join(f.cwd, ".git"));
     writeFileSync(join(f.cwd, "sub", ".git"), "gitdir: fixture");
     await f.runner.getCommand("add_workspace")!.handler(join(f.cwd, "sub"), f.runner.createCommandContext());

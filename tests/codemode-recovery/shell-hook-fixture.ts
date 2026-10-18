@@ -11,7 +11,7 @@ const jiti = createJiti(import.meta.url);
 const { default: lifecycle } = await jiti.import<typeof import("../../packages/extensions/resource-lifecycle-guard/index.ts")>("../../packages/extensions/resource-lifecycle-guard/index.ts");
 
 export async function shellHookFixture(t: TestContext, mode: "full-access" | "workspace-write",
-  nativePowerShell: "active" | "discoverable" | "unavailable" = process.platform === "win32" ? "active" : "unavailable") {
+  nativePowerShell: "active" | "discoverable" | "unavailable" = process.platform === "win32" ? "active" : "unavailable", managedTasks = false, bashCapability: { supportsManagedBackground?: boolean } = { supportsManagedBackground: true }) {
   const cwd = workspace(t), runtime = createExtensionRuntime(), manager = SessionManager.inMemory(cwd);
   const runner = new ExtensionRunner(
     [await loadExtensionFromFactory(lifecycle, cwd, createEventBus(), runtime)], runtime, cwd, manager, {} as never,
@@ -20,8 +20,8 @@ export async function shellHookFixture(t: TestContext, mode: "full-access" | "wo
   let dialogs = 0, sequence = 0, catalogReads = 0;
   // Only metadata is exposed: this fixture has no shell tool implementation or provider.
   runner.bindCore({ getThinkingLevel: () => "off",
-    getActiveTools: () => ["bash", ...(nativePowerShell === "active" ? ["powershell"] : nativePowerShell === "discoverable" ? ["tool_search"] : [])],
-    getAllTools: () => { catalogReads++; return [{ name: "powershell", available: nativePowerShell !== "unavailable" }]; },
+    getActiveTools: () => ["bash", ...(managedTasks ? ["tasks"] : []), ...(nativePowerShell === "active" ? ["powershell"] : nativePowerShell === "discoverable" ? ["tool_search"] : [])],
+    getAllTools: () => { catalogReads++; return [{ name: "bash", supportsManagedBackground: bashCapability.supportsManagedBackground }, { name: "powershell", supportsManagedBackground: true, available: nativePowerShell !== "unavailable" }, ...runner.getAllRegisteredTools().map(tool => tool.definition)]; },
     appendEntry: (kind: string, data: unknown) => { manager.appendCustomEntry(kind, data); },
   } as never, {
     getSignal: () => controller.signal, isProjectTrusted: () => false, getModel: () => undefined,
@@ -38,7 +38,7 @@ export async function shellHookFixture(t: TestContext, mode: "full-access" | "wo
   const permissions = runner.getCommand("permissions")!;
   await permissions.handler(mode, runner.createCommandContext());
   await permissions.handler(mode === "full-access" ? "never-ask" : "ask", runner.createCommandContext());
-  return { runner, cwd, dialogs: () => dialogs, catalogReads: () => catalogReads,
+  return { runner, cwd, dialogs: () => dialogs, catalogReads: () => catalogReads, setManagedTasks: (available: boolean) => { managedTasks = available; },
     async authorize(command: string, toolName: "bash" | "powershell" = "bash", executionCwd = cwd) {
       const input = { command, cwd: executionCwd, timeout: 60 }, id = `hook-${++sequence}`;
       const outcome = await runner.emitToolCall({ type: "tool_call", toolName, toolCallId: id, input });
