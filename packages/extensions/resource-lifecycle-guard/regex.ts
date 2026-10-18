@@ -6,12 +6,6 @@ export const WINDOWS_WAIT_PATTERN = /(?:^|[\s;|()])(?:start-process\b[^\r\n;|]*\
 export const SHELL_WAIT_PATTERN = /(?:^|[;&|()\r\n])\s*wait(?=$|[\s;|)])/u;
 export const EXIT_TRAP_PATTERN = /(?:^|[;&|()\r\n])\s*trap\b[^\r\n]*(?:EXIT|\b0\b)/iu;
 export const PROCESS_CLEANUP_PATTERN = /(?:^|[;&|()\r\n])\s*(?:(?:kill|pkill|taskkill|stop-process)(?=$|[\s;|()])|trap\b\s*['"]\s*(?:kill|pkill|taskkill|stop-process)(?=$|[\s;|()]))/iu;
-export const DOCKER_DETACHED_PATTERN = /\bdocker(?:\s+compose)?\b[^;\r\n&|]*(?:\s-d\b|\s--detach\b)/iu;
-export const DOCKER_CLEANUP_PATTERN = /(?:^|[;&|()\r\n])\s*(?:sudo\s+)?docker(?:\s+compose)?\b[^;\r\n&|]*(?:\sdown\b|\sstop\b|\srm\b)/iu;
-// Newlines are already start boundaries. Never rescan all following masked
-// heredoc lines as whitespace from every earlier newline.
-export const SERVICE_START_PATTERN = /(?:^|[;&|()\r\n])[^\S\r\n]*(?:sudo\s+)?(?:systemctl\s+start|service\s+\S+\s+start|pm2\s+(?:start|serve))(?=$|[\s;|()])/iu;
-export const SERVICE_CLEANUP_PATTERN = /(?:^|[;&|()\r\n])\s*(?:sudo\s+)?(?:systemctl\s+stop|service\s+\S+\s+stop|pm2\s+(?:stop|delete|kill))(?=$|[\s;|()])/iu;
 
 // High-risk mutation primitives from the script-safety policy. Keep these
 // module-scoped so hot-path scans allocate no regular expressions. Embedded-call

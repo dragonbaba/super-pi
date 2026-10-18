@@ -4,7 +4,7 @@ Existing Pi 0.84.x safety extension. It owns Session filesystem permission state
 
 ## Threat model and maintenance scope
 
-This guard helps prevent accidental deletion and unmanaged background processes in ordinary model-generated commands, such as direct `rm -rf`, `shutil.rmtree(x)`, `fs.rmSync(x, {recursive:true})`, `&` and `nohup`. Body inspection is a best-effort denylist for preventing mistakes, **not an adversarial security boundary**. Admission does not establish that a program is safe. Policy has three outcomes: allow, ask, or deny. Denial is reserved for known catastrophic targets, an unchanged user-rejected request, and (until PR3) recognized unmanaged lifecycle violations or the PowerShell native-tool routing hint. Parser uncertainty is not a denial.
+This guard helps prevent accidental deletion and unmanaged background processes in ordinary model-generated commands, such as direct `rm -rf`, `shutil.rmtree(x)`, `fs.rmSync(x, {recursive:true})`, `&` and `nohup`. Body inspection is a best-effort denylist for preventing mistakes, **not an adversarial security boundary**. Admission does not establish that a program is safe. Policy has three outcomes: allow, ask, or deny. Denial is reserved for known catastrophic targets, an unchanged user-rejected request, recognized unmanaged launches when session background management is available, and the PowerShell native-tool routing hint. Parser uncertainty is not a denial.
 
 For example, `python3 script.py` can run in full-access even though this guard does not inspect the script file. Inline and heredoc checks likewise cannot establish the behavior of arbitrary code. D3 sends unrecognized scripts to permission-mode handling: workspace-write asks and full-access permits when no independent recognized violation applies. OS sandboxing and process containment, including Windows Job Objects, are tracked separately in [issue #163](https://github.com/dragonbaba/super-pi/issues/163); extending this text scanner cannot provide that isolation.
 
@@ -89,14 +89,29 @@ The representative table is exercised by one table-driven test in `tests/guard-r
 | `bash scripts/build.sh`, `sh -x scripts/build.sh`, `$CMD --version` | Allow | Ask |
 | Expanded Bash heredoc containing `$X`; command exceeding inspection length | Allow | Ask |
 | `git status && git diff`, `ls -la` | Allow | Allow |
-| `npm run dev &`, `docker compose up -d`, visible `&` after a parser-opaque substitution | Deny (until PR3) | Deny |
 | No UI: `rm -rf $BUILD_DIR` | confirmation_required | confirmation_required |
 
 The same test covers PowerShell, native destructive operations, repeated one-time approval, rejection memory and a manually installed exact rule. Existing R0 F-S1/S4 admission assertions remain unchanged. Unusual-spelling findings remain accepted boundaries under [#161](https://github.com/dragonbaba/super-pi/issues/161), without parsing fixes or additional spelling matrices.
 
 ## Resource lifecycle
 
-Unmanaged detached/background services remain blocked unless one foreground Bash call owns cleanup and wait. For session-managed long work, submit the foreground command with `background: true` and an explicit `cwd`; a live TUI/RPC session and the `tasks` tool are required. Poll or cancel through `tasks`. Headless environments use foreground execution. The flag does not authorize raw `&`, `nohup` or detached services. Default managed Chrome screenshots and managed Chrome itself are cleaned by exact identity at `agent_settled` and `session_shutdown`.
+Docker detached containers and system-managed services follow ordinary opaque-command permissions: F allows, W asks. They are owned by Docker or the service manager, so they do not trigger unmanaged-process refusals. This includes the existing Bash docker/service/pm2 cases and PowerShell's systemctl and service-cmdlet paths; their lifecycle-only special parsing has been removed.
+
+Raw `&`, `nohup`, `setsid`, `disown`, and Start-Process without literal `-Wait` retain lifecycle evidence. When the existing background manager can offer live TUI/RPC control through the registered `tasks` tool, they are refused with one line: remove `&` or the detaching launcher, set `background: true` with explicit `cwd`. Without that capability (print/JSON/headless, missing or conflicting tasks tool), the same evidence becomes opaque permission input: F allows; W asks if a UI is present, otherwise returns `confirmation_required`. Missing tasks alone does not remove an existing UI. Catastrophic targets and native PowerShell routing still take precedence.
+
+The `background: true` managed path, its availability checks, process ownership, timeout, cancellation and cleanup are unchanged. Submit the foreground command with explicit `cwd`, and use `tasks` to observe completion or cancel. Default managed Chrome screenshots and managed Chrome itself are cleaned by exact identity at `agent_settled` and `session_shutdown`.
+
+PR3 uses one representative table-driven test in `tests/guard-relax-3-lifecycle.test.ts`; commands are authorization inputs, and the managed row runs a controlled in-memory executor. Existing background-shell integration tests retain real managed-process coverage. F/W have the same definitions as above.
+
+| Request / environment | F | W |
+| --- | --- | --- |
+| `docker run -d nginx`, `docker compose up -d`, `systemctl restart nginx` | Allow | Ask |
+| `npm run dev &`, `nohup node s.js > log 2>&1 &`; live TUI with tasks | Deny with one-line `background: true` guidance | Deny |
+| Same raw launches; print/JSON/headless with or without tasks | Allow | confirmation_required |
+| Same raw launches; TUI without tasks | Allow | Ask |
+| `npm run dev` with `background: true` and explicit cwd; live TUI with tasks | Managed execution | Managed execution after approval |
+
+The table also covers existing service/PowerShell paths, RPC, catastrophic deletion and native-tool routing. It adds no syntax grammar or command-wide scan and reuses `ShellAnalysisOwner`. R0's obsolete Docker-denial control is separately migrated to `setsid` with real tasks availability; all refusal assertions and F-S1/S4 remain intact.
 
 The owned-job recipe permits up to 16 literal `curl`, `test`, `true`, `false` or `echo` use commands (4096 characters total) between installing cleanup and explicitly killing/waiting on the captured PID. Expansion, PID reassignment and arbitrary runners in this interval are unsupported; do not interpret an unsupported recipe as permission to detach or switch launchers.
 
@@ -214,7 +229,7 @@ values and intrinsic ForEach dispatch retain ordinary permission classification.
 A method named Start may be Stopwatch.Start; its name does not establish a process
 launch. Native start.exe/cp.exe are not the start/cp PowerShell aliases.
 
-The preflight retains explicit Start-Job/thread-job/service/scheduled-task checks,
+The preflight retains explicit Start-Job/thread-job/scheduled-task checks,
 trailing background `&`, owned Start-Process Wait checks, and cmdlet-specific AsJob,
 BITS Asynchronous/Suspended and literal WhatIf behavior. Nested expressions and
 script blocks within its supported grammar receive the same bounded token walk.
@@ -230,12 +245,8 @@ the right-hand command position, and attribute argument lists preserve declarati
 context before param(). Native AST checks confirm the reported forms are valid;
 ordinary counterparts remain accepted. Invoke-Command/icm and Invoke-WmiMethod/iwmi
 check their own AsJob option against native 5.1/7.6 parameter metadata, without
-banning their foreground forms. The native systemctl path recognizes explicit
-start/restart/reload-or-restart/isolate verbs after supported global options;
-option values are not verbs, and unknown/dynamic syntax remains ordinary opaque
-execution rather than a new command whitelist. No service or remote job was run.
-Combined systemctl short flags are consumed before the verb, including a final
-value-taking option. Attribute boundaries retain their argument tokens so literal
+banning their foreground forms. System-managed services now follow normal opaque
+permissions. No service or remote job was run. Attribute boundaries retain their argument tokens so literal
 ValidateScript bodies receive ordinary lifecycle inspection; the same bounded
 primitive stack is reused for lexical attribute ends and expression contexts.
 Invoke-Command also checks InDisconnectedSession and its Disconnected alias/prefixes
@@ -245,14 +256,11 @@ legacy high-risk scanner may require one-time approval for some validation-attri
 lifecycle acceptance is not evidence of whole-chain acceptance for those forms.
 Attribute argument names remain metadata; only their script-block bodies enter
 command position. A harmless custom attribute with a Start property confirms the
-distinction on native 5.1/7.6. systemctl enable plus --now is recognized on either
-side of the verb, while plain enable, disable/mask, option values and -- operands
-retain their normal meaning. Native parameter binding also confirms that a
+distinction on native 5.1/7.6. Native parameter binding also confirms that a
 backtick touching -As/-InDis before a newline stays in the parameter name and
 fails binding; it must not be normalized into an async switch. Ordinary spaced
 line continuations already preserve the native switch and remain covered.
-reenable plus --now also requires owned execution because it try-restarts active
-units. Literal flat cmd /c start restores the prior lifecycle check, accepting
+Literal flat cmd /c start retains its lifecycle evidence, accepting
 its own /wait before the program but not a title, directory or program argument
 spelled /wait. Plain cmd commands still reach normal authorization. Arbitrary
 batch source/indirection remains opaque; this does not add a general cmd parser.
@@ -281,7 +289,7 @@ sandbox. Here-strings, expandable string subexpressions and indirect call target
 defer to normal permission classification. It does not prove arbitrary authorized
 programs, reflection, aliases, preference tables, modules, scripts or COM methods
 cannot detach work. That broader claim cannot be established by a growing list of
-type/member names. Explicit background work still belongs in session-owned tasks.
+type/member names. Explicit background work uses session-owned tasks when that capability is available; otherwise it follows opaque-command permissions.
 The local Windows Job Object is used for managed background execution; ordinary
 foreground execution has timeout/cancel process-tree cleanup, not a general
 normal-exit containment guarantee for indirect or external-service launches.

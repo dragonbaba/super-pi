@@ -171,7 +171,7 @@ export default function resourceLifecycleGuard(pi: ExtensionAPI): void {
     await permissions.restore(ctx);
   });
   pi.on("before_agent_start", (event) => ({
-    systemPrompt: `${event.systemPrompt}\n\n${permissions.systemGuidance()}\nBash input: bounded heredoc bodies are distinguished from executable substitutions; literal interpreter input receives script checks. Shell state or lookup uncertainty without a recognized mutation follows opaque-input permissions: full-access with never-ask allows it; workspace-write requires approval. Recognized mutations with uncertain targets require one-time approval in every mode. Known catastrophic targets, unchanged user-rejected requests and unmanaged process lifecycles remain blocked. The original command and body are executed unchanged. Timeout is seconds: 60 means one minute. For long work, background: true with explicit cwd is available in a live TUI/RPC session with the tasks tool; keep the command itself foreground and use tasks to observe completion or cancel it. Other environments require foreground execution. Native creation/editing, execution and cleanup retain their own read, path, permission and lifecycle requirements. Changing tools or language cannot authorize forbidden behavior.`,
+    systemPrompt: `${event.systemPrompt}\n\n${permissions.systemGuidance()}\nBash input: bounded heredoc bodies are distinguished from executable substitutions; literal interpreter input receives script checks. Shell state or lookup uncertainty without a recognized mutation follows opaque-input permissions: full-access with never-ask allows it; workspace-write requires approval. Recognized mutations with uncertain targets require one-time approval in every mode. Known catastrophic targets and unchanged user-rejected requests remain blocked. Raw background launches are refused only when session background management is available; otherwise they follow opaque-input permissions. Docker and system-managed services follow ordinary permissions. The original command and body are executed unchanged. Timeout is seconds: 60 means one minute. For long work, background: true with explicit cwd is available in a live TUI/RPC session with the tasks tool; keep the command itself foreground and use tasks to observe completion or cancel it. Without managed background capability, opaque commands follow the selected permission mode; requests needing confirmation still require a UI. Native creation/editing, execution and cleanup retain their own read, path, permission and lifecycle requirements. Changing tools or language cannot authorize forbidden behavior.`,
   }));
 
   pi.on("tool_call", async (event, ctx) => {
@@ -197,19 +197,17 @@ export default function resourceLifecycleGuard(pi: ExtensionAPI): void {
       ? new ShellAnalysisOwner(bashCommand, preparedCwd?.canonical ?? cwd, generation) : undefined;
     let transferred = false;
     try {
-    let opaqueScript = false;
+    let lifecycleReason: string | undefined;
     if (event.toolName === "bash") {
       analysis?.assertCurrent(event.input.command, preparedCwd?.canonical ?? ctx.cwd, permissions.authorityGeneration);
-      const reason = inspectBashResourceLifecycle(event.input, nativePowerShellAvailability, analysis);
-      if (reason && isBlockingLifecycleReason(reason)) return { block: true, reason };
-      opaqueScript = reason !== undefined;
+      lifecycleReason = inspectBashResourceLifecycle(event.input, nativePowerShellAvailability, analysis);
     }
     if (event.toolName === "powershell") {
-      const reason = inspectPowerShellResourceLifecycle(event.input);
-      if (reason && isBlockingLifecycleReason(reason)) return { block: true, reason };
-      opaqueScript = reason !== undefined;
+      lifecycleReason = inspectPowerShellResourceLifecycle(event.input);
     }
-    const permissionBlock = await permissions.authorizeToolCall(event, ctx, analysis, opaqueScript);
+    if (lifecycleReason && isBlockingLifecycleReason(lifecycleReason)
+      && (lifecycleReason.startsWith("[SHELL_WRAPPER:LAUNCHER_UNSUPPORTED]") || backgroundTasks.canManageForeground(ctx))) return { block: true, reason: lifecycleReason };
+    const permissionBlock = await permissions.authorizeToolCall(event, ctx, analysis, lifecycleReason !== undefined);
     if (permissionBlock) return permissionBlock;
     // Neither lifecycle acceptance nor the original approval authorizes a replacement.
     if (bash) {

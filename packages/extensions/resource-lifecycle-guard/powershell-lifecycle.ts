@@ -1,13 +1,12 @@
-import { inspectBashResourceLifecycle } from "./core.ts";
+import { BLOCK_REASON, inspectBashResourceLifecycle } from "./core.ts";
 
 const MAX_CHARS = 128 * 1024;
 const MAX_TOKENS = 2048;
 const MAX_NESTING = 64;
 const BASH = new Set(["bash", "sh", "zsh", "dash", "ksh", "fish"]);
-const DETACHED = new Set(["start-job", "sajb", "start-threadjob", "start-service", "sasv", "restart-service", "resume-service", "rsv", "start-scheduledtask", "register-scheduledjob", "set-scheduledjob", "register-scheduledtask", "set-scheduledtask", "nohup", "disown", "setsid", "daemonize", "invoke-item", "ii"]);
+const DETACHED = new Set(["start-job", "sajb", "start-threadjob", "start-scheduledtask", "register-scheduledjob", "set-scheduledjob", "register-scheduledtask", "set-scheduledtask", "nohup", "disown", "setsid", "daemonize", "invoke-item", "ii"]);
 const EXTERNAL_DETACHED = new Set(["nohup", "disown", "setsid", "daemonize"]);
 const PROCESS = new Set(["start-process", "start", "saps"]);
-const SERVICE_STARTERS = new Set(["start-service", "sasv", "restart-service", "resume-service", "rsv"]);
 const CONTROL_BLOCK = new Set(["if", "elseif", "else", "for", "foreach", "while", "do", "switch", "try", "catch", "finally", "trap", "begin", "process", "end", "clean", "dynamicparam", "data", "function", "filter", "class", "enum", "workflow", "configuration", "parallel", "sequence", "inlinescript"]);
 const VARIABLE_LOOKUP_PARAMETERS = ["name", "valueonly", "include", "exclude", "scope", "verbose", "debug", "erroraction", "warningaction", "informationaction", "progressaction", "errorvariable", "warningvariable", "informationvariable", "outvariable", "outbuffer", "pipelinevariable"];
 const VARIABLE_LOOKUP_ALIASES = new Map([["vb", "verbose"], ["db", "debug"], ["ea", "erroraction"], ["wa", "warningaction"], ["infa", "informationaction"], ["proga", "progressaction"], ["ev", "errorvariable"], ["wv", "warningvariable"], ["iv", "informationvariable"], ["ov", "outvariable"], ["ob", "outbuffer"], ["pv", "pipelinevariable"]]);
@@ -16,8 +15,6 @@ const FOR_EACH_PARAMETERS = ["inputobject", "begin", "process", "end", "remainin
 const PROCESS_PARAMETERS = ["filepath", "argumentlist", "credential", "workingdirectory", "loaduserprofile", "nonewwindow", "passthru", "redirectstandarderror", "redirectstandardinput", "redirectstandardoutput", "verb", "windowstyle", "wait", "usenewenvironment", "environment", "whatif", "confirm", ...VARIABLE_LOOKUP_PARAMETERS.slice(5)];
 const BITS_START_PARAMETERS = ["asynchronous", "dynamic", "customheaderswriteonly", "authentication", "credential", "description", "httpmethod", "destination", "displayname", "priority", "transferpolicy", "aclflags", "securityflags", "usestoredcredential", "proxyauthentication", "proxybypass", "proxycredential", "proxylist", "proxyusage", "retryinterval", "retrytimeout", "maxdownloadtime", "source", "suspended", "transfertype", "customheaders", "notifyflags", "notifycmdline", "certstorelocation", "certstorename", "certhash", "whatif", "confirm", ...VARIABLE_LOOKUP_PARAMETERS.slice(5)];
 const BITS_RESUME_PARAMETERS = ["bitsjob", "asynchronous", "whatif", "confirm", ...VARIABLE_LOOKUP_PARAMETERS.slice(5)];
-const SERVICE_START_PARAMETERS = ["name", "inputobject", "passthru", "displayname", "include", "exclude", "force", "whatif", "confirm", ...VARIABLE_LOOKUP_PARAMETERS.slice(5)];
-const SERVICE_SET_PARAMETERS = ["name", "inputobject", "displayname", "credential", "description", "startuptype", "securitydescriptorsddl", "status", "force", "passthru", "computername", "whatif", "confirm", ...VARIABLE_LOOKUP_PARAMETERS.slice(5)];
 const ITEM_PARAMETERS = ["path", "literalpath", "filter", "include", "exclude", "credential", "whatif", "confirm", ...VARIABLE_LOOKUP_PARAMETERS.slice(5)];
 // Native 5.1 metadata: only these names compete with a WhatIf prefix.
 const SCHEDULED_JOB_WHATIF_PARAMETERS = ["whatif", "warningaction", "warningvariable"];
@@ -29,9 +26,6 @@ const COMPUTER_JOB_COMMANDS = new Set(["restart-computer", "stop-computer", "tes
 const WMI_JOB_PARAMETERS = ["asjob", "authentication", "authority", "arguments"];
 const COMPUTER_JOB_PARAMETERS = ["asjob"];
 const REMOTE_JOB_PARAMETERS = ["asjob", "applicationname", "allowredirection", "authentication", "argumentlist", "indisconnectedsession", "disconnected", "inputobject", ...VARIABLE_LOOKUP_PARAMETERS.slice(5)];
-const SYSTEMCTL_START = new Set(["start", "restart", "reload-or-restart", "isolate"]);
-const SYSTEMCTL_FLAGS = new Set(["--user", "--system", "--global", "--no-block", "--no-legend", "--no-pager", "--no-ask-password", "--quiet", "-q", "--all", "-a", "--full", "-l", "--force", "-f", "--runtime", "--wait", "--no-wall"]);
-const SYSTEMCTL_VALUES = new Set(["--host", "-H", "--machine", "-M", "--type", "-t", "--state", "--property", "-p", "--output", "-o", "--root", "--image", "--job-mode", "--lines", "-n", "--kill-whom", "--kill-who", "--signal", "-s", "--preset-mode"]);
 const CMD_OPTIONS = /^\/(?:d|s|q|a|u|[efv]:(?:on|off)|t:[\da-f]{2})$/i;
 const CMD_START_FLAGS = new Set(["/i", "/min", "/max", "/separate", "/shared", "/low", "/normal", "/high", "/realtime", "/abovenormal", "/belownormal", "/b"]);
 const CMD_START_VALUES = new Set(["/d", "/node", "/affinity", "/machine"]);
@@ -300,41 +294,6 @@ function isStreamMerge(tokens: readonly Token[], index: number): boolean {
 		&& STREAM_REDIRECT.test(previous.value) && STREAM_NUMBER.test(next.value);
 }
 
-/** Recognize explicit start verbs after supported systemctl global options.
- * Unknown/dynamic options remain ordinary opaque execution, never a new ban. */
-function inspectSystemctl(tokens: readonly Token[], start: number): string | undefined {
-	let options = true, now = false, enable = false;
-	for (let i = start; i < tokens.length; i++) {
-		const token = tokens[i]!;
-		if (token.operator || token.dynamic) return undefined;
-		const value = token.value;
-		if (options && value === "--") { options = false; continue; }
-		if (options && value.startsWith("-")) {
-			if (value === "--now") { if (enable) return BACKGROUND; now = true; continue; }
-			if (SYSTEMCTL_FLAGS.has(value)) continue;
-			let offset = 1;
-			const long = value.startsWith("--");
-			if (!long) {
-				while (offset < value.length && "qalf".includes(value[offset]!)) offset++;
-				if (offset === value.length) continue;
-			}
-			const short = long ? value : "-" + value[offset];
-			if (!SYSTEMCTL_VALUES.has(short)) return undefined;
-			if (!long && offset + 1 < value.length) continue;
-			if (tokens[i + 1]?.value === "=") i++;
-			const operand = tokens[++i];
-			if (!operand || operand.operator || operand.dynamic) return undefined;
-			continue;
-		}
-		if (enable) continue; // Remaining plain operands are unit names.
-		if (SYSTEMCTL_START.has(value)) return BACKGROUND;
-		if (value !== "enable" && value !== "reenable") return undefined;
-		if (now) return BACKGROUND;
-		enable = true;
-	}
-	return undefined;
-}
-
 /** Expose only flat literal native arguments to the existing cmd check. Expansion,
  * escapes and batch operators remain opaque, with no attempt to execute/evaluate.
  * The additional capped tokens belong to this synchronous invocation only. */
@@ -403,7 +362,7 @@ function refusal(code: string, reason: string): string {
 	return `[${code}] PowerShell not executed: ${reason}.\nNext: submit a literal foreground command for normal authorization; do not retry the same blocked call.`;
 }
 const UNCERTAIN = refusal("SHELL_UNINSPECTABLE", "this PowerShell invocation cannot be inspected");
-const BACKGROUND = refusal("SHELL_BACKGROUND", "unmanaged background work requires an owned task; Start-Process must use a literal -Wait");
+const BACKGROUND = `[SHELL_BACKGROUND] ${BLOCK_REASON}`;
 /** Invocation-only bounded lexer, not an authorization or a PowerShell sandbox.
  * Unlike Bash, assignment, member access and script blocks are ordinary PS syntax.
  * Detect explicit job/process options; do not infer behavior from types or members.
@@ -661,7 +620,7 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		doCondition = afterDo && !token.quoted && (name === "while" || name === "until"); afterDo = false;
 		if (!token.quoted && (name === "return" || name === "throw" || name === "exit")) { head = true; continue; }
 		if (DETACHED.has(name)) {
-			const parameters = SERVICE_STARTERS.has(name) ? SERVICE_START_PARAMETERS : name === "invoke-item" || name === "ii" ? ITEM_PARAMETERS : name === "register-scheduledjob" ? SCHEDULED_JOB_WHATIF_PARAMETERS : undefined;
+			const parameters = name === "invoke-item" || name === "ii" ? ITEM_PARAMETERS : name === "register-scheduledjob" ? SCHEDULED_JOB_WHATIF_PARAMETERS : undefined;
 			if (!parameters || !hasLiteralWhatIf(tokens, i + 1, command, parameters)) return BACKGROUND;
 		}
 		if (EXTERNAL_DETACHED.has(externalName)) return BACKGROUND;
@@ -676,30 +635,6 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		if (FOR_EACH.has(name) && !(name === "foreach" && !token.quoted && tokens[i + 1]?.value === "(")) {
 			const reason = inspectCommandSwitch(tokens, i + 1, command, FOR_EACH_PARAMETERS, "asjob");
 			if (reason) return reason;
-		}
-		if (name === "set-service" && !hasLiteralWhatIf(tokens, i + 1, command, SERVICE_SET_PARAMETERS)) {
-			let depth = 0;
-			for (let j = i + 1; j < tokens.length; j++) {
-				const arg = tokens[j]!;
-				if (arg.operator && arg.value === "=") continue;
-				if (arg.operator) {
-					if (arg.value === "(" || arg.value === "{" || arg.value === "[") { if (++depth > MAX_NESTING) return UNCERTAIN; }
-					else if (arg.value === ")" || arg.value === "}" || arg.value === "]") { if (!depth) break; depth--; }
-					else if (!depth) break;
-					continue;
-				}
-				if (depth || isArgumentSuffix(tokens, j)) continue;
-				if (!arg.quoted && (arg.value === "--%" || arg.value === "--")) break;
-				if (isFileRedirect(tokens, j, command)) { if (tokens[j + 1] && !tokens[j + 1]!.operator) j++; continue; }
-				const raw = command.slice(arg.start, arg.end), colon = raw.indexOf(":"), option = raw.slice(1, colon < 0 ? raw.length : colon).toLowerCase();
-				if (!PARAMETER_DASH.test(raw) || lookupOption(option, SERVICE_SET_PARAMETERS) !== "status") continue;
-				const separate = colon < 0 || colon === raw.length - 1;
-				const status = separate ? tokens[j + 1] : arg;
-				// Dynamic status/data remains opaque; a literal Running is explicit.
-				if (!status || status.operator || status.dynamic) continue;
-				const state = (separate ? status.value : status.value.slice(status.value.indexOf(":") + 1)).toLowerCase();
-				if (state === "running") return BACKGROUND;
-			}
 		}
 		if (PROCESS.has(name) && !hasLiteralWhatIf(tokens, i + 1, command, PROCESS_PARAMETERS)) {
 			const reason = inspectCommandSwitch(tokens, i + 1, command, PROCESS_PARAMETERS, "wait");
@@ -718,21 +653,6 @@ export function inspectPowerShellResourceLifecycle(input: unknown): string | und
 		if (externalName === "cmd") {
 			const reason = inspectCmdStart(tokens, i + 1, command);
 			if (reason) return reason;
-		}
-		if (externalName === "systemctl") {
-			const reason = inspectSystemctl(tokens, i + 1);
-			if (reason) return reason;
-		}
-		if (externalName === "docker" || externalName === "pm2" || externalName === "service") {
-			let end = token.end;
-			for (let j = i + 1; j < tokens.length; j++) {
-				const arg = tokens[j]!;
-				if (arg.operator && arg.value === "=") continue;
-				if (arg.operator) break;
-				if (arg.dynamic) return UNCERTAIN;
-				end = arg.end;
-			}
-			if (inspectBashResourceLifecycle({ command: command.slice(token.start, end) })) return BACKGROUND;
 		}
 	}
 	return contexts.length ? UNCERTAIN : undefined;

@@ -46,12 +46,6 @@ for (const [name, command] of [
  assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "opaque-script");
 });
 
-for (const command of [
- "cat <<'EOF' &\nvalue & 255\nEOF", "cat <<EOF\n$(sleep 1 &)\nEOF",
- "cat <<EOF\n'$(sleep 1 &)'\nEOF", "cat <<EOF\n`nohup sleep 1`\nEOF",
- "cat <<'EOF'\ndata\nEOF\nnohup sleep 1", "bash -c 'sleep 1 &'", "sleep 1 & wait", "sleep 1 & echo 'kill wait trap'",
-]) test(`executable/detached lifecycle remains blocked: ${command.slice(0, 30)}`, () => assert.ok(inspectBashResourceLifecycle({ command })));
-
 test("unterminated heredoc is explicitly uncertain", () => assert.equal(inspectBashPermissionScope({ command: "cat <<'EOF'\ntext" }, process.cwd())?.kind, "opaque-script"));
 
 test("active browser schema identifies unexpected fields without values", () => {
@@ -575,10 +569,6 @@ test("review: arithmetic shifts are not heredoc operators", () => {
 test("review: owned job permits bounded use and exact PID cleanup", () => {
  assert.equal(inspectBashResourceLifecycle({ command: `server --foreground & pid=$!; trap 'kill "$pid"; wait "$pid"' EXIT; curl --fail http://127.0.0.1:8000; kill "$pid"; wait "$pid"` }), undefined);
  assert.ok(inspectBashResourceLifecycle({ command: `server --foreground & pid=$!; trap 'kill "$pid"; wait "$pid"' EXIT; pid=99; kill "$pid"; wait "$pid"` }));
-});
-test("review: lifecycle denial has structural recovery, not permission escalation", async () => {
- const hint = await failureRecoveryHint("bash", {}, "Blocked an unmanaged long-lived process.", process.cwd());
- assert.match(hint, /Lifecycle recovery/); assert.match(hint, /permission change cannot/);
 });
 
 
