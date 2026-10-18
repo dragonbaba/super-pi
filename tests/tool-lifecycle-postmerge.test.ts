@@ -441,8 +441,8 @@ test("postmerge one-layer escapes and line continuations preserve target consume
  }
  const mixed = inspectHighRiskBashMutation({ command: 'echo "$(time echo safe)"; rm -rf victim' }, f.cwd)!;
  assert.ok(mixed.primitives.includes("rm_recursive")); assert.ok(mixed.unverifiableScope);
- assert.ok(!mixed.primitives.includes("unterminated_command_substitution"));
- assert.equal(extractCommandSubstitutions('echo "$(echo safe').unterminated, true);
+ assert.ok(mixed.primitives.includes("uninspectable_command_substitution"));
+ assert.equal(extractCommandSubstitutions('echo "$(echo safe').uncertain, true);
  assert.equal(inspectBashPermissionScope({ command: 'echo "$(time rm victim)"' }, f.cwd)?.kind, "opaque-script");
 });
 

@@ -34,8 +34,8 @@ import {
 	WINDOWS_START_BACKGROUND_PATTERN,
 	WINDOWS_WAIT_PATTERN,
 } from "./regex.ts";
-import { commandSubstitutionEnd, MAX_SUBSTITUTIONS, MAX_SUBSTITUTION_NESTING } from "./shell-substitution.ts";
-import { analyzeShellSource, type ShellAnalysisOwner } from "./shell-analysis.ts";
+import { commandSubstitutionEnd, MAX_SUBSTITUTIONS } from "./shell-substitution.ts";
+import { analyzeShellSource, ShellAnalysisOwner } from "./shell-analysis.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
 import { findPredicateHasOperand, isReadOnlyFindTail, isReadOnlySortTail } from "./readonly-find.ts";
 import { isReadOnlyFindLoop } from "./readonly-find-loop.ts";
@@ -123,7 +123,11 @@ export function inspectBashResourceLifecycle(input: unknown, nativePowerShellAva
  const command = (input as { command?: unknown }).command;
  if (typeof command !== "string" || command.length === 0) return undefined;
  if (command.length > MAX_INSPECTED_COMMAND_CHARS) return lifecycleRefusal("SHELL_INSPECTION_LIMIT", "command exceeds the inspection size limit", "reduce this command's size");
- return inspectLifecycleScript(command, 0, nativePowerShellAvailable, analysisOwner);
+ // Standalone callers also share nested analysis while deferred uncertainty
+ // allows later sources to be checked. Hook callers retain their own owner.
+ const owner = analysisOwner ?? new ShellAnalysisOwner(command, "", 0);
+ try { return inspectLifecycleScript(command, 0, nativePowerShellAvailable, owner); }
+ finally { if (!analysisOwner) owner.release(); }
 }
 
 function inspectLifecycleScript(source: string, depth: number, nativePowerShellAvailable: NativePowerShellAvailability = false, analysisOwner?: ShellAnalysisOwner): string | undefined {
@@ -133,8 +137,8 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
  const here = prepared.view;
  const command = here.command;
  const substitutions = prepared.substitutions;
- if (here.unboundedHeredoc || substitutions.boundaryRefusal === 2) return lifecycleRefusal("SHELL_HEREDOC", "heredoc or CR-sensitive source boundaries cannot be inspected for executable input or following commands", "use a bounded literal heredoc outside function substitution, without CR-sensitive delimiters or escapes");
- if (here.uninspectableFunction || substitutions.boundaryRefusal === 1) return UNCERTAIN_LIFECYCLE;
+ // Uncertainty cannot hide a recognized blocker in another source or segment.
+ let nonBlockingReason = here.uncertain || substitutions.uncertain ? UNCERTAIN_LIFECYCLE : undefined;
  // Check already-visible launches before deferring parser diagnostics to permissions.
  if (DETACH_UTILITY_PATTERN.test(command)) return BLOCK_REASON;
  if ((WINDOWS_DETACH_PATTERN.test(command) || WINDOWS_START_BACKGROUND_PATTERN.test(command)) && !WINDOWS_WAIT_PATTERN.test(command)) return BLOCK_REASON;
@@ -144,19 +148,15 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
   const ownedName = commandName(owned[1]!);
   if (OPAQUE_JOB_LAUNCHER_PATTERN.test(ownedName) || PYTHON_COMMAND_PATTERN.test(ownedName) || NODE_COMMAND_PATTERN.test(ownedName)) return BLOCK_REASON;
  }
- if (here.substitutionUncertain) return lifecycleRefusal("SHELL_SUBSTITUTION", "uncertain/uninspectable executable heredoc substitution", "simplify the substitution into inspectable foreground commands");
- if (substitutions.limitExceeded === "count") return `[SHELL_INSPECTION_LIMIT] Bash not executed: more than ${MAX_SUBSTITUTIONS} command substitutions per script.\nRetry: split into smaller calls (max ${MAX_SUBSTITUTIONS} each).`;
- if (substitutions.limitExceeded === "nesting") return `[SHELL_INSPECTION_LIMIT] Bash not executed: command substitution nesting exceeds ${MAX_SUBSTITUTION_NESTING} levels.\nRetry: reduce nesting.`;
- if (substitutions.unterminated || substitutions.unsupported) return lifecycleRefusal("SHELL_SUBSTITUTION", substitutions.unterminated ? "unterminated command substitution" : "uncertain/uninspectable command substitution grammar", "simplify the substitution into inspectable foreground commands");
- for (const script of here.substitutions) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) return result; }
- for (const script of substitutions.scripts) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) return result; }
+ for (const script of here.substitutions) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) { if (isBlockingLifecycleReason(result)) return result; nonBlockingReason ??= result; } }
+ for (const script of substitutions.scripts) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) { if (isBlockingLifecycleReason(result)) return result; nonBlockingReason ??= result; } }
  const trapScripts = literalStoredScripts(command);
  if (trapScripts === null) return lifecycleRefusal("SHELL_INSPECTION_LIMIT", "resolved stored actions exceed the source count or size limit", "split stored actions into smaller inspectable calls");
- if (trapScripts) for (const script of trapScripts) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) return result; }
+ if (trapScripts) for (const script of trapScripts) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) { if (isBlockingLifecycleReason(result)) return result; nonBlockingReason ??= result; } }
  const processScripts = literalProcessSources(command);
  if (processScripts === null) return lifecycleRefusal("SHELL_INSPECTION_LIMIT", "sourced process-substitution bodies exceed the source count or size limit", "split sourced input into smaller inspectable calls");
  if (processScripts === false) return UNCERTAIN_LIFECYCLE;
- if (processScripts) for (const script of processScripts) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) return result; }
+ if (processScripts) for (const script of processScripts) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) { if (isBlockingLifecycleReason(result)) return result; nonBlockingReason ??= result; } }
  let segments = here.hasHeredoc ? parseShellSegments(command, true) : undefined;
  if (here.hereDocuments) {
   if (prepared.heredocLanguages === undefined) {
@@ -165,10 +165,10 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
   }
   if (prepared.heredocLanguages & 1) for (const document of here.hereDocuments) {
    const result = inspectLifecycleScript(document.body, depth + 1, nativePowerShellAvailable, analysisOwner);
-   if (result) return result;
+   if (result) { if (isBlockingLifecycleReason(result)) return result; nonBlockingReason ??= result; }
   }
  }
- if (!SHELL_WRAPPER_TEXT_PATTERN.test(command) && !EXECUTABLE_EXPANSION_TEXT_PATTERN.test(command) && !command.includes("[[") && !command.includes("((") && !command.includes("for") && !command.includes("select") && !command.includes("coproc")) return undefined;
+ if (!SHELL_WRAPPER_TEXT_PATTERN.test(command) && !EXECUTABLE_EXPANSION_TEXT_PATTERN.test(command) && !command.includes("[[") && !command.includes("((") && !command.includes("for") && !command.includes("select") && !command.includes("coproc")) return nonBlockingReason;
  segments ??= parseShellSegments(command, true);
  if (segments.length > MAX_SCRIPT_SEGMENTS) return lifecycleRefusal("SHELL_INSPECTION_LIMIT", "too many command segments", "reduce the number of segments");
  for (let segment = 0; segment < segments.length; segment++) {
@@ -270,14 +270,14 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
     if (tokens[operand]!.indexOf("=") < 1) continue;
     const script = literalAliasSource(tokens, operand);
     if (script === undefined) continue;
-    const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) return result;
+    const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) { if (isBlockingLifecycleReason(result)) return result; nonBlockingReason ??= result; }
    }
    continue;
   }
   if (name === "eval" && tokens[index] === "eval") {
    const script = literalEvalScript(tokens, index + 1);
    if (script === undefined || script.includes("<<")) return lifecycleRefusal("SHELL_WRAPPER", "eval operand cannot be inspected as literal executable source", "use directly inspectable foreground commands");
-   const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) return result;
+   const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) { if (isBlockingLifecycleReason(result)) return result; nonBlockingReason ??= result; }
    continue;
   }
   if (name === "trap" && tokens[index] === "trap") {
@@ -291,7 +291,7 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
      if (literal === undefined) return lifecycleRefusal("SHELL_WRAPPER", "trap action cannot be inspected as literal executable source", "supply a literal inspectable trap action");
      action = literal;
     }
-    const result = inspectLifecycleScript(action, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) return result;
+    const result = inspectLifecycleScript(action, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) { if (isBlockingLifecycleReason(result)) return result; nonBlockingReason ??= result; }
    }
    continue;
   }
@@ -299,9 +299,9 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
   const flag = index + 1;
   const scriptIndex = tokens[flag] === "-c" ? bashScriptOperandIndex(tokens, flag) : -1;
   if (scriptIndex < 0) return lifecycleRefusal("SHELL_WRAPPER", "shell wrapper requires a direct literal -c script operand", "use a supported direct -c operand");
-  const result = inspectLifecycleScript(tokens[scriptIndex]!, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) return result;
+  const result = inspectLifecycleScript(tokens[scriptIndex]!, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) { if (isBlockingLifecycleReason(result)) return result; nonBlockingReason ??= result; }
  }
- return undefined;
+ return nonBlockingReason;
 }
 
 export interface HighRiskMutationScan {
@@ -479,11 +479,10 @@ function inspectShellScript(script: string, initialCwd: string, depth: number, b
 	}
 	for (const nested of analysis.substitutions) inspectShellScript(nested, initialCwd, depth + 1, builder, shellOperation);
 	const substitutions = prepared.substitutions;
-	if (substitutions.unterminated) {
-		addPrimitive(builder, "unterminated_command_substitution");
+	if (substitutions.uncertain) {
+		addPrimitive(builder, "uninspectable_command_substitution");
 		markUnverifiable(builder);
 	}
-	if (substitutions.unsupported) markUnverifiable(builder);
 	for (const nested of substitutions.scripts) inspectShellScript(nested, initialCwd, depth + 1, builder, shellOperation);
 	const loopReason = unsafeBashLoopHeaders(segments);
 	if (loopReason) { addPrimitive(builder, loopReason); markUnverifiable(builder); }

@@ -22,7 +22,7 @@ test("literal spaced executable and dynamic data keep the original allow decisio
  }
 });
 test("specific refusal classes retain conservative decisions without unrelated heredoc advice", () => {
- for (const [command, code] of [['bash script.sh', 'SHELL_WRAPPER'], ['bash -c "$SCRIPT"', 'SHELL_WRAPPER'], ['echo "$(time echo x)"', 'SHELL_SUBSTITUTION']]) {
+ for (const [command, code] of [['bash script.sh', 'SHELL_WRAPPER'], ['bash -c "$SCRIPT"', 'SHELL_WRAPPER'], ['echo "$(time echo x)"', 'SHELL_UNINSPECTABLE']]) {
   const failure = inspectBashResourceLifecycle({ command })!;
   assert.ok(failure.startsWith(`[${code}]`), failure);
   if (code !== 'SHELL_HEREDOC') assert.doesNotMatch(failure, /heredoc/i);

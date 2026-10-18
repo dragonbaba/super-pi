@@ -583,8 +583,7 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
   if (processScripts) for (const source of processScripts) { markUncertainContext(builder, "resolved_process_source"); inspectScript(source, initialCwd, depth + 1, builder); }
   for (const nested of analysis.substitutions) inspectScript(nested, initialCwd, depth + 1, builder);
   const substitutions = prepared.substitutions;
-  if (substitutions.unterminated) markOpaque(builder, "unterminated_command_substitution");
-  if (substitutions.unsupported) markOpaque(builder, "uninspectable_command_substitution");
+  if (substitutions.uncertain) markOpaque(builder, "uninspectable_command_substitution");
   for (const nested of substitutions.scripts) inspectScript(nested, initialCwd, depth + 1, builder);
   command = analysis.command;
   const loopReason = unsafeBashLoopHeaderReason(command);

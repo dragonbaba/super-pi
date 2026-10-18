@@ -147,7 +147,6 @@ for (const [name, command, uniqueSources] of cases) {
   if (name === "node-ascii-template-key") for (const value of Object.values(methodNameCounters)) assert.equal(value, 0);
   if (name === "node-ascii-methods" || name === "python-ascii-methods" || name === "python-unrelated-unicode" || name === "nodejs-eval" || name === "nodejs-heredoc" || name === "node-array-string-data") for (const value of Object.values(methodNameCounters)) assert.equal(value, 0);
   assert.equal(counters.prepareCalls, iterations * uniqueSources);
-  assert.ok(counters.subscriptTextChars <= counters.substitutionInputBytes / 2);
   assert.equal(shellAnalysisOwnership.misses - ownership.misses, iterations * uniqueSources);
   assert.equal(shellAnalysisOwnership.liveOwners, 0);
   assert.equal(shellAnalysisOwnership.liveEntries, 0);

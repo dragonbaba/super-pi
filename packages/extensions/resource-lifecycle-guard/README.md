@@ -149,6 +149,33 @@ PR4 has one representative table-driven test, `tests/guard-relax-4-cleanup.test.
 | `cat <<'EOF' > a.sh`, body `rm -rf .git`, then `bash a.sh` in the same command | Deny | Deny | Stricter: language word in the same command |
 | `base64 -d <<'EOF' \| bash`; encoded deletion body | Allow | Ask | Relaxed: accepted boundary, #161, unfixed |
 
+### Command substitution simplification (PR5)
+
+Command substitution analysis retains extracted scripts and one `uncertain` flag. Unclosed, unsupported and over-budget input all follow the existing opaque permission flow. The limits remain 16 substitutions and four nesting levels. Bash 5.3 function substitutions `${ …; }` and `${| …; }` still expose ordinary bodies; arithmetic, heredocs, case/time/coproc, missing final separators and double-quoted function substitutions are uncertain. Prompt transforms and stored subscript execution are accepted boundaries in [#161](https://github.com/dragonbaba/super-pi/issues/161), without replacement analysis.
+
+Heredoc boundary and nested-substitution uncertainty share the source view's flag. Any CR in a heredoc delimiter line or body marks that view uncertain; a backslash followed by CR remains uncertain. Visible destructive targets still receive the same protected-root checks. A recognized high-risk mutation in the newly uncertain context requires one-time authorization, including in full-access. Existing token walks and `ShellAnalysisOwner` are reused; standalone lifecycle calls own and release a local owner when the caller supplies none.
+
+Source uncertainty and nonblocking recursive results are deferred while visible launches, nested sources, heredoc bodies and later segments are checked. A recognized lifecycle or native-tool-routing blocker takes precedence. Other existing local early returns, including source limits and unresolved process sources, remain unchanged in this PR. When managed tasks are unavailable, lifecycle findings still follow PR3 permission handling.
+
+`tests/guard-relax-5-substitution.test.ts` uses one table with eight original cases plus five regression rows through the complete hook. F/W retain the definitions above; managed tasks are available unless stated otherwise.
+
+| Command | F | W |
+| --- | --- | --- |
+| `echo $(rm -rf .git)` | Protected-root deny | Deny |
+| `echo ${ rm -rf .git; }` | Protected-root deny | Deny |
+| Unquoted `cat` heredoc containing `$(rm -rf .git)` | Protected-root deny | Deny |
+| `rm -rf $(mktemp -d)` | Ask once | Ask once |
+| `echo $((1+2)) $(echo $((3+4)))` | Allow | Allow |
+| `echo` with 17 substitutions | Allow | Ask |
+| `grep -n 'items[$(i)]' src/a.js` | Allow | Allow |
+| `echo $(nohup node server.js &)` | Lifecycle deny | Deny |
+| Bash heredoc body `npm run dev &` followed by CR | Lifecycle deny | Deny |
+| Bash heredoc body `npm run dev &`, followed by unclosed `echo $(date` | Lifecycle deny | Deny |
+| Either preceding heredoc command without managed tasks (TUI) | Allow | Ask |
+| `bash -c 'echo $(date'; bash -c 'npm run dev &'` | Lifecycle deny | Deny |
+
+Behavior changes confirmed against main: quoted subscript text in the `grep` row, `echo 'a[$(date)]'`, and `[[ foo == 'x[$(printf data >.git/config)]' ]]` no longer asks in W. A Bash heredoc containing `rm -rf node_modules` followed by CR now asks once in F and W (previously allow/ask). With managed tasks, the heredoc followed by an unclosed substitution, the two `bash -c` segments above, and `echo $(date)` followed by backslash-CR-LF and `nohup node server.js &` now produce lifecycle refusal instead of allow/ask. The CR-bearing background heredoc remains refused as on main. Catastrophic-root and dynamic-target outcomes remain unchanged.
+
 ### Explicit Shell cwd
 
 Bash and PowerShell accept optional literal `cwd`, relative to the Session cwd.
