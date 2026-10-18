@@ -164,11 +164,6 @@ export function attachPermissionPathApproval(input: unknown, approval: Permissio
   });
 }
 
-export function permissionPathApproval(input: unknown): PermissionPathApproval | undefined {
-  if (!input || typeof input !== "object") return undefined;
-  return (input as PermissionCarryingInput)[PERMISSION_PATH_APPROVAL];
-}
-
 export function consumePermissionPathApproval(
   input: unknown,
   toolCallId: string,

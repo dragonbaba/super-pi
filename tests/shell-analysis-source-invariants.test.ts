@@ -6,8 +6,8 @@ import ts from "typescript";
 test("authorization scanners and cache methods add no callbacks, promises or Buffer copies", () => {
   const targets = new Map([
     ["shell-analysis.ts", new Set(["analyzeShellSource", "get", "assertCurrent", "release"])],
-    ["shell-substitution.ts", new Set(["prepareShellAnalysis", "removeHeredocContinuations", "heredocDeclarationEnd", "collectHereDelimiters", "heredocDescriptorCopy", "isShellWordBoundary", "isFunctionSubstitutionStart", "extractCommandSubstitutions", "commandSubstitutionEnd"])],
-    ["core.ts", new Set(["inspectBashResourceLifecycle", "inspectLifecycleScript", "inspectHighRiskBashMutation", "inspectShellScript", "heredocConsumer", "heredocConsumers", "heredocDocumentConsumers", "heredocExecutableBody", "decodeLiteralBase64", "stdinScriptConsumers", "simpleStdinConsumers", "functionStdinConsumers", "persistedHeredocConsumers", "isPersistentHeredocDeclaration", "heredocHasAliasRisk", "hasUninspectableBashState", "uninspectableBashStateStart", "hasUnboundDescriptorSource", "descriptorBoundAt", "pipelineDescriptorConnected", "parseShellSegments", "literalProcessSources", "isTransparentStdinStage", "literalStoredScripts", "literalAdjacentSource", "literalPreviousAssignment", "literalEvalScript", "literalAliasSource", "isHeredocDescriptorPath", "nodeMayReadStdin", "heredocHasUntrackedCwd", "addMutationPrimitive", "inspectEmbeddedCode", "inspectCodeCall", "inspectOutputRedirections", "inspectPowerShellRemove", "inspectWindowsRmdir", "inspectXargs", "collectPositionalTargets", "addPrimitive", "addTarget", "addResolvedTarget", "markUnverifiable", "maskCodeStringsAndComments", "literalFirstArgument", "inspectFind"])],
+    ["shell-substitution.ts", new Set(["prepareShellAnalysis", "removeHeredocContinuations", "heredocDeclarationEnd", "collectHereDelimiters", "isShellWordBoundary", "isFunctionSubstitutionStart", "extractCommandSubstitutions", "commandSubstitutionEnd"])],
+    ["core.ts", new Set(["inspectBashResourceLifecycle", "inspectLifecycleScript", "inspectHighRiskBashMutation", "inspectShellScript", "heredocScriptLanguages", "hasFunctionDeclaration", "shellHasAliasRisk", "hasUninspectableBashState", "uninspectableBashStateStart", "parseShellSegments", "literalProcessSources", "literalStoredScripts", "literalAdjacentSource", "literalPreviousAssignment", "literalEvalScript", "literalAliasSource", "addMutationPrimitive", "inspectEmbeddedCode", "inspectCodeCall", "inspectOutputRedirections", "inspectPowerShellRemove", "inspectWindowsRmdir", "inspectXargs", "collectPositionalTargets", "addPrimitive", "addTarget", "addResolvedTarget", "markUnverifiable", "maskCodeStringsAndComments", "literalFirstArgument", "inspectFind"])],
     ["code-method-names.ts", new Set(["isCodeMethodNamePart", "hexDigit", "writeCodeMethodName", "writeEscapedNodeMethodKey", "nodeDeletionName", "nodeKeyTriviaEnd", "hasBracketReceiver", "keyWhitespace", "failedName", "decodeNodeName", "writeName"])],
     ["permission-bash.ts", new Set(["inspectScript", "inspectBashPermissionScope", "inspectKnownMutation", "markMutation", "markUncertainContext", "addResolvedTarget", "addTarget"])],
     ["shell-redirection.ts", new Set(["isShellOutputFileRedirection", "isShellFileDescriptor", "shellRedirectionLength", "hasUnsafeBashTestOperand", "isBashIntegerLiteral", "hasOnlySimpleQueryVariables", "isQueryVariableStart", "isQueryVariablePart", "isQueryVariableDigit", "isReadOnlySpecialParameter", "bashPipelinePrefixEnd", "bashTimeOptionsEnd", "isQuotedBashWord"])],
@@ -17,9 +17,7 @@ test("authorization scanners and cache methods add no callbacks, promises or Buf
   ]);
   for (const name of ["hasUnsafeBashBuiltinOperand", "hasNonliteralBashSubscript", "skipRedirections", "afterLeadingRedirection"]) targets.get("core.ts")!.add(name);
   targets.get("core.ts")!.add("hasBareBashArithmeticCommand");
-  targets.get("core.ts")!.add("descriptorCopyOrigin");
   targets.get("core.ts")!.add("shellSegmentsHaveAliasRisk");
-  for (const name of ["persistentHeredocDescriptor", "descriptorPathNumber", "addDescriptorCandidate", "isPersistentExecSegment", "redirectionDescriptor", "removePersistentDescriptor", "updatePersistentDescriptors", "descriptorReadState"]) targets.get("core.ts")!.add(name);
   targets.get("code-method-names.ts")!.add("plainNodeDeletionName");
   targets.get("shell-substitution.ts")!.add("subscriptTextState");
   targets.get("shell-substitution.ts")!.add("isPromptParameterExpansion");
@@ -27,8 +25,7 @@ test("authorization scanners and cache methods add no callbacks, promises or Buf
   targets.get("core.ts")!.add("nodeHasRecursiveOption");
   targets.get("core.ts")!.add("pythonPathArgumentOpen");
   targets.get("core.ts")!.add("coprocBodyIndex");
-  targets.get("core.ts")!.add("coprocHeredocContext");
-  for (const name of ["nodeIndirectCall", "nodeLiteralMethodKeyEnd", "isCodeWhitespace", "hasUninspectableEnvLauncher", "commandTokenIndex", "heredocConsumerKind", "uninspectableHeredocTail"]) targets.get("core.ts")!.add(name);
+  for (const name of ["nodeIndirectCall", "nodeLiteralMethodKeyEnd", "isCodeWhitespace", "hasUninspectableEnvLauncher", "commandTokenIndex"]) targets.get("core.ts")!.add(name);
   for (const name of ["addPositionalTargets", "findSearchRootIndex", "inspectTokenBuffer"]) targets.get("permission-bash.ts")!.add(name);
   for (const [file, names] of targets) {
     const source = ts.createSourceFile(file, readFileSync(`packages/extensions/resource-lifecycle-guard/${file}`, "utf8"), ts.ScriptTarget.Latest, true);
@@ -52,27 +49,9 @@ test("authorization scanners and cache methods add no callbacks, promises or Buf
   }
 });
 
-test("persistent descriptor provenance uses two bounded call-owned lists released in finally", () => {
+test("builtin and coproc checks use primitive state without source copies or temporary containers", () => {
   const source = ts.createSourceFile("core.ts", readFileSync("packages/extensions/resource-lifecycle-guard/core.ts", "utf8"), ts.ScriptTarget.Latest, true);
-  const names = new Set(["descriptorPathNumber", "addDescriptorCandidate", "isPersistentExecSegment", "redirectionDescriptor", "removePersistentDescriptor", "updatePersistentDescriptors", "descriptorReadState"]), seen = new Set<string>();
-  function audit(node: ts.Node): void {
-    assert.equal(ts.isNewExpression(node) || ts.isObjectLiteralExpression(node) || ts.isArrayLiteralExpression(node) || ts.isArrowFunction(node) || ts.isFunctionExpression(node) || ts.isRegularExpressionLiteral(node), false, node.getText(source));
-    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) assert.ok(["charCodeAt", "startsWith", "endsWith", "includes", "push", "max", "isSafeInteger"].includes(node.expression.name.text), node.getText(source));
-    ts.forEachChild(node, audit);
-  }
-  for (const statement of source.statements) if (ts.isFunctionDeclaration(statement) && statement.name && names.has(statement.name.text)) {
-    seen.add(statement.name.text); ts.forEachChild(statement.body!, audit);
-  }
-  assert.deepEqual(seen, names);
-  const owner = source.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === "persistedHeredocConsumers");
-  assert.ok(owner && ts.isFunctionDeclaration(owner));
-  const cleanup = owner.body!.statements.find(ts.isTryStatement)?.finallyBlock?.getText(source);
-  assert.ok(cleanup?.includes("bindings.length = 0") && cleanup.includes("candidates.length = 0") && cleanup.includes("arraysReleased += 2"));
-});
-
-test("builtin, coproc and Node argv checks use primitive state without source copies or temporary containers", () => {
-  const source = ts.createSourceFile("core.ts", readFileSync("packages/extensions/resource-lifecycle-guard/core.ts", "utf8"), ts.ScriptTarget.Latest, true);
-  const names = new Set(["hasUnsafeBashBuiltinOperand", "hasNonliteralBashSubscript", "skipRedirections", "afterLeadingRedirection", "coprocBodyIndex", "coprocHeredocContext", "nodeMayReadStdin", "hasUninspectableEnvLauncher"]), seen = new Set<string>();
+  const names = new Set(["hasUnsafeBashBuiltinOperand", "hasNonliteralBashSubscript", "skipRedirections", "afterLeadingRedirection", "coprocBodyIndex", "hasUninspectableEnvLauncher"]), seen = new Set<string>();
   function audit(node: ts.Node): void {
     assert.equal(ts.isNewExpression(node) || ts.isObjectLiteralExpression(node) || ts.isArrayLiteralExpression(node) || ts.isArrowFunction(node) || ts.isFunctionExpression(node) || ts.isRegularExpressionLiteral(node), false, node.getText(source));
     if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) assert.ok(["charCodeAt", "startsWith", "includes", "test", "has"].includes(node.expression.name.text), node.getText(source));
@@ -82,7 +61,7 @@ test("builtin, coproc and Node argv checks use primitive state without source co
     seen.add(statement.name.text); ts.forEachChild(statement.body!, audit);
   }
   assert.deepEqual(seen, names);
-  for (const name of ["inspectLifecycleScript", "simpleStdinConsumers", "commandTokenIndex"]) {
+  for (const name of ["inspectLifecycleScript"]) {
     const caller = source.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === name);
     assert.ok(caller?.getText(source).includes("hasUninspectableEnvLauncher("), `${name} must share the env uncertainty condition`);
   }
@@ -161,34 +140,6 @@ test("method-name ASCII helpers contain no string construction or per-call alloc
     ts.forEachChild(node, auditLiteral);
   }
   ts.forEachChild(literal.body!, auditLiteral);
-});
-
-test("heredoc consumer fallback shares name classification without path copies or temporary containers", () => {
-  const source = ts.createSourceFile("core.ts", readFileSync("packages/extensions/resource-lifecycle-guard/core.ts", "utf8"), ts.ScriptTarget.Latest, true);
-  const names = new Set(["heredocConsumerKind", "uninspectableHeredocTail"]), seen = new Set<string>();
-  function audit(node: ts.Node): void {
-    assert.equal(ts.isNewExpression(node) || ts.isObjectLiteralExpression(node) || ts.isArrayLiteralExpression(node) || ts.isArrowFunction(node) || ts.isFunctionExpression(node) || ts.isRegularExpressionLiteral(node) || ts.isTemplateExpression(node), false, node.getText(source));
-    if (ts.isCallExpression(node)) assert.ok(ts.isPropertyAccessExpression(node.expression) ? node.expression.name.text === "test" : node.expression.getText(source) === "heredocConsumerKind", node.getText(source));
-    ts.forEachChild(node, audit);
-  }
-  for (const statement of source.statements) if (ts.isFunctionDeclaration(statement) && statement.name && names.has(statement.name.text)) { seen.add(statement.name.text); ts.forEachChild(statement.body!, audit); }
-  assert.deepEqual(seen, names);
-  for (const name of ["simpleStdinConsumers", "uninspectableHeredocTail"]) {
-    const caller = source.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === name);
-    assert.ok(caller?.getText(source).includes("heredocConsumerKind("), `${name} must share the same consumer classifier`);
-  }
-});
-
-test("descriptor origin decoding adds no strings or temporary containers", () => {
-  const source = ts.createSourceFile("core.ts", readFileSync("packages/extensions/resource-lifecycle-guard/core.ts", "utf8"), ts.ScriptTarget.Latest, true);
-  const helper = source.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === "descriptorCopyOrigin");
-  assert.ok(helper && ts.isFunctionDeclaration(helper));
-  function audit(node: ts.Node): void {
-    assert.equal(ts.isNewExpression(node) || ts.isObjectLiteralExpression(node) || ts.isArrayLiteralExpression(node) || ts.isArrowFunction(node) || ts.isFunctionExpression(node) || ts.isRegularExpressionLiteral(node), false, node.getText(source));
-    if (ts.isCallExpression(node)) assert.ok(ts.isPropertyAccessExpression(node.expression) && ["endsWith", "charCodeAt", "isSafeInteger"].includes(node.expression.name.text), node.getText(source));
-    ts.forEachChild(node, audit);
-  }
-  ts.forEachChild(helper.body!, audit);
 });
 
 test("prompt transform recognition adds no strings or temporary containers", () => {

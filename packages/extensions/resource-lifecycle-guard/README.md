@@ -10,7 +10,7 @@ For example, `python3 script.py` can run in full-access even though this guard d
 
 Further recognition work is limited to missed ordinary commands and false refusals of normal commands. Additional escape, Unicode, concatenation, alias, dynamic-evaluation, descriptor and path-normalization variants are accepted limits, recorded in [issue #161](https://github.com/dragonbaba/super-pi/issues/161), rather than new parsing work or repeated scope questions. Existing bounded recognition remains as documented below; it is not a promise to cover all equivalent spellings.
 
-In particular, same-command descriptor heredocs such as `python3 /proc/thread-self/fd/3 3<<'EOF'`, persistent descriptors, `/proc/*/fd` paths, redundant separators/dot components, symlinks and relative descriptor paths are not comprehensively modeled. The existing exact descriptor checks remain, without adding path normalization or a blanket non-stdin-heredoc refusal. Backslash-newline variants within Bash function-substitution or prompt-transform syntax also remain outside the recognized forms. These limits can differ from main's blanket refusals; they are accepted under this threat model.
+PR4 removes heredoc consumer and descriptor provenance modeling. Descriptor copies, persistent bindings, consumer options, alias/function forwarding and transformed input are not resolved; language presence in the masked command determines body inspection. Base64 decoding is an accepted boundary in [issue #161](https://github.com/dragonbaba/super-pi/issues/161), not repaired by adding another parser. Path normalization, symlinks and backslash-newline variants within Bash function-substitution or prompt-transform syntax remain outside the recognized forms.
 
 Regression tests are organized by behavior. Keep one representative per distinct implementation path plus a harmless control; run both permission modes only when the expected result differs. Do not add spelling × interpreter × mode matrices for the accepted limits.
 
@@ -128,7 +128,26 @@ Command substitutions containing `case` syntax are conservatively uncertain beca
 
 Bash heredocs use the unchanged local transport, including the existing Windows MSYS bridge. Custom backends, command prefixes and arbitrary spawn hooks retain their transport constraints; those are separate from resource-lifecycle policy. The original command/body is executed unchanged after authorization. Parser bounds remain 128 KiB, 64 segments, 16 substitutions and four nesting levels; exhaustion produces opacity, not a policy veto.
 
-Literal Shell/Node/Python input retains existing best-effort inspection. Unsupported wrappers, `eval`/trap operands, descriptor provenance, arithmetic, aliases, interpolation and transformed or expanded input follow opaque permissions unless an independently recognized mutation requires target approval or a known lifecycle violation applies. No new recognition is added for the accepted limits in #161.
+After all heredoc bodies are masked, the existing command tokens identify shell/interpreter words. Bash/sh/zsh/dash/ksh, source/`.`/eval, `/dev/stdin` and `/dev/fd/N` select shell inspection; Node and Python words select their existing code inspection. Existing recognized executable-name variants remain supported. Every body is inspected in each language present anywhere in that command, including a later script-file invocation; without a language word, bodies are data. There is no consumer, descriptor-binding or transform analysis. Unquoted-body expansions retain uncertain context and substitution inspection; CR-bearing bodies still receive inspection. Boundary parsing, masking and unbounded-input handling remain intact.
+
+Language presence is derived from existing token walks and shared through `ShellAnalysisOwner`; no extra whole-command scan is added. `permission-bash.ts` continues to mark heredocs opaque and inspect shell bodies. Compound commands and evaluator wrappers retain uncertain execution context: body mutations require one-time confirmation rather than assuming the initial cwd. Lifecycle preflight uses the same language decision for body recursion. Non-heredoc process-source producer checks retain their alias/function-override behavior. No yolo bypass is provided: recognized high-risk mutations retain target and authorization checks.
+
+PR4 has one representative table-driven test, `tests/guard-relax-4-cleanup.test.ts`. F/W retain the definitions above; background rows use a live TUI with tasks available. Commands are inspected through the complete hook, never executed by the test.
+
+| Command / body | F | W | Change from main |
+| --- | --- | --- | --- |
+| `bash`, `sh -s`, or `cat … \| bash` heredoc; body `rm -rf .git` | Deny | Deny | Unchanged |
+| `python3 -` with `shutil.rmtree('.git')`; `node` with `fs.rmSync('.git',{recursive:true})` | Deny | Deny | Unchanged |
+| `exec 3<<'EOF'` followed by `bash /dev/fd/3`; `bash /dev/fd/3 3<<'EOF'`; `f() { bash; }; f <<'EOF'`; `source /dev/stdin`; body `rm -rf .git` | Deny | Deny | Unchanged |
+| Bash heredoc; body `rm -rf .git` followed by CR | Deny | Deny | Unchanged |
+| Bash heredoc; body `rm -rf $BUILD_DIR` | Ask once | Ask once | Unchanged |
+| `cd .. && bash` heredoc; body `rm -rf <workspace-name>` | Ask once | Ask once | Unchanged: uncertain execution context |
+| Bash body `npm test` or `rm -rf node_modules`; unquoted Bash body `echo $HOME`; Python body `print(1)` | Allow | Ask | Unchanged |
+| `cat > notes.md` with deletion text; `git commit -F -` with `fix: rm -rf ~ handling`; `tee out.txt` with data | Allow | Ask | Unchanged: data |
+| Bash body `npm run dev &`; `cat … \| bash` body `nohup node s.js &` | Lifecycle deny | Lifecycle deny | Unchanged |
+| `cat > notes.md`; body `npm run dev &` | Allow | Ask | Unchanged: data |
+| `cat <<'EOF' > a.sh`, body `rm -rf .git`, then `bash a.sh` in the same command | Deny | Deny | Stricter: language word in the same command |
+| `base64 -d <<'EOF' \| bash`; encoded deletion body | Allow | Ask | Relaxed: accepted boundary, #161, unfixed |
 
 ### Explicit Shell cwd
 
