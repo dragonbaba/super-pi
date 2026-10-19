@@ -5,7 +5,7 @@ import test from "node:test";
 import { BoundedMemorySelector, type BoundedSelectorItem } from "../packages/extensions/session-memory-manager/bounded-selector.ts";
 import { formatTrashEntryLabel, selectBounded } from "../packages/extensions/session-memory-manager/index.ts";
 import { inspectBashPermissionScope } from "../packages/extensions/resource-lifecycle-guard/permission-bash.ts";
-import { inspectBashResourceLifecycle, inspectHighRiskBashMutation } from "../packages/extensions/resource-lifecycle-guard/core.ts";
+import { inspectBashResourceLifecycle, inspectHighRiskBashMutation, isBlockingLifecycleReason } from "../packages/extensions/resource-lifecycle-guard/core.ts";
 import { parseTimeoutInvocation } from "../packages/extensions/resource-lifecycle-guard/timeout-wrapper.ts";
 import { INTEGER_SECONDS_PATTERN } from "../packages/extensions/resource-lifecycle-guard/regex.ts";
 import { prepareShellAnalysis } from "../packages/extensions/resource-lifecycle-guard/shell-substitution.ts";
@@ -565,7 +565,7 @@ test("timeout scan continues into dangerous inner commands and preserves command
 test("timeout keeps unsupported, dynamic, nested and Windows cases conservative", () => {
   for (const command of ["timeout --foreground 250 find .", "timeout 0 find .", "timeout $LIMIT find .", "timeout 250 $PROGRAM .", "timeout.exe 250 find .", "timeout 1 timeout 2 timeout 3 timeout 4 timeout 5 find ."]) {
     const lifecycle = inspectBashResourceLifecycle({ command });
-    assert.match(lifecycle ?? "", /SHELL_WRAPPER|SHELL_INSPECTION_LIMIT/);
+    assert.ok(lifecycle); assert.equal(isBlockingLifecycleReason(lifecycle), false);
   }
 });
 

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import test, { type TestContext } from "node:test";
-import { aliasRiskCounters, inspectBashResourceLifecycle, inspectHighRiskBashMutation, literalProcessSources, literalStoredScripts, } from "../packages/extensions/resource-lifecycle-guard/core.ts";
+import { aliasRiskCounters, inspectBashResourceLifecycle, inspectHighRiskBashMutation, isBlockingLifecycleReason, literalProcessSources, literalStoredScripts, } from "../packages/extensions/resource-lifecycle-guard/core.ts";
 import { inspectBashPermissionScope } from "../packages/extensions/resource-lifecycle-guard/permission-bash.ts";
 import { extractCommandSubstitutions, prepareShellAnalysis, shellAnalysisCounters } from "../packages/extensions/resource-lifecycle-guard/shell-substitution.ts";
 import { codeMethodNameCounters } from "../packages/extensions/resource-lifecycle-guard/code-method-names.ts";
@@ -289,7 +289,8 @@ test("inspection bounds, borrowed regexes and temporary views release on every e
     ["stored source limit", () => {
         const source = Array.from({ length: 17 }, (_, i) => `X${i}=':'; trap "$X${i}" EXIT`).join("; ");
         assert.equal(literalStoredScripts(source), null);
-        assert.match(inspectBashResourceLifecycle({ command: source }) ?? "", /SHELL_INSPECTION_LIMIT/);
+        const reason = inspectBashResourceLifecycle({ command: source });
+        assert.ok(reason); assert.equal(isBlockingLifecycleReason(reason), false);
         assert.deepEqual(literalStoredScripts('ACTION=\'printf ok\'; trap "$ACTION" EXIT'), ["printf ok"]);
         assert.deepEqual(literalStoredScripts('ACTION=\'printf ok\'; builtin -- trap -- "$ACTION" EXIT'), ["printf ok"]);
         assert.deepEqual(inspectBashPermissionScope({ command: "builtin eval touch target" }, process.cwd())?.targets, [resolve("target")]);
@@ -300,7 +301,8 @@ test("inspection bounds, borrowed regexes and temporary views release on every e
     ["process source limit", () => {
         const before = { ...aliasRiskCounters };
         assert.equal(literalProcessSources(Array(17).fill("source <(echo ':')").join("; ")), null);
-        assert.match(inspectBashResourceLifecycle({ command: Array(17).fill("source <(echo ':')").join("; ") }) ?? "", /SHELL_INSPECTION_LIMIT/);
+        const reason = inspectBashResourceLifecycle({ command: Array(17).fill("source <(echo ':')").join("; ") });
+        assert.ok(reason); assert.equal(isBlockingLifecycleReason(reason), false);
         assert.deepEqual(literalProcessSources("source <(echo ':')"), [":"]);
         assert.equal(aliasRiskCounters.liveViews, 0);
         assert.equal(aliasRiskCounters.viewsCreated - before.viewsCreated, aliasRiskCounters.viewsReleased - before.viewsReleased);

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { inspectBashResourceLifecycle } from "../packages/extensions/resource-lifecycle-guard/core.ts";
+import { inspectBashResourceLifecycle, isBlockingLifecycleReason } from "../packages/extensions/resource-lifecycle-guard/core.ts";
 import { inspectBashPermissionScope } from "../packages/extensions/resource-lifecycle-guard/permission-bash.ts";
 
 // Inspection only: these strings must never be passed to a shell or browser.
@@ -21,11 +21,11 @@ test("literal spaced executable and dynamic data keep the original allow decisio
   assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
  }
 });
-test("specific refusal classes retain conservative decisions without unrelated heredoc advice", () => {
- for (const [command, code] of [['bash script.sh', 'SHELL_WRAPPER'], ['bash -c "$SCRIPT"', 'SHELL_WRAPPER'], ['echo "$(time echo x)"', 'SHELL_UNINSPECTABLE']]) {
-  const failure = inspectBashResourceLifecycle({ command })!;
-  assert.ok(failure.startsWith(`[${code}]`), failure);
-  if (code !== 'SHELL_HEREDOC') assert.doesNotMatch(failure, /heredoc/i);
+test("uninspectable shell forms remain opaque without a lifecycle block", () => {
+ for (const command of ['bash script.sh', 'bash -c "$SCRIPT"', 'echo "$(time echo x)"']) {
+  const reason = inspectBashResourceLifecycle({ command });
+  assert.ok(reason); assert.equal(isBlockingLifecycleReason(reason), false);
+  assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "opaque-script");
  }
  for (const command of ['cat <<EOF\ntext\nEOF', 'echo $((1 << 2)']) {
   assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "opaque-script");
