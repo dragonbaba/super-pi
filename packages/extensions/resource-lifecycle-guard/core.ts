@@ -28,7 +28,6 @@ import {
 	PYTHON_UNLINK_PATTERN,
 	REDIRECTION_OPERATOR_PATTERN,
 	SHELL_WRAPPER_TEXT_PATTERN,
-	SIMPLE_VARIABLE_PATTERN,
 	SOURCE_DESCRIPTOR_PATTERN,
 	WINDOWS_DETACH_PATTERN,
 	WINDOWS_START_BACKGROUND_PATTERN,
@@ -108,21 +107,12 @@ function hasBoundedOwnedUse(work: string | undefined): boolean {
  return true;
 }
 export const UNCERTAIN_LIFECYCLE = "[SHELL_UNINSPECTABLE] This Bash call was not executed: uncertain/uninspectable shell structure.\nRetry: use an inspectable foreground command and resubmit for authorization.";
-function lifecycleRefusal(code: string, reason: string, recovery: string): string {
- return `[${code}] This Bash call was not executed: ${reason}.\nRetry: ${recovery}; resubmit for authorization.`;
-}
-function dynamicExecutable(token: string | undefined): string {
- // Echo only a simple variable name, never command substitutions or arbitrary operands.
- const variable = token && SIMPLE_VARIABLE_PATTERN.test(token) ? ` (${token})` : "";
- return lifecycleRefusal("SHELL_DYNAMIC_EXECUTABLE", `executable position uses a variable or dynamic expression${variable}`, "use the quoted literal executable path in a foreground command");
-}
-
 type NativePowerShellAvailability = boolean | (() => "active" | "discoverable" | "unavailable");
 export function inspectBashResourceLifecycle(input: unknown, nativePowerShellAvailable: NativePowerShellAvailability = false, analysisOwner?: ShellAnalysisOwner): string | undefined {
  if (!input || typeof input !== "object") return undefined;
  const command = (input as { command?: unknown }).command;
  if (typeof command !== "string" || command.length === 0) return undefined;
- if (command.length > MAX_INSPECTED_COMMAND_CHARS) return lifecycleRefusal("SHELL_INSPECTION_LIMIT", "command exceeds the inspection size limit", "reduce this command's size");
+ if (command.length > MAX_INSPECTED_COMMAND_CHARS) return UNCERTAIN_LIFECYCLE;
  // Standalone callers also share nested analysis while deferred uncertainty
  // allows later sources to be checked. Hook callers retain their own owner.
  const owner = analysisOwner ?? new ShellAnalysisOwner(command, "", 0);
@@ -131,14 +121,14 @@ export function inspectBashResourceLifecycle(input: unknown, nativePowerShellAva
 }
 
 function inspectLifecycleScript(source: string, depth: number, nativePowerShellAvailable: NativePowerShellAvailability = false, analysisOwner?: ShellAnalysisOwner): string | undefined {
- if (depth > MAX_WRAPPER_DEPTH) return lifecycleRefusal("SHELL_INSPECTION_LIMIT", "wrapper/substitution nesting exceeds the inspection depth", "reduce nesting");
+ if (depth > MAX_WRAPPER_DEPTH) return UNCERTAIN_LIFECYCLE;
  if (isReadOnlyFindLoop(source)) return undefined;
  const prepared = analysisOwner ? analysisOwner.get(source) : analyzeShellSource(source);
  const here = prepared.view;
  const command = here.command;
  const substitutions = prepared.substitutions;
  // Uncertainty cannot hide a recognized blocker in another source or segment.
- let nonBlockingReason = here.uncertain || substitutions.uncertain ? UNCERTAIN_LIFECYCLE : undefined;
+ let uncertain = here.uncertain || substitutions.uncertain;
  // Check already-visible launches before deferring parser diagnostics to permissions.
  if (DETACH_UTILITY_PATTERN.test(command)) return BLOCK_REASON;
  if ((WINDOWS_DETACH_PATTERN.test(command) || WINDOWS_START_BACKGROUND_PATTERN.test(command)) && !WINDOWS_WAIT_PATTERN.test(command)) return BLOCK_REASON;
@@ -148,15 +138,15 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
   const ownedName = commandName(owned[1]!);
   if (OPAQUE_JOB_LAUNCHER_PATTERN.test(ownedName) || PYTHON_COMMAND_PATTERN.test(ownedName) || NODE_COMMAND_PATTERN.test(ownedName)) return BLOCK_REASON;
  }
- for (const script of here.substitutions) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) { if (isBlockingLifecycleReason(result)) return result; nonBlockingReason ??= result; } }
- for (const script of substitutions.scripts) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) { if (isBlockingLifecycleReason(result)) return result; nonBlockingReason ??= result; } }
+ for (const script of here.substitutions) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) { if (isBlockingLifecycleReason(result)) return result; uncertain = true; } }
+ for (const script of substitutions.scripts) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) { if (isBlockingLifecycleReason(result)) return result; uncertain = true; } }
  const trapScripts = literalStoredScripts(command);
- if (trapScripts === null) return lifecycleRefusal("SHELL_INSPECTION_LIMIT", "resolved stored actions exceed the source count or size limit", "split stored actions into smaller inspectable calls");
- if (trapScripts) for (const script of trapScripts) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) { if (isBlockingLifecycleReason(result)) return result; nonBlockingReason ??= result; } }
+ if (trapScripts === null) return UNCERTAIN_LIFECYCLE;
+ if (trapScripts) for (const script of trapScripts) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) { if (isBlockingLifecycleReason(result)) return result; uncertain = true; } }
  const processScripts = literalProcessSources(command);
- if (processScripts === null) return lifecycleRefusal("SHELL_INSPECTION_LIMIT", "sourced process-substitution bodies exceed the source count or size limit", "split sourced input into smaller inspectable calls");
- if (processScripts === false) return UNCERTAIN_LIFECYCLE;
- if (processScripts) for (const script of processScripts) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) { if (isBlockingLifecycleReason(result)) return result; nonBlockingReason ??= result; } }
+ if (processScripts === null) return UNCERTAIN_LIFECYCLE;
+ if (processScripts === false) uncertain = true;
+ if (processScripts) for (const script of processScripts) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) { if (isBlockingLifecycleReason(result)) return result; uncertain = true; } }
  let segments = here.hasHeredoc ? parseShellSegments(command, true) : undefined;
  if (here.hereDocuments) {
   if (prepared.heredocLanguages === undefined) {
@@ -165,19 +155,19 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
   }
   if (prepared.heredocLanguages & 1) for (const document of here.hereDocuments) {
    const result = inspectLifecycleScript(document.body, depth + 1, nativePowerShellAvailable, analysisOwner);
-   if (result) { if (isBlockingLifecycleReason(result)) return result; nonBlockingReason ??= result; }
+   if (result) { if (isBlockingLifecycleReason(result)) return result; uncertain = true; }
   }
  }
- if (!SHELL_WRAPPER_TEXT_PATTERN.test(command) && !EXECUTABLE_EXPANSION_TEXT_PATTERN.test(command) && !command.includes("[[") && !command.includes("((") && !command.includes("for") && !command.includes("select") && !command.includes("coproc")) return nonBlockingReason;
+ if (!SHELL_WRAPPER_TEXT_PATTERN.test(command) && !EXECUTABLE_EXPANSION_TEXT_PATTERN.test(command) && !command.includes("[[") && !command.includes("((") && !command.includes("for") && !command.includes("select") && !command.includes("coproc")) return uncertain ? UNCERTAIN_LIFECYCLE : undefined;
  segments ??= parseShellSegments(command, true);
- if (segments.length > MAX_SCRIPT_SEGMENTS) return lifecycleRefusal("SHELL_INSPECTION_LIMIT", "too many command segments", "reduce the number of segments");
- for (let segment = 0; segment < segments.length; segment++) {
+ if (segments.length > MAX_SCRIPT_SEGMENTS) return UNCERTAIN_LIFECYCLE;
+ segmentLoop: for (let segment = 0; segment < segments.length; segment++) {
   const tokens = segments[segment]!;
   const coprocBody = coprocBodyIndex(tokens);
-  if (coprocBody >= tokens.length && tokens[coprocBody - 1] === "coproc" && tokens.separatorAfter === "(") return UNCERTAIN_LIFECYCLE;
-  if (tokens.bashTestProcessSubstitution) return lifecycleRefusal("SHELL_UNINSPECTABLE", "process substitution inside a Bash test cannot be safely inspected", "split the process substitution into separately inspectable commands");
-  if (hasUnsafeBashTestOperand(tokens) || hasUnsafeBashBuiltinOperand(tokens)) return lifecycleRefusal("SHELL_UNINSPECTABLE", "Bash test, callback or name operand may execute uninspected arithmetic or source", "use callback-free reads, simple variable tests and literal numeric subscripts/comparisons");
-  if (hasBareBashArithmeticCommand(tokens)) return lifecycleRefusal("SHELL_UNINSPECTABLE", "arithmetic command can change later shell state", "use an inspectable foreground command without a bare arithmetic command");
+  if (coprocBody >= tokens.length && tokens[coprocBody - 1] === "coproc" && tokens.separatorAfter === "(") { uncertain = true; continue segmentLoop; }
+  if (tokens.bashTestProcessSubstitution) { uncertain = true; continue segmentLoop; }
+  if (hasUnsafeBashTestOperand(tokens) || hasUnsafeBashBuiltinOperand(tokens)) { uncertain = true; continue segmentLoop; }
+  if (hasBareBashArithmeticCommand(tokens)) { uncertain = true; continue segmentLoop; }
   // Assignment, arithmetic and lookup uncertainty is classified by permissions.
   // It cannot turn a visible detached launch into an authorized foreground job.
   // The global filter is only an optimization; unrelated segments supply no
@@ -193,7 +183,7 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
   if (tokens[0] === "for" || tokens[0] === "done" || tokens[0] === "}" || index >= tokens.length) continue;
   while (index < tokens.length) {
    const token = tokens[index]!;
-   if (++prefixes > MAX_SCRIPT_SEGMENTS) return lifecycleRefusal("SHELL_INSPECTION_LIMIT", "too many command prefixes", "reduce prefixes");
+   if (++prefixes > MAX_SCRIPT_SEGMENTS) return UNCERTAIN_LIFECYCLE;
    if (LEADING_ASSIGNMENT_PATTERN.test(token)) {
     // Shell assignment words do not undergo field splitting (unlike env argv).
     changedLookup = true; index++; continue;
@@ -201,7 +191,7 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
    const redirection = LEADING_REDIRECTION_PATTERN.exec(token);
    if (redirection) {
     changedLookup = true; index++;
-    if (!redirection[1]) { if (!tokens[index]) return UNCERTAIN_LIFECYCLE; index++; }
+    if (!redirection[1]) { if (!tokens[index]) { uncertain = true; continue segmentLoop; } index++; }
     continue;
    }
    const prefix = token === "command" || token === "exec" || token === "builtin" ? token : "";
@@ -209,29 +199,30 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
    if (prefix === "command" && (tokens[index + 1] === "-v" || tokens[index + 1] === "-V")) {
     // Query operands are names to inspect, never executable positions. Nested
     // substitutions were inspected above before this branch.
-    if (hasUnsafeCommandQueryOperand(tokens, index + 2)) return lifecycleRefusal("SHELL_UNINSPECTABLE", "command query operand has state-changing or uncertain expansion", "use literal names or simple variable references");
+    if (hasUnsafeCommandQueryOperand(tokens, index + 2)) { uncertain = true; continue segmentLoop; }
     index = tokens.length;
     break;
    }
    index++;
    if (prefix === "builtin" && tokens[index] === "--") index++;
-   if (index > MAX_WRAPPER_DEPTH || !tokens[index] || tokens[index]!.startsWith("-")) return lifecycleRefusal("SHELL_WRAPPER", "unsupported command/exec prefix depth or operand", "use a direct foreground executable");
+   if (index > MAX_WRAPPER_DEPTH) return UNCERTAIN_LIFECYCLE;
+   if (!tokens[index] || tokens[index]!.startsWith("-")) { uncertain = true; continue segmentLoop; }
   }
   if (index >= tokens.length) continue;
   if (tokens.bashTestOpenAt === index && tokens.bashTestClosed && tokens[index] === "[[") continue;
-  if (REDIRECTION_OPERATOR_PATTERN.test(tokens[index] ?? "")) return UNCERTAIN_LIFECYCLE;
+  if (REDIRECTION_OPERATOR_PATTERN.test(tokens[index] ?? "")) { uncertain = true; continue segmentLoop; }
   if (tokens.expansions?.[index] || hasDynamicSyntax(tokens[index] ?? "")) continue;
   let name = commandName(tokens[index] ?? "");
   // Only literal, option-free launcher operands are resolved. env assignments are
   // data, not executable names; split-string/options/dynamic lookup stay unknown.
   let launchers = 0;
   while (OPAQUE_JOB_LAUNCHER_PATTERN.test(name) && !SCRIPT_WRAPPERS.has(name)) {
-   if (++launchers > MAX_WRAPPER_DEPTH) return lifecycleRefusal("SHELL_INSPECTION_LIMIT", "too many nested launchers", "reduce launcher nesting");
+   if (++launchers > MAX_WRAPPER_DEPTH) return UNCERTAIN_LIFECYCLE;
    if (name === "timeout" || name === "timeout.exe") {
     const parsed = parseTimeoutInvocation(tokens, index);
-    if (!parsed.supported) return lifecycleRefusal("SHELL_WRAPPER", parsed.reason, "使用受支持的正整数秒字面量格式，或直接调用内部程序并设置工具超时；不同子命令的超时不能静默合并");
+    if (!parsed.supported) { uncertain = true; continue segmentLoop; }
     index = parsed.commandIndex;
-    if (tokens.expansions?.[index]) return dynamicExecutable(tokens[index]);
+    if (tokens.expansions?.[index]) { uncertain = true; continue segmentLoop; }
     name = commandName(tokens[index]!);
     continue;
    }
@@ -242,42 +233,42 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
      const availability = typeof nativePowerShellAvailable === "function" ? nativePowerShellAvailable() : nativePowerShellAvailable ? "active" : "unavailable";
      return renderPolicyDiagnostic({ code: "LAUNCHER_UNSUPPORTED", category: "SHELL_WRAPPER", launcher: name, nativeToolAvailable: availability === "active", nativeToolDiscoverable: availability === "discoverable", retryable: false, action: "native_tool" });
     }
-    return lifecycleRefusal("SHELL_WRAPPER", "launcher operand grammar is uncertain/uninspectable", "use a directly inspectable foreground executable");
+    uncertain = true; continue segmentLoop;
    }
-   if (name === "env" && hasUninspectableEnvLauncher(tokens, index)) return lifecycleRefusal("SHELL_WRAPPER", "launcher operand grammar is uncertain/uninspectable", "use a directly inspectable foreground executable");
+   if (name === "env" && hasUninspectableEnvLauncher(tokens, index)) { uncertain = true; continue segmentLoop; }
    index++;
    if (tokens[index] === "--") index++;
    if (name === "env" || name === "sudo") {
     // env and sudo accept NAME=VALUE beyond Bash identifiers (e.g. foo.bar).
     while (index < tokens.length && tokens[index]!.includes("=")) {
-     if (uncertainAssignment(tokens, index)) return lifecycleRefusal("SHELL_UNINSPECTABLE", "uncertain launcher assignment expansion or lookup", "use literal launcher assignments");
+     if (uncertainAssignment(tokens, index)) { uncertain = true; continue segmentLoop; }
      index++;
     }
    }
    // Shell redirections are removed from argv, not launcher executables. Their
-   // interleaved/quoted provenance is outside this token view: refuse, don't guess.
-   if (REDIRECTION_OPERATOR_PATTERN.test(tokens[index] ?? "")) return UNCERTAIN_LIFECYCLE;
-   if (!tokens[index] || tokens[index]!.startsWith("-")) return lifecycleRefusal("SHELL_WRAPPER", "missing or unsupported launcher operand", "use a directly inspectable foreground executable");
-   if (hasDynamicSyntax(tokens[index]!)) return dynamicExecutable(tokens[index]);
+   // interleaved/quoted provenance is outside this token view: skip this segment.
+   if (REDIRECTION_OPERATOR_PATTERN.test(tokens[index] ?? "")) { uncertain = true; continue segmentLoop; }
+   if (!tokens[index] || tokens[index]!.startsWith("-")) { uncertain = true; continue segmentLoop; }
+   if (hasDynamicSyntax(tokens[index]!)) { uncertain = true; continue segmentLoop; }
    changedLookup = true;
    name = commandName(tokens[index]!);
   }
   // Resolve only this segment; unrelated text in another command is not authority or uncertainty.
-  if (changedLookup && SCRIPT_WRAPPERS.has(name)) return lifecycleRefusal("SHELL_WRAPPER", "shell lookup was changed by a prefix", "remove the lookup-changing prefix from the shell wrapper");
-  if (tokens.dynamic && (SCRIPT_WRAPPERS.has(name) || name === "eval")) return lifecycleRefusal("SHELL_WRAPPER", "shell/eval operand contains dynamic expansion", "supply a literal inspectable script operand");
+  if (changedLookup && SCRIPT_WRAPPERS.has(name)) { uncertain = true; continue segmentLoop; }
+  if (tokens.dynamic && (SCRIPT_WRAPPERS.has(name) || name === "eval")) { uncertain = true; continue segmentLoop; }
   if (name === "alias" && tokens[index] === "alias") {
    for (let operand = skipRedirections(tokens, index + 1); operand < tokens.length; operand = skipRedirections(tokens, operand + 1)) {
     if (tokens[operand]!.indexOf("=") < 1) continue;
     const script = literalAliasSource(tokens, operand);
     if (script === undefined) continue;
-    const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) { if (isBlockingLifecycleReason(result)) return result; nonBlockingReason ??= result; }
+    const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) { if (isBlockingLifecycleReason(result)) return result; uncertain = true; }
    }
    continue;
   }
   if (name === "eval" && tokens[index] === "eval") {
    const script = literalEvalScript(tokens, index + 1);
-   if (script === undefined || script.includes("<<")) return lifecycleRefusal("SHELL_WRAPPER", "eval operand cannot be inspected as literal executable source", "use directly inspectable foreground commands");
-   const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) { if (isBlockingLifecycleReason(result)) return result; nonBlockingReason ??= result; }
+   if (script === undefined || script.includes("<<")) { uncertain = true; continue segmentLoop; }
+   const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) { if (isBlockingLifecycleReason(result)) return result; uncertain = true; }
    continue;
   }
   if (name === "trap" && tokens[index] === "trap") {
@@ -288,20 +279,20 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
    if (action && action !== "-" && (endOfOptions || action !== "-p" && action !== "-l")) {
     if (tokens.expansions?.[actionIndex]) {
      const literal = literalAdjacentSource(segments[segment - 1], action);
-     if (literal === undefined) return lifecycleRefusal("SHELL_WRAPPER", "trap action cannot be inspected as literal executable source", "supply a literal inspectable trap action");
+     if (literal === undefined) { uncertain = true; continue segmentLoop; }
      action = literal;
     }
-    const result = inspectLifecycleScript(action, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) { if (isBlockingLifecycleReason(result)) return result; nonBlockingReason ??= result; }
+    const result = inspectLifecycleScript(action, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) { if (isBlockingLifecycleReason(result)) return result; uncertain = true; }
    }
    continue;
   }
   if (!SCRIPT_WRAPPERS.has(name)) continue;
   const flag = index + 1;
   const scriptIndex = tokens[flag] === "-c" ? bashScriptOperandIndex(tokens, flag) : -1;
-  if (scriptIndex < 0) return lifecycleRefusal("SHELL_WRAPPER", "shell wrapper requires a direct literal -c script operand", "use a supported direct -c operand");
-  const result = inspectLifecycleScript(tokens[scriptIndex]!, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) { if (isBlockingLifecycleReason(result)) return result; nonBlockingReason ??= result; }
+  if (scriptIndex < 0) { uncertain = true; continue segmentLoop; }
+  const result = inspectLifecycleScript(tokens[scriptIndex]!, depth + 1, nativePowerShellAvailable, analysisOwner); if (result) { if (isBlockingLifecycleReason(result)) return result; uncertain = true; }
  }
- return nonBlockingReason;
+ return uncertain ? UNCERTAIN_LIFECYCLE : undefined;
 }
 
 export interface HighRiskMutationScan {

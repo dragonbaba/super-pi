@@ -155,7 +155,7 @@ Command substitution analysis retains extracted scripts and one `uncertain` flag
 
 Heredoc boundary and nested-substitution uncertainty share the source view's flag. Any CR in a heredoc delimiter line or body marks that view uncertain; a backslash followed by CR remains uncertain. Visible destructive targets still receive the same protected-root checks. A recognized high-risk mutation in the newly uncertain context requires one-time authorization, including in full-access. Existing token walks and `ShellAnalysisOwner` are reused; standalone lifecycle calls own and release a local owner when the caller supplies none.
 
-Source uncertainty and nonblocking recursive results are deferred while visible launches, nested sources, heredoc bodies and later segments are checked. A recognized lifecycle or native-tool-routing blocker takes precedence. Other existing local early returns, including source limits and unresolved process sources, remain unchanged in this PR. When managed tasks are unavailable, lifecycle findings still follow PR3 permission handling.
+Source uncertainty and nonblocking recursive results are deferred while visible launches, nested sources, heredoc bodies and later segments are checked. A recognized lifecycle or native-tool-routing blocker takes precedence. PR7 also defers local uncertainty; work-limit exits remain immediate. When managed tasks are unavailable, background lifecycle findings still follow PR3 permission handling; native-tool routing remains blocking independently of managed tasks.
 
 `tests/guard-relax-5-substitution.test.ts` uses one table with eight original cases plus five regression rows through the complete hook. F/W retain the definitions above; managed tasks are available unless stated otherwise.
 
@@ -194,6 +194,28 @@ A CR immediately before the declaration's LF is excluded from the delimiter word
 | Pure-LF `git commit -m "$(cat <<'EOF'…EOF…)"` | Allow | Ask | Allow | Ask |
 
 Mixed LF/CRLF boundary recognition may inspect a superset of the executed text. Data-only bodies do not become lifecycle scripts. Pure-LF behavior, PR5's 13 acceptance rows, source invariants and the existing ownership/release rules are unchanged. Nested `$(… <<X …)` inside `${ …; }` remains an accepted boundary under [#161](https://github.com/dragonbaba/super-pi/issues/161), without additional modeling.
+
+### Deferred lifecycle uncertainty (PR7)
+
+Nonblocking Bash lifecycle results use the single `UNCERTAIN_LIFECYCLE` constant. Production authorization consumes their presence as opacity, without displaying their text. `BLOCK_REASON`, `[SHELL_BACKGROUND]` and rendered `LAUNCHER_UNSUPPORTED` routing retain their existing blocking semantics. One boolean replaces the saved diagnostic string; recursive blockers return immediately, while nonblocking recursive results and local uncertainty allow later sources/segments to be checked. No new parsing pass or container is added, and existing `ShellAnalysisOwner` reuse is unchanged.
+
+Local uncertainty now skips the remainder of its segment for coproc subshells, test process substitutions, unsafe test/builtin operands, bare arithmetic, missing redirection operands, unsafe command queries, unsupported command/exec operands, redirection in executable position, unsupported timeout syntax, dynamic timeout executables, unsupported launcher grammar, uninspectable env, uncertain launcher assignments, launcher redirections, missing/unsupported launcher operands, dynamic launcher executables, changed shell lookup, dynamic shell/eval operands, nonliteral/heredoc eval source, unresolved trap actions and missing literal shell `-c` source. Unresolved process sources mark uncertainty before the existing segment walk. Command size, recursion depth, stored/process source limits, segment/prefix counts, command/exec depth and launcher depth still return immediately.
+
+`tests/guard-relax-7-lifecycle-defer.test.ts` uses one nine-row table. F/W omit managed tasks; FM/WM have managed tasks. A preceding uncertain segment must not change a later recognized blocker's result compared with that later command alone or after `$CMD;`.
+
+| Command | F | W | FM | WM |
+| --- | --- | --- | --- | --- |
+| `eval "$X"; bash -c 'npm run dev &'` | Allow | Ask | Lifecycle deny | Deny |
+| `(( i++ )); bash -c 'npm run dev &'` | Allow | Ask | Lifecycle deny | Deny |
+| `bash -c "$X"; bash -c 'npm run dev &'` | Allow | Ask | Lifecycle deny | Deny |
+| `eval "$X"` | Allow | Ask | Allow | Ask |
+| `bash -c "$X"` | Allow | Ask | Allow | Ask |
+| `$CMD build` | Allow | Ask | Allow | Ask |
+| `x=1; bash -c 'echo hi'` | Allow | Ask | Allow | Ask |
+| `eval "$X"; rm -rf .git` | Protected-root deny | Deny | Deny | Deny |
+| `eval "$X"; powershell -Command "Write-Output ok"` | Native-tool route deny | Deny | Deny | Deny |
+
+The 62-command baseline changes only the first three rows above. Additional representative comparisons confirm the same background result after unresolved process source, unsafe test operands, unsupported timeout, unresolved trap actions, a shell script file, changed shell lookup and coproc. The native-route row now refuses in all four scenarios, matching the standalone command; an `env -S` prefix already had that result. PR5/PR6 acceptance outcomes and protected-root checks remain unchanged. The accepted-boundary policy in #161 is unchanged.
 
 ### Explicit Shell cwd
 
