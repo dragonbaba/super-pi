@@ -23,6 +23,7 @@ async function fixture(t: any, content = "old\r\n完整\r\n") {
 }
 
 test("N2 shared commit publishes a complete BOM/CRLF candidate and releases its temporary", async t => {
+	assert.equal(commitPreparedFile, (await import("@super-pi/coding-agent/internal/files/file-commit")).commitPreparedFile);
   const f = await fixture(t), candidate = Buffer.from("\ufeffnew\r\n完整\r\n");
   const result = await commitPreparedFile(f.plan, candidate, f.hooks);
   assert.equal(result.outcome, "committed"); assert.equal(result.fileSynced, true); assert.equal(result.directorySynced, false);

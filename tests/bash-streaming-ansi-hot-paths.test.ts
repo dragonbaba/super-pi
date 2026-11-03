@@ -6,7 +6,7 @@ import ts from "typescript";
 test("streaming ANSI delivery and sanitizer allocate no callbacks, containers, promises or regexes", () => {
   const seen = new Set<string>();
   for (const [file, names] of [
-    ["packages/coding-agent/src/utils/ansi.ts", ["write", "reset"]],
+    ["packages/coding-agent/src/utils/ansi.ts", ["write", "reset", "stripAnsi", "findOscEnd"]],
     ["packages/coding-agent/src/utils/shell.ts", ["sanitizeBinaryOutput"]],
     ["packages/coding-agent/src/core/bash-executor.ts", ["onData", "appendText", "onTempFileError"]],
     ["packages/coding-agent/src/core/tools/bash.ts", ["onStdoutData", "onStderrData"]],
@@ -14,7 +14,7 @@ test("streaming ANSI delivery and sanitizer allocate no callbacks, containers, p
     const source = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
     function audit(node: ts.Node): void {
       assert.ok(!ts.isArrowFunction(node) && !ts.isFunctionExpression(node) && !ts.isFunctionDeclaration(node)
-        && !ts.isObjectLiteralExpression(node) && !ts.isArrayLiteralExpression(node) && !ts.isNewExpression(node)
+        && !ts.isObjectLiteralExpression(node) && !ts.isArrayLiteralExpression(node) && (!ts.isNewExpression(node) || node.expression.getText() === "TypeError")
         && !ts.isRegularExpressionLiteral(node) && !ts.isAwaitExpression(node), node.getText(source));
       if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
         assert.ok(!["map", "filter", "split", "then", "catch", "finally", "bind", "from"].includes(node.expression.name.text));
@@ -37,7 +37,7 @@ test("streaming ANSI delivery and sanitizer allocate no callbacks, containers, p
       assert.equal(slots.length, 1); assert.equal(slots[0].name.getText(source), "state");
     }
   }
-  assert.deepEqual([...seen].sort(), ["appendText", "onData", "onStderrData", "onStdoutData", "onTempFileError", "reset", "sanitizeBinaryOutput", "write"]);
+  assert.deepEqual([...seen].sort(), ["appendText", "findOscEnd", "onData", "onStderrData", "onStdoutData", "onTempFileError", "reset", "sanitizeBinaryOutput", "stripAnsi", "write"]);
 });
 
 test("local stdout/stderr callbacks have matching listener ownership", () => {

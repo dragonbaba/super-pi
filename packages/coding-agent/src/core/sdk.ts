@@ -9,9 +9,8 @@ import {
 import { estimateContextTokensFromParts, getModelCapabilities, type EffectiveDispatchObservation } from "@super-pi/ai";
 import {
 	buildOpenAICodexRequestBody,
-	compactOpenAICodexRequest,
 } from "@super-pi/ai/api/openai-codex-responses";
-import { clampThinkingLevel, type Message, type Model, streamSimple } from "@super-pi/ai/compat";
+import { clampThinkingLevel, type Context, type Message, type Model, type SimpleStreamOptions, streamSimple } from "@super-pi/ai/compat";
 import { CONTEXT_SAFETY_TOKENS, resolveRequestOutputFloor, requestThinkingTokens, resolveRequestOutputTokens, usesAdaptiveRequestBudget } from "@super-pi/ai/api/simple-options";
 import { buildOpenAIResponsesRequestBody } from "@super-pi/ai/api/openai-responses";
 import { getAgentDir, getConfigDir } from "../config.ts";
@@ -28,7 +27,7 @@ import type {
 } from "./extensions/index.ts";
 import { convertToLlm } from "./messages.ts";
 import { findInitialModel } from "./model-resolver.ts";
-import { ModelRuntime } from "./model-runtime.ts";
+import { ModelRuntime, type ProviderRequestContext } from "./model-runtime.ts";
 import { initializePowerShellPersistence } from "./powershell-persistence.ts";
 import {
 	buildPrefixManifest,
@@ -55,7 +54,6 @@ import {
 	createReadTool,
 	createWriteTool,
 	getDefaultToolNames,
-	type ToolName,
 	withFileMutationQueue,
 } from "./tools/index.ts";
 import type { ToolOutputShadowOptions } from "./tool-output-budget.ts";
@@ -344,7 +342,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		thinkingLevel = clampThinkingLevel(model, thinkingLevel) as ThinkingLevel;
 	}
 
-	const defaultActiveToolNames: ToolName[] = getDefaultToolNames();
+	const sandboxSelected = settingsManager.getExecutionEnvironment() === "sandbox";
+	const defaultActiveToolNames: string[] = sandboxSelected
+		? ["read", "powershell", "edit", "write", "delete", "move", "file_batch", "tasks", ...(settingsManager.getPermissionMode() ? ["ls", "find", "grep"] : [])]
+		: [...getDefaultToolNames(), "tasks", "delete", "move", "file_batch"];
 	const configuredDefaultToolNames = settingsManager.getDefaultTools();
 	const allowedToolNames = options.tools ?? (options.noTools === "all" && !toolSelection ? [] : undefined);
 	const excludedToolNames = options.excludeTools;
@@ -352,7 +353,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	let requestedActiveToolNames = options.tools ?? (options.noTools || toolSelection && !toolSelection.usesDefaults ? [] : (configuredDefaultToolNames ?? defaultActiveToolNames));
 	if (toolSelection) {
 		requestedActiveToolNames = requestedActiveToolNames.slice();
-		for (const name of allToolNames) if ((!allowedToolNames || allowedToolNames.includes(name)) && toolSelection.adds(name) && !requestedActiveToolNames.includes(name)) requestedActiveToolNames.push(name);
+		for (const name of [...allToolNames, "tasks", "delete", "move", "file_batch"]) if ((!allowedToolNames || allowedToolNames.includes(name)) && toolSelection.adds(name) && !requestedActiveToolNames.includes(name)) requestedActiveToolNames.push(name);
 	}
 	const powerShellRequested =
 		requestedActiveToolNames.includes("powershell") && !excludedToolNameSet?.has("powershell") && (!toolSelection || toolSelection.allows("powershell"));
@@ -418,6 +419,99 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const extensionRunnerRef: { current?: ExtensionRunner } = {};
 	const prefixManifestRecorder = options.prefixManifestRecorder ?? new PrefixManifestRecorder();
 
+	const streamRequest = async (model: Model<any>, context: Context, options?: SimpleStreamOptions, request?: ProviderRequestContext) => {
+		options?.signal?.throwIfAborted();
+		session.assertImageRequestAllowed(model);
+		const providerRetrySettings = settingsManager.getProviderRetrySettings();
+		const httpIdleTimeoutMs = settingsManager.getHttpIdleTimeoutMs();
+		// SDKs treat timeout=0 as 0ms (immediate timeout), not "no timeout".
+		// Use max int32 to effectively disable the timeout.
+		const effectiveTimeoutMs = httpIdleTimeoutMs === 0 ? 2147483647 : httpIdleTimeoutMs;
+		const timeoutMs = options?.timeoutMs ?? providerRetrySettings.timeoutMs ?? effectiveTimeoutMs;
+		const websocketConnectTimeoutMs =
+			options?.websocketConnectTimeoutMs ?? settingsManager.getWebSocketConnectTimeoutMs();
+		const headerRunner = extensionRunnerRef.current;
+		const codexRemoteCompaction = headerRunner?.getCodexRemoteCompactionEnabled() ?? false;
+		const openAIResponsesDispatch = headerRunner?.getOpenAIResponsesDispatch();
+		const codexDispatch = resourceLoader.getExtensions().runtime.codexDispatch;
+		const codexGeneration = codexDispatch.owner.generation;
+		const configuredTransport = options?.transport ?? settingsManager.getTransport();
+		const requestTransformChain = headerRunner?.getHandlerChainIdentifiers([
+			"context",
+			"before_provider_headers",
+			"before_provider_request",
+		]) ?? [];
+		const persistentContext = resourceLoader.getAgentsFiles().agentsFiles.map((file, index) => ({
+			identifier: createScopedContextIdentifier(file.path, { workspaceRoot: cwd, globalRoot: agentDir }),
+			content: file.content,
+			precedence: index,
+		}));
+		const manifestInput = {
+			provider: model.provider,
+			model: model.id,
+			api: model.api,
+			transport: configuredTransport,
+			cacheRetention: options?.cacheRetention,
+			systemPrompt: context.systemPrompt ?? "",
+			tools: (context.tools ?? []).map((tool) => ({ name: tool.name, schema: tool.parameters })),
+			logicalToolNames: session?.getActiveToolNames(),
+			persistentContext,
+			requestTransformChain,
+			cacheKey: options?.sessionId,
+			previousResponseMode: configuredTransport.startsWith("websocket") ? "websocket" as const : "none" as const,
+		};
+		try {
+			prefixManifestRecorder.recordIntent(buildPrefixManifest(manifestInput));
+		} catch {
+			// Prefix intent diagnostics are observational and must never block a provider request.
+		}
+		const recordEffectiveDispatch = (observation: Readonly<EffectiveDispatchObservation>, observedModel: Model<any>) => {
+			session.recordToolResultBudgetDispatch();
+			try {
+				prefixManifestRecorder.record(buildPrefixManifest({
+					...manifestInput,
+					provider: observedModel.provider,
+					model: observedModel.id,
+					api: observedModel.api,
+					effectiveDispatch: observation,
+				}));
+			} catch {
+				// Effective dispatch diagnostics are observational and must never block a provider request.
+			}
+			try {
+				const result = options?.onEffectiveDispatch?.(observation, observedModel);
+				if (result && typeof result.then === "function") {
+					void Promise.resolve(result).catch(() => undefined);
+				}
+			} catch {
+				// A nested observer cannot escape the provider-owned instrumentation lane.
+			}
+		};
+		return modelRuntime.streamSimple(model, context, {
+			...options,
+			codexRemoteCompaction,
+			timeoutMs,
+			websocketConnectTimeoutMs,
+			maxRetries: options?.maxRetries ?? providerRetrySettings.maxRetries,
+			maxRetryDelayMs: options?.maxRetryDelayMs ?? providerRetrySettings.maxRetryDelayMs,
+			onEffectiveDispatch: recordEffectiveDispatch,
+			transformHeaders: async (requestHeaders) => {
+				const headers = mergeProviderAttributionHeaders(
+					model,
+					settingsManager,
+					options?.sessionId,
+					requestHeaders,
+				);
+				const transformed = headerRunner?.hasHandlers("before_provider_headers")
+					? await headerRunner.emitBeforeProviderHeaders(headers ?? {})
+					: (headers ?? {});
+				session.assertImageRequestAllowed(model);
+				request?.assertCurrent();
+				return transformed;
+			},
+		}, request, openAIResponsesDispatch, codexDispatch, codexGeneration);
+	};
+
 	agent = new Agent({
 		initialState: {
 			systemPrompt: "",
@@ -426,92 +520,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			tools: [],
 		},
 		convertToLlm: convertToLlmWithBlockImages,
-		streamFn: async (model, context, options) => {
-			options?.signal?.throwIfAborted();
-			session.assertImageRequestAllowed(model);
-			const providerRetrySettings = settingsManager.getProviderRetrySettings();
-			const httpIdleTimeoutMs = settingsManager.getHttpIdleTimeoutMs();
-			// SDKs treat timeout=0 as 0ms (immediate timeout), not "no timeout".
-			// Use max int32 to effectively disable the timeout.
-			const effectiveTimeoutMs = httpIdleTimeoutMs === 0 ? 2147483647 : httpIdleTimeoutMs;
-			const timeoutMs = options?.timeoutMs ?? providerRetrySettings.timeoutMs ?? effectiveTimeoutMs;
-			const websocketConnectTimeoutMs =
-				options?.websocketConnectTimeoutMs ?? settingsManager.getWebSocketConnectTimeoutMs();
-			const headerRunner = extensionRunnerRef.current;
-			const configuredTransport = options?.transport ?? settingsManager.getTransport();
-			const requestTransformChain = headerRunner?.getHandlerChainIdentifiers([
-				"context",
-				"before_provider_headers",
-				"before_provider_request",
-			]) ?? [];
-			const persistentContext = resourceLoader.getAgentsFiles().agentsFiles.map((file, index) => ({
-				identifier: createScopedContextIdentifier(file.path, { workspaceRoot: cwd, globalRoot: agentDir }),
-				content: file.content,
-				precedence: index,
-			}));
-			const manifestInput = {
-				provider: model.provider,
-				model: model.id,
-				api: model.api,
-				transport: configuredTransport,
-				cacheRetention: options?.cacheRetention,
-				systemPrompt: context.systemPrompt ?? "",
-				tools: (context.tools ?? []).map((tool) => ({ name: tool.name, schema: tool.parameters })),
-				logicalToolNames: session?.getActiveToolNames(),
-				persistentContext,
-				requestTransformChain,
-				cacheKey: options?.sessionId,
-				previousResponseMode: configuredTransport.startsWith("websocket") ? "websocket" as const : "none" as const,
-			};
-			try {
-				prefixManifestRecorder.recordIntent(buildPrefixManifest(manifestInput));
-			} catch {
-				// Prefix intent diagnostics are observational and must never block a provider request.
-			}
-			const recordEffectiveDispatch = (observation: Readonly<EffectiveDispatchObservation>, observedModel: Model<any>) => {
-				session.recordToolResultBudgetDispatch();
-				try {
-					prefixManifestRecorder.record(buildPrefixManifest({
-						...manifestInput,
-						provider: observedModel.provider,
-						model: observedModel.id,
-						api: observedModel.api,
-						effectiveDispatch: observation,
-					}));
-				} catch {
-					// Effective dispatch diagnostics are observational and must never block a provider request.
-				}
-				try {
-					const result = options?.onEffectiveDispatch?.(observation, observedModel);
-					if (result && typeof result.then === "function") {
-						void Promise.resolve(result).catch(() => undefined);
-					}
-				} catch {
-					// A nested observer cannot escape the provider-owned instrumentation lane.
-				}
-			};
-			return modelRuntime.streamSimple(model, context, {
-				...options,
-				timeoutMs,
-				websocketConnectTimeoutMs,
-				maxRetries: options?.maxRetries ?? providerRetrySettings.maxRetries,
-				maxRetryDelayMs: options?.maxRetryDelayMs ?? providerRetrySettings.maxRetryDelayMs,
-				onEffectiveDispatch: recordEffectiveDispatch,
-				transformHeaders: async (requestHeaders) => {
-					const headers = mergeProviderAttributionHeaders(
-						model,
-						settingsManager,
-						options?.sessionId,
-						requestHeaders,
-					);
-					const transformed = headerRunner?.hasHandlers("before_provider_headers")
-						? await headerRunner.emitBeforeProviderHeaders(headers ?? {})
-						: (headers ?? {});
-					session.assertImageRequestAllowed(model);
-					return transformed;
-				},
-			});
-		},
+		streamFn: streamRequest,
 		onPayload: async (payload, _model, requestAuth) => {
 			const runner = extensionRunnerRef.current;
 			session.assertImageRequestAllowed(_model);
@@ -563,6 +572,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	}
 
 	const session = new AgentSession({
+		agentDir,
 		operationJournal: options.operationJournal,
 		agent,
 		sessionManager,
@@ -573,6 +583,14 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		customTools: options.customTools,
 		modelRuntime,
 		prefixManifestRecorder,
+		createSummarizationStream: (auth, assertCurrent) => {
+			if (agent.streamFunction !== streamRequest) return agent.streamFunction;
+			const request = { auth, assertCurrent };
+			return (model, context, options) => streamRequest(model, context, options, request);
+		},
+		getSupplementalSummaryCustomStream: () => agent.streamFunction === streamRequest ? undefined : agent.streamFunction,
+		getSummarizationCodexDispatch: model => agent.streamFunction === streamRequest && modelRuntime.usesBuiltinOpenAICodex?.(model) === true
+			? resourceLoader.getExtensions().runtime.codexDispatch : undefined,
 		providerRequestPayloadBuilder: ({ model, systemPrompt, messages, tools, thinkingLevel, sessionId }) => {
 			if (model.api === "openai-responses") {
 				return buildOpenAIResponsesRequestBody(model,
@@ -589,9 +607,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			);
 		},
 		providerRequestCompactor: async ({
-			model, apiKey, headers, env, sessionId, regularPayload, signal, shapeDiagnostics,
+			model, apiKey, headers, env, sessionId, regularPayload, signal, shapeDiagnostics, codexDispatch, codexGeneration, builtinCodex,
 		}) => {
-			if (model.api !== "openai-codex-responses") return undefined;
+			if (model.api !== "openai-codex-responses" || !builtinCodex) return undefined;
 			let requestHeaders = mergeProviderAttributionHeaders(model, settingsManager, sessionId, headers);
 			const runner = extensionRunnerRef.current;
 			if (runner?.hasHandlers("before_provider_headers")) {
@@ -599,7 +617,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			}
 			const configuredTimeoutMs = settingsManager.getHttpIdleTimeoutMs();
 			const timeoutMs = configuredTimeoutMs === 0 ? 2147483647 : configuredTimeoutMs;
-			const result = await compactOpenAICodexRequest(model, regularPayload, {
+			codexDispatch.assertCurrent();
+			codexDispatch.owner.resume(codexGeneration);
+			signal?.throwIfAborted();
+			const result = await codexDispatch.owner.compact(model, regularPayload, {
 				apiKey,
 				headers: requestHeaders,
 				env,

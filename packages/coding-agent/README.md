@@ -34,9 +34,20 @@ lifecycle rules and an example.
 
 ## Fullscreen behavior
 
-The global `fullscreenExitOutput` setting controls what remains when the process exits. `"transcript"` (the default) prints the complete transcript back to the main terminal; `"resume-hint"` restores the pre-fullscreen terminal and leaves only the ordinary resume hint. This can also be changed in `/settings`.
+When scrolling up in fullscreen mode, a `↓ Back to bottom · Esc` button appears above the input area. Click it or press Escape to resume following new output without changing the input draft. Autocomplete and dialogs retain their Escape handling; at the bottom, Escape keeps its usual interrupt behavior.
+
+Fullscreen exit now restores the terminal as it was before Super Pi started and leaves only the session resume hint. The global `fullscreenExitOutput` setting defaults to `"resume-hint"`; explicitly selecting `"transcript"` in `/settings` reprints the session after exit.
 
 ## PowerShell on Windows
+
+Start with `superpi`, then use `/permissions` to choose read-only in Sandbox,
+Sandbox read/write (default), or full host read/write. Switching preserves the
+conversation and drains the previous runtime; host access requires an explicit
+choice and is not inherited by a new session. See
+[execution environments and permissions](../../docs/execution-environments.md)
+for the PowerShell 5.1 workspace, guarded file publication, capacity limits,
+prerequisites, and migration from existing settings. The executable selection
+below applies to host PowerShell execution.
 
 The `powershell` tool is enabled by default on Windows. Resolution prefers PowerShell 7 (`pwsh.exe`) from `PATH`, then its standard installation under `Program Files`; Windows PowerShell 5.1 is used only as a fallback.
 

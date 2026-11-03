@@ -2,7 +2,6 @@ import {
   createBashToolDefinition,
   getAgentDir,
   SettingsManager,
-  withMsysStdinBridge,
 } from "@super-pi/coding-agent";
 export { withMsysStdinBridge, MAX_MSYS_STDIN_COMMAND_BYTES, MAX_WINDOWS_ENVIRONMENT_CHARS, MSYS_STDIN_COMMAND_ENV } from "@super-pi/coding-agent";
 
@@ -13,7 +12,6 @@ export function createMsysProtectedBashDefinition(
   return createBashToolDefinition(cwd, {
     shellPath: settings.shellPath,
     commandPrefix: settings.commandPrefix,
-    spawnHook: withMsysStdinBridge,
   });
 }
 

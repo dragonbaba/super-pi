@@ -12,6 +12,7 @@ import { ToolSelection } from "../core/tool-selection.ts";
 export type Mode = "text" | "json" | "rpc";
 
 export interface Args {
+	executionEnvironment?: "sandbox" | "trusted-host";
 	provider?: string;
 	model?: string;
 	apiKey?: string;
@@ -103,6 +104,10 @@ export function parseArgs(args: string[]): Args {
 			result.help = true;
 		} else if (arg === "--version" || arg === "-v") {
 			result.version = true;
+		} else if (arg === "--execution-environment") {
+			const environment = args[++i];
+			if (environment === "sandbox" || environment === "trusted-host") result.executionEnvironment = environment;
+			else result.diagnostics.push({ type: "error", message: "--execution-environment requires sandbox or trusted-host" });
 		} else if (arg === "--mode" && i + 1 < args.length) {
 			const mode = args[++i];
 			if (mode === "text" || mode === "json" || mode === "rpc") {
@@ -293,6 +298,7 @@ ${chalk.bold("Options:")}
   --system-prompt <text>         System prompt (default: coding assistant prompt)
   --append-system-prompt <text>  Append text or file contents to the system prompt (can be used multiple times)
   --mode <mode>                  Output mode: text (default), json, or rpc
+  --execution-environment <env>  sandbox or trusted-host; explicit session selection, no fallback
   --print, -p                    Non-interactive mode: process prompt and exit
   --continue, -c                 Continue previous session
   --resume, -r                   Select a session to resume

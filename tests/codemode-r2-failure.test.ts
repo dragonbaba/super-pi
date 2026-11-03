@@ -11,10 +11,16 @@ test("R2.2 explicit handling leaves true child errors and default caught failure
   assert.match(body(handled.result.content), /Handled failures: 1/);
   const facts = handled.result.details.codemode.calls;
   assert.deepEqual(facts.map((fact: any) => [fact.isError, fact.failureHandled, fact.executed]), [[true, true, true], [false, false, true]]);
-  const caught = await f.run('try {await tools.probe({kind:"failure"});}catch{} await tools.probe({kind:"ok"});store("saved",2);');
+  const caught = await f.run('try {await callTool("probe",{kind:"failure"});}catch{text("caught failure without allowFailure");} await tools.probe({kind:"ok"});store("saved",2);store("caughtOnly",true);text("alternative completed");');
+  assert.match(body(caught.result.content), /caught failure without allowFailure/);
+  assert.match(body(caught.result.content), /alternative completed/);
+  assert.equal(caught.result.details.codemode.scriptOk, true);
+  assert.deepEqual(caught.result.details.codemode.calls.map((fact: any) => fact.isError), [true, false]);
   assert.equal(caught.result.isError, true);
-  const loaded = await f.run('text(load("saved"));');
-  assert.match(body(loaded.result.content), /\n1(?:\n|$)/);
+  assert.deepEqual(f.calls, ["failure", "ok", "failure", "ok"]);
+  const loaded = await f.run('text({saved:load("saved"),caughtOnly:load("caughtOnly") ?? null});');
+  assert.match(body(loaded.result.content), /"saved":1/);
+  assert.match(body(loaded.result.content), /"caughtOnly":null/);
 });
 
 test("R2.2 handled failure never clears a concurrent unhandled failure or masks observation failure", async () => {

@@ -1,48 +1,29 @@
 import { WINDOWS_BATCH_COMPONENT_PATTERN, WINDOWS_PATH_SEPARATOR_PATTERN } from "./regex.ts";
 import { lstat, readFile } from "node:fs/promises";
-import { resolve, relative, isAbsolute, sep, parse } from "node:path";
+import { resolve, parse } from "node:path";
 import { TextDecoder } from "node:util";
 import type { ExtensionAPI, ExtensionContext } from "@super-pi/coding-agent";
 import { prepareExactEditContent, generateDiffString, generateUnifiedPatch } from "@super-pi/coding-agent";
-import { Type } from "typebox";
-import type { ToolDefinition } from "@super-pi/coding-agent";
-import { Value } from "typebox/value";
+import { formatBatchResult, renderBatchResult, type ItemResult } from "@super-pi/coding-agent/internal/files/file-results";
+export { renderBatchResult } from "@super-pi/coding-agent/internal/files/file-results";
 import { consumePermissionPathApproval, mutationRequestHash, type PermissionPathApproval } from "../resource-lifecycle-guard/permission-contract.ts";
 import { MutationWriteGuard, resolveToolPath, sha256, type GuardedEdit, type MutationEditAuthorization, type MutationPathApproval } from "./core.ts";
 import { prepareFileCreation, verifyCreationAncestor, directoryKey, canonicalCreationDirectories, type FileCreationPlan } from "./file-creation.ts";
 import { selectCommitMetadata } from "./file-commit-metadata.ts";
 import { capturePathIdentity, sameIdentity, prepareNativeOperation, revalidateNativePlan, executeNativePlan, type NativePlan, type PathIdentity, type MutationStatus } from "./native-file-core.ts";
 import { prepareSnapshotLineMutation, executePreparedSnapshotMutation, type PreparedSnapshotMutation, type SnapshotLineEdit } from "./snapshot-line-edit.ts";
-import { PublicEditOperationParameters, PublicEditParameters, EditParameters, SnapshotEditParameters, WriteParameters, validatePublicSnapshotAnchors } from "./mutation-parameters.ts";
 import { assessProtectedMutationPath } from "./protected-path-policy.ts";
 import { withMutationPaths, MUTATION_PROGRESS_ENTRY } from "./native-tools.ts";
-import { PreviewBudget, addedPreview, modifiedPreview, batchExpandedSummary, BatchResultText, releaseBatchRenderState, readPreviewSource, MAX_PREVIEW_SOURCE_BYTES, displayMetadata, type ChangePreview } from "./change-preview.ts";
-import { RELEASE_TOOL_RENDER_DERIVED_STATE } from "../../coding-agent/src/core/tools/tool-render-lifecycle.ts";
-import { FileCommitError, commitFailure, commitSummary, type CommitMetadata } from "./file-commit.ts";
+import { PreviewBudget, addedPreview, modifiedPreview, readPreviewSource, MAX_PREVIEW_SOURCE_BYTES, type ChangePreview } from "./change-preview.ts";
+import { FileCommitError, commitFailure, type CommitMetadata } from "./file-commit.ts";
 
 // Default extensions load in separate module-cache scopes; share only the private key, not authority state.
+import { FileBatchParameters, copyBatchInput as copyInput, assertIndependent, type BatchInput } from "@super-pi/coding-agent/internal/files/file-batch-protocol";
+export { FileBatchParameters, MAX_BATCH_ITEMS } from "@super-pi/coding-agent/internal/files/file-batch-protocol";
+type Operation = BatchInput["operations"][number]["operation"];
 const PREPARATION = Symbol.for("pi.mutation-guard.file-batch.preparation.v1");
 const EXECUTION = Symbol("file-batch-execution");
 const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
-export const MAX_BATCH_ITEMS = 16;
-
-const ItemParameters = Type.Object({
-  operation: Type.String({ enum: ["edit", "write", "delete", "move"] }),
-  path: Type.String({ minLength: 1, maxLength: 4096 }),
-  mode: Type.Optional(Type.String({ enum: ["create", "overwrite"], description: "Required for write: create refuses any existing target; overwrite requires prior full read." })),
-  destination: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
-  content: Type.Optional(Type.String()),
-  snapshot: Type.Optional(Type.String()),
-  edits: Type.Optional(Type.Array(PublicEditOperationParameters, { minItems: 1, maxItems: 20 })),
-}, { additionalProperties: false });
-export const FileBatchParameters = Type.Object({
-  operations: Type.Array(ItemParameters, { minItems: 1, maxItems: MAX_BATCH_ITEMS, description: "Fixed-order independent items. Put all edits of one file in one item. No chains, aliases, overlap or automatic reorder." }),
-  dryRun: Type.Optional(Type.Boolean({ description: "Preflight only: no mutation, directory creation, evidence or approval token." })),
-  purpose: Type.Optional(Type.String({ maxLength: 800 })),
-}, { additionalProperties: false });
-
-type Operation = "edit" | "write" | "delete" | "move";
-interface BatchInput { operations: Array<{ operation: Operation; path: string; mode?: "create" | "overwrite"; content?: string; destination?: string; snapshot?: string; edits?: any[] }>; dryRun?: boolean; purpose?: string }
 interface Item {
   itemId: string;
   operation: Operation;
@@ -62,57 +43,7 @@ interface Item {
   reservation?: number;
   preview?: ChangePreview;
 }
-interface ItemResult { itemId: string; operation: Operation; target: string; destination?: string; status: MutationStatus | "preview"; stateChanged: boolean | "unknown"; requiresVerification?: true; reason?: string; receipt?: unknown; preview?: ChangePreview }
 
-function pathKey(path: string): string { return path.normalize("NFC").toLowerCase(); }
-function pathConflicts(left: string, right: string, prospective: boolean): boolean {
-  if (prospective) { left = pathKey(left); right = pathKey(right); }
-  const path = relative(left, right);
-  return path === "" || (path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path));
-}
-function assertIndependent(items: readonly Item[]): void {
-  for (let i = 0; i < items.length; i++) for (let j = 0; j < i; j++) {
-    const a = items[i], b = items[j];
-    if (process.platform !== "win32" && a.creation && b.creation) {
-      for (const left of a.creation.directories) for (const right of b.creation.directories) {
-        if (left !== right && pathKey(left) === pathKey(right)) throw new Error(`[BATCH_CONFLICT] ${a.itemId} and ${b.itemId} use ambiguous spellings for a missing shared parent; use identical spelling.`);
-      }
-    }
-    if (a.identity && b.identity && a.identity.device === b.identity.device && a.identity.inode === b.identity.inode) throw new Error(`[BATCH_CONFLICT] ${a.itemId} and ${b.itemId} share a file identity.`);
-    for (const left of a.paths) for (const right of b.paths) {
-      const prospective = !(a.identity && left === a.target && b.identity && right === b.target);
-      if (pathConflicts(left, right, prospective) || pathConflicts(right, left, prospective)) throw new Error(`[BATCH_CONFLICT] ${a.itemId} and ${b.itemId} overlap; split dependent changes into verified stages.`);
-    }
-  }
-}
-function copyInput(value: unknown): BatchInput {
-  if (!Value.Check(FileBatchParameters, value)) throw new Error("[TOOL_ARGS_INVALID] Invalid file_batch object or fields.");
-  const input = value as BatchInput;
-  let bytes = 0;
-  const operations: BatchInput["operations"] = [];
-  for (const item of input.operations) {
-    bytes += Buffer.byteLength(item.content ?? "", "utf8");
-    if (item.edits) for (const edit of item.edits) {
-      bytes += Buffer.byteLength(edit.oldText ?? "", "utf8") + Buffer.byteLength(edit.newText ?? "", "utf8");
-      if (edit.newLines) for (const line of edit.newLines) bytes += Buffer.byteLength(line, "utf8");
-    }
-    if (bytes > 1024 * 1024) throw new Error("[MUTATION_BUDGET_EXCEEDED] Batch input exceeds 1 MiB of mutation text.");
-    const clean: any = {};
-    for (const key of Object.keys(item)) if (key !== "operation") clean[key] = (item as any)[key];
-    if (item.operation === "write") {
-      if (item.mode !== "create" && item.mode !== "overwrite") throw new Error("[TOOL_ARGS_INVALID] Batch write requires explicit create or overwrite mode.");
-      const write = { path: item.path, content: item.content };
-      if (!Value.Check(WriteParameters, write) || Object.keys(item).some(key => !["operation", "path", "mode", "content"].includes(key))) throw new Error("[TOOL_ARGS_INVALID] Invalid write item fields.");
-    } else if (item.operation === "edit") {
-      if (!Value.Check(PublicEditParameters, clean)) throw new Error("[TOOL_ARGS_INVALID] Invalid edit item fields.");
-      if (item.snapshot) { validatePublicSnapshotAnchors(clean); if (!Value.Check(SnapshotEditParameters, clean)) throw new Error("[TOOL_ARGS_INVALID] Invalid snapshot item."); }
-      else if (!Value.Check(EditParameters, clean)) throw new Error("[TOOL_ARGS_INVALID] Mixed or incomplete exact edit item.");
-    } else if (Object.keys(item).some(key => !["operation", "path", ...(item.operation === "move" ? ["destination"] : [])].includes(key))) throw new Error("[TOOL_ARGS_INVALID] Invalid native item fields.");
-    const edits = item.edits?.map(edit => Object.freeze({ ...edit, ...(edit.newLines ? { newLines: Object.freeze([...edit.newLines]) } : {}) }));
-    operations.push(Object.freeze({ ...item, ...(edits ? { edits: Object.freeze(edits) as any } : {}) }));
-  }
-  return Object.freeze({ operations: Object.freeze(operations) as any, dryRun: input.dryRun, purpose: input.purpose });
-}
 export function getBatchPreparation(input: unknown): BatchInvocation | undefined {
   return input && typeof input === "object" ? (input as any)[PREPARATION] : undefined;
 }
@@ -362,27 +293,7 @@ export class BatchInvocation {
       results[failedIndex].status = signal?.aborted ? "cancelled" : "failed_no_change";
       results[failedIndex].reason = (error instanceof Error ? error.message : String(error)).slice(0, 800);
     } finally { sharedDirectories.clear(); this.dispose(); }
-    let succeeded = 0, failed = 0, notStarted = 0;
-    let requiresVerification = false;
-    let firstReason: string | undefined;
-    for (const result of results) { requiresVerification ||= Boolean(result.requiresVerification); if (result.status === "succeeded") succeeded++; else if (result.status === "not_started") notStarted++; else if (result.status !== "preview") { failed++; firstReason ??= result.reason; } }
-    const preview = this.input.dryRun === true;
-    let summary = preview ? failed === 0 ? `Preflight passed for ${results.length} items. No changes; apply revalidates and requires current authorization.`
-      : `Preflight failed. No changes; ${failed} failed, ${notStarted} not started.${firstReason ? `\n${displayMetadata(firstReason)}` : ""}`
-      : `file_batch: ${succeeded} succeeded, ${failed} failed, ${notStarted} not started.${firstReason ? `\n${displayMetadata(firstReason)}` : ""}`;
-    if (requiresVerification) summary += "\nVerify current state and any retained candidate; do not automatically retry uncertain items.";
-    const collapsedSummary = summary;
-    if (!preview) for (const result of results) {
-      const receipt = result.receipt as any;
-      summary += `\n${displayMetadata(result.itemId)}: ${result.status === "succeeded" && receipt?.created ? "Added" : result.operation} ${displayMetadata(result.target)}: ${result.status}`;
-      if (receipt?.commit) summary += `\n${commitSummary(receipt.commit)}`;
-      if (result.status === "succeeded" && receipt?.creation) {
-        summary += receipt.creation.addedLines === undefined ? ` (${receipt.creation.bytes} bytes)` : ` (+${receipt.creation.addedLines} -0)`;
-        if (receipt.creation.createdDirectories.length) summary += `; created ${receipt.creation.createdDirectories.length} parent directories`;
-      }
-    }
-    const expandedSummary = batchExpandedSummary(collapsedSummary, results, plannedDirectories);
-    return { content: [{ type: "text" as const, text: summary }], details: { mutationReceiptVersion: 2, operation: "file_batch", preview, collapsedSummary, expandedSummary, plannedDirectories, succeeded, failed, notStarted, items: results }, isError: failed > 0 };
+    return formatBatchResult(this.input, results, plannedDirectories);
   }
 
   private async revalidate(item: Item, signal?: AbortSignal, shared?: Map<string, PathIdentity>): Promise<void> {
@@ -425,13 +336,3 @@ export function registerFileBatch(pi: ExtensionAPI, guard: MutationWriteGuard, g
       return invocation.execute(pi, signal);
     } });
 }
-
-export const renderBatchResult: NonNullable<ToolDefinition<any, any>["renderResult"]> = function renderBatchResult(result, options, _theme, context) {
-  const component = context.lastComponent instanceof BatchResultText ? context.lastComponent : new BatchResultText("", 0, 0);
-  context.state.batchComponent = component;
-  context.state[RELEASE_TOOL_RENDER_DERIVED_STATE] = releaseBatchRenderState;
-  const primary = result.content[0];
-  const full = primary?.type === "text" ? primary.text : "";
-  component.setBatchText(options.isPartial ? "File batch running" : options.expanded ? result.details?.expandedSummary ?? full : result.details?.collapsedSummary ?? full);
-  return component;
-};

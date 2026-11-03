@@ -1,4 +1,4 @@
-export const SUPPORTED_SP_VERSION_PATTERN = /^0\.84\.\d+(?:[-+].*)?$/u;
+export const SUPPORTED_SP_VERSION_PATTERN = /^(?:0\.84|1\.\d+)\.\d+(?:[-+].*)?$/u;
 export const HEX_COLOR_PATTERN = /^#[0-9a-f]{6}$/iu;
 export const LINE_SEPARATOR_PATTERN = /[\r\n\u2028\u2029]/u;
 export const LEADING_HASH_PATTERN = /^#/;

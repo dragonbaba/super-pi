@@ -9,7 +9,7 @@ import { pathToFileURL } from "node:url";
 import { Session } from "node:inspector/promises";
 import { setImmediate as immediate } from "node:timers/promises";
 import { createReadToolDefinition } from "../../packages/coding-agent/src/core/tools/read.ts";
-import { createReadWindowCounters, readWindow, READ_CHUNK_BYTES, READ_WINDOW_BYTES, type ReadWindowResult } from "../../packages/coding-agent/src/core/tools/read-window.ts";
+import { createReadWindowCounters, readWindow, formatReadWindowText, READ_CHUNK_BYTES, READ_WINDOW_BYTES, type ReadWindowResult } from "../../packages/coding-agent/src/core/tools/read-window.ts";
 import { truncateHead } from "../../packages/coding-agent/src/core/tools/truncate.ts";
 import { detectSupportedImageMimeTypeFromFile } from "../../packages/coding-agent/src/utils/mime.ts";
 import type { ExtensionContext } from "../../packages/coding-agent/src/core/extensions/types.ts";
@@ -99,8 +99,10 @@ try {
 		let peakHeap = initialHeap;
 		const counters = createReadWindowCounters();
 		for (let i = 0; i < 12; i++) {
-			await readWindow(largePath, directory, "bench", { offset: rows / 2, limit: 10 }, undefined, counters);
-			await readWindow(singlePath, directory, "bench", { limit: 1 }, undefined, counters);
+			const middle = await readWindow(largePath, directory, "bench", { offset: rows / 2, limit: 10 }, undefined, counters);
+			assert.ok(formatReadWindowText(middle.text, middle).length > 0);
+			const single = await readWindow(singlePath, directory, "bench", { limit: 1 }, undefined, counters);
+			assert.ok(formatReadWindowText(single.text, single).length > 0);
 			peakHeap = Math.max(peakHeap, process.memoryUsage().heapUsed);
 		}
 		const { profile } = await inspector.post("HeapProfiler.stopSampling");
@@ -139,9 +141,11 @@ try {
 		const counters = createReadWindowCounters();
 		try {
 			let result: ReadWindowResult | undefined = await readWindow(singlePath, directory, "bench", {}, undefined, counters);
+			assert.ok(formatReadWindowText(result.text, result).length > 0);
 			references.push(new WeakRef(result));
 			const cursor = result.cursor;
 			result = await readWindow(singlePath, directory, "bench", { cursor }, undefined, counters);
+			assert.ok(formatReadWindowText(result.text, result).length > 0);
 			references.push(new WeakRef(result));
 			result = undefined;
 			const signal = { get aborted() { return counters.bytesRead > READ_WINDOW_BYTES * 2; } } as AbortSignal;

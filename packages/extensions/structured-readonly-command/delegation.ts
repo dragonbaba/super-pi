@@ -7,6 +7,8 @@ import {
 } from "../resource-lifecycle-guard/permission-contract.ts";
 
 export interface StructuredReadonlyWorkspacePolicy {
+  assertCurrent(): void;
+  revocationSignal: AbortSignal;
   canonicalRoot: string;
   canonicalCwd: string;
   authorizedRoots: readonly string[];
@@ -68,7 +70,7 @@ export function consumeStructuredReadonlyWorkspacePolicy(
     throw new Error("Structured read-only workspace identity changed after authorization.");
   }
   const requestedCwd = input && typeof input === "object" && typeof (input as { cwd?: unknown }).cwd === "string"
-    ? resolve(canonicalRoot, (input as { cwd: string }).cwd)
+    ? resolve(delegation.invocationCwd ?? canonicalRoot, (input as { cwd: string }).cwd)
     : canonicalRoot;
   const requestedCanonical = realpathSync(requestedCwd);
   const requestedIdentity = statSync(requestedCanonical);
@@ -82,5 +84,5 @@ export function consumeStructuredReadonlyWorkspacePolicy(
     const additionalRoot = validateRootGrant(grant);
     if (!authorizedRoots.includes(additionalRoot)) authorizedRoots.push(additionalRoot);
   }
-  return { canonicalRoot, canonicalCwd, authorizedRoots, source: delegation.source };
+  return { canonicalRoot, canonicalCwd, authorizedRoots, source: delegation.source, assertCurrent: delegation.assertCurrent, revocationSignal: delegation.revocationSignal };
 }

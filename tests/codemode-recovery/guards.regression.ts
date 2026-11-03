@@ -64,50 +64,8 @@ for (const tool of ["bash", "codemode"] as const) for (const length of [5024, 55
   });
 }
 
-for (const parentIsError of [true, false]) test(`F-S7 parent isError=${parentIsError} does not erase the repeated deterministic child failure`, async () => {
-  const hooks = new Map<string, (...args: any[]) => any>();
-  guardExtension({ on: (name: string, callback: (...args: any[]) => any) => hooks.set(name, callback),
-    registerTool() {}, sendMessage() {} } as never);
-  const context = { cwd: process.cwd() };
-  let repeatedBlocked = false;
-  hooks.get("agent_start")!();
-  for (let round = 0; round < 3; round++) {
-    hooks.get("turn_start")!();
-    const parentId = `parent-${round}`;
-    // Vary only the wrapper: the repeated child must reach admission without
-    // the parent's independent failure count masking a lost child count.
-    const parentInput = { code: `// wrapper ${round}\nawait callTool("fixture_operation",{kind:"failure"},${JSON.stringify({ allowFailure: !parentIsError })});` };
-    for (const [id, toolName, input, parentToolCallId] of [
-      [parentId, "codemode", parentInput, undefined], [`child-${round}`, "fixture_operation", { kind: "failure" }, parentId],
-    ] as const) {
-      const event = { type: "tool_call", toolCallId: id, toolName, input, parentToolCallId };
-      const admission = await hooks.get("tool_call")!(event, context);
-      if (toolName === "codemode") assert.notEqual(admission?.block, true, "distinct parent wrappers must remain admitted");
-      if (admission?.block) {
-        assert.equal(toolName, "fixture_operation");
-        assert.equal(id, `child-${round}`);
-        assert.equal(parentToolCallId, parentId);
-        assert.match(admission.reason, /REPEATED_CALL_BLOCKED/);
-        assert.equal(round, 2, "the child must be admitted twice before repeated-failure blocking");
-        repeatedBlocked = true;
-        break;
-      }
-    }
-    if (repeatedBlocked) break;
-    for (const [id, toolName, input, parentToolCallId] of [
-      [`child-${round}`, "fixture_operation", { kind: "failure" }, parentId], [parentId, "codemode", parentInput, undefined],
-    ] as const) {
-      const isError = toolName === "fixture_operation" || parentIsError;
-      await hooks.get("tool_result")!({ type: "tool_result", toolCallId: id, toolName, input, parentToolCallId,
-        isError, content: [{ type: "text", text: isError ? "SyntaxError: deterministic fixture failure" : "handled child failure" }], details: {} }, context);
-      hooks.get("tool_execution_end")!({ toolCallId: id, toolName, isError });
-    }
-  }
-  assert.equal(repeatedBlocked, true, "the third child admission must be blocked after two identical deterministic child failures");
-});
-
-for (const policy of ["real guard", "third-admission block control"] as const) {
-  test(`F-S7 allowFailure keeps the third blocked child recoverable in one agent run: ${policy}`, async t => {
+for (const policy of ["real guard", "explicit policy block control"] as const) {
+  test(`allowFailure preserves repeated real errors and explicit refusal: ${policy}`, async t => {
     let executions = 0, admissions = 0, starts = 0, ends = 0;
     const alternatives: number[] = [];
     const observe: ExtensionFactory = pi => {
@@ -116,8 +74,8 @@ for (const policy of ["real guard", "third-admission block control"] as const) {
       pi.on("tool_call", async event => {
         if (event.toolName !== "fixture_operation") return;
         admissions++;
-        if (policy === "third-admission block control" && admissions === 3) {
-          return { block: true, reason: "[REPEATED_CALL_BLOCKED] deterministic third-admission fixture" };
+        if (policy === "explicit policy block control" && admissions === 3) {
+          return { block: true, reason: "[POLICY_BLOCKED] explicit fixture refusal" };
         }
       });
     };
@@ -138,7 +96,7 @@ for (const policy of ["real guard", "third-admission block control"] as const) {
     scripts.push('text({lastRecoveredRound:load("lastRecoveredRound") ?? null});');
     const { results } = await f.run(scripts);
     assert.deepEqual({ starts, ends, admissions }, { starts: 1, ends: 1, admissions: 3 });
-    assert.equal(executions, 2, "the third deterministic child must be blocked before execution");
+    assert.equal(executions, policy === "real guard" ? 3 : 2, "only the explicit refusal prevents the third execution");
     assert.deepEqual(alternatives, [0, 1, 2], "all parents must continue to the alternative, including after blocking");
     assert.equal(results.length, 4);
     for (const [round, result] of results.slice(0, 3).entries()) {
@@ -148,7 +106,7 @@ for (const policy of ["real guard", "third-admission block control"] as const) {
       const facts = (result.details as any).codemode.calls;
       assert.deepEqual(facts.map((c: any) => [c.toolName, c.isError]), [["fixture_operation", true], ["fixture_alternative", false]]);
     }
-    assert.match(body(results[2]!.content), /REPEATED_CALL_BLOCKED/, "the blocked outcome must be returned to the script");
+    assert.match(body(results[2]!.content), policy === "real guard" ? /SyntaxError: deterministic fixture failure/ : /POLICY_BLOCKED/, "the real error or explicit refusal reaches the script");
     assert.match(body(results[3]!.content), /"lastRecoveredRound":2/, "the recovered third parent must commit its store");
   });
 }

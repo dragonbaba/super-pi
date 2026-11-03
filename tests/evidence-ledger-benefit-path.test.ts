@@ -95,7 +95,21 @@ for (const corpus of ["medium", "large"]) {
 	});
 }
 
-for (const budget of [tokens("x"), tokens("x") + 1, 128, 2048]) {
+for (const budget of [1, 2]) {
+	test(`native read budget ${budget} preserves the outcome but blocks an envelope that cannot fit`, linux, async () => {
+		const f = await fixture(true, true, [], budget);
+		try {
+			writeFileSync(join(f.cwd, "file.txt"), "x");
+			await f.runCalls([{ name: "read", arguments: { path: "file.txt" } }]);
+			assert.match(f.session.agent.state.errorMessage!, /result-batch-budget/);
+			const raw = f.session.agent.state.messages.filter(m => m.role === "toolResult").at(-1)!;
+			assert.equal(raw.isError, false); assert.equal(raw.content.length, 2);
+			assert.match((raw.content[0] as { text: string }).text, /^1#[A-F0-9]{4}\|x$/);
+			assert.equal(f.internals._evidenceLedger!.counters.realReadExecutions, 1);
+		} finally { f.close(); }
+	});
+}
+for (const budget of [128, 2048]) {
 	test(`tiny repeated read stays successful and unamplified at budget ${budget}`, linux, async t => {
 		const f = await fixture(true, true, [], budget);
 		try {
@@ -104,13 +118,13 @@ for (const budget of [tokens("x"), tokens("x") + 1, 128, 2048]) {
 			assert.equal(f.session.agent.state.errorMessage, undefined);
 			const original = first.at(-1)!.messages.filter(m => m.role === "toolResult").at(-1)!;
 			const originalTokens = estimateToolOutputTokens(original.content).estimatedTokens;
-			assert.equal(originalTokens, tokens("x"));
+			assert.ok(originalTokens > tokens("x") && originalTokens <= budget, "native lines include paired revision metadata");
 			const second = await f.runCalls([{ name: "read", arguments: { path: "file.txt" } }]);
 			const raw = f.session.agent.state.messages.filter(m => m.role === "toolResult").at(-1)!;
 			t.diagnostic(JSON.stringify({ budget, originalTokens, repeatedRawTokens: estimateToolOutputTokens(raw.content).estimatedTokens, error: f.session.agent.state.errorMessage }));
 			assert.equal(f.session.agent.state.errorMessage, undefined);
 			const repeated = second.at(-1)!.messages.filter(m => m.role === "toolResult").at(-1)!;
-			assert.equal(estimateToolOutputTokens(repeated.content).estimatedTokens, originalTokens);
+			assert.deepEqual(repeated.content, raw.content, "a cheaper native read stays inline instead of inflating to an evidence reference");
 			const c = f.internals._evidenceLedger!.counters;
 			assert.equal(c.hits, 0);
 			assert.equal(c.realReadExecutions, 2);
@@ -144,7 +158,9 @@ test("tiny budget sweep brackets the actual final artifact reference estimate", 
 				const contexts = await f.runCalls([{ name: "read", arguments: { path: "file.txt" } }]);
 				assert.equal(f.session.agent.state.errorMessage, undefined);
 				const result = contexts.at(-1)!.messages.filter(m => m.role === "toolResult").at(-1)!;
-				assert.equal(estimateToolOutputTokens(result.content).estimatedTokens, 1);
+				const raw = f.session.agent.state.messages.filter(m => m.role === "toolResult").at(-1)!;
+				assert.deepEqual(result.content, raw.content);
+				assert.ok(estimateToolOutputTokens(result.content).estimatedTokens <= budget);
 			}
 			assert.equal(f.internals._evidenceLedger!.counters.hits, 0);
 			assert.equal(f.internals._evidenceLedger!.counters.realReadExecutions, 2);

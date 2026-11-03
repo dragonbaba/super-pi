@@ -6,9 +6,11 @@ import { fileURLToPath } from "node:url";
 import { StringDecoder } from "node:string_decoder";
 import { getEventListeners } from "node:events";
 import { createRequire, syncBuiltinESMExports } from "node:module";
+import { Session as InspectorSession } from "node:inspector/promises";
 import { setImmediate as tick, setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import { createEventBus } from "../packages/coding-agent/src/core/event-bus.ts";
+import { SessionExecutionBoundary } from "../packages/coding-agent/src/core/execution-boundary.ts";
 import { attachSubagentWorkspaceDelegation, SESSION_PERMISSION_EVENT } from "../packages/extensions/resource-lifecycle-guard/permission-contract.ts";
 import { SubagentScheduler } from "../packages/extensions/subagent/scheduler.ts";
 import { SubagentTasks } from "../packages/extensions/subagent/tasks.ts";
@@ -40,7 +42,10 @@ test.after(() => {
 	rmSync(fixtureRoot, { recursive: true, force: true });
 });
 
-test("limits accept explicit capacity, reject invalid values, and bound file reads", () => {
+test("limits accept explicit capacity, reject invalid values, and bound file reads", async () => {
+	assert.equal(SubagentTasks, (await import("@super-pi/coding-agent/internal/tasks/tasks")).SubagentTasks);
+	assert.equal(SubagentScheduler, (await import("@super-pi/coding-agent/internal/tasks/scheduler")).SubagentScheduler);
+	assert.equal(ForegroundTask, (await import("@super-pi/coding-agent/internal/tasks/foreground")).ForegroundTask);
 	assert.deepEqual(parseSubagentLimits("{}"), { maxConcurrent: 16, maxTasks: 64 });
 	assert.deepEqual(parseSubagentLimits('{"maxConcurrent":64,"maxTasks":256}'), { maxConcurrent: 64, maxTasks: 256 });
 	for (const input of ["null", "[]", '{"maxConcurrent":null}', '{"maxConcurrent":65}', '{"maxTasks":257}', '{"maxConcurrent":2,"maxTasks":1}', '{"maxTasks":1.5}', '{"unexpected":1}']) assert.throws(() => parseSubagentLimits(input));
@@ -197,7 +202,7 @@ test("dispose releases waiters and ignores late results", async () => {
 
 const responsibility = { scope: "Fixture workspace only", deliverable: "Fixture result and evidence", stopCondition: "Return when the assigned fixture completes or report its blocker" };
 
-function harness(t: test.TestContext, options: { persistent?: boolean; shutdownError?: RegExp } = {}) {
+function harness(t: test.TestContext, options: { persistent?: boolean; shutdownError?: RegExp; assertCurrent?: () => void; revocationSignal?: AbortSignal; boundary?: SessionExecutionBoundary } = {}) {
 	assert.ok(SUBAGENT_LIMITS_PATH.startsWith(fixtureRoot), "configuration must stay in the recorded fixture directory");
 	writeFileSync(SUBAGENT_LIMITS_PATH, '{"maxConcurrent":2,"maxTasks":8}');
 	const tools = new Map<string, any>(); const commands = new Map<string, any>(); const hooks = new Map<string, any>();
@@ -206,6 +211,7 @@ function harness(t: test.TestContext, options: { persistent?: boolean; shutdownE
 	let completion!: () => void;
 	let notified = new Promise<void>(resolve => { completion = resolve; });
 	const pi: any = { events, registerTool: (tool: any) => tools.set(tool.name, tool), registerCommand: (name: string, command: any) => commands.set(name, command), on: (name: string, hook: any) => { hooks.set(name, hook); if (name === "before_agent_start") startHooks.push(hook); }, sendMessage: (message: any) => { messages.push(message); completion(); } };
+	if (options.boundary) pi.registerExecutionOwner = (name: string, owner: any) => options.boundary!.register(name, owner);
 	extension(pi);
 	pi.getAllTools = () => [...tools.values()];
 	const entries: any[] = [];
@@ -219,7 +225,7 @@ function harness(t: test.TestContext, options: { persistent?: boolean; shutdownE
 		const items = params.tasks ?? params.chain ?? [params];
 		for (const item of items) { item.scope ??= responsibility.scope; item.deliverable ??= responsibility.deliverable; item.stopCondition ??= responsibility.stopCondition; }
 		const grants = items.map((item: any) => { const canonicalCwd = item.cwd ?? cwd; const stat = statSync(canonicalCwd); return { canonicalCwd, device: stat.dev, inode: stat.ino, permissionMode: item.readOnly ? "read-only" : "workspace-write", writable: !item.readOnly, source: isPathInside(canonicalCwd, cwd) ? "primary" : "additional" }; });
-		attachSubagentWorkspaceDelegation(params, { schemaVersion: 1, sequence, toolCallId: id, grants });
+		attachSubagentWorkspaceDelegation(params, { schemaVersion: 1, sequence, toolCallId: id, grants, assertCurrent: options.assertCurrent ?? (() => {}), revocationSignal: options.revocationSignal ?? new AbortController().signal });
 		return tools.get("subagent").execute(id, params, signal, onUpdate, ctx);
 	};
 	const control = async (action: string, id?: string, timeoutMs?: number) => (await tools.get("subagent_tasks").execute("control", { action, id, timeoutMs }, undefined)).content[0].text as string;
@@ -293,8 +299,9 @@ test("task steering targets the same live checkpoint child and refuses stale, un
 		if (kind === "permission") h.events.emit(SESSION_PERMISSION_EVENT, {});
 		else if (kind === "tree") await h.hooks.get("session_before_tree")();
 		else await h.control("cancel", current.id);
-		await assert.rejects(steer(current.id, "late"), /cancelling|terminal/);
+		await assert.rejects(steer(current.id, "late"), kind === "tree" || kind === "permission" ? /session is unavailable|cancelling|terminal/ : /cancelling|terminal/);
 		await h.control("wait", current.id, 5000);
+		if (kind === "permission") await h.hooks.get("session_before_tree")(); // Join the async permission listener's same pending owners.
 		assert.throws(() => process.kill(current.pid, 0), /ESRCH/);
 	}
 	assert.match(await h.control("list"), /0\/2 running · 0\/8 active\/queued · 0\/8 reserved/);
@@ -621,16 +628,52 @@ test("real background calls share capacity and a cancelled queued child never la
 	assert.equal(h.messages.length, 0);
 });
 
+test("expired authority prevents queued and asynchronously prepared children from starting", { timeout: 10_000 }, async t => {
+	let current = true;
+	const assertCurrent = () => { if (!current) throw new Error("Permission authority changed after approval."); };
+	const h = harness(t, { assertCurrent });
+	const accepted = await h.run({ tasks: [
+		{ agent: "scout", task: "hold-authority-one", readOnly: true },
+		{ agent: "scout", task: "hold-authority-two", readOnly: true },
+		{ agent: "scout", task: "expired-queued", readOnly: true },
+	], background: true });
+	const taskIds = ids(accepted);
+	await startedChild(h.ctx.cwd, "hold-authority-one"); await startedChild(h.ctx.cwd, "hold-authority-two");
+	current = false;
+	await h.control("cancel", taskIds[0]); await h.control("wait", taskIds[0], 5000);
+	const refused = await h.control("wait", taskIds[2], 5000);
+	assert.match(refused, /failed/); assert.match(refused, /Permission authority changed/);
+	assert.equal(readdirSync(h.ctx.cwd).filter(file => file.endsWith(".ready.json")).length, 2);
+	await h.control("cancel", taskIds[1]); await h.control("wait", taskIds[1], 5000);
+	assert.match(await h.control("list"), /0\/2 running/);
+
+	current = true;
+	const prepared = harness(t, { assertCurrent });
+	const native = createRequire(import.meta.url)("node:fs"), write = native.promises.writeFile;
+	native.promises.writeFile = async (...args: unknown[]) => { const result = await write(...args); current = false; return result; };
+	try {
+		await assert.rejects(prepared.run({ agent: "scout", task: "expired-after-preparation", readOnly: true }), /Permission authority changed/);
+		assert.equal(readdirSync(prepared.ctx.cwd).some(file => file.endsWith(".ready.json")), false);
+	} finally { native.promises.writeFile = write; }
+});
+
 test("permission changes cancel owned children and suppress stale notifications", { timeout: 10_000 }, async t => {
-	const h = harness(t);
+	for (const source of ["event", "grant"]) {
+	const revocation = new AbortController();
+	const h = harness(t, { revocationSignal: revocation.signal });
 	const result = await h.run({ agent: "scout", task: "hold", readOnly: true, background: true });
 	const [id] = ids(result);
 	const pid = await startedChild(h.ctx.cwd, "hold");
-	h.events.emit(SESSION_PERMISSION_EVENT, {});
+	if (source === "event") {
+		h.events.emit(SESSION_PERMISSION_EVENT, {});
+		await assert.rejects(h.run({ agent: "scout", task: "must-not-start-during-drain", readOnly: true }), /session is changing/);
+	}
+	else revocation.abort(new Error("Permission authority changed after approval."));
 	assert.match(await h.control("wait", id, 5000), /cancelled/);
 	assert.equal(h.messages.length, 0);
 	assert.throws(() => process.kill(pid, 0), /ESRCH/);
 	assert.match(await h.control("list"), /0\/2 running/);
+	}
 });
 
 test("tree navigation drains owned children before new branch work", async t => {
@@ -641,6 +684,45 @@ test("tree navigation drains owned children before new branch work", async t => 
 	assert.throws(() => process.kill(pid, 0), /ESRCH/);
 	assert.match(await h.control("status", ids(result)[0]), /cancelled/); assert.equal(h.messages.length, 0);
 	assert.match((await h.run({ agent: "scout", task: "fast-new-branch", readOnly: true })).content[0].text, /fixture result/);
+});
+
+test("native transition drains subagent startup preparation and the owned child before publication", { timeout: 10_000 }, async t => {
+	const boundary = new SessionExecutionBoundary(), h = harness(t, { boundary });
+	const inspector = new InspectorSession(); inspector.connect(); t.after(() => inspector.disconnect());
+	const refs: WeakRef<object>[] = [];
+	const run = (params: any) => { refs.push(new WeakRef(params)); return h.run(params); };
+	await inspector.post("HeapProfiler.startSampling", { samplingInterval: 4096, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true });
+	const accepted = await run({ agent: "scout", task: "hold-boundary", readOnly: true, background: true });
+	const pid = await startedChild(h.ctx.cwd, "hold-boundary");
+	let resume!: () => void, entered!: () => void;
+	const ready = new Promise<void>(resolve => { entered = resolve; });
+	h.ctx.model = { provider: "fixture", id: "fixture" };
+	h.ctx.modelRegistry.getProviderAuth = async () => { entered(); await new Promise<void>(resolve => { resume = resolve; }); return undefined; };
+	const preparing = run({ agent: "scout", task: "must-not-start-boundary", readOnly: true });
+	const rejected = assert.rejects(preparing, /boundary changed|branch changed/);
+	await ready;
+	let published = false;
+	const transition = boundary.transition(() => {
+		assert.throws(() => process.kill(pid, 0), /ESRCH/);
+		published = true;
+	});
+	await tick();
+	assert.equal(published, false, "startup preparation still owns its reservation");
+	await assert.rejects(run({ agent: "scout", task: "blocked-boundary", readOnly: true }), /session is changing/);
+	resume(); await Promise.all([transition, rejected]);
+	assert.equal(published, true); assert.match(await h.control("status", ids(accepted)[0]), /cancelled/);
+	assert.equal(readdirSync(h.ctx.cwd).some(file => file.includes("must-not-start-boundary") || file.includes("blocked-boundary")), false);
+	assert.equal(h.messages.length, 0);
+	h.ctx.model = undefined;
+	assert.match((await run({ agent: "scout", task: "fast-current-boundary", readOnly: true })).content[0].text, /fixture result/);
+	await h.hooks.get("session_shutdown")(); await boundary.dispose(); assert.equal(boundary.participantCount, 0);
+	const { profile } = await inspector.post("HeapProfiler.stopSampling");
+	let sampled = 0; const nodes = [profile.head];
+	while (nodes.length) { const node = nodes.pop()!; sampled += node.selfSize; for (const child of node.children) nodes.push(child); }
+	assert.ok(sampled <= 16 * 1024 * 1024);
+	for (let index = 0; index < 3; index++) { await tick(); await inspector.post("HeapProfiler.collectGarbage"); }
+	assert.equal(refs.filter(ref => ref.deref()).length, 0);
+	t.diagnostic(JSON.stringify({ calls: 4, preparationDeferreds: 3, childrenStarted: 2, transitions: 1, inputReferences: refs.length, liveInputs: 0, executionOwners: 0, sampledMainThreadBytes: sampled }));
 });
 
 test("shutdown waits for real child exit and suppresses late delivery", { timeout: 10_000 }, async t => {
@@ -654,7 +736,7 @@ test("shutdown waits for real child exit and suppresses late delivery", { timeou
 });
 
 test("failed Windows tree cleanup blocks queued children and successful quit acknowledgement", { skip: process.platform !== "win32", timeout: 10_000 }, async t => {
-	const h = harness(t, { shutdownError: /process-tree cleanup failed/ });
+	const boundary = new SessionExecutionBoundary(), h = harness(t, { shutdownError: /process-tree cleanup failed/, boundary });
 	const accepted = await h.run({ tasks: [
 		{ agent: "scout", task: "hold-cleanup-one", readOnly: true },
 		{ agent: "scout", task: "hold-cleanup-two", readOnly: true },
@@ -669,6 +751,9 @@ test("failed Windows tree cleanup blocks queued children and successful quit ack
 	assert.throws(() => process.kill(one, 0), /ESRCH/); assert.throws(() => process.kill(two, 0), /ESRCH/);
 	assert.equal(readdirSync(h.ctx.cwd).some(file => readFileSync(join(h.ctx.cwd, file), "utf8").includes("must-not-launch")), false);
 	await assert.rejects(h.run({ agent: "scout", task: "later" }), /process-tree cleanup failed/);
+	let published = false;
+	await assert.rejects(boundary.transition(() => { published = true; }), /process-tree cleanup failed/);
+	assert.equal(published, false); assert.throws(() => boundary.assertCurrent(), /EXECUTION_BOUNDARY_CHANGED/);
 	await assert.rejects(h.hooks.get("session_shutdown")(), /process-tree cleanup failed/);
 });
 

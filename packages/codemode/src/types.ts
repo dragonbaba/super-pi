@@ -58,7 +58,7 @@ export interface CodemodeCall {
 export type CodemodeErrorKind =
 	/** The script threw or failed to parse. `name` and `stack` come from the script's error. */
 	| "script"
-	/** The overall deadline expired. The worker was terminated. */
+	/** The configured execution budget expired. The worker was terminated. */
 	| "timeout"
 	/** The caller's signal fired or the sandbox was closed. The worker was terminated. */
 	| "aborted"
@@ -100,10 +100,16 @@ export interface CodemodeSandboxOptions {
 	 */
 	globals?: CodemodeTool[];
 	/**
-	 * Overall deadline per execution, including time spent in tools. Positive integer,
-	 * at most 300000 ms. Default: 60000. A deadline cannot be disabled.
+	 * Execution budget in milliseconds, interpreted by timeoutMode. Positive integer,
+	 * at most 300000 ms. Default: 60000. The budget cannot be disabled.
 	 */
 	timeoutMs?: number;
+	/**
+	 * Default: wall time, including tools. Active time excludes confirmed VM waits
+	 * for host tools/helpers; startup, computation and bridge delivery still count.
+	 * Active mode requires the caller to bound/cancel host work independently.
+	 */
+	timeoutMode?: "wall" | "active";
 	/**
 	 * Maximum memory the QuickJS VM may allocate. Allocations beyond it fail inside the script as
 	 * `InternalError: out of memory`. Default and maximum: 256 MiB; minimum: 1 MiB.

@@ -36,6 +36,7 @@ async function fixture(t: TestContext) {
 	const cleanup: Array<() => Promise<void>> = [];
 	const notes: string[] = [];
 	let reloads = 0;
+	let executionOwner: { revoke(): void; drain(): Promise<void> };
 	t.after(async () => {
 		for (const gate of gates) gate.resolve();
 		try {
@@ -54,6 +55,7 @@ async function fixture(t: TestContext) {
 		fixture: { transport: "http", url: "https://fixture.invalid/mcp", oauth: true, enabled: false },
 	} }));
 	const pi = { registerTool() {}, registerCommand(name: string, command: any) { commands.set(name, command.handler); },
+		registerExecutionOwner(_name: string, owner: typeof executionOwner) { executionOwner = owner; },
 		on(name: string, handler: any) { events.set(name, handler); }, getActiveTools: (): string[] => [], setActiveTools() {} };
 	mcpBridgeExtension(pi);
 	const ctx = { cwd: root, isProjectTrusted: () => false, hasUI: false, signal: undefined as AbortSignal | undefined,
@@ -61,6 +63,7 @@ async function fixture(t: TestContext) {
 		async reload() { reloads++; await events.get("session_shutdown")({}, {}); } };
 	await events.get("session_start")({}, ctx);
 	return { root, ctx, pi, notes, events, operations, cleanup, reloads: () => reloads,
+		owner: () => executionOwner,
 		gate() { const value = deferred(); gates.push(value); return value; },
 		run(action = "login", context = ctx) {
 			const pending = commands.get(action === "manager" ? "mcp" : `mcp-${action}`)("fixture", context);
@@ -70,6 +73,29 @@ async function fixture(t: TestContext) {
 		start: () => events.get("session_start")({}, ctx) as Promise<void>,
 	};
 }
+
+test("MCP execution owner joins both command dialogs and auth cleanup before reopening", { timeout: 5000 }, async t => {
+	const f = await fixture(t), menuReady = f.gate(), authReady = f.gate(), menuRelease = f.gate(), authRelease = f.gate();
+	let menuSignal!: AbortSignal, authSignal!: AbortSignal, calls = 0;
+	t.mock.method(McpOAuth.prototype, "login", async (_notify: unknown, signal: AbortSignal) => {
+		calls++; authSignal = signal; authReady.resolve(); await authRelease.promise;
+	});
+	const menuContext = { ...f.ctx, hasUI: true, ui: { ...f.ctx.ui,
+		async select(_title: string, _options: string[], options: { signal: AbortSignal }) {
+			menuSignal = options.signal; menuReady.resolve(); await menuRelease.promise; return "Reload configuration";
+		},
+	} };
+	const menu = f.run("manager", menuContext);
+	await menuReady.promise;
+	const login = f.run(); await authReady.promise;
+	f.owner().revoke(); let drained = false;
+	const draining = f.owner().drain().then(() => { drained = true; }); f.operations.push(draining);
+	await nextTask(); assert.equal(menuSignal.aborted, true); assert.equal(authSignal.aborted, true); assert.equal(drained, false);
+	await f.run(); assert.equal(calls, 1);
+	menuRelease.resolve(); await menu; await nextTask(); assert.equal(drained, false);
+	authRelease.resolve(); await login; await draining; assert.equal(f.reloads(), 0);
+	await f.run(); assert.equal(calls, 2); assert.equal(f.reloads(), 1);
+});
 
 // chooseMcpAction/withMcpAuthProgress are explicit-command boundaries. The
 // selector host owns its abort listener and releases it before resolving.

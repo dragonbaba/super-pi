@@ -76,11 +76,13 @@ test("final Chat wire excludes failed attempts across retry, resume, branch and 
 		await session.prompt("Continue from recorded evidence.");
 		assert.equal(requests, 2);
 		session.dispose();
+		await session.waitForSessionLeaseRelease(); await resources.reload();
 		session = (await createAgentSession(options)).session;
 		await session.setModel({ ...model, id: "switched-model", contextWindow: 256000 });
 		await session.prompt("Resume with the same completed effect.");
 		assert.equal(wires[2].model, "switched-model");
 		session.dispose();
+		await session.waitForSessionLeaseRelease(); await resources.reload();
 		manager.branch(branchPoint);
 		session = (await createAgentSession(options)).session;
 		await session.prompt("Branch from the recorded effect.");

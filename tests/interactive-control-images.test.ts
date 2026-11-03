@@ -2,9 +2,11 @@ import { tmpdir } from "node:os";
 import { stream as responsesStream } from "../packages/ai/src/api/openai-responses.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
-import { writeFileSync, readFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { writeFileSync, readFileSync, existsSync, lstatSync, mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, utimesSync } from "node:fs";
+import { basename, join, resolve, sep } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { randomUUID } from "node:crypto";
+import { createJiti } from "jiti";
 import { setImmediate as turn } from "node:timers/promises";
 import { fixture } from "./helpers/evidence-ledger-fixture.ts";
 import { response } from "./helpers/selected-integration-fixture.ts";
@@ -21,9 +23,227 @@ import { TuiAltScreen } from "../packages/tui/src/tui-alt-screen.ts";
 import { FakeTerminal } from "./helpers/runtime-instrumentation.ts";
 import { createAgentSession } from "../packages/coding-agent/src/core/sdk.ts";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
+import { AgentSessionRuntime } from "../packages/coding-agent/src/core/agent-session-runtime.ts";
+import { DefaultResourceLoader } from "../packages/coding-agent/src/core/resource-loader.ts";
+import { SettingsManager } from "../packages/coding-agent/src/core/settings-manager.ts";
+import { VIRTUAL_MODULES } from "../packages/coding-agent/src/core/extensions/virtual-modules.ts";
+import { ALPHA_MODEL, alphaModelRuntime } from "./helpers/alpha-session.ts";
+import { CLIPBOARD_LIFECYCLE_SYMBOL, ClipboardArtifactLifecycle } from "../packages/extensions/auxiliary-vision/clipboard-lifecycle.ts";
+import { readBoundedImage, resolveExistingRoots } from "../packages/extensions/auxiliary-vision/image-io.ts";
 
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGP4DwQACfsD/fteaysAAAAASUVORK5CYII=", "base64");
 initTheme("dark");
+
+test("modern attachment manifest preserves legacy files and global ownership across SDK reload", { timeout: 5000 }, async () => {
+	const tempRoot = resolve(tmpdir()), root = mkdtempSync(join(tempRoot, "pi-attachment-bridge-"));
+	const oldTemp = process.env.TEMP, oldTmp = process.env.TMP, oldTmpdir = process.env.TMPDIR, oldAgent = process.env.SP_CODING_AGENT_DIR;
+	const globals = globalThis as any, previous = globals[CLIPBOARD_LIFECYCLE_SYMBOL], oldFetch = globalThis.fetch;
+	let shutdowns = 0, requests = 0, main = 0;
+	const sentinel = { shutdown() { shutdowns++; } };
+	let host: AgentSessionRuntime | undefined;
+	let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
+	try {
+		process.env.TEMP = root; process.env.TMP = root; process.env.TMPDIR = root; process.env.SP_CODING_AGENT_DIR = root;
+		assert.equal(tmpdir(), root);
+		globals[CLIPBOARD_LIFECYCLE_SYMBOL] = sentinel;
+		globalThis.fetch = async () => { requests++; throw new Error("fixture must remain offline"); };
+		const historical = join(root, `pi-clipboard-${randomUUID()}.png`);
+		writeFileSync(historical, PNG); const aged = new Date(Date.now() - 48 * 60 * 60 * 1000); utimesSync(historical, aged, aged);
+		mkdirSync(join(root, "config")); writeFileSync(join(root, "config", "auxiliary-vision.json"), JSON.stringify({ toolMode: "off" }));
+		const packageRoot = fileURLToPath(new URL("../packages/extensions/", import.meta.url));
+		const manifest = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
+		const entry = manifest.pi.extensions.find((path: string) => path === "./auxiliary-vision/index.ts"); assert.ok(entry);
+		const settings = SettingsManager.inMemory({ compaction: { enabled: false } });
+		const resources = new DefaultResourceLoader({ cwd: root, agentDir: root, settingsManager: settings, noExtensions: true,
+			additionalExtensionPaths: [resolve(packageRoot, entry)], noContextFiles: true, noSkills: true, noPromptTemplates: true, noThemes: true });
+		await resources.reload(); assert.deepEqual(resources.getExtensions().errors, []);
+		const assertUnowned = () => {
+			assert.equal(globals[CLIPBOARD_LIFECYCLE_SYMBOL], sentinel); assert.equal(shutdowns, 0);
+			assert.deepEqual(readFileSync(historical), PNG); assert.equal(existsSync(join(root, "pi-clipboard-leases-v1")), false);
+			assert.equal(resources.getExtensions().extensions.length, 1);
+			assert.equal(resources.getExtensions().extensions[0]!.handlers.has("message_start"), false);
+		};
+		assertUnowned();
+		const runtime = alphaModelRuntime((model, context) => {
+			main++; assert.ok(context.messages.some(m => m.role === "user" && Array.isArray(m.content) && m.content.some(c => c.type === "image")));
+			return response(model, []);
+		});
+		({ session } = await createAgentSession({ cwd: root, agentDir: root, resourceLoader: resources, settingsManager: settings,
+			sessionManager: SessionManager.inMemory(root), model: { ...ALPHA_MODEL, input: ["text", "image"] }, modelRuntime: runtime, noTools: "all" }));
+		host = new AgentSessionRuntime(session, { cwd: root, agentDir: root } as never, async () => { throw new Error("unexpected replacement"); });
+		const errors: unknown[] = []; await session.bindExtensions({ onError: error => { errors.push(error); } });
+		await session.prompt("typed attachment", { images: [{ type: "image", mimeType: "image/png", data: PNG.toString("base64") }] });
+		await session.prompt(historical);
+		const user = session.messages.filter(m => m.role === "user").at(-1)!;
+		assert.ok(Array.isArray(user.content) && user.content.some(c => c.type === "image"), "historical path still materializes");
+		assertUnowned(); assert.equal(main, 2); assert.equal(requests, 0);
+		await session.reload(); assertUnowned();
+		await host.dispose(); assertUnowned(); assert.deepEqual(errors, []);
+	} finally {
+		try { if (host) await host.dispose(); else if (session) { session.dispose(); await session.waitForSessionLeaseRelease(); } }
+		finally {
+			globals[CLIPBOARD_LIFECYCLE_SYMBOL] = previous; globalThis.fetch = oldFetch;
+			if (oldTemp === undefined) delete process.env.TEMP; else process.env.TEMP = oldTemp;
+			if (oldTmp === undefined) delete process.env.TMP; else process.env.TMP = oldTmp;
+			if (oldTmpdir === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = oldTmpdir;
+			if (oldAgent === undefined) delete process.env.SP_CODING_AGENT_DIR; else process.env.SP_CODING_AGENT_DIR = oldAgent;
+			assert.ok(resolve(root).startsWith(tempRoot + sep) && basename(root).startsWith("pi-attachment-bridge-"));
+			rmSync(root, { recursive: true, force: true }); assert.equal(existsSync(root), false);
+		}
+	}
+});
+
+test("legacy and injected clipboard owners retain failure retry and identity-safe confirmation", { timeout: 5000 }, async () => {
+	const tempRoot = process.platform === "win32" ? resolve(tmpdir()) : realpathSync.native(tmpdir());
+	const root = mkdtempSync(join(tempRoot, "pi-attachment-legacy-"));
+	const globals = globalThis as any, previous = globals[CLIPBOARD_LIFECYCLE_SYMBOL];
+	const owners: ClipboardArtifactLifecycle[] = [];
+	const shutdown: Array<() => unknown> = [];
+	try {
+		globals[CLIPBOARD_LIFECYCLE_SYMBOL] = undefined;
+		const configPath = join(root, "vision.json"); writeFileSync(configPath, JSON.stringify({ model: "fixture/vision", toolMode: "off" }));
+		let fail = true;
+		for (const injected of [false, true]) {
+			const jiti = createJiti(import.meta.url, { moduleCache: false, fsCache: false, tryNative: false, virtualModules: {
+				...VIRTUAL_MODULES, "@super-pi/coding-agent": { getConfigDir: () => root, IMAGE_VISION_RESULT_TYPE: "image-vision-result-v1", ...(injected ? { IMAGE_ATTACHMENT_VERSION: 2 } : {}) },
+				"@super-pi/ai/compat": { complete: async () => { if (fail) throw new Error("fixture vision failure"); return { stopReason: "stop", content: [{ type: "text", text: "fixture description" }], usage: {} }; } },
+			} });
+			const extension = await jiti.import<typeof auxiliaryVision>("../packages/extensions/auxiliary-vision/index.ts", { default: true });
+			const handlers = new Map<string, any[]>(), tools = new Map<string, any>();
+			const pi: any = { on: (name: string, handler: any) => { const list = handlers.get(name) ?? []; list.push(handler); handlers.set(name, list); },
+				registerTool: (tool: any) => tools.set(tool.name, tool), registerCommand() {}, appendEntry() {} };
+			const other = new ClipboardArtifactLifecycle({ tempDir: realpathSync.native(root) }); owners.push(other);
+			if (injected) {
+				globals[CLIPBOARD_LIFECYCLE_SYMBOL] = other.api;
+				extension(pi, { systemTempDir: root, configPath });
+				assert.equal(handlers.has("message_start"), false, "future native capability must not reinstall legacy bridge");
+				handlers.get("session_shutdown")![0](); handlers.clear(); tools.clear();
+			}
+			const owner = injected ? new ClipboardArtifactLifecycle({ tempDir: root }) : undefined;
+			if (owner) owners.push(owner);
+			extension(pi, { systemTempDir: root, configPath, clipboardLifecycle: owner });
+			const close = handlers.get("session_shutdown")![0]; shutdown.push(close);
+			const registered = globals[CLIPBOARD_LIFECYCLE_SYMBOL];
+			if (injected) assert.equal(registered, other.api); else assert.ok(registered?.ownerId);
+			const image = () => { const path = join(root, `pi-clipboard-${randomUUID()}.png`); writeFileSync(path, PNG); return path; };
+			const file = image(), foreign = image(); assert.equal(other.created({ path: realpathSync.native(foreign), mimeType: "image/png" }), true);
+			const input = handlers.get("input")![0], accepted = handlers.get("message_start")![0];
+			const ctx: any = { cwd: root, model: { input: ["text"] }, ui: { notify() {}, setStatus() {} },
+				modelRegistry: { find: () => ({ provider: "fixture", id: "vision", input: ["text", "image"] }), getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "offline-fixture" }) },
+				sessionManager: { getBranch: () => [], getSessionId: () => "fixture" } };
+			fail = true;
+			const failed = await input({ text: file, source: "interactive" }, ctx);
+			assert.match(failed.text, /auxiliary_vision_error/); assert.equal(failed.images.length, 1); assert.ok(existsSync(file));
+			fail = false;
+			const retry = await input({ text: file, source: "interactive" }, ctx);
+			assert.match(retry.text, /fixture description/); assert.deepEqual(retry.images, []); assert.ok(existsSync(file));
+			accepted({ message: { role: "assistant" } }); assert.ok(existsSync(file));
+			accepted({ message: { role: "user" } }); assert.equal(existsSync(file), false);
+			ctx.model.input = ["text", "image"];
+			const changed = image(); await input({ text: changed, source: "interactive" }, ctx); writeFileSync(changed, Buffer.concat([PNG, Buffer.from("changed")]));
+			await input({ text: foreign, source: "interactive" }, ctx); accepted({ message: { role: "user" } });
+			assert.ok(existsSync(changed)); assert.ok(existsSync(foreign));
+			const inspected = image(); const inspection = await tools.get("inspect_image").execute("inspect", { path: inspected, question: "describe" }, undefined, undefined, ctx);
+			assert.equal(existsSync(inspected), false, JSON.stringify({ injected, root, inspected, details: inspection.details }));
+			const owned = image(), creator = owner?.api ?? registered;
+			assert.equal(creator.created({ path: owned, mimeType: "image/png" }), true);
+			creator.editorChanged(owned); await Promise.resolve(); assert.ok(existsSync(owned)); creator.submitted(owned);
+			fail = true;
+			await assert.rejects(tools.get("inspect_image").execute("retry-inspect", { path: owned, question: "describe" }, undefined, undefined, ctx), /fixture vision failure/);
+			assert.ok(existsSync(owned)); fail = false;
+			await tools.get("inspect_image").execute("retry-inspect", { path: owned, question: "describe" }, undefined, undefined, ctx);
+			assert.equal(existsSync(owned), false);
+			const externalDir = join(root, `external-${injected}`); mkdirSync(externalDir);
+			const sameName = image(), external = join(externalDir, basename(sameName)); writeFileSync(external, PNG);
+			await tools.get("inspect_image").execute("external-inspect", { path: external, question: "describe" }, undefined, undefined, ctx);
+			assert.ok(existsSync(external)); assert.ok(existsSync(sameName), "same UUID filename outside the exact temp root is not owned");
+			const pending = image(); await input({ text: pending, source: "interactive" }, ctx); close(); shutdown.pop();
+			assert.equal(existsSync(pending), false); assert.ok(existsSync(foreign)); assert.ok(existsSync(changed));
+			assert.equal(globals[CLIPBOARD_LIFECYCLE_SYMBOL], injected ? other.api : undefined);
+			other.shutdown(); if (injected) globals[CLIPBOARD_LIFECYCLE_SYMBOL] = undefined;
+		}
+		assert.equal(existsSync(join(root, "pi-clipboard-leases-v1")), false);
+	} finally {
+		try { for (const close of shutdown) close(); for (const owner of owners) owner.shutdown(); }
+		finally {
+			globals[CLIPBOARD_LIFECYCLE_SYMBOL] = previous;
+			assert.ok(resolve(root).startsWith(tempRoot + sep) && basename(root).startsWith("pi-attachment-legacy-"));
+			rmSync(root, { recursive: true, force: true }); assert.equal(existsSync(root), false);
+		}
+	}
+});
+
+test("real Windows clipboard aliases share live and stale lease boundaries", { timeout: 5000 }, async (t) => {
+	const tempRoot = resolve(tmpdir());
+	if (process.platform !== "win32" || tempRoot.toLowerCase() === realpathSync.native(tempRoot).toLowerCase()) {
+		t.skip("No real short/long Windows temp-directory alias is available"); return;
+	}
+	const root = mkdtempSync(join(tempRoot, "pi-attachment-alias-"));
+	const owners: ClipboardArtifactLifecycle[] = [];
+	try {
+		const nativeRoot = realpathSync.native(root); assert.notEqual(root.toLowerCase(), nativeRoot.toLowerCase());
+		const image = (directory: string, aged = false) => {
+			const path = join(directory, `pi-clipboard-${randomUUID()}.png`); writeFileSync(path, PNG);
+			if (aged) { const date = new Date(Date.now() - 48 * 60 * 60 * 1000); utimesSync(path, date, date); }
+			return path;
+		};
+		const owner = (directory: string) => { const instance = new ClipboardArtifactLifecycle({ tempDir: directory, processAlive: pid => pid === process.pid }); owners.push(instance); return instance; };
+		const longOwner = owner(nativeRoot), longFile = image(nativeRoot, true);
+		assert.equal(longOwner.created({ path: longFile, mimeType: "image/png" }), true);
+		const shortOwner = owner(root); assert.ok(existsSync(longFile), "short-root startup protects the long-root active lease");
+		const shortFile = image(root, true); assert.equal(shortOwner.created({ path: shortFile, mimeType: "image/png" }), true);
+		const observer = owner(nativeRoot); assert.ok(existsSync(shortFile), "long-root startup protects the short-root active lease");
+		const roots = await resolveExistingRoots([root]);
+		for (const [consumer, file] of [[shortOwner, longFile], [observer, shortFile]] as const) {
+			const loaded = await readBoundedImage(file, 1024, roots);
+			consumer.materialized([{ ...loaded, path: loaded.resolvedPath }]); consumer.confirmMaterialized();
+			assert.ok(existsSync(file), "a different spelling must not transfer live ownership");
+		}
+		const leaseDir = join(root, "pi-clipboard-leases-v1");
+		const stale = (path: string) => {
+			const state = lstatSync(path), ownerId = randomUUID();
+			const manifest = join(leaseDir, `owner-${ownerId}.json`);
+			const record = { path, mimeType: "image/png", dev: state.dev, ino: state.ino, size: state.size, mtimeMs: state.mtimeMs,
+				createdAtMs: Date.now() - 10 * 60 * 1000, state: "materialized", sessionId: null };
+			writeFileSync(manifest, JSON.stringify({ version: 1, ownerId, pid: -1, processStartedAtMs: 0, startupIdentity: "-1:0", updatedAtMs: 0, files: [record] }));
+			return { manifest, record };
+		};
+		const overlapping = stale(join(root, basename(longFile)));
+		owner(root); assert.ok(existsSync(longFile), "a dead lease must not override a live owner's alias");
+		assert.ok(existsSync(overlapping.manifest)); assert.ok(existsSync(join(leaseDir, `owner-${longOwner.ownerId}.json`)));
+		const staleLong = image(nativeRoot), longLease = stale(staleLong);
+		owner(root); assert.equal(existsSync(staleLong), false); assert.equal(existsSync(longLease.manifest), false);
+		const staleShort = image(root), shortLease = stale(staleShort);
+		owner(nativeRoot); assert.equal(existsSync(staleShort), false); assert.equal(existsSync(shortLease.manifest), false);
+		const changed = image(root), changedLease = stale(changed); writeFileSync(changed, Buffer.concat([PNG, Buffer.from("changed")]));
+		const outsideDir = join(root, "outside"); mkdirSync(outsideDir);
+		const outside = image(outsideDir), outsideLease = stale(outside);
+		const unresolvedLease = stale(image(root));
+		const unresolved = JSON.parse(readFileSync(unresolvedLease.manifest, "utf8"));
+		unresolved.files[0].path = join(root, "missing-parent", basename(unresolvedLease.record.path));
+		writeFileSync(unresolvedLease.manifest, JSON.stringify(unresolved));
+		const link = join(root, `pi-clipboard-${randomUUID()}.png`); symlinkSync(outsideDir, link, "junction");
+		const linkedLease = stale(link);
+		owner(nativeRoot);
+		assert.ok(existsSync(changed)); assert.ok(existsSync(changedLease.manifest));
+		assert.ok(existsSync(outside)); assert.ok(existsSync(outsideLease.manifest));
+		assert.ok(existsSync(unresolvedLease.record.path)); assert.ok(existsSync(unresolvedLease.manifest), "failed alias resolution is not a missing-file receipt");
+		assert.ok(lstatSync(link).isSymbolicLink()); assert.ok(existsSync(linkedLease.manifest));
+		assert.ok(existsSync(longFile)); assert.ok(existsSync(shortFile));
+		for (const instance of owners) {
+			instance.shutdown(); assert.equal((instance as any).records.size, 0);
+			assert.equal((instance as any).pendingEditorText, ""); assert.equal((instance as any).editorReconcileQueued, false);
+		}
+		assert.equal(existsSync(longFile), false); assert.equal(existsSync(shortFile), false);
+		t.diagnostic("Actual Windows short/long aliases: bidirectional live protection and stale cleanup passed");
+	} finally {
+		try { for (const instance of owners) instance.shutdown(); }
+		finally {
+			assert.ok(resolve(root).startsWith(tempRoot + sep) && basename(root).startsWith("pi-attachment-alias-"));
+			rmSync(root, { recursive: true, force: true }); assert.equal(existsSync(root), false);
+		}
+	}
+});
 
 test("shared image input patterns preserve matching and replacement state across calls", () => {
 	const replacements = new Set([imagePatterns.IMAGE_LABEL_CONTROL_PATTERN, imagePatterns.IMAGE_DESCRIPTION_LINE_BREAK_PATTERN, imagePatterns.IMAGE_DESCRIPTION_CONTROL_PATTERN]);
@@ -252,12 +472,14 @@ test("no-UI question returns requires_user_input and ends the SDK run", async ()
 test("SDK tools, excludeTools and noTools keep ask_user disabled when requested", async () => {
 	const f = await fixture(false, false);
 	try {
+		f.session.dispose(); await f.session.waitForSessionLeaseRelease();
 		for (const options of [{ tools: ["read"] }, { excludeTools: ["ask_user"] }, { noTools: "all" as const }, { noTools: "builtin" as const }]) {
+			await f.session.resourceLoader.reload();
 			const { session } = await createAgentSession({ cwd: f.cwd, agentDir: join(f.root, "agent"), model: f.session.model,
 				modelRuntime: f.session.modelRuntime, resourceLoader: f.session.resourceLoader, sessionManager: SessionManager.inMemory(f.cwd),
 				settingsManager: f.settings, ...options });
 			try { assert.equal(session.getActiveToolNames().includes("ask_user"), false); }
-			finally { session.dispose(); }
+			finally { session.dispose(); await session.waitForSessionLeaseRelease(); }
 		}
 	} finally { f.close(); }
 });

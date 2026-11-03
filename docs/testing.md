@@ -1,8 +1,10 @@
 # Regression tests and optional measurements
 
-Default Linux and Windows CI runs `npm ci`, `npm run check`,
-`npm run build:offline`, then `npm test`, within the unchanged 30-minute job
-limit. Use `npm.cmd` on Windows PowerShell when required by execution policy.
+Default Linux and Windows CI runs `npm ci`, `npm run build:offline`, then
+`npm test`, within the unchanged 30-minute job limit. The shared TypeScript
+check runs once, on Linux shard 1. Both operating systems still compile and
+exercise their actual runtime paths. Use `npm.cmd` on Windows PowerShell when
+required by execution policy.
 
 `node scripts/test.mjs --suite all --list` lists the deterministic
 execution-unit order (of the selected shard, if any), including the memory
@@ -17,7 +19,7 @@ heaviest first to the least-loaded shard using approximate weights in the
 runner, so the shards are disjoint and together cover every file and the memory
 workspace once. CI runs Linux as 2 shards and Windows as 4 shards on separate
 runners, each shard serially (`SP_TEST_JOBS=1`) because the two-core hosted
-runners gain little from a pool; only shard 1 repeats `npm run check`. After
+runners gain little from a pool. Type checking is not repeated on Windows. After
 the first nonzero child exit or signal no new file starts, even if a slow output
 consumer is still holding another file's log replay. Running files finish, and
 the first failure's exit code is returned. Each child writes stdout and stderr
@@ -25,6 +27,12 @@ to a runner-owned log file, replayed to stdout with its END line. Parallel
 output never interleaves, and the runner does not hold child output in memory.
 `test:unit`, `test:hot` and `test:contract` partition that discovery for
 focused work; they are not an additional validation chain before `npm test`.
+The root runner invokes the memory workspace's existing Node test directly
+against the preceding build. Its standalone workspace test still builds when
+that package is tested independently. The 16 frozen Windows Sandbox acceptance
+entries are explicitly excluded from ordinary discovery; real VM replays and
+allocation benchmarks are not extra CI steps. `--keep-going` is an explicit
+diagnostic option; routine CI stays fail-fast.
 
 Every child gets private HOME, USERPROFILE, config, agent and session paths and
 `SP_OFFLINE=1`. Its `TMPDIR`, `TMP` and `TEMP` point at one runner-owned
@@ -44,6 +52,25 @@ elapsed milliseconds, exit code and signal.
 
 ## Consolidated coverage
 
+- The parallel raw-result matrix contains 8 cases instead of 18: both renderers
+  retain projection on/off with 8 concurrent calls, plus 129-call insufficient
+  and sufficient budget boundaries with projection enabled. Each still checks
+  actual concurrency, no replay, exact continuation recovery, responsiveness and
+  GC. Single-result shapes already run in `alpha-raw-session`; intermediate
+  count 4 and another unprojected count 129 introduced no additional branch.
+- The real CLI matrix has 38 cases instead of 42. Terminal lifecycle,
+  cancellation, active-work shutdown and progress still run in both renderers.
+  Missing/malformed settings and trusted/untrusted project parsing run once
+  through the real CLI because they precede renderer selection.
+- The caught-child-error control is consolidated into `codemode-r2-failure`:
+  failed/successful child facts, catch/alternative output, preserved previously
+  committed store and discarded new keys all remain asserted. The separate
+  uncaught typed-tool error control is retained.
+- Across the two CI operating systems this removes 30 redundant test invocations,
+  one repeated type check and two repeated memory builds. Windows/POSIX coverage
+  and correctness, allocation, cleanup and timeout limits are unchanged.
+  Historical timing/result counts remain dated evidence; current matrices are
+  authoritative.
 - The retired `alpha:g2-probe` command repeated 23 files already discovered by
   `npm test`. Its independent environment/GC requirements now live in the one
   runner. No alpha family is excluded from discovery.

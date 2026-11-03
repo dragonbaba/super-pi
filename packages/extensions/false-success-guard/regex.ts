@@ -1,5 +1,3 @@
-export const COMPLETION_CLAIM_RE = /(?:已完成|完成了|已经完成|已修复|修复完成|已实现|实现完成|验证通过|测试通过|全部通过|成功完成|\bdone\b|\bcompleted\b|\bfixed\b|\bimplemented\b|all (?:tests|checks) pass(?:ed)?)/iu;
-export const INCOMPLETE_DISCLOSURE_RE = /(?:未完成|尚未完成|无法完成|仍(?:然)?(?:失败|存在|需要)|尚(?:未|需)|阻塞|被阻止|需要(?:用户|外部)|\bnot complete\b|\bincomplete\b|\bstill (?:failed|failing|blocked|remaining)\b|\bblocked\b|\bremaining\b|\bcould not\b|\bunable to\b)/iu;
 export const PARTIAL_MUTATION_RE = /partial[_ -]?mutation|"?statechanged"?\s*:\s*true/iu;
 export const LEADING_CD_RE = /^cd\s+((?:"[^"]*"|'[^']*'|\S+))\s*&&\s*/u;
 export const SHELL_OPERATOR_RE = /&&|\|\||;/u;

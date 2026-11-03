@@ -1,6 +1,8 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import path from "node:path";
 import process from "node:process";
+import { setTimeout as delay } from "node:timers/promises";
+import type { WindowsShellJob } from "@super-pi/coding-agent/internal/windows-shell-job";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { commandPathValue, mergeEnvironment, resolveCommandPath } from "./command.js";
 import { EMPTY_READONLY_ARRAY } from "./collections.js";
@@ -41,7 +43,7 @@ const SHUTDOWN_GRACE_MS = 1_000;
 
 export class LspClient {
 	#child?: ChildProcessWithoutNullStreams;
-	#buffer = Buffer.alloc(0);
+	#buffer: Buffer = Buffer.alloc(0);
 	#nextId = 1;
 	#pending = new Map<
 		number,
@@ -66,6 +68,47 @@ export class LspClient {
 	#command: ServerCommand;
 	#cwd: string;
 	#timeoutMs: number;
+	#started = false;
+	#stopping = false;
+	#shutdownOperation?: Promise<void>;
+	#startOperation?: Promise<void>;
+	#startupController?: AbortController;
+	#windowsJob?: WindowsShellJob;
+	#processGroup?: number;
+	#familyCleanup?: Promise<void>;
+	readonly #onStdout = (chunk: Buffer) => {
+		try { this.#onData(chunk); }
+		catch (error) {
+			this.#fail(`${this.#adapter.name} LSP server sent invalid JSON-RPC data: ${formatErrorMessage(error)}.${this.#formatStderr()}`);
+		}
+	};
+	readonly #onStderr = (chunk: Buffer) => {
+		this.#stderr = `${this.#stderr}${chunk.toString()}`.slice(-MAX_STDERR_CHARS);
+	};
+	readonly #onStdinError = (error: Error) => {
+		this.#fail(`${this.#adapter.name} LSP stdin write failed: ${formatErrorMessage(error)}.${this.#formatStderr()}`);
+	};
+	readonly #onProcessError = (error: Error) => {
+		this.#fail(`${this.#adapter.name} LSP process failed: ${error.message}.${this.#formatStderr()}`);
+	};
+	readonly #onExit = () => {
+		this.#rejectPending(`${this.#adapter.name} LSP server exited before completing its requests.${this.#formatStderr()}`);
+		void this.#stopFamily().catch(observeFamilyFailure);
+	};
+	readonly #onClose = () => {
+		const child = this.#child;
+		if (!child) return;
+		child.stdout.removeListener("data", this.#onStdout);
+		child.stderr.removeListener("data", this.#onStderr);
+		child.stdin.removeListener("error", this.#onStdinError);
+		child.removeListener("error", this.#onProcessError);
+		child.removeListener("exit", this.#onExit);
+		child.removeListener("close", this.#onClose);
+		this.#child = undefined;
+		this.#rejectPending(`${this.#adapter.name} LSP connection closed.`);
+		this.#clearRetainedState();
+		void this.#stopFamily().catch(observeFamilyFailure);
+	};
 
 	constructor(adapter: LspServerAdapter, command: ServerCommand, cwd: string, timeoutMs: number) {
 		this.#adapter = adapter;
@@ -77,11 +120,18 @@ export class LspClient {
 	get running() {
 		const child = this.#child;
 		return Boolean(
-			child && !child.killed && child.exitCode === null && child.signalCode === null,
+			!this.#stopping && child && !child.killed && child.exitCode === null && child.signalCode === null,
 		);
 	}
 
-	async start() {
+	start(): Promise<void> {
+		if (this.#started || this.#stopping) throw new Error("An LSP client cannot be started twice or after shutdown.");
+		this.#started = true;
+		this.#startupController = new AbortController();
+		return this.#startOperation = this.#performStart();
+	}
+
+	async #performStart() {
 		const commandPath = resolveCommandPath(
 			this.#command.command,
 			this.#cwd,
@@ -95,47 +145,40 @@ export class LspClient {
 		}
 
 		const spawnCommand = resolveSpawnCommand({ ...this.#command, command: commandPath });
-		const child = spawn(spawnCommand.command, spawnCommand.args, {
-			cwd: this.#cwd,
-			env: mergeEnvironment(this.#adapter.env),
-			stdio: "pipe",
-		});
-		this.#child = child;
-		child.stdout.on("data", (chunk) => {
-			try {
-				this.#onData(chunk);
-			} catch (error) {
-				this.#fail(
-					`${this.#adapter.name} LSP server sent invalid JSON-RPC data: ${formatErrorMessage(error)}.${this.#formatStderr()}`,
-				);
-			}
-		});
-		child.stderr.on("data", (chunk) => {
-			this.#stderr = `${this.#stderr}${chunk.toString()}`.slice(-MAX_STDERR_CHARS);
-		});
-		child.stdin.on("error", (error) => {
-			this.#fail(
-				`${this.#adapter.name} LSP stdin write failed: ${formatErrorMessage(error)}.${this.#formatStderr()}`,
-			);
-		});
-		child.once("exit", (code, signal) => {
-			if (this.#child === child) this.#child = undefined;
-			const reason = signal ? `signal ${signal}` : `code ${code ?? "unknown"}`;
-			this.#rejectPending(
-				(id) =>
-					`${this.#adapter.name} LSP server exited before response ${id} (${reason}).${this.#formatStderr()}`,
-			);
-		});
-
-		await new Promise<void>((resolve, reject) => {
-			child.once("spawn", resolve);
-			child.once("error", (error) => {
-				const message = `${this.#adapter.name} LSP process failed to start: ${error.message}.${this.#formatStderr()}`;
-				this.#rejectPending(message);
-				if (this.#child === child) this.#child = undefined;
-				reject(new Error(message));
+		let child: ChildProcessWithoutNullStreams;
+		if (process.platform === "win32") {
+			const { WindowsShellJob } = await import("@super-pi/coding-agent/internal/windows-shell-job");
+			if (this.#stopping) throw new Error("LSP client stopped before process startup.");
+			this.#windowsJob = await WindowsShellJob.spawn(spawnCommand.command, spawnCommand.args, this.#cwd, mergeEnvironment(this.#adapter.env), true, this.#startupController!.signal);
+			child = this.#windowsJob.child as ChildProcessWithoutNullStreams;
+		} else {
+			child = spawn(spawnCommand.command, spawnCommand.args, {
+				cwd: this.#cwd, env: mergeEnvironment(this.#adapter.env), stdio: "pipe", detached: true,
 			});
+			this.#processGroup = child.pid;
+		}
+		this.#child = child;
+		child.stdout.on("data", this.#onStdout);
+		child.stderr.on("data", this.#onStderr);
+		child.stdin.on("error", this.#onStdinError);
+		child.on("error", this.#onProcessError);
+		child.once("exit", this.#onExit);
+		child.once("close", this.#onClose);
+
+		// The managed Windows launcher owns spawn admission before returning its host.
+		if (!this.#windowsJob) await new Promise<void>((resolve, reject) => {
+			const onSpawn = () => { child.removeListener("error", onError); resolve(); };
+			const onError = (error: Error) => {
+				child.removeListener("spawn", onSpawn);
+				const message = `${this.#adapter.name} LSP process failed to start: ${error.message}.${this.#formatStderr()}`;
+				reject(new Error(message));
+			};
+			child.once("spawn", onSpawn);
+			child.once("error", onError);
 		});
+		if (this.#windowsJob?.launchError) throw this.#windowsJob.launchError;
+		if (this.#windowsJob?.dispatchError) throw new Error(this.#windowsJob.dispatchError);
+		this.#startupController = undefined;
 	}
 
 	async initialize(root: string) {
@@ -292,25 +335,81 @@ export class LspClient {
 		return resolvedActions;
 	}
 
-	async shutdown() {
-		const child = this.#child;
-		if (!child) return;
+	shutdown(): Promise<void> {
+		this.#stopping = true;
+		this.#startupController?.abort();
+		return this.#shutdownOperation ??= Promise.resolve().then(() => this.#performShutdown());
+	}
 
+	async #performShutdown() {
 		try {
-			await this.request("shutdown", null);
-			this.notify("exit", undefined);
-			await waitForExit(child, SHUTDOWN_GRACE_MS);
-		} catch {
-			// The process may already be gone; exact termination below guarantees cleanup.
+			try { await this.#startOperation; } catch { /* Failed startup can still own process resources. */ }
+			const child = this.#child;
+			this.#rejectPending(`${this.#adapter.name} LSP request cancelled.`);
+			if (!child) return;
+			if (!child.killed && child.exitCode === null && child.signalCode === null) {
+				try {
+					await this.request("shutdown", null, Math.min(this.#timeoutMs, SHUTDOWN_GRACE_MS));
+					this.notify("exit", undefined);
+				} catch { /* Exact process close is checked below, even after protocol failure. */ }
+			}
+			if (await this.#waitForClose(child)) return;
+			await this.#stopFamily();
+			if (this.#child !== child) return;
+			signalChild(child, "SIGTERM");
+			if (await this.#waitForClose(child)) return;
+			signalChild(child, "SIGKILL");
+			if (!(await this.#waitForClose(child))) {
+				throw new Error(`[LSP_CLEANUP_UNCONFIRMED] ${this.#adapter.name} process close was not observed; its identity remains owned.`);
+			}
 		} finally {
 			this.#rejectPending(`${this.#adapter.name} LSP request cancelled.`);
-			if (this.#child === child) {
-				child.kill("SIGTERM");
-				if (!(await waitForExit(child, SHUTDOWN_GRACE_MS))) child.kill("SIGKILL");
-				if (this.#child === child) this.#child = undefined;
+			try { await this.#stopFamily(); }
+			finally {
+				this.#clearRetainedState(); this.#shutdownOperation = undefined;
+				this.#startOperation = undefined; this.#startupController = undefined;
 			}
-			this.#clearRetainedState();
 		}
+	}
+
+	#stopFamily(): Promise<void> {
+		return this.#familyCleanup ??= Promise.resolve().then(() => this.#performFamilyCleanup());
+	}
+	async #performFamilyCleanup() {
+		if (this.#windowsJob) {
+			const failure = await this.#windowsJob.stop();
+			if (failure) throw new Error(`[LSP_CLEANUP_UNCONFIRMED] ${failure}`);
+			this.#windowsJob = undefined;
+		}
+		const group = this.#processGroup;
+		if (group === undefined) return;
+		try { process.kill(-group, "SIGKILL"); }
+		catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ESRCH") { this.#processGroup = undefined; return; }
+			throw new Error("[LSP_CLEANUP_UNCONFIRMED] Could not terminate the owned LSP process group.");
+		}
+		const deadline = performance.now() + SHUTDOWN_GRACE_MS;
+		for (;;) {
+			try { process.kill(-group, 0); }
+			catch (error) {
+				if ((error as NodeJS.ErrnoException).code === "ESRCH") { this.#processGroup = undefined; return; }
+				throw new Error("[LSP_CLEANUP_UNCONFIRMED] Could not confirm LSP process group exit.");
+			}
+			if (performance.now() >= deadline) throw new Error("[LSP_CLEANUP_UNCONFIRMED] LSP process group is still present.");
+			await delay(10);
+		}
+	}
+
+	#waitForClose(child: ChildProcessWithoutNullStreams): Promise<boolean> {
+		if (this.#child !== child) return Promise.resolve(true);
+		return new Promise<boolean>((resolve) => {
+			const onClose = () => { clearTimeout(timer); resolve(true); };
+			const timer = setTimeout(() => {
+				child.removeListener("close", onClose);
+				resolve(false);
+			}, SHUTDOWN_GRACE_MS);
+			child.once("close", onClose);
+		});
 	}
 
 	#rejectPending(message: string | ((id: number | "diagnostics") => string)) {
@@ -329,8 +428,8 @@ export class LspClient {
 
 	#fail(message: string) {
 		this.#rejectPending(message);
-		if (this.#child && !this.#child.killed) this.#child.kill("SIGTERM");
-		// Keep the exact child reference until its exit event or shutdown() confirms
+		if (this.#child && !this.#child.killed) signalChild(this.#child, "SIGTERM");
+		// Keep the exact child reference until its close event confirms
 		// termination, so callers can await cleanup instead of racing the OS.
 		this.#clearRetainedState();
 	}
@@ -342,7 +441,7 @@ export class LspClient {
 		this.#stderr = "";
 	}
 
-	private request(method: string, params: unknown) {
+	private request(method: string, params: unknown, timeoutMs = this.#timeoutMs) {
 		const id = this.#nextId++;
 
 		return new Promise<JsonRpcMessage>((resolve, reject) => {
@@ -353,7 +452,7 @@ export class LspClient {
 						`${this.#adapter.name} LSP request timed out: ${method}.${this.#formatStderr()}`,
 					),
 				);
-			}, this.#timeoutMs);
+			}, timeoutMs);
 			this.#pending.set(id, { resolve, reject, timeout });
 
 			try {
@@ -373,6 +472,7 @@ export class LspClient {
 	}
 
 	#send(message: JsonRpcMessage) {
+		if (this.#stopping && message.method !== "shutdown" && message.method !== "exit") throw new Error(`${this.#adapter.name} LSP client is stopping.`);
 		if (!this.#child) throw new Error(`${this.#adapter.name} LSP server is not running.`);
 
 		const body = JSON.stringify(message);
@@ -391,7 +491,13 @@ export class LspClient {
 		if (chunk.length > MAX_LSP_BUFFER_BYTES - this.#buffer.length) {
 			throw new Error(`LSP response buffer exceeds ${MAX_LSP_BUFFER_BYTES} bytes`);
 		}
-		this.#buffer = Buffer.concat([this.#buffer, chunk]);
+		if (this.#buffer.length === 0) this.#buffer = chunk;
+		else {
+			const merged = Buffer.allocUnsafe(this.#buffer.length + chunk.length);
+			this.#buffer.copy(merged);
+			chunk.copy(merged, this.#buffer.length);
+			this.#buffer = merged;
+		}
 
 		while (true) {
 			const separator = this.#buffer.indexOf("\r\n\r\n");
@@ -442,7 +548,7 @@ export class LspClient {
 				this.#recordPublishedDiagnostics(uriKey, publication);
 				const waiters = this.#diagnosticWaiters.get(uriKey);
 				if (waiters) {
-					for (const waiter of [...waiters]) waiter.onPublish(publication);
+					for (const waiter of waiters) waiter.onPublish(publication);
 				}
 			}
 			return;
@@ -491,6 +597,9 @@ export class LspClient {
 				dispose();
 				resolve(diagnostics);
 			};
+			const settleLatest = () => {
+				if (latestPublication) settleWith(latestPublication.diagnostics);
+			};
 			const fail = (reason: unknown) => {
 				dispose();
 				reject(reason);
@@ -505,10 +614,10 @@ export class LspClient {
 				}
 				sawNonEmptyPublication ||= publication.diagnostics.length > 0;
 				latestPublication = publication;
-				if (fallbackTimer) clearTimeout(fallbackTimer);
-				if (settleTimer) clearTimeout(settleTimer);
-				settleTimer = setTimeout(
-					() => settleWith(publication.diagnostics),
+				if (fallbackTimer) { clearTimeout(fallbackTimer); fallbackTimer = undefined; }
+				if (settleTimer) settleTimer.refresh();
+				else settleTimer = setTimeout(
+					settleLatest,
 					this.#adapter.diagnosticsSettleMs ?? PUBLISHED_DIAGNOSTICS_SETTLE_MS,
 				);
 			};
@@ -603,22 +712,12 @@ function documentUriKey(uri: string) {
 	}
 }
 
-function waitForExit(child: ChildProcessWithoutNullStreams, timeoutMs: number) {
-	if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
-	return new Promise<boolean>((resolve) => {
-		let timer: NodeJS.Timeout;
-		const onExit = () => {
-			clearTimeout(timer);
-			resolve(true);
-		};
-		timer = setTimeout(() => {
-			child.removeListener("exit", onExit);
-			resolve(false);
-		}, timeoutMs);
-		timer.unref?.();
-		child.once("exit", onExit);
-	});
+function signalChild(child: ChildProcessWithoutNullStreams, signal: NodeJS.Signals): void {
+	try { child.kill(signal); } catch { /* A signal request is never proof of exit. */ }
 }
+
+// Failures stay on the owned cleanup promise and are reported by shutdown/discard.
+function observeFamilyFailure(): void {}
 
 function formatErrorMessage(error: unknown) {
 	return error instanceof Error ? error.message : String(error);

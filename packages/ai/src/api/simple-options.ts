@@ -130,6 +130,7 @@ export function buildBaseOptions(
 		fetch: options?.fetch,
 		transport: options?.transport,
 		cacheRetention: options?.cacheRetention,
+		codexRemoteCompaction: options?.codexRemoteCompaction,
 		sessionId: options?.sessionId,
 		headers: options?.headers,
 		onPayload: options?.onPayload,

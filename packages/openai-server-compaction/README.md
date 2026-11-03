@@ -2,6 +2,8 @@
 
 This is a Pi extension which adds **Codex-style remote compaction** for OpenAI models, giving you better continuity across compaction boundaries while preserving all of Pi's normal features.
 
+Current Super Pi hosts select this package through the native compaction strategy registry. Model/configuration matching happens before candidate authentication, preview or summary requests. If another native policy also matches, compaction stops with a conflict instead of choosing by extension load order. Disable the unwanted policy explicitly; this selection does not grant permission to send history to another provider. Legacy `session_before_compact` hooks keep compatibility priority for cancellation or custom results. Hosts without the registry retain the old hook path and its ordering limitations.
+
 What does that mean? Why would you want it? My impression has been that Codex compacts better than Claude Code and better than Pi. And I supposed this was because Codex compacts by using OpenAI's server-side Responses compaction protocol. That protocol sends a `compaction_trigger` through `POST /v1/responses` and receives an encrypted `compaction` item. This extension configures Pi to use that protocol for OpenAI models alongside Pi's native compaction logic.
 
 But is Codex's compaction _actually_ better? Since the OpenAI compaction endpoint compacts to encrypted binary blobs, no one can say what it is doing under the hood. However, we don't need to know how it works to determine if it works better. Anyone can call the endpoint. And since codex is an open source, we can mimic exactly how codex itself uses the endpoint. That is what this extension configures Pi to do.
@@ -78,13 +80,19 @@ superpi -e ./packages/openai-server-compaction/src/index.ts --model openai/gpt-5
 ## Requirements
 
 - Node `>= 22`
-- Pi `>=0.84.0 <0.85.0`
+- Super Pi `^1.0.0` or legacy `>=0.84.0 <0.85.0` with `pi.setCodexRemoteCompactionEnabled(boolean)` and `pi.setOpenAIResponsesStream(...)`. A version number alone is insufficient: hosts without these APIs are disabled before command or hook registration, with an upgrade notice.
 - Auth/config for the model you want to use must already work in Pi
 - A supported OpenAI Responses model, e.g. `openai/gpt-5.6-sol` or `openai-codex/gpt-5.6-sol`
 
+Codex request intent belongs to the host runtime. This extension publishes its configured `enabled` value on `session_start` and `session_tree`, and revokes it before transitions and on shutdown. The host API is available after extension loading; call it from a lifecycle hook such as `session_start`. Model capability checks and successful-request validation remain separate. The former global Symbol registry is no longer used; update the host and extension together.
+
+Direct Responses dispatch is installed in the same runtime after loading; this extension no longer re-registers the OpenAI Provider. Native SDK requests select it after model, authentication and header preparation, while preserving user-defined native Providers and matching custom stream registrations. Metadata-only registrations still use the prepared settings. Low-level `ModelRuntime.stream()`/`complete()` and calls without the runtime dispatch use their selected Provider rather than inheriting an extension override.
+
+Each runtime owns its compaction state, direct Responses connections and request queues. Clearing dispatch retains this owner for cleanup; an installed owner cannot be replaced or omitted when reinstalling a stream. Revocation aborts active and queued requests, and shutdown/reload waits for actual completion with a 10-second deadline. A timeout or cleanup error reports failure; it does not certify a successful shutdown. `/provider-refresh` clears live flow after requests settle and preserves remote history and configuration. Cancellation reports `aborted` in both the event and final message. The queue is bounded at 128 outstanding requests per owner. The separate AI Codex transport cache is still keyed by session ID; this change does not claim isolation of that cache for identical IDs.
+
 ## What it does
 
-On compaction, the extension requests Responses compaction v2 through `/v1/responses` in parallel with generating a portable Pi text summary. If and only if the server returns an explicit pre-output 400/404 saying `compaction_trigger`/`remote_compaction_v2` is unsupported, it retries once through unary `/v1/responses/compact`; generic HTTP errors, rate limits, aborts, timeouts, and failures after streaming begins never issue that second request. This gives you both:
+On compaction, the extension requests Responses compaction v2 through `/v1/responses`. When a portable model summary is requested, GPT models finish it before remote compaction; other supported models may run the two requests in parallel. If and only if the server returns an explicit pre-output 400/404 saying `compaction_trigger`/`remote_compaction_v2` is unsupported, it retries once through unary `/v1/responses/compact`; generic HTTP errors, rate limits, aborts, timeouts, and failures after streaming begins never issue that second request. This gives you both:
 
 - **An OpenAI-native opaque compaction artifact** for high-fidelity continuity on compatible future turns
 - **A portable Pi text summary** so non-OpenAI models, session exports, forking, and tree navigation keep working
@@ -101,8 +109,8 @@ For `openai-codex/*` models, the extension preserves the built-in Codex transpor
 
 On Pi compaction events for supported models, the extension:
 
-1. Generates a **portable Pi continuation checkpoint** from only the prefix Pi will discard. The request reuses the normal system/tool/message prefix for prompt-cache locality, excludes the retained tail, and falls back to Pi's built-in compactor and then a bounded deterministic checkpoint when no custom summary instructions are present.
-2. Calls `POST /v1/responses` with the current effective conversation context (not superseded pre-compaction JSONL history), a trailing `compaction_trigger`, system prompt, tools, reasoning config, text config, and the effective request tier: the current process-local Fast override first, then the last observed base `service_tier`; the narrow unsupported-protocol case falls back to `POST /v1/responses/compact`
+1. Generates a **portable Pi continuation checkpoint** from only the prefix Pi will discard. An optional model summary uses a separate summary context, excludes the retained tail, and falls back to Pi's built-in compactor and then a bounded deterministic checkpoint when no custom summary instructions are present.
+2. Calls `POST /v1/responses` with the current effective conversation context (not superseded pre-compaction JSONL history), a trailing `compaction_trigger`, system prompt, tools, reasoning config, text config, and the final canonical preview's `service_tier`; the narrow unsupported-protocol case falls back to `POST /v1/responses/compact`
 3. Retains recent user messages within Pi's intentional 20K-token replay budget measured with the GPT-family `o200k_base` BPE tokenizer (using code-point-safe bounded chunks), replacing retained inline images with a fixed text marker so Base64 payloads cannot bypass that budget, and stores them with the returned opaque `compaction` item in `CompactionEntry.details.remoteCompaction`
 4. Aggregates reported portable-summary and remote-compaction usage on Pi's compaction entry so session statistics and footer totals include billed work
 5. After automatic threshold compaction, queues at most one hidden follow-up only when the last assistant response was reliably truncated (`length`)
@@ -118,6 +126,12 @@ The extension clears live continuation state on: session start/reload/resume, sw
 `/provider-refresh` waits until the current agent is fully idle, then closes only the current session's WebSocket and clears only its live `previous_response_id` / transport baseline. It does not change Pi's local JSONL history, persisted or reconstructed remote-compaction replay, observed request-shape settings, or project configuration. The next provider request starts a fresh transport flow from the appropriate local history.
 
 Remote compaction history is only replayed for compatible models. Cross-model turns are filtered from reconstructed replay history to prevent contamination after resume or tree navigation.
+
+Continuity recovery has explicit limits:
+
+- Direct Responses WebSocket requests assemble their candidate previous ID and input before payload hooks. A hook that removes that ID keeps its resulting input; the host does not splice an older prefix back in or replay the hook. Unknown cold/HTTP evidence is cleared before hooks. A final tier or foreign-ID mismatch is rejected before sending, and a subsequent cold request can establish a new boundary.
+- Native Codex hooks see the full logical request before cached WebSocket delta selection. An ordinary cache mismatch can send that full input. After compaction, a missing or ambiguous opaque boundary rejects the request without sending or falling back to SSE, while preserving the cache evidence. Restoring a valid boundary can reuse it; `/provider-refresh` starts a fresh transport using compatible persisted opaque history or the portable local representation.
+- These rules do not promise transparent recovery for arbitrary hook changes. They do not cache additional full histories, retry hooks to infer intent, or treat an error response as a successful continuity boundary.
 
 ## Data handling
 
@@ -140,9 +154,11 @@ Config is read from:
 - `~/.sp/agent/config/openai-server-compaction.json` (global)
 - `.sp/config/openai-server-compaction.json` (project-local, takes precedence only when `ctx.isProjectTrusted()` is true)
 
-Project config is resolved from the active session's `ctx.cwd`, not the process working directory. Because Pi's provider registration API has no session context at extension-load time, the OpenAI provider wrapper is registered once but delegates unchanged to Pi's built-in HTTP stream whenever the trusted per-session configuration has `enabled: false`. This avoids project-config leakage and preserves normal provider behavior when disabled.
+Project config is resolved from the active session's trusted `ctx.cwd`, not the process working directory. Session startup installs direct Responses dispatch only when the captured configuration is enabled. Disabled sessions retain their selected Provider; no OpenAI Provider registration is replaced. Untrusted sessions read only global/environment configuration.
 
-Codex Fast state is read from a fail-closed, versioned process-global contract shared with `@super-pi/openai-fast-mode`; this extension never rereads `pi-openai-fast.json` on the compaction path. Missing, malformed, or unknown state means no Fast override. The persisted JSON is only the next process/reload default. This contract assumes Pi 0.84.x has one active `AgentSessionRuntime` per process and must be redesigned for concurrent embedded runtimes.
+Compaction reads `service_tier` from the canonical preview after all ordinary payload hooks, including the optional Fast hook. It never rereads Fast configuration or a process-global override, and never substitutes an observed response tier. Codex validates this final requested tier against the last successful request commitment; changing it before compaction rejects the mismatch before dispatch. A successful ordinary request establishes the new tier's boundary.
+
+Direct Responses WebSocket continuation also binds the final requested tier to the successful response ID. The existing options-based shape check remains a conservative first filter. After payload hooks, any remaining `previous_response_id` must match that successful ID and its exact requested tier (including an explicitly omitted tier); response pricing tiers never establish continuation identity. Unknown cold/HTTP continuation is discarded before hooks so the existing full-input path can run once. A hook that changes tier while retaining an old ID is rejected before sending; it is not silently replayed, and client history is not spliced into its input. If the hook explicitly removes the ID, its resulting input is preserved. Failed or canceled requests never advance this successful boundary.
 
 ```json
 {
@@ -157,7 +173,11 @@ Codex Fast state is read from a fail-closed, versioned process-global contract s
 }
 ```
 
-`portableSummaryModel` is a model ID from the active provider. The default, `"current"`, maximizes prompt-cache reuse. A cheaper same-provider model may reduce summary cost, but is selected only when its context window can hold the current compaction input plus the summary output budget; otherwise the active model is used. This setting never selects a model from another provider.
+`portableSummaryModel` is a model ID from the active provider. The default, `"current"`, reuses the active model and its captured authentication. A cheaper same-provider model may reduce summary cost, but is selected only when its context window can hold the current compaction input plus the summary output budget; otherwise the active model is used. This setting never selects a model from another provider.
+
+Portable summaries reuse the active request's complete authentication snapshot, including its effective model URL, nullable headers and environment. A different summary model resolves its own authentication once; if unavailable, the whole active snapshot is retained. Both the first portable request and an allowed built-in compactor fallback use the selected snapshot, without mixing fields or resolving authentication again. Header deletion markers still prevent the legacy compactor fallback, and cancellation or custom summary instructions retain their existing failure behavior.
+
+Current hosts run both summary algorithms inside `withSupplementalSummary`, opened before candidate authentication. The host applies its header and payload hooks with `purpose: "supplemental-summary"` and the selected summary model. Fast therefore applies to eligible Codex summaries; a later payload hook can override their requested tier. The ordinary request and remote-compaction tier remain governed by their own canonical payload. Summary requests use SSE without session caching or a previous response ID, reuse the host's provider selection and Codex owner, and leave ordinary continuation, successful-request commitment, prefix and tool-budget state intact. Cancellation, model changes, reload and shutdown invalidate pending work; scope exit waits for the request iterator's cleanup, including errors after a terminal event. Hosts without this optional API retain the legacy dispatch path and do not provide these host-scope guarantees.
 
 Environment overrides:
 
@@ -232,7 +252,7 @@ The focused cache-rewarm matrix is intentionally kept outside this installed pac
 | `src/openai-ws-stream.ts`                  | WebSocket continuation path                                       |
 | `src/openai-ws-connection.ts`              | WebSocket connection manager                                      |
 | `src/openai.ts`                            | Model detection and payload patching                              |
-| `src/custom-stream.ts`                     | Provider override entrypoint                                      |
+| `src/custom-stream.ts`                     | Explicit runtime dispatch entrypoint                              |
 | `src/config.ts`                            | Configuration loading                                             |
 | `src/state.ts`                             | Ephemeral per-session runtime state                               |
 | `src/stream-message-shared.ts`             | Shared assistant message builders                                 |

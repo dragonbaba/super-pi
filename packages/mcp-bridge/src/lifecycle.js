@@ -1,6 +1,12 @@
 async function closeRuntime(runtime) {
   if (!runtime) return;
-  try { await runtime.close(); } catch { /* lifecycle cleanup is best effort */ }
+  await runtime.close();
+}
+
+function lifecycleCancellation(message) {
+  const error = new Error(message);
+  error.stack = error.message;
+  return error;
 }
 
 // Only connection/discovery waits use this boundary. Cancelling one waiter must
@@ -38,17 +44,31 @@ export class McpRuntimeLifecycle {
     return token?.generation === this.#generation && token.controller === this.#controller;
   }
 
+  owns(runtime) {
+    return runtime === this.#current || runtime === this.#starting;
+  }
+
+  async suspend() {
+    this.#generation++;
+    this.#controller?.abort(lifecycleCancellation("MCP execution boundary changed"));
+    this.#controller = null;
+    // A partially initialized runtime cannot be published after revocation.
+    // Only the published catalog is reusable; no replacement catalog is copied.
+    const results = await Promise.allSettled([this.#closeStarting(), this.#current?.suspend()]);
+    for (const result of results) if (result.status === "rejected") throw result.reason;
+  }
+
+  resume() {
+    if (this.#starting) throw new Error("MCP startup cleanup has not completed.");
+    this.#current?.resume();
+  }
+
   async begin(parentSignal) {
     const generation = ++this.#generation;
-    this.#controller?.abort(new Error("MCP lifecycle replaced"));
-    const current = this.#current;
-    const starting = this.#starting;
+    this.#controller?.abort(lifecycleCancellation("MCP lifecycle replaced"));
     this.#controller = null;
-    this.#current = null;
-    this.#starting = null;
     this.deactivate();
-    await closeRuntime(starting);
-    if (current !== starting) await closeRuntime(current);
+    await this.#drainOwned();
     if (generation !== this.#generation) return null;
 
     const controller = new AbortController();
@@ -58,11 +78,13 @@ export class McpRuntimeLifecycle {
   }
 
   async attach(token, runtime) {
+    if (this.#starting && this.#starting !== runtime) throw new Error("MCP startup still owns a runtime awaiting cleanup.");
+    this.#starting = runtime;
     if (!this.isCurrent(token) || token.signal.aborted) {
       await closeRuntime(runtime);
+      if (this.#starting === runtime) this.#starting = null;
       return false;
     }
-    this.#starting = runtime;
     return true;
   }
 
@@ -75,6 +97,7 @@ export class McpRuntimeLifecycle {
 
   fail(token, runtime) {
     if (!this.isCurrent(token)) return false;
+    if (runtime && !runtime.cleanupComplete) return true;
     if (this.#starting === runtime) this.#starting = null;
     if (this.#current === runtime) this.#current = null;
     return true;
@@ -82,14 +105,26 @@ export class McpRuntimeLifecycle {
 
   async shutdown() {
     this.#generation += 1;
-    this.#controller?.abort(new Error("MCP lifecycle stopped"));
-    const current = this.#current;
-    const starting = this.#starting;
+    this.#controller?.abort(lifecycleCancellation("MCP lifecycle stopped"));
     this.#controller = null;
-    this.#current = null;
-    this.#starting = null;
     this.deactivate();
-    await closeRuntime(starting);
-    if (current !== starting) await closeRuntime(current);
+    await this.#drainOwned();
+  }
+
+  async #drainOwned() {
+    const results = await Promise.allSettled([this.#closeStarting(), this.#closeCurrent()]);
+    for (const result of results) if (result.status === "rejected") throw result.reason;
+  }
+
+  async #closeStarting() {
+    const runtime = this.#starting;
+    await closeRuntime(runtime);
+    if (this.#starting === runtime) this.#starting = null;
+  }
+
+  async #closeCurrent() {
+    const runtime = this.#current;
+    await closeRuntime(runtime);
+    if (this.#current === runtime) this.#current = null;
   }
 }

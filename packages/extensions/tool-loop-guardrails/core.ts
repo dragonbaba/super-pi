@@ -25,7 +25,8 @@ import {
 } from "./regex.js";
 
 const MAX_TRACKED_KEYS = 64;
-const REPEATED_FAILURE_THRESHOLD = 2;
+const FAILURE_WARNING_THRESHOLD = 2;
+const MAX_UNTRACKED_TRANSIENT_FAILURES = 2;
 const FIRST_REPEAT_REMINDER_THRESHOLD = 3;
 const SECOND_REPEAT_REMINDER_THRESHOLD = 5;
 const FINAL_REPEAT_REMINDER_THRESHOLD = 8;
@@ -80,9 +81,9 @@ function boundedToolName(value: string): string {
   return value.length <= 80 ? value : value.slice(0, 80);
 }
 
-export function guardCapacityReason(toolName: string, cause: string): string {
+export function guardCapacityReason(toolName: string, cause: string, retryable = true): string {
   return JSON.stringify({ ok: false, category: "GUARD_CAPACITY", operation: boundedToolName(toolName),
-    retryable: true, stateChanged: false, cause });
+    retryable, stateChanged: false, cause });
 }
 
 function setBounded<T>(map: Map<string, T>, key: string, value: T): void {
@@ -514,18 +515,12 @@ export function inspectBeforeCall(
       waitMs: retry?.waitMs ?? 0, maxAttempts: state.retry.policy.maxAttempts,
       maxWaitMs: state.retry.policy.maxWaitMs, cause: retryReason });
   }
-  const prefix = `${key}:`;
-  for (const signature of state.failuresBySignature.keys()) {
-    const count = state.failuresBySignature.get(signature)!;
-    if (!signature.startsWith(prefix)) continue;
-    if (count < REPEATED_FAILURE_THRESHOLD) continue;
+  // Only retry-table overflow retains a resource refusal. Ordinary failure
+  // summaries are advisory and never decide whether the next call may execute.
+  if (state.retry.saturated
+    && (state.failuresBySignature.get(signatureKey(key, "transient_retry_overflow")) ?? 0) >= MAX_UNTRACKED_TRANSIENT_FAILURES) {
     state.blocked++;
-    return JSON.stringify({
-      ok: false, category: "REPEATED_CALL_BLOCKED", operation: boundedToolName(toolName),
-      retryable: false, stateChanged: false, failureCategory: signature.slice(prefix.length), failureCount: count,
-      cause: "The identical call already failed repeatedly in this agent run, across parent scripts.",
-      nextAction: "Inspect the original failure and change the arguments or method before retrying.",
-    });
+    return guardCapacityReason(toolName, "The transient retry table is full and this operation exhausted its two untracked recovery attempts; start a fresh user run.", false);
   }
   return undefined;
 }
@@ -561,14 +556,11 @@ export function recordResult(
       state.failureEvictions++;
     }
     setBounded(state.failuresBySignature, key, count);
-    // Compatibility diagnostics only; admission consults the bounded per-identity table.
+    // Ordinary failure counts are diagnostic only; transient overflow is a separate resource limit.
     state.activeFailureCount = count;
     state.activeFailureSignature = key;
-    if (count < REPEATED_FAILURE_THRESHOLD) return undefined;
+    if (count !== FAILURE_WARNING_THRESHOLD) return undefined;
     state.warnings++;
-    if (state.activeFailureCount > REPEATED_FAILURE_THRESHOLD) {
-      return `[TLG: identical ${boundedToolName(toolName)}/${category} failure still active; change approach.]`;
-    }
     return warningText(toolName, `the identical call failed ${state.activeFailureCount} times with category ${category}`);
   }
 

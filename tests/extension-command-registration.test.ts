@@ -65,12 +65,21 @@ test("invalid replacement leaves the existing command callable", async t => {
 test("failed command registration discards staged flags and event subscriptions", async t => {
 	const { runtime, bus } = owner(t);
 	let events = 0;
+	let failedApi: ExtensionAPI | undefined;
 	await assert.rejects(loadExtensionFromFactory(pi => {
+		failedApi = pi;
+		assert.throws(() => pi.setCodexRemoteCompactionEnabled(true), /during extension loading/);
+		assert.throws(() => pi.setOpenAIResponsesStream(() => { throw new Error("unused"); }), /during extension loading/);
+		assert.equal(runtime.openAIResponsesDispatch, undefined);
+		assert.equal(runtime.codexRemoteCompactionEnabled, false);
 		pi.registerFlag("uncommitted", { type: "boolean", default: true });
 		pi.events.on("probe", () => { events++; });
 		pi.registerCommand("broken", {} as never);
 	}, process.cwd(), bus, runtime), /handler/);
 	assert.equal(runtime.flagValues.has("uncommitted"), false);
+	assert.throws(() => failedApi!.setCodexRemoteCompactionEnabled(true), /failed to load/);
+	assert.throws(() => failedApi!.setOpenAIResponsesStream(undefined), /failed to load/);
+	assert.equal(runtime.codexRemoteCompactionEnabled, false);
 	bus.emit("probe", undefined);
 	assert.equal(events, 0);
 });

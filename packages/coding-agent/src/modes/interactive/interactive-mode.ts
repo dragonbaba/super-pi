@@ -5,6 +5,7 @@ import { IMAGE_ATTACHMENT_LIMITS, IMAGE_VISION_RESULT_TYPE, ImageAttachmentDraft
  */
 
 import * as crypto from "node:crypto";
+import { PERMISSION_MODE_LABELS, type SessionPermissionMode } from "../../core/permission-mode.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -417,6 +418,7 @@ export function createInteractiveTui(options: InteractiveTuiOptions): TuiMainScr
 	const terminal = options.terminal ?? new ProcessTerminal();
 	if (options.tuiMode === "fullscreen") {
 		return new TuiAltScreen(terminal, options.showHardwareCursor, options.logDirectory, {
+			scrollToBottomHint: true,
 			openUrl: openBrowser,
 			onRightClickPaste: options.onRightClickPaste,
 		});
@@ -740,9 +742,11 @@ export class InteractiveMode {
 
 	// Auto-compaction state
 	private autoCompactionEscapeHandler?: () => void;
+	private readonly onCompactionEscape = (): void => { if (!this.returnToBottomOnEscape()) this.session.abortCompaction(); };
 
 	// Auto-retry state
 	private retryEscapeHandler?: () => void;
+	private readonly onRetryEscape = (): void => { if (!this.returnToBottomOnEscape()) this.session.abortRetry(); };
 
 	// Messages queued while compaction is running
 	private compactionQueuedMessages: CompactionQueuedMessage[] = [];
@@ -2356,6 +2360,8 @@ export class InteractiveMode {
 	private async bindCurrentSessionExtensions(lifecycleGeneration?: number): Promise<void> {
 		const extensionUiGeneration = ++this.extensionUiGeneration;
 		const uiContext = this.createExtensionUIContext(extensionUiGeneration);
+		const permissionMode = this.session.settingsManager.getPermissionMode();
+		if (permissionMode) this.setExtensionStatus("permissions", PERMISSION_MODE_LABELS[permissionMode]);
 		await this.session.bindExtensions({
 			uiContext,
 			mode: "tui",
@@ -2904,6 +2910,27 @@ export class InteractiveMode {
 				notify: ui.notify,
 			},
 		};
+	}
+
+	private async showPermissionsSelector(): Promise<void> {
+		const session = this.session, generation = this.tuiLifecycleGeneration;
+		const current = session.settingsManager.getPermissionMode();
+		const modes: SessionPermissionMode[] = ["read-only", "sandbox-write", "host-write"];
+		const choices = modes.map((mode, index) => `${index + 1} · ${PERMISSION_MODE_LABELS[mode]}${mode === current ? "（当前）" : ""}`);
+		const ui = this.createExtensionUIContext();
+		const selected = await ui.select("选择当前 Session 权限", choices);
+		if (!selected || this.session !== session || this.tuiLifecycleGeneration !== generation) return;
+		const mode = modes[choices.indexOf(selected)];
+		if (!mode) return;
+		if (mode === "host-write" && !await ui.confirm("切换到宿主机读写", "此模式退出沙箱隔离，工具将在本机执行，并可按授权修改本机文件。是否切换？")) return;
+		if (this.session !== session || this.tuiLifecycleGeneration !== generation) return;
+		try {
+			const result = await this.runtimeHost.setPermissionMode(mode);
+			if (!result.cancelled) this.showExtensionNotify(`当前权限：${PERMISSION_MODE_LABELS[mode]}`, "info");
+		} catch (error) {
+			this.setExtensionStatus("permissions", "权限切换未完成 · 执行已停止");
+			this.showError(`权限切换失败：${error instanceof Error ? error.message : String(error)}`);
+		}
 	}
 
 	private createExtensionUIContext(extensionUiGeneration = this.extensionUiGeneration): ExtensionUIContext {
@@ -3702,10 +3729,17 @@ export class InteractiveMode {
 	// Key Handlers
 	// =========================================================================
 
+	private returnToBottomOnEscape(): boolean {
+		if (!(this.renderer instanceof TuiAltScreen) || !this.renderer.scrollToBottomIfNeeded()) return false;
+		this.lastEscapeTime = 0;
+		return true;
+	}
+
 	private setupKeyHandlers(): void {
 		// Set up handlers on defaultEditor - they use this.editor for text access
 		// so they work correctly regardless of which editor is active
 		this.defaultEditor.onEscape = () => {
+			if (this.returnToBottomOnEscape()) return;
 			if (this.session.isStreaming) {
 				this.restoreQueuedMessagesToEditor({ abort: true });
 			} else if (this.session.isBashRunning) {
@@ -3933,6 +3967,11 @@ export class InteractiveMode {
 			if (!text) return;
 
 			// Handle commands
+			if (text === "/permissions" || text === "/permission") {
+				this.editor.setText("");
+				await this.showPermissionsSelector();
+				return;
+			}
 			if (text === "/tool-budget" || text.startsWith("/tool-budget ")) {
 				this.editor.setText("");
 				this.handleToolResultBudgetCommand(text.slice(12));
@@ -4417,9 +4456,7 @@ export class InteractiveMode {
 				}
 				// Keep editor active; submissions are queued during compaction.
 				this.autoCompactionEscapeHandler = this.defaultEditor.onEscape;
-				this.defaultEditor.onEscape = () => {
-					this.session.abortCompaction();
-				};
+				this.defaultEditor.onEscape = this.onCompactionEscape;
 				this.showStatusIndicator(new CompactionStatusIndicator(this.ui, event.reason));
 				this.ui.requestRender();
 				break;
@@ -4468,9 +4505,7 @@ export class InteractiveMode {
 			case "auto_retry_start": {
 				// Set up escape to abort retry
 				this.retryEscapeHandler = this.defaultEditor.onEscape;
-				this.defaultEditor.onEscape = () => {
-					this.session.abortRetry();
-				};
+				this.defaultEditor.onEscape = this.onRetryEscape;
 				this.showStatusIndicator(
 					new RetryStatusIndicator(this.ui, event.attempt, event.maxAttempts, event.delayMs),
 				);
@@ -7116,6 +7151,7 @@ export class InteractiveMode {
 						mgr.appendSessionInfo(next);
 					},
 					showRenameHint: true,
+					agentDir: this.runtimeHost.services.agentDir,
 					keybindings: this.keybindings,
 				},
 

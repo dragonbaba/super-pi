@@ -18,7 +18,7 @@ import { snapshotImageSubmission } from "../packages/coding-agent/src/core/image
 import { Editor } from "@super-pi/tui";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
 import { readClipboardImage } from "../packages/coding-agent/src/utils/clipboard-image.ts";
-import { readFormsClipboardFixture } from "./helpers/windows-clipboard-data.ts";
+import { prepareFormsImageClipboardFixture, readFormsClipboardFixture } from "./helpers/windows-clipboard-data.ts";
 
 async function mounted(auxiliary = false, screen: "regular" | "fullscreen" = "regular", controls: Parameters<typeof offlineImageRuntime>[5] = {}) {
 	const root = mkdtempSync(join(tmpdir(), "sp-placeholder-"));
@@ -58,7 +58,7 @@ for (const auxiliary of [false, true]) test(`Windows copied image files: Alt+V t
 		for (const path of paths) writeFileSync(path, bytes);
 		cp.execFile = (command: string, args: string[], options: unknown, callback: any) => {
 			const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le");
-			if (script.includes("[System.Windows.Forms.Clipboard]::GetImage()")) {
+			if (script.includes("[System.Windows.Forms.Clipboard]::GetDataObject()")) {
 				imageHelperCalls++; callback(null, Buffer.alloc(0)); return;
 			}
 			return original(command, args, options, callback);
@@ -167,7 +167,7 @@ for (const auxiliary of [false, true]) for (const gesture of ["alt", "ctrl", "em
 		try {
 			cp.execFile = (_command: string, args: string[], _options: unknown, callback: any) => {
 				const script = Buffer.from(args[args.length - 1], "base64").toString("utf16le");
-				assert.match(script, /GetImage/); reads++; callback(null, Buffer.from(pngFixture(8, 8).toString("base64")));
+				assert.match(script, /\[System\.Windows\.Forms\.Clipboard\]::GetDataObject\(\)/); reads++; callback(null, Buffer.from(pngFixture(8, 8).toString("base64")));
 			}; syncBuiltinESMExports();
 			f.input.write(gesture === "alt" ? "\x1bv" : gesture === "ctrl" ? "\x16" : gesture === "right-click" ? "\x1b[<2;5;5M" : "\x1b[200~\x1b[201~");
 			await settled(f);
@@ -176,6 +176,111 @@ for (const auxiliary of [false, true]) for (const gesture of ["alt", "ctrl", "em
 			assert.equal(f.counts.main + f.counts.vision, 0);
 			f.input.write("\x7f"); assert.equal(f.internal.imageDraft.items.length, 0);
 		} finally { cp.execFile = original; syncBuiltinESMExports(); await f.release(); }
+	});
+}
+
+for (const auxiliary of [false, true]) for (const gesture of ["alt", "ctrl"] as const) {
+	test(`known clipboard image failure keeps its failed attachment and blocks submit (${gesture}, auxiliary=${auxiliary})`, async () => {
+		const f = await mounted(auxiliary);
+		const cp = createRequire(import.meta.url)("node:child_process"), original = cp.execFile;
+		let completeRead: ((error: Error, stdout: Buffer, stderr: Buffer) => void) | undefined;
+		let helperCalls = 0, textReads = 0;
+		try {
+			// Exercise the same host gesture on every OS; only the Windows helper
+			// transport is simulated here, not native Windows clipboard access.
+			f.internal.keybindings.setUserBindings({ "app.clipboard.pasteImage": ["alt+v", "ctrl+v"] });
+			cp.execFile = (_command: string, args: string[], _options: unknown, callback: typeof completeRead) => {
+				const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le");
+				assert.match(script, /\[System\.Windows\.Forms\.Clipboard\]::GetDataObject\(\)/);
+				helperCalls++; completeRead = callback;
+			}; syncBuiltinESMExports();
+			f.internal.readClipboardImageForPaste = () => readClipboardImage({ platform: "win32", nativeClipboard: null, signal: f.internal.clipboardAbort.signal });
+			f.internal.readClipboardTextForPaste = async () => { textReads++; return "-"; };
+			f.input.write("question"); f.input.write(gesture === "alt" ? "\x1bv" : "\x16");
+			assert.equal(helperCalls, 1);
+			assert.match(await frame(f), /正在添加/);
+			const id = f.internal.imageDraft.items[0].id;
+			assert.ok(completeRead);
+			const finish = completeRead; completeRead = undefined;
+			finish(Object.assign(new Error("known image read failure"), { code: 4 }), Buffer.alloc(0), Buffer.from("Image data is present but unavailable"));
+			await settled(f);
+			assert.equal(textReads, 0, "an image read failure must not become clipboard text");
+			assert.equal(f.internal.editor.getText(), "question");
+			assert.equal(f.internal.imageDraft.items.length, 1);
+			assert.equal(f.internal.imageDraft.items[0].id, id);
+			assert.equal(f.internal.imageDraft.items[0].state, "failed");
+			assert.match(await frame(f), /失败：/);
+			let submitted: Promise<void> | undefined;
+			const submit = f.internal.defaultEditor.onSubmit;
+			f.internal.defaultEditor.onSubmit = (text: string) => submitted = submit(text);
+			f.input.write("\r"); assert.ok(submitted, "Enter reaches the host submission guard"); await submitted;
+			assert.equal(f.counts.main + f.counts.vision, 0);
+			assert.equal(f.internal.editor.getText(), "question");
+			assert.equal(f.internal.imageDraft.items[0].id, id);
+			assert.equal(f.internal.imageDraft.items[0].state, "failed");
+		} finally {
+			completeRead?.(Object.assign(new Error("fixture cleanup"), { code: 4 }), Buffer.alloc(0), Buffer.alloc(0));
+			cp.execFile = original; syncBuiltinESMExports(); await settled(f); await f.release();
+		}
+	});
+}
+
+for (const gesture of ["alt", "ctrl"] as const) test(`clipboard with no image preserves ordinary hyphen text (${gesture})`, async () => {
+	const f = await mounted(); let textReads = 0;
+	try {
+		f.internal.keybindings.setUserBindings({ "app.clipboard.pasteImage": ["alt+v", "ctrl+v"] });
+		f.internal.readClipboardImageForPaste = async () => null;
+		f.internal.readClipboardTextForPaste = async () => { textReads++; return "-"; };
+		f.input.write("question "); f.input.write(gesture === "alt" ? "\x1bv" : "\x16"); await settled(f);
+		assert.equal(textReads, 1);
+		assert.equal(f.internal.editor.getText(), "question -");
+		assert.equal(f.internal.imageDraft.items.length, 0);
+		assert.equal(f.counts.main + f.counts.vision, 0);
+		assert.doesNotMatch(await frame(f), /正在添加|失败：|已粘贴/);
+	} finally { await f.release(); }
+});
+
+for (const format of ["PNG", "image/png"] as const) for (const valid of [true, false]) {
+	test(`Windows Forms ${format} stream with hyphen text ${valid ? "creates an attachment" : "keeps a failed attachment"}`, { skip: process.platform !== "win32", timeout: 45_000 }, async () => {
+		const f = await mounted();
+		const cp = createRequire(import.meta.url)("node:child_process"), original = cp.execFile;
+		let helperCalls = 0, textReads = 0;
+		try {
+			// Real production STA parsing and image decoding, but a private in-memory
+			// DataObject: this does not read or overwrite the Windows system clipboard.
+			cp.execFile = (command: string, args: string[], options: Record<string, unknown>, callback: unknown) => {
+				const fixture = prepareFormsImageClipboardFixture(args, valid ? pngFixture(8, 8) : Buffer.from("not a PNG"), "-", format);
+				helperCalls++;
+				return original(command, fixture.args, { ...options, timeout: fixture.timeoutMs }, callback);
+			}; syncBuiltinESMExports();
+			f.internal.readClipboardImageForPaste = () => readClipboardImage({ platform: "win32", nativeClipboard: null, signal: f.internal.clipboardAbort.signal });
+			f.internal.readClipboardTextForPaste = async () => { textReads++; return "-"; };
+			f.input.write("question"); f.input.write("\x1bv");
+			assert.match(f.internal.defaultEditor.render(120).join("\n"), /正在添加/);
+			await settled(f);
+			assert.equal(helperCalls, 1);
+			assert.equal(textReads, 0);
+			assert.equal(f.internal.editor.getText(), "question");
+			assert.equal(f.internal.imageDraft.items.length, 1);
+			const attachment = f.internal.imageDraft.items[0];
+			assert.equal(attachment.state, valid ? "ready" : "failed");
+			assert.match(await frame(f), valid ? /已粘贴 · 未发送/ : /失败：/);
+			assert.equal(f.counts.main + f.counts.vision, 0);
+			if (valid) {
+				assert.equal(attachment.metadata.mimeType, "image/png");
+				assert.equal(attachment.metadata.width, 8); assert.equal(attachment.metadata.height, 8);
+			}
+			let submitted: Promise<void> | undefined;
+			const submit = f.internal.defaultEditor.onSubmit;
+			f.internal.defaultEditor.onSubmit = (text: string) => submitted = submit(text);
+			f.input.write("\r"); assert.ok(submitted, "Enter reaches the host submission guard"); await submitted;
+			assert.equal(f.counts.main, valid ? 1 : 0); assert.equal(f.counts.vision, 0);
+			if (!valid) {
+				assert.equal(f.internal.editor.getText(), "question");
+				assert.equal(f.internal.imageDraft.items[0].id, attachment.id);
+				assert.equal(f.internal.imageDraft.items[0].state, "failed");
+			}
+		} finally { cp.execFile = original; syncBuiltinESMExports(); await settled(f); await f.release(); }
 	});
 }
 

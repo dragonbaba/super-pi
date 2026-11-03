@@ -8,6 +8,7 @@ const { ChangeViewer } = await createJiti(import.meta.url).import<any>("../packa
 test("N1 full bounded report materializes only visible rows and releases numeric scroll state", async t => {
   let done = 0, renders = 0;
   const view = new ChangeViewer("x".repeat(65536), { terminal: { rows: 24 }, requestRender() { renders++; } }, () => { done++; });
+  const lifecycleReferences = [new WeakRef((view as any).tui), new WeakRef((view as any).done)];
   const profiler = process.env.SP_PREVIEW_PROFILE === "1" ? new Session() : undefined;
   try {
     const first = view.render(1), initial = view.getDiagnostics();
@@ -37,7 +38,11 @@ test("N1 full bounded report materializes only visible rows and releases numeric
       profiler.disconnect();
       await new Promise<void>(resolve => setImmediate(resolve));
     }
-    global.gc?.(); t.diagnostic(JSON.stringify({ benchmark: "N1-change-viewport", node: process.version, stableRenders: 20000, changedViewports: 200,
+    if (global.gc) {
+      for (let cycle = 0; cycle < 3; cycle++) { await new Promise<void>(resolve => setImmediate(resolve)); global.gc(); }
+      assert.equal(lifecycleReferences.filter(reference => reference.deref()).length, 0);
+    }
+    t.diagnostic(JSON.stringify({ benchmark: "N1-change-viewport", node: process.version, stableRenders: 20000, changedViewports: 200,
       stableNewRows: 0, metrics, released, heapBefore, heapAfterRelease: process.memoryUsage().heapUsed, sampledBytes: profiler ? sampledBytes : null }));
   } finally { view.dispose(); profiler?.disconnect(); }
 });

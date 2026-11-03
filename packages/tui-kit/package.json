@@ -18,8 +18,8 @@
 		"highlight.js": "11.11.1"
 	},
 	"peerDependencies": {
-		"@super-pi/coding-agent": ">=0.84.0 <0.85.0",
-		"@super-pi/tui": ">=0.84.0 <0.85.0"
+		"@super-pi/coding-agent": ">=0.84.0 <0.85.0 || ^1.0.0",
+		"@super-pi/tui": ">=0.84.0 <0.85.0 || ^1.0.0"
 	},
 	"upstream": {
 		"name": "@narumitw/pi-tui-kit",

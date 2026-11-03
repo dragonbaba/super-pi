@@ -4,7 +4,7 @@ import test from "node:test";
 import ts from "typescript";
 
 test("task persistence is reachable only from named lifecycle boundaries, never streaming publication", () => {
-	const file = "packages/extensions/subagent/tasks.ts";
+	const file = "packages/coding-agent/src/core/tasks/tasks.ts";
 	const tree = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
 	const sites: string[] = [];
 	function walk(node: ts.Node, owner: string): void {
@@ -19,7 +19,7 @@ test("task persistence is reachable only from named lifecycle boundaries, never 
 		ts.forEachChild(node, child => walk(child, owner));
 	}
 	walk(tree, ""); assert.deepEqual(sites.sort(), ["create", "finish", "start"]);
-	const storage = readFileSync("packages/extensions/task-history.ts", "utf8");
+	const storage = readFileSync("packages/coding-agent/src/core/tasks/task-history.ts", "utf8");
 	assert.doesNotMatch(storage, /setTimeout|setInterval|new Promise|AbortController|\.on\(["']data/);
 	assert.doesNotMatch(storage, /JSON\.stringify\(record\)|JSON\.stringify\(.*records/);
 	assert.doesNotMatch(storage, /JSON\.stringify\(record\.shellExecution\)/, "backend-owned facts must never be serialized directly");

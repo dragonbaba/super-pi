@@ -7,7 +7,7 @@ const { default: guard } = await jiti.import<any>("../packages/extensions/tool-l
 
 function fixture() {
 	const hooks = new Map<string, (...args: any[]) => any>();
-	guard({ on: (name: string, hook: any) => hooks.set(name, hook), registerTool() {}, sendMessage() {} });
+	guard({ on: (name: string, hook: any) => hooks.set(name, hook), events: { emit() {} }, registerTool() {}, sendMessage() {} });
 	const ctx = { cwd: process.cwd() };
 	const input = { fixture: "same" };
 	return { hooks, async call(id: string, parent?: string) {
@@ -54,20 +54,19 @@ test("a nested child that never reaches tool_result releases its reservation at 
 	assert.match((await native.call("duplicate")).reason, /current assistant tool batch/);
 });
 
-test("native duplicate batches and repeated nested failure guards remain enforced", async () => {
+test("native duplicate batches stay blocked while completed nested failures can be requested again", async () => {
 	const native = fixture();
 	assert.equal(await native.call("first"), undefined); await native.result("first");
 	assert.match((await native.call("duplicate")).reason, /DUPLICATE_CALL/);
 	native.hooks.get("turn_start")!();
 	assert.equal(await native.call("new-turn"), undefined);
 	const nested = fixture();
-	let blocked = false;
 	for (let i = 0; i < 8; i++) {
-		const admission = await nested.call(`failure-${i}`, "p");
-		if (admission?.block) { assert.match(admission.reason, /REPEATED_CALL_BLOCKED/); blocked = true; break; }
-		await nested.result(`failure-${i}`, true, "p");
+		assert.equal(await nested.call(`failure-${i}`, "p"), undefined);
+		assert.equal(await nested.result(`failure-${i}`, true, "p"), undefined, "preserve the real error result");
 	}
-	assert.equal(blocked, true);
+	native.hooks.get("agent_end")!();
+	nested.hooks.get("agent_end")!();
 });
 
 test("a queued nested duplicate stays an overlap after many distinct siblings complete", async () => {

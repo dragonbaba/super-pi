@@ -15,7 +15,7 @@ function fixture(config?: string) {
   const hooks = new Map<string, (...args: any[]) => any>();
   const messages: any[] = [];
   const controller = new AbortController();
-  guard({ on(name: string, hook: any) { hooks.set(name, hook); }, registerTool() {}, registerFlag() {},
+  guard({ on(name: string, hook: any) { hooks.set(name, hook); }, events: { emit() {} }, registerTool() {}, registerFlag() {},
     getFlag() { return config; }, sendMessage(message: any) { messages.push(message); } } as any);
   const ctx = { cwd: process.cwd(), signal: controller.signal };
   hooks.get("agent_start")!();
@@ -81,7 +81,7 @@ test("production hook scans one admitted input; result and unadmitted results pe
   } finally { prototype.update = original; f.close(); }
 });
 
-test("per-operation deterministic counts survive other categories, parents, cancellation and unrelated success", () => {
+test("ordinary failure summaries remain bounded advice and never deny admission", () => {
   const s = core.createGuardState(), input = { x: 1 };
   for (let i = 0; i < 2; i++) {
     assert.equal(core.inspectBeforeCall(s, "child", input), undefined);
@@ -90,14 +90,16 @@ test("per-operation deterministic counts survive other categories, parents, canc
     core.recordResult(s, "child", { x: 2 }, false);
     core.recordResult(s, "child", input, true, "Operation aborted");
   }
-  assert.match(core.inspectBeforeCall(s, "child", input)!, /REPEATED_CALL_BLOCKED/);
+  assert.equal(core.inspectBeforeCall(s, "child", input), undefined);
+  assert.equal(s.blocked, 0);
+  assert.equal(s.failuresBySignature.size, 1);
   core.recordResult(s, "child", input, false);
   assert.equal(core.inspectBeforeCall(s, "child", input), undefined);
   core.resetGuardState(s);
   assert.equal(s.failuresBySignature.size + s.retry.operations.size + s.batchCalls.size, 0);
 });
 
-test("full parent cancellation releases a pending child without erasing earlier child failures", async () => {
+test("parent cancellation releases a pending child and earlier failures cannot veto a fresh request", async () => {
   const f = fixture(), input = { x: 1 };
   assert.equal(await f.call("first", input, "p1"), undefined);
   await f.result("first", input, "SyntaxError: bad", true); f.end("p1");
@@ -105,7 +107,8 @@ test("full parent cancellation releases a pending child without erasing earlier 
   f.end("p2");
   assert.equal(await f.call("second", input, "p3"), undefined);
   await f.result("second", input, "SyntaxError: bad", true); f.end("p3");
-  assert.match((await f.call("third", input, "p4")).reason, /REPEATED_CALL_BLOCKED/);
+  assert.equal(await f.call("third", input, "p4"), undefined);
+  assert.equal(await f.result("third", input, "SyntaxError: bad", true), undefined, "advice does not replace the real failure");
   f.close();
   assert.equal(await f.call("fresh", input, "p5"), undefined);
   f.close();
@@ -282,7 +285,7 @@ for (const outcome of ["success", "failure"] as const) test(`a stale retry ${out
   assert.equal(state.retry.operations.has(key), false);
 });
 
-test("camelCase and JSON HTTP 5xx use the transient ledger without changing deterministic refusals", async t => {
+test("camelCase and JSON HTTP 5xx use the transient ledger while ordinary failures remain advisory", async t => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   for (const text of ['{"statusCode":503}', "Request failed with statusCode: 503", '{"status":502}', "status code = 504"]) {
     const f = fixture('{"baseDelayMs":1,"maxDelayMs":1}'), input = { url: "offline" };
@@ -301,7 +304,7 @@ test("camelCase and JSON HTTP 5xx use the transient ledger without changing dete
     const state = core.createGuardState();
     for (let i = 0; i < 2; i++) core.recordResult(state, "bash", {}, true, text);
     assert.equal(state.retry.operations.size, 0);
-    assert.match(core.inspectBeforeCall(state, "bash", {})!, /REPEATED_CALL_BLOCKED/);
+    assert.equal(core.inspectBeforeCall(state, "bash", {}), undefined);
   }
 });
 
@@ -325,7 +328,7 @@ test("65 different deterministic failures evict FIFO and still admit a fresh rea
   assert.equal(core.inspectBeforeCall(state, "read", { path: "src/index.ts" }), undefined);
   assert.equal(core.inspectBeforeCall(state, "child", { i: 0 }), undefined);
   core.recordResult(state, "child", { i: 1 }, true, "SyntaxError");
-  assert.match(core.inspectBeforeCall(state, "child", { i: 1 })!, /REPEATED_CALL_BLOCKED/);
+  assert.equal(core.inspectBeforeCall(state, "child", { i: 1 }), undefined);
   assert.equal(state.failureEvictions, 1);
 });
 
@@ -346,8 +349,9 @@ test("a full retry ledger preserves owners, admits fresh calls and caps overflow
   core.recordResult(state, "child", { i: 64 }, true, "Operation timed out");
   assert.equal(state.retry.overflowFailures, 2);
   const refusal = JSON.parse(core.inspectBeforeCall(state, "child", { i: 64 })!);
-  assert.equal(refusal.category, "REPEATED_CALL_BLOCKED");
-  assert.equal(refusal.failureCount, 2);
+  assert.equal(refusal.category, "GUARD_CAPACITY");
+  assert.equal(refusal.retryable, false);
+  assert.match(refusal.cause, /transient retry table.*two untracked recovery attempts/);
   assert.equal(state.retry.operations.has(core.callKey("child", { i: 64 })), false);
   assert.equal(core.inspectBeforeCall(state, "child", { i: 65 }), undefined);
   core.resetGuardState(state);
@@ -368,34 +372,19 @@ for (const failure of ["SyntaxError", "HTTP 503"]) test(`real hooks admit a new 
   f.close();
 });
 
-for (const mutation of ["edit", "write", "bash", "powershell"]) test(`npm test twice → ${mutation} leaf success → test admission recovers`, async () => {
+test("a failed test command can be requested again without an intervening successful mutation", async () => {
   const f = fixture(), input = { command: "npm test" };
-  for (let i = 0; i < 2; i++) {
+  for (let i = 0; i < 12; i++) {
     assert.equal(await f.call(`test${i}`, input, `parent${i}`, "bash"), undefined);
-    await f.result(`test${i}`, input, "Command exited with code 1", true, "bash");
+    assert.equal(await f.result(`test${i}`, input, "Command exited with code 1", true, "bash"), undefined);
+    f.end(`parent${i}`);
   }
-  const blocked = JSON.parse((await f.call("blocked", input, "parent2", "bash")).reason);
-  assert.equal(blocked.failureCategory, "test_failed");
-  const edit = mutation === "bash" || mutation === "powershell" ? { command: "echo repaired" } : { path: "src/index.ts", content: "repaired" };
-  assert.equal(await f.call("repair", edit, "repair-parent", mutation), undefined);
-  await f.result("repair", edit, "ok", false, mutation);
-  assert.equal(await f.call("after-repair", input, "parent3", "bash"), undefined);
+  assert.equal(f.messages.filter(message => message.customType === "tool-failure-advisory-v1").length, 1);
+  assert.equal(f.messages.filter(message => message.customType === "tool-loop-reminder-v1").length, 3);
   f.close();
 });
 
-test("parent success and failed mutations preserve failures; mutation success preserves unrelated retry accounting", async () => {
-  const f = fixture(), input = { command: "npm test" };
-  for (let i = 0; i < 2; i++) {
-    await f.call(`test${i}`, input, `p${i}`, "bash");
-    await f.result(`test${i}`, input, "Command exited with code 1", true, "bash");
-  }
-  const parentInput = { command: "echo parent" };
-  await f.call("parent", parentInput, "outer", "bash");
-  await f.call("child", {}, "parent"); await f.result("child", {}); f.end("child");
-  await f.result("parent", parentInput, "ok", false, "bash");
-  await f.call("failed-edit", {}, "pedit", "edit"); await f.result("failed-edit", {}, "edit failed", true, "edit");
-  assert.match((await f.call("blocked", input, "p3", "bash")).reason, /REPEATED_CALL_BLOCKED/);
-  f.close();
+test("mutation success preserves unrelated transient retry accounting", () => {
   for (const mutation of ["edit", "write", "bash", "powershell"]) {
     const state = core.createGuardState(), key = core.callKey("http_read", {});
     core.recordResult(state, "http_read", {}, true, "HTTP 503", key);
@@ -415,6 +404,7 @@ test("capacity refusals include the bounded operation name", async () => {
   const f = fixture();
   const refusal = JSON.parse((await f.call("x".repeat(513), {}, undefined, "read")).reason);
   assert.equal(refusal.operation, "read"); assert.equal(refusal.category, "GUARD_CAPACITY");
+  assert.equal(refusal.retryable, true);
   f.close();
 });
 
@@ -443,7 +433,7 @@ test("configuration defaults match the user choice and malformed budgets fail cl
 test("loaded CLI policy survives session replacement without calling a stale extension API", async () => {
   const hooks = new Map<string, (...args: any[]) => any>();
   let reads = 0;
-  guard({ on(name: string, hook: any) { hooks.set(name, hook); }, registerTool() {}, registerFlag() {}, sendMessage() {},
+  guard({ on(name: string, hook: any) { hooks.set(name, hook); }, events: { emit() {} }, registerTool() {}, registerFlag() {}, sendMessage() {},
     getFlag() { if (++reads > 1) throw new Error("stale extension API"); return '{"maxAttempts":3}'; } } as any);
   hooks.get("session_start")!();
   for (let run = 0; run < 3; run++) {
@@ -452,17 +442,4 @@ test("loaded CLI policy survives session replacement without calling a stale ext
     hooks.get("agent_end")!();
   }
   assert.equal(reads, 1);
-});
-
-test("known limitation: a post-admission generic argument rewrite is accounted to the admitted identity", async () => {
-  const f = fixture();
-  for (let i = 0; i < 2; i++) {
-    f.turn(); const input = { value: "admitted" };
-    assert.equal(await f.call(`c${i}`, input), undefined);
-    input.value = "changed by a later extension";
-    await f.result(`c${i}`, input, "SyntaxError", true);
-  }
-  f.turn(); assert.match((await f.call("blocked-original", { value: "admitted" })).reason, /REPEATED_CALL_BLOCKED/);
-  f.turn(); assert.equal(await f.call("changed", { value: "changed by a later extension" }), undefined);
-  f.close();
 });

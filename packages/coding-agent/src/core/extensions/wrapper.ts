@@ -22,6 +22,7 @@ export function wrapRegisteredTool(registeredTool: RegisteredTool, runner: Exten
 		get supportsManagedBackground() { return tool.supportsManagedBackground; },
 		execute: async (toolCallId, params, signal, onUpdate, executionContext) => {
 			const activeBefore = runner.getActiveTools();
+			runner.assertExecutionCurrent();
 			const result = await execute(toolCallId, params, signal, onUpdate, executionContext);
 			const activeAfter = runner.getActiveTools();
 			if (!activeBefore.every((name) => activeAfter.includes(name))) return result;

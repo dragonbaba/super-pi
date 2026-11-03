@@ -66,8 +66,9 @@ function fixture(t: TestContext, phase = "response") {
 for (const phase of ["response", "commit"]) {
 	test(`MCP runtime close waits for refresh ${phase} and file unlock after caller cancellation`, { timeout: 5000 }, async t => {
 		const f = fixture(t, phase), caller = new AbortController();
-		f.runtime.activeCalls.add({ abort() { caller.abort(); }, finish() {} });
-		const request = f.track(assert.rejects(f.owner.refresh("old", caller.signal), { name: "AbortError" }));
+		Object.assign(f.state, { client: { callTool(_args: unknown, _schema: unknown, options: { signal: AbortSignal }) { return f.owner.refresh("old", options.signal); }, async close() {} } });
+		f.state.tools.set("fixture", {});
+		const request = f.track(assert.rejects(f.runtime.callRemoteTool(f.state, "fixture", {}, caller.signal), { code: "aborted" }));
 		await f.entered.promise;
 		let closed = false;
 		const closing = f.track(f.runtime.close().then(() => { closed = true; }));
@@ -110,15 +111,20 @@ for (const event of ["shutdown", "begin"]) {
 		await lifecycle.attach(token, f.runtime); lifecycle.publish(token, f.runtime);
 		const request = f.track(f.owner.refresh("old"));
 		await f.entered.promise;
-		Object.assign(f.state, { client: { close() { throw new Error("transport close failure"); } } });
+		let failClose = true;
+		const client = { close() { if (failClose) throw new Error("transport close failure"); } };
+		Object.assign(f.state, { client });
 		let closed = false;
-		const closing = f.track(lifecycle[event]().then(() => { closed = true; }));
+		const closing = f.track(assert.rejects(lifecycle[event]().then(() => { closed = true; }), /MCP_CLEANUP_UNCONFIRMED/));
 		await nextTask(); assert.equal(closed, false);
 		f.release.resolve(); await closing; await request;
 		assert.equal(f.stored().tokens.refresh_token, "rotated");
 		assert.equal(f.state.oauth, null);
 		assert.equal(f.owner.refreshCount, 0);
+		assert.equal(closed, false); assert.equal(lifecycle.current, f.runtime); assert.equal(f.state.client, client);
+		failClose = false;
 		await lifecycle.shutdown();
+		assert.equal(lifecycle.current, null);
 	});
 }
 
@@ -137,7 +143,7 @@ for (const event of ["runtime close", "connection cancel"]) {
 		const closing = f.track((event === "runtime close" ? f.runtime.close() : connecting).then(() => { closed = true; }));
 		await nextTask(); assert.equal(closed, false);
 		f.release.resolve(); await closing; await connecting;
-		assert.deepEqual(attempts, event === "connection cancel" ? ["initialize", "notifications/cancelled"] : ["initialize"],
+		assert.deepEqual(attempts, ["initialize", "notifications/cancelled"],
 			"the SDK may notify cancellation, but must not retry initialize");
 		assert.equal(f.fetches(), 1);
 		assert.equal(f.stored().tokens.refresh_token, "rotated");

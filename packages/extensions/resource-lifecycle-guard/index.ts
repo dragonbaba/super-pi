@@ -1,3 +1,4 @@
+import { getSessionFiles } from "@super-pi/coding-agent/internal/files/file-host";
 import { getShellCwdBinding, attachShellCwdBinding, prepareShellCwd, attachBackgroundShellLaunch, attachForegroundShellLaunch, validateBackgroundShellInput, type ShellCwdBinding } from "@super-pi/coding-agent";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -9,7 +10,7 @@ import { ShellAnalysisOwner } from "./shell-analysis.ts";
 import { inspectPowerShellResourceLifecycle } from "./powershell-lifecycle.ts";
 import { SessionPermissionController } from "./permission-controller.ts";
 import { registerChanges } from "../mutation-guard-write/changes.ts";
-import { BackgroundShellTasks } from "./background-shell.ts";
+import { getBackgroundShellTasks, type BackgroundShellTasks } from "./background-shell.ts";
 
 const CHROME_TOOL_PREFIX = "chrome_devtools_";
 const DEFAULT_SCREENSHOT_PREFIX = "sp-chrome-devtools-screenshot-";
@@ -143,6 +144,9 @@ class OwnedResourceCleaner {
 }
 
 export default function resourceLifecycleGuard(pi: ExtensionAPI): void {
+  // Explicit new execution profiles have one native operation-policy owner.
+  // The legacy controller remains only for unmigrated settings during the documented compatibility window.
+  if (getSessionFiles(pi)?.hasNativeAuthorization) return;
   // Resolve only on a launcher refusal. Catalog materialization is never on
   // ordinary command/progress paths; the callback belongs to this extension.
   function nativePowerShellAvailability(): "active" | "discoverable" | "unavailable" {
@@ -160,9 +164,11 @@ export default function resourceLifecycleGuard(pi: ExtensionAPI): void {
   }
   const permissions = new SessionPermissionController(pi);
   const resources = new OwnedResourceCleaner();
-  const backgroundTasks = new BackgroundShellTasks(pi);
+  const backgroundTasks = getBackgroundShellTasks(pi);
   permissions.registerCommands();
-  registerChanges(pi, permissions);
+  const files = getSessionFiles(pi);
+  if (files) files.setCompatibilityBoundary(permissions);
+  else registerChanges(pi, permissions);
 
   pi.on("session_start", async (_event, ctx) => {
     await permissions.restore(ctx);
@@ -244,5 +250,5 @@ export default function resourceLifecycleGuard(pi: ExtensionAPI): void {
   });
 
   pi.on("agent_settled", () => resources.cleanup());
-  pi.on("session_shutdown", () => resources.cleanup());
+  pi.on("session_shutdown", () => { permissions.invalidate(); return resources.cleanup(); });
 }

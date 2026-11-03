@@ -22,14 +22,13 @@ import {
 } from "./core.ts";
 import { SUPPORTED_SP_VERSION_PATTERN } from "./regex.ts";
 import { MAX_UI_ERROR, sanitizeSessionText } from "./ui-text.ts";
-import { sessionIdIsLeased, SessionLease } from "./lease.ts";
+import { sessionIdIsLeased } from "./lease.ts";
 import { BoundedMemorySelector, type BoundedSelectorItem } from "./bounded-selector.ts";
 
 const AGENT_DIR = getAgentDir();
 const DATABASE_PATH = join(AGENT_DIR, "@super-pi/memory", "sessions.db");
 const TRASH_DIR = join(AGENT_DIR, "@super-pi/memory", "session-trash");
 const LEASE_DIR = join(AGENT_DIR, "@super-pi/memory", "session-leases");
-const LEASE_STATE_KEY = Symbol.for("pi.@super-pi/session-memory-manager.lease-state");
 const BYTE_FORMATTER = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 1 });
 const SESSION_CLEAN_OVERLAY_MARGIN = 2;
 const SESSION_CLEAN_OVERLAY_MAX_HEIGHT = 24;
@@ -41,13 +40,6 @@ const SHORT_DATE_FORMATTER = new Intl.DateTimeFormat("zh-CN", {
   minute: "2-digit",
   hour12: false,
 });
-
-type GlobalLeaseState = { lease?: SessionLease };
-
-function globalLeaseState(): GlobalLeaseState {
-  const root = globalThis as typeof globalThis & { [LEASE_STATE_KEY]?: GlobalLeaseState };
-  return root[LEASE_STATE_KEY] ??= {};
-}
 
 function shortDate(date: Date): string {
   return SHORT_DATE_FORMATTER.format(date);
@@ -151,45 +143,9 @@ async function deleteSession(
 
 export default function sessionMemoryManager(pi: ExtensionAPI): void {
   if (!SUPPORTED_SP_VERSION_PATTERN.test(VERSION)) {
-    console.warn(`@super-pi/session-memory-manager disabled: Pi ${VERSION} is unsupported (requires 0.84.x).`);
+    console.warn(`@super-pi/session-memory-manager disabled: Pi ${VERSION} is unsupported (requires 1.x or 0.84.x).`);
     return;
   }
-  pi.on("session_start", (_event, ctx) => {
-    const state = globalLeaseState();
-    const getSessionFile = () => ctx.sessionManager.getSessionFile();
-    const getSessionId = () => ctx.sessionManager.getHeader()?.id;
-    if (state.lease) state.lease.setSessionPathGetter(getSessionFile, getSessionId);
-    else {
-      state.lease = new SessionLease(LEASE_DIR, getSessionFile, undefined, getSessionId);
-      state.lease.start();
-    }
-  });
-
-  pi.on("session_before_switch", (event, ctx) => {
-    if (event.reason !== "resume" || !event.targetSessionFile) return;
-    const state = globalLeaseState();
-    try {
-      state.lease?.reserveSessionPath(event.targetSessionFile);
-    } catch (error) {
-      const detail = sanitizeSessionText(error instanceof Error ? error.message : error, MAX_UI_ERROR);
-      ctx.ui.notify(`无法预留目标 Session，已取消切换：${detail}`, "error");
-      return { cancel: true };
-    }
-  });
-
-  pi.on("session_shutdown", (event) => {
-    const state = globalLeaseState();
-    if (!state.lease) return;
-    if (event.targetSessionFile) {
-      const target = event.targetSessionFile;
-      state.lease.setSessionPathGetter(() => target, () => undefined);
-      return;
-    }
-    if (event.reason === "reload") return;
-    state.lease.stop();
-    state.lease = undefined;
-  });
-
   pi.registerCommand("memory-sessions", {
     description: "管理 Pi Session，并同步维护 Hermes 搜索索引",
     handler: async (rawArgs, ctx) => {

@@ -34,118 +34,147 @@ export type TransportContextState = {
   contextLength: number;
 };
 
-const continuationBySessionId = new Map<string, ContinuationState>();
-const transportContextBySessionId = new Map<string, TransportContextState>();
-const remoteCompactionBySessionId = new Map<string, RemoteCompactionSessionState>();
-const requestShapeBySessionId = new Map<string, ResponsesRequestShapeState>();
-const configBySessionId = new Map<string, Required<ExtensionConfig>>();
-const processedMessagesBySessionId = new Map<string, WeakSet<object>>();
-const claimedCompactionBySessionId = new Map<string, string>();
+// One explicit owner; session IDs never select process-global state.
+export class CompactionState {
+  private disposed = false;
+  private readonly continuationBySessionId = new Map<string, ContinuationState>();
+  private readonly transportContextBySessionId = new Map<string, TransportContextState>();
+  private readonly remoteCompactionBySessionId = new Map<string, RemoteCompactionSessionState>();
+  private readonly requestShapeBySessionId = new Map<string, ResponsesRequestShapeState>();
+  private readonly configBySessionId = new Map<string, Required<ExtensionConfig>>();
+  private readonly processedMessagesBySessionId = new Map<string, WeakSet<object>>();
+  private readonly claimedCompactionBySessionId = new Map<string, string>();
 
-export function getContinuationState(sessionId: string): ContinuationState | undefined {
-  return continuationBySessionId.get(sessionId);
-}
-
-export function setContinuationState(sessionId: string, state: ContinuationState): void {
-  continuationBySessionId.set(sessionId, state);
-}
-
-export function clearContinuationState(sessionId: string | undefined): void {
-  if (!sessionId) return;
-  continuationBySessionId.delete(sessionId);
-  transportContextBySessionId.delete(sessionId);
-}
-
-export function getTransportContextState(sessionId: string): TransportContextState | undefined {
-  return transportContextBySessionId.get(sessionId);
-}
-
-export function setTransportContextState(sessionId: string, state: TransportContextState): void {
-  transportContextBySessionId.set(sessionId, state);
-}
-
-export function clearTransportContextState(sessionId: string): void {
-  transportContextBySessionId.delete(sessionId);
-}
-
-export function markMessageProcessed(sessionId: string, message: object): boolean {
-  let processed = processedMessagesBySessionId.get(sessionId);
-  if (!processed) {
-    processed = new WeakSet<object>();
-    processedMessagesBySessionId.set(sessionId, processed);
+  private assertMutable(): void {
+    if (this.disposed) throw new Error("Responses state owner is disposed");
   }
-  if (processed.has(message)) return false;
-  processed.add(message);
-  return true;
-}
 
-export function claimCompactionContinuation(sessionId: string, compactionEntryId: string): boolean {
-  if (claimedCompactionBySessionId.get(sessionId) === compactionEntryId) return false;
-  claimedCompactionBySessionId.set(sessionId, compactionEntryId);
-  return true;
-}
+  get entryCount(): number {
+    return this.continuationBySessionId.size + this.transportContextBySessionId.size + this.remoteCompactionBySessionId.size +
+      this.requestShapeBySessionId.size + this.configBySessionId.size + this.processedMessagesBySessionId.size + this.claimedCompactionBySessionId.size;
+  }
 
-export function clearSessionDedupState(sessionId: string | undefined): void {
-  if (!sessionId) return;
-  processedMessagesBySessionId.delete(sessionId);
-  claimedCompactionBySessionId.delete(sessionId);
-}
+  dispose(): void { this.disposed = true; this.clearAllContinuationState(); }
 
-export function getRemoteCompactionState(
-  sessionId: string,
-): RemoteCompactionSessionState | undefined {
-  return remoteCompactionBySessionId.get(sessionId);
-}
+  getContinuationState(sessionId: string): ContinuationState | undefined {
+    return this.continuationBySessionId.get(sessionId);
+  }
 
-export function setRemoteCompactionState(
-  sessionId: string,
-  state: RemoteCompactionSessionState,
-): void {
-  remoteCompactionBySessionId.set(sessionId, state);
-}
+  setContinuationState(sessionId: string, state: ContinuationState): void {
+    this.assertMutable();
+    this.continuationBySessionId.set(sessionId, state);
+  }
 
-export function clearRemoteCompactionState(sessionId: string | undefined): void {
-  if (!sessionId) return;
-  remoteCompactionBySessionId.delete(sessionId);
-}
+  clearContinuationState(sessionId: string | undefined): void {
+    if (!sessionId) return;
+    this.continuationBySessionId.delete(sessionId);
+    this.transportContextBySessionId.delete(sessionId);
+  }
 
-export function getResponsesRequestShapeState(
-  sessionId: string,
-): ResponsesRequestShapeState | undefined {
-  return requestShapeBySessionId.get(sessionId);
-}
+  getTransportContextState(sessionId: string): TransportContextState | undefined {
+    return this.transportContextBySessionId.get(sessionId);
+  }
 
-export function setResponsesRequestShapeState(
-  sessionId: string,
-  state: ResponsesRequestShapeState,
-): void {
-  requestShapeBySessionId.set(sessionId, state);
-}
+  setTransportContextState(sessionId: string, state: TransportContextState): void {
+    this.assertMutable();
+    this.transportContextBySessionId.set(sessionId, state);
+  }
 
-export function clearResponsesRequestShapeState(sessionId: string | undefined): void {
-  if (!sessionId) return;
-  requestShapeBySessionId.delete(sessionId);
-}
+  clearTransportContextState(sessionId: string): void {
+    this.transportContextBySessionId.delete(sessionId);
+  }
 
-export function getSessionConfig(sessionId: string): Required<ExtensionConfig> | undefined {
-  return configBySessionId.get(sessionId);
-}
+  markMessageProcessed(sessionId: string, message: object): boolean {
+    this.assertMutable();
+    let processed = this.processedMessagesBySessionId.get(sessionId);
+    if (!processed) {
+      processed = new WeakSet<object>();
+      this.processedMessagesBySessionId.set(sessionId, processed);
+    }
+    if (processed.has(message)) return false;
+    processed.add(message);
+    return true;
+  }
 
-export function setSessionConfig(sessionId: string, config: Required<ExtensionConfig>): void {
-  configBySessionId.set(sessionId, config);
-}
+  claimCompactionContinuation(sessionId: string, compactionEntryId: string): boolean {
+    this.assertMutable();
+    if (this.claimedCompactionBySessionId.get(sessionId) === compactionEntryId) return false;
+    this.claimedCompactionBySessionId.set(sessionId, compactionEntryId);
+    return true;
+  }
 
-export function clearSessionConfig(sessionId: string | undefined): void {
-  if (!sessionId) return;
-  configBySessionId.delete(sessionId);
-}
+  clearSessionDedupState(sessionId: string | undefined): void {
+    if (!sessionId) return;
+    this.processedMessagesBySessionId.delete(sessionId);
+    this.claimedCompactionBySessionId.delete(sessionId);
+  }
 
-export function clearAllContinuationState(): void {
-  continuationBySessionId.clear();
-  transportContextBySessionId.clear();
-  remoteCompactionBySessionId.clear();
-  requestShapeBySessionId.clear();
-  configBySessionId.clear();
-  processedMessagesBySessionId.clear();
-  claimedCompactionBySessionId.clear();
+  getRemoteCompactionState(
+    sessionId: string,
+  ): RemoteCompactionSessionState | undefined {
+    return this.remoteCompactionBySessionId.get(sessionId);
+  }
+
+  setRemoteCompactionState(
+    sessionId: string,
+    state: RemoteCompactionSessionState,
+  ): void {
+    this.assertMutable();
+    this.remoteCompactionBySessionId.set(sessionId, state);
+  }
+
+  clearRemoteCompactionState(sessionId: string | undefined): void {
+    if (!sessionId) return;
+    this.remoteCompactionBySessionId.delete(sessionId);
+  }
+
+  getResponsesRequestShapeState(
+    sessionId: string,
+  ): ResponsesRequestShapeState | undefined {
+    return this.requestShapeBySessionId.get(sessionId);
+  }
+
+  setResponsesRequestShapeState(
+    sessionId: string,
+    state: ResponsesRequestShapeState,
+  ): void {
+    this.assertMutable();
+    this.requestShapeBySessionId.set(sessionId, state);
+  }
+
+  clearResponsesRequestShapeState(sessionId: string | undefined): void {
+    if (!sessionId) return;
+    this.requestShapeBySessionId.delete(sessionId);
+  }
+
+  clearRequestShapes(): void { this.requestShapeBySessionId.clear(); }
+
+  getSessionConfig(sessionId: string): Required<ExtensionConfig> | undefined {
+    return this.configBySessionId.get(sessionId);
+  }
+
+  setSessionConfig(sessionId: string, config: Required<ExtensionConfig>): void {
+    this.assertMutable();
+    this.configBySessionId.set(sessionId, config);
+  }
+
+  clearSessionConfig(sessionId: string | undefined): void {
+    if (!sessionId) return;
+    this.configBySessionId.delete(sessionId);
+  }
+
+  clearAllContinuationState(): void {
+    this.continuationBySessionId.clear();
+    this.transportContextBySessionId.clear();
+    this.remoteCompactionBySessionId.clear();
+    this.requestShapeBySessionId.clear();
+    this.configBySessionId.clear();
+    this.processedMessagesBySessionId.clear();
+    this.claimedCompactionBySessionId.clear();
+  }
+
+  clearLiveContinuations(): void {
+    this.continuationBySessionId.clear();
+    this.transportContextBySessionId.clear();
+  }
 }

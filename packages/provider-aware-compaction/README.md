@@ -2,17 +2,23 @@
 
 A narrowly scoped, fail-closed Pi 0.84 compaction policy extension for providers whose default high-density summaries are empty, unstable, or too short.
 
-## Default policies
+On current Super Pi hosts, this package registers a native compaction strategy. The host captures each matching strategy's model/configuration before execution: zero matches use the native summary, one match executes once, and overlapping matches cancel before either candidate performs authentication, request preview or summary dispatch. The host may already have resolved the active model's authentication snapshot. Explicit policy selection never grants cross-provider consent.
 
-| Active model | Summary model | Policy |
-|---|---|---|
-| `superapi-claude/*` | `deepseek/deepseek-v4-flash` | Cross-provider fallback with exact-state preservation |
-| `deepseek/deepseek-v4-flash` | self | Original system/tools/message prefix replay plus one trailing compaction instruction; current mapped thinking level |
-| `kimi-coding/k3-256k` | self | Same-provider preservation focus and a 32K reserve (26,214-token summary cap) |
+Legacy `session_before_compact` hooks have compatibility priority: their cancellation or custom result ends the operation before native strategy selection. Otherwise, selected strategy errors propagate; only an explicit `undefined` result requests native fallback. Older hosts without the strategy API retain the previous hook path and its ordering limitations.
+
+## Opt-in policy presets
+
+No presets are enabled by default. Installing this package, setting `SP_PORTABLE_COMPACTION_FALLBACK=1`, or granting cross-provider permission alone no longer activates model-specific rules. Existing users must explicitly choose the presets they want; configuration is not migrated automatically.
+
+| Preset ID | Active model | Summary model | Policy |
+|---|---|---|---|
+| `claude-deepseek-fallback-v1` | `superapi-claude/*` | `deepseek/deepseek-v4-flash` | Cross-provider fallback with exact-state preservation |
+| `deepseek-self-preserve-v1` | `deepseek/deepseek-v4-flash` | self | Original system/tools/message prefix replay plus one trailing compaction instruction; current mapped thinking level |
+| `kimi-self-preserve-32k-v1` | `kimi-coding/k3-256k` | self | Same-provider preservation focus and a 32K reserve (26,214-token summary cap) |
 
 All other models—including xAI Grok and DeepSeek V4 Pro—are untouched.
 
-Every policy cancels compaction when its summary model is missing, unauthenticated, errors, or returns an empty summary. It never writes an empty checkpoint and does not affect OpenAI/Codex remote compaction.
+Every enabled policy cancels compaction when its summary model is missing, unauthenticated, errors, or returns an empty summary. It never writes an empty checkpoint. These presets do not match OpenAI/Codex remote compaction; a custom target that overlaps another native strategy causes an explicit conflict.
 
 Only the superapi Claude policy routes the summarized history prefix to another provider. DeepSeek and Kimi remain same-provider.
 
@@ -32,11 +38,12 @@ Cross-provider summarization is denied by default. A trusted project must explic
 
 ```json
 {
+  "policies": ["claude-deepseek-fallback-v1"],
   "allowCrossProviderSummary": true
 }
 ```
 
-Missing, invalid, false, or untrusted project configuration cancels Claude compaction fail-closed; it does not silently fall back to the known empty-summary path. This does not disable same-provider DeepSeek or Kimi policies. For an explicitly approved one-process run, set `SP_PORTABLE_COMPACTION_ALLOW_CROSS_PROVIDER=1`; set it to `0` for a process-wide denial.
+When the Claude preset is enabled, missing, invalid, false, or untrusted project permission cancels its compaction fail-closed; it does not silently fall back to the known empty-summary path. This permission does not enable or disable the same-provider presets. A global `allowCrossProviderSummary` field grants no project permission. For an explicitly approved one-process run, set `SP_PORTABLE_COMPACTION_ALLOW_CROSS_PROVIDER=1`; set it to `0` for a process-wide denial.
 
 ## DeepSeek effort metadata
 
@@ -50,12 +57,20 @@ This package currently intercepts only V4 Flash because V4 Pro has not been benc
 
 ## Configuration
 
-Environment variables are read once when the extension loads:
+Set `policies` in `~/.sp/agent/config/provider-aware-compaction.json`, or in a trusted project's `.sp/config/provider-aware-compaction.json`. For example, to opt into Kimi self-compaction without granting any cross-provider permission:
+
+```json
+{ "policies": ["kimi-self-preserve-32k-v1"] }
+```
+
+The project `policies` field replaces the global field; omission inherits, while `[]` explicitly disables presets. Untrusted project policy files are not read. Missing files mean no configuration. Invalid JSON, unreadable files, non-array values, unknown IDs and duplicates are explicit configuration errors; they never restore the old automatic rules. Older hosts receive cancellation with a diagnostic rather than an exception that their hook runner might swallow.
+
+Embedding callers can pass `options.policies` to `createProviderAwareCompactionExtension`; its validated primitive snapshot overrides files and is unaffected by later mutations of the caller's array. The full precedence is: master disable, explicit custom target, embedding presets, trusted project presets, global presets, then none. Files are read once per preparation and the chosen policy is fixed for that execution. Target/fallback environment values are captured when the extension factory is created; the data-sharing boundary is checked independently at execution.
 
 - `SP_PORTABLE_COMPACTION_FALLBACK=0`: disable all extension policies (stock Pi compaction resumes).
 - `SP_PORTABLE_COMPACTION_ALLOW_CROSS_PROVIDER=1`: explicitly approve cross-provider summarization for this process.
 - `SP_PORTABLE_COMPACTION_ALLOW_CROSS_PROVIDER=0`: deny cross-provider summarization for this process.
-- `SP_PORTABLE_COMPACTION_TARGET_PROVIDER`: replace built-in selection with one custom target provider.
+- `SP_PORTABLE_COMPACTION_TARGET_PROVIDER`: replace preset selection with one explicit custom target provider.
 - `SP_PORTABLE_COMPACTION_FALLBACK_MODEL`: custom fallback `provider/model`; default `deepseek/deepseek-v4-flash`.
 
 ## Evidence
@@ -85,4 +100,4 @@ npm run benchmark:prefix
 
 The localhost E2E sends a synthetic regular request and compaction request through the same installed OpenAI-compatible adapter, then proves the latter's serialized system/tool/message sequence begins with the former and has one trailing compaction instruction. The benchmark uses only synthetic fixtures and reports median/p80, retained heap, and a body-free behavior hash.
 
-The package is version-gated to Pi 0.84.x. Re-audit before widening its model or version gates.
+The package is version-gated to Super Pi 1.x and legacy 0.84.x. Re-audit before widening its model or version gates.

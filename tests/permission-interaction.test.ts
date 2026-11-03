@@ -1,18 +1,106 @@
 import { createSessionAllowRule, sessionAllowRuleMatches, simpleCommandPrefix } from "../packages/extensions/resource-lifecycle-guard/permission-rule.ts";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, realpathSync, mkdirSync, symlinkSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, realpathSync, mkdirSync, symlinkSync, writeFileSync, promises as fsPromises } from "node:fs";
+import { EventEmitter, getEventListeners } from "node:events";
+import { createRequire, syncBuiltinESMExports } from "node:module";
+import { PassThrough } from "node:stream";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createEventBus } from "../packages/coding-agent/src/core/event-bus.ts";
+import { SessionExecutionBoundary } from "../packages/coding-agent/src/core/execution-boundary.ts";
+import { Session as InspectorSession } from "node:inspector/promises";
+import { setImmediate as tick } from "node:timers/promises";
+import { wrapRegisteredTool } from "../packages/coding-agent/src/core/extensions/wrapper.ts";
 import { createExtensionRuntime, ExtensionRunner, loadExtensionFromFactory } from "../packages/coding-agent/src/core/extensions/index.ts";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
 import { SessionPermissionController } from "../packages/extensions/resource-lifecycle-guard/permission-controller.ts";
+import { consumeBrowserExecAuthorization } from "../packages/extensions/resource-lifecycle-guard/permission-contract.ts";
+import { consumeStructuredReadonlyWorkspacePolicy } from "../packages/extensions/structured-readonly-command/delegation.ts";
+import structuredReadonlyCommandExtension from "../packages/extensions/structured-readonly-command/index.ts";
+import browserUseExtension from "../packages/extensions/browser-use/index.ts";
+import { BrowserHarnessVersionGate } from "../packages/extensions/browser-use/core.ts";
+import { consumeFixAuthorization, assertFixAuthorization } from "../packages/lsp/src/fix-authorization.ts";
+import { consumeDelegatedTaskPolicies } from "../packages/extensions/subagent/delegation.ts";
 import { ExtensionSelectorComponent } from "../packages/coding-agent/src/modes/interactive/components/extension-selector.ts";
 import { initTheme } from "../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { FakeScheduler } from "./helpers/runtime-instrumentation.ts";
 
 initTheme("dark");
+
+test("native execution transition revokes all owners, waits for cleanup and invalidates old generations", { timeout: 2000 }, async () => {
+ const boundary = new SessionExecutionBoundary();
+ const oldGeneration = boundary.generation, oldSignal = boundary.signal;
+ let release!: () => void, published = 0, modeReads = 0;
+ let planning = false;
+ assert.equal(boundary.getToolSelectionMode(), "default");
+ const drained = new Promise<void>(resolve => { release = resolve; });
+ const order: string[] = [];
+ const remove = boundary.register("tasks", { toolSelectionMode() { modeReads++; return planning ? "plan" : undefined; },
+  revoke() { order.push("tasks:revoke"); }, drain() { order.push("tasks:drain"); return drained; } });
+ boundary.register("files", { revoke() { order.push("files:revoke"); }, async drain() { order.push("files:drain"); } });
+ const pending = boundary.transition(() => { assert.throws(() => boundary.assertCurrent(), /BOUNDARY_CHANGED/); planning = true; published++; });
+ assert.equal(oldSignal.aborted, true); assert.throws(() => boundary.assertCurrent(), /BOUNDARY_CHANGED/);
+ await assert.rejects(boundary.transition(() => assert.fail("must not queue")), /still draining/);
+ assert.throws(remove, /Cannot detach/); assert.equal(published, 0);
+ assert.equal(boundary.getToolSelectionMode(), "default", "reading during drain does not publish or open admission");
+ assert.throws(() => boundary.assertCurrent(), /BOUNDARY_CHANGED/);
+ assert.deepEqual(order, ["tasks:revoke", "files:revoke", "tasks:drain", "files:drain"]);
+ release(); await pending;
+ boundary.assertCurrent(); assert.throws(() => boundary.assertCurrent(oldGeneration), /BOUNDARY_CHANGED/);
+ assert.equal(boundary.signal.aborted, false); assert.equal(published, 1); assert.equal(boundary.hasDeadline, false);
+ assert.equal(boundary.getToolSelectionMode(), "plan");
+ assert.equal(modeReads, 2);
+ remove(); await boundary.dispose(); assert.equal(boundary.participantCount, 0);
+ assert.equal(boundary.getToolSelectionMode(), "default"); assert.equal(modeReads, 2);
+ assert.throws(() => boundary.assertCurrent(), /BOUNDARY_CHANGED/);
+});
+
+test("native execution transition failures stay closed and disposal retains only unfinished owners", { timeout: 2000 }, async () => {
+ for (const failure of ["revoke", "drain", "publish", "timeout", "dispose"]) {
+  const boundary = new SessionExecutionBoundary(failure === "timeout" ? 10 : 1000);
+  let release!: () => void, fail = true, published = false, drained = false;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  boundary.register("owner", {
+   revoke() { if (fail && failure === "revoke") throw new Error("controlled revoke"); },
+   async drain() { if (fail && (failure === "timeout" || failure === "dispose")) await held; drained = true; if (fail && failure === "drain") throw new Error("controlled drain"); },
+  });
+  const pending = boundary.transition(() => { if (fail && failure === "publish") throw new Error("controlled publish"); published = true; });
+  if (failure === "dispose") { const stopped = boundary.dispose(); release(); await stopped; await pending; assert.equal(published, false); }
+  else {
+   await assert.rejects(pending, failure === "timeout" ? /DRAIN_TIMEOUT/ : /controlled|revocation failed/);
+   assert.throws(() => boundary.assertCurrent(), /BOUNDARY_CHANGED/); assert.equal(published, false); assert.equal(boundary.hasDeadline, false);
+   if (failure === "timeout") { assert.equal(boundary.participantCount, 1); await assert.rejects(boundary.transition(() => {}), /still draining/); release(); await new Promise(resolve => setImmediate(resolve)); }
+   assert.equal(drained, true); fail = false;
+   await boundary.transition(() => { published = true; }); boundary.assertCurrent();
+   await boundary.dispose();
+  }
+  assert.equal(boundary.participantCount, 0); assert.equal(boundary.hasDeadline, false); assert.equal(boundary.isDraining, false);
+ }
+ const bounded = new SessionExecutionBoundary();
+ for (let index = 0; index < 16; index++) bounded.register(String(index), { revoke() {}, async drain() {} });
+ assert.throws(() => bounded.register("extra", { revoke() {}, async drain() {} }), /capacity/);
+ await bounded.dispose();
+ const failedClose = new SessionExecutionBoundary(); let failClose = true;
+ failedClose.register("retained", { revoke() {}, async drain() { if (failClose) throw new Error("owned cleanup failed"); } });
+ await assert.rejects(failedClose.dispose(), /owned cleanup failed/);
+ assert.equal(failedClose.participantCount, 1); assert.throws(() => failedClose.assertCurrent(), /BOUNDARY_CHANGED/);
+ failClose = false; await failedClose.dispose(); assert.equal(failedClose.participantCount, 0);
+ for (const delayed of [false, true]) {
+  const failedRevoke = new SessionExecutionBoundary(delayed ? 10 : 1000);
+  let fail = true, release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  failedRevoke.register("retained", { revoke() { if (fail) throw undefined; }, async drain() { if (delayed && fail) await held; } });
+  if (delayed) {
+   await assert.rejects(failedRevoke.transition(() => {}), /DRAIN_TIMEOUT/);
+   const closing = failedRevoke.dispose(); release();
+   await assert.rejects(closing, /revocation failed/);
+  } else await assert.rejects(failedRevoke.dispose(), /revocation failed/);
+  assert.equal(failedRevoke.participantCount, 1);
+  fail = false; await failedRevoke.dispose(); assert.equal(failedRevoke.participantCount, 0);
+ }
+});
 
 async function permissionFixture(t: test.TestContext, aliasedRoot = false) {
  const root = mkdtempSync(join(tmpdir(), "pi-permission-wait-")); let cwd = root;
@@ -45,8 +133,19 @@ async function permissionFixture(t: test.TestContext, aliasedRoot = false) {
   },
 	}, "tui");
  await permission.restore(runner.createContext());
- const call = (toolName = "browser_exec", input: object = { code: "print('controlled fixture')", purpose: "permission regression" }) => runner.emitToolCall({ type: "tool_call", toolName, toolCallId: "approval-1", input } as never);
- return { runner, scheduler, permission, visible, call, abort, cwd, root, audits, choose: (index: number) => choose(choices[index]),
+ // This fixture exercises permission results; consume the runner's epoch guard
+ // just as the dispatcher does before the delegated-tool assertions below.
+ const call = async (toolName = "browser_exec", input: object = { code: "print('controlled fixture')", purpose: "permission regression" }) => {
+  const result = await runner.emitToolCall({ type: "tool_call", toolName, toolCallId: "approval-1", input } as never);
+  if (result?.finalAuthorization) {
+   try { assert.equal(result.finalAuthorization.consume(input, "approval-1", toolName), input); }
+   finally { result.finalAuthorization.release(); }
+   assert.equal(result.block, undefined); assert.equal(result.reason, undefined); assert.equal(result.terminate, undefined);
+   return undefined;
+  }
+  return result;
+ };
+ return { runner, scheduler, permission, visible, call, abort, cwd, root, audits, runtime, choose: (index: number) => choose(choices[index]),
   dialogOptions: () => dialogOptions, choices: () => choices };
 }
 
@@ -75,6 +174,260 @@ test("invalidating a pending approval revokes its signal and late selection", as
  assert.equal(signal?.aborted, true);
  assert.equal(f.permission.state.allowRules.length, 0);
  assert.equal(f.scheduler.highWaterMark.current, 0);
+});
+
+test("native transitions revoke permission grants and wait for pending confirmation without changing policy", { timeout: 2000 }, async t => {
+ const f = await permissionFixture(t);
+ const pending = f.call(); const rejected = assert.rejects(pending, /obsolete|EXECUTION_BOUNDARY_CHANGED/);
+ await f.visible;
+ const before = f.permission.state.serialized(); let published = false;
+ const transition = f.runtime.executionBoundary.transition(() => { published = true; });
+ await new Promise<void>(resolve => setImmediate(resolve));
+ assert.equal(f.dialogOptions().signal.aborted, true);
+ assert.equal(published, false, "even a UI ignoring cancellation must settle before publication");
+ f.choose(0); await Promise.all([transition, rejected]);
+ assert.equal(published, true); assert.deepEqual(f.permission.state.serialized(), before);
+ assert.equal(f.permission.state.allowRules.length, 0);
+ f.permission.state.setMode("full-access"); f.permission.state.setApprovalPolicy("never-ask");
+ const input = { code: "print('not executed')" }; await f.call("browser_exec", input);
+ const grant = consumeBrowserExecAuthorization(input, "approval-1"); grant.assertCurrent();
+ await f.runtime.executionBoundary.transition(() => undefined);
+ assert.equal(grant.revocationSignal.aborted, true); assert.throws(grant.assertCurrent, /authority changed/);
+ const fresh = { code: "print('still not executed')" }; await f.call("browser_exec", fresh);
+ consumeBrowserExecAuthorization(fresh, "approval-1").assertCurrent();
+ f.runner.invalidate(); await f.runtime.executionBoundary.dispose();
+ assert.equal(f.runtime.executionBoundary.participantCount, 0); assert.equal(f.scheduler.highWaterMark.current, 0);
+});
+
+test("execution transitions wait for actual timed and untimed hooks, dialogs and late grant release", { timeout: 5000 }, async t => {
+ const profiler = new InspectorSession(); profiler.connect(); t.after(() => profiler.disconnect());
+ const refs: WeakRef<object>[] = [], signals: AbortSignal[] = [];
+ const cleanups: Promise<unknown>[] = [], releases: (() => void)[] = [];
+ t.after(async () => { for (const release of releases) release(); await Promise.allSettled(cleanups); });
+ let released = 0, dialogs = 0;
+ async function exercise(kind: "untimed" | "dialog" | "timeout" | "release-failed") {
+  const runtime = createExtensionRuntime(), scheduler = new FakeScheduler();
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  releases.push(release);
+  const ready = new Promise<void>(resolve => { entered = resolve; });
+  const grant = { consume() { assert.fail("late grant must not execute"); }, release() { released++; if (kind === "release-failed") throw undefined; } };
+  const extension = await loadExtensionFromFactory(pi => {
+   pi.on("tool_call", async (_event, ctx) => {
+    refs.push(new WeakRef(ctx)); signals.push(ctx.signal!);
+    if (kind === "dialog") { try { await ctx.ui.select("fixture", ["ok"]); } catch {} }
+    else { entered(); await gate; }
+    return { finalAuthorization: grant };
+   });
+  }, process.cwd(), createEventBus(), runtime);
+  const runner = new ExtensionRunner([extension], runtime, process.cwd(), SessionManager.inMemory(), {} as never,
+   { scheduler, hookTimeouts: { safety: { timeoutMs: kind === "untimed" ? 0 : 100 } } });
+  runner.setUIContext({ ...runner.getUIContext(), async select() { dialogs++; entered(); await gate; return "ok"; } });
+  const call = runner.emitToolCall({ type: "tool_call", toolName: "opaque", toolCallId: kind, input: {} });
+  const rejectedCall = assert.rejects(call, /obsolete|timed out/);
+  await ready;
+  const deadline = [...(runner as any).toolCallDeadlines][0]; refs.push(new WeakRef(deadline));
+  if (kind === "timeout" || kind === "release-failed") { scheduler.advanceBy(100); await rejectedCall; }
+  else if (kind === "dialog") { scheduler.advanceBy(1000); assert.equal(scheduler.highWaterMark.current, 0); }
+  let published = false;
+  const transition = runtime.executionBoundary.transition(() => { published = true; });
+  cleanups.push(transition); void transition.catch(() => {});
+  const failed = kind === "release-failed" ? assert.rejects(transition, /cleanup is unconfirmed/) : undefined;
+  await rejectedCall; await tick();
+  assert.equal(published, false); assert.equal((runner as any).toolCallDeadlines.size, 1);
+  assert.equal(signals.at(-1)!.aborted, true);
+  if (kind === "dialog") assert.ok((runner as any).toolCallDialogOwner, "physical dialog keeps its owner after cancellation");
+  release();
+  if (failed) {
+   await failed; assert.equal(published, false); assert.equal((runner as any).toolCallDeadlines.size, 1);
+   await assert.rejects(runtime.executionBoundary.dispose(), /cleanup is unconfirmed/);
+  } else {
+   await transition; assert.equal(published, true); assert.equal((runner as any).toolCallDeadlines?.size ?? 0, 0);
+   await runtime.executionBoundary.dispose(); assert.equal(runtime.executionBoundary.participantCount, 0);
+  }
+  assert.equal(scheduler.highWaterMark.current, 0);
+  refs.push(new WeakRef(runtime), new WeakRef(runner), new WeakRef(grant));
+  releases.pop(); cleanups.pop();
+ }
+ await profiler.post("HeapProfiler.startSampling", { samplingInterval: 4096, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true });
+ for (const kind of ["untimed", "dialog", "timeout", "release-failed"] as const) await exercise(kind);
+ const { profile } = await profiler.post("HeapProfiler.stopSampling");
+ let sampled = 0; const nodes = [profile.head]; while (nodes.length) { const node = nodes.pop()!; sampled += node.selfSize; for (const child of node.children) nodes.push(child); }
+ for (let i = 0; i < 3; i++) { await tick(); await profiler.post("HeapProfiler.collectGarbage"); }
+ assert.equal(refs.filter(ref => ref.deref()).length, 0); assert.equal(released, 4); assert.equal(dialogs, 1);
+ assert.ok(sampled < 4 * 1024 * 1024);
+ t.diagnostic(JSON.stringify({ actualHooks: 4, actualDialogs: dialogs, lateGrantReleases: released, retainedCancelledSignals: signals.length, releasedReferences: refs.length, sampledBytes: sampled }));
+});
+
+test("shared admission stays closed after a fast service drains and revokes ordinary prepared tools", { timeout: 5000 }, async t => {
+ const profiler = new InspectorSession(); profiler.connect(); t.after(() => profiler.disconnect());
+ const refs: WeakRef<object>[] = []; let checks = 0, guards = 0, localReady = false;
+ let rejectedDeliveries = 0, acceptedReleases = 0, retryReleases = 0;
+ async function exercise() {
+  const runtime = createExtensionRuntime();
+  let assertAdmission!: () => void, release!: () => void, installFailedGrants!: () => void, installSlotGrants!: () => void, fail = true;
+  let releaseFails = true, failedReleases = 0, otherReleases = 0;
+  const failingGrant = { consume() {}, release() { failedReleases++; if (releaseFails) throw undefined; } };
+  const otherGrant = { consume() {}, release() { otherReleases++; } };
+  let hookCalls = 0, slotReleases = 0;
+  const slotGrants = [0, 1].map(() => ({ consume() {}, release() { slotReleases++; } }));
+  const slow = new Promise<void>(resolve => { release = resolve; });
+  const extension = await loadExtensionFromFactory(pi => {
+   assertAdmission = pi.assertExecutionCurrent!;
+   installSlotGrants = () => {
+    for (const grant of slotGrants) pi.on("tool_call", event => {
+     hookCalls++; if (event.toolCallId === "last-slot") return { finalAuthorization: grant };
+    });
+   };
+   installFailedGrants = () => {
+    pi.on("tool_call", () => ({ finalAuthorization: failingGrant }));
+    pi.on("tool_call", () => ({ finalAuthorization: otherGrant }));
+   };
+   pi.registerExecutionOwner!("fast", { revoke() { localReady = false; }, async drain() { localReady = true; } });
+   pi.registerExecutionOwner!("slow", { revoke() {}, async drain() { await slow; if (fail) throw new Error("held cleanup"); } });
+  }, process.cwd(), createEventBus(), runtime);
+  installSlotGrants();
+  const runner = new ExtensionRunner([extension], runtime, process.cwd(), SessionManager.inMemory(), {} as never);
+  const active: string[] = []; runtime.getActiveTools = () => active;
+  let executions = 0;
+  const wrapped = wrapRegisteredTool({ definition: { name: "opaque_tool", parameters: {}, async execute() { executions++; return { content: [] }; } } } as never, runner);
+  const event = { type: "tool_call", toolName: "opaque_tool", toolCallId: "ordinary", input: {} } as const;
+  const first = (await runner.emitToolCall(event))!.finalAuthorization!;
+  for (let i = 0; i < 10_000; i++) { assertAdmission(); checks++; }
+  let published = 0;
+  const change = runtime.executionBoundary.transition(() => { published++; });
+  const rejected = assert.rejects(change, /held cleanup/);
+  await tick(); assert.equal(localReady, true); assert.equal(published, 0);
+  assert.throws(assertAdmission, /BOUNDARY_CHANGED/);
+  assert.throws(() => first.consume(event.input, event.toolCallId, event.toolName), /obsolete/);
+  await assert.rejects(runner.emitToolCall(event), /BOUNDARY_CHANGED/);
+  await assert.rejects(wrapped.execute("late", {}), /BOUNDARY_CHANGED/); assert.equal(executions, 0);
+  release(); await rejected; assert.throws(assertAdmission, /BOUNDARY_CHANGED/);
+  fail = false; await runtime.executionBoundary.transition(() => { published++; }); assert.equal(published, 1);
+  const held: typeof first[] = [];
+  for (let i = 0; i < 128; i++) {
+   const guard = (await runner.emitToolCall(i === 127 ? { ...event, toolCallId: "last-slot" } : event))!.finalAuthorization!;
+   held.push(guard); refs.push(new WeakRef(guard)); guards++;
+  }
+  const admittedHooks = hookCalls;
+  await assert.rejects(runner.emitToolCall(event), /Too many pending/);
+  assert.equal(hookCalls, admittedHooks, "capacity is reserved before producing another grant");
+  assert.equal(held[0]!.consume(event.input, event.toolCallId, event.toolName), event.input);
+  assert.throws(() => held[0]!.consume(event.input, event.toolCallId, event.toolName), /obsolete/);
+  await runtime.executionBoundary.transition(() => undefined);
+  assert.equal(slotReleases, 2, "the last reserved invocation accepts both of its grants");
+  for (const guard of held) assert.throws(() => guard.consume(event.input, event.toolCallId, event.toolName), /obsolete/);
+  held.length = 0;
+  const fresh = (await runner.emitToolCall(event))!.finalAuthorization!;
+  assert.equal(fresh.consume(event.input, event.toolCallId, event.toolName), event.input);
+  await wrapped.execute("current", {}); assert.equal(executions, 1);
+  assert.equal((first as any).owners, undefined, "a consumed guard cannot keep the live registry alive");
+  installFailedGrants();
+  const cleanupGuard = (await runner.emitToolCall(event))!.finalAuthorization!;
+  await assert.rejects(runtime.executionBoundary.transition(() => assert.fail("cleanup failure cannot publish")), /cleanup (?:is|remains) unconfirmed/);
+  assert.equal(failedReleases, 1); assert.equal(otherReleases, 1);
+  assert.equal((runner as any).finalAuthorizations.size, 1); assert.throws(assertAdmission, /BOUNDARY_CHANGED/);
+  releaseFails = false; await runtime.executionBoundary.transition(() => undefined);
+  assert.equal(failedReleases, 2); assert.equal(otherReleases, 1); assert.equal((runner as any).finalAuthorizations, undefined);
+  assert.equal((cleanupGuard as any).owners, undefined);
+  refs.push(new WeakRef(cleanupGuard), new WeakRef(failingGrant), new WeakRef(otherGrant));
+  for (const grant of slotGrants) refs.push(new WeakRef(grant));
+  refs.push(new WeakRef(runner), new WeakRef(runtime), new WeakRef(first), new WeakRef(fresh));
+  runner.invalidate(); await runtime.executionBoundary.dispose(); assert.equal(runtime.executionBoundary.participantCount, 0);
+ }
+ async function rejectedDelivery(kind: "capacity" | "conflict" | "late-native") {
+  const runtime = createExtensionRuntime(); let failRelease = true, attempts = 0, goodReleases = 0;
+  const incoming = { finalAuthority: kind === "conflict" ? true as const : undefined, consume() { assert.fail("rejected grant cannot execute"); },
+   release() { attempts++; if (failRelease) throw undefined; } };
+  const accepted = Array.from({ length: kind === "capacity" ? 32 : kind === "conflict" ? 1 : 0 }, () => ({
+   finalAuthority: kind === "conflict" ? true as const : undefined, consume() { assert.fail("rejected invocation cannot execute"); }, release() { goodReleases++; }
+  }));
+  const extension = await loadExtensionFromFactory(pi => {
+   if (kind === "late-native") return;
+   for (const grant of accepted) pi.on("tool_call", () => ({ finalAuthorization: grant }));
+   pi.on("tool_call", () => ({ finalAuthorization: incoming }));
+   pi.on("tool_call", () => assert.fail("no producer may run after a rejected delivery"));
+  }, process.cwd(), createEventBus(), runtime);
+  const runner = new ExtensionRunner([extension], runtime, process.cwd(), SessionManager.inMemory(), {} as never);
+  let deliver!: () => void;
+  if (kind === "late-native") {
+   const pending = new Promise<void>(resolve => { deliver = resolve; });
+   runtime.nativeFiles = { ownsDefinition() { return true; }, async prepareInvocation() { await pending; return incoming; } } as never;
+  }
+  try {
+   const call = runner.emitToolCall({ type: "tool_call", toolName: "opaque", toolCallId: kind, input: {} });
+   const rejectedCall = assert.rejects(call, /cleanup is unconfirmed/);
+   if (kind === "late-native") {
+    const transition = runtime.executionBoundary.transition(() => assert.fail("late cleanup cannot publish"));
+    const rejectedTransition = assert.rejects(transition, /cleanup is unconfirmed/);
+    await tick(); assert.equal((runner as any).finalAuthorizations.size, 1);
+    assert.equal((runner as any).actualHooks, 1, "native delivery keeps the shared idle wait alive");
+    deliver(); await rejectedCall; await rejectedTransition;
+   } else {
+    await rejectedCall;
+    await assert.rejects(runtime.executionBoundary.transition(() => assert.fail("rejected cleanup cannot publish")), /cleanup (?:is|remains) unconfirmed/);
+   }
+   rejectedDeliveries++;
+   const guard = [...(runner as any).finalAuthorizations][0];
+   assert.equal(guard.incoming, incoming, "retain the exact failed release rather than a cleanup flag");
+   assert.equal((runner as any).finalAuthorizations.size, 1);
+   assert.equal((runner as any).actualHooks, 0); assert.equal((runner as any).hooksIdle, undefined);
+   assert.equal(goodReleases, accepted.length); acceptedReleases += goodReleases;
+   assert.throws(() => runtime.executionBoundary.assertCurrent(), /BOUNDARY_CHANGED/);
+   const priorAttempts = attempts; failRelease = false;
+   await runtime.executionBoundary.transition(() => undefined);
+   assert.equal(attempts, priorAttempts + 1); retryReleases++;
+   assert.equal(goodReleases, accepted.length, "successful releases are not repeated on retry");
+   assert.equal(guard.incoming, undefined); assert.equal(guard.owners, undefined);
+   assert.equal((runner as any).finalAuthorizations, undefined);
+   refs.push(new WeakRef(guard), new WeakRef(incoming), new WeakRef(runtime), new WeakRef(runner));
+   for (const grant of accepted) refs.push(new WeakRef(grant));
+  } finally {
+   deliver?.(); failRelease = false; runtime.nativeFiles = undefined;
+   await runtime.executionBoundary.dispose();
+  }
+ }
+ await profiler.post("HeapProfiler.startSampling", { samplingInterval: 4096, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true });
+ await exercise();
+ for (const kind of ["capacity", "conflict", "late-native"] as const) await rejectedDelivery(kind);
+ const { profile } = await profiler.post("HeapProfiler.stopSampling");
+ let sampled = 0; const nodes = [profile.head]; while (nodes.length) { const node = nodes.pop()!; sampled += node.selfSize; for (const child of node.children) nodes.push(child); }
+ for (let i = 0; i < 3; i++) { await tick(); await profiler.post("HeapProfiler.collectGarbage"); }
+ const leading: { name: string; url: string; bytes: number }[] = [];
+ const pending = [profile.head]; while (pending.length) { const node = pending.pop()!; if (node.selfSize) leading.push({ name: node.callFrame.functionName, url: node.callFrame.url, bytes: node.selfSize }); for (const child of node.children) pending.push(child); }
+ t.diagnostic(JSON.stringify({ leading: leading.sort((a, b) => b.bytes - a.bytes).slice(0, 12) }));
+ // Capacity now exercises 128 genuine async hook invocations (two hooks each),
+ // rather than ordinary epoch guards. Keep the original lifecycle allowance and
+ // a bounded 64 KiB per privileged preparation; hot admission is gated separately.
+ assert.equal(refs.filter(ref => ref.deref()).length, 0); assert.ok(sampled < 4 * 1024 * 1024 + guards * 64 * 1024, `sampled ${sampled} bytes`);
+ t.diagnostic(JSON.stringify({ sharedAdmissionChecks: checks, peakPreparedTools: guards, rejectedDeliveries, acceptedReleases, retryReleases, releasedReferences: refs.length, sampledBytes: sampled }));
+});
+
+test("failed extension initialization removes only its registered execution owner", async () => {
+ const runtime = createExtensionRuntime(), events = createEventBus();
+ const nativeOwners = runtime.executionBoundary.participantCount;
+ await loadExtensionFromFactory(pi => {
+  pi.registerExecutionOwner!("existing", { revoke() {}, async drain() {} });
+  pi.registerCompactionStrategy!({ id: "existing", prepare: () => undefined });
+ }, process.cwd(), events, runtime, "existing");
+ await assert.rejects(loadExtensionFromFactory(pi => {
+  pi.registerExecutionOwner!("temporary", { toolSelectionMode: () => "plan", revoke() {}, async drain() {} });
+  assert.throws(() => pi.registerCompactionStrategy!({ id: "existing", prepare: () => undefined }), /Duplicate/);
+  pi.registerCompactionStrategy!({ id: "temporary", prepare: () => undefined });
+  assert.equal(runtime.executionBoundary.getToolSelectionMode(), "plan");
+  assert.throws(() => pi.registerExecutionOwner!("temporary", { revoke() {}, async drain() {} }), /duplicate/);
+  throw new Error("factory failed");
+ }, process.cwd(), events, runtime, "failing"), /factory failed/);
+ assert.equal(runtime.executionBoundary.participantCount, nativeOwners + 1);
+ assert.deepEqual([...runtime.compactionStrategies.keys()], ["existing"]);
+ assert.equal(runtime.executionBoundary.getToolSelectionMode(), "default", "failed factory cannot leave a selection declaration");
+ const removeInvalid = runtime.executionBoundary.register("invalid-mode", { toolSelectionMode: (() => "unknown") as never, revoke() {}, async drain() {} });
+ assert.throws(() => runtime.executionBoundary.getToolSelectionMode(), /Invalid tool selection mode/);
+ removeInvalid(); runtime.executionBoundary.assertCurrent();
+ await runtime.executionBoundary.transition(() => undefined);
+ runtime.invalidate(); await runtime.executionBoundary.dispose();
+ assert.equal(runtime.executionBoundary.participantCount, 0);
+ assert.equal(runtime.compactionStrategies.size, 0);
 });
 
 test("permission details never push controls beyond the terminal viewport", () => {
@@ -450,6 +803,183 @@ test("current subagent approval completes and releases the prompt", async (t) =>
  assert.equal(f.scheduler.highWaterMark.current, 0);
 });
 
+test("delegated approvals are single-use and reject changed or restored authority before consumption", async (t) => {
+ const f = await permissionFixture(t);
+ const cases = [
+  { name: "browser_exec", input: { code: "print('no execution')" }, consume: (input: object) => consumeBrowserExecAuthorization(input, "approval-1") },
+  { name: "structured_readonly_command", input: { command: "git", args: ["status"], cwd: f.cwd }, consume: (input: object) => consumeStructuredReadonlyWorkspacePolicy(input, "approval-1") },
+  { name: "subagent", input: { agent: "controlled", task: "no execution", cwd: f.cwd }, consume: (input: object) => consumeDelegatedTaskPolicies(input, [f.cwd], f.cwd, "approval-1") },
+ ];
+ for (const item of cases) for (const invalidation of ["none", "narrow", "restore", "transition"] as const) {
+  f.permission.state.setMode("full-access"); f.permission.state.setApprovalPolicy("never-ask");
+  const input = { ...item.input };
+  assert.equal(await f.call(item.name, input), undefined);
+  if (invalidation === "narrow") f.permission.state.setMode("read-only");
+  if (invalidation === "restore") await f.permission.restore(f.runner.createContext());
+  if (invalidation === "transition") await f.runtime.executionBoundary.transition(() => undefined);
+  if (invalidation === "none") assert.ok(item.consume(input));
+  else assert.throws(() => item.consume(input), /authority changed|authorization.*(stale|current)/i, `${item.name}: ${invalidation}`);
+  assert.throws(() => item.consume(input), /missing|invalid|stale/i);
+  for (const key of Object.getOwnPropertySymbols(input)) assert.equal((input as any)[key], undefined);
+ }
+ f.runner.invalidate();
+ assert.equal(f.scheduler.highWaterMark.current, 0);
+});
+
+test("structured command rechecks authorization after asynchronous preparation before starting Git", async (t) => {
+ const f = await permissionFixture(t);
+ execFileSync("git", ["init", "--quiet", f.cwd], { timeout: 5000, windowsHide: true });
+ let tool: any;
+ structuredReadonlyCommandExtension({ registerTool(value: unknown) { tool = value; } } as never);
+ for (const narrow of [false, true]) {
+  f.permission.state.setMode("full-access"); f.permission.state.setApprovalPolicy("never-ask");
+  const input = { command: "git", args: ["status", "--short"], cwd: f.cwd };
+  assert.equal(await f.call("structured_readonly_command", input), undefined);
+  const running = tool.execute("approval-1", input, undefined, undefined, f.runner.createContext());
+  if (narrow) {
+   f.permission.state.setMode("read-only");
+   await assert.rejects(running, /Permission authority changed/);
+  } else assert.equal((await running).details.ok, true);
+ }
+ f.runner.invalidate();
+});
+
+
+test("browser execution rechecks authority and exact input after preparation and progress callbacks", { timeout: 10000 }, async (t) => {
+ const f = await permissionFixture(t);
+ const executable = join(f.root, process.platform === "win32" ? "browser-harness.exe" : "browser-harness");
+ writeFileSync(executable, "offline browser fixture", { mode: 0o700 });
+ const originalCli = process.env.SP_BROWSER_HARNESS_CLI, originalAgent = process.env.SP_CODING_AGENT_DIR;
+ process.env.SP_BROWSER_HARNESS_CLI = executable; process.env.SP_CODING_AGENT_DIR = join(f.root, "agent");
+ const childProcess = createRequire(import.meta.url)("node:child_process");
+ const originalSpawn = childProcess.spawn, originalMkdir = fsPromises.mkdir;
+ let boundary = "current", launches = 0;
+ childProcess.spawn = (_command: string, args: string[]) => {
+  launches++;
+  const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough() });
+  queueMicrotask(() => {
+   child.emit("spawn");
+   if (args[0] === "--version") {
+    child.stdout.write("0.1.13\n");
+    if (boundary === "version") f.permission.state.setMode("read-only");
+   }
+   child.emit("close", 0);
+  });
+  return child;
+ };
+ (fsPromises as any).mkdir = async (...args: any[]) => {
+  const result = await (originalMkdir as any)(...args);
+  if (boundary === "workspace") f.permission.state.setMode("read-only");
+  return result;
+ };
+ syncBuiltinESMExports();
+ try {
+  for (boundary of ["current", "version", "workspace", "update", "mutated"]) {
+   f.permission.state.setMode("full-access"); f.permission.state.setApprovalPolicy("never-ask"); launches = 0;
+   const input = { code: "print('offline')", session: "fixture" };
+   assert.equal(await f.call("browser_exec", input), undefined);
+   let tool: any, shutdown: any;
+   browserUseExtension({ registerTool(value: unknown) { tool = value; }, registerCommand() {},
+    on(name: string, handler: unknown) { if (name === "session_shutdown") shutdown = handler; } } as never);
+   const running = tool.execute("approval-1", input, undefined, () => {
+    if (boundary === "update") f.permission.state.setMode("read-only");
+    if (boundary === "mutated") input.code = "print('changed after approval')";
+   }, f.runner.createContext());
+   if (boundary === "current") { assert.equal((await running).details.ok, true); assert.equal(launches, 2); }
+   else { await assert.rejects(running, /authority changed|authorization is missing or stale/, boundary); assert.equal(launches, 1); }
+   await shutdown();
+  }
+  // A revocation during the version gate's own asynchronous fingerprint must prevent even --version.
+  f.permission.state.setMode("full-access"); launches = 0;
+  const input = { code: "print('offline')" }; await f.call("browser_exec", input);
+  const grant = consumeBrowserExecAuthorization(input, "approval-1");
+  const gate = new BrowserHarnessVersionGate(() => { launches++; throw new Error("unexpected version launch"); });
+  const pending = gate.check({ command: executable, source: "configured" }, { cwd: f.cwd, env: {}, assertCurrent: grant.assertCurrent } as any);
+  f.permission.state.setMode("read-only");
+  await assert.rejects(pending, /authority changed/); assert.equal(launches, 0);
+ } finally {
+  childProcess.spawn = originalSpawn; fsPromises.mkdir = originalMkdir; syncBuiltinESMExports();
+  if (originalCli === undefined) delete process.env.SP_BROWSER_HARNESS_CLI; else process.env.SP_BROWSER_HARNESS_CLI = originalCli;
+  if (originalAgent === undefined) delete process.env.SP_CODING_AGENT_DIR; else process.env.SP_CODING_AGENT_DIR = originalAgent;
+  f.runner.invalidate();
+ }
+});
+
+test("permission changes revoke running browser and structured commands without leaving abort listeners", { timeout: 10000 }, async (t) => {
+ const f = await permissionFixture(t);
+ execFileSync("git", ["init", "--quiet", f.cwd], { timeout: 5000, windowsHide: true });
+ const executable = join(f.root, process.platform === "win32" ? "browser-harness.exe" : "browser-harness");
+ writeFileSync(executable, "offline browser fixture", { mode: 0o700 });
+ const originalCli = process.env.SP_BROWSER_HARNESS_CLI, originalAgent = process.env.SP_CODING_AGENT_DIR;
+ process.env.SP_BROWSER_HARNESS_CLI = executable; process.env.SP_CODING_AGENT_DIR = join(f.root, "agent");
+ const childProcess = createRequire(import.meta.url)("node:child_process");
+ const originalSpawn = childProcess.spawn;
+ const originalKill = process.kill;
+ process.kill = (() => true) as typeof process.kill;
+ const children: any[] = [];
+ let change = "policy", changeDone: Promise<void> | undefined;
+ childProcess.spawn = (_command: string, args: string[]) => {
+  const child = Object.assign(new EventEmitter(), { pid: 424242, stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
+   kill() { queueMicrotask(() => child.emit("close", 1)); return true; } });
+  children.push(child);
+  queueMicrotask(() => {
+   child.emit("spawn");
+   if (args[0] === "/PID") { child.emit("close", 0); return; }
+   if (args[0] === "--version") { child.stdout.write("0.1.13\n"); child.emit("close", 0); return; }
+   changeDone = change === "policy"
+    ? f.runner.getCommand("permissions")!.handler("read-only", f.runner.createContext() as never)
+    : f.permission.restore(f.runner.createContext());
+   void Promise.resolve(changeDone).then(() => child.emit("close", 0));
+  });
+  return child;
+ };
+ syncBuiltinESMExports();
+ try {
+  for (const kind of ["browser_exec", "structured_readonly_command"]) for (change of ["policy", "restore"]) {
+   f.permission.state.setMode("full-access"); f.permission.state.setApprovalPolicy("never-ask");
+   let tool: any, shutdown: any;
+   const api = { registerTool(value: unknown) { tool = value; }, registerCommand() {},
+    on(name: string, handler: unknown) { if (name === "session_shutdown") shutdown = handler; } };
+   if (kind === "browser_exec") browserUseExtension(api as never); else structuredReadonlyCommandExtension(api as never);
+   const input = kind === "browser_exec" ? { code: "print('offline')", session: "fixture" } : { command: "git", args: ["status", "--short"], cwd: f.cwd };
+   await f.call(kind, input);
+   const grant = (input as any)[Object.getOwnPropertySymbols(input).find(key => (input as any)[key]?.revocationSignal)!];
+   const running = tool.execute("approval-1", input, undefined, undefined, f.runner.createContext());
+   if (kind === "browser_exec") {
+    const result = await running;
+    assert.equal(result.isError, true, `${kind}: ${change}`); assert.equal(result.details.aborted, true);
+   } else await assert.rejects(running, /timeout_or_aborted/);
+   await changeDone;
+   assert.equal(grant.revocationSignal.aborted, true);
+   assert.equal(getEventListeners(grant.revocationSignal, "abort").length, 0);
+   for (const child of children) { assert.equal(child.stdout.listenerCount("data"), 0); assert.equal(child.stderr.listenerCount("data"), 0); }
+   children.length = 0;
+   await shutdown?.();
+  }
+ } finally {
+  childProcess.spawn = originalSpawn; process.kill = originalKill; syncBuiltinESMExports();
+  if (originalCli === undefined) delete process.env.SP_BROWSER_HARNESS_CLI; else process.env.SP_BROWSER_HARNESS_CLI = originalCli;
+  if (originalAgent === undefined) delete process.env.SP_CODING_AGENT_DIR; else process.env.SP_CODING_AGENT_DIR = originalAgent;
+  f.runner.invalidate();
+ }
+});
+
+test("LSP write authorization resolves the requested root instead of the session cwd", async t => {
+ const f = await permissionFixture(t, true);
+ const outside = join(f.root, "external"); mkdirSync(outside); writeFileSync(join(outside, "example.ts"), "const n = 1;");
+ f.permission.state.setMode("workspace-write"); f.permission.state.setApprovalPolicy("never-ask");
+ const input = { root: outside, path: "example.ts", write: true };
+ assert.equal((await f.call("lsp_fix", input))?.block, true);
+ f.permission.state.setMode("full-access");
+ assert.equal(await f.call("lsp_fix", input), undefined);
+ const approval = consumeFixAuthorization(input, "approval-1");
+ assert.equal(approval.canonicalTarget, realpathSync.native(join(outside, "example.ts")));
+ assertFixAuthorization(approval, join(outside, "example.ts"));
+ assert.throws(() => consumeFixAuthorization(input, "approval-1"), /authorization is missing/);
+ await f.permission.restore(f.runner.createContext());
+ assert.throws(() => assertFixAuthorization(approval, join(outside, "example.ts")), /authority changed/);
+ f.runner.invalidate();
+});
 
 test("RPC revocation dismisses only the matching client prompt", async () => {
  const { createRpcDialogPromise } = await import("../packages/coding-agent/src/modes/rpc/rpc-mode.ts");

@@ -1,8 +1,8 @@
-import { execFile } from "node:child_process";
+import { execFile, type ExecFileException } from "node:child_process";
 import { readFileSync } from "fs";
 
 import { clipboard, type ClipboardModule } from "./clipboard-native.ts";
-import { NativeClipboardError, readNativeClipboard } from "./clipboard-native-process.ts";
+import { ClipboardImageReadError, NativeClipboardError, readNativeClipboard } from "./clipboard-native-process.ts";
 import { loadPhoton } from "./photon.ts";
 import { CLIPBOARD_IMAGE_LIMIT_PATTERN, CLIPBOARD_LINE_BREAK_PATTERN, CLIPBOARD_WSL_RELEASE_PATTERN } from "./image-input-regex.ts";
 
@@ -17,6 +17,20 @@ const DEFAULT_LIST_TIMEOUT_MS = 1000;
 const DEFAULT_READ_TIMEOUT_MS = 3000;
 export const DEFAULT_POWERSHELL_TIMEOUT_MS = 5000;
 const DEFAULT_MAX_BUFFER_BYTES = 50 * 1024 * 1024;
+const WINDOWS_IMAGE_PRESENT_MARKER = "SP_CLIPBOARD_IMAGE_PRESENT";
+
+class ClipboardCommandError extends Error {
+	readonly exitCode: ExecFileException["code"];
+	readonly imagePresent: boolean;
+	constructor(error: ExecFileException, stderr?: Buffer) {
+		const diagnostic = stderr?.subarray(0, 4096).toString("utf8") ?? "";
+		const imagePresent = diagnostic === WINDOWS_IMAGE_PRESENT_MARKER || diagnostic.startsWith(`${WINDOWS_IMAGE_PRESENT_MARKER}\n`) || diagnostic.startsWith(`${WINDOWS_IMAGE_PRESENT_MARKER}\r\n`);
+		const detail = (imagePresent ? diagnostic.slice(WINDOWS_IMAGE_PRESENT_MARKER.length) : diagnostic).trim();
+		super(`Clipboard helper failed (${error.code ?? "timeout/busy"}): ${(detail || error.message).slice(0, 300)}`, { cause: error });
+		this.exitCode = error.code;
+		this.imagePresent = imagePresent;
+	}
+}
 
 export function isWaylandSession(env: NodeJS.ProcessEnv = process.env): boolean {
 	return Boolean(env.WAYLAND_DISPLAY) || env.XDG_SESSION_TYPE === "wayland";
@@ -89,7 +103,7 @@ export function runClipboardCommand(command: string, args: string[], options: { 
 	return new Promise((resolve, reject) => {
 		execFile(command, args, { encoding: "buffer", windowsHide: true, timeout: options.timeoutMs ?? DEFAULT_READ_TIMEOUT_MS,
 			maxBuffer: options.maxBufferBytes ?? DEFAULT_MAX_BUFFER_BYTES, env: options.env, signal: options.signal },
-			(error, stdout, stderr) => { if (error) reject(new Error(`Clipboard helper failed (${error.code ?? "timeout/busy"}): ${(stderr?.toString("utf8").trim() || error.message).slice(0, 300)}`)); else resolve(stdout); });
+			(error, stdout, stderr) => { if (error) reject(new ClipboardCommandError(error, stderr)); else resolve(stdout); });
 	});
 }
 async function runCommand(command: string, args: string[], options?: { timeoutMs?: number; maxBufferBytes?: number; env?: NodeJS.ProcessEnv; signal?: AbortSignal }): Promise<{ stdout: Buffer; ok: boolean }> {
@@ -140,7 +154,68 @@ export function isWSL(env: NodeJS.ProcessEnv = process.env): boolean {
  * Windows screenshots (Win+Shift+S). PowerShell can access the Windows clipboard
  * directly, so we use it as a fallback.
  */
-const WINDOWS_IMAGE_SCRIPT = "$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; $img=[System.Windows.Forms.Clipboard]::GetImage(); if ($null -ne $img) { try { if ([long]$img.Width*$img.Height -gt 24000000) { throw 'Image exceeds pixel limit' }; $stream=[System.IO.MemoryStream]::new(); try { $img.Save($stream,[System.Drawing.Imaging.ImageFormat]::Png); if ($stream.Length -gt 10485760) { throw 'Image exceeds byte limit' }; [Console]::Out.Write([Convert]::ToBase64String($stream.ToArray())) } finally { $stream.Dispose() } } finally { $img.Dispose() } }";
+// Keep binary image evidence even if extraction hangs and the helper is killed.
+// Use one IDataObject for format detection and reading; clipboard text is never
+// executable input. PNG streams need not be convertible to Forms' Bitmap format.
+const WINDOWS_IMAGE_SCRIPT = `
+$ErrorActionPreference='Stop'
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+$knownImage=$false; $img=$null; $rawStream=$null; $readError=$null
+try {
+ $data=[System.Windows.Forms.Clipboard]::GetDataObject()
+ if ($null -eq $data) { exit 0 }
+ foreach ($format in @([System.Windows.Forms.DataFormats]::Bitmap,[System.Windows.Forms.DataFormats]::Dib,([System.Windows.Forms.DataFormats]::GetFormat(17).Name),'PNG','image/png')) {
+  if ($data.GetDataPresent($format,$false)) { $knownImage=$true; break }
+ }
+ if ($knownImage) { [Console]::Error.WriteLine('${WINDOWS_IMAGE_PRESENT_MARKER}'); [Console]::Error.Flush() }
+ try { $img=$data.GetData([System.Windows.Forms.DataFormats]::Bitmap,$true) -as [System.Drawing.Image] }
+ catch { $readError=$_.Exception }
+ if ($null -ne $img -and -not $knownImage) {
+  $knownImage=$true; [Console]::Error.WriteLine('${WINDOWS_IMAGE_PRESENT_MARKER}'); [Console]::Error.Flush()
+ }
+ if ($null -eq $img) {
+  foreach ($format in @('PNG','image/png')) {
+   if (-not $data.GetDataPresent($format,$false)) { continue }
+   try {
+    $raw=$data.GetData($format,$false)
+    if ($raw -is [byte[]]) {
+     if ($raw.LongLength -gt 10485760) { throw 'Image exceeds byte limit' }
+     $rawStream=[System.IO.MemoryStream]::new([byte[]]$raw,$false)
+    } elseif ($raw -is [System.IO.Stream]) { $rawStream=$raw }
+    else { throw 'Clipboard PNG data is not an image stream' }
+    if (-not $rawStream.CanSeek) { throw 'Clipboard PNG stream is not seekable' }
+    if ($rawStream.Length -gt 10485760) { throw 'Image exceeds byte limit' }
+    $rawStream.Position=0
+    $img=[System.Drawing.Image]::FromStream($rawStream)
+    break
+   } catch {
+    if ($null -ne $rawStream) { $rawStream.Dispose(); $rawStream=$null }
+    if ($_.Exception.Message.Contains('Image exceeds byte limit')) { throw }
+    $readError=$_.Exception
+   }
+  }
+ }
+ if ($null -eq $img) {
+  if ($null -ne $readError) { throw $readError }
+  if ($knownImage) { throw 'Clipboard advertises image data but returned no image' }
+  exit 0
+ }
+ if ([long]$img.Width*$img.Height -gt 24000000) { throw 'Image exceeds pixel limit' }
+ $pngStream=[System.IO.MemoryStream]::new()
+ try {
+  $img.Save($pngStream,[System.Drawing.Imaging.ImageFormat]::Png)
+  if ($pngStream.Length -gt 10485760) { throw 'Image exceeds byte limit' }
+  [Console]::Out.Write([Convert]::ToBase64String($pngStream.ToArray()))
+ } finally { $pngStream.Dispose() }
+} catch {
+ if ($knownImage) { [Console]::Error.WriteLine($_.Exception.Message); exit 4 }
+ throw
+} finally {
+ if ($null -ne $img) { $img.Dispose() }
+ if ($null -ne $rawStream) { $rawStream.Dispose() }
+}
+`;
 const WINDOWS_IMAGE_ENCODED_SCRIPT = Buffer.from(WINDOWS_IMAGE_SCRIPT, "utf16le").toString("base64");
 async function readClipboardImageViaPowerShell(signal?: AbortSignal, onUnavailable?: (error: unknown) => void): Promise<ClipboardImage | null> {
 	let output: Buffer;
@@ -149,6 +224,9 @@ async function readClipboardImageViaPowerShell(signal?: AbortSignal, onUnavailab
 	catch (error) {
 		// Cancellation and actual image quota failures remain failures, not text probes.
 		if (signal?.aborted || (error instanceof Error && CLIPBOARD_IMAGE_LIMIT_PATTERN.test(error.message))) throw error;
+		if (error instanceof ClipboardCommandError && (error.exitCode === 4 || error.imagePresent)) {
+			throw new ClipboardImageReadError(`已检测到剪贴板图片，但 Windows 图片读取失败：${error.message}`, { cause: error });
+		}
 		onUnavailable?.(error); return null;
 	}
 	if (!output.length) return null;
@@ -249,7 +327,11 @@ export async function readClipboardImage(options?: {
 		// Forms may not obtain an image from every clipboard source. Native is
 		// supplemental; actual Windows format compatibility needs desktop tests.
 		let helperError: unknown;
-		image = await readClipboardImageViaPowerShell(options?.signal, error => { helperError = error; });
+		try { image = await readClipboardImageViaPowerShell(options?.signal, error => { helperError = error; }); }
+		catch (error) {
+			if (!(error instanceof ClipboardImageReadError)) throw error;
+			helperError = error;
+		}
 		let nativeError: unknown;
 		if (!image) {
 			try {
@@ -260,6 +342,8 @@ export async function readClipboardImage(options?: {
 				nativeError = error;
 			}
 		}
+		if (!image && helperError instanceof ClipboardImageReadError) throw helperError;
+		if (!image && nativeError instanceof ClipboardImageReadError) throw nativeError;
 		if (!image && (nativeError ?? helperError)) options?.onUnavailable?.(nativeError ?? helperError);
 	} else {
 		image = await readClipboardImageViaNativeClipboard(options?.signal, options?.nativeClipboard);

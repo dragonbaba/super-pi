@@ -1,6 +1,6 @@
 # False-success guard
 
-Pi 0.84.x runtime extension that prevents an assistant from reporting completion while deterministic completion evidence remains unresolved.
+Runtime extension retaining structured `goal_complete` checks while verification evidence remains unresolved. Assistant replies are preserved without scanning completion wording or rewriting their content.
 
 It adds no tool, slash command, or persistent prompt instruction.
 
@@ -11,11 +11,8 @@ It adds no tool, slash command, or persistent prompt instruction.
 - Failed edit/write/fix calls require a successful same-target mutation or an authoritative verification whose target/package/workspace scope covers that target.
 - A partial mutation (`stateChanged: true`) remains unresolved after a retry and until authoritative verification covers the same target.
 - Exploratory search and missing optional paths do not open completion obligations.
-- Successful tool results stay on a text-free fast path; only failed results collect up to 8 KiB for classification, while final assistant drafts retain the separate 1 MiB safety bound.
-- If the final assistant message candidly reports failure or remaining work, it is preserved.
-- If it claims completion with open obligations, the finalized message is prefixed with a fixed-Chinese truthful runtime report that lists bounded scope/category evidence and preserves the original assistant report under an explicit “未验证” heading; useful context is never replaced by abrupt fixed-English text.
+- Successful tool results stay on a text-free fast path; only failed results collect up to 8 KiB for classification. This extension has no `message_end` handler and never reads final assistant drafts.
 - `goal_complete` is blocked with a structured `unverified_completion` reason while obligations remain open.
-- The first failure that opens an obligation receives the complete explanation; later failures for the same obligation receive only a compact `[FSG: ... still open]` marker.
 
 ## Lifecycle
 
@@ -23,4 +20,4 @@ Obligations are scoped to an explicit user boundary and carry normalized filesys
 
 ## Intervention audit
 
-Each intercepted completion message or blocked `goal_complete` call appends a `false-success-intervention-v1` custom session entry. The versioned record is machine-readable and bounded: it stores only model identity, intervention kind/outcome, obligation count, and bounded tool/category metadata. It never stores the discarded draft, tool output, mutation target, or original tool arguments. Audit persistence is best-effort; a persistence failure cannot disable the guard itself.
+Each blocked `goal_complete` call appends a `false-success-intervention-v1` custom session entry. The versioned record is machine-readable and bounded: it stores only model identity, intervention kind/outcome, obligation count, and bounded tool/category metadata. It never stores assistant replies, tool output, mutation targets, or original tool arguments. Audit persistence is best-effort. Historical completion-replacement entries remain readable as session records; new replies do not generate them.

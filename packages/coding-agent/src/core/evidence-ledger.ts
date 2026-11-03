@@ -29,6 +29,7 @@ export interface EvidenceRecordV1 {
 	readonly branchGeneration: number;
 	readonly canonicalPath: string;
 	readonly fileGeneration: string;
+	readonly fileRevision?: string;
 	readonly sessionId: string;
 	readonly cwd: string;
 	readonly blocks: number;
@@ -67,7 +68,7 @@ export function createEvidenceCounters() {
 export function evidenceMetadataBytes(r: EvidenceRecordV1): number {
 	return 512 + 2 * (r.evidenceId.length + r.canonicalArgsHash.length + r.scopeFingerprint.length +
 		r.resultHandle.length + r.sourceToolCallId.length + r.relativePath.length + r.location.length +
-		r.canonicalPath.length + r.fileGeneration.length + r.sessionId.length + r.cwd.length);
+		r.canonicalPath.length + r.fileGeneration.length + (r.fileRevision?.length ?? 0) + r.sessionId.length + r.cwd.length);
 }
 
 // Admission is not lookup. Detach bounded strings so a short substring cannot
@@ -120,7 +121,8 @@ export class EvidenceLedger {
 
 	admit(input: EvidenceRecordV1, budgetTokens: number): boolean {
 		if (this.disposed || input.version !== 1 || input.toolKind !== "builtin-read" ||
-			input.location.length > EVIDENCE_MAX_LOCATION_CHARS || input.blocks !== 1 ||
+			input.location.length > EVIDENCE_MAX_LOCATION_CHARS || (input.blocks !== 1 && !(input.blocks === 2 && input.fileRevision)) ||
+			(input.fileRevision !== undefined && (typeof input.fileRevision !== "string" || input.fileRevision.length > 64)) ||
 			!Number.isSafeInteger(input.chars) || input.chars < 1 || input.chars > 64 * 1024 ||
 			input.workspaceGeneration !== this.workspaceGeneration || input.branchGeneration !== this.branchGeneration ||
 			input.evidenceId.length > 512 || input.sourceToolCallId.length > 256 || input.canonicalArgsHash.length > 64 ||
@@ -144,6 +146,7 @@ export class EvidenceLedger {
 			relativePath: ownMetadata(input.relativePath), location: ownMetadata(input.location), createdTurn: input.createdTurn,
 			workspaceGeneration: input.workspaceGeneration, branchGeneration: input.branchGeneration,
 			canonicalPath: ownMetadata(input.canonicalPath), fileGeneration: ownMetadata(input.fileGeneration),
+			fileRevision: input.fileRevision === undefined ? undefined : ownMetadata(input.fileRevision),
 			sessionId: ownMetadata(input.sessionId), cwd: ownMetadata(input.cwd), blocks: input.blocks, chars: input.chars,
 			artifactBytes: input.artifactBytes, modelTokens: input.modelTokens, referenceTokens,
 		};

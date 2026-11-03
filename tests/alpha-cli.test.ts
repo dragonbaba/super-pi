@@ -8,7 +8,11 @@ import { fileURLToPath } from 'node:url';
 import { CONFIG_DIR_NAME, getConfigDir } from '../packages/coding-agent/src/config.ts';
 import { ProjectTrustStore } from '../packages/coding-agent/src/core/trust-manager.ts';
 
-for (const mode of ['regular', 'fullscreen']) for (const scenario of ['quit', 'ctrl-d', 'double-ctrl-c', 'extension', 'SIGTERM', 'SIGHUP', 'active-stream', 'active-tool', 'active-compaction', 'settings-absent', 'settings-malformed', 'startup-quit', 'stdout-close', 'active-stream/stdout-close', 'active-tool/stdout-close', 'active-compaction/stdout-close', 'project-trusted', 'project-untrusted', 'quit/progress', 'stdout-close/progress', 'active-stream/stdout-close/progress']) {
+const lifecycleScenarios = ['quit', 'ctrl-d', 'double-ctrl-c', 'extension', 'SIGTERM', 'SIGHUP', 'active-stream', 'active-tool', 'active-compaction', 'startup-quit', 'stdout-close', 'active-stream/stdout-close', 'active-tool/stdout-close', 'active-compaction/stdout-close', 'quit/progress', 'stdout-close/progress', 'active-stream/stdout-close/progress'];
+// Settings parsing and project trust run before selecting a renderer. Exercise
+// those through the real CLI once; keep every terminal lifecycle in both modes.
+const configurationScenarios = ['settings-absent', 'settings-malformed', 'project-trusted', 'project-untrusted'];
+for (const mode of ['regular', 'fullscreen']) for (const scenario of mode === 'regular' ? [...lifecycleScenarios, ...configurationScenarios] : lifecycleScenarios) {
   const kind = scenario.split('/')[0]!;
   const outputLost = scenario.split('/').includes('stdout-close');
   test(`pipe-backed real CLI ${mode}/${scenario}`, { skip: process.platform === 'win32' && kind.startsWith('SIG') ? 'Windows kill signals terminate externally; native POSIX signal CI required' : false }, async (t) => {
@@ -29,16 +33,25 @@ for (const mode of ['regular', 'fullscreen']) for (const scenario of ['quit', 'c
       '--tui-mode', mode, '--extension', fileURLToPath(new URL(kind.startsWith('active-') ? './fixtures/alpha-cli-active-extension.mjs' : './fixtures/alpha-cli-extension.mjs', import.meta.url))], {
       cwd: root, env: { ...process.env, HOME: root, USERPROFILE: root, XDG_CONFIG_HOME: root, SP_CODING_AGENT_DIR: agent,
         SP_CODING_AGENT_SESSION_DIR: join(root, 'sessions'), SP_OFFLINE: '1', SP_TUI_WRITE_LOG: '', SP_ALPHA_STARTUP_CAPTURE: capture, ALPHA_EXIT_KIND: kind }, stdio: 'pipe' });
-    let stdout = ''; let stderr = ''; let ready = false; let sendTimer: ReturnType<typeof setTimeout> | undefined;
+    let stdout = ''; let stderr = ''; let ready = false; let permissionStep = 0; let sendTimer: ReturnType<typeof setTimeout> | undefined;
     const timeout = setTimeout(() => child.kill(), 15000);
     child.once('exit', () => { if (sendTimer) clearTimeout(sendTimer); });
     child.stdout.on('data', data => {
       stdout += data.toString(); assert.ok(stdout.length <= 1024 * 1024, 'bounded capture');
+      // Custom host tools require the same explicit menu choice as a real user.
+      if (kind === 'active-tool' && permissionStep === 1 && stdout.includes('选择当前 Session 权限')) {
+        permissionStep = 2; child.stdin.write('\x1b[B\x1b[B\r');
+      } else if (kind === 'active-tool' && permissionStep === 2 && stdout.includes('切换到宿主机读写')) {
+        permissionStep = 3; child.stdin.write('\r');
+      } else if (kind === 'active-tool' && permissionStep === 3 && stdout.includes('当前权限：全部读写')) {
+        permissionStep = 4; child.stdin.write('fixture\r');
+      }
       if (!ready && stdout.includes('ALPHA_CLI_READY')) {
         ready = true;
         sendTimer = setTimeout(() => {
           if (child.exitCode !== null || child.signalCode !== null || child.stdin.destroyed) return;
           if (kind === 'stdout-close') { child.stdout.destroy(); child.stdin.write('/quit\r'); }
+          else if (kind === 'active-tool') { permissionStep = 1; child.stdin.write('/permissions\r'); }
           else if (kind.startsWith('active-')) child.stdin.write(kind === 'active-compaction' ? '/alpha-compact\r' : 'fixture\r');
           else if (kind.startsWith('SIG')) child.kill(kind as NodeJS.Signals);
           else if (kind !== 'extension' && kind !== 'startup-quit') child.stdin.write(kind === 'quit' ? '/quit\r' : kind === 'ctrl-d' ? '\x04' : '\x03\x03');
@@ -59,8 +72,15 @@ for (const mode of ['regular', 'fullscreen']) for (const scenario of ['quit', 'c
       t.diagnostic(JSON.stringify({ mode, scenario, code, shutdownEmissions: stderr.split('ALPHA_SESSION_SHUTDOWN').length - 1, exitState: stderr.match(/ALPHA_EXIT:[^\n]+/)?.[0] }));
       assert.equal(code, outputLost ? 129 : 0, stderr.slice(-2000));
       assert.doesNotMatch(stderr, /uncaughtException|disposed ProcessTerminal|UnhandledPromiseRejection/);
-      assert.equal(stderr.split('ALPHA_SESSION_SHUTDOWN').length - 1, 1);
+      assert.equal(stderr.split('ALPHA_SESSION_SHUTDOWN').length - 1, kind === 'active-tool' ? 2 : 1);
+      if (kind === 'active-tool') assert.equal(permissionStep, 4, 'menu selection completed before invoking the host fixture');
       assert.match(stderr, outputLost ? /ALPHA_EXIT:129:RAW:false/ : /ALPHA_EXIT:0:RAW:false/);
+      if (mode === 'fullscreen' && kind === 'quit' && !outputLost) {
+        const restored = stdout.lastIndexOf('\x1b[?1049l');
+        assert.ok(restored >= 0, 'alternate screen restored');
+        assert.ok(stdout.slice(0, restored).includes('ALPHA_RENDER_RESIDUE'), 'fixture was actually rendered');
+        assert.doesNotMatch(stdout.slice(restored), /ALPHA_RENDER_RESIDUE|\x1b\[2K/, 'no transcript redraw after returning to the shell');
+      }
       if (projectCase) {
         assert.equal(stderr.split('ALPHA_PROJECT_EXTENSION_LOADED').length - 1, kind === 'project-trusted' ? 1 : 0);
         assert.equal(new ProjectTrustStore(agent).get(root), kind === 'project-trusted', 'startup preserves the isolated trust decision');

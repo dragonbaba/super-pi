@@ -3,10 +3,17 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "typescript";
 
-test("Worker reuse adds no per-message callbacks or async factories", () => {
+test("Worker reuse and explicit catalog reads add no callbacks or async factories", () => {
 	const targets = new Map([
+		// Explicit directory reads own their result arrays/entries, never per-output callbacks or caches.
+		["packages/coding-agent/src/core/agent-session.ts", new Set(["getAllTools", "getActiveToolNames", "getToolCatalog"])],
+		["packages/coding-agent/src/core/execution-boundary.ts", new Set(["getToolSelectionMode"])],
+		["packages/plan-mode/src/plan-mode.ts", new Set(["toolSelectionMode"])],
+		["packages/tool-classification/src/index.ts", new Set(["readToolCatalog"])],
+		["packages/mcp-bridge/src/bridge.js", new Set(["searchTools"])],
+		["packages/mcp-bridge/src/index.js", new Set(["syncRemoteTools"])],
 		["packages/codemode/src/runtime/worker.ts", new Set(["post", "drain", "deliver", "onMessage"])],
-		["packages/codemode/src/runtime/host.ts", new Set(["post", "handleMessage"])],
+		["packages/codemode/src/runtime/host.ts", new Set(["post", "handleMessage", "pauseClock", "resumeClock", "onTimeout"])],
 		["packages/codemode/src/runtime/worker-pool.ts", new Set(["release", "onExit"])],
 	]);
 	// main/captureMemory/bridge/API scope initialize a VM; start/finish/acquire/retire
@@ -55,6 +62,8 @@ test("Codemode tree progress, timer and leaf refresh reuse owners without hot fa
 	const targets = new Map([
 		// Policy construction is a bounded startup allocation; matching a catalog name is not.
 		["packages/coding-agent/src/core/tool-selection.ts", new Set(["matchesToolPattern", "excludes", "adds", "allows", "explicitlyAdds"])],
+		["packages/tool-classification/src/index.ts", new Set(["planOwnsToolSelection"])],
+		["packages/chrome-devtools/src/active-tool-policy.ts", new Set(["planModeOwnsActiveTools"])],
 		["packages/coding-agent/src/modes/interactive/components/codemode-tree.ts", new Set(["boundedPreview", "shellStatus", "projectFailure", "updateChild", "refresh", "refreshHeader", "tick"])],
 		["packages/coding-agent/src/core/codemode-display.ts", new Set(["codemodeFailureReason"])],
 		["packages/coding-agent/src/modes/interactive/components/tool-execution.ts", new Set(["startNestedTool", "updateNestedTool"])],

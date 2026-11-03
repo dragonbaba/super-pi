@@ -179,7 +179,6 @@ const DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api";
 const X_CODEX_ROUTING_HINT_HEADER = "x-codex-routing-hint";
 const X_CODEX_BETA_FEATURES_HEADER = "x-codex-beta-features";
 const REMOTE_COMPACTION_V2_FEATURE = "remote_compaction_v2";
-const REMOTE_COMPACTION_CAPABILITY_KEY = Symbol.for("@super-pi/ai/codex-remote-compaction-sessions");
 const TERMINAL_RATE_LIMIT_PATTERN = /GoUsageLimitError|FreeUsageLimitError|Monthly usage limit reached|available balance|insufficient_quota|out of budget|quota exceeded|billing/i;
 const RETRYABLE_ERROR_PATTERN = /rate.?limit|overloaded|service.?unavailable|upstream.?connect|connection.?refused/i;
 const TRAILING_SLASHES_PATTERN = /\/+$/;
@@ -198,28 +197,6 @@ const CODEX_TOOL_CALL_PROVIDERS = new Set(["openai", "openai-codex", "opencode"]
 const WEBSOCKET_MESSAGE_TOO_BIG_CLOSE_CODE = 1009;
 const WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE = "websocket_connection_limit_reached";
 const PREVIOUS_RESPONSE_NOT_FOUND_CODE = "previous_response_not_found";
-type RemoteCompactionCapabilityState = typeof globalThis & {
-    [REMOTE_COMPACTION_CAPABILITY_KEY]?: Set<string>;
-};
-
-export function setOpenAICodexRemoteCompactionCapability(sessionId: string, enabled: boolean): void {
-    const state = globalThis as RemoteCompactionCapabilityState;
-    let sessions = state[REMOTE_COMPACTION_CAPABILITY_KEY];
-    if (!(sessions instanceof Set)) {
-        if (!enabled)
-            return;
-        sessions = new Set();
-        state[REMOTE_COMPACTION_CAPABILITY_KEY] = sessions;
-    }
-    if (enabled)
-        sessions.add(sessionId);
-    else
-        sessions.delete(sessionId);
-}
-function isOpenAICodexRemoteCompactionCapabilityEnabled(sessionId: string | undefined): boolean {
-    const sessions = (globalThis as RemoteCompactionCapabilityState)[REMOTE_COMPACTION_CAPABILITY_KEY];
-    return sessions instanceof Set && (sessions.has("*") || (sessionId !== undefined && sessions.has(sessionId)));
-}
 const CODEX_RESPONSE_STATUSES = new Set<CodexResponseStatus>([
     "completed",
     "incomplete",
@@ -356,9 +333,11 @@ function compressRequestBodyZstd(bodyJson: string) {
 // ============================================================================
 // Main Stream Function
 // ============================================================================
-export const stream: StreamFunction<"openai-codex-responses", OpenAICodexResponsesOptions> = (model, context, options) => {
+function streamOwned(owner: CodexTransportOwner, model: Model<"openai-codex-responses">, context: Context, callerOptions?: OpenAICodexResponsesOptions): AssistantMessageEventStream {
+    const admitted = owner.admit(callerOptions);
+    const options = admitted.options;
     const stream = new AssistantMessageEventStream();
-    (async () => {
+    const operation = Promise.resolve().then(async () => {
         const output: AssistantMessage = {
             role: "assistant",
             content: [],
@@ -377,6 +356,7 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
             timestamp: Date.now(),
         };
         try {
+            options.signal?.throwIfAborted();
             const apiKey = options?.apiKey;
             if (!apiKey) {
                 throw new Error(`No API key for provider: ${model.provider}`);
@@ -394,12 +374,14 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
             if (nextBody !== undefined) {
                 body = nextBody as OpenAICodexRequestBody;
             }
+            options.signal?.throwIfAborted();
             const requestServiceTier = body.service_tier;
 			const capabilities = getModelCapabilities(model);
             const websocketRequestId = codexSessionId || uuidv7();
             const routingHint = buildCodexRoutingHint(body.model, requestServiceTier);
 			const remoteCompactionEnabled =
-				capabilities.remoteCompaction && isOpenAICodexRemoteCompactionCapabilityEnabled(codexSessionId);
+				capabilities.remoteCompaction && options?.codexRemoteCompaction === true &&
+				!!codexSessionId && codexSessionId === options.sessionId;
             const sseHeaders = buildSSEHeaders(model.headers, options?.headers, accountId, apiKey, routingHint, codexSessionId, remoteCompactionEnabled);
             const websocketHeaders = buildWebSocketHeaders(model.headers, options?.headers, accountId, apiKey, routingHint, websocketRequestId, remoteCompactionEnabled);
             let bodyJson;
@@ -408,9 +390,9 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
             const websocketConnectTimeoutMs = normalizeTimeoutMs(options?.websocketConnectTimeoutMs);
 			const transport = capabilities.websocketContinuation ? options?.transport || "auto" : "sse";
             let startEmitted = false;
-            const websocketDisabledForSession = transport !== "sse" && isWebSocketSseFallbackActive(cacheSessionId);
+            const websocketDisabledForSession = transport !== "sse" && isWebSocketSseFallbackActive(owner, cacheSessionId);
             if (websocketDisabledForSession) {
-                recordWebSocketSseFallback(cacheSessionId);
+                recordWebSocketSseFallback(owner, cacheSessionId);
             }
             if (transport !== "sse" && !websocketDisabledForSession) {
                 let websocketStarted = false;
@@ -419,7 +401,7 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
                 while (true) {
                     websocketStarted = false;
                     try {
-                        await processWebSocketStream(resolveCodexWebSocketUrl(model.baseUrl), body, websocketHeaders, output, stream, model, () => {
+                        await processWebSocketStream(owner, resolveCodexWebSocketUrl(model.baseUrl), body, websocketHeaders, output, stream, model, () => {
                             websocketStarted = true;
                             if (!startEmitted) {
                                 startEmitted = true;
@@ -460,11 +442,11 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
                             phase: websocketStarted ? "after_message_stream_start" : "before_message_stream_start",
                             requestBytes: new TextEncoder().encode(getBodyJson()).byteLength,
                         }));
-                        recordWebSocketFailure(cacheSessionId, error);
+                        recordWebSocketFailure(owner, cacheSessionId, error);
                         if (websocketStarted) {
                             throw error;
                         }
-                        recordWebSocketSseFallback(cacheSessionId);
+                        recordWebSocketSseFallback(owner, cacheSessionId);
                         break;
                     }
                 }
@@ -506,7 +488,10 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
                     finally {
                         combinedSignal.cleanup();
                     }
-                    await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
+                    try {
+                        await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
+                        options.signal?.throwIfAborted();
+                    } catch (error) { await cancelUnconsumedResponse(owner, response); throw error; }
                     if (response.ok) {
                         break;
                     }
@@ -561,7 +546,8 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
             }
             assertSuccessfulOutput(output);
             const responseItems = convertAssistantResponseItems(model, output, grammarToolInputProperties);
-            recordSuccessfulDispatch(cacheSessionId, body, body, sseHeaders, "sse", responseItems, model, options, output.responseId);
+            recordSuccessfulDispatch(owner, cacheSessionId, body, body, sseHeaders, "sse", responseItems, model, options, output.responseId);
+            options.signal?.throwIfAborted();
             stream.push({ type: "done", reason: output.stopReason, message: output });
             stream.end();
         }
@@ -580,10 +566,11 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
             stream.push({ type: "error", reason: output.stopReason, error: output });
             stream.end();
         }
-    })();
+    });
+    void owner.track(operation, admitted.cleanup).catch(ignoreSettledRequestFailure);
     return stream;
-};
-export const streamSimple: StreamFunction<"openai-codex-responses", SimpleStreamOptions> = (model, context, options) => {
+}
+function streamSimpleOwned(owner: CodexTransportOwner, model: Model<"openai-codex-responses">, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream {
     const apiKey = options?.apiKey;
     if (!apiKey) {
         throw new Error(`No API key for provider: ${model.provider}`);
@@ -594,7 +581,7 @@ export const streamSimple: StreamFunction<"openai-codex-responses", SimpleStream
     };
     const clampedReasoning = clampThinkingLevel(model, options?.reasoning ?? "off");
     const reasoningEffort = clampedReasoning === "off" ? undefined : clampedReasoning;
-    return stream(model, context, {
+    return streamOwned(owner, model, context, {
         ...base,
         reasoningEffort,
     });
@@ -986,15 +973,140 @@ interface WebSocketLease {
     release(options?: { keep?: boolean }): void;
 }
 
-const websocketSessionCache = new Map<string, Map<string, CachedWebSocketConnection>>();
-const websocketDebugStats = new Map<string, OpenAICodexWebSocketDebugStats>();
-const websocketSseFallbackSessions = new Set<string>();
-const successfulDispatchCommitments = new Map<string, SuccessfulDispatchCommitment>();
-const consumedDispatchCommitments = new Set<string>();
 const MAX_SUCCESSFUL_DISPATCH_COMMITMENTS = 16;
-function getOrCreateWebSocketDebugStats(sessionId: string): OpenAICodexWebSocketDebugStats {
-    let stats = websocketDebugStats.get(sessionId);
+export interface OpenAICodexTransportOwner {
+    readonly generation: number;
+    readonly stream: StreamFunction<"openai-codex-responses", OpenAICodexResponsesOptions>;
+    readonly streamSimple: StreamFunction<"openai-codex-responses", SimpleStreamOptions>;
+    compact(model: Model<"openai-codex-responses">, payload: Record<string, unknown>, options: OpenAICodexCompactionOptions): Promise<OpenAICodexCompactionResult>;
+    getDebugStats(sessionId: string): OpenAICodexWebSocketDebugStats | undefined;
+    readonly diagnostics: { pending: number; sockets: number; cached: number; timers: number; commitments: number; consumed: number; debug: number; fallbacks: number };
+    assertCurrent(): void;
+    resume(expectedGeneration?: number): void;
+    reset(): void;
+    revoke(): void;
+    drain(): Promise<void>;
+    dispose(): Promise<void>;
+}
+
+function ignoreSettledRequestFailure(): void {} // Request errors are delivered to their caller; drain joins settlement.
+
+class CodexTransportOwner implements OpenAICodexTransportOwner {
+    readonly websocketSessionCache = new Map<string, Map<string, CachedWebSocketConnection>>();
+    readonly websocketDebugStats = new Map<string, OpenAICodexWebSocketDebugStats>();
+    readonly websocketSseFallbackSessions = new Set<string>();
+    readonly successfulDispatchCommitments = new Map<string, SuccessfulDispatchCommitment>();
+    readonly consumedDispatchCommitments = new Set<string>();
+    readonly sockets = new Set<WebSocketLike>();
+    private readonly pending = new Set<Promise<unknown>>();
+    private cancellation = new AbortController();
+    private accepting = true;
+    private epoch = 0;
+    private disposed = false;
+    private draining: Promise<void> | undefined;
+    private disposal: Promise<void> | undefined;
+    private cleanupFailed = false;
+    private cleanupFailure: unknown;
+
+    readonly stream: OpenAICodexTransportOwner["stream"] = (model, context, options) => streamOwned(this, model, context, options);
+    readonly streamSimple: OpenAICodexTransportOwner["streamSimple"] = (model, context, options) => streamSimpleOwned(this, model, context, options);
+    compact(model: Model<"openai-codex-responses">, payload: Record<string, unknown>, options: OpenAICodexCompactionOptions): Promise<OpenAICodexCompactionResult> {
+        const admitted = this.admit(options);
+        return this.track(Promise.resolve().then(() => compactOpenAICodexRequestOwned(this, model, payload, admitted.options)), admitted.cleanup);
+    }
+    getDebugStats(sessionId: string): OpenAICodexWebSocketDebugStats | undefined { return getOpenAICodexWebSocketDebugStatsOwned(this, sessionId); }
+    get diagnostics() {
+        let cached = 0, timers = 0;
+        for (const entries of this.websocketSessionCache.values()) for (const entry of entries.values()) {
+            cached++; if (entry.idleTimer) timers++;
+        }
+        return { pending: this.pending.size, sockets: this.sockets.size, cached, timers,
+            commitments: this.successfulDispatchCommitments.size, consumed: this.consumedDispatchCommitments.size,
+            debug: this.websocketDebugStats.size, fallbacks: this.websocketSseFallbackSessions.size };
+    }
+    get isActive(): boolean { return this.accepting && !this.disposed; }
+    get generation(): number { return this.epoch; }
+    assertCurrent(): void { if (!this.isActive) throw new Error("Codex transport owner is revoked or disposed"); }
+    admit<T extends StreamOptions>(options: T | undefined): { options: T; cleanup: () => void } {
+        this.assertCurrent();
+        if (this.pending.size >= 128) throw new Error("Codex transport owner request capacity exceeded");
+        const combined = combineAbortSignals([options?.signal, this.cancellation.signal]);
+        return { options: { ...options, signal: combined.signal } as T, cleanup: combined.cleanup };
+    }
+    track<T>(operation: Promise<T>, cleanup: () => void): Promise<T> {
+        const tracked = operation.finally(() => { cleanup(); this.pending.delete(tracked); });
+        this.pending.add(tracked);
+        return tracked;
+    }
+    closeSocket(socket: WebSocketLike, code: number, reason: string): void {
+        if (!this.sockets.has(socket)) return;
+        try { socket.close(code, reason); this.sockets.delete(socket); }
+        catch (error) { this.recordCleanupFailure(error); }
+    }
+    recordCleanupFailure(error: unknown): void { this.cleanupFailed = true; this.cleanupFailure = error; }
+    revoke(): void {
+        this.epoch++;
+        this.accepting = false;
+        if (!this.cancellation.signal.aborted) this.cancellation.abort(new Error("Codex transport owner revoked"));
+        closeOpenAICodexWebSocketSessionsOwned(this);
+        for (const socket of this.sockets) this.closeSocket(socket, 1000, "owner_revoked");
+        if (this.cleanupFailed) throw this.cleanupFailure;
+    }
+    drain(): Promise<void> {
+        if (this.accepting) return Promise.reject(new Error("Revoke Codex transport owner before draining"));
+        return this.draining ??= this.finishPending().catch(error => {
+            this.cleanupFailed = true; this.cleanupFailure = error; throw error;
+        }).finally(() => { this.draining = undefined; });
+    }
+    private async finishPending(): Promise<void> {
+        await Promise.allSettled(this.pending);
+        closeOpenAICodexWebSocketSessionsOwned(this);
+        resetOpenAICodexWebSocketDebugStatsOwned(this);
+        if (this.cleanupFailed) throw this.cleanupFailure;
+    }
+    resume(expectedGeneration = this.epoch): void {
+        if (expectedGeneration !== this.epoch) throw new Error("Codex transport request belongs to a previous generation");
+        if (this.disposed) throw new Error("Codex transport owner is disposed");
+        if (this.cleanupFailed) throw this.cleanupFailure;
+        if (this.accepting) return;
+        if (this.pending.size || this.draining) throw new Error("Codex transport owner is still draining");
+        this.cancellation = new AbortController(); this.accepting = true;
+    }
+    reset(): void {
+        // Model selection may originate in a payload hook: do not await that same request.
+        try { this.revoke(); } finally { void this.drain().catch(ignoreSettledRequestFailure); }
+    }
+    dispose(): Promise<void> {
+        if (this.disposal) return this.disposal;
+        this.disposed = true;
+        this.disposal = Promise.resolve().then(() => this.drain());
+        try { this.revoke(); } catch { /* drain retains and reports cleanup failure */ }
+        return this.disposal;
+    }
+}
+
+export function createOpenAICodexTransportOwner(): OpenAICodexTransportOwner { return new CodexTransportOwner(); }
+
+// Compatibility domain only. Explicit owners are never registered in global ID-based cleanup.
+const legacyDefaultOwner = new CodexTransportOwner();
+export const stream = legacyDefaultOwner.stream;
+export const streamSimple = legacyDefaultOwner.streamSimple;
+export function compactOpenAICodexRequest(model: Model<"openai-codex-responses">, payload: Record<string, unknown>, options: OpenAICodexCompactionOptions): Promise<OpenAICodexCompactionResult> {
+    return legacyDefaultOwner.compact(model, payload, options);
+}
+export function getOpenAICodexWebSocketDebugStats(sessionId: string): OpenAICodexWebSocketDebugStats | undefined { return legacyDefaultOwner.getDebugStats(sessionId); }
+export function resetOpenAICodexWebSocketDebugStats(sessionId?: string): void { resetOpenAICodexWebSocketDebugStatsOwned(legacyDefaultOwner, sessionId); }
+export function closeOpenAICodexWebSocketSessions(sessionId?: string): void { closeOpenAICodexWebSocketSessionsOwned(legacyDefaultOwner, sessionId); }
+
+function getOrCreateWebSocketDebugStats(owner: CodexTransportOwner, sessionId: string): OpenAICodexWebSocketDebugStats {
+    owner.assertCurrent();
+    let stats = owner.websocketDebugStats.get(sessionId);
     if (!stats) {
+        while (owner.websocketDebugStats.size >= 128) {
+            const oldest = owner.websocketDebugStats.keys().next().value;
+            if (oldest === undefined) break;
+            owner.websocketDebugStats.delete(oldest); owner.websocketSseFallbackSessions.delete(oldest);
+        }
         stats = {
             requests: 0,
             connectionsCreated: 0,
@@ -1007,65 +1119,67 @@ function getOrCreateWebSocketDebugStats(sessionId: string): OpenAICodexWebSocket
             websocketFailures: 0,
             sseFallbacks: 0,
         };
-        websocketDebugStats.set(sessionId, stats);
+        owner.websocketDebugStats.set(sessionId, stats);
     }
     return stats;
 }
-export function getOpenAICodexWebSocketDebugStats(sessionId: string): OpenAICodexWebSocketDebugStats | undefined {
-    const stats = websocketDebugStats.get(sessionId);
+function getOpenAICodexWebSocketDebugStatsOwned(owner: CodexTransportOwner, sessionId: string): OpenAICodexWebSocketDebugStats | undefined {
+    const stats = owner.websocketDebugStats.get(sessionId);
     return stats ? { ...stats } : undefined;
 }
-export function resetOpenAICodexWebSocketDebugStats(sessionId?: string): void {
+function resetOpenAICodexWebSocketDebugStatsOwned(owner: CodexTransportOwner, sessionId?: string): void {
     if (sessionId) {
-        websocketDebugStats.delete(sessionId);
-        websocketSseFallbackSessions.delete(sessionId);
+        owner.websocketDebugStats.delete(sessionId);
+        owner.websocketSseFallbackSessions.delete(sessionId);
         return;
     }
-    websocketDebugStats.clear();
-    websocketSseFallbackSessions.clear();
+    owner.websocketDebugStats.clear();
+    owner.websocketSseFallbackSessions.clear();
 }
-export function closeOpenAICodexWebSocketSessions(sessionId?: string): void {
+function closeOpenAICodexWebSocketSessionsOwned(owner: CodexTransportOwner, sessionId?: string): void {
     const closeEntry = (entry: CachedWebSocketConnection) => {
         if (entry.idleTimer)
             clearTimeout(entry.idleTimer);
-        closeWebSocketSilently(entry.socket, 1000, "debug_close");
+        entry.idleTimer = undefined;
+        entry.continuation = undefined;
+        closeWebSocketSilently(owner, entry.socket, 1000, "debug_close");
     };
     if (sessionId) {
-        for (const entry of websocketSessionCache.get(sessionId)?.values() ?? [])
+        for (const entry of owner.websocketSessionCache.get(sessionId)?.values() ?? [])
             closeEntry(entry);
-        websocketSessionCache.delete(sessionId);
-        successfulDispatchCommitments.delete(sessionId);
-        consumedDispatchCommitments.delete(sessionId);
+        owner.websocketSessionCache.delete(sessionId);
+        owner.successfulDispatchCommitments.delete(sessionId);
+        owner.consumedDispatchCommitments.delete(sessionId);
         return;
     }
-    for (const accountEntries of websocketSessionCache.values()) {
+    for (const accountEntries of owner.websocketSessionCache.values()) {
         for (const entry of accountEntries.values())
             closeEntry(entry);
     }
-    websocketSessionCache.clear();
-    successfulDispatchCommitments.clear();
-    consumedDispatchCommitments.clear();
+    owner.websocketSessionCache.clear();
+    owner.successfulDispatchCommitments.clear();
+    owner.consumedDispatchCommitments.clear();
 }
 function cleanupOpenAICodexSessionResources(sessionId?: string): void {
-    closeOpenAICodexWebSocketSessions(sessionId);
-    resetOpenAICodexWebSocketDebugStats(sessionId);
+    closeOpenAICodexWebSocketSessionsOwned(legacyDefaultOwner, sessionId);
+    resetOpenAICodexWebSocketDebugStatsOwned(legacyDefaultOwner, sessionId);
 }
 registerSessionResourceCleanup(cleanupOpenAICodexSessionResources);
-function isWebSocketSseFallbackActive(sessionId: string | undefined): boolean {
-    return sessionId ? websocketSseFallbackSessions.has(sessionId) : false;
+function isWebSocketSseFallbackActive(owner: CodexTransportOwner, sessionId: string | undefined): boolean {
+    return sessionId ? owner.websocketSseFallbackSessions.has(sessionId) : false;
 }
-function recordWebSocketSseFallback(sessionId: string | undefined): void {
-    if (!sessionId)
+function recordWebSocketSseFallback(owner: CodexTransportOwner, sessionId: string | undefined): void {
+    if (!sessionId || !owner.isActive)
         return;
-    const stats = getOrCreateWebSocketDebugStats(sessionId);
+    const stats = getOrCreateWebSocketDebugStats(owner, sessionId);
     stats.sseFallbacks++;
-    stats.websocketFallbackActive = isWebSocketSseFallbackActive(sessionId);
+    stats.websocketFallbackActive = isWebSocketSseFallbackActive(owner, sessionId);
 }
-function recordWebSocketFailure(sessionId: string | undefined, error: unknown): void {
-    if (!sessionId)
+function recordWebSocketFailure(owner: CodexTransportOwner, sessionId: string | undefined, error: unknown): void {
+    if (!sessionId || !owner.isActive)
         return;
-    websocketSseFallbackSessions.add(sessionId);
-    const stats = getOrCreateWebSocketDebugStats(sessionId);
+    owner.websocketSseFallbackSessions.add(sessionId);
+    const stats = getOrCreateWebSocketDebugStats(owner, sessionId);
     stats.websocketFailures++;
     stats.lastWebSocketError = formatThrownValue(error);
     stats.websocketFallbackActive = true;
@@ -1124,37 +1238,34 @@ function isWebSocketReusable(socket: WebSocketLike): boolean {
 function isWebSocketSessionExpired(entry: CachedWebSocketConnection): boolean {
     return Date.now() - entry.createdAt >= SESSION_WEBSOCKET_MAX_AGE_MS;
 }
-function closeWebSocketSilently(socket: WebSocketLike, code = 1000, reason = "done"): void {
-    try {
-        socket.close(code, reason);
-    }
-    catch { }
+function closeWebSocketSilently(owner: CodexTransportOwner, socket: WebSocketLike, code = 1000, reason = "done"): void {
+    owner.closeSocket(socket, code, reason);
 }
-function removeCachedWebSocketSession(sessionId: string, accountId: string, entry: CachedWebSocketConnection, reason: string): void {
+function removeCachedWebSocketSession(owner: CodexTransportOwner, sessionId: string, accountId: string, entry: CachedWebSocketConnection, reason: string): void {
     if (entry.idleTimer)
         clearTimeout(entry.idleTimer);
-    closeWebSocketSilently(entry.socket, 1000, reason);
-    const accountEntries = websocketSessionCache.get(sessionId);
+    closeWebSocketSilently(owner, entry.socket, 1000, reason);
+    const accountEntries = owner.websocketSessionCache.get(sessionId);
     if (accountEntries?.get(accountId) === entry)
         accountEntries.delete(accountId);
     if (accountEntries?.size === 0)
-        websocketSessionCache.delete(sessionId);
+        owner.websocketSessionCache.delete(sessionId);
 }
-function pruneWebSocketSessionCache(): void {
-    for (const [sessionId, accountEntries] of websocketSessionCache) {
+function pruneWebSocketSessionCache(owner: CodexTransportOwner): void {
+    for (const [sessionId, accountEntries] of owner.websocketSessionCache) {
         for (const [accountId, entry] of accountEntries) {
             if (!entry.busy && (isWebSocketSessionExpired(entry) || !isWebSocketReusable(entry.socket)))
-                removeCachedWebSocketSession(sessionId, accountId, entry, "cache_prune");
+                removeCachedWebSocketSession(owner, sessionId, accountId, entry, "cache_prune");
         }
     }
 }
-function reserveWebSocketSessionCacheSlot(): boolean {
-    pruneWebSocketSessionCache();
+function reserveWebSocketSessionCacheSlot(owner: CodexTransportOwner): boolean {
+    pruneWebSocketSessionCache(owner);
     let cachedEntryCount = 0;
     let oldestSessionId;
     let oldestAccountId;
     let oldestEntry;
-    for (const [sessionId, accountEntries] of websocketSessionCache) {
+    for (const [sessionId, accountEntries] of owner.websocketSessionCache) {
         for (const [accountId, entry] of accountEntries) {
             cachedEntryCount++;
             if (!entry.busy && (!oldestEntry || entry.lastUsedAt < oldestEntry.lastUsedAt)) {
@@ -1168,23 +1279,31 @@ function reserveWebSocketSessionCacheSlot(): boolean {
         return true;
     if (!oldestEntry)
         return false;
-    removeCachedWebSocketSession(oldestSessionId!, oldestAccountId!, oldestEntry, "cache_lru_eviction");
+    removeCachedWebSocketSession(owner, oldestSessionId!, oldestAccountId!, oldestEntry, "cache_lru_eviction");
     return true;
 }
-function expireSessionWebSocket(sessionId: string, accountId: string, entry: CachedWebSocketConnection): void {
+function expireSessionWebSocket(owner: CodexTransportOwner, sessionId: string, accountId: string, entry: CachedWebSocketConnection): void {
     if (entry.busy)
         return;
-    removeCachedWebSocketSession(sessionId, accountId, entry, "idle_timeout");
+    removeCachedWebSocketSession(owner, sessionId, accountId, entry, "idle_timeout");
 }
-function scheduleSessionWebSocketExpiry(sessionId: string, accountId: string, entry: CachedWebSocketConnection) {
+function scheduleSessionWebSocketExpiry(owner: CodexTransportOwner, sessionId: string, accountId: string, entry: CachedWebSocketConnection) {
     if (entry.idleTimer) {
         clearTimeout(entry.idleTimer);
     }
+    entry.idleTimer = undefined;
+    if (!owner.isActive || owner.websocketSessionCache.get(sessionId)?.get(accountId) !== entry) {
+        entry.continuation = undefined;
+        closeWebSocketSilently(owner, entry.socket);
+        return;
+    }
     entry.lastUsedAt = Date.now();
-    entry.idleTimer = setTimeout(expireSessionWebSocket, SESSION_WEBSOCKET_CACHE_TTL_MS, sessionId, accountId, entry);
+    entry.idleTimer = setTimeout(expireSessionWebSocket, SESSION_WEBSOCKET_CACHE_TTL_MS, owner, sessionId, accountId, entry);
 }
-async function connectWebSocket(url: string, headers: Headers, signal?: AbortSignal, connectTimeoutMs: number | undefined = DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS, env?: ProviderEnv): Promise<WebSocketLike> {
+async function connectWebSocket(owner: CodexTransportOwner, url: string, headers: Headers, signal?: AbortSignal, connectTimeoutMs: number | undefined = DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS, env?: ProviderEnv): Promise<WebSocketLike> {
     const WebSocketCtor = await getWebSocketConstructor(env);
+    signal?.throwIfAborted();
+    owner.assertCurrent();
     if (!WebSocketCtor) {
         throw new Error("WebSocket transport is not available in this runtime");
     }
@@ -1195,6 +1314,7 @@ async function connectWebSocket(url: string, headers: Headers, signal?: AbortSig
         let socket: WebSocketLike;
         try {
             socket = new WebSocketCtor(url, { headers: wsHeaders });
+            owner.sockets.add(socket);
         }
         catch (error) {
             reject(error instanceof Error ? error : new Error(String(error)));
@@ -1216,7 +1336,7 @@ async function connectWebSocket(url: string, headers: Headers, signal?: AbortSig
             settled = true;
             cleanup();
             if (closeReason) {
-                closeWebSocketSilently(socket, 1000, closeReason);
+                closeWebSocketSilently(owner, socket, 1000, closeReason);
             }
             reject(error);
         };
@@ -1228,10 +1348,10 @@ async function connectWebSocket(url: string, headers: Headers, signal?: AbortSig
             resolve(socket);
         };
         const onError = (event: unknown) => {
-            fail(extractWebSocketError(event));
+            fail(extractWebSocketError(event), "connect_error");
         };
         const onClose = (event: unknown) => {
-            fail(extractWebSocketCloseError(event));
+            fail(extractWebSocketCloseError(event), "connect_closed");
         };
         const onAbort = () => {
             fail(new Error("Request was aborted"), "aborted");
@@ -1250,7 +1370,7 @@ async function connectWebSocket(url: string, headers: Headers, signal?: AbortSig
         }
     });
 }
-async function acquireWebSocket(
+async function acquireWebSocket(owner: CodexTransportOwner,
     url: string,
     headers: Headers,
     sessionId: string | undefined,
@@ -1260,15 +1380,15 @@ async function acquireWebSocket(
     env: ProviderEnv | undefined,
 ): Promise<WebSocketLease> {
     if (!sessionId) {
-        const socket = await connectWebSocket(url, headers, signal, connectTimeoutMs, env);
+        const socket = await connectWebSocket(owner, url, headers, signal, connectTimeoutMs, env);
         return {
             socket,
             reused: false,
-            release: () => closeWebSocketSilently(socket),
+            release: () => closeWebSocketSilently(owner, socket),
         };
     }
     const connectionHeadersKey = JSON.stringify(headersToRecord(headers));
-    let accountEntries = websocketSessionCache.get(sessionId);
+    let accountEntries = owner.websocketSessionCache.get(sessionId);
     const cached = accountEntries?.get(accountId);
     if (cached) {
         if (cached.idleTimer) {
@@ -1276,16 +1396,16 @@ async function acquireWebSocket(
             cached.idleTimer = undefined;
         }
         if (!cached.busy && (cached.url !== url || cached.connectionHeadersKey !== connectionHeadersKey)) {
-            closeWebSocketSilently(cached.socket, 1000, "headers_changed");
+            closeWebSocketSilently(owner, cached.socket, 1000, "headers_changed");
             accountEntries?.delete(accountId);
             if (accountEntries?.size === 0)
-                websocketSessionCache.delete(sessionId);
+                owner.websocketSessionCache.delete(sessionId);
         }
         else if (!cached.busy && isWebSocketSessionExpired(cached)) {
-            closeWebSocketSilently(cached.socket, 1000, "connection_age_limit");
+            closeWebSocketSilently(owner, cached.socket, 1000, "connection_age_limit");
             accountEntries?.delete(accountId);
             if (accountEntries?.size === 0)
-                websocketSessionCache.delete(sessionId);
+                owner.websocketSessionCache.delete(sessionId);
         }
         else if (!cached.busy && isWebSocketReusable(cached.socket)) {
             cached.busy = true;
@@ -1295,45 +1415,46 @@ async function acquireWebSocket(
                 reused: true,
                 release: ({ keep } = {}) => {
                     if (!keep || !isWebSocketReusable(cached.socket)) {
-                        closeWebSocketSilently(cached.socket);
-                        const currentEntries = websocketSessionCache.get(sessionId);
+                        closeWebSocketSilently(owner, cached.socket);
+                        const currentEntries = owner.websocketSessionCache.get(sessionId);
                         if (currentEntries?.get(accountId) === cached)
                             currentEntries.delete(accountId);
                         if (currentEntries?.size === 0)
-                            websocketSessionCache.delete(sessionId);
+                            owner.websocketSessionCache.delete(sessionId);
                         return;
                     }
                     cached.busy = false;
-                    scheduleSessionWebSocketExpiry(sessionId, accountId, cached);
+                    scheduleSessionWebSocketExpiry(owner, sessionId, accountId, cached);
                 },
             };
         }
         if (cached.busy) {
-            const socket = await connectWebSocket(url, headers, signal, connectTimeoutMs, env);
+            const socket = await connectWebSocket(owner, url, headers, signal, connectTimeoutMs, env);
             return {
                 socket,
                 reused: false,
                 release: () => {
-                    closeWebSocketSilently(socket);
+                    closeWebSocketSilently(owner, socket);
                 },
             };
         }
         if (!isWebSocketReusable(cached.socket)) {
-            closeWebSocketSilently(cached.socket);
+            closeWebSocketSilently(owner, cached.socket);
             accountEntries?.delete(accountId);
             if (accountEntries?.size === 0)
-                websocketSessionCache.delete(sessionId);
+                owner.websocketSessionCache.delete(sessionId);
         }
     }
-    const socket = await connectWebSocket(url, headers, signal, connectTimeoutMs, env);
+    const socket = await connectWebSocket(owner, url, headers, signal, connectTimeoutMs, env);
+    if (!owner.isActive || signal?.aborted) { closeWebSocketSilently(owner, socket); signal?.throwIfAborted(); owner.assertCurrent(); }
     // A concurrent request may have populated this session/account pair while connect awaited.
     // Keep this connection request-scoped rather than replacing credential-bound continuation state.
-    accountEntries = websocketSessionCache.get(sessionId);
-    if (accountEntries?.has(accountId) || !reserveWebSocketSessionCacheSlot()) {
+    accountEntries = owner.websocketSessionCache.get(sessionId);
+    if (accountEntries?.has(accountId) || !reserveWebSocketSessionCacheSlot(owner)) {
         return {
             socket,
             reused: false,
-            release: () => closeWebSocketSilently(socket),
+            release: () => closeWebSocketSilently(owner, socket),
         };
     }
     const now = Date.now();
@@ -1345,10 +1466,10 @@ async function acquireWebSocket(
         createdAt: now,
         lastUsedAt: now,
     };
-    accountEntries = websocketSessionCache.get(sessionId);
+    accountEntries = owner.websocketSessionCache.get(sessionId);
     if (!accountEntries) {
         accountEntries = new Map();
-        websocketSessionCache.set(sessionId, accountEntries);
+        owner.websocketSessionCache.set(sessionId, accountEntries);
     }
     accountEntries.set(accountId, entry);
     return {
@@ -1357,11 +1478,11 @@ async function acquireWebSocket(
         reused: false,
         release: ({ keep } = {}) => {
             if (!keep || !isWebSocketReusable(entry.socket)) {
-                removeCachedWebSocketSession(sessionId, accountId, entry, "done");
+                removeCachedWebSocketSession(owner, sessionId, accountId, entry, "done");
                 return;
             }
             entry.busy = false;
-            scheduleSessionWebSocketExpiry(sessionId, accountId, entry);
+            scheduleSessionWebSocketExpiry(owner, sessionId, accountId, entry);
         },
     };
 }
@@ -1402,7 +1523,9 @@ function extractWebSocketCloseError(event: unknown): Error {
     }
     return new Error("WebSocket closed");
 }
-async function decodeWebSocketData(data: unknown): Promise<string | null> {
+function decodeWebSocketBuffer(data: ArrayBuffer): string { return new TextDecoder().decode(new Uint8Array(data)); }
+
+function decodeWebSocketData(data: unknown): string | null | Promise<string> {
     if (typeof data === "string")
         return data;
     if (data instanceof ArrayBuffer) {
@@ -1414,12 +1537,11 @@ async function decodeWebSocketData(data: unknown): Promise<string | null> {
     }
     if (data && typeof data === "object" && "arrayBuffer" in data) {
         const blobLike = data as { arrayBuffer(): Promise<ArrayBuffer> };
-        const arrayBuffer = await blobLike.arrayBuffer();
-        return new TextDecoder().decode(new Uint8Array(arrayBuffer));
+        return blobLike.arrayBuffer().then(decodeWebSocketBuffer);
     }
     return null;
 }
-async function* parseWebSocket(
+async function* parseWebSocket(owner: CodexTransportOwner,
     socket: WebSocketLike,
     signal: AbortSignal | undefined,
     idleTimeoutMs: number | undefined,
@@ -1429,6 +1551,9 @@ async function* parseWebSocket(
     let done = false;
     let failed: Error | null = null;
     let sawCompletion = false;
+    let closed = false, decoding = 0;
+    let decodeDrain: Promise<void> | undefined;
+    let finishDecodeDrain: (() => void) | undefined;
     const wake = () => {
         if (!pending)
             return;
@@ -1436,15 +1561,9 @@ async function* parseWebSocket(
         pending = null;
         resolve();
     };
-    const onMessage = (event: unknown) => {
-        void (async () => {
-            let text = null;
-            try {
-                if (!event || typeof event !== "object" || !("data" in event))
-                    return;
-                text = await decodeWebSocketData(event.data);
-                if (!text)
-                    return;
+    const onDecoded = (text: string | null) => {
+        if (closed || !text) return;
+        try {
                 const parsed = JSON.parse(text) as CodexEvent;
                 const type = typeof parsed.type === "string" ? parsed.type : "";
                 if (type === "response.completed" || type === "response.done" || type === "response.incomplete") {
@@ -1454,15 +1573,38 @@ async function* parseWebSocket(
                 queue.push(parsed);
                 wake();
             }
-            catch (cause) {
+        catch (cause) {
                 failed = new CodexProtocolError(`Invalid Codex WebSocket JSON: ${formatThrownValue(cause)}`, {
                     cause,
                     payload: text,
                 });
                 done = true;
                 wake();
-            }
-        })();
+        }
+    };
+    const onDecodeFailure = (cause: unknown) => {
+        if (closed) return;
+        failed = new CodexProtocolError(`Invalid Codex WebSocket data: ${formatThrownValue(cause)}`, { cause });
+        done = true; wake();
+    };
+    const finishDecode = () => {
+        if (--decoding !== 0) return;
+        const finish = finishDecodeDrain;
+        finishDecodeDrain = undefined; decodeDrain = undefined; finish?.();
+    };
+    const beginDecodeCycle = () => {
+        // Blob conversion owns one shared deferred per idle-to-busy cycle, never per text delta.
+        decodeDrain = new Promise<void>(resolve => { finishDecodeDrain = resolve; });
+    };
+    const onMessage = (event: unknown) => {
+        if (closed || !event || typeof event !== "object" || !("data" in event)) return;
+        try {
+            if (decoding >= 128) throw new Error("Codex WebSocket decode capacity exceeded");
+            const decoded = decodeWebSocketData(event.data);
+            if (typeof decoded === "string" || decoded === null) { onDecoded(decoded); return; }
+            if (decoding++ === 0) beginDecodeCycle();
+            void decoded.then(onDecoded, onDecodeFailure).finally(finishDecode);
+        } catch (error) { onDecodeFailure(error); }
     };
     const onError = (event: unknown) => {
         failed = extractWebSocketError(event);
@@ -1510,7 +1652,7 @@ async function* parseWebSocket(
                         failed = error;
                         done = true;
                         pending = null;
-                        closeWebSocketSilently(socket, 1000, "idle_timeout");
+                        closeWebSocketSilently(owner, socket, 1000, "idle_timeout");
                         reject(error);
                     }, idleTimeoutMs);
                 }
@@ -1528,10 +1670,13 @@ async function* parseWebSocket(
         }
     }
     finally {
+        closed = true;
         socket.removeEventListener("message", onMessage);
         socket.removeEventListener("error", onError);
         socket.removeEventListener("close", onClose);
         signal?.removeEventListener("abort", onAbort);
+        queue.length = 0; pending = null;
+        await decodeDrain;
     }
 }
 function requestBodyWithoutInput(body: RequestBody): RequestBody {
@@ -1703,7 +1848,7 @@ function createSuccessfulDispatchCommitment(
         ...(responseId ? { responseId } : {}),
     };
 }
-function recordSuccessfulDispatch(
+function recordSuccessfulDispatch(owner: CodexTransportOwner,
     sessionId: string | undefined,
     fullBody: RequestBody,
     actualBody: RequestBody,
@@ -1714,6 +1859,7 @@ function recordSuccessfulDispatch(
     options: OpenAICodexResponsesOptions | undefined,
     responseId?: string,
 ): void {
+    if (!owner.isActive || options?.signal?.aborted) return;
     const commitment = createSuccessfulDispatchCommitment(fullBody, actualBody, headers, transport, responseItems, responseId);
     if (!commitment)
         return;
@@ -1734,27 +1880,27 @@ function recordSuccessfulDispatch(
         requestTransformOutputHash: commitment.actualBodyHash,
     };
     deliverEffectiveDispatchObservation(options, model, observation);
-    if (!sessionId)
+    if (!sessionId || !owner.isActive || options?.signal?.aborted)
         return;
-    successfulDispatchCommitments.delete(sessionId);
-    consumedDispatchCommitments.delete(sessionId);
-    while (successfulDispatchCommitments.size >= MAX_SUCCESSFUL_DISPATCH_COMMITMENTS) {
-        const oldest = successfulDispatchCommitments.keys().next().value;
+    owner.successfulDispatchCommitments.delete(sessionId);
+    owner.consumedDispatchCommitments.delete(sessionId);
+    while (owner.successfulDispatchCommitments.size >= MAX_SUCCESSFUL_DISPATCH_COMMITMENTS) {
+        const oldest = owner.successfulDispatchCommitments.keys().next().value;
         if (typeof oldest !== "string")
             break;
-        successfulDispatchCommitments.delete(oldest);
+        owner.successfulDispatchCommitments.delete(oldest);
     }
-    successfulDispatchCommitments.set(sessionId, commitment);
+    owner.successfulDispatchCommitments.set(sessionId, commitment);
 }
-function markDispatchCommitmentConsumed(sessionId: string): void {
-    consumedDispatchCommitments.delete(sessionId);
-    while (consumedDispatchCommitments.size >= MAX_SUCCESSFUL_DISPATCH_COMMITMENTS) {
-        const oldest = consumedDispatchCommitments.values().next().value;
+function markDispatchCommitmentConsumed(owner: CodexTransportOwner, sessionId: string): void {
+    owner.consumedDispatchCommitments.delete(sessionId);
+    while (owner.consumedDispatchCommitments.size >= MAX_SUCCESSFUL_DISPATCH_COMMITMENTS) {
+        const oldest = owner.consumedDispatchCommitments.values().next().value;
         if (typeof oldest !== "string")
             break;
-        consumedDispatchCommitments.delete(oldest);
+        owner.consumedDispatchCommitments.delete(oldest);
     }
-    consumedDispatchCommitments.add(sessionId);
+    owner.consumedDispatchCommitments.add(sessionId);
 }
 function convertAssistantResponseItems(
     model: Model<"openai-codex-responses">,
@@ -1913,7 +2059,7 @@ async function* startWebSocketOutputOnFirstEvent(events: AsyncIterable<ResponseS
         yield event;
     }
 }
-async function processWebSocketStream(
+async function processWebSocketStream(owner: CodexTransportOwner,
     url: string,
     body: RequestBody,
     headers: Headers,
@@ -1929,7 +2075,7 @@ async function processWebSocketStream(
     requestServiceTier: ResponseCreateParamsStreaming["service_tier"] | undefined,
     options: OpenAICodexResponsesOptions | undefined,
 ): Promise<void> {
-    const { socket, entry, reused, release } = await acquireWebSocket(url, headers, cacheSessionId, accountId, options?.signal, websocketConnectTimeoutMs, options?.env);
+    const { socket, entry, reused, release } = await acquireWebSocket(owner, url, headers, cacheSessionId, accountId, options?.signal, websocketConnectTimeoutMs, options?.env);
     let keepConnection = true;
 	const capabilities = getModelCapabilities(model);
 	const useCachedContext =
@@ -1940,8 +2086,10 @@ async function processWebSocketStream(
     // WebSocket continuation still works via connection-scoped previous_response_id state.
     const fullBody = body;
     try {
+        options?.signal?.throwIfAborted();
+        owner.assertCurrent();
         const requestBody = useCachedContext && entry ? buildCachedWebSocketRequestBody(entry, fullBody) : fullBody;
-        const stats = cacheSessionId ? getOrCreateWebSocketDebugStats(cacheSessionId) : undefined;
+        const stats = cacheSessionId ? getOrCreateWebSocketDebugStats(owner, cacheSessionId) : undefined;
         if (stats) {
             stats.requests++;
             if (reused)
@@ -1965,7 +2113,7 @@ async function processWebSocketStream(
             }
         }
         socket.send(JSON.stringify({ type: "response.create", ...requestBody }));
-        await processResponsesStream(startWebSocketOutputOnFirstEvent(mapCodexEvents(parseWebSocket(socket, options?.signal, idleTimeoutMs), output), onStart), output, stream, model, {
+        await processResponsesStream(startWebSocketOutputOnFirstEvent(mapCodexEvents(parseWebSocket(owner, socket, options?.signal, idleTimeoutMs), output), onStart), output, stream, model, {
             serviceTier: requestServiceTier,
             grammarToolInputProperties,
             resolveServiceTier: resolveCodexServiceTier,
@@ -1976,7 +2124,8 @@ async function processWebSocketStream(
         }
         else {
             const responseItems = convertAssistantResponseItems(model, output, grammarToolInputProperties);
-            recordSuccessfulDispatch(cacheSessionId, fullBody, requestBody, headers, requestBody.previous_response_id ? "websocket-delta" : "websocket-full", responseItems, model, options, output.responseId);
+            recordSuccessfulDispatch(owner, cacheSessionId, fullBody, requestBody, headers, requestBody.previous_response_id ? "websocket-delta" : "websocket-full", responseItems, model, options, output.responseId);
+            options?.signal?.throwIfAborted();
             if (useCachedContext && entry && output.responseId) {
                 entry.continuation = {
                     lastRequestBody: fullBody,
@@ -2092,36 +2241,36 @@ function assertCompactionParity(diagnostics: OpenAICodexCompactionDiagnostics): 
         throw new Error("Codex compaction stopped: cache-relevant headers differ from the last successful request.");
     }
 }
-function discardCompactionWebSocket(sessionId: string, accountId: string, entry: CachedWebSocketConnection, reason: string): void {
-    closeWebSocketSilently(entry.socket, 1000, reason);
+function discardCompactionWebSocket(owner: CodexTransportOwner, sessionId: string, accountId: string, entry: CachedWebSocketConnection, reason: string): void {
+    closeWebSocketSilently(owner, entry.socket, 1000, reason);
     if (entry.idleTimer)
         clearTimeout(entry.idleTimer);
-    const accountEntries = websocketSessionCache.get(sessionId);
+    const accountEntries = owner.websocketSessionCache.get(sessionId);
     if (accountEntries?.get(accountId) === entry)
         accountEntries.delete(accountId);
     if (accountEntries?.size === 0)
-        websocketSessionCache.delete(sessionId);
+        owner.websocketSessionCache.delete(sessionId);
 }
-function acquireExistingCompactionWebSocket(sessionId: string, accountId: string, headers: Headers): {
+function acquireExistingCompactionWebSocket(owner: CodexTransportOwner, sessionId: string, accountId: string, headers: Headers): {
     entry: CachedWebSocketConnection;
     release(keep: boolean): void;
 } {
-    const accountEntries = websocketSessionCache.get(sessionId);
+    const accountEntries = owner.websocketSessionCache.get(sessionId);
     const entry = accountEntries?.get(accountId);
     if (!entry)
         throw new Error("Codex compaction stopped: the last successful WebSocket connection is unavailable.");
     if (entry.busy)
         throw new Error("Codex compaction stopped: the session WebSocket is busy.");
     if (!entry.continuation) {
-        discardCompactionWebSocket(sessionId, accountId, entry, "compaction_continuation_unavailable");
+        discardCompactionWebSocket(owner, sessionId, accountId, entry, "compaction_continuation_unavailable");
         throw new Error("Codex compaction stopped: the WebSocket continuation is unavailable.");
     }
     if (entry.connectionHeadersKey !== JSON.stringify(headersToRecord(headers))) {
-        discardCompactionWebSocket(sessionId, accountId, entry, "compaction_headers_drifted");
+        discardCompactionWebSocket(owner, sessionId, accountId, entry, "compaction_headers_drifted");
         throw new Error("Codex compaction stopped: WebSocket connection headers drifted.");
     }
     if (!isWebSocketReusable(entry.socket) || isWebSocketSessionExpired(entry)) {
-        discardCompactionWebSocket(sessionId, accountId, entry, "compaction_connection_expired");
+        discardCompactionWebSocket(owner, sessionId, accountId, entry, "compaction_connection_expired");
         throw new Error("Codex compaction stopped: the last successful WebSocket connection expired.");
     }
     if (entry.idleTimer) {
@@ -2133,15 +2282,15 @@ function acquireExistingCompactionWebSocket(sessionId: string, accountId: string
         entry,
         release: (keep: boolean) => {
             if (!keep || !isWebSocketReusable(entry.socket)) {
-                closeWebSocketSilently(entry.socket);
+                closeWebSocketSilently(owner, entry.socket);
                 if (accountEntries?.get(accountId) === entry)
                     accountEntries.delete(accountId);
                 if (accountEntries?.size === 0)
-                    websocketSessionCache.delete(sessionId);
+                    owner.websocketSessionCache.delete(sessionId);
                 return;
             }
             entry.busy = false;
-            scheduleSessionWebSocketExpiry(sessionId, accountId, entry);
+            scheduleSessionWebSocketExpiry(owner, sessionId, accountId, entry);
         },
     };
 }
@@ -2201,7 +2350,20 @@ async function collectRemoteCompactionEvents(events: AsyncIterable<CodexEvent>):
     }
     return { compactionItem, usage, ...(responseId ? { responseId } : {}) };
 }
-async function performCodexSseCompaction(
+async function cancelUnconsumedResponse(owner: CodexTransportOwner, response: Response): Promise<void> {
+    if (!response.body) return;
+    let reader: ReadableStreamDefaultReader<Uint8Array>;
+    try { reader = response.body.getReader(); } catch (error) { owner.recordCleanupFailure(error); return; }
+    // A native fetch abort may have already errored the stream. That terminal state
+    // differs from an underlying cancel() failure on an otherwise readable body.
+    let errored = false;
+    const closed = reader.closed.catch(() => { errored = true; });
+    try { await reader.cancel(); }
+    catch (error) { await closed; if (!errored) owner.recordCleanupFailure(error); }
+    finally { reader.releaseLock(); }
+}
+
+async function performCodexSseCompaction(owner: CodexTransportOwner,
     model: Model<"openai-codex-responses">,
     body: string | Uint8Array,
     headers: Headers,
@@ -2212,6 +2374,7 @@ async function performCodexSseCompaction(
     const timeoutSignal = timeoutMs !== undefined && timeoutMs > 0 ? AbortSignal.timeout(timeoutMs) : undefined;
     const combinedSignal = combineAbortSignals([options.signal, timeoutSignal]);
     try {
+        options.signal?.throwIfAborted();
         onDispatch();
         const response = await (options.fetch ?? globalThis.fetch)(resolveCodexUrl(model.baseUrl), {
             method: "POST",
@@ -2219,7 +2382,10 @@ async function performCodexSseCompaction(
             body: body as never,
             signal: combinedSignal.signal,
         });
-        await options.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
+        try {
+            await options.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
+            options.signal?.throwIfAborted();
+        } catch (error) { await cancelUnconsumedResponse(owner, response); throw error; }
         if (!response.ok) {
             const info = await parseErrorResponse(response);
             throw new Error(info.friendlyMessage || info.message);
@@ -2242,8 +2408,8 @@ interface CodexWebSocketCompactionParams {
     onDispatch(): void;
 }
 
-async function performCodexWebSocketCompaction(params: CodexWebSocketCompactionParams): Promise<OpenAICodexCompactionResult> {
-    const acquired = acquireExistingCompactionWebSocket(params.sessionId, params.accountId, params.headers);
+async function performCodexWebSocketCompaction(owner: CodexTransportOwner, params: CodexWebSocketCompactionParams): Promise<OpenAICodexCompactionResult> {
+    const acquired = acquireExistingCompactionWebSocket(owner, params.sessionId, params.accountId, params.headers);
     let keepConnection = false;
     try {
         const continuation = acquired.entry.continuation;
@@ -2262,9 +2428,12 @@ async function performCodexWebSocketCompaction(params: CodexWebSocketCompactionP
             input: delta,
         };
         params.diagnostics.hashes.compactionActualBody = requiredSha256Json(requestBody);
+        params.options.signal?.throwIfAborted();
+        owner.assertCurrent();
         params.onDispatch();
         acquired.entry.socket.send(JSON.stringify({ type: "response.create", ...requestBody }));
-        const result = await collectRemoteCompactionEvents(parseWebSocket(acquired.entry.socket, params.options.signal, normalizeTimeoutMs(params.options.timeoutMs)));
+        const result = await collectRemoteCompactionEvents(parseWebSocket(owner, acquired.entry.socket, params.options.signal, normalizeTimeoutMs(params.options.timeoutMs)));
+        params.options.signal?.throwIfAborted();
         if (result.responseId) {
             acquired.entry.continuation = {
                 lastRequestBody: params.body,
@@ -2292,17 +2461,19 @@ async function performCodexWebSocketCompaction(params: CodexWebSocketCompactionP
         acquired.release(keepConnection);
     }
 }
-export async function compactOpenAICodexRequest(
+async function compactOpenAICodexRequestOwned(owner: CodexTransportOwner,
     model: Model<"openai-codex-responses">,
     regularPayload: Record<string, unknown>,
     options: OpenAICodexCompactionOptions,
 ): Promise<OpenAICodexCompactionResult> {
+    options.signal?.throwIfAborted();
+    owner.assertCurrent();
     const sessionId = clampOpenAIPromptCacheKey(options.sessionId);
     if (!sessionId)
         throw new Error("Codex compaction stopped: a stable session id is required.");
-    const commitment = successfulDispatchCommitments.get(sessionId);
+    const commitment = owner.successfulDispatchCommitments.get(sessionId);
     if (!commitment) {
-        throw new Error("Codex compaction stopped: no successful regular request commitment exists for this process.");
+        throw new Error("Codex compaction stopped: no successful regular request commitment exists for this owner.");
     }
     let providerDispatched = false;
     const markProviderDispatched = () => {
@@ -2328,10 +2499,11 @@ export async function compactOpenAICodexRequest(
         assertCompactionParity(diagnostics);
         if (useSse) {
             diagnostics.hashes.compactionActualBody = requiredSha256Json(body);
-            const result = await performCodexSseCompaction(model, sseBody ?? JSON.stringify(body), headers, options, markProviderDispatched);
+            const result = await performCodexSseCompaction(owner, model, sseBody ?? JSON.stringify(body), headers, options, markProviderDispatched);
+            options.signal?.throwIfAborted();
             return { ...result, ...(options.shapeDiagnostics ? { diagnostics } : {}) };
         }
-        const result = await performCodexWebSocketCompaction({
+        const result = await performCodexWebSocketCompaction(owner, {
             sessionId,
             accountId,
             commitment,
@@ -2344,9 +2516,9 @@ export async function compactOpenAICodexRequest(
         return { ...result, ...(options.shapeDiagnostics ? { diagnostics } : {}) };
     }
     finally {
-        if (providerDispatched) {
-            successfulDispatchCommitments.delete(sessionId);
-            markDispatchCommitmentConsumed(sessionId);
+        if (providerDispatched && owner.isActive && owner.successfulDispatchCommitments.get(sessionId) === commitment) {
+            owner.successfulDispatchCommitments.delete(sessionId);
+            markDispatchCommitmentConsumed(owner, sessionId);
         }
     }
 }

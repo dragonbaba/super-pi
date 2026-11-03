@@ -304,6 +304,12 @@ export interface StreamOptions extends ProviderRequestOptions<Model<Api>> {
 	 */
 	cacheRetention?: CacheRetention;
 	/**
+	 * Codex ordinary-request opt-in for remote compaction protocol headers. Requires model
+	 * support and an unchanged cache session ID. False disables automatic injection only.
+	 * Default: false. Other providers ignore this option; it is not a wire payload field.
+	 */
+	codexRemoteCompaction?: boolean;
+	/**
 	 * Optional session identifier for providers that support session-based caching.
 	 * Providers can use this to enable prompt caching, request routing, or other
 	 * session-aware features. Ignored by providers that don't support it.

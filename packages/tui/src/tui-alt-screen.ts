@@ -72,6 +72,12 @@ const BEGIN_SYNCHRONIZED_OUTPUT = "\x1b[?2026h";
 const END_SYNCHRONIZED_OUTPUT = "\x1b[?2026l";
 const PAGE_SCROLL_OVERLAP = 4;
 const DEFAULT_FULLSCREEN_WHEEL_SCROLL_LINES = 3;
+const BOTTOM_HINT_TEXT = " ↓ Back to bottom · Esc ";
+const BOTTOM_HINT_WIDTH = visibleWidth(BOTTOM_HINT_TEXT);
+const BOTTOM_HINT = "\x1b[38;5;75m\x1b[48;5;236m" + BOTTOM_HINT_TEXT + "\x1b[0m";
+const BOTTOM_HINT_COMPACT_TEXT = " ↓ End · Esc ";
+const BOTTOM_HINT_COMPACT_WIDTH = visibleWidth(BOTTOM_HINT_COMPACT_TEXT);
+const BOTTOM_HINT_COMPACT = "\x1b[38;5;75m\x1b[48;5;236m" + BOTTOM_HINT_COMPACT_TEXT + "\x1b[0m";
 const MAX_FULLSCREEN_WHEEL_SCROLL_LINES = 12;
 const SCROLLBAR_DRAG_FRAME_INTERVAL_MS = 32;
 const configuredWheelScrollLines = Number(process.env.SP_TUI_FULLSCREEN_WHEEL_SCROLL_LINES);
@@ -144,6 +150,8 @@ interface ScrollbarTarget {
 }
 
 export interface TuiAltScreenOptions {
+	/** Show a clickable return-to-bottom hint while the primary transcript is scrolled up. */
+	scrollToBottomHint?: boolean;
 	/** Number of logical lines moved for each mouse-wheel event. */
 	wheelScrollLines?: number;
 	/** Capture mouse events for viewport scrolling and application-owned text selection. */
@@ -213,6 +221,14 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private readonly mouseEnabled: boolean;
 	private readonly openUrl?: (url: string) => void;
 	private readonly onRightClickPaste?: () => void;
+	private readonly scrollToBottomHint: boolean;
+	private bottomHintRow = -1;
+	private bottomHintLeft = 0;
+	private bottomHintWidth = 0;
+	private bottomHintPressed = false;
+	private bottomHintLine: string | undefined;
+	private bottomHintLineColumns = 0;
+	private bottomHintMaterializations = 0;
 
 	constructor(
 		terminal: Terminal,
@@ -250,6 +266,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.mouseEnabled = options.mouse ?? true;
 		this.openUrl = options.openUrl;
 		this.onRightClickPaste = options.onRightClickPaste;
+		this.scrollToBottomHint = options.scrollToBottomHint ?? false;
 		this.addInputListener((data) => this.handleViewportInput(data));
 	}
 
@@ -368,6 +385,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	}
 
 	private releaseLayoutInteractionOwners(): void {
+		this.clearBottomHint();
 		if (this.selectionAutoScrollTimer) {
 			clearInterval(this.selectionAutoScrollTimer);
 			this.selectionAutoScrollTimer = undefined;
@@ -696,6 +714,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	}
 
 	protected override resetRenderState(): void {
+		this.clearBottomHint();
 		this.previousScreen = [];
 		this.nextScreen = [];
 		this.previousRawScreen = [];
@@ -717,7 +736,71 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 
 	scrollToBottom(): void {
 		this.getPrimaryScrollView().scrollToEnd();
+		this.bottomHintRow = -1;
+		this.bottomHintLine = undefined;
+		this.bottomHintLineColumns = 0;
 		this.requestRender();
+	}
+
+	/** Called by the editor's Escape action, after autocomplete/dialog cancellation. */
+	scrollToBottomIfNeeded(): boolean {
+		if (this.hasOverlay() || this.isFollowingOutput) return false;
+		this.resetTextSelection();
+		this.scrollToBottom();
+		return true;
+	}
+
+	private clearBottomHint(): void {
+		this.bottomHintRow = -1;
+		this.bottomHintLeft = 0;
+		this.bottomHintWidth = 0;
+		this.bottomHintPressed = false;
+		this.bottomHintLine = undefined;
+		this.bottomHintLineColumns = 0;
+	}
+
+	/** Lifecycle/benchmark inspection; never called by the frame path. */
+	getBottomHintDiagnostics() {
+		return { row: this.bottomHintRow, left: this.bottomHintLeft, width: this.bottomHintWidth, pressed: this.bottomHintPressed,
+			lineReferences: this.bottomHintLine === undefined ? 0 : 1, codeUnits: this.bottomHintLine?.length ?? 0,
+			materializations: this.bottomHintMaterializations };
+	}
+
+	private compositeBottomHint(screen: string[], layout: LayoutFrame): void {
+		this.bottomHintRow = -1;
+		this.bottomHintWidth = 0;
+		if (!this.scrollToBottomHint || this.hasOverlay() || this.selectionPressActive || this.scrollbarDrag) { this.clearBottomHint(); return; }
+		const scroll = layout.primaryScrollView ?? this.implicitScrollView;
+		if (scroll.isFollowingEnd) { this.bottomHintLine = undefined; this.bottomHintLineColumns = 0; return; }
+		const box = getScrollViewBox(layout, scroll);
+		if (!box || box.clip.height < 2) { this.clearBottomHint(); return; }
+		const left = Math.max(0, box.rect.x, box.clip.x);
+		const right = Math.min(layout.width, box.rect.x + box.rect.width, box.clip.x + box.clip.width);
+		const available = right - left;
+		const width = available >= BOTTOM_HINT_WIDTH ? BOTTOM_HINT_WIDTH : BOTTOM_HINT_COMPACT_WIDTH;
+		// One cached navigation row, only in a full-width transcript. Never cover a sibling pane.
+		if (available < width || left !== 0 || right !== layout.width || layout.width > 4096) { this.clearBottomHint(); return; }
+		const row = Math.min(layout.height, box.rect.y + box.rect.height, box.clip.y + box.clip.height) - 1;
+		if (row < 0 || isImageLine(screen[row] ?? "")) { this.clearBottomHint(); return; }
+		this.bottomHintRow = row;
+		this.bottomHintLeft = left + Math.floor((available - width) / 2);
+		this.bottomHintWidth = width;
+		if (this.bottomHintLineColumns !== layout.width || this.bottomHintLine === undefined) {
+			this.bottomHintLine = " ".repeat(this.bottomHintLeft) + (width === BOTTOM_HINT_WIDTH ? BOTTOM_HINT : BOTTOM_HINT_COMPACT)
+				+ " ".repeat(layout.width - this.bottomHintLeft - width);
+			this.bottomHintLineColumns = layout.width;
+			this.bottomHintMaterializations++;
+		}
+		screen[row] = this.bottomHintLine;
+	}
+
+	private handleBottomHintMouse(event: SgrMouseEvent): boolean {
+		if (this.hasOverlay()) { this.bottomHintPressed = false; return false; }
+		if (this.bottomHintPressed && event.release) { this.bottomHintPressed = false; return true; }
+		if (event.release || event.button !== 0 || this.bottomHintRow < 0 || event.y !== this.bottomHintRow
+			|| event.x < this.bottomHintLeft || event.x >= this.bottomHintLeft + this.bottomHintWidth) return false;
+		this.bottomHintPressed = this.scrollToBottomIfNeeded();
+		return this.bottomHintPressed;
 	}
 
 	private scrollToPrompt(direction: -1 | 1): void {
@@ -762,6 +845,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 
 	private handleViewportInput(data: string): { consume?: boolean } | undefined {
 		if (data === FOCUS_OUT) {
+			this.bottomHintPressed = false;
 			const hadActiveSelection = this.selectionPressActive;
 			const hadNonEmptyActiveSelection = hadActiveSelection && this.getSelectionBounds() !== undefined;
 			this.selectionPressActive = false;
@@ -789,6 +873,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		}
 		const mouseEvent = this.parseSgrMouseEvent(data);
 		if (mouseEvent) {
+			if (this.handleBottomHintMouse(mouseEvent)) return { consume: true };
 			if (this.handleRightClickPaste(mouseEvent)) return { consume: true };
 			const handled = this.handleScrollbarMouseEvent(mouseEvent);
 			if (!this.scrollbarDrag) this.updateScrollbarHover(mouseEvent.x, mouseEvent.y);
@@ -1479,6 +1564,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			screen.length = height;
 		}
 		screen = this.applySelection(screen, nextLayout);
+		this.compositeBottomHint(screen, nextLayout);
 		screen = this.compositeFlashes(screen, width, height);
 
 		const cursorPos = this.extractCursorPosition(screen, height);

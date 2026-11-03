@@ -1,4 +1,4 @@
-export const SUPPORTED_SP_VERSION_PATTERN = /^0\.84\.\d+(?:[-+].*)?$/u;
+export const SUPPORTED_SP_VERSION_PATTERN = /^(?:0\.84|1\.\d+)\.\d+(?:[-+].*)?$/u;
 export const SERVER_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$/u;
 export const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/u;
 export const SINGLE_LINE_CONTROL_PATTERN = /[\x00\r\n]/u;

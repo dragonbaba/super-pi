@@ -275,13 +275,13 @@ test("Node compatibility retains opaque-script permission classification", () =>
 });
 
 test("a longer valid node -e keeps argv content and executes under the existing policy", async () => {
- const script = `const value = ${JSON.stringify("中文 \\\\ \\\"quoted")}; console.log(value + " ${"x".repeat(1800)}");`;
+ const expected = "中文 \\\\ \\\"quoted" + " " + "x".repeat(1800);
+ const script = `console.log(${JSON.stringify(expected)});`;
  const command = `node -e '${script.replaceAll("'", "'\\''")}'`;
  assert.equal(inspectBashResourceLifecycle({ command }), undefined);
  const outcome = await dispatch(process.cwd(), command);
  assert.equal(outcome.result.isError, false);
- assert.match(outcome.text, /中文/);
- assert.match(outcome.text, /quoted/);
+ assert.equal(outcome.text.trim(), expected, "native Bash must preserve every backslash without an extension-installed bridge");
  assert.equal(outcome.processes, 1);
 });
 

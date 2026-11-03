@@ -29,6 +29,14 @@ above 64 MiB retire the thread. A slot also expires after 30 idle seconds or
 Overlapping executions still fail immediately; there is no pool queue or shared VM.
 This trades a bounded idle thread's memory for faster consecutive scripts.
 
+Low-level `timeoutMs` remains a wall-time deadline by default. The coding agent
+uses `timeoutMode: "active"`: the budget includes startup, bridge delivery and
+VM computation, but pauses after the VM and its microtasks drain while waiting
+for host tools or approval. Reply sequence counters fence stale idle messages;
+an unawaited tool cannot suspend a spinning VM's deadline. Tools retain their
+own deadlines and cancellation; a caller that needs a total wall-time limit
+can supply a deadline signal. Active mode does not impose a tool wait limit.
+
 Terminating the Worker stops sandbox JavaScript. Host tools must honor their abort
 signal: arbitrary host JavaScript that ignores cancellation cannot be forcibly
 killed by this package. The controller waits for host calls to settle so it can

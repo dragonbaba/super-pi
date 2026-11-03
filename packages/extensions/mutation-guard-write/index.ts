@@ -1,3 +1,4 @@
+import { getSessionFiles } from "@super-pi/coding-agent/internal/files/file-host";
 import { MUTATION_READ_SOURCE } from "../../coding-agent/src/core/tools/read-window.ts";
 import { EditParameters, PublicEditParameters, WriteParameters,
   validatePublicEditInput,
@@ -214,6 +215,7 @@ class GuardedEditExecution {
 }
 
 export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
+  if (getSessionFiles(pi)) return;
   const guard = new MutationWriteGuard();
   const upstreamEdit = createEditToolDefinition(process.cwd());
   let turnGeneration = 0;

@@ -2,7 +2,7 @@
  * Main extension entrypoint.
  *
  * Wires together request patching, remote compaction, runtime state
- * reconstruction, session lifecycle cleanup, and provider override registration.
+ * reconstruction, session lifecycle cleanup, and runtime-owned Responses dispatch.
  */
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -13,10 +13,11 @@ import {
   type ExtensionContext,
   type SessionBeforeCompactEvent,
   type SessionEntry,
+  type CompactionStrategy,
+  type SessionBeforeCompactResult,
 } from "@super-pi/coding-agent";
-import type { AgentMessage, ThinkingLevel } from "@super-pi/agent-core";
+import type { AgentMessage, StreamFn, ThinkingLevel } from "@super-pi/agent-core";
 import type { Model, ProviderHeaders } from "@super-pi/ai";
-import { closeOpenAICodexWebSocketSessions } from "@super-pi/ai/api/openai-codex-responses";
 import { requestScope } from "./request-scope.ts";
 import { isRecord, loadConfig, type ExtensionConfig } from "./config.ts";
 import {
@@ -24,7 +25,7 @@ import {
   COMPACTION_CONTINUATION_PROMPT,
   shouldQueueCompactionContinuation,
 } from "./continuity.ts";
-import { streamOpenAIResponsesWithPhase2B } from "./custom-stream.ts";
+import { createOpenAIResponsesOwner } from "./custom-stream.ts";
 import {
   applyPayloadPatch,
   applyRemoteHistoryPayloadPatch,
@@ -39,7 +40,7 @@ import {
   supportsPreviousResponseId,
   supportsRemoteCompactionModel,
 } from "./openai.ts";
-import { releaseWsSession } from "./openai-ws-stream.ts";
+import type { OpenAIResponsesTransportOwner } from "./openai-ws-stream.ts";
 import { SUPPORTED_SP_VERSION_PATTERN } from "./regex.ts";
 import { unknownText } from "./text.ts";
 import {
@@ -56,29 +57,12 @@ import {
   normalizeResponseItemsForPrompt,
   PORTABLE_SUMMARY_MAX_TOKENS,
   reconstructRemoteCompactionStateFromBranch,
-  resolveRemoteCompactionServiceTier,
   type RemoteCompactionServiceTier,
   type RemoteCompactionResult,
   type RemoteCompactionUsageSnapshot,
   type ResponseItem,
 } from "./remote-compaction.ts";
-import {
-  clearContinuationState,
-  clearRemoteCompactionState,
-  clearResponsesRequestShapeState,
-  clearSessionDedupState,
-  clearSessionConfig,
-  claimCompactionContinuation,
-  getContinuationState,
-  getTransportContextState,
-  getRemoteCompactionState,
-  markMessageProcessed,
-  setContinuationState,
-  setTransportContextState,
-  setRemoteCompactionState,
-  setResponsesRequestShapeState,
-  setSessionConfig,
-} from "./state.ts";
+import type { CompactionState } from "./state.ts";
 
 type TargetModel = Parameters<typeof modelKey>[0];
 type CompactionAuthSnapshot = {
@@ -91,6 +75,7 @@ type ProviderRequestPayloadAPI = ExtensionAPI & {
   buildProviderRequestPayload?: (input: {
     systemPrompt: string;
     messages: AgentMessage[];
+    auth?: CompactionAuthSnapshot;
   }) => Promise<Record<string, unknown> | undefined>;
   compactProviderRequestPayload?: (input: {
     regularPayload: Record<string, unknown>;
@@ -107,22 +92,8 @@ type ProviderRequestPayloadAPI = ExtensionAPI & {
 const COMPACTION_TELEMETRY_TYPE = "compaction-telemetry-v1";
 const COMPACTION_USAGE_LEDGER_TYPE = "compaction-usage-ledger-v2";
 const COMPACTION_STRATEGY = "openai-remote-compaction-v2";
-const REMOTE_COMPACTION_CAPABILITY_KEY = Symbol.for("@super-pi/ai/codex-remote-compaction-sessions");
 const PRODUCER_VERSION = "@super-pi/openai-server-compaction@0.1.22-pi.84.1";
 const CANCEL_COMPACTION_RESULT = Object.freeze({ cancel: true as const });
-
-function setTransportRemoteCompactionCapability(sessionId: string, enabled: boolean): void {
-  const state = globalThis as Record<symbol, unknown>;
-  let sessions = state[REMOTE_COMPACTION_CAPABILITY_KEY];
-  if (!(sessions instanceof Set)) {
-    if (!enabled) return;
-    sessions = new Set<string>();
-    state[REMOTE_COMPACTION_CAPABILITY_KEY] = sessions;
-  }
-  const sessionSet = sessions as Set<string>;
-  if (enabled) sessionSet.add(sessionId);
-  else sessionSet.delete(sessionId);
-}
 
 export type GptCompactionFailureClass =
   | "authentication_missing_credentials"
@@ -245,14 +216,6 @@ async function callConfiguredRemoteCompaction(
   };
 }
 
-export function resolveEffectiveRemoteCompactionServiceTier(
-  model: Model<any>,
-  observedServiceTier: RemoteCompactionServiceTier | undefined,
-  sessionId: string,
-): RemoteCompactionServiceTier | undefined {
-  return resolveRemoteCompactionServiceTier(model, sessionId) ?? observedServiceTier;
-}
-
 export function recordCompactionFallback(
   pi: ExtensionAPI,
   model: TargetModel,
@@ -357,7 +320,7 @@ function appendCompactionUsageLedger(
 }
 
 export function buildNativeCompactionInput(
-  remoteState: ReturnType<typeof getRemoteCompactionState>,
+  remoteState: ReturnType<CompactionState["getRemoteCompactionState"]>,
   contextMessages: AgentMessage[],
   model: TargetModel,
 ): ReturnType<typeof normalizeResponseItemsForPrompt> {
@@ -446,40 +409,50 @@ export async function settlePromise<T>(promise: Promise<T>): Promise<SettledResu
   }
 }
 
-async function generateConfiguredLocalSummary(params: {
+interface LocalSummaryInput {
   model: Model<any>;
   config: Required<ExtensionConfig>;
   inputTokens: number;
   ctx: Pick<ExtensionContext, "modelRegistry" | "hasUI" | "ui">;
-  activeAuth: { apiKey: string; headers?: ProviderHeaders };
+  activeAuth: CompactionAuthSnapshot & { apiKey: string };
   preparation: SessionBeforeCompactEvent["preparation"];
   messages: AgentMessage[];
   sessionId: string;
   customInstructions?: string;
   signal: AbortSignal;
   thinkingLevel?: ThinkingLevel;
-}) {
-  let summaryModel = selectPortableSummaryModel(
+}
+
+function generateConfiguredLocalSummary(params: LocalSummaryInput, pi: ExtensionAPI) {
+  // Capture the host generation before the first candidate authentication await.
+  return pi.withSupplementalSummary
+    ? pi.withSupplementalSummary(params.signal, stream => generateSelectedLocalSummary(params, stream))
+    : generateSelectedLocalSummary(params);
+}
+
+async function generateSelectedLocalSummary(params: LocalSummaryInput, streamFn?: StreamFn) {
+  const summaryModel = selectPortableSummaryModel(
     params.model,
     params.config.portableSummaryModel,
     params.inputTokens,
     params.ctx.modelRegistry,
   );
-  let summaryApiKey = params.activeAuth.apiKey;
-  let summaryHeaders = params.activeAuth.headers;
+  let summaryAuth = params.activeAuth;
   if (summaryModel !== params.model) {
     try {
       const resolvedSummaryAuth = await params.ctx.modelRegistry.getApiKeyAndHeaders(summaryModel);
       if (resolvedSummaryAuth.ok && resolvedSummaryAuth.apiKey) {
-        summaryApiKey = resolvedSummaryAuth.apiKey;
-        summaryHeaders = resolvedSummaryAuth.headers;
-      } else {
-        summaryModel = params.model;
+        summaryAuth = {
+          model: resolvedSummaryAuth.baseUrl ? { ...summaryModel, baseUrl: resolvedSummaryAuth.baseUrl } : summaryModel,
+          apiKey: resolvedSummaryAuth.apiKey,
+          headers: resolvedSummaryAuth.headers,
+          env: resolvedSummaryAuth.env,
+        };
       }
     } catch {
-      summaryModel = params.model;
+      // Keep the complete active snapshot when candidate authentication is unavailable.
     }
-    if (summaryModel === params.model && params.ctx.hasUI) {
+    if (summaryAuth === params.activeAuth && params.ctx.hasUI) {
       params.ctx.ui.notify("Configured portable summary model is unavailable; using the active model.", "warning");
     }
   }
@@ -487,13 +460,15 @@ async function generateConfiguredLocalSummary(params: {
   return generateBestEffortLocalSummary({
     preparation: params.preparation,
     messages: params.messages,
-    model: summaryModel,
-    apiKey: summaryApiKey,
-    headers: summaryHeaders,
+    model: summaryAuth.model,
+    apiKey: summaryAuth.apiKey,
+    headers: summaryAuth.headers,
+    env: summaryAuth.env,
     sessionId: params.sessionId,
     customInstructions: params.customInstructions,
     signal: params.signal,
     thinkingLevel: params.thinkingLevel,
+    streamFn,
   });
 }
 
@@ -538,18 +513,19 @@ export function combineCompactionUsage(
   };
 }
 
-function clearLiveContinuation(sessionId: string | undefined): void {
-  clearContinuationState(sessionId);
-  releaseWsSession(sessionId);
-  if (sessionId) closeOpenAICodexWebSocketSessions(sessionId);
+function clearLiveContinuation(owner: OpenAIResponsesTransportOwner, sessionId: string | undefined): void {
+  const runtimeState = owner.state;
+  runtimeState.clearContinuationState(sessionId);
+  owner.releaseSession(sessionId);
 }
 
-function clearSessionRuntimeState(sessionId: string | undefined): void {
-  clearLiveContinuation(sessionId);
-  clearRemoteCompactionState(sessionId);
-  clearResponsesRequestShapeState(sessionId);
-  clearSessionDedupState(sessionId);
-  clearSessionConfig(sessionId);
+function clearSessionRuntimeState(owner: OpenAIResponsesTransportOwner, sessionId: string | undefined): void {
+  const runtimeState = owner.state;
+  clearLiveContinuation(owner, sessionId);
+  runtimeState.clearRemoteCompactionState(sessionId);
+  runtimeState.clearResponsesRequestShapeState(sessionId);
+  runtimeState.clearSessionDedupState(sessionId);
+  runtimeState.clearSessionConfig(sessionId);
 }
 
 export function buildCompactionUsageComponents(params: {
@@ -564,7 +540,7 @@ export function buildCompactionUsageComponents(params: {
   return components;
 }
 
-function syncRemoteState(ctx: SessionContextLike): void {
+function syncRemoteState(runtimeState: CompactionState, ctx: SessionContextLike): void {
   const sessionId = getSessionId(ctx);
   const branchEntries = ctx.sessionManager.getBranch() as Array<{
     type: string;
@@ -574,37 +550,37 @@ function syncRemoteState(ctx: SessionContextLike): void {
   }>;
   const state = reconstructRemoteCompactionStateFromBranch({ branchEntries });
   if (state) {
-    setRemoteCompactionState(sessionId, state);
+    runtimeState.setRemoteCompactionState(sessionId, state);
   } else {
-    clearRemoteCompactionState(sessionId);
+    runtimeState.clearRemoteCompactionState(sessionId);
   }
 }
 
-function getMatchingRemoteState(
+function getMatchingRemoteState(runtimeState: CompactionState,
   sessionId: string,
   model: TargetModel | undefined,
   scope?: string,
-): ReturnType<typeof getRemoteCompactionState> {
+): ReturnType<CompactionState["getRemoteCompactionState"]> {
   if (!model) return undefined;
-  const remoteState = getRemoteCompactionState(sessionId);
+  const remoteState = runtimeState.getRemoteCompactionState(sessionId);
   return remoteState && scope !== undefined && remoteState.requestScope === scope && remoteState.modelKey === modelKey(model) ? remoteState : undefined;
 }
 
-function extendRemoteHistoryIfCompatible(params: {
+function extendRemoteHistoryIfCompatible(runtimeState: CompactionState, params: {
   sessionId: string;
   model: TargetModel | undefined;
   message: AgentMessage;
 }): void {
   const scope = params.message.role === "assistant" || params.message.role === "toolResult"
-    ? getTransportContextState(params.sessionId)?.requestScope : getRemoteCompactionState(params.sessionId)?.requestScope;
-  const remoteState = getRemoteCompactionState(params.sessionId);
+    ? runtimeState.getTransportContextState(params.sessionId)?.requestScope : runtimeState.getRemoteCompactionState(params.sessionId)?.requestScope;
+  const remoteState = runtimeState.getRemoteCompactionState(params.sessionId);
   if (!remoteState || !params.model) return;
   const compatible = remoteState.modelKey === modelKey(params.model) && remoteState.requestScope === scope &&
     (params.message.role !== "assistant" || messageMatchesModel(params.message, params.model));
   const items = compatible ? messageToResponseItems(params.message) : messageToPortableResponseItems(params.message);
-  if (items.length === 0 || !markMessageProcessed(params.sessionId, params.message as object)) return;
+  if (items.length === 0 || !runtimeState.markMessageProcessed(params.sessionId, params.message as object)) return;
 
-  setRemoteCompactionState(params.sessionId, {
+  runtimeState.setRemoteCompactionState(params.sessionId, {
     ...remoteState,
     explicitHistory: [...remoteState.explicitHistory, ...items],
   });
@@ -630,65 +606,77 @@ function maybeNotifyRequestFeatures(params: {
 
 export default function openaiServerCompactionExtension(pi: ExtensionAPI) {
   if (!SUPPORTED_SP_VERSION_PATTERN.test(VERSION)) {
-    console.warn(`@super-pi/openai-server-compaction disabled: Pi ${VERSION} is unsupported (requires 0.84.x).`);
+    console.warn(`@super-pi/openai-server-compaction disabled: Pi ${VERSION} is unsupported (requires 1.x or 0.84.x).`);
     return;
   }
+  if (typeof pi.setCodexRemoteCompactionEnabled !== "function" || typeof pi.setOpenAIResponsesStream !== "function" || typeof pi.resetCodexTransport !== "function") {
+    console.warn("@super-pi/openai-server-compaction disabled: upgrade the Super Pi host to support session-owned Codex intent and Responses dispatch.");
+    return;
+  }
+  const owner = createOpenAIResponsesOwner();
+  const runtimeState = owner.state;
+  const stream: typeof owner.streamSimple = (model, context, options) => {
+    // ModelRuntime validates the installation and execution boundary before this call.
+    owner.resume();
+    return owner.streamSimple(model, context, options);
+  };
   const notifiedModels = new Set<string>();
-  const capabilitySessionIds = new Set<string>();
-
-  pi.registerProvider("openai", {
-    api: "openai-responses",
-    streamSimple: streamOpenAIResponsesWithPhase2B,
-  });
 
   pi.registerCommand("provider-refresh", {
     description: "Reset the current session's live provider flow without changing local history",
     handler: async (_args, ctx) => {
       await ctx.waitForIdle();
-      clearLiveContinuation(getSessionId(ctx));
+      await pi.resetCodexTransport();
+      owner.revoke();
+      await owner.drain();
+      clearLiveContinuation(owner, getSessionId(ctx));
       ctx.ui.notify("Provider flow refreshed for the current session; local history was preserved.", "info");
     },
   });
 
   pi.on("session_start", (_event, ctx) => {
     const sessionId = getSessionId(ctx);
-    clearLiveContinuation(sessionId);
-    clearResponsesRequestShapeState(sessionId);
-    clearSessionDedupState(sessionId);
+    clearLiveContinuation(owner, sessionId);
+    runtimeState.clearResponsesRequestShapeState(sessionId);
+    runtimeState.clearSessionDedupState(sessionId);
     const cfg = loadContextConfig(ctx);
-    setSessionConfig(sessionId, cfg);
-    setTransportRemoteCompactionCapability(sessionId, cfg.enabled);
-    if (cfg.enabled) capabilitySessionIds.add(sessionId);
-    syncRemoteState(ctx);
+    runtimeState.setSessionConfig(sessionId, cfg);
+    pi.setCodexRemoteCompactionEnabled(cfg.enabled);
+    pi.setOpenAIResponsesStream(cfg.enabled ? stream : undefined, owner);
+    syncRemoteState(runtimeState, ctx);
   });
 
-  const clearBeforeSessionChange = (_event: unknown, ctx: SessionContextLike): void => {
+  const clearBeforeSessionChange = async (_event: unknown, ctx: SessionContextLike): Promise<void> => {
+    owner.revoke();
+    await owner.drain();
     const sessionId = getSessionId(ctx);
-    setTransportRemoteCompactionCapability(sessionId, false);
-    capabilitySessionIds.delete(sessionId);
-    clearSessionRuntimeState(sessionId);
+    pi.setCodexRemoteCompactionEnabled(false);
+    pi.setOpenAIResponsesStream(undefined);
+    clearSessionRuntimeState(owner, sessionId);
   };
   pi.on("session_before_switch", clearBeforeSessionChange);
   pi.on("session_before_fork", clearBeforeSessionChange);
   pi.on("session_before_tree", clearBeforeSessionChange);
 
-  const syncAfterSessionChange = (_event: unknown, ctx: SessionContextLike): void => {
-    clearLiveContinuation(getSessionId(ctx));
-    syncRemoteState(ctx);
+  const syncAfterSessionChange = async (_event: unknown, ctx: SessionContextLike): Promise<void> => {
+    owner.revoke();
+    await owner.drain();
+    clearLiveContinuation(owner, getSessionId(ctx));
+    syncRemoteState(runtimeState, ctx);
   };
-  pi.on("session_tree", (event, ctx) => {
-    syncAfterSessionChange(event, ctx);
+  pi.on("session_tree", async (event, ctx) => {
+    await syncAfterSessionChange(event, ctx);
     // session_before_tree clears the old session snapshot. Re-read project
     // config through the new tree context so trusted cwd configuration is
     // restored without ever falling back to process.cwd().
     const sessionId = getSessionId(ctx);
     const cfg = loadContextConfig(ctx);
-    setSessionConfig(sessionId, cfg);
-    setTransportRemoteCompactionCapability(sessionId, cfg.enabled);
-    if (cfg.enabled) capabilitySessionIds.add(sessionId);
+    runtimeState.setSessionConfig(sessionId, cfg);
+    pi.setCodexRemoteCompactionEnabled(cfg.enabled);
+    pi.setOpenAIResponsesStream(cfg.enabled ? stream : undefined, owner);
   });
-  pi.on("session_compact", (event, ctx) => {
-    syncAfterSessionChange(event, ctx);
+  pi.on("session_compact", async (event, ctx) => {
+    await syncAfterSessionChange(event, ctx);
 
     const sessionId = getSessionId(ctx);
     const cfg = loadContextConfig(ctx);
@@ -701,7 +689,7 @@ export default function openaiServerCompactionExtension(pi: ExtensionAPI) {
       branchEntries,
     })) return;
 
-    if (!claimCompactionContinuation(sessionId, event.compactionEntry.id)) return;
+    if (!runtimeState.claimCompactionContinuation(sessionId, event.compactionEntry.id)) return;
 
     // Only reliably truncated responses reach this point; a clean final
     // `stop` and ordinary tool-use turns are intentionally excluded.
@@ -719,28 +707,25 @@ export default function openaiServerCompactionExtension(pi: ExtensionAPI) {
     );
   });
 
-  pi.on("model_select", (_event, ctx) => {
-    const sessionId = getSessionId(ctx);
-    clearLiveContinuation(sessionId);
-    clearResponsesRequestShapeState(sessionId);
+  pi.on("model_select", () => {
+    owner.resetForModelChange();
   });
 
-  pi.on("session_shutdown", (_event, ctx) => {
-    const currentSessionId = getSessionId(ctx);
-    for (const sessionId of capabilitySessionIds) {
-      setTransportRemoteCompactionCapability(sessionId, false);
-      if (sessionId !== currentSessionId) clearSessionRuntimeState(sessionId);
-    }
-    capabilitySessionIds.clear();
-    setTransportRemoteCompactionCapability(currentSessionId, false);
-    clearSessionRuntimeState(currentSessionId);
+  pi.on("session_shutdown", () => {
+    pi.setCodexRemoteCompactionEnabled(false);
+    pi.setOpenAIResponsesStream(undefined);
+    owner.revoke();
+    // The host joins terminal owner disposal after hooks; clear state after its last writer.
   });
 
-  pi.on("session_before_compact", async (event, ctx) => {
+  const prepareCompaction: CompactionStrategy["prepare"] = ctx => {
     const cfg = loadContextConfig(ctx);
     const model = ctx.model;
     if (!cfg.enabled || !model || !supportsRemoteCompactionModel(model)) return undefined;
 
+    return (event, ctx) => executeCompaction(event, ctx, cfg, model);
+  };
+  const executeCompaction = async (event: SessionBeforeCompactEvent, ctx: ExtensionContext, cfg: Required<ExtensionConfig>, model: Model<any>): Promise<SessionBeforeCompactResult | undefined> => {
     const eventAuth = (event as typeof event & { auth?: CompactionAuthSnapshot }).auth;
     let auth: CompactionAuthSnapshot | undefined = eventAuth?.model.provider === model.provider && eventAuth.model.id === model.id
       ? eventAuth
@@ -788,7 +773,7 @@ export default function openaiServerCompactionExtension(pi: ExtensionAPI) {
     try {
       const buildProviderRequestPayload = (pi as ProviderRequestPayloadAPI).buildProviderRequestPayload;
       const payload = typeof buildProviderRequestPayload === "function"
-        ? await buildProviderRequestPayload.call(pi, { systemPrompt, messages: contextMessages })
+        ? await buildProviderRequestPayload.call(pi, { systemPrompt, messages: contextMessages, auth })
         : undefined;
       canonicalRequest = payload ? extractCanonicalCompactionRequest(payload, model, sessionId) : undefined;
     } catch (error) {
@@ -832,7 +817,7 @@ export default function openaiServerCompactionExtension(pi: ExtensionAPI) {
       config: cfg,
       inputTokens: event.preparation.tokensBefore,
       ctx,
-      activeAuth: { apiKey: auth.apiKey, headers: auth.headers },
+      activeAuth: auth as CompactionAuthSnapshot & { apiKey: string },
       preparation: event.preparation,
       messages: contextMessages,
       sessionId,
@@ -845,7 +830,7 @@ export default function openaiServerCompactionExtension(pi: ExtensionAPI) {
     let localUsageLedgerId: string | undefined;
     let localResultPromise: Promise<SettledResult<Awaited<ReturnType<typeof generateConfiguredLocalSummary>>>> | undefined;
     if (shouldGeneratePortable && isGptSeriesModel(model)) {
-      const settled = await settlePromise(generateConfiguredLocalSummary(localSummaryInput));
+      const settled = await settlePromise(generateConfiguredLocalSummary(localSummaryInput, pi));
       if (settled.status === "fulfilled") {
         localResult = settled.value;
         localUsageLedgerId = appendCompactionUsageLedger(pi, model, "portable_summary", localResult.usage);
@@ -858,7 +843,7 @@ export default function openaiServerCompactionExtension(pi: ExtensionAPI) {
       }
       if (!localResult) return failGptCompaction(pi, ctx, model, "portable_summary", localError);
     } else if (shouldGeneratePortable) {
-      localResultPromise = settlePromise(generateConfiguredLocalSummary(localSummaryInput));
+      localResultPromise = settlePromise(generateConfiguredLocalSummary(localSummaryInput, pi));
     }
 
     const remoteResultPromise = callConfiguredRemoteCompaction(pi, {
@@ -890,6 +875,8 @@ export default function openaiServerCompactionExtension(pi: ExtensionAPI) {
     }
 
     if (event.signal.aborted) {
+      // Non-GPT summaries may run beside remote compaction; cancellation still joins them.
+      if (localResultPromise) await localResultPromise;
       recordCompactionFallback(pi, model, "cancelled", "aborted");
       return undefined;
     }
@@ -899,11 +886,11 @@ export default function openaiServerCompactionExtension(pi: ExtensionAPI) {
     }
 
     if (remoteResult && shouldGeneratePortable && !localResultPromise && !localResult) {
-      localResultPromise = settlePromise(generateConfiguredLocalSummary(localSummaryInput));
+      localResultPromise = settlePromise(generateConfiguredLocalSummary(localSummaryInput, pi));
     }
 
     if (!remoteResult && !localResultPromise && !localResult) {
-      localResultPromise = settlePromise(generateConfiguredLocalSummary(localSummaryInput));
+      localResultPromise = settlePromise(generateConfiguredLocalSummary(localSummaryInput, pi));
     }
 
     if (localResultPromise) {
@@ -1000,13 +987,15 @@ export default function openaiServerCompactionExtension(pi: ExtensionAPI) {
         combineCompactionUsage(localSummary.usage, remoteResult.usage),
       ),
     };
-  });
+  };
+  if (pi.registerCompactionStrategy) pi.registerCompactionStrategy({ id: "openai-server", prepare: prepareCompaction });
+  else pi.on("session_before_compact", (event, ctx) => prepareCompaction(ctx)?.(event, ctx));
 
   pi.on("message_end", (event, ctx) => {
     const sessionId = getSessionId(ctx);
     const model = ctx.model;
 
-    extendRemoteHistoryIfCompatible({
+    extendRemoteHistoryIfCompatible(runtimeState, {
       sessionId,
       model,
       message: event.message,
@@ -1020,8 +1009,8 @@ export default function openaiServerCompactionExtension(pi: ExtensionAPI) {
     if (!responseId) return;
 
     const currentModelKey = modelKey(model);
-    const currentContinuation = getContinuationState(sessionId);
-    const transportContext = getTransportContextState(sessionId);
+    const currentContinuation = runtimeState.getContinuationState(sessionId);
+    const transportContext = runtimeState.getTransportContextState(sessionId);
     const contextLength =
       currentContinuation?.responseId === responseId &&
       currentContinuation.modelKey === currentModelKey &&
@@ -1031,7 +1020,7 @@ export default function openaiServerCompactionExtension(pi: ExtensionAPI) {
           ? transportContext.contextLength
           : undefined;
 
-    setContinuationState(sessionId, {
+    runtimeState.setContinuationState(sessionId, {
       responseId,
       modelKey: currentModelKey,
       updatedAt: Date.now(),
@@ -1042,6 +1031,7 @@ export default function openaiServerCompactionExtension(pi: ExtensionAPI) {
   });
 
   pi.on("before_provider_request", async (event, ctx) => {
+    if (event.purpose === "supplemental-summary") return undefined;
     const cfg = loadContextConfig(ctx);
     if (!cfg.enabled) return undefined;
 
@@ -1055,25 +1045,25 @@ export default function openaiServerCompactionExtension(pi: ExtensionAPI) {
       : await ctx.modelRegistry.getApiKeyAndHeaders(model);
     if (auth.ok && auth.baseUrl) model = { ...model, baseUrl: auth.baseUrl };
     const scope = auth.ok ? requestScope(model, auth.apiKey, auth.headers) : undefined;
-    const continuation = getContinuationState(sessionId);
+    const continuation = runtimeState.getContinuationState(sessionId);
     const compatibleContinuation = scope !== undefined && continuation?.requestScope === scope;
     if (!dryRun) {
-      const transport = getTransportContextState(sessionId);
+      const transport = runtimeState.getTransportContextState(sessionId);
       const previousScope = continuation?.requestScope ?? transport?.requestScope;
-      if ((continuation || transport) && (scope === undefined || previousScope !== scope)) clearLiveContinuation(sessionId);
-      setTransportContextState(sessionId, {
+      if ((continuation || transport) && (scope === undefined || previousScope !== scope)) clearLiveContinuation(owner, sessionId);
+      runtimeState.setTransportContextState(sessionId, {
         modelKey: modelKey(model), contextLength: transport?.contextLength ?? 0, requestScope: scope,
       });
     }
     if (!dryRun) {
-      setResponsesRequestShapeState(sessionId, {
+      runtimeState.setResponsesRequestShapeState(sessionId, {
         updatedAt: Date.now(),
         reasoning: extractResponsesReasoningConfig(event.payload),
         text: extractResponsesTextConfig(event.payload),
         serviceTier: extractResponsesServiceTier(event.payload),
       });
     }
-    const remoteState = getMatchingRemoteState(sessionId, model, scope);
+    const remoteState = getMatchingRemoteState(runtimeState, sessionId, model, scope);
 
     if (isOpenAICodexResponsesModel(model)) {
       if (!remoteState) return undefined;

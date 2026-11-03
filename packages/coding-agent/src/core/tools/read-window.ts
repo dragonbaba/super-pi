@@ -134,6 +134,15 @@ export interface ReadWindowResult {
 	binary: boolean;
 }
 
+/** Shared producer/proof projection; preserve the exact byte-window continuation text. */
+export function formatReadWindowText(text: string, window: Omit<ReadWindowResult, "text">): string {
+  let output = text;
+  if (window.startsPartial) output = `[Continuation starts partway through line ${window.startLine}; this is a partial-line suffix.]\n${output}`;
+  if (window.binary) output += "\n\n[Binary NUL detected in this byte range; displayed as UTF-8 with replacement.]";
+  if (window.cursor) output += `\n\n[${window.partial ? `Line ${window.nextLine} is partial` : `Read through line ${window.nextLine - 1}`}; more file content remains. Continue with the same path and cursor=${window.cursor}.]`;
+  return output;
+}
+
 export function createReadWindowCounters() {
 	return {
 		bytesRead: 0, decodedCharacters: 0, separatorsInspected: 0, scanBytes: 0,

@@ -17,7 +17,7 @@ import { SESSION_PERMISSION_STATE_TYPE } from "../packages/extensions/resource-l
 import { fixture } from "./helpers/evidence-ledger-fixture.ts";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { readClipboardImage } from "../packages/coding-agent/src/utils/clipboard-image.ts";
-import { NativeClipboardError, readNativeClipboard } from "../packages/coding-agent/src/utils/clipboard-native-process.ts";
+import { ClipboardImageReadError, NativeClipboardError, readNativeClipboard } from "../packages/coding-agent/src/utils/clipboard-native-process.ts";
 import { readClipboardText } from "../packages/coding-agent/src/utils/clipboard.ts";
 
 function deferred() { let resolve!: () => void; const promise = new Promise<void>(yes => { resolve = yes; }); return { promise, resolve }; }
@@ -262,6 +262,110 @@ for (const failure of ["ENOENT", "EACCES", "ETIMEDOUT"]) test(`Windows image hel
  finally { cp.execFile = original; syncBuiltinESMExports(); }
 });
 
+for (const nativeResult of ["unavailable", "absent", "probe-error"] as const) test(`clipboard image regression: confirmed Forms failure survives native ${nativeResult}`, async () => {
+	const cp = createRequire(import.meta.url)("node:child_process"), original = cp.execFile;
+	let unavailable = 0, nativeProbes = 0;
+	cp.execFile = (_command: string, _args: string[], _options: unknown, callback: any) => callback(
+		Object.assign(new Error("Forms image read failed"), { code: 4 }), Buffer.alloc(0), Buffer.from("confirmed image could not be read"));
+	syncBuiltinESMExports();
+	const native = nativeResult === "unavailable" ? null : {
+		getText: async () => "-", setText: async () => {}, getImageBinary: async () => [],
+		hasImage: () => { nativeProbes++; if (nativeResult === "probe-error") throw new Error("native probe unavailable"); return false; },
+	};
+	try {
+		await assert.rejects(readClipboardImage({ platform: "win32", nativeClipboard: native, onUnavailable: () => unavailable++ }),
+			error => error instanceof ClipboardImageReadError && !error.fatal && error.message.includes("confirmed image could not be read"));
+		assert.equal(nativeProbes, nativeResult === "unavailable" ? 0 : 1);
+		assert.equal(unavailable, 0, "known image failures must reach the attachment owner, not the unavailable/text path");
+	} finally { cp.execFile = original; syncBuiltinESMExports(); }
+});
+
+test("clipboard image regression: native image success recovers a confirmed Forms failure", async () => {
+	const cp = createRequire(import.meta.url)("node:child_process"), original = cp.execFile;
+	const bytes = pngFixture(8, 8); let nativeReads = 0, unavailable = 0;
+	cp.execFile = (_command: string, _args: string[], _options: unknown, callback: any) => callback(
+		Object.assign(new Error("Forms image read failed"), { code: 4 }), Buffer.alloc(0), Buffer.from("confirmed image could not be read"));
+	syncBuiltinESMExports();
+	try {
+		const result = await readClipboardImage({ platform: "win32", nativeClipboard: {
+			getText: async () => "-", setText: async () => {}, hasImage: () => true,
+			getImageBinary: async () => { nativeReads++; return Array.from(bytes); },
+		}, onUnavailable: () => unavailable++ });
+		assert.deepEqual(Buffer.from(result?.bytes ?? []), bytes);
+		assert.equal(result?.mimeType, "image/png"); assert.equal(nativeReads, 1); assert.equal(unavailable, 0);
+	} finally { cp.execFile = original; syncBuiltinESMExports(); }
+});
+
+for (const transport of ["direct", "isolated"] as const) for (const outcome of ["empty", "throw"] as const) test(`clipboard image regression: ${transport} native image ${outcome} cannot become no image`, async () => {
+	const cp = createRequire(import.meta.url)("node:child_process"), original = cp.execFile;
+	const root = transport === "isolated" ? mkdtempSync(join(tmpdir(), "sp-native-image-failure-")) : undefined;
+	const nativeModulePath = root ? join(root, "clipboard-fixture.cjs") : undefined;
+	if (nativeModulePath) writeFileSync(nativeModulePath, `module.exports = { hasImage() { return true; }, async getImageBinary() { ${outcome === "throw" ? "throw new Error('image decode failed');" : "return [];"} }, async getText() { return '-'; } };`);
+	let unavailable = 0;
+	cp.execFile = (_command: string, _args: string[], _options: unknown, callback: any) => callback(null, Buffer.alloc(0));
+	syncBuiltinESMExports();
+	try {
+		await assert.rejects(readClipboardImage({ platform: "win32", nativeModulePath,
+			nativeClipboard: transport === "direct" ? {
+				getText: async () => "-", setText: async () => {}, hasImage: () => true,
+				getImageBinary: async () => { if (outcome === "throw") throw new Error("image decode failed"); return []; },
+			} : undefined,
+			onUnavailable: () => unavailable++,
+		}), error => error instanceof ClipboardImageReadError && !error.fatal);
+		assert.equal(unavailable, 0);
+	} finally {
+		cp.execFile = original; syncBuiltinESMExports();
+		if (root) rmSync(root, { recursive: true, force: true });
+	}
+});
+
+for (const code of ["ETIMEDOUT", "ENOENT", "EACCES"] as const) test(`clipboard image regression: presence marker preserves image failure after ${code}`, async () => {
+	const cp = createRequire(import.meta.url)("node:child_process"), original = cp.execFile;
+	let unavailable = 0;
+	cp.execFile = (_command: string, _args: string[], _options: unknown, callback: any) => callback(
+		Object.assign(new Error("clipboard transport failed"), { code }), Buffer.alloc(0), Buffer.from("SP_CLIPBOARD_IMAGE_PRESENT\r\nimage transport failed"));
+	syncBuiltinESMExports();
+	try {
+		await assert.rejects(readClipboardImage({ platform: "win32", nativeClipboard: null, onUnavailable: () => unavailable++ }),
+			error => error instanceof ClipboardImageReadError && !error.fatal);
+		assert.equal(unavailable, 0);
+	} finally { cp.execFile = original; syncBuiltinESMExports(); }
+});
+
+for (const markerLocation of ["message", "stderr-body"] as const) test(`clipboard image regression: marker in ${markerLocation} is not a presence report`, async () => {
+	const cp = createRequire(import.meta.url)("node:child_process"), original = cp.execFile;
+	let unavailable = 0;
+	cp.execFile = (_command: string, _args: string[], _options: unknown, callback: any) => callback(
+		Object.assign(new Error(markerLocation === "message" ? "Command failed: SP_CLIPBOARD_IMAGE_PRESENT" : "helper unavailable"), { code: "EACCES" }),
+		Buffer.alloc(0), Buffer.from(markerLocation === "stderr-body" ? "helper startup failed\nSP_CLIPBOARD_IMAGE_PRESENT" : ""));
+	syncBuiltinESMExports();
+	try {
+		assert.equal(await readClipboardImage({ platform: "win32", nativeClipboard: null, onUnavailable: () => unavailable++ }), null);
+		assert.equal(unavailable, 1);
+	} finally { cp.execFile = original; syncBuiltinESMExports(); }
+});
+
+for (const failure of ["abort", "quota"] as const) test(`clipboard image regression: native ${failure} takes precedence over an earlier image read failure`, async () => {
+	const cp = createRequire(import.meta.url)("node:child_process"), original = cp.execFile;
+	const controller = new AbortController(), reason = new Error("cancel native image fixture");
+	let nativeReads = 0, unavailable = 0;
+	cp.execFile = (_command: string, _args: string[], _options: unknown, callback: any) => callback(
+		Object.assign(new Error("Forms image read failed"), { code: 4 }), Buffer.alloc(0));
+	syncBuiltinESMExports();
+	try {
+		await assert.rejects(readClipboardImage({ platform: "win32", signal: controller.signal, nativeClipboard: {
+			getText: async () => "-", setText: async () => {}, hasImage: () => true,
+			getImageBinary: async () => {
+				nativeReads++;
+				if (failure === "abort") { controller.abort(reason); return Array.from(pngFixture(8, 8)); }
+				return new Uint8Array(10 * 1024 * 1024 + 1) as unknown as number[];
+			},
+		}, onUnavailable: () => unavailable++ }), error => failure === "abort" ? error === reason
+			: error instanceof NativeClipboardError && error.fatal && !(error instanceof ClipboardImageReadError));
+		assert.equal(nativeReads, 1); assert.equal(unavailable, 0);
+	} finally { cp.execFile = original; syncBuiltinESMExports(); }
+});
+
 test("Windows image read uses native fallback when STA helper returns no image", { skip: process.platform !== "win32" }, async () => {
  const cp = createRequire(import.meta.url)("node:child_process"), original = cp.execFile; let helperCalls = 0;
  const bytes = pngFixture(8, 8);
@@ -338,7 +442,7 @@ test("real Windows Alt+V dispatch falls back to text after image helper failure"
   f.internal.readClipboardImageForPaste = () => readClipboardImage({ platform: "win32", nativeClipboard: null });
   cp.execFile = (_command: string, args: string[], _options: any, callback: any) => {
    const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le");
-   if (script.includes("GetImage")) { calls.push("image"); callback(Object.assign(new Error("image helper blocked"), { code: "EACCES" }), Buffer.alloc(0)); }
+   if (script.includes("SP_CLIPBOARD_IMAGE_PRESENT")) { calls.push("image"); callback(Object.assign(new Error("image helper blocked"), { code: "EACCES" }), Buffer.alloc(0)); }
    else { assert.ok(script.includes("DataFormats]::UnicodeText")); calls.push("text"); callback(null, Buffer.from("clipboard fallback text")); }
   }; syncBuiltinESMExports();
   f.input.write("\x1bv"); while (f.internal.clipboardPending) await turn();
@@ -350,7 +454,7 @@ for (const failure of ["abort", "quota"]) test(`Windows helper ${failure} remain
  const cp = createRequire(import.meta.url)("node:child_process"), original = cp.execFile, abort = new AbortController(); let unavailable = 0, nativeCalls = 0;
  cp.execFile = (_command: string, _args: string[], _options: any, callback: any) => {
   if (failure === "abort") abort.abort();
-  callback(new Error(failure === "abort" ? "aborted" : `Command failed: powershell ${"encoded-script".repeat(60)}`), Buffer.alloc(0), failure === "quota" ? Buffer.from("Image exceeds pixel limit") : Buffer.alloc(0));
+  callback(Object.assign(new Error(failure === "abort" ? "aborted" : `Command failed: powershell ${"encoded-script".repeat(60)}`), { code: 4 }), Buffer.alloc(0), failure === "quota" ? Buffer.from("Image exceeds pixel limit") : Buffer.alloc(0));
  }; syncBuiltinESMExports();
  const native = { getText: async () => "", setText: async () => {}, hasImage: () => { nativeCalls++; return true; }, getImageBinary: async () => Array.from(pngFixture(8, 8)) };
  try { await assert.rejects(readClipboardImage({ platform: "win32", nativeClipboard: native, signal: abort.signal, onUnavailable: () => unavailable++ })); assert.equal(unavailable, 0); assert.equal(nativeCalls, 0); }

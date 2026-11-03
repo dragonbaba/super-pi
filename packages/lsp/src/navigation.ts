@@ -20,6 +20,8 @@ const MAX_NAVIGATION_FILE_BYTES = 2 * 1024 * 1024;
 const SYMBOL_LINE_DRIFT = 5;
 const MAX_SYMBOL_LINE_HINTS = 10;
 
+function observeDiscardFailure(): void {}
+
 export interface NavigationParams {
 	action: NavigationAction;
 	root?: string;
@@ -66,14 +68,16 @@ export async function runNavigation(
 
 	let lease: ClientLease | undefined;
 	let aborted = false;
+	let discard: Promise<void> | undefined;
 	const abort = () => {
 		aborted = true;
-		if (lease) void pool.discard(lease);
+		if (lease && !discard) { discard = pool.discard(lease); void discard.catch(observeDiscardFailure); }
 	};
 	signal?.addEventListener("abort", abort, { once: true });
 
 	try {
 		ctx.ui.setStatus(statusKey, `${adapter.name} ${params.action}`);
+		throwIfAborted(signal, adapter);
 		lease = await pool.acquire(adapter, root, timeoutMs);
 		throwIfAborted(signal, adapter);
 		if (text !== undefined) lease.client.didOpen(uri, text, adapter.languageIdFor(file));
@@ -115,9 +119,10 @@ export async function runNavigation(
 			if (text !== undefined) lease.client.didClose(uri);
 		}
 	} finally {
-		ctx.ui.setStatus(statusKey, undefined);
 		signal?.removeEventListener("abort", abort);
-		if (lease && !aborted) pool.release(lease);
+		try {
+			if (lease) { if (aborted) await (discard ?? pool.discard(lease)); else pool.release(lease); }
+		} finally { ctx.ui.setStatus(statusKey, undefined); }
 	}
 }
 

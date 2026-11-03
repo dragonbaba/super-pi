@@ -29,5 +29,5 @@ The single `codegraph` model tool keeps prompt overhead small while exposing `st
 - CodeGraph access requires Pi's current project trust. The extension executes the exact locally installed `node.exe` and CLI with an argument array—never through a shell—and restricts file arguments to the resolved project root.
 - CodeGraph output is bounded to 50 KiB and stripped of ANSI, OSC, and unsafe control sequences before reaching the terminal or model.
 - Directory, manifest, and file names are stripped/escaped for generated Markdown and terminal notifications; index JSON uses JSON escaping.
-- This local package is strictly gated to Pi `0.84.x` and disables itself when the runtime version is unavailable or outside that line.
+- This local package is gated to Super Pi `1.x` and legacy `0.84.x`, and disables itself when the runtime version is unavailable or outside those lines.
 - Non-Git projects should start Pi from their initialized root because Hermes currently derives non-Git scope from the current working-directory name.

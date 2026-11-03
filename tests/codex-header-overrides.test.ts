@@ -6,9 +6,10 @@ import {
 	closeOpenAICodexWebSocketSessions,
 	compactOpenAICodexRequest,
 	resetOpenAICodexWebSocketDebugStats,
-	setOpenAICodexRemoteCompactionCapability,
 	stream,
+	streamSimple,
 } from "../packages/ai/src/api/openai-codex-responses.ts";
+import { getModelCapabilities } from "../packages/ai/src/model-capabilities.ts";
 import type { ProviderHeaders } from "../packages/ai/src/types.ts";
 import { FakeCodexWebSocket, terminalResponse } from "./helpers/codex-websocket-fixture.ts";
 import { codexModel, codexToken, responsesContext, sseFrames, textEvents } from "./helpers/responses-sse-fixture.ts";
@@ -35,7 +36,6 @@ function fixture(t: TestContext) {
 	t.after(() => {
 		closeOpenAICodexWebSocketSessions(sessionId);
 		resetOpenAICodexWebSocketDebugStats(sessionId);
-		setOpenAICodexRemoteCompactionCapability(sessionId, false);
 		globalThis.WebSocket = originalWebSocket;
 		FakeCodexWebSocket.mode = "success";
 		FakeCodexWebSocket.sentBodies = [];
@@ -102,6 +102,7 @@ test("Codex fallback preserves configured headers across WebSocket and SSE", asy
 	FakeCodexWebSocket.mode = "fail";
 	const result = await stream({ ...codexModel, headers: { originator: "model" } }, responsesContext, {
 		apiKey: codexToken(), transport: "auto", sessionId: f.sessionId, fetch: f.fetch,
+		codexRemoteCompaction: true,
 		headers: { originator: "caller", "User-Agent": null }, maxRetries: 0,
 	}).result();
 	assert.equal(result.stopReason, "stop", result.errorMessage);
@@ -111,6 +112,58 @@ test("Codex fallback preserves configured headers across WebSocket and SSE", asy
 		assert.equal(headers.get("originator"), "caller");
 		assert.equal(headers.get("user-agent"), null);
 		assert.equal(headers.get("authorization"), `Bearer ${codexToken()}`);
+		assert.ok(headers.get("x-codex-beta-features")?.includes("remote_compaction_v2"));
+	}
+});
+
+test("Codex explicit compaction intent preserves model, session and caller header boundaries", async (t) => {
+	const f = fixture(t);
+	const feature = "x-codex-beta-features";
+	const routing = "x-codex-routing-hint";
+	const legacyKey = Symbol.for("@super-pi/ai/codex-remote-compaction-sessions");
+	const previous = Object.getOwnPropertyDescriptor(globalThis, legacyKey);
+	Object.defineProperty(globalThis, legacyKey, { configurable: true, get() { throw new Error("retired capability registry accessed"); } });
+	t.after(() => { if (previous) Object.defineProperty(globalThis, legacyKey, previous); else Reflect.deleteProperty(globalThis, legacyKey); });
+	for (const intent of [undefined, false]) {
+		const result = await streamSimple(codexModel, responsesContext, {
+			apiKey: codexToken(), transport: "sse", sessionId: f.sessionId, fetch: f.fetch,
+			codexRemoteCompaction: intent,
+		}).result();
+		assert.equal(result.stopReason, "stop", result.errorMessage);
+		assert.equal(f.sseHeaders.at(-1)!.has(feature), false);
+	}
+	const longSessionId = "long-".repeat(100);
+	t.after(() => {
+		closeOpenAICodexWebSocketSessions(longSessionId);
+		resetOpenAICodexWebSocketDebugStats(longSessionId);
+	});
+	const unsupported = { ...codexModel, capabilities: { ...getModelCapabilities(codexModel), remoteCompaction: false } };
+	for (const entry of [
+		{ model: codexModel, sessionId: f.sessionId, enabled: true },
+		{ model: unsupported, sessionId: f.sessionId, enabled: false },
+		{ model: codexModel, sessionId: undefined, enabled: false },
+		{ model: codexModel, sessionId: "", enabled: false },
+		{ model: codexModel, sessionId: longSessionId, enabled: false },
+		{ model: codexModel, sessionId: f.sessionId, cacheRetention: "none" as const, enabled: false },
+	]) {
+		const result = await streamSimple(entry.model, responsesContext, {
+			apiKey: codexToken(), transport: "sse", fetch: f.fetch, sessionId: entry.sessionId,
+			cacheRetention: entry.cacheRetention, codexRemoteCompaction: true,
+			onPayload: payload => { assert.equal(Object.hasOwn(payload as object, "codexRemoteCompaction"), false); },
+		}).result();
+		assert.equal(result.stopReason, "stop", result.errorMessage);
+		assert.equal(f.sseHeaders.at(-1)!.has(feature), entry.enabled);
+	}
+	for (const enabled of [true, false]) {
+		const result = await streamSimple(codexModel, responsesContext, {
+			apiKey: codexToken(), transport: "websocket", fetch: f.fetch, sessionId: f.sessionId,
+			codexRemoteCompaction: enabled, headers: { [feature]: "caller-feature", [routing]: "caller-route" },
+		}).result();
+		assert.equal(result.stopReason, "stop", result.errorMessage);
+		const headers = f.wsHeaders.at(-1)!;
+		assert.ok(headers.get(feature)?.includes("caller-feature"));
+		assert.equal(headers.get(feature)?.includes("remote_compaction_v2"), enabled);
+		assert.equal(headers.get(routing) === "caller-route", !enabled);
 	}
 });
 
@@ -140,12 +193,12 @@ test("Codex reuses matching WebSocket headers and reconnects when either client 
 for (const transport of ["sse", "websocket"] as const) {
 	test(`Codex ${transport} compaction preserves overrides and rejects changed client headers before dispatch`, async (t) => {
 		const f = fixture(t);
-		setOpenAICodexRemoteCompactionCapability(f.sessionId, true);
 		const headers = { originator: "compact-client", "User-Agent": null };
 		FakeCodexWebSocket.replies = () => textEvents();
 		const options = {
 			apiKey: codexToken(), transport: transport === "sse" ? "sse" as const : "websocket-cached" as const,
 			sessionId: f.sessionId, headers, maxRetries: 0,
+			codexRemoteCompaction: true,
 			fetch: (async (_url, init) => {
 				f.sseHeaders.push(new Headers(init?.headers));
 				return new Response(sseFrames(textEvents()), { headers: { "content-type": "text/event-stream" } });

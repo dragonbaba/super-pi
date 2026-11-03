@@ -8,7 +8,7 @@
  */
 import { arch, platform, release } from "node:os";
 import type { SessionBeforeCompactEvent } from "@super-pi/coding-agent";
-import type { AgentMessage, ThinkingLevel } from "@super-pi/agent-core";
+import type { AgentMessage, StreamFn, ThinkingLevel } from "@super-pi/agent-core";
 import {
   compact,
   convertToLlm,
@@ -27,7 +27,6 @@ import {
 import { complete } from "@super-pi/ai/compat";
 import { getEncoding } from "js-tiktoken";
 import { isRecord } from "./config.ts";
-import { isFastRuntimeEnabled } from "./fast-runtime-state.ts";
 import { buildCompactionShapeDiagnostics, type CompactionShapeDiagnostics } from "./shape-diagnostics.ts";
 import {
   CARRIAGE_RETURN_PATTERN,
@@ -171,15 +170,6 @@ export type RemoteCompactionServiceTier =
   | "priority"
   | "fast"
   | "ultrafast";
-
-export function resolveRemoteCompactionServiceTier(
-  model: Model<any>,
-  sessionId: string,
-  stateSource: object = globalThis,
-): RemoteCompactionServiceTier | undefined {
-  if (!isOpenAICodexResponsesModel(model)) return undefined;
-  return isFastRuntimeEnabled(sessionId, stateSource) ? "priority" : undefined;
-}
 
 function normalizeBaseUrl(baseUrl: string | undefined, fallback: string): string {
   const trimmed = baseUrl?.trim();
@@ -931,24 +921,30 @@ export async function generatePortableSummary(params: {
   model: Model<any>;
   apiKey: string;
   headers?: ProviderHeaders;
+  env?: Record<string, string>;
   sessionId: string;
   customInstructions?: string;
   signal?: AbortSignal;
+  streamFn?: StreamFn;
 }): Promise<CompactionResult> {
-  const response = await complete(
-    params.model,
-    buildPortableSummaryContext(params),
-    {
-      apiKey: params.apiKey,
-      headers: params.headers,
-      maxTokens: Math.min(
-        PORTABLE_SUMMARY_MAX_TOKENS,
-        params.model.maxTokens > 0 ? params.model.maxTokens : PORTABLE_SUMMARY_MAX_TOKENS,
-      ),
-      sessionId: params.sessionId,
-      signal: params.signal,
-    },
-  );
+  const context = buildPortableSummaryContext(params);
+  const options = {
+    apiKey: params.apiKey,
+    headers: params.headers,
+    env: params.env,
+    maxTokens: Math.min(
+      PORTABLE_SUMMARY_MAX_TOKENS,
+      params.model.maxTokens > 0 ? params.model.maxTokens : PORTABLE_SUMMARY_MAX_TOKENS,
+    ),
+    sessionId: params.sessionId,
+    signal: params.signal,
+  };
+  const response = params.streamFn
+    ? await (await params.streamFn(params.model, context, options)).result()
+    : await complete(params.model, context, options);
+  if (response.stopReason === "error" || response.stopReason === "aborted") {
+    throw new Error(response.errorMessage || "Portable summary request failed");
+  }
 
   const textParts: string[] = [];
   for (const item of response.content) if (item.type === "text") textParts.push(item.text);
@@ -980,10 +976,12 @@ export async function generateBestEffortLocalSummary(params: {
   model: Model<any>;
   apiKey: string;
   headers?: ProviderHeaders;
+  env?: Record<string, string>;
   sessionId: string;
   customInstructions?: string;
   signal?: AbortSignal;
   thinkingLevel?: ThinkingLevel;
+  streamFn?: StreamFn;
 }): Promise<CompactionResult> {
   try {
     return await generatePortableSummary(params);
@@ -1003,6 +1001,8 @@ export async function generateBestEffortLocalSummary(params: {
           params.customInstructions,
           params.signal,
           params.thinkingLevel,
+          params.streamFn,
+          params.env,
         );
         if (result.summary.trim()) return result;
       } catch (fallbackError) {

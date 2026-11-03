@@ -1,6 +1,7 @@
 import { existsSync, statSync } from "node:fs";
 import { delimiter, isAbsolute, join, resolve, sep } from "node:path";
 import { spawn, spawnSync } from "child_process";
+import { setTimeout as cleanupDelay } from "node:timers/promises";
 import { getBinDir } from "../config.ts";
 import { waitForChildProcess } from "./child-process.ts";
 import { FORWARD_SLASH_PATTERN, LEGACY_WSL_BASH_PATH_PATTERN } from "./shell-regex.ts";
@@ -312,10 +313,21 @@ export function getShellEnv(): NodeJS.ProcessEnv {
 	}
 	const updatedPath = hasBinDir ? currentPath : currentPath ? `${binDir}${delimiter}${currentPath}` : binDir;
 
-	return {
+	const env: NodeJS.ProcessEnv = {
 		...process.env,
 		[pathKey]: updatedPath,
 	};
+	// Python otherwise uses the Windows locale for redirected pipes, even when
+	// PowerShell's console output is UTF-8. Preserve explicit overrides (including
+	// empty values) and leave Python's file-open defaults and the host unchanged.
+	if (process.platform === "win32") {
+		let pythonEncodingKey = "PYTHONIOENCODING";
+		for (const key of environmentKeys) {
+			if (key.toUpperCase() === "PYTHONIOENCODING") { pythonEncodingKey = key; break; }
+		}
+		if (env[pythonEncodingKey] === undefined) env[pythonEncodingKey] = "utf-8";
+	}
+	return env;
 }
 
 /**
@@ -409,5 +421,19 @@ export async function killProcessTreeAndWait(pid: number): Promise<string | unde
 		if (code !== 0) return `Process-tree cleanup failed: taskkill exit=${code ?? "unknown"}; inspect before retrying.`;
 	} catch (error) {
 		return `Process-tree cleanup failed: ${error instanceof Error ? error.message : String(error)}`.slice(0, 1000);
+	}
+}
+
+/** Only for a process group created by our detached spawn, never an arbitrary PID. */
+export async function stopOwnedProcessGroup(pid: number): Promise<string | undefined> {
+	if (process.platform === "win32" || !Number.isSafeInteger(pid) || pid <= 0) return "Invalid owned process group.";
+	try { process.kill(-pid, "SIGKILL"); }
+	catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return; return "Owned process group termination was not confirmed."; }
+	const deadline = performance.now() + 5000;
+	for (;;) {
+		try { process.kill(-pid, 0); }
+		catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return; return "Owned process group exit could not be observed."; }
+		if (performance.now() >= deadline) return "Owned process group still exists after cleanup deadline.";
+		await cleanupDelay(10);
 	}
 }

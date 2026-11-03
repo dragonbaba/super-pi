@@ -17,6 +17,7 @@ export interface BuiltinSlashCommand {
 }
 
 export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
+	{ name: "permissions", description: "选择只读、沙箱读写或宿主机读写" },
 	{ name: "settings", description: "Open settings menu" },
 	{ name: "tool-budget", description: "View or explicitly change this session's tool-result text budget", argumentHint: "status | off | <positive tokens>" },
 	{ name: "model", description: "Select model (opens selector UI)", argumentHint: "<provider/model>" },

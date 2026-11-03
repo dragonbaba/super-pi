@@ -9,7 +9,7 @@ import {
 import { Text } from "@super-pi/tui";
 import { Type, type Static } from "typebox";
 import { ownedTabsPrelude } from "./tab-lifecycle.ts";
-import type { BrowserUseRunResult } from "./runner.ts";
+import type { BrowserUseRunOptions, BrowserUseRunResult } from "./runner.ts";
 
 const TOOL_NAME = "browser_exec";
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -57,6 +57,8 @@ type BrowserExecParams = Static<typeof BrowserExecParameters>;
 
 interface BrowserExecDetails {
   ok: boolean;
+  cleanup: BrowserUseRunResult["cleanup"];
+  exitObserved: boolean;
   exitCode: number;
   killed: boolean;
   timedOut: boolean;
@@ -125,15 +127,16 @@ function stepLabel(code: string): string {
 
 /** Completion boundary: each stream is already bounded by the runner. */
 export function browserResultText(result: BrowserUseRunResult): Array<{ type: "text"; text: string }> {
-  const failed = result.exitCode !== 0 || result.killed || result.timedOut || result.aborted;
+  const failed = result.cleanup !== "complete" || result.exitCode !== 0 || result.killed || result.timedOut || result.aborted;
   let output = result.stdout.trim() || "(no output)";
   if (result.stdoutTruncated) output += "\n… stdout truncated";
   if (!failed) {
     if (result.stderr.trim()) output += `\n[stderr]\n${result.stderr.trim()}${result.stderrTruncated ? "\n… stderr truncated" : ""}`;
     return [{ type: "text", text: `Untrusted browser output:\n${output}` }];
   }
-  const category = result.timedOut ? "TIMEOUT" : result.aborted ? "ABORTED" : "FAILED";
-  const evidence = result.stderr.trim() || result.stdout.trim() || `exit ${result.exitCode}`;
+  const category = result.cleanup !== "complete" ? "CLEANUP_UNCONFIRMED" : result.timedOut ? "TIMEOUT" : result.aborted ? "ABORTED" : "FAILED";
+  const evidence = result.cleanup !== "complete" ? "Browser helper cleanup is unconfirmed. Execution is paused; owned workspaces were preserved. Do not retry or reconnect automatically."
+    : result.stderr.trim() || result.stdout.trim() || `exit ${result.exitCode}`;
   const content: Array<{ type: "text"; text: string }> = [{ type: "text", text: formatFailure(category, evidence) }];
   if (result.stdout.trim()) content.push({ type: "text", text: `Untrusted partial browser output (script failed; do not replay completed actions):\n${output}` });
   return content;
@@ -257,11 +260,42 @@ export default function browserUseExtension(pi: ExtensionAPI): void {
   let workspaceGeneration = 0;
   let activeRuns = 0;
   let releaseInProgress = false;
-  let cleanupInProgress = false;
-  let cleanupPending = false;
+  let cleanupOperation: Promise<boolean> | undefined;
   let tabCleanupPending = false;
   let connectionNoticeShown = false;
   let runtimeVersion: InstanceType<BrowserRuntime[0]["BrowserHarnessVersionGate"]> | undefined;
+  let authority = new AbortController();
+  let paused = false, closed = false;
+  let cleanupFailure: string | undefined;
+  let operation: Promise<void> | undefined, finishOperation: (() => void) | undefined;
+  let draining: Promise<void> | undefined;
+
+  const beginOperation = (signal?: AbortSignal): AbortSignal => {
+    pi.assertExecutionCurrent?.();
+    if (closed || paused || cleanupFailure) throw new Error(cleanupFailure ?? "[BROWSER_EXEC_PAUSED] Browser execution is closed or changing.");
+    if (operation || cleanupOperation) throw new Error("[BROWSER_EXEC_BUSY] Browser control is busy.");
+    signal?.throwIfAborted();
+    operation = new Promise<void>(resolve => { finishOperation = resolve; });
+    return signal ? AbortSignal.any([signal, authority.signal]) : authority.signal;
+  };
+  const endOperation = (): void => {
+    const finish = finishOperation; finishOperation = undefined; operation = undefined; finish?.();
+  };
+  // Every helper, including version/release/owned-tab cleanup, supplies physical cleanup evidence.
+  const runHelper = async (options: BrowserUseRunOptions): Promise<BrowserUseRunResult> => {
+    if (cleanupFailure) throw new Error(cleanupFailure);
+    const [, runner] = await loadBrowserRuntime();
+    options.signal?.throwIfAborted();
+    const result = await runner.runBrowserUse(options);
+    if (result.cleanup !== "complete") cleanupFailure = "[BROWSER_EXEC_CLEANUP_UNCONFIRMED] Browser helper cleanup is unconfirmed; execution remains paused and owned workspaces are retained.";
+    return result;
+  };
+  const revokeExecution = (): void => {
+    paused = true;
+    const reason = new Error("[BROWSER_EXEC_PAUSED] Browser execution boundary changed.");
+    reason.stack = reason.message;
+    authority.abort(reason);
+  };
 
   const ensureWorkspace = async (ctx: ExtensionContext, command: string, buildEnvironment: BrowserRuntime[0]["buildBrowserUseEnvironment"], session?: string): Promise<string> => {
     const connection = `${session === undefined ? "local" : "named:" + session}\0${process.env.BU_CDP_URL ?? ""}\0${process.env.BU_CDP_WS ?? ""}\0${process.env.BU_BROWSER_ID ?? ""}`;
@@ -278,26 +312,21 @@ export default function browserUseExtension(pi: ExtensionAPI): void {
     const connection = ownedWorkspaces.get(workspace)!;
     const statePath = join(workspace, "tabs.json");
     try { if ((await stat(statePath)).size === 2) return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT"; }
-    const [, runner] = await loadBrowserRuntime();
-    const result = await runner.runBrowserUse({ command: connection.command, cwd: workspace,
+    const result = await runHelper({ command: connection.command, cwd: workspace,
       env: { ...connection.env, BH_REQUIRE_EXISTING_DAEMON: "1" },
       code: withOwnedScreenshotDefault("close_owned_tabs()", join(workspace, "cleanup.png"), timeoutMs, statePath),
       timeoutMs, maxBytesPerStream: 1024 });
-    return result.exitCode === 0 && !result.killed && !result.timedOut && !result.aborted;
+    return result.cleanup === "complete" && result.exitCode === 0 && !result.killed && !result.timedOut && !result.aborted;
   };
 
-  const cleanupOwnedWorkspaces = async (remove = true, ctx?: ExtensionContext): Promise<boolean> => {
-    if (cleanupInProgress || activeRuns > 0) {
-      cleanupPending ||= remove;
-      tabCleanupPending = true;
-      return false;
-    }
-    cleanupInProgress = true;
+  const performCleanup = async (remove: boolean, ctx?: ExtensionContext): Promise<boolean> => {
     tabCleanupPending = false;
     const deadline = Date.now() + 5000;
     let incomplete = false;
     try {
+      if (cleanupFailure) throw new Error(cleanupFailure);
       for (const owned of ownedWorkspaces.keys()) {
+        if (cleanupFailure) { incomplete = true; break; }
         try {
           const remaining = deadline - Date.now();
           if (remaining <= 0 || !await cleanupTabs(owned, remaining)) { incomplete = true; continue; }
@@ -311,11 +340,28 @@ export default function browserUseExtension(pi: ExtensionAPI): void {
       }
       if (incomplete) ctx?.ui.notify("部分任务临时标签未能关闭，已保留标签归属记录；不会重新连接浏览器。可在连接恢复后执行 close_owned_tabs()。", "warning");
     } finally {
-      cleanupInProgress = false;
-      if (cleanupPending && activeRuns === 0) { cleanupPending = false; incomplete = !await cleanupOwnedWorkspaces() || incomplete; }
+      cleanupOperation = undefined;
     }
     return !incomplete;
   };
+  const cleanupOwnedWorkspaces = (remove = true, ctx?: ExtensionContext): Promise<boolean> => {
+    if (activeRuns > 0) { tabCleanupPending = true; return Promise.resolve(false); }
+    // Defer work until this shared owner is assigned, including the empty-workspace case.
+    return cleanupOperation ??= Promise.resolve().then(() => performCleanup(remove, ctx));
+  };
+  const performDrain = async (): Promise<void> => {
+    try {
+      await operation;
+      await cleanupOperation;
+      if (cleanupFailure) throw new Error(cleanupFailure);
+      if (!await cleanupOwnedWorkspaces()) throw new Error("[BROWSER_EXEC_CLEANUP_INCOMPLETE] Owned browser tabs/workspaces have not been released; execution remains paused.");
+      workspaceGeneration++; connectionNoticeShown = false;
+      runtimeVersion?.clear(); runtimeVersion = undefined;
+      if (!closed) { authority = new AbortController(); paused = false; }
+    } finally { draining = undefined; }
+  };
+  const drainExecution = (): Promise<void> => draining ??= performDrain();
+  pi.registerExecutionOwner?.("browser-use", { revoke: revokeExecution, drain: drainExecution });
 
   pi.registerTool({
     name: TOOL_NAME,
@@ -326,17 +372,21 @@ export default function browserUseExtension(pi: ExtensionAPI): void {
     async execute(toolCallId, params: BrowserExecParams, signal, onUpdate, ctx) {
       if (!params.code.trim()) throw new Error("[BROWSER_EXEC_INVALID] code is empty.");
       if (Buffer.byteLength(params.code, "utf8") > MAX_CODE_BYTES) throw new Error("[BROWSER_EXEC_INVALID] code is too large.");
-      if (releaseInProgress || cleanupInProgress) throw new Error("[BROWSER_EXEC_BUSY] Browser control is being released.");
+      const operationSignal = beginOperation(signal);
       activeRuns += 1;
       try {
-        const [core, runner, permission] = await loadBrowserRuntime();
+        const [core, , permission] = await loadBrowserRuntime();
         const urlError = core.browserUrlSafetyError(params.code);
         if (urlError) throw new Error(`[BROWSER_EXEC_URL] ${urlError}`);
-        permission.consumeBrowserExecAuthorization(params, toolCallId);
+        const authorization = permission.consumeBrowserExecAuthorization(params, toolCallId);
+        const executionSignal = AbortSignal.any([operationSignal, authorization.revocationSignal]);
+        executionSignal.throwIfAborted();
         const executable = await core.findBrowserUseExecutable(getAgentDir());
         if (!executable) throw new Error("[BROWSER_EXEC_UNAVAILABLE] Browser Harness 0.1.13 is required. Run /browser-use install.");
-        runtimeVersion ??= new core.BrowserHarnessVersionGate(runner.runBrowserUse);
-        await runtimeVersion.check(executable, { cwd: ctx.cwd, env: process.env, signal });
+        runtimeVersion ??= new core.BrowserHarnessVersionGate(runHelper);
+        await runtimeVersion.check(executable, { cwd: ctx.cwd, env: process.env, signal: executionSignal, assertCurrent: authorization.assertCurrent });
+        permission.assertBrowserExecAuthorization(authorization, params, toolCallId);
+        executionSignal.throwIfAborted();
         const currentWorkspace = await ensureWorkspace(ctx, executable.command, core.buildBrowserUseEnvironment, params.session);
         const expectedScreenshotPath = ownedScreenshotPath(currentWorkspace, toolCallId);
         const startedAtMs = Date.now();
@@ -345,22 +395,25 @@ export default function browserUseExtension(pi: ExtensionAPI): void {
           ctx.ui.notify("正在通过 Browser Use 连接 Chrome。如 Chrome 显示“Allow remote debugging?”，请在 Chrome 中确认；未出现提示时请告知模型，不要改用另一套浏览器。", "info");
         }
         onUpdate?.({ content: [{ type: "text", text: `Running: ${stepLabel(params.code)}` }], details: {} });
+        permission.assertBrowserExecAuthorization(authorization, params, toolCallId);
+        executionSignal.throwIfAborted();
         let result;
         try {
-          result = await runner.runBrowserUse({
+          result = await runHelper({
             command: executable.command,
             code: withOwnedScreenshotDefault(params.code, expectedScreenshotPath, params.timeoutMs ?? DEFAULT_TIMEOUT_MS, join(currentWorkspace, "tabs.json")),
             cwd: currentWorkspace,
             env: core.buildBrowserUseEnvironment(process.env, currentWorkspace, params.session),
             timeoutMs: params.timeoutMs ?? DEFAULT_TIMEOUT_MS,
             maxBytesPerStream: MAX_OUTPUT_BYTES,
-            signal,
+            signal: executionSignal,
           });
         } catch (error) {
           throw new Error(formatFailure("LAUNCH", error instanceof Error ? error.message : String(error)));
         }
         const details: BrowserExecDetails = {
-          ok: result.exitCode === 0 && !result.killed && !result.timedOut && !result.aborted,
+          ok: result.cleanup === "complete" && result.exitCode === 0 && !result.killed && !result.timedOut && !result.aborted,
+          cleanup: result.cleanup, exitObserved: result.exitObserved,
           exitCode: result.exitCode,
           killed: result.killed,
           timedOut: result.timedOut,
@@ -371,8 +424,8 @@ export default function browserUseExtension(pi: ExtensionAPI): void {
           stderrBytes: result.stderrBytes,
           workspace: currentWorkspace,
         };
-        let screenshot = await core.loadRecentScreenshot(expectedScreenshotPath, [currentWorkspace], startedAtMs);
-        if (!screenshot) {
+        let screenshot = result.cleanup === "complete" ? await core.loadRecentScreenshot(expectedScreenshotPath, [currentWorkspace], startedAtMs) : undefined;
+        if (!screenshot && result.cleanup === "complete") {
           const candidates = core.extractScreenshotCandidates(result.stdout);
           for (let index = candidates.length - 1; index >= 0; index--) {
             screenshot = await core.loadRecentScreenshot(candidates[index]!, [currentWorkspace], startedAtMs);
@@ -385,12 +438,8 @@ export default function browserUseExtension(pi: ExtensionAPI): void {
         return { content, details, isError: !details.ok };
       } finally {
         activeRuns -= 1;
-        if (activeRuns === 0 && cleanupPending) {
-          cleanupPending = false;
-          await cleanupOwnedWorkspaces();
-        } else if (activeRuns === 0 && tabCleanupPending) {
-          await cleanupOwnedWorkspaces(false, ctx);
-        }
+        try { if (tabCleanupPending && !paused && !closed && !cleanupFailure) await cleanupOwnedWorkspaces(false, ctx); }
+        finally { endOperation(); }
       }
     },
     renderCall(args, theme) {
@@ -410,7 +459,7 @@ export default function browserUseExtension(pi: ExtensionAPI): void {
   });
 
   pi.on("agent_end", async (_event, ctx) => {
-    if (!releaseInProgress) await cleanupOwnedWorkspaces(false, ctx);
+    if (!releaseInProgress && !paused && !closed && !cleanupFailure) await cleanupOwnedWorkspaces(false, ctx);
   });
 
   pi.registerCommand("browser-use", {
@@ -422,23 +471,24 @@ export default function browserUseExtension(pi: ExtensionAPI): void {
         return;
       }
       if (action === "release") {
-        if (activeRuns > 0 || releaseInProgress || cleanupInProgress) {
+        if (operation || releaseInProgress || cleanupOperation) {
           ctx.ui.notify("Browser Use is busy; release it after the current run.", "warning");
           return;
         }
+        const operationSignal = beginOperation(ctx.signal);
         releaseInProgress = true;
         try {
           if (!await cleanupOwnedWorkspaces()) {
             ctx.ui.notify("任务临时标签未全部关闭，已保留连接和标签归属记录；连接仍可用时请重试 /browser-use release。", "warning");
             return;
           }
-          const [core, runner] = await loadBrowserRuntime();
+          const [core] = await loadBrowserRuntime();
           const executable = await core.findBrowserUseExecutable(getAgentDir());
           if (!executable) {
             ctx.ui.notify("Browser Harness CLI not found.", "warning");
             return;
           }
-          const result = await runner.runBrowserUse({
+          const result = await runHelper({
             command: executable.command,
             args: ["--reload"],
             code: "",
@@ -446,16 +496,18 @@ export default function browserUseExtension(pi: ExtensionAPI): void {
             env: core.buildBrowserUseEnvironment(process.env, ctx.cwd),
             timeoutMs: 30_000,
             maxBytesPerStream: 8 * 1024,
+            signal: operationSignal,
           });
-          if (result.exitCode === 0 && !result.timedOut && !result.aborted) {
+          if (result.cleanup === "complete" && result.exitCode === 0 && !result.timedOut && !result.aborted) {
             connectionNoticeShown = false;
             ctx.ui.notify("Browser control released.", "info");
           }
-          else ctx.ui.notify("Could not release browser control.", "warning");
+          else ctx.ui.notify(cleanupFailure ?? "Could not release browser control.", "warning");
         } catch {
-          ctx.ui.notify("Could not release browser control.", "warning");
+          ctx.ui.notify(cleanupFailure ?? "Could not release browser control.", "warning");
         } finally {
           releaseInProgress = false;
+          endOperation();
         }
         return;
       }
@@ -463,26 +515,21 @@ export default function browserUseExtension(pi: ExtensionAPI): void {
         ctx.ui.notify("Usage: /browser-use [status|install|release]", "warning");
         return;
       }
-      const [core, runner] = await loadBrowserRuntime();
-      const executable = await core.findBrowserUseExecutable(getAgentDir());
-      if (!executable) { ctx.ui.notify("Browser Harness CLI not found. Run /browser-use install.", "warning"); return; }
-      runtimeVersion ??= new core.BrowserHarnessVersionGate(runner.runBrowserUse);
+      const operationSignal = beginOperation(ctx.signal);
       try {
-        const version = await runtimeVersion.check(executable, { cwd: ctx.cwd, env: process.env, signal: ctx.signal });
+        const [core] = await loadBrowserRuntime();
+        const executable = await core.findBrowserUseExecutable(getAgentDir());
+        if (!executable) { ctx.ui.notify("Browser Harness CLI not found. Run /browser-use install.", "warning"); return; }
+        runtimeVersion ??= new core.BrowserHarnessVersionGate(runHelper);
+        const version = await runtimeVersion.check(executable, { cwd: ctx.cwd, env: process.env, signal: operationSignal });
         ctx.ui.notify(`Browser runtime ${version}: ${executable.command}\nChrome connection and approval have not been checked.`, "info");
       } catch (error) { ctx.ui.notify(bounded(error instanceof Error ? error.message : String(error)), "warning"); }
+      finally { endOperation(); }
     },
   });
 
-  pi.on("session_shutdown", async () => {
-    workspaceGeneration += 1;
-    connectionNoticeShown = false;
-    runtimeVersion?.clear();
-    runtimeVersion = undefined;
-    if (activeRuns > 0) {
-      cleanupPending = true;
-      return;
-    }
-    await cleanupOwnedWorkspaces();
+  pi.on("session_shutdown", () => {
+    closed = true; revokeExecution();
+    return drainExecution();
   });
 }

@@ -9,6 +9,10 @@ type RunResolve = (result: BrowserUseRunResult) => void;
 type RunReject = (error: Error) => void;
 type TerminationReason = "timeout" | "abort";
 
+function signalChild(child: ChildProcess, signal: NodeJS.Signals): boolean {
+  try { return child.kill(signal); } catch { return false; }
+}
+
 function signalOwnedProcessTree(child: ChildProcess, signal: NodeJS.Signals): boolean {
   const pid = child.pid;
   if (!pid) return false;
@@ -16,11 +20,14 @@ function signalOwnedProcessTree(child: ChildProcess, signal: NodeJS.Signals): bo
     try {
       process.kill(-pid, signal);
       return true;
-    } catch {
-      // Fall back to the direct child if the process group has already exited.
+    } catch (error) {
+      // A missing group is already gone. Stopping only the root cannot prove group cleanup.
+      if ((error as NodeJS.ErrnoException).code === "ESRCH") return true;
+      signalChild(child, signal);
+      return false;
     }
   }
-  return child.kill(signal);
+  return signalChild(child, signal);
 }
 
 export interface BrowserUseRunOptions {
@@ -35,6 +42,9 @@ export interface BrowserUseRunOptions {
 }
 
 export interface BrowserUseRunResult {
+  /** Snapshot at return. Normal exit covers the helper, not a persistent browser/daemon. */
+  cleanup: "complete" | "unconfirmed";
+  exitObserved: boolean;
   stdout: string;
   stderr: string;
   exitCode: number;
@@ -59,6 +69,7 @@ class BoundedStream {
 
   append(value: Buffer | string): void {
     const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+    if (chunk.byteLength === 0) return;
     this.totalBytes += chunk.byteLength;
     const remaining = this.#maxBytes - this.#retainedBytes;
     if (remaining <= 0) return;
@@ -108,6 +119,8 @@ class BrowserUseProcessRun {
   #terminationRequested = false;
   #abortAttached = false;
   #killerDone = false;
+  #killerClosed = false;
+  #treeTerminationConfirmed = false;
 
   readonly #onAbort = this.onAbort.bind(this);
   readonly #onStdout = this.onStdout.bind(this);
@@ -149,13 +162,17 @@ class BrowserUseProcessRun {
     }
     this.#killed = signalOwnedProcessTree(child, "SIGTERM");
     this.#forceKillTimeout = setTimeout(handleForceKill, FORCE_KILL_DELAY_MS, this);
-    this.#forceKillTimeout.unref();
+    // Root close can remove the last process handle before group cleanup is proven.
+    // Keep the bounded cleanup timer referenced until the returned promise settles.
   }
 
   forceKill(): void {
     this.#forceKillTimeout = undefined;
     const child = this.#child;
-    if (child && !this.#settled) this.#killed = signalOwnedProcessTree(child, "SIGKILL") || this.#killed;
+    if (child && !this.#settled) {
+      this.#treeTerminationConfirmed = signalOwnedProcessTree(child, "SIGKILL");
+      this.#killed = this.#treeTerminationConfirmed || this.#killed;
+    }
     if (this.#closeCode !== undefined) this.finishTermination();
     else this.armTerminationSettle();
   }
@@ -165,11 +182,11 @@ class BrowserUseProcessRun {
     const killer = this.#killer;
     if (killer && !this.#killerDone) {
       this.#stderr?.append("\n[tree termination timed out]");
-      killer.kill("SIGKILL");
+      signalChild(killer, "SIGKILL");
     }
     const child = this.#child;
     if (child && this.#closeCode === undefined) {
-      const directKilled = child.kill("SIGKILL");
+      const directKilled = signalChild(child, "SIGKILL");
       if (process.platform !== "win32") this.#killed = directKilled || this.#killed;
     }
     this.settle(this.#closeCode ?? 1);
@@ -199,19 +216,23 @@ class BrowserUseProcessRun {
   private startWindowsTreeKill(child: ChildProcess): void {
     const pid = child.pid;
     if (!pid) {
-      child.kill("SIGKILL");
+      signalChild(child, "SIGKILL");
       this.armTerminationSettle();
       return;
     }
     const taskkill = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe");
-    const killer = spawn(taskkill, ["/PID", String(pid), "/T", "/F"], {
-      shell: false,
-      windowsHide: true,
-      stdio: "ignore",
-    });
-    this.#killer = killer;
-    killer.once("error", this.#onKillerError);
-    killer.once("close", this.#onKillerClose);
+    try {
+      const killer = spawn(taskkill, ["/PID", String(pid), "/T", "/F"], {
+        shell: false,
+        windowsHide: true,
+        stdio: "ignore",
+      });
+      this.#killer = killer;
+      killer.on("error", this.#onKillerError);
+      killer.once("close", this.#onKillerClose);
+    } catch (error) {
+      this.onKillerError(error instanceof Error ? error : new Error(String(error)));
+    }
     this.armTerminationSettle();
   }
 
@@ -233,7 +254,7 @@ class BrowserUseProcessRun {
 
   private onChildError(error: Error): void {
     if (this.#settled) return;
-    if (this.#spawnCompleted) {
+    if (this.#spawnCompleted || this.#child?.pid !== undefined) {
       this.#stderr?.append(`\n[process error] ${error.message}`);
       return;
     }
@@ -244,8 +265,8 @@ class BrowserUseProcessRun {
   }
 
   private onClose(code: number | null): void {
-    if (this.#settled) return;
     this.#closeCode = code;
+    if (this.#settled) { this.dispose(); return; }
     if (!this.#terminationRequested) {
       this.settle(code ?? 1);
       return;
@@ -262,18 +283,20 @@ class BrowserUseProcessRun {
     this.#killerDone = true;
     this.#stderr?.append(`\n[tree termination error] ${error.message}`);
     const child = this.#child;
-    if (child && this.#closeCode === undefined) child.kill("SIGKILL");
+    if (child && this.#closeCode === undefined) signalChild(child, "SIGKILL");
     if (this.#closeCode !== undefined) this.finishTermination();
   }
 
   private onKillerClose(code: number | null): void {
-    if (this.#settled || this.#killerDone) return;
+    this.#killerClosed = true;
+    if (this.#settled) { this.dispose(); return; }
+    const failed = this.#killerDone;
     this.#killerDone = true;
-    if (code === 0) this.#killed = true;
+    if (code === 0 && !failed) { this.#killed = true; this.#treeTerminationConfirmed = true; }
     else {
       this.#stderr?.append(`\n[tree termination exit ${code ?? 1}]`);
       const child = this.#child;
-      if (child && this.#closeCode === undefined) child.kill("SIGKILL");
+      if (child && this.#closeCode === undefined) signalChild(child, "SIGKILL");
     }
     if (this.#closeCode !== undefined) this.finishTermination();
   }
@@ -284,6 +307,9 @@ class BrowserUseProcessRun {
     const stdout = this.#stdout!;
     const stderr = this.#stderr!;
     const result: BrowserUseRunResult = {
+      cleanup: this.#closeCode !== undefined && (!this.#terminationRequested || this.#treeTerminationConfirmed)
+        && (!this.#killer || this.#killerClosed) ? "complete" : "unconfirmed",
+      exitObserved: this.#closeCode !== undefined,
       stdout: stdout.text(),
       stderr: stderr.text(),
       exitCode: code,
@@ -301,9 +327,8 @@ class BrowserUseProcessRun {
   }
 
   private armTerminationSettle(): void {
-    if (this.#terminationSettleTimeout) return;
+    if (this.#settled || this.#terminationSettleTimeout) return;
     this.#terminationSettleTimeout = setTimeout(handleTerminationSettle, TERMINATION_SETTLE_MS, this);
-    this.#terminationSettleTimeout.unref();
   }
 
   private clearDeadline(): void {
@@ -330,21 +355,24 @@ class BrowserUseProcessRun {
     }
     this.detachAbort();
     const killer = this.#killer;
-    if (killer) {
+    if (killer && this.#killerClosed) {
       killer.removeListener("error", this.#onKillerError);
       killer.removeListener("close", this.#onKillerClose);
+      this.#killer = undefined;
     }
     const child = this.#child;
     if (child) {
       child.stdout.removeListener("data", this.#onStdout);
       child.stderr.removeListener("data", this.#onStderr);
-      child.stdin.removeListener("error", IGNORE_ERROR);
       child.removeListener("spawn", this.#onSpawn);
-      child.removeListener("error", this.#onChildError);
-      child.removeListener("close", this.#onClose);
+      // Logical completion is not physical exit. Retain only exact child/error/close ownership.
+      if (this.#closeCode !== undefined) {
+        child.stdin.removeListener("error", IGNORE_ERROR);
+        child.removeListener("error", this.#onChildError);
+        child.removeListener("close", this.#onClose);
+        this.#child = undefined;
+      }
     }
-    this.#killer = undefined;
-    this.#child = undefined;
     this.#signal = undefined;
     this.#stdout = undefined;
     this.#stderr = undefined;
@@ -356,6 +384,7 @@ class BrowserUseProcessRun {
 export function runBrowserUse(options: BrowserUseRunOptions): Promise<BrowserUseRunResult> {
   if (options.signal?.aborted) {
     return Promise.resolve({
+      cleanup: "complete", exitObserved: false,
       stdout: "", stderr: "", exitCode: 1, killed: false, timedOut: false, aborted: true,
       stdoutTruncated: false, stderrTruncated: false, stdoutBytes: 0, stderrBytes: 0,
     });

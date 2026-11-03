@@ -1,2 +1,2 @@
-// Native worker executes as plain ESM in source and packaged deliveries.
-export const LINUX_MOUNT_ID_PATTERN = /^mnt_id:[ \t]+(\d{1,20})$/m;
+// Compatibility entry point; the platform file backend belongs to the native host.
+export * from "@super-pi/coding-agent/internal/files/native-file-regex";

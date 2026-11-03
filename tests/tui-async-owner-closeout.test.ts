@@ -1367,6 +1367,7 @@ test("extension tree navigation is inert after the interactive lifecycle closes"
 	let statusCalls = 0;
 	let flushCalls = 0;
 	const session = {
+		settingsManager: { getPermissionMode: () => undefined },
 		bindExtensions: async (value: unknown): Promise<void> => { bindings = value; },
 		navigateTree: (): Promise<{ cancelled: boolean; editorText?: string }> => new Promise((resolve) => {
 			settleNavigation = resolve;
@@ -1461,6 +1462,7 @@ test("final stop disables extension UI and error callbacks before shutdown hooks
 		resourceLoader: { getThemes: () => ({ themes: [] }) },
 		extensionRunner,
 		settingsManager: {
+			getPermissionMode: () => undefined,
 			getFullscreenExitOutput: () => "transcript",
 			getShowTerminalProgress: () => false,
 		},
@@ -1709,7 +1711,7 @@ test("runtime disposal rejects an in-flight session replacement before apply", a
 	let settleRuntime: ((result: any) => void) | undefined;
 	let oldDisposeCalls = 0;
 	let replacementDisposeCalls = 0;
-	const extensionRunner = { hasHandlers: () => false };
+	const extensionRunner = { hasHandlers: () => false, disposeExecutionBoundary: async () => {}, disposeProviderOwners: async () => {} };
 	const oldSession = {
 		extensionRunner,
 		sessionFile: undefined,

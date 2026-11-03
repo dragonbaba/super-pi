@@ -8,10 +8,12 @@ import { createRequire } from "node:module";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Provider } from "@super-pi/ai";
+import { createOpenAICodexTransportOwner } from "@super-pi/ai/api/openai-codex-responses";
 import type { KeyId } from "@super-pi/tui";
 import { CONFIG_DIR_NAME, getAgentDir, isBunBinary } from "../../config.ts";
 import { resolvePath } from "../../utils/paths.ts";
 import { createEventBus, type EventBus } from "../event-bus.ts";
+import { SessionExecutionBoundary } from "../execution-boundary.ts";
 import type { ExecOptions } from "../exec.ts";
 import { execCommand } from "../exec.ts";
 import { readPiManifest } from "../pi-manifest.ts";
@@ -25,6 +27,7 @@ import type {
 	ExtensionFactory,
 	ExtensionObserverOptions,
 	ExtensionRuntime,
+	CompactionStrategy,
 	LoadExtensionsResult,
 	MarkdownTransformer,
 	MessageRenderer,
@@ -85,6 +88,9 @@ function getAliases(): Record<string, string> {
 	);
 
 	_aliases = {
+		"@super-pi/coding-agent/internal/session-lease": path.resolve(__dirname, "../session-lease"),
+		"@super-pi/coding-agent/internal/files": path.resolve(__dirname, "../files"),
+		"@super-pi/coding-agent/internal/tasks": path.resolve(__dirname, "../tasks"),
 		"@super-pi/ai/api/openai-codex-responses": resolveWorkspaceOrImport(
 			"ai/dist/api/openai-codex-responses.js", "@super-pi/ai/api/openai-codex-responses",
 		),
@@ -150,6 +156,8 @@ function useExtensionCacheCwd(cwd: string): ExtensionCacheToken {
 	return { cwd: resolvedCwd, generation: extensionCacheGeneration };
 }
 
+function ignoreRuntimeDisposalRejection(): void {} // Awaited session shutdown/reload reports cleanup failures.
+
 /**
  * Create a runtime with throwing stubs for action methods.
  * Runner.bindCore() replaces these with real implementations.
@@ -166,7 +174,41 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		}
 	};
 
+	const codexOwner = createOpenAICodexTransportOwner();
 	const runtime: ExtensionRuntime = {
+		compactionStrategies: new Map(),
+		executionBoundary: new SessionExecutionBoundary(),
+		codexRemoteCompactionEnabled: false,
+		openAIResponsesDispatch: undefined,
+		codexDispatch: { owner: codexOwner, assertCurrent() { assertActive(); runtime.executionBoundary.assertCurrent(); } },
+		openAIResponsesOwner: undefined,
+		providerOwnerDisposal: undefined,
+		disposeProviderOwners: () => {
+			if (runtime.providerOwnerDisposal) return runtime.providerOwnerDisposal;
+			runtime.openAIResponsesDispatch = undefined;
+			const owners = runtime.openAIResponsesOwner ? [codexOwner, runtime.openAIResponsesOwner] : [codexOwner];
+			let revokeError: unknown;
+			let revokeFailed = false;
+			let deadline: ReturnType<typeof setTimeout> | undefined;
+			const cleanup = Promise.resolve().then(async () => {
+				const pending: Promise<void>[] = [];
+				for (const owner of owners) {
+					try { pending.push(Promise.resolve(owner.dispose())); } catch (error) { pending.push(Promise.reject(error)); }
+				}
+				const results = await Promise.allSettled(pending);
+				if (revokeFailed) throw revokeError;
+				for (const result of results) if (result.status === "rejected") throw result.reason;
+			});
+			const timeout = new Promise<never>((_resolve, reject) => {
+				deadline = setTimeout(() => reject(new Error("Provider owner cleanup timed out; shutdown remains unconfirmed")), 10_000);
+			});
+			runtime.providerOwnerDisposal = Promise.race([cleanup, timeout]).finally(() => clearTimeout(deadline));
+			// Publish the join operation before synchronous abort observers can reenter.
+			for (const owner of owners) {
+				try { owner.revoke(); } catch (error) { if (!revokeFailed) { revokeFailed = true; revokeError = error; } }
+			}
+			return runtime.providerOwnerDisposal;
+		},
 		sendMessage: notInitialized,
 		sendUserMessage: notInitialized,
 		appendEntry: notInitialized,
@@ -176,6 +218,7 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		getActiveTools: notInitialized,
 		getAllTools: notInitialized,
 		buildProviderRequestPayload: () => Promise.reject(new Error("Extension runtime not initialized")),
+		withSupplementalSummary: () => Promise.reject(new Error("Extension runtime not initialized")),
 		compactProviderRequestPayload: () => Promise.reject(new Error("Extension runtime not initialized")),
 		setActiveTools: notInitialized,
 		// registerTool() is valid during extension load; refresh is only needed post-bind.
@@ -188,8 +231,18 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		pendingProviderRegistrations: [],
 		pendingNativeProviderRegistrations: [],
 		assertActive,
-		invalidate: (message) => {
+		invalidate: (message, ownersCleanupStarted = false) => {
 			if (state.staleMessage) return;
+			runtime.nativePermissions?.dispose();
+			runtime.compactionStrategies.clear();
+			runtime.codexRemoteCompactionEnabled = false;
+			runtime.openAIResponsesDispatch = undefined;
+			if (!ownersCleanupStarted) {
+				void runtime.disposeProviderOwners().catch(ignoreRuntimeDisposalRejection);
+				void runtime.executionBoundary.dispose().catch(ignoreRuntimeDisposalRejection);
+				void runtime.nativeTasks?.dispose().catch(ignoreRuntimeDisposalRejection);
+				void runtime.nativeFiles?.dispose().catch(ignoreRuntimeDisposalRejection);
+			}
 			state.staleMessage =
 				message ??
 				"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().";
@@ -231,6 +284,7 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		},
 	};
 
+	runtime.executionBoundary.register("provider:openai-codex", codexOwner);
 	return runtime;
 }
 
@@ -288,6 +342,20 @@ function createExtensionAPI(
 
 	const api = {
 		// Registration methods - write to extension
+		registerCompactionStrategy(strategy: CompactionStrategy): void {
+			assertActive();
+			if (state !== "loading") throw new Error("Compaction strategies must be registered during extension loading");
+			if (!strategy || typeof strategy.id !== "string" || !/^[a-z0-9][a-z0-9._-]{0,79}$/.test(strategy.id) || typeof strategy.prepare !== "function") {
+				throw new TypeError("Invalid compaction strategy");
+			}
+			if (runtime.compactionStrategies.has(strategy.id)) throw new Error(`Duplicate compaction strategy: ${strategy.id}`);
+			if (runtime.compactionStrategies.size >= 16) throw new Error("At most 16 compaction strategies may be registered");
+			const registered = { id: strategy.id, prepare: strategy.prepare, extensionPath: extension.path };
+			runtime.compactionStrategies.set(registered.id, registered);
+			loadingUnsubscribers.push(() => {
+				if (runtime.compactionStrategies.get(registered.id) === registered) runtime.compactionStrategies.delete(registered.id);
+			});
+		},
 		on(event: string, handler: HandlerFn, options?: { phase: "image-processing" }): void {
 			assertActive();
 			if (event === "input" && options?.phase === "image-processing") event = "input:image-processing";
@@ -446,9 +514,57 @@ function createExtensionAPI(
 			return runtime.getAllTools();
 		},
 
+		getToolCatalog() {
+			assertActive();
+			return runtime.getToolCatalog?.() ?? { tools: runtime.getAllTools(), activeTools: runtime.getActiveTools() };
+		},
+
 		buildProviderRequestPayload(input) {
 			assertActive();
 			return runtime.buildProviderRequestPayload(input);
+		},
+		withSupplementalSummary(signal, run) {
+			assertActive();
+			if (!runtime.withSupplementalSummary) throw new Error("Supplemental summary host is unavailable");
+			return runtime.withSupplementalSummary(signal, run);
+		},
+
+		setCodexRemoteCompactionEnabled(enabled: boolean): void {
+			assertActive();
+			if (state === "loading") throw new Error("Cannot set Codex remote compaction intent during extension loading; use session_start");
+			if (typeof enabled !== "boolean") throw new TypeError("Codex remote compaction intent must be a boolean");
+			runtime.codexRemoteCompactionEnabled = enabled;
+		},
+
+		resetCodexTransport(): Promise<void> {
+			assertActive();
+			if (state === "loading") throw new Error("Cannot reset Codex transport during extension loading");
+			runtime.codexDispatch.assertCurrent();
+			runtime.codexDispatch.owner.revoke();
+			return runtime.codexDispatch.owner.drain();
+		},
+
+		setOpenAIResponsesStream(streamSimple, owner): void {
+			assertActive();
+			if (state === "loading") throw new Error("Cannot install Responses dispatch during extension loading; use session_start");
+			if (streamSimple !== undefined && typeof streamSimple !== "function") throw new TypeError("Responses dispatch must be a function");
+			if (runtime.providerOwnerDisposal) throw new Error("Responses owner is disposed");
+			if (owner !== undefined && (!owner || typeof owner.revoke !== "function" || typeof owner.drain !== "function" || typeof owner.dispose !== "function")) throw new TypeError("Invalid Responses owner");
+			if (runtime.openAIResponsesOwner && (owner !== undefined || streamSimple !== undefined) && runtime.openAIResponsesOwner !== owner) throw new Error("Responses owner cannot be replaced or omitted");
+			if (owner && !runtime.openAIResponsesOwner) {
+				runtime.executionBoundary.register("provider:openai-responses", owner);
+				runtime.openAIResponsesOwner = owner;
+			}
+			if (streamSimple === undefined) { runtime.openAIResponsesDispatch = undefined; return; }
+			const dispatch = {
+				streamSimple,
+				assertCurrent(): void {
+					assertActive();
+					runtime.executionBoundary.assertCurrent();
+					if (runtime.openAIResponsesDispatch !== dispatch) throw new Error("Responses dispatch belongs to a stale runtime installation");
+				},
+			};
+			runtime.openAIResponsesDispatch = dispatch;
 		},
 
 		compactProviderRequestPayload(input) {
@@ -494,6 +610,29 @@ function createExtensionAPI(
 		unregisterProvider(name: string) {
 			assertActive();
 			applyRuntimeChange({ type: "unregisterProvider", name });
+		},
+
+		assertExecutionCurrent() {
+			assertActive();
+			runtime.executionBoundary.assertCurrent();
+		},
+		transitionExecution(publish) {
+			assertActive();
+			if (!runtime.transitionExecution) throw new Error("Native execution transitions are unavailable in this host.");
+			return runtime.transitionExecution(publish);
+		},
+		waitForExecutionIdle() {
+			assertActive();
+			if (!runtime.waitForExecutionIdle) throw new Error("Native execution completion is unavailable in this host.");
+			return runtime.waitForExecutionIdle();
+		},
+
+		registerExecutionOwner(name, owner) {
+			assertActive();
+			if (typeof name !== "string" || !name || name.length > 80) throw new Error("Invalid execution owner name");
+			const unregister = runtime.executionBoundary.register(`extension:${extension.path}:${name}`, owner);
+			if (state === "loading") loadingUnsubscribers.push(unregister);
+			return unregister;
 		},
 
 		events: {

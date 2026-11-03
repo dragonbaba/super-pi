@@ -14,7 +14,8 @@ import { detectSupportedImageMimeTypeFromFile } from "../../utils/mime.ts";
 import { formatPathRelativeToCwdOrAbsolute } from "../../utils/paths.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { resolveReadPathAsync, resolveToCwd } from "./path-utils.ts";
-import { ReadCursorError, readSmallFileIfStable, readWindow, type ReadWindowResult } from "./read-window.ts";
+import { consumeToolPath } from "../files/tool-path-authorization.ts";
+import { ReadCursorError, readSmallFileIfStable, readWindow, formatReadWindowText, type ReadWindowResult } from "./read-window.ts";
 import { READ_EVIDENCE_CAPTURE, MUTATION_READ_SOURCE, attachReadIdentity, createValidatedReadIdentity, type ValidatedReadIdentity } from "./read-window.ts";
 import { getTextOutput, renderToolPath, replaceTabs, str } from "./render-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
@@ -233,11 +234,13 @@ export function createReadToolDefinition(
 		parameters: readSchema,
 		async execute(
 			_toolCallId,
-			{ path, offset, limit, cursor }: ReadToolInput,
+			input: ReadToolInput,
 			signal?: AbortSignal,
 			_onUpdate?,
 			ctx?,
 		) {
+			const { path, offset, limit, cursor } = input;
+			const authorizedPath = consumeToolPath(input, "read", _toolCallId);
 			const evidenceIdentity = ops === defaultReadOperations ? createValidatedReadIdentity(true) : undefined;
 			const ledgerCapture = definition[READ_EVIDENCE_CAPTURE]?.() === true;
 			let resolvedLocalPath: string | undefined;
@@ -246,7 +249,7 @@ export function createReadToolDefinition(
 			if (cursor !== undefined && ops !== defaultReadOperations) throw new ReadCursorError("invalid-cursor");
 			if (ops === defaultReadOperations) {
 				if (signal?.aborted) throw new Error("Operation aborted");
-				const absolutePath = await resolveReadPathAsync(path, cwd);
+				const absolutePath = authorizedPath ?? await resolveReadPathAsync(path, cwd);
 				resolvedLocalPath = absolutePath;
 				if (cursor === undefined) {
 					await ops.access(absolutePath);
@@ -255,10 +258,7 @@ export function createReadToolDefinition(
 				}
 				if (cursor !== undefined || (!localMime && localTextBuffer === undefined)) {
 					const window = await readWindow(absolutePath, cwd, ctx?.sessionManager?.getSessionId() || instanceScope, { offset, limit, cursor }, signal, undefined, evidenceIdentity);
-					let output = window.text;
-					if (window.startsPartial) output = `[Continuation starts partway through line ${window.startLine}; this is a partial-line suffix.]\n${output}`;
-					if (window.binary) output += "\n\n[Binary NUL detected in this byte range; displayed as UTF-8 with replacement.]";
-					if (window.cursor) output += `\n\n[${window.partial ? `Line ${window.nextLine} is partial` : `Read through line ${window.nextLine - 1}`}; more file content remains. Continue with the same path and cursor=${window.cursor}.]`;
+					const output = formatReadWindowText(window.text, window);
 					const { text: _text, ...details } = window;
 					return attachMutationReadSource(attachReadIdentity({ content: [{ type: "text" as const, text: output }], details: { window: details } }, ledgerCapture ? evidenceIdentity : undefined), evidenceIdentity);
 				}
@@ -278,7 +278,7 @@ export function createReadToolDefinition(
 
 					(async () => {
 						try {
-							const absolutePath = resolvedLocalPath ?? await resolveReadPathAsync(path, cwd);
+							const absolutePath = resolvedLocalPath ?? authorizedPath ?? await resolveReadPathAsync(path, cwd);
 							if (aborted) return;
 							// Check if file exists and is readable.
 							if (ops !== defaultReadOperations) await ops.access(absolutePath);

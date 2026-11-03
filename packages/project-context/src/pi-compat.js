@@ -54,7 +54,7 @@ if (typeof runtimeVersion !== "string" || runtimeVersion.trim() === "") {
 
 export const CONFIG_DIR_NAME = configDirName;
 export const SP_RUNTIME_VERSION = runtimeVersion;
-export const SUPPORTED_SP_LINE = "0.84.x";
+export const SUPPORTED_SP_LINE = "1.x or 0.84.x";
 
 export function checkRuntimeCompatibility(version) {
   if (typeof version !== "string" || version.trim() === "") {

@@ -4,6 +4,9 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { EventEmitter, getEventListeners } from "node:events";
+import { Session as InspectorSession } from "node:inspector/promises";
+import { setImmediate as tick } from "node:timers/promises";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { Type } from "typebox";
@@ -14,14 +17,18 @@ import { createJiti } from "jiti";
 import { inspectBashPermissionScope } from "../packages/extensions/resource-lifecycle-guard/permission-bash.ts";
 import { inspectBashResourceLifecycle } from "../packages/extensions/resource-lifecycle-guard/core.ts";
 import { validateToolArguments } from "../packages/ai/src/utils/validation.ts";
+import { createEventBus } from "../packages/coding-agent/src/core/event-bus.ts";
+import { SessionExecutionBoundary } from "../packages/coding-agent/src/core/execution-boundary.ts";
 import mutationExtension from "../packages/extensions/mutation-guard-write/index.ts";
 import browserExtension, { browserResultText, formatFailure, withOwnedScreenshotDefault } from "../packages/extensions/browser-use/index.ts";
 import { codemodeFailureReason } from "../packages/coding-agent/src/core/codemode-display.ts";
 import { BrowserHarnessVersionGate, browserUrlSafetyError, buildBrowserUseEnvironment, findBrowserUseExecutable } from "../packages/extensions/browser-use/core.ts";
+import { runBrowserUse } from "../packages/extensions/browser-use/runner.ts";
 const { failureRecoveryHint } = await createJiti(import.meta.url).import<any>("../packages/extensions/tool-loop-guardrails/core.ts");
 const { default: toolLoopGuardrails } = await createJiti(import.meta.url).import<any>("../packages/extensions/tool-loop-guardrails/index.ts");
 const definitions = new Map<string, any>();
-const pi: any = { on() {}, registerCommand() {}, registerTool(tool: any) { definitions.set(tool.name, tool); } };
+const pi: any = { events: createEventBus(), on() {}, registerCommand() {}, registerTool(tool: any) { definitions.set(tool.name, tool); } };
+test.after(() => pi.events.clear());
 mutationExtension(pi); browserExtension(pi);
 toolLoopGuardrails(pi);
 
@@ -131,15 +138,16 @@ test("browser version gate rejects old or unverifiable runtimes and reuses only 
  const root = mkdtempSync(join(tmpdir(), "pi-browser-version-")), command = join(root, "runtime");
  t.after(() => rmSync(root, { recursive: true, force: true }));
  writeFileSync(command, "fixture");
- let version = "0.1.8", probes = 0, timedOut = false;
+ let version = "0.1.8", probes = 0, timedOut = false, cleanup: "complete" | "unconfirmed" = "complete";
  const gate = new BrowserHarnessVersionGate(async options => {
   probes++; assert.deepEqual(options.args, ["--version"]); assert.equal(options.code, "");
   assert.equal(options.env.UNRELATED_SECRET, undefined); assert.equal(options.env.BROWSER_USE_API_KEY, undefined);
   assert.equal(options.timeoutMs, 5000); assert.equal(options.maxBytesPerStream, 1024);
-  return { stdout: version, stderr: "", exitCode: 0, killed: false, timedOut, aborted: false,
+  return { cleanup, exitObserved: true, stdout: version, stderr: "", exitCode: 0, killed: false, timedOut, aborted: false,
    stdoutTruncated: false, stderrTruncated: false, stdoutBytes: version.length, stderrBytes: 0 };
  });
  const executable = { command, source: "configured" as const }, options = { cwd: root, env: { UNRELATED_SECRET: "fixture", BROWSER_USE_API_KEY: "fixture" } };
+ cleanup = "unconfirmed"; await assert.rejects(gate.check(executable, options), /CLEANUP_UNCONFIRMED/); cleanup = "complete";
  for (version of ["0.1.8", "0.1.12", "unknown", "0.1.13rc1"]) await assert.rejects(gate.check(executable, options), /BROWSER_EXEC_VERSION/);
  version = "0.1.13"; assert.equal(await gate.check(executable, options), version);
  const checked = probes;
@@ -183,7 +191,7 @@ test("browser approval failures retain actionable guidance inside the bounded mo
 
 test("browser partial stdout survives failure and final cause survives both Codemode projections", () => {
  const content = browserResultText({ stdout: "NASA fact printed before failed navigation", stderr: "Traceback (most recent call last):\nTimeoutError: earlier failure\nTraceback (most recent call last):\nStopIteration: final cause",
-  exitCode: 1, killed: false, timedOut: false, aborted: false, stdoutBytes: 48, stderrBytes: 153, stdoutTruncated: true, stderrTruncated: false });
+  cleanup: "complete", exitObserved: true, exitCode: 1, killed: false, timedOut: false, aborted: false, stdoutBytes: 48, stderrBytes: 153, stdoutTruncated: true, stderrTruncated: false });
  assert.equal(content.length, 2);
  assert.match(content[1]!.text, /Untrusted partial.*\nNASA fact.*\n… stdout truncated/);
  for (const audience of ["model", "display"] as const) assert.equal(codemodeFailureReason(content[0]!.text, audience), "StopIteration: final cause");
@@ -435,14 +443,119 @@ print(json.dumps({"queries": 3, "searchTabsCreated": 1, "searchNavigations": 1, 
  assert.match(description, /never close a user tab/);
 });
 
-test("browser extension preserves failure details and bounds cleanup without connecting or racing an active run", async () => {
+test("browser process cleanup distinguishes observed exit and retains only late-close observers", { timeout: 5000 }, async t => {
+ const file = "packages/extensions/browser-use/runner.ts", source = readFileSync(file, "utf8");
+ const tree = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
+ let audited = 0;
+ function audit(node: ts.Node): void {
+  if (ts.isMethodDeclaration(node) && ["onStdout", "onStderr", "append"].includes(node.name.getText(tree))) {
+   audited++;
+   function visit(child: ts.Node): void {
+    assert.equal(ts.isArrowFunction(child) || ts.isFunctionExpression(child) || ts.isObjectLiteralExpression(child) || ts.isArrayLiteralExpression(child), false);
+    if (ts.isNewExpression(child)) assert.equal(child.expression.getText(tree), "Error");
+    if (ts.isCallExpression(child)) assert.doesNotMatch(child.expression.getText(tree), /\.(then|catch|finally|map|filter|flatMap|bind)$/);
+    ts.forEachChild(child, visit);
+   }
+   visit(node.body!);
+  }
+  ts.forEachChild(node, audit);
+ }
+ audit(tree); assert.equal(audited, 3);
+ const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
+ const inspector = new InspectorSession(); inspector.connect(); t.after(() => inspector.disconnect());
+ const refs: WeakRef<object>[] = [];
+ async function exercise(kind: string) {
+  const children: any[] = [], timers = new Set<any>();
+  const abort = new AbortController(), module = { exports: {} as any };
+  const platform = kind.startsWith("posix") ? "linux" : "win32";
+  const spawn = () => {
+   if (kind === "killer-spawn-error" && children.length === 1) throw new Error("terminator unavailable");
+   const child = Object.assign(new EventEmitter(), { pid: 1000 + children.length, stdin: Object.assign(new EventEmitter(), { end() {} }), stdout: new EventEmitter(), stderr: new EventEmitter(), kill() { return true; } });
+   children.push(child); refs.push(new WeakRef(child)); return child;
+  };
+  runInNewContext(compiled, { module, exports: module.exports, Buffer,
+   require(name: string) { if (name === "node:child_process") return { spawn }; if (name === "node:path") return path; throw new Error(name); },
+   process: { platform, env: {}, kill() { if (kind === "posix-denied") throw Object.assign(new Error("denied"), { code: "EPERM" }); if (kind === "posix-gone") throw Object.assign(new Error("gone"), { code: "ESRCH" }); } },
+   setTimeout(fn: Function, delay: number, ...args: unknown[]) { const timer = { fn, delay, args, referenced: true, unref() { this.referenced = false; } }; timers.add(timer); return timer; },
+   clearTimeout(timer: unknown) { timers.delete(timer); },
+  });
+  const fire = (delay: number) => { let fired = false; for (const timer of [...timers]) if (timer.delay === delay) { fired = true; timers.delete(timer); timer.fn(...timer.args); } assert.equal(fired, true); };
+  const running = module.exports.runBrowserUse({ command: "fixture", code: "", cwd: ".", env: {}, timeoutMs: 100, maxBytesPerStream: 8192, signal: abort.signal });
+  const child = children[0]; refs.push(new WeakRef(abort.signal), new WeakRef(child.stdout.listeners("data")[0]));
+  if (kind === "spawn-error") {
+   child.pid = undefined;
+   const rejected = assert.rejects(running, /missing/); child.emit("error", new Error("missing")); await rejected;
+   assert.doesNotThrow(() => child.emit("error", new Error("late"))); child.emit("close", -1);
+  } else {
+   child.emit("spawn");
+   const chunk = Buffer.alloc(512, 97);
+   for (let index = 0; index < 1000; index++) { child.stdout.emit("data", chunk); child.stderr.emit("data", Buffer.alloc(0)); }
+   if (kind === "normal") child.emit("close", 0);
+   else {
+    abort.abort();
+    if (platform === "linux") {
+     child.emit("close", null);
+     assert.ok([...timers].some(timer => timer.delay === 2000 && timer.referenced), "group cleanup must keep the event loop alive after root close");
+     fire(2000);
+    }
+    else if (kind === "deadline") { assert.ok([...timers].some(timer => timer.delay === 5000 && timer.referenced)); fire(5000); }
+    else if (kind === "killer-error") { children[1].emit("error", new Error("denied")); child.emit("close", null); }
+    else if (kind === "killer-spawn-error") child.emit("close", null);
+    else if (kind === "root-first") { child.emit("close", null); children[1].emit("close", 0); }
+    else { children[1].emit("close", 0); child.emit("close", null); }
+   }
+   const result = await running; refs.push(new WeakRef(result));
+   assert.equal(result.cleanup, ["deadline", "killer-error", "killer-spawn-error", "posix-denied"].includes(kind) ? "unconfirmed" : "complete");
+   assert.equal(result.exitObserved, kind !== "deadline"); assert.equal(result.stdout.length, 8192); assert.equal(result.stdoutBytes, 512000);
+   assert.equal(child.stdout.listenerCount("data"), 0); assert.equal(getEventListeners(abort.signal, "abort").length, 0);
+   if (kind === "deadline" || kind === "killer-error") {
+    if (kind === "deadline") { assert.doesNotThrow(() => child.emit("error", new Error("late"))); child.emit("close", null); }
+    assert.doesNotThrow(() => children[1].emit("error", new Error("late terminator"))); children[1].emit("close", 1);
+    assert.equal(result.cleanup, "unconfirmed", "late physical exit must not rewrite the returned evidence");
+   }
+  }
+  assert.equal(timers.size, 0);
+  for (const process of children) { assert.equal(process.listenerCount("error"), 0); assert.equal(process.listenerCount("close"), 0); assert.equal(process.stdin.listenerCount("error"), 0); }
+ }
+ await inspector.post("HeapProfiler.startSampling", { samplingInterval: 4096, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true });
+ for (const kind of ["normal", "cancel", "root-first", "deadline", "killer-error", "killer-spawn-error", "spawn-error", "posix-gone", "posix-denied"]) await exercise(kind);
+ const { profile } = await inspector.post("HeapProfiler.stopSampling");
+ let sampled = 0; const nodes = [profile.head]; while (nodes.length) { const node = nodes.pop()!; sampled += node.selfSize; for (const child of node.children) nodes.push(child); }
+ assert.ok(sampled < 16 * 1024 * 1024);
+ for (let index = 0; index < 3; index++) { await tick(); await inspector.post("HeapProfiler.collectGarbage"); }
+ assert.equal(refs.filter(ref => ref.deref()).length, 0);
+ t.diagnostic(JSON.stringify({ scenarios: 9, outputUpdates: 8000, retainedBytesPerStream: 8192, references: refs.length, liveReferences: 0, pendingTimers: 0, sampledBytesIncludingVmFixtures: sampled }));
+});
+
+test("browser helper reports real normal exit and timeout cleanup without a browser connection", { timeout: 10000 }, async () => {
+ const normal = await runBrowserUse({ command: process.execPath, args: ["-e", "process.stdout.write('fixture')"], code: "", cwd: process.cwd(), env: process.env, timeoutMs: 3000, maxBytesPerStream: 1024 });
+ assert.equal(normal.stdout, "fixture"); assert.equal(normal.cleanup, "complete"); assert.equal(normal.exitObserved, true);
+ const timed = await runBrowserUse({ command: process.execPath, args: ["-e", "setInterval(()=>{},1000)"], code: "", cwd: process.cwd(), env: process.env, timeoutMs: 100, maxBytesPerStream: 1024 });
+ assert.equal(timed.timedOut, true); assert.equal(timed.cleanup, "complete"); assert.equal(timed.exitObserved, true);
+ const abort = new AbortController(); abort.abort();
+ const unstarted = await runBrowserUse({ command: "must-not-spawn", code: "", cwd: process.cwd(), env: {}, timeoutMs: 100, maxBytesPerStream: 1024, signal: abort.signal });
+ assert.equal(unstarted.cleanup, "complete"); assert.equal(unstarted.exitObserved, false); assert.equal(unstarted.aborted, true);
+});
+
+test("browser extension preserves failure details and bounds cleanup without connecting or racing an active run", { timeout: 5000 }, async t => {
+ const inspector = new InspectorSession(); inspector.connect(); t.after(() => inspector.disconnect());
+ const references: WeakRef<object>[] = [];
  const hooks = new Map<string, Function>(), tools = new Map<string, any>(), commands = new Map<string, any>(), removed: string[] = [], notices: string[] = [];
  const states = new Map<string, number>(), cleanedSessions: (string | undefined)[] = [];
- let cleanupCalls = 0, reloads = 0, failCleanup = true, resolveRun: ((value: any) => void) | undefined;
+ let cleanupCalls = 0, reloads = 0, helperCalls = 0, failCleanup = true, resolveRun: ((value: any) => void) | undefined;
  let signalStarted: (() => void) | undefined;
+ let waitPhase = "main", runSignal: AbortSignal | undefined, unconfirmed = false;
+ let boundary = new SessionExecutionBoundary();
  const result = { stdout: "completed extraction", stderr: "Traceback (most recent call last):\nStopIteration: failed later", exitCode: 1,
-  killed: false, timedOut: false, aborted: false, stdoutTruncated: false, stderrTruncated: false, stdoutBytes: 20, stderrBytes: 65 };
+  cleanup: "complete", exitObserved: true, killed: false, timedOut: false, aborted: false, stdoutTruncated: false, stderrTruncated: false, stdoutBytes: 20, stderrBytes: 65 };
  const runner = { runBrowserUse: async (options: any) => {
+  helperCalls++;
+  const phase = options.args?.[0] === "--version" ? "version" : options.args?.[0] === "--reload" ? "release" : "main";
+  if (signalStarted && phase === waitPhase && options.env.BH_REQUIRE_EXISTING_DAEMON !== "1") {
+   if (phase === "main") states.set(options.cwd, 20);
+   runSignal = options.signal; signalStarted(); return new Promise(resolve => { resolveRun = resolve; });
+  }
+  if (phase === "version") return { ...result, exitCode: 0, stdout: "0.1.13" };
   if (options.args?.[0] === "--reload") { reloads++; return { ...result, exitCode: 0 }; }
   if (options.env.BH_REQUIRE_EXISTING_DAEMON === "1") {
    cleanupCalls++; assert.ok(options.timeoutMs > 0 && options.timeoutMs <= 5000); assert.equal(options.maxBytesPerStream, 1024);
@@ -451,25 +564,33 @@ test("browser extension preserves failure details and bounds cleanup without con
    return { ...result, exitCode: failCleanup ? 1 : 0, stdout: "", stderr: "" };
   }
   states.set(options.cwd, 20);
-  if (signalStarted) { signalStarted(); return new Promise(resolve => { resolveRun = resolve; }); }
-  return result;
+  return unconfirmed ? { ...result, cleanup: "unconfirmed", exitObserved: false } : result;
  } };
  const runtime = { findBrowserUseExecutable: async () => ({ command: "fixture-harness" }), browserUrlSafetyError: () => undefined,
   buildBrowserUseEnvironment: (_env: unknown, workspace: string, session?: string) => ({ BH_AGENT_WORKSPACE: workspace, BU_NAME: session }),
-  BrowserHarnessVersionGate: class { async check() {} clear() {} }, loadRecentScreenshot: async () => undefined, extractScreenshotCandidates: () => [] };
+  BrowserHarnessVersionGate: class {
+   run: Function; constructor(run: Function) { this.run = run; }
+   async check(executable: any, options: any) { const probe = await this.run({ ...options, command: executable.command, args: ["--version"], code: "" }); options.signal?.throwIfAborted(); return probe.stdout; }
+   clear() {}
+  }, loadRecentScreenshot: async () => undefined, extractScreenshotCandidates: () => [] };
  const modules: Record<string, unknown> = { "node:crypto": crypto, "node:path": path,
   "node:fs/promises": { mkdir: async () => {}, rm: async (target: string) => { removed.push(target); states.delete(target); }, stat: async (file: string) => ({ size: states.get(path.dirname(file)) ?? 2 }) },
   "@super-pi/coding-agent": { getAgentDir: () => path.resolve("fixture-agent") }, "@super-pi/tui": { Text: class {} }, typebox: { Type },
   "./tab-lifecycle.ts": { ownedTabsPrelude }, "./core.ts": runtime, "./runner.ts": runner,
-  "../resource-lifecycle-guard/permission-contract.ts": { consumeBrowserExecAuthorization() {} } };
+  "../resource-lifecycle-guard/permission-contract.ts": {
+   consumeBrowserExecAuthorization() { return { revocationSignal: new AbortController().signal, assertCurrent() {} }; },
+   assertBrowserExecAuthorization(grant: { assertCurrent(): void }) { grant.assertCurrent(); },
+  } };
  const module = { exports: {} as any };
  const source = ts.transpileModule(readFileSync(new URL("../packages/extensions/browser-use/index.ts", import.meta.url), "utf8"),
   { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
  runInNewContext(source, { module, exports: module.exports, require(name: string) { assert.ok(name in modules, name); return modules[name]; },
-  process: { pid: 1, env: {} }, Buffer });
- module.exports.default({ on: (name: string, callback: Function) => hooks.set(name, callback), registerTool: (tool: any) => tools.set(tool.name, tool), registerCommand: (name: string, command: any) => commands.set(name, command) });
+  process: { pid: 1, env: {} }, Buffer, AbortController, AbortSignal });
+ const initialize = () => module.exports.default({ registerExecutionOwner: (name: string, owner: any) => { references.push(new WeakRef(owner), new WeakRef(owner.revoke), new WeakRef(owner.drain)); return boundary.register(name, owner); }, on: (name: string, callback: Function) => { hooks.set(name, callback); if (name === "session_shutdown") references.push(new WeakRef(callback)); }, registerTool: (tool: any) => { tools.set(tool.name, tool); references.push(new WeakRef(tool)); }, registerCommand: (name: string, command: any) => commands.set(name, command) });
+ await inspector.post("HeapProfiler.startSampling", { samplingInterval: 4096, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true });
+ initialize();
  const ctx = { cwd: path.resolve("fixture-work"), sessionManager: { getSessionId: () => "fixture" }, ui: { notify: (message: string) => notices.push(message) } };
- const tool = tools.get("browser_exec");
+ let tool = tools.get("browser_exec");
  const failed = await tool.execute("first", { code: "print('fixture')" }, undefined, undefined, ctx);
  assert.equal(failed.isError, true); assert.equal(failed.details.exitCode, 1); assert.equal(failed.details.stdoutBytes, 20);
  assert.match(failed.content[1].text, /completed extraction/);
@@ -482,24 +603,61 @@ test("browser extension preserves failure details and bounds cleanup without con
  await hooks.get("agent_end")!({}, ctx);
  await hooks.get("agent_end")!({}, ctx);
  assert.equal(cleanupCalls, 3, "an empty ownership record must not launch another CLI");
- const started = new Promise<void>(resolve => { signalStarted = resolve; });
- const active = tool.execute("active", { code: "print('fixture')" }, undefined, undefined, ctx);
- await started;
- await hooks.get("agent_end")!({}, ctx);
- await hooks.get("session_shutdown")!({}, ctx);
- assert.equal(cleanupCalls, 3); assert.equal(removed.length, 0, "never remove the workspace while its process is active");
- resolveRun!(result);
- await active;
- assert.equal(cleanupCalls, 4); assert.equal(removed.length, 1);
- await hooks.get("session_shutdown")!({}, ctx);
- assert.equal(removed.length, 1, "released workspaces must not retain cleanup references");
- signalStarted = undefined;
  const local = await tool.execute("local", { code: "print('fixture')" }, undefined, undefined, ctx);
  const named = await tool.execute("named", { code: "print('fixture')", session: "default" }, undefined, undefined, ctx);
  assert.notEqual(local.details.workspace, named.details.workspace, "omitted session and named default must not share tab ownership");
  await commands.get("browser-use").handler("release", ctx);
  assert.deepEqual(cleanedSessions.slice(-2), [undefined, "default"]);
- assert.equal(removed.length, 3); assert.equal(reloads, 1); assert.equal(states.size, 0);
+ assert.equal(removed.length, 2); assert.equal(reloads, 1); assert.equal(states.size, 0);
+ const started = new Promise<void>(resolve => { signalStarted = resolve; });
+ const active = tool.execute("active", { code: "print('fixture')" }, undefined, undefined, ctx);
+ await started;
+ await hooks.get("agent_end")!({}, ctx);
+ let published = false;
+ const transition = boundary.transition(() => { published = true; });
+ await tick(); assert.equal(runSignal?.aborted, true); assert.equal(published, false);
+ assert.equal(cleanupCalls, 5); assert.equal(removed.length, 2, "never remove the workspace while its process is active");
+ await assert.rejects(tool.execute("blocked", { code: "print('fixture')" }, undefined, undefined, ctx), /PAUSED/);
+ resolveRun!({ ...result, aborted: true }); await Promise.all([active, transition]);
+ assert.equal(published, true); assert.equal(cleanupCalls, 6); assert.equal(removed.length, 3);
+ for (const phase of ["version", "release"]) {
+  waitPhase = phase;
+  const ready = new Promise<void>(resolve => { signalStarted = resolve; });
+  const command = commands.get("browser-use").handler(phase === "version" ? "status" : "release", ctx);
+  await ready; let stopped = false;
+  const stopping = phase === "version" ? boundary.transition(() => { stopped = true; }) : hooks.get("session_shutdown")!({}, ctx).then(() => { stopped = true; });
+  await tick(); assert.equal(runSignal?.aborted, true); assert.equal(stopped, false);
+  resolveRun!({ ...result, aborted: true }); await Promise.all([command, stopping]); assert.equal(stopped, true);
+ }
+ await assert.rejects(tool.execute("closed", { code: "print('fixture')" }, undefined, undefined, ctx), /PAUSED/);
+ await boundary.dispose(); assert.equal(boundary.participantCount, 0);
+ signalStarted = undefined; unconfirmed = true; boundary = new SessionExecutionBoundary(); initialize();
+ const uncertain = await tools.get("browser_exec").execute("uncertain", { code: "print('fixture')" }, undefined, undefined, ctx);
+ assert.equal(uncertain.isError, true); assert.equal(uncertain.details.cleanup, "unconfirmed"); assert.match(uncertain.content[0].text, /CLEANUP_UNCONFIRMED/);
+ const before = removed.length; let incorrectlyPublished = false;
+ await assert.rejects(boundary.transition(() => { incorrectlyPublished = true; }), /CLEANUP_UNCONFIRMED/);
+ assert.equal(incorrectlyPublished, false); assert.equal(removed.length, before); assert.equal(states.size, 1);
+ await assert.rejects(commands.get("browser-use").handler("release", ctx), /CLEANUP_UNCONFIRMED/);
+ await assert.rejects(hooks.get("session_shutdown")!({}, ctx), /CLEANUP_UNCONFIRMED/);
+ assert.equal(removed.length, before, "unconfirmed cleanup must preserve exact workspace ownership");
+ assert.equal(boundary.participantCount, 1, "failed drain must retain its owner");
+ const preserved = [...states.keys()][0];
+ boundary = new SessionExecutionBoundary(); unconfirmed = false; failCleanup = true; initialize();
+ await tools.get("browser_exec").execute("tabs", { code: "print('fixture')" }, undefined, undefined, ctx);
+ await assert.rejects(boundary.transition(() => { incorrectlyPublished = true; }), /CLEANUP_INCOMPLETE/);
+ assert.equal(incorrectlyPublished, false); assert.equal(removed.length, before);
+ failCleanup = false; await boundary.transition(() => undefined);
+ assert.equal(removed.length, before + 1); assert.equal(states.has(preserved), true, "recovery cannot remove another owner's retained workspace");
+ await hooks.get("session_shutdown")!({}, ctx); await boundary.dispose(); assert.equal(boundary.participantCount, 0);
+ const { profile } = await inspector.post("HeapProfiler.stopSampling");
+ let sampled = 0; const nodes = [profile.head]; while (nodes.length) { const node = nodes.pop()!; sampled += node.selfSize; for (const child of node.children) nodes.push(child); }
+ assert.ok(sampled <= 8 * 1024 * 1024);
+ // Drop the isolated fixture host; unconfirmed cleanup above was deliberately not reported successful.
+ boundary = undefined as never; tool = undefined; runSignal = undefined; resolveRun = undefined;
+ hooks.clear(); tools.clear(); commands.clear(); states.clear();
+ for (let index = 0; index < 3; index++) { await tick(); await inspector.post("HeapProfiler.collectGarbage"); }
+ assert.equal(references.filter(ref => ref.deref()).length, 0);
+ t.diagnostic(JSON.stringify({ services: 3, helperCalls, cleanupCalls, workspacesRemoved: removed.length, failedCleanupPublished: false, references: references.length, liveAfterFixtureRelease: 0, sampledBytes: sampled }));
 });
 
 

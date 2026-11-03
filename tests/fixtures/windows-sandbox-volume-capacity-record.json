@@ -1,0 +1,294 @@
+{
+  "source": "captured-before-final-report-from-task-15f06cbc-9d54-4186-b556-1021d963a382",
+  "journal": {
+    "protocol": "super-pi-volume-capacity-acceptance-v1",
+    "taskId": "15f06cbc-9d54-4186-b556-1021d963a382",
+    "artifactRoot": "D:\\RMProjects\\Pi\\.artifacts\\windows-sandbox-acceptance-owner",
+    "rootId": "3938676073:2533274791600426",
+    "hostPid": 30244,
+    "startedUtc": "2026-11-01T18:05:02.417Z",
+    "sources": {
+      "bundleSha256": "bd2b96fd01acdff28c73cea9d9c4ec5e741dc4701e49dea99f0c591599be7866",
+      "files": 24,
+      "nativeSha256": "0aef619b4b514b24ded65b8324e241eb82a6a56fed7dcdff134b25c846f85153",
+      "powershellSha256": "2a6769a3330dc1084d0154bfde7d164ab750ca7f700f313f9d417c1be78b2233",
+      "compilerSha256": "eca02e6b15cde93009a59a3d129d5a77fb5008f2e1cf62cf573b6737c747ecc3",
+      "cliSha256": "247e092b5c5bd37820f225a7dd3ddf10ae37a67e2751a19c24b802c84769c441",
+      "nodeVersion": "v26.13.0",
+      "guestSha256": "68be63d7fe384b9af3a115317b41e9cdb007a7f7084fedcc6e9df128f39bf08d",
+      "nodeSha256": "14319838b3f355e0398c13569a90270bce4fc68f25189f58c59b03dadae0e6d5"
+    },
+    "preflight": {
+      "powershell": "7.6.9",
+      "x64": true,
+      "administratorToken": true,
+      "privilege": "SeManageVolumePrivilege",
+      "privilegeState": "Disabled",
+      "storageVersion": "2.0.0.0",
+      "commands": 7,
+      "format": "NTFS",
+      "availableBytes": 88143220736,
+      "requiredBytes": 168820736
+    },
+    "helperCalls": [
+      {
+        "role": "preflight",
+        "executable": "pwsh.exe",
+        "pid": 24616,
+        "outcome": "settled",
+        "killRequested": false,
+        "result": {
+          "exitCode": 0,
+          "signal": null,
+          "launchError": null,
+          "stdoutSeen": 280,
+          "stderrSeen": 0,
+          "truncated": false,
+          "stdoutPrefix": "{\"commands\":7,\"privilege\":\"SeManageVolumePrivilege\",…",
+          "stderrPrefix": "",
+          "prefixesOnly": true
+        }
+      },
+      {
+        "role": "compile-native",
+        "executable": "csc.exe",
+        "pid": 30716,
+        "outcome": "settled",
+        "killRequested": false,
+        "result": {
+          "exitCode": 0,
+          "signal": null,
+          "launchError": null,
+          "stdoutSeen": 0,
+          "stderrSeen": 0,
+          "truncated": false,
+          "stdoutPrefix": "",
+          "stderrPrefix": "",
+          "prefixesOnly": true
+        }
+      },
+      {
+        "role": "compile-guest",
+        "executable": "csc.exe",
+        "pid": 31880,
+        "outcome": "settled",
+        "killRequested": false,
+        "result": {
+          "exitCode": 0,
+          "signal": null,
+          "launchError": null,
+          "stdoutSeen": 0,
+          "stderrSeen": 0,
+          "truncated": false,
+          "stdoutPrefix": "",
+          "stderrPrefix": "",
+          "prefixesOnly": true
+        }
+      }
+    ],
+    "volume": {
+      "state": "released",
+      "helperPid": 27920,
+      "helperClosed": true,
+      "pending": false,
+      "reading": false,
+      "closeUnknown": false,
+      "revoked": false,
+      "mapping": "released",
+      "instanceId": "17e9d317-230f-41af-a9f8-b7440801849f",
+      "facts": {
+        "imageId": "EAC36D69:0015000000126151",
+        "diskId": "15f06cbc-9d54-4186-b556-1021d963a382",
+        "physicalPath": "\\\\.\\PhysicalDrive1",
+        "volumePath": "\\\\?\\Volume{d74950f0-0000-0000-0000-100000000000}\\",
+        "exchangeId": "E8874742:0001000000000024",
+        "capacity": 134217728,
+        "imageBudget": 135266304,
+        "phase": "released",
+        "error": null,
+        "detached": true,
+        "managementClosed": true,
+        "closeUnknown": false
+      },
+      "transport": {
+        "exitCode": 0,
+        "signal": null,
+        "buffersReleased": true,
+        "stderr": {
+          "encoding": "uninterpreted",
+          "rawBase64": "",
+          "seenBytes": 0,
+          "capturedBytes": 0,
+          "truncated": false
+        }
+      }
+    },
+    "prepared": {
+      "imageId": "EAC36D69:0015000000126151",
+      "diskId": "15f06cbc-9d54-4186-b556-1021d963a382",
+      "physicalPath": "\\\\.\\PhysicalDrive1",
+      "volumePath": "\\\\?\\Volume{d74950f0-0000-0000-0000-100000000000}\\",
+      "exchangeId": "E8874742:0001000000000024",
+      "capacity": 134217728,
+      "imageBudget": 135266304
+    },
+    "vm": {
+      "taskId": "15f06cbc-9d54-4186-b556-1021d963a382",
+      "instanceId": "17e9d317-230f-41af-a9f8-b7440801849f",
+      "state": "closed",
+      "startAttempted": true,
+      "startSettled": true,
+      "registered": true,
+      "stopAttempted": true,
+      "controlPending": false,
+      "executionPending": false,
+      "connectionPending": false,
+      "cleanupError": null,
+      "callRecords": 7,
+      "configSha256": "1ebb1559a3a69beac2095e36c1bae2352acf7c6c8330d5245578adc3e6c88784"
+    },
+    "guestExit": {
+      "source": "guest-report",
+      "interfaceSource": "platform-interface",
+      "exitCode": 0,
+      "state": "delivered",
+      "write": "success",
+      "flush": "success",
+      "close": "success",
+      "writeErrorCode": null,
+      "flushErrorCode": null,
+      "closeErrorCode": null,
+      "deliveryComplete": true
+    },
+    "physical": {
+      "reservations": 11,
+      "attached": 11,
+      "notStarted": 0,
+      "observedStarted": 11,
+      "launchUnknown": 0,
+      "physicallyClosed": 11,
+      "resultCharacters": 665,
+      "pending": [],
+      "cliReservations": 7,
+      "cliRecords": 7
+    },
+    "lastCli": {
+      "kind": "list",
+      "pid": 32480,
+      "exitCode": 0,
+      "signal": null,
+      "launchError": null,
+      "stdoutSeen": 42,
+      "stderrSeen": 0,
+      "truncated": false,
+      "stdoutPrefix": "{\r\n  \"WindowsSandboxEnvironments\": []\r\n}\r\n",
+      "stderrPrefix": "",
+      "prefixesOnly": true
+    },
+    "operationErrors": [],
+    "receiptUnknownHandles": [],
+    "files": [],
+    "removedFiles": 0,
+    "error": null,
+    "cleanupError": null,
+    "cancelled": false,
+    "revoked": false,
+    "released": true,
+    "retained": false,
+    "passed": false,
+    "sequencePassed": true,
+    "journalFailed": false,
+    "outputBoundFailed": false,
+    "outputFailed": false,
+    "evidenceEmitted": false,
+    "cleanupStarted": false,
+    "artifactsRemoved": false,
+    "taskReferencesReleased": false,
+    "installation": {
+      "source": "host-cli-process",
+      "installed": true,
+      "probeId": "E8874742:0001000000000025",
+      "slotId": "E8874742:0001000000000026",
+      "sentinelId": "EAC36D69:001A000000126142",
+      "handles": {
+        "opened": 5,
+        "closed": 5,
+        "peak": 3,
+        "closeUnknown": false,
+        "unresolved": []
+      }
+    },
+    "capacityRead": {
+      "source": "host-cli-process",
+      "installed": true,
+      "readCompleted": true,
+      "probeId": "E8874742:0001000000000025",
+      "slotId": "E8874742:0001000000000026",
+      "sentinelId": "EAC36D69:001A000000126142",
+      "fillId": "E8874742:0001000000000027",
+      "fillLength": 119537664,
+      "fillAllocation": 119537664,
+      "sentinelMatched": true,
+      "guestBytes": {
+        "source": "guest-report",
+        "encoding": "base64",
+        "bytes": 512,
+        "data": "U1BDRjAwMDExNWYwNmNiYzlkNTQ0MTg2YjU1NjEwMjFkOTYzYTM4MgMAAAABAAAAcwAAAHIAAAAAADAHAAAgB2gAAAAAAAAAAQAAAAAAAABwAAAAAAAQAAAAAAABAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAJAAAAAgTgAAAQAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+      },
+      "handles": {
+        "opened": 9,
+        "closed": 9,
+        "peak": 3,
+        "closeUnknown": false,
+        "unresolved": []
+      }
+    },
+    "capacityCandidate": true,
+    "privateReceipts": {
+      "opened": 2,
+      "closed": 2,
+      "active": 0,
+      "peak": 1,
+      "bytesRead": 2164,
+      "bytesAllocated": 2164
+    },
+    "reportedUtc": "2026-11-01T18:05:19.567Z"
+  },
+  "manifest": [
+    {
+      "name": "volume-native.dll",
+      "id": "3938676073:2251799814889810",
+      "bytes": 38912
+    },
+    {
+      "name": "capacity-probe.exe",
+      "id": "3938676073:1688849861468499",
+      "bytes": 13824
+    },
+    {
+      "name": "capacity-host-sentinel.bin",
+      "id": "3938676073:7318349395681602",
+      "bytes": 32
+    },
+    {
+      "name": "volume-capacity-install.json",
+      "id": "3938676073:2814749768311126",
+      "bytes": 724
+    },
+    {
+      "name": "volume-capacity-read.json",
+      "id": "3938676073:10977524092920148",
+      "bytes": 1440
+    },
+    {
+      "name": "volume-helper.json",
+      "id": "3938676073:10414574139498837",
+      "bytes": 525
+    },
+    {
+      "name": "lifecycle.json",
+      "id": "3938676073:4503599628575063",
+      "bytes": 7730
+    }
+  ]
+}

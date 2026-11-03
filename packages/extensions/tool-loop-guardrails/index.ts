@@ -1,3 +1,4 @@
+import { getSessionFiles } from "@super-pi/coding-agent/internal/files/file-host";
 import { CallLedger } from "./call-ledger.ts";
 import { parseRetryPolicy, RetryWait } from "./transient-retry.ts";
 import { MUTATION_READ_SOURCE } from "../../coding-agent/src/core/tools/read-window.ts";
@@ -92,6 +93,7 @@ export default function toolLoopGuardrails(pi: ExtensionAPI): void {
     try { state.retry.policy = parseRetryPolicy(pi.getFlag?.("tool-transient-retry")); }
     catch (error) { configurationError = String(error).slice(0, 512); }
   };
+  if (!getSessionFiles(pi)) {
   let nativeReadCwd = process.cwd();
   let nativeRead = createReadToolDefinition(nativeReadCwd);
   const upstreamRead = nativeRead;
@@ -185,6 +187,7 @@ export default function toolLoopGuardrails(pi: ExtensionAPI): void {
     },
   });
 
+  }
   pi.on("session_start", configureRetry);
   pi.on("agent_start", () => {
     resetGuardState(state);
@@ -235,7 +238,7 @@ export default function toolLoopGuardrails(pi: ExtensionAPI): void {
     if (preparation.blockReason) return { block: true, reason: preparation.blockReason };
     const reason = inspectBeforeCall(state, event.toolName, event.input, key);
     if (reason) {
-      if (event.input && typeof event.input === "object") attachRepairKind(event.input as Record<PropertyKey, unknown>, "repeated_call_blocked");
+      if (event.input && typeof event.input === "object") attachRepairKind(event.input as Record<PropertyKey, unknown>, "transient_retry_blocked");
       calls.finish(event.toolCallId);
       return { block: true, reason };
     }

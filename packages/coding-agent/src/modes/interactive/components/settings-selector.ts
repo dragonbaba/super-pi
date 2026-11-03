@@ -700,9 +700,9 @@ export class SettingsSelectorComponent extends Container {
 			{
 				id: "fullscreen-exit-output",
 				label: "Fullscreen exit output",
-				description: "Print the transcript or only a session resume hint when exiting fullscreen mode",
+				description: "Restore the terminal with a resume hint (default), or explicitly reprint the transcript",
 				currentValue: config.fullscreenExitOutput,
-				values: ["transcript", "resume-hint"],
+				values: ["resume-hint", "transcript"],
 			},
 			{
 				id: "theme",

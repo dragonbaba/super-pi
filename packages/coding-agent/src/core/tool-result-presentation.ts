@@ -2791,17 +2791,23 @@ export class ToolResultPresentationOwner {
 	/** Resolve a session-bound virtual artifact to the canonical content on the active branch. */
 	/** @internal Evidence never reconstructs a source or changes public artifact recovery. */
 	private residentEvidenceRecord(toolCallId: string, messages: readonly unknown[], blocks: number, chars: number): ProjectionRecord | undefined {
-		if (!this.mcpInputConfigured || messages.length > 4096 || blocks !== 1 ||
+		if (!this.mcpInputConfigured || messages.length > 4096 || (blocks !== 1 && blocks !== 2) ||
 			!Number.isSafeInteger(chars) || chars < 1 || chars > 64 * 1024) return undefined;
 		const record = this.projectionRecords?.get(toolCallId);
 		if (!record || record.sourceContent.length !== blocks || record.sourceScan.mcpInput) return undefined;
 		// Inspect data properties before the integrity algorithm can encounter a
-		// replaced giant string or accessor. Ordinary local text has one block.
-		const element = Object.getOwnPropertyDescriptor(record.sourceContent, "0");
-		const block = element?.value;
-		if (!block || Object.getOwnPropertyDescriptor(block, "type")?.value !== "text") return undefined;
-		const text = Object.getOwnPropertyDescriptor(block, "text")?.value;
-		if (typeof text !== "string" || text.length !== chars || block.mcpInput || block.mcpSource) return undefined;
+		// replaced giant string or accessor. Native revisions add one bounded metadata block.
+		let actualChars = 0;
+		for (let index = 0; index < blocks; index++) {
+			const element = Object.getOwnPropertyDescriptor(record.sourceContent, index);
+			const block = element?.value;
+			if (!block || Object.getOwnPropertyDescriptor(block, "type")?.value !== "text") return undefined;
+			const text = Object.getOwnPropertyDescriptor(block, "text")?.value;
+			if (typeof text !== "string" || text.length > chars || block.mcpInput || block.mcpSource) return undefined;
+			if (blocks === 2 && Object.getOwnPropertyDescriptor(block, "readBoundary")?.value !== (index === 0 ? "lines" : "metadata")) return undefined;
+			actualChars += text.length;
+		}
+		if (actualChars !== chars) return undefined;
 		let found = false;
 		// This is a bounded active-context validation, never a historical lookup.
 		// Rescan uniqueness even when array length is unchanged: public messages

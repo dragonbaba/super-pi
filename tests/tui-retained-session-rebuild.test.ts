@@ -224,7 +224,7 @@ async function createModeFixture(
 				budgetTokens: settingsToolResultPresentation.budgetTokens,
 			},
 		})
-		: SettingsManager.create(cwd, agentDir);
+		: SettingsManager.inMemory();
 	const sessionManager = SessionManager.inMemory(cwd);
 	for (const message of messages) sessionManager.appendMessage(message as any);
 	const resourceLoader = new DefaultResourceLoader({

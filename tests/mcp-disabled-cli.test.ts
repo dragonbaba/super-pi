@@ -11,6 +11,7 @@ test("built CLI --no-mcp prevents stdio startup even with an explicit MCP allowl
 	try {
 		const agent = join(root, "agent"), marker = join(root, "spawned");
 		mkdirSync(join(agent, "config"), { recursive: true });
+		writeFileSync(join(agent, "config", "settings.json"), JSON.stringify({ executionEnvironment: "trusted-host" }));
 		const configPath = join(agent, "config", "mcp.json");
 		const config = JSON.stringify({ version: 1, servers: { fixture: { enabled: true, transport: "stdio", command: process.execPath,
 			args: ["-e", 'require("node:fs").writeFileSync(process.argv[1], "started")', marker] } } });

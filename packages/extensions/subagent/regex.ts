@@ -1,4 +1,4 @@
-export const SUPPORTED_SP_VERSION_PATTERN = /^0\.84\.\d+(?:[-+].*)?$/u;
+export const SUPPORTED_SP_VERSION_PATTERN = /^(?:0\.84|1\.\d+)\.\d+(?:[-+].*)?$/u;
 export const ENV_NAME_PATTERN = /^[A-Z_][A-Z0-9_]{0,127}$/u;
 export const TRAILING_SLASH_PATTERN = /\/+$/u;
 export const ENV_FILE_REFERENCE_PATTERN = /\.env(?:\.[\w.-]+)?/giu;

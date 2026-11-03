@@ -1,9 +1,10 @@
+import * as PiHost from "@super-pi/coding-agent";
 import type { ExtensionAPI } from "@super-pi/coding-agent";
-import { checkRuntimeCompatibility, discoverPiRuntimeVersion } from "./runtime-compat.js";
+import { checkRuntimeCompatibility } from "./runtime-compat.js";
 import { sanitizeTerminalText, unknownTerminalText } from "./terminal-text.js";
 
 export default async function statuslineCompatibilityEntry(pi: ExtensionAPI): Promise<void> {
-	const compatibility = checkRuntimeCompatibility(discoverPiRuntimeVersion());
+	const compatibility = checkRuntimeCompatibility(PiHost.VERSION);
 	if (!compatibility.compatible) {
 		pi.on("session_start", (_event, ctx) => {
 			if (ctx.hasUI) ctx.ui.notify(compatibility.reason, "warning");

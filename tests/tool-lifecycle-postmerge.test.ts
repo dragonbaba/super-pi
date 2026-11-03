@@ -63,7 +63,13 @@ async function fixture(t: test.TestContext, lateCommand?: string | ((event: any)
     if (!owner.live) ownership.released++;
     ownership.highWater = Math.max(ownership.highWater, (runner as any).finalAuthorizations?.size ?? 0);
     const consume = owner.consume, release = owner.release;
-    owner.consume = function(...values: any[]) { ownership.consumed++; const execution = consume.apply(this, values); ownership.containers++; assert.notEqual(execution, values[0]); return execution; };
+    owner.consume = function(...values: any[]) {
+     ownership.consumed++; const guarded = this.hasChecks;
+     const execution = consume.apply(this, values);
+     if (guarded) { ownership.containers++; assert.notEqual(execution, values[0]); }
+     else assert.equal(execution, values[0], "ordinary epoch checks do not clone arguments");
+     return execution;
+    };
     owner.release = function() { if (this.live) ownership.released++; return release.call(this); };
    }
    return result;
@@ -177,12 +183,13 @@ test("postmerge preflight adds zero argument-wrapper allocations", () => {
  const pending = runnerSource.statements.find(node => ts.isClassDeclaration(node) && node.name?.text === "PendingToolAuthorization") as ts.ClassDeclaration;
  const handoff = pending.members.find(node => ts.isMethodDeclaration(node) && node.name.getText(runnerSource) === "consume") as ts.MethodDeclaration;
  let shellConsumes = 0, batchConsumes = 0, batchBranches = 0;
+ const fileBranch = 'name === "file_batch" || name === "edit" || name === "write" || name === "delete" || name === "move"';
  function countTerminalConsume(node: ts.Node): void {
-  if (ts.isIfStatement(node) && node.expression.getText(runnerSource) === 'name === "file_batch"') batchBranches++;
+  if (ts.isIfStatement(node) && node.expression.getText(runnerSource) === fileBranch) batchBranches++;
   if (ts.isCallExpression(node) && node.expression.getText(runnerSource) === "authority.consume") {
    let parent: ts.Node | undefined = node.parent, inBatch = false;
    while (parent && parent !== handoff) {
-    if (ts.isIfStatement(parent) && parent.expression.getText(runnerSource) === 'name === "file_batch"'
+    if (ts.isIfStatement(parent) && parent.expression.getText(runnerSource) === fileBranch
       && node.pos >= parent.thenStatement.pos && node.end <= parent.thenStatement.end) inBatch = true;
     parent = parent.parent;
    }
@@ -194,7 +201,8 @@ test("postmerge preflight adds zero argument-wrapper allocations", () => {
     const assignment = ts.isAsExpression(node.parent) ? node.parent.parent : node.parent;
     assert.ok(ts.isBinaryExpression(assignment) && assignment.left.getText(runnerSource) === "terminalValues",
       "shell handoff must retain terminal values for failed-binding release");
-    assert.ok(runnerText.indexOf("finally { check.release(); }", handoff.pos) < node.pos,
+    const release = runnerText.indexOf("try { check.release(); }", handoff.pos);
+    assert.ok(release !== -1 && release < node.pos,
       "auxiliary shell releases precede terminal shell consume");
    }
   }
@@ -202,7 +210,7 @@ test("postmerge preflight adds zero argument-wrapper allocations", () => {
  }
  countTerminalConsume(handoff);
  assert.equal(shellConsumes, 1);
- assert.ok(batchBranches === 0 || batchBranches === 1);
+ assert.equal(batchBranches, 1);
  assert.equal(batchConsumes, batchBranches, "one terminal consume per independent batch branch");
 });
 
@@ -223,8 +231,9 @@ test("final authorization preserves pre-guard transforms and detaches only guard
  assert.deepEqual(f.ownership, { installed: 1, consumed: 1, released: 1, containers: 1, highWater: 1 });
  const plain = await fixture(t, undefined, undefined, true);
  assert.equal((await plain.call("printf ORDINARY")).text.trim(), "ORDINARY");
- plain.assertReleased(); assert.equal(plain.ownership.installed, 0);
- assert.equal((plain.runner as any).finalAuthorizations, undefined);
+ plain.assertReleased(); assert.equal(plain.ownership.installed, 1);
+ assert.equal(plain.ownership.containers, 0);
+ assert.equal((plain.runner as any).finalAuthorizations.size, 0);
 });
 
 test("final authorization denies timeout, authority and abort changes and releases requests", async t => {

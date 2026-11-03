@@ -3,7 +3,6 @@ import { SHELL_TASK_RESULT_EVENT } from "../managed-tasks.ts";
 import type { ExtensionAPI, ToolResultEvent } from "@super-pi/coding-agent";
 import {
   beginPromptBoundary,
-  completionIntervention,
   createFalseSuccessLifecycleState,
   createFalseSuccessState,
   FALSE_SUCCESS_AUDIT_TYPE,
@@ -16,7 +15,6 @@ import {
   type ToolObservation,
 } from "./core.js";
 
-const TEXT_TYPE = "text" as const;
 const GOAL_COMPLETE_TOOL = "goal_complete";
 
 export default function falseSuccessGuard(pi: ExtensionAPI): void {
@@ -99,25 +97,6 @@ export default function falseSuccessGuard(pi: ExtensionAPI): void {
     });
     return undefined;
   });
-
-  pi.on("message_end", (event) => {
-    if (event.message.role !== "assistant") return undefined;
-    if (event.message.stopReason === "error" || event.message.stopReason === "toolUse") return undefined;
-    if (hasToolCall(event.message.content)) return undefined;
-    const intervention = completionIntervention(
-      state,
-      collectText(event.message.content, 1_000_000),
-      modelName({ provider: event.message.provider, id: event.message.model }),
-    );
-    if (!intervention) return undefined;
-    appendAudit(intervention.audit);
-    return {
-      message: {
-        ...event.message,
-        content: [{ type: TEXT_TYPE, text: intervention.replacement }],
-      },
-    };
-  });
 }
 
 function isNativeOrBatch(name: string): boolean { return name === "file_batch" || name === "delete" || name === "move"; }
@@ -137,13 +116,6 @@ function collectText(
     if (text.length >= maxChars) break;
   }
   return text;
-}
-
-function hasToolCall(content: ReadonlyArray<{ type: string }>): boolean {
-  for (const item of content) {
-    if (item.type === "toolCall") return true;
-  }
-  return false;
 }
 
 function modelName(model: { provider?: unknown; id?: unknown } | undefined): string {

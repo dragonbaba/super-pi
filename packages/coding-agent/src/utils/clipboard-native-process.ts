@@ -17,12 +17,15 @@ const STDERR_BYTES = 4096;
 const NATIVE_CLIPBOARD_SCRIPT = `
 const [modulePath, kind, limitText] = process.argv.slice(1);
 const limit = Number(limitText);
+let imagePresent = false;
 (async () => {
  const source = require(modulePath);
  let data;
  if (kind === 'image') {
   if (!source.hasImage()) return;
+  imagePresent = true;
   data = await source.getImageBinary();
+  if (!data || !data.length) { process.exitCode = 4; return; }
   if (data.length > limit) { process.exitCode = 3; return; }
  } else {
   data = await source.getText();
@@ -30,19 +33,30 @@ const limit = Number(limitText);
  }
  const bytes = Buffer.from(data);
  await new Promise((resolve, reject) => process.stdout.write(bytes, error => error ? reject(error) : resolve()));
-})().catch(() => { process.exitCode = 2; });
+})().catch(() => { process.exitCode = imagePresent ? 4 : 2; });
 `;
 
 export class NativeClipboardError extends Error {
 	readonly fatal: boolean;
-	constructor(message: string, fatal = false) { super(message); this.fatal = fatal; }
+	constructor(message: string, fatal = false, options?: ErrorOptions) { super(message, options); this.fatal = fatal; }
+}
+
+/** An image was detected, but could not be read. Another image reader may recover it; text must not replace it. */
+export class ClipboardImageReadError extends NativeClipboardError {
+	constructor(message: string, options?: ErrorOptions) { super(message, false, options); }
 }
 
 async function readNativeClipboardSource(kind: "image" | "text", source: ClipboardModule, signal?: AbortSignal): Promise<Buffer | null> {
 	signal?.throwIfAborted();
 	if (kind === "image" && !source.hasImage()) return null;
-	const value = kind === "image" ? await source.getImageBinary() : await source.getText();
+	let value: number[] | string;
+	try { value = kind === "image" ? await source.getImageBinary() : await source.getText(); }
+	catch (error) {
+		if (signal?.aborted || kind !== "image" || (error instanceof NativeClipboardError && error.fatal)) throw error;
+		throw new ClipboardImageReadError("已检测到剪贴板图片，但原生图片读取失败", { cause: error });
+	}
 	signal?.throwIfAborted();
+	if (kind === "image" && !value?.length) throw new ClipboardImageReadError("已检测到剪贴板图片，但原生读取返回了空数据");
 	const bytes = kind === "image" ? Uint8Array.from(value as number[]) : Buffer.from(value as string, "utf8");
 	const limit = kind === "image" ? IMAGE_BYTES : TEXT_BYTES;
 	if (bytes.byteLength > limit) throw new NativeClipboardError("剪贴板内容超过字节限制", true);
@@ -115,6 +129,7 @@ export function readNativeClipboard(kind: "image" | "text", signal?: AbortSignal
 			child.stderr?.removeListener("data", onStderr); child.stderr?.removeListener("error", onError);
 			if (activeRead === token) activeRead = undefined;
 			const error = failure ?? (code === 3 ? new NativeClipboardError("剪贴板内容超过字节限制", true)
+				: code === 4 ? new ClipboardImageReadError("已检测到剪贴板图片，但原生图片读取失败或返回了空数据")
 				: code !== 0 ? new NativeClipboardError(`原生剪贴板读取失败（退出码 ${code}）`) : undefined);
 			const result = !settled && !error && size ? Buffer.concat(chunks, size) : null;
 			settle(error, result);

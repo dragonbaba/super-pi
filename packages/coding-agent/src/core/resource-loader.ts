@@ -27,6 +27,9 @@ import type { Skill } from "./skills.ts";
 import { loadSkills } from "./skills.ts";
 import { createSourceInfo, type SourceInfo } from "./source-info.ts";
 import { resetTimings } from "./timings.ts";
+import { SessionTasks } from "./tasks/session-tasks.ts";
+import { SessionFiles } from "./files/session-files.ts";
+import { SessionExecutionPolicy } from "./execution-policy.ts";
 
 export interface ResourceExtensionPaths {
 	skillPaths?: Array<{ path: string; metadata: PathMetadata }>;
@@ -232,6 +235,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private appendSystemPromptOverride?: (base: string[]) => string[];
 
 	private extensionsResult: LoadExtensionsResult;
+	private pendingTaskRuntime: ExtensionRuntime | undefined;
 	private skills: Skill[];
 	private skillDiagnostics: ResourceDiagnostic[];
 	private prompts: PromptTemplate[];
@@ -387,6 +391,29 @@ export class DefaultResourceLoader implements ResourceLoader {
 	}
 
 	async reload(options?: ResourceLoaderReloadOptions): Promise<void> {
+		const abandoned = this.takePendingTaskRuntime();
+		if (abandoned) {
+			await abandoned.nativeFiles?.dispose();
+			await abandoned.nativeTasks?.dispose();
+			abandoned.invalidate();
+		}
+		await this.extensionsResult.runtime.nativeFiles?.dispose();
+		await this.extensionsResult.runtime.nativeTasks?.dispose();
+		this.extensionsResult.runtime.invalidate();
+		let completed = false;
+		try {
+			await this.reloadResources(options);
+			completed = true;
+		} finally {
+			const pending = this.takePendingTaskRuntime();
+			if (pending && (!completed || pending !== this.extensionsResult.runtime)) {
+				try { await pending.nativeFiles?.dispose(); await pending.nativeTasks?.dispose(); }
+				finally { pending.invalidate(); }
+			}
+		}
+	}
+
+	private async reloadResources(options?: ResourceLoaderReloadOptions): Promise<void> {
 		resetTimings("extensions");
 
 		if (this.loaded) {
@@ -557,7 +584,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		const extensionPaths = this.noExtensions
 			? cliEnabledExtensions
 			: this.mergePaths(cliEnabledExtensions, enabledExtensions);
-		const extensionsResult = await loadExtensionsCached(extensionPaths, this.cwd, this.eventBus);
+		const extensionsResult = await loadExtensionsCached(extensionPaths, this.cwd, this.eventBus, this.createSessionRuntime());
 		if (!options.includeInlineFactories) {
 			return extensionsResult;
 		}
@@ -572,12 +599,32 @@ export class DefaultResourceLoader implements ResourceLoader {
 		return resolvePath(path, this.cwd, { normalizeUnicodeSpaces: true });
 	}
 
+	private createSessionRuntime(): ExtensionRuntime {
+		const runtime = createExtensionRuntime();
+		this.pendingTaskRuntime = runtime;
+		runtime.nativeTasks = new SessionTasks(runtime, this.eventBus);
+		runtime.nativeFiles = new SessionFiles(runtime, this.eventBus);
+		const settings = this.settingsManager.getGlobalSettings();
+		const environment = this.settingsManager.getExecutionEnvironment();
+		if (environment !== undefined) {
+			runtime.nativePermissions = new SessionExecutionPolicy(runtime, environment, settings.executionPermissions, this.settingsManager.getPermissionMode());
+			runtime.nativeFiles.setCompatibilityBoundary(runtime.nativePermissions);
+		}
+		return runtime;
+	}
+
+	private takePendingTaskRuntime(): ExtensionRuntime | undefined {
+		const runtime = this.pendingTaskRuntime;
+		this.pendingTaskRuntime = undefined;
+		return runtime;
+	}
+
 	private async loadFinalExtensionSet(
 		extensionPaths: string[],
 		preTrustExtensions: LoadExtensionsResult | undefined,
 	): Promise<LoadExtensionsResult> {
 		if (!preTrustExtensions) {
-			const extensionsResult = await loadExtensionsCached(extensionPaths, this.cwd, this.eventBus);
+			const extensionsResult = await loadExtensionsCached(extensionPaths, this.cwd, this.eventBus, this.createSessionRuntime());
 			const inlineExtensions = await this.loadExtensionFactories(extensionsResult.runtime);
 			extensionsResult.extensions.push(...inlineExtensions.extensions);
 			extensionsResult.errors.push(...inlineExtensions.errors);

@@ -6,8 +6,8 @@ import { waitForChildProcess } from "./child-process.ts";
 // OS stdio handles go straight to the shell: no JS output forwarding or polling.
 const HOST_SOURCE = `
 const {spawn} = require('node:child_process');
-process.once('message', ({shell,args,env}) => {
-  const child = spawn(shell,args,{env,stdio:[process.stdin,process.stdout,process.stderr],windowsHide:true});
+process.once('message', ({shell,args,env,windowsVerbatimArguments}) => {
+  const child = spawn(shell,args,{env,stdio:[process.stdin,process.stdout,process.stderr],windowsHide:true,windowsVerbatimArguments});
   child.once('error', error => process.send({error:error.message,code:error.code}, () => process.exit(1)));
   child.once('exit', code => process.exit(code === null ? 1 : code));
 });
@@ -59,7 +59,7 @@ export class WindowsShellJob {
 		child.on("message", this.onMessage);
 	}
 
-	static async spawn(shell: string, args: readonly string[], cwd: string, env: NodeJS.ProcessEnv, stdin: boolean, signal?: AbortSignal, beforeSpawn?: (cwd: string) => void): Promise<WindowsShellJob> {
+	static async spawn(shell: string, args: readonly string[], cwd: string, env: NodeJS.ProcessEnv, stdin: boolean, signal?: AbortSignal, beforeSpawn?: (cwd: string) => void, windowsVerbatimArguments = false): Promise<WindowsShellJob> {
 		if (process.platform !== "win32" || process.arch !== "x64" && process.arch !== "arm64") throw new Error("Managed Windows shells require a 64-bit Windows runtime.");
 		const native = await (bindings ??= loadBindings());
 		signal?.throwIfAborted(); beforeSpawn?.(cwd);
@@ -87,7 +87,7 @@ export class WindowsShellJob {
 				}
 			}
 			const owner = new WindowsShellJob(native, job, child);
-			if (child.pid) child.send({ shell, args, env }, owner.onSend);
+			if (child.pid) child.send({ shell, args, env, windowsVerbatimArguments }, owner.onSend);
 			return owner;
 		} catch (error) {
 			if (child) {

@@ -6,6 +6,7 @@
  * input replay.
  */
 import { randomUUID } from "node:crypto";
+import { addAbortListener, setMaxListeners } from "node:events";
 import {
   calculateCost,
   createAssistantMessageEventStream,
@@ -52,13 +53,7 @@ import {
   buildCodexWebSocketHeaders,
   normalizeResponseItemsForPrompt,
 } from "./remote-compaction.ts";
-import {
-  getContinuationState,
-  getRemoteCompactionState,
-  getSessionConfig,
-  setContinuationState,
-  setTransportContextState,
-} from "./state.ts";
+import { CompactionState } from "./state.ts";
 
 type WsSession = {
   requestScope?: string;
@@ -66,25 +61,13 @@ type WsSession = {
   modelKey: string;
   lastContextLength: number;
   lastRequestKey?: string;
+  lastSuccessfulResponseId?: string;
+  lastSuccessfulServiceTier?: WsOptions["serviceTier"];
   warmUpAttempted: boolean;
   broken: boolean;
 };
 
-const wsRegistry = new Map<string, WsSession>();
-const wsRequestTails = new Map<string, Promise<void>>();
 const WARM_UP_TIMEOUT_MS = 8000;
-
-/** Serialize requests sharing one WebSocket continuation state. */
-export function serializeWsSessionRequest(sessionId: string, request: () => Promise<void>): Promise<void> {
-  const previous = wsRequestTails.get(sessionId) ?? Promise.resolve();
-  const run = previous.catch(() => undefined).then(request);
-  let tracked: Promise<void>;
-  tracked = run.finally(() => {
-    if (wsRequestTails.get(sessionId) === tracked) wsRequestTails.delete(sessionId);
-  });
-  wsRequestTails.set(sessionId, tracked);
-  return tracked;
-}
 
 type AssistantMessageEventStreamLike = {
   push(event: AssistantMessageEvent): void;
@@ -228,24 +211,6 @@ function asResponsesModel(model: Model<any>): ResponsesModel {
 
 function getModelDescriptor(model: { api: string; provider: string; id: string }): ModelDescriptor {
   return { api: model.api, provider: model.provider, id: model.id };
-}
-
-export function releaseWsSession(sessionId: string | undefined): void {
-  if (!sessionId) return;
-  const session = wsRegistry.get(sessionId);
-  if (!session) return;
-  try {
-    session.manager.close();
-  } catch {
-    // ignore
-  }
-  wsRegistry.delete(sessionId);
-}
-
-export function releaseAllWsSessions(): void {
-  for (const sessionId of wsRegistry.keys()) {
-    releaseWsSession(sessionId);
-  }
 }
 
 function toNonEmptyString(value: unknown): string | null {
@@ -632,12 +597,20 @@ function buildWsRequestKey(params: {
   });
 }
 
+function assertWsContinuationTier(session: WsSession, previousResponseId: unknown, serviceTier: WsOptions["serviceTier"]): void {
+  if (previousResponseId === undefined || previousResponseId === null) return;
+  if (session.lastSuccessfulResponseId === undefined || previousResponseId !== session.lastSuccessfulResponseId ||
+    serviceTier !== session.lastSuccessfulServiceTier) {
+    throw new Error("OpenAI WebSocket continuation tier has no matching successful request; start a new request without the previous response ID.");
+  }
+}
+
 export function selectInputItemsForContinuation(params: {
   context: Context;
   model: ReplayModelInfo;
   session: Pick<WsSession, "lastContextLength">;
   currentModelKey: string;
-  remoteCompactionState: ReturnType<typeof getRemoteCompactionState>;
+  remoteCompactionState: ReturnType<CompactionState["getRemoteCompactionState"]>;
   previousResponseId?: string | null;
 }): Array<InputItem | Record<string, unknown>> {
   const { context, model, session, currentModelKey, remoteCompactionState, previousResponseId } = params;
@@ -763,8 +736,8 @@ export async function prepareHttpFallbackPayload(params: {
   context: Context;
   originalOnPayload?: SimpleStreamOptions["onPayload"];
   requestAuth?: Parameters<NonNullable<SimpleStreamOptions["onPayload"]>>[2];
-  remoteCompactionState: ReturnType<typeof getRemoteCompactionState>;
-  continuationState: ReturnType<typeof getContinuationState>;
+  remoteCompactionState: ReturnType<CompactionState["getRemoteCompactionState"]>;
+  continuationState: ReturnType<CompactionState["getContinuationState"]>;
 }): Promise<unknown> {
   // Pi's original onPayload runs before transport-specific rewriting. In this
   // extension that hook is before_provider_request, and it is what adds
@@ -804,6 +777,7 @@ export async function prepareHttpFallbackPayload(params: {
 }
 
 async function fallbackToHttp(
+  state: CompactionState,
   model: ResponsesModel,
   context: Context,
   options: SimpleStreamOptions | undefined,
@@ -812,13 +786,13 @@ async function fallbackToHttp(
 ): Promise<void> {
   const sessionId = options?.sessionId;
   const scope = requestScope(model, options?.apiKey, options?.headers);
-  const remote = sessionId ? getRemoteCompactionState(sessionId) : undefined;
-  const continuation = sessionId ? getContinuationState(sessionId) : undefined;
+  const remote = sessionId ? state.getRemoteCompactionState(sessionId) : undefined;
+  const continuation = sessionId ? state.getContinuationState(sessionId) : undefined;
   const remoteCompactionState = scope !== undefined && remote?.requestScope === scope ? remote : undefined;
   const continuationState = scope !== undefined && continuation?.requestScope === scope ? continuation : undefined;
   const originalOnPayload = options?.onPayload;
   if (sessionId) {
-    setTransportContextState(sessionId, {
+    state.setTransportContextState(sessionId, {
       modelKey: modelKey(model),
       contextLength: context.messages.length + 1,
       requestScope: scope,
@@ -845,37 +819,108 @@ async function fallbackToHttp(
 }
 
 async function fallbackToHttpResponses(
+  state: CompactionState,
   model: Model<any>,
   context: Context,
   options: SimpleStreamOptions | undefined,
   eventStream: AssistantMessageEventStreamLike,
   signal?: AbortSignal,
 ): Promise<void> {
-  return await fallbackToHttp(asResponsesModel(model), context, options, eventStream, signal);
+  return await fallbackToHttp(state, asResponsesModel(model), context, options, eventStream, signal);
 }
 
-export function createOpenAIWebSocketStreamFn(
+export interface OpenAIResponsesTransportOwner {
+  readonly state: CompactionState;
+  readonly streamSimple: StreamFunction;
+  readonly pendingRequests: number;
+  readonly queuedSessions: number;
+  readonly connections: number;
+  resume(): void;
+  resetForModelChange(): void;
+  revoke(): void;
+  drain(): Promise<void>;
+  dispose(): Promise<void>;
+  releaseSession(sessionId: string | undefined): void;
+}
+
+function ignorePreviousFailure(): void {}
+
+export function createOpenAIWebSocketStreamOwner(
+  state: CompactionState,
   managerOptions: OpenAIWebSocketManagerOptions = {},
-): StreamFunction {
-  return (model, context, options) => {
+): OpenAIResponsesTransportOwner {
+  const wsRegistry = new Map<string, WsSession>();
+  const wsRequestTails = new Map<string, Promise<void>>();
+  const pending = new Set<Promise<void>>();
+  let cancellation = new AbortController();
+  setMaxListeners(128, cancellation.signal);
+  let accepting = true, disposed = false;
+  let cleanupFailed = false;
+  let cleanupFailure: unknown;
+  let clearRequestShapes = false;
+  let draining: Promise<void> | undefined, disposal: Promise<void> | undefined;
+  function releaseWsSession(sessionId: string | undefined): void {
+    if (!sessionId) return;
+    const session = wsRegistry.get(sessionId);
+    if (!session) return;
+    try { session.manager.close(); wsRegistry.delete(sessionId); }
+    catch (error) { cleanupFailed = true; cleanupFailure = error; }
+  }
+  function revoke(): void {
+    accepting = false;
+    if (!cancellation.signal.aborted) cancellation.abort(new Error("Responses owner revoked"));
+    for (const sessionId of wsRegistry.keys()) releaseWsSession(sessionId);
+    if (cleanupFailed) throw cleanupFailure;
+  }
+  async function waitForPending(): Promise<void> {
+    // Admission is closed before this snapshot; tails remain until requests really settle.
+    const settled = await Promise.allSettled(pending);
+    state.clearLiveContinuations();
+    if (clearRequestShapes) { state.clearRequestShapes(); clearRequestShapes = false; }
+    for (const result of settled) if (result.status === "rejected") throw result.reason;
+    if (cleanupFailed) throw cleanupFailure;
+  }
+  function drain(): Promise<void> {
+    if (accepting) return Promise.reject(new Error("Revoke Responses owner before draining"));
+    return draining ??= waitForPending().catch(error => {
+      cleanupFailed = true; cleanupFailure = error; throw error;
+    }).finally(() => { draining = undefined; });
+  }
+  const streamSimple: StreamFunction = (model, context, callerOptions) => {
+    if (!accepting || disposed) throw new Error("Responses owner is revoked or disposed");
+    if (pending.size >= 128) throw new Error("Responses owner request queue exceeds capacity");
+    const ownerSignal = cancellation.signal;
+    const callerSignal = callerOptions?.signal;
+    const requestCancellation = callerSignal ? new AbortController() : undefined;
+    const forwardAbort = () => requestCancellation!.abort(callerSignal!.aborted ? callerSignal!.reason : ownerSignal.reason);
+    const callerAbort = callerSignal ? addAbortListener(callerSignal, forwardAbort) : undefined;
+    const ownerAbort = callerSignal ? addAbortListener(ownerSignal, forwardAbort) : undefined;
+    const signal = requestCancellation?.signal ?? ownerSignal;
+    if (callerSignal?.aborted) forwardAbort();
+    const options = { ...callerOptions, signal };
     const eventStream = createEventStream();
 
-    queueMicrotask(() => {
       const run = async () => {
+        signal.throwIfAborted();
         const sessionId = options?.sessionId;
         // Stream functions do not receive ExtensionContext. Session startup
         // snapshots trusted ctx.cwd config; calls without a session safely use
         // global/env config only rather than process.cwd project config.
-        const cfg = sessionId ? getSessionConfig(sessionId) ?? loadConfig() : loadConfig();
+        const cfg = sessionId ? state.getSessionConfig(sessionId) ?? loadConfig() : loadConfig();
         const modelInfo = getModelDescriptor(model);
-        if (!cfg.enabled || !cfg.usePreviousResponseId || !isDirectOpenAIResponsesModel(model)) {
-          return await fallbackToHttpResponses(model, context, options, eventStream);
+        if (!cfg.enabled || !isDirectOpenAIResponsesModel(model)) {
+          const native = streamSimpleOpenAIResponses(asResponsesModel(model), context, options);
+          for await (const event of native) eventStream.push(event);
+          return;
+        }
+        if (!cfg.usePreviousResponseId) {
+          return await fallbackToHttpResponses(state, model, context, options, eventStream);
         }
 
         const apiKey = options?.apiKey;
         const transport = resolveWsTransport(options);
         if (transport === "sse" || !sessionId || !apiKey) {
-          return await fallbackToHttpResponses(model, context, options, eventStream);
+          return await fallbackToHttpResponses(state, model, context, options, eventStream);
         }
 
         let session = wsRegistry.get(sessionId);
@@ -901,6 +946,8 @@ export function createOpenAIWebSocketStreamFn(
             requestScope: scope,
             lastContextLength: 0,
             lastRequestKey: undefined,
+            lastSuccessfulResponseId: undefined,
+            lastSuccessfulServiceTier: undefined,
             warmUpAttempted: false,
             broken: false,
           };
@@ -918,20 +965,21 @@ export function createOpenAIWebSocketStreamFn(
             }
             session.broken = true;
             wsRegistry.delete(sessionId);
+            signal.throwIfAborted();
             if (transport === "websocket") throw error;
-            return await fallbackToHttpResponses(model, context, options, eventStream);
+            return await fallbackToHttpResponses(state, model, context, options, eventStream);
           }
         }
+        signal.throwIfAborted();
 
         if (session.broken || !session.manager.isConnected()) {
           if (transport === "websocket") {
             throw new Error("WebSocket session disconnected");
           }
           releaseWsSession(sessionId);
-          return await fallbackToHttpResponses(model, context, options, eventStream);
+          return await fallbackToHttpResponses(state, model, context, options, eventStream);
         }
 
-        const signal = options?.signal;
         const typedOptions = options as WsOptions | undefined;
         const functionTools = convertTools(context.tools);
         const requestReasoning = resolveResponsesReasoning(model, typedOptions);
@@ -949,9 +997,22 @@ export function createOpenAIWebSocketStreamFn(
             // best effort only
           }
         }
+        signal.throwIfAborted();
 
-        const remote = getRemoteCompactionState(sessionId);
-        const continuation = getContinuationState(sessionId);
+        const remote = state.getRemoteCompactionState(sessionId);
+        let continuation = state.getContinuationState(sessionId);
+        // A cold connection/HTTP continuation has no final-tier proof in this WS owner.
+        // Discard only ephemeral continuation before hooks; durable/opaque history stays intact.
+        if (continuation && (session.lastSuccessfulResponseId === undefined ||
+          continuation.responseId !== session.lastSuccessfulResponseId ||
+          continuation.modelKey !== currentModelKey || continuation.requestScope !== scope)) {
+          state.clearContinuationState(sessionId);
+          continuation = undefined;
+          session.lastRequestKey = undefined;
+          session.lastSuccessfulResponseId = undefined;
+          session.lastSuccessfulServiceTier = undefined;
+          session.lastContextLength = 0;
+        }
         const remoteCompactionState = scope !== undefined && remote?.requestScope === scope ? remote : undefined;
         const continuationState = scope !== undefined && continuation?.requestScope === scope ? continuation : undefined;
         const requestKey = buildWsRequestKey({
@@ -966,13 +1027,7 @@ export function createOpenAIWebSocketStreamFn(
           remoteCompactionState && remoteCompactionState.modelKey === currentModelKey
             ? undefined
             : incrementalAllowed
-              ? session.manager.previousResponseId ??
-                (
-                  continuationState?.modelKey === currentModelKey &&
-                  typeof continuationState.contextLength === "number"
-                    ? continuationState.responseId
-                    : undefined
-                )
+              ? session.lastSuccessfulResponseId
               : undefined;
         const baselineContextLength =
           continuationState?.modelKey === currentModelKey && typeof continuationState.contextLength === "number"
@@ -998,13 +1053,16 @@ export function createOpenAIWebSocketStreamFn(
         });
 
         const nextPayload = (await options?.onPayload?.(payload, model, options)) ?? payload;
+        const requestServiceTier = (nextPayload as { service_tier?: WsOptions["serviceTier"] }).service_tier;
+        signal?.throwIfAborted();
+        assertWsContinuationTier(session, (nextPayload as { previous_response_id?: unknown }).previous_response_id, requestServiceTier);
         try {
           session.manager.send(nextPayload as Parameters<OpenAIWebSocketManager["send"]>[0]);
-          session.lastRequestKey = requestKey;
         } catch (error) {
           releaseWsSession(sessionId);
+          signal.throwIfAborted();
           if (transport === "websocket") throw error;
-          return await fallbackToHttpResponses(model, context, options, eventStream, signal);
+          return await fallbackToHttpResponses(state, model, context, options, eventStream, signal);
         }
 
         eventStream.push({
@@ -1053,12 +1111,16 @@ export function createOpenAIWebSocketStreamFn(
               const assistantMsg = buildAssistantMessageFromResponse(
                 response,
                 model,
-                typedOptions?.serviceTier,
+                requestServiceTier,
               );
-              if (assistantMsg.stopReason === "error") {
+              if (assistantMsg.stopReason === "error" || !response.id ||
+                (response.status !== "completed" && response.status !== "incomplete")) {
                 // Safety/content-filter and unknown incomplete reasons are hard
                 // stops, not token truncation. Do not advance continuation or
                 // emit `length`, which would make threshold logic auto-continue.
+                assistantMsg.stopReason = "error";
+                assistantMsg.errorMessage = response.error?.message ?? response.incomplete_details?.reason ??
+                  "OpenAI WebSocket response has no successful continuation boundary.";
                 eventStream.push({ type: "error", reason: "error", error: assistantMsg });
                 resolve();
                 return;
@@ -1068,8 +1130,11 @@ export function createOpenAIWebSocketStreamFn(
               // in the continuation baseline so the next turn sends only the
               // messages added after the just-finished response.
               const completedContextLength = capturedContextLength + 1;
+              session.lastRequestKey = requestKey;
+              session.lastSuccessfulResponseId = response.id;
+              session.lastSuccessfulServiceTier = requestServiceTier;
               session.lastContextLength = completedContextLength;
-              setContinuationState(sessionId, {
+              state.setContinuationState(sessionId, {
                 responseId: response.id,
                 modelKey: currentModelKey,
                 updatedAt: Date.now(),
@@ -1127,25 +1192,58 @@ export function createOpenAIWebSocketStreamFn(
       };
 
       const requestSessionId = options?.sessionId;
-      const execution = requestSessionId
-        ? serializeWsSessionRequest(requestSessionId, run)
-        : run();
-      execution.catch((error) => {
+      const previous = requestSessionId ? wsRequestTails.get(requestSessionId) : undefined;
+      const execution = (previous ?? Promise.resolve()).catch(ignorePreviousFailure).then(run);
+      let tracked: Promise<void>;
+      tracked = execution.catch((error) => {
         const errorMessage = error instanceof Error ? error.message : unknownText(error);
         const sessionId = options?.sessionId;
         if (sessionId) releaseWsSession(sessionId);
+        const failure: AssistantMessage = buildStreamErrorAssistantMessage({ model: getModelDescriptor(model), errorMessage });
+        failure.stopReason = signal.aborted ? "aborted" : "error";
         eventStream.push({
           type: "error",
-          reason: options?.signal?.aborted ? "aborted" : "error",
-          error: buildStreamErrorAssistantMessage({
-            model: getModelDescriptor(model),
-            errorMessage,
-          }),
+          reason: signal.aborted ? "aborted" : "error",
+          error: failure,
         });
         eventStream.end();
+      }).finally(() => {
+        callerAbort?.[Symbol.dispose]();
+        ownerAbort?.[Symbol.dispose]();
+        pending.delete(tracked);
+        if (requestSessionId && wsRequestTails.get(requestSessionId) === tracked) wsRequestTails.delete(requestSessionId);
       });
-    });
+      pending.add(tracked);
+      if (requestSessionId) wsRequestTails.set(requestSessionId, tracked);
 
     return eventStream;
+  };
+  return {
+    state, streamSimple, revoke, drain, releaseSession: releaseWsSession,
+    get pendingRequests() { return pending.size; },
+    get queuedSessions() { return wsRequestTails.size; },
+    get connections() { return wsRegistry.size; },
+    resetForModelChange() {
+      clearRequestShapes = true;
+      // A payload hook can await setModel: never wait for that containing request here.
+      // The owner retains drain failure for resume/dispose and the host shutdown join.
+      try { revoke(); } finally { void drain().catch(ignorePreviousFailure); }
+    },
+    resume() {
+      if (disposed) throw new Error("Responses owner is disposed");
+      if (accepting) return;
+      if (pending.size || draining) throw new Error("Responses owner is still draining");
+      if (cleanupFailed) throw cleanupFailure;
+      cancellation = new AbortController();
+      setMaxListeners(128, cancellation.signal);
+      accepting = true;
+    },
+    dispose() {
+      if (disposal) return disposal;
+      disposed = true;
+      disposal = Promise.resolve().then(drain).then(() => { state.dispose(); });
+      try { revoke(); } catch { /* drain reports cleanup failure after all requests settle */ }
+      return disposal;
+    },
   };
 }

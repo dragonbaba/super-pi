@@ -14,11 +14,12 @@ const root = mkdtempSync(join(tmpdir(), "sp-shell-bench-"));
 process.env.SP_CODING_AGENT_DIR = join(root, "agent");
 mkdirSync(join(root, "agent", "config"), { recursive: true });
 writeFileSync(join(root, "agent", "config", "background-shell-limits.json"), '{"maxConcurrent":4,"maxTasks":8}');
-const { BackgroundShellTasks } = await import("../../packages/extensions/resource-lifecycle-guard/background-shell.ts");
+const { SessionTasks } = await import("../../packages/coding-agent/src/core/tasks/session-tasks.ts");
+const { createExtensionRuntime } = await import("../../packages/coding-agent/src/core/extensions/loader.ts");
 const { createEventBus } = await import("../../packages/coding-agent/src/core/event-bus.ts");
 const { createBashToolDefinition } = await import("../../packages/coding-agent/src/core/tools/bash.ts");
 const { registerLocalShellBackend, getShellCwdBinding } = await import("../../packages/coding-agent/src/core/tools/shell-cwd.ts");
-const { attachBackgroundShellLaunch, attachForegroundShellLaunch } = await import("../../packages/coding-agent/src/core/tools/shell-background.ts");
+const { attachForegroundShellLaunch } = await import("../../packages/coding-agent/src/core/tools/shell-background.ts");
 const { TASK_COMPLETION_CHARS } = await import("../../packages/extensions/managed-tasks.ts");
 const updates = 1000, chunk = Buffer.from("evidence ".repeat(128) + "\n");
 let pumping = false, chunkPromises = 0, chunkControllers = 0;
@@ -28,21 +29,22 @@ globalThis.AbortController = class extends NativeController { constructor() { su
 
 let sessionSequence = 0;
 function harness(durable = false) {
-	const events = createEventBus(), hooks: unknown[] = [], tools = new Map<string, any>();
+	const events = createEventBus(), tools = new Map<string, any>(), runtime = createExtensionRuntime();
 	let notifications = 0, notificationChars = 0;
-	const pi: any = { events, registerTool: (tool: any) => tools.set(tool.name, tool), registerCommand() {}, on: (_name: string, fn: unknown) => hooks.push(fn), sendMessage: (message: { content: string }) => {
+	runtime.sendMessage = message => {
 		notifications++; notificationChars += message.content.length;
 		assert.ok(message.content.length <= TASK_COMPLETION_CHARS);
-	} };
-	const manager = new BackgroundShellTasks(pi);
-	pi.getAllTools = () => [...tools.values()];
+	};
+	const native = runtime.nativeTasks = new SessionTasks(runtime, events), manager = native.shell;
+	tools.set("tasks", native.definition);
+	runtime.getAllTools = () => [{ name: "bash", supportsManagedBackground: true }, ...tools.values()];
 	const ctx: any = { cwd: root, mode: "tui", getActiveTools: () => ["bash", "tasks"] };
 	if (durable) {
 		const id = `background-profile-${sessionSequence++}`, file = join(root, `${id}.jsonl`);
 		ctx.sessionManager = { getSessionFile: () => file, getSessionId: () => id, getLeafId: () => "branch" };
 	}
-	return { manager, ctx, events, tools, notifications: () => notifications, notificationChars: () => notificationChars,
-		async dispose() { await manager.dispose(); hooks.length = 0; tools.clear(); events.clear(); } };
+	return { manager, native, runtime, ctx, events, tools, notifications: () => notifications, notificationChars: () => notificationChars,
+		async dispose() { try { await native.dispose(); } finally { runtime.invalidate(); tools.clear(); events.clear(); } } };
 }
 
 function sampledSites(node: any, sites: Map<string, number>): number {
@@ -84,15 +86,16 @@ async function profile(mode: "foreground" | "background" | "managed-foreground" 
 	} });
 	const tool = createBashToolDefinition(root, { operations: backend, exposeSessionEnvironment: false });
 	const input = { command: "fixture", cwd: ".", background, timeout: 10 };
-	if (background) attachBackgroundShellLaunch(input, h.manager.createLaunch("bash", "fixture", input.command, root, h.ctx, () => {}));
-	if (managed) attachForegroundShellLaunch(input, h.manager.createForegroundLaunch("bash", "fixture", input.command, root, h.ctx, () => {}));
+	const grant = background || managed ? await h.native.prepareInvocation({ type: "tool_call", toolName: "bash", toolCallId: "fixture", input }, h.ctx) : undefined;
+	const executionInput = (grant?.consume(input, "fixture", "bash") ?? input) as typeof input;
+	if (grant) for (const name of ["input", "values", "binding", "ctx", "runtime", "owner", "authority"]) assert.equal((grant as any)[name], undefined);
 	const inspector = new Session(); inspector.connect(); globalThis.gc!();
 	const publish = updateCallback(value => { structuredClone(value); publications++; });
 	await inspector.post("HeapProfiler.enable");
 	await inspector.post("HeapProfiler.startSampling", { samplingInterval: 4096, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true });
 	let result: any;
 	try {
-		result = await tool.execute("fixture", input, undefined, publish, h.ctx);
+		result = await tool.execute("fixture", executionInput, undefined, publish, h.ctx);
 		if (background || mode === "handoff") {
 			const id = result.details.backgroundTask.id;
 			const task = await h.manager.tasks.wait(id, 60_000);
@@ -106,6 +109,8 @@ async function profile(mode: "foreground" | "background" | "managed-foreground" 
 		assert.equal(received, updates); assert.equal(chunkWrites, 0); if (background) assert.equal(publications, 0);
 		if (mode === "handoff") assert.equal(publications, publicationsAtHandoff);
 		const weak: WeakRef<object>[] = [new WeakRef(input), new WeakRef(backend), new WeakRef(tool), new WeakRef(h.manager)];
+		weak.push(new WeakRef(h.native), new WeakRef(h.runtime), new WeakRef(executionInput));
+		if (grant) weak.push(new WeakRef(grant));
 		const binding = getShellCwdBinding(input); assert.ok(binding?.isReleased); weak.push(new WeakRef(binding!));
 		return { mode, updates: received, publications, publicationsAfterHandoff: publicationsAtHandoff === undefined ? undefined : publications - publicationsAtHandoff, chunkWrites,
 			history: (h.manager.tasks as any).history?.counters, notifications: h.notifications(), notificationChars: h.notificationChars(), sampledBytesPerChunk: sampledBytes / updates,

@@ -94,7 +94,8 @@ for (const mode of ['regular', 'fullscreen'] as const) {
       let outcome: Promise<unknown> | undefined;
       try {
         assert.equal(await f.mode.init(), true);
-        if (failure === 'component' || failure === 'both') f.internal.renderer.addChild({ render: () => [], invalidate() {}, [RELEASE_COMPONENT_RENDER_CACHE]() { throw componentError; } });
+        // Both renderers own the chat tree; fullscreen's explicit layout does not mount renderer.children.
+        if (failure === 'component' || failure === 'both') f.internal.chatContainer.addChild({ render: () => [], invalidate() {}, [RELEASE_COMPONENT_RENDER_CACHE]() { throw componentError; } });
         if (failure !== 'none') f.internal.terminalDisconnected = true;
         const operation: Promise<void> = f.internal.shutdown();
         outcome = operation.then(() => undefined, error => error);

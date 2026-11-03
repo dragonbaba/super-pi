@@ -6,7 +6,7 @@
  */
 
 import type { AgentMessage, StreamFn } from "@super-pi/agent-core";
-import type { RetryCallbacks, RetryPolicy } from "@super-pi/ai";
+import type { ProviderHeaders, RetryCallbacks, RetryPolicy } from "@super-pi/ai";
 import { contentText } from "@super-pi/ai";
 import type { Model, SimpleStreamOptions, Usage } from "@super-pi/ai/compat";
 import {
@@ -71,7 +71,7 @@ export interface GenerateBranchSummaryOptions {
 	/** API key for the model */
 	apiKey?: string;
 	/** Request headers for the model */
-	headers?: Record<string, string>;
+	headers?: ProviderHeaders;
 	/** Provider-scoped environment values for the model */
 	env?: Record<string, string>;
 	/** Abort signal for cancellation */

@@ -17,6 +17,7 @@ import {
 	GREP_TRAILING_LINE_FEED_PATTERN,
 } from "./grep-regex.ts";
 import { resolveToCwd } from "./path-utils.ts";
+import { consumeToolPath } from "../files/tool-path-authorization.ts";
 import { getTextOutput, invalidArgText, shortenPath, str } from "./render-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import {
@@ -259,15 +260,7 @@ export function createGrepToolDefinition(
 		parameters: grepSchema,
 		async execute(
 			_toolCallId,
-			{
-				pattern,
-				path: searchDir,
-				glob,
-				ignoreCase,
-				literal,
-				context,
-				limit,
-			}: {
+			input: {
 				pattern: string;
 				path?: string;
 				glob?: string;
@@ -280,6 +273,8 @@ export function createGrepToolDefinition(
 			_onUpdate?,
 			_ctx?,
 		) {
+			const { pattern, path: searchDir, glob, ignoreCase, literal, context, limit } = input;
+			const authorizedPath = consumeToolPath(input, "grep", _toolCallId);
 			return new Promise((resolve, reject) => {
 				if (signal?.aborted) {
 					reject(new Error("Operation aborted"));
@@ -301,7 +296,7 @@ export function createGrepToolDefinition(
 							return;
 						}
 
-						const searchPath = resolveToCwd(searchDir || ".", cwd);
+						const searchPath = authorizedPath ?? resolveToCwd(searchDir || ".", cwd);
 						const ops = customOps ?? defaultGrepOperations;
 						let isDirectory: boolean;
 						try {

@@ -16,6 +16,12 @@ ajv.addSchema(projectSchema, projectUrl.href);
 const validateGlobal = ajv.getSchema(globalUrl.href)!;
 const validateProject = ajv.getSchema(projectUrl.href)!;
 
+test("fullscreen restores the original terminal by default and transcript output remains explicit", () => {
+	assert.equal(SettingsManager.inMemory().getFullscreenExitOutput(), "resume-hint");
+	assert.equal(SettingsManager.inMemory({ fullscreenExitOutput: "transcript" }).getFullscreenExitOutput(), "transcript");
+	assert.equal(globalSchema.properties.fullscreenExitOutput.default, "resume-hint");
+});
+
 function storage(global: Record<string, unknown>, project: Record<string, unknown> = {}): SettingsStorage {
 	const contents: Record<SettingsScope, string> = { global: JSON.stringify(global), project: JSON.stringify(project) };
 	return {

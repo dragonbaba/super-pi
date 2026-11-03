@@ -37,7 +37,7 @@ This environment loads the checked-out compatibility package directly:
 
 Do not use an upstream npm install command for this build. For the best result, use a terminal font that includes Powerline glyphs and emoji.
 
-This compatibility package targets Pi `0.84.x` and declares Pi's coding-agent and TUI packages as
+This compatibility package targets Super Pi `1.x` and legacy `0.84.x` and declares Pi's coding-agent and TUI packages as
 peer dependencies. On an unsupported runtime it disables itself and keeps Pi's native footer. If the
 runtime version cannot be obtained from Pi's public `VERSION` export, it is treated as unknown and is
 disabled rather than guessed.

@@ -1,4 +1,5 @@
 import { statSync } from "node:fs";
+import { resolve } from "node:path";
 import {
 	consumeSubagentWorkspaceDelegation,
 	type SessionPermissionMode,
@@ -8,6 +9,8 @@ import { canonicalWorkspace, isPathInside } from "./child-security.ts";
 
 export interface DelegatedTaskPolicy extends SubagentWorkspaceGrant {
 	allowMutation: boolean;
+	assertCurrent(): void;
+	revocationSignal: AbortSignal;
 }
 
 function validMode(value: unknown): value is SessionPermissionMode {
@@ -36,7 +39,7 @@ export function consumeDelegatedTaskPolicies(
 	for (let index = 0; index < requestedCwds.length; index++) {
 		const grant = delegation.grants[index];
 		if (!grant || !validMode(grant.permissionMode)) throw new Error("Subagent workspace grant is invalid.");
-		const expected = canonicalWorkspace(requestedCwds[index] ?? canonicalPrimary);
+		const expected = canonicalWorkspace(resolve(canonicalPrimary, requestedCwds[index] ?? "."));
 		const granted = canonicalWorkspace(grant.canonicalCwd);
 		if (expected !== granted) throw new Error("Subagent workspace grant does not match the requested canonical cwd.");
 		const identity = statSync(granted);
@@ -56,7 +59,7 @@ export function consumeDelegatedTaskPolicies(
 		if (grant.source === "primary" && !isPathInside(granted, canonicalPrimary)) {
 			throw new Error("Subagent primary-workspace grant escapes the active project.");
 		}
-		policies.push({ ...grant, canonicalCwd: granted, allowMutation: grant.writable });
+		policies.push({ ...grant, canonicalCwd: granted, allowMutation: grant.writable, assertCurrent: delegation.assertCurrent, revocationSignal: delegation.revocationSignal });
 	}
 	return policies;
 }

@@ -9,7 +9,7 @@ Compatibility validation performed against Pi `0.84.0` and `0.84.1`:
 - Package smoke test, including `ProviderHeaders` null-deletion semantics
 - Pi extension/resource startup through `pi --list-models`
 
-The overlay accepts only `>=0.84.0 <0.85.0`. Pi 0.84 changed resolved provider
+The overlay accepts Super Pi `^1.0.0` and legacy `>=0.84.0 <0.85.0`. Pi 0.84 changed resolved provider
 headers to `string | null`; pi-ai stream calls preserve those markers unchanged,
 while direct remote-compaction HTTP requests apply deletions case-insensitively
 and never serialize null as a header value. The legacy `compact()` fallback is

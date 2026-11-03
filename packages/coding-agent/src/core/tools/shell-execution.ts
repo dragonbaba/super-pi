@@ -9,6 +9,8 @@ export interface ShellProcessResult {
   observationError?: string;
   secondaryObservationError?: string;
   observationErrorsOmitted?: true;
+  /** Producer confirmation for the entire owned process family, not just stdout or root exit. */
+  processCleanup?: "complete" | "unconfirmed";
 }
 const PROCESS_RESULT = Symbol.for("pi.shell-process-result.v1");
 
@@ -16,6 +18,7 @@ const PROCESS_RESULT = Symbol.for("pi.shell-process-result.v1");
 export function normalizeShellProcessResult(result: ShellProcessResult): ShellProcessResult {
   const observation = result.observation;
   if (result.exitCode !== null && !Number.isSafeInteger(result.exitCode)
+    || result.processCleanup !== undefined && result.processCleanup !== "complete" && result.processCleanup !== "unconfirmed"
     || result.termination !== undefined && !TERMINATIONS.has(result.termination)
     || result.termination === "exit" && result.exitCode === null
     || (result.termination === "signal" || result.termination === "not_started") && result.exitCode !== null
@@ -36,6 +39,7 @@ export function normalizeShellProcessResult(result: ShellProcessResult): ShellPr
   }
   if ((result.inputError?.length ?? 0) <= 1000 && (result.observationError?.length ?? 0) <= 1000 && (result.secondaryObservationError?.length ?? 0) <= 1000) return result;
   return { exitCode: result.exitCode, observation: result.observation, termination: result.termination,
+	processCleanup: result.processCleanup,
     inputError: result.inputError?.slice(0, 1000), observationError: result.observationError?.slice(0, 1000),
     secondaryObservationError: result.secondaryObservationError?.slice(0, 1000), observationErrorsOmitted: result.observationErrorsOmitted };
 }
@@ -45,6 +49,7 @@ export function appendShellObservationError(result: ShellProcessResult, message:
   result = normalizeShellProcessResult(result);
   const detail = message.slice(0, 1000);
   return { exitCode: result.exitCode, observation: result.observation, termination: result.termination, inputError: result.inputError,
+	processCleanup: result.processCleanup,
     observationError: result.observationError ?? detail,
     secondaryObservationError: result.observationError === undefined ? undefined : result.secondaryObservationError ?? detail,
     observationErrorsOmitted: result.secondaryObservationError === undefined ? result.observationErrorsOmitted : true };

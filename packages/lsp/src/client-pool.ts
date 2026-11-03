@@ -5,12 +5,14 @@ import type { LspServerAdapter } from "./types.js";
 const DEFAULT_IDLE_MS = 10 * 60_000;
 const FAILURE_BACKOFF_MS = 3 * 60_000;
 const MAX_FAILURE_BACKOFFS = 64;
+const MAX_CLIENTS = 8;
 
 interface PoolEntry {
 	client: LspClient;
 	rootKey: string;
 	leases: number;
 	idleTimer?: NodeJS.Timeout;
+	closing?: Promise<void>;
 }
 
 interface FailureEntry {
@@ -36,6 +38,7 @@ export class LspClientPool {
 	#failures = new Map<string, FailureEntry>();
 	#idleMs: number;
 	#shuttingDown = false;
+	#shutdownOperation?: Promise<void>;
 
 	constructor(idleMs = DEFAULT_IDLE_MS) {
 		this.#idleMs = idleMs;
@@ -43,7 +46,7 @@ export class LspClientPool {
 
 	reopen() {
 		if (!this.#shuttingDown) return;
-		if (this.#initializing.size > 0 || this.#entries.size > 0) {
+		if (this.#shutdownOperation || this.#initializing.size > 0 || this.#entries.size > 0) {
 			throw new Error("Cannot reopen the LSP client pool while shutdown is still draining.");
 		}
 		this.#shuttingDown = false;
@@ -56,14 +59,14 @@ export class LspClientPool {
 			);
 		}
 		const { key, rootKey } = poolIdentity(adapter, root);
-		const existing = this.#entries.get(key);
-		if (existing?.client.running) return this.#checkout(key, existing, true);
-
 		const pending = this.#initializing.get(key);
 		if (pending) {
 			const client = await pending;
 			return this.#checkoutInitialized(key, client, true);
 		}
+		const existing = this.#entries.get(key);
+		if (existing?.closing) throw new Error("The LSP client is still closing.");
+		if (existing?.client.running) return this.#checkout(key, existing, true);
 
 		const failure = this.#failures.get(key);
 		if (failure && failure.until > Date.now()) {
@@ -80,6 +83,9 @@ export class LspClientPool {
 					+ `Release its active operation before selecting ${adapter.name}.`,
 				);
 			}
+		}
+		if (!this.#workspaceClaims.has(rootKey) && this.#workspaceClaims.size >= MAX_CLIENTS) {
+			throw new Error(`The LSP client pool is limited to ${MAX_CLIENTS} workspaces. Close idle services before opening another.`);
 		}
 
 		// Reserve the workspace synchronously. A sibling acquire can now only join this
@@ -102,24 +108,46 @@ export class LspClientPool {
 
 	async discard(lease: ClientLease) {
 		const entry = this.#entries.get(lease.key);
-		if (entry?.client === lease.client) this.#removeEntry(lease.key, entry);
-		await lease.client.shutdown();
+		if (entry?.client === lease.client) await this.#closeEntry(lease.key, entry);
+		else await lease.client.shutdown();
 	}
 
-	async shutdownAll() {
+	shutdownAll(): Promise<void> {
 		this.#shuttingDown = true;
+		return this.#shutdownOperation ??= Promise.resolve().then(() => this.#performShutdown());
+	}
+
+	async #performShutdown() {
 		for (const entry of this.#entries.values()) {
 			if (entry.idleTimer) clearTimeout(entry.idleTimer);
+			entry.idleTimer = undefined;
 		}
+		try {
+			const closing: Promise<void>[] = [];
+			for (const [key, entry] of this.#entries) closing.push(this.#closeEntry(key, entry));
+			const results = await Promise.allSettled(closing);
+			// Closing live clients also cancels initialize requests. Waiting for initialization
+			// first would leave a revoked server running until its ordinary request timeout.
+			await Promise.allSettled(this.#initializing.values());
+			for (const result of results) if (result.status === "rejected") throw result.reason;
+			this.#workspaceClaims.clear();
+			this.#failures.clear();
+		} finally { this.#shutdownOperation = undefined; }
+	}
 
-		const pending = [...this.#initializing.values()];
-		await Promise.allSettled(pending);
-		const clients = [...new Set([...this.#entries.values()].map((entry) => entry.client))];
-		this.#entries.clear();
-		this.#initializing.clear();
-		this.#workspaceClaims.clear();
-		this.#failures.clear();
-		await Promise.allSettled(clients.map((client) => client.shutdown()));
+	#closeEntry(key: string, entry: PoolEntry): Promise<void> {
+		if (entry.idleTimer) clearTimeout(entry.idleTimer);
+		entry.idleTimer = undefined;
+		return entry.closing ??= Promise.resolve().then(async () => {
+			try {
+				await entry.client.shutdown();
+				this.#removeEntry(key, entry);
+			} catch (error) {
+				// Retain the exact failed client and close all admission until explicit recovery.
+				this.#shuttingDown = true;
+				throw error;
+			} finally { entry.closing = undefined; }
+		});
 	}
 
 	async #createClient(
@@ -133,27 +161,27 @@ export class LspClientPool {
 		let client: LspClient | undefined;
 		try {
 			if (superseded) {
-				this.#removeEntry(superseded.key, superseded.entry, false);
-				await superseded.entry.client.shutdown();
+				await this.#closeEntry(superseded.key, superseded.entry);
 			}
 
 			const stale = this.#entries.get(key);
 			if (stale) {
-				this.#removeEntry(key, stale, false);
-				await stale.client.shutdown();
+				await this.#closeEntry(key, stale);
 			}
 			if (this.#shuttingDown) throw new Error("The LSP client pool is shutting down.");
+			this.#workspaceClaims.set(rootKey, key);
 
 			client = new LspClient(adapter, adapter.defaultCommand, root, timeoutMs);
+			this.#entries.set(key, { client, rootKey, leases: 0 });
 			await client.start();
 			await client.initialize(root);
 			if (this.#shuttingDown || this.#workspaceClaims.get(rootKey) !== key) {
 				throw new Error("LSP initialization was cancelled before the client could be pooled.");
 			}
-			this.#entries.set(key, { client, rootKey, leases: 0 });
 			return client;
 		} catch (error) {
-			if (client) await client.shutdown();
+			const entry = this.#entries.get(key);
+			if (entry && entry.client === client) await this.#closeEntry(key, entry);
 			const message = error instanceof Error ? error.message : String(error);
 			if (!this.#shuttingDown) this.#recordFailure(key, message);
 			if (this.#workspaceClaims.get(rootKey) === key) this.#workspaceClaims.delete(rootKey);
@@ -175,7 +203,7 @@ export class LspClientPool {
 
 	#checkoutInitialized(key: string, client: LspClient, reused: boolean) {
 		const entry = this.#entries.get(key);
-		if (!entry || entry.client !== client || !client.running || this.#shuttingDown) {
+		if (!entry || entry.client !== client || entry.closing || !client.running || this.#shuttingDown) {
 			throw new Error("The initialized LSP client is no longer available.");
 		}
 		return this.#checkout(key, entry, reused);
@@ -192,23 +220,28 @@ export class LspClientPool {
 
 	#scheduleIdle(key: string, entry: PoolEntry) {
 		if (entry.idleTimer) clearTimeout(entry.idleTimer);
-		if (this.#idleMs <= 0) return;
+		entry.idleTimer = undefined;
+		if (this.#idleMs <= 0 || this.#shuttingDown || entry.closing) return;
 		entry.idleTimer = setTimeout(() => {
+			entry.idleTimer = undefined;
 			if (this.#entries.get(key) !== entry || entry.leases > 0) return;
-			this.#removeEntry(key, entry);
-			void entry.client.shutdown();
+			void this.#closeEntry(key, entry).catch(observeIdleShutdown);
 		}, this.#idleMs);
 		entry.idleTimer.unref?.();
 	}
 
-	#removeEntry(key: string, entry: PoolEntry, releaseClaim = true) {
+	#removeEntry(key: string, entry: PoolEntry) {
 		if (entry.idleTimer) clearTimeout(entry.idleTimer);
-		this.#entries.delete(key);
-		if (releaseClaim && this.#workspaceClaims.get(entry.rootKey) === key) {
+		entry.idleTimer = undefined;
+		if (this.#entries.get(key) === entry) this.#entries.delete(key);
+		if (this.#workspaceClaims.get(entry.rootKey) === key) {
 			this.#workspaceClaims.delete(entry.rootKey);
 		}
 	}
 }
+
+// The pool retains the failed entry and closes admission; shutdownAll reports/retries it.
+function observeIdleShutdown(): void {}
 
 function poolIdentity(adapter: LspServerAdapter, root: string): PoolIdentity {
 	const command = adapter.defaultCommand;

@@ -17,8 +17,8 @@ interface PlanLaunchMenuOptions {
 	signal: AbortSignal;
 	isCurrent(): boolean;
 	initialScreen?: "main" | "tools";
-	start(signal: AbortSignal): void;
-	startWithTools(toolNames: string[], signal: AbortSignal): void;
+	start(signal: AbortSignal): void | Promise<void>;
+	startWithTools(toolNames: string[], signal: AbortSignal): void | Promise<void>;
 	settings(signal: AbortSignal): Promise<boolean>;
 }
 
@@ -84,7 +84,7 @@ export async function showPlanLaunchMenu(ctx: ExtensionContext, options: PlanLau
 		actions: {
 			start: async ({ signal }) => {
 				if (signal.aborted || !options.isCurrent()) return { kind: "rejected" };
-				options.start(signal);
+				await options.start(signal);
 				return { kind: "close" };
 			},
 			"toggle-tool": async ({ itemId, selected, signal }) => {
@@ -98,7 +98,7 @@ export async function showPlanLaunchMenu(ctx: ExtensionContext, options: PlanLau
 			},
 			"start-with-tools": async ({ signal }) => {
 				if (signal.aborted || !options.isCurrent()) return { kind: "rejected" };
-				options.startWithTools(Array.from(selectedNames), signal);
+				await options.startWithTools(Array.from(selectedNames), signal);
 				return { kind: "close" };
 			},
 			settings: async ({ signal }) => {

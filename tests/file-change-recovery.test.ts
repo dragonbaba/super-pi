@@ -1503,6 +1503,7 @@ test("N1 actual default SDK Session: view/verify/draft do not trigger provider c
   assert.equal(session.agent.state.pendingToolCalls.size, 0); assert.equal((session.extensionRunner as any).finalAuthorizations.size, 0);
   const file = manager.getSessionFile()!;
   session.dispose();
+  await session.waitForSessionLeaseRelease(); await options.resourceLoader.reload();
   ({ session } = await createAgentSession({ ...options, sessionManager: SessionManager.open(file) }));
   await session.bindExtensions({ mode: "tui", uiContext: ui });
   action = "View";

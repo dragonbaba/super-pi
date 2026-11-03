@@ -111,10 +111,11 @@ export default function structuredReadonlyCommandExtension(pi: ExtensionAPI): vo
           workspacePolicy.canonicalCwd,
         ));
       }
+      workspacePolicy.assertCurrent();
       const result = await executeBoundedCommand(prepared.executable, prepared.args, {
         cwd: prepared.cwd,
         env: prepared.env,
-        signal,
+        signal: signal ? AbortSignal.any([signal, workspacePolicy.revocationSignal]) : workspacePolicy.revocationSignal,
         timeoutMs: params.timeoutMs ?? DEFAULT_TIMEOUT_MS,
         maxBytes: DEFAULT_MAX_BYTES,
       });

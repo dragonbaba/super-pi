@@ -7,8 +7,8 @@
     "node": ">=22.19.0"
   },
   "peerDependencies": {
-    "@super-pi/ai": "0.84.x",
-    "@super-pi/coding-agent": "0.84.x",
+    "@super-pi/ai": "0.84.x || ^1.0.0",
+    "@super-pi/coding-agent": "0.84.x || ^1.0.0",
     "typebox": "*"
   },
   "peerDependenciesMeta": {

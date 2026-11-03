@@ -1,4 +1,7 @@
+import type { ToolDefinition } from "./types.ts";
 import { getShellCwdBinding } from "../tools/shell-cwd.ts";
+import type { SessionExecutionBoundary } from "../execution-boundary.ts";
+import type { NativePolicyInvocation } from "../execution-policy.ts";
 /**
  * Extension runner - executes extensions and manages their lifecycle.
  */
@@ -13,13 +16,14 @@ import type { ModelRegistry } from "../model-registry.ts";
 import type { ScopedModel } from "../model-resolver.ts";
 import { createScopedExtensionIdentifier } from "../prefix-manifest.ts";
 import type { SessionManager } from "../session-manager.ts";
-import type { BuildSystemPromptOptions } from "../system-prompt.ts";
+import type { BuildSystemPromptOptions, SystemPromptComposition } from "../system-prompt.ts";
 import { setOwnProperty } from "../../utils/record.ts";
 import type {
 	BeforeAgentStartEvent,
 	BeforeAgentStartEventResult,
 	BeforeProviderHeadersEvent,
 	BeforeProviderRequestEvent,
+	SupplementalSummaryHookScope,
 	CompactOptions,
 	ContextEvent,
 	ContextEventResult,
@@ -61,6 +65,9 @@ import type {
 	ResourcesDiscoverEvent,
 	ResourcesDiscoverResult,
 	SessionBeforeCompactResult,
+	SessionBeforeCompactEvent,
+	CompactionStrategyHandler,
+	RegisteredCompactionStrategy,
 	SessionBeforeForkResult,
 	SessionBeforeSwitchResult,
 	SessionBeforeShutdownResult,
@@ -276,6 +283,12 @@ const TRANSFORM_HOOK_EVENTS = new Set([
 	"tool_result",
 ]);
 const INTERACTION_HOOK_EVENTS = new Set(["input", "user_bash", "session_before_shutdown"]);
+// Intercepting calls and explicit completion boundaries only. Ordinary stream,
+// progress and observer delivery never acquire this lifecycle ownership.
+const OWNED_HOOK_EVENTS = new Set([
+	...SAFETY_HOOK_EVENTS, ...TRANSFORM_HOOK_EVENTS, ...INTERACTION_HOOK_EVENTS,
+	"agent_end", "agent_settled", "tool_execution_end", "session_compact", "session_compact_failed", "session_tree",
+]);
 
 export type ExtensionErrorListener = (error: ExtensionError) => void;
 
@@ -312,11 +325,21 @@ export async function emitSessionShutdownEvent(
 	extensionRunner: ExtensionRunner,
 	event: SessionShutdownEvent,
 ): Promise<boolean> {
-	if (extensionRunner.hasHandlers("session_shutdown")) {
-		await extensionRunner.emit(event);
-		return true;
-	}
-	return false;
+	let emitted = false, failed = false;
+	let failure: unknown;
+	try {
+		if (extensionRunner.hasHandlers("session_shutdown")) {
+			await extensionRunner.emit(event);
+			emitted = true;
+		}
+	} catch (error) { failed = true; failure = error; }
+	try {
+		// Normal shutdown, replacement and reload must join terminal cleanup.
+		const results = await Promise.allSettled([extensionRunner.disposeExecutionBoundary(), extensionRunner.disposeProviderOwners()]);
+		for (const result of results) if (result.status === "rejected") throw result.reason;
+	} catch (error) { if (!failed) { failed = true; failure = error; } }
+	if (failed) throw failure;
+	return emitted;
 }
 
 export async function emitProjectTrustEvent(
@@ -420,7 +443,13 @@ const noOpUIContext: ExtensionUIContext = {
 class ToolCallDeadline {
 	readonly controller = new AbortController();
 	readonly cancelled: Promise<never>;
+	readonly drained: Promise<void>;
 	private reject!: (reason: unknown) => void;
+	private finishDrain!: () => void;
+	// Delivery, the actual handler and each admitted dialog are separately owned.
+	private pending = 1;
+	private returnedAuthorization: ToolInvocationAuthorization | undefined;
+	private cleanupFailed = false;
 	private handle: unknown;
 	private remaining: number;
 	private startedAt = 0;
@@ -428,11 +457,14 @@ class ToolCallDeadline {
 	private readonly parent: AbortSignal | undefined;
 	private readonly scheduler: ExtensionRunnerScheduler;
 	private readonly timeoutError: ExtensionHookTimeoutError;
-	constructor(scheduler: ExtensionRunnerScheduler, timeoutError: ExtensionHookTimeoutError, parent?: AbortSignal) {
+	private readonly owners: Set<ToolCallDeadline>;
+	constructor(owners: Set<ToolCallDeadline>, scheduler: ExtensionRunnerScheduler, timeoutError: ExtensionHookTimeoutError, parent?: AbortSignal) {
+		this.owners = owners;
 		this.scheduler = scheduler;
 		this.timeoutError = timeoutError;
 		this.remaining = timeoutError.timeoutMs;
 		this.parent = parent;
+		this.drained = new Promise(resolve => { this.finishDrain = resolve; });
 		this.cancelled = new Promise<never>((_resolve, reject) => { this.reject = reject; });
 		parent?.addEventListener("abort", this.onParentAbort, { once: true });
 		if (parent?.aborted) this.onParentAbort();
@@ -440,8 +472,11 @@ class ToolCallDeadline {
 	}
 	private readonly onParentAbort = (): void => { this.revoke(this.parent?.reason ?? new Error("Tool approval aborted")); };
 	private readonly expire = (): void => { this.handle = undefined; this.revoke(this.timeoutError); };
-	revoke(reason: unknown = new Error("Tool approval is obsolete")): void {
+	revoke(reason?: unknown): void {
 		if (this.finished) return;
+		if (reason === undefined) {
+			const error = new Error("Tool approval is obsolete"); error.stack = error.message; reason = error;
+		}
 		this.pause();
 		this.reject(reason);
 		this.controller.abort(reason);
@@ -453,48 +488,119 @@ class ToolCallDeadline {
 		this.remaining = Math.max(0, this.remaining - (this.scheduler.now() - this.startedAt));
 	}
 	resume(): void {
-		if (this.finished || this.controller.signal.aborted) return;
+		if (this.finished || this.controller.signal.aborted || this.timeoutError.timeoutMs === 0) return;
 		this.startedAt = this.scheduler.now();
 		this.handle = this.scheduler.schedule(this.expire, this.remaining);
 	}
 	assertCurrent(): void { this.controller.signal.throwIfAborted(); }
+	trackHandler(result: unknown): Promise<unknown> {
+		this.pending++;
+		const operation = Promise.resolve(result);
+		void operation.then(this.onHandlerResult, this.finishActual);
+		return operation;
+	}
+	trackDialog<T>(operation: Promise<T>): Promise<T> {
+		this.pending++;
+		void operation.then(this.finishActual, this.finishActual);
+		return operation;
+	}
+	private readonly onHandlerResult = (result: unknown): void => {
+		try {
+			this.returnedAuthorization = (result as ToolCallEventResult | undefined)?.finalAuthorization;
+			if (this.controller.signal.aborted) this.releaseReturnedAuthorization();
+		} catch { this.cleanupFailed = true; }
+		finally { this.finishActual(); }
+	};
+	private readonly finishActual = (): void => {
+		if (--this.pending !== 0) return;
+		if (!this.cleanupFailed) this.owners.delete(this);
+		this.finishDrain();
+	};
+	private releaseReturnedAuthorization(): void {
+		try { this.returnedAuthorization?.release(); this.returnedAuthorization = undefined; }
+		catch { this.cleanupFailed = true; }
+	}
+	takeResult(): void { this.returnedAuthorization = undefined; }
+	async drain(): Promise<void> {
+		await this.drained;
+		if (this.cleanupFailed) throw new Error("Tool hook authorization cleanup is unconfirmed; execution remains closed.");
+	}
 	dispose(): void {
+		if (this.finished) return;
 		this.pause();
 		this.finished = true;
 		this.parent?.removeEventListener("abort", this.onParentAbort);
-		this.controller.abort(new Error("Tool hook invocation ended"));
+		const reason = new Error("Tool hook invocation ended"); reason.stack = reason.message;
+		this.controller.abort(reason);
+		this.releaseReturnedAuthorization();
+		this.finishActual();
 	}
 }
 
 /** Bounded live ownership only; no historical tool-call map or waiting queue. */
+/** Shared per epoch only when there is no policy, hook, or native preparation.
+ * It carries no operation grant, input snapshot, or asynchronous producer. */
+class OrdinaryToolEpoch implements ToolInvocationAuthorization {
+	private live = true;
+	readonly generation: number;
+	private readonly boundary: SessionExecutionBoundary;
+	constructor(boundary: SessionExecutionBoundary) { this.boundary = boundary; this.generation = boundary.generation; }
+	consume(args: unknown, _id: string, _name: string, signal?: AbortSignal): unknown {
+		if (!this.live) throw new Error("[EXECUTION_BOUNDARY_CHANGED] Ordinary tool epoch was revoked and is obsolete");
+		signal?.throwIfAborted(); this.boundary.assertCurrent(this.generation); return args;
+	}
+	release(): void {}
+	revoke(): void { this.live = false; }
+}
+
 class PendingToolAuthorization implements ToolInvocationAuthorization {
+	policy?: NativePolicyInvocation;
 	private checks: (ToolInvocationAuthorization | undefined)[] = [];
 	private authority: ToolInvocationAuthorization | undefined;
+	// One rejected/late delivery remains owned until its release succeeds. A
+	// rejected add ends collection, so this slot cannot become an unbounded queue.
+	private incoming: ToolInvocationAuthorization | undefined;
+	private collecting = true;
 	private live = true;
-	private readonly owners: Set<PendingToolAuthorization>;
-	constructor(owners: Set<PendingToolAuthorization>) { this.owners = owners; owners.add(this); }
+	private releasing = false;
+	private owners: Set<PendingToolAuthorization> | undefined;
+	private boundary: SessionExecutionBoundary | undefined;
+	private readonly generation: number;
+	constructor(owners: Set<PendingToolAuthorization>, boundary: SessionExecutionBoundary, generation: number) {
+		this.owners = owners; owners.add(this); this.boundary = boundary; this.generation = generation;
+	}
 	add(check: ToolInvocationAuthorization): void {
+		this.incoming = check;
 		if (!this.live || this.checks.length + (this.authority ? 1 : 0) >= 32) {
-			check.release();
 			throw new Error("Blocked by policy: final authorization capacity or lifetime exceeded");
 		}
 		if (check.finalAuthority) {
-			if (this.authority) { check.release(); throw new Error("Blocked by policy: conflicting final authority checks"); }
+			if (this.authority) throw new Error("Blocked by policy: conflicting final authority checks");
 			this.authority = check;
 		} else this.checks.push(check);
+		this.incoming = undefined;
+	}
+	get hasChecks(): boolean { return this.authority !== undefined || this.checks.length !== 0; }
+	finishCollection(handedOff: boolean): void {
+		this.collecting = false;
+		if (!handedOff || !this.live) this.release();
 	}
 	consume(args: unknown, id: string, name: string, signal?: AbortSignal): unknown {
 		let terminalValues: unknown;
 		let handedOff = false;
 		try {
 			if (!this.live || signal?.aborted) throw new Error("Blocked by policy: final authorization is obsolete");
-      // A batch has one terminal authority and owns a private prepared payload.
-      if (name === "file_batch") {
-        if (this.checks.length || !this.authority) throw new Error("Blocked by policy: batch requires one terminal authority");
+			this.boundary!.assertCurrent(this.generation);
+      this.policy?.consume(args, id, name, signal);
+      // An ordinary tool needs only the epoch gate; permission policy still ran
+      // in tool_call. Native mutation grants retain their private value checks.
+      if (!this.authority && this.checks.length === 0) return args;
+      // Native files have one terminal authority and own a private prepared payload.
+      if (name === "file_batch" || name === "edit" || name === "write" || name === "delete" || name === "move") {
+        if (this.checks.length || !this.authority) throw new Error("Blocked by policy: file operation requires one terminal authority");
         const authority = this.authority;
-        this.authority = undefined;
         try { return authority.consume(args, id, name, signal); }
-        finally { authority.release(); }
+        finally { authority.release(); this.authority = undefined; }
       }
       // Shell snapshots continue through their existing agreement checks.
 			if (name !== "bash" && name !== "powershell") throw new Error("Blocked by policy: unsupported final authorization tool");
@@ -524,38 +630,59 @@ class PendingToolAuthorization implements ToolInvocationAuthorization {
 				else if (command !== approvedCommand.value || timeout !== approvedTimeout?.value || cwd !== approvedCwd?.value || purpose !== approvedPurpose?.value || background !== approvedBackground?.value) {
 					throw new Error("Blocked by policy: final authorization snapshots disagree");
 				}
-				} finally { check.release(); }
+				} finally {
+					try { check.release(); }
+					catch (error) { this.checks[i] = check; throw error; }
+				}
 			}
 			if (!this.live || signal?.aborted || !this.authority) throw new Error("Blocked by policy: final authorization is obsolete or missing");
+			this.boundary!.assertCurrent(this.generation);
 			// All auxiliary consume/release callbacks have settled. The one terminal
 			// guard checks current authority, returns private values, and self-releases.
 			const authority = this.authority;
-			this.authority = undefined;
 			const approved = terminalValues = authority.consume(args, id, name, signal) as { command: unknown; timeout: unknown; cwd: unknown; purpose: unknown; background: unknown };
+			this.authority = undefined;
 			if (this.checks.length && (command !== approved.command || timeout !== approved.timeout || cwd !== approved.cwd || purpose !== approved.purpose || background !== approved.background)) {
 				throw new Error("Blocked by policy: final authorization snapshots disagree");
 			}
 			if (!this.live || signal?.aborted) throw new Error("Blocked by policy: final authorization is obsolete");
+			this.boundary!.assertCurrent(this.generation);
 			handedOff = true;
 			return approved;
 		} finally { if (!handedOff) getShellCwdBinding(terminalValues)?.release(); this.release(); }
 	}
 	release(): void {
-		if (!this.live) return;
+		if (!this.owners || this.releasing) return;
 		this.live = false;
-		this.owners.delete(this);
-		try { for (const check of this.checks) { try { check?.release(); } catch { /* Release every check. */ } } }
-		finally {
-			this.checks = [];
-			const authority = this.authority; this.authority = undefined;
-			authority?.release();
+		this.boundary = undefined;
+		this.releasing = true;
+		this.policy?.release(); this.policy = undefined;
+		let failed = false;
+		try {
+			for (let i = 0; i < this.checks.length; i++) {
+				try { this.checks[i]?.release(); this.checks[i] = undefined; }
+				catch { failed = true; }
+			}
+			try { this.authority?.release(); this.authority = undefined; }
+			catch { failed = true; }
+			try { this.incoming?.release(); this.incoming = undefined; }
+			catch { failed = true; }
+			if (failed) throw new Error("Final authorization cleanup is unconfirmed; execution remains closed.");
+			this.checks.length = 0;
+			// Revoke may race an awaited producer. Keep the reservation until its
+			// actual delivery/finally has run, even if no grant arrived yet.
+			if (this.collecting) return;
+			this.owners.delete(this);
+			this.owners = undefined;
 		}
+		finally { this.releasing = false; }
 	}
 }
 
 function ignoreToolRendererRejection(): void {}
 
 export class ExtensionRunner {
+	private ordinaryToolEpoch?: OrdinaryToolEpoch;
 	private extensions: Extension[];
 	private handlerEventTypes: Set<string>;
 	private observerEventTypes: Set<string>;
@@ -600,6 +727,16 @@ export class ExtensionRunner {
 	private commandDiagnostics: ResourceDiagnostic[] = [];
 	private staleMessage: string | undefined;
 	private toolCallDeadlines: Set<ToolCallDeadline> | undefined;
+	private actualHooks = 0;
+	private hooksIdle: Promise<void> | undefined;
+	private finishHooks: (() => void) | undefined;
+	private readonly finishHook = (): void => {
+		if (--this.actualHooks !== 0) return;
+		const finish = this.finishHooks;
+		this.finishHooks = undefined;
+		this.hooksIdle = undefined;
+		finish?.();
+	};
 	private finalAuthorizations: Set<PendingToolAuthorization> | undefined;
 	private toolCallDialogOwner: ToolCallDeadline | undefined;
 	private rendererToolName: string | undefined;
@@ -673,7 +810,33 @@ export class ExtensionRunner {
 		this.cwd = cwd;
 		this.sessionManager = sessionManager;
 		this.modelRegistry = modelRegistry;
+		runtime.executionBoundary.register("extension-runner", { revoke: this.revokeExecution, drain: this.drainExecution });
 	}
+
+	private readonly revokeExecution = (): void => {
+		this.ordinaryToolEpoch?.revoke(); this.ordinaryToolEpoch = undefined;
+		try { this.revokeAuthorizations(); }
+		finally { for (const deadline of this.toolCallDeadlines ?? []) deadline.revoke(); }
+	};
+	/** Native session shutdown joins this again after foreground settlement. */
+	readonly drainExecution = async (): Promise<void> => {
+		const pending: Promise<void>[] = [];
+		if (this.hooksIdle) pending.push(this.hooksIdle);
+		for (const deadline of this.toolCallDeadlines ?? []) pending.push(deadline.drain());
+		const results = await Promise.allSettled(pending);
+		for (const result of results) if (result.status === "rejected") throw result.reason;
+		if (this.finalAuthorizations?.size) throw new Error("Final authorization cleanup is unconfirmed; execution remains closed.");
+	};
+
+	private readonly revokeAuthorizations = (): void => {
+		let failure: unknown;
+		let failed = false;
+		for (const authorization of this.finalAuthorizations ?? []) {
+			try { authorization.release(); } catch (error) { failed = true; failure ??= error; }
+		}
+		if (this.finalAuthorizations?.size === 0) this.finalAuthorizations = undefined;
+		if (failed) throw failure;
+	};
 
 	bindCore(
 		actions: ExtensionActions,
@@ -685,6 +848,8 @@ export class ExtensionRunner {
 		},
 	): void {
 		// Copy actions into the shared runtime (all extension APIs reference this)
+		this.runtime.transitionExecution = actions.transitionExecution;
+		this.runtime.waitForExecutionIdle = actions.waitForExecutionIdle;
 		this.runtime.sendMessage = actions.sendMessage;
 		this.runtime.sendUserMessage = actions.sendUserMessage;
 		this.runtime.appendEntry = actions.appendEntry;
@@ -693,7 +858,9 @@ export class ExtensionRunner {
 		this.runtime.setLabel = actions.setLabel;
 		this.runtime.getActiveTools = actions.getActiveTools;
 		this.runtime.getAllTools = actions.getAllTools;
+		this.runtime.getToolCatalog = actions.getToolCatalog;
 		this.runtime.buildProviderRequestPayload = actions.buildProviderRequestPayload;
+		this.runtime.withSupplementalSummary = actions.withSupplementalSummary;
 		this.runtime.compactProviderRequestPayload = actions.compactProviderRequestPayload;
 		this.runtime.setActiveTools = actions.setActiveTools;
 		this.runtime.refreshTools = actions.refreshTools;
@@ -932,14 +1099,17 @@ export class ExtensionRunner {
 
 	invalidate(
 		message = "This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().",
+		ownersCleanupStarted = false,
 	): void {
 		if (!this.staleMessage) {
 			this.staleMessage = message;
-			for (const authorization of this.finalAuthorizations ?? []) authorization.release();
-			this.finalAuthorizations = undefined;
-			for (const deadline of this.toolCallDeadlines ?? []) deadline.revoke(new Error(message));
-			this.mcpResultInputActions = undefined;
-			this.runtime.invalidate(message);
+			this.ordinaryToolEpoch?.revoke(); this.ordinaryToolEpoch = undefined;
+			try { this.revokeAuthorizations(); }
+			finally {
+				for (const deadline of this.toolCallDeadlines ?? []) deadline.revoke(new Error(message));
+				this.mcpResultInputActions = undefined;
+				this.runtime.invalidate(message, ownersCleanupStarted);
+			}
 		}
 	}
 
@@ -948,6 +1118,29 @@ export class ExtensionRunner {
 			throw new Error(this.staleMessage);
 		}
 	}
+
+	assertExecutionCurrent(): void {
+		this.assertActive();
+		this.runtime.executionBoundary.assertCurrent();
+	}
+
+	getCodexRemoteCompactionEnabled(): boolean {
+		this.assertActive();
+		return this.runtime.codexRemoteCompactionEnabled;
+	}
+
+	getOpenAIResponsesDispatch() {
+		return this.runtime.openAIResponsesDispatch;
+	}
+
+	getOpenAICodexDispatch() {
+		return this.runtime.codexDispatch;
+	}
+
+	disposeProviderOwners(): Promise<void> {
+		return this.runtime.disposeProviderOwners();
+	}
+	disposeExecutionBoundary(): Promise<void> { return this.runtime.executionBoundary.dispose(); }
 
 	onError(listener: ExtensionErrorListener): () => void {
 		this.errorListeners.add(listener);
@@ -961,7 +1154,8 @@ export class ExtensionRunner {
 	}
 
 	hasHandlers(eventType: string): boolean {
-		return this.handlerEventTypes.has(eventType);
+		return this.handlerEventTypes.has(eventType) || (eventType === "session_before_compact" && this.runtime.compactionStrategies.size > 0)
+			|| this.runtime.nativeTasks?.hasHandlers(eventType) === true || this.runtime.nativeFiles?.hasHandlers(eventType) === true;
 	}
 
 	/** Stable live identifiers for request-transform handlers in actual invocation order. */
@@ -1032,6 +1226,10 @@ export class ExtensionRunner {
 	private resolveRegisteredCommands(): ResolvedCommand[] {
 		const commands: RegisteredCommand[] = [];
 		const counts = new Map<string, number>();
+		const nativeCommand = this.runtime.nativeTasks?.command;
+		if (nativeCommand) { commands.push(nativeCommand); counts.set(nativeCommand.name, 1); }
+		const changesCommand = this.runtime.nativeFiles?.command;
+		if (changesCommand) { commands.push(changesCommand); counts.set(changesCommand.name, 1); }
 
 		for (const ext of this.extensions) {
 			for (const command of ext.commands.values()) {
@@ -1099,7 +1297,7 @@ export class ExtensionRunner {
 	 * Create an ExtensionContext for use in event handlers and tool execution.
 	 * Context values are resolved at call time, so changes via bindCore/bindUI are reflected.
 	 */
-	createContext(): ExtensionContext {
+	createContext(requestModel?: Model<any>): ExtensionContext {
 		const runner = this;
 		const getModel = this.getModel;
 		const getScopedModels = this.getScopedModels;
@@ -1130,7 +1328,7 @@ export class ExtensionRunner {
 			},
 			get model() {
 				runner.assertActive();
-				return getModel();
+				return requestModel ?? getModel();
 			},
 			get scopedModels() {
 				runner.assertActive();
@@ -1254,15 +1452,16 @@ export class ExtensionRunner {
 		const category = this.hookCategory(eventType);
 		const configured = this.options.hookTimeouts?.[category];
 		const timeoutMs = configured?.timeoutMs ?? 0;
-		if (eventType === "tool_call" && timeoutMs > 0) {
+		if (eventType === "tool_call") {
 			return this.invokeToolCallHook(handler, event, ctx, extensionPath, timeoutMs);
 		}
-		const result = handler(event, ctx);
+		const result = OWNED_HOOK_EVENTS.has(eventType) ? this.invokeOwnedHook(handler, event, ctx) : handler(event, ctx);
 		if (timeoutMs === 0 || !result || typeof (result as PromiseLike<unknown>).then !== "function") {
 			return await result;
 		}
 
 		const timeoutError = new ExtensionHookTimeoutError(extensionPath, eventType, timeoutMs);
+		timeoutError.stack = timeoutError.stack;
 		let handle: unknown;
 		const timeout = new Promise<never>((_resolve, reject) => {
 			handle = this.scheduler.schedule(() => reject(timeoutError), timeoutMs);
@@ -1286,14 +1485,32 @@ export class ExtensionRunner {
 		}
 	}
 
+	private beginOwnedHook(): void {
+		if (this.actualHooks >= 128) throw new Error("Too many unfinished intercepting hooks; execution blocked");
+		if (this.actualHooks++ === 0) this.hooksIdle = new Promise(resolve => { this.finishHooks = resolve; });
+	}
+	private invokeOwnedHook(handler: HandlerFn, event: unknown, ctx: ExtensionContext): unknown {
+		this.beginOwnedHook();
+		try {
+			const result = handler(event, ctx);
+			if (result && typeof (result as PromiseLike<unknown>).then === "function") {
+				void Promise.resolve(result).then(this.finishHook, this.finishHook);
+			} else this.finishHook();
+			return result;
+		} catch (error) { this.finishHook(); throw error; }
+	}
+
 	private async invokeToolCallHook(handler: HandlerFn, event: unknown, ctx: ExtensionContext,
 		extensionPath: string, timeoutMs: number): Promise<unknown> {
 		this.assertActive();
 		ctx.signal?.throwIfAborted();
 		if ((this.toolCallDeadlines?.size ?? 0) >= 128) throw new Error("Too many active tool hooks; execution blocked");
 		const timeoutError = new ExtensionHookTimeoutError(extensionPath, "tool_call", timeoutMs);
-		const deadline = new ToolCallDeadline(this.scheduler, timeoutError, ctx.signal);
-		(this.toolCallDeadlines ??= new Set()).add(deadline);
+		// Materialize diagnostic frames before an aborted signal can outlive this invocation.
+		timeoutError.stack = timeoutError.stack;
+		const owners = this.toolCallDeadlines ??= new Set();
+		const deadline = new ToolCallDeadline(owners, this.scheduler, timeoutError, ctx.signal);
+		owners.add(deadline);
 		const ui = Object.create(ctx.ui) as ExtensionUIContext;
 		const originalUI = ctx.ui;
 		ui.editor = rejectUncancellableToolCallUI;
@@ -1308,7 +1525,8 @@ export class ExtensionRunner {
 			this.toolCallDialogOwner = deadline;
 			deadline.pause();
 			try {
-				const result = await Promise.race([show(), deadline.cancelled]);
+				const actual = deadline.trackDialog(show());
+				const result = await actual;
 				deadline.assertCurrent();
 				return result;
 			} finally {
@@ -1325,8 +1543,9 @@ export class ExtensionRunner {
 			{ ...opts, signal: opts?.signal && opts.signal !== deadline.controller.signal ? AbortSignal.any([opts.signal, deadline.controller.signal]) : deadline.controller.signal }));
 		try {
 			deadline.assertCurrent();
-			const result = await Promise.race([handler(event, invocationContext), deadline.cancelled]);
+			const result = await Promise.race([deadline.trackHandler(handler(event, invocationContext)), deadline.cancelled]);
 			deadline.assertCurrent();
+			deadline.takeResult();
 			return result;
 		} catch (error) {
 			if (error === timeoutError) {
@@ -1337,9 +1556,7 @@ export class ExtensionRunner {
 			throw error;
 		} finally {
 			deadline.dispose();
-			this.toolCallDeadlines?.delete(deadline);
 			if (this.toolCallDeadlines?.size === 0) this.toolCallDeadlines = undefined;
-			if (this.toolCallDialogOwner === deadline) this.toolCallDialogOwner = undefined;
 		}
 	}
 
@@ -1448,10 +1665,29 @@ export class ExtensionRunner {
 
 	async emit<TEvent extends RunnerEmitEvent>(event: TEvent): Promise<RunnerEmitResult<TEvent>> {
 		const ctx = this.createContext();
+		const compactionModel = event.type === "session_before_compact" ? ctx.model : undefined;
+		const compactionGeneration = event.type === "session_before_compact" ? this.runtime.executionBoundary.generation : 0;
 		let result: SessionBeforeEventResult | undefined;
 		let terminalTimeout: ExtensionHookTimeoutError | undefined;
 		let shutdownFailure: unknown;
 		let shutdownFailed = false;
+		if (event.type === "session_shutdown") this.runtime.nativePermissions?.dispose();
+		if (this.runtime.nativeFiles?.hasHandlers(event.type)) {
+			try { await this.runtime.nativeFiles.emit(event); }
+			catch (error) {
+				if (event.type !== "session_shutdown") throw error;
+				shutdownFailed = true; shutdownFailure = error;
+			}
+		}
+		if (this.runtime.nativeTasks?.hasHandlers(event.type)) {
+			try {
+				const nativeResult = await this.runtime.nativeTasks.emit(event, ctx);
+				if (nativeResult && (nativeResult as SessionBeforeEventResult).cancel) return nativeResult as RunnerEmitResult<TEvent>;
+			} catch (error) {
+				if (event.type !== "session_shutdown") throw error;
+				shutdownFailed = true; shutdownFailure = error;
+			}
+		}
 
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get(event.type);
@@ -1498,7 +1734,38 @@ export class ExtensionRunner {
 
 		if (terminalTimeout) throw terminalTimeout;
 		if (shutdownFailed) throw shutdownFailure;
+		if (event.type === "session_before_compact") return await this.executeCompactionStrategy(event, ctx, compactionModel, compactionGeneration) as RunnerEmitResult<TEvent>;
 		return result as RunnerEmitResult<TEvent>;
+	}
+
+	/** Legacy hooks retain their existing veto/override; native adapters select before any execution. */
+	private assertCompactionCurrent(event: SessionBeforeCompactEvent, ctx: ExtensionContext, model: Model<any> | undefined, generation: number): void {
+		this.assertExecutionCurrent(); this.runtime.executionBoundary.assertCurrent(generation); event.signal.throwIfAborted();
+		if (ctx.model !== model) throw new Error("Compaction strategy selection belongs to a stale model");
+	}
+
+	private async executeCompactionStrategy(event: SessionBeforeCompactEvent, ctx: ExtensionContext, model: Model<any> | undefined, generation: number): Promise<SessionBeforeCompactResult | undefined> {
+		this.assertCompactionCurrent(event, ctx, model, generation);
+		let selected: RegisteredCompactionStrategy | undefined, handler: CompactionStrategyHandler | undefined;
+		for (const strategy of this.runtime.compactionStrategies.values()) {
+			// Invalid asynchronous prepare results still belong to the existing hook settlement owner.
+			const candidate = this.invokeOwnedHook(strategy.prepare as HandlerFn, ctx, ctx);
+			this.assertCompactionCurrent(event, ctx, model, generation);
+			if (candidate === undefined) continue;
+			if (typeof candidate !== "function") throw new Error(`Compaction strategy ${strategy.id} must prepare synchronously`);
+			if (selected) throw new Error(`Conflicting compaction strategies: ${selected.id} and ${strategy.id}. Disable one policy before compacting.`);
+			selected = strategy; handler = candidate as CompactionStrategyHandler;
+		}
+		this.assertCompactionCurrent(event, ctx, model, generation);
+		if (!selected || !handler) return undefined;
+		// Outside the legacy emit catch: selection/execution failures must not trigger another strategy or native summary.
+		const result = await this.invokeHook(handler as HandlerFn, event, ctx, selected.extensionPath, "session_before_compact") as SessionBeforeCompactResult | undefined;
+		this.assertCompactionCurrent(event, ctx, model, generation);
+		if (result !== undefined && (!result || typeof result !== "object" ||
+			(result.cancel !== true && (!result.compaction || typeof result.compaction !== "object")))) {
+			throw new Error(`Compaction strategy ${selected.id} must return a compaction, cancellation or explicit undefined fallback`);
+		}
+		return result;
 	}
 
 	async emitMessageEnd(event: MessageEndEvent): Promise<AgentMessage | undefined> {
@@ -1551,6 +1818,7 @@ export class ExtensionRunner {
 	}
 
 	async emitToolResult(event: ToolResultEvent): Promise<ToolResultEventResult | undefined> {
+		this.runtime.nativeFiles?.finish(event.toolCallId);
 		const ctx = this.createContext();
 		const currentEvent: ToolResultEvent = { ...event };
 		let modified = false;
@@ -1612,42 +1880,67 @@ export class ExtensionRunner {
 		};
 	}
 
-	async emitToolCall(event: ToolCallEvent): Promise<ToolCallEventResult | undefined> {
+	async emitToolCall(event: ToolCallEvent, definition?: ToolDefinition): Promise<ToolCallEventResult | undefined> {
+		const boundary = this.runtime.executionBoundary, generation = boundary.generation;
+		boundary.assertCurrent(generation);
+		const name = event.toolName;
+		if (!this.runtime.nativePermissions && !this.handlerEventTypes.has("tool_call")
+			&& !this.runtime.nativeFiles?.ownsDefinition(definition) && name !== "bash" && name !== "powershell"
+			&& name !== "edit" && name !== "write" && name !== "delete" && name !== "move" && name !== "file_batch") {
+			if (this.ordinaryToolEpoch?.generation !== generation) this.ordinaryToolEpoch = new OrdinaryToolEpoch(boundary);
+			return { finalAuthorization: this.ordinaryToolEpoch };
+		}
+		if ((this.finalAuthorizations?.size ?? 0) >= 128) throw new Error("Too many pending tool invocations");
 		const ctx = this.createContext();
 		let result: ToolCallEventResult | undefined;
-		let authorization: PendingToolAuthorization | undefined;
+		// Reserve before any producer starts. The same hook idle deferred covers
+		// actual native/hook delivery and cleanup, including a late rejected grant.
+		this.beginOwnedHook();
+		const authorization = new PendingToolAuthorization(this.finalAuthorizations ??= new Set(), boundary, generation);
 		let handedOff = false;
 		try {
+		if (this.runtime.nativePermissions) authorization.policy = await this.runtime.nativePermissions.authorize(event, ctx, definition);
+		if (this.runtime.nativeFiles?.ownsDefinition(definition)) {
+			const native = await this.runtime.nativeFiles.prepareInvocation(event, ctx);
+			if (native) {
+				authorization.add(native);
+			}
+		}
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get("tool_call");
 			if (!handlers || handlers.length === 0) continue;
 
 			for (const handler of handlers) {
+				boundary.assertCurrent(generation);
 				const handlerResult = await this.invokeHook(handler, event, ctx, ext.path, "tool_call");
 
 				if (handlerResult) {
 					result = handlerResult as ToolCallEventResult;
 					if (result.finalAuthorization) {
-						if ((this.finalAuthorizations?.size ?? 0) >= 128) {
-							result.finalAuthorization.release();
-							throw new Error("Blocked by policy: too many pending authorizations");
-						}
-						authorization ??= new PendingToolAuthorization(this.finalAuthorizations ??= new Set());
 						authorization.add(result.finalAuthorization);
 					}
 					if (result.block) {
 						return result;
 					}
 				}
+				boundary.assertCurrent(generation);
 			}
 		}
 
-		if (authorization) {
-			handedOff = true;
-			return { block: result?.block, reason: result?.reason, details: result?.details, terminate: result?.terminate, finalAuthorization: authorization };
+		// Legacy grants keep their existing terminal authority; both paths use the same task owner.
+		if (!authorization.hasChecks && this.runtime.nativeTasks && (event.toolName === "bash" || event.toolName === "powershell")) {
+			const native = await this.runtime.nativeTasks.prepareInvocation(event, ctx);
+			if (native) {
+				authorization.add(native);
+			}
 		}
-		return result;
-		} finally { if (!handedOff) authorization?.release(); }
+		boundary.assertCurrent(generation);
+		handedOff = true;
+		return { block: result?.block, reason: result?.reason, details: result?.details, terminate: result?.terminate, finalAuthorization: authorization };
+		} finally {
+			try { authorization.finishCollection(handedOff); }
+			finally { this.finishHook(); }
+		}
 	}
 
 	async emitUserBash(event: UserBashEvent): Promise<UserBashEventResult | undefined> {
@@ -1714,8 +2007,8 @@ export class ExtensionRunner {
 		return currentMessages;
 	}
 
-	async emitBeforeProviderRequest(payload: unknown, dryRun = false, requestAuth?: ProviderRequestAuthSnapshot): Promise<unknown> {
-		const ctx = this.createContext();
+	async emitBeforeProviderRequest(payload: unknown, dryRun = false, requestAuth?: ProviderRequestAuthSnapshot, scope?: SupplementalSummaryHookScope): Promise<unknown> {
+		const ctx = this.createContext(scope?.model);
 		let currentPayload = payload;
 
 		for (const ext of this.extensions) {
@@ -1729,7 +2022,9 @@ export class ExtensionRunner {
 						payload: currentPayload,
 						dryRun,
 						requestAuth,
+						purpose: scope?.purpose,
 					};
+					scope?.assertCurrent();
 					const handlerResult = await this.invokeHook(
 						handler,
 						event,
@@ -1740,7 +2035,9 @@ export class ExtensionRunner {
 					if (handlerResult !== undefined) {
 						currentPayload = handlerResult;
 					}
+					scope?.assertCurrent();
 				} catch (err) {
+					if (scope) throw err;
 					if (err instanceof ExtensionHookTimeoutError) throw err;
 					const message = err instanceof Error ? err.message : String(err);
 					const stack = err instanceof Error ? err.stack : undefined;
@@ -1757,8 +2054,8 @@ export class ExtensionRunner {
 		return currentPayload;
 	}
 
-	async emitBeforeProviderHeaders(headers: ProviderHeaders): Promise<ProviderHeaders> {
-		const ctx = this.createContext();
+	async emitBeforeProviderHeaders(headers: ProviderHeaders, scope?: SupplementalSummaryHookScope): Promise<ProviderHeaders> {
+		const ctx = this.createContext(scope?.model);
 
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get("before_provider_headers");
@@ -1770,9 +2067,13 @@ export class ExtensionRunner {
 					const event: BeforeProviderHeadersEvent = {
 						type: "before_provider_headers",
 						headers,
+						purpose: scope?.purpose,
 					};
+					scope?.assertCurrent();
 					await this.invokeHook(handler, event, ctx, ext.path, "before_provider_headers");
+					scope?.assertCurrent();
 				} catch (err) {
+					if (scope) throw err;
 					if (err instanceof ExtensionHookTimeoutError) throw err;
 					const message = err instanceof Error ? err.message : String(err);
 					const stack = err instanceof Error ? err.stack : undefined;
@@ -1794,8 +2095,12 @@ export class ExtensionRunner {
 		images: ImageContent[] | undefined,
 		systemPrompt: string,
 		systemPromptOptions: BuildSystemPromptOptions,
+		systemPromptComposition?: SystemPromptComposition | null,
 	): Promise<BeforeAgentStartCombinedResult | undefined> {
 		let currentSystemPrompt = systemPrompt;
+		// Capture the matching build for this whole waterfall, including async handlers.
+		let currentComposition = systemPromptComposition && systemPromptComposition.text !== systemPrompt
+			? null : systemPromptComposition;
 		const ctx = Object.defineProperties(
 			{},
 			Object.getOwnPropertyDescriptors(this.createContext()),
@@ -1819,6 +2124,7 @@ export class ExtensionRunner {
 						images,
 						systemPrompt: currentSystemPrompt,
 						systemPromptOptions,
+						systemPromptComposition: currentComposition,
 					};
 					const handlerResult = await this.invokeHook(handler, event, ctx, ext.path, "before_agent_start");
 
@@ -1829,6 +2135,7 @@ export class ExtensionRunner {
 						}
 						if (result.systemPrompt !== undefined) {
 							currentSystemPrompt = result.systemPrompt;
+							currentComposition = null;
 							systemPromptModified = true;
 						}
 					}

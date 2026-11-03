@@ -3,6 +3,8 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { Session as InspectorSession } from "node:inspector/promises";
+import { setImmediate as tick } from "node:timers/promises";
 import { CLI_EXTENSION_HOST_POLICY } from "../packages/coding-agent/src/core/extension-host-policy.ts";
 import type { ModelRegistry } from "../packages/coding-agent/src/core/model-registry.ts";
 import { createEventBus } from "../packages/coding-agent/src/core/event-bus.ts";
@@ -236,13 +238,18 @@ test("main runtime project trust callback applies the shared CLI safety timeout"
 	}
 });
 
-test("a late transform result is ignored after a fail-open timeout", async () => {
+test("a late transform result is ignored after a fail-open timeout and transition waits for actual cleanup", async t => {
+	const profiler = new InspectorSession(); profiler.connect(); t.after(() => profiler.disconnect());
+	const refs: WeakRef<object>[] = [];
+	await profiler.post("HeapProfiler.startSampling", { samplingInterval: 4096, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true });
+	async function exercise() {
 	const scheduler = new FakeScheduler();
 	let releaseLate = () => {};
 	const late = new Promise<void>((resolve) => { releaseLate = resolve; });
 	const runner = await createRunner(
 		(pi) => {
-			pi.on("message_end", async (event) => {
+			pi.on("message_end", async (event, ctx) => {
+				refs.push(new WeakRef(ctx));
 				await late;
 				return { message: { ...event.message, content: [{ type: "text", text: "late" }] } };
 			});
@@ -259,10 +266,24 @@ test("a late transform result is ignored after a fail-open timeout", async () =>
 	scheduler.advanceBy(100);
 	const result = await resultPromise as { content: Array<{ type: string; text: string }> };
 	assert.equal(result.content[0]?.text, "accepted");
-	releaseLate();
-	await Promise.resolve();
-	await Promise.resolve();
-	assert.equal(result.content[0]?.text, "accepted");
+	const owned = runner as unknown as { runtime: ReturnType<typeof createExtensionRuntime>; actualHooks: number; hooksIdle?: Promise<void>; finishHooks?: () => void };
+	const boundary = owned.runtime.executionBoundary;
+	let published = false;
+	const transition = boundary.transition(() => { published = true; });
+	try {
+		await tick(); assert.equal(published, false); assert.equal(owned.actualHooks, 1);
+	} finally { releaseLate(); await transition; }
+	assert.equal(result.content[0]?.text, "accepted"); assert.equal(published, true);
+	assert.equal(owned.actualHooks, 0); assert.equal(owned.hooksIdle, undefined); assert.equal(owned.finishHooks, undefined);
+	refs.push(new WeakRef(runner), new WeakRef(owned.runtime), new WeakRef(boundary));
+	await boundary.dispose();
+	}
+	await exercise();
+	const { profile } = await profiler.post("HeapProfiler.stopSampling");
+	let sampled = 0; const nodes = [profile.head]; while (nodes.length) { const node = nodes.pop()!; sampled += node.selfSize; for (const child of node.children) nodes.push(child); }
+	for (let i = 0; i < 3; i++) { await tick(); await profiler.post("HeapProfiler.collectGarbage"); }
+	assert.equal(refs.filter(ref => ref.deref()).length, 0); assert.ok(sampled < 4 * 1024 * 1024);
+	t.diagnostic(JSON.stringify({ actualHooks: 2, timeout: 1, pendingHooks: 0, releasedReferences: refs.length, sampledBytes: sampled }));
 });
 
 test("hook timeout configuration rejects non-finite and negative durations", async () => {

@@ -15,7 +15,7 @@ const { default: guard } = await jiti.import<any>(pathToFileURL(resolve(target, 
 const gc = (globalThis as { gc?: () => void }).gc;
 assert.ok(gc, "run with --expose-gc");
 const iterations = 256, warmup = 32;
-let phase = "idle", scannedBytes = 0, updates = 0, digests = 0, resultBytes = 0, resultDigests = 0;
+let phase = "idle", scannedBytes = 0, updates = 0, digests = 0, resultBytes = 0, resultDigests = 0, advisories = 0;
 const hashPrototype = Object.getPrototypeOf(createHash("sha256"));
 const originalUpdate = hashPrototype.update, originalDigest = hashPrototype.digest;
 hashPrototype.update = function(value: any, encoding?: BufferEncoding) {
@@ -32,19 +32,19 @@ hashPrototype.digest = function(...args: any[]) {
 
 function fixture() {
   const hooks = new Map<string, (...args: any[]) => any>();
-  guard({ on(name: string, hook: any) { hooks.set(name, hook); }, registerTool() {}, registerFlag() {}, getFlag() {}, sendMessage() {} });
+  guard({ on(name: string, hook: any) { hooks.set(name, hook); }, events: { emit() {} }, registerTool() {}, registerFlag() {}, getFlag() {}, sendMessage() { advisories++; } });
   hooks.get("agent_start")!();
   return hooks;
 }
 
 const ctx = { cwd: target };
-async function invoke(hooks: ReturnType<typeof fixture>, input: object, index: number): Promise<void> {
+async function invoke(hooks: ReturnType<typeof fixture>, input: object, index: number, failed = false): Promise<void> {
   const toolCallId = `c${index}`, parentToolCallId = `p${index}`;
   phase = "admission";
   const outcome = await hooks.get("tool_call")!({ toolName: "fixture_operation", toolCallId, input, parentToolCallId }, ctx);
   assert.equal(outcome, undefined);
   phase = "result";
-  await hooks.get("tool_result")!({ toolName: "fixture_operation", toolCallId, input, isError: false, content: [{ type: "text", text: "ok" }], details: {} }, ctx);
+  await hooks.get("tool_result")!({ toolName: "fixture_operation", toolCallId, input, isError: failed, content: [{ type: "text", text: failed ? "SyntaxError: fixture" : "ok" }], details: {} }, ctx);
   phase = "idle";
   hooks.get("tool_execution_end")!({ toolCallId });
   hooks.get("tool_execution_end")!({ toolCallId: parentToolCallId });
@@ -90,10 +90,15 @@ async function retryLifecycle(mode: string): Promise<void> {
 }
 
 try {
-  for (const length of [64, 1024 * 1024]) {
+  for (const [scenario, length] of [["success", 64], ["success", 1024 * 1024], ["failure", 64]] as const) {
+    // Old checkouts block the third failure; compare only their successful-call lane.
+    if (scenario === "failure" && process.argv[2] !== undefined) continue;
     const hooks = fixture(), input = { code: "x".repeat(length) };
-    for (let i = 0; i < warmup; i++) await invoke(hooks, input, i);
-    scannedBytes = updates = digests = resultBytes = resultDigests = 0;
+    const failed = scenario === "failure";
+    advisories = 0;
+    for (let i = 0; i < warmup; i++) await invoke(hooks, input, i, failed);
+    assert.equal(advisories, failed ? 4 : 3, "one failure advisory plus three bounded chain reminders");
+    scannedBytes = updates = digests = resultBytes = resultDigests = advisories = 0;
     gc();
     const heapBefore = process.memoryUsage().heapUsed;
     const profiler = new Session(); profiler.connect();
@@ -102,7 +107,7 @@ try {
     const sites: { site: string; bytes: number }[] = [];
     try {
       await profiler.post("HeapProfiler.startSampling", { samplingInterval: 4096, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true });
-      for (let i = 0; i < iterations; i++) { const started = performance.now(); await invoke(hooks, input, i); times.push(performance.now() - started); }
+      for (let i = 0; i < iterations; i++) { const started = performance.now(); await invoke(hooks, input, i, failed); times.push(performance.now() - started); }
       const { profile } = await profiler.post("HeapProfiler.stopSampling");
       const stack = [profile.head];
       while (stack.length) {
@@ -114,10 +119,10 @@ try {
     const heapBeforeClear = process.memoryUsage().heapUsed;
     hooks.get("agent_end")!(); gc();
     sites.sort((a, b) => b.bytes - a.bytes); times.sort((a, b) => a - b);
-    assert.equal(resultBytes, 0); assert.equal(resultDigests, 0);
-    console.log(JSON.stringify({ target, length, iterations, warmup, sampledBytesPerCall: sampledBytes / iterations,
+    assert.equal(resultBytes, 0); assert.equal(resultDigests, 0); assert.equal(advisories, 0);
+    console.log(JSON.stringify({ target, scenario, length, iterations, warmup, sampledBytesPerCall: sampledBytes / iterations,
       p50Ms: times[Math.floor(times.length / 2)], p95Ms: times[Math.floor(times.length * 0.95)],
-      counters: { admissionScannedBytes: scannedBytes, hashUpdates: updates, admissionDigests: digests, resultScannedBytes: resultBytes, resultDigests },
+      counters: { admissionScannedBytes: scannedBytes, hashUpdates: updates, admissionDigests: digests, resultScannedBytes: resultBytes, resultDigests, advisories },
       heapBefore, heapBeforeClear, heapAfterClearGc: process.memoryUsage().heapUsed, sites: sites.slice(0, 8) }));
   }
   for (const mode of ["normal", "failure", "parent-cancel", "cancel-during-preparation"]) for (let i = 0; i < 16; i++) await lifecycle(mode);

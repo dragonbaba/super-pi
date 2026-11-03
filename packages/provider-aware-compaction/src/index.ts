@@ -6,6 +6,9 @@ import {
   convertToLlm,
   sessionEntryToContextMessages,
   type CompactionResult,
+  type CompactionStrategy,
+  type ExtensionContext,
+  type SessionBeforeCompactResult,
   type ExtensionAPI,
   type SessionBeforeCompactEvent,
   type ToolInfo,
@@ -13,8 +16,9 @@ import {
 import type { AgentMessage } from "@super-pi/agent-core";
 import { contentText, type Api, type Model, type ProviderHeaders } from "@super-pi/ai";
 import { completeSimple, type Context, type Tool } from "@super-pi/ai/compat";
+import { CompactionPolicyConfigurationError, loadPolicyMask, parsePolicyMask, type CompactionPresetId } from "./policy-config.ts";
 
-const SUPPORTED_SP_VERSION = /^0\.84\./;
+const SUPPORTED_SP_VERSION = /^(?:0\.84|1\.\d+)\./;
 const DEFAULT_FALLBACK_MODEL = "deepseek/deepseek-v4-flash";
 const KIMI_RESERVE_TOKENS = 32_768;
 const PROJECT_CONFIG_PATH = join(".sp", "config", "provider-aware-compaction.json");
@@ -86,6 +90,8 @@ export type CompactionPolicy = {
 export type CrossProviderBoundary = { allowed: boolean; reason?: string };
 
 export type ProviderAwareCompactionOptions = {
+  /** Explicit preset selection; empty disables all presets. Captured when the factory is created. */
+  policies?: readonly CompactionPresetId[];
   compactFn?: CompactFunction;
   originalPrefixCompactFn?: OriginalPrefixCompactFunction;
   /** Legacy/custom single-provider override. When set, replaces built-in policy selection. */
@@ -240,14 +246,14 @@ export function projectCrossProviderBoundary(cwd: string, trusted: boolean): Cro
   }
 }
 
-export function defaultCompactionPolicy(model: ActiveModel): CompactionPolicy | undefined {
-  if (model.provider === "superapi-claude") {
+export function defaultCompactionPolicy(model: ActiveModel, enabledPolicies = 0): CompactionPolicy | undefined {
+  if ((enabledPolicies & 1) && model.provider === "superapi-claude") {
     return { id: "claude-deepseek-fallback-v1", summaryModel: DEFAULT_FALLBACK_MODEL };
   }
-  if (model.provider === "deepseek" && model.id === "deepseek-v4-flash") {
+  if ((enabledPolicies & 2) && model.provider === "deepseek" && model.id === "deepseek-v4-flash") {
     return { id: "deepseek-self-preserve-v1", summaryModel: "self" };
   }
-  if (model.provider === "kimi-coding" && model.id === "k3-256k") {
+  if ((enabledPolicies & 4) && model.provider === "kimi-coding" && model.id === "k3-256k") {
     return { id: "kimi-self-preserve-32k-v1", summaryModel: "self", reserveTokens: KIMI_RESERVE_TOKENS };
   }
   return undefined;
@@ -263,6 +269,7 @@ type CompactionFallbackReason =
   | "summary_model_missing"
   | "auth_lookup_failed"
   | "auth_unavailable"
+  | "auth_snapshot_mismatch"
   | "empty_summary"
   | "summarization_aborted"
   | "summarization_failed";
@@ -295,15 +302,19 @@ export function createProviderAwareCompactionExtension(options: ProviderAwareCom
   const configuredTargetProvider = options.targetProvider ?? process.env.SP_PORTABLE_COMPACTION_TARGET_PROVIDER;
   const configuredFallbackModel = options.fallbackModel ?? process.env.SP_PORTABLE_COMPACTION_FALLBACK_MODEL ?? DEFAULT_FALLBACK_MODEL;
   const boundaryFn = options.crossProviderBoundaryFn ?? projectCrossProviderBoundary;
+  let explicitPolicies: number | undefined, policyConfigurationError: string | undefined;
+  try { if (!configuredTargetProvider && options.policies !== undefined) explicitPolicies = parsePolicyMask(options.policies); }
+  catch (error) { policyConfigurationError = error instanceof CompactionPolicyConfigurationError ? error.message : "Invalid compaction policies."; }
 
   return function providerAwareCompactionExtension(pi: ExtensionAPI): void {
     if (!SUPPORTED_SP_VERSION.test(VERSION)) {
-      console.warn(`@super-pi/provider-aware-compaction disabled: Pi ${VERSION} is unsupported (requires 0.84.x).`);
+      console.warn(`@super-pi/provider-aware-compaction disabled: Pi ${VERSION} is unsupported (requires 1.x or 0.84.x).`);
       return;
     }
     if (process.env.SP_PORTABLE_COMPACTION_FALLBACK === "0") return;
+    if (policyConfigurationError !== undefined) throw new CompactionPolicyConfigurationError(policyConfigurationError);
 
-    pi.on("session_before_compact", async (event: SessionBeforeCompactEvent, ctx) => {
+    const prepare: CompactionStrategy["prepare"] = ctx => {
       const activeModel = ctx.model;
       if (!activeModel) return undefined;
 
@@ -311,9 +322,12 @@ export function createProviderAwareCompactionExtension(options: ProviderAwareCom
         ? activeModel.provider === configuredTargetProvider
           ? { id: "custom-fallback-v1" as const, summaryModel: configuredFallbackModel }
           : undefined
-        : defaultCompactionPolicy(activeModel);
+        : defaultCompactionPolicy(activeModel, explicitPolicies ?? loadPolicyMask(ctx.cwd, ctx.isProjectTrusted()));
       if (!policy) return undefined;
 
+      return (event, ctx) => executeCompaction(event, ctx, activeModel, policy);
+    };
+    const executeCompaction = async (event: SessionBeforeCompactEvent, ctx: ExtensionContext, activeModel: Model<Api>, policy: CompactionPolicy): Promise<SessionBeforeCompactResult | undefined> => {
       if (policy.id === "claude-deepseek-fallback-v1" || policy.id === "custom-fallback-v1") {
         const boundary = boundaryFn(ctx.cwd, ctx.isProjectTrusted());
         if (!boundary.allowed) {
@@ -346,14 +360,32 @@ export function createProviderAwareCompactionExtension(options: ProviderAwareCom
 
       let stage: "authentication" | "summarization" = "authentication";
       try {
-        const auth = await ctx.modelRegistry.getApiKeyAndHeaders(summaryModel);
+        let auth: { apiKey?: string; headers?: ProviderHeaders; env?: Record<string, string> };
+        if (policy.summaryModel === "self" && event.auth) {
+          const snapshot = event.auth;
+          if (snapshot.model.provider !== summaryModel.provider || snapshot.model.id !== summaryModel.id || snapshot.model.api !== summaryModel.api) {
+            recordFallback(pi, activeModel, policy.id, "auth_snapshot_mismatch");
+            notifyFailure(ctx, "Compaction cancelled: authentication snapshot does not match the summary model.");
+            return { cancel: true };
+          }
+          if (!snapshot.apiKey && !snapshot.headers) {
+            recordFallback(pi, activeModel, policy.id, "auth_unavailable");
+            notifyFailure(ctx, "Compaction cancelled: captured authentication is unavailable.");
+            return { cancel: true };
+          }
+          auth = snapshot;
+          summaryModel = snapshot.model;
+        } else {
+          const resolved = await ctx.modelRegistry.getApiKeyAndHeaders(summaryModel);
+          if (!resolved.ok) {
+            recordFallback(pi, activeModel, policy.id, event.signal.aborted ? "summarization_aborted" : "auth_unavailable");
+            if (!event.signal.aborted) notifyFailure(ctx, `Compaction cancelled: ${resolved.error}`);
+            return { cancel: true };
+          }
+          auth = resolved;
+        }
         if (event.signal.aborted) {
           recordFallback(pi, activeModel, policy.id, "summarization_aborted");
-          return { cancel: true };
-        }
-        if (!auth.ok) {
-          recordFallback(pi, activeModel, policy.id, "auth_unavailable");
-          notifyFailure(ctx, `Compaction cancelled: ${auth.error}`);
           return { cancel: true };
         }
 
@@ -428,6 +460,16 @@ export function createProviderAwareCompactionExtension(options: ProviderAwareCom
           const message = error instanceof Error ? error.message : String(error);
           notifyFailure(ctx, `Compaction cancelled: ${stage} failed. ${message}`);
         }
+        return { cancel: true };
+      }
+    };
+    if (pi.registerCompactionStrategy) pi.registerCompactionStrategy({ id: "provider-aware", prepare });
+    else pi.on("session_before_compact", (event, ctx) => {
+      try { return prepare(ctx)?.(event, ctx); }
+      catch (error) {
+        if (!(error instanceof CompactionPolicyConfigurationError)) throw error;
+        const message = `Compaction cancelled: ${error.message}`;
+        if (ctx.hasUI) notifyFailure(ctx, message); else console.warn(message);
         return { cancel: true };
       }
     });

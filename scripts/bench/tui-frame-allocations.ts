@@ -15,6 +15,8 @@ import { currentCommit, readIntegerOption } from "./benchmark.ts";
 type Fixture = "direct-main" | "production-main" | "production-alt";
 type AltControl =
 	| "stable"
+	| "scroll-up"
+	| "bottom-hint"
 	| "overlay"
 	| "overlay-multiple"
 	| "selection"
@@ -145,6 +147,7 @@ interface FixtureRuntime {
 		selectionPointReferences: number;
 	};
 	dispose(): Promise<void>;
+	getBottomHintDiagnostics(): ReturnType<TuiAltScreen["getBottomHintDiagnostics"]> | undefined;
 }
 
 function addPlainContainer(plainChildren: StaticLines[], id: string, lineCount = 1): Container {
@@ -234,7 +237,7 @@ function createFixture(
 				{ component: transcriptScrollView, basis: 0, grow: 1, shrink: 1, minSize: 1 },
 				{ component: dock, basis: "auto", grow: 0, shrink: 1, minSize: 1 },
 			]);
-			const alt = new TuiAltScreen(terminal, false, undefined, { mouse: false });
+			const alt = new TuiAltScreen(terminal, false, undefined, { mouse: false, scrollToBottomHint: altControl === "bottom-hint" });
 			for (const root of roots) alt.addChild(root);
 			alt.setLayoutRoot(layout);
 			if (altControl === "overlay" || altControl === "overlay-multiple" || altControl === "mixed") {
@@ -248,6 +251,9 @@ function createFixture(
 				}
 			}
 			alt.start();
+			if (altControl === "bottom-hint" || altControl === "scroll-up") {
+				alt.renderNow(); alt.scrollToTop(); alt.renderNow();
+			}
 			if (altControl === "selection" || altControl === "selection-multi" || altControl === "mixed") {
 				const row = Math.max(0, itemCount - (altControl === "selection" ? 2 : 12));
 				const internals = alt as unknown as {
@@ -277,6 +283,7 @@ function createFixture(
 		active,
 		advanceActive,
 		plainChildren,
+		getBottomHintDiagnostics: () => tui instanceof TuiAltScreen ? tui.getBottomHintDiagnostics() : undefined,
 		getAltLayoutRetainedReferenceCounts: () =>
 			tui instanceof TuiAltScreen
 				? tui.getAltLayoutRetainedReferenceCounts()
@@ -322,13 +329,13 @@ function linearSlope(values: readonly number[]): number {
 	return denominator === 0 ? 0 : numerator / denominator;
 }
 
-async function runAltLifecycleCycle(itemCount: number, width: number, height: number): Promise<number> {
-	const cycle = createFixture("production-alt", itemCount, width, height, "stable");
+async function runAltLifecycleCycle(itemCount: number, width: number, height: number, control: AltControl): Promise<number> {
+	const cycle = createFixture("production-alt", itemCount, width, height, control);
 	cycle.advanceActive();
 	cycle.tui.renderNow();
 	await cycle.tui.dispose({ preserveScreen: true });
 	const references = cycle.getAltLayoutRetainedReferenceCounts();
-	return references.components + references.lines + references.sources + references.cachedRows;
+	return references.components + references.lines + references.sources + references.cachedRows + (cycle.getBottomHintDiagnostics()?.lineReferences ?? 0);
 }
 
 function allocationSites(head: SamplingNode): { sampledBytes: number; top: AllocationSite[] } {
@@ -371,12 +378,12 @@ const height = readIntegerOption("--height", 40);
 const altControlIndex = process.argv.indexOf("--alt-control");
 const altControlArgument = (altControlIndex === -1 ? "stable" : process.argv[altControlIndex + 1]) as AltControl;
 if (
-	!["stable", "overlay", "overlay-multiple", "selection", "selection-multi", "cursor-ime", "mixed"].includes(
+	!["stable", "scroll-up", "bottom-hint", "overlay", "overlay-multiple", "selection", "selection-multi", "cursor-ime", "mixed"].includes(
 		altControlArgument,
 	)
 ) {
 	throw new Error(
-		"--alt-control must be stable, overlay, overlay-multiple, selection, selection-multi, cursor-ime, or mixed",
+		"--alt-control must be stable, scroll-up, bottom-hint, overlay, overlay-multiple, selection, selection-multi, cursor-ime, or mixed",
 	);
 }
 if (typeof globalThis.gc !== "function") throw new Error("tui-frame-allocations requires --expose-gc");
@@ -443,6 +450,7 @@ const sampled = allocationSites(stopped.profile.head as SamplingNode);
 const metrics = runtime.instrumentation.snapshot();
 const retainedReferencesBeforeDispose = runtime.getAltLayoutRetainedReferenceCounts();
 const compositionReferencesBeforeDispose = runtime.getAltCompositionRetainedReferenceCounts();
+const bottomHintBeforeDispose = runtime.getBottomHintDiagnostics();
 let plainRenderCalls = 0;
 let maxPlainRenderCalls = 0;
 for (const child of runtime.plainChildren) {
@@ -455,10 +463,11 @@ globalThis.gc();
 const controlledGcAfterDisposeHeapBytes = process.memoryUsage().heapUsed;
 const retainedReferencesAfterDispose = runtime.getAltLayoutRetainedReferenceCounts();
 const compositionReferencesAfterDispose = runtime.getAltCompositionRetainedReferenceCounts();
+const bottomHintAfterDispose = runtime.getBottomHintDiagnostics();
 const lifecycleHeapSamples: number[] = [];
 let lifecycleMaximumRetainedReferencesAfterDispose = 0;
 for (let cycle = 0; cycle < lifecycleCycles; cycle++) {
-	const retainedReferences = await runAltLifecycleCycle(itemCount, width, height);
+	const retainedReferences = await runAltLifecycleCycle(itemCount, width, height, altControlArgument);
 	await waitImmediate();
 	lifecycleMaximumRetainedReferencesAfterDispose = Math.max(
 		lifecycleMaximumRetainedReferencesAfterDispose,
@@ -504,6 +513,8 @@ process.stdout.write(`${JSON.stringify({
 		retainedReferencesAfterDispose,
 		compositionReferencesBeforeDispose,
 		compositionReferencesAfterDispose,
+		bottomHintBeforeDispose,
+		bottomHintAfterDispose,
 		lifecycleCycles,
 		lifecycleHeapSamples,
 		lifecycleHeapSlopeBytesPerCycle: linearSlope(lifecycleHeapSamples),

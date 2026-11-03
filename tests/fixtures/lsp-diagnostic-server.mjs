@@ -1,5 +1,7 @@
 // Protocol/status fixture only. This process does not analyze HTML or JavaScript.
+import { spawn } from "node:child_process";
 const mode = process.argv[2];
+const ownedChild = mode === "owned-descendant" ? spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore", windowsHide: true }) : undefined;
 let buffer = Buffer.alloc(0);
 function send(message) {
   const body = JSON.stringify({ jsonrpc: "2.0", ...message });
@@ -23,6 +25,7 @@ function handle(message) {
   } else if (message.method === "textDocument/codeAction") send({ id: message.id, result: [{ title: "synthetic fix", kind: "source.fixAll", edit: {
     changes: { [message.params.textDocument.uri]: [{ range: { start: { line: 0, character: 10 }, end: { line: 0, character: 11 } }, newText: "2" }] },
   } }] });
+  else if (message.method === "workspace/symbol") send({ id: message.id, result: ownedChild ? [{ name: String(ownedChild.pid) }] : [] });
   else if (message.method === "shutdown") send({ id: message.id, result: null });
   else if (message.method === "exit") process.exit(0);
 }

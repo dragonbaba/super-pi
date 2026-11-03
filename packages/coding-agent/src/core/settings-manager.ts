@@ -115,6 +115,12 @@ export type PackageSource =
 	  };
 
 export interface Settings {
+	/** Startup preference only. Host execution always requires fresh session consent. */
+	permissionMode?: import("./permission-mode.ts").SessionPermissionMode;
+	/** Global-only execution environment. Legacy settings require explicit migration. */
+	executionEnvironment?: "sandbox" | "trusted-host";
+	/** Global-only operation rules; project files cannot grant host capabilities. */
+	executionPermissions?: import("./execution-policy.ts").ExecutionPermissions;
 	lastChangelogVersion?: string;
 	lastUpdateNotificationVersion?: string;
 	defaultProvider?: string;
@@ -168,7 +174,7 @@ export interface Settings {
 	httpIdleTimeoutMs?: number; // HTTP header/body idle timeout in milliseconds; 0 disables it
 	websocketConnectTimeoutMs?: number; // WebSocket connect/open handshake timeout in milliseconds; 0 disables it
 	tuiMode?: TuiMode; // default: "regular"
-	fullscreenExitOutput?: FullscreenExitOutput; // default: transcript; fullscreen mode only
+	fullscreenExitOutput?: FullscreenExitOutput; // default: resume-hint; fullscreen mode only
 	fullscreenScrollbar?: ScrollViewScrollbar; // default: "auto"; no effect in regular TUI mode
 }
 
@@ -419,6 +425,16 @@ export class SettingsManager {
 		const projectTrusted = options.projectTrusted ?? true;
 		storage.assertProjectIdentity?.();
 		const globalLoad = SettingsManager.tryLoadFromStorage(storage, "global");
+		// First Windows installation only. Re-check under the storage lock so a
+		// concurrent settings writer cannot be overwritten. Existing configurations
+		// keep their compatibility path until an explicit profile is selected.
+		if (process.platform === "win32" && settingsPaths.global && !globalLoad.error && !existsSync(settingsPaths.global)) {
+			storage.withLock("global", current => {
+				if (current !== undefined && current !== "") return undefined;
+				globalLoad.settings.executionEnvironment = "sandbox";
+				return JSON.stringify(globalLoad.settings, null, 2);
+			});
+		}
 		const projectLoad = SettingsManager.tryLoadFromStorage(storage, "project", projectTrusted);
 		const initialErrors: SettingsError[] = [];
 		if (globalLoad.error) {
@@ -542,6 +558,25 @@ export class SettingsManager {
 
 	getGlobalSettings(): Settings {
 		return structuredClone(this.globalSettings);
+	}
+
+	private executionEnvironmentOverride?: "sandbox" | "trusted-host";
+	private permissionModeOverride?: import("./permission-mode.ts").SessionPermissionMode;
+	getPermissionMode(): import("./permission-mode.ts").SessionPermissionMode | undefined { return this.permissionModeOverride; }
+	setPermissionModeForSession(mode: import("./permission-mode.ts").SessionPermissionMode): void {
+		if (mode !== "read-only" && mode !== "sandbox-write" && mode !== "host-write") throw new Error("Invalid session permission mode");
+		this.permissionModeOverride = mode;
+		this.executionEnvironmentOverride = mode === "host-write" ? "trusted-host" : "sandbox";
+	}
+	getExecutionEnvironment(): "sandbox" | "trusted-host" | undefined {
+		const value = this.executionEnvironmentOverride ?? this.globalSettings.executionEnvironment;
+		if (value !== undefined && value !== "sandbox" && value !== "trusted-host") throw new Error("Invalid global executionEnvironment; expected sandbox or trusted-host");
+		return value;
+	}
+	/** Startup-only explicit CLI selection. Never persisted or merged from project settings. */
+	setExecutionEnvironmentForSession(value: "sandbox" | "trusted-host"): void {
+		if (value !== "sandbox" && value !== "trusted-host") throw new Error("Invalid execution environment");
+		this.executionEnvironmentOverride = value;
 	}
 
 	getProjectSettings(): Settings {
@@ -1345,7 +1380,7 @@ export class SettingsManager {
 	}
 
 	getFullscreenExitOutput(): FullscreenExitOutput {
-		return this.settings.fullscreenExitOutput === "resume-hint" ? "resume-hint" : "transcript";
+		return this.settings.fullscreenExitOutput === "transcript" ? "transcript" : "resume-hint";
 	}
 
 	setFullscreenExitOutput(output: FullscreenExitOutput): void {

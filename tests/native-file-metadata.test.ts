@@ -15,7 +15,7 @@ import { protectWindowsFixture } from "./helpers/native-metadata-fixture.ts";
 import { Worker } from "node:worker_threads";
 import { once } from "node:events";
 const execute = promisify(execFile);
-const sourceDirectory = fileURLToPath(new URL("../packages/extensions/mutation-guard-write/", import.meta.url));
+const sourceDirectory = fileURLToPath(new URL("../packages/coding-agent/src/core/files/", import.meta.url));
 
 async function planFor(target: string, before: string) {
   const identity = await capturePathIdentity(target);

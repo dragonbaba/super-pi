@@ -217,11 +217,14 @@ export function applyChromeDevtoolsTools(
 	selectedTools: readonly ChromeDevToolsToolName[],
 	options: { preservePlanModeSelection?: boolean } = {},
 ) {
-	const activeToolNames = pi.getActiveTools();
+	// Automatic restoration reads one current snapshot per application, including after settings I/O.
+	const catalog = options.preservePlanModeSelection === true ? pi.getToolCatalog?.() : undefined;
+	const activeToolNames = catalog?.activeTools ?? pi.getActiveTools();
 	const next = reconcileChromeDevtoolsTools(
 		activeToolNames,
 		selectedTools,
 		options.preservePlanModeSelection === true,
+		catalog?.selectionMode,
 	);
 	if (next !== undefined) pi.setActiveTools(next);
 }

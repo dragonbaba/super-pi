@@ -1,5 +1,6 @@
 import { verifyMutationReadSource, type MutationReadSource } from "../../coding-agent/src/core/tools/read-window.ts";
-import { createHash } from "node:crypto";
+import { resolveToolPath, sha256 } from "@super-pi/coding-agent/internal/files/file-path";
+export { resolveToolPath, sha256 } from "@super-pi/coding-agent/internal/files/file-path";
 import { lstat, readFile, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { assessProtectedMutationPath } from "./protected-path-policy.ts";
@@ -122,15 +123,6 @@ export interface MutationWriteSuccess {
 
 export function normalizeToolPath(path: string): string {
   return path.startsWith("@") ? path.slice(1) : path;
-}
-
-export function resolveToolPath(cwd: string, path: string): string {
-  const normalized = normalizeToolPath(path);
-  return isAbsolute(normalized) ? resolve(normalized) : resolve(cwd, normalized);
-}
-
-export function sha256(content: string | Uint8Array): string {
-  return createHash("sha256").update(content).digest("hex");
 }
 
 export async function canonicalExistingPath(path: string): Promise<string> {
