@@ -58,7 +58,8 @@ elapsed milliseconds, exit code and signal.
   actual concurrency, no replay, exact continuation recovery, responsiveness and
   GC. Single-result shapes already run in `alpha-raw-session`; intermediate
   count 4 and another unprojected count 129 introduced no additional branch.
-- The real CLI matrix has 38 cases instead of 42. Terminal lifecycle,
+- The real CLI matrix has 39 cases (38 after consolidation, plus the T02
+  AGENTS-only saved-denial regression). Terminal lifecycle,
   cancellation, active-work shutdown and progress still run in both renderers.
   Missing/malformed settings and trusted/untrusted project parsing run once
   through the real CLI because they precede renderer selection.

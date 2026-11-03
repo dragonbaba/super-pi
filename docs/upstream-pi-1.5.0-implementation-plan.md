@@ -1,6 +1,6 @@
 # Pi 1.5.0 借鉴与修复实施方案
 
-日期：2026-11-03。状态：**方案 PR #175 已合并，T01 依赖修复进入验收，其余任务未实施**。#175 交付 GPL-3.0-only、README、差异评估与本方案；先完成逐项规划，再进入独立修复。不得把“读过源码”“写了测试”或“CI 启动了”记成实施完成。
+日期：2026-11-03。状态：**方案 #175、SDK 前置修复 #176 和 T01 #177 已合并；T02 已实现，进入验收；T03–T12 尚未实施**。#175 交付 GPL-3.0-only、README、差异评估与本方案；先完成逐项规划，再进入独立修复。不得把“读过源码”“写了测试”或“CI 启动了”记成实施完成。
 
 ## 1. 基线、范围与交付顺序
 
@@ -8,7 +8,7 @@
 - 上游参考：Pi `v1.5.0` / `f9a26365568127461c47a07a37dcb42c140a3ac5`；发布记录和本地证据见[差异评估](upstream-pi-1.5.0-diff-assessment.md)及[JSON 记录](evidence/upstream-pi-1.5.0-review.json)。不将未发布 main 内容混入本轮。
 - 约束依据：[AGENTS.md](../AGENTS.md)、[Hot-path allocation contract](performance/hot-path-allocation-contract.md)、[测试与 CI 说明](testing.md)。发生冲突时不得用本方案降低契约。
 - 方案交付后按 T01 → T02 → T03 → T04 → T05 → T06 → T07–T09 → T10–T12 顺序实施；F 项先做需求/兼容性判定，不自动纳入修复。
-- 每个独立根因使用独立实施分支和 PR；共用的锁文件、认证、session 或 provider 模块串行修改。通常以已合并基线为准；T01 验收发现独立 SDK transport 缺陷，先提交 [#176](https://github.com/dragonbaba/super-pi/pull/176)，T01 以其为显式前置 PR，合并顺序为 #176 → T01。不把未合并候选当已交付。
+- 每个独立根因使用独立实施分支和 PR；共用的锁文件、认证、session 或 provider 模块串行修改，以已合并基线为准。T01 的 SDK transport 前置 [#176](https://github.com/dragonbaba/super-pi/pull/176) 与依赖更新 [#177](https://github.com/dragonbaba/super-pi/pull/177) 已依次合并；T02 从 `ed53fbe72a1c2c27b64fec78980ccb46bacca476` 开始。不把未合并候选当已交付。
 - 本 PR 的创建不代表允许自动合并、安装到全局环境或发布 npm。沿用用户对当前任务的授权，不从历史任务文档继承额外发布权限。
 
 ### 1.1 任务索引
@@ -29,7 +29,7 @@
 | T12 | Windows 路径等价性 | 待复现 | 路径边界及调用者 | 分入口复现，按根因拆分 |
 | F01–F06 | Schema、文档、更新说明、账单、目录、Worker 等待 | 产品/兼容性选择 | 见第 6 节 | 不与缺陷修复捆绑 |
 
-每项状态统一为：`待复现/待设计核对 → 可实施 → 实施中 → 待验收 → 已交付`。排除项记录理由及覆盖范围，不打“修复完成”勾。T01 的候选、测试和性能证据见[独立实施记录](repairs/pi-150-t01-dependencies.md)；T02–T12 和 F01–F06 尚未实施。
+每项状态统一为：`待复现/待设计核对 → 可实施 → 实施中 → 待验收 → 已交付`。排除项记录理由及覆盖范围，不打“修复完成”勾。T01 见[依赖实施记录](repairs/pi-150-t01-dependencies.md)；T02 的复现、设计与验收见[保存信任决定实施记录](repairs/pi-150-t02-saved-trust.md)。T03–T12 和 F01–F06 尚未实施。
 
 用户最新验收约束：**只使用当前 Node 26.13，失败定位根因并修复，不扩展多版本测试来绕过失败。** 现有 Linux/Windows CI 分片统一使用该版本；各任务原先提到的最低版本测试不再作为本轮执行项，包的 engines 元数据不因此自动修改。
 
@@ -103,7 +103,7 @@ npm.cmd run bench:tui-frame-queue-allocations
 
 **步骤。** 实施时重新执行生产 audit，结合 `npm.cmd explain <包名>` 确认引入者、使用的 API 和最低修复版本；对照当前 manifest 精确更新。安全公告对应的版本修复优先，只有上游补丁无法覆盖明确可达问题时才设计本地代码改动。新增 override 必须说明无法由父包版本解决的原因。
 
-依赖选择必须兼容项目声明和 CI 的 Node.js `22.19.x`；本机 Node.js 26 上可运行不能代替最低版本验证。若修复版要求提高运行时下限，先独立记录兼容性决策，不在安全升级中悄悄抬高 engines。
+依赖选择核对项目声明的 engines；按用户最新要求，本轮验收和 CI 只使用当前 Node 26.13，不执行其他版本测试。若修复版要求提高运行时下限，先独立记录兼容性决策，不在安全升级中悄悄抬高 engines。
 
 **边界。** 使用 provider `fetch`/连接、MCP transport/auth、文件工具 glob 的真实链路审计；不在每次请求添加 URL/证书/glob 的多层重复检查。外部 SDK 的分配变化不能被“仅改锁文件”排除，若命中 delta/progress 链则需要相关 profile。
 
@@ -111,13 +111,13 @@ npm.cmd run bench:tui-frame-queue-allocations
 
 ### T02 — 保存的拒绝信任决定
 
-**根因。** `resolveProjectTrusted()` 对“没有需信任资源”的目录提前返回 `true`，早于读取保存决定。
+**根因。** `resolveProjectTrusted()` 对“没有需信任资源”的目录提前返回 `true`，早于读取保存决定。实施前审计还确认 CLI `main.ts:createRuntime` 的共享启动分支有相同短路，须同时修正，不能只测公共函数。
 
-**最小设计。** 在该现有分支消费 trust store 的有效结果；没有保存决定时才保持原自动信任行为。保留显式 override 与有资源目录的 extension hook 优先级，不借此重排所有信任来源。
+**最小设计。** 在上述两个现有分支消费 trust store 的有效结果；没有保存决定时才保持原自动信任行为。保留显式 override、会话内决定与有资源目录的 extension hook 优先级，不借此重排所有信任来源。直接 SDK 由宿主传入 SettingsManager/resource loader 的信任状态，不新增隐式磁盘读取策略。
 
 **调用链/文件。** CLI/SDK 资源启动 → [project-trust.ts](../packages/coding-agent/src/core/project-trust.ts) → [trust-manager.ts](../packages/coding-agent/src/core/trust-manager.ts) → resource/package/extension 消费者；检查 TUI/print/RPC/SDK 是否共用决定。低频入口，不增加 watcher、永久缓存或每次工具调用的磁盘查询。
 
-**验收。** 拟新增 `tests/project-trust-decisions.test.ts`，用独立临时目录验证无资源+保存 false/true/null、父级拒绝、显式 override、有资源 hook、无 UI。计数确认同次解析只读取必要的 trust 决定；不发起真实 package 安装。安全结论只覆盖信任决策，不宣称验证了 VM 隔离。
+**验收。** `tests/project-trust-decisions.test.ts` 使用独立临时目录验证无资源+保存 false/true/null、父级拒绝、显式 override、有资源 hook、无 UI、坏存储错误与锁释放。已有 `alpha-cli.test.ts` 增加仅含 AGENTS.md 的保存拒绝场景，实际启动 CLI 验证上下文中的有效信任状态。计数确认同次解析只读取必要的 trust 决定；不发起真实 package 安装。安全结论只覆盖信任决策，不宣称验证了 VM 隔离。
 
 ### T03 — 登录 URL 与终端控制字符
 
@@ -249,4 +249,4 @@ npm.cmd run bench:tui-frame-queue-allocations
 | 审查 | 最终 diff、不过度防御检查、未解决风险、对应最终 SHA 的 CI/审查结果 |
 | 交付 | 状态、已授权操作及实际结果；仅规划/仅请求审查不算完成 |
 
-方案 PR #175 已交付固定基线与差异证据、逐项设计、性能门禁、验证映射和许可/文档。T01 已产生独立依赖候选，进入验收；合并前不计入已交付修复，应用生产源码改动仍为 **0**。
+方案 PR #175 已交付固定基线与差异证据、逐项设计、性能门禁、验证映射和许可/文档；T01 及 SDK 前置修复已通过 #176/#177 合并。T02 进入独立验收，合并前不计入已交付修复；其余任务未实施。

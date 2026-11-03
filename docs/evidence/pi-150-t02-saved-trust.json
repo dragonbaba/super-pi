@@ -1,0 +1,117 @@
+{
+  "schemaVersion": 1,
+  "task": "T02 saved project trust",
+  "baselineCommit": "ed53fbe72a1c2c27b64fec78980ccb46bacca476",
+  "branch": "codex/t02-saved-trust-decisions",
+  "node": "26.13.0",
+  "platform": "win32/x64",
+  "candidateSourceSha256Lf": {
+    "packages/coding-agent/src/core/project-trust.ts": "9f33f0f74f7a273b6bc7d369b68c2970611f19b647f79e9c7f43c96276662789",
+    "packages/coding-agent/src/main.ts": "6a45edaae7ff3a3a42c65c54228c4be286978e3cec877a0c1c76ea67912e2270",
+    "tests/project-trust-decisions.test.ts": "1b1f612c15cff420a334adc803c42cf4024621b14a3075f561ea647213f56381",
+    "tests/alpha-cli.test.ts": "689a280315d75540b914afdb8683257a18e64fd24d542e5d39229ed15bc7af5e",
+    "tests/fixtures/alpha-cli-extension.mjs": "d115f5331a50506cfea27638528416c320ddd6720648f765702981cbdc74a6dd"
+  },
+  "scope": {
+    "productionLinesReplaced": 2,
+    "entryPoints": [
+      "resolveProjectTrusted: resource-free branch",
+      "CLI createRuntime: resource-free initial decision"
+    ],
+    "unchanged": [
+      "SDK host-provided SettingsManager policy",
+      "explicit override and cached decision priority",
+      "resource-bearing extension hook priority",
+      "store parser, locking and nearest-parent identity logic",
+      "provider delta/progress/event/render/frame paths"
+    ]
+  },
+  "baselineReproduction": {
+    "resolver": {
+      "tests": 12,
+      "pass": 6,
+      "fail": 6,
+      "note": "Saved false/inherited false returned true; skipped reads and corrupt-file error detected."
+    },
+    "actualCli": {
+      "tests": 1,
+      "pass": 0,
+      "fail": 1,
+      "expected": "ALPHA_PROJECT_TRUST:false",
+      "actual": "ALPHA_PROJECT_TRUST:true"
+    }
+  },
+  "validation": {
+    "focusedCommand": "node --expose-gc --experimental-strip-types --test --test-concurrency=1 tests/project-trust-decisions.test.ts tests/extension-hook-timeout.test.ts",
+    "focused": {
+      "tests": 22,
+      "pass": 22,
+      "fail": 0,
+      "skip": 0
+    },
+    "actualCliCommand": "node --experimental-strip-types --test --test-name-pattern=project- tests/alpha-cli.test.ts",
+    "actualCli": {
+      "tests": 3,
+      "pass": 3,
+      "fail": 0,
+      "skip": 0,
+      "covers": [
+        "saved true with resources",
+        "saved false with resources",
+        "saved false with only AGENTS.md"
+      ]
+    },
+    "typecheck": "passed",
+    "offlineBuild": "passed",
+    "fullNode26": {
+      "command": "npm test -- --keep-going",
+      "units": 389,
+      "failedUnits": 0,
+      "exitCode": 0,
+      "tests": 5200,
+      "pass": 5104,
+      "fail": 0,
+      "skipped": 96,
+      "cancelled": 0
+    },
+    "ci": "pending"
+  },
+  "deterministicCounters": {
+    "resourceFreeStoreGetsPerResolution": 1,
+    "explicitOverrideStoreGets": 0,
+    "decisiveExtensionHookStoreGets": 0,
+    "undecidedHookStoreGets": 1,
+    "persistedDecisionChangedByOverride": false,
+    "newRuntimeWatchers": 0,
+    "newRuntimeCaches": 0,
+    "newRetryOrFallbackChains": 0
+  },
+  "lifecycle": {
+    "trustLockPresentAfterParseError": false,
+    "trustLockPresentAfterRecovery": false,
+    "storedDecisionPreservedByActualCli": true,
+    "actualCliExitCode": 0,
+    "actualCliShutdownEmissions": 1,
+    "actualCliRawModeRestored": true,
+    "fixtureCleanup": "Existing removeOwnedFixture or existing CLI finally cleanup, scoped to per-test mkdtemp roots."
+  },
+  "performance": {
+    "classification": "Cold startup/explicit command",
+    "newAllocationBenchmark": "Not applicable: no hot-path modification, new persistent owner or object pool. Existing full suite includes source/AST invariants.",
+    "existingWork": "One existing locked JSON read and nearest-parent lookup for a previously bypassed cold branch; objects and file lock use original lifetime."
+  },
+  "limits": [
+    "Trust-decision behavior only; not a Windows VM isolation acceptance.",
+    "Direct SDK keeps its existing host-controlled trust policy.",
+    "AGENTS.md resource classification remains unchanged."
+  ],
+  "rawLogSha256": {
+    "resolver-red.log": "f13af0ba1c2da187fecaba66ce9744a63b5092415dce626423fe8f772bab5ac2",
+    "cli-red.log": "106c259ac884760666dff7b9bee3d95f7ff8d6994f6775ec731a94fdce9115c7",
+    "focused-green.log": "81d2a9d9298cfa188e0c6c72a2ffaa13f20deb443f9d100977052c155db9ac5f",
+    "cli-green.log": "564c52948952f0c96fe6e2b11e84a4781195163a79962bc51a36c20edfed5f14",
+    "check.log": "527ecb914662d6ebb9f70368b02372a12edc39848a9869740f280fd2b581481e",
+    "build.log": "597b0150f0ae816a32c03540f61e994cf48a4e37294d7d64d907912dfe541055",
+    "full-node26.log": "859dda55516148a32d1984e613fbb7a75e098a7d26201bc154abf36a70b115df"
+  }
+}
