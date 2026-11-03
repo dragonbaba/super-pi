@@ -1,0 +1,1676 @@
+{
+  "schemaVersion": 1,
+  "task": "T01",
+  "date": "2026-11-03",
+  "candidateIdentity": {
+    "branch": "codex/t01-dependency-security",
+    "packageLockSha256": "5de202a2095106f02830e574bf33d26537d18d916cc4eede5f2958714763a03f",
+    "codingAgentManifestSha256": "04539507a63d07a91efa41a52cc175ade517bc6580bf650a535c890b666386e7",
+    "productionSourceChanged": false,
+    "note": "No production source change relative to PR #176. Initial dependency-only profiles were on 6ad356fd2; final profiles include the separately reviewed transport fix. Manifest/lock hashes identify the dependency candidate.",
+    "hashNormalization": "UTF-8 with LF"
+  },
+  "environment": {
+    "os": "Windows",
+    "arch": "x64",
+    "node": [
+      "26.13.0"
+    ],
+    "acceptance": "Current Node 26 only, per user instruction. Prior Node22 exploration is not an acceptance gate."
+  },
+  "audit": {
+    "command": "npm audit --omit=dev --json",
+    "before": {
+      "info": 0,
+      "low": 0,
+      "moderate": 6,
+      "high": 3,
+      "critical": 0,
+      "total": 9
+    },
+    "after": {
+      "info": 0,
+      "low": 0,
+      "moderate": 0,
+      "high": 0,
+      "critical": 0,
+      "total": 0
+    },
+    "note": "Affected-package counts from same-day snapshots; historical count 16 is not the before value for this change."
+  },
+  "dependencies": [
+    {
+      "path": "node_modules/@hono/node-server",
+      "before": "2.1.1",
+      "after": "2.1.5",
+      "engines": {
+        "node": ">=20"
+      }
+    },
+    {
+      "path": "node_modules/@isaacs/nonrecursive-glob-match",
+      "before": null,
+      "after": "1.0.3",
+      "engines": null
+    },
+    {
+      "path": "node_modules/body-parser",
+      "before": "2.3.0",
+      "after": "2.4.0",
+      "engines": {
+        "node": ">=18"
+      }
+    },
+    {
+      "path": "node_modules/fast-uri",
+      "before": "3.1.8",
+      "after": "3.1.9",
+      "engines": null
+    },
+    {
+      "path": "node_modules/glob",
+      "before": "13.0.6",
+      "after": "14.0.3",
+      "engines": {
+        "node": "18 || 20 || >=22"
+      }
+    },
+    {
+      "path": "node_modules/ip-address",
+      "before": "10.7.2",
+      "after": "10.7.5",
+      "engines": {
+        "node": ">= 12"
+      }
+    },
+    {
+      "path": "node_modules/minimatch",
+      "before": "10.2.5",
+      "after": "11.0.3",
+      "engines": {
+        "node": "18 || 20 || >=22"
+      }
+    },
+    {
+      "path": "node_modules/path-scurry",
+      "before": "2.0.2",
+      "after": "3.0.0",
+      "engines": {
+        "node": "18 || 20 || >=22"
+      }
+    },
+    {
+      "path": "node_modules/qs",
+      "before": "6.16.0",
+      "after": "6.17.1",
+      "engines": {
+        "node": ">=0.6"
+      }
+    },
+    {
+      "path": "node_modules/undici",
+      "before": "8.11.2",
+      "after": "8.12.3",
+      "engines": {
+        "node": ">=22.19.0"
+      }
+    },
+    {
+      "path": "node_modules/zod",
+      "before": "3.25.76",
+      "after": "4.6.7",
+      "engines": null
+    }
+  ],
+  "httpDispatcher": {
+    "method": "20 warmup + 100 measured 256 KiB local HTTP responses, heap sampling interval 4096, 12 event-loop/GC cycles after closing owned dispatcher and server. Serial runs on the same host. Timings include inspector overhead.",
+    "heapFieldNote": "Raw prototype output called the end-of-work snapshot peakHeap; corrected to heapAfterWork here and in the committed probe. This value is not a measured peak.",
+    "results": {
+      "node26": {
+        "before": {
+          "fixture": "production-http-dispatcher:20-warmup:100x256KiB",
+          "node": "v26.13.0",
+          "undici": "8.11.2",
+          "requests": 120,
+          "responses": 120,
+          "receivedBytes": 31457280,
+          "reads": 600,
+          "sampledBytes": 9779328,
+          "sampledBytesPerResponse": 97793.28,
+          "p50Ms": 0.5488000000000284,
+          "p95Ms": 0.8900999999998476,
+          "heapBefore": 16861328,
+          "heapAfterGc": 12163096,
+          "retained": {
+            "sockets": 0,
+            "response": false,
+            "reader": false,
+            "dispatcher": false
+          },
+          "scope": "Production configureHttpDispatcher and npm undici fetch/body consumption; includes fixture server and consumer allocations. SDK parser and TUI measured separately.",
+          "heapAfterWork": 19207424
+        },
+        "after": {
+          "fixture": "production-http-dispatcher:20-warmup:100x256KiB",
+          "node": "v26.13.0",
+          "undici": "8.12.3",
+          "requests": 120,
+          "responses": 120,
+          "receivedBytes": 31457280,
+          "reads": 600,
+          "sampledBytes": 9490544,
+          "sampledBytesPerResponse": 94905.44,
+          "p50Ms": 0.5395000000000039,
+          "p95Ms": 1.1658999999999935,
+          "heapBefore": 16964720,
+          "heapAfterGc": 12266240,
+          "retained": {
+            "sockets": 0,
+            "response": false,
+            "reader": false,
+            "dispatcher": false
+          },
+          "scope": "Production configureHttpDispatcher and npm undici fetch/body consumption; includes fixture server and consumer allocations. SDK parser and TUI measured separately.",
+          "heapAfterWork": 19228648
+        },
+        "final": {
+          "fixture": "production-http-dispatcher:20-warmup:100x256KiB",
+          "node": "v26.13.0",
+          "undici": "8.12.3",
+          "requests": 120,
+          "responses": 120,
+          "receivedBytes": 31457280,
+          "reads": 600,
+          "sampledBytes": 9655296,
+          "sampledBytesPerResponse": 96552.96,
+          "p50Ms": 0.5708999999999946,
+          "p95Ms": 1.852499999999992,
+          "heapBefore": 16964704,
+          "heapAfterWork": 12206088,
+          "heapAfterGc": 12268160,
+          "retained": {
+            "sockets": 0,
+            "response": false,
+            "reader": false,
+            "dispatcher": false
+          },
+          "scope": "Production configureHttpDispatcher and npm undici fetch/body consumption; includes fixture server and consumer allocations. SDK parser and TUI measured separately."
+        }
+      }
+    },
+    "paired": {
+      "method": "Five alternating before/after processes, Node 26.13, both include the same SDK transport fix. Before uses old lock in isolated checkout; after uses T01 lock. Same probe bytes. No other local test runner active.",
+      "probeSha256Lf": "6f0c8b872aa12cc14e7b353ef6376d9a13383e272d9134cc27165953770f5fdc",
+      "pairs": [
+        {
+          "before": {
+            "fixture": "production-http-dispatcher:20-warmup:100x256KiB",
+            "node": "v26.13.0",
+            "undici": "8.11.2",
+            "requests": 120,
+            "responses": 120,
+            "receivedBytes": 31457280,
+            "reads": 600,
+            "sampledBytes": 9720104,
+            "sampledBytesPerResponse": 97201.04,
+            "p50Ms": 0.545899999999989,
+            "p95Ms": 1.2342999999999904,
+            "heapBefore": 16890120,
+            "heapAfterWork": 19307528,
+            "heapAfterGc": 12209824,
+            "retained": {
+              "sockets": 0,
+              "response": false,
+              "reader": false,
+              "dispatcher": false
+            },
+            "scope": "Production configureHttpDispatcher and npm undici fetch/body consumption; includes fixture server and consumer allocations. SDK parser and TUI measured separately."
+          },
+          "after": {
+            "fixture": "production-http-dispatcher:20-warmup:100x256KiB",
+            "node": "v26.13.0",
+            "undici": "8.12.3",
+            "requests": 120,
+            "responses": 120,
+            "receivedBytes": 31457280,
+            "reads": 600,
+            "sampledBytes": 9868120,
+            "sampledBytesPerResponse": 98681.2,
+            "p50Ms": 0.5444999999999993,
+            "p95Ms": 1.1639000000000124,
+            "heapBefore": 16964368,
+            "heapAfterWork": 19228072,
+            "heapAfterGc": 12275184,
+            "retained": {
+              "sockets": 0,
+              "response": false,
+              "reader": false,
+              "dispatcher": false
+            },
+            "scope": "Production configureHttpDispatcher and npm undici fetch/body consumption; includes fixture server and consumer allocations. SDK parser and TUI measured separately."
+          }
+        },
+        {
+          "before": {
+            "fixture": "production-http-dispatcher:20-warmup:100x256KiB",
+            "node": "v26.13.0",
+            "undici": "8.11.2",
+            "requests": 120,
+            "responses": 120,
+            "receivedBytes": 31457280,
+            "reads": 600,
+            "sampledBytes": 9494704,
+            "sampledBytesPerResponse": 94947.04,
+            "p50Ms": 0.555800000000005,
+            "p95Ms": 1.1696000000000026,
+            "heapBefore": 16898264,
+            "heapAfterWork": 19245600,
+            "heapAfterGc": 12215600,
+            "retained": {
+              "sockets": 0,
+              "response": false,
+              "reader": false,
+              "dispatcher": false
+            },
+            "scope": "Production configureHttpDispatcher and npm undici fetch/body consumption; includes fixture server and consumer allocations. SDK parser and TUI measured separately."
+          },
+          "after": {
+            "fixture": "production-http-dispatcher:20-warmup:100x256KiB",
+            "node": "v26.13.0",
+            "undici": "8.12.3",
+            "requests": 120,
+            "responses": 120,
+            "receivedBytes": 31457280,
+            "reads": 600,
+            "sampledBytes": 9590168,
+            "sampledBytesPerResponse": 95901.68,
+            "p50Ms": 0.5635999999999797,
+            "p95Ms": 1.2940000000000111,
+            "heapBefore": 16964664,
+            "heapAfterWork": 19229304,
+            "heapAfterGc": 12263464,
+            "retained": {
+              "sockets": 0,
+              "response": false,
+              "reader": false,
+              "dispatcher": false
+            },
+            "scope": "Production configureHttpDispatcher and npm undici fetch/body consumption; includes fixture server and consumer allocations. SDK parser and TUI measured separately."
+          }
+        },
+        {
+          "before": {
+            "fixture": "production-http-dispatcher:20-warmup:100x256KiB",
+            "node": "v26.13.0",
+            "undici": "8.11.2",
+            "requests": 120,
+            "responses": 120,
+            "receivedBytes": 31457280,
+            "reads": 600,
+            "sampledBytes": 9612264,
+            "sampledBytesPerResponse": 96122.64,
+            "p50Ms": 0.538899999999984,
+            "p95Ms": 1.183099999999996,
+            "heapBefore": 16898496,
+            "heapAfterWork": 12066680,
+            "heapAfterGc": 12217264,
+            "retained": {
+              "sockets": 0,
+              "response": false,
+              "reader": false,
+              "dispatcher": false
+            },
+            "scope": "Production configureHttpDispatcher and npm undici fetch/body consumption; includes fixture server and consumer allocations. SDK parser and TUI measured separately."
+          },
+          "after": {
+            "fixture": "production-http-dispatcher:20-warmup:100x256KiB",
+            "node": "v26.13.0",
+            "undici": "8.12.3",
+            "requests": 120,
+            "responses": 120,
+            "receivedBytes": 31457280,
+            "reads": 600,
+            "sampledBytes": 9072232,
+            "sampledBytesPerResponse": 90722.32,
+            "p50Ms": 0.5441999999999894,
+            "p95Ms": 1.197499999999991,
+            "heapBefore": 16966520,
+            "heapAfterWork": 19286784,
+            "heapAfterGc": 12261168,
+            "retained": {
+              "sockets": 0,
+              "response": false,
+              "reader": false,
+              "dispatcher": false
+            },
+            "scope": "Production configureHttpDispatcher and npm undici fetch/body consumption; includes fixture server and consumer allocations. SDK parser and TUI measured separately."
+          }
+        },
+        {
+          "before": {
+            "fixture": "production-http-dispatcher:20-warmup:100x256KiB",
+            "node": "v26.13.0",
+            "undici": "8.11.2",
+            "requests": 120,
+            "responses": 120,
+            "receivedBytes": 31457280,
+            "reads": 600,
+            "sampledBytes": 9770936,
+            "sampledBytesPerResponse": 97709.36,
+            "p50Ms": 0.5382999999999925,
+            "p95Ms": 0.8980999999999995,
+            "heapBefore": 16896144,
+            "heapAfterWork": 19236208,
+            "heapAfterGc": 12194264,
+            "retained": {
+              "sockets": 0,
+              "response": false,
+              "reader": false,
+              "dispatcher": false
+            },
+            "scope": "Production configureHttpDispatcher and npm undici fetch/body consumption; includes fixture server and consumer allocations. SDK parser and TUI measured separately."
+          },
+          "after": {
+            "fixture": "production-http-dispatcher:20-warmup:100x256KiB",
+            "node": "v26.13.0",
+            "undici": "8.12.3",
+            "requests": 120,
+            "responses": 120,
+            "receivedBytes": 31457280,
+            "reads": 600,
+            "sampledBytes": 9799240,
+            "sampledBytesPerResponse": 97992.4,
+            "p50Ms": 0.5597999999999956,
+            "p95Ms": 1.3111000000000104,
+            "heapBefore": 16941440,
+            "heapAfterWork": 19291856,
+            "heapAfterGc": 12254064,
+            "retained": {
+              "sockets": 0,
+              "response": false,
+              "reader": false,
+              "dispatcher": false
+            },
+            "scope": "Production configureHttpDispatcher and npm undici fetch/body consumption; includes fixture server and consumer allocations. SDK parser and TUI measured separately."
+          }
+        },
+        {
+          "before": {
+            "fixture": "production-http-dispatcher:20-warmup:100x256KiB",
+            "node": "v26.13.0",
+            "undici": "8.11.2",
+            "requests": 120,
+            "responses": 120,
+            "receivedBytes": 31457280,
+            "reads": 600,
+            "sampledBytes": 9478040,
+            "sampledBytesPerResponse": 94780.4,
+            "p50Ms": 0.5424999999999898,
+            "p95Ms": 1.13930000000002,
+            "heapBefore": 16889984,
+            "heapAfterWork": 19156272,
+            "heapAfterGc": 12212304,
+            "retained": {
+              "sockets": 0,
+              "response": false,
+              "reader": false,
+              "dispatcher": false
+            },
+            "scope": "Production configureHttpDispatcher and npm undici fetch/body consumption; includes fixture server and consumer allocations. SDK parser and TUI measured separately."
+          },
+          "after": {
+            "fixture": "production-http-dispatcher:20-warmup:100x256KiB",
+            "node": "v26.13.0",
+            "undici": "8.12.3",
+            "requests": 120,
+            "responses": 120,
+            "receivedBytes": 31457280,
+            "reads": 600,
+            "sampledBytes": 9621288,
+            "sampledBytesPerResponse": 96212.88,
+            "p50Ms": 0.5397999999999854,
+            "p95Ms": 1.3100000000000023,
+            "heapBefore": 16964240,
+            "heapAfterWork": 19232904,
+            "heapAfterGc": 12272136,
+            "retained": {
+              "sockets": 0,
+              "response": false,
+              "reader": false,
+              "dispatcher": false
+            },
+            "scope": "Production configureHttpDispatcher and npm undici fetch/body consumption; includes fixture server and consumer allocations. SDK parser and TUI measured separately."
+          }
+        }
+      ]
+    }
+  },
+  "mcp": {
+    "before": {
+      "tests": 5,
+      "pass": 5,
+      "fail": 0,
+      "progressDeliveries": 100000,
+      "progressPromiseHistory": 0,
+      "diagnostics": [
+        {
+          "processFamilies": 2,
+          "normalExit": 1,
+          "forcedExit": 1,
+          "commandArgumentsPreserved": 4,
+          "windowsJobHandlesAfterCleanup": 0
+        },
+        {
+          "protocolMessages": 1000,
+          "baselineMessages": 1000,
+          "deliveryPromises": 0,
+          "releasedReferences": 3,
+          "sampledBytes": 8529912,
+          "sdkBaselineBytes": 8153848,
+          "startupSignalRetainedWithoutOwner": true
+        }
+      ]
+    },
+    "after": {
+      "tests": 5,
+      "pass": 5,
+      "fail": 0,
+      "progressDeliveries": 100000,
+      "progressPromiseHistory": 0,
+      "diagnostics": [
+        {
+          "processFamilies": 2,
+          "normalExit": 1,
+          "forcedExit": 1,
+          "commandArgumentsPreserved": 4,
+          "windowsJobHandlesAfterCleanup": 0
+        },
+        {
+          "protocolMessages": 1000,
+          "baselineMessages": 1000,
+          "deliveryPromises": 0,
+          "releasedReferences": 3,
+          "sampledBytes": 7476832,
+          "sdkBaselineBytes": 7362320,
+          "startupSignalRetainedWithoutOwner": true
+        }
+      ]
+    }
+  },
+  "stream": {
+    "before": {
+      "schemaVersion": 1,
+      "name": "stream-events",
+      "node": "v26.13.0",
+      "platform": "win32",
+      "arch": "x64",
+      "fixture": "phase0-v1:assistant-deltas:100000:delivery-latest:burst",
+      "warmupRuns": 5,
+      "measuredRuns": 20,
+      "metrics": {
+        "minMs": 23.615400000000022,
+        "p50Ms": 24.63639999999998,
+        "p95Ms": 25.288099999999986,
+        "p99Ms": 28.87729999999999,
+        "maxMs": 28.87729999999999,
+        "meanMs": 24.709650000000003,
+        "coefficientOfVariation": 0.04357690329907776,
+        "peakHeapBytes": 94867616,
+        "finalHeapBytes": 54896568,
+        "updates": 100000,
+        "eventsDelivered": 1,
+        "snapshots": 1,
+        "coalesced": 100001,
+        "maxPendingKeys": 1,
+        "legacyDelivery": 0,
+        "producerPaceMs": 0
+      },
+      "environment": {
+        "cpu": "Intel(R) Core(TM) i7-14700KF",
+        "cpuCores": 28,
+        "totalMemoryBytes": 34134798336,
+        "terminalColumns": 0,
+        "terminalRows": 0,
+        "term": "dumb",
+        "kittyImages": false,
+        "exposeGc": false,
+        "measuredAt": "2026-11-03T12:23:49.347Z"
+      }
+    },
+    "after": {
+      "schemaVersion": 1,
+      "name": "stream-events",
+      "node": "v26.13.0",
+      "platform": "win32",
+      "arch": "x64",
+      "fixture": "phase0-v1:assistant-deltas:100000:delivery-latest:burst",
+      "warmupRuns": 5,
+      "measuredRuns": 20,
+      "metrics": {
+        "minMs": 23.795200000000023,
+        "p50Ms": 24.795599999999922,
+        "p95Ms": 25.773000000000025,
+        "p99Ms": 28.02800000000002,
+        "maxMs": 28.02800000000002,
+        "meanMs": 25.000635,
+        "coefficientOfVariation": 0.03694066185174141,
+        "peakHeapBytes": 89204920,
+        "finalHeapBytes": 53999080,
+        "updates": 100000,
+        "eventsDelivered": 1,
+        "snapshots": 1,
+        "coalesced": 100001,
+        "maxPendingKeys": 1,
+        "legacyDelivery": 0,
+        "producerPaceMs": 0
+      },
+      "environment": {
+        "cpu": "Intel(R) Core(TM) i7-14700KF",
+        "cpuCores": 28,
+        "totalMemoryBytes": 34134798336,
+        "terminalColumns": 0,
+        "terminalRows": 0,
+        "term": "dumb",
+        "kittyImages": false,
+        "exposeGc": false,
+        "measuredAt": "2026-11-03T12:27:01.305Z"
+      }
+    },
+    "final": {
+      "schemaVersion": 1,
+      "name": "stream-events",
+      "node": "v26.13.0",
+      "platform": "win32",
+      "arch": "x64",
+      "fixture": "phase0-v1:assistant-deltas:100000:delivery-latest:burst",
+      "warmupRuns": 5,
+      "measuredRuns": 20,
+      "metrics": {
+        "minMs": 23.809799999999996,
+        "p50Ms": 25.285100000000057,
+        "p95Ms": 26.675399999999968,
+        "p99Ms": 28.087100000000078,
+        "maxMs": 28.087100000000078,
+        "meanMs": 25.38345000000001,
+        "coefficientOfVariation": 0.03751305009260474,
+        "peakHeapBytes": 90012656,
+        "finalHeapBytes": 56464968,
+        "updates": 100000,
+        "eventsDelivered": 1,
+        "snapshots": 1,
+        "coalesced": 100001,
+        "maxPendingKeys": 1,
+        "legacyDelivery": 0,
+        "producerPaceMs": 0
+      },
+      "environment": {
+        "cpu": "Intel(R) Core(TM) i7-14700KF",
+        "cpuCores": 28,
+        "totalMemoryBytes": 34134798336,
+        "terminalColumns": 0,
+        "terminalRows": 0,
+        "term": "dumb",
+        "kittyImages": false,
+        "exposeGc": false,
+        "measuredAt": "2026-11-03T12:48:56.177Z"
+      }
+    }
+  },
+  "sessionEvents": {
+    "before": {
+      "node": "v26.13.0",
+      "fixtures": [
+        {
+          "name": "agent-session-to-interactive-stub",
+          "coverage": {
+            "realAgentObserverDelivery": true,
+            "realStableReference": true,
+            "realProgramStatusReporter": true,
+            "realAssistantComponent": false,
+            "realToolComponent": false,
+            "markdown": false,
+            "frameQueue": false
+          },
+          "results": [
+            {
+              "name": "message_update",
+              "updates": 100000,
+              "warmup": 10000,
+              "metrics": {
+                "cpuP50MsPerUpdate": 1.3799999998809653e-05,
+                "cpuP95MsPerUpdate": 2.019999999902211e-05,
+                "sampledAllocationBytes": 62568,
+                "sampledAllocationBytesPerUpdate": 0.62568,
+                "minorGcCount": 0,
+                "majorGcCount": 1,
+                "totalGcDurationMs": 5.239700019359589,
+                "heapBefore": 43047976,
+                "heapAfter": 43164600,
+                "controlledGcAfter": 43047632,
+                "controlledGcHeapDeltaBytes": -344,
+                "builtInListenerPromisesPerUpdate": 0,
+                "programStatusReportsPerUpdate": 0,
+                "rejectionObserversPerUpdate": 0,
+                "finalUpdateCorrect": 1
+              },
+              "sourceInvariant": {
+                "toolWrapperObjectsPerUpdate": 0,
+                "inlineClosuresPerUpdate": 0,
+                "promiseTailsPerUpdate": 0,
+                "promiseArraysPerUpdate": 0,
+                "arraysPerUpdate": 0
+              },
+              "topAllocationSites": [
+                {
+                  "bytes": 19048,
+                  "functionName": "measure",
+                  "url": "repo:scripts/bench/tui-session-event-allocations.ts",
+                  "line": 142,
+                  "column": 23
+                },
+                {
+                  "bytes": 16696,
+                  "functionName": "wrappedFn",
+                  "url": "node:internal/errors",
+                  "line": 542,
+                  "column": 21
+                },
+                {
+                  "bytes": 14944,
+                  "functionName": "post",
+                  "url": "node:inspector",
+                  "line": 115,
+                  "column": 7
+                },
+                {
+                  "bytes": 7632,
+                  "functionName": "_emit",
+                  "url": "repo:packages/coding-agent/src/core/agent-session.ts",
+                  "line": 1345,
+                  "column": 15
+                },
+                {
+                  "bytes": 2064,
+                  "functionName": "now",
+                  "url": "node:internal/perf/performance",
+                  "line": 137,
+                  "column": 6
+                },
+                {
+                  "bytes": 1120,
+                  "functionName": "Promise",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 1064,
+                  "functionName": "#onMessage",
+                  "url": "node:inspector",
+                  "line": 84,
+                  "column": 13
+                }
+              ]
+            },
+            {
+              "name": "tool_execution_update",
+              "updates": 100000,
+              "warmup": 10000,
+              "metrics": {
+                "cpuP50MsPerUpdate": 3.080000000045402e-05,
+                "cpuP95MsPerUpdate": 0.0001478000000006432,
+                "sampledAllocationBytes": 52008,
+                "sampledAllocationBytesPerUpdate": 0.52008,
+                "minorGcCount": 0,
+                "majorGcCount": 1,
+                "totalGcDurationMs": 4.756400018930435,
+                "heapBefore": 43045464,
+                "heapAfter": 43244392,
+                "controlledGcAfter": 43138120,
+                "controlledGcHeapDeltaBytes": 92656,
+                "builtInListenerPromisesPerUpdate": 0,
+                "programStatusReportsPerUpdate": 0,
+                "rejectionObserversPerUpdate": 0,
+                "finalUpdateCorrect": 1
+              },
+              "sourceInvariant": {
+                "toolWrapperObjectsPerUpdate": 0,
+                "inlineClosuresPerUpdate": 0,
+                "promiseTailsPerUpdate": 0,
+                "promiseArraysPerUpdate": 0,
+                "arraysPerUpdate": 0
+              },
+              "topAllocationSites": [
+                {
+                  "bytes": 21896,
+                  "functionName": "wrappedFn",
+                  "url": "node:internal/errors",
+                  "line": 542,
+                  "column": 21
+                },
+                {
+                  "bytes": 20544,
+                  "functionName": "measure",
+                  "url": "repo:scripts/bench/tui-session-event-allocations.ts",
+                  "line": 142,
+                  "column": 23
+                },
+                {
+                  "bytes": 5096,
+                  "functionName": "deferReadExecutionResult",
+                  "url": "repo:packages/coding-agent/src/modes/interactive/interactive-mode.ts",
+                  "line": 4608,
+                  "column": 34
+                },
+                {
+                  "bytes": 1248,
+                  "functionName": "handleEvent",
+                  "url": "repo:packages/coding-agent/src/modes/interactive/interactive-mode.ts",
+                  "line": 4186,
+                  "column": 21
+                },
+                {
+                  "bytes": 1152,
+                  "functionName": "invalidate",
+                  "url": "repo:scripts/bench/tui-session-event-allocations.ts",
+                  "line": 116,
+                  "column": 23
+                },
+                {
+                  "bytes": 1040,
+                  "functionName": "now",
+                  "url": "node:internal/perf/performance",
+                  "line": 137,
+                  "column": 6
+                },
+                {
+                  "bytes": 1032,
+                  "functionName": "post",
+                  "url": "node:inspector",
+                  "line": 115,
+                  "column": 7
+                }
+              ]
+            },
+            {
+              "name": "observer-coalesced-message_update",
+              "updates": 100000,
+              "warmup": 10000,
+              "metrics": {
+                "rawUpdates": 100000,
+                "coalescedUpdates": 99999,
+                "coalescedDeliveries": 1,
+                "snapshotCount": 1,
+                "extensionObserverPublishes": 1,
+                "promisesPerRawUpdate": 0,
+                "promisesPerDelivery": 0,
+                "observerBridgePromisesPerDelivery": 0,
+                "builtInInteractivePromisesPerDelivery": 0,
+                "programStatusReportsPerDelivery": 0,
+                "rejectionObserversPerDelivery": 0,
+                "sampledAllocationBytes": 15138912,
+                "sampledAllocationBytesPerRawUpdate": 151.38912,
+                "sampledAllocationBytesPerDelivery": 15138912,
+                "cpuP50MsPerRawUpdate": 9.060000000135915e-05,
+                "cpuP95MsPerRawUpdate": 0.0005689999999995052,
+                "minorGcCount": 0,
+                "majorGcCount": 1,
+                "totalGcDurationMs": 5.713599979877472,
+                "heapBefore": 43165872,
+                "heapAfter": 44748504,
+                "controlledGcAfter": 44016808,
+                "controlledGcHeapDeltaBytes": 850936,
+                "finalUpdateCorrect": 1
+              },
+              "sourceInvariant": {
+                "toolWrapperObjectsPerUpdate": 0,
+                "inlineClosuresPerUpdate": 0,
+                "promiseTailsPerUpdate": 0,
+                "promiseArraysPerUpdate": 0
+              },
+              "topAllocationSites": [
+                {
+                  "bytes": 8227760,
+                  "functionName": "scheduleFlush",
+                  "url": "repo:packages/agent/src/event-delivery.ts",
+                  "line": 258,
+                  "column": 23
+                },
+                {
+                  "bytes": 4070840,
+                  "functionName": "next",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 989504,
+                  "functionName": "now",
+                  "url": "node:internal/perf/performance",
+                  "line": 137,
+                  "column": 6
+                },
+                {
+                  "bytes": 913872,
+                  "functionName": "values",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 874080,
+                  "functionName": "entries",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 14448,
+                  "functionName": "max",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 13424,
+                  "functionName": "min",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 10856,
+                  "functionName": "publishLatest",
+                  "url": "repo:packages/agent/src/event-delivery.ts",
+                  "line": 200,
+                  "column": 15
+                },
+                {
+                  "bytes": 5696,
+                  "functionName": "structuredClone",
+                  "url": "node:internal/worker/js_transferable",
+                  "line": 101,
+                  "column": 25
+                },
+                {
+                  "bytes": 4680,
+                  "functionName": "deepFreezeSnapshot",
+                  "url": "repo:packages/agent/src/agent.ts",
+                  "line": 84,
+                  "column": 28
+                },
+                {
+                  "bytes": 4320,
+                  "functionName": "measureFullObserverChain",
+                  "url": "repo:scripts/bench/tui-session-event-allocations.ts",
+                  "line": 234,
+                  "column": 40
+                },
+                {
+                  "bytes": 3960,
+                  "functionName": "get",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 2256,
+                  "functionName": "runFlush",
+                  "url": "repo:packages/agent/src/event-delivery.ts",
+                  "line": 342,
+                  "column": 24
+                },
+                {
+                  "bytes": 2160,
+                  "functionName": "Timeout",
+                  "url": "node:internal/timers",
+                  "line": 218,
+                  "column": 14
+                },
+                {
+                  "bytes": 1056,
+                  "functionName": "post",
+                  "url": "node:inspector",
+                  "line": 115,
+                  "column": 7
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "after": {
+      "node": "v26.13.0",
+      "fixtures": [
+        {
+          "name": "agent-session-to-interactive-stub",
+          "coverage": {
+            "realAgentObserverDelivery": true,
+            "realStableReference": true,
+            "realProgramStatusReporter": true,
+            "realAssistantComponent": false,
+            "realToolComponent": false,
+            "markdown": false,
+            "frameQueue": false
+          },
+          "results": [
+            {
+              "name": "message_update",
+              "updates": 100000,
+              "warmup": 10000,
+              "metrics": {
+                "cpuP50MsPerUpdate": 1.1200000000144427e-05,
+                "cpuP95MsPerUpdate": 2.140000000008513e-05,
+                "sampledAllocationBytes": 66520,
+                "sampledAllocationBytesPerUpdate": 0.6652,
+                "minorGcCount": 0,
+                "majorGcCount": 1,
+                "totalGcDurationMs": 4.905299991369247,
+                "heapBefore": 43175880,
+                "heapAfter": 43352880,
+                "controlledGcAfter": 43246984,
+                "controlledGcHeapDeltaBytes": 71104,
+                "builtInListenerPromisesPerUpdate": 0,
+                "programStatusReportsPerUpdate": 0,
+                "rejectionObserversPerUpdate": 0,
+                "finalUpdateCorrect": 1
+              },
+              "sourceInvariant": {
+                "toolWrapperObjectsPerUpdate": 0,
+                "inlineClosuresPerUpdate": 0,
+                "promiseTailsPerUpdate": 0,
+                "promiseArraysPerUpdate": 0,
+                "arraysPerUpdate": 0
+              },
+              "topAllocationSites": [
+                {
+                  "bytes": 30080,
+                  "functionName": "measure",
+                  "url": "repo:scripts/bench/tui-session-event-allocations.ts",
+                  "line": 142,
+                  "column": 23
+                },
+                {
+                  "bytes": 14944,
+                  "functionName": "post",
+                  "url": "node:inspector",
+                  "line": 115,
+                  "column": 7
+                },
+                {
+                  "bytes": 7936,
+                  "functionName": "_emit",
+                  "url": "repo:packages/coding-agent/src/core/agent-session.ts",
+                  "line": 1345,
+                  "column": 15
+                },
+                {
+                  "bytes": 7320,
+                  "functionName": "wrappedFn",
+                  "url": "node:internal/errors",
+                  "line": 542,
+                  "column": 21
+                },
+                {
+                  "bytes": 4128,
+                  "functionName": "now",
+                  "url": "node:internal/perf/performance",
+                  "line": 137,
+                  "column": 6
+                },
+                {
+                  "bytes": 2112,
+                  "functionName": "handleEvent",
+                  "url": "repo:packages/coding-agent/src/modes/interactive/program-status-reporter.ts",
+                  "line": 38,
+                  "column": 13
+                }
+              ]
+            },
+            {
+              "name": "tool_execution_update",
+              "updates": 100000,
+              "warmup": 10000,
+              "metrics": {
+                "cpuP50MsPerUpdate": 2.9400000000123328e-05,
+                "cpuP95MsPerUpdate": 0.00014620000000013534,
+                "sampledAllocationBytes": 49488,
+                "sampledAllocationBytesPerUpdate": 0.49488,
+                "minorGcCount": 0,
+                "majorGcCount": 1,
+                "totalGcDurationMs": 4.786700010299683,
+                "heapBefore": 43244288,
+                "heapAfter": 43395176,
+                "controlledGcAfter": 43265976,
+                "controlledGcHeapDeltaBytes": 21688,
+                "builtInListenerPromisesPerUpdate": 0,
+                "programStatusReportsPerUpdate": 0,
+                "rejectionObserversPerUpdate": 0,
+                "finalUpdateCorrect": 1
+              },
+              "sourceInvariant": {
+                "toolWrapperObjectsPerUpdate": 0,
+                "inlineClosuresPerUpdate": 0,
+                "promiseTailsPerUpdate": 0,
+                "promiseArraysPerUpdate": 0,
+                "arraysPerUpdate": 0
+              },
+              "topAllocationSites": [
+                {
+                  "bytes": 18544,
+                  "functionName": "measure",
+                  "url": "repo:scripts/bench/tui-session-event-allocations.ts",
+                  "line": 142,
+                  "column": 23
+                },
+                {
+                  "bytes": 14616,
+                  "functionName": "wrappedFn",
+                  "url": "node:internal/errors",
+                  "line": 542,
+                  "column": 21
+                },
+                {
+                  "bytes": 7488,
+                  "functionName": "has",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 5168,
+                  "functionName": "now",
+                  "url": "node:internal/perf/performance",
+                  "line": 137,
+                  "column": 6
+                },
+                {
+                  "bytes": 2520,
+                  "functionName": "_emit",
+                  "url": "repo:packages/coding-agent/src/core/agent-session.ts",
+                  "line": 1345,
+                  "column": 15
+                },
+                {
+                  "bytes": 1152,
+                  "functionName": "get",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                }
+              ]
+            },
+            {
+              "name": "observer-coalesced-message_update",
+              "updates": 100000,
+              "warmup": 10000,
+              "metrics": {
+                "rawUpdates": 100000,
+                "coalescedUpdates": 99999,
+                "coalescedDeliveries": 1,
+                "snapshotCount": 1,
+                "extensionObserverPublishes": 1,
+                "promisesPerRawUpdate": 0,
+                "promisesPerDelivery": 0,
+                "observerBridgePromisesPerDelivery": 0,
+                "builtInInteractivePromisesPerDelivery": 0,
+                "programStatusReportsPerDelivery": 0,
+                "rejectionObserversPerDelivery": 0,
+                "sampledAllocationBytes": 15244280,
+                "sampledAllocationBytesPerRawUpdate": 152.4428,
+                "sampledAllocationBytesPerDelivery": 15244280,
+                "cpuP50MsPerRawUpdate": 9.320000000002437e-05,
+                "cpuP95MsPerRawUpdate": 0.0005606000000000222,
+                "minorGcCount": 0,
+                "majorGcCount": 1,
+                "totalGcDurationMs": 5.884900003671646,
+                "heapBefore": 43294736,
+                "heapAfter": 44896568,
+                "controlledGcAfter": 44161704,
+                "controlledGcHeapDeltaBytes": 866968,
+                "finalUpdateCorrect": 1
+              },
+              "sourceInvariant": {
+                "toolWrapperObjectsPerUpdate": 0,
+                "inlineClosuresPerUpdate": 0,
+                "promiseTailsPerUpdate": 0,
+                "promiseArraysPerUpdate": 0
+              },
+              "topAllocationSites": [
+                {
+                  "bytes": 8329280,
+                  "functionName": "scheduleFlush",
+                  "url": "repo:packages/agent/src/event-delivery.ts",
+                  "line": 258,
+                  "column": 23
+                },
+                {
+                  "bytes": 4129808,
+                  "functionName": "next",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 957800,
+                  "functionName": "values",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 901872,
+                  "functionName": "now",
+                  "url": "node:internal/perf/performance",
+                  "line": 137,
+                  "column": 6
+                },
+                {
+                  "bytes": 834280,
+                  "functionName": "entries",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 23744,
+                  "functionName": "max",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 18576,
+                  "functionName": "min",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 12744,
+                  "functionName": "publishLatest",
+                  "url": "repo:packages/agent/src/event-delivery.ts",
+                  "line": 200,
+                  "column": 15
+                },
+                {
+                  "bytes": 6008,
+                  "functionName": "get",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 4512,
+                  "functionName": "structuredClone",
+                  "url": "node:internal/worker/js_transferable",
+                  "line": 101,
+                  "column": 25
+                },
+                {
+                  "bytes": 4296,
+                  "functionName": "deepFreezeSnapshot",
+                  "url": "repo:packages/agent/src/agent.ts",
+                  "line": 84,
+                  "column": 28
+                },
+                {
+                  "bytes": 3728,
+                  "functionName": "measureFullObserverChain",
+                  "url": "repo:scripts/bench/tui-session-event-allocations.ts",
+                  "line": 234,
+                  "column": 40
+                },
+                {
+                  "bytes": 3264,
+                  "functionName": "Timeout",
+                  "url": "node:internal/timers",
+                  "line": 218,
+                  "column": 14
+                },
+                {
+                  "bytes": 3224,
+                  "functionName": "setTimeout",
+                  "url": "node:timers",
+                  "line": 123,
+                  "column": 20
+                },
+                {
+                  "bytes": 2416,
+                  "functionName": "(anonymous)",
+                  "url": "node:internal/validators",
+                  "line": 547,
+                  "column": 51
+                },
+                {
+                  "bytes": 2136,
+                  "functionName": "TimersList",
+                  "url": "node:internal/timers",
+                  "line": 306,
+                  "column": 14
+                },
+                {
+                  "bytes": 1176,
+                  "functionName": "add",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 1176,
+                  "functionName": "initAsyncResource",
+                  "url": "node:internal/timers",
+                  "line": 203,
+                  "column": 27
+                },
+                {
+                  "bytes": 1064,
+                  "functionName": "delete",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 1064,
+                  "functionName": "post",
+                  "url": "node:inspector",
+                  "line": 115,
+                  "column": 7
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "final": {
+      "node": "v26.13.0",
+      "fixtures": [
+        {
+          "name": "agent-session-to-interactive-stub",
+          "coverage": {
+            "realAgentObserverDelivery": true,
+            "realStableReference": true,
+            "realProgramStatusReporter": true,
+            "realAssistantComponent": false,
+            "realToolComponent": false,
+            "markdown": false,
+            "frameQueue": false
+          },
+          "results": [
+            {
+              "name": "message_update",
+              "updates": 100000,
+              "warmup": 10000,
+              "metrics": {
+                "cpuP50MsPerUpdate": 1.0600000000067666e-05,
+                "cpuP95MsPerUpdate": 2.2199999999884313e-05,
+                "sampledAllocationBytes": 69496,
+                "sampledAllocationBytesPerUpdate": 0.69496,
+                "minorGcCount": 0,
+                "majorGcCount": 1,
+                "totalGcDurationMs": 5.203700006008148,
+                "heapBefore": 43175848,
+                "heapAfter": 43282480,
+                "controlledGcAfter": 43175672,
+                "controlledGcHeapDeltaBytes": -176,
+                "builtInListenerPromisesPerUpdate": 0,
+                "programStatusReportsPerUpdate": 0,
+                "rejectionObserversPerUpdate": 0,
+                "finalUpdateCorrect": 1
+              },
+              "sourceInvariant": {
+                "toolWrapperObjectsPerUpdate": 0,
+                "inlineClosuresPerUpdate": 0,
+                "promiseTailsPerUpdate": 0,
+                "promiseArraysPerUpdate": 0,
+                "arraysPerUpdate": 0
+              },
+              "topAllocationSites": [
+                {
+                  "bytes": 24528,
+                  "functionName": "measure",
+                  "url": "repo:scripts/bench/tui-session-event-allocations.ts",
+                  "line": 142,
+                  "column": 23
+                },
+                {
+                  "bytes": 18776,
+                  "functionName": "wrappedFn",
+                  "url": "node:internal/errors",
+                  "line": 542,
+                  "column": 21
+                },
+                {
+                  "bytes": 14416,
+                  "functionName": "post",
+                  "url": "node:inspector",
+                  "line": 115,
+                  "column": 7
+                },
+                {
+                  "bytes": 9616,
+                  "functionName": "_emit",
+                  "url": "repo:packages/coding-agent/src/core/agent-session.ts",
+                  "line": 1345,
+                  "column": 15
+                },
+                {
+                  "bytes": 1120,
+                  "functionName": "Promise",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 1040,
+                  "functionName": "now",
+                  "url": "node:internal/perf/performance",
+                  "line": 137,
+                  "column": 6
+                }
+              ]
+            },
+            {
+              "name": "tool_execution_update",
+              "updates": 100000,
+              "warmup": 10000,
+              "metrics": {
+                "cpuP50MsPerUpdate": 2.9600000000073124e-05,
+                "cpuP95MsPerUpdate": 0.00014619999999990795,
+                "sampledAllocationBytes": 48960,
+                "sampledAllocationBytesPerUpdate": 0.4896,
+                "minorGcCount": 0,
+                "majorGcCount": 1,
+                "totalGcDurationMs": 4.736099988222122,
+                "heapBefore": 43172792,
+                "heapAfter": 43372648,
+                "controlledGcAfter": 43265160,
+                "controlledGcHeapDeltaBytes": 92368,
+                "builtInListenerPromisesPerUpdate": 0,
+                "programStatusReportsPerUpdate": 0,
+                "rejectionObserversPerUpdate": 0,
+                "finalUpdateCorrect": 1
+              },
+              "sourceInvariant": {
+                "toolWrapperObjectsPerUpdate": 0,
+                "inlineClosuresPerUpdate": 0,
+                "promiseTailsPerUpdate": 0,
+                "promiseArraysPerUpdate": 0,
+                "arraysPerUpdate": 0
+              },
+              "topAllocationSites": [
+                {
+                  "bytes": 23184,
+                  "functionName": "measure",
+                  "url": "repo:scripts/bench/tui-session-event-allocations.ts",
+                  "line": 142,
+                  "column": 23
+                },
+                {
+                  "bytes": 10456,
+                  "functionName": "wrappedFn",
+                  "url": "node:internal/errors",
+                  "line": 542,
+                  "column": 21
+                },
+                {
+                  "bytes": 5192,
+                  "functionName": "deferReadExecutionResult",
+                  "url": "repo:packages/coding-agent/src/modes/interactive/interactive-mode.ts",
+                  "line": 4608,
+                  "column": 34
+                },
+                {
+                  "bytes": 4128,
+                  "functionName": "now",
+                  "url": "node:internal/perf/performance",
+                  "line": 137,
+                  "column": 6
+                },
+                {
+                  "bytes": 3840,
+                  "functionName": "get",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 1120,
+                  "functionName": "Promise",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 1040,
+                  "functionName": "post",
+                  "url": "node:inspector",
+                  "line": 115,
+                  "column": 7
+                }
+              ]
+            },
+            {
+              "name": "observer-coalesced-message_update",
+              "updates": 100000,
+              "warmup": 10000,
+              "metrics": {
+                "rawUpdates": 100000,
+                "coalescedUpdates": 99999,
+                "coalescedDeliveries": 1,
+                "snapshotCount": 1,
+                "extensionObserverPublishes": 1,
+                "promisesPerRawUpdate": 0,
+                "promisesPerDelivery": 0,
+                "observerBridgePromisesPerDelivery": 0,
+                "builtInInteractivePromisesPerDelivery": 0,
+                "programStatusReportsPerDelivery": 0,
+                "rejectionObserversPerDelivery": 0,
+                "sampledAllocationBytes": 15239984,
+                "sampledAllocationBytesPerRawUpdate": 152.39984,
+                "sampledAllocationBytesPerDelivery": 15239984,
+                "cpuP50MsPerRawUpdate": 9.140000000002147e-05,
+                "cpuP95MsPerRawUpdate": 0.0005714000000000397,
+                "minorGcCount": 0,
+                "majorGcCount": 1,
+                "totalGcDurationMs": 5.658699989318848,
+                "heapBefore": 43293248,
+                "heapAfter": 44890936,
+                "controlledGcAfter": 44151312,
+                "controlledGcHeapDeltaBytes": 858064,
+                "finalUpdateCorrect": 1
+              },
+              "sourceInvariant": {
+                "toolWrapperObjectsPerUpdate": 0,
+                "inlineClosuresPerUpdate": 0,
+                "promiseTailsPerUpdate": 0,
+                "promiseArraysPerUpdate": 0
+              },
+              "topAllocationSites": [
+                {
+                  "bytes": 8407888,
+                  "functionName": "scheduleFlush",
+                  "url": "repo:packages/agent/src/event-delivery.ts",
+                  "line": 258,
+                  "column": 23
+                },
+                {
+                  "bytes": 4046912,
+                  "functionName": "next",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 940648,
+                  "functionName": "now",
+                  "url": "node:internal/perf/performance",
+                  "line": 137,
+                  "column": 6
+                },
+                {
+                  "bytes": 937896,
+                  "functionName": "values",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 832408,
+                  "functionName": "entries",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 25808,
+                  "functionName": "min",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 14448,
+                  "functionName": "max",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 14128,
+                  "functionName": "publishLatest",
+                  "url": "repo:packages/agent/src/event-delivery.ts",
+                  "line": 200,
+                  "column": 15
+                },
+                {
+                  "bytes": 5344,
+                  "functionName": "measureFullObserverChain",
+                  "url": "repo:scripts/bench/tui-session-event-allocations.ts",
+                  "line": 234,
+                  "column": 40
+                },
+                {
+                  "bytes": 3864,
+                  "functionName": "get",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 2104,
+                  "functionName": "deliverObserver",
+                  "url": "repo:packages/agent/src/event-delivery.ts",
+                  "line": 407,
+                  "column": 31
+                },
+                {
+                  "bytes": 1080,
+                  "functionName": "deepFreezeSnapshot",
+                  "url": "repo:packages/agent/src/agent.ts",
+                  "line": 84,
+                  "column": 28
+                },
+                {
+                  "bytes": 1080,
+                  "functionName": "structuredClone",
+                  "url": "node:internal/worker/js_transferable",
+                  "line": 101,
+                  "column": 25
+                },
+                {
+                  "bytes": 1080,
+                  "functionName": "TimersList",
+                  "url": "node:internal/timers",
+                  "line": 306,
+                  "column": 14
+                },
+                {
+                  "bytes": 1080,
+                  "functionName": "Timeout",
+                  "url": "node:internal/timers",
+                  "line": 218,
+                  "column": 14
+                },
+                {
+                  "bytes": 1064,
+                  "functionName": "delete",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 1056,
+                  "functionName": "flushLatest",
+                  "url": "repo:packages/agent/src/event-delivery.ts",
+                  "line": 227,
+                  "column": 19
+                },
+                {
+                  "bytes": 1056,
+                  "functionName": "runFlush",
+                  "url": "repo:packages/agent/src/event-delivery.ts",
+                  "line": 342,
+                  "column": 24
+                },
+                {
+                  "bytes": 1040,
+                  "functionName": "#onMessage",
+                  "url": "node:inspector",
+                  "line": 84,
+                  "column": 13
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "limits": [
+    "No performance improvement claim from single allocation samples.",
+    "HTTP fixture includes server and consumer allocations; it does not execute provider SSE parsers or physical terminal rendering.",
+    "Session fixture uses the real agent/session observer with an interactive stub; full renderer invariants are covered by the test suite, not this allocation measurement.",
+    "Retained references are explicitly checked for normal HTTP close and MCP normal/forced exit; broken-body and pre-cancelled HTTP are behavior tests, not separate retained-heap profiles.",
+    "No object pool, retry, fallback, provider SDK update, or application production source change."
+  ],
+  "rawEvidenceSha256": {
+    "audit-after.json": "2ca1456c05b4ddd90372d7e27e72d915818b824428711b3f598fff7883944229",
+    "audit-before.json": "6f6afcd8498b191b3e6f168182ec9f9478062b3f094c11e7e4af6c19974f9426",
+    "http-after.json": "9cedfdd94010a4d49a25b508a61829a411d8e60205e35ea6807eaf849328b6f5",
+    "http-before.json": "9b8897f0ff5667796248986b83e12d19a441723537a918ae608aaaef82dfe160",
+    "mcp-after.tap": "0f5a38683996018acbee8b9abf5373adc706ddcba2da3e997fea3d6797b28531",
+    "mcp-before.tap": "a7ae3e506ed546992a1ef72755a92dc0dedda0d676f6dca9dd4fb150a9380ffe",
+    "session-events-after.json": "959bf958693d428885e8e0a55e10a42928d9cbc425705fb5acdbb5789b8ad419",
+    "session-events-before.json": "3e6b33f4ab7957b831b860eb5a8fa62d53bb66d723513a25a2303ca2cf80225b",
+    "stream-after.json": "38177b705d5cfa0441afb6fe9a4ab02d1902954cf727b9731d178738186ca444",
+    "stream-before.json": "0acb95ead580ea124e94b54741d9b66d388761b9e686bc711c804b98ddf97d1f",
+    "http-final.json": "b22927350dc2afc30452e08f6e36d92eb3e084205da2d13d4cebc5916fa55011",
+    "stream-final.json": "aab0fcdaa302b79e3ed35f52a5e8bb93c2f53fa30defb0baea317d1f73e16c56",
+    "session-events-final.json": "38a5adbb2d195ea58e4f8d92426302d469c9c0a055303cc08b50fb8a4234c06e",
+    "full-node26-final.log": "7396a45fa33aa949b89673f196e04efd1490e99f6eff11008ae408b7085d245b"
+  },
+  "validation": {
+    "typecheck": "passed",
+    "offlineBuild": "passed",
+    "node26Full": {
+      "command": "npm test -- --keep-going",
+      "units": 388,
+      "failedUnits": 0,
+      "exitCode": 0,
+      "tests": 5187,
+      "pass": 5091,
+      "fail": 0,
+      "skipped": 96,
+      "cancelled": 0
+    },
+    "initialFailure": "Old and candidate lockfiles both exposed SDK configured transport not forwarded; separately fixed in PR #176. Full current Node26 suite passes with this prerequisite.",
+    "ci": "pending"
+  },
+  "dependencyComparisonBaselineCommit": "6ad356fd254f557c4dc3e5af3172720bbede6c8f",
+  "prBaseCommit": "5fd4859396424a87f3223b6d85475cd7700de474",
+  "prBase": "codex/sdk-configured-transport",
+  "prDependency": "https://github.com/dragonbaba/super-pi/pull/176"
+}
