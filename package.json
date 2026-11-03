@@ -24,6 +24,7 @@
 		"verify": "npm run check && npm run build:offline && npm test",
 		"bench:stream": "node --experimental-strip-types ./scripts/bench/stream-events.ts",
 		"bench:session-append": "node --expose-gc --experimental-strip-types ./scripts/bench/session-append.ts",
+		"bench:extension-exec": "node --expose-gc --experimental-strip-types ./scripts/bench/extension-exec-output.ts",
 		"bench:interactive-input": "node --expose-gc --experimental-strip-types ./scripts/bench/interactive-image-input.ts",
 		"bench:interactive-progress": "node --expose-gc --experimental-strip-types ./scripts/bench/interactive-progress.ts",
 		"bench:tool-progress": "node --experimental-strip-types ./scripts/bench/tool-progress.ts",

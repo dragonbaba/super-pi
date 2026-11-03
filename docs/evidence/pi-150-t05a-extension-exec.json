@@ -1,0 +1,1531 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-11-04",
+  "baselineCommit": "423f4e98acecb225ff83cf8b66a051b43198be39",
+  "baselineOriginalSourceSha256": "1a55e7416847ea0c548775b28596bb817c8cd4aa97bc36b8da7403959fcd350f",
+  "baselineControl": "exec-baseline.ts is the baseline exec.ts with only its child-process helper import rebased to the unchanged production helper; no other baseline source edits.",
+  "driverSourceSha256": "69902248da5c64ddb66dfbb2ab911574f9ee16ca340748be189656f895120c11",
+  "method": "Five serial baseline/candidate pairs, Node26 only. Real execCommand and waitForChildProcess; deterministic EventEmitter/PassThrough spawn-boundary fixture with prebuilt buffers. 4 warmups, 16 sampled invocations per fixture; separate CPU/timing pass delivers 256MiB total per fixture. Inspector samplingInterval=1024 includes objects collected by major/minor GC. No real subprocess startup is included in these throughput metrics.",
+  "limits": [
+    "Node/fixture/inspector allocations are included; samples are estimates. No constant speedup claim is made.",
+    "Small wall-time p95 regressions are recorded: 256KiB/+5.86%,512KiB/+16.81% in these runs; absolute increases 7.6us and 23.4us. Windows CPU accounting is coarse.",
+    "The baseline ignores maxBuffer: the capped comparison demonstrates stopped decoding, not identical accepted output.",
+    "heapBefore/peakHeap/heapAfterGC are process heap observations at invocation boundaries, not proof of exact retained string bytes. WeakRef and listener/timer counts establish release independently.",
+    "Input buffers are prebuilt and decoding builds required output strings; no raw chunk array/full-history scan/application full-output copy is introduced. V8 may flatten cons strings outside this fixture; no zero-V8-copy claim.",
+    "T05-A owns direct child/reading ends only. Windows Job/POSIX group descendants belong to the separately planned T05-B."
+  ],
+  "configuration": {
+    "baseline": {
+      "node": "v26.13.0",
+      "os": "win32 10.0.26300",
+      "sourceHash": "163fb464a5e48ae5b99a2d49987ac45b5df86d3e522b796432a660596301e8af",
+      "warmup": 4,
+      "iterations": 16,
+      "samplingInterval": 1024
+    },
+    "candidate": {
+      "node": "v26.13.0",
+      "os": "win32 10.0.26300",
+      "sourceHash": "8fd23a6ac0bf31c0ff94a09af355ed0d5879ba979a90fcd83e29fe4fae86a5cb",
+      "warmup": 4,
+      "iterations": 16,
+      "samplingInterval": 1024
+    }
+  },
+  "deterministic": {
+    "baseline": [
+      {
+        "inputBytes": 4096,
+        "inputChunks": 64,
+        "cap": 4096,
+        "decodedBytes": 0,
+        "decodedChunks": 0,
+        "outputBytes": 4096,
+        "promisesDuringDelivery": 0,
+        "partialBufferViews": 0,
+        "remainingDataListeners": 2,
+        "stopSignals": 0
+      },
+      {
+        "inputBytes": 4096,
+        "inputChunks": 64,
+        "cap": 135,
+        "decodedBytes": 0,
+        "decodedChunks": 0,
+        "outputBytes": 4096,
+        "promisesDuringDelivery": 0,
+        "partialBufferViews": 0,
+        "remainingDataListeners": 2,
+        "stopSignals": 0
+      },
+      {
+        "inputBytes": 4096,
+        "inputChunks": 64,
+        "cap": 0,
+        "decodedBytes": 0,
+        "decodedChunks": 0,
+        "outputBytes": 4096,
+        "promisesDuringDelivery": 0,
+        "partialBufferViews": 0,
+        "remainingDataListeners": 2,
+        "stopSignals": 0
+      }
+    ],
+    "candidate": [
+      {
+        "inputBytes": 4096,
+        "inputChunks": 64,
+        "cap": 4096,
+        "decodedBytes": 4096,
+        "decodedChunks": 64,
+        "outputBytes": 4096,
+        "promisesDuringDelivery": 0,
+        "partialBufferViews": 0,
+        "remainingDataListeners": 0,
+        "stopSignals": 0
+      },
+      {
+        "inputBytes": 4096,
+        "inputChunks": 64,
+        "cap": 135,
+        "decodedBytes": 135,
+        "decodedChunks": 3,
+        "outputBytes": 135,
+        "promisesDuringDelivery": 0,
+        "partialBufferViews": 1,
+        "remainingDataListeners": 0,
+        "stopSignals": 1
+      },
+      {
+        "inputBytes": 4096,
+        "inputChunks": 64,
+        "cap": 0,
+        "decodedBytes": 0,
+        "decodedChunks": 0,
+        "outputBytes": 0,
+        "promisesDuringDelivery": 0,
+        "partialBufferViews": 0,
+        "remainingDataListeners": 0,
+        "stopSignals": 1
+      }
+    ]
+  },
+  "lifecycle": {
+    "baseline": [
+      {
+        "kind": "normal",
+        "retainedInputBuffers": 0,
+        "retainedCallbacks": 1,
+        "retainedResult": 0,
+        "dataListeners": 2,
+        "pendingTimers": 0,
+        "abortListeners": 0
+      },
+      {
+        "kind": "abort",
+        "retainedInputBuffers": 0,
+        "retainedCallbacks": 1,
+        "retainedResult": 0,
+        "dataListeners": 2,
+        "pendingTimers": 1,
+        "abortListeners": 0
+      },
+      {
+        "kind": "cap",
+        "retainedInputBuffers": 0,
+        "retainedCallbacks": 1,
+        "retainedResult": 0,
+        "dataListeners": 2,
+        "pendingTimers": 0,
+        "abortListeners": 0
+      },
+      {
+        "kind": "error",
+        "retainedInputBuffers": 0,
+        "retainedCallbacks": 1,
+        "retainedResult": 0,
+        "dataListeners": 2,
+        "pendingTimers": 0,
+        "abortListeners": 0
+      }
+    ],
+    "candidate": [
+      {
+        "kind": "normal",
+        "retainedInputBuffers": 0,
+        "retainedCallbacks": 0,
+        "retainedResult": 0,
+        "dataListeners": 0,
+        "pendingTimers": 0,
+        "abortListeners": 0
+      },
+      {
+        "kind": "abort",
+        "retainedInputBuffers": 0,
+        "retainedCallbacks": 0,
+        "retainedResult": 0,
+        "dataListeners": 0,
+        "pendingTimers": 0,
+        "abortListeners": 0
+      },
+      {
+        "kind": "cap",
+        "retainedInputBuffers": 0,
+        "retainedCallbacks": 0,
+        "retainedResult": 0,
+        "dataListeners": 0,
+        "pendingTimers": 0,
+        "abortListeners": 0
+      },
+      {
+        "kind": "error",
+        "retainedInputBuffers": 0,
+        "retainedCallbacks": 0,
+        "retainedResult": 0,
+        "dataListeners": 0,
+        "pendingTimers": 0,
+        "abortListeners": 0
+      }
+    ]
+  },
+  "summary": [
+    {
+      "bytes": 262144,
+      "chunkBytes": 1024,
+      "cap": 262144,
+      "iterations": 16,
+      "timingIterations": 1024,
+      "sampledBytesPerInputChunk": {
+        "baselineMedian": 1224.603515625,
+        "candidateMedian": 1192.603515625,
+        "changePercent": -2.6130906527463416
+      },
+      "wallP95Milliseconds": {
+        "baselineMedian": 0.1297999999999888,
+        "candidateMedian": 0.13739999999999952,
+        "changePercent": 5.85516178737393
+      },
+      "cpuMicrosecondsPerInvocation": {
+        "baselineMedian": 259.765625,
+        "candidateMedian": 61.5234375,
+        "changePercent": -76.31578947368422
+      },
+      "heapBefore": {
+        "baselineMedian": 10438744,
+        "candidateMedian": 10478952,
+        "changePercent": 0.3851804393325553
+      },
+      "peakHeap": {
+        "baselineMedian": 15428552,
+        "candidateMedian": 15351888,
+        "changePercent": -0.4968969220183417
+      },
+      "heapAfterGC": {
+        "baselineMedian": 10764504,
+        "candidateMedian": 10791576,
+        "changePercent": 0.2514932411191495
+      }
+    },
+    {
+      "bytes": 524288,
+      "chunkBytes": 1024,
+      "cap": 524288,
+      "iterations": 16,
+      "timingIterations": 512,
+      "sampledBytesPerInputChunk": {
+        "baselineMedian": 1152.5302734375,
+        "candidateMedian": 1153.4423828125,
+        "changePercent": 0.07913973246702621
+      },
+      "wallP95Milliseconds": {
+        "baselineMedian": 0.13919999999998822,
+        "candidateMedian": 0.16259999999999764,
+        "changePercent": 16.81034482759438
+      },
+      "cpuMicrosecondsPerInvocation": {
+        "baselineMedian": 365.234375,
+        "candidateMedian": 123.046875,
+        "changePercent": -66.31016042780749
+      },
+      "heapBefore": {
+        "baselineMedian": 10560688,
+        "candidateMedian": 10587056,
+        "changePercent": 0.24968070262088027
+      },
+      "peakHeap": {
+        "baselineMedian": 20035352,
+        "candidateMedian": 20069968,
+        "changePercent": 0.17277460361064811
+      },
+      "heapAfterGC": {
+        "baselineMedian": 10946576,
+        "candidateMedian": 10963752,
+        "changePercent": 0.15690751153603077
+      }
+    },
+    {
+      "bytes": 1048576,
+      "chunkBytes": 1024,
+      "cap": 1048576,
+      "iterations": 16,
+      "timingIterations": 256,
+      "sampledBytesPerInputChunk": {
+        "baselineMedian": 1144.0322265625,
+        "candidateMedian": 1137.5478515625,
+        "changePercent": -0.5668000297057829
+      },
+      "wallP95Milliseconds": {
+        "baselineMedian": 0.387800000000027,
+        "candidateMedian": 0.27120000000002165,
+        "changePercent": -30.067044868488203
+      },
+      "cpuMicrosecondsPerInvocation": {
+        "baselineMedian": 367.1875,
+        "candidateMedian": 183.59375,
+        "changePercent": -50.0
+      },
+      "heapBefore": {
+        "baselineMedian": 5702944,
+        "candidateMedian": 10592712,
+        "changePercent": 85.74111897293749
+      },
+      "peakHeap": {
+        "baselineMedian": 24394824,
+        "candidateMedian": 29302920,
+        "changePercent": 20.11941549568055
+      },
+      "heapAfterGC": {
+        "baselineMedian": 6400832,
+        "candidateMedian": 11290760,
+        "changePercent": 76.39519362482878
+      }
+    },
+    {
+      "bytes": 1048576,
+      "chunkBytes": 64,
+      "cap": 1048576,
+      "iterations": 16,
+      "timingIterations": 256,
+      "sampledBytesPerInputChunk": {
+        "baselineMedian": 120.3912353515625,
+        "candidateMedian": 120.08346557617188,
+        "changePercent": -0.25564134672418914
+      },
+      "wallP95Milliseconds": {
+        "baselineMedian": 7.033500000000004,
+        "candidateMedian": 1.3281000000000063,
+        "changePercent": -81.11750906376618
+      },
+      "cpuMicrosecondsPerInvocation": {
+        "baselineMedian": 2195.3125,
+        "candidateMedian": 855.46875,
+        "changePercent": -61.032028469750884
+      },
+      "heapBefore": {
+        "baselineMedian": 5712104,
+        "candidateMedian": 10602168,
+        "changePercent": 85.60880544191774
+      },
+      "peakHeap": {
+        "baselineMedian": 37144840,
+        "candidateMedian": 42049144,
+        "changePercent": 13.203190537366694
+      },
+      "heapAfterGC": {
+        "baselineMedian": 7414616,
+        "candidateMedian": 7425160,
+        "changePercent": 0.14220561118740704
+      }
+    },
+    {
+      "bytes": 1048576,
+      "chunkBytes": 1024,
+      "cap": 8192,
+      "iterations": 16,
+      "timingIterations": 256,
+      "sampledBytesPerInputChunk": {
+        "baselineMedian": 1138.828125,
+        "candidateMedian": 77.0234375,
+        "changePercent": -93.23660561157988
+      },
+      "wallP95Milliseconds": {
+        "baselineMedian": 0.3623999999999796,
+        "candidateMedian": 0.11189999999999145,
+        "changePercent": -69.12251655629201
+      },
+      "cpuMicrosecondsPerInvocation": {
+        "baselineMedian": 425.78125,
+        "candidateMedian": 62.5,
+        "changePercent": -85.3211009174312
+      },
+      "heapBefore": {
+        "baselineMedian": 5722240,
+        "candidateMedian": 5741776,
+        "changePercent": 0.34140476456772095
+      },
+      "peakHeap": {
+        "baselineMedian": 24418376,
+        "candidateMedian": 7017216,
+        "changePercent": -71.26256062237718
+      },
+      "heapAfterGC": {
+        "baselineMedian": 6422456,
+        "candidateMedian": 5849480,
+        "changePercent": -8.921446873283367
+      }
+    }
+  ],
+  "rawMeasurements": [
+    {
+      "baseline": [
+        {
+          "bytes": 262144,
+          "chunkBytes": 1024,
+          "cap": 262144,
+          "iterations": 16,
+          "timingIterations": 1024,
+          "cpuMicrosecondsPerInvocation": 290.0390625,
+          "wallP95Milliseconds": 0.12579999999999814,
+          "sampledBytes": 4934208,
+          "sampledBytesPerInputChunk": 1204.640625,
+          "heapBefore": 10438856,
+          "peakHeap": 15429200,
+          "heapAfterGC": 10782776
+        },
+        {
+          "bytes": 524288,
+          "chunkBytes": 1024,
+          "cap": 524288,
+          "iterations": 16,
+          "timingIterations": 512,
+          "cpuMicrosecondsPerInvocation": 304.6875,
+          "wallP95Milliseconds": 0.1342999999999961,
+          "sampledBytes": 9441528,
+          "sampledBytesPerInputChunk": 1152.5302734375,
+          "heapBefore": 10576864,
+          "peakHeap": 20041696,
+          "heapAfterGC": 10946576
+        },
+        {
+          "bytes": 1048576,
+          "chunkBytes": 1024,
+          "cap": 1048576,
+          "iterations": 16,
+          "timingIterations": 256,
+          "cpuMicrosecondsPerInvocation": 363.28125,
+          "wallP95Milliseconds": 0.35820000000001073,
+          "sampledBytes": 18773552,
+          "sampledBytesPerInputChunk": 1145.8466796875,
+          "heapBefore": 5702992,
+          "peakHeap": 24394872,
+          "heapAfterGC": 6404240
+        },
+        {
+          "bytes": 1048576,
+          "chunkBytes": 64,
+          "cap": 1048576,
+          "iterations": 16,
+          "timingIterations": 256,
+          "cpuMicrosecondsPerInvocation": 2015.625,
+          "wallP95Milliseconds": 7.4384000000000015,
+          "sampledBytes": 31753224,
+          "sampledBytesPerInputChunk": 121.12893676757812,
+          "heapBefore": 5712104,
+          "peakHeap": 37144840,
+          "heapAfterGC": 7423848
+        },
+        {
+          "bytes": 1048576,
+          "chunkBytes": 1024,
+          "cap": 8192,
+          "iterations": 16,
+          "timingIterations": 256,
+          "cpuMicrosecondsPerInvocation": 425.78125,
+          "wallP95Milliseconds": 0.31110000000001037,
+          "sampledBytes": 18386752,
+          "sampledBytesPerInputChunk": 1122.23828125,
+          "heapBefore": 5722056,
+          "peakHeap": 24418192,
+          "heapAfterGC": 6410592
+        }
+      ],
+      "candidate": [
+        {
+          "bytes": 262144,
+          "chunkBytes": 1024,
+          "cap": 262144,
+          "iterations": 16,
+          "timingIterations": 1024,
+          "cpuMicrosecondsPerInvocation": 60.546875,
+          "wallP95Milliseconds": 0.13519999999999754,
+          "sampledBytes": 4913496,
+          "sampledBytesPerInputChunk": 1199.583984375,
+          "heapBefore": 10479024,
+          "peakHeap": 15351960,
+          "heapAfterGC": 10772712
+        },
+        {
+          "bytes": 524288,
+          "chunkBytes": 1024,
+          "cap": 524288,
+          "iterations": 16,
+          "timingIterations": 512,
+          "cpuMicrosecondsPerInvocation": 91.796875,
+          "wallP95Milliseconds": 0.16980000000000928,
+          "sampledBytes": 9381120,
+          "sampledBytesPerInputChunk": 1145.15625,
+          "heapBefore": 10570016,
+          "peakHeap": 20052928,
+          "heapAfterGC": 10979880
+        },
+        {
+          "bytes": 1048576,
+          "chunkBytes": 1024,
+          "cap": 1048576,
+          "iterations": 16,
+          "timingIterations": 256,
+          "cpuMicrosecondsPerInvocation": 183.59375,
+          "wallP95Milliseconds": 0.2955000000000041,
+          "sampledBytes": 18686632,
+          "sampledBytesPerInputChunk": 1140.54150390625,
+          "heapBefore": 10611248,
+          "peakHeap": 29321456,
+          "heapAfterGC": 11308832
+        },
+        {
+          "bytes": 1048576,
+          "chunkBytes": 64,
+          "cap": 1048576,
+          "iterations": 16,
+          "timingIterations": 256,
+          "cpuMicrosecondsPerInvocation": 855.46875,
+          "wallP95Milliseconds": 1.2916000000000167,
+          "sampledBytes": 31790744,
+          "sampledBytesPerInputChunk": 121.27206420898438,
+          "heapBefore": 10620704,
+          "peakHeap": 42053968,
+          "heapAfterGC": 7450496
+        },
+        {
+          "bytes": 1048576,
+          "chunkBytes": 1024,
+          "cap": 8192,
+          "iterations": 16,
+          "timingIterations": 256,
+          "cpuMicrosecondsPerInvocation": 58.59375,
+          "wallP95Milliseconds": 0.10999999999989996,
+          "sampledBytes": 1261952,
+          "sampledBytesPerInputChunk": 77.0234375,
+          "heapBefore": 5754224,
+          "peakHeap": 7029664,
+          "heapAfterGC": 5853832
+        }
+      ]
+    },
+    {
+      "baseline": [
+        {
+          "bytes": 262144,
+          "chunkBytes": 1024,
+          "cap": 262144,
+          "iterations": 16,
+          "timingIterations": 1024,
+          "cpuMicrosecondsPerInvocation": 244.140625,
+          "wallP95Milliseconds": 0.12399999999999523,
+          "sampledBytes": 5036528,
+          "sampledBytesPerInputChunk": 1229.62109375,
+          "heapBefore": 10438208,
+          "peakHeap": 15428552,
+          "heapAfterGC": 10764504
+        },
+        {
+          "bytes": 524288,
+          "chunkBytes": 1024,
+          "cap": 524288,
+          "iterations": 16,
+          "timingIterations": 512,
+          "cpuMicrosecondsPerInvocation": 365.234375,
+          "wallP95Milliseconds": 0.14720000000002642,
+          "sampledBytes": 9396104,
+          "sampledBytesPerInputChunk": 1146.9853515625,
+          "heapBefore": 10560688,
+          "peakHeap": 20025520,
+          "heapAfterGC": 10950696
+        },
+        {
+          "bytes": 1048576,
+          "chunkBytes": 1024,
+          "cap": 1048576,
+          "iterations": 16,
+          "timingIterations": 256,
+          "cpuMicrosecondsPerInvocation": 367.1875,
+          "wallP95Milliseconds": 0.35940000000005057,
+          "sampledBytes": 18734232,
+          "sampledBytesPerInputChunk": 1143.44677734375,
+          "heapBefore": 5703072,
+          "peakHeap": 24394952,
+          "heapAfterGC": 6401816
+        },
+        {
+          "bytes": 1048576,
+          "chunkBytes": 64,
+          "cap": 1048576,
+          "iterations": 16,
+          "timingIterations": 256,
+          "cpuMicrosecondsPerInvocation": 2195.3125,
+          "wallP95Milliseconds": 6.763699999999972,
+          "sampledBytes": 31559840,
+          "sampledBytesPerInputChunk": 120.3912353515625,
+          "heapBefore": 5712288,
+          "peakHeap": 37144848,
+          "heapAfterGC": 7414616
+        },
+        {
+          "bytes": 1048576,
+          "chunkBytes": 1024,
+          "cap": 8192,
+          "iterations": 16,
+          "timingIterations": 256,
+          "cpuMicrosecondsPerInvocation": 425.78125,
+          "wallP95Milliseconds": 0.34360000000003765,
+          "sampledBytes": 18658560,
+          "sampledBytesPerInputChunk": 1138.828125,
+          "heapBefore": 5722240,
+          "peakHeap": 24418376,
+          "heapAfterGC": 6421648
+        }
+      ],
+      "candidate": [
+        {
+          "bytes": 262144,
+          "chunkBytes": 1024,
+          "cap": 262144,
+          "iterations": 16,
+          "timingIterations": 1024,
+          "cpuMicrosecondsPerInvocation": 106.4453125,
+          "wallP95Milliseconds": 0.14119999999999777,
+          "sampledBytes": 4840728,
+          "sampledBytesPerInputChunk": 1181.818359375,
+          "heapBefore": 10478976,
+          "peakHeap": 15353376,
+          "heapAfterGC": 10791576
+        },
+        {
+          "bytes": 524288,
+          "chunkBytes": 1024,
+          "cap": 524288,
+          "iterations": 16,
+          "timingIterations": 512,
+          "cpuMicrosecondsPerInvocation": 150.390625,
+          "wallP95Milliseconds": 0.16059999999998809,
+          "sampledBytes": 9380400,
+          "sampledBytesPerInputChunk": 1145.068359375,
+          "heapBefore": 10591720,
+          "peakHeap": 20074632,
+          "heapAfterGC": 10965104
+        },
+        {
+          "bytes": 1048576,
+          "chunkBytes": 1024,
+          "cap": 1048576,
+          "iterations": 16,
+          "timingIterations": 256,
+          "cpuMicrosecondsPerInvocation": 121.09375,
+          "wallP95Milliseconds": 0.25679999999999836,
+          "sampledBytes": 18637584,
+          "sampledBytesPerInputChunk": 1137.5478515625,
+          "heapBefore": 10598840,
+          "peakHeap": 29309048,
+          "heapAfterGC": 11292944
+        },
+        {
+          "bytes": 1048576,
+          "chunkBytes": 64,
+          "cap": 1048576,
+          "iterations": 16,
+          "timingIterations": 256,
+          "cpuMicrosecondsPerInvocation": 1039.0625,
+          "wallP95Milliseconds": 1.332300000000032,
+          "sampledBytes": 31432216,
+          "sampledBytesPerInputChunk": 119.90438842773438,
+          "heapBefore": 10609632,
+          "peakHeap": 42084528,
+          "heapAfterGC": 7425160
+        },
+        {
+          "bytes": 1048576,
+          "chunkBytes": 1024,
+          "cap": 8192,
+          "iterations": 16,
+          "timingIterations": 256,
+          "cpuMicrosecondsPerInvocation": 62.5,
+          "wallP95Milliseconds": 0.10950000000002547,
+          "sampledBytes": 1282936,
+          "sampledBytesPerInputChunk": 78.30419921875,
+          "heapBefore": 5741776,
+          "peakHeap": 7017216,
+          "heapAfterGC": 5849480
+        }
+      ]
+    },
+    {
+      "baseline": [
+        {
+          "bytes": 262144,
+          "chunkBytes": 1024,
+          "cap": 262144,
+          "iterations": 16,
+          "timingIterations": 1024,
+          "cpuMicrosecondsPerInvocation": 183.59375,
+          "wallP95Milliseconds": 0.1297999999999888,
+          "sampledBytes": 4988224,
+          "sampledBytesPerInputChunk": 1217.828125,
+          "heapBefore": 10469896,
+          "peakHeap": 15463616,
+          "heapAfterGC": 10742696
+        },
+        {
+          "bytes": 524288,
+          "chunkBytes": 1024,
+          "cap": 524288,
+          "iterations": 16,
+          "timingIterations": 512,
+          "cpuMicrosecondsPerInvocation": 244.140625,
+          "wallP95Milliseconds": 0.13980000000000814,
+          "sampledBytes": 9396728,
+          "sampledBytesPerInputChunk": 1147.0615234375,
+          "heapBefore": 10541544,
+          "peakHeap": 20006376,
+          "heapAfterGC": 10928344
+        },
+        {
+          "bytes": 1048576,
+          "chunkBytes": 1024,
+          "cap": 1048576,
+          "iterations": 16,
+          "timingIterations": 256,
+          "cpuMicrosecondsPerInvocation": 425.78125,
+          "wallP95Milliseconds": 0.4078000000000088,
+          "sampledBytes": 18743824,
+          "sampledBytesPerInputChunk": 1144.0322265625,
+          "heapBefore": 5684744,
+          "peakHeap": 24376624,
+          "heapAfterGC": 6383392
+        },
+        {
+          "bytes": 1048576,
+          "chunkBytes": 64,
+          "cap": 1048576,
+          "iterations": 16,
+          "timingIterations": 256,
+          "cpuMicrosecondsPerInvocation": 1769.53125,
+          "wallP95Milliseconds": 7.328199999999924,
+          "sampledBytes": 31309200,
+          "sampledBytesPerInputChunk": 119.43511962890625,
+          "heapBefore": 5694176,
+          "peakHeap": 37126288,
+          "heapAfterGC": 7409192
+        },
+        {
+          "bytes": 1048576,
+          "chunkBytes": 1024,
+          "cap": 8192,
+          "iterations": 16,
+          "timingIterations": 256,
+          "cpuMicrosecondsPerInvocation": 425.78125,
+          "wallP95Milliseconds": 0.9313999999999396,
+          "sampledBytes": 18773880,
+          "sampledBytesPerInputChunk": 1145.86669921875,
+          "heapBefore": 5722776,
+          "peakHeap": 24421168,
+          "heapAfterGC": 6428320
+        }
+      ],
+      "candidate": [
+        {
+          "bytes": 262144,
+          "chunkBytes": 1024,
+          "cap": 262144,
+          "iterations": 16,
+          "timingIterations": 1024,
+          "cpuMicrosecondsPerInvocation": 61.5234375,
+          "wallP95Milliseconds": 0.13759999999999195,
+          "sampledBytes": 4884904,
+          "sampledBytesPerInputChunk": 1192.603515625,
+          "heapBefore": 10473664,
+          "peakHeap": 15346600,
+          "heapAfterGC": 10772640
+        },
+        {
+          "bytes": 524288,
+          "chunkBytes": 1024,
+          "cap": 524288,
+          "iterations": 16,
+          "timingIterations": 512,
+          "cpuMicrosecondsPerInvocation": 121.09375,
+          "wallP95Milliseconds": 0.20300000000000296,
+          "sampledBytes": 9449000,
+          "sampledBytesPerInputChunk": 1153.4423828125,
+          "heapBefore": 10569928,
+          "peakHeap": 20052840,
+          "heapAfterGC": 10962400
+        },
+        {
+          "bytes": 1048576,
+          "chunkBytes": 1024,
+          "cap": 1048576,
+          "iterations": 16,
+          "timingIterations": 256,
+          "cpuMicrosecondsPerInvocation": 121.09375,
+          "wallP95Milliseconds": 0.27199999999999136,
+          "sampledBytes": 18538664,
+          "sampledBytesPerInputChunk": 1131.51025390625,
+          "heapBefore": 10592712,
+          "peakHeap": 29302920,
+          "heapAfterGC": 11285128
+        },
+        {
+          "bytes": 1048576,
+          "chunkBytes": 64,
+          "cap": 1048576,
+          "iterations": 16,
+          "timingIterations": 256,
+          "cpuMicrosecondsPerInvocation": 855.46875,
+          "wallP95Milliseconds": 1.333699999999908,
+          "sampledBytes": 31469176,
+          "sampledBytesPerInputChunk": 120.04537963867188,
+          "heapBefore": 10602168,
+          "peakHeap": 42024368,
+          "heapAfterGC": 7415648
+        },
+        {
+          "bytes": 1048576,
+          "chunkBytes": 1024,
+          "cap": 8192,
+          "iterations": 16,
+          "timingIterations": 256,
+          "cpuMicrosecondsPerInvocation": 62.5,
+          "wallP95Milliseconds": 0.14959999999996398,
+          "sampledBytes": 1293120,
+          "sampledBytesPerInputChunk": 78.92578125,
+          "heapBefore": 5735688,
+          "peakHeap": 7011128,
+          "heapAfterGC": 5834824
+        }
+      ]
+    },
+    {
+      "baseline": [
+        {
+          "bytes": 262144,
+          "chunkBytes": 1024,
+          "cap": 262144,
+          "iterations": 16,
+          "timingIterations": 1024,
+          "cpuMicrosecondsPerInvocation": 260.7421875,
+          "wallP95Milliseconds": 0.13100000000000023,
+          "sampledBytes": 5015976,
+          "sampledBytesPerInputChunk": 1224.603515625,
+          "heapBefore": 10438432,
+          "peakHeap": 15426456,
+          "heapAfterGC": 10759312
+        },
+        {
+          "bytes": 524288,
+          "chunkBytes": 1024,
+          "cap": 524288,
+          "iterations": 16,
+          "timingIterations": 512,
+          "cpuMicrosecondsPerInvocation": 425.78125,
+          "wallP95Milliseconds": 0.13229999999998654,
+          "sampledBytes": 9487776,
+          "sampledBytesPerInputChunk": 1158.17578125,
+          "heapBefore": 10559264,
+          "peakHeap": 20035352,
+          "heapAfterGC": 10931568
+        },
+        {
+          "bytes": 1048576,
+          "chunkBytes": 1024,
+          "cap": 1048576,
+          "iterations": 16,
+          "timingIterations": 256,
+          "cpuMicrosecondsPerInvocation": 363.28125,
+          "wallP95Milliseconds": 0.387800000000027,
+          "sampledBytes": 18599296,
+          "sampledBytesPerInputChunk": 1135.2109375,
+          "heapBefore": 5685120,
+          "peakHeap": 24377000,
+          "heapAfterGC": 6379800
+        },
+        {
+          "bytes": 1048576,
+          "chunkBytes": 64,
+          "cap": 1048576,
+          "iterations": 16,
+          "timingIterations": 256,
+          "cpuMicrosecondsPerInvocation": 2257.8125,
+          "wallP95Milliseconds": 6.768400000000042,
+          "sampledBytes": 31434344,
+          "sampledBytesPerInputChunk": 119.91250610351562,
+          "heapBefore": 5694280,
+          "peakHeap": 37127016,
+          "heapAfterGC": 7411416
+        },
+        {
+          "bytes": 1048576,
+          "chunkBytes": 1024,
+          "cap": 8192,
+          "iterations": 16,
+          "timingIterations": 256,
+          "cpuMicrosecondsPerInvocation": 488.28125,
+          "wallP95Milliseconds": 0.3623999999999796,
+          "sampledBytes": 18664288,
+          "sampledBytesPerInputChunk": 1139.177734375,
+          "heapBefore": 5722632,
+          "peakHeap": 24421024,
+          "heapAfterGC": 6423720
+        }
+      ],
+      "candidate": [
+        {
+          "bytes": 262144,
+          "chunkBytes": 1024,
+          "cap": 262144,
+          "iterations": 16,
+          "timingIterations": 1024,
+          "cpuMicrosecondsPerInvocation": 61.5234375,
+          "wallP95Milliseconds": 0.13739999999999952,
+          "sampledBytes": 4811224,
+          "sampledBytesPerInputChunk": 1174.615234375,
+          "heapBefore": 10478952,
+          "peakHeap": 15351888,
+          "heapAfterGC": 10793984
+        },
+        {
+          "bytes": 524288,
+          "chunkBytes": 1024,
+          "cap": 524288,
+          "iterations": 16,
+          "timingIterations": 512,
+          "cpuMicrosecondsPerInvocation": 123.046875,
+          "wallP95Milliseconds": 0.16259999999999764,
+          "sampledBytes": 9460392,
+          "sampledBytesPerInputChunk": 1154.8330078125,
+          "heapBefore": 10587056,
+          "peakHeap": 20069968,
+          "heapAfterGC": 10958712
+        },
+        {
+          "bytes": 1048576,
+          "chunkBytes": 1024,
+          "cap": 1048576,
+          "iterations": 16,
+          "timingIterations": 256,
+          "cpuMicrosecondsPerInvocation": 183.59375,
+          "wallP95Milliseconds": 0.27120000000002165,
+          "sampledBytes": 18681776,
+          "sampledBytesPerInputChunk": 1140.2451171875,
+          "heapBefore": 10592648,
+          "peakHeap": 29302856,
+          "heapAfterGC": 11290760
+        },
+        {
+          "bytes": 1048576,
+          "chunkBytes": 64,
+          "cap": 1048576,
+          "iterations": 16,
+          "timingIterations": 256,
+          "cpuMicrosecondsPerInvocation": 917.96875,
+          "wallP95Milliseconds": 1.2910999999999717,
+          "sampledBytes": 31619704,
+          "sampledBytesPerInputChunk": 120.61959838867188,
+          "heapBefore": 10601896,
+          "peakHeap": 42022080,
+          "heapAfterGC": 7420736
+        },
+        {
+          "bytes": 1048576,
+          "chunkBytes": 1024,
+          "cap": 8192,
+          "iterations": 16,
+          "timingIterations": 256,
+          "cpuMicrosecondsPerInvocation": 121.09375,
+          "wallP95Milliseconds": 0.11570000000006075,
+          "sampledBytes": 1225280,
+          "sampledBytesPerInputChunk": 74.78515625,
+          "heapBefore": 5735608,
+          "peakHeap": 7011048,
+          "heapAfterGC": 5830840
+        }
+      ]
+    },
+    {
+      "baseline": [
+        {
+          "bytes": 262144,
+          "chunkBytes": 1024,
+          "cap": 262144,
+          "iterations": 16,
+          "timingIterations": 1024,
+          "cpuMicrosecondsPerInvocation": 259.765625,
+          "wallP95Milliseconds": 0.13329999999999131,
+          "sampledBytes": 5100624,
+          "sampledBytesPerInputChunk": 1245.26953125,
+          "heapBefore": 10438744,
+          "peakHeap": 15427928,
+          "heapAfterGC": 10767856
+        },
+        {
+          "bytes": 524288,
+          "chunkBytes": 1024,
+          "cap": 524288,
+          "iterations": 16,
+          "timingIterations": 512,
+          "cpuMicrosecondsPerInvocation": 427.734375,
+          "wallP95Milliseconds": 0.13919999999998822,
+          "sampledBytes": 9497568,
+          "sampledBytesPerInputChunk": 1159.37109375,
+          "heapBefore": 10561368,
+          "peakHeap": 20037456,
+          "heapAfterGC": 10948216
+        },
+        {
+          "bytes": 1048576,
+          "chunkBytes": 1024,
+          "cap": 1048576,
+          "iterations": 16,
+          "timingIterations": 256,
+          "cpuMicrosecondsPerInvocation": 675.78125,
+          "wallP95Milliseconds": 0.4122000000000412,
+          "sampledBytes": 18754808,
+          "sampledBytesPerInputChunk": 1144.70263671875,
+          "heapBefore": 5702944,
+          "peakHeap": 24394824,
+          "heapAfterGC": 6400832
+        },
+        {
+          "bytes": 1048576,
+          "chunkBytes": 64,
+          "cap": 1048576,
+          "iterations": 16,
+          "timingIterations": 256,
+          "cpuMicrosecondsPerInvocation": 2441.40625,
+          "wallP95Milliseconds": 7.033500000000004,
+          "sampledBytes": 31651104,
+          "sampledBytesPerInputChunk": 120.7393798828125,
+          "heapBefore": 5712160,
+          "peakHeap": 37161248,
+          "heapAfterGC": 7424392
+        },
+        {
+          "bytes": 1048576,
+          "chunkBytes": 1024,
+          "cap": 8192,
+          "iterations": 16,
+          "timingIterations": 256,
+          "cpuMicrosecondsPerInvocation": 730.46875,
+          "wallP95Milliseconds": 0.7790999999999713,
+          "sampledBytes": 18614048,
+          "sampledBytesPerInputChunk": 1136.111328125,
+          "heapBefore": 5722112,
+          "peakHeap": 24418248,
+          "heapAfterGC": 6422456
+        }
+      ],
+      "candidate": [
+        {
+          "bytes": 262144,
+          "chunkBytes": 1024,
+          "cap": 262144,
+          "iterations": 16,
+          "timingIterations": 1024,
+          "cpuMicrosecondsPerInvocation": 61.5234375,
+          "wallP95Milliseconds": 0.1342999999999961,
+          "sampledBytes": 4968648,
+          "sampledBytesPerInputChunk": 1213.048828125,
+          "heapBefore": 10476696,
+          "peakHeap": 15349632,
+          "heapAfterGC": 10794808
+        },
+        {
+          "bytes": 524288,
+          "chunkBytes": 1024,
+          "cap": 524288,
+          "iterations": 16,
+          "timingIterations": 512,
+          "cpuMicrosecondsPerInvocation": 183.59375,
+          "wallP95Milliseconds": 0.16249999999999432,
+          "sampledBytes": 9507496,
+          "sampledBytesPerInputChunk": 1160.5830078125,
+          "heapBefore": 10588584,
+          "peakHeap": 20071496,
+          "heapAfterGC": 10963752
+        },
+        {
+          "bytes": 1048576,
+          "chunkBytes": 1024,
+          "cap": 1048576,
+          "iterations": 16,
+          "timingIterations": 256,
+          "cpuMicrosecondsPerInvocation": 242.1875,
+          "wallP95Milliseconds": 0.25610000000000355,
+          "sampledBytes": 18632640,
+          "sampledBytesPerInputChunk": 1137.24609375,
+          "heapBefore": 10592592,
+          "peakHeap": 29302800,
+          "heapAfterGC": 11284368
+        },
+        {
+          "bytes": 1048576,
+          "chunkBytes": 64,
+          "cap": 1048576,
+          "iterations": 16,
+          "timingIterations": 256,
+          "cpuMicrosecondsPerInvocation": 855.46875,
+          "wallP95Milliseconds": 1.3281000000000063,
+          "sampledBytes": 31479160,
+          "sampledBytesPerInputChunk": 120.08346557617188,
+          "heapBefore": 10602008,
+          "peakHeap": 42049144,
+          "heapAfterGC": 7436480
+        },
+        {
+          "bytes": 1048576,
+          "chunkBytes": 1024,
+          "cap": 8192,
+          "iterations": 16,
+          "timingIterations": 256,
+          "cpuMicrosecondsPerInvocation": 183.59375,
+          "wallP95Milliseconds": 0.11189999999999145,
+          "sampledBytes": 1257840,
+          "sampledBytesPerInputChunk": 76.7724609375,
+          "heapBefore": 5754392,
+          "peakHeap": 7029832,
+          "heapAfterGC": 5851232
+        }
+      ]
+    }
+  ],
+  "representativeProfiles": {
+    "baseline": [
+      {
+        "bytes": 262144,
+        "chunkBytes": 1024,
+        "cap": 262144,
+        "allocationStacks": [
+          {
+            "frame": "toString@node:buffer:975",
+            "bytes": 2199616
+          },
+          {
+            "frame": "toString@node:buffer:975",
+            "bytes": 2171520
+          },
+          {
+            "frame": "emit@node:events:489",
+            "bytes": 191104
+          },
+          {
+            "frame": "@repo:/.git/pi150-t05a/exec-baseline.ts:81",
+            "bytes": 71776
+          },
+          {
+            "frame": "@repo:/.git/pi150-t05a/exec-baseline.ts:85",
+            "bytes": 59296
+          },
+          {
+            "frame": "post@node:inspector:115",
+            "bytes": 33920
+          },
+          {
+            "frame": "_onceWrap@node:events:633",
+            "bytes": 22152
+          },
+          {
+            "frame": "hasOwnProperty@:0",
+            "bytes": 17832
+          }
+        ]
+      },
+      {
+        "bytes": 524288,
+        "chunkBytes": 1024,
+        "cap": 524288,
+        "allocationStacks": [
+          {
+            "frame": "@repo:/.git/pi150-t05a/exec-baseline.ts:85",
+            "bytes": 4186000
+          },
+          {
+            "frame": "@repo:/.git/pi150-t05a/exec-baseline.ts:81",
+            "bytes": 4064336
+          },
+          {
+            "frame": "emit@node:events:489",
+            "bytes": 464112
+          },
+          {
+            "frame": "toString@node:buffer:975",
+            "bytes": 269360
+          },
+          {
+            "frame": "toString@node:buffer:975",
+            "bytes": 250640
+          },
+          {
+            "frame": "_onceWrap@node:events:633",
+            "bytes": 20312
+          },
+          {
+            "frame": "run@repo:/scripts/bench/extension-exec-output.ts:23",
+            "bytes": 14952
+          },
+          {
+            "frame": "Duplex@node:internal/streams/duplex:64",
+            "bytes": 12880
+          }
+        ]
+      },
+      {
+        "bytes": 1048576,
+        "chunkBytes": 1024,
+        "cap": 1048576,
+        "allocationStacks": [
+          {
+            "frame": "@repo:/.git/pi150-t05a/exec-baseline.ts:85",
+            "bytes": 8599776
+          },
+          {
+            "frame": "@repo:/.git/pi150-t05a/exec-baseline.ts:81",
+            "bytes": 8546736
+          },
+          {
+            "frame": "emit@node:events:489",
+            "bytes": 924176
+          },
+          {
+            "frame": "toString@node:buffer:975",
+            "bytes": 277680
+          },
+          {
+            "frame": "toString@node:buffer:975",
+            "bytes": 247520
+          },
+          {
+            "frame": "_onceWrap@node:events:633",
+            "bytes": 28448
+          },
+          {
+            "frame": "@repo:/packages/coding-agent/src/utils/child-process.ts:59",
+            "bytes": 14952
+          },
+          {
+            "frame": "Duplex@node:internal/streams/duplex:64",
+            "bytes": 12936
+          }
+        ]
+      },
+      {
+        "bytes": 1048576,
+        "chunkBytes": 64,
+        "cap": 1048576,
+        "allocationStacks": [
+          {
+            "frame": "@repo:/.git/pi150-t05a/exec-baseline.ts:85",
+            "bytes": 9023632
+          },
+          {
+            "frame": "@repo:/.git/pi150-t05a/exec-baseline.ts:81",
+            "bytes": 8897248
+          },
+          {
+            "frame": "@repo:/.git/pi150-t05a/exec-baseline.ts:81",
+            "bytes": 5866528
+          },
+          {
+            "frame": "@repo:/.git/pi150-t05a/exec-baseline.ts:85",
+            "bytes": 5789752
+          },
+          {
+            "frame": "emit@node:events:489",
+            "bytes": 1869072
+          },
+          {
+            "frame": "toString@node:buffer:975",
+            "bytes": 57520
+          },
+          {
+            "frame": "toString@node:buffer:975",
+            "bytes": 55360
+          },
+          {
+            "frame": "onData@repo:/packages/coding-agent/src/utils/child-process.ts:109",
+            "bytes": 34184
+          }
+        ]
+      },
+      {
+        "bytes": 1048576,
+        "chunkBytes": 1024,
+        "cap": 8192,
+        "allocationStacks": [
+          {
+            "frame": "@repo:/.git/pi150-t05a/exec-baseline.ts:81",
+            "bytes": 8446368
+          },
+          {
+            "frame": "@repo:/.git/pi150-t05a/exec-baseline.ts:85",
+            "bytes": 8381392
+          },
+          {
+            "frame": "emit@node:events:489",
+            "bytes": 870184
+          },
+          {
+            "frame": "toString@node:buffer:975",
+            "bytes": 275600
+          },
+          {
+            "frame": "toString@node:buffer:975",
+            "bytes": 261040
+          },
+          {
+            "frame": "_onceWrap@node:events:633",
+            "bytes": 20072
+          },
+          {
+            "frame": "@repo:/packages/coding-agent/src/utils/child-process.ts:59",
+            "bytes": 13048
+          },
+          {
+            "frame": "Duplex@node:internal/streams/duplex:64",
+            "bytes": 12880
+          }
+        ]
+      }
+    ],
+    "candidate": [
+      {
+        "bytes": 262144,
+        "chunkBytes": 1024,
+        "cap": 262144,
+        "allocationStacks": [
+          {
+            "frame": "write@node:string_decoder:76",
+            "bytes": 2185040
+          },
+          {
+            "frame": "write@node:string_decoder:76",
+            "bytes": 2124720
+          },
+          {
+            "frame": "emit@node:events:489",
+            "bytes": 234624
+          },
+          {
+            "frame": "onStderrData@repo:/packages/coding-agent/src/core/exec.ts:85",
+            "bytes": 73856
+          },
+          {
+            "frame": "onStdoutData@repo:/packages/coding-agent/src/core/exec.ts:81",
+            "bytes": 68640
+          },
+          {
+            "frame": "execCommand@repo:/packages/coding-agent/src/core/exec.ts:45",
+            "bytes": 17256
+          },
+          {
+            "frame": "onData@repo:/packages/coding-agent/src/utils/child-process.ts:109",
+            "bytes": 16824
+          },
+          {
+            "frame": "_onceWrap@node:events:633",
+            "bytes": 15992
+          }
+        ]
+      },
+      {
+        "bytes": 524288,
+        "chunkBytes": 1024,
+        "cap": 524288,
+        "allocationStacks": [
+          {
+            "frame": "write@node:string_decoder:76",
+            "bytes": 4312880
+          },
+          {
+            "frame": "write@node:string_decoder:76",
+            "bytes": 4208880
+          },
+          {
+            "frame": "emit@node:events:489",
+            "bytes": 435048
+          },
+          {
+            "frame": "onStdoutData@repo:/packages/coding-agent/src/core/exec.ts:81",
+            "bytes": 125856
+          },
+          {
+            "frame": "onStderrData@repo:/packages/coding-agent/src/core/exec.ts:85",
+            "bytes": 107136
+          },
+          {
+            "frame": "execCommand@repo:/packages/coding-agent/src/core/exec.ts:45",
+            "bytes": 23552
+          },
+          {
+            "frame": "_onceWrap@node:events:633",
+            "bytes": 19248
+          },
+          {
+            "frame": "run@repo:/scripts/bench/extension-exec-output.ts:23",
+            "bytes": 12008
+          }
+        ]
+      },
+      {
+        "bytes": 1048576,
+        "chunkBytes": 1024,
+        "cap": 1048576,
+        "allocationStacks": [
+          {
+            "frame": "write@node:string_decoder:76",
+            "bytes": 8588320
+          },
+          {
+            "frame": "write@node:string_decoder:76",
+            "bytes": 8464560
+          },
+          {
+            "frame": "emit@node:events:489",
+            "bytes": 913728
+          },
+          {
+            "frame": "onStderrData@repo:/packages/coding-agent/src/core/exec.ts:85",
+            "bytes": 273536
+          },
+          {
+            "frame": "onStdoutData@repo:/packages/coding-agent/src/core/exec.ts:81",
+            "bytes": 271456
+          },
+          {
+            "frame": "_onceWrap@node:events:633",
+            "bytes": 25352
+          },
+          {
+            "frame": "execCommand@repo:/packages/coding-agent/src/core/exec.ts:45",
+            "bytes": 13896
+          },
+          {
+            "frame": "@repo:/packages/coding-agent/src/utils/child-process.ts:59",
+            "bytes": 13896
+          }
+        ]
+      },
+      {
+        "bytes": 1048576,
+        "chunkBytes": 64,
+        "cap": 1048576,
+        "allocationStacks": [
+          {
+            "frame": "write@node:string_decoder:76",
+            "bytes": 6948160
+          },
+          {
+            "frame": "write@node:string_decoder:76",
+            "bytes": 6850160
+          },
+          {
+            "frame": "write@node:string_decoder:76",
+            "bytes": 3806720
+          },
+          {
+            "frame": "write@node:string_decoder:76",
+            "bytes": 3748160
+          },
+          {
+            "frame": "onStdoutData@repo:/packages/coding-agent/src/core/exec.ts:81",
+            "bytes": 2749984
+          },
+          {
+            "frame": "onStderrData@repo:/packages/coding-agent/src/core/exec.ts:85",
+            "bytes": 2673024
+          },
+          {
+            "frame": "emit@node:events:489",
+            "bytes": 1795176
+          },
+          {
+            "frame": "onStderrData@repo:/packages/coding-agent/src/core/exec.ts:85",
+            "bytes": 1552832
+          }
+        ]
+      },
+      {
+        "bytes": 1048576,
+        "chunkBytes": 1024,
+        "cap": 8192,
+        "allocationStacks": [
+          {
+            "frame": "emit@node:events:489",
+            "bytes": 916848
+          },
+          {
+            "frame": "write@node:string_decoder:76",
+            "bytes": 69680
+          },
+          {
+            "frame": "write@node:string_decoder:76",
+            "bytes": 66560
+          },
+          {
+            "frame": "execCommand@repo:/packages/coding-agent/src/core/exec.ts:45",
+            "bytes": 15008
+          },
+          {
+            "frame": "_onceWrap@node:events:633",
+            "bytes": 12896
+          },
+          {
+            "frame": "Timeout@node:internal/timers:218",
+            "bytes": 12744
+          },
+          {
+            "frame": "Duplex@node:internal/streams/duplex:64",
+            "bytes": 11744
+          },
+          {
+            "frame": "run@repo:/scripts/bench/extension-exec-output.ts:23",
+            "bytes": 9728
+          }
+        ]
+      }
+    ]
+  },
+  "validation": {
+    "typecheck": "Node26 npm run check: pass",
+    "build": "Node26 npm run build:offline: pass",
+    "fullTests": {
+      "units": 394,
+      "failedUnits": 0,
+      "tests": 5250,
+      "pass": 5152,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 98
+    },
+    "targeted": {
+      "tests": 67,
+      "pass": 61,
+      "skip": 6,
+      "fail": 0
+    },
+    "logs": {
+      "tests.log": "09ec5e1e43550570c93e36e75733aa57927cecb18dc984a150d45ecaff87d2fe",
+      "targeted-tests.log": "29b3dd5a0325989e70c67e1a0051575574f0d27242f7d2960a93151eb6f8308a",
+      "baseline-tests.log": "841a5f829060d26383f51e135e0540af97d32c95d711b46ac35f20eac9c18c7d",
+      "build.log": "597b0150f0ae816a32c03540f61e994cf48a4e37294d7d64d907912dfe541055"
+    }
+  }
+}
