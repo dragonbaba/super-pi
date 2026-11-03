@@ -40,7 +40,7 @@
 
 ## 图片、终端和嵌入
 
-- [图片输入和交互控制](interactive-control-image-input.md)：图片草稿、提交、取消和终端输入边界。
+- [图片和终端体验](../README.zh-CN.md#图片和终端体验)：图片草稿、提交、终端模式和输入边界。
 - [Auxiliary Vision](../packages/extensions/auxiliary-vision/README.md)：文本模型的可选图像描述、配置和文件范围。
 - [TUI](../packages/tui/README.md)：终端组件和布局包参考。
 - [RPC protocol](../packages/protocol/README.md)：运行时协议、帧边界和验证。
@@ -61,6 +61,7 @@
 
 ## 历史、来源和评估
 
+- [Pi 1.5.0 差异评估（2026-11-03）](upstream-pi-1.5.0-diff-assessment.md)：最新稳定版核对、当前缺口、已有等效实现和建议优先级。
 - [OpenCode v2 与 Claude Code 借鉴任务计划](opencode-v2-claude-code-task-plan.md)：后台通知与续跑复核、Codemode 实现及同机性能对照、分阶段任务、性能门禁、最小必要测试和 Codex 审查流程。
 - [Pi 1.1.0 复核与任务清单](upstream-pi-1.1.0-task-plan.md)：固定版本对照、已复现缺口、待验证项、实施顺序和性能验收要求。
 - [Pi 0.84.1 → 0.86.1 定向评估](policy-diagnostics-pi-0.84.1-0.86.1-assessment.md)：当前 Super Pi 与固定上游 tag 的差异记录，不是整体升级。
@@ -79,4 +80,4 @@
 - 英文和中文首页共享同一章节结构、命令、启用状态和限制。
 - 仓库内链接使用相对路径，并在提交前检查大小写和锚点。
 
-欢迎从 README、包说明和性能契约开始，再按实际影响选择 `npm.cmd run check`、构建和测试范围。来源和 MIT 许可证见 [NOTICE.md](../NOTICE.md) 与仓库 [LICENSE](../LICENSE)。
+欢迎从 README、包说明和性能契约开始，再按实际影响选择 `npm.cmd run check`、构建和测试范围。项目采用 [GPL-3.0-only](../LICENSE)；分发义务、旧版 MIT 授权及保留的上游声明见 [NOTICE.md](../NOTICE.md)。

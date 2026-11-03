@@ -20,7 +20,10 @@
 		"native/darwin/src/**/*.c",
 		"native/darwin/build.sh",
 		"native/darwin/README.md",
-		"README.md"
+		"README.md",
+		"LICENSE",
+		"LICENSE-MIT",
+		"NOTICE.md"
 	],
 	"keywords": [
 		"tui",
@@ -32,7 +35,7 @@
 		"cli"
 	],
 	"author": "Mario Zechner",
-	"license": "MIT",
+	"license": "GPL-3.0-only",
 	"repository": {
 		"type": "git",
 		"url": "git+https://github.com/dragonbaba/super-pi.git",

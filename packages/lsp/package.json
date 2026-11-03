@@ -3,7 +3,7 @@
 	"version": "0.2.3-pi.84.1",
 	"description": "Bounded Super Pi LSP integration with drift-safe pooled symbol navigation.",
 	"type": "module",
-	"license": "MIT",
+	"license": "GPL-3.0-only",
 	"private": true,
 	"keywords": [
 		"pi-package",
@@ -19,7 +19,9 @@
 	"files": [
 		"src",
 		"README.md",
-		"LICENSE"
+		"LICENSE",
+		"LICENSE-MIT",
+		"NOTICE.md"
 	],
 	"pi": {
 		"extensions": [

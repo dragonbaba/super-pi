@@ -1,6 +1,6 @@
 # 🌐 sp-chrome-devtools — Chrome DevTools Tools for Pi Agents
 
-[![npm](https://img.shields.io/npm/v/@super-pi/chrome-devtools)](https://www.npmjs.com/package/@super-pi/chrome-devtools) [![Pi extension](https://img.shields.io/badge/Pi-extension-blue)](https://pi.dev) [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
+[![npm](https://img.shields.io/npm/v/@super-pi/chrome-devtools)](https://www.npmjs.com/package/@super-pi/chrome-devtools) [![Pi extension](https://img.shields.io/badge/Pi-extension-blue)](https://pi.dev) [![License: GPL-3.0-only](https://img.shields.io/badge/license-GPL--3.0--only-blue.svg)](./LICENSE)
 
 `@super-pi/chrome-devtools` is a native [Pi coding agent](https://pi.dev) extension that exposes Chrome DevTools Protocol (CDP) automation as Pi tools.
 

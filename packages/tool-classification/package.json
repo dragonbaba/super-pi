@@ -29,5 +29,6 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
-  }
+  },
+  "license": "GPL-3.0-only"
 }

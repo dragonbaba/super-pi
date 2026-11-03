@@ -17,5 +17,6 @@
     "@super-pi/coding-agent": {
       "optional": true
     }
-  }
+  },
+  "license": "GPL-3.0-only"
 }

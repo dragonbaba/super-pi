@@ -3,7 +3,7 @@
 	"version": "0.49.3-super-pi.1",
 	"description": "Super Pi declarative TUI menu helpers.",
 	"type": "module",
-	"license": "MIT",
+	"license": "GPL-3.0-only",
 	"private": true,
 	"sideEffects": false,
 	"main": "./src/index.ts",

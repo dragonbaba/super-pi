@@ -24,5 +24,6 @@
   },
   "scripts": {
     "check": "tsc --noEmit -p tsconfig.json"
-  }
+  },
+  "license": "GPL-3.0-only"
 }

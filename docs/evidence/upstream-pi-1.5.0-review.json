@@ -1,0 +1,253 @@
+{
+  "checkedAt": "2026-11-03",
+  "localCommit": "b81db72154ff703d2378d58362f03cb83e14adc1",
+  "upstreamTag": "v1.5.0",
+  "upstreamCommit": "f9a26365568127461c47a07a37dcb42c140a3ac5",
+  "publishedAt": "2026-11-02T11:05:31Z",
+  "environment": {
+    "platform": "win32",
+    "node": "v26.13.0",
+    "npm": "11.20.0"
+  },
+  "probes": [
+    {
+      "probe": "exec-spawn-error",
+      "stdout": "",
+      "stderr": "",
+      "code": 1,
+      "killed": false
+    },
+    {
+      "probe": "exec-split-utf8",
+      "expected": "中",
+      "stdout": "���",
+      "stderr": "",
+      "code": 0,
+      "killed": false
+    },
+    {
+      "probe": "session-append-write-failure",
+      "before": {
+        "count": 0,
+        "leaf": null,
+        "entries": 0
+      },
+      "after": {
+        "count": 1,
+        "leaf": "non-null generated entry ID",
+        "entries": 1
+      },
+      "error": "simulated write failure"
+    }
+  ],
+  "productionAudit": {
+    "command": "npm.cmd audit --omit=dev --json",
+    "counts": {
+      "info": 0,
+      "low": 0,
+      "moderate": 8,
+      "high": 8,
+      "critical": 0,
+      "total": 16
+    },
+    "packages": [
+      {
+        "name": "@anthropic-ai/sdk",
+        "severity": "high",
+        "isDirect": true,
+        "advisories": []
+      },
+      {
+        "name": "@google/genai",
+        "severity": "high",
+        "isDirect": true,
+        "advisories": []
+      },
+      {
+        "name": "@hono/node-server",
+        "severity": "moderate",
+        "isDirect": false,
+        "advisories": [
+          {
+            "title": "@hono/node-server: `serveStatic` decodes the request path a second time, leading to bypass of middleware on static paths",
+            "url": "https://github.com/advisories/GHSA-rmxm-3fg6-px4f"
+          }
+        ]
+      },
+      {
+        "name": "@modelcontextprotocol/sdk",
+        "severity": "high",
+        "isDirect": true,
+        "advisories": []
+      },
+      {
+        "name": "body-parser",
+        "severity": "high",
+        "isDirect": false,
+        "advisories": [
+          {
+            "title": "body-parser vulnerable to Denial of Service via trailing bytes after a compressed request body",
+            "url": "https://github.com/advisories/GHSA-27r3-jxmh-p828"
+          }
+        ]
+      },
+      {
+        "name": "express",
+        "severity": "moderate",
+        "isDirect": false,
+        "advisories": []
+      },
+      {
+        "name": "express-rate-limit",
+        "severity": "moderate",
+        "isDirect": false,
+        "advisories": []
+      },
+      {
+        "name": "fast-uri",
+        "severity": "moderate",
+        "isDirect": false,
+        "advisories": [
+          {
+            "title": "fast-uri vulnerable to URI scheme spoofing via percent-encoded scheme decoding",
+            "url": "https://github.com/advisories/GHSA-w74x-v6f9-j3xg"
+          },
+          {
+            "title": "fast-uri vulnerable to improper path equivalence in relative reference normalization",
+            "url": "https://github.com/advisories/GHSA-xhq7-xmqj-769h"
+          },
+          {
+            "title": "fast-uri vulnerable to host confusion via unchecked WHATWG host canonicalization",
+            "url": "https://github.com/advisories/GHSA-wjr9-j795-jxcr"
+          },
+          {
+            "title": "fast-uri vulnerable to scheme injection via an unescaped first-segment colon in suffix references",
+            "url": "https://github.com/advisories/GHSA-333x-w4r6-6crp"
+          }
+        ]
+      },
+      {
+        "name": "glob",
+        "severity": "moderate",
+        "isDirect": true,
+        "advisories": [
+          {
+            "title": "Glob: AbortSignal cancellation bypass allows post-timeout filesystem traversal",
+            "url": "https://github.com/advisories/GHSA-3g3m-2fjr-6pw4"
+          }
+        ]
+      },
+      {
+        "name": "ip-address",
+        "severity": "moderate",
+        "isDirect": false,
+        "advisories": [
+          {
+            "title": "ip-address: Address6 matches a zone identifier in quadratic time ahead of its length limit, allowing a single long string to stall the process",
+            "url": "https://github.com/advisories/GHSA-rxp7-6hxx-x8q5"
+          }
+        ]
+      },
+      {
+        "name": "minimatch",
+        "severity": "moderate",
+        "isDirect": true,
+        "advisories": [
+          {
+            "title": "minimatch has potential denial of service via globparts amplification",
+            "url": "https://github.com/advisories/GHSA-g3hv-75wg-m249"
+          }
+        ]
+      },
+      {
+        "name": "openai",
+        "severity": "high",
+        "isDirect": true,
+        "advisories": []
+      },
+      {
+        "name": "qs",
+        "severity": "moderate",
+        "isDirect": false,
+        "advisories": [
+          {
+            "title": "qs : qs.stringify with arrayFormat 'comma' throws an uncaught TypeError on array elements carrying a non-callable own toString (DoS)",
+            "url": "https://github.com/advisories/GHSA-6pq8-jhm2-2vcw"
+          }
+        ]
+      },
+      {
+        "name": "undici",
+        "severity": "high",
+        "isDirect": true,
+        "advisories": [
+          {
+            "title": "undici vulnerable to Denial of Service via unbounded memory in the EventSource parser",
+            "url": "https://github.com/advisories/GHSA-4qv8-2p9j-2685"
+          },
+          {
+            "title": "undici vulnerable to Subresource Integrity bypass via non-lowercase algorithm tokens",
+            "url": "https://github.com/advisories/GHSA-f72v-6w45-q472"
+          },
+          {
+            "title": "undici vulnerable to Denial of Service via unhandled error on excessive content-encodings",
+            "url": "https://github.com/advisories/GHSA-xjj6-f33q-929c"
+          },
+          {
+            "title": "undici vulnerable to cache poisoning and cross-user disclosure via cross-origin redirects",
+            "url": "https://github.com/advisories/GHSA-4w7w-5xrc-9h26"
+          },
+          {
+            "title": "undici vulnerable to TLS certificate validation bypass via dropped tls options in Agent",
+            "url": "https://github.com/advisories/GHSA-2m5v-pch6-74hx"
+          },
+          {
+            "title": "undici vulnerable to Denial of Service via TLS 1.2 certificate-changing renegotiation",
+            "url": "https://github.com/advisories/GHSA-qrxm-fqhp-jwvm"
+          },
+          {
+            "title": "undici WebSocket client vulnerable to Denial of Service via unbounded automatic PONG buffering",
+            "url": "https://github.com/advisories/GHSA-9fm3-97px-rjf6"
+          },
+          {
+            "title": "undici vulnerable to Denial of Service via unhandled exception in the decompress interceptor",
+            "url": "https://github.com/advisories/GHSA-55wc-3pg8-jfw6"
+          }
+        ]
+      },
+      {
+        "name": "zod",
+        "severity": "high",
+        "isDirect": false,
+        "advisories": [
+          {
+            "title": "Zod can exhaust memory while validating oversized constrained collections",
+            "url": "https://github.com/advisories/GHSA-mrhx-c7xc-m3w5"
+          }
+        ]
+      },
+      {
+        "name": "zod-to-json-schema",
+        "severity": "high",
+        "isDirect": false,
+        "advisories": []
+      }
+    ]
+  },
+  "packDryRun": {
+    "command": "npm.cmd pack --workspaces --dry-run --ignore-scripts --json",
+    "workspaces": 34,
+    "allContainGplMitAndNotice": true
+  },
+  "licenseAndDocsValidation": {
+    "manifestLicenseChecks": 35,
+    "gplCopiesIdentical": 35,
+    "originalMitNoticesPreserved": 10,
+    "packDryRunWorkspaces": 34,
+    "missingLegalFiles": 0,
+    "brokenRelativeFileLinks": 0,
+    "runtimeSourceFilesChanged": 0,
+    "dependenciesChanged": 0,
+    "changedFiles": 150
+  }
+}
