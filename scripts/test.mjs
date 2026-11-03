@@ -45,6 +45,7 @@ const ISOLATED_CWD_TESTS = new Set([
 	"alpha-runtime-dispose.test.ts", "alpha-startup-quit.test.ts", "alpha-crash-cleanup.test.ts", "alpha-startup-faults.test.ts",
 ]);
 const GC_TESTS = new Set([
+	"canonical-path-identity.test.ts",
 	"windows-sandbox-candidate-write-batch.test.mjs",
 	"alpha-assistant-update.test.ts", "alpha-markdown-ownership.test.ts",
 	"alpha-raw-parallel.test.ts", "alpha-startup-quit.test.ts",

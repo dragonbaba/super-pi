@@ -1,0 +1,1515 @@
+{
+  "task": "T12-A",
+  "base": "6b0f8a10459709aaad9e0e8818771e8abd6e109e",
+  "node": "v26.13.0",
+  "tests": {
+    "tests": 5522,
+    "pass": 5424,
+    "fail": 0,
+    "cancelled": 0,
+    "skipped": 98,
+    "successfulUnits": 413
+  },
+  "targeted": 68,
+  "sources": [
+    {
+      "path": "packages/coding-agent/src/utils/paths.ts",
+      "sha256": "31ce4dcb150f4541218639d77c6e9e5bf21a4585d45ca76750fea1ab1c9b3f78"
+    },
+    {
+      "path": "packages/coding-agent/src/core/trust-manager.ts",
+      "sha256": "2781fb05d1e7ed161fe0e0b6ff11d84cf28b069deaefc1803ca694d1347168c7"
+    },
+    {
+      "path": "packages/coding-agent/src/core/project-trust.ts",
+      "sha256": "49ac8fb6a06110f89f7987ccec561048d078f7ec541e9631071ce8717f2c019b"
+    },
+    {
+      "path": "packages/coding-agent/src/modes/interactive/interactive-mode.ts",
+      "sha256": "c55b7c9e07c2d637050d790ad7f9200a44648c7854bc61df7475e2a73f95d692"
+    },
+    {
+      "path": "packages/coding-agent/src/modes/interactive/components/trust-selector.ts",
+      "sha256": "504363cdfb65338f322a99475bb27f66c8eee35f79c239478d3c2cf7c372b98d"
+    },
+    {
+      "path": "packages/coding-agent/src/modes/interactive/components/session-selector.ts",
+      "sha256": "6e958680e4532bd59de79d3a7d142a1a75737efa6e4596ae4409982d06e9113c"
+    },
+    {
+      "path": "packages/coding-agent/src/modes/interactive/components/config-selector.ts",
+      "sha256": "6e97dca4c9c6764104f7585ee5b620e8682bf4ee13a7c4e2f69ece4541c44960"
+    },
+    {
+      "path": "scripts/bench/canonical-path-selectors.ts",
+      "sha256": "0796d0f9a000062eea36cb755cbdc551e77dfa6e0030db042eebd557a8e6f602"
+    },
+    {
+      "path": "scripts/test.mjs",
+      "sha256": "58d8d19dc5e998b234c22671dba2fe96a58caca671b91e0958a47847884ff206"
+    },
+    {
+      "path": "tests/canonical-path-identity.test.ts",
+      "sha256": "cd0c92040d671ef050ee2fff0d9328e8747a974a82e3ac2603c7ebedf9241b2f"
+    },
+    {
+      "path": "tests/canonical-path-hot-paths.test.ts",
+      "sha256": "43fc3f83af47eba79750178a3a33fa1411d4f6bb195c53a085b75c1324b4d5c1"
+    },
+    {
+      "path": "tests/project-trust-conflicts.test.ts",
+      "sha256": "0f9aa3a0e7c6226294078f8ab568bdf4fb34533fad68383a7a081fac3c7699db"
+    },
+    {
+      "path": "tests/helpers/owned-fixture-cleanup.ts",
+      "sha256": "3112a5cd59a61e56c4214752e92e25e2450d67867c13224fad1804b3b6d7b38d"
+    }
+  ],
+  "comparison": [
+    {
+      "kind": "session",
+      "sampledBytesPerFrame": {
+        "baseline": 208126.125,
+        "nativeOnly": 177900.5,
+        "candidate": 176432.75
+      },
+      "p95Ms": {
+        "baseline": 0.5982000000000198,
+        "nativeOnly": 0.774599999999964,
+        "candidate": 0.2925000000000182
+      },
+      "cpuUsPerFrame": {
+        "baseline": 565.4296875,
+        "nativeOnly": 715.8203125,
+        "candidate": 274.4140625
+      },
+      "retainedHeap": {
+        "baseline": 25332312,
+        "nativeOnly": 25312752,
+        "candidate": 25411552
+      }
+    },
+    {
+      "kind": "config",
+      "sampledBytesPerFrame": {
+        "baseline": 634777,
+        "nativeOnly": 551014.375,
+        "candidate": 540742.875
+      },
+      "p95Ms": {
+        "baseline": 1.4974999999999454,
+        "nativeOnly": 1.9528999999997723,
+        "candidate": 0.5378000000000611
+      },
+      "cpuUsPerFrame": {
+        "baseline": 1282.2265625,
+        "nativeOnly": 1694.3359375,
+        "candidate": 503.90625
+      },
+      "retainedHeap": {
+        "baseline": 25573184,
+        "nativeOnly": 25561808,
+        "candidate": 25627632
+      }
+    }
+  ],
+  "boundaries": {
+    "trust": "Operation-owned canonical decision/key Maps; normal/update/clear and Windows conflicts release five observed Maps. Saved keys only receive native spelling normalization when legacy realpath still resolves to themselves; replacing a trusted directory with a link does not transfer trust. Nine saved keys + one cwd = 9 legacy / 10 native API calls; two updates = 9 legacy / 11 native, independent of ancestor count. Read does not write/migrate the file.",
+    "conflictUI": "Typed trust conflicts are handled only at bootstrap and explicit /trust UI boundaries. No UI or cancellation denies; defaults cannot grant through a conflict. Explicit choices use the existing setMany path. Other read errors propagate. Constructor text only; no new per-render work.",
+    "display": "Session list owns only matching path strings in a Set, replaced on list refresh and cleared on disposal. Config ResourceItem owns one identityKey, refreshed at explicit toggle. No global cache or pool.",
+    "mutation": "Deletion confirmation resolves current filesystem identity again; configuration toggle refreshes identity before existing override selection/writes. Junction retarget regressions pass.",
+    "frames": "Native-only candidate regressed CPU about 30%; final candidate moves display identity work to load boundaries. Render path API counts 10/28→0/0. Thirty-row setup costs 91/60 native API calls, reported separately.",
+    "lifetime": "Frames collect while component remains alive; old identity Set collects after replacing the list; component collects after disposal/release. Config item identity strings have component ownership.",
+    "platform": "Windows real case-sensitive directory enabled successfully in local test; case/drive/8.3 short path/namespace/junction and distinct objects exercised. Remote UNC server not available and not claimed tested.",
+    "retainedBaseline": "Existing selector layout/override helper arrays/Sets/string formatting remain in sampled frame allocations. This change does not claim entire selector render has zero allocation; added per-frame closures/promises/controllers/wrappers/arrays are zero.",
+    "order": "Three old-source baseline runs, then three native-only runs, then three final candidate runs; setup excluded from frame timing. Initial source hash and base commit identify old UI source."
+  },
+  "frameQueue": {
+    "schemaVersion": 1,
+    "name": "tui-frame-queue",
+    "commit": "6b0f8a10459709aaad9e0e8818771e8abd6e109e",
+    "node": "v26.13.0",
+    "platform": "win32",
+    "arch": "x64",
+    "fixture": "phase0-v1:phase4c-production-frame-queue-v2:100000:120x40:0KiB",
+    "warmupRuns": 2,
+    "measuredRuns": 5,
+    "metrics": {
+      "minMs": 5.911299999999997,
+      "p50Ms": 5.986500000000007,
+      "p95Ms": 6.2059,
+      "p99Ms": 6.2059,
+      "maxMs": 6.2059,
+      "meanMs": 6.041579999999999,
+      "coefficientOfVariation": 0.01779172004827461,
+      "peakHeapBytes": 10252800,
+      "finalHeapBytes": 10264080,
+      "requests": 100000,
+      "doRenderCalls": 2,
+      "generatedFrameStrings": 2,
+      "writtenFrames": 2,
+      "uniqueWrittenFrames": 2,
+      "maximumActiveWrites": 1,
+      "pendingRenderIntentHighWaterMark": 1,
+      "frameQueueHighWaterMark": 1,
+      "activeWriteHighWaterMark": 1,
+      "pendingFrameHighWaterMark": 0,
+      "instrumentedFrameStringsGenerated": 2,
+      "instrumentedFrameStringUtf8BytesGenerated": 38,
+      "maximumFrameUtf8Bytes": 21,
+      "fullSizeFrameCopies": 0,
+      "framePromisesCreated": 0,
+      "frameAbortControllersCreated": 0,
+      "frameWrapperObjectsCreated": 0,
+      "activeFrameUtf8BytesAfterFlush": 0,
+      "pendingFrameUtf8BytesAfterFlush": 0,
+      "activeWritesAfterFlush": 0,
+      "frameKiB": 0,
+      "initialControlledHeapBytes": 10222496,
+      "heapAfterRequestsBytes": 10279712,
+      "finalControlledHeapBytes": 10251840,
+      "controlledHeapDeltaBytes": 29344,
+      "finalFrameSentinelMatched": 1
+    },
+    "observations": {
+      "finalFrameSha256": "bdb9144c20814fd20e44475c378bcde45b85110114954f472fc0c55b3f3cf6a0",
+      "finalFrameSentinel": "frame-99999-of-99999:"
+    },
+    "environment": {
+      "cpu": "Intel(R) Core(TM) i7-14700KF",
+      "cpuCores": 28,
+      "totalMemoryBytes": 34134798336,
+      "terminalColumns": 0,
+      "terminalRows": 0,
+      "term": "dumb",
+      "kittyImages": false,
+      "exposeGc": true,
+      "measuredAt": "2026-11-03T21:48:12.907Z"
+    }
+  },
+  "runs": [
+    {
+      "run": 1,
+      "baseline": {
+        "node": "v26.13.0",
+        "platform": "win32",
+        "nativeImplementation": false,
+        "sourceSha256": "a687cdb54b82216673fea5be1210c48e64ffa8398d64cfabf2bd7dba5c9d4210",
+        "warmup": 20,
+        "timingIterations": 1024,
+        "profileIterations": 64,
+        "samplingInterval": 1024,
+        "rows": [
+          {
+            "kind": "session",
+            "counters": {
+              "legacyCalls": 10,
+              "nativeCalls": 0,
+              "lines": 22,
+              "codeUnits": 2638
+            },
+            "retainedFrames": 0,
+            "retainedComponent": false,
+            "profile": {
+              "p95Ms": 0.591700000000003,
+              "cpuUsPerFrame": 564.453125,
+              "sampledBytesPerFrame": 207993,
+              "topSites": [
+                [
+                  "truncateToWidth@file:///D:/RMProjects/Pi/packages/tui/dist/utils.js:1090",
+                  10471000
+                ],
+                [
+                  "realpathSync@node:fs:3358",
+                  921168
+                ],
+                [
+                  "resolve@node:path:190",
+                  522800
+                ],
+                [
+                  "render@file:///D:/RMProjects/Pi/packages/coding-agent/src/modes/interactive/components/session-selector.ts:421",
+                  219360
+                ],
+                [
+                  "repeat@:0",
+                  214000
+                ],
+                [
+                  "exec@:0",
+                  154184
+                ],
+                [
+                  "add@:0",
+                  117200
+                ],
+                [
+                  "Map@:0",
+                  110840
+                ]
+              ],
+              "before": {
+                "rss": 112443392,
+                "heapTotal": 47046656,
+                "heapUsed": 25178256,
+                "external": 7719576,
+                "arrayBuffers": 147015
+              },
+              "after": {
+                "rss": 129417216,
+                "heapTotal": 61726720,
+                "heapUsed": 25332456,
+                "external": 7719632,
+                "arrayBuffers": 147031
+              }
+            }
+          },
+          {
+            "kind": "config",
+            "counters": {
+              "legacyCalls": 28,
+              "nativeCalls": 0,
+              "lines": 27,
+              "codeUnits": 2416
+            },
+            "retainedFrames": 0,
+            "retainedComponent": false,
+            "profile": {
+              "p95Ms": 1.4974999999999454,
+              "cpuUsPerFrame": 1282.2265625,
+              "sampledBytesPerFrame": 634777,
+              "topSites": [
+                [
+                  "resolve@node:path:190",
+                  13973776
+                ],
+                [
+                  "truncateToWidth@file:///D:/RMProjects/Pi/packages/tui/dist/utils.js:1090",
+                  8048728
+                ],
+                [
+                  "join@node:path:506",
+                  5002688
+                ],
+                [
+                  "relative@node:path:610",
+                  3301104
+                ],
+                [
+                  "realpathSync@node:fs:3358",
+                  2701640
+                ],
+                [
+                  "getProjectOverrideState@file:///D:/RMProjects/Pi/packages/coding-agent/src/modes/interactive/components/config-selector.ts:743",
+                  2015488
+                ],
+                [
+                  "normalize@node:path:350",
+                  1783016
+                ],
+                [
+                  "Set@:0",
+                  893472
+                ]
+              ],
+              "before": {
+                "rss": 133271552,
+                "heapTotal": 61726720,
+                "heapUsed": 25520584,
+                "external": 7719632,
+                "arrayBuffers": 147031
+              },
+              "after": {
+                "rss": 134344704,
+                "heapTotal": 61726720,
+                "heapUsed": 25573312,
+                "external": 7719632,
+                "arrayBuffers": 147031
+              }
+            }
+          }
+        ],
+        "notes": "Actual selector render consumers; existing layout/path work included. Setup and list loading excluded from timing. Native call counts are API calls, not OS syscall counts. Existing per-row path lookup is not claimed eliminated. Frames collect while selector lives; selector collects after disposal/release."
+      },
+      "nativeOnly": {
+        "node": "v26.13.0",
+        "platform": "win32",
+        "nativeImplementation": true,
+        "sourceSha256": "31ce4dcb150f4541218639d77c6e9e5bf21a4585d45ca76750fea1ab1c9b3f78",
+        "warmup": 20,
+        "timingIterations": 1024,
+        "profileIterations": 64,
+        "samplingInterval": 1024,
+        "rows": [
+          {
+            "kind": "session",
+            "counters": {
+              "legacyCalls": 0,
+              "nativeCalls": 10,
+              "lines": 22,
+              "codeUnits": 2638
+            },
+            "retainedFrames": 0,
+            "retainedComponent": false,
+            "profile": {
+              "p95Ms": 0.7849999999999682,
+              "cpuUsPerFrame": 761.71875,
+              "sampledBytesPerFrame": 180076.375,
+              "topSites": [
+                [
+                  "truncateToWidth@file:///D:/RMProjects/Pi/packages/tui/dist/utils.js:1090",
+                  10551872
+                ],
+                [
+                  "repeat@:0",
+                  228536
+                ],
+                [
+                  "render@file:///D:/RMProjects/Pi/packages/coding-agent/src/modes/interactive/components/session-selector.ts:421",
+                  173608
+                ],
+                [
+                  "(anonymous)@node:fs:3518",
+                  90376
+                ],
+                [
+                  "formatSessionDate@file:///D:/RMProjects/Pi/packages/coding-agent/src/modes/interactive/components/session-selector.ts:37",
+                  77784
+                ],
+                [
+                  "keyHint@file:///D:/RMProjects/Pi/packages/coding-agent/src/modes/interactive/components/keybinding-hints.ts:49",
+                  72752
+                ],
+                [
+                  "render@file:///D:/RMProjects/Pi/packages/coding-agent/src/modes/interactive/components/session-selector.ts:138",
+                  57568
+                ],
+                [
+                  "isPrintableAscii@file:///D:/RMProjects/Pi/packages/tui/dist/utils.js:38",
+                  52424
+                ]
+              ],
+              "before": {
+                "rss": 110940160,
+                "heapTotal": 45735936,
+                "heapUsed": 25161848,
+                "external": 7719576,
+                "arrayBuffers": 147015
+              },
+              "after": {
+                "rss": 130875392,
+                "heapTotal": 61464576,
+                "heapUsed": 25312752,
+                "external": 7719632,
+                "arrayBuffers": 147031
+              }
+            }
+          },
+          {
+            "kind": "config",
+            "counters": {
+              "legacyCalls": 0,
+              "nativeCalls": 28,
+              "lines": 27,
+              "codeUnits": 2416
+            },
+            "retainedFrames": 0,
+            "retainedComponent": false,
+            "profile": {
+              "p95Ms": 1.9844000000000506,
+              "cpuUsPerFrame": 1694.3359375,
+              "sampledBytesPerFrame": 551014.375,
+              "topSites": [
+                [
+                  "resolve@node:path:190",
+                  12304656
+                ],
+                [
+                  "truncateToWidth@file:///D:/RMProjects/Pi/packages/tui/dist/utils.js:1090",
+                  8120976
+                ],
+                [
+                  "join@node:path:506",
+                  5125152
+                ],
+                [
+                  "relative@node:path:610",
+                  3339768
+                ],
+                [
+                  "getProjectOverrideState@file:///D:/RMProjects/Pi/packages/coding-agent/src/modes/interactive/components/config-selector.ts:743",
+                  1952832
+                ],
+                [
+                  "normalize@node:path:350",
+                  1783000
+                ],
+                [
+                  "Set@:0",
+                  654456
+                ],
+                [
+                  "push@:0",
+                  485728
+                ]
+              ],
+              "before": {
+                "rss": 133177344,
+                "heapTotal": 61464576,
+                "heapUsed": 25499552,
+                "external": 7719632,
+                "arrayBuffers": 147031
+              },
+              "after": {
+                "rss": 134635520,
+                "heapTotal": 61464576,
+                "heapUsed": 25561808,
+                "external": 7719632,
+                "arrayBuffers": 147031
+              }
+            }
+          }
+        ],
+        "notes": "Actual selector render consumers; existing layout/path work included. Setup and list loading excluded from timing. Native call counts are API calls, not OS syscall counts. Existing per-row path lookup is not claimed eliminated. Frames collect while selector lives; selector collects after disposal/release."
+      },
+      "candidate": {
+        "node": "v26.13.0",
+        "platform": "win32",
+        "nativeImplementation": true,
+        "displayIdentityCached": true,
+        "sourceSha256": "31ce4dcb150f4541218639d77c6e9e5bf21a4585d45ca76750fea1ab1c9b3f78",
+        "selectorHashes": {
+          "session": "6e958680e4532bd59de79d3a7d142a1a75737efa6e4596ae4409982d06e9113c",
+          "config": "6e97dca4c9c6764104f7585ee5b620e8682bf4ee13a7c4e2f69ece4541c44960"
+        },
+        "warmup": 20,
+        "timingIterations": 1024,
+        "profileIterations": 64,
+        "samplingInterval": 1024,
+        "rows": [
+          {
+            "kind": "session",
+            "setupCalls": {
+              "legacyCalls": 0,
+              "nativeCalls": 91
+            },
+            "counters": {
+              "legacyCalls": 0,
+              "nativeCalls": 0,
+              "lines": 22,
+              "codeUnits": 2638
+            },
+            "retainedFrames": 0,
+            "retainedPreviousIdentitySet": false,
+            "retainedComponent": false,
+            "profile": {
+              "p95Ms": 0.29920000000004165,
+              "cpuUsPerFrame": 274.4140625,
+              "sampledBytesPerFrame": 176432.75,
+              "topSites": [
+                [
+                  "truncateToWidth@file:///D:/RMProjects/Pi/packages/tui/dist/utils.js:1090",
+                  10393504
+                ],
+                [
+                  "repeat@:0",
+                  207808
+                ],
+                [
+                  "render@file:///D:/RMProjects/Pi/packages/coding-agent/src/modes/interactive/components/session-selector.ts:436",
+                  199616
+                ],
+                [
+                  "formatSessionDate@file:///D:/RMProjects/Pi/packages/coding-agent/src/modes/interactive/components/session-selector.ts:37",
+                  87312
+                ],
+                [
+                  "keyHint@file:///D:/RMProjects/Pi/packages/coding-agent/src/modes/interactive/components/keybinding-hints.ts:49",
+                  80024
+                ],
+                [
+                  "render@file:///D:/RMProjects/Pi/packages/coding-agent/src/modes/interactive/components/session-selector.ts:138",
+                  67176
+                ],
+                [
+                  "isPrintableAscii@file:///D:/RMProjects/Pi/packages/tui/dist/utils.js:38",
+                  52672
+                ],
+                [
+                  "render@file:///D:/RMProjects/Pi/packages/tui/dist/components/spacer.js:15",
+                  44688
+                ]
+              ],
+              "before": {
+                "rss": 111464448,
+                "heapTotal": 46784512,
+                "heapUsed": 25265896,
+                "external": 7719576,
+                "arrayBuffers": 147015
+              },
+              "after": {
+                "rss": 131608576,
+                "heapTotal": 61726720,
+                "heapUsed": 25411328,
+                "external": 7719632,
+                "arrayBuffers": 147031
+              }
+            }
+          },
+          {
+            "kind": "config",
+            "setupCalls": {
+              "legacyCalls": 0,
+              "nativeCalls": 60
+            },
+            "counters": {
+              "legacyCalls": 0,
+              "nativeCalls": 0,
+              "lines": 27,
+              "codeUnits": 2416
+            },
+            "retainedFrames": 0,
+            "retainedPreviousIdentitySet": false,
+            "retainedComponent": false,
+            "profile": {
+              "p95Ms": 0.5000999999999749,
+              "cpuUsPerFrame": 518.5546875,
+              "sampledBytesPerFrame": 537931.625,
+              "topSites": [
+                [
+                  "resolve@node:path:190",
+                  12179856
+                ],
+                [
+                  "truncateToWidth@file:///D:/RMProjects/Pi/packages/tui/dist/utils.js:1090",
+                  8105248
+                ],
+                [
+                  "join@node:path:506",
+                  5055056
+                ],
+                [
+                  "relative@node:path:610",
+                  3280528
+                ],
+                [
+                  "getProjectOverrideState@file:///D:/RMProjects/Pi/packages/coding-agent/src/modes/interactive/components/config-selector.ts:747",
+                  2007944
+                ],
+                [
+                  "normalize@node:path:350",
+                  1668768
+                ],
+                [
+                  "Set@:0",
+                  664856
+                ],
+                [
+                  "push@:0",
+                  463800
+                ]
+              ],
+              "before": {
+                "rss": 134004736,
+                "heapTotal": 61988864,
+                "heapUsed": 25580432,
+                "external": 7719632,
+                "arrayBuffers": 147031
+              },
+              "after": {
+                "rss": 135106560,
+                "heapTotal": 61988864,
+                "heapUsed": 25627408,
+                "external": 7719632,
+                "arrayBuffers": 147031
+              }
+            }
+          }
+        ],
+        "notes": "Actual selector render consumers; existing layout work included. Setup/list loading counted separately and excluded from frame timing. Counts are API calls, not OS syscalls. Final display uses loaded identities; mutation checks still resolve on demand. Frames collect while selector lives; selector collects after disposal/release."
+      }
+    },
+    {
+      "run": 2,
+      "baseline": {
+        "node": "v26.13.0",
+        "platform": "win32",
+        "nativeImplementation": false,
+        "sourceSha256": "a687cdb54b82216673fea5be1210c48e64ffa8398d64cfabf2bd7dba5c9d4210",
+        "warmup": 20,
+        "timingIterations": 1024,
+        "profileIterations": 64,
+        "samplingInterval": 1024,
+        "rows": [
+          {
+            "kind": "session",
+            "counters": {
+              "legacyCalls": 10,
+              "nativeCalls": 0,
+              "lines": 22,
+              "codeUnits": 2638
+            },
+            "retainedFrames": 0,
+            "retainedComponent": false,
+            "profile": {
+              "p95Ms": 0.6003999999999792,
+              "cpuUsPerFrame": 610.3515625,
+              "sampledBytesPerFrame": 209950.625,
+              "topSites": [
+                [
+                  "truncateToWidth@file:///D:/RMProjects/Pi/packages/tui/dist/utils.js:1090",
+                  10574768
+                ],
+                [
+                  "realpathSync@node:fs:3358",
+                  971744
+                ],
+                [
+                  "resolve@node:path:190",
+                  498280
+                ],
+                [
+                  "render@file:///D:/RMProjects/Pi/packages/coding-agent/src/modes/interactive/components/session-selector.ts:421",
+                  208952
+                ],
+                [
+                  "repeat@:0",
+                  187024
+                ],
+                [
+                  "exec@:0",
+                  157480
+                ],
+                [
+                  "add@:0",
+                  136360
+                ],
+                [
+                  "Map@:0",
+                  129528
+                ]
+              ],
+              "before": {
+                "rss": 114626560,
+                "heapTotal": 49930240,
+                "heapUsed": 25175792,
+                "external": 7719576,
+                "arrayBuffers": 147015
+              },
+              "after": {
+                "rss": 129916928,
+                "heapTotal": 61988864,
+                "heapUsed": 25329928,
+                "external": 7719632,
+                "arrayBuffers": 147031
+              }
+            }
+          },
+          {
+            "kind": "config",
+            "counters": {
+              "legacyCalls": 28,
+              "nativeCalls": 0,
+              "lines": 27,
+              "codeUnits": 2416
+            },
+            "retainedFrames": 0,
+            "retainedComponent": false,
+            "profile": {
+              "p95Ms": 1.508199999999988,
+              "cpuUsPerFrame": 1297.8515625,
+              "sampledBytesPerFrame": 629323.25,
+              "topSites": [
+                [
+                  "resolve@node:path:190",
+                  13840264
+                ],
+                [
+                  "truncateToWidth@file:///D:/RMProjects/Pi/packages/tui/dist/utils.js:1090",
+                  7954288
+                ],
+                [
+                  "join@node:path:506",
+                  5091488
+                ],
+                [
+                  "relative@node:path:610",
+                  3303544
+                ],
+                [
+                  "realpathSync@node:fs:3358",
+                  2624936
+                ],
+                [
+                  "getProjectOverrideState@file:///D:/RMProjects/Pi/packages/coding-agent/src/modes/interactive/components/config-selector.ts:743",
+                  2014224
+                ],
+                [
+                  "normalize@node:path:350",
+                  1696840
+                ],
+                [
+                  "Set@:0",
+                  934840
+                ]
+              ],
+              "before": {
+                "rss": 132898816,
+                "heapTotal": 61988864,
+                "heapUsed": 25519384,
+                "external": 7719632,
+                "arrayBuffers": 147031
+              },
+              "after": {
+                "rss": 134242304,
+                "heapTotal": 61988864,
+                "heapUsed": 25572112,
+                "external": 7719632,
+                "arrayBuffers": 147031
+              }
+            }
+          }
+        ],
+        "notes": "Actual selector render consumers; existing layout/path work included. Setup and list loading excluded from timing. Native call counts are API calls, not OS syscall counts. Existing per-row path lookup is not claimed eliminated. Frames collect while selector lives; selector collects after disposal/release."
+      },
+      "nativeOnly": {
+        "node": "v26.13.0",
+        "platform": "win32",
+        "nativeImplementation": true,
+        "sourceSha256": "31ce4dcb150f4541218639d77c6e9e5bf21a4585d45ca76750fea1ab1c9b3f78",
+        "warmup": 20,
+        "timingIterations": 1024,
+        "profileIterations": 64,
+        "samplingInterval": 1024,
+        "rows": [
+          {
+            "kind": "session",
+            "counters": {
+              "legacyCalls": 0,
+              "nativeCalls": 10,
+              "lines": 22,
+              "codeUnits": 2638
+            },
+            "retainedFrames": 0,
+            "retainedComponent": false,
+            "profile": {
+              "p95Ms": 0.774599999999964,
+              "cpuUsPerFrame": 715.8203125,
+              "sampledBytesPerFrame": 177900.5,
+              "topSites": [
+                [
+                  "truncateToWidth@file:///D:/RMProjects/Pi/packages/tui/dist/utils.js:1090",
+                  10388344
+                ],
+                [
+                  "render@file:///D:/RMProjects/Pi/packages/coding-agent/src/modes/interactive/components/session-selector.ts:421",
+                  211024
+                ],
+                [
+                  "repeat@:0",
+                  198448
+                ],
+                [
+                  "(anonymous)@node:fs:3518",
+                  103136
+                ],
+                [
+                  "keyHint@file:///D:/RMProjects/Pi/packages/coding-agent/src/modes/interactive/components/keybinding-hints.ts:49",
+                  71704
+                ],
+                [
+                  "formatSessionDate@file:///D:/RMProjects/Pi/packages/coding-agent/src/modes/interactive/components/session-selector.ts:37",
+                  70272
+                ],
+                [
+                  "render@file:///D:/RMProjects/Pi/packages/coding-agent/src/modes/interactive/components/session-selector.ts:138",
+                  63840
+                ],
+                [
+                  "render@file:///D:/RMProjects/Pi/packages/tui/dist/components/spacer.js:15",
+                  57664
+                ]
+              ],
+              "before": {
+                "rss": 109973504,
+                "heapTotal": 44425216,
+                "heapUsed": 25159632,
+                "external": 7719576,
+                "arrayBuffers": 147015
+              },
+              "after": {
+                "rss": 130605056,
+                "heapTotal": 61464576,
+                "heapUsed": 25310536,
+                "external": 7719632,
+                "arrayBuffers": 147031
+              }
+            }
+          },
+          {
+            "kind": "config",
+            "counters": {
+              "legacyCalls": 0,
+              "nativeCalls": 28,
+              "lines": 27,
+              "codeUnits": 2416
+            },
+            "retainedFrames": 0,
+            "retainedComponent": false,
+            "profile": {
+              "p95Ms": 1.9528999999997723,
+              "cpuUsPerFrame": 1694.3359375,
+              "sampledBytesPerFrame": 556124.25,
+              "topSites": [
+                [
+                  "resolve@node:path:190",
+                  12426336
+                ],
+                [
+                  "truncateToWidth@file:///D:/RMProjects/Pi/packages/tui/dist/utils.js:1090",
+                  8043712
+                ],
+                [
+                  "join@node:path:506",
+                  5207408
+                ],
+                [
+                  "relative@node:path:610",
+                  3401096
+                ],
+                [
+                  "getProjectOverrideState@file:///D:/RMProjects/Pi/packages/coding-agent/src/modes/interactive/components/config-selector.ts:743",
+                  2152096
+                ],
+                [
+                  "normalize@node:path:350",
+                  1789392
+                ],
+                [
+                  "Set@:0",
+                  597088
+                ],
+                [
+                  "push@:0",
+                  487184
+                ]
+              ],
+              "before": {
+                "rss": 133373952,
+                "heapTotal": 61726720,
+                "heapUsed": 25488192,
+                "external": 7719632,
+                "arrayBuffers": 147031
+              },
+              "after": {
+                "rss": 134946816,
+                "heapTotal": 61726720,
+                "heapUsed": 25550448,
+                "external": 7719632,
+                "arrayBuffers": 147031
+              }
+            }
+          }
+        ],
+        "notes": "Actual selector render consumers; existing layout/path work included. Setup and list loading excluded from timing. Native call counts are API calls, not OS syscall counts. Existing per-row path lookup is not claimed eliminated. Frames collect while selector lives; selector collects after disposal/release."
+      },
+      "candidate": {
+        "node": "v26.13.0",
+        "platform": "win32",
+        "nativeImplementation": true,
+        "displayIdentityCached": true,
+        "sourceSha256": "31ce4dcb150f4541218639d77c6e9e5bf21a4585d45ca76750fea1ab1c9b3f78",
+        "selectorHashes": {
+          "session": "6e958680e4532bd59de79d3a7d142a1a75737efa6e4596ae4409982d06e9113c",
+          "config": "6e97dca4c9c6764104f7585ee5b620e8682bf4ee13a7c4e2f69ece4541c44960"
+        },
+        "warmup": 20,
+        "timingIterations": 1024,
+        "profileIterations": 64,
+        "samplingInterval": 1024,
+        "rows": [
+          {
+            "kind": "session",
+            "setupCalls": {
+              "legacyCalls": 0,
+              "nativeCalls": 91
+            },
+            "counters": {
+              "legacyCalls": 0,
+              "nativeCalls": 0,
+              "lines": 22,
+              "codeUnits": 2638
+            },
+            "retainedFrames": 0,
+            "retainedPreviousIdentitySet": false,
+            "retainedComponent": false,
+            "profile": {
+              "p95Ms": 0.28810000000004266,
+              "cpuUsPerFrame": 289.0625,
+              "sampledBytesPerFrame": 176186.25,
+              "topSites": [
+                [
+                  "truncateToWidth@file:///D:/RMProjects/Pi/packages/tui/dist/utils.js:1090",
+                  10363584
+                ],
+                [
+                  "repeat@:0",
+                  204720
+                ],
+                [
+                  "render@file:///D:/RMProjects/Pi/packages/coding-agent/src/modes/interactive/components/session-selector.ts:436",
+                  183976
+                ],
+                [
+                  "formatSessionDate@file:///D:/RMProjects/Pi/packages/coding-agent/src/modes/interactive/components/session-selector.ts:37",
+                  93864
+                ],
+                [
+                  "keyHint@file:///D:/RMProjects/Pi/packages/coding-agent/src/modes/interactive/components/keybinding-hints.ts:49",
+                  84192
+                ],
+                [
+                  "isPrintableAscii@file:///D:/RMProjects/Pi/packages/tui/dist/utils.js:38",
+                  65400
+                ],
+                [
+                  "render@file:///D:/RMProjects/Pi/packages/coding-agent/src/modes/interactive/components/session-selector.ts:138",
+                  64960
+                ],
+                [
+                  "render@file:///D:/RMProjects/Pi/packages/tui/dist/components/spacer.js:15",
+                  54728
+                ]
+              ],
+              "before": {
+                "rss": 112463872,
+                "heapTotal": 46522368,
+                "heapUsed": 25274496,
+                "external": 7719576,
+                "arrayBuffers": 147015
+              },
+              "after": {
+                "rss": 131792896,
+                "heapTotal": 61464576,
+                "heapUsed": 25419928,
+                "external": 7719632,
+                "arrayBuffers": 147031
+              }
+            }
+          },
+          {
+            "kind": "config",
+            "setupCalls": {
+              "legacyCalls": 0,
+              "nativeCalls": 60
+            },
+            "counters": {
+              "legacyCalls": 0,
+              "nativeCalls": 0,
+              "lines": 27,
+              "codeUnits": 2416
+            },
+            "retainedFrames": 0,
+            "retainedPreviousIdentitySet": false,
+            "retainedComponent": false,
+            "profile": {
+              "p95Ms": 0.5378000000000611,
+              "cpuUsPerFrame": 503.90625,
+              "sampledBytesPerFrame": 547524.125,
+              "topSites": [
+                [
+                  "resolve@node:path:190",
+                  12366240
+                ],
+                [
+                  "truncateToWidth@file:///D:/RMProjects/Pi/packages/tui/dist/utils.js:1090",
+                  8068992
+                ],
+                [
+                  "join@node:path:506",
+                  5163848
+                ],
+                [
+                  "relative@node:path:610",
+                  3417232
+                ],
+                [
+                  "getProjectOverrideState@file:///D:/RMProjects/Pi/packages/coding-agent/src/modes/interactive/components/config-selector.ts:747",
+                  2165840
+                ],
+                [
+                  "normalize@node:path:350",
+                  1709056
+                ],
+                [
+                  "Set@:0",
+                  631592
+                ],
+                [
+                  "push@:0",
+                  489880
+                ]
+              ],
+              "before": {
+                "rss": 133787648,
+                "heapTotal": 61464576,
+                "heapUsed": 25588792,
+                "external": 7719632,
+                "arrayBuffers": 147031
+              },
+              "after": {
+                "rss": 135606272,
+                "heapTotal": 61464576,
+                "heapUsed": 25635768,
+                "external": 7719632,
+                "arrayBuffers": 147031
+              }
+            }
+          }
+        ],
+        "notes": "Actual selector render consumers; existing layout work included. Setup/list loading counted separately and excluded from frame timing. Counts are API calls, not OS syscalls. Final display uses loaded identities; mutation checks still resolve on demand. Frames collect while selector lives; selector collects after disposal/release."
+      }
+    },
+    {
+      "run": 3,
+      "baseline": {
+        "node": "v26.13.0",
+        "platform": "win32",
+        "nativeImplementation": false,
+        "sourceSha256": "a687cdb54b82216673fea5be1210c48e64ffa8398d64cfabf2bd7dba5c9d4210",
+        "warmup": 20,
+        "timingIterations": 1024,
+        "profileIterations": 64,
+        "samplingInterval": 1024,
+        "rows": [
+          {
+            "kind": "session",
+            "counters": {
+              "legacyCalls": 10,
+              "nativeCalls": 0,
+              "lines": 22,
+              "codeUnits": 2638
+            },
+            "retainedFrames": 0,
+            "retainedComponent": false,
+            "profile": {
+              "p95Ms": 0.5982000000000198,
+              "cpuUsPerFrame": 565.4296875,
+              "sampledBytesPerFrame": 208126.125,
+              "topSites": [
+                [
+                  "truncateToWidth@file:///D:/RMProjects/Pi/packages/tui/dist/utils.js:1090",
+                  10457392
+                ],
+                [
+                  "realpathSync@node:fs:3358",
+                  924488
+                ],
+                [
+                  "resolve@node:path:190",
+                  495216
+                ],
+                [
+                  "repeat@:0",
+                  229584
+                ],
+                [
+                  "render@file:///D:/RMProjects/Pi/packages/coding-agent/src/modes/interactive/components/session-selector.ts:421",
+                  211008
+                ],
+                [
+                  "exec@:0",
+                  154280
+                ],
+                [
+                  "add@:0",
+                  144200
+                ],
+                [
+                  "Map@:0",
+                  112304
+                ]
+              ],
+              "before": {
+                "rss": 112136192,
+                "heapTotal": 46784512,
+                "heapUsed": 25178176,
+                "external": 7719576,
+                "arrayBuffers": 147015
+              },
+              "after": {
+                "rss": 129523712,
+                "heapTotal": 61726720,
+                "heapUsed": 25332312,
+                "external": 7719632,
+                "arrayBuffers": 147031
+              }
+            }
+          },
+          {
+            "kind": "config",
+            "counters": {
+              "legacyCalls": 28,
+              "nativeCalls": 0,
+              "lines": 27,
+              "codeUnits": 2416
+            },
+            "retainedFrames": 0,
+            "retainedComponent": false,
+            "profile": {
+              "p95Ms": 1.4949000000001433,
+              "cpuUsPerFrame": 1282.2265625,
+              "sampledBytesPerFrame": 635989.25,
+              "topSites": [
+                [
+                  "resolve@node:path:190",
+                  13790976
+                ],
+                [
+                  "truncateToWidth@file:///D:/RMProjects/Pi/packages/tui/dist/utils.js:1090",
+                  8345256
+                ],
+                [
+                  "join@node:path:506",
+                  5146960
+                ],
+                [
+                  "relative@node:path:610",
+                  3320232
+                ],
+                [
+                  "realpathSync@node:fs:3358",
+                  2533336
+                ],
+                [
+                  "getProjectOverrideState@file:///D:/RMProjects/Pi/packages/coding-agent/src/modes/interactive/components/config-selector.ts:743",
+                  2002480
+                ],
+                [
+                  "normalize@node:path:350",
+                  1849552
+                ],
+                [
+                  "Set@:0",
+                  889904
+                ]
+              ],
+              "before": {
+                "rss": 132841472,
+                "heapTotal": 61726720,
+                "heapUsed": 25520456,
+                "external": 7719632,
+                "arrayBuffers": 147031
+              },
+              "after": {
+                "rss": 134344704,
+                "heapTotal": 61726720,
+                "heapUsed": 25573184,
+                "external": 7719632,
+                "arrayBuffers": 147031
+              }
+            }
+          }
+        ],
+        "notes": "Actual selector render consumers; existing layout/path work included. Setup and list loading excluded from timing. Native call counts are API calls, not OS syscall counts. Existing per-row path lookup is not claimed eliminated. Frames collect while selector lives; selector collects after disposal/release."
+      },
+      "nativeOnly": {
+        "node": "v26.13.0",
+        "platform": "win32",
+        "nativeImplementation": true,
+        "sourceSha256": "31ce4dcb150f4541218639d77c6e9e5bf21a4585d45ca76750fea1ab1c9b3f78",
+        "warmup": 20,
+        "timingIterations": 1024,
+        "profileIterations": 64,
+        "samplingInterval": 1024,
+        "rows": [
+          {
+            "kind": "session",
+            "counters": {
+              "legacyCalls": 0,
+              "nativeCalls": 10,
+              "lines": 22,
+              "codeUnits": 2638
+            },
+            "retainedFrames": 0,
+            "retainedComponent": false,
+            "profile": {
+              "p95Ms": 0.7443000000000097,
+              "cpuUsPerFrame": 702.1484375,
+              "sampledBytesPerFrame": 177465.25,
+              "topSites": [
+                [
+                  "truncateToWidth@file:///D:/RMProjects/Pi/packages/tui/dist/utils.js:1090",
+                  10370408
+                ],
+                [
+                  "repeat@:0",
+                  208832
+                ],
+                [
+                  "render@file:///D:/RMProjects/Pi/packages/coding-agent/src/modes/interactive/components/session-selector.ts:421",
+                  179872
+                ],
+                [
+                  "formatSessionDate@file:///D:/RMProjects/Pi/packages/coding-agent/src/modes/interactive/components/session-selector.ts:37",
+                  87288
+                ],
+                [
+                  "(anonymous)@node:fs:3518",
+                  83128
+                ],
+                [
+                  "render@file:///D:/RMProjects/Pi/packages/coding-agent/src/modes/interactive/components/session-selector.ts:138",
+                  73320
+                ],
+                [
+                  "keyHint@file:///D:/RMProjects/Pi/packages/coding-agent/src/modes/interactive/components/keybinding-hints.ts:49",
+                  68608
+                ],
+                [
+                  "isPrintableAscii@file:///D:/RMProjects/Pi/packages/tui/dist/utils.js:38",
+                  52880
+                ]
+              ],
+              "before": {
+                "rss": 109146112,
+                "heapTotal": 44425216,
+                "heapUsed": 25167680,
+                "external": 7719576,
+                "arrayBuffers": 147015
+              },
+              "after": {
+                "rss": 130146304,
+                "heapTotal": 61464576,
+                "heapUsed": 25318416,
+                "external": 7719632,
+                "arrayBuffers": 147031
+              }
+            }
+          },
+          {
+            "kind": "config",
+            "counters": {
+              "legacyCalls": 0,
+              "nativeCalls": 28,
+              "lines": 27,
+              "codeUnits": 2416
+            },
+            "retainedFrames": 0,
+            "retainedComponent": false,
+            "profile": {
+              "p95Ms": 1.8641999999999825,
+              "cpuUsPerFrame": 1693.359375,
+              "sampledBytesPerFrame": 550585.125,
+              "topSites": [
+                [
+                  "resolve@node:path:190",
+                  12478960
+                ],
+                [
+                  "truncateToWidth@file:///D:/RMProjects/Pi/packages/tui/dist/utils.js:1090",
+                  8226416
+                ],
+                [
+                  "join@node:path:506",
+                  4954184
+                ],
+                [
+                  "relative@node:path:610",
+                  3298008
+                ],
+                [
+                  "getProjectOverrideState@file:///D:/RMProjects/Pi/packages/coding-agent/src/modes/interactive/components/config-selector.ts:743",
+                  1960320
+                ],
+                [
+                  "normalize@node:path:350",
+                  1755952
+                ],
+                [
+                  "Set@:0",
+                  605472
+                ],
+                [
+                  "push@:0",
+                  463680
+                ]
+              ],
+              "before": {
+                "rss": 132591616,
+                "heapTotal": 61464576,
+                "heapUsed": 25506064,
+                "external": 7719632,
+                "arrayBuffers": 147031
+              },
+              "after": {
+                "rss": 134127616,
+                "heapTotal": 61464576,
+                "heapUsed": 25568560,
+                "external": 7719632,
+                "arrayBuffers": 147031
+              }
+            }
+          }
+        ],
+        "notes": "Actual selector render consumers; existing layout/path work included. Setup and list loading excluded from timing. Native call counts are API calls, not OS syscall counts. Existing per-row path lookup is not claimed eliminated. Frames collect while selector lives; selector collects after disposal/release."
+      },
+      "candidate": {
+        "node": "v26.13.0",
+        "platform": "win32",
+        "nativeImplementation": true,
+        "displayIdentityCached": true,
+        "sourceSha256": "31ce4dcb150f4541218639d77c6e9e5bf21a4585d45ca76750fea1ab1c9b3f78",
+        "selectorHashes": {
+          "session": "6e958680e4532bd59de79d3a7d142a1a75737efa6e4596ae4409982d06e9113c",
+          "config": "6e97dca4c9c6764104f7585ee5b620e8682bf4ee13a7c4e2f69ece4541c44960"
+        },
+        "warmup": 20,
+        "timingIterations": 1024,
+        "profileIterations": 64,
+        "samplingInterval": 1024,
+        "rows": [
+          {
+            "kind": "session",
+            "setupCalls": {
+              "legacyCalls": 0,
+              "nativeCalls": 91
+            },
+            "counters": {
+              "legacyCalls": 0,
+              "nativeCalls": 0,
+              "lines": 22,
+              "codeUnits": 2638
+            },
+            "retainedFrames": 0,
+            "retainedPreviousIdentitySet": false,
+            "retainedComponent": false,
+            "profile": {
+              "p95Ms": 0.2925000000000182,
+              "cpuUsPerFrame": 274.4140625,
+              "sampledBytesPerFrame": 178532.375,
+              "topSites": [
+                [
+                  "truncateToWidth@file:///D:/RMProjects/Pi/packages/tui/dist/utils.js:1090",
+                  10535256
+                ],
+                [
+                  "render@file:///D:/RMProjects/Pi/packages/coding-agent/src/modes/interactive/components/session-selector.ts:436",
+                  212040
+                ],
+                [
+                  "repeat@:0",
+                  193264
+                ],
+                [
+                  "keyHint@file:///D:/RMProjects/Pi/packages/coding-agent/src/modes/interactive/components/keybinding-hints.ts:49",
+                  95608
+                ],
+                [
+                  "formatSessionDate@file:///D:/RMProjects/Pi/packages/coding-agent/src/modes/interactive/components/session-selector.ts:37",
+                  74640
+                ],
+                [
+                  "render@file:///D:/RMProjects/Pi/packages/coding-agent/src/modes/interactive/components/session-selector.ts:138",
+                  68768
+                ],
+                [
+                  "isPrintableAscii@file:///D:/RMProjects/Pi/packages/tui/dist/utils.js:38",
+                  53712
+                ],
+                [
+                  "render@file:///D:/RMProjects/Pi/packages/tui/dist/components/spacer.js:15",
+                  40280
+                ]
+              ],
+              "before": {
+                "rss": 111915008,
+                "heapTotal": 46522368,
+                "heapUsed": 25266120,
+                "external": 7719576,
+                "arrayBuffers": 147015
+              },
+              "after": {
+                "rss": 131743744,
+                "heapTotal": 61202432,
+                "heapUsed": 25411552,
+                "external": 7719632,
+                "arrayBuffers": 147031
+              }
+            }
+          },
+          {
+            "kind": "config",
+            "setupCalls": {
+              "legacyCalls": 0,
+              "nativeCalls": 60
+            },
+            "counters": {
+              "legacyCalls": 0,
+              "nativeCalls": 0,
+              "lines": 27,
+              "codeUnits": 2416
+            },
+            "retainedFrames": 0,
+            "retainedPreviousIdentitySet": false,
+            "retainedComponent": false,
+            "profile": {
+              "p95Ms": 0.5706000000000131,
+              "cpuUsPerFrame": 488.28125,
+              "sampledBytesPerFrame": 540742.875,
+              "topSites": [
+                [
+                  "resolve@node:path:190",
+                  12343776
+                ],
+                [
+                  "truncateToWidth@file:///D:/RMProjects/Pi/packages/tui/dist/utils.js:1090",
+                  8075864
+                ],
+                [
+                  "join@node:path:506",
+                  5053232
+                ],
+                [
+                  "relative@node:path:610",
+                  3344888
+                ],
+                [
+                  "getProjectOverrideState@file:///D:/RMProjects/Pi/packages/coding-agent/src/modes/interactive/components/config-selector.ts:747",
+                  1951112
+                ],
+                [
+                  "normalize@node:path:350",
+                  1707160
+                ],
+                [
+                  "Set@:0",
+                  617896
+                ],
+                [
+                  "push@:0",
+                  497176
+                ]
+              ],
+              "before": {
+                "rss": 134524928,
+                "heapTotal": 61202432,
+                "heapUsed": 25580656,
+                "external": 7719632,
+                "arrayBuffers": 147031
+              },
+              "after": {
+                "rss": 135172096,
+                "heapTotal": 61464576,
+                "heapUsed": 25627632,
+                "external": 7719632,
+                "arrayBuffers": 147031
+              }
+            }
+          }
+        ],
+        "notes": "Actual selector render consumers; existing layout work included. Setup/list loading counted separately and excluded from frame timing. Counts are API calls, not OS syscalls. Final display uses loaded identities; mutation checks still resolve on demand. Frames collect while selector lives; selector collects after disposal/release."
+      }
+    }
+  ]
+}

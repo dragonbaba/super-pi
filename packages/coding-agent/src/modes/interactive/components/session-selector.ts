@@ -303,6 +303,7 @@ class SessionList implements Component, Focusable {
 	private showPath = false;
 	private confirmingDeletePath: string | null = null;
 	private currentSessionCanonicalPath?: string;
+	private currentSessionPaths = new Set<string>();
 	public onSelect?: (sessionPath: string) => void;
 	public onCancel?: () => void;
 	public onExit: () => void = () => {};
@@ -342,6 +343,7 @@ class SessionList implements Component, Focusable {
 		this.nameFilter = nameFilter;
 		this.keybindings = keybindings;
 		this.currentSessionCanonicalPath = canonicalizePath(currentSessionFilePath);
+		this.updateCurrentSessionPaths();
 		this.filterSessions("");
 
 		// Handle Enter in search input - select current item
@@ -368,7 +370,20 @@ class SessionList implements Component, Focusable {
 	setSessions(sessions: SessionInfo[], showCwd: boolean): void {
 		this.allSessions = sessions;
 		this.showCwd = showCwd;
+		this.updateCurrentSessionPaths();
 		this.filterSessions(this.searchInput.getValue());
+	}
+
+	private updateCurrentSessionPaths(): void {
+		this.currentSessionPaths = new Set<string>();
+		if (!this.currentSessionCanonicalPath) return;
+		for (const session of this.allSessions) {
+			if (this.isCurrentSessionPath(session.path)) this.currentSessionPaths.add(session.path);
+		}
+	}
+
+	dispose(): void {
+		this.currentSessionPaths.clear();
 	}
 
 	private filterSessions(query: string): void {
@@ -458,7 +473,7 @@ class SessionList implements Component, Focusable {
 			const session = node.session;
 			const isSelected = i === this.selectedIndex;
 			const isConfirmingDelete = session.path === this.confirmingDeletePath;
-			const isCurrent = this.isCurrentSessionPath(session.path);
+			const isCurrent = this.currentSessionPaths.has(session.path);
 
 			// Build tree prefix
 			const prefix = this.buildTreePrefix(node);
@@ -848,6 +863,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		this.currentLoading = false;
 		this.allLoading = false;
 		this.header.dispose();
+		this.sessionList.dispose();
 		this.requestRender = ignoreSessionSelectorRender;
 	}
 

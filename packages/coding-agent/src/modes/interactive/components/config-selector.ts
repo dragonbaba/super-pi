@@ -40,6 +40,7 @@ const RESOURCE_TYPE_LABELS: Record<ResourceType, string> = {
 
 interface ResourceItem {
 	path: string;
+	identityKey: string;
 	enabled: boolean;
 	metadata: PathMetadata;
 	resourceType: ResourceType;
@@ -140,6 +141,7 @@ function buildGroups(resolved: ResolvedPaths, agentDir: string): ResourceGroup[]
 			}
 			subgroup.items.push({
 				path,
+				identityKey: `${resourceType}:${canonicalizePath(path)}`,
 				enabled,
 				metadata,
 				resourceType,
@@ -518,6 +520,8 @@ class ResourceList implements Component, Focusable {
 	}
 
 	private toggleResource(item: ResourceItem): boolean | undefined {
+		// Display uses the loaded identity; an explicit mutation checks it again.
+		item.identityKey = `${item.resourceType}:${canonicalizePath(item.path)}`;
 		if (this.writeScope === "project") {
 			const state = this.getNextOverrideState(item);
 			if (!this.setProjectResourceOverride(item, state)) return undefined;
@@ -844,7 +848,7 @@ class ResourceList implements Component, Focusable {
 	}
 
 	private getResourceItemKey(item: ResourceItem): string {
-		return `${item.resourceType}:${canonicalizePath(item.path)}`;
+		return item.identityKey;
 	}
 
 	private getItemScope(item: ResourceItem): SettingsScope {

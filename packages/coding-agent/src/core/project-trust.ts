@@ -5,6 +5,7 @@ import type { DefaultProjectTrust } from "./settings-manager.ts";
 import {
 	getProjectTrustOptions,
 	hasTrustRequiringProjectResources,
+	ProjectTrustConflictError,
 	type ProjectTrustOption,
 	type ProjectTrustStore,
 } from "./trust-manager.ts";
@@ -30,10 +31,11 @@ function formatProjectTrustPrompt(cwd: string): string {
 async function selectProjectTrustOption(
 	cwd: string,
 	ctx: ProjectTrustContext,
+	conflict?: ProjectTrustConflictError,
 ): Promise<ProjectTrustOption | undefined> {
 	const options = getProjectTrustOptions(cwd, { includeSessionOnly: true });
 	const selected = await ctx.ui.select(
-		formatProjectTrustPrompt(cwd),
+		conflict ? `${conflict.message}\n\n${formatProjectTrustPrompt(cwd)}` : formatProjectTrustPrompt(cwd),
 		options.map((option) => option.label),
 	);
 	return options.find((option) => option.label === selected);
@@ -49,11 +51,9 @@ export async function resolveProjectTrusted(options: ResolveProjectTrustedOption
 	if (options.trustOverride !== undefined) {
 		return options.trustOverride;
 	}
-	if (!hasTrustRequiringProjectResources(options.cwd)) {
-		return options.trustStore.get(options.cwd) ?? true;
-	}
+	const requiresTrust = hasTrustRequiringProjectResources(options.cwd);
 
-	if (options.extensionsResult) {
+	if (requiresTrust && options.extensionsResult) {
 		const { result, errors } = await emitProjectTrustEvent(
 			options.extensionsResult,
 			{ type: "project_trust", cwd: options.cwd },
@@ -72,25 +72,32 @@ export async function resolveProjectTrusted(options: ResolveProjectTrustedOption
 		}
 	}
 
-	const decision = options.trustStore.get(options.cwd);
-	if (decision !== null) {
-		return decision;
+	let conflict: ProjectTrustConflictError | undefined;
+	try {
+		const decision = options.trustStore.get(options.cwd);
+		if (decision !== null) return decision;
+	} catch (error) {
+		if (!(error instanceof ProjectTrustConflictError)) throw error;
+		conflict = error;
 	}
 
-	switch (options.defaultProjectTrust ?? "ask") {
-		case "always":
-			return true;
-		case "never":
-			return false;
-		case "ask":
-			break;
+	if (!conflict) {
+		if (!requiresTrust) return true;
+		switch (options.defaultProjectTrust ?? "ask") {
+			case "always":
+				return true;
+			case "never":
+				return false;
+			case "ask":
+				break;
+		}
 	}
 
 	if (!options.projectTrustContext.hasUI) {
 		return false;
 	}
 
-	const selected = await selectProjectTrustOption(options.cwd, options.projectTrustContext);
+	const selected = await selectProjectTrustOption(options.cwd, options.projectTrustContext, conflict);
 	if (selected !== undefined) {
 		saveProjectTrustPromptResult(options.trustStore, selected);
 		return selected.trusted;
