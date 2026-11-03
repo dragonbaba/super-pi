@@ -53,8 +53,37 @@ test("Responses ordinary function delta only appends new input and publishes its
 	assert.match(text, /outputSlots\.clear\(\)/);
 });
 
-for (const responses of [false, true]) test(`real provider counters and controlled-GC release satisfy the argument lifecycle, responses=${responses}`, { timeout: 30000 }, () => {
-	const output = execFileSync(process.execPath, ["--expose-gc", "--experimental-strip-types", "scripts/bench/provider-tool-args.ts", "--smoke", ...(responses ? ["--responses"] : [])], { encoding: "utf8", windowsHide: true, timeout: 25000 });
+test("Bedrock delta lookup creates no closures and argument parsing stays incremental", () => {
+	const file = "packages/ai/src/api/bedrock-converse-stream.ts", text = readFileSync(file, "utf8");
+	const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
+	let seen = 0;
+	function visit(node: ts.Node): void {
+		if (ts.isFunctionDeclaration(node) && node.name?.text === "handleContentBlockDelta") {
+			seen++;
+			function audit(child: ts.Node): void {
+				assert.equal(ts.isArrowFunction(child) || ts.isFunctionExpression(child) || ts.isAwaitExpression(child) || ts.isNewExpression(child)
+					|| ts.isArrayLiteralExpression(child) || ts.isSpreadElement(child), false, child.getText(source));
+				if (ts.isObjectLiteralExpression(child)) {
+					const type = child.properties.find(property => ts.isPropertyAssignment(property) && property.name.getText(source) === "type");
+					assert.ok(type && ts.isPropertyAssignment(type) && ts.isStringLiteral(type.initializer));
+					assert.ok(["text", "thinking", "text_start", "text_delta", "toolcall_delta", "thinking_start", "thinking_delta"].includes(type.initializer.text));
+				}
+				if (ts.isCallExpression(child)) assert.doesNotMatch(child.expression.getText(source), /(?:parse|parseStreamingJson|findIndex|map|filter|join|stringify|then|bind)$/);
+				ts.forEachChild(child, audit);
+			}
+			audit(node.body!); // Existing protocol events and first text/thinking block creation are explicit object exemptions.
+		}
+		ts.forEachChild(node, visit);
+	}
+	visit(source); assert.equal(seen, 1);
+	assert.doesNotMatch(text, /partialJson|parseStreamingJson/);
+	assert.match(text, /toolParsers\[index\]!\.append\(delta\.toolUse\.input \|\| ""\)/);
+	assert.match(text, /blockPositions\.delete\(event\.contentBlockIndex!\)/);
+	assert.match(text, /finally \{\s*for \(const parser of toolParsers\) parser\?\.dispose\(\);\s*toolParsers\.length = 0;\s*blockPositions\.clear\(\)/);
+});
+
+for (const provider of ["anthropic", "responses", "bedrock"]) test(`real provider counters and controlled-GC release satisfy the argument lifecycle, provider=${provider}`, { timeout: 30000 }, () => {
+	const output = execFileSync(process.execPath, ["--expose-gc", "--experimental-strip-types", "scripts/bench/provider-tool-args.ts", "--smoke", ...(provider === "anthropic" ? [] : [`--${provider}`])], { encoding: "utf8", windowsHide: true, timeout: 25000 });
 	const evidence = JSON.parse(output);
 	assert.equal(evidence.counters.length, 3); assert.equal(evidence.lifecycle.length, 3);
 	for (const row of evidence.counters) { assert.equal(row.parserPromises, 0); assert.equal(row.argumentParseCalls, 1); }

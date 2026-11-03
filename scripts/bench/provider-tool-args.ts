@@ -10,11 +10,13 @@ import { pathToFileURL } from "node:url";
 import { IncrementalToolArguments } from "../../packages/ai/src/utils/incremental-tool-arguments.ts";
 import { anthropicArgumentsFixture } from "../../tests/helpers/anthropic-arguments-fixture.ts";
 import { responsesArgumentsFixture } from "../../tests/helpers/responses-arguments-fixture.ts";
+import { bedrockArgumentsFixture } from "../../tests/helpers/bedrock-arguments-fixture.ts";
 
 const moduleIndex = process.argv.indexOf("--provider-module");
 const responses = process.argv.includes("--responses");
-const argumentsFixture = responses ? responsesArgumentsFixture : anthropicArgumentsFixture;
-const modulePath = resolve(moduleIndex < 0 ? `packages/ai/src/api/${responses ? "openai-codex-responses" : "anthropic-messages"}.ts` : process.argv[moduleIndex + 1]);
+const bedrock = process.argv.includes("--bedrock");
+const argumentsFixture = bedrock ? bedrockArgumentsFixture : responses ? responsesArgumentsFixture : anthropicArgumentsFixture;
+const modulePath = resolve(moduleIndex < 0 ? `packages/ai/src/api/${bedrock ? "bedrock-converse-stream" : responses ? "openai-codex-responses" : "anthropic-messages"}.ts` : process.argv[moduleIndex + 1]);
 const { stream: factory } = await import(pathToFileURL(modulePath).href);
 const smoke = process.argv.includes("--smoke"), warmup = 2, timingIterations = 8, profileIterations = 4, samplingInterval = 1024;
 type Fixture = ReturnType<typeof argumentsFixture>;
