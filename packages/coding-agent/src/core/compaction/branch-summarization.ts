@@ -5,9 +5,10 @@
  * a summary of the branch being left so context isn't lost.
  */
 
-import type { AgentMessage, StreamFn } from "@super-pi/agent-core";
+import type { AgentMessage, StreamFn, ThinkingLevel } from "@super-pi/agent-core";
 import type { ProviderHeaders, RetryCallbacks, RetryPolicy } from "@super-pi/ai";
-import { contentText } from "@super-pi/ai";
+import { clampThinkingLevel, contentText } from "@super-pi/ai";
+import { clampReasoning, minimumRequestOutputTokens, requestThinkingTokens, resolveRequestOutputTokens } from "@super-pi/ai/api/simple-options";
 import type { Model, SimpleStreamOptions, Usage } from "@super-pi/ai/compat";
 import {
 	convertToLlm,
@@ -68,6 +69,8 @@ export interface CollectEntriesResult {
 export interface GenerateBranchSummaryOptions {
 	/** Model to use for summarization */
 	model: Model<any>;
+	/** Current session thinking level; provider capability rules still apply. */
+	thinkingLevel?: ThinkingLevel;
 	/** API key for the model */
 	apiKey?: string;
 	/** Request headers for the model */
@@ -297,6 +300,7 @@ export async function generateBranchSummary(
 ): Promise<BranchSummaryResult> {
 	const {
 		model,
+		thinkingLevel,
 		apiKey,
 		headers,
 		env,
@@ -349,6 +353,19 @@ export async function generateBranchSummary(
 	// so transient stream drops reuse the configured retry policy.
 	const context = { systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages };
 	const requestOptions: SimpleStreamOptions = { apiKey, headers, env, signal, maxTokens: 2048 };
+	if (model.reasoning && thinkingLevel && thinkingLevel !== "off") {
+		requestOptions.reasoning = thinkingLevel;
+		const thinkingTokens = requestThinkingTokens(model, thinkingLevel);
+		if (thinkingTokens > 0) {
+			const outputTokens = resolveRequestOutputTokens(model, requestOptions.maxTokens!);
+			const availableThinking = outputTokens - minimumRequestOutputTokens(outputTokens);
+			const effort = clampThinkingLevel(model, thinkingLevel);
+			// Keep a usable answer inside the shared Google output ceiling.
+			if (availableThinking > 0 && thinkingTokens > availableThinking && effort !== "off") {
+				requestOptions.thinkingBudgets = { [clampReasoning(effort)!]: availableThinking };
+			}
+		}
+	}
 	const response = await completeSummarization(model, context, requestOptions, streamFn, retry, callbacks);
 
 	// Check if aborted or errored

@@ -1,0 +1,77 @@
+{
+  "task": "T07 branch summary thinking inheritance",
+  "baseCommit": "521f84f2316f19548c3f8e76021e808d1c0f1f60",
+  "node": "v26.13.0",
+  "sources": [
+    {
+      "path": "packages/coding-agent/src/core/agent-session.ts",
+      "sha256": "189c877510c96dea3943906208b4600284b5d5c0c664b5d3bb56ccba8fbf722f"
+    },
+    {
+      "path": "packages/coding-agent/src/core/compaction/branch-summarization.ts",
+      "sha256": "2e79354631902a9d5475c97a40e17f909a3d9c90ee6e43b6345a2a799550bcfb"
+    },
+    {
+      "path": "tests/provider-contract/branch-summary-options.contract.test.ts",
+      "sha256": "dfd31b8e76b9b321071817b868c625bd2cba5843c77c2a872adf4941a8c0ae59"
+    }
+  ],
+  "scope": "Summary request admission only: reasoning scalar and at most one request-owned Google thinkingBudgets object, reused across retries. No changes to history traversal/serialization, per-delta callbacks, event delivery, layout or terminal writes. No new allocation profile claimed for unchanged hot paths.",
+  "behavior": {
+    "baseline": "high was undefined in summary stream options (red assertion)",
+    "directCases": [
+      "high",
+      "low",
+      "off",
+      "omitted",
+      "non-reasoning model"
+    ],
+    "sessionLevels": [
+      "low",
+      "high"
+    ],
+    "summaryMaxTokens": 2048,
+    "providerWire": "Existing capability mapping preserved: requested high with supported low -> low; off -> none; disabled -> omitted",
+    "retry": {
+      "requests": 2,
+      "requestOptionsIdentity": "same",
+      "capturedReasoning": "high",
+      "abortListenersAfter": 0
+    },
+    "abort": {
+      "result": "aborted",
+      "abortListenersAfter": 0
+    },
+    "googleReviewFix": {
+      "finding": 4459750772,
+      "baseline": "Real Google/Vertex streamSimple threw output-reservation before payload; medium=8192, output=2048, minimumOutput=9216.",
+      "cases": [
+        "fixed budget 8192 -> 1024",
+        "unsupported high clamps to medium before override key selection",
+        "model max1536 -> thinking512",
+        "small512 unchanged",
+        "dynamic-1 unchanged",
+        "model max1024 still fails explicitly once"
+      ],
+      "requestsPerCase": 1,
+      "outputSemantics": "Configured maxTokens remains2048; Google shares it with thinking. Anthropic/Claude Bedrock existing additive thinking semantics remain unchanged."
+    }
+  },
+  "validation": {
+    "targeted": {
+      "tests": 119,
+      "pass": 119,
+      "fail": 0
+    },
+    "typeCheck": "passed",
+    "offlineBuild": "passed",
+    "fullSuite": {
+      "units": 405,
+      "tests": 5441,
+      "pass": 5343,
+      "skip": 98,
+      "fail": 0,
+      "cancelled": 0
+    }
+  }
+}
