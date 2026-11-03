@@ -70,7 +70,7 @@ export function consumeStructuredReadonlyWorkspacePolicy(
     throw new Error("Structured read-only workspace identity changed after authorization.");
   }
   const requestedCwd = input && typeof input === "object" && typeof (input as { cwd?: unknown }).cwd === "string"
-    ? resolve(canonicalRoot, (input as { cwd: string }).cwd)
+    ? resolve(delegation.invocationCwd ?? canonicalRoot, (input as { cwd: string }).cwd)
     : canonicalRoot;
   const requestedCanonical = realpathSync(requestedCwd);
   const requestedIdentity = statSync(requestedCanonical);

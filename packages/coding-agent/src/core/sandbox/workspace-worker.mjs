@@ -50,6 +50,17 @@ function selected(root, scope) {
   for (const name of scope) { const file = local(root, name); if (fs.existsSync(file)) output.set(name, sha(read(file))); }
   return output;
 }
+function searchScope(root, raw) {
+  if (raw === undefined || raw === '') return '';
+  need(typeof raw === 'string' && raw.length < 4096 && !raw.includes('\0') && !raw.includes(':') && !path.isAbsolute(raw), 'Invalid search scope');
+  const normalized = path.relative(root, path.resolve(root, raw.replaceAll('\\', '/'))).replaceAll('\\', '/');
+  if (!normalized) return '';
+  // local rejects escapes, protected components and redirected entries before realpath.
+  return path.relative(root, fs.realpathSync(local(root, normalized))).replaceAll('\\', '/');
+}
+function matchesScope(name, scope) {
+  return scope === '' || name === scope || name.startsWith(scope) && name[scope.length] === '/';
+}
 function grepRows(source, pattern, name, rows) {
   let match = source.indexOf(pattern), start = 0, line = 1;
   while (match >= 0 && start < source.length && rows.length < 200) {
@@ -122,9 +133,9 @@ try {
     for (let line = 0; line < count && end < source.length && end - start < 32768; line++) { const next = source.indexOf('\n', end); end = next < 0 ? source.length : next + 1; }
     text = source.slice(start, Math.min(end, start + 32768)) + '\n[Snapshot: ' + snapshot + ']';
   } else if (operation === 'ls' || operation === 'find' || operation === 'grep') {
-    const files = catalog(root); const rows = [];
+    const searchRoot = searchScope(root, input.path), files = catalog(root); const rows = [];
     for (const name of files.keys()) {
-      if (input.path && input.path !== '.' && !name.startsWith(input.path.replaceAll('\\', '/').replace(/\/$/, '') + '/')) continue;
+      if (!matchesScope(name, searchRoot)) continue;
       if (operation === 'find' && input.pattern && !name.includes(input.pattern)) continue;
       if (operation === 'grep') {
         need(typeof input.pattern === 'string' && input.pattern.length > 0, 'Literal search pattern required');

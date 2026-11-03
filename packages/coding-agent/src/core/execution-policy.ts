@@ -7,6 +7,12 @@ import type { SessionEntry } from "./session-manager.ts";
 import { assessProtectedMutationPath, canonicalizeProspectivePath } from "./files/protected-path-policy.ts";
 import { attachPermissionPathApproval, mutationRequestHash, type PermissionPathApproval } from "./files/file-invocation.ts";
 import { InputReadPolicyLease } from "./files/session-input-read-permission.ts";
+import { resolveReadPathAsync, resolveToCwd } from "./tools/path-utils.ts";
+import { attachToolPath } from "./files/tool-path-authorization.ts";
+import { resolveToolPath } from "./files/file-path.ts";
+import { prepareNativeDelegation } from "./files/native-delegation.ts";
+import { attachSubagentWorkspaceDelegation, attachStructuredReadonlyWorkspaceDelegation, structuredReadonlyRequestHash,
+    attachBrowserExecAuthorization, browserExecRequestHash } from "./files/extension-permissions.ts";
 import { InputWorkspaceGrantLease, type InputWorkspaceGrant, type InputWorkspaceIssuance,
     type AssertInputWorkspace, type ObserveInputWorkspace } from "./files/input-workspace-grant-lease.ts";
 
@@ -22,6 +28,7 @@ export interface ExecutionPermissionRule {
 export interface ExecutionPermissions { approval?: "interactive" | "never"; rules?: ExecutionPermissionRule[]; }
 const MUTATIONS = new Set(["edit", "write", "delete", "move", "file_batch"]);
 const SEARCHES = new Set(["grep", "find", "ls"]);
+const RECURSIVE_SCOPES = new Set([...SEARCHES, "subagent", "structured_readonly_command"]);
 const SAFE = new Set(["codemode", "tool_search", "tasks"]);
 const SANDBOX_TOOLS = new Set([...SAFE, "read", "grep", "find", "ls", "powershell", ...MUTATIONS]);
 const BLOCKED = "[POLICY_BLOCKED] ";
@@ -152,7 +159,7 @@ export class SessionExecutionPolicy {
                 for (const target of paths) {
                     const contained = inside(root, target);
                     if (rule.decision === "allow") { if (!contained) { matches = false; break; } }
-                    else if (contained || SEARCHES.has(tool) && inside(target, root)) { matches = true; break; }
+                    else if (contained || RECURSIVE_SCOPES.has(tool) && inside(target, root)) { matches = true; break; }
                 }
                 if (!matches) continue;
             }
@@ -193,17 +200,34 @@ export class SessionExecutionPolicy {
         this.restoreHistory(ctx);
         if (this.mode === undefined && this.legacyHistory && !SAFE.has(event.toolName) && event.toolName !== "read")
             throw new Error("[LEGACY_PERMISSION_MIGRATION] Historical grants cannot be widened by a new profile. Start a new session with explicit execution rules; history remains unchanged.");
-        if (this.runtime.executionBoundary.getToolSelectionMode() === "plan" && (mutation || event.toolName === "powershell" || event.toolName === "bash"))
+        if (this.runtime.executionBoundary.getToolSelectionMode() === "plan" && (mutation || event.toolName === "powershell" || event.toolName === "bash" || event.toolName === "browser_exec"))
             throw new Error(BLOCKED + "Plan mode does not authorize execution or mutations");
         const input = event.input as Record<string, any>, targets: string[] = [];
         if (event.toolName === "file_batch") {
             if (!Array.isArray(input.operations) || !input.operations.length || input.operations.length > 16) throw new Error(BLOCKED + "Invalid file batch");
-            for (const item of input.operations) { targets.push(item.path); if (item.destination !== undefined) targets.push(item.destination); }
+            for (const item of input.operations) {
+                targets.push(this.environment === "trusted-host" && (item.operation === "write" || item.operation === "edit") && typeof item.path === "string"
+                    ? resolveToolPath(ctx.cwd, item.path) : item.path);
+                if (item.destination !== undefined) targets.push(item.destination);
+            }
         } else if (event.toolName === "lsp_fix") {
             targets.push(resolve(ctx.cwd, typeof input.root === "string" && input.root.trim() ? input.root : ".", input.path));
         } else if (SEARCHES.has(event.toolName)) targets.push(input.path ?? ".");
-        else if (mutation || event.toolName === "read") { targets.push(input.path); if (input.destination !== undefined) targets.push(input.destination); }
-        const paths = await this.paths(ctx, targets, mutation); check();
+        else if (mutation || event.toolName === "read") {
+            targets.push(this.environment === "trusted-host" && (event.toolName === "write" || event.toolName === "edit") && typeof input.path === "string"
+                ? resolveToolPath(ctx.cwd, input.path) : input.path);
+            if (input.destination !== undefined) targets.push(input.destination);
+        }
+        // Match the host tool's interpretation before checking rules. Sandbox paths
+        // retain their workspace-relative grammar; native mutations own their resolver.
+        if (this.environment === "trusted-host" && targets.length && (event.toolName === "read" || SEARCHES.has(event.toolName))) {
+            targets[0] = event.toolName === "read" ? await resolveReadPathAsync(targets[0]!, ctx.cwd) : resolveToCwd(targets[0] || ".", ctx.cwd);
+            check();
+        }
+        const delegation = event.toolName === "subagent" || event.toolName === "structured_readonly_command"
+            ? await prepareNativeDelegation(event.toolName, input, ctx.cwd, this.runtime.executionBoundary.getToolSelectionMode() === "plan") : undefined;
+        check();
+        const paths = delegation?.paths ?? await this.paths(ctx, targets, mutation); check();
         let decision = await this.decision(event.toolName, input.command, paths, ctx.cwd, explicitUserCommand ? "allow" : undefined); check();
         if (event.toolName === "file_batch") {
             let index = 0;
@@ -241,6 +265,15 @@ export class SessionExecutionPolicy {
             }
         }
         invocation.consume(event.input, event.toolCallId, event.toolName, ctx.signal);
+        if (delegation?.subagent) attachSubagentWorkspaceDelegation(input, { schemaVersion: 1, sequence: this.runtime.executionBoundary.generation,
+            toolCallId: event.toolCallId, grants: delegation.subagent, assertCurrent: check, revocationSignal: ctx.signal ?? this.runtime.executionBoundary.signal });
+        if (delegation?.structured) attachStructuredReadonlyWorkspaceDelegation(input, { ...delegation.structured, schemaVersion: 1,
+            sequence: this.runtime.executionBoundary.generation, toolCallId: event.toolCallId, requestHash: structuredReadonlyRequestHash(input),
+            assertCurrent: check, revocationSignal: ctx.signal ?? this.runtime.executionBoundary.signal });
+        if (event.toolName === "browser_exec") attachBrowserExecAuthorization(input, { schemaVersion: 1, sequence: this.runtime.executionBoundary.generation,
+            toolCallId: event.toolCallId, requestHash: browserExecRequestHash(input), assertCurrent: check, revocationSignal: ctx.signal ?? this.runtime.executionBoundary.signal });
+        if (this.environment === "trusted-host" && (event.toolName === "read" || SEARCHES.has(event.toolName)))
+            attachToolPath(input, event.toolName, event.toolCallId, paths[0]!, check);
         if (mutation) attachPermissionPathApproval(input, { schemaVersion: 1, sequence: this.runtime.executionBoundary.generation,
             toolCallId: event.toolCallId, operation: event.toolName as PermissionPathApproval["operation"],
             requestHash: mutationRequestHash(event.toolName as PermissionPathApproval["operation"], input), canonicalTarget: paths[0]!,
