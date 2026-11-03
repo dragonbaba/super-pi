@@ -1,0 +1,294 @@
+{
+  "schemaVersion": 1,
+  "task": "SDK configured transport",
+  "baselineCommit": "6ad356fd254f557c4dc3e5af3172720bbede6c8f",
+  "candidateSdkSha256Lf": "105e4d8ed6e6c2d68fab671a79d50623961512b2ad228d3e689db5a02721172a",
+  "node": "26.13.0",
+  "platform": "win32/x64",
+  "baselineDependenciesUnchanged": true,
+  "productionChange": "One primitive transport field in the existing request options object; no delta/frame/progress code changes",
+  "stream": {
+    "before": {
+      "minMs": 23.615400000000022,
+      "p50Ms": 24.63639999999998,
+      "p95Ms": 25.288099999999986,
+      "p99Ms": 28.87729999999999,
+      "maxMs": 28.87729999999999,
+      "meanMs": 24.709650000000003,
+      "coefficientOfVariation": 0.04357690329907776,
+      "peakHeapBytes": 94867616,
+      "finalHeapBytes": 54896568,
+      "updates": 100000,
+      "eventsDelivered": 1,
+      "snapshots": 1,
+      "coalesced": 100001,
+      "maxPendingKeys": 1,
+      "legacyDelivery": 0,
+      "producerPaceMs": 0
+    },
+    "after": {
+      "minMs": 23.814300000000003,
+      "p50Ms": 24.824700000000007,
+      "p95Ms": 26.836499999999944,
+      "p99Ms": 28.9212,
+      "maxMs": 28.9212,
+      "meanMs": 24.966794999999998,
+      "coefficientOfVariation": 0.045883927526787965,
+      "peakHeapBytes": 97404088,
+      "finalHeapBytes": 44963112,
+      "updates": 100000,
+      "eventsDelivered": 1,
+      "snapshots": 1,
+      "coalesced": 100001,
+      "maxPendingKeys": 1,
+      "legacyDelivery": 0,
+      "producerPaceMs": 0
+    }
+  },
+  "session": {
+    "before": {
+      "fixture": "agent-session-to-interactive-stub",
+      "coverage": {
+        "realAgentObserverDelivery": true,
+        "realStableReference": true,
+        "realProgramStatusReporter": true,
+        "realAssistantComponent": false,
+        "realToolComponent": false,
+        "markdown": false,
+        "frameQueue": false
+      },
+      "results": [
+        {
+          "name": "message_update",
+          "updates": 100000,
+          "warmup": 10000,
+          "metrics": {
+            "cpuP50MsPerUpdate": 1.3799999998809653e-05,
+            "cpuP95MsPerUpdate": 2.019999999902211e-05,
+            "sampledAllocationBytes": 62568,
+            "sampledAllocationBytesPerUpdate": 0.62568,
+            "minorGcCount": 0,
+            "majorGcCount": 1,
+            "totalGcDurationMs": 5.239700019359589,
+            "heapBefore": 43047976,
+            "heapAfter": 43164600,
+            "controlledGcAfter": 43047632,
+            "controlledGcHeapDeltaBytes": -344,
+            "builtInListenerPromisesPerUpdate": 0,
+            "programStatusReportsPerUpdate": 0,
+            "rejectionObserversPerUpdate": 0,
+            "finalUpdateCorrect": 1
+          },
+          "sourceInvariant": {
+            "toolWrapperObjectsPerUpdate": 0,
+            "inlineClosuresPerUpdate": 0,
+            "promiseTailsPerUpdate": 0,
+            "promiseArraysPerUpdate": 0,
+            "arraysPerUpdate": 0
+          }
+        },
+        {
+          "name": "tool_execution_update",
+          "updates": 100000,
+          "warmup": 10000,
+          "metrics": {
+            "cpuP50MsPerUpdate": 3.080000000045402e-05,
+            "cpuP95MsPerUpdate": 0.0001478000000006432,
+            "sampledAllocationBytes": 52008,
+            "sampledAllocationBytesPerUpdate": 0.52008,
+            "minorGcCount": 0,
+            "majorGcCount": 1,
+            "totalGcDurationMs": 4.756400018930435,
+            "heapBefore": 43045464,
+            "heapAfter": 43244392,
+            "controlledGcAfter": 43138120,
+            "controlledGcHeapDeltaBytes": 92656,
+            "builtInListenerPromisesPerUpdate": 0,
+            "programStatusReportsPerUpdate": 0,
+            "rejectionObserversPerUpdate": 0,
+            "finalUpdateCorrect": 1
+          },
+          "sourceInvariant": {
+            "toolWrapperObjectsPerUpdate": 0,
+            "inlineClosuresPerUpdate": 0,
+            "promiseTailsPerUpdate": 0,
+            "promiseArraysPerUpdate": 0,
+            "arraysPerUpdate": 0
+          }
+        },
+        {
+          "name": "observer-coalesced-message_update",
+          "updates": 100000,
+          "warmup": 10000,
+          "metrics": {
+            "rawUpdates": 100000,
+            "coalescedUpdates": 99999,
+            "coalescedDeliveries": 1,
+            "snapshotCount": 1,
+            "extensionObserverPublishes": 1,
+            "promisesPerRawUpdate": 0,
+            "promisesPerDelivery": 0,
+            "observerBridgePromisesPerDelivery": 0,
+            "builtInInteractivePromisesPerDelivery": 0,
+            "programStatusReportsPerDelivery": 0,
+            "rejectionObserversPerDelivery": 0,
+            "sampledAllocationBytes": 15138912,
+            "sampledAllocationBytesPerRawUpdate": 151.38912,
+            "sampledAllocationBytesPerDelivery": 15138912,
+            "cpuP50MsPerRawUpdate": 9.060000000135915e-05,
+            "cpuP95MsPerRawUpdate": 0.0005689999999995052,
+            "minorGcCount": 0,
+            "majorGcCount": 1,
+            "totalGcDurationMs": 5.713599979877472,
+            "heapBefore": 43165872,
+            "heapAfter": 44748504,
+            "controlledGcAfter": 44016808,
+            "controlledGcHeapDeltaBytes": 850936,
+            "finalUpdateCorrect": 1
+          },
+          "sourceInvariant": {
+            "toolWrapperObjectsPerUpdate": 0,
+            "inlineClosuresPerUpdate": 0,
+            "promiseTailsPerUpdate": 0,
+            "promiseArraysPerUpdate": 0
+          }
+        }
+      ]
+    },
+    "after": {
+      "fixture": "agent-session-to-interactive-stub",
+      "coverage": {
+        "realAgentObserverDelivery": true,
+        "realStableReference": true,
+        "realProgramStatusReporter": true,
+        "realAssistantComponent": false,
+        "realToolComponent": false,
+        "markdown": false,
+        "frameQueue": false
+      },
+      "results": [
+        {
+          "name": "message_update",
+          "updates": 100000,
+          "warmup": 10000,
+          "metrics": {
+            "cpuP50MsPerUpdate": 1.0999999999967259e-05,
+            "cpuP95MsPerUpdate": 2.140000000008513e-05,
+            "sampledAllocationBytes": 59680,
+            "sampledAllocationBytesPerUpdate": 0.5968,
+            "minorGcCount": 0,
+            "majorGcCount": 1,
+            "totalGcDurationMs": 4.556500017642975,
+            "heapBefore": 43145296,
+            "heapAfter": 43324128,
+            "controlledGcAfter": 43216728,
+            "controlledGcHeapDeltaBytes": 71432,
+            "builtInListenerPromisesPerUpdate": 0,
+            "programStatusReportsPerUpdate": 0,
+            "rejectionObserversPerUpdate": 0,
+            "finalUpdateCorrect": 1
+          },
+          "sourceInvariant": {
+            "toolWrapperObjectsPerUpdate": 0,
+            "inlineClosuresPerUpdate": 0,
+            "promiseTailsPerUpdate": 0,
+            "promiseArraysPerUpdate": 0,
+            "arraysPerUpdate": 0
+          }
+        },
+        {
+          "name": "tool_execution_update",
+          "updates": 100000,
+          "warmup": 10000,
+          "metrics": {
+            "cpuP50MsPerUpdate": 3.139999999984866e-05,
+            "cpuP95MsPerUpdate": 0.00014139999999997598,
+            "sampledAllocationBytes": 69424,
+            "sampledAllocationBytesPerUpdate": 0.69424,
+            "minorGcCount": 0,
+            "majorGcCount": 1,
+            "totalGcDurationMs": 4.862899988889694,
+            "heapBefore": 43214304,
+            "heapAfter": 43374640,
+            "controlledGcAfter": 43238040,
+            "controlledGcHeapDeltaBytes": 23736,
+            "builtInListenerPromisesPerUpdate": 0,
+            "programStatusReportsPerUpdate": 0,
+            "rejectionObserversPerUpdate": 0,
+            "finalUpdateCorrect": 1
+          },
+          "sourceInvariant": {
+            "toolWrapperObjectsPerUpdate": 0,
+            "inlineClosuresPerUpdate": 0,
+            "promiseTailsPerUpdate": 0,
+            "promiseArraysPerUpdate": 0,
+            "arraysPerUpdate": 0
+          }
+        },
+        {
+          "name": "observer-coalesced-message_update",
+          "updates": 100000,
+          "warmup": 10000,
+          "metrics": {
+            "rawUpdates": 100000,
+            "coalescedUpdates": 99999,
+            "coalescedDeliveries": 1,
+            "snapshotCount": 1,
+            "extensionObserverPublishes": 1,
+            "promisesPerRawUpdate": 0,
+            "promisesPerDelivery": 0,
+            "observerBridgePromisesPerDelivery": 0,
+            "builtInInteractivePromisesPerDelivery": 0,
+            "programStatusReportsPerDelivery": 0,
+            "rejectionObserversPerDelivery": 0,
+            "sampledAllocationBytes": 15348720,
+            "sampledAllocationBytesPerRawUpdate": 153.4872,
+            "sampledAllocationBytesPerDelivery": 15348720,
+            "cpuP50MsPerRawUpdate": 9.020000000009531e-05,
+            "cpuP95MsPerRawUpdate": 0.0005620000000001256,
+            "minorGcCount": 0,
+            "majorGcCount": 1,
+            "totalGcDurationMs": 5.775899976491928,
+            "heapBefore": 43264928,
+            "heapAfter": 44868736,
+            "controlledGcAfter": 44134432,
+            "controlledGcHeapDeltaBytes": 869504,
+            "finalUpdateCorrect": 1
+          },
+          "sourceInvariant": {
+            "toolWrapperObjectsPerUpdate": 0,
+            "inlineClosuresPerUpdate": 0,
+            "promiseTailsPerUpdate": 0,
+            "promiseArraysPerUpdate": 0
+          }
+        }
+      ]
+    }
+  },
+  "regression": {
+    "before": "summary dispatch transport undefined instead of sse",
+    "after": "settings sse inherited; explicit websocket-cached preserved; 2 offline requests"
+  },
+  "validation": {
+    "focused": {
+      "pass": 78,
+      "fail": 0,
+      "skip": 0
+    },
+    "check": "passed",
+    "buildOffline": "passed",
+    "fullSuite": {
+      "command": "npm test -- --keep-going",
+      "node": "26.13.0",
+      "units": 387,
+      "failedUnits": 0,
+      "exitCode": 0
+    },
+    "ci": "pending"
+  },
+  "limits": [
+    "Stream/session fixtures measure the unchanged downstream event lane; the session fixture has an interactive stub.",
+    "Heap sampling is evidence, not a speedup claim; request-level options already allocate before this change.",
+    "Original compaction lifecycle tests cover cancellation, disposal, normal and failed requests; no timeout or assertion was relaxed."
+  ]
+}

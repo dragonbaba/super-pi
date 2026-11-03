@@ -489,6 +489,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		};
 		return modelRuntime.streamSimple(model, context, {
 			...options,
+			transport: configuredTransport,
 			codexRemoteCompaction,
 			timeoutMs,
 			websocketConnectTimeoutMs,
