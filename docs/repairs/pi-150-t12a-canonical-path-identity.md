@@ -38,6 +38,10 @@ ConfigSelector既有ResourceItem包装在buildGroups入口多一个identityKey�
 
 ## 最终实现与已观察证据
 
+PR #194首轮review发现：冲突异常阻断启动提示和`/trust`，使用户无法通过已有UI作明确选择。修复前方案：用专用`ProjectTrustConflictError`保留store的fail-closed读取契约，只在`resolveProjectTrusted`和`InteractiveMode.showTrustSelector`这两个UI边界识别该异常。冲突不套用default always或无资源自动信任；无UI/取消返回false，存在UI时明确显示冲突路径并允许已有选择写入。显式trustOverride及既有extension hook优先级保持不变，其它文件/解析异常继续传播。`/trust`以冲突状态代替“无记录”展示，既有setMany负责修复所选身份。
+
+这些处理均在启动/显式命令入口：`resolveProjectTrusted`、`selectProjectTrustOption`、`InteractiveMode.showTrustSelector`及`TrustSelectorComponent.constructor`。不新增render/update方法内工作或状态缓存；constructor只构造已有Text的一次性说明。先验证非交互拒绝、default always不能越过冲突、UI保存/取消、AGENTS-only与有资源项目，以及真实`/trust`方法能打开和保存，再check/build/full。修复推送后独立`@codex review`并等待新head。
+
 canonicalizePath换native后，Windows大小写、盘符、8.3短路径、namespace路径得到一致实际名称；缺失路径仍原样。真实Windows大小写敏感目录成功启用，两种case对象inode不同且trust决定不混淆；junction在Windows、symlink在POSIX用同一语义测试。远程UNC服务未实测，不据此宣布网络盘覆盖。Skills同文件别名只保留一次，不同文件同名仍报告collision。
 
 trust读取构建一次操作拥有的Map，以null作为已检测boolean冲突的内部标记；原文件null不参与决定，普通读取不写文件。只在最近命中的实际目录冲突时报错，无关目录仍能读取。保存key先核对legacy realpath仍返回自身，才统一native拼写；后来被junction替换的目录不会把历史授权转给新目标。setMany只更新已确认同身份的旧alias键，新目标的更新保留已重定向旧目录的历史决定；9条记录的get为9次legacy/10次native API调用，2项显式update为9/11次，不按祖先层数/更新数量重做每个key的I/O。正常、更新、clear及Windows冲突共5个操作Map在受控GC后全部释放。相对legacy键不变成当前目录授权；其它记录及写锁边界保留。
@@ -46,6 +50,6 @@ SessionList的Set随列表替换整组丢弃重建，销毁时clear，不保留�
 
 原基线、native-only中间态、最终候选分别串行3轮；warmup20、timing1024、profile64、采样间隔1024。30项列表的最终装载native API计数session91/config60，显示帧从10/28降为0/0；删除和toggle的显式操作仍解析。最终中位数：session **208126→176433 bytes/frame，p95 0.5982→0.2925ms，CPU 565.4→274.4μs/frame**；config **634777→540743 bytes/frame，p95 1.4975→0.5378ms，CPU 1282.2→503.9μs/frame**。GC后heap约25MB，最终比基线增加约0.3%/0.2%，不是零驻留成本。旧frame数组在组件存活时回收，旧身份Set在替换后回收，组件dispose/release后回收。
 
-58项路径/trust/Skills/选择器及TUI source invariants通过，check/build:offline通过。最终Node26全套412个执行单元成功，5512项测试：5414通过、98跳过、0失败/取消。frame queue生产计数100000请求→2次render/写入，active write≤1，完整帧复制0，frame Promise/controller/wrapper0，flush后active/pending bytes及write归零。新增删除测试曾缺少全局键绑定，已按真实启动契约补齐；Map探针修正泛型构造签名，生产未加任何兜底。测试清理器也换native身份比较，修复临时目录短路径与长路径误判；每个新fixture记录精确root并由既有owner清理。
+68项路径/trust/Skills/选择器及TUI source invariants通过，check/build:offline通过。含review修复的最终Node26全套413个执行单元成功，5522项测试：5424通过、98跳过、0失败/取消。10项新增冲突UI回归先红后绿，覆盖无UI/default always拒绝、显式选择/取消、实际`/trust`入口及真实Windows别名冲突保存。frame queue生产计数100000请求→2次render/写入，active write≤1，完整帧复制0，frame Promise/controller/wrapper0，flush后active/pending bytes及write归零。新增删除测试曾缺少全局键绑定，已按真实启动契约补齐；Map探针修正泛型构造签名，生产未加任何兜底。测试清理器也换native身份比较，修复临时目录短路径与长路径误判；每个新fixture记录精确root并由既有owner清理。
 
 最终PR reviewer/CI待验收。原始记录 `.git/pi150-t12a` 保留native-only回退证据及最终profile；结构化证据见 `docs/evidence/pi-150-t12a-canonical-path-identity.json`。旧键重定向回归先红后绿；最后修复未触及选择器，原最终选择器源码hash及profile仍适用。

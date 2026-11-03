@@ -117,7 +117,7 @@ import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
 import { isInstallTelemetryEnabled } from "../../core/telemetry.ts";
 import type { TruncationResult } from "../../core/tools/truncate.ts";
-import { hasTrustRequiringProjectResources, ProjectTrustStore } from "../../core/trust-manager.ts";
+import { hasTrustRequiringProjectResources, ProjectTrustConflictError, ProjectTrustStore } from "../../core/trust-manager.ts";
 import { getUsageCostBreakdown } from "../../core/usage-totals.ts";
 import { getChangelogPath, getNewEntries, normalizeChangelogLinks, parseChangelog } from "../../utils/changelog.ts";
 import { copyToClipboard, readClipboardText } from "../../utils/clipboard.ts";
@@ -6727,11 +6727,19 @@ export class InteractiveMode {
 	private showTrustSelector(): void {
 		const cwd = this.sessionManager.getCwd();
 		const trustStore = new ProjectTrustStore(this.runtimeHost.services.agentDir);
-		const savedDecision = trustStore.getEntry(cwd);
+		let savedDecision = null;
+		let conflict: ProjectTrustConflictError | undefined;
+		try {
+			savedDecision = trustStore.getEntry(cwd);
+		} catch (error) {
+			if (!(error instanceof ProjectTrustConflictError)) throw error;
+			conflict = error;
+		}
 		this.showSelector((done) => {
 			const selector = new TrustSelectorComponent({
 				cwd,
 				savedDecision,
+				conflict,
 				projectTrusted: this.settingsManager.isProjectTrusted(),
 				onSelect: (selection) => {
 					trustStore.setMany(selection.updates);

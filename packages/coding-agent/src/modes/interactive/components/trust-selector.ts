@@ -1,6 +1,7 @@
 import { Container, getKeybindings, Spacer, Text } from "@super-pi/tui";
 import {
 	getProjectTrustOptions,
+	type ProjectTrustConflictError,
 	type ProjectTrustOption,
 	type ProjectTrustStoreEntry,
 } from "../../../core/trust-manager.ts";
@@ -13,6 +14,7 @@ export type TrustSelection = Pick<ProjectTrustOption, "trusted" | "updates">;
 export interface TrustSelectorOptions {
 	cwd: string;
 	savedDecision: ProjectTrustStoreEntry | null;
+	conflict?: ProjectTrustConflictError;
 	projectTrusted: boolean;
 	onSelect: (selection: TrustSelection) => void;
 	onCancel: () => void;
@@ -58,7 +60,8 @@ export class TrustSelectorComponent extends Container {
 			new Text(
 				theme.fg(
 					"muted",
-					`Saved decision: ${formatDecision(this.trustOptions[0]?.savedPath, options.savedDecision)}`,
+					options.conflict?.message ??
+						`Saved decision: ${formatDecision(this.trustOptions[0]?.savedPath, options.savedDecision)}`,
 				),
 				1,
 				0,

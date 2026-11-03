@@ -3,14 +3,14 @@
   "base": "6b0f8a10459709aaad9e0e8818771e8abd6e109e",
   "node": "v26.13.0",
   "tests": {
-    "tests": 5512,
-    "pass": 5414,
+    "tests": 5522,
+    "pass": 5424,
     "fail": 0,
     "cancelled": 0,
     "skipped": 98,
-    "successfulUnits": 412
+    "successfulUnits": 413
   },
-  "targeted": 58,
+  "targeted": 68,
   "sources": [
     {
       "path": "packages/coding-agent/src/utils/paths.ts",
@@ -18,7 +18,19 @@
     },
     {
       "path": "packages/coding-agent/src/core/trust-manager.ts",
-      "sha256": "0beb6c74b99cb68d5a28a82ff70e420f052508ae2198eba9990dbd8641380f80"
+      "sha256": "2781fb05d1e7ed161fe0e0b6ff11d84cf28b069deaefc1803ca694d1347168c7"
+    },
+    {
+      "path": "packages/coding-agent/src/core/project-trust.ts",
+      "sha256": "49ac8fb6a06110f89f7987ccec561048d078f7ec541e9631071ce8717f2c019b"
+    },
+    {
+      "path": "packages/coding-agent/src/modes/interactive/interactive-mode.ts",
+      "sha256": "c55b7c9e07c2d637050d790ad7f9200a44648c7854bc61df7475e2a73f95d692"
+    },
+    {
+      "path": "packages/coding-agent/src/modes/interactive/components/trust-selector.ts",
+      "sha256": "504363cdfb65338f322a99475bb27f66c8eee35f79c239478d3c2cf7c372b98d"
     },
     {
       "path": "packages/coding-agent/src/modes/interactive/components/session-selector.ts",
@@ -43,6 +55,10 @@
     {
       "path": "tests/canonical-path-hot-paths.test.ts",
       "sha256": "43fc3f83af47eba79750178a3a33fa1411d4f6bb195c53a085b75c1324b4d5c1"
+    },
+    {
+      "path": "tests/project-trust-conflicts.test.ts",
+      "sha256": "0f9aa3a0e7c6226294078f8ab568bdf4fb34533fad68383a7a081fac3c7699db"
     },
     {
       "path": "tests/helpers/owned-fixture-cleanup.ts",
@@ -99,6 +115,7 @@
   ],
   "boundaries": {
     "trust": "Operation-owned canonical decision/key Maps; normal/update/clear and Windows conflicts release five observed Maps. Saved keys only receive native spelling normalization when legacy realpath still resolves to themselves; replacing a trusted directory with a link does not transfer trust. Nine saved keys + one cwd = 9 legacy / 10 native API calls; two updates = 9 legacy / 11 native, independent of ancestor count. Read does not write/migrate the file.",
+    "conflictUI": "Typed trust conflicts are handled only at bootstrap and explicit /trust UI boundaries. No UI or cancellation denies; defaults cannot grant through a conflict. Explicit choices use the existing setMany path. Other read errors propagate. Constructor text only; no new per-render work.",
     "display": "Session list owns only matching path strings in a Set, replaced on list refresh and cleared on disposal. Config ResourceItem owns one identityKey, refreshed at explicit toggle. No global cache or pool.",
     "mutation": "Deletion confirmation resolves current filesystem identity again; configuration toggle refreshes identity before existing override selection/writes. Junction retarget regressions pass.",
     "frames": "Native-only candidate regressed CPU about 30%; final candidate moves display identity work to load boundaries. Render path API counts 10/28→0/0. Thirty-row setup costs 91/60 native API calls, reported separately.",

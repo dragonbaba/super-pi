@@ -15,6 +15,16 @@ export interface ProjectTrustStoreEntry {
 	decision: boolean;
 }
 
+export class ProjectTrustConflictError extends Error {
+	readonly path: string;
+
+	constructor(path: string) {
+		super(`Conflicting trust decisions for ${path}; set an explicit trust decision for this directory.`);
+		this.name = "ProjectTrustConflictError";
+		this.path = path;
+	}
+}
+
 export interface ProjectTrustUpdate {
 	path: string;
 	decision: ProjectTrustDecision;
@@ -67,7 +77,7 @@ function findNearestTrustEntry(data: TrustFile, cwd: string): ProjectTrustStoreE
 	while (true) {
 		const value = decisions.get(currentDir);
 		if (value === null) {
-			throw new Error(`Conflicting trust decisions for ${currentDir}; set an explicit trust decision for this directory.`);
+			throw new ProjectTrustConflictError(currentDir);
 		}
 		if (value === true || value === false) {
 			return { path: currentDir, decision: value };
