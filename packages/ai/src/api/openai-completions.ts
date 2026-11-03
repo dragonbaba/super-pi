@@ -48,7 +48,8 @@ import { type AzureEndpointOptions, resolveAzureBaseUrl, resolveDeploymentName }
 import { observeEffectiveDispatch, summarizeCacheMarkerMetadata } from "../utils/effective-dispatch.ts";
 import { shortHash } from "../utils/hash.ts";
 import { headersToRecord } from "../utils/headers.ts";
-import { parseStreamingJson, stringifyToolArguments } from "../utils/json-parse.ts";
+import { stringifyToolArguments } from "../utils/json-parse.ts";
+import { IncrementalToolArguments } from "../utils/incremental-tool-arguments.ts";
 import { getPiUserAgent } from "../utils/pi-user-agent.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { retryProviderRequest } from "../utils/provider-retry.ts";
@@ -67,6 +68,8 @@ import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.ts";
 import { OPENAI_CHAT_SAMPLING_RESERVED_KEYS } from "./openai-sampling-reserved.ts";
 import { buildBaseOptions, clampMaxTokensToContext, clampReasoning, MIN_ANSWER_TOKENS, resolveSamplingParams } from "./simple-options.ts";
 import { transformMessages } from "./transform-messages.ts";
+
+const REASONING_FIELDS = ["reasoning_content", "reasoning", "reasoning_text"] as const;
 
 /**
  * Check if conversation messages contain tool calls or tool results.
@@ -235,6 +238,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 			stopReason: "pending",
 			timestamp: Date.now(),
 		};
+		const toolParsers = new Map<ToolCall, IncrementalToolArguments>();
 
 		try {
 			const apiKey = getClientApiKey(model.provider, options?.apiKey, options?.headers);
@@ -275,8 +279,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 			stream.push({ type: "start", partial: output });
 
 			interface StreamingToolCallBlock extends ToolCall {
-				partialArgs?: string;
-				/** Host-only generation for custom/grammar argument replacement. */
+				/** Host-only generation for JSON and custom/grammar arguments. */
 				toolArgsGeneration?: number;
 				customInput?: {
 					property: string;
@@ -356,11 +359,11 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 							});
 						}
 					} else {
-						block.arguments = parseStreamingJson(block.partialArgs);
+						block.arguments = toolParsers.get(block)!.finalize();
+						toolParsers.delete(block);
 					}
 					// Finalize in-place and strip the scratch buffers so replay only
 					// carries parsed arguments.
-					block.partialArgs = undefined;
 					block.toolArgsGeneration = undefined;
 					block.customInput = undefined;
 					block.streamIndex = undefined;
@@ -420,13 +423,13 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 						id: toolCall.id || "",
 						name,
 						arguments: hasCustomInput ? { [customInputProperty]: "" } : {},
-						partialArgs: hasCustomInput ? undefined : "",
-						toolArgsGeneration: hasCustomInput ? 0 : undefined,
+						toolArgsGeneration: 0,
 						customInput: hasCustomInput
 							? { property: customInputProperty, jsonBuffer: { input: "", started: false, closed: false } }
 							: undefined,
 						streamIndex,
 					};
+					if (!hasCustomInput) toolParsers.set(block, new IncrementalToolArguments());
 					if (streamIndex !== undefined) {
 						toolCallBlocksByIndex.set(streamIndex, block);
 					}
@@ -451,14 +454,15 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 					block.name = name;
 				}
 				if (toolCall.custom && !toolCall.function && !block.customInput) {
+					toolParsers.get(block)!.dispose();
+					toolParsers.delete(block);
 					const customInputProperty = grammarToolInputProperties.get(block.name) ?? "input";
 					block.arguments = { [customInputProperty]: "" };
 					block.customInput = {
 						property: customInputProperty,
 						jsonBuffer: { input: "", started: false, closed: false },
 					};
-					block.partialArgs = undefined;
-					block.toolArgsGeneration = 0;
+					block.toolArgsGeneration = (block.toolArgsGeneration ?? 0) + 1;
 				}
 				applyPendingReasoningDetail(block);
 				return block;
@@ -516,10 +520,9 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 					// or reasoning (other openai compatible endpoints)
 					// Use the first non-empty reasoning field to avoid duplication
 					// (e.g., chutes.ai returns both reasoning_content and reasoning with same content)
-					const reasoningFields = ["reasoning_content", "reasoning", "reasoning_text"];
 					const deltaFields = choice.delta as Record<string, unknown>;
 					let foundReasoningField: string | null = null;
-					for (const field of reasoningFields) {
+					for (const field of REASONING_FIELDS) {
 						const value = deltaFields[field];
 						if (typeof value === "string" && value.length > 0) {
 							foundReasoningField = field;
@@ -560,8 +563,8 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 							let delta = "";
 							if (toolCall.function?.arguments) {
 								delta = toolCall.function.arguments;
-								block.partialArgs = (block.partialArgs ?? "") + toolCall.function.arguments;
-								block.arguments = parseStreamingJson(block.partialArgs);
+								block.arguments = toolParsers.get(block)!.append(delta);
+								block.toolArgsGeneration = (block.toolArgsGeneration ?? 0) + 1;
 							} else if (toolCall.custom?.input) {
 								const nextInput = getCustomToolCallInput(block) + toolCall.custom.input;
 								delta = appendCustomToolCallInput(block, nextInput, false) ?? "";
@@ -619,7 +622,6 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 			for (const block of output.content) {
 				if ("index" in block) (block as { index?: number }).index = undefined;
 				// Streaming scratch buffers are only used during parsing; never persist them.
-				if ("partialArgs" in block) (block as { partialArgs?: string }).partialArgs = undefined;
 				if ("toolArgsGeneration" in block) (block as { toolArgsGeneration?: number }).toolArgsGeneration = undefined;
 				if ("customInput" in block) (block as { customInput?: unknown }).customInput = undefined;
 				if ("streamIndex" in block) (block as { streamIndex?: number }).streamIndex = undefined;
@@ -636,6 +638,9 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 			}
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
+		} finally {
+			for (const parser of toolParsers.values()) parser.dispose();
+			toolParsers.clear();
 		}
 	})();
 

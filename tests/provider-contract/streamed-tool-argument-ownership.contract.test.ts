@@ -102,7 +102,6 @@ test("legacy and custom adapters may omit ownership and enter the counted compat
 
 test("mutation adapters expose transient generations and replacement adapters replace arguments", () => {
 	const mutationSources = [
-		"openai-completions.ts",
 		"mistral-conversations.ts",
 	];
 	for (const modulePath of mutationSources) {
@@ -124,6 +123,11 @@ test("mutation adapters expose transient generations and replacement adapters re
 	assert.match(bedrock, /toolArgsGeneration: block\.toolArgsGeneration/);
 	assert.match(bedrock, /toolArgsGeneration = undefined/);
 	assert.doesNotMatch(bedrock, /partialJson|parseStreamingJson/);
+	const chat = readFileSync("packages/ai/src/api/openai-completions.ts", "utf8");
+	assert.match(chat, /toolArgsGeneration = \(block\.toolArgsGeneration \?\? 0\) \+ 1/);
+	assert.match(chat, /toolArgsGeneration: block\.toolArgsGeneration/);
+	assert.match(chat, /toolArgsGeneration = undefined/);
+	assert.doesNotMatch(chat, /partialArgs|parseStreamingJson/);
 
 	for (const modulePath of ["pi-messages.ts", "google-generative-ai.ts", "google-vertex.ts"]) {
 		const source = readFileSync(`packages/ai/src/api/${modulePath}`, "utf8");

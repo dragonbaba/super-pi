@@ -11,12 +11,14 @@ import { IncrementalToolArguments } from "../../packages/ai/src/utils/incrementa
 import { anthropicArgumentsFixture } from "../../tests/helpers/anthropic-arguments-fixture.ts";
 import { responsesArgumentsFixture } from "../../tests/helpers/responses-arguments-fixture.ts";
 import { bedrockArgumentsFixture } from "../../tests/helpers/bedrock-arguments-fixture.ts";
+import { chatArgumentsFixture } from "../../tests/helpers/chat-arguments-fixture.ts";
 
 const moduleIndex = process.argv.indexOf("--provider-module");
 const responses = process.argv.includes("--responses");
 const bedrock = process.argv.includes("--bedrock");
-const argumentsFixture = bedrock ? bedrockArgumentsFixture : responses ? responsesArgumentsFixture : anthropicArgumentsFixture;
-const modulePath = resolve(moduleIndex < 0 ? `packages/ai/src/api/${bedrock ? "bedrock-converse-stream" : responses ? "openai-codex-responses" : "anthropic-messages"}.ts` : process.argv[moduleIndex + 1]);
+const chat = process.argv.includes("--chat");
+const argumentsFixture = chat ? chatArgumentsFixture : bedrock ? bedrockArgumentsFixture : responses ? responsesArgumentsFixture : anthropicArgumentsFixture;
+const modulePath = resolve(moduleIndex < 0 ? `packages/ai/src/api/${chat ? "openai-completions" : bedrock ? "bedrock-converse-stream" : responses ? "openai-codex-responses" : "anthropic-messages"}.ts` : process.argv[moduleIndex + 1]);
 const { stream: factory } = await import(pathToFileURL(modulePath).href);
 const smoke = process.argv.includes("--smoke"), warmup = 2, timingIterations = 8, profileIterations = 4, samplingInterval = 1024;
 type Fixture = ReturnType<typeof argumentsFixture>;
@@ -69,7 +71,7 @@ async function lifecycle(reason: "normal" | "abort" | "error") {
 	IncrementalToolArguments.prototype.dispose = function() { dispose.call(this); released.push(this.diagnostics()); };
 	const stream = fixture.start(factory, controller.signal);
 	try {
-		for await (const event of stream) if (event.type === "toolcall_delta") {
+		for await (const event of stream) if (event.type === "toolcall_delta" && event.delta.length > 0) {
 			preview ??= new WeakRef((event.partial.content[event.contentIndex] as any).arguments);
 			if (reason === "abort") controller.abort();
 		}
