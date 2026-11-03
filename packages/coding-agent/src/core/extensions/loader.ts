@@ -15,7 +15,7 @@ import { resolvePath } from "../../utils/paths.ts";
 import { createEventBus, type EventBus } from "../event-bus.ts";
 import { SessionExecutionBoundary } from "../execution-boundary.ts";
 import type { ExecOptions } from "../exec.ts";
-import { execCommand } from "../exec.ts";
+import { ExtensionExecOwner } from "../extension-exec-owner.ts";
 import { readPiManifest } from "../pi-manifest.ts";
 import { compareCanonicalIdentifiers } from "../prefix-manifest.ts";
 import { createSyntheticSourceInfo } from "../source-info.ts";
@@ -175,9 +175,11 @@ export function createExtensionRuntime(): ExtensionRuntime {
 	};
 
 	const codexOwner = createOpenAICodexTransportOwner();
+	const executionBoundary = new SessionExecutionBoundary();
 	const runtime: ExtensionRuntime = {
 		compactionStrategies: new Map(),
-		executionBoundary: new SessionExecutionBoundary(),
+		executionBoundary,
+		execOwner: new ExtensionExecOwner(executionBoundary),
 		codexRemoteCompactionEnabled: false,
 		openAIResponsesDispatch: undefined,
 		codexDispatch: { owner: codexOwner, assertCurrent() { assertActive(); runtime.executionBoundary.assertCurrent(); } },
@@ -501,7 +503,7 @@ function createExtensionAPI(
 
 		exec(command: string, args: string[], options?: ExecOptions) {
 			assertActive();
-			return execCommand(command, args, options?.cwd ?? cwd, options);
+			return runtime.execOwner.exec(command, args, options?.cwd ?? cwd, options);
 		},
 
 		getActiveTools(): string[] {

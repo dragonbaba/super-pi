@@ -1,6 +1,6 @@
 # T05：扩展 exec 输出与资源生命周期
 
-日期：2026-11-04。基线：T04 #180 合并提交 `423f4e98acecb225ff83cf8b66a051b43198be39`。状态：**方案先行，T05-A 已实现、验收中；T05-B 未实施**。本次分支 `codex/t05a-extension-exec-output`；只使用当前 Node 26.13.0，保留用户未暂存的 patch 删除。以下设计在生产代码变更前写入，实际执行记录在末尾追加。
+日期：2026-11-04。基线：T04 #180 合并提交 `423f4e98acecb225ff83cf8b66a051b43198be39`。状态：**T05-A #181 已合并；T05-B 已实现、待独立验收**。A 分支 `codex/t05a-extension-exec-output` 已在合并后清理；只使用当前 Node 26.13.0，保留用户未暂存的 patch 删除。以下为 A 变更前写入的设计，实际执行记录在末尾追加；B 见[独立实施记录](pi-150-t05b-exec-process-tree.md)。
 
 ## 顺序与范围
 
@@ -90,4 +90,4 @@ GC smoke 的首次失败定位到 benchmark 自己保留已完成的 Promise，�
 
 类型检查和离线构建通过。全量当前 Node26：**394/394 执行单元成功，5,250 tests / 5,152 pass / 98 skip / 0 fail / 0 cancelled**。相对 T04 增加 19 项可在 Windows 执行的测试，以及 1 项 Linux 实际 SIGTERM-ignore 验证；没有修改既有跳过条件或超时。日志 hash 见证据 validation，原始文件保留于 `.git/pi150-t05a`。基线控制模块完成测量后按登记路径删除，任务拥有的 timer/child/临时目录均在对应夹具退出时释放。
 
-新 PR 最终 head 的跨平台 CI 以该 PR 的检查列表为准，不把本地 Windows 验收当作 Linux 实际强杀的证明。使用说明见 [extension-exec.md](../extension-exec.md)。T05-B 尚未实施；本 PR 不宣称进程族管理已经完成。
+#181 最终 head `901358d9ed88a61286dad19986987062098919c0` 的 CI 6/6 通过，Linux 实际 SIGTERM-ignore 用例完成 5s 强杀；Codex review completed/no findings。经用户授权合并为 `92d5adb8642839140f0229749a0f0b3829f3c550`，远端与本地对应分支已删除，main 已同步。A 仅交付直接 child 生命周期；进程族归属与运行时 drain 在 B 的独立 PR 验收。

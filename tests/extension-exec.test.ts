@@ -23,6 +23,7 @@ test("the public extension API forwards cwd and maxBuffer to the same exec owner
 	try {
 		await loadExtensionFromFactory(pi => { api = pi; }, process.cwd(), bus, runtime);
 		const pending = api!.exec("fixture", [], { cwd: tmpdir(), maxBuffer: 2 });
+		await child.ready;
 		child.stdout.emit("data", Buffer.from("abc"));
 		const result = await pending;
 		assert.equal(result.stdout, "ab"); assert.equal(result.truncated, true); assert.equal(result.code, 1);
@@ -42,6 +43,7 @@ test("UTF-8 survives every split point and both streams retain independent decod
 		const child = new ExecFixture(), restore = installExecFixture(child);
 		try {
 			const pending = execCommand("fixture", [], process.cwd());
+			await child.ready;
 			child.stdout.emit("data", bytes.subarray(0, split));
 			child.stderr.emit("data", bytes.subarray(0, bytes.length - split));
 			child.stdout.emit("data", bytes.subarray(split));
@@ -64,6 +66,7 @@ test("a genuine incomplete UTF-8 EOF is flushed, unlike an artificial capacity c
 	const child = new ExecFixture(), restore = installExecFixture(child);
 	try {
 		const pending = execCommand("fixture", [], process.cwd(), { maxBuffer: 1 });
+		await child.ready;
 		child.stdout.emit("data", Buffer.from([0xe4])); child.finish();
 		const result = await pending;
 		assert.equal(result.stdout, "\ufffd"); assert.equal(result.code, 0); assert.equal(result.truncated, false);
@@ -75,6 +78,7 @@ test("shared raw-byte cap accepts a prefix once and discards an incomplete UTF-8
 	const child = new ExecFixture(), restore = installExecFixture(child);
 	try {
 		const pending = execCommand("fixture", [], process.cwd(), { maxBuffer: 7 });
+		await child.ready;
 		child.stdout.emit("data", Buffer.from("abc"));
 		child.stderr.emit("data", Buffer.from("é"));
 		child.stdout.emit("data", Buffer.from("中tail")); // only two of the three UTF-8 bytes fit
@@ -82,7 +86,7 @@ test("shared raw-byte cap accepts a prefix once and discards an incomplete UTF-8
 		if (!child.killed) child.finish();
 		const result = await pending;
 		assert.deepEqual(result, { stdout: "abc", stderr: "é", code: 1, killed: true, truncated: true });
-		assert.deepEqual(child.signals, ["SIGTERM"]); child.assertReleased();
+		assert.deepEqual(child.signals, [process.platform === "win32" ? "SIGKILL" : "SIGTERM"]); child.assertReleased();
 	} finally { restore(); }
 });
 
@@ -91,6 +95,7 @@ for (const cap of [0, 4]) test(`maxBuffer=${cap}: exact capacity succeeds, one e
 		const child = new ExecFixture(), restore = installExecFixture(child);
 		try {
 			const pending = execCommand("fixture", [], process.cwd(), { maxBuffer: cap });
+			await child.ready;
 			child.stdout.emit("data", Buffer.alloc(cap + extra, 120));
 			if (!extra) child.finish();
 			else if (!child.killed) child.finish(); // let the baseline report its missing capacity behavior
@@ -126,6 +131,7 @@ test("signal termination is not reported as a successful exit", async () => {
 	const child = new ExecFixture(), restore = installExecFixture(child);
 	try {
 		const pending = execCommand("fixture", [], process.cwd());
+		await child.ready;
 		child.finish(null, "SIGTERM");
 		const result = await pending;
 		assert.equal(result.code, 1); assert.equal(result.killed, false); child.assertReleased();
@@ -138,20 +144,21 @@ for (const reason of ["abort", "timeout", "cap"] as const) test(`${reason}: forc
 	const restore = installExecFixture(child), controller = new AbortController();
 	try {
 		const pending = execCommand("fixture", [], process.cwd(), { signal: controller.signal, timeout: 10, maxBuffer: 1 });
+		await child.ready;
 		if (reason === "abort") controller.abort();
 		else if (reason === "timeout") t.mock.timers.tick(10);
 		else child.stdout.emit("data", Buffer.from("over"));
-		assert.deepEqual(child.signals, ["SIGTERM"]);
+		assert.deepEqual(child.signals, [process.platform === "win32" ? "SIGKILL" : "SIGTERM"]);
 		child.stdout.emit("data", Buffer.from("late while stopping"));
 		t.mock.timers.tick(4999); assert.equal(child.signals.length, 1);
-		t.mock.timers.tick(1); assert.deepEqual(child.signals, ["SIGTERM", "SIGKILL"]);
+		t.mock.timers.tick(1); assert.deepEqual(child.signals, process.platform === "win32" ? ["SIGKILL"] : ["SIGTERM", "SIGKILL"]);
 		child.finish(0); // cooperative child exit=0 must not conceal an interruption
 		const result = await pending;
 		assert.equal(result.code, 1); assert.equal(result.killed, true);
 		assert.equal(result.truncated, reason === "cap");
 		assert.equal(result.stdout, reason === "cap" ? "o" : "");
 		assert.equal(getEventListeners(controller.signal, "abort").length, 0); child.assertReleased();
-		t.mock.timers.tick(20000); assert.equal(child.signals.length, 2);
+		t.mock.timers.tick(20000); assert.equal(child.signals.length, process.platform === "win32" ? 1 : 2);
 	} finally { restore(); }
 });
 
@@ -160,6 +167,7 @@ test("completed execution removes its timeout, force timer and data callbacks; s
 	const child = new ExecFixture(), restore = installExecFixture(child), controller = new AbortController();
 	try {
 		const pending = execCommand("fixture", [], process.cwd(), { timeout: 50, signal: controller.signal });
+		await child.ready;
 		const callbacks = child.stdout.listeners("data");
 		child.stdout.emit("data", Buffer.from("done")); child.finish();
 		const result = await pending;
@@ -175,6 +183,7 @@ test("abort after root exit closes inherited reading ends without waiting for de
 	const child = new ExecFixture(), restore = installExecFixture(child), controller = new AbortController();
 	try {
 		const pending = execCommand("fixture", [], process.cwd(), { signal: controller.signal });
+		await child.ready;
 		child.exitCode = 0; child.emit("exit", 0, null);
 		child.stdout.emit("data", Buffer.from("tail")); controller.abort();
 		assert.equal(child.stdout.destroyed, true); assert.equal(child.stderr.destroyed, true);

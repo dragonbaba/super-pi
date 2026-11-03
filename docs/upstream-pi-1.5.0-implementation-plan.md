@@ -1,6 +1,6 @@
 # Pi 1.5.0 借鉴与修复实施方案
 
-日期：2026-11-04。状态：**方案 #175、SDK 前置修复 #176、T01 #177、T02 #178、T03 #179 和 T04 #180 已合并；T05-A 输出与直接 child 生命周期进入验收；T05-B 进程族管理及 T06–T12 尚未实施**。#175 交付 GPL-3.0-only、README、差异评估与本方案；先完成逐项规划，再进入独立修复。不得把“读过源码”“写了测试”或“CI 启动了”记成实施完成。
+日期：2026-11-04。状态：**方案 #175、SDK 前置修复 #176、T01 #177、T02 #178、T03 #179、T04 #180 和 T05-A #181 已合并；T05-B 进程族管理已实现、待验收；T06–T12 尚未实施**。#175 交付 GPL-3.0-only、README、差异评估与本方案；先完成逐项规划，再进入独立修复。不得把“读过源码”“写了测试”或“CI 启动了”记成实施完成。
 
 ## 1. 基线、范围与交付顺序
 
@@ -9,7 +9,7 @@
 - 约束依据：[AGENTS.md](../AGENTS.md)、[Hot-path allocation contract](performance/hot-path-allocation-contract.md)、[测试与 CI 说明](testing.md)。发生冲突时不得用本方案降低契约。
 - 方案交付后按 T01 → T02 → T03 → T04 → T05 → T06 → T07–T09 → T10–T12 顺序实施；F 项先做需求/兼容性判定，不自动纳入修复。
 - 每个独立根因使用独立实施分支和 PR；共用的锁文件、认证、session 或 provider 模块串行修改，以已合并基线为准。T01 的 SDK transport 前置 [#176](https://github.com/dragonbaba/super-pi/pull/176)、依赖更新 [#177](https://github.com/dragonbaba/super-pi/pull/177) 与 T02 [#178](https://github.com/dragonbaba/super-pi/pull/178) 已依次合并；T03 从 `57e623a2840a1709d0aad92fdd380f5cf78e7367` 开始。不把未合并候选当已交付。
-- 本 PR 的创建不代表允许自动合并、安装到全局环境或发布 npm。沿用用户对当前任务的授权，不从历史任务文档继承额外发布权限。
+- 用户在 T05-B 开始前明确授权后续各功能：等待 reviewer 对最终 head 完成审核，无问题且检查通过后自动合并、删除对应本地/远端分支、同步 main 并执行下一项；有问题则修复、推送并额外 `@codex review`，等待复审完成。此授权不包含安装到全局环境或发布 npm。
 
 ### 1.1 任务索引
 
@@ -32,6 +32,8 @@
 每项状态统一为：`待复现/待设计核对 → 可实施 → 实施中 → 待验收 → 已交付`。排除项记录理由及覆盖范围，不打“修复完成”勾。T01 见[依赖实施记录](repairs/pi-150-t01-dependencies.md)；T02 见[保存信任决定实施记录](repairs/pi-150-t02-saved-trust.md)；T03 见[登录 URL 实施记录](repairs/pi-150-t03-login-url-safety.md)。T04 见[会话追加失败实施记录](repairs/pi-150-t04-session-append.md)，已通过 #180 合并为 `423f4e98acecb225ff83cf8b66a051b43198be39`。T05 先行拆分方案及验收见[扩展 exec 实施记录](repairs/pi-150-t05-extension-exec.md)：A 验收后独立合并，再执行 B；B 完成前不进入 T06。T06–T12 和 F01–F06 尚未实施。
 
 用户最新验收约束：**只使用当前 Node 26.13，失败定位根因并修复，不扩展多版本测试来绕过失败。** 现有 Linux/Windows CI 分片统一使用该版本；各任务原先提到的最低版本测试不再作为本轮执行项，包的 engines 元数据不因此自动修改。
+
+T05-A #181 已合并为 `92d5adb8642839140f0229749a0f0b3829f3c550`，最终 head Codex completed/no findings、CI 6/6，通过后删除对应分支。T05-B 的先行方案、实现与验证见[进程所有权实施记录](repairs/pi-150-t05b-exec-process-tree.md)；本项仍需独立 PR 的最终审核与跨平台验收。
 
 ## 2. 实施前必须完成的设计门禁
 

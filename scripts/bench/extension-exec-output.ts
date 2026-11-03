@@ -11,6 +11,8 @@ import { StringDecoder } from "node:string_decoder";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { ExecFixture, installExecFixture } from "../../tests/helpers/extension-exec-fixture.ts";
+import { ExtensionExecOwner } from "../../packages/coding-agent/src/core/extension-exec-owner.ts";
+import { SessionExecutionBoundary } from "../../packages/coding-agent/src/core/execution-boundary.ts";
 
 const moduleIndex = process.argv.indexOf("--exec-module");
 const modulePath = resolve(moduleIndex < 0 ? "packages/coding-agent/src/core/exec.ts" : process.argv[moduleIndex + 1]);
@@ -24,6 +26,7 @@ async function run(bytes: number, chunk: Buffer, cap = bytes) {
 	const child = new ExecFixture(), restore = installExecFixture(child);
 	try {
 		const pending = execCommand("fixture", [], process.cwd(), { maxBuffer: cap });
+		await child.ready;
 		for (let offset = 0; offset < bytes; offset += chunk.length) {
 			if (offset / chunk.length % 2) child.stderr.emit("data", chunk);
 			else child.stdout.emit("data", chunk);
@@ -35,8 +38,8 @@ async function run(bytes: number, chunk: Buffer, cap = bytes) {
 
 async function counters(cap: number) {
 	const chunk = Buffer.from("x".repeat(64)), bytes = 4096;
-	let inDelivery = false, promises = 0, decodedBytes = 0, decodedChunks = 0, views = 0;
-	const hook = createHook({ init(_id, type) { if (inDelivery && type === "PROMISE") promises++; } });
+	let inDelivery = false, stopping = false, promises = 0, stopPromises = 0, decodedBytes = 0, decodedChunks = 0, views = 0;
+	const hook = createHook({ init(_id, type) { if (inDelivery && type === "PROMISE") { if (stopping) stopPromises++; else promises++; } } });
 	const write = StringDecoder.prototype.write, subarray = Buffer.prototype.subarray;
 	StringDecoder.prototype.write = function(buffer) { decodedBytes += buffer.length; decodedChunks++; return write.call(this, buffer); };
 	Buffer.prototype.subarray = function(start, end) { if (inDelivery) views++; return subarray.call(this, start, end); };
@@ -44,8 +47,11 @@ async function counters(cap: number) {
 	hook.enable();
 	try {
 		const pending = execCommand("fixture", [], process.cwd(), { maxBuffer: cap });
+		await child.ready;
 		inDelivery = true;
 		for (let offset = 0; offset < bytes; offset += chunk.length) {
+			// The first over-cap delivery invokes one stop boundary; it is not normal output work.
+			stopping = offset <= cap && offset + chunk.length > cap;
 			if (offset / chunk.length % 2) child.stderr.emit("data", chunk);
 			else child.stdout.emit("data", chunk);
 		}
@@ -62,7 +68,7 @@ async function counters(cap: number) {
 			assert.ok(views <= 1); child.assertReleased();
 		}
 		return { inputBytes: bytes, inputChunks: bytes / chunk.length, cap, decodedBytes, decodedChunks, outputBytes,
-			promisesDuringDelivery: promises, partialBufferViews: views, remainingDataListeners: listeners, stopSignals: child.signals.length };
+			promisesDuringDelivery: promises, promisesDuringStopDelivery: stopPromises, partialBufferViews: views, remainingDataListeners: listeners, stopSignals: child.signals.length };
 	} finally {
 		hook.disable(); StringDecoder.prototype.write = write; Buffer.prototype.subarray = subarray;
 		restore();
@@ -83,6 +89,7 @@ async function lifecycle(kind: "normal" | "abort" | "cap" | "error") {
 	let callbackRefs: WeakRef<Function>[] = [];
 	try {
 		pending = execCommand("fixture", [], process.cwd(), { signal: controller.signal, maxBuffer: kind === "cap" ? 128 : payload.length });
+		await child.ready;
 		listeners = child.stdout.listeners("data"); callbackRefs = listeners.map(fn => new WeakRef(fn));
 		child.stdout.emit("data", payload);
 		if (kind === "abort") controller.abort();
@@ -148,16 +155,43 @@ async function measure(bytes: number, chunkBytes: number, cap: number) {
 		allocationStacks: stacks.sort((a, b) => b.bytes - a.bytes).slice(0, 8) };
 }
 
+async function ownerLifecycle(dispose: boolean) {
+	const boundary = new SessionExecutionBoundary();
+	let owner: ExtensionExecOwner | undefined = new ExtensionExecOwner(boundary);
+	const ownerRef = new WeakRef(owner), signal = boundary.signal;
+	const child = new ExecFixture(), restore = installExecFixture(child);
+	let pending: Promise<object> | undefined, result: object | undefined, resultRef: WeakRef<object>;
+	try {
+		pending = owner.exec("fixture", [], process.cwd()); await child.ready;
+		child.stdout.emit("data", Buffer.alloc(1024 * 1024, 120));
+		if (dispose) await boundary.dispose();
+		else { child.finish(); await pending; await boundary.transition(() => {}); }
+		result = await pending; resultRef = new WeakRef(result);
+		child.assertReleased();
+	} finally { restore(); }
+	pending = undefined; result = undefined;
+	if (dispose) owner = undefined;
+	await gc();
+	const row = { dispose, retainedResult: Number(resultRef.deref() !== undefined), retainedDisposedOwner: dispose ? Number(ownerRef.deref() !== undefined) : null,
+		abortListeners: getEventListeners(signal, "abort").length, participants: boundary.participantCount };
+	assert.equal(row.retainedResult, 0); assert.equal(row.abortListeners, 0);
+	assert.equal(row.participants, dispose ? 0 : 1);
+	if (dispose) assert.equal(row.retainedDisposedOwner, 0);
+	await boundary.dispose();
+	return row;
+}
+
 assert.equal(typeof globalThis.gc, "function", "run with --expose-gc");
 const deterministic = [await counters(4096), await counters(135), await counters(0)];
 const references = [];
 for (const kind of ["normal", "abort", "cap", "error"] as const) references.push(await lifecycle(kind));
 const measurements = [];
+const runtimeReferences = [await ownerLifecycle(false), await ownerLifecycle(true)];
 if (!smoke) {
 	for (const bytes of [256 * 1024, 512 * 1024, 1024 * 1024]) measurements.push(await measure(bytes, 1024, bytes));
 	measurements.push(await measure(1024 * 1024, 64, 1024 * 1024));
 	measurements.push(await measure(1024 * 1024, 1024, 8192));
 }
-console.log(JSON.stringify({ fixtureVersion: 1, node: process.version, os: `${platform()} ${release()}`, modulePath,
+console.log(JSON.stringify({ fixtureVersion: 2, node: process.version, os: `${platform()} ${release()}`, modulePath,
 	sourceHash: createHash("sha256").update(readFileSync(modulePath, "utf8").replaceAll("\r\n", "\n")).digest("hex"),
-	warmup, iterations, samplingInterval, deterministic, references, measurements }));
+	warmup, iterations, samplingInterval, deterministic, references, runtimeReferences, measurements }));

@@ -1,0 +1,4747 @@
+{
+  "schemaVersion": 1,
+  "task": "Pi 1.5.0 T05-B",
+  "baselineCommit": "92d5adb8642839140f0229749a0f0b3829f3c550",
+  "node": "v26.13.0",
+  "baselineGitSourceHash": "8fd23a6ac0bf31c0ff94a09af355ed0d5879ba979a90fcd83e29fe4fae86a5cb",
+  "protocol": {
+    "pairedRounds": 5,
+    "order": "AB / BA alternating; output then real startup per variant",
+    "output": "same real exec/wait handlers; only exact fixture spawn/job/group boundary is replaced",
+    "runtimeGC": "candidate service in both invocations, not a baseline capability comparison",
+    "startup": "21 serial real commands, first plus 20 warm; first empty-node only includes native initialization; module import excluded",
+    "stopExemption": "first over-cap delivery may allocate one mock cached stop Promise; normal and subsequent delivery Promise count stays zero",
+    "scope": "POSIX owned PGID only; Windows job including detached descendants; no sandbox promise"
+  },
+  "sources": {
+    "packages/coding-agent/src/core/exec.ts": "a9300b6027e40ddedbcca460de30f1c78750533bd8cd1699f5b5ac9671b9a70d",
+    "packages/coding-agent/src/core/extension-exec-owner.ts": "8ec412f8b36408688530c350d9466f0584df845ca1c498bc7e3f09b326d44b78",
+    "scripts/bench/extension-exec-output.ts": "f07a5dec75bb2c0ba626c9745da0ee3c91295f6d17bdc8b60c34310f1dd3db0c",
+    "scripts/bench/extension-exec-startup.ts": "b4ec829ffce84cf47fea596f0dae0cbcdb2cfd529866b51f143f2f5e9e18dbbf",
+    "tests/helpers/extension-exec-fixture.ts": "43f58d137a44b8a468b2b9b01f7db0b6762b1d1e289b7fea3719a6c429f83f1d"
+  },
+  "baselineReproduction": {
+    "logHash": "85d3de22fdd7d467269d3f9e323ac7cbd696ca8a6157877320e881891c896ff0",
+    "observed": "Missing expected ESRCH: owned fixture descendant still alive after exec returned; cleaned by exact handshake PID"
+  },
+  "validation": {
+    "check": {
+      "passed": true,
+      "logHash": "34ad06a75b1949f63b287da92a66396b50df4048d85a6cc6c37a9e54497a7ae7"
+    },
+    "build": {
+      "passed": true,
+      "logHash": "3c4911c940a7efe45da5b0224fb733a8aa4a281196813d7d6dc33c5bc0d25a77"
+    },
+    "targeted": {
+      "tests": 83,
+      "pass": 82,
+      "skip": 1,
+      "fail": 0,
+      "logHash": "fa0ab009c0ba5d6469663e112d1e59b99397036966fe21dc0250a1ee925a9efc"
+    },
+    "full": {
+      "executionUnits": 396,
+      "tests": 5263,
+      "pass": 5165,
+      "skip": 98,
+      "fail": 0,
+      "cancelled": 0,
+      "exitCode": 0,
+      "logHash": "3eb319e7a6968fc8bba9b3cedc8d28c814db9ac1cc8a0244cbb5e89dd39dcae5"
+    },
+    "review": "pending final PR head"
+  },
+  "runs": [
+    {
+      "round": 1,
+      "variant": "baseline",
+      "output": {
+        "fixtureVersion": 2,
+        "node": "v26.13.0",
+        "os": "win32 10.0.26300",
+        "modulePath": "D:\\RMProjects\\Pi\\.git\\pi150-t05b\\exec-baseline.ts",
+        "sourceHash": "76e1c26ac060e33f93e190283e900bf0f4f235d6975c12d7280c8b3f09bc1621",
+        "warmup": 4,
+        "iterations": 16,
+        "samplingInterval": 1024,
+        "deterministic": [
+          {
+            "inputBytes": 4096,
+            "inputChunks": 64,
+            "cap": 4096,
+            "decodedBytes": 4096,
+            "decodedChunks": 64,
+            "outputBytes": 4096,
+            "promisesDuringDelivery": 0,
+            "promisesDuringStopDelivery": 0,
+            "partialBufferViews": 0,
+            "remainingDataListeners": 0,
+            "stopSignals": 0
+          },
+          {
+            "inputBytes": 4096,
+            "inputChunks": 64,
+            "cap": 135,
+            "decodedBytes": 135,
+            "decodedChunks": 3,
+            "outputBytes": 135,
+            "promisesDuringDelivery": 0,
+            "promisesDuringStopDelivery": 0,
+            "partialBufferViews": 1,
+            "remainingDataListeners": 0,
+            "stopSignals": 1
+          },
+          {
+            "inputBytes": 4096,
+            "inputChunks": 64,
+            "cap": 0,
+            "decodedBytes": 0,
+            "decodedChunks": 0,
+            "outputBytes": 0,
+            "promisesDuringDelivery": 0,
+            "promisesDuringStopDelivery": 0,
+            "partialBufferViews": 0,
+            "remainingDataListeners": 0,
+            "stopSignals": 1
+          }
+        ],
+        "references": [
+          {
+            "kind": "normal",
+            "retainedInputBuffers": 0,
+            "retainedCallbacks": 0,
+            "retainedResult": 0,
+            "dataListeners": 0,
+            "pendingTimers": 0,
+            "abortListeners": 0
+          },
+          {
+            "kind": "abort",
+            "retainedInputBuffers": 0,
+            "retainedCallbacks": 0,
+            "retainedResult": 0,
+            "dataListeners": 0,
+            "pendingTimers": 0,
+            "abortListeners": 0
+          },
+          {
+            "kind": "cap",
+            "retainedInputBuffers": 0,
+            "retainedCallbacks": 0,
+            "retainedResult": 0,
+            "dataListeners": 0,
+            "pendingTimers": 0,
+            "abortListeners": 0
+          },
+          {
+            "kind": "error",
+            "retainedInputBuffers": 0,
+            "retainedCallbacks": 0,
+            "retainedResult": 0,
+            "dataListeners": 0,
+            "pendingTimers": 0,
+            "abortListeners": 0
+          }
+        ],
+        "runtimeReferences": [
+          {
+            "dispose": false,
+            "retainedResult": 0,
+            "retainedDisposedOwner": null,
+            "abortListeners": 0,
+            "participants": 1
+          },
+          {
+            "dispose": true,
+            "retainedResult": 0,
+            "retainedDisposedOwner": 0,
+            "abortListeners": 0,
+            "participants": 0
+          }
+        ],
+        "measurements": [
+          {
+            "bytes": 262144,
+            "chunkBytes": 1024,
+            "cap": 262144,
+            "iterations": 16,
+            "timingIterations": 1024,
+            "cpuMicrosecondsPerInvocation": 60.546875,
+            "wallP95Milliseconds": 0.13290000000000646,
+            "sampledBytes": 4935416,
+            "sampledBytesPerInputChunk": 1204.935546875,
+            "heapBefore": 10803936,
+            "peakHeap": 15690320,
+            "heapAfterGC": 11113752,
+            "allocationStacks": [
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 2136160
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 2116400
+              },
+              {
+                "frame": "emit@node:events:489",
+                "bytes": 220096
+              },
+              {
+                "frame": "post@node:inspector:115",
+                "bytes": 79736
+              },
+              {
+                "frame": "onStdoutData@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:81",
+                "bytes": 66560
+              },
+              {
+                "frame": "onStderrData@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:85",
+                "bytes": 64480
+              },
+              {
+                "frame": "execCommand@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:45",
+                "bytes": 22552
+              },
+              {
+                "frame": "_onceWrap@node:events:633",
+                "bytes": 17912
+              }
+            ]
+          },
+          {
+            "bytes": 524288,
+            "chunkBytes": 1024,
+            "cap": 524288,
+            "iterations": 16,
+            "timingIterations": 512,
+            "cpuMicrosecondsPerInvocation": 181.640625,
+            "wallP95Milliseconds": 0.1780000000000257,
+            "sampledBytes": 9367120,
+            "sampledBytesPerInputChunk": 1143.447265625,
+            "heapBefore": 10912848,
+            "peakHeap": 20401224,
+            "heapAfterGC": 11290712,
+            "allocationStacks": [
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 4212000
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 4200560
+              },
+              {
+                "frame": "emit@node:events:489",
+                "bytes": 458944
+              },
+              {
+                "frame": "onStdoutData@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:81",
+                "bytes": 142496
+              },
+              {
+                "frame": "onStderrData@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:85",
+                "bytes": 142496
+              },
+              {
+                "frame": "execCommand@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:45",
+                "bytes": 18440
+              },
+              {
+                "frame": "Duplex@node:internal/streams/duplex:64",
+                "bytes": 17288
+              },
+              {
+                "frame": "@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/child-process.ts:59",
+                "bytes": 16184
+              }
+            ]
+          },
+          {
+            "bytes": 1048576,
+            "chunkBytes": 1024,
+            "cap": 1048576,
+            "iterations": 16,
+            "timingIterations": 256,
+            "cpuMicrosecondsPerInvocation": 183.59375,
+            "wallP95Milliseconds": 0.24970000000001846,
+            "sampledBytes": 18500336,
+            "sampledBytesPerInputChunk": 1129.1708984375,
+            "heapBefore": 10929504,
+            "peakHeap": 27312648,
+            "heapAfterGC": 11619536,
+            "allocationStacks": [
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 8496800
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 8388656
+              },
+              {
+                "frame": "emit@node:events:489",
+                "bytes": 901224
+              },
+              {
+                "frame": "onStderrData@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:85",
+                "bytes": 261568
+              },
+              {
+                "frame": "onStdoutData@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:81",
+                "bytes": 241312
+              },
+              {
+                "frame": "_onceWrap@node:events:633",
+                "bytes": 16968
+              },
+              {
+                "frame": "@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/child-process.ts:59",
+                "bytes": 15968
+              },
+              {
+                "frame": "execCommand@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:45",
+                "bytes": 15912
+              }
+            ]
+          },
+          {
+            "bytes": 1048576,
+            "chunkBytes": 64,
+            "cap": 1048576,
+            "iterations": 16,
+            "timingIterations": 256,
+            "cpuMicrosecondsPerInvocation": 855.46875,
+            "wallP95Milliseconds": 1.0468999999999937,
+            "sampledBytes": 31511432,
+            "sampledBytesPerInputChunk": 120.20657348632812,
+            "heapBefore": 10933872,
+            "peakHeap": 27617344,
+            "heapAfterGC": 7767920,
+            "allocationStacks": [
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 6224240
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 6097600
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 4441200
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 4417760
+              },
+              {
+                "frame": "onStderrData@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:85",
+                "bytes": 2451488
+              },
+              {
+                "frame": "onStdoutData@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:81",
+                "bytes": 2410912
+              },
+              {
+                "frame": "emit@node:events:489",
+                "bytes": 1756840
+              },
+              {
+                "frame": "onStdoutData@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:81",
+                "bytes": 1743168
+              }
+            ]
+          },
+          {
+            "bytes": 1048576,
+            "chunkBytes": 1024,
+            "cap": 8192,
+            "iterations": 16,
+            "timingIterations": 256,
+            "cpuMicrosecondsPerInvocation": 58.59375,
+            "wallP95Milliseconds": 0.17589999999995598,
+            "sampledBytes": 1315992,
+            "sampledBytesPerInputChunk": 80.32177734375,
+            "heapBefore": 6084416,
+            "peakHeap": 7374568,
+            "heapAfterGC": 6186416,
+            "allocationStacks": [
+              {
+                "frame": "emit@node:events:489",
+                "bytes": 943864
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 76960
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 68640
+              },
+              {
+                "frame": "execCommand@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:45",
+                "bytes": 21624
+              },
+              {
+                "frame": "_onceWrap@node:events:633",
+                "bytes": 16064
+              },
+              {
+                "frame": "@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/child-process.ts:59",
+                "bytes": 15048
+              },
+              {
+                "frame": "ExecFixture@file:///D:/RMProjects/Pi/tests/helpers/extension-exec-fixture.ts:10",
+                "bytes": 14872
+              },
+              {
+                "frame": "Timeout@node:internal/timers:218",
+                "bytes": 10728
+              }
+            ]
+          }
+        ]
+      },
+      "startup": {
+        "node": "v26.13.0",
+        "os": "win32 10.0.26300",
+        "modulePath": "D:\\RMProjects\\Pi\\.git\\pi150-t05b\\exec-baseline.ts",
+        "sourceHash": "76e1c26ac060e33f93e190283e900bf0f4f235d6975c12d7280c8b3f09bc1621",
+        "rows": [
+          {
+            "name": "empty-node",
+            "firstMilliseconds": 36.606300000000005,
+            "warmP50Milliseconds": 33.36500000000001,
+            "warmP95Milliseconds": 35.71200000000002,
+            "samples": [
+              36.606300000000005,
+              34.101699999999994,
+              35.71200000000002,
+              33.398300000000006,
+              32.558099999999996,
+              32.2638,
+              33.36500000000001,
+              34.17579999999998,
+              33.86110000000002,
+              33.81229999999999,
+              32.24150000000003,
+              32.3852,
+              33.48509999999999,
+              33.10560000000004,
+              32.18380000000002,
+              32.391899999999964,
+              31.792100000000005,
+              34.533399999999915,
+              33.560100000000034,
+              31.737700000000018,
+              33.13409999999999
+            ],
+            "outputBytes": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          {
+            "name": "git-status",
+            "firstMilliseconds": 29.912399999999934,
+            "warmP50Milliseconds": 28.259000000000015,
+            "warmP95Milliseconds": 33.315900000000056,
+            "samples": [
+              29.912399999999934,
+              28.720899999999915,
+              27.879200000000083,
+              29.185699999999997,
+              29.598299999999995,
+              28.353399999999965,
+              27.972500000000082,
+              28.430500000000052,
+              27.96679999999992,
+              27.915100000000052,
+              27.92470000000003,
+              33.315900000000056,
+              28.04009999999994,
+              28.604100000000017,
+              28.259000000000015,
+              28.634599999999864,
+              28.201099999999997,
+              30.95270000000005,
+              28.19159999999988,
+              27.76830000000018,
+              28.12160000000017
+            ],
+            "outputBytes": [
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643
+            ]
+          }
+        ],
+        "finalOwnership": {
+          "handles": 0,
+          "processHandles": 0,
+          "created": 0,
+          "cleanupChecks": 0
+        }
+      }
+    },
+    {
+      "round": 1,
+      "variant": "candidate",
+      "output": {
+        "fixtureVersion": 2,
+        "node": "v26.13.0",
+        "os": "win32 10.0.26300",
+        "modulePath": "D:\\RMProjects\\Pi\\packages\\coding-agent\\src\\core\\exec.ts",
+        "sourceHash": "a9300b6027e40ddedbcca460de30f1c78750533bd8cd1699f5b5ac9671b9a70d",
+        "warmup": 4,
+        "iterations": 16,
+        "samplingInterval": 1024,
+        "deterministic": [
+          {
+            "inputBytes": 4096,
+            "inputChunks": 64,
+            "cap": 4096,
+            "decodedBytes": 4096,
+            "decodedChunks": 64,
+            "outputBytes": 4096,
+            "promisesDuringDelivery": 0,
+            "promisesDuringStopDelivery": 0,
+            "partialBufferViews": 0,
+            "remainingDataListeners": 0,
+            "stopSignals": 0
+          },
+          {
+            "inputBytes": 4096,
+            "inputChunks": 64,
+            "cap": 135,
+            "decodedBytes": 135,
+            "decodedChunks": 3,
+            "outputBytes": 135,
+            "promisesDuringDelivery": 0,
+            "promisesDuringStopDelivery": 1,
+            "partialBufferViews": 1,
+            "remainingDataListeners": 0,
+            "stopSignals": 1
+          },
+          {
+            "inputBytes": 4096,
+            "inputChunks": 64,
+            "cap": 0,
+            "decodedBytes": 0,
+            "decodedChunks": 0,
+            "outputBytes": 0,
+            "promisesDuringDelivery": 0,
+            "promisesDuringStopDelivery": 1,
+            "partialBufferViews": 0,
+            "remainingDataListeners": 0,
+            "stopSignals": 1
+          }
+        ],
+        "references": [
+          {
+            "kind": "normal",
+            "retainedInputBuffers": 0,
+            "retainedCallbacks": 0,
+            "retainedResult": 0,
+            "dataListeners": 0,
+            "pendingTimers": 0,
+            "abortListeners": 0
+          },
+          {
+            "kind": "abort",
+            "retainedInputBuffers": 0,
+            "retainedCallbacks": 0,
+            "retainedResult": 0,
+            "dataListeners": 0,
+            "pendingTimers": 0,
+            "abortListeners": 0
+          },
+          {
+            "kind": "cap",
+            "retainedInputBuffers": 0,
+            "retainedCallbacks": 0,
+            "retainedResult": 0,
+            "dataListeners": 0,
+            "pendingTimers": 0,
+            "abortListeners": 0
+          },
+          {
+            "kind": "error",
+            "retainedInputBuffers": 0,
+            "retainedCallbacks": 0,
+            "retainedResult": 0,
+            "dataListeners": 0,
+            "pendingTimers": 0,
+            "abortListeners": 0
+          }
+        ],
+        "runtimeReferences": [
+          {
+            "dispose": false,
+            "retainedResult": 0,
+            "retainedDisposedOwner": null,
+            "abortListeners": 0,
+            "participants": 1
+          },
+          {
+            "dispose": true,
+            "retainedResult": 0,
+            "retainedDisposedOwner": 0,
+            "abortListeners": 0,
+            "participants": 0
+          }
+        ],
+        "measurements": [
+          {
+            "bytes": 262144,
+            "chunkBytes": 1024,
+            "cap": 262144,
+            "iterations": 16,
+            "timingIterations": 1024,
+            "cpuMicrosecondsPerInvocation": 106.4453125,
+            "wallP95Milliseconds": 0.136099999999999,
+            "sampledBytes": 4946448,
+            "sampledBytesPerInputChunk": 1207.62890625,
+            "heapBefore": 10808296,
+            "peakHeap": 15710816,
+            "heapAfterGC": 11135384,
+            "allocationStacks": [
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 2145520
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 2113280
+              },
+              {
+                "frame": "emit@node:events:489",
+                "bytes": 215960
+              },
+              {
+                "frame": "post@node:inspector:115",
+                "bytes": 83328
+              },
+              {
+                "frame": "onStderrData@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:120",
+                "bytes": 65536
+              },
+              {
+                "frame": "onStdoutData@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:116",
+                "bytes": 64480
+              },
+              {
+                "frame": "onData@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/child-process.ts:109",
+                "bytes": 18600
+              },
+              {
+                "frame": "_onceWrap@node:events:633",
+                "bytes": 18160
+              }
+            ]
+          },
+          {
+            "bytes": 524288,
+            "chunkBytes": 1024,
+            "cap": 524288,
+            "iterations": 16,
+            "timingIterations": 512,
+            "cpuMicrosecondsPerInvocation": 152.34375,
+            "wallP95Milliseconds": 0.17600000000001614,
+            "sampledBytes": 9464464,
+            "sampledBytesPerInputChunk": 1155.330078125,
+            "heapBefore": 10916008,
+            "peakHeap": 20422776,
+            "heapAfterGC": 11295448,
+            "allocationStacks": [
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 4239040
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 4221360
+              },
+              {
+                "frame": "emit@node:events:489",
+                "bytes": 461016
+              },
+              {
+                "frame": "onStdoutData@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:116",
+                "bytes": 142496
+              },
+              {
+                "frame": "onStderrData@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:120",
+                "bytes": 139360
+              },
+              {
+                "frame": "_onceWrap@node:events:633",
+                "bytes": 22352
+              },
+              {
+                "frame": "execCommand@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:52",
+                "bytes": 14392
+              },
+              {
+                "frame": "run@file:///D:/RMProjects/Pi/scripts/bench/extension-exec-output.ts:25",
+                "bytes": 12888
+              }
+            ]
+          },
+          {
+            "bytes": 1048576,
+            "chunkBytes": 1024,
+            "cap": 1048576,
+            "iterations": 16,
+            "timingIterations": 256,
+            "cpuMicrosecondsPerInvocation": 179.6875,
+            "wallP95Milliseconds": 0.2656000000000063,
+            "sampledBytes": 18686656,
+            "sampledBytesPerInputChunk": 1140.54296875,
+            "heapBefore": 10933312,
+            "peakHeap": 27325760,
+            "heapAfterGC": 11633008,
+            "allocationStacks": [
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 8540480
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 8425040
+              },
+              {
+                "frame": "emit@node:events:489",
+                "bytes": 939832
+              },
+              {
+                "frame": "onStderrData@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:120",
+                "bytes": 279104
+              },
+              {
+                "frame": "onStdoutData@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:116",
+                "bytes": 274592
+              },
+              {
+                "frame": "_onceWrap@node:events:633",
+                "bytes": 13728
+              },
+              {
+                "frame": "@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/child-process.ts:59",
+                "bytes": 10704
+              },
+              {
+                "frame": "Duplex@node:internal/streams/duplex:64",
+                "bytes": 10696
+              }
+            ]
+          },
+          {
+            "bytes": 1048576,
+            "chunkBytes": 64,
+            "cap": 1048576,
+            "iterations": 16,
+            "timingIterations": 256,
+            "cpuMicrosecondsPerInvocation": 917.96875,
+            "wallP95Milliseconds": 0.9856000000000336,
+            "sampledBytes": 31324976,
+            "sampledBytesPerInputChunk": 119.49530029296875,
+            "heapBefore": 10937592,
+            "peakHeap": 27633680,
+            "heapAfterGC": 7767696,
+            "allocationStacks": [
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 6284960
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 6215760
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 4299600
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 4163360
+              },
+              {
+                "frame": "onStdoutData@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:116",
+                "bytes": 2420288
+              },
+              {
+                "frame": "onStderrData@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:120",
+                "bytes": 2416128
+              },
+              {
+                "frame": "emit@node:events:489",
+                "bytes": 1878488
+              },
+              {
+                "frame": "onStdoutData@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:116",
+                "bytes": 1733824
+              }
+            ]
+          },
+          {
+            "bytes": 1048576,
+            "chunkBytes": 1024,
+            "cap": 8192,
+            "iterations": 16,
+            "timingIterations": 256,
+            "cpuMicrosecondsPerInvocation": 183.59375,
+            "wallP95Milliseconds": 0.11130000000002838,
+            "sampledBytes": 1317440,
+            "sampledBytesPerInputChunk": 80.41015625,
+            "heapBefore": 6083584,
+            "peakHeap": 7377184,
+            "heapAfterGC": 6205024,
+            "allocationStacks": [
+              {
+                "frame": "emit@node:events:489",
+                "bytes": 940624
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 73840
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 71760
+              },
+              {
+                "frame": "post@node:inspector:115",
+                "bytes": 20480
+              },
+              {
+                "frame": "_onceWrap@node:events:633",
+                "bytes": 18144
+              },
+              {
+                "frame": "Duplex@node:internal/streams/duplex:64",
+                "bytes": 14984
+              },
+              {
+                "frame": "@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/child-process.ts:59",
+                "bytes": 11768
+              },
+              {
+                "frame": "execCommand@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:52",
+                "bytes": 11088
+              }
+            ]
+          }
+        ]
+      },
+      "startup": {
+        "node": "v26.13.0",
+        "os": "win32 10.0.26300",
+        "modulePath": "D:\\RMProjects\\Pi\\packages\\coding-agent\\src\\core\\exec.ts",
+        "sourceHash": "a9300b6027e40ddedbcca460de30f1c78750533bd8cd1699f5b5ac9671b9a70d",
+        "rows": [
+          {
+            "name": "empty-node",
+            "firstMilliseconds": 70.3187,
+            "warmP50Milliseconds": 63.26969999999983,
+            "warmP95Milliseconds": 69.58019999999988,
+            "samples": [
+              70.3187,
+              62.2388,
+              64.21030000000002,
+              62.26459999999997,
+              63.16460000000001,
+              62.179899999999975,
+              65.12719999999996,
+              63.10270000000003,
+              62.19330000000002,
+              63.57420000000002,
+              63.8297,
+              65.08679999999993,
+              66.4058,
+              62.7749,
+              63.23760000000004,
+              69.58019999999988,
+              61.235299999999825,
+              63.2971,
+              62.198700000000144,
+              63.44600000000014,
+              63.26969999999983
+            ],
+            "outputBytes": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          {
+            "name": "git-status",
+            "firstMilliseconds": 61.15210000000002,
+            "warmP50Milliseconds": 60.225799999999936,
+            "warmP95Milliseconds": 66.83589999999981,
+            "samples": [
+              61.15210000000002,
+              60.66759999999999,
+              60.1244999999999,
+              59.160499999999956,
+              59.81190000000015,
+              60.9380000000001,
+              61.52580000000012,
+              61.78430000000003,
+              58.21169999999984,
+              66.83589999999981,
+              60.225799999999936,
+              57.21590000000015,
+              59.04300000000012,
+              59.762399999999616,
+              63.421200000000226,
+              57.05549999999994,
+              59.62519999999995,
+              58.95809999999983,
+              60.582800000000134,
+              63.359300000000076,
+              61.30110000000013
+            ],
+            "outputBytes": [
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643
+            ]
+          }
+        ],
+        "finalOwnership": {
+          "handles": 0,
+          "processHandles": 0,
+          "created": 42,
+          "cleanupChecks": 42
+        }
+      }
+    },
+    {
+      "round": 2,
+      "variant": "candidate",
+      "output": {
+        "fixtureVersion": 2,
+        "node": "v26.13.0",
+        "os": "win32 10.0.26300",
+        "modulePath": "D:\\RMProjects\\Pi\\packages\\coding-agent\\src\\core\\exec.ts",
+        "sourceHash": "a9300b6027e40ddedbcca460de30f1c78750533bd8cd1699f5b5ac9671b9a70d",
+        "warmup": 4,
+        "iterations": 16,
+        "samplingInterval": 1024,
+        "deterministic": [
+          {
+            "inputBytes": 4096,
+            "inputChunks": 64,
+            "cap": 4096,
+            "decodedBytes": 4096,
+            "decodedChunks": 64,
+            "outputBytes": 4096,
+            "promisesDuringDelivery": 0,
+            "promisesDuringStopDelivery": 0,
+            "partialBufferViews": 0,
+            "remainingDataListeners": 0,
+            "stopSignals": 0
+          },
+          {
+            "inputBytes": 4096,
+            "inputChunks": 64,
+            "cap": 135,
+            "decodedBytes": 135,
+            "decodedChunks": 3,
+            "outputBytes": 135,
+            "promisesDuringDelivery": 0,
+            "promisesDuringStopDelivery": 1,
+            "partialBufferViews": 1,
+            "remainingDataListeners": 0,
+            "stopSignals": 1
+          },
+          {
+            "inputBytes": 4096,
+            "inputChunks": 64,
+            "cap": 0,
+            "decodedBytes": 0,
+            "decodedChunks": 0,
+            "outputBytes": 0,
+            "promisesDuringDelivery": 0,
+            "promisesDuringStopDelivery": 1,
+            "partialBufferViews": 0,
+            "remainingDataListeners": 0,
+            "stopSignals": 1
+          }
+        ],
+        "references": [
+          {
+            "kind": "normal",
+            "retainedInputBuffers": 0,
+            "retainedCallbacks": 0,
+            "retainedResult": 0,
+            "dataListeners": 0,
+            "pendingTimers": 0,
+            "abortListeners": 0
+          },
+          {
+            "kind": "abort",
+            "retainedInputBuffers": 0,
+            "retainedCallbacks": 0,
+            "retainedResult": 0,
+            "dataListeners": 0,
+            "pendingTimers": 0,
+            "abortListeners": 0
+          },
+          {
+            "kind": "cap",
+            "retainedInputBuffers": 0,
+            "retainedCallbacks": 0,
+            "retainedResult": 0,
+            "dataListeners": 0,
+            "pendingTimers": 0,
+            "abortListeners": 0
+          },
+          {
+            "kind": "error",
+            "retainedInputBuffers": 0,
+            "retainedCallbacks": 0,
+            "retainedResult": 0,
+            "dataListeners": 0,
+            "pendingTimers": 0,
+            "abortListeners": 0
+          }
+        ],
+        "runtimeReferences": [
+          {
+            "dispose": false,
+            "retainedResult": 0,
+            "retainedDisposedOwner": null,
+            "abortListeners": 0,
+            "participants": 1
+          },
+          {
+            "dispose": true,
+            "retainedResult": 0,
+            "retainedDisposedOwner": 0,
+            "abortListeners": 0,
+            "participants": 0
+          }
+        ],
+        "measurements": [
+          {
+            "bytes": 262144,
+            "chunkBytes": 1024,
+            "cap": 262144,
+            "iterations": 16,
+            "timingIterations": 1024,
+            "cpuMicrosecondsPerInvocation": 106.4453125,
+            "wallP95Milliseconds": 0.13679999999999382,
+            "sampledBytes": 4958000,
+            "sampledBytesPerInputChunk": 1210.44921875,
+            "heapBefore": 10807600,
+            "peakHeap": 15708992,
+            "heapAfterGC": 11118368,
+            "allocationStacks": [
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 2134080
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 2101840
+              },
+              {
+                "frame": "emit@node:events:489",
+                "bytes": 234704
+              },
+              {
+                "frame": "post@node:inspector:115",
+                "bytes": 79816
+              },
+              {
+                "frame": "onStdoutData@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:116",
+                "bytes": 71776
+              },
+              {
+                "frame": "onStderrData@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:120",
+                "bytes": 57216
+              },
+              {
+                "frame": "max@:0",
+                "bytes": 19392
+              },
+              {
+                "frame": "_onceWrap@node:events:633",
+                "bytes": 16016
+              }
+            ]
+          },
+          {
+            "bytes": 524288,
+            "chunkBytes": 1024,
+            "cap": 524288,
+            "iterations": 16,
+            "timingIterations": 512,
+            "cpuMicrosecondsPerInvocation": 152.34375,
+            "wallP95Milliseconds": 0.18420000000000414,
+            "sampledBytes": 9427672,
+            "sampledBytesPerInputChunk": 1150.8388671875,
+            "heapBefore": 10915576,
+            "peakHeap": 20422344,
+            "heapAfterGC": 11287840,
+            "allocationStacks": [
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 4293120
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 4216160
+              },
+              {
+                "frame": "emit@node:events:489",
+                "bytes": 433000
+              },
+              {
+                "frame": "onStdoutData@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:116",
+                "bytes": 143520
+              },
+              {
+                "frame": "onStderrData@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:120",
+                "bytes": 136608
+              },
+              {
+                "frame": "_onceWrap@node:events:633",
+                "bytes": 18008
+              },
+              {
+                "frame": "run@file:///D:/RMProjects/Pi/scripts/bench/extension-exec-output.ts:25",
+                "bytes": 13064
+              },
+              {
+                "frame": "execCommand@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:52",
+                "bytes": 9984
+              }
+            ]
+          },
+          {
+            "bytes": 1048576,
+            "chunkBytes": 1024,
+            "cap": 1048576,
+            "iterations": 16,
+            "timingIterations": 256,
+            "cpuMicrosecondsPerInvocation": 425.78125,
+            "wallP95Milliseconds": 0.2622000000000071,
+            "sampledBytes": 18535168,
+            "sampledBytesPerInputChunk": 1131.296875,
+            "heapBefore": 10932400,
+            "peakHeap": 27324848,
+            "heapAfterGC": 11625256,
+            "allocationStacks": [
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 8471840
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 8451040
+              },
+              {
+                "frame": "emit@node:events:489",
+                "bytes": 906376
+              },
+              {
+                "frame": "onStderrData@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:120",
+                "bytes": 265216
+              },
+              {
+                "frame": "onStdoutData@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:116",
+                "bytes": 235072
+              },
+              {
+                "frame": "@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/child-process.ts:59",
+                "bytes": 17248
+              },
+              {
+                "frame": "execCommand@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:52",
+                "bytes": 15392
+              },
+              {
+                "frame": "run@file:///D:/RMProjects/Pi/scripts/bench/extension-exec-output.ts:25",
+                "bytes": 12928
+              }
+            ]
+          },
+          {
+            "bytes": 1048576,
+            "chunkBytes": 64,
+            "cap": 1048576,
+            "iterations": 16,
+            "timingIterations": 256,
+            "cpuMicrosecondsPerInvocation": 917.96875,
+            "wallP95Milliseconds": 1.042599999999993,
+            "sampledBytes": 31524208,
+            "sampledBytesPerInputChunk": 120.25531005859375,
+            "heapBefore": 6078480,
+            "peakHeap": 37545064,
+            "heapAfterGC": 7773672,
+            "allocationStacks": [
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 6373280
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 6261520
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 4213360
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 4176080
+              },
+              {
+                "frame": "onStderrData@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:120",
+                "bytes": 2533632
+              },
+              {
+                "frame": "onStdoutData@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:116",
+                "bytes": 2494112
+              },
+              {
+                "frame": "emit@node:events:489",
+                "bytes": 1845024
+              },
+              {
+                "frame": "onStdoutData@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:116",
+                "bytes": 1714560
+              }
+            ]
+          },
+          {
+            "bytes": 1048576,
+            "chunkBytes": 1024,
+            "cap": 8192,
+            "iterations": 16,
+            "timingIterations": 256,
+            "cpuMicrosecondsPerInvocation": 62.5,
+            "wallP95Milliseconds": 0.11450000000002092,
+            "sampledBytes": 1289704,
+            "sampledBytesPerInputChunk": 78.71728515625,
+            "heapBefore": 6082264,
+            "peakHeap": 7375864,
+            "heapAfterGC": 6185712,
+            "allocationStacks": [
+              {
+                "frame": "emit@node:events:489",
+                "bytes": 925232
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 73840
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 66560
+              },
+              {
+                "frame": "Duplex@node:internal/streams/duplex:64",
+                "bytes": 17248
+              },
+              {
+                "frame": "_onceWrap@node:events:633",
+                "bytes": 15824
+              },
+              {
+                "frame": "execCommand@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:52",
+                "bytes": 12376
+              },
+              {
+                "frame": "run@file:///D:/RMProjects/Pi/scripts/bench/extension-exec-output.ts:25",
+                "bytes": 10824
+              },
+              {
+                "frame": "@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/child-process.ts:59",
+                "bytes": 9696
+              }
+            ]
+          }
+        ]
+      },
+      "startup": {
+        "node": "v26.13.0",
+        "os": "win32 10.0.26300",
+        "modulePath": "D:\\RMProjects\\Pi\\packages\\coding-agent\\src\\core\\exec.ts",
+        "sourceHash": "a9300b6027e40ddedbcca460de30f1c78750533bd8cd1699f5b5ac9671b9a70d",
+        "rows": [
+          {
+            "name": "empty-node",
+            "firstMilliseconds": 71.53389999999999,
+            "warmP50Milliseconds": 63.77480000000003,
+            "warmP95Milliseconds": 70.08190000000013,
+            "samples": [
+              71.53389999999999,
+              63.2659,
+              63.018400000000014,
+              64.0318,
+              63.563000000000045,
+              61.881399999999985,
+              64.54749999999996,
+              65.5623,
+              65.54269999999997,
+              62.55449999999996,
+              63.51739999999995,
+              63.28640000000007,
+              63.77480000000003,
+              65.47540000000004,
+              66.94590000000005,
+              70.08190000000013,
+              62.71330000000012,
+              63.12610000000018,
+              63.787000000000035,
+              65.89229999999998,
+              61.728799999999865
+            ],
+            "outputBytes": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          {
+            "name": "git-status",
+            "firstMilliseconds": 59.331100000000106,
+            "warmP50Milliseconds": 59.878400000000056,
+            "warmP95Milliseconds": 66.14199999999983,
+            "samples": [
+              59.331100000000106,
+              59.268100000000004,
+              60.82199999999989,
+              58.35519999999997,
+              59.2342000000001,
+              60.608799999999974,
+              62.71199999999999,
+              64.1884,
+              57.770300000000134,
+              60.95620000000008,
+              60.45909999999981,
+              58.88909999999987,
+              60.202999999999975,
+              59.61590000000024,
+              66.14199999999983,
+              59.16979999999967,
+              60.28989999999976,
+              59.229699999999866,
+              58.72510000000011,
+              59.878400000000056,
+              57.29989999999998
+            ],
+            "outputBytes": [
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643
+            ]
+          }
+        ],
+        "finalOwnership": {
+          "handles": 0,
+          "processHandles": 0,
+          "created": 42,
+          "cleanupChecks": 42
+        }
+      }
+    },
+    {
+      "round": 2,
+      "variant": "baseline",
+      "output": {
+        "fixtureVersion": 2,
+        "node": "v26.13.0",
+        "os": "win32 10.0.26300",
+        "modulePath": "D:\\RMProjects\\Pi\\.git\\pi150-t05b\\exec-baseline.ts",
+        "sourceHash": "76e1c26ac060e33f93e190283e900bf0f4f235d6975c12d7280c8b3f09bc1621",
+        "warmup": 4,
+        "iterations": 16,
+        "samplingInterval": 1024,
+        "deterministic": [
+          {
+            "inputBytes": 4096,
+            "inputChunks": 64,
+            "cap": 4096,
+            "decodedBytes": 4096,
+            "decodedChunks": 64,
+            "outputBytes": 4096,
+            "promisesDuringDelivery": 0,
+            "promisesDuringStopDelivery": 0,
+            "partialBufferViews": 0,
+            "remainingDataListeners": 0,
+            "stopSignals": 0
+          },
+          {
+            "inputBytes": 4096,
+            "inputChunks": 64,
+            "cap": 135,
+            "decodedBytes": 135,
+            "decodedChunks": 3,
+            "outputBytes": 135,
+            "promisesDuringDelivery": 0,
+            "promisesDuringStopDelivery": 0,
+            "partialBufferViews": 1,
+            "remainingDataListeners": 0,
+            "stopSignals": 1
+          },
+          {
+            "inputBytes": 4096,
+            "inputChunks": 64,
+            "cap": 0,
+            "decodedBytes": 0,
+            "decodedChunks": 0,
+            "outputBytes": 0,
+            "promisesDuringDelivery": 0,
+            "promisesDuringStopDelivery": 0,
+            "partialBufferViews": 0,
+            "remainingDataListeners": 0,
+            "stopSignals": 1
+          }
+        ],
+        "references": [
+          {
+            "kind": "normal",
+            "retainedInputBuffers": 0,
+            "retainedCallbacks": 0,
+            "retainedResult": 0,
+            "dataListeners": 0,
+            "pendingTimers": 0,
+            "abortListeners": 0
+          },
+          {
+            "kind": "abort",
+            "retainedInputBuffers": 0,
+            "retainedCallbacks": 0,
+            "retainedResult": 0,
+            "dataListeners": 0,
+            "pendingTimers": 0,
+            "abortListeners": 0
+          },
+          {
+            "kind": "cap",
+            "retainedInputBuffers": 0,
+            "retainedCallbacks": 0,
+            "retainedResult": 0,
+            "dataListeners": 0,
+            "pendingTimers": 0,
+            "abortListeners": 0
+          },
+          {
+            "kind": "error",
+            "retainedInputBuffers": 0,
+            "retainedCallbacks": 0,
+            "retainedResult": 0,
+            "dataListeners": 0,
+            "pendingTimers": 0,
+            "abortListeners": 0
+          }
+        ],
+        "runtimeReferences": [
+          {
+            "dispose": false,
+            "retainedResult": 0,
+            "retainedDisposedOwner": null,
+            "abortListeners": 0,
+            "participants": 1
+          },
+          {
+            "dispose": true,
+            "retainedResult": 0,
+            "retainedDisposedOwner": 0,
+            "abortListeners": 0,
+            "participants": 0
+          }
+        ],
+        "measurements": [
+          {
+            "bytes": 262144,
+            "chunkBytes": 1024,
+            "cap": 262144,
+            "iterations": 16,
+            "timingIterations": 1024,
+            "cpuMicrosecondsPerInvocation": 91.796875,
+            "wallP95Milliseconds": 0.13929999999999154,
+            "sampledBytes": 5077856,
+            "sampledBytesPerInputChunk": 1239.7109375,
+            "heapBefore": 10806168,
+            "peakHeap": 15692688,
+            "heapAfterGC": 11121416,
+            "allocationStacks": [
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 2219360
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 2147600
+              },
+              {
+                "frame": "emit@node:events:489",
+                "bytes": 238840
+              },
+              {
+                "frame": "onStderrData@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:85",
+                "bytes": 69696
+              },
+              {
+                "frame": "post@node:inspector:115",
+                "bytes": 66072
+              },
+              {
+                "frame": "onStdoutData@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:81",
+                "bytes": 61376
+              },
+              {
+                "frame": "_onceWrap@node:events:633",
+                "bytes": 22176
+              },
+              {
+                "frame": "run@file:///D:/RMProjects/Pi/scripts/bench/extension-exec-output.ts:25",
+                "bytes": 15040
+              }
+            ]
+          },
+          {
+            "bytes": 524288,
+            "chunkBytes": 1024,
+            "cap": 524288,
+            "iterations": 16,
+            "timingIterations": 512,
+            "cpuMicrosecondsPerInvocation": 121.09375,
+            "wallP95Milliseconds": 0.16989999999998417,
+            "sampledBytes": 9582808,
+            "sampledBytesPerInputChunk": 1169.7763671875,
+            "heapBefore": 10896520,
+            "peakHeap": 20384896,
+            "heapAfterGC": 11272752,
+            "allocationStacks": [
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 4287920
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 4260880
+              },
+              {
+                "frame": "emit@node:events:489",
+                "bytes": 483960
+              },
+              {
+                "frame": "onStdoutData@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:81",
+                "bytes": 147680
+              },
+              {
+                "frame": "onStderrData@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:85",
+                "bytes": 145600
+              },
+              {
+                "frame": "_onceWrap@node:events:633",
+                "bytes": 27680
+              },
+              {
+                "frame": "execCommand@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:45",
+                "bytes": 23520
+              },
+              {
+                "frame": "@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/child-process.ts:59",
+                "bytes": 20208
+              }
+            ]
+          },
+          {
+            "bytes": 1048576,
+            "chunkBytes": 1024,
+            "cap": 1048576,
+            "iterations": 16,
+            "timingIterations": 256,
+            "cpuMicrosecondsPerInvocation": 121.09375,
+            "wallP95Milliseconds": 0.2685999999999922,
+            "sampledBytes": 18628776,
+            "sampledBytesPerInputChunk": 1137.01025390625,
+            "heapBefore": 10913304,
+            "peakHeap": 27296448,
+            "heapAfterGC": 11626184,
+            "allocationStacks": [
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 8586240
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 8408400
+              },
+              {
+                "frame": "emit@node:events:489",
+                "bytes": 852472
+              },
+              {
+                "frame": "onStderrData@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:85",
+                "bytes": 300576
+              },
+              {
+                "frame": "onStdoutData@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:81",
+                "bytes": 257408
+              },
+              {
+                "frame": "execCommand@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:45",
+                "bytes": 28008
+              },
+              {
+                "frame": "post@node:inspector:115",
+                "bytes": 19672
+              },
+              {
+                "frame": "Duplex@node:internal/streams/duplex:64",
+                "bytes": 16072
+              }
+            ]
+          },
+          {
+            "bytes": 1048576,
+            "chunkBytes": 64,
+            "cap": 1048576,
+            "iterations": 16,
+            "timingIterations": 256,
+            "cpuMicrosecondsPerInvocation": 851.5625,
+            "wallP95Milliseconds": 1.0069999999999482,
+            "sampledBytes": 31028368,
+            "sampledBytesPerInputChunk": 118.36383056640625,
+            "heapBefore": 6071776,
+            "peakHeap": 37532424,
+            "heapAfterGC": 7740960,
+            "allocationStacks": [
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 6024160
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 5942160
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 4443400
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 4338960
+              },
+              {
+                "frame": "onStderrData@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:85",
+                "bytes": 2439008
+              },
+              {
+                "frame": "onStdoutData@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:81",
+                "bytes": 2373472
+              },
+              {
+                "frame": "emit@node:events:489",
+                "bytes": 1811856
+              },
+              {
+                "frame": "onStdoutData@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:81",
+                "bytes": 1724960
+              }
+            ]
+          },
+          {
+            "bytes": 1048576,
+            "chunkBytes": 1024,
+            "cap": 8192,
+            "iterations": 16,
+            "timingIterations": 256,
+            "cpuMicrosecondsPerInvocation": 179.6875,
+            "wallP95Milliseconds": 0.12570000000005166,
+            "sampledBytes": 1336104,
+            "sampledBytesPerInputChunk": 81.54931640625,
+            "heapBefore": 6083872,
+            "peakHeap": 7374024,
+            "heapAfterGC": 6186056,
+            "allocationStacks": [
+              {
+                "frame": "emit@node:events:489",
+                "bytes": 977032
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 73840
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 66576
+              },
+              {
+                "frame": "execCommand@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:45",
+                "bytes": 15864
+              },
+              {
+                "frame": "@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/child-process.ts:59",
+                "bytes": 13984
+              },
+              {
+                "frame": "_onceWrap@node:events:633",
+                "bytes": 13912
+              },
+              {
+                "frame": "run@file:///D:/RMProjects/Pi/scripts/bench/extension-exec-output.ts:25",
+                "bytes": 13872
+              },
+              {
+                "frame": "Duplex@node:internal/streams/duplex:64",
+                "bytes": 12952
+              }
+            ]
+          }
+        ]
+      },
+      "startup": {
+        "node": "v26.13.0",
+        "os": "win32 10.0.26300",
+        "modulePath": "D:\\RMProjects\\Pi\\.git\\pi150-t05b\\exec-baseline.ts",
+        "sourceHash": "76e1c26ac060e33f93e190283e900bf0f4f235d6975c12d7280c8b3f09bc1621",
+        "rows": [
+          {
+            "name": "empty-node",
+            "firstMilliseconds": 36.725100000000005,
+            "warmP50Milliseconds": 33.544399999999996,
+            "warmP95Milliseconds": 37.17769999999996,
+            "samples": [
+              36.725100000000005,
+              35.62599999999999,
+              36.12119999999999,
+              37.1233,
+              33.7132,
+              33.58949999999999,
+              32.136900000000026,
+              33.896799999999985,
+              33.544399999999996,
+              35.177400000000034,
+              37.17769999999996,
+              35.34930000000003,
+              33.119699999999966,
+              31.740399999999966,
+              32.97910000000002,
+              32.440200000000004,
+              32.372299999999996,
+              33.00249999999994,
+              32.352499999999964,
+              32.452800000000025,
+              32.0951
+            ],
+            "outputBytes": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          {
+            "name": "git-status",
+            "firstMilliseconds": 34.229799999999955,
+            "warmP50Milliseconds": 28.641000000000076,
+            "warmP95Milliseconds": 29.898399999999924,
+            "samples": [
+              34.229799999999955,
+              28.42470000000003,
+              28.541999999999916,
+              28.998300000000086,
+              28.537900000000036,
+              29.61360000000002,
+              28.585199999999986,
+              28.574299999999994,
+              29.898399999999924,
+              29.81860000000006,
+              28.588999999999942,
+              28.641000000000076,
+              28.72160000000008,
+              29.252499999999827,
+              28.363799999999856,
+              29.623199999999997,
+              28.62909999999988,
+              28.39189999999985,
+              28.194500000000062,
+              29.821500000000015,
+              28.97829999999999
+            ],
+            "outputBytes": [
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643
+            ]
+          }
+        ],
+        "finalOwnership": {
+          "handles": 0,
+          "processHandles": 0,
+          "created": 0,
+          "cleanupChecks": 0
+        }
+      }
+    },
+    {
+      "round": 3,
+      "variant": "baseline",
+      "output": {
+        "fixtureVersion": 2,
+        "node": "v26.13.0",
+        "os": "win32 10.0.26300",
+        "modulePath": "D:\\RMProjects\\Pi\\.git\\pi150-t05b\\exec-baseline.ts",
+        "sourceHash": "76e1c26ac060e33f93e190283e900bf0f4f235d6975c12d7280c8b3f09bc1621",
+        "warmup": 4,
+        "iterations": 16,
+        "samplingInterval": 1024,
+        "deterministic": [
+          {
+            "inputBytes": 4096,
+            "inputChunks": 64,
+            "cap": 4096,
+            "decodedBytes": 4096,
+            "decodedChunks": 64,
+            "outputBytes": 4096,
+            "promisesDuringDelivery": 0,
+            "promisesDuringStopDelivery": 0,
+            "partialBufferViews": 0,
+            "remainingDataListeners": 0,
+            "stopSignals": 0
+          },
+          {
+            "inputBytes": 4096,
+            "inputChunks": 64,
+            "cap": 135,
+            "decodedBytes": 135,
+            "decodedChunks": 3,
+            "outputBytes": 135,
+            "promisesDuringDelivery": 0,
+            "promisesDuringStopDelivery": 0,
+            "partialBufferViews": 1,
+            "remainingDataListeners": 0,
+            "stopSignals": 1
+          },
+          {
+            "inputBytes": 4096,
+            "inputChunks": 64,
+            "cap": 0,
+            "decodedBytes": 0,
+            "decodedChunks": 0,
+            "outputBytes": 0,
+            "promisesDuringDelivery": 0,
+            "promisesDuringStopDelivery": 0,
+            "partialBufferViews": 0,
+            "remainingDataListeners": 0,
+            "stopSignals": 1
+          }
+        ],
+        "references": [
+          {
+            "kind": "normal",
+            "retainedInputBuffers": 0,
+            "retainedCallbacks": 0,
+            "retainedResult": 0,
+            "dataListeners": 0,
+            "pendingTimers": 0,
+            "abortListeners": 0
+          },
+          {
+            "kind": "abort",
+            "retainedInputBuffers": 0,
+            "retainedCallbacks": 0,
+            "retainedResult": 0,
+            "dataListeners": 0,
+            "pendingTimers": 0,
+            "abortListeners": 0
+          },
+          {
+            "kind": "cap",
+            "retainedInputBuffers": 0,
+            "retainedCallbacks": 0,
+            "retainedResult": 0,
+            "dataListeners": 0,
+            "pendingTimers": 0,
+            "abortListeners": 0
+          },
+          {
+            "kind": "error",
+            "retainedInputBuffers": 0,
+            "retainedCallbacks": 0,
+            "retainedResult": 0,
+            "dataListeners": 0,
+            "pendingTimers": 0,
+            "abortListeners": 0
+          }
+        ],
+        "runtimeReferences": [
+          {
+            "dispose": false,
+            "retainedResult": 0,
+            "retainedDisposedOwner": null,
+            "abortListeners": 0,
+            "participants": 1
+          },
+          {
+            "dispose": true,
+            "retainedResult": 0,
+            "retainedDisposedOwner": 0,
+            "abortListeners": 0,
+            "participants": 0
+          }
+        ],
+        "measurements": [
+          {
+            "bytes": 262144,
+            "chunkBytes": 1024,
+            "cap": 262144,
+            "iterations": 16,
+            "timingIterations": 1024,
+            "cpuMicrosecondsPerInvocation": 106.4453125,
+            "wallP95Milliseconds": 0.12719999999998777,
+            "sampledBytes": 4953632,
+            "sampledBytesPerInputChunk": 1209.3828125,
+            "heapBefore": 10805176,
+            "peakHeap": 15692688,
+            "heapAfterGC": 11129808,
+            "allocationStacks": [
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 2145520
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 2116400
+              },
+              {
+                "frame": "emit@node:events:489",
+                "bytes": 233640
+              },
+              {
+                "frame": "post@node:inspector:115",
+                "bytes": 81096
+              },
+              {
+                "frame": "onStdoutData@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:81",
+                "bytes": 72800
+              },
+              {
+                "frame": "onStderrData@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:85",
+                "bytes": 65536
+              },
+              {
+                "frame": "execCommand@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:45",
+                "bytes": 16128
+              },
+              {
+                "frame": "clearTimeout@node:timers:144",
+                "bytes": 15624
+              }
+            ]
+          },
+          {
+            "bytes": 524288,
+            "chunkBytes": 1024,
+            "cap": 524288,
+            "iterations": 16,
+            "timingIterations": 512,
+            "cpuMicrosecondsPerInvocation": 91.796875,
+            "wallP95Milliseconds": 0.16849999999999454,
+            "sampledBytes": 9430848,
+            "sampledBytesPerInputChunk": 1151.2265625,
+            "heapBefore": 10911728,
+            "peakHeap": 20400104,
+            "heapAfterGC": 11282440,
+            "allocationStacks": [
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 4261920
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 4215120
+              },
+              {
+                "frame": "emit@node:events:489",
+                "bytes": 448536
+              },
+              {
+                "frame": "onStdoutData@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:81",
+                "bytes": 160160
+              },
+              {
+                "frame": "onStderrData@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:85",
+                "bytes": 117536
+              },
+              {
+                "frame": "execCommand@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:45",
+                "bytes": 22480
+              },
+              {
+                "frame": "@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/child-process.ts:59",
+                "bytes": 17032
+              },
+              {
+                "frame": "_onceWrap@node:events:633",
+                "bytes": 14936
+              }
+            ]
+          },
+          {
+            "bytes": 1048576,
+            "chunkBytes": 1024,
+            "cap": 1048576,
+            "iterations": 16,
+            "timingIterations": 256,
+            "cpuMicrosecondsPerInvocation": 246.09375,
+            "wallP95Milliseconds": 0.2588999999999828,
+            "sampledBytes": 18806800,
+            "sampledBytesPerInputChunk": 1147.8759765625,
+            "heapBefore": 10929600,
+            "peakHeap": 27312744,
+            "heapAfterGC": 11630832,
+            "allocationStacks": [
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 8571680
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 8547760
+              },
+              {
+                "frame": "emit@node:events:489",
+                "bytes": 923200
+              },
+              {
+                "frame": "onStderrData@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:85",
+                "bytes": 285128
+              },
+              {
+                "frame": "onStdoutData@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:81",
+                "bytes": 281856
+              },
+              {
+                "frame": "@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/child-process.ts:59",
+                "bytes": 17120
+              },
+              {
+                "frame": "_onceWrap@node:events:633",
+                "bytes": 17120
+              },
+              {
+                "frame": "execCommand@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:45",
+                "bytes": 15088
+              }
+            ]
+          },
+          {
+            "bytes": 1048576,
+            "chunkBytes": 64,
+            "cap": 1048576,
+            "iterations": 16,
+            "timingIterations": 256,
+            "cpuMicrosecondsPerInvocation": 855.46875,
+            "wallP95Milliseconds": 1.0600000000000023,
+            "sampledBytes": 31330896,
+            "sampledBytesPerInputChunk": 119.51788330078125,
+            "heapBefore": 6071384,
+            "peakHeap": 37511864,
+            "heapAfterGC": 7760048,
+            "allocationStacks": [
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 6398800
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 6283840
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 4178240
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 4092000
+              },
+              {
+                "frame": "onStderrData@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:85",
+                "bytes": 2561728
+              },
+              {
+                "frame": "onStdoutData@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:81",
+                "bytes": 2531552
+              },
+              {
+                "frame": "emit@node:events:489",
+                "bytes": 1798512
+              },
+              {
+                "frame": "onStderrData@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:85",
+                "bytes": 1655808
+              }
+            ]
+          },
+          {
+            "bytes": 1048576,
+            "chunkBytes": 1024,
+            "cap": 8192,
+            "iterations": 16,
+            "timingIterations": 256,
+            "cpuMicrosecondsPerInvocation": 62.5,
+            "wallP95Milliseconds": 0.11939999999992779,
+            "sampledBytes": 1300344,
+            "sampledBytesPerInputChunk": 79.36669921875,
+            "heapBefore": 6083944,
+            "peakHeap": 7374096,
+            "heapAfterGC": 6184192,
+            "allocationStacks": [
+              {
+                "frame": "emit@node:events:489",
+                "bytes": 924160
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 66560
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 65520
+              },
+              {
+                "frame": "_onceWrap@node:events:633",
+                "bytes": 24272
+              },
+              {
+                "frame": "execCommand@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:45",
+                "bytes": 22432
+              },
+              {
+                "frame": "@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/child-process.ts:59",
+                "bytes": 19232
+              },
+              {
+                "frame": "run@file:///D:/RMProjects/Pi/scripts/bench/extension-exec-output.ts:25",
+                "bytes": 11968
+              },
+              {
+                "frame": "nextTick@node:internal/process/task_queues:126",
+                "bytes": 11520
+              }
+            ]
+          }
+        ]
+      },
+      "startup": {
+        "node": "v26.13.0",
+        "os": "win32 10.0.26300",
+        "modulePath": "D:\\RMProjects\\Pi\\.git\\pi150-t05b\\exec-baseline.ts",
+        "sourceHash": "76e1c26ac060e33f93e190283e900bf0f4f235d6975c12d7280c8b3f09bc1621",
+        "rows": [
+          {
+            "name": "empty-node",
+            "firstMilliseconds": 35.88099999999999,
+            "warmP50Milliseconds": 33.22309999999999,
+            "warmP95Milliseconds": 39.914199999999994,
+            "samples": [
+              35.88099999999999,
+              34.33479999999999,
+              33.82689999999998,
+              39.914199999999994,
+              33.40989999999999,
+              32.215900000000005,
+              32.24629999999996,
+              32.52090000000004,
+              33.84070000000003,
+              33.4701,
+              33.864499999999964,
+              36.115399999999966,
+              35.64059999999995,
+              33.22309999999999,
+              32.9448000000001,
+              32.51260000000002,
+              32.51080000000002,
+              31.263900000000035,
+              31.14760000000001,
+              31.80759999999998,
+              32.72539999999992
+            ],
+            "outputBytes": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          {
+            "name": "git-status",
+            "firstMilliseconds": 30.8913,
+            "warmP50Milliseconds": 28.780899999999974,
+            "warmP95Milliseconds": 34.5761,
+            "samples": [
+              30.8913,
+              28.77080000000001,
+              28.914100000000076,
+              29.396499999999946,
+              29.47199999999998,
+              28.853700000000003,
+              28.637299999999982,
+              28.857500000000073,
+              28.65409999999997,
+              28.58190000000002,
+              29.50579999999991,
+              34.5761,
+              28.2038,
+              29.32439999999997,
+              28.280899999999974,
+              28.423000000000002,
+              28.058700000000044,
+              28.536200000000008,
+              28.780899999999974,
+              28.710199999999986,
+              29.16170000000011
+            ],
+            "outputBytes": [
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643
+            ]
+          }
+        ],
+        "finalOwnership": {
+          "handles": 0,
+          "processHandles": 0,
+          "created": 0,
+          "cleanupChecks": 0
+        }
+      }
+    },
+    {
+      "round": 3,
+      "variant": "candidate",
+      "output": {
+        "fixtureVersion": 2,
+        "node": "v26.13.0",
+        "os": "win32 10.0.26300",
+        "modulePath": "D:\\RMProjects\\Pi\\packages\\coding-agent\\src\\core\\exec.ts",
+        "sourceHash": "a9300b6027e40ddedbcca460de30f1c78750533bd8cd1699f5b5ac9671b9a70d",
+        "warmup": 4,
+        "iterations": 16,
+        "samplingInterval": 1024,
+        "deterministic": [
+          {
+            "inputBytes": 4096,
+            "inputChunks": 64,
+            "cap": 4096,
+            "decodedBytes": 4096,
+            "decodedChunks": 64,
+            "outputBytes": 4096,
+            "promisesDuringDelivery": 0,
+            "promisesDuringStopDelivery": 0,
+            "partialBufferViews": 0,
+            "remainingDataListeners": 0,
+            "stopSignals": 0
+          },
+          {
+            "inputBytes": 4096,
+            "inputChunks": 64,
+            "cap": 135,
+            "decodedBytes": 135,
+            "decodedChunks": 3,
+            "outputBytes": 135,
+            "promisesDuringDelivery": 0,
+            "promisesDuringStopDelivery": 1,
+            "partialBufferViews": 1,
+            "remainingDataListeners": 0,
+            "stopSignals": 1
+          },
+          {
+            "inputBytes": 4096,
+            "inputChunks": 64,
+            "cap": 0,
+            "decodedBytes": 0,
+            "decodedChunks": 0,
+            "outputBytes": 0,
+            "promisesDuringDelivery": 0,
+            "promisesDuringStopDelivery": 1,
+            "partialBufferViews": 0,
+            "remainingDataListeners": 0,
+            "stopSignals": 1
+          }
+        ],
+        "references": [
+          {
+            "kind": "normal",
+            "retainedInputBuffers": 0,
+            "retainedCallbacks": 0,
+            "retainedResult": 0,
+            "dataListeners": 0,
+            "pendingTimers": 0,
+            "abortListeners": 0
+          },
+          {
+            "kind": "abort",
+            "retainedInputBuffers": 0,
+            "retainedCallbacks": 0,
+            "retainedResult": 0,
+            "dataListeners": 0,
+            "pendingTimers": 0,
+            "abortListeners": 0
+          },
+          {
+            "kind": "cap",
+            "retainedInputBuffers": 0,
+            "retainedCallbacks": 0,
+            "retainedResult": 0,
+            "dataListeners": 0,
+            "pendingTimers": 0,
+            "abortListeners": 0
+          },
+          {
+            "kind": "error",
+            "retainedInputBuffers": 0,
+            "retainedCallbacks": 0,
+            "retainedResult": 0,
+            "dataListeners": 0,
+            "pendingTimers": 0,
+            "abortListeners": 0
+          }
+        ],
+        "runtimeReferences": [
+          {
+            "dispose": false,
+            "retainedResult": 0,
+            "retainedDisposedOwner": null,
+            "abortListeners": 0,
+            "participants": 1
+          },
+          {
+            "dispose": true,
+            "retainedResult": 0,
+            "retainedDisposedOwner": 0,
+            "abortListeners": 0,
+            "participants": 0
+          }
+        ],
+        "measurements": [
+          {
+            "bytes": 262144,
+            "chunkBytes": 1024,
+            "cap": 262144,
+            "iterations": 16,
+            "timingIterations": 1024,
+            "cpuMicrosecondsPerInvocation": 76.171875,
+            "wallP95Milliseconds": 0.1459000000000117,
+            "sampledBytes": 4966784,
+            "sampledBytesPerInputChunk": 1212.59375,
+            "heapBefore": 10800184,
+            "peakHeap": 15700448,
+            "heapAfterGC": 11133648,
+            "allocationStacks": [
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 2137200
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 2124720
+              },
+              {
+                "frame": "emit@node:events:489",
+                "bytes": 241928
+              },
+              {
+                "frame": "post@node:inspector:115",
+                "bytes": 82736
+              },
+              {
+                "frame": "onStdoutData@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:116",
+                "bytes": 66560
+              },
+              {
+                "frame": "onStderrData@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:120",
+                "bytes": 64480
+              },
+              {
+                "frame": "execCommand@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:52",
+                "bytes": 20888
+              },
+              {
+                "frame": "_onceWrap@node:events:633",
+                "bytes": 17904
+              }
+            ]
+          },
+          {
+            "bytes": 524288,
+            "chunkBytes": 1024,
+            "cap": 524288,
+            "iterations": 16,
+            "timingIterations": 512,
+            "cpuMicrosecondsPerInvocation": 123.046875,
+            "wallP95Milliseconds": 0.18419999999997572,
+            "sampledBytes": 9398768,
+            "sampledBytesPerInputChunk": 1147.310546875,
+            "heapBefore": 10914856,
+            "peakHeap": 20421624,
+            "heapAfterGC": 11285800,
+            "allocationStacks": [
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 4298320
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 4193280
+              },
+              {
+                "frame": "emit@node:events:489",
+                "bytes": 451696
+              },
+              {
+                "frame": "onStdoutData@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:116",
+                "bytes": 121696
+              },
+              {
+                "frame": "onStderrData@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:120",
+                "bytes": 112320
+              },
+              {
+                "frame": "_onceWrap@node:events:633",
+                "bytes": 16032
+              },
+              {
+                "frame": "Duplex@node:internal/streams/duplex:64",
+                "bytes": 13944
+              },
+              {
+                "frame": "execCommand@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:52",
+                "bytes": 13256
+              }
+            ]
+          },
+          {
+            "bytes": 1048576,
+            "chunkBytes": 1024,
+            "cap": 1048576,
+            "iterations": 16,
+            "timingIterations": 256,
+            "cpuMicrosecondsPerInvocation": 121.09375,
+            "wallP95Milliseconds": 0.2658000000000129,
+            "sampledBytes": 18627072,
+            "sampledBytesPerInputChunk": 1136.90625,
+            "heapBefore": 10931648,
+            "peakHeap": 27324096,
+            "heapAfterGC": 11630184,
+            "allocationStacks": [
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 8479120
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 8473920
+              },
+              {
+                "frame": "emit@node:events:489",
+                "bytes": 895120
+              },
+              {
+                "frame": "onStdoutData@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:116",
+                "bytes": 282912
+              },
+              {
+                "frame": "onStderrData@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:120",
+                "bytes": 257952
+              },
+              {
+                "frame": "Timeout@node:internal/timers:218",
+                "bytes": 19448
+              },
+              {
+                "frame": "@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/child-process.ts:59",
+                "bytes": 19232
+              },
+              {
+                "frame": "_onceWrap@node:events:633",
+                "bytes": 18232
+              }
+            ]
+          },
+          {
+            "bytes": 1048576,
+            "chunkBytes": 64,
+            "cap": 1048576,
+            "iterations": 16,
+            "timingIterations": 256,
+            "cpuMicrosecondsPerInvocation": 1039.0625,
+            "wallP95Milliseconds": 1.0656999999999925,
+            "sampledBytes": 31265392,
+            "sampledBytesPerInputChunk": 119.26800537109375,
+            "heapBefore": 6078720,
+            "peakHeap": 37568488,
+            "heapAfterGC": 7766256,
+            "allocationStacks": [
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 6193360
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 6181680
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 4272960
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 4162240
+              },
+              {
+                "frame": "onStdoutData@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:116",
+                "bytes": 2516992
+              },
+              {
+                "frame": "onStderrData@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:120",
+                "bytes": 2455648
+              },
+              {
+                "frame": "onStderrData@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:120",
+                "bytes": 1745440
+              },
+              {
+                "frame": "onStdoutData@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:116",
+                "bytes": 1741088
+              }
+            ]
+          },
+          {
+            "bytes": 1048576,
+            "chunkBytes": 1024,
+            "cap": 8192,
+            "iterations": 16,
+            "timingIterations": 256,
+            "cpuMicrosecondsPerInvocation": 183.59375,
+            "wallP95Milliseconds": 0.10919999999998709,
+            "sampledBytes": 1278032,
+            "sampledBytesPerInputChunk": 78.0048828125,
+            "heapBefore": 6082568,
+            "peakHeap": 7376168,
+            "heapAfterGC": 6184576,
+            "allocationStacks": [
+              {
+                "frame": "emit@node:events:489",
+                "bytes": 927224
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 69680
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 64496
+              },
+              {
+                "frame": "@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/child-process.ts:59",
+                "bytes": 17032
+              },
+              {
+                "frame": "_onceWrap@node:events:633",
+                "bytes": 12872
+              },
+              {
+                "frame": "Duplex@node:internal/streams/duplex:64",
+                "bytes": 10664
+              },
+              {
+                "frame": "Uint8Array@:0",
+                "bytes": 9632
+              },
+              {
+                "frame": "execCommand@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:52",
+                "bytes": 9512
+              }
+            ]
+          }
+        ]
+      },
+      "startup": {
+        "node": "v26.13.0",
+        "os": "win32 10.0.26300",
+        "modulePath": "D:\\RMProjects\\Pi\\packages\\coding-agent\\src\\core\\exec.ts",
+        "sourceHash": "a9300b6027e40ddedbcca460de30f1c78750533bd8cd1699f5b5ac9671b9a70d",
+        "rows": [
+          {
+            "name": "empty-node",
+            "firstMilliseconds": 71.2183,
+            "warmP50Milliseconds": 64.04040000000003,
+            "warmP95Milliseconds": 93.8153000000001,
+            "samples": [
+              71.2183,
+              65.5325,
+              63.743900000000025,
+              63.50479999999999,
+              64.04040000000003,
+              67.8166,
+              62.49459999999999,
+              62.62609999999995,
+              63.53120000000001,
+              61.93439999999998,
+              62.474500000000035,
+              65.20100000000002,
+              68.84130000000005,
+              68.16539999999998,
+              93.8153000000001,
+              64.92399999999998,
+              64.51340000000005,
+              63.95100000000002,
+              64.42819999999983,
+              60.46549999999979,
+              63.65820000000008
+            ],
+            "outputBytes": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          {
+            "name": "git-status",
+            "firstMilliseconds": 62.47160000000008,
+            "warmP50Milliseconds": 59.58140000000003,
+            "warmP95Milliseconds": 63.96119999999996,
+            "samples": [
+              62.47160000000008,
+              58.90509999999995,
+              62.23479999999995,
+              59.5963999999999,
+              60.36169999999993,
+              59.605999999999995,
+              60.03250000000003,
+              59.25579999999991,
+              58.87130000000002,
+              63.96119999999996,
+              63.184299999999894,
+              59.04770000000008,
+              59.215799999999945,
+              63.16619999999966,
+              59.207800000000134,
+              60.27779999999984,
+              59.108400000000074,
+              59.235299999999825,
+              58.3163999999997,
+              59.58140000000003,
+              59.46720000000005
+            ],
+            "outputBytes": [
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643
+            ]
+          }
+        ],
+        "finalOwnership": {
+          "handles": 0,
+          "processHandles": 0,
+          "created": 42,
+          "cleanupChecks": 42
+        }
+      }
+    },
+    {
+      "round": 4,
+      "variant": "candidate",
+      "output": {
+        "fixtureVersion": 2,
+        "node": "v26.13.0",
+        "os": "win32 10.0.26300",
+        "modulePath": "D:\\RMProjects\\Pi\\packages\\coding-agent\\src\\core\\exec.ts",
+        "sourceHash": "a9300b6027e40ddedbcca460de30f1c78750533bd8cd1699f5b5ac9671b9a70d",
+        "warmup": 4,
+        "iterations": 16,
+        "samplingInterval": 1024,
+        "deterministic": [
+          {
+            "inputBytes": 4096,
+            "inputChunks": 64,
+            "cap": 4096,
+            "decodedBytes": 4096,
+            "decodedChunks": 64,
+            "outputBytes": 4096,
+            "promisesDuringDelivery": 0,
+            "promisesDuringStopDelivery": 0,
+            "partialBufferViews": 0,
+            "remainingDataListeners": 0,
+            "stopSignals": 0
+          },
+          {
+            "inputBytes": 4096,
+            "inputChunks": 64,
+            "cap": 135,
+            "decodedBytes": 135,
+            "decodedChunks": 3,
+            "outputBytes": 135,
+            "promisesDuringDelivery": 0,
+            "promisesDuringStopDelivery": 1,
+            "partialBufferViews": 1,
+            "remainingDataListeners": 0,
+            "stopSignals": 1
+          },
+          {
+            "inputBytes": 4096,
+            "inputChunks": 64,
+            "cap": 0,
+            "decodedBytes": 0,
+            "decodedChunks": 0,
+            "outputBytes": 0,
+            "promisesDuringDelivery": 0,
+            "promisesDuringStopDelivery": 1,
+            "partialBufferViews": 0,
+            "remainingDataListeners": 0,
+            "stopSignals": 1
+          }
+        ],
+        "references": [
+          {
+            "kind": "normal",
+            "retainedInputBuffers": 0,
+            "retainedCallbacks": 0,
+            "retainedResult": 0,
+            "dataListeners": 0,
+            "pendingTimers": 0,
+            "abortListeners": 0
+          },
+          {
+            "kind": "abort",
+            "retainedInputBuffers": 0,
+            "retainedCallbacks": 0,
+            "retainedResult": 0,
+            "dataListeners": 0,
+            "pendingTimers": 0,
+            "abortListeners": 0
+          },
+          {
+            "kind": "cap",
+            "retainedInputBuffers": 0,
+            "retainedCallbacks": 0,
+            "retainedResult": 0,
+            "dataListeners": 0,
+            "pendingTimers": 0,
+            "abortListeners": 0
+          },
+          {
+            "kind": "error",
+            "retainedInputBuffers": 0,
+            "retainedCallbacks": 0,
+            "retainedResult": 0,
+            "dataListeners": 0,
+            "pendingTimers": 0,
+            "abortListeners": 0
+          }
+        ],
+        "runtimeReferences": [
+          {
+            "dispose": false,
+            "retainedResult": 0,
+            "retainedDisposedOwner": null,
+            "abortListeners": 0,
+            "participants": 1
+          },
+          {
+            "dispose": true,
+            "retainedResult": 0,
+            "retainedDisposedOwner": 0,
+            "abortListeners": 0,
+            "participants": 0
+          }
+        ],
+        "measurements": [
+          {
+            "bytes": 262144,
+            "chunkBytes": 1024,
+            "cap": 262144,
+            "iterations": 16,
+            "timingIterations": 1024,
+            "cpuMicrosecondsPerInvocation": 75.1953125,
+            "wallP95Milliseconds": 0.14400000000000546,
+            "sampledBytes": 4994976,
+            "sampledBytesPerInputChunk": 1219.4765625,
+            "heapBefore": 10809096,
+            "peakHeap": 15710624,
+            "heapAfterGC": 11108128,
+            "allocationStacks": [
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 2162160
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 2104960
+              },
+              {
+                "frame": "emit@node:events:489",
+                "bytes": 254376
+              },
+              {
+                "frame": "onStdoutData@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:116",
+                "bytes": 72800
+              },
+              {
+                "frame": "onStderrData@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:120",
+                "bytes": 70720
+              },
+              {
+                "frame": "post@node:inspector:115",
+                "bytes": 67424
+              },
+              {
+                "frame": "onData@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/child-process.ts:109",
+                "bytes": 20784
+              },
+              {
+                "frame": "execCommand@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:52",
+                "bytes": 18720
+              }
+            ]
+          },
+          {
+            "bytes": 524288,
+            "chunkBytes": 1024,
+            "cap": 524288,
+            "iterations": 16,
+            "timingIterations": 512,
+            "cpuMicrosecondsPerInvocation": 91.796875,
+            "wallP95Milliseconds": 0.1706000000000074,
+            "sampledBytes": 9586896,
+            "sampledBytesPerInputChunk": 1170.275390625,
+            "heapBefore": 10900672,
+            "peakHeap": 20407440,
+            "heapAfterGC": 11304776,
+            "allocationStacks": [
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 4299360
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 4278560
+              },
+              {
+                "frame": "emit@node:events:489",
+                "bytes": 457872
+              },
+              {
+                "frame": "onStderrData@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:120",
+                "bytes": 147680
+              },
+              {
+                "frame": "onStdoutData@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:116",
+                "bytes": 134176
+              },
+              {
+                "frame": "execCommand@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:52",
+                "bytes": 24336
+              },
+              {
+                "frame": "post@node:inspector:115",
+                "bytes": 17240
+              },
+              {
+                "frame": "_onceWrap@node:events:633",
+                "bytes": 15840
+              }
+            ]
+          },
+          {
+            "bytes": 1048576,
+            "chunkBytes": 1024,
+            "cap": 1048576,
+            "iterations": 16,
+            "timingIterations": 256,
+            "cpuMicrosecondsPerInvocation": 183.59375,
+            "wallP95Milliseconds": 0.27480000000002747,
+            "sampledBytes": 18539040,
+            "sampledBytesPerInputChunk": 1131.533203125,
+            "heapBefore": 10933120,
+            "peakHeap": 29664192,
+            "heapAfterGC": 6767696,
+            "allocationStacks": [
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 8503040
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 8436480
+              },
+              {
+                "frame": "emit@node:events:489",
+                "bytes": 907576
+              },
+              {
+                "frame": "onStderrData@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:120",
+                "bytes": 275616
+              },
+              {
+                "frame": "onStdoutData@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:116",
+                "bytes": 232992
+              },
+              {
+                "frame": "_onceWrap@node:events:633",
+                "bytes": 17960
+              },
+              {
+                "frame": "execCommand@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:52",
+                "bytes": 16592
+              },
+              {
+                "frame": "ExecFixture@file:///D:/RMProjects/Pi/tests/helpers/extension-exec-fixture.ts:10",
+                "bytes": 10192
+              }
+            ]
+          },
+          {
+            "bytes": 1048576,
+            "chunkBytes": 64,
+            "cap": 1048576,
+            "iterations": 16,
+            "timingIterations": 256,
+            "cpuMicrosecondsPerInvocation": 976.5625,
+            "wallP95Milliseconds": 1.0460000000000491,
+            "sampledBytes": 31517592,
+            "sampledBytesPerInputChunk": 120.23007202148438,
+            "heapBefore": 6079200,
+            "peakHeap": 37552568,
+            "heapAfterGC": 7779736,
+            "allocationStacks": [
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 6188080
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 6154000
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 4416720
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 4389040
+              },
+              {
+                "frame": "onStdoutData@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:116",
+                "bytes": 2431712
+              },
+              {
+                "frame": "onStderrData@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:120",
+                "bytes": 2429632
+              },
+              {
+                "frame": "emit@node:events:489",
+                "bytes": 1876296
+              },
+              {
+                "frame": "onStderrData@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:120",
+                "bytes": 1751488
+              }
+            ]
+          },
+          {
+            "bytes": 1048576,
+            "chunkBytes": 1024,
+            "cap": 8192,
+            "iterations": 16,
+            "timingIterations": 256,
+            "cpuMicrosecondsPerInvocation": 183.59375,
+            "wallP95Milliseconds": 0.11530000000004748,
+            "sampledBytes": 1289816,
+            "sampledBytesPerInputChunk": 78.72412109375,
+            "heapBefore": 6083448,
+            "peakHeap": 7377048,
+            "heapAfterGC": 6184840,
+            "allocationStacks": [
+              {
+                "frame": "emit@node:events:489",
+                "bytes": 937536
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 69680
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 65520
+              },
+              {
+                "frame": "@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/child-process.ts:59",
+                "bytes": 15048
+              },
+              {
+                "frame": "execCommand@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:52",
+                "bytes": 13680
+              },
+              {
+                "frame": "execCommand@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:52",
+                "bytes": 13640
+              },
+              {
+                "frame": "ExecFixture@file:///D:/RMProjects/Pi/tests/helpers/extension-exec-fixture.ts:10",
+                "bytes": 13224
+              },
+              {
+                "frame": "Duplex@node:internal/streams/duplex:64",
+                "bytes": 12984
+              }
+            ]
+          }
+        ]
+      },
+      "startup": {
+        "node": "v26.13.0",
+        "os": "win32 10.0.26300",
+        "modulePath": "D:\\RMProjects\\Pi\\packages\\coding-agent\\src\\core\\exec.ts",
+        "sourceHash": "a9300b6027e40ddedbcca460de30f1c78750533bd8cd1699f5b5ac9671b9a70d",
+        "rows": [
+          {
+            "name": "empty-node",
+            "firstMilliseconds": 71.7813,
+            "warmP50Milliseconds": 64.52240000000006,
+            "warmP95Milliseconds": 69.08320000000003,
+            "samples": [
+              71.7813,
+              63.150800000000004,
+              67.3981,
+              64.53380000000001,
+              63.17739999999998,
+              66.28550000000001,
+              64.10149999999999,
+              69.08320000000003,
+              66.60640000000001,
+              62.0616,
+              60.51819999999998,
+              64.27410000000009,
+              64.4647,
+              64.23149999999998,
+              64.60610000000008,
+              64.52240000000006,
+              60.415500000000065,
+              65.47860000000014,
+              63.69069999999988,
+              66.79309999999987,
+              65.39769999999999
+            ],
+            "outputBytes": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          {
+            "name": "git-status",
+            "firstMilliseconds": 59.76909999999998,
+            "warmP50Milliseconds": 59.64399999999978,
+            "warmP95Milliseconds": 63.496200000000044,
+            "samples": [
+              59.76909999999998,
+              61.057399999999916,
+              59.88580000000002,
+              61.79259999999999,
+              58.60269999999991,
+              58.01430000000005,
+              63.496200000000044,
+              59.69839999999999,
+              58.68859999999995,
+              57.0947000000001,
+              59.52850000000012,
+              59.01220000000012,
+              59.99689999999964,
+              59.99980000000005,
+              58.4676000000004,
+              59.497899999999845,
+              58.07330000000002,
+              59.73420000000033,
+              59.64399999999978,
+              60.065599999999904,
+              57.74290000000019
+            ],
+            "outputBytes": [
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643
+            ]
+          }
+        ],
+        "finalOwnership": {
+          "handles": 0,
+          "processHandles": 0,
+          "created": 42,
+          "cleanupChecks": 42
+        }
+      }
+    },
+    {
+      "round": 4,
+      "variant": "baseline",
+      "output": {
+        "fixtureVersion": 2,
+        "node": "v26.13.0",
+        "os": "win32 10.0.26300",
+        "modulePath": "D:\\RMProjects\\Pi\\.git\\pi150-t05b\\exec-baseline.ts",
+        "sourceHash": "76e1c26ac060e33f93e190283e900bf0f4f235d6975c12d7280c8b3f09bc1621",
+        "warmup": 4,
+        "iterations": 16,
+        "samplingInterval": 1024,
+        "deterministic": [
+          {
+            "inputBytes": 4096,
+            "inputChunks": 64,
+            "cap": 4096,
+            "decodedBytes": 4096,
+            "decodedChunks": 64,
+            "outputBytes": 4096,
+            "promisesDuringDelivery": 0,
+            "promisesDuringStopDelivery": 0,
+            "partialBufferViews": 0,
+            "remainingDataListeners": 0,
+            "stopSignals": 0
+          },
+          {
+            "inputBytes": 4096,
+            "inputChunks": 64,
+            "cap": 135,
+            "decodedBytes": 135,
+            "decodedChunks": 3,
+            "outputBytes": 135,
+            "promisesDuringDelivery": 0,
+            "promisesDuringStopDelivery": 0,
+            "partialBufferViews": 1,
+            "remainingDataListeners": 0,
+            "stopSignals": 1
+          },
+          {
+            "inputBytes": 4096,
+            "inputChunks": 64,
+            "cap": 0,
+            "decodedBytes": 0,
+            "decodedChunks": 0,
+            "outputBytes": 0,
+            "promisesDuringDelivery": 0,
+            "promisesDuringStopDelivery": 0,
+            "partialBufferViews": 0,
+            "remainingDataListeners": 0,
+            "stopSignals": 1
+          }
+        ],
+        "references": [
+          {
+            "kind": "normal",
+            "retainedInputBuffers": 0,
+            "retainedCallbacks": 0,
+            "retainedResult": 0,
+            "dataListeners": 0,
+            "pendingTimers": 0,
+            "abortListeners": 0
+          },
+          {
+            "kind": "abort",
+            "retainedInputBuffers": 0,
+            "retainedCallbacks": 0,
+            "retainedResult": 0,
+            "dataListeners": 0,
+            "pendingTimers": 0,
+            "abortListeners": 0
+          },
+          {
+            "kind": "cap",
+            "retainedInputBuffers": 0,
+            "retainedCallbacks": 0,
+            "retainedResult": 0,
+            "dataListeners": 0,
+            "pendingTimers": 0,
+            "abortListeners": 0
+          },
+          {
+            "kind": "error",
+            "retainedInputBuffers": 0,
+            "retainedCallbacks": 0,
+            "retainedResult": 0,
+            "dataListeners": 0,
+            "pendingTimers": 0,
+            "abortListeners": 0
+          }
+        ],
+        "runtimeReferences": [
+          {
+            "dispose": false,
+            "retainedResult": 0,
+            "retainedDisposedOwner": null,
+            "abortListeners": 0,
+            "participants": 1
+          },
+          {
+            "dispose": true,
+            "retainedResult": 0,
+            "retainedDisposedOwner": 0,
+            "abortListeners": 0,
+            "participants": 0
+          }
+        ],
+        "measurements": [
+          {
+            "bytes": 262144,
+            "chunkBytes": 1024,
+            "cap": 262144,
+            "iterations": 16,
+            "timingIterations": 1024,
+            "cpuMicrosecondsPerInvocation": 76.171875,
+            "wallP95Milliseconds": 0.1379000000000019,
+            "sampledBytes": 4974736,
+            "sampledBytesPerInputChunk": 1214.53515625,
+            "heapBefore": 10806168,
+            "peakHeap": 15692688,
+            "heapAfterGC": 11117360,
+            "allocationStacks": [
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 2139280
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 2129920
+              },
+              {
+                "frame": "emit@node:events:489",
+                "bytes": 254328
+              },
+              {
+                "frame": "post@node:inspector:115",
+                "bytes": 66528
+              },
+              {
+                "frame": "onStdoutData@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:81",
+                "bytes": 64480
+              },
+              {
+                "frame": "onStderrData@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:85",
+                "bytes": 54080
+              },
+              {
+                "frame": "execCommand@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:45",
+                "bytes": 23488
+              },
+              {
+                "frame": "WritableState@node:internal/streams/writable:303",
+                "bytes": 19768
+              }
+            ]
+          },
+          {
+            "bytes": 524288,
+            "chunkBytes": 1024,
+            "cap": 524288,
+            "iterations": 16,
+            "timingIterations": 512,
+            "cpuMicrosecondsPerInvocation": 91.796875,
+            "wallP95Milliseconds": 0.18829999999999814,
+            "sampledBytes": 9553584,
+            "sampledBytesPerInputChunk": 1166.208984375,
+            "heapBefore": 10896576,
+            "peakHeap": 20384952,
+            "heapAfterGC": 11289936,
+            "allocationStacks": [
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 4335760
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 4232800
+              },
+              {
+                "frame": "emit@node:events:489",
+                "bytes": 444416
+              },
+              {
+                "frame": "onStdoutData@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:81",
+                "bytes": 142496
+              },
+              {
+                "frame": "onStderrData@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:85",
+                "bytes": 133120
+              },
+              {
+                "frame": "_onceWrap@node:events:633",
+                "bytes": 22160
+              },
+              {
+                "frame": "execCommand@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:45",
+                "bytes": 19200
+              },
+              {
+                "frame": "ExecFixture@file:///D:/RMProjects/Pi/tests/helpers/extension-exec-fixture.ts:10",
+                "bytes": 17176
+              }
+            ]
+          },
+          {
+            "bytes": 1048576,
+            "chunkBytes": 1024,
+            "cap": 1048576,
+            "iterations": 16,
+            "timingIterations": 256,
+            "cpuMicrosecondsPerInvocation": 363.28125,
+            "wallP95Milliseconds": 0.24840000000000373,
+            "sampledBytes": 18737384,
+            "sampledBytesPerInputChunk": 1143.63916015625,
+            "heapBefore": 10929632,
+            "peakHeap": 27312776,
+            "heapAfterGC": 11628512,
+            "allocationStacks": [
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 8581040
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 8545680
+              },
+              {
+                "frame": "emit@node:events:489",
+                "bytes": 878440
+              },
+              {
+                "frame": "onStdoutData@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:81",
+                "bytes": 267296
+              },
+              {
+                "frame": "onStderrData@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:85",
+                "bytes": 249632
+              },
+              {
+                "frame": "execCommand@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:45",
+                "bytes": 21392
+              },
+              {
+                "frame": "@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/child-process.ts:59",
+                "bytes": 17120
+              },
+              {
+                "frame": "_onceWrap@node:events:633",
+                "bytes": 15800
+              }
+            ]
+          },
+          {
+            "bytes": 1048576,
+            "chunkBytes": 64,
+            "cap": 1048576,
+            "iterations": 16,
+            "timingIterations": 256,
+            "cpuMicrosecondsPerInvocation": 1097.65625,
+            "wallP95Milliseconds": 1.0063000000000102,
+            "sampledBytes": 31203616,
+            "sampledBytesPerInputChunk": 119.0323486328125,
+            "heapBefore": 10932968,
+            "peakHeap": 27625960,
+            "heapAfterGC": 7751464,
+            "allocationStacks": [
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 6295600
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 6043280
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 4241040
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 4206960
+              },
+              {
+                "frame": "onStdoutData@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:81",
+                "bytes": 2505568
+              },
+              {
+                "frame": "onStderrData@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:85",
+                "bytes": 2488928
+              },
+              {
+                "frame": "emit@node:events:489",
+                "bytes": 1763096
+              },
+              {
+                "frame": "onStderrData@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:85",
+                "bytes": 1721344
+              }
+            ]
+          },
+          {
+            "bytes": 1048576,
+            "chunkBytes": 1024,
+            "cap": 8192,
+            "iterations": 16,
+            "timingIterations": 256,
+            "cpuMicrosecondsPerInvocation": 62.5,
+            "wallP95Milliseconds": 0.11369999999999436,
+            "sampledBytes": 1244408,
+            "sampledBytesPerInputChunk": 75.95263671875,
+            "heapBefore": 6083512,
+            "peakHeap": 7373664,
+            "heapAfterGC": 6181648,
+            "allocationStacks": [
+              {
+                "frame": "emit@node:events:489",
+                "bytes": 873320
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 76960
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 58240
+              },
+              {
+                "frame": "execCommand@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:45",
+                "bytes": 26912
+              },
+              {
+                "frame": "_onceWrap@node:events:633",
+                "bytes": 20048
+              },
+              {
+                "frame": "@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/child-process.ts:59",
+                "bytes": 13984
+              },
+              {
+                "frame": "Duplex@node:internal/streams/duplex:64",
+                "bytes": 12904
+              },
+              {
+                "frame": "run@file:///D:/RMProjects/Pi/scripts/bench/extension-exec-output.ts:25",
+                "bytes": 8504
+              }
+            ]
+          }
+        ]
+      },
+      "startup": {
+        "node": "v26.13.0",
+        "os": "win32 10.0.26300",
+        "modulePath": "D:\\RMProjects\\Pi\\.git\\pi150-t05b\\exec-baseline.ts",
+        "sourceHash": "76e1c26ac060e33f93e190283e900bf0f4f235d6975c12d7280c8b3f09bc1621",
+        "rows": [
+          {
+            "name": "empty-node",
+            "firstMilliseconds": 34.219800000000006,
+            "warmP50Milliseconds": 32.7363,
+            "warmP95Milliseconds": 37.21270000000001,
+            "samples": [
+              34.219800000000006,
+              37.21270000000001,
+              33.933400000000006,
+              32.54329999999999,
+              33.47060000000002,
+              32.7363,
+              33.77600000000001,
+              31.912500000000023,
+              32.455600000000004,
+              33.47520000000003,
+              33.20490000000001,
+              32.41890000000001,
+              32.215799999999945,
+              32.62170000000003,
+              31.28309999999999,
+              34.367500000000064,
+              32.085199999999986,
+              31.329700000000003,
+              34.30920000000003,
+              33.61149999999998,
+              31.942999999999984
+            ],
+            "outputBytes": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          {
+            "name": "git-status",
+            "firstMilliseconds": 29.298000000000002,
+            "warmP50Milliseconds": 28.626900000000205,
+            "warmP95Milliseconds": 33.56600000000003,
+            "samples": [
+              29.298000000000002,
+              28.747100000000046,
+              28.770500000000084,
+              29.076000000000022,
+              28.254299999999944,
+              28.062900000000013,
+              28.556899999999928,
+              28.417400000000043,
+              33.56600000000003,
+              29.447499999999877,
+              28.70010000000002,
+              28.59120000000007,
+              28.119899999999916,
+              28.04449999999997,
+              28.626900000000205,
+              28.873599999999897,
+              31.222299999999905,
+              28.383399999999938,
+              28.019300000000158,
+              28.233200000000124,
+              31.137899999999945
+            ],
+            "outputBytes": [
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643
+            ]
+          }
+        ],
+        "finalOwnership": {
+          "handles": 0,
+          "processHandles": 0,
+          "created": 0,
+          "cleanupChecks": 0
+        }
+      }
+    },
+    {
+      "round": 5,
+      "variant": "baseline",
+      "output": {
+        "fixtureVersion": 2,
+        "node": "v26.13.0",
+        "os": "win32 10.0.26300",
+        "modulePath": "D:\\RMProjects\\Pi\\.git\\pi150-t05b\\exec-baseline.ts",
+        "sourceHash": "76e1c26ac060e33f93e190283e900bf0f4f235d6975c12d7280c8b3f09bc1621",
+        "warmup": 4,
+        "iterations": 16,
+        "samplingInterval": 1024,
+        "deterministic": [
+          {
+            "inputBytes": 4096,
+            "inputChunks": 64,
+            "cap": 4096,
+            "decodedBytes": 4096,
+            "decodedChunks": 64,
+            "outputBytes": 4096,
+            "promisesDuringDelivery": 0,
+            "promisesDuringStopDelivery": 0,
+            "partialBufferViews": 0,
+            "remainingDataListeners": 0,
+            "stopSignals": 0
+          },
+          {
+            "inputBytes": 4096,
+            "inputChunks": 64,
+            "cap": 135,
+            "decodedBytes": 135,
+            "decodedChunks": 3,
+            "outputBytes": 135,
+            "promisesDuringDelivery": 0,
+            "promisesDuringStopDelivery": 0,
+            "partialBufferViews": 1,
+            "remainingDataListeners": 0,
+            "stopSignals": 1
+          },
+          {
+            "inputBytes": 4096,
+            "inputChunks": 64,
+            "cap": 0,
+            "decodedBytes": 0,
+            "decodedChunks": 0,
+            "outputBytes": 0,
+            "promisesDuringDelivery": 0,
+            "promisesDuringStopDelivery": 0,
+            "partialBufferViews": 0,
+            "remainingDataListeners": 0,
+            "stopSignals": 1
+          }
+        ],
+        "references": [
+          {
+            "kind": "normal",
+            "retainedInputBuffers": 0,
+            "retainedCallbacks": 0,
+            "retainedResult": 0,
+            "dataListeners": 0,
+            "pendingTimers": 0,
+            "abortListeners": 0
+          },
+          {
+            "kind": "abort",
+            "retainedInputBuffers": 0,
+            "retainedCallbacks": 0,
+            "retainedResult": 0,
+            "dataListeners": 0,
+            "pendingTimers": 0,
+            "abortListeners": 0
+          },
+          {
+            "kind": "cap",
+            "retainedInputBuffers": 0,
+            "retainedCallbacks": 0,
+            "retainedResult": 0,
+            "dataListeners": 0,
+            "pendingTimers": 0,
+            "abortListeners": 0
+          },
+          {
+            "kind": "error",
+            "retainedInputBuffers": 0,
+            "retainedCallbacks": 0,
+            "retainedResult": 0,
+            "dataListeners": 0,
+            "pendingTimers": 0,
+            "abortListeners": 0
+          }
+        ],
+        "runtimeReferences": [
+          {
+            "dispose": false,
+            "retainedResult": 0,
+            "retainedDisposedOwner": null,
+            "abortListeners": 0,
+            "participants": 1
+          },
+          {
+            "dispose": true,
+            "retainedResult": 0,
+            "retainedDisposedOwner": 0,
+            "abortListeners": 0,
+            "participants": 0
+          }
+        ],
+        "measurements": [
+          {
+            "bytes": 262144,
+            "chunkBytes": 1024,
+            "cap": 262144,
+            "iterations": 16,
+            "timingIterations": 1024,
+            "cpuMicrosecondsPerInvocation": 106.4453125,
+            "wallP95Milliseconds": 0.1379000000000019,
+            "sampledBytes": 4919120,
+            "sampledBytesPerInputChunk": 1200.95703125,
+            "heapBefore": 10808496,
+            "peakHeap": 15695016,
+            "heapAfterGC": 11132784,
+            "allocationStacks": [
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 2165280
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 2082080
+              },
+              {
+                "frame": "emit@node:events:489",
+                "bytes": 223240
+              },
+              {
+                "frame": "post@node:inspector:115",
+                "bytes": 78504
+              },
+              {
+                "frame": "onStderrData@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:85",
+                "bytes": 74936
+              },
+              {
+                "frame": "onStdoutData@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:81",
+                "bytes": 64480
+              },
+              {
+                "frame": "execCommand@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:45",
+                "bytes": 21496
+              },
+              {
+                "frame": "_onceWrap@node:events:633",
+                "bytes": 19232
+              }
+            ]
+          },
+          {
+            "bytes": 524288,
+            "chunkBytes": 1024,
+            "cap": 524288,
+            "iterations": 16,
+            "timingIterations": 512,
+            "cpuMicrosecondsPerInvocation": 89.84375,
+            "wallP95Milliseconds": 0.17660000000000764,
+            "sampledBytes": 9520008,
+            "sampledBytesPerInputChunk": 1162.1103515625,
+            "heapBefore": 10910528,
+            "peakHeap": 20398904,
+            "heapAfterGC": 11284456,
+            "allocationStacks": [
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 4359680
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 4249440
+              },
+              {
+                "frame": "emit@node:events:489",
+                "bytes": 453784
+              },
+              {
+                "frame": "onStderrData@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:85",
+                "bytes": 128960
+              },
+              {
+                "frame": "onStdoutData@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:81",
+                "bytes": 118560
+              },
+              {
+                "frame": "_onceWrap@node:events:633",
+                "bytes": 21112
+              },
+              {
+                "frame": "execCommand@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:45",
+                "bytes": 13912
+              },
+              {
+                "frame": "@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/child-process.ts:59",
+                "bytes": 11680
+              }
+            ]
+          },
+          {
+            "bytes": 1048576,
+            "chunkBytes": 1024,
+            "cap": 1048576,
+            "iterations": 16,
+            "timingIterations": 256,
+            "cpuMicrosecondsPerInvocation": 183.59375,
+            "wallP95Milliseconds": 0.24720000000002074,
+            "sampledBytes": 18708440,
+            "sampledBytesPerInputChunk": 1141.87255859375,
+            "heapBefore": 10929728,
+            "peakHeap": 27312872,
+            "heapAfterGC": 11626072,
+            "allocationStacks": [
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 8571680
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 8480160
+              },
+              {
+                "frame": "emit@node:events:489",
+                "bytes": 920032
+              },
+              {
+                "frame": "onStdoutData@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:81",
+                "bytes": 292256
+              },
+              {
+                "frame": "onStderrData@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:85",
+                "bytes": 254816
+              },
+              {
+                "frame": "_onceWrap@node:events:633",
+                "bytes": 18016
+              },
+              {
+                "frame": "execCommand@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:45",
+                "bytes": 14952
+              },
+              {
+                "frame": "@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/child-process.ts:59",
+                "bytes": 13984
+              }
+            ]
+          },
+          {
+            "bytes": 1048576,
+            "chunkBytes": 64,
+            "cap": 1048576,
+            "iterations": 16,
+            "timingIterations": 256,
+            "cpuMicrosecondsPerInvocation": 976.5625,
+            "wallP95Milliseconds": 1.0464000000000055,
+            "sampledBytes": 31250112,
+            "sampledBytesPerInputChunk": 119.209716796875,
+            "heapBefore": 6071512,
+            "peakHeap": 37515912,
+            "heapAfterGC": 7755224,
+            "allocationStacks": [
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 6186960
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 6038000
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 4354960
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 4338960
+              },
+              {
+                "frame": "onStderrData@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:85",
+                "bytes": 2461888
+              },
+              {
+                "frame": "onStdoutData@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:81",
+                "bytes": 2428608
+              },
+              {
+                "frame": "emit@node:events:489",
+                "bytes": 1793392
+              },
+              {
+                "frame": "onStderrData@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:85",
+                "bytes": 1722616
+              }
+            ]
+          },
+          {
+            "bytes": 1048576,
+            "chunkBytes": 1024,
+            "cap": 8192,
+            "iterations": 16,
+            "timingIterations": 256,
+            "cpuMicrosecondsPerInvocation": 58.59375,
+            "wallP95Milliseconds": 0.15869999999995343,
+            "sampledBytes": 1253408,
+            "sampledBytesPerInputChunk": 76.501953125,
+            "heapBefore": 6083608,
+            "peakHeap": 7373760,
+            "heapAfterGC": 6183864,
+            "allocationStacks": [
+              {
+                "frame": "emit@node:events:489",
+                "bytes": 867056
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 68640
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 68640
+              },
+              {
+                "frame": "@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/child-process.ts:59",
+                "bytes": 17120
+              },
+              {
+                "frame": "execCommand@file:///D:/RMProjects/Pi/.git/pi150-t05b/exec-baseline.ts:45",
+                "bytes": 17104
+              },
+              {
+                "frame": "run@file:///D:/RMProjects/Pi/scripts/bench/extension-exec-output.ts:25",
+                "bytes": 11824
+              },
+              {
+                "frame": "Uint8Array@:0",
+                "bytes": 10784
+              },
+              {
+                "frame": "Duplex@node:internal/streams/duplex:64",
+                "bytes": 10704
+              }
+            ]
+          }
+        ]
+      },
+      "startup": {
+        "node": "v26.13.0",
+        "os": "win32 10.0.26300",
+        "modulePath": "D:\\RMProjects\\Pi\\.git\\pi150-t05b\\exec-baseline.ts",
+        "sourceHash": "76e1c26ac060e33f93e190283e900bf0f4f235d6975c12d7280c8b3f09bc1621",
+        "rows": [
+          {
+            "name": "empty-node",
+            "firstMilliseconds": 33.4718,
+            "warmP50Milliseconds": 33.733000000000004,
+            "warmP95Milliseconds": 37.83670000000001,
+            "samples": [
+              33.4718,
+              33.9045,
+              37.381,
+              32.88639999999998,
+              33.733000000000004,
+              33.2414,
+              32.4453,
+              31.454799999999977,
+              33.8073,
+              35.11130000000003,
+              32.391399999999976,
+              37.83670000000001,
+              32.95060000000001,
+              33.175599999999974,
+              34.46040000000005,
+              34.99860000000001,
+              32.16660000000002,
+              32.08570000000009,
+              32.161699999999996,
+              34.154399999999896,
+              35.036699999999996
+            ],
+            "outputBytes": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          {
+            "name": "git-status",
+            "firstMilliseconds": 30.387100000000032,
+            "warmP50Milliseconds": 28.628399999999942,
+            "warmP95Milliseconds": 33.67600000000016,
+            "samples": [
+              30.387100000000032,
+              27.843599999999924,
+              28.153200000000083,
+              29.099000000000046,
+              28.46580000000006,
+              28.01030000000003,
+              28.414999999999964,
+              28.628399999999942,
+              28.765499999999975,
+              28.421100000000024,
+              28.782200000000103,
+              28.16780000000017,
+              28.345800000000054,
+              33.67600000000016,
+              28.846000000000004,
+              28.284700000000157,
+              28.538499999999885,
+              29.086499999999887,
+              29.160499999999956,
+              29.09089999999992,
+              29.832599999999957
+            ],
+            "outputBytes": [
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643
+            ]
+          }
+        ],
+        "finalOwnership": {
+          "handles": 0,
+          "processHandles": 0,
+          "created": 0,
+          "cleanupChecks": 0
+        }
+      }
+    },
+    {
+      "round": 5,
+      "variant": "candidate",
+      "output": {
+        "fixtureVersion": 2,
+        "node": "v26.13.0",
+        "os": "win32 10.0.26300",
+        "modulePath": "D:\\RMProjects\\Pi\\packages\\coding-agent\\src\\core\\exec.ts",
+        "sourceHash": "a9300b6027e40ddedbcca460de30f1c78750533bd8cd1699f5b5ac9671b9a70d",
+        "warmup": 4,
+        "iterations": 16,
+        "samplingInterval": 1024,
+        "deterministic": [
+          {
+            "inputBytes": 4096,
+            "inputChunks": 64,
+            "cap": 4096,
+            "decodedBytes": 4096,
+            "decodedChunks": 64,
+            "outputBytes": 4096,
+            "promisesDuringDelivery": 0,
+            "promisesDuringStopDelivery": 0,
+            "partialBufferViews": 0,
+            "remainingDataListeners": 0,
+            "stopSignals": 0
+          },
+          {
+            "inputBytes": 4096,
+            "inputChunks": 64,
+            "cap": 135,
+            "decodedBytes": 135,
+            "decodedChunks": 3,
+            "outputBytes": 135,
+            "promisesDuringDelivery": 0,
+            "promisesDuringStopDelivery": 1,
+            "partialBufferViews": 1,
+            "remainingDataListeners": 0,
+            "stopSignals": 1
+          },
+          {
+            "inputBytes": 4096,
+            "inputChunks": 64,
+            "cap": 0,
+            "decodedBytes": 0,
+            "decodedChunks": 0,
+            "outputBytes": 0,
+            "promisesDuringDelivery": 0,
+            "promisesDuringStopDelivery": 1,
+            "partialBufferViews": 0,
+            "remainingDataListeners": 0,
+            "stopSignals": 1
+          }
+        ],
+        "references": [
+          {
+            "kind": "normal",
+            "retainedInputBuffers": 0,
+            "retainedCallbacks": 0,
+            "retainedResult": 0,
+            "dataListeners": 0,
+            "pendingTimers": 0,
+            "abortListeners": 0
+          },
+          {
+            "kind": "abort",
+            "retainedInputBuffers": 0,
+            "retainedCallbacks": 0,
+            "retainedResult": 0,
+            "dataListeners": 0,
+            "pendingTimers": 0,
+            "abortListeners": 0
+          },
+          {
+            "kind": "cap",
+            "retainedInputBuffers": 0,
+            "retainedCallbacks": 0,
+            "retainedResult": 0,
+            "dataListeners": 0,
+            "pendingTimers": 0,
+            "abortListeners": 0
+          },
+          {
+            "kind": "error",
+            "retainedInputBuffers": 0,
+            "retainedCallbacks": 0,
+            "retainedResult": 0,
+            "dataListeners": 0,
+            "pendingTimers": 0,
+            "abortListeners": 0
+          }
+        ],
+        "runtimeReferences": [
+          {
+            "dispose": false,
+            "retainedResult": 0,
+            "retainedDisposedOwner": null,
+            "abortListeners": 0,
+            "participants": 1
+          },
+          {
+            "dispose": true,
+            "retainedResult": 0,
+            "retainedDisposedOwner": 0,
+            "abortListeners": 0,
+            "participants": 0
+          }
+        ],
+        "measurements": [
+          {
+            "bytes": 262144,
+            "chunkBytes": 1024,
+            "cap": 262144,
+            "iterations": 16,
+            "timingIterations": 1024,
+            "cpuMicrosecondsPerInvocation": 61.5234375,
+            "wallP95Milliseconds": 0.1413000000000011,
+            "sampledBytes": 4864448,
+            "sampledBytesPerInputChunk": 1187.609375,
+            "heapBefore": 10808552,
+            "peakHeap": 15707824,
+            "heapAfterGC": 11120440,
+            "allocationStacks": [
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 2118480
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 2069600
+              },
+              {
+                "frame": "emit@node:events:489",
+                "bytes": 213920
+              },
+              {
+                "frame": "post@node:inspector:115",
+                "bytes": 80632
+              },
+              {
+                "frame": "onStdoutData@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:116",
+                "bytes": 65536
+              },
+              {
+                "frame": "onStderrData@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:120",
+                "bytes": 56160
+              },
+              {
+                "frame": "execCommand@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:52",
+                "bytes": 20920
+              },
+              {
+                "frame": "_onceWrap@node:events:633",
+                "bytes": 18984
+              }
+            ]
+          },
+          {
+            "bytes": 524288,
+            "chunkBytes": 1024,
+            "cap": 524288,
+            "iterations": 16,
+            "timingIterations": 512,
+            "cpuMicrosecondsPerInvocation": 121.09375,
+            "wallP95Milliseconds": 0.17279999999999518,
+            "sampledBytes": 9530800,
+            "sampledBytesPerInputChunk": 1163.427734375,
+            "heapBefore": 10913248,
+            "peakHeap": 20420016,
+            "heapAfterGC": 11297112,
+            "allocationStacks": [
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 4283760
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 4280640
+              },
+              {
+                "frame": "emit@node:events:489",
+                "bytes": 455824
+              },
+              {
+                "frame": "onStderrData@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:120",
+                "bytes": 128960
+              },
+              {
+                "frame": "onStdoutData@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:116",
+                "bytes": 124800
+              },
+              {
+                "frame": "ExecFixture@file:///D:/RMProjects/Pi/tests/helpers/extension-exec-fixture.ts:10",
+                "bytes": 14056
+              },
+              {
+                "frame": "execCommand@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:52",
+                "bytes": 13704
+              },
+              {
+                "frame": "_onceWrap@node:events:633",
+                "bytes": 12608
+              }
+            ]
+          },
+          {
+            "bytes": 1048576,
+            "chunkBytes": 1024,
+            "cap": 1048576,
+            "iterations": 16,
+            "timingIterations": 256,
+            "cpuMicrosecondsPerInvocation": 183.59375,
+            "wallP95Milliseconds": 0.24459999999999127,
+            "sampledBytes": 18479496,
+            "sampledBytesPerInputChunk": 1127.89892578125,
+            "heapBefore": 10932608,
+            "peakHeap": 27325056,
+            "heapAfterGC": 11624448,
+            "allocationStacks": [
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 8433360
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 8382400
+              },
+              {
+                "frame": "emit@node:events:489",
+                "bytes": 966712
+              },
+              {
+                "frame": "onStderrData@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:120",
+                "bytes": 259488
+              },
+              {
+                "frame": "onStdoutData@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:116",
+                "bytes": 232992
+              },
+              {
+                "frame": "@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/child-process.ts:59",
+                "bytes": 16056
+              },
+              {
+                "frame": "Duplex@node:internal/streams/duplex:64",
+                "bytes": 13976
+              },
+              {
+                "frame": "_onceWrap@node:events:633",
+                "bytes": 13720
+              }
+            ]
+          },
+          {
+            "bytes": 1048576,
+            "chunkBytes": 64,
+            "cap": 1048576,
+            "iterations": 16,
+            "timingIterations": 256,
+            "cpuMicrosecondsPerInvocation": 917.96875,
+            "wallP95Milliseconds": 0.980700000000013,
+            "sampledBytes": 31514432,
+            "sampledBytesPerInputChunk": 120.218017578125,
+            "heapBefore": 10936960,
+            "peakHeap": 27636568,
+            "heapAfterGC": 7781008,
+            "allocationStacks": [
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 6204000
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 6136960
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 4435840
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 4388432
+              },
+              {
+                "frame": "onStderrData@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:120",
+                "bytes": 2500352
+              },
+              {
+                "frame": "onStdoutData@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:116",
+                "bytes": 2384896
+              },
+              {
+                "frame": "emit@node:events:489",
+                "bytes": 1785968
+              },
+              {
+                "frame": "onStderrData@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:120",
+                "bytes": 1745248
+              }
+            ]
+          },
+          {
+            "bytes": 1048576,
+            "chunkBytes": 1024,
+            "cap": 8192,
+            "iterations": 16,
+            "timingIterations": 256,
+            "cpuMicrosecondsPerInvocation": 121.09375,
+            "wallP95Milliseconds": 0.15660000000002583,
+            "sampledBytes": 1266264,
+            "sampledBytesPerInputChunk": 77.28662109375,
+            "heapBefore": 6082488,
+            "peakHeap": 7376088,
+            "heapAfterGC": 6190800,
+            "allocationStacks": [
+              {
+                "frame": "emit@node:events:489",
+                "bytes": 900184
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 71760
+              },
+              {
+                "frame": "write@node:string_decoder:76",
+                "bytes": 62400
+              },
+              {
+                "frame": "_onceWrap@node:events:633",
+                "bytes": 16928
+              },
+              {
+                "frame": "@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/child-process.ts:59",
+                "bytes": 14904
+              },
+              {
+                "frame": "run@file:///D:/RMProjects/Pi/scripts/bench/extension-exec-output.ts:25",
+                "bytes": 14216
+              },
+              {
+                "frame": "execCommand@file:///D:/RMProjects/Pi/packages/coding-agent/src/core/exec.ts:52",
+                "bytes": 12144
+              },
+              {
+                "frame": "ExecFixture@file:///D:/RMProjects/Pi/tests/helpers/extension-exec-fixture.ts:10",
+                "bytes": 9760
+              }
+            ]
+          }
+        ]
+      },
+      "startup": {
+        "node": "v26.13.0",
+        "os": "win32 10.0.26300",
+        "modulePath": "D:\\RMProjects\\Pi\\packages\\coding-agent\\src\\core\\exec.ts",
+        "sourceHash": "a9300b6027e40ddedbcca460de30f1c78750533bd8cd1699f5b5ac9671b9a70d",
+        "rows": [
+          {
+            "name": "empty-node",
+            "firstMilliseconds": 71.2404,
+            "warmP50Milliseconds": 63.01310000000001,
+            "warmP95Milliseconds": 70.74369999999999,
+            "samples": [
+              71.2404,
+              64.5523,
+              63.01310000000001,
+              62.22,
+              63.76319999999998,
+              63.86200000000002,
+              61.632000000000005,
+              61.08449999999999,
+              65.83579999999995,
+              61.46889999999996,
+              62.960399999999936,
+              65.03860000000009,
+              70.74369999999999,
+              62.44349999999997,
+              62.670999999999935,
+              61.462400000000116,
+              63.50469999999996,
+              62.844499999999925,
+              64.52960000000007,
+              62.60440000000017,
+              65.97019999999998
+            ],
+            "outputBytes": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          {
+            "name": "git-status",
+            "firstMilliseconds": 60.30420000000004,
+            "warmP50Milliseconds": 59.784999999999854,
+            "warmP95Milliseconds": 65.0447999999999,
+            "samples": [
+              60.30420000000004,
+              59.07960000000003,
+              57.71090000000004,
+              59.87149999999997,
+              64.51890000000003,
+              58.851199999999835,
+              57.02649999999994,
+              60.255300000000034,
+              65.0447999999999,
+              60.11630000000014,
+              60.31510000000003,
+              62.61670000000004,
+              59.86969999999974,
+              60.88599999999997,
+              57.42520000000013,
+              58.45589999999993,
+              59.62310000000025,
+              59.16310000000021,
+              59.784999999999854,
+              58.97769999999991,
+              58.965599999999995
+            ],
+            "outputBytes": [
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643,
+              643
+            ]
+          }
+        ],
+        "finalOwnership": {
+          "handles": 0,
+          "processHandles": 0,
+          "created": 42,
+          "cleanupChecks": 42
+        }
+      }
+    }
+  ]
+}
