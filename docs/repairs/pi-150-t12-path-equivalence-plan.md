@@ -1,6 +1,6 @@
 # T12：Windows路径等价性，分入口复现与分批交付
 
-状态：T12-A #194最终head 421cecb10270528a04537f45740a3e4edede70eb 获completed/no findings与六CI通过，合并为adcd1a6ec866fad3d02c836529a8873a1f38ecd3；两端分支已删除。[T12-B](pi-150-t12b-session-cwd-identity.md)已在同步main上独立复现并进入验收；C/D仍待实施。用户只要求当前Node26；POSIX行为在既有Node26 Linux CI验证。
+状态：T12-A #194和T12-B #195已合并，各最终head均获completed/no findings与六CI通过，两端任务分支已删除。B合并为0cc64d3be615386134c7be8fe3932aa1dba35a2f；[T12-C](pi-150-t12c-local-package-identity.md)已在同步main上独立复现并进入验收，D仍待实施。用户只要求当前Node26；POSIX行为在既有Node26 Linux CI验证。
 
 ## 已观察到的共同边界
 

@@ -801,7 +801,10 @@ export class DefaultPackageManager implements PackageManager {
 			scope === "project" ? this.settingsManager.getProjectSettings() : this.settingsManager.getGlobalSettings();
 		const currentPackages = currentSettings.packages ?? [];
 		const normalizedSource = this.normalizePackageSourceForSettings(source, scope);
-		const matchIndex = currentPackages.findIndex((existing) => this.packageSourcesMatch(existing, source, scope));
+		const inputKey = this.getSourceMatchKeyForInput(source);
+		const matchIndex = currentPackages.findIndex(
+			(existing) => this.getSourceMatchKeyForSettings(this.getPackageSourceString(existing), scope) === inputKey,
+		);
 		if (matchIndex !== -1) {
 			const existing = currentPackages[matchIndex];
 			if (this.getPackageSourceString(existing) === normalizedSource) {
@@ -831,7 +834,10 @@ export class DefaultPackageManager implements PackageManager {
 		const currentSettings =
 			scope === "project" ? this.settingsManager.getProjectSettings() : this.settingsManager.getGlobalSettings();
 		const currentPackages = currentSettings.packages ?? [];
-		const nextPackages = currentPackages.filter((existing) => !this.packageSourcesMatch(existing, source, scope));
+		const inputKey = this.getSourceMatchKeyForInput(source);
+		const nextPackages = currentPackages.filter(
+			(existing) => this.getSourceMatchKeyForSettings(this.getPackageSourceString(existing), scope) !== inputKey,
+		);
 		const changed = nextPackages.length !== currentPackages.length;
 		if (!changed) {
 			return false;
@@ -1352,7 +1358,7 @@ export class DefaultPackageManager implements PackageManager {
 		if (parsed.type === "git") {
 			return `git:${parsed.host}/${parsed.path}`;
 		}
-		return `local:${this.resolvePath(parsed.path)}`;
+		return `local:${canonicalizePath(this.resolvePath(parsed.path))}`;
 	}
 
 	private getSourceMatchKeyForSettings(source: string, scope: SourceScope): string {
@@ -1364,7 +1370,7 @@ export class DefaultPackageManager implements PackageManager {
 			return `git:${parsed.host}/${parsed.path}`;
 		}
 		const baseDir = this.getBaseDirForScope(scope);
-		return `local:${this.resolvePathFromBase(parsed.path, baseDir)}`;
+		return `local:${canonicalizePath(this.resolvePathFromBase(parsed.path, baseDir))}`;
 	}
 
 	private buildNoMatchingPackageMessage(source: string, configuredPackages: PackageSource[]): string {
@@ -1398,12 +1404,6 @@ export class DefaultPackageManager implements PackageManager {
 		}
 
 		return suggestions.values().next().value;
-	}
-
-	private packageSourcesMatch(existing: PackageSource, inputSource: string, scope: SourceScope): boolean {
-		const left = this.getSourceMatchKeyForSettings(this.getPackageSourceString(existing), scope);
-		const right = this.getSourceMatchKeyForInput(inputSource);
-		return left === right;
 	}
 
 	private normalizePackageSourceForSettings(source: string, scope: SourceScope): string {
