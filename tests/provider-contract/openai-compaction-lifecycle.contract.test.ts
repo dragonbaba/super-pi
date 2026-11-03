@@ -618,6 +618,24 @@ function tokenOwner(f: Awaited<ReturnType<typeof fixture>>) {
   return f.session.extensionRunner.getOpenAICodexDispatch().owner;
 }
 
+test("SDK summary dispatch uses configured transport and explicit requests retain their transport", async () => {
+  const f = await fixture(false, undefined, "gpt-5.1", { noExtensions: true });
+  const dispatch = f.runtime.streamSimple.bind(f.runtime);
+  const transports: unknown[] = [];
+  f.runtime.streamSimple = (...args: Parameters<typeof dispatch>) => {
+    transports.push(args[2]?.transport);
+    return dispatch(...args);
+  };
+  try {
+    await f.session.compact();
+    assert.deepEqual(transports, ["sse"]);
+    f.session.agent.transport = "websocket-cached";
+    await f.session.prompt("EXPLICIT_TRANSPORT");
+    assert.deepEqual(transports, ["sse", "websocket-cached"]);
+    assert.equal(f.requests.length, 2);
+  } finally { await f.release(); }
+});
+
 test("SDK Codex owners isolate identical IDs without extensions and preserve legacy callers", { timeout: 5000 }, async () => {
   const sessionId = "native-codex-same-id";
   const first = await fixture(true, undefined, "gpt-5.1", { noExtensions: true, sessionId });
