@@ -1,6 +1,6 @@
 # T06-C：Bedrock Converse 工具参数增量解析
 
-日期：2026-11-04。状态：**先行设计已落实，Bedrock 已实现，验收中**。基线为 T06-B #184 合并提交 `35dc8d10b6e350ecf01fe24007adbf7e1473496b`；其最终 head `2458a88685c4d8202d61dc266869bb3a349cba21` 已获 Codex completed/no findings，Windows/Linux CI 6/6 成功，相关本地/远端分支已删除，main 已同步。当前分支 `codex/t06c-bedrock-incremental-tool-args`，仅验证 Node v26.13.0。
+日期：2026-11-04。状态：**#185 已合并交付**，合并提交 `4d82e1de7b4c62fe75483dce98d405b01764e3dd`，最终 head `6bdc04e48eca353c1818fb96d10b721a2ac298a8` 已获 Codex completed/no findings、CI 6/6，相关本地/远端分支已删除并同步 main。基线为 T06-B #184 合并提交 `35dc8d10b6e350ecf01fe24007adbf7e1473496b`；其最终 head `2458a88685c4d8202d61dc266869bb3a349cba21` 已获 Codex completed/no findings，Windows/Linux CI 6/6 成功，相关本地/远端分支已删除，main 已同步。当前分支 `codex/t06c-bedrock-incremental-tool-args`，仅验证 Node v26.13.0。
 
 ## 范围与现状
 
@@ -60,4 +60,4 @@ block stop 一次 finalize 并释放 slot，删除索引映射使迟到工具 de
 
 受控 GC 保持 stream/result 存活：normal/abort/error 的 parser 弱引用均为 0，dispose 后 raw/token/stack/root/parent 全部释放；normal 的旧 preview 也可回收，abort/error 的部分 preview 仍由最终结果持有。临时旧 adapter 已按记录的唯一精确路径删除；fixture 精确恢复其替换的 SDK send 方法。
 
-类型检查、离线构建、四个下游 benchmark 和当前 Node26 全套均通过：**401/401 执行单元成功，5341 tests / 5243 pass / 98 skip / 0 fail / 0 cancelled**。全量包括构建后实际 Agent 集成与 stream/TUI 源码门禁。stream 100000 更新合并为 1 次 snapshot/delivery；session listener Promise/wrapper/array 为 0；paced args 每 flush 一次 snapshot，缺失 generation 和语义兜底为 0，metadata/调度状态释放；frame queue 100000 请求只生成/写入 2 帧，全尺寸副本和新增 Promise/controller/wrapper 为 0，active/pending 清空。最终 PR reviewer/CI 尚待验收，未先标交付。日志与原始采样位于 `.git/pi150-t06c`。
+类型检查、离线构建、四个下游 benchmark 和当前 Node26 全套均通过：**401/401 执行单元成功，5341 tests / 5243 pass / 98 skip / 0 fail / 0 cancelled**。全量包括构建后实际 Agent 集成与 stream/TUI 源码门禁。stream 100000 更新合并为 1 次 snapshot/delivery；session listener Promise/wrapper/array 为 0；paced args 每 flush 一次 snapshot，缺失 generation 和语义兜底为 0，metadata/调度状态释放；frame queue 100000 请求只生成/写入 2 帧，全尺寸副本和新增 Promise/controller/wrapper 为 0，active/pending 清空。最终 head reviewer/CI 已通过并随 #185 合并交付。日志与原始采样位于 `.git/pi150-t06c`。

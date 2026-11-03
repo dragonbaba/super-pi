@@ -1,6 +1,6 @@
 # Pi 1.5.0 借鉴与修复实施方案
 
-日期：2026-11-04。状态：**方案 #175、SDK 前置修复 #176、T01 #177、T02 #178、T03 #179、T04 #180、T05-A #181、T05-B #182、T06-A #183 和 T06-B #184 已合并；T06-C Bedrock 正在实施；其余 T06 切片及 T07–T12 尚未实施**。#175 交付 GPL-3.0-only、README、差异评估与本方案；先完成逐项规划，再进入独立修复。不得把“读过源码”“写了测试”或“CI 启动了”记成实施完成。
+日期：2026-11-04。状态：**方案 #175、SDK 前置修复 #176、T01 #177、T02 #178、T03 #179、T04 #180、T05-A #181、T05-B #182、T06-A #183、T06-B #184 和 T06-C #185 已合并；T06-D Chat Completions 正在实施；其余 T06 切片及 T07–T12 尚未实施**。#175 交付 GPL-3.0-only、README、差异评估与本方案；先完成逐项规划，再进入独立修复。不得把“读过源码”“写了测试”或“CI 启动了”记成实施完成。
 
 ## 1. 基线、范围与交付顺序
 
@@ -38,6 +38,8 @@ T05-A #181 已合并为 `92d5adb8642839140f0229749a0f0b3829f3c550`；T05-B #182 
 T06-A #183 已合并为 `23fd4b6e15e25886dc22e69e703deb278de4ae7c`；最终 head `1044154f9e3b585dc00da02e87a6283cd300905f` 已获 Codex completed/no findings、CI 6/6，本地/远端对应分支已删除。T06-B 的先行设计和证据见 [Responses 增量参数](repairs/pi-150-t06b-responses-tool-args.md)。
 
 T06-B #184 已合并为 `35dc8d10b6e350ecf01fe24007adbf7e1473496b`；最终 head `2458a88685c4d8202d61dc266869bb3a349cba21` 已获 Codex completed/no findings、CI 6/6，相关本地/远端分支已删除。T06-C 见 [Bedrock 增量参数](repairs/pi-150-t06c-bedrock-tool-args.md)。
+
+T06-C #185 已合并为 `4d82e1de7b4c62fe75483dce98d405b01764e3dd`；最终 head `6bdc04e48eca353c1818fb96d10b721a2ac298a8` 已获 Codex completed/no findings、CI 6/6，相关本地/远端分支已删除。T06-D 见 [Chat Completions 增量参数](repairs/pi-150-t06d-chat-tool-args.md)。
 
 ## 2. 实施前必须完成的设计门禁
 
