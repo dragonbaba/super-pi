@@ -12,13 +12,15 @@ import { anthropicArgumentsFixture } from "../../tests/helpers/anthropic-argumen
 import { responsesArgumentsFixture } from "../../tests/helpers/responses-arguments-fixture.ts";
 import { bedrockArgumentsFixture } from "../../tests/helpers/bedrock-arguments-fixture.ts";
 import { chatArgumentsFixture } from "../../tests/helpers/chat-arguments-fixture.ts";
+import { mistralArgumentsFixture } from "../../tests/helpers/mistral-arguments-fixture.ts";
 
 const moduleIndex = process.argv.indexOf("--provider-module");
 const responses = process.argv.includes("--responses");
 const bedrock = process.argv.includes("--bedrock");
 const chat = process.argv.includes("--chat");
-const argumentsFixture = chat ? chatArgumentsFixture : bedrock ? bedrockArgumentsFixture : responses ? responsesArgumentsFixture : anthropicArgumentsFixture;
-const modulePath = resolve(moduleIndex < 0 ? `packages/ai/src/api/${chat ? "openai-completions" : bedrock ? "bedrock-converse-stream" : responses ? "openai-codex-responses" : "anthropic-messages"}.ts` : process.argv[moduleIndex + 1]);
+const mistral = process.argv.includes("--mistral");
+const argumentsFixture = mistral ? mistralArgumentsFixture : chat ? chatArgumentsFixture : bedrock ? bedrockArgumentsFixture : responses ? responsesArgumentsFixture : anthropicArgumentsFixture;
+const modulePath = resolve(moduleIndex < 0 ? `packages/ai/src/api/${mistral ? "mistral-conversations" : chat ? "openai-completions" : bedrock ? "bedrock-converse-stream" : responses ? "openai-codex-responses" : "anthropic-messages"}.ts` : process.argv[moduleIndex + 1]);
 const { stream: factory } = await import(pathToFileURL(modulePath).href);
 const smoke = process.argv.includes("--smoke"), warmup = 2, timingIterations = 8, profileIterations = 4, samplingInterval = 1024;
 type Fixture = ReturnType<typeof argumentsFixture>;

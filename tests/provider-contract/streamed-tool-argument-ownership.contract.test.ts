@@ -101,33 +101,13 @@ test("legacy and custom adapters may omit ownership and enter the counted compat
 });
 
 test("mutation adapters expose transient generations and replacement adapters replace arguments", () => {
-	const mutationSources = [
-		"mistral-conversations.ts",
-	];
-	for (const modulePath of mutationSources) {
+	for (const modulePath of ["anthropic-messages.ts", "openai-responses-shared.ts", "bedrock-converse-stream.ts", "openai-completions.ts", "mistral-conversations.ts"]) {
 		const source = readFileSync(`packages/ai/src/api/${modulePath}`, "utf8");
-		assert.match(source, /partialJson|partialArgs/, modulePath);
+		assert.match(source, /toolArgsGeneration = \((?:block|slot\.block)\.toolArgsGeneration \?\? 0\) \+ 1/, modulePath);
+		assert.match(source, /toolArgsGeneration: (?:block|slot\.block)\.toolArgsGeneration/, modulePath);
+		assert.match(source, /toolArgsGeneration = undefined/, modulePath);
+		assert.doesNotMatch(source, /partialJson|partialArgs|parseStreamingJson/, modulePath);
 	}
-	const anthropic = readFileSync("packages/ai/src/api/anthropic-messages.ts", "utf8");
-	assert.match(anthropic, /toolArgsGeneration = \(block\.toolArgsGeneration \?\? 0\) \+ 1/);
-	assert.match(anthropic, /toolArgsGeneration: block\.toolArgsGeneration/);
-	assert.match(anthropic, /toolArgsGeneration = undefined/);
-	assert.doesNotMatch(anthropic, /partialJson|parseStreamingJson/);
-	const responses = readFileSync("packages/ai/src/api/openai-responses-shared.ts", "utf8");
-	assert.match(responses, /toolArgsGeneration = \(slot\.block\.toolArgsGeneration \?\? 0\) \+ 1/);
-	assert.match(responses, /toolArgsGeneration: slot\.block\.toolArgsGeneration/);
-	assert.match(responses, /toolArgsGeneration = undefined/);
-	assert.doesNotMatch(responses, /partialJson|parseStreamingJson/);
-	const bedrock = readFileSync("packages/ai/src/api/bedrock-converse-stream.ts", "utf8");
-	assert.match(bedrock, /toolArgsGeneration = \(block\.toolArgsGeneration \?\? 0\) \+ 1/);
-	assert.match(bedrock, /toolArgsGeneration: block\.toolArgsGeneration/);
-	assert.match(bedrock, /toolArgsGeneration = undefined/);
-	assert.doesNotMatch(bedrock, /partialJson|parseStreamingJson/);
-	const chat = readFileSync("packages/ai/src/api/openai-completions.ts", "utf8");
-	assert.match(chat, /toolArgsGeneration = \(block\.toolArgsGeneration \?\? 0\) \+ 1/);
-	assert.match(chat, /toolArgsGeneration: block\.toolArgsGeneration/);
-	assert.match(chat, /toolArgsGeneration = undefined/);
-	assert.doesNotMatch(chat, /partialArgs|parseStreamingJson/);
 
 	for (const modulePath of ["pi-messages.ts", "google-generative-ai.ts", "google-vertex.ts"]) {
 		const source = readFileSync(`packages/ai/src/api/${modulePath}`, "utf8");
