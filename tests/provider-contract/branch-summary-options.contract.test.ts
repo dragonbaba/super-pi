@@ -7,6 +7,8 @@ import { generateBranchSummary } from "../../packages/coding-agent/src/core/comp
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.ts";
 import { ALPHA_MODEL, alphaHeadless, alphaModelRuntime } from "../helpers/alpha-session.ts";
 import { streamSimple as streamChat } from "../../packages/ai/src/api/openai-completions.ts";
+import { streamSimple as streamGoogle } from "../../packages/ai/src/api/google-generative-ai.ts";
+import { streamSimple as streamVertex } from "../../packages/ai/src/api/google-vertex.ts";
 import { conservativeModelCapabilities } from "../../packages/ai/src/model-capabilities.ts";
 import type { Model } from "../../packages/ai/src/types.ts";
 
@@ -65,6 +67,43 @@ for (const [enabled, level, expected] of [[true, "high", "low"], [true, "off", "
 				} }), retry: { enabled: false, maxRetries: 0, baseDelayMs: 1 } });
 		assert.equal(result.error, undefined); assert.equal(calls, 1);
 		assert.equal(wire.reasoning_effort, expected); assert.equal(wire.max_tokens, 2048);
+	});
+}
+
+for (const api of ["google-generative-ai", "google-vertex"] as const) {
+	for (const [level, budget, modelMax, expected] of [
+		["medium", 8192, 32768, 1024], ["high", 8192, 32768, 1024],
+		["medium", 8192, 1536, 512], ["medium", 512, 32768, 512], ["medium", -1, 32768, -1],
+	] as const) test(`branch summary ${api} fits ${level}/${budget} thinking in model cap ${modelMax}`, async () => {
+		let payload: any, budgets: unknown, calls = 0;
+		const model = { ...ALPHA_MODEL, api, id: "gemini-2.5-pro", reasoning: true, maxTokens: modelMax,
+			thinkingBudgetMap: { medium: budget }, capabilities: { ...conservativeModelCapabilities(),
+				reasoning: { mode: "budget" as const, levels: ["off", "medium"] as const } } };
+		const result = await generateBranchSummary(entries(), { model, thinkingLevel: level, apiKey: "offline", signal: new AbortController().signal,
+			streamFn: (requestModel, context, options) => {
+				calls++; assert.equal(options?.reasoning, level); assert.equal(options?.maxTokens, 2048);
+				budgets = options?.thinkingBudgets;
+				const sender = api === "google-generative-ai" ? streamGoogle : streamVertex;
+				return sender(requestModel as never, context, { ...options, project: "fixture", location: "us-central1",
+					onPayload(value: unknown) { payload = value; throw Error("captured-summary-payload"); } } as never);
+			}, retry: { enabled: false, maxRetries: 0, baseDelayMs: 1 } });
+		assert.ok(payload, result.error); assert.match(result.error!, /captured-summary-payload/); assert.equal(calls, 1);
+		assert.deepEqual(budgets, budget > 1024 ? { medium: expected } : undefined);
+		assert.equal(payload.config.thinkingConfig.thinkingBudget, expected);
+		assert.equal(payload.config.maxOutputTokens, Math.min(2048, modelMax));
+	});
+	test(`branch summary ${api} keeps the explicit budget failure when no thinking space remains`, async () => {
+		let calls = 0, sent = false;
+		const model = { ...ALPHA_MODEL, api, id: "gemini-2.5-pro", reasoning: true, maxTokens: 1024,
+			thinkingBudgetMap: { medium: 8192 }, capabilities: { ...conservativeModelCapabilities(),
+				reasoning: { mode: "budget" as const, levels: ["off", "medium"] as const } } };
+		await assert.rejects(generateBranchSummary(entries(), { model, thinkingLevel: "medium", apiKey: "offline", signal: new AbortController().signal,
+			streamFn: (requestModel, context, options) => {
+				calls++; assert.equal(options?.thinkingBudgets, undefined);
+				return (api === "google-generative-ai" ? streamGoogle : streamVertex)(requestModel as never, context, { ...options,
+					onPayload() { sent = true; throw Error("unexpected payload"); } });
+			}, retry: { enabled: false, maxRetries: 0, baseDelayMs: 1 } }), /output-reservation/);
+		assert.equal(calls, 1); assert.equal(sent, false);
 	});
 }
 

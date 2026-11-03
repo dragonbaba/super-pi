@@ -31,8 +31,20 @@ AgentSession.navigateTree 的 generateBranchSummary 参数包含 model/auth/sign
 
 ## 实施与验证记录
 
-生产改动仅在 GenerateBranchSummaryOptions 增加可选 ThinkingLevel、navigateTree 传入本次会话级别、requestOptions 条件附加 reasoning。与普通 compaction 保持相同启用语义，实际能力限制继续由已有 provider streamSimple 处理；未新增模型白名单、重试、认证读取、配置对象或高频回调。prepare/serialize、completeSummarization 和下游事件/终端代码均未改动，故本项没有宣称新的全链 allocation profile。
+### #189 reviewer 修复设计（先于修复代码）
 
-先行红灯证明 high 在旧分支摘要 stream options 中为 undefined；修复后定向 **105/105** 通过（11 项新 branch-summary cases、现有 compaction 生命周期与 provider 能力矩阵）。真实 AgentSession tree summary 在 low → high 变化后分别继承新值；相同摘要的 transient retry 共享同一个 requestOptions 对象，调用方随后修改选项不改变该次快照。off/缺省/无推理模型保留原行为；真实 Chat adapter 夹具确认已有能力映射仍生效。摘要 options 与实际 wire 的 maxTokens 均保持 2048，取消返回 aborted 并移除 listener。
+Codex 行内发现 4459750772：Google/Vertex budget 模式将 medium 映射为 8192，现有 requestThinkingTokens → resolveRequestOutputFloor 要求额外保留 1024 回答空间，超过摘要请求的 2048，因此请求在发送前失败。此前只测 Chat 的 level 映射，没有覆盖此预算型真实边界。
+
+修复限定在摘要请求配置处：保留 reasoning 级别，复用 requestThinkingTokens 判断现有能力映射后的固定预算；只有预算超过摘要可用空间时，通过已有 thinkingBudgets 覆盖该次请求的实际有效级别。输出额度复用 resolveRequestOutputTokens，回答空间复用 minimumRequestOutputTokens，级别/key 复用 clampThinkingLevel/clampReasoning，不维护第二套模型名或级别表。预算已经足够小、动态 -1、level/adaptive/非 Google 模式不增加覆盖。模型上限不足以同时容纳回答和正 thinking 时仍由已有预算错误拒绝，不静默关闭推理或扩大请求额度。重试继续复用同一请求快照。
+
+增加真实 Google/Vertex streamSimple payload 回归：8192 → 1024，模型上限更小、级别降到模型支持项、小预算不变、动态预算不变，以及无法容纳时只失败一次。先复现输出预算错误，再实现和运行定向/类型/构建/Node26 全套。修复推送后独立发送额外 `@codex review`，等新 head 审核和 CI。
+
+语义澄清：本项保留 SimpleStreamOptions.maxTokens=2048 的原有 provider 解释。Google/Vertex 共享输出额度；Chat 测试的 wire cap 为 2048；非 adaptive Anthropic/Claude Bedrock 的已有实现会在基础回答额度上加 thinking，再受模型/上下文限制，不能宣称所有 provider 的最终 wire 总量都是 2048。本项不修改全局 token 语义。新增计算和最多一个预算对象都只发生在一次摘要请求入口，不改大历史/流式/终端路径。
+
+初版生产改动在 GenerateBranchSummaryOptions 增加可选 ThinkingLevel、navigateTree 传入本次会话级别、requestOptions 条件附加 reasoning。review 修复增加 Google 共享额度的请求级预算调整，复用既有模型能力和预算函数；最多增加一个 request-owned thinkingBudgets 对象，既有 retry 复用同一对象。未新增模型白名单、重试、认证读取或高频回调。prepare/serialize、completeSummarization 和下游事件/终端代码均未改动，故本项没有宣称新的全链 allocation profile。
+
+先行红灯证明 high 在旧分支摘要 stream options 中为 undefined；初版定向 **105/105** 通过（11 项新 branch-summary cases、现有 compaction 生命周期与 provider 能力矩阵）。真实 AgentSession tree summary 在 low → high 变化后分别继承新值；相同摘要的 transient retry 共享同一个 requestOptions 对象，调用方随后修改选项不改变该次快照。off/缺省/无推理模型保留原行为；真实 Chat adapter 夹具确认已有能力映射仍生效。摘要 options 与 Chat wire 的 maxTokens 均保持 2048，取消返回 aborted 并移除 listener。其他 provider 的额度语义见上述澄清。
 
 测试过程中修正了两个 fixture 假设：conservativeModelCapabilities 返回冻结共享对象，测试先复制再提供显式能力；RetryPolicy 即使禁用也要求完整字段，补齐 maxRetries/baseDelayMs。未因此增加生产兜底。类型检查与离线构建通过；当前 Node26 全套 **405/405 执行单元成功，5429 tests / 5331 pass / 98 skip / 0 fail / 0 cancelled**。[证据记录](../evidence/pi-150-t07-branch-summary-thinking.json)包含源码 hash、行为计数及验证结果；原始日志在 .git/pi150-t07。最终 PR reviewer/CI 尚未验收。
+
+Reviewer 修复已复现真实 output-reservation 红灯并完成：12 个 Google/Vertex case 覆盖固定/动态预算、能力级别映射、较小模型上限和无剩余推理空间；扩大后的定向 **119/119** 通过。修复版本 check/build:offline 通过，Node v26.13.0 全套 **405/405 执行单元成功，5441 tests / 5343 pass / 98 skip / 0 fail / 0 cancelled**。请求配置每摘要一次，单次成功捕获或明确失败均为 1 次 stream 调用，没有付费补偿重试。修复后将主动额外请求 Codex review，尚不把旧 head 的 CI 当新 head 验收。

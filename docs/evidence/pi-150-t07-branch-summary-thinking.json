@@ -9,14 +9,14 @@
     },
     {
       "path": "packages/coding-agent/src/core/compaction/branch-summarization.ts",
-      "sha256": "979106cc82dbdaebefd9159f89f39893df4a56a68ec94d32e9a9a66ed6f9ce3b"
+      "sha256": "2e79354631902a9d5475c97a40e17f909a3d9c90ee6e43b6345a2a799550bcfb"
     },
     {
       "path": "tests/provider-contract/branch-summary-options.contract.test.ts",
-      "sha256": "332bb838e924a0dfd3fc7eb187f395fa809a325d0c94b900de8cfb0a67e6fc06"
+      "sha256": "dfd31b8e76b9b321071817b868c625bd2cba5843c77c2a872adf4941a8c0ae59"
     }
   ],
-  "scope": "One scalar field propagated at explicit summary request admission. No changes to history traversal/serialization, per-delta callbacks, event delivery, layout or terminal writes. No new allocation profile claimed for unchanged hot paths.",
+  "scope": "Summary request admission only: reasoning scalar and at most one request-owned Google thinkingBudgets object, reused across retries. No changes to history traversal/serialization, per-delta callbacks, event delivery, layout or terminal writes. No new allocation profile claimed for unchanged hot paths.",
   "behavior": {
     "baseline": "high was undefined in summary stream options (red assertion)",
     "directCases": [
@@ -41,20 +41,34 @@
     "abort": {
       "result": "aborted",
       "abortListenersAfter": 0
+    },
+    "googleReviewFix": {
+      "finding": 4459750772,
+      "baseline": "Real Google/Vertex streamSimple threw output-reservation before payload; medium=8192, output=2048, minimumOutput=9216.",
+      "cases": [
+        "fixed budget 8192 -> 1024",
+        "unsupported high clamps to medium before override key selection",
+        "model max1536 -> thinking512",
+        "small512 unchanged",
+        "dynamic-1 unchanged",
+        "model max1024 still fails explicitly once"
+      ],
+      "requestsPerCase": 1,
+      "outputSemantics": "Configured maxTokens remains2048; Google shares it with thinking. Anthropic/Claude Bedrock existing additive thinking semantics remain unchanged."
     }
   },
   "validation": {
     "targeted": {
-      "tests": 105,
-      "pass": 105,
+      "tests": 119,
+      "pass": 119,
       "fail": 0
     },
     "typeCheck": "passed",
     "offlineBuild": "passed",
     "fullSuite": {
       "units": 405,
-      "tests": 5429,
-      "pass": 5331,
+      "tests": 5441,
+      "pass": 5343,
       "skip": 98,
       "fail": 0,
       "cancelled": 0

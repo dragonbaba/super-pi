@@ -7,7 +7,8 @@
 
 import type { AgentMessage, StreamFn, ThinkingLevel } from "@super-pi/agent-core";
 import type { ProviderHeaders, RetryCallbacks, RetryPolicy } from "@super-pi/ai";
-import { contentText } from "@super-pi/ai";
+import { clampThinkingLevel, contentText } from "@super-pi/ai";
+import { clampReasoning, minimumRequestOutputTokens, requestThinkingTokens, resolveRequestOutputTokens } from "@super-pi/ai/api/simple-options";
 import type { Model, SimpleStreamOptions, Usage } from "@super-pi/ai/compat";
 import {
 	convertToLlm,
@@ -354,6 +355,16 @@ export async function generateBranchSummary(
 	const requestOptions: SimpleStreamOptions = { apiKey, headers, env, signal, maxTokens: 2048 };
 	if (model.reasoning && thinkingLevel && thinkingLevel !== "off") {
 		requestOptions.reasoning = thinkingLevel;
+		const thinkingTokens = requestThinkingTokens(model, thinkingLevel);
+		if (thinkingTokens > 0) {
+			const outputTokens = resolveRequestOutputTokens(model, requestOptions.maxTokens!);
+			const availableThinking = outputTokens - minimumRequestOutputTokens(outputTokens);
+			const effort = clampThinkingLevel(model, thinkingLevel);
+			// Keep a usable answer inside the shared Google output ceiling.
+			if (availableThinking > 0 && thinkingTokens > availableThinking && effort !== "off") {
+				requestOptions.thinkingBudgets = { [clampReasoning(effort)!]: availableThinking };
+			}
+		}
 	}
 	const response = await completeSummarization(model, context, requestOptions, streamFn, retry, callbacks);
 
