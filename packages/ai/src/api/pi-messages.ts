@@ -23,17 +23,20 @@ import type {
 	ToolCall,
 } from "../types.ts";
 
-export const streamedToolArgumentOwnership = "replacement-object" as const;
+export const streamedToolArgumentOwnership = "mutation-with-generation" as const;
 import { capabilityCacheRetention, contextForModelCapabilities, getModelCapabilities } from "../model-capabilities.ts";
 import { clampThinkingLevel } from "../models.ts";
 import { appendAssistantMessageDiagnostic, createAssistantMessageDiagnostic } from "../utils/diagnostics.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { observeEffectiveDispatch } from "../utils/effective-dispatch.ts";
 import { headersToRecord, providerHeadersToRecord } from "../utils/headers.ts";
-import { parseStreamingJson } from "../utils/json-parse.ts";
+import { IncrementalToolArguments } from "../utils/incremental-tool-arguments.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
-import { CRLF_PATTERN, TRAILING_SLASHES_PATTERN } from "./pi-messages-regex.ts";
+import { TRAILING_SLASHES_PATTERN } from "./pi-messages-regex.ts";
 import { clampMaxTokensToContext } from "./simple-options.ts";
+
+const PI_MESSAGES_DECODE_OPTIONS = { stream: true } as const;
+type StreamingPiToolCall = ToolCall & { toolArgsGeneration?: number };
 
 export interface PiMessagesOptions extends StreamOptions {
 	reasoning?: ThinkingLevel;
@@ -191,17 +194,32 @@ function createEventConverter(model: Model<"pi-messages">, timestamp: number) {
 		stopReason: "pending",
 		timestamp,
 	};
-	const toolJson = new Map<number, string>();
+	const toolParsers: (IncrementalToolArguments | undefined)[] = [];
+	function releaseTool(contentIndex: number, finalize = false): void {
+		const parser = toolParsers[contentIndex];
+		if (!parser) return;
+		const block = partial.content[contentIndex] as StreamingPiToolCall;
+		if (finalize) block.arguments = parser.finalize();
+		else parser.dispose();
+		block.toolArgsGeneration = undefined;
+		toolParsers[contentIndex] = undefined;
+	}
+	function dispose(finalize = false): void {
+		for (let index = 0; index < toolParsers.length; index++) releaseTool(index, finalize);
+		toolParsers.length = 0;
+	}
 
-	return (event: PiMessagesEvent): AssistantMessageEvent => {
+	function convert(event: PiMessagesEvent): AssistantMessageEvent {
 		switch (event.type) {
 			case "done":
+				dispose(true);
 				partial.stopReason = event.reason;
 				partial.usage = event.usage;
 				partial.responseId = event.responseId;
 				appendRewriteDiagnostic(partial, event.rewrite);
 				return { type: "done", reason: event.reason, message: partial };
 			case "error":
+				dispose();
 				partial.stopReason = event.reason;
 				partial.usage = event.usage;
 				partial.errorMessage = event.errorMessage;
@@ -211,6 +229,7 @@ function createEventConverter(model: Model<"pi-messages">, timestamp: number) {
 			case "start":
 				break;
 			case "text_start":
+				releaseTool(event.contentIndex);
 				partial.content[event.contentIndex] = { type: "text", text: "" };
 				break;
 			case "text_delta":
@@ -223,6 +242,7 @@ function createEventConverter(model: Model<"pi-messages">, timestamp: number) {
 				break;
 			}
 			case "thinking_start":
+				releaseTool(event.contentIndex);
 				partial.content[event.contentIndex] = { type: "thinking", thinking: "" };
 				break;
 			case "thinking_delta":
@@ -239,32 +259,38 @@ function createEventConverter(model: Model<"pi-messages">, timestamp: number) {
 				content.redacted = event.redacted;
 				break;
 			}
-			case "toolcall_start":
-				partial.content[event.contentIndex] = {
+			case "toolcall_start": {
+				releaseTool(event.contentIndex);
+				const block: StreamingPiToolCall = {
 					type: "toolCall",
 					id: event.id,
 					name: event.toolName,
 					arguments: {},
 					thoughtSignature: undefined,
 					namespace: undefined,
+					toolArgsGeneration: 0,
 				};
-				toolJson.set(event.contentIndex, "");
-				break;
-			case "toolcall_delta": {
-				const json = `${toolJson.get(event.contentIndex) ?? ""}${event.delta}`;
-				toolJson.set(event.contentIndex, json);
-				(partial.content[event.contentIndex] as ToolCall).arguments =
-					parseStreamingJson<ToolCall["arguments"]>(json);
+				partial.content[event.contentIndex] = block;
+				toolParsers[event.contentIndex] = new IncrementalToolArguments();
 				break;
 			}
+			case "toolcall_delta": {
+				const block = partial.content[event.contentIndex] as StreamingPiToolCall;
+				block.arguments = toolParsers[event.contentIndex]!.append(event.delta);
+				block.toolArgsGeneration = (block.toolArgsGeneration ?? 0) + 1;
+				const hostEvent = event as Extract<AssistantMessageEvent, { type: "toolcall_delta" }>;
+				hostEvent.toolArgsGeneration = block.toolArgsGeneration;
+				hostEvent.partial = partial;
+				return hostEvent;
+			}
 			case "toolcall_end": {
+				releaseTool(event.contentIndex);
 				const content = partial.content[event.contentIndex] as ToolCall;
 				content.id = event.toolCall.id;
 				content.name = event.toolCall.name;
 				content.arguments = event.toolCall.arguments;
 				content.thoughtSignature = event.toolCall.thoughtSignature;
 				content.namespace = event.toolCall.namespace;
-				toolJson.delete(event.contentIndex);
 				return {
 					type: "toolcall_end",
 					contentIndex: event.contentIndex,
@@ -274,30 +300,40 @@ function createEventConverter(model: Model<"pi-messages">, timestamp: number) {
 			}
 		}
 
-		return { ...event, partial } as AssistantMessageEvent;
-	};
+		const hostEvent = event as AssistantMessageEvent & { partial: AssistantMessage };
+		hostEvent.partial = partial;
+		return hostEvent;
+	}
+	return { convert, dispose };
 }
 
 async function* readPiMessagesEvents(stream: ReadableStream<Uint8Array>): AsyncGenerator<PiMessagesEvent> {
 	const decoder = new TextDecoder();
 	const reader = stream.getReader();
 	let buffer = "";
+	let decoded = "";
+	// 1 = LF, 2 = LF followed by CR. A following LF completes the blank line.
+	let separator = 0;
 
 	try {
 		while (true) {
 			const { done, value } = await reader.read();
-			buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
-			buffer = buffer.replace(CRLF_PATTERN, "\n");
-
-			let split = buffer.indexOf("\n\n");
-			while (split !== -1) {
-				const event = parsePiMessagesEvent(buffer.slice(0, split));
-				if (event) {
-					yield event;
-				}
-				buffer = buffer.slice(split + 2);
-				split = buffer.indexOf("\n\n");
+			decoded = done ? decoder.decode() : decoder.decode(value, PI_MESSAGES_DECODE_OPTIONS);
+			let segmentStart = 0;
+			for (let index = 0; index < decoded.length; index++) {
+				const code = decoded.charCodeAt(index);
+				if (code === 0x0a) {
+					if (separator !== 0) {
+						buffer += decoded.slice(segmentStart, index + 1);
+						const event = parsePiMessagesEvent(buffer);
+						buffer = "";
+						segmentStart = index + 1;
+						separator = 0;
+						if (event) yield event;
+					} else separator = 1;
+				} else separator = code === 0x0d && separator === 1 ? 2 : 0;
 			}
+			buffer += decoded.slice(segmentStart);
 
 			if (done) {
 				break;
@@ -311,18 +347,25 @@ async function* readPiMessagesEvents(stream: ReadableStream<Uint8Array>): AsyncG
 			}
 		}
 	} finally {
+		buffer = "";
+		decoded = "";
+		try { await reader.cancel(); } catch { /* Preserve the original protocol/transport failure. */ }
 		reader.releaseLock();
 	}
 }
 
 function parsePiMessagesEvent(raw: string): PiMessagesEvent | undefined {
-	const data = raw
-		.split("\n")
-		.find((line) => line.startsWith("data:"))
-		?.slice(5)
-		.trim();
-
-	return data && data !== "[DONE]" ? (JSON.parse(data) as PiMessagesEvent) : undefined;
+	let start = 0;
+	while (start < raw.length) {
+		const newline = raw.indexOf("\n", start);
+		const end = newline < 0 ? raw.length : newline;
+		if (raw.startsWith("data:", start)) {
+			const data = raw.slice(start + 5, end).trim();
+			return data && data !== "[DONE]" ? (JSON.parse(data) as PiMessagesEvent) : undefined;
+		}
+		start = end + 1;
+	}
+	return undefined;
 }
 
 function createErrorEvent(model: Model<"pi-messages">, error: unknown, aborted: boolean, timestamp: number): AssistantMessageEvent {
@@ -364,7 +407,7 @@ export const stream: StreamFunction<"pi-messages", PiMessagesOptions> = (
 ): AssistantMessageEventStream => {
 	const eventStream = new AssistantMessageEventStream();
 	const startedAt = Date.now();
-	const convertEvent = createEventConverter(model, startedAt);
+	const converter = createEventConverter(model, startedAt);
 
 	void (async () => {
 		try {
@@ -424,7 +467,7 @@ export const stream: StreamFunction<"pi-messages", PiMessagesOptions> = (
 			}
 
 			for await (const piEvent of readPiMessagesEvents(response.body)) {
-				const event = convertEvent(piEvent);
+				const event = converter.convert(piEvent);
 				eventStream.push(event);
 				if (event.type === "done" || event.type === "error") {
 					return;
@@ -434,6 +477,8 @@ export const stream: StreamFunction<"pi-messages", PiMessagesOptions> = (
 			throw new Error(`${model.provider} stream ended without a terminal event`);
 		} catch (error) {
 			eventStream.push(createErrorEvent(model, error, options?.signal?.aborted ?? false, startedAt));
+		} finally {
+			converter.dispose();
 		}
 	})();
 

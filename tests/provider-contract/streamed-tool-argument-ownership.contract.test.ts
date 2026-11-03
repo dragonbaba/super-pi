@@ -31,7 +31,7 @@ const CONTRACT_MATRIX: readonly ContractEntry[] = [
 	["openai-codex-responses", "mutation-with-generation", openAICodexResponsesApi, "openai-codex-responses.ts"],
 	["openai-completions", "mutation-with-generation", openAICompletionsApi, "openai-completions.ts"],
 	["mistral-conversations", "mutation-with-generation", mistralConversationsApi, "mistral-conversations.ts"],
-	["pi-messages", "replacement-object", piMessagesApi, "pi-messages.ts"],
+	["pi-messages", "mutation-with-generation", piMessagesApi, "pi-messages.ts"],
 	["google-generative-ai", "replacement-object", googleGenerativeAIApi, "google-generative-ai.ts"],
 	["google-vertex", "replacement-object", googleVertexApi, "google-vertex.ts"],
 ];
@@ -101,15 +101,15 @@ test("legacy and custom adapters may omit ownership and enter the counted compat
 });
 
 test("mutation adapters expose transient generations and replacement adapters replace arguments", () => {
-	for (const modulePath of ["anthropic-messages.ts", "openai-responses-shared.ts", "bedrock-converse-stream.ts", "openai-completions.ts", "mistral-conversations.ts"]) {
+	for (const modulePath of ["anthropic-messages.ts", "openai-responses-shared.ts", "bedrock-converse-stream.ts", "openai-completions.ts", "mistral-conversations.ts", "pi-messages.ts"]) {
 		const source = readFileSync(`packages/ai/src/api/${modulePath}`, "utf8");
 		assert.match(source, /toolArgsGeneration = \((?:block|slot\.block)\.toolArgsGeneration \?\? 0\) \+ 1/, modulePath);
-		assert.match(source, /toolArgsGeneration: (?:block|slot\.block)\.toolArgsGeneration/, modulePath);
+		assert.match(source, /(?:toolArgsGeneration: |hostEvent\.toolArgsGeneration = )(?:block|slot\.block)\.toolArgsGeneration/, modulePath);
 		assert.match(source, /toolArgsGeneration = undefined/, modulePath);
 		assert.doesNotMatch(source, /partialJson|partialArgs|parseStreamingJson/, modulePath);
 	}
 
-	for (const modulePath of ["pi-messages.ts", "google-generative-ai.ts", "google-vertex.ts"]) {
+	for (const modulePath of ["google-generative-ai.ts", "google-vertex.ts"]) {
 		const source = readFileSync(`packages/ai/src/api/${modulePath}`, "utf8");
 		assert.match(source, /\.arguments\s*=|arguments:\s*\(/, modulePath);
 	}
