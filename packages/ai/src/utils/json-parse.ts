@@ -197,7 +197,7 @@ export function parseJsonWithRepair<T>(json: string): T {
  * @param partialJson The partial JSON string from streaming
  * @returns Parsed object or empty object if parsing fails
  */
-function markIncompleteToolArguments<T>(value: T): T {
+export function markIncompleteToolArguments<T>(value: T): T {
 	if (value && typeof value === "object") incompleteToolArgumentGraphs.add(value);
 	return value;
 }

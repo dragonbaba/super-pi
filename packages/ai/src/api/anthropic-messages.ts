@@ -41,7 +41,8 @@ import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { estimateContextTokens, estimateTextTokens } from "../utils/estimate.ts";
 import { observeEffectiveDispatch, summarizeCacheMarkerMetadata } from "../utils/effective-dispatch.ts";
 import { headersToRecord } from "../utils/headers.ts";
-import { parseJsonWithRepair, parseStreamingJson } from "../utils/json-parse.ts";
+import { parseJsonWithRepair } from "../utils/json-parse.ts";
+import { IncrementalToolArguments } from "../utils/incremental-tool-arguments.ts";
 import { getPiUserAgent } from "../utils/pi-user-agent.ts";
 import { ANTHROPIC_MODEL_VERSION_PATTERN, TOOL_CALL_ID_SANITIZE_PATTERN } from "./anthropic-messages-regex.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
@@ -525,6 +526,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 			stopReason: "pending",
 			timestamp: Date.now(),
 		};
+		const toolParsers: (IncrementalToolArguments | undefined)[] = [];
 
 		try {
 			let client: Anthropic;
@@ -599,7 +601,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
 			stream.push({ type: "start", partial: output });
 
-			type Block = (ThinkingContent | TextContent | (ToolCall & { partialJson: string })) & { index: number };
+			type Block = (ThinkingContent | TextContent | (ToolCall & { toolArgsGeneration?: number })) & { index: number };
 			const blocks = output.content as Block[];
 			const blockPositions: number[] = [];
 
@@ -657,13 +659,14 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 							id: event.content_block.id,
 							name: event.content_block.name,
 							arguments: (event.content_block.input as Record<string, any>) ?? {},
-							partialJson: "",
+							toolArgsGeneration: 0,
 							index: event.index,
 						};
 						output.content.push(block);
 						const contentIndex = output.content.length - 1;
 						blockPositions[event.index] = contentIndex;
 						stream.push({ type: "toolcall_start", contentIndex, partial: output });
+							toolParsers[contentIndex] = new IncrementalToolArguments();
 					}
 				} else if (event.type === "content_block_delta") {
 					if (event.delta.type === "text_delta") {
@@ -694,12 +697,13 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 						const index = blockPositions[event.index] ?? -1;
 						const block = blocks[index];
 						if (block && block.type === "toolCall") {
-							block.partialJson += event.delta.partial_json;
-							block.arguments = parseStreamingJson(block.partialJson);
+							block.arguments = toolParsers[index]!.append(event.delta.partial_json);
+							block.toolArgsGeneration = (block.toolArgsGeneration ?? 0) + 1;
 							stream.push({
 								type: "toolcall_delta",
 								contentIndex: index,
 								delta: event.delta.partial_json,
+								toolArgsGeneration: block.toolArgsGeneration,
 								partial: output,
 							});
 						}
@@ -732,10 +736,9 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 								partial: output,
 							});
 						} else if (block.type === "toolCall") {
-							block.arguments = parseStreamingJson(block.partialJson);
-							// Finalize in-place and strip the scratch buffer so replay only
-							// carries parsed arguments.
-							(block as { partialJson?: string }).partialJson = undefined;
+							block.arguments = toolParsers[index]!.finalize();
+							toolParsers[index] = undefined;
+							block.toolArgsGeneration = undefined;
 							stream.push({
 								type: "toolcall_end",
 								contentIndex: index,
@@ -794,6 +797,17 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 			if (output.stopReason === "aborted" || output.stopReason === "error") {
 				throw new Error(output.errorMessage || "An unknown error occurred");
 			}
+			// A successful message without a tool stop must still cross the final validation boundary.
+			for (let index = 0; index < toolParsers.length; index++) {
+				const parser = toolParsers[index];
+				if (!parser) continue;
+				const block = blocks[index];
+				if (block.type === "toolCall") {
+					block.arguments = parser.finalize(); block.toolArgsGeneration = undefined;
+					(block as { index?: number }).index = undefined;
+				}
+				toolParsers[index] = undefined;
+			}
 
 			// Keep queued partial references free of schemas even for a slow consumer.
 			const finalOutput = checkpoint.value === undefined ? output : { ...output, anthropicContext: checkpoint.value };
@@ -804,15 +818,17 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 				if ("index" in block) {
 					(block as { index?: number }).index = undefined;
 				}
-				// partialJson is only a streaming scratch buffer; never persist it.
-				if ("partialJson" in block) {
-					(block as { partialJson?: string }).partialJson = undefined;
+				if ("toolArgsGeneration" in block) {
+					(block as { toolArgsGeneration?: number }).toolArgsGeneration = undefined;
 				}
 			}
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
 			output.errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
+		} finally {
+			for (const parser of toolParsers) parser?.dispose();
+			toolParsers.length = 0;
 		}
 	})();
 

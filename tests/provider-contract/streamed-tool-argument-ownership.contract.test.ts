@@ -102,7 +102,6 @@ test("legacy and custom adapters may omit ownership and enter the counted compat
 
 test("mutation adapters expose transient generations and replacement adapters replace arguments", () => {
 	const mutationSources = [
-		"anthropic-messages.ts",
 		"bedrock-converse-stream.ts",
 		"openai-responses-shared.ts",
 		"openai-completions.ts",
@@ -112,6 +111,11 @@ test("mutation adapters expose transient generations and replacement adapters re
 		const source = readFileSync(`packages/ai/src/api/${modulePath}`, "utf8");
 		assert.match(source, /partialJson|partialArgs/, modulePath);
 	}
+	const anthropic = readFileSync("packages/ai/src/api/anthropic-messages.ts", "utf8");
+	assert.match(anthropic, /toolArgsGeneration = \(block\.toolArgsGeneration \?\? 0\) \+ 1/);
+	assert.match(anthropic, /toolArgsGeneration: block\.toolArgsGeneration/);
+	assert.match(anthropic, /toolArgsGeneration = undefined/);
+	assert.doesNotMatch(anthropic, /partialJson|parseStreamingJson/);
 
 	for (const modulePath of ["pi-messages.ts", "google-generative-ai.ts", "google-vertex.ts"]) {
 		const source = readFileSync(`packages/ai/src/api/${modulePath}`, "utf8");
@@ -127,7 +131,7 @@ test("custom OpenAI generations stay on host events and are removed before persi
 		assert.match(source, /toolArgsGeneration = undefined/, modulePath);
 	}
 	const types = readFileSync("packages/ai/src/types.ts", "utf8");
-	assert.match(types, /Host-only custom\/grammar argument generation; never persisted or sent on wire/);
+	assert.match(types, /Host-only argument generation; never persisted or sent on wire/);
 });
 
 test("tool finalization uses one message lane with bounded per-tool metadata", () => {
