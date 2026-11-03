@@ -1,6 +1,6 @@
 # Pi 1.5.0 借鉴与修复实施方案
 
-日期：2026-11-04。状态：**方案 #175、SDK 前置修复 #176、T01 #177、T02 #178、T03 #179、T04 #180、T05-A #181、T05-B #182、T06-A #183、T06-B #184、T06-C #185、T06-D #186、T06-E #187、T06-F #188、T07 #189 和 T08 #190 已合并；T09 正在验收；T10–T12 尚未实施**。#175 交付 GPL-3.0-only、README、差异评估与本方案；先完成逐项规划，再进入独立修复。不得把“读过源码”“写了测试”或“CI 启动了”记成实施完成。
+日期：2026-11-04。状态：**方案 #175、SDK 前置修复 #176、T01 #177、T02 #178、T03 #179、T04 #180、T05-A #181、T05-B #182、T06-A #183、T06-B #184、T06-C #185、T06-D #186、T06-E #187、T06-F #188、T07 #189、T08 #190 和 T09 #191 已合并；T10 正在验收；T11–T12 尚未实施**。#175 交付 GPL-3.0-only、README、差异评估与本方案；先完成逐项规划，再进入独立修复。不得把“读过源码”“写了测试”或“CI 启动了”记成实施完成。
 
 ## 1. 基线、范围与交付顺序
 
@@ -23,13 +23,13 @@
 | T06 | provider 工具参数增量解析 | 源码确认 | delta → UI → 终端全链热路径 | T01 稳定；先建立基线 |
 | T07 | 分支摘要继承推理级别 | 源码确认 | 摘要请求低频；事件保持现状 | 模型能力夹具 |
 | T08 | 分支摘要输出上限 | 源码确认 | 大历史处理及请求边界 | T07；先核对现有配置与成本语义 |
-| T09 | 摘要 OAuth/key 来源语义 | 待复现 | 认证低频边界 | T07/T08 后串行审计认证链 |
+| T09 | 摘要 OAuth/key 来源语义 | 来源等效；已修复凭据变化后的待发摘要 | 认证低频边界 | #191 已交付 |
 | T10 | 图片编码选择 | 源码确认 | 大结果/图片处理 | 图片质量与透明度夹具 |
 | T11 | 多语言工具检索 | 部分已有，部分待改进 | 显式搜索；不能搬进每帧/每请求 | 保留工具准入和 browser 路由 |
 | T12 | Windows 路径等价性 | 待复现 | 路径边界及调用者 | 分入口复现，按根因拆分 |
 | F01–F06 | Schema、文档、更新说明、账单、目录、Worker 等待 | 产品/兼容性选择 | 见第 6 节 | 不与缺陷修复捆绑 |
 
-每项状态统一为：`待复现/待设计核对 → 可实施 → 实施中 → 待验收 → 已交付`。排除项记录理由及覆盖范围，不打“修复完成”勾。T01 见[依赖实施记录](repairs/pi-150-t01-dependencies.md)；T02 见[保存信任决定实施记录](repairs/pi-150-t02-saved-trust.md)；T03 见[登录 URL 实施记录](repairs/pi-150-t03-login-url-safety.md)。T04 见[会话追加失败实施记录](repairs/pi-150-t04-session-append.md)，已通过 #180 合并为 `423f4e98acecb225ff83cf8b66a051b43198be39`。T05 两个子项已依次合并，见[输出记录](repairs/pi-150-t05-extension-exec.md)和[进程所有权记录](repairs/pi-150-t05b-exec-process-tree.md)。T06-A 先行设计及执行记录见[Anthropic 增量参数](repairs/pi-150-t06a-anthropic-tool-args.md)；B/C/D/E/F 与 T07 已交付；T08 已交付；T09 验收中，T10–T12 和 F01–F06 尚未实施。
+每项状态统一为：`待复现/待设计核对 → 可实施 → 实施中 → 待验收 → 已交付`。排除项记录理由及覆盖范围，不打“修复完成”勾。T01 见[依赖实施记录](repairs/pi-150-t01-dependencies.md)；T02 见[保存信任决定实施记录](repairs/pi-150-t02-saved-trust.md)；T03 见[登录 URL 实施记录](repairs/pi-150-t03-login-url-safety.md)。T04 见[会话追加失败实施记录](repairs/pi-150-t04-session-append.md)，已通过 #180 合并为 `423f4e98acecb225ff83cf8b66a051b43198be39`。T05 两个子项已依次合并，见[输出记录](repairs/pi-150-t05-extension-exec.md)和[进程所有权记录](repairs/pi-150-t05b-exec-process-tree.md)。T06-A 先行设计及执行记录见[Anthropic 增量参数](repairs/pi-150-t06a-anthropic-tool-args.md)；B/C/D/E/F 与 T07/T08/T09 已交付；T10 验收中，T11–T12 和 F01–F06 尚未实施。
 
 用户最新验收约束：**只使用当前 Node 26.13，失败定位根因并修复，不扩展多版本测试来绕过失败。** 现有 Linux/Windows CI 分片统一使用该版本；各任务原先提到的最低版本测试不再作为本轮执行项，包的 engines 元数据不因此自动修改。
 
@@ -50,6 +50,8 @@ T06-F #188 已合并为 `521f84f2316f19548c3f8e76021e808d1c0f1f60`；最终 head
 T07 #189 已合并为 `4e004f4af1b10f91e9137632608b9421c32ed728`；Codex 提出的 Google thinking 预算问题已修复并额外主动复审。最终 head `1b2452c034fb89ddf8bc6f31035ff9a9f3b2f921` 获 completed/no findings、CI 6/6，相关两端分支已删除。T08 先行设计和性能证据见 [分支摘要输出配置](repairs/pi-150-t08-branch-summary-output.md)。
 
 T08 #190 已合并为 `aa5485a42fcf3d1b0c0c82530e09b90e44a0bf0c`；最终 head `0c738b1b3a70513dfd2f571673c1901ea04a837d` 获 Codex completed/no findings、CI 6/6，对应两端分支已删除。T09 见 [摘要认证来源与失效边界](repairs/pi-150-t09-summary-auth-boundary.md)。
+
+T09 #191 已合并为 `9df902e80d1673ef4d52e762596f0bf151f67198`；最终 head `425b2b91365330e907b2ee05eadf2e2c8be74ea2` 获 Codex completed/no findings、CI 6/6，对应两端分支已删除。T10 见 [图片编码选择与所有权](repairs/pi-150-t10-image-encoding-selection.md)。
 
 ## 2. 实施前必须完成的设计门禁
 
