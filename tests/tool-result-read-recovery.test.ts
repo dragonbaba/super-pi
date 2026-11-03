@@ -192,7 +192,7 @@ async function sdkFixture(t: test.TestContext, budget: number, original = "x".re
  const requests: any[] = [], deliveries: any[] = [], userErrors: string[] = [];
  let readCalls = 0;
  let next: ((wire: any) => any[] | undefined) | undefined;
- const runtime: any = { hasConfiguredAuth: () => true, checkAuth: async () => ({ type: "api_key" }), isUsingOAuth: () => false, getAuth: async () => undefined, getModel: () => undefined, registerProvider() {}, registerNativeProvider() {}, unregisterProvider() {},
+ const runtime: any = { hasConfiguredAuth: () => true, checkAuth: async () => ({ type: "api_key" }), isUsingOAuth: () => false, getCredentialGeneration: () => 0, getAuth: async () => undefined, getModel: () => undefined, registerProvider() {}, registerNativeProvider() {}, unregisterProvider() {},
   streamSimple: (m: any, c: any, o: any) => streamSimple(m, c, { ...o, apiKey: "offline", maxRetries: 0, fetch: async (_url, init) => {
    const wire = JSON.parse(String(init?.body)); requests.push(wire);
    const calls = next?.(wire);

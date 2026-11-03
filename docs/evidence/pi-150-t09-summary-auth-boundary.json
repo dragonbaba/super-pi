@@ -1,0 +1,87 @@
+{
+  "task": "T09 summary auth source equivalence and pending credential invalidation",
+  "baseCommit": "aa5485a42fcf3d1b0c0c82530e09b90e44a0bf0c",
+  "node": "v26.13.0",
+  "sources": [
+    {
+      "path": "packages/coding-agent/src/core/agent-session.ts",
+      "sha256": "d85dd184df28e9b88425f2fe4b1978b46d68613b79ad34dddb9195b9785c897c"
+    },
+    {
+      "path": "packages/coding-agent/src/core/model-runtime.ts",
+      "sha256": "35b33cf875738b3fca15319cde00f79c13e542b7457015f6e80fce79dc436d0c"
+    },
+    {
+      "path": "tests/provider-contract/openai-compaction-lifecycle.contract.test.ts",
+      "sha256": "9891a232a9824f011ef6732a931f9d45a4ff8659fd354ef416dfdd3f8ba80414"
+    }
+  ],
+  "sourceAudit": {
+    "chain": "AgentSession guard before auth -> getAuth -> immutable auth snapshot -> SDK createSummarizationStream -> ModelRuntime.prepareRequest(snapshot skips getAuth) -> captured provider.streamSimple -> existing cleanup",
+    "finding": "OAuth source handling is already equivalent; no reclassification fix needed.",
+    "scope": "Pending built-in logical summary requests and their retries. Already dispatched streams retain existing lifecycle; local logout is not remote token revocation."
+  },
+  "counters": {
+    "sourceCases": 6,
+    "authLookupsPerSourceCase": 1,
+    "correctResolverCallsPerCase": 1,
+    "wrongResolverCallsPerCase": 0,
+    "refreshesInValidTokenCases": 0,
+    "requestsPerSourceCase": 1,
+    "logoutRaceCases": 4,
+    "requestsAfterPendingLogout": 0,
+    "checkpointWritesAfterPendingLogout": 0,
+    "retryAfterReplacement": {
+      "authLookups": 1,
+      "outgoingRequests": 1,
+      "checkpointWrites": 0
+    },
+    "otherProvider": {
+      "outgoingRequests": 1,
+      "currentProviderGeneration": 0
+    },
+    "mutations": {
+      "login": 1,
+      "setRuntimeApiKey": 2,
+      "removeRuntimeApiKey": 3,
+      "failedWrite": 3,
+      "committedLogoutWithSyncFailure": 4
+    },
+    "sameAccountOAuthRefreshExplicitGenerations": 0
+  },
+  "ownership": {
+    "state": "One runtime-owned Map<providerId,number>, one entry per explicitly mutated provider identity; no tokens, headers, contexts, signals or closures stored.",
+    "guard": "Existing request-owned closure captures one additional integer; no new per-delta work or allocations.",
+    "release": "Compaction/branch guards, controllers and callbacks settle through existing finally paths; isCompacting=false verified after rejected pending request/retry. No new allocation or GC profile claimed for unchanged hot producer/event/UI paths."
+  },
+  "validation": {
+    "targeted": {
+      "tests": 195,
+      "pass": 195,
+      "fail": 0
+    },
+    "imageFixture": {
+      "tests": 52,
+      "pass": 52,
+      "fail": 0
+    },
+    "typeCheck": "passed",
+    "offlineBuild": "passed",
+    "fullSuite": {
+      "units": 406,
+      "tests": 5473,
+      "pass": 5375,
+      "skip": 98,
+      "fail": 0,
+      "cancelled": 0
+    },
+    "diagnosis": "Two early-stopping full runs found missing generation methods in offline-image and evidence-ledger fake runtimes. Exact remaining hand-written runtime targets were reviewed and completed with generation=0. Type check passed again. Production has no optional-call fallback.",
+    "ledgerFixture": {
+      "tests": 33,
+      "pass": 16,
+      "skip": 17,
+      "fail": 0,
+      "note": "No expose-gc on targeted invocation; full runner enables GC for this file."
+    }
+  }
+}

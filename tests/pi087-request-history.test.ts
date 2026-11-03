@@ -54,7 +54,7 @@ test("final Chat wire excludes failed attempts across retry, resume, branch and 
 	const wires: any[] = [];
 	const runtime = {
 		hasConfiguredAuth: () => true, checkAuth: async () => ({ type: "api_key" }),
-		getAuth: async () => undefined, isUsingOAuth: () => false, getModel: () => model,
+		getCredentialGeneration: () => 0, getAuth: async () => undefined, isUsingOAuth: () => false, getModel: () => model,
 		registerProvider() {}, registerNativeProvider() {}, unregisterProvider() {},
 		streamSimple: (m: any, context: any, options: any) => streamSimple(m, context, {
 			...options, apiKey: "offline-fixture", maxRetries: 0, fetch: async (_input, init) => {

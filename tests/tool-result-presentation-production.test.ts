@@ -62,7 +62,7 @@ function fixtureModelRuntime(): ModelRuntime {
 		registerNativeProvider: () => {},
 		unregisterProvider: () => {},
 		getModel: () => undefined,
-		getAuth: async () => undefined,
+		getCredentialGeneration: () => 0, getAuth: async () => undefined,
 	} as unknown as ModelRuntime;
 }
 
@@ -102,7 +102,7 @@ function capturingModelRuntime(capture: (context: Context) => void): ModelRuntim
 		registerNativeProvider: () => {},
 		unregisterProvider: () => {},
 		getModel: () => undefined,
-		getAuth: async () => undefined,
+		getCredentialGeneration: () => 0, getAuth: async () => undefined,
 	} as unknown as ModelRuntime;
 }
 

@@ -1141,10 +1141,14 @@ export class AgentSession {
 	/** One logical summary/retry boundary, never a delta/progress callback. Capture before resolving auth. */
 	private _createSummarizationGuard(model: Model<any>, signal: AbortSignal): () => void {
 		const runner = this._extensionRunner, sessionId = this.sessionId;
+		const credentialGeneration = this._modelRuntime.getCredentialGeneration(model.provider);
 		const boundary = this._resourceLoader.getExtensions().runtime.executionBoundary, generation = boundary.generation;
 		const codex = this._getSummarizationCodexDispatch?.(model), codexGeneration = codex?.owner.generation;
 		return () => {
 			signal.throwIfAborted();
+			if (this._modelRuntime.getCredentialGeneration(model.provider) !== credentialGeneration) {
+				throw new Error("Summary authentication changed while the request was pending");
+			}
 			boundary.assertCurrent(generation);
 			this._assertProviderPreviewCurrent(model, runner, sessionId, generation);
 			if (codex && codex.owner.generation !== codexGeneration) throw new Error("Codex summary belongs to a previous transport generation");

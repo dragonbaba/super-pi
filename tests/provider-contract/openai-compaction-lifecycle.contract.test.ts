@@ -11,6 +11,7 @@ import { InMemoryCredentialStore } from "../../packages/ai/src/auth/credential-s
 import { openaiCodexOAuth } from "../../packages/ai/src/auth/oauth/openai-codex.ts";
 import { stream as streamResponses } from "../../packages/ai/src/api/openai-responses.ts";
 import { resolveProviderAuth } from "../../packages/ai/src/auth/resolve.ts";
+import type { ProviderAuth } from "../../packages/ai/src/auth/types.ts";
 import extension from "../../packages/openai-server-compaction/src/index.ts";
 import fastExtension from "../../packages/openai-fast-mode/src/index.ts";
 import { fastModeConfigPath, saveFastModeConfig } from "../../packages/openai-fast-mode/src/config.ts";
@@ -571,7 +572,8 @@ async function fixture(codex = false, fail?: "remote" | "summary", modelId = "gp
     }
     return response(events);
   }) as typeof fetch;
-  const runtime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false });
+  const credentials = new InMemoryCredentialStore();
+  const runtime = await ModelRuntime.create({ credentials, modelsPath: null, refreshOnCreate: false });
   runtime.getAuth = async () => ({ auth: { apiKey: key, baseUrl: endpoint }, source: codex ? "oauth" : "api_key" });
   runtime.getModel = () => model;
   runtime.hasConfiguredAuth = () => true;
@@ -606,7 +608,7 @@ async function fixture(codex = false, fail?: "remote" | "summary", modelId = "gp
     return { ...created, services: { cwd: target.cwd, agentDir: target.agentDir } as any, diagnostics: [] };
   });
   sessionRuntime.setRebindSession(async active => { await active.bindExtensions({}); });
-  return { get session() { return sessionRuntime.session; }, get manager() { return sessionRuntime.session.sessionManager; }, sessionRuntime, runtime, requests, refreshRequests, model, root,
+  return { get session() { return sessionRuntime.session; }, get manager() { return sessionRuntime.session.sessionManager; }, sessionRuntime, runtime, credentials, requests, refreshRequests, model, root,
     setAuthResolver(resolver: () => Promise<any>) { runtime.getAuth = resolver; },
     requestTool() { callTool = true; }, get headerCalls() { return headerCalls; },
     changeKey(value: string) { key = value; }, changeEndpoint(value: string) { endpoint = value; },
@@ -1856,6 +1858,7 @@ test("ordinary Codex requests and native compaction resolve refreshed auth at th
     assert.equal(f.refreshRequests.length, 2);
     assert.equal(f.requests.length, 3);
     assert.equal(f.requests[2].authorization, `Bearer ${token("one", 3)}`);
+    assert.equal(f.runtime.getCredentialGeneration("openai-codex"), 0, "same-account OAuth refresh is not an explicit credential replacement");
     assert.equal(f.requests[2].payload.input.some((item: any) => item.type === "compaction"), true);
   } finally { await f.release(); }
 });
@@ -2014,6 +2017,125 @@ test("Codex post-compaction boundary rejection preserves evidence and allows exp
     finally { globalThis.WebSocket = originalWebSocket; FakeCodexWebSocket.replies = undefined; FakeCodexWebSocket.sentBodies = []; }
   }
   for (const count of Object.values(owner.diagnostics)) assert.equal(count, 0);
+});
+
+for (const source of ["oauth", "api_key"] as const) for (const operation of ["prompt", "compact", "branch"] as const) {
+  test(`T09 ${operation} preserves ${source} authentication without reclassification`, async () => {
+    const f = await fixture(false, undefined, "gpt-5.1", { compactionExtension: () => {} });
+    const store = new InMemoryCredentialStore();
+    let lookups = 0, conversions = 0, keyResolutions = 0, refreshes = 0;
+    const requestAuth = { apiKey: "synthetic-oauth-access", baseUrl: "https://fixture.invalid/selected", headers: { "x-auth-source": source } };
+    const auth: ProviderAuth = {
+      apiKey: { name: "fixture key", async resolve({ credential }) {
+        keyResolutions++; assert.notEqual(credential?.key, requestAuth.apiKey, "OAuth access must not be reclassified as an explicit API key");
+        return { auth: { ...requestAuth, apiKey: credential?.key }, source: "api_key" };
+      } },
+      oauth: { name: "fixture OAuth", async login() { throw Error("unexpected login"); },
+        async refresh(credential) { refreshes++; return { ...credential, expires: Date.now() + 3600000 }; },
+        async toAuth() { conversions++; return requestAuth; } },
+    };
+    await store.modify("openai", async () => ({ type: "oauth", access: "synthetic-oauth-access", refresh: "synthetic-refresh", expires: Date.now() + 3600000 }));
+    f.runtime.getAuth = async (_model, options) => {
+      lookups++;
+      return resolveProviderAuth({ id: "openai", auth }, store, { env: async () => undefined, fileExists: async () => false },
+        { ...options, apiKey: options?.apiKey ?? (source === "api_key" ? "synthetic-explicit-key" : undefined) });
+    };
+    try {
+      if (operation === "prompt") await f.session.prompt("AUTH_SOURCE_FIXTURE");
+      else if (operation === "compact") await f.session.compact();
+      else await f.session.navigateTree(f.manager.getEntries().find(entry => entry.type === "message")!.id, { summarize: true });
+      assert.equal(lookups, 1); assert.equal(conversions, source === "oauth" ? 1 : 0);
+      assert.equal(keyResolutions, source === "api_key" ? 1 : 0); assert.equal(refreshes, 0); assert.equal(f.requests.length, 1);
+      assert.match(f.requests[0].url, /^https:\/\/fixture\.invalid\/selected\//);
+      assert.equal(f.requests[0].headers.get("x-auth-source"), source);
+      assert.doesNotMatch(JSON.stringify(f.manager.getEntries()), /synthetic-oauth-access|synthetic-explicit-key|synthetic-refresh/);
+    } finally { await f.release(); }
+  });
+}
+
+for (const operation of ["compact", "branch"] as const) for (const phase of ["auth", "headers"] as const) {
+  test(`T09 logout during ${operation} ${phase} preparation revokes the captured auth`, async () => {
+    let f: Awaited<ReturnType<typeof fixture>>, started!: () => void, resume!: () => void;
+    const entered = new Promise<void>(resolve => { started = resolve; }), gate = new Promise<void>(resolve => { resume = resolve; });
+    f = await fixture(false, undefined, "gpt-5.1", { compactionExtension: () => {}, previewHooks: pi => {
+      pi.on("before_provider_headers", async () => { if (phase === "headers") { started(); await gate; } });
+    } });
+    await f.credentials.modify("openai", async () => ({ type: "api_key", key: "synthetic-stored-key" }));
+    if (phase === "auth") {
+      const original = f.runtime.getAuth.bind(f.runtime);
+      f.runtime.getAuth = async (model, options) => { started(); await gate; return original(model as any, options); };
+    }
+    const leaf = f.manager.getLeafId(), count = f.manager.getEntries().length;
+    const pending = operation === "compact" ? f.session.compact() : f.session.navigateTree(f.manager.getEntries().find(entry => entry.type === "message")!.id, { summarize: true });
+    const rejected = assert.rejects(pending, /credential.*changed|authentication.*changed/i);
+    try {
+      await entered; await f.runtime.logout("openai"); resume(); await rejected;
+      assert.equal(await f.credentials.read("openai"), undefined);
+      assert.equal(f.requests.length, 0); assert.equal(f.manager.getLeafId(), leaf); assert.equal(f.manager.getEntries().length, count);
+      assert.equal(f.session.isCompacting, false);
+    } finally { resume(); await pending.catch(() => {}); await f.release(); }
+  });
+}
+
+test("T09 credential generations track committed mutations and survive synchronization failure", async t => {
+  const f = await fixture(false, undefined, "gpt-5.1", { compactionExtension: () => {} });
+  try {
+    assert.equal(f.runtime.getCredentialGeneration("openai"), 0);
+    await f.runtime.login("openai", "api_key", { prompt: async () => "synthetic-login-key", notify() {} });
+    assert.equal(f.runtime.getCredentialGeneration("openai"), 1);
+    await f.runtime.setRuntimeApiKey("openai", "synthetic-runtime-key");
+    assert.equal(f.runtime.getCredentialGeneration("openai"), 2);
+    await f.runtime.removeRuntimeApiKey("openai");
+    assert.equal(f.runtime.getCredentialGeneration("openai"), 3);
+    const remove = t.mock.method(f.credentials, "delete", async () => { throw Error("fixture write failed"); });
+    await assert.rejects(f.runtime.logout("openai"), /fixture write failed/);
+    assert.equal(f.runtime.getCredentialGeneration("openai"), 3); remove.mock.restore();
+    const refresh = t.mock.method((f.runtime as any).models, "refresh", async () => { throw Error("fixture sync failed"); });
+    await assert.rejects(f.runtime.logout("openai"), /Credential logout committed/);
+    assert.equal(f.runtime.getCredentialGeneration("openai"), 4);
+    assert.equal(await f.credentials.read("openai"), undefined); refresh.mock.restore();
+    assert.equal(f.runtime.getCredentialGeneration("openai-codex"), 0);
+  } finally { await f.release(); }
+});
+
+test("T09 another provider credential change leaves a pending summary valid", async () => {
+  let f: Awaited<ReturnType<typeof fixture>>;
+  f = await fixture(false, undefined, "gpt-5.1", { compactionExtension: () => {}, previewHooks: pi => {
+    pi.on("before_provider_headers", async () => { await f.runtime.logout("openai-codex"); });
+  } });
+  try { await f.session.compact(); assert.equal(f.requests.length, 1); assert.equal(f.runtime.getCredentialGeneration("openai"), 0); }
+  finally { await f.release(); }
+});
+
+test("T09 replacing a key between summary attempts blocks the retry without re-resolving auth", async () => {
+  const f = await fixture(false, undefined, "gpt-5.1", { compactionExtension: () => {} });
+  let lookups = 0;
+  const auth = f.runtime.getAuth.bind(f.runtime), fetch = globalThis.fetch;
+  f.runtime.getAuth = async (model, options) => { lookups++; return auth(model as any, options); };
+  f.session.settingsManager.getRetrySettings = () => ({ enabled: true, maxRetries: 1, baseDelayMs: 0 });
+  globalThis.fetch = async (...args) => {
+    await fetch(...args);
+    await f.runtime.setRuntimeApiKey("openai", "synthetic-replacement-key");
+    return response([{ type: "response.failed", response: { status: "failed", error: { code: "server_error", message: "terminated" } } }]);
+  };
+  try {
+    await assert.rejects(f.session.compact(), /authentication changed/);
+    assert.equal(lookups, 1); assert.equal(f.requests.length, 1);
+    assert.equal(f.manager.getEntries().filter(entry => entry.type === "compaction").length, 0);
+    assert.equal(f.session.isCompacting, false);
+  } finally { await f.release(); }
+});
+
+test("T09 cancellation during synchronization cannot revive a committed logout generation", async t => {
+  const f = await fixture(false, undefined, "gpt-5.1", { compactionExtension: () => {} });
+  const controller = new AbortController();
+  await f.credentials.modify("openai", async () => ({ type: "api_key", key: "synthetic-stored-key" }));
+  t.mock.method((f.runtime as any).models, "refresh", async () => { controller.abort(); return { aborted: true, errors: new Map() }; });
+  try {
+    await assert.rejects(f.runtime.logout("openai", { signal: controller.signal }), /Credential logout committed/);
+    assert.equal(await f.credentials.read("openai"), undefined);
+    assert.equal(f.runtime.getCredentialGeneration("openai"), 1);
+  } finally { await f.release(); }
 });
 
 for (const transition of ["compatible", "refresh", "resume", "model", "endpoint", "identity", "token-rotation", "local-history-change"] as const) {

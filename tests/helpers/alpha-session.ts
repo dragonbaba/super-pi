@@ -16,7 +16,7 @@ import { ProcessTerminal } from '../../packages/tui/src/terminal.ts';
 
 export const ALPHA_MODEL: Model<'openai-responses'> = { id: 'alpha-fixture', name: 'alpha-fixture', api: 'openai-responses', provider: 'fixture', baseUrl: 'https://fixture.invalid', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 4096 };
 export function alphaModelRuntime(streamSimple?: ModelRuntime['streamSimple']): ModelRuntime {
-  return { hasConfiguredAuth: () => true, checkAuth: async () => ({ type: 'api_key' }),
+  return { getCredentialGeneration: () => 0, hasConfiguredAuth: () => true, checkAuth: async () => ({ type: 'api_key' }),
     getAuth: async () => ({ auth: { apiKey: 'offline-fixture' }, source: 'api_key' }),
     usesBuiltinOpenAICodex: () => false, usesBuiltinOpenAIResponses: () => false,
     isUsingOAuth: () => false, isUsingSubscription: () => false, getAvailableSnapshot: () => [ALPHA_MODEL],

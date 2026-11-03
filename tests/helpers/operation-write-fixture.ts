@@ -39,7 +39,7 @@ export async function fixture(enabled: boolean, previous?: { cwd: string; agentD
 	const { session } = await createAgentSession({ cwd, agentDir, settingsManager, resourceLoader, sessionManager,
 		operationJournal: enabled ? { enabled: true, stoppedWriterToken } : undefined,
 		model: { id: "fixture", name: "fixture", api: "openai-responses", provider: "fixture", baseUrl: "https://example.test", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 4096 },
-		modelRuntime: { hasConfiguredAuth: () => true, checkAuth: async () => ({ type: "api_key" }), isUsingOAuth: () => false, getModel: () => undefined, getAuth: async () => undefined } as unknown as ModelRuntime,
+		modelRuntime: { hasConfiguredAuth: () => true, checkAuth: async () => ({ type: "api_key" }), isUsingOAuth: () => false, getModel: () => undefined, getCredentialGeneration: () => 0, getAuth: async () => undefined } as unknown as ModelRuntime,
 	});
 	let providers = 0;
 	session.agent.streamFunction = () => { providers++; throw new Error("provider forbidden"); };

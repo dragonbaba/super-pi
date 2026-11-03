@@ -106,7 +106,7 @@ export async function runBashResponsiveness(scenario: BashResponseScenario, sour
 		const model: any = { id: "offline", name: "offline", api: "openai-completions", provider: "fixture", baseUrl: "https://fixture.invalid",
 			reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32768, maxTokens: 4096 };
 		const runtime: any = { hasConfiguredAuth: () => true, checkAuth: async () => ({ type: "api_key" }), isUsingOAuth: () => false,
-			isUsingSubscription: () => false, getAuth: async () => undefined, getModel: () => undefined,
+			isUsingSubscription: () => false, getCredentialGeneration: () => 0, getAuth: async () => undefined, getModel: () => undefined,
 			registerProvider() {}, registerNativeProvider() {}, unregisterProvider() {},
 			streamSimple(_model: any, _context: any, options: any) {
 				const stream = new AssistantMessageEventStream(), tool = providerCalls++ === 0;

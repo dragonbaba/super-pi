@@ -116,7 +116,7 @@ async function sessionFixture(t: TestContext, resolver: ToolRendererResolver) {
 		model: { id: "fixture", name: "fixture", api: "openai-responses", provider: "fixture", baseUrl: "http://unused",
 			reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32000, maxTokens: 4096 },
 		modelRuntime: { hasConfiguredAuth: () => true, checkAuth: async () => ({ type: "api_key" }), isUsingOAuth: () => false,
-			getModel: () => undefined, getAuth: async () => undefined } as never }));
+			getModel: () => undefined, getCredentialGeneration: () => 0, getAuth: async () => undefined } as never }));
 	await session.bindExtensions({});
 	return { session, root };
 }
