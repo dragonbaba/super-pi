@@ -1,0 +1,64 @@
+{
+  "task": "T12-B",
+  "base": "adcd1a6ec866fad3d02c836529a8873a1f38ecd3",
+  "node": "v26.13.0",
+  "platform": "win32",
+  "tests": {
+    "tests": 5531,
+    "pass": 5433,
+    "fail": 0,
+    "cancelled": 0,
+    "skipped": 98,
+    "successfulUnits": 414
+  },
+  "targeted": 53,
+  "sources": [
+    {
+      "path": "packages/coding-agent/src/core/session-manager.ts",
+      "sha256": "95636c6209017a93bd84bb7a63e8e19f10900afbe09b57ef3f0eb198c942bac2"
+    },
+    {
+      "path": "scripts/test.mjs",
+      "sha256": "afd6526a428d398446946b1a056681674cc95ce408ddb9571e556d7cac945455"
+    },
+    {
+      "path": "tests/session-cwd-identity.test.ts",
+      "sha256": "ab5c1ba0d1ec5b11d291b5cff01c633cc5fcc93252c404b9dbacee8ae70679f7"
+    }
+  ],
+  "reproduction": {
+    "initialTests": 9,
+    "initialFailures": 6,
+    "existingBehaviorControls": 3,
+    "finalTargetedFailures": 0
+  },
+  "counters": [
+    {
+      "headers": 100,
+      "recentNativeCalls": 3,
+      "listNativeCalls": 5,
+      "continueNativeCalls": 5,
+      "matchedHeaders": 90,
+      "eachDistinctPathCalls": 1
+    },
+    {
+      "headers": 1000,
+      "recentNativeCalls": 3,
+      "listNativeCalls": 5,
+      "continueNativeCalls": 5,
+      "matchedHeaders": 900,
+      "eachDistinctPathCalls": 1
+    }
+  ],
+  "exactCwdDiscoveryNativeCalls": 0,
+  "lifetime": {
+    "normalScanMapsReleased": 3,
+    "missingDirectoryExitMapsReleased": 1,
+    "returnedSessionInfoAndManagerAlive": true
+  },
+  "ownership": "One closure and Map per explicit filtered scan; capacity bounded by distinct non-exact header cwd strings. Query native identity is lazy and at most once per scan. No retained global cache or pool.",
+  "callChain": "Explicit list/continue/recent discovery and default-directory classification. usesDefaultSessionDir is consumed by selector scope loading and exit resume-command formatting, not render. No changes to append, deltas, progress callbacks or frame generation.",
+  "existingCosts": "File/header reading, discovery arrays and wrappers, sorting and list promises remain. This low-frequency change does not claim zero allocation or general timing improvement; counts describe API calls, not OS syscalls.",
+  "compatibility": "Historical default bucket names unchanged. Explicit bucket aliases preserve unfiltered default discovery; empty in-memory directory sentinel remains non-default. Missing cwd uses exact lexical identity; empty/non-string/malformed headers do not match a custom project filter.",
+  "platformCoverage": "Local Windows case/drive/namespace/junction and real case-sensitive directories. POSIX symlink counterpart runs in Node 26 CI. Remote UNC not exercised."
+}

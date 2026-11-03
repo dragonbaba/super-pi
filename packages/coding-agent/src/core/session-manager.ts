@@ -19,7 +19,7 @@ import { createInterface } from "readline";
 import { StringDecoder } from "string_decoder";
 import { getAgentDir as getDefaultAgentDir, getSessionsDir } from "../config.ts";
 import { ObjectPool } from "../utils/object-pool.ts";
-import { normalizePath, resolvePath } from "../utils/paths.ts";
+import { canonicalizePath, normalizePath, resolvePath } from "../utils/paths.ts";
 import {
 	type BashExecutionMessage,
 	type CustomMessage,
@@ -498,6 +498,11 @@ function getDefaultSessionDirPath(cwd: string, agentDir: string = getDefaultAgen
 	return join(resolvedAgentDir, "sessions", safePath);
 }
 
+function isDefaultSessionDirectory(dir: string, cwd: string): boolean {
+	const defaultDir = getDefaultSessionDirPath(cwd);
+	return dir === defaultDir || canonicalizePath(resolvePath(dir)) === canonicalizePath(defaultDir);
+}
+
 export function getDefaultSessionDir(cwd: string, agentDir: string = getDefaultAgentDir()): string {
 	const sessionDir = getDefaultSessionDirPath(cwd, agentDir);
 	if (!existsSync(sessionDir)) {
@@ -645,14 +650,31 @@ function getSessionHeaderCwd(header: SessionHeader): string | undefined {
 	return typeof cwd === "string" ? cwd : undefined;
 }
 
-function sessionCwdMatches(cwd: string | undefined, resolvedCwd: string): boolean {
-	return cwd !== undefined && cwd !== "" && resolvePath(cwd) === resolvedCwd;
+function createSessionCwdMatcher(cwd: string): (candidate: string | undefined) => boolean {
+	const resolvedCwd = resolvePath(cwd);
+	let canonicalCwd: string | undefined;
+	// A discovery scan owns this map; no filesystem identities survive the scan.
+	const matches = new Map<string, boolean>();
+	return (candidate) => {
+		if (!candidate) return false;
+		if (candidate === resolvedCwd) return true;
+		const cached = matches.get(candidate);
+		if (cached !== undefined) return cached;
+		const resolvedCandidate = resolvePath(candidate);
+		let match = resolvedCandidate === resolvedCwd;
+		if (!match) {
+			canonicalCwd ??= canonicalizePath(resolvedCwd);
+			match = canonicalizePath(resolvedCandidate) === canonicalCwd;
+		}
+		matches.set(candidate, match);
+		return match;
+	};
 }
 
 /** Exported for testing */
 export function findMostRecentSession(sessionDir: string, cwd?: string): string | null {
 	const resolvedSessionDir = normalizePath(sessionDir);
-	const resolvedCwd = cwd ? resolvePath(cwd) : undefined;
+	const matchesCwd = cwd ? createSessionCwdMatcher(cwd) : undefined;
 	try {
 		const files = readdirSync(resolvedSessionDir)
 			.filter((f) => f.endsWith(".jsonl"))
@@ -661,7 +683,7 @@ export function findMostRecentSession(sessionDir: string, cwd?: string): string 
 			.filter(
 				(file): file is { path: string; header: SessionHeader } =>
 					file.header !== null &&
-					(!resolvedCwd || sessionCwdMatches(getSessionHeaderCwd(file.header), resolvedCwd)),
+					(!matchesCwd || matchesCwd(getSessionHeaderCwd(file.header))),
 			)
 			.map(({ path }) => ({ path, mtime: statSync(path).mtime }))
 			.sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
@@ -1060,7 +1082,7 @@ export class SessionManager {
 	}
 
 	usesDefaultSessionDir(): boolean {
-		return this.sessionDir === getDefaultSessionDirPath(this.cwd);
+		return this.sessionDir !== "" && isDefaultSessionDirectory(this.sessionDir, this.cwd);
 	}
 
 	getSessionId(): string {
@@ -1653,7 +1675,7 @@ export class SessionManager {
 	 */
 	static continueRecent(cwd: string, sessionDir?: string): SessionManager {
 		const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(cwd);
-		const filterCwd = sessionDir !== undefined && dir !== getDefaultSessionDirPath(cwd);
+		const filterCwd = sessionDir !== undefined && !isDefaultSessionDirectory(dir, cwd);
 		const mostRecent = findMostRecentSession(dir, filterCwd ? cwd : undefined);
 		if (mostRecent) {
 			return new SessionManager(cwd, dir, mostRecent, true);
@@ -1734,10 +1756,10 @@ export class SessionManager {
 	 */
 	static async list(cwd: string, sessionDir?: string, onProgress?: SessionListProgress): Promise<SessionInfo[]> {
 		const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(cwd);
-		const filterCwd = sessionDir !== undefined && dir !== getDefaultSessionDirPath(cwd);
-		const resolvedCwd = resolvePath(cwd);
+		const matchesCwd =
+			sessionDir !== undefined && !isDefaultSessionDirectory(dir, cwd) ? createSessionCwdMatcher(cwd) : undefined;
 		const sessions = (await listSessionsFromDir(dir, onProgress)).filter(
-			(session) => !filterCwd || sessionCwdMatches(session.cwd, resolvedCwd),
+			(session) => !matchesCwd || matchesCwd(session.cwd),
 		);
 		sessions.sort((a, b) => b.modified.getTime() - a.modified.getTime());
 		return sessions;
