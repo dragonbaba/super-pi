@@ -40,7 +40,7 @@
 6. 先跑 `node --expose-gc --experimental-strip-types --test --test-concurrency=1 tests/login-url-copy.test.ts tests/tui-async-owner-closeout.test.ts`，再 `npm.cmd run check`、`npm.cmd run build:offline`、`npm.cmd test -- --keep-going`。最终提交保留现有 Node 26 Linux 2 / Windows 4 CI 分片。
 7. 补写源文件哈希、确定性计数、红/绿与生命周期证据；检查 diff 不包含用户原有 patch 删除；独立提交、推送并创建 T03 PR。合并授权只适用于刚完成的 #178，不自动合并新 PR。
 
-## 5. 当前验证
+## 5. 初版验证（b23cd0d488）
 
 初始红灯：78 项中 70 pass / 8 fail，观察到非 Web URL 被接受、原始终端控制串进入输出、非法 info 链接后 provider 仍正常返回。初版 prompt 夹具在断言提前失败后取消未观察的 Promise，另有一条测试清理的 unhandledRejection；已在最终夹具立即观察该 Promise，并在输出断言中识别原有 Input 光标标记，不把这些夹具问题当作产品缺陷。
 
@@ -48,4 +48,23 @@
 
 全量 Node 26 测试：**389/389 执行单元成功，5,113 pass / 96 原有 skip / 0 fail / 0 cancelled**。没有增加跳过项、放宽断言或修改超时。最终提交的远端 CI 以独立 PR 检查列表为准；不把候选当作已合并交付。
 
-[JSON 证据](../evidence/pi-150-t03-login-url-safety.json)记录源文件 LF-normalized SHA-256、确定性解析计数、owner 释放与覆盖限制；原始日志保留在 `.git/pi150-t03`。最终代码只修改一个生产文件；新增三项模块级正则和两个局部 helper，没有新全局状态机、缓存、重试或对象池。
+[JSON 证据](../evidence/pi-150-t03-login-url-safety.json)记录源文件 LF-normalized SHA-256、确定性解析计数、owner 释放与覆盖限制；原始日志保留在 `.git/pi150-t03`。初版只修改登录对话一个生产文件；审查补充修复另调整 Radius 的现有清理保护区，见下节。没有新全局状态机、缓存、重试或对象池。
+
+## 6. Codex 审查补充：Radius 回调服务器释放
+
+状态：**已先补写方案，复现后完成最小修复；本地验收全部通过，待新提交远端验收**。审查基线 `b23cd0d48841899c56d93628332bbe9c733e1adf`，建议见 [P2 评论](https://github.com/dragonbaba/super-pi/pull/179#discussion_r4455702826)。初版提交的 [CI](https://github.com/dragonbaba/super-pi/actions/runs/41649377802) 6/6 通过，但原测试未覆盖 provider 已拥有监听服务器时的 UI 校验异常。
+
+根因链：Radius discovery → `loginWithBrowser` 构造授权 URL → `startOAuthCallbackServer` 绑定 127.0.0.1:1456 并注册 abort listener → progress/auth_url notify → 登录 URL 校验抛错。两次 notify 在原 `try/finally` 之前，所以拒绝非法 URL 会绕过 `callbackServer.close()`，留下监听端口和 signal listener。
+
+最小设计：只把 progress 和 auth_url 两次通知移入现有 try，紧接服务器成功创建之后即进入保护区；沿用同一个 finally 关闭服务器。原异常原样传播，不另加 catch、URL 校验、关闭重试、超时或备用端口；成功、取消、token exchange 的处理顺序保持原语义。这是登录生命周期边界，不修改流式事件/渲染热路径，也不新增 closure、Promise、controller、timer、wrapper、缓存或池。
+
+有序验收：
+
+1. 新增 `tests/radius-oauth-lifecycle.test.ts`：通过真实 `createRadiusOAuth().login()` 和真实登录对话复现 discovery 提供 `file:` 后的失败；另测第一条 progress notify 抛错，覆盖两条通知的清理边界。
+2. 网络 discovery 使用固定 Response 替身；HTTP server 为真实 Node server。测试只将原固定端口的 listen 重定向到内核分配的 loopback 端口，断言生产传入的仍是 127.0.0.1:1456，避免与用户真实登录争抢。记录所有测试自建 server，退出时按实例关闭；不扫描或终止其他进程。
+3. 修复前观察 server 仍 listening / close 次数为 0；修复后验证原异常、close 恰好 1 次、abort listener 为 0、没有 token 请求，并用新 server 实际重新绑定释放的同一端口。
+4. 先跑新回归与既有登录/owner/Radius 模型用例，再用当前 Node 26.13 跑类型检查、离线构建、完整测试。更新原 #179 的方案、证据和 PR 描述，最终检查新 SHA 的 CI；不另开重复功能 PR，不自动合并。
+
+复现结果：两项均失败，实际计数都是 `listening=true / closeCalls=0 / abortListeners=1`。最小移动后，两项均为 `listening=false / closeCalls=1 / abortListeners=0`，signal 尚未 abort，原通知异常对象保持，token 请求为 0，同一端口实际重绑成功。包含登录对话、async owner closeout 和 Radius 模型用例的定向回归 **82/82 通过**；类型检查通过。OpenAI Codex 和 OpenRouter 的对应通知已位于自己的 finally 保护区中，本次不修改它们。
+
+补充修复最终本地验收：当前 Node 26.13.0 的类型检查、离线构建全部通过；全量 **390/390 执行单元成功，5,115 pass / 96 原有 skip / 0 fail / 0 cancelled**。新增两项用例均使用测试拥有的真实 loopback server；无外部网络、真实凭据或实际浏览器启动。精确命令和日志哈希记录在同一 JSON 证据的 `reviewFollowup`、`validation` 与 `rawLogSha256` 中。

@@ -9,13 +9,16 @@
   "candidateSourceSha256Lf": {
     "packages/coding-agent/src/modes/interactive/components/login-dialog.ts": "072b0b0007fc546bd5e318b80071d134ba74ed30bca6aea342010b4d87a7d506",
     "tests/login-url-copy.test.ts": "247a18df9429dcb0f2e789d43265b09be10b59fb990b7b5036c560bc596faf71",
-    "tests/tui-async-owner-closeout.test.ts": "6d40fae5e6123d46e3d468491c9d2799c67daa3489c1f9f28f2d3c391acce52e"
+    "tests/tui-async-owner-closeout.test.ts": "6d40fae5e6123d46e3d468491c9d2799c67daa3489c1f9f28f2d3c391acce52e",
+    "packages/ai/src/auth/oauth/radius.ts": "1be306f3e439a9143180e2096878e7541bc8fa2d9a54d12a387e2d00364acfe9",
+    "tests/radius-oauth-lifecycle.test.ts": "5c00d5bcda1de60d694849baeeaa03dd1cf6150d99bf77b50d93e223cf827f4f"
   },
   "scope": {
-    "productionFilesChanged": 1,
+    "productionFilesChanged": 2,
+    "providerLifecycleChange": "Radius progress/auth_url notifications moved into the existing callback-server try/finally.",
     "urlEntryPoints": ["showAuth", "showDeviceCode", "showInfo"],
     "plainTextEntryPoints": ["constructor", "showAuth", "showDeviceCode", "showInfo", "showManualInput", "showPrompt", "showWaiting", "showProgress"],
-    "unchanged": ["shared openBrowser and file opening", "MCP URL and issuer validation", "provider auth and credential store", "general extension selectors and SDK host UI", "Text/render/keyboard hot paths", "trusted preformatted showDetails"]
+    "unchanged": ["shared openBrowser and file opening", "MCP URL and issuer validation", "provider protocol and credential store", "general extension selectors and SDK host UI", "Text/render/keyboard hot paths", "trusted preformatted showDetails"]
   },
   "baselineReproduction": {
     "tests": 78,
@@ -25,22 +28,27 @@
     "harnessNote": "The initial prompt failure also exposed an unobserved fixture cleanup rejection. The final fixture observes pending prompts and excludes existing Input cursor markers from the raw-control assertion; these are not product defects."
   },
   "validation": {
-    "focusedCommand": "node --expose-gc --experimental-strip-types --test --test-concurrency=1 tests/login-url-copy.test.ts tests/tui-async-owner-closeout.test.ts",
-    "focused": { "tests": 78, "pass": 78, "fail": 0, "skipped": 0 },
+    "focusedCommand": "node --expose-gc --experimental-strip-types --test --test-concurrency=1 tests/radius-oauth-lifecycle.test.ts tests/radius-model-profile.test.ts tests/login-url-copy.test.ts tests/tui-async-owner-closeout.test.ts",
+    "focused": { "tests": 82, "pass": 82, "fail": 0, "skipped": 0 },
     "typecheck": "npm run check: passed",
     "offlineBuild": "npm run build:offline: passed",
     "fullNode26": {
       "command": "npm test -- --keep-going",
       "exitCode": 0,
-      "units": 389,
+      "units": 390,
       "failedUnits": 0,
-      "tests": 5209,
-      "pass": 5113,
+      "tests": 5211,
+      "pass": 5115,
       "fail": 0,
       "cancelled": 0,
       "skipped": 96
     },
-    "ci": "pending final PR head"
+    "previousCi": {
+      "head": "b23cd0d48841899c56d93628332bbe9c733e1adf",
+      "url": "https://github.com/dragonbaba/super-pi/actions/runs/41649377802",
+      "successfulJobs": 6
+    },
+    "ci": "pending Radius follow-up PR head"
   },
   "deterministicCounters": {
     "urlParsesPerAcceptedLink": 1,
@@ -63,15 +71,24 @@
     "invalidInfoReleasedActiveDialog": true,
     "invalidInfoReleasedAuthUrlAndHint": true,
     "existingCopyFailureCoalescingReplacementCancelCompletion": "passed",
-    "realBrowserOrNetworkUsedByFixtures": false,
+    "externalNetworkOrRealBrowserUsedByFixtures": false,
     "launcherFixtureCleanup": "Test-owned child_process.spawn mock restored, then builtin ESM exports resynchronized."
   },
   "performance": {
     "classification": "Explicit low-frequency login events; showProgress is OAuth progress, not assistant/tool progress.",
     "auditedChain": "provider notify/prompt -> active dialog identity check -> login presentation boundary -> Container/Text -> requestRender/scheduleRender/performRender -> frame queue -> terminal",
-    "newColdWork": "One control scan and at most one URL parse per received link; plain-text ANSI stripping, newline normalization and control stripping before styling. Regex patterns are module-owned; only URL href strings enter existing UI/copy ownership.",
+    "newColdWork": "One control scan and at most one URL parse per received link; plain-text ANSI stripping, newline normalization and control stripping before styling. Regex patterns are module-owned; only URL href strings enter existing UI/copy ownership. Radius reuses the existing finally; no new allocations or retry paths are added by the notification move.",
     "hotPathSourceChanged": false,
     "allocationBenchmark": "Not applicable: no hot-path change or new persistent owner. Runtime call counters, AST boundary checks and existing owner release regressions passed."
+  },
+  "reviewFollowup": {
+    "url": "https://github.com/dragonbaba/super-pi/pull/179#discussion_r4455702826",
+    "baselineCommit": "b23cd0d48841899c56d93628332bbe9c733e1adf",
+    "failurePoints": ["progress notification throws", "actual login dialog rejects file authorization endpoint"],
+    "red": { "tests": 2, "pass": 0, "fail": 2, "listening": true, "closeCalls": 0, "abortListeners": 1 },
+    "greenPerFailure": { "listening": false, "closeCalls": 1, "abortListeners": 0, "signalAborted": false, "discoveryRequests": 1, "tokenRequests": 0, "launcherCalls": 0, "sameErrorPropagated": true, "samePortRebound": true },
+    "fixture": "Real Node HTTP callback server; test-only listen substitution asserts production host/port 127.0.0.1:1456 and binds an ephemeral loopback port. Original spawn and builtin exports are restored; every created server is closed by recorded instance.",
+    "adjacentAudit": "OpenAI Codex and OpenRouter notifications are already within their existing cleanup-protected block; unchanged."
   },
   "limits": [
     "HTTP and HTTPS are allowed without a host allowlist; this is terminal/launcher boundary validation, not a Web-origin trust or SSRF policy.",
@@ -84,6 +101,11 @@
     "focused-green.log": "da01ad36cb5c063c663f33bb0d4bdace5706fb56d1c273ce2bd10820750012cd",
     "check.log": "527ecb914662d6ebb9f70368b02372a12edc39848a9869740f280fd2b581481e",
     "build.log": "597b0150f0ae816a32c03540f61e994cf48a4e37294d7d64d907912dfe541055",
-    "full-node26.log": "13900411cab2dcaf9b95a026fdc562af3887f91a3135c3afbef23ceeae0e2993"
+    "full-node26.log": "13900411cab2dcaf9b95a026fdc562af3887f91a3135c3afbef23ceeae0e2993",
+    "radius-red.log": "33a9e722c7c18e0242d7e5b0f14d8882dc7505a4f9936d3a302abf771ac6fabf",
+    "review-focused-green.log": "55a9a363fa22cb206869633d3124c99493189d5e49aa7e42b26c3408146638b1",
+    "review-check.log": "527ecb914662d6ebb9f70368b02372a12edc39848a9869740f280fd2b581481e",
+    "review-build.log": "597b0150f0ae816a32c03540f61e994cf48a4e37294d7d64d907912dfe541055",
+    "review-full-node26.log": "dc476524a88985c08d69601c2c1314edbeb5ad1c0345602b482ef3af0f044f9e"
   }
 }
