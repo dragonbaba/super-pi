@@ -3,7 +3,7 @@ import ignore from "ignore";
 import { basename, dirname, join, relative, resolve, sep } from "path";
 import { CONFIG_DIR_NAME, getAgentDir } from "../config.ts";
 import { parseFrontmatter } from "../utils/frontmatter.ts";
-import { canonicalizePath, resolvePath } from "../utils/paths.ts";
+import { canonicalizePath, isCanonicalPathWithin, resolvePath } from "../utils/paths.ts";
 import type { ResourceDiagnostic } from "./diagnostics.ts";
 import { compareCanonicalIdentifiers } from "./prefix-manifest.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
@@ -435,22 +435,14 @@ export function loadSkills(options: LoadSkillsOptions): LoadSkillsResult {
 		addSkills(loadSkillsFromDirInternal(resolve(resolvedCwd, CONFIG_DIR_NAME, "skills"), "project", true));
 	}
 
-	const userSkillsDir = join(resolvedAgentDir, "skills");
-	const projectSkillsDir = resolve(resolvedCwd, CONFIG_DIR_NAME, "skills");
-
-	const isUnderPath = (target: string, root: string): boolean => {
-		const normalizedRoot = resolve(root);
-		if (target === normalizedRoot) {
-			return true;
-		}
-		const prefix = normalizedRoot.endsWith(sep) ? normalizedRoot : `${normalizedRoot}${sep}`;
-		return target.startsWith(prefix);
-	};
+	const userSkillsDir = includeDefaults ? undefined : canonicalizePath(join(resolvedAgentDir, "skills"));
+	const projectSkillsDir = includeDefaults ? undefined : canonicalizePath(resolve(resolvedCwd, CONFIG_DIR_NAME, "skills"));
 
 	const getSource = (resolvedPath: string): "user" | "project" | "path" => {
-		if (!includeDefaults) {
-			if (isUnderPath(resolvedPath, userSkillsDir)) return "user";
-			if (isUnderPath(resolvedPath, projectSkillsDir)) return "project";
+		if (userSkillsDir !== undefined && projectSkillsDir !== undefined) {
+			const actualPath = canonicalizePath(resolvedPath);
+			if (isCanonicalPathWithin(actualPath, userSkillsDir)) return "user";
+			if (isCanonicalPathWithin(actualPath, projectSkillsDir)) return "project";
 		}
 		return "path";
 	};

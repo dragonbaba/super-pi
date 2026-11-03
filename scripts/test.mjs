@@ -45,6 +45,7 @@ const ISOLATED_CWD_TESTS = new Set([
 	"alpha-runtime-dispose.test.ts", "alpha-startup-quit.test.ts", "alpha-crash-cleanup.test.ts", "alpha-startup-faults.test.ts",
 ]);
 const GC_TESTS = new Set([
+	"resource-source-identity.test.ts",
 	"local-package-identity.test.ts",
 	"session-cwd-identity.test.ts",
 	"canonical-path-identity.test.ts",
