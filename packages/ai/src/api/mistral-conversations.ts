@@ -20,7 +20,7 @@ import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { observeEffectiveDispatch } from "../utils/effective-dispatch.ts";
 import { shortHash } from "../utils/hash.ts";
 import { headersToRecord } from "../utils/headers.ts";
-import { parseStreamingJson } from "../utils/json-parse.ts";
+import { IncrementalToolArguments } from "../utils/incremental-tool-arguments.ts";
 import { getPiUserAgent } from "../utils/pi-user-agent.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import { getJsonSchemaToolParameters, resolveJsonSchemaStrictSampling } from "./constrained-sampling.ts";
@@ -33,6 +33,7 @@ const MAX_MISTRAL_ERROR_BODY_BYTES = 16 * 1024;
 const MAX_MISTRAL_STREAM_CHUNK_BYTES = 1024 * 1024;
 const MAX_MISTRAL_EVENT_CHARS = 1024 * 1024;
 const MISTRAL_EVENT_BOUNDARY_OVERLAP = 3;
+const MISTRAL_STREAM_DECODE_OPTIONS = { stream: true } as const;
 
 /**
  * Provider-specific options for the Mistral API.
@@ -108,23 +109,23 @@ type MistralStreamToolCall = {
 };
 
 type MistralCompletionEvent = {
-	data: {
-		id?: string;
-		usage?: {
-			[key: string]: unknown;
-			prompt_tokens?: number;
-			completion_tokens?: number;
-			total_tokens?: number;
-		};
-		choices: Array<{
-			finish_reason?: string | null;
-			delta: {
-				content?: string | MistralStreamContentChunk[] | null;
-				tool_calls?: MistralStreamToolCall[] | null;
-			};
-		}>;
+	id?: string;
+	usage?: {
+		[key: string]: unknown;
+		prompt_tokens?: number;
+		completion_tokens?: number;
+		total_tokens?: number;
 	};
+	choices: Array<{
+		finish_reason?: string | null;
+		delta: {
+			content?: string | MistralStreamContentChunk[] | null;
+			tool_calls?: MistralStreamToolCall[] | null;
+		};
+	}>;
 };
+
+type StreamingMistralToolCall = ToolCall & { toolArgsGeneration?: number };
 
 const MISTRAL_PAYLOAD_PROPERTY_MAPPINGS = [
 	["topP", "top_p"],
@@ -198,12 +199,6 @@ export const stream: StreamFunction<"mistral-conversations", MistralOptions> = (
 			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();
 		} catch (error) {
-			for (const block of output.content) {
-				// partialArgs is only a streaming scratch buffer; never persist it.
-				if (block.type === "toolCall" && "partialArgs" in block) {
-					(block as ToolCall & { partialArgs?: string }).partialArgs = undefined;
-				}
-			}
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
 			output.errorMessage = formatMistralError(error);
 			stream.push({ type: "error", reason: output.stopReason, error: output });
@@ -616,7 +611,7 @@ async function* readMistralEvents(
 			if (value && value.byteLength > MAX_MISTRAL_STREAM_CHUNK_BYTES) {
 				throw new Error(`Mistral stream chunk exceeded ${MAX_MISTRAL_STREAM_CHUNK_BYTES} bytes`);
 			}
-			buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
+			buffer += done ? decoder.decode() : decoder.decode(value, MISTRAL_STREAM_DECODE_OPTIONS);
 
 			let consumed = 0;
 			while (findMistralEventBoundary(buffer, scanFrom, boundary)) {
@@ -638,11 +633,12 @@ async function* readMistralEvents(
 			if (done) break;
 		}
 
-	if (buffer.trim()) {
+		if (buffer.trim()) {
 			const event = parseMistralEvent(buffer);
 			if (event !== MISTRAL_STREAM_DONE && event) yield event;
 		}
 	} finally {
+		buffer = "";
 		signal.removeEventListener("abort", onAbort);
 		try {
 			await reader.cancel();
@@ -719,7 +715,7 @@ function parseMistralEvent(
 	if (!isMistralRecord(parsed) || !Array.isArray(parsed.choices)) {
 		throw new Error("Invalid Mistral streaming event");
 	}
-	return { data: parsed as MistralCompletionEvent["data"] };
+	return parsed as MistralCompletionEvent;
 }
 
 function buildChatPayload(
@@ -829,156 +825,165 @@ async function consumeChatStream(
 ): Promise<void> {
 	let currentBlock: TextContent | ThinkingContent | null = null;
 	const toolBlocksByKey = new Map<number, number>();
+	const toolParsers: (IncrementalToolArguments | undefined)[] = [];
 
-	for await (const event of mistralStream) {
-		const chunk = event.data;
-		// Mistral's streamed CompletionChunk carries an id field. Keep the first non-empty one,
-		// mirroring how OpenAI-style streaming exposes a stable response identifier per stream.
-		output.responseId ||= chunk.id;
+	try {
+		for await (const chunk of mistralStream) {
+			// Mistral's streamed CompletionChunk carries an id field. Keep the first non-empty one,
+			// mirroring how OpenAI-style streaming exposes a stable response identifier per stream.
+			output.responseId ||= chunk.id;
 
-		if (chunk.usage) {
-			const promptTokens = chunk.usage.prompt_tokens || 0;
-			const cachedPromptTokens = getMistralCachedPromptTokens(chunk.usage, promptTokens);
+			if (chunk.usage) {
+				const promptTokens = chunk.usage.prompt_tokens || 0;
+				const cachedPromptTokens = getMistralCachedPromptTokens(chunk.usage, promptTokens);
 
-			output.usage.input = Math.max(0, promptTokens - cachedPromptTokens);
-			output.usage.output = chunk.usage.completion_tokens || 0;
-			output.usage.cacheRead = cachedPromptTokens;
-			output.usage.cacheWrite = 0;
-			output.usage.totalTokens =
-				chunk.usage.total_tokens ||
-				output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
-			calculateCost(model, output.usage);
-		}
-
-		const choice = chunk.choices[0];
-		if (!choice) continue;
-
-		if (choice.finish_reason) {
-			output.rawStopReason = choice.finish_reason;
-			const stopReasonResult = mapChatStopReason(choice.finish_reason);
-			output.stopReason = stopReasonResult.stopReason;
-			if (stopReasonResult.errorMessage) {
-				output.errorMessage = stopReasonResult.errorMessage;
+				output.usage.input = Math.max(0, promptTokens - cachedPromptTokens);
+				output.usage.output = chunk.usage.completion_tokens || 0;
+				output.usage.cacheRead = cachedPromptTokens;
+				output.usage.cacheWrite = 0;
+				output.usage.totalTokens =
+					chunk.usage.total_tokens ||
+					output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
+				calculateCost(model, output.usage);
 			}
-		}
 
-		const delta = choice.delta;
-		if (delta.content !== null && delta.content !== undefined) {
-			if (typeof delta.content === "string") {
-				currentBlock = appendMistralTextDelta(delta.content, currentBlock, output, stream);
-			} else {
-				for (const item of delta.content) {
-					if (typeof item === "string") {
-						currentBlock = appendMistralTextDelta(item, currentBlock, output, stream);
-						continue;
-					}
+			const choice = chunk.choices[0];
+			if (!choice) continue;
 
-					if (item.type === "thinking") {
-						let deltaText = "";
-						if (item.thinking) {
-							for (const part of item.thinking) {
-								if (part.text) deltaText += part.text;
+			if (choice.finish_reason) {
+				output.rawStopReason = choice.finish_reason;
+				const stopReasonResult = mapChatStopReason(choice.finish_reason);
+				output.stopReason = stopReasonResult.stopReason;
+				if (stopReasonResult.errorMessage) {
+					output.errorMessage = stopReasonResult.errorMessage;
+				}
+			}
+
+			const delta = choice.delta;
+			if (delta.content !== null && delta.content !== undefined) {
+				if (typeof delta.content === "string") {
+					currentBlock = appendMistralTextDelta(delta.content, currentBlock, output, stream);
+				} else {
+					for (const item of delta.content) {
+						if (typeof item === "string") {
+							currentBlock = appendMistralTextDelta(item, currentBlock, output, stream);
+							continue;
+						}
+
+						if (item.type === "thinking") {
+							let deltaText = "";
+							if (item.thinking) {
+								for (const part of item.thinking) {
+									if (part.text) deltaText += part.text;
+								}
 							}
+							const thinkingDelta = sanitizeSurrogates(deltaText);
+							if (!thinkingDelta) continue;
+							if (!currentBlock || currentBlock.type !== "thinking") {
+								finishMistralContentBlock(currentBlock, output, stream);
+								currentBlock = { type: "thinking", thinking: "" };
+								output.content.push(currentBlock);
+								stream.push({ type: "thinking_start", contentIndex: output.content.length - 1, partial: output });
+							}
+							currentBlock.thinking += thinkingDelta;
+							stream.push({
+								type: "thinking_delta",
+								contentIndex: output.content.length - 1,
+								delta: thinkingDelta,
+								partial: output,
+							});
+							continue;
 						}
-						const thinkingDelta = sanitizeSurrogates(deltaText);
-						if (!thinkingDelta) continue;
-						if (!currentBlock || currentBlock.type !== "thinking") {
-							finishMistralContentBlock(currentBlock, output, stream);
-							currentBlock = { type: "thinking", thinking: "" };
-							output.content.push(currentBlock);
-							stream.push({ type: "thinking_start", contentIndex: output.content.length - 1, partial: output });
+
+						if (item.type === "text") {
+							currentBlock = appendMistralTextDelta(item.text ?? "", currentBlock, output, stream);
 						}
-						currentBlock.thinking += thinkingDelta;
+					}
+				}
+			}
+
+			if (delta.tool_calls) {
+				for (let chunkToolIndex = 0; chunkToolIndex < delta.tool_calls.length; chunkToolIndex++) {
+					const toolCall = delta.tool_calls[chunkToolIndex]!;
+					if (currentBlock) {
+						finishMistralContentBlock(currentBlock, output, stream);
+						currentBlock = null;
+					}
+					const toolIndex = toolCall.index ?? chunkToolIndex;
+					const existingIndex = toolBlocksByKey.get(toolIndex);
+					let contentIndex = existingIndex;
+					let block: StreamingMistralToolCall | undefined;
+
+					if (existingIndex !== undefined) {
+						const existing = output.content[existingIndex];
+						if (existing?.type === "toolCall") {
+							block = existing as StreamingMistralToolCall;
+							if (toolCall.id && toolCall.id !== "null") block.id = toolCall.id;
+							if (toolCall.function.name) block.name = toolCall.function.name;
+						}
+					}
+
+					if (!block) {
+						const callId =
+							toolCall.id && toolCall.id !== "null"
+								? toolCall.id
+								: deriveMistralToolCallId(`toolcall:${toolIndex}`, 0);
+						block = {
+							type: "toolCall",
+							id: callId,
+							name: toolCall.function.name ?? "",
+							arguments: {},
+							toolArgsGeneration: 0,
+						};
+						output.content.push(block);
+						contentIndex = output.content.length - 1;
+						toolBlocksByKey.set(toolIndex, contentIndex);
+						toolParsers[contentIndex] = new IncrementalToolArguments();
+						stream.push({ type: "toolcall_start", contentIndex, partial: output });
+					}
+
+					const argsDelta =
+						typeof toolCall.function.arguments === "string"
+							? toolCall.function.arguments
+							: toolCall.function.arguments
+								? JSON.stringify(toolCall.function.arguments)
+								: "";
+					if (argsDelta) {
+						block.arguments = toolParsers[contentIndex!]!.append(argsDelta);
+						block.toolArgsGeneration = (block.toolArgsGeneration ?? 0) + 1;
 						stream.push({
-							type: "thinking_delta",
-							contentIndex: output.content.length - 1,
-							delta: thinkingDelta,
+							type: "toolcall_delta",
+							contentIndex: contentIndex!,
+							delta: argsDelta,
 							partial: output,
+							toolArgsGeneration: block.toolArgsGeneration,
 						});
-						continue;
-					}
-
-					if (item.type === "text") {
-						currentBlock = appendMistralTextDelta(item.text ?? "", currentBlock, output, stream);
 					}
 				}
 			}
 		}
 
-		if (delta.tool_calls) {
-			for (let chunkToolIndex = 0; chunkToolIndex < delta.tool_calls.length; chunkToolIndex++) {
-				const toolCall = delta.tool_calls[chunkToolIndex]!;
-				if (currentBlock) {
-					finishMistralContentBlock(currentBlock, output, stream);
-					currentBlock = null;
-				}
-				const toolIndex = toolCall.index ?? chunkToolIndex;
-				const existingIndex = toolBlocksByKey.get(toolIndex);
-				let contentIndex = existingIndex;
-				let block: (ToolCall & { partialArgs?: string }) | undefined;
-
-				if (existingIndex !== undefined) {
-					const existing = output.content[existingIndex];
-					if (existing?.type === "toolCall") {
-						block = existing as ToolCall & { partialArgs?: string };
-						if (toolCall.id && toolCall.id !== "null") block.id = toolCall.id;
-						if (toolCall.function.name) block.name = toolCall.function.name;
-					}
-				}
-
-				if (!block) {
-					const callId =
-						toolCall.id && toolCall.id !== "null"
-							? toolCall.id
-							: deriveMistralToolCallId(`toolcall:${toolIndex}`, 0);
-					block = {
-						type: "toolCall",
-						id: callId,
-						name: toolCall.function.name ?? "",
-						arguments: {},
-						partialArgs: "",
-					};
-					output.content.push(block);
-					contentIndex = output.content.length - 1;
-					toolBlocksByKey.set(toolIndex, contentIndex);
-					stream.push({ type: "toolcall_start", contentIndex, partial: output });
-				}
-
-				const argsDelta =
-					typeof toolCall.function.arguments === "string"
-						? toolCall.function.arguments
-						: toolCall.function.arguments
-							? JSON.stringify(toolCall.function.arguments)
-							: "";
-				if (argsDelta) {
-					block.partialArgs = (block.partialArgs || "") + argsDelta;
-					block.arguments = parseStreamingJson<Record<string, unknown>>(block.partialArgs);
-					stream.push({
-						type: "toolcall_delta",
-						contentIndex: contentIndex!,
-						delta: argsDelta,
-						partial: output,
-					});
-				}
-			}
+		finishMistralContentBlock(currentBlock, output, stream);
+		for (const index of toolBlocksByKey.values()) {
+			const block = output.content[index];
+			if (block.type !== "toolCall") continue;
+			const toolBlock = block as StreamingMistralToolCall;
+			toolBlock.arguments = toolParsers[index]!.finalize();
+			toolParsers[index] = undefined;
+			toolBlock.toolArgsGeneration = undefined;
+			stream.push({
+				type: "toolcall_end",
+				contentIndex: index,
+				toolCall: toolBlock,
+				partial: output,
+			});
 		}
-	}
-
-	finishMistralContentBlock(currentBlock, output, stream);
-	for (const index of toolBlocksByKey.values()) {
-		const block = output.content[index];
-		if (block.type !== "toolCall") continue;
-		const toolBlock = block as ToolCall & { partialArgs?: string };
-		toolBlock.arguments = parseStreamingJson<Record<string, unknown>>(toolBlock.partialArgs);
-		// Finalize in-place and strip the scratch buffer so replay only
-		// carries parsed arguments.
-		toolBlock.partialArgs = undefined;
-		stream.push({
-			type: "toolcall_end",
-			contentIndex: index,
-			toolCall: toolBlock,
-			partial: output,
-		});
+	} finally {
+		for (const parser of toolParsers) parser?.dispose();
+		toolParsers.length = 0;
+		toolBlocksByKey.clear();
+		currentBlock = null;
+		for (const block of output.content) if (block.type === "toolCall") (block as StreamingMistralToolCall).toolArgsGeneration = undefined;
 	}
 }
 

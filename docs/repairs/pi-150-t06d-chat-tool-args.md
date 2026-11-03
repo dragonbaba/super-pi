@@ -1,6 +1,6 @@
 # T06-D：Chat Completions 工具参数增量解析
 
-日期：2026-11-04。状态：**先行设计已落实，Chat Completions 已实现，验收中**。基线为 T06-C #185 合并提交 `4d82e1de7b4c62fe75483dce98d405b01764e3dd`，最终 head `6bdc04e48eca353c1818fb96d10b721a2ac298a8` 已获 Codex completed/no findings、Windows/Linux CI 6/6，相关本地与远端分支已删除，main 已同步。当前分支 `codex/t06d-chat-incremental-tool-args`，只使用 Node v26.13.0。
+日期：2026-11-04。状态：**已通过 #186 交付**。基线为 T06-C #185 合并提交 `4d82e1de7b4c62fe75483dce98d405b01764e3dd`，最终 head `6bdc04e48eca353c1818fb96d10b721a2ac298a8` 已获 Codex completed/no findings、Windows/Linux CI 6/6，相关本地与远端分支已删除，main 已同步。当前分支 `codex/t06d-chat-incremental-tool-args`，只使用 Node v26.13.0。
 
 ## 范围与事实
 
@@ -59,4 +59,4 @@ finishBlock 当前位于 finish_reason/abort 最终检查之前；本项不调�
 
 normal/abort/error 受控 GC 保持 stream/result 活着，parser 弱引用均释放；dispose 后 raw/token/stack/root/parent 为空。生命周期采样从首个非空参数 delta 记录 preview，避开 Chat 的 metadata-only 事件；正常旧 preview 可回收，异常部分 preview 仍归结果拥有。私有 Map 在 finalize/custom 转换时立即删除 entry，finally 清余项；临时旧 adapter 已按记录的唯一精确路径删除。
 
-初始定向 73/73、边界修正后的 29/29、构建后实际 adapter/Agent 专用 19/19、类型检查和离线构建均通过。四个下游 benchmark 与当前 Node26 全套也通过：**402/402 执行单元成功，5362 tests / 5264 pass / 98 skip / 0 fail / 0 cancelled**。stream 100000 更新合并为 1 次 snapshot/delivery；session listener Promise/wrapper/array 为 0；paced args 每 flush 一次 snapshot、generation 缺失和语义兜底为 0，metadata/调度状态释放；frame queue 100000 请求仅 2 次生成/写入，无全尺寸副本或新增 Promise/controller/wrapper，active/pending 清空。最终 PR reviewer/CI 尚待验收，不先标交付。日志与原始采样位于 `.git/pi150-t06d`。
+初始定向 73/73、边界修正后的 29/29、构建后实际 adapter/Agent 专用 19/19、类型检查和离线构建均通过。四个下游 benchmark 与当前 Node26 全套也通过：**402/402 执行单元成功，5362 tests / 5264 pass / 98 skip / 0 fail / 0 cancelled**。stream 100000 更新合并为 1 次 snapshot/delivery；session listener Promise/wrapper/array 为 0；paced args 每 flush 一次 snapshot、generation 缺失和语义兜底为 0，metadata/调度状态释放；frame queue 100000 请求仅 2 次生成/写入，无全尺寸副本或新增 Promise/controller/wrapper，active/pending 清空。最终 head `c21e4d43da9133828f9790522d76612002271fe4` 已获 Codex completed/no findings、CI 6/6；#186 合并为 `fd14e54638b24cbeb9aae8207cbceebc20bd74ae`，对应本地/远端分支已删除、main 已同步。日志与原始采样位于 `.git/pi150-t06d`。

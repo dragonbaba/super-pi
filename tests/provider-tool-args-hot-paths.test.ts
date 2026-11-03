@@ -113,7 +113,33 @@ test("Chat function arguments only append new input and release owners on finali
 	assert.match(text, /finally \{\s*for \(const parser of toolParsers\.values\(\)\) parser\.dispose\(\);\s*toolParsers\.clear\(\)/);
 });
 
-for (const provider of ["anthropic", "responses", "bedrock", "chat"]) test(`real provider counters and controlled-GC release satisfy the argument lifecycle, provider=${provider}`, { timeout: 30000 }, () => {
+test("Mistral native delivery avoids scratch wrappers and releases incremental argument owners", () => {
+	const file = "packages/ai/src/api/mistral-conversations.ts", text = readFileSync(file, "utf8");
+	const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
+	let seen = 0;
+	function visit(node: ts.Node): void {
+		if (ts.isIfStatement(node) && node.expression.getText(source) === "argsDelta") {
+			seen++;
+			function audit(child: ts.Node): void {
+				assert.equal(ts.isArrowFunction(child) || ts.isFunctionExpression(child) || ts.isAwaitExpression(child) || ts.isNewExpression(child)
+					|| ts.isArrayLiteralExpression(child) || ts.isSpreadElement(child), false, child.getText(source));
+				if (ts.isObjectLiteralExpression(child)) assert.match(child.getText(source), /^\{\s*type: "toolcall_delta",/);
+				if (ts.isCallExpression(child)) assert.ok(["toolParsers[contentIndex!]!.append", "stream.push"].includes(child.expression.getText(source)), child.getText(source));
+				ts.forEachChild(child, audit);
+			}
+			audit(node.thenStatement);
+		}
+		ts.forEachChild(node, visit);
+	}
+	visit(source); assert.equal(seen, 1);
+	assert.doesNotMatch(text, /partialArgs|parseStreamingJson|return \{ data: parsed|decoder\.decode\(value, \{/);
+	assert.match(text, /return parsed as MistralCompletionEvent/);
+	assert.match(text, /decoder\.decode\(value, MISTRAL_STREAM_DECODE_OPTIONS\)/);
+	assert.match(text, /finally \{\s*buffer = "";\s*signal\.removeEventListener/);
+	assert.match(text, /finally \{\s*for \(const parser of toolParsers\) parser\?\.dispose\(\);\s*toolParsers\.length = 0;\s*toolBlocksByKey\.clear\(\)/);
+});
+
+for (const provider of ["anthropic", "responses", "bedrock", "chat", "mistral"]) test(`real provider counters and controlled-GC release satisfy the argument lifecycle, provider=${provider}`, { timeout: 30000 }, () => {
 	const output = execFileSync(process.execPath, ["--expose-gc", "--experimental-strip-types", "scripts/bench/provider-tool-args.ts", "--smoke", ...(provider === "anthropic" ? [] : [`--${provider}`])], { encoding: "utf8", windowsHide: true, timeout: 25000 });
 	const evidence = JSON.parse(output);
 	assert.equal(evidence.counters.length, 3); assert.equal(evidence.lifecycle.length, 3);
