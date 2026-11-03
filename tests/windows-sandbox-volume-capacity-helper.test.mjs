@@ -1,3 +1,4 @@
+import { PINNED_SANDBOX_TEST_OPTIONS } from "./helpers/windows-sandbox-prerequisites.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -7,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { createHash, randomUUID } from "node:crypto";
 import { POWERSHELL7_PATH, POWERSHELL7_PREFIX, verifyPowerShell7 } from "../scripts/acceptance/windows-sandbox-volume.mjs";
 
-test("capacity helper AST dispatch and fixed receipt serialization use substitutes only", { timeout: 40000 }, t => {
+test("capacity helper AST dispatch and fixed receipt serialization use substitutes only", { timeout: 40000, ...PINNED_SANDBOX_TEST_OPTIONS }, t => {
     const workspace = fileURLToPath(new URL("..", import.meta.url)), parent = path.join(workspace, ".artifacts");
     assert.equal(fs.realpathSync(parent), parent); assert.equal(fs.lstatSync(parent).isSymbolicLink(), false);
     const root = path.join(parent, "volume-capacity-helper-check-" + randomUUID()); fs.mkdirSync(root);

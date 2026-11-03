@@ -28,6 +28,8 @@ test('selector deletion checks activation after confirmation in default and expl
       return { status: null, signal: null, error: Object.assign(new Error('fixture trash unavailable'), { code: 'ENOENT' }), stderr: '' } as any;
     });
     t.mock.method(fs, 'unlinkSync', (path: fs.PathLike) => {
+      // Node 22 rmSync also enters this export for the lease's own files (as Buffers).
+      if (String(path) !== file) return unlink(path);
       assert.equal(path, file); assert.ok(fs.existsSync(lock)); unlinks++; unlink(path);
     });
     syncBuiltinESMExports();
@@ -90,6 +92,7 @@ test('native session deletion holds the publication lock and stops fallback on u
       return trashResult;
     });
     t.mock.method(fs, 'unlinkSync', (path: fs.PathLike) => {
+      if (String(path) !== file) return unlink(path);
       assert.equal(path, file); assert.ok(fs.existsSync(join(lock, 'owner.json'))); unlinks++;
       if (rejectUnlink) throw Object.assign(new Error('fixture unlink denied'), { code: 'EACCES' });
       unlink(path);

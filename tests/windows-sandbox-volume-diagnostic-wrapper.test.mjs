@@ -1,10 +1,11 @@
+import { PINNED_SANDBOX_TEST_OPTIONS } from "./helpers/windows-sandbox-prerequisites.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { POWERSHELL7_PATH, POWERSHELL7_PREFIX, verifyPowerShell7 } from "../scripts/acceptance/windows-sandbox-volume.mjs";
 
-test("fixed PS7 diagnostic functions preserve unknown owners and exact bounded encoding", { timeout: 40000 }, () => {
+test("fixed PS7 diagnostic functions preserve unknown owners and exact bounded encoding", { timeout: 40000, ...PINNED_SANDBOX_TEST_OPTIONS }, () => {
     const workspace = fileURLToPath(new URL("..", import.meta.url));
     verifyPowerShell7();
     const result = spawnSync(POWERSHELL7_PATH, [...POWERSHELL7_PREFIX, "-File",

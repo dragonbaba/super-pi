@@ -1,3 +1,4 @@
+import { WINDOWS_PATH_TEST_OPTIONS } from "./helpers/windows-sandbox-prerequisites.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -25,14 +26,14 @@ function fixture(text = '{"ok":true}', leafName = name) {
     };
     return { state, io, reader: new PrivateReceiptReader(root, rootId, state.unknown, io) };
 }
-test("private receipt is read once with independent close evidence and cleared bounded storage", t => {
+test("private receipt is read once with independent close evidence and cleared bounded storage", WINDOWS_PATH_TEST_OPTIONS, t => {
     const f = fixture(); assert.deepEqual(f.reader.read(name), { ok: true });
     assert.deepEqual(f.reader.counters, { opened: 1, closed: 1, active: 0, peak: 1, bytesRead: 11, bytesAllocated: 11 });
     assert.ok(f.state.buffers.every(buffer => buffer.every(byte => byte === 0)));
     assert.throws(() => f.reader.read(name), /admission/); assert.equal(f.state.opened, 1);
     t.diagnostic(JSON.stringify({ realHandles: 0, fakeOpened: 1, fakeClosed: 1, peak: 1, allocated: 11, buffersCleared: true }));
 });
-test("private receipt rejects shape, identity, size, short read and invalid UTF-8 without expanding scope", () => {
+test("private receipt rejects shape, identity, size, short read and invalid UTF-8 without expanding scope", WINDOWS_PATH_TEST_OPTIONS, () => {
     const unknown = fixture(); assert.throws(() => unknown.reader.read("user.txt"), /admission/); assert.equal(unknown.state.opened, 0);
     const oversized = fixture("x".repeat(4097)); assert.throws(() => oversized.reader.read(name), /size/); assert.equal(oversized.state.opened, 0);
     const redirected = fixture(); redirected.io.realpathSync = file => file + "-other"; assert.throws(() => redirected.reader.read(name), /root/); assert.equal(redirected.state.opened, 0);
@@ -63,7 +64,7 @@ test("private receipt rejects shape, identity, size, short read and invalid UTF-
         assert.equal(f.state.closed, stage === "after-read" ? 1 : 0);
     }
 });
-test("private receipt preserves original read error and separately retains an unknown close descriptor", () => {
+test("private receipt preserves original read error and separately retains an unknown close descriptor", WINDOWS_PATH_TEST_OPTIONS, () => {
     for (const readFailed of [false, true]) {
         const f = fixture(), original = Object.assign(Error("original read error"), { code: "EIO" }), close = Object.assign(Error("close error"), { code: "EBADF" });
         f.state.failRead = readFailed ? original : undefined; f.state.failClose = close;

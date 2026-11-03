@@ -476,7 +476,7 @@ test("browser process cleanup distinguishes observed exit and retains only late-
   runInNewContext(compiled, { module, exports: module.exports, Buffer,
    require(name: string) { if (name === "node:child_process") return { spawn }; if (name === "node:path") return path; throw new Error(name); },
    process: { platform, env: {}, kill() { if (kind === "posix-denied") throw Object.assign(new Error("denied"), { code: "EPERM" }); if (kind === "posix-gone") throw Object.assign(new Error("gone"), { code: "ESRCH" }); } },
-   setTimeout(fn: Function, delay: number, ...args: unknown[]) { const timer = { fn, delay, args, unref() {} }; timers.add(timer); return timer; },
+   setTimeout(fn: Function, delay: number, ...args: unknown[]) { const timer = { fn, delay, args, referenced: true, unref() { this.referenced = false; } }; timers.add(timer); return timer; },
    clearTimeout(timer: unknown) { timers.delete(timer); },
   });
   const fire = (delay: number) => { let fired = false; for (const timer of [...timers]) if (timer.delay === delay) { fired = true; timers.delete(timer); timer.fn(...timer.args); } assert.equal(fired, true); };
@@ -493,8 +493,12 @@ test("browser process cleanup distinguishes observed exit and retains only late-
    if (kind === "normal") child.emit("close", 0);
    else {
     abort.abort();
-    if (platform === "linux") { child.emit("close", null); fire(2000); }
-    else if (kind === "deadline") fire(5000);
+    if (platform === "linux") {
+     child.emit("close", null);
+     assert.ok([...timers].some(timer => timer.delay === 2000 && timer.referenced), "group cleanup must keep the event loop alive after root close");
+     fire(2000);
+    }
+    else if (kind === "deadline") { assert.ok([...timers].some(timer => timer.delay === 5000 && timer.referenced)); fire(5000); }
     else if (kind === "killer-error") { children[1].emit("error", new Error("denied")); child.emit("close", null); }
     else if (kind === "killer-spawn-error") child.emit("close", null);
     else if (kind === "root-first") { child.emit("close", null); children[1].emit("close", 0); }

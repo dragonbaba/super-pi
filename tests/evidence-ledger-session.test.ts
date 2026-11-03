@@ -241,7 +241,8 @@ test("source lifecycle: reused source call ID rejects before integrity work", li
 		await f.runCalls([{ name: "read", arguments: { path: "file.txt" }, id: "same-source" }]);
 		const first = lastRead(f);
 		const owner = f.internals._toolResultPresentation!;
-		const artifact = owner.issueEvidenceArtifact(first.toolCallId, f.session.agent.state.messages, 1, (first.content[0] as { text: string }).text.length)!;
+		const artifact = owner.issueEvidenceArtifact(first.toolCallId, f.session.agent.state.messages, first.content.length,
+			first.content.reduce((sum, block) => sum + (block as { text: string }).text.length, 0))!;
 		assert.ok(artifact, "first real read must be eligible");
 		const generation = owner.getResidentEvidenceGeneration(first.toolCallId);
 		const before = { ...f.internals._evidenceLedger!.counters };
@@ -258,7 +259,8 @@ test("source lifecycle: reused source call ID rejects before integrity work", li
 		assert.equal(f.session.agent.state.messages.filter(m => m.role === "toolResult" && m.toolCallId === "same-source").length, 2);
 		assert.throws(() => owner.readArtifact(artifact.id, f.session.agent.state.messages));
 		assert.deepEqual(delta, { hits: 0, realReads: 1, prevented: 0, avoided: 0, scans: 0 });
-		assert.deepEqual(second.content, first.content);
+		assert.deepEqual(second.content[0], first.content[0]);
+		assert.notDeepEqual(second.content[1], first.content[1], "a repeated real read issues a fresh native revision");
 		assert.equal((after.missesByReason as Record<string, number>)["source-call-id-reused"], 1);
 	} finally { f.close(); }
 });
@@ -280,7 +282,8 @@ for (const mode of ["manual", "automatic"] as const) {
 				await f.runCalls([{ name: "read", arguments: { path: "file.txt" }, id: "original-source" }]);
 				const source = lastRead(f);
 				const owner = f.internals._toolResultPresentation!;
-				const artifact = owner.issueEvidenceArtifact(source.toolCallId, f.session.agent.state.messages, 1, (source.content[0] as { text: string }).text.length)!;
+				const artifact = owner.issueEvidenceArtifact(source.toolCallId, f.session.agent.state.messages, source.content.length,
+					source.content.reduce((sum, block) => sum + (block as { text: string }).text.length, 0))!;
 				assert.ok(artifact);
 				await f.runCalls([{ name: "read", arguments: { path: "file.txt" }, id: "later-hit" }]);
 				const live = lastRead(f);

@@ -1,3 +1,4 @@
+import { PINNED_SANDBOX_TEST_OPTIONS } from "./helpers/windows-sandbox-prerequisites.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -7,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { POWERSHELL7_PATH, POWERSHELL7_PREFIX, POWERSHELL7_SHA256, POWERSHELL7_SETTINGS_SHA256, verifyPowerShell7 } from "../scripts/acceptance/windows-sandbox-volume.mjs";
 
-test("volume journal publishes both states with a real null backup path", () => {
+test("volume journal publishes both states with a real null backup path", PINNED_SANDBOX_TEST_OPTIONS, () => {
     verifyPowerShell7();
     const helper = fileURLToPath(new URL("../scripts/acceptance/windows-sandbox-volume-helper.ps1", import.meta.url));
     assert.ok(fs.statSync(helper).size <= 65536);

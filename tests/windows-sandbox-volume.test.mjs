@@ -1,3 +1,4 @@
+import { WINDOWS_PATH_TEST_OPTIONS, PINNED_SANDBOX_TEST_OPTIONS } from "./helpers/windows-sandbox-prerequisites.mjs";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
@@ -94,7 +95,7 @@ test("failed preparation may release only recorded resources; failed detach neve
 	await assert.rejects(instance.release()); assert.equal(instance.state, "blocked"); assert.equal(driver.calls.includes("exit"), false);
 });
 
-test("disk release keeps actual checked candidate bytes alive; task revoke still reaches them", async t => {
+test("disk release keeps actual checked candidate bytes alive; task revoke still reaches them", WINDOWS_PATH_TEST_OPTIONS, async t => {
 	const { directory, identity } = root(t), snapshotId = randomUUID(); fs.mkdirSync(path.join(directory, "payload"));
 	fs.writeFileSync(path.join(directory, "payload", "a.txt"), "abc");
 	fs.writeFileSync(path.join(directory, "candidates.json"), JSON.stringify({ protocol: CANDIDATE_PROTOCOL, taskId, snapshotId,
@@ -143,7 +144,7 @@ test("protocol budget, broken input and graceful exit preserve bounded physical 
 	const closing = protocol.waitClosed(1000); child.emit("close", 0, null); assert.equal(await closing, true);
 });
 
-test("native helper compiles and its actual PowerShell functions pass non-storage substitute checks", { timeout: 30000 }, async t => {
+test("native helper compiles and its actual PowerShell functions pass non-storage substitute checks", { timeout: 30000, ...PINNED_SANDBOX_TEST_OPTIONS }, async t => {
 	const { directory } = root(t);
 	const source = fileURLToPath(new URL("../scripts/acceptance/windows-sandbox-volume-native.cs", import.meta.url));
 	const helper = fileURLToPath(new URL("../scripts/acceptance/windows-sandbox-volume-helper.ps1", import.meta.url));

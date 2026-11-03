@@ -1,3 +1,4 @@
+import { PINNED_SANDBOX_TEST_OPTIONS } from "./helpers/windows-sandbox-prerequisites.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import fs from "node:fs";
@@ -86,7 +87,7 @@ test("network fixed entry is bound to owned System execution and drains pending 
 	assert.equal(await owner.cleanup(), true); assert.equal(owner.execution, undefined); assert.equal(execution.listenerCount("settled"), 0);
 	assert.equal(calls.filter(kind => kind === "exec").length, 1); assert.equal(calls.filter(kind => kind === "stop").length, 1);
 });
-test("native fixed network parsing checks compile and run without DNS, sockets or clipboard calls", { skip: process.platform !== "win32" }, t => {
+test("native fixed network parsing checks compile and run without DNS, sockets or clipboard calls", { skip: process.platform !== "win32", ...PINNED_SANDBOX_TEST_OPTIONS }, t => {
 	const repository = fileURLToPath(new URL("../", import.meta.url)), compiler = "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe";
 	assert.equal(sha256(compiler), "eca02e6b15cde93009a59a3d129d5a77fb5008f2e1cf62cf573b6737c747ecc3");
 	const parent = fs.realpathSync(path.join(repository, ".artifacts")), root = path.join(parent, "wsb-network-check-" + randomUUID());

@@ -1,3 +1,4 @@
+import { PINNED_SANDBOX_TEST_OPTIONS } from "./helpers/windows-sandbox-prerequisites.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import fs from "node:fs";
@@ -68,7 +69,7 @@ test("owned fixed cancel entry drains delayed exec after stop and retains owners
     }
     await scenario(true); await scenario(false);
 });
-test("fixed waiting guest compiles but is never executed on the host", { skip: process.platform !== "win32" }, t => {
+test("fixed waiting guest compiles but is never executed on the host", { skip: process.platform !== "win32", ...PINNED_SANDBOX_TEST_OPTIONS }, t => {
     const repository = fileURLToPath(new URL("../", import.meta.url)), compiler = "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe";
     assert.equal(sha256(compiler), "eca02e6b15cde93009a59a3d129d5a77fb5008f2e1cf62cf573b6737c747ecc3");
     const parent = fs.realpathSync(path.join(repository, ".artifacts")), root = path.join(parent, "wsb-cancel-compile-" + randomUUID());

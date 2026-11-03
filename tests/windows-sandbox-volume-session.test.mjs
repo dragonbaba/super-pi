@@ -1,3 +1,4 @@
+import { WINDOWS_PATH_TEST_OPTIONS } from "./helpers/windows-sandbox-prerequisites.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
@@ -91,7 +92,7 @@ function full(mode) {
         exercise: () => exerciseSharedVolume(f.task, f.report, controller.signal, buildVm, receipt) };
 }
 
-test("combined fixed sequence waits for actual VM closure, then reads/releases and clears bindings after exact cleanup", async t => {
+test("combined fixed sequence waits for actual VM closure, then reads/releases and clears bindings after exact cleanup", WINDOWS_PATH_TEST_OPTIONS, async t => {
     const f = full(); assert.equal(await f.exercise(), true);
     assert.deepEqual(f.driver.calls, ["prepare", "verify", "verify", "read-guest", "release", "exit"]);
     assert.deepEqual(f.calls.map(call => call[0]), ["list", "start", "list", "exec", "list", "stop", "list"]);
@@ -110,7 +111,7 @@ test("combined fixed sequence waits for actual VM closure, then reads/releases a
     t.diagnostic(JSON.stringify({cliCalls:7,managerCalls:6,physicalObjects:8,outputWrites:2,physicalPendingAfter:0,retainedTaskAfter:false,filesystemOperations:0}));
 });
 
-test("binding-before-launch failure and cancellation skip reading but close the actual owned volume", async () => {
+test("binding-before-launch failure and cancellation skip reading but close the actual owned volume", WINDOWS_PATH_TEST_OPTIONS, async () => {
     for (const mode of ["before-binding", "cancel"]) {
         const f = full(mode); assert.equal(await f.exercise(), false);
         assert.deepEqual(f.driver.calls, ["prepare", "release", "exit"]); assert.equal(f.calls.length, 0);
@@ -177,7 +178,7 @@ test("all quota checks precede factories and no fifth unresolved record is hidde
     assert.equal(unknown.lifetime.physicalClosed, false); // Missing PID is never evidence that the factory created no process.
 });
 
-test("journal/output failures and late closes only update evidence and never restart cleanup", async () => {
+test("journal/output failures and late closes only update evidence and never restart cleanup", WINDOWS_PATH_TEST_OPTIONS, async () => {
     for (const mode of ["journal", "output"]) {
         const f = basic(); f.report.sequencePassed = true;
         const call = f.lifetime.launch("manager", () => new Call(3)); f.state.ready = false;
@@ -205,7 +206,7 @@ test("journal/output failures and late closes only update evidence and never res
     }
 });
 
-test("complete report profiles use real summaries and retain ownership on encoded overflow", async t => {
+test("complete report profiles use real summaries and retain ownership on encoded overflow", WINDOWS_PATH_TEST_OPTIONS, async t => {
     const noisy = "\u0000\u0001错𐐀".repeat(100), measurements = [];
     const sourceNames = ["lifecycle", "volume", "volume-helper", "volume-native", "volume-config", "volume-sharing", "volume-guest-read",
         "volume-session", "volume-share", "volume-share-acceptance"].map(name => "windows-sandbox-" + name);
@@ -275,7 +276,7 @@ test("complete report profiles use real summaries and retain ownership on encode
         journalLimit:8192,evidenceLimit:7680,footerLimit:512,realProcesses:0 }));
 });
 
-test("exact cleanup refuses extra files and changed identities before deleting any leaf", async () => {
+test("exact cleanup refuses extra files and changed identities before deleting any leaf", WINDOWS_PATH_TEST_OPTIONS, async () => {
     const files = memoryFiles(); files.add("volume-native.dll", 22016); files.add("lifecycle.json", 200);
     const manifest = snapshotSessionFiles(root, rootId, files.io);
     files.add("user-file.txt", 1); assert.throws(() => removeSessionFiles(root, rootId, manifest, files.io), /Unexpected task file/);

@@ -1,3 +1,4 @@
+import { WINDOWS_PATH_TEST_OPTIONS } from "./helpers/windows-sandbox-prerequisites.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -5,7 +6,7 @@ import path from "node:path";
 import { EventEmitter } from "node:events";
 import { SharingLifetime, sessionJournal, completeSharingSession } from "../scripts/acceptance/windows-sandbox-volume-session.mjs";
 const fixture = JSON.parse(fs.readFileSync(new URL("./fixtures/windows-sandbox-volume-capacity-record.json", import.meta.url), "utf8"));
-test("actual capacity record preserves fixed byte budgets through output, exact cleanup and reference release", async t => {
+test("actual capacity record preserves fixed byte budgets through output, exact cleanup and reference release", WINDOWS_PATH_TEST_OPTIONS, async t => {
     const report = structuredClone(fixture.journal), root = report.artifactRoot, rootId = report.rootId;
     assert.equal(Buffer.byteLength(JSON.stringify(report, null, 2)), 7730);
     assert.equal(Buffer.byteLength(JSON.stringify({ ...report, files: fixture.manifest }, null, 2)), 8536);

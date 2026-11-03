@@ -1,3 +1,4 @@
+import { PINNED_SANDBOX_TEST_OPTIONS } from "./helpers/windows-sandbox-prerequisites.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { EventEmitter } from "node:events";
@@ -77,7 +78,7 @@ test("registered HGLOBAL snapshots require complete bounded storage evidence ind
 	for (const item of overTotal.formats) { item.allocationBytes = 8 * 1024 * 1024; overTotal.totalAllocationBytes += item.allocationBytes; }
 	assert.throws(() => validateSnapshot(overTotal));
 });
-test("registered HGLOBAL native storage, output and unlock checks use only process-owned memory", { skip: process.platform !== "win32" }, t => {
+test("registered HGLOBAL native storage, output and unlock checks use only process-owned memory", { skip: process.platform !== "win32", ...PINNED_SANDBOX_TEST_OPTIONS }, t => {
 	const repository = fileURLToPath(new URL("../", import.meta.url));
 	const compiler = "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe";
 	assert.equal(createHash("sha256").update(fs.readFileSync(compiler)).digest("hex"), "eca02e6b15cde93009a59a3d129d5a77fb5008f2e1cf62cf573b6737c747ecc3");

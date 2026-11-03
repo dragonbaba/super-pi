@@ -1,3 +1,4 @@
+import { WINDOWS_PATH_TEST_OPTIONS } from "./helpers/windows-sandbox-prerequisites.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -88,7 +89,7 @@ function full(mode) {
         stage => { const value = receipt(stage); if (mode === "close-unknown" && stage === "read") { value.closeUnknown = true; value.readCompleted = false; value.closed = 8; value.retainedHandles[8] = "66"; }
             f.report.privateReceipts = { opened: stage === "read" ? 2 : 1, closed: stage === "read" ? 2 : 1, active: 0, peak: 1, bytesRead: stage === "read" ? 3600 : 1400, bytesAllocated: stage === "read" ? 3600 : 1400 }; return value; }, digest) };
 }
-test("capacity composed sequence completes one fill command, preserves raw report and cleans seven exact leaves", async t => {
+test("capacity composed sequence completes one fill command, preserves raw report and cleans seven exact leaves", WINDOWS_PATH_TEST_OPTIONS, async t => {
     const f = full(), passed = await f.exercise(); assert.equal(passed, true, JSON.stringify({ error: f.report.error, cleanupError: f.report.cleanupError,
         journalFailed: f.report.journalFailed, journalPeak: f.state.journalPeak, volumeState: f.volume.state, managerCalls: f.driver.calls }));
     assert.deepEqual(f.driver.calls, ["prepare", "install-capacity", "verify", "verify", "read-capacity", "release", "exit"]);
@@ -115,7 +116,7 @@ test("capacity final exec guard rejects replaced installation or standalone volu
         await f.complete(); await tick(); assert.equal(f.report.passed, false);
     }
 });
-test("failed delivery retains diagnostic data while unknown closes or pending exec retain owned resources", async () => {
+test("failed delivery retains diagnostic data while unknown closes or pending exec retain owned resources", WINDOWS_PATH_TEST_OPTIONS, async () => {
     const delivered = full("delivery-failed"); assert.equal(await delivered.exercise(), false); assert.ok(delivered.report.capacityRead.guestBytes.data);
     assert.equal(delivered.report.guestExit.deliveryComplete, false); await delivered.complete(); await tick(); assert.equal(delivered.report.artifactsRemoved, true); assert.equal(delivered.report.passed, false);
     for (const mode of ["close-unknown", "pending-exec"]) {
@@ -123,7 +124,7 @@ test("failed delivery retains diagnostic data while unknown closes or pending ex
         assert.equal(f.driver.calls.includes("release"), false); assert.equal(f.files.removed.length, 0); assert.equal(f.lifetime.retainsTask, true); assert.equal(f.state.holds.size, 1);
     }
 });
-test("capacity quotas are three helpers plus one manager plus 95 CLI, with no fifth unresolved factory", async () => {
+test("capacity quotas are three helpers plus one manager plus 95 CLI, with no fifth unresolved factory", WINDOWS_PATH_TEST_OPTIONS, async () => {
     const f = basic(); let factories = 0;
     for (const kind of ["preflight", "compile", "compile", "manager"]) f.lifetime.launch(kind, () => new Call(++factories));
     for (let i = 0; i < 95; i++) f.lifetime.launch("list", () => new Call(++factories));
@@ -145,7 +146,7 @@ test("capacity quotas are three helpers plus one manager plus 95 CLI, with no fi
     integrated.lifetime.snapshot(); assert.equal(integrated.report.physical.cliRecords, 95);
     await integrated.complete(); await tick(); assert.equal(integrated.report.artifactsRemoved, true); assert.equal(integrated.lifetime.retainsTask, false);
 });
-test("capacity cleanup requires the fixed profile and refuses an extra image or changed leaf", () => {
+test("capacity cleanup requires the fixed profile and refuses an extra image or changed leaf", WINDOWS_PATH_TEST_OPTIONS, () => {
     const f = memory(); f.add("volume-native.dll", 100); f.add("capacity-probe.exe", 100); f.add("capacity-host-sentinel.bin", 32); f.add("lifecycle.json", 100);
     assert.throws(() => snapshotSessionFiles(root, rootId, f.io)); const manifest = snapshotSessionFiles(root, rootId, f.io, "capacity");
     f.add("task.vhd", 134218240); assert.throws(() => removeSessionFiles(root, rootId, manifest, f.io, {}, "capacity")); f.entries.delete(path.join(root, "task.vhd"));
@@ -153,7 +154,7 @@ test("capacity cleanup requires the fixed profile and refuses an extra image or 
     const current = snapshotSessionFiles(root, rootId, f.io, "capacity"); assert.equal(removeSessionFiles(root, rootId, current, f.io, {}, "capacity"), 4);
     assert.equal(f.entries.size, 0);
 });
-test("capacity bundle closes static imports and final CLI source guard runs after reservation", async () => {
+test("capacity bundle closes static imports and final CLI source guard runs after reservation", WINDOWS_PATH_TEST_OPTIONS, async () => {
     const bundle = capacitySourceManifest(name => Buffer.from(name)); assert.equal(bundle.manifest.files.length, 26); assert.equal(new Set(CAPACITY_SOURCES).size, 26);
     const directory = fileURLToPath(new URL("../scripts/acceptance/", import.meta.url));
     for (const name of CAPACITY_SOURCES.filter(name => name.endsWith(".mjs"))) for (const match of fs.readFileSync(path.join(directory, name), "utf8").matchAll(/^import .+ from "\.\/(.+)";/gm))

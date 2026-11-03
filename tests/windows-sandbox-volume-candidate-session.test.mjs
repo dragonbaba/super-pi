@@ -1,3 +1,4 @@
+import { WINDOWS_PATH_TEST_OPTIONS } from "./helpers/windows-sandbox-prerequisites.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -184,7 +185,7 @@ function fixture(mode = "normal") {
     };
 }
 
-test("candidate normal composition captures real core bytes after volume release and cleans eight fixed leaves", async t => {
+test("candidate normal composition captures real core bytes after volume release and cleans eight fixed leaves", WINDOWS_PATH_TEST_OPTIONS, async t => {
     const f = fixture(); assert.equal(await f.exercise(), true, JSON.stringify({ error: f.report.error, cleanup: f.report.cleanupError, peak: f.state.journalPeak }));
     assert.deepEqual(f.state.nativeCommands, ["prepare", "verify", "verify", "verify", "read-candidate-manifest", "read-candidate-batch", "release", "exit"]);
     assert.equal(f.state.registeredVerifies, 1);
@@ -258,7 +259,7 @@ test("registration verification await cannot replace task binding or resume a ca
         assert.equal(f.report.retained, true); assert.ok(originalVm);
     }
 });
-test("known closed candidate failures may release only the volume and retain all partial evidence", async () => {
+test("known closed candidate failures may release only the volume and retain all partial evidence", WINDOWS_PATH_TEST_OPTIONS, async () => {
     for (const mode of ["bad-receipt", "native-failure", "guest-failure", "high-bit", "manifest-crlf"]) {
         const f = fixture(mode); assert.equal(await f.exercise(), false); assert.equal(f.report.retained, true);
         assert.equal(f.report.released, true, mode); assert.equal(f.driver.physicallyClosed, true);
@@ -278,7 +279,7 @@ test("known closed candidate failures may release only the volume and retain all
         }
     }
 });
-test("private/native close unknown and pending VM keep exact owners and never send disk release", async () => {
+test("private/native close unknown and pending VM keep exact owners and never send disk release", WINDOWS_PATH_TEST_OPTIONS, async () => {
     for (const mode of ["private-unknown", "native-unknown", "pending-exec", "error-receipt-missing", "error-receipt-partial", "batch-receipt-partial"]) {
         const f = fixture(mode); assert.equal(await f.exercise(), false);
         assert.equal(f.state.nativeCommands.includes("release"), false, mode);
@@ -313,7 +314,7 @@ test("profile, literal command and last dispatch guard preserve exclusive bounde
         assert.equal(await f.exercise(), false); assert.equal(f.state.factories.includes("exec"), false); assert.equal(f.report.retained, true);
     }
 });
-test("candidate cleanup profile admits bounded partial leaves but normal success requires all exact eight", () => {
+test("candidate cleanup profile admits bounded partial leaves but normal success requires all exact eight", WINDOWS_PATH_TEST_OPTIONS, () => {
     const m = memory(); for (const name of CANDIDATE_NORMAL_FILES) m.add(name, name === "candidate-payload.bin" ? 16384 : 4096);
     const normal = snapshotSessionFiles(root, rootId, m.io, "candidate"); requireNormalCandidateFiles(normal);
     assert.throws(() => snapshotSessionFiles(root, rootId, m.io, "sharing"));

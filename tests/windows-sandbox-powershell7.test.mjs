@@ -1,3 +1,4 @@
+import { PINNED_SANDBOX_TEST_OPTIONS } from "./helpers/windows-sandbox-prerequisites.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -30,7 +31,7 @@ test("PowerShell 7 host boundary has an explicit path and cannot fall back throu
  }
  assert.match(PREFLIGHT,/Import-Module Storage -SkipEditionCheck -ErrorAction Stop/u);
 });
-test("PowerShell 7 loads the current native type, hashes the DLL and imports Storage in process without disk operations", {timeout:30000}, t => {
+test("PowerShell 7 loads the current native type, hashes the DLL and imports Storage in process without disk operations", { timeout:30000, ...PINNED_SANDBOX_TEST_OPTIONS }, t => {
  verifyPowerShell7();
  const parent=fs.realpathSync(os.tmpdir()), root=fs.mkdtempSync(path.join(parent,"super-pi-powershell7-"));
  const identity=fs.lstatSync(root,{bigint:true}), owned=new Map();

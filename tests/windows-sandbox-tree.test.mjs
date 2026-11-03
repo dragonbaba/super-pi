@@ -1,3 +1,4 @@
+import { PINNED_SANDBOX_TEST_OPTIONS } from "./helpers/windows-sandbox-prerequisites.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import fs from "node:fs";
@@ -62,7 +63,7 @@ test("tree cancellation wiring requires complete readiness and still cleans part
     }
     await scenario(true, true); await scenario(true, false); await scenario(false, true);
 });
-test("fixed tree guest compiles without executing or creating descendants on the host", { skip: process.platform !== "win32" }, t => {
+test("fixed tree guest compiles without executing or creating descendants on the host", { skip: process.platform !== "win32", ...PINNED_SANDBOX_TEST_OPTIONS }, t => {
     const repository = fileURLToPath(new URL("../", import.meta.url)), compiler = "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe";
     assert.equal(sha256(compiler), "eca02e6b15cde93009a59a3d129d5a77fb5008f2e1cf62cf573b6737c747ecc3");
     const parent = fs.realpathSync(path.join(repository, ".artifacts")), root = path.join(parent, "wsb-tree-check-" + randomUUID());

@@ -1,3 +1,4 @@
+import { WINDOWS_PATH_TEST_OPTIONS } from "./helpers/windows-sandbox-prerequisites.mjs";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -52,7 +53,7 @@ function rejected(context, reason) {
 	} finally { owner.dispose(); }
 }
 
-test("offline candidates keep host authority, distinct result sources, and owned checked bytes", t => {
+test("offline candidates keep host authority, distinct result sources, and owned checked bytes", WINDOWS_PATH_TEST_OPTIONS, t => {
 	const f = fixture(t), input = f.context(), original = structuredClone(input);
 	input.observations.platformReceipt = { exitCode: 0 };
 	const owner = new OfflineCandidateOwner(input);
@@ -84,7 +85,7 @@ test("offline candidates keep host authority, distinct result sources, and owned
 	} finally { owner.dispose(); }
 });
 
-test("guest authority, source labels, revisions and foreign associations are rejected", t => {
+test("guest authority, source labels, revisions and foreign associations are rejected", WINDOWS_PATH_TEST_OPTIONS, t => {
 	const f = fixture(t);
 	for (const key of ["authorized", "committed", "allProcessesExited", "done", "revision", "source", "budget", "root", "owner"]) {
 		const value = f.metadata(); value[key] = true; f.write(value); rejected(f.context(), "schema");
@@ -97,7 +98,7 @@ test("guest authority, source labels, revisions and foreign associations are rej
 	assert.equal(rejected(wrongRoot, "root-identity").opened, 0);
 });
 
-test("host lifecycle and revocation cannot be bypassed by any guest report", t => {
+test("host lifecycle and revocation cannot be bypassed by any guest report", WINDOWS_PATH_TEST_OPTIONS, t => {
 	const f = fixture(t);
 	for (const mutate of [c => c.lifecycle.state = "active", c => c.lifecycle.state = "unknown", c => c.lifecycle.callsClosed = false,
 		c => c.lifecycle.instanceAbsent = false, c => c.lifecycle.cancelled = true, c => c.lifecycle.timedOut = true,
@@ -114,7 +115,7 @@ test("host lifecycle and revocation cannot be bypassed by any guest report", t =
 	assert.equal(after.diagnostics.retainedBytes, 0); after.dispose();
 });
 
-test("operation and target binding rejects baseline substitution, duplicates and unsupported operations", t => {
+test("operation and target binding rejects baseline substitution, duplicates and unsupported operations", WINDOWS_PATH_TEST_OPTIONS, t => {
 	const f = fixture(t);
 	for (const mutate of [v => v.candidates[0].operation = "modify", v => v.candidates[1].operation = "add",
 		v => v.candidates[0].operation = "delete", v => v.candidates[0].operation = "move",
@@ -128,7 +129,7 @@ test("operation and target binding rejects baseline substitution, duplicates and
 	}
 });
 
-test("minimal Windows path subset rejects aliases, protected paths and escape syntax", t => {
+test("minimal Windows path subset rejects aliases, protected paths and escape syntax", WINDOWS_PATH_TEST_OPTIONS, t => {
 	const f = fixture(t);
 	for (const name of ["../new.txt", "./new.txt", "/new.txt", "C:/new.txt", "C:new.txt", "\\\\host\\share", "src\\edit.txt",
 		"src//edit.txt", "new.txt:stream", ".git/config", "src/.SP/state", "new.txt.", "new.txt ", "NEW~1.TXT",
@@ -138,7 +139,7 @@ test("minimal Windows path subset rejects aliases, protected paths and escape sy
 	const value = f.metadata(); value.candidates[0].path = "NEW.TXT"; f.write(value); rejected(f.context(), "target-or-operation");
 });
 
-test("actual hardlinks, junction parents and missing files are rejected with no retained candidates", t => {
+test("actual hardlinks, junction parents and missing files are rejected with no retained candidates", WINDOWS_PATH_TEST_OPTIONS, t => {
 	const f = fixture(t), file = f.file("new.txt"), alias = path.join(f.root, "hardlink");
 	fs.linkSync(file, alias); rejected(f.context(), "file-kind"); fs.unlinkSync(alias);
 	const source = path.join(f.root, "original-src");
@@ -148,7 +149,7 @@ test("actual hardlinks, junction parents and missing files are rejected with no 
 	assert.equal(metrics.opened, 2); assert.equal(metrics.closed, 2); // Manifest and first candidate released.
 });
 
-test("budgets apply before allocation, with exact per-file and aggregate boundaries", t => {
+test("budgets apply before allocation, with exact per-file and aggregate boundaries", WINDOWS_PATH_TEST_OPTIONS, t => {
 	const f = fixture(t);
 	fs.writeFileSync(f.file("new.txt"), Buffer.alloc(4096));
 	let owner = new OfflineCandidateOwner(f.context()); let checked = owner.check(); assert.equal(checked.status, "candidate-checked");
@@ -166,7 +167,7 @@ test("budgets apply before allocation, with exact per-file and aggregate boundar
 	for (const value of [0, -1, Infinity, 16385]) { input = f.context(); input.budget.totalBytes = value; assert.throws(() => new OfflineCandidateOwner(input)); }
 });
 
-test("entry count and manifest parse work remain bounded; duplicate JSON keys are rejected", t => {
+test("entry count and manifest parse work remain bounded; duplicate JSON keys are rejected", WINDOWS_PATH_TEST_OPTIONS, t => {
 	const entries = Array.from({ length: 16 }, (_, i) => ({ path: `f${i}.txt`, operation: "add", revision: null }));
 	const f = fixture(t, entries), owner = new OfflineCandidateOwner(f.context());
 	assert.equal(owner.check().records.length, 16); assert.equal(owner.diagnostics.opened, 17); assert.equal(owner.diagnostics.peakHandles, 1); owner.dispose();
@@ -178,7 +179,7 @@ test("entry count and manifest parse work remain bounded; duplicate JSON keys ar
 	fs.writeFileSync(path.join(f.root, "candidates.json"), Buffer.from([0xff])); rejected(f.context(), "manifest-invalid");
 });
 
-test("observed content or identity changes during reads release opened handles and prior bytes", t => {
+test("observed content or identity changes during reads release opened handles and prior bytes", WINDOWS_PATH_TEST_OPTIONS, t => {
 	const f = fixture(t), originalRead = fs.readSync;
 	for (const mode of ["grow", "replace"]) {
 		fs.writeFileSync(f.file("new.txt"), "before"); let calls = 0;
@@ -194,7 +195,7 @@ test("observed content or identity changes during reads release opened handles a
 	}
 });
 
-test("revocation during a read prevents acceptance and releases partial data", t => {
+test("revocation during a read prevents acceptance and releases partial data", WINDOWS_PATH_TEST_OPTIONS, t => {
 	const f = fixture(t), owner = new OfflineCandidateOwner(f.context()), originalRead = fs.readSync; let calls = 0;
 	fs.readSync = function (...args) { const count = originalRead(...args); if (++calls === 3) owner.revoke(); return count; };
 	try {
@@ -204,7 +205,7 @@ test("revocation during a read prevents acceptance and releases partial data", t
 	} finally { fs.readSync = originalRead; owner.dispose(); }
 });
 
-test("close failure is an unknown cleanup result, never candidate acceptance", t => {
+test("close failure is an unknown cleanup result, never candidate acceptance", WINDOWS_PATH_TEST_OPTIONS, t => {
 	const f = fixture(t), owner = new OfflineCandidateOwner(f.context()), originalClose = fs.closeSync; let calls = 0, held;
 	fs.closeSync = function (fd) { if (++calls === 2) { held = fd; throw new Error("synthetic pre-close failure"); } return originalClose(fd); };
 	try {

@@ -1,3 +1,4 @@
+import { PINNED_SANDBOX_TEST_OPTIONS } from "./helpers/windows-sandbox-prerequisites.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -9,7 +10,7 @@ import { CapturedCandidateOwner } from "../scripts/acceptance/windows-sandbox-vo
 import { CANDIDATE_PROTOCOL, CANDIDATE_LIMITS } from "../scripts/acceptance/windows-sandbox-candidates.mjs";
 import { POWERSHELL7_PATH, POWERSHELL7_PREFIX, verifyPowerShell7 } from "../scripts/acceptance/windows-sandbox-volume.mjs";
 
-test("candidate helper commands preserve receipts, failures and bounded handle responsibility", { timeout: 40000 }, t => {
+test("candidate helper commands preserve receipts, failures and bounded handle responsibility", { timeout: 40000, ...PINNED_SANDBOX_TEST_OPTIONS }, t => {
     const workspace = fileURLToPath(new URL("..", import.meta.url)), parent = path.join(workspace, ".artifacts");
     assert.equal(fs.realpathSync(parent), parent); assert.equal(fs.lstatSync(parent).isSymbolicLink(), false);
     const root = path.join(parent, "volume-candidate-helper-check-" + randomUUID()); fs.mkdirSync(root);

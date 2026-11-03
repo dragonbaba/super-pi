@@ -1,3 +1,4 @@
+import { WINDOWS_PATH_TEST_OPTIONS } from "./helpers/windows-sandbox-prerequisites.mjs";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { mkdtemp, open, lstat, realpath, unlink, rmdir } from "node:fs/promises";
@@ -235,7 +236,7 @@ async function runCases() {
   finishErrors(failed, failure, cleanupErrors, "Binding cases and registered owner cleanup failed.");
   return evidence;
 }
-test("bounded sandbox intent and original parent binding", async () => {
+test("bounded sandbox intent and original parent binding", WINDOWS_PATH_TEST_OPTIONS, async () => {
   const workerBefore = nativeFileDiagnostics();
   let evidence, failed = false, failure, cleanupFailed = false, cleanupFailure;
   try {

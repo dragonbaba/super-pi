@@ -162,7 +162,8 @@ class BrowserUseProcessRun {
     }
     this.#killed = signalOwnedProcessTree(child, "SIGTERM");
     this.#forceKillTimeout = setTimeout(handleForceKill, FORCE_KILL_DELAY_MS, this);
-    this.#forceKillTimeout.unref();
+    // Root close can remove the last process handle before group cleanup is proven.
+    // Keep the bounded cleanup timer referenced until the returned promise settles.
   }
 
   forceKill(): void {
@@ -328,7 +329,6 @@ class BrowserUseProcessRun {
   private armTerminationSettle(): void {
     if (this.#settled || this.#terminationSettleTimeout) return;
     this.#terminationSettleTimeout = setTimeout(handleTerminationSettle, TERMINATION_SETTLE_MS, this);
-    this.#terminationSettleTimeout.unref();
   }
 
   private clearDeadline(): void {

@@ -77,3 +77,12 @@
 真实 Windows Sandbox（.artifacts/pr174-real.json）：1 MiB 候选成功落盘；同批次包含先写入的小文件和 1 MiB+1 字节文件时，宿主两者均不存在。1 次 VM 启动、2 次命令调用，最终 vm=false、ownedArtifacts=0、sourceFiles=0。该测试验证新的预算字段实际跨越宿主/来宾边界，不以 mock 代替传输验收。
 
 第二轮 CI 在 Linux/Windows 的 alpha-crash-cleanup 中暴露同类旧挂载点，已改为实际 chatContainer；31 项清理回归通过。仓库中其余 renderer.addChild 用法已核对，output-padding 对全屏明确使用 setLayoutRoot。CI 使用现有 --keep-going 并关闭矩阵 fail-fast，保留非零失败状态和每项一次的分片安排，收集完整独立失败，减少反复重跑；较新推送仍取消旧运行。
+
+完整矩阵追加定位（首个不提前取消的运行 41611716187）：
+
+- POSIX 浏览器清理有实际生命周期缺陷：根进程 close 后最后的清理定时器被 unref，待返回的 Promise 可能随事件循环提前结束。两种有界清理定时器现在保留引用到 settle/dispose，普通执行 deadline 仍随活跃 child 管理。VM 注入增加 referenced 断言，覆盖 POSIX 根先退出和 Windows 清理超时；9 场景 / 8,000 输出更新、每流 8,192 B，39 WeakRef 最终 live=0，pendingTimers=0，采样 5,236,920 B 含 VM 夹具。流式 append/onStdout/onStderr AST 门禁继续通过，未新增热路径分配。
+- 旧测试适配原生读取：首次 MIME/source/native revision 共 3 次 open、2 个有 stat 的捕获，后续缓存命中仍禁止新增磁盘打开；证据 artifact 使用实际两块文本及总字符数，重新真实读取签发新 snapshot。极小预算不能容纳成对凭据时必须保留原结果并阻止请求；不再假定带版本凭据的读取只占 1 token。没有放松产品预算、身份精度或证据准入。
+- Node 22 的 rmSync 会经过导出的 unlinkSync 并使用 Buffer 路径，删除测试只拦截目标会话文件，允许锁文件按原函数清理。交互测试夹具补齐 settingsManager.getPermissionMode；产品接口不添加兜底。
+- 22 个历史 native 检查明确要求已审查的固定 Windows 编译器/PowerShell 指纹；不满足时报告前置条件跳过，匹配时保持原正文与全部安全断言。31 个依赖盘符/NTFS 语义的检查限定 Windows，仍在 Windows CI 自动执行。其他跨平台模型检查保持自动运行；16 个冻结文件未修改。只在工具链匹配时创建干净检出缺少的 .artifacts 父目录。产品固定工具链校验没有改动。
+
+本地追加结果：交互/删除/浏览器/权限批次 154 通过、1 条原有平台跳过；本机固定工具链及 Windows 模型 101 项全过；证据与 source-invariants 48 通过、35 条平台跳过。后者 Linux 专项由远端矩阵验证，不能把本机跳过表述为 Linux 已通过。

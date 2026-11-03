@@ -1,3 +1,4 @@
+import { PINNED_SANDBOX_TEST_OPTIONS } from "./helpers/windows-sandbox-prerequisites.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import fs from "node:fs";
@@ -53,7 +54,7 @@ test("fixed file entry is bound to the owned System instance and cleanup", async
     await assert.rejects(owner.executeFileProbe(), /owned registration/); await owner.start(); await owner.executeFileProbe();
     assert.equal(await owner.cleanup(), true); assert.equal(owner.execution, undefined); assert.equal(owner.stopAttempted, true);
 });
-test("host sentinel checks detect content and length changes; fixed guest compiles without host execution", { skip: process.platform !== "win32" }, t => {
+test("host sentinel checks detect content and length changes; fixed guest compiles without host execution", { skip: process.platform !== "win32", ...PINNED_SANDBOX_TEST_OPTIONS }, t => {
     const repository = fileURLToPath(new URL("../", import.meta.url)), compiler = "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe";
     assert.equal(sha256(compiler), "eca02e6b15cde93009a59a3d129d5a77fb5008f2e1cf62cf573b6737c747ecc3");
     const parent = fs.realpathSync(path.join(repository, ".artifacts")), root = path.join(parent, "wsb-files-check-" + randomUUID());

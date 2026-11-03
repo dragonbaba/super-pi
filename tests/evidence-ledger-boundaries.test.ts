@@ -55,7 +55,7 @@ test("Windows stat-only identity stays ineligible without hashing or capture", {
 	} finally { f.close(); }
 });
 
-test("ten completed reads execute one file snapshot and no disk opens on later hits", { skip: process.platform === "win32" ? "Windows stat cannot prove unchanged identity" : false }, async t => {
+test("ten completed reads capture the source and native revision once, with no disk opens on later hits", { skip: process.platform === "win32" ? "Windows stat cannot prove unchanged identity" : false }, async t => {
 	const f = await fixture();
 	const original = fsPromises.open;
 	let opens = 0;
@@ -73,9 +73,11 @@ test("ten completed reads execute one file snapshot and no disk opens on later h
 	});
 	syncBuiltinESMExports();
 	try {
-		for (let i = 0; i < 10; i++) await f.read();
-		assert.equal(snapshots, 1);
-		assert.equal(opens, 2); // Existing first-read MIME sniff plus validated text snapshot.
+		await f.read();
+		assert.equal(snapshots, 2); // Validated text source plus the independently verified native edit revision.
+		assert.equal(opens, 3); // MIME sniff, source capture, native revision capture.
+		for (let i = 1; i < 10; i++) await f.read();
+		assert.equal(snapshots, 2); assert.equal(opens, 3);
 		assert.equal(f.internals._evidenceLedger!.counters.realReadExecutionsPrevented, 9);
 	} finally { mocked.mock.restore(); syncBuiltinESMExports(); f.close(); }
 });

@@ -1,3 +1,4 @@
+import { PINNED_SANDBOX_TEST_OPTIONS } from "./helpers/windows-sandbox-prerequisites.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -94,7 +95,7 @@ test("receipt validates both close errors and rejects aliases, forged associatio
     assert.deepEqual(validateGuestReadReceipt(failed, taskId, { volumePath, exchangeId }), failed);
 });
 
-test("fixed reader compiles and actual helper functions run with pure storage substitutes", { timeout: 40000 }, t => {
+test("fixed reader compiles and actual helper functions run with pure storage substitutes", { timeout: 40000, ...PINNED_SANDBOX_TEST_OPTIONS }, t => {
     const workspace = fileURLToPath(new URL("..", import.meta.url)), parent = path.join(workspace, ".artifacts");
     assert.equal(fs.realpathSync(parent), parent); assert.equal(fs.lstatSync(parent).isSymbolicLink(), false);
     const root = path.join(parent, "volume-guest-read-check-" + randomUUID()); fs.mkdirSync(root);

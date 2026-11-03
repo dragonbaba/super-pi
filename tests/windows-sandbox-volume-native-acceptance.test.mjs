@@ -1,3 +1,4 @@
+import { PINNED_SANDBOX_TEST_OPTIONS } from "./helpers/windows-sandbox-prerequisites.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -146,7 +147,7 @@ test("outer journal failure and final output budget retain ownership without rec
  assert.ok(errors.every(error => error.message.length === 256 && error.messageTruncated));
  assert.ok(Buffer.byteLength(JSON.stringify({ helperCalls: calls, operationErrors: errors })) < 4096);
 });
-test("new native probe compiles; actual helper probe functions run only with storage substitutes", { timeout: 30000 }, t => {
+test("new native probe compiles; actual helper probe functions run only with storage substitutes", { timeout: 30000, ...PINNED_SANDBOX_TEST_OPTIONS }, t => {
  const parent = fs.realpathSync(os.tmpdir()), root = fs.mkdtempSync(path.join(parent, "super-pi-volume-native-check-"));
  const identity = fs.lstatSync(root, { bigint: true });
  t.after(() => {

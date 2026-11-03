@@ -1,3 +1,4 @@
+import { PINNED_SANDBOX_TEST_OPTIONS } from "./helpers/windows-sandbox-prerequisites.mjs";
 import { POWERSHELL7_PATH, POWERSHELL7_PREFIX, verifyPowerShell7 } from "../scripts/acceptance/windows-sandbox-volume.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -134,7 +135,7 @@ test("startup cleanup requires emitted evidence, closed ownership and exact root
  assert.throws(() => validateCleanupSnapshot(root, root, files, { "lifecycle.json": files["lifecycle.json"] }));
  assert.throws(() => validateCleanupSnapshot(root, root, files, { ...files, "volume-native.dll": { ino: "9", sha256: "b" } }));
 });
-test("startup PowerShell 7 parse-only guard never executes helper body or native constructor", { timeout: 15000 }, t => {
+test("startup PowerShell 7 parse-only guard never executes helper body or native constructor", { timeout: 15000, ...PINNED_SANDBOX_TEST_OPTIONS }, t => {
  const script = fileURLToPath(new URL("./fixtures/windows-sandbox-volume-startup-parse.ps1", import.meta.url));
  const helper = fileURLToPath(new URL("../scripts/acceptance/windows-sandbox-volume-helper.ps1", import.meta.url));
  verifyPowerShell7();
