@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
  * dangling links via readdir but ENOENT via lstat, so recursive rm leaves them. */
 export function removeOwnedFixture(root: string): void {
   root = resolve(root);
-  assert.equal(realpathSync(dirname(root)), realpathSync(tmpdir()));
+  assert.equal(realpathSync.native(dirname(root)), realpathSync.native(tmpdir()));
   assert.equal(lstatSync(root).isSymbolicLink(), false);
   const directories = [root];
   while (directories.length) {

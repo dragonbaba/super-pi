@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAME, getConfigDir } from "../config.ts";
 import { canonicalizePath, resolvePath } from "../utils/paths.ts";
@@ -43,10 +43,32 @@ function normalizeCwd(cwd: string): string {
 	return canonicalizePath(resolvePath(cwd));
 }
 
+function canonicalizeSavedTrustPath(path: string): string {
+	try {
+		// Saved keys were already resolved. Normalize their spelling only while
+		// they still resolve to themselves; a new link must not transfer trust.
+		return realpathSync(path) === path ? realpathSync.native(path) : path;
+	} catch {
+		return path;
+	}
+}
+
 function findNearestTrustEntry(data: TrustFile, cwd: string): ProjectTrustStoreEntry | null {
+	// Legacy files can contain different spellings of one existing directory.
+	// Resolve them once for this lookup without rewriting the saved decisions.
+	const decisions = new Map<string, boolean | null>();
+	for (const [path, value] of Object.entries(data)) {
+		if (!isAbsolute(path) || (value !== true && value !== false)) continue;
+		const key = canonicalizeSavedTrustPath(path);
+		const previous = decisions.get(key);
+		decisions.set(key, previous === undefined || previous === value ? value : null);
+	}
 	let currentDir = normalizeCwd(cwd);
 	while (true) {
-		const value = data[currentDir];
+		const value = decisions.get(currentDir);
+		if (value === null) {
+			throw new Error(`Conflicting trust decisions for ${currentDir}; set an explicit trust decision for this directory.`);
+		}
 		if (value === true || value === false) {
 			return { path: currentDir, decision: value };
 		}
@@ -230,8 +252,16 @@ export class ProjectTrustStore {
 	setMany(decisions: ProjectTrustUpdate[]): void {
 		withTrustFileLock(this.trustPath, () => {
 			const data = readTrustFile(this.trustPath);
+			const storedKeys = new Map<string, string>();
+			for (const key of Object.keys(data)) {
+				if (isAbsolute(key)) storedKeys.set(key, canonicalizeSavedTrustPath(key));
+			}
 			for (const { path, decision } of decisions) {
 				const key = normalizeCwd(path);
+				// An explicit update replaces only aliases of this actual directory.
+				for (const [storedKey, canonicalKey] of storedKeys) {
+					if (canonicalKey === key) setOwnProperty(data, storedKey, undefined);
+				}
 				if (decision === null) {
 					setOwnProperty(data, key, undefined);
 				} else {
