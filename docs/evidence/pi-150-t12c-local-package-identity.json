@@ -1,0 +1,89 @@
+{
+  "task": "T12-C",
+  "base": "0cc64d3be615386134c7be8fe3932aa1dba35a2f",
+  "node": "v26.13.0",
+  "platform": "win32",
+  "tests": {
+    "tests": 5548,
+    "pass": 5450,
+    "fail": 0,
+    "cancelled": 0,
+    "skipped": 98,
+    "successfulUnits": 415
+  },
+  "targeted": 56,
+  "sources": [
+    {
+      "path": "packages/coding-agent/src/core/package-manager.ts",
+      "sha256": "2963e9f82e956cd8788eccf04de0b597b0d5676ae213034149f2bb3191cfaad5"
+    },
+    {
+      "path": "scripts/test.mjs",
+      "sha256": "ef7e7a99feceb72a627a28dd564a72b386550587146d68d9e3fd9e0e5b38d4d9"
+    },
+    {
+      "path": "tests/local-package-identity.test.ts",
+      "sha256": "850e1ef3524bff7770b77edc95d4cd96ed59a28d9087146cdf7d39fccddfbe7e"
+    }
+  ],
+  "reproduction": {
+    "initialTests": 14,
+    "initialFailures": 10,
+    "existingBehaviorControls": 4,
+    "finalFeatureTests": 17
+  },
+  "counters": [
+    {
+      "operation": "add",
+      "packages": 1,
+      "nativeCalls": 2,
+      "inputCalls": 1,
+      "matchPosition": "last"
+    },
+    {
+      "operation": "add",
+      "packages": 100,
+      "nativeCalls": 101,
+      "inputCalls": 1,
+      "matchPosition": "last"
+    },
+    {
+      "operation": "add",
+      "packages": 1000,
+      "nativeCalls": 1001,
+      "inputCalls": 1,
+      "matchPosition": "last"
+    },
+    {
+      "operation": "remove",
+      "packages": 1,
+      "nativeCalls": 2,
+      "inputCalls": 1,
+      "matchPosition": "last"
+    },
+    {
+      "operation": "remove",
+      "packages": 100,
+      "nativeCalls": 101,
+      "inputCalls": 1,
+      "matchPosition": "last"
+    },
+    {
+      "operation": "remove",
+      "packages": 1000,
+      "nativeCalls": 1001,
+      "inputCalls": 1,
+      "matchPosition": "last"
+    }
+  ],
+  "lifetime": {
+    "oldPackagesArrayReleased": true,
+    "oldEntryObjectsReleased": 2,
+    "afterSettingsFlush": true,
+    "bothManagersAlive": true
+  },
+  "scope": "Explicit package add/remove matching only. Local remove changes configuration, not package files. No frame/delta/progress callback changes. Existing find/filter closures stay at the explicit command boundary.",
+  "costs": "Canonical resolution adds required filesystem identity work. Input is once per command; each local settings candidate once. Existing SettingsManager structuredClone, snapshots, writeQueue and result array remain; no new cache/pool or general timing/zero-allocation claim.",
+  "compatibility": "Input cwd and settings user agentDir/project .sp bases preserved; add preserves object filter fields. Missing paths use lexical identity. Case-sensitive objects remain separate; denied project trust and npm name/git host/path matching preserved.",
+  "coverage": "Real Windows case and junction/case-sensitive fixtures; POSIX symlink counterpart in Node26 CI. Remote package matching is offline; no npm/git uninstall or publication."
+}
