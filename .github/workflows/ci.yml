@@ -23,6 +23,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
+      # Collect independent failures in one run instead of cancelling other shards.
+      fail-fast: false
       matrix:
         shard: [1, 2]
     steps:
@@ -41,7 +43,7 @@ jobs:
       - run: npm run check
         if: matrix.shard == 1
       - run: npm run build:offline
-      - run: npm test
+      - run: npm test -- --keep-going
         env:
           SP_TEST_SHARD: ${{ matrix.shard }}/2
           SP_TEST_JOBS: 1
@@ -51,6 +53,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 30
     strategy:
+      fail-fast: false
       matrix:
         shard: [1, 2, 3, 4]
     steps:
@@ -71,7 +74,7 @@ jobs:
         run: Set-MpPreference -DisableRealtimeMonitoring $true
       - run: npm ci
       - run: npm run build:offline
-      - run: npm test
+      - run: npm test -- --keep-going
         env:
           SP_TEST_SHARD: ${{ matrix.shard }}/4
           SP_TEST_JOBS: 1

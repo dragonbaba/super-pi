@@ -75,3 +75,5 @@
 分配与释放复验（.artifacts/pr174-perf.json）：16 × 1 MiB 候选仅解码 16 个缓冲，共 16,777,216 B；追加超限项额外解码 0；V8 采样 40,112 B 不含全部外部缓冲，不能代替精确字节计数。200,000 次历史检查无历史查找、branch 数组或 Promise；采样 26,408 B 含夹具开销。4 个 WeakRef 经 4 轮受控 GC 后 live=0，权限叶子、拒绝集合、边界参与者及快照残留均 0。
 
 真实 Windows Sandbox（.artifacts/pr174-real.json）：1 MiB 候选成功落盘；同批次包含先写入的小文件和 1 MiB+1 字节文件时，宿主两者均不存在。1 次 VM 启动、2 次命令调用，最终 vm=false、ownedArtifacts=0、sourceFiles=0。该测试验证新的预算字段实际跨越宿主/来宾边界，不以 mock 代替传输验收。
+
+第二轮 CI 在 Linux/Windows 的 alpha-crash-cleanup 中暴露同类旧挂载点，已改为实际 chatContainer；31 项清理回归通过。仓库中其余 renderer.addChild 用法已核对，output-padding 对全屏明确使用 setLayoutRoot。CI 使用现有 --keep-going 并关闭矩阵 fail-fast，保留非零失败状态和每项一次的分片安排，收集完整独立失败，减少反复重跑；较新推送仍取消旧运行。

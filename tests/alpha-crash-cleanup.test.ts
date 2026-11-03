@@ -12,7 +12,7 @@ for (const mode of ['regular', 'fullscreen'] as const) for (const deadOutput of 
   t.mock.method(f.terminal, 'dispose', () => { disposals++; return dispose(); });
   try {
     await f.mode.init();
-    f.internal.renderer.addChild({ render: () => [], invalidate() {}, [RELEASE_COMPONENT_RENDER_CACHE]() { releases++; throw cause; } });
+    f.internal.chatContainer.addChild({ render: () => [], invalidate() {}, [RELEASE_COMPONENT_RENDER_CACHE]() { releases++; throw cause; } });
     f.internal.terminalDisconnected = deadOutput;
     await assert.rejects(f.internal.shutdown(), error => error === cause);
     assert.equal(releases, 1); assert.equal(disposals, 1); assert.equal(exit, undefined);
