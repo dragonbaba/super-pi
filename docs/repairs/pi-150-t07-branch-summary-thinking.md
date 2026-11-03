@@ -1,6 +1,6 @@
 # T07：分支摘要继承当前推理级别
 
-状态：先行设计已落实，T07 已实现，验收中。T06-F #188 最终提交 ecccb60013e733be36aed57072ceacc0b91c28fc 的 Codex 审核已 completed，同 head 无问题回执、无行内/正式 review 发现，六个 CI 全部成功；结构化发现布尔值为空，未将其冒称为 false。#188 已合并为 521f84f2316f19548c3f8e76021e808d1c0f1f60；对应本地/远端分支已删除、main 已同步。本项从该基线开启 codex/t07-branch-summary-thinking，仅 Node v26.13.0。
+状态：先行设计已落实，T07 已通过 #189 合并。T06-F #188 最终提交 ecccb60013e733be36aed57072ceacc0b91c28fc 的 Codex 审核已 completed，同 head 无问题回执、无行内/正式 review 发现，六个 CI 全部成功；结构化发现布尔值为空，未将其冒称为 false。#188 已合并为 521f84f2316f19548c3f8e76021e808d1c0f1f60；对应本地/远端分支已删除、main 已同步。本项从该基线开启 codex/t07-branch-summary-thinking，仅 Node v26.13.0。
 
 ## 已确认的缺口
 
@@ -48,3 +48,7 @@ Codex 行内发现 4459750772：Google/Vertex budget 模式将 medium 映射为 
 测试过程中修正了两个 fixture 假设：conservativeModelCapabilities 返回冻结共享对象，测试先复制再提供显式能力；RetryPolicy 即使禁用也要求完整字段，补齐 maxRetries/baseDelayMs。未因此增加生产兜底。类型检查与离线构建通过；当前 Node26 全套 **405/405 执行单元成功，5429 tests / 5331 pass / 98 skip / 0 fail / 0 cancelled**。[证据记录](../evidence/pi-150-t07-branch-summary-thinking.json)包含源码 hash、行为计数及验证结果；原始日志在 .git/pi150-t07。最终 PR reviewer/CI 尚未验收。
 
 Reviewer 修复已复现真实 output-reservation 红灯并完成：12 个 Google/Vertex case 覆盖固定/动态预算、能力级别映射、较小模型上限和无剩余推理空间；扩大后的定向 **119/119** 通过。修复版本 check/build:offline 通过，Node v26.13.0 全套 **405/405 执行单元成功，5441 tests / 5343 pass / 98 skip / 0 fail / 0 cancelled**。请求配置每摘要一次，单次成功捕获或明确失败均为 1 次 stream 调用，没有付费补偿重试。修复后将主动额外请求 Codex review，尚不把旧 head 的 CI 当新 head 验收。
+
+## 交付结果
+
+最终 head `1b2452c034fb89ddf8bc6f31035ff9a9f3b2f921` 的 Codex review completed、has_any_findings=false、has_unresolved_findings=false；修复后独立复审请求为 issuecomment-6614252775。CI 41709593698 六个分片全部成功，#189 合并为 `4e004f4af1b10f91e9137632608b9421c32ed728`，对应两端分支已删除，main 已同步。

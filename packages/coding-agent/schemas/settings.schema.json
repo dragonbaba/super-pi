@@ -57,6 +57,7 @@
 			"additionalProperties": false,
 			"properties": {
 				"reserveTokens": { "type": "integer", "minimum": 0, "default": 16384, "description": "Tokens reserved for the prompt and summary response." },
+				"maxTokens": { "type": "integer", "minimum": 1, "maximum": 9007199254740991, "default": 2048, "description": "Summary output allowance, capped by a known model limit. Uses provider-specific thinking accounting; higher values may increase cost. 摘要输出额度，默认 2048，受已知模型上限约束；推理计费语义由 provider 决定，增大可能增加费用。" },
 				"skipPrompt": { "type": "boolean", "default": false, "description": "Skip the summary prompt and default to no summary." }
 			}
 		},
