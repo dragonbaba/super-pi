@@ -139,10 +139,41 @@ test("Mistral native delivery avoids scratch wrappers and releases incremental a
 	assert.match(text, /finally \{\s*for \(const parser of toolParsers\) parser\?\.dispose\(\);\s*toolParsers\.length = 0;\s*toolBlocksByKey\.clear\(\)/);
 });
 
-for (const provider of ["anthropic", "responses", "bedrock", "chat", "mistral"]) test(`real provider counters and controlled-GC release satisfy the argument lifecycle, provider=${provider}`, { timeout: 30000 }, () => {
+test("Pi Messages scans only each decoded chunk and mutates host events without wrappers", () => {
+	const file = "packages/ai/src/api/pi-messages.ts", text = readFileSync(file, "utf8");
+	const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
+	let deltaSeen = 0, scannerSeen = 0, parseSeen = 0;
+	function noControlAllocation(child: ts.Node): void {
+		assert.equal(ts.isArrowFunction(child) || ts.isFunctionExpression(child) || ts.isNewExpression(child) || ts.isAwaitExpression(child)
+			|| ts.isObjectLiteralExpression(child) || ts.isArrayLiteralExpression(child) || ts.isSpreadElement(child) || ts.isSpreadAssignment(child), false, child.getText(source));
+		ts.forEachChild(child, noControlAllocation);
+	}
+	function visit(node: ts.Node): void {
+		if (ts.isCaseClause(node) && node.expression.getText(source) === '"toolcall_delta"') {
+			deltaSeen++; noControlAllocation(node);
+			assert.doesNotMatch(node.getText(source), /JSON|parseStreamingJson|\.slice\(|\.join\(/);
+		}
+		if (ts.isForStatement(node) && node.condition?.getText(source) === "index < decoded.length") {
+			scannerSeen++; noControlAllocation(node);
+			assert.doesNotMatch(node.getText(source), /buffer\.(?:charCodeAt|indexOf|replace|slice|split)/);
+		}
+		if (ts.isFunctionDeclaration(node) && node.name?.text === "parsePiMessagesEvent") {
+			parseSeen++; noControlAllocation(node.body!);
+			assert.doesNotMatch(node.getText(source), /\.split\(|\.find\(|\.map\(/);
+		}
+		ts.forEachChild(node, visit);
+	}
+	visit(source); assert.deepEqual([deltaSeen, scannerSeen, parseSeen], [1, 1, 1]);
+	assert.doesNotMatch(text, /toolJson|parseStreamingJson|\.\.\.event|buffer\.replace|decoder\.decode\(value, \{/);
+	assert.match(text, /content\.arguments = event\.toolCall\.arguments/);
+	assert.match(text, /finally \{\s*converter\.dispose\(\)/);
+	assert.match(text, /finally \{\s*buffer = "";\s*decoded = "";[\s\S]*?reader\.cancel\(\)[\s\S]*?reader\.releaseLock\(\)/);
+});
+
+for (const provider of ["anthropic", "responses", "bedrock", "chat", "mistral", "pi-messages"]) test(`real provider counters and controlled-GC release satisfy the argument lifecycle, provider=${provider}`, { timeout: 30000 }, () => {
 	const output = execFileSync(process.execPath, ["--expose-gc", "--experimental-strip-types", "scripts/bench/provider-tool-args.ts", "--smoke", ...(provider === "anthropic" ? [] : [`--${provider}`])], { encoding: "utf8", windowsHide: true, timeout: 25000 });
 	const evidence = JSON.parse(output);
 	assert.equal(evidence.counters.length, 3); assert.equal(evidence.lifecycle.length, 3);
-	for (const row of evidence.counters) { assert.equal(row.parserPromises, 0); assert.equal(row.argumentParseCalls, 1); }
+	for (const row of evidence.counters) { assert.equal(row.parserPromises, 0); assert.equal(row.argumentParseCalls, provider === "pi-messages" ? 0 : 1); }
 	for (const row of evidence.lifecycle) assert.equal(row.retainedParsers, 0);
 });

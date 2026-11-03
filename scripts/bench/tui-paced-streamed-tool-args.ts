@@ -235,7 +235,7 @@ function allocationSites(head: SamplingNode): { sampledBytes: number; top: unkno
 }
 
 function messageEvent(
-	api: "openai-completions" | "pi-messages",
+	api: "openai-completions" | "google-generative-ai",
 	content: Array<Record<string, unknown>>,
 	contentIndex: number,
 	type: "toolcall_delta" | "toolcall_end",
@@ -334,7 +334,7 @@ async function profileScenario(scenario: Scenario): Promise<Record<string, unkno
 				content[toolIndex + contentOffset]!.partialArgs = String(updateIndex);
 			}
 			await activeAgent.processEvents(messageEvent(
-				scenario === "replacement-object" ? "pi-messages" : "openai-completions",
+				scenario === "replacement-object" ? "google-generative-ai" : "openai-completions",
 				content,
 				toolIndex + contentOffset,
 				"toolcall_delta",
@@ -404,7 +404,7 @@ async function profileScenario(scenario: Scenario): Promise<Record<string, unkno
 	const sampled = allocationSites(stopped.profile.head as SamplingNode);
 	for (let toolIndex = 0; toolIndex < toolCount; toolIndex++) {
 		await activeAgent.processEvents(messageEvent(
-			scenario === "replacement-object" ? "pi-messages" : "openai-completions",
+			scenario === "replacement-object" ? "google-generative-ai" : "openai-completions",
 			content,
 			toolIndex + contentOffset,
 			"toolcall_end",

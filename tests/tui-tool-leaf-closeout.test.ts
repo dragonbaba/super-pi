@@ -273,8 +273,9 @@ test("known adapter ownership matrix has dynamic host behavior without missing m
 		"openai-codex-responses",
 		"openai-completions",
 		"mistral-conversations",
+		"pi-messages",
 	];
-	const replacementApis: readonly KnownApi[] = ["pi-messages", "google-generative-ai", "google-vertex"];
+	const replacementApis: readonly KnownApi[] = ["google-generative-ai", "google-vertex"];
 	for (const api of mutationApis) {
 		const metrics = createMetrics();
 		const args = { nested: { value: 1 } };

@@ -13,17 +13,20 @@ import { responsesArgumentsFixture } from "../../tests/helpers/responses-argumen
 import { bedrockArgumentsFixture } from "../../tests/helpers/bedrock-arguments-fixture.ts";
 import { chatArgumentsFixture } from "../../tests/helpers/chat-arguments-fixture.ts";
 import { mistralArgumentsFixture } from "../../tests/helpers/mistral-arguments-fixture.ts";
+import { piMessagesArgumentsFixture } from "../../tests/helpers/pi-messages-arguments-fixture.ts";
+import { piMessagesWireFixture } from "../../tests/helpers/pi-messages-wire-fixture.ts";
 
 const moduleIndex = process.argv.indexOf("--provider-module");
 const responses = process.argv.includes("--responses");
 const bedrock = process.argv.includes("--bedrock");
 const chat = process.argv.includes("--chat");
 const mistral = process.argv.includes("--mistral");
-const argumentsFixture = mistral ? mistralArgumentsFixture : chat ? chatArgumentsFixture : bedrock ? bedrockArgumentsFixture : responses ? responsesArgumentsFixture : anthropicArgumentsFixture;
-const modulePath = resolve(moduleIndex < 0 ? `packages/ai/src/api/${mistral ? "mistral-conversations" : chat ? "openai-completions" : bedrock ? "bedrock-converse-stream" : responses ? "openai-codex-responses" : "anthropic-messages"}.ts` : process.argv[moduleIndex + 1]);
+const piMessages = process.argv.includes("--pi-messages");
+const argumentsFixture = piMessages ? piMessagesArgumentsFixture : mistral ? mistralArgumentsFixture : chat ? chatArgumentsFixture : bedrock ? bedrockArgumentsFixture : responses ? responsesArgumentsFixture : anthropicArgumentsFixture;
+const modulePath = resolve(moduleIndex < 0 ? `packages/ai/src/api/${piMessages ? "pi-messages" : mistral ? "mistral-conversations" : chat ? "openai-completions" : bedrock ? "bedrock-converse-stream" : responses ? "openai-codex-responses" : "anthropic-messages"}.ts` : process.argv[moduleIndex + 1]);
 const { stream: factory } = await import(pathToFileURL(modulePath).href);
 const smoke = process.argv.includes("--smoke"), warmup = 2, timingIterations = 8, profileIterations = 4, samplingInterval = 1024;
-type Fixture = ReturnType<typeof argumentsFixture>;
+type Fixture = ReturnType<typeof argumentsFixture> | ReturnType<typeof piMessagesWireFixture>;
 async function gc(): Promise<void> { for (let i = 0; i < 4; i++) { await nextTurn(); globalThis.gc!(); } }
 async function run(fixture: Fixture) {
 	const stream = fixture.start(factory); for await (const _event of stream) { /* drain real delivery */ }
@@ -54,7 +57,7 @@ async function count(size: number) {
 		hook.disable(); JSON.parse = parse; IncrementalToolArguments.prototype.append = append; IncrementalToolArguments.prototype.dispose = dispose; fixture.release();
 	}
 	if (smoke) {
-		assert.equal(argumentParseCalls, 1); assert.equal(argumentParseCodeUnits, input.length); assert.equal(parserPromises, 0);
+		assert.equal(argumentParseCalls, piMessages ? 0 : 1); assert.equal(argumentParseCodeUnits, piMessages ? 0 : input.length); assert.equal(parserPromises, 0);
 		assert.equal(parsers.length, 1); assert.equal(parsers[0].scannedCodeUnits, input.length); assert.equal(parsers[0].retainedRawCodeUnits, 0);
 	}
 	return { inputCodeUnits: input.length, inputBytes: Buffer.byteLength(input), deltas, argumentParseCalls, argumentParseCodeUnits,
@@ -92,10 +95,37 @@ async function lifecycle(reason: "normal" | "abort" | "error") {
 	return row;
 }
 
+async function wireCount(size: number) {
+	const fixture = piMessagesWireFixture(JSON.stringify({ payload: "x".repeat(size) }), 32);
+	const charCodeAt = String.prototype.charCodeAt, replace = String.prototype.replace, split = String.prototype.split, decode = TextDecoder.prototype.decode;
+	let scannedDecodedCodeUnits = 0, replacedBufferCodeUnits = 0, lineArrays = 0;
+	const decodeOptions = new Set<object>();
+	String.prototype.charCodeAt = function(index) { if (fixture.decodedChunks.has(String(this))) scannedDecodedCodeUnits++; return charCodeAt.call(this, index); };
+	String.prototype.replace = function(pattern: any, replacement: any) {
+		if (pattern instanceof RegExp && pattern.source === "\\r\\n") replacedBufferCodeUnits += this.length;
+		return replace.call(this, pattern, replacement);
+	} as typeof replace;
+	String.prototype.split = function(separator: any, limit?: number) { if (separator === "\n") lineArrays++; return split.call(this, separator, limit); } as typeof split;
+	TextDecoder.prototype.decode = function(input, options) { if (options) decodeOptions.add(options); return decode.call(this, input, options); };
+	try {
+		await run(fixture); await nextTurn();
+		const lifecycle = fixture.inspect();
+		if (smoke) {
+			assert.equal(scannedDecodedCodeUnits, fixture.wireCodeUnits); assert.equal(replacedBufferCodeUnits, 0);
+			assert.equal(lineArrays, 0); assert.equal(decodeOptions.size, 1); assert.deepEqual(lifecycle, { cancelled: true, locked: false });
+		}
+		return { inputBytes: size, wireCodeUnits: fixture.wireCodeUnits, readChunks: fixture.readChunks, scannedDecodedCodeUnits,
+			replacedBufferCodeUnits, lineArrays, decodeOptionsObjects: decodeOptions.size, lifecycle };
+	} finally {
+		String.prototype.charCodeAt = charCodeAt; String.prototype.replace = replace; String.prototype.split = split; TextDecoder.prototype.decode = decode;
+		fixture.release();
+	}
+}
+
 async function measure(kind: string, size: number, chunkCharacters: number) {
 	const input = kind === "wide" ? JSON.stringify({ payload: Object.fromEntries(Array.from({ length: size / 32 }, (_, i) => [`key${i}`, i])) })
 		: JSON.stringify({ payload: "x".repeat(size) });
-	const fixture = argumentsFixture([input], chunkCharacters);
+	const fixture = kind === "wire" ? piMessagesWireFixture(input, chunkCharacters) : argumentsFixture([input], chunkCharacters);
 	try {
 		for (let i = 0; i < warmup; i++) await run(fixture);
 		const samples = [], cpu = process.cpuUsage();
@@ -124,13 +154,15 @@ async function measure(kind: string, size: number, chunkCharacters: number) {
 }
 
 assert.equal(typeof globalThis.gc, "function", "run with --expose-gc");
-const counters = [], lifecycleRows = [], measurements = [];
+const counters = [], lifecycleRows = [], measurements = [], wireCounters = [];
 for (const size of [8192, 16384, 32768]) counters.push(await count(size));
 for (const reason of ["normal", "abort", "error"] as const) lifecycleRows.push(await lifecycle(reason));
+if (piMessages) for (const size of [8192, 16384, 32768]) wireCounters.push(await wireCount(size));
 if (!smoke) {
 	for (const size of [16384, 32768, 65536]) measurements.push(await measure("string", size, 128));
 	measurements.push(await measure("string", 32768, 32)); measurements.push(await measure("wide", 65536, 128));
+	if (piMessages) for (const size of [16384, 32768, 65536]) measurements.push(await measure("wire", size, 32));
 }
 console.log(JSON.stringify({ fixtureVersion: 1, node: process.version, os: `${process.platform} ${release()}`, modulePath,
 	sourceHash: createHash("sha256").update(readFileSync(modulePath, "utf8").replaceAll("\r\n", "\n")).digest("hex"),
-	warmup, timingIterations, profileIterations, samplingInterval, counters, lifecycle: lifecycleRows, measurements }));
+	warmup, timingIterations, profileIterations, samplingInterval, counters, lifecycle: lifecycleRows, wireCounters, measurements }));

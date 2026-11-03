@@ -1,6 +1,6 @@
 # T06-E：Mistral 参数增量解析与剩余入口核对
 
-日期：2026-11-04。状态：**先行设计已落实，Mistral 已实现，验收中**。基线为 T06-D #186 合并提交 `fd14e54638b24cbeb9aae8207cbceebc20bd74ae`，最终 head `c21e4d43da9133828f9790522d76612002271fe4` 已获 Codex completed/no findings、CI 6/6，相关本地/远端分支已删除，main 已同步。当前分支 `codex/t06e-mistral-incremental-tool-args`，只使用 Node v26.13.0。
+日期：2026-11-04。状态：**已通过 #187 交付**。基线为 T06-D #186 合并提交 `fd14e54638b24cbeb9aae8207cbceebc20bd74ae`，最终 head `c21e4d43da9133828f9790522d76612002271fe4` 已获 Codex completed/no findings、CI 6/6，相关本地/远端分支已删除，main 已同步。当前分支 `codex/t06e-mistral-incremental-tool-args`，只使用 Node v26.13.0。
 
 ## 范围与核对结果
 
@@ -53,4 +53,4 @@ Mistral 私有 parser 数组按稳定 contentIndex 保存；toolBlocksByKey 保�
 
 normal/abort/error 受控 GC 保持 stream/result 活着，parser 弱引用全部释放，dispose 后 raw/token/stack/root/parent 清空。正常旧 preview 可回收；异常部分 preview 仍归结果拥有。私有索引/数组在 finally 清空，临时 baseline 已按唯一记录的精确路径删除。源码门禁约束普通 append 和 SSE wrapper/options 构造，下游 benchmark 单独覆盖实际 observer/UI/frame 链，不能将 UI 合成事件当作 producer 解析证明。
 
-类型检查、离线构建和四个串行下游 benchmark 均通过；当前 Node26 全套：**403/403 执行单元成功，5389 tests / 5291 pass / 98 skip / 0 fail / 0 cancelled**。stream 100000 更新合并为 1 次 snapshot/delivery；session listener Promise/wrapper/array=0；paced args 每 flush 一次 snapshot、generation 缺失/语义兜底=0，metadata/调度状态释放；frame queue 100000 请求仅 2 次生成/写入，active≤1，无全尺寸副本或新增 Promise/controller/wrapper，结束 active/pending 清空。最终 PR reviewer/CI 尚待验收。日志位于 .git/pi150-t06e。T06-F Pi Messages 仍需单独先行设计、实现与验收；T06 不在此提前标交付。
+类型检查、离线构建和四个串行下游 benchmark 均通过；当前 Node26 全套：**403/403 执行单元成功，5389 tests / 5291 pass / 98 skip / 0 fail / 0 cancelled**。stream 100000 更新合并为 1 次 snapshot/delivery；session listener Promise/wrapper/array=0；paced args 每 flush 一次 snapshot、generation 缺失/语义兜底=0，metadata/调度状态释放；frame queue 100000 请求仅 2 次生成/写入，active≤1，无全尺寸副本或新增 Promise/controller/wrapper，结束 active/pending 清空。最终 head `e126710468e1ca49089b6860825e0f51762d5579` 已获 Codex completed/no findings、CI 6/6；#187 合并为 `a95e9dc3d36f1a29a6d26ac01ffd86147d08093a`，对应本地/远端分支已删除，main 已同步。日志位于 .git/pi150-t06e。T06-F Pi Messages 仍需单独先行设计、实现与验收；T06 不在此提前标交付。
