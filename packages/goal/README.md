@@ -16,7 +16,7 @@ The ordinary no-progress guard remains enabled. Network, authentication, quota, 
 
 # 🎯 pi-goal — Goal Mode for the Pi Coding Agent
 
-[![npm](https://img.shields.io/npm/v/@narumitw/pi-goal)](https://www.npmjs.com/package/@narumitw/pi-goal) [![Pi extension](https://img.shields.io/badge/Pi-extension-blue)](https://pi.dev) [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
+[![npm](https://img.shields.io/npm/v/@narumitw/pi-goal)](https://www.npmjs.com/package/@narumitw/pi-goal) [![Pi extension](https://img.shields.io/badge/Pi-extension-blue)](https://pi.dev) [![License: GPL-3.0-only](https://img.shields.io/badge/license-GPL--3.0--only-blue.svg)](./LICENSE)
 
 `@narumitw/pi-goal` is a native [Pi coding agent](https://pi.dev) extension that adds session-scoped `/goal` commands, a `goal_complete({ goal_id, summary })` completion tool, and a strict `goal_blocked({ goal_id, reason, evidence, repeated_turns })` impasse tool for autonomous, verifiable task completion. An opt-in experimental mode adds an ordered queue without introducing a second command or tool namespace.
 

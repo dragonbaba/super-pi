@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "description": "Super Pi extension for OpenAI server-side compaction with Codex-quality continuity.",
-  "license": "MIT",
+  "license": "GPL-3.0-only",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/dragonbaba/super-pi.git",
@@ -30,7 +30,9 @@
     "README.md",
     "ARCHITECTURE.md",
     "VALIDATION.md",
-    "LICENSE.md"
+    "LICENSE.md",
+    "LICENSE-MIT",
+    "NOTICE.md"
   ],
   "pi": {
     "extensions": [

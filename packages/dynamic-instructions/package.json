@@ -18,5 +18,6 @@
   "devDependencies": {
     "@super-pi/coding-agent": "1.0.0",
     "typescript": "7.0.2"
-  }
+  },
+  "license": "GPL-3.0-only"
 }

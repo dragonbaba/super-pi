@@ -12,9 +12,9 @@
 		"./bounded-json": { "types": "./dist/bounded-json.d.ts", "import": "./dist/bounded-json.js" },
 		"./worker": { "types": "./dist/runtime/worker.d.ts", "import": "./dist/runtime/worker.js" }
 	},
-	"files": ["dist", "README.md", "LICENSE"],
+	"files": ["dist", "README.md", "LICENSE", "LICENSE-MIT", "NOTICE.md"],
 	"scripts": { "build": "tsc -p tsconfig.build.json" },
-	"license": "MIT",
+	"license": "GPL-3.0-only",
 	"engines": { "node": ">=22.19.0" },
 	"dependencies": { "quickjs-wasi": "3.6.2" }
 }

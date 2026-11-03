@@ -3,7 +3,7 @@
 	"description": "Super Pi source monorepo and local superpi CLI",
 	"private": true,
 	"type": "module",
-	"license": "MIT",
+	"license": "GPL-3.0-only",
 	"repository": "https://github.com/dragonbaba/super-pi",
 	"bin": {
 		"superpi": "./scripts/superpi.mjs"

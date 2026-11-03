@@ -1,8 +1,11 @@
 # @super-pi/codemode
 
 QuickJS WASI execution in a separate, terminable worker. Imported from official Pi
-v1.0.0 (`a13d35a74`), under the accompanying MIT license, then adapted to Super Pi's
+v1.0.0 (`a13d35a74`), under the retained [MIT notice](LICENSE-MIT), then adapted to Super Pi's
 bounded resource and allocation contracts. The low-level Agent has no VM dependency.
+
+The modified Super Pi package is licensed under [GPL-3.0-only](LICENSE);
+see [NOTICE.md](NOTICE.md) for the scope and upstream attribution.
 
 The coding agent loads this package on first script execution. Only injected tools
 and helpers are available; scripts have no host filesystem, network, Node globals

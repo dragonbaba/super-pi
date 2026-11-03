@@ -3,7 +3,7 @@
   "version": "0.41.0-pi.9",
   "description": "Super Pi statusline with IME-safe idle rendering and generation throughput.",
   "type": "module",
-  "license": "MIT",
+  "license": "GPL-3.0-only",
   "private": false,
   "keywords": [
     "pi-package",
@@ -17,7 +17,9 @@
     "dist",
     "README.md",
     "COMPATIBILITY.md",
-    "LICENSE"
+    "LICENSE",
+    "LICENSE-MIT",
+    "NOTICE.md"
   ],
   "pi": {
     "extensions": [

@@ -18,7 +18,10 @@
 	"files": [
 		"dist",
 		"README.md",
-		"CHANGELOG.md"
+		"CHANGELOG.md",
+		"LICENSE",
+		"LICENSE-MIT",
+		"NOTICE.md"
 	],
 	"scripts": {
 		"clean": "shx rm -rf dist",
@@ -30,7 +33,7 @@
 		"server"
 	],
 	"author": "Earendil Works",
-	"license": "MIT",
+	"license": "GPL-3.0-only",
 	"repository": {
 		"type": "git",
 		"url": "git+https://github.com/dragonbaba/super-pi.git",

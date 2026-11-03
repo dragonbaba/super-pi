@@ -19,5 +19,6 @@
       "./tool-loop-guardrails/index.ts"
     ]
   },
-  "scripts": {}
+  "scripts": {},
+  "license": "GPL-3.0-only"
 }

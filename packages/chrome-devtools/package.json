@@ -3,9 +3,9 @@
 	"version": "0.49.3-super-pi.1",
 	"description": "Super Pi Chrome DevTools Protocol tools.",
 	"type": "module",
-	"license": "MIT",
+	"license": "GPL-3.0-only",
 	"private": true,
-	"files": ["src", "README.md", "LICENSE"],
+	"files": ["src", "README.md", "LICENSE", "LICENSE-MIT", "NOTICE.md"],
 	"pi": {
 		"extensions": ["./src/index.ts"]
 	},

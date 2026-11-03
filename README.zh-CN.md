@@ -2,9 +2,9 @@
 
 面向真实工程任务的可扩展终端 AI 编程助手，聚焦可控执行、持续项目上下文和长会话终端体验。
 
-[English](README.md) · [文档导航](docs/README.md)
+[English](README.md) · [快速开始](#快速开始) · [文档导航](docs/README.md) · [上游差异](docs/upstream-pi-1.5.0-diff-assessment.md) · [GPL-3.0-only](LICENSE)
 
-Super Pi 是一个 source-first 的终端 coding agent。它把模型 API、项目文件和本地工具组合成一个可持续的工作环境：你可以在自己的项目目录中检查代码、规划任务、执行经过检查的操作、恢复会话，并按需要加载扩展。
+Super Pi 是一个优先从源码运行的终端编程助手。它把模型 API、项目文件和本地工具组合成一个可持续的工作环境：你可以在自己的项目目录中检查代码、规划任务、执行经过检查的操作、恢复会话，并按需要加载扩展。
 
 ## 适合什么工作
 
@@ -26,64 +26,7 @@ Super Pi 适合需要多轮探索和修改的工程任务，例如：
 | 应用自己维护 UI 和流式状态 | 常规和全屏 TUI、选择器、进度与结果展示 |
 | Provider 集成各自实现 | 多 provider 目录、认证存储、扩展、Skills、MCP 和 RPC |
 
-这些能力仍受 provider、模型能力、项目配置和当前工具策略限制。它们是应用层控制，不是操作系统沙箱，也不保证任意模型输出或外部服务行为。
-
-## 核心能力
-
-### 代码工具与项目理解
-
-普通工具默认通过内置 `codemode` JavaScript 工具调用，CLI、TUI、JSON/RPC 和 SDK 一致，无需开关。脚本使用 `await tools.read({path: "README.md"})`、`await callTool(name, args)` 和 `await show(result.ref)`；交互及 Plan/Goal 控制工具仍直接调用。不支持专用代码格式的模型使用 JSON `code` 参数进入同一运行时。每个子调用继续遵守工具白名单、Plan mode、权限与取消规则；`--no-tools` 仍可禁用工具。
-
-Codemode 首次调用才加载隔离的 QuickJS Worker，并限制执行时间、桥接流量、存储和输出。只有实际展示的原生读取才能在后续模型轮次授权受保护编辑；隐藏读取、打印副本及被截断内容不能授权。子调用失败时，即使脚本捕获异常，父调用也会保留失败状态。成功的分支内 `store` 写入会持久保存，恢复会话不重放脚本；外部工具副作用不会回滚。相关操作可合并到一个脚本以摊薄 Worker 启动成本。详见 [使用说明](docs/codemode.md)、[默认 Codemode 契约](docs/codemode-default-execution-plan.md) 和 [验证记录](docs/codemode-default-execution-log.md)。
-
-coding agent 提供 `read`、`grep`、`find`、`ls`、`edit`、`write`、`bash`，以及 Windows 上的 `powershell` 工具。各工具有自己的读取窗口和字节/行数限制；TUI 折叠控制屏幕上的可见内容。这些不等于模型 Token 预算。独立的 `toolResultPresentation` 流程需要 `enabled: true`；模型 Token 预算投影还需要配置正整数 `budgetTokens`，它没有生产默认值。支持时，较大输出可以保存在本地 artifact 中按需查看。配置和边界见 [tool-result presentation](docs/performance/phase5b-budgeted-model-view.md)。
-
-项目理解分成几层：
-
-- Project Context 用 `/project-status`、`/project-init` 和 `/project-refresh` 管理项目规则、轻量仓库索引和上下文状态。
-- CodeGraph 通过 `/codegraph-status`、`/codegraph-init` 和 `/codegraph-sync` 显式管理；它要求项目可信，不会在启动时自动完整扫描仓库。
-- LSP 工具需要配置 server，提供目标诊断、source fix 预览和符号导航。仓库自己的 typecheck、build 和 test 仍是最终依据。
-
-文件编辑使用有范围和身份检查的读写流程。快照、行定位和批量编辑有助于缩小修改范围，但不构成任意多文件事务，也不保证语义正确；每次写入仍经过正常权限和结果检查。
-
-### 会话内后台任务
-
-在宿主执行的 TUI/RPC 会话中，Bash 和 PowerShell 可使用 `background: true` 和明确的 `cwd`；沙箱两档目前仅支持前台命令。提交前模型会获知实际容量；`/tasks` 和直接工具 `tasks` 统一管理普通命令与子代理任务。普通命令默认同时运行 16 个、接纳 64 个，可配置到 64/256。命令保留正常授权、有限结果和完成通知，会话关闭时停止。持久会话重启后可查看有限历史结果；缺少完成记录的任务标记为中断，不自动重跑或恢复旧授权。参见[后台任务用法与限制](docs/background-tasks.md)。
-
-### Goal、Plan、会话和记忆
-
-- **Plan mode** 通过 `/plan` 或 `--plan` 进入，以只读探索、澄清问题和形成完整实现计划为主。计划接受前会收紧可用工具。
-- **Goal mode** 通过 `/goal` 管理持续目标、暂停、恢复和完成状态。顺序 Goal 队列和 managed-run RPC 属于实验能力，默认关闭。
-- 会话支持继续、恢复、分支、树导航、命名、导入和导出。会话历史保存在本地；每次模型请求仍只接收该请求允许的上下文。
-- Memory 将全局记忆、项目记忆、会话搜索和 Skills 分开管理，通过 `/memory-review` 提供人工审阅的记忆提取流程。普通 memory 工具操作遵守内容检查及当前工具策略，具体确认方式取决于入口。启动不会把所有历史记忆自动塞进 system prompt。
-
-当活动模型接近上下文限制时，Compaction 会整理较早上下文，保留可继续工作的边界，但不等于保存模型的全部内部状态，也不保证跨 provider 完全一致。
-
-Provider-native `openai-server-compaction` 扩展的 `enabled` 默认回退为 `true`。扩展加载后，在模型兼容及触发条件满足时按实际配置工作。可在 `~/.sp/agent/config/openai-server-compaction.json` 中设置 `enabled: false`，或设置 `SP_OPENAI_SERVER_COMPACTION_ENABLED=false` 显式关闭（环境变量优先）。参见 [配置源码](packages/openai-server-compaction/src/config.ts)。远端压缩可能产生额外请求和费用；Auxiliary Vision 是另一项需要单独配置的集成。
-
-### 多模型、扩展、Skills 和 MCP
-
-Super Pi 使用 `@super-pi` 包作用域和 `superpi` CLI。AI 层包含内置 provider 和模型目录，`models.json` 可以定义自定义 provider 或模型覆盖。模型是否可用取决于目录、认证、provider 设置以及 tool、image、reasoning 能力。
-
-源码入口会从 `.sp/config/settings.json` 加载随源码提供的扩展、Skills 和 prompt templates。也可以使用 `superpi install`、`superpi list`、`superpi config`、`superpi remove` 和 `superpi update` 管理资源。扩展可以增加工具、命令、provider 或 UI；项目本地资源受项目可信度限制。
-
-MCP 是显式配置的集成。需要在 `~/.sp/agent/config/mcp.json` 中配置可信 server，再按需使用 `/mcp-status`、`/mcp-tools` 和 `/mcp-reload`。发现、连接和调用可能增加启动时间、网络传输和 provider 成本。MCP 结果的模型 Token 预算投影同样需要上述显式启用的 `toolResultPresentation` 及 `budgetTokens` 配置，并非所有远端结果默认都会投影。失败调用不会自动重放。
-
-### 提问、权限和失败恢复
-
-当模型需要决定重大歧义、冲突需求或无法推导的偏好时，应调用 `ask_user`。工具会显示问题并等待明确的选项或文字回答；回答前，依赖该答案的业务调用不会开始。正文中的“请确认”不会自动形成同样的边界，工具禁用或没有可用 UI 时也不算已回答。回答本身不等于文件、Shell 或外部服务权限。
-
-直接运行 `superpi`，通过 `/permissions` 选择“只读（沙箱）”“沙箱读写（默认）”或“全部读写（宿主机）”。前两档的文件与命令工具都在 Windows Sandbox 内执行，只有第三档在明确确认后使用宿主工具。切换保留对话并等待旧任务关闭；新会话不继承宿主授权。工作区快照、写回、工具限制与迁移规则见[会话权限与沙箱](docs/execution-environments.md)。项目扩展初始化和 provider 代码仍在宿主应用运行。
-
-长 `node -e` 脚本不会仅因长度而一律拒绝。能够可靠传参的一次性脚本可以直接运行；复杂引号、多段维护或需要重复运行时，可以选择明确文件或受支持的 stdin。写文件不是绕过授权的方式，写入和执行仍分别经过检查。
-
-### 图片和终端体验
-
-图片先进入输入草稿，用户提交后才成为模型请求的一部分。当前模型支持图片时，Super Pi 按 provider 能力发送；文本模型需要图像理解时，可以显式配置 Auxiliary Vision，让另一个有视觉能力的模型生成描述。辅助视觉需要自己的模型和认证，可能产生额外服务调用。
-
-常规模式适合保留终端历史，全屏模式提供更集中的工作区；两者共享会话、工具和权限边界。`--mode json` 用于非交互输出，`--mode rpc` 面向嵌入式 host；RPC 协议、client 和 server 包仍是实验接口，server 包本身不提供独立 coding-agent 服务。普通路径粘贴、内部文字选择和图片草稿是不同输入来源，项目没有承诺外部 Explorer 文件拖入终端的原生接收。
-
-全屏模式向上翻阅时显示 `↓ Back to bottom · Esc`，点击或按 Esc 回到底部并继续跟随新输出，输入草稿保留。退出默认恢复进入前的终端，只留下会话恢复提示，不再重印内部界面；如需保留完整会话，可在 `/settings` 显式选择 `fullscreenExitOutput: "transcript"`。
+这些能力仍受 provider、模型能力、项目配置和当前工具策略限制。选定的执行模式决定已接入的工具是否使用 Windows Sandbox；应用权限不保证模型输出或外部服务行为。
 
 ## 快速开始
 
@@ -91,6 +34,7 @@ MCP 是显式配置的集成。需要在 `~/.sp/agent/config/mcp.json` 中配置
 
 - Node.js 22.19 或更高版本。
 - npm。
+- 使用默认沙箱权限需要 Windows Sandbox 及受支持的 CLI；具体要求见[执行环境](docs/execution-environments.md)。宿主读写通过 `/permissions` 明确选择。
 - 已配置的模型 provider。构建脚本中的 offline 只描述构建阶段，不代表模型推理离线。
 
 ### 从源码构建
@@ -169,6 +113,63 @@ superpi
 
 `npm.cmd link` 创建 `superpi`，不创建 `pi`，也不会替换 PowerShell 的 `sp` alias。链接依赖源码目录，移动或删除 checkout 会使命令失效。
 
+## 核心能力
+
+### 代码工具与项目理解
+
+普通工具默认通过内置 `codemode` JavaScript 工具调用，CLI、TUI、JSON/RPC 和 SDK 一致，无需开关。脚本使用 `await tools.read({path: "README.md"})`、`await callTool(name, args)` 和 `await show(result.ref)`；交互及 Plan/Goal 控制工具仍直接调用。不支持专用代码格式的模型使用 JSON `code` 参数进入同一运行时。每个子调用继续遵守工具白名单、Plan mode、权限与取消规则；`--no-tools` 仍可禁用工具。
+
+Codemode 首次调用才加载隔离的 QuickJS Worker，并限制执行时间、桥接流量、存储和输出。只有实际展示的原生读取才能在后续模型轮次授权受保护编辑；隐藏读取、打印副本及被截断内容不能授权。子调用失败时，即使脚本捕获异常，父调用也会保留失败状态。成功的分支内 `store` 写入会持久保存，恢复会话不重放脚本；外部工具副作用不会回滚。相关操作可合并到一个脚本以摊薄 Worker 启动成本。详见 [使用说明](docs/codemode.md)、[默认 Codemode 契约](docs/codemode-default-execution-plan.md) 和 [验证记录](docs/codemode-default-execution-log.md)。
+
+coding agent 提供 `read`、`grep`、`find`、`ls`、`edit`、`write`、`bash`，以及 Windows 上的 `powershell` 工具。各工具有自己的读取窗口和字节/行数限制；TUI 折叠控制屏幕上的可见内容。这些不等于模型 Token 预算。独立的 `toolResultPresentation` 流程需要 `enabled: true`；模型 Token 预算投影还需要配置正整数 `budgetTokens`，它没有生产默认值。支持时，较大输出可以保存在本地 artifact 中按需查看。配置和边界见 [tool-result presentation](docs/performance/phase5b-budgeted-model-view.md)。
+
+项目理解分成几层：
+
+- Project Context 用 `/project-status`、`/project-init` 和 `/project-refresh` 管理项目规则、轻量仓库索引和上下文状态。
+- CodeGraph 通过 `/codegraph-status`、`/codegraph-init` 和 `/codegraph-sync` 显式管理；它要求项目可信，不会在启动时自动完整扫描仓库。
+- LSP 工具需要配置 server，提供目标诊断、source fix 预览和符号导航。仓库自己的 typecheck、build 和 test 仍是最终依据。
+
+文件编辑使用有范围和身份检查的读写流程。快照、行定位和批量编辑有助于缩小修改范围，但不构成任意多文件事务，也不保证语义正确；每次写入仍经过正常权限和结果检查。
+
+### 会话内后台任务
+
+在宿主执行的 TUI/RPC 会话中，Bash 和 PowerShell 可使用 `background: true` 和明确的 `cwd`；沙箱两档目前仅支持前台命令。提交前模型会获知实际容量；`/tasks` 和直接工具 `tasks` 统一管理普通命令与子代理任务。普通命令默认同时运行 16 个、接纳 64 个，可配置到 64/256。命令保留正常授权、有限结果和完成通知，会话关闭时停止。持久会话重启后可查看有限历史结果；缺少完成记录的任务标记为中断，不自动重跑或恢复旧授权。参见[后台任务用法与限制](docs/background-tasks.md)。
+
+### Goal、Plan、会话和记忆
+
+- **Plan mode** 通过 `/plan` 或 `--plan` 进入，以只读探索、澄清问题和形成完整实现计划为主。计划接受前会收紧可用工具。
+- **Goal mode** 通过 `/goal` 管理持续目标、暂停、恢复和完成状态。顺序 Goal 队列和 managed-run RPC 属于实验能力，默认关闭。
+- 会话支持继续、恢复、分支、树导航、命名、导入和导出。会话历史保存在本地；每次模型请求仍只接收该请求允许的上下文。
+- Memory 将全局记忆、项目记忆、会话搜索和 Skills 分开管理，通过 `/memory-review` 提供人工审阅的记忆提取流程。普通 memory 工具操作遵守内容检查及当前工具策略，具体确认方式取决于入口。启动不会把所有历史记忆自动塞进 system prompt。
+
+当活动模型接近上下文限制时，Compaction 会整理较早上下文，保留可继续工作的边界，但不等于保存模型的全部内部状态，也不保证跨 provider 完全一致。
+
+Provider-native `openai-server-compaction` 扩展的 `enabled` 默认回退为 `true`。扩展加载后，在模型兼容及触发条件满足时按实际配置工作。可在 `~/.sp/agent/config/openai-server-compaction.json` 中设置 `enabled: false`，或设置 `SP_OPENAI_SERVER_COMPACTION_ENABLED=false` 显式关闭（环境变量优先）。参见 [配置源码](packages/openai-server-compaction/src/config.ts)。远端压缩可能产生额外请求和费用；Auxiliary Vision 是另一项需要单独配置的集成。
+
+### 多模型、扩展、Skills 和 MCP
+
+Super Pi 使用 `@super-pi` 包作用域和 `superpi` CLI。AI 层包含内置 provider 和模型目录，`models.json` 可以定义自定义 provider 或模型覆盖。模型是否可用取决于目录、认证、provider 设置以及 tool、image、reasoning 能力。
+
+源码入口会从 `.sp/config/settings.json` 加载随源码提供的扩展、Skills 和 prompt templates。也可以使用 `superpi install`、`superpi list`、`superpi config`、`superpi remove` 和 `superpi update` 管理资源。扩展可以增加工具、命令、provider 或 UI；项目本地资源受项目可信度限制。
+
+MCP 是显式配置的集成。需要在 `~/.sp/agent/config/mcp.json` 中配置可信 server，再按需使用 `/mcp-status`、`/mcp-tools` 和 `/mcp-reload`。发现、连接和调用可能增加启动时间、网络传输和 provider 成本。MCP 结果的模型 Token 预算投影同样需要上述显式启用的 `toolResultPresentation` 及 `budgetTokens` 配置，并非所有远端结果默认都会投影。失败调用不会自动重放。
+
+### 提问、权限和失败恢复
+
+当模型需要决定重大歧义、冲突需求或无法推导的偏好时，应调用 `ask_user`。工具会显示问题并等待明确的选项或文字回答；回答前，依赖该答案的业务调用不会开始。正文中的“请确认”不会自动形成同样的边界，工具禁用或没有可用 UI 时也不算已回答。回答本身不等于文件、Shell 或外部服务权限。
+
+直接运行 `superpi`，通过 `/permissions` 选择“只读（沙箱）”“沙箱读写（默认）”或“全部读写（宿主机）”。前两档的文件与命令工具都在 Windows Sandbox 内执行，只有第三档在明确确认后使用宿主工具。切换保留对话并等待旧任务关闭；新会话不继承宿主授权。工作区快照、写回、工具限制与迁移规则见[会话权限与沙箱](docs/execution-environments.md)。项目扩展初始化和 provider 代码仍在宿主应用运行。
+
+长 `node -e` 脚本不会仅因长度而一律拒绝。能够可靠传参的一次性脚本可以直接运行；复杂引号、多段维护或需要重复运行时，可以选择明确文件或受支持的 stdin。写文件不是绕过授权的方式，写入和执行仍分别经过检查。
+
+### 图片和终端体验
+
+图片先进入输入草稿，用户提交后才成为模型请求的一部分。当前模型支持图片时，Super Pi 按 provider 能力发送；文本模型需要图像理解时，可以显式配置 Auxiliary Vision，让另一个有视觉能力的模型生成描述。辅助视觉需要自己的模型和认证，可能产生额外服务调用。
+
+常规模式适合保留终端历史，全屏模式提供更集中的工作区；两者共享会话、工具和权限边界。`--mode json` 用于非交互输出，`--mode rpc` 面向嵌入式 host；RPC 协议、client 和 server 包仍是实验接口，server 包本身不提供独立 coding-agent 服务。普通路径粘贴、内部文字选择和图片草稿是不同输入来源，项目没有承诺外部 Explorer 文件拖入终端的原生接收。
+
+全屏模式向上翻阅时显示 `↓ Back to bottom · Esc`，点击或按 Esc 回到底部并继续跟随新输出，输入草稿保留。退出默认恢复进入前的终端，只留下会话恢复提示，不再重印内部界面；如需保留完整会话，可在 `/settings` 显式选择 `fullscreenExitOutput: "transcript"`。
+
 ## 配置和数据位置
 
 | 位置 | 用途 |
@@ -235,10 +236,18 @@ npm.cmd test
 
 文档任务先做 Markdown、链接、命令和事实核对；生产代码再按影响范围选择测试。修改热路径前阅读性能契约，不要用一次计时或一个 heap 数字替代生命周期证据。
 
-## 上游关系、路线和许可证
+## 上游关系与版本
 
 Super Pi 最初派生自 [Pi](https://github.com/earendil-works/pi) v0.84.1，现在在本仓库独立维护，使用自己的 `@super-pi` 包作用域、`superpi` 命令和 `.sp` 数据根目录。它不是官方 Pi 发行版，也不继承上游发布通道；来源见 [NOTICE.md](NOTICE.md)。
 
-Pi v0.86.1 的差异评估已经记录，但不代表完成整体升级。v0.87.0 有界评估已经落地部分独立切片：EventStream 两栈 FIFO、provider-aware overflow、virtual modules 懒加载和 fuzzy search 推进。范围、验证结果和剩余边界见[有界优化证据记录](docs/performance/pi-087-bounded-optimization.md)。默认不启动后台付费 cache warming。
+Super Pi 核心包当前版本为 **1.0.0**，与 Pi 独立编号。上一轮 [Pi 1.1.0 对照与实施](docs/upstream-pi-1.1.0-task-plan.md)已完成其选定范围；这不代表完整同步上游。
 
-项目遵循 [MIT License](LICENSE)。贡献前请阅读 [AGENTS.md](AGENTS.md)、相关包说明和性能契约。
+截至 **2026-11-03**，上游最新稳定版为 [Pi v1.5.0](https://github.com/earendil-works/pi/releases/tag/v1.5.0)（2026-11-02 发布）。[最新差异评估](docs/upstream-pi-1.5.0-diff-assessment.md)区分已确认缺口、已有等效实现和待验证候选，并给出建议顺序。默认不启动后台付费 cache warming。
+
+## 许可证与合理使用
+
+当前修订版采用 **[GNU GPL v3.0 only](LICENSE)**（`GPL-3.0-only`）。分发受 GPL 覆盖的修改版本或二进制时，必须遵守相应的许可证、版权声明和对应源码提供义务；不得以剥夺接收者 GPL 权利或拒绝提供所需源码的方式闭源分发。
+
+项目反对违法使用、未经授权的访问、侵权和其他滥用。这是项目立场，不是额外的 GPL 用途限制。GPL 允许商业使用；私人修改、内部使用和仅提供网络服务并不自动要求向公众开源。使用 Super Pi 编写自己的项目，也不会仅因此改变该项目的许可证。
+
+改许可不追溯撤销旧版 MIT 授权；上游 MIT 代码及其版权声明继续保留。许可范围、分发说明、来源和报告入口见 [NOTICE.md](NOTICE.md)。贡献前请阅读 [AGENTS.md](AGENTS.md)、相关包说明和性能契约。
