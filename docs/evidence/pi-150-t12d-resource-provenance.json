@@ -1,0 +1,96 @@
+{
+  "task": "T12-D",
+  "base": "559163ebf42f6783223f7abcc6d8c4efc81a3540",
+  "node": "v26.13.0",
+  "platform": "win32",
+  "tests": {
+    "tests": 5568,
+    "pass": 5470,
+    "fail": 0,
+    "cancelled": 0,
+    "skipped": 98,
+    "successfulUnits": 416
+  },
+  "targeted": 78,
+  "sources": [
+    {
+      "path": "packages/coding-agent/src/core/resource-loader.ts",
+      "sha256": "6ebd16a296179dadbd24a838d0180669e49bfb16b2bf5c9d3c62de40dfb4273c"
+    },
+    {
+      "path": "packages/coding-agent/src/core/skills.ts",
+      "sha256": "bdffc4665b0f900f31be772cc09655ba1e84c5151b176b762b21706cfafc40f6"
+    },
+    {
+      "path": "packages/coding-agent/src/utils/paths.ts",
+      "sha256": "1900472bab16d17a04f2e53c313531630d60fcc9e1162a6c53311feeb543b0c0"
+    },
+    {
+      "path": "scripts/test.mjs",
+      "sha256": "6ca757bfd6642caaae8fd0ceb51033c4e0aafea814caccfd40fb51c45b0f5e1e"
+    },
+    {
+      "path": "tests/resource-source-identity.test.ts",
+      "sha256": "20b9fb99199f3d55480572feec48287a9b79a6fd2f02de633f1a9db9579c656c"
+    }
+  ],
+  "reproduction": {
+    "publicEntryFailures": 4,
+    "reviewerPublicEntryFailures": 2,
+    "featureTests": 20
+  },
+  "reviewer": {
+    "finding": 4461525995,
+    "pr": 197,
+    "behavior": "Explicit source entries retain lexical descendant provenance for outgoing links before testing alias-equivalent canonical ancestors. Extra-source insertion order and exact metadata priority are unchanged.",
+    "linkedDescendantNative": 8,
+    "existingMergeAndSkillsNative": 8,
+    "sourceResolverNative": 0
+  },
+  "counters": [
+    {
+      "resources": 1,
+      "skillsNative": 4,
+      "skillsRoots": 2,
+      "skillsClassification": 1,
+      "existingSkillDedup": 1,
+      "defaultSourceNative": 9,
+      "defaultRoots": 8,
+      "extendNative": 7,
+      "extendSourceRoot": 1
+    },
+    {
+      "resources": 100,
+      "skillsNative": 202,
+      "skillsRoots": 2,
+      "skillsClassification": 100,
+      "existingSkillDedup": 100,
+      "defaultSourceNative": 108,
+      "defaultRoots": 8,
+      "extendNative": 205,
+      "extendSourceRoot": 1
+    },
+    {
+      "resources": 1000,
+      "skillsNative": 2002,
+      "skillsRoots": 2,
+      "skillsClassification": 1000,
+      "existingSkillDedup": 1000,
+      "defaultSourceNative": 1008,
+      "defaultRoots": 8,
+      "extendNative": 2005,
+      "extendSourceRoot": 1
+    }
+  ],
+  "lifetime": {
+    "resolverFunctionsReleased": 5,
+    "normalAndFailureRootMapsReleased": 2,
+    "loaderAndExtensionsAlive": true,
+    "rootsArray": "Only captured by the collected resolver; at most eight strings."
+  },
+  "ownership": "Two closures plus one Map per explicit source-assignment pass; source Map capacity bounded by extra/metadata paths + eight default roots. No resource objects in the Map. No persistent cache or pool.",
+  "precedence": "Extra source insertion order, raw exact metadata then its search order, provided sourceInfo, default roots. Each declared source matches normalized lexical descendants or canonical aliases. Explicit temporary/package provenance remains authoritative over default user/project classification.",
+  "costs": "Counts are native API invocations, not OS syscalls. dirname creates ancestor strings. Existing resource reads, parse/metadata wrappers, scanning arrays and linear metadata lookup remain. This explicit-load change makes no general CPU or zero-allocation claim and touches no render/delta/event/progress lane.",
+  "boundaries": "Normal/error return releases pass identities; reload/extend creates a new owner and observes junction retargets. Missing skill paths diagnose, missing default files still throw ENOENT; virtual sources perform no filesystem identity lookup.",
+  "coverage": "Windows case/namespace/junction and real case-sensitive objects; POSIX symlink counterpart in Node26 CI. Prefix-like siblings remain distinct; display paths preserved. Remote UNC not exercised."
+}

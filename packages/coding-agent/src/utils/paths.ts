@@ -1,6 +1,6 @@
 import { realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve as nodeResolvePath, relative, sep } from "node:path";
+import { dirname, isAbsolute, join, resolve as nodeResolvePath, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnProcessSync } from "./child-process.ts";
 
@@ -30,6 +30,17 @@ export function canonicalizePath(path: string): string {
 		return realpathSync.native(path);
 	} catch {
 		return path;
+	}
+}
+
+/** Compare normalized absolute path ancestors without folding case or doing I/O. */
+export function isPathWithin(path: string, root: string): boolean {
+	let current = path;
+	while (true) {
+		if (current === root) return true;
+		const parent = dirname(current);
+		if (parent === current) return false;
+		current = parent;
 	}
 }
 

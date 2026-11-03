@@ -7,7 +7,7 @@ import type { ResourceDiagnostic } from "./diagnostics.ts";
 
 export type { ResourceCollision, ResourceDiagnostic } from "./diagnostics.ts";
 
-import { canonicalizePath, isLocalPath, resolvePath } from "../utils/paths.ts";
+import { canonicalizePath, isLocalPath, isPathWithin, resolvePath } from "../utils/paths.ts";
 import { stripBom } from "../utils/text.ts";
 import { createEventBus, type EventBus } from "./event-bus.ts";
 import {
@@ -730,12 +730,10 @@ export class DefaultResourceLoader implements ResourceLoader {
 			});
 		}
 		const resolvedSkills = this.skillsOverride ? this.skillsOverride(skillsResult) : skillsResult;
+		const resolveSource = this.createSourceInfoResolver(this.extensionSkillSourceInfos, metadataByPath);
 		this.skills = resolvedSkills.skills.map((skill) => ({
 			...skill,
-			sourceInfo:
-				this.findSourceInfoForPath(skill.filePath, this.extensionSkillSourceInfos, metadataByPath) ??
-				skill.sourceInfo ??
-				this.getDefaultSourceInfoForPath(skill.filePath),
+			sourceInfo: resolveSource(skill.filePath, skill.sourceInfo),
 		}));
 		this.skillDiagnostics = resolvedSkills.diagnostics;
 	}
@@ -754,12 +752,10 @@ export class DefaultResourceLoader implements ResourceLoader {
 			promptsResult = this.dedupePrompts(allPrompts);
 		}
 		const resolvedPrompts = this.promptsOverride ? this.promptsOverride(promptsResult) : promptsResult;
+		const resolveSource = this.createSourceInfoResolver(this.extensionPromptSourceInfos, metadataByPath);
 		this.prompts = resolvedPrompts.prompts.map((prompt) => ({
 			...prompt,
-			sourceInfo:
-				this.findSourceInfoForPath(prompt.filePath, this.extensionPromptSourceInfos, metadataByPath) ??
-				prompt.sourceInfo ??
-				this.getDefaultSourceInfoForPath(prompt.filePath),
+			sourceInfo: resolveSource(prompt.filePath, prompt.sourceInfo),
 		}));
 		this.promptDiagnostics = resolvedPrompts.diagnostics;
 	}
@@ -774,12 +770,11 @@ export class DefaultResourceLoader implements ResourceLoader {
 			themesResult = { themes: deduped.themes, diagnostics: [...loaded.diagnostics, ...deduped.diagnostics] };
 		}
 		const resolvedThemes = this.themesOverride ? this.themesOverride(themesResult) : themesResult;
+		const resolveSource = this.createSourceInfoResolver(this.extensionThemeSourceInfos, metadataByPath);
 		this.themes = resolvedThemes.themes.map((theme) => {
 			const sourcePath = theme.sourcePath;
 			theme.sourceInfo = sourcePath
-				? (this.findSourceInfoForPath(sourcePath, this.extensionThemeSourceInfos, metadataByPath) ??
-					theme.sourceInfo ??
-					this.getDefaultSourceInfoForPath(sourcePath))
+				? resolveSource(sourcePath, theme.sourceInfo)
 				: theme.sourceInfo;
 			return theme;
 		});
@@ -787,10 +782,9 @@ export class DefaultResourceLoader implements ResourceLoader {
 	}
 
 	private applyExtensionSourceInfo(extensions: Extension[], metadataByPath: Map<string, PathMetadata>): void {
+		const resolveSource = this.createSourceInfoResolver(undefined, metadataByPath);
 		for (const extension of extensions) {
-			extension.sourceInfo =
-				this.findSourceInfoForPath(extension.path, undefined, metadataByPath) ??
-				this.getDefaultSourceInfoForPath(extension.path);
+			extension.sourceInfo = resolveSource(extension.path);
 			for (const command of extension.commands.values()) {
 				command.sourceInfo = extension.sourceInfo;
 			}
@@ -800,94 +794,91 @@ export class DefaultResourceLoader implements ResourceLoader {
 		}
 	}
 
-	private findSourceInfoForPath(
-		resourcePath: string,
+	private createSourceInfoResolver(
 		extraSourceInfos?: Map<string, SourceInfo>,
 		metadataByPath?: Map<string, PathMetadata>,
-	): SourceInfo | undefined {
-		if (!resourcePath) {
-			return undefined;
-		}
-
-		if (resourcePath.startsWith("<")) {
-			return this.getDefaultSourceInfoForPath(resourcePath);
-		}
-
-		const normalizedResourcePath = resolve(resourcePath);
-		if (extraSourceInfos) {
-			for (const [sourcePath, sourceInfo] of extraSourceInfos.entries()) {
-				const normalizedSourcePath = resolve(sourcePath);
-				if (
-					normalizedResourcePath === normalizedSourcePath ||
-					normalizedResourcePath.startsWith(`${normalizedSourcePath}${sep}`)
-				) {
-					return { ...sourceInfo, path: resourcePath };
+	): (resourcePath: string, provided?: SourceInfo) => SourceInfo {
+		// This synchronous loading pass owns these identities. A later reload or
+		// extendResources pass must resolve junctions again.
+		const sourcePaths = new Map<string, string>();
+		let defaultRoots: string[] | undefined;
+		const canonicalSource = (path: string): string => {
+			let actual = sourcePaths.get(path);
+			if (actual === undefined) {
+				actual = canonicalizePath(resolve(path));
+				sourcePaths.set(path, actual);
+			}
+			return actual;
+		};
+		return (resourcePath, provided) => {
+			if (resourcePath.startsWith("<") && resourcePath.endsWith(">")) {
+				return {
+					path: resourcePath,
+					source: resourcePath.slice(1, -1).split(":")[0] || "temporary",
+					scope: "temporary",
+					origin: "top-level",
+				};
+			}
+			const normalizedPath = resolve(resourcePath);
+			let actualPath: string | undefined;
+			if (resourcePath) {
+				if (extraSourceInfos) {
+					for (const [sourcePath, sourceInfo] of extraSourceInfos) {
+						// Declared roots also own resources discovered through outgoing links.
+						if (isPathWithin(normalizedPath, resolve(sourcePath))) {
+							return { ...sourceInfo, path: resourcePath };
+						}
+						actualPath ??= canonicalizePath(normalizedPath);
+						if (isPathWithin(actualPath, canonicalSource(sourcePath))) {
+							return { ...sourceInfo, path: resourcePath };
+						}
+					}
+				}
+				if (metadataByPath) {
+					const exact = metadataByPath.get(normalizedPath) ?? metadataByPath.get(resourcePath);
+					if (exact) return createSourceInfo(resourcePath, exact);
+					for (const [sourcePath, metadata] of metadataByPath) {
+						if (isPathWithin(normalizedPath, resolve(sourcePath))) {
+							return createSourceInfo(resourcePath, metadata);
+						}
+						actualPath ??= canonicalizePath(normalizedPath);
+						if (isPathWithin(actualPath, canonicalSource(sourcePath))) {
+							return createSourceInfo(resourcePath, metadata);
+						}
+					}
 				}
 			}
-		}
-
-		if (metadataByPath) {
-			const exact = metadataByPath.get(normalizedResourcePath) ?? metadataByPath.get(resourcePath);
-			if (exact) {
-				return createSourceInfo(resourcePath, exact);
-			}
-
-			for (const [sourcePath, metadata] of metadataByPath.entries()) {
-				const normalizedSourcePath = resolve(sourcePath);
-				if (
-					normalizedResourcePath === normalizedSourcePath ||
-					normalizedResourcePath.startsWith(`${normalizedSourcePath}${sep}`)
-				) {
-					return createSourceInfo(resourcePath, metadata);
+			if (provided) return provided;
+			defaultRoots ??= [
+				join(this.agentDir, "skills"),
+				join(this.agentDir, "prompts"),
+				join(this.agentDir, "themes"),
+				join(this.agentDir, "extensions"),
+				join(this.cwd, CONFIG_DIR_NAME, "skills"),
+				join(this.cwd, CONFIG_DIR_NAME, "prompts"),
+				join(this.cwd, CONFIG_DIR_NAME, "themes"),
+				join(this.cwd, CONFIG_DIR_NAME, "extensions"),
+			];
+			actualPath ??= canonicalizePath(normalizedPath);
+			for (let index = 0; index < defaultRoots.length; index++) {
+				const root = defaultRoots[index];
+				if (isPathWithin(actualPath, canonicalSource(root))) {
+					return {
+						path: resourcePath,
+						source: "local",
+						scope: index < 4 ? "user" : "project",
+						origin: "top-level",
+						baseDir: root,
+					};
 				}
 			}
-		}
-
-		return undefined;
-	}
-
-	private getDefaultSourceInfoForPath(filePath: string): SourceInfo {
-		if (filePath.startsWith("<") && filePath.endsWith(">")) {
 			return {
-				path: filePath,
-				source: filePath.slice(1, -1).split(":")[0] || "temporary",
+				path: resourcePath,
+				source: "local",
 				scope: "temporary",
 				origin: "top-level",
+				baseDir: statSync(normalizedPath).isDirectory() ? normalizedPath : resolve(normalizedPath, ".."),
 			};
-		}
-
-		const normalizedPath = resolve(filePath);
-		const agentRoots = [
-			join(this.agentDir, "skills"),
-			join(this.agentDir, "prompts"),
-			join(this.agentDir, "themes"),
-			join(this.agentDir, "extensions"),
-		];
-		const projectRoots = [
-			join(this.cwd, CONFIG_DIR_NAME, "skills"),
-			join(this.cwd, CONFIG_DIR_NAME, "prompts"),
-			join(this.cwd, CONFIG_DIR_NAME, "themes"),
-			join(this.cwd, CONFIG_DIR_NAME, "extensions"),
-		];
-
-		for (const root of agentRoots) {
-			if (this.isUnderPath(normalizedPath, root)) {
-				return { path: filePath, source: "local", scope: "user", origin: "top-level", baseDir: root };
-			}
-		}
-
-		for (const root of projectRoots) {
-			if (this.isUnderPath(normalizedPath, root)) {
-				return { path: filePath, source: "local", scope: "project", origin: "top-level", baseDir: root };
-			}
-		}
-
-		return {
-			path: filePath,
-			source: "local",
-			scope: "temporary",
-			origin: "top-level",
-			baseDir: statSync(normalizedPath).isDirectory() ? normalizedPath : resolve(normalizedPath, ".."),
 		};
 	}
 
@@ -1103,15 +1094,6 @@ export class DefaultResourceLoader implements ResourceLoader {
 		}
 
 		return undefined;
-	}
-
-	private isUnderPath(target: string, root: string): boolean {
-		const normalizedRoot = resolve(root);
-		if (target === normalizedRoot) {
-			return true;
-		}
-		const prefix = normalizedRoot.endsWith(sep) ? normalizedRoot : `${normalizedRoot}${sep}`;
-		return target.startsWith(prefix);
 	}
 
 	private detectExtensionConflicts(extensions: Extension[]): Array<{ path: string; message: string }> {

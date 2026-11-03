@@ -1,0 +1,51 @@
+# T12-D：实际路径下的资源来源归属
+
+状态：先行方案已落盘，开始独立复现。T12-C #196最终head f58aead80344bd298bd8636ae3a3786617ec6dc4经completed/no findings和六CI通过，合并为559163ebf42f6783223f7abcc6d8c4efc81a3540；两端任务分支已删除，main已同步。本批分支codex/t12d-resource-provenance，只使用Node26。
+
+## 已观察入口与边界
+
+loadSkills在includeDefaults=false时，以resolve+startsWith判断显式skillPaths是否位于user/project skills目录；它不消费T12-A的真实canonical名称，大小写或junction别名可能被标成path/temporary。Skill.sourceInfo会传到自动补全、RPC和prefix manifest等消费者，必须保持真实来源信息，但不能用来源标签取代已有项目trust/工具授权。
+
+DefaultResourceLoader的getDefaultSourceInfoForPath也按8个默认资源根的词法prefix判断user/project，否则temporary。它用于资源装载后的来源补全，且明确metadata/资源自身sourceInfo优先。必须通过真实公开reload/extend/override入口复现，而不是只直接调私有函数来证明用户可见问题。findSourceInfoForPath的extra/package metadata还有独立prefix匹配，先测试其生产输入是否实际发生别名失配；未复现的比较不为了统一风格重写。
+
+## 最小设计候选
+
+只针对独立失败入口，在显式资源装载边界解析实际路径及根，再以逐级dirname的完整祖先相等判断包含关系。不得全局toLowerCase，不把相似prefix视为父目录；Windows大小写敏感Case/case对象分开。缺失路径保留现有报错/跳过和词法规则，不能猜授权或加载替代路径。显示filePath/baseDir保留已有输入形式，不迁移配置。
+
+loadSkills的一次加载预先得到user/project根的canonical身份，每个待分类的显式路径解析一次。既有skill同文件去重仍是独立边界并计入I/O，不能把它当新增计数漏掉。includeDefaults=true的默认来源规则保留；不要未经验证改变目录中每个嵌套link的加载语义。
+
+若resource-loader默认来源补全确实复现，根身份只能每个同步装载pass求一次，不能为N个资源解析8N次。优先用方法内短生命周期resolver，首次确需默认来源时才构造8根身份；已有metadata全部命中时不增加根I/O。resolver及根数组只属于一次update/apply pass，reload/extendResources创建新owner，不能跨装载缓存junction目标。虚拟<...>来源保留零filesystem规则；声明metadata优先级保持原样。若这个范围不能保持清晰，先进一步拆批，不引入通用索引框架。
+
+## 复现与验收
+
+独立复现补充：初始3项公开入口失败，Skills user/project和reload后factory override均把真实目录别名标为temporary。第4项通过公开extendResources+skillsOverride复现：显式temporary/package元数据因别名失配而被原Skill的user来源替代。因此resource-loader必须同时修复明确metadata匹配和默认来源补全，不能仅给默认根加canonical。
+
+实施前收敛为一次update/apply pass拥有的来源resolver：保留extra来源的原插入顺序，再做metadata原始exact匹配及原顺序查找，再使用资源自身sourceInfo，最后默认根；不提升默认root优先级。查询实际路径每个资源最多一次，源路径/默认根通过pass-owned Map每种原始source key最多解析一次（容量≤extra+metadata key数+8根）。不预建永久index，不改变明确来源决定的优先级。默认8根字符串数组只在确需默认补全时建立。resolver、根Map和数组随同步pass结束释放；reload和extend创建新owner，以反映junction变化。新增两个闭包（root解析和资源解析）仅在该显式pass入口创建，未加入per-frame/event代码。已有线性source搜索保留，不借本任务重排source优先级。
+
+实际user/project/temporary目录，Windows大小写/namespace和跨平台junction/symlink；相似prefix不同目录、Windows真实大小写敏感对象；原filePath显示不变；已有明确metadata（含temporary）不被默认根归属覆盖。公开SDK override/factory入口仅用真实合法类型和实际磁盘文件，完整reload只用隔离agentDir和in-memory设置，释放runtime owners。禁止读取用户真实配置。
+
+1/100/1000资源计数根解析不随资源数量增长；无渲染/增量路径变化。若新增resolver，保留loader及产物，用WeakRef证明pass resolver释放，故而其根数组不被长期捕获；重复reload/extend后junction变更读取新身份。纯祖先比较helper不得内含realpath/stat或闭包分配。已有资源扫描/解析/metadata包装成本单独说明，不宣称全加载零分配；无对象池。如果触及热路径，先补契约要求的AST/profile再实现。
+
+相关资源/Skills/trust/source invariants、check/build:offline/Node26全套；独立PR、主动@codex review，有问题修复推送后再次请求。最终head完成审核且六CI全过再合并清理。此后T01–T12结束，F01–F06仍未获采纳，不自动实施。
+
+## 实施与已观察证据
+
+### #197 reviewer修订方案（实施前）
+
+reviewer指出显式注册目录中的linked descendant可指向目录之外；Skills扫描仍从注册路径产出资源，仅比较整条路径的canonical身份会丢失声明的package/temporary来源。extraSourceInfos与metadataByPath两条查找链均须保持这个既有行为。先通过公开extendResources以及reload的CLI目录入口复现，覆盖外部目标、原显示路径与来源优先级；再在每条来源的原查找顺序内先比较已归一化的词法祖先，未命中才比较实际身份。此处词法命中是声明目录来源规则，并非错误兜底或trust授权。
+
+复用纯dirname祖先比较，命名改为isPathWithin以明确它也接受normalized绝对路径；不新增容器/闭包/异常分支。仅显式来源两条链添加词法匹配，不扩大默认根分类范围。词法命中应免去来源resolver的native查询，别名路径仍维持每资源最多一次、每根每pass最多一次；原1/100/1000计数、生命周期和AST约束继续验证。新增回归先红后绿，然后相关检查、check/build及Node26全套，修复推送后独立@codex review，等待新head审核及六CI。
+
+4项公开入口初始失败均转绿。`isPathWithin`对已归一化的绝对路径逐级dirname比较，AST限制它没有I/O、回调、容器或await；没有全局大小写折叠。loadSkills只在includeDefaults=false分类时求两根身份，保留默认装载与原显示路径。resource-loader把原查找/默认补全过程合为pass-owned resolver，保留extra插入顺序、metadata原始exact及查找顺序、资源已有sourceInfo、默认来源的优先级；明确temporary/package元数据不会因别名而丢失。
+
+1/100/1000真实文件，Skills的native API次数为2N+2：2根、N次分类和原有N次同文件去重。默认来源补全为N+8：每个资源一次、8根各一次。公开extendResources完整链为2N+5：文件去重N、输出别名身份N、merge/Skills两根/Skills入口共4及来源root一次；source root解析不随N增长。已有线性metadata搜索保留，计数不代表OS syscall或全面CPU改善。
+
+真实Windowscase/namespace/junction和大小写敏感对象已覆盖，POSIX symlink在同一Node26 CI验证；无远程UNC服务不宣称实测。相似prefix不视为父目录，缺失Skill给既有diagnostic，缺失默认来源文件仍抛ENOENT；虚拟来源不做filesystem身份查询。重复reload后junction换目标按新实际目录分类。原任意worktree/context prefix用途不在本次已复现范围，未批量重写。
+
+新增Map容量≤当前extra/metadata路径数+8，不持有资源对象；defaultRoots最多8个字符串。5个pass resolver与正常/失败两张root Map在受控GC后回收，loader和其返回扩展仍活着；根数组只被已回收resolver闭包拥有。没有对象池或持久cache。新增两个闭包和Map是`createSourceInfoResolver`显式加载入口开销，dirname会产生路径段字符串；原资源读取、解析、metadata包装、扫描数组仍保留。不进入provider、event、进度、布局或frame路径，不宣称资源加载零分配。
+
+74项资源/路径/包/trust/选择器及source invariants通过，check/build:offline通过，另补Windowsnamespace直接入口验证通过。最终Node26全套416个执行单元成功，5566项测试：5468通过、98跳过、0失败/取消。最终PR审核、CI及合并以对应PR记录为准；该PR合并后本轮T01–T12全部交付。结构化证据见`docs/evidence/pi-150-t12d-resource-provenance.json`；原始红绿、路径计数和生命周期日志位于`.git/pi150-t12d`。
+
+#197意见4461525995已按上述先行修订方案修复。两个真实公开入口先红后绿：extendResources里的声明目录优先于后续更具体条目，reload里的CLI目录来源不再丢失；它们的linked descendant均指向注册根之外。显式来源在每个原顺序条目内先匹配词法祖先，再匹配canonical身份；没有新增兜底、容器或闭包。linked descendant用例的8次native调用全部来自原merge/Skills扫描，source resolver为0；原别名规模计数与5个resolver/2张Map回收仍通过。
+
+修订后Node v26.13.0验证：78项相关测试通过，check及build:offline通过；全套416个执行单元成功，5568项测试、5470通过、98跳过、0失败/取消。专项共20项，两个新增回归包含在全套中。本轮相关测试记录的61个临时目录均已释放；T12-A此前10个目录的清单删除即使获用户明确授权仍被执行工具自动策略拒绝，不计入已清理。修订推送后独立@codex review，并继续等待新head的completed/no findings与六CI通过。
