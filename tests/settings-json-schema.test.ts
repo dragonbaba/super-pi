@@ -112,6 +112,21 @@ test("settings schemas diagnose misspelled fields and malformed local settings",
 	}
 });
 
+test("branch summary output schema and project precedence preserve an explicit optional allowance", () => {
+	for (const maxTokens of [1, 2048, 8192, Number.MAX_SAFE_INTEGER]) {
+		assert.equal(validateGlobal({ branchSummary: { maxTokens } }), true);
+		assert.equal(validateProject({ branchSummary: { maxTokens } }), true);
+	}
+	for (const maxTokens of [0, -1, 1.5, Infinity, Number.MAX_SAFE_INTEGER + 1, null, "4096"]) {
+		assert.equal(validateGlobal({ branchSummary: { maxTokens } }), false);
+		assert.equal(validateProject({ branchSummary: { maxTokens } }), false);
+	}
+	assert.equal(SettingsManager.inMemory().getBranchSummarySettings().maxTokens, undefined);
+	const settings = SettingsManager.fromStorage(storage({ branchSummary: { reserveTokens: 32768, maxTokens: 4096 } }, { branchSummary: { maxTokens: 8192 } }));
+	assert.deepEqual(settings.getBranchSummarySettings(), { reserveTokens: 32768, maxTokens: 8192, skipPrompt: false });
+	assert.equal(globalSchema.properties.branchSummary.properties.maxTokens.default, 2048);
+});
+
 test("project schema warns on global-only settings without changing runtime trust and precedence", () => {
 	const globalOnly = {
 		powershellPath: "C:/trusted/pwsh.exe",

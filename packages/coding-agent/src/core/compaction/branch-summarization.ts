@@ -85,6 +85,8 @@ export interface GenerateBranchSummaryOptions {
 	replaceInstructions?: boolean;
 	/** Tokens reserved for prompt + LLM response (default 16384) */
 	reserveTokens?: number;
+	/** Provider output allowance (default 2048), capped by a known model limit. */
+	maxTokens?: number;
 	/** Optional session stream function. Used to preserve SDK request behavior without mutating agent state. */
 	streamFn?: StreamFn;
 	/** Retry policy for transient summarization errors. Reuses coding-agent's `settings.retry`. */
@@ -308,10 +310,15 @@ export async function generateBranchSummary(
 		customInstructions,
 		replaceInstructions,
 		reserveTokens = 16384,
+		maxTokens = 2048,
 		streamFn,
 		retry,
 		callbacks,
 	} = options;
+	if (!Number.isSafeInteger(maxTokens) || maxTokens <= 0) {
+		throw new RangeError("Branch summary maxTokens must be a positive safe integer");
+	}
+	const outputTokens = model.maxTokens > 0 ? Math.min(maxTokens, model.maxTokens) : maxTokens;
 
 	// Token budget = context window minus reserved space for prompt + response
 	const contextWindow = model.contextWindow || 128000;
@@ -352,13 +359,13 @@ export async function generateBranchSummary(
 	// without running through agent state/events. Retried via completeSummarization
 	// so transient stream drops reuse the configured retry policy.
 	const context = { systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages };
-	const requestOptions: SimpleStreamOptions = { apiKey, headers, env, signal, maxTokens: 2048 };
+	const requestOptions: SimpleStreamOptions = { apiKey, headers, env, signal, maxTokens: outputTokens };
 	if (model.reasoning && thinkingLevel && thinkingLevel !== "off") {
 		requestOptions.reasoning = thinkingLevel;
 		const thinkingTokens = requestThinkingTokens(model, thinkingLevel);
 		if (thinkingTokens > 0) {
-			const outputTokens = resolveRequestOutputTokens(model, requestOptions.maxTokens!);
-			const availableThinking = outputTokens - minimumRequestOutputTokens(outputTokens);
+			const ceiling = resolveRequestOutputTokens(model, outputTokens);
+			const availableThinking = ceiling - minimumRequestOutputTokens(ceiling);
 			const effort = clampThinkingLevel(model, thinkingLevel);
 			// Keep a usable answer inside the shared Google output ceiling.
 			if (availableThinking > 0 && thinkingTokens > availableThinking && effort !== "off") {
@@ -381,6 +388,7 @@ export async function generateBranchSummary(
 	}
 
 	let summary = contentText(response.content);
+	if (!summary.trim()) return { error: "Branch summarization returned no summary text" };
 
 	// Prepend preamble to provide context about the branch summary
 	summary = BRANCH_SUMMARY_PREAMBLE + summary;
@@ -390,7 +398,7 @@ export async function generateBranchSummary(
 	summary += formatFileOperations(readFiles, modifiedFiles);
 
 	return {
-		summary: summary || "No summary generated",
+		summary,
 		usage: response.usage,
 		readFiles,
 		modifiedFiles,

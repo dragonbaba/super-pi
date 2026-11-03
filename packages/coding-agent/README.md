@@ -19,6 +19,10 @@ extensions and legacy settings. Use the project schema for project files to
 identify global-only options. See [settings schema setup](../../docs/repairs/settings-json-schema.md)
 for online/offline examples and the unchanged runtime/trust boundaries.
 
+Branch summaries support an optional `branchSummary.maxTokens` output allowance
+(default 2048). See [branch summary settings](../../docs/branch-summaries.md) for
+provider thinking semantics, context reserves, costs, and SDK usage.
+
 Global `~/.sp/agent/config/keybindings.json` has a separate
 `schemas/keybindings.schema.json` for built-in action names, descriptions and
 binding value types, including legacy names and empty arrays for unbinding.

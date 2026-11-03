@@ -5649,6 +5649,7 @@ export class AgentSession {
 					customInstructions,
 					replaceInstructions,
 					reserveTokens: branchSummarySettings.reserveTokens,
+					maxTokens: branchSummarySettings.maxTokens,
 					streamFn: this._createSummarizationStream?.(auth, assertCurrent) ?? this.agent.streamFunction,
 					retry: this.settingsManager.getRetrySettings(),
 					callbacks: this._summarizationRetryCallbacks({ source: "branchSummary" }),

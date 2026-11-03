@@ -10,14 +10,14 @@ import { streamSimple as streamChat } from "../../packages/ai/src/api/openai-com
 import { streamSimple as streamGoogle } from "../../packages/ai/src/api/google-generative-ai.ts";
 import { streamSimple as streamVertex } from "../../packages/ai/src/api/google-vertex.ts";
 import { conservativeModelCapabilities } from "../../packages/ai/src/model-capabilities.ts";
-import type { Model } from "../../packages/ai/src/types.ts";
+import type { AssistantMessage, Model } from "../../packages/ai/src/types.ts";
 
 const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
-function reply(reason: "stop" | "error" | "aborted" = "stop", errorMessage?: string) {
+function reply(reason: "stop" | "length" | "error" | "aborted" = "stop", errorMessage?: string, content?: AssistantMessage["content"]) {
 	const stream = createAssistantMessageEventStream();
 	const message = { role: "assistant" as const, api: ALPHA_MODEL.api, provider: ALPHA_MODEL.provider, model: ALPHA_MODEL.id,
-		content: [{ type: "text" as const, text: "Offline branch summary" }], timestamp: 1, usage, stopReason: reason, errorMessage };
-	if (reason === "stop") stream.push({ type: "done", reason, message });
+		content: content ?? [{ type: "text" as const, text: "Offline branch summary" }], timestamp: 1, usage, stopReason: reason, errorMessage };
+	if (reason === "stop" || reason === "length") stream.push({ type: "done", reason, message });
 	else stream.push({ type: "error", reason, error: message });
 	return stream;
 }
@@ -71,26 +71,27 @@ for (const [enabled, level, expected] of [[true, "high", "low"], [true, "off", "
 }
 
 for (const api of ["google-generative-ai", "google-vertex"] as const) {
-	for (const [level, budget, modelMax, expected] of [
-		["medium", 8192, 32768, 1024], ["high", 8192, 32768, 1024],
-		["medium", 8192, 1536, 512], ["medium", 512, 32768, 512], ["medium", -1, 32768, -1],
+	for (const [level, budget, modelMax, maxTokens, expected] of [
+		["medium", 8192, 32768, undefined, 1024], ["high", 8192, 32768, undefined, 1024],
+		["medium", 8192, 1536, undefined, 512], ["medium", 512, 32768, undefined, 512], ["medium", -1, 32768, undefined, -1],
+		["medium", 8192, 32768, 4096, 3072], ["medium", 8192, 32768, 12288, 8192],
 	] as const) test(`branch summary ${api} fits ${level}/${budget} thinking in model cap ${modelMax}`, async () => {
 		let payload: any, budgets: unknown, calls = 0;
 		const model = { ...ALPHA_MODEL, api, id: "gemini-2.5-pro", reasoning: true, maxTokens: modelMax,
 			thinkingBudgetMap: { medium: budget }, capabilities: { ...conservativeModelCapabilities(),
 				reasoning: { mode: "budget" as const, levels: ["off", "medium"] as const } } };
-		const result = await generateBranchSummary(entries(), { model, thinkingLevel: level, apiKey: "offline", signal: new AbortController().signal,
+		const result = await generateBranchSummary(entries(), { model, maxTokens, thinkingLevel: level, apiKey: "offline", signal: new AbortController().signal,
 			streamFn: (requestModel, context, options) => {
-				calls++; assert.equal(options?.reasoning, level); assert.equal(options?.maxTokens, 2048);
+				calls++; assert.equal(options?.reasoning, level); assert.equal(options?.maxTokens, Math.min(maxTokens ?? 2048, modelMax));
 				budgets = options?.thinkingBudgets;
 				const sender = api === "google-generative-ai" ? streamGoogle : streamVertex;
 				return sender(requestModel as never, context, { ...options, project: "fixture", location: "us-central1",
 					onPayload(value: unknown) { payload = value; throw Error("captured-summary-payload"); } } as never);
 			}, retry: { enabled: false, maxRetries: 0, baseDelayMs: 1 } });
 		assert.ok(payload, result.error); assert.match(result.error!, /captured-summary-payload/); assert.equal(calls, 1);
-		assert.deepEqual(budgets, budget > 1024 ? { medium: expected } : undefined);
+		assert.deepEqual(budgets, budget > expected ? { medium: expected } : undefined);
 		assert.equal(payload.config.thinkingConfig.thinkingBudget, expected);
-		assert.equal(payload.config.maxOutputTokens, Math.min(2048, modelMax));
+		assert.equal(payload.config.maxOutputTokens, Math.min(maxTokens ?? 2048, modelMax));
 	});
 	test(`branch summary ${api} keeps the explicit budget failure when no thinking space remains`, async () => {
 		let calls = 0, sent = false;
@@ -144,5 +145,60 @@ test("actual tree summaries inherit the current session thinking level after cha
 			assert.equal(result.cancelled, false);
 		}
 		assert.deepEqual(seen, [{ reasoning: "low", maxTokens: 2048 }, { reasoning: "high", maxTokens: 2048 }]);
+	} finally { await f.release(); }
+});
+
+for (const [maxTokens, modelMax, expected] of [[undefined, 16384, 2048], [8192, 16384, 8192], [8192, 4096, 4096], [undefined, 1024, 1024], [8192, 0, 8192]] as const) {
+	test(`branch summary output setting ${maxTokens}, model ${modelMax}`, async () => {
+		let calls = 0;
+		const result = await generateBranchSummary(entries(), { model: { ...ALPHA_MODEL, maxTokens: modelMax }, maxTokens,
+			signal: new AbortController().signal, streamFn: (_model, _context, options) => {
+				calls++; assert.equal(options?.maxTokens, expected); return reply();
+			} });
+		assert.equal(calls, 1); assert.equal(result.error, undefined); assert.equal(result.usage, usage);
+	});
+}
+
+test("invalid branch output settings fail before traversing history or starting a request", async () => {
+	let reads = 0, calls = 0;
+	const history = new Proxy(entries(), { get() { reads++; throw Error("history accessed"); } });
+	for (const maxTokens of [0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, null, "4096"]) {
+		await assert.rejects(generateBranchSummary(history, { model: ALPHA_MODEL, maxTokens: maxTokens as number,
+			signal: new AbortController().signal, streamFn: () => { calls++; return reply(); } }), /maxTokens must be a positive safe integer/);
+	}
+	assert.equal(reads, 0); assert.equal(calls, 0);
+});
+
+for (const content of [[], [{ type: "text", text: " \n\t" }], [{ type: "thinking", thinking: "private reasoning" }]] as AssistantMessage["content"][]) {
+	test(`branch summary rejects empty visible text: ${content[0]?.type ?? "empty"}`, async () => {
+		let calls = 0;
+		const result = await generateBranchSummary(entries(), { model: ALPHA_MODEL, signal: new AbortController().signal,
+			streamFn: () => { calls++; return reply("stop", undefined, content); } });
+		assert.match(result.error!, /no summary text/); assert.equal(result.summary, undefined); assert.equal(calls, 1);
+	});
+}
+
+test("branch summary length failure does not trigger another paid request", async () => {
+	let calls = 0;
+	const result = await generateBranchSummary(entries(), { model: ALPHA_MODEL, signal: new AbortController().signal,
+		streamFn: () => { calls++; return reply("length"); }, retry: { enabled: true, maxRetries: 3, baseDelayMs: 0 } });
+	assert.match(result.error!, /incomplete/); assert.equal(calls, 1); assert.equal(result.summary, undefined);
+});
+
+test("tree summaries use configured output and never persist empty checkpoints", async () => {
+	let calls = 0, empty = false;
+	const f = await alphaHeadless(alphaModelRuntime((_model, _context, options) => {
+		calls++; assert.equal(options?.maxTokens, 3072); return reply("stop", undefined, empty ? [] : undefined);
+	}), [{ role: "user", content: "root", timestamp: 0 }, { role: "user", content: "branch", timestamp: 1 }]);
+	try {
+		f.session.settingsManager.applyOverrides({ branchSummary: { maxTokens: 3072 } });
+		const manager = f.session.sessionManager, target = manager.getEntries()[0].id;
+		assert.equal((await f.session.navigateTree(target, { summarize: true })).cancelled, false);
+		const summaries = manager.getEntries().filter(entry => entry.type === "branch_summary").length;
+		manager.appendMessage({ role: "user", content: "second branch", timestamp: 2 }); empty = true;
+		const leaf = manager.getLeafId();
+		await assert.rejects(f.session.navigateTree(target, { summarize: true }), /no summary text/);
+		assert.equal(manager.getEntries().filter(entry => entry.type === "branch_summary").length, summaries);
+		assert.equal(manager.getLeafId(), leaf); assert.equal(calls, 2); assert.equal(f.session.isCompacting, false);
 	} finally { await f.release(); }
 });

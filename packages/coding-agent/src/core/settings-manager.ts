@@ -21,6 +21,7 @@ export interface CompactionSettings {
 
 export interface BranchSummarySettings {
 	reserveTokens?: number; // default: 16384 (tokens reserved for prompt + LLM response)
+	maxTokens?: number; // default: 2048 (provider summary output allowance)
 	skipPrompt?: boolean; // default: false - when true, skips "Summarize branch?" prompt and defaults to no summary
 }
 
@@ -994,9 +995,10 @@ export class SettingsManager {
 		};
 	}
 
-	getBranchSummarySettings(): { reserveTokens: number; skipPrompt: boolean } {
+	getBranchSummarySettings(): { reserveTokens: number; maxTokens?: number; skipPrompt: boolean } {
 		return {
 			reserveTokens: this.settings.branchSummary?.reserveTokens ?? 16384,
+			maxTokens: this.settings.branchSummary?.maxTokens,
 			skipPrompt: this.settings.branchSummary?.skipPrompt ?? false,
 		};
 	}
