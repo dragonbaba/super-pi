@@ -1,6 +1,6 @@
 # T06-B：Responses 家族增量 JSON 工具参数
 
-日期：2026-11-04。状态：**先行设计已落实，Responses 已实现，验收中**。基线为 T06-A #183 合并提交 `23fd4b6e15e25886dc22e69e703deb278de4ae7c`；最终 head `1044154f9e3b585dc00da02e87a6283cd300905f` 已获 Codex completed/no findings，CI 6/6 成功。对应本地和远端分支已删除，main 已同步。当前分支 `codex/t06b-responses-incremental-tool-args`，仅使用 Node v26.13.0。
+日期：2026-11-04。状态：**#184 已合并交付**，合并提交 `35dc8d10b6e350ecf01fe24007adbf7e1473496b`，最终 head `2458a88685c4d8202d61dc266869bb3a349cba21` 已获 Codex completed/no findings、CI 6/6，本地/远端对应分支已删除并同步 main。基线为 T06-A #183 合并提交 `23fd4b6e15e25886dc22e69e703deb278de4ae7c`；最终 head `1044154f9e3b585dc00da02e87a6283cd300905f` 已获 Codex completed/no findings，CI 6/6 成功。对应本地和远端分支已删除，main 已同步。当前分支 `codex/t06b-responses-incremental-tool-args`，仅使用 Node v26.13.0。
 
 ## 范围与顺序
 
@@ -66,4 +66,4 @@ N/2N/4N 输入为 8206/16398/32782 字符，64 字符分片。旧参数 JSON.par
 
 ### 验收状态
 
-定向 79/79 测试、类型检查、离线构建和四个下游 benchmark 已通过。全量当前 Node26：**400/400 执行单元成功，5323 tests / 5225 pass / 98 skip / 0 fail / 0 cancelled**。全量包含构建后实际 Agent 集成与 stream/TUI AST/source invariants。最终 head CI/reviewer 尚待独立 PR；未先标已交付。原始日志与采样位于 `.git/pi150-t06b`。
+定向 79/79 测试、类型检查、离线构建和四个下游 benchmark 已通过。全量当前 Node26：**400/400 执行单元成功，5323 tests / 5225 pass / 98 skip / 0 fail / 0 cancelled**。全量包含构建后实际 Agent 集成与 stream/TUI AST/source invariants。最终 head CI/reviewer 已通过并随 #184 合并交付。原始日志与采样位于 `.git/pi150-t06b`。

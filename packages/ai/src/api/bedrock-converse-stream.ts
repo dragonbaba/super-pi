@@ -58,7 +58,7 @@ import { normalizeProviderError } from "../utils/error-body.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { observeEffectiveDispatch, summarizeCacheMarkerMetadata } from "../utils/effective-dispatch.ts";
 import { providerHeadersToRecord } from "../utils/headers.ts";
-import { parseStreamingJson } from "../utils/json-parse.ts";
+import { IncrementalToolArguments } from "../utils/incremental-tool-arguments.ts";
 import { resolveHttpProxyUrlForTarget } from "../utils/node-http-proxy.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
@@ -107,7 +107,7 @@ export interface BedrockOptions extends StreamOptions {
 	bearerToken?: string;
 }
 
-type Block = (TextContent | ThinkingContent | ToolCall) & { index?: number; partialJson?: string };
+type Block = (TextContent | ThinkingContent | ToolCall) & { toolArgsGeneration?: number };
 
 const EMPTY_TEXT_PLACEHOLDER = "<empty>";
 
@@ -138,6 +138,8 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 		};
 
 		const blocks = output.content as Block[];
+		const blockPositions = new Map<number, number>();
+		const toolParsers: (IncrementalToolArguments | undefined)[] = [];
 
 		// A profile explicitly configured through pi's auth flow (the `profile`
 		// option or scoped `AWS_PROFILE` on the stored credential's env) must win
@@ -292,11 +294,11 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 					}
 					stream.push({ type: "start", partial: output });
 				} else if (item.contentBlockStart) {
-					handleContentBlockStart(item.contentBlockStart, blocks, output, stream);
+					handleContentBlockStart(item.contentBlockStart, blocks, output, stream, blockPositions, toolParsers);
 				} else if (item.contentBlockDelta) {
-					handleContentBlockDelta(item.contentBlockDelta, blocks, output, stream);
+					handleContentBlockDelta(item.contentBlockDelta, blocks, output, stream, blockPositions, toolParsers);
 				} else if (item.contentBlockStop) {
-					handleContentBlockStop(item.contentBlockStop, blocks, output, stream);
+					handleContentBlockStop(item.contentBlockStop, blocks, output, stream, blockPositions, toolParsers);
 				} else if (item.messageStop) {
 					output.rawStopReason = item.messageStop.stopReason;
 					const { stopReason, errorMessage } = mapStopReason(item.messageStop.stopReason);
@@ -330,18 +332,19 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 				throw new Error(output.errorMessage || "An unknown error occurred");
 			}
 
+			// Providers may omit a block stop; the final result still needs semantic validation.
+			for (let index = 0; index < toolParsers.length; index++) {
+				const parser = toolParsers[index];
+				if (!parser) continue;
+				const block = blocks[index] as ToolCall & Block;
+				block.arguments = parser.finalize();
+				block.toolArgsGeneration = undefined;
+				toolParsers[index] = undefined;
+			}
 			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();
 		} catch (error) {
-			for (const block of output.content) {
-				if ("index" in block) {
-					(block as Block).index = undefined;
-				}
-				// partialJson is only a streaming scratch buffer; never persist it.
-				if ("partialJson" in block) {
-					(block as Block).partialJson = undefined;
-				}
-			}
+			for (const block of blocks) if (block.type === "toolCall") block.toolArgsGeneration = undefined;
 			output.stopReason = options.signal?.aborted ? "aborted" : "error";
 			output.errorMessage = formatBedrockError(error);
 			if (output.stopReason === "error") {
@@ -349,6 +352,10 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 			}
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
+		} finally {
+			for (const parser of toolParsers) parser?.dispose();
+			toolParsers.length = 0;
+			blockPositions.clear();
 		}
 	})();
 
@@ -637,6 +644,8 @@ function handleContentBlockStart(
 	blocks: Block[],
 	output: AssistantMessage,
 	stream: AssistantMessageEventStream,
+	blockPositions: Map<number, number>,
+	toolParsers: (IncrementalToolArguments | undefined)[],
 ): void {
 	const index = event.contentBlockIndex!;
 	const start = event.start;
@@ -647,10 +656,11 @@ function handleContentBlockStart(
 			id: start.toolUse.toolUseId || "",
 			name: start.toolUse.name || "",
 			arguments: {},
-			partialJson: "",
-			index,
+			toolArgsGeneration: 0,
 		};
 		output.content.push(block);
+		blockPositions.set(index, blocks.length - 1);
+		toolParsers[blocks.length - 1] = new IncrementalToolArguments();
 		stream.push({ type: "toolcall_start", contentIndex: blocks.length - 1, partial: output });
 	}
 }
@@ -660,19 +670,22 @@ function handleContentBlockDelta(
 	blocks: Block[],
 	output: AssistantMessage,
 	stream: AssistantMessageEventStream,
+	blockPositions: Map<number, number>,
+	toolParsers: (IncrementalToolArguments | undefined)[],
 ): void {
 	const contentBlockIndex = event.contentBlockIndex!;
 	const delta = event.delta;
-	let index = blocks.findIndex((b) => b.index === contentBlockIndex);
+	let index = blockPositions.get(contentBlockIndex) ?? -1;
 	let block = blocks[index];
 
 	if (delta?.text !== undefined) {
 		// If no text block exists yet, create one, as `handleContentBlockStart` is not sent for text blocks
 		if (!block) {
-			const newBlock: Block = { type: "text", text: "", index: contentBlockIndex };
+			const newBlock: Block = { type: "text", text: "" };
 			output.content.push(newBlock);
 			index = blocks.length - 1;
 			block = blocks[index];
+			blockPositions.set(contentBlockIndex, index);
 			stream.push({ type: "text_start", contentIndex: index, partial: output });
 		}
 		if (block.type === "text") {
@@ -680,18 +693,20 @@ function handleContentBlockDelta(
 			stream.push({ type: "text_delta", contentIndex: index, delta: delta.text, partial: output });
 		}
 	} else if (delta?.toolUse && block?.type === "toolCall") {
-		block.partialJson = (block.partialJson || "") + (delta.toolUse.input || "");
-		block.arguments = parseStreamingJson(block.partialJson);
-		stream.push({ type: "toolcall_delta", contentIndex: index, delta: delta.toolUse.input || "", partial: output });
+		block.arguments = toolParsers[index]!.append(delta.toolUse.input || "");
+		block.toolArgsGeneration = (block.toolArgsGeneration ?? 0) + 1;
+		stream.push({ type: "toolcall_delta", contentIndex: index, delta: delta.toolUse.input || "", partial: output,
+			toolArgsGeneration: block.toolArgsGeneration });
 	} else if (delta?.reasoningContent) {
 		let thinkingBlock = block;
 		let thinkingIndex = index;
 
 		if (!thinkingBlock) {
-			const newBlock: Block = { type: "thinking", thinking: "", thinkingSignature: "", index: contentBlockIndex };
+			const newBlock: Block = { type: "thinking", thinking: "", thinkingSignature: "" };
 			output.content.push(newBlock);
 			thinkingIndex = blocks.length - 1;
 			thinkingBlock = blocks[thinkingIndex];
+			blockPositions.set(contentBlockIndex, thinkingIndex);
 			stream.push({ type: "thinking_start", contentIndex: thinkingIndex, partial: output });
 		}
 
@@ -733,11 +748,13 @@ function handleContentBlockStop(
 	blocks: Block[],
 	output: AssistantMessage,
 	stream: AssistantMessageEventStream,
+	blockPositions: Map<number, number>,
+	toolParsers: (IncrementalToolArguments | undefined)[],
 ): void {
-	const index = blocks.findIndex((b) => b.index === event.contentBlockIndex);
+	const index = blockPositions.get(event.contentBlockIndex!) ?? -1;
 	const block = blocks[index];
 	if (!block) return;
-	(block as Block).index = undefined;
+	blockPositions.delete(event.contentBlockIndex!);
 
 	switch (block.type) {
 		case "text":
@@ -747,10 +764,9 @@ function handleContentBlockStop(
 			stream.push({ type: "thinking_end", contentIndex: index, content: block.thinking, partial: output });
 			break;
 		case "toolCall":
-			block.arguments = parseStreamingJson(block.partialJson);
-			// Finalize in-place and strip the scratch buffer so replay only
-			// carries parsed arguments.
-			(block as Block).partialJson = undefined;
+			block.arguments = toolParsers[index]!.finalize();
+			toolParsers[index] = undefined;
+			block.toolArgsGeneration = undefined;
 			stream.push({ type: "toolcall_end", contentIndex: index, toolCall: block, partial: output });
 			break;
 	}
