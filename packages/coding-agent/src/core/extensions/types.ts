@@ -57,6 +57,7 @@ import type { BashResult } from "../bash-executor.ts";
 import type { CompactionPreparation, CompactionResult } from "../compaction/index.ts";
 import type { EventBus } from "../event-bus.ts";
 import type { ExecOptions, ExecResult } from "../exec.ts";
+import type { ExtensionExecOwner } from "../extension-exec-owner.ts";
 import type { ReadonlyFooterDataProvider } from "../footer-data-provider.ts";
 import type { KeybindingsManager } from "../keybindings.ts";
 import type { CustomMessage } from "../messages.ts";
@@ -1933,6 +1934,7 @@ export interface OpenAIResponsesOwner {
 export interface ExtensionRuntimeState {
 	readonly compactionStrategies: Map<string, RegisteredCompactionStrategy>;
 	readonly executionBoundary: SessionExecutionBoundary;
+	readonly execOwner: ExtensionExecOwner;
 	/** Session-owned intent, reset on invalidation; never a server capability assertion. */
 	codexRemoteCompactionEnabled: boolean;
 	openAIResponsesDispatch: OpenAIResponsesDispatch | undefined;

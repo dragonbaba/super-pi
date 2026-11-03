@@ -6,7 +6,10 @@ import test from "node:test";
 import ts from "typescript";
 
 test("exec output and its wait helper have stable callbacks and no per-chunk async/container/history work", () => {
-	const targets = new Set(["onStdoutData", "onStderrData", "takeWithinCap", "forceKill", "killProcess", "onData", "armIdleTimer", "cleanup", "finalize", "onIdle", "onExit", "onClose", "onError", "onSpawn", "onStdoutEnd", "onStderrEnd", "maybeFinalizeAfterExit"]);
+	// forceKill invokes the cached platform stop Promise once at cancellation/root exit.
+	// Exact asynchronous exemptions: execCommand admission/finally, WindowsShellJob.spawn/close,
+	// stopOwnedProcessGroup and ExtensionExecOwner.exec/drain. No normal output callback is exempt.
+	const targets = new Set(["onStdoutData", "onStderrData", "takeWithinCap", "forceKill", "killProcess", "onRootExit", "cancelled", "onData", "armIdleTimer", "cleanup", "finalize", "onIdle", "onExit", "onClose", "onError", "onSpawn", "onStdoutEnd", "onStderrEnd", "maybeFinalizeAfterExit"]);
 	const seen = new Set<string>();
 	for (const path of ["packages/coding-agent/src/core/exec.ts", "packages/coding-agent/src/utils/child-process.ts"]) {
 		const source = ts.createSourceFile(path, readFileSync(path, "utf8"), ts.ScriptTarget.Latest, true);
@@ -40,5 +43,6 @@ test("exec delivery counters and GC release hold through completion, cap, cancel
 	});
 	const evidence = JSON.parse(output);
 	assert.equal(evidence.deterministic.length, 3); assert.equal(evidence.references.length, 4);
+	assert.equal(evidence.runtimeReferences.length, 2);
 	for (const row of evidence.references) assert.equal(row.dataListeners, 0);
 });

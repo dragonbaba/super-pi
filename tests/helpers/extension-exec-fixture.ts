@@ -3,6 +3,7 @@ import childProcess, { type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { syncBuiltinESMExports } from "node:module";
 import { PassThrough } from "node:stream";
+import { WindowsShellJob } from "../../packages/coding-agent/src/utils/windows-shell-job.ts";
 
 /** A deterministic spawn boundary; production exec/wait/output callbacks are real. */
 export class ExecFixture extends EventEmitter {
@@ -15,6 +16,21 @@ export class ExecFixture extends EventEmitter {
 	killed = false;
 	signals: NodeJS.Signals[] = [];
 	autoExit = true;
+	cleanupGate: Promise<string | undefined> | undefined;
+	cleanupFailure: string | undefined;
+	stopCount = 0;
+	readonly ready: Promise<void>;
+	constructor() {
+		super();
+		const output = this.stdout;
+		this.ready = new Promise(resolve => {
+			function onListener(event: string): void {
+				if (event !== "data" || output.listenerCount("data") !== 1) return;
+				output.removeListener("newListener", onListener); resolve();
+			}
+			output.on("newListener", onListener);
+		});
+	}
 	kill(signal: NodeJS.Signals = "SIGTERM"): boolean {
 		this.killed = true;
 		this.signals.push(signal);
@@ -39,10 +55,30 @@ export class ExecFixture extends EventEmitter {
 
 export function installExecFixture(child: ExecFixture, onSpawn?: (options: childProcess.SpawnOptions) => void): () => void {
 	const original = childProcess.spawn;
+	const originalJob = WindowsShellJob.spawn, originalKill = process.kill;
+	let groupGone = false, cleanup: Promise<string | undefined> | undefined;
+	// The exact fake PGID must never reach the OS.
+	process.kill = ((pid: number, signal: NodeJS.Signals | number = "SIGTERM") => {
+		if (pid !== -child.pid) return originalKill(pid, signal);
+		if (groupGone || child.exitCode !== null || child.signalCode !== null) throw Object.assign(new Error("gone"), { code: "ESRCH" });
+		if (signal === 0) return true;
+		if (signal === "SIGKILL") groupGone = true;
+		return child.kill(signal as NodeJS.Signals);
+	}) as typeof process.kill;
+	WindowsShellJob.spawn = (async (_command, _args, cwd, _env, _stdin, signal, beforeSpawn) => {
+		signal?.throwIfAborted(); beforeSpawn?.(cwd);
+		onSpawn?.({ cwd, shell: false, windowsHide: true });
+		return { child, stop() {
+			if (cleanup) return cleanup;
+			child.stopCount++;
+			if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+			return cleanup = child.cleanupGate ?? Promise.resolve(child.cleanupFailure);
+		} } as unknown as WindowsShellJob;
+	}) as typeof WindowsShellJob.spawn;
 	childProcess.spawn = ((_command: string, _args: string[], options: childProcess.SpawnOptions) => {
 		onSpawn?.(options);
 		return child as unknown as ChildProcess;
 	}) as typeof childProcess.spawn;
 	syncBuiltinESMExports();
-	return () => { childProcess.spawn = original; syncBuiltinESMExports(); };
+	return () => { childProcess.spawn = original; WindowsShellJob.spawn = originalJob; process.kill = originalKill; syncBuiltinESMExports(); };
 }
