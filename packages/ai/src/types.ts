@@ -667,7 +667,7 @@ export type AssistantMessageEvent =
 			contentIndex: number;
 			delta: string;
 			partial: AssistantMessage;
-			/** Host-only custom/grammar argument generation; never persisted or sent on wire. */
+			/** Host-only argument generation; never persisted or sent on wire. */
 			toolArgsGeneration?: number;
 	  }
 	| { type: "toolcall_end"; contentIndex: number; toolCall: ToolCall; partial: AssistantMessage }

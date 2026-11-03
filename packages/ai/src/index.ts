@@ -41,7 +41,10 @@ export * from "./utils/diagnostics.ts";
 export * from "./utils/event-stream.ts";
 export { estimateContextTokens, estimateContextTokensFromParts, estimateMessageTokens } from "./utils/estimate.ts";
 export { mergeProviderHeaders } from "./utils/headers.ts";
-export * from "./utils/json-parse.ts";
+export {
+	stabilizeToolArguments, stringifyToolArguments, getToolArgumentJsonCacheStats,
+	repairJson, parseJsonWithRepair, hasIncompleteToolArguments, parseStreamingJson,
+} from "./utils/json-parse.ts";
 export * from "./utils/overflow.ts";
 export * from "./utils/policy-diagnostics.ts";
 export * from "./utils/record.ts";

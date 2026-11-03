@@ -1,6 +1,6 @@
 # T05-B：扩展 exec 进程所有权
 
-日期：2026-11-04。状态：**方案先行，现已实现、待独立 PR 验收**。基线为 T05-A #181 合并提交 `92d5adb8642839140f0229749a0f0b3829f3c550`。#181 最终 head `901358d9ed88a61286dad19986987062098919c0` 已获 Codex completed/no findings，CI 6/6 通过；对应分支已清理。
+日期：2026-11-04。状态：**已通过 #182 合并**。基线为 T05-A #181 合并提交 `92d5adb8642839140f0229749a0f0b3829f3c550`。#181 最终 head `901358d9ed88a61286dad19986987062098919c0` 已获 Codex completed/no findings，CI 6/6 通过；对应分支已清理。
 
 ## 授权与交付门禁
 
@@ -76,3 +76,5 @@ runtime 仅增加一个 `extension-exec` service。它复用 boundary.signal，�
 ### 验收状态
 
 定向 83 tests / 82 pass / 1 POSIX 条件 skip / 0 fail（随后增加继承输出场景）；类型检查与离线构建通过。全量当前 Node26：**396/396 执行单元成功，5263 tests / 5165 pass / 98 skip / 0 fail / 0 cancelled**，包含继承输出场景。基线控制模块已按登记路径删除；日志留在 `.git/pi150-t05b`，hash 记录于证据。最终 head 的跨平台 CI 及 reviewer completed 仍由独立 PR 验收，不能先记已交付。
+
+最终交付：[#182](https://github.com/dragonbaba/super-pi/pull/182) 的 head `8670a659839f13d44dda36fdf35b702830ebe416` 获 Codex completed/no findings；[CI 41681868683](https://github.com/dragonbaba/super-pi/actions/runs/41681868683) 6/6 通过。Linux 实际 SIGTERM-ignore 用例执行 5044 ms 后由 SIGKILL 回收，真实进程族验收通过。按用户授权合并为 `c37c9d6e509ff41650eef21dc81ea97f4ec8cfa5`，对应远端/本地分支已删除、main 已同步；随后才开始 T06-A。
