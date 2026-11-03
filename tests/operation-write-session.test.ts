@@ -77,6 +77,46 @@ test("a copied session header cannot transfer the live journal to another storag
 	} finally { f.session.dispose(); }
 });
 
+test("partial receipt notice blocks further admission until reload without replaying a durable effect", { skip: !operationFixtureSupported }, async () => {
+	const f = await fixture(true);
+	const intent = { intentId: randomUUID(), originBranch: null, path: "target", content: "durable" };
+	const manager = f.session.sessionManager;
+	const open = fs.openSync, write = fs.writeFileSync;
+	let noticeFd: number | undefined;
+	try {
+		const completed = await f.session.newOperation(intent);
+		const count = manager.getEntryCount(), leaf = manager.getLeafId();
+		writeFileSync(join(f.cwd, "target"), "external later edit");
+		fs.openSync = (path, flags, mode) => {
+			const fd = open(path, flags, mode);
+			if (String(path) === f.file && flags === "a") noticeFd = fd;
+			return fd;
+		};
+		fs.writeFileSync = (path, data, options) => {
+			if (path === noticeFd && String(data).includes("host-operation-v1")) {
+				write(path, String(data).slice(0, 24), options);
+				throw new Error("partial receipt notice");
+			}
+			write(path, data, options);
+		};
+		syncBuiltinESMExports();
+		try { await assert.rejects(f.session.resumeOperation(completed.operationId, intent), /partial receipt notice/); }
+		finally { fs.openSync = open; fs.writeFileSync = write; syncBuiltinESMExports(); }
+		assert.equal(manager.getEntryCount(), count); assert.equal(manager.getLeafId(), leaf);
+		await assert.rejects(f.session.resumeOperation(completed.operationId, intent), /write outcome is uncertain/);
+		assert.equal(readFileSync(join(f.cwd, "target"), "utf8"), "external later edit");
+		manager.setSessionFile(f.file);
+		assert.equal((await f.session.resumeOperation(completed.operationId, intent)).historical, true);
+		assert.equal(readFileSync(join(f.cwd, "target"), "utf8"), "external later edit");
+		assert.equal(f.providers(), 0);
+	} finally {
+		fs.openSync = open; fs.writeFileSync = write; syncBuiltinESMExports();
+		f.session.dispose();
+		// fixture(true) created and returned this exact, task-owned temporary root.
+		fs.rmSync(f.cwd, { recursive: true, force: true });
+	}
+});
+
 test("post-effect abort preserves a receipt; failed lock release still retires live session ownership", { skip: !operationFixtureSupported }, async () => {
 	const f = await fixture(true);
 	const intent = { intentId: randomUUID(), originBranch: null, path: "target", content: "acknowledged" };
