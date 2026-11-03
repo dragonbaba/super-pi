@@ -51,12 +51,18 @@ if (process.argv[2] === "--operation-crash") {
 	const previous = JSON.parse(process.argv[3]);
 	const cutpoint = process.argv[4];
 	const intentId = process.argv[5];
-	const append = fs.appendFileSync;
-	fs.appendFileSync = (path, data, options) => {
-		if (cutpoint === "history" && String(path) === previous.file && String(data).includes("host-operation-v1")) {
-			append(path, String(data).slice(0, 80), options); process.kill(process.pid, "SIGKILL");
+	const open = fs.openSync, writeSync = fs.writeFileSync;
+	let historyFd: number | undefined;
+	fs.openSync = (path, flags, mode) => {
+		const fd = open(path, flags, mode);
+		if (String(path) === previous.file && flags === "a") historyFd = fd;
+		return fd;
+	};
+	fs.writeFileSync = (path, data, options) => {
+		if (cutpoint === "history" && path === historyFd && String(data).includes("host-operation-v1")) {
+			writeSync(path, String(data).slice(0, 80), options); process.kill(process.pid, "SIGKILL");
 		}
-		return append(path, data, options);
+		return writeSync(path, data, options);
 	};
 	const rename = fs.renameSync;
 	fs.renameSync = (source, target) => {

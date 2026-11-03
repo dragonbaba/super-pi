@@ -872,6 +872,7 @@ export class SessionManager {
 	private cwd: string;
 	private persist: boolean;
 	private flushed: boolean = false;
+	private _appendOutcomeUncertain = false;
 	private fileEntries: FileEntry[] = [];
 	private byId: Map<string, SessionEntry> = new Map();
 	private entryCount = 0;
@@ -904,7 +905,13 @@ export class SessionManager {
 
 	/** Switch to a different session file (used for resume and branching) */
 	setSessionFile(sessionFile: string): void {
-		this._setSessionFile(sessionFile);
+		try {
+			this._setSessionFile(sessionFile);
+		} catch (error) {
+			// A failed load may have replaced only part of the in-memory state.
+			this._appendOutcomeUncertain = true;
+			throw error;
+		}
 	}
 
 	private _appendNeedsSeparator = false;
@@ -943,6 +950,7 @@ export class SessionManager {
 
 			this._buildIndex();
 			this.flushed = true;
+			this._appendOutcomeUncertain = false;
 		} else {
 			const explicitPath = this.sessionFile;
 			this.newSession();
@@ -951,10 +959,11 @@ export class SessionManager {
 	}
 
 	newSession(options?: NewSessionOptions): string | undefined {
-		this._appendNeedsSeparator = false;
 		if (options?.id !== undefined) {
 			assertValidSessionId(options.id);
 		}
+		this._appendNeedsSeparator = false;
+		this._appendOutcomeUncertain = false;
 		this.sessionId = options?.id ?? createSessionId();
 		const timestamp = new Date().toISOString();
 		const header: SessionHeader = {
@@ -1014,11 +1023,28 @@ export class SessionManager {
 	 * Existing sessions are untouched; exclusive atomic install preserves ordinary append behavior.
 	 */
 	ensureOperationStorage(): void {
+		this._assertWriteReady();
 		if (!this.persist || !this.sessionFile) throw new Error("Protected write requires persisted session storage");
 		if (!this.flushed) {
-			writeSessionEntriesAtomically(this.sessionFile, this.fileEntries, false);
-			this.flushed = true;
+			this._flushEntries(this.sessionFile);
 		}
+	}
+
+	private _assertWriteReady(): void {
+		if (this._appendOutcomeUncertain) {
+			throw new Error("Session write outcome is uncertain; reload the session or start a new session before writing again");
+		}
+	}
+
+	private _flushEntries(sessionFile: string): void {
+		try {
+			writeSessionEntriesAtomically(sessionFile, this.fileEntries, false);
+		} catch (error) {
+			// Installation can succeed before temporary-file cleanup fails.
+			this._appendOutcomeUncertain = existsSync(sessionFile);
+			throw error;
+		}
+		this.flushed = true;
 	}
 
 	isPersisted(): boolean {
@@ -1058,27 +1084,48 @@ export class SessionManager {
 	}
 
 	_persist(entry: SessionEntry): void {
+		this._assertWriteReady();
 		if (!this.persist || !this.sessionFile) return;
-		if (this._appendNeedsSeparator) {
-			appendFileSync(this.sessionFile, "\n");
-			this._appendNeedsSeparator = false;
-		}
 
 		if (!this.flushed) {
 			if (!this._hasConversation()) return;
-			writeSessionEntriesAtomically(this.sessionFile, this.fileEntries, false);
-			this.flushed = true;
+			this._flushEntries(this.sessionFile);
 		} else {
-			appendFileSync(this.sessionFile, `${JSON.stringify(entry)}\n`);
+			// Serialization and open failures cannot have appended any bytes.
+			const line = `${this._appendNeedsSeparator ? "\n" : ""}${JSON.stringify(entry)}\n`;
+			const fd = openSync(this.sessionFile, "a");
+			try {
+				let written = false;
+				try {
+					writeFileSync(fd, line);
+					written = true;
+				} finally {
+					try { closeSync(fd); }
+					catch (error) { if (written) throw error; } // Preserve the first write error.
+				}
+			} catch (error) {
+				this._appendOutcomeUncertain = true;
+				throw error;
+			}
+			this._appendNeedsSeparator = false;
 		}
 	}
 
 	private _appendEntry(entry: SessionEntry): void {
+		const previousLeaf = this.leafId;
 		this.fileEntries.push(entry);
 		this.entryCount++;
 		this.byId.set(entry.id, entry);
 		this.leafId = entry.id;
-		this._persist(entry);
+		try {
+			this._persist(entry);
+		} catch (error) {
+			this.fileEntries.pop();
+			this.entryCount--;
+			this.byId.delete(entry.id);
+			this.leafId = previousLeaf;
+			throw error;
+		}
 	}
 
 	/** Append a message as child of current leaf, then advance leaf. Returns entry id.
@@ -1441,7 +1488,6 @@ export class SessionManager {
 		if (branchFromId !== null && !this.byId.has(branchFromId)) {
 			throw new Error(`Entry ${branchFromId} not found`);
 		}
-		this.leafId = branchFromId;
 		const entry: BranchSummaryEntry = {
 			type: "branch_summary",
 			id: generateId(this.byId),
@@ -1463,6 +1509,7 @@ export class SessionManager {
 	 * Returns the new session file path, or undefined if not persisting.
 	 */
 	createBranchedSession(leafId: string): string | undefined {
+		this._assertWriteReady();
 		const previousSessionFile = this.sessionFile;
 		const path = this.getBranch(leafId);
 		if (path.length === 0) {
@@ -1535,6 +1582,7 @@ export class SessionManager {
 			} else {
 				this.flushed = false;
 			}
+			this._appendNeedsSeparator = false;
 
 			return newSessionFile;
 		}

@@ -1,0 +1,2019 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-11-04",
+  "baselineCommit": "1702ac609ee3d4262196295416286b0397e824e3",
+  "candidateIdentity": "sourceHash identifies the measured production file; committed evidence cannot contain its own commit hash",
+  "driverSourceHash": "c80290e6a2c64c358b0e0aa5e1587efcac835ce185f8b43b0351329940d5cf54",
+  "method": "Five serial baseline/candidate pairs; fixture v1; 64 warmup, 4096 measured appends per history; CPU timing separate from HeapProfiler sampling at 1024 bytes with collected objects included. Deterministic/WeakRef checks are separate from profiling. Existing histories are loaded before timing; history=0 is an already-flushed header, not initial installation.",
+  "limits": [
+    "Native appendFileSync opens/closes are internal to Node; baseline explicitOpens=0 is not a syscall count.",
+    "Windows process CPU accounting is coarse; wall p95 includes filesystem/OS latency. The 1000-history wall p95 rose 5.59% (6.1 microseconds). No claim of stable timing improvement.",
+    "Allocation samples include Node and inspector overhead; they are estimates, not exact object counts.",
+    "Lifecycle observes the entry and its 1 MiB logical message payload through WeakRef; it does not equate string length with physical heap bytes.",
+    "Initial atomic install helper remains unchanged; fd ownership counters apply to steady append. Exception handling, first flush and explicit reload are verified by fault tests, not regular-frame allocation budgets."
+  ],
+  "summary": [
+    {
+      "history": 0,
+      "sampledBytesPerAppend": {
+        "baselineMedian": 2666.7890625,
+        "candidateMedian": 2449.125,
+        "changePercent": -8.162027719430842
+      },
+      "cpuMicrosecondsPerAppend": {
+        "baselineMedian": 72.75390625,
+        "candidateMedian": 76.171875,
+        "changePercent": 4.697986577181212
+      },
+      "wallP95Milliseconds": {
+        "baselineMedian": 0.11740000000008877,
+        "candidateMedian": 0.1149000000000342,
+        "changePercent": -2.1294718910159105
+      }
+    },
+    {
+      "history": 1000,
+      "sampledBytesPerAppend": {
+        "baselineMedian": 2593.75,
+        "candidateMedian": 2378.802734375,
+        "changePercent": -8.287123493975901
+      },
+      "cpuMicrosecondsPerAppend": {
+        "baselineMedian": 76.416015625,
+        "candidateMedian": 76.416015625,
+        "changePercent": 0.0
+      },
+      "wallP95Milliseconds": {
+        "baselineMedian": 0.10910000000012587,
+        "candidateMedian": 0.11519999999973152,
+        "changePercent": 5.591200732904311
+      }
+    },
+    {
+      "history": 10000,
+      "sampledBytesPerAppend": {
+        "baselineMedian": 2397.498046875,
+        "candidateMedian": 2207.13671875,
+        "changePercent": -7.939999299399847
+      },
+      "cpuMicrosecondsPerAppend": {
+        "baselineMedian": 79.833984375,
+        "candidateMedian": 79.833984375,
+        "changePercent": 0.0
+      },
+      "wallP95Milliseconds": {
+        "baselineMedian": 0.11580000000003565,
+        "candidateMedian": 0.1133999999997286,
+        "changePercent": -2.072538860368145
+      }
+    }
+  ],
+  "runs": [
+    {
+      "baseline": {
+        "fixtureVersion": 1,
+        "node": "v26.13.0",
+        "os": "win32 10.0.26300",
+        "modulePath": ".git/pi150-t04/control/packages/coding-agent/src/core/session-manager.ts",
+        "sourceHash": "6a2c89cc0278ff651e7b960e833439a6b069dccb769f1ea61ca7855c080c07c6",
+        "warmup": 64,
+        "iterations": 4096,
+        "samplingInterval": 1024,
+        "deterministic": [
+          {
+            "history": 0,
+            "appends": 4096,
+            "historyReads": 0,
+            "stringifies": 4096,
+            "writes": 4096,
+            "explicitOpens": 0,
+            "explicitCloses": 0,
+            "activeFds": 0
+          },
+          {
+            "history": 1000,
+            "appends": 4096,
+            "historyReads": 0,
+            "stringifies": 4096,
+            "writes": 4096,
+            "explicitOpens": 0,
+            "explicitCloses": 0,
+            "activeFds": 0
+          },
+          {
+            "history": 10000,
+            "appends": 4096,
+            "historyReads": 0,
+            "stringifies": 4096,
+            "writes": 4096,
+            "explicitOpens": 0,
+            "explicitCloses": 0,
+            "activeFds": 0
+          }
+        ],
+        "references": {
+          "failedWhileOwnerAlive": 2,
+          "failedAfterClear": 0,
+          "successWhileOwnerAlive": 1,
+          "successAfterClear": 0,
+          "finalEntryCount": 0
+        },
+        "measurements": [
+          {
+            "history": 0,
+            "timedStartCount": 64,
+            "appends": 4096,
+            "cpuMicrosecondsPerAppend": 80.078125,
+            "wallP50Milliseconds": 0.07090000000016516,
+            "wallP95Milliseconds": 0.11740000000008877,
+            "sampledBytes": 10609032,
+            "sampledBytesPerAppend": 2590.095703125,
+            "allocationStacks": [
+              {
+                "frame": "writeFileSync@node:fs:2999",
+                "bytes": 3146128
+              },
+              {
+                "frame": "_persist@repo:/.git/pi150-t04/control/packages/coding-agent/src/core/session-manager.ts:1060",
+                "bytes": 2417840
+              },
+              {
+                "frame": "serializeUUID@node:internal/crypto/random:424",
+                "bytes": 2356736
+              },
+              {
+                "frame": "appendMessage@repo:/.git/pi150-t04/control/packages/coding-agent/src/core/session-manager.ts:1090",
+                "bytes": 862768
+              },
+              {
+                "frame": "appendFileSync@node:fs:3110",
+                "bytes": 471240
+              },
+              {
+                "frame": "set@:0",
+                "bytes": 455448
+              },
+              {
+                "frame": "generateId@repo:/.git/pi150-t04/control/packages/coding-agent/src/core/session-manager.ts:238",
+                "bytes": 329800
+              },
+              {
+                "frame": "randomUUID@node:internal/crypto/random:467",
+                "bytes": 250368
+              }
+            ]
+          },
+          {
+            "history": 1000,
+            "timedStartCount": 1064,
+            "appends": 4096,
+            "cpuMicrosecondsPerAppend": 76.416015625,
+            "wallP50Milliseconds": 0.06960000000026412,
+            "wallP95Milliseconds": 0.11640000000033979,
+            "sampledBytes": 10580320,
+            "sampledBytesPerAppend": 2583.0859375,
+            "allocationStacks": [
+              {
+                "frame": "writeFileSync@node:fs:2999",
+                "bytes": 2730256
+              },
+              {
+                "frame": "_persist@repo:/.git/pi150-t04/control/packages/coding-agent/src/core/session-manager.ts:1060",
+                "bytes": 2185336
+              },
+              {
+                "frame": "serializeUUID@node:internal/crypto/random:424",
+                "bytes": 1276648
+              },
+              {
+                "frame": "appendMessage@repo:/.git/pi150-t04/control/packages/coding-agent/src/core/session-manager.ts:1090",
+                "bytes": 909360
+              },
+              {
+                "frame": "randomUUID@node:internal/crypto/random:467",
+                "bytes": 637424
+              },
+              {
+                "frame": "writeFileSync@node:fs:2999",
+                "bytes": 420376
+              },
+              {
+                "frame": "appendFileSync@node:fs:3110",
+                "bytes": 408592
+              },
+              {
+                "frame": "getBufferedUUID@node:internal/crypto/random:449",
+                "bytes": 380512
+              }
+            ]
+          },
+          {
+            "history": 10000,
+            "timedStartCount": 10064,
+            "appends": 4096,
+            "cpuMicrosecondsPerAppend": 80.078125,
+            "wallP50Milliseconds": 0.07110000000011496,
+            "wallP95Milliseconds": 0.12150000000019645,
+            "sampledBytes": 9820152,
+            "sampledBytesPerAppend": 2397.498046875,
+            "allocationStacks": [
+              {
+                "frame": "writeFileSync@node:fs:2999",
+                "bytes": 3168408
+              },
+              {
+                "frame": "_persist@repo:/.git/pi150-t04/control/packages/coding-agent/src/core/session-manager.ts:1060",
+                "bytes": 2560552
+              },
+              {
+                "frame": "randomUUID@node:internal/crypto/random:467",
+                "bytes": 2411792
+              },
+              {
+                "frame": "appendMessage@repo:/.git/pi150-t04/control/packages/coding-agent/src/core/session-manager.ts:1090",
+                "bytes": 1106328
+              },
+              {
+                "frame": "appendFileSync@node:fs:3110",
+                "bytes": 478768
+              },
+              {
+                "frame": "has@:0",
+                "bytes": 92208
+              },
+              {
+                "frame": "wrappedFn@node:internal/errors:542",
+                "bytes": 1056
+              },
+              {
+                "frame": "#onMessage@node:inspector:84",
+                "bytes": 1040
+              }
+            ]
+          }
+        ]
+      },
+      "candidate": {
+        "fixtureVersion": 1,
+        "node": "v26.13.0",
+        "os": "win32 10.0.26300",
+        "modulePath": "packages/coding-agent/src/core/session-manager.ts",
+        "sourceHash": "98eaad066155ea4b5f2f2d7cd390e459f985379d211e4fcf479e7f7eb1532ea0",
+        "warmup": 64,
+        "iterations": 4096,
+        "samplingInterval": 1024,
+        "deterministic": [
+          {
+            "history": 0,
+            "appends": 4096,
+            "historyReads": 0,
+            "stringifies": 4096,
+            "writes": 4096,
+            "explicitOpens": 4096,
+            "explicitCloses": 4096,
+            "activeFds": 0
+          },
+          {
+            "history": 1000,
+            "appends": 4096,
+            "historyReads": 0,
+            "stringifies": 4096,
+            "writes": 4096,
+            "explicitOpens": 4096,
+            "explicitCloses": 4096,
+            "activeFds": 0
+          },
+          {
+            "history": 10000,
+            "appends": 4096,
+            "historyReads": 0,
+            "stringifies": 4096,
+            "writes": 4096,
+            "explicitOpens": 4096,
+            "explicitCloses": 4096,
+            "activeFds": 0
+          }
+        ],
+        "references": {
+          "failedWhileOwnerAlive": 0,
+          "failedAfterClear": 0,
+          "successWhileOwnerAlive": 1,
+          "successAfterClear": 0,
+          "finalEntryCount": 0
+        },
+        "measurements": [
+          {
+            "history": 0,
+            "timedStartCount": 64,
+            "appends": 4096,
+            "cpuMicrosecondsPerAppend": 76.171875,
+            "wallP50Milliseconds": 0.07110000000011496,
+            "wallP95Milliseconds": 0.1149000000000342,
+            "sampledBytes": 9875640,
+            "sampledBytesPerAppend": 2411.044921875,
+            "allocationStacks": [
+              {
+                "frame": "writeFileSync@node:fs:2999",
+                "bytes": 2875112
+              },
+              {
+                "frame": "_persist@repo:/packages/coding-agent/src/core/session-manager.ts:1086",
+                "bytes": 2535800
+              },
+              {
+                "frame": "serializeUUID@node:internal/crypto/random:424",
+                "bytes": 2301664
+              },
+              {
+                "frame": "appendMessage@repo:/packages/coding-agent/src/core/session-manager.ts:1137",
+                "bytes": 905272
+              },
+              {
+                "frame": "set@:0",
+                "bytes": 455448
+              },
+              {
+                "frame": "generateId@repo:/packages/coding-agent/src/core/session-manager.ts:238",
+                "bytes": 309904
+              },
+              {
+                "frame": "randomUUID@node:internal/crypto/random:467",
+                "bytes": 263040
+              },
+              {
+                "frame": "push@:0",
+                "bytes": 100960
+              }
+            ]
+          },
+          {
+            "history": 1000,
+            "timedStartCount": 1064,
+            "appends": 4096,
+            "cpuMicrosecondsPerAppend": 68.84765625,
+            "wallP50Milliseconds": 0.07099999999991269,
+            "wallP95Milliseconds": 0.1184000000002925,
+            "sampledBytes": 9743576,
+            "sampledBytesPerAppend": 2378.802734375,
+            "allocationStacks": [
+              {
+                "frame": "writeFileSync@node:fs:2999",
+                "bytes": 2926040
+              },
+              {
+                "frame": "_persist@repo:/packages/coding-agent/src/core/session-manager.ts:1086",
+                "bytes": 2427296
+              },
+              {
+                "frame": "serializeUUID@node:internal/crypto/random:424",
+                "bytes": 1698600
+              },
+              {
+                "frame": "appendBatch@repo:/scripts/bench/session-append.ts:32",
+                "bytes": 1165264
+              },
+              {
+                "frame": "randomUUID@node:internal/crypto/random:467",
+                "bytes": 643760
+              },
+              {
+                "frame": "set@:0",
+                "bytes": 344144
+              },
+              {
+                "frame": "getBufferedUUID@node:internal/crypto/random:449",
+                "bytes": 313944
+              },
+              {
+                "frame": "push@:0",
+                "bytes": 128024
+              }
+            ]
+          },
+          {
+            "history": 10000,
+            "timedStartCount": 10064,
+            "appends": 4096,
+            "cpuMicrosecondsPerAppend": 80.078125,
+            "wallP50Milliseconds": 0.07099999999991269,
+            "wallP95Milliseconds": 0.11329999999998108,
+            "sampledBytes": 9028816,
+            "sampledBytesPerAppend": 2204.30078125,
+            "allocationStacks": [
+              {
+                "frame": "writeFileSync@node:fs:2999",
+                "bytes": 2888552
+              },
+              {
+                "frame": "randomUUID@node:internal/crypto/random:467",
+                "bytes": 2432520
+              },
+              {
+                "frame": "_persist@repo:/packages/coding-agent/src/core/session-manager.ts:1086",
+                "bytes": 2412072
+              },
+              {
+                "frame": "appendBatch@repo:/scripts/bench/session-append.ts:32",
+                "bytes": 1188896
+              },
+              {
+                "frame": "has@:0",
+                "bytes": 102576
+              },
+              {
+                "frame": "wrappedFn@node:internal/errors:542",
+                "bytes": 3136
+              },
+              {
+                "frame": "delete@:0",
+                "bytes": 1064
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "baseline": {
+        "fixtureVersion": 1,
+        "node": "v26.13.0",
+        "os": "win32 10.0.26300",
+        "modulePath": ".git/pi150-t04/control/packages/coding-agent/src/core/session-manager.ts",
+        "sourceHash": "6a2c89cc0278ff651e7b960e833439a6b069dccb769f1ea61ca7855c080c07c6",
+        "warmup": 64,
+        "iterations": 4096,
+        "samplingInterval": 1024,
+        "deterministic": [
+          {
+            "history": 0,
+            "appends": 4096,
+            "historyReads": 0,
+            "stringifies": 4096,
+            "writes": 4096,
+            "explicitOpens": 0,
+            "explicitCloses": 0,
+            "activeFds": 0
+          },
+          {
+            "history": 1000,
+            "appends": 4096,
+            "historyReads": 0,
+            "stringifies": 4096,
+            "writes": 4096,
+            "explicitOpens": 0,
+            "explicitCloses": 0,
+            "activeFds": 0
+          },
+          {
+            "history": 10000,
+            "appends": 4096,
+            "historyReads": 0,
+            "stringifies": 4096,
+            "writes": 4096,
+            "explicitOpens": 0,
+            "explicitCloses": 0,
+            "activeFds": 0
+          }
+        ],
+        "references": {
+          "failedWhileOwnerAlive": 2,
+          "failedAfterClear": 0,
+          "successWhileOwnerAlive": 1,
+          "successAfterClear": 0,
+          "finalEntryCount": 0
+        },
+        "measurements": [
+          {
+            "history": 0,
+            "timedStartCount": 64,
+            "appends": 4096,
+            "cpuMicrosecondsPerAppend": 72.75390625,
+            "wallP50Milliseconds": 0.07089999999993779,
+            "wallP95Milliseconds": 0.12200000000007094,
+            "sampledBytes": 10923168,
+            "sampledBytesPerAppend": 2666.7890625,
+            "allocationStacks": [
+              {
+                "frame": "writeFileSync@node:fs:2999",
+                "bytes": 3205496
+              },
+              {
+                "frame": "_persist@repo:/.git/pi150-t04/control/packages/coding-agent/src/core/session-manager.ts:1060",
+                "bytes": 2514048
+              },
+              {
+                "frame": "serializeUUID@node:internal/crypto/random:424",
+                "bytes": 2415920
+              },
+              {
+                "frame": "appendMessage@repo:/.git/pi150-t04/control/packages/coding-agent/src/core/session-manager.ts:1090",
+                "bytes": 905056
+              },
+              {
+                "frame": "appendFileSync@node:fs:3110",
+                "bytes": 539008
+              },
+              {
+                "frame": "set@:0",
+                "bytes": 455448
+              },
+              {
+                "frame": "generateId@repo:/.git/pi150-t04/control/packages/coding-agent/src/core/session-manager.ts:238",
+                "bytes": 317496
+              },
+              {
+                "frame": "randomUUID@node:internal/crypto/random:467",
+                "bytes": 272512
+              }
+            ]
+          },
+          {
+            "history": 1000,
+            "timedStartCount": 1064,
+            "appends": 4096,
+            "cpuMicrosecondsPerAppend": 76.171875,
+            "wallP50Milliseconds": 0.0702000000001135,
+            "wallP95Milliseconds": 0.10910000000012587,
+            "sampledBytes": 10532072,
+            "sampledBytesPerAppend": 2571.306640625,
+            "allocationStacks": [
+              {
+                "frame": "writeFileSync@node:fs:2999",
+                "bytes": 2665752
+              },
+              {
+                "frame": "_persist@repo:/.git/pi150-t04/control/packages/coding-agent/src/core/session-manager.ts:1060",
+                "bytes": 2159752
+              },
+              {
+                "frame": "serializeUUID@node:internal/crypto/random:424",
+                "bytes": 1180992
+              },
+              {
+                "frame": "appendMessage@repo:/.git/pi150-t04/control/packages/coding-agent/src/core/session-manager.ts:1090",
+                "bytes": 991256
+              },
+              {
+                "frame": "randomUUID@node:internal/crypto/random:467",
+                "bytes": 692952
+              },
+              {
+                "frame": "writeFileSync@node:fs:2999",
+                "bytes": 447544
+              },
+              {
+                "frame": "appendFileSync@node:fs:3110",
+                "bytes": 428464
+              },
+              {
+                "frame": "_persist@repo:/.git/pi150-t04/control/packages/coding-agent/src/core/session-manager.ts:1060",
+                "bytes": 359848
+              }
+            ]
+          },
+          {
+            "history": 10000,
+            "timedStartCount": 10064,
+            "appends": 4096,
+            "cpuMicrosecondsPerAppend": 80.078125,
+            "wallP50Milliseconds": 0.07110000000011496,
+            "wallP95Milliseconds": 0.11580000000003565,
+            "sampledBytes": 9991544,
+            "sampledBytesPerAppend": 2439.341796875,
+            "allocationStacks": [
+              {
+                "frame": "writeFileSync@node:fs:2999",
+                "bytes": 3263224
+              },
+              {
+                "frame": "_persist@repo:/.git/pi150-t04/control/packages/coding-agent/src/core/session-manager.ts:1060",
+                "bytes": 2509992
+              },
+              {
+                "frame": "randomUUID@node:internal/crypto/random:467",
+                "bytes": 2436744
+              },
+              {
+                "frame": "appendMessage@repo:/.git/pi150-t04/control/packages/coding-agent/src/core/session-manager.ts:1090",
+                "bytes": 1156840
+              },
+              {
+                "frame": "appendFileSync@node:fs:3110",
+                "bytes": 526280
+              },
+              {
+                "frame": "has@:0",
+                "bytes": 95328
+              },
+              {
+                "frame": "wrappedFn@node:internal/errors:542",
+                "bytes": 3136
+              }
+            ]
+          }
+        ]
+      },
+      "candidate": {
+        "fixtureVersion": 1,
+        "node": "v26.13.0",
+        "os": "win32 10.0.26300",
+        "modulePath": "packages/coding-agent/src/core/session-manager.ts",
+        "sourceHash": "98eaad066155ea4b5f2f2d7cd390e459f985379d211e4fcf479e7f7eb1532ea0",
+        "warmup": 64,
+        "iterations": 4096,
+        "samplingInterval": 1024,
+        "deterministic": [
+          {
+            "history": 0,
+            "appends": 4096,
+            "historyReads": 0,
+            "stringifies": 4096,
+            "writes": 4096,
+            "explicitOpens": 4096,
+            "explicitCloses": 4096,
+            "activeFds": 0
+          },
+          {
+            "history": 1000,
+            "appends": 4096,
+            "historyReads": 0,
+            "stringifies": 4096,
+            "writes": 4096,
+            "explicitOpens": 4096,
+            "explicitCloses": 4096,
+            "activeFds": 0
+          },
+          {
+            "history": 10000,
+            "appends": 4096,
+            "historyReads": 0,
+            "stringifies": 4096,
+            "writes": 4096,
+            "explicitOpens": 4096,
+            "explicitCloses": 4096,
+            "activeFds": 0
+          }
+        ],
+        "references": {
+          "failedWhileOwnerAlive": 0,
+          "failedAfterClear": 0,
+          "successWhileOwnerAlive": 1,
+          "successAfterClear": 0,
+          "finalEntryCount": 0
+        },
+        "measurements": [
+          {
+            "history": 0,
+            "timedStartCount": 64,
+            "appends": 4096,
+            "cpuMicrosecondsPerAppend": 76.416015625,
+            "wallP50Milliseconds": 0.0704000000000633,
+            "wallP95Milliseconds": 0.11200000000008004,
+            "sampledBytes": 9840592,
+            "sampledBytesPerAppend": 2402.48828125,
+            "allocationStacks": [
+              {
+                "frame": "writeFileSync@node:fs:2999",
+                "bytes": 2791896
+              },
+              {
+                "frame": "_persist@repo:/packages/coding-agent/src/core/session-manager.ts:1086",
+                "bytes": 2513136
+              },
+              {
+                "frame": "serializeUUID@node:internal/crypto/random:424",
+                "bytes": 2380584
+              },
+              {
+                "frame": "appendMessage@repo:/packages/coding-agent/src/core/session-manager.ts:1137",
+                "bytes": 882520
+              },
+              {
+                "frame": "set@:0",
+                "bytes": 455448
+              },
+              {
+                "frame": "generateId@repo:/packages/coding-agent/src/core/session-manager.ts:238",
+                "bytes": 325696
+              },
+              {
+                "frame": "randomUUID@node:internal/crypto/random:467",
+                "bytes": 254592
+              },
+              {
+                "frame": "push@:0",
+                "bytes": 102096
+              }
+            ]
+          },
+          {
+            "history": 1000,
+            "timedStartCount": 1064,
+            "appends": 4096,
+            "cpuMicrosecondsPerAppend": 80.078125,
+            "wallP50Milliseconds": 0.07029999999986103,
+            "wallP95Milliseconds": 0.11519999999973152,
+            "sampledBytes": 9894480,
+            "sampledBytesPerAppend": 2415.64453125,
+            "allocationStacks": [
+              {
+                "frame": "writeFileSync@node:fs:2999",
+                "bytes": 2872480
+              },
+              {
+                "frame": "_persist@repo:/packages/coding-agent/src/core/session-manager.ts:1086",
+                "bytes": 2500616
+              },
+              {
+                "frame": "serializeUUID@node:internal/crypto/random:424",
+                "bytes": 1723584
+              },
+              {
+                "frame": "appendBatch@repo:/scripts/bench/session-append.ts:32",
+                "bytes": 1206648
+              },
+              {
+                "frame": "randomUUID@node:internal/crypto/random:467",
+                "bytes": 680512
+              },
+              {
+                "frame": "set@:0",
+                "bytes": 344144
+              },
+              {
+                "frame": "getBufferedUUID@node:internal/crypto/random:449",
+                "bytes": 326432
+              },
+              {
+                "frame": "push@:0",
+                "bytes": 128024
+              }
+            ]
+          },
+          {
+            "history": 10000,
+            "timedStartCount": 10064,
+            "appends": 4096,
+            "cpuMicrosecondsPerAppend": 72.509765625,
+            "wallP50Milliseconds": 0.07119999999986248,
+            "wallP95Milliseconds": 0.11619999999993524,
+            "sampledBytes": 9040432,
+            "sampledBytesPerAppend": 2207.13671875,
+            "allocationStacks": [
+              {
+                "frame": "writeFileSync@node:fs:2999",
+                "bytes": 2864984
+              },
+              {
+                "frame": "_persist@repo:/packages/coding-agent/src/core/session-manager.ts:1086",
+                "bytes": 2552696
+              },
+              {
+                "frame": "randomUUID@node:internal/crypto/random:467",
+                "bytes": 2407728
+              },
+              {
+                "frame": "appendBatch@repo:/scripts/bench/session-append.ts:32",
+                "bytes": 1122720
+              },
+              {
+                "frame": "has@:0",
+                "bytes": 90144
+              },
+              {
+                "frame": "Promise@:0",
+                "bytes": 1120
+              },
+              {
+                "frame": "post@node:inspector:115",
+                "bytes": 1040
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "baseline": {
+        "fixtureVersion": 1,
+        "node": "v26.13.0",
+        "os": "win32 10.0.26300",
+        "modulePath": ".git/pi150-t04/control/packages/coding-agent/src/core/session-manager.ts",
+        "sourceHash": "6a2c89cc0278ff651e7b960e833439a6b069dccb769f1ea61ca7855c080c07c6",
+        "warmup": 64,
+        "iterations": 4096,
+        "samplingInterval": 1024,
+        "deterministic": [
+          {
+            "history": 0,
+            "appends": 4096,
+            "historyReads": 0,
+            "stringifies": 4096,
+            "writes": 4096,
+            "explicitOpens": 0,
+            "explicitCloses": 0,
+            "activeFds": 0
+          },
+          {
+            "history": 1000,
+            "appends": 4096,
+            "historyReads": 0,
+            "stringifies": 4096,
+            "writes": 4096,
+            "explicitOpens": 0,
+            "explicitCloses": 0,
+            "activeFds": 0
+          },
+          {
+            "history": 10000,
+            "appends": 4096,
+            "historyReads": 0,
+            "stringifies": 4096,
+            "writes": 4096,
+            "explicitOpens": 0,
+            "explicitCloses": 0,
+            "activeFds": 0
+          }
+        ],
+        "references": {
+          "failedWhileOwnerAlive": 2,
+          "failedAfterClear": 0,
+          "successWhileOwnerAlive": 1,
+          "successAfterClear": 0,
+          "finalEntryCount": 0
+        },
+        "measurements": [
+          {
+            "history": 0,
+            "timedStartCount": 64,
+            "appends": 4096,
+            "cpuMicrosecondsPerAppend": 72.509765625,
+            "wallP50Milliseconds": 0.07009999999991123,
+            "wallP95Milliseconds": 0.11010000000010223,
+            "sampledBytes": 10988240,
+            "sampledBytesPerAppend": 2682.67578125,
+            "allocationStacks": [
+              {
+                "frame": "writeFileSync@node:fs:2999",
+                "bytes": 3286072
+              },
+              {
+                "frame": "_persist@repo:/.git/pi150-t04/control/packages/coding-agent/src/core/session-manager.ts:1060",
+                "bytes": 2600952
+              },
+              {
+                "frame": "serializeUUID@node:internal/crypto/random:424",
+                "bytes": 2419096
+              },
+              {
+                "frame": "appendMessage@repo:/.git/pi150-t04/control/packages/coding-agent/src/core/session-manager.ts:1090",
+                "bytes": 914704
+              },
+              {
+                "frame": "appendFileSync@node:fs:3110",
+                "bytes": 459936
+              },
+              {
+                "frame": "set@:0",
+                "bytes": 455448
+              },
+              {
+                "frame": "generateId@repo:/.git/pi150-t04/control/packages/coding-agent/src/core/session-manager.ts:238",
+                "bytes": 327640
+              },
+              {
+                "frame": "randomUUID@node:internal/crypto/random:467",
+                "bytes": 231360
+              }
+            ]
+          },
+          {
+            "history": 1000,
+            "timedStartCount": 1064,
+            "appends": 4096,
+            "cpuMicrosecondsPerAppend": 80.078125,
+            "wallP50Milliseconds": 0.06960000000003674,
+            "wallP95Milliseconds": 0.10719999999992069,
+            "sampledBytes": 10654576,
+            "sampledBytesPerAppend": 2601.21484375,
+            "allocationStacks": [
+              {
+                "frame": "writeFileSync@node:fs:2999",
+                "bytes": 2807800
+              },
+              {
+                "frame": "_persist@repo:/.git/pi150-t04/control/packages/coding-agent/src/core/session-manager.ts:1060",
+                "bytes": 2195992
+              },
+              {
+                "frame": "serializeUUID@node:internal/crypto/random:424",
+                "bytes": 1201808
+              },
+              {
+                "frame": "appendMessage@repo:/.git/pi150-t04/control/packages/coding-agent/src/core/session-manager.ts:1090",
+                "bytes": 883776
+              },
+              {
+                "frame": "randomUUID@node:internal/crypto/random:467",
+                "bytes": 706504
+              },
+              {
+                "frame": "writeFileSync@node:fs:2999",
+                "bytes": 446336
+              },
+              {
+                "frame": "appendFileSync@node:fs:3110",
+                "bytes": 418192
+              },
+              {
+                "frame": "_persist@repo:/.git/pi150-t04/control/packages/coding-agent/src/core/session-manager.ts:1060",
+                "bytes": 353352
+              }
+            ]
+          },
+          {
+            "history": 10000,
+            "timedStartCount": 10064,
+            "appends": 4096,
+            "cpuMicrosecondsPerAppend": 76.416015625,
+            "wallP50Milliseconds": 0.0706000000000131,
+            "wallP95Milliseconds": 0.11809999999968568,
+            "sampledBytes": 9824160,
+            "sampledBytesPerAppend": 2398.4765625,
+            "allocationStacks": [
+              {
+                "frame": "writeFileSync@node:fs:2999",
+                "bytes": 3269840
+              },
+              {
+                "frame": "_persist@repo:/.git/pi150-t04/control/packages/coding-agent/src/core/session-manager.ts:1060",
+                "bytes": 2498936
+              },
+              {
+                "frame": "randomUUID@node:internal/crypto/random:467",
+                "bytes": 2315248
+              },
+              {
+                "frame": "appendMessage@repo:/.git/pi150-t04/control/packages/coding-agent/src/core/session-manager.ts:1090",
+                "bytes": 1132720
+              },
+              {
+                "frame": "appendFileSync@node:fs:3110",
+                "bytes": 496544
+              },
+              {
+                "frame": "has@:0",
+                "bytes": 108792
+              },
+              {
+                "frame": "wrappedFn@node:internal/errors:542",
+                "bytes": 2080
+              }
+            ]
+          }
+        ]
+      },
+      "candidate": {
+        "fixtureVersion": 1,
+        "node": "v26.13.0",
+        "os": "win32 10.0.26300",
+        "modulePath": "packages/coding-agent/src/core/session-manager.ts",
+        "sourceHash": "98eaad066155ea4b5f2f2d7cd390e459f985379d211e4fcf479e7f7eb1532ea0",
+        "warmup": 64,
+        "iterations": 4096,
+        "samplingInterval": 1024,
+        "deterministic": [
+          {
+            "history": 0,
+            "appends": 4096,
+            "historyReads": 0,
+            "stringifies": 4096,
+            "writes": 4096,
+            "explicitOpens": 4096,
+            "explicitCloses": 4096,
+            "activeFds": 0
+          },
+          {
+            "history": 1000,
+            "appends": 4096,
+            "historyReads": 0,
+            "stringifies": 4096,
+            "writes": 4096,
+            "explicitOpens": 4096,
+            "explicitCloses": 4096,
+            "activeFds": 0
+          },
+          {
+            "history": 10000,
+            "appends": 4096,
+            "historyReads": 0,
+            "stringifies": 4096,
+            "writes": 4096,
+            "explicitOpens": 4096,
+            "explicitCloses": 4096,
+            "activeFds": 0
+          }
+        ],
+        "references": {
+          "failedWhileOwnerAlive": 0,
+          "failedAfterClear": 0,
+          "successWhileOwnerAlive": 1,
+          "successAfterClear": 0,
+          "finalEntryCount": 0
+        },
+        "measurements": [
+          {
+            "history": 0,
+            "timedStartCount": 64,
+            "appends": 4096,
+            "cpuMicrosecondsPerAppend": 72.265625,
+            "wallP50Milliseconds": 0.0703000000000884,
+            "wallP95Milliseconds": 0.10579999999981737,
+            "sampledBytes": 10074088,
+            "sampledBytesPerAppend": 2459.494140625,
+            "allocationStacks": [
+              {
+                "frame": "writeFileSync@node:fs:2999",
+                "bytes": 2900656
+              },
+              {
+                "frame": "_persist@repo:/packages/coding-agent/src/core/session-manager.ts:1086",
+                "bytes": 2533544
+              },
+              {
+                "frame": "serializeUUID@node:internal/crypto/random:424",
+                "bytes": 2455480
+              },
+              {
+                "frame": "appendMessage@repo:/packages/coding-agent/src/core/session-manager.ts:1137",
+                "bytes": 910616
+              },
+              {
+                "frame": "set@:0",
+                "bytes": 455448
+              },
+              {
+                "frame": "generateId@repo:/packages/coding-agent/src/core/session-manager.ts:238",
+                "bytes": 307016
+              },
+              {
+                "frame": "randomUUID@node:internal/crypto/random:467",
+                "bytes": 272512
+              },
+              {
+                "frame": "push@:0",
+                "bytes": 100264
+              }
+            ]
+          },
+          {
+            "history": 1000,
+            "timedStartCount": 1064,
+            "appends": 4096,
+            "cpuMicrosecondsPerAppend": 80.078125,
+            "wallP50Milliseconds": 0.07189999999991414,
+            "wallP95Milliseconds": 0.11590000000023792,
+            "sampledBytes": 9821096,
+            "sampledBytesPerAppend": 2397.728515625,
+            "allocationStacks": [
+              {
+                "frame": "writeFileSync@node:fs:2999",
+                "bytes": 2897400
+              },
+              {
+                "frame": "_persist@repo:/packages/coding-agent/src/core/session-manager.ts:1086",
+                "bytes": 2557304
+              },
+              {
+                "frame": "serializeUUID@node:internal/crypto/random:424",
+                "bytes": 1719392
+              },
+              {
+                "frame": "appendBatch@repo:/scripts/bench/session-append.ts:32",
+                "bytes": 1149640
+              },
+              {
+                "frame": "randomUUID@node:internal/crypto/random:467",
+                "bytes": 600136
+              },
+              {
+                "frame": "set@:0",
+                "bytes": 344144
+              },
+              {
+                "frame": "getBufferedUUID@node:internal/crypto/random:449",
+                "bytes": 329560
+              },
+              {
+                "frame": "push@:0",
+                "bytes": 128024
+              }
+            ]
+          },
+          {
+            "history": 10000,
+            "timedStartCount": 10064,
+            "appends": 4096,
+            "cpuMicrosecondsPerAppend": 79.833984375,
+            "wallP50Milliseconds": 0.07069999999976062,
+            "wallP95Milliseconds": 0.1133999999997286,
+            "sampledBytes": 9134024,
+            "sampledBytesPerAppend": 2229.986328125,
+            "allocationStacks": [
+              {
+                "frame": "writeFileSync@node:fs:2999",
+                "bytes": 2841192
+              },
+              {
+                "frame": "_persist@repo:/packages/coding-agent/src/core/session-manager.ts:1086",
+                "bytes": 2571096
+              },
+              {
+                "frame": "randomUUID@node:internal/crypto/random:467",
+                "bytes": 2483472
+              },
+              {
+                "frame": "appendBatch@repo:/scripts/bench/session-append.ts:32",
+                "bytes": 1131368
+              },
+              {
+                "frame": "has@:0",
+                "bytes": 103608
+              },
+              {
+                "frame": "Promise@:0",
+                "bytes": 1120
+              },
+              {
+                "frame": "post@node:inspector:115",
+                "bytes": 1088
+              },
+              {
+                "frame": "#onMessage@node:inspector:84",
+                "bytes": 1080
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "baseline": {
+        "fixtureVersion": 1,
+        "node": "v26.13.0",
+        "os": "win32 10.0.26300",
+        "modulePath": ".git/pi150-t04/control/packages/coding-agent/src/core/session-manager.ts",
+        "sourceHash": "6a2c89cc0278ff651e7b960e833439a6b069dccb769f1ea61ca7855c080c07c6",
+        "warmup": 64,
+        "iterations": 4096,
+        "samplingInterval": 1024,
+        "deterministic": [
+          {
+            "history": 0,
+            "appends": 4096,
+            "historyReads": 0,
+            "stringifies": 4096,
+            "writes": 4096,
+            "explicitOpens": 0,
+            "explicitCloses": 0,
+            "activeFds": 0
+          },
+          {
+            "history": 1000,
+            "appends": 4096,
+            "historyReads": 0,
+            "stringifies": 4096,
+            "writes": 4096,
+            "explicitOpens": 0,
+            "explicitCloses": 0,
+            "activeFds": 0
+          },
+          {
+            "history": 10000,
+            "appends": 4096,
+            "historyReads": 0,
+            "stringifies": 4096,
+            "writes": 4096,
+            "explicitOpens": 0,
+            "explicitCloses": 0,
+            "activeFds": 0
+          }
+        ],
+        "references": {
+          "failedWhileOwnerAlive": 2,
+          "failedAfterClear": 0,
+          "successWhileOwnerAlive": 1,
+          "successAfterClear": 0,
+          "finalEntryCount": 0
+        },
+        "measurements": [
+          {
+            "history": 0,
+            "timedStartCount": 64,
+            "appends": 4096,
+            "cpuMicrosecondsPerAppend": 80.078125,
+            "wallP50Milliseconds": 0.0706000000000131,
+            "wallP95Milliseconds": 0.11159999999995307,
+            "sampledBytes": 10758512,
+            "sampledBytesPerAppend": 2626.58984375,
+            "allocationStacks": [
+              {
+                "frame": "writeFileSync@node:fs:2999",
+                "bytes": 3157408
+              },
+              {
+                "frame": "_persist@repo:/.git/pi150-t04/control/packages/coding-agent/src/core/session-manager.ts:1060",
+                "bytes": 2473800
+              },
+              {
+                "frame": "serializeUUID@node:internal/crypto/random:424",
+                "bytes": 2407640
+              },
+              {
+                "frame": "appendMessage@repo:/.git/pi150-t04/control/packages/coding-agent/src/core/session-manager.ts:1090",
+                "bytes": 882296
+              },
+              {
+                "frame": "appendFileSync@node:fs:3110",
+                "bytes": 469664
+              },
+              {
+                "frame": "set@:0",
+                "bytes": 455448
+              },
+              {
+                "frame": "generateId@repo:/.git/pi150-t04/control/packages/coding-agent/src/core/session-manager.ts:238",
+                "bytes": 297504
+              },
+              {
+                "frame": "randomUUID@node:internal/crypto/random:467",
+                "bytes": 293632
+              }
+            ]
+          },
+          {
+            "history": 1000,
+            "timedStartCount": 1064,
+            "appends": 4096,
+            "cpuMicrosecondsPerAppend": 76.416015625,
+            "wallP50Milliseconds": 0.06940000000031432,
+            "wallP95Milliseconds": 0.1054999999996653,
+            "sampledBytes": 10636160,
+            "sampledBytesPerAppend": 2596.71875,
+            "allocationStacks": [
+              {
+                "frame": "writeFileSync@node:fs:2999",
+                "bytes": 2762888
+              },
+              {
+                "frame": "_persist@repo:/.git/pi150-t04/control/packages/coding-agent/src/core/session-manager.ts:1060",
+                "bytes": 2164752
+              },
+              {
+                "frame": "serializeUUID@node:internal/crypto/random:424",
+                "bytes": 1187224
+              },
+              {
+                "frame": "appendMessage@repo:/.git/pi150-t04/control/packages/coding-agent/src/core/session-manager.ts:1090",
+                "bytes": 976192
+              },
+              {
+                "frame": "randomUUID@node:internal/crypto/random:467",
+                "bytes": 671248
+              },
+              {
+                "frame": "writeFileSync@node:fs:2999",
+                "bytes": 461536
+              },
+              {
+                "frame": "appendFileSync@node:fs:3110",
+                "bytes": 395104
+              },
+              {
+                "frame": "_persist@repo:/.git/pi150-t04/control/packages/coding-agent/src/core/session-manager.ts:1060",
+                "bytes": 358568
+              }
+            ]
+          },
+          {
+            "history": 10000,
+            "timedStartCount": 10064,
+            "appends": 4096,
+            "cpuMicrosecondsPerAppend": 79.833984375,
+            "wallP50Milliseconds": 0.07000000000016371,
+            "wallP95Milliseconds": 0.11509999999998399,
+            "sampledBytes": 9770024,
+            "sampledBytesPerAppend": 2385.259765625,
+            "allocationStacks": [
+              {
+                "frame": "writeFileSync@node:fs:2999",
+                "bytes": 3151872
+              },
+              {
+                "frame": "_persist@repo:/.git/pi150-t04/control/packages/coding-agent/src/core/session-manager.ts:1060",
+                "bytes": 2440648
+              },
+              {
+                "frame": "randomUUID@node:internal/crypto/random:467",
+                "bytes": 2419184
+              },
+              {
+                "frame": "appendMessage@repo:/.git/pi150-t04/control/packages/coding-agent/src/core/session-manager.ts:1090",
+                "bytes": 1165280
+              },
+              {
+                "frame": "appendFileSync@node:fs:3110",
+                "bytes": 496648
+              },
+              {
+                "frame": "has@:0",
+                "bytes": 94272
+              },
+              {
+                "frame": "delete@:0",
+                "bytes": 1064
+              },
+              {
+                "frame": "wrappedFn@node:internal/errors:542",
+                "bytes": 1056
+              }
+            ]
+          }
+        ]
+      },
+      "candidate": {
+        "fixtureVersion": 1,
+        "node": "v26.13.0",
+        "os": "win32 10.0.26300",
+        "modulePath": "packages/coding-agent/src/core/session-manager.ts",
+        "sourceHash": "98eaad066155ea4b5f2f2d7cd390e459f985379d211e4fcf479e7f7eb1532ea0",
+        "warmup": 64,
+        "iterations": 4096,
+        "samplingInterval": 1024,
+        "deterministic": [
+          {
+            "history": 0,
+            "appends": 4096,
+            "historyReads": 0,
+            "stringifies": 4096,
+            "writes": 4096,
+            "explicitOpens": 4096,
+            "explicitCloses": 4096,
+            "activeFds": 0
+          },
+          {
+            "history": 1000,
+            "appends": 4096,
+            "historyReads": 0,
+            "stringifies": 4096,
+            "writes": 4096,
+            "explicitOpens": 4096,
+            "explicitCloses": 4096,
+            "activeFds": 0
+          },
+          {
+            "history": 10000,
+            "appends": 4096,
+            "historyReads": 0,
+            "stringifies": 4096,
+            "writes": 4096,
+            "explicitOpens": 4096,
+            "explicitCloses": 4096,
+            "activeFds": 0
+          }
+        ],
+        "references": {
+          "failedWhileOwnerAlive": 0,
+          "failedAfterClear": 0,
+          "successWhileOwnerAlive": 1,
+          "successAfterClear": 0,
+          "finalEntryCount": 0
+        },
+        "measurements": [
+          {
+            "history": 0,
+            "timedStartCount": 64,
+            "appends": 4096,
+            "cpuMicrosecondsPerAppend": 68.603515625,
+            "wallP50Milliseconds": 0.0705000000000382,
+            "wallP95Milliseconds": 0.116800000000012,
+            "sampledBytes": 10031616,
+            "sampledBytesPerAppend": 2449.125,
+            "allocationStacks": [
+              {
+                "frame": "writeFileSync@node:fs:2999",
+                "bytes": 2876552
+              },
+              {
+                "frame": "_persist@repo:/packages/coding-agent/src/core/session-manager.ts:1086",
+                "bytes": 2555368
+              },
+              {
+                "frame": "serializeUUID@node:internal/crypto/random:424",
+                "bytes": 2376448
+              },
+              {
+                "frame": "appendMessage@repo:/packages/coding-agent/src/core/session-manager.ts:1137",
+                "bytes": 896168
+              },
+              {
+                "frame": "set@:0",
+                "bytes": 455448
+              },
+              {
+                "frame": "generateId@repo:/packages/coding-agent/src/core/session-manager.ts:238",
+                "bytes": 369712
+              },
+              {
+                "frame": "randomUUID@node:internal/crypto/random:467",
+                "bytes": 277824
+              },
+              {
+                "frame": "push@:0",
+                "bytes": 102096
+              }
+            ]
+          },
+          {
+            "history": 1000,
+            "timedStartCount": 1064,
+            "appends": 4096,
+            "cpuMicrosecondsPerAppend": 76.416015625,
+            "wallP50Milliseconds": 0.06989999999996144,
+            "wallP95Milliseconds": 0.11310000000003129,
+            "sampledBytes": 9716808,
+            "sampledBytesPerAppend": 2372.267578125,
+            "allocationStacks": [
+              {
+                "frame": "writeFileSync@node:fs:2999",
+                "bytes": 2841464
+              },
+              {
+                "frame": "_persist@repo:/packages/coding-agent/src/core/session-manager.ts:1086",
+                "bytes": 2499848
+              },
+              {
+                "frame": "serializeUUID@node:internal/crypto/random:424",
+                "bytes": 1705984
+              },
+              {
+                "frame": "appendBatch@repo:/scripts/bench/session-append.ts:32",
+                "bytes": 1148104
+              },
+              {
+                "frame": "randomUUID@node:internal/crypto/random:467",
+                "bytes": 626448
+              },
+              {
+                "frame": "set@:0",
+                "bytes": 344144
+              },
+              {
+                "frame": "getBufferedUUID@node:internal/crypto/random:449",
+                "bytes": 307736
+              },
+              {
+                "frame": "push@:0",
+                "bytes": 128024
+              }
+            ]
+          },
+          {
+            "history": 10000,
+            "timedStartCount": 10064,
+            "appends": 4096,
+            "cpuMicrosecondsPerAppend": 80.078125,
+            "wallP50Milliseconds": 0.07139999999981228,
+            "wallP95Milliseconds": 0.12289999999984502,
+            "sampledBytes": 9065640,
+            "sampledBytesPerAppend": 2213.291015625,
+            "allocationStacks": [
+              {
+                "frame": "writeFileSync@node:fs:2999",
+                "bytes": 2904424
+              },
+              {
+                "frame": "_persist@repo:/packages/coding-agent/src/core/session-manager.ts:1086",
+                "bytes": 2536976
+              },
+              {
+                "frame": "randomUUID@node:internal/crypto/random:467",
+                "bytes": 2403568
+              },
+              {
+                "frame": "appendBatch@repo:/scripts/bench/session-append.ts:32",
+                "bytes": 1121056
+              },
+              {
+                "frame": "has@:0",
+                "bytes": 94272
+              },
+              {
+                "frame": "#onMessage@node:inspector:84",
+                "bytes": 2088
+              },
+              {
+                "frame": "wrappedFn@node:internal/errors:542",
+                "bytes": 2080
+              },
+              {
+                "frame": "push@:0",
+                "bytes": 1176
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "baseline": {
+        "fixtureVersion": 1,
+        "node": "v26.13.0",
+        "os": "win32 10.0.26300",
+        "modulePath": ".git/pi150-t04/control/packages/coding-agent/src/core/session-manager.ts",
+        "sourceHash": "6a2c89cc0278ff651e7b960e833439a6b069dccb769f1ea61ca7855c080c07c6",
+        "warmup": 64,
+        "iterations": 4096,
+        "samplingInterval": 1024,
+        "deterministic": [
+          {
+            "history": 0,
+            "appends": 4096,
+            "historyReads": 0,
+            "stringifies": 4096,
+            "writes": 4096,
+            "explicitOpens": 0,
+            "explicitCloses": 0,
+            "activeFds": 0
+          },
+          {
+            "history": 1000,
+            "appends": 4096,
+            "historyReads": 0,
+            "stringifies": 4096,
+            "writes": 4096,
+            "explicitOpens": 0,
+            "explicitCloses": 0,
+            "activeFds": 0
+          },
+          {
+            "history": 10000,
+            "appends": 4096,
+            "historyReads": 0,
+            "stringifies": 4096,
+            "writes": 4096,
+            "explicitOpens": 0,
+            "explicitCloses": 0,
+            "activeFds": 0
+          }
+        ],
+        "references": {
+          "failedWhileOwnerAlive": 2,
+          "failedAfterClear": 0,
+          "successWhileOwnerAlive": 1,
+          "successAfterClear": 0,
+          "finalEntryCount": 0
+        },
+        "measurements": [
+          {
+            "history": 0,
+            "timedStartCount": 64,
+            "appends": 4096,
+            "cpuMicrosecondsPerAppend": 68.603515625,
+            "wallP50Milliseconds": 0.070699999999988,
+            "wallP95Milliseconds": 0.11740000000008877,
+            "sampledBytes": 11094384,
+            "sampledBytesPerAppend": 2708.58984375,
+            "allocationStacks": [
+              {
+                "frame": "writeFileSync@node:fs:2999",
+                "bytes": 3212920
+              },
+              {
+                "frame": "_persist@repo:/.git/pi150-t04/control/packages/coding-agent/src/core/session-manager.ts:1060",
+                "bytes": 2594824
+              },
+              {
+                "frame": "serializeUUID@node:internal/crypto/random:424",
+                "bytes": 2495920
+              },
+              {
+                "frame": "appendMessage@repo:/.git/pi150-t04/control/packages/coding-agent/src/core/session-manager.ts:1090",
+                "bytes": 954848
+              },
+              {
+                "frame": "appendFileSync@node:fs:3110",
+                "bytes": 483248
+              },
+              {
+                "frame": "set@:0",
+                "bytes": 455448
+              },
+              {
+                "frame": "generateId@repo:/.git/pi150-t04/control/packages/coding-agent/src/core/session-manager.ts:238",
+                "bytes": 303576
+              },
+              {
+                "frame": "randomUUID@node:internal/crypto/random:467",
+                "bytes": 285184
+              }
+            ]
+          },
+          {
+            "history": 1000,
+            "timedStartCount": 1064,
+            "appends": 4096,
+            "cpuMicrosecondsPerAppend": 84.228515625,
+            "wallP50Milliseconds": 0.07219999999983884,
+            "wallP95Milliseconds": 0.12550000000010186,
+            "sampledBytes": 10624000,
+            "sampledBytesPerAppend": 2593.75,
+            "allocationStacks": [
+              {
+                "frame": "writeFileSync@node:fs:2999",
+                "bytes": 2757936
+              },
+              {
+                "frame": "_persist@repo:/.git/pi150-t04/control/packages/coding-agent/src/core/session-manager.ts:1060",
+                "bytes": 2209248
+              },
+              {
+                "frame": "serializeUUID@node:internal/crypto/random:424",
+                "bytes": 1210016
+              },
+              {
+                "frame": "appendMessage@repo:/.git/pi150-t04/control/packages/coding-agent/src/core/session-manager.ts:1090",
+                "bytes": 949296
+              },
+              {
+                "frame": "randomUUID@node:internal/crypto/random:467",
+                "bytes": 659544
+              },
+              {
+                "frame": "writeFileSync@node:fs:2999",
+                "bytes": 422320
+              },
+              {
+                "frame": "appendFileSync@node:fs:3110",
+                "bytes": 422320
+              },
+              {
+                "frame": "_persist@repo:/.git/pi150-t04/control/packages/coding-agent/src/core/session-manager.ts:1060",
+                "bytes": 371088
+              }
+            ]
+          },
+          {
+            "history": 10000,
+            "timedStartCount": 10064,
+            "appends": 4096,
+            "cpuMicrosecondsPerAppend": 76.171875,
+            "wallP50Milliseconds": 0.07070000000021537,
+            "wallP95Milliseconds": 0.10799999999971988,
+            "sampledBytes": 9661048,
+            "sampledBytesPerAppend": 2358.654296875,
+            "allocationStacks": [
+              {
+                "frame": "writeFileSync@node:fs:2999",
+                "bytes": 3053848
+              },
+              {
+                "frame": "_persist@repo:/.git/pi150-t04/control/packages/coding-agent/src/core/session-manager.ts:1060",
+                "bytes": 2488240
+              },
+              {
+                "frame": "randomUUID@node:internal/crypto/random:467",
+                "bytes": 2329784
+              },
+              {
+                "frame": "appendMessage@repo:/.git/pi150-t04/control/packages/coding-agent/src/core/session-manager.ts:1090",
+                "bytes": 1162616
+              },
+              {
+                "frame": "appendFileSync@node:fs:3110",
+                "bytes": 514648
+              },
+              {
+                "frame": "has@:0",
+                "bytes": 104640
+              },
+              {
+                "frame": "wrappedFn@node:internal/errors:542",
+                "bytes": 6240
+              },
+              {
+                "frame": "post@node:inspector:115",
+                "bytes": 1032
+              }
+            ]
+          }
+        ]
+      },
+      "candidate": {
+        "fixtureVersion": 1,
+        "node": "v26.13.0",
+        "os": "win32 10.0.26300",
+        "modulePath": "packages/coding-agent/src/core/session-manager.ts",
+        "sourceHash": "98eaad066155ea4b5f2f2d7cd390e459f985379d211e4fcf479e7f7eb1532ea0",
+        "warmup": 64,
+        "iterations": 4096,
+        "samplingInterval": 1024,
+        "deterministic": [
+          {
+            "history": 0,
+            "appends": 4096,
+            "historyReads": 0,
+            "stringifies": 4096,
+            "writes": 4096,
+            "explicitOpens": 4096,
+            "explicitCloses": 4096,
+            "activeFds": 0
+          },
+          {
+            "history": 1000,
+            "appends": 4096,
+            "historyReads": 0,
+            "stringifies": 4096,
+            "writes": 4096,
+            "explicitOpens": 4096,
+            "explicitCloses": 4096,
+            "activeFds": 0
+          },
+          {
+            "history": 10000,
+            "appends": 4096,
+            "historyReads": 0,
+            "stringifies": 4096,
+            "writes": 4096,
+            "explicitOpens": 4096,
+            "explicitCloses": 4096,
+            "activeFds": 0
+          }
+        ],
+        "references": {
+          "failedWhileOwnerAlive": 0,
+          "failedAfterClear": 0,
+          "successWhileOwnerAlive": 1,
+          "successAfterClear": 0,
+          "finalEntryCount": 0
+        },
+        "measurements": [
+          {
+            "history": 0,
+            "timedStartCount": 64,
+            "appends": 4096,
+            "cpuMicrosecondsPerAppend": 80.078125,
+            "wallP50Milliseconds": 0.07130000000006476,
+            "wallP95Milliseconds": 0.11730000000011387,
+            "sampledBytes": 10040984,
+            "sampledBytesPerAppend": 2451.412109375,
+            "allocationStacks": [
+              {
+                "frame": "writeFileSync@node:fs:2999",
+                "bytes": 2901264
+              },
+              {
+                "frame": "_persist@repo:/packages/coding-agent/src/core/session-manager.ts:1086",
+                "bytes": 2618440
+              },
+              {
+                "frame": "serializeUUID@node:internal/crypto/random:424",
+                "bytes": 2405576
+              },
+              {
+                "frame": "appendMessage@repo:/packages/coding-agent/src/core/session-manager.ts:1137",
+                "bytes": 887880
+              },
+              {
+                "frame": "set@:0",
+                "bytes": 455448
+              },
+              {
+                "frame": "generateId@repo:/packages/coding-agent/src/core/session-manager.ts:238",
+                "bytes": 277528
+              },
+              {
+                "frame": "randomUUID@node:internal/crypto/random:467",
+                "bytes": 273600
+              },
+              {
+                "frame": "push@:0",
+                "bytes": 102096
+              }
+            ]
+          },
+          {
+            "history": 1000,
+            "timedStartCount": 1064,
+            "appends": 4096,
+            "cpuMicrosecondsPerAppend": 76.171875,
+            "wallP50Milliseconds": 0.07090000000016516,
+            "wallP95Milliseconds": 0.10850000000027649,
+            "sampledBytes": 9701272,
+            "sampledBytesPerAppend": 2368.474609375,
+            "allocationStacks": [
+              {
+                "frame": "writeFileSync@node:fs:2999",
+                "bytes": 2886240
+              },
+              {
+                "frame": "_persist@repo:/packages/coding-agent/src/core/session-manager.ts:1086",
+                "bytes": 2497336
+              },
+              {
+                "frame": "serializeUUID@node:internal/crypto/random:424",
+                "bytes": 1614552
+              },
+              {
+                "frame": "appendBatch@repo:/scripts/bench/session-append.ts:32",
+                "bytes": 1169464
+              },
+              {
+                "frame": "randomUUID@node:internal/crypto/random:467",
+                "bytes": 613552
+              },
+              {
+                "frame": "set@:0",
+                "bytes": 344144
+              },
+              {
+                "frame": "getBufferedUUID@node:internal/crypto/random:449",
+                "bytes": 310840
+              },
+              {
+                "frame": "push@:0",
+                "bytes": 128024
+              }
+            ]
+          },
+          {
+            "history": 10000,
+            "timedStartCount": 10064,
+            "appends": 4096,
+            "cpuMicrosecondsPerAppend": 76.416015625,
+            "wallP50Milliseconds": 0.07049999999981083,
+            "wallP95Milliseconds": 0.10690000000022337,
+            "sampledBytes": 9035272,
+            "sampledBytesPerAppend": 2205.876953125,
+            "allocationStacks": [
+              {
+                "frame": "writeFileSync@node:fs:2999",
+                "bytes": 2923328
+              },
+              {
+                "frame": "_persist@repo:/packages/coding-agent/src/core/session-manager.ts:1086",
+                "bytes": 2512152
+              },
+              {
+                "frame": "randomUUID@node:internal/crypto/random:467",
+                "bytes": 2370248
+              },
+              {
+                "frame": "appendBatch@repo:/scripts/bench/session-append.ts:32",
+                "bytes": 1125944
+              },
+              {
+                "frame": "has@:0",
+                "bytes": 95328
+              },
+              {
+                "frame": "wrappedFn@node:internal/errors:542",
+                "bytes": 4160
+              },
+              {
+                "frame": "openSync@node:fs:774",
+                "bytes": 4112
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "eventChainRegression": {
+    "node": "v26.13.0",
+    "platform": "win32",
+    "results": [
+      {
+        "name": "message_update",
+        "updates": 100000,
+        "warmup": 10000,
+        "metrics": {
+          "cpuP50MsPerUpdate": 1.1200000000144427e-05,
+          "cpuP95MsPerUpdate": 2.0199999999931607e-05,
+          "sampledAllocationBytes": 74384,
+          "sampledAllocationBytesPerUpdate": 0.74384,
+          "minorGcCount": 0,
+          "majorGcCount": 1,
+          "totalGcDurationMs": 4.71739998459816,
+          "heapBefore": 43229264,
+          "heapAfter": 43411160,
+          "controlledGcAfter": 43305304,
+          "controlledGcHeapDeltaBytes": 76040,
+          "builtInListenerPromisesPerUpdate": 0,
+          "programStatusReportsPerUpdate": 0,
+          "rejectionObserversPerUpdate": 0,
+          "finalUpdateCorrect": 1
+        },
+        "sourceInvariant": {
+          "toolWrapperObjectsPerUpdate": 0,
+          "inlineClosuresPerUpdate": 0,
+          "promiseTailsPerUpdate": 0,
+          "promiseArraysPerUpdate": 0,
+          "arraysPerUpdate": 0
+        }
+      },
+      {
+        "name": "tool_execution_update",
+        "updates": 100000,
+        "warmup": 10000,
+        "metrics": {
+          "cpuP50MsPerUpdate": 3.099999999994907e-05,
+          "cpuP95MsPerUpdate": 0.00014340000000015606,
+          "sampledAllocationBytes": 57368,
+          "sampledAllocationBytesPerUpdate": 0.57368,
+          "minorGcCount": 0,
+          "majorGcCount": 1,
+          "totalGcDurationMs": 4.901000022888184,
+          "heapBefore": 43302472,
+          "heapAfter": 43440104,
+          "controlledGcAfter": 43324928,
+          "controlledGcHeapDeltaBytes": 22456,
+          "builtInListenerPromisesPerUpdate": 0,
+          "programStatusReportsPerUpdate": 0,
+          "rejectionObserversPerUpdate": 0,
+          "finalUpdateCorrect": 1
+        },
+        "sourceInvariant": {
+          "toolWrapperObjectsPerUpdate": 0,
+          "inlineClosuresPerUpdate": 0,
+          "promiseTailsPerUpdate": 0,
+          "promiseArraysPerUpdate": 0,
+          "arraysPerUpdate": 0
+        }
+      },
+      {
+        "name": "observer-coalesced-message_update",
+        "updates": 100000,
+        "warmup": 10000,
+        "metrics": {
+          "rawUpdates": 100000,
+          "coalescedUpdates": 99999,
+          "coalescedDeliveries": 1,
+          "snapshotCount": 1,
+          "extensionObserverPublishes": 1,
+          "promisesPerRawUpdate": 0,
+          "promisesPerDelivery": 0,
+          "observerBridgePromisesPerDelivery": 0,
+          "builtInInteractivePromisesPerDelivery": 0,
+          "programStatusReportsPerDelivery": 0,
+          "rejectionObserversPerDelivery": 0,
+          "sampledAllocationBytes": 15293504,
+          "sampledAllocationBytesPerRawUpdate": 152.93504,
+          "sampledAllocationBytesPerDelivery": 15293504,
+          "cpuP50MsPerRawUpdate": 8.919999999989159e-05,
+          "cpuP95MsPerRawUpdate": 0.0005751999999999952,
+          "minorGcCount": 0,
+          "majorGcCount": 1,
+          "totalGcDurationMs": 6.0546999871730804,
+          "heapBefore": 43352464,
+          "heapAfter": 44942864,
+          "controlledGcAfter": 44212016,
+          "controlledGcHeapDeltaBytes": 859552,
+          "finalUpdateCorrect": 1
+        },
+        "sourceInvariant": {
+          "toolWrapperObjectsPerUpdate": 0,
+          "inlineClosuresPerUpdate": 0,
+          "promiseTailsPerUpdate": 0,
+          "promiseArraysPerUpdate": 0
+        }
+      }
+    ]
+  },
+  "validation": {
+    "node": "v26.13.0",
+    "typecheck": "npm run check: pass",
+    "build": "npm run build:offline: pass",
+    "fullTests": {
+      "command": "npm test -- --keep-going",
+      "units": 392,
+      "failedUnits": 0,
+      "tests": 5230,
+      "pass": 5133,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 97
+    },
+    "targetedTests": {
+      "tests": 36,
+      "pass": 27,
+      "fail": 0,
+      "skipped": 9
+    },
+    "logs": {
+      "tests.log": "47a96b010e9d15539f1f1588feb94c97df39e3d37b2af60ae706c4191ebff4d9",
+      "build.log": "597b0150f0ae816a32c03540f61e994cf48a4e37294d7d64d907912dfe541055"
+    }
+  }
+}
