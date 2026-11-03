@@ -10,7 +10,7 @@ import { CONFIG_DIR_NAME } from "../packages/coding-agent/src/config.ts";
 import { DefaultResourceLoader } from "../packages/coding-agent/src/core/resource-loader.ts";
 import { SettingsManager } from "../packages/coding-agent/src/core/settings-manager.ts";
 import { loadSkills } from "../packages/coding-agent/src/core/skills.ts";
-import { canonicalizePath, isCanonicalPathWithin } from "../packages/coding-agent/src/utils/paths.ts";
+import { canonicalizePath, isPathWithin } from "../packages/coding-agent/src/utils/paths.ts";
 import { removeOwnedFixture } from "./helpers/owned-fixture-cleanup.ts";
 
 function fixture(t: TestContext) {
@@ -79,10 +79,10 @@ test("path containment uses complete ancestors and preserves case-sensitive obje
 	const upper = join(sensitive, "Case"), lower = join(sensitive, "case"); fs.mkdirSync(upper); fs.mkdirSync(lower);
 	const file = skillFile(join(lower, "skills", "demo"));
 	assert.notEqual(fs.statSync(upper, { bigint: true }).ino, fs.statSync(lower, { bigint: true }).ino);
-	assert.equal(isCanonicalPathWithin(canonicalizePath(file), canonicalizePath(lower)), true);
-	assert.equal(isCanonicalPathWithin(canonicalizePath(file), canonicalizePath(upper)), false);
-	assert.equal(isCanonicalPathWithin(`${lower}-other`, lower), false);
-	assert.equal(isCanonicalPathWithin(lower, lower), true);
+	assert.equal(isPathWithin(canonicalizePath(file), canonicalizePath(lower)), true);
+	assert.equal(isPathWithin(canonicalizePath(file), canonicalizePath(upper)), false);
+	assert.equal(isPathWithin(`${lower}-other`, lower), false);
+	assert.equal(isPathWithin(lower, lower), true);
 	const loaded = loadSkills({ cwd: f.cwd, agentDir: upper, skillPaths: [file], includeDefaults: false });
 	assert.equal(loaded.skills[0].sourceInfo.scope, "temporary");
 });
@@ -193,6 +193,52 @@ test("explicit extension metadata survives a Skills override using an alias", as
 	} finally { await disposeLoader(loader); }
 });
 
+test("extendResources preserves declared provenance for linked descendants outside its root", async t => {
+	const f = fixture(t), registered = join(f.root, "Registered"), outside = join(f.root, "Outside");
+	fs.mkdirSync(registered); skillFile(outside); link(outside, join(registered, "linked"));
+	const displayedPath = join(registered, "linked", "SKILL.md");
+	const loader = new DefaultResourceLoader({ cwd: f.cwd, agentDir: f.agentDir, settingsManager: SettingsManager.inMemory(),
+		noExtensions: true, noContextFiles: true, noSkills: true, noPromptTemplates: true, noThemes: true,
+	});
+	try {
+		await loader.reload();
+		const native = fs.realpathSync.native, calls = new Map<string, number>();
+		t.mock.method(fs.realpathSync, "native", (...args: Parameters<typeof native>) => { const path = String(args[0]); calls.set(path, (calls.get(path) ?? 0) + 1); return native(...args); });
+		loader.extendResources({ skillPaths: [
+			{ path: registered, metadata: { source: "declared-linked", scope: "temporary", origin: "package", baseDir: registered } },
+			{ path: displayedPath, metadata: { source: "later-specific", scope: "user", origin: "top-level" } },
+		] });
+		const loaded = loader.getSkills().skills;
+		assert.equal(loaded.length, 1); assert.equal(loaded[0].filePath, displayedPath);
+		assert.equal(loaded[0].sourceInfo.source, "declared-linked");
+		assert.equal(loaded[0].sourceInfo.scope, "temporary"); assert.equal(loaded[0].sourceInfo.origin, "package");
+		assert.equal(loaded[0].sourceInfo.baseDir, registered);
+		assert.equal(calls.get(registered), 2, "existing merge and Skills classification only");
+		assert.equal(calls.get(displayedPath), 4, "existing merge, Skills classification, and two dedup checks only");
+		assert.equal([...calls.values()].reduce((sum, count) => sum + count, 0), 8, "declared ancestor matching adds no native calls");
+		t.diagnostic("linkedDescendantNative=8; existingMergeAndSkills=8; sourceResolver=0");
+	} finally { await disposeLoader(loader); }
+});
+
+test("reload preserves CLI directory metadata for linked descendants outside its root", async t => {
+	const f = fixture(t), registered = join(f.root, "Registered"), outside = join(f.root, "Outside");
+	fs.mkdirSync(registered); fs.writeFileSync(join(registered, "index.ts"), "export default () => {};\n");
+	skillFile(outside); link(outside, join(registered, "linked"));
+	const displayedPath = join(registered, "linked", "SKILL.md");
+	const loader = new DefaultResourceLoader({ cwd: f.cwd, agentDir: f.agentDir, settingsManager: SettingsManager.inMemory(),
+		noExtensions: true, noContextFiles: true, noSkills: true, noPromptTemplates: true, noThemes: true,
+		additionalExtensionPaths: [registered], additionalSkillPaths: [registered],
+	});
+	try {
+		await loader.reload();
+		assert.deepEqual(loader.getExtensions().errors, []);
+		const loaded = loader.getSkills().skills;
+		assert.equal(loaded.length, 1); assert.equal(loaded[0].filePath, displayedPath);
+		assert.equal(loaded[0].sourceInfo.source, "cli"); assert.equal(loaded[0].sourceInfo.scope, "temporary");
+		assert.equal(loaded[0].sourceInfo.origin, "top-level");
+	} finally { await disposeLoader(loader); }
+});
+
 for (const size of [1, 100, 1000]) {
 	test(`explicit source root resolves once during a ${size}-resource extend pass`, async t => {
 		const f = fixture(t), skillsRoot = join(f.agentDir, "skills"), alias = join(f.root, "Alias");
@@ -221,7 +267,7 @@ for (const size of [1, 100, 1000]) {
 
 test("canonical containment helper only walks dirname without I/O, callbacks or containers", () => {
 	const source = ts.createSourceFile("paths.ts", fs.readFileSync(new URL("../packages/coding-agent/src/utils/paths.ts", import.meta.url), "utf8"), ts.ScriptTarget.Latest, true);
-	const fn = source.statements.find((node): node is ts.FunctionDeclaration => ts.isFunctionDeclaration(node) && node.name?.text === "isCanonicalPathWithin")!;
+	const fn = source.statements.find((node): node is ts.FunctionDeclaration => ts.isFunctionDeclaration(node) && node.name?.text === "isPathWithin")!;
 	function walk(node: ts.Node) {
 		assert.ok(!ts.isArrowFunction(node) && !ts.isFunctionExpression(node) && !ts.isNewExpression(node) && !ts.isArrayLiteralExpression(node) && !ts.isObjectLiteralExpression(node) && !ts.isAwaitExpression(node));
 		if (ts.isCallExpression(node)) assert.equal(node.expression.getText(source), "dirname");

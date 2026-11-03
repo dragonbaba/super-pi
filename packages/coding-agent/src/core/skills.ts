@@ -3,7 +3,7 @@ import ignore from "ignore";
 import { basename, dirname, join, relative, resolve, sep } from "path";
 import { CONFIG_DIR_NAME, getAgentDir } from "../config.ts";
 import { parseFrontmatter } from "../utils/frontmatter.ts";
-import { canonicalizePath, isCanonicalPathWithin, resolvePath } from "../utils/paths.ts";
+import { canonicalizePath, isPathWithin, resolvePath } from "../utils/paths.ts";
 import type { ResourceDiagnostic } from "./diagnostics.ts";
 import { compareCanonicalIdentifiers } from "./prefix-manifest.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
@@ -441,8 +441,8 @@ export function loadSkills(options: LoadSkillsOptions): LoadSkillsResult {
 	const getSource = (resolvedPath: string): "user" | "project" | "path" => {
 		if (userSkillsDir !== undefined && projectSkillsDir !== undefined) {
 			const actualPath = canonicalizePath(resolvedPath);
-			if (isCanonicalPathWithin(actualPath, userSkillsDir)) return "user";
-			if (isCanonicalPathWithin(actualPath, projectSkillsDir)) return "project";
+			if (isPathWithin(actualPath, userSkillsDir)) return "user";
+			if (isPathWithin(actualPath, projectSkillsDir)) return "project";
 		}
 		return "path";
 	};

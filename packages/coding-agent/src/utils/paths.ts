@@ -33,8 +33,8 @@ export function canonicalizePath(path: string): string {
 	}
 }
 
-/** Compare already-canonical absolute paths without folding case or doing I/O. */
-export function isCanonicalPathWithin(path: string, root: string): boolean {
+/** Compare normalized absolute path ancestors without folding case or doing I/O. */
+export function isPathWithin(path: string, root: string): boolean {
 	let current = path;
 	while (true) {
 		if (current === root) return true;

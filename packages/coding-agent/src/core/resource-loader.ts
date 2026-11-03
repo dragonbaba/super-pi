@@ -7,7 +7,7 @@ import type { ResourceDiagnostic } from "./diagnostics.ts";
 
 export type { ResourceCollision, ResourceDiagnostic } from "./diagnostics.ts";
 
-import { canonicalizePath, isCanonicalPathWithin, isLocalPath, resolvePath } from "../utils/paths.ts";
+import { canonicalizePath, isLocalPath, isPathWithin, resolvePath } from "../utils/paths.ts";
 import { stripBom } from "../utils/text.ts";
 import { createEventBus, type EventBus } from "./event-bus.ts";
 import {
@@ -824,8 +824,12 @@ export class DefaultResourceLoader implements ResourceLoader {
 			if (resourcePath) {
 				if (extraSourceInfos) {
 					for (const [sourcePath, sourceInfo] of extraSourceInfos) {
+						// Declared roots also own resources discovered through outgoing links.
+						if (isPathWithin(normalizedPath, resolve(sourcePath))) {
+							return { ...sourceInfo, path: resourcePath };
+						}
 						actualPath ??= canonicalizePath(normalizedPath);
-						if (isCanonicalPathWithin(actualPath, canonicalSource(sourcePath))) {
+						if (isPathWithin(actualPath, canonicalSource(sourcePath))) {
 							return { ...sourceInfo, path: resourcePath };
 						}
 					}
@@ -834,8 +838,11 @@ export class DefaultResourceLoader implements ResourceLoader {
 					const exact = metadataByPath.get(normalizedPath) ?? metadataByPath.get(resourcePath);
 					if (exact) return createSourceInfo(resourcePath, exact);
 					for (const [sourcePath, metadata] of metadataByPath) {
+						if (isPathWithin(normalizedPath, resolve(sourcePath))) {
+							return createSourceInfo(resourcePath, metadata);
+						}
 						actualPath ??= canonicalizePath(normalizedPath);
-						if (isCanonicalPathWithin(actualPath, canonicalSource(sourcePath))) {
+						if (isPathWithin(actualPath, canonicalSource(sourcePath))) {
 							return createSourceInfo(resourcePath, metadata);
 						}
 					}
@@ -855,7 +862,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 			actualPath ??= canonicalizePath(normalizedPath);
 			for (let index = 0; index < defaultRoots.length; index++) {
 				const root = defaultRoots[index];
-				if (isCanonicalPathWithin(actualPath, canonicalSource(root))) {
+				if (isPathWithin(actualPath, canonicalSource(root))) {
 					return {
 						path: resourcePath,
 						source: "local",

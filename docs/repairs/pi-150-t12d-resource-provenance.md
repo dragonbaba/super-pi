@@ -30,7 +30,13 @@ loadSkills的一次加载预先得到user/project根的canonical身份，每个�
 
 ## 实施与已观察证据
 
-4项公开入口初始失败均转绿。`isCanonicalPathWithin`只对已canonical的绝对路径逐级dirname比较，AST限制它没有I/O、回调、容器或await；没有全局大小写折叠。loadSkills只在includeDefaults=false分类时求两根身份，保留默认装载与原显示路径。resource-loader把原查找/默认补全过程合为pass-owned resolver，保留extra插入顺序、metadata原始exact及查找顺序、资源已有sourceInfo、默认来源的优先级；明确temporary/package元数据不会因别名而丢失。
+### #197 reviewer修订方案（实施前）
+
+reviewer指出显式注册目录中的linked descendant可指向目录之外；Skills扫描仍从注册路径产出资源，仅比较整条路径的canonical身份会丢失声明的package/temporary来源。extraSourceInfos与metadataByPath两条查找链均须保持这个既有行为。先通过公开extendResources以及reload的CLI目录入口复现，覆盖外部目标、原显示路径与来源优先级；再在每条来源的原查找顺序内先比较已归一化的词法祖先，未命中才比较实际身份。此处词法命中是声明目录来源规则，并非错误兜底或trust授权。
+
+复用纯dirname祖先比较，命名改为isPathWithin以明确它也接受normalized绝对路径；不新增容器/闭包/异常分支。仅显式来源两条链添加词法匹配，不扩大默认根分类范围。词法命中应免去来源resolver的native查询，别名路径仍维持每资源最多一次、每根每pass最多一次；原1/100/1000计数、生命周期和AST约束继续验证。新增回归先红后绿，然后相关检查、check/build及Node26全套，修复推送后独立@codex review，等待新head审核及六CI。
+
+4项公开入口初始失败均转绿。`isPathWithin`对已归一化的绝对路径逐级dirname比较，AST限制它没有I/O、回调、容器或await；没有全局大小写折叠。loadSkills只在includeDefaults=false分类时求两根身份，保留默认装载与原显示路径。resource-loader把原查找/默认补全过程合为pass-owned resolver，保留extra插入顺序、metadata原始exact及查找顺序、资源已有sourceInfo、默认来源的优先级；明确temporary/package元数据不会因别名而丢失。
 
 1/100/1000真实文件，Skills的native API次数为2N+2：2根、N次分类和原有N次同文件去重。默认来源补全为N+8：每个资源一次、8根各一次。公开extendResources完整链为2N+5：文件去重N、输出别名身份N、merge/Skills两根/Skills入口共4及来源root一次；source root解析不随N增长。已有线性metadata搜索保留，计数不代表OS syscall或全面CPU改善。
 
@@ -39,3 +45,7 @@ loadSkills的一次加载预先得到user/project根的canonical身份，每个�
 新增Map容量≤当前extra/metadata路径数+8，不持有资源对象；defaultRoots最多8个字符串。5个pass resolver与正常/失败两张root Map在受控GC后回收，loader和其返回扩展仍活着；根数组只被已回收resolver闭包拥有。没有对象池或持久cache。新增两个闭包和Map是`createSourceInfoResolver`显式加载入口开销，dirname会产生路径段字符串；原资源读取、解析、metadata包装、扫描数组仍保留。不进入provider、event、进度、布局或frame路径，不宣称资源加载零分配。
 
 74项资源/路径/包/trust/选择器及source invariants通过，check/build:offline通过，另补Windowsnamespace直接入口验证通过。最终Node26全套416个执行单元成功，5566项测试：5468通过、98跳过、0失败/取消。最终PR审核、CI及合并以对应PR记录为准；该PR合并后本轮T01–T12全部交付。结构化证据见`docs/evidence/pi-150-t12d-resource-provenance.json`；原始红绿、路径计数和生命周期日志位于`.git/pi150-t12d`。
+
+#197意见4461525995已按上述先行修订方案修复。两个真实公开入口先红后绿：extendResources里的声明目录优先于后续更具体条目，reload里的CLI目录来源不再丢失；它们的linked descendant均指向注册根之外。显式来源在每个原顺序条目内先匹配词法祖先，再匹配canonical身份；没有新增兜底、容器或闭包。linked descendant用例的8次native调用全部来自原merge/Skills扫描，source resolver为0；原别名规模计数与5个resolver/2张Map回收仍通过。
+
+修订后Node v26.13.0验证：78项相关测试通过，check及build:offline通过；全套416个执行单元成功，5568项测试、5470通过、98跳过、0失败/取消。专项共20项，两个新增回归包含在全套中。本轮相关测试记录的61个临时目录均已释放；T12-A此前10个目录的清单删除即使获用户明确授权仍被执行工具自动策略拒绝，不计入已清理。修订推送后独立@codex review，并继续等待新head的completed/no findings与六CI通过。
