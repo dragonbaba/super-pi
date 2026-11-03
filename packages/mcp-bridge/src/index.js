@@ -1,6 +1,7 @@
 import { createHash, createHmac } from "node:crypto";
+import * as PiHost from "@super-pi/coding-agent";
 import { loadMcpConfig } from "./config.js";
-import { checkRuntimeCompatibility, discoverPiVersion } from "./runtime-compat.js";
+import { checkRuntimeCompatibility } from "./runtime-compat.js";
 import { MAX_ACTIVATED_SCHEMA_BYTES, MAX_SERVERS, sanitizeText } from "./security.js";
 import { McpRuntimeLifecycle } from "./lifecycle.js";
 import { chooseMcpAction, withMcpAuthProgress } from "./manager.js";
@@ -55,7 +56,7 @@ async function runAuthCommand(action, server, ctx, signal, showUrl) {
 }
 
 export default function mcpBridgeExtension(pi) {
-  const compatibility = checkRuntimeCompatibility(discoverPiVersion());
+  const compatibility = checkRuntimeCompatibility(PiHost.VERSION);
   if (!compatibility.compatible) {
     pi.on("session_start", (_event, ctx) => {
       if (ctx.hasUI) ctx.ui.notify(compatibility.reason, "warning");
@@ -73,6 +74,14 @@ export default function mcpBridgeExtension(pi) {
   let managerEnabled = false;
   let managerController = null;
   let managerOperation = null;
+  let executionPaused = false;
+  let closed = false;
+  let startupOperation = null;
+  let boundaryStop = null;
+  const assertExecution = () => {
+    pi.assertExecutionCurrent?.();
+    if (executionPaused || closed) throw new Error("MCP execution is stopped while the session boundary changes.");
+  };
   const stopManager = async () => {
     managerEnabled = false;
     managerController?.abort();
@@ -138,16 +147,25 @@ export default function mcpBridgeExtension(pi) {
   // update also keeps remote tools activated by other means while still valid.
   const syncRemoteTools = (runtime, reset = false) => {
     for (const name of runtime.registeredNames.keys()) knownRemoteToolNames.add(name);
+    const catalog = pi.getToolCatalog?.();
+    const active = catalog?.activeTools ?? pi.getActiveTools();
+    const planOwnsSelection = catalog?.selectionMode === "plan";
     const next = new Set();
-    for (const name of pi.getActiveTools()) {
+    for (const name of active) {
       if (!knownRemoteToolNames.has(name)) next.add(name);
-      else if (!reset && !hostActivatedRemoteNames.has(name) && runtime.toolConfig(name)) next.add(name);
+      else if ((!reset || planOwnsSelection) && !hostActivatedRemoteNames.has(name) && runtime.toolConfig(name)) next.add(name);
     }
     hostActivatedRemoteNames.clear();
-    for (const [name, fingerprint] of activationIntent) {
-      if (toolActivationFingerprint(runtime, name, fingerprints) === fingerprint) next.add(name);
+    if (planOwnsSelection) {
+      // Plan synchronization only removes invalid/auto-registered remote names.
+      // Keep its existing order and avoid rebuilding an unchanged selection.
+      if (next.size === active.length) return;
+    } else {
+      for (const [name, fingerprint] of activationIntent) {
+        if (toolActivationFingerprint(runtime, name, fingerprints) === fingerprint) next.add(name);
+      }
+      next.add("mcp_search_tools");
     }
-    next.add("mcp_search_tools");
     pi.setActiveTools([...next]);
   };
 
@@ -162,6 +180,29 @@ export default function mcpBridgeExtension(pi) {
   };
   const lifecycle = new McpRuntimeLifecycle(deactivateRemoteTools);
   const hasEmptyConfiguration = () => mcpEnabled && managerEnabled && !configError && configInfo?.servers.length === 0;
+  const toolsChanged = () => {
+    if (!executionPaused && !closed && lifecycle.current) syncRemoteTools(lifecycle.current);
+  };
+  pi.registerExecutionOwner?.("mcp", {
+    revoke() {
+      executionPaused = true;
+      activationGeneration++;
+      // Each stop revokes synchronously before returning its owned wait.
+      boundaryStop = Promise.allSettled([stopManager(), stopAuth(), lifecycle.suspend()]);
+    },
+    async drain() {
+      const results = await boundaryStop;
+      await startupOperation;
+      for (const result of results ?? []) if (result.status === "rejected") throw result.reason;
+      boundaryStop = null;
+      if (closed) return;
+      lifecycle.resume();
+      if (lifecycle.current) lifecycle.current.onToolsChanged = toolsChanged;
+      managerEnabled = mcpEnabled;
+      authEnabled = mcpEnabled && configInfo !== null;
+      executionPaused = false;
+    },
+  });
 
   pi.registerTool({
     name: "mcp_search_tools",
@@ -175,6 +216,7 @@ export default function mcpBridgeExtension(pi) {
       additionalProperties: false,
     },
     async execute(_toolCallId, args, signal) {
+      assertExecution();
       signal?.throwIfAborted();
       const runtime = lifecycle.current;
       if (!runtime) {
@@ -190,7 +232,16 @@ export default function mcpBridgeExtension(pi) {
       await runtime.waitForDiscovery(signal);
       if (lifecycle.current !== runtime || generation !== activationGeneration || signal?.aborted) throw new Error("MCP search was cancelled or replaced");
       const query = typeof args.query === "string" ? args.query.slice(0, 200) : "";
-      const candidates = runtime.searchTools(query, 8);
+      const catalog = pi.getToolCatalog?.();
+      let eligibleNames;
+      if (catalog) {
+        eligibleNames = new Set();
+        for (const tool of catalog.tools) {
+          if (tool.available !== false) eligibleNames.add(tool.name);
+        }
+      }
+      // An empty modern catalog is authoritative. Filter before either search or schema budgets.
+      const candidates = runtime.searchTools(query, 8, eligibleNames);
       if (candidates.length === 0) return { content: [{ type: "text", text: `No deferred MCP tools matched: ${sanitizeText(query, 200)}` }] };
       const matches = [];
       let schemaBytes = 0;
@@ -200,7 +251,7 @@ export default function mcpBridgeExtension(pi) {
         matches.push(name);
         schemaBytes += nextBytes;
       }
-      const active = pi.getActiveTools();
+      const active = catalog?.activeTools ?? pi.getActiveTools();
       const activeSet = new Set(active);
       const added = matches.filter((name) => !activeSet.has(name));
       if (added.length > 0) pi.setActiveTools([...active, ...added]);
@@ -224,7 +275,8 @@ export default function mcpBridgeExtension(pi) {
     },
   });
 
-  pi.on("session_start", async (event, ctx) => {
+  const startSession = async (event, ctx) => {
+    assertExecution();
     mcpEnabled = event.mcpEnabled !== false;
     const managerStopped = stopManager();
     const authStopped = stopAuth();
@@ -256,8 +308,9 @@ export default function mcpBridgeExtension(pi) {
       if (!lifecycle.isCurrent(token)) return;
       const schemaCache = new McpSchemaCache(cacheSnapshot.path, cacheSnapshot);
       nextRuntime = new McpBridgeRuntime({
+        assertExecutionCurrent: assertExecution,
         registerTool(tool) {
-          if (!lifecycle.isCurrent(token) || token.signal.aborted || nextRuntime.closed) throw new Error("MCP startup aborted");
+          if (executionPaused || closed || !lifecycle.owns(nextRuntime) || nextRuntime.closed) throw new Error("MCP startup aborted");
           // Record ownership before host registration: a later catalog entry can
           // fail, and cleanup must still deactivate every partially registered tool.
           knownRemoteToolNames.add(tool.name);
@@ -299,7 +352,7 @@ export default function mcpBridgeExtension(pi) {
         return;
       }
       const isCurrent = () => lifecycle.isCurrent(token) && lifecycle.current === nextRuntime && !token.signal.aborted && !nextRuntime.closed;
-      nextRuntime.onToolsChanged = () => { if (isCurrent()) syncRemoteTools(nextRuntime); };
+      nextRuntime.onToolsChanged = toolsChanged;
       syncRemoteTools(nextRuntime, true);
       const connections = [];
       for (const server of uncached) connections.push(nextRuntime.connect(server, token.signal));
@@ -320,18 +373,27 @@ export default function mcpBridgeExtension(pi) {
       configError = sanitizeText(error instanceof Error ? error.message : error, 500);
       if (ctx.hasUI) ctx.ui.notify(`MCP bridge configuration error: ${configError}`, "warning");
     }
+  };
+
+  pi.on("session_start", async (event, ctx) => {
+    if (startupOperation) throw new Error("MCP startup is already in progress.");
+    if (executionPaused) throw new Error("MCP execution cleanup has not completed.");
+    closed = false;
+    const operation = startSession(event, ctx);
+    startupOperation = operation;
+    try { await operation; }
+    finally { if (startupOperation === operation) startupOperation = null; }
   });
 
   pi.on("session_shutdown", async () => {
+    closed = true;
     activationGeneration++;
-    const managerStopped = stopManager();
-    const authStopped = stopAuth();
-    try { await lifecycle.shutdown(); }
-    finally { await authStopped; await managerStopped; }
+    const results = await Promise.allSettled([stopManager(), stopAuth(), lifecycle.shutdown(), startupOperation]);
+    for (const result of results) if (result.status === "rejected") throw result.reason;
   });
 
   pi.on("session_tree", (_event, ctx) => {
-    if (!mcpEnabled) return;
+    if (!mcpEnabled || executionPaused || closed) return;
     restoreActivationIntent(ctx);
     if (lifecycle.current) syncRemoteTools(lifecycle.current, true);
   });
@@ -358,6 +420,7 @@ export default function mcpBridgeExtension(pi) {
   pi.registerCommand("mcp-reload", {
     description: "Reload Pi resources and reconnect MCP servers from configuration",
     handler: async (_args, ctx) => {
+      assertExecution();
       await ctx.reload();
       return;
     },
@@ -365,6 +428,7 @@ export default function mcpBridgeExtension(pi) {
 
   const authCommand = async (action, args, ctx, progress = false) => {
     if (!authEnabled) return;
+    assertExecution();
     const parentSignal = ctx.signal;
     if (parentSignal?.aborted) return;
     const server = configInfo?.servers.find(item => item.id === args.trim() && item.oauth);
@@ -412,6 +476,7 @@ export default function mcpBridgeExtension(pi) {
       if (!mcpEnabled) { ctx.ui.notify("MCP is disabled for this session (--no-mcp).", "info"); return; }
       if (!ctx.hasUI) { ctx.ui.notify("Use /mcp-status, /mcp-tools, /mcp-login, /mcp-logout or /mcp-reload in this mode.", "info"); return; }
       if (!managerEnabled || ctx.signal?.aborted) return;
+      assertExecution();
       if (managerOperation || authOperation) { ctx.ui.notify("An MCP manager or authorization operation is already open.", "info"); return; }
       const controller = new AbortController(); managerController = controller;
       const signal = ctx.signal ? AbortSignal.any([ctx.signal, controller.signal]) : controller.signal;

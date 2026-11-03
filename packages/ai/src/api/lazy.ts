@@ -53,17 +53,22 @@ async function forwardStream(
 export function lazyStream(
 	model: Model<Api>,
 	setup: () => Promise<AsyncIterable<AssistantMessageEvent>>,
+	onSettled?: (failed: boolean, error?: unknown) => void,
 ): AssistantMessageEventStream {
 	const outer = new AssistantMessageEventStream();
 	const startedAt = Date.now();
 
-	setup()
+	const forwarding = setup()
 		.then((inner) => forwardStream(outer, inner))
 		.catch((error) => {
 			const message = createSetupErrorMessage(model, error, startedAt);
 			outer.push({ type: "error", reason: "error", error: message });
 			outer.end(message);
+			if (onSettled) throw error;
 		});
+	// A logical request may need to join iterator cleanup after its terminal event.
+	// This observer runs once per request, never once per delta.
+	if (onSettled) void forwarding.then(() => onSettled(false), error => onSettled(true, error));
 
 	return outer;
 }

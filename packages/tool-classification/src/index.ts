@@ -1,5 +1,9 @@
-import type { ExtensionAPI, InputEvent, ToolCallEvent, ToolExecutionEndEvent } from "@super-pi/coding-agent";
+import type { ExtensionAPI, InputEvent, ToolCallEvent, ToolExecutionEndEvent, ToolCatalogSnapshot } from "@super-pi/coding-agent";
 import { Type } from "typebox";
+
+function readToolCatalog(pi: ExtensionAPI): ToolCatalogSnapshot {
+  return pi.getToolCatalog?.() ?? { tools: pi.getAllTools(), activeTools: pi.getActiveTools() };
+}
 
 const CORE_TOOL_NAMES = [
   "codemode",
@@ -15,6 +19,16 @@ const CORE_TOOL_NAMES = [
 ] as const;
 
 const PLAN_MODE_TOOL_NAMES = ["plan_mode_question", "plan_mode_complete"] as const;
+
+/** Explicit state takes precedence; only hosts without the field use the legacy name heuristic. */
+function planOwnsToolSelection(catalog: ToolCatalogSnapshot, active: ReadonlySet<string>): boolean {
+  if (catalog.selectionMode !== undefined) return catalog.selectionMode === "plan";
+  for (let index = 0; index < PLAN_MODE_TOOL_NAMES.length; index++) {
+    if (!active.has(PLAN_MODE_TOOL_NAMES[index])) return false;
+  }
+  return true;
+}
+
 const PRESERVABLE_POLICY_TOOL_NAMES = ["goal_complete", "goal_blocked", "inspect_image"] as const;
 const POLICY_OWNED_TOOL_NAMES = new Set<string>([
   ...PLAN_MODE_TOOL_NAMES,
@@ -143,8 +157,6 @@ export default function toolClassificationExtension(pi: ExtensionAPI): void {
       limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 12, description: "Maximum tools to activate; defaults to 6." })),
     }, { additionalProperties: false }),
     async execute(_toolCallId, params) {
-      const active = pi.getActiveTools();
-      const activeSet = new Set(active);
       const query = params.query.trim().toLowerCase();
       const category = requestedCategory(params.query);
       const browserDebug = category === "browser_debug" || BROWSER_DEBUG_QUERY.test(query);
@@ -155,7 +167,10 @@ export default function toolClassificationExtension(pi: ExtensionAPI): void {
         content: [{ type: "text", text: BROWSER_APPROVAL_PAUSE.reason }], isError: true,
         details: { query: params.query, matches: [], added: [], rejected: [], blocked: "browser_approval" } as ToolSearchDetails,
       };
-      for (const tool of pi.getAllTools()) {
+      const catalog = readToolCatalog(pi);
+      const active = catalog.activeTools;
+      const activeSet = new Set(active);
+      for (const tool of catalog.tools) {
         if (
           tool.name === "tool_search"
           || tool.available === false
@@ -226,8 +241,9 @@ export default function toolClassificationExtension(pi: ExtensionAPI): void {
   pi.on("session_start", (_event, ctx) => {
     browserRouting.sessionId = ctx.sessionManager.getSessionId();
     browserRouting.reset();
-    const activeBeforeReset = pi.getActiveTools();
-    const allTools = pi.getAllTools();
+    const catalog = readToolCatalog(pi);
+    const activeBeforeReset = catalog.activeTools;
+    const allTools = catalog.tools;
     const activeSet = new Set(activeBeforeReset);
 
     // An explicit --tools/SDK allowlist exposes only the selected definitions,
@@ -243,13 +259,7 @@ export default function toolClassificationExtension(pi: ExtensionAPI): void {
       }
       if (explicitSelection) return;
     }
-    let planModeOwnsSelection = true;
-    for (let index = 0; index < PLAN_MODE_TOOL_NAMES.length; index += 1) {
-      if (activeSet.has(PLAN_MODE_TOOL_NAMES[index])) continue;
-      planModeOwnsSelection = false;
-      break;
-    }
-    if (planModeOwnsSelection) return;
+    if (planOwnsToolSelection(catalog, activeSet)) return;
 
     const available = new Set<string>();
     for (let index = 0; index < allTools.length; index += 1) {

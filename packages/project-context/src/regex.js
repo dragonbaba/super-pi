@@ -1,4 +1,4 @@
-export const SUPPORTED_SP_VERSION_PATTERN = /^0\.84\.\d+(?:[-+].*)?$/u;
+export const SUPPORTED_SP_VERSION_PATTERN = /^(?:0\.84|1\.\d+)\.\d+(?:[-+].*)?$/u;
 export const PROJECT_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 export const PROJECT_NAME_UNSAFE_PATTERN = /[\r\n`]/;
 export const TEST_PATH_PATTERN = /(^|\/)(?:test|tests|spec|specs|__tests__)(\/|$)|\.(?:test|spec)\.[^.]+$/i;

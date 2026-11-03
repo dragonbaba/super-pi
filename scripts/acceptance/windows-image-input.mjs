@@ -26,9 +26,12 @@ for (const name of ["截图测试 中文.png", "second image.png"]) writeFileSyn
 const log = join(root, "events.jsonl"); let count = 0;
 const f = await offlineImageRuntime(root, kind === "auxiliary", undefined, event => { if (++count <= 256) appendFileSync(log, JSON.stringify(event) + "\n"); });
 process.chdir(f.cwd);
-writeFileSync(join(root, "run.json"), JSON.stringify({ kind, node: process.version, platform: process.platform, tty: Boolean(process.stdin.isTTY),
+const runRecord = JSON.stringify({ kind, pid: process.pid, node: process.version, platform: process.platform, tty: Boolean(process.stdin.isTTY),
 	terminalProgram: process.env.TERM_PROGRAM ?? null, windowsTerminal: Boolean(process.env.WT_SESSION), shell: process.env.COMSPEC,
-	root, fixtures, log, nativeInputExecuted: false }, null, 2));
+	root, fixtures, log, nativeInputExecuted: false }, null, 2);
+writeFileSync(join(root, "run.json"), runRecord);
+const recordPath = process.argv.find(value => value.startsWith("--record-path="))?.slice("--record-path=".length);
+if (recordPath) writeFileSync(recordPath, runRecord, { flag: "wx" });
 console.log(`OFFLINE ${kind}\nRun directory: ${root}\nExplorer fixtures: ${fixtures}\nEvents: ${log}\nNo external network or user model configuration. Alt+V uses the REAL clipboard. Use only non-sensitive screenshots.`);
 if (process.argv.includes("--check")) {
 	try { await f.session.prompt("SDK transport self-check (not native input acceptance)", { images: [{ type: "image", data: pngFixture(8, 8).toString("base64"), mimeType: "image/png" }] });

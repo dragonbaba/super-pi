@@ -20,7 +20,7 @@ test("evidence workspace resolution failure preserves an accessible absolute rea
 		assert.equal(identity.precise, false);
 		assert.equal(identity.canonicalWorkspace, "");
 		const message = await f.read({ path });
-		assert.equal((message.content[0] as { text: string }).text, "accessible absolute text");
+		assert.match((message.content[0] as { text: string }).text, /^1#[A-F0-9]{4}\|accessible absolute text$/);
 		assert.equal(f.internals._evidenceLedger!.counters.entries, 0);
 	} finally { f.close(); }
 });

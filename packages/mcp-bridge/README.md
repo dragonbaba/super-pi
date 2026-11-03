@@ -1,6 +1,10 @@
 # @super-pi/mcp-bridge
 
-A guarded generic MCP client extension for Pi `0.84.x` hosts that provide the internal typed-source adapter. It exposes configured MCP server tools as namespaced Pi tools and supports stdio, Streamable HTTP, and legacy HTTP+SSE. Older hosts in the same version line are detected before runtime loading and receive an upgrade warning instead of a missing-export crash.
+A guarded generic MCP client extension for Super Pi `1.x` and legacy `0.84.x` hosts that provide the internal typed-source adapter. It exposes configured MCP server tools as namespaced Pi tools and supports stdio, Streamable HTTP, and legacy HTTP+SSE. Older hosts in the same version line are detected before runtime loading and receive an upgrade warning instead of a missing-export crash.
+
+Compatibility uses the loaded host's public `VERSION`, so explicitly loading this extension from a normal SDK application does not depend on the application script's location. A missing or unsupported version disables the extension; the typed-source adapter check still runs before bridge runtime loading. This does not add the extension to SDK applications that have not selected it.
+
+The source `superpi` launcher selects the package manifest entry by default. Repeated selection of the same entry through explicit paths and package settings produces one extension and one MCP execution owner. `--no-extensions` suppresses automatic sources but preserves explicit entries; a package's `extensions: []` filter likewise cannot cancel an explicit entry supplied by the launcher or caller. Use `--no-mcp` to prevent MCP startup and remove MCP-required tools from the session catalog; the loaded extension can still own its idle lifecycle, and LSP remains available. Session reload via `session.reload()` drains the previous owner before registering its replacement.
 
 Large text and typed resource/audio results require configured ToolResult presentation and a sufficient token budget. Recovery uses the existing session artifact owner (`session.readToolResultArtifact`); it is local recovery, not server pagination. Small inline text and supported inline images retain their existing path. If a configured budget cannot contain even failure text, the final error has zero model text and preserves its explicit configuration reason in canonical ToolResult details.
 
@@ -369,7 +373,7 @@ override. Search for its tools again to activate the project definition.
 
 ## Safety boundaries
 
-- Pi runtime gate: only `0.84.x`.
+- Super Pi runtime gate: `1.x` and legacy `0.84.x`.
 - Validated schema metadata is cached under `~/.sp/agent/cache/mcp-schemas-v1.json` (2 MiB total, 16 entries, 30-day age bound). The filename is retained for upgrades; its current payload version is 2. Commands, URLs, environment values, and headers contribute to an in-memory configuration digest. Only an HMAC of that digest is persisted, using the existing `mcp-activation.key` with a schema-cache-specific domain. Cache metadata is not encrypted, and the HMAC identifies the configuration rather than authenticating the whole file.
 - Without a usable local key, schema caching is disabled and servers are discovered normally. A different key cannot reuse the previous cache. Legacy version-1 caches are never reused and are replaced with an empty version-2 cache on load before rediscovery, even if the key is unavailable. If file permissions prevent replacement, the legacy file remains on disk but is not used; it must be removed or made writable separately. Previously copied legacy files are outside this upgrade's protection.
 - Startup checks for a legacy cache before parsing global or trusted-project

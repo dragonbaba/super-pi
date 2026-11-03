@@ -15,6 +15,10 @@ The pool and bounded action design follows patterns independently verified in Oh
 
 ## Tools
 
+The source `superpi` launcher selects this package's `src/index.ts` manifest entry by default. A plain SDK application must select the package or entry explicitly. Loading registers the three tools and one session execution owner; it does not start a language server. Session reload via `session.reload()` drains the old owner before publishing its replacement.
+
+There is no dedicated `--no-lsp` switch. `--no-extensions` suppresses automatic extension sources while preserving explicit `--extension` entries. A package setting with `extensions: []` disables only that package source; it cannot cancel an explicit entry, including one supplied by the source launcher. Select one manifest entry per package: loading `src/pi-lsp.ts` as well selects a different file and is not path deduplication. `--no-mcp` does not disable LSP.
+
 - `lsp_diagnostics`: targeted diagnostics for configured file routes.
 - `lsp_fix`: preview or apply configured source code actions.
 - `lsp_navigate`: symbol navigation through a reusable client.

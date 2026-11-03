@@ -6,6 +6,7 @@
  */
 
 import { createInterface } from "node:readline";
+import { defaultPermissionMode } from "./core/permission-mode.ts";
 import { type ImageContent, modelsAreEqual } from "@super-pi/ai";
 import chalk from "chalk";
 import { type Args, hasOption, type Mode, parseArgs, printHelp, validateModelSelectionArgs } from "./cli/args.ts";
@@ -600,7 +601,11 @@ export function createMainProjectTrustResolver(options: MainProjectTrustResolver
 
 export async function main(args: string[], options?: MainOptions) {
 	resetTimings();
-	const extensionFactories = [...builtInExtensions, ...(options?.extensionFactories ?? [])];
+	const parsed = parseArgs(args);
+	const extensionFactories = [
+		...(parsed.noExtensions ? [] : builtInExtensions),
+		...(options?.extensionFactories ?? []),
+	];
 	const offlineMode = hasOption(args, "--offline") || isTruthyEnvFlag(process.env.SP_OFFLINE);
 	if (offlineMode) {
 		process.env.SP_OFFLINE = "1";
@@ -638,7 +643,6 @@ export async function main(args: string[], options?: MainOptions) {
 		return;
 	}
 
-	const parsed = parseArgs(args);
 	if (parsed.diagnostics.length > 0) {
 		for (const d of parsed.diagnostics) {
 			const color = d.type === "error" ? chalk.red : chalk.yellow;
@@ -746,6 +750,7 @@ export async function main(args: string[], options?: MainOptions) {
 	const resolvedThemePaths = resolveCliPaths(cwd, parsed.themes);
 	const extensionRunnerOptions = CLI_EXTENSION_HOST_POLICY;
 	const createRuntime: CreateAgentSessionRuntimeFactory = async ({
+		permissionMode,
 		cwd,
 		agentDir,
 		sessionManager,
@@ -764,6 +769,9 @@ export async function main(args: string[], options?: MainOptions) {
 				parsed.projectTrustOverride ??
 				(!hasTrustRequiringResources || trustStore.get(cwd) === true));
 		const runtimeSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted });
+		if (parsed.executionEnvironment) runtimeSettingsManager.setExecutionEnvironmentForSession(parsed.executionEnvironment);
+		if (permissionMode !== undefined || appMode === "interactive") runtimeSettingsManager.setPermissionModeForSession(
+			permissionMode ?? defaultPermissionMode(runtimeSettingsManager.getGlobalSettings().permissionMode));
 		const services = await createAgentSessionServices({
 			cwd,
 			agentDir,

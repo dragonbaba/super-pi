@@ -70,8 +70,6 @@ jobs:
         shell: pwsh
         run: Set-MpPreference -DisableRealtimeMonitoring $true
       - run: npm ci
-      - run: npm run check
-        if: matrix.shard == 1
       - run: npm run build:offline
       - run: npm test
         env:

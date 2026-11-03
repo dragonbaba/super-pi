@@ -68,6 +68,10 @@ test("maximum metadata admission measures the final escaped notice and exact ben
 
 test("mutation/branch generations invalidate completed evidence before work", () => {
 	const ledger = new EvidenceLedger();
+	assert.equal(ledger.admit({ ...record("native"), blocks: 2, fileRevision: "snap_current" }, 512), true);
+	assert.equal(ledger.lookup("native")?.fileRevision, "snap_current");
+	assert.equal(ledger.admit({ ...record("unbound"), blocks: 2 }, 512), false);
+	assert.equal(ledger.admit({ ...record("oversized"), blocks: 2, fileRevision: "x".repeat(65) }, 512), false);
 	ledger.admit(record("old"), 512);
 	ledger.mutate();
 	assert.equal(ledger.lookup("old"), undefined);

@@ -9,6 +9,22 @@ import { NativeClipboardError } from "../../packages/coding-agent/src/utils/clip
 // This remains finite so a broken helper cannot hang the full test suite.
 const FIXTURE_POWERSHELL_TIMEOUT_MS = 30_000;
 
+/** Replace only the OS image source; the production PNG/Bitmap parser still runs in PowerShell. */
+export function prepareFormsImageClipboardFixture(args: readonly string[], bytes: Uint8Array, text?: string, format: "PNG" | "image/png" = "PNG") {
+	const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le");
+	const source = "[System.Windows.Forms.Clipboard]::GetDataObject()";
+	assert.equal(script.split(source).length, 2, "replace exactly one OS clipboard source");
+	const replaced = script.replace(source, "$fixtureData");
+	assert.doesNotMatch(replaced, /\[System\.Windows\.Forms\.Clipboard\]::/, "fixture must never read or write the system clipboard");
+	const fixture = Buffer.from(JSON.stringify({ image: Buffer.from(bytes).toString("base64"), text, format }), "utf8").toString("base64");
+	const setup = `Add-Type -AssemblyName System.Windows.Forms; $fixture=([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${fixture}')) | ConvertFrom-Json); $fixtureData=New-Object System.Windows.Forms.DataObject; $fixtureStream=[System.IO.MemoryStream]::new([Convert]::FromBase64String([string]$fixture.image), $false); $fixtureData.SetData([string]$fixture.format, $false, $fixtureStream); if ($null -ne $fixture.text) { $fixtureData.SetData([System.Windows.Forms.DataFormats]::UnicodeText, [string]$fixture.text) }; `;
+	const isolatedScript = `${setup}try { ${replaced} } finally { $fixtureStream.Dispose() }`;
+	return {
+		args: [...args.slice(0, -1), Buffer.from(isolatedScript, "utf16le").toString("base64")],
+		timeoutMs: FIXTURE_POWERSHELL_TIMEOUT_MS,
+	};
+}
+
 /** Run the production STA script with an in-memory Forms source; never set the system clipboard. */
 export async function readFormsClipboardFixture(paths: string[], text?: string, signal?: AbortSignal, execute: typeof runClipboardCommand = runClipboardCommand) {
 	let calls = 0;

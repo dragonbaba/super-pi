@@ -1709,7 +1709,7 @@ test("runtime disposal rejects an in-flight session replacement before apply", a
 	let settleRuntime: ((result: any) => void) | undefined;
 	let oldDisposeCalls = 0;
 	let replacementDisposeCalls = 0;
-	const extensionRunner = { hasHandlers: () => false };
+	const extensionRunner = { hasHandlers: () => false, disposeExecutionBoundary: async () => {}, disposeProviderOwners: async () => {} };
 	const oldSession = {
 		extensionRunner,
 		sessionFile: undefined,

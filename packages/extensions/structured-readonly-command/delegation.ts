@@ -7,6 +7,8 @@ import {
 } from "../resource-lifecycle-guard/permission-contract.ts";
 
 export interface StructuredReadonlyWorkspacePolicy {
+  assertCurrent(): void;
+  revocationSignal: AbortSignal;
   canonicalRoot: string;
   canonicalCwd: string;
   authorizedRoots: readonly string[];
@@ -82,5 +84,5 @@ export function consumeStructuredReadonlyWorkspacePolicy(
     const additionalRoot = validateRootGrant(grant);
     if (!authorizedRoots.includes(additionalRoot)) authorizedRoots.push(additionalRoot);
   }
-  return { canonicalRoot, canonicalCwd, authorizedRoots, source: delegation.source };
+  return { canonicalRoot, canonicalCwd, authorizedRoots, source: delegation.source, assertCurrent: delegation.assertCurrent, revocationSignal: delegation.revocationSignal };
 }

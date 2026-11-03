@@ -5,7 +5,8 @@ Based on `@narumitw/pi-statusline@0.41.0`, locally adapted for Super Pi's Pi 0.8
 ## Runtime and security compatibility
 
 - The package declares `@super-pi/coding-agent` and `@super-pi/tui` as Super Pi-provided peer dependencies.
-- Startup is gated to `0.84.x`. Unsupported versions register only a warning and leave Pi's native footer intact.
+- Startup supports Super Pi `1.x` and the legacy `0.84.x` line. Unsupported versions register only a warning and leave Pi's native footer intact.
+- The entry reads the loaded host's public `VERSION`; the SDK application's script path does not determine compatibility. The old ancestor-package scan has been removed.
 - If Super Pi does not expose `VERSION`, the version is treated as unknown and the extension disables itself rather than guessing or loading the implementation. This is the safe-degradation policy.
 - This build resolves the standard `.sp` config root with a lightweight helper equivalent to Super Pi's `getAgentDir()` for default, absolute, and `~`-relative `SP_CODING_AGENT_DIR` values. This avoids loading a second local coding-agent runtime solely for path constants.
 - Project settings and package metadata reached from project-local package entries are inspected only when `ctx.isProjectTrusted()` is true.
@@ -23,7 +24,7 @@ The footer hot path renders powerline rows directly as `string[]`. The public st
 
 This build also adds a `speed` segment. It records the latest completed assistant stream's output-token throughput using monotonic timing between Pi's first assistant stream event and message completion. Request latency and tool execution are excluded; non-stream or implausibly short timing is omitted.
 
-Pi loads deterministic precompiled `dist/index.js` instead of translating the full TypeScript graph on every start. This local build registers no `/statusline` command and carries no menu/TUI-kit runtime path. The startup graph also avoids runtime imports from the package-local coding-agent dev dependency. `npm run typecheck` rebuilds dist after validation.
+Pi loads deterministic precompiled `dist/index.js` instead of translating the full TypeScript graph on every start. This local build registers no `/statusline` command and carries no menu/TUI-kit runtime path. Through Pi's extension loader, the entry's coding-agent namespace resolves to the current host via Node aliases or source/Bun virtual modules, rather than selecting a package-local dev dependency. Arbitrary direct imports outside that loader do not inherit this mapping, and the coding-agent peer dependency must still exist. `npm run typecheck` rebuilds dist after validation.
 
 ## Update procedure
 

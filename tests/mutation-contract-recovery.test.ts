@@ -364,16 +364,16 @@ test("affected recovery is concise and repeated validation emits at most one ste
   m => { read = lastResult(m); const annotation = read.content.at(-1).text; assert.ok(annotation.length < 180, annotation); bad = { path, snapshot: snapshot(read), edits: [{ kind: "insert_after", start: anchor(read, 1), end: anchor(read, 2), newLines: ["inserted"] }] }; return call("bad-1", "edit", bad); },
   () => call("bad-2", "edit", bad),
   () => call("bad-3", "edit", bad),
-  m => { assert.ok(f.advisories.length <= 1, JSON.stringify(f.advisories)); assert.equal(readFileSync(path, "utf8"), "one\ntwo\n"); return call("fixed", "edit", { path, snapshot: snapshot(read), edits: [{ kind: "insert_after", start: anchor(read, 1), newLines: ["inserted"] }] }); },
+  m => { assert.equal(f.advisories.length, 2, JSON.stringify(f.advisories)); assert.equal(readFileSync(path, "utf8"), "one\ntwo\n"); return call("fixed", "edit", { path, snapshot: snapshot(read), edits: [{ kind: "insert_after", start: anchor(read, 1), newLines: ["inserted"] }] }); },
   m => { assert.match(text(lastResult(m)), /pre-mutation snapshots/); return call("used", "edit", { path, snapshot: snapshot(read), edits: [{ kind: "delete", start: anchor(read, 1) }] }); },
  ]);
  const failure = text(results.at(-1)); assert.match(failure, /SNAPSHOT_EDIT_UNKNOWN/); assert.equal(failure.split("\n").length, 2); assert.match(failure, /snapshot.*LINE#ID/);
  assert.equal(text(results[1]), text(results[2]), "unchanged requests keep stable canonical validation failures");
- assert.match(text(results[3]), /REPEATED_CALL_BLOCKED/); assert.equal(f.invocations.has("bad-3"), false, "existing repetition guard blocks before execution");
+ assert.equal(text(results[3]), text(results[2])); assert.equal(f.invocations.has("bad-3"), true, "the original validator handles every admitted request");
  assert.equal(results.filter(r => (r.details as any)?.stateChanged).length, 1); assert.equal(f.counts().processes, 0);
- const steering = contexts[4].filter(m => m.role === "user" && Array.isArray(m.content) && m.content.some((c: any) => c.text?.startsWith("[Tool-loop")));
- assert.equal(steering.length, 1, "one hidden steering message reaches the next provider request");
- assert.equal(matcherCalls, 1, "the warning reuses one stateless module matcher");
+ const steering = contexts[4].filter(m => m.role === "user" && Array.isArray(m.content) && m.content.some((c: any) => c.text?.startsWith("[Tool-loop") || c.text?.startsWith("You are repeating")));
+ assert.equal(steering.length, 2, "one advisory per warning result, without duplicating the third-call reminder");
+ assert.equal(matcherCalls, 1, "only the single failure warning needs the stateless module matcher");
  const guidance = f.registered.find(r => r.definition.name === "edit")!.definition.promptGuidelines!.join("\n");
  assert.match(guidance, /non-overlapping.*one call/); assert.match(guidance, /dependent same-file.*sibling/);
  const encoding = getEncoding("cl100k_base");
@@ -430,7 +430,7 @@ test("snapshot recovery focused production allocation and completion/failure/abo
     function sum(node: any): void {
      bytes.total += node.selfSize;
      const url = node.callFrame.url.replaceAll("\\", "/");
-     if (/extensions\/(?:tool-loop-guardrails|mutation-guard-write)\//u.test(url)) {
+     if (/(?:extensions\/(?:tool-loop-guardrails|mutation-guard-write)|core\/files)\//u.test(url)) {
       bytes.recovery += node.selfSize;
       if (node.selfSize > 0) sites.push({ site: `${url.slice(url.indexOf("packages/"))}:${node.callFrame.lineNumber + 1} ${node.callFrame.functionName}`, bytes: node.selfSize });
      }
@@ -637,12 +637,20 @@ test("compact snapshot field validation uses stable observed legacy read project
  const cwd = mkdtempSync(join(tmpdir(), "pi-compact-recovery-"));
  t.after(() => { resetSnapshotLineStore(); rmSync(cwd, { recursive: true }); });
  const path = join(cwd, "large.txt"); const original = "heading\n\ntail\n" + "filler\n".repeat(320_000); writeFileSync(path, original);
- // Native custom-I/O read preserves the legacy projection required by compact receipts.
- // Default local window/cursor reads currently do not mint compact receipts; do not change eligibility here.
+ // Exercise the legacy custom-I/O projection. Native window/cursor revision coverage lives in native-file-revisions.
  const read = createReadToolDefinition(cwd, { operations: { access: async p => access(p), readFile: p => readFile(p), detectImageMimeType: async () => null } });
  const input = { path, offset: 1, limit: 3 };
  const result: any = await read.execute("read", input, undefined, undefined, {} as never);
- const annotation = await issueSnapshotForRead("compact-fixture", cwd, input, result); assert.ok(annotation); result.content.push({ type: "text", text: annotation });
+ const inspector = new InspectorSession(); inspector.connect();
+ t.after(() => inspector.disconnect());
+ await inspector.post("HeapProfiler.startSampling", { samplingInterval: 1024, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true });
+ const annotation = await issueSnapshotForRead("compact-fixture", cwd, input, result);
+ const { profile } = await inspector.post("HeapProfiler.stopSampling");
+ let allocated = 0; const nodes = [profile.head];
+ while (nodes.length) { const node = nodes.pop()!; allocated += node.selfSize; for (const child of node.children) nodes.push(child); }
+ assert.ok(allocated < 8 * 1024 * 1024, "bounded compact scan does not allocate empty buffers/arrays for 320,000 unretained lines");
+ t.diagnostic(JSON.stringify({ compactFileBytes: Buffer.byteLength(original), visibleLines: 3, scanChunkBytes: 65536, sampledCaptureBytes: allocated }));
+ assert.ok(annotation); result.content.push({ type: "text", text: annotation });
  let commits = 0;
  const hooks = { assertPathAllowed: () => realpath(path), beforeCommit: () => { commits++; } };
  const id = snapshot(result), start = anchor(result, 2);
@@ -695,7 +703,7 @@ test("syntax parser resolves the pinned host dependency without a global Node-di
  const { spawnSync } = await import("node:child_process");
  const { fileURLToPath } = await import("node:url");
  const cwd = mkdtempSync(join(tmpdir(), "pi-parser-resolution-")); t.after(() => rmSync(cwd, { recursive: true }));
- const module = new URL("../packages/extensions/mutation-guard-write/snapshot-syntax-guard.ts", import.meta.url).href;
+ const module = new URL("../packages/coding-agent/src/core/files/snapshot-syntax-guard.ts", import.meta.url).href;
  const child = spawnSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", `
   import assert from 'node:assert/strict';
   Object.defineProperty(process, 'execPath', {value: ${JSON.stringify(join(cwd, "missing-node", "node"))}});

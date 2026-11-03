@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import ts from "typescript";
 import tps from "../.sp/extensions/tps.ts";
+import { captureBundledArguments } from "./helpers/bundled-launcher.ts";
+import { VERSION } from "../packages/coding-agent/src/config.ts";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const extensionRoot = join(root, "packages", "extensions");
@@ -27,39 +29,47 @@ function json(path: string): any {
   return JSON.parse(readFileSync(path, "utf8"));
 }
 
-test("bundled reports are removed while retained extensions keep their loading order", () => {
+test("bundled reports are removed while retained extensions keep their loading order and accept the host", async () => {
   assert.deepEqual(json(join(extensionRoot, "package.json")).pi.extensions, retainedEntries);
   for (const entry of retainedEntries) assert.ok(existsSync(resolve(extensionRoot, entry)), entry);
   for (const name of removed) assert.equal(existsSync(join(extensionRoot, name, "index.ts")), false);
   assert.ok(json(join(root, ".sp/config/settings.json")).packages.includes("../../packages/extensions"));
+  for (const relative of [
+    "extensions/subagent/regex.ts", "extensions/session-memory-manager/regex.ts",
+    "mcp-bridge/src/regex.js", "project-context/src/regex.js", "statusline/src/regex.ts",
+    "openai-server-compaction/src/regex.ts", "openai-fast-mode/src/regex.ts",
+  ]) {
+    const { SUPPORTED_SP_VERSION_PATTERN: supported } = await import(pathToFileURL(join(root, "packages", relative)).href);
+    assert.equal(supported.test(VERSION), true, `${relative} must accept the current host`);
+    assert.equal(supported.test("0.84.1"), true, `${relative} must preserve legacy compatibility`);
+    for (const version of ["0.83.1", "0.85.0", "2.0.0", "unknown"]) {
+      assert.equal(supported.test(version), false, `${relative} must reject ${version}`);
+    }
+  }
 });
 
-test("the real launcher still assembles TPS and every retained bundled resource", t => {
+test("the real launcher assembles default resources and honors explicit isolation flags", t => {
   const fixture = mkdtempSync(join(tmpdir(), "sp-bundled-extensions-"));
   t.after(() => rmSync(fixture, { recursive: true, force: true }));
-  const cliPath = join(root, "packages/coding-agent/dist/cli.js");
-  const launcher = pathToFileURL(join(root, "scripts/superpi.mjs")).href;
-  // Intercept only the final CLI import: execute the actual launcher without
-  // reading credentials, opening a Session, or invoking a model or extension.
-  const script = `
-    import { registerHooks } from 'node:module';
-    registerHooks({ load(url, context, nextLoad) {
-      if (url === ${JSON.stringify(pathToFileURL(cliPath).href)}) {
-        return { format: 'module', shortCircuit: true, source: 'console.log(JSON.stringify(process.argv.slice(2)))' };
-      }
-      return nextLoad(url, context);
-    } });
-    process.argv = [process.execPath, ${JSON.stringify(fileURLToPath(launcher))}, '--help'];
-    await import(${JSON.stringify(launcher)});
-  `;
-  const child = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
-    cwd: fixture,
-    env: { SystemRoot: process.env.SystemRoot, TEMP: fixture, TMP: fixture, SP_AGENT_DIR: join(fixture, "agent") },
-    encoding: "utf8",
-    timeout: 15_000,
-  });
-  assert.equal(child.status, 0, child.stderr || child.error?.message);
-  const args: string[] = JSON.parse(child.stdout);
+  const allResources = ["--extension", "--skill", "--prompt-template"];
+  const childGuard = join(extensionRoot, "subagent/child-guard.ts");
+  const dynamicRoot = join(root, "packages/dynamic-instructions");
+  const dynamicEntries = json(join(dynamicRoot, "package.json")).pi.extensions;
+  assert.equal(dynamicEntries.length, 1);
+  const dynamicEntry = resolve(dynamicRoot, dynamicEntries[0]);
+  const cases = [
+    { args: ["--help"], omitted: [] },
+    { args: ["--no-extensions", "--no-skills", "--no-prompt-templates", "--extension", childGuard, "--help"], omitted: allResources },
+    { args: ["-ne", "-ns", "-np", "--help"], omitted: allResources },
+    { args: ["--no-extensions", "--help"], omitted: ["--extension"] },
+    { args: ["--system-prompt", "--no-extensions", "--help"], omitted: [] },
+    { args: ["--", "--no-extensions", "list"], omitted: [] },
+    { args: ["--model", "list", "--help"], omitted: [] },
+    { args: ["list"], omitted: allResources },
+    { args: ["--no-extensions", "--extension", dynamicEntry, "--help"], omitted: ["--extension"] },
+  ];
+  const results = captureBundledArguments(root, fixture, cases.map(entry => entry.args));
+  const args = results[0]!;
   const expected: string[] = [];
   const settingsDir = join(root, ".sp/config");
   for (const packageSource of json(join(settingsDir, "settings.json")).packages) {
@@ -77,13 +87,57 @@ test("the real launcher still assembles TPS and every retained bundled resource"
     if (existsSync(path)) expected.push(flag, path);
   }
   assert.deepEqual(args, [...expected, "--help"]);
+  for (const [index, entry] of cases.entries()) {
+    const bundled = expected.filter((_, i) => !entry.omitted.includes(expected[i - i % 2]!));
+    assert.deepEqual(results[index], [...bundled, ...entry.args], JSON.stringify(entry.args));
+  }
   for (let index = 1; index < expected.length; index += 2) assert.ok(existsSync(expected[index]), expected[index]);
   const paths = args.filter((_, index) => index > 0 && args[index - 1] === "--extension");
+  assert.equal(paths.filter(path => path === dynamicEntry).length, 1);
+  assert.equal(results[3]!.includes(dynamicEntry), false);
+  assert.equal(results.at(-1)!.filter(path => path === dynamicEntry).length, 1);
   assert.equal(paths.filter(path => path === join(root, ".sp/extensions/tps.ts")).length, 1);
   assert.ok(paths.includes(join(root, ".sp/extensions/prompt-url-widget.ts")));
   assert.deepEqual(paths.filter(path => path.startsWith(extensionRoot + "/") || path.startsWith(extensionRoot + "\\")),
     retainedEntries.map(entry => resolve(extensionRoot, entry)));
   for (const name of removed) assert.ok(paths.every(path => !path.includes(name)));
+});
+
+test("the built launcher loads zero extensions or only explicit child/task providers", t => {
+  const fixture = mkdtempSync(join(tmpdir(), "sp-minimal-launcher-"));
+  t.after(() => rmSync(fixture, { recursive: true, force: true }));
+  const agent = join(fixture, "agent");
+  mkdirSync(join(agent, "extensions"), { recursive: true });
+  writeFileSync(join(agent, "extensions/unwanted.js"), 'throw new Error("User discovery must be disabled");');
+  const probe = join(fixture, "probe.mjs");
+  writeFileSync(probe, `
+    import { DefaultResourceLoader } from ${JSON.stringify(pathToFileURL(join(root, "packages/coding-agent/dist/core/resource-loader.js")).href)};
+    const reload = DefaultResourceLoader.prototype.reload;
+    DefaultResourceLoader.prototype.reload = async function (...args) {
+      const result = await reload.apply(this, args);
+      const loaded = this.getExtensions();
+      process.stderr.write('MINIMAL_RESOURCES:' + JSON.stringify({
+        paths: loaded.extensions.map(extension => extension.resolvedPath),
+        errors: loaded.errors, factories: this.extensionFactories.length,
+      }) + '\\n');
+      return result;
+    };
+  `);
+  const childGuard = join(extensionRoot, "subagent/child-guard.ts");
+  for (const explicit of [[], ["--extension", childGuard], ["--extension", join(extensionRoot, "resource-lifecycle-guard/index.ts"), "--extension", join(extensionRoot, "subagent/index.ts")]]) {
+    const child = spawnSync(process.execPath, [
+      "--import", pathToFileURL(join(root, "tests/fixtures/native-offline-preload.mjs")).href,
+      "--import", pathToFileURL(probe).href, join(root, "scripts/superpi.mjs"),
+      "--offline", "--no-session", "--no-extensions", "--no-skills", "--no-prompt-templates",
+      "--no-themes", "--no-context-files", "--no-mcp", ...explicit, "--help",
+    ], { cwd: fixture, encoding: "utf8", timeout: 20_000, maxBuffer: 512 * 1024, windowsHide: true,
+      env: { ...process.env, HOME: fixture, USERPROFILE: fixture, SP_CODING_AGENT_DIR: agent } });
+    assert.equal(child.status, 0, child.stderr || child.error?.message);
+    assert.match(child.stderr, /NATIVE_NETWORK_ATTEMPTS:0/);
+    const records = [...child.stderr.matchAll(/^MINIMAL_RESOURCES:(.+)$/gm)];
+    assert.equal(records.length, 1, child.stderr);
+    assert.deepEqual(JSON.parse(records[0]![1]!), { paths: explicit.filter((_, index) => index % 2 === 1), errors: [], factories: 0 });
+  }
 });
 
 test("runtime source no longer registers either report command", () => {

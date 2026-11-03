@@ -14,7 +14,7 @@ test("display listener cannot admit a replacement G2 source as file evidence", a
 		assert.equal(f.internals._evidenceLedger!.counters.recordsCreated, 0);
 		unsubscribe();
 		const next = await f.read();
-		assert.match((next.content[0] as { text: string }).text, /^production-shaped/);
+		assert.match((next.content[0] as { text: string }).text, /^1#[A-F0-9]{4}\|production-shaped/);
 	} finally { f.close(); }
 });
 
@@ -39,7 +39,7 @@ test("same-length historical mutation is permitted and forces a real read", asyn
 		const block = first.content[0] as { type: string; text: string };
 		assert.doesNotThrow(() => { block.text = "x".repeat(block.text.length); });
 		const next = await f.read();
-		assert.match((next.content[0] as { text: string }).text, /^production-shaped/);
+		assert.match((next.content[0] as { text: string }).text, /^1#[A-F0-9]{4}\|production-shaped/);
 		assert.equal(/no new disk read/i.test(JSON.stringify((await f.read()).content)), process.platform !== "win32");
 	} finally { f.close(); }
 });
@@ -50,7 +50,10 @@ for (const mode of ["disabled", "no-owner"] as const) {
 		try {
 			const first = await f.read();
 			const before = f.counters.artifactIntegrityScans;
-			assert.deepEqual((await f.read()).content, first.content);
+			const next = await f.read();
+			assert.deepEqual(next.content[0], first.content[0]);
+			assert.equal(next.content.length, 2);
+			assert.match((next.content[1] as { text: string }).text, /snapshot=snap_/);
 			assert.equal(f.counters.artifactIntegrityScans, before);
 			assert.equal(Object.isFrozen(first.content), false);
 		} finally { f.close(); }

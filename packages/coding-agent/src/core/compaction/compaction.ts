@@ -6,7 +6,7 @@
  */
 
 import type { AgentMessage, StreamFn, ThinkingLevel } from "@super-pi/agent-core";
-import { contentText, type RetryCallbacks, type RetryPolicy, retryAssistantCall, uuidv7 } from "@super-pi/ai";
+import { contentText, type ProviderHeaders, type RetryCallbacks, type RetryPolicy, retryAssistantCall, uuidv7 } from "@super-pi/ai";
 import type { AssistantMessage, Context, Model, SimpleStreamOptions, Usage } from "@super-pi/ai/compat";
 import { completeSimple } from "@super-pi/ai/compat";
 import { convertToLlm } from "../messages.ts";
@@ -704,7 +704,7 @@ function createSummarizationOptions(
 	model: Model<any>,
 	maxTokens: number,
 	apiKey: string | undefined,
-	headers: Record<string, string> | undefined,
+	headers: ProviderHeaders | undefined,
 	env: Record<string, string> | undefined,
 	signal: AbortSignal | undefined,
 	thinkingLevel: ThinkingLevel | undefined,
@@ -756,7 +756,7 @@ export async function generateSummary(
 	model: Model<any>,
 	reserveTokens: number,
 	apiKey: string | undefined,
-	headers?: Record<string, string>,
+	headers?: ProviderHeaders,
 	signal?: AbortSignal,
 	customInstructions?: string,
 	previousSummary?: string,
@@ -793,7 +793,7 @@ export async function generateSummaryWithUsage(
 	model: Model<any>,
 	reserveTokens: number,
 	apiKey: string | undefined,
-	headers?: Record<string, string>,
+	headers?: ProviderHeaders,
 	signal?: AbortSignal,
 	customInstructions?: string,
 	previousSummary?: string,
@@ -1009,7 +1009,7 @@ export async function compact(
 	preparation: CompactionPreparation,
 	model: Model<any>,
 	apiKey: string | undefined,
-	headers?: Record<string, string>,
+	headers?: ProviderHeaders,
 	customInstructions?: string,
 	signal?: AbortSignal,
 	thinkingLevel?: ThinkingLevel,
@@ -1123,7 +1123,7 @@ async function generateTurnPrefixSummary(
 	model: Model<any>,
 	reserveTokens: number,
 	apiKey: string | undefined,
-	headers?: Record<string, string>,
+	headers?: ProviderHeaders,
 	env?: Record<string, string>,
 	signal?: AbortSignal,
 	thinkingLevel?: ThinkingLevel,

@@ -202,9 +202,12 @@ async function sdkFixture(t: test.TestContext, budget: number, original = "x".re
    return new Response(`data: ${JSON.stringify(event)}\n\ndata: ${JSON.stringify(end)}\n\ndata: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } });
   } }),
  };
+ let activeSession: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
  async function open(presentationBudget: number, sessionManager = manager) {
+  if (activeSession) { activeSession.dispose(); await activeSession.waitForSessionLeaseRelease(); await resourceLoader.reload(); }
   const counters = createToolResultPresentationCounters();
-  const { session } = await createAgentSession({ cwd, agentDir, model, modelRuntime: runtime, settingsManager, sessionManager, resourceLoader, tools: ["read"], toolResultPresentation: { enabled: true, budgetTokens: presentationBudget, counters } });
+  const { session } = await createAgentSession({ cwd, agentDir, model, modelRuntime: runtime, settingsManager, sessionManager, resourceLoader, tools: ["read", "edit"], toolResultPresentation: { enabled: true, budgetTokens: presentationBudget, counters } });
+  activeSession = session;
   const read = session.agent.state.tools.find(tool => tool.name === "read")!; const execute = read.execute;
   read.execute = async (...args) => { readCalls++; return execute(...args); };
   session.subscribe(event => {
@@ -214,7 +217,7 @@ async function sdkFixture(t: test.TestContext, budget: number, original = "x".re
   return { session, counters };
  }
  const opened = await open(budget);
- t.after(() => opened.session.dispose());
+ t.after(async () => { activeSession?.dispose(); await activeSession?.waitForSessionLeaseRelease(); });
  return { ...opened, open, manager, requests, deliveries, userErrors, setNext(fn: typeof next) { next = fn; }, readCalls: () => readCalls, assertUnchanged() { assert.equal(readFileSync(join(cwd, "fixture.txt"), "utf8"), original); } };
 }
 

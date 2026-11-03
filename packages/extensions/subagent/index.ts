@@ -1104,6 +1104,7 @@ async function runSingleAgent(
 	let primaryError: unknown;
 	try {
 		if (task.length > MAX_TASK_CHARS) throw new Error(`Task exceeds ${MAX_TASK_CHARS} characters`);
+		policy.assertCurrent();
 		const childCwd = canonicalWorkspace(policy.canonicalCwd);
 		if (childCwd !== policy.canonicalCwd) throw new Error("Delegated child cwd changed after permission authorization.");
 		{
@@ -1119,6 +1120,7 @@ async function runSingleAgent(
 		if (canonicalWorkspace(childCwd) !== policy.canonicalCwd || identity.dev !== policy.device || identity.ino !== policy.inode || !identity.isDirectory()) {
 			throw new Error("Delegated workspace identity changed before subagent launch.");
 		}
+		policy.assertCurrent();
 		const processRun = new SubagentProcessRun(
 			args,
 			childCwd,
@@ -1368,7 +1370,7 @@ async function executePreparedBatch(batch: PreparedBatch): Promise<AgentToolResu
 
 export default function (pi: ExtensionAPI) {
 	if (!SUPPORTED_SP_VERSION_PATTERN.test(VERSION)) {
-		console.warn(`@super-pi/subagent disabled: Pi ${VERSION} is unsupported (requires 0.84.x).`);
+		console.warn(`@super-pi/subagent disabled: Pi ${VERSION} is unsupported (requires 1.x or 0.84.x).`);
 		return;
 	}
 	const limits = loadSubagentLimits();
@@ -1383,6 +1385,12 @@ export default function (pi: ExtensionAPI) {
 	let closed = false;
 	let cleanupFailure: string | undefined;
 	let changingSession = 0;
+	let boundaryChanging = false;
+	const revokeExecution = (): void => {
+		boundaryChanging = true;
+		authority.abort(new Error("Subagent execution boundary changed; submit a fresh request."));
+		tasks.cancelAll();
+	};
 	const drain = async (): Promise<void> => {
 		changingSession++;
 		authority.abort(new Error("Subagent session branch changed; submit a fresh request."));
@@ -1390,13 +1398,13 @@ export default function (pi: ExtensionAPI) {
 		try { await Promise.allSettled(pending); }
 		finally { authority = new AbortController(); changingSession--; }
 	};
+	pi.registerExecutionOwner?.("subagent", { revoke: revokeExecution, async drain() {
+		try { await drain(); if (cleanupFailure) throw new Error(cleanupFailure); }
+		finally { boundaryChanging = false; }
+	} });
 	pi.on("session_before_tree", drain);
 	pi.on("session_start", async (_event, ctx) => { await drain(); configureTaskHistory(tasks, "subagent", ctx); });
-	const removePermissionListener = pi.events.on(SESSION_PERMISSION_EVENT, () => {
-		authority.abort(new Error("Subagent permission state changed; submit a new task."));
-		tasks.cancelAll();
-		authority = new AbortController();
-	});
+	const removePermissionListener = pi.events.on(SESSION_PERMISSION_EVENT, drain);
 	pi.on("session_shutdown", async () => {
 		closed = true;
 		taskRegistration.unregister();
@@ -1433,7 +1441,8 @@ export default function (pi: ExtensionAPI) {
 		throw new Error("Background subagents require the built-in tasks or subagent_tasks management tool. Enable one or use foreground execution.");
 	};
 	const steerTask = (task: ManagedSubagentTask, text: string, ctx: ExtensionContext): string => {
-		if (closed || changingSession || cleanupFailure) throw new Error("Subagent session is unavailable for steering.");
+		pi.assertExecutionCurrent?.();
+		if (closed || changingSession || boundaryChanging || cleanupFailure) throw new Error("Subagent session is unavailable for steering.");
 		assertBackgroundContext(ctx); tasks.assertHistoryAvailable();
 		if (task.state !== "running" || task.completedAt !== undefined) throw new Error("Only a running checkpoint task can receive corrections; queued, cancelling, terminal and historical tasks cannot restart.");
 		task.controller?.signal.throwIfAborted();
@@ -1447,7 +1456,8 @@ export default function (pi: ExtensionAPI) {
 		steer: steerTask,
 		status: task => controls.has(task.id) ? `\n${controls.get(task.id)!.guidanceStatus}` : "",
 		background(task, ctx) {
-			if (closed || changingSession || cleanupFailure) throw new Error("Subagent session is unavailable for handoff.");
+			pi.assertExecutionCurrent?.();
+			if (closed || changingSession || boundaryChanging || cleanupFailure) throw new Error("Subagent session is unavailable for handoff.");
 			assertBackgroundContext(ctx);
 			tasks.assertHistoryAvailable();
 			const entry = foreground.get(task.id);
@@ -1583,15 +1593,21 @@ export default function (pi: ExtensionAPI) {
 
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			if (closed) throw new Error("Subagent session is closed.");
-			if (changingSession) throw new Error("Subagent session is changing; wait for previous tasks to stop.");
+			pi.assertExecutionCurrent?.();
+			if (changingSession || boundaryChanging) throw new Error("Subagent session is changing; wait for previous tasks to stop.");
 			if (cleanupFailure) throw new Error(cleanupFailure);
 			configureTaskHistory(tasks, "subagent", ctx); tasks.assertHistoryAvailable();
 			assertTaskCount(params, limits);
 			assertAssignments(params);
 			signal?.throwIfAborted();
 			if (params.background) assertBackgroundContext(ctx);
-			const authoritySignal = authority.signal;
-			const foregroundSignal = signal ? AbortSignal.any([signal, authoritySignal]) : authoritySignal;
+			if (pending.size >= limits.maxTasks) throw new Error("Subagent preparation capacity exceeded; wait for an admitted call to finish.");
+			// One admission deferred, replaced by the existing batch operation before handoff.
+			let finishPreparation: (() => void) | undefined;
+			let preparing: Promise<void> | undefined = new Promise<void>(resolve => { finishPreparation = resolve; });
+			pending.add(preparing);
+			try {
+			const sessionAuthoritySignal = authority.signal;
 			const defaultTimeoutMs = params.timeoutMs ?? DEFAULT_TASK_TIMEOUT_MS;
 			const agentScope: AgentScope = params.agentScope ?? "user";
 			const confirmProjectAgents = params.confirmProjectAgents ?? true;
@@ -1648,6 +1664,8 @@ export default function (pi: ExtensionAPI) {
 				requestedAgentNames.push(params.agent!);
 			}
 			const delegatedPolicies = consumeDelegatedTaskPolicies(params, requestedCwds, ctx.cwd, toolCallId);
+			const authoritySignal = AbortSignal.any([sessionAuthoritySignal, delegatedPolicies[0]!.revocationSignal]);
+			const foregroundSignal = signal ? AbortSignal.any([signal, authoritySignal]) : authoritySignal;
 			assertSubagentBatchPreflight(agents, requestedAgentNames, delegatedPolicies, hasTasks);
 			const continuation = params.resumeTaskId ? tasks.readCheckpoint(params.resumeTaskId) : undefined;
 			if (continuation) {
@@ -1679,7 +1697,9 @@ export default function (pi: ExtensionAPI) {
 						const ok = await ctx.ui.confirm(
 							"Run project-local agents?",
 							`Agents: ${projectAgentNames.join(", ")}\nSource: ${dir}\n\nProject agents are repo-controlled. Only continue for trusted repositories.`,
+							{ signal: foregroundSignal },
 						);
+						foregroundSignal.throwIfAborted();
 						if (!ok) throw new Error("Project-local agents were not approved");
 					}
 				}
@@ -1709,8 +1729,9 @@ export default function (pi: ExtensionAPI) {
 					try {
 						task = formatAssignment(params.chain?.[index] ?? params.tasks?.[index] ?? params, task);
 						const result = await scheduler.run(childSignal, async () => {
-							tasks.start(record);
 							const policy = delegatedPolicies[index];
+							policy.assertCurrent();
+							tasks.start(record);
 							const identity = params.checkpoint || continuation ? fs.statSync(policy.canonicalCwd, { bigint: true }) : undefined;
 							if (continuation && (continuation.device !== String(identity!.dev) || continuation.inode !== String(identity!.ino))) throw new Error("Checkpoint workspace identity changed while queued.");
 							const checkpoint: TaskCheckpoint | undefined = params.checkpoint || continuation ? {
@@ -1757,6 +1778,7 @@ export default function (pi: ExtensionAPI) {
 				};
 				const operation = runTasks();
 				pending.add(operation);
+				pending.delete(preparing); finishPreparation!(); preparing = undefined; finishPreparation = undefined;
 				if (foregroundOwner) {
 					const complete = (result?: AgentToolResult<SubagentDetails>, error?: unknown, failed = false): void => {
 						pending.delete(operation);
@@ -1785,6 +1807,10 @@ export default function (pi: ExtensionAPI) {
 			} catch (error) {
 				reservation.release();
 				throw error;
+			}
+			} finally {
+				if (preparing) { pending.delete(preparing); finishPreparation!(); }
+				preparing = undefined; finishPreparation = undefined;
 			}
 		},
 

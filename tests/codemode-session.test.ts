@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, resolve, toNamespacedPath } from "node:path";
 import { test, type TestContext } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { createJiti } from "jiti";
 import { Type } from "typebox";
 import { releaseComponentRenderCaches } from "@super-pi/tui";
@@ -16,12 +17,13 @@ import { SettingsManager } from "../packages/coding-agent/src/core/settings-mana
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
 import { AssistantMessageEventStream } from "../packages/ai/src/utils/event-stream.ts";
 import type { AssistantMessage, Context } from "../packages/ai/src/types.ts";
-import type { InlineExtension, ExtensionFactory } from "../packages/coding-agent/src/core/extensions/types.ts";
+import type { InlineExtension, ExtensionFactory, ToolCatalogSnapshot } from "../packages/coding-agent/src/core/extensions/types.ts";
 import { CODEMODE_DESCRIPTION, CODEMODE_STORE_ENTRY } from "../packages/coding-agent/src/core/codemode-constants.ts";
 import { CodemodeStore } from "../packages/coding-agent/src/core/codemode-store.ts";
 import { CodemodeController } from "../packages/coding-agent/src/core/codemode.ts";
 import { browserResultText, formatFailure } from "../packages/extensions/browser-use/index.ts";
 import { privateOutputFileSystem } from "../packages/coding-agent/src/utils/private-output-file.ts";
+import { getShellCwdBinding } from "../packages/coding-agent/src/core/tools/shell-cwd.ts";
 import { CODEMODE_RESULT_ENTRY } from "../packages/coding-agent/src/core/codemode-constants.ts";
 import { convertResponsesTools } from "../packages/ai/src/api/openai-responses-shared.ts";
 import { streamSimple as streamAnthropic } from "../packages/ai/src/api/anthropic-messages.ts";
@@ -73,7 +75,11 @@ async function fixture(t: TestContext, options: Pick<CreateAgentSessionOptions, 
 			isUsingOAuth: () => false, getModel: () => undefined, getAuth: async () => undefined } as never, ...options });
 	shutdown = async () => {
 		session.agent.abort();
-		try { await session.agent.waitForIdle(); } finally { session.dispose(); }
+		try { await session.agent.waitForIdle(); } finally {
+			await resources.getExtensions().runtime.nativeFiles?.dispose();
+			await resources.getExtensions().runtime.nativeTasks?.dispose();
+			session.dispose();
+		}
 	};
 	await session.bindExtensions({});
 	let id = 0;
@@ -145,22 +151,19 @@ test("Codemode pre-execution edit failures suppress only the proven no-execution
   assert.equal(readFileSync(join(f.cwd, "file.txt"), "utf8"), "hello\nworld\n");
 });
 
-test("guarded edit execute rejects a missing snapshot even when its validation hook is lost", async t => {
+test("native edit execute cannot bypass its prepared invocation", async t => {
   const f = await fixture(t, {}, [mutation]);
   const edit = f.session.agent.state.tools.find(tool => tool.name === "edit")!;
-  assert.ok(edit.validateInput);
-  edit.validateInput = undefined;
   await assert.rejects(edit.execute("direct-edit", {
     path: "file.txt", edits: [{ kind: "replace", start: "1#1234", newLines: ["changed"] }],
-  }), /\[SNAPSHOT_REQUIRED\] Missing top-level "snapshot"/);
+  }), /requires its prepared invocation/);
   assert.equal(readFileSync(join(f.cwd, "file.txt"), "utf8"), "hello\nworld\n");
 });
 
-test("guarded shape validation leaves malformed input to schema and snapshot state checks in execute", async t => {
+test("native file schema and unknown revisions fail before execute", async t => {
   const f = await fixture(t, {}, [mutation]);
   const edit = f.session.agent.state.tools.find(tool => tool.name === "edit")!;
   assert.equal(edit.prepareArguments, undefined);
-  assert.ok(edit.validateInput);
   const scripts = [
     'await tools.edit({path:"file.txt",edits:[null]})',
     'await tools.write({path:"file.txt"})',
@@ -171,21 +174,21 @@ test("guarded shape validation leaves malformed input to schema and snapshot sta
     assert.equal(outcome.results[index]?.isError, true);
     assert.equal((outcome.results[index]!.details as any).codemode.calls[0].executionStatus, "not_executed");
   }
-  // Use the actual snapshot identifier grammar; absent receipts remain execution failures.
+  // Unknown receipts are rejected during preparation before a file effect can begin.
   const unknown = outcome.results[2]!;
   assert.match(JSON.stringify(unknown.content), /SNAPSHOT_EDIT_UNKNOWN/);
-  assert.equal((unknown.details as any).codemode.calls[0].executionStatus, undefined);
+  assert.equal((unknown.details as any).codemode.calls[0].executionStatus, "not_executed");
   assert.equal(readFileSync(join(f.cwd, "file.txt"), "utf8"), "hello\nworld\n");
 });
 
 test("native edit empty replacements are refused before execute", async t => {
   const f = await fixture(t);
   const outcome = await f.run(['await tools.edit({path:"file.txt",edits:[]})']);
-  assert.match(JSON.stringify(outcome.results[0]!.content), /edits must contain at least one replacement/);
+  assert.match(JSON.stringify(outcome.results[0]!.content), /TOOL_ARGS_INVALID.*minItems/);
   assert.equal((outcome.results[0]!.details as any).codemode.calls[0].executionStatus, "not_executed");
 });
 
-test("Codemode missing snapshot retains guardrail recovery, one steering note and third-call refusal", async t => {
+test("Codemode missing snapshot is refused without entering execution or result hooks", async t => {
   initTheme("dark");
   const received: any[] = [];
   const observer: InlineExtension = pi => {
@@ -197,29 +200,21 @@ test("Codemode missing snapshot retains guardrail recovery, one steering note an
   const execute = edit.execute;
   edit.execute = (...args) => { executed++; return execute(...args); };
   const script = 'for(let i=0;i<3;i++){try{await tools.edit({path:"file.txt",edits:[{kind:"replace",start:"1#1234",newLines:["x"]}]})}catch(error){text(error.message)}}';
-  const { results, wires } = await f.run([script], undefined, false, true);
+  const { results } = await f.run([script], undefined, false, true);
   assert.equal(results.length, 1);
   assert.equal(executed, 0);
-  assert.equal(received.length, 2, "only admitted validation failures produce tool_result");
+  assert.equal(received.length, 0, "preparation failures never enter tool execution");
   const result = results[0]!;
   const calls = (result.details as any).codemode.calls;
   assert.equal(calls.length, 3);
   assert.equal(result.isError, true);
   for (const call of calls) assert.equal(call.executionStatus, "not_executed");
   assert.match(JSON.stringify(result.content), /SNAPSHOT_REQUIRED/);
-  assert.match(JSON.stringify(result.content), /REPEATED_CALL_BLOCKED/);
-  for (const event of received) assert.match(JSON.stringify(event.content), /Retry: copy the snapshot ID/);
   const tree = new CodemodeTreeComponent();
   try {
     tree.updateParent(script, result as any, false, true, false);
     assert.doesNotMatch(stripVTControlCharacters(tree.render(160).join("\n")), /not rolled back/);
   } finally { releaseComponentRenderCaches(tree); }
-  const steering = wires[1]!.messages.filter((message: any) => message.role === "user" && Array.isArray(message.content)
-    && message.content.some((block: any) => block.text?.startsWith("[Tool-loop")));
-  assert.equal(steering.length, 1, "one hidden steering note reaches the next model request");
-  const notices = f.session.messages.filter(message => message.role === "custom" && message.customType === "tool-failure-advisory-v1");
-  assert.equal(notices.length, 1);
-  assert.equal((notices[0] as any).display, false);
   assert.equal(readFileSync(join(f.cwd, "file.txt"), "utf8"), "hello\nworld\n");
 });
 
@@ -374,25 +369,24 @@ function isolateTemporaryFiles(t: TestContext, cwd: string): void {
 	});
 }
 
-test("five native reads under a shared budget continue without granting omitted reads edit authority", async t => {
+test("five native reads under a shared budget retain revisions independently of projected output", async t => {
 	const f = await fixture(t, { toolResultPresentation: { enabled: true, budgetTokens: 512 } }, [], true);
 	isolateTemporaryFiles(t, f.cwd);
 	for (let file = 0; file < 3; file++) writeFileSync(join(f.cwd, `middle${file}.txt`), Array.from({ length: 400 }, (_, line) => `hidden${file} line${line}\n`).join(""));
 	writeFileSync(join(f.cwd, "last.txt"), "last\n");
 	const outcome = await f.run([
 		'for (const path of ["file.txt","middle0.txt","middle1.txt","middle2.txt","last.txt"]) await show((await tools.read({path})).ref)',
-		'await tools.edit({path:"middle1.txt",edits:[{oldText:"hidden1 line0",newText:"must not write"}]})',
+		'await tools.edit({path:"middle1.txt",edits:[{oldText:"hidden1 line0",newText:"first change"}]})',
 	]);
 	assert.equal(f.session.agent.state.errorMessage, undefined);
 	assert.equal(outcome.wires.length, 3);
 	assert.equal(outcome.results[0]?.isError, false);
 	assert.equal(outcome.results[0]?.details?.codemode.calls.length, 5);
-	assert.equal(outcome.results[1]?.isError, true);
-	assert.match(JSON.stringify(outcome.results[1]?.content), /READ_REQUIRED/);
-	assert.ok(readFileSync(join(f.cwd, "middle1.txt"), "utf8").startsWith("hidden1 line0\n"));
+	assert.equal(outcome.results[1]?.isError, false);
+	assert.ok(readFileSync(join(f.cwd, "middle1.txt"), "utf8").startsWith("first change\n"));
 	const recovery = await f.run([
 		'await show((await tools.read({path:"middle1.txt",offset:1,limit:1})).ref)',
-		'await tools.edit({path:"middle1.txt",edits:[{oldText:"hidden1 line0",newText:"verified change"}]})',
+		'await tools.edit({path:"middle1.txt",edits:[{oldText:"first change",newText:"verified change"}]})',
 	]);
 	assert.equal(f.session.agent.state.errorMessage, undefined);
 	assert.equal(recovery.results.at(-1)?.isError, false, JSON.stringify(recovery.results.at(-1)?.content));
@@ -466,16 +460,17 @@ for (const mode of ["live", "reload", "unrecognized"] as const) test(`capped tra
 		assert.deepEqual(errors, []);
 	}
 	const edit = await f.run(['await tools.edit({path:"file.txt",edits:[{oldText:"hello",newText:"annotation safe"}]})']);
-	assert.equal(edit.results.at(-1)?.isError, mode === "unrecognized", JSON.stringify(edit.results.at(-1)?.content));
-	assert.equal(readFileSync(join(f.cwd, "file.txt"), "utf8"), mode === "unrecognized" ? "hello\nworld\n" : "annotation safe\nworld\n");
+	assert.equal(edit.results.at(-1)?.isError, mode === "reload", JSON.stringify(edit.results.at(-1)?.content));
+	if (mode === "reload") assert.match(JSON.stringify(edit.results.at(-1)?.content), /REVISION_REQUIRED/);
+	assert.equal(readFileSync(join(f.cwd, "file.txt"), "utf8"), mode === "reload" ? "hello\nworld\n" : "annotation safe\nworld\n");
 });
 
-test("projection never substitutes a printed read copy for an omitted native group", async t => {
+test("projection keeps native groups distinct while file revisions remain usable", async t => {
 	const f = await fixture(t, { toolResultPresentation: { enabled: true, budgetTokens: 512 } }, [], true);
 	writeFileSync(join(f.cwd, "large.txt"), "surrounding data\n".repeat(100));
 	const outcome = await f.run([
 		'const r=await tools.read({path:"file.txt"}); for(const b of r.content) text(b.text); const large=await tools.read({path:"large.txt"}); await show(large.ref); await show(r.ref); await show(large.ref)',
-		'await tools.edit({path:"file.txt",edits:[{oldText:"hello",newText:"must not write"}]})',
+		'await tools.edit({path:"file.txt",edits:[{oldText:"hello",newText:"current version"}]})',
 	]);
 	assert.equal(f.session.agent.state.errorMessage, undefined);
 	const original = outcome.results[0]!.content;
@@ -484,32 +479,111 @@ test("projection never substitutes a printed read copy for an omitted native gro
 	const visible = outcome.wires[1]!.messages.find(m => m.role === "toolResult")!.content;
 	assert.equal(original.filter(b => b.type === "text" && b.text === lines.text).length, 2);
 	assert.equal(visible.filter(b => b.type === "text" && b.text === lines.text).length, 1, "only the printed copy survives");
-	assert.equal(outcome.results[1]?.isError, true);
-	assert.match(JSON.stringify(outcome.results[1]?.content), /READ_REQUIRED/);
-	assert.equal(readFileSync(join(f.cwd, "file.txt"), "utf8"), "hello\nworld\n");
+	assert.equal(outcome.results[1]?.isError, false);
+	assert.equal(readFileSync(join(f.cwd, "file.txt"), "utf8"), "current version\nworld\n");
 });
 
 test("SDK defaults to Codemode declarations and native control tools, retaining callable tools", async t => {
 	const f = await fixture(t);
+	assert.deepEqual(f.resources.getExtensions().extensions, [], "minimal runtime has no external or inline extensions");
 	(f.session as any)._providerRequestPayloadBuilder = (input: any) => ({ tools: input.tools.map((tool: any) => tool.name) });
 	const preview = await f.session.buildProviderRequestPayload({ messages: [], systemPrompt: "fixture" });
-	assert.deepEqual((preview?.tools as string[]).sort(), ["ask_user", "codemode"], "provider compaction/preview uses the model-facing catalog too");
+	assert.deepEqual((preview?.tools as string[]).sort(), ["ask_user", "codemode", "tasks"], "provider compaction/preview uses the model-facing catalog too");
 	assert.ok(f.session.getActiveToolNames().includes("read"));
-	const outcome = await f.run(['const r=await tools.read({path:"file.txt"}); await show(r.ref);']);
-	assert.deepEqual(outcome.wires[0]!.tools?.map(tool => tool.name).sort(), ["ask_user", "codemode"]);
+	const outcome = await f.run(['const r=await tools.read({path:"file.txt"}); await show(r.ref); await tools.write({path:"copy.txt",content:"native write"}); const b=await tools.bash({command:"printf native-minimal"}); await show(b.ref);']);
+	assert.deepEqual(outcome.wires[0]!.tools?.map(tool => tool.name).sort(), ["ask_user", "codemode", "tasks"]);
 	const prompt = outcome.wires[0]!.systemPrompt!;
 	const toolsSection = prompt.slice(prompt.indexOf("Available tools:"), prompt.indexOf("Guidelines:"));
 	assert.match(toolsSection, /- codemode:/);
 	assert.doesNotMatch(toolsSection, /- (read|bash|powershell|edit|write):/);
 	assert.match(prompt, /For read inside codemode:/);
 	assert.match(prompt, /for file operations/, "shell guidance counts Codemode children as callable tools");
-	assert.equal(outcome.results[0]?.isError, false);
+	assert.equal(outcome.results[0]?.isError, false, JSON.stringify(outcome.results[0]?.content));
 	assert.match(JSON.stringify(outcome.results[0]?.content), /hello/);
+	assert.match(JSON.stringify(outcome.results[0]?.content), /native-minimal/);
+	assert.equal(readFileSync(join(f.cwd, "copy.txt"), "utf8"), "native write");
 	assert.deepEqual(outcome.results.map(r => r.toolName), ["codemode"]);
+});
+
+test("zero-extension session owns shell tasks through Codemode, controls, handoff and reload", { timeout: 15_000 }, async t => {
+	const f = await fixture(t);
+	await f.session.bindExtensions({ mode: "rpc" });
+	const native = f.resources.getExtensions().runtime.nativeTasks!;
+	const reports: unknown[] = [];
+	f.resources.getExtensions().runtime.sendMessage = message => { reports.push(message); };
+	assert.equal(f.session.extensionRunner.getCommand("tasks")?.sourceInfo.source, "builtin");
+	assert.equal(f.session.extensionRunner.getAllRegisteredTools().length, 0);
+	for (const change of ["input", "authority"] as const) {
+		const input = { command: "printf never-started", cwd: ".", background: true };
+		const grant = (await f.session.extensionRunner.emitToolCall({ type: "tool_call", toolName: "bash", toolCallId: change, input }))!.finalAuthorization!;
+		if (change === "input") input.command = "printf changed";
+		else await f.session.extensionRunner.emit({ type: "session_tree" } as never);
+		assert.throws(() => grant.consume(input, change, "bash"), /stale|permission changed/);
+		assert.equal(getShellCwdBinding(input)?.isReleased, true);
+		assert.equal(native.shell.tasks.size, 0);
+	}
+	writeFileSync(join(f.cwd, "fixture.mjs"), readFileSync(new URL("fixtures/background-shell-child.mjs", import.meta.url)));
+	let sequence = 0;
+	const call = (name: string, args: Record<string, unknown>) => f.session.agent.dispatchHostTool({ type: "toolCall", id: `native-task-${++sequence}`, name, arguments: args });
+	const outcome = await f.run(['const r=await tools.bash({command:"node fixture.mjs fast",cwd:".",background:true});await show(r.ref)']);
+	assert.equal(outcome.results[0]?.isError, false, JSON.stringify(outcome.results));
+	const first = [...native.shell.tasks.values()][0]!;
+	assert.ok(first);
+	const completed = await call("tasks", { action: "wait", id: first.id, timeoutMs: 5000 });
+	assert.equal(completed.isError, false);
+	assert.match(JSON.stringify(completed.content), /result:fast/);
+	assert.equal((completed.details as any).result.shellExecution.exitCode, 0);
+	assert.equal(reports.length, 1);
+	const hold = await call("bash", { command: "node fixture.mjs hold", cwd: ".", background: true });
+	assert.equal(hold.isError, false, JSON.stringify(hold));
+	const holdId = (hold.details as any).backgroundTask.id;
+	await call("tasks", { action: "cancel", id: holdId });
+	await call("tasks", { action: "wait", id: holdId, timeoutMs: 5000 });
+	assert.equal(native.shell.tasks.get(holdId).state, "cancelled");
+	const count = native.shell.tasks.size;
+	await f.run(['const r=await tools.bash({command:"printf nested-complete",cwd:".",timeout:5});await show(r.ref)']);
+	assert.equal(native.shell.tasks.size, count, "nested foreground work is never transferable");
+	const foreground = call("bash", { command: "node fixture.mjs handoff small", cwd: ".", timeout: 10 });
+	for (let i = 0; i < 150; i++) {
+		try { readFileSync(join(f.cwd, "handoff.ready.json")); break; } catch { await delay(20); }
+	}
+	const pid = JSON.parse(readFileSync(join(f.cwd, "handoff.ready.json"), "utf8")).pid;
+	const running = [...native.shell.tasks.values()].find(task => task.state === "running")!;
+	assert.ok(running);
+	await f.session.extensionRunner.getCommand("tasks")!.handler(`background ${running.id}`, f.session.extensionRunner.createCommandContext());
+	const accepted = await foreground;
+	assert.equal((accepted.details as any).backgroundTask.id, running.id);
+	writeFileSync(join(f.cwd, "handoff.release"), "release");
+	const handedOff = await call("tasks", { action: "wait", id: running.id, timeoutMs: 5000 });
+	assert.match(JSON.stringify(handedOff.content), new RegExp(`HANDOFF-PID:${pid}`));
+	assert.equal(reports.length, 3, "one report per accepted background task");
+	await f.session.bindExtensions({ mode: "print" });
+	const unavailable = await call("bash", { command: "printf forbidden", cwd: ".", background: true });
+	assert.equal(unavailable.isError, true);
+	assert.match(JSON.stringify(unavailable.content), /live TUI or RPC/);
+	await f.session.reload();
+	assert.notEqual(f.resources.getExtensions().runtime.nativeTasks, native);
+	assert.equal(native.shell.tasks.size + native.shell.tasks.waiterCount + native.shell.scheduler.outstanding, 0);
+	assert.deepEqual(f.resources.getExtensions().extensions, []);
+	assert.equal(f.session.extensionRunner.getRegisteredCommands().filter(command => command.name === "tasks").length, 1);
+	let abandoned: ReturnType<typeof f.resources.getExtensions>["runtime"] | undefined;
+	await assert.rejects(f.resources.reload({ resolveProjectTrust: async ({ extensionsResult }) => {
+		abandoned = extensionsResult.runtime;
+		throw new Error("fixture startup failure");
+	} }), /fixture startup failure/);
+	assert.throws(() => abandoned!.assertActive(), /stale/);
+	assert.equal(abandoned!.nativeTasks!.shell.tasks.size, 0);
+	await f.resources.reload();
+	assert.deepEqual(f.resources.getExtensions().errors, []);
 });
 
 test("default extension bundle allows sequential verification after an authorized edit", async t => {
 	const f = await fixture(t, {}, [], true);
+	assert.equal(f.session.extensionRunner.getAllRegisteredTools().filter(tool => tool.definition.name === "tasks").length, 0, "optional providers share the native directory");
+	assert.equal(f.session.extensionRunner.getRegisteredCommands().filter(command => command.name === "tasks").length, 1);
+	const directory = await f.session.agent.dispatchHostTool({ type: "toolCall", id: "shared-task-directory", name: "tasks", arguments: { action: "list" } });
+	assert.match(JSON.stringify(directory.content), /shell:/);
+	assert.match(JSON.stringify(directory.content), /subagent:/);
 	const outcome = await f.run([
 		'const r=await tools.read({path:"file.txt"});await show(r.ref)',
 		'await tools.read({path:"file.txt"});await tools.edit({path:"file.txt",edits:[{oldText:"hello",newText:"changed"}]});const r=await tools.read({path:"file.txt"});await show(r.ref)',
@@ -519,16 +593,45 @@ test("default extension bundle allows sequential verification after an authorize
 	assert.match(JSON.stringify(outcome.results.at(-1)?.content), /changed/);
 });
 
-test("default extension bundle still requires a completed prior visible read", async t => {
-	const f = await fixture(t, {}, [], true);
-	const outcome = await f.run(['const r=await tools.read({path:"file.txt"});await show(r.ref);await tools.edit({path:"file.txt",edits:[{oldText:"hello",newText:"bad"}]})']);
-	assert.equal(outcome.results[0]?.isError, true);
-	assert.match(JSON.stringify(outcome.results[0]), /READ_REQUIRED/);
-	assert.equal(readFileSync(join(f.cwd, "file.txt"), "utf8"), "hello\nworld\n");
+test("native files have one owner and support same-script unshown read/edit in default and zero-extension sessions", { timeout: 15_000 }, async t => {
+  for (const bundle of [false, true]) {
+    const f = await fixture(t, {}, [], bundle);
+    const files = f.resources.getExtensions().runtime.nativeFiles!;
+    assert.ok(files);
+    assert.equal(f.session.extensionRunner.getAllRegisteredTools().filter(tool => ["read", "edit", "write", "delete", "move", "file_batch"].includes(tool.definition.name)).length, 0);
+    assert.equal(f.session.extensionRunner.getRegisteredCommands().filter(command => command.name === "changes").length, 1);
+    const outcome = await f.run(['await tools.read({path:"file.txt"}); await tools.edit({path:"file.txt",edits:[{oldText:"hello",newText:"changed"}]}); await tools.read({path:"file.txt"}); await tools.file_batch({operations:[{operation:"write",mode:"overwrite",path:"file.txt",content:"final\\n"},{operation:"write",mode:"create",path:"new/copy.txt",content:"copy"}]});']);
+    assert.equal(outcome.results[0]?.isError, false, JSON.stringify(outcome.results[0]));
+    assert.equal(readFileSync(join(f.cwd, "file.txt"), "utf8"), "final\n");
+    assert.equal(readFileSync(join(f.cwd, "new/copy.txt"), "utf8"), "copy");
+    assert.deepEqual(files.getDiagnostics(), { pending: 0, inFlight: 0, revisions: 0, closed: false });
+    const changes = collectChanges(f.manager.getBranch(), f.cwd);
+    assert.ok(changes.length >= 3); assert.ok(changes.every(change => !change.unavailable), JSON.stringify(changes));
+    const factCount = f.manager.getBranch().filter(entry => entry.type === "custom" && entry.customType === "file-mutation-progress-v2").length;
+    const preview = await f.run(['await tools.file_batch({dryRun:true,operations:[{operation:"write",mode:"create",path:"preview/only.txt",content:"preview"}]})']);
+    assert.equal(preview.results.at(-1)?.isError, false, JSON.stringify(preview.results.at(-1)));
+    assert.throws(() => readFileSync(join(f.cwd, "preview/only.txt")), { code: "ENOENT" });
+    assert.equal(f.manager.getBranch().filter(entry => entry.type === "custom" && entry.customType === "file-mutation-progress-v2").length, factCount, "preview records no mutation progress");
+    assert.ok(collectChanges(f.manager.getBranch(), f.cwd).some(change => change.preview));
+    if (!bundle) {
+      const native = await f.run(['await tools.move({path:"new/copy.txt",destination:"new/moved.txt"}); await tools.delete({path:"new/moved.txt"});']);
+      assert.equal(native.results.at(-1)?.isError, false, JSON.stringify(native.results.at(-1)));
+    }
+    await f.session.reload();
+    assert.deepEqual(files.getDiagnostics(), { pending: 0, inFlight: 0, revisions: 0, closed: true });
+  }
 });
 
 test("SDK allowlist constrains children while adding the default transport; no-tools stays empty", async t => {
 	const f = await fixture(t, { tools: ["read"] });
+	const catalog = f.session.getToolCatalog();
+	assert.equal(catalog.selectionMode, "default");
+	assert.deepEqual(catalog.tools.map(tool => tool.name).sort(), ["codemode", "read"]);
+	assert.deepEqual(catalog.activeTools, ["read", "codemode"]);
+	catalog.tools[0]!.description = "caller-owned entry";
+	catalog.tools.length = 0; catalog.activeTools.length = 0;
+	assert.equal(f.session.getToolCatalog().tools.length, 2);
+	assert.ok(f.session.getToolCatalog().tools.every(tool => tool.description !== "caller-owned entry"));
 	assert.deepEqual(f.session.getActiveToolNames().sort(), ["codemode", "read"]);
 	const outcome = await f.run(['try { await callTool("write",{path:"forbidden.txt",content:"bad"}); } catch {} text("success")']);
 	assert.equal(outcome.results[0]?.isError, true);
@@ -536,6 +639,7 @@ test("SDK allowlist constrains children while adding the default transport; no-t
 	const empty = await fixture(t, { noTools: "all" });
 	assert.deepEqual(empty.session.getActiveToolNames(), []);
 	assert.deepEqual(empty.session.agent.state.modelTools, []);
+	assert.deepEqual(empty.session.getToolCatalog(), { tools: [], activeTools: [], selectionMode: "default" });
 });
 
 test("tool selection expressions modify configured defaults and intersect literal SDK lists", async t => {
@@ -546,6 +650,7 @@ test("tool selection expressions modify configured defaults and intersect litera
 	const strict = await fixture(t, { tools: ["read", "write"], toolSelection: { tools: ["*"], excludeTools: ["writ?"] } });
 	strict.session.setActiveToolsByName(["read", "write", "bash"]);
 	assert.deepEqual(strict.session.getActiveToolNames().sort(), ["codemode", "read"]);
+	assert.deepEqual(strict.session.getToolCatalog().tools.map(tool => tool.name).sort(), ["codemode", "read"]);
 	const literal = await fixture(t, { tools: ["rea*"] });
 	assert.equal(literal.session.getActiveToolNames().includes("read"), false);
 	const empty = await fixture(t, { toolSelection: { tools: ["missing_*"] } });
@@ -556,8 +661,10 @@ test("tool selection expressions modify configured defaults and intersect litera
 
 test("tool selection expressions constrain late MCP registration, explicit activation and reload", async t => {
 	let registerLate: () => void = () => { throw new Error("not initialized"); };
+	let readCatalog: () => ToolCatalogSnapshot = () => { throw new Error("not initialized"); };
 	let allowed = 0, denied = 0;
 	const extension: InlineExtension = pi => {
+		readCatalog = () => pi.getToolCatalog!();
 		const runtime = new McpBridgeRuntime(pi, "fixture");
 		t.after(() => runtime.close());
 		pi.on("session_shutdown", () => runtime.close());
@@ -573,14 +680,21 @@ test("tool selection expressions constrain late MCP registration, explicit activ
 	};
 	const f = await fixture(t, { toolSelection: { tools: ["mcp__fixture__*", "-*__delete"] } }, [extension]);
 	assert.deepEqual(f.session.getActiveToolNames(), []);
+	assert.equal(readCatalog().tools.some(tool => tool.name.startsWith("mcp__")), false);
 	registerLate();
+	assert.deepEqual(readCatalog(), f.session.getToolCatalog());
+	assert.equal(readCatalog().tools.some(tool => tool.name === "mcp__fixture__delete"), false);
 	assert.deepEqual(f.session.getActiveToolNames().sort(), ["codemode", "mcp__fixture__lookup"]);
 	const outcome = await f.run(['const r=await callTool("mcp__fixture__lookup",{});text(r.content)', 'await callTool("mcp__fixture__delete",{})']);
 	assert.equal(outcome.results[0]?.isError, false, JSON.stringify(outcome.results));
 	assert.equal(outcome.results[1]?.isError, true);
 	assert.equal(allowed, 1); assert.equal(denied, 0);
+	const oldReader = readCatalog;
 	await f.session.reload();
+	assert.throws(oldReader, /stale/);
+	assert.equal(readCatalog().tools.some(tool => tool.name.startsWith("mcp__")), false);
 	registerLate();
+	assert.deepEqual(readCatalog(), f.session.getToolCatalog());
 	assert.deepEqual(f.session.getActiveToolNames().sort(), ["codemode", "mcp__fixture__lookup"]);
 	f.session.dispose();
 	assert.equal((f.session as any)._toolSelection, undefined);
@@ -593,6 +707,9 @@ test("tool selection wildcard and denied activation preserve unavailable PowerSh
 	assert.equal(f.session.getActiveToolNames().includes("powershell"), false);
 	assert.equal(settings.getPowerShellStatus()?.available, false);
 	assert.equal(f.session.getAllTools().find(tool => tool.name === "powershell")?.available, false);
+	const beforeRecovery = f.session.getToolCatalog();
+	assert.equal(beforeRecovery.tools.find(tool => tool.name === "powershell")?.available, false);
+	assert.equal(beforeRecovery.activeTools.includes("powershell"), false);
 	const blocked = await f.session.agent.dispatchHostTool({ type: "toolCall", id: "unavailable-recovery", name: "bash", arguments: { command: "powershell.exe -NoProfile -Command 'Write-Output fixture'" } });
 	assert.equal(blocked.isError, true);
 	assert.match(JSON.stringify(blocked.content), /directly inspectable foreground command/);
@@ -608,20 +725,35 @@ test("tool selection wildcard and denied activation preserve unavailable PowerSh
 	if (process.platform === "win32") {
 		f.session.setActiveToolsByName(["bash", "tool_search", "powershell"]);
 		assert.equal(f.session.getAllTools().find(tool => tool.name === "powershell")?.available, true);
+		assert.equal(f.session.getToolCatalog().tools.find(tool => tool.name === "powershell")?.available, true);
 		(f.session as any)._powerShellToolState.disable("offline transient failure");
 		assert.equal(f.session.getAllTools().find(tool => tool.name === "powershell")?.available, false);
+		const disabled = f.session.getToolCatalog();
+		assert.equal(disabled.tools.find(tool => tool.name === "powershell")?.available, false);
+		assert.equal(disabled.activeTools.includes("powershell"), true, "availability and activation are independent");
+		assert.equal(beforeRecovery.activeTools.includes("powershell"), false, "previous snapshot stays stable");
 		const unavailable = await f.session.agent.dispatchHostTool({ type: "toolCall", id: "disabled-active-recovery", name: "bash", arguments: { command: "powershell.exe -Command 'Write-Output fixture'" } });
 		assert.doesNotMatch(JSON.stringify(unavailable.content), /Use tool_search|enabled native PowerShell/);
 	}
 });
 
 test("real tool_search activates allowed tools inside Codemode without exposing denied names", async t => {
+	let catalogReads = 0;
+	const classification: InlineExtension = pi => (toolClassification as ExtensionFactory)({ ...pi,
+		getToolCatalog: () => { catalogReads++; return pi.getToolCatalog!(); },
+		getAllTools: () => { throw new Error("search must consume the unified catalog"); },
+	});
 	const extension: InlineExtension = pi => {
 		for (const name of ["catalog_lookup", "catalog_delete"]) pi.registerTool({ name, label: name, description: "catalog fixture",
 			parameters: Type.Object({}), execute: async () => ({ content: [{ type: "text", text: name }], details: {} }) });
 	};
-	const f = await fixture(t, { toolSelection: { tools: ["tool_search", "catalog_*", "-catalog_delete"] } }, [toolClassification, extension]);
+	const f = await fixture(t, { toolSelection: { tools: ["tool_search", "catalog_*", "-catalog_delete"] } }, [classification, extension]);
+	assert.equal(catalogReads, 1, "startup reads one catalog");
+	catalogReads = 0;
 	f.session.setActiveToolsByName(["tool_search"]);
+	const before = f.session.getToolCatalog();
+	assert.deepEqual(before.activeTools, ["tool_search", "codemode"]);
+	assert.equal(before.tools.find(tool => tool.name === "catalog_lookup")?.available, true);
 	const outcome = await f.run([
 		'const r=await tools.tool_search({query:"catalog",limit:1});text(r.details);text(ALL_TOOLS.some(t=>t.name==="catalog_lookup"));text((await callTool("catalog_lookup",{})).content);text(await describeTools(["catalog_delete"]));',
 		'text(ALL_TOOLS.map(t=>t.name));await callTool("catalog_delete",{});',
@@ -633,6 +765,9 @@ test("real tool_search activates allowed tools inside Codemode without exposing 
 	assert.doesNotMatch(discovered, /catalog_delete/);
 	assert.equal(outcome.results[1]?.isError, true);
 	assert.match(JSON.stringify(outcome.results[1]?.content), /catalog_lookup/);
+	assert.equal(catalogReads, 1, "one explicit search reads one catalog; output does not rescan");
+	assert.deepEqual(f.session.getToolCatalog().activeTools, ["tool_search", "codemode", "catalog_lookup"]);
+	assert.deepEqual(before.activeTools, ["tool_search", "codemode"]);
 	assert.deepEqual(f.session.getActiveToolNames().sort(), ["catalog_lookup", "codemode", "tool_search"]);
 });
 
@@ -644,13 +779,106 @@ test("exact tool-name search outranks matching words in another tool description
 		pi.registerTool({ name: "file_batch", label: "File batch", description: "file batch fixture",
 			parameters: Type.Object({}), execute: async () => { batchCalls++; return { content: [], details: {} }; } });
 	};
-	const f = await fixture(t, {}, [toolClassification, extension]);
+	// Older extension hosts only provide the two legacy readers.
+	const legacyClassification: InlineExtension = pi => (toolClassification as ExtensionFactory)({ ...pi, getToolCatalog: undefined });
+	const f = await fixture(t, {}, [legacyClassification, extension]);
 	f.session.setActiveToolsByName(["tool_search"]);
 	const outcome = await f.run(['text((await tools.tool_search({query:"  FILE_BATCH  ",limit:1})).details);await callTool("file_batch",{});']);
 	assert.equal(outcome.results[0]?.isError, false, JSON.stringify(outcome.results));
 	assert.equal(batchCalls, 1);
 	assert.equal(browserCalls, 0);
 	assert.deepEqual(f.session.getActiveToolNames().sort(), ["codemode", "file_batch", "tool_search"]);
+});
+
+test("explicit selection mode distinguishes Plan from tool names while older catalogs retain compatibility", async t => {
+	let olderCatalog = false;
+	const classification: InlineExtension = pi => (toolClassification as ExtensionFactory)({ ...pi,
+		getToolCatalog: () => {
+			const catalog = pi.getToolCatalog!();
+			if (olderCatalog) catalog.selectionMode = undefined; // P5.1 host: API exists, mode field does not.
+			return catalog;
+		},
+	});
+	const names = ["plan_mode_question", "plan_mode_complete", "conditional_fixture"];
+	const impostors: InlineExtension = pi => {
+		for (const name of names) pi.registerTool({ name, label: name, description: "ordinary tool, no Plan owner",
+			parameters: Type.Object({}), execute: async () => { throw new Error("fixture must not execute"); } });
+	};
+	const f = await fixture(t, {}, [classification, impostors]);
+	assert.equal(f.session.getToolCatalog().selectionMode, "default");
+	for (const name of names) assert.equal(f.session.getActiveToolNames().includes(name), false, "names cannot override explicit default mode");
+	olderCatalog = true;
+	f.session.setActiveToolsByName(names);
+	await f.session.extensionRunner.emit({ type: "session_start", reason: "reload" });
+	assert.deepEqual(f.session.getActiveToolNames(), [...names, "codemode"]);
+	olderCatalog = false;
+	await f.session.extensionRunner.emit({ type: "session_start", reason: "reload" });
+	for (const name of names) assert.equal(f.session.getActiveToolNames().includes(name), false);
+});
+
+test("Chrome automatic restoration follows explicit mode while manual selection and old hosts remain compatible", async t => {
+	const { applyChromeDevtoolsTools } = await jiti.import<typeof import("../packages/chrome-devtools/src/tool-selector.ts")>("../packages/chrome-devtools/src/tool-selector.ts");
+	let api!: Parameters<typeof applyChromeDevtoolsTools>[0];
+	const names = ["plan_mode_question", "plan_mode_complete", "chrome_devtools_list_pages"];
+	const f = await fixture(t, {}, [pi => {
+		api = pi;
+		for (const name of names) pi.registerTool({ name, label: name, description: "fixture", parameters: Type.Object({}), execute: async () => { throw new Error("must not execute"); } });
+	}]);
+	f.session.setActiveToolsByName(names);
+	applyChromeDevtoolsTools(api, [], { preservePlanModeSelection: true });
+	assert.equal(f.session.getActiveToolNames().includes("chrome_devtools_list_pages"), false, "control-name collisions cannot override explicit default");
+	let plan = true, reads = 0;
+	f.session.resourceLoader.getExtensions().runtime.executionBoundary.register("chrome-mode-fixture", {
+		revoke() {}, async drain() {}, toolSelectionMode: () => plan ? "plan" : undefined,
+	});
+	const modern = { ...api, getToolCatalog: () => { reads++; return api.getToolCatalog!(); } };
+	f.session.setActiveToolsByName(["read", "chrome_devtools_list_pages"]);
+	const before = f.session.getActiveToolNames();
+	applyChromeDevtoolsTools(modern, [], { preservePlanModeSelection: true });
+	assert.deepEqual(f.session.getActiveToolNames(), before, "explicit Plan owns selection even without control names");
+	await Promise.resolve(); plan = false; // The next startup application must not reuse a pre-await snapshot.
+	applyChromeDevtoolsTools(modern, [], { preservePlanModeSelection: true });
+	assert.equal(reads, 2);
+	assert.equal(f.session.getActiveToolNames().includes("chrome_devtools_list_pages"), false);
+	plan = true;
+	applyChromeDevtoolsTools(modern, ["chrome_devtools_list_pages"]);
+	assert.equal(f.session.getActiveToolNames().includes("chrome_devtools_list_pages"), true);
+	assert.equal(reads, 2, "manual selection does not enumerate the catalog");
+	f.session.setActiveToolsByName(names);
+	for (const older of [{ ...api, getToolCatalog: undefined }, { ...api, getToolCatalog: () => ({ ...api.getToolCatalog!(), selectionMode: undefined }) }]) {
+		applyChromeDevtoolsTools(older, [], { preservePlanModeSelection: true });
+		assert.equal(f.session.getActiveToolNames().includes("chrome_devtools_list_pages"), true);
+	}
+	// Exercise the real two-stage startup around real settings I/O, without connecting a browser.
+	const previousAgentDir = process.env.SP_CODING_AGENT_DIR;
+	process.env.SP_CODING_AGENT_DIR = f.agentDir;
+	t.after(() => { if (previousAgentDir === undefined) delete process.env.SP_CODING_AGENT_DIR; else process.env.SP_CODING_AGENT_DIR = previousAgentDir; });
+	const { saveSettings } = await jiti.import<typeof import("../packages/chrome-devtools/src/settings.ts")>("../packages/chrome-devtools/src/settings.ts");
+	const { default: chromeDevtools } = await jiti.import<{ default: ExtensionFactory }>("../packages/chrome-devtools/src/chrome-devtools.ts");
+	const { state } = await jiti.import<typeof import("../packages/chrome-devtools/src/runtime.ts")>("../packages/chrome-devtools/src/runtime.js");
+	const hooks = new Map<string, (...args: any[]) => unknown>();
+	const modes: string[] = [];
+	let cancelGeneration = false;
+	chromeDevtools({ ...api, registerTool() {}, registerCommand() {}, on: ((name: string, handler: (...args: any[]) => unknown) => { hooks.set(name, handler); }) as typeof api.on,
+		getToolCatalog: () => {
+			const catalog = api.getToolCatalog!(); modes.push(catalog.selectionMode!);
+			if (modes.length === 1) queueMicrotask(() => { plan = !plan; if (cancelGeneration) state.sessionGeneration++; });
+			return catalog;
+		},
+	});
+	const ctx = f.session.extensionRunner.createContext();
+	for (const initialPlan of [true, false]) {
+		plan = initialPlan; modes.length = 0;
+		f.session.setActiveToolsByName(["read", "chrome_devtools_list_pages"]);
+		await saveSettings({ tools: initialPlan ? [] : ["chrome_devtools_list_pages"], updatedAt: 1 });
+		await hooks.get("session_start")!({ type: "session_start", reason: "reload" }, ctx);
+		assert.deepEqual(modes, initialPlan ? ["plan", "default"] : ["default", "plan"]);
+		assert.equal(f.session.getActiveToolNames().includes("chrome_devtools_list_pages"), false);
+	}
+	modes.length = 0; cancelGeneration = true;
+	await hooks.get("session_start")!({ type: "session_start", reason: "reload" }, ctx);
+	assert.equal(modes.length, 1, "a replaced session does not apply loaded settings");
+	await hooks.get("session_shutdown")!({ type: "session_shutdown", reason: "exit" }, ctx);
 });
 
 test("browser search separates browsing and DevTools while approval failures pause automatic switching", async t => {
@@ -662,6 +890,9 @@ test("browser search separates browsing and DevTools while approval failures pau
 			parameters: Type.Object({}), execute: async () => { devtoolsCalls++; return { content: [{ type: "text", text: "explicit browser" }], details: {} }; } });
 	};
 	const f = await fixture(t, {}, [toolClassification, extension]);
+	let catalogReads = 0;
+	const getCatalog = f.session.getToolCatalog.bind(f.session);
+	f.session.getToolCatalog = () => { catalogReads++; return getCatalog(); };
 	f.session.setActiveToolsByName(["tool_search"]);
 	const outcome = await f.run([
 		'const r=await tools.tool_search({query:"web search",limit:3});text(r.details);',
@@ -674,6 +905,7 @@ test("browser search separates browsing and DevTools while approval failures pau
 	assert.equal(outcome.results[1]?.isError, true);
 	assert.match(JSON.stringify(outcome.results[1]?.content), /PERMISSION_REQUIRED/);
 	assert.equal(outcome.results[2]?.isError, true);
+	assert.equal(catalogReads, 1, "approval-paused search must return before directory enumeration");
 	assert.equal(devtoolsCalls, 0, "guessing a disabled name must not launch a second browser");
 	assert.equal(f.session.getActiveToolNames().includes("chrome_devtools_list_pages"), false);
 	const retry = await f.run(['await tools.browser_exec({});']);
@@ -694,7 +926,7 @@ test("browser search separates browsing and DevTools while approval failures pau
 	assert.equal(devtoolsCalls, 1);
 });
 
-test("parent cancellation preserves browser approval pause and partial browser output reaches the next model turn", async t => {
+test("script deadline cancellation preserves browser approval pause and partial browser output reaches the next model turn", { timeout: 5000 }, async t => {
 	let devtoolsCalls = 0, started = false;
 	const evidence = 'browser-harness: Chrome is asking "Allow remote debugging?" — click Allow to continue.\npermission-pending: Chrome approval is pending';
 	const extension: InlineExtension = pi => {
@@ -703,7 +935,7 @@ test("parent cancellation preserves browser approval pause and partial browser o
 				started = true;
 				if (args.wait) await new Promise<void>(resolve => { if (signal?.aborted) resolve(); else signal?.addEventListener("abort", () => resolve(), { once: true }); });
 				return { content: browserResultText({ stdout: args.wait ? "" : "Partial NASA fact before navigation failed", stderr: args.wait ? evidence : "Traceback (most recent call last):\nTimeoutError: earlier\nTraceback (most recent call last):\nStopIteration: final cause",
-					exitCode: 1, killed: !!args.wait, timedOut: false, aborted: !!args.wait, stdoutTruncated: false, stderrTruncated: false, stdoutBytes: 48, stderrBytes: 180 }),
+					cleanup: "complete", exitObserved: true, exitCode: 1, killed: !!args.wait, timedOut: false, aborted: !!args.wait, stdoutTruncated: false, stderrTruncated: false, stdoutBytes: 48, stderrBytes: 180 }),
 					isError: true, details: { aborted: !!args.wait } };
 			} });
 		pi.registerTool({ name: "chrome_devtools_list_pages", label: "cdp", description: "fixture", parameters: Type.Object({}),
@@ -728,7 +960,8 @@ test("parent cancellation preserves browser approval pause and partial browser o
 	assert.match(expanded, /Partial NASA fact/); assert.match(expanded, /StopIteration: final cause/);
 	releaseComponentRenderCaches(tree);
 	started = false;
-	const cancelled = await f.run(['// @options: {"timeout_ms":1000}\nawait tools.browser_exec({wait:true});', 'await tools.chrome_devtools_list_pages({});']);
+	// Active budgets exclude external waits. Keep computing to exercise parent cancellation.
+	const cancelled = await f.run(['// @options: {"timeout_ms":1000}\ntools.browser_exec({wait:true});while(true){}', 'await tools.chrome_devtools_list_pages({});']);
 	assert.equal(started, true);
 	assert.match(JSON.stringify(cancelled.results.at(-2)!.content), /BROWSER_APPROVAL_PENDING/);
 	assert.match(JSON.stringify(cancelled.results.at(-1)!.content), /BROWSER_APPROVAL_PAUSED/);
@@ -854,26 +1087,18 @@ test("successful state writes persist as a versioned branch entry; failed script
 
 for (const [label, code, allowed] of [
 	["shown native read", 'const r=await tools.read({path:"file.txt"}); await show(r.ref)', true],
-	["hidden native read", 'await tools.read({path:"file.txt"})', false],
-	["printed copy", 'const r=await tools.read({path:"file.txt"}); text(r.content)', false],
+	["hidden native read", 'await tools.read({path:"file.txt"})', true],
+	["printed copy", 'const r=await tools.read({path:"file.txt"}); text(r.content)', true],
 	["forged reference", 'try { await show("forged") } catch {}', false],
 ] as const) {
-	test(`mutation evidence: ${label}`, async t => {
+		test(`file revision independent of presentation: ${label}`, async t => {
 		const f = await fixture(t, { tools: ["read", "edit"] }, [mutation]);
 		const outcome = await f.run([code, 'await tools.edit({path:"file.txt",edits:[{oldText:"hello",newText:"changed"}]})']);
 		assert.equal(outcome.results[1]?.isError, !allowed, JSON.stringify(outcome.results));
-		if (!allowed) assert.match(JSON.stringify(outcome.results[1]), /READ_REQUIRED/);
+		if (!allowed) assert.match(JSON.stringify(outcome.results[1]), /REVISION_REQUIRED/);
 		assert.equal(readFileSync(join(f.cwd, "file.txt"), "utf8"), allowed ? "changed\nworld\n" : "hello\nworld\n");
 	});
 }
-
-test("same-script shown read cannot authorize an edit", async t => {
-	const f = await fixture(t, { tools: ["read", "edit"] }, [mutation]);
-	const outcome = await f.run(['const r=await tools.read({path:"file.txt"});await show(r.ref);await tools.edit({path:"file.txt",edits:[{oldText:"hello",newText:"bad"}]})']);
-	assert.equal(outcome.results[0]?.isError, true);
-	assert.match(JSON.stringify(outcome.results[0]), /READ_REQUIRED/);
-	assert.equal(readFileSync(join(f.cwd, "file.txt"), "utf8"), "hello\nworld\n");
-});
 
 test("tool discovery changes are callable within the same script through the current catalog", async t => {
 	const extra: InlineExtension = pi => {
@@ -1003,12 +1228,21 @@ test("Codemode state restores after resource reload and navigation to an earlier
 });
 
 test("actual Plan mode retains Codemode with read-only child authorization", async t => {
-	const planning: InlineExtension = pi => planMode({ ...pi, getFlag: name => name === "plan" ? true : pi.getFlag(name) });
-	const f = await fixture(t, {}, [planning]);
+	let readMode: () => ToolCatalogSnapshot["selectionMode"] = () => { throw new Error("not initialized"); };
+	const planning: InlineExtension = pi => {
+		readMode = () => pi.getToolCatalog!().selectionMode;
+		return planMode({ ...pi, getFlag: name => name === "plan" ? true : pi.getFlag(name) });
+	};
+	const f = await fixture(t, { excludeTools: ["plan_mode_question"] }, [planning, toolClassification]);
 	const names = f.session.agent.state.modelTools!.map(tool => tool.name);
 	assert.ok(names.includes("codemode"));
 	assert.ok(names.includes("plan_mode_complete"));
+	assert.equal(names.includes("plan_mode_question"), false);
 	assert.equal(f.session.getActiveToolNames().includes("write"), false);
+	const catalog = f.session.getToolCatalog();
+	assert.equal(catalog.selectionMode, "plan");
+	assert.equal(catalog.tools.find(tool => tool.name === "write")?.available, true);
+	assert.equal(catalog.activeTools.includes("write"), false, "catalog visibility does not override Plan selection");
 	const outcome = await f.run(['text((await tools.read({path:"file.txt"})).content)', 'try { await callTool("write",{path:"bad",content:"bad"}) } catch {}']);
 	assert.equal(outcome.results[0]?.isError, false);
 	assert.equal(outcome.results[1]?.isError, true);
@@ -1023,6 +1257,18 @@ test("actual Plan mode retains Codemode with read-only child authorization", asy
 	await f.session.waitForIdle();
 	assert.equal(f.session.messages.filter(m => m.role === "custom" && m.customType === "proposed-plan").length, 1,
 		"the actual Plan settled handler must see admission-ready idle and publish its plan");
+	await f.session.extensionRunner.getCommand("plan")!.handler("exit", f.session.extensionRunner.createCommandContext());
+	assert.equal(f.session.getToolCatalog().selectionMode, "default");
+	assert.equal(catalog.selectionMode, "plan", "old snapshots retain the published mode value");
+	const oldReader = readMode;
+	await f.session.reload();
+	assert.throws(oldReader, /stale/);
+	assert.equal(readMode(), "default", "unbound reload has not restored a mode yet");
+	await f.session.bindExtensions({});
+	assert.equal(readMode(), "plan", "reload reads the freshly restored owner");
+	const reverse = await fixture(t, { excludeTools: ["plan_mode_question"] }, [toolClassification, planning]);
+	assert.equal(reverse.session.getToolCatalog().selectionMode, "plan");
+	assert.deepEqual(reverse.session.getActiveToolNames(), f.session.getActiveToolNames(), "both load orders preserve the same Plan selection");
 });
 
 test("Goal/interaction controls remain model-only and cannot be called through a script", async t => {
@@ -1062,8 +1308,16 @@ test("real MCP adapter preserves long instructions and ignores self-reported rea
 	assert.equal(runtime.activeCalls.size, 0);
 	const controller = (f.session as any)._codemode;
 	const description = controller.definition.description;
+	const beforeReplacement = f.session.getToolCatalog().tools.find(tool => tool.name === "mcp__fixture__lookup")!;
 	runtime.registerRemoteTool(runtime.states.get("fixture"), { name: "lookup", description: "lookup updated", inputSchema: {
 		type: "object", properties: { revised: { type: "string" } }, required: ["revised"], additionalProperties: false } });
+	const afterReplacement = f.session.getToolCatalog().tools.find(tool => tool.name === "mcp__fixture__lookup")!;
+	assert.equal(afterReplacement.description, "lookup updated");
+	assert.notEqual(afterReplacement.parameters, beforeReplacement.parameters);
+	assert.ok("required" in afterReplacement.parameters);
+	assert.deepEqual(afterReplacement.parameters.required, ["revised"]);
+	assert.equal(afterReplacement.parameters, f.session.getToolDefinition("mcp__fixture__lookup")!.parameters);
+	assert.equal(afterReplacement.sourceInfo, f.session.getAllTools().find(tool => tool.name === "mcp__fixture__lookup")!.sourceInfo);
 	assert.equal(controller.definition.description, description, "MCP schema refresh keeps the inline prefix stable");
 	const updated = await f.run(['text(await describeTools(["mcp__fixture__lookup"]));', 'await callTool("mcp__fixture__lookup",{});']);
 	assert.match(JSON.stringify(updated.results.at(-2)?.content), /revised/);
@@ -1376,7 +1630,7 @@ test("grammar and JSON models use the same Codemode runtime", async t => {
 	assert.equal(result.results[0]?.isError, false);
 });
 
-for (const boundary of ["truncated", "changed-file", "context-filter", "payload-unproven"] as const) test(`read evidence rejects ${boundary}`, async t => {
+for (const boundary of ["truncated", "changed-file", "context-filter", "payload-unproven"] as const) test(`read revision and presentation boundary: ${boundary}`, async t => {
 	const filter: InlineExtension = pi => pi.on("context", event => ({ messages: event.messages.filter(m => m.role !== "toolResult") }));
 	const f = await fixture(t, { tools: ["read", "edit"] }, boundary === "context-filter" ? [mutation, filter] : [mutation]);
 	if (boundary === "truncated") writeFileSync(join(f.cwd, "file.txt"), "hello\n" + "visible-data\n".repeat(500));
@@ -1389,11 +1643,11 @@ for (const boundary of ["truncated", "changed-file", "context-filter", "payload-
 		if (boundary === "changed-file") writeFileSync(join(f.cwd, "file.txt"), "hello\nchanged externally\n");
 		if (boundary === "payload-unproven") f.session.discardPendingToolResultBudgetSources();
 	});
-	assert.equal(outcome.results[1]?.isError, true, JSON.stringify(outcome.results));
-	assert.ok(readFileSync(join(f.cwd, "file.txt"), "utf8").startsWith("hello\n"));
+	assert.equal(outcome.results[1]?.isError, boundary === "changed-file", JSON.stringify(outcome.results));
+	assert.ok(readFileSync(join(f.cwd, "file.txt"), "utf8").startsWith(boundary === "changed-file" ? "hello\n" : "bad\n"));
 });
 
-test("read evidence needs the shown block at its own position, not an equal copy elsewhere", async t => {
+test("a truncated shown block does not revoke the native file revision", async t => {
 	const f = await fixture(t, { tools: ["read", "edit"] }, [mutation]);
 	writeFileSync(join(f.cwd, "file.txt"), "hello\n" + "visible-data\n".repeat(300));
 	const outcome = await f.run([
@@ -1401,12 +1655,11 @@ test("read evidence needs the shown block at its own position, not an equal copy
 		'await tools.edit({path:"file.txt",edits:[{oldText:"hello",newText:"bad"}]})',
 	]);
 	const parent = outcome.results[0]!.content as Array<{ type: string; text: string }>;
-	// Precondition: the printed copy survives intact while the native shown block is truncated.
-	assert.ok(parent[2]!.text.length < parent[1]!.text.length && parent[1]!.text.startsWith(parent[2]!.text), JSON.stringify(parent.map(b => b.text.length)));
+	// The printed copy survives while showing the native group exceeds the remaining budget.
+	assert.ok(parent[1]!.text.includes("|hello"));
 	assert.match(parent.at(-1)!.text, /Codemode output truncated/);
-	assert.equal(outcome.results[1]?.isError, true, JSON.stringify(outcome.results[1]));
-	assert.match(JSON.stringify(outcome.results[1]), /READ_REQUIRED/);
-	assert.ok(readFileSync(join(f.cwd, "file.txt"), "utf8").startsWith("hello\n"));
+	assert.equal(outcome.results[1]?.isError, false, JSON.stringify(outcome.results[1]));
+	assert.ok(readFileSync(join(f.cwd, "file.txt"), "utf8").startsWith("bad\n"));
 });
 
 test("shown reads from every Codemode call in one assistant batch stay admissible", async t => {
@@ -1420,31 +1673,26 @@ test("shown reads from every Codemode call in one assistant batch stay admissibl
 	assert.equal(readFileSync(join(f.cwd, "file.txt"), "utf8"), "changed\nworld\n");
 });
 
-for (const tampered of [false, true]) test(`an admitted Codemode read ${tampered ? "with a tampered receipt is not" : "is"} restored after reload`, async t => {
-	const f = await fixture(t, { tools: ["read", "edit"] }, [mutation]);
-	await f.run(['await show((await tools.read({path:"file.txt"})).ref)', 'text("admits the displayed read")']);
-	const saved = f.manager.getBranch().filter(e => e.type === "custom" && e.customType === "codemode-read-evidence-v1") as any[];
-	assert.equal(saved.length, 1);
-	// The producer binding names the original nested call; a receipt re-pointed elsewhere must fail closed.
-	if (tampered) saved[0].data.toolCallId = `${saved[0].data.parentToolCallId}:nested:99`;
-	// Reload emits session_start only for a bound host, as in interactive and RPC modes.
-	const errors: unknown[] = [];
-	await f.session.bindExtensions({ onError: error => errors.push(error) });
-	await f.session.reload();
-	assert.deepEqual(errors, []);
-	const outcome = await f.run(['await tools.edit({path:"file.txt",edits:[{oldText:"hello",newText:"edited"}]})']);
-	assert.equal(outcome.results.at(-1)?.isError, tampered, JSON.stringify(outcome.results.at(-1)));
-	assert.equal(readFileSync(join(f.cwd, "file.txt"), "utf8"), tampered ? "hello\nworld\n" : "edited\nworld\n");
+test("file revisions expire on reload without replaying persisted read markers", async t => {
+ const f = await fixture(t, { tools: ["read", "edit"] });
+ await f.run(['await tools.read({path:"file.txt"})']);
+ await f.session.reload();
+ const expired = await f.run(['await tools.edit({path:"file.txt",edits:[{oldText:"hello",newText:"expired"}]})']);
+ assert.equal(expired.results.at(-1)?.isError, true);
+ assert.match(JSON.stringify(expired.results.at(-1)), /REVISION_REQUIRED/);
+ const fresh = await f.run(['await tools.read({path:"file.txt"}); await tools.edit({path:"file.txt",edits:[{oldText:"hello",newText:"fresh"}]})']);
+ assert.equal(fresh.results.at(-1)?.isError, false);
+ assert.equal(readFileSync(join(f.cwd, "file.txt"), "utf8"), "fresh\nworld\n");
 });
 
-test("a nested tool that ignores cancellation cannot wedge Codemode past its deadline", async t => {
+test("a nested tool that ignores cancellation cannot wedge Codemode past its deadline", { timeout: 10_000 }, async t => {
 	let owner: any;
 	const hang: InlineExtension = pi => pi.registerTool({ name: "hang", label: "hang", description: "ignores abort ".repeat(100), parameters: Type.Object({}),
 		execute: () => { assert.ok(owner.documentationSnapshot); return new Promise<never>(() => {}); } });
 	const f = await fixture(t, {}, [hang]);
 	owner = (f.session as any)._codemode;
 	const started = Date.now();
-	const outcome = await f.run(['// @options: {"timeout_ms":200}\nawait describeTools(["hang"],{limit:256});await tools.hang({})']);
+	const outcome = await f.run(['// @options: {"timeout_ms":200}\nawait describeTools(["hang"],{limit:256});tools.hang({});while(true){}']);
 	assert.ok(Date.now() - started < 15_000, "bounded by the timeout plus the cancellation grace period");
 	const parent = outcome.results[0]!;
 	assert.equal(parent.isError, true);
@@ -1676,21 +1924,6 @@ test("colliding tool names get distinct declared identifiers that scripts and de
 	assert.match(text, /ran foo_bar/);
 });
 
-test("a shown read answered by a final text response is persisted before reload", async t => {
-	const f = await fixture(t, { tools: ["read", "edit"] }, [mutation]);
-	// The run ends with the model's text answer; no later tool call admits the read.
-	await f.run(['await show((await tools.read({path:"file.txt"})).ref)']);
-	assert.equal(f.manager.getBranch().filter(e => e.type === "custom" && e.customType === "codemode-read-evidence-v1").length, 1);
-	// Reload emits session_start only for a bound host, as in interactive and RPC modes.
-	const errors: unknown[] = [];
-	await f.session.bindExtensions({ onError: error => errors.push(error) });
-	await f.session.reload();
-	assert.deepEqual(errors, []);
-	const outcome = await f.run(['await tools.edit({path:"file.txt",edits:[{oldText:"hello",newText:"edited"}]})']);
-	assert.equal(outcome.results.at(-1)?.isError, false, JSON.stringify(outcome.results.at(-1)));
-	assert.equal(readFileSync(join(f.cwd, "file.txt"), "utf8"), "edited\nworld\n");
-});
-
 test("the long-running subagent tool stays directly declared instead of being forced into Codemode", async t => {
 	const f = await fixture(t, {}, [], true);
 	const subagent = f.session.agent.state.tools.find(tool => tool.name === "subagent");
@@ -1701,25 +1934,6 @@ test("the long-running subagent tool stays directly declared instead of being fo
 	const outcome = await f.run(['await callTool("subagent", {agent:"scout", task:"x"})']);
 	assert.equal(outcome.results[0]?.isError, true);
 	assert.match(JSON.stringify(outcome.results[0]?.content), /direct model call/);
-});
-
-test("a Codemode read whose parent result sits just before the retained tail is still restored", async t => {
-	const f = await fixture(t, { tools: ["read", "edit"] }, [mutation]);
-	await f.run(['await show((await tools.read({path:"file.txt"})).ref)']);
-	let branch = f.manager.getBranch();
-	const marker = branch.findIndex(e => e.type === "custom" && e.customType === "codemode-read-evidence-v1");
-	const parent = branch.findIndex(e => e.type === "message" && e.message.role === "toolResult" && e.message.toolName === "codemode");
-	assert.ok(parent >= 0 && parent < marker);
-	// Restoration keeps the last 512 entries: place the marker first in that tail, its parent outside.
-	for (let fill = marker + 512 - branch.length; fill > 0; fill--) f.manager.appendCustomEntry("restore-window-filler", {});
-	branch = f.manager.getBranch();
-	assert.equal(branch.length - 512, marker);
-	const errors: unknown[] = [];
-	await f.session.bindExtensions({ onError: error => errors.push(error) });
-	await f.session.reload();
-	assert.deepEqual(errors, []);
-	const outcome = await f.run(['await tools.edit({path:"file.txt",edits:[{oldText:"hello",newText:"edited"}]})']);
-	assert.equal(outcome.results.at(-1)?.isError, false, JSON.stringify(outcome.results.at(-1)));
 });
 
 test("screenshot-sized images survive Codemode bounding and are shown whole beside spilled text", async t => {
@@ -1816,20 +2030,22 @@ test("identical side effects issued together in one script run once even though 
 	assert.equal(appended, 3);
 });
 
-test("a nested file_batch records post-mutation evidence for a later guarded overwrite", async t => {
+test("a nested file_batch invalidates the previous revision and a fresh read permits overwrite", async t => {
 	const f = await fixture(t, {}, [], true);
 	const outcome = await f.run([
 		'await show((await tools.read({path:"file.txt"})).ref)',
 		'await tools.file_batch({operations:[{operation:"edit", path:"file.txt", edits:[{oldText:"hello", newText:"batched"}]}]})',
-		// An overwrite needs complete evidence matching the disk; only the batch snapshot matches "batched".
+		// A mutation receipt records effects; a fresh read supplies the next version precondition.
 		'await tools.write({path:"file.txt",content:"edited\\nworld\\n"})',
+		'await tools.read({path:"file.txt"}); await tools.write({path:"file.txt",content:"edited\\nworld\\n"})',
 	]);
 	assert.equal(outcome.results[1]?.isError, false, JSON.stringify(outcome.results[1]?.content).slice(0, 1000));
-	assert.equal(outcome.results[2]?.isError, false, JSON.stringify(outcome.results[2]?.content).slice(0, 1000));
+	assert.match(JSON.stringify(outcome.results[2]?.content), /REVISION_REQUIRED/);
+	assert.equal(outcome.results[3]?.isError, false, JSON.stringify(outcome.results[3]?.content).slice(0, 1000));
 	assert.equal(readFileSync(join(f.cwd, "file.txt"), "utf8"), "edited\nworld\n");
 });
 
-for (const nested of ["edit", "file_batch"]) test(`a nested ${nested} receipt is restored after reload for a later guarded overwrite`, async t => {
+for (const nested of ["edit", "file_batch"]) test(`a nested ${nested} receipt remains a change fact after reload, not a read revision`, async t => {
 	const f = await fixture(t, {}, [], true);
 	const mutate = nested === "edit"
 		? 'await tools.edit({path:"file.txt",edits:[{oldText:"hello",newText:"batched"}]})'
@@ -1841,7 +2057,11 @@ for (const nested of ["edit", "file_batch"]) test(`a nested ${nested} receipt is
 	await f.session.bindExtensions({ onError: error => errors.push(error) });
 	await f.session.reload();
 	assert.deepEqual(errors, []);
-	const outcome = await f.run(['await tools.write({path:"file.txt",content:"edited\\nworld\\n"})']);
+	const changes = collectChanges(f.manager.getBranch(), f.cwd);
+	assert.ok(changes.some(change => !change.unavailable));
+	const outcome = await f.run(['await tools.write({path:"file.txt",content:"edited\\nworld\\n"})',
+		'await tools.read({path:"file.txt"}); await tools.write({path:"file.txt",content:"edited\\nworld\\n"})']);
+	assert.match(JSON.stringify(outcome.results.at(-2)?.content), /REVISION_REQUIRED/);
 	assert.equal(outcome.results.at(-1)?.isError, false, JSON.stringify(outcome.results.at(-1)?.content).slice(0, 1000));
 	assert.equal(readFileSync(join(f.cwd, "file.txt"), "utf8"), "edited\nworld\n");
 });

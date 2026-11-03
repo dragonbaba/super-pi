@@ -105,11 +105,11 @@ for (const linked of ["root", "ancestor"]) test(`legacy Session root ${linked} r
 
 test("optional snapshot source disappearing retains successful read without evidence", async t => {
   const f = await mutationFixture(t), target = join(realpathSync.native(f.cwd), "file"); writeFileSync(target, "same\n");
-  let removed = false;
+  let removed = false, targetOpens = 0;
   opened = (handle, path) => {
-    if (path === target) {
-      const close = handle.close.bind(handle), read = handle.readFile.bind(handle); let captured = false;
-      handle.readFile = (async (...options: any[]) => { const bytes = await (read as any)(...options); captured = true; return bytes; }) as typeof handle.readFile;
+    if (path === target && ++targetOpens === 2) {
+      const close = handle.close.bind(handle), read = handle.read.bind(handle); let captured = false;
+      handle.read = (async (...options: any[]) => { const bytes = await (read as any)(...options); captured = true; return bytes; }) as typeof handle.read;
       handle.close = async () => { await close(); if (captured && !removed) { removed = true; unlinkSync(target); } };
     }
   };
@@ -146,16 +146,18 @@ for (const operation of ["edit", "write"]) test(`built-in read with mutation and
   assert.equal(result.isError,false,JSON.stringify(result));assert.equal(readFileSync(join(cwd,"builtin-file"),"utf8"),"after");
 });
 
-for (const cursor of [false, true]) for (const allowed of [false,true]) test(`built-in read window bounds repeated target, cursor=${cursor}, allowed=${allowed}`, async t => {
+for (const cursor of [false, true]) for (const allowed of [false,true]) test(`native revision validates the file independently of the displayed window, cursor=${cursor}, targetInsideWindow=${allowed}`, async t => {
   const f = await builtinGuardFixture(t), path=join(f.cwd,"large.txt");
   const lines=Array.from({length:3000},()=>"x".repeat(120)); lines[cursor?150:0]="needle";lines[2999]="needle"; const original=lines.join("\n");writeFileSync(path,original);
-  const first=await f.call("read",{path:"large.txt"});assert.equal(first.isError,false); assert.ok((first.details as any).window);
-  if(cursor){const second=await f.call("read",{path:"large.txt",cursor:(first.details as any).window.cursor});assert.equal(second.isError,false);assert.ok(JSON.stringify(second.content).includes("needle"));}
+  const first=await f.call("read",{path:"large.txt",limit:100});assert.equal(first.isError,false); assert.ok((first.details as any).window);
+  if(cursor){const second=await f.call("read",{path:"large.txt",limit:100,cursor:(first.details as any).window.cursor});assert.equal(second.isError,false);assert.ok(JSON.stringify(second.content).includes("needle"));}
   const expectedLine=allowed?(cursor?151:1):3000;
   const restored=new MutationWriteGuard();await restoreMutationEvidenceFromBranch(restored,f.cwd,SessionManager.open(f.manager.getSessionFile()!).getBranch());
   let denied=false;try{await restored.authorizeEdit(f.cwd,path,[{oldText:"needle",newText:"changed",expectedLine}],99,original);}catch{denied=true;}
   const result=await f.call("edit",{path:"large.txt",edits:[{oldText:"needle",newText:"changed",expectedLine}]});
-  t.diagnostic(JSON.stringify({cursor,allowed,result,denied}));assert.equal(result.isError,!allowed,JSON.stringify(result));assert.equal(denied,!allowed);if(allowed)lines[expectedLine-1]="changed";assert.equal(readFileSync(path,"utf8"),lines.join("\n"));
+  // Native revisions are file-version preconditions, not a displayed-line permission gate.
+  // Their persisted receipts must not become legacy mutation-guard authorizations.
+  assert.equal(result.isError,false,JSON.stringify(result));assert.equal(denied,true);lines[expectedLine-1]="changed";assert.equal(readFileSync(path,"utf8"),lines.join("\n"));
 });
 
 test("Windows held writer control records actual generation and rejects changed content", {skip:process.platform!=="win32"}, async t => {
@@ -177,6 +179,12 @@ for (const loop of [false, true]) for (const changed of [false,true]) test(`coar
   try {
     const read=await f.call("read",{path});assert.equal(read.isError,false);agent.afterToolCall=afterHook;
     const result=await f.call("edit",{path,edits:[{oldText:changed?"new":"old",newText:"bad"}]});
-    assert.equal(result.isError,changed,JSON.stringify(result));assert.equal((read.details as any).mutationReadEvidence.rejected===true,changed);assert.equal(readFileSync(path,"utf8"),changed?"seen\nnew\n":"seen\nbad\n");
+    if (loop) {
+      assert.equal(result.isError,changed,JSON.stringify(result));assert.equal((read.details as any).mutationReadEvidence.rejected===true,changed);assert.equal(readFileSync(path,"utf8"),changed?"seen\nnew\n":"seen\nbad\n");
+    } else {
+      assert.equal(result.isError,true,JSON.stringify(result)); assert.match(JSON.stringify(result.content),/REVISION_REQUIRED/);
+      assert.equal(JSON.stringify(read.content).includes("snapshot="),false,"inconsistent coarse producer and precise native identity cannot issue a revision");
+      assert.equal(readFileSync(path,"utf8"),changed?"seen\nnew\n":"seen\nold\n");
+    }
   }finally{coarsePath=undefined;agent.afterToolCall=afterHook;}
 });

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { BuildSystemPromptOptions, ExtensionAPI, ExtensionContext } from "@super-pi/coding-agent";
+import type { BuildSystemPromptOptions, ExtensionAPI, ExtensionContext, SystemPromptComposition } from "@super-pi/coding-agent";
 
 const MESSAGE_TYPE = "dynamic-instructions-v1";
 const VERSION = 1;
@@ -38,7 +38,8 @@ const EMPTY_HASH_STATE: Required<HashState> = Object.freeze({
 });
 
 type Projection = {
-  options: BuildSystemPromptOptions;
+  options?: BuildSystemPromptOptions;
+  composition?: SystemPromptComposition;
   inputSystemPrompt: string;
   systemPrompt: string;
   workspace: string;
@@ -185,6 +186,41 @@ function buildProjection(options: BuildSystemPromptOptions, systemPrompt: string
   };
 }
 
+function validBound(value: number, maximum: number): boolean {
+  return Number.isSafeInteger(value) && value >= 0 && value <= maximum;
+}
+
+/** Native provenance is build-owned. Never reconstruct resources or search the final string. */
+function buildNativeProjection(composition: SystemPromptComposition, systemPrompt: string): Projection | undefined {
+  if (composition.version !== VERSION || composition.text !== systemPrompt || !Object.isFrozen(composition)) return undefined;
+  const segments = composition.segments;
+  if (!Array.isArray(segments) || segments.length !== 5 || !Object.isFrozen(segments)) return undefined;
+  for (const segment of segments) {
+    if (!segment || segment.version !== VERSION || typeof segment.text !== "string" || !Object.isFrozen(segment)) return undefined;
+  }
+  if ((segments[0].source !== "default" && segments[0].source !== "custom")
+    || segments[1].source !== "append" || segments[2].source !== "workspace"
+    || segments[3].source !== "skills" || segments[4].source !== "cwd") return undefined;
+  const bounds = composition.dynamicSources;
+  if (!bounds || !Object.isFrozen(bounds)
+    || !validBound(bounds.contextFileCount, MAX_CONTEXT_FILES)
+    || !validBound(bounds.visibleSkillCount, MAX_SKILLS)
+    || !validBound(bounds.maxContextPathChars, MAX_PATH_CHARS)
+    || !validBound(bounds.maxSkillPathChars, MAX_PATH_CHARS)) return undefined;
+  const workspace = segments[2].text, skills = segments[3].text;
+  if (Buffer.byteLength(workspace) + Buffer.byteLength(skills) > MAX_DYNAMIC_BYTES) return undefined;
+  return {
+    composition,
+    inputSystemPrompt: systemPrompt,
+    systemPrompt: segments[0].text + segments[1].text + segments[4].text,
+    workspace,
+    skills,
+    hashes: workspace.length === 0 && skills.length === 0 ? EMPTY_HASH_STATE
+      : { workspaceSha256: sha256(workspace), skillsSha256: sha256(skills) },
+    safe: true,
+  };
+}
+
 function replacementContent(projection: Projection, workspaceChanged: boolean, skillsChanged: boolean): string {
   const parts = [
     "Dynamic instruction replacement (version 1). Newer replacements supersede older values for the named source.",
@@ -217,19 +253,34 @@ export default function dynamicInstructions(pi: ExtensionAPI): void {
     stableResult = undefined;
   });
 
+  pi.on("session_shutdown", () => {
+    known = undefined;
+    cached = undefined;
+    stableResult = undefined;
+  });
+
   pi.on("before_agent_start", (event, ctx) => {
     // Durable session history is authoritative. Re-read it before deciding so
     // a failed custom-message append does not advance process-local state and
     // suppress the replacement on the next turn.
     known = restoreHashes(ctx);
     const options = event.systemPromptOptions;
-    if (cached?.options !== options || cached.inputSystemPrompt !== event.systemPrompt) {
-      cached = buildProjection(options, event.systemPrompt);
-      stableResult = cached.safe && cached.systemPrompt !== event.systemPrompt
+    const composition = event.systemPromptComposition;
+    if (composition === null) {
+      cached = undefined;
+      stableResult = undefined;
+      return undefined;
+    }
+    if (composition === undefined
+      ? cached?.composition !== undefined || cached?.options !== options || cached?.inputSystemPrompt !== event.systemPrompt
+      : cached?.composition !== composition || cached?.inputSystemPrompt !== event.systemPrompt) {
+      // Only absent metadata denotes an old host. Invalid native metadata never falls back to text surgery.
+      cached = composition === undefined ? buildProjection(options, event.systemPrompt) : buildNativeProjection(composition, event.systemPrompt);
+      stableResult = cached?.safe && cached.systemPrompt !== event.systemPrompt
         ? { systemPrompt: cached.systemPrompt }
         : undefined;
     }
-    if (!cached.safe) return undefined;
+    if (!cached?.safe) return undefined;
     if (known === cached.hashes) return stableResult;
 
     const workspaceChanged = known.workspaceSha256 !== cached.hashes.workspaceSha256

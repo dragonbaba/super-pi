@@ -54,15 +54,18 @@ export class BrowserHarnessVersionGate {
     return `${command}\0${info.dev}:${info.ino}:${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
   }
 
-  async check(executable: BrowserUseExecutable, options: Pick<BrowserUseRunOptions, "cwd" | "env" | "signal">): Promise<string> {
+  async check(executable: BrowserUseExecutable, options: Pick<BrowserUseRunOptions, "cwd" | "env" | "signal"> & { assertCurrent?: () => void }): Promise<string> {
     options.signal?.throwIfAborted();
     const identity = await this.fingerprint(executable.command);
     options.signal?.throwIfAborted();
+    options.assertCurrent?.();
     if (identity === this.identity && this.version !== undefined) return this.version;
     this.clear();
     const result = await this.run({ ...options, env: buildBrowserUseEnvironment(options.env, options.cwd),
       command: executable.command, args: ["--version"], code: "", timeoutMs: 5000, maxBytesPerStream: 1024 });
+    if (result.cleanup !== "complete") throw new Error("[BROWSER_EXEC_CLEANUP_UNCONFIRMED] Browser version helper cleanup is unconfirmed; execution must remain paused.");
     options.signal?.throwIfAborted();
+    options.assertCurrent?.();
     const version = result.stdout.trim();
     const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
     const major = Number(match?.[1]), minor = Number(match?.[2]), patch = Number(match?.[3]);
@@ -73,6 +76,7 @@ export class BrowserHarnessVersionGate {
     }
     if (identity !== await this.fingerprint(executable.command)) throw new Error("[BROWSER_EXEC_VERSION] Browser Harness changed during verification; run /browser-use status again.");
     options.signal?.throwIfAborted();
+    options.assertCurrent?.();
     this.identity = identity;
     this.version = version;
     return version;

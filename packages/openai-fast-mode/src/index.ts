@@ -1,12 +1,7 @@
+import { VERSION } from "@super-pi/coding-agent";
 import { parseFastCommand, resolveFastEnabled } from "./command.ts";
 import { loadFastModeConfig, saveFastModeConfig } from "./config.ts";
 import { SUPPORTED_SP_VERSION_PATTERN } from "./regex.ts";
-import { discoverActivePiVersion } from "./runtime-version.ts";
-import {
-  clearFastRuntimeState,
-  publishFastRuntimeState,
-  updateFastRuntimeState,
-} from "./runtime-state.ts";
 
 const STATUS_KEY = "openai-fast";
 
@@ -46,10 +41,10 @@ function updateFastStatus(ctx: FastContext, enabled: boolean): void {
 
 export default function openAIFastModeExtension(
   pi: FastExtensionAPI,
-  runtimeVersion = discoverActivePiVersion(),
+  runtimeVersion = VERSION,
 ): void {
   if (!runtimeVersion || !SUPPORTED_SP_VERSION_PATTERN.test(runtimeVersion)) {
-    console.warn(`@super-pi/openai-fast-mode disabled: Pi ${runtimeVersion ?? "unknown"} is unsupported (requires 0.84.x).`);
+    console.warn(`@super-pi/openai-fast-mode disabled: Pi ${runtimeVersion ?? "unknown"} is unsupported (requires 1.x or 0.84.x).`);
     return;
   }
 
@@ -61,12 +56,12 @@ export default function openAIFastModeExtension(
     configLoadError = error instanceof Error ? error.message : "unknown read error";
     console.warn(`@super-pi/openai-fast-mode: ${configLoadError}`);
   }
-  const ownedStates = new Map<string, ReturnType<typeof publishFastRuntimeState>>();
+  const ownedStates = new Map<string, { enabled: boolean }>();
   const stateFor = (ctx: FastContext) => {
     const sessionId = ctx.sessionManager.getSessionId();
     const owned = ownedStates.get(sessionId);
     if (owned) return owned;
-    const state = publishFastRuntimeState(sessionId, enabled);
+    const state = { enabled };
     ownedStates.set(sessionId, state);
     return state;
   };
@@ -96,7 +91,7 @@ export default function openAIFastModeExtension(
         return;
       }
 
-      updateFastRuntimeState(runtimeState, nextEnabled);
+      runtimeState.enabled = nextEnabled;
       updateFastStatus(ctx, runtimeState.enabled);
       if (!runtimeState.enabled) {
         ctx.ui.notify("OpenAI Fast mode disabled.", "info");
@@ -124,11 +119,7 @@ export default function openAIFastModeExtension(
   });
   pi.on("session_shutdown", (_event, ctx) => {
     const sessionId = ctx.sessionManager.getSessionId();
-    const runtimeState = ownedStates.get(sessionId);
-    if (runtimeState) {
-      clearFastRuntimeState(runtimeState);
-      ownedStates.delete(sessionId);
-    }
+    ownedStates.delete(sessionId);
     ctx.ui.setStatus(STATUS_KEY, undefined);
   });
 }

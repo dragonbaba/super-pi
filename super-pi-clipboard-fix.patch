@@ -1,0 +1,521 @@
+diff --git a/packages/coding-agent/src/utils/clipboard-image.ts b/packages/coding-agent/src/utils/clipboard-image.ts
+index 00cac22..5427ce4 100644
+--- a/packages/coding-agent/src/utils/clipboard-image.ts
++++ b/packages/coding-agent/src/utils/clipboard-image.ts
+@@ -1,8 +1,8 @@
+-import { execFile } from "node:child_process";
++import { execFile, type ExecFileException } from "node:child_process";
+ import { readFileSync } from "fs";
+ 
+ import { clipboard, type ClipboardModule } from "./clipboard-native.ts";
+-import { NativeClipboardError, readNativeClipboard } from "./clipboard-native-process.ts";
++import { ClipboardImageReadError, NativeClipboardError, readNativeClipboard } from "./clipboard-native-process.ts";
+ import { loadPhoton } from "./photon.ts";
+ import { CLIPBOARD_IMAGE_LIMIT_PATTERN, CLIPBOARD_LINE_BREAK_PATTERN, CLIPBOARD_WSL_RELEASE_PATTERN } from "./image-input-regex.ts";
+ 
+@@ -17,6 +17,20 @@ const DEFAULT_LIST_TIMEOUT_MS = 1000;
+ const DEFAULT_READ_TIMEOUT_MS = 3000;
+ export const DEFAULT_POWERSHELL_TIMEOUT_MS = 5000;
+ const DEFAULT_MAX_BUFFER_BYTES = 50 * 1024 * 1024;
++const WINDOWS_IMAGE_PRESENT_MARKER = "SP_CLIPBOARD_IMAGE_PRESENT";
++
++class ClipboardCommandError extends Error {
++	readonly exitCode: ExecFileException["code"];
++	readonly imagePresent: boolean;
++	constructor(error: ExecFileException, stderr?: Buffer) {
++		const diagnostic = stderr?.subarray(0, 4096).toString("utf8") ?? "";
++		const imagePresent = diagnostic === WINDOWS_IMAGE_PRESENT_MARKER || diagnostic.startsWith(`${WINDOWS_IMAGE_PRESENT_MARKER}\n`) || diagnostic.startsWith(`${WINDOWS_IMAGE_PRESENT_MARKER}\r\n`);
++		const detail = (imagePresent ? diagnostic.slice(WINDOWS_IMAGE_PRESENT_MARKER.length) : diagnostic).trim();
++		super(`Clipboard helper failed (${error.code ?? "timeout/busy"}): ${(detail || error.message).slice(0, 300)}`, { cause: error });
++		this.exitCode = error.code;
++		this.imagePresent = imagePresent;
++	}
++}
+ 
+ export function isWaylandSession(env: NodeJS.ProcessEnv = process.env): boolean {
+ 	return Boolean(env.WAYLAND_DISPLAY) || env.XDG_SESSION_TYPE === "wayland";
+@@ -89,7 +103,7 @@ export function runClipboardCommand(command: string, args: string[], options: {
+ 	return new Promise((resolve, reject) => {
+ 		execFile(command, args, { encoding: "buffer", windowsHide: true, timeout: options.timeoutMs ?? DEFAULT_READ_TIMEOUT_MS,
+ 			maxBuffer: options.maxBufferBytes ?? DEFAULT_MAX_BUFFER_BYTES, env: options.env, signal: options.signal },
+-			(error, stdout, stderr) => { if (error) reject(new Error(`Clipboard helper failed (${error.code ?? "timeout/busy"}): ${(stderr?.toString("utf8").trim() || error.message).slice(0, 300)}`)); else resolve(stdout); });
++			(error, stdout, stderr) => { if (error) reject(new ClipboardCommandError(error, stderr)); else resolve(stdout); });
+ 	});
+ }
+ async function runCommand(command: string, args: string[], options?: { timeoutMs?: number; maxBufferBytes?: number; env?: NodeJS.ProcessEnv; signal?: AbortSignal }): Promise<{ stdout: Buffer; ok: boolean }> {
+@@ -140,7 +154,68 @@ export function isWSL(env: NodeJS.ProcessEnv = process.env): boolean {
+  * Windows screenshots (Win+Shift+S). PowerShell can access the Windows clipboard
+  * directly, so we use it as a fallback.
+  */
+-const WINDOWS_IMAGE_SCRIPT = "$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; $img=[System.Windows.Forms.Clipboard]::GetImage(); if ($null -ne $img) { try { if ([long]$img.Width*$img.Height -gt 24000000) { throw 'Image exceeds pixel limit' }; $stream=[System.IO.MemoryStream]::new(); try { $img.Save($stream,[System.Drawing.Imaging.ImageFormat]::Png); if ($stream.Length -gt 10485760) { throw 'Image exceeds byte limit' }; [Console]::Out.Write([Convert]::ToBase64String($stream.ToArray())) } finally { $stream.Dispose() } } finally { $img.Dispose() } }";
++// Keep binary image evidence even if extraction hangs and the helper is killed.
++// Use one IDataObject for format detection and reading; clipboard text is never
++// executable input. PNG streams need not be convertible to Forms' Bitmap format.
++const WINDOWS_IMAGE_SCRIPT = `
++$ErrorActionPreference='Stop'
++Add-Type -AssemblyName System.Windows.Forms
++Add-Type -AssemblyName System.Drawing
++$knownImage=$false; $img=$null; $rawStream=$null; $readError=$null
++try {
++ $data=[System.Windows.Forms.Clipboard]::GetDataObject()
++ if ($null -eq $data) { exit 0 }
++ foreach ($format in @([System.Windows.Forms.DataFormats]::Bitmap,[System.Windows.Forms.DataFormats]::Dib,([System.Windows.Forms.DataFormats]::GetFormat(17).Name),'PNG','image/png')) {
++  if ($data.GetDataPresent($format,$false)) { $knownImage=$true; break }
++ }
++ if ($knownImage) { [Console]::Error.WriteLine('${WINDOWS_IMAGE_PRESENT_MARKER}'); [Console]::Error.Flush() }
++ try { $img=$data.GetData([System.Windows.Forms.DataFormats]::Bitmap,$true) -as [System.Drawing.Image] }
++ catch { $readError=$_.Exception }
++ if ($null -ne $img -and -not $knownImage) {
++  $knownImage=$true; [Console]::Error.WriteLine('${WINDOWS_IMAGE_PRESENT_MARKER}'); [Console]::Error.Flush()
++ }
++ if ($null -eq $img) {
++  foreach ($format in @('PNG','image/png')) {
++   if (-not $data.GetDataPresent($format,$false)) { continue }
++   try {
++    $raw=$data.GetData($format,$false)
++    if ($raw -is [byte[]]) {
++     if ($raw.LongLength -gt 10485760) { throw 'Image exceeds byte limit' }
++     $rawStream=[System.IO.MemoryStream]::new([byte[]]$raw,$false)
++    } elseif ($raw -is [System.IO.Stream]) { $rawStream=$raw }
++    else { throw 'Clipboard PNG data is not an image stream' }
++    if (-not $rawStream.CanSeek) { throw 'Clipboard PNG stream is not seekable' }
++    if ($rawStream.Length -gt 10485760) { throw 'Image exceeds byte limit' }
++    $rawStream.Position=0
++    $img=[System.Drawing.Image]::FromStream($rawStream)
++    break
++   } catch {
++    if ($null -ne $rawStream) { $rawStream.Dispose(); $rawStream=$null }
++    if ($_.Exception.Message.Contains('Image exceeds byte limit')) { throw }
++    $readError=$_.Exception
++   }
++  }
++ }
++ if ($null -eq $img) {
++  if ($null -ne $readError) { throw $readError }
++  if ($knownImage) { throw 'Clipboard advertises image data but returned no image' }
++  exit 0
++ }
++ if ([long]$img.Width*$img.Height -gt 24000000) { throw 'Image exceeds pixel limit' }
++ $pngStream=[System.IO.MemoryStream]::new()
++ try {
++  $img.Save($pngStream,[System.Drawing.Imaging.ImageFormat]::Png)
++  if ($pngStream.Length -gt 10485760) { throw 'Image exceeds byte limit' }
++  [Console]::Out.Write([Convert]::ToBase64String($pngStream.ToArray()))
++ } finally { $pngStream.Dispose() }
++} catch {
++ if ($knownImage) { [Console]::Error.WriteLine($_.Exception.Message); exit 4 }
++ throw
++} finally {
++ if ($null -ne $img) { $img.Dispose() }
++ if ($null -ne $rawStream) { $rawStream.Dispose() }
++}
++`;
+ const WINDOWS_IMAGE_ENCODED_SCRIPT = Buffer.from(WINDOWS_IMAGE_SCRIPT, "utf16le").toString("base64");
+ async function readClipboardImageViaPowerShell(signal?: AbortSignal, onUnavailable?: (error: unknown) => void): Promise<ClipboardImage | null> {
+ 	let output: Buffer;
+@@ -149,6 +224,9 @@ async function readClipboardImageViaPowerShell(signal?: AbortSignal, onUnavailab
+ 	catch (error) {
+ 		// Cancellation and actual image quota failures remain failures, not text probes.
+ 		if (signal?.aborted || (error instanceof Error && CLIPBOARD_IMAGE_LIMIT_PATTERN.test(error.message))) throw error;
++		if (error instanceof ClipboardCommandError && (error.exitCode === 4 || error.imagePresent)) {
++			throw new ClipboardImageReadError(`已检测到剪贴板图片，但 Windows 图片读取失败：${error.message}`, { cause: error });
++		}
+ 		onUnavailable?.(error); return null;
+ 	}
+ 	if (!output.length) return null;
+@@ -249,7 +327,11 @@ export async function readClipboardImage(options?: {
+ 		// Forms may not obtain an image from every clipboard source. Native is
+ 		// supplemental; actual Windows format compatibility needs desktop tests.
+ 		let helperError: unknown;
+-		image = await readClipboardImageViaPowerShell(options?.signal, error => { helperError = error; });
++		try { image = await readClipboardImageViaPowerShell(options?.signal, error => { helperError = error; }); }
++		catch (error) {
++			if (!(error instanceof ClipboardImageReadError)) throw error;
++			helperError = error;
++		}
+ 		let nativeError: unknown;
+ 		if (!image) {
+ 			try {
+@@ -260,6 +342,8 @@ export async function readClipboardImage(options?: {
+ 				nativeError = error;
+ 			}
+ 		}
++		if (!image && helperError instanceof ClipboardImageReadError) throw helperError;
++		if (!image && nativeError instanceof ClipboardImageReadError) throw nativeError;
+ 		if (!image && (nativeError ?? helperError)) options?.onUnavailable?.(nativeError ?? helperError);
+ 	} else {
+ 		image = await readClipboardImageViaNativeClipboard(options?.signal, options?.nativeClipboard);
+diff --git a/packages/coding-agent/src/utils/clipboard-native-process.ts b/packages/coding-agent/src/utils/clipboard-native-process.ts
+index b5231aa..71432b3 100644
+--- a/packages/coding-agent/src/utils/clipboard-native-process.ts
++++ b/packages/coding-agent/src/utils/clipboard-native-process.ts
+@@ -17,12 +17,15 @@ const STDERR_BYTES = 4096;
+ const NATIVE_CLIPBOARD_SCRIPT = `
+ const [modulePath, kind, limitText] = process.argv.slice(1);
+ const limit = Number(limitText);
++let imagePresent = false;
+ (async () => {
+  const source = require(modulePath);
+  let data;
+  if (kind === 'image') {
+   if (!source.hasImage()) return;
++  imagePresent = true;
+   data = await source.getImageBinary();
++  if (!data || !data.length) { process.exitCode = 4; return; }
+   if (data.length > limit) { process.exitCode = 3; return; }
+  } else {
+   data = await source.getText();
+@@ -30,19 +33,30 @@ const limit = Number(limitText);
+  }
+  const bytes = Buffer.from(data);
+  await new Promise((resolve, reject) => process.stdout.write(bytes, error => error ? reject(error) : resolve()));
+-})().catch(() => { process.exitCode = 2; });
++})().catch(() => { process.exitCode = imagePresent ? 4 : 2; });
+ `;
+ 
+ export class NativeClipboardError extends Error {
+ 	readonly fatal: boolean;
+-	constructor(message: string, fatal = false) { super(message); this.fatal = fatal; }
++	constructor(message: string, fatal = false, options?: ErrorOptions) { super(message, options); this.fatal = fatal; }
++}
++
++/** An image was detected, but could not be read. Another image reader may recover it; text must not replace it. */
++export class ClipboardImageReadError extends NativeClipboardError {
++	constructor(message: string, options?: ErrorOptions) { super(message, false, options); }
+ }
+ 
+ async function readNativeClipboardSource(kind: "image" | "text", source: ClipboardModule, signal?: AbortSignal): Promise<Buffer | null> {
+ 	signal?.throwIfAborted();
+ 	if (kind === "image" && !source.hasImage()) return null;
+-	const value = kind === "image" ? await source.getImageBinary() : await source.getText();
++	let value: number[] | string;
++	try { value = kind === "image" ? await source.getImageBinary() : await source.getText(); }
++	catch (error) {
++		if (signal?.aborted || kind !== "image" || (error instanceof NativeClipboardError && error.fatal)) throw error;
++		throw new ClipboardImageReadError("已检测到剪贴板图片，但原生图片读取失败", { cause: error });
++	}
+ 	signal?.throwIfAborted();
++	if (kind === "image" && !value?.length) throw new ClipboardImageReadError("已检测到剪贴板图片，但原生读取返回了空数据");
+ 	const bytes = kind === "image" ? Uint8Array.from(value as number[]) : Buffer.from(value as string, "utf8");
+ 	const limit = kind === "image" ? IMAGE_BYTES : TEXT_BYTES;
+ 	if (bytes.byteLength > limit) throw new NativeClipboardError("剪贴板内容超过字节限制", true);
+@@ -115,6 +129,7 @@ export function readNativeClipboard(kind: "image" | "text", signal?: AbortSignal
+ 			child.stderr?.removeListener("data", onStderr); child.stderr?.removeListener("error", onError);
+ 			if (activeRead === token) activeRead = undefined;
+ 			const error = failure ?? (code === 3 ? new NativeClipboardError("剪贴板内容超过字节限制", true)
++				: code === 4 ? new ClipboardImageReadError("已检测到剪贴板图片，但原生图片读取失败或返回了空数据")
+ 				: code !== 0 ? new NativeClipboardError(`原生剪贴板读取失败（退出码 ${code}）`) : undefined);
+ 			const result = !settled && !error && size ? Buffer.concat(chunks, size) : null;
+ 			settle(error, result);
+diff --git a/tests/github-review-regressions.test.ts b/tests/github-review-regressions.test.ts
+index f660b99..b760c9c 100644
+--- a/tests/github-review-regressions.test.ts
++++ b/tests/github-review-regressions.test.ts
+@@ -17,7 +17,7 @@ import { SESSION_PERMISSION_STATE_TYPE } from "../packages/extensions/resource-l
+ import { fixture } from "./helpers/evidence-ledger-fixture.ts";
+ import { createRequire, syncBuiltinESMExports } from "node:module";
+ import { readClipboardImage } from "../packages/coding-agent/src/utils/clipboard-image.ts";
+-import { NativeClipboardError, readNativeClipboard } from "../packages/coding-agent/src/utils/clipboard-native-process.ts";
++import { ClipboardImageReadError, NativeClipboardError, readNativeClipboard } from "../packages/coding-agent/src/utils/clipboard-native-process.ts";
+ import { readClipboardText } from "../packages/coding-agent/src/utils/clipboard.ts";
+ 
+ function deferred() { let resolve!: () => void; const promise = new Promise<void>(yes => { resolve = yes; }); return { promise, resolve }; }
+@@ -262,6 +262,110 @@ for (const failure of ["ENOENT", "EACCES", "ETIMEDOUT"]) test(`Windows image hel
+  finally { cp.execFile = original; syncBuiltinESMExports(); }
+ });
+ 
++for (const nativeResult of ["unavailable", "absent", "probe-error"] as const) test(`clipboard image regression: confirmed Forms failure survives native ${nativeResult}`, async () => {
++	const cp = createRequire(import.meta.url)("node:child_process"), original = cp.execFile;
++	let unavailable = 0, nativeProbes = 0;
++	cp.execFile = (_command: string, _args: string[], _options: unknown, callback: any) => callback(
++		Object.assign(new Error("Forms image read failed"), { code: 4 }), Buffer.alloc(0), Buffer.from("confirmed image could not be read"));
++	syncBuiltinESMExports();
++	const native = nativeResult === "unavailable" ? null : {
++		getText: async () => "-", setText: async () => {}, getImageBinary: async () => [],
++		hasImage: () => { nativeProbes++; if (nativeResult === "probe-error") throw new Error("native probe unavailable"); return false; },
++	};
++	try {
++		await assert.rejects(readClipboardImage({ platform: "win32", nativeClipboard: native, onUnavailable: () => unavailable++ }),
++			error => error instanceof ClipboardImageReadError && !error.fatal && error.message.includes("confirmed image could not be read"));
++		assert.equal(nativeProbes, nativeResult === "unavailable" ? 0 : 1);
++		assert.equal(unavailable, 0, "known image failures must reach the attachment owner, not the unavailable/text path");
++	} finally { cp.execFile = original; syncBuiltinESMExports(); }
++});
++
++test("clipboard image regression: native image success recovers a confirmed Forms failure", async () => {
++	const cp = createRequire(import.meta.url)("node:child_process"), original = cp.execFile;
++	const bytes = pngFixture(8, 8); let nativeReads = 0, unavailable = 0;
++	cp.execFile = (_command: string, _args: string[], _options: unknown, callback: any) => callback(
++		Object.assign(new Error("Forms image read failed"), { code: 4 }), Buffer.alloc(0), Buffer.from("confirmed image could not be read"));
++	syncBuiltinESMExports();
++	try {
++		const result = await readClipboardImage({ platform: "win32", nativeClipboard: {
++			getText: async () => "-", setText: async () => {}, hasImage: () => true,
++			getImageBinary: async () => { nativeReads++; return Array.from(bytes); },
++		}, onUnavailable: () => unavailable++ });
++		assert.deepEqual(Buffer.from(result?.bytes ?? []), bytes);
++		assert.equal(result?.mimeType, "image/png"); assert.equal(nativeReads, 1); assert.equal(unavailable, 0);
++	} finally { cp.execFile = original; syncBuiltinESMExports(); }
++});
++
++for (const transport of ["direct", "isolated"] as const) for (const outcome of ["empty", "throw"] as const) test(`clipboard image regression: ${transport} native image ${outcome} cannot become no image`, async () => {
++	const cp = createRequire(import.meta.url)("node:child_process"), original = cp.execFile;
++	const root = transport === "isolated" ? mkdtempSync(join(tmpdir(), "sp-native-image-failure-")) : undefined;
++	const nativeModulePath = root ? join(root, "clipboard-fixture.cjs") : undefined;
++	if (nativeModulePath) writeFileSync(nativeModulePath, `module.exports = { hasImage() { return true; }, async getImageBinary() { ${outcome === "throw" ? "throw new Error('image decode failed');" : "return [];"} }, async getText() { return '-'; } };`);
++	let unavailable = 0;
++	cp.execFile = (_command: string, _args: string[], _options: unknown, callback: any) => callback(null, Buffer.alloc(0));
++	syncBuiltinESMExports();
++	try {
++		await assert.rejects(readClipboardImage({ platform: "win32", nativeModulePath,
++			nativeClipboard: transport === "direct" ? {
++				getText: async () => "-", setText: async () => {}, hasImage: () => true,
++				getImageBinary: async () => { if (outcome === "throw") throw new Error("image decode failed"); return []; },
++			} : undefined,
++			onUnavailable: () => unavailable++,
++		}), error => error instanceof ClipboardImageReadError && !error.fatal);
++		assert.equal(unavailable, 0);
++	} finally {
++		cp.execFile = original; syncBuiltinESMExports();
++		if (root) rmSync(root, { recursive: true, force: true });
++	}
++});
++
++for (const code of ["ETIMEDOUT", "ENOENT", "EACCES"] as const) test(`clipboard image regression: presence marker preserves image failure after ${code}`, async () => {
++	const cp = createRequire(import.meta.url)("node:child_process"), original = cp.execFile;
++	let unavailable = 0;
++	cp.execFile = (_command: string, _args: string[], _options: unknown, callback: any) => callback(
++		Object.assign(new Error("clipboard transport failed"), { code }), Buffer.alloc(0), Buffer.from("SP_CLIPBOARD_IMAGE_PRESENT\r\nimage transport failed"));
++	syncBuiltinESMExports();
++	try {
++		await assert.rejects(readClipboardImage({ platform: "win32", nativeClipboard: null, onUnavailable: () => unavailable++ }),
++			error => error instanceof ClipboardImageReadError && !error.fatal);
++		assert.equal(unavailable, 0);
++	} finally { cp.execFile = original; syncBuiltinESMExports(); }
++});
++
++for (const markerLocation of ["message", "stderr-body"] as const) test(`clipboard image regression: marker in ${markerLocation} is not a presence report`, async () => {
++	const cp = createRequire(import.meta.url)("node:child_process"), original = cp.execFile;
++	let unavailable = 0;
++	cp.execFile = (_command: string, _args: string[], _options: unknown, callback: any) => callback(
++		Object.assign(new Error(markerLocation === "message" ? "Command failed: SP_CLIPBOARD_IMAGE_PRESENT" : "helper unavailable"), { code: "EACCES" }),
++		Buffer.alloc(0), Buffer.from(markerLocation === "stderr-body" ? "helper startup failed\nSP_CLIPBOARD_IMAGE_PRESENT" : ""));
++	syncBuiltinESMExports();
++	try {
++		assert.equal(await readClipboardImage({ platform: "win32", nativeClipboard: null, onUnavailable: () => unavailable++ }), null);
++		assert.equal(unavailable, 1);
++	} finally { cp.execFile = original; syncBuiltinESMExports(); }
++});
++
++for (const failure of ["abort", "quota"] as const) test(`clipboard image regression: native ${failure} takes precedence over an earlier image read failure`, async () => {
++	const cp = createRequire(import.meta.url)("node:child_process"), original = cp.execFile;
++	const controller = new AbortController(), reason = new Error("cancel native image fixture");
++	let nativeReads = 0, unavailable = 0;
++	cp.execFile = (_command: string, _args: string[], _options: unknown, callback: any) => callback(
++		Object.assign(new Error("Forms image read failed"), { code: 4 }), Buffer.alloc(0));
++	syncBuiltinESMExports();
++	try {
++		await assert.rejects(readClipboardImage({ platform: "win32", signal: controller.signal, nativeClipboard: {
++			getText: async () => "-", setText: async () => {}, hasImage: () => true,
++			getImageBinary: async () => {
++				nativeReads++;
++				if (failure === "abort") { controller.abort(reason); return Array.from(pngFixture(8, 8)); }
++				return new Uint8Array(10 * 1024 * 1024 + 1) as unknown as number[];
++			},
++		}, onUnavailable: () => unavailable++ }), error => failure === "abort" ? error === reason
++			: error instanceof NativeClipboardError && error.fatal && !(error instanceof ClipboardImageReadError));
++		assert.equal(nativeReads, 1); assert.equal(unavailable, 0);
++	} finally { cp.execFile = original; syncBuiltinESMExports(); }
++});
++
+ test("Windows image read uses native fallback when STA helper returns no image", { skip: process.platform !== "win32" }, async () => {
+  const cp = createRequire(import.meta.url)("node:child_process"), original = cp.execFile; let helperCalls = 0;
+  const bytes = pngFixture(8, 8);
+@@ -338,7 +442,7 @@ test("real Windows Alt+V dispatch falls back to text after image helper failure"
+   f.internal.readClipboardImageForPaste = () => readClipboardImage({ platform: "win32", nativeClipboard: null });
+   cp.execFile = (_command: string, args: string[], _options: any, callback: any) => {
+    const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le");
+-   if (script.includes("GetImage")) { calls.push("image"); callback(Object.assign(new Error("image helper blocked"), { code: "EACCES" }), Buffer.alloc(0)); }
++   if (script.includes("SP_CLIPBOARD_IMAGE_PRESENT")) { calls.push("image"); callback(Object.assign(new Error("image helper blocked"), { code: "EACCES" }), Buffer.alloc(0)); }
+    else { assert.ok(script.includes("DataFormats]::UnicodeText")); calls.push("text"); callback(null, Buffer.from("clipboard fallback text")); }
+   }; syncBuiltinESMExports();
+   f.input.write("\x1bv"); while (f.internal.clipboardPending) await turn();
+@@ -350,7 +454,7 @@ for (const failure of ["abort", "quota"]) test(`Windows helper ${failure} remain
+  const cp = createRequire(import.meta.url)("node:child_process"), original = cp.execFile, abort = new AbortController(); let unavailable = 0, nativeCalls = 0;
+  cp.execFile = (_command: string, _args: string[], _options: any, callback: any) => {
+   if (failure === "abort") abort.abort();
+-  callback(new Error(failure === "abort" ? "aborted" : `Command failed: powershell ${"encoded-script".repeat(60)}`), Buffer.alloc(0), failure === "quota" ? Buffer.from("Image exceeds pixel limit") : Buffer.alloc(0));
++  callback(Object.assign(new Error(failure === "abort" ? "aborted" : `Command failed: powershell ${"encoded-script".repeat(60)}`), { code: 4 }), Buffer.alloc(0), failure === "quota" ? Buffer.from("Image exceeds pixel limit") : Buffer.alloc(0));
+  }; syncBuiltinESMExports();
+  const native = { getText: async () => "", setText: async () => {}, hasImage: () => { nativeCalls++; return true; }, getImageBinary: async () => Array.from(pngFixture(8, 8)) };
+  try { await assert.rejects(readClipboardImage({ platform: "win32", nativeClipboard: native, signal: abort.signal, onUnavailable: () => unavailable++ })); assert.equal(unavailable, 0); assert.equal(nativeCalls, 0); }
+diff --git a/tests/helpers/windows-clipboard-data.ts b/tests/helpers/windows-clipboard-data.ts
+index 4093952..956c896 100644
+--- a/tests/helpers/windows-clipboard-data.ts
++++ b/tests/helpers/windows-clipboard-data.ts
+@@ -9,6 +9,22 @@ import { NativeClipboardError } from "../../packages/coding-agent/src/utils/clip
+ // This remains finite so a broken helper cannot hang the full test suite.
+ const FIXTURE_POWERSHELL_TIMEOUT_MS = 30_000;
+ 
++/** Replace only the OS image source; the production PNG/Bitmap parser still runs in PowerShell. */
++export function prepareFormsImageClipboardFixture(args: readonly string[], bytes: Uint8Array, text?: string, format: "PNG" | "image/png" = "PNG") {
++	const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le");
++	const source = "[System.Windows.Forms.Clipboard]::GetDataObject()";
++	assert.equal(script.split(source).length, 2, "replace exactly one OS clipboard source");
++	const replaced = script.replace(source, "$fixtureData");
++	assert.doesNotMatch(replaced, /\[System\.Windows\.Forms\.Clipboard\]::/, "fixture must never read or write the system clipboard");
++	const fixture = Buffer.from(JSON.stringify({ image: Buffer.from(bytes).toString("base64"), text, format }), "utf8").toString("base64");
++	const setup = `Add-Type -AssemblyName System.Windows.Forms; $fixture=([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${fixture}')) | ConvertFrom-Json); $fixtureData=New-Object System.Windows.Forms.DataObject; $fixtureStream=[System.IO.MemoryStream]::new([Convert]::FromBase64String([string]$fixture.image), $false); $fixtureData.SetData([string]$fixture.format, $false, $fixtureStream); if ($null -ne $fixture.text) { $fixtureData.SetData([System.Windows.Forms.DataFormats]::UnicodeText, [string]$fixture.text) }; `;
++	const isolatedScript = `${setup}try { ${replaced} } finally { $fixtureStream.Dispose() }`;
++	return {
++		args: [...args.slice(0, -1), Buffer.from(isolatedScript, "utf16le").toString("base64")],
++		timeoutMs: FIXTURE_POWERSHELL_TIMEOUT_MS,
++	};
++}
++
+ /** Run the production STA script with an in-memory Forms source; never set the system clipboard. */
+ export async function readFormsClipboardFixture(paths: string[], text?: string, signal?: AbortSignal, execute: typeof runClipboardCommand = runClipboardCommand) {
+ 	let calls = 0;
+diff --git a/tests/image-placeholder-input.test.ts b/tests/image-placeholder-input.test.ts
+index 7ef947f..2d3b8b8 100644
+--- a/tests/image-placeholder-input.test.ts
++++ b/tests/image-placeholder-input.test.ts
+@@ -18,7 +18,7 @@ import { snapshotImageSubmission } from "../packages/coding-agent/src/core/image
+ import { Editor } from "@super-pi/tui";
+ import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
+ import { readClipboardImage } from "../packages/coding-agent/src/utils/clipboard-image.ts";
+-import { readFormsClipboardFixture } from "./helpers/windows-clipboard-data.ts";
++import { prepareFormsImageClipboardFixture, readFormsClipboardFixture } from "./helpers/windows-clipboard-data.ts";
+ 
+ async function mounted(auxiliary = false, screen: "regular" | "fullscreen" = "regular", controls: Parameters<typeof offlineImageRuntime>[5] = {}) {
+ 	const root = mkdtempSync(join(tmpdir(), "sp-placeholder-"));
+@@ -58,7 +58,7 @@ for (const auxiliary of [false, true]) test(`Windows copied image files: Alt+V t
+ 		for (const path of paths) writeFileSync(path, bytes);
+ 		cp.execFile = (command: string, args: string[], options: unknown, callback: any) => {
+ 			const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le");
+-			if (script.includes("[System.Windows.Forms.Clipboard]::GetImage()")) {
++			if (script.includes("[System.Windows.Forms.Clipboard]::GetDataObject()")) {
+ 				imageHelperCalls++; callback(null, Buffer.alloc(0)); return;
+ 			}
+ 			return original(command, args, options, callback);
+@@ -167,7 +167,7 @@ for (const auxiliary of [false, true]) for (const gesture of ["alt", "ctrl", "em
+ 		try {
+ 			cp.execFile = (_command: string, args: string[], _options: unknown, callback: any) => {
+ 				const script = Buffer.from(args[args.length - 1], "base64").toString("utf16le");
+-				assert.match(script, /GetImage/); reads++; callback(null, Buffer.from(pngFixture(8, 8).toString("base64")));
++				assert.match(script, /\[System\.Windows\.Forms\.Clipboard\]::GetDataObject\(\)/); reads++; callback(null, Buffer.from(pngFixture(8, 8).toString("base64")));
+ 			}; syncBuiltinESMExports();
+ 			f.input.write(gesture === "alt" ? "\x1bv" : gesture === "ctrl" ? "\x16" : gesture === "right-click" ? "\x1b[<2;5;5M" : "\x1b[200~\x1b[201~");
+ 			await settled(f);
+@@ -179,6 +179,111 @@ for (const auxiliary of [false, true]) for (const gesture of ["alt", "ctrl", "em
+ 	});
+ }
+ 
++for (const auxiliary of [false, true]) for (const gesture of ["alt", "ctrl"] as const) {
++	test(`known clipboard image failure keeps its failed attachment and blocks submit (${gesture}, auxiliary=${auxiliary})`, async () => {
++		const f = await mounted(auxiliary);
++		const cp = createRequire(import.meta.url)("node:child_process"), original = cp.execFile;
++		let completeRead: ((error: Error, stdout: Buffer, stderr: Buffer) => void) | undefined;
++		let helperCalls = 0, textReads = 0;
++		try {
++			// Exercise the same host gesture on every OS; only the Windows helper
++			// transport is simulated here, not native Windows clipboard access.
++			f.internal.keybindings.setUserBindings({ "app.clipboard.pasteImage": ["alt+v", "ctrl+v"] });
++			cp.execFile = (_command: string, args: string[], _options: unknown, callback: typeof completeRead) => {
++				const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le");
++				assert.match(script, /\[System\.Windows\.Forms\.Clipboard\]::GetDataObject\(\)/);
++				helperCalls++; completeRead = callback;
++			}; syncBuiltinESMExports();
++			f.internal.readClipboardImageForPaste = () => readClipboardImage({ platform: "win32", nativeClipboard: null, signal: f.internal.clipboardAbort.signal });
++			f.internal.readClipboardTextForPaste = async () => { textReads++; return "-"; };
++			f.input.write("question"); f.input.write(gesture === "alt" ? "\x1bv" : "\x16");
++			assert.equal(helperCalls, 1);
++			assert.match(await frame(f), /正在添加/);
++			const id = f.internal.imageDraft.items[0].id;
++			assert.ok(completeRead);
++			const finish = completeRead; completeRead = undefined;
++			finish(Object.assign(new Error("known image read failure"), { code: 4 }), Buffer.alloc(0), Buffer.from("Image data is present but unavailable"));
++			await settled(f);
++			assert.equal(textReads, 0, "an image read failure must not become clipboard text");
++			assert.equal(f.internal.editor.getText(), "question");
++			assert.equal(f.internal.imageDraft.items.length, 1);
++			assert.equal(f.internal.imageDraft.items[0].id, id);
++			assert.equal(f.internal.imageDraft.items[0].state, "failed");
++			assert.match(await frame(f), /失败：/);
++			let submitted: Promise<void> | undefined;
++			const submit = f.internal.defaultEditor.onSubmit;
++			f.internal.defaultEditor.onSubmit = (text: string) => submitted = submit(text);
++			f.input.write("\r"); assert.ok(submitted, "Enter reaches the host submission guard"); await submitted;
++			assert.equal(f.counts.main + f.counts.vision, 0);
++			assert.equal(f.internal.editor.getText(), "question");
++			assert.equal(f.internal.imageDraft.items[0].id, id);
++			assert.equal(f.internal.imageDraft.items[0].state, "failed");
++		} finally {
++			completeRead?.(Object.assign(new Error("fixture cleanup"), { code: 4 }), Buffer.alloc(0), Buffer.alloc(0));
++			cp.execFile = original; syncBuiltinESMExports(); await settled(f); await f.release();
++		}
++	});
++}
++
++for (const gesture of ["alt", "ctrl"] as const) test(`clipboard with no image preserves ordinary hyphen text (${gesture})`, async () => {
++	const f = await mounted(); let textReads = 0;
++	try {
++		f.internal.keybindings.setUserBindings({ "app.clipboard.pasteImage": ["alt+v", "ctrl+v"] });
++		f.internal.readClipboardImageForPaste = async () => null;
++		f.internal.readClipboardTextForPaste = async () => { textReads++; return "-"; };
++		f.input.write("question "); f.input.write(gesture === "alt" ? "\x1bv" : "\x16"); await settled(f);
++		assert.equal(textReads, 1);
++		assert.equal(f.internal.editor.getText(), "question -");
++		assert.equal(f.internal.imageDraft.items.length, 0);
++		assert.equal(f.counts.main + f.counts.vision, 0);
++		assert.doesNotMatch(await frame(f), /正在添加|失败：|已粘贴/);
++	} finally { await f.release(); }
++});
++
++for (const format of ["PNG", "image/png"] as const) for (const valid of [true, false]) {
++	test(`Windows Forms ${format} stream with hyphen text ${valid ? "creates an attachment" : "keeps a failed attachment"}`, { skip: process.platform !== "win32", timeout: 45_000 }, async () => {
++		const f = await mounted();
++		const cp = createRequire(import.meta.url)("node:child_process"), original = cp.execFile;
++		let helperCalls = 0, textReads = 0;
++		try {
++			// Real production STA parsing and image decoding, but a private in-memory
++			// DataObject: this does not read or overwrite the Windows system clipboard.
++			cp.execFile = (command: string, args: string[], options: Record<string, unknown>, callback: unknown) => {
++				const fixture = prepareFormsImageClipboardFixture(args, valid ? pngFixture(8, 8) : Buffer.from("not a PNG"), "-", format);
++				helperCalls++;
++				return original(command, fixture.args, { ...options, timeout: fixture.timeoutMs }, callback);
++			}; syncBuiltinESMExports();
++			f.internal.readClipboardImageForPaste = () => readClipboardImage({ platform: "win32", nativeClipboard: null, signal: f.internal.clipboardAbort.signal });
++			f.internal.readClipboardTextForPaste = async () => { textReads++; return "-"; };
++			f.input.write("question"); f.input.write("\x1bv");
++			assert.match(f.internal.defaultEditor.render(120).join("\n"), /正在添加/);
++			await settled(f);
++			assert.equal(helperCalls, 1);
++			assert.equal(textReads, 0);
++			assert.equal(f.internal.editor.getText(), "question");
++			assert.equal(f.internal.imageDraft.items.length, 1);
++			const attachment = f.internal.imageDraft.items[0];
++			assert.equal(attachment.state, valid ? "ready" : "failed");
++			assert.match(await frame(f), valid ? /已粘贴 · 未发送/ : /失败：/);
++			assert.equal(f.counts.main + f.counts.vision, 0);
++			if (valid) {
++				assert.equal(attachment.metadata.mimeType, "image/png");
++				assert.equal(attachment.metadata.width, 8); assert.equal(attachment.metadata.height, 8);
++			}
++			let submitted: Promise<void> | undefined;
++			const submit = f.internal.defaultEditor.onSubmit;
++			f.internal.defaultEditor.onSubmit = (text: string) => submitted = submit(text);
++			f.input.write("\r"); assert.ok(submitted, "Enter reaches the host submission guard"); await submitted;
++			assert.equal(f.counts.main, valid ? 1 : 0); assert.equal(f.counts.vision, 0);
++			if (!valid) {
++				assert.equal(f.internal.editor.getText(), "question");
++				assert.equal(f.internal.imageDraft.items[0].id, attachment.id);
++				assert.equal(f.internal.imageDraft.items[0].state, "failed");
++			}
++		} finally { cp.execFile = original; syncBuiltinESMExports(); await settled(f); await f.release(); }
++	});
++}
++
+ test("custom deletion bindings and extension shortcuts retain precedence", async () => {
+ 	const f = await mounted();
+ 	try {

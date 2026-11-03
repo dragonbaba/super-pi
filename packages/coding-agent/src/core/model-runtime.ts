@@ -58,6 +58,14 @@ import {
 } from "./provider-composer.ts";
 import { withRemoteCatalog } from "./remote-catalog-provider.ts";
 import { RuntimeCredentials } from "./runtime-credentials.ts";
+import type { OpenAICodexDispatch, OpenAIResponsesDispatch, ProviderRequestAuthSnapshot } from "./extensions/types.ts";
+
+/** Internal logical-request context; never forwarded to a Provider's options or telemetry. */
+export interface ProviderRequestContext {
+	readonly auth: ProviderRequestAuthSnapshot;
+	readonly assertCurrent: () => void;
+	readonly onStreamSettled?: (failed: boolean, error?: unknown) => void;
+}
 
 interface ModelRuntimeSnapshot {
 	all: readonly Model<Api>[];
@@ -632,37 +640,66 @@ export class ModelRuntime implements Models {
 		return check ? { configured: true, source: "environment", label: check.source } : { configured: false };
 	}
 
+	private usesBuiltinOpenAIResponses(model: Model<Api>): boolean {
+		const extension = this.extensionProviders.get(model.provider);
+		return model.provider === "openai" && model.api === "openai-responses" &&
+			this.builtins.has(model.provider) && !this.nativeExtensionProviders.has(model.provider) &&
+			!(extension?.api === model.api && extension.streamSimple);
+	}
+
+	usesBuiltinOpenAICodex(model: Model<Api>): boolean {
+		const extension = this.extensionProviders.get(model.provider);
+		return model.provider === "openai-codex" && model.api === "openai-codex-responses" &&
+			this.builtins.has(model.provider) && !this.nativeExtensionProviders.has(model.provider) &&
+			!(extension?.api === model.api && extension.streamSimple);
+	}
+
 	private async prepareRequest<TOptions extends ProviderRequestOptions & ModelsRequestTransforms>(
 		model: Model<Api>,
 		options: TOptions | undefined,
+		request?: ProviderRequestContext,
 	): Promise<{
 		provider: Provider;
+		builtinOpenAIResponses: boolean;
+		builtinOpenAICodex: boolean;
 		model: Model<Api>;
 		options: Omit<TOptions, "transformHeaders"> & ProviderRequestOptions;
 	}> {
 		const provider = this.models.getProvider(model.provider);
 		if (!provider) throw new ModelsError("provider", `Unknown provider: ${model.provider}`);
-		const resolution = await this.getAuth(model, {
+		// Capture source alongside the Provider, before auth/header hooks can mutate registrations.
+		const builtinOpenAIResponses = this.usesBuiltinOpenAIResponses(model);
+		const builtinOpenAICodex = this.usesBuiltinOpenAICodex(model);
+		request?.assertCurrent();
+		const snapshot = request?.auth;
+		if (snapshot && (snapshot.model.provider !== model.provider || snapshot.model.id !== model.id || snapshot.model.api !== model.api)) {
+			throw new ModelsError("auth", "Request authentication snapshot does not match the model");
+		}
+		if (snapshot && !snapshot.apiKey && !snapshot.headers) throw new ModelsError("auth", "Captured request authentication is unavailable");
+		const resolution = snapshot ? undefined : await this.getAuth(model, {
 			apiKey: options?.apiKey,
 			env: options?.env,
 			signal: options?.signal,
 		});
-		if (!resolution) throw new ModelsError("auth", `Provider is not configured: ${model.provider}`);
+		if (!snapshot && !resolution) throw new ModelsError("auth", `Provider is not configured: ${model.provider}`);
 
 		const { transformHeaders, ...rawProviderOptions } = options ?? {};
 		const providerOptions = rawProviderOptions as Omit<TOptions, "transformHeaders"> & ProviderRequestOptions;
-		let headers = mergeProviderHeaders(resolution.auth.headers, providerOptions.headers);
+		let headers = mergeProviderHeaders(snapshot ? snapshot.headers : resolution!.auth.headers, snapshot ? undefined : providerOptions.headers);
 		if (transformHeaders) headers = await transformHeaders(headers ?? {});
-		const env =
-			resolution.env || providerOptions.env
-				? { ...(resolution.env ?? {}), ...(providerOptions.env ?? {}) }
-				: undefined;
+		request?.assertCurrent();
+		if (request) options?.signal?.throwIfAborted();
+		const authEnv = snapshot ? snapshot.env : resolution!.env;
+		const optionEnv = snapshot ? undefined : providerOptions.env;
+		const env = authEnv || optionEnv ? { ...(authEnv ?? {}), ...(optionEnv ?? {}) } : undefined;
 		return {
 			provider,
-			model: resolution.auth.baseUrl ? { ...model, baseUrl: resolution.auth.baseUrl } : model,
+			builtinOpenAIResponses,
+			builtinOpenAICodex,
+			model: snapshot ? snapshot.model : resolution!.auth.baseUrl ? { ...model, baseUrl: resolution!.auth.baseUrl } : model,
 			options: {
 				...providerOptions,
-				apiKey: providerOptions.apiKey ?? resolution.auth.apiKey,
+				apiKey: snapshot ? snapshot.apiKey : providerOptions.apiKey ?? resolution!.auth.apiKey,
 				headers,
 				env,
 			} as Omit<TOptions, "transformHeaders"> & ProviderRequestOptions,
@@ -695,11 +732,25 @@ export class ModelRuntime implements Models {
 		return this.stream(model, context, options).result();
 	}
 
-	streamSimple(model: Model<Api>, context: Context, options?: ModelsSimpleStreamOptions): AssistantMessageEventStream {
+	streamSimple(model: Model<Api>, context: Context, options?: ModelsSimpleStreamOptions, request?: ProviderRequestContext, dispatch?: OpenAIResponsesDispatch,
+		codex?: OpenAICodexDispatch, codexGeneration = codex?.owner.generation,
+		customStream?: (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => AssistantMessageEventStream | Promise<AssistantMessageEventStream>): AssistantMessageEventStream {
 		return lazyStream(model, async () => {
-			const prepared = await this.prepareRequest(model, options);
+			const prepared = await this.prepareRequest(model, options, request);
+			request?.assertCurrent();
+			if (request) options?.signal?.throwIfAborted();
+			if (customStream) return customStream(prepared.model, context, prepared.options as SimpleStreamOptions);
+			if (dispatch && prepared.builtinOpenAIResponses) {
+				dispatch.assertCurrent();
+				return dispatch.streamSimple(prepared.model, context, prepared.options as SimpleStreamOptions);
+			}
+			if (codex && prepared.builtinOpenAICodex) {
+				codex.assertCurrent();
+				codex.owner.resume(codexGeneration);
+				return codex.owner.streamSimple(prepared.model as Model<"openai-codex-responses">, context, prepared.options as SimpleStreamOptions);
+			}
 			return prepared.provider.streamSimple(prepared.model, context, prepared.options as SimpleStreamOptions);
-		});
+		}, request?.onStreamSettled);
 	}
 
 	completeSimple(model: Model<Api>, context: Context, options?: ModelsSimpleStreamOptions): Promise<AssistantMessage> {

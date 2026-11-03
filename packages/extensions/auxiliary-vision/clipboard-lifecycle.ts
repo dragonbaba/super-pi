@@ -15,7 +15,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import type { Stats } from "node:fs";
-import { basename, dirname, extname, join, resolve } from "node:path";
+import { basename, dirname, extname, join, parse, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { detectImageMime } from "./core.ts";
 import {
@@ -163,6 +163,8 @@ export class ClipboardArtifactLifecycle {
 	readonly api: ClipboardLifecycleApi;
 	private readonly tempDir: string;
 	private readonly normalizedTempDir: string;
+	private readonly normalizedNativeTempDir: string;
+	private readonly tempPathRoot: string;
 	private readonly leaseDir: string;
 	private readonly leasePath: string;
 	private readonly now: () => number;
@@ -179,6 +181,9 @@ export class ClipboardArtifactLifecycle {
 	constructor(options: LifecycleOptions = {}) {
 		this.tempDir = realpathSync(options.tempDir ?? tmpdir());
 		this.normalizedTempDir = normalizedPath(this.tempDir);
+		this.normalizedNativeTempDir = process.platform === "win32"
+			? normalizedPath(realpathSync.native(this.tempDir)) : this.normalizedTempDir;
+		this.tempPathRoot = normalizedPath(parse(this.tempDir).root);
 		this.leaseDir = join(this.tempDir, "pi-clipboard-leases-v1");
 		this.leasePath = join(this.leaseDir, `owner-${this.ownerId}.json`);
 		this.now = options.now ?? Date.now;
@@ -252,15 +257,17 @@ export class ClipboardArtifactLifecycle {
 		if (this.closed || artifacts.length === 0) return;
 		let changed = false;
 		for (const artifact of artifacts) {
-			const key = normalizedPath(artifact.path);
+			const filePath = this.normalizeClipboardAlias(artifact.path);
+			if (!filePath) continue;
+			const key = normalizedPath(filePath);
 			let record = this.records.get(key);
 			if (!record) {
-				if (this.pathHasAnotherActiveOwner(artifact.path)) continue;
-				const verified = this.verifyClipboardFile(artifact.path, artifact.mimeType);
+				if (this.pathHasAnotherActiveOwner(filePath)) continue;
+				const verified = this.verifyClipboardFile(filePath, artifact.mimeType);
 				if (!verified || !sameFileIdentity(artifact, verified)) continue;
 				record = {
 					...verified,
-					path: resolve(artifact.path),
+					path: filePath,
 					mimeType: artifact.mimeType,
 					createdAtMs: this.now(),
 					state: "materialized",
@@ -350,6 +357,25 @@ export class ClipboardArtifactLifecycle {
 		return identityFromStats(state);
 	}
 
+	/** Consumption/lease boundary only: keep creator/editor paths and hot callbacks unchanged. */
+	private normalizeClipboardAlias(filePath: string): string | undefined {
+		const resolvedPath = resolve(filePath);
+		const name = basename(resolvedPath);
+		if (!SP_CLIPBOARD_FILE_NAME_PATTERN.test(name)) return undefined;
+		const parent = dirname(resolvedPath);
+		const normalizedParent = normalizedPath(parent);
+		if (normalizedParent === this.normalizedTempDir) return resolvedPath;
+		if (process.platform !== "win32" || normalizedPath(parse(parent).root) !== this.tempPathRoot) return undefined;
+		try {
+			if (normalizedParent !== this.normalizedNativeTempDir
+				&& normalizedPath(realpathSync.native(parent)) !== this.normalizedNativeTempDir) return undefined;
+			// Resolve the directory only. The final file must still pass lstat/MIME/identity checks.
+			return join(this.tempDir, name);
+		} catch {
+			return undefined;
+		}
+	}
+
 	private pruneExpiredOwnedEditorFiles(): void {
 		const cutoff = this.now() - CLIPBOARD_OWNER_MAX_AGE_MS;
 		let changed = false;
@@ -420,7 +446,9 @@ export class ClipboardArtifactLifecycle {
 			const manifest = this.readLease(join(this.leaseDir, name));
 			if (!manifest || !this.processAlive(manifest.pid)) continue;
 			for (const record of manifest.files) {
-				if (typeof record.path === "string") active.add(normalizedPath(record.path));
+				if (typeof record.path !== "string") continue;
+				const filePath = this.normalizeClipboardAlias(record.path);
+				if (filePath) active.add(normalizedPath(filePath));
 			}
 		}
 		return active;
@@ -433,6 +461,7 @@ export class ClipboardArtifactLifecycle {
 	}
 
 	private coldStartSweep(): void {
+		const active = this.activeOwnedPaths();
 		let leaseNames: string[];
 		try { leaseNames = readdirSync(this.leaseDir); } catch { leaseNames = []; }
 		let scanned = 0;
@@ -444,33 +473,35 @@ export class ClipboardArtifactLifecycle {
 			if (!manifest || this.processAlive(manifest.pid)) continue;
 			let retained = false;
 			for (const record of manifest.files) {
-				if (!this.removeStaleManifestRecord(record)) retained = true;
+				if (!this.removeStaleManifestRecord(record, active)) retained = true;
 			}
 			if (!retained) {
 				try { unlinkSync(leasePath); } catch { /* another startup may have swept it */ }
 			}
 		}
-		this.sweepLegacyOrphans();
+		this.sweepLegacyOrphans(active);
 	}
 
-	private removeStaleManifestRecord(record: ClipboardRecord): boolean {
+	private removeStaleManifestRecord(record: ClipboardRecord, active: ReadonlySet<string>): boolean {
 		if (typeof record.path !== "string"
 			|| typeof record.mimeType !== "string"
 			|| typeof record.createdAtMs !== "number"
 			|| this.now() - record.createdAtMs < CLIPBOARD_STALE_LEASE_MIN_AGE_MS) return false;
-		const verified = this.verifyClipboardFile(record.path, record.mimeType);
-		if (!verified) return !existsSync(record.path);
+		const filePath = this.normalizeClipboardAlias(record.path);
+		if (!filePath) return false;
+		if (active.has(normalizedPath(filePath))) return false;
+		const verified = this.verifyClipboardFile(filePath, record.mimeType);
+		if (!verified) return !existsSync(filePath);
 		if (!sameFileIdentity(record, verified)) return false;
 		try {
-			unlinkSync(record.path);
+			unlinkSync(filePath);
 			return true;
 		} catch {
 			return false;
 		}
 	}
 
-	private sweepLegacyOrphans(): void {
-		const active = this.activeOwnedPaths();
+	private sweepLegacyOrphans(active: ReadonlySet<string>): void {
 		let names: string[];
 		try { names = readdirSync(this.tempDir); } catch { return; }
 		let scanned = 0;

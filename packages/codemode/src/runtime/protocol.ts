@@ -23,6 +23,8 @@ export interface WorkerData {
 	 * polls it, because Bun's `worker.terminate()` cannot stop a thread that is spinning in wasm.
 	 */
 	interrupt: SharedArrayBuffer;
+	/** Report drained VM waits so the host can exclude tool waiting from its budget. */
+	pauseTimeoutWhileWaiting?: boolean;
 }
 
 /** JSON-encoded `{ name?, message, stack? }` of an error thrown by the script. */
@@ -30,6 +32,8 @@ export type ScriptErrorJson = string;
 
 export type WorkerToHostMessage =
 	| { type: "call"; id: number; target: "tool" | "global"; name: string; args: string | undefined }
+	/** Sent only after VM execution and queued jobs drain. Fences replies already sent by the host. */
+	| { type: "idle"; received: number }
 	| { type: "output"; item: CodemodeOutputItem }
 	/** `writes` is a JSON array of `[key, json]` for `store()` and `[key]` for deletions. */
 	| { type: "done"; ok: true; value: string | undefined; writes: string; reusable?: boolean }
@@ -45,6 +49,7 @@ export function isWorkerToHostMessage(value: unknown): value is WorkerToHostMess
 	if (typeof value !== "object" || value === null) return false;
 	const message = value as Record<string, unknown>;
 	switch (message.type) {
+		case "idle": return Number.isSafeInteger(message.received) && (message.received as number) >= 0 && (message.received as number) <= MAX_CALLS;
 		case "call": return Number.isSafeInteger(message.id) && (message.id as number) > 0 &&
 			(message.target === "tool" || message.target === "global") && typeof message.name === "string" &&
 			(message.args === undefined || typeof message.args === "string");
@@ -75,11 +80,15 @@ export class BridgeBudget {
 	private outputs = 0;
 	private outputChars = 0;
 	private calls = 0;
+	private waits = 0;
 	private done = false;
 	consume(message: WorkerToHostMessage): boolean {
 		if (this.done) return false;
 		let chars = 0;
 		switch (message.type) {
+			case "idle":
+				if (++this.waits > MAX_CALLS + 1 || message.received > this.calls) return false;
+				break;
 			case "call":
 				if (++this.calls > MAX_CALLS || message.id !== this.calls || message.name.length > 1024) return false;
 				chars = (message.args?.length ?? 0) + message.name.length;

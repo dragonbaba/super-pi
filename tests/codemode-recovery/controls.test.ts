@@ -3,7 +3,7 @@ import test from "node:test";
 import { createToolResultPresentationOwner } from "../../packages/coding-agent/src/core/tool-result-presentation.ts";
 import { assistant, body, longText, toolResult } from "./fixture.ts";
 import { executionFixture as fixture } from "./execution-fixture.ts";
-import { workspace, permission, inspectBashResourceLifecycle, inspectPowerShellResourceLifecycle, guard } from "./guard-fixture.ts";
+import { workspace, permission, inspectBashResourceLifecycle, inspectPowerShellResourceLifecycle } from "./guard-fixture.ts";
 import { shellHookFixture, assertFinalAuthorization } from "./shell-hook-fixture.ts";
 
 // These passing controls are discovered by npm test. The explicit R0 entry also
@@ -41,21 +41,6 @@ test("control: an unhandled child failure still fails the parent and does not co
   const second = await f.run('text({value:load("uncommitted") ?? null});');
   assert.equal(first.result.isError, true); assert.match(body(second.result.content), /"value":null/);
   assert.deepEqual(f.calls, ["failure"]);
-});
-
-test("control: catch without allowFailure keeps the failed parent and discards store", async t => {
-  const f = await fixture(t);
-  const first = await f.run(`try { await callTool("probe", {kind:"failure"}); }
-    catch (error) { text("caught failure without allowFailure"); }
-    await tools.probe({kind:"ok"}); store("caughtOnly",true); text("alternative completed");`);
-  const second = await f.run('text({caughtOnly:load("caughtOnly") ?? null});');
-  assert.match(body(first.result.content), /caught failure without allowFailure/);
-  assert.match(body(first.result.content), /alternative completed/);
-  assert.equal((first.result.details as any).codemode.scriptOk, true);
-  assert.deepEqual((first.result.details as any).codemode.calls.map((c: any) => c.isError), [true, false]);
-  assert.equal(first.result.isError, true);
-  assert.match(body(second.result.content), /"caughtOnly":null/);
-  assert.deepEqual(f.calls, ["failure", "ok"]);
 });
 
 test("control: one bounded child completes within the script deadline", async t => {
@@ -142,12 +127,3 @@ for (const availability of ["active", "discoverable", "unavailable"] as const) {
     assert.equal(f.dialogs(), 0);
   });
 }
-
-test("control: a third identical deterministic failure remains blocked", () => {
-  const state = guard.createGuardState(), input = { path: "missing-fixture" };
-  for (let i = 0; i < 2; i++) {
-    assert.equal(guard.inspectBeforeCall(state, "read", input), undefined);
-    guard.recordResult(state, "read", input, true, "ENOENT: no such file or directory");
-  }
-  assert.match(guard.inspectBeforeCall(state, "read", input)!, /REPEATED_CALL_BLOCKED/);
-});

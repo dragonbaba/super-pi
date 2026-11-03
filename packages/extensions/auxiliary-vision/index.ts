@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { complete } from "@super-pi/ai/compat";
 import type { Api, ImageContent, Model } from "@super-pi/ai";
+import * as PiHost from "@super-pi/coding-agent";
 import {
 	getConfigDir,
 	IMAGE_VISION_RESULT_TYPE,
@@ -236,9 +237,11 @@ export default function auxiliaryVisionExtension(
 	let sessionAutomaticOverride: boolean | undefined;
 	const configPath = dependencies.configPath ?? CONFIG_PATH;
 	const systemTempDir = dependencies.systemTempDir ?? SYSTEM_TEMP_DIR;
+	// The marker selects lifecycle ownership only, not a future submission format.
+	const nativeAttachments = Number.isSafeInteger(PiHost.IMAGE_ATTACHMENT_VERSION) && PiHost.IMAGE_ATTACHMENT_VERSION >= 1;
 	const clipboardLifecycle = dependencies.clipboardLifecycle
-		?? installClipboardArtifactLifecycle({ tempDir: systemTempDir });
-	const clipboardConsumer = new ClipboardConsumptionController(clipboardLifecycle);
+		?? (nativeAttachments ? undefined : installClipboardArtifactLifecycle({ tempDir: systemTempDir }));
+	const clipboardConsumer = clipboardLifecycle ? new ClipboardConsumptionController(clipboardLifecycle) : undefined;
 	// Compatibility for pre-digest persisted results; scalar-only, session-lifetime, bounded.
 	const legacyDigests = new Map<string, string>();
 
@@ -266,7 +269,7 @@ export default function auxiliaryVisionExtension(
 				params.question,
 				signal,
 			);
-			clipboardConsumer.stage([{
+			clipboardConsumer?.stage([{
 				path: loaded.resolvedPath,
 				mimeType: loaded.mimeType,
 				dev: loaded.dev,
@@ -274,7 +277,7 @@ export default function auxiliaryVisionExtension(
 				size: loaded.size,
 				mtimeMs: loaded.mtimeMs,
 			}]);
-			clipboardConsumer.confirmExplicitInspection();
+			clipboardConsumer?.confirmExplicitInspection();
 			return {
 				content: [{ type: "text", text: result.text }],
 				details: { model: result.modelRef, path: loaded.resolvedPath, mimeType: loaded.mimeType },
@@ -290,13 +293,15 @@ export default function auxiliaryVisionExtension(
 
 	pi.on("model_select", (_event, ctx) => reconcileTool(pi, ctx, configPath));
 
-	pi.on("message_start", (event) => {
-		clipboardConsumer.confirmAcceptedUserMessage(event.message.role);
-	});
+	if (clipboardConsumer) {
+		pi.on("message_start", (event) => {
+			clipboardConsumer.confirmAcceptedUserMessage(event.message.role);
+		});
+	}
 
 	pi.on("session_shutdown", () => {
 		legacyDigests.clear();
-		clipboardConsumer.shutdown();
+		clipboardConsumer?.shutdown();
 	});
 
 	const handleImageInput = async (event: InputEvent, ctx: ExtensionContext): Promise<InputEventResult> => {
@@ -318,7 +323,7 @@ export default function auxiliaryVisionExtension(
 			ctx.ui.notify(`${materialized.skipped} clipboard image(s) were rejected or exceeded configured limits.`, "warning");
 		}
 		if (images.length === 0) return { action: "continue" };
-		clipboardConsumer.stage(materialized.loadedArtifacts);
+		clipboardConsumer?.stage(materialized.loadedArtifacts);
 
 		if (supportsImages) {
 			if (materialized.loadedPaths.length === 0) return { action: "continue" };

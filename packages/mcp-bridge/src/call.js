@@ -7,6 +7,9 @@ export class McpCallError extends Error {
       ? "MCP authorization required. Run /mcp-login <server-id>." : "MCP request failed (protocol-error).");
     this.name = "McpCallError";
     this.code = code;
+    // A public cancellation signal may outlive its call. Do not retain lazy V8
+    // CallSite frames containing the runtime, arguments or update callback.
+    this.stack = `${this.name}: ${this.message}`;
   }
 }
 

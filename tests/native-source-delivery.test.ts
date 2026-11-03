@@ -14,6 +14,9 @@ test("N2 built formal source launcher keeps Codemode isolation, guarded commits 
   const temporary = await realpath(tmpdir()), root = await mkdtemp(join(temporary, "sp-source-native-"));
   t.after(async () => { assert.equal(dirname(root), temporary); await rm(root, { recursive: true, force: true }); });
   const cwd = join(root, "work"), agent = join(root, "agent"); await mkdir(cwd); await mkdir(agent);
+  await mkdir(join(agent, "config"));
+  await writeFile(join(agent, "config/settings.json"), JSON.stringify({ executionEnvironment: "trusted-host",
+    executionPermissions: { approval: "never", rules: [{ tool: "edit", decision: "allow" }, { tool: "write", decision: "allow" }] } }));
   await writeFile(join(cwd, "中文.txt"), "before\n");
   await protectWindowsFixture(join(cwd, "中文.txt"));
   const running = execute(process.execPath, ["--import", offlinePreload, resolve("scripts/superpi.mjs"), "--offline", "--mode", "json", "--print", "--no-session",
@@ -28,7 +31,7 @@ test("N2 built formal source launcher keeps Codemode isolation, guarded commits 
   const events = stdout.split("\n").filter(line => line.startsWith("{")).map(line => JSON.parse(line));
   const mutations = events.filter(event => event.type === "tool_execution_end" && ["edit", "write"].includes(event.toolName));
   assert.deepEqual(mutations.map(event => [event.toolName, event.isError]), [["edit", true], ["edit", false], ["write", false], ["edit", false]]);
-  assert.match(JSON.stringify(mutations[0].result.content), /READ_REQUIRED/);
+  assert.match(JSON.stringify(mutations[0].result.content), /REVISION_REQUIRED/);
   for (const event of mutations.slice(1)) {
     assert.equal(event.isError, false); assert.equal(event.result.details.commit.outcome, "committed");
     assert.equal(event.result.details.commit.strategy, "staged_replace", JSON.stringify(event.result));
@@ -47,7 +50,7 @@ test("N2 built formal source launcher keeps Codemode isolation, guarded commits 
     committedMutations: 3, deniedEdits: 1, codemodeScripts: scripts.length, workers, node: process.version, platform: process.platform }));
 });
 
-test("N2 packed runtime extension includes worker and resolves installed platform binary", { timeout: 60000 }, async t => {
+test("N2 packed compatibility extension resolves the installed native core and platform binary", { timeout: 60000 }, async t => {
   const temporary = await realpath(tmpdir()), root = await mkdtemp(join(temporary, "sp-packed-native-"));
   t.after(async () => { assert.equal(dirname(root), temporary); await rm(root, { recursive: true, force: true }); });
   const npm = process.env.npm_execpath;
@@ -79,6 +82,16 @@ test("N2 packed runtime extension includes worker and resolves installed platfor
   // Installed-runtime packaging check, with no installation/download in the smoke.
   // The repository ships source workspaces; this private extension pack is not a standalone CLI release.
   const modules = join(root, "node_modules"); await mkdir(join(modules, "@koromix"), { recursive: true });
+  // The compatibility package delegates to its declared coding-agent peer. Test
+  // the actual packed peer, including copied worker assets, outside the workspace.
+  const corePack = await execute(process.execPath, [npm, "pack", "--workspace", "@super-pi/coding-agent", "--ignore-scripts", "--json", "--pack-destination", root], { windowsHide: true });
+  const coreOutput = JSON.parse(corePack.stdout);
+  const coreManifest = Array.isArray(coreOutput) ? coreOutput[0] : coreOutput["@super-pi/coding-agent"];
+  assert.equal(coreManifest.name, "@super-pi/coding-agent");
+  for (const name of ["dist/core/files/native-file-client.js", "dist/core/files/native-file-worker.mjs", "dist/core/files/native-file-regex.mjs"])
+    assert.ok(coreManifest.files.some((file: any) => file.path === name), name);
+  const installedCore = join(modules, "@super-pi/coding-agent"); await mkdir(installedCore, { recursive: true });
+  await execute("tar", ["-xzf", join(root, coreManifest.filename), "-C", installedCore, "--strip-components=1"], { windowsHide: true });
   await cp(resolve("node_modules/koffi"), join(modules, "koffi"), { recursive: true });
   const platform = `koffi-${process.platform}-${process.arch}`;
   await cp(resolve("node_modules/@koromix", platform), join(modules, "@koromix", platform), { recursive: true });
@@ -87,5 +100,5 @@ test("N2 packed runtime extension includes worker and resolves installed platfor
     { cwd: root, windowsHide: true });
   assert.equal(JSON.parse(stdout).activeHandles, 0);
   assert.match(stderr, /NATIVE_NETWORK_ATTEMPTS:0/);
-  t.diagnostic(JSON.stringify({ packageBytes: manifest.size, packageUnpackedBytes: manifest.unpackedSize, installedPlatform: platform, offlineRuntime: true }));
+  t.diagnostic(JSON.stringify({ packageBytes: manifest.size, packageUnpackedBytes: manifest.unpackedSize, coreBytes: coreManifest.size, installedPlatform: platform, offlineRuntime: true }));
 });

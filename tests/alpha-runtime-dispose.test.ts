@@ -10,7 +10,7 @@ function fixture(failures = 0) {
   const session = {
     sessionManager: SessionManager.inMemory(process.cwd()), sessionFile: undefined,
     abort: async () => {},
-    extensionRunner: { hasHandlers: (event: string) => event === 'session_shutdown', emit: async () => {
+    extensionRunner: { disposeExecutionBoundary: async () => {}, disposeProviderOwners: async () => {}, hasHandlers: (event: string) => event === 'session_shutdown', emit: async () => {
       order.push('shutdown'); onShutdown?.(); if (failures & 1) throw errors[0];
     } },
     dispose: () => { order.push('session'); if (failures & 4) throw errors[2]; },

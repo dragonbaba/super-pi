@@ -1,1 +1,1 @@
-export const SUPPORTED_SP_VERSION_PATTERN = /^0\.84\./;
+export const SUPPORTED_SP_VERSION_PATTERN = /^(?:0\.84|1\.\d+)\./;

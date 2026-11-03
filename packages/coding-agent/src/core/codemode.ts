@@ -5,7 +5,8 @@ import type { CodemodeSandbox, CodemodeTool, CodemodeResult, CodemodeStoreWrites
 import { assignCodemodeIdentifiers, renderToolSignature } from "@super-pi/codemode/declarations";
 import { parseCodemodeSource } from "@super-pi/codemode/source";
 import { BoundedJson } from "@super-pi/codemode/bounded-json";
-import type { ToolDefinition, CodemodeReadEvent } from "./extensions/types.ts";
+import type { ToolDefinition, CodemodeReadEvent, ExtensionContext } from "./extensions/types.ts";
+import type { SessionSandbox } from "./sandbox/session-sandbox.ts";
 import type { ToolResultPresentationContent } from "./tool-result-presentation.ts";
 import { CODEMODE_DESCRIPTION, CODEMODE_NAME, CODEMODE_PARAMETERS, CODEMODE_SAMPLING,
 	MAX_CODEMODE_DESCRIPTION_CHARS, MAX_CODEMODE_RETAINED_CHARS } from "./codemode-constants.ts";
@@ -28,6 +29,7 @@ type ChildFact = CodemodeChildDisplay;
 interface DisplayedRead extends CodemodeReadEvent { projectedContentIndex: number; }
 interface Invocation {
 	context: AgentToolExecutionContext;
+	extensionContext?: ExtensionContext;
 	signal?: AbortSignal;
 	prefix: string;
 	issued: number;
@@ -156,6 +158,9 @@ export class CodemodeController {
 	private pendingStore: { id: string; writes: CodemodeStoreWrites } | undefined;
 	private restoreError: string | undefined;
 	private closed = false;
+	private commandSandbox?: SessionSandbox;
+	private readonly dispatchSandboxChild = (invocation: Invocation, name: string, input: Record<string, unknown>, allowFailure: boolean) =>
+		this.runChild(invocation, name, input, allowFailure) as Promise<{ isError?: boolean; [key: string]: unknown }>;
 	private readonly saveStore: (values: Readonly<Record<string, unknown>>) => void;
 	private readonly saveCall: ((entry: unknown) => void) | undefined;
 	private readonly saveResult: ((entry: unknown) => void) | undefined;
@@ -166,10 +171,14 @@ export class CodemodeController {
 		this.saveResult = saveResult;
 		this.definition = { name: CODEMODE_NAME, label: "Codemode", description: CODEMODE_DESCRIPTION,
 			promptSnippet: "Run JavaScript to call ordinary tools via tools.NAME(args) or callTool(name,args)",
-			promptGuidelines: ["Call ordinary tools only inside codemode scripts; ask_user and other declared control tools are called directly. Use await show(result.ref) to display a native read for guarded edits in a later completed turn."],
+			promptGuidelines: ["Call ordinary tools only inside codemode scripts; ask_user and other declared control tools are called directly. Native read revisions permit same-script edits of that version; mutation authorization still applies. Use await show(result.ref) to display original results."],
 			parameters: CODEMODE_PARAMETERS, constrainedSampling: CODEMODE_SAMPLING, orchestration: true, executionMode: "sequential",
 			prepareArguments: args => typeof args === "string" ? { code: args } : args as { code: string },
-			execute: (_id, args, signal, _update, _ctx, context) => this.execute((args as { code: string }).code, context, signal) };
+			execute: (_id, args, signal, _update, ctx, context) => this.execute((args as { code: string }).code, context, signal, ctx) };
+	}
+	setCommandSandbox(owner: SessionSandbox | undefined): void {
+		if (this.current) throw new Error("Cannot change command backend during CodeMode execution");
+		this.commandSandbox = owner;
 	}
 	recordInvocation(parent: string | undefined, id: string, name: string, args: unknown): void {
 		if (!parent || parent !== this.current?.context.parentToolCallId || !CODEMODE_MUTATION_NAMES.has(name)) return;
@@ -314,7 +323,14 @@ export class CodemodeController {
 				|| (options as { allowFailure?: unknown }).allowFailure !== undefined && typeof (options as { allowFailure?: unknown }).allowFailure !== "boolean")) {
 				throw new Error("callTool options must be an object with an optional boolean allowFailure");
 			}
-			return await this.runChild(invocation, name, args, (options as { allowFailure?: boolean } | undefined)?.allowFailure === true);
+			const allowFailure = (options as { allowFailure?: boolean } | undefined)?.allowFailure === true;
+			if (name === "powershell" && this.commandSandbox) {
+				if (!invocation.extensionContext || !invocation.signal || !args || typeof args !== "object" || Array.isArray(args))
+					throw new Error("Sandbox execution requires a live CodeMode session and object arguments");
+				return await this.commandSandbox.dispatch(args as Record<string, unknown>, invocation.extensionContext,
+					invocation.context, invocation.signal, this.dispatchSandboxChild, invocation, allowFailure);
+			}
+			return await this.runChild(invocation, name, args, allowFailure);
 		}
 		catch (error) { invocation.failed = true; throw error; }
 		finally {
@@ -578,7 +594,7 @@ export class CodemodeController {
 		if (this.sandbox) return this.sandbox;
 		const { CodemodeSandbox } = await import("@super-pi/codemode");
 		if (this.closed) throw new Error("Codemode session is disposed");
-		this.sandbox = new CodemodeSandbox({ reuseWorker: true, tools: this.descriptors, globals: [
+		this.sandbox = new CodemodeSandbox({ reuseWorker: true, timeoutMode: "active", tools: this.descriptors, globals: [
 			{ name: "callTool", spread: true, execute: args => {
 				const [name, input, options] = args as unknown[];
 				if (typeof name !== "string") { this.requireInvocation().failed = true; throw new Error("callTool requires a tool name"); }
@@ -592,7 +608,7 @@ export class CodemodeController {
 		] });
 		return this.sandbox;
 	}
-	private async execute(code: string, context: AgentToolExecutionContext | undefined, signal?: AbortSignal) {
+	private async execute(code: string, context: AgentToolExecutionContext | undefined, signal?: AbortSignal, extensionContext?: ExtensionContext) {
 		if (!context || this.current || this.closed) throw new Error("Codemode requires an idle live orchestration context");
 		if (this.restoreError) {
 			const reason = this.restoreError;
@@ -602,7 +618,7 @@ export class CodemodeController {
 		const parsed = parseCodemodeSource(code);
 		const outputTokens = parsed.options.maxOutputTokens ?? 8000;
 		if (outputTokens < 256 || outputTokens > 16384) throw new Error("Codemode max_output_tokens must be 256..16384; no tools were executed");
-		const invocation: Invocation = { context, signal, prefix: randomUUID(), issued: 0, started: 0, records: new Map(), evicted: new Map(), recovering: new Map(), retainedChars: 0, retainedImageChars: 0,
+		const invocation: Invocation = { context, signal, extensionContext, prefix: randomUUID(), issued: 0, started: 0, records: new Map(), evicted: new Map(), recovering: new Map(), retainedChars: 0, retainedImageChars: 0,
 			shownChars: 0, shownImageChars: 0, shown: [], reads: [], facts: [], failed: false, displayLimited: false, pending: 0, resolveIdle: undefined };
 		this.current = invocation;
 		let result: CodemodeResult;
@@ -686,6 +702,7 @@ export class CodemodeController {
 		this.documentationSnapshot = undefined;
 		try {
 			await this.sandbox?.close();
+			await this.commandSandbox?.close();
 		} finally {
 			this.sandbox = undefined;
 			this.tools = EMPTY_TOOLS;

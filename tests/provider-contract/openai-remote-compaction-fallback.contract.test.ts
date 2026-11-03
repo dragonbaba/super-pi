@@ -90,6 +90,9 @@ async function beforeCompact(modelId: string, authError: string) {
 	const pi: any = {
 		on: (name: string, handler: any) => handlers.set(name, handler),
 		registerProvider() {}, registerCommand() {}, sendMessage() {}, getThinkingLevel: () => "off",
+		setCodexRemoteCompactionEnabled() {},
+		setOpenAIResponsesStream() {},
+		async resetCodexTransport() {},
 		appendEntry: (type: string, data: unknown) => entries.push([type, data]),
 	};
 	extension(pi);
@@ -111,6 +114,15 @@ async function beforeCompact(modelId: string, authError: string) {
 }
 
 test("GPT compaction auth failure cancels compaction with enum-only telemetry", async () => {
+	const originalWarn = console.warn;
+	const warnings: string[] = [];
+	let registrations = 0;
+	try {
+		console.warn = message => { warnings.push(String(message)); };
+		extension({ registerProvider() { registrations++; }, registerCommand() { registrations++; }, on() { registrations++; } } as any);
+		assert.equal(registrations, 0, "older hosts stop before any registration");
+		assert.equal(warnings.length, 1); assert.match(warnings[0]!, /upgrade the Super Pi host/);
+	} finally { console.warn = originalWarn; }
 	const { result, entries, notices } = await beforeCompact("gpt-5.1", `OAuth refresh failed for openai: token ${KEY}`);
 	assert.deepEqual(result, { cancel: true });
 	assert.equal(entries.length, 1);

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync, realpathSync } from "node:fs";
 import { Session } from "node:inspector/promises";
 import { isAbsolute, join, relative } from "node:path";
-import { setImmediate as nextTask } from "node:timers/promises";
+import { setImmediate as nextTask, setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const args = process.argv.slice(2);
@@ -10,7 +10,7 @@ let packageRoot: string | undefined;
 const flags = new Set<string>();
 for (let i = 0; i < args.length; i++) {
 	const flag = args[i]!;
-	assert.ok(["--compiled", "--pool", "--stages", "--package-root"].includes(flag) && !flags.has(flag), `Unknown or duplicate option: ${flag}`);
+	assert.ok(["--compiled", "--pool", "--stages", "--package-root", "--active-time"].includes(flag) && !flags.has(flag), `Unknown or duplicate option: ${flag}`);
 	flags.add(flag);
 	if (flag === "--package-root") {
 		const value = args[++i];
@@ -20,6 +20,7 @@ for (let i = 0; i < args.length; i++) {
 }
 assert.ok(!(packageRoot && flags.has("--compiled")), "Choose --package-root or --compiled");
 assert.ok(!(flags.has("--pool") && flags.has("--stages")), "Choose --pool or --stages");
+assert.ok(!(flags.has("--active-time") && (flags.has("--pool") || flags.has("--stages"))), "Active time uses the bounded runtime benchmark");
 assert.ok(!(packageRoot && flags.has("--stages")), "Stage instrumentation currently supports only repository --compiled output");
 const mode = packageRoot ? "package" : flags.has("--compiled") ? "compiled" : "source";
 const runtimeRoot = mode === "source" ? "src" : "dist";
@@ -69,12 +70,12 @@ const rawLatencies: number[] = [];
 let catalogConstructionMs = 0, closeMs = 0;
 let workersStarted = 0, workersStopped = 0, calls = 0;
 const serializerPayload = "x".repeat(4096);
-function read() { calls++; return serializerPayload; }
+function read() { calls++; return flags.has("--active-time") ? delay(2, serializerPayload) : serializerPayload; }
 function compare(a: number, b: number) { return a - b; }
 async function cycle(code: string): Promise<number> {
 	const catalog = [{ name: "read", execute: read }];
 	const catalogStart = performance.now();
-	const sandbox = new CodemodeSandbox({ tools: catalog });
+	const sandbox = new CodemodeSandbox({ tools: catalog, timeoutMode: flags.has("--active-time") ? "active" : "wall" });
 	catalogConstructionMs += performance.now() - catalogStart;
 	const start = performance.now();
 	const result = await sandbox.execute(code);
@@ -104,8 +105,14 @@ try {
 	const batchMs = await cycle('for(let i=0;i<100;i++) await tools.read({}); return 100');
 	const { profile } = await inspector.post("HeapProfiler.stopSampling");
 	let sampledBytes = 0;
+	const allocationSites: { name: string; bytes: number }[] = [];
 	const pending = [profile.head];
-	while (pending.length) { const entry = pending.pop()!; sampledBytes += entry.selfSize; for (const child of entry.children) pending.push(child); }
+	while (pending.length) {
+		const entry = pending.pop()!; sampledBytes += entry.selfSize;
+		if (entry.selfSize) allocationSites.push({ name: entry.callFrame.functionName, bytes: entry.selfSize });
+		for (const child of entry.children) pending.push(child);
+	}
+	allocationSites.sort((a, b) => b.bytes - a.bytes);
 	for (let index = 0; index < 5; index++) { await nextTask(); gc(); }
 	let retained = 0;
 	for (const ref of references) if (ref.deref()) retained++;
@@ -119,6 +126,8 @@ try {
 		moduleImportMs, catalogConstructionMs, closeMs, warmSamplesMs: rawLatencies,
 		wasmCompileMs, firstScriptMs, warmMedianMs: latencies[15], warmP95Ms: latencies[28], batchCalls: calls, batchMs,
 		workersStarted, workersStopped, trackedReferences: references.length, retainedAfterGc: retained, sampledHostBytes: sampledBytes,
+		timeoutMode: flags.has("--active-time") ? "active" : "wall",
+		topAllocationSites: allocationSites.slice(0, 5),
 		coverage: "real Worker and QuickJS; execution includes Worker startup, VM/prelude, execution, bridge and termination (not separately timed); warm=compiled WASM reused, fresh Worker/VM per run; sampling enabled for 30 warm no-ops and batch; excludes worker heaps, AgentSession, policy and UI; runtime identifies repository source/dist or the explicitly selected package; package mode alone does not establish archive provenance or validate a full CLI release" }) + "\n");
 } finally { inspector.disconnect(); }
 }

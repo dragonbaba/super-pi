@@ -56,6 +56,7 @@ async function fixture(scenario: Scenario) {
 	const effectPath = join(root, "completed-effect.txt");
 	writeFileSync(effectPath, "1"); // A completed synthetic side effect recorded in the seed history.
 	let thresholdHookCalls = 0;
+	let releaseTimedOutHook: (() => void) | undefined;
 	const thresholdScenario = scenario.startsWith("retry-tool-threshold") || scenario.startsWith("threshold-hook-");
 	const hookTimeoutScenario = scenario === "retry-tool-threshold-hook" || scenario.startsWith("threshold-hook-") || scenario === "initial-hook-timeout";
 	const autoRetryScenario = scenario.startsWith("auto-retry");
@@ -104,7 +105,7 @@ async function fixture(scenario: Scenario) {
 				} };
 			});
 			if (hookTimeoutScenario) pi.on("session_compact", (event: any) => {
-				if ((scenario === "initial-hook-timeout" || event.reason === "threshold") && thresholdHookCalls++ === 0) return new Promise(() => {});
+				if ((scenario === "initial-hook-timeout" || event.reason === "threshold") && thresholdHookCalls++ === 0) return new Promise<void>(resolve => { releaseTimedOutHook = resolve; });
 			});
 		}] : [], noContextFiles: true, noPromptTemplates: true, noSkills: true, noThemes: true,
 		systemPrompt: "Synthetic fixed length recovery policy." });
@@ -213,7 +214,8 @@ async function fixture(scenario: Scenario) {
 	return {
 		get session() { return session!; }, get manager() { return manager!; }, get inspections() { return inspections; }, wires, summaries, sessionEvents,
 		async reopen(branch?: string) {
-			session!.dispose(); session = undefined; manager = undefined;
+			releaseTimedOutHook?.(); releaseTimedOutHook = undefined;
+			session!.dispose(); await session!.waitForSessionLeaseRelease(); await resources.reload(); session = undefined; manager = undefined;
 			manager = SessionManager.open(file); // A new manager parsed from actual JSONL; no in-memory reuse.
 			if (branch) manager.branch(branch);
 			await open();
@@ -262,7 +264,7 @@ async function fixture(scenario: Scenario) {
 			assert.equal(breakdown.reduce((sum, item) => sum + item.tokens, 0), input + output);
 			assert.ok(Math.abs(stats.cost - (input / 1e6 + output * 2 / 1e6)) < 1e-10);
 		},
-		close() { session?.dispose(); session = undefined; manager = undefined; rmSync(root, { recursive: true, force: true }); },
+		close() { releaseTimedOutHook?.(); releaseTimedOutHook = undefined; session?.dispose(); session = undefined; manager = undefined; rmSync(root, { recursive: true, force: true }); },
 	};
 }
 

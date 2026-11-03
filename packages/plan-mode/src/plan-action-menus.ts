@@ -22,9 +22,9 @@ interface PlanMenuOptions extends MenuLifecycle {
 	implementHere(): void | Promise<void>;
 	implementFresh(signal: AbortSignal): void | Promise<void>;
 	exportPlan(path: string, signal: AbortSignal): Promise<boolean>;
-	save(): void;
+	save(): void | Promise<void>;
 	stay(): void;
-	exit(): void;
+	exit(): void | Promise<void>;
 }
 
 export async function showPlanModeMenu(ctx: ExtensionContext, options: PlanMenuOptions) {
@@ -100,7 +100,7 @@ export async function showPlanModeMenu(ctx: ExtensionContext, options: PlanMenuO
 			export: async ({ value, signal }) =>
 				(await options.exportPlan(value ?? "", signal)) ? { kind: "close" } : { kind: "rejected" },
 			save: async () => {
-				options.save();
+				await options.save();
 				return { kind: "close" };
 			},
 			stay: async () => {
@@ -108,7 +108,7 @@ export async function showPlanModeMenu(ctx: ExtensionContext, options: PlanMenuO
 				return { kind: "close" };
 			},
 			exit: async () => {
-				options.exit();
+				await options.exit();
 				return { kind: "close" };
 			},
 		},
@@ -126,9 +126,9 @@ interface ReadyPlanMenuOptions extends MenuLifecycle {
 	implementHere(): void | Promise<void>;
 	implementFresh(signal: AbortSignal): void | Promise<void>;
 	exportPlan(path: string, signal: AbortSignal): Promise<boolean>;
-	save(): void;
+	save(): void | Promise<void>;
 	stay(): void;
-	exit(): void;
+	exit(): void | Promise<void>;
 }
 
 export async function showReadyPlanMenu(ctx: ExtensionContext, options: ReadyPlanMenuOptions) {
@@ -176,7 +176,7 @@ export async function showReadyPlanMenu(ctx: ExtensionContext, options: ReadyPla
 			export: async ({ value, signal }) =>
 				(await options.exportPlan(value ?? "", signal)) ? { kind: "close" } : { kind: "rejected" },
 			save: async () => {
-				options.save();
+				await options.save();
 				return { kind: "close" };
 			},
 			stay: async () => {
@@ -184,7 +184,7 @@ export async function showReadyPlanMenu(ctx: ExtensionContext, options: ReadyPla
 				return { kind: "close" };
 			},
 			exit: async () => {
-				options.exit();
+				await options.exit();
 				return { kind: "close" };
 			},
 		},

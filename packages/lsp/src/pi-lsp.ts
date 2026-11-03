@@ -1,18 +1,11 @@
-import { defineTool, type ExtensionAPI } from "@super-pi/coding-agent";
+import { defineTool, type ExtensionAPI, type ToolDefinition } from "@super-pi/coding-agent";
 import { Type } from "typebox";
 import { DEFAULT_FILE_LIMIT, MAX_COLLECTED_FILES, MAX_REQUESTED_PATHS } from "./limits.js";
+import { consumeFixAuthorization } from "./fix-authorization.js";
 import type { LspClientPool } from "./client-pool.js";
 import type { LspServerAdapter } from "./types.js";
 
 const STATUS_KEY = "lsp";
-let clientPool: LspClientPool | undefined;
-
-async function getClientPool() {
-	if (clientPool) return clientPool;
-	const { LspClientPool } = await import("./client-pool.js");
-	clientPool = new LspClientPool();
-	return clientPool;
-}
 
 const ServerParameter = Type.Optional(
 	Type.String({ description: "Configured server; automatic inference must resolve exactly one." }),
@@ -41,187 +34,244 @@ const SingleFileParameters = {
 	server: Type.Optional(Type.String({ description: "Configured server; defaults to inference." })),
 };
 
-const lspDiagnosticsTool = defineTool({
-	name: "lsp_diagnostics",
-	label: "LSP: Diagnostics",
-	description: "Run diagnostics using configured, language-agnostic LSP server routes.",
-	promptSnippet: "Run configured LSP diagnostics",
-	promptGuidelines: [
-		"Start at most one server per call; narrow ambiguous routes. Report missing servers and run the authoritative CLI typecheck after broad type changes.",
-		"Prefer existing authoritative project checks and available LSP routes covering the target. Tool registration alone does not establish server availability or embedded-language coverage. Reuse known configuration; do not install servers or start them after every write.",
-		"Report submitted file count, received diagnostics and uncovered scope. No route, skipped service, zero matching files/scripts or failed diagnostics is not a pass. Supplement only gaps with targeted checks; regex checks do not validate all HTML/JS or browser behavior.",
-	],
-	parameters: DiagnosticsParameters,
-	async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-		const [{ loadRuntime }, { resolveRoot }, { selectDiagnosticRoutes }, runner, pool] =
-			await Promise.all([
-				import("./adapters.js"),
-				import("./files.js"),
-				import("./routes.js"),
-				import("./runner.js"),
-				getClientPool(),
-			]);
-		const requestedRoot = resolveRoot(params.root, ctx.cwd);
-		const { adapters, timeoutMs } = loadRuntime(ctx.cwd, {
-			projectTrusted: ctx.isProjectTrusted(),
-		});
-		const { root, routes, skipped, uncoveredFiles, skippedScopeLimited, routedScopeLimited, incomplete } = selectDiagnosticRoutes(
-			adapters,
-			{ ...params, root: requestedRoot },
-			DEFAULT_FILE_LIMIT,
-		);
-		const results = [];
-		for (const route of routes) {
-			const result = await runner.runDiagnostics(
+export default function lsp(pi: ExtensionAPI) {
+	let clientPool: LspClientPool | undefined;
+	let authority = new AbortController();
+	let paused = false;
+	let closed = false;
+	let active = 0;
+	let idle: Promise<void> | undefined;
+	let finishIdle: (() => void) | undefined;
+	let draining: Promise<void> | undefined;
+	let pendingShutdown: Promise<void> | undefined;
+
+	function assertAvailable() {
+		pi.assertExecutionCurrent?.();
+		if (paused || closed) throw new Error("LSP execution is closed while session services are changing or awaiting cleanup.");
+	}
+	async function getClientPool() {
+		assertAvailable();
+		if (clientPool) return clientPool;
+		const { LspClientPool } = await import("./client-pool.js");
+		assertAvailable();
+		return clientPool ??= new LspClientPool();
+	}
+	function registerTool(tool: ToolDefinition<any, any, any>) {
+		pi.registerTool({ ...tool, async execute(id, params, signal, onUpdate, ctx, executionContext) {
+			assertAvailable(); signal?.throwIfAborted();
+			if (active >= 8) throw new Error("LSP has reached its limit of 8 active operations.");
+			if (active++ === 0) idle = new Promise<void>(resolve => { finishIdle = resolve; });
+			const executionSignal = signal ? AbortSignal.any([signal, authority.signal]) : authority.signal;
+			try {
+				const result = await tool.execute(id, params, executionSignal, onUpdate, ctx, executionContext);
+				executionSignal.throwIfAborted();
+				return result;
+			} finally {
+				if (--active === 0) { const finish = finishIdle; idle = undefined; finishIdle = undefined; finish?.(); }
+			}
+		} });
+	}
+	function revoke() {
+		paused = true;
+		const reason = new Error("LSP execution cancelled for session transition."); reason.stack = reason.message;
+		authority.abort(reason);
+		pendingShutdown ??= clientPool?.shutdownAll();
+		void pendingShutdown?.catch(observePoolShutdown);
+	}
+	async function performDrain() {
+		try {
+			await idle;
+			await pendingShutdown;
+			await clientPool?.shutdownAll();
+			if (!closed) { clientPool?.reopen(); authority = new AbortController(); paused = false; }
+		} finally { draining = undefined; pendingShutdown = undefined; }
+	}
+	function drain(): Promise<void> { return draining ??= performDrain(); }
+	pi.registerExecutionOwner?.("lsp", { revoke, drain });
+
+	const lspDiagnosticsTool = defineTool({
+		name: "lsp_diagnostics",
+		label: "LSP: Diagnostics",
+		description: "Run diagnostics using configured, language-agnostic LSP server routes.",
+		promptSnippet: "Run configured LSP diagnostics",
+		promptGuidelines: [
+			"Start at most one server per call; narrow ambiguous routes. Report missing servers and run the authoritative CLI typecheck after broad type changes.",
+			"Prefer existing authoritative project checks and available LSP routes covering the target. Tool registration alone does not establish server availability or embedded-language coverage. Reuse known configuration; do not install servers or start them after every write.",
+			"Report submitted file count, received diagnostics and uncovered scope. No route, skipped service, zero matching files/scripts or failed diagnostics is not a pass. Supplement only gaps with targeted checks; regex checks do not validate all HTML/JS or browser behavior.",
+		],
+		parameters: DiagnosticsParameters,
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			const [{ loadRuntime }, { resolveRoot }, { selectDiagnosticRoutes }, runner, pool] =
+				await Promise.all([
+					import("./adapters.js"),
+					import("./files.js"),
+					import("./routes.js"),
+					import("./runner.js"),
+					getClientPool(),
+				]);
+			const requestedRoot = resolveRoot(params.root, ctx.cwd);
+			const { adapters, timeoutMs } = loadRuntime(ctx.cwd, {
+				projectTrusted: ctx.isProjectTrusted(),
+			});
+			const { root, routes, skipped, uncoveredFiles, skippedScopeLimited, routedScopeLimited, incomplete } = selectDiagnosticRoutes(
+				adapters,
+				{ ...params, root: requestedRoot },
+				DEFAULT_FILE_LIMIT,
+			);
+			const results = [];
+			for (const route of routes) {
+				const result = await runner.runDiagnostics(
+					pool,
+					route.adapter,
+					{ root, paths: params.paths, limit: params.limit, files: route.files },
+					timeoutMs,
+					signal,
+					ctx,
+					STATUS_KEY,
+				);
+				results.push({ route, result });
+			}
+
+			const sections = [];
+			const routeDetails = [];
+			let submittedFiles = 0;
+			for (const { route, result } of results) {
+				submittedFiles += route.files.length;
+				sections.push(`${route.reason}\n\n${textFromResult(result)}`);
+				routeDetails.push({
+					server: route.adapter.name,
+					backend: route.adapter.name,
+					reason: route.reason,
+					files: route.files,
+					scopeLimited: route.scopeLimited,
+					details: result.details,
+				});
+			}
+			const skippedDetails = [];
+			if (skipped.length) {
+				let names = "";
+				for (const route of skipped) {
+					if (names) names += ", ";
+					names += route.adapter.name;
+					skippedDetails.push({ server: route.adapter.name, reason: route.reason, files: route.files, scopeLimited: route.scopeLimited });
+				}
+				sections.push(`Skipped unavailable default LSP server(s): ${names}.`);
+			}
+			if (uncoveredFiles.length) sections.push(`Incomplete: ${uncoveredFiles.length} matching file(s) were not submitted because their default server was unavailable. No validation pass for that scope is established.`);
+			if (skippedScopeLimited) sections.push("Incomplete: a skipped route reached the file limit; additional uncovered matches are unknown. Narrow the requested scope before claiming completeness.");
+			if (routedScopeLimited) sections.push("Incomplete: an available route reached the file limit with unvisited requested scope. Narrow the scope or raise the bounded limit before claiming completeness.");
+			sections.push(submittedFiles === 0
+				? "Not checked: 0 files submitted to an LSP server. No validation pass is established."
+				: `Scope: ${submittedFiles} file(s) submitted, limited to the selected route and file limit. Embedded languages, unmatched files and browser/runtime behavior are not established by this result.`);
+			return { ...runner.textResult(sections.join("\n\n---\n\n"), {
+				root,
+				status: submittedFiles === 0 ? "not_checked" : incomplete ? "partial" : "diagnostics_received",
+				submittedFiles,
+				uncoveredFiles,
+				skippedScopeLimited,
+				routedScopeLimited,
+				fileLimit: params.limit ?? DEFAULT_FILE_LIMIT,
+				skipped: skippedDetails,
+				routes: routeDetails,
+			}), isError: submittedFiles === 0 || incomplete };
+		},
+	});
+
+	const lspFixTool = defineTool({
+		name: "lsp_fix",
+		label: "LSP: Fix",
+		description: "Apply source fixes or import organization using configured LSP server routes.",
+		promptSnippet: "Apply configured LSP source fixes to a file",
+		parameters: Type.Object({
+			...SingleFileParameters,
+			kind: Type.Optional(Type.String({ description: "Source action kind. Defaults to source.fixAll." })),
+		}),
+		async execute(toolCallId, params, signal, _onUpdate, ctx) {
+			const input = { ...params };
+			const authorization = input.write ? consumeFixAuthorization(params, toolCallId) : undefined;
+			const [{ loadRuntime }, { resolveRoot }, { selectFixRoute }, { runFix }, pool] =
+				await Promise.all([
+					import("./adapters.js"),
+					import("./files.js"),
+					import("./routes.js"),
+					import("./runner.js"),
+					getClientPool(),
+				]);
+			const requestedRoot = resolveRoot(input.root, ctx.cwd);
+			const { adapters, timeoutMs } = loadRuntime(ctx.cwd, {
+				projectTrusted: ctx.isProjectTrusted(),
+			});
+			const { root, route } = selectFixRoute(adapters, { ...input, root: requestedRoot });
+			return runFix(
 				pool,
 				route.adapter,
-				{ root, paths: params.paths, limit: params.limit, files: route.files },
+				{ root, path: input.path, kind: input.kind, write: input.write },
+				timeoutMs,
+				signal,
+				ctx,
+				STATUS_KEY,
+				authorization,
+			);
+		},
+	});
+
+	const lspNavigateTool = defineTool({
+		name: "lsp_navigate",
+		label: "LSP: Navigate",
+		description: "Navigate symbols through a reusable configured LSP client.",
+		promptSnippet: "Navigate symbols through LSP",
+		promptGuidelines: [
+			"Use LSP for symbols and text search for literals/config; read a returned target before explaining or editing it.",
+		],
+		parameters: Type.Object({
+			action: Type.Union([
+				Type.Literal("definition"),
+				Type.Literal("references"),
+				Type.Literal("implementation"),
+				Type.Literal("workspace_symbols"),
+			]),
+			path: Type.String({ description: "Anchor file selecting server and workspace." }),
+			root: Type.Optional(Type.String({ description: "Workspace root; defaults to cwd." })),
+			line: Type.Optional(Type.Number({ description: "1-indexed line for position actions." })),
+			symbol: Type.Optional(Type.String({ description: "Symbol; use name#N if repeated on the line." })),
+			query: Type.Optional(Type.String({ description: "workspace_symbols query." })),
+			includeDeclaration: Type.Optional(Type.Boolean({ description: "Include declarations; defaults true." })),
+			maxResults: Type.Optional(Type.Number({ description: "Results, capped at 200; defaults 50." })),
+			server: Type.Optional(Type.String({ description: "Configured server." })),
+		}),
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			const [{ loadRuntime }, { resolveRoot }, { selectNavigationRoute }, { runNavigation }, pool] =
+				await Promise.all([
+					import("./adapters.js"),
+					import("./files.js"),
+					import("./routes.js"),
+					import("./navigation.js"),
+					getClientPool(),
+				]);
+			const requestedRoot = resolveRoot(params.root, ctx.cwd);
+			const { adapters, timeoutMs } = loadRuntime(ctx.cwd, {
+				projectTrusted: ctx.isProjectTrusted(),
+			});
+			const { root, route } = selectNavigationRoute(adapters, {
+				root: requestedRoot,
+				path: params.path,
+				server: params.server,
+			});
+			return runNavigation(
+				pool,
+				route.adapter,
+				{ ...params, root },
 				timeoutMs,
 				signal,
 				ctx,
 				STATUS_KEY,
 			);
-			results.push({ route, result });
-		}
+		},
+	});
 
-		const sections = [];
-		const routeDetails = [];
-		let submittedFiles = 0;
-		for (const { route, result } of results) {
-			submittedFiles += route.files.length;
-			sections.push(`${route.reason}\n\n${textFromResult(result)}`);
-			routeDetails.push({
-				server: route.adapter.name,
-				backend: route.adapter.name,
-				reason: route.reason,
-				files: route.files,
-				scopeLimited: route.scopeLimited,
-				details: result.details,
-			});
-		}
-		const skippedDetails = [];
-		if (skipped.length) {
-			let names = "";
-			for (const route of skipped) {
-				if (names) names += ", ";
-				names += route.adapter.name;
-				skippedDetails.push({ server: route.adapter.name, reason: route.reason, files: route.files, scopeLimited: route.scopeLimited });
-			}
-			sections.push(`Skipped unavailable default LSP server(s): ${names}.`);
-		}
-		if (uncoveredFiles.length) sections.push(`Incomplete: ${uncoveredFiles.length} matching file(s) were not submitted because their default server was unavailable. No validation pass for that scope is established.`);
-		if (skippedScopeLimited) sections.push("Incomplete: a skipped route reached the file limit; additional uncovered matches are unknown. Narrow the requested scope before claiming completeness.");
-		if (routedScopeLimited) sections.push("Incomplete: an available route reached the file limit with unvisited requested scope. Narrow the scope or raise the bounded limit before claiming completeness.");
-		sections.push(submittedFiles === 0
-			? "Not checked: 0 files submitted to an LSP server. No validation pass is established."
-			: `Scope: ${submittedFiles} file(s) submitted, limited to the selected route and file limit. Embedded languages, unmatched files and browser/runtime behavior are not established by this result.`);
-		return { ...runner.textResult(sections.join("\n\n---\n\n"), {
-			root,
-			status: submittedFiles === 0 ? "not_checked" : incomplete ? "partial" : "diagnostics_received",
-			submittedFiles,
-			uncoveredFiles,
-			skippedScopeLimited,
-			routedScopeLimited,
-			fileLimit: params.limit ?? DEFAULT_FILE_LIMIT,
-			skipped: skippedDetails,
-			routes: routeDetails,
-		}), isError: submittedFiles === 0 || incomplete };
-	},
-});
-
-const lspFixTool = defineTool({
-	name: "lsp_fix",
-	label: "LSP: Fix",
-	description: "Apply source fixes or import organization using configured LSP server routes.",
-	promptSnippet: "Apply configured LSP source fixes to a file",
-	parameters: Type.Object({
-		...SingleFileParameters,
-		kind: Type.Optional(Type.String({ description: "Source action kind. Defaults to source.fixAll." })),
-	}),
-	async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-		const [{ loadRuntime }, { resolveRoot }, { selectFixRoute }, { runFix }, pool] =
-			await Promise.all([
-				import("./adapters.js"),
-				import("./files.js"),
-				import("./routes.js"),
-				import("./runner.js"),
-				getClientPool(),
-			]);
-		const requestedRoot = resolveRoot(params.root, ctx.cwd);
-		const { adapters, timeoutMs } = loadRuntime(ctx.cwd, {
-			projectTrusted: ctx.isProjectTrusted(),
-		});
-		const { root, route } = selectFixRoute(adapters, { ...params, root: requestedRoot });
-		return runFix(
-			pool,
-			route.adapter,
-			{ root, path: params.path, kind: params.kind, write: params.write },
-			timeoutMs,
-			signal,
-			ctx,
-			STATUS_KEY,
-		);
-	},
-});
-
-const lspNavigateTool = defineTool({
-	name: "lsp_navigate",
-	label: "LSP: Navigate",
-	description: "Navigate symbols through a reusable configured LSP client.",
-	promptSnippet: "Navigate symbols through LSP",
-	promptGuidelines: [
-		"Use LSP for symbols and text search for literals/config; read a returned target before explaining or editing it.",
-	],
-	parameters: Type.Object({
-		action: Type.Union([
-			Type.Literal("definition"),
-			Type.Literal("references"),
-			Type.Literal("implementation"),
-			Type.Literal("workspace_symbols"),
-		]),
-		path: Type.String({ description: "Anchor file selecting server and workspace." }),
-		root: Type.Optional(Type.String({ description: "Workspace root; defaults to cwd." })),
-		line: Type.Optional(Type.Number({ description: "1-indexed line for position actions." })),
-		symbol: Type.Optional(Type.String({ description: "Symbol; use name#N if repeated on the line." })),
-		query: Type.Optional(Type.String({ description: "workspace_symbols query." })),
-		includeDeclaration: Type.Optional(Type.Boolean({ description: "Include declarations; defaults true." })),
-		maxResults: Type.Optional(Type.Number({ description: "Results, capped at 200; defaults 50." })),
-		server: Type.Optional(Type.String({ description: "Configured server." })),
-	}),
-	async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-		const [{ loadRuntime }, { resolveRoot }, { selectNavigationRoute }, { runNavigation }, pool] =
-			await Promise.all([
-				import("./adapters.js"),
-				import("./files.js"),
-				import("./routes.js"),
-				import("./navigation.js"),
-				getClientPool(),
-			]);
-		const requestedRoot = resolveRoot(params.root, ctx.cwd);
-		const { adapters, timeoutMs } = loadRuntime(ctx.cwd, {
-			projectTrusted: ctx.isProjectTrusted(),
-		});
-		const { root, route } = selectNavigationRoute(adapters, {
-			root: requestedRoot,
-			path: params.path,
-			server: params.server,
-		});
-		return runNavigation(
-			pool,
-			route.adapter,
-			{ ...params, root },
-			timeoutMs,
-			signal,
-			ctx,
-			STATUS_KEY,
-		);
-	},
-});
-
-export default function lsp(pi: ExtensionAPI) {
-	pi.registerTool(lspDiagnosticsTool);
-	pi.registerTool(lspFixTool);
-	pi.registerTool(lspNavigateTool);
+	registerTool(lspDiagnosticsTool);
+	registerTool(lspFixTool);
+	registerTool(lspNavigateTool);
 
 	pi.registerCommand("lsp", {
 		description: "Show shared LSP extension configuration",
@@ -247,19 +297,23 @@ export default function lsp(pi: ExtensionAPI) {
 	});
 
 	pi.on("session_start", (_event, ctx) => {
-		clientPool?.reopen();
 		ctx.ui.setStatus(STATUS_KEY, undefined);
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {
+		closed = true;
+		revoke();
 		ctx.ui.setStatus(STATUS_KEY, undefined);
-		await clientPool?.shutdownAll();
+		await drain();
 	});
 }
 
 function formatError(error: unknown) {
 	return error instanceof Error ? error.message : String(error);
 }
+
+// The execution owner awaits this same rejection after admitted calls settle.
+function observePoolShutdown(): void {}
 
 function textFromResult(result: { content?: Array<{ type?: string; text?: string }> }) {
 	return result.content?.find((item) => item.type === "text")?.text ?? "";

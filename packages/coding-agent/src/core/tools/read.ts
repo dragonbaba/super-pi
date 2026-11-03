@@ -14,7 +14,7 @@ import { detectSupportedImageMimeTypeFromFile } from "../../utils/mime.ts";
 import { formatPathRelativeToCwdOrAbsolute } from "../../utils/paths.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { resolveReadPathAsync, resolveToCwd } from "./path-utils.ts";
-import { ReadCursorError, readSmallFileIfStable, readWindow, type ReadWindowResult } from "./read-window.ts";
+import { ReadCursorError, readSmallFileIfStable, readWindow, formatReadWindowText, type ReadWindowResult } from "./read-window.ts";
 import { READ_EVIDENCE_CAPTURE, MUTATION_READ_SOURCE, attachReadIdentity, createValidatedReadIdentity, type ValidatedReadIdentity } from "./read-window.ts";
 import { getTextOutput, renderToolPath, replaceTabs, str } from "./render-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
@@ -255,10 +255,7 @@ export function createReadToolDefinition(
 				}
 				if (cursor !== undefined || (!localMime && localTextBuffer === undefined)) {
 					const window = await readWindow(absolutePath, cwd, ctx?.sessionManager?.getSessionId() || instanceScope, { offset, limit, cursor }, signal, undefined, evidenceIdentity);
-					let output = window.text;
-					if (window.startsPartial) output = `[Continuation starts partway through line ${window.startLine}; this is a partial-line suffix.]\n${output}`;
-					if (window.binary) output += "\n\n[Binary NUL detected in this byte range; displayed as UTF-8 with replacement.]";
-					if (window.cursor) output += `\n\n[${window.partial ? `Line ${window.nextLine} is partial` : `Read through line ${window.nextLine - 1}`}; more file content remains. Continue with the same path and cursor=${window.cursor}.]`;
+					const output = formatReadWindowText(window.text, window);
 					const { text: _text, ...details } = window;
 					return attachMutationReadSource(attachReadIdentity({ content: [{ type: "text" as const, text: output }], details: { window: details } }, ledgerCapture ? evidenceIdentity : undefined), evidenceIdentity);
 				}

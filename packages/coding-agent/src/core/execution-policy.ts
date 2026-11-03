@@ -1,0 +1,279 @@
+import { createHash } from "node:crypto";
+import { lstat, realpath } from "node:fs/promises";
+import { isAbsolute, relative, resolve } from "node:path";
+import { assertPermissionMode, type SessionPermissionMode } from "./permission-mode.ts";
+import type { ExtensionContext, ExtensionRuntime, ToolCallEvent, ToolDefinition } from "./extensions/types.ts";
+import type { SessionEntry } from "./session-manager.ts";
+import { assessProtectedMutationPath } from "./files/protected-path-policy.ts";
+import { attachPermissionPathApproval, mutationRequestHash, type PermissionPathApproval } from "./files/file-invocation.ts";
+import { InputReadPolicyLease } from "./files/session-input-read-permission.ts";
+import { InputWorkspaceGrantLease, type InputWorkspaceGrant, type InputWorkspaceIssuance,
+    type AssertInputWorkspace, type ObserveInputWorkspace } from "./files/input-workspace-grant-lease.ts";
+
+export type ExecutionEnvironment = "sandbox" | "trusted-host";
+export type PermissionDecision = "allow" | "ask" | "deny";
+export interface ExecutionPermissionRule {
+    tool: string; decision: PermissionDecision;
+    /** Exact command, never a shell prefix or parsed risk classification. */
+    command?: string;
+    /** Workspace-relative subtree; all targets must be inside it. */
+    path?: string;
+}
+export interface ExecutionPermissions { approval?: "interactive" | "never"; rules?: ExecutionPermissionRule[]; }
+const MUTATIONS = new Set(["edit", "write", "delete", "move", "file_batch"]);
+const SAFE = new Set(["codemode", "tool_search", "tasks"]);
+const SANDBOX_TOOLS = new Set([...SAFE, "read", "grep", "find", "ls", "powershell", ...MUTATIONS]);
+const BLOCKED = "[POLICY_BLOCKED] ";
+const assertSignal = AbortSignal.prototype.throwIfAborted;
+function inside(root: string, target: string): boolean {
+    const part = relative(root, target);
+    return part === "" || part !== ".." && !part.startsWith("..\\") && !part.startsWith("../") && !isAbsolute(part);
+}
+function insideCanonical(root: string, target: string): boolean {
+    return target === root || target.length > root.length && target.startsWith(root)
+        && (target[root.length] === "\\" || target[root.length] === "/");
+}
+function fingerprint(value: unknown): string {
+    const json = JSON.stringify(value);
+    if (json.length > 16 * 1024 * 1024) throw new Error(BLOCKED + "Invocation exceeds the authorization size limit");
+    return createHash("sha256").update(json).digest("hex");
+}
+function invocationFingerprint(name: string, input: unknown): string {
+    return MUTATIONS.has(name) ? mutationRequestHash(name as PermissionPathApproval["operation"], input) : fingerprint(input);
+}
+
+/** One cold invocation snapshot. It is released by the existing pending tool owner. */
+export class NativePolicyInvocation {
+    private original?: object;
+    private check?: () => void;
+    private readonly hash: string;
+    private readonly id: string;
+    private readonly name: string;
+    private context?: WeakRef<ExtensionContext>;
+    private readonly cwd: string;
+    private readonly session: string;
+    constructor(event: ToolCallEvent, check: () => void, ctx: ExtensionContext) {
+        this.original = event.input; this.hash = invocationFingerprint(event.toolName, event.input); this.id = event.toolCallId;
+        this.name = event.toolName; this.check = check;
+        this.context = new WeakRef(ctx); this.cwd = ctx.cwd; this.session = ctx.sessionManager.getSessionId();
+    }
+    consume(args: unknown, id: string, name: string, signal?: AbortSignal): void {
+        if (!this.check || args !== this.original || id !== this.id || name !== this.name || invocationFingerprint(name, args) !== this.hash)
+            throw new Error(BLOCKED + "Invocation changed after authorization");
+        const ctx = this.context?.deref();
+        if (!ctx || ctx.cwd !== this.cwd || ctx.sessionManager.getSessionId() !== this.session) throw new Error(BLOCKED + "Session changed");
+        signal?.throwIfAborted(); this.check();
+    }
+    release(): void { this.original = undefined; this.check = undefined; this.context = undefined; }
+}
+
+/** Native operation authorization, independent of the OS execution backend.
+ * No shell parsing, command risk inference, extension grant bus, or output hooks.
+ * Configuration is immutable for this runtime; reload uses the execution barrier.
+ */
+export class SessionExecutionPolicy {
+    readonly mode?: SessionPermissionMode;
+    readonly environment: ExecutionEnvironment;
+    private readonly runtime: ExtensionRuntime;
+    private readonly rules: readonly ExecutionPermissionRule[];
+    private readonly approval: "interactive" | "never";
+    private readonly definitions = new WeakSet<ToolDefinition>();
+    private grant?: InputWorkspaceGrant;
+    private issuance?: InputWorkspaceIssuance;
+    private workspace = "";
+    private sessionId = "";
+    private readonly denied = new Set<string>();
+    private scannedLeaf?: WeakRef<SessionEntry>;
+    private legacyHistory = false;
+    private epoch = 0;
+    private closed = false;
+    constructor(runtime: ExtensionRuntime, environment: ExecutionEnvironment, config: ExecutionPermissions = {}, mode?: SessionPermissionMode) {
+        this.mode = mode;
+        if (mode !== undefined) { assertPermissionMode(mode); if ((mode === "host-write") !== (environment === "trusted-host")) throw new Error("Permission mode and backend disagree"); }
+        if (environment !== "sandbox" && environment !== "trusted-host") throw new Error("Invalid executionEnvironment");
+        if (config.approval !== undefined && config.approval !== "interactive" && config.approval !== "never") throw new Error("Invalid executionPermissions.approval");
+        if (config.rules !== undefined && (!Array.isArray(config.rules) || config.rules.length > 128)) throw new Error("At most 128 execution permission rules are supported");
+        this.runtime = runtime; this.environment = environment; this.approval = config.approval ?? "interactive";
+        this.rules = Object.freeze((config.rules ?? []).map(rule => {
+            if (!rule || typeof rule.tool !== "string" || !rule.tool.length || rule.tool.length > 128
+                || !["allow", "ask", "deny"].includes(rule.decision)
+                || rule.command !== undefined && (typeof rule.command !== "string" || rule.command.length > 32768)
+                || rule.path !== undefined && (typeof rule.path !== "string" || rule.path.length > 4096 || isAbsolute(rule.path) || !inside(resolve("."), resolve(rule.path))))
+                throw new Error("Invalid execution permission rule");
+            return Object.freeze({ ...rule });
+        }));
+        runtime.executionBoundary.register("native-permissions", { revoke: this.revoke, drain: this.drain });
+    }
+    private readonly revoke = (): void => { this.epoch++; this.grant = undefined; this.issuance = undefined; };
+    private readonly drain = async (): Promise<void> => {};
+    dispose(): void { this.closed = true; this.revoke(); this.denied.clear(); this.scannedLeaf = undefined; this.legacyHistory = false; }
+    registerDefinition(definition: ToolDefinition): void { if (SANDBOX_TOOLS.has(definition.name)) this.definitions.add(definition); }
+    supports(definition: ToolDefinition): boolean { return this.environment !== "sandbox" || this.definitions.has(definition); }
+    private guard(ctx: ExtensionContext): () => void {
+        this.runtime.executionBoundary.assertCurrent();
+        const owner = new WeakRef(this), generation = this.epoch, signal = ctx.signal;
+        return function assertNativePermission() {
+            const active = owner.deref();
+            if (!active || active.closed || active.epoch !== generation)
+                throw new Error(BLOCKED + "Original permission context expired");
+            if (signal) assertSignal.call(signal);
+        };
+    }
+    private async paths(ctx: ExtensionContext, targets: readonly string[], mutation: boolean): Promise<string[]> {
+        const check = this.guard(ctx), output: string[] = [];
+        if (targets.length > 34) throw new Error(BLOCKED + "Too many paths");
+        for (const target of targets) {
+            if (typeof target !== "string" || target.length > 4096 || target.includes("\0")) throw new Error(BLOCKED + "Invalid path");
+            const absolute = resolve(ctx.cwd, target);
+            if (mutation) {
+                const result = await assessProtectedMutationPath(ctx.cwd, absolute); check();
+                if (!result.canonicalTarget || result.violations.some(violation => violation !== "workspace_escape" || this.mode !== "host-write")) throw new Error(BLOCKED + "Protected or out-of-workspace mutation: " + target);
+                output.push(result.canonicalTarget);
+            } else {
+                const canonical = await realpath(absolute), root = await realpath(ctx.cwd); check();
+                if (this.mode !== "host-write" && !inside(root, canonical)) throw new Error(BLOCKED + "Read is outside the workspace: " + target);
+                output.push(canonical);
+            }
+        }
+        return output;
+    }
+    private decision(tool: string, command: unknown, paths: readonly string[], cwd: string, fallback?: PermissionDecision): PermissionDecision {
+        let selected: PermissionDecision | undefined;
+        for (const rule of this.rules) {
+            if (rule.tool !== "*" && rule.tool !== tool || rule.command !== undefined && rule.command !== command) continue;
+            if (rule.path !== undefined && (!paths.length || !paths.every(target => inside(resolve(cwd, rule.path!), target)))) continue;
+            if (rule.decision === "deny") return "deny";
+            // An explicit ask is not overridden by a broader allow.
+            if (selected !== "ask") selected = rule.decision;
+        }
+        return selected ?? fallback ?? (this.mode !== undefined || SAFE.has(tool) || tool === "read" || tool === "powershell" && this.environment === "sandbox" ? "allow" : "ask");
+    }
+    private restoreHistory(ctx: ExtensionContext): void {
+        const manager = ctx.sessionManager, leaf = manager.getLeafEntry(), previous = this.scannedLeaf?.deref();
+        if (leaf === previous && (leaf !== undefined || this.scannedLeaf === undefined)) return;
+        let entry = leaf, legacy = false;
+        while (entry && entry !== previous) {
+            if (entry.type === "custom") {
+                if (entry.customType === "native-permission-denial-v1" && typeof (entry.data as { key?: unknown })?.key === "string") {
+                    const key = (entry.data as { key: string }).key;
+                    if (this.denied.size >= 128 && !this.denied.has(key)) throw new Error(BLOCKED + "Refusal capacity reached; start a new session");
+                    this.denied.add(key);
+                }
+                if (entry.customType === "session-permission-state-v1") legacy = true;
+            }
+            entry = entry.parentId ? manager.getEntry(entry.parentId) : undefined;
+        }
+        // Branch replacement must recompute legacy state; only an actual ancestor may reuse it.
+        this.legacyHistory = legacy || entry !== undefined && entry === previous && this.legacyHistory;
+        this.scannedLeaf = leaf ? new WeakRef(leaf) : undefined;
+    }
+    async authorize(event: ToolCallEvent, ctx: ExtensionContext, definition?: ToolDefinition, explicitUserCommand = false): Promise<NativePolicyInvocation> {
+        const check = this.guard(ctx); check();
+        const invocation = new NativePolicyInvocation(event, check, ctx);
+        if (this.environment === "sandbox" && (!definition || !this.supports(definition)))
+            throw new Error("[SANDBOX_UNSUPPORTED] This entry has no sandbox backend: " + event.toolName);
+        const mutation = MUTATIONS.has(event.toolName);
+        if (this.mode === "read-only" && mutation) throw new Error(BLOCKED + "当前为只读模式；请通过 /permissions 选择沙箱读写");
+        // Legacy audits do not contain exact request identities. Never reinterpret
+        // their grants or erase a historical rejection by guessing an equivalent rule.
+        this.restoreHistory(ctx);
+        if (this.mode === undefined && this.legacyHistory && !SAFE.has(event.toolName) && event.toolName !== "read")
+            throw new Error("[LEGACY_PERMISSION_MIGRATION] Historical grants cannot be widened by a new profile. Start a new session with explicit execution rules; history remains unchanged.");
+        if (this.runtime.executionBoundary.getToolSelectionMode() === "plan" && (mutation || event.toolName === "powershell" || event.toolName === "bash"))
+            throw new Error(BLOCKED + "Plan mode does not authorize execution or mutations");
+        const input = event.input as Record<string, any>, targets: string[] = [];
+        if (event.toolName === "file_batch") {
+            if (!Array.isArray(input.operations) || !input.operations.length || input.operations.length > 16) throw new Error(BLOCKED + "Invalid file batch");
+            for (const item of input.operations) { targets.push(item.path); if (item.destination !== undefined) targets.push(item.destination); }
+        } else if (mutation || event.toolName === "read") { targets.push(input.path); if (input.destination !== undefined) targets.push(input.destination); }
+        const paths = await this.paths(ctx, targets, mutation); check();
+        let decision = this.decision(event.toolName, input.command, paths, ctx.cwd, explicitUserCommand ? "allow" : undefined);
+        if (event.toolName === "file_batch") {
+            let index = 0;
+            for (const item of input.operations) {
+                const count = item.destination === undefined ? 1 : 2;
+                const itemDecision = this.decision(item.operation, undefined, paths.slice(index, index + count), ctx.cwd, decision);
+                if (itemDecision === "deny" || decision !== "deny" && itemDecision === "ask") decision = itemDecision;
+                index += count;
+            }
+        }
+        const keys: string[] = [];
+        const session = ctx.sessionManager.getSessionId();
+        if (mutation) {
+            const items = event.toolName === "file_batch" ? input.operations : [{ ...input, operation: event.toolName }];
+            let index = 0;
+            for (const item of items) {
+                const target = paths[index++], destination = item.destination === undefined ? undefined : paths[index++];
+                // One rejected batch also refuses its unchanged individual operations.
+                const hash = mutationRequestHash(item.operation, { ...item, path: target, destination, purpose: undefined });
+                keys.push(fingerprint([session, item.operation, hash]));
+            }
+        } else keys.push(fingerprint([session, event.toolName, invocationFingerprint(event.toolName, input)]));
+        if (decision === "deny" || keys.some(key => this.denied.has(key))) throw new Error(BLOCKED + "Explicitly denied operation");
+        if (decision === "ask") {
+            if (this.approval === "never" || !ctx.hasUI) throw new Error("[APPROVAL_REQUIRED] Operation was not executed: " + event.toolName);
+            const details = mutation ? paths.join("\n") : JSON.stringify(input, null, 2);
+            if (details.length > 16384) throw new Error("[APPROVAL_REQUIRED] Request is too large for one interactive review; configure an explicit scoped rule");
+            const approved = await ctx.ui.confirm("Allow this operation?", `${event.toolName} (${this.environment})\n${details}`,
+                { signal: ctx.signal ?? this.runtime.executionBoundary.signal, timeout: 60000 });
+            check();
+            if (!approved) {
+                if (this.denied.size + keys.length > 128) throw new Error(BLOCKED + "Refusal capacity reached; start a new session");
+                for (const key of keys) { this.denied.add(key); this.runtime.appendEntry("native-permission-denial-v1", { key }); }
+                throw new Error(BLOCKED + "User declined this operation");
+            }
+        }
+        invocation.consume(event.input, event.toolCallId, event.toolName, ctx.signal);
+        if (mutation) attachPermissionPathApproval(input, { schemaVersion: 1, sequence: this.runtime.executionBoundary.generation,
+            toolCallId: event.toolCallId, operation: event.toolName as PermissionPathApproval["operation"],
+            requestHash: mutationRequestHash(event.toolName as PermissionPathApproval["operation"], input), canonicalTarget: paths[0]!,
+            protectedRoots: [resolve(ctx.cwd, ".git"), resolve(ctx.cwd, ".sp")], assertCurrent: check, revocationSignal: ctx.signal });
+        return invocation;
+    }
+    async authorizeFileObservation(ctx: ExtensionContext, targets: readonly string[]) {
+        const check = this.guard(ctx);
+        await this.paths(ctx, targets, false); check();
+        if (this.decision("read", undefined, targets, ctx.cwd) !== "allow") throw new Error(BLOCKED + "File observation requires an existing read grant");
+        const renew = async () => { check(); await this.paths(ctx, targets, false); check(); };
+        return Object.assign(renew, { assertCurrent: check });
+    }
+    async prepareInputRead(ctx: ExtensionContext, targets: readonly string[]): Promise<InputReadPolicyLease> {
+        await this.authorizeFileObservation(ctx, targets);
+        return new InputReadPolicyLease(ctx, targets, this.guard(ctx));
+    }
+    async prepareInputWorkspaceRead(ctx: ExtensionContext, targets: readonly string[]): Promise<InputWorkspaceGrantLease> {
+        const check = this.guard(ctx); await this.authorizeFileObservation(ctx, targets); check();
+        const canonical = await realpath(ctx.cwd), stat = await lstat(canonical, { bigint: true }); check();
+        const id = ctx.sessionManager.getSessionId();
+        if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(BLOCKED + "Workspace is not an ordinary directory");
+        if (!this.grant || this.sessionId !== id || this.workspace !== ctx.cwd) {
+            this.grant = Object.freeze({ requestedPath: canonical, canonicalPath: canonical, device: Number(stat.dev), inode: Number(stat.ino) });
+            this.issuance = Object.freeze({ ...this.grant, identity: Object.freeze({ dev: stat.dev, ino: stat.ino }) });
+            this.sessionId = id; this.workspace = ctx.cwd;
+        }
+        if (this.issuance!.identity.dev !== stat.dev || this.issuance!.identity.ino !== stat.ino) throw new Error(BLOCKED + "Original workspace changed");
+        const lease = new InputWorkspaceGrantLease(ctx, targets, this, this.grant, -1, check,
+            SessionExecutionPolicy.assertWorkspace, SessionExecutionPolicy.observeWorkspace, this.issuance);
+        try { return await lease.prepare(); } catch (error) { lease.dispose(); throw error; }
+    }
+    private static readonly assertWorkspace: AssertInputWorkspace = (issuer, grant, slot, binding, paths, issuance) => {
+        const owner = issuer as SessionExecutionPolicy;
+        if (owner.grant !== grant || owner.issuance !== issuance || slot !== -1 || grant.canonicalPath !== binding.canonicalPath
+            || issuance?.identity.dev !== binding.identity.dev || issuance.identity.ino !== binding.identity.ino)
+            throw new Error(BLOCKED + "Workspace grant changed");
+        // A frozen array's iterator was visible in the allocation profile at
+        // every pure ownership check; indexed access creates no iterator.
+        for (let index = 0; index < paths.length; index++) {
+            const target = paths[index]!;
+            if (!insideCanonical(binding.canonicalPath, target) && !insideCanonical(owner.workspace, target))
+                throw new Error(BLOCKED + "Workspace scope changed");
+        }
+    };
+    private static readonly observeWorkspace: ObserveInputWorkspace = async (issuer, ctx, _grant, binding, paths, check) => {
+        const owner = issuer as SessionExecutionPolicy;
+        await owner.paths(ctx, paths, false); check();
+        const canonical = await realpath(binding.requestedPath), stat = await lstat(canonical, { bigint: true }); check();
+        if (canonical !== binding.canonicalPath || !stat.isDirectory() || stat.dev !== binding.identity.dev || stat.ino !== binding.identity.ino)
+            throw new Error(BLOCKED + "Original workspace directory changed");
+    };
+}

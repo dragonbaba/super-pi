@@ -5,9 +5,9 @@ import ts from "typescript";
 
 test("shell data/progress/drain callbacks create no callback or Promise on delivery", () => {
   const targets = new Set(["onError", "onClose", "onIdle", "armIdleTimer", "onData", "onStdoutData", "onStderrData", "onStdoutEnd", "onStderrEnd", "onSpawn", "onExit", "maybeFinalizeAfterExit", "finalize", "cleanup",
-    "recordOutputFailure", "emitOutputUpdate", "clearUpdateTimer", "onUpdateTimer", "scheduleOutputUpdate", "handleData", "stopChild"]);
+    "recordOutputFailure", "emitOutputUpdate", "clearUpdateTimer", "onUpdateTimer", "scheduleOutputUpdate", "handleData", "stopChild", "hasHandlers"]);
   const seen = new Set<string>();
-  for (const file of ["packages/coding-agent/src/core/tools/bash.ts", "packages/coding-agent/src/core/bash-executor.ts", "packages/coding-agent/src/utils/child-process.ts"]) {
+  for (const file of ["packages/coding-agent/src/core/tools/bash.ts", "packages/coding-agent/src/core/bash-executor.ts", "packages/coding-agent/src/utils/child-process.ts", "packages/coding-agent/src/core/tasks/session-tasks.ts"]) {
     const source = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
     function audit(node: ts.Node): void {
       assert.equal(ts.isArrowFunction(node) || ts.isFunctionExpression(node) || ts.isFunctionDeclaration(node), false, `per-delivery callback: ${node.getText(source)}`);
@@ -16,6 +16,9 @@ test("shell data/progress/drain callbacks create no callback or Promise on deliv
       ts.forEachChild(node, audit);
     }
     function visit(node: ts.Node): void {
+      if (ts.isMethodDeclaration(node) && node.name.getText(source) === "hasHandlers") {
+        seen.add("hasHandlers"); audit(node.body!);
+      }
       if ((ts.isVariableDeclaration(node) || ts.isPropertyDeclaration(node)) && targets.has(node.name.getText(source)) && node.initializer && ts.isArrowFunction(node.initializer)) {
         seen.add(node.name.getText(source)); audit(node.initializer.body);
         // Exact startup owners, never a file-wide exemption for nested closures.
@@ -33,7 +36,7 @@ test("shell data/progress/drain callbacks create no callback or Promise on deliv
 
 test("completion, retention and CDPATH helpers use module functions without nested callbacks or regexes", () => {
   const targets = new Set(["appendShellStatus", "normalizeShellProcessResult", "appendShellObservationError", "shellFailureCategory", "isTemporaryCdpathQuery", "changesBashCdSemantics", "retainedShellText", "setBounded"]), seen = new Set<string>();
-  for (const file of ["packages/coding-agent/src/core/tools/bash.ts", "packages/coding-agent/src/core/tools/shell-execution.ts", "packages/extensions/resource-lifecycle-guard/core.ts", "packages/extensions/resource-lifecycle-guard/background-shell.ts", "packages/extensions/false-success-guard/core.ts"]) {
+  for (const file of ["packages/coding-agent/src/core/tools/bash.ts", "packages/coding-agent/src/core/tools/shell-execution.ts", "packages/extensions/resource-lifecycle-guard/core.ts", "packages/coding-agent/src/core/tasks/background-shell.ts", "packages/extensions/false-success-guard/core.ts"]) {
     const source = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
     for (const node of source.statements) if (ts.isFunctionDeclaration(node) && node.name && targets.has(node.name.text)) {
       seen.add(node.name.text);
@@ -61,7 +64,8 @@ test("Windows job callbacks are owned by admission and never forward shell outpu
   visit(source); assert.deepEqual(owners, new Set(["onMessage", "onSend"]));
   assert.doesNotMatch(text, /\.on\(["']data|\.pipe\(|onData\(/);
   assert.match(text, /stdio:\[process.stdin,process.stdout,process.stderr\]/);
-  assert.ok(text.indexOf("native.assign(job, processHandle)") < text.indexOf("child.send({ shell, args, env }"));
+  const assigned = text.indexOf("native.assign(job, processHandle)"), sent = text.indexOf("child.send({ shell, args, env,");
+  assert.ok(assigned >= 0 && sent > assigned);
 });
 
 test("substitution boundaries use primitive offsets without per-boundary containers or callbacks", () => {

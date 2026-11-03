@@ -1,17 +1,27 @@
 import assert from "node:assert/strict";
 import { removeOwnedFixture } from "./helpers/owned-fixture-cleanup.ts";
 import test from "node:test";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, symlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, realpathSync, symlinkSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { createJiti } from "jiti";
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
+import { EventEmitter } from "node:events";
+import { Session as InspectorSession } from "node:inspector/promises";
+import { setImmediate as tick } from "node:timers/promises";
+import { runInNewContext } from "node:vm";
+import ts from "typescript";
+import * as path from "node:path";
+import * as url from "node:url";
+import { SessionExecutionBoundary } from "../packages/coding-agent/src/core/execution-boundary.ts";
+import { Type } from "typebox";
 
 const jiti = createJiti(import.meta.url);
 const { loadRuntime } = await jiti.import<any>("../packages/lsp/src/adapters.ts");
 const { selectDiagnosticRoutes } = await jiti.import<any>("../packages/lsp/src/routes.ts");
 const { runDiagnostics, runFix } = await jiti.import<any>("../packages/lsp/src/runner.ts");
+const { runNavigation } = await jiti.import<any>("../packages/lsp/src/navigation.ts");
 const { LspClientPool } = await jiti.import<any>("../packages/lsp/src/client-pool.ts");
 const { default: extension } = await jiti.import<any>("../packages/lsp/src/pi-lsp.ts");
 const server = resolve("tests/fixtures/lsp-diagnostic-server.mjs");
@@ -29,11 +39,250 @@ function fixture(mode = "full") {
     return { root, ...runtime, release() { assert.equal(dirname(root), tmpdir()); removeOwnedFixture(root); } };
   } catch (error) { removeOwnedFixture(root); throw error; }
 }
-function tools() {
+function tools(boundary?: SessionExecutionBoundary, factory = extension) {
   const registered = new Map<string, any>(), events = new Map<string, any>();
-  extension({ registerTool(tool: any) { registered.set(tool.name, tool); }, registerCommand() {}, on(name: string, fn: any) { events.set(name, fn); } });
+  factory({ registerExecutionOwner: boundary ? (name: string, owner: any) => boundary.register(name, owner) : undefined, registerTool(tool: any) { registered.set(tool.name, tool); }, registerCommand() {}, on(name: string, fn: any) { events.set(name, fn); } });
   return { registered, events };
 }
+
+test("LSP session transitions drain late acquisitions and own services independently", { timeout: 12000 }, async t => {
+  const profiler = new InspectorSession(); profiler.connect(); t.after(() => profiler.disconnect());
+  const refs: WeakRef<object>[] = [];
+  // Compiler/module initialization is cold setup, not the service lifecycle under measurement.
+  const files = await jiti.import<any>("../packages/lsp/src/files.ts");
+  const code = ts.transpileModule(readFileSync(new URL("../packages/lsp/src/pi-lsp.ts", import.meta.url), "utf8"), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
+  async function exercise() {
+  const f = fixture(process.platform === "win32" ? "owned-descendant" : "full");
+  const boundary = new SessionExecutionBoundary(), otherBoundary = new SessionExecutionBoundary();
+  // Inject the same pool class at the module boundary; Jiti's lazy ESM imports use a separate cache.
+  const module = { exports: {} as any };
+  runInNewContext(code, { module, exports: module.exports, AbortController, AbortSignal, require(name: string) {
+    if (name === "@super-pi/coding-agent") return { defineTool: (tool: unknown) => tool };
+    if (name === "typebox") return { Type };
+    if (name === "./limits.js") return { DEFAULT_FILE_LIMIT: 50, MAX_COLLECTED_FILES: 500, MAX_REQUESTED_PATHS: 100 };
+    if (name === "./fix-authorization.js") return {};
+    if (name === "./client-pool.js") return { LspClientPool };
+    if (name === "./adapters.js") return { loadRuntime };
+    if (name === "./files.js") return files;
+    if (name === "./routes.js") return { selectDiagnosticRoutes };
+    if (name === "./runner.js") return { runDiagnostics, textResult: (text: string, details: unknown) => ({ content: [{ type: "text", text }], details }) };
+    throw new Error(name);
+  } });
+  const first = tools(boundary, module.exports.default), other = tools(otherBoundary, module.exports.default);
+  for (const host of [first, other]) for (const tool of host.registered.values()) refs.push(new WeakRef(tool));
+  const ctx = { cwd: f.root, isProjectTrusted: () => true, ui: { setStatus() {} } };
+  const acquire = LspClientPool.prototype.acquire, captures: any[] = [];
+  let wait: Promise<void> | undefined, ready: (() => void) | undefined;
+  LspClientPool.prototype.acquire = async function(...args: unknown[]) {
+    const lease = await acquire.apply(this, args); captures.push({ pool: this, lease }); refs.push(new WeakRef(this), new WeakRef(lease.client)); ready?.(); await wait; return lease;
+  };
+  const execute = (registration: ReturnType<typeof tools>) => registration.registered.get("lsp_diagnostics").execute("fixture", { paths: ["example.ts"] }, undefined, undefined, ctx);
+  try {
+    await execute(first); await execute(other);
+    assert.notEqual(captures[0].pool, captures[1].pool, "extension instances must not share a process pool");
+    let descendant: number | undefined;
+    if (process.platform === "win32") descendant = Number((await captures[0].lease.client.workspaceSymbols("fixture"))[0].name);
+    let resume!: () => void;
+    wait = new Promise<void>(resolve => { resume = resolve; });
+    const acquired = new Promise<void>(resolve => { ready = resolve; });
+    const oldCall = execute(first), rejected = assert.rejects(oldCall, /cancel|abort|closed|stopping/i);
+    await acquired;
+    let published = false;
+    const changing = boundary.transition(() => { published = true; });
+    await tick(); assert.equal(published, false);
+    await assert.rejects(execute(first), /closed/);
+    wait = undefined; ready = undefined; resume();
+    await rejected; await changing;
+    assert.equal(captures[0].lease.client.running, false);
+    assert.equal(captures[1].lease.client.running, true, "another session's service survives this transition");
+    if (descendant) assert.throws(() => process.kill(descendant!, 0), /ESRCH/, "the owned Windows descendant must also exit");
+    await execute(first);
+    await first.events.get("session_shutdown")({}, ctx);
+    await assert.rejects(execute(first), /closed/);
+    assert.equal(captures[1].lease.client.running, true);
+    const otherPool = captures[1].pool, shutdownAll = otherPool.shutdownAll;
+    otherPool.shutdownAll = async () => { throw new Error("fixture cleanup unconfirmed"); };
+    let failedPublished = false;
+    try { await assert.rejects(otherBoundary.transition(() => { failedPublished = true; }), /unconfirmed/); }
+    finally { otherPool.shutdownAll = shutdownAll; }
+    assert.equal(failedPublished, false); await assert.rejects(execute(other), /closed/);
+    await otherBoundary.transition(() => {});
+    t.diagnostic(JSON.stringify({ sessionPools: 2, acquisitions: captures.length, transitions: 3, lateAcquisitionsDrained: 1, otherSessionPreserved: true, windowsDescendantExitObserved: descendant !== undefined }));
+  } finally {
+    wait = undefined; ready = undefined; LspClientPool.prototype.acquire = acquire;
+    try { await first.events.get("session_shutdown")({}, ctx); await other.events.get("session_shutdown")({}, ctx); await boundary.dispose(); await otherBoundary.dispose(); }
+    finally { captures.length = 0; for (const host of [first, other]) { host.registered.clear(); host.events.clear(); } f.release(); }
+  }
+  }
+  await profiler.post("HeapProfiler.startSampling", { samplingInterval: 4096, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true });
+  await exercise();
+  const { profile } = await profiler.post("HeapProfiler.stopSampling");
+  let sampled = 0; const nodes = [profile.head]; while (nodes.length) { const node = nodes.pop()!; sampled += node.selfSize; for (const child of node.children) nodes.push(child); }
+  assert.ok(sampled < 16 * 1024 * 1024, `sampled ${sampled} bytes including process setup`);
+  for (let i = 0; i < 3; i++) { await tick(); await profiler.post("HeapProfiler.collectGarbage"); }
+  assert.equal(refs.filter(ref => ref.deref()).length, 0);
+  t.diagnostic(JSON.stringify({ serviceReferences: refs.length, liveReferences: 0, sampledBytesIncludingVmAndProcesses: sampled }));
+});
+
+test("LSP diagnostics and navigation await cancellation cleanup after late acquire", { timeout: 5000 }, async () => {
+  const f = fixture();
+  try {
+    for (const navigate of [false, true]) {
+      const abort = new AbortController(); let acquired!: (lease: unknown) => void, close!: () => void;
+      const pending = new Promise(resolve => { acquired = resolve; });
+      const cleanup = new Promise<void>(resolve => { close = resolve; });
+      let discards = 0, settled = false, effects = 0;
+      const lease = { client: { didOpen() { effects++; } } };
+      const pool = { acquire: () => pending, discard() { discards++; return cleanup; }, release() { throw new Error("cancelled lease released"); } };
+      const work = navigate
+        ? runNavigation(pool, f.adapters[0], { root: f.root, path: "example.ts", action: "workspace_symbols", query: "n" }, 100, abort.signal, { ui: { setStatus() {} } }, "lsp")
+        : runDiagnostics(pool, f.adapters[0], { root: f.root, paths: ["example.ts"] }, 100, abort.signal, { ui: { setStatus() {} } }, "lsp");
+      const result = assert.rejects(work, /cancel|abort/i).then(() => { settled = true; });
+      abort.abort(); acquired(lease); await tick();
+      assert.equal(discards, 1); assert.equal(effects, 0); assert.equal(settled, false);
+      close(); await result;
+    }
+  } finally { f.release(); }
+});
+
+test("LSP cleanup retains failed processes, waits for close and releases bounded pool ownership", { timeout: 10000 }, async t => {
+  const source = readFileSync(new URL("../packages/lsp/src/lsp-client.ts", import.meta.url), "utf8");
+  const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
+  const poolCode = ts.transpileModule(readFileSync(new URL("../packages/lsp/src/client-pool.ts", import.meta.url), "utf8"), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
+  const inspector = new InspectorSession(); inspector.connect(); t.after(() => inspector.disconnect());
+  const refs: WeakRef<object>[] = [];
+  let publishes = 0, peakTimers = 0, settleCallbacks = 0, settleTimers = 0;
+  async function exercise(kind: "normal" | "held" | "spawn-error" | "late-start" | "group-denied") {
+    const timers = new Set<any>(), callbacks = new Set<Function>(), children: any[] = [];
+    let kills = 0;
+    let deliverJob!: (job: unknown) => void, startupSignal: AbortSignal | undefined;
+    const jobReady = new Promise(resolve => { deliverJob = resolve; });
+    function spawn() {
+      const child: any = Object.assign(new EventEmitter(), { pid: kind === "spawn-error" ? undefined : 123, killed: false, exitCode: null, signalCode: null,
+        stdin: new EventEmitter(), stdout: new EventEmitter(), stderr: new EventEmitter(),
+        kill() { kills++; this.killed = true; if (kind === "held") throw new Error("signal denied"); return true; },
+      });
+      child.stdin.write = (frame: string) => {
+        const message = JSON.parse(frame.slice(frame.indexOf("\r\n\r\n") + 4));
+        if (message.method === "shutdown") {
+          const body = JSON.stringify({ jsonrpc: "2.0", id: message.id, result: null });
+          child.stdout.emit("data", Buffer.from(`Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`));
+        }
+        if (message.method === "exit" && kind !== "held") { child.exitCode = 0; child.emit("exit", 0); child.emit("close", 0); }
+        return true;
+      };
+      children.push(child); refs.push(new WeakRef(child)); return child;
+    }
+    const module = { exports: {} as any };
+    runInNewContext(compiled, { module, exports: module.exports, Buffer, AbortController,
+      require(name: string) {
+        if (name === "node:child_process") return { spawn };
+        if (name === "node:path") return { default: path };
+        if (name === "node:process") return { default: { platform: kind === "late-start" ? "win32" : "linux", env: {}, kill() { throw Object.assign(new Error("fixture"), { code: kind === "group-denied" ? "EPERM" : "ESRCH" }); } } };
+        if (name === "node:timers/promises") return { setTimeout: tick };
+        if (name === "@super-pi/coding-agent/internal/windows-shell-job") return { WindowsShellJob: { spawn(_cmd: string, _args: unknown, _cwd: string, _env: unknown, _stdin: boolean, signal: AbortSignal) { startupSignal = signal; spawn(); return jobReady; } } };
+        if (name === "node:url") return url;
+        if (name === "./command.js") return { resolveCommandPath: () => "fixture", mergeEnvironment: () => ({}), commandPathValue() {} };
+        if (name === "./collections.js") return { EMPTY_READONLY_ARRAY: [] };
+        if (name === "./files.js") return { directoryUri: () => "file:///fixture/" };
+        if (name === "./regex.js") return { COMMAND_SCRIPT_PATTERN: /\.(?:bat|cmd)$/iu, LSP_CONTENT_LENGTH_PATTERN: /Content-Length:\s*(\d+)/iu };
+        if (name === "./text-edits.js") return {};
+        throw new Error(name);
+      },
+      setTimeout(fn: Function, ms: number) { const timer = { fn, ms, refresh() { return this; } }; timers.add(timer); peakTimers = Math.max(peakTimers, timers.size); if (ms === 7) { callbacks.add(fn); settleTimers++; } return timer; },
+      clearTimeout(timer: unknown) { timers.delete(timer); },
+    });
+    const client = new module.exports.LspClient({ name: "fixture", diagnosticsSettleMs: 7 }, { command: "fixture", args: [] }, ".", 10000);
+    refs.push(new WeakRef(client));
+    const starting = client.start();
+    if (kind === "late-start") await tick();
+    const child = children[0];
+    if (kind === "late-start") {
+      let completed = false;
+      const stopping = client.shutdown().then(() => { completed = true; });
+      await tick(); assert.equal(completed, false); assert.equal(startupSignal?.aborted, true);
+      deliverJob({ child, stop: async () => undefined });
+      await starting; await stopping; startupSignal = undefined;
+    } else if (kind === "spawn-error") {
+      const rejected = assert.rejects(starting, /failed to start/); child.emit("error", new Error("missing")); await rejected;
+      child.emit("error", new Error("late")); child.emit("close", -1); await client.shutdown();
+    } else {
+      child.emit("spawn"); await starting;
+      refs.push(new WeakRef(child.stdout.listeners("data")[0]));
+      // Use the host's valid file URI: file:///fixture/... throws during every
+      // canonicalization on Windows and profiles error construction, not LSP.
+      const uri = url.pathToFileURL(path.resolve("fixture", "example.ts")).href, diagnostics = client.diagnostics(uri);
+      const body = JSON.stringify({ jsonrpc: "2.0", method: "textDocument/publishDiagnostics", params: { uri, diagnostics: [] } });
+      const frame = Buffer.from(`Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`);
+      for (let i = 0; i < 1000; i++) { child.stdout.emit("data", frame); publishes++; }
+      assert.equal(callbacks.size, 1, "one stable settle callback per diagnostic operation"); settleCallbacks += callbacks.size;
+      const settle = [...timers].find(timer => timer.ms === 7); timers.delete(settle); settle.fn(); await diagnostics;
+      let completed = false;
+      const stopping = client.shutdown(); assert.equal(client.shutdown(), stopping, "concurrent cleanup shares ownership");
+      const stopped = stopping.then(() => { completed = true; }, (error: unknown) => { throw error; });
+      if (kind === "held") {
+        const rejected = assert.rejects(stopped, /LSP_CLEANUP_UNCONFIRMED/);
+        await tick(); child.exitCode = 0; child.emit("exit", 0); await tick(); assert.equal(completed, false, "exit without closed pipes is not cleanup");
+        for (let i = 0; i < 3; i++) { const timer = [...timers].find(timer => timer.ms === 1000); assert.ok(timer); timers.delete(timer); timer.fn(); await tick(); }
+        await rejected; assert.equal(kills, 2); assert.equal(client.running, false);
+        assert.doesNotThrow(() => child.emit("error", new Error("late process error")));
+        assert.equal(child.listenerCount("close"), 1, "failed cleanup retains its physical close observer");
+        child.emit("close", 0); await client.shutdown();
+      } else if (kind === "group-denied") {
+        await assert.rejects(stopped, /LSP_CLEANUP_UNCONFIRMED/);
+        await assert.rejects(client.shutdown(), /LSP_CLEANUP_UNCONFIRMED/, "failed family cleanup must remain closed");
+      } else await stopped;
+    }
+    assert.equal(timers.size, 0);
+    for (const stream of [child, child.stdin, child.stdout, child.stderr]) assert.deepEqual(stream.eventNames(), []);
+    callbacks.clear(); children.length = 0;
+  }
+  async function exercisePool() {
+    let blocked = true, starts = 0, shutdowns = 0;
+    let holdInitialization = false, initialized: (() => void) | undefined;
+    const clients: any[] = [], timers = new Set<any>();
+    class Client {
+      running = false;
+      async start() { starts++; this.running = true; clients.push(this); refs.push(new WeakRef(this)); }
+      async initialize() { if (holdInitialization) await new Promise<void>(resolve => { initialized = resolve; }); }
+      async shutdown() { shutdowns++; if (blocked) throw new Error("cleanup unconfirmed"); this.running = false; initialized?.(); }
+    }
+    const module = { exports: {} as any };
+    runInNewContext(poolCode, { module, exports: module.exports, require(name: string) { if (name === "node:fs") return { realpathSync: (root: string) => root }; if (name === "./lsp-client.js") return { LspClient: Client }; throw new Error(name); },
+      setTimeout(fn: Function) { const timer = { fn, unref() {} }; timers.add(timer); return timer; }, clearTimeout(timer: unknown) { timers.delete(timer); },
+    });
+    const pool = new module.exports.LspClientPool(10), adapter = { name: "fixture", defaultCommand: { command: "fixture", args: [] } };
+    refs.push(new WeakRef(pool));
+    const lease = await pool.acquire(adapter, "root", 100);
+    await assert.rejects(pool.discard(lease), /unconfirmed/);
+    assert.throws(() => pool.reopen(), /still draining/);
+    await assert.rejects(pool.acquire(adapter, "other", 100), /shutting down/); assert.equal(starts, 1);
+    const shutdown = pool.shutdownAll(); assert.equal(pool.shutdownAll(), shutdown); await assert.rejects(shutdown, /unconfirmed/);
+    blocked = false; await pool.shutdownAll(); pool.reopen();
+    for (let i = 0; i < 8; i++) { const current = await pool.acquire(adapter, `root-${i}`, 100); pool.release(current); }
+    await assert.rejects(pool.acquire(adapter, "overflow", 100), /limited to 8/);
+    const timer = [...timers][0]; timers.delete(timer); blocked = true; timer.fn(); await tick();
+    await assert.rejects(pool.acquire(adapter, "root-0", 100), /shutting down/);
+    blocked = false; await pool.shutdownAll(); pool.reopen();
+    holdInitialization = true;
+    const initializing = assert.rejects(pool.acquire(adapter, "held-initialize", 100), /cancel|available/);
+    await tick(); await pool.shutdownAll(); await initializing; pool.reopen(); initialized = undefined;
+    assert.equal(starts, 10); assert.equal(shutdowns, 13); assert.equal(timers.size, 0); clients.length = 0;
+  }
+  await inspector.post("HeapProfiler.startSampling", { samplingInterval: 4096, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true });
+  for (const kind of ["normal", "held", "spawn-error", "late-start", "group-denied"] as const) await exercise(kind);
+  await exercisePool();
+  const { profile } = await inspector.post("HeapProfiler.stopSampling");
+  let sampled = 0; const nodes = [profile.head]; while (nodes.length) { const node = nodes.pop()!; sampled += node.selfSize; for (const child of node.children) nodes.push(child); }
+  const leading: { name: string; url: string; bytes: number }[] = [], pending = [profile.head];
+  while (pending.length) { const node = pending.pop()!; if (node.selfSize) leading.push({name:node.callFrame.functionName,url:node.callFrame.url,bytes:node.selfSize}); for (const child of node.children) pending.push(child); }
+  t.diagnostic(JSON.stringify({ leading: leading.sort((a,b)=>b.bytes-a.bytes).slice(0,10), sampled }));
+  assert.ok(sampled < 16 * 1024 * 1024, `sampled ${sampled} bytes including VM fixtures`);
+  for (let i = 0; i < 3; i++) { await tick(); await inspector.post("HeapProfiler.collectGarbage"); }
+  assert.equal(refs.filter(ref => ref.deref()).length, 0);
+  assert.equal(settleTimers, 3);
+  t.diagnostic(JSON.stringify({ publishes, settleCallbacks, settleTimers, peakTimers, references: refs.length, liveReferences: 0, timersAfterCleanup: 0, sampledBytesIncludingFixtures: sampled }));
+});
 
 test("configured route is explicit about zero files and unsupported HTML; no client acquisition", async () => {
   const f = fixture(); let acquired = 0;
@@ -159,6 +408,48 @@ test("strict validation can fail for silence while source fixes retain an empty 
     assert.match(result.content[0].text, /const n = 2/);
     assert.equal(readFileSync(join(f.root, "example.ts"), "utf8"), "const n = 1;", "preview is not a write or a validation pass");
   } finally { try { await pool.shutdownAll(); } finally { f.release(); } }
+});
+
+test("LSP fixes require current exact-target authorization after asynchronous server replies", { skip: process.arch !== "x64" || !["win32", "linux"].includes(process.platform) }, async () => {
+ const f = fixture(), ctx = { ui: { setStatus() {} } };
+ const file = join(f.root, "example.ts");
+ try {
+  await assert.rejects(tools().registered.get("lsp_fix").execute("missing", { path: "example.ts", write: true }, undefined, undefined,
+   { cwd: f.root, isProjectTrusted() { return true; }, ...ctx }), /authorization is missing/);
+  for (const boundary of ["missing", "current", "revoked", "changed-target", "edited", "aborted-acquire"]) {
+   writeFileSync(file, "const n = 1;");
+   let current = true, acquired = 0, released = 0, discarded = 0;
+   const cancellation = new AbortController(), signal = cancellation.signal;
+   const authorization = boundary === "missing" ? undefined : {
+    schemaVersion: 1, operation: "lsp_fix", toolCallId: "fix", sequence: 0, requestHash: "fixture",
+    canonicalTarget: boundary === "changed-target" ? join(f.root, "other.ts") : realpathSync.native(file), protectedRoots: [],
+    revocationSignal: signal, assertCurrent() { if (!current) throw new Error("Permission authority changed after approval."); },
+   };
+   const client = {
+    didOpen() {}, didClose() {}, async diagnostics() { return []; },
+    async codeActions(uri: string) { return [{ title: "fix", kind: "source.fixAll", edit: { changes: { [uri]: [
+     { range: { start: { line: 0, character: 10 }, end: { line: 0, character: 11 } }, newText: "2" },
+    ] } } }]; },
+    async resolveActions(actions: unknown) {
+     if (boundary === "revoked") current = false;
+     if (boundary === "edited") writeFileSync(file, "const n = 9;");
+     return actions;
+    },
+   };
+   const pool = { async acquire() { acquired++; if (boundary === "aborted-acquire") cancellation.abort(); return { client }; }, release() { released++; },
+    async discard() { await new Promise<void>(resolve => setImmediate(resolve)); discarded++; } };
+   const pending = runFix(pool, f.adapters[0], { root: f.root, path: "example.ts", write: true }, 2500, undefined, ctx, "lsp", authorization);
+   if (boundary === "current") { assert.equal((await pending).details.changed, true); assert.equal(readFileSync(file, "utf8"), "const n = 2;"); }
+   else if (boundary === "edited") { const result = await pending; assert.equal(result.isError, true); assert.equal(result.details.commit.outcome, "not_committed"); assert.equal(readFileSync(file, "utf8"), "const n = 9;"); }
+   else { await assert.rejects(pending, /authorization|authority changed|aborted/i); assert.equal(readFileSync(file, "utf8"), "const n = 1;"); }
+   assert.equal(acquired, boundary === "missing" || boundary === "changed-target" ? 0 : 1);
+   assert.equal(discarded, boundary === "aborted-acquire" ? 1 : 0); assert.equal(released + discarded, acquired);
+  }
+ } finally {
+  const native = await import("@super-pi/coding-agent/internal/files/native-file-client");
+  try { assert.equal((await native.nativeFileRequest("stats")).activeHandles, 0); }
+  finally { try { await native.disposeNativeFileWorker(); } finally { f.release(); } }
+ }
 });
 
 test("actual tool reports live-route truncation as partial and exact-cap exhaustion as complete", async () => {

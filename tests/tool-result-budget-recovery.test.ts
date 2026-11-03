@@ -117,15 +117,14 @@ for (const presentationBudget of [1024,1]) test(`real SDK write persists across 
   const execute=write.execute;
   let delay: Promise<void>|undefined, entered: (()=>void)|undefined;
   write.execute=async(...args)=>{
-   const input=args[1] as {path:string};
-   if(input.path==='delayed.txt'||input.path==='aborted.txt'){entered?.();await delay;}
+   if(delay){entered?.();await delay;}
    const result=await execute(...args);effects++;return result;
   };
   const convert=session.agent.convertToLlm;
   if(presentationBudget===1024)assert.doesNotThrow(()=>convert(messages(620_000),undefined,[],{...fullModel,api:"openai-codex-responses"}));
   let inject=presentationBudget===1024,blockAfterResults=1;
   session.agent.convertToLlm=(m,s,tools,model,cap)=>{
-   if(inject&&m.filter(x=>x.role==='toolResult'&&!x.isError).length>=blockAfterResults)throw new RequestBudgetError(1_000_000,999_000,384_000,-3096);
+   if(inject&&effects>=blockAfterResults)throw new RequestBudgetError(1_000_000,999_000,384_000,-3096);
    return convert(m,s,tools,model,cap);
   };
   await session.prompt(corpus);
@@ -155,7 +154,9 @@ for (const presentationBudget of [1024,1]) test(`real SDK write persists across 
   const started=new Promise<void>(resolve=>{entered=resolve;});
   pendingArguments=[JSON.stringify({path:"delayed.txt",content:"first"}),JSON.stringify({path:"parallel.txt",content:"second"})];
   inject=true;blockAfterResults=3;
-  const parallel=session.prompt("Parallel write fixture.");await started;release();await parallel;
+  const parallel=session.prompt("Parallel write fixture.");
+  await Promise.race([started, parallel.then(() => { throw new Error("Delayed write was never entered: " + JSON.stringify(session.messages.at(-1))); })]);
+  release();await parallel;
   assert.equal(effects,3);assert.equal(readFileSync(join(cwd,"delayed.txt"),"utf8"),"first");
   assert.equal(readFileSync(join(cwd,"parallel.txt"),"utf8"),"second");
   const results=session.messages.filter((m:any)=>m.role==='toolResult'&&!m.isError) as any[];
@@ -164,7 +165,9 @@ for (const presentationBudget of [1024,1]) test(`real SDK write persists across 
   await session.prompt("Recover the recorded parallel results only.");assert.equal(effects,3);
   delay=new Promise<void>(resolve=>{release=resolve;});const abortStarted=new Promise<void>(resolve=>{entered=resolve;});
   pendingArguments=JSON.stringify({path:"aborted.txt",content:"never written"});
-  const aborting=session.prompt("Abort fixture.");await abortStarted;session.agent.abort();release();await aborting;
+  const aborting=session.prompt("Abort fixture.");
+  await Promise.race([abortStarted, aborting.then(() => { throw new Error("Abort write was never entered: " + JSON.stringify(session.messages.at(-1))); })]);
+  session.agent.abort();release();await aborting;
   assert.equal(effects,3);assert.equal(existsSync(join(cwd,"aborted.txt")),false);
   delay=undefined;entered=undefined;
   assert.equal(session.agent.state.pendingToolCalls.size,0);assert.equal(session.agent.state.isStreaming,false);

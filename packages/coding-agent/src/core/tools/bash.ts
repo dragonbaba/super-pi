@@ -2,6 +2,7 @@ import { withMsysStdinBridge } from "./msys-stdin.ts";
 import { consumeBackgroundShellLaunch, consumeForegroundShellLaunch, validateBackgroundShellInput, DEFAULT_BACKGROUND_SHELL_TIMEOUT, type ShellForegroundControl } from "./shell-background.ts";
 import { shellHeredocKind, CUSTOM_HEREDOC_REFUSAL } from "./shell-heredoc-gate.ts";
 import { prepareShellCwd, getShellCwdBinding, isLocalShellBackend, registerLocalShellBackend } from "./shell-cwd.ts";
+import { stopOwnedProcessGroup } from "../../utils/shell.ts";
 import { constants } from "node:fs";
 import { access as fsAccess, realpath as fsRealpath } from "node:fs/promises";
 import { type AgentTool, type AgentToolResult, ToolResultError, toolResultFromError } from "@super-pi/agent-core";
@@ -197,6 +198,7 @@ export function createLocalShellOperations(shellName: string, resolveShellConfig
 			let processCleanup: Promise<string | undefined> | undefined;
 			const stopChild = () => {
 				if (windowsJob) processCleanup ??= windowsJob.stop();
+				else if (managedBackground && process.platform !== "win32" && child.pid) processCleanup ??= stopOwnedProcessGroup(child.pid);
 				else if (child.pid) processCleanup ??= killProcessTreeAndWait(child.pid);
 				if (observation.exitCode !== null || observation.signal !== null) { child.stdout?.destroy(); child.stderr?.destroy(); }
 			};
@@ -232,6 +234,7 @@ export function createLocalShellOperations(shellName: string, resolveShellConfig
 				const exitCode = await waitForChildProcess(child, observation);
 				outputSettled = true;
 				if (windowsJob) processCleanup ??= windowsJob.stop();
+				else if (managedBackground && process.platform !== "win32" && child.pid) processCleanup ??= stopOwnedProcessGroup(child.pid);
 				if (processCleanup) processCleanupError = await processCleanup;
 				processCleanupError ??= windowsJob?.dispatchError;
 				await inputObserver?.finish();
@@ -240,12 +243,14 @@ export function createLocalShellOperations(shellName: string, resolveShellConfig
 					throw windowsJob.launchError;
 				}
 				const termination = stopReason ?? (observation.signal ? "signal" : exitCode === null ? "unknown" : "exit");
-				const result: ShellProcessResult = { exitCode, observation, termination, inputError: inputObserver?.error, observationError: processCleanupError };
+				const result: ShellProcessResult = { exitCode, observation, termination, inputError: inputObserver?.error, observationError: processCleanupError,
+					processCleanup: managedBackground && processCleanup !== undefined && processCleanupError === undefined ? "complete" : "unconfirmed" };
 				if (stopReason) throw observedShellError(new Error(stopReason === "timeout" ? `timeout:${timeout}` : stopReason === "output_failure" ? "output capture failed" : "aborted"), result);
 				return result;
 			} finally {
 				outputSettled = true;
 				if (windowsJob) processCleanup ??= windowsJob.stop();
+				else if (managedBackground && process.platform !== "win32" && child.pid) processCleanup ??= stopOwnedProcessGroup(child.pid);
 				if (processCleanup) processCleanupError = await processCleanup;
 				if (child.pid) untrackDetachedChildPid(child.pid);
 				if (timeoutHandle) clearTimeout(timeoutHandle);
@@ -258,7 +263,8 @@ export function createLocalShellOperations(shellName: string, resolveShellConfig
 				if (shellProcessResultFromError(error)) throw error;
 				if (!observation.started) observation.outputDrained = true;
 				throw observedShellError(error, { exitCode: observation.exitCode, observation,
-					termination: observation.started ? stopReason ?? "unknown" : stopReason === "cancelled" ? "cancelled" : "not_started", inputError: inputObserver?.error, observationError: processCleanupError });
+					termination: observation.started ? stopReason ?? "unknown" : stopReason === "cancelled" ? "cancelled" : "not_started", inputError: inputObserver?.error, observationError: processCleanupError,
+					processCleanup: !observation.spawnAttempted ? "complete" : "unconfirmed" });
 			}
 		},
 	});
@@ -927,7 +933,9 @@ export function createShellToolDefinition(
 	const backendExecute = ops.exec;
 	const commandPrefix = options?.commandPrefix;
 	const exposeSessionEnvironment = options?.exposeSessionEnvironment ?? true;
-	const spawnHook = options?.spawnHook;
+	// Platform transport belongs to the native tool, including SDK/no-extension
+	// sessions. Custom backends and explicit hooks keep their own transport.
+	const spawnHook = options?.spawnHook ?? (config.name === "bash" && isLocalShellBackend(ops) ? withMsysStdinBridge : undefined);
 	const supportsBackground = isLocalShellBackend(ops) && !commandPrefix && (!spawnHook || spawnHook === withMsysStdinBridge);
 	const parameters = supportsBackground ? bashSchema : { ...bashSchema, properties: { ...bashSchema.properties, background: { ...bashSchema.properties.background, const: false } } };
 	const executeForeground = async (

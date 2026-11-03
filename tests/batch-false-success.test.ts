@@ -39,19 +39,33 @@ async function fixture(t: test.TestContext) {
     const result = await session.agent.dispatchHostTool({ type: "toolCall", id, name, arguments: args });
     session.agent.state.messages = [...session.agent.state.messages, result]; return result;
   }
-  async function say(text: string) {
+  async function say(text: string, content = [{ type: "text", text }] as any[]) {
+    const expected = structuredClone(content);
     session.agent.streamFunction = (() => {
-      const message: any = { role: "assistant", api: "fixture", provider: "fixture", model: "fixture", timestamp: 0, stopReason: "stop", content: [{ type: "text", text }], usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
+      const message: any = { role: "assistant", api: "fixture", provider: "fixture", model: "fixture", timestamp: 0, stopReason: "stop", content, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
       const stream = createAssistantMessageEventStream(); stream.push({ type: "start", partial: message }); stream.push({ type: "done", reason: "stop", message }); return stream;
     }) as any;
     // Same task: no new interactive input boundary to reset obligations.
-    await session.agent.continue(); await session.agent.waitForIdle();
+    let delivered: unknown;
+    const stop = session.subscribe((event: any) => {
+      if (event.type === "message_end" && event.message.role === "assistant") delivered = structuredClone(event.message.content);
+    });
+    try { await session.agent.continue(); await session.agent.waitForIdle(); } finally { stop(); }
+    assert.deepEqual(delivered, expected);
     const last = session.agent.state.messages.at(-1) as any;
+    assert.deepEqual(last.content, expected);
+    const branch = manager.getBranch(); let persisted: any;
+    for (let i = branch.length - 1; i >= 0; i--) {
+      const entry = branch[i]!;
+      if (entry.type === "message" && entry.message.role === "assistant") { persisted = entry; break; }
+    }
+    assert.ok(persisted);
+    assert.deepEqual(persisted.message.content, expected);
     return last.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n");
   }
   return { cwd, manager, session, runner, call, say, goals: () => goals };
 }
-for (const kind of ["preflight", "partial", "unknown", "cancel", "delete", "move", "success", "dry-run"]) test(`R4 default Agent completion guard: ${kind}`, async t => {
+for (const kind of ["preflight", "partial", "unknown", "cancel", "delete", "move", "success", "dry-run"]) test(`R4 default Agent preserves replies and structured goal checks: ${kind}`, async t => {
   const f = await fixture(t); writeFileSync(join(f.cwd, "current"), "before");
   const append = f.manager.appendCustomEntry.bind(f.manager); let fired = false;
   t.mock.method(f.manager, "appendCustomEntry", function(type: string, data: any) {
@@ -72,10 +86,20 @@ for (const kind of ["preflight", "partial", "unknown", "cancel", "delete", "move
   ] });
   const blocked = kind !== "success" && kind !== "dry-run";
   assert.equal(result.isError, blocked, JSON.stringify(result));
-  const complete = await f.say("已完成，全部通过。");
+  const blocks: any[] = kind === "preflight" ? [
+    { type: "thinking", thinking: "fixture", thinkingSignature: "fixture-signature" },
+    { type: "text", text: "已完成。Done, completed, fixed; all tests passed.\n" },
+    { type: "text", text: "x".repeat(1_000_010) }, { type: "text", text: "\n原始尾部。" },
+  ] : [{ type: "text", text: "已完成，全部通过。" }];
+  const complete = await f.say("", blocks);
+  assert.equal(complete, blocks.filter(block => block.type === "text").map(block => block.text).join("\n"));
+  assert.equal(f.manager.getBranch().some((entry: any) => entry.customType === "false-success-intervention-v1"), false);
   const goal = await f.call("goal_complete", {});
-  t.diagnostic(JSON.stringify({ kind, error: result.isError, completion: complete, goalError: goal.isError, goals: f.goals() }));
-  assert.equal(complete.includes("尚未验证"), blocked); assert.equal(goal.isError === true, blocked);
+  t.diagnostic(JSON.stringify({ kind, error: result.isError, preservedReplyChars: complete.length, goalError: goal.isError, goals: f.goals() }));
+  assert.equal(goal.isError === true, blocked);
+  const audits = f.manager.getBranch().filter((entry: any) => entry.customType === "false-success-intervention-v1") as any[];
+  assert.equal(audits.length, blocked ? 1 : 0);
+  if (blocked) assert.equal(audits[0].data.kind, "goal_completion_blocked");
   assert.equal(f.goals(), blocked ? 0 : 1);
 });
 
@@ -116,7 +140,7 @@ for (const batch of [false, true]) test(`R4 actual partial move requires both sc
   const item = batch ? (result.details as any).items[0] : result.details as any;
   assert.equal(item.status, "partial", JSON.stringify(result));
   assert.equal(readFileSync(source, "utf8"), "before"); assert.equal(readFileSync(destination, "utf8"), "before");
-  assert.equal((await f.say("已完成。" )).includes("尚未验证"), true);
+  assert.equal(await f.say("已完成。"), "已完成。");
   assert.equal((await f.call("goal_complete", {})).isError, true);
   await f.call("run_tests", { path: source, expected: "before" });
   assert.equal((await f.call("goal_complete", {})).isError, true);
@@ -132,13 +156,13 @@ for (const batch of [false, true]) for (const kind of ["partial", "preflight"]) 
   const result = await f.call(batch ? "file_batch" : "move", batch ? { operations: [{ operation: "move", ...args }] } : args); afterLink = undefined;
   assert.equal(result.isError, true);
   if (kind === "partial") { assert.equal(readFileSync(source, "utf8"), "before"); assert.equal(readFileSync(destination, "utf8"), "before"); }
-  assert.equal((await f.say("已完成。" )).includes("尚未验证"), true);
+  assert.equal(await f.say("已完成。"), "已完成。");
   assert.equal((await f.call("goal_complete", {})).isError, true);
 });
 
-for (const args of [null, { operations: [{ operation: "invalid", path: "file" }] }]) test(`R4 invalid raw arguments still block completion: ${args === null ? "null" : "operation"}`, async t => {
+for (const args of [null, { operations: [{ operation: "invalid", path: "file" }] }]) test(`R4 invalid raw arguments still block goal completion: ${args === null ? "null" : "operation"}`, async t => {
   const f = await fixture(t);
   assert.equal((await f.call("file_batch", args)).isError, true);
-  assert.equal((await f.say("已完成。" )).includes("尚未验证"), true);
+  assert.equal(await f.say("已完成。"), "已完成。");
   assert.equal((await f.call("goal_complete", {})).isError, true);
 });

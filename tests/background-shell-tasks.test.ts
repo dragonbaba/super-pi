@@ -19,6 +19,8 @@ mkdirSync(join(root, "agent", "agents"));
 writeFileSync(join(root, "agent", "agents", "scout.md"), "---\nname: scout\ndescription: Offline test agent\ntools: read\n---\nFixture prompt.");
 writeFileSync(join(root, "agent", "config", "background-shell-limits.json"), '{"maxConcurrent":1,"maxTasks":3}');
 const { createEventBus } = await import("../packages/coding-agent/src/core/event-bus.ts");
+const { SessionTasks } = await import("../packages/coding-agent/src/core/tasks/session-tasks.ts");
+const { wrapToolDefinition } = await import("../packages/coding-agent/src/core/tools/tool-definition-wrapper.ts");
 const { BackgroundShellTasks, BACKGROUND_SHELL_LIMITS_PATH } = await import("../packages/extensions/resource-lifecycle-guard/background-shell.ts");
 const { SESSION_PERMISSION_EVENT } = await import("../packages/extensions/resource-lifecycle-guard/permission-contract.ts");
 const { createBashTool, createBashToolDefinition } = await import("../packages/coding-agent/src/core/tools/bash.ts");
@@ -61,6 +63,7 @@ function harness(t: test.TestContext, expectedDisposalError?: RegExp) {
 }
 
 test("background availability and effective caps are advertised before submission", async t => {
+	assert.equal(BackgroundShellTasks, (await import("@super-pi/coding-agent/internal/tasks/background-shell")).BackgroundShellTasks);
 	const h = harness(t);
 	const prompt = h.hooks.get("before_agent_start")![0]({ systemPrompt: "base" }).systemPrompt;
 	assert.match(prompt, /1 running concurrently, 3 admitted/); assert.match(prompt, /hard ceilings 64\/256/);
@@ -106,11 +109,12 @@ test("queue revalidates authority and releases an unstarted request", async t =>
 	assert.match(h.owner.tasks.get(second).result!, /authority changed/);
 });
 
-async function fixture(t: test.TestContext, auxiliary?: any, preceding?: any, resume?: string) {
+async function fixture(t: test.TestContext, auxiliary?: any, preceding?: any, resume?: string, native = false) {
 	const restored = resume ? SessionManager.open(resume) : undefined;
 	const cwd = restored?.getCwd() ?? realpathSync(mkdtempSync(join(root, "workspace-")));
 	writeFileSync(join(cwd, "fixture.mjs"), readFileSync(new URL("fixtures/background-shell-child.mjs", import.meta.url)));
 	const session = restored ?? SessionManager.create(cwd, join(cwd, "sessions")), events = createEventBus(), runtime = createExtensionRuntime();
+	if (native) runtime.nativeTasks = new SessionTasks(runtime, events);
 	const settings = SettingsManager.create(cwd, join(cwd, "agent"));
 	const extensions = [];
 	if (preceding) extensions.push(await loadExtensionFromFactory(preceding, cwd, events, runtime));
@@ -127,12 +131,13 @@ async function fixture(t: test.TestContext, auxiliary?: any, preceding?: any, re
 		{ getSignal: () => agent.signal, getModel: () => undefined, isProjectTrusted: (identity?: boolean) => settings.isProjectTrusted(identity), isIdle: () => true, hasPendingMessages: () => false } as never);
 	runner.setUIContext({ ...runner.getUIContext(), select: async () => { approvals++; return "仅允许本次"; } }, "tui");
 	agent.state.tools = [createBashTool(cwd, { shellPath: bashPath }), createPowerShellTool(cwd), ...wrapRegisteredTools(runner.getAllRegisteredTools(), runner)];
+	if (runtime.nativeTasks) agent.state.tools.push(wrapToolDefinition(runtime.nativeTasks.definition, () => runner.createContext()));
 	await runner.emit({ type: "session_start" } as never);
 	let sequence = 0;
 	const call = (name: string, args: any) => agent.dispatchHostTool({ type: "toolCall", id: `task-${++sequence}`, name, arguments: args });
 	const shutdown = async () => { runner.invalidate(); await runner.emit({ type: "session_shutdown" } as never); agent.abort(); await agent.waitForIdle(); };
 	t.after(async () => { await shutdown(); events.clear(); });
-	return { cwd, session, call, runner, events, active, messages, shutdown, agent, approvals: () => approvals, beforeConsume: (fn: (args: any) => void) => { beforeConsume = fn; } };
+	return { cwd, session, call, runner, events, active, messages, shutdown, agent, runtime, approvals: () => approvals, beforeConsume: (fn: (args: any) => void) => { beforeConsume = fn; } };
 }
 
 function text(result: any): string { return result.content.filter((item: any) => item.type === "text").map((item: any) => item.text).join("\n"); }
@@ -144,6 +149,55 @@ async function started(cwd: string, name: string): Promise<number> {
 	}
 	throw new Error("Recorded fixture child did not start");
 }
+
+test("native execution transition waits for shell cleanup and rejects prior final authorization", { timeout: 15_000 }, async t => {
+	const h = await fixture(t, undefined, undefined, undefined, true);
+	const owner = h.runtime.nativeTasks!.shell;
+	const id = taskId(await h.call("bash", { command: "node fixture.mjs hold", cwd: ".", background: true }));
+	const pid = await started(h.cwd, "hold");
+	let published = false;
+	const transition = h.runtime.executionBoundary.transition(() => {
+		assert.throws(() => process.kill(pid, 0), /ESRCH/);
+		assert.equal(owner.scheduler.outstanding, 0);
+		published = true;
+	});
+	assert.equal(published, false);
+	assert.throws(() => owner.assertAvailable(h.runner.createContext(), "bash"), /EXECUTION_BOUNDARY_CHANGED/);
+	await assert.rejects(h.runner.emitToolCall({ type: "tool_call", toolName: "bash", toolCallId: "blocked", input: {} } as never), /EXECUTION_BOUNDARY_CHANGED/);
+	await transition; assert.equal(published, true);
+	assert.equal(owner.tasks.get(id).state, "cancelled"); assert.equal(h.messages.length, 0);
+	let finalTransition!: Promise<void>;
+	h.beforeConsume(() => { finalTransition = h.runtime.executionBoundary.transition(() => undefined); });
+	const obsolete = await h.call("bash", { command: "node fixture.mjs obsolete", cwd: ".", background: true });
+	assert.equal(obsolete.isError, true); assert.match(text(obsolete), /EXECUTION_BOUNDARY_CHANGED|final authorization is obsolete/);
+	await finalTransition;
+	assert.equal(existsSync(join(h.cwd, "obsolete.ready.json")), false);
+	h.beforeConsume(() => {});
+	const fresh = await h.call("bash", { command: "node fixture.mjs fast", cwd: ".", timeout: 10 });
+	assert.equal(fresh.isError, false, text(fresh)); assert.match(text(fresh), /result:fast/);
+	await h.shutdown(); await h.runtime.executionBoundary.dispose();
+	assert.equal(h.runtime.executionBoundary.participantCount, 0);
+});
+
+test("a native transition waits for an obsolete tool hook without handing off its invocation", { timeout: 5000 }, async t => {
+	let resume!: () => void, entered!: () => void;
+	const ready = new Promise<void>(resolve => { entered = resolve; });
+	const h = await fixture(t, (pi: any) => pi.on("tool_call", async (event: any) => {
+		if (event.toolName !== "bash") return;
+		entered(); await new Promise<void>(resolve => { resume = resolve; });
+	}), undefined, undefined, true);
+	const pending = h.call("bash", { command: "node fixture.mjs obsolete", cwd: ".", background: true });
+	try {
+		await ready;
+		let published = false;
+		const transition = h.runtime.executionBoundary.transition(() => { published = true; });
+		const result = await pending;
+		assert.equal(result.isError, true); assert.match(text(result), /EXECUTION_BOUNDARY_CHANGED|Tool approval is obsolete/);
+		await tick(); assert.equal(published, false, "cancellation cannot stand in for actual hook completion");
+		resume(); await transition; assert.equal(published, true);
+		assert.equal(existsSync(join(h.cwd, "obsolete.ready.json")), false);
+	} finally { resume?.(); }
+});
 
 for (const shell of ["bash", "powershell"]) test(`${shell} authorized background work returns IDs, cancels queued work and preserves a sibling`, { skip: shell === "powershell" && process.platform !== "win32", timeout: 15_000 }, async t => {
 	const h = await fixture(t);
@@ -469,16 +523,20 @@ test("old task completion cannot contaminate verification after session tree nav
 	assert.notEqual(result?.block, true);
 });
 
-test("session tree navigation drains cleanup before admitting work on the new branch", async t => {
+test("session tree and permission changes drain cleanup before admitting new work", async t => {
+	for (const change of ["tree", "permissions"]) {
 	const h = harness(t); let finish!: () => void, released = 0, settled = false;
 	const id = h.start(async () => { await new Promise<void>(resolve => { finish = resolve; }); return { content: [], details: undefined }; }, undefined, () => released++);
-	const boundary = h.hooks.get("session_tree")![0]().then(() => { settled = true; });
+	const boundary = change === "tree" ? h.hooks.get("session_tree")![0]().then(() => { settled = true; }) : undefined;
+	if (change === "permissions") h.events.emit(SESSION_PERMISSION_EVENT, {});
 	await tick();
 	assert.equal(settled, false); assert.equal(h.owner.tasks.get(id).controller?.signal.aborted, true);
-	assert.throws(() => h.start(async () => assert.fail("must wait for old cleanup")), /session is changing/);
-	finish(); await boundary;
+	try { assert.throws(() => h.start(async () => assert.fail("must wait for old cleanup")), /session is changing/); }
+	finally { finish(); }
+	await boundary; await tick();
 	assert.equal(released, 1); assert.equal(h.owner.scheduler.outstanding, 0); assert.equal(h.messages.length, 0);
 	h.owner.assertAvailable(h.ctx);
+	}
 });
 
 test("an earlier unrelated tasks registration prevents unmanaged background execution", async t => {

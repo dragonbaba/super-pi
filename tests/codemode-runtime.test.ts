@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { getEventListeners } from "node:events";
+import { setTimeout as delay } from "node:timers/promises";
 import { CodemodeSandbox } from "../packages/codemode/src/runtime/host.ts";
 import { WorkerPool } from "../packages/codemode/src/runtime/worker-pool.ts";
 import { loadQuickJSWasm } from "../packages/codemode/src/wasm.ts";
@@ -275,10 +276,11 @@ for (const [label, code] of [
 	["microtask loop", "while (true) await null"],
 ] as const) {
 	test(`Codemode terminates ${label} and remains reusable`, async () => {
-		const sandbox = new CodemodeSandbox();
+		const sandbox = new CodemodeSandbox({ timeoutMode: "active", tools: [{ name: "pending", execute: (_args, { signal }) =>
+			delay(10_000, undefined, { signal }) }] });
 		try {
 			const start = performance.now();
-			const result = await sandbox.execute(code, { timeoutMs: 250 });
+			const result = await sandbox.execute(`tools.pending(); ${code}`, { timeoutMs: 250 });
 			assert.equal(result.ok, false);
 			if (!result.ok) assert.equal(result.error.kind, "timeout");
 			assert.ok(performance.now() - start < 5000);
@@ -286,6 +288,36 @@ for (const [label, code] of [
 		} finally { await sandbox.close(); }
 	});
 }
+
+test("active time accumulates across waits and stale idle replies cannot hide resumed computation", { timeout: 6000 }, async () => {
+	const wall = new CodemodeSandbox({ tools: [{ name: "wait", execute: (_args, { signal }) => delay(1000, undefined, { signal }) }] });
+	try {
+		const result = await wall.execute("await tools.wait()", { timeoutMs: 150 });
+		assert.equal(result.ok, false);
+		if (!result.ok) assert.equal(result.error.kind, "timeout", "the low-level default still bounds tool waiting");
+	} finally { await wall.close(); }
+	const sandbox = new CodemodeSandbox({ reuseWorker: true, timeoutMode: "active", tools: [
+		{ name: "echo", execute: args => args },
+		{ name: "wait", execute: (ms, { signal }) => delay(Number(ms), undefined, { signal }) },
+	] });
+	try {
+		assert.ok((await sandbox.execute("return 1")).ok); // Exclude cold VM startup from the small test budget.
+		const cumulative = await sandbox.execute(`for(let i=0;i<6;i++) {
+			await tools.wait(40); const start=Date.now(); while(Date.now()-start<100) {}
+		}`, { timeoutMs: 450 });
+		assert.equal(cumulative.ok, false);
+		if (!cumulative.ok) assert.equal(cumulative.error.kind, "timeout");
+		assert.ok(cumulative.calls.length > 1 && cumulative.calls.length < 6, JSON.stringify(cumulative));
+		const raced = await sandbox.execute('tools.wait(10000); for(let i=0;i<32;i++) await tools.echo(i); while(true) {}', { timeoutMs: 400 });
+		assert.equal(raced.ok, false);
+		if (!raced.ok) assert.equal(raced.error.kind, "timeout");
+		assert.equal(raced.calls.length, 33);
+		assert.equal(raced.calls[0]!.status, "cancelled");
+		assert.ok((await sandbox.execute("return 2")).ok);
+	} finally { await sandbox.close(); }
+	assert.equal(sandbox.stats.workersStarted, sandbox.stats.workersStopped);
+	assert.equal(sandbox.stats.activeExecutions, 0);
+});
 
 for (const [label, code, expected] of [
 	["text flood", 'for(let i=0;i<100000;i++) text("")', "output limit"],
@@ -336,13 +368,14 @@ test("Codemode abort releases listeners and cancels unawaited host calls", async
 	let aborts = 0;
 	let notifyStarted!: () => void;
 	const started = new Promise<void>(resolve => { notifyStarted = resolve; });
-	const sandbox = new CodemodeSandbox({ tools: [{ name: "wait", execute: (_args, context) => new Promise(resolve => {
+	const sandbox = new CodemodeSandbox({ timeoutMode: "active", tools: [{ name: "wait", execute: (_args, context) => new Promise(resolve => {
 		context.signal.addEventListener("abort", () => { aborts++; resolve(undefined); }, { once: true });
 		notifyStarted();
 	}) }] });
 	try {
 		const task = sandbox.execute("await tools.wait({})", { signal: controller.signal });
 		await started;
+		await delay(20); // Let the worker report its drained wait before cancelling.
 		controller.abort();
 		const result = await task;
 		assert.equal(result.ok, false);
@@ -385,7 +418,12 @@ test("Codemode refuses invalid outer limits and bounds tool results before cross
 });
 
 test("Codemode validates protocol shapes and enforces cumulative budgets independently of VM helpers", () => {
-	for (const value of [{ type: "call" }, { type: "done", ok: true }, { type: "done", ok: true, writes: "[]", reusable: "yes" }, { type: "output", item: null }]) assert.equal(isWorkerToHostMessage(value), false);
+	for (const value of [{ type: "call" }, { type: "done", ok: true }, { type: "done", ok: true, writes: "[]", reusable: "yes" }, { type: "output", item: null }, { type: "idle", received: -1 }, { type: "idle", received: MAX_CALLS + 1 }]) assert.equal(isWorkerToHostMessage(value), false);
+	assert.equal(isWorkerToHostMessage({ type: "idle", received: 0 }), true);
+	const idleBudget = new BridgeBudget();
+	for (let i = 0; i <= MAX_CALLS; i++) assert.equal(idleBudget.consume({ type: "idle", received: 0 }), true);
+	assert.equal(idleBudget.consume({ type: "idle", received: 0 }), false);
+	assert.equal(new BridgeBudget().consume({ type: "idle", received: 1 }), false);
 	const budget = new BridgeBudget();
 	for (let i = 0; i < MAX_OUTPUT_ITEMS; i++) assert.equal(budget.consume({ type: "output", item: { type: "text", text: "" } }), true);
 	assert.equal(budget.consume({ type: "output", item: { type: "text", text: "" } }), false);

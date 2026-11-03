@@ -30,6 +30,8 @@ export interface BashExecutorOptions {
 	onChunk?: (chunk: string) => void;
 	/** AbortSignal for cancellation */
 	signal?: AbortSignal;
+	/** Request the local backend's owned process-family lifecycle. */
+	managedProcessFamily?: boolean;
 }
 
 export interface BashResult {
@@ -43,6 +45,7 @@ export interface BashResult {
 	truncated: boolean;
 	/** Path to temp file containing full output (if output exceeded truncation threshold) */
 	fullOutputPath?: string;
+	processCleanup?: "complete" | "unconfirmed";
 }
 
 // ============================================================================
@@ -155,6 +158,7 @@ export async function executeBashWithOperations(
 			result = normalizeShellProcessResult(await operations.exec(command, cwd, {
 				onData,
 				signal: options?.signal,
+				managedBackground: options?.managedProcessFamily,
 			}));
 			// An observed zero exit alone does not mean the entire submitted command
 			// reached the shell. Propagate producer facts to direct Session/RPC callers
@@ -171,6 +175,7 @@ export async function executeBashWithOperations(
 			if (!options?.signal?.aborted || (observed && (observed.inputError !== undefined || observed.observationError !== undefined
 				|| observed.observation?.outputDrained === false || observed.termination !== "cancelled"))) throw err;
 			cancelled = true;
+			result = observed;
 		}
 		// Flush UTF-8 once, before discarding an unfinished control. A callback
 		// failure here must still reject, including after accepted cancellation.
@@ -202,6 +207,7 @@ export async function executeBashWithOperations(
 			cancelled,
 			truncated: truncationResult.truncated,
 			fullOutputPath: tempFilePath,
+			processCleanup: result?.processCleanup ?? "unconfirmed",
 		};
 	} catch (err) {
 		stdoutDecoder = undefined;

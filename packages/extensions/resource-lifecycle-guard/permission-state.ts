@@ -19,6 +19,12 @@ export interface WorkspaceGrant {
   inode: number;
 }
 
+/** Issuance-only metadata. It is neither persisted nor copied with a grant. */
+export interface IssuedWorkspaceIdentity extends WorkspaceGrant {
+  readonly identity: Readonly<{ dev: bigint; ino: bigint }>;
+}
+const issuedWorkspaceIdentities = new WeakMap<WorkspaceGrant, IssuedWorkspaceIdentity>();
+
 interface PersistedPermissionState {
   schemaVersion: 1 | 2 | 3 | 4;
   mode: SessionPermissionMode;
@@ -67,14 +73,32 @@ async function canonicalizeProspectivePath(candidate: string): Promise<string> {
   }
 }
 
-async function workspaceGrant(path: string, cwd: string): Promise<WorkspaceGrant> {
+async function observeWorkspace(path: string, cwd: string): Promise<IssuedWorkspaceIdentity> {
   if (!path || path.length > MAX_PATH_CHARS) throw new Error("Workspace path must contain 1-4096 characters.");
   const requestedPath = isAbsolute(path) ? resolve(path) : resolve(cwd, path);
   const canonicalPath = await realpath(requestedPath);
-  const info = await lstat(canonicalPath);
+  const info = await lstat(canonicalPath, { bigint: true });
   if (!info.isDirectory()) throw new Error("Workspace path must resolve to an existing directory.");
   if (canonicalPath === parse(canonicalPath).root) throw new Error("A filesystem root cannot be added as a workspace.");
-  return { requestedPath, canonicalPath, device: info.dev, inode: info.ino };
+  // Legacy numbers retain their existing representation. Only this same original
+  // observation supplies the exact identity; later checks never repair a grant.
+  return Object.freeze({ requestedPath, canonicalPath, device: Number(info.dev), inode: Number(info.ino),
+    identity: Object.freeze({ dev: info.dev, ino: info.ino }) });
+}
+
+function issueWorkspace(observed: IssuedWorkspaceIdentity): WorkspaceGrant {
+  const grant = { requestedPath: observed.requestedPath, canonicalPath: observed.canonicalPath,
+    device: observed.device, inode: observed.inode };
+  issuedWorkspaceIdentities.set(grant, observed);
+  return grant;
+}
+
+function issuedGrantUnchanged(grant: WorkspaceGrant, issued: IssuedWorkspaceIdentity): boolean {
+  for (const key of ["requestedPath", "canonicalPath", "device", "inode"] as const) {
+    const field = Object.getOwnPropertyDescriptor(grant, key);
+    if (!field || !("value" in field) || field.value !== issued[key]) return false;
+  }
+  return true;
 }
 
 function validStoredGrant(value: unknown): value is WorkspaceGrant {
@@ -186,6 +210,22 @@ export class SessionPermissionState {
     return this.#additional;
   }
 
+  /** Lookup only: current original membership and the original issuance object.
+   * A clone, persisted record, or later observation cannot create this entry. */
+  getIssuedWorkspaceIdentity(grant: WorkspaceGrant): IssuedWorkspaceIdentity | undefined {
+    if (grant !== this.#primary) {
+      if (this.#additional.length > MAX_ADDITIONAL_WORKSPACES) return undefined;
+      let found = false;
+      for (let index = 0; index < this.#additional.length; index++) {
+        const field = Object.getOwnPropertyDescriptor(this.#additional, String(index));
+        if (!field || !("value" in field)) return undefined;
+        if (field.value === grant) { found = true; break; }
+      }
+      if (!found) return undefined;
+    }
+    return issuedWorkspaceIdentities.get(grant);
+  }
+
   get allowRules(): readonly SessionAllowRule[] {
     return this.#allowRules;
   }
@@ -213,12 +253,17 @@ export class SessionPermissionState {
   }
 
   async restore(cwd: string, branch: readonly unknown[]): Promise<void> {
-    const primary = await workspaceGrant(cwd, cwd);
-    if (this.#primary && (this.#primary.canonicalPath !== primary.canonicalPath
-      || this.#primary.device !== primary.device || this.#primary.inode !== primary.inode)) {
+    const observed = await observeWorkspace(cwd, cwd);
+    const issued = this.#primary ? issuedWorkspaceIdentities.get(this.#primary) : undefined;
+    if (this.#primary && (this.#primary.canonicalPath !== observed.canonicalPath
+      || this.#primary.device !== observed.device || this.#primary.inode !== observed.inode
+      || issued !== undefined && (!issuedGrantUnchanged(this.#primary, issued)
+        || issued.identity.dev !== observed.identity.dev || issued.identity.ino !== observed.identity.ino))) {
       throw new Error("[SHELL_CWD_CHANGED] Primary workspace identity changed during restore; reopen the verified workspace and establish trust again.");
     }
-    if (!this.#primary) this.#primary = primary;
+    // A comparison observation is not issuance. Never replace an existing grant
+    // or sidecar, including an old grant without an exact issuance record.
+    if (!this.#primary) this.#primary = issueWorkspace(observed);
     this.#mode = "workspace-write";
     this.#approvalPolicy = "ask";
     this.#additional = [];
@@ -290,16 +335,17 @@ export class SessionPermissionState {
   }
 
   async addWorkspace(path: string, cwd: string): Promise<WorkspaceGrant> {
-    const grant = await workspaceGrant(path, cwd);
-    if (grant.canonicalPath === this.primary.canonicalPath) throw new Error("The primary workspace is already writable.");
+    const observed = await observeWorkspace(path, cwd);
+    if (observed.canonicalPath === this.primary.canonicalPath) throw new Error("The primary workspace is already writable.");
     for (const existing of this.#additional) {
-      if (existing.requestedPath === grant.requestedPath || existing.canonicalPath === grant.canonicalPath) {
+      if (existing.requestedPath === observed.requestedPath || existing.canonicalPath === observed.canonicalPath) {
         throw new Error("That workspace is already added to this Session.");
       }
     }
     if (this.#additional.length >= MAX_ADDITIONAL_WORKSPACES) {
       throw new Error(`A Session can contain at most ${MAX_ADDITIONAL_WORKSPACES} additional workspaces.`);
     }
+    const grant = issueWorkspace(observed);
     this.#additional.push(grant);
     this.#sequence += 1;
     return grant;

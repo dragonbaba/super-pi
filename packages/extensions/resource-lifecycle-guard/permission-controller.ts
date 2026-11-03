@@ -39,6 +39,10 @@ import { prepareFileCreation, type FileCreationPlan } from "../mutation-guard-wr
 import { getBatchPreparation } from "../mutation-guard-write/file-batch.ts";
 import { classifyStructuredReadonlyArguments, type StructuredReadonlyCommandName } from "./structured-argv.ts";
 import { sanitizePolicyFeedback, type PolicyDiagnosticMetadata } from "./policy-diagnostics.ts";
+import { InputReadPolicyLease } from "@super-pi/coding-agent/internal/files/session-input-read-permission";
+import { InputWorkspaceGrantLease, freezeInputReadPaths, inputWorkspaceData, type InputWorkspaceGrant,
+  type InputWorkspaceBinding, type InputWorkspaceIssuance } from "@super-pi/coding-agent/internal/files/input-workspace-grant-lease";
+import { relative as inputWorkspaceRelative } from "node:path";
 
 const STATUS_KEY = "session-permissions";
 const MAX_PURPOSE_CHARS = 800;
@@ -81,6 +85,13 @@ const REJECT = "拒绝";
 const EDIT_CLASSES = ["file:edit"] as const;
 const WRITE_CLASSES = ["file:write"] as const;
 const LSP_FIX_CLASSES = ["file:lsp_fix"] as const;
+
+function permissionCancellation(message: string): Error {
+  const error = new Error(message);
+  // Abort reasons outlive the issuer. V8's lazy CallSite objects can retain its receiver.
+  error.stack = `Error: ${message}`;
+  return error;
+}
 
 interface ToolCallEventShape {
   toolName: string;
@@ -281,10 +292,32 @@ export class SessionPermissionController {
   #auditSequence = 0;
   #restored = false;
   #authorityGeneration = 0;
+  #invocationCancellation = new AbortController();
   #pendingApproval: AbortController | undefined;
+  #pendingInteraction: Promise<unknown> | undefined;
+  readonly #invocationIssuer: WeakRef<SessionPermissionController>;
 
   constructor(pi: ExtensionAPI) {
     this.#pi = pi;
+    this.#invocationIssuer = new WeakRef(this);
+    pi.registerExecutionOwner?.("permissions", { revoke: this.#revokeExecution, drain: this.#drainExecution });
+  }
+
+  /** Policy settings persist; only already issued or awaiting authority becomes obsolete. */
+  readonly #revokeExecution = (): void => {
+    this.#authorityGeneration++;
+    this.#revokeInvocations();
+    this.#invocationCancellation = new AbortController();
+    this.#pendingApproval?.abort(permissionCancellation("Permission request is obsolete after execution transition"));
+    this.#pendingApproval = undefined;
+  };
+  readonly #drainExecution = async (): Promise<void> => {
+    try { await this.#pendingInteraction; } catch { /* The original permission caller observes cancellation/failure. */ }
+  };
+  async #awaitInteraction<T>(pending: Promise<T>): Promise<T> {
+    this.#pendingInteraction = pending;
+    try { return await pending; }
+    finally { if (this.#pendingInteraction === pending) this.#pendingInteraction = undefined; }
   }
 
   get state(): SessionPermissionState {
@@ -321,6 +354,84 @@ export class SessionPermissionController {
     return Object.assign(assertAllowed, { assertCurrent });
   }
 
+  /** Input preparation only: perform the real asynchronous scope checks, then
+   * retain a weak, revocable policy lease instead of the observation closure.
+   * Its synchronous check does NOT repeat filesystem validation. */
+  async prepareInputRead(ctx: ExtensionContext, paths: readonly string[]): Promise<InputReadPolicyLease> {
+    const lease = new InputReadPolicyLease(ctx, paths, this.#captureInvocationAuthority());
+    try {
+      await originalInputObservation.call(this, ctx, lease.paths);
+      lease.assertCurrent();
+      return lease;
+    } catch (error) { lease.dispose(); throw error; }
+  }
+
+  /** One exact original workspace only. No receipt/native/content authority. */
+  async prepareInputWorkspaceRead(ctx: ExtensionContext, paths: readonly string[]): Promise<InputWorkspaceGrantLease> {
+    const targets = freezeInputReadPaths(paths);
+    const first = SessionPermissionController.#inputWorkspaceFor(this, targets[0]!);
+    if (!first) throw new Error("Input requires an existing exact workspace grant.");
+    const issuance = originalInputIssuance.call(this.#state, first.grant);
+    const lease = new InputWorkspaceGrantLease(ctx, targets, this, first.grant, first.slot,
+      this.#captureInvocationAuthority(), SessionPermissionController.#assertInputWorkspace,
+      SessionPermissionController.#observeInputWorkspace, issuance);
+    const assertCurrent = lease.assertCurrent; // Original instance field, captured before the await.
+    try { await lease.prepare(); assertCurrent(); return lease; }
+    catch (error) { disposeInputWorkspace.call(lease); throw error; }
+  }
+
+  static #inputWorkspaceFor(owner: SessionPermissionController, target: string): { grant: InputWorkspaceGrant; slot: number } | undefined {
+    const primary = originalInputPrimary.call(owner.#state);
+    if (inputWorkspaceInside(inputWorkspaceData(primary, "canonicalPath"), target)) return { grant: primary, slot: -1 };
+    const additional = originalInputAdditional.call(owner.#state);
+    if (additional.length > 16) throw new Error("Input workspace table exceeds its bound.");
+    for (let index = 0; index < additional.length; index++) {
+      const grant = inputWorkspaceSlot(additional, index);
+      if (inputWorkspaceInside(inputWorkspaceData(grant, "canonicalPath"), target)) return { grant, slot: index };
+    }
+    return undefined;
+  }
+
+  static #assertInputWorkspace(issuer: object, grant: InputWorkspaceGrant, slot: number,
+    binding: InputWorkspaceBinding, paths: readonly string[], issuance: InputWorkspaceIssuance | undefined): void {
+    const owner = issuer as SessionPermissionController;
+    const original = slot === -1 ? originalInputPrimary.call(owner.#state) : inputWorkspaceSlot(originalInputAdditional.call(owner.#state), slot);
+    if (!owner.#restored || original !== grant || originalInputIssuance.call(owner.#state, grant) !== issuance
+      || inputWorkspaceData(grant, "requestedPath") !== binding.requestedPath
+      || inputWorkspaceData(grant, "canonicalPath") !== binding.canonicalPath
+      || inputWorkspaceData(grant, "device") !== binding.device || inputWorkspaceData(grant, "inode") !== binding.inode) {
+      throw new Error("Original input workspace identity changed.");
+    }
+    for (const path of paths) {
+      const selected = SessionPermissionController.#inputWorkspaceFor(owner, path);
+      if (!selected || selected.grant !== grant || selected.slot !== slot) throw new Error("Input paths changed workspace mapping.");
+    }
+  }
+
+  static async #observeInputWorkspace(issuer: object, ctx: ExtensionContext, grant: InputWorkspaceGrant,
+    binding: InputWorkspaceBinding, paths: readonly string[], check: () => void): Promise<void> {
+    const owner = issuer as SessionPermissionController;
+    const cwd = ctx.cwd;
+    check();
+    for (const path of paths) {
+      check();
+      const assessment = await owner.#state.assessTarget(path, cwd);
+      check();
+      if (assessment.unverifiableReason || assessment.canonicalTarget !== path || assessment.workspace !== grant) {
+        throw new Error("Input target no longer matches its original workspace grant.");
+      }
+      const info = await lstat(binding.canonicalPath, { bigint: true });
+      check();
+      if (!info.isDirectory() || info.isSymbolicLink() || info.dev !== binding.identity.dev || info.ino !== binding.identity.ino) {
+        throw new Error("Original input workspace filesystem identity changed.");
+      }
+      const canonical = await realpath(binding.requestedPath);
+      check();
+      if (canonical !== binding.canonicalPath) throw new Error("Original input workspace mapping changed.");
+    }
+    check();
+  }
+
   registerCommands(): void {
     this.#pi.registerCommand("permissions", {
       description: "管理当前 Session 的访问范围、审批策略和指令白名单",
@@ -337,15 +448,26 @@ export class SessionPermissionController {
   }
 
   async restore(ctx: ExtensionContext): Promise<void> {
-    this.#restored = false;
-    this.#authorityGeneration++;
-    this.#pendingApproval?.abort(new Error("Permission request is obsolete after session restore"));
-    this.#pendingApproval = undefined;
+    this.invalidate();
+    this.#invocationCancellation = new AbortController();
     await this.#state.restore(ctx.cwd, ctx.sessionManager.getBranch());
     this.#committedState = this.#state.checkpoint();
     this.#rejections.clear();
     this.#publish(ctx);
     this.#restored = true;
+  }
+
+  /** Revoke live invocations before session restoration or shutdown. */
+  invalidate(): void {
+    this.#restored = false;
+    this.#authorityGeneration++;
+    this.#revokeInvocations();
+    this.#pendingApproval?.abort(permissionCancellation("Permission request is obsolete after session invalidation"));
+    this.#pendingApproval = undefined;
+  }
+
+  #revokeInvocations(): void {
+    this.#invocationCancellation.abort(permissionCancellation("[POLICY_BLOCKED] Permission authority changed after approval."));
   }
 
   systemGuidance(): string {
@@ -446,7 +568,7 @@ export class SessionPermissionController {
       };
     }
 
-    if (this.#pendingApproval) throw new Error("Another permission request is awaiting approval");
+    if (this.#pendingApproval || this.#pendingInteraction) throw new Error("Another permission request is awaiting approval");
     const approval = new AbortController();
     this.#pendingApproval = approval;
     signal = signal ? AbortSignal.any([signal, approval.signal]) : approval.signal;
@@ -473,7 +595,7 @@ export class SessionPermissionController {
     // summary as the authority or as a substitute for inspectable request values.
     const fullRequest = JSON.stringify(event.input, null, 2);
     const details = `${header}\n操作尚未执行\n将保存的精确规则: ${request.shellCommand ?? "不适用"}\n将保存的前缀规则: ${commandPrefix ? `${commandPrefix} *（仅匹配单条简单命令，允许参数变化及无参数调用；复合命令仍需确认）` : "不适用"}\n本 Session 规则范围: ${request.operation}; cwd=${ruleCwd}\n模型提供的说明 (未经验证): ${request.purpose ?? "未提供"}\n目标范围:\n${request.exactTargets.join("\n") || "未确定"}\n风险依据: ${request.primitives.join(", ")}\n完整请求:\n${fullRequest}`;
-    const choice = await ctx.ui.select(header, choices, { signal, details });
+    const choice = await this.#awaitInteraction(ctx.ui.select(header, choices, { signal, details }));
     assertCurrent();
     const prefixChoice = commandPrefix ? `${ALLOW_SESSION_PREFIX}：${commandPrefix} *` : undefined;
     const chosePrefix = prefixChoice !== undefined && choice === prefixChoice;
@@ -518,7 +640,7 @@ export class SessionPermissionController {
 
     let rejectionReason: string | undefined;
     if (choice === REJECT_REASON) {
-      const entered = await ctx.ui.input("拒绝理由（将返回给模型）", "请说明需要修改、缩小或补充的内容", { signal });
+      const entered = await this.#awaitInteraction(ctx.ui.input("拒绝理由（将返回给模型）", "请说明需要修改、缩小或补充的内容", { signal }));
       assertCurrent();
       if (typeof entered === "string" && entered.trim()) rejectionReason = boundedText(entered, MAX_REJECTION_CHARS);
     }
@@ -535,7 +657,7 @@ export class SessionPermissionController {
     };
     } finally {
       if (this.#pendingApproval === approval) this.#pendingApproval = undefined;
-      approval.abort(new Error("Permission interaction ended"));
+      approval.abort(permissionCancellation("Permission interaction ended"));
     }
   }
 
@@ -672,6 +794,8 @@ export class SessionPermissionController {
     assertCurrent();
     attachStructuredReadonlyWorkspaceDelegation(event.input, {
       schemaVersion: 1,
+      assertCurrent: this.#captureInvocationAuthority(),
+      revocationSignal: this.#invocationCancellation.signal,
       sequence: this.#state.sequence,
       toolCallId: event.toolCallId,
       requestHash: structuredReadonlyRequestHash(event.input),
@@ -764,11 +888,11 @@ export class SessionPermissionController {
           }),
         };
       }
-      if (this.#pendingApproval) throw new Error("Another permission request is awaiting approval");
+      if (this.#pendingApproval || this.#pendingInteraction) throw new Error("Another permission request is awaiting approval");
       approval = new AbortController(); this.#pendingApproval = approval;
       const signal = ctx.signal ? AbortSignal.any([ctx.signal, approval.signal]) : approval.signal;
-      const choice = await ctx.ui.select("子代理工作区委派: subagent | 精确 cwd | 独立子进程",
-        [ALLOW_ONCE, REJECT], { signal, details: `完整请求:\n${JSON.stringify(event.input, null, 2)}\n授权范围:\n${grants.map(grant => `${grant.canonicalCwd}: ${grant.permissionMode}`).join("\n")}` });
+      const choice = await this.#awaitInteraction(ctx.ui.select("子代理工作区委派: subagent | 精确 cwd | 独立子进程",
+        [ALLOW_ONCE, REJECT], { signal, details: `完整请求:\n${JSON.stringify(event.input, null, 2)}\n授权范围:\n${grants.map(grant => `${grant.canonicalCwd}: ${grant.permissionMode}`).join("\n")}` }));
       signal.throwIfAborted();
       assertCurrent();
       if (choice !== ALLOW_ONCE) {
@@ -784,6 +908,8 @@ export class SessionPermissionController {
     assertCurrent();
     attachSubagentWorkspaceDelegation(event.input, {
       schemaVersion: 1,
+      assertCurrent: this.#captureInvocationAuthority(),
+      revocationSignal: this.#invocationCancellation.signal,
       sequence: this.#state.sequence,
       toolCallId: event.toolCallId,
       grants,
@@ -792,7 +918,7 @@ export class SessionPermissionController {
     } finally {
       if (approval) {
         if (this.#pendingApproval === approval) this.#pendingApproval = undefined;
-        approval.abort(new Error("Permission interaction ended"));
+        approval.abort(permissionCancellation("Permission interaction ended"));
       }
     }
   }
@@ -865,7 +991,10 @@ export class SessionPermissionController {
       if (!event.input || typeof event.input !== "object" || !("path" in event.input)) return undefined;
       const rawPath = (event.input as { path?: unknown }).path;
       if (typeof rawPath !== "string") return undefined;
-      const path = rawPath.startsWith("@") ? rawPath.slice(1) : rawPath;
+      const lspRoot = (event.input as { root?: unknown }).root;
+      const path = event.toolName === "lsp_fix"
+        ? resolve(ctx.cwd, typeof lspRoot === "string" && lspRoot.trim() ? lspRoot : ".", rawPath)
+        : rawPath.startsWith("@") ? rawPath.slice(1) : rawPath;
       const requestHash = mutationRequestHash(event.toolName, event.input);
       const creationPlan = event.toolName === "write" ? await prepareFileCreation(resolve(ctx.cwd, path)) : undefined;
       const assessment = await this.#state.assessTarget(path, ctx.cwd);
@@ -879,7 +1008,7 @@ export class SessionPermissionController {
         exactTargets: creationPlan ? [...exactTargets, ...creationPlan.directories] : exactTargets,
         targetAssessments: [assessment],
         classes: event.toolName === "edit" ? EDIT_CLASSES : event.toolName === "write" ? WRITE_CLASSES : LSP_FIX_CLASSES,
-        pathApproval: protectedAssessment.canonicalTarget && (protectedAssessment.violations.length > 0 || event.toolName === "write" || event.toolName === "edit")
+        pathApproval: protectedAssessment.canonicalTarget
           ? { canonicalTarget: protectedAssessment.canonicalTarget, protectedRoots: protectedAssessment.violations }
           : undefined,
         highRisk: sensitiveProtectedRoots(protectedAssessment.violations),
@@ -994,10 +1123,25 @@ export class SessionPermissionController {
     };
   }
 
+  #captureInvocationAuthority(): () => void {
+    const sequence = this.#state.sequence;
+    const generation = this.#authorityGeneration;
+    const issuer = this.#invocationIssuer;
+    // One callback per approved invocation; no progress-event or rendering work.
+    return () => {
+      const current = issuer.deref();
+      if (!current || !current.#restored || sequence !== current.#state.sequence || generation !== current.#authorityGeneration) {
+        throw new Error("[POLICY_BLOCKED] Permission authority changed after approval.");
+      }
+    };
+  }
+
   #attachPathApproval(event: ToolCallEventShape, request: OperationRequest): void {
     if (request.operation === "browser_exec") {
       attachBrowserExecAuthorization(event.input, {
         schemaVersion: 1,
+        assertCurrent: this.#captureInvocationAuthority(),
+        revocationSignal: this.#invocationCancellation.signal,
         sequence: this.#state.sequence,
         toolCallId: event.toolCallId,
         requestHash: browserExecRequestHash(event.input),
@@ -1016,7 +1160,8 @@ export class SessionPermissionController {
       nativePlan: request.nativePlan,
       creationPlan: request.creationPlan,
       writePreflight: request.operation === "write",
-      assertCurrent: request.nativePlan || request.operation === "write" || request.operation === "edit" || request.batch ? () => {
+      revocationSignal: request.operation === "lsp_fix" ? this.#invocationCancellation.signal : undefined,
+      assertCurrent: request.operation === "lsp_fix" ? this.#captureInvocationAuthority() : request.nativePlan || request.operation === "write" || request.operation === "edit" || request.batch ? () => {
         if (sequence !== this.#state.sequence || generation !== this.#authorityGeneration) throw new Error("[POLICY_BLOCKED] Permission authority changed after approval.");
       } : undefined,
       ...request.pathApproval,
@@ -1214,7 +1359,7 @@ export class SessionPermissionController {
   }
 
   #persist(ctx: ExtensionContext): void {
-    this.#pendingApproval?.abort(new Error("Permission request is obsolete after permission state change"));
+    this.#pendingApproval?.abort(permissionCancellation("Permission request is obsolete after permission state change"));
     this.#pendingApproval = undefined;
     const state = this.#state.serialized();
     try {
@@ -1225,6 +1370,8 @@ export class SessionPermissionController {
       throw error;
     }
     this.#committedState = this.#state.checkpoint();
+    this.#revokeInvocations();
+    this.#invocationCancellation = new AbortController();
     try {
       this.#pi.events.emit(SESSION_PERMISSION_EVENT, state);
     } catch {
@@ -1317,4 +1464,19 @@ export class SessionPermissionController {
       // Auditing is best-effort; enforcement remains active.
     }
   }
+}
+const originalInputObservation = SessionPermissionController.prototype.authorizeFileObservation;
+const originalInputPrimary = Object.getOwnPropertyDescriptor(SessionPermissionState.prototype, "primary")!.get!;
+const originalInputAdditional = Object.getOwnPropertyDescriptor(SessionPermissionState.prototype, "additional")!.get!;
+const originalInputIssuance = SessionPermissionState.prototype.getIssuedWorkspaceIdentity;
+const disposeInputWorkspace = InputWorkspaceGrantLease.prototype.dispose;
+function inputWorkspaceInside(root: string, target: string): boolean {
+  if (typeof root !== "string" || root.length < 1 || root.length > 4096) throw new Error("Input workspace path exceeds its bound.");
+  const value = inputWorkspaceRelative(root, target);
+  return value === "" || !value.startsWith("..") && !isAbsolute(value);
+}
+function inputWorkspaceSlot(grants: readonly InputWorkspaceGrant[], index: number): InputWorkspaceGrant {
+  const field = Object.getOwnPropertyDescriptor(grants, String(index));
+  if (!field || !("value" in field) || !field.value) throw new Error("Original workspace slot is unavailable.");
+  return field.value;
 }

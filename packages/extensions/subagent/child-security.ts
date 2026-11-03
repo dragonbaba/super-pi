@@ -1,6 +1,8 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { isPathInside } from "@super-pi/coding-agent/internal/tasks/path";
+export { isPathInside } from "@super-pi/coding-agent/internal/tasks/path";
 import {
 	CREDENTIAL_FILE_EXTENSION_PATTERN,
 	ENV_DUMP_COMMAND_PATTERN,
@@ -116,16 +118,6 @@ export function assertProjectAgentAccess(
 	if (confirmProjectAgents && !hasUI) {
 		throw new Error("Project-local agents are denied without UI confirmation; trusted automation must explicitly disable confirmation");
 	}
-}
-
-function comparable(value: string): string {
-	const normalized = path.normalize(value);
-	return process.platform === "win32" ? normalized.toLowerCase() : normalized;
-}
-
-export function isPathInside(candidate: string, root: string): boolean {
-	const relative = path.relative(comparable(root), comparable(candidate));
-	return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
 }
 
 /** Resolve symlinks for an existing path, or for the nearest existing parent of a new path. */

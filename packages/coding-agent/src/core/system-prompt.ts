@@ -35,14 +35,37 @@ export interface BuildSystemPromptOptions {
 	skills?: Skill[];
 }
 
-/** Build the system prompt with tools, guidelines, and context */
+export interface SystemPromptSegment {
+	readonly source: "default" | "custom" | "append" | "workspace" | "skills" | "cwd";
+	readonly version: 1;
+	readonly text: string;
+}
+
+/** Immutable, build-owned provenance; never an authorization credential. */
+export interface SystemPromptComposition {
+	readonly version: 1;
+	readonly text: string;
+	readonly segments: readonly SystemPromptSegment[];
+	/** Migration bounds paired with these strings, independent of mutable resource options. */
+	readonly dynamicSources: {
+		readonly contextFileCount: number;
+		readonly maxContextPathChars: number;
+		readonly visibleSkillCount: number;
+		readonly maxSkillPathChars: number;
+	};
+}
+
+/** Compatibility entry point: providers and existing callers still receive a string. */
 export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
+	return buildSystemPromptComposition(options).text;
+}
+
+/** Five aggregate segments, allocated only when the session rebuilds its prompt. */
+export function buildSystemPromptComposition(options: BuildSystemPromptOptions): SystemPromptComposition {
 	const {
 		customPrompt,
 		selectedTools,
 		nestedTools,
-		toolSnippets,
-		promptGuidelines,
 		appendSystemPrompt,
 		cwd,
 		contextFiles: providedContextFiles,
@@ -55,34 +78,37 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 	const contextFiles = providedContextFiles ?? [];
 	const skills = providedSkills ?? [];
 
-	if (customPrompt) {
-		let prompt = customPrompt;
-
-		if (appendSection) {
-			prompt += appendSection;
+	let workspace = "", maxContextPathChars = 0;
+	if (contextFiles.length > 0) {
+		workspace = "\n\n<project_context>\n\nProject-specific instructions and guidelines:\n\n";
+		for (const { path: filePath, content } of contextFiles) {
+			workspace += `<project_instructions path="${filePath}">\n${content}\n</project_instructions>\n\n`;
+			maxContextPathChars = Math.max(maxContextPathChars, filePath.length);
 		}
-
-		// Append project context files
-		if (contextFiles.length > 0) {
-			prompt += "\n\n<project_context>\n\n";
-			prompt += "Project-specific instructions and guidelines:\n\n";
-			for (const { path: filePath, content } of contextFiles) {
-				prompt += `<project_instructions path="${filePath}">\n${content}\n</project_instructions>\n\n`;
-			}
-			prompt += "</project_context>\n";
-		}
-
-		// Append skills section (only if read tool is available)
-		const customPromptHasRead = !selectedTools || hasCallableTool(selectedTools, nestedTools, "read");
-		if (customPromptHasRead && skills.length > 0) {
-			prompt += formatSkillsForPrompt(skills);
-		}
-
-		prompt += `\nCurrent working directory: ${promptCwd}\n`;
-
-		return prompt;
+		workspace += "</project_context>\n";
 	}
+	const hasRead = !selectedTools || hasCallableTool(selectedTools, nestedTools, "read");
+	let visibleSkillCount = 0, maxSkillPathChars = 0;
+	if (hasRead) {
+		for (const skill of skills) {
+			if (skill.disableModelInvocation) continue;
+			visibleSkillCount++;
+			maxSkillPathChars = Math.max(maxSkillPathChars, skill.filePath.length);
+		}
+	}
+	const segments: readonly SystemPromptSegment[] = Object.freeze([
+		Object.freeze({ source: customPrompt ? "custom" : "default", version: 1, text: customPrompt || buildDefaultPrompt(options) }),
+		Object.freeze({ source: "append", version: 1, text: appendSection }),
+		Object.freeze({ source: "workspace", version: 1, text: workspace }),
+		Object.freeze({ source: "skills", version: 1, text: hasRead && skills.length > 0 ? formatSkillsForPrompt(skills) : "" }),
+		Object.freeze({ source: "cwd", version: 1, text: `\nCurrent working directory: ${promptCwd}${customPrompt ? "\n" : ""}` }),
+	]);
+	let text = "";
+	for (const segment of segments) text += segment.text;
+	return Object.freeze({ version: 1, text, segments, dynamicSources: Object.freeze({ contextFileCount: contextFiles.length, maxContextPathChars, visibleSkillCount, maxSkillPathChars }) });
+}
 
+function buildDefaultPrompt({ selectedTools, nestedTools, toolSnippets, promptGuidelines }: BuildSystemPromptOptions): string {
 	// Get absolute paths to documentation and examples
 	const readmePath = getReadmePath();
 
@@ -102,7 +128,6 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 	const hasGrep = hasCallableTool(tools, nestedTools, "grep");
 	const hasFind = hasCallableTool(tools, nestedTools, "find");
 	const hasLs = hasCallableTool(tools, nestedTools, "ls");
-	const hasRead = hasCallableTool(tools, nestedTools, "read");
 
 	// File exploration guidelines
 	if ((hasBash || hasPowerShell) && !hasGrep && !hasFind && !hasLs) {
@@ -135,34 +160,11 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 		? `\n\nAvailable tools:\n${toolsList}\n\nIn addition to the tools above, you may have access to other custom tools depending on the project.`
 		: "";
 
-	let prompt = `${introduction}${toolSection}
+	return `${introduction}${toolSection}
 
 Guidelines:
 ${guidelines}
 
 Super Pi package documentation (read only when the user asks about Super Pi itself):
 - Package overview: ${readmePath}`;
-
-	if (appendSection) {
-		prompt += appendSection;
-	}
-
-	// Append project context files
-	if (contextFiles.length > 0) {
-		prompt += "\n\n<project_context>\n\n";
-		prompt += "Project-specific instructions and guidelines:\n\n";
-		for (const { path: filePath, content } of contextFiles) {
-			prompt += `<project_instructions path="${filePath}">\n${content}\n</project_instructions>\n\n`;
-		}
-		prompt += "</project_context>\n";
-	}
-
-	// Append skills section (only if read tool is available)
-	if (hasRead && skills.length > 0) {
-		prompt += formatSkillsForPrompt(skills);
-	}
-
-	prompt += `\nCurrent working directory: ${promptCwd}`;
-
-	return prompt;
 }

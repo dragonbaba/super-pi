@@ -1,9 +1,14 @@
-import { readFileSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, fstatSync, openSync, readSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ClientLease, LspClientPool } from "./client-pool.js";
 import { collectSupportedFiles, resolveRoot, resolveSupportedFile } from "./files.js";
 import { DEFAULT_FILE_LIMIT } from "./limits.js";
+import { assertFixAuthorization, type FixAuthorization } from "./fix-authorization.js";
+import { capturePathIdentity } from "@super-pi/coding-agent/internal/files/native-file-core";
+import { selectCommitMetadata } from "@super-pi/coding-agent/internal/files/file-commit-metadata";
+import { commitPreparedFile, commitFailure, commitSummary, FileCommitError, type FileCommitReceipt } from "@super-pi/coding-agent/internal/files/file-commit";
 import { applyTextEdits, collectWorkspaceEdits, hasOverlappingTextEdits } from "./text-edits.js";
 import type {
 	CodeAction,
@@ -17,6 +22,8 @@ const MAX_LSP_DOCUMENT_BYTES = 4 * 1024 * 1024;
 const MAX_MODEL_OUTPUT_BYTES = 50 * 1024;
 const MAX_DIAGNOSTIC_LINES = 500;
 const MAX_RETAINED_EDIT_ITEMS = 200;
+// Observe early shutdown rejection immediately; the invocation finally awaits and reports it.
+function observeDiscardFailure(): void {}
 
 export async function runDiagnostics(
 	pool: LspClientPool,
@@ -45,9 +52,10 @@ export async function runDiagnostics(
 
 	let lease: ClientLease | undefined;
 	let aborted = false;
+	let discard: Promise<void> | undefined;
 	const abort = () => {
 		aborted = true;
-		if (lease) void pool.discard(lease);
+		if (lease && !discard) { discard = pool.discard(lease); void discard.catch(observeDiscardFailure); }
 	};
 	throwIfAborted(signal, adapter);
 	signal?.addEventListener("abort", abort, { once: true });
@@ -56,6 +64,7 @@ export async function runDiagnostics(
 		ctx.ui.setStatus(statusKey, `${adapter.name} diagnostics`);
 		throwIfAborted(signal, adapter);
 		lease = await pool.acquire(adapter, root, timeoutMs);
+		throwIfAborted(signal, adapter);
 		const client = lease.client;
 
 		const openedFiles: Array<{ file: string; uri: string }> = [];
@@ -86,9 +95,10 @@ export async function runDiagnostics(
 			for (const { uri } of openedFiles) client.didClose(uri);
 		}
 	} finally {
-		ctx.ui.setStatus(statusKey, undefined);
 		signal?.removeEventListener("abort", abort);
-		if (lease && !aborted) pool.release(lease);
+		try {
+			if (lease) { if (aborted) await (discard ?? pool.discard(lease)); else pool.release(lease); }
+		} finally { ctx.ui.setStatus(statusKey, undefined); }
 	}
 }
 
@@ -100,17 +110,26 @@ export async function runFix(
 	signal: AbortSignal | undefined,
 	ctx: StatusContext,
 	statusKey: string,
+	authorization?: FixAuthorization,
 ) {
 	const root = resolveRoot(params.root);
 	const file = resolveSupportedFile(adapter, root, params.path);
+	if (params.write) {
+		assertFixAuthorization(authorization, file);
+		signal = signal ? AbortSignal.any([signal, authorization!.revocationSignal]) : authorization!.revocationSignal;
+	}
 	const actionKind = params.kind?.trim() || "source.fixAll";
+	const target = params.write ? await capturePathIdentity(file) : undefined;
 	const text = readBoundedDocument(file);
+	const plan = target ? { target, parent: await capturePathIdentity(path.dirname(file)),
+		previousSha256: createHash("sha256").update(text, "utf8").digest("hex"), metadata: await selectCommitMetadata(target) } : undefined;
 
 	let lease: ClientLease | undefined;
+	let discard: Promise<void> | undefined;
 	let aborted = false;
 	const abort = () => {
 		aborted = true;
-		if (lease) void pool.discard(lease);
+		if (lease && !discard) { discard = pool.discard(lease); void discard.catch(observeDiscardFailure); }
 	};
 	throwIfAborted(signal, adapter);
 	signal?.addEventListener("abort", abort, { once: true });
@@ -146,7 +165,23 @@ export async function runFix(
 		}
 		const changed = newText !== text;
 
-		if (params.write && changed) writeFileSync(file, newText);
+		throwIfAborted(signal, adapter);
+		let commit: FileCommitReceipt | undefined;
+		if (params.write && changed) {
+			assertFixAuthorization(authorization, file);
+			if (Buffer.byteLength(newText, "utf8") > MAX_LSP_DOCUMENT_BYTES) throw new Error("LSP fix result exceeds the document byte limit.");
+			try {
+				commit = await commitPreparedFile(plan!, Buffer.from(newText, "utf8"), {
+					assertPathAllowed: async () => { assertFixAuthorization(authorization, file); return authorization!.canonicalTarget; },
+					assertCurrent: authorization!.assertCurrent,
+					signal,
+				});
+			} catch (error) {
+				if (!(error instanceof FileCommitError)) throw error;
+				return { ...textResult(`LSP fix could not finish. Inspect the current file before retrying.\n${commitSummary(error.receipt)}\n${error.message}`,
+					{ path: path.relative(root, file) || file, ...commitFailure(error) }), isError: true };
+			}
+		}
 
 		return textResult(
 			formatEditSummary(adapter, "fix", root, file, changed, params.write, newText),
@@ -155,6 +190,7 @@ export async function runFix(
 				uri,
 				changed,
 				write: params.write ?? false,
+				commit,
 				kind: actionKind,
 				actions: resolvedActions.slice(0, MAX_RETAINED_EDIT_ITEMS).map(({ title, kind }) => ({ title, kind })),
 				appliedActions: selectedActions.slice(0, MAX_RETAINED_EDIT_ITEMS).map(({ title, kind }) => ({ title, kind })),
@@ -164,9 +200,10 @@ export async function runFix(
 			},
 		);
 	} finally {
-		ctx.ui.setStatus(statusKey, undefined);
 		signal?.removeEventListener("abort", abort);
-		if (lease && !aborted) pool.release(lease);
+		try {
+			if (lease) { if (aborted) await (discard ?? pool.discard(lease)); else pool.release(lease); }
+		} finally { ctx.ui.setStatus(statusKey, undefined); }
 	}
 }
 
@@ -177,12 +214,25 @@ function assertBoundedDocument(file: string) {
 }
 
 function readBoundedDocument(file: string) {
-	assertBoundedDocument(file);
-	const text = readFileSync(file, "utf8");
-	if (Buffer.byteLength(text) > MAX_LSP_DOCUMENT_BYTES) {
-		throw new Error(`LSP document exceeds ${MAX_LSP_DOCUMENT_BYTES} bytes after read: ${file}.`);
-	}
-	return text;
+	const fd = openSync(file, "r");
+	try {
+		const info = fstatSync(fd);
+		if (!info.isFile()) throw new Error(`LSP document must be a regular file: ${file}.`);
+		const size = info.size;
+		if (size > MAX_LSP_DOCUMENT_BYTES) throw new Error(`LSP document exceeds ${MAX_LSP_DOCUMENT_BYTES} bytes: ${file}.`);
+		// One bounded file-owned buffer, including a growth sentinel; no per-read wrappers or arrays.
+		const bytes = Buffer.allocUnsafe(size + 1);
+		let used = 0;
+		while (used < bytes.length) {
+			const count = readSync(fd, bytes, used, bytes.length - used, null);
+			if (count === 0) break;
+			used += count;
+		}
+		if (used !== size) throw new Error(`LSP document size changed while reading: ${file}. Retry from a fresh read.`);
+		const text = bytes.toString("utf8", 0, used);
+		if (Buffer.byteLength(text) > MAX_LSP_DOCUMENT_BYTES) throw new Error(`LSP decoded document exceeds ${MAX_LSP_DOCUMENT_BYTES} bytes: ${file}.`);
+		return text;
+	} finally { closeSync(fd); }
 }
 
 function selectCodeActions(actions: CodeAction[], requestedKind: string) {

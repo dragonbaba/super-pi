@@ -67,7 +67,8 @@ export class RetryBudget {
     if (!operation) {
       if (this.saturated || this.operations.size >= MAX_RETRY_OPERATIONS) {
         // Preserve existing reservations. Unknown identities may execute, but their
-        // transient failures use the deterministic ledger's two-failure threshold.
+        // transient failures use the bounded overflow recovery limit, not the
+        // ordinary failure advisory threshold.
         this.saturated = true;
         this.overflowFailures++;
         return false;

@@ -1,6 +1,11 @@
 import { type AttachmentMessage, type ImageSubmission, snapshotImageSubmission, verifyImmutableImage, isDecodedImage, verifySubmittedImage } from "./image-attachments.ts";
 import { createHash } from "node:crypto";
 import { CodemodeController } from "./codemode.ts";
+import { SessionSandbox } from "./sandbox/session-sandbox.ts";
+import { WorkspaceSandboxTools } from "./sandbox/workspace-tools.ts";
+import { getAgentDir } from "../config.ts";
+import { createSessionLease, type SessionLease } from "./session-lease.ts";
+import { NATIVE_FILE_REVISION } from "./files/file-host.ts";
 import type { ToolSelection } from "./tool-selection.ts";
 import { CODEMODE_NAME, CODEMODE_DESCRIPTION, CODEMODE_STORE_ENTRY, CODEMODE_CALL_ENTRY, CODEMODE_RESULT_ENTRY, DIRECT_CONTROL_NAMES } from "./codemode-constants.ts";
 import type { CodemodeReadEvent } from "./extensions/types.ts";
@@ -39,6 +44,7 @@ import {
 	type AgentState,
 	type AgentTool,
 	type PrepareNextTurnContext,
+	type StreamFn,
 	type ThinkingLevel,
 } from "@super-pi/agent-core";
 import { contentText, stabilizeToolArguments } from "@super-pi/ai";
@@ -55,7 +61,6 @@ import type {
 } from "@super-pi/ai/compat";
 import {
 	clampThinkingLevel,
-	cleanupSessionResources,
 	getModelCapabilities,
 	getSupportedThinkingLevels,
 	isContextOverflow,
@@ -75,6 +80,7 @@ import { sleep } from "../utils/sleep.ts";
 import { normalizeToolResultImages } from "../utils/tool-result-images.ts";
 import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.ts";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.ts";
+import { shellProcessResultFromError } from "./tools/shell-execution.ts";
 import {
 	type CompactionResult,
 	calculateContextTokens,
@@ -105,6 +111,7 @@ import {
 	type ProviderRequestCompactionInput,
 	type ProviderRequestCompactionResult,
 	type ProviderRequestPayloadInput,
+	type ProviderRequestAuthSnapshot,
 	type ReplacedSessionContext,
 	type RegisteredTool,
 	type SessionBeforeCompactResult,
@@ -118,11 +125,13 @@ import {
 	type ToolExecutionStartEvent,
 	type ToolExecutionUpdateEvent,
 	type ToolInfo,
+	type ToolCatalogSnapshot,
 	type TreePreparation,
 	type TurnEndEvent,
 	type TurnStartEvent,
 	wrapRegisteredTools,
 } from "./extensions/index.ts";
+import type { OpenAICodexDispatch } from "./extensions/types.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
@@ -146,7 +155,7 @@ import { CURRENT_SESSION_VERSION, getLatestCompactionEntry, sessionEntryToContex
 import type { SettingsManager } from "./settings-manager.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
-import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.ts";
+import { type BuildSystemPromptOptions, buildSystemPromptComposition, type SystemPromptComposition } from "./system-prompt.ts";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
 import { createAllToolDefinitions, getDefaultToolNames } from "./tools/index.ts";
 import { createPowerShellToolState } from "./tools/powershell.ts";
@@ -353,12 +362,6 @@ function stabilizeCompletedToolArguments(messages: AgentMessage[]): void {
 	}
 }
 
-function withoutDeletedHeaders(headers: ProviderHeaders | undefined): Record<string, string> | undefined {
-	return headers
-		? Object.fromEntries(Object.entries(headers).filter((entry): entry is [string, string] => entry[1] !== null))
-		: undefined;
-}
-
 function boundedAutoCompactionError(prefix: string, error: unknown): string {
 	const detail = (error instanceof Error ? error.message : "compaction failed").replace(COMPACTION_ERROR_NEWLINE_PATTERN, " ").trim();
 	return `${prefix}: ${detail || "compaction failed"}`.slice(0, 512);
@@ -380,9 +383,12 @@ function isExtensionObserverFlushBoundary(event: AgentEvent): boolean {
 }
 
 import { operationSessionIdentity, OperationJournal, type OperationJournalOptions, type OperationWriteIntent, type OperationWriteRecovery, type OperationCompletion } from "./operation-journal.ts";
+import { SupplementalSummaryScope } from "./supplemental-summary.ts";
 import { bindOperationWrite, retireOperationWrite, type OperationWriteGate } from "./tools/write.ts";
 
 export interface AgentSessionConfig {
+	/** Native session lease location, independent of optional Memory indexing. */
+	agentDir?: string;
 	operationJournal?: OperationJournalOptions;
 	agent: Agent;
 	sessionManager: SessionManager;
@@ -396,6 +402,11 @@ export interface AgentSessionConfig {
 	customTools?: ToolDefinition[];
 	/** Canonical model/auth runtime used by coding-agent internals. */
 	modelRuntime: ModelRuntime;
+	/** Internal SDK summary boundary; custom Agent stream replacements remain authoritative. */
+	createSummarizationStream?: (auth: ProviderRequestAuthSnapshot, assertCurrent: () => void) => StreamFn;
+	getSupplementalSummaryCustomStream?: () => StreamFn | undefined;
+	/** Capture the native Codex binding before summary authentication; absent for custom streams. */
+	getSummarizationCodexDispatch?: (model: Model<any>) => OpenAICodexDispatch | undefined;
 	/** Provider-owned request serializer used for extension request previews. */
 	providerRequestPayloadBuilder?: (input: {
 		model: Model<any>;
@@ -407,6 +418,9 @@ export interface AgentSessionConfig {
 	}) => Record<string, unknown> | undefined;
 	/** Provider-owned native compactor. */
 	providerRequestCompactor?: (input: {
+		codexDispatch: OpenAICodexDispatch;
+		codexGeneration: number;
+		builtinCodex: boolean;
 		model: Model<any>;
 		apiKey: string;
 		headers?: ProviderHeaders;
@@ -758,6 +772,9 @@ function withContextAccounting(
 export class AgentSession {
 	readonly agent: Agent;
 	readonly sessionManager: SessionManager;
+	private _sessionLease: SessionLease | undefined;
+	private _sessionLeaseRelease: Promise<void> | undefined;
+	private _sessionLeaseShutdown: Promise<unknown> | undefined;
 	readonly settingsManager: SettingsManager;
 
 	private _scopedModels: Array<{ model: Model<any>; thinkingLevel?: ThinkingLevel }>;
@@ -813,6 +830,7 @@ export class AgentSession {
 
 	// Bash execution state
 	private readonly _bashAbortControllers = new Set<AbortController>();
+	private readonly _unconfirmedBashOwners = new Map<AbortController, BashOperations>();
 	private _pendingBashMessages: BashExecutionMessage[] = [];
 
 	// Extension system
@@ -843,6 +861,9 @@ export class AgentSession {
 	private _modelRuntime: ModelRuntime;
 	private _providerRequestPayloadBuilder: AgentSessionConfig["providerRequestPayloadBuilder"];
 	private _providerRequestCompactor: AgentSessionConfig["providerRequestCompactor"];
+	private _createSummarizationStream: AgentSessionConfig["createSummarizationStream"];
+	private _getSupplementalSummaryCustomStream: AgentSessionConfig["getSupplementalSummaryCustomStream"];
+	private _getSummarizationCodexDispatch: AgentSessionConfig["getSummarizationCodexDispatch"];
 	private _prefixManifestRecorder?: PrefixManifestRecorder;
 	private _toolOutputShadow: ToolOutputShadowObserver | undefined;
 	private _toolResultPresentation: ToolResultPresentationOwner | undefined;
@@ -885,6 +906,9 @@ export class AgentSession {
 	private _evidenceLeaf: string | null = null;
 	private _toolRegistry: Map<string, AgentTool> = new Map();
 	private readonly _codemode: CodemodeController;
+	private readonly _sandboxCommands?: SessionSandbox;
+	private _workspaceSandbox?: WorkspaceSandboxTools;
+	private _createWorkspaceSandbox?: () => WorkspaceSandboxTools;
 	private readonly _emitCodemodeRead = async (event: CodemodeReadEvent): Promise<void> => { await this._extensionRunner.emit(event); };
 	private _toolDefinitions: Map<string, ToolDefinitionEntry> = new Map();
 	private _toolPromptSnippets: Map<string, string> = new Map();
@@ -894,6 +918,7 @@ export class AgentSession {
 
 	// Base system prompt (without extension appends) - used to apply fresh appends each turn
 	private _baseSystemPrompt = "";
+	private _baseSystemPromptComposition: SystemPromptComposition | undefined;
 	private _baseSystemPromptOptions!: BuildSystemPromptOptions;
 	private _systemPromptOverride?: string;
 
@@ -916,6 +941,7 @@ export class AgentSession {
 		return this._dispatchOperation(operationId, true, args);
 	}
 	private async _dispatchOperation(id: string, resume: boolean, args: OperationWriteRecovery): Promise<OperationCompletion> {
+		this._resourceLoader.getExtensions().runtime.executionBoundary.assertCurrent();
 		if (!this._operationOptions || this._operationDisposed) throw new Error("Operation journal disabled or disposed");
 		if (typeof id !== "string" || id.length !== (resume ? 77 : 36) || !(args.originBranch === null || typeof args.originBranch === "string" && Buffer.byteLength(args.originBranch) <= 128)) throw new Error("Operation identity capacity");
 		if (this._hostOperation || this._isAgentRunActive || this.agent.state.isStreaming) throw new Error("Operation dispatch busy");
@@ -1002,6 +1028,19 @@ export class AgentSession {
 		this._codemode = new CodemodeController(values => { this.sessionManager.appendCustomEntry(CODEMODE_STORE_ENTRY, { version: 1, values }); },
 			entry => { this.sessionManager.appendCustomEntry(CODEMODE_CALL_ENTRY, entry); },
 			entry => { this.sessionManager.appendCustomEntry(CODEMODE_RESULT_ENTRY, entry); });
+		const permissionMode = this.settingsManager.getPermissionMode();
+		if (permissionMode && permissionMode !== "host-write") {
+			if (this._operationOptions || config.baseToolsOverride) throw new Error("[SANDBOX_UNSUPPORTED] Host tool overrides and operation journals cannot enter a sandbox");
+			const workspaceCwd = config.cwd, workspaceParent = resolveEvidencePath(config.agentDir ?? getAgentDir(), "sandbox-workspaces");
+			this._createWorkspaceSandbox = () => new WorkspaceSandboxTools(workspaceCwd, workspaceParent, permissionMode,
+				() => this._resourceLoader.getExtensions().runtime);
+			this._workspaceSandbox = this._createWorkspaceSandbox();
+		} else if (this.settingsManager.getExecutionEnvironment() === "sandbox") {
+			if (this._operationOptions) throw new Error("[SANDBOX_UNSUPPORTED] Experimental host operation journals require trusted-host execution");
+			this._sandboxCommands = new SessionSandbox(() => this._resourceLoader.getExtensions().runtime,
+				resolveEvidencePath(config.agentDir ?? getAgentDir(), "sandbox-tasks"));
+			this._codemode.setCommandSandbox(this._sandboxCommands);
+		}
 		this._scopedModels = config.scopedModels ?? [];
 		this._resourceLoader = config.resourceLoader;
 		this._customTools = config.customTools ?? [];
@@ -1009,6 +1048,9 @@ export class AgentSession {
 		this._modelRuntime = config.modelRuntime;
 		this._providerRequestPayloadBuilder = config.providerRequestPayloadBuilder;
 		this._providerRequestCompactor = config.providerRequestCompactor;
+		this._createSummarizationStream = config.createSummarizationStream;
+		this._getSupplementalSummaryCustomStream = config.getSupplementalSummaryCustomStream;
+		this._getSummarizationCodexDispatch = config.getSummarizationCodexDispatch;
 		this._prefixManifestRecorder = config.prefixManifestRecorder;
 		this._toolOutputShadow = createToolOutputShadowObserver(config.toolOutputShadow);
 		this._toolResultPresentation =
@@ -1019,7 +1061,7 @@ export class AgentSession {
 		this._initialActiveToolNames = config.initialActiveToolNames;
 		this._allowedToolNames = config.allowedToolNames ? new Set(config.allowedToolNames) : undefined;
 		this._excludedToolNames = config.excludedToolNames ? new Set(config.excludedToolNames) : undefined;
-		this._mcpEnabled = config.noMcp !== true;
+		this._mcpEnabled = config.noMcp !== true && !this._sandboxCommands && !this._workspaceSandbox;
 		this._toolSelection = config.toolSelection;
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = { ...(config.sessionStartEvent ?? { type: "session_start", reason: "startup" }), mcpEnabled: this._mcpEnabled };
@@ -1047,6 +1089,12 @@ export class AgentSession {
 			includeAllExtensionTools: true,
 		});
 		this._toolRuntimeInitialized = true;
+		try {
+			this._sessionLease = createSessionLease(config.agentDir ?? getAgentDir(), this.sessionFile, this.sessionId);
+		} catch (error) {
+			this.dispose();
+			throw error;
+		}
 	}
 
 	get modelRuntime(): ModelRuntime {
@@ -1056,7 +1104,7 @@ export class AgentSession {
 	private async _getRequiredRequestAuth(model: Model<any>): Promise<{
 		model: Model<any>;
 		apiKey?: string;
-		headers?: Record<string, string>;
+		headers?: ProviderHeaders;
 		env?: Record<string, string>;
 	}> {
 		let result: AuthResult | undefined;
@@ -1074,7 +1122,7 @@ export class AgentSession {
 			return {
 				model: requestModel,
 				apiKey: result.auth.apiKey,
-				headers: withoutDeletedHeaders(result.auth.headers),
+				headers: result.auth.headers,
 				env: result.env,
 			};
 		}
@@ -1090,10 +1138,23 @@ export class AgentSession {
 		throw new Error(formatNoApiKeyFoundMessage(model.provider));
 	}
 
+	/** One logical summary/retry boundary, never a delta/progress callback. Capture before resolving auth. */
+	private _createSummarizationGuard(model: Model<any>, signal: AbortSignal): () => void {
+		const runner = this._extensionRunner, sessionId = this.sessionId;
+		const boundary = this._resourceLoader.getExtensions().runtime.executionBoundary, generation = boundary.generation;
+		const codex = this._getSummarizationCodexDispatch?.(model), codexGeneration = codex?.owner.generation;
+		return () => {
+			signal.throwIfAborted();
+			boundary.assertCurrent(generation);
+			this._assertProviderPreviewCurrent(model, runner, sessionId, generation);
+			if (codex && codex.owner.generation !== codexGeneration) throw new Error("Codex summary belongs to a previous transport generation");
+		};
+	}
+
 	private async _getSummarizationRequestAuth(model: Model<any>): Promise<{
 		model: Model<any>;
 		apiKey?: string;
-		headers?: Record<string, string>;
+		headers?: ProviderHeaders;
 		env?: Record<string, string>;
 	}> {
 		if (this.agent.streamFunction === streamSimple) {
@@ -1107,7 +1168,7 @@ export class AgentSession {
 			return {
 				model: requestModel,
 				apiKey: result.auth.apiKey,
-				headers: withoutDeletedHeaders(result.auth.headers),
+				headers: result.auth.headers,
 				env: result.env,
 			};
 		} catch {
@@ -1124,17 +1185,12 @@ export class AgentSession {
 	 * happens here instead of in wrappers.
 	 */
 	private _installAgentToolHooks(): void {
-		this.agent.beforeToolCall = async ({ toolCall, args, parentToolCallId, nestedIssuedAt }) => {
+		this.agent.beforeToolCall = async ({ toolCall, args, context, parentToolCallId, nestedIssuedAt }) => {
 			await this._codemode.admitVisibleReads(this._emitCodemodeRead);
 			if (toolCall.name === "inspect_image" && this.settingsManager.getBlockImages()) {
 				return { block: true, reason: "图片读取/发送已被 blockImages 禁止" };
 			}
 			const runner = this._extensionRunner;
-			if (!runner.hasHandlers("tool_call")) {
-				this._codemode.recordInvocation(parentToolCallId, toolCall.id, toolCall.name, args);
-				return undefined;
-			}
-
 			try {
 				const decision = await runner.emitToolCall({
 					// Preserve the runner-owned finalAuthorization in the returned result;
@@ -1145,7 +1201,8 @@ export class AgentSession {
 					parentToolCallId,
 					nestedIssuedAt,
 					input: args as Record<string, unknown>,
-				});
+				}, context.tools?.find(tool => tool.name === toolCall.name)?.execute === this._toolRegistry.get(toolCall.name)?.execute
+					? this._toolDefinitions.get(toolCall.name)?.definition : undefined);
 				try { if (!decision?.block) this._codemode.recordInvocation(parentToolCallId, toolCall.id, toolCall.name, args); }
 				catch (error) { decision?.finalAuthorization?.release(); throw error; }
 				return decision;
@@ -1225,6 +1282,7 @@ export class AgentSession {
 				if (toolCall.name === CODEMODE_NAME) return this._codemode.observationFailed(result, error);
 				throw error;
 			} finally {
+				this._resourceLoader.getExtensions().runtime.nativeFiles?.finish(toolCall.id);
 				stabilizeToolArguments(toolCall.arguments);
 			}
 		};
@@ -1876,7 +1934,15 @@ export class AgentSession {
 	 * Call this when completely done with the session.
 	 */
 	dispose(): void {
+		if (this._operationDisposed) return;
 		this._operationDisposed = true;
+		// Publish before callbacks can reenter. Disposal is a request; the lease
+		// survives until all native execution/provider owners confirm quiescence.
+		const leaseRunner = this._extensionRunner, leaseShutdown = this._sessionLeaseShutdown;
+		this._sessionLeaseShutdown = undefined;
+		this._sessionLeaseRelease = Promise.resolve().then(() => this._releaseSessionLease(leaseRunner, leaseShutdown));
+		void this._sessionLeaseRelease.catch(ignoreOrdinaryEventListenerRejection);
+		this._baseSystemPromptComposition = undefined;
 		this._toolSelection = undefined;
 		const codemode = this._toolRegistry.get(CODEMODE_NAME);
 		if (codemode) codemode.description = CODEMODE_DESCRIPTION;
@@ -1917,6 +1983,7 @@ export class AgentSession {
 
 		this._extensionRunner.invalidate(
 			"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().",
+			leaseShutdown !== undefined,
 		);
 		this._disconnectFromAgent();
 		this._toolOutputShadow?.dispose();
@@ -1935,7 +2002,34 @@ export class AgentSession {
 		this._toolResultUiCanonicalMessagesTail = undefined;
 		this._toolResultUiCanonicalMessagesOverflowed = false;
 		this._eventListeners = [];
-		cleanupSessionResources(this.sessionId);
+	}
+
+	/** Join actual native cleanup after dispose(); rejection keeps disk protection. */
+	waitForSessionLeaseRelease(): Promise<void> {
+		if (!this._sessionLeaseRelease) return Promise.reject(new Error("Dispose the session before waiting for its lease release."));
+		return this._sessionLeaseRelease;
+	}
+
+	/** @internal Preserve this exact teardown result; do not retry failed drains implicitly. */
+	captureSessionLeaseShutdown(operation: Promise<unknown>): void {
+		if (!this._operationDisposed && !this._sessionLeaseShutdown) this._sessionLeaseShutdown = operation;
+	}
+
+	private async _releaseSessionLease(runner: ExtensionRunner, shutdown: Promise<unknown> | undefined): Promise<void> {
+		const lease = this._sessionLease;
+		try {
+			if (shutdown) await shutdown;
+			else {
+				const results = await Promise.allSettled([runner.disposeExecutionBoundary(), runner.disposeProviderOwners()]);
+				for (const result of results) if (result.status === "rejected") throw result.reason;
+			}
+			lease?.stop();
+		} finally {
+			// On failure leave only the conservative live-pid record, not a heartbeat
+			// or a callback retaining this session. Never report a failed unlink as release.
+			lease?.retainProtection();
+			this._sessionLease = undefined;
+		}
 	}
 
 	// =========================================================================
@@ -2002,7 +2096,9 @@ export class AgentSession {
 	 * Returns the names of tools currently set on the agent.
 	 */
 	getActiveToolNames(): string[] {
-		return this.agent.state.tools.map((t) => t.name);
+		const names: string[] = [];
+		for (const tool of this.agent.state.tools) names.push(tool.name);
+		return names;
 	}
 
 	/** Whether this session owns the explicitly enabled presentation boundary. */
@@ -2393,7 +2489,8 @@ export class AgentSession {
 	getAllTools(): ToolInfo[] {
 		const powerShellAvailable = process.platform === "win32" && this.settingsManager.getPowerShellStatus()?.available !== false
 			&& this._powerShellToolState.disabledReason === undefined;
-		return Array.from(this._toolDefinitions.values()).map(({ definition, sourceInfo }) => ({
+		const tools: ToolInfo[] = [];
+		for (const { definition, sourceInfo } of this._toolDefinitions.values()) tools.push({
 			name: definition.name,
 			available: definition.name !== "powershell" || powerShellAvailable,
 			description: definition.description,
@@ -2401,7 +2498,37 @@ export class AgentSession {
 			supportsManagedBackground: definition.supportsManagedBackground,
 			promptGuidelines: definition.promptGuidelines,
 			sourceInfo,
-		}));
+		});
+		return tools;
+	}
+
+	/** Synchronous, uncached view of the existing definition, activation and availability owners. */
+	getToolCatalog(): ToolCatalogSnapshot {
+		return { tools: this.getAllTools(), activeTools: this.getActiveToolNames(),
+			selectionMode: this._resourceLoader.getExtensions().runtime.executionBoundary.getToolSelectionMode() };
+	}
+
+	async withSupplementalSummary<T>(signal: AbortSignal, callback: (stream: StreamFn) => Promise<T>): Promise<T> {
+		const model = this.model;
+		if (!model) throw new Error("Supplemental summary requires an active model");
+		const runtime = this._resourceLoader.getExtensions().runtime;
+		const boundary = runtime.executionBoundary;
+		const generation = boundary.beginPreparation();
+		const runner = this._extensionRunner, sessionId = this.sessionId;
+		const codex = runtime.codexDispatch, codexGeneration = codex.owner.generation;
+		const customStream = this._getSupplementalSummaryCustomStream?.();
+		try {
+			const scope = new SupplementalSummaryScope({ runtime: this._modelRuntime, settings: this.settingsManager,
+				runner, codex, codexGeneration, sessionId, customStream,
+				assertCurrent: () => {
+					this._assertProviderPreviewCurrent(model, runner, sessionId, generation);
+					if (this._getSupplementalSummaryCustomStream?.() !== customStream) {
+						throw new Error("Supplemental summary belongs to a previous dispatch generation");
+					}
+				},
+			}, AbortSignal.any([signal, boundary.signal]));
+			return await scope.run(callback);
+		} finally { boundary.endPreparation(); }
 	}
 
 	async buildProviderRequestPayload(
@@ -2410,28 +2537,46 @@ export class AgentSession {
 		const model = this.model;
 		const builder = this._providerRequestPayloadBuilder;
 		if (!model || !builder) return undefined;
-		const messages = this._extensionRunner.hasHandlers("context")
-			? await this._extensionRunner.emitContext(input.messages, true)
+		const auth = input.auth;
+		if (auth && (auth.model.provider !== model.provider || auth.model.id !== model.id || auth.model.api !== model.api)) {
+			throw new Error("Provider request preview auth snapshot does not match the active model.");
+		}
+		const runner = this._extensionRunner;
+		const sessionId = this.sessionManager.getSessionId();
+		const generation = this._resourceLoader.getExtensions().runtime.executionBoundary.generation;
+		this._assertProviderPreviewCurrent(model, runner, sessionId, generation);
+		const messages = runner.hasHandlers("context")
+			? await runner.emitContext(input.messages, true)
 			: input.messages;
+		this._assertProviderPreviewCurrent(model, runner, sessionId, generation);
 		let payload: Record<string, unknown> | undefined;
 		// Only this synchronous builder is a preview conversion. Keep the flag out
 		// of awaited context/payload hooks so another request cannot inherit it.
 		this._toolBudgetPayloadPreviewDepth++;
 		try {
 			payload = builder({
-				model,
+				model: auth?.model ?? model,
 				systemPrompt: input.systemPrompt,
 				messages,
 				tools: this.agent.state.modelTools ?? this.agent.state.tools,
 				thinkingLevel: this.thinkingLevel,
-				sessionId: this.sessionManager.getSessionId(),
+				sessionId,
 			});
 		} finally { this._toolBudgetPayloadPreviewDepth--; }
-		if (!payload || !this._extensionRunner.hasHandlers("before_provider_request")) return payload;
-		const finalPayload = await this._extensionRunner.emitBeforeProviderRequest(payload, true);
+		if (!payload || !runner.hasHandlers("before_provider_request")) return payload;
+		const finalPayload = await runner.emitBeforeProviderRequest(payload, true, auth);
+		this._assertProviderPreviewCurrent(model, runner, sessionId, generation);
 		return finalPayload !== null && typeof finalPayload === "object" && !Array.isArray(finalPayload)
 			? (finalPayload as Record<string, unknown>)
 			: undefined;
+	}
+
+	private _assertProviderPreviewCurrent(model: Model<any>, runner: ExtensionRunner, sessionId: string, generation: number): void {
+		runner.assertExecutionCurrent();
+		if (this._operationDisposed || this.model !== model || this._extensionRunner !== runner || this.sessionManager.getSessionId() !== sessionId) {
+			throw new Error("Provider request preview belongs to a stale model or session.");
+		}
+		this._resourceLoader.getExtensions().runtime.executionBoundary.assertCurrent(generation);
 	}
 
 	async compactProviderRequestPayload(
@@ -2441,12 +2586,23 @@ export class AgentSession {
 		const compactor = this._providerRequestCompactor;
 		if (!model || !compactor) return undefined;
 		if (!getModelCapabilities(model).remoteCompaction) return undefined;
+		const runner = this._extensionRunner;
+		const sessionId = this.sessionManager.getSessionId();
+		const runtime = this._resourceLoader.getExtensions().runtime;
+		const generation = runtime.executionBoundary.generation;
+		const codexDispatch = runtime.codexDispatch;
+		const codexGeneration = codexDispatch.owner.generation;
+		const builtinCodex = this._modelRuntime.usesBuiltinOpenAICodex?.(model) === true;
+		this._assertProviderPreviewCurrent(model, runner, sessionId, generation);
 		const auth = input.auth ?? (await this._getRequiredRequestAuth(model));
+		this._assertProviderPreviewCurrent(model, runner, sessionId, generation);
+		if (builtinCodex && codexGeneration !== codexDispatch.owner.generation) throw new Error("Codex compaction belongs to a previous transport generation");
 		if (auth.model.provider !== model.provider || auth.model.id !== model.id) {
 			throw new Error("Provider-native compaction auth snapshot does not match the active model.");
 		}
 		if (!auth.apiKey) throw new Error(`Provider-native compaction requires an API key for ${model.provider}.`);
 		return compactor({
+			codexDispatch, codexGeneration, builtinCodex,
 			model: auth.model,
 			apiKey: auth.apiKey,
 			headers: auth.headers ? { ...auth.headers } : undefined,
@@ -2592,6 +2748,8 @@ export class AgentSession {
 	}
 
 	private _rebuildSystemPrompt(toolNames: string[]): string {
+		// A model-auth await may finish after disposal. Do not reacquire prompt ownership.
+		if (this._operationDisposed) return this._baseSystemPrompt;
 		const toolCalling = this.model ? getModelCapabilities(this.model).toolCalling : true;
 		const validToolNames = toolCalling ? toolNames.filter((name) => this._toolRegistry.has(name)) : [];
 		const toolSnippets: Record<string, string> = {};
@@ -2630,7 +2788,8 @@ export class AgentSession {
 			toolSnippets,
 			promptGuidelines,
 		};
-		return buildSystemPrompt(this._baseSystemPromptOptions);
+		this._baseSystemPromptComposition = buildSystemPromptComposition(this._baseSystemPromptOptions);
+		return this._baseSystemPromptComposition.text;
 	}
 
 	private _refreshSystemPromptForCurrentModel(): void {
@@ -2645,10 +2804,13 @@ export class AgentSession {
 	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[], onAccepted?: (success: boolean) => void, promptState?: { systemPromptOverride?: string }): Promise<void> {
 		let admitted = false;
 		let needsSettlement = false;
+		const boundary = this._resourceLoader.getExtensions().runtime.executionBoundary;
+		const generation = boundary.beginPreparation();
 		try {
 			// An idle/paused report may still be awaiting message_end hooks. Join its
 			// shared drain before admitting a user turn, including after async preflight.
 			while (this._customMessageFlush) await this._customMessageFlush;
+			boundary.assertCurrent(generation);
 			if (this._operationDisposed) throw new Error("Cannot prompt a disposed session");
 			await this.agent.prompt(messages, () => {
 				admitted = true;
@@ -2683,7 +2845,8 @@ export class AgentSession {
 			if (!admitted) onAccepted?.(false);
 			throw error;
 		} finally {
-			if (needsSettlement) await this._emitAgentSettled();
+			try { if (needsSettlement) await this._emitAgentSettled(); }
+			finally { boundary.endPreparation(); }
 		}
 	}
 
@@ -2778,6 +2941,8 @@ export class AgentSession {
 		let messages: AgentMessage[] | undefined;
 		let systemPromptOverride: string | undefined;
 		const admissionSignal = options?.queueOnly ? this._autoCompactionAbortController?.signal : undefined;
+		const boundary = this._resourceLoader.getExtensions().runtime.executionBoundary;
+		let generation: number | undefined;
 
 		try {
 			// Handle extension commands first (execute immediately, even during streaming)
@@ -2796,6 +2961,7 @@ export class AgentSession {
 					"Cannot submit a prompt while compaction is in progress. Wait for compaction to finish and retry.",
 				);
 			}
+			generation = boundary.beginPreparation();
 
 			// Emit input event for extension interception (before skill/template expansion)
 			let currentText = text;
@@ -2910,6 +3076,7 @@ export class AgentSession {
 				currentImages,
 				this._baseSystemPrompt,
 				this._baseSystemPromptOptions,
+				this._baseSystemPromptComposition,
 			);
 			// Add all custom messages from extensions
 			if (result?.messages) {
@@ -2931,12 +3098,16 @@ export class AgentSession {
 		} catch (error) {
 			preflightResult?.(false);
 			throw error;
+		} finally {
+			if (generation !== undefined) boundary.endPreparation();
 		}
 
 		if (!messages) {
 			return;
 		}
 
+		try { boundary.assertCurrent(generation); }
+		catch (error) { preflightResult?.(false); throw error; }
 		await this._runAgentPrompt(messages, preflightResult, { systemPromptOverride });
 	}
 
@@ -3399,6 +3570,7 @@ export class AgentSession {
 		source: "set" | "cycle" | "restore",
 	): Promise<void> {
 		if (modelsAreEqual(previousModel, nextModel)) return;
+		this._resourceLoader.getExtensions().runtime.codexDispatch.owner.reset();
 		await this._extensionRunner.emit({
 			type: "model_select",
 			model: nextModel,
@@ -3646,7 +3818,18 @@ export class AgentSession {
 	 * @param customInstructions Optional instructions for the compaction summary
 	 */
 	async compact(customInstructions?: string): Promise<CompactionResult> {
-		await this.abort();
+		const boundary = this._resourceLoader.getExtensions().runtime.executionBoundary;
+		const generation = boundary.beginPreparation();
+		try {
+			await this.abort();
+			boundary.assertCurrent(generation);
+			if (this.isCompacting) throw new Error("Another session summary is still running.");
+			return await this._compact(customInstructions, generation);
+		} finally { boundary.endPreparation(); }
+	}
+
+	private async _compact(customInstructions: string | undefined, generation: number): Promise<CompactionResult> {
+		const boundary = this._resourceLoader.getExtensions().runtime.executionBoundary;
 		this._compactionAbortController = new AbortController();
 		this._emit({ type: "compaction_start", reason: "manual" });
 		let fromExtension = false;
@@ -3656,7 +3839,10 @@ export class AgentSession {
 				throw new Error(formatNoModelSelectedMessage());
 			}
 
+			const assertCurrent = this._createSummarizationGuard(this.model, this._compactionAbortController.signal);
 			const { model: requestModel, apiKey, headers, env } = await this._getSummarizationRequestAuth(this.model);
+			assertCurrent();
+			boundary.assertCurrent(generation);
 			const auth = Object.freeze({
 				model: requestModel,
 				apiKey,
@@ -3721,6 +3907,7 @@ export class AgentSession {
 				retainedTail = extensionCompaction.retainedTail;
 			} else {
 				// Generate compaction result
+				boundary.assertCurrent(generation);
 				const result = await compact(
 					preparation,
 					requestModel,
@@ -3729,7 +3916,7 @@ export class AgentSession {
 					customInstructions,
 					this._compactionAbortController.signal,
 					this.thinkingLevel,
-					this.agent.streamFunction,
+					this._createSummarizationStream?.(auth, assertCurrent) ?? this.agent.streamFunction,
 					env,
 					this.settingsManager.getRetrySettings(),
 					this._summarizationRetryCallbacks({ source: "compaction", reason: "manual" }),
@@ -3746,6 +3933,7 @@ export class AgentSession {
 			if (this._compactionAbortController.signal.aborted) {
 				throw new Error("Compaction cancelled");
 			}
+			boundary.assertCurrent(generation);
 
 			tokensBefore = preparation.tokensBefore;
 			details = withContextAccounting(
@@ -3994,7 +4182,9 @@ export class AgentSession {
 			this._emit({ type: "compaction_start", reason });
 			this._autoCompactionAbortController = new AbortController();
 			started = true;
+			const assertCurrent = this._createSummarizationGuard(model, this._autoCompactionAbortController.signal);
 			const { model: requestModel, apiKey, headers, env } = await this._getSummarizationRequestAuth(model);
+			assertCurrent();
 			const auth = Object.freeze({
 				model: requestModel,
 				apiKey,
@@ -4069,7 +4259,7 @@ export class AgentSession {
 					undefined,
 					this._autoCompactionAbortController.signal,
 					this.thinkingLevel,
-					this.agent.streamFunction,
+					this._createSummarizationStream?.(auth, assertCurrent) ?? this.agent.streamFunction,
 					env,
 					this.settingsManager.getRetrySettings(),
 					this._summarizationRetryCallbacks({ source: "compaction", reason }),
@@ -4416,9 +4606,17 @@ export class AgentSession {
 				},
 				getActiveTools: () => this.getActiveToolNames(),
 				getAllTools: () => this.getAllTools(),
+				getToolCatalog: () => this.getToolCatalog(),
 				buildProviderRequestPayload: (input) => this.buildProviderRequestPayload(input),
+				withSupplementalSummary: (signal, run) => this.withSupplementalSummary(signal, run),
 				compactProviderRequestPayload: (input) => this.compactProviderRequestPayload(input),
 				setActiveTools: (toolNames) => this.setActiveToolsByName(toolNames),
+				transitionExecution: (publish) => this._resourceLoader.getExtensions().runtime.executionBoundary.transition(publish),
+				waitForExecutionIdle: async () => {
+					const boundary = this._resourceLoader.getExtensions().runtime.executionBoundary;
+					do { await boundary.waitForPreparations(); await this.waitForIdle(); }
+					while (boundary.preparationCount > 0 || !this.isIdle);
+				},
 				refreshTools: () => this._refreshToolRegistry(),
 				getCommands,
 				setModel: async (model) => {
@@ -4595,6 +4793,7 @@ export class AgentSession {
 				else if (record.sessionId !== sessionId || record.cwd !== canonicalCwd || record.branchGeneration !== branch) miss = "branch/session/cwd";
 				else if (record.workspaceGeneration !== workspace) miss = "workspace-generation";
 				else if (record.relativePath !== relativePath) miss = "args-mismatch";
+				else if (record.fileRevision && !this._resourceLoader.getExtensions().runtime.nativeFiles?.hasRevision(record.fileRevision, canonical, sessionId)) miss = "file-generation";
 				else if (referenceTokens === undefined || !Number.isSafeInteger(referenceTokens) || referenceTokens < 1 || !Number.isSafeInteger(record.modelTokens) ||
 					referenceTokens >= record.modelTokens || budgetTokens === undefined || referenceTokens > budgetTokens) miss = "not-beneficial";
 				else {
@@ -4644,6 +4843,7 @@ export class AgentSession {
 		const result = await execute(callId, args, signal, onUpdate);
 		this._checkEvidenceBranch();
 		const identity = (result as typeof result & { [READ_EVIDENCE_IDENTITY]?: ValidatedReadIdentity })[READ_EVIDENCE_IDENTITY];
+		const fileRevision = (result as typeof result & { [NATIVE_FILE_REVISION]?: string })[NATIVE_FILE_REVISION];
 		if (empty && identity?.precise) {
 			canonical = identity.canonicalPath;
 			canonicalCwd = identity.canonicalWorkspace;
@@ -4668,7 +4868,7 @@ export class AgentSession {
 					sourceGeneration: 0,
 					scopeFingerprint: scope, resultHandle: "", sourceToolCallId: callId, relativePath, location: identity.location,
 					createdTurn: this.agent.state.messages.length, workspaceGeneration: workspace, branchGeneration: branch,
-					canonicalPath: canonical, fileGeneration: identity.fileGeneration, sessionId, cwd: canonicalCwd,
+					canonicalPath: canonical, fileGeneration: identity.fileGeneration, fileRevision, sessionId, cwd: canonicalCwd,
 					blocks: 0, chars: 0, artifactBytes: bytes, modelTokens: 0 };
 				this._evidenceCompletedReads.set(callId, receipt);
 				this._evidenceCompletedBytes += bytes;
@@ -4686,19 +4886,28 @@ export class AgentSession {
 		const owner = this._toolResultPresentation;
 		if (expectedGeneration === undefined || owner?.getResidentEvidenceGeneration(message.toolCallId) !== expectedGeneration) return;
 		if (!ledger || !owner?.evidenceSessionMatches(this.sessionManager.getSessionId()) || receipt.sessionId !== this.sessionManager.getSessionId() || message.isError || this._evidenceMutableHooks() ||
-			!this.settingsManager.getEvidenceLedgerEnabled() || message.content.length !== 1) return;
-		const block = message.content[0];
-		if (block?.type !== "text" || block.text.length < 1 || block.text.length > 64 * 1024) return;
-		const descriptor = owner.issueEvidenceArtifact(message.toolCallId, this.agent.state.messages, 1, block.text.length);
+			!this.settingsManager.getEvidenceLedgerEnabled()) return;
+		const blocks = receipt.fileRevision ? 2 : 1;
+		if (message.content.length !== blocks || (receipt.fileRevision && !this._resourceLoader.getExtensions().runtime.nativeFiles?.hasRevision(receipt.fileRevision, receipt.canonicalPath, receipt.sessionId))) return;
+		let chars = 0;
+		for (let index = 0; index < blocks; index++) {
+			const block = message.content[index];
+			if (block?.type !== "text" || block.text.length < 1) return;
+			chars += block.text.length;
+		}
+		if (chars > 64 * 1024) return;
+		const descriptor = owner.issueEvidenceArtifact(message.toolCallId, this.agent.state.messages, blocks, chars);
 		if (!descriptor) return;
 		const budgetTokens = owner.getEvidenceBudgetTokens();
 		if (budgetTokens === undefined) return;
-		ledger.admit({ ...receipt, resultHandle: descriptor.id, sourceGeneration: owner.getResidentEvidenceGeneration(message.toolCallId)!, blocks: 1, chars: block.text.length,
+		ledger.admit({ ...receipt, resultHandle: descriptor.id, sourceGeneration: owner.getResidentEvidenceGeneration(message.toolCallId)!, blocks, chars,
 			artifactBytes: descriptor.bytes, modelTokens: owner.getResidentEvidenceModelTokens(message.toolCallId) ?? 0 }, budgetTokens);
 	}
 
 	private _refreshToolRegistry(options?: { activeToolNames?: string[]; includeAllExtensionTools?: boolean }): void {
 		if (this._operationDisposed) return;
+		const preservePlanSelection = options?.activeToolNames === undefined &&
+			this._resourceLoader.getExtensions().runtime.executionBoundary.getToolSelectionMode() === "plan";
 		this._clearEvidenceBranch();
 		if (this.settingsManager.getEvidenceLedgerEnabled() && !this._evidenceLedger) {
 			this._evidenceLedger = new EvidenceLedger();
@@ -4715,13 +4924,16 @@ export class AgentSession {
 			(name === CODEMODE_NAME ? !allowedToolNames || allowedToolNames.size > 0 : !allowedToolNames || allowedToolNames.has(name)) && !excludedToolNames?.has(name) && (!selection || selection.allows(name));
 
 		const registeredTools = this._extensionRunner.getAllRegisteredTools();
+		const nativePolicy = this._resourceLoader.getExtensions().runtime.nativePermissions;
 		const allCustomTools: RegisteredTool[] = [];
 		for (const tool of registeredTools) {
+			if (nativePolicy && !nativePolicy.supports(tool.definition)) continue;
 			if (tool.definition.name === CODEMODE_NAME) throw new Error("codemode is a reserved built-in orchestration tool");
 			if (!this._mcpEnabled && tool.definition.requiresMcp) continue;
 			if (isAllowedTool(tool.definition.name)) allCustomTools.push(tool);
 		}
 		for (const definition of this._customTools) {
+			if (nativePolicy && !nativePolicy.supports(definition)) continue;
 			if (definition.name === CODEMODE_NAME) throw new Error("codemode is a reserved built-in orchestration tool");
 			if (!this._mcpEnabled && definition.requiresMcp) continue;
 			if (!isAllowedTool(definition.name)) continue;
@@ -4732,6 +4944,7 @@ export class AgentSession {
 		}
 		const definitionRegistry = new Map<string, ToolDefinitionEntry>();
 		for (const [name, definition] of this._baseToolDefinitions) {
+			if (nativePolicy && !nativePolicy.supports(definition)) continue;
 			if (!isAllowedTool(name)) continue;
 			definitionRegistry.set(name, {
 				definition,
@@ -4766,6 +4979,7 @@ export class AgentSession {
 		const wrappedExtensionTools = wrapRegisteredTools(allCustomTools, runner);
 		const registeredBuiltInTools: RegisteredTool[] = [];
 		for (const definition of this._baseToolDefinitions.values()) {
+			if (nativePolicy && !nativePolicy.supports(definition)) continue;
 			if (!isAllowedTool(definition.name)) continue;
 			registeredBuiltInTools.push({
 				definition,
@@ -4813,13 +5027,16 @@ export class AgentSession {
 			if (isAllowedTool(name)) nextActiveToolNames.push(name);
 		}
 
-		if (selection) {
+		if (!preservePlanSelection && selection) {
 			for (const toolName of this._toolRegistry.keys()) {
 				if (toolName === "powershell" && (process.platform !== "win32" || this.settingsManager.getPowerShellStatus()?.available === false)) continue;
 				if (selection.adds(toolName)) nextActiveToolNames.push(toolName);
 			}
 		}
-		if (allowedToolNames) {
+		if (preservePlanSelection) {
+			// Registration updates definitions, but must not broaden Plan's published
+			// selection. Still replace active wrappers and rebuild their descriptions below.
+		} else if (allowedToolNames) {
 			for (const toolName of this._toolRegistry.keys()) {
 				if (selection && toolName === "powershell" && (process.platform !== "win32" || this.settingsManager.getPowerShellStatus()?.available === false)) continue;
 				if (allowedToolNames.has(toolName)) {
@@ -4901,13 +5118,21 @@ export class AgentSession {
 				});
 		}
 
+		if (!this._baseToolsOverride && !this._workspaceSandbox) this._resourceLoader.getExtensions().runtime.nativeFiles?.install(baseToolDefinitions,
+			!this._allowedToolNames || this._allowedToolNames.has("edit") || this._allowedToolNames.has("write") || this._allowedToolNames.has("file_batch"), this._operationOptions !== undefined);
+		if (this._sandboxCommands && !this._baseToolsOverride) baseToolDefinitions.powershell = this._sandboxCommands.definition();
+		this._workspaceSandbox?.install(baseToolDefinitions);
+		if (this._sandboxCommands && this._baseToolsOverride) throw new Error("[SANDBOX_UNSUPPORTED] Host tool overrides require explicit trusted-host execution");
 		if (Object.hasOwn(baseToolDefinitions, CODEMODE_NAME)) throw new Error("codemode is a reserved built-in orchestration tool");
 		baseToolDefinitions[CODEMODE_NAME] = this._codemode.definition;
+		const nativeTasks = this._resourceLoader.getExtensions().runtime.nativeTasks;
+		if (nativeTasks && !Object.hasOwn(baseToolDefinitions, "tasks")) baseToolDefinitions.tasks = nativeTasks.definition;
 		const baseToolDefinitionMap = new Map<string, ToolDefinition>();
 		const baseToolNames = Object.keys(baseToolDefinitions);
 		for (let index = 0; index < baseToolNames.length; index++) {
 			const name = baseToolNames[index]!;
 			baseToolDefinitionMap.set(name, baseToolDefinitions[name]!);
+			this._resourceLoader.getExtensions().runtime.nativePermissions?.registerDefinition(baseToolDefinitions[name]!);
 		}
 		this._baseToolDefinitions = baseToolDefinitionMap;
 
@@ -4926,6 +5151,28 @@ export class AgentSession {
 			new ModelRegistry(this._modelRuntime),
 			this._extensionRunnerOptions,
 		);
+		const boundary = extensionsResult.runtime.executionBoundary, runner = this._extensionRunner;
+		boundary.register("agent-session", {
+			revoke: () => {
+				if (this._isAgentRunActive) this._agentRunAbortRequested = true;
+				this.abortRetry();
+				this.agent.abort();
+				this._autoCompactionAbortController?.abort(boundary.signal.reason);
+				this._compactionAbortController?.abort(boundary.signal.reason);
+				this._branchSummaryAbortController?.abort(boundary.signal.reason);
+				for (const controller of this._bashAbortControllers) controller.abort(boundary.signal.reason);
+			},
+			drain: async () => {
+				await boundary.waitForPreparations();
+				await this.waitForIdle();
+				await runner.drainExecution();
+				await this._sandboxCommands?.drain();
+				if (boundary.isDisposed) await this._workspaceSandbox?.close();
+				else await this._workspaceSandbox?.drain();
+				if (this._unconfirmedBashOwners.size) throw new Error("[SHELL_CLEANUP_UNCONFIRMED] A command backend did not confirm process-family cleanup; execution remains closed.");
+				if (this.isCompacting || this.isBashRunning) throw new Error("Independent session work has not stopped; execution remains closed.");
+			},
+		});
 		if (this._extensionRunnerRef) {
 			this._extensionRunnerRef.current = this._extensionRunner;
 		}
@@ -4934,7 +5181,7 @@ export class AgentSession {
 
 		const defaultActiveToolNames = this._baseToolsOverride
 			? Object.keys(this._baseToolsOverride)
-			: getDefaultToolNames();
+			: [...getDefaultToolNames(), ...(nativeTasks ? ["tasks"] : []), ...(extensionsResult.runtime.nativeFiles ? ["delete", "move", "file_batch"] : [])];
 		const requestedActiveToolNames = options.activeToolNames ?? defaultActiveToolNames;
 		const powerShellAvailable =
 			process.platform === "win32" && this.settingsManager.getPowerShellStatus()?.available !== false;
@@ -4954,11 +5201,14 @@ export class AgentSession {
 		await emitSessionShutdownEvent(oldRunner, { type: "session_shutdown", reason: "reload" });
 		oldRunner.invalidate();
 		await this.settingsManager.reload();
+		if ((this.settingsManager.getExecutionEnvironment() === "sandbox") !== Boolean(this._sandboxCommands || this._workspaceSandbox))
+			throw new Error("Execution environment changes require a new session runtime");
 		await initializePowerShellPersistence(this.settingsManager);
 		hydratePowerShellToolState(this.settingsManager, this._powerShellToolState);
 		this.syncQueueModesFromSettings();
 		resetApiProviders();
 		await this._resourceLoader.reload();
+		this._workspaceSandbox = this._createWorkspaceSandbox?.();
 		this._buildRuntime({
 			activeToolNames: this.getActiveToolNames(),
 			flagValues: previousFlagValues,
@@ -5139,33 +5389,50 @@ export class AgentSession {
 		onChunk?: (chunk: string) => void,
 		options?: { excludeFromContext?: boolean; id?: string; operations?: BashOperations },
 	): Promise<BashResult> {
-		if (this._evidenceLedger) this._invalidateEvidenceWorkspace();
+		if (this._sandboxCommands || this._workspaceSandbox) throw new Error("[SANDBOX_UNSUPPORTED] Direct host Bash is unavailable; use CodeMode PowerShell");
+		const policy = this._resourceLoader.getExtensions().runtime.nativePermissions;
+		if (policy) {
+			const input = { command, cwd: this._cwd };
+			const id = options?.id ?? "direct-user-command";
+			const permission = await policy.authorize({ type: "tool_call", toolName: "bash", toolCallId: id, input },
+				this._extensionRunner.createContext(), this._baseToolDefinitions.get("bash"), true);
+			try { permission.consume(input, id, "bash"); } finally { permission.release(); }
+		}
+		const boundary = this._resourceLoader.getExtensions().runtime.executionBoundary;
+		boundary.assertCurrent();
+		if (this._bashAbortControllers.size + this._unconfirmedBashOwners.size >= 8) throw new Error("Too many owned independent commands; cleanup is required.");
+		const operations = options?.operations ?? createLocalBashOperations({ shellPath: this.settingsManager.getShellPath() });
+		boundary.beginPreparation();
 		const abortController = new AbortController();
 		this._bashAbortControllers.add(abortController);
 
-		// Apply command prefix if configured (e.g., "shopt -s expand_aliases" for alias support)
-		const prefix = this.settingsManager.getShellCommandPrefix();
-		const shellPath = this.settingsManager.getShellPath();
-		const resolvedCommand = prefix ? `${prefix}\n${command}` : command;
-
 		try {
+			if (this._evidenceLedger) this._invalidateEvidenceWorkspace();
+			const prefix = this.settingsManager.getShellCommandPrefix();
+			const resolvedCommand = prefix ? `${prefix}\n${command}` : command;
 			const result = await executeBashWithOperations(
 				resolvedCommand,
 				this.sessionManager.getCwd(),
-				options?.operations ?? createLocalBashOperations({ shellPath }),
+				operations,
 				{
 					onChunk: (delta) => {
 						onChunk?.(delta);
 						this._emit({ type: "bash_execution_update", id: options?.id, delta });
 					},
 					signal: abortController.signal,
+					managedProcessFamily: true,
 				},
 			);
 
+			if (result.processCleanup !== "complete") this._unconfirmedBashOwners.set(abortController, operations);
 			this.recordBashResult(command, result, options);
 			return result;
+		} catch (error) {
+			if (shellProcessResultFromError(error)?.processCleanup !== "complete") this._unconfirmedBashOwners.set(abortController, operations);
+			throw error;
 		} finally {
 			this._bashAbortControllers.delete(abortController);
+			boundary.endPreparation();
 		}
 	}
 
@@ -5203,8 +5470,9 @@ export class AgentSession {
 	 * Cancel running bash command.
 	 */
 	abortBash(): void {
-		for (const abortController of [...this._bashAbortControllers]) {
-			abortController.abort();
+		const reason = new DOMException("This operation was aborted", "AbortError"); reason.stack = "AbortError: This operation was aborted";
+		for (const abortController of this._bashAbortControllers) {
+			abortController.abort(reason);
 		}
 	}
 
@@ -5269,6 +5537,11 @@ export class AgentSession {
 		targetId: string,
 		options: { summarize?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string } = {},
 	): Promise<{ editorText?: string; cancelled: boolean; aborted?: boolean; summaryEntry?: BranchSummaryEntry }> {
+		const boundary = this._resourceLoader.getExtensions().runtime.executionBoundary;
+		const codexOwner = this._resourceLoader.getExtensions().runtime.codexDispatch.owner;
+		const originalModel = this.model, originalSessionId = this.sessionManager.getSessionId(), originalRunner = this._extensionRunner;
+		const codexGeneration = codexOwner.generation;
+		boundary.assertCurrent();
 		if (this.isStreaming) {
 			throw new Error("Wait for the current response to finish before navigating the session tree.");
 		}
@@ -5314,6 +5587,8 @@ export class AgentSession {
 		};
 
 		// Set up abort controller for summarization
+		if (this.isCompacting) throw new Error("Another session summary is still running.");
+		const generation = boundary.beginPreparation();
 		this._branchSummaryAbortController = new AbortController();
 
 		try {
@@ -5350,12 +5625,19 @@ export class AgentSession {
 			}
 
 			// Run default summarizer if needed
+			boundary.assertCurrent(generation);
 			let summaryText: string | undefined;
 			let summaryDetails: unknown;
 			let summaryUsage: Usage | undefined;
 			if (options.summarize && entriesToSummarize.length > 0 && !extensionSummary) {
 				const model = this.model!;
+				const assertCurrent = this._createSummarizationGuard(model, this._branchSummaryAbortController.signal);
 				const { model: requestModel, apiKey, headers, env } = await this._getSummarizationRequestAuth(model);
+				assertCurrent();
+				const auth = Object.freeze({ model: requestModel, apiKey,
+					headers: headers ? Object.freeze({ ...headers }) : undefined,
+					env: env ? Object.freeze({ ...env }) : undefined });
+				boundary.assertCurrent(generation);
 				const branchSummarySettings = this.settingsManager.getBranchSummarySettings();
 				const result = await generateBranchSummary(entriesToSummarize, {
 					model: requestModel,
@@ -5366,7 +5648,7 @@ export class AgentSession {
 					customInstructions,
 					replaceInstructions,
 					reserveTokens: branchSummarySettings.reserveTokens,
-					streamFn: this.agent.streamFunction,
+					streamFn: this._createSummarizationStream?.(auth, assertCurrent) ?? this.agent.streamFunction,
 					retry: this.settingsManager.getRetrySettings(),
 					callbacks: this._summarizationRetryCallbacks({ source: "branchSummary" }),
 				});
@@ -5389,6 +5671,18 @@ export class AgentSession {
 			}
 
 			// Determine the new leaf position based on target type
+			boundary.assertCurrent(generation);
+			if (this.model !== originalModel || this.sessionManager.getSessionId() !== originalSessionId || this._extensionRunner !== originalRunner || codexOwner.generation !== codexGeneration) {
+				throw new Error("Tree navigation belongs to a stale model or transport generation");
+			}
+			codexOwner.revoke();
+			const drainedGeneration = codexOwner.generation;
+			await codexOwner.drain();
+			boundary.assertCurrent(generation);
+			if (this.model !== originalModel || this.sessionManager.getSessionId() !== originalSessionId || this._extensionRunner !== originalRunner || codexOwner.generation !== drainedGeneration) {
+				throw new Error("Tree navigation changed while transport cleanup was pending");
+			}
+			this._branchSummaryAbortController.signal.throwIfAborted();
 			let newLeafId: string | null;
 			let editorText: string | undefined;
 
@@ -5458,6 +5752,7 @@ export class AgentSession {
 			return { editorText, cancelled: false, summaryEntry };
 		} finally {
 			this._branchSummaryAbortController = undefined;
+			boundary.endPreparation();
 		}
 	}
 

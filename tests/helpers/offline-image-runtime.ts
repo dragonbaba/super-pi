@@ -50,6 +50,7 @@ export async function offlineImageRuntime(root: string, auxiliary: boolean, save
 	}
 	const modelRuntime = { hasConfiguredAuth: () => true, checkAuth: async () => ({ type: "api_key" }),
 		getAuth: async () => ({ auth: { apiKey: "offline-noncredential" } }), isUsingOAuth: () => false, isUsingSubscription: () => false,
+		usesBuiltinOpenAICodex: () => false, usesBuiltinOpenAIResponses: () => false,
 		getAvailableSnapshot: () => [model], getAvailable: async () => [model], getError: () => undefined,
 		getModel: (provider: string, id: string) => provider === "offline-input" ? id === "vision" ? vision : model : undefined,
 		registerProvider() {}, registerNativeProvider() {}, unregisterProvider() {}, streamSimple: transport,

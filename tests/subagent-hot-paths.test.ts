@@ -64,7 +64,7 @@ test("child event ingestion and status rendering allocate no callbacks, promises
 });
 
 test("foreground publication proxy reuses its lifecycle callback without event allocations", () => {
-	const text = readFileSync(new URL("../packages/extensions/subagent/foreground.ts", import.meta.url), "utf8");
+	const text = readFileSync(new URL("../packages/coding-agent/src/core/tasks/foreground.ts", import.meta.url), "utf8");
 	const tree = ts.createSourceFile("foreground.ts", text, ts.ScriptTarget.Latest, true);
 	let checked = false;
 	function visit(node: ts.Node): void {

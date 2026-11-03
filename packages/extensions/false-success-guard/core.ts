@@ -1,4 +1,4 @@
-import { COMPLETION_CLAIM_RE, INCOMPLETE_DISCLOSURE_RE, PARTIAL_MUTATION_RE, LEADING_CD_RE, SHELL_OPERATOR_RE, NODE_TEST_RE, TEST_COMMAND_RE, NODE_TSC_RE, TYPECHECK_COMMAND_RE, LINT_COMMAND_RE, BUILD_COMMAND_RE, PACKAGE_PREFIX_RE, POLICY_BLOCKED_RE, TIMEOUT_RE, PATH_NOT_FOUND_RE, COMMAND_FAILED_RE, WINDOWS_ABSOLUTE_RE, TRAILING_SEPARATOR_RE } from "./regex.ts";
+import { PARTIAL_MUTATION_RE, LEADING_CD_RE, SHELL_OPERATOR_RE, NODE_TEST_RE, TEST_COMMAND_RE, NODE_TSC_RE, TYPECHECK_COMMAND_RE, LINT_COMMAND_RE, BUILD_COMMAND_RE, PACKAGE_PREFIX_RE, POLICY_BLOCKED_RE, TIMEOUT_RE, PATH_NOT_FOUND_RE, COMMAND_FAILED_RE, WINDOWS_ABSOLUTE_RE, TRAILING_SEPARATOR_RE } from "./regex.ts";
 import { dirname, extname, isAbsolute, relative, resolve } from "node:path";
 import { realpathSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -13,7 +13,6 @@ const MAX_PENDING_BACKGROUND = 256;
 const MAX_AUDIT_OBLIGATIONS = 16;
 const MAX_LABEL_CHARS = 180;
 const MAX_TOOL_TEXT_CHARS = 8_192;
-const MAX_DRAFT_CHARS = 1_000_000;
 
 export const FALSE_SUCCESS_GUARD_VERSION = "0.3.4-pi.84.2";
 export const FALSE_SUCCESS_AUDIT_TYPE = "false-success-intervention-v1";
@@ -26,7 +25,7 @@ const GOAL_OBJECTIVE_OPEN = "<goal_objective>";
 const GOAL_ID_OPEN = "<goal_id>";
 
 export type VerificationFamily = "test" | "typecheck" | "build" | "lint" | "diagnostics";
-export type InterventionKind = "completion_replaced" | "goal_completion_blocked";
+export type InterventionKind = "goal_completion_blocked";
 export type ObligationScopeKind = "target" | "package" | "workspace";
 
 export interface CompletionObligation {
@@ -73,7 +72,7 @@ export interface InterventionAudit {
   kind: InterventionKind;
   outcome: "blocked";
   category: "unverified_completion";
-  tool: "assistant_message" | "goal_complete";
+  tool: "goal_complete";
   model: string;
   obligationCount: number;
   obligations: Array<{
@@ -83,12 +82,6 @@ export interface InterventionAudit {
     scopeKind: ObligationScopeKind;
   }>;
   interventionSequence: number;
-  draftChars?: number;
-}
-
-export interface CompletionIntervention {
-  replacement: string;
-  audit: InterventionAudit;
 }
 
 export interface GoalCompletionIntervention {
@@ -324,46 +317,6 @@ function observeNativeResult(state: FalseSuccessState, observation: ToolObservat
   if (typeof destination === "string" && destination.length <= 4096) observeMutationOutcome(state, observation.toolName, normalizeAbsolute(destination, observation.cwd ?? process.cwd()), status);
 }
 
-export function completionIntervention(
-  state: FalseSuccessState,
-  assistantText: string,
-  model = "unknown",
-): CompletionIntervention | undefined {
-  if (state.obligations.size === 0) return undefined;
-  if (!COMPLETION_CLAIM_RE.test(assistantText) || INCOMPLETE_DISCLOSURE_RE.test(assistantText)) return undefined;
-  state.interventions++;
-  const lines = [
-    "⚠️ 完成状态：尚未验证",
-    "",
-    "运行时未接受本次“已完成”声明，因为以下证据义务仍未关闭：",
-  ];
-  for (const item of state.obligations.values()) {
-    const scope = `${item.scopeKind}:${bounded(item.scopePath)}`;
-    lines.push(`- ${item.label} (${item.tool}, ${item.category}, ${scope})`);
-  }
-  lines.push(
-    "",
-    "需要在同一范围完成匹配验证，或明确报告任务尚未完成。下面保留模型原始汇报供检查，其中的完成声明不代表已经通过运行时验证。",
-    "",
-    "--- 模型原始汇报（未验证）---",
-    assistantText,
-  );
-  return {
-    replacement: lines.join("\n"),
-    audit: makeAudit(
-      state,
-      "completion_replaced",
-      "assistant_message",
-      model,
-      Math.min(assistantText.length, MAX_DRAFT_CHARS),
-    ),
-  };
-}
-
-export function completionReplacement(state: FalseSuccessState, assistantText: string): string | undefined {
-  return completionIntervention(state, assistantText)?.replacement;
-}
-
 export function goalCompletionIntervention(
   state: FalseSuccessState,
   model = "unknown",
@@ -585,7 +538,6 @@ function makeAudit(
   kind: InterventionKind,
   tool: InterventionAudit["tool"],
   model: string,
-  draftChars?: number,
 ): InterventionAudit {
   const obligations: InterventionAudit["obligations"] = [];
   for (const item of state.obligations.values()) {
@@ -608,7 +560,6 @@ function makeAudit(
     obligationCount: state.obligations.size,
     obligations,
     interventionSequence: state.interventions,
-    ...(draftChars === undefined ? {} : { draftChars }),
   };
 }
 

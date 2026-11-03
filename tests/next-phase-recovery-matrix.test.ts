@@ -112,11 +112,11 @@ test("N4 combined actual Session: preview, mixed commit, drift/recovery, shell f
     const records = collectChanges(f.manager.getBranch(), f.cwd).filter((record: any) => record.toolCallId === "drift");
     assert.deepEqual(records.map((record: any) => record.status), ["succeeded", "failed_no_change", "not_started"]);
     assert.equal(readFileSync(join(f.cwd, "once"), "utf8"), "once"); assert.equal(existsSync(join(f.cwd, "remaining")), false);
-    assert.ok((await f.continue([], "已完成，全部通过。")).includes("尚未验证"));
-    assert.ok(f.manager.getBranch().some((entry: any) => entry.customType === "false-success-intervention-v1"));
-    assert.ok((await f.continue([[call("remaining-preview", "file_batch", { dryRun: true, operations: [
+    assert.equal(await f.continue([], "已完成，全部通过。"), "已完成，全部通过。");
+    assert.equal(f.manager.getBranch().some((entry: any) => entry.customType === "false-success-intervention-v1"), false);
+    assert.equal(await f.continue([[call("remaining-preview", "file_batch", { dryRun: true, operations: [
       { operation: "delete", path: "stale" }, { operation: "write", mode: "create", path: "remaining", content: "desired" },
-    ] })]], "已完成，全部通过。")).includes("尚未验证"));
+    ] })]], "已完成，全部通过。"), "已完成，全部通过。");
     assert.equal(f.result("remaining-preview").isError, false); assert.equal(readFileSync(join(f.cwd, "stale"), "utf8"), "external");
     assert.equal(existsSync(join(f.cwd, "remaining")), false);
     const runner = f.session.extensionRunner, ui = runner.getUIContext(); let action = "Verify current state", editor = "", notices: string[] = [];
@@ -128,7 +128,9 @@ test("N4 combined actual Session: preview, mixed commit, drift/recovery, shell f
     action = "Draft remaining request"; await runner.getCommand("changes").handler("", runner.createContext());
     assert.equal(notices.length, 0); assert.ok(editor.includes("remaining")); assert.ok(editor.includes("stale")); assert.equal(editor.includes('"content":"once"'), false);
     assert.equal(f.metrics.toolCalls, beforeTools); assert.equal(existsSync(join(f.cwd, "remaining")), false); runner.setUIContext(ui, "tui");
-    assert.ok((await f.continue([], "已完成，全部通过。")).includes("尚未验证"), "filesystem observation/draft cannot erase unfinished obligations");
+    assert.equal(await f.continue([], "已完成，全部通过。"), "已完成，全部通过。");
+    assert.deepEqual(collectChanges(f.manager.getBranch(), f.cwd).filter((record: any) => record.toolCallId === "drift").map((record: any) => record.status),
+      ["succeeded", "failed_no_change", "not_started"], "assistant wording and preview cannot rewrite committed operation facts");
     const approvals = f.metrics.approvals;
     await f.run([[call("fresh-repair", "file_batch", { operations: [{ operation: "delete", path: "stale" }, { operation: "write", mode: "create", path: "remaining", content: "desired" }] })]]);
     assert.equal(f.result("fresh-repair").isError, false); assert.ok(f.metrics.approvals > approvals); assert.equal(readFileSync(join(f.cwd, "once"), "utf8"), "once");

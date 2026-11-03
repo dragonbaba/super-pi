@@ -5,11 +5,24 @@ import type { BashOperations } from "../packages/coding-agent/src/core/tools/bas
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { finished } from "node:stream/promises";
-import { AnsiStreamFilter } from "../packages/coding-agent/src/utils/ansi.ts";
+import { AnsiStreamFilter, stripAnsi } from "../packages/coding-agent/src/utils/ansi.ts";
 import { AgentSession } from "../packages/coding-agent/src/core/agent-session.ts";
+import { SessionExecutionBoundary } from "../packages/coding-agent/src/core/execution-boundary.ts";
 import { BashExecutionComponent } from "../packages/coding-agent/src/modes/interactive/components/bash-execution.ts";
 import { initTheme } from "../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { RELEASE_COMPONENT_RENDER_CACHE, type TUI } from "@super-pi/tui";
+import { sanitizeBinaryOutput } from "../packages/coding-agent/src/utils/shell.ts";
+
+test("binary sanitizing preserves BMP and astral semantics without discarding valid surrogate pairs", () => {
+  const input = Array.from({ length: 65536 }, (_, code) => String.fromCharCode(code)).join("") + "😀𐀀\ud800ok\udc00\t\r\n";
+  let expected = "";
+  for (const character of input) {
+    const code = character.codePointAt(0)!;
+    if ((code > 0x1f || code === 9 || code === 10 || code === 13) && !(code >= 0xd800 && code <= 0xdfff) && !(code >= 0xfff9 && code <= 0xfffb)) expected += character;
+  }
+  assert.equal(sanitizeBinaryOutput(input), expected);
+  assert.equal(sanitizeBinaryOutput("plain 中文😀"), "plain 中文😀");
+});
 
 async function capture(chunks: Buffer[], cancelled = false) {
   const controller = new AbortController();
@@ -37,6 +50,25 @@ const cases = [
   ["unfinished CSI", "a\x1b[38;2;", "a"],
   ["unfinished OSC", "a\x1b]0;unfinished", "a"],
 ] as const;
+
+test("stateless ANSI stripping preserves legacy output without quadratic OSC suffix scans", t => {
+  const legacy = /(?:\u001B\][\s\S]*?(?:\u0007|\u001B\u005C|\u009C))|[\u001B\u009B][[\]()#;?]*(?:\d{1,4}(?:[;:]\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]/g;
+  const inputs = cases.map(entry => entry[1]);
+  const alphabet = ["\x1b", "]", "[", ";", "1", "m", "中", "\x07", "\x9c", "\\", "\x9b", "x"];
+  let seed = 12345;
+  for (let i = 0; i < 1000; i++) {
+    let value = "";
+    for (let j = 0; j < 80; j++) { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; value += alphabet[seed % alphabet.length]; }
+    inputs.push(value as typeof inputs[number]);
+  }
+  for (const input of inputs) assert.equal(stripAnsi(input), input.replace(legacy, ""));
+  const input = "\x1b]".repeat(65536), original = String.prototype.charCodeAt;
+  let reads = 0;
+  const mock = t.mock.method(String.prototype, "charCodeAt", function(this: string, index: number) { reads++; return original.call(this, index); });
+  try { assert.equal(stripAnsi(input), input); } finally { mock.mock.restore(); }
+  assert.ok(reads <= input.length * 4 + 8);
+  t.diagnostic(JSON.stringify({ compatibilityInputs: inputs.length, inputCodeUnits: input.length, characterReads: reads, maximumReadsPerCodeUnit: 4 }));
+});
 for (const [name, input, expected] of cases) test(`streamed bash ${name} is independent of every byte split`, async () => {
   const bytes = Buffer.from(input);
   for (let split = 0; split <= bytes.length; split++) {
@@ -170,8 +202,11 @@ for (const interactive of [false, true]) test(`AgentSession delivers clean outpu
   initTheme("dark");
   const component = interactive ? new BashExecutionComponent("fixture", { requestRender() {} } as TUI) : undefined;
   const events: string[] = [], history: unknown[] = [], controllers = new Set<AbortController>();
+  const boundary = new SessionExecutionBoundary();
   const owner = {
     _bashAbortControllers: controllers,
+    _unconfirmedBashOwners: new Map(),
+    _resourceLoader: { getExtensions: () => ({ runtime: { executionBoundary: boundary } }) },
     settingsManager: { getShellCommandPrefix() {}, getShellPath() {} },
     sessionManager: { getCwd: () => process.cwd() },
     _emit(event: unknown) { events.push(JSON.stringify(event)); },
@@ -184,7 +219,7 @@ for (const interactive of [false, true]) test(`AgentSession delivers clean outpu
         onData(Buffer.from("diagnostic\n"), "stderr");
         onData(Buffer.from("\x07"), "stdout");
         for (const byte of Buffer.from("\x1b[31m中文😀\x1b[0m\x1b]0;title\x07\nend")) onData(Buffer.from([byte]), "stdout");
-        return { exitCode: 0 };
+        return { exitCode: 0, processCleanup: "complete" };
       } } });
     component?.setComplete(result.exitCode, result.cancelled);
     assert.equal(result.output, "diagnostic\n中文😀\nend"); assert.equal(controllers.size, 0); assert.deepEqual(history, [result]);

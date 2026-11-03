@@ -13,6 +13,7 @@ import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import type { CreateAgentSessionResult } from "./sdk.ts";
 import { assertSessionCwdExists } from "./session-cwd.ts";
 import { SessionManager } from "./session-manager.ts";
+import { createSessionLease, type SessionLease } from "./session-lease.ts";
 
 /**
  * Result returned by runtime creation.
@@ -33,6 +34,7 @@ export interface CreateAgentSessionRuntimeResult extends CreateAgentSessionResul
  * services, and finally creates the AgentSession.
  */
 export type CreateAgentSessionRuntimeFactory = (options: {
+	permissionMode?: import("./permission-mode.ts").SessionPermissionMode;
 	cwd: string;
 	agentDir: string;
 	sessionManager: SessionManager;
@@ -72,6 +74,8 @@ function extractUserMessageText(content: string | Array<{ type: string; text?: s
  * caller. The caller is responsible for user-facing error handling.
  */
 export class AgentSessionRuntime {
+	private replacementLease: SessionLease | undefined;
+	private replacementOperation: Promise<boolean> | undefined;
 	private rebindSession?: (session: AgentSession) => Promise<void>;
 	private beforeSessionInvalidate?: () => void;
 	private _session: AgentSession;
@@ -176,12 +180,53 @@ export class AgentSessionRuntime {
 		generation: number,
 	): Promise<boolean> {
 		const result = await this.createRuntime(options);
+		if (options.permissionMode !== undefined && result.session.settingsManager.getPermissionMode() !== options.permissionMode) {
+			result.session.dispose(); await result.session.waitForSessionLeaseRelease?.();
+			throw new Error("Runtime factory did not apply the selected permission mode; execution remains stopped");
+		}
 		if (!this.isReplacementCurrent(generation)) {
 			result.session.dispose();
+			await result.session.waitForSessionLeaseRelease?.();
 			return false;
 		}
 		this.apply(result);
 		return true;
+	}
+
+	private replaceCurrent(
+		reason: SessionShutdownEvent["reason"],
+		options: Parameters<CreateAgentSessionRuntimeFactory>[0],
+		generation: number,
+	): Promise<boolean> {
+		if (!this.isReplacementCurrent(generation)) return Promise.resolve(false);
+		if (this.replacementLease) throw new Error("Session replacement is still preparing; no replacement was queued.");
+		const manager = options.sessionManager;
+		const lease = createSessionLease(options.agentDir, manager.getSessionFile(), manager.getSessionId(), reason === "resume");
+		this.replacementLease = lease;
+		let resolve!: (applied: boolean) => void, reject!: (error: unknown) => void;
+		const operation = new Promise<boolean>((yes, no) => { resolve = yes; reject = no; });
+		this.replacementOperation = operation;
+		void this.performReplacement(reason, options, generation, lease, resolve, reject);
+		return operation;
+	}
+
+	private async performReplacement(
+		reason: SessionShutdownEvent["reason"], options: Parameters<CreateAgentSessionRuntimeFactory>[0],
+		generation: number, lease: SessionLease, resolve: (applied: boolean) => void, reject: (error: unknown) => void,
+	): Promise<void> {
+		let applied = false, failed = false, failure: unknown;
+		try {
+			await this.teardownCurrent(reason, options.sessionManager.getSessionFile());
+			if (this.isReplacementCurrent(generation)) applied = await this.createAndApplyReplacement(options, generation);
+		} catch (error) { failed = true; failure = error; }
+		// The new AgentSession has published its record before apply. Superseded
+		// candidates have joined their own cleanup before the reservation is removed.
+		try { lease.stop(); }
+		catch (error) { if (!failed) { failed = true; failure = error; } }
+		this.replacementLease = undefined;
+		this.replacementOperation = undefined;
+		if (failed) reject(failure);
+		else resolve(applied);
 	}
 
 	private async emitBeforeSwitch(
@@ -268,7 +313,10 @@ export class AgentSessionRuntime {
 		try { await pendingActivities; }
 		catch (error) { if (!failed) { failed = true; failure = error; } }
 		try {
-			await emitSessionShutdownEvent(session.extensionRunner, { type: "session_shutdown", reason, targetSessionFile });
+			// Publish the exact result before shutdown/abort callbacks can reenter dispose.
+			const shutdown = Promise.resolve().then(() => emitSessionShutdownEvent(session.extensionRunner, { type: "session_shutdown", reason, targetSessionFile }));
+			session.captureSessionLeaseShutdown?.(shutdown);
+			await shutdown;
 		} catch (error) { if (!failed) { failed = true; failure = error; } }
 		try {
 			// Read at invocation time: final UI detach can disarm this during an await.
@@ -276,6 +324,9 @@ export class AgentSessionRuntime {
 		} catch (error) { if (!failed) { failed = true; failure = error; } }
 		try {
 			session.dispose();
+		} catch (error) { if (!failed) { failed = true; failure = error; } }
+		try {
+			await session.waitForSessionLeaseRelease?.();
 		} catch (error) { if (!failed) { failed = true; failure = error; } }
 		if (failed) reject(failure);
 		else resolve();
@@ -319,6 +370,17 @@ export class AgentSessionRuntime {
 		return true;
 	}
 
+	async setPermissionMode(mode: import("./permission-mode.ts").SessionPermissionMode): Promise<{ cancelled: boolean }> {
+		if (mode !== "read-only" && mode !== "sandbox-write" && mode !== "host-write") throw new Error("Invalid session permission mode");
+		const generation = this.beginReplacement();
+		const manager = this.session.sessionManager;
+		if (!(await this.replaceCurrent("reload", { cwd: this.cwd, agentDir: this.services.agentDir, sessionManager: manager, permissionMode: mode,
+			sessionStartEvent: { type: "session_start", reason: "reload" } }, generation))) return { cancelled: true };
+		if (!(await this.finishSessionReplacement(generation))) return { cancelled: true };
+		manager.appendCustomEntry("session-permission-mode-v2", { mode, source: "user-command" });
+		return { cancelled: false };
+	}
+
 	async switchSession(
 		sessionPath: string,
 		options?: {
@@ -336,9 +398,7 @@ export class AgentSessionRuntime {
 		const previousSessionFile = this.session.sessionFile;
 		const sessionManager = SessionManager.open(sessionPath, undefined, options?.cwdOverride);
 		assertSessionCwdExists(sessionManager, this.cwd);
-		await this.teardownCurrent("resume", sessionManager.getSessionFile());
-		if (!this.isReplacementCurrent(generation)) return { cancelled: true };
-		if (!(await this.createAndApplyReplacement({
+		if (!(await this.replaceCurrent("resume", {
 				cwd: sessionManager.getCwd(),
 				agentDir: this.services.agentDir,
 				sessionManager,
@@ -368,20 +428,19 @@ export class AgentSessionRuntime {
 		if (options?.parentSession) {
 			sessionManager.newSession({ parentSession: options.parentSession });
 		}
+		// Startup handlers must see the initialized destination (including Plan
+		// state) before any prompt or background service is admitted there.
+		if (options?.setup) {
+			await options.setup(sessionManager);
+			if (!this.isReplacementCurrent(generation)) return { cancelled: true };
+		}
 
-		await this.teardownCurrent("new", sessionManager.getSessionFile());
-		if (!this.isReplacementCurrent(generation)) return { cancelled: true };
-		if (!(await this.createAndApplyReplacement({
+		if (!(await this.replaceCurrent("new", {
 				cwd: this.cwd,
 				agentDir: this.services.agentDir,
 				sessionManager,
 				sessionStartEvent: { type: "session_start", reason: "new", previousSessionFile },
 			}, generation))) return { cancelled: true };
-		if (options?.setup) {
-			await options.setup(this.session.sessionManager);
-			if (!this.isReplacementCurrent(generation)) return { cancelled: true };
-			this.session.agent.state.messages = this.session.sessionManager.buildSessionContext().messages;
-		}
 		if (!(await this.finishSessionReplacement(generation, options?.withSession))) return { cancelled: true };
 		return { cancelled: false };
 	}
@@ -424,9 +483,7 @@ export class AgentSessionRuntime {
 			if (!targetLeafId) {
 				const sessionManager = SessionManager.create(this.cwd, sessionDir);
 				sessionManager.newSession({ parentSession: currentSessionFile });
-				await this.teardownCurrent("fork", sessionManager.getSessionFile());
-				if (!this.isReplacementCurrent(generation)) return { cancelled: true };
-				if (!(await this.createAndApplyReplacement({
+				if (!(await this.replaceCurrent("fork", {
 						cwd: this.cwd,
 						agentDir: this.services.agentDir,
 						sessionManager,
@@ -446,9 +503,7 @@ export class AgentSessionRuntime {
 			if (!forkedSessionPath) {
 				throw new Error("Failed to create forked session");
 			}
-			await this.teardownCurrent("fork", sessionManager.getSessionFile());
-			if (!this.isReplacementCurrent(generation)) return { cancelled: true };
-			if (!(await this.createAndApplyReplacement({
+			if (!(await this.replaceCurrent("fork", {
 					cwd: sessionManager.getCwd(),
 					agentDir: this.services.agentDir,
 					sessionManager,
@@ -464,9 +519,7 @@ export class AgentSessionRuntime {
 		} else {
 			sessionManager.createBranchedSession(targetLeafId);
 		}
-		await this.teardownCurrent("fork", sessionManager.getSessionFile());
-		if (!this.isReplacementCurrent(generation)) return { cancelled: true };
-		if (!(await this.createAndApplyReplacement({
+		if (!(await this.replaceCurrent("fork", {
 				cwd: this.cwd,
 				agentDir: this.services.agentDir,
 				sessionManager,
@@ -508,9 +561,7 @@ export class AgentSessionRuntime {
 
 		const sessionManager = SessionManager.open(destinationPath, sessionDir, cwdOverride);
 		assertSessionCwdExists(sessionManager, this.cwd);
-		await this.teardownCurrent("resume", sessionManager.getSessionFile());
-		if (!this.isReplacementCurrent(generation)) return { cancelled: true };
-		if (!(await this.createAndApplyReplacement({
+		if (!(await this.replaceCurrent("resume", {
 				cwd: sessionManager.getCwd(),
 				agentDir: this.services.agentDir,
 				sessionManager,
@@ -535,10 +586,22 @@ export class AgentSessionRuntime {
 	private async performDispose(): Promise<void> {
 		let failed = false;
 		let failure: unknown;
+		// Capture before joining teardown: its continuations may clear the slot
+		// (including after a failed reservation unlink) before this await resumes.
+		const replacement = this.replacementOperation;
 		try { this.cancelPendingReplacements(); }
 		catch (error) { failed = true; failure = error; }
 		try { await this.teardownCurrent("quit"); }
 		catch (error) { if (!failed) { failed = true; failure = error; } }
+		if (replacement) {
+			let deadline: NodeJS.Timeout | undefined;
+			try {
+				await Promise.race([replacement, new Promise<never>((_resolve, reject) => {
+					deadline = setTimeout(() => reject(new Error("Session replacement has not stopped within 5000ms; target protection is retained.")), 5000);
+				})]);
+			} catch (error) { if (!failed) { failed = true; failure = error; } }
+			finally { if (deadline) clearTimeout(deadline); }
+		}
 		this.beforeSessionInvalidate = undefined;
 		this.rebindSession = undefined;
 		const resolve = this.resolveDispose;

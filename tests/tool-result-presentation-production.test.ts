@@ -386,6 +386,7 @@ test("budgeted production persists full UI content and resumes the identical pro
 		const firstArtifactId = retainedArtifact.id;
 		const firstArtifactSha256 = retainedArtifact.sha256;
 		session.dispose();
+		await session.waitForSessionLeaseRelease(); await resourceLoader.reload();
 
 		const { session: resumed } = await createAgentSession(commonOptions);
 		try {
@@ -628,6 +629,7 @@ test("V1 image placeholder expansion creates an internal V2 cursor without trust
 		}
 
 		settingsManager.setBlockImages(true);
+		await session.waitForSessionLeaseRelease(); await resourceLoader.reload();
 		const { session: resumed } = await createAgentSession(options);
 		try {
 			const converted = await resumed.agent.convertToLlm(resumed.agent.state.messages.slice());
@@ -716,6 +718,7 @@ async function runEmptyRecordContextCloneFixture(
 		})._handleAgentEvent({ type: "message_end", message: source });
 		if (mode === "resume") {
 			active.dispose();
+			await active.waitForSessionLeaseRelease(); await resourceLoader.reload();
 			active = (await createAgentSession(options)).session;
 		} else {
 			(active as unknown as {

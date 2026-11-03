@@ -151,6 +151,7 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 			if (nextParams !== undefined) {
 				params = nextParams as ResponseCreateParamsStreaming;
 			}
+			const requestServiceTier = params.service_tier;
 			observeOpenAIResponsesEffectiveDispatch(options, model, params);
 			const requestOptions = {
 				...(options?.signal ? { signal: options.signal } : {}),
@@ -169,7 +170,7 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 			stream.push({ type: "start", partial: output });
 
 			await processResponsesStream(openaiStream, output, stream, model, {
-				serviceTier: options?.serviceTier,
+				serviceTier: requestServiceTier,
 				grammarToolInputProperties,
 				applyServiceTierPricing: (usage, serviceTier) => applyServiceTierPricing(usage, serviceTier, model),
 			});

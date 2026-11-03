@@ -121,6 +121,7 @@ interface ExecutionOptions {
 	toolCatalog: WorkerData["tools"];
 	globalCatalog: WorkerData["globals"];
 	timeoutMs: number;
+	pauseTimeoutWhileWaiting: boolean;
 	signal: AbortSignal | undefined;
 	memoryLimitBytes: number | undefined;
 	store: Record<string, string>;
@@ -145,7 +146,12 @@ class Execution {
 	private tools: ReadonlyMap<string, CodemodeTool> | undefined;
 	private globals: ReadonlyMap<string, CodemodeTool> | undefined;
 	private readonly signal: AbortSignal | undefined;
-	private readonly timer: NodeJS.Timeout | undefined;
+	private timer: NodeJS.Timeout | undefined;
+	private readonly timeoutMs: number;
+	private readonly pauseTimeoutWhileWaiting: boolean;
+	private remainingMs: number;
+	private activeSince = 0;
+	private sentReplies = 0;
 	private readonly output: CodemodeOutputItem[] = [];
 	private readonly calls: CodemodeCall[] = [];
 	private readonly pending = new Map<number, PendingCall>();
@@ -165,11 +171,9 @@ class Execution {
 		this.globals = options.globals;
 		this.signal = options.signal;
 
-		if (Number.isFinite(options.timeoutMs)) {
-			this.timer = setTimeout(() => {
-				this.finish({ kind: "timeout", message: `Execution timed out after ${options.timeoutMs} ms` });
-			}, options.timeoutMs);
-		}
+		this.timeoutMs = this.remainingMs = options.timeoutMs;
+		this.pauseTimeoutWhileWaiting = options.pauseTimeoutWhileWaiting;
+		this.resumeClock();
 
 		if (options.signal) {
 			if (options.signal.aborted) {
@@ -189,6 +193,23 @@ class Execution {
 	private readonly onStartFailure = (error: unknown): void => {
 		this.finish({ kind: "sandbox", message: errorMessage(error) });
 	};
+	private readonly onTimeout = (): void => {
+		this.finish({ kind: "timeout", message: `Execution timed out after ${this.timeoutMs} ms${this.pauseTimeoutWhileWaiting ? " of active time" : ""}` });
+	};
+	private resumeClock(): void {
+		if (this.finished || this.timer !== undefined) return;
+		this.activeSince = performance.now();
+		this.timer = setTimeout(this.onTimeout, Math.ceil(this.remainingMs));
+	}
+	private pauseClock(received: number): void {
+		// A quick host reply can overtake the VM's idle notification. Never pause
+		// a resumed VM on a stale notification, or pending tools could mask a loop.
+		if (!this.pauseTimeoutWhileWaiting || received !== this.sentReplies || !this.pending.size || this.timer === undefined) return;
+		this.remainingMs -= performance.now() - this.activeSince;
+		clearTimeout(this.timer);
+		this.timer = undefined;
+		if (this.remainingMs <= 0) this.onTimeout();
+	}
 
 	abort(message: string): Promise<CodemodeResult> {
 		this.finish({ kind: "aborted", message });
@@ -205,6 +226,7 @@ class Execution {
 			memoryLimitBytes: options.memoryLimitBytes,
 			store: options.store,
 			interrupt: this.interrupt,
+			pauseTimeoutWhileWaiting: this.pauseTimeoutWhileWaiting,
 		};
 		let worker: Worker;
 		try {
@@ -243,6 +265,10 @@ class Execution {
 	};
 
 	private post(message: HostToWorkerMessage): void {
+		if (this.pauseTimeoutWhileWaiting) {
+			this.resumeClock();
+			this.sentReplies++;
+		}
 		(this.port ?? this.worker)?.postMessage(message);
 	}
 
@@ -253,6 +279,9 @@ class Execution {
 			return;
 		}
 		switch (message.type) {
+			case "idle":
+				this.pauseClock(message.received);
+				break;
 			case "output":
 				this.output.push(message.item);
 				break;
@@ -322,6 +351,7 @@ class Execution {
 		if (this.finished) return;
 		this.finished = true;
 		clearTimeout(this.timer);
+		this.timer = undefined;
 		this.signal?.removeEventListener("abort", this.onAbort);
 
 		const now = performance.now();
@@ -380,6 +410,7 @@ export class CodemodeSandbox {
 	private readonly toolsByName = new Map<string, CodemodeTool>();
 	private readonly globalsByName = new Map<string, CodemodeTool>();
 	private readonly timeoutMs: number;
+	private readonly pauseTimeoutWhileWaiting: boolean;
 	private readonly memoryLimitBytes: number | undefined;
 	private readonly wasm: CodemodeWasmModule | Promise<CodemodeWasmModule> | undefined;
 	private readonly workerUrl: string | URL;
@@ -395,6 +426,7 @@ export class CodemodeSandbox {
 
 	constructor(options: CodemodeSandboxOptions = {}) {
 		this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+		this.pauseTimeoutWhileWaiting = options.timeoutMode === "active";
 		this.memoryLimitBytes = options.memoryLimitBytes ?? DEFAULT_MEMORY_BYTES;
 		if (!Number.isSafeInteger(this.memoryLimitBytes) || this.memoryLimitBytes < 1024 * 1024 || this.memoryLimitBytes > DEFAULT_MEMORY_BYTES) throw new RangeError("Invalid Codemode memory limit");
 		this.wasm = options.wasm;
@@ -470,6 +502,7 @@ export class CodemodeSandbox {
 			toolCatalog: this.toolCatalog,
 			globalCatalog: this.globalCatalog,
 			timeoutMs,
+			pauseTimeoutWhileWaiting: this.pauseTimeoutWhileWaiting,
 			signal: options.signal,
 			memoryLimitBytes: this.memoryLimitBytes,
 			store: serializeStore(options.store),

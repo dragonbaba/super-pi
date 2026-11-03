@@ -22,8 +22,9 @@ function appendResource(args, flag, path) {
 	args.push(flag, path);
 }
 
-function bundledArguments() {
+function bundledArguments(options) {
 	const args = [];
+	if (options.noExtensions && options.noSkills && options.noPromptTemplates) return args;
 	const settings = readJson(join(bundledSettingsDir, "settings.json"));
 	for (const packageSource of settings.packages ?? []) {
 		if (typeof packageSource !== "string") {
@@ -31,26 +32,27 @@ function bundledArguments() {
 		}
 		const packageDir = resolve(bundledSettingsDir, packageSource);
 		const manifest = readJson(join(packageDir, "package.json"));
-		for (const extension of manifest.pi?.extensions ?? []) {
+		for (const extension of options.noExtensions ? [] : manifest.pi?.extensions ?? []) {
 			appendResource(args, "--extension", resolve(packageDir, extension));
 		}
-		for (const skill of manifest.pi?.skills ?? []) {
+		for (const skill of options.noSkills ? [] : manifest.pi?.skills ?? []) {
 			appendResource(args, "--skill", resolve(packageDir, skill));
 		}
-		for (const prompt of manifest.pi?.prompts ?? []) {
+		for (const prompt of options.noPromptTemplates ? [] : manifest.pi?.prompts ?? []) {
 			appendResource(args, "--prompt-template", resolve(packageDir, prompt));
 		}
 	}
 
 	const directExtensionsDir = join(bundledConfigDir, "extensions");
-	if (existsSync(directExtensionsDir)) {
+	if (!options.noExtensions && existsSync(directExtensionsDir)) {
 		for (const entry of readdirSync(directExtensionsDir, { withFileTypes: true })) {
 			if (entry.isFile() && /\.(?:js|ts)$/u.test(entry.name)) {
 				appendResource(args, "--extension", join(directExtensionsDir, entry.name));
 			}
 		}
 	}
-	for (const [directory, flag] of [["skills", "--skill"], ["prompts", "--prompt-template"]]) {
+	for (const [directory, flag, disabled] of [["skills", "--skill", options.noSkills], ["prompts", "--prompt-template", options.noPromptTemplates]]) {
+		if (disabled) continue;
 		const path = join(bundledConfigDir, directory);
 		if (existsSync(path)) appendResource(args, flag, path);
 	}
@@ -62,9 +64,11 @@ if (!existsSync(cliPath)) {
 }
 
 const userArgs = process.argv.slice(2);
-const firstArgument = userArgs.find((argument) => !argument.startsWith("-"));
-if (!firstArgument || !packageCommands.has(firstArgument)) {
-	process.argv.splice(2, 0, ...bundledArguments());
+if (!packageCommands.has(userArgs[0])) {
+	// Reuse CLI parsing so option values and messages after -- are never mistaken
+	// for resource switches. Explicit user -e/--skill/--prompt-template stay intact.
+	const { parseArgs } = await import(pathToFileURL(join(dirname(cliPath), "cli", "args.js")).href);
+	process.argv.splice(2, 0, ...bundledArguments(parseArgs(userArgs)));
 }
 
 process.env.SP_SOURCE_LAUNCHER = fileURLToPath(import.meta.url);

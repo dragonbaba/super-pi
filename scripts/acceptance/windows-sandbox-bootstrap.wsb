@@ -1,0 +1,10 @@
+<!-- Official-client initialization only. No mapped host folders or guest task. -->
+<Configuration>
+  <Networking>Disable</Networking>
+  <ClipboardRedirection>Disable</ClipboardRedirection>
+  <AudioInput>Disable</AudioInput>
+  <VideoInput>Disable</VideoInput>
+  <PrinterRedirection>Disable</PrinterRedirection>
+  <vGPU>Disable</vGPU>
+  <MemoryInMB>2048</MemoryInMB>
+</Configuration>

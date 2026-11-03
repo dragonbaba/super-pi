@@ -1,11 +1,9 @@
 import { createHash, type Hash } from "node:crypto";
-import type { NativePlan } from "../mutation-guard-write/native-file-core.ts";
-import type { FileCreationPlan } from "../mutation-guard-write/file-creation.ts";
+export { attachPermissionPathApproval, consumePermissionPathApproval, mutationRequestHash, type PermissionPathApproval } from "@super-pi/coding-agent/internal/files/file-invocation";
 
 export const SESSION_PERMISSION_STATE_TYPE = "session-permission-state-v1";
 export const SESSION_PERMISSION_AUDIT_TYPE = "session-permission-audit-v1";
 export const SESSION_PERMISSION_EVENT = "session-permission:state-v1";
-const PERMISSION_PATH_APPROVAL = Symbol.for("pi.session-permission.path-approval.v2");
 const SUBAGENT_WORKSPACE_DELEGATION = Symbol.for("pi.session-permission.subagent-workspace-delegation.v1");
 const STRUCTURED_READONLY_WORKSPACE_DELEGATION = Symbol.for("pi.session-permission.structured-readonly-workspace-delegation.v1");
 const BROWSER_EXEC_AUTHORIZATION = Symbol.for("pi.session-permission.browser-exec-authorization.v1");
@@ -30,20 +28,6 @@ export interface SessionAllowRule {
   label: string;
 }
 
-export interface PermissionPathApproval {
-  schemaVersion: 1;
-  sequence: number;
-  toolCallId: string;
-  operation: "edit" | "write" | "lsp_fix" | "delete" | "move" | "file_batch";
-  requestHash: string;
-  canonicalTarget: string;
-  protectedRoots: readonly string[];
-  nativePlan?: NativePlan;
-  creationPlan?: FileCreationPlan;
-  writePreflight?: boolean;
-  assertCurrent?: () => void;
-}
-
 export interface SubagentWorkspaceGrant {
   canonicalCwd: string;
   device: number;
@@ -53,7 +37,20 @@ export interface SubagentWorkspaceGrant {
   source: "primary" | "additional" | "full-access-exact";
 }
 
-export interface SubagentWorkspaceDelegation {
+interface CurrentInvocationAuthority {
+  /** Live issuer check, never serialized or recovered from session history. */
+  assertCurrent(): void;
+  revocationSignal: AbortSignal;
+}
+
+function assertInvocationAuthority(value: CurrentInvocationAuthority): void {
+  if (typeof value.assertCurrent !== "function") throw new Error("[POLICY_BLOCKED] Current invocation authorization is missing.");
+  if (!(value.revocationSignal instanceof AbortSignal)) throw new Error("[POLICY_BLOCKED] Current invocation revocation signal is missing.");
+  value.revocationSignal.throwIfAborted();
+  value.assertCurrent();
+}
+
+export interface SubagentWorkspaceDelegation extends CurrentInvocationAuthority {
   schemaVersion: 1;
   sequence: number;
   toolCallId: string;
@@ -67,7 +64,7 @@ export interface StructuredReadonlyPathGrant {
   source: "primary" | "additional" | "full-access-exact";
 }
 
-export interface StructuredReadonlyWorkspaceDelegation extends StructuredReadonlyPathGrant {
+export interface StructuredReadonlyWorkspaceDelegation extends StructuredReadonlyPathGrant, CurrentInvocationAuthority {
   schemaVersion: 1;
   sequence: number;
   toolCallId: string;
@@ -78,7 +75,7 @@ export interface StructuredReadonlyWorkspaceDelegation extends StructuredReadonl
   additionalRoots: readonly StructuredReadonlyPathGrant[];
 }
 
-export interface BrowserExecAuthorization {
+export interface BrowserExecAuthorization extends CurrentInvocationAuthority {
   schemaVersion: 1;
   sequence: number;
   toolCallId: string;
@@ -96,91 +93,9 @@ export interface PermissionStateSnapshot {
 }
 
 interface PermissionCarryingInput {
-  [PERMISSION_PATH_APPROVAL]?: PermissionPathApproval;
   [SUBAGENT_WORKSPACE_DELEGATION]?: SubagentWorkspaceDelegation;
   [STRUCTURED_READONLY_WORKSPACE_DELEGATION]?: StructuredReadonlyWorkspaceDelegation;
   [BROWSER_EXEC_AUTHORIZATION]?: BrowserExecAuthorization;
-}
-
-export function mutationRequestHash(operation: PermissionPathApproval["operation"], input: unknown): string {
-  const value = input && typeof input === "object"
-    ? input as { path?: unknown; destination?: unknown; purpose?: unknown; content?: unknown; snapshot?: unknown; edits?: unknown; kind?: unknown; root?: unknown; server?: unknown; write?: unknown; operations?: unknown; dryRun?: unknown; mode?: unknown }
-    : {};
-  const hash = createHash("sha256");
-  updateStructuredHashField(hash, operation);
-  updateStructuredHashField(hash, value.path);
-  updateStructuredHashField(hash, value.purpose);
-  if (operation === "file_batch") {
-    hash.update(value.dryRun === true ? "preview;" : "apply;");
-    if (!Array.isArray(value.operations)) hash.update("invalid;");
-    else for (const item of value.operations) {
-      updateStructuredHashField(hash, item?.operation);
-      updateStructuredHashField(hash, item?.mode);
-      hash.update(mutationRequestHash(item?.operation, item));
-    }
-  } else if (operation === "move" || operation === "delete") {
-    updateStructuredHashField(hash, value.destination);
-  } else if (operation === "write") {
-    updateStructuredHashField(hash, value.content);
-  } else if (operation === "edit") {
-    updateStructuredHashField(hash, value.snapshot);
-    if (!Array.isArray(value.edits)) {
-      hash.update("edits:-1;");
-    } else {
-      hash.update(`edits:${value.edits.length};`);
-      for (const edit of value.edits) {
-        const item = edit && typeof edit === "object"
-          ? edit as { oldText?: unknown; newText?: unknown; expectedLine?: unknown; kind?: unknown; start?: unknown; end?: unknown; newLines?: unknown }
-          : {};
-        updateStructuredHashField(hash, item.oldText);
-        updateStructuredHashField(hash, item.newText);
-        updateStructuredHashField(hash, item.kind);
-        updateStructuredHashField(hash, item.start);
-        updateStructuredHashField(hash, item.end);
-        hash.update(typeof item.expectedLine === "number" ? `line:${item.expectedLine};` : "line:-1;");
-        if (!Array.isArray(item.newLines)) {
-          hash.update("newLines:-1;");
-        } else {
-          hash.update(`newLines:${item.newLines.length};`);
-          for (const line of item.newLines) updateStructuredHashField(hash, line);
-        }
-      }
-    }
-  } else {
-    updateStructuredHashField(hash, value.kind);
-    updateStructuredHashField(hash, value.root);
-    updateStructuredHashField(hash, value.server);
-    hash.update(value.write === true ? "write:1;" : "write:0;");
-  }
-  return hash.digest("hex");
-}
-export function attachPermissionPathApproval(input: unknown, approval: PermissionPathApproval | undefined): void {
-  if (!approval || !input || typeof input !== "object") return;
-  Object.defineProperty(input, PERMISSION_PATH_APPROVAL, {
-    configurable: true,
-    enumerable: false,
-    writable: false,
-    value: Object.freeze({ ...approval, protectedRoots: Object.freeze([...approval.protectedRoots]) }),
-  });
-}
-
-export function consumePermissionPathApproval(
-  input: unknown,
-  toolCallId: string,
-  operation: PermissionPathApproval["operation"],
-): PermissionPathApproval | undefined {
-  if (!input || typeof input !== "object") return undefined;
-  const carrying = input as PermissionCarryingInput;
-  const approval = carrying[PERMISSION_PATH_APPROVAL];
-  if (approval) Object.defineProperty(carrying, PERMISSION_PATH_APPROVAL, CONSUMED_ATTACHMENT_DESCRIPTOR);
-  if (!approval) return undefined;
-  approval.assertCurrent?.();
-  if (approval.toolCallId !== toolCallId
-    || approval.operation !== operation
-    || approval.requestHash !== mutationRequestHash(operation, input)) {
-    throw new Error("[POLICY_BLOCKED] Attached one-call mutation approval is stale, mismatched, or was altered after authorization.");
-  }
-  return approval;
 }
 
 export function attachSubagentWorkspaceDelegation(input: unknown, delegation: SubagentWorkspaceDelegation): void {
@@ -200,6 +115,7 @@ export function consumeSubagentWorkspaceDelegation(input: unknown): SubagentWork
   const carrying = input as PermissionCarryingInput;
   const delegation = carrying[SUBAGENT_WORKSPACE_DELEGATION];
   if (delegation) Object.defineProperty(carrying, SUBAGENT_WORKSPACE_DELEGATION, CONSUMED_ATTACHMENT_DESCRIPTOR);
+  if (delegation) assertInvocationAuthority(delegation);
   return delegation;
 }
 
@@ -253,11 +169,17 @@ export function consumeBrowserExecAuthorization(input: unknown, toolCallId: stri
   const carrying = input as PermissionCarryingInput;
   const authorization = carrying[BROWSER_EXEC_AUTHORIZATION];
   if (authorization) Object.defineProperty(carrying, BROWSER_EXEC_AUTHORIZATION, CONSUMED_ATTACHMENT_DESCRIPTOR);
+  return assertBrowserExecAuthorization(authorization, input, toolCallId);
+}
+
+/** Revalidate the consumed grant after asynchronous preparation, immediately before execution. */
+export function assertBrowserExecAuthorization(authorization: BrowserExecAuthorization | undefined, input: unknown, toolCallId: string): BrowserExecAuthorization {
   if (!authorization
     || authorization.toolCallId !== toolCallId
     || authorization.requestHash !== browserExecRequestHash(input)) {
     throw new Error("[POLICY_BLOCKED] Browser execution authorization is missing or stale.");
   }
+  assertInvocationAuthority(authorization);
   return authorization;
 }
 
@@ -285,6 +207,7 @@ export function consumeStructuredReadonlyWorkspaceDelegation(
   const delegation = carrying[STRUCTURED_READONLY_WORKSPACE_DELEGATION];
   if (delegation) {
     Object.defineProperty(carrying, STRUCTURED_READONLY_WORKSPACE_DELEGATION, CONSUMED_ATTACHMENT_DESCRIPTOR);
+    assertInvocationAuthority(delegation);
   }
   return delegation;
 }

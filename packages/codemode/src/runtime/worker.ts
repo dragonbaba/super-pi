@@ -142,10 +142,18 @@ async function main(data: WorkerData, port: MessagePort): Promise<void> {
 		const settle = api.getProp("settle");
 		const run = api.getProp("run");
 		const stalled = api.getProp("stalled");
+		let receivedResults = 0;
+		// One owner per VM. postMessage clones before returning, so this record is
+		// safe to reuse; no per-result callbacks, arrays or Promise boundaries.
+		const idleMessage = { type: "idle" as const, received: 0 };
 		/** Run queued jobs, then fail a script that waits on nothing that can ever resume it. */
 		const drain = () => {
 			vm.executePendingJobs();
 			vm.callFunction(stalled, api).dispose();
+			if (data.pauseTimeoutWhileWaiting && !terminal) {
+				idleMessage.received = receivedResults;
+				post(idleMessage);
+			}
 		};
 
 		let incoming: import("./protocol.ts").HostToWorkerMessage | undefined;
@@ -157,6 +165,7 @@ async function main(data: WorkerData, port: MessagePort): Promise<void> {
 		};
 		onMessage = (message: unknown) => {
 			if (!isHostToWorkerMessage(message)) return;
+			receivedResults++;
 			try {
 				incoming = message;
 				vm.withScope(deliver);

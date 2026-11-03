@@ -10,6 +10,8 @@ interface MethodTarget {
 }
 
 const HOT_METHODS: readonly MethodTarget[] = [
+	{ path: "packages/tui/src/tui-alt-screen.ts", className: "TuiAltScreen", methodName: "compositeBottomHint" },
+	{ path: "packages/tui/src/tui-alt-screen.ts", className: "TuiAltScreen", methodName: "clearBottomHint" },
 	{ path: "packages/tui/src/terminal.ts", className: "ProcessTerminal", methodName: "writeFrame" },
 	{ path: "packages/tui/src/terminal.ts", className: "ProcessTerminal", methodName: "startFrameWrite" },
 	{ path: "packages/tui/src/terminal-frame-queue.ts", className: "TerminalFrameQueue", methodName: "submit" },

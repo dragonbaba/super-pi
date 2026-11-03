@@ -153,6 +153,16 @@ test("AgentSession preserves active tools while a no-tool model is selected and 
 	});
 	assert.deepEqual(enabledCompaction, { compactionItem: { type: "compaction" } });
 	assert.equal(compactionCalls, 1);
+	// A late model-auth result must not repopulate prompt ownership after disposal.
+	let releaseAuth!: () => void;
+	const authGate = new Promise<void>(resolve => { releaseAuth = resolve; });
+	runtime.checkAuth = async () => { await authGate; return { type: "api_key" }; };
+	const pendingModel = session.setModel(toolModel);
+	session.dispose();
+	assert.equal((session as any)._baseSystemPromptComposition, undefined);
+	releaseAuth();
+	await pendingModel;
+	assert.equal((session as any)._baseSystemPromptComposition, undefined);
 });
 
 test("toolCalling=false converts prior tool protocol to ordinary messages", async () => {

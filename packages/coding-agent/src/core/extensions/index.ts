@@ -47,8 +47,12 @@ export type {
 	BeforeProviderRequestEventResult,
 	BuildProviderRequestPayloadHandler,
 	BuildSystemPromptOptions,
+	SystemPromptComposition,
+	SystemPromptSegment,
 	// Context
 	CompactOptions,
+	CompactionStrategy,
+	CompactionStrategyHandler,
 	CompactProviderRequestPayloadHandler,
 	// Events - Agent
 	ContextEvent,
@@ -92,6 +96,7 @@ export type {
 	FindToolResultEvent,
 	GetActiveToolsHandler,
 	GetAllToolsHandler,
+	GetToolCatalogHandler,
 	GetCommandsHandler,
 	GetThinkingLevelHandler,
 	GrepToolCallEvent,
@@ -129,6 +134,7 @@ export type {
 	ProviderRequestCompactionInput,
 	ProviderRequestCompactionResult,
 	ProviderRequestPayloadInput,
+	WithSupplementalSummaryHandler,
 	ReadToolCallEvent,
 	ReadToolResultEvent,
 	// Commands
@@ -176,6 +182,7 @@ export type {
 	ToolExecutionStartEvent,
 	ToolExecutionUpdateEvent,
 	ToolInfo,
+	ToolCatalogSnapshot,
 	ToolRenderResultOptions,
 	ToolRenderers,
 	ToolRendererResolver,

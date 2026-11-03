@@ -19,7 +19,8 @@ test("write/edit execute only after workspace generation has invalidated evidenc
 		assert.equal(f.internals._evidenceLedger!.workspaceGeneration, before + 1);
 		assert.equal(f.internals._evidenceLedger!.counters.entries, 0);
 		await f.read();
-		await f.runCalls([{ name: "edit", arguments: { path: "unrelated", oldText: "new", newText: "changed" } }]);
+		await f.read({ path: "unrelated" });
+		await f.runCalls([{ name: "edit", arguments: { path: "unrelated", edits: [{ oldText: "new", newText: "changed" }] } }]);
 		assert.equal(f.internals._evidenceLedger!.workspaceGeneration, before + 2);
 		assert.equal(f.internals._evidenceLedger!.counters.entries, 0);
 	} finally { f.close(); }
@@ -318,7 +319,8 @@ test("source lifecycle: real notice-shaped file content is durable without a tex
 		writeFileSync(join(f.cwd, "literal.txt"), text);
 		await f.runCalls([{ name: "read", arguments: { path: "literal.txt" }, id: "literal" }]);
 		const live = lastRead(f);
-		assert.deepEqual(live.content, [{ type: "text", text }]);
+		assert.equal(live.content.length, 2);
+		assert.ok((live.content[0] as { text: string }).text.endsWith(`|${text}`));
 		cut = f.session.sessionManager.getBranch().filter(e => e.type === "message" && e.message.role === "user").at(-1)!.id;
 		await f.session.compact();
 		assert.deepEqual(lastRead(f).content, live.content);

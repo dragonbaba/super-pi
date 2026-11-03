@@ -95,13 +95,16 @@ async function fixture(t: TestContext) {
 	writeConfig();
 	function block() { endpoint.listed = deferred(); endpoint.gate = deferred(); gates.push(endpoint.gate); return endpoint.gate; }
 	// `allow` models a host tool policy (allowlist) that silently ignores other names.
-	function host(manager = SessionManager.inMemory(root), allow = (_name: string) => true) {
+	function host(manager = SessionManager.inMemory(root), allow = (_name: string) => true, catalog?: (tools: Map<string, any>, active: string[]) => unknown) {
 		const events = new Map<string, any>(), commands = new Map<string, any>(), tools = new Map<string, any>(), notes: string[] = [];
 		let active = ["read"];
+		let executionOwner: { revoke(): void; drain(): Promise<void> };
 		const pi = {
+			registerExecutionOwner(_name: string, owner: typeof executionOwner) { executionOwner = owner; },
 			on(name: string, handler: any) { events.set(name, handler); }, registerCommand(name: string, command: any) { commands.set(name, command.handler); },
 			registerTool(tool: any) { tools.set(tool.name, tool); if (!active.includes(tool.name) && allow(tool.name)) active.push(tool.name); },
 			getActiveTools: () => active, setActiveTools(names: string[]) { active = names.filter(allow); },
+			getToolCatalog: catalog ? () => catalog(tools, active) : undefined,
 			appendEntry(type: string, data: unknown) { manager.appendCustomEntry(type, data); },
 		};
 		mcpBridgeExtension(pi);
@@ -110,6 +113,7 @@ async function fixture(t: TestContext) {
 		const stop = async () => { await events.get("session_shutdown")?.({}, ctx); };
 		cleanup.push(stop);
 		return { ctx, manager, tools, events, commands, notes, active: () => active, stop, activate: (name: string) => { active = [...active, name]; },
+			owner: () => executionOwner,
 			start: () => events.get("session_start")({}, ctx),
 			search: (query = "lookup", signal?: AbortSignal) => tools.get("mcp_search_tools").execute("search", { query }, signal),
 		};
@@ -118,6 +122,36 @@ async function fixture(t: TestContext) {
 }
 
 const REMOTE = "mcp__fixture__lookup";
+
+test("MCP execution owner joins startup and discovery, then lazily reconnects the existing catalog", { timeout: 5000 }, async t => {
+	const f = await fixture(t), h = f.host();
+	// A revoke in the import/preparation window must not leave a late runtime.
+	const startup = h.start(); h.owner().revoke(); await h.owner().drain(); await startup;
+	assert.equal(f.endpoint.initializes, 0);
+	await h.start(); await h.search();
+	const tool = h.tools.get(REMOTE), active = h.active();
+	assert.equal(f.endpoint.initializes, 1);
+	h.owner().revoke();
+	await assert.rejects(h.search(), /boundary changes/);
+	await assert.rejects(h.commands.get("mcp-reload")("", h.ctx), /boundary changes/);
+	await h.owner().drain();
+	assert.equal(h.tools.get(REMOTE), tool); assert.deepEqual(h.active(), active);
+	await h.search(); assert.equal(f.endpoint.initializes, 1, "cached search does not eagerly reconnect");
+	const result = await tool.execute("resumed", {});
+	assert.equal(result.details?.mcpError, undefined); assert.equal(f.endpoint.calls, 1);
+	assert.equal(f.endpoint.initializes, 2); assert.equal(h.tools.get(REMOTE), tool);
+	// A never-discovered catalog gets a fresh discovery only after an explicit search.
+	await h.stop();
+	const next = f.host();
+	// Change connection configuration: labels alone intentionally share a schema cache.
+	f.writeConfig({ headers: { "X-Catalog": "fresh" } }, "fresh"); const gate = f.block();
+	await next.start(); await f.endpoint.listed.promise;
+	const search = assert.rejects(next.search(), /cancelled|aborted/i);
+	next.owner().revoke(); await next.owner().drain(); await search;
+	gate.resolve(); f.endpoint.gate = undefined;
+	await next.search(); assert.ok(next.tools.has("mcp__fresh__lookup"));
+	await next.stop();
+});
 
 test("MCP manager inspects real asynchronous discovery without activating or calling tools", async t => {
 	const f = await fixture(t), gate = f.block(), h = f.host();
@@ -218,7 +252,7 @@ for (const configuration of ["absent", "empty"]) test(`MCP search reports an unc
 	await assert.rejects(h.search("web search", controller.signal), /fixture search cancelled/);
 	assert.equal(getEventListeners(controller.signal, "abort").length, 0);
 	await h.stop();
-	await assert.rejects(h.search(), /MCP_NOT_READY/);
+	await assert.rejects(h.search(), /MCP execution is stopped/);
 	assert.equal(f.endpoint.initializes, 0); assert.equal(f.endpoint.lists, 0); assert.equal(f.endpoint.calls, 0);
 });
 
@@ -398,6 +432,74 @@ test("search activation survives extension replacement and validates changed con
 	f.writeConfig({ headers: { "X-Fixture": "new-config" } });
 	const changed = f.host(h.manager); await changed.start(); await changed.search("nothing-matches");
 	assert.equal(changed.active().includes(REMOTE), false);
+});
+
+test("MCP automatic restoration preserves the real Plan selection", async t => {
+	const f = await fixture(t), seed = f.host();
+	await seed.start(); await seed.search(); await seed.stop();
+	const { createJiti } = await import("jiti");
+	const { default: planMode } = await createJiti(import.meta.url).import<typeof import("../packages/plan-mode/src/plan-mode.ts")>("../packages/plan-mode/src/plan-mode.ts");
+	let runtime: any;
+	const addCached = McpBridgeRuntime.prototype.addCached;
+	McpBridgeRuntime.prototype.addCached = function (...args: unknown[]) { runtime = this; return addCached.apply(this, args); };
+	t.after(() => { McpBridgeRuntime.prototype.addCached = addCached; });
+	const settings = SettingsManager.inMemory({});
+	const resources = new DefaultResourceLoader({ cwd: f.root, agentDir: f.agentDir, settingsManager: settings,
+		noExtensions: true, noContextFiles: true, noSkills: true, noPromptTemplates: true, noThemes: true,
+		extensionFactories: [mcpBridgeExtension, (pi: ExtensionAPI) => planMode({ ...pi, getFlag: name => name === "plan" ? true : pi.getFlag(name) }, {
+			readSettings: async () => ({ kind: "loaded", settings: { thinkingLevel: "inherit", defaultPlanTools: ["read"] } }),
+		})] });
+	await resources.reload();
+	const { session } = await createAgentSession({ cwd: f.root, agentDir: f.agentDir, resourceLoader: resources, settingsManager: settings,
+		sessionManager: seed.manager, tools: ["read", "mcp_search_tools", REMOTE, "mcp__fixture__extra", "plan_mode_question", "plan_mode_complete"], excludeTools: ["plan_mode_question"],
+		model: { id: "fixture", name: "fixture", api: "openai-responses", provider: "fixture", baseUrl: "http://unused", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32000, maxTokens: 4096 },
+		modelRuntime: { hasConfiguredAuth: () => true, checkAuth: async () => ({ type: "api_key" }), isUsingOAuth: () => false, getModel: () => undefined, getAuth: async () => undefined } as never });
+	f.cleanup.push(async () => { try { await emitSessionShutdownEvent(session.extensionRunner, { type: "session_shutdown", reason: "quit" }); }
+		finally { session.dispose(); assert.equal(runtime.closed, true); assert.equal(runtime.onToolsChanged, null);
+			for (const state of runtime.states.values()) assert.equal(state.tools.size, 0); } });
+	await session.bindExtensions({});
+	assert.equal(session.getToolCatalog().selectionMode, "plan");
+	assert.ok(session.getToolDefinition(REMOTE), "the remote must be configuration-visible, not filtered by the fixture");
+	const selected = session.getActiveToolNames();
+	assert.equal(selected.includes(REMOTE), false);
+	assert.equal(selected.includes("mcp_search_tools"), false);
+	const intent = activationRecords(seed.manager);
+	await session.extensionRunner!.emit({ type: "session_tree" } as never);
+	assert.deepEqual(session.getActiveToolNames(), selected, "branch intent must not broaden published Plan selection");
+	runtime.onToolsChanged();
+	assert.deepEqual(session.getActiveToolNames(), selected, "background catalog sync must not broaden Plan selection");
+	const state = runtime.states.get("fixture");
+	const extra = { name: "extra", inputSchema: { type: "object" } };
+	state.tools.set(extra.name, extra);
+	runtime.registerRemoteTool(state, extra);
+	assert.ok(session.getToolDefinition("mcp__fixture__extra"), "registration still updates the configured catalog");
+	assert.deepEqual(session.getActiveToolNames(), selected, "native registration must not restore any configured tool during Plan");
+	runtime.onToolsChanged();
+	assert.deepEqual(session.getActiveToolNames(), selected, "new registration must stay deferred in Plan");
+	session.setActiveToolsByName([...selected, REMOTE, "mcp_search_tools"]);
+	const manual = session.getActiveToolNames();
+	await session.extensionRunner!.emit({ type: "session_tree" } as never);
+	assert.deepEqual(session.getActiveToolNames(), manual, "Plan reset preserves its current valid explicit selection");
+	const oldActive = session.agent.state.tools.find(tool => tool.name === REMOTE)!;
+	const remote = { ...state.tools.get("lookup"), inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } };
+	state.tools.set("lookup", remote); runtime.registerRemoteTool(state, remote);
+	assert.deepEqual(session.getActiveToolNames(), manual);
+	const newActive = session.agent.state.tools.find(tool => tool.name === REMOTE)!;
+	assert.notEqual(newActive, oldActive, "same-name registration must replace the actual active wrapper");
+	assert.match(JSON.stringify(newActive.parameters), /"required":\["query"\]/);
+	state.tools.delete("lookup"); runtime.onToolsChanged();
+	assert.deepEqual(session.getActiveToolNames(), [...selected, "mcp_search_tools"], "removed remote tools still deactivate in Plan");
+	state.tools.set("lookup", remote);
+	await session.extensionRunner!.getCommand("plan")!.handler("exit", session.extensionRunner!.createCommandContext());
+	assert.equal(session.getToolCatalog().selectionMode, "default");
+	session.setActiveToolsByName(["read"]);
+	runtime.registerRemoteTool(state, { ...extra, description: "updated in default mode" });
+	assert.ok(session.getActiveToolNames().includes("mcp__fixture__extra"), "default registration retains its automatic activation behavior");
+	runtime.onToolsChanged();
+	assert.ok(session.getActiveToolNames().includes(REMOTE), "ordinary synchronization restores the retained intent after exit");
+	assert.ok(session.getActiveToolNames().includes("mcp_search_tools"));
+	assert.deepEqual(activationRecords(seed.manager), intent);
+	assert.equal(f.endpoint.calls, 0);
 });
 
 test("trusted project override invalidates global activation and a disabled override never connects", async t => {
@@ -793,6 +895,56 @@ test("only activations accepted by the host tool policy are recorded and reporte
 	await h.stop();
 	const permissive = f.host(h.manager); await permissive.start(); await permissive.search("nothing-matches");
 	assert.equal(permissive.active().includes(REMOTE), false, "a rejected activation is never restored");
+});
+
+test("MCP search applies current host eligibility before candidate and schema budgets", async t => {
+	const f = await fixture(t);
+	f.endpoint.tools = Array.from({ length: 10 }, (_, i) => ({ name: i < 9 ? `blocked_${i}` : "lookup", inputSchema: { type: "object" } }));
+	let reads = 0, empty = false, blockedBudgetReads = 0;
+	let readsAfterDiscovery = 0;
+	const originalBytes = McpBridgeRuntime.prototype.toolSchemaBytes;
+	const originalWait = McpBridgeRuntime.prototype.waitForDiscovery;
+	McpBridgeRuntime.prototype.waitForDiscovery = async function (...args: unknown[]) {
+		const result = await originalWait.apply(this, args);
+		readsAfterDiscovery = reads;
+		return result;
+	};
+	McpBridgeRuntime.prototype.toolSchemaBytes = function (name: string) {
+		if (name.includes("blocked")) blockedBudgetReads++;
+		return originalBytes.call(this, name);
+	};
+	t.after(() => { McpBridgeRuntime.prototype.toolSchemaBytes = originalBytes; McpBridgeRuntime.prototype.waitForDiscovery = originalWait; });
+	const catalog = (tools: Map<string, any>, active: string[]) => {
+		reads++;
+		return { tools: empty ? [] : [...tools.values()].filter(tool => !tool.name.includes("blocked") || tool.name.endsWith("blocked_8"))
+			.map(tool => ({ name: tool.name, available: tool.name.endsWith("blocked_8") ? false : undefined })), activeTools: [...active] };
+	};
+	const h = f.host(undefined, name => !name.includes("blocked"), catalog);
+	const gate = f.block();
+	await h.start(); await f.endpoint.listed.promise;
+	const startupReads = reads;
+	const pending = h.search("fixture");
+	await Promise.resolve(); assert.equal(reads, startupReads, "the waiting search does not read host eligibility");
+	gate.resolve(); f.endpoint.gate = undefined;
+	const result = await pending;
+	assert.match(JSON.stringify(result), /Activated MCP tools: mcp__fixture__lookup/);
+	assert.equal(readsAfterDiscovery - startupReads, 1, "discovery completion synchronizes its own catalog once");
+	assert.equal(reads - readsAfterDiscovery, 1, "search reads once after discovery and automatic sync complete");
+	assert.equal(blockedBudgetReads, 0, "excluded and unavailable candidates consume no schema budget reads");
+	assert.ok(h.active().includes(REMOTE));
+	empty = true;
+	assert.match(JSON.stringify(await h.search("fixture")), /No deferred MCP tools matched/);
+	assert.equal(reads - readsAfterDiscovery, 1);
+	empty = false;
+	assert.match(JSON.stringify(await h.search("fixture")), /already active/);
+	assert.equal(reads - readsAfterDiscovery, 1);
+	await h.stop();
+	// Visibility is not a grant: a modern host can still reject the final activation.
+	const rejecting = f.host(undefined, name => name !== REMOTE, catalog);
+	await rejecting.start();
+	assert.match(JSON.stringify(await rejecting.search("fixture")), /Not activated by the host tool policy/);
+	assert.equal(activationRecords(rejecting.manager).length, 0);
+	assert.equal(rejecting.active().includes(REMOTE), false);
 });
 
 test("persisted activation identities are keyed by a machine-local secret", async t => {

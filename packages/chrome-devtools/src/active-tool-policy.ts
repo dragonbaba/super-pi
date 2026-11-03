@@ -7,7 +7,8 @@ export const CHROME_DEVTOOLS_TOOL_NAME_SET: ReadonlySet<string> = new Set(
 	CHROME_DEVTOOLS_TOOL_NAMES,
 );
 
-export function planModeOwnsActiveTools(activeToolNames: readonly string[]): boolean {
+export function planModeOwnsActiveTools(activeToolNames: readonly string[], selectionMode?: "default" | "plan"): boolean {
+	if (selectionMode !== undefined) return selectionMode === "plan";
 	let hasQuestionTool = false;
 	let hasCompleteTool = false;
 	for (let index = 0; index < activeToolNames.length; index += 1) {
@@ -23,8 +24,9 @@ export function reconcileChromeDevtoolsTools(
 	activeToolNames: readonly string[],
 	selectedTools: readonly ChromeDevToolsToolName[],
 	preservePlanModeSelection: boolean,
+	selectionMode?: "default" | "plan",
 ): string[] | undefined {
-	if (preservePlanModeSelection && planModeOwnsActiveTools(activeToolNames)) return undefined;
+	if (preservePlanModeSelection && planModeOwnsActiveTools(activeToolNames, selectionMode)) return undefined;
 
 	const next: string[] = [];
 	for (let index = 0; index < activeToolNames.length; index += 1) {

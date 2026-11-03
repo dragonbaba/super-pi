@@ -35,21 +35,19 @@ In practice, that means keeping two representations of context alive at once:
    - `store: true`
    - `context_management`
    - maybe `previous_response_id`
-4. For direct `openai/*`, the registered provider override in `src/custom-stream.ts` chooses the custom WS-backed stream.
+4. For direct `openai/*`, the SDK captures the runtime's explicit dispatch. ModelRuntime captures Provider source before awaiting authentication, then uses `src/custom-stream.ts` after preparing the request unless a user-defined Provider/stream takes precedence.
 5. `src/openai-ws-stream.ts` either:
    - sends the request over the OpenAI Responses WebSocket transport, or
    - falls back to Pi's default HTTP Responses streaming path.
-6. For `openai-codex/*`, the extension mostly leaves the built-in Codex provider transport alone and only injects reconstructed remote-compaction history when needed.
+6. For `openai-codex/*`, the SDK dispatches through the runtime's native Codex owner; the extension sets remote-compaction intent and injects compatible reconstructed opaque history when needed. It does not install a second Codex transport.
 7. When a compatible assistant message completes, `src/index.ts` records the new `responseId` while preserving the exact transport-context baseline (including the just-finalized assistant). This remains correct across compaction/custom branch entries.
 8. Both `response.completed` and `response.incomplete` are terminal WS events. Only `max_output_tokens` maps to `length`; content-filter and other incomplete reasons are safety/error stops and cannot trigger automatic continuation.
 
 ### Compaction turn
 
 1. Pi decides to compact or receives an explicit compact command.
-2. `src/index.ts` handles `session_before_compact`.
-3. In parallel, it tries to:
-   - generate a **portable structured continuation checkpoint** whose required first field is the current user goal
-   - request Responses compaction v2
+2. The host first handles legacy compaction overrides, then selects at most one matching native strategy. `src/index.ts` contributes its strategy through `registerCompactionStrategy`; older hosts retain the legacy hook path. Conflicting native strategies stop before candidate execution.
+3. It requests Responses compaction v2 and, when configured, a **portable structured continuation checkpoint** whose required first field is the current user goal. GPT models finish the required summary first; other supported models may run both in parallel. Modern hosts own optional summary requests through `withSupplementalSummary`, including selected authentication, Fast/payload hooks, ordinary-state isolation and cancellation cleanup.
 4. `src/remote-compaction.ts` converts Pi messages to OpenAI Responses `input` items, appends a `compaction_trigger`, and streams the compaction response from the normal Responses endpoint. Only an explicit pre-output 400/404 unsupported-protocol response can retry through unary `/responses/compact`; ambiguous or post-output failures do not retry.
 5. If remote compaction succeeds, the returned opaque replacement history is stored in:
    - `CompactionEntry.details.remoteCompaction`
@@ -62,6 +60,8 @@ For later direct OpenAI Responses turns, the extension prefers:
 - the persisted/reconstructed remote replacement history, when model-compatible
 - otherwise safe live continuation using `previous_response_id`
 - otherwise ordinary full-input replay / Pi fallback behavior
+
+This is not an unconditional replay guarantee. Direct WS payload hooks run after candidate previous-ID/input selection; explicit deletion of the ID preserves the hook's independent input. Native Codex hooks run before cached delta selection. An ordinary Codex cache mismatch may use full input, but a missing or ambiguous post-compaction boundary rejects before dispatch and preserves the existing evidence. A valid later request may reuse that evidence; an explicit provider refresh starts a new transport from compatible opaque or portable local history. Neither path repeats hooks or synthesizes an unproven prefix to force recovery. See the README's continuity limits and the offline contract test `Codex post-compaction boundary rejection preserves evidence and allows explicit recovery`.
 
 ### Explicit provider refresh
 
@@ -103,7 +103,7 @@ This state is managed by:
 The orchestration layer.
 
 Responsibilities:
-- register the custom provider override
+- publish/revoke the runtime's direct Responses dispatch without re-registering the OpenAI Provider
 - register `/provider-refresh` at the provider-state ownership boundary
 - patch outgoing provider payloads
 - hook into Pi compaction lifecycle
@@ -120,7 +120,7 @@ The Codex-style compaction layer.
 Responsibilities:
 - convert Pi messages to OpenAI Responses-style input items
 - call `POST /v1/responses` with a trailing `compaction_trigger`
-- apply the current process-local subscription Fast override first, then inherit the last observed base normal-request `service_tier`
+- preserve the final canonical preview's `service_tier`, after the same payload hooks as ordinary requests; do not recompute it from Fast intent, cached observations, or response pricing
 - retry once through unary `/v1/responses/compact` only for explicit pre-output unsupported-v2 errors
 - parse the Responses SSE stream and validate the returned `compaction` item
 - retain recent user messages using Pi's intentionally smaller 20K-token replay budget (Codex 0.149 uses a 64K retained budget)
@@ -172,13 +172,19 @@ Loads and normalizes configuration from:
 
 ### `src/state.ts`
 
-Stores ephemeral per-session runtime state only.
+`CompactionState` holds seven ephemeral maps per runtime owner, indexed by session ID. Reads return existing references. Final disposal clears all maps and rejects subsequent writes; revocation/drain clears only live continuation and transport state. Remote history and configuration survive a live refresh.
 
 It does **not** persist remote compaction artifacts itself. Those live in Pi session entries.
 
 ### `src/custom-stream.ts`
 
-Small dispatch layer that enables the custom WS-backed stream only for direct OpenAI Responses models. Provider registration cannot receive session context, so disabled/untrusted sessions safely delegate to Pi's built-in HTTP stream using the configuration snapshot captured at `session_start`.
+Creates an explicit owner containing `CompactionState`, direct Responses connections, session queue tails and a bounded set of pending requests. The host captures a runtime dispatch token; disabled sessions publish no dispatch and retain their selected Provider. The stream uses the configuration snapshot captured at `session_start`; untrusted project configuration is not loaded.
+
+Admission captures the cancellation epoch and registers pending work synchronously before queue execution. Revoke closes admission, aborts requests and closes sockets; drain joins connection creation, warmup, payload hooks, WS responses and HTTP fallback before clearing live state. A validated dispatch may resume only after drain; final disposal is terminal and publishes its shared operation before abort observers can reenter. Request-level abort subscriptions are explicitly released on settlement. No owner bookkeeping is added per delta.
+
+The runtime binds this owner once to its execution boundary. Normal shutdown, replacement and reload join the same terminal cleanup with a bounded deadline; synchronous invalidation starts that cleanup as a fallback. These guarantees cover this package and direct Responses transport. The separate AI Codex transport cache and successful commitments still use session IDs and are not covered by the identical-ID isolation proof.
+
+Model changes may originate inside a payload hook. That event revokes synchronously and starts owner-held cleanup without awaiting its containing request; request-shape caches are cleared after pending work settles. Cleanup failures remain sticky and are reported by later admission or final disposal. Other lifecycle callers still await drain.
 
 ### `src/stream-message-shared.ts`
 

@@ -112,6 +112,7 @@ test("A+B+C actual SDK Session: mixed tools, final handoffs, partial receipts an
   assert.equal(beforeReceipts.filter((item: any) => item.toolCallId === partial.toolCallId && item.status === "succeeded").length, 1);
   const file = manager.getSessionFile()!; assert.ok(file);
   session.dispose(); const reopened = SessionManager.open(file);
+  await session.waitForSessionLeaseRelease(); await options.resourceLoader.reload();
   ({ session } = await createAgentSession({ ...options, sessionManager: reopened })); runner = session.extensionRunner; await session.bindExtensions({});
   const receipts = collectStructuredMutationReceipts(reopened.getBranch());
   assert.deepEqual(receipts, beforeReceipts);

@@ -6,8 +6,8 @@ import { SubagentTasks } from "../packages/extensions/subagent/tasks.ts";
 
 for (const mode of ["regular", "fullscreen"] as const) {
 	test(`manual quit asks once for both providers, cancel preserves tasks, confirm awaits cleanup: ${mode}`, async t => {
-		const shell = new SubagentTasks(2), child = new SubagentTasks(2);
-		const shellTask = shell.create("bash"), childTask = child.create("scout"); shell.start(shellTask); child.start(childTask);
+		const child = new SubagentTasks(2);
+		const childTask = child.create("scout"); child.start(childTask);
 		let cleanupStarted = false, cleaned = false, exits = 0, dialogs = 0;
 		let releaseCleanup!: () => void;
 		let markCleanup!: () => void;
@@ -20,7 +20,8 @@ for (const mode of ["regular", "fullscreen"] as const) {
 				registration.unregister(); tasks.dispose(); cleaned = true;
 			});
 		};
-		const f = await alphaSession({ mode, extensions: [provider("shell", shell), provider("subagent", child)] });
+		const f = await alphaSession({ mode, extensions: [provider("subagent", child)] });
+		const shell = f.session.resourceLoader.getExtensions().runtime.nativeTasks!.shell.tasks;
 		t.mock.method(process, "exit", (code: number) => { assert.equal(code, 0); assert.equal(cleaned, true); exits++; });
 		let confirm!: (value: boolean) => void;
 		t.mock.method(f.internal, "showExtensionConfirm", (_title: string, message: string) => {
@@ -28,11 +29,13 @@ for (const mode of ["regular", "fullscreen"] as const) {
 		});
 		try {
 			await f.mode.init();
+			const shellTask = shell.create("bash"); shell.start(shellTask);
 			const cancelled = f.internal.shutdown(); assert.equal(f.internal.shutdown(), cancelled);
+			await new Promise<void>(resolve => setImmediate(resolve));
 			assert.equal(dialogs, 1); confirm(false); await cancelled;
 			assert.equal(exits, 0); assert.equal(cleanupStarted, false); assert.equal(f.input.isRaw, true);
 			assert.equal(shellTask.controller?.signal.aborted, false); assert.equal(childTask.controller?.signal.aborted, false);
-			const approved = f.internal.shutdown(); assert.equal(dialogs, 2); confirm(true);
+			const approved = f.internal.shutdown(); await new Promise<void>(resolve => setImmediate(resolve)); assert.equal(dialogs, 2); confirm(true);
 			await cleanupReady;
 			assert.equal(exits, 0); assert.equal(cleanupStarted, true);
 			releaseCleanup(); await approved;
@@ -53,6 +56,7 @@ test("termination signal cancels a pending quit dialog and joins mandatory clean
 	});
 	try {
 		await f.mode.init(); const pending = f.internal.shutdown();
+		await new Promise<void>(resolve => setImmediate(resolve));
 		assert.equal(f.internal.shutdown({ fromSignal: true }), pending); await pending;
 		assert.equal(dialogs, 1); assert.equal(exits, 1); assert.equal(tasks.size, 0);
 	} finally { await f.release(); }

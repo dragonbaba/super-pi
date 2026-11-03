@@ -8,12 +8,17 @@
  * - Interact with the user via UI primitives
  */
 
+import type { SessionTasks } from "../tasks/session-tasks.ts";
+import type { OpenAICodexTransportOwner } from "@super-pi/ai/api/openai-codex-responses";
+import type { SessionFiles } from "../files/session-files.ts";
+import type { ExecutionBoundaryParticipant, SessionExecutionBoundary } from "../execution-boundary.ts";
 import type {
 	AgentMessage,
 	AgentToolExecutionContext,
 	AgentToolResult,
 	AgentToolUpdateCallback,
 	ThinkingLevel,
+	StreamFn,
 	ToolExecutionMode,
 	ToolInvocationAuthorization,
 } from "@super-pi/agent-core";
@@ -67,7 +72,7 @@ import type {
 } from "../session-manager.ts";
 import type { SlashCommandInfo } from "../slash-commands.ts";
 import type { SourceInfo } from "../source-info.ts";
-import type { BuildSystemPromptOptions } from "../system-prompt.ts";
+import type { BuildSystemPromptOptions, SystemPromptComposition } from "../system-prompt.ts";
 import type { BashOperations } from "../tools/bash.ts";
 import type { EditToolDetails } from "../tools/edit.ts";
 import type {
@@ -88,7 +93,7 @@ import type {
 } from "../tools/index.ts";
 
 export type { ExecOptions, ExecResult } from "../exec.ts";
-export type { BuildSystemPromptOptions } from "../system-prompt.ts";
+export type { BuildSystemPromptOptions, SystemPromptComposition, SystemPromptSegment } from "../system-prompt.ts";
 export type { AgentToolResult, AgentToolUpdateCallback, ToolExecutionMode };
 export type { AppKeybinding, KeybindingsManager } from "../keybindings.ts";
 
@@ -664,6 +669,20 @@ export interface SessionBeforeCompactEvent {
 	signal: AbortSignal;
 }
 
+/** Prepared once per compaction; undefined explicitly requests the native summary fallback. */
+export type CompactionStrategyHandler = (event: SessionBeforeCompactEvent, ctx: ExtensionContext) =>
+	SessionBeforeCompactResult | undefined | Promise<SessionBeforeCompactResult | undefined>;
+
+export interface CompactionStrategy {
+	readonly id: string;
+	/** Synchronous selection only: capture model/config, with no auth lookup, preview or request. */
+	readonly prepare: (ctx: ExtensionContext) => CompactionStrategyHandler | undefined;
+}
+
+export interface RegisteredCompactionStrategy extends CompactionStrategy {
+	readonly extensionPath: string;
+}
+
 /** Fired after context compaction succeeds */
 export interface SessionCompactEvent {
 	type: "session_compact";
@@ -770,6 +789,8 @@ export interface BeforeProviderRequestEvent {
 	dryRun: boolean;
 	/** Ephemeral auth and routing snapshot for this dispatch; never persist credentials. Absent for previews. */
 	requestAuth?: ProviderRequestAuthSnapshot;
+	/** A supplementary request must not inherit ordinary conversation state. */
+	purpose?: "supplemental-summary";
 }
 
 /**
@@ -780,6 +801,7 @@ export interface BeforeProviderRequestEvent {
 export interface BeforeProviderHeadersEvent {
 	type: "before_provider_headers";
 	headers: ProviderHeaders;
+	purpose?: "supplemental-summary";
 }
 
 /** Fired after a provider response is received and before the response stream is consumed. */
@@ -800,6 +822,8 @@ export interface BeforeAgentStartEvent {
 	systemPrompt: string;
 	/** Structured options used to build the system prompt. Extensions can inspect this to understand what Pi loaded without re-discovering resources. */
 	systemPromptOptions: BuildSystemPromptOptions;
+	/** Native immutable segments; null after a raw override, absent on older hosts. */
+	systemPromptComposition?: SystemPromptComposition | null;
 }
 
 /** Fired when an agent loop starts */
@@ -1367,6 +1391,20 @@ export interface ExtensionObserverOptions {
  * ExtensionAPI passed to extension factory functions.
  */
 export interface ExtensionAPI {
+	/** Register during loading. The host rejects overlapping matches before running any strategy. */
+	registerCompactionStrategy?(strategy: CompactionStrategy): void;
+	/** Register one service owner for native execution transitions. This grants no permissions.
+	 * Older standalone hosts may omit this API; full coordinated transitions require it.
+	 * drain must await owned cleanup, never the containing agent/tool invocation. */
+	registerExecutionOwner?(name: string, owner: ExecutionBoundaryParticipant): () => void;
+	/** Check shared admission before service work, including direct commands. Grants no permission. */
+	assertExecutionCurrent?(): void;
+	/** Native coordinated mode switch. Call from a user command or session_start,
+	 * never await this from a tool or a hook belonging to the execution being drained.
+	 * Publication must be synchronous; rejection leaves admission closed. No permission is granted. */
+	transitionExecution?(publish: () => undefined): Promise<void>;
+	/** Full foreground/preflight/settlement completion. Do not await from its own hook. */
+	waitForExecutionIdle?(): Promise<void>;
 	// =========================================================================
 	// Event Subscription
 	// =========================================================================
@@ -1527,8 +1565,19 @@ export interface ExtensionAPI {
 
 	/** Get all configured tools with parameter schema, prompt guidelines, and source metadata. */
 	getAllTools(): ToolInfo[];
+	/** Read configured tools, host availability and active order together; absent on older hosts. */
+	getToolCatalog?(): ToolCatalogSnapshot;
 	/** Build the active provider request payload without network I/O. */
 	buildProviderRequestPayload(input: ProviderRequestPayloadInput): Promise<Record<string, unknown> | undefined>;
+	/** Run supplementary summaries in a host-owned scope. Its StreamFn resolves after iterator cleanup;
+	 * only one request may run at a time. Absent on older hosts. */
+	withSupplementalSummary?: WithSupplementalSummaryHandler;
+	/** Set this runtime's Codex ordinary-request intent after loading (e.g. session_start); model support is checked separately. */
+	setCodexRemoteCompactionEnabled(enabled: boolean): void;
+	/** Install this runtime's direct Responses dispatch after loading; undefined revokes it. */
+	setOpenAIResponsesStream(streamSimple: OpenAIResponsesDispatch["streamSimple"] | undefined, owner?: OpenAIResponsesOwner): void;
+	/** Clear this runtime's live Codex transport after requests settle; durable history is preserved. */
+	resetCodexTransport(): Promise<void>;
 	/** Execute fail-closed provider-native compaction through the active provider runtime. */
 	compactProviderRequestPayload(
 		input: ProviderRequestCompactionInput,
@@ -1787,9 +1836,23 @@ export type ToolInfo = Pick<ToolDefinition, "name" | "description" | "parameters
 
 export type GetAllToolsHandler = () => ToolInfo[];
 
+/** Caller-owned directory entries/arrays; schemas and source metadata retain their definition identity. */
+export interface ToolCatalogSnapshot {
+	/** Only configuration-allowed definitions; availability does not grant execution authorization. */
+	tools: ToolInfo[];
+	/** Actual active order, independent of host availability and current invocation permission. */
+	activeTools: string[];
+	/** Selection coordination only, not permission/admission. Absent on hosts predating this field. */
+	selectionMode?: "default" | "plan";
+}
+
+export type GetToolCatalogHandler = () => ToolCatalogSnapshot;
+
 export interface ProviderRequestPayloadInput {
 	systemPrompt: string;
 	messages: AgentMessage[];
+	/** Ephemeral effective authentication already resolved by the caller; never re-resolve it for a preview. */
+	auth?: ProviderRequestAuthSnapshot;
 }
 
 export type BuildProviderRequestPayloadHandler = (
@@ -1808,6 +1871,15 @@ export interface ProviderRequestAuthSnapshot {
 	readonly apiKey?: string;
 	readonly headers?: Readonly<ProviderHeaders>;
 	readonly env?: Readonly<Record<string, string>>;
+}
+
+export type WithSupplementalSummaryHandler = <T>(signal: AbortSignal, run: (stream: StreamFn) => Promise<T>) => Promise<T>;
+
+/** Host-only request context for selected-model hooks and lifecycle checks. */
+export interface SupplementalSummaryHookScope {
+	readonly purpose: "supplemental-summary";
+	readonly model: Model<any>;
+	readonly assertCurrent: () => void;
 }
 
 export interface ProviderRequestCompactionResult {
@@ -1840,7 +1912,38 @@ export type SetLabelHandler = (entryId: string, label: string | undefined) => vo
  * Shared state created by loader, used during registration and runtime.
  * Contains flag values (defaults set during registration, CLI values set after).
  */
+/** Host-only captured dispatch. Never serialized into provider options or payloads. */
+export interface OpenAIResponsesDispatch {
+	readonly streamSimple: (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => AssistantMessageEventStream;
+	readonly assertCurrent: () => void;
+}
+
+export interface OpenAICodexDispatch {
+	readonly owner: OpenAICodexTransportOwner;
+	assertCurrent(): void;
+}
+
+/** One runtime's transport and state lifecycle; separate from the Provider registry. */
+export interface OpenAIResponsesOwner {
+	revoke(): void;
+	drain(): Promise<void>;
+	dispose(): Promise<void>;
+}
+
 export interface ExtensionRuntimeState {
+	readonly compactionStrategies: Map<string, RegisteredCompactionStrategy>;
+	readonly executionBoundary: SessionExecutionBoundary;
+	/** Session-owned intent, reset on invalidation; never a server capability assertion. */
+	codexRemoteCompactionEnabled: boolean;
+	openAIResponsesDispatch: OpenAIResponsesDispatch | undefined;
+	readonly codexDispatch: OpenAICodexDispatch;
+	openAIResponsesOwner: OpenAIResponsesOwner | undefined;
+	providerOwnerDisposal: Promise<void> | undefined;
+	disposeProviderOwners(): Promise<void>;
+	/** Native session owner shared with optional task providers; not an extension registration. */
+	nativeTasks?: SessionTasks;
+	nativeFiles?: SessionFiles;
+	nativePermissions?: import("../execution-policy.ts").SessionExecutionPolicy;
 	flagValues: Map<string, boolean | string>;
 	/** Legacy provider-config registrations queued during extension loading, processed when runner binds. */
 	pendingProviderRegistrations: Array<{ name: string; config: ProviderConfig; extensionPath: string }>;
@@ -1849,7 +1952,7 @@ export interface ExtensionRuntimeState {
 	/** Throws when this extension instance is stale after runtime replacement. */
 	assertActive: () => void;
 	/** Marks this extension instance as stale after runtime replacement or reload. */
-	invalidate: (message?: string) => void;
+	invalidate: (message?: string, ownersCleanupStarted?: boolean) => void;
 	/** Retain an event-bus subscription until this runtime is invalidated. */
 	trackEventBusSubscription: (unsubscribe: () => void) => () => void;
 	/**
@@ -1868,6 +1971,8 @@ export interface ExtensionRuntimeState {
  * Provided to runner.initialize(), copied into the shared runtime.
  */
 export interface ExtensionActions {
+	transitionExecution?: (publish: () => undefined) => Promise<void>;
+	waitForExecutionIdle?: () => Promise<void>;
 	sendMessage: SendMessageHandler;
 	sendUserMessage: SendUserMessageHandler;
 	appendEntry: AppendEntryHandler;
@@ -1876,7 +1981,9 @@ export interface ExtensionActions {
 	setLabel: SetLabelHandler;
 	getActiveTools: GetActiveToolsHandler;
 	getAllTools: GetAllToolsHandler;
+	getToolCatalog?: GetToolCatalogHandler;
 	buildProviderRequestPayload: BuildProviderRequestPayloadHandler;
+	withSupplementalSummary?: WithSupplementalSummaryHandler;
 	compactProviderRequestPayload: CompactProviderRequestPayloadHandler;
 	setActiveTools: SetActiveToolsHandler;
 	refreshTools: RefreshToolsHandler;

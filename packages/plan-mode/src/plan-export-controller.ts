@@ -6,7 +6,8 @@ import type { PlanModeState } from "./state.js";
 interface PlanExportControllerOptions {
 	getState(): PlanModeState;
 	getSettings(): PlanModeSettings;
-	finishReady(ctx: ExtensionContext): void;
+	finishReady(ctx: ExtensionContext): void | Promise<void>;
+	trackWrite<T>(run: () => Promise<T>): Promise<T>;
 }
 
 export function createPlanExportController(options: PlanExportControllerOptions) {
@@ -27,6 +28,7 @@ export function createPlanExportController(options: PlanExportControllerOptions)
 					isCurrent,
 					getState: options.getState,
 					finishReady: () => options.finishReady(ctx),
+					trackWrite: options.trackWrite,
 				},
 				configuredPlanExportPath(options.getSettings()),
 			);

@@ -26,7 +26,7 @@ For a single prompt and a single text response, a direct model API call may be s
 | The application owns the UI and streaming state | Regular and fullscreen TUI, selectors, progress, and result presentation |
 | Provider integrations are separate | Multiple provider catalogs, stored authentication, extensions, Skills, MCP, and RPC |
 
-These capabilities still depend on the provider, model capabilities, project configuration, and active tool policy. They are application controls, not an operating-system sandbox or a guarantee about any model output or external service.
+These capabilities still depend on the provider, model capabilities, project configuration, and active tool policy. The selected execution mode determines whether supported tools use Windows Sandbox; application permissions do not guarantee model output or external-service behavior.
 
 ## Core capabilities
 
@@ -48,7 +48,7 @@ File editing uses scoped reads and identity checks. Snapshots, line anchors, and
 
 ### Session background tasks
 
-In TUI/RPC sessions, Bash and PowerShell can use `background: true` with an explicit `cwd`. The model sees effective capacity before submission; `/tasks` and the direct `tasks` tool manage shell and subagent work together. Shell defaults are 16 running and 64 admitted commands, configurable up to 64/256. Commands keep normal authorization, bounded results and completion notifications, and stop on session shutdown. Persistent sessions restore bounded historical results after restart; missing completion is marked interrupted, without replaying work or restoring permissions. See [background task usage and limits](docs/background-tasks.md).
+In host TUI/RPC sessions, Bash and PowerShell can use `background: true` with an explicit `cwd`; the Sandbox modes currently run foreground commands only. The model sees effective capacity before submission; `/tasks` and the direct `tasks` tool manage shell and subagent work together. Shell defaults are 16 running and 64 admitted commands, configurable up to 64/256. Commands keep normal authorization, bounded results and completion notifications, and stop on session shutdown. Persistent sessions restore bounded historical results after restart; missing completion is marked interrupted, without replaying work or restoring permissions. See [background task usage and limits](docs/background-tasks.md).
 
 ### Goal, Plan, sessions, and memory
 
@@ -73,7 +73,7 @@ MCP is an explicit integration. Configure a trusted server in `~/.sp/agent/confi
 
 When the model needs a decision about material ambiguity, conflicting requirements, or a preference that cannot be inferred, it should call `ask_user`. The tool displays the question and waits for an explicit option or text answer; dependent business calls do not start before the answer. A prose question such as “please confirm” does not create the same boundary, and a disabled tool or unavailable UI does not count as an answer. An answer is not file, Shell, or external-service permission.
 
-Permission checks combine tool policy, project trust, paths, and operation checks. `full-access` changes the authorization scope, but it does not make uninspectable Shell syntax pass automatically; the policy is not an operating-system sandbox. Treat project extensions, MCP servers, Shell commands, and model-generated edits as inputs to review.
+Start with `superpi` and use `/permissions` to select read-only in Windows Sandbox, Sandbox read/write (default), or full host read/write. Both of the first two modes execute file and command tools inside the VM; only the third uses host tools, after explicit confirmation. Switching preserves the conversation and drains the previous runtime. See [permissions and execution limits](docs/execution-environments.md) for workspace snapshots, writeback, supported tools and migration. Project extensions and provider code still run in the host application.
 
 A long `node -e` script is not rejected merely because of its length. A one-off script that can be passed reliably can run directly; complex quoting, repeated maintenance, or multi-part scripts may be clearer as an explicit file or supported stdin input. Writing a file is not a way around authorization: the file write and the execution still have their own checks.
 
@@ -82,6 +82,8 @@ A long `node -e` script is not rejected merely because of its length. A one-off 
 Images first enter an input draft and become part of the model request only after submission. If the active model accepts images, Super Pi can send them according to provider capability. For a text-only model, optional Auxiliary Vision can ask a configured vision-capable model for a description. Auxiliary Vision needs its own model and credentials and may create an additional service call.
 
 Regular mode is suited to preserving terminal history; fullscreen mode provides a more focused workspace. Both share session, tool, and permission boundaries. `--mode json` supports non-interactive output and `--mode rpc` targets embedded hosts; the RPC protocol, client, and server packages are experimental, and the server package does not provide a standalone coding-agent service. Ordinary path paste, internal text selection, and image drafts are separate inputs; the project does not promise native Explorer file-drop handling.
+
+Scrolling up in fullscreen mode shows `↓ Back to bottom · Esc`. Click it or press Escape to follow new output again while preserving the input draft. Exiting restores the pre-session terminal and leaves only a resume hint by default; select `fullscreenExitOutput: "transcript"` in `/settings` to explicitly reprint the session.
 
 ## Quick start
 
@@ -209,7 +211,7 @@ The home page does not present isolated microbenchmark numbers. Heap delta, samp
 
 Configuration, sessions, and some memory are stored locally, but that does not mean input always stays on the machine. Prompts, tool schemas, file excerpts, tool results, and images may be sent to the selected provider; configured MCP servers receive the calls and data sent to them. Review provider, MCP, extension, and environment trust before use.
 
-Permission and project trust are application controls. They do not replace operating-system accounts, containers, network isolation, or human review. `full-access` is not “skip checks”; unsupported Shell wrapper syntax can still be rejected. “Not executed” means a trusted pre-execution refusal; a backend failure after start must be understood from its actual result.
+Permission rules and project trust are application controls. The first two permission modes additionally isolate supported file and command tools in Windows Sandbox. Host read/write retains explicit denials, file-version checks and protected metadata checks; it does not restore old `full-access` grants. “Not executed” means a trusted pre-execution refusal; a backend failure after start must be understood from its actual result.
 
 Compaction reduces direct visibility of some older history. Memory, Project Context, and CodeGraph each have their own bounds and activation conditions; none promises to understand an entire repository automatically or remember every session forever. Auxiliary Vision needs separate configuration. Provider-native compaction follows the extension's configuration and compatibility conditions, with `enabled` defaulting to `true` as described above. Both can create extra service calls and cost.
 

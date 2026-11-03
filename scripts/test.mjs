@@ -1,4 +1,4 @@
-import { closeSync, createReadStream, existsSync, openSync, readdirSync, mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { closeSync, createReadStream, openSync, readdirSync, mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { once } from "node:events";
 import { availableParallelism, tmpdir } from "node:os";
 import { dirname, relative, resolve } from "node:path";
@@ -9,6 +9,28 @@ const SCRIPT_DIRECTORY = dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = resolve(SCRIPT_DIRECTORY, "..");
 const DEFAULT_TEST_ROOT = resolve(REPOSITORY_ROOT, "tests");
 const TEST_FILE_PATTERN = /\.test\.(?:[cm]?[jt]s)$/;
+// Frozen, individually reviewed acceptance entries stay discoverable as evidence,
+// but must never be replayed by an ordinary suite (including preserved failures).
+// Exact paths only: new sandbox model regressions remain automatic by default.
+// See docs/Windows Sandbox 故障收尾组合接线交接.md §64.
+const MANUAL_ACCEPTANCE_TESTS = new Set([
+	"windows-sandbox-captured-agent-orchestration.test.mjs",
+	"windows-sandbox-captured-host-source-resolution.test.mjs",
+	"windows-sandbox-captured-host-write.test.mjs",
+	"windows-sandbox-explicit-write-snapshot.test.mjs",
+	"windows-sandbox-input-capture.test.mjs",
+	"windows-sandbox-input-read-preparation.test.mjs",
+	"windows-sandbox-input-revision-lease.test.mjs",
+	"windows-sandbox-input-session-source.test.mjs",
+	"windows-sandbox-input-workspace-grant.test.mjs",
+	"windows-sandbox-issued-workspace-source.test.mjs",
+	"windows-sandbox-source-reader.test.mjs",
+	"windows-sandbox-volume-candidate-cmd.test.mjs",
+	"windows-sandbox-volume-candidate-identity.test.mjs",
+	"windows-sandbox-workspace-grant-identity.test.mjs",
+	"windows-sandbox-workspace-input-capture.test.mjs",
+	"windows-sandbox-workspace-source-reader.test.mjs",
+]);
 const HOT_TEST_PATTERN = /(?:^|\/)(?:source-invariants|hot-source-invariants|[^/]*hot-paths)\.test\./;
 
 // These offline integration fixtures need an empty working directory as well as
@@ -23,6 +45,7 @@ const ISOLATED_CWD_TESTS = new Set([
 	"alpha-runtime-dispose.test.ts", "alpha-startup-quit.test.ts", "alpha-crash-cleanup.test.ts", "alpha-startup-faults.test.ts",
 ]);
 const GC_TESTS = new Set([
+	"windows-sandbox-candidate-write-batch.test.mjs",
 	"alpha-assistant-update.test.ts", "alpha-markdown-ownership.test.ts",
 	"alpha-raw-parallel.test.ts", "alpha-startup-quit.test.ts",
 	"tui-transcript-selection-reset.test.ts",
@@ -53,6 +76,7 @@ export function normalizeTestPath(value) {
 
 export function classifyTestFile(file) {
 	const normalized = normalizeTestPath(file);
+	if (MANUAL_ACCEPTANCE_TESTS.has(normalized)) return "manual";
 	if (normalized.includes("/provider-contract/") || normalized.startsWith("provider-contract/") || normalized.includes(".contract.test.")) {
 		return "contract";
 	}
@@ -95,7 +119,7 @@ export function defaultJobs(env = process.env) {
 }
 
 function parseArguments(argv) {
-	const options = { suite: "all", root: DEFAULT_TEST_ROOT, skipMemory: false, list: false, jobs: undefined, shard: undefined };
+	const options = { suite: "all", root: DEFAULT_TEST_ROOT, skipMemory: false, list: false, jobs: undefined, shard: undefined, keepGoing: false };
 	for (let index = 0; index < argv.length; index++) {
 		const argument = argv[index];
 		if (argument === "--suite") {
@@ -108,6 +132,8 @@ function parseArguments(argv) {
 			options.list = true;
 		} else if (argument === "--jobs") {
 			options.jobs = parseJobs(argv[++index], "--jobs");
+		} else if (argument === "--keep-going") {
+			options.keepGoing = true;
 		} else if (argument === "--shard") {
 			options.shard = parseShard(argv[++index], "--shard");
 		} else {
@@ -239,18 +265,26 @@ async function runChild(unit, logFile, temporary, print, recordFailure) {
 }
 
 function memoryCommand() {
-	const bundledNpmCli = resolve(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
-	const npmCli = process.env.npm_execpath || (existsSync(bundledNpmCli) ? bundledNpmCli : undefined);
-	return npmCli
-		? { command: process.execPath, args: [npmCli, "test", "--workspace", "@super-pi/memory"] }
-		: { command: "npm", args: ["test", "--workspace", "@super-pi/memory"] };
+	// Root verification already builds every workspace. Run the same memory test
+	// against those artifacts instead of compiling the package again inside CI.
+	// The standalone workspace npm test retains its build for local package work.
+	return { command: process.execPath, args: ["--test", resolve(REPOSITORY_ROOT, "packages/memory/tests/session-anchor-search.test.mjs")] };
+}
+
+export function testFileArguments(file, root) {
+	const args = ["--experimental-strip-types", "--test", resolve(root, file)];
+	if (GC_TESTS.has(file)) args.unshift("--expose-gc");
+	return args;
 }
 
 export async function run(options) {
 	const jobs = parseJobs(options.jobs ?? defaultJobs(), "jobs");
 	const shard = options.shard === undefined ? defaultShard() : parseShard(`${options.shard.index}/${options.shard.count}`);
 	const files = discoverTestFiles(options.root).filter(
-		(file) => options.suite === "all" || classifyTestFile(file) === options.suite,
+		(file) => {
+			const suite = classifyTestFile(file);
+			return suite !== "manual" && (options.suite === "all" || suite === options.suite);
+		},
 	);
 	const includeMemory = !options.skipMemory && (options.suite === "all" || options.suite === "unit");
 	const labels = includeMemory ? [...files, MEMORY_LABEL] : files;
@@ -262,8 +296,7 @@ export async function run(options) {
 	}
 
 	const testUnit = (file) => {
-		const args = ["--experimental-strip-types", "--test", resolve(options.root, file)];
-		if (GC_TESTS.has(file)) args.unshift("--expose-gc");
+		const args = testFileArguments(file, options.root);
 		return { label: file, command: process.execPath, args, cwd: ISOLATED_CWD_TESTS.has(file) ? undefined : REPOSITORY_ROOT };
 	};
 	const exclusiveUnits = exclusive.map(testUnit);
@@ -285,11 +318,12 @@ export async function run(options) {
 	const print = createPrinter();
 	let firstFailure = 0, logIndex = 0;
 	const recordFailure = (code) => { if (code !== 0 && firstFailure === 0) firstFailure = code; };
-	// After the first failure no new child starts; running children finish and report.
+	// Default remains fail-fast. Full migration audits can collect every failure
+	// in one isolated run while preserving the first failing exit status.
 	const runPool = async (units, poolWidth) => {
 		let next = 0;
 		const worker = async () => {
-			while (firstFailure === 0 && next < units.length) {
+			while ((options.keepGoing || firstFailure === 0) && next < units.length) {
 				const unit = units[next++];
 				const exitCode = await runChild(unit, resolve(logRoot, `${logIndex++}.log`), temporary, print, recordFailure);
 				recordFailure(exitCode);

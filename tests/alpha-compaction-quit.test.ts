@@ -31,7 +31,7 @@ for (const mode of ['regular', 'fullscreen'] as const) for (const signal of [fal
         : activity === 'tree' ? f.session.navigateTree(f.sessionManager.getEntries()[0].id, { summarize: true })
         : f.session.executeBash('fixture command', undefined, { operations: { exec: async (_command, _cwd, options) => {
           await new Promise<void>(resolve => { release = resolve; options.signal!.addEventListener('abort', () => setImmediate(resolve), { once: true }); enter(); });
-          released = true; return { exitCode: null };
+          released = true; return { exitCode: null, processCleanup: 'complete' as const };
         } } });
       task = operation.then(() => { completed = true; }, () => { completed = true; });
       await Promise.race([entered, new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error('compaction fixture did not start')), 2500); })]);

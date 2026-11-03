@@ -6,6 +6,27 @@
 	"additionalProperties": false,
 	"properties": {
 		"$schema": { "type": "string", "description": "Editor schema URL or local file reference." },
+		"executionEnvironment": { "enum": ["sandbox", "trusted-host"], "description": "Global execution backend. Fresh Windows installations use sandbox; changing an active session requires a new session." },
+		"permissionMode": { "enum": ["read-only", "sandbox-write"], "description": "Startup preference. Switch the running session through /permissions; host execution is never restored from settings." },
+		"executionPermissions": {
+			"type": "object", "additionalProperties": false,
+			"description": "Global native authorization rules. Project settings cannot widen these permissions; omitted rules use the selected backend defaults.",
+			"properties": {
+				"approval": { "enum": ["interactive", "never"], "description": "Whether an ask decision can display an interactive approval; never refuses ask decisions." },
+				"rules": {
+					"type": "array", "maxItems": 128, "description": "Exact tool rules; deny takes precedence over ask and allow.",
+					"items": {
+						"type": "object", "additionalProperties": false, "required": ["tool", "decision"],
+						"properties": {
+							"tool": { "type": "string", "minLength": 1, "description": "Exact registered tool name." },
+							"decision": { "enum": ["allow", "ask", "deny"], "description": "Decision for matching invocations." },
+							"command": { "type": "string", "description": "Optional exact command, without shell parsing or prefix matching." },
+							"path": { "type": "string", "description": "Optional workspace-relative subtree containing every target." }
+						}
+					}
+				}
+			}
+		},
 		"lastChangelogVersion": { "type": "string", "readOnly": true, "description": "Last changelog version shown; maintained by Super Pi." },
 		"lastUpdateNotificationVersion": { "type": "string", "readOnly": true, "description": "Last update notification version; maintained by Super Pi." },
 		"defaultProvider": { "type": "string", "description": "Default provider identifier, including custom providers." },
@@ -183,7 +204,7 @@
 		"httpIdleTimeoutMs": { "allOf": [{ "$ref": "#/definitions/timeout" }], "default": 300000, "description": "HTTP header/body idle timeout in milliseconds; 0 disables it." },
 		"websocketConnectTimeoutMs": { "allOf": [{ "$ref": "#/definitions/timeout" }], "description": "WebSocket connection handshake timeout in milliseconds; 0 disables it. Otherwise provider defaults apply." },
 		"tuiMode": { "enum": ["regular", "fullscreen"], "default": "regular", "description": "Terminal renderer mode." },
-		"fullscreenExitOutput": { "enum": ["transcript", "resume-hint"], "default": "transcript", "description": "What remains after exiting fullscreen mode." },
+		"fullscreenExitOutput": { "enum": ["transcript", "resume-hint"], "default": "resume-hint", "description": "Restore the original terminal and show only a resume hint by default; transcript explicitly reprints the session." },
 		"fullscreenScrollbar": { "enum": ["hidden", "auto", "always"], "default": "auto", "description": "Scrollbar visibility in fullscreen mode." },
 		"queueMode": { "enum": ["all", "one-at-a-time"], "description": "Legacy alias migrated to steeringMode when steeringMode is absent." },
 		"websockets": { "type": "boolean", "description": "Legacy transport selector: true becomes websocket, false becomes sse when transport is absent." }

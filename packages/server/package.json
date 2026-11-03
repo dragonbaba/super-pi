@@ -1,6 +1,6 @@
 {
 	"name": "@super-pi/server",
-	"version": "0.84.1",
+	"version": "1.0.0",
 	"description": "Experimental server package for Super Pi",
 	"type": "module",
 	"main": "./dist/index.js",
@@ -40,8 +40,8 @@
 		"node": ">=22.19.0"
 	},
 	"dependencies": {
-		"@super-pi/ai": "^0.84.1",
-		"@super-pi/protocol": "^0.84.1"
+		"@super-pi/ai": "^1.0.0",
+		"@super-pi/protocol": "^1.0.0"
 	},
 	"devDependencies": {
 		"shx": "0.3.4"

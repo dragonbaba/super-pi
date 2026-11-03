@@ -8,7 +8,7 @@ import { parallelRawResults } from './fixtures/g2-raw-result-probe.ts';
 import { ToolResultContinuationError } from '../packages/coding-agent/src/core/tool-result-presentation.ts';
 import { estimateMessageTokens, estimateContextTokensFromParts } from '@super-pi/ai';
 
-async function runParallel(mode: 'regular' | 'fullscreen', enabled: boolean, count: 1 | 4 | 8 | 129, budgetTokens: number) {
+async function runParallel(mode: 'regular' | 'fullscreen', enabled: boolean, count: 8 | 129, budgetTokens: number) {
     const boundary = enabled && count === 129 && budgetTokens === 1024;
     const results = parallelRawResults(count);
     const weak = results.map(result => new WeakRef(result.content));
@@ -22,11 +22,22 @@ async function runParallel(mode: 'regular' | 'fullscreen', enabled: boolean, cou
     let firstShare = 0; let projectionFailures = 0; let projectedTotal = 0; let wrapperTokens = 0;
     let minimumAllocation = Infinity; let maximumAllocation = 0;
     let terminalState = ''; let contextTokens = 0;
+    const probe = { name: 'g2_raw_result_probe', label: 'raw probe', description: 'test only', parameters: Type.Object({ index: Type.Integer() }),
+      async execute(id: string, args: { index: number }) {
+        const raw = results[args.index]!;
+        assert.equal(id, raw.details.toolCallId); assert.equal(raw.details.bytes, 65536);
+        assert.equal(raw.details.upstreamTruncated, false);
+        active++; maximumActive = Math.max(maximumActive, active);
+        await new Promise<void>(resolve => setImmediate(resolve));
+        active--; executed++; return raw;
+      },
+    };
     const f = await alphaSession({ mode, g2: enabled, budgetTokens, settings: { compaction: { enabled: false } },
       runtime: alphaModelRuntime((_model, context) => {
         requests++;
         if (requests === 1) {
-          const message = alphaMessage(results.map((result, index) => ({ type: 'toolCall', id: result.details.toolCallId, name: 'g2_raw_result_probe', arguments: { index } })));
+          const message = alphaMessage(results.map((result, index) => ({ type: 'toolCall', id: result.details.toolCallId,
+            name: 'g2_raw_result_probe', arguments: { index } })));
           message.stopReason = 'toolUse'; return finalStream(message);
         }
         const tools = context.messages.filter(message => message.role === 'toolResult');
@@ -55,16 +66,7 @@ async function runParallel(mode: 'regular' | 'fullscreen', enabled: boolean, cou
         contextTokens = estimateContextTokensFromParts(context.systemPrompt, context.messages, context.tools).tokens;
         if (enabled) assert.ok(contextTokens + 4096 <= 128000);
         return finalStream(alphaMessage([{ type: 'text', text: 'parallel complete' }]));
-      }), customTools: [{ name: 'g2_raw_result_probe', label: 'raw probe', description: 'test only', parameters: Type.Object({ index: Type.Integer() }),
-        async execute(id: string, args: { index: number }) {
-          const raw = results[args.index]!;
-          assert.equal(id, raw.details.toolCallId); assert.equal(raw.details.bytes, 65536);
-          assert.equal(raw.details.upstreamTruncated, false);
-          active++; maximumActive = Math.max(maximumActive, active);
-          await new Promise<void>(resolve => setImmediate(resolve));
-          active--; executed++; return raw;
-        },
-      }] });
+      }), customTools: [probe] });
     const owner = (f.session as any)._toolResultPresentation;
     if (owner) {
       const project = owner.projectMessageWithinContextualBudget;
@@ -159,8 +161,18 @@ async function runParallel(mode: 'regular' | 'fullscreen', enabled: boolean, cou
       presentationEntriesAfterCleanup: owner?.counters.projectionRecordEntries ?? 0 } };
 }
 
-for (const mode of ['regular', 'fullscreen'] as const) for (const enabled of [false, true]) for (const count of [1, 4, 8, 129] as const) {
-  for (const budget of enabled && count === 129 ? [1024, 16384] : [1024]) test(`actual parallel raw results mode=${mode} G2=${enabled} count=${count} budget=${budget}`, async (t) => {
+// Single-result shapes live in alpha-raw-session. Eight calls cover ordinary
+// parallel ownership with projection on/off; 129 crosses pending-authorization
+// capacity and both fixed-notice budget outcomes. Repeat each branch in both UIs,
+// without redundant 1/4/8 combinations or another unprojected 129 run.
+const parallelCases = [
+  { enabled: false, count: 8, budget: 1024 },
+  { enabled: true, count: 8, budget: 1024 },
+  { enabled: true, count: 129, budget: 1024 },
+  { enabled: true, count: 129, budget: 16384 },
+] as const;
+for (const mode of ['regular', 'fullscreen'] as const) {
+  for (const { enabled, count, budget } of parallelCases) test(`actual parallel raw results mode=${mode} G2=${enabled} count=${count} budget=${budget}`, async (t) => {
     const { weak, report } = await runParallel(mode, enabled, count, budget);
     const heap: number[] = [];
     assert.ok(global.gc, 'run through npm test (or node --expose-gc) to verify collection');

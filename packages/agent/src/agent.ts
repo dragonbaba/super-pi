@@ -44,6 +44,15 @@ import type {
 
 export type { QueueMode } from "./types.ts";
 
+function abortRun(controller: AbortController): void {
+	if (controller.signal.aborted) return;
+	// A caller may retain the signal after the run. Lazy error frames must not
+	// retain the agent, session, hook contexts or provider executor with it.
+	const reason = new DOMException("This operation was aborted", "AbortError");
+	reason.stack = "AbortError: This operation was aborted";
+	controller.abort(reason);
+}
+
 function defaultConvertToLlm(messages: AgentMessage[]): Message[] {
 	return messages.filter(
 		(message) => message.role === "user" || message.role === "assistant" || message.role === "toolResult",
@@ -467,7 +476,7 @@ export class Agent {
 	abort(): void {
 		if (!this.activeRun) return;
 		this._abortRequested = true;
-		this.activeRun.abortController.abort();
+		abortRun(this.activeRun.abortController);
 	}
 
 	/**
@@ -677,7 +686,7 @@ export class Agent {
 		} catch (error) {
 			const aborted = abortController.signal.aborted;
 			// A failed consumer can abandon a still-running provider producer.
-			abortController.abort();
+			abortRun(abortController);
 			if (hostOnly) throw error;
 			await this.handleRunFailure(error, aborted);
 		} finally {

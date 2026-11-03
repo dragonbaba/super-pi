@@ -214,7 +214,7 @@ test("batch TUI renders real counts and Added details; renderer has no hot inlin
   const component = new ToolExecutionComponent("file_batch", "file_batch", input, {}, definition, { requestRender() {} } as never, f.cwd);
   component.updateResult(result); assert.ok(component.render(100).join("\n").includes("1 succeeded"));
   component.setExpanded(true); assert.ok(component.render(100).join("\n").includes("Added")); component[RELEASE_COMPONENT_RENDER_CACHE]();
-  const source = ts.createSourceFile("batch.ts", readFileSync("packages/extensions/mutation-guard-write/file-batch.ts", "utf8"), ts.ScriptTarget.Latest, true);
+  const source = ts.createSourceFile("batch.ts", readFileSync("packages/coding-agent/src/core/files/file-results.ts", "utf8"), ts.ScriptTarget.Latest, true);
   let found = 0;
   function inspect(node: ts.Node): void {
     assert.equal(ts.isArrowFunction(node) || ts.isFunctionExpression(node) || ts.isArrayLiteralExpression(node) || ts.isObjectLiteralExpression(node) || ts.isRegularExpressionLiteral(node), false);

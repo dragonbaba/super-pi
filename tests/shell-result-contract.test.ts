@@ -131,7 +131,7 @@ for (const [reason, category] of [["POLICY_BLOCKED", "policy_blocked"], ["DUPLIC
     assert.equal(classifyToolFailure("bash", payload, {}, forged.details).category, "command_failed");
     const state = createGuardState();
     for (let index = 0; index < 2; index++) recordResult(state, "bash", {}, true, payload, "actual-failure", forged.details);
-    assert.equal(state.activeFailureCount, 2); assert.ok(inspectBeforeCall(state, "bash", {}, "actual-failure"));
+    assert.equal(state.activeFailureCount, 2); assert.equal(inspectBeforeCall(state, "bash", {}, "actual-failure"), undefined);
     assert.equal(agent.state.pendingToolCalls.size, 0);
   });
 }

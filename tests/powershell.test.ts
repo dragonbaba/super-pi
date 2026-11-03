@@ -9,7 +9,7 @@ import {
 	createPowerShellToolState,
 } from "../packages/coding-agent/src/core/tools/powershell.ts";
 import type { SettingsManager } from "../packages/coding-agent/src/core/settings-manager.ts";
-import type { PowerShellConfig } from "../packages/coding-agent/src/utils/shell.ts";
+import { getShellEnv, type PowerShellConfig } from "../packages/coding-agent/src/utils/shell.ts";
 import { normalizeShellProcessResult, observedShellError, shellProcessResultFromError, type ShellProcessResult } from "../packages/coding-agent/src/core/tools/shell-execution.ts";
 
 const INITIAL_CONFIG: PowerShellConfig = {
@@ -25,6 +25,29 @@ const RECOVERED_CONFIG: PowerShellConfig = {
 	edition: "Core",
 };
 const EXEC_OPTIONS = { onData: (_data: Buffer): void => {} };
+
+test("Windows shell children default Python pipes to UTF-8 without changing the host or explicit encodings", () => {
+	const original = process.env;
+	try {
+		for (const override of [undefined, "gbk:strict", ""]) {
+			const input: NodeJS.ProcessEnv = { Path: "C:\\tools", SP_ENCODING_FIXTURE: "unchanged" };
+			if (override !== undefined) input.pythonioencoding = override;
+			process.env = input;
+			const env = getShellEnv();
+			assert.equal(env.SP_ENCODING_FIXTURE, "unchanged");
+			assert.equal(env.PYTHONUTF8, undefined, "file-open defaults are outside the pipe contract");
+			assert.equal(input.Path, "C:\\tools");
+			assert.equal(input.PYTHONIOENCODING, undefined, "do not mutate the host environment");
+			if (process.platform === "win32") {
+				assert.equal(env[override === undefined ? "PYTHONIOENCODING" : "pythonioencoding"], override ?? "utf-8");
+				assert.equal(Object.keys(env).filter(key => key.toUpperCase() === "PYTHONIOENCODING").length, 1);
+			} else {
+				assert.equal(env.PYTHONIOENCODING, undefined);
+				assert.equal(env.pythonioencoding, override);
+			}
+		}
+	} finally { process.env = original; }
+});
 
 for (const facts of [
   { exitCode: 23, termination: "exit" },

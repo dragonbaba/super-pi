@@ -1,0 +1,315 @@
+import { Value } from "typebox/value";
+import { resolve } from "node:path";
+import { lstat } from "node:fs/promises";
+import { withFileMutationQueue } from "../tools/file-mutation-queue.ts";
+import {
+  PublicEditParameters, NativeWriteParameters, validatePublicEditInput,
+  type PublicEditInput,
+} from "./file-parameters.ts";
+import { resolveToolPath, sha256 } from "./file-path.ts";
+import { mutationRequestHash } from "./file-invocation.ts";
+import { assessProtectedMutationPath } from "./protected-path-policy.ts";
+import {
+  prepareFileCreation, executeFileCreation, canonicalCreationDirectories, directoryKey, verifyCreationAncestor,
+  type FileCreationPlan,
+} from "./file-creation.ts";
+import {
+  prepareNativeOperation, executeNativePlan, validateNativeInput, revalidateNativePlan, capturePathIdentity, sameIdentity,
+  type NativePlan, type PathIdentity, type MutationStatus,
+} from "./native-file-core.ts";
+import { FileCommitError, commitFailure, type FileCommitReceipt } from "./file-commit.ts";
+import { PreviewBudget, addedPreview, type ChangePreview } from "./change-preview.ts";
+import {
+  FileRevisions, prepareSnapshotLineMutation, executePreparedSnapshotMutation, readSnapshotSource,
+  type PreparedSnapshotMutation, type SnapshotLineEdit,
+} from "./snapshot-line-edit.ts";
+import { prepareRevisionMutation, validateWriteContent, type ExactRevisionEdit } from "./revision-mutations.ts";
+
+export const FILE_MUTATION_PROGRESS_ENTRY = "file-mutation-progress-v2";
+export type FileOperation = "edit" | "write" | "delete" | "move";
+export interface FileOperationInput {
+  path: string; purpose?: string; content?: string; destination?: string; snapshot?: string;
+  edits?: PublicEditInput["edits"];
+}
+export interface PreparedFileItem {
+  operation: FileOperation;
+  input: FileOperationInput;
+  target: string;
+  paths: string[];
+  executionPath: string;
+  generation: number;
+  requestHash: string;
+  approval: { canonicalTarget: string; protectedRoots: readonly string[] };
+  identity?: PathIdentity;
+  creation?: FileCreationPlan;
+  native?: NativePlan;
+  snapshot?: PreparedSnapshotMutation;
+  preview?: ChangePreview;
+}
+export interface FileReceipt {
+  mutationReceiptVersion: 2;
+  operation: FileOperation;
+  target: string;
+  destination?: string;
+  ok: boolean;
+  status: MutationStatus;
+  stateChanged: boolean | "unknown";
+  requiresVerification?: boolean;
+  commit?: FileCommitReceipt;
+  [field: string]: unknown;
+}
+export interface FileExecutionHooks {
+  assertCurrent(): void;
+  record(entry: Record<string, unknown>): void;
+  signal?: AbortSignal;
+  sharedDirectories?: Map<string, PathIdentity>;
+  /** Batch preparation owns origin; per-item commit selection has its own phase. */
+  batch?: true;
+}
+
+/** Copy only validated public fields; extension authorization observes the separate original input. */
+function copyInput(operation: FileOperation, raw: unknown): FileOperationInput {
+  if (operation === "edit") {
+    if (!Value.Check(PublicEditParameters, raw)) throw new Error("[TOOL_ARGS_INVALID] Invalid edit fields.");
+    validatePublicEditInput(raw);
+  } else if (operation === "write") {
+    if (!Value.Check(NativeWriteParameters, raw)) throw new Error("[TOOL_ARGS_INVALID] Invalid write fields.");
+    validateWriteContent(raw.content);
+  } else validateNativeInput(operation, raw);
+  const input = raw as FileOperationInput;
+  if (!input.path.trim() || input.path.length > 4096 || input.path.includes("\0")) throw new Error("[TOOL_ARGS_INVALID] Expected one literal file path of 1-4096 characters.");
+  let edits: PublicEditInput["edits"] | undefined;
+  if (input.edits) {
+    edits = [];
+    let bytes = 0;
+    for (const edit of input.edits) {
+      bytes += Buffer.byteLength(edit.oldText ?? "") + Buffer.byteLength(edit.newText ?? "");
+      if (edit.newLines) for (const line of edit.newLines) bytes += Buffer.byteLength(line);
+      if (bytes > 256 * 1024) throw new Error("[EDIT_SCOPE] Edit input exceeds 256 KiB.");
+      edits.push(Object.freeze({ ...edit, ...(edit.newLines ? { newLines: Object.freeze([...edit.newLines]) as unknown as string[] } : {}) }));
+    }
+    Object.freeze(edits);
+  }
+  return Object.freeze({ path: input.path, purpose: input.purpose, content: input.content,
+    destination: input.destination, snapshot: input.snapshot, edits });
+}
+
+/** Stable invocation callbacks. Retains only one plan until execution returns. */
+class FileExecution {
+  private readonly service: FileService;
+  private readonly item: PreparedFileItem;
+  private readonly hooks: FileExecutionHooks;
+  private readonly toolCallId: string;
+  private readonly itemId: string;
+  constructor(service: FileService, item: PreparedFileItem, toolCallId: string, itemId: string, hooks: FileExecutionHooks) {
+    this.service = service; this.item = item; this.hooks = hooks; this.toolCallId = toolCallId; this.itemId = itemId;
+  }
+  readonly assertCurrent = (): void => {
+    this.service.assertPrepared(this.item); this.hooks.signal?.throwIfAborted(); this.hooks.assertCurrent();
+  };
+  readonly assertPath = async (): Promise<string> => {
+    this.assertCurrent();
+    const current = await assessProtectedMutationPath(this.service.cwd, this.item.executionPath);
+    this.assertCurrent();
+    if (!current.canonicalTarget || directoryKey(current.canonicalTarget) !== directoryKey(this.item.target)) throw new Error("[STALE_STATE] Prepared path no longer identifies the approved target.");
+    return current.canonicalTarget;
+  };
+  readonly selected = (metadata: { strategy: string; reason?: string }): void => {
+    this.record(this.hooks.batch ? "commit_prepared" : "intent", { strategy: metadata.strategy, compatibilityReason: metadata.reason });
+  };
+  record(phase: string, extra?: Record<string, unknown>): void {
+    const item = this.item;
+    this.hooks.record({ toolCallId: this.toolCallId, itemId: this.itemId, phase, operation: item.operation,
+      target: item.target, destination: item.native?.destination, requestHash: item.requestHash,
+      directories: item.creation ? canonicalCreationDirectories(item.creation) : item.operation === "write" ? [] : undefined, ...extra });
+  }
+  async run(): Promise<FileReceipt> {
+    const { item, hooks } = this;
+    let receipt: FileReceipt;
+    try {
+      this.assertCurrent();
+      await this.assertPath();
+      if (!hooks.batch && !item.native) this.record("origin");
+      if (hooks.batch || !item.snapshot) this.record("intent");
+      if (hooks.batch) await this.service.revalidate(item, hooks);
+      if (item.native) receipt = { ...await executeNativePlan(item.native, this.assertCurrent, hooks.signal) };
+      else if (item.creation) {
+        const creation = await executeFileCreation(item.creation, item.input.content!, this.assertPath,
+          hooks.signal, undefined, hooks.sharedDirectories, this.assertCurrent);
+        receipt = { mutationReceiptVersion: 2, operation: "write", target: item.target, ok: true, status: "succeeded",
+          category: "success", stateChanged: true, created: true, creation, sha256: sha256(item.input.content!) };
+      } else {
+        const committed = await executePreparedSnapshotMutation(item.snapshot!, hooks.signal,
+          { assertPathAllowed: this.assertPath, assertCurrent: this.assertCurrent, commitSelected: this.selected });
+        receipt = { ...committed, mutationReceiptVersion: 2, operation: item.operation, target: item.target,
+          ok: true, category: "success", status: "succeeded", stateChanged: true,
+          diff: item.preview?.diff ?? committed.diff, patch: item.preview?.diff ?? committed.patch };
+      }
+    } catch (error) {
+      if (error instanceof FileCommitError) receipt = { ...commitFailure(error), mutationReceiptVersion: 2,
+        operation: item.operation, target: item.target } as FileReceipt;
+      else {
+        let creationFailure: Record<string, unknown> | undefined;
+        if (item.creation && error instanceof Error) {
+          try { creationFailure = JSON.parse(error.message); } catch { /* Unstructured errors preceded creation. */ }
+        }
+        const changed = creationFailure?.stateChanged === true;
+        receipt = { ...creationFailure, mutationReceiptVersion: 2, operation: item.operation, target: item.target,
+          ok: false, status: changed ? "partial" : hooks.signal?.aborted ? "cancelled" : "failed_no_change",
+          stateChanged: changed, requiresVerification: changed,
+          cause: creationFailure?.cause ?? (error instanceof Error ? error.message : String(error)) };
+      }
+    }
+    if (receipt.stateChanged !== false || receipt.commit?.retainedTemporary) {
+      this.service.revisions.invalidatePath(item.target);
+      if (item.native?.destination) this.service.revisions.invalidatePath(item.native.destination);
+    }
+    // Persist bounded recovery facts once; preview/diff bodies belong to the tool result.
+    try { this.record("result", { mutationReceiptVersion: 2, status: receipt.status, stateChanged: receipt.stateChanged,
+      requiresVerification: receipt.requiresVerification, commit: receipt.commit, sha256: receipt.sha256,
+      sourceIdentity: receipt.sourceIdentity, createdDirectories: receipt.createdDirectories
+        ?? (receipt.creation as { createdDirectories?: unknown } | undefined)?.createdDirectories,
+      reason: typeof receipt.cause === "string" ? receipt.cause.slice(0, 800) : undefined }); }
+    catch (error) {
+      if (receipt.stateChanged !== false) receipt = { ...receipt, ok: false,
+        status: receipt.stateChanged === true ? "partial" : "state_unknown", requiresVerification: true,
+        cause: `Operation may have completed but recording failed: ${error instanceof Error ? error.message : String(error)}` };
+    }
+    return receipt;
+  }
+}
+
+/** Session-owned file correctness. Access policy is supplied by the caller's execution boundary. */
+export class FileService {
+  readonly revisions: FileRevisions;
+  readonly cwd: string;
+  readonly sessionId: string;
+  private closed = false;
+  private readonly prepared = new WeakSet<PreparedFileItem>();
+  private readonly executing = new WeakSet<PreparedFileItem>();
+  constructor(cwd: string, sessionId: string) {
+    this.cwd = cwd; this.sessionId = sessionId; this.revisions = new FileRevisions(sessionId);
+  }
+  clear(): void { this.revisions.clear(); }
+  dispose(): void { this.closed = true; this.revisions.dispose(); }
+  assertPrepared(item: PreparedFileItem): void {
+    if (this.closed || !this.prepared.has(item) || item.generation !== this.revisions.generation) throw new Error("[STALE_STATE] File invocation was released or its session changed.");
+  }
+  release(item: PreparedFileItem): void {
+    this.prepared.delete(item);
+    this.executing.delete(item);
+    if (item.snapshot) item.snapshot.byteEdits.length = 0;
+  }
+  async prepare(operation: FileOperation, raw: unknown, signal?: AbortSignal, mode?: "create" | "overwrite", previewBudget = new PreviewBudget()): Promise<PreparedFileItem> {
+    if (this.closed) throw new Error("File service is closed.");
+    signal?.throwIfAborted();
+    const generation = this.revisions.generation, input = copyInput(operation, raw);
+    if (operation === "write" && mode === "create" && input.snapshot !== undefined) throw new Error("[TOOL_ARGS_INVALID] Create cannot carry a read snapshot.");
+    const path = operation === "delete" || operation === "move" ? resolve(this.cwd, input.path) : resolveToolPath(this.cwd, input.path);
+    const assessment = await assessProtectedMutationPath(this.cwd, path);
+    if (!assessment.canonicalTarget) throw new Error("[STALE_STATE] File target cannot be resolved.");
+    const item: PreparedFileItem = { operation, input, target: assessment.canonicalTarget, executionPath: path,
+      paths: [assessment.canonicalTarget], generation, requestHash: mutationRequestHash(operation, input),
+      approval: { canonicalTarget: assessment.canonicalTarget, protectedRoots: assessment.violations } };
+    try {
+      if (operation === "delete" || operation === "move") {
+        item.native = await prepareNativeOperation(this.cwd, operation, operation === "move"
+          ? { path: input.path, destination: input.destination } : { path: input.path });
+        item.identity = item.native.source;
+        if (item.native.destination) item.paths.push(item.native.destination);
+        item.preview = { kind: operation === "delete" ? "Deleted" : "Moved", bytes: item.native.source.directory ? undefined : Number(item.native.source.size),
+          risk: operation === "delete" ? "Irreversible deletion; no backup or recursive traversal." : "Exclusive link then unlink; partial failure can leave both names. No replacement or automatic replay." };
+      } else {
+        item.creation = operation === "write" ? await prepareFileCreation(path, mode === "create") : undefined;
+        if (item.creation && input.snapshot !== undefined) throw new Error("[SNAPSHOT_EDIT_STALE] Snapshot write requires its original existing target. No change.");
+        if (mode === "overwrite" && item.creation) throw new Error("[TARGET_MISSING] Overwrite requires an existing target; use create.");
+        if (item.creation) {
+          item.preview = addedPreview(input.content!, previewBudget);
+          item.preview.plannedDirectories = item.creation.directories;
+        } else {
+          const id = input.snapshot ?? this.revisions.latest(item.target);
+          if (!id) throw new Error("[REVISION_REQUIRED] Read this file to obtain its current revision before editing or replacing it.");
+          item.snapshot = operation === "edit" && input.snapshot
+            ? await prepareSnapshotLineMutation(this.sessionId, this.cwd, path, id, input.edits as SnapshotLineEdit[], signal,
+              { revisions: this.revisions, assertPathAllowed: async () => item.target, previewOnly: true, previewBudget })
+            : await prepareRevisionMutation(this.revisions, this.sessionId, this.cwd, path, id,
+              operation === "write" ? { content: input.content! } : { edits: input.edits as ExactRevisionEdit[] }, signal, previewBudget);
+          item.identity = item.snapshot.target; item.preview = item.snapshot.preview;
+        }
+      }
+      const actual = item.creation?.canonicalTarget ?? item.identity?.canonical;
+      if (actual === undefined || directoryKey(actual) !== directoryKey(item.target)) throw new Error("[STALE_STATE] File target changed during preparation.");
+      signal?.throwIfAborted();
+      this.prepared.add(item); this.assertPrepared(item);
+      return item;
+    } catch (error) { this.release(item); throw error; }
+  }
+  async execute(item: PreparedFileItem, toolCallId: string, hooks: FileExecutionHooks, itemId = `${toolCallId}:0`): Promise<FileReceipt> {
+    return this.withPreparedItems([item], execute => execute(item, toolCallId, hooks, itemId));
+  }
+  /** One bounded lock scope for single operations and batches; no nested acquisition of the same path. */
+  async withPreparedItems<T>(items: readonly PreparedFileItem[], run: (execute: ExecutePreparedFile) => Promise<T>): Promise<T> {
+    if (!items.length || items.length > 16) throw new Error("Expected 1-16 prepared file items.");
+    const selected = new Set(items);
+    if (selected.size !== items.length) throw new Error("Duplicate prepared file item.");
+    for (const item of selected) if (this.executing.has(item)) throw new Error("File invocation is already executing.");
+    for (const item of selected) this.executing.add(item);
+    const paths = new Set<string>();
+    for (const item of selected) for (const path of item.paths) paths.add(directoryKey(path));
+    const ordered = [...paths].sort();
+    let open = true;
+    const running: Promise<FileReceipt>[] = [];
+    const runOne: ExecutePreparedFile = async (item, id, hooks, itemId = `${id}:0`) => {
+      try { return await new FileExecution(this, item, id, itemId, hooks).run(); }
+      finally { this.release(item); }
+    };
+    const execute: ExecutePreparedFile = (item, id, hooks, itemId) => {
+      if (!open || !selected.delete(item)) throw new Error("Prepared file is outside the active lock scope or already consumed.");
+      const pending = runOne(item, id, hooks, itemId);
+      running.push(pending);
+      return pending;
+    };
+    async function acquire(index: number): Promise<T> {
+      if (index < ordered.length) return withFileMutationQueue(ordered[index], () => acquire(index + 1));
+      try { return await run(execute); }
+      finally {
+        open = false;
+        // A callback cannot release locks while an already-started OS operation still owns them.
+        let failed = false, failure: unknown;
+        try {
+          for (const pending of running) {
+            try { await pending; } catch (error) { failed = true; failure ??= error; }
+          }
+          if (failed) throw failure;
+        }
+        finally { running.length = 0; }
+      }
+    }
+    try { return await acquire(0); }
+    finally { open = false; for (const item of selected) this.release(item); selected.clear(); }
+  }
+  /** Read-only all-item check. Each effect still repeats its own final identity/content checks. */
+  async revalidate(item: PreparedFileItem, hooks: FileExecutionHooks): Promise<void> {
+    this.assertPrepared(item); hooks.signal?.throwIfAborted(); hooks.assertCurrent();
+    const assessment = await assessProtectedMutationPath(this.cwd, item.executionPath);
+    if (!assessment.canonicalTarget || directoryKey(assessment.canonicalTarget) !== directoryKey(item.target)) throw new Error("[STALE_STATE] Prepared target changed.");
+    if (item.native) await revalidateNativePlan(item.native);
+    else if (item.creation) {
+      await verifyCreationAncestor(item.creation);
+      const absent = [item.creation.path, ...item.creation.directories];
+      for (const path of absent) {
+        if (path !== item.creation.path && hooks.sharedDirectories?.has(directoryKey(path))) continue;
+        try { await lstat(path); throw new Error("[TARGET_APPEARED] Planned file or parent appeared after preparation."); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      }
+    } else {
+      const plan = item.snapshot!;
+      if (!sameIdentity(plan.target, await capturePathIdentity(plan.target.path))
+        || !sameIdentity(plan.parent, await capturePathIdentity(plan.parent.path), false)) throw new Error("[STALE_STATE] Prepared file or parent changed.");
+      await readSnapshotSource(plan.receipt, this.revisions);
+    }
+    this.assertPrepared(item); hooks.signal?.throwIfAborted(); hooks.assertCurrent();
+  }
+}
+
+export type ExecutePreparedFile = (item: PreparedFileItem, toolCallId: string, hooks: FileExecutionHooks, itemId?: string) => Promise<FileReceipt>;
