@@ -382,7 +382,7 @@ test("real AgentSession reload waits for MCP auth before invalidating the old co
 		settingsManager: settings, sessionManager: SessionManager.create(f.root, join(f.root, "sessions")),
 		model: { id: "fixture", name: "fixture", api: "openai-responses", provider: "fixture", baseUrl: "http://unused", reasoning: false, input: ["text"],
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32000, maxTokens: 4096 },
-		modelRuntime: { hasConfiguredAuth: () => true, checkAuth: async () => ({ type: "api_key" }), isUsingOAuth: () => false, getModel: () => undefined, getAuth: async () => undefined } as never });
+		modelRuntime: { hasConfiguredAuth: () => true, checkAuth: async () => ({ type: "api_key" }), isUsingOAuth: () => false, getModel: () => undefined, getCredentialGeneration: () => 0, getAuth: async () => undefined } as never });
 	f.cleanup.push(async () => { try { await emitSessionShutdownEvent(session.extensionRunner, { type: "session_shutdown", reason: "quit" }); } finally { session.dispose(); } });
 	await session.bindExtensions({ onError: error => { errors.push(error); } });
 	const command = session.prompt("/mcp-login fixture"); f.operations.push(command); void command.catch(() => {});

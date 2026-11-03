@@ -1,6 +1,6 @@
 # T08：显式分支摘要输出上限与空结果处理
 
-状态：先行设计已落实，实施完成、验收中。T07 #189 最终 head 1b2452c034fb89ddf8bc6f31035ff9a9f3b2f921 经 Codex completed/no findings、六 CI success 后合并为 4e004f4af1b10f91e9137632608b9421c32ed728；对应两端分支已删除、main 已同步。本项从该基线开启 codex/t08-branch-summary-output。仅当前 Node v26.13.0。
+状态：先行设计已落实，已通过 #190 合并。T07 #189 最终 head 1b2452c034fb89ddf8bc6f31035ff9a9f3b2f921 经 Codex completed/no findings、六 CI success 后合并为 4e004f4af1b10f91e9137632608b9421c32ed728；对应两端分支已删除、main 已同步。本项从该基线开启 codex/t08-branch-summary-output。仅当前 Node v26.13.0。
 
 ## 已核对事实与默认成本决定
 
@@ -45,3 +45,7 @@ BranchSummarySettings 只有 reserveTokens/skipPrompt；reserveTokens 默认 163
 离线真实 generateBranchSummary 在 256/512/1024 条历史上，分别序列化 265872/531856/1063848 code units，均为 **1 次序列化、1 次请求**；最大 prompt 的 UTF-16 逻辑大小上界为 2129140 bytes（不是 V8 实际存储字节断言）。正常/abort/error 三种终态保留 caller entries 和返回 result，受控 GC 后 request context/options 均为 0 个存活引用，request-owned prompt 无 owner 保留。
 
 三轮同机串行基线/候选采样见[完整 JSON](../evidence/pi-150-t08-branch-summary-output.json)。1024 条历史的采样分配中位数为约 1.315 MB → 1.310 MB/摘要，p95 中位数为 0.6453 → 0.6601 ms；GC 后 heap 约 20.4 MB，差异很小。CPU 中位数为 275.4 → 304.7 μs/摘要，受 Windows 计时粒度、调度和 GC 影响而波动，不宣称性能提升。首次仅 12 次测量导致 CPU=0，已改为 512 次，最终证据只使用足够长的测量窗口。profile 最大分配仍来自原有历史串行化路径；临时 baseline 按精确绝对路径删除，未保留生产副本。
+
+## 交付结果
+
+最终 head `0c738b1b3a70513dfd2f571673c1901ea04a837d` 经 Codex completed/no findings（summary 6614561329）及 CI 41711987521 六个分片全部成功，#190 合并为 `aa5485a42fcf3d1b0c0c82530e09b90e44a0bf0c`。独立 review 请求为 issuecomment-6614561286。对应远端/本地分支已删除，main 已同步。

@@ -37,7 +37,7 @@ test("complete repository default configuration supports Codemode verification a
 		writeFileSync(join(cwd, "file.txt"), "hello\nworld\n");
 		({ session } = await createAgentSession({ cwd, agentDir, resourceLoader: resources, settingsManager: settings, sessionManager: SessionManager.inMemory(cwd),
 			model: { id: "fixture", name: "fixture", api: "openai-responses", provider: "fixture", baseUrl: "https://example.test", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 4096 },
-			modelRuntime: { hasConfiguredAuth: () => true, checkAuth: async () => ({ type: "api_key" }), isUsingOAuth: () => false, getModel: () => undefined, getAuth: async () => undefined } as never }));
+			modelRuntime: { hasConfiguredAuth: () => true, checkAuth: async () => ({ type: "api_key" }), isUsingOAuth: () => false, getModel: () => undefined, getCredentialGeneration: () => 0, getAuth: async () => undefined } as never }));
 		await session.bindExtensions({});
 		assert.ok(session._toolRegistry.has("mcp_search_tools"), "MCP extension must be enabled, not just imported");
 		const scripts = [

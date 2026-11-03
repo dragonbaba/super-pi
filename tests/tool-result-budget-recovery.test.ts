@@ -110,7 +110,7 @@ for (const presentationBudget of [1024,1]) test(`real SDK write persists across 
   const end={...event,choices:[{index:0,delta:{},finish_reason:hasCall?"tool_calls":"stop"}]};
   return new Response(`data: ${JSON.stringify(event)}\n\ndata: ${JSON.stringify(end)}\n\ndata: [DONE]\n\n`,{headers:{"Content-Type":"text/event-stream"}});
  };
- const runtime:any={hasConfiguredAuth:()=>true,checkAuth:async()=>({type:"api_key"}),isUsingOAuth:()=>false,getAuth:async()=>undefined,getModel:()=>undefined,registerProvider(){},registerNativeProvider(){},unregisterProvider(){},streamSimple:(m:any,c:any,o:any)=>{expectedCap=clampMaxTokensToContext(m,c,o?.maxTokens??m.maxTokens);return streamSimple(m,c,{...o,apiKey:"offline-fixture",fetch:fakeFetch,maxRetries:0});}};
+ const runtime:any={hasConfiguredAuth:()=>true,checkAuth:async()=>({type:"api_key"}),isUsingOAuth:()=>false,getCredentialGeneration: () => 0, getAuth:async()=>undefined,getModel:()=>undefined,registerProvider(){},registerNativeProvider(){},unregisterProvider(){},streamSimple:(m:any,c:any,o:any)=>{expectedCap=clampMaxTokensToContext(m,c,o?.maxTokens??m.maxTokens);return streamSimple(m,c,{...o,apiKey:"offline-fixture",fetch:fakeFetch,maxRetries:0});}};
  const {session}=await createAgentSession({cwd,agentDir,model:fullModel,modelRuntime:runtime,settingsManager,sessionManager:manager,resourceLoader:loader,tools:["write"],toolResultPresentation:{enabled:true,budgetTokens:presentationBudget}});
  try {
   const write=session.agent.state.tools.find(tool=>tool.name==='write')!;

@@ -72,7 +72,7 @@ async function fixture(t: TestContext, options: Pick<CreateAgentSessionOptions, 
 	const manager = persist ? SessionManager.create(cwd, join(root, "sessions")) : SessionManager.inMemory(cwd);
 	const { session } = await createAgentSession({ cwd, agentDir, resourceLoader: resources, settingsManager: settings, sessionManager: manager,
 		model: { ...MODEL, input: ["text"] }, modelRuntime: { hasConfiguredAuth: () => true, checkAuth: async () => ({ type: "api_key" }),
-			isUsingOAuth: () => false, getModel: () => undefined, getAuth: async () => undefined } as never, ...options });
+			isUsingOAuth: () => false, getModel: () => undefined, getCredentialGeneration: () => 0, getAuth: async () => undefined } as never, ...options });
 	shutdown = async () => {
 		session.agent.abort();
 		try { await session.agent.waitForIdle(); } finally {
@@ -337,7 +337,7 @@ test("saved multi-read Codemode history recovers after request failure and reope
 	const { session } = await createAgentSession({ cwd: f.cwd, agentDir: f.agentDir, resourceLoader: f.resources,
 		settingsManager: f.settings, sessionManager: SessionManager.open(file), ...options,
 		model: { ...MODEL, input: ["text"] }, modelRuntime: { hasConfiguredAuth: () => true, checkAuth: async () => ({ type: "api_key" }),
-			isUsingOAuth: () => false, getModel: () => undefined, getAuth: async () => undefined } as never });
+			isUsingOAuth: () => false, getModel: () => undefined, getCredentialGeneration: () => 0, getAuth: async () => undefined } as never });
 	try {
 		await session.bindExtensions({});
 		let requests = 0;

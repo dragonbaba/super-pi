@@ -48,7 +48,7 @@ export async function offlineImageRuntime(root: string, auxiliary: boolean, save
 			} });
 		});
 	}
-	const modelRuntime = { hasConfiguredAuth: () => true, checkAuth: async () => ({ type: "api_key" }),
+	const modelRuntime = { getCredentialGeneration: () => 0, hasConfiguredAuth: () => true, checkAuth: async () => ({ type: "api_key" }),
 		getAuth: async () => ({ auth: { apiKey: "offline-noncredential" } }), isUsingOAuth: () => false, isUsingSubscription: () => false,
 		usesBuiltinOpenAICodex: () => false, usesBuiltinOpenAIResponses: () => false,
 		getAvailableSnapshot: () => [model], getAvailable: async () => [model], getError: () => undefined,

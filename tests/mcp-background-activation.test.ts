@@ -195,7 +195,7 @@ test("noMcp blocks real session startup, cached history, reload and tagged activ
 		sessionManager: enabled.manager, noMcp: true, tools: ["read", "mcp_search_tools", REMOTE, "alias", "late_alias", ordinary.name], toolSelection: { tools: ["*"] },
 		customTools: [ordinary, { ...ordinary, name: "alias", requiresMcp: true }],
 		model: { id: "fixture", name: "fixture", api: "openai-responses", provider: "fixture", baseUrl: "http://unused", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32000, maxTokens: 4096 },
-		modelRuntime: { hasConfiguredAuth: () => true, checkAuth: async () => ({ type: "api_key" }), isUsingOAuth: () => false, getModel: () => undefined, getAuth: async () => undefined } as never });
+		modelRuntime: { hasConfiguredAuth: () => true, checkAuth: async () => ({ type: "api_key" }), isUsingOAuth: () => false, getModel: () => undefined, getCredentialGeneration: () => 0, getAuth: async () => undefined } as never });
 	f.cleanup.push(async () => { try { await emitSessionShutdownEvent(session.extensionRunner, { type: "session_shutdown", reason: "quit" }); } finally { session.dispose(); } });
 	assert.equal(session.getToolDefinition("mcp_search_tools"), undefined, "filtered even before session_start");
 	await session.bindExtensions({});
@@ -272,7 +272,7 @@ test("Codemode continues to an available browser after empty MCP search", async 
 	const { session } = await createAgentSession({ cwd: f.root, agentDir: f.agentDir, resourceLoader: resources, settingsManager: settings,
 		sessionManager: SessionManager.inMemory(f.root),
 		model: { id: "fixture", name: "fixture", api: "openai-responses", provider: "fixture", baseUrl: "http://unused", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32000, maxTokens: 4096 },
-		modelRuntime: { hasConfiguredAuth: () => true, checkAuth: async () => ({ type: "api_key" }), isUsingOAuth: () => false, getModel: () => undefined, getAuth: async () => undefined } as never });
+		modelRuntime: { hasConfiguredAuth: () => true, checkAuth: async () => ({ type: "api_key" }), isUsingOAuth: () => false, getModel: () => undefined, getCredentialGeneration: () => 0, getAuth: async () => undefined } as never });
 	f.cleanup.push(async () => { try { await emitSessionShutdownEvent(session.extensionRunner, { type: "session_shutdown", reason: "quit" }); } finally { session.dispose(); } });
 	await session.bindExtensions({});
 	const scripts = [
@@ -453,7 +453,7 @@ test("MCP automatic restoration preserves the real Plan selection", async t => {
 	const { session } = await createAgentSession({ cwd: f.root, agentDir: f.agentDir, resourceLoader: resources, settingsManager: settings,
 		sessionManager: seed.manager, tools: ["read", "mcp_search_tools", REMOTE, "mcp__fixture__extra", "plan_mode_question", "plan_mode_complete"], excludeTools: ["plan_mode_question"],
 		model: { id: "fixture", name: "fixture", api: "openai-responses", provider: "fixture", baseUrl: "http://unused", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32000, maxTokens: 4096 },
-		modelRuntime: { hasConfiguredAuth: () => true, checkAuth: async () => ({ type: "api_key" }), isUsingOAuth: () => false, getModel: () => undefined, getAuth: async () => undefined } as never });
+		modelRuntime: { hasConfiguredAuth: () => true, checkAuth: async () => ({ type: "api_key" }), isUsingOAuth: () => false, getModel: () => undefined, getCredentialGeneration: () => 0, getAuth: async () => undefined } as never });
 	f.cleanup.push(async () => { try { await emitSessionShutdownEvent(session.extensionRunner, { type: "session_shutdown", reason: "quit" }); }
 		finally { session.dispose(); assert.equal(runtime.closed, true); assert.equal(runtime.onToolsChanged, null);
 			for (const state of runtime.states.values()) assert.equal(state.tools.size, 0); } });
@@ -645,7 +645,7 @@ test("real AgentSession supports same-script discovery/call, reload and persiste
 		const { session } = await createAgentSession({ cwd: f.root, agentDir: f.agentDir, resourceLoader: resources,
 			settingsManager: settings, sessionManager,
 			model: { id: "fixture", name: "fixture", api: "openai-responses", provider: "fixture", baseUrl: "http://unused", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32000, maxTokens: 4096 },
-			modelRuntime: { hasConfiguredAuth: () => true, checkAuth: async () => ({ type: "api_key" }), isUsingOAuth: () => false, getModel: () => undefined, getAuth: async () => undefined } as never });
+			modelRuntime: { hasConfiguredAuth: () => true, checkAuth: async () => ({ type: "api_key" }), isUsingOAuth: () => false, getModel: () => undefined, getCredentialGeneration: () => 0, getAuth: async () => undefined } as never });
 		f.cleanup.push(async () => { try { await emitSessionShutdownEvent(session.extensionRunner, { type: "session_shutdown", reason: "quit" }); } finally { session.dispose(); } });
 		await session.bindExtensions({ onError: error => { errors.push(error); } });
 		return session;

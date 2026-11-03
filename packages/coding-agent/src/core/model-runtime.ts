@@ -146,6 +146,7 @@ export class ModelRuntime implements Models {
 	private readonly providerAvailabilitySeq = new Map<string, number>();
 	private availabilityError: string | undefined;
 	private readonly credentialOperations = new Map<string, Promise<unknown>>();
+	private readonly credentialGenerations = new Map<string, number>();
 
 	private constructor(
 		credentials: RuntimeCredentials,
@@ -581,12 +582,19 @@ export class ModelRuntime implements Models {
 		return raceWithAbortSignal(started, signal).then(() => operation);
 	}
 
+	/** Explicit credential changes revoke pending logical requests; OAuth refresh does not. */
+	getCredentialGeneration(providerId: string): number {
+		return this.credentialGenerations.get(providerId) ?? 0;
+	}
+
 	private async synchronizeCredentialState(
 		providerId: string,
 		operation: CredentialSynchronizationOperation,
 		credential: Credential | undefined,
 		signal: AbortSignal,
 	): Promise<void> {
+		// The credential mutation has committed, even if local synchronization fails.
+		this.credentialGenerations.set(providerId, this.getCredentialGeneration(providerId) + 1);
 		try {
 			signal.throwIfAborted();
 			this.recomposeProvider(providerId);

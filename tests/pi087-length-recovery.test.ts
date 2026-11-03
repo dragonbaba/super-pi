@@ -134,6 +134,7 @@ async function fixture(scenario: Scenario) {
 	let inspections = 0;
 	let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
 	const runtime = {
+		getCredentialGeneration: () => 0,
 		hasConfiguredAuth: () => true, checkAuth: async () => ({ type: "api_key" }),
 		getAuth: async () => undefined, isUsingOAuth: () => false, getModel: () => model,
 		registerProvider() {}, registerNativeProvider() {}, unregisterProvider() {},

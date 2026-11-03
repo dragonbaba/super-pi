@@ -70,7 +70,7 @@ for (const scenario of [
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 1024 };
 	let normalRequests = 0, summaryRequests = 0, compactStarts = 0;
 	const ordinaryWires: any[] = [];
-	const runtime = { hasConfiguredAuth: () => true, checkAuth: async () => ({ type: "api_key" }),
+	const runtime = { getCredentialGeneration: () => 0, hasConfiguredAuth: () => true, checkAuth: async () => ({ type: "api_key" }),
 		getAuth: async () => undefined, isUsingOAuth: () => false, getModel: () => model,
 		registerProvider() {}, registerNativeProvider() {}, unregisterProvider() {},
 		streamSimple: (m: any, context: any, options: any) => {

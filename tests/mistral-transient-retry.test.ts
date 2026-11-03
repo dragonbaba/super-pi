@@ -86,7 +86,7 @@ for (const failure of ["server_busy", "servers are currently busy", "The pending
 		let effects = 0;
 		const runtime = {
 			hasConfiguredAuth: () => true, checkAuth: async () => ({ type: "api_key" }),
-			getAuth: async () => undefined, isUsingOAuth: () => false, getModel: () => model,
+			getCredentialGeneration: () => 0, getAuth: async () => undefined, isUsingOAuth: () => false, getModel: () => model,
 			registerProvider() {}, registerNativeProvider() {}, unregisterProvider() {},
 			streamSimple: (_model: unknown, ctx: any, options: any) => streamMistral(model, ctx, {
 				...options, apiKey: "offline-fixture", fetch: async (_input, init) => {
