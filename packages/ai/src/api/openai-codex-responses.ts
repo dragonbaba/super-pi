@@ -552,15 +552,6 @@ function streamOwned(owner: CodexTransportOwner, model: Model<"openai-codex-resp
             stream.end();
         }
         catch (error) {
-            for (const block of output.content) {
-                // Streaming scratch buffers are only used during parsing; never persist them.
-                if ("partialJson" in block)
-                    (block as typeof block & { partialJson?: unknown }).partialJson = undefined;
-                if ("toolArgsGeneration" in block)
-                    (block as typeof block & { toolArgsGeneration?: unknown }).toolArgsGeneration = undefined;
-                if ("customInput" in block)
-                    (block as typeof block & { customInput?: unknown }).customInput = undefined;
-            }
             output.stopReason = options?.signal?.aborted ? "aborted" : "error";
             output.errorMessage = formatProviderError(normalizeProviderError(error));
             stream.push({ type: "error", reason: output.stopReason, error: output });

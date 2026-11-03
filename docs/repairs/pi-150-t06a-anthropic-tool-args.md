@@ -1,6 +1,6 @@
 # T06-A：共享增量 JSON 状态机与 Anthropic 工具参数
 
-日期：2026-11-04。状态：**先行设计已落实，共享 parser 与 Anthropic 已实现，验收中**。基线为 T05-B #182 合并提交 `c37c9d6e509ff41650eef21dc81ea97f4ec8cfa5`；该 PR 最终 head `8670a659839f13d44dda36fdf35b702830ebe416` 已获 Codex completed/no findings，Linux/Windows CI 6/6 通过。本地与远端对应分支已删除并同步 main。本项分支 `codex/t06a-anthropic-incremental-tool-args`，只验证当前 Node 26.13.0。
+日期：2026-11-04。状态：**#183 已合并交付**，合并提交 `23fd4b6e15e25886dc22e69e703deb278de4ae7c`。最终 head `1044154f9e3b585dc00da02e87a6283cd300905f` 已获 Codex completed/no findings，Linux/Windows CI 6/6 通过；对应本地/远端分支已删除并同步 main。基线为 T05-B #182 合并提交 `c37c9d6e509ff41650eef21dc81ea97f4ec8cfa5`。本项仅验证 Node 26.13.0，后续进入独立 T06-B。
 
 ## 顺序与范围
 

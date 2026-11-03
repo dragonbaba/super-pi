@@ -70,6 +70,15 @@ test("large strings and open containers consume input once; scalar previews have
 	}
 });
 
+test("authoritative terminal text can extend or replace the accumulated preview", () => {
+	const parser = new IncrementalToolArguments(); parser.append('{"path":"old');
+	assert.equal(parser.getAppendDelta('{"path":"old"}'), '"}');
+	assert.equal(parser.getAppendDelta('{"path":"new"}'), undefined);
+	assert.deepEqual(parser.finalize('{"path":"final"}'), { path: "final" });
+	assert.equal(parser.diagnostics().retainedRawCodeUnits, 0);
+	assert.throws(() => parser.getAppendDelta("late"), /closed/);
+});
+
 test("deep inputs have no invented depth cap and dispose releases all parser-owned references", () => {
 	const parser = new IncrementalToolArguments(), input = '['.repeat(1000) + '0' + ']'.repeat(1000);
 	for (const char of input) parser.append(char);
