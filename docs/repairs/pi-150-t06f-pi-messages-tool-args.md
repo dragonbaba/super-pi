@@ -1,6 +1,6 @@
 # T06-F：Pi Messages 参数解析、终态权威对象和 SSE 生命周期
 
-状态：先行设计已落实，Pi Messages 已实现，验收中。T06-E #187 最终 head e126710468e1ca49089b6860825e0f51762d5579 已获 Codex completed/no findings、CI 6/6，合并为 a95e9dc3d36f1a29a6d26ac01ffd86147d08093a；对应本地/远端分支已删除，main 已同步。本项分支 codex/t06f-pi-messages-incremental-tool-args，从该合并 SHA 开始，仅 Node v26.13.0。
+状态：已通过 #188 交付。T06-E #187 最终 head e126710468e1ca49089b6860825e0f51762d5579 已获 Codex completed/no findings、CI 6/6，合并为 a95e9dc3d36f1a29a6d26ac01ffd86147d08093a；对应本地/远端分支已删除，main 已同步。本项分支 codex/t06f-pi-messages-incremental-tool-args，从该合并 SHA 开始，仅 Node v26.13.0。
 
 ## 源码事实与范围
 
@@ -72,4 +72,4 @@ reader finally 清 raw/decoded 引用，cancel 尚未消耗的 body 并 releaseL
 
 normal/abort/error 受控 GC 保持 stream/result 活着，parser 和首次 preview 弱引用均释放，dispose 后 raw/token/stack/root/parent 为空。Pi 本地错误结果原本为空 content，所以不会保留 preview；不能套用其他 adapter 仍由结果拥有 partial preview 的解释。服务器 error 的 preview 仍属其部分结果，行为测试单独覆盖。私有数组与公开 generation 在所有退出路径释放，所有必要最终结果仍由 caller 拥有。
 
-类型检查、离线构建和四个下游 benchmark 通过；当前 Node26 全套 **404/404 执行单元成功，5418 tests / 5320 pass / 98 skip / 0 fail / 0 cancelled**。stream 100000 更新合并为 1 次 snapshot/delivery；session listener Promise/wrapper/array=0；paced 每 flush 一次 snapshot，generation 缺失/语义兜底=0，metadata/调度状态释放；frame queue 100000 请求只生成/写入 2 帧，active≤1，完整副本/新增 Promise/controller/wrapper=0，active/pending 最终清空。日志在 .git/pi150-t06f；PR reviewer/CI 尚未验收。内置 API producer 范围的 T06 只有本项通过合并后才能标交付；可选 SDK streamProxy 旧路径已明确列为范围外后续记录，不冒称全仓都已迁移。
+类型检查、离线构建和四个下游 benchmark 通过；当前 Node26 全套 **404/404 执行单元成功，5418 tests / 5320 pass / 98 skip / 0 fail / 0 cancelled**。stream 100000 更新合并为 1 次 snapshot/delivery；session listener Promise/wrapper/array=0；paced 每 flush 一次 snapshot，generation 缺失/语义兜底=0，metadata/调度状态释放；frame queue 100000 请求只生成/写入 2 帧，active≤1，完整副本/新增 Promise/controller/wrapper=0，active/pending 最终清空。日志在 .git/pi150-t06f；最终 head ecccb60013e733be36aed57072ceacc0b91c28fc 的 Codex 审核 completed，配套同 head 无问题回执且无行内/正式 review 发现（汇总布尔值为空，不等同于 false）；CI 6/6 成功。#188 合并为 521f84f2316f19548c3f8e76021e808d1c0f1f60，对应远端/本地分支已删除，main 已同步。内置 API producer 范围的 T06 已随本项合并交付；可选 SDK streamProxy 旧路径已明确列为范围外后续记录，不冒称全仓都已迁移。

@@ -1,0 +1,63 @@
+{
+  "task": "T07 branch summary thinking inheritance",
+  "baseCommit": "521f84f2316f19548c3f8e76021e808d1c0f1f60",
+  "node": "v26.13.0",
+  "sources": [
+    {
+      "path": "packages/coding-agent/src/core/agent-session.ts",
+      "sha256": "189c877510c96dea3943906208b4600284b5d5c0c664b5d3bb56ccba8fbf722f"
+    },
+    {
+      "path": "packages/coding-agent/src/core/compaction/branch-summarization.ts",
+      "sha256": "979106cc82dbdaebefd9159f89f39893df4a56a68ec94d32e9a9a66ed6f9ce3b"
+    },
+    {
+      "path": "tests/provider-contract/branch-summary-options.contract.test.ts",
+      "sha256": "332bb838e924a0dfd3fc7eb187f395fa809a325d0c94b900de8cfb0a67e6fc06"
+    }
+  ],
+  "scope": "One scalar field propagated at explicit summary request admission. No changes to history traversal/serialization, per-delta callbacks, event delivery, layout or terminal writes. No new allocation profile claimed for unchanged hot paths.",
+  "behavior": {
+    "baseline": "high was undefined in summary stream options (red assertion)",
+    "directCases": [
+      "high",
+      "low",
+      "off",
+      "omitted",
+      "non-reasoning model"
+    ],
+    "sessionLevels": [
+      "low",
+      "high"
+    ],
+    "summaryMaxTokens": 2048,
+    "providerWire": "Existing capability mapping preserved: requested high with supported low -> low; off -> none; disabled -> omitted",
+    "retry": {
+      "requests": 2,
+      "requestOptionsIdentity": "same",
+      "capturedReasoning": "high",
+      "abortListenersAfter": 0
+    },
+    "abort": {
+      "result": "aborted",
+      "abortListenersAfter": 0
+    }
+  },
+  "validation": {
+    "targeted": {
+      "tests": 105,
+      "pass": 105,
+      "fail": 0
+    },
+    "typeCheck": "passed",
+    "offlineBuild": "passed",
+    "fullSuite": {
+      "units": 405,
+      "tests": 5429,
+      "pass": 5331,
+      "skip": 98,
+      "fail": 0,
+      "cancelled": 0
+    }
+  }
+}

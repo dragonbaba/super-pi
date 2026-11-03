@@ -5641,6 +5641,7 @@ export class AgentSession {
 				const branchSummarySettings = this.settingsManager.getBranchSummarySettings();
 				const result = await generateBranchSummary(entriesToSummarize, {
 					model: requestModel,
+					thinkingLevel: this.thinkingLevel,
 					apiKey,
 					headers,
 					env,
