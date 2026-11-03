@@ -11,7 +11,7 @@ import { ProjectTrustStore } from '../packages/coding-agent/src/core/trust-manag
 const lifecycleScenarios = ['quit', 'ctrl-d', 'double-ctrl-c', 'extension', 'SIGTERM', 'SIGHUP', 'active-stream', 'active-tool', 'active-compaction', 'startup-quit', 'stdout-close', 'active-stream/stdout-close', 'active-tool/stdout-close', 'active-compaction/stdout-close', 'quit/progress', 'stdout-close/progress', 'active-stream/stdout-close/progress'];
 // Settings parsing and project trust run before selecting a renderer. Exercise
 // those through the real CLI once; keep every terminal lifecycle in both modes.
-const configurationScenarios = ['settings-absent', 'settings-malformed', 'project-trusted', 'project-untrusted'];
+const configurationScenarios = ['settings-absent', 'settings-malformed', 'project-trusted', 'project-untrusted', 'project-empty-untrusted'];
 for (const mode of ['regular', 'fullscreen']) for (const scenario of mode === 'regular' ? [...lifecycleScenarios, ...configurationScenarios] : lifecycleScenarios) {
   const kind = scenario.split('/')[0]!;
   const outputLost = scenario.split('/').includes('stdout-close');
@@ -23,8 +23,12 @@ for (const mode of ['regular', 'fullscreen']) for (const scenario of mode === 'r
     const capture = kind === 'quit' || kind.startsWith('settings-') || kind === 'startup-quit' || projectCase ? join(root, 'startup-capture.jsonl') : '';
     if (kind !== 'settings-absent') writeFileSync(join(config, 'settings.json'), kind === 'settings-malformed' ? '{"quietStartup":' : JSON.stringify({ quietStartup: true, theme: 'dark', terminal: { showTerminalProgress: scenario.endsWith('/progress') }, compaction: { enabled: false, keepRecentTokens: 128, reserveTokens: 128 } }));
     if (projectCase) {
-      const extensions = join(root, CONFIG_DIR_NAME, 'extensions'); mkdirSync(extensions, { recursive: true });
-      writeFileSync(join(extensions, 'alpha-project.js'), "export default function(pi) { pi.on('session_start', () => process.stderr.write('ALPHA_PROJECT_EXTENSION_LOADED\\n')); }\n");
+      if (kind === 'project-empty-untrusted') {
+        writeFileSync(join(root, 'AGENTS.md'), 'Fixture instructions\n');
+      } else {
+        const extensions = join(root, CONFIG_DIR_NAME, 'extensions'); mkdirSync(extensions, { recursive: true });
+        writeFileSync(join(extensions, 'alpha-project.js'), "export default function(pi) { pi.on('session_start', () => process.stderr.write('ALPHA_PROJECT_EXTENSION_LOADED\\n')); }\n");
+      }
       new ProjectTrustStore(agent).set(root, kind === 'project-trusted');
     }
     const child = spawn(process.execPath, ['--import', new URL('./fixtures/alpha-cli-preload.mjs', import.meta.url).href,
@@ -83,6 +87,7 @@ for (const mode of ['regular', 'fullscreen']) for (const scenario of mode === 'r
       }
       if (projectCase) {
         assert.equal(stderr.split('ALPHA_PROJECT_EXTENSION_LOADED').length - 1, kind === 'project-trusted' ? 1 : 0);
+        assert.ok(stderr.includes(`ALPHA_PROJECT_TRUST:${kind === 'project-trusted'}\n`), stderr);
         assert.equal(new ProjectTrustStore(agent).get(root), kind === 'project-trusted', 'startup preserves the isolated trust decision');
       }
       if (kind === 'settings-malformed') {

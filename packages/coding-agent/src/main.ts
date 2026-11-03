@@ -767,7 +767,7 @@ export async function main(args: string[], options?: MainOptions) {
 			? false
 			: (cachedProjectTrust ??
 				parsed.projectTrustOverride ??
-				(!hasTrustRequiringResources || trustStore.get(cwd) === true));
+				(trustStore.get(cwd) ?? !hasTrustRequiringResources));
 		const runtimeSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted });
 		if (parsed.executionEnvironment) runtimeSettingsManager.setExecutionEnvironmentForSession(parsed.executionEnvironment);
 		if (permissionMode !== undefined || appMode === "interactive") runtimeSettingsManager.setPermissionModeForSession(
