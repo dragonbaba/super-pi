@@ -1,6 +1,6 @@
 # Pi 1.5.0 借鉴与修复实施方案
 
-日期：2026-11-03。状态：**方案 #175、SDK 前置修复 #176 和 T01 #177 已合并；T02 已实现，进入验收；T03–T12 尚未实施**。#175 交付 GPL-3.0-only、README、差异评估与本方案；先完成逐项规划，再进入独立修复。不得把“读过源码”“写了测试”或“CI 启动了”记成实施完成。
+日期：2026-11-03。状态：**方案 #175、SDK 前置修复 #176、T01 #177 和 T02 #178 已合并；T03 已实现，进入验收；T04–T12 尚未实施**。#175 交付 GPL-3.0-only、README、差异评估与本方案；先完成逐项规划，再进入独立修复。不得把“读过源码”“写了测试”或“CI 启动了”记成实施完成。
 
 ## 1. 基线、范围与交付顺序
 
@@ -8,7 +8,7 @@
 - 上游参考：Pi `v1.5.0` / `f9a26365568127461c47a07a37dcb42c140a3ac5`；发布记录和本地证据见[差异评估](upstream-pi-1.5.0-diff-assessment.md)及[JSON 记录](evidence/upstream-pi-1.5.0-review.json)。不将未发布 main 内容混入本轮。
 - 约束依据：[AGENTS.md](../AGENTS.md)、[Hot-path allocation contract](performance/hot-path-allocation-contract.md)、[测试与 CI 说明](testing.md)。发生冲突时不得用本方案降低契约。
 - 方案交付后按 T01 → T02 → T03 → T04 → T05 → T06 → T07–T09 → T10–T12 顺序实施；F 项先做需求/兼容性判定，不自动纳入修复。
-- 每个独立根因使用独立实施分支和 PR；共用的锁文件、认证、session 或 provider 模块串行修改，以已合并基线为准。T01 的 SDK transport 前置 [#176](https://github.com/dragonbaba/super-pi/pull/176) 与依赖更新 [#177](https://github.com/dragonbaba/super-pi/pull/177) 已依次合并；T02 从 `ed53fbe72a1c2c27b64fec78980ccb46bacca476` 开始。不把未合并候选当已交付。
+- 每个独立根因使用独立实施分支和 PR；共用的锁文件、认证、session 或 provider 模块串行修改，以已合并基线为准。T01 的 SDK transport 前置 [#176](https://github.com/dragonbaba/super-pi/pull/176)、依赖更新 [#177](https://github.com/dragonbaba/super-pi/pull/177) 与 T02 [#178](https://github.com/dragonbaba/super-pi/pull/178) 已依次合并；T03 从 `57e623a2840a1709d0aad92fdd380f5cf78e7367` 开始。不把未合并候选当已交付。
 - 本 PR 的创建不代表允许自动合并、安装到全局环境或发布 npm。沿用用户对当前任务的授权，不从历史任务文档继承额外发布权限。
 
 ### 1.1 任务索引
@@ -29,7 +29,7 @@
 | T12 | Windows 路径等价性 | 待复现 | 路径边界及调用者 | 分入口复现，按根因拆分 |
 | F01–F06 | Schema、文档、更新说明、账单、目录、Worker 等待 | 产品/兼容性选择 | 见第 6 节 | 不与缺陷修复捆绑 |
 
-每项状态统一为：`待复现/待设计核对 → 可实施 → 实施中 → 待验收 → 已交付`。排除项记录理由及覆盖范围，不打“修复完成”勾。T01 见[依赖实施记录](repairs/pi-150-t01-dependencies.md)；T02 的复现、设计与验收见[保存信任决定实施记录](repairs/pi-150-t02-saved-trust.md)。T03–T12 和 F01–F06 尚未实施。
+每项状态统一为：`待复现/待设计核对 → 可实施 → 实施中 → 待验收 → 已交付`。排除项记录理由及覆盖范围，不打“修复完成”勾。T01 见[依赖实施记录](repairs/pi-150-t01-dependencies.md)；T02 见[保存信任决定实施记录](repairs/pi-150-t02-saved-trust.md)；T03 的先行设计、范围和验收见[登录 URL 实施记录](repairs/pi-150-t03-login-url-safety.md)。T04–T12 和 F01–F06 尚未实施。
 
 用户最新验收约束：**只使用当前 Node 26.13，失败定位根因并修复，不扩展多版本测试来绕过失败。** 现有 Linux/Windows CI 分片统一使用该版本；各任务原先提到的最低版本测试不再作为本轮执行项，包的 engines 元数据不因此自动修改。
 
@@ -249,4 +249,4 @@ npm.cmd run bench:tui-frame-queue-allocations
 | 审查 | 最终 diff、不过度防御检查、未解决风险、对应最终 SHA 的 CI/审查结果 |
 | 交付 | 状态、已授权操作及实际结果；仅规划/仅请求审查不算完成 |
 
-方案 PR #175 已交付固定基线与差异证据、逐项设计、性能门禁、验证映射和许可/文档；T01 及 SDK 前置修复已通过 #176/#177 合并。T02 进入独立验收，合并前不计入已交付修复；其余任务未实施。
+方案 PR #175 已交付固定基线与差异证据、逐项设计、性能门禁、验证映射和许可/文档；SDK 前置修复、T01、T02 已通过 #176/#177/#178 合并。T03 进入独立验收，合并前不计入已交付修复；其余任务未实施。

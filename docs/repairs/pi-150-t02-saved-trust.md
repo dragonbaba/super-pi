@@ -1,6 +1,6 @@
 # T02 — 无项目资源时尊重保存的信任决定
 
-基线：`ed53fbe72a1c2c27b64fec78980ccb46bacca476`（#176、#177 已合并）。分支：`codex/t02-saved-trust-decisions`。状态：按先落盘方案后实施的顺序完成两个入口修复，正在验收，尚未合并交付。验收只使用当前 Node 26.13。
+基线：`ed53fbe72a1c2c27b64fec78980ccb46bacca476`（#176、#177 已合并）。原分支：`codex/t02-saved-trust-decisions`。状态：**已通过 [#178](https://github.com/dragonbaba/super-pi/pull/178) 合并交付**，合并提交 `57e623a2840a1709d0aad92fdd380f5cf78e7367`。用户授权后已删除对应本地/远端分支。验收只使用当前 Node 26.13。
 
 ## 根因与完整入口核对
 
@@ -35,7 +35,7 @@
 
 修复前，新增 resolver 文件 12 项中 6 项失败、6 项通过；真实 CLI 的新场景失败，日志明确为 `ALPHA_PROJECT_TRUST:true`。这不是只对源码表达式的推断。
 
-修复后，resolver 与既有 extension timeout 回归 **22 pass / 0 fail / 0 skip**；离线构建产物的 3 个实际 CLI 信任场景全部通过。新场景报告 false，原有项目扩展执行、存储决定、退出码 0、shutdown=1 和 raw mode 恢复断言通过。`npm.cmd run check` 和 `npm.cmd run build:offline` 通过。Node 26.13 完整测试 **389/389 个执行单元成功，5,104 pass / 96 原有 skip / 0 fail**；最终 SHA 的远端 CI 状态以 PR 检查列表为准。
+修复后，resolver 与既有 extension timeout 回归 **22 pass / 0 fail / 0 skip**；离线构建产物的 3 个实际 CLI 信任场景全部通过。新场景报告 false，原有项目扩展执行、存储决定、退出码 0、shutdown=1 和 raw mode 恢复断言通过。`npm.cmd run check` 和 `npm.cmd run build:offline` 通过。Node 26.13 完整测试 **389/389 个执行单元成功，5,104 pass / 96 原有 skip / 0 fail**；候选 `6e133520180a49193d83bd71252a0848a99343f6` 的 [CI](https://github.com/dragonbaba/super-pi/actions/runs/41645277142) **Linux 2 + Windows 4 分片全部通过**，合并前再次核对为 clean。
 
 [JSON 证据](../evidence/pi-150-t02-saved-trust.json)记录基线、候选源码的 LF-normalized SHA-256、失败/成功结果、精确读取次数、锁释放和覆盖边界；原始日志保留在任务目录 `.git/pi150-t02`。没有新增测试跳过项、降低断言、修改超时或引入对象池。
 

@@ -74,7 +74,13 @@
       "skipped": 96,
       "cancelled": 0
     },
-    "ci": "pending"
+    "ci": {
+      "head": "6e133520180a49193d83bd71252a0848a99343f6",
+      "url": "https://github.com/dragonbaba/super-pi/actions/runs/41645277142",
+      "successfulJobs": 6,
+      "failedJobs": 0,
+      "mergeCommit": "57e623a2840a1709d0aad92fdd380f5cf78e7367"
+    }
   },
   "deterministicCounters": {
     "resourceFreeStoreGetsPerResolution": 1,

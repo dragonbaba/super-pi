@@ -237,14 +237,14 @@ async function loginWithBrowser(
 	}).toString();
 
 	const callbackServer = await startOAuthCallbackServer(state, interaction.signal);
-	interaction.notify({ type: "progress", message: `Listening for OAuth callback on ${REDIRECT_URI}` });
-	interaction.notify({
-		type: "auth_url",
-		url: authorizeUrl.toString(),
-		instructions: "Continue in your browser.",
-	});
-
 	try {
+		interaction.notify({ type: "progress", message: `Listening for OAuth callback on ${REDIRECT_URI}` });
+		interaction.notify({
+			type: "auth_url",
+			url: authorizeUrl.toString(),
+			instructions: "Continue in your browser.",
+		});
+
 		const code = await callbackServer.waitForCode();
 		if (!code) {
 			if (interaction.signal.aborted) {

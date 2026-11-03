@@ -510,6 +510,41 @@ test("provider completion and notifications are inert after final login cancella
 	assert.equal(mode.activeLoginDialog, undefined);
 });
 
+test("invalid provider info URL fails login, restores editor and releases its copy target", async () => {
+	initTheme("dark");
+	const mode = createTestInteractiveMode();
+	const tui = createCountingTui();
+	let loginDialog: LoginDialogComponent | undefined;
+	let completed = 0;
+	let providerReturned = false;
+	const errors: string[] = [];
+	mode.runtimeHost = { session: { model: undefined, modelRuntime: {
+		async login(_providerId: string, _type: string, interaction: { notify(event: unknown): void }): Promise<void> {
+			loginDialog = mode.activeLoginDialog;
+			interaction.notify({ type: "device_code", verificationUri: "https://example.invalid/device", userCode: "FIXTURE" });
+			interaction.notify({ type: "info", message: "Account", links: [{ url: "file:///tmp/login.html" }] });
+			providerReturned = true;
+		},
+	} } };
+	mode.ui = tui;
+	mode.editor = {};
+	mode.editorContainer = new Container();
+	mode.completeProviderAuthentication = async (): Promise<void> => { completed++; };
+	mode.showError = (message: string): void => { errors.push(message); };
+	await mode.showLoginDialog("fixture", "Fixture");
+	assert.equal(providerReturned, false);
+	assert.equal(completed, 0);
+	assert.equal(errors.length, 1);
+	assert.match(errors[0]!, /Failed to login to Fixture: Login URL /);
+	assert.doesNotMatch(errors[0]!, /file:/);
+	assert.equal(mode.activeLoginDialog, undefined);
+	assert.deepEqual(mode.editorContainer.children, [mode.editor]);
+	assert.ok(loginDialog);
+	assert.equal((loginDialog as any).authUrl, undefined);
+	assert.equal((loginDialog as any).authUrlHint, undefined);
+	loginDialog.cancel();
+});
+
 test("released edit preview rejects late completion and can rebuild under a new owner", async () => {
 	initTheme("dark");
 	const directory = await mkdtemp(path.join(os.tmpdir(), "super-pi-edit-preview-owner-"));
