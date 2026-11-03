@@ -1,0 +1,3240 @@
+{
+  "task": "T10",
+  "base": "9df902e80d1673ef4d52e762596f0bf151f67198",
+  "node": "v26.13.0",
+  "sources": [
+    {
+      "path": "packages/coding-agent/src/utils/image-resize-core.ts",
+      "sha256": "dabfbf2e939799e616315679b54cad21b899865f7783a0406e863cd01aa3ec54"
+    },
+    {
+      "path": "scripts/bench/image-encoding-selection.ts",
+      "sha256": "388b7786537bf04b88ed5d93274ace9b5630446662514281ed56e97b3fa78bb5"
+    },
+    {
+      "path": "tests/image-encoding-selection.test.ts",
+      "sha256": "c78caaf48cf9b98e93523109e139af0ef2e7fbf6d8aa18e526abc0c5dc46e09d"
+    },
+    {
+      "path": "tests/image-encoding-hot-paths.test.ts",
+      "sha256": "8d726b0106680ed185a90bef8c1152c71a0d51d0337fffe8da9d068be972bff6"
+    },
+    {
+      "path": "tests/helpers/image-encoding-fixtures.ts",
+      "sha256": "a325e3ffcde195e47b16076a4d6ce040c9dd5277642eaf2b3817d3b9a2e1c9db"
+    }
+  ],
+  "tests": {
+    "tests": 5482,
+    "pass": 5384,
+    "fail": 0,
+    "cancelled": 0,
+    "skipped": 98,
+    "successfulUnits": 408
+  },
+  "targeted": 17,
+  "imageRegression": 67,
+  "quality": [
+    {
+      "kind": "photo",
+      "mimeType": "image/jpeg",
+      "rmse": 3.694666448693399,
+      "textContrastAccuracy": null,
+      "base64CodeUnits": 12224
+    },
+    {
+      "kind": "transparent",
+      "mimeType": "image/png",
+      "rmse": 0,
+      "textContrastAccuracy": null,
+      "base64CodeUnits": 139664
+    },
+    {
+      "kind": "text",
+      "mimeType": "image/jpeg",
+      "rmse": 6.729061350278802,
+      "textContrastAccuracy": 1,
+      "base64CodeUnits": 40244
+    }
+  ],
+  "comparison": [
+    {
+      "size": 256,
+      "sampledBytesPerImage": {
+        "baseline": 60698,
+        "candidate": 9203
+      },
+      "p95Ms": {
+        "baseline": 4.634399999999999,
+        "candidate": 3.3100000000000023
+      },
+      "cpuUsPerImage": {
+        "baseline": 4875,
+        "candidate": 2937.5
+      },
+      "retainedHeap": {
+        "baseline": 10494400,
+        "candidate": 10485792
+      }
+    },
+    {
+      "size": 512,
+      "sampledBytesPerImage": {
+        "baseline": 194314,
+        "candidate": 15246
+      },
+      "p95Ms": {
+        "baseline": 18.225199999999973,
+        "candidate": 11.785499999999985
+      },
+      "cpuUsPerImage": {
+        "baseline": 17562.5,
+        "candidate": 11687.5
+      },
+      "retainedHeap": {
+        "baseline": 10584192,
+        "candidate": 10575800
+      }
+    },
+    {
+      "size": 1024,
+      "sampledBytesPerImage": {
+        "baseline": 730201,
+        "candidate": 48211
+      },
+      "p95Ms": {
+        "baseline": 75.64419999999996,
+        "candidate": 50.96100000000001
+      },
+      "cpuUsPerImage": {
+        "baseline": 71250,
+        "candidate": 48812.5
+      },
+      "retainedHeap": {
+        "baseline": 10610048,
+        "candidate": 10599584
+      }
+    }
+  ],
+  "allocationBoundaries": {
+    "materializations": "resized accepted output: one base64; rejected dimensions: zero; existing small-input path: one",
+    "buffers": "At most two live encoded candidate slots, plus transient RGBA copy in hasTransparency, bounded by 4*currentWidth*currentHeight; garbage may remain until GC.",
+    "native": "Photon images explicitly free and pointers become zero on accepted/rejected/encoder/alpha failure; WASM capacity is not equivalent to a live image.",
+    "preserved": "Worker input copy+transfer, one worker/request and terminate/listener cleanup; read cancellation remains rejected until worker physically settles. Output base64 is caller-owned.",
+    "warning": "V8 sampled allocation decreases; native/ArrayBuffer allocation does not universally decrease because checking alpha adds an RGBA copy. Exact byte counts and sampled peak memory are reported separately.",
+    "hot": "No added per-delta/frame state; no object pools, caches, promises or controllers in encoding helpers. Existing once-per-image async/worker boundaries retained."
+  },
+  "runs": [
+    {
+      "run": 1,
+      "baseline": {
+        "node": "v26.13.0",
+        "platform": "win32",
+        "modulePath": "D:\\RMProjects\\Pi\\packages\\coding-agent\\src\\utils\\.pi150-t10-baseline.ts",
+        "sourceSha256": "b3523329397d47473b76c40e8802283a79d3a3e3f317f4da0124ccba5152edd8",
+        "optimized": false,
+        "warmup": 3,
+        "timingIterations": 16,
+        "profileIterations": 8,
+        "samplingInterval": 1024,
+        "counters": [
+          {
+            "kind": "photo",
+            "size": 256,
+            "png": 1,
+            "jpeg": 5,
+            "qualities": [
+              80,
+              85,
+              70,
+              55,
+              40
+            ],
+            "base64": 6,
+            "base64CodeUnits": 51868,
+            "encodedBytes": 38895,
+            "largestEncodingBytes": 26742,
+            "rgbaBytes": 0,
+            "largestRgbaBytes": 0,
+            "imagesCreated": 2,
+            "imagesFreed": 2,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 2,
+            "peakHeap": 11934008,
+            "peakExternal": 8922515,
+            "peakArrayBuffers": 2536939,
+            "retainedTemporaryObjects": 0,
+            "result": {
+              "mimeType": "image/png",
+              "width": 128,
+              "height": 96,
+              "base64CodeUnits": 35656
+            },
+            "liveEncodedSlotBytesUpperBound": null
+          },
+          {
+            "kind": "photo",
+            "size": 512,
+            "png": 1,
+            "jpeg": 5,
+            "qualities": [
+              80,
+              85,
+              70,
+              55,
+              40
+            ],
+            "base64": 6,
+            "base64CodeUnits": 186924,
+            "encodedBytes": 140184,
+            "largestEncodingBytes": 104255,
+            "rgbaBytes": 0,
+            "largestRgbaBytes": 0,
+            "imagesCreated": 2,
+            "imagesFreed": 2,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 2,
+            "peakHeap": 11516608,
+            "peakExternal": 8381382,
+            "peakArrayBuffers": 1927832,
+            "retainedTemporaryObjects": 0,
+            "result": {
+              "mimeType": "image/png",
+              "width": 256,
+              "height": 192,
+              "base64CodeUnits": 139008
+            },
+            "liveEncodedSlotBytesUpperBound": null
+          },
+          {
+            "kind": "photo",
+            "size": 1024,
+            "png": 1,
+            "jpeg": 5,
+            "qualities": [
+              80,
+              85,
+              70,
+              55,
+              40
+            ],
+            "base64": 6,
+            "base64CodeUnits": 722988,
+            "encodedBytes": 542235,
+            "largestEncodingBytes": 414508,
+            "rgbaBytes": 0,
+            "largestRgbaBytes": 0,
+            "imagesCreated": 2,
+            "imagesFreed": 2,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 2,
+            "peakHeap": 11976768,
+            "peakExternal": 13584902,
+            "peakArrayBuffers": 7131352,
+            "retainedTemporaryObjects": 0,
+            "result": {
+              "mimeType": "image/png",
+              "width": 512,
+              "height": 384,
+              "base64CodeUnits": 552680
+            },
+            "liveEncodedSlotBytesUpperBound": null
+          },
+          {
+            "kind": "transparent",
+            "size": 512,
+            "png": 1,
+            "jpeg": 5,
+            "qualities": [
+              80,
+              85,
+              70,
+              55,
+              40
+            ],
+            "base64": 6,
+            "base64CodeUnits": 187580,
+            "encodedBytes": 140677,
+            "largestEncodingBytes": 104748,
+            "rgbaBytes": 0,
+            "largestRgbaBytes": 0,
+            "imagesCreated": 2,
+            "imagesFreed": 2,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 2,
+            "peakHeap": 12228048,
+            "peakExternal": 10440920,
+            "peakArrayBuffers": 3987370,
+            "retainedTemporaryObjects": 0,
+            "result": {
+              "mimeType": "image/png",
+              "width": 256,
+              "height": 192,
+              "base64CodeUnits": 139664
+            },
+            "liveEncodedSlotBytesUpperBound": null
+          },
+          {
+            "kind": "text",
+            "size": 512,
+            "png": 1,
+            "jpeg": 5,
+            "qualities": [
+              80,
+              85,
+              70,
+              55,
+              40
+            ],
+            "base64": 6,
+            "base64CodeUnits": 325148,
+            "encodedBytes": 243855,
+            "largestEncodingBytes": 114969,
+            "rgbaBytes": 0,
+            "largestRgbaBytes": 0,
+            "imagesCreated": 2,
+            "imagesFreed": 2,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 2,
+            "peakHeap": 11117792,
+            "peakExternal": 10610729,
+            "peakArrayBuffers": 4157179,
+            "retainedTemporaryObjects": 0,
+            "result": {
+              "mimeType": "image/png",
+              "width": 256,
+              "height": 192,
+              "base64CodeUnits": 153292
+            },
+            "liveEncodedSlotBytesUpperBound": null
+          }
+        ],
+        "lifecycle": [
+          {
+            "reason": "png",
+            "png": 1,
+            "jpeg": 0,
+            "qualities": [],
+            "base64": 0,
+            "base64CodeUnits": 0,
+            "encodedBytes": 0,
+            "largestEncodingBytes": 0,
+            "rgbaBytes": 0,
+            "largestRgbaBytes": 0,
+            "imagesCreated": 2,
+            "imagesFreed": 2,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 2,
+            "peakHeap": 0,
+            "peakExternal": 0,
+            "peakArrayBuffers": 0,
+            "retainedTemporaryObjects": 0,
+            "result": null,
+            "liveEncodedSlotBytesUpperBound": null
+          },
+          {
+            "reason": "jpeg",
+            "png": 1,
+            "jpeg": 1,
+            "qualities": [
+              80
+            ],
+            "base64": 1,
+            "base64CodeUnits": 9276,
+            "encodedBytes": 6957,
+            "largestEncodingBytes": 6957,
+            "rgbaBytes": 0,
+            "largestRgbaBytes": 0,
+            "imagesCreated": 2,
+            "imagesFreed": 2,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 2,
+            "peakHeap": 10642624,
+            "peakExternal": 8835302,
+            "peakArrayBuffers": 2381752,
+            "retainedTemporaryObjects": 0,
+            "result": null,
+            "liveEncodedSlotBytesUpperBound": null
+          },
+          {
+            "reason": "impossible-cap",
+            "png": 13,
+            "jpeg": 65,
+            "qualities": [
+              80,
+              85,
+              70,
+              55,
+              40,
+              80,
+              85,
+              70,
+              55,
+              40,
+              80,
+              85,
+              70,
+              55,
+              40,
+              80,
+              85,
+              70,
+              55,
+              40,
+              80,
+              85,
+              70,
+              55,
+              40,
+              80,
+              85,
+              70,
+              55,
+              40,
+              80,
+              85,
+              70,
+              55,
+              40,
+              80,
+              85,
+              70,
+              55,
+              40,
+              80,
+              85,
+              70,
+              55,
+              40,
+              80,
+              85,
+              70,
+              55,
+              40,
+              80,
+              85,
+              70,
+              55,
+              40,
+              80,
+              85,
+              70,
+              55,
+              40,
+              80,
+              85,
+              70,
+              55,
+              40
+            ],
+            "base64": 78,
+            "base64CodeUnits": 85572,
+            "encodedBytes": 64085,
+            "largestEncodingBytes": 6957,
+            "rgbaBytes": 0,
+            "largestRgbaBytes": 0,
+            "imagesCreated": 14,
+            "imagesFreed": 14,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 14,
+            "peakHeap": 10829832,
+            "peakExternal": 8958030,
+            "peakArrayBuffers": 2504480,
+            "retainedTemporaryObjects": 0,
+            "result": null,
+            "liveEncodedSlotBytesUpperBound": null
+          },
+          {
+            "reason": "fast-path",
+            "png": 0,
+            "jpeg": 0,
+            "qualities": [],
+            "base64": 1,
+            "base64CodeUnits": 46300,
+            "encodedBytes": 0,
+            "largestEncodingBytes": 0,
+            "rgbaBytes": 0,
+            "largestRgbaBytes": 0,
+            "imagesCreated": 1,
+            "imagesFreed": 1,
+            "liveImages": 0,
+            "peakImages": 1,
+            "zeroedPointers": 1,
+            "peakHeap": 0,
+            "peakExternal": 0,
+            "peakArrayBuffers": 0,
+            "retainedTemporaryObjects": 0,
+            "result": {
+              "mimeType": "image/png",
+              "width": 128,
+              "height": 96,
+              "base64CodeUnits": 46300
+            },
+            "liveEncodedSlotBytesUpperBound": null
+          }
+        ],
+        "profiles": [
+          {
+            "size": 256,
+            "p50Ms": 4.3311999999999955,
+            "p95Ms": 4.77849999999998,
+            "cpuUsPerImage": 4875,
+            "sampledBytesPerImage": 60698,
+            "topSites": [
+              [
+                "toString@node:buffer:975",
+                418976
+              ],
+              [
+                "resizeImageInProcess@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/.pi150-t10-baseline.ts:59",
+                12912
+              ],
+              [
+                "slice@:0",
+                11824
+              ],
+              [
+                "post@node:inspector:115",
+                11784
+              ],
+              [
+                "Uint8Array@:0",
+                8632
+              ],
+              [
+                "subarray@:0",
+                6448
+              ],
+              [
+                "loadPhoton@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/photon.ts:116",
+                3240
+              ],
+              [
+                "next@:0",
+                3120
+              ]
+            ],
+            "before": {
+              "rss": 68419584,
+              "heapTotal": 13893632,
+              "heapUsed": 10365840,
+              "external": 6667540,
+              "arrayBuffers": 281985
+            },
+            "after": {
+              "rss": 69054464,
+              "heapTotal": 13893632,
+              "heapUsed": 10494400,
+              "external": 6735551,
+              "arrayBuffers": 282001
+            }
+          },
+          {
+            "size": 512,
+            "p50Ms": 17.370600000000024,
+            "p95Ms": 17.765100000000075,
+            "cpuUsPerImage": 18562.5,
+            "sampledBytesPerImage": 194314,
+            "topSites": [
+              [
+                "toString@node:buffer:975",
+                1498344
+              ],
+              [
+                "resizeImageInProcess@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/.pi150-t10-baseline.ts:59",
+                11280
+              ],
+              [
+                "slice@:0",
+                8648
+              ],
+              [
+                "subarray@:0",
+                5408
+              ],
+              [
+                "Uint8Array@:0",
+                5320
+              ],
+              [
+                "encodeCandidate@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/.pi150-t10-baseline.ts:37",
+                4224
+              ],
+              [
+                "js-to-wasm:ii:ii@wasm://wasm/photon_rs.wasm-0072d88a:1",
+                4224
+              ],
+              [
+                "split@:0",
+                3136
+              ]
+            ],
+            "before": {
+              "rss": 74432512,
+              "heapTotal": 13893632,
+              "heapUsed": 10582664,
+              "external": 7146989,
+              "arrayBuffers": 693439
+            },
+            "after": {
+              "rss": 75730944,
+              "heapTotal": 13893632,
+              "heapUsed": 10584224,
+              "external": 7146989,
+              "arrayBuffers": 693439
+            }
+          },
+          {
+            "size": 1024,
+            "p50Ms": 71.91170000000011,
+            "p95Ms": 75.64419999999996,
+            "cpuUsPerImage": 71250,
+            "sampledBytesPerImage": 730342,
+            "topSites": [
+              [
+                "toString@node:buffer:975",
+                5788944
+              ],
+              [
+                "Uint8Array@:0",
+                12824
+              ],
+              [
+                "slice@:0",
+                10696
+              ],
+              [
+                "resizeImageInProcess@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/.pi150-t10-baseline.ts:59",
+                9976
+              ],
+              [
+                "subarray@:0",
+                4264
+              ],
+              [
+                "Set@:0",
+                2200
+              ],
+              [
+                "register@:0",
+                2184
+              ],
+              [
+                "tryEncodings@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/.pi150-t10-baseline.ts:108",
+                2112
+              ]
+            ],
+            "before": {
+              "rss": 94478336,
+              "heapTotal": 15466496,
+              "heapUsed": 10609224,
+              "external": 8793622,
+              "arrayBuffers": 2340072
+            },
+            "after": {
+              "rss": 94470144,
+              "heapTotal": 15466496,
+              "heapUsed": 10610048,
+              "external": 8793622,
+              "arrayBuffers": 2340072
+            }
+          }
+        ],
+        "notes": "V8 sampling excludes most WASM/native buffers; encoded/RGBA byte counters are exact JS-returned lengths. WASM capacity may remain reserved after free. Peak memory is sampled at encodes, not a process-wide absolute peak. Inputs and returned base64 remain caller-owned during GC checks."
+      },
+      "candidate": {
+        "node": "v26.13.0",
+        "platform": "win32",
+        "modulePath": "D:\\RMProjects\\Pi\\packages\\coding-agent\\src\\utils\\image-resize-core.ts",
+        "sourceSha256": "dabfbf2e939799e616315679b54cad21b899865f7783a0406e863cd01aa3ec54",
+        "optimized": true,
+        "warmup": 3,
+        "timingIterations": 16,
+        "profileIterations": 8,
+        "samplingInterval": 1024,
+        "counters": [
+          {
+            "kind": "photo",
+            "size": 256,
+            "png": 1,
+            "jpeg": 1,
+            "qualities": [
+              80
+            ],
+            "base64": 1,
+            "base64CodeUnits": 3912,
+            "encodedBytes": 29675,
+            "largestEncodingBytes": 26742,
+            "rgbaBytes": 49152,
+            "largestRgbaBytes": 49152,
+            "imagesCreated": 2,
+            "imagesFreed": 2,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 2,
+            "peakHeap": 11859704,
+            "peakExternal": 8962447,
+            "peakArrayBuffers": 2576871,
+            "retainedTemporaryObjects": 0,
+            "result": {
+              "mimeType": "image/jpeg",
+              "width": 128,
+              "height": 96,
+              "base64CodeUnits": 3912
+            },
+            "liveEncodedSlotBytesUpperBound": 53484
+          },
+          {
+            "kind": "photo",
+            "size": 512,
+            "png": 1,
+            "jpeg": 1,
+            "qualities": [
+              80
+            ],
+            "base64": 1,
+            "base64CodeUnits": 12224,
+            "encodedBytes": 113421,
+            "largestEncodingBytes": 104255,
+            "rgbaBytes": 196608,
+            "largestRgbaBytes": 196608,
+            "imagesCreated": 2,
+            "imagesFreed": 2,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 2,
+            "peakHeap": 11233424,
+            "peakExternal": 8381372,
+            "peakArrayBuffers": 1927822,
+            "retainedTemporaryObjects": 0,
+            "result": {
+              "mimeType": "image/jpeg",
+              "width": 256,
+              "height": 192,
+              "base64CodeUnits": 12224
+            },
+            "liveEncodedSlotBytesUpperBound": 208510
+          },
+          {
+            "kind": "photo",
+            "size": 1024,
+            "png": 1,
+            "jpeg": 1,
+            "qualities": [
+              80
+            ],
+            "base64": 1,
+            "base64CodeUnits": 44376,
+            "encodedBytes": 447790,
+            "largestEncodingBytes": 414508,
+            "rgbaBytes": 786432,
+            "largestRgbaBytes": 786432,
+            "imagesCreated": 2,
+            "imagesFreed": 2,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 2,
+            "peakHeap": 11418712,
+            "peakExternal": 13722932,
+            "peakArrayBuffers": 7269382,
+            "retainedTemporaryObjects": 0,
+            "result": {
+              "mimeType": "image/jpeg",
+              "width": 512,
+              "height": 384,
+              "base64CodeUnits": 44376
+            },
+            "liveEncodedSlotBytesUpperBound": 829016
+          },
+          {
+            "kind": "transparent",
+            "size": 512,
+            "png": 1,
+            "jpeg": 0,
+            "qualities": [],
+            "base64": 1,
+            "base64CodeUnits": 139664,
+            "encodedBytes": 104748,
+            "largestEncodingBytes": 104748,
+            "rgbaBytes": 196608,
+            "largestRgbaBytes": 196608,
+            "imagesCreated": 2,
+            "imagesFreed": 2,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 2,
+            "peakHeap": 11544304,
+            "peakExternal": 10431251,
+            "peakArrayBuffers": 3977701,
+            "retainedTemporaryObjects": 0,
+            "result": {
+              "mimeType": "image/png",
+              "width": 256,
+              "height": 192,
+              "base64CodeUnits": 139664
+            },
+            "liveEncodedSlotBytesUpperBound": 209496
+          },
+          {
+            "kind": "text",
+            "size": 512,
+            "png": 1,
+            "jpeg": 1,
+            "qualities": [
+              80
+            ],
+            "base64": 1,
+            "base64CodeUnits": 40244,
+            "encodedBytes": 145150,
+            "largestEncodingBytes": 114969,
+            "rgbaBytes": 196608,
+            "largestRgbaBytes": 196608,
+            "imagesCreated": 2,
+            "imagesFreed": 2,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 2,
+            "peakHeap": 10792816,
+            "peakExternal": 10494536,
+            "peakArrayBuffers": 4040986,
+            "retainedTemporaryObjects": 0,
+            "result": {
+              "mimeType": "image/jpeg",
+              "width": 256,
+              "height": 192,
+              "base64CodeUnits": 40244
+            },
+            "liveEncodedSlotBytesUpperBound": 229938
+          }
+        ],
+        "lifecycle": [
+          {
+            "reason": "png",
+            "png": 1,
+            "jpeg": 0,
+            "qualities": [],
+            "base64": 0,
+            "base64CodeUnits": 0,
+            "encodedBytes": 0,
+            "largestEncodingBytes": 0,
+            "rgbaBytes": 12288,
+            "largestRgbaBytes": 12288,
+            "imagesCreated": 2,
+            "imagesFreed": 2,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 2,
+            "peakHeap": 12405208,
+            "peakExternal": 8912668,
+            "peakArrayBuffers": 2459118,
+            "retainedTemporaryObjects": 0,
+            "result": null,
+            "liveEncodedSlotBytesUpperBound": 0
+          },
+          {
+            "reason": "jpeg",
+            "png": 1,
+            "jpeg": 1,
+            "qualities": [
+              80
+            ],
+            "base64": 0,
+            "base64CodeUnits": 0,
+            "encodedBytes": 6957,
+            "largestEncodingBytes": 6957,
+            "rgbaBytes": 12288,
+            "largestRgbaBytes": 12288,
+            "imagesCreated": 2,
+            "imagesFreed": 2,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 2,
+            "peakHeap": 10617704,
+            "peakExternal": 8847590,
+            "peakArrayBuffers": 2394040,
+            "retainedTemporaryObjects": 0,
+            "result": null,
+            "liveEncodedSlotBytesUpperBound": 13914
+          },
+          {
+            "reason": "alpha",
+            "png": 0,
+            "jpeg": 0,
+            "qualities": [],
+            "base64": 0,
+            "base64CodeUnits": 0,
+            "encodedBytes": 0,
+            "largestEncodingBytes": 0,
+            "rgbaBytes": 0,
+            "largestRgbaBytes": 0,
+            "imagesCreated": 2,
+            "imagesFreed": 2,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 2,
+            "peakHeap": 0,
+            "peakExternal": 0,
+            "peakArrayBuffers": 0,
+            "retainedTemporaryObjects": 0,
+            "result": null,
+            "liveEncodedSlotBytesUpperBound": 0
+          },
+          {
+            "reason": "impossible-cap",
+            "png": 13,
+            "jpeg": 52,
+            "qualities": [
+              80,
+              70,
+              55,
+              40,
+              80,
+              70,
+              55,
+              40,
+              80,
+              70,
+              55,
+              40,
+              80,
+              70,
+              55,
+              40,
+              80,
+              70,
+              55,
+              40,
+              80,
+              70,
+              55,
+              40,
+              80,
+              70,
+              55,
+              40,
+              80,
+              70,
+              55,
+              40,
+              80,
+              70,
+              55,
+              40,
+              80,
+              70,
+              55,
+              40,
+              80,
+              70,
+              55,
+              40,
+              80,
+              70,
+              55,
+              40,
+              80,
+              70,
+              55,
+              40
+            ],
+            "base64": 0,
+            "base64CodeUnits": 0,
+            "encodedBytes": 53793,
+            "largestEncodingBytes": 6957,
+            "rgbaBytes": 27832,
+            "largestRgbaBytes": 12288,
+            "imagesCreated": 14,
+            "imagesFreed": 14,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 14,
+            "peakHeap": 11071128,
+            "peakExternal": 8909886,
+            "peakArrayBuffers": 2456336,
+            "retainedTemporaryObjects": 0,
+            "result": null,
+            "liveEncodedSlotBytesUpperBound": 13914
+          },
+          {
+            "reason": "fast-path",
+            "png": 0,
+            "jpeg": 0,
+            "qualities": [],
+            "base64": 1,
+            "base64CodeUnits": 46300,
+            "encodedBytes": 0,
+            "largestEncodingBytes": 0,
+            "rgbaBytes": 0,
+            "largestRgbaBytes": 0,
+            "imagesCreated": 1,
+            "imagesFreed": 1,
+            "liveImages": 0,
+            "peakImages": 1,
+            "zeroedPointers": 1,
+            "peakHeap": 0,
+            "peakExternal": 0,
+            "peakArrayBuffers": 0,
+            "retainedTemporaryObjects": 0,
+            "result": {
+              "mimeType": "image/png",
+              "width": 128,
+              "height": 96,
+              "base64CodeUnits": 46300
+            },
+            "liveEncodedSlotBytesUpperBound": 0
+          }
+        ],
+        "profiles": [
+          {
+            "size": 256,
+            "p50Ms": 2.806100000000015,
+            "p95Ms": 3.3100000000000023,
+            "cpuUsPerImage": 2937.5,
+            "sampledBytesPerImage": 9111,
+            "topSites": [
+              [
+                "toString@node:buffer:975",
+                32456
+              ],
+              [
+                "post@node:inspector:115",
+                11784
+              ],
+              [
+                "js-to-wasm:ii:i@wasm://wasm/photon_rs.wasm-0072d88a:1",
+                5040
+              ],
+              [
+                "resizeImageInProcess@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/image-resize-core.ts:81",
+                4432
+              ],
+              [
+                "js-to-wasm:i:ii@wasm://wasm/photon_rs.wasm-0072d88a:1",
+                4288
+              ],
+              [
+                "slice@:0",
+                3168
+              ],
+              [
+                "Uint8Array@:0",
+                2184
+              ],
+              [
+                "register@:0",
+                2184
+              ]
+            ],
+            "before": {
+              "rss": 68947968,
+              "heapTotal": 13893632,
+              "heapUsed": 10350264,
+              "external": 6667540,
+              "arrayBuffers": 281985
+            },
+            "after": {
+              "rss": 69177344,
+              "heapTotal": 14155776,
+              "heapUsed": 10485792,
+              "external": 6735551,
+              "arrayBuffers": 282001
+            }
+          },
+          {
+            "size": 512,
+            "p50Ms": 11.024100000000033,
+            "p95Ms": 11.890499999999975,
+            "cpuUsPerImage": 12687.5,
+            "sampledBytesPerImage": 15623,
+            "topSites": [
+              [
+                "toString@node:buffer:975",
+                98976
+              ],
+              [
+                "slice@:0",
+                6392
+              ],
+              [
+                "resizeImageInProcess@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/image-resize-core.ts:81",
+                5472
+              ],
+              [
+                "js-to-wasm:i:ii@wasm://wasm/photon_rs.wasm-0072d88a:1",
+                4400
+              ],
+              [
+                "subarray@:0",
+                3224
+              ],
+              [
+                "register@:0",
+                2160
+              ],
+              [
+                "create@:0",
+                2128
+              ],
+              [
+                "push@:0",
+                1176
+              ]
+            ],
+            "before": {
+              "rss": 74252288,
+              "heapTotal": 14417920,
+              "heapUsed": 10574848,
+              "external": 7146989,
+              "arrayBuffers": 693439
+            },
+            "after": {
+              "rss": 73883648,
+              "heapTotal": 14417920,
+              "heapUsed": 10575952,
+              "external": 7146989,
+              "arrayBuffers": 693439
+            }
+          },
+          {
+            "size": 1024,
+            "p50Ms": 48.037799999999834,
+            "p95Ms": 49.725400000000036,
+            "cpuUsPerImage": 48812.5,
+            "sampledBytesPerImage": 48211,
+            "topSites": [
+              [
+                "toString@node:buffer:975",
+                355136
+              ],
+              [
+                "get length@:0",
+                6824
+              ],
+              [
+                "resizeImageInProcess@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/image-resize-core.ts:81",
+                6608
+              ],
+              [
+                "subarray@:0",
+                5408
+              ],
+              [
+                "register@:0",
+                3264
+              ],
+              [
+                "create@:0",
+                2128
+              ],
+              [
+                "slice@:0",
+                2080
+              ],
+              [
+                "js-to-wasm:ii:ii@wasm://wasm/photon_rs.wasm-0072d88a:1",
+                1088
+              ]
+            ],
+            "before": {
+              "rss": 90836992,
+              "heapTotal": 15990784,
+              "heapUsed": 10598760,
+              "external": 8793622,
+              "arrayBuffers": 2340072
+            },
+            "after": {
+              "rss": 90849280,
+              "heapTotal": 15990784,
+              "heapUsed": 10599584,
+              "external": 8793622,
+              "arrayBuffers": 2340072
+            }
+          }
+        ],
+        "notes": "V8 sampling excludes most WASM/native buffers; encoded/RGBA byte counters are exact JS-returned lengths. WASM capacity may remain reserved after free. Peak memory is sampled at encodes, not a process-wide absolute peak. Inputs and returned base64 remain caller-owned during GC checks."
+      }
+    },
+    {
+      "run": 2,
+      "baseline": {
+        "node": "v26.13.0",
+        "platform": "win32",
+        "modulePath": "D:\\RMProjects\\Pi\\packages\\coding-agent\\src\\utils\\.pi150-t10-baseline.ts",
+        "sourceSha256": "b3523329397d47473b76c40e8802283a79d3a3e3f317f4da0124ccba5152edd8",
+        "optimized": false,
+        "warmup": 3,
+        "timingIterations": 16,
+        "profileIterations": 8,
+        "samplingInterval": 1024,
+        "counters": [
+          {
+            "kind": "photo",
+            "size": 256,
+            "png": 1,
+            "jpeg": 5,
+            "qualities": [
+              80,
+              85,
+              70,
+              55,
+              40
+            ],
+            "base64": 6,
+            "base64CodeUnits": 51868,
+            "encodedBytes": 38895,
+            "largestEncodingBytes": 26742,
+            "rgbaBytes": 0,
+            "largestRgbaBytes": 0,
+            "imagesCreated": 2,
+            "imagesFreed": 2,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 2,
+            "peakHeap": 11895448,
+            "peakExternal": 8922515,
+            "peakArrayBuffers": 2536939,
+            "retainedTemporaryObjects": 0,
+            "result": {
+              "mimeType": "image/png",
+              "width": 128,
+              "height": 96,
+              "base64CodeUnits": 35656
+            },
+            "liveEncodedSlotBytesUpperBound": null
+          },
+          {
+            "kind": "photo",
+            "size": 512,
+            "png": 1,
+            "jpeg": 5,
+            "qualities": [
+              80,
+              85,
+              70,
+              55,
+              40
+            ],
+            "base64": 6,
+            "base64CodeUnits": 186924,
+            "encodedBytes": 140184,
+            "largestEncodingBytes": 104255,
+            "rgbaBytes": 0,
+            "largestRgbaBytes": 0,
+            "imagesCreated": 2,
+            "imagesFreed": 2,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 2,
+            "peakHeap": 11524136,
+            "peakExternal": 8381382,
+            "peakArrayBuffers": 1927832,
+            "retainedTemporaryObjects": 0,
+            "result": {
+              "mimeType": "image/png",
+              "width": 256,
+              "height": 192,
+              "base64CodeUnits": 139008
+            },
+            "liveEncodedSlotBytesUpperBound": null
+          },
+          {
+            "kind": "photo",
+            "size": 1024,
+            "png": 1,
+            "jpeg": 5,
+            "qualities": [
+              80,
+              85,
+              70,
+              55,
+              40
+            ],
+            "base64": 6,
+            "base64CodeUnits": 722988,
+            "encodedBytes": 542235,
+            "largestEncodingBytes": 414508,
+            "rgbaBytes": 0,
+            "largestRgbaBytes": 0,
+            "imagesCreated": 2,
+            "imagesFreed": 2,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 2,
+            "peakHeap": 12283712,
+            "peakExternal": 13584902,
+            "peakArrayBuffers": 7131352,
+            "retainedTemporaryObjects": 0,
+            "result": {
+              "mimeType": "image/png",
+              "width": 512,
+              "height": 384,
+              "base64CodeUnits": 552680
+            },
+            "liveEncodedSlotBytesUpperBound": null
+          },
+          {
+            "kind": "transparent",
+            "size": 512,
+            "png": 1,
+            "jpeg": 5,
+            "qualities": [
+              80,
+              85,
+              70,
+              55,
+              40
+            ],
+            "base64": 6,
+            "base64CodeUnits": 187580,
+            "encodedBytes": 140677,
+            "largestEncodingBytes": 104748,
+            "rgbaBytes": 0,
+            "largestRgbaBytes": 0,
+            "imagesCreated": 2,
+            "imagesFreed": 2,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 2,
+            "peakHeap": 12222560,
+            "peakExternal": 10440920,
+            "peakArrayBuffers": 3987370,
+            "retainedTemporaryObjects": 0,
+            "result": {
+              "mimeType": "image/png",
+              "width": 256,
+              "height": 192,
+              "base64CodeUnits": 139664
+            },
+            "liveEncodedSlotBytesUpperBound": null
+          },
+          {
+            "kind": "text",
+            "size": 512,
+            "png": 1,
+            "jpeg": 5,
+            "qualities": [
+              80,
+              85,
+              70,
+              55,
+              40
+            ],
+            "base64": 6,
+            "base64CodeUnits": 325148,
+            "encodedBytes": 243855,
+            "largestEncodingBytes": 114969,
+            "rgbaBytes": 0,
+            "largestRgbaBytes": 0,
+            "imagesCreated": 2,
+            "imagesFreed": 2,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 2,
+            "peakHeap": 11117632,
+            "peakExternal": 10610729,
+            "peakArrayBuffers": 4157179,
+            "retainedTemporaryObjects": 0,
+            "result": {
+              "mimeType": "image/png",
+              "width": 256,
+              "height": 192,
+              "base64CodeUnits": 153292
+            },
+            "liveEncodedSlotBytesUpperBound": null
+          }
+        ],
+        "lifecycle": [
+          {
+            "reason": "png",
+            "png": 1,
+            "jpeg": 0,
+            "qualities": [],
+            "base64": 0,
+            "base64CodeUnits": 0,
+            "encodedBytes": 0,
+            "largestEncodingBytes": 0,
+            "rgbaBytes": 0,
+            "largestRgbaBytes": 0,
+            "imagesCreated": 2,
+            "imagesFreed": 2,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 2,
+            "peakHeap": 0,
+            "peakExternal": 0,
+            "peakArrayBuffers": 0,
+            "retainedTemporaryObjects": 0,
+            "result": null,
+            "liveEncodedSlotBytesUpperBound": null
+          },
+          {
+            "reason": "jpeg",
+            "png": 1,
+            "jpeg": 1,
+            "qualities": [
+              80
+            ],
+            "base64": 1,
+            "base64CodeUnits": 9276,
+            "encodedBytes": 6957,
+            "largestEncodingBytes": 6957,
+            "rgbaBytes": 0,
+            "largestRgbaBytes": 0,
+            "imagesCreated": 2,
+            "imagesFreed": 2,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 2,
+            "peakHeap": 10642464,
+            "peakExternal": 8835302,
+            "peakArrayBuffers": 2381752,
+            "retainedTemporaryObjects": 0,
+            "result": null,
+            "liveEncodedSlotBytesUpperBound": null
+          },
+          {
+            "reason": "impossible-cap",
+            "png": 13,
+            "jpeg": 65,
+            "qualities": [
+              80,
+              85,
+              70,
+              55,
+              40,
+              80,
+              85,
+              70,
+              55,
+              40,
+              80,
+              85,
+              70,
+              55,
+              40,
+              80,
+              85,
+              70,
+              55,
+              40,
+              80,
+              85,
+              70,
+              55,
+              40,
+              80,
+              85,
+              70,
+              55,
+              40,
+              80,
+              85,
+              70,
+              55,
+              40,
+              80,
+              85,
+              70,
+              55,
+              40,
+              80,
+              85,
+              70,
+              55,
+              40,
+              80,
+              85,
+              70,
+              55,
+              40,
+              80,
+              85,
+              70,
+              55,
+              40,
+              80,
+              85,
+              70,
+              55,
+              40,
+              80,
+              85,
+              70,
+              55,
+              40
+            ],
+            "base64": 78,
+            "base64CodeUnits": 85572,
+            "encodedBytes": 64085,
+            "largestEncodingBytes": 6957,
+            "rgbaBytes": 0,
+            "largestRgbaBytes": 0,
+            "imagesCreated": 14,
+            "imagesFreed": 14,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 14,
+            "peakHeap": 10829672,
+            "peakExternal": 8958030,
+            "peakArrayBuffers": 2504480,
+            "retainedTemporaryObjects": 0,
+            "result": null,
+            "liveEncodedSlotBytesUpperBound": null
+          },
+          {
+            "reason": "fast-path",
+            "png": 0,
+            "jpeg": 0,
+            "qualities": [],
+            "base64": 1,
+            "base64CodeUnits": 46300,
+            "encodedBytes": 0,
+            "largestEncodingBytes": 0,
+            "rgbaBytes": 0,
+            "largestRgbaBytes": 0,
+            "imagesCreated": 1,
+            "imagesFreed": 1,
+            "liveImages": 0,
+            "peakImages": 1,
+            "zeroedPointers": 1,
+            "peakHeap": 0,
+            "peakExternal": 0,
+            "peakArrayBuffers": 0,
+            "retainedTemporaryObjects": 0,
+            "result": {
+              "mimeType": "image/png",
+              "width": 128,
+              "height": 96,
+              "base64CodeUnits": 46300
+            },
+            "liveEncodedSlotBytesUpperBound": null
+          }
+        ],
+        "profiles": [
+          {
+            "size": 256,
+            "p50Ms": 4.268000000000001,
+            "p95Ms": 4.474500000000006,
+            "cpuUsPerImage": 3875,
+            "sampledBytesPerImage": 60758,
+            "topSites": [
+              [
+                "toString@node:buffer:975",
+                421488
+              ],
+              [
+                "slice@:0",
+                13992
+              ],
+              [
+                "post@node:inspector:115",
+                11784
+              ],
+              [
+                "Uint8Array@:0",
+                6448
+              ],
+              [
+                "resizeImageInProcess@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/.pi150-t10-baseline.ts:59",
+                5528
+              ],
+              [
+                "subarray@:0",
+                5408
+              ],
+              [
+                "createUnsafeAlignedBuffer@node:internal/buffer:1132",
+                3264
+              ],
+              [
+                "Set@:0",
+                2200
+              ]
+            ],
+            "before": {
+              "rss": 68702208,
+              "heapTotal": 13893632,
+              "heapUsed": 10365840,
+              "external": 6667540,
+              "arrayBuffers": 281985
+            },
+            "after": {
+              "rss": 68857856,
+              "heapTotal": 13893632,
+              "heapUsed": 10494400,
+              "external": 6735551,
+              "arrayBuffers": 282001
+            }
+          },
+          {
+            "size": 512,
+            "p50Ms": 17.557900000000018,
+            "p95Ms": 18.775099999999952,
+            "cpuUsPerImage": 17562.5,
+            "sampledBytesPerImage": 195200,
+            "topSites": [
+              [
+                "toString@node:buffer:975",
+                1498344
+              ],
+              [
+                "slice@:0",
+                13952
+              ],
+              [
+                "Uint8Array@:0",
+                10728
+              ],
+              [
+                "next@:0",
+                6280
+              ],
+              [
+                "subarray@:0",
+                5304
+              ],
+              [
+                "resizeImageInProcess@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/.pi150-t10-baseline.ts:59",
+                4520
+              ],
+              [
+                "push@:0",
+                3360
+              ],
+              [
+                "loadPhoton@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/photon.ts:116",
+                3224
+              ]
+            ],
+            "before": {
+              "rss": 73977856,
+              "heapTotal": 13893632,
+              "heapUsed": 10582632,
+              "external": 7146989,
+              "arrayBuffers": 693439
+            },
+            "after": {
+              "rss": 76226560,
+              "heapTotal": 13893632,
+              "heapUsed": 10584192,
+              "external": 7146989,
+              "arrayBuffers": 693439
+            }
+          },
+          {
+            "size": 1024,
+            "p50Ms": 72.2645,
+            "p95Ms": 75.50960000000009,
+            "cpuUsPerImage": 71312.5,
+            "sampledBytesPerImage": 728450,
+            "topSites": [
+              [
+                "toString@node:buffer:975",
+                5787888
+              ],
+              [
+                "Uint8Array@:0",
+                7520
+              ],
+              [
+                "resizeImageInProcess@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/.pi150-t10-baseline.ts:59",
+                6592
+              ],
+              [
+                "slice@:0",
+                5304
+              ],
+              [
+                "js-to-wasm:ii:ii@wasm://wasm/photon_rs.wasm-0072d88a:1",
+                4224
+              ],
+              [
+                "Set@:0",
+                3256
+              ],
+              [
+                "subarray@:0",
+                3224
+              ],
+              [
+                "register@:0",
+                2120
+              ]
+            ],
+            "before": {
+              "rss": 94490624,
+              "heapTotal": 15466496,
+              "heapUsed": 10609128,
+              "external": 8793622,
+              "arrayBuffers": 2340072
+            },
+            "after": {
+              "rss": 94441472,
+              "heapTotal": 15466496,
+              "heapUsed": 10609952,
+              "external": 8793622,
+              "arrayBuffers": 2340072
+            }
+          }
+        ],
+        "notes": "V8 sampling excludes most WASM/native buffers; encoded/RGBA byte counters are exact JS-returned lengths. WASM capacity may remain reserved after free. Peak memory is sampled at encodes, not a process-wide absolute peak. Inputs and returned base64 remain caller-owned during GC checks."
+      },
+      "candidate": {
+        "node": "v26.13.0",
+        "platform": "win32",
+        "modulePath": "D:\\RMProjects\\Pi\\packages\\coding-agent\\src\\utils\\image-resize-core.ts",
+        "sourceSha256": "dabfbf2e939799e616315679b54cad21b899865f7783a0406e863cd01aa3ec54",
+        "optimized": true,
+        "warmup": 3,
+        "timingIterations": 16,
+        "profileIterations": 8,
+        "samplingInterval": 1024,
+        "counters": [
+          {
+            "kind": "photo",
+            "size": 256,
+            "png": 1,
+            "jpeg": 1,
+            "qualities": [
+              80
+            ],
+            "base64": 1,
+            "base64CodeUnits": 3912,
+            "encodedBytes": 29675,
+            "largestEncodingBytes": 26742,
+            "rgbaBytes": 49152,
+            "largestRgbaBytes": 49152,
+            "imagesCreated": 2,
+            "imagesFreed": 2,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 2,
+            "peakHeap": 11859424,
+            "peakExternal": 8962447,
+            "peakArrayBuffers": 2576871,
+            "retainedTemporaryObjects": 0,
+            "result": {
+              "mimeType": "image/jpeg",
+              "width": 128,
+              "height": 96,
+              "base64CodeUnits": 3912
+            },
+            "liveEncodedSlotBytesUpperBound": 53484
+          },
+          {
+            "kind": "photo",
+            "size": 512,
+            "png": 1,
+            "jpeg": 1,
+            "qualities": [
+              80
+            ],
+            "base64": 1,
+            "base64CodeUnits": 12224,
+            "encodedBytes": 113421,
+            "largestEncodingBytes": 104255,
+            "rgbaBytes": 196608,
+            "largestRgbaBytes": 196608,
+            "imagesCreated": 2,
+            "imagesFreed": 2,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 2,
+            "peakHeap": 11212184,
+            "peakExternal": 8381372,
+            "peakArrayBuffers": 1927822,
+            "retainedTemporaryObjects": 0,
+            "result": {
+              "mimeType": "image/jpeg",
+              "width": 256,
+              "height": 192,
+              "base64CodeUnits": 12224
+            },
+            "liveEncodedSlotBytesUpperBound": 208510
+          },
+          {
+            "kind": "photo",
+            "size": 1024,
+            "png": 1,
+            "jpeg": 1,
+            "qualities": [
+              80
+            ],
+            "base64": 1,
+            "base64CodeUnits": 44376,
+            "encodedBytes": 447790,
+            "largestEncodingBytes": 414508,
+            "rgbaBytes": 786432,
+            "largestRgbaBytes": 786432,
+            "imagesCreated": 2,
+            "imagesFreed": 2,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 2,
+            "peakHeap": 11411872,
+            "peakExternal": 13722932,
+            "peakArrayBuffers": 7269382,
+            "retainedTemporaryObjects": 0,
+            "result": {
+              "mimeType": "image/jpeg",
+              "width": 512,
+              "height": 384,
+              "base64CodeUnits": 44376
+            },
+            "liveEncodedSlotBytesUpperBound": 829016
+          },
+          {
+            "kind": "transparent",
+            "size": 512,
+            "png": 1,
+            "jpeg": 0,
+            "qualities": [],
+            "base64": 1,
+            "base64CodeUnits": 139664,
+            "encodedBytes": 104748,
+            "largestEncodingBytes": 104748,
+            "rgbaBytes": 196608,
+            "largestRgbaBytes": 196608,
+            "imagesCreated": 2,
+            "imagesFreed": 2,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 2,
+            "peakHeap": 11503304,
+            "peakExternal": 10431251,
+            "peakArrayBuffers": 3977701,
+            "retainedTemporaryObjects": 0,
+            "result": {
+              "mimeType": "image/png",
+              "width": 256,
+              "height": 192,
+              "base64CodeUnits": 139664
+            },
+            "liveEncodedSlotBytesUpperBound": 209496
+          },
+          {
+            "kind": "text",
+            "size": 512,
+            "png": 1,
+            "jpeg": 1,
+            "qualities": [
+              80
+            ],
+            "base64": 1,
+            "base64CodeUnits": 40244,
+            "encodedBytes": 145150,
+            "largestEncodingBytes": 114969,
+            "rgbaBytes": 196608,
+            "largestRgbaBytes": 196608,
+            "imagesCreated": 2,
+            "imagesFreed": 2,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 2,
+            "peakHeap": 10793504,
+            "peakExternal": 10494536,
+            "peakArrayBuffers": 4040986,
+            "retainedTemporaryObjects": 0,
+            "result": {
+              "mimeType": "image/jpeg",
+              "width": 256,
+              "height": 192,
+              "base64CodeUnits": 40244
+            },
+            "liveEncodedSlotBytesUpperBound": 229938
+          }
+        ],
+        "lifecycle": [
+          {
+            "reason": "png",
+            "png": 1,
+            "jpeg": 0,
+            "qualities": [],
+            "base64": 0,
+            "base64CodeUnits": 0,
+            "encodedBytes": 0,
+            "largestEncodingBytes": 0,
+            "rgbaBytes": 12288,
+            "largestRgbaBytes": 12288,
+            "imagesCreated": 2,
+            "imagesFreed": 2,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 2,
+            "peakHeap": 12437160,
+            "peakExternal": 8912668,
+            "peakArrayBuffers": 2459118,
+            "retainedTemporaryObjects": 0,
+            "result": null,
+            "liveEncodedSlotBytesUpperBound": 0
+          },
+          {
+            "reason": "jpeg",
+            "png": 1,
+            "jpeg": 1,
+            "qualities": [
+              80
+            ],
+            "base64": 0,
+            "base64CodeUnits": 0,
+            "encodedBytes": 6957,
+            "largestEncodingBytes": 6957,
+            "rgbaBytes": 12288,
+            "largestRgbaBytes": 12288,
+            "imagesCreated": 2,
+            "imagesFreed": 2,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 2,
+            "peakHeap": 10617848,
+            "peakExternal": 8847590,
+            "peakArrayBuffers": 2394040,
+            "retainedTemporaryObjects": 0,
+            "result": null,
+            "liveEncodedSlotBytesUpperBound": 13914
+          },
+          {
+            "reason": "alpha",
+            "png": 0,
+            "jpeg": 0,
+            "qualities": [],
+            "base64": 0,
+            "base64CodeUnits": 0,
+            "encodedBytes": 0,
+            "largestEncodingBytes": 0,
+            "rgbaBytes": 0,
+            "largestRgbaBytes": 0,
+            "imagesCreated": 2,
+            "imagesFreed": 2,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 2,
+            "peakHeap": 0,
+            "peakExternal": 0,
+            "peakArrayBuffers": 0,
+            "retainedTemporaryObjects": 0,
+            "result": null,
+            "liveEncodedSlotBytesUpperBound": 0
+          },
+          {
+            "reason": "impossible-cap",
+            "png": 13,
+            "jpeg": 52,
+            "qualities": [
+              80,
+              70,
+              55,
+              40,
+              80,
+              70,
+              55,
+              40,
+              80,
+              70,
+              55,
+              40,
+              80,
+              70,
+              55,
+              40,
+              80,
+              70,
+              55,
+              40,
+              80,
+              70,
+              55,
+              40,
+              80,
+              70,
+              55,
+              40,
+              80,
+              70,
+              55,
+              40,
+              80,
+              70,
+              55,
+              40,
+              80,
+              70,
+              55,
+              40,
+              80,
+              70,
+              55,
+              40,
+              80,
+              70,
+              55,
+              40,
+              80,
+              70,
+              55,
+              40
+            ],
+            "base64": 0,
+            "base64CodeUnits": 0,
+            "encodedBytes": 53793,
+            "largestEncodingBytes": 6957,
+            "rgbaBytes": 27832,
+            "largestRgbaBytes": 12288,
+            "imagesCreated": 14,
+            "imagesFreed": 14,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 14,
+            "peakHeap": 10702832,
+            "peakExternal": 8909886,
+            "peakArrayBuffers": 2456336,
+            "retainedTemporaryObjects": 0,
+            "result": null,
+            "liveEncodedSlotBytesUpperBound": 13914
+          },
+          {
+            "reason": "fast-path",
+            "png": 0,
+            "jpeg": 0,
+            "qualities": [],
+            "base64": 1,
+            "base64CodeUnits": 46300,
+            "encodedBytes": 0,
+            "largestEncodingBytes": 0,
+            "rgbaBytes": 0,
+            "largestRgbaBytes": 0,
+            "imagesCreated": 1,
+            "imagesFreed": 1,
+            "liveImages": 0,
+            "peakImages": 1,
+            "zeroedPointers": 1,
+            "peakHeap": 0,
+            "peakExternal": 0,
+            "peakArrayBuffers": 0,
+            "retainedTemporaryObjects": 0,
+            "result": {
+              "mimeType": "image/png",
+              "width": 128,
+              "height": 96,
+              "base64CodeUnits": 46300
+            },
+            "liveEncodedSlotBytesUpperBound": 0
+          }
+        ],
+        "profiles": [
+          {
+            "size": 256,
+            "p50Ms": 2.934200000000004,
+            "p95Ms": 3.436099999999996,
+            "cpuUsPerImage": 4875,
+            "sampledBytesPerImage": 9203,
+            "topSites": [
+              [
+                "toString@node:buffer:975",
+                32480
+              ],
+              [
+                "post@node:inspector:115",
+                11784
+              ],
+              [
+                "js-to-wasm:ii:i@wasm://wasm/photon_rs.wasm-0072d88a:1",
+                6264
+              ],
+              [
+                "slice@:0",
+                5336
+              ],
+              [
+                "resizeImageInProcess@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/image-resize-core.ts:81",
+                4472
+              ],
+              [
+                "register@:0",
+                2160
+              ],
+              [
+                "subarray@:0",
+                2080
+              ],
+              [
+                "selectEncoding@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/image-resize-core.ts:46",
+                1416
+              ]
+            ],
+            "before": {
+              "rss": 68272128,
+              "heapTotal": 13893632,
+              "heapUsed": 10350264,
+              "external": 6667540,
+              "arrayBuffers": 281985
+            },
+            "after": {
+              "rss": 68775936,
+              "heapTotal": 14155776,
+              "heapUsed": 10485792,
+              "external": 6735551,
+              "arrayBuffers": 282001
+            }
+          },
+          {
+            "size": 512,
+            "p50Ms": 10.983000000000004,
+            "p95Ms": 11.575299999999999,
+            "cpuUsPerImage": 10750,
+            "sampledBytesPerImage": 14945,
+            "topSites": [
+              [
+                "toString@node:buffer:975",
+                97920
+              ],
+              [
+                "js-to-wasm:i:ii@wasm://wasm/photon_rs.wasm-0072d88a:1",
+                6520
+              ],
+              [
+                "resizeImageInProcess@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/image-resize-core.ts:81",
+                5552
+              ],
+              [
+                "slice@:0",
+                3120
+              ],
+              [
+                "subarray@:0",
+                2184
+              ],
+              [
+                "register@:0",
+                2088
+              ],
+              [
+                "Promise@:0",
+                1120
+              ],
+              [
+                "loadPhoton@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/photon.ts:116",
+                1056
+              ]
+            ],
+            "before": {
+              "rss": 73519104,
+              "heapTotal": 14155776,
+              "heapUsed": 10574696,
+              "external": 7146989,
+              "arrayBuffers": 693439
+            },
+            "after": {
+              "rss": 73699328,
+              "heapTotal": 14155776,
+              "heapUsed": 10575800,
+              "external": 7146989,
+              "arrayBuffers": 693439
+            }
+          },
+          {
+            "size": 1024,
+            "p50Ms": 47.64670000000001,
+            "p95Ms": 51.10539999999992,
+            "cpuUsPerImage": 46875,
+            "sampledBytesPerImage": 47624,
+            "topSites": [
+              [
+                "toString@node:buffer:975",
+                355136
+              ],
+              [
+                "resizeImageInProcess@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/image-resize-core.ts:81",
+                6896
+              ],
+              [
+                "js-to-wasm:i:ii@wasm://wasm/photon_rs.wasm-0072d88a:1",
+                4328
+              ],
+              [
+                "slice@:0",
+                3136
+              ],
+              [
+                "create@:0",
+                2128
+              ],
+              [
+                "subarray@:0",
+                2080
+              ],
+              [
+                "get length@:0",
+                1920
+              ],
+              [
+                "push@:0",
+                1176
+              ]
+            ],
+            "before": {
+              "rss": 90595328,
+              "heapTotal": 15728640,
+              "heapUsed": 10598824,
+              "external": 8793622,
+              "arrayBuffers": 2340072
+            },
+            "after": {
+              "rss": 90656768,
+              "heapTotal": 15728640,
+              "heapUsed": 10599648,
+              "external": 8793622,
+              "arrayBuffers": 2340072
+            }
+          }
+        ],
+        "notes": "V8 sampling excludes most WASM/native buffers; encoded/RGBA byte counters are exact JS-returned lengths. WASM capacity may remain reserved after free. Peak memory is sampled at encodes, not a process-wide absolute peak. Inputs and returned base64 remain caller-owned during GC checks."
+      }
+    },
+    {
+      "run": 3,
+      "baseline": {
+        "node": "v26.13.0",
+        "platform": "win32",
+        "modulePath": "D:\\RMProjects\\Pi\\packages\\coding-agent\\src\\utils\\.pi150-t10-baseline.ts",
+        "sourceSha256": "b3523329397d47473b76c40e8802283a79d3a3e3f317f4da0124ccba5152edd8",
+        "optimized": false,
+        "warmup": 3,
+        "timingIterations": 16,
+        "profileIterations": 8,
+        "samplingInterval": 1024,
+        "counters": [
+          {
+            "kind": "photo",
+            "size": 256,
+            "png": 1,
+            "jpeg": 5,
+            "qualities": [
+              80,
+              85,
+              70,
+              55,
+              40
+            ],
+            "base64": 6,
+            "base64CodeUnits": 51868,
+            "encodedBytes": 38895,
+            "largestEncodingBytes": 26742,
+            "rgbaBytes": 0,
+            "largestRgbaBytes": 0,
+            "imagesCreated": 2,
+            "imagesFreed": 2,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 2,
+            "peakHeap": 12141464,
+            "peakExternal": 8922515,
+            "peakArrayBuffers": 2536939,
+            "retainedTemporaryObjects": 0,
+            "result": {
+              "mimeType": "image/png",
+              "width": 128,
+              "height": 96,
+              "base64CodeUnits": 35656
+            },
+            "liveEncodedSlotBytesUpperBound": null
+          },
+          {
+            "kind": "photo",
+            "size": 512,
+            "png": 1,
+            "jpeg": 5,
+            "qualities": [
+              80,
+              85,
+              70,
+              55,
+              40
+            ],
+            "base64": 6,
+            "base64CodeUnits": 186924,
+            "encodedBytes": 140184,
+            "largestEncodingBytes": 104255,
+            "rgbaBytes": 0,
+            "largestRgbaBytes": 0,
+            "imagesCreated": 2,
+            "imagesFreed": 2,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 2,
+            "peakHeap": 11428800,
+            "peakExternal": 8381382,
+            "peakArrayBuffers": 1927832,
+            "retainedTemporaryObjects": 0,
+            "result": {
+              "mimeType": "image/png",
+              "width": 256,
+              "height": 192,
+              "base64CodeUnits": 139008
+            },
+            "liveEncodedSlotBytesUpperBound": null
+          },
+          {
+            "kind": "photo",
+            "size": 1024,
+            "png": 1,
+            "jpeg": 5,
+            "qualities": [
+              80,
+              85,
+              70,
+              55,
+              40
+            ],
+            "base64": 6,
+            "base64CodeUnits": 722988,
+            "encodedBytes": 542235,
+            "largestEncodingBytes": 414508,
+            "rgbaBytes": 0,
+            "largestRgbaBytes": 0,
+            "imagesCreated": 2,
+            "imagesFreed": 2,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 2,
+            "peakHeap": 11977608,
+            "peakExternal": 13584902,
+            "peakArrayBuffers": 7131352,
+            "retainedTemporaryObjects": 0,
+            "result": {
+              "mimeType": "image/png",
+              "width": 512,
+              "height": 384,
+              "base64CodeUnits": 552680
+            },
+            "liveEncodedSlotBytesUpperBound": null
+          },
+          {
+            "kind": "transparent",
+            "size": 512,
+            "png": 1,
+            "jpeg": 5,
+            "qualities": [
+              80,
+              85,
+              70,
+              55,
+              40
+            ],
+            "base64": 6,
+            "base64CodeUnits": 187580,
+            "encodedBytes": 140677,
+            "largestEncodingBytes": 104748,
+            "rgbaBytes": 0,
+            "largestRgbaBytes": 0,
+            "imagesCreated": 2,
+            "imagesFreed": 2,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 2,
+            "peakHeap": 12218592,
+            "peakExternal": 10440920,
+            "peakArrayBuffers": 3987370,
+            "retainedTemporaryObjects": 0,
+            "result": {
+              "mimeType": "image/png",
+              "width": 256,
+              "height": 192,
+              "base64CodeUnits": 139664
+            },
+            "liveEncodedSlotBytesUpperBound": null
+          },
+          {
+            "kind": "text",
+            "size": 512,
+            "png": 1,
+            "jpeg": 5,
+            "qualities": [
+              80,
+              85,
+              70,
+              55,
+              40
+            ],
+            "base64": 6,
+            "base64CodeUnits": 325148,
+            "encodedBytes": 243855,
+            "largestEncodingBytes": 114969,
+            "rgbaBytes": 0,
+            "largestRgbaBytes": 0,
+            "imagesCreated": 2,
+            "imagesFreed": 2,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 2,
+            "peakHeap": 11125464,
+            "peakExternal": 10610729,
+            "peakArrayBuffers": 4157179,
+            "retainedTemporaryObjects": 0,
+            "result": {
+              "mimeType": "image/png",
+              "width": 256,
+              "height": 192,
+              "base64CodeUnits": 153292
+            },
+            "liveEncodedSlotBytesUpperBound": null
+          }
+        ],
+        "lifecycle": [
+          {
+            "reason": "png",
+            "png": 1,
+            "jpeg": 0,
+            "qualities": [],
+            "base64": 0,
+            "base64CodeUnits": 0,
+            "encodedBytes": 0,
+            "largestEncodingBytes": 0,
+            "rgbaBytes": 0,
+            "largestRgbaBytes": 0,
+            "imagesCreated": 2,
+            "imagesFreed": 2,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 2,
+            "peakHeap": 0,
+            "peakExternal": 0,
+            "peakArrayBuffers": 0,
+            "retainedTemporaryObjects": 0,
+            "result": null,
+            "liveEncodedSlotBytesUpperBound": null
+          },
+          {
+            "reason": "jpeg",
+            "png": 1,
+            "jpeg": 1,
+            "qualities": [
+              80
+            ],
+            "base64": 1,
+            "base64CodeUnits": 9276,
+            "encodedBytes": 6957,
+            "largestEncodingBytes": 6957,
+            "rgbaBytes": 0,
+            "largestRgbaBytes": 0,
+            "imagesCreated": 2,
+            "imagesFreed": 2,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 2,
+            "peakHeap": 10642536,
+            "peakExternal": 8835302,
+            "peakArrayBuffers": 2381752,
+            "retainedTemporaryObjects": 0,
+            "result": null,
+            "liveEncodedSlotBytesUpperBound": null
+          },
+          {
+            "reason": "impossible-cap",
+            "png": 13,
+            "jpeg": 65,
+            "qualities": [
+              80,
+              85,
+              70,
+              55,
+              40,
+              80,
+              85,
+              70,
+              55,
+              40,
+              80,
+              85,
+              70,
+              55,
+              40,
+              80,
+              85,
+              70,
+              55,
+              40,
+              80,
+              85,
+              70,
+              55,
+              40,
+              80,
+              85,
+              70,
+              55,
+              40,
+              80,
+              85,
+              70,
+              55,
+              40,
+              80,
+              85,
+              70,
+              55,
+              40,
+              80,
+              85,
+              70,
+              55,
+              40,
+              80,
+              85,
+              70,
+              55,
+              40,
+              80,
+              85,
+              70,
+              55,
+              40,
+              80,
+              85,
+              70,
+              55,
+              40,
+              80,
+              85,
+              70,
+              55,
+              40
+            ],
+            "base64": 78,
+            "base64CodeUnits": 85572,
+            "encodedBytes": 64085,
+            "largestEncodingBytes": 6957,
+            "rgbaBytes": 0,
+            "largestRgbaBytes": 0,
+            "imagesCreated": 14,
+            "imagesFreed": 14,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 14,
+            "peakHeap": 10829744,
+            "peakExternal": 8958030,
+            "peakArrayBuffers": 2504480,
+            "retainedTemporaryObjects": 0,
+            "result": null,
+            "liveEncodedSlotBytesUpperBound": null
+          },
+          {
+            "reason": "fast-path",
+            "png": 0,
+            "jpeg": 0,
+            "qualities": [],
+            "base64": 1,
+            "base64CodeUnits": 46300,
+            "encodedBytes": 0,
+            "largestEncodingBytes": 0,
+            "rgbaBytes": 0,
+            "largestRgbaBytes": 0,
+            "imagesCreated": 1,
+            "imagesFreed": 1,
+            "liveImages": 0,
+            "peakImages": 1,
+            "zeroedPointers": 1,
+            "peakHeap": 0,
+            "peakExternal": 0,
+            "peakArrayBuffers": 0,
+            "retainedTemporaryObjects": 0,
+            "result": {
+              "mimeType": "image/png",
+              "width": 128,
+              "height": 96,
+              "base64CodeUnits": 46300
+            },
+            "liveEncodedSlotBytesUpperBound": null
+          }
+        ],
+        "profiles": [
+          {
+            "size": 256,
+            "p50Ms": 4.2675000000000125,
+            "p95Ms": 4.634399999999999,
+            "cpuUsPerImage": 4875,
+            "sampledBytesPerImage": 59529,
+            "topSites": [
+              [
+                "toString@node:buffer:975",
+                417232
+              ],
+              [
+                "slice@:0",
+                10728
+              ],
+              [
+                "resizeImageInProcess@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/.pi150-t10-baseline.ts:59",
+                9824
+              ],
+              [
+                "Uint8Array@:0",
+                9672
+              ],
+              [
+                "subarray@:0",
+                6448
+              ],
+              [
+                "register@:0",
+                5312
+              ],
+              [
+                "js-to-wasm:ii:ii@wasm://wasm/photon_rs.wasm-0072d88a:1",
+                4224
+              ],
+              [
+                "encodeCandidate@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/.pi150-t10-baseline.ts:37",
+                3200
+              ]
+            ],
+            "before": {
+              "rss": 68464640,
+              "heapTotal": 13893632,
+              "heapUsed": 10365984,
+              "external": 6667540,
+              "arrayBuffers": 281985
+            },
+            "after": {
+              "rss": 69074944,
+              "heapTotal": 14155776,
+              "heapUsed": 10494544,
+              "external": 6735551,
+              "arrayBuffers": 282001
+            }
+          },
+          {
+            "size": 512,
+            "p50Ms": 16.85730000000001,
+            "p95Ms": 18.225199999999973,
+            "cpuUsPerImage": 17562.5,
+            "sampledBytesPerImage": 193921,
+            "topSites": [
+              [
+                "toString@node:buffer:975",
+                1497312
+              ],
+              [
+                "post@node:inspector:115",
+                10024
+              ],
+              [
+                "resizeImageInProcess@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/.pi150-t10-baseline.ts:59",
+                8776
+              ],
+              [
+                "slice@:0",
+                6504
+              ],
+              [
+                "encodeCandidate@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/.pi150-t10-baseline.ts:37",
+                5312
+              ],
+              [
+                "Uint8Array@:0",
+                4264
+              ],
+              [
+                "subarray@:0",
+                3224
+              ],
+              [
+                "create@:0",
+                2128
+              ]
+            ],
+            "before": {
+              "rss": 74309632,
+              "heapTotal": 14417920,
+              "heapUsed": 10573032,
+              "external": 7146989,
+              "arrayBuffers": 693439
+            },
+            "after": {
+              "rss": 75866112,
+              "heapTotal": 14417920,
+              "heapUsed": 10574592,
+              "external": 7146989,
+              "arrayBuffers": 693439
+            }
+          },
+          {
+            "size": 1024,
+            "p50Ms": 72.41529999999989,
+            "p95Ms": 76.85100000000011,
+            "cpuUsPerImage": 70375,
+            "sampledBytesPerImage": 730201,
+            "topSites": [
+              [
+                "toString@node:buffer:975",
+                5784768
+              ],
+              [
+                "Uint8Array@:0",
+                12864
+              ],
+              [
+                "slice@:0",
+                10672
+              ],
+              [
+                "resizeImageInProcess@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/.pi150-t10-baseline.ts:59",
+                8808
+              ],
+              [
+                "subarray@:0",
+                3224
+              ],
+              [
+                "encodeCandidate@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/.pi150-t10-baseline.ts:37",
+                3200
+              ],
+              [
+                "js-to-wasm:ii:ii@wasm://wasm/photon_rs.wasm-0072d88a:1",
+                3200
+              ],
+              [
+                "Set@:0",
+                2200
+              ]
+            ],
+            "before": {
+              "rss": 94208000,
+              "heapTotal": 15466496,
+              "heapUsed": 10609384,
+              "external": 8793622,
+              "arrayBuffers": 2340072
+            },
+            "after": {
+              "rss": 94240768,
+              "heapTotal": 15466496,
+              "heapUsed": 10610208,
+              "external": 8793622,
+              "arrayBuffers": 2340072
+            }
+          }
+        ],
+        "notes": "V8 sampling excludes most WASM/native buffers; encoded/RGBA byte counters are exact JS-returned lengths. WASM capacity may remain reserved after free. Peak memory is sampled at encodes, not a process-wide absolute peak. Inputs and returned base64 remain caller-owned during GC checks."
+      },
+      "candidate": {
+        "node": "v26.13.0",
+        "platform": "win32",
+        "modulePath": "D:\\RMProjects\\Pi\\packages\\coding-agent\\src\\utils\\image-resize-core.ts",
+        "sourceSha256": "dabfbf2e939799e616315679b54cad21b899865f7783a0406e863cd01aa3ec54",
+        "optimized": true,
+        "warmup": 3,
+        "timingIterations": 16,
+        "profileIterations": 8,
+        "samplingInterval": 1024,
+        "counters": [
+          {
+            "kind": "photo",
+            "size": 256,
+            "png": 1,
+            "jpeg": 1,
+            "qualities": [
+              80
+            ],
+            "base64": 1,
+            "base64CodeUnits": 3912,
+            "encodedBytes": 29675,
+            "largestEncodingBytes": 26742,
+            "rgbaBytes": 49152,
+            "largestRgbaBytes": 49152,
+            "imagesCreated": 2,
+            "imagesFreed": 2,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 2,
+            "peakHeap": 11975136,
+            "peakExternal": 8962447,
+            "peakArrayBuffers": 2576871,
+            "retainedTemporaryObjects": 0,
+            "result": {
+              "mimeType": "image/jpeg",
+              "width": 128,
+              "height": 96,
+              "base64CodeUnits": 3912
+            },
+            "liveEncodedSlotBytesUpperBound": 53484
+          },
+          {
+            "kind": "photo",
+            "size": 512,
+            "png": 1,
+            "jpeg": 1,
+            "qualities": [
+              80
+            ],
+            "base64": 1,
+            "base64CodeUnits": 12224,
+            "encodedBytes": 113421,
+            "largestEncodingBytes": 104255,
+            "rgbaBytes": 196608,
+            "largestRgbaBytes": 196608,
+            "imagesCreated": 2,
+            "imagesFreed": 2,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 2,
+            "peakHeap": 11170720,
+            "peakExternal": 8381372,
+            "peakArrayBuffers": 1927822,
+            "retainedTemporaryObjects": 0,
+            "result": {
+              "mimeType": "image/jpeg",
+              "width": 256,
+              "height": 192,
+              "base64CodeUnits": 12224
+            },
+            "liveEncodedSlotBytesUpperBound": 208510
+          },
+          {
+            "kind": "photo",
+            "size": 1024,
+            "png": 1,
+            "jpeg": 1,
+            "qualities": [
+              80
+            ],
+            "base64": 1,
+            "base64CodeUnits": 44376,
+            "encodedBytes": 447790,
+            "largestEncodingBytes": 414508,
+            "rgbaBytes": 786432,
+            "largestRgbaBytes": 786432,
+            "imagesCreated": 2,
+            "imagesFreed": 2,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 2,
+            "peakHeap": 11037816,
+            "peakExternal": 13722932,
+            "peakArrayBuffers": 7269382,
+            "retainedTemporaryObjects": 0,
+            "result": {
+              "mimeType": "image/jpeg",
+              "width": 512,
+              "height": 384,
+              "base64CodeUnits": 44376
+            },
+            "liveEncodedSlotBytesUpperBound": 829016
+          },
+          {
+            "kind": "transparent",
+            "size": 512,
+            "png": 1,
+            "jpeg": 0,
+            "qualities": [],
+            "base64": 1,
+            "base64CodeUnits": 139664,
+            "encodedBytes": 104748,
+            "largestEncodingBytes": 104748,
+            "rgbaBytes": 196608,
+            "largestRgbaBytes": 196608,
+            "imagesCreated": 2,
+            "imagesFreed": 2,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 2,
+            "peakHeap": 11537672,
+            "peakExternal": 10431251,
+            "peakArrayBuffers": 3977701,
+            "retainedTemporaryObjects": 0,
+            "result": {
+              "mimeType": "image/png",
+              "width": 256,
+              "height": 192,
+              "base64CodeUnits": 139664
+            },
+            "liveEncodedSlotBytesUpperBound": 209496
+          },
+          {
+            "kind": "text",
+            "size": 512,
+            "png": 1,
+            "jpeg": 1,
+            "qualities": [
+              80
+            ],
+            "base64": 1,
+            "base64CodeUnits": 40244,
+            "encodedBytes": 145150,
+            "largestEncodingBytes": 114969,
+            "rgbaBytes": 196608,
+            "largestRgbaBytes": 196608,
+            "imagesCreated": 2,
+            "imagesFreed": 2,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 2,
+            "peakHeap": 10801216,
+            "peakExternal": 10494536,
+            "peakArrayBuffers": 4040986,
+            "retainedTemporaryObjects": 0,
+            "result": {
+              "mimeType": "image/jpeg",
+              "width": 256,
+              "height": 192,
+              "base64CodeUnits": 40244
+            },
+            "liveEncodedSlotBytesUpperBound": 229938
+          }
+        ],
+        "lifecycle": [
+          {
+            "reason": "png",
+            "png": 1,
+            "jpeg": 0,
+            "qualities": [],
+            "base64": 0,
+            "base64CodeUnits": 0,
+            "encodedBytes": 0,
+            "largestEncodingBytes": 0,
+            "rgbaBytes": 12288,
+            "largestRgbaBytes": 12288,
+            "imagesCreated": 2,
+            "imagesFreed": 2,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 2,
+            "peakHeap": 12405368,
+            "peakExternal": 8912668,
+            "peakArrayBuffers": 2459118,
+            "retainedTemporaryObjects": 0,
+            "result": null,
+            "liveEncodedSlotBytesUpperBound": 0
+          },
+          {
+            "reason": "jpeg",
+            "png": 1,
+            "jpeg": 1,
+            "qualities": [
+              80
+            ],
+            "base64": 0,
+            "base64CodeUnits": 0,
+            "encodedBytes": 6957,
+            "largestEncodingBytes": 6957,
+            "rgbaBytes": 12288,
+            "largestRgbaBytes": 12288,
+            "imagesCreated": 2,
+            "imagesFreed": 2,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 2,
+            "peakHeap": 10617864,
+            "peakExternal": 8847590,
+            "peakArrayBuffers": 2394040,
+            "retainedTemporaryObjects": 0,
+            "result": null,
+            "liveEncodedSlotBytesUpperBound": 13914
+          },
+          {
+            "reason": "alpha",
+            "png": 0,
+            "jpeg": 0,
+            "qualities": [],
+            "base64": 0,
+            "base64CodeUnits": 0,
+            "encodedBytes": 0,
+            "largestEncodingBytes": 0,
+            "rgbaBytes": 0,
+            "largestRgbaBytes": 0,
+            "imagesCreated": 2,
+            "imagesFreed": 2,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 2,
+            "peakHeap": 0,
+            "peakExternal": 0,
+            "peakArrayBuffers": 0,
+            "retainedTemporaryObjects": 0,
+            "result": null,
+            "liveEncodedSlotBytesUpperBound": 0
+          },
+          {
+            "reason": "impossible-cap",
+            "png": 13,
+            "jpeg": 52,
+            "qualities": [
+              80,
+              70,
+              55,
+              40,
+              80,
+              70,
+              55,
+              40,
+              80,
+              70,
+              55,
+              40,
+              80,
+              70,
+              55,
+              40,
+              80,
+              70,
+              55,
+              40,
+              80,
+              70,
+              55,
+              40,
+              80,
+              70,
+              55,
+              40,
+              80,
+              70,
+              55,
+              40,
+              80,
+              70,
+              55,
+              40,
+              80,
+              70,
+              55,
+              40,
+              80,
+              70,
+              55,
+              40,
+              80,
+              70,
+              55,
+              40,
+              80,
+              70,
+              55,
+              40
+            ],
+            "base64": 0,
+            "base64CodeUnits": 0,
+            "encodedBytes": 53793,
+            "largestEncodingBytes": 6957,
+            "rgbaBytes": 27832,
+            "largestRgbaBytes": 12288,
+            "imagesCreated": 14,
+            "imagesFreed": 14,
+            "liveImages": 0,
+            "peakImages": 2,
+            "zeroedPointers": 14,
+            "peakHeap": 10917312,
+            "peakExternal": 8909886,
+            "peakArrayBuffers": 2456336,
+            "retainedTemporaryObjects": 0,
+            "result": null,
+            "liveEncodedSlotBytesUpperBound": 13914
+          },
+          {
+            "reason": "fast-path",
+            "png": 0,
+            "jpeg": 0,
+            "qualities": [],
+            "base64": 1,
+            "base64CodeUnits": 46300,
+            "encodedBytes": 0,
+            "largestEncodingBytes": 0,
+            "rgbaBytes": 0,
+            "largestRgbaBytes": 0,
+            "imagesCreated": 1,
+            "imagesFreed": 1,
+            "liveImages": 0,
+            "peakImages": 1,
+            "zeroedPointers": 1,
+            "peakHeap": 0,
+            "peakExternal": 0,
+            "peakArrayBuffers": 0,
+            "retainedTemporaryObjects": 0,
+            "result": {
+              "mimeType": "image/png",
+              "width": 128,
+              "height": 96,
+              "base64CodeUnits": 46300
+            },
+            "liveEncodedSlotBytesUpperBound": 0
+          }
+        ],
+        "profiles": [
+          {
+            "size": 256,
+            "p50Ms": 2.8615999999999957,
+            "p95Ms": 3.2013000000000034,
+            "cpuUsPerImage": 2937.5,
+            "sampledBytesPerImage": 9428,
+            "topSites": [
+              [
+                "toString@node:buffer:975",
+                31424
+              ],
+              [
+                "post@node:inspector:115",
+                11784
+              ],
+              [
+                "resizeImageInProcess@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/image-resize-core.ts:81",
+                7864
+              ],
+              [
+                "js-to-wasm:ii:i@wasm://wasm/photon_rs.wasm-0072d88a:1",
+                6320
+              ],
+              [
+                "register@:0",
+                3168
+              ],
+              [
+                "slice@:0",
+                3152
+              ],
+              [
+                "subarray@:0",
+                3120
+              ],
+              [
+                "(anonymous)@node:inspector:66",
+                2208
+              ]
+            ],
+            "before": {
+              "rss": 68157440,
+              "heapTotal": 14155776,
+              "heapUsed": 10350376,
+              "external": 6667540,
+              "arrayBuffers": 281985
+            },
+            "after": {
+              "rss": 68751360,
+              "heapTotal": 14417920,
+              "heapUsed": 10485904,
+              "external": 6735551,
+              "arrayBuffers": 282001
+            }
+          },
+          {
+            "size": 512,
+            "p50Ms": 11.195400000000006,
+            "p95Ms": 11.785499999999985,
+            "cpuUsPerImage": 11687.5,
+            "sampledBytesPerImage": 15246,
+            "topSites": [
+              [
+                "toString@node:buffer:975",
+                98976
+              ],
+              [
+                "resizeImageInProcess@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/image-resize-core.ts:81",
+                5656
+              ],
+              [
+                "slice@:0",
+                4280
+              ],
+              [
+                "js-to-wasm:i:ii@wasm://wasm/photon_rs.wasm-0072d88a:1",
+                3568
+              ],
+              [
+                "loadPhoton@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/photon.ts:116",
+                2096
+              ],
+              [
+                "subarray@:0",
+                2080
+              ],
+              [
+                "js-to-wasm:ii:ii@wasm://wasm/photon_rs.wasm-0072d88a:1",
+                1088
+              ],
+              [
+                "register@:0",
+                1080
+              ]
+            ],
+            "before": {
+              "rss": 74137600,
+              "heapTotal": 14417920,
+              "heapUsed": 10565584,
+              "external": 7146989,
+              "arrayBuffers": 693439
+            },
+            "after": {
+              "rss": 74047488,
+              "heapTotal": 14417920,
+              "heapUsed": 10566688,
+              "external": 7146989,
+              "arrayBuffers": 693439
+            }
+          },
+          {
+            "size": 1024,
+            "p50Ms": 48.36310000000003,
+            "p95Ms": 50.96100000000001,
+            "cpuUsPerImage": 48875,
+            "sampledBytesPerImage": 48270,
+            "topSites": [
+              [
+                "toString@node:buffer:975",
+                355136
+              ],
+              [
+                "resizeImageInProcess@file:///D:/RMProjects/Pi/packages/coding-agent/src/utils/image-resize-core.ts:81",
+                7672
+              ],
+              [
+                "slice@:0",
+                6304
+              ],
+              [
+                "get length@:0",
+                4288
+              ],
+              [
+                "Uint8Array@:0",
+                2184
+              ],
+              [
+                "js-to-wasm:i:ii@wasm://wasm/photon_rs.wasm-0072d88a:1",
+                1088
+              ],
+              [
+                "register@:0",
+                1080
+              ],
+              [
+                "delete@:0",
+                1064
+              ]
+            ],
+            "before": {
+              "rss": 90570752,
+              "heapTotal": 15990784,
+              "heapUsed": 10589816,
+              "external": 8793622,
+              "arrayBuffers": 2340072
+            },
+            "after": {
+              "rss": 90480640,
+              "heapTotal": 15990784,
+              "heapUsed": 10590640,
+              "external": 8793622,
+              "arrayBuffers": 2340072
+            }
+          }
+        ],
+        "notes": "V8 sampling excludes most WASM/native buffers; encoded/RGBA byte counters are exact JS-returned lengths. WASM capacity may remain reserved after free. Peak memory is sampled at encodes, not a process-wide absolute peak. Inputs and returned base64 remain caller-owned during GC checks."
+      }
+    }
+  ]
+}

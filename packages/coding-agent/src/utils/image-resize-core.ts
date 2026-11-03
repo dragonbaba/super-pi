@@ -1,5 +1,5 @@
 import { applyExifOrientation } from "./exif-orientation.ts";
-import { loadPhoton } from "./photon.ts";
+import { loadPhoton, type PhotonImageType } from "./photon.ts";
 
 export interface ImageResizeOptions {
 	maxWidth?: number; // Default: 2000
@@ -29,18 +29,40 @@ const DEFAULT_OPTIONS: Required<ImageResizeOptions> = {
 };
 
 interface EncodedCandidate {
-	data: string;
-	encodedSize: number;
+	bytes: Uint8Array;
 	mimeType: string;
 }
 
-function encodeCandidate(buffer: Uint8Array, mimeType: string): EncodedCandidate {
-	const data = Buffer.from(buffer).toString("base64");
-	return {
-		data,
-		encodedSize: Buffer.byteLength(data, "utf-8"),
-		mimeType,
-	};
+const JPEG_QUALITY_STEPS = [85, 70, 55, 40];
+
+function hasTransparency(image: PhotonImageType): boolean {
+	const pixels = image.get_raw_pixels();
+	for (let i = 3; i < pixels.length; i += 4) {
+		if (pixels[i] !== 255) return true;
+	}
+	return false;
+}
+
+function selectEncoding(image: PhotonImageType, maxBytes: number, jpegQuality: number): EncodedCandidate | null {
+	const transparent = hasTransparency(image);
+	let bytes = image.get_bytes();
+	let mimeType = "image/png";
+	if (!transparent) {
+		const jpeg = image.get_bytes_jpeg(jpegQuality);
+		if (jpeg.length < bytes.length) {
+			bytes = jpeg;
+			mimeType = "image/jpeg";
+		}
+	}
+	if (Math.ceil(bytes.length / 3) * 4 < maxBytes) return { bytes, mimeType };
+	if (transparent) return null;
+
+	for (const quality of JPEG_QUALITY_STEPS) {
+		if (quality >= jpegQuality) continue;
+		bytes = image.get_bytes_jpeg(quality);
+		if (Math.ceil(bytes.length / 3) * 4 < maxBytes) return { bytes, mimeType: "image/jpeg" };
+	}
+	return null;
 }
 
 /**
@@ -105,30 +127,16 @@ export async function resizeImageInProcess(
 			targetHeight = opts.maxHeight;
 		}
 
-		function tryEncodings(width: number, height: number, jpegQualities: number[]): EncodedCandidate[] {
-			const resized = photon!.resize(image!, width, height, photon!.SamplingFilter.Lanczos3);
-
-			try {
-				const candidates: EncodedCandidate[] = [encodeCandidate(resized.get_bytes(), "image/png")];
-				for (const quality of jpegQualities) {
-					candidates.push(encodeCandidate(resized.get_bytes_jpeg(quality), "image/jpeg"));
-				}
-				return candidates;
-			} finally {
-				resized.free();
-			}
-		}
-
-		const qualitySteps = Array.from(new Set([opts.jpegQuality, 85, 70, 55, 40]));
 		let currentWidth = targetWidth;
 		let currentHeight = targetHeight;
 
 		while (true) {
-			const candidates = tryEncodings(currentWidth, currentHeight, qualitySteps);
-			for (const candidate of candidates) {
-				if (candidate.encodedSize < opts.maxBytes) {
+			const resized = photon.resize(image, currentWidth, currentHeight, photon.SamplingFilter.Lanczos3);
+			try {
+				const candidate = selectEncoding(resized, opts.maxBytes, opts.jpegQuality);
+				if (candidate) {
 					return {
-						data: candidate.data,
+						data: Buffer.from(candidate.bytes.buffer, candidate.bytes.byteOffset, candidate.bytes.byteLength).toString("base64"),
 						mimeType: candidate.mimeType,
 						originalWidth,
 						originalHeight,
@@ -137,6 +145,8 @@ export async function resizeImageInProcess(
 						wasResized: true,
 					};
 				}
+			} finally {
+				resized.free();
 			}
 
 			if (currentWidth === 1 && currentHeight === 1) {
