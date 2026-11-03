@@ -25,7 +25,7 @@ Node 26.13 的完整测试和隔离运行均在 `openai-compaction-lifecycle.con
 
 ## 验证结果
 
-确定性回归先失败：实际摘要请求 transport 为 `undefined`，预期 `sse`。单字段修复后 `openai-compaction-lifecycle.contract.test.ts` 和 `stream-hot-paths.test.ts` 共 **78 pass / 0 fail / 0 skip**；原 manifest 用例约 2.7 秒完成，后续 WebSocket 断言正常。typecheck 与离线构建通过，完整测试和最终 SHA 的 CI 尚待结束。
+确定性回归先失败：实际摘要请求 transport 为 `undefined`，预期 `sse`。单字段修复后 `openai-compaction-lifecycle.contract.test.ts` 和 `stream-hot-paths.test.ts` 共 **78 pass / 0 fail / 0 skip**；原 manifest 用例约 2.7 秒完成，后续 WebSocket 断言正常。typecheck、离线构建及 Node 26.13 完整测试均通过；完整测试的 387 个执行单元全部退出 0。最终 SHA 的 CI 尚待结束。
 
 [性能证据](../evidence/sdk-configured-transport.json)保存同机 Node 26.13 基线/候选：100,000 updates、交付/快照各 1、pending key≤1 不变；Session message/tool 的 wrapper、inline closure、Promise tail/array、内置 listener Promise、rejection observer 均为 0，最终更新正确。采样分别为 message 0.62568→0.59680、tool 0.52008→0.69424 B/update；受控 GC 的实际差值全部保留，不用单次样本声称优化。stream p95 25.2881→26.8365 ms 是未改动事件夹具的波动，未新增对象池或改变门禁。
 

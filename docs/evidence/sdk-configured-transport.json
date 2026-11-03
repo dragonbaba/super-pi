@@ -277,7 +277,13 @@
     },
     "check": "passed",
     "buildOffline": "passed",
-    "fullSuite": "pending",
+    "fullSuite": {
+      "command": "npm test -- --keep-going",
+      "node": "26.13.0",
+      "units": 387,
+      "failedUnits": 0,
+      "exitCode": 0
+    },
     "ci": "pending"
   },
   "limits": [
