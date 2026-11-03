@@ -62,6 +62,7 @@
 ## 历史、来源和评估
 
 - [Pi 1.5.0 差异评估（2026-11-03）](upstream-pi-1.5.0-diff-assessment.md)：最新稳定版核对、当前缺口、已有等效实现和建议优先级。
+- [Pi 1.5.0 逐项实施方案](upstream-pi-1.5.0-implementation-plan.md)：先规划再实施，逐项根因、最小改动、性能门禁、不过度防御要求和验收映射。
 - [OpenCode v2 与 Claude Code 借鉴任务计划](opencode-v2-claude-code-task-plan.md)：后台通知与续跑复核、Codemode 实现及同机性能对照、分阶段任务、性能门禁、最小必要测试和 Codex 审查流程。
 - [Pi 1.1.0 复核与任务清单](upstream-pi-1.1.0-task-plan.md)：固定版本对照、已复现缺口、待验证项、实施顺序和性能验收要求。
 - [Pi 0.84.1 → 0.86.1 定向评估](policy-diagnostics-pi-0.84.1-0.86.1-assessment.md)：当前 Super Pi 与固定上游 tag 的差异记录，不是整体升级。
