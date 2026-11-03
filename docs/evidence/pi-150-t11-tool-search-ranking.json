@@ -1,0 +1,2519 @@
+{
+  "task": "T11",
+  "base": "336ea2bfb124bf1b26a92c69fb659f99fd894246",
+  "node": "v26.13.0",
+  "sources": [
+    {
+      "path": "packages/tool-classification/src/index.ts",
+      "sha256": "97b3a86fa2c07530cbf1970abc2056f5858442ad4dc37d2f388f2401453458d1"
+    },
+    {
+      "path": "scripts/bench/tool-search-ranking.ts",
+      "sha256": "0c97dfd11a31a15da14e273fbdd5194d44202e6c91159bb42379065d6b4522b4"
+    },
+    {
+      "path": "tests/tool-search-ranking.test.ts",
+      "sha256": "f797f28c3c91701feb011c76116be59d355d20192c2798a167dfc1203238fb47"
+    },
+    {
+      "path": "tests/tool-search-hot-paths.test.ts",
+      "sha256": "97261fb51efef5881571e3a35c775e9aed42460e303022b596b5faf96606fa00"
+    },
+    {
+      "path": "tests/helpers/tool-search-fixture.ts",
+      "sha256": "07f370f625046138c9e8cc0ba7bbb6a4b84d085d1b7d1776b6c8f2c04b756d9a"
+    }
+  ],
+  "tests": {
+    "tests": 5495,
+    "pass": 5397,
+    "fail": 0,
+    "cancelled": 0,
+    "skipped": 98,
+    "successfulUnits": 410
+  },
+  "targeted": 23,
+  "sdkRegression": 175,
+  "comparison": [
+    {
+      "size": 100,
+      "query": "export report archive",
+      "sampledBytesPerSearch": {
+        "baseline": 81597.5,
+        "candidate": 38415.25
+      },
+      "p95Ms": {
+        "baseline": 0.04810000000000514,
+        "candidate": 0.045199999999994134
+      },
+      "cpuUsPerSearch": {
+        "baseline": 45.8984375,
+        "candidate": 53.466796875
+      },
+      "retainedHeap": {
+        "baseline": 13354056,
+        "candidate": 13313176
+      }
+    },
+    {
+      "size": 100,
+      "query": "検索ファイル",
+      "sampledBytesPerSearch": {
+        "baseline": 70478.75,
+        "candidate": 29645.75
+      },
+      "p95Ms": {
+        "baseline": 0.031100000000037653,
+        "candidate": 0.04169999999999163
+      },
+      "cpuUsPerSearch": {
+        "baseline": 41.9921875,
+        "candidate": 45.8984375
+      },
+      "retainedHeap": {
+        "baseline": 13377296,
+        "candidate": 13340944
+      }
+    },
+    {
+      "size": 1000,
+      "query": "export report archive",
+      "sampledBytesPerSearch": {
+        "baseline": 787408,
+        "candidate": 350918.25
+      },
+      "p95Ms": {
+        "baseline": 0.4093000000000302,
+        "candidate": 0.43899999999985084
+      },
+      "cpuUsPerSearch": {
+        "baseline": 343.26171875,
+        "candidate": 377.685546875
+      },
+      "retainedHeap": {
+        "baseline": 13652800,
+        "candidate": 13621808
+      }
+    },
+    {
+      "size": 1000,
+      "query": "検索ファイル",
+      "sampledBytesPerSearch": {
+        "baseline": 703887.25,
+        "candidate": 268154.5
+      },
+      "p95Ms": {
+        "baseline": 0.32780000000002474,
+        "candidate": 0.4171999999998661
+      },
+      "cpuUsPerSearch": {
+        "baseline": 274.658203125,
+        "candidate": 343.26171875
+      },
+      "retainedHeap": {
+        "baseline": 13698320,
+        "candidate": 13696920
+      }
+    }
+  ],
+  "boundaries": {
+    "query": "One NFC-normalized query, deduplicated terms <= original 200-character schema bound; ICU words only for CJK fragments.",
+    "catalog": "One catalog snapshot per search; 2 normalizations/eligible item for non-category queries, zero per-term normalization. No concatenated full haystack.",
+    "allocations": "Existing async execute/result and activation map/filter/spread remain explicit command lifecycle allocations. New query Set/Array.from/ICU segment records die with the query; candidates <= eligible catalog size. No per-frame/event changes.",
+    "release": "Old catalog array and objects are collected while extension and result details remain alive, on normal activation/rejection/throw. Clear uses next catalog snapshot; no index/cache. Execute has no asynchronous suspension before matching/activation, no new abort owner.",
+    "pilot": "256-iteration pilot had zero CPU samples at Windows process.cpuUsage resolution; excluded from final comparisons and replaced by 4096 iterations. No object pool or performance fallback."
+  },
+  "runs": [
+    {
+      "run": 1,
+      "baseline": {
+        "node": "v26.13.0",
+        "platform": "win32",
+        "modulePath": "D:\\RMProjects\\Pi\\packages\\tool-classification\\src\\.pi150-t11-baseline.ts",
+        "optimized": false,
+        "sourceSha256": "8738f3016ab397ce374074400b70fd6ea883a797e5943d32db7e5810e90a0cfe",
+        "warmup": 10,
+        "timingIterations": 4096,
+        "profileIterations": 32,
+        "samplingInterval": 1024,
+        "counters": [
+          {
+            "size": 100,
+            "query": "export report archive",
+            "terms": [
+              "export",
+              "report",
+              "archive"
+            ],
+            "normalizations": 0,
+            "substringComparisons": 300,
+            "sortComparisons": 99,
+            "catalogReads": 1,
+            "activationCalls": 1,
+            "matches": [
+              {
+                "name": "0001_report_export",
+                "category": "other",
+                "score": 3
+              },
+              {
+                "name": "0002_report_export",
+                "category": "other",
+                "score": 3
+              },
+              {
+                "name": "0003_report_export",
+                "category": "other",
+                "score": 3
+              },
+              {
+                "name": "0004_report_export",
+                "category": "other",
+                "score": 3
+              },
+              {
+                "name": "0005_report_export",
+                "category": "other",
+                "score": 3
+              },
+              {
+                "name": "0006_report_export",
+                "category": "other",
+                "score": 3
+              }
+            ]
+          },
+          {
+            "size": 100,
+            "query": "検索ファイル",
+            "terms": [
+              "検索ファイル"
+            ],
+            "normalizations": 0,
+            "substringComparisons": 100,
+            "sortComparisons": 0,
+            "catalogReads": 1,
+            "activationCalls": 0,
+            "matches": []
+          },
+          {
+            "size": 1000,
+            "query": "export report archive",
+            "terms": [
+              "export",
+              "report",
+              "archive"
+            ],
+            "normalizations": 0,
+            "substringComparisons": 3000,
+            "sortComparisons": 999,
+            "catalogReads": 1,
+            "activationCalls": 1,
+            "matches": [
+              {
+                "name": "0001_report_export",
+                "category": "other",
+                "score": 3
+              },
+              {
+                "name": "0002_report_export",
+                "category": "other",
+                "score": 3
+              },
+              {
+                "name": "0003_report_export",
+                "category": "other",
+                "score": 3
+              },
+              {
+                "name": "0004_report_export",
+                "category": "other",
+                "score": 3
+              },
+              {
+                "name": "0005_report_export",
+                "category": "other",
+                "score": 3
+              },
+              {
+                "name": "0006_report_export",
+                "category": "other",
+                "score": 3
+              }
+            ]
+          },
+          {
+            "size": 1000,
+            "query": "検索ファイル",
+            "terms": [
+              "検索ファイル"
+            ],
+            "normalizations": 0,
+            "substringComparisons": 1000,
+            "sortComparisons": 0,
+            "catalogReads": 1,
+            "activationCalls": 0,
+            "matches": []
+          }
+        ],
+        "releases": [
+          {
+            "size": 100,
+            "mode": "normal",
+            "observedObjects": 101,
+            "retainedCatalogObjects": 0
+          },
+          {
+            "size": 100,
+            "mode": "rejected",
+            "observedObjects": 101,
+            "retainedCatalogObjects": 0
+          },
+          {
+            "size": 100,
+            "mode": "error",
+            "observedObjects": 101,
+            "retainedCatalogObjects": 0
+          },
+          {
+            "size": 1000,
+            "mode": "normal",
+            "observedObjects": 1001,
+            "retainedCatalogObjects": 0
+          },
+          {
+            "size": 1000,
+            "mode": "rejected",
+            "observedObjects": 1001,
+            "retainedCatalogObjects": 0
+          },
+          {
+            "size": 1000,
+            "mode": "error",
+            "observedObjects": 1001,
+            "retainedCatalogObjects": 0
+          }
+        ],
+        "profiles": [
+          {
+            "size": 100,
+            "query": "export report archive",
+            "p50Ms": 0.033299999999997,
+            "p95Ms": 0.04390000000000782,
+            "cpuUsPerSearch": 38.0859375,
+            "sampledBytesPerSearch": 81597.5,
+            "topSites": [
+              [
+                "execute@file:///D:/RMProjects/Pi/packages/tool-classification/src/.pi150-t11-baseline.ts:159",
+                2516416
+              ],
+              [
+                "sort@:0",
+                48632
+              ],
+              [
+                "Set@:0",
+                14656
+              ],
+              [
+                "join@:0",
+                9704
+              ],
+              [
+                "split@:0",
+                9616
+              ],
+              [
+                "run@file:///D:/RMProjects/Pi/scripts/bench/tool-search-ranking.ts:60",
+                7920
+              ],
+              [
+                "(JS)@:0",
+                4176
+              ],
+              [
+                "(root)@:0",
+                0
+              ]
+            ],
+            "before": {
+              "rss": 76079104,
+              "heapTotal": 23052288,
+              "heapUsed": 13129320,
+              "external": 6515875,
+              "arrayBuffers": 144063
+            },
+            "after": {
+              "rss": 77422592,
+              "heapTotal": 23576576,
+              "heapUsed": 13354056,
+              "external": 6583926,
+              "arrayBuffers": 144079
+            }
+          },
+          {
+            "size": 100,
+            "query": "検索ファイル",
+            "p50Ms": 0.026900000000011914,
+            "p95Ms": 0.03100000000000591,
+            "cpuUsPerSearch": 30.517578125,
+            "sampledBytesPerSearch": 70478.75,
+            "topSites": [
+              [
+                "execute@file:///D:/RMProjects/Pi/packages/tool-classification/src/.pi150-t11-baseline.ts:159",
+                2215944
+              ],
+              [
+                "run@file:///D:/RMProjects/Pi/scripts/bench/tool-search-ranking.ts:60",
+                17712
+              ],
+              [
+                "split@:0",
+                8584
+              ],
+              [
+                "Set@:0",
+                7800
+              ],
+              [
+                "measure@file:///D:/RMProjects/Pi/scripts/bench/tool-search-ranking.ts:58",
+                3168
+              ],
+              [
+                "(JS)@:0",
+                2112
+              ],
+              [
+                "(root)@:0",
+                0
+              ],
+              [
+                "(anonymous)@:0",
+                0
+              ]
+            ],
+            "before": {
+              "rss": 77848576,
+              "heapTotal": 23314432,
+              "heapUsed": 13285760,
+              "external": 6583926,
+              "arrayBuffers": 144079
+            },
+            "after": {
+              "rss": 78024704,
+              "heapTotal": 23576576,
+              "heapUsed": 13368264,
+              "external": 6583926,
+              "arrayBuffers": 144079
+            }
+          },
+          {
+            "size": 1000,
+            "query": "export report archive",
+            "p50Ms": 0.3304000000000542,
+            "p95Ms": 0.4093000000000302,
+            "cpuUsPerSearch": 347.16796875,
+            "sampledBytesPerSearch": 790897,
+            "topSites": [
+              [
+                "execute@file:///D:/RMProjects/Pi/packages/tool-classification/src/.pi150-t11-baseline.ts:159",
+                24970904
+              ],
+              [
+                "sort@:0",
+                283400
+              ],
+              [
+                "Set@:0",
+                21896
+              ],
+              [
+                "post@node:inspector:115",
+                10024
+              ],
+              [
+                "join@:0",
+                7528
+              ],
+              [
+                "split@:0",
+                5384
+              ],
+              [
+                "run@file:///D:/RMProjects/Pi/scripts/bench/tool-search-ranking.ts:60",
+                4304
+              ],
+              [
+                "(JS)@:0",
+                2112
+              ]
+            ],
+            "before": {
+              "rss": 77955072,
+              "heapTotal": 23576576,
+              "heapUsed": 13605224,
+              "external": 6583926,
+              "arrayBuffers": 144079
+            },
+            "after": {
+              "rss": 103751680,
+              "heapTotal": 48742400,
+              "heapUsed": 13643784,
+              "external": 6583926,
+              "arrayBuffers": 144079
+            }
+          },
+          {
+            "size": 1000,
+            "query": "検索ファイル",
+            "p50Ms": 0.2703999999998814,
+            "p95Ms": 0.32389999999986685,
+            "cpuUsPerSearch": 274.658203125,
+            "sampledBytesPerSearch": 703887.25,
+            "topSites": [
+              [
+                "execute@file:///D:/RMProjects/Pi/packages/tool-classification/src/.pi150-t11-baseline.ts:159",
+                22492696
+              ],
+              [
+                "run@file:///D:/RMProjects/Pi/scripts/bench/tool-search-ranking.ts:60",
+                10648
+              ],
+              [
+                "Set@:0",
+                10200
+              ],
+              [
+                "split@:0",
+                7560
+              ],
+              [
+                "push@:0",
+                1176
+              ],
+              [
+                "measure@file:///D:/RMProjects/Pi/scripts/bench/tool-search-ranking.ts:58",
+                1056
+              ],
+              [
+                "(JS)@:0",
+                1056
+              ],
+              [
+                "(root)@:0",
+                0
+              ]
+            ],
+            "before": {
+              "rss": 105463808,
+              "heapTotal": 48742400,
+              "heapUsed": 13653144,
+              "external": 6583926,
+              "arrayBuffers": 144079
+            },
+            "after": {
+              "rss": 106156032,
+              "heapTotal": 49266688,
+              "heapUsed": 13715392,
+              "external": 6583926,
+              "arrayBuffers": 144079
+            }
+          }
+        ],
+        "notes": "Explicit-search boundary only; no catalog index/cache or work on frame/event delivery. Substring comparisons and sort comparisons are counted separately. Caller-owned match names/details remain alive during catalog GC checks."
+      },
+      "candidate": {
+        "node": "v26.13.0",
+        "platform": "win32",
+        "modulePath": "D:\\RMProjects\\Pi\\packages\\tool-classification\\src\\index.ts",
+        "optimized": true,
+        "sourceSha256": "97b3a86fa2c07530cbf1970abc2056f5858442ad4dc37d2f388f2401453458d1",
+        "warmup": 10,
+        "timingIterations": 4096,
+        "profileIterations": 32,
+        "samplingInterval": 1024,
+        "counters": [
+          {
+            "size": 100,
+            "query": "export report archive",
+            "terms": [
+              "export",
+              "report",
+              "archive"
+            ],
+            "normalizations": 201,
+            "substringComparisons": 400,
+            "sortComparisons": 99,
+            "catalogReads": 1,
+            "activationCalls": 1,
+            "matches": [
+              {
+                "name": "0001_report_export",
+                "category": "other",
+                "score": 14
+              },
+              {
+                "name": "0002_report_export",
+                "category": "other",
+                "score": 14
+              },
+              {
+                "name": "0003_report_export",
+                "category": "other",
+                "score": 14
+              },
+              {
+                "name": "0004_report_export",
+                "category": "other",
+                "score": 14
+              },
+              {
+                "name": "0005_report_export",
+                "category": "other",
+                "score": 14
+              },
+              {
+                "name": "0006_report_export",
+                "category": "other",
+                "score": 14
+              }
+            ]
+          },
+          {
+            "size": 100,
+            "query": "検索ファイル",
+            "terms": [
+              "検索",
+              "ファイル"
+            ],
+            "normalizations": 201,
+            "substringComparisons": 600,
+            "sortComparisons": 0,
+            "catalogReads": 1,
+            "activationCalls": 0,
+            "matches": []
+          },
+          {
+            "size": 1000,
+            "query": "export report archive",
+            "terms": [
+              "export",
+              "report",
+              "archive"
+            ],
+            "normalizations": 2001,
+            "substringComparisons": 4000,
+            "sortComparisons": 999,
+            "catalogReads": 1,
+            "activationCalls": 1,
+            "matches": [
+              {
+                "name": "0001_report_export",
+                "category": "other",
+                "score": 14
+              },
+              {
+                "name": "0002_report_export",
+                "category": "other",
+                "score": 14
+              },
+              {
+                "name": "0003_report_export",
+                "category": "other",
+                "score": 14
+              },
+              {
+                "name": "0004_report_export",
+                "category": "other",
+                "score": 14
+              },
+              {
+                "name": "0005_report_export",
+                "category": "other",
+                "score": 14
+              },
+              {
+                "name": "0006_report_export",
+                "category": "other",
+                "score": 14
+              }
+            ]
+          },
+          {
+            "size": 1000,
+            "query": "検索ファイル",
+            "terms": [
+              "検索",
+              "ファイル"
+            ],
+            "normalizations": 2001,
+            "substringComparisons": 6000,
+            "sortComparisons": 0,
+            "catalogReads": 1,
+            "activationCalls": 0,
+            "matches": []
+          }
+        ],
+        "releases": [
+          {
+            "size": 100,
+            "mode": "normal",
+            "observedObjects": 101,
+            "retainedCatalogObjects": 0
+          },
+          {
+            "size": 100,
+            "mode": "rejected",
+            "observedObjects": 101,
+            "retainedCatalogObjects": 0
+          },
+          {
+            "size": 100,
+            "mode": "error",
+            "observedObjects": 101,
+            "retainedCatalogObjects": 0
+          },
+          {
+            "size": 1000,
+            "mode": "normal",
+            "observedObjects": 1001,
+            "retainedCatalogObjects": 0
+          },
+          {
+            "size": 1000,
+            "mode": "rejected",
+            "observedObjects": 1001,
+            "retainedCatalogObjects": 0
+          },
+          {
+            "size": 1000,
+            "mode": "error",
+            "observedObjects": 1001,
+            "retainedCatalogObjects": 0
+          }
+        ],
+        "profiles": [
+          {
+            "size": 100,
+            "query": "export report archive",
+            "p50Ms": 0.038000000000010914,
+            "p95Ms": 0.045199999999994134,
+            "cpuUsPerSearch": 53.466796875,
+            "sampledBytesPerSearch": 38415.25,
+            "topSites": [
+              [
+                "execute@file:///D:/RMProjects/Pi/packages/tool-classification/src/index.ts:169",
+                1114864
+              ],
+              [
+                "sort@:0",
+                49160
+              ],
+              [
+                "Set@:0",
+                18656
+              ],
+              [
+                "post@node:inspector:115",
+                11064
+              ],
+              [
+                "run@file:///D:/RMProjects/Pi/scripts/bench/tool-search-ranking.ts:60",
+                11056
+              ],
+              [
+                "join@:0",
+                6432
+              ],
+              [
+                "split@:0",
+                5392
+              ],
+              [
+                "next@:0",
+                5240
+              ]
+            ],
+            "before": {
+              "rss": 76963840,
+              "heapTotal": 22528000,
+              "heapUsed": 13080360,
+              "external": 6515875,
+              "arrayBuffers": 144063
+            },
+            "after": {
+              "rss": 77299712,
+              "heapTotal": 23576576,
+              "heapUsed": 13313176,
+              "external": 6583926,
+              "arrayBuffers": 144079
+            }
+          },
+          {
+            "size": 100,
+            "query": "検索ファイル",
+            "p50Ms": 0.035799999999994725,
+            "p95Ms": 0.041400000000010095,
+            "cpuUsPerSearch": 45.8984375,
+            "sampledBytesPerSearch": 29907.5,
+            "topSites": [
+              [
+                "execute@file:///D:/RMProjects/Pi/packages/tool-classification/src/index.ts:169",
+                902240
+              ],
+              [
+                "normalizedTerms@file:///D:/RMProjects/Pi/packages/tool-classification/src/index.ts:113",
+                15744
+              ],
+              [
+                "run@file:///D:/RMProjects/Pi/scripts/bench/tool-search-ranking.ts:60",
+                11248
+              ],
+              [
+                "Set@:0",
+                10856
+              ],
+              [
+                "split@:0",
+                6384
+              ],
+              [
+                "from@:0",
+                3200
+              ],
+              [
+                "measure@file:///D:/RMProjects/Pi/scripts/bench/tool-search-ranking.ts:58",
+                2112
+              ],
+              [
+                "next@:0",
+                2080
+              ]
+            ],
+            "before": {
+              "rss": 79306752,
+              "heapTotal": 23314432,
+              "heapUsed": 13247144,
+              "external": 6583926,
+              "arrayBuffers": 144079
+            },
+            "after": {
+              "rss": 78307328,
+              "heapTotal": 23314432,
+              "heapUsed": 13340944,
+              "external": 6583926,
+              "arrayBuffers": 144079
+            }
+          },
+          {
+            "size": 1000,
+            "query": "export report archive",
+            "p50Ms": 0.3627999999998792,
+            "p95Ms": 0.43899999999985084,
+            "cpuUsPerSearch": 377.685546875,
+            "sampledBytesPerSearch": 353617,
+            "topSites": [
+              [
+                "execute@file:///D:/RMProjects/Pi/packages/tool-classification/src/index.ts:169",
+                10998256
+              ],
+              [
+                "sort@:0",
+                273656
+              ],
+              [
+                "Set@:0",
+                14136
+              ],
+              [
+                "split@:0",
+                8504
+              ],
+              [
+                "run@file:///D:/RMProjects/Pi/scripts/bench/tool-search-ranking.ts:60",
+                7440
+              ],
+              [
+                "join@:0",
+                5352
+              ],
+              [
+                "(JS)@:0",
+                3168
+              ],
+              [
+                "search@file:///D:/RMProjects/Pi/tests/helpers/tool-search-fixture.ts:23",
+                3120
+              ]
+            ],
+            "before": {
+              "rss": 78487552,
+              "heapTotal": 23314432,
+              "heapUsed": 13611736,
+              "external": 6583926,
+              "arrayBuffers": 144079
+            },
+            "after": {
+              "rss": 86962176,
+              "heapTotal": 31965184,
+              "heapUsed": 13637504,
+              "external": 6583926,
+              "arrayBuffers": 144079
+            }
+          },
+          {
+            "size": 1000,
+            "query": "検索ファイル",
+            "p50Ms": 0.33989999999994325,
+            "p95Ms": 0.4171999999998661,
+            "cpuUsPerSearch": 347.16796875,
+            "sampledBytesPerSearch": 268154.5,
+            "topSites": [
+              [
+                "execute@file:///D:/RMProjects/Pi/packages/tool-classification/src/index.ts:169",
+                8528504
+              ],
+              [
+                "Set@:0",
+                18680
+              ],
+              [
+                "normalizedTerms@file:///D:/RMProjects/Pi/packages/tool-classification/src/index.ts:113",
+                13520
+              ],
+              [
+                "split@:0",
+                5392
+              ],
+              [
+                "run@file:///D:/RMProjects/Pi/scripts/bench/tool-search-ranking.ts:60",
+                4288
+              ],
+              [
+                "measure@file:///D:/RMProjects/Pi/scripts/bench/tool-search-ranking.ts:58",
+                3168
+              ],
+              [
+                "post@node:inspector:115",
+                2144
+              ],
+              [
+                "from@:0",
+                2112
+              ]
+            ],
+            "before": {
+              "rss": 88338432,
+              "heapTotal": 31965184,
+              "heapUsed": 13634528,
+              "external": 6583926,
+              "arrayBuffers": 144079
+            },
+            "after": {
+              "rss": 88133632,
+              "heapTotal": 31965184,
+              "heapUsed": 13696920,
+              "external": 6583926,
+              "arrayBuffers": 144079
+            }
+          }
+        ],
+        "notes": "Explicit-search boundary only; no catalog index/cache or work on frame/event delivery. Substring comparisons and sort comparisons are counted separately. Caller-owned match names/details remain alive during catalog GC checks."
+      }
+    },
+    {
+      "run": 2,
+      "baseline": {
+        "node": "v26.13.0",
+        "platform": "win32",
+        "modulePath": "D:\\RMProjects\\Pi\\packages\\tool-classification\\src\\.pi150-t11-baseline.ts",
+        "optimized": false,
+        "sourceSha256": "8738f3016ab397ce374074400b70fd6ea883a797e5943d32db7e5810e90a0cfe",
+        "warmup": 10,
+        "timingIterations": 4096,
+        "profileIterations": 32,
+        "samplingInterval": 1024,
+        "counters": [
+          {
+            "size": 100,
+            "query": "export report archive",
+            "terms": [
+              "export",
+              "report",
+              "archive"
+            ],
+            "normalizations": 0,
+            "substringComparisons": 300,
+            "sortComparisons": 99,
+            "catalogReads": 1,
+            "activationCalls": 1,
+            "matches": [
+              {
+                "name": "0001_report_export",
+                "category": "other",
+                "score": 3
+              },
+              {
+                "name": "0002_report_export",
+                "category": "other",
+                "score": 3
+              },
+              {
+                "name": "0003_report_export",
+                "category": "other",
+                "score": 3
+              },
+              {
+                "name": "0004_report_export",
+                "category": "other",
+                "score": 3
+              },
+              {
+                "name": "0005_report_export",
+                "category": "other",
+                "score": 3
+              },
+              {
+                "name": "0006_report_export",
+                "category": "other",
+                "score": 3
+              }
+            ]
+          },
+          {
+            "size": 100,
+            "query": "検索ファイル",
+            "terms": [
+              "検索ファイル"
+            ],
+            "normalizations": 0,
+            "substringComparisons": 100,
+            "sortComparisons": 0,
+            "catalogReads": 1,
+            "activationCalls": 0,
+            "matches": []
+          },
+          {
+            "size": 1000,
+            "query": "export report archive",
+            "terms": [
+              "export",
+              "report",
+              "archive"
+            ],
+            "normalizations": 0,
+            "substringComparisons": 3000,
+            "sortComparisons": 999,
+            "catalogReads": 1,
+            "activationCalls": 1,
+            "matches": [
+              {
+                "name": "0001_report_export",
+                "category": "other",
+                "score": 3
+              },
+              {
+                "name": "0002_report_export",
+                "category": "other",
+                "score": 3
+              },
+              {
+                "name": "0003_report_export",
+                "category": "other",
+                "score": 3
+              },
+              {
+                "name": "0004_report_export",
+                "category": "other",
+                "score": 3
+              },
+              {
+                "name": "0005_report_export",
+                "category": "other",
+                "score": 3
+              },
+              {
+                "name": "0006_report_export",
+                "category": "other",
+                "score": 3
+              }
+            ]
+          },
+          {
+            "size": 1000,
+            "query": "検索ファイル",
+            "terms": [
+              "検索ファイル"
+            ],
+            "normalizations": 0,
+            "substringComparisons": 1000,
+            "sortComparisons": 0,
+            "catalogReads": 1,
+            "activationCalls": 0,
+            "matches": []
+          }
+        ],
+        "releases": [
+          {
+            "size": 100,
+            "mode": "normal",
+            "observedObjects": 101,
+            "retainedCatalogObjects": 0
+          },
+          {
+            "size": 100,
+            "mode": "rejected",
+            "observedObjects": 101,
+            "retainedCatalogObjects": 0
+          },
+          {
+            "size": 100,
+            "mode": "error",
+            "observedObjects": 101,
+            "retainedCatalogObjects": 0
+          },
+          {
+            "size": 1000,
+            "mode": "normal",
+            "observedObjects": 1001,
+            "retainedCatalogObjects": 0
+          },
+          {
+            "size": 1000,
+            "mode": "rejected",
+            "observedObjects": 1001,
+            "retainedCatalogObjects": 0
+          },
+          {
+            "size": 1000,
+            "mode": "error",
+            "observedObjects": 1001,
+            "retainedCatalogObjects": 0
+          }
+        ],
+        "profiles": [
+          {
+            "size": 100,
+            "query": "export report archive",
+            "p50Ms": 0.03529999999997813,
+            "p95Ms": 0.0694000000000301,
+            "cpuUsPerSearch": 45.8984375,
+            "sampledBytesPerSearch": 81699.25,
+            "topSites": [
+              [
+                "execute@file:///D:/RMProjects/Pi/packages/tool-classification/src/.pi150-t11-baseline.ts:159",
+                2506568
+              ],
+              [
+                "sort@:0",
+                39536
+              ],
+              [
+                "Set@:0",
+                17880
+              ],
+              [
+                "split@:0",
+                15008
+              ],
+              [
+                "post@node:inspector:115",
+                11464
+              ],
+              [
+                "run@file:///D:/RMProjects/Pi/scripts/bench/tool-search-ranking.ts:60",
+                8976
+              ],
+              [
+                "join@:0",
+                8600
+              ],
+              [
+                "measure@file:///D:/RMProjects/Pi/scripts/bench/tool-search-ranking.ts:58",
+                3168
+              ]
+            ],
+            "before": {
+              "rss": 75890688,
+              "heapTotal": 22790144,
+              "heapUsed": 13129376,
+              "external": 6515875,
+              "arrayBuffers": 144063
+            },
+            "after": {
+              "rss": 77373440,
+              "heapTotal": 23314432,
+              "heapUsed": 13352832,
+              "external": 6583926,
+              "arrayBuffers": 144079
+            }
+          },
+          {
+            "size": 100,
+            "query": "検索ファイル",
+            "p50Ms": 0.027100000000018554,
+            "p95Ms": 0.031100000000037653,
+            "cpuUsPerSearch": 41.9921875,
+            "sampledBytesPerSearch": 70894.75,
+            "topSites": [
+              [
+                "execute@file:///D:/RMProjects/Pi/packages/tool-classification/src/.pi150-t11-baseline.ts:159",
+                2224928
+              ],
+              [
+                "run@file:///D:/RMProjects/Pi/scripts/bench/tool-search-ranking.ts:60",
+                13360
+              ],
+              [
+                "Set@:0",
+                11256
+              ],
+              [
+                "split@:0",
+                6432
+              ],
+              [
+                "(JS)@:0",
+                5232
+              ],
+              [
+                "measure@file:///D:/RMProjects/Pi/scripts/bench/tool-search-ranking.ts:58",
+                4176
+              ],
+              [
+                "Promise@:0",
+                1120
+              ],
+              [
+                "fn@node:internal/util:477",
+                1064
+              ]
+            ],
+            "before": {
+              "rss": 78729216,
+              "heapTotal": 22790144,
+              "heapUsed": 13294792,
+              "external": 6583926,
+              "arrayBuffers": 144079
+            },
+            "after": {
+              "rss": 77873152,
+              "heapTotal": 23314432,
+              "heapUsed": 13377296,
+              "external": 6583926,
+              "arrayBuffers": 144079
+            }
+          },
+          {
+            "size": 1000,
+            "query": "export report archive",
+            "p50Ms": 0.32560000000012224,
+            "p95Ms": 0.40200000000004366,
+            "cpuUsPerSearch": 343.26171875,
+            "sampledBytesPerSearch": 782955.25,
+            "topSites": [
+              [
+                "execute@file:///D:/RMProjects/Pi/packages/tool-classification/src/.pi150-t11-baseline.ts:159",
+                24725696
+              ],
+              [
+                "sort@:0",
+                286880
+              ],
+              [
+                "Set@:0",
+                17616
+              ],
+              [
+                "run@file:///D:/RMProjects/Pi/scripts/bench/tool-search-ranking.ts:60",
+                7440
+              ],
+              [
+                "split@:0",
+                7408
+              ],
+              [
+                "measure@file:///D:/RMProjects/Pi/scripts/bench/tool-search-ranking.ts:58",
+                4176
+              ],
+              [
+                "join@:0",
+                3256
+              ],
+              [
+                "(JS)@:0",
+                1056
+              ]
+            ],
+            "before": {
+              "rss": 78057472,
+              "heapTotal": 23314432,
+              "heapUsed": 13614240,
+              "external": 6583926,
+              "arrayBuffers": 144079
+            },
+            "after": {
+              "rss": 103751680,
+              "heapTotal": 48480256,
+              "heapUsed": 13652800,
+              "external": 6583926,
+              "arrayBuffers": 144079
+            }
+          },
+          {
+            "size": 1000,
+            "query": "検索ファイル",
+            "p50Ms": 0.27120000000013533,
+            "p95Ms": 0.32780000000002474,
+            "cpuUsPerSearch": 278.3203125,
+            "sampledBytesPerSearch": 707864.5,
+            "topSites": [
+              [
+                "execute@file:///D:/RMProjects/Pi/packages/tool-classification/src/.pi150-t11-baseline.ts:159",
+                22616168
+              ],
+              [
+                "run@file:///D:/RMProjects/Pi/scripts/bench/tool-search-ranking.ts:60",
+                13728
+              ],
+              [
+                "Set@:0",
+                8856
+              ],
+              [
+                "split@:0",
+                8688
+              ],
+              [
+                "measure@file:///D:/RMProjects/Pi/scripts/bench/tool-search-ranking.ts:58",
+                2112
+              ],
+              [
+                "(JS)@:0",
+                2112
+              ],
+              [
+                "(root)@:0",
+                0
+              ],
+              [
+                "(anonymous)@:0",
+                0
+              ]
+            ],
+            "before": {
+              "rss": 105078784,
+              "heapTotal": 48480256,
+              "heapUsed": 13636040,
+              "external": 6583926,
+              "arrayBuffers": 144079
+            },
+            "after": {
+              "rss": 105820160,
+              "heapTotal": 48742400,
+              "heapUsed": 13698288,
+              "external": 6583926,
+              "arrayBuffers": 144079
+            }
+          }
+        ],
+        "notes": "Explicit-search boundary only; no catalog index/cache or work on frame/event delivery. Substring comparisons and sort comparisons are counted separately. Caller-owned match names/details remain alive during catalog GC checks."
+      },
+      "candidate": {
+        "node": "v26.13.0",
+        "platform": "win32",
+        "modulePath": "D:\\RMProjects\\Pi\\packages\\tool-classification\\src\\index.ts",
+        "optimized": true,
+        "sourceSha256": "97b3a86fa2c07530cbf1970abc2056f5858442ad4dc37d2f388f2401453458d1",
+        "warmup": 10,
+        "timingIterations": 4096,
+        "profileIterations": 32,
+        "samplingInterval": 1024,
+        "counters": [
+          {
+            "size": 100,
+            "query": "export report archive",
+            "terms": [
+              "export",
+              "report",
+              "archive"
+            ],
+            "normalizations": 201,
+            "substringComparisons": 400,
+            "sortComparisons": 99,
+            "catalogReads": 1,
+            "activationCalls": 1,
+            "matches": [
+              {
+                "name": "0001_report_export",
+                "category": "other",
+                "score": 14
+              },
+              {
+                "name": "0002_report_export",
+                "category": "other",
+                "score": 14
+              },
+              {
+                "name": "0003_report_export",
+                "category": "other",
+                "score": 14
+              },
+              {
+                "name": "0004_report_export",
+                "category": "other",
+                "score": 14
+              },
+              {
+                "name": "0005_report_export",
+                "category": "other",
+                "score": 14
+              },
+              {
+                "name": "0006_report_export",
+                "category": "other",
+                "score": 14
+              }
+            ]
+          },
+          {
+            "size": 100,
+            "query": "検索ファイル",
+            "terms": [
+              "検索",
+              "ファイル"
+            ],
+            "normalizations": 201,
+            "substringComparisons": 600,
+            "sortComparisons": 0,
+            "catalogReads": 1,
+            "activationCalls": 0,
+            "matches": []
+          },
+          {
+            "size": 1000,
+            "query": "export report archive",
+            "terms": [
+              "export",
+              "report",
+              "archive"
+            ],
+            "normalizations": 2001,
+            "substringComparisons": 4000,
+            "sortComparisons": 999,
+            "catalogReads": 1,
+            "activationCalls": 1,
+            "matches": [
+              {
+                "name": "0001_report_export",
+                "category": "other",
+                "score": 14
+              },
+              {
+                "name": "0002_report_export",
+                "category": "other",
+                "score": 14
+              },
+              {
+                "name": "0003_report_export",
+                "category": "other",
+                "score": 14
+              },
+              {
+                "name": "0004_report_export",
+                "category": "other",
+                "score": 14
+              },
+              {
+                "name": "0005_report_export",
+                "category": "other",
+                "score": 14
+              },
+              {
+                "name": "0006_report_export",
+                "category": "other",
+                "score": 14
+              }
+            ]
+          },
+          {
+            "size": 1000,
+            "query": "検索ファイル",
+            "terms": [
+              "検索",
+              "ファイル"
+            ],
+            "normalizations": 2001,
+            "substringComparisons": 6000,
+            "sortComparisons": 0,
+            "catalogReads": 1,
+            "activationCalls": 0,
+            "matches": []
+          }
+        ],
+        "releases": [
+          {
+            "size": 100,
+            "mode": "normal",
+            "observedObjects": 101,
+            "retainedCatalogObjects": 0
+          },
+          {
+            "size": 100,
+            "mode": "rejected",
+            "observedObjects": 101,
+            "retainedCatalogObjects": 0
+          },
+          {
+            "size": 100,
+            "mode": "error",
+            "observedObjects": 101,
+            "retainedCatalogObjects": 0
+          },
+          {
+            "size": 1000,
+            "mode": "normal",
+            "observedObjects": 1001,
+            "retainedCatalogObjects": 0
+          },
+          {
+            "size": 1000,
+            "mode": "rejected",
+            "observedObjects": 1001,
+            "retainedCatalogObjects": 0
+          },
+          {
+            "size": 1000,
+            "mode": "error",
+            "observedObjects": 1001,
+            "retainedCatalogObjects": 0
+          }
+        ],
+        "profiles": [
+          {
+            "size": 100,
+            "query": "export report archive",
+            "p50Ms": 0.03750000000002274,
+            "p95Ms": 0.04599999999999227,
+            "cpuUsPerSearch": 53.466796875,
+            "sampledBytesPerSearch": 37336.5,
+            "topSites": [
+              [
+                "execute@file:///D:/RMProjects/Pi/packages/tool-classification/src/index.ts:169",
+                1082648
+              ],
+              [
+                "sort@:0",
+                46856
+              ],
+              [
+                "Set@:0",
+                22176
+              ],
+              [
+                "run@file:///D:/RMProjects/Pi/scripts/bench/tool-search-ranking.ts:60",
+                10832
+              ],
+              [
+                "post@node:inspector:115",
+                10024
+              ],
+              [
+                "split@:0",
+                5296
+              ],
+              [
+                "next@:0",
+                4160
+              ],
+              [
+                "join@:0",
+                3264
+              ]
+            ],
+            "before": {
+              "rss": 77271040,
+              "heapTotal": 22790144,
+              "heapUsed": 13117032,
+              "external": 6515875,
+              "arrayBuffers": 144063
+            },
+            "after": {
+              "rss": 77176832,
+              "heapTotal": 23314432,
+              "heapUsed": 13313112,
+              "external": 6583926,
+              "arrayBuffers": 144079
+            }
+          },
+          {
+            "size": 100,
+            "query": "検索ファイル",
+            "p50Ms": 0.036000000000001364,
+            "p95Ms": 0.04590000000001737,
+            "cpuUsPerSearch": 49.8046875,
+            "sampledBytesPerSearch": 28386.75,
+            "topSites": [
+              [
+                "execute@file:///D:/RMProjects/Pi/packages/tool-classification/src/index.ts:169",
+                864472
+              ],
+              [
+                "normalizedTerms@file:///D:/RMProjects/Pi/packages/tool-classification/src/index.ts:113",
+                13608
+              ],
+              [
+                "Set@:0",
+                9720
+              ],
+              [
+                "split@:0",
+                9712
+              ],
+              [
+                "run@file:///D:/RMProjects/Pi/scripts/bench/tool-search-ranking.ts:60",
+                7712
+              ],
+              [
+                "measure@file:///D:/RMProjects/Pi/scripts/bench/tool-search-ranking.ts:58",
+                2112
+              ],
+              [
+                "next@:0",
+                1040
+              ],
+              [
+                "(root)@:0",
+                0
+              ]
+            ],
+            "before": {
+              "rss": 79290368,
+              "heapTotal": 23314432,
+              "heapUsed": 13247080,
+              "external": 6583926,
+              "arrayBuffers": 144079
+            },
+            "after": {
+              "rss": 78090240,
+              "heapTotal": 23314432,
+              "heapUsed": 13340880,
+              "external": 6583926,
+              "arrayBuffers": 144079
+            }
+          },
+          {
+            "size": 1000,
+            "query": "export report archive",
+            "p50Ms": 0.3608000000001539,
+            "p95Ms": 0.4339999999999691,
+            "cpuUsPerSearch": 373.779296875,
+            "sampledBytesPerSearch": 350918.25,
+            "topSites": [
+              [
+                "execute@file:///D:/RMProjects/Pi/packages/tool-classification/src/index.ts:169",
+                10902200
+              ],
+              [
+                "sort@:0",
+                275400
+              ],
+              [
+                "Set@:0",
+                17576
+              ],
+              [
+                "split@:0",
+                8512
+              ],
+              [
+                "join@:0",
+                7520
+              ],
+              [
+                "run@file:///D:/RMProjects/Pi/scripts/bench/tool-search-ranking.ts:60",
+                6376
+              ],
+              [
+                "from@:0",
+                5328
+              ],
+              [
+                "push@:0",
+                1176
+              ]
+            ],
+            "before": {
+              "rss": 78053376,
+              "heapTotal": 23314432,
+              "heapUsed": 13595480,
+              "external": 6583926,
+              "arrayBuffers": 144079
+            },
+            "after": {
+              "rss": 86745088,
+              "heapTotal": 31965184,
+              "heapUsed": 13621248,
+              "external": 6583926,
+              "arrayBuffers": 144079
+            }
+          },
+          {
+            "size": 1000,
+            "query": "検索ファイル",
+            "p50Ms": 0.336699999999837,
+            "p95Ms": 0.41469999999981155,
+            "cpuUsPerSearch": 343.26171875,
+            "sampledBytesPerSearch": 262364.75,
+            "topSites": [
+              [
+                "execute@file:///D:/RMProjects/Pi/packages/tool-classification/src/index.ts:169",
+                8340520
+              ],
+              [
+                "normalizedTerms@file:///D:/RMProjects/Pi/packages/tool-classification/src/index.ts:113",
+                18880
+              ],
+              [
+                "Set@:0",
+                12992
+              ],
+              [
+                "run@file:///D:/RMProjects/Pi/scripts/bench/tool-search-ranking.ts:60",
+                9504
+              ],
+              [
+                "split@:0",
+                7440
+              ],
+              [
+                "search@file:///D:/RMProjects/Pi/tests/helpers/tool-search-fixture.ts:23",
+                2080
+              ],
+              [
+                "from@:0",
+                1088
+              ],
+              [
+                "#onMessage@node:inspector:84",
+                1080
+              ]
+            ],
+            "before": {
+              "rss": 87900160,
+              "heapTotal": 31965184,
+              "heapUsed": 13634408,
+              "external": 6583926,
+              "arrayBuffers": 144079
+            },
+            "after": {
+              "rss": 87441408,
+              "heapTotal": 32227328,
+              "heapUsed": 13696800,
+              "external": 6583926,
+              "arrayBuffers": 144079
+            }
+          }
+        ],
+        "notes": "Explicit-search boundary only; no catalog index/cache or work on frame/event delivery. Substring comparisons and sort comparisons are counted separately. Caller-owned match names/details remain alive during catalog GC checks."
+      }
+    },
+    {
+      "run": 3,
+      "baseline": {
+        "node": "v26.13.0",
+        "platform": "win32",
+        "modulePath": "D:\\RMProjects\\Pi\\packages\\tool-classification\\src\\.pi150-t11-baseline.ts",
+        "optimized": false,
+        "sourceSha256": "8738f3016ab397ce374074400b70fd6ea883a797e5943d32db7e5810e90a0cfe",
+        "warmup": 10,
+        "timingIterations": 4096,
+        "profileIterations": 32,
+        "samplingInterval": 1024,
+        "counters": [
+          {
+            "size": 100,
+            "query": "export report archive",
+            "terms": [
+              "export",
+              "report",
+              "archive"
+            ],
+            "normalizations": 0,
+            "substringComparisons": 300,
+            "sortComparisons": 99,
+            "catalogReads": 1,
+            "activationCalls": 1,
+            "matches": [
+              {
+                "name": "0001_report_export",
+                "category": "other",
+                "score": 3
+              },
+              {
+                "name": "0002_report_export",
+                "category": "other",
+                "score": 3
+              },
+              {
+                "name": "0003_report_export",
+                "category": "other",
+                "score": 3
+              },
+              {
+                "name": "0004_report_export",
+                "category": "other",
+                "score": 3
+              },
+              {
+                "name": "0005_report_export",
+                "category": "other",
+                "score": 3
+              },
+              {
+                "name": "0006_report_export",
+                "category": "other",
+                "score": 3
+              }
+            ]
+          },
+          {
+            "size": 100,
+            "query": "検索ファイル",
+            "terms": [
+              "検索ファイル"
+            ],
+            "normalizations": 0,
+            "substringComparisons": 100,
+            "sortComparisons": 0,
+            "catalogReads": 1,
+            "activationCalls": 0,
+            "matches": []
+          },
+          {
+            "size": 1000,
+            "query": "export report archive",
+            "terms": [
+              "export",
+              "report",
+              "archive"
+            ],
+            "normalizations": 0,
+            "substringComparisons": 3000,
+            "sortComparisons": 999,
+            "catalogReads": 1,
+            "activationCalls": 1,
+            "matches": [
+              {
+                "name": "0001_report_export",
+                "category": "other",
+                "score": 3
+              },
+              {
+                "name": "0002_report_export",
+                "category": "other",
+                "score": 3
+              },
+              {
+                "name": "0003_report_export",
+                "category": "other",
+                "score": 3
+              },
+              {
+                "name": "0004_report_export",
+                "category": "other",
+                "score": 3
+              },
+              {
+                "name": "0005_report_export",
+                "category": "other",
+                "score": 3
+              },
+              {
+                "name": "0006_report_export",
+                "category": "other",
+                "score": 3
+              }
+            ]
+          },
+          {
+            "size": 1000,
+            "query": "検索ファイル",
+            "terms": [
+              "検索ファイル"
+            ],
+            "normalizations": 0,
+            "substringComparisons": 1000,
+            "sortComparisons": 0,
+            "catalogReads": 1,
+            "activationCalls": 0,
+            "matches": []
+          }
+        ],
+        "releases": [
+          {
+            "size": 100,
+            "mode": "normal",
+            "observedObjects": 101,
+            "retainedCatalogObjects": 0
+          },
+          {
+            "size": 100,
+            "mode": "rejected",
+            "observedObjects": 101,
+            "retainedCatalogObjects": 0
+          },
+          {
+            "size": 100,
+            "mode": "error",
+            "observedObjects": 101,
+            "retainedCatalogObjects": 0
+          },
+          {
+            "size": 1000,
+            "mode": "normal",
+            "observedObjects": 1001,
+            "retainedCatalogObjects": 0
+          },
+          {
+            "size": 1000,
+            "mode": "rejected",
+            "observedObjects": 1001,
+            "retainedCatalogObjects": 0
+          },
+          {
+            "size": 1000,
+            "mode": "error",
+            "observedObjects": 1001,
+            "retainedCatalogObjects": 0
+          }
+        ],
+        "profiles": [
+          {
+            "size": 100,
+            "query": "export report archive",
+            "p50Ms": 0.03279999999995198,
+            "p95Ms": 0.04810000000000514,
+            "cpuUsPerSearch": 49.8046875,
+            "sampledBytesPerSearch": 79989,
+            "topSites": [
+              [
+                "execute@file:///D:/RMProjects/Pi/packages/tool-classification/src/.pi150-t11-baseline.ts:159",
+                2460496
+              ],
+              [
+                "sort@:0",
+                45096
+              ],
+              [
+                "Set@:0",
+                13600
+              ],
+              [
+                "run@file:///D:/RMProjects/Pi/scripts/bench/tool-search-ranking.ts:60",
+                12288
+              ],
+              [
+                "post@node:inspector:115",
+                10024
+              ],
+              [
+                "join@:0",
+                8600
+              ],
+              [
+                "split@:0",
+                5296
+              ],
+              [
+                "#onMessage@node:inspector:84",
+                1080
+              ]
+            ],
+            "before": {
+              "rss": 76234752,
+              "heapTotal": 23052288,
+              "heapUsed": 13129304,
+              "external": 6515875,
+              "arrayBuffers": 144063
+            },
+            "after": {
+              "rss": 77709312,
+              "heapTotal": 23576576,
+              "heapUsed": 13356096,
+              "external": 6583926,
+              "arrayBuffers": 144079
+            }
+          },
+          {
+            "size": 100,
+            "query": "検索ファイル",
+            "p50Ms": 0.026800000000037016,
+            "p95Ms": 0.04599999999999227,
+            "cpuUsPerSearch": 41.9921875,
+            "sampledBytesPerSearch": 69595,
+            "topSites": [
+              [
+                "execute@file:///D:/RMProjects/Pi/packages/tool-classification/src/.pi150-t11-baseline.ts:159",
+                2202912
+              ],
+              [
+                "Set@:0",
+                7856
+              ],
+              [
+                "run@file:///D:/RMProjects/Pi/scripts/bench/tool-search-ranking.ts:60",
+                6688
+              ],
+              [
+                "split@:0",
+                5352
+              ],
+              [
+                "measure@file:///D:/RMProjects/Pi/scripts/bench/tool-search-ranking.ts:58",
+                3168
+              ],
+              [
+                "fn@node:internal/util:477",
+                1064
+              ],
+              [
+                "(root)@:0",
+                0
+              ],
+              [
+                "(anonymous)@:0",
+                0
+              ]
+            ],
+            "before": {
+              "rss": 77996032,
+              "heapTotal": 23314432,
+              "heapUsed": 13295832,
+              "external": 6583926,
+              "arrayBuffers": 144079
+            },
+            "after": {
+              "rss": 78041088,
+              "heapTotal": 23576576,
+              "heapUsed": 13378432,
+              "external": 6583926,
+              "arrayBuffers": 144079
+            }
+          },
+          {
+            "size": 1000,
+            "query": "export report archive",
+            "p50Ms": 0.3283000000000129,
+            "p95Ms": 0.42010000000004766,
+            "cpuUsPerSearch": 339.35546875,
+            "sampledBytesPerSearch": 787408,
+            "topSites": [
+              [
+                "execute@file:///D:/RMProjects/Pi/packages/tool-classification/src/.pi150-t11-baseline.ts:159",
+                24851704
+              ],
+              [
+                "sort@:0",
+                284696
+              ],
+              [
+                "Set@:0",
+                18936
+              ],
+              [
+                "split@:0",
+                17168
+              ],
+              [
+                "run@file:///D:/RMProjects/Pi/scripts/bench/tool-search-ranking.ts:60",
+                9496
+              ],
+              [
+                "join@:0",
+                7528
+              ],
+              [
+                "#onMessage@node:inspector:84",
+                2120
+              ],
+              [
+                "push@:0",
+                1176
+              ]
+            ],
+            "before": {
+              "rss": 78225408,
+              "heapTotal": 23576576,
+              "heapUsed": 13615440,
+              "external": 6583926,
+              "arrayBuffers": 144079
+            },
+            "after": {
+              "rss": 104009728,
+              "heapTotal": 48742400,
+              "heapUsed": 13654000,
+              "external": 6583926,
+              "arrayBuffers": 144079
+            }
+          },
+          {
+            "size": 1000,
+            "query": "検索ファイル",
+            "p50Ms": 0.2694000000001324,
+            "p95Ms": 0.3538999999996122,
+            "cpuUsPerSearch": 270.99609375,
+            "sampledBytesPerSearch": 698896.75,
+            "topSites": [
+              [
+                "execute@file:///D:/RMProjects/Pi/packages/tool-classification/src/.pi150-t11-baseline.ts:159",
+                22335664
+              ],
+              [
+                "run@file:///D:/RMProjects/Pi/scripts/bench/tool-search-ranking.ts:60",
+                9640
+              ],
+              [
+                "Set@:0",
+                5600
+              ],
+              [
+                "split@:0",
+                4344
+              ],
+              [
+                "(JS)@:0",
+                3168
+              ],
+              [
+                "search@file:///D:/RMProjects/Pi/tests/helpers/tool-search-fixture.ts:23",
+                3120
+              ],
+              [
+                "delete@:0",
+                1064
+              ],
+              [
+                "measure@file:///D:/RMProjects/Pi/scripts/bench/tool-search-ranking.ts:58",
+                1056
+              ]
+            ],
+            "before": {
+              "rss": 105820160,
+              "heapTotal": 48742400,
+              "heapUsed": 13636072,
+              "external": 6583926,
+              "arrayBuffers": 144079
+            },
+            "after": {
+              "rss": 106541056,
+              "heapTotal": 49004544,
+              "heapUsed": 13698320,
+              "external": 6583926,
+              "arrayBuffers": 144079
+            }
+          }
+        ],
+        "notes": "Explicit-search boundary only; no catalog index/cache or work on frame/event delivery. Substring comparisons and sort comparisons are counted separately. Caller-owned match names/details remain alive during catalog GC checks."
+      },
+      "candidate": {
+        "node": "v26.13.0",
+        "platform": "win32",
+        "modulePath": "D:\\RMProjects\\Pi\\packages\\tool-classification\\src\\index.ts",
+        "optimized": true,
+        "sourceSha256": "97b3a86fa2c07530cbf1970abc2056f5858442ad4dc37d2f388f2401453458d1",
+        "warmup": 10,
+        "timingIterations": 4096,
+        "profileIterations": 32,
+        "samplingInterval": 1024,
+        "counters": [
+          {
+            "size": 100,
+            "query": "export report archive",
+            "terms": [
+              "export",
+              "report",
+              "archive"
+            ],
+            "normalizations": 201,
+            "substringComparisons": 400,
+            "sortComparisons": 99,
+            "catalogReads": 1,
+            "activationCalls": 1,
+            "matches": [
+              {
+                "name": "0001_report_export",
+                "category": "other",
+                "score": 14
+              },
+              {
+                "name": "0002_report_export",
+                "category": "other",
+                "score": 14
+              },
+              {
+                "name": "0003_report_export",
+                "category": "other",
+                "score": 14
+              },
+              {
+                "name": "0004_report_export",
+                "category": "other",
+                "score": 14
+              },
+              {
+                "name": "0005_report_export",
+                "category": "other",
+                "score": 14
+              },
+              {
+                "name": "0006_report_export",
+                "category": "other",
+                "score": 14
+              }
+            ]
+          },
+          {
+            "size": 100,
+            "query": "検索ファイル",
+            "terms": [
+              "検索",
+              "ファイル"
+            ],
+            "normalizations": 201,
+            "substringComparisons": 600,
+            "sortComparisons": 0,
+            "catalogReads": 1,
+            "activationCalls": 0,
+            "matches": []
+          },
+          {
+            "size": 1000,
+            "query": "export report archive",
+            "terms": [
+              "export",
+              "report",
+              "archive"
+            ],
+            "normalizations": 2001,
+            "substringComparisons": 4000,
+            "sortComparisons": 999,
+            "catalogReads": 1,
+            "activationCalls": 1,
+            "matches": [
+              {
+                "name": "0001_report_export",
+                "category": "other",
+                "score": 14
+              },
+              {
+                "name": "0002_report_export",
+                "category": "other",
+                "score": 14
+              },
+              {
+                "name": "0003_report_export",
+                "category": "other",
+                "score": 14
+              },
+              {
+                "name": "0004_report_export",
+                "category": "other",
+                "score": 14
+              },
+              {
+                "name": "0005_report_export",
+                "category": "other",
+                "score": 14
+              },
+              {
+                "name": "0006_report_export",
+                "category": "other",
+                "score": 14
+              }
+            ]
+          },
+          {
+            "size": 1000,
+            "query": "検索ファイル",
+            "terms": [
+              "検索",
+              "ファイル"
+            ],
+            "normalizations": 2001,
+            "substringComparisons": 6000,
+            "sortComparisons": 0,
+            "catalogReads": 1,
+            "activationCalls": 0,
+            "matches": []
+          }
+        ],
+        "releases": [
+          {
+            "size": 100,
+            "mode": "normal",
+            "observedObjects": 101,
+            "retainedCatalogObjects": 0
+          },
+          {
+            "size": 100,
+            "mode": "rejected",
+            "observedObjects": 101,
+            "retainedCatalogObjects": 0
+          },
+          {
+            "size": 100,
+            "mode": "error",
+            "observedObjects": 101,
+            "retainedCatalogObjects": 0
+          },
+          {
+            "size": 1000,
+            "mode": "normal",
+            "observedObjects": 1001,
+            "retainedCatalogObjects": 0
+          },
+          {
+            "size": 1000,
+            "mode": "rejected",
+            "observedObjects": 1001,
+            "retainedCatalogObjects": 0
+          },
+          {
+            "size": 1000,
+            "mode": "error",
+            "observedObjects": 1001,
+            "retainedCatalogObjects": 0
+          }
+        ],
+        "profiles": [
+          {
+            "size": 100,
+            "query": "export report archive",
+            "p50Ms": 0.037700000000000955,
+            "p95Ms": 0.04449999999999932,
+            "cpuUsPerSearch": 45.8984375,
+            "sampledBytesPerSearch": 39729,
+            "topSites": [
+              [
+                "execute@file:///D:/RMProjects/Pi/packages/tool-classification/src/index.ts:169",
+                1161168
+              ],
+              [
+                "sort@:0",
+                49952
+              ],
+              [
+                "Set@:0",
+                22136
+              ],
+              [
+                "post@node:inspector:115",
+                10024
+              ],
+              [
+                "run@file:///D:/RMProjects/Pi/scripts/bench/tool-search-ranking.ts:60",
+                7920
+              ],
+              [
+                "split@:0",
+                6336
+              ],
+              [
+                "join@:0",
+                5344
+              ],
+              [
+                "next@:0",
+                3120
+              ]
+            ],
+            "before": {
+              "rss": 77127680,
+              "heapTotal": 22528000,
+              "heapUsed": 13117160,
+              "external": 6515875,
+              "arrayBuffers": 144063
+            },
+            "after": {
+              "rss": 76951552,
+              "heapTotal": 23314432,
+              "heapUsed": 13313176,
+              "external": 6583926,
+              "arrayBuffers": 144079
+            }
+          },
+          {
+            "size": 100,
+            "query": "検索ファイル",
+            "p50Ms": 0.035599999999988086,
+            "p95Ms": 0.04169999999999163,
+            "cpuUsPerSearch": 41.9921875,
+            "sampledBytesPerSearch": 29645.75,
+            "topSites": [
+              [
+                "execute@file:///D:/RMProjects/Pi/packages/tool-classification/src/index.ts:169",
+                879040
+              ],
+              [
+                "normalizedTerms@file:///D:/RMProjects/Pi/packages/tool-classification/src/index.ts:113",
+                23056
+              ],
+              [
+                "Set@:0",
+                19496
+              ],
+              [
+                "run@file:///D:/RMProjects/Pi/scripts/bench/tool-search-ranking.ts:60",
+                11056
+              ],
+              [
+                "split@:0",
+                6528
+              ],
+              [
+                "from@:0",
+                3200
+              ],
+              [
+                "(JS)@:0",
+                2112
+              ],
+              [
+                "next@:0",
+                2080
+              ]
+            ],
+            "before": {
+              "rss": 78782464,
+              "heapTotal": 23052288,
+              "heapUsed": 13247192,
+              "external": 6583926,
+              "arrayBuffers": 144079
+            },
+            "after": {
+              "rss": 77815808,
+              "heapTotal": 23052288,
+              "heapUsed": 13340992,
+              "external": 6583926,
+              "arrayBuffers": 144079
+            }
+          },
+          {
+            "size": 1000,
+            "query": "export report archive",
+            "p50Ms": 0.36210000000005493,
+            "p95Ms": 0.4540999999999258,
+            "cpuUsPerSearch": 377.685546875,
+            "sampledBytesPerSearch": 349712.5,
+            "topSites": [
+              [
+                "execute@file:///D:/RMProjects/Pi/packages/tool-classification/src/index.ts:169",
+                10856808
+              ],
+              [
+                "sort@:0",
+                284440
+              ],
+              [
+                "Set@:0",
+                20736
+              ],
+              [
+                "run@file:///D:/RMProjects/Pi/scripts/bench/tool-search-ranking.ts:60",
+                9536
+              ],
+              [
+                "split@:0",
+                6432
+              ],
+              [
+                "from@:0",
+                3168
+              ],
+              [
+                "join@:0",
+                2176
+              ],
+              [
+                "#onMessage@node:inspector:84",
+                2120
+              ]
+            ],
+            "before": {
+              "rss": 77934592,
+              "heapTotal": 23052288,
+              "heapUsed": 13596040,
+              "external": 6583926,
+              "arrayBuffers": 144079
+            },
+            "after": {
+              "rss": 86749184,
+              "heapTotal": 31965184,
+              "heapUsed": 13621808,
+              "external": 6583926,
+              "arrayBuffers": 144079
+            }
+          },
+          {
+            "size": 1000,
+            "query": "検索ファイル",
+            "p50Ms": 0.337800000000243,
+            "p95Ms": 0.42820000000028813,
+            "cpuUsPerSearch": 339.599609375,
+            "sampledBytesPerSearch": 268701.75,
+            "topSites": [
+              [
+                "execute@file:///D:/RMProjects/Pi/packages/tool-classification/src/index.ts:169",
+                8558952
+              ],
+              [
+                "Set@:0",
+                13080
+              ],
+              [
+                "run@file:///D:/RMProjects/Pi/scripts/bench/tool-search-ranking.ts:60",
+                8472
+              ],
+              [
+                "normalizedTerms@file:///D:/RMProjects/Pi/packages/tool-classification/src/index.ts:113",
+                7344
+              ],
+              [
+                "split@:0",
+                3216
+              ],
+              [
+                "from@:0",
+                3200
+              ],
+              [
+                "post@node:inspector:115",
+                2080
+              ],
+              [
+                "measure@file:///D:/RMProjects/Pi/scripts/bench/tool-search-ranking.ts:58",
+                1056
+              ]
+            ],
+            "before": {
+              "rss": 87355392,
+              "heapTotal": 31965184,
+              "heapUsed": 13634984,
+              "external": 6583926,
+              "arrayBuffers": 144079
+            },
+            "after": {
+              "rss": 87760896,
+              "heapTotal": 31965184,
+              "heapUsed": 13697376,
+              "external": 6583926,
+              "arrayBuffers": 144079
+            }
+          }
+        ],
+        "notes": "Explicit-search boundary only; no catalog index/cache or work on frame/event delivery. Substring comparisons and sort comparisons are counted separately. Caller-owned match names/details remain alive during catalog GC checks."
+      }
+    }
+  ]
+}

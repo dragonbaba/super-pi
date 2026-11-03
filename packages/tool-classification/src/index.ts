@@ -50,7 +50,9 @@ const CATEGORY_ENTRIES = Object.entries(CATEGORY_ALIASES);
 const CATEGORY_SEARCH_TEXT: Readonly<Record<string, string>> = Object.fromEntries(
   CATEGORY_ENTRIES.map(([category, aliases]) => [category, aliases.join(" ")]),
 );
-const TOKEN_SPLIT = /[^\p{L}\p{N}]+/u;
+const TOKEN_SPLIT = /[^\p{L}\p{N}\p{M}]+/u;
+const CJK_TERM = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u;
+const WORD_SEGMENTER = new Intl.Segmenter("und", { granularity: "word" });
 const BROWSER_DEBUG_QUERY = /\b(?:browser_debug|cdp|devtools|localhost)\b|chrome_devtools_|\blocal (?:html|page|preview)\b|\b(?:browser|frontend|dom) debug(?:ging)?\b|\b(?:dom|javascript) inspection\b|\binspect (?:dom|javascript)\b|\bui validation\b|\bvalidate ui\b|本地(?:网页|页面|预览)|(?:浏览器|前端|网页|页面)调试|(?:dom|javascript)\s*检查|(?:ui|界面)\s*验证/iu;
 const BROWSER_APPROVAL_PAUSE = Object.freeze({ block: true,
   reason: "[BROWSER_APPROVAL_PAUSED] Browser Harness reported incomplete Chrome approval. Stop this automatic browser workflow and wait for user direction; do not retry Browser Harness or switch to another browser/profile to bypass it. DevTools is available for separately directed local preview and debugging, but does not prove approval of the original connection.",
@@ -109,13 +111,21 @@ function categoryFor(name: string): string {
 }
 
 function normalizedTerms(query: string): string[] {
-  return query.toLowerCase().split(TOKEN_SPLIT).filter(Boolean);
+  const terms = new Set<string>();
+  for (const part of query.split(TOKEN_SPLIT)) {
+    if (!part) continue;
+    if (CJK_TERM.test(part)) {
+      for (const word of WORD_SEGMENTER.segment(part)) {
+        if (word.isWordLike) terms.add(word.segment);
+      }
+    } else terms.add(part);
+  }
+  return Array.from(terms);
 }
 
 function requestedCategory(query: string): string | undefined {
-  const normalized = query.trim().toLowerCase();
   for (const [category, aliases] of CATEGORY_ENTRIES) {
-    if (aliases.includes(normalized)) return category;
+    if (aliases.includes(query)) return category;
   }
   return undefined;
 }
@@ -157,10 +167,11 @@ export default function toolClassificationExtension(pi: ExtensionAPI): void {
       limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 12, description: "Maximum tools to activate; defaults to 6." })),
     }, { additionalProperties: false }),
     async execute(_toolCallId, params) {
-      const query = params.query.trim().toLowerCase();
-      const category = requestedCategory(params.query);
+      const query = params.query.trim().toLowerCase().normalize("NFC");
+      const category = requestedCategory(query);
       const browserDebug = category === "browser_debug" || BROWSER_DEBUG_QUERY.test(query);
-      const terms = normalizedTerms(params.query);
+      const terms = normalizedTerms(query);
+      const wordScoreLimit = (terms.length + 1) ** 2;
       const limit = params.limit ?? 6;
       const candidates: ToolCandidate[] = [];
       if (browserDebug && browserRouting.awaitingUser) return {
@@ -182,14 +193,17 @@ export default function toolClassificationExtension(pi: ExtensionAPI): void {
         if (toolCategory === "browser_debug" && !browserDebug) continue;
         if (toolCategory === "browser" && browserDebug) continue;
         if (category !== undefined && category !== toolCategory) continue;
-        // A precise name must outrank incidental words in richer descriptions.
-        // The 200-character query cannot produce 1,000 keyword matches.
-        let score = tool.name.toLowerCase() === query ? 1_000 : category === toolCategory ? 100 : 0;
-        if (category === undefined && browserDebug && toolCategory === "browser_debug") score += 100;
+        const name = tool.name.toLowerCase().normalize("NFC");
+        // Each covered term outweighs all possible name bonuses. Exact names and
+        // category routing outweigh the entire word score, regardless of term count.
+        let score = name === query ? 2 * wordScoreLimit : category === toolCategory ? wordScoreLimit : 0;
+        if (category === undefined && browserDebug && toolCategory === "browser_debug") score += wordScoreLimit;
         if (category === undefined) {
-          const haystack = `${tool.name} ${tool.description} ${toolCategory} ${CATEGORY_SEARCH_TEXT[toolCategory] ?? ""}`.toLowerCase();
+          const description = tool.description.toLowerCase().normalize("NFC");
+          const categoryText = CATEGORY_SEARCH_TEXT[toolCategory] ?? toolCategory;
           for (const term of terms) {
-            if (haystack.includes(term)) score += 1;
+            if (name.includes(term)) score += terms.length + 2;
+            else if (description.includes(term) || categoryText.includes(term)) score += terms.length + 1;
           }
         }
         if (score > 0) candidates.push({ name: tool.name, category: toolCategory, score });
