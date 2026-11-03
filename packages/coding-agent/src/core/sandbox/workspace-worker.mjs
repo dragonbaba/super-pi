@@ -59,20 +59,21 @@ function grepRows(source, pattern, name, rows) {
     if (match < start) match = source.indexOf(pattern, start);
   }
 }
-function changes(before, root, scope) {
+function changes(before, root, scope, maxWriteBytes) {
   const after = scope ? selected(root, scope) : catalog(root, true), output = []; let bytes = 0;
   for (const [name, hash] of after) if (before.get(name) !== hash) {
     const content = read(local(root, name)); bytes += content.length;
+    need(content.length <= maxWriteBytes, 'Candidate exceeds the native write limit');
     need(output.length < 32 && bytes <= OUTPUT_LIMIT, 'Writeback capacity exceeded');
     output.push({ path: name, before: before.get(name) ?? null, content: content.toString('base64') });
   }
   for (const [name, hash] of before) if (!after.has(name)) { need(output.length < 32, 'Writeback capacity exceeded'); output.push({ path: name, before: hash, content: null }); }
   return output;
 }
-function mutate(root, operation, input) {
+function mutate(root, operation, input, maxWriteBytes) {
   const target = local(root, input.path);
   if (operation === 'write') {
-    need(typeof input.content === 'string' && Buffer.byteLength(input.content) <= FILE_LIMIT, 'Write exceeds 2 MiB');
+    need(typeof input.content === 'string' && Buffer.byteLength(input.content) <= maxWriteBytes, 'Write exceeds the native write limit');
     if (fs.existsSync(target)) need(input.snapshot === sha(read(target)), 'Read snapshot required or changed');
     else need(input.snapshot === undefined || input.snapshot === null, 'Create cannot reuse a snapshot');
     fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, input.content);
@@ -85,7 +86,7 @@ function mutate(root, operation, input) {
       const at = text.indexOf(edit.oldText); need(at >= 0 && text.indexOf(edit.oldText, at + 1) < 0, 'Edit target is missing or ambiguous');
       text = text.slice(0, at) + edit.newText + text.slice(at + edit.oldText.length);
     }
-    need(Buffer.byteLength(text) <= FILE_LIMIT, 'Edited file exceeds 2 MiB'); fs.writeFileSync(target, text);
+    need(Buffer.byteLength(text) <= maxWriteBytes, 'Edited file exceeds the native write limit'); fs.writeFileSync(target, text);
   } else if (operation === 'delete') { need(fs.lstatSync(target).isFile(), 'Only files may be deleted'); fs.unlinkSync(target); }
   else if (operation === 'move') { const destination = local(root, input.destination); need(!fs.existsSync(destination), 'Destination exists'); fs.mkdirSync(path.dirname(destination), { recursive: true }); fs.linkSync(target, destination); fs.unlinkSync(target); }
   else throw new Error('Unsupported mutation');
@@ -95,6 +96,8 @@ try {
   const requestFile = path.join(EXCHANGE, 'request.json'); need(fs.statSync(requestFile).size <= 4 * 1024 * 1024, 'Request too large');
   request = JSON.parse(fs.readFileSync(requestFile, 'utf8'));
   need(/^[a-f0-9]{32}$/.test(request.id) && ['read-only', 'sandbox-write'].includes(request.mode), 'Invalid request identity');
+  const maxWriteBytes = request.maxWriteBytes;
+  need(Number.isSafeInteger(maxWriteBytes) && maxWriteBytes > 0 && maxWriteBytes <= FILE_LIMIT, 'Invalid native write limit');
   if (request.mode === 'sandbox-write' && !fs.existsSync(WORK)) fs.cpSync(SOURCE, WORK, { recursive: true, dereference: false });
   const root = request.mode === 'read-only' ? SOURCE : WORK;
   const input = request.input, operation = request.operation;
@@ -149,11 +152,11 @@ try {
     need(request.mode === 'sandbox-write', 'Read-only workspace');
     if (operation === 'file_batch') {
       need(Array.isArray(input.operations) && input.operations.length > 0 && input.operations.length <= 16, 'Invalid batch');
-      for (const item of input.operations) mutate(root, item.operation, item);
-    } else mutate(root, operation, input);
+      for (const item of input.operations) mutate(root, item.operation, item, maxWriteBytes);
+    } else mutate(root, operation, input, maxWriteBytes);
     text = 'Sandbox operation completed';
   }
-  const result = { id: request.id, ok: true, text, snapshot, changes: before && request.mode === 'sandbox-write' ? changes(before, root, scope) : [] };
+  const result = { id: request.id, ok: true, text, snapshot, changes: before && request.mode === 'sandbox-write' ? changes(before, root, scope, maxWriteBytes) : [] };
   const encoded = JSON.stringify(result); need(Buffer.byteLength(encoded) <= 24 * 1024 * 1024, 'Result too large');
   fs.writeFileSync(path.join(EXCHANGE, 'response.json'), encoded);
 } catch (error) {

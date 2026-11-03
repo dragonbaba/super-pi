@@ -17,7 +17,7 @@ function isCode(error: unknown, code: string): boolean {
   );
 }
 
-async function canonicalizeProspectivePath(candidate: string): Promise<string> {
+export async function canonicalizeProspectivePath(candidate: string): Promise<string> {
   let probe = resolve(candidate);
   const suffix: string[] = [];
   while (true) {

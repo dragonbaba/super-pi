@@ -15,6 +15,7 @@ import { DefaultResourceLoader } from "../packages/coding-agent/src/core/resourc
 import { SettingsManager } from "../packages/coding-agent/src/core/settings-manager.ts";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
 import { FileService } from "../packages/coding-agent/src/core/files/file-service.ts";
+import { MAX_WRITE_BYTES } from "../packages/coding-agent/src/core/files/write-limits.ts";
 
 function mockSourceChecks(t: test.TestContext, version = true): void {
   t.mock.method(WorkspaceSandboxBackend.prototype, "assertWorkspaceCurrent", async () => {});
@@ -158,19 +159,22 @@ test("validate the entire candidate envelope before publishing any file", async 
   const first = { path: "first.txt", before: null, content: "eA==" };
   let changes: any[] = [];
   t.mock.method(WorkspaceSandboxBackend.prototype, "invoke", async () => ({ id: "fixture", ok: true, changes }));
-  const large = Buffer.alloc(2 * 1024 * 1024, 65).toString("base64");
+  const large = Buffer.alloc(MAX_WRITE_BYTES, 65).toString("base64");
   try {
     for (const invalid of [
       [{ path: "../escape.txt", before: null, content: "eA==" }],
       [{ ...first, path: "FIRST.txt" }],
       [{ path: "bad.txt", before: null, content: "/w==" }],
-      Array.from({ length: 9 }, (_, i) => ({ path: `large-${i}.txt`, before: null, content: large })),
+      [{ path: "too-large.txt", before: null, content: Buffer.alloc(MAX_WRITE_BYTES + 1, 65).toString("base64") }],
+      [{ path: "multibyte.txt", before: null, content: Buffer.from("界".repeat(Math.floor(MAX_WRITE_BYTES / 3) + 1)).toString("base64") }],
+      Array.from({ length: 16 }, (_, i) => ({ path: `large-${i}.txt`, before: null, content: large })),
     ]) {
       changes = [first, ...invalid];
       await assert.rejects(base.powershell.execute("invalid", {}, ctx.signal, undefined, ctx));
       assert.deepEqual(await fs.readdir(root), []);
     }
-    changes = [first]; await base.powershell.execute("valid", {}, ctx.signal, undefined, ctx);
+    changes = [first, { path: "at-limit.txt", before: null, content: large }]; await base.powershell.execute("valid", {}, ctx.signal, undefined, ctx);
+    assert.equal((await fs.stat(path.join(root, "at-limit.txt"))).size, MAX_WRITE_BYTES);
     assert.equal(await fs.readFile(path.join(root, first.path), "utf8"), "x");
     changes = [{ ...first, path: "committed.txt" }, first];
     await assert.rejects(base.powershell.execute("conflict", {}, ctx.signal, undefined, ctx), /1 file\(s\) already published/);

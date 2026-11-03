@@ -1,6 +1,6 @@
 # 2026-11-03 性能、稳定性与回退复核
 
-本轮审查已完成，确认的十类缺陷已修复，两个性能改进候选保留为后续事项。依据 [hot-path allocation contract](hot-path-allocation-contract.md)，同时检查闭包、临时对象、正则、取消、权限和资源释放。没有引入对象池，没有提交、推送或改动暂存区。
+本轮审查已完成，确认的十类缺陷已修复，两个性能改进候选保留为后续事项。依据 [hot-path allocation contract](hot-path-allocation-contract.md)，同时检查闭包、临时对象、正则、取消、权限和资源释放。没有引入对象池。初次审查时未提交，后续已按用户要求汇总至 PR #174；CI/Codex 追加修复记录见文末。
 
 ## 范围与方法
 
@@ -57,3 +57,21 @@
 2. `tui-kit` 的 browse/multi-select renderer 仍有条件展开、临时行数组等结构性热点候选。此次没有为其所有菜单形态建立代表性 allocation profile，因此没有未经量测地加入缓存或池，也未宣称满足整个仓库每个 renderer 的零临时分配要求。Markdown/LaTeX 等构建型 helper 则须结合上层缓存失效频率判断，不能仅凭函数名或字面量计数定性。
 
 实际 VM 与工作区快照已清理。早期注入测试的一处遗留空目录 `C:\Users\Administrator\AppData\Local\Temp\sp-review-recovery-9N83zZ` 及两个空子目录仍保留：自动审批策略拒绝按记录删除，返回仅为 `blocked by policy`，未绕过该限制；不含运行中进程。其余 `.artifacts/review-*` 是有意保留的审查证据。
+
+## PR #174 CI / Codex 追加修复
+
+2026-11-03，修复首轮 CI 的两项失败以及 Codex 的三项审查发现：
+
+- 干净检出类型检查：补齐 windows-shell-job 的源码路径映射；statusline 集成测试保留真实构建产物的运行时加载，类型来自源码，不再要求先有 dist 才能检查。
+- 全屏退出测试：故障组件挂入两个渲染器实际拥有的 chatContainer，保留组件错误优先、终端先释放和迟到回调不触碰 UI 的全部断言。
+- 搜索权限：grep/find/ls 包含默认工作区范围；deny/ask 匹配任何相交搜索范围，allow 仍要求全部包含。规则与目标均使用实际路径，覆盖目录别名、嵌套目录和越界拒绝。
+- LSP 写入：宿主策略为 lsp_fix(write=true) 签发精确文件授权，保留 root/path、输入指纹、受保护路径、Plan 和撤销检查；缺少调用者 signal 时使用执行边界 signal。实际注册工具通过真实 LSP 服务修复文件并落盘。
+- 候选上限：原生写入、宿主预验证与来宾请求预算共用 MAX_WRITE_BYTES=1 MiB。来宾写入/编辑结果/命令候选均遵守该预算，读取上限仍为 2 MiB。前文 2 MiB/候选是初次审查时的历史值，以本次修正及 execution-environments.md 为准。
+
+调用链复核覆盖授权入口到单次授权释放、host request → guest mutate/changes → 整组 validateChanges → FileService.prepare/execute → owner 清理。新增文件系统解析位于单次工具准入，规则最多 128、目标最多 34；没有在流式事件、渲染或逐字节循环新增闭包、临时包装对象、正则实例或对象池。
+
+定向测试并集 70 项通过、0 失败（alpha shutdown、native policy、session permission modes、source invariants、LSP、statusline）；npm run check 与 coding-agent 构建/沙箱 runtime 打包通过。只运行相关本地检查，完整 Linux/Windows 矩阵由 PR CI 运行。
+
+分配与释放复验（.artifacts/pr174-perf.json）：16 × 1 MiB 候选仅解码 16 个缓冲，共 16,777,216 B；追加超限项额外解码 0；V8 采样 40,112 B 不含全部外部缓冲，不能代替精确字节计数。200,000 次历史检查无历史查找、branch 数组或 Promise；采样 26,408 B 含夹具开销。4 个 WeakRef 经 4 轮受控 GC 后 live=0，权限叶子、拒绝集合、边界参与者及快照残留均 0。
+
+真实 Windows Sandbox（.artifacts/pr174-real.json）：1 MiB 候选成功落盘；同批次包含先写入的小文件和 1 MiB+1 字节文件时，宿主两者均不存在。1 次 VM 启动、2 次命令调用，最终 vm=false、ownedArtifacts=0、sourceFiles=0。该测试验证新的预算字段实际跨越宿主/来宾边界，不以 mock 代替传输验收。

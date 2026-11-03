@@ -1,5 +1,7 @@
 import { dirname } from "node:path";
 import { TextDecoder } from "node:util";
+import { MAX_WRITE_BYTES } from "./write-limits.ts";
+export { MAX_WRITE_BYTES } from "./write-limits.ts";
 import { detectLineEnding, normalizeToLF } from "../tools/edit-diff.ts";
 import { capturePathIdentity } from "./native-file-core.ts";
 import { modifiedPreview, PreviewBudget, MAX_PREVIEW_SOURCE_BYTES, type ChangePreview } from "./change-preview.ts";
@@ -10,7 +12,6 @@ import {
 
 const MAX_EXACT_SOURCE_BYTES = 2 * 1024 * 1024;
 const MAX_EXACT_EDIT_BYTES = 256 * 1024;
-export const MAX_WRITE_BYTES = 1024 * 1024;
 const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 export interface ExactRevisionEdit { oldText: string; newText: string; expectedLine?: number }

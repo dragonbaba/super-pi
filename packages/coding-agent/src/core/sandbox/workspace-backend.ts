@@ -3,6 +3,7 @@ import { existsSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash, randomUUID } from "node:crypto";
+import { MAX_WRITE_BYTES } from "../files/write-limits.ts";
 
 export interface WorkspaceChange { path: string; before: string | null; content: string | null; }
 export interface WorkspaceReply { id: string; ok: boolean; text?: string; snapshot?: string; changes?: WorkspaceChange[]; error?: string; }
@@ -117,7 +118,7 @@ export class WorkspaceSandboxBackend {
       signal?.throwIfAborted(); if (!this.vm) await this.start(signal); signal?.throwIfAborted();
       await this.assertWorkspaceCurrent();
       const id = randomUUID().replaceAll("-", ""), exchange = path.join(this.root!, "exchange");
-      const request = JSON.stringify({ id, mode: this.mode, operation, input }); need(Buffer.byteLength(request) <= 4 * 1024 * 1024, "Request too large");
+      const request = JSON.stringify({ id, mode: this.mode, operation, input, maxWriteBytes: MAX_WRITE_BYTES }); need(Buffer.byteLength(request) <= 4 * 1024 * 1024, "Request too large");
       await fs.writeFile(path.join(exchange, "request.json"), request); this.calls++;
       await this.vm.invoke("exec", ["exec", "--id", this.vm.id, "-c", '"C:\\SuperPiTools\\node.exe" "C:\\SuperPiTools\\worker.mjs"', "-d", "C:\\SuperPiTools", "-r", "System", "--raw"], 150000, signal);
       // Only settled command records are compacted. Physical owners stay in the lifecycle slots.

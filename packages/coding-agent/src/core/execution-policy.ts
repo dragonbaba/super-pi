@@ -4,7 +4,7 @@ import { isAbsolute, relative, resolve } from "node:path";
 import { assertPermissionMode, type SessionPermissionMode } from "./permission-mode.ts";
 import type { ExtensionContext, ExtensionRuntime, ToolCallEvent, ToolDefinition } from "./extensions/types.ts";
 import type { SessionEntry } from "./session-manager.ts";
-import { assessProtectedMutationPath } from "./files/protected-path-policy.ts";
+import { assessProtectedMutationPath, canonicalizeProspectivePath } from "./files/protected-path-policy.ts";
 import { attachPermissionPathApproval, mutationRequestHash, type PermissionPathApproval } from "./files/file-invocation.ts";
 import { InputReadPolicyLease } from "./files/session-input-read-permission.ts";
 import { InputWorkspaceGrantLease, type InputWorkspaceGrant, type InputWorkspaceIssuance,
@@ -16,11 +16,12 @@ export interface ExecutionPermissionRule {
     tool: string; decision: PermissionDecision;
     /** Exact command, never a shell prefix or parsed risk classification. */
     command?: string;
-    /** Workspace-relative subtree; all targets must be inside it. */
+    /** Workspace-relative subtree. Allow requires containment; deny/ask covers any intersecting search scope. */
     path?: string;
 }
 export interface ExecutionPermissions { approval?: "interactive" | "never"; rules?: ExecutionPermissionRule[]; }
 const MUTATIONS = new Set(["edit", "write", "delete", "move", "file_batch"]);
+const SEARCHES = new Set(["grep", "find", "ls"]);
 const SAFE = new Set(["codemode", "tool_search", "tasks"]);
 const SANDBOX_TOOLS = new Set([...SAFE, "read", "grep", "find", "ls", "powershell", ...MUTATIONS]);
 const BLOCKED = "[POLICY_BLOCKED] ";
@@ -39,7 +40,10 @@ function fingerprint(value: unknown): string {
     return createHash("sha256").update(json).digest("hex");
 }
 function invocationFingerprint(name: string, input: unknown): string {
-    return MUTATIONS.has(name) ? mutationRequestHash(name as PermissionPathApproval["operation"], input) : fingerprint(input);
+    return isMutation(name, input) ? mutationRequestHash(name as PermissionPathApproval["operation"], input) : fingerprint(input);
+}
+function isMutation(name: string, input: unknown): boolean {
+    return MUTATIONS.has(name) || name === "lsp_fix" && (input as { write?: unknown } | null)?.write === true;
 }
 
 /** One cold invocation snapshot. It is released by the existing pending tool owner. */
@@ -111,7 +115,7 @@ export class SessionExecutionPolicy {
     supports(definition: ToolDefinition): boolean { return this.environment !== "sandbox" || this.definitions.has(definition); }
     private guard(ctx: ExtensionContext): () => void {
         this.runtime.executionBoundary.assertCurrent();
-        const owner = new WeakRef(this), generation = this.epoch, signal = ctx.signal;
+        const owner = new WeakRef(this), generation = this.epoch, signal = ctx.signal ?? this.runtime.executionBoundary.signal;
         return function assertNativePermission() {
             const active = owner.deref();
             if (!active || active.closed || active.epoch !== generation)
@@ -137,11 +141,21 @@ export class SessionExecutionPolicy {
         }
         return output;
     }
-    private decision(tool: string, command: unknown, paths: readonly string[], cwd: string, fallback?: PermissionDecision): PermissionDecision {
+    private async decision(tool: string, command: unknown, paths: readonly string[], cwd: string, fallback?: PermissionDecision): Promise<PermissionDecision> {
         let selected: PermissionDecision | undefined;
         for (const rule of this.rules) {
             if (rule.tool !== "*" && rule.tool !== tool || rule.command !== undefined && rule.command !== command) continue;
-            if (rule.path !== undefined && (!paths.length || !paths.every(target => inside(resolve(cwd, rule.path!), target)))) continue;
+            if (rule.path !== undefined) {
+                if (!paths.length) continue;
+                const root = await canonicalizeProspectivePath(resolve(cwd, rule.path));
+                let matches = rule.decision === "allow";
+                for (const target of paths) {
+                    const contained = inside(root, target);
+                    if (rule.decision === "allow") { if (!contained) { matches = false; break; } }
+                    else if (contained || SEARCHES.has(tool) && inside(target, root)) { matches = true; break; }
+                }
+                if (!matches) continue;
+            }
             if (rule.decision === "deny") return "deny";
             // An explicit ask is not overridden by a broader allow.
             if (selected !== "ask") selected = rule.decision;
@@ -172,7 +186,7 @@ export class SessionExecutionPolicy {
         const invocation = new NativePolicyInvocation(event, check, ctx);
         if (this.environment === "sandbox" && (!definition || !this.supports(definition)))
             throw new Error("[SANDBOX_UNSUPPORTED] This entry has no sandbox backend: " + event.toolName);
-        const mutation = MUTATIONS.has(event.toolName);
+        const mutation = isMutation(event.toolName, event.input);
         if (this.mode === "read-only" && mutation) throw new Error(BLOCKED + "当前为只读模式；请通过 /permissions 选择沙箱读写");
         // Legacy audits do not contain exact request identities. Never reinterpret
         // their grants or erase a historical rejection by guessing an equivalent rule.
@@ -185,14 +199,17 @@ export class SessionExecutionPolicy {
         if (event.toolName === "file_batch") {
             if (!Array.isArray(input.operations) || !input.operations.length || input.operations.length > 16) throw new Error(BLOCKED + "Invalid file batch");
             for (const item of input.operations) { targets.push(item.path); if (item.destination !== undefined) targets.push(item.destination); }
-        } else if (mutation || event.toolName === "read") { targets.push(input.path); if (input.destination !== undefined) targets.push(input.destination); }
+        } else if (event.toolName === "lsp_fix") {
+            targets.push(resolve(ctx.cwd, typeof input.root === "string" && input.root.trim() ? input.root : ".", input.path));
+        } else if (SEARCHES.has(event.toolName)) targets.push(input.path ?? ".");
+        else if (mutation || event.toolName === "read") { targets.push(input.path); if (input.destination !== undefined) targets.push(input.destination); }
         const paths = await this.paths(ctx, targets, mutation); check();
-        let decision = this.decision(event.toolName, input.command, paths, ctx.cwd, explicitUserCommand ? "allow" : undefined);
+        let decision = await this.decision(event.toolName, input.command, paths, ctx.cwd, explicitUserCommand ? "allow" : undefined); check();
         if (event.toolName === "file_batch") {
             let index = 0;
             for (const item of input.operations) {
                 const count = item.destination === undefined ? 1 : 2;
-                const itemDecision = this.decision(item.operation, undefined, paths.slice(index, index + count), ctx.cwd, decision);
+                const itemDecision = await this.decision(item.operation, undefined, paths.slice(index, index + count), ctx.cwd, decision); check();
                 if (itemDecision === "deny" || decision !== "deny" && itemDecision === "ask") decision = itemDecision;
                 index += count;
             }
@@ -227,13 +244,14 @@ export class SessionExecutionPolicy {
         if (mutation) attachPermissionPathApproval(input, { schemaVersion: 1, sequence: this.runtime.executionBoundary.generation,
             toolCallId: event.toolCallId, operation: event.toolName as PermissionPathApproval["operation"],
             requestHash: mutationRequestHash(event.toolName as PermissionPathApproval["operation"], input), canonicalTarget: paths[0]!,
-            protectedRoots: [resolve(ctx.cwd, ".git"), resolve(ctx.cwd, ".sp")], assertCurrent: check, revocationSignal: ctx.signal });
+            protectedRoots: [resolve(ctx.cwd, ".git"), resolve(ctx.cwd, ".sp")], assertCurrent: check, revocationSignal: ctx.signal ?? this.runtime.executionBoundary.signal });
         return invocation;
     }
     async authorizeFileObservation(ctx: ExtensionContext, targets: readonly string[]) {
         const check = this.guard(ctx);
-        await this.paths(ctx, targets, false); check();
-        if (this.decision("read", undefined, targets, ctx.cwd) !== "allow") throw new Error(BLOCKED + "File observation requires an existing read grant");
+        const paths = await this.paths(ctx, targets, false); check();
+        const decision = await this.decision("read", undefined, paths, ctx.cwd); check();
+        if (decision !== "allow") throw new Error(BLOCKED + "File observation requires an existing read grant");
         const renew = async () => { check(); await this.paths(ctx, targets, false); check(); };
         return Object.assign(renew, { assertCurrent: check });
     }

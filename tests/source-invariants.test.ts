@@ -4,6 +4,7 @@ import { join } from "node:path";
 import test from "node:test";
 import ts from "typescript";
 import { isUtf8 } from "node:buffer";
+import { MAX_WRITE_BYTES } from "../packages/coding-agent/src/core/files/write-limits.ts";
 
 test("sandbox text editing refuses invalid UTF-8 instead of rewriting replacement characters", () => {
   const source = ts.createSourceFile("workspace-worker.mjs", readFileSync("packages/coding-agent/src/core/sandbox/workspace-worker.mjs", "utf8"), ts.ScriptTarget.Latest, true);
@@ -12,8 +13,26 @@ test("sandbox text editing refuses invalid UTF-8 instead of rewriting replacemen
   const mutate = new Function("fs", "path", "local", "read", "sha", "isUtf8", "FILE_LIMIT", helpers + "\nreturn mutate;")(
     { writeFileSync() { writes++; } }, {}, (_root: string, name: string) => name, () => Buffer.from([97, 255, 98]), () => "snapshot", isUtf8, 2 * 1024 * 1024,
   );
-  assert.throws(() => mutate("fixture", "edit", { path: "file", snapshot: "snapshot", edits: [{ oldText: "a", newText: "c" }] }), /UTF-8/);
+  assert.throws(() => mutate("fixture", "edit", { path: "file", snapshot: "snapshot", edits: [{ oldText: "a", newText: "c" }] }, MAX_WRITE_BYTES), /UTF-8/);
   assert.equal(writes, 0);
+});
+
+test("guest writes, edits and command candidates obey the host-supplied native byte budget", () => {
+  const source = ts.createSourceFile("workspace-worker.mjs", readFileSync("packages/coding-agent/src/core/sandbox/workspace-worker.mjs", "utf8"), ts.ScriptTarget.Latest, true);
+  const helpers = source.statements.filter(node => ts.isFunctionDeclaration(node) && ["need", "mutate", "changes"].includes(node.name?.text ?? "")).map(node => node.getText(source)).join("\n");
+  let writes = 0, bytes = Buffer.alloc(MAX_WRITE_BYTES, 65);
+  const { mutate, changes } = new Function("fs", "path", "local", "read", "sha", "isUtf8", "catalog", "OUTPUT_LIMIT", helpers + "\nreturn { mutate, changes };")(
+    { existsSync: () => false, mkdirSync() {}, writeFileSync() { writes++; } }, { dirname: () => "." }, (_root: string, name: string) => name,
+    () => bytes, () => "snapshot", isUtf8, () => new Map([["file", "changed"]]), 16 * 1024 * 1024,
+  );
+  mutate("fixture", "write", { path: "file", content: bytes.toString() }, MAX_WRITE_BYTES);
+  assert.equal(writes, 1);
+  assert.equal(changes(new Map(), "fixture", undefined, MAX_WRITE_BYTES).length, 1);
+  bytes = Buffer.alloc(MAX_WRITE_BYTES + 1, 65);
+  assert.throws(() => mutate("fixture", "write", { path: "file", content: bytes.toString() }, MAX_WRITE_BYTES), /native write limit/);
+  assert.throws(() => mutate("fixture", "edit", { path: "file", snapshot: "snapshot", edits: [{ oldText: bytes.toString(), newText: bytes.toString() }] }, MAX_WRITE_BYTES), /native write limit/);
+  assert.throws(() => changes(new Map(), "fixture", undefined, MAX_WRITE_BYTES), /native write limit/);
+  assert.equal(writes, 1);
 });
 
 test("permission history and Escape navigation avoid repeated branch arrays and callback creation", () => {

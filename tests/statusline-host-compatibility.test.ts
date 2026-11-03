@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import { basename, join, resolve, sep } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { loadExtensions } from "../packages/coding-agent/dist/core/extensions/loader.js";
+// Resolve the built host at runtime; a clean checkout can typecheck before dist exists.
+const { loadExtensions } = await import(new URL("../packages/coding-agent/dist/core/extensions/loader.js", import.meta.url).href) as
+	typeof import("../packages/coding-agent/src/core/extensions/loader.ts");
 
 test("statusline manifest uses the host version in SDK apps and preserves safe degradation", { timeout: 5000 }, async t => {
 	const root = mkdtempSync(join(tmpdir(), "statusline-host-"));

@@ -15,6 +15,8 @@ import ts from "typescript";
 import * as path from "node:path";
 import * as url from "node:url";
 import { SessionExecutionBoundary } from "../packages/coding-agent/src/core/execution-boundary.ts";
+import { SessionExecutionPolicy } from "../packages/coding-agent/src/core/execution-policy.ts";
+import { createExtensionRuntime } from "../packages/coding-agent/src/core/extensions/loader.ts";
 import { Type } from "typebox";
 
 const jiti = createJiti(import.meta.url);
@@ -408,6 +410,27 @@ test("strict validation can fail for silence while source fixes retain an empty 
     assert.match(result.content[0].text, /const n = 2/);
     assert.equal(readFileSync(join(f.root, "example.ts"), "utf8"), "const n = 1;", "preview is not a write or a validation pass");
   } finally { try { await pool.shutdownAll(); } finally { f.release(); } }
+});
+
+test("native host-write policy authorizes the registered LSP tool to commit its exact file", { skip: process.arch !== "x64" || !["win32", "linux"].includes(process.platform) }, async () => {
+ const f = fixture("push-silent"), runtime = createExtensionRuntime(), registration = tools(runtime.executionBoundary);
+ const policy = new SessionExecutionPolicy(runtime, "trusted-host", {}, "host-write");
+ const ctx: any = { cwd: f.root, hasUI: false, isProjectTrusted() { return true; }, ui: { setStatus() {} },
+  sessionManager: { getSessionId: () => "native-lsp", getLeafEntry: () => undefined } };
+ try {
+  await registration.events.get("session_start")({}, ctx);
+  const input = { root: ".", path: "example.ts", write: true };
+  const authorization = await policy.authorize({ type: "tool_call", toolName: "lsp_fix", toolCallId: "native-fix", input } as any, ctx);
+  try {
+   const result = await registration.registered.get("lsp_fix").execute("native-fix", input, undefined, undefined, ctx);
+   assert.equal(result.isError, undefined); assert.equal(result.details.changed, true);
+   assert.equal(readFileSync(join(f.root, "example.ts"), "utf8"), "const n = 2;");
+  } finally { authorization.release(); }
+ } finally {
+  policy.dispose();
+  try { await registration.events.get("session_shutdown")({}, ctx); await runtime.executionBoundary.dispose(); }
+  finally { const native = await import("@super-pi/coding-agent/internal/files/native-file-client"); await native.disposeNativeFileWorker(); f.release(); }
+ }
 });
 
 test("LSP fixes require current exact-target authorization after asynchronous server replies", { skip: process.arch !== "x64" || !["win32", "linux"].includes(process.platform) }, async () => {

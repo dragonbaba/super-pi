@@ -5,6 +5,7 @@ import { isUtf8 } from "node:buffer";
 import { Type } from "typebox";
 import type { ExtensionContext, ExtensionRuntime, ToolDefinition } from "../extensions/types.ts";
 import { FileService } from "../files/file-service.ts";
+import { MAX_WRITE_BYTES } from "../files/write-limits.ts";
 import { assessProtectedMutationPath } from "../files/protected-path-policy.ts";
 import { WorkspaceSandboxBackend, type WorkspaceChange } from "./workspace-backend.ts";
 
@@ -77,7 +78,7 @@ export class WorkspaceSandboxTools {
       need(change.content === null || typeof change.content === "string" && change.content.length <= 2800000 && BASE64_PATTERN.test(change.content), "Invalid candidate bytes");
       const key = components.join("/").toLowerCase(); need(!paths.has(key), "Duplicate candidate path"); paths.add(key);
       const size = change.content === null ? 0 : Buffer.byteLength(change.content, "base64");
-      need(size <= 2 * 1024 * 1024, "Candidate exceeds 2 MiB");
+      need(size <= MAX_WRITE_BYTES, "Candidate exceeds the native write limit (1 MiB)");
       total += size; need(total <= 16 * 1024 * 1024, "Candidates exceed 16 MiB");
     }
     const contents: (string | undefined)[] = [];

@@ -7,8 +7,10 @@ import { SessionExecutionPolicy } from "../packages/coding-agent/src/core/execut
 import { createExtensionRuntime } from "../packages/coding-agent/src/core/extensions/loader.ts";
 import { ExtensionRunner } from "../packages/coding-agent/src/core/extensions/runner.ts";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
+import type { SessionPermissionMode } from "../packages/coding-agent/src/core/permission-mode.ts";
+import { consumePermissionPathApproval } from "../packages/coding-agent/src/core/files/file-invocation.ts";
 
-async function fixture(t: TestContext, config = {}, environment: "sandbox" | "trusted-host" = "sandbox") {
+async function fixture(t: TestContext, config = {}, environment: "sandbox" | "trusted-host" = "sandbox", mode?: SessionPermissionMode) {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "sp-native-policy-"));
     const runtime = createExtensionRuntime(), branch: any[] = [];
     runtime.appendEntry = (customType, data) => { branch.push({ type: "custom", customType, data }); };
@@ -18,7 +20,7 @@ async function fixture(t: TestContext, config = {}, environment: "sandbox" | "tr
     };
     const ctx: any = { cwd: root, hasUI: false, signal: new AbortController().signal,
         sessionManager: { getSessionId: () => "policy-test", getBranch: () => branch, getLeafEntry: () => getEntry(String(branch.length - 1)), getEntry }, ui: {} };
-    const owner = new SessionExecutionPolicy(runtime, environment, config);
+    const owner = new SessionExecutionPolicy(runtime, environment, config, mode);
     t.after(async () => { owner.dispose(); await runtime.executionBoundary.dispose(); await fs.rm(root, { recursive: true }); });
     function event(toolName: string, input: object) { return { type: "tool_call", toolName, input, toolCallId: "test-call" } as any; }
     function definition(name: string) { const d: any = { name }; owner.registerDefinition(d); return d; }
@@ -30,6 +32,58 @@ test("native sandbox denies unsupported aliases and respects exact deny before b
     await assert.rejects(f.owner.authorize(f.event("powershell", { command: "blocked" }), f.ctx, f.definition("powershell")), /Explicitly denied/);
     await assert.rejects(f.owner.authorize(f.event("bash", { command: "echo x" }), f.ctx, f.definition("bash")), /SANDBOX_UNSUPPORTED/);
     await assert.rejects(f.owner.authorize(f.event("powershell", { command: "ok" }), f.ctx, { name: "powershell" } as any), /SANDBOX_UNSUPPORTED/);
+});
+
+test("search scopes enforce nested deny/ask on explicit and default roots without widening scoped allow", async t => {
+    for (const mode of ["read-only", "sandbox-write", "host-write"] as const) {
+        for (const decision of ["deny", "ask"] as const) {
+            const f = await fixture(t, { rules: [{ tool: "*", decision: "allow" }, { tool: "*", path: "private", decision }] },
+                mode === "host-write" ? "trusted-host" : "sandbox", mode);
+            await fs.mkdir(path.join(f.root, "private")); await fs.mkdir(path.join(f.root, "public"));
+            await fs.writeFile(path.join(f.root, "private/secret.txt"), "secret");
+            await fs.symlink(path.join(f.root, "private"), path.join(f.root, "alias"), process.platform === "win32" ? "junction" : "dir");
+            for (const tool of ["grep", "find", "ls"]) {
+                const definition = f.definition(tool);
+                for (const target of [undefined, ".", "private", "alias", "private/secret.txt"]) {
+                    await assert.rejects(f.owner.authorize(f.event(tool, { path: target, pattern: "secret" }), f.ctx, definition),
+                        decision === "deny" ? /Explicitly denied/ : /APPROVAL_REQUIRED/);
+                }
+                (await f.owner.authorize(f.event(tool, { path: "public" }), f.ctx, definition)).release();
+            }
+        }
+    }
+    const f = await fixture(t, { rules: [{ tool: "find", path: "public", decision: "allow" }] });
+    await fs.mkdir(path.join(f.root, "public"));
+    const definition = f.definition("find");
+    (await f.owner.authorize(f.event("find", { path: "public" }), f.ctx, definition)).release();
+    await assert.rejects(f.owner.authorize(f.event("find", {}), f.ctx, definition), /APPROVAL_REQUIRED/);
+    await assert.rejects(f.owner.authorize(f.event("find", { path: ".." }), f.ctx, definition), /outside the workspace/);
+});
+
+test("native LSP write grants bind root, exact input and lifetime; preview remains read-only", async t => {
+    const f = await fixture(t, {}, "trusted-host", "host-write");
+    await fs.mkdir(path.join(f.root, "src")); await fs.mkdir(path.join(f.root, ".sp"));
+    await fs.writeFile(path.join(f.root, "src/example.ts"), "const n = 1;");
+    f.ctx.signal = undefined; // SDK contexts borrow the boundary signal when no caller signal exists.
+    const input = { root: "src", path: "example.ts", write: true };
+    const invocation = await f.owner.authorize(f.event("lsp_fix", input), f.ctx);
+    const grant = consumePermissionPathApproval(input, "test-call", "lsp_fix")!;
+    assert.equal(grant.canonicalTarget, await fs.realpath(path.join(f.root, "src/example.ts")));
+    assert.equal(grant.revocationSignal, f.runtime.executionBoundary.signal);
+    assert.equal(consumePermissionPathApproval(input, "test-call", "lsp_fix"), undefined);
+    input.root = ".";
+    assert.throws(() => invocation.consume(input, "test-call", "lsp_fix"), /changed after authorization/);
+    invocation.release();
+    await assert.rejects(f.owner.authorize(f.event("lsp_fix", { root: ".sp", path: "config.ts", write: true }), f.ctx), /Protected/);
+    f.runtime.executionBoundary.register("plan-fixture", { revoke() {}, async drain() {}, toolSelectionMode: () => "plan" });
+    await assert.rejects(f.owner.authorize(f.event("lsp_fix", { ...input, root: "src" }), f.ctx), /Plan mode/);
+    const preview = { ...input, root: "src", write: false };
+    (await f.owner.authorize(f.event("lsp_fix", preview), f.ctx)).release();
+    assert.equal(consumePermissionPathApproval(preview, "test-call", "lsp_fix"), undefined);
+    await f.runtime.executionBoundary.transition(() => undefined);
+    assert.throws(() => grant.assertCurrent!(), /expired/); assert.equal(grant.revocationSignal?.aborted, true);
+    const sandbox = await fixture(t, {}, "sandbox", "sandbox-write");
+    await assert.rejects(sandbox.owner.authorize(sandbox.event("lsp_fix", input), sandbox.ctx, sandbox.definition("lsp_fix")), /SANDBOX_UNSUPPORTED/);
 });
 test("ask never silently grants, and changed arguments cannot consume an approval", async t => {
     const f = await fixture(t, { approval: "never", rules: [{ tool: "powershell", decision: "ask" }] });
