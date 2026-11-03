@@ -122,21 +122,6 @@ export const stream: StreamFunction<"azure-openai-responses", AzureOpenAIRespons
 			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();
 		} catch (error) {
-			for (const block of output.content) {
-				if ("index" in block) {
-					(block as { index?: number }).index = undefined;
-				}
-				// Streaming scratch buffers are only used during parsing; never persist them.
-				if ("partialJson" in block) {
-					(block as { partialJson?: string }).partialJson = undefined;
-				}
-				if ("toolArgsGeneration" in block) {
-					(block as { toolArgsGeneration?: number }).toolArgsGeneration = undefined;
-				}
-				if ("customInput" in block) {
-					(block as { customInput?: unknown }).customInput = undefined;
-				}
-			}
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
 			output.errorMessage = formatAzureOpenAIError(error);
 			stream.push({ type: "error", reason: output.stopReason, error: output });

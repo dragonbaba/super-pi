@@ -9,12 +9,15 @@ import { setImmediate as nextTurn } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { IncrementalToolArguments } from "../../packages/ai/src/utils/incremental-tool-arguments.ts";
 import { anthropicArgumentsFixture } from "../../tests/helpers/anthropic-arguments-fixture.ts";
+import { responsesArgumentsFixture } from "../../tests/helpers/responses-arguments-fixture.ts";
 
 const moduleIndex = process.argv.indexOf("--provider-module");
-const modulePath = resolve(moduleIndex < 0 ? "packages/ai/src/api/anthropic-messages.ts" : process.argv[moduleIndex + 1]);
+const responses = process.argv.includes("--responses");
+const argumentsFixture = responses ? responsesArgumentsFixture : anthropicArgumentsFixture;
+const modulePath = resolve(moduleIndex < 0 ? `packages/ai/src/api/${responses ? "openai-codex-responses" : "anthropic-messages"}.ts` : process.argv[moduleIndex + 1]);
 const { stream: factory } = await import(pathToFileURL(modulePath).href);
 const smoke = process.argv.includes("--smoke"), warmup = 2, timingIterations = 8, profileIterations = 4, samplingInterval = 1024;
-type Fixture = ReturnType<typeof anthropicArgumentsFixture>;
+type Fixture = ReturnType<typeof argumentsFixture>;
 async function gc(): Promise<void> { for (let i = 0; i < 4; i++) { await nextTurn(); globalThis.gc!(); } }
 async function run(fixture: Fixture) {
 	const stream = fixture.start(factory); for await (const _event of stream) { /* drain real delivery */ }
@@ -22,7 +25,7 @@ async function run(fixture: Fixture) {
 }
 
 async function count(size: number) {
-	const input = JSON.stringify({ payload: "x".repeat(size) }), fixture = anthropicArgumentsFixture([input], 64);
+	const input = JSON.stringify({ payload: "x".repeat(size) }), fixture = argumentsFixture([input], 64);
 	const parse = JSON.parse, append = IncrementalToolArguments.prototype.append, dispose = IncrementalToolArguments.prototype.dispose;
 	let argumentParseCalls = 0, argumentParseCodeUnits = 0, providerPromises = 0, parserPromises = 0, inParser = false, deltas = 0;
 	const parsers: ReturnType<IncrementalToolArguments["diagnostics"]>[] = [];
@@ -53,7 +56,7 @@ async function count(size: number) {
 }
 
 async function lifecycle(reason: "normal" | "abort" | "error") {
-	const fixture = anthropicArgumentsFixture([JSON.stringify({ payload: "x".repeat(256 * 1024) })], 1024, false, reason === "error" ? 3 : undefined);
+	const fixture = argumentsFixture([JSON.stringify({ payload: "x".repeat(256 * 1024) })], 1024, false, reason === "error" ? 3 : undefined);
 	const controller = new AbortController(), append = IncrementalToolArguments.prototype.append, dispose = IncrementalToolArguments.prototype.dispose;
 	const seen = new WeakSet<IncrementalToolArguments>(), refs: WeakRef<IncrementalToolArguments>[] = [], released: ReturnType<IncrementalToolArguments["diagnostics"]>[] = [];
 	let preview: WeakRef<object> | undefined;
@@ -86,7 +89,7 @@ async function lifecycle(reason: "normal" | "abort" | "error") {
 async function measure(kind: string, size: number, chunkCharacters: number) {
 	const input = kind === "wide" ? JSON.stringify({ payload: Object.fromEntries(Array.from({ length: size / 32 }, (_, i) => [`key${i}`, i])) })
 		: JSON.stringify({ payload: "x".repeat(size) });
-	const fixture = anthropicArgumentsFixture([input], chunkCharacters);
+	const fixture = argumentsFixture([input], chunkCharacters);
 	try {
 		for (let i = 0; i < warmup; i++) await run(fixture);
 		const samples = [], cpu = process.cpuUsage();

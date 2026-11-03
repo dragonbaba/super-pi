@@ -71,10 +71,16 @@ export class IncrementalToolArguments {
 		return (this.root === undefined ? this.empty : this.root) as Record<string, any>;
 	}
 
-	finalize(): Record<string, any> {
+	/** Cold boundary: compare an authoritative whole argument event with the accumulated text. */
+	getAppendDelta(text: string): string | undefined {
+		if (this.closed) closedParser();
+		return text.startsWith(this.raw) ? text.slice(this.raw.length) : undefined;
+	}
+
+	finalize(text?: string): Record<string, any> {
 		if (this.closed) closedParser();
 		this.finalizations++;
-		try { return parseStreamingJson(this.raw); }
+		try { return parseStreamingJson(text ?? this.raw); }
 		finally { this.dispose(); }
 	}
 
