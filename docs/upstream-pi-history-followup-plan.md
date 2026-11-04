@@ -1,6 +1,6 @@
 # Pi 历史修复补漏：详细任务与实施规范
 
-状态：**H00–H08（含 H02-A/B）已合并；H09 已完成本地验收，H10 待实施。** 用户已授权按顺序创建独立 PR，首次推送后等待 reviewer，每次后续推送单独 `@codex review`；当前最终 head 审查无未处理意见且 CI 全部通过后可合并，并按精确身份删除两端旧分支。下文待办和验收条件不代表已经实施或通过；规划阶段的历史记录保留在 §9，H00 执行记录见 §10，各实现项记录见下表。
+状态：**H00–H09（含 H02-A/B）已合并；H10 已实施并完成本地验收，待 reviewer/CI。** 用户已授权按顺序创建独立 PR，首次推送后等待 reviewer，每次后续推送单独 `@codex review`；当前最终 head 审查无未处理意见且 CI 全部通过后可合并，并按精确身份删除两端旧分支。下文待办和验收条件不代表已经实施或通过；规划阶段的历史记录保留在 §9，H00 执行记录见 §10，各实现项记录见下表。
 
 日期：2026-11-04，Asia/Tokyo。任务前缀使用 **H**，避免与上一轮 T01–T12、F01–F06 混淆。后续每项先更新自己的设计和证据，再动生产代码。
 
@@ -49,8 +49,8 @@
 | H06 | split-turn 压缩接收用户指令 | v1.4.0 | R：SDK/AgentSession、分配/释放；[实施记录](repairs/pi-history-h06-compaction-instructions.md) | 已合并 #205；缓存清理受阻 |
 | H07 | 内置 grep 隔离 RIPGREP_CONFIG_PATH | v1.4.0 | R：真实 rg；[实施记录](repairs/pi-history-h07-grep-no-config.md) | 已合并 #206；本项临时根已清理 |
 | H08 | grep 上下文避免整文件加载 | 未发布 | R：真实 rg；[实施记录](repairs/pi-history-h08-grep-context.md) | 已合并 #207；本项临时根已清理 |
-| H09 | 提示模板保留空引号参数 | v1.3.0 | R：生产函数；[实施记录](repairs/pi-history-h09-empty-prompt-args.md) | 已实施，待审查 / P2 |
-| H10 | SDK streamProxy 工具参数增量解析 | v1.5.0 | S；上一轮明确范围外 | 待基线与完整链审计 / P2 |
+| H09 | 提示模板保留空引号参数 | v1.3.0 | R：生产函数；[实施记录](repairs/pi-history-h09-empty-prompt-args.md) | 已合并 #208；本项临时根已清理 |
+| H10 | SDK streamProxy 工具参数增量解析 | v1.5.0 | R：实际 proxy/Agent、分配与释放；[实施记录](repairs/pi-history-h10-proxy-arguments.md) | 已实施，待审查 / P2 |
 
 每项状态只按真实证据推进：`待验证 → 设计就绪 → 实施中 → 待审查 → 待合并 → 已交付`。另有 `已排除`，必须记录原因和覆盖边界。设计就绪的最低条件是：根因、失败输入、实际调用链、改动范围、性能性质、资源所有者及验收命令均明确。
 

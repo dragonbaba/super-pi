@@ -41,6 +41,7 @@ export * from "./utils/diagnostics.ts";
 export * from "./utils/event-stream.ts";
 export { estimateContextTokens, estimateContextTokensFromParts, estimateMessageTokens } from "./utils/estimate.ts";
 export { mergeProviderHeaders } from "./utils/headers.ts";
+export { IncrementalToolArguments } from "./utils/incremental-tool-arguments.ts";
 export {
 	stabilizeToolArguments, stringifyToolArguments, getToolArgumentJsonCacheStats,
 	repairJson, parseJsonWithRepair, hasIncompleteToolArguments, parseStreamingJson,

@@ -1,0 +1,1672 @@
+{
+  "task": "H10",
+  "date": "2026-11-04",
+  "node": "v26.13.0",
+  "platform": "win32",
+  "baselineCommit": "5b798165a20014ecb8a9af423253becaba18ab77",
+  "taskRoot": "D:\\RMProjects\\Pi\\.task-tmp\\h10-7da5a16b0f09",
+  "method": "Serial actual streamProxy synthetic Response; counts separate from HeapProfiler sampling (4096 bytes, 2 warmups, 6 iterations), wire fixture prebuilt before sampling; WeakRef after 8 GC turns with stream/results/signals retained. No real network or credentials.",
+  "measurements": {
+    "baseline-count-16384": {
+      "result": {
+        "argumentParses": 257,
+        "parsedArgumentCodeUnits": 2121742,
+        "parserPromises": 0,
+        "streamPromises": 1845,
+        "deltas": 257,
+        "structural": {
+          "deltaObjects": 514,
+          "deltaSpreads": 257
+        },
+        "parsers": [],
+        "wireSplits": 261,
+        "wireSplitCodeUnits": 48961,
+        "wireScanCodeUnits": 0,
+        "decodeOptionIdentities": 261,
+        "transport": {
+          "reads": 262,
+          "cancellations": 0,
+          "locked": true,
+          "closed": true
+        }
+      },
+      "metadata": {
+        "phase": "counts",
+        "node": "v26.13.0",
+        "inputCodeUnits": 16398,
+        "chunkCodeUnits": 64,
+        "sourceHash": "5f503e8dd8179a2ff64edf0fc4a195320b04527942fac42be669fee5e51a81a2",
+        "benchmarkHash": "7f6edf262e91c5be5e4a07487e9d9285ba9be6afdebe001595e45ec63a6824d6"
+      }
+    },
+    "baseline-count-65536": {
+      "result": {
+        "argumentParses": 1025,
+        "parsedArgumentCodeUnits": 33652750,
+        "parserPromises": 0,
+        "streamPromises": 7221,
+        "deltas": 1025,
+        "structural": {
+          "deltaObjects": 2050,
+          "deltaSpreads": 1025
+        },
+        "parsers": [],
+        "wireSplits": 1029,
+        "wireSplitCodeUnits": 194113,
+        "wireScanCodeUnits": 0,
+        "decodeOptionIdentities": 1029,
+        "transport": {
+          "reads": 1030,
+          "cancellations": 0,
+          "locked": true,
+          "closed": true
+        }
+      },
+      "metadata": {
+        "phase": "counts",
+        "node": "v26.13.0",
+        "inputCodeUnits": 65550,
+        "chunkCodeUnits": 64,
+        "sourceHash": "5f503e8dd8179a2ff64edf0fc4a195320b04527942fac42be669fee5e51a81a2",
+        "benchmarkHash": "7f6edf262e91c5be5e4a07487e9d9285ba9be6afdebe001595e45ec63a6824d6"
+      }
+    },
+    "baseline-wire-65536": {
+      "result": {
+        "argumentParses": 0,
+        "parsedArgumentCodeUnits": 0,
+        "parserPromises": 0,
+        "streamPromises": 6208,
+        "deltas": 0,
+        "structural": {
+          "deltaObjects": 0,
+          "deltaSpreads": 0
+        },
+        "parsers": [],
+        "wireSplits": 2058,
+        "wireSplitCodeUnits": 67273535,
+        "wireScanCodeUnits": 0,
+        "decodeOptionIdentities": 2058,
+        "transport": {
+          "reads": 2059,
+          "cancellations": 0,
+          "locked": true,
+          "closed": true
+        }
+      },
+      "metadata": {
+        "phase": "wire",
+        "node": "v26.13.0",
+        "inputCodeUnits": 65550,
+        "chunkCodeUnits": 64,
+        "sourceHash": "5f503e8dd8179a2ff64edf0fc4a195320b04527942fac42be669fee5e51a81a2",
+        "benchmarkHash": "7f6edf262e91c5be5e4a07487e9d9285ba9be6afdebe001595e45ec63a6824d6"
+      }
+    },
+    "baseline-lifecycle": {
+      "result": {
+        "parserRefs": 0,
+        "retainedParsers": 0,
+        "released": [],
+        "rawInResults": [
+          0,
+          128,
+          320
+        ],
+        "streamsAlive": 3,
+        "listeners": [
+          0,
+          0,
+          0
+        ],
+        "transport": [
+          {
+            "reads": 1030,
+            "cancellations": 0,
+            "locked": true,
+            "closed": true
+          },
+          {
+            "reads": 5,
+            "cancellations": 0,
+            "locked": true,
+            "closed": true
+          },
+          {
+            "reads": 9,
+            "cancellations": 1,
+            "locked": true,
+            "closed": true
+          }
+        ]
+      },
+      "metadata": {
+        "phase": "lifecycle",
+        "node": "v26.13.0",
+        "inputCodeUnits": 65550,
+        "chunkCodeUnits": 64,
+        "sourceHash": "5f503e8dd8179a2ff64edf0fc4a195320b04527942fac42be669fee5e51a81a2",
+        "benchmarkHash": "7f6edf262e91c5be5e4a07487e9d9285ba9be6afdebe001595e45ec63a6824d6"
+      }
+    },
+    "baseline-profile-16384": {
+      "result": {
+        "iterations": 6,
+        "sampledBytesPerStream": 76462348,
+        "settlementPeakHeapIncrease": 27436800,
+        "top": [
+          {
+            "bytes": 402780440,
+            "fn": "repairJson",
+            "url": "file:///D:/RMProjects/Pi/packages/ai/src/utils/json-parse.ts",
+            "line": 127
+          },
+          {
+            "bytes": 25097496,
+            "fn": "parseStr",
+            "url": "D:\\RMProjects\\Pi\\node_modules\\partial-json\\dist\\index.js",
+            "line": 90
+          },
+          {
+            "bytes": 14225488,
+            "fn": "parseJsonWithRepair",
+            "url": "file:///D:/RMProjects/Pi/packages/ai/src/utils/json-parse.ts",
+            "line": 180
+          },
+          {
+            "bytes": 12526960,
+            "fn": "trim",
+            "url": "",
+            "line": -1
+          },
+          {
+            "bytes": 814128,
+            "fn": "_parseJSON",
+            "url": "D:\\RMProjects\\Pi\\node_modules\\partial-json\\dist\\index.js",
+            "line": 45
+          },
+          {
+            "bytes": 490136,
+            "fn": "",
+            "url": "file:///D:/RMProjects/Pi/packages/agent/src/proxy.ts",
+            "line": 123
+          },
+          {
+            "bytes": 401344,
+            "fn": "",
+            "url": "file:///D:/RMProjects/Pi/packages/ai/src/utils/event-stream.ts",
+            "line": 80
+          },
+          {
+            "bytes": 373968,
+            "fn": "decode",
+            "url": "node:internal/encoding",
+            "line": 480
+          }
+        ]
+      },
+      "metadata": {
+        "phase": "profile",
+        "node": "v26.13.0",
+        "inputCodeUnits": 16398,
+        "chunkCodeUnits": 64,
+        "sourceHash": "5f503e8dd8179a2ff64edf0fc4a195320b04527942fac42be669fee5e51a81a2",
+        "benchmarkHash": "7f6edf262e91c5be5e4a07487e9d9285ba9be6afdebe001595e45ec63a6824d6"
+      }
+    },
+    "baseline-profile-65536": {
+      "result": {
+        "iterations": 6,
+        "sampledBytesPerStream": 1211885357.3333333,
+        "settlementPeakHeapIncrease": 71382136,
+        "top": [
+          {
+            "bytes": 6441072576,
+            "fn": "repairJson",
+            "url": "file:///D:/RMProjects/Pi/packages/ai/src/utils/json-parse.ts",
+            "line": 127
+          },
+          {
+            "bytes": 403025256,
+            "fn": "parseStr",
+            "url": "D:\\RMProjects\\Pi\\node_modules\\partial-json\\dist\\index.js",
+            "line": 90
+          },
+          {
+            "bytes": 208513192,
+            "fn": "parseJsonWithRepair",
+            "url": "file:///D:/RMProjects/Pi/packages/ai/src/utils/json-parse.ts",
+            "line": 180
+          },
+          {
+            "bytes": 201946032,
+            "fn": "trim",
+            "url": "",
+            "line": -1
+          },
+          {
+            "bytes": 3743776,
+            "fn": "_parseJSON",
+            "url": "D:\\RMProjects\\Pi\\node_modules\\partial-json\\dist\\index.js",
+            "line": 45
+          },
+          {
+            "bytes": 2063448,
+            "fn": "",
+            "url": "file:///D:/RMProjects/Pi/packages/agent/src/proxy.ts",
+            "line": 123
+          },
+          {
+            "bytes": 1682784,
+            "fn": "decode",
+            "url": "node:internal/encoding",
+            "line": 480
+          },
+          {
+            "bytes": 1313128,
+            "fn": "",
+            "url": "file:///D:/RMProjects/Pi/packages/ai/src/utils/event-stream.ts",
+            "line": 80
+          }
+        ]
+      },
+      "metadata": {
+        "phase": "profile",
+        "node": "v26.13.0",
+        "inputCodeUnits": 65550,
+        "chunkCodeUnits": 64,
+        "sourceHash": "5f503e8dd8179a2ff64edf0fc4a195320b04527942fac42be669fee5e51a81a2",
+        "benchmarkHash": "7f6edf262e91c5be5e4a07487e9d9285ba9be6afdebe001595e45ec63a6824d6"
+      }
+    },
+    "candidate-counts-16384": {
+      "result": {
+        "argumentParses": 0,
+        "parsedArgumentCodeUnits": 0,
+        "parserPromises": 0,
+        "streamPromises": 1846,
+        "deltas": 257,
+        "structural": {
+          "deltaObjects": 0,
+          "deltaSpreads": 0
+        },
+        "parsers": [
+          {
+            "inputCodeUnits": 16398,
+            "scannedCodeUnits": 16398,
+            "scalarPreviewCodeUnits": 0,
+            "scalarFinalCodeUnits": 0,
+            "finalizations": 0,
+            "containers": 1,
+            "maxDepth": 1,
+            "depth": 0,
+            "retainedRawCodeUnits": 0,
+            "retainedTokenCodeUnits": 0,
+            "retainedRoot": false,
+            "retainedParent": false,
+            "closed": true
+          }
+        ],
+        "wireSplits": 0,
+        "wireSplitCodeUnits": 0,
+        "wireScanCodeUnits": 48960,
+        "decodeOptionIdentities": 1,
+        "transport": {
+          "reads": 262,
+          "cancellations": 0,
+          "locked": false,
+          "closed": true
+        }
+      },
+      "metadata": {
+        "phase": "counts",
+        "node": "v26.13.0",
+        "inputCodeUnits": 16398,
+        "chunkCodeUnits": 64,
+        "sourceHash": "7e8aed2af4748cd20b58e3e8e0cad9d3f78b83afb4b7409d86777f64adb299f7",
+        "benchmarkHash": "7f6edf262e91c5be5e4a07487e9d9285ba9be6afdebe001595e45ec63a6824d6"
+      }
+    },
+    "candidate-counts-65536": {
+      "result": {
+        "argumentParses": 0,
+        "parsedArgumentCodeUnits": 0,
+        "parserPromises": 0,
+        "streamPromises": 7222,
+        "deltas": 1025,
+        "structural": {
+          "deltaObjects": 0,
+          "deltaSpreads": 0
+        },
+        "parsers": [
+          {
+            "inputCodeUnits": 65550,
+            "scannedCodeUnits": 65550,
+            "scalarPreviewCodeUnits": 0,
+            "scalarFinalCodeUnits": 0,
+            "finalizations": 0,
+            "containers": 1,
+            "maxDepth": 1,
+            "depth": 0,
+            "retainedRawCodeUnits": 0,
+            "retainedTokenCodeUnits": 0,
+            "retainedRoot": false,
+            "retainedParent": false,
+            "closed": true
+          }
+        ],
+        "wireSplits": 0,
+        "wireSplitCodeUnits": 0,
+        "wireScanCodeUnits": 194112,
+        "decodeOptionIdentities": 1,
+        "transport": {
+          "reads": 1030,
+          "cancellations": 0,
+          "locked": false,
+          "closed": true
+        }
+      },
+      "metadata": {
+        "phase": "counts",
+        "node": "v26.13.0",
+        "inputCodeUnits": 65550,
+        "chunkCodeUnits": 64,
+        "sourceHash": "7e8aed2af4748cd20b58e3e8e0cad9d3f78b83afb4b7409d86777f64adb299f7",
+        "benchmarkHash": "7f6edf262e91c5be5e4a07487e9d9285ba9be6afdebe001595e45ec63a6824d6"
+      }
+    },
+    "candidate-wire-65536": {
+      "result": {
+        "argumentParses": 0,
+        "parsedArgumentCodeUnits": 0,
+        "parserPromises": 0,
+        "streamPromises": 6209,
+        "deltas": 0,
+        "structural": {
+          "deltaObjects": 0,
+          "deltaSpreads": 0
+        },
+        "parsers": [],
+        "wireSplits": 0,
+        "wireSplitCodeUnits": 0,
+        "wireScanCodeUnits": 65822,
+        "decodeOptionIdentities": 1,
+        "transport": {
+          "reads": 2059,
+          "cancellations": 0,
+          "locked": false,
+          "closed": true
+        }
+      },
+      "metadata": {
+        "phase": "wire",
+        "node": "v26.13.0",
+        "inputCodeUnits": 65550,
+        "chunkCodeUnits": 64,
+        "sourceHash": "7e8aed2af4748cd20b58e3e8e0cad9d3f78b83afb4b7409d86777f64adb299f7",
+        "benchmarkHash": "7f6edf262e91c5be5e4a07487e9d9285ba9be6afdebe001595e45ec63a6824d6"
+      }
+    },
+    "candidate-lifecycle-16384": {
+      "result": {
+        "parserRefs": 3,
+        "retainedParsers": 0,
+        "released": [
+          {
+            "inputCodeUnits": 16398,
+            "scannedCodeUnits": 16398,
+            "scalarPreviewCodeUnits": 0,
+            "scalarFinalCodeUnits": 0,
+            "finalizations": 0,
+            "containers": 1,
+            "maxDepth": 1,
+            "depth": 0,
+            "retainedRawCodeUnits": 0,
+            "retainedTokenCodeUnits": 0,
+            "retainedRoot": false,
+            "retainedParent": false,
+            "closed": true
+          },
+          {
+            "inputCodeUnits": 128,
+            "scannedCodeUnits": 128,
+            "scalarPreviewCodeUnits": 0,
+            "scalarFinalCodeUnits": 0,
+            "finalizations": 0,
+            "containers": 1,
+            "maxDepth": 1,
+            "depth": 0,
+            "retainedRawCodeUnits": 0,
+            "retainedTokenCodeUnits": 0,
+            "retainedRoot": false,
+            "retainedParent": false,
+            "closed": true
+          },
+          {
+            "inputCodeUnits": 320,
+            "scannedCodeUnits": 320,
+            "scalarPreviewCodeUnits": 0,
+            "scalarFinalCodeUnits": 0,
+            "finalizations": 0,
+            "containers": 1,
+            "maxDepth": 1,
+            "depth": 0,
+            "retainedRawCodeUnits": 0,
+            "retainedTokenCodeUnits": 0,
+            "retainedRoot": false,
+            "retainedParent": false,
+            "closed": true
+          }
+        ],
+        "rawInResults": [
+          0,
+          0,
+          0
+        ],
+        "streamsAlive": 3,
+        "listeners": [
+          0,
+          0,
+          0
+        ],
+        "transport": [
+          {
+            "reads": 262,
+            "cancellations": 0,
+            "locked": false,
+            "closed": true
+          },
+          {
+            "reads": 5,
+            "cancellations": 0,
+            "locked": false,
+            "closed": true
+          },
+          {
+            "reads": 9,
+            "cancellations": 1,
+            "locked": false,
+            "closed": true
+          }
+        ]
+      },
+      "metadata": {
+        "phase": "lifecycle",
+        "node": "v26.13.0",
+        "inputCodeUnits": 16398,
+        "chunkCodeUnits": 64,
+        "sourceHash": "7e8aed2af4748cd20b58e3e8e0cad9d3f78b83afb4b7409d86777f64adb299f7",
+        "benchmarkHash": "7f6edf262e91c5be5e4a07487e9d9285ba9be6afdebe001595e45ec63a6824d6"
+      }
+    },
+    "candidate-profile-16384": {
+      "result": {
+        "iterations": 6,
+        "sampledBytesPerStream": 430148,
+        "settlementPeakHeapIncrease": 2830272,
+        "top": [
+          {
+            "bytes": 461304,
+            "fn": "",
+            "url": "file:///D:/RMProjects/Pi/packages/agent/src/proxy.ts",
+            "line": 141
+          },
+          {
+            "bytes": 415280,
+            "fn": "decode",
+            "url": "node:internal/encoding",
+            "line": 480
+          },
+          {
+            "bytes": 405536,
+            "fn": "",
+            "url": "file:///D:/RMProjects/Pi/packages/ai/src/utils/event-stream.ts",
+            "line": 80
+          },
+          {
+            "bytes": 144128,
+            "fn": "next",
+            "url": "",
+            "line": -1
+          },
+          {
+            "bytes": 132704,
+            "fn": "Uint8Array",
+            "url": "",
+            "line": -1
+          },
+          {
+            "bytes": 128544,
+            "fn": "subarray",
+            "url": "",
+            "line": -1
+          },
+          {
+            "bytes": 119264,
+            "fn": "slice",
+            "url": "",
+            "line": -1
+          },
+          {
+            "bytes": 103008,
+            "fn": "then",
+            "url": "",
+            "line": -1
+          }
+        ]
+      },
+      "metadata": {
+        "phase": "profile",
+        "node": "v26.13.0",
+        "inputCodeUnits": 16398,
+        "chunkCodeUnits": 64,
+        "sourceHash": "7e8aed2af4748cd20b58e3e8e0cad9d3f78b83afb4b7409d86777f64adb299f7",
+        "benchmarkHash": "7f6edf262e91c5be5e4a07487e9d9285ba9be6afdebe001595e45ec63a6824d6"
+      }
+    },
+    "candidate-profile-65536": {
+      "result": {
+        "iterations": 6,
+        "sampledBytesPerStream": 1626213.3333333333,
+        "settlementPeakHeapIncrease": 5280008,
+        "top": [
+          {
+            "bytes": 1680056,
+            "fn": "",
+            "url": "file:///D:/RMProjects/Pi/packages/agent/src/proxy.ts",
+            "line": 141
+          },
+          {
+            "bytes": 1650024,
+            "fn": "decode",
+            "url": "node:internal/encoding",
+            "line": 480
+          },
+          {
+            "bytes": 1526312,
+            "fn": "",
+            "url": "file:///D:/RMProjects/Pi/packages/ai/src/utils/event-stream.ts",
+            "line": 80
+          },
+          {
+            "bytes": 618072,
+            "fn": "Uint8Array",
+            "url": "",
+            "line": -1
+          },
+          {
+            "bytes": 609752,
+            "fn": "subarray",
+            "url": "",
+            "line": -1
+          },
+          {
+            "bytes": 576576,
+            "fn": "next",
+            "url": "",
+            "line": -1
+          },
+          {
+            "bytes": 502656,
+            "fn": "then",
+            "url": "",
+            "line": -1
+          },
+          {
+            "bytes": 358416,
+            "fn": "slice",
+            "url": "",
+            "line": -1
+          }
+        ]
+      },
+      "metadata": {
+        "phase": "profile",
+        "node": "v26.13.0",
+        "inputCodeUnits": 65550,
+        "chunkCodeUnits": 64,
+        "sourceHash": "7e8aed2af4748cd20b58e3e8e0cad9d3f78b83afb4b7409d86777f64adb299f7",
+        "benchmarkHash": "7f6edf262e91c5be5e4a07487e9d9285ba9be6afdebe001595e45ec63a6824d6"
+      }
+    }
+  },
+  "downstream": {
+    "session": {
+      "warmup": 1000,
+      "updates": 10000,
+      "fixtures": [
+        {
+          "name": "agent-session-to-interactive-stub",
+          "coverage": {
+            "realAgentObserverDelivery": true,
+            "realStableReference": true,
+            "realProgramStatusReporter": true,
+            "realAssistantComponent": false,
+            "realToolComponent": false,
+            "markdown": false,
+            "frameQueue": false
+          },
+          "results": [
+            {
+              "name": "message_update",
+              "updates": 10000,
+              "warmup": 1000,
+              "metrics": {
+                "cpuP50MsPerUpdate": 0.00014159999999992579,
+                "cpuP95MsPerUpdate": 0.00015979999999990468,
+                "sampledAllocationBytes": 19264,
+                "sampledAllocationBytesPerUpdate": 1.9264,
+                "minorGcCount": 0,
+                "majorGcCount": 1,
+                "totalGcDurationMs": 4.515100002288818,
+                "heapBefore": 43327912,
+                "heapAfter": 43368688,
+                "controlledGcAfter": 43278784,
+                "controlledGcHeapDeltaBytes": -49128,
+                "builtInListenerPromisesPerUpdate": 0,
+                "programStatusReportsPerUpdate": 0,
+                "rejectionObserversPerUpdate": 0,
+                "finalUpdateCorrect": 1
+              },
+              "sourceInvariant": {
+                "toolWrapperObjectsPerUpdate": 0,
+                "inlineClosuresPerUpdate": 0,
+                "promiseTailsPerUpdate": 0,
+                "promiseArraysPerUpdate": 0,
+                "arraysPerUpdate": 0
+              },
+              "topAllocationSites": [
+                {
+                  "bytes": 13968,
+                  "functionName": "post",
+                  "url": "node:inspector",
+                  "line": 115,
+                  "column": 7
+                },
+                {
+                  "bytes": 3136,
+                  "functionName": "wrappedFn",
+                  "url": "node:internal/errors",
+                  "line": 542,
+                  "column": 21
+                },
+                {
+                  "bytes": 2160,
+                  "functionName": "measure",
+                  "url": "file:///D:/RMProjects/Pi/scripts/bench/tui-session-event-allocations.ts",
+                  "line": 142,
+                  "column": 23
+                }
+              ]
+            },
+            {
+              "name": "tool_execution_update",
+              "updates": 10000,
+              "warmup": 1000,
+              "metrics": {
+                "cpuP50MsPerUpdate": 3.260000000000218E-05,
+                "cpuP95MsPerUpdate": 3.780000000006112E-05,
+                "sampledAllocationBytes": 5224,
+                "sampledAllocationBytesPerUpdate": 0.5224,
+                "minorGcCount": 0,
+                "majorGcCount": 1,
+                "totalGcDurationMs": 5.371299982070923,
+                "heapBefore": 43285504,
+                "heapAfter": 43359016,
+                "controlledGcAfter": 43295088,
+                "controlledGcHeapDeltaBytes": 9584,
+                "builtInListenerPromisesPerUpdate": 0,
+                "programStatusReportsPerUpdate": 0,
+                "rejectionObserversPerUpdate": 0,
+                "finalUpdateCorrect": 1
+              },
+              "sourceInvariant": {
+                "toolWrapperObjectsPerUpdate": 0,
+                "inlineClosuresPerUpdate": 0,
+                "promiseTailsPerUpdate": 0,
+                "promiseArraysPerUpdate": 0,
+                "arraysPerUpdate": 0
+              },
+              "topAllocationSites": [
+                {
+                  "bytes": 4192,
+                  "functionName": "wrappedFn",
+                  "url": "node:internal/errors",
+                  "line": 542,
+                  "column": 21
+                },
+                {
+                  "bytes": 1032,
+                  "functionName": "post",
+                  "url": "node:inspector",
+                  "line": 115,
+                  "column": 7
+                }
+              ]
+            },
+            {
+              "name": "observer-coalesced-message_update",
+              "updates": 10000,
+              "warmup": 1000,
+              "metrics": {
+                "rawUpdates": 10000,
+                "coalescedUpdates": 9999,
+                "coalescedDeliveries": 1,
+                "snapshotCount": 1,
+                "extensionObserverPublishes": 1,
+                "promisesPerRawUpdate": 0,
+                "promisesPerDelivery": 0,
+                "observerBridgePromisesPerDelivery": 0,
+                "builtInInteractivePromisesPerDelivery": 0,
+                "programStatusReportsPerDelivery": 0,
+                "rejectionObserversPerDelivery": 0,
+                "sampledAllocationBytes": 5140720,
+                "sampledAllocationBytesPerRawUpdate": 514.072,
+                "sampledAllocationBytesPerDelivery": 5140720,
+                "cpuP50MsPerRawUpdate": 0.0005834000000002106,
+                "cpuP95MsPerRawUpdate": 0.0011838000000000193,
+                "minorGcCount": 0,
+                "majorGcCount": 1,
+                "totalGcDurationMs": 4.788299977779388,
+                "heapBefore": 43343760,
+                "heapAfter": 43916944,
+                "controlledGcAfter": 43672080,
+                "controlledGcHeapDeltaBytes": 328320,
+                "finalUpdateCorrect": 1
+              },
+              "sourceInvariant": {
+                "toolWrapperObjectsPerUpdate": 0,
+                "inlineClosuresPerUpdate": 0,
+                "promiseTailsPerUpdate": 0,
+                "promiseArraysPerUpdate": 0
+              },
+              "topAllocationSites": [
+                {
+                  "bytes": 1855976,
+                  "functionName": "next",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 1511816,
+                  "functionName": "scheduleFlush",
+                  "url": "file:///D:/RMProjects/Pi/packages/agent/src/event-delivery.ts",
+                  "line": 258,
+                  "column": 23
+                },
+                {
+                  "bytes": 862848,
+                  "functionName": "now",
+                  "url": "node:internal/perf/performance",
+                  "line": 137,
+                  "column": 6
+                },
+                {
+                  "bytes": 455464,
+                  "functionName": "values",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 390520,
+                  "functionName": "entries",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 20640,
+                  "functionName": "max",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 15488,
+                  "functionName": "min",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 4248,
+                  "functionName": "Timeout",
+                  "url": "node:internal/timers",
+                  "line": 218,
+                  "column": 14
+                },
+                {
+                  "bytes": 4224,
+                  "functionName": "TimersList",
+                  "url": "node:internal/timers",
+                  "line": 306,
+                  "column": 14
+                },
+                {
+                  "bytes": 3304,
+                  "functionName": "runFlush",
+                  "url": "file:///D:/RMProjects/Pi/packages/agent/src/event-delivery.ts",
+                  "line": 342,
+                  "column": 24
+                },
+                {
+                  "bytes": 3200,
+                  "functionName": "deepFreezeSnapshot",
+                  "url": "file:///D:/RMProjects/Pi/packages/agent/src/agent.ts",
+                  "line": 84,
+                  "column": 28
+                },
+                {
+                  "bytes": 2128,
+                  "functionName": "delete",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 2064,
+                  "functionName": "measureFullObserverChain",
+                  "url": "file:///D:/RMProjects/Pi/scripts/bench/tui-session-event-allocations.ts",
+                  "line": 234,
+                  "column": 40
+                },
+                {
+                  "bytes": 1176,
+                  "functionName": "setTimeout",
+                  "url": "node:timers",
+                  "line": 123,
+                  "column": 20
+                },
+                {
+                  "bytes": 1176,
+                  "functionName": "push",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 1120,
+                  "functionName": "Promise",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 1088,
+                  "functionName": "initHooksExist",
+                  "url": "node:internal/async_hooks",
+                  "line": 488,
+                  "column": 24
+                },
+                {
+                  "bytes": 1064,
+                  "functionName": "flushLatest",
+                  "url": "file:///D:/RMProjects/Pi/packages/agent/src/event-delivery.ts",
+                  "line": 227,
+                  "column": 19
+                },
+                {
+                  "bytes": 1064,
+                  "functionName": "isFinite",
+                  "url": "",
+                  "line": 0,
+                  "column": 0
+                },
+                {
+                  "bytes": 1056,
+                  "functionName": "publishLatest",
+                  "url": "file:///D:/RMProjects/Pi/packages/agent/src/event-delivery.ts",
+                  "line": 200,
+                  "column": 15
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "coverage": "Separate existing downstream regression fixtures, not a single proxy-to-physical-terminal end-to-end run.",
+    "frameQueue": {
+      "frameKiB": 64,
+      "frames": 20000,
+      "metrics": {
+        "cpuP50Ms": 0.08800000000002228,
+        "cpuP95Ms": 0.09389999999996235,
+        "sampledAllocationBytes": 2213672,
+        "sampledAllocationBytesPerFrame": 110.6836,
+        "minorGcCount": 0,
+        "majorGcCount": 1,
+        "incrementalGcCount": 0,
+        "weakCallbackGcCount": 0,
+        "totalGcDurationMs": 1.5897000432014465,
+        "controlledGcBeforeHeapBytes": 9145768,
+        "heapAfterFramesBytes": 9516728,
+        "controlledGcAfterHeapBytes": 9402728,
+        "controlledGcHeapDeltaBytes": 256960,
+        "writtenFrames": 20000,
+        "activeAfterFlush": 0,
+        "pendingAfterFlush": 0,
+        "activeFrameUtf8BytesAfterFlush": 0,
+        "pendingFrameUtf8BytesAfterFlush": 0,
+        "closuresCreated": 0,
+        "framePromisesCreated": 0,
+        "frameAbortControllersCreated": 0,
+        "frameWrapperObjectsCreated": 0,
+        "frameStringsMaterializedByQueue": 0,
+        "fullSizeFrameCopies": 0
+      },
+      "fixture": "queue-only-prebuilt-frame",
+      "topAllocationSites": [
+        {
+          "bytes": 1629232,
+          "functionName": "now",
+          "url": "node:internal/perf/performance",
+          "line": 137,
+          "column": 6
+        },
+        {
+          "bytes": 509392,
+          "functionName": "(anonymous)",
+          "url": "file:///D:/RMProjects/Pi/scripts/bench/tui-frame-queue-allocations.ts",
+          "line": 1,
+          "column": 1
+        },
+        {
+          "bytes": 35440,
+          "functionName": "wrappedFn",
+          "url": "node:internal/errors",
+          "line": 542,
+          "column": 21
+        },
+        {
+          "bytes": 26104,
+          "functionName": "start",
+          "url": "file:///D:/RMProjects/Pi/packages/tui/src/terminal-frame-queue.ts",
+          "line": 226,
+          "column": 15
+        },
+        {
+          "bytes": 12440,
+          "functionName": "post",
+          "url": "node:inspector",
+          "line": 115,
+          "column": 7
+        },
+        {
+          "bytes": 1064,
+          "functionName": "flush",
+          "url": "file:///D:/RMProjects/Pi/packages/tui/src/terminal-frame-queue.ts",
+          "line": 205,
+          "column": 13
+        }
+      ]
+    },
+    "paced": {
+      "results": [
+        {
+          "name": "single-mutation",
+          "coverage": {
+            "providerStyleEventFixture": true,
+            "actualProviderParser": false,
+            "agentProcessEvents": true,
+            "realEventDeliveryDispatcher": true,
+            "productionSnapshot": true,
+            "agentSessionPrototypeBridge": true,
+            "interactiveModePrototypeHarness": true,
+            "stableInteractiveTuiReference": true,
+            "realToolExecutionComponent": true,
+            "retainedViewport": true,
+            "mainFrameQueue": true
+          },
+          "rawUpdates": 2000,
+          "rawUpdatesPerFlushCycle": 20,
+          "actualDeliveries": 100,
+          "snapshotCount": 100,
+          "metrics": {
+            "fullMessageSnapshotsPerFlush": 1,
+            "agentSessionDeliveriesPerFlush": 1,
+            "interactiveModeDeliveriesPerFlush": 1,
+            "toolUpdateArgsCallsPerFlush": 1,
+            "toolArgsGenerationUpdates": 100,
+            "toolArgsReplacementUpdates": 0,
+            "toolArgsSemanticFallbackComparisons": 0,
+            "toolArgsMissingGenerationUpdates": 0,
+            "builtInPromises": 0,
+            "pendingToolMetadataHwm": 1,
+            "pendingToolMetadataAfterFlush": 0,
+            "pendingKeys": 0,
+            "schedulerPendingTasks": 0,
+            "sampledAllocationBytesPerActualDelivery": 54280.72
+          },
+          "sourceInvariant": {
+            "inlineClosuresPerUpdate": 0,
+            "promiseTailsPerUpdate": 0,
+            "promiseArraysPerUpdate": 0
+          },
+          "topAllocationSites": [
+            {
+              "bytes": 805336,
+              "functionName": "next",
+              "url": "",
+              "line": 0,
+              "column": 0
+            },
+            {
+              "bytes": 661680,
+              "functionName": "isImageLine",
+              "url": "file:///D:/RMProjects/Pi/packages/tui/src/terminal-image.ts",
+              "line": 165,
+              "column": 28
+            },
+            {
+              "bytes": 498808,
+              "functionName": "processEvents",
+              "url": "file:///D:/RMProjects/Pi/packages/agent/src/agent.ts",
+              "line": 731,
+              "column": 29
+            }
+          ]
+        },
+        {
+          "name": "interleaved-mutation",
+          "coverage": {
+            "providerStyleEventFixture": true,
+            "actualProviderParser": false,
+            "agentProcessEvents": true,
+            "realEventDeliveryDispatcher": true,
+            "productionSnapshot": true,
+            "agentSessionPrototypeBridge": true,
+            "interactiveModePrototypeHarness": true,
+            "stableInteractiveTuiReference": true,
+            "realToolExecutionComponent": true,
+            "retainedViewport": true,
+            "mainFrameQueue": true
+          },
+          "rawUpdates": 2000,
+          "rawUpdatesPerFlushCycle": 20,
+          "actualDeliveries": 100,
+          "snapshotCount": 100,
+          "metrics": {
+            "fullMessageSnapshotsPerFlush": 1,
+            "agentSessionDeliveriesPerFlush": 1,
+            "interactiveModeDeliveriesPerFlush": 1,
+            "toolUpdateArgsCallsPerFlush": 2,
+            "toolArgsGenerationUpdates": 200,
+            "toolArgsReplacementUpdates": 0,
+            "toolArgsSemanticFallbackComparisons": 0,
+            "toolArgsMissingGenerationUpdates": 0,
+            "builtInPromises": 0,
+            "pendingToolMetadataHwm": 2,
+            "pendingToolMetadataAfterFlush": 0,
+            "pendingKeys": 0,
+            "schedulerPendingTasks": 0,
+            "sampledAllocationBytesPerActualDelivery": 64806.24
+          },
+          "sourceInvariant": {
+            "inlineClosuresPerUpdate": 0,
+            "promiseTailsPerUpdate": 0,
+            "promiseArraysPerUpdate": 0
+          },
+          "topAllocationSites": [
+            {
+              "bytes": 805512,
+              "functionName": "next",
+              "url": "",
+              "line": 0,
+              "column": 0
+            },
+            {
+              "bytes": 532848,
+              "functionName": "processEvents",
+              "url": "file:///D:/RMProjects/Pi/packages/agent/src/agent.ts",
+              "line": 731,
+              "column": 29
+            },
+            {
+              "bytes": 512864,
+              "functionName": "isImageLine",
+              "url": "file:///D:/RMProjects/Pi/packages/tui/src/terminal-image.ts",
+              "line": 165,
+              "column": 28
+            }
+          ]
+        },
+        {
+          "name": "openai-custom",
+          "coverage": {
+            "providerStyleEventFixture": true,
+            "actualProviderParser": false,
+            "agentProcessEvents": true,
+            "realEventDeliveryDispatcher": true,
+            "productionSnapshot": true,
+            "agentSessionPrototypeBridge": true,
+            "interactiveModePrototypeHarness": true,
+            "stableInteractiveTuiReference": true,
+            "realToolExecutionComponent": true,
+            "retainedViewport": true,
+            "mainFrameQueue": true
+          },
+          "rawUpdates": 2000,
+          "rawUpdatesPerFlushCycle": 20,
+          "actualDeliveries": 100,
+          "snapshotCount": 100,
+          "metrics": {
+            "fullMessageSnapshotsPerFlush": 1,
+            "agentSessionDeliveriesPerFlush": 1,
+            "interactiveModeDeliveriesPerFlush": 1,
+            "toolUpdateArgsCallsPerFlush": 1,
+            "toolArgsGenerationUpdates": 100,
+            "toolArgsReplacementUpdates": 0,
+            "toolArgsSemanticFallbackComparisons": 0,
+            "toolArgsMissingGenerationUpdates": 0,
+            "builtInPromises": 0,
+            "pendingToolMetadataHwm": 1,
+            "pendingToolMetadataAfterFlush": 0,
+            "pendingKeys": 0,
+            "schedulerPendingTasks": 0,
+            "sampledAllocationBytesPerActualDelivery": 52744.16
+          },
+          "sourceInvariant": {
+            "inlineClosuresPerUpdate": 0,
+            "promiseTailsPerUpdate": 0,
+            "promiseArraysPerUpdate": 0
+          },
+          "topAllocationSites": [
+            {
+              "bytes": 805792,
+              "functionName": "next",
+              "url": "",
+              "line": 0,
+              "column": 0
+            },
+            {
+              "bytes": 674560,
+              "functionName": "processEvents",
+              "url": "file:///D:/RMProjects/Pi/packages/agent/src/agent.ts",
+              "line": 731,
+              "column": 29
+            },
+            {
+              "bytes": 537512,
+              "functionName": "isImageLine",
+              "url": "file:///D:/RMProjects/Pi/packages/tui/src/terminal-image.ts",
+              "line": 165,
+              "column": 28
+            }
+          ]
+        },
+        {
+          "name": "interleaved-openai-custom",
+          "coverage": {
+            "providerStyleEventFixture": true,
+            "actualProviderParser": false,
+            "agentProcessEvents": true,
+            "realEventDeliveryDispatcher": true,
+            "productionSnapshot": true,
+            "agentSessionPrototypeBridge": true,
+            "interactiveModePrototypeHarness": true,
+            "stableInteractiveTuiReference": true,
+            "realToolExecutionComponent": true,
+            "retainedViewport": true,
+            "mainFrameQueue": true
+          },
+          "rawUpdates": 2000,
+          "rawUpdatesPerFlushCycle": 20,
+          "actualDeliveries": 100,
+          "snapshotCount": 100,
+          "metrics": {
+            "fullMessageSnapshotsPerFlush": 1,
+            "agentSessionDeliveriesPerFlush": 1,
+            "interactiveModeDeliveriesPerFlush": 1,
+            "toolUpdateArgsCallsPerFlush": 2,
+            "toolArgsGenerationUpdates": 200,
+            "toolArgsReplacementUpdates": 0,
+            "toolArgsSemanticFallbackComparisons": 0,
+            "toolArgsMissingGenerationUpdates": 0,
+            "builtInPromises": 0,
+            "pendingToolMetadataHwm": 2,
+            "pendingToolMetadataAfterFlush": 0,
+            "pendingKeys": 0,
+            "schedulerPendingTasks": 0,
+            "sampledAllocationBytesPerActualDelivery": 65115.12
+          },
+          "sourceInvariant": {
+            "inlineClosuresPerUpdate": 0,
+            "promiseTailsPerUpdate": 0,
+            "promiseArraysPerUpdate": 0
+          },
+          "topAllocationSites": [
+            {
+              "bytes": 1035680,
+              "functionName": "next",
+              "url": "",
+              "line": 0,
+              "column": 0
+            },
+            {
+              "bytes": 603928,
+              "functionName": "isImageLine",
+              "url": "file:///D:/RMProjects/Pi/packages/tui/src/terminal-image.ts",
+              "line": 165,
+              "column": 28
+            },
+            {
+              "bytes": 508400,
+              "functionName": "deepFreezeSnapshot",
+              "url": "file:///D:/RMProjects/Pi/packages/agent/src/agent.ts",
+              "line": 84,
+              "column": 28
+            }
+          ]
+        },
+        {
+          "name": "replacement-object",
+          "coverage": {
+            "providerStyleEventFixture": true,
+            "actualProviderParser": false,
+            "agentProcessEvents": true,
+            "realEventDeliveryDispatcher": true,
+            "productionSnapshot": true,
+            "agentSessionPrototypeBridge": true,
+            "interactiveModePrototypeHarness": true,
+            "stableInteractiveTuiReference": true,
+            "realToolExecutionComponent": true,
+            "retainedViewport": true,
+            "mainFrameQueue": true
+          },
+          "rawUpdates": 2000,
+          "rawUpdatesPerFlushCycle": 20,
+          "actualDeliveries": 100,
+          "snapshotCount": 100,
+          "metrics": {
+            "fullMessageSnapshotsPerFlush": 1,
+            "agentSessionDeliveriesPerFlush": 1,
+            "interactiveModeDeliveriesPerFlush": 1,
+            "toolUpdateArgsCallsPerFlush": 1,
+            "toolArgsGenerationUpdates": 0,
+            "toolArgsReplacementUpdates": 100,
+            "toolArgsSemanticFallbackComparisons": 0,
+            "toolArgsMissingGenerationUpdates": 0,
+            "builtInPromises": 0,
+            "pendingToolMetadataHwm": 1,
+            "pendingToolMetadataAfterFlush": 0,
+            "pendingKeys": 0,
+            "schedulerPendingTasks": 0,
+            "sampledAllocationBytesPerActualDelivery": 52422.32
+          },
+          "sourceInvariant": {
+            "inlineClosuresPerUpdate": 0,
+            "promiseTailsPerUpdate": 0,
+            "promiseArraysPerUpdate": 0
+          },
+          "topAllocationSites": [
+            {
+              "bytes": 797520,
+              "functionName": "next",
+              "url": "",
+              "line": 0,
+              "column": 0
+            },
+            {
+              "bytes": 686448,
+              "functionName": "isImageLine",
+              "url": "file:///D:/RMProjects/Pi/packages/tui/src/terminal-image.ts",
+              "line": 165,
+              "column": 28
+            },
+            {
+              "bytes": 441456,
+              "functionName": "processEvents",
+              "url": "file:///D:/RMProjects/Pi/packages/agent/src/agent.ts",
+              "line": 731,
+              "column": 29
+            }
+          ]
+        },
+        {
+          "name": "cardinality-1",
+          "coverage": {
+            "providerStyleEventFixture": true,
+            "actualProviderParser": false,
+            "agentProcessEvents": true,
+            "realEventDeliveryDispatcher": true,
+            "productionSnapshot": true,
+            "agentSessionPrototypeBridge": true,
+            "interactiveModePrototypeHarness": true,
+            "stableInteractiveTuiReference": true,
+            "realToolExecutionComponent": true,
+            "retainedViewport": true,
+            "mainFrameQueue": true
+          },
+          "rawUpdates": 2000,
+          "rawUpdatesPerFlushCycle": 1,
+          "actualDeliveries": 2000,
+          "snapshotCount": 2000,
+          "metrics": {
+            "fullMessageSnapshotsPerFlush": 1,
+            "agentSessionDeliveriesPerFlush": 1,
+            "interactiveModeDeliveriesPerFlush": 1,
+            "toolUpdateArgsCallsPerFlush": 1,
+            "toolArgsGenerationUpdates": 2000,
+            "toolArgsReplacementUpdates": 0,
+            "toolArgsSemanticFallbackComparisons": 0,
+            "toolArgsMissingGenerationUpdates": 0,
+            "builtInPromises": 0,
+            "pendingToolMetadataHwm": 1,
+            "pendingToolMetadataAfterFlush": 0,
+            "pendingKeys": 0,
+            "schedulerPendingTasks": 0,
+            "sampledAllocationBytesPerActualDelivery": 136395.212
+          },
+          "sourceInvariant": {
+            "inlineClosuresPerUpdate": 0,
+            "promiseTailsPerUpdate": 0,
+            "promiseArraysPerUpdate": 0
+          },
+          "topAllocationSites": [
+            {
+              "bytes": 151884384,
+              "functionName": "createLatestSnapshot",
+              "url": "file:///D:/RMProjects/Pi/scripts/bench/tui-paced-streamed-tool-args.ts",
+              "line": 176,
+              "column": 41
+            },
+            {
+              "bytes": 13964144,
+              "functionName": "captureActiveLineChanges",
+              "url": "file:///D:/RMProjects/Pi/packages/tui/src/components/retained-item.ts",
+              "line": 252,
+              "column": 34
+            },
+            {
+              "bytes": 13117944,
+              "functionName": "isImageLine",
+              "url": "file:///D:/RMProjects/Pi/packages/tui/src/terminal-image.ts",
+              "line": 165,
+              "column": 28
+            }
+          ]
+        },
+        {
+          "name": "cardinality-2",
+          "coverage": {
+            "providerStyleEventFixture": true,
+            "actualProviderParser": false,
+            "agentProcessEvents": true,
+            "realEventDeliveryDispatcher": true,
+            "productionSnapshot": true,
+            "agentSessionPrototypeBridge": true,
+            "interactiveModePrototypeHarness": true,
+            "stableInteractiveTuiReference": true,
+            "realToolExecutionComponent": true,
+            "retainedViewport": true,
+            "mainFrameQueue": true
+          },
+          "rawUpdates": 2000,
+          "rawUpdatesPerFlushCycle": 2,
+          "actualDeliveries": 1000,
+          "snapshotCount": 1000,
+          "metrics": {
+            "fullMessageSnapshotsPerFlush": 1,
+            "agentSessionDeliveriesPerFlush": 1,
+            "interactiveModeDeliveriesPerFlush": 1,
+            "toolUpdateArgsCallsPerFlush": 2,
+            "toolArgsGenerationUpdates": 2000,
+            "toolArgsReplacementUpdates": 0,
+            "toolArgsSemanticFallbackComparisons": 0,
+            "toolArgsMissingGenerationUpdates": 0,
+            "builtInPromises": 0,
+            "pendingToolMetadataHwm": 2,
+            "pendingToolMetadataAfterFlush": 0,
+            "pendingKeys": 0,
+            "schedulerPendingTasks": 0,
+            "sampledAllocationBytesPerActualDelivery": 431435.76
+          },
+          "sourceInvariant": {
+            "inlineClosuresPerUpdate": 0,
+            "promiseTailsPerUpdate": 0,
+            "promiseArraysPerUpdate": 0
+          },
+          "topAllocationSites": [
+            {
+              "bytes": 89086856,
+              "functionName": "doRender",
+              "url": "file:///D:/RMProjects/Pi/packages/tui/src/tui-main-screen.ts",
+              "line": 386,
+              "column": 20
+            },
+            {
+              "bytes": 85427496,
+              "functionName": "createLatestSnapshot",
+              "url": "file:///D:/RMProjects/Pi/scripts/bench/tui-paced-streamed-tool-args.ts",
+              "line": 176,
+              "column": 41
+            },
+            {
+              "bytes": 78976000,
+              "functionName": "utf8ByteLength",
+              "url": "file:///D:/RMProjects/Pi/packages/tui/src/terminal-frame-queue.ts",
+              "line": 38,
+              "column": 24
+            }
+          ]
+        },
+        {
+          "name": "cardinality-4",
+          "coverage": {
+            "providerStyleEventFixture": true,
+            "actualProviderParser": false,
+            "agentProcessEvents": true,
+            "realEventDeliveryDispatcher": true,
+            "productionSnapshot": true,
+            "agentSessionPrototypeBridge": true,
+            "interactiveModePrototypeHarness": true,
+            "stableInteractiveTuiReference": true,
+            "realToolExecutionComponent": true,
+            "retainedViewport": true,
+            "mainFrameQueue": true
+          },
+          "rawUpdates": 2000,
+          "rawUpdatesPerFlushCycle": 4,
+          "actualDeliveries": 500,
+          "snapshotCount": 500,
+          "metrics": {
+            "fullMessageSnapshotsPerFlush": 1,
+            "agentSessionDeliveriesPerFlush": 1,
+            "interactiveModeDeliveriesPerFlush": 1,
+            "toolUpdateArgsCallsPerFlush": 4,
+            "toolArgsGenerationUpdates": 2000,
+            "toolArgsReplacementUpdates": 0,
+            "toolArgsSemanticFallbackComparisons": 0,
+            "toolArgsMissingGenerationUpdates": 0,
+            "builtInPromises": 0,
+            "pendingToolMetadataHwm": 4,
+            "pendingToolMetadataAfterFlush": 0,
+            "pendingKeys": 0,
+            "schedulerPendingTasks": 0,
+            "sampledAllocationBytesPerActualDelivery": 560024.528
+          },
+          "sourceInvariant": {
+            "inlineClosuresPerUpdate": 0,
+            "promiseTailsPerUpdate": 0,
+            "promiseArraysPerUpdate": 0
+          },
+          "topAllocationSites": [
+            {
+              "bytes": 53592048,
+              "functionName": "doRender",
+              "url": "file:///D:/RMProjects/Pi/packages/tui/src/tui-main-screen.ts",
+              "line": 386,
+              "column": 20
+            },
+            {
+              "bytes": 51421192,
+              "functionName": "createLatestSnapshot",
+              "url": "file:///D:/RMProjects/Pi/scripts/bench/tui-paced-streamed-tool-args.ts",
+              "line": 176,
+              "column": 41
+            },
+            {
+              "bytes": 45948000,
+              "functionName": "utf8ByteLength",
+              "url": "file:///D:/RMProjects/Pi/packages/tui/src/terminal-frame-queue.ts",
+              "line": 38,
+              "column": 24
+            }
+          ]
+        },
+        {
+          "name": "cardinality-8",
+          "coverage": {
+            "providerStyleEventFixture": true,
+            "actualProviderParser": false,
+            "agentProcessEvents": true,
+            "realEventDeliveryDispatcher": true,
+            "productionSnapshot": true,
+            "agentSessionPrototypeBridge": true,
+            "interactiveModePrototypeHarness": true,
+            "stableInteractiveTuiReference": true,
+            "realToolExecutionComponent": true,
+            "retainedViewport": true,
+            "mainFrameQueue": true
+          },
+          "rawUpdates": 2000,
+          "rawUpdatesPerFlushCycle": 8,
+          "actualDeliveries": 250,
+          "snapshotCount": 250,
+          "metrics": {
+            "fullMessageSnapshotsPerFlush": 1,
+            "agentSessionDeliveriesPerFlush": 1,
+            "interactiveModeDeliveriesPerFlush": 1,
+            "toolUpdateArgsCallsPerFlush": 8,
+            "toolArgsGenerationUpdates": 2000,
+            "toolArgsReplacementUpdates": 0,
+            "toolArgsSemanticFallbackComparisons": 0,
+            "toolArgsMissingGenerationUpdates": 0,
+            "builtInPromises": 0,
+            "pendingToolMetadataHwm": 8,
+            "pendingToolMetadataAfterFlush": 0,
+            "pendingKeys": 0,
+            "schedulerPendingTasks": 0,
+            "sampledAllocationBytesPerActualDelivery": 815025.088
+          },
+          "sourceInvariant": {
+            "inlineClosuresPerUpdate": 0,
+            "promiseTailsPerUpdate": 0,
+            "promiseArraysPerUpdate": 0
+          },
+          "topAllocationSites": [
+            {
+              "bytes": 34106832,
+              "functionName": "createLatestSnapshot",
+              "url": "file:///D:/RMProjects/Pi/scripts/bench/tui-paced-streamed-tool-args.ts",
+              "line": 176,
+              "column": 41
+            },
+            {
+              "bytes": 33460112,
+              "functionName": "doRender",
+              "url": "file:///D:/RMProjects/Pi/packages/tui/src/tui-main-screen.ts",
+              "line": 386,
+              "column": 20
+            },
+            {
+              "bytes": 29436000,
+              "functionName": "utf8ByteLength",
+              "url": "file:///D:/RMProjects/Pi/packages/tui/src/terminal-frame-queue.ts",
+              "line": 38,
+              "column": 24
+            }
+          ]
+        },
+        {
+          "name": "cardinality-16",
+          "coverage": {
+            "providerStyleEventFixture": true,
+            "actualProviderParser": false,
+            "agentProcessEvents": true,
+            "realEventDeliveryDispatcher": true,
+            "productionSnapshot": true,
+            "agentSessionPrototypeBridge": true,
+            "interactiveModePrototypeHarness": true,
+            "stableInteractiveTuiReference": true,
+            "realToolExecutionComponent": true,
+            "retainedViewport": true,
+            "mainFrameQueue": true
+          },
+          "rawUpdates": 2000,
+          "rawUpdatesPerFlushCycle": 16,
+          "actualDeliveries": 125,
+          "snapshotCount": 125,
+          "metrics": {
+            "fullMessageSnapshotsPerFlush": 1,
+            "agentSessionDeliveriesPerFlush": 1,
+            "interactiveModeDeliveriesPerFlush": 1,
+            "toolUpdateArgsCallsPerFlush": 16,
+            "toolArgsGenerationUpdates": 2000,
+            "toolArgsReplacementUpdates": 0,
+            "toolArgsSemanticFallbackComparisons": 0,
+            "toolArgsMissingGenerationUpdates": 0,
+            "builtInPromises": 0,
+            "pendingToolMetadataHwm": 16,
+            "pendingToolMetadataAfterFlush": 0,
+            "pendingKeys": 0,
+            "schedulerPendingTasks": 0,
+            "sampledAllocationBytesPerActualDelivery": 1353155.648
+          },
+          "sourceInvariant": {
+            "inlineClosuresPerUpdate": 0,
+            "promiseTailsPerUpdate": 0,
+            "promiseArraysPerUpdate": 0
+          },
+          "topAllocationSites": [
+            {
+              "bytes": 26262024,
+              "functionName": "createLatestSnapshot",
+              "url": "file:///D:/RMProjects/Pi/scripts/bench/tui-paced-streamed-tool-args.ts",
+              "line": 176,
+              "column": 41
+            },
+            {
+              "bytes": 23446032,
+              "functionName": "doRender",
+              "url": "file:///D:/RMProjects/Pi/packages/tui/src/tui-main-screen.ts",
+              "line": 386,
+              "column": 20
+            },
+            {
+              "bytes": 22970104,
+              "functionName": "render",
+              "url": "file:///D:/RMProjects/Pi/packages/tui/dist/components/text.js",
+              "line": 51,
+              "column": 11
+            }
+          ]
+        }
+      ],
+      "warmup": 200,
+      "historyItems": 500,
+      "updates": 2000
+    }
+  },
+  "verification": {
+    "candidateProtocol": 17,
+    "offlineBuild": "pass",
+    "typeCheck": "pass",
+    "builtEntrypointsSmoke": "pass",
+    "relatedTests": 156,
+    "baselineProtocol": {
+      "fail": 12,
+      "pass": 1
+    },
+    "finalProxyGates": 22
+  },
+  "limits": [
+    "Heap sampling totals are cumulative allocated bytes, not peak resident memory; settlement heap is only sampled at stream completion.",
+    "JSON wire decoding and native reader/EventStream delivery still allocate; stream Promise counts include those costs and one extra final cleanup Promise.",
+    "SSE buffering remains proportional to one unfinished protocol line; per-call parser raw/root/token/stack capacity follows input and is disposed.",
+    "Existing text/thinking event wrappers and rendered text/layout allocations remain. No object pools or CPU speed claim."
+  ]
+}

@@ -3,18 +3,36 @@
  * The server manages auth and proxies requests to LLM providers.
  */
 
-// Internal import for JSON parsing utility
 import {
 	type AssistantMessage,
 	type AssistantMessageEvent,
 	type Context,
 	EventStream,
+	IncrementalToolArguments,
 	type Model,
-	parseStreamingJson,
 	type SimpleStreamOptions,
 	type StopReason,
 	type ToolCall,
 } from "@super-pi/ai";
+
+type StreamingProxyToolCall = ToolCall & { toolArgsGeneration?: number };
+const PROXY_DECODE_OPTIONS = { stream: true } as const;
+function ignoreReaderCancellation(): void { /* The stream's original error/abort remains authoritative. */ }
+
+function releaseProxyTool(partial: AssistantMessage, parsers: (IncrementalToolArguments | undefined)[], index: number, finalize = false): void {
+	const parser = parsers[index];
+	if (!parser) return;
+	const block = partial.content[index] as StreamingProxyToolCall;
+	if (finalize) block.arguments = parser.finalize();
+	else parser.dispose();
+	block.toolArgsGeneration = undefined;
+	parsers[index] = undefined;
+}
+
+function releaseProxyTools(partial: AssistantMessage, parsers: (IncrementalToolArguments | undefined)[], finalize = false): void {
+	for (let index = 0; index < parsers.length; index++) releaseProxyTool(partial, parsers, index, finalize);
+	parsers.length = 0;
+}
 
 // Create stream class matching ProxyMessageEventStream
 class ProxyMessageEventStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
@@ -142,10 +160,12 @@ export function streamProxy(model: Model<any>, context: Context, options: ProxyS
 		};
 
 		let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+		let buffer = "";
+		const toolParsers: (IncrementalToolArguments | undefined)[] = [];
 
 		const abortHandler = () => {
 			if (reader) {
-				reader.cancel("Request aborted by user").catch(() => {});
+				reader.cancel("Request aborted by user").catch(ignoreReaderCancellation);
 			}
 		};
 
@@ -183,9 +203,9 @@ export function streamProxy(model: Model<any>, context: Context, options: ProxyS
 
 			reader = response.body!.getReader();
 			const decoder = new TextDecoder();
-			let buffer = "";
+			let terminalReceived = false;
 
-			while (true) {
+			while (!terminalReceived) {
 				const { done, value } = await reader.read();
 				if (done) break;
 
@@ -193,30 +213,37 @@ export function streamProxy(model: Model<any>, context: Context, options: ProxyS
 					throw new Error("Request aborted by user");
 				}
 
-				buffer += decoder.decode(value, { stream: true });
-				const lines = buffer.split("\n");
-				buffer = lines.pop() || "";
-
-				for (const line of lines) {
+				const decoded = decoder.decode(value, PROXY_DECODE_OPTIONS);
+				let segmentStart = 0;
+				let newline = decoded.indexOf("\n", segmentStart);
+				while (newline !== -1) {
+					const line = buffer + decoded.slice(segmentStart, newline);
+					buffer = "";
+					segmentStart = newline + 1;
 					if (line.startsWith("data: ")) {
 						const data = line.slice(6).trim();
 						if (data) {
 							const proxyEvent = JSON.parse(data) as ProxyAssistantMessageEvent;
-							const event = processProxyEvent(proxyEvent, partial);
+							const event = processProxyEvent(proxyEvent, partial, toolParsers);
 							if (event) {
 								stream.push(event);
+								if (event.type === "done" || event.type === "error") { terminalReceived = true; break; }
 							}
 						}
 					}
+					newline = decoded.indexOf("\n", segmentStart);
 				}
+				if (!terminalReceived && segmentStart < decoded.length) buffer += decoded.slice(segmentStart);
 			}
 
 			if (options.signal?.aborted) {
 				throw new Error("Request aborted by user");
 			}
+			if (!terminalReceived) throw new Error("Proxy stream ended without a terminal event");
 
 			stream.end();
 		} catch (error) {
+			releaseProxyTools(partial, toolParsers);
 			const errorMessage = error instanceof Error ? error.message : String(error);
 			const reason = options.signal?.aborted ? "aborted" : "error";
 			partial.stopReason = reason;
@@ -228,8 +255,15 @@ export function streamProxy(model: Model<any>, context: Context, options: ProxyS
 			});
 			stream.end();
 		} finally {
+			releaseProxyTools(partial, toolParsers);
+			buffer = "";
 			if (options.signal) {
 				options.signal.removeEventListener("abort", abortHandler);
+			}
+			if (reader) {
+				await reader.cancel().catch(ignoreReaderCancellation);
+				reader.releaseLock();
+				reader = undefined;
 			}
 		}
 	})();
@@ -243,12 +277,14 @@ export function streamProxy(model: Model<any>, context: Context, options: ProxyS
 function processProxyEvent(
 	proxyEvent: ProxyAssistantMessageEvent,
 	partial: AssistantMessage,
+	toolParsers: (IncrementalToolArguments | undefined)[],
 ): AssistantMessageEvent | undefined {
 	switch (proxyEvent.type) {
 		case "start":
 			return { type: "start", partial };
 
 		case "text_start":
+			releaseProxyTool(partial, toolParsers, proxyEvent.contentIndex);
 			partial.content[proxyEvent.contentIndex] = { type: "text", text: "" };
 			return { type: "text_start", contentIndex: proxyEvent.contentIndex, partial };
 
@@ -281,6 +317,7 @@ function processProxyEvent(
 		}
 
 		case "thinking_start":
+			releaseProxyTool(partial, toolParsers, proxyEvent.contentIndex);
 			partial.content[proxyEvent.contentIndex] = { type: "thinking", thinking: "" };
 			return { type: "thinking_start", contentIndex: proxyEvent.contentIndex, partial };
 
@@ -312,35 +349,38 @@ function processProxyEvent(
 			throw new Error("Received thinking_end for non-thinking content");
 		}
 
-		case "toolcall_start":
-			partial.content[proxyEvent.contentIndex] = {
+		case "toolcall_start": {
+			releaseProxyTool(partial, toolParsers, proxyEvent.contentIndex);
+			const block: StreamingProxyToolCall = {
 				type: "toolCall",
 				id: proxyEvent.id,
 				name: proxyEvent.toolName,
 				arguments: {},
 				thoughtSignature: undefined,
 				namespace: undefined,
-				partialJson: "",
-			} satisfies ToolCall & { partialJson: string } as ToolCall;
+				toolArgsGeneration: 0,
+			};
+			partial.content[proxyEvent.contentIndex] = block;
+			toolParsers[proxyEvent.contentIndex] = new IncrementalToolArguments();
 			return { type: "toolcall_start", contentIndex: proxyEvent.contentIndex, partial };
+		}
 
 		case "toolcall_delta": {
-			const content = partial.content[proxyEvent.contentIndex];
-			if (content?.type === "toolCall") {
-				(content as any).partialJson += proxyEvent.delta;
-				content.arguments = parseStreamingJson((content as any).partialJson) || {};
-				partial.content[proxyEvent.contentIndex] = { ...content }; // Trigger reactivity
-				return {
-					type: "toolcall_delta",
-					contentIndex: proxyEvent.contentIndex,
-					delta: proxyEvent.delta,
-					partial,
-				};
+			const content = partial.content[proxyEvent.contentIndex] as StreamingProxyToolCall;
+			const parser = toolParsers[proxyEvent.contentIndex];
+			if (content?.type === "toolCall" && parser) {
+				content.arguments = parser.append(proxyEvent.delta);
+				content.toolArgsGeneration = (content.toolArgsGeneration ?? 0) + 1;
+				const hostEvent = proxyEvent as Extract<AssistantMessageEvent, { type: "toolcall_delta" }>;
+				hostEvent.toolArgsGeneration = content.toolArgsGeneration;
+				hostEvent.partial = partial;
+				return hostEvent;
 			}
-			throw new Error("Received toolcall_delta for non-toolCall content");
+			throw new Error("Received toolcall_delta without an active tool call");
 		}
 
 		case "toolcall_end": {
+			releaseProxyTool(partial, toolParsers, proxyEvent.contentIndex);
 			const content = partial.content[proxyEvent.contentIndex];
 			if (content?.type === "toolCall") {
 				content.id = proxyEvent.toolCall.id;
@@ -348,7 +388,6 @@ function processProxyEvent(
 				content.arguments = proxyEvent.toolCall.arguments;
 				content.thoughtSignature = proxyEvent.toolCall.thoughtSignature;
 				content.namespace = proxyEvent.toolCall.namespace;
-				(content as { partialJson?: string }).partialJson = undefined;
 				return {
 					type: "toolcall_end",
 					contentIndex: proxyEvent.contentIndex,
@@ -360,6 +399,7 @@ function processProxyEvent(
 		}
 
 		case "done":
+			releaseProxyTools(partial, toolParsers, true);
 			partial.stopReason = proxyEvent.reason;
 			partial.usage = proxyEvent.usage;
 			return { type: "done", reason: proxyEvent.reason, message:
@@ -367,6 +407,7 @@ function processProxyEvent(
 					{ ...partial, anthropicContext: proxyEvent.anthropicContext, rawStopReason: proxyEvent.rawStopReason } };
 
 		case "error":
+			releaseProxyTools(partial, toolParsers);
 			partial.stopReason = proxyEvent.reason;
 			partial.errorMessage = proxyEvent.errorMessage;
 			partial.usage = proxyEvent.usage;
