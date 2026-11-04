@@ -1454,12 +1454,15 @@ function convertTools(
 	return tools.map((tool, index) => {
 		const strict = resolveJsonSchemaStrictSampling(tool, supportsStrictTools, isAnthropicStrictUnsupportedKeyword);
 		const parameters = getJsonSchemaToolParameters(tool, strict);
-		const schema = parameters as { properties?: unknown; required?: string[] };
-		const legacyInputSchema = {
+		const schema = parameters as { properties?: unknown; required?: string[]; $defs?: unknown; definitions?: unknown };
+		const legacyInputSchema: { type: "object"; properties: unknown; required: string[]; $defs?: unknown; definitions?: unknown } = {
 			type: "object" as const,
 			properties: schema.properties ?? {},
 			required: schema.required ?? [],
 		};
+		// Preserve targets of nested $refs without forwarding unsupported root keywords.
+		if (schema.$defs !== undefined) legacyInputSchema.$defs = schema.$defs;
+		if (schema.definitions !== undefined) legacyInputSchema.definitions = schema.definitions;
 		const inputSchema =
 			strict === true
 				? {
