@@ -71,7 +71,7 @@ for (const kind of ["eof", "eof-error", "sigterm", "sigterm-first"]) {
     const exitLine = stderr.split("\n").find(line => line.startsWith("CLOSE_EXIT:"));
     assert.ok(exitLine, stderr);
     const exit = JSON.parse(exitLine.slice("CLOSE_EXIT:".length));
-    assert.deepEqual(exit, { code: expectedCode, runtimeCalls: 1, sessionCalls: 1, completed: true, networkCalls: 0, uncaught: 0, unhandledRejections: 0, signalObserverActive: true,
+    assert.deepEqual(exit, { code: expectedCode, runtimeCalls: 1, sessionCalls: 1, completed: true, networkCalls: 0, uncaught: 0, unhandledRejections: 0, signalObserverReleased: true,
       tmpdir: tmpdir(), signalListeners: 0, dataListeners: 0, endListeners: 0, callbacksReleased: true, idleReleased: true });
     const gate = stderr.split("\n").filter(line => line.startsWith("CLOSE_RELEASED:"));
     assert.equal(gate.length, 1, stderr);

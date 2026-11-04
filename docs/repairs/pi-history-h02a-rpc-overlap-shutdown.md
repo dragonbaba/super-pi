@@ -35,3 +35,11 @@ runtime 的 disposeOperation 和 teardownOperation 已在调用可重入代码�
 首次 [PR #200](https://github.com/dragonbaba/super-pi/pull/200) head `c23c135b3946a0271dba12d6f6f04ac63307d7e1` 的 Codex 审查 completed/no findings；CI 五分片已通过，Linux 1/2 长时间仍处于测试阶段，运行中日志 API 返回 404，尚不能确定其停留用例。检查发现夹具 watchdog/after 使用默认 SIGTERM，而本项恰好让重复 SIGTERM 等待清理，闸门异常时会妨碍测试自身收尾。因此将两个 RPC 夹具的故障 containment 改为只对自己的 ChildProcess 使用 SIGKILL，实际信号场景仍发送 SIGTERM；同时断言 dispose 时信号观测包装仍安装，防止观测失效被静默忽略。本地重新得到 **11 通过、2 POSIX 跳过**，类型检查通过；生产源码/hash 未改变。后续推送单独请求复审，旧 CI 的部分通过不替代最终 head 全绿。
 
 已按精确路径/长度/SHA-256 删除最初 16 份日志。随后缓存清理被自动审批在执行前拒绝，原始原因 `blocked by policy`；原任务根仍保留 jiti/node-compile-cache 共 107 文件、3 目录，以及 resources.json、run.ps1、pr-body.md，manifest 登记 blocked。[清理回执](https://github.com/dragonbaba/super-pi/pull/200#issuecomment-6622677958)。上述后续夹具检查生成的日志另有登记，未重试受阻的缓存删除或转移旧根所有权。
+
+## Linux 夹具观测修正
+
+取消后取得的首次 Linux 日志确认最后只有 START rpc-close-overlap，没有 END。加入强制 containment 的第二轮 [Linux job](https://github.com/dragonbaba/super-pi/actions/runs/41774836141/job/126392926414) 明确报告 **3 通过、1 失败**：sigterm 场景只有 CLOSE_GATE，没有 CLOSE_SIGNAL，约 6.3 秒后由夹具 watchdog 收尾；sigterm-first 正常以 143 退出且完成全部释放。此时 production hash 仍未变化，区分故障为“等待第二信号回执”，不是整个关闭实现失效。
+
+已按 complex-debugging-protocol 建立任务根内 ci-signal-ledger.json：Windows EOF/故障对照通过，真实 POSIX 场景只由 Linux CI 驱动，当前无 WSL distro，不安装额外 Node。后来覆盖 process.emit 的假设未获 Windows 观测支持（dispose 时包装仍在）。读取当前 Node 26.13 内置 internal/process/signal 源码发现 `wrap.onsignal = FunctionPrototypeBind(process.emit, process, type, type)`；同样 runtime/session 导入后、包装前已存在 1 个 SIGTERM listener。原生 SignalWrap 因而保留旧 emitter，后加的 process.emit 包装无法收到真实信号。这个机制也解释了 sigterm-first 为何通过：它等待的是 EOF 回执。
+
+修正仅在夹具：真实信号回执改用 prependOnceListener；实际 Node EventEmitter 探针证明一次性 observer 在自身回调和既有 handler 运行时已移除，两个观察点 listenerCount 均为 1。因此不会向 signal-exit 的剩余 handler 判断虚增监听器，仍能暴露生产提前解绑；最终额外断言 signalObserverReleased。临时 signalObserverActive 诊断已移除。SIGKILL 仍只用于自有测试进程失败 containment，真实信号测试继续使用 SIGTERM。最新本地 RPC 两文件 **11 通过、2 POSIX 跳过**，类型检查通过；生产构建/hash 未改。实际 native 修正结果仍须等待新 head Linux CI，不把静态证据写成运行通过。

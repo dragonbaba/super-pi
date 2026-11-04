@@ -5,7 +5,6 @@ import { tmpdir } from 'node:os';
 let runtime, retainedSession;
 let runtimeCalls = 0, sessionCalls = 0, completed = false, networkCalls = 0, uncaught = 0;
 let unhandledRejections = 0;
-let signalObserverActive = false;
 const initialEnd = process.stdin.listeners('end');
 const initialData = process.stdin.listeners('data');
 let initialSignals = [];
@@ -20,21 +19,21 @@ AgentSession.prototype.bindExtensions = function () {
 };
 function onEof() { process.stderr.write('CLOSE_EOF\n'); }
 process.stdin.once('end', onEof);
-// Observe actual delivered signals without installing another signal listener:
-// a removed production handler must still expose the OS default termination.
+function onSignal() { process.stderr.write('CLOSE_SIGNAL\n'); }
+// Native SignalWrap binds process.emit at the first listener, before this
+// preload's wrapper. Remove this one-shot observer before signal-exit checks
+// the remaining handlers, so it cannot hide premature production detachment.
+if (process.env.RPC_CLOSE_CASE?.startsWith('sigterm')) process.prependOnceListener('SIGTERM', onSignal);
 process.emit = function (event) {
   if (event === 'unhandledRejection') unhandledRejections++;
-  const result = Reflect.apply(originalEmit, this, arguments);
-  if (event === 'SIGTERM') process.stderr.write('CLOSE_SIGNAL\n');
-  return result;
+  return Reflect.apply(originalEmit, this, arguments);
 };
-const signalObserver = process.emit;
 function finished() {
   completed = true;
   process.stdin.off('end', onEof);
+  process.off('SIGTERM', onSignal);
 }
 AgentSessionRuntime.prototype.dispose = function () {
-  signalObserverActive = process.emit === signalObserver;
   runtime = this; runtimeCalls++;
   return disposeRuntime.call(this).then(finished, error => { finished(); throw error; });
 };
@@ -48,7 +47,8 @@ globalThis.fetch = function () { networkCalls++; throw new Error('fixture forbid
 process.on('uncaughtExceptionMonitor', () => { uncaught++; });
 process.on('exit', code => {
   process.emit = originalEmit;
-  process.stderr.write('CLOSE_EXIT:' + JSON.stringify({ code, runtimeCalls, sessionCalls, completed, networkCalls, uncaught, unhandledRejections, signalObserverActive,
+  process.stderr.write('CLOSE_EXIT:' + JSON.stringify({ code, runtimeCalls, sessionCalls, completed, networkCalls, uncaught, unhandledRejections,
+    signalObserverReleased: !process.listeners('SIGTERM').includes(onSignal),
     tmpdir: tmpdir(), signalListeners: process.listeners('SIGTERM').filter(listener => !initialSignals.includes(listener)).length,
     dataListeners: process.stdin.listeners('data').filter(listener => !initialData.includes(listener)).length,
     endListeners: process.stdin.listeners('end').filter(listener => !initialEnd.includes(listener)).length,
