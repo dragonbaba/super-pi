@@ -1,0 +1,400 @@
+{
+  "date": "2026-11-04",
+  "baseline": "24663237e2e1aebe403215c27f8e7fd9d89dc303",
+  "environment": {
+    "node": "v26.13.0",
+    "powershell": "7.6.9 Core",
+    "platform": "win32"
+  },
+  "regression": {
+    "before": {
+      "tests": 2,
+      "failed": 2
+    },
+    "after": {
+      "tests": 62,
+      "passed": 62,
+      "failed": 0
+    },
+    "typecheck": true
+  },
+  "build": {
+    "command": "npm run build:offline",
+    "summary": "[build] Completed 12/12 packages in 11056ms; peak=2",
+    "runtimeFiles": 41,
+    "manifestSha256": "baa2b0598dea4e730820ea3f93619e1780d5f6ba431ece1b48c9deb06ba09212",
+    "workerSha256": "4fde1d6e244793c0c56351231f93f2137fe1b9def8c82e5e6de17236d3bb8f6b"
+  },
+  "live": {
+    "distribution": true,
+    "probes": [
+      {
+        "mode": "read-only",
+        "network": "disabled",
+        "version": "7.6.9",
+        "cwd": "C:\\SuperPiInput",
+        "dns": false,
+        "https": false,
+        "fixture": "workspace-fixture",
+        "calls": 3
+      },
+      {
+        "mode": "sandbox-write",
+        "network": "enabled",
+        "version": "7.6.9",
+        "cwd": "C:\\SuperPiWorkspace",
+        "dns": true,
+        "https": true,
+        "fixture": "workspace-fixture",
+        "npmInstall": true,
+        "hostUnchanged": true,
+        "dependencyWritebacks": 0,
+        "calls": 4
+      }
+    ],
+    "closed": [
+      {
+        "starts": 1,
+        "calls": 3,
+        "pending": false,
+        "vm": false,
+        "closed": true,
+        "sourceFiles": 0,
+        "ownedArtifacts": 0
+      },
+      {
+        "starts": 1,
+        "calls": 4,
+        "pending": false,
+        "vm": false,
+        "closed": true,
+        "sourceFiles": 0,
+        "ownedArtifacts": 0
+      }
+    ],
+    "reportedProject": [
+      {
+        "reportedProject": true,
+        "hostEntries": 0,
+        "absoluteLs": true,
+        "hostUnchanged": true,
+        "cwd": "C:\\SuperPiWorkspace",
+        "count": 0,
+        "dns": true
+      },
+      {
+        "closed": {
+          "starts": 1,
+          "calls": 2,
+          "pending": false,
+          "vm": false,
+          "closed": true,
+          "sourceFiles": 0,
+          "ownedArtifacts": 0
+        }
+      }
+    ]
+  },
+  "performance": {
+    "outputAndPermissions": {
+      "contract": "sandbox-session-allocation-v1",
+      "counts": {
+        "chunks": 272,
+        "hotPromises": 0,
+        "hotControllers": 0,
+        "processes": 1,
+        "closed": 1,
+        "seen": 17825792,
+        "retained": 32768,
+        "streamBufferAllocations": 2,
+        "streamBufferBytes": 32768,
+        "policyChecks": 200000,
+        "ordinaryChecks": 200000
+      },
+      "allocations": [
+        {
+          "function": "CapturedProcess",
+          "line": 56,
+          "bytes": 2976
+        },
+        {
+          "function": "CapturedProcess",
+          "line": 29,
+          "bytes": 3624
+        },
+        {
+          "function": "SessionExecutionPolicy",
+          "line": 86,
+          "bytes": 4352
+        },
+        {
+          "function": "prepareInputWorkspaceRead",
+          "line": 295,
+          "bytes": 3176
+        },
+        {
+          "function": "authorizeFileObservation",
+          "line": 283,
+          "bytes": 1424
+        },
+        {
+          "function": "paths",
+          "line": 133,
+          "bytes": 1088
+        },
+        {
+          "function": "guard",
+          "line": 123,
+          "bytes": 1088
+        },
+        {
+          "function": "onClose",
+          "line": 46,
+          "bytes": 5712
+        },
+        {
+          "function": "onOut",
+          "line": 42,
+          "bytes": 5168
+        },
+        {
+          "function": "drainExecution",
+          "line": 822,
+          "bytes": 4264
+        },
+        {
+          "function": "ExtensionRunner",
+          "line": 786,
+          "bytes": 2216
+        },
+        {
+          "function": "ExtensionRunner",
+          "line": 685,
+          "bytes": 10792
+        },
+        {
+          "function": "dispose",
+          "line": 120,
+          "bytes": 2096
+        },
+        {
+          "function": "#pure",
+          "line": 104,
+          "bytes": 2496
+        },
+        {
+          "function": "assertGrantIdentity",
+          "line": 127,
+          "bytes": 1056
+        },
+        {
+          "function": "get diagnostics",
+          "line": 173,
+          "bytes": 5584
+        },
+        {
+          "function": "consume",
+          "line": 548,
+          "bytes": 3888
+        },
+        {
+          "function": "assertNativePermission",
+          "line": 126,
+          "bytes": 1120
+        },
+        {
+          "function": "decision",
+          "line": 151,
+          "bytes": 2256
+        },
+        {
+          "function": "prepareInputWorkspaceRead",
+          "line": 295,
+          "bytes": 5592
+        },
+        {
+          "function": "InputWorkspaceGrantLease",
+          "line": 85,
+          "bytes": 2656
+        },
+        {
+          "function": "InputReadPolicyLease",
+          "line": 39,
+          "bytes": 2192
+        },
+        {
+          "function": "InputReadPolicyLease",
+          "line": 30,
+          "bytes": 2144
+        },
+        {
+          "function": "freezeInputWorkspaceBinding",
+          "line": 26,
+          "bytes": 2128
+        },
+        {
+          "function": "InputWorkspaceGrantLease",
+          "line": 66,
+          "bytes": 6424
+        },
+        {
+          "function": "assertNativePermission",
+          "line": 126,
+          "bytes": 1104
+        },
+        {
+          "function": "prepare",
+          "line": 134,
+          "bytes": 2568
+        },
+        {
+          "function": "#run",
+          "line": 136,
+          "bytes": 1040
+        },
+        {
+          "function": "paths",
+          "line": 133,
+          "bytes": 1120
+        },
+        {
+          "function": "assertWorkspace",
+          "line": 310,
+          "bytes": 1104
+        }
+      ],
+      "workspaceCheckSampledBytes": 1104,
+      "ordinaryCheckSampledBytes": 3888,
+      "lifecycle": {
+        "targets": 9,
+        "gcRounds": 4,
+        "live": 0
+      },
+      "hotPerChunk": {
+        "closures": 0,
+        "arrays": 0,
+        "wrappers": 0,
+        "promises": 0,
+        "controllers": 0
+      },
+      "note": "Closure/array/wrapper counts also require source invariants; profiler samples include cold startup and completion."
+    },
+    "workspacePaths": {
+      "checks": 200000,
+      "sampledBytes": 834521992,
+      "sampledBytesPerCheck": 4172.60996,
+      "sites": [
+        {
+          "name": "join",
+          "bytes": 386500312
+        },
+        {
+          "name": "normalize",
+          "bytes": 167510944
+        },
+        {
+          "name": "resolve",
+          "bytes": 122279856
+        },
+        {
+          "name": "push",
+          "bytes": 60955648
+        },
+        {
+          "name": "local",
+          "bytes": 40034920
+        },
+        {
+          "name": "join",
+          "bytes": 36651072
+        },
+        {
+          "name": "split",
+          "bytes": 6279040
+        },
+        {
+          "name": "normalizeString",
+          "bytes": 5594056
+        },
+        {
+          "name": "normalizeString",
+          "bytes": 4292904
+        },
+        {
+          "name": "next",
+          "bytes": 1650520
+        },
+        {
+          "name": "slice",
+          "bytes": 1023472
+        },
+        {
+          "name": "toLowerCase",
+          "bytes": 698816
+        }
+      ],
+      "structural": {
+        "componentClosures": 0,
+        "componentRegexObjects": 0,
+        "componentProtectedArrays": 0,
+        "pathComponentArraysPerCheck": 1
+      },
+      "lifecycle": {
+        "targets": 2,
+        "gcRounds": 4,
+        "live": 0
+      },
+      "note": "Real production local helper, synthetic absent filesystem; includes path-library allocations, not VM or OS memory. Structural counts require the sandbox-search-scope AST test."
+    },
+    "search": {
+      "scopeChecks": 200000,
+      "guestCalls": 90,
+      "dependencyDirectoryReads": 0,
+      "dependencyWritebacks": 0
+    }
+  },
+  "sources": [
+    {
+      "file": "packages/coding-agent/src/core/sandbox/workspace-paths.ts",
+      "sha256": "a5d0208f5da97872087d42f34e0fa11f3755c8cf00b34fa2fbd1a6adbacf6e98"
+    },
+    {
+      "file": "packages/coding-agent/src/core/sandbox/network-policy.ts",
+      "sha256": "3c7aa8ec7b9b8363e8a40f0f5115fb1202c7772f52415234321cb37bd67597a3"
+    },
+    {
+      "file": "packages/coding-agent/src/core/sandbox/workspace-backend.ts",
+      "sha256": "09a997f8bf4a514ca27a2bb27bf53e7e24db8d8a113a24d94f9d2bd038e4f098"
+    },
+    {
+      "file": "packages/coding-agent/src/core/sandbox/workspace-tools.ts",
+      "sha256": "d3d86a8385ed5ba58f9b0c3f961c63186732014005364fba46c798cec08cc1d2"
+    },
+    {
+      "file": "packages/coding-agent/src/core/sandbox/workspace-worker.mjs",
+      "sha256": "4fde1d6e244793c0c56351231f93f2137fe1b9def8c82e5e6de17236d3bb8f6b"
+    },
+    {
+      "file": "packages/coding-agent/src/core/settings-manager.ts",
+      "sha256": "44a658fe44c82212a8fee2e48c71fd458bc9332fe597b016f60f63f8423d1ae9"
+    },
+    {
+      "file": "packages/coding-agent/src/core/agent-session.ts",
+      "sha256": "61817e61a5b3e89c1bb124e6a5f7ecb4a32345f80ad74b0de6dcee63855865a3"
+    },
+    {
+      "file": "scripts/bench/sandbox-workspace-paths.mjs",
+      "sha256": "d7006e24b456a91d6877f13494d2db13d7b1f50bb5f9df407e716d24bf53ee63"
+    }
+  ],
+  "exploratoryFailures": [
+    "Initial path regressions failed as expected.",
+    "Type annotation and test command.txt cleanup omissions fixed before acceptance.",
+    "Existing home-relative host-path fixture assumed TEMP and home used the same Windows drive; corrected without modifying production permissions.",
+    "Scratch reported-project probe import had one excess parent component; corrected before any VM or file action."
+  ],
+  "scratch": {
+    "root": ".task-tmp/sandbox-workspace-a58426776bbf",
+    "cleanup": "Pending review/CI; final closeout receipt will record exact cleanup."
+  }
+}

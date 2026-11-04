@@ -28,7 +28,7 @@ Super Pi 适合需要多轮探索和修改的工程任务，例如：
 
 这些能力仍受 provider、模型能力、项目配置和当前工具策略限制。选定的执行模式决定已接入的工具是否使用 Windows Sandbox；应用权限不保证模型输出或外部服务行为。
 
-Windows Sandbox 命令严格使用 **PowerShell 7**，不回退 Windows PowerShell 5.1。默认从宿主 PATH 自动发现工具安装目录，连同安装目录内的依赖只读映射，无需逐个配置普通工具；来宾使用自己的 home 和缓存。此沙箱配置仍不开放网络，也不带入项目 `node_modules`。详见[自动发现、例外与限制](docs/execution-environments.md#自动发现工具目录)。
+Windows Sandbox 命令严格使用 **PowerShell 7**，不回退 Windows PowerShell 5.1。默认从宿主 PATH 自动发现工具安装目录，连同安装目录内的依赖只读映射，无需逐个配置普通工具。文件工具接受相对路径和会话工作区内的宿主绝对路径；命令使用沙箱工作目录。网络默认关闭，可通过全局 `sandboxNetwork: "enabled"` 开启。宿主 `node_modules` 不进入快照，沙箱内安装的依赖留在 VM 中。详见[工作区路径与网络配置](docs/execution-environments.md#工作区路径与网络配置)。
 
 ## 快速开始
 

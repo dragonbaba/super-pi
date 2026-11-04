@@ -9,6 +9,7 @@
 		"executionEnvironment": { "not": {}, "description": "Global-only: a project cannot select its execution backend." },
 		"executionPermissions": { "not": {}, "description": "Global-only: a project cannot grant itself execution permissions." },
 		"powershellPath": { "not": {}, "description": "Global-only: configure in ~/.sp/agent/config/settings.json." },
+		"sandboxNetwork": { "not": {}, "description": "Global-only: project content cannot enable sandbox network access." },
 		"sandboxToolchains": { "not": {}, "description": "Global-only: project content cannot expose additional host tool directories." },
 		"powershellStatus": { "not": {}, "description": "Global-only: Super Pi maintains this discovery state in global settings." },
 		"defaultProjectTrust": { "not": {}, "description": "Global-only: a project cannot grant itself trust." },

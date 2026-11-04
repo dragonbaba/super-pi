@@ -7,7 +7,8 @@ import type { ExtensionContext, ExtensionRuntime, ToolDefinition } from "../exte
 import { FileService } from "../files/file-service.ts";
 import { MAX_WRITE_BYTES } from "../files/write-limits.ts";
 import { assessProtectedMutationPath } from "../files/protected-path-policy.ts";
-import { WorkspaceSandboxBackend, type WorkspaceChange } from "./workspace-backend.ts";
+import { WorkspaceSandboxBackend, type WorkspaceChange, type WorkspaceSandboxOptions } from "./workspace-backend.ts";
+import { parseSandboxNetwork } from "./network-policy.ts";
 
 const names = ["read", "ls", "find", "grep", "write", "edit", "delete", "move", "file_batch", "powershell"] as const;
 const BASELINE_PATTERN = /^[a-f0-9]{64}$/;
@@ -21,8 +22,11 @@ export class WorkspaceSandboxTools {
   private readonly backend: WorkspaceSandboxBackend;
   private readonly runtime: () => ExtensionRuntime;
   private readonly definitions = new Map<string, ToolDefinition>();
-  constructor(cwd: string, parent: string, mode: "read-only" | "sandbox-write", runtime: () => ExtensionRuntime, toolchainOptions = {}) {
+  constructor(cwd: string, parent: string, mode: "read-only" | "sandbox-write", runtime: () => ExtensionRuntime, toolchainOptions: WorkspaceSandboxOptions = {}) {
     this.backend = new WorkspaceSandboxBackend(cwd, parent, mode, toolchainOptions); this.runtime = runtime;
+    const workspace = " Session host workspace: " + cwd + ". File tools accept workspace-relative paths or host absolute paths inside this directory. Other host directories are unavailable.";
+    const commandEnvironment = " Command cwd: " + (mode === "read-only" ? "C:\\SuperPiInput" : "C:\\SuperPiWorkspace")
+      + "; use relative paths or $PWD in commands. Host workspace drive paths are not mounted. Network access: " + parseSandboxNetwork(toolchainOptions.network) + ".";
     for (const name of names) {
       const parameters = name === "powershell" ? Type.Object({ command: Type.String(), timeout: Type.Optional(Type.Number({ minimum: 0.001, maximum: 120 })) })
         : name === "file_batch" ? Type.Object({ operations: Type.Array(Type.Any(), { minItems: 1, maxItems: 16 }) })
@@ -34,9 +38,9 @@ export class WorkspaceSandboxTools {
         : Type.Object({ path: Type.Optional(Type.String()), pattern: Type.Optional(Type.String()) });
       const owner = this;
       const definition: ToolDefinition = { name, label: name + " (Sandbox)", parameters, executionMode: "sequential", modelExposure: "nested",
-        description: name === "powershell" ? "Run PowerShell 7 inside the session Windows Sandbox. Tools are discovered from the host PATH and their installation directories mounted read-only. Use Get-Command to inspect guest availability; C:\\SuperPiTools\\toolchains.json lists skipped directories. Only discovered installations have guest paths; the host user profile, credentials and project node_modules are not inherited. Workspace changes publish only after successful execution and current authorization. No host fallback; no network or background processes. Timeout at most 120 seconds."
-          : name === "find" || name === "grep" ? "Search sandbox workspace using a literal substring; at most 200 results."
-          : "Operate inside the session sandbox workspace. Paths are workspace-relative. Read returns a snapshot hash required for overwriting or exact-text editing. Protected metadata and dependencies are excluded from the snapshot.",
+        description: name === "powershell" ? "Run PowerShell 7 inside the session Windows Sandbox. Tools are discovered from the host PATH and their installation directories mounted read-only. Use Get-Command to inspect guest availability; C:\\SuperPiTools\\toolchains.json lists skipped directories. The host user profile, credentials and project node_modules are not inherited. Workspace changes publish only after successful execution and current authorization. No host fallback or background processes. Timeout at most 120 seconds." + workspace + commandEnvironment
+          : name === "find" || name === "grep" ? "Search sandbox workspace using a literal substring; at most 200 results." + workspace
+          : "Operate inside the session sandbox workspace. Read returns a snapshot hash required for overwriting or exact-text editing. Protected metadata and dependencies are excluded from the snapshot." + workspace,
         async execute(id, args, signal, _update, ctx) { return owner.execute(name, id, args as Record<string, unknown>, ctx, signal); },
       };
       this.definitions.set(name, definition);

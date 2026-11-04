@@ -131,20 +131,37 @@ test("project schema warns on global-only settings without changing runtime trus
 	const globalOnly = {
 		powershellPath: "C:/trusted/pwsh.exe",
 		sandboxToolchains: { include: ["C:/trusted/tools"], exclude: ["C:/obsolete"] },
+		sandboxNetwork: "disabled",
 		powershellStatus: { trustVersion: 1, available: true, verified: false, source: "configured" },
 		defaultProjectTrust: "ask", httpProxy: "http://localhost:8080",
 	};
 	assert.equal(validateGlobal(globalOnly), true, ajv.errorsText(validateGlobal.errors));
 	for (const [key, value] of Object.entries(globalOnly)) assert.equal(validateProject({ [key]: value }), false, key);
 	const manager = SettingsManager.fromStorage(storage(globalOnly, {
-		powershellPath: "C:/project/pwsh.exe", sandboxToolchains: { include: ["C:/project"] }, defaultProjectTrust: "always", showHardwareCursor: true,
+		powershellPath: "C:/project/pwsh.exe", sandboxToolchains: { include: ["C:/project"] }, sandboxNetwork: "enabled", defaultProjectTrust: "always", showHardwareCursor: true,
 	}));
 	assert.equal(manager.getPowerShellPath(), "C:/trusted/pwsh.exe");
 	assert.deepEqual(manager.getSandboxToolchains(), globalOnly.sandboxToolchains);
+	assert.equal(manager.getSandboxNetwork(), "disabled");
 	assert.equal(manager.getDefaultProjectTrust(), "ask");
 	assert.equal(manager.getShowHardwareCursor(), true);
 	const untrusted = SettingsManager.fromStorage(storage({ showHardwareCursor: false }, { showHardwareCursor: true }), { projectTrusted: false });
 	assert.equal(untrusted.getShowHardwareCursor(), false);
+});
+
+test("sandbox networking defaults offline, validates values, and persists explicit global choices", async () => {
+	assert.equal(SettingsManager.inMemory().getSandboxNetwork(), "disabled");
+	for (const value of ["enabled", "disabled"] as const) {
+		assert.equal(validateGlobal({ sandboxNetwork: value }), true);
+		const saved = storage({}); const manager = SettingsManager.fromStorage(saved);
+		manager.setSandboxNetwork(value); assert.equal(manager.getSandboxNetwork(), value);
+		await manager.flush(); assert.equal(SettingsManager.fromStorage(saved).getSandboxNetwork(), value);
+	}
+	for (const value of [true, false, null, "Enable", "default", "", 1]) {
+		assert.equal(validateGlobal({ sandboxNetwork: value }), false);
+		assert.throws(() => SettingsManager.fromStorage(storage({sandboxNetwork:value})).getSandboxNetwork(), /Invalid global sandboxNetwork/);
+	}
+	assert.equal(SettingsManager.fromStorage(storage({}, {sandboxNetwork:"enabled"})).getSandboxNetwork(), "disabled");
 });
 
 test("editor schema annotations and diagnostics do not enable runtime validation or mutate loaded data", () => {

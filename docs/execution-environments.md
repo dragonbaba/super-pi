@@ -26,9 +26,27 @@
 | 写回 | 每次至多 32 个文件、单文件 1 MiB（与原生写入共用上限）、合计 16 MiB；UTF-8 文本；批量入口至多 16 项 |
 | 命令 | 只使用 PowerShell 7；来宾验证 Core / 主版本 7，禁止兼容模式隐式启动 5.1；默认 30 秒、最多 120 秒，同一会话串行执行 |
 | 工具链 | 默认从宿主 PATH 自动发现完整安装目录，去重并生成来宾 PATH；当前应用的 Node 安装优先，npm/npx 随其安装目录可用 |
-| 外部通道 | VM 网络、剪贴板、音视频、打印和 vGPU 关闭；模型 provider 在宿主侧通信 |
+| 外部通道 | VM 网络默认关闭，由全局 `sandboxNetwork` 显式控制；剪贴板、音视频、打印和 vGPU 关闭；模型 provider 在宿主侧通信 |
 
-宿主需要完整的 PowerShell 7 安装。优先使用全局 `powershellPath`，否则从 PATH 和标准安装位置发现 `pwsh.exe`；缺失时明确失败，不回退 Windows PowerShell 5.1。UTF-8 脚本无需为 5.1 添加 BOM，错误按纯文本返回。命令及其后代由同一个 Windows Job 管理；成功、失败或超时都必须确认进程族结束。沙箱中未接入的 Bash、MCP、浏览器、LSP、自定义宿主工具与后台任务不会绕过边界在宿主执行。需要网络或当前快照预算之外的大型构建时，可由用户明确选择第三档。
+宿主需要完整的 PowerShell 7 安装。优先使用全局 `powershellPath`，否则从 PATH 和标准安装位置发现 `pwsh.exe`；缺失时明确失败，不回退 Windows PowerShell 5.1。UTF-8 脚本无需为 5.1 添加 BOM，错误按纯文本返回。命令及其后代由同一个 Windows Job 管理；成功、失败或超时都必须确认进程族结束。沙箱中未接入的 Bash、MCP、浏览器、LSP、自定义宿主工具与后台任务不会绕过边界在宿主执行。当前快照预算之外的大型构建可由用户明确选择第三档。
+
+### 工作区路径与网络配置
+
+文件工具（包括批量操作）接受工作区相对路径，也接受当前会话工作区内部的宿主绝对路径。例如从 `D:\Projects\Example` 启动会话后，`ls({ path: "D:/Projects/Example" })` 与 `ls({ path: "." })` 指向同一份沙箱快照。工作区外路径、UNC 和设备路径不会扩展挂载范围。要处理另一个项目，应从那个目录启动会话。
+
+PowerShell 的当前目录在只读模式为 `C:\SuperPiInput`，读写模式为 `C:\SuperPiWorkspace`。命令中使用相对路径或 `$PWD`；命令文本中的宿主绝对路径不会自动改写，宿主项目盘符也不会映射进 VM。工具描述会提供实际宿主工作区、来宾 cwd 和网络状态。若宿主项目本来为空，沙箱副本也为空。
+
+在全局 `~/.sp/agent/config/settings.json` 中合并以下字段即可允许工作区沙箱联网：
+
+```json
+{ "sandboxNetwork": "enabled" }
+```
+
+`"disabled"` 或未设置表示禁网；其他值明确报错。修改后重新启动会话或执行 `/reload`，新 VM 才使用新配置。项目配置不能启用网络。该开关适用于前两档工作区沙箱；旧 SDK 显式 `inputs` / `writes` 协议仍保持离线。
+
+启用后通过 Windows Sandbox 虚拟网络访问外网及可达的局域网，并非域名白名单。DNS、代理、系统策略和防火墙仍可能影响连接；不继承宿主代理凭据，也不自动更改防火墙。网络由 Windows Sandbox 的 [Networking 配置](https://learn.microsoft.com/en-us/windows/security/application-security/application-isolation/windows-sandbox/windows-sandbox-configure-using-wsb-file)控制，与构建用的 `build:offline` 和启动用的 `--offline` 无关。
+
+读写模式可在 VM 中运行 `npm install`。`node_modules` 不参与文件工具搜索和宿主写回，关闭或重建 VM 后需要重新安装；`package.json`、锁文件等普通项目文件仍按现有容量、版本和授权规则写回。二进制产物和超出快照/写回预算的构建输出仍受上述限制。只读模式的项目快照不能安装依赖，可在来宾临时目录下载或试运行。
 
 ### 自动发现工具目录
 
