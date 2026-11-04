@@ -1,0 +1,396 @@
+{
+  "task": "H06",
+  "node": "v26.13.0",
+  "baselineCommit": "b900f2e82dc1904811ac868cbf8af74caa9d63d9",
+  "benchmarkHash": "61840d0ad78136f6eb62598eaffa98b40002032611a7c92d024560b7ae32f3d1",
+  "fixtureHash": "d76c9c123462acb25c2d79c72877a848bcc4843848752b6ab700c74417dd1ff3",
+  "commands": [
+    "node --experimental-strip-types scripts/bench/compaction-instructions.ts counts",
+    "node --expose-gc --experimental-strip-types scripts/bench/compaction-instructions.ts profile",
+    "node --expose-gc --experimental-strip-types scripts/bench/compaction-instructions.ts lifecycle"
+  ],
+  "samplingInterval": 4096,
+  "baseline": {
+    "profile": [
+      {
+        "phase": "profile",
+        "node": "v26.13.0",
+        "messages": 1024,
+        "charactersPerMessage": 2048,
+        "benchmarkHash": "61840d0ad78136f6eb62598eaffa98b40002032611a7c92d024560b7ae32f3d1",
+        "hashes": [
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\coding-agent\\src\\core\\compaction\\compaction.ts",
+            "sha256": "c2a26c3f647d98edb6dea6dad581c322f45d247e42e06eda39e93bf42d696dbd"
+          },
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\coding-agent\\src\\core\\compaction\\utils.ts",
+            "sha256": "05d05bb84bdfa059461bff73e3d84d055383d16a9a5ae9e40e59bbe4175b2237"
+          },
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\coding-agent\\src\\core\\messages.ts",
+            "sha256": "18c071a7a4135c3bae395fc2504f416c36dbbdfb60ed3712ef8b477b016ef486"
+          }
+        ]
+      },
+      {
+        "iterations": 16,
+        "sampledBytesPerCompaction": 6838978,
+        "lastRequests": 2,
+        "lastWireCodeUnits": 2125404,
+        "focusedRequests": 1,
+        "top": [
+          {
+            "bytes": 34027680,
+            "function": "FallbackEncoder",
+            "url": "file:///D:/RMProjects/Pi/node_modules/@anthropic-ai/sdk/internal/request-options.mjs",
+            "line": 10
+          },
+          {
+            "bytes": 17046496,
+            "function": "join",
+            "url": "",
+            "line": -1
+          },
+          {
+            "bytes": 17009464,
+            "function": "join",
+            "url": "",
+            "line": -1
+          },
+          {
+            "bytes": 16993664,
+            "function": "replace",
+            "url": "",
+            "line": -1
+          },
+          {
+            "bytes": 16963584,
+            "function": "replace",
+            "url": "",
+            "line": -1
+          },
+          {
+            "bytes": 774384,
+            "function": "",
+            "url": "file:///D:/RMProjects/Pi/packages/coding-agent/src/core/messages.ts",
+            "line": 149
+          },
+          {
+            "bytes": 770384,
+            "function": "",
+            "url": "file:///D:/RMProjects/Pi/packages/coding-agent/src/core/messages.ts",
+            "line": 149
+          },
+          {
+            "bytes": 428080,
+            "function": "next",
+            "url": "",
+            "line": -1
+          },
+          {
+            "bytes": 411600,
+            "function": "next",
+            "url": "",
+            "line": -1
+          },
+          {
+            "bytes": 312544,
+            "function": "serializeConversation",
+            "url": "file:///D:/RMProjects/Pi/packages/coding-agent/src/core/compaction/utils.ts",
+            "line": 123
+          },
+          {
+            "bytes": 234400,
+            "function": "serializeConversation",
+            "url": "file:///D:/RMProjects/Pi/packages/coding-agent/src/core/compaction/utils.ts",
+            "line": 123
+          },
+          {
+            "bytes": 206616,
+            "function": "push",
+            "url": "",
+            "line": -1
+          }
+        ]
+      }
+    ],
+    "counts": [
+      {
+        "phase": "counts",
+        "node": "v26.13.0",
+        "messages": 1024,
+        "charactersPerMessage": 2048,
+        "benchmarkHash": "61840d0ad78136f6eb62598eaffa98b40002032611a7c92d024560b7ae32f3d1",
+        "hashes": [
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\coding-agent\\src\\core\\compaction\\compaction.ts",
+            "sha256": "c2a26c3f647d98edb6dea6dad581c322f45d247e42e06eda39e93bf42d696dbd"
+          },
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\coding-agent\\src\\core\\compaction\\utils.ts",
+            "sha256": "05d05bb84bdfa059461bff73e3d84d055383d16a9a5ae9e40e59bbe4175b2237"
+          },
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\coding-agent\\src\\core\\messages.ts",
+            "sha256": "18c071a7a4135c3bae395fc2504f416c36dbbdfb60ed3712ef8b477b016ef486"
+          }
+        ]
+      },
+      {
+        "counters": {
+          "conversions": 2,
+          "serializations": 2,
+          "convertVisits": 1024,
+          "filterVisits": 1024,
+          "serializedVisits": 1024,
+          "objects": 1043,
+          "arrays": 13,
+          "closures": 6,
+          "templates": 1032,
+          "joins": 5
+        },
+        "requests": 2,
+        "wireCodeUnits": 2125404,
+        "focusedRequests": 1
+      }
+    ],
+    "lifecycle": [
+      {
+        "phase": "lifecycle",
+        "node": "v26.13.0",
+        "messages": 1024,
+        "charactersPerMessage": 2048,
+        "benchmarkHash": "61840d0ad78136f6eb62598eaffa98b40002032611a7c92d024560b7ae32f3d1",
+        "hashes": [
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\coding-agent\\src\\core\\compaction\\compaction.ts",
+            "sha256": "c2a26c3f647d98edb6dea6dad581c322f45d247e42e06eda39e93bf42d696dbd"
+          },
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\coding-agent\\src\\core\\compaction\\utils.ts",
+            "sha256": "05d05bb84bdfa059461bff73e3d84d055383d16a9a5ae9e40e59bbe4175b2237"
+          },
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\coding-agent\\src\\core\\messages.ts",
+            "sha256": "18c071a7a4135c3bae395fc2504f416c36dbbdfb60ed3712ef8b477b016ef486"
+          }
+        ]
+      },
+      {
+        "weakReferences": 24,
+        "retained": 0,
+        "abortListeners": 0,
+        "retainedStreams": 6,
+        "retainedInputMessages": 1024,
+        "retainedTail": 1,
+        "heapAfterGc": 25312416
+      }
+    ]
+  },
+  "candidate": {
+    "profile": [
+      {
+        "phase": "profile",
+        "node": "v26.13.0",
+        "messages": 1024,
+        "charactersPerMessage": 2048,
+        "benchmarkHash": "61840d0ad78136f6eb62598eaffa98b40002032611a7c92d024560b7ae32f3d1",
+        "hashes": [
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\coding-agent\\src\\core\\compaction\\compaction.ts",
+            "sha256": "ef50ea4398fd571090903470692a2d6faad7da4a448bfd2b08647265caab8e94"
+          },
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\coding-agent\\src\\core\\compaction\\utils.ts",
+            "sha256": "05d05bb84bdfa059461bff73e3d84d055383d16a9a5ae9e40e59bbe4175b2237"
+          },
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\coding-agent\\src\\core\\messages.ts",
+            "sha256": "18c071a7a4135c3bae395fc2504f416c36dbbdfb60ed3712ef8b477b016ef486"
+          }
+        ]
+      },
+      {
+        "iterations": 16,
+        "sampledBytesPerCompaction": 6807747.5,
+        "lastRequests": 2,
+        "lastWireCodeUnits": 2125456,
+        "focusedRequests": 2,
+        "top": [
+          {
+            "bytes": 34020312,
+            "function": "FallbackEncoder",
+            "url": "file:///D:/RMProjects/Pi/node_modules/@anthropic-ai/sdk/internal/request-options.mjs",
+            "line": 10
+          },
+          {
+            "bytes": 17042376,
+            "function": "join",
+            "url": "",
+            "line": -1
+          },
+          {
+            "bytes": 17025944,
+            "function": "join",
+            "url": "",
+            "line": -1
+          },
+          {
+            "bytes": 16993664,
+            "function": "replace",
+            "url": "",
+            "line": -1
+          },
+          {
+            "bytes": 16964352,
+            "function": "replace",
+            "url": "",
+            "line": -1
+          },
+          {
+            "bytes": 782848,
+            "function": "",
+            "url": "file:///D:/RMProjects/Pi/packages/coding-agent/src/core/messages.ts",
+            "line": 149
+          },
+          {
+            "bytes": 749664,
+            "function": "",
+            "url": "file:///D:/RMProjects/Pi/packages/coding-agent/src/core/messages.ts",
+            "line": 149
+          },
+          {
+            "bytes": 391040,
+            "function": "next",
+            "url": "",
+            "line": -1
+          },
+          {
+            "bytes": 275520,
+            "function": "serializeConversation",
+            "url": "file:///D:/RMProjects/Pi/packages/coding-agent/src/core/compaction/utils.ts",
+            "line": 123
+          },
+          {
+            "bytes": 267560,
+            "function": "next",
+            "url": "",
+            "line": -1
+          },
+          {
+            "bytes": 234400,
+            "function": "serializeConversation",
+            "url": "file:///D:/RMProjects/Pi/packages/coding-agent/src/core/compaction/utils.ts",
+            "line": 123
+          },
+          {
+            "bytes": 204736,
+            "function": "push",
+            "url": "",
+            "line": -1
+          }
+        ]
+      }
+    ],
+    "counts": [
+      {
+        "phase": "counts",
+        "node": "v26.13.0",
+        "messages": 1024,
+        "charactersPerMessage": 2048,
+        "benchmarkHash": "61840d0ad78136f6eb62598eaffa98b40002032611a7c92d024560b7ae32f3d1",
+        "hashes": [
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\coding-agent\\src\\core\\compaction\\compaction.ts",
+            "sha256": "ef50ea4398fd571090903470692a2d6faad7da4a448bfd2b08647265caab8e94"
+          },
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\coding-agent\\src\\core\\compaction\\utils.ts",
+            "sha256": "05d05bb84bdfa059461bff73e3d84d055383d16a9a5ae9e40e59bbe4175b2237"
+          },
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\coding-agent\\src\\core\\messages.ts",
+            "sha256": "18c071a7a4135c3bae395fc2504f416c36dbbdfb60ed3712ef8b477b016ef486"
+          }
+        ]
+      },
+      {
+        "counters": {
+          "conversions": 2,
+          "serializations": 2,
+          "convertVisits": 1024,
+          "filterVisits": 1024,
+          "serializedVisits": 1024,
+          "objects": 1043,
+          "arrays": 13,
+          "closures": 6,
+          "templates": 1033,
+          "joins": 5
+        },
+        "requests": 2,
+        "wireCodeUnits": 2125456,
+        "focusedRequests": 2
+      }
+    ],
+    "lifecycle": [
+      {
+        "phase": "lifecycle",
+        "node": "v26.13.0",
+        "messages": 1024,
+        "charactersPerMessage": 2048,
+        "benchmarkHash": "61840d0ad78136f6eb62598eaffa98b40002032611a7c92d024560b7ae32f3d1",
+        "hashes": [
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\coding-agent\\src\\core\\compaction\\compaction.ts",
+            "sha256": "ef50ea4398fd571090903470692a2d6faad7da4a448bfd2b08647265caab8e94"
+          },
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\coding-agent\\src\\core\\compaction\\utils.ts",
+            "sha256": "05d05bb84bdfa059461bff73e3d84d055383d16a9a5ae9e40e59bbe4175b2237"
+          },
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\coding-agent\\src\\core\\messages.ts",
+            "sha256": "18c071a7a4135c3bae395fc2504f416c36dbbdfb60ed3712ef8b477b016ef486"
+          }
+        ]
+      },
+      {
+        "weakReferences": 24,
+        "retained": 0,
+        "abortListeners": 0,
+        "retainedStreams": 6,
+        "retainedInputMessages": 1024,
+        "retainedTail": 1,
+        "heapAfterGc": 25312896
+      }
+    ]
+  },
+  "ast": [
+    {
+      "path": "packages/coding-agent/src/core/compaction/compaction.ts",
+      "baseline": {
+        "arrows": 5,
+        "functions": 27,
+        "regex": 0,
+        "strings": 74,
+        "newPromise": 0,
+        "async": 6
+      },
+      "candidate": {
+        "arrows": 5,
+        "functions": 27,
+        "regex": 0,
+        "strings": 74,
+        "newPromise": 0,
+        "async": 6
+      }
+    }
+  ],
+  "limitations": [
+    "Counters cover selected compaction/conversion/serialization functions; SDK and Session metadata allocations are not source literal counts.",
+    "Profiles measure compact through real Anthropic SDK offline fetch, not complete AgentSession/TUI; include fixture and profiler overhead.",
+    "No CPU, memory improvement or whole-chain zero-allocation claim.",
+    "Lifecycle retains input, six completed streams, signals and one retained tail. Existing SDK asResponse listener cleanup requires body collection; real AgentSession persistence is tested separately."
+  ]
+}

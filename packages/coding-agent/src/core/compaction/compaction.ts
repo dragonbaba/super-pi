@@ -1066,6 +1066,7 @@ export async function compact(
 			headers,
 			env,
 			signal,
+			customInstructions,
 			thinkingLevel,
 			streamFn,
 			retry,
@@ -1126,6 +1127,7 @@ async function generateTurnPrefixSummary(
 	headers?: ProviderHeaders,
 	env?: Record<string, string>,
 	signal?: AbortSignal,
+	customInstructions?: string,
 	thinkingLevel?: ThinkingLevel,
 	streamFn?: StreamFn,
 	retry?: RetryPolicy,
@@ -1136,9 +1138,13 @@ async function generateTurnPrefixSummary(
 		Math.floor(0.5 * reserveTokens),
 		model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
 	); // Smaller budget for turn prefix
+	let basePrompt = TURN_PREFIX_SUMMARIZATION_PROMPT;
+	if (customInstructions) {
+		basePrompt = `${basePrompt}\n\nAdditional focus: ${customInstructions}`;
+	}
 	const llmMessages = convertToLlm(messages);
 	const conversationText = serializeConversation(llmMessages);
-	const promptText = `<conversation>\n${conversationText}\n</conversation>\n\n${TURN_PREFIX_SUMMARIZATION_PROMPT}`;
+	const promptText = `<conversation>\n${conversationText}\n</conversation>\n\n${basePrompt}`;
 	const summarizationMessages = [
 		{
 			role: "user" as const,
