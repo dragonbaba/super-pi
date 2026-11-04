@@ -54,7 +54,7 @@
 ## 开发和性能契约
 
 - [性能文档索引](performance/README.md)：性能设计、验证和历史候选。
-- [Super Pi 性能优化与进一步验证方案](super-pi-performance-followup-plan.md)：PF00–PF08 的基线复核、启动/关闭、TUI、前缀与缓存检测，以及性能和 PR 门禁；PF00 正在执行，后续按序推进。
+- [Super Pi 性能优化与进一步验证方案](super-pi-performance-followup-plan.md)：PF00–PF08 的基线复核、启动/关闭、TUI、前缀与缓存检测，以及性能和 PR 门禁；PF00 已交付，PF01 本地验证完成、待审查，后续按序推进。
 - [Hot-path allocation contract](performance/hot-path-allocation-contract.md)：provider、工具、交互、渲染和大结果路径的修改要求。
 - [Tool-result presentation](performance/phase5b-budgeted-model-view.md)：显式启用的结果展示流程；模型 Token 预算投影还需配置正整数 `budgetTokens`，没有生产默认预算。
 - [Token estimator](performance/phase5a-token-estimator.md)：估算口径与限制。

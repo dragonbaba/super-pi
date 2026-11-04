@@ -805,7 +805,16 @@ test("UI allocation source audit executes the selected production chain and lock
 	assert.equal(audit.resultRenderingArraySpreadSites, 3);
 	assert.equal(audit.resultRenderingCallSpreadSites, 3);
 	assert.equal(audit.resultRenderingArrayProducingCallSites, 5);
-	assert.equal(audit.resultRenderingStringProducingCallSites, 12, "bounded grouped preview and direct ASCII/ANSI run slices");
+	assert.equal(
+		audit.widthMeasurementStringProducingCallSites,
+		3,
+		"ANSI run slices and Unicode core slice; ASCII/cache-hit paths skip them",
+	);
+	assert.equal(
+		audit.resultRenderingStringProducingCallSites,
+		15,
+		"12 existing preview/wrapping sites plus 3 exact-width slice sites",
+	);
 	assert.equal(audit.resultRenderingArrayConstructorSites, 0);
 	assert.equal(audit.resultRenderingStringAppendSites, 29);
 	assert.equal(audit.resultRenderingNumericAppendSites, 15);

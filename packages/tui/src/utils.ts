@@ -50,7 +50,7 @@ function couldBeEmoji(segment: string): boolean {
 	);
 }
 
-// Cache for non-ASCII strings
+// One bounded cache shared by full inputs and Unicode cores, never two caches.
 const WIDTH_CACHE_SIZE = 512;
 const widthCache = new Map<string, number>();
 
@@ -261,15 +261,16 @@ export function visibleWidth(str: string): number {
 		return 0;
 	}
 
-	// Fast path: pure ASCII printable
-	if (isPrintableAscii(str)) {
-		return str.length;
-	}
+	if (isPrintableAscii(str)) return str.length;
+	const inputCached = widthCache.get(str);
+	if (inputCached !== undefined) return inputCached;
 
-	// Check cache
-	const cached = widthCache.get(str);
-	if (cached !== undefined) {
-		return cached;
+	// ASCII styling and padding can be measured without materializing stripped
+	// text. Fall back as a whole when Unicode might join across ANSI boundaries.
+	const asciiWidth = terminalAsciiWidth(str);
+	if (asciiWidth >= 0) {
+		rememberWidth(str, asciiWidth);
+		return asciiWidth;
 	}
 
 	// Normalize: tabs to 3 spaces, strip ANSI escape codes
@@ -282,34 +283,83 @@ export function visibleWidth(str: string): number {
 		// This covers CSI styling/cursor codes, OSC hyperlinks and prompt markers,
 		// and APC sequences like CURSOR_MARKER.
 		let stripped = "";
-		let i = 0;
-		while (i < clean.length) {
-			const ansi = extractAnsiCode(clean, i);
-			if (ansi) {
-				i += ansi.length;
-				continue;
-			}
-			stripped += clean[i];
-			i++;
+		let start = 0;
+		for (let i = 0; i < clean.length; i++) {
+			const end = findTerminalSequenceEnd(clean, i);
+			if (end === 0) continue;
+			stripped += clean.slice(start, i);
+			start = end;
+			i = end - 1;
 		}
-		clean = stripped;
+		clean = stripped + clean.slice(start);
 	}
 
-	// Calculate width
+	// Printable ASCII pairs always have a grapheme boundary. Keep one ASCII
+	// character at either edge of the Unicode core: a following combining mark
+	// or preceding Prepend character can belong to that boundary character.
+	// Padding and ordinary ASCII runs need neither segment objects nor regexes.
+	let start = 0;
+	while (start < clean.length) {
+		const code = clean.charCodeAt(start);
+		if (code < 0x20 || code > 0x7e) break;
+		start++;
+	}
+	if (start === clean.length) return clean.length;
+	let end = clean.length;
+	while (end > start) {
+		const code = clean.charCodeAt(end - 1);
+		if (code < 0x20 || code > 0x7e) break;
+		end--;
+	}
+	if (start > 0) start--;
+	if (end < clean.length) end++;
+	const asciiColumns = start + clean.length - end;
+	const core = clean.slice(start, end);
+	// Stripping interrupted ANSI can form a new supported sequence. Such a
+	// core's grapheme width differs from its width as raw input; do not alias
+	// the two meanings in the shared cache. Tabs have already been normalized.
+	const cacheCore = !core.includes("\x1b");
+	const cached = cacheCore ? widthCache.get(core) : undefined;
+	if (cached !== undefined) {
+		const width = asciiColumns + cached;
+		rememberWidth(str, width);
+		return width;
+	}
 	let width = 0;
-	for (const { segment } of graphemeSegmenter.segment(clean)) {
-		width += graphemeWidth(segment);
-	}
+	for (const { segment } of graphemeSegmenter.segment(core)) width += graphemeWidth(segment);
+	if (cacheCore) rememberWidth(core, width);
+	const result = asciiColumns + width;
+	if (!cacheCore || str !== core) rememberWidth(str, result);
+	return result;
+}
 
-	// Cache result
+function rememberWidth(text: string, width: number): void {
 	if (widthCache.size >= WIDTH_CACHE_SIZE) {
 		const firstKey = widthCache.keys().next().value;
 		if (firstKey !== undefined) {
 			widthCache.delete(firstKey);
 		}
 	}
-	widthCache.set(str, width);
+	widthCache.set(text, width);
+}
 
+/** Exact for printable ASCII, tabs, and supported terminal sequences only. */
+function terminalAsciiWidth(str: string): number {
+	let width = 0;
+	for (let index = 0; index < str.length; index++) {
+		const code = str.charCodeAt(index);
+		if (code >= 0x20 && code <= 0x7e) {
+			width++;
+		} else if (code === 0x09) {
+			width += 3;
+		} else if (code === 0x1b) {
+			const end = findTerminalSequenceEnd(str, index);
+			if (end === 0) return -1;
+			index = end - 1;
+		} else {
+			return -1;
+		}
+	}
 	return width;
 }
 

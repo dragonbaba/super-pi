@@ -1,6 +1,6 @@
 # PF00 基线复核与验收协议
 
-状态：本地复核完成，准备提交审查。生产基线 `fc790a0bd608298b9acdb2860eddd12ac596628a`；本项不改变生产路径。对应[总方案](../super-pi-performance-followup-plan.md)，初始输入为[审计记录](../evidence/performance-audit-2026-11-05.json)，本轮结果单独保存在 [PF00 证据](../evidence/performance-pf00-baseline-2026-11-05.json)。
+状态：已交付，[PR #215](https://github.com/dragonbaba/super-pi/pull/215) 合并为 `1c9f9c597f58af54abb0d7639336b0a5bf7a8f09`。当前 head 审查无发现、六分片 CI 全通过；合并树一致性、main 同步与两端分支删除见 [收尾回执](https://github.com/dragonbaba/super-pi/pull/215#issuecomment-6636642543)，临时资源清理见 [资源回执](https://github.com/dragonbaba/super-pi/pull/215#issuecomment-6636527419)。生产基线 `fc790a0bd608298b9acdb2860eddd12ac596628a`；本项不改变生产路径。对应[总方案](../super-pi-performance-followup-plan.md)，初始输入为[审计记录](../evidence/performance-audit-2026-11-05.json)，本轮结果单独保存在 [PF00 证据](../evidence/performance-pf00-baseline-2026-11-05.json)。
 
 ## 交付范围与既有材料
 
