@@ -56,6 +56,7 @@ test("GUID preview has exactly one mapping and cannot admit or alias a share", a
     assert.throws(() => experimentalGuidConfig({ facts: facts(), shareAdmission: true }));
     await assert.rejects(f.volume.startExperimentalMapping({}, f.vm)); assert.equal(f.cli.calls.length, 0);
     f.vm.config += "<MappedFolder>extra</MappedFolder>"; f.vm.configSha256 = createHash("sha256").update(f.vm.config).digest("hex");
+    f.volume.experimentalMappingConfig = () => f.vm.config;
     await assert.rejects(f.volume.issueExperimentalMapping(f.vm), /sole bound/); assert.equal(f.volume.experimentalShareAdmission, false);
     assert.equal(f.volume.experimentalMappingReferencesHeld, false); assert.equal(f.state.cancels, 1);
     await f.volume.release(); f.runtime.dispose(); assert.equal(f.runtime.retainsOwner, false);

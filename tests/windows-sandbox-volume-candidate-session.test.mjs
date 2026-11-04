@@ -328,7 +328,7 @@ test("candidate cleanup profile admits bounded partial leaves but normal success
 });
 test("candidate source closure and post-reservation source guard use actual new dependencies", async () => {
     const bundle = candidateSourceManifest(name => Buffer.from(name));
-    assert.equal(CANDIDATE_SOURCES.length, 25); assert.equal(new Set(CANDIDATE_SOURCES).size, 25);
+    assert.equal(CANDIDATE_SOURCES.length, 26); assert.equal(new Set(CANDIDATE_SOURCES).size, 26);
     const directory = fileURLToPath(new URL("../scripts/acceptance/", import.meta.url));
     for (const name of CANDIDATE_SOURCES.filter(name => name.endsWith(".mjs")))
         for (const match of fs.readFileSync(path.join(directory, name), "utf8").matchAll(/^import .+ from "\.\/(.+)";/gm))

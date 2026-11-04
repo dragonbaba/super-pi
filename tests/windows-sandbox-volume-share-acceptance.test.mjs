@@ -77,7 +77,7 @@ test("private receipt preserves original read error and separately retains an un
 });
 test("source manifest guards the final manager factory and bounds adapter encoding samples", async t => {
     const bundle = sourceManifest(file => Buffer.from(file));
-    assert.equal(bundle.manifest.files.length, 20); assert.equal(new Set(SHARING_SOURCES).size, 20);
+    assert.equal(bundle.manifest.files.length, 21); assert.equal(new Set(SHARING_SOURCES).size, 21);
     assert.equal(bundle.sha256, createHash("sha256").update(Buffer.from(JSON.stringify(bundle.manifest), "utf8")).digest("hex"));
     assert.notEqual(bundle.sha256, sourceManifest(file => Buffer.from(file + "x")).sha256);
     assert.throws(() => sourceManifest(() => Buffer.alloc(131073)), /bound/);

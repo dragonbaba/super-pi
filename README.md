@@ -28,6 +28,8 @@ For a single prompt and a single text response, a direct model API call may be s
 
 These capabilities still depend on the provider, model capabilities, project configuration, and active tool policy. The selected execution mode determines whether supported tools use Windows Sandbox; application permissions do not guarantee model output or external-service behavior.
 
+Windows Sandbox commands require **PowerShell 7**, with no Windows PowerShell 5.1 fallback. Tool installations are discovered automatically from the host PATH and mounted read-only with their installation-relative dependencies; normal tools do not need individual configuration. The guest has its own home and caches. Network access and project `node_modules` remain outside this sandbox profile. See [tool discovery, exceptions and limits](docs/execution-environments.md#自动发现工具目录).
+
 ## Quick start
 
 ### Requirements

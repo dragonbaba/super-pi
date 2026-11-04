@@ -140,6 +140,7 @@ export interface Settings {
 	externalEditor?: string; // Command for Ctrl+G external editor; takes precedence over VISUAL/EDITOR
 	shellPath?: string; // Custom shell path (e.g., for Cygwin users on Windows); supports leading ~ expansion
 	powershellPath?: string; // Trusted global PowerShell executable path; project settings cannot override it
+	sandboxToolchains?: { include?: string[]; exclude?: string[] }; // Global-only exceptions to automatic host PATH discovery
 	powershellStatus?: PowerShellStatusSettings; // Global persisted discovery/availability state
 	quietStartup?: boolean;
 	defaultProjectTrust?: DefaultProjectTrust; // default: "ask"; global setting only
@@ -1100,6 +1101,10 @@ export class SettingsManager {
 	getPowerShellPath(): string | undefined {
 		const powershellPath = this.globalSettings.powershellPath;
 		return powershellPath ? normalizePath(powershellPath) : powershellPath;
+	}
+
+	getSandboxToolchains(): Settings["sandboxToolchains"] {
+		return this.globalSettings.sandboxToolchains;
 	}
 
 	setPowerShellPath(path: string | undefined): void {

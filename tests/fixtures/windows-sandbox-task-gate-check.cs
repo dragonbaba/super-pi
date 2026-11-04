@@ -5,7 +5,7 @@ using System.Runtime.InteropServices;
 
 internal static class TaskGateCheck {
     [DllImport("kernel32.dll")] static extern bool FreeConsole();
-    static int Main() {
+    static int Main(string[] args) {
         // Exercise the production startup helper under both locale-independent
         // UTF-8 preamble modes, plus a non-UTF-8 console code page.
         Encoding original = Console.InputEncoding;
@@ -14,9 +14,10 @@ internal static class TaskGateCheck {
             foreach (Encoding encoding in new Encoding[] { new UTF8Encoding(true), new UTF8Encoding(false), Encoding.GetEncoding(936), null }) {
                 if (encoding != null) Console.InputEncoding = encoding;
                 else { Console.InputEncoding = original; FreeConsole(); }
-                string bootstrap = TaskWorker.GateBootstrap + "[Console]::Write('gate-passed')";
-                var info = new ProcessStartInfo(@"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
-                    "-NoLogo -NoProfile -NonInteractive -EncodedCommand " + Convert.ToBase64String(Encoding.Unicode.GetBytes(bootstrap))) {
+                if (args.Length != 1 || !args[0].EndsWith(@"\pwsh.exe", StringComparison.OrdinalIgnoreCase)) throw new Exception("PowerShell 7 required");
+                string bootstrap = TaskWorker.GateBootstrap + TaskWorker.VersionGuard + "[Console]::Write('gate-passed')";
+                var info = new ProcessStartInfo(args[0],
+                    "-NoLogo -NoProfile -NonInteractive -OutputFormat Text -EncodedCommand " + Convert.ToBase64String(Encoding.Unicode.GetBytes(bootstrap))) {
                     UseShellExecute = false, CreateNoWindow = true, RedirectStandardInput = true,
                     RedirectStandardOutput = true, RedirectStandardError = true
                 };

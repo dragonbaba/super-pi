@@ -55,7 +55,7 @@ export function syncCandidateEvidence(task, report) {
         task.privateRecorded = true;
     }
 }
-export function candidateTask(report, controller) {
+export function candidateTask(report, controller, toolchains) {
     const task = {
         runtime: new LiveSandboxRuntime(report.taskId), vm: undefined, volume: undefined, driver: undefined,
         channel: undefined, checked: undefined, privateRecorded: false, helpers: undefined, save: undefined,
@@ -70,7 +70,7 @@ export function candidateTask(report, controller) {
         },
         attach(driver, save) {
             need(!this.driver && !this.volume, "Candidate manager already bound"); this.driver = driver; this.save = save;
-            this.volume = new TaskVolumeOwner({ driver, taskId: report.taskId, readRuntime: this.runtime.read,
+            this.volume = new TaskVolumeOwner({ driver, taskId: report.taskId, readRuntime: this.runtime.read, toolchains,
                 journal: value => { report.volume = volumeSnapshot(value); syncCandidateEvidence(this, report); save(); },
                 revokeCandidates() { report.revoked = true; }, cancelExecution() { controller.abort(); report.cancelled = true; } });
         },
@@ -81,6 +81,7 @@ export function candidateTask(report, controller) {
             this.checked = undefined; this.runtime.dispose();
             if (this.helpers) { this.helpers.calls.length = 0; this.helpers.persist = undefined; this.helpers.launch = undefined; }
             this.helpers = undefined; this.vm = undefined; this.volume = undefined; this.driver = undefined; this.runtime = undefined; this.save = undefined;
+            toolchains = undefined;
         },
     };
     return task;

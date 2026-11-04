@@ -1033,12 +1033,14 @@ export class AgentSession {
 			if (this._operationOptions || config.baseToolsOverride) throw new Error("[SANDBOX_UNSUPPORTED] Host tool overrides and operation journals cannot enter a sandbox");
 			const workspaceCwd = config.cwd, workspaceParent = resolveEvidencePath(config.agentDir ?? getAgentDir(), "sandbox-workspaces");
 			this._createWorkspaceSandbox = () => new WorkspaceSandboxTools(workspaceCwd, workspaceParent, permissionMode,
-				() => this._resourceLoader.getExtensions().runtime);
+				() => this._resourceLoader.getExtensions().runtime,
+				{ settings: this.settingsManager.getSandboxToolchains(), powershellPath: this.settingsManager.getPowerShellPath() });
 			this._workspaceSandbox = this._createWorkspaceSandbox();
 		} else if (this.settingsManager.getExecutionEnvironment() === "sandbox") {
 			if (this._operationOptions) throw new Error("[SANDBOX_UNSUPPORTED] Experimental host operation journals require trusted-host execution");
 			this._sandboxCommands = new SessionSandbox(() => this._resourceLoader.getExtensions().runtime,
-				resolveEvidencePath(config.agentDir ?? getAgentDir(), "sandbox-tasks"));
+				resolveEvidencePath(config.agentDir ?? getAgentDir(), "sandbox-tasks"), undefined,
+				{ settings: this.settingsManager.getSandboxToolchains(), powershellPath: this.settingsManager.getPowerShellPath() });
 			this._codemode.setCommandSandbox(this._sandboxCommands);
 		}
 		this._scopedModels = config.scopedModels ?? [];

@@ -17,6 +17,7 @@ import { WindowsSourceNative } from "./windows-sandbox-source-native.mjs";
 import { INPUT_LIMITS } from "./windows-sandbox-input-snapshot.mjs";
 import { CapturedWriteBatch } from "./windows-sandbox-candidate-write-batch.mjs";
 import { taskReport, taskFrame, taskHelpers, runOwnedTaskChain, finishInputCandidates } from "./windows-sandbox-task-session.mjs";
+import { SandboxToolchains } from "./windows-sandbox-toolchains.mjs";
 
 const directory = fileURLToPath(new URL(".", import.meta.url));
 const compiler = "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe";
@@ -85,13 +86,15 @@ class EvidenceSink extends Writable {
 }
 
 /** One invocation, kept alive by the session until finish confirms all owners closed. */
-export async function executeWindowsTask(borrow, parent) {
+export async function executeWindowsTask(borrow, parent, toolchainOptions = {}) {
     need(process.platform === "win32" && process.arch === "x64", "This sandbox profile requires Windows x64");
     borrow.assertInputsCurrent(); verifyPowerShell7();
+    const toolchains = new SandboxToolchains({ cwd: borrow.ctx.cwd, ...toolchainOptions });
+    await toolchains.validateTrees(borrow.signal);
     need(fileHash(compiler) === compilerHash && fileHash(CLI_PATH) === CLI_SHA256, "Sandbox toolchain version changed");
     const resource = createRoot(parent), taskId = randomUUID(), snapshotId = randomUUID();
     const report = taskReport(taskId, snapshotId, resource.root, resource.rootId);
-    const controller = new AbortController(), task = taskFrame(report, controller);
+    const controller = new AbortController(), task = taskFrame(report, controller, toolchains);
     const save = sessionJournal(resource, report, () => task.unsafe(), "task");
     const sink = new EvidenceSink(), bus = new EventEmitter();
     const lifetime = new SharingLifetime({ bus, stream: sink, report, save, task, profile: "task" });
@@ -151,7 +154,7 @@ export async function executeWindowsTask(borrow, parent) {
             path.join(directory, "windows-sandbox-task-worker.cs")], 15000, signal);
         const tool = compiled(resource.root, "task-runner.exe", 65536);
         const produced = await runOwnedTaskChain(task, report, signal, borrow, {
-            root: resource.root, rootId: resource.privateRootId, tool, save, fixture: false,
+            root: resource.root, rootId: resource.privateRootId, tool, save, fixture: false, environment: toolchains.encodedEnvironment,
             onResult(result) {
                 // Exactly one bounded UTF-8 materialization per stream at completion.
                 output = { exitCode: result.exitCode, timedOut: result.timedOut, stdout: result.stdout.toString("utf8"),

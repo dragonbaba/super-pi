@@ -29,7 +29,8 @@ export class WorkspaceSandboxBackend {
   private readonly cwd: string;
   private readonly parent: string;
   private readonly mode: "read-only" | "sandbox-write";
-  constructor(cwd: string, parent: string, mode: "read-only" | "sandbox-write") { this.cwd = cwd; this.parent = parent; this.mode = mode; }
+  private readonly toolchainOptions: { settings?: { include?: string[]; exclude?: string[] }; powershellPath?: string };
+  constructor(cwd: string, parent: string, mode: "read-only" | "sandbox-write", toolchainOptions = {}) { this.cwd = cwd; this.parent = parent; this.mode = mode; this.toolchainOptions = toolchainOptions; }
   get diagnostics() { return { starts: this.starts, calls: this.calls, pending: !!this.pending, vm: !!this.vm, root: this.root, closed: this.closed, sourceFiles: this.sources.size, ownedArtifacts: this.owned.size }; }
   invoke(operation: string, input: Record<string, unknown>, signal?: AbortSignal): Promise<WorkspaceReply> {
     if (this.closed || this.pending) return Promise.reject(new Error("[SANDBOX_BUSY] Workspace is closed or has an active operation"));
@@ -84,6 +85,9 @@ export class WorkspaceSandboxBackend {
     const source = new URL("../../../../../scripts/acceptance/windows-sandbox-lifecycle.mjs", import.meta.url);
     const runtimeUrl = existsSync(fileURLToPath(packaged)) ? packaged : source;
     const runtime = await import(runtimeUrl.href);
+    const { SandboxToolchains } = await import(new URL("windows-sandbox-toolchains.mjs", runtimeUrl).href);
+    const toolchains = new SandboxToolchains({ cwd: this.cwd, ...this.toolchainOptions });
+    await toolchains.validateTrees(signal);
     const cli = new runtime.FixedCli();
     await fs.mkdir(this.parent, { recursive: true });
     need(await fs.realpath(this.parent) === path.resolve(this.parent), "Redirected artifact parent");
@@ -100,6 +104,10 @@ export class WorkspaceSandboxBackend {
       const bytes = await fs.readFile(from); const target = path.join(tools, name); await fs.writeFile(target, bytes, { flag: "wx" }); await this.remember(target);
       need(hash(await fs.readFile(target)) === hash(bytes), "Tool copy changed");
     }
+    const environmentFile = path.join(tools, "environment.txt");
+    await fs.writeFile(environmentFile, toolchains.encodedEnvironment, { flag: "wx" }); await this.remember(environmentFile);
+    const diagnosticsFile = path.join(tools, "toolchains.json");
+    await fs.writeFile(diagnosticsFile, JSON.stringify({ shell: toolchains.shell, statistics: toolchains.statistics, skipped: toolchains.diagnostics }), { flag: "wx" }); await this.remember(diagnosticsFile);
     const compiler = "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe";
     const compile = this.compiler = new runtime.CapturedProcess(compiler, ["/nologo", "/target:exe", "/platform:x64", "/out:" + path.join(tools, "command.exe"), path.join(tools, "command.cs")], tools);
     need(await compile.wait(15000) === "settled" && compile.result?.exitCode === 0, "Guest command supervisor compilation failed");
@@ -109,9 +117,14 @@ export class WorkspaceSandboxBackend {
     let config = "<Configuration><Networking>Disable</Networking><ClipboardRedirection>Disable</ClipboardRedirection><AudioInput>Disable</AudioInput><VideoInput>Disable</VideoInput><PrinterRedirection>Disable</PrinterRedirection><vGPU>Disable</vGPU><MemoryInMB>2048</MemoryInMB><MappedFolders>";
     for (const [host, guest, readOnly] of mappings) config += "<MappedFolder><HostFolder>" + xml(host) + "</HostFolder><SandboxFolder>" + guest + "</SandboxFolder><ReadOnly>" + readOnly + "</ReadOnly></MappedFolder>";
     config += "</MappedFolders></Configuration>";
+    config = toolchains.appendConfig(config);
     const journal = path.join(this.root, "owner.json"); await fs.writeFile(journal, "{}"); await this.remember(journal);
     this.vm = new runtime.SandboxLifecycle({ cli, config, taskId: randomUUID(), journal(record: unknown) { writeFileSync(journal, JSON.stringify(record)); } });
-    await this.vm.start(signal); this.starts++;
+    await this.vm.start(signal, async (vm: any) => {
+      toolchains.assertCurrent();
+      return { instanceId: vm.id, config: vm.config, configSha256: vm.configSha256,
+        validate(current: any) { toolchains.assertCurrent(); return current === vm && !signal?.aborted; } };
+    }); this.starts++;
   }
   private async run(operation: string, input: Record<string, unknown>, signal?: AbortSignal): Promise<WorkspaceReply> {
     try {

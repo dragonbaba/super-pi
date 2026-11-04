@@ -130,15 +130,17 @@ test("branch summary output schema and project precedence preserve an explicit o
 test("project schema warns on global-only settings without changing runtime trust and precedence", () => {
 	const globalOnly = {
 		powershellPath: "C:/trusted/pwsh.exe",
+		sandboxToolchains: { include: ["C:/trusted/tools"], exclude: ["C:/obsolete"] },
 		powershellStatus: { trustVersion: 1, available: true, verified: false, source: "configured" },
 		defaultProjectTrust: "ask", httpProxy: "http://localhost:8080",
 	};
 	assert.equal(validateGlobal(globalOnly), true, ajv.errorsText(validateGlobal.errors));
 	for (const [key, value] of Object.entries(globalOnly)) assert.equal(validateProject({ [key]: value }), false, key);
 	const manager = SettingsManager.fromStorage(storage(globalOnly, {
-		powershellPath: "C:/project/pwsh.exe", defaultProjectTrust: "always", showHardwareCursor: true,
+		powershellPath: "C:/project/pwsh.exe", sandboxToolchains: { include: ["C:/project"] }, defaultProjectTrust: "always", showHardwareCursor: true,
 	}));
 	assert.equal(manager.getPowerShellPath(), "C:/trusted/pwsh.exe");
+	assert.deepEqual(manager.getSandboxToolchains(), globalOnly.sandboxToolchains);
 	assert.equal(manager.getDefaultProjectTrust(), "ask");
 	assert.equal(manager.getShowHardwareCursor(), true);
 	const untrusted = SettingsManager.fromStorage(storage({ showHardwareCursor: false }, { showHardwareCursor: true }), { projectTrusted: false });

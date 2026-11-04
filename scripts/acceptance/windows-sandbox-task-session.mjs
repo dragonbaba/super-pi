@@ -16,6 +16,7 @@ import { boundedText } from "./windows-sandbox-volume-session.mjs";
 export { finishInputCandidates } from "./windows-sandbox-input-execution-session.mjs";
 
 const need = (value, reason) => { if (!value) throw new Error(reason); };
+const ENVIRONMENT_BASE64 = /^[A-Za-z0-9+/]+=*$/;
 const hash = value => createHash("sha256").update(value).digest("hex");
 const state = Class => Object.getOwnPropertyDescriptor(Class.prototype, "diagnostics").get;
 const captureState = state(WindowsWorkspaceInputCapture), publicationState = state(TaskInputPublication);
@@ -43,8 +44,8 @@ export function taskReport(taskId, snapshotId, root, rootId) {
     return { ...candidateReport(taskId, snapshotId, root, rootId), protocol: "super-pi-generic-task-acceptance-v1",
         input: null, command: null, host: null, binding: null, resultReader: null };
 }
-export function taskFrame(report, controller) {
-    const task = candidateTask(report, controller), baseQuiescent = task.quiescent, baseDispose = task.dispose;
+export function taskFrame(report, controller, toolchains) {
+    const task = candidateTask(report, controller, toolchains), baseQuiescent = task.quiescent, baseDispose = task.dispose;
     task.capture = undefined; task.publication = undefined; task.resultReader = undefined; task.binding = undefined;
     task.hostRetention = undefined; task.hostDone = false; task.weak = [];
     task.quiescent = function() {
@@ -109,7 +110,7 @@ function requirePublicationReleased(p) {
         && grant.state === "disposed" && grant.grants === 0 && grant.weakReferences === 0 && !grant.retainedObserver && !grant.retainedVerifier
         && grant.policyDisposals === 1, "Original input permission release");
 }
-async function executeTaskRunner(task, snapshotId, request, signal) {
+async function executeTaskRunner(task, snapshotId, request, signal, environment) {
     const { vm, volume, runtime, driver } = task;
     await TaskVolumeOwner.prototype.renewInputExecution.call(volume, vm);
     const instanceId = vm.id, taskId = vm.taskId;
@@ -117,7 +118,8 @@ async function executeTaskRunner(task, snapshotId, request, signal) {
         && current.state === "executing-volume-input" && !current.cleanupPromise && !current.active && !current.execution && !current.connection
         && task.vm === vm && task.volume === volume && task.runtime === runtime && task.driver === driver
         && TaskVolumeOwner.prototype.assertInputExecution.call(volume, vm) === true;
-    const command = '"C:\\SuperPiVolume\\tools\\task-runner.exe" ' + taskId + " " + snapshotId;
+    need(typeof environment === "string" && environment.length <= 24000 && ENVIRONMENT_BASE64.test(environment), "Toolchain environment required");
+    const command = '"C:\\SuperPiVolume\\tools\\task-runner.exe" ' + taskId + " " + snapshotId + " --toolchain " + environment;
     vm.state = "executing-volume-input"; vm.save();
     const result = await SandboxLifecycle.prototype.invoke.call(vm, "exec", ["exec", "--id", instanceId, "-c", command,
         "-d", "C:\\SuperPiVolume\\workspace", "-r", "System", "--raw"], request.timeoutMs + 10000, signal, validate);
@@ -152,7 +154,7 @@ export async function runOwnedTaskChain(task, report, signal, borrow, options) {
         task.save();
         const ticket = await task.volume.issueExperimentalMapping(task.vm);
         await task.volume.startExperimentalMapping(ticket, task.vm, signal);
-        report.guestExit = await executeTaskRunner(task, report.snapshotId, borrow.request, signal);
+        report.guestExit = await executeTaskRunner(task, report.snapshotId, borrow.request, signal, options.environment);
         need(report.guestExit.wrapperExitCode === 0, "Guest task wrapper failed");
     } catch (error) { fail(error); }
     let closed = false;

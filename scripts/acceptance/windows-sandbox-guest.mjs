@@ -101,16 +101,17 @@ class FixedProbe {
 		this.resolve = undefined; this.child = undefined; this.out = undefined; this.err = undefined;
 		resolve(result);
 	}
-	async run(request, input, output) {
+	async run(request, input, output, powerShellPath) {
 		this.out = new BoundedFileSink(path.join(output, "stdout.bin"));
 		try { this.err = new BoundedFileSink(path.join(output, "stderr.bin")); }
 		catch (error) { this.out.close(); this.out = undefined; throw error; }
 		try {
 			let executable, args;
 			if (request.mode === "powershell") {
-				executable = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
-				args = ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(
-					"[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); [Console]::Out.Write([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('" + Buffer.from(STDOUT).toString("base64") + "'))); [Console]::Error.Write([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('" + Buffer.from(STDERR).toString("base64") + "'))); exit 17", "utf16le").toString("base64")];
+				executable = powerShellPath ?? JSON.parse(fs.readFileSync(path.join(input, "powershell.json"), "utf8")).shell;
+				if (typeof executable !== "string" || path.basename(executable).toLowerCase() !== "pwsh.exe") throw new Error("PowerShell 7 required");
+				args = ["-NoLogo", "-NoProfile", "-NonInteractive", "-SettingsFile", path.join(input, "powershell.config.json"), "-OutputFormat", "Text", "-EncodedCommand", Buffer.from(
+					"if($PSVersionTable.PSEdition -cne 'Core' -or $PSVersionTable.PSVersion.Major -ne 7){exit 91}; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); [Console]::Out.Write([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('" + Buffer.from(STDOUT).toString("base64") + "'))); [Console]::Error.Write([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('" + Buffer.from(STDERR).toString("base64") + "'))); exit 17", "utf16le").toString("base64")];
 			} else {
 				executable = path.join(input, "node.exe");
 				const code = request.mode === "overflow"
@@ -136,9 +137,9 @@ class FixedProbe {
 }
 
 // Exported for explicit host transport checks. They make no isolation claim.
-export async function runFixedProbe(request, input, output) {
+export async function runFixedProbe(request, input, output, powerShellPath) {
 	validateRequest(request);
-	const result = await new FixedProbe().run(request, input, output);
+	const result = await new FixedProbe().run(request, input, output, powerShellPath);
 	const encoded = Buffer.from(JSON.stringify({ protocol: PROTOCOL, taskId: request.taskId, mode: request.mode, ...result }));
 	if (encoded.length > RESULT_LIMIT) throw new Error("Result metadata exceeded limit");
 	fs.writeFileSync(path.join(output, "result.json"), encoded, { flag: "wx" });

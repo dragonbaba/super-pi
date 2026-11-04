@@ -21,8 +21,8 @@ export class WorkspaceSandboxTools {
   private readonly backend: WorkspaceSandboxBackend;
   private readonly runtime: () => ExtensionRuntime;
   private readonly definitions = new Map<string, ToolDefinition>();
-  constructor(cwd: string, parent: string, mode: "read-only" | "sandbox-write", runtime: () => ExtensionRuntime) {
-    this.backend = new WorkspaceSandboxBackend(cwd, parent, mode); this.runtime = runtime;
+  constructor(cwd: string, parent: string, mode: "read-only" | "sandbox-write", runtime: () => ExtensionRuntime, toolchainOptions = {}) {
+    this.backend = new WorkspaceSandboxBackend(cwd, parent, mode, toolchainOptions); this.runtime = runtime;
     for (const name of names) {
       const parameters = name === "powershell" ? Type.Object({ command: Type.String(), timeout: Type.Optional(Type.Number({ minimum: 0.001, maximum: 120 })) })
         : name === "file_batch" ? Type.Object({ operations: Type.Array(Type.Any(), { minItems: 1, maxItems: 16 }) })
@@ -34,7 +34,7 @@ export class WorkspaceSandboxTools {
         : Type.Object({ path: Type.Optional(Type.String()), pattern: Type.Optional(Type.String()) });
       const owner = this;
       const definition: ToolDefinition = { name, label: name + " (Sandbox)", parameters, executionMode: "sequential", modelExposure: "nested",
-        description: name === "powershell" ? "Run PowerShell inside the session Windows Sandbox. Workspace changes publish only after successful execution and current authorization. No host fallback; no network or background processes. Timeout at most 120 seconds."
+        description: name === "powershell" ? "Run PowerShell 7 inside the session Windows Sandbox. Tools are discovered from the host PATH and their installation directories mounted read-only. Use Get-Command to inspect guest availability; C:\\SuperPiTools\\toolchains.json lists skipped directories. Only discovered installations have guest paths; the host user profile, credentials and project node_modules are not inherited. Workspace changes publish only after successful execution and current authorization. No host fallback; no network or background processes. Timeout at most 120 seconds."
           : name === "find" || name === "grep" ? "Search sandbox workspace using a literal substring; at most 200 results."
           : "Operate inside the session sandbox workspace. Paths are workspace-relative. Read returns a snapshot hash required for overwriting or exact-text editing. Protected metadata and dependencies are excluded from the snapshot.",
         async execute(id, args, signal, _update, ctx) { return owner.execute(name, id, args as Record<string, unknown>, ctx, signal); },

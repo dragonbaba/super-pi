@@ -5,6 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { PROTOCOL, NODE_VERSION, STREAM_LIMIT, RESULT_LIMIT, GUEST_INPUT, GUEST_OUTPUT, validateRequest } from "./windows-sandbox-guest.mjs";
+import { SandboxToolchains } from "./windows-sandbox-toolchains.mjs";
 
 const SOURCE = fileURLToPath(new URL("./windows-sandbox-guest.mjs", import.meta.url));
 // Fixed local project runtime observed for this acceptance, not a project engine minimum.
@@ -43,9 +44,14 @@ export function sha256(file) {
 	} finally { fs.closeSync(fd); }
 }
 
-export function prepareWindowsSandboxPackage(parent, mode) {
+export async function prepareWindowsSandboxPackage(parent, mode) {
 	if (process.platform !== "win32" || process.version !== NODE_VERSION) throw new Error(`Preparation requires Windows ${NODE_VERSION}`);
 	const request = validateRequest({ protocol: PROTOCOL, taskId: randomUUID(), mode, nodeVersion: NODE_VERSION });
+	const discovered = new SandboxToolchains({ cwd: process.cwd() });
+	// This historical fixed probe can only run Node or PowerShell, never arbitrary tools.
+	const toolchains = new SandboxToolchains({ cwd: process.cwd(), powershellPath: discovered.hostShell,
+		environment: { PATH: path.dirname(discovered.hostShell) } });
+	await toolchains.validateTrees();
 	const nodeSha256 = sha256(process.execPath);
 	if (nodeSha256 !== NODE_SHA256) throw new Error("Project Node digest differs from the fixed acceptance runtime");
 	const parentPath = fs.realpathSync(parent);
@@ -56,12 +62,14 @@ export function prepareWindowsSandboxPackage(parent, mode) {
 		fs.mkdirSync(input); fs.mkdirSync(output);
 		fs.copyFileSync(process.execPath, path.join(input, "node.exe"), fs.constants.COPYFILE_EXCL);
 		fs.copyFileSync(SOURCE, path.join(input, "guest.mjs"), fs.constants.COPYFILE_EXCL);
+		fs.writeFileSync(path.join(input, "powershell.json"), JSON.stringify({ shell: toolchains.shell }), { flag: "wx" });
+		fs.writeFileSync(path.join(input, "powershell.config.json"), '{"DisableImplicitWinCompat":true}', { flag: "wx" });
 		if (sha256(path.join(input, "node.exe")) !== nodeSha256) throw new Error("Copied Node digest mismatch");
 		const guestSha256 = sha256(path.join(input, "guest.mjs"));
 		fs.writeFileSync(path.join(input, "request.json"), JSON.stringify(request), { flag: "wx" });
-		fs.writeFileSync(path.join(root, "sandbox.wsb"), windowsSandboxConfig(input, output), { flag: "wx" });
+		fs.writeFileSync(path.join(root, "sandbox.wsb"), toolchains.appendConfig(windowsSandboxConfig(input, output)), { flag: "wx" });
 		const record = { protocol: PROTOCOL, root, input, output, request, nodeSource: process.execPath, nodeSha256, guestSha256,
-			lifecycle: "prepared-not-started", arbitraryCommands: false, writableShareQuota: false };
+			lifecycle: "prepared-not-started", arbitraryCommands: false, writableShareQuota: false, hostPowerShell: toolchains.hostShell };
 		fs.writeFileSync(path.join(root, "owner.json"), JSON.stringify(record, null, 2), { flag: "wx" });
 		return record;
 	} catch (error) {

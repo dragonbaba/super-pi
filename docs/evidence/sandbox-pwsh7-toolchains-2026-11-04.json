@@ -1,0 +1,212 @@
+{
+  "date": "2026-11-04",
+  "node": "v26.13.0",
+  "scope": "PowerShell 7 guest execution and automatic host PATH installations",
+  "hostControl": {
+    "powershell": "7.6.9 Core",
+    "node": "26.13.0",
+    "npm": "11.20.0",
+    "python": "3.13.7",
+    "git": "2.56.0.windows.4",
+    "allExitCodes": 0
+  },
+  "workspace": {
+    "artifact": "offline distribution",
+    "powershell": "7.6.9",
+    "edition": "Core",
+    "tools": [
+      {
+        "name": "node",
+        "exit": 0,
+        "version": "v26.13.0"
+      },
+      {
+        "name": "npm",
+        "exit": 0,
+        "version": "11.20.0"
+      },
+      {
+        "name": "npx",
+        "exit": 0,
+        "version": "11.20.0"
+      },
+      {
+        "name": "python",
+        "exit": 0,
+        "version": "Python 3.13.7"
+      },
+      {
+        "name": "pip",
+        "exit": 0,
+        "version": "pip 26.0.1 from C:\\Python313\\Lib\\site-packages\\pip (python 3.13)"
+      },
+      {
+        "name": "git",
+        "exit": 0,
+        "version": "git version 2.56.0.windows.4"
+      },
+      {
+        "name": "gh",
+        "exit": 0,
+        "version": "gh version 2.93.0 (2026-05-27)"
+      },
+      {
+        "name": "go",
+        "exit": 0,
+        "version": "go version go1.25.6 windows/amd64"
+      },
+      {
+        "name": "java",
+        "exit": 0,
+        "version": "openjdk 21.0.10 2026-01-20 LTS"
+      },
+      {
+        "name": "javac",
+        "exit": 0,
+        "version": "javac 21.0.10"
+      },
+      {
+        "name": "dotnet",
+        "exit": 0,
+        "version": "10.0.114"
+      },
+      {
+        "name": "rustc",
+        "exit": 0,
+        "version": "rustc 1.97.1 (8bab26f4f 2026-07-14)"
+      },
+      {
+        "name": "cargo",
+        "exit": 0,
+        "version": "cargo 1.97.1 (c980f4866 2026-06-30)"
+      },
+      {
+        "name": "bun",
+        "exit": 0,
+        "version": "1.4.0"
+      },
+      {
+        "name": "rg",
+        "exit": 0,
+        "version": "ripgrep 15.2.0 (rev e89fff89ac)"
+      },
+      {
+        "name": "uv",
+        "exit": 0,
+        "version": "uv 0.12.5 (210d1f678 2026-08-14 x86_64-pc-windows-msvc)"
+      },
+      {
+        "name": "adb",
+        "exit": 0,
+        "version": "Android Debug Bridge version 1.0.41"
+      }
+    ],
+    "temporary": "C:\\SuperPiCommand",
+    "home": "C:\\SuperPiCommand\\home",
+    "hostProjectVisible": false,
+    "discovery": {
+      "mounts": 27,
+      "paths": 31,
+      "scannedEntries": 423462,
+      "scannedDirectories": 42924,
+      "checked": true
+    },
+    "excludedOldNodeLink": true,
+    "dependencies": true,
+    "textErrors": true,
+    "vmStarts": 1,
+    "calls": 3,
+    "afterCommandFailure": {
+      "vm": false,
+      "pending": false,
+      "sourceFiles": 0,
+      "ownedArtifacts": 0
+    },
+    "testCompleted": true
+  },
+  "legacy": {
+    "artifact": "source production backend with original SandboxTaskBinding",
+    "rootRemoved": true,
+    "physicalClosed": 10,
+    "pendingProcesses": 0,
+    "candidateBuffersReleased": true,
+    "resultBytesReleased": true,
+    "evidenceBytes": 8298
+  },
+  "performance": {
+    "scope": "VM startup and explicit command launch; no changes to per-chunk pumps or result delivery",
+    "pumpSourceUnchanged": true,
+    "pumpSourceSha256": "ba2f41f4cff4e7e9af2abd4f75a4207cfd407ae572995ca5c35f01119f63f3cf",
+    "pumpContract": {
+      "protocol": "super-pi-task-pump-contract-v1",
+      "seen": 131073,
+      "retained": 32768,
+      "reads": 34,
+      "allocated": 36864,
+      "cleared": 36864,
+      "liveBuffers": 0,
+      "nativeCalls": 0,
+      "packageRefusals": 9
+    },
+    "objectPoolsAdded": 0
+  },
+  "verification": {
+    "applicableTests": {
+      "passed": 90,
+      "failed": 0
+    },
+    "guardTests": 37,
+    "typecheck": true,
+    "offlineBuild": true,
+    "launcherVersion": "1.0.0",
+    "packagedRuntimeFiles": 41,
+    "manifestSha256": "baa2b0598dea4e730820ea3f93619e1780d5f6ba431ece1b48c9deb06ba09212",
+    "taskWorkerSha256": "e4afd3da6bbecf7616aa6a56db2678be6abb9993861170be8429078b4b0076a0",
+    "reviewFollowup": {
+      "reproducedBeforeFix": 3,
+      "discoveryTestsAfterFix": 9,
+      "applicableTestsAfterFix": 86,
+      "liveCasesAfterFix": 2,
+      "toolchainSourceSha256": "89d68dccdc78b5fc5522730f4560b1c43645403770028d80aba10985b08ef9c6",
+      "cases": [
+        "complete profile SDK without Cargo credentials",
+        "PATH precedence and fallback after unsafe root removal",
+        "real workspace identity through junction"
+      ]
+    },
+    "reviewFollowup2": {
+      "reproducedBeforeFix": 3,
+      "discoveryTestsAfterFix": 12,
+      "applicableTestsAfterFix": 89,
+      "liveCasesAfterFix": 2,
+      "toolchainSourceSha256": "57de92b2ef231abfd935cc002a8dded4310a09141de063af73abf11548c47e3c",
+      "cases": [
+        "configured Cargo home real identity and bin-only mapping",
+        "stale WinGet aliases isolated per entry",
+        "explicit PATH before supplemental directories and matching SDK roots"
+      ]
+    },
+    "reviewFollowup3": {
+      "reproducedBeforeFix": 1,
+      "discoveryTestsAfterFix": 13,
+      "applicableTestsAfterFix": 90,
+      "liveCasesAfterFix": 2,
+      "toolchainSourceSha256": "d9945642af6d5695563e83bf77575901b188053c4873d9fc4044d5af8bf39a2a",
+      "cases": [
+        "exclusion alias real identity",
+        "missing descendants resolve existing ancestor identity",
+        "excluded installations cannot fall back to bin-only mapping",
+        "unreadable exclusion fails closed"
+      ]
+    }
+  },
+  "notes": [
+    "An exploratory glob incorrectly included archived manual acceptance tests excluded by scripts/test.mjs and initially omitted --expose-gc. Those runs are not counted as passing acceptance. Their historical source-loader/guard failures were not changed.",
+    "Source-manifest dependency guards initially detected the new module; the manifest and exact counts were updated and relevant guards passed.",
+    "Discovery does not install absent tools, inherit user credentials, enable networking or include project node_modules. Required or explicitly included tool roots with external links fail closed; unsafe automatic roots are skipped."
+  ],
+  "cleanup": {
+    "taskRoot": ".task-tmp/sandbox-env-diagnosis-3a8d113ce7e7",
+    "state": "pending PR review and CI; exact resources.json retained"
+  }
+}

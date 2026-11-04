@@ -5,6 +5,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { SandboxToolchains } from "../scripts/acceptance/windows-sandbox-toolchains.mjs";
 
 const repository = fileURLToPath(new URL("..", import.meta.url));
 test("Framework PowerShell gate is independent of the parent console BOM", { skip: process.platform !== "win32" }, () => {
@@ -20,7 +21,8 @@ test("Framework PowerShell gate is independent of the parent console BOM", { ski
         ], { encoding: "utf8", timeout: 15000, windowsHide: true, maxBuffer: 8192 });
         if (fs.existsSync(executable)) executableId = fs.lstatSync(executable, { bigint: true });
         assert.equal(compiled.status, 0, compiled.stderr + compiled.stdout);
-        const result = spawnSync(executable, [], { encoding: "utf8", timeout: 20000, windowsHide: true, maxBuffer: 8192 });
+        const toolchains = new SandboxToolchains({ cwd: repository });
+        const result = spawnSync(executable, [toolchains.hostShell], { encoding: "utf8", timeout: 20000, windowsHide: true, maxBuffer: 8192 });
         assert.equal(result.status, 0, result.stderr + result.stdout);
         assert.deepEqual(JSON.parse(result.stdout), { cases: 4, started: 4, closed: 4, headless: true });
     } finally {
