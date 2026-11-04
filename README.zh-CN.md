@@ -41,17 +41,19 @@ Windows Sandbox 命令严格使用 **PowerShell 7**，不回退 Windows PowerShe
 
 ### 从源码构建
 
-在 PowerShell 中：
+在 PowerShell 7 中：
 
 ```powershell
 git clone https://github.com/dragonbaba/super-pi.git
 Set-Location .\super-pi
 npm.cmd ci
-npm.cmd --offline run build:offline
+npm.cmd run build:offline
 npm.cmd run superpi -- --help
 ```
 
-`npm.cmd ci` 按锁文件安装依赖，可能需要联网及原生构建环境；请保留仓库的 `.npmrc`，不要用 `npm.cmd update` 替代。依赖安装完成后，`npm.cmd --offline run build:offline` 使用仓库内已有的模型数据，将本地各包运行时和资源构建到 `packages/*/dist/`，不会在线刷新模型目录或配置 provider。npm 的 `--offline` 作用于 npm；CLI 的独立 `--offline` 参数禁用启动阶段的网络操作。两者都不会把远程模型推理变成本地推理。
+`npm.cmd ci` 按锁文件安装依赖，可能需要联网及原生构建环境；请保留仓库的 `.npmrc`，不要用 `npm.cmd update` 替代。依赖安装完成后，`npm.cmd run build:offline` 使用仓库内已有的模型数据，将本地各包运行时和资源构建到 `packages/*/dist/`，自动为构建子进程启用 npm 离线模式，不会在线刷新模型目录或配置 provider。CLI 的独立 `--offline` 参数禁用启动阶段的网络操作。两者都不会把远程模型推理变成本地推理。
+
+构建按工作区依赖顺序执行，默认最多同时构建两个包。需要串行执行时用 `npm.cmd run build:offline -- --jobs 1`，查看构建计划时用 `--list`。原来带 npm 外层 `--offline` 的命令仍可使用。失败处理和实测结果见[构建说明](docs/building.md)。
 
 启动交互界面：
 
@@ -66,7 +68,7 @@ npm.cmd run superpi
 更新源码后，在仓库根目录重新构建。如果 `package-lock.json` 发生变化，先运行 `npm.cmd ci` 安装匹配的依赖。依赖已经安装时：
 
 ```powershell
-npm.cmd --offline run build:offline
+npm.cmd run build:offline
 npm.cmd run superpi -- --offline --version
 npm.cmd run superpi -- --offline --help
 ```

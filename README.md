@@ -41,17 +41,19 @@ Windows Sandbox commands require **PowerShell 7**, with no Windows PowerShell 5.
 
 ### Build from source
 
-In PowerShell:
+In PowerShell 7:
 
 ```powershell
 git clone https://github.com/dragonbaba/super-pi.git
 Set-Location .\super-pi
 npm.cmd ci
-npm.cmd --offline run build:offline
+npm.cmd run build:offline
 npm.cmd run superpi -- --help
 ```
 
-`npm.cmd ci` installs from the lockfile and may require network access and native build prerequisites. Keep the repository `.npmrc`; do not substitute `npm.cmd update`. Once dependencies are installed, `npm.cmd --offline run build:offline` uses the checked-in model data and builds the local package runtimes and resources into `packages/*/dist/`. The build does not refresh the online model catalog or configure a provider. npm's `--offline` applies to npm; the CLI's separate `--offline` option disables startup network operations. Neither makes remote model inference local.
+`npm.cmd ci` installs from the lockfile and may require network access and native build prerequisites. Keep the repository `.npmrc`; do not substitute `npm.cmd update`. Once dependencies are installed, `npm.cmd run build:offline` uses the checked-in model data and builds the local package runtimes and resources into `packages/*/dist/`. It enables npm's offline mode for child builds and does not refresh the online model catalog or configure a provider. The CLI's separate `--offline` option disables startup network operations. Neither makes remote model inference local.
+
+The build respects workspace dependencies and runs at most two packages concurrently by default. Use `npm.cmd run build:offline -- --jobs 1` for serial execution or `--list` to inspect the build plan. Existing commands with npm's outer `--offline` flag still work. See the [build guide](docs/building.md) for failure handling and measured results.
 
 Start the interactive application:
 
@@ -66,7 +68,7 @@ The supported source entry is `scripts/superpi.mjs`. It checks the built CLI and
 After updating the source, rebuild from the repository root. If `package-lock.json` changed, run `npm.cmd ci` first to install the matching dependencies. With dependencies already installed:
 
 ```powershell
-npm.cmd --offline run build:offline
+npm.cmd run build:offline
 npm.cmd run superpi -- --offline --version
 npm.cmd run superpi -- --offline --help
 ```
