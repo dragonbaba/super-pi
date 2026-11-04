@@ -1,6 +1,6 @@
 # PF02 验证前置：仓库内临时目录的测试隔离与释放
 
-日期：2026-11-05。基线 `0a4191e9bde5e97714674d8b048a7e91327bb1f8`。独立分支 `codex/test-task-temp-isolation`，作为 PF02-B 启动优化的验证前置，单独 PR，不包含 Jiti 生产改动。状态：本地完整检查及释放验证通过，待当前 head reviewer 和六分片 CI。原始失败、归因探针、最终检查和复现脚本见[PF02-V 证据](../evidence/performance-pf02-task-temp-2026-11-05.json)。
+日期：2026-11-05。基线 `0a4191e9bde5e97714674d8b048a7e91327bb1f8`。作为 PF02-B 启动优化的独立验证前置，[PR #218](https://github.com/dragonbaba/super-pi/pull/218) 已交付，不包含 Jiti 生产改动。原始失败、归因探针、最终检查和复现脚本见[PF02-V 证据](../evidence/performance-pf02-task-temp-2026-11-05.json)。
 
 ## 已复现问题
 
@@ -29,3 +29,5 @@ footer 的独立生产函数对照在同一夹具中证明：120 列确实不包
 同一资源探针复核修复后的两个测试文件：引用中的 Git watcher 分别为 7 → 0、70 → 0；两个进程自然 exit 0。退出阶段仅剩诊断父进程所用的三个 stdio PipeWrap，随后子进程 close；未将 stdio 的存在误写为零资源，也未把强制停止的旧诊断写成成功。该证据只证明测试夹具释放，产品关闭的 PF07 待验证项仍保留。
 
 当前任务根 `.task-tmp/pf02-validation-8c7487f66a`；此前失败与根因证据来自仍由 PF02-B 持有的 `.task-tmp/pf02-bundled-Tfkp8k`。正式证据归档后分别按身份清单清理，不删除另一个仍有后续工作的任务根。首次推送后等待当前 head reviewer；任何新增推送都重新单独 `@codex review`，六个 CI 检查全部成功后才合并、同步 main 和删除对应两端分支。
+
+交付回执：最终 head `8d2d49a7b9435751092a71c647ef80c7776cd202` 的 [review](https://github.com/dragonbaba/super-pi/pull/218#issuecomment-6640869017) 已完成，无未处理发现；[CI 41903205123](https://github.com/dragonbaba/super-pi/actions/runs/41903205123) 六分片首次运行全部成功。合并为 `039134566b4ec78efcea8692d0267aee793608a4`，head/squash tree 同为 `4e4a3cfa7a750a45a34b8cc99239e90315b2d5eb`，已确认进入 main、切回并同步主分支，精确删除两端 `codex/test-task-temp-isolation`。13 个直接进程与两个释放探针子进程完成后，按身份清单移除上述验证根的 339 个资源；共享父目录和 PF02-B 根保留。[合并、分支与资源回执](https://github.com/dragonbaba/super-pi/pull/218#issuecomment-6641077042)。

@@ -2,7 +2,7 @@
 
 日期：2026-11-05，Asia/Tokyo。任务前缀 **PF**。
 
-状态：**用户已授权 PF00 起依次执行；PF00、PF01 已交付，PF02-A 版本目标及功能回归完成、待审查/CI，PF02-B、PF03–PF08 尚未开始生产实施。** 本方案将当前性能审计转为可核对、可排除、可分批交付的任务。先复核测量和行为边界，再实施有证据支持的优化；阶段状态以对应源码、验收证据和 PR 记录推进。PF00 的实际检测与目标见[基线复核记录](performance/pf00-baseline-validation.md)，PF01 见[布局宽度测量记录](performance/pf01-layout-width-validation.md)，PF02-A 见[版本入口验证](performance/pf02-version-entry-validation.md)；其关闭绝对计时稳定性 V 已明确转入 PF07，未宣称整轮验收完成。
+状态：**用户已授权 PF00 起依次执行；PF00、PF01、PF02-A、验证前置 PF02-V 已交付，PF02-B 完成主目标验证、准备独立 PR，PF03–PF08 尚未开始生产实施。** 本方案将当前性能审计转为可核对、可排除、可分批交付的任务。先复核测量和行为边界，再实施有证据支持的优化；阶段状态以对应源码、验收证据和 PR 记录推进。PF00 的实际检测与目标见[基线复核记录](performance/pf00-baseline-validation.md)，PF01 见[布局宽度测量记录](performance/pf01-layout-width-validation.md)，PF02-A 见[版本入口验证](performance/pf02-version-entry-validation.md)，PF02-B 见[默认扩展启动验证](performance/pf02-bundled-startup-validation.md)；关闭绝对计时稳定性 V 继续 PF07，未宣称整轮验收完成。
 
 沿用 [历史修复方案](upstream-pi-history-followup-plan.md) 的代码、资源管理和 PR 约束，并完整服从 [Hot-path allocation contract](performance/hot-path-allocation-contract.md)。实施时若用户已有授权，不重复申请相同步骤的许可。首次推送后等待 reviewer；同一 PR 每次后续新增推送，必须单独评论 `@codex review`，等待当前 head 的审查闭环。
 
@@ -39,7 +39,7 @@
 | --- | --- | --- | --- |
 | PF00 | 复核基线、探针与检测矩阵 | R/S；已交付，[PR #215](https://github.com/dragonbaba/super-pi/pull/215) | 固定源码/构建、补测量边界、审查各项假设和验收条件 |
 | PF01 | 长会话首次布局与缩放 | R/S；已交付，[PR #216](https://github.com/dragonbaba/super-pi/pull/216) | 50k 合成生产组件夹具缩放 p95 −60.3%；保持精确高度，同步 O(n) 和原生终端验收边界不变 |
-| PF02 | 启动入口与模块加载 | A：版本目标/功能回归完成，待审查；B：待设计验证 | 独立版本查询 p95 −88.3%；默认交互启动另测收益、另建 PR，关闭绝对计时 V 继续 PF07 |
+| PF02 | 启动入口与模块加载 | A：[PR #217](https://github.com/dragonbaba/super-pi/pull/217) 已交付；验证前置 [#218](https://github.com/dragonbaba/super-pi/pull/218) 已交付；B：主目标验证完成，准备独立 PR | 版本查询 p95 −88.3%；B 的 bundled/regular 暖缓存 ACK p95 −3.33%，首次未缓存 TS 转译约 40 ms 成本延后，关闭绝对计时 V 继续 PF07 |
 | PF03 | 增长中的复杂 Markdown | R/S；待设计验证 | 分别评估表格/代码块；保留既有纯文本与 token 复用能力 |
 | PF04 | 缓存命中观测与归因 | S/V；待核对 | 实际 usage、有效前缀和 retention 的关联；不承诺云端命中率提升 |
 | PF05 | 缓存统计的历史扫描 | R/S；待设计验证 | 单轮统计增量维护；保留全量重建所需的正确扫描 |
@@ -146,7 +146,7 @@
 - **候选方向**：简单命令轻量入口、按模式动态导入、避免已证实重复初始化。Provider API 的 lazy import 已存在，不重复增加一层；`--help` 可能依赖扩展参数，不能为了快而遗漏扩展帮助。重复 refresh 先测来源/收益和注册语义，再决定是否改。
 - **验收**：无关模块不加载的确定性证据 + 端到端时间/分配；默认捆绑资源行为和首次使用成本单独报告，不能把启动成本完整转移到第一条输入后忽略。保留 CLI 参数优先级、错误码、资源检查、信任与 hook 顺序，启动失败/取消清理通过。
 - **拆分**：简单命令与默认交互启动若属于不同根因，按 PF02-A/B 独立 PR；前者收益不能代替后者验收。
-- **验证前置 PF02-V**：[仓库内临时目录的测试隔离与释放](performance/pf02-task-temp-validation.md)。PF02-B 全套检测发现旧夹具会继承父目录依赖/Git watcher，另有固定宽度截断误报；先独立修复测试、审查合并，再恢复启动优化，不弱化断言或修改临时目录约定。
+- **验证前置 PF02-V**：[仓库内临时目录的测试隔离与释放](performance/pf02-task-temp-validation.md)，[PR #218](https://github.com/dragonbaba/super-pi/pull/218) 已交付。PF02-B 全套检测发现旧夹具会继承父目录依赖/Git watcher，另有固定宽度截断误报；已独立修复、审查合并后恢复启动优化，未弱化断言或修改临时目录约定。
 - **现有入口**：`tests/alpha-cli.test.ts`、`tests/alpha-startup-faults.test.ts`、`tests/alpha-startup-quit.test.ts`；`bench:model-runtime`、`bench:model-runtime:warm`、`alpha:g2-capture`。capture 与正式 launcher 的路径/加载差异须先核对，不能直接套用。
 
 ### PF03 复杂 Markdown 的增量成本
@@ -191,6 +191,7 @@
 - **补测**：空闲、流式请求、工具/后台命令、compaction、MCP、活动 VM、背压/慢 stdout、断开输出、慢/失败扩展、启动中退出及重叠/重复关闭；regular/fullscreen 和 print/RPC 的既有收尾语义分别保留。
 - **计时**：按 hook、输入 drain、逻辑 UI、物理写入、runtime、子进程/VM 分段；同时测实际 raw/alternate screen 恢复和最终输出，不把 `drainInput(1000)` 误写为固定 1 秒延迟。
 - **前置未决证据**：PF02-A 的 Windows bundled/fullscreen 空闲关闭，五个 30 事件窗口仍有 10.151% 基线 p95 带；分段探针观察到原有 50 ms 输入等待及 runtime dispose 的波动。配对窗口未出现 >5% 回退，但绝对计时稳定性未通过，原始样本与探针见 [PF02-A 记录](performance/pf02-version-entry-validation.md)，本项须继续核验，不能改写为已稳定。
+- **PF02-B 补充观察**：基线/候选退出前资源快照均有一个 FSEventWrap，进程随后正常关闭；需区分待完成的异步 watcher close 与未释放 owner，不凭类型名认定产品泄漏。PF02-V 已修复的测试夹具 watcher 释放不能替代产品路径验收。
 - **验收**：取消只发起一次，重复关闭共享完成点，最终帧/退出码正确，无 stale callback、写后释放、重复 hook、遗留自有进程/VM。区分无法取消的 OS 写入最小物理 ownership 和可释放逻辑引用。
 - **决策边界**：先证明慢点再改；不能删除必要清理、提前 process.exit、强杀不属于任务的进程或默默增加扩展 hook timeout。确需改变可取消/等待语义时单独写兼容性决策，不混入普通提速。
 - **现有入口**：`tests/alpha-shutdown-deferred.test.ts`、`tests/alpha-startup-quit.test.ts`、`tests/alpha-cli.test.ts`、`tests/rpc-shutdown.test.ts`、`tests/mcp-refresh-shutdown.test.ts`、`tests/tui-terminal-state.test.ts`、`tests/tui-frame-queue.test.ts`；`bench:tui-frame-queue`、`bench:tui-input-lifecycle`、`bench:tui-interactive-reference-allocations`，实际 VM 验收按 [测试说明](testing.md) 的现行 opt-in 入口执行。

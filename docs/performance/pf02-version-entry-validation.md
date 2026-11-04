@@ -1,6 +1,6 @@
 # PF02-A 独立版本查询入口
 
-状态：本地实施、版本查询目标和功能回归完成，待独立 PR 审查及六分片 CI；关闭绝对计时的稳定性仍为 V，记录在下方及 PF07。前置 [PF01 / PR #216](https://github.com/dragonbaba/super-pi/pull/216) 已交付，基线为 `49000173b677dc0ac855f45be7f83ca37764e7c8`。沿用[总方案](../super-pi-performance-followup-plan.md)、[PF00 预先固定的目标](pf00-baseline-validation.md)及[热路径分配契约](hot-path-allocation-contract.md)：无预加载版本查询 p95 至少下降 40%，并证明无关模块不加载，检查其余模式和错误语义。默认交互启动的可避免成本属于后续独立 PF02-B，不能用本项收益替代。原始样本、精确源码/构建哈希和复现脚本见[PF02-A 证据](../evidence/performance-pf02-version-2026-11-05.json)。
+状态：已交付，[PR #217](https://github.com/dragonbaba/super-pi/pull/217) 已通过当前 head 审查及六分片 CI 并合并；关闭绝对计时的稳定性仍为 V，记录在下方及 PF07。前置 [PF01 / PR #216](https://github.com/dragonbaba/super-pi/pull/216) 已交付，基线为 `49000173b677dc0ac855f45be7f83ca37764e7c8`。沿用[总方案](../super-pi-performance-followup-plan.md)、[PF00 预先固定的目标](pf00-baseline-validation.md)及[热路径分配契约](hot-path-allocation-contract.md)：无预加载版本查询 p95 至少下降 40%，并证明无关模块不加载，检查其余模式和错误语义。默认交互启动的可避免成本属于后续独立 PF02-B，不能用本项收益替代。原始样本、精确源码/构建哈希和复现脚本见[PF02-A 证据](../evidence/performance-pf02-version-2026-11-05.json)。
 
 ## 成本与边界
 
@@ -41,4 +41,6 @@ ACK 最大变化 +0.92%，退出最大变化 +4.88%。按相邻六个正式样�
 
 随后停止同类重复计时，按证据优先调试流程记录假设并加入任务专用分段探针，各侧 12 正式事件、2 预热。原有 50 ms input drain 实际范围为基线 50.40–62.83 / 候选 50.28–63.92 ms，UI stop 为 1.50–4.96 / 1.51–4.80 ms，runtime dispose 为 2.57–13.39 / 2.53–11.42 ms；退出标记到 close 为 21.97–24.29 / 22.68–24.31 ms，exit 事件到 close 小于 0.024 ms。直接观察到两侧既有等待和释放耗时的波动，不能把总时延尾部归因于入口修改。探针改变导入顺序，其启动时间不作正式启动证据；没有改变产品等待、清理、timeout、OS 优先级或时钟分辨率。绝对关闭计时保持 V，交由 PF07 继续核验，既不把它写成通过，也不将关闭收益纳入 PF02-A 目标。原始窗口、子进程身份、分段结果及失败假设记录全部保留在证据中；全轮验收仍须 PF07/PF08 收尾。
 
-已通过 26 项入口/参数/捆绑资源测试：完整模块排除、选项值和 `--`、版本/帮助优先级、错误码、扩展帮助、缺少 dist、损坏 bundle、缺失资源、缺失/损坏用户配置；新入口测试记录并校验 20 个子进程 PID、退出状态和临时目录。首轮新测试把 Windows 原生绝对路径传给 ESM `--import`，探针未加载；改用 `file:` URL 后重跑通过，未更改产品错误规则。另 7 个启动/关闭测试文件共 157 项，150 通过、7 跳过、0 失败：跳过的是 Windows 无法等价交付的交互 SIGTERM/SIGHUP 和 print 原生 POSIX 信号收尾，须由 Linux CI 执行。离线构建 12/12 包、7352 ms、并发峰值 2；最终类型检查通过。当前 head 的六分片 CI/reviewer 尚待完成，不能提前标为交付；首次推送等待审查，后续新增推送重新单独 `@codex review`。
+已通过 26 项入口/参数/捆绑资源测试：完整模块排除、选项值和 `--`、版本/帮助优先级、错误码、扩展帮助、缺少 dist、损坏 bundle、缺失资源、缺失/损坏用户配置；新入口测试记录并校验 20 个子进程 PID、退出状态和临时目录。首轮新测试把 Windows 原生绝对路径传给 ESM `--import`，探针未加载；改用 `file:` URL 后重跑通过，未更改产品错误规则。另 7 个启动/关闭测试文件共 157 项，150 通过、7 跳过、0 失败：跳过的是 Windows 无法等价交付的交互 SIGTERM/SIGHUP 和 print 原生 POSIX 信号收尾，随后由 Linux CI 执行。离线构建 12/12 包、7352 ms、并发峰值 2；最终类型检查通过。
+
+交付回执：最终 head `7ffb929c03da6630a7095aed80c9a8b552a122db` 的 [review 记录](https://github.com/dragonbaba/super-pi/pull/217#issuecomment-6639445500) 无未处理发现，[CI 41892730091](https://github.com/dragonbaba/super-pi/actions/runs/41892730091) 六分片成功。合并为 `0a4191e9bde5e97714674d8b048a7e91327bb1f8`，squash tree 与 head 均为 `6362580d6ebbaae326422b3e75abad2824774515`；已确认进入 main、切回并同步主分支，精确删除两端 `codex/perf-pf02-version`。任务根已按身份清单移除 7202 个资源，36 个直接进程均已退出；46 份退出回执及 540 个 lifecycle、80 个 version、10 个 temp-env-check、20 个最终入口测试子进程记录已归档。共享 `.task-tmp` 保留。[合并与清理回执](https://github.com/dragonbaba/super-pi/pull/217#issuecomment-6639686170)。
