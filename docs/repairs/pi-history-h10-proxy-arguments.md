@@ -1,6 +1,6 @@
 # H10 — SDK streamProxy 增量工具参数
 
-状态：设计、最小实现与本地验收完成，待独立 PR reviewer/CI。基于 H09 merge `5b798165a20014ecb8a9af423253becaba18ab77`，分支 `codex/h10-proxy-arguments`。任务根 `D:\RMProjects\Pi\.task-tmp\h10-7da5a16b0f09`，Node 26.13.0，child TMP/TEMP/TMPDIR 已验证。
+状态：已通过 [PR #209](https://github.com/dragonbaba/super-pi/pull/209) 合并，两端任务分支已删除；临时目录清理受阻，见末节。基于 H09 merge `5b798165a20014ecb8a9af423253becaba18ab77`，原分支 `codex/h10-proxy-arguments`。任务根 `D:\RMProjects\Pi\.task-tmp\h10-7da5a16b0f09`，Node 26.13.0，child TMP/TEMP/TMPDIR 已验证。
 
 ## 实际链与边界
 
@@ -20,7 +20,7 @@ SSE 维持当前每 data 行一个 JSON event 的协议，只扫描新 decoded c
 
 实际 streamProxy 与离线 Response fixture：Unicode/转义跨块、nested/array/string、交错工具、空 delta、最终对象修正、无 tool end、非法/不完整 JSON、替换/重复边界、abort/网络 error/缺 terminal、尾部持续连接。真实 Agent observer 验证 snapshot 隔离及 generation 到达，不把手工 clone 当作实际交付。
 
-已检查 scripts/bench/provider-tool-args.ts：它期待 provider.stream + fixture.start(factory)，不能直接把原参数当 proxy 数据。新增专门的 proxy fixture/驱动测实际 streamProxy，复用 IncrementalToolArguments diagnostics 与相同 HeapProfiler 方法；固定 16KiB/64KiB payload、64 code-unit delta，计数与 profile 分离。完成以下实际验收，review/CI 待独立 PR。
+已检查 scripts/bench/provider-tool-args.ts：它期待 provider.stream + fixture.start(factory)，不能直接把原参数当 proxy 数据。新增专门的 proxy fixture/驱动测实际 streamProxy，复用 IncrementalToolArguments diagnostics 与相同 HeapProfiler 方法；固定 16KiB/64KiB payload、64 code-unit delta，计数与 profile 分离。完成以下实际验收，review/CI 最终回执见末节。
 
 ## 失败基线与最终功能验证
 
@@ -62,3 +62,11 @@ HeapProfiler sampling interval 4,096，2 warmups、6 measured streams；wire fix
 - frame-queue：20,000 帧、1,000 warmup、预建 64KiB frame；frame wrapper/Promise/closure/materialization/copy 均 0，flush 后 active/pending 和两者保留字节均 0。采样 110.6836 B/frame 包含诊断/计时等成本；这只是 queue-only 基准。相关 source/行为测试继续验证 active≤1、pending≤1、HWM≤2 和物理背压所有权。
 
 下游三项是原有生产链回归夹具，不能当作一次 proxy→物理终端的完整端到端 profile。proxy→实际 Agent 已单独验证；未增加真实网络/终端环境测试。既有 text/thinking event 包装、实际交付快照、参数序列化与渲染成本仍存在，不宣称完整调用链零分配。最终审查、六分片 CI、合并及精确资源清理回执在本 PR 中记录。
+
+## 审查、合并与资源回执
+
+最终 head `7c83523505140527337d70d68a87ba1a1904813d`。首次 PR 打开后机器人只返回需要环境的提示，未实际启动审查；等待核实后补发一次 [@codex review](https://github.com/dragonbaba/super-pi/pull/209#issuecomment-6625559048)，[reviewer](https://github.com/dragonbaba/super-pi/pull/209#issuecomment-6625563029) 于 07:50:22 UTC 完成同 head 审查，无建议、无未处理线程。期间没有追加推送。[CI 41793721212](https://github.com/dragonbaba/super-pi/actions/runs/41793721212) 六分片全部通过。
+
+合并前重新核验 head/reviewer/六项检查/线程，于 2026-11-04 07:51:41 UTC squash merge 为 `4652be3eeaaa96d54ea02e23eac4e43d34f8a3fb`。本地主分支快进同步，按精确 head 删除远端及本地 `codex/h10-proxy-arguments`。
+
+27 条登记子进程记录均无存活 owner，正式功能/结构计数/profile/生命周期证据已提交。精确删除任务根内 212 文件和 3 子目录的命令被自动审批在执行前拒绝，原文 `blocked by policy`。全部资源仍保留于 `D:\RMProjects\Pi\.task-tmp\h10-7da5a16b0f09`，resources.json 记录 blocked；没有重试、换机制或接管旧根。[合并和清理受阻回执](https://github.com/dragonbaba/super-pi/pull/209#issuecomment-6625639612)。
