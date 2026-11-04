@@ -10,7 +10,7 @@
 - [模型能力参考](model-capabilities.md)：模型输入模态、工具调用、推理、上下文、缓存和 provider 能力。
 - [分支摘要配置](branch-summaries.md)：输出额度、历史输入预留、推理预算和空结果处理。
 
-源码交付的最短路径是：在仓库根目录运行 `npm.cmd ci`、`npm.cmd run build:offline`，再通过 `npm.cmd run superpi` 启动。包内 README 如果保留面向独立 npm 包或上游 Pi 的安装片段，应视为包级参考；源码 checkout 的正式入口以根 README 和 `scripts/superpi.mjs` 为准。
+源码交付的最短路径是：在仓库根目录运行 `npm.cmd ci` 安装依赖、`npm.cmd --offline run build:offline` 构建本地运行时，再通过 `npm.cmd run superpi` 启动。更新源码后的重建和 `--offline --version` / `--offline --help` 检查见[中文首页](../README.zh-CN.md#更新已有源码后重新构建)。`.task-tmp` 是开发临时目录，与 `packages/*/dist/` 构建产物分开。包内 README 如果保留面向独立 npm 包或上游 Pi 的安装片段，应视为包级参考；源码 checkout 的正式入口以根 README 和 `scripts/superpi.mjs` 为准。
 
 ## 模型、认证和 provider
 
@@ -62,9 +62,9 @@
 
 ## 历史、来源和评估
 
-- [Pi 历史修复补漏任务方案（2026-11-04）](upstream-pi-history-followup-plan.md)：覆盖派生基线之后的历史版本、已确认缺口与未发布候选，规定独立 PR、代码和性能门禁，以及独立临时目录的登记与清理。
-- [Pi 1.5.0 差异评估（2026-11-03）](upstream-pi-1.5.0-diff-assessment.md)：最新稳定版核对、当前缺口、已有等效实现和建议优先级。
-- [Pi 1.5.0 逐项实施方案](upstream-pi-1.5.0-implementation-plan.md)：先规划再实施，逐项根因、最小改动、性能门禁、不过度防御要求和验收映射。
+- [Pi 历史修复补漏实施与收尾（2026-11-04）](upstream-pi-history-followup-plan.md)：H00–H10 已合并，记录独立 PR、审查/CI、性能与资源回执；历史来源覆盖不等于全部语义审计，V/F 条目继续按证据处理。
+- [Pi 1.5.0 差异评估（2026-11-03）](upstream-pi-1.5.0-diff-assessment.md)：固定版本的历史差异与候选分类，当前交付结果以实施记录为准。
+- [Pi 1.5.0 逐项实施记录](upstream-pi-1.5.0-implementation-plan.md)：已交付任务的根因、最小改动、性能门禁和验收映射，后续补漏见 H00–H10 记录。
 - [OpenCode v2 与 Claude Code 借鉴任务计划](opencode-v2-claude-code-task-plan.md)：后台通知与续跑复核、Codemode 实现及同机性能对照、分阶段任务、性能门禁、最小必要测试和 Codex 审查流程。
 - [Pi 1.1.0 复核与任务清单](upstream-pi-1.1.0-task-plan.md)：固定版本对照、已复现缺口、待验证项、实施顺序和性能验收要求。
 - [Pi 0.84.1 → 0.86.1 定向评估](policy-diagnostics-pi-0.84.1-0.86.1-assessment.md)：当前 Super Pi 与固定上游 tag 的差异记录，不是整体升级。

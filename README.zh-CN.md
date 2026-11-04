@@ -2,7 +2,7 @@
 
 面向真实工程任务的可扩展终端 AI 编程助手，聚焦可控执行、持续项目上下文和长会话终端体验。
 
-[English](README.md) · [快速开始](#快速开始) · [文档导航](docs/README.md) · [上游差异](docs/upstream-pi-1.5.0-diff-assessment.md) · [GPL-3.0-only](LICENSE)
+[English](README.md) · [快速开始](#快速开始) · [文档导航](docs/README.md) · [上游补漏进度](docs/upstream-pi-history-followup-plan.md) · [GPL-3.0-only](LICENSE)
 
 Super Pi 是一个优先从源码运行的终端编程助手。它把模型 API、项目文件和本地工具组合成一个可持续的工作环境：你可以在自己的项目目录中检查代码、规划任务、执行经过检查的操作、恢复会话，并按需要加载扩展。
 
@@ -32,7 +32,7 @@ Super Pi 适合需要多轮探索和修改的工程任务，例如：
 
 ### 环境
 
-- Node.js 22.19 或更高版本。
+- 包的 `engines` 声明要求 Node.js 22.19 或更高版本；当前 [CI](.github/workflows/ci.yml) 在 Linux 和 Windows 上验证 Node.js 26.13.x。
 - npm。
 - 使用默认沙箱权限需要 Windows Sandbox 及受支持的 CLI；具体要求见[执行环境](docs/execution-environments.md)。宿主读写通过 `/permissions` 明确选择。
 - 已配置的模型 provider。构建脚本中的 offline 只描述构建阶段，不代表模型推理离线。
@@ -45,11 +45,11 @@ Super Pi 适合需要多轮探索和修改的工程任务，例如：
 git clone https://github.com/dragonbaba/super-pi.git
 Set-Location .\super-pi
 npm.cmd ci
-npm.cmd run build:offline
+npm.cmd --offline run build:offline
 npm.cmd run superpi -- --help
 ```
 
-`npm.cmd ci` 按锁文件安装依赖；请保留仓库的 `.npmrc` 和原生依赖要求，不要用 `npm.cmd update` 替代。`npm.cmd run build:offline` 构建源码运行时和资源，不会配置 provider，也不会阻断之后的模型网络请求。CLI 的 `--offline` 是另一项设置：它只禁用启动阶段的网络操作，不会把远程 provider 变成本地模型。
+`npm.cmd ci` 按锁文件安装依赖，可能需要联网及原生构建环境；请保留仓库的 `.npmrc`，不要用 `npm.cmd update` 替代。依赖安装完成后，`npm.cmd --offline run build:offline` 使用仓库内已有的模型数据，将本地各包运行时和资源构建到 `packages/*/dist/`，不会在线刷新模型目录或配置 provider。npm 的 `--offline` 作用于 npm；CLI 的独立 `--offline` 参数禁用启动阶段的网络操作。两者都不会把远程模型推理变成本地推理。
 
 启动交互界面：
 
@@ -58,6 +58,18 @@ npm.cmd run superpi
 ```
 
 支持的源码入口是 `scripts/superpi.mjs`。它会检查构建的 CLI，并把仓库中的 `.sp` 扩展、Skills 和 prompt resources 传给 coding-agent。直接启动 `packages/coding-agent/dist/cli.js` 会跳过资源装配，不是默认路径。
+
+### 更新已有源码后重新构建
+
+更新源码后，在仓库根目录重新构建。如果 `package-lock.json` 发生变化，先运行 `npm.cmd ci` 安装匹配的依赖。依赖已经安装时：
+
+```powershell
+npm.cmd --offline run build:offline
+npm.cmd run superpi -- --offline --version
+npm.cmd run superpi -- --offline --help
+```
+
+launcher 只检查构建的 CLI 是否存在，不会自动重新构建，也不会判断它是否匹配更新后的源码。版本命令显示包版本，单看版本号不能确认某个提交已经构建。构建成功后运行这两个 CLI 检查可以验证本地启动入口；provider 访问需按下文另行配置。
 
 ### 配置认证和模型
 
@@ -230,9 +242,12 @@ Compaction 会减少部分旧历史的直接可见性。Memory、Project Context
 npm.cmd ci
 npm.cmd run check
 npm.cmd run build:offline
-npm.cmd run test:hot
 npm.cmd test
 ```
+
+`npm test` 包含 unit、热路径不变量、provider-contract 三类测试，并运行一次 memory workspace。`test:unit`、`test:hot` 和 `test:contract` 用于定向选择子集，不需要在完整测试前额外重复运行。runner 记录各文件的启动、退出和耗时，为子进程提供隔离的离线 HOME/agent/session 环境，并为需要 GC 的所有权回归启用 GC。回归覆盖与基准测量的边界见[测试执行说明](docs/testing.md)。
+
+开发临时文件统一放在 `.task-tmp/<task-id>/`，包括日志、临时夹具、缓存和资源清单。先将验收证据保存到 `docs/` 或 `docs/evidence/`，等待任务进程和句柄退出，再删除该任务登记的临时文件；清空共享目录前先确认没有活动任务。删除已完成任务的临时数据不会移除 `packages/*/dist/` 构建产物、`node_modules/` 依赖或 `~/.sp/agent/` 运行数据，后续任务会重新创建自己的临时目录。所有权和清理规范见 [AGENTS.md](AGENTS.md)。
 
 文档任务先做 Markdown、链接、命令和事实核对；生产代码再按影响范围选择测试。修改热路径前阅读性能契约，不要用一次计时或一个 heap 数字替代生命周期证据。
 
@@ -240,9 +255,9 @@ npm.cmd test
 
 Super Pi 最初派生自 [Pi](https://github.com/earendil-works/pi) v0.84.1，现在在本仓库独立维护，使用自己的 `@super-pi` 包作用域、`superpi` 命令和 `.sp` 数据根目录。它不是官方 Pi 发行版，也不继承上游发布通道；来源见 [NOTICE.md](NOTICE.md)。
 
-Super Pi 核心包当前版本为 **1.0.0**，与 Pi 独立编号。上一轮 [Pi 1.1.0 对照与实施](docs/upstream-pi-1.1.0-task-plan.md)已完成其选定范围；这不代表完整同步上游。
+Super Pi 核心包当前版本为 **1.0.0**，与 Pi 独立编号。截至 **2026-11-04**，选定的 [Pi 1.5.0 实施任务](docs/upstream-pi-1.5.0-implementation-plan.md)和后续 [H00–H10 历史补漏任务](docs/upstream-pi-history-followup-plan.md)均已合并。补漏记录包含独立 PR、审查与 CI 结果、性能证据和资源清理状态。
 
-截至 **2026-11-03**，上游最新稳定版为 [Pi v1.5.0](https://github.com/earendil-works/pi/releases/tag/v1.5.0)（2026-11-02 发布）。[最新差异评估](docs/upstream-pi-1.5.0-diff-assessment.md)区分已确认缺口、已有等效实现和待验证候选，并给出建议顺序。默认不启动后台付费 cache warming。
+[Pi 1.5.0 差异评估](docs/upstream-pi-1.5.0-diff-assessment.md)是固定历史对照，不是持续更新的上游版本公告。历史清单的 1,150 条来源记录不等于 1,150 个已修复缺陷，也不代表全部完成语义审计；V01–V04 和其他未验证条目仍开放，功能候选仍需独立产品决策。默认不启动后台付费 cache warming。
 
 ## 许可证与合理使用
 

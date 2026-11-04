@@ -1,6 +1,6 @@
 # Pi 历史修复补漏：详细任务与实施规范
 
-状态：**H00–H10（含 H02-A/B）已依次通过审查和六分片 CI 并合并；所有对应远端及本地任务分支已删除。部分任务临时目录清理受阻，见 §11。** 用户已授权按顺序创建独立 PR，首次推送后等待 reviewer，每次后续推送单独 `@codex review`；当前最终 head 审查无未处理意见且 CI 全部通过后可合并，并按精确身份删除两端旧分支。下文设计和验收条件保留实施前约定，实际结果以各项实施记录为准；规划阶段的历史记录保留在 §9，H00 执行记录见 §10，本轮收尾见 §11。V/F 不因 H 任务完成而自动关闭。
+状态：**H00–H10（含 H02-A/B）已依次通过审查和六分片 CI 并合并；所有对应远端及本地任务分支已删除。部分临时目录曾清理受阻，后由用户手动清理并核验不存在，见 §11。** 用户已授权按顺序创建独立 PR，首次推送后等待 reviewer，每次后续推送单独 `@codex review`；当前最终 head 审查无未处理意见且 CI 全部通过后可合并，并按精确身份删除两端旧分支。下文设计和验收条件保留实施前约定，实际结果以各项实施记录为准；规划阶段的历史记录保留在 §9，H00 执行记录见 §10，本轮收尾见 §11。V/F 不因 H 任务完成而自动关闭。
 
 日期：2026-11-04，Asia/Tokyo。任务前缀使用 **H**，避免与上一轮 T01–T12、F01–F06 混淆。后续每项先更新自己的设计和证据，再动生产代码。
 
@@ -40,17 +40,17 @@
 
 | ID | 任务 | 上游来源 | 证据 | 初始状态 / 优先级 |
 | --- | --- | --- | --- | --- |
-| H00 | 建立历史版本逐项映射与遗漏清单 | v0.84.2–v1.5.0、固定未发布快照 | [清单](evidence/pi-history-followup-inventory.json)；V 保持待验证 | 已交付 #198；清理受阻见 §10 |
-| H01 | RPC 空闲 shutdown 主动完成关闭 | 未发布 | R：隔离 CLI；[实施与合并记录](repairs/pi-history-h01-rpc-idle-shutdown.md) | 已合并 #199；缓存清理受阻 |
-| H02 | RPC/print 重复关闭共享清理完成点 | 未发布 | A/B：真实 CLI 失败基线；[RPC 记录](repairs/pi-history-h02a-rpc-overlap-shutdown.md)、[print 记录](repairs/pi-history-h02b-print-overlap-shutdown.md) | 已合并 #200/#201；临时缓存清理受阻 |
-| H03 | print 最终输出截断返回非零状态 | v1.2.0 | R：真实 CLI；[实施记录](repairs/pi-history-h03-print-length.md) | 已合并 #202；临时缓存清理受阻 |
-| H04 | 跨模型历史不把 thinking 转为正文 | v1.3.0 | R：生产函数、实际 SDK 请求、分配/释放；[实施记录](repairs/pi-history-h04-thinking-history.md) | 已合并 #203；缓存清理受阻 |
-| H05 | Anthropic 非 strict 工具保留 schema 根定义 | 未发布 | R：SDK、确定性分配/释放；[实施记录](repairs/pi-history-h05-anthropic-schema-definitions.md) | 已合并 #204；缓存清理受阻 |
-| H06 | split-turn 压缩接收用户指令 | v1.4.0 | R：SDK/AgentSession、分配/释放；[实施记录](repairs/pi-history-h06-compaction-instructions.md) | 已合并 #205；缓存清理受阻 |
+| H00 | 建立历史版本逐项映射与遗漏清单 | v0.84.2–v1.5.0、固定未发布快照 | [清单](evidence/pi-history-followup-inventory.json)；V 保持待验证 | 已交付 #198；临时根已由用户清理 |
+| H01 | RPC 空闲 shutdown 主动完成关闭 | 未发布 | R：隔离 CLI；[实施与合并记录](repairs/pi-history-h01-rpc-idle-shutdown.md) | 已合并 #199；临时根已由用户清理 |
+| H02 | RPC/print 重复关闭共享清理完成点 | 未发布 | A/B：真实 CLI 失败基线；[RPC 记录](repairs/pi-history-h02a-rpc-overlap-shutdown.md)、[print 记录](repairs/pi-history-h02b-print-overlap-shutdown.md) | 已合并 #200/#201；临时根已由用户清理 |
+| H03 | print 最终输出截断返回非零状态 | v1.2.0 | R：真实 CLI；[实施记录](repairs/pi-history-h03-print-length.md) | 已合并 #202；临时根已由用户清理 |
+| H04 | 跨模型历史不把 thinking 转为正文 | v1.3.0 | R：生产函数、实际 SDK 请求、分配/释放；[实施记录](repairs/pi-history-h04-thinking-history.md) | 已合并 #203；临时根已由用户清理 |
+| H05 | Anthropic 非 strict 工具保留 schema 根定义 | 未发布 | R：SDK、确定性分配/释放；[实施记录](repairs/pi-history-h05-anthropic-schema-definitions.md) | 已合并 #204；临时根已由用户清理 |
+| H06 | split-turn 压缩接收用户指令 | v1.4.0 | R：SDK/AgentSession、分配/释放；[实施记录](repairs/pi-history-h06-compaction-instructions.md) | 已合并 #205；临时根已由用户清理 |
 | H07 | 内置 grep 隔离 RIPGREP_CONFIG_PATH | v1.4.0 | R：真实 rg；[实施记录](repairs/pi-history-h07-grep-no-config.md) | 已合并 #206；本项临时根已清理 |
 | H08 | grep 上下文避免整文件加载 | 未发布 | R：真实 rg；[实施记录](repairs/pi-history-h08-grep-context.md) | 已合并 #207；本项临时根已清理 |
 | H09 | 提示模板保留空引号参数 | v1.3.0 | R：生产函数；[实施记录](repairs/pi-history-h09-empty-prompt-args.md) | 已合并 #208；本项临时根已清理 |
-| H10 | SDK streamProxy 工具参数增量解析 | v1.5.0 | R：实际 proxy/Agent、分配与释放；[实施记录](repairs/pi-history-h10-proxy-arguments.md) | 已合并 #209；临时目录清理受阻 |
+| H10 | SDK streamProxy 工具参数增量解析 | v1.5.0 | R：实际 proxy/Agent、分配与释放；[实施记录](repairs/pi-history-h10-proxy-arguments.md) | 已合并 #209；临时根已由用户清理 |
 
 每项状态只按真实证据推进：`待验证 → 设计就绪 → 实施中 → 待审查 → 待合并 → 已交付`。另有 `已排除`，必须记录原因和覆盖边界。设计就绪的最低条件是：根因、失败输入、实际调用链、改动范围、性能性质、资源所有者及验收命令均明确。
 
@@ -376,7 +376,7 @@ H00–H10 共 12 个独立 PR（H02 分 A/B）已完成：[#198](https://github.
 
 性能任务 H04/H05/H06/H08/H10 的完整链审计、确定性计数、分配采样及释放证据分别存放于实施记录和 docs/evidence；必要协议交付、最终快照、渲染/布局的已有成本明确列出。不宣称全链零分配，不引入对象池，不用 CPU 计时或单次 heap 差代替分配证据。H07 是真实 ripgrep 行为检查，H09 是显式命令解析；没有为冷路径虚构 profile。
 
-以下是**仍保留**的精确目录，均位于 `D:\RMProjects\Pi\.task-tmp\`。本轮没有存活的登记测试进程；删除失败是自动审批在执行前返回 `blocked by policy`，不是清理成功。各根 resources.json 和对应回执保留；被拒绝后没有重试或切换机制。
+以下是**收尾时清理受阻、随后由用户手动删除**的精确目录，均位于 `D:\RMProjects\Pi\.task-tmp\`。收尾时没有存活的登记测试进程；自动删除失败是在执行前返回 `blocked by policy`，不是清理成功。当时保留各根 resources.json 和对应回执，被拒绝后没有重试或切换机制；后续手动清理记录见表后。
 
 | 所属 | `.task-tmp` 下的目录名 | 记录 |
 | --- | --- | --- |
@@ -391,7 +391,9 @@ H00–H10 共 12 个独立 PR（H02 分 A/B）已完成：[#198](https://github.
 | H06 | `h06-ef451f0ce8ff` | [回执](https://github.com/dragonbaba/super-pi/pull/205#issuecomment-6624053534) |
 | H10 | `h10-7da5a16b0f09` | [回执](https://github.com/dragonbaba/super-pi/pull/209#issuecomment-6625639612)，212 文件 / 3 子目录 |
 
-H07、H08、H09 的独立任务根已全部删除并验证不存在，详见各自实施记录的最终回执。共享 `.task-tmp` 不是本轮新建且仍有其他受阻资源，保留父目录。
+H07、H08、H09 的独立任务根已全部删除并验证不存在，详见各自实施记录的最终回执。收尾时共享 `.task-tmp` 不是本轮新建且仍有其他受阻资源，因此保留了父目录。
+
+2026-11-04 后续：用户明确确认“已清理”后，只读核对上表 10 个旧任务根均已不存在。历史审批拒绝与回执仍保留为当时证据，不再表示当前存在这些残留。随后新建独立的 README/离线构建验证目录，重新构建并验证本地入口及资源；结果见 [离线构建验证](evidence/readme-offline-build-2026-11-04.json)。
 
 范围仍按 H00 口径：1,150 条是来源覆盖记录，不是 1,150 个已修复缺陷；V01–V04 和清单中的其余 V 仍待独立验证，F 仍待产品取舍。不得把 H01–H10 的已合并结果批量写回成所有历史来源均已语义审计完成。
 
