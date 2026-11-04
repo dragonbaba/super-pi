@@ -1,6 +1,6 @@
 # PF03 复杂 Markdown 增长验证
 
-日期：2026-11-05。基线 `b4cabe0ec7cabef0acd0f615def7ab734ac8459f`，分支 `codex/perf-pf03-markdown`。状态：最终本地验收完成，准备独立 PR；仍须当前 head reviewer 无未处理发现及六分片 CI 全通过。对应[总方案](../super-pi-performance-followup-plan.md)和 [PF00 验收门禁](pf00-baseline-validation.md)。原始样本、两版候选、协议、源码/构建摘要、失败夹具、进程退出和复现脚本见 [PF03 证据](../evidence/performance-pf03-markdown-2026-11-05.json)。
+日期：2026-11-05。基线 `b4cabe0ec7cabef0acd0f615def7ab734ac8459f`，分支 `codex/perf-pf03-markdown`。状态：[PR #220](https://github.com/dragonbaba/super-pi/pull/220) 已审查合并；reviewed head `7bb8bb2afe1db5607ef2d9cfbd533a3d36183ae0`，squash `f1b4963d42489c6e1a59a742425f13aa5aa7b56a`，tree `c7758c9b1289907d692d82cceb58eac063d29456` 一致。当前 head reviewer 无发现，[CI 41915401957](https://github.com/dragonbaba/super-pi/actions/runs/41915401957) 六分片首次全通过。已切回并快进 main、删除精确远端/本地任务分支；任务目录 1,283 项资源、300 个直接子进程均按身份核验后完成清理，共享父目录保留，见[收尾回执](https://github.com/dragonbaba/super-pi/pull/220#issuecomment-6642609948)。对应[总方案](../super-pi-performance-followup-plan.md)和 [PF00 验收门禁](pf00-baseline-validation.md)。原始样本、两版候选、协议、源码/构建摘要、失败夹具、进程退出和复现脚本见 [PF03 证据](../evidence/performance-pf03-markdown-2026-11-05.json)。
 
 ## 根因与最小改动
 

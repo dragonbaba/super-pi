@@ -224,6 +224,8 @@ These are design and maintenance constraints, not an all-path zero-allocation, f
 
 The home page does not present isolated microbenchmark numbers. Heap delta, sampled allocation, token estimation, and provider billing are different measurements.
 
+The footer's `CH%` uses the latest assistant response's reported cache reads divided by its normalized prompt tokens; `/session` uses cumulative token-weighted usage. Missing provider cache reports cannot establish the actual server hit rate. Optional **Cache overlap estimates** (`showCacheMissNotices`, off by default) show length-only upper bounds, with repeated content and cache causes explicitly unknown. They do not infer expiry or money saved.
+
 ## Security, privacy, and known boundaries
 
 Configuration, sessions, and some memory are stored locally, but that does not mean input always stays on the machine. Prompts, tool schemas, file excerpts, tool results, and images may be sent to the selected provider; configured MCP servers receive the calls and data sent to them. Review provider, MCP, extension, and environment trust before use.

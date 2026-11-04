@@ -2,7 +2,7 @@
 
 日期：2026-11-05，Asia/Tokyo。任务前缀 **PF**。
 
-状态：**用户已授权 PF00 起依次执行；PF00、PF01、PF02-A、验证前置 PF02-V、PF02-B 已交付，PF03 完成本地验收、准备独立 PR，PF04–PF08 尚未开始生产实施。** 本方案将当前性能审计转为可核对、可排除、可分批交付的任务。先复核测量和行为边界，再实施有证据支持的优化；阶段状态以对应源码、验收证据和 PR 记录推进。PF00 的实际检测与目标见[基线复核记录](performance/pf00-baseline-validation.md)，PF01 见[布局宽度测量记录](performance/pf01-layout-width-validation.md)，PF02-A 见[版本入口验证](performance/pf02-version-entry-validation.md)，PF02-B 见[默认扩展启动验证](performance/pf02-bundled-startup-validation.md)，PF03 见[复杂 Markdown 验证](performance/pf03-complex-markdown-validation.md)；关闭绝对计时稳定性 V 继续 PF07，未宣称整轮验收完成。
+状态：**用户已授权 PF00 起依次执行；PF00、PF01、PF02-A、验证前置 PF02-V、PF02-B、PF03 已交付，PF04-A 正在校正缓存统计口径，PF04-B 请求归因及 PF05–PF08 尚未开始生产实施。** 本方案将当前性能审计转为可核对、可排除、可分批交付的任务。先复核测量和行为边界，再实施有证据支持的优化；阶段状态以对应源码、验收证据和 PR 记录推进。PF00 的实际检测与目标见[基线复核记录](performance/pf00-baseline-validation.md)，PF01 见[布局宽度测量记录](performance/pf01-layout-width-validation.md)，PF02-A 见[版本入口验证](performance/pf02-version-entry-validation.md)，PF02-B 见[默认扩展启动验证](performance/pf02-bundled-startup-validation.md)，PF03 见[复杂 Markdown 验证](performance/pf03-complex-markdown-validation.md)，PF04-A 见[缓存统计口径验证](performance/pf04-cache-overlap-validation.md)；关闭绝对计时稳定性 V 继续 PF07，未宣称整轮验收完成。
 
 沿用 [历史修复方案](upstream-pi-history-followup-plan.md) 的代码、资源管理和 PR 约束，并完整服从 [Hot-path allocation contract](performance/hot-path-allocation-contract.md)。实施时若用户已有授权，不重复申请相同步骤的许可。首次推送后等待 reviewer；同一 PR 每次后续新增推送，必须单独评论 `@codex review`，等待当前 head 的审查闭环。
 
@@ -160,6 +160,7 @@
 
 ### PF04 缓存观测和归因正确性
 
+- **顺序拆分**：PF04-A 先退役无证据的 rebilling/金额/通用 TTL 推断并校正长度上限；PF04-B 再核对有效请求与响应的身份关联、retry/reconnect/账号/历史边界。两项各自 PR 审查、六 CI、合并清理后再继续，不将 A 的估计当作 B 的实际归因。
 - **链路**：provider usage 归一化 + provider effective-dispatch → SDK manifest/recorder → session 完成事件 → cache stats/footer/notice。
 - **补测**：同前缀多轮、工具 schema/顺序/激活变化、项目上下文和动态指令、分支/压缩/恢复、模型/传输/账号边界、retry/reconnect、扩展请求变换；`none/short/long`、不支持/未报告 cache、零 token、cacheRead-only 和 cacheWrite 模式分别覆盖。
 - **候选方向**：复用已有 CH% 与漂移诊断，关联实际有效请求和相应响应 usage；异步重试或重连不得把上一请求诊断配给下一条消息。不把单一 5 分钟空闲阈值作为跨 provider 的失效证明；缺少 retention/服务端原因时明确未知。
@@ -170,9 +171,9 @@
 
 ### PF05 增量缓存统计
 
-- **链路**：message_end（持久化前）→ `maybeShowCacheMissNotice()` → `getEntries()` → `detectCacheMiss()/scan()`；同时核对 session 汇总、footer 和 transcript rebuild 的消费者。
+- **链路**：message_end（持久化前）→ `maybeShowCacheMissNotice()` → `getEntries()` → `detectCacheOverlapEstimate()/scan()`（PF04-A 更名前为 `detectCacheMiss`）；同时核对 session 汇总、footer 和 transcript rebuild 的消费者。
 - **补测**：提示开/关，1 千/1 万/5 万记录，普通/零用量消息、工具穿插、模型切换、压缩、分支摘要、分叉/切换/恢复、重复事件和失败请求；包含“同长度但不同内容”的归因反例。
-- **候选方向**：单轮路径只维护所需前态或复用现有 session 版本状态；以 session/branch/history generation 为失效依据。恢复/分支切换可一次重建，正常 append 不复制扫描全部历史。`collectCacheMisses()` 的完整重建用途保留，公开 `getEntries()` 的隔离语义不变。
+- **候选方向**：单轮路径只维护所需前态或复用现有 session 版本状态；以 session/branch/history generation 为失效依据。恢复/分支切换可一次重建，正常 append 不复制扫描全部历史。`collectCacheOverlapEstimates()` 的完整重建用途保留，公开 `getEntries()` 的隔离语义不变。
 - **验收**：与已校正语义的参考扫描逐步对照，避免重复计数/遗漏重置；正常完成事件处理与历史长度无关，不构建随后丢弃的全量 Map。记录访问条目数、复制引用数、分配、重建次数和退出引用；提示关闭不新增无消费者的统计负担。
 - **门禁**：补最小公开行为回归和定向 allocation/增长规模测试，复用 `tests/alpha-cli.test.ts` 相关重建路径、事件链/缓存消费者测试；不复制实现来充当正确性 oracle。
 
