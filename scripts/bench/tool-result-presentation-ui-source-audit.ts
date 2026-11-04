@@ -486,7 +486,7 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 	];
 	const widthMeasurementNodes = selectNamedDeclarations(tuiUtils, [
 		"visibleWidth",
-		"terminalAsciiWidth",
+		"terminalSimpleWidth",
 		"rememberWidth",
 	]);
 	const tuiResultRenderingNodes = [

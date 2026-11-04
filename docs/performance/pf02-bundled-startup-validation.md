@@ -1,6 +1,6 @@
 # PF02-B 默认扩展启动验证
 
-日期：2026-11-05。测量基线 `0a4191e9bde5e97714674d8b048a7e91327bb1f8`，独立分支 `codex/perf-pf02-bundled`。验证前置 [PF02-V / PR #218](https://github.com/dragonbaba/super-pi/pull/218) 已合并，PR base 更新到 `039134566b4ec78efcea8692d0267aee793608a4`；前置仅修改测试/文档，生产测量基线不变。状态：本地主目标、兼容性、负对照、分配及最终完整检查通过，待独立 PR 的当前 head reviewer 和六分片 CI。原始样本、源码/构建哈希、计数、进程与复现脚本见[PF02-B 证据](../evidence/performance-pf02-bundled-2026-11-05.json)。
+日期：2026-11-05。测量基线 `0a4191e9bde5e97714674d8b048a7e91327bb1f8`，独立分支 `codex/perf-pf02-bundled`。验证前置 [PF02-V / PR #218](https://github.com/dragonbaba/super-pi/pull/218) 已合并，PR base 更新到 `039134566b4ec78efcea8692d0267aee793608a4`；前置仅修改测试/文档，生产测量基线不变。状态：已交付，[PR #219](https://github.com/dragonbaba/super-pi/pull/219) 的 head `47b2803ca484597b77428965851254abcaab644b` 完成审查且无发现，六分片 CI `41906007956` 全通过；合并为 `b4cabe0ec7cabef0acd0f615def7ab734ac8459f`。合并树一致性、main 同步、两端旧分支删除及精确临时资源清理见[收尾回执](https://github.com/dragonbaba/super-pi/pull/219#issuecomment-6641426459)。原始样本、源码/构建哈希、计数、进程与复现脚本见[PF02-B 证据](../evidence/performance-pf02-bundled-2026-11-05.json)。
 
 ## 成本来源与先行门禁
 
@@ -76,4 +76,4 @@
 
 最终 `npm run check` 通过，离线构建 12/12 包、7061 ms、并发峰值 2；`npm test -- --keep-going` 全部 441 个执行单元 exit 0。扫描 AST 确认 `loadCreateJiti` 仍只有原有一次初始化的 arrow 回调，function expression/new expression/正则/数组与对象字面量均为 0。构建函数与计时候选去除注释/空白后严格相同；其余生产调用链没有 diff。完整检查包含现有 source/AST 热路径门禁，本项没有引入新的热路径或池。
 
-曾误直接调用受 npm 环境约束的 `scripts/build.mjs`，被入口正确拒绝，随后使用正式 npm 入口成功；该失败原样归档。初次完整检查发现的旧夹具问题已由 PF02-V 独立完成审查/合并，最终检查未跳过这些文件。等待审查期间无采样/测试进程在后台运行；正式证据已保存，任务根保留至 PR 完成精确清理。原生终端、真实 provider 首请求及 PF07 关闭边界仍明确未完成，不将本项写成整轮验收完成。
+曾误直接调用受 npm 环境约束的 `scripts/build.mjs`，被入口正确拒绝，随后使用正式 npm 入口成功；该失败原样归档。初次完整检查发现的旧夹具问题已由 PF02-V 独立完成审查/合并，最终检查未跳过这些文件。正式证据先保存，合并后已精确清理 22382 项任务资源并核对 38 个直接子进程、382 个 CLI 子进程、3 个 Bun 子进程和 4 个有界诊断子进程退出；共享 `.task-tmp` 保留。原生终端、真实 provider 首请求及 PF07 关闭边界仍明确未完成，不将本项写成整轮验收完成。
