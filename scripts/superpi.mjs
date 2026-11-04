@@ -67,8 +67,13 @@ const userArgs = process.argv.slice(2);
 if (!packageCommands.has(userArgs[0])) {
 	// Reuse CLI parsing so option values and messages after -- are never mistaken
 	// for resource switches. Explicit user -e/--skill/--prompt-template stay intact.
-	const { parseArgs } = await import(pathToFileURL(join(dirname(cliPath), "cli", "args.js")).href);
-	process.argv.splice(2, 0, ...bundledArguments(parseArgs(userArgs)));
+	const { isStandaloneVersionQuery } = await import(pathToFileURL(join(dirname(cliPath), "cli", "version-query.js")).href);
+	const versionQuery = isStandaloneVersionQuery(userArgs);
+	const options = versionQuery ? {} : (await import(pathToFileURL(join(dirname(cliPath), "cli", "args.js")).href)).parseArgs(userArgs);
+	// Version queries still validate bundled resources, but do not pass unused
+	// extension arguments that would require the full CLI startup path.
+	const resources = bundledArguments(options);
+	if (!versionQuery) process.argv.splice(2, 0, ...resources);
 }
 
 process.env.SP_SOURCE_LAUNCHER = fileURLToPath(import.meta.url);
