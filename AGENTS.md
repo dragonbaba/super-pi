@@ -30,6 +30,14 @@
 - Run the relevant AST/source invariants and allocation benchmark, and provide deterministic counters plus lifecycle/reference-release evidence.
 - Object pools require profiler proof and must satisfy the contract's ownership, safety, capacity, test, and measured-improvement gates.
 
+## Task Temporary Files
+
+- Create task-owned scratch data under `<repository>/.task-tmp/<task-id>-<unique-id>/`. Do not put task logs, fixtures, downloads, profiles, or cleanup manifests in `.git`; ordinary Git-managed files are unaffected.
+- Record the exact task root, created files/directories, and owned process identities. For tests and subprocesses, set `TMP`, `TEMP`, and `TMPDIR` to the task root in the child environment before startup; do not change persistent user/system environment settings. Verify the child actually uses this directory.
+- Preserve concise, reproducible acceptance evidence in the task document or `docs/evidence/` before removing scratch data. Never retain credentials, real user configuration, or full private transcripts as evidence.
+- After releasing owned processes and handles, verify the resolved cleanup target remains inside `.task-tmp`, check reparse/link boundaries, and delete only resources recorded for this task. Do not follow links into other directories or clean unrelated task roots. Remove the shared `.task-tmp` parent only if this task created it and it is empty.
+- If cleanup is blocked, record the exact remaining path and tool reason; do not claim success, switch mechanisms to evade the block, or delete the resource manifest while recorded resources remain.
+
 ## Completion
 
 - Track resources created by the current task and clean them by recorded identity; do not broadly scan or kill guessed processes.
