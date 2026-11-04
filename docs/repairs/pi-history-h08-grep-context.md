@@ -1,6 +1,6 @@
 # H08 — grep 默认上下文流式读取
 
-状态：候选实现与本地验收完成，待独立 PR reviewer/CI。基于 H07 merge `098cc11c3d681fda9852d3163e2e5deddc45b0ed`，分支 `codex/h08-grep-context`。本项任务根 `D:\RMProjects\Pi\.task-tmp\h08-ba69993a9cf9`，Node 26.13.0，child TMP/TEMP/TMPDIR 已验证。
+状态：已合并 [PR #207](https://github.com/dragonbaba/super-pi/pull/207)，两端任务分支和本项临时根均已删除并验证。原分支 `codex/h08-grep-context` 基于 H07 merge `098cc11c3d681fda9852d3163e2e5deddc45b0ed`。本项任务根 `D:\RMProjects\Pi\.task-tmp\h08-ba69993a9cf9`，Node 26.13.0，child TMP/TEMP/TMPDIR 已验证。
 
 ## 先行范围与容量
 
@@ -54,4 +54,10 @@ UTF-8/UTF-16 采用 rg 的实际转码结果；JSON text/bytes 只按 rg 协议�
 
 `node --experimental-strip-types --test tests/grep-context-stream.test.ts tests/grep-context-allocation.test.ts tests/grep-config-isolation.test.ts tests/source-invariants.test.ts tests/stream-hot-paths.test.ts tests/tool-renderer-source-invariants.test.ts tests/tool-output-shadow-production.test.ts tests/tool-result-presentation-source-invariants.test.ts tests/tui-hot-paths.test.ts`：**60 通过**。`npm run check`、离线构建通过。
 
-基准：`node --expose-gc --experimental-strip-types scripts/bench/grep-context.ts counts|profile|lifecycle 4096|65536`；宽窗口加第四参数 65537。基线源码取固定 base commit 的 grep.ts 放入本任务 owned root，设置仅 child 的 GREP_BASELINE_PATH，loader 保持原模块 URL/依赖；候选不设该变量。均先设置 TMP/TEMP/TMPDIR 并验证。PR、同 head review/CI、合并及最终清理待完成。
+基准：`node --expose-gc --experimental-strip-types scripts/bench/grep-context.ts counts|profile|lifecycle 4096|65536`；宽窗口加第四参数 65537。基线源码取固定 base commit 的 grep.ts 放入本任务 owned root，设置仅 child 的 GREP_BASELINE_PATH，loader 保持原模块 URL/依赖；候选不设该变量。均先设置 TMP/TEMP/TMPDIR 并验证。
+
+## 合并与资源回执
+
+最终 head `0dd41d71eab0ba1739460b5140439c1e51a429f8`，[首次审查](https://github.com/dragonbaba/super-pi/pull/207#issuecomment-6624773610) completed/no findings，未解决线程为 0；[CI](https://github.com/dragonbaba/super-pi/actions/runs/41789347235) 六分片全部 success。2026-11-04 07:08:26 UTC squash merge `3064ce9211b09458bc2d99a4751f87a9dda4f0e6`，main 快进同步，远端/本地 `codex/h08-grep-context` 按精确 head 删除。
+
+登记子进程全部退出，正式证据保存后核对根/父目录/全部资源的 resolved path 与 reparse 边界，按登记路径删除日志、缓存、基线副本、runner/PR 文本，最后清单与空任务根。任务根已验证不存在；共享父目录和其他任务根未动。[准备回执](https://github.com/dragonbaba/super-pi/pull/207#issuecomment-6624872904)、[完成回执](https://github.com/dragonbaba/super-pi/pull/207#issuecomment-6624878927)。
