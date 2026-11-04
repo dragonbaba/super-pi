@@ -1,6 +1,8 @@
 node_modules/
 dist/
 .artifacts/
+# Task-owned scratch data; remove each recorded task directory after use.
+/.task-tmp/
 *.log
 .DS_Store
 *.tsbuildinfo
