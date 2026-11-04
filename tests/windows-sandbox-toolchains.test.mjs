@@ -98,6 +98,21 @@ test("workspace junctions cannot expose the real project as a PATH installation"
     assert.throws(() => f.create({ include: ["D:\\real-project"] }), /Unsafe/);
 });
 
+test("exclusions protect real installations through aliases and missing descendant paths", async () => {
+    const f = fixture(["D:\\private-sdk", "D:\\private-sdk\\bin"]);
+    f.put("C:\\sdk-alias", "link", "D:\\private-sdk");
+    for (const excluded of ["C:\\sdk-alias", "C:\\sdk-alias\\future-cache"]) {
+        const plan = f.create({ exclude: [excluded] }, { PATH: "D:\\pwsh;C:\\sdk-alias;D:\\private-sdk\\bin" });
+        await plan.validateTrees();
+        assert.doesNotMatch(plan.appendConfig(config), /private-sdk|sdk-alias/);
+        assert.doesNotMatch(env(plan).PATH, /private-sdk|sdk-alias/);
+        assert.throws(() => f.create({ exclude: [excluded], include: ["D:\\private-sdk"] }), /excluded/);
+    }
+    const realpath = f.io.realpathSync;
+    f.io.realpathSync = name => { if (name === "C:\\sdk-alias") throw Object.assign(new Error("inaccessible exclusion"), { code: "EACCES" }); return realpath(name); };
+    assert.throws(() => f.create({ exclude: ["C:\\sdk-alias"] }), /inaccessible exclusion/);
+});
+
 test("configured and redirected Cargo homes expose only their executable subdirectories", async () => {
     const f = fixture(["D:\\cargo-home", "D:\\cargo-home\\bin", "D:\\cargo-home\\registry"]);
     f.put("D:\\cargo-home\\credentials.toml", "file"); f.put("D:\\cargo-home\\bin\\cargo.exe", "file");

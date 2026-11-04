@@ -131,7 +131,7 @@
     "pendingProcesses": 0,
     "candidateBuffersReleased": true,
     "resultBytesReleased": true,
-    "evidenceBytes": 8293
+    "evidenceBytes": 8298
   },
   "performance": {
     "scope": "VM startup and explicit command launch; no changes to per-chunk pumps or result delivery",
@@ -152,7 +152,7 @@
   },
   "verification": {
     "applicableTests": {
-      "passed": 89,
+      "passed": 90,
       "failed": 0
     },
     "guardTests": 37,
@@ -160,7 +160,7 @@
     "offlineBuild": true,
     "launcherVersion": "1.0.0",
     "packagedRuntimeFiles": 41,
-    "manifestSha256": "5b47bb2210ebf7226bd8026830f0d5bc5d62c66f32e1e5db13e922e39572a073",
+    "manifestSha256": "baa2b0598dea4e730820ea3f93619e1780d5f6ba431ece1b48c9deb06ba09212",
     "taskWorkerSha256": "e4afd3da6bbecf7616aa6a56db2678be6abb9993861170be8429078b4b0076a0",
     "reviewFollowup": {
       "reproducedBeforeFix": 3,
@@ -184,6 +184,19 @@
         "configured Cargo home real identity and bin-only mapping",
         "stale WinGet aliases isolated per entry",
         "explicit PATH before supplemental directories and matching SDK roots"
+      ]
+    },
+    "reviewFollowup3": {
+      "reproducedBeforeFix": 1,
+      "discoveryTestsAfterFix": 13,
+      "applicableTestsAfterFix": 90,
+      "liveCasesAfterFix": 2,
+      "toolchainSourceSha256": "d9945642af6d5695563e83bf77575901b188053c4873d9fc4044d5af8bf39a2a",
+      "cases": [
+        "exclusion alias real identity",
+        "missing descendants resolve existing ancestor identity",
+        "excluded installations cannot fall back to bin-only mapping",
+        "unreadable exclusion fails closed"
       ]
     }
   },

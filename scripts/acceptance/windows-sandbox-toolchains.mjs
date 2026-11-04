@@ -24,6 +24,17 @@ function environmentValue(environment, name) {
     for (const key of Object.keys(environment)) if (key.toUpperCase() === name) return environment[key];
     return undefined;
 }
+function exclusionIdentity(value, io) {
+    let ancestor = value, suffix = "";
+    for (;;) {
+        try { return canonical(win.join(io.realpathSync(ancestor), suffix)); }
+        catch (error) {
+            if (error?.code !== "ENOENT") throw error;
+            const parent = win.dirname(ancestor); if (parent === ancestor) return value;
+            suffix = win.join(win.basename(ancestor), suffix); ancestor = parent;
+        }
+    }
+}
 
 /** Host-created, read-only mounts. Retained only for one VM generation. */
 export class SandboxToolchains {
@@ -59,7 +70,10 @@ export class SandboxToolchains {
         if (cargoHome) this.#cargo = this.#protectCargoHome(cargoHome);
         this.#windows = canonical(environmentValue(environment, "SYSTEMROOT") || "C:\\Windows");
         this.#excluded = [];
-        for (const item of settings.exclude ?? []) this.#excluded.push(canonical(item));
+        for (const item of settings.exclude ?? []) {
+            const root = canonical(item), real = exclusionIdentity(root, io);
+            this.#excluded.push(root); if (real.toLowerCase() !== root.toLowerCase()) this.#excluded.push(real);
+        }
         const entries = [];
         for (const item of (environmentValue(environment, "PATH") || "").split(";")) {
             const value = item.trim(); if (value) entries.push(value.startsWith('"') && value.endsWith('"') ? value.slice(1, -1) : value);
@@ -128,8 +142,11 @@ export class SandboxToolchains {
             || within(root, this.#windows)) return false;
         for (const cargo of this.#cargoRoots) if (within(cargo, root) || within(root, cargo) && !within(root, win.join(cargo, "bin"))) return false;
         for (const reserved of RESERVED_GUEST_ROOTS) if (within(root, reserved) || within(reserved, root)) return false;
-        for (const excluded of this.#excluded) if (within(root, excluded) || within(excluded, root)) return false;
-        return true;
+        return !this.#isExcluded(root);
+    }
+    #isExcluded(root) {
+        for (const excluded of this.#excluded) if (within(root, excluded) || within(excluded, root)) return true;
+        return false;
     }
     #add(root, entry, required) {
         try {
@@ -167,7 +184,10 @@ export class SandboxToolchains {
             const stat = this.#io.statSync(entry); need(stat.isDirectory(), "PATH entry is not a directory");
             let root = entry;
             const leaf = win.basename(entry).toLowerCase(), parent = win.dirname(entry);
-            if ((leaf === "bin" || leaf === "cmd" || leaf === "scripts") && this.#safe(parent)) root = parent;
+            if (leaf === "bin" || leaf === "cmd" || leaf === "scripts") {
+                need(!this.#isExcluded(parent), "Unsafe or excluded tool installation: " + parent);
+                if (this.#safe(parent)) root = parent;
+            }
             // A Links directory contains aliases, not their installation dependencies.
             if (leaf === "links") {
                 for (const child of this.#io.readdirSync(entry, { withFileTypes: true })) {
