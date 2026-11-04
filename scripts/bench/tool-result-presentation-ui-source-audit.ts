@@ -14,6 +14,7 @@ export interface ToolResultPresentationUiSourceAudit {
 	readonly resultRenderingCallSpreadSites: number;
 	readonly resultRenderingArrayProducingCallSites: number;
 	readonly resultRenderingStringProducingCallSites: number;
+	readonly widthMeasurementStringProducingCallSites: number;
 	readonly resultRenderingArrayConstructorSites: number;
 	readonly resultRenderingStringAppendSites: number;
 	readonly resultRenderingNumericAppendSites: number;
@@ -483,12 +484,18 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 		]),
 		...selectNamedDeclarations(renderUtils, ["getTextOutput"]),
 	];
+	const widthMeasurementNodes = selectNamedDeclarations(tuiUtils, [
+		"visibleWidth",
+		"terminalAsciiWidth",
+		"rememberWidth",
+	]);
 	const tuiResultRenderingNodes = [
 		...selectClassMembers(tuiContainer, "Container", ["render"]),
 		...selectNamedDeclarations(tuiContainer, ["renderContainerInto"]),
 		...selectClassMembers(tuiBox, "Box", ["matchCache", "render", "applyBg"]),
 		...selectClassMembers(tuiText, "Text", ["render"]),
 		...selectClassMembers(tuiSpacer, "Spacer", ["render"]),
+		...widthMeasurementNodes,
 		...selectNamedDeclarations(tuiUtils, [
 			"getGraphemeSegmenter",
 			"getWordSegmenter",
@@ -496,7 +503,6 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 			"isPrintableAscii",
 			"graphemeWidth",
 			"isSimpleTerminalAsciiRun",
-			"visibleWidth",
 			"extractAnsiCode",
 			"findTerminalSequenceEnd",
 			"parseOsc8Hyperlink",
@@ -518,6 +524,7 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 		[...toolResultRenderingNodes, ...tuiResultRenderingNodes, ...discoveryCoreOwnershipNodes],
 		checker,
 	);
+	const widthMeasurementCounts = countAst(widthMeasurementNodes, checker);
 	const argumentCounts = countAst(
 		selectClassMembers(toolComponent, "ToolExecutionComponent", ["serializeArgs"]),
 		checker,
@@ -654,6 +661,7 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 		resultRenderingCallSpreadSites: renderingCounts.callSpreads,
 		resultRenderingArrayProducingCallSites: renderingCounts.arrayProducingCalls,
 		resultRenderingStringProducingCallSites: renderingCounts.stringProducingCalls,
+		widthMeasurementStringProducingCallSites: widthMeasurementCounts.stringProducingCalls,
 		resultRenderingArrayConstructorSites: renderingCounts.arrayConstructors,
 		resultRenderingStringAppendSites: renderingCounts.stringAppendAssignments,
 		resultRenderingNumericAppendSites: renderingCounts.numericAppendAssignments,
