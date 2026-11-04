@@ -12,6 +12,7 @@ import { setOwnProperty } from "../utils/record.ts";
 import { waitSynchronously } from "../utils/sync-wait.ts";
 import { stripBom } from "../utils/text.ts";
 import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, parseHttpIdleTimeoutMs } from "./http-dispatcher.ts";
+import { parseSandboxNetwork, type SandboxNetwork } from "./sandbox/network-policy.ts";
 
 export interface CompactionSettings {
 	enabled?: boolean; // default: true
@@ -141,6 +142,7 @@ export interface Settings {
 	shellPath?: string; // Custom shell path (e.g., for Cygwin users on Windows); supports leading ~ expansion
 	powershellPath?: string; // Trusted global PowerShell executable path; project settings cannot override it
 	sandboxToolchains?: { include?: string[]; exclude?: string[] }; // Global-only exceptions to automatic host PATH discovery
+	sandboxNetwork?: SandboxNetwork; // Global-only workspace VM network policy; disabled by default
 	powershellStatus?: PowerShellStatusSettings; // Global persisted discovery/availability state
 	quietStartup?: boolean;
 	defaultProjectTrust?: DefaultProjectTrust; // default: "ask"; global setting only
@@ -1105,6 +1107,12 @@ export class SettingsManager {
 
 	getSandboxToolchains(): Settings["sandboxToolchains"] {
 		return this.globalSettings.sandboxToolchains;
+	}
+
+	getSandboxNetwork(): SandboxNetwork { return parseSandboxNetwork(this.globalSettings.sandboxNetwork); }
+	setSandboxNetwork(value: SandboxNetwork): void {
+		this.globalSettings.sandboxNetwork = parseSandboxNetwork(value);
+		this.markModified("sandboxNetwork"); this.save();
 	}
 
 	setPowerShellPath(path: string | undefined): void {

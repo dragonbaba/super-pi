@@ -114,7 +114,10 @@ test("host paths authorize normalized targets and execute the bound read/search 
     assert.equal(consumePermissionPathApproval(write, "test-call", "write")!.canonicalTarget, path.join(await fs.realpath(f.root), "public/new.txt"));
     writeInvocation.release();
     const read = createReadToolDefinition(f.root);
-    for (const raw of ["@public/example.txt", "~/" + path.relative(os.homedir(), file).replaceAll("\\", "/")]) {
+    const spellings = ["@public/example.txt", file], fromHome = path.relative(os.homedir(), file);
+    // A task-owned TEMP can be on another Windows drive; ~/D:/... is not a valid home-relative spelling.
+    if (!path.isAbsolute(fromHome)) spellings.push("~/" + fromHome.replaceAll("\\", "/"));
+    for (const raw of spellings) {
         const input = { path: raw }, invocation = await f.owner.authorize(f.event("read", input), f.ctx);
         invocation.consume(input, "test-call", "read");
         const result = await read.execute("test-call", input, undefined, undefined, f.ctx);

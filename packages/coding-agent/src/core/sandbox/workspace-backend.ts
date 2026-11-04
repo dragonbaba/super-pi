@@ -4,6 +4,14 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash, randomUUID } from "node:crypto";
 import { MAX_WRITE_BYTES } from "../files/write-limits.ts";
+import { parseSandboxNetwork, type SandboxNetwork } from "./network-policy.ts";
+import { workspaceInput } from "./workspace-paths.ts";
+
+export interface WorkspaceSandboxOptions {
+  settings?: { include?: string[]; exclude?: string[] };
+  powershellPath?: string;
+  network?: SandboxNetwork;
+}
 
 export interface WorkspaceChange { path: string; before: string | null; content: string | null; }
 export interface WorkspaceReply { id: string; ok: boolean; text?: string; snapshot?: string; changes?: WorkspaceChange[]; error?: string; }
@@ -29,8 +37,12 @@ export class WorkspaceSandboxBackend {
   private readonly cwd: string;
   private readonly parent: string;
   private readonly mode: "read-only" | "sandbox-write";
-  private readonly toolchainOptions: { settings?: { include?: string[]; exclude?: string[] }; powershellPath?: string };
-  constructor(cwd: string, parent: string, mode: "read-only" | "sandbox-write", toolchainOptions = {}) { this.cwd = cwd; this.parent = parent; this.mode = mode; this.toolchainOptions = toolchainOptions; }
+  private readonly toolchainOptions: WorkspaceSandboxOptions;
+  private readonly network: SandboxNetwork;
+  constructor(cwd: string, parent: string, mode: "read-only" | "sandbox-write", toolchainOptions: WorkspaceSandboxOptions = {}) {
+    this.cwd = path.resolve(cwd); this.parent = parent; this.mode = mode; this.toolchainOptions = toolchainOptions;
+    this.network = parseSandboxNetwork(toolchainOptions.network);
+  }
   get diagnostics() { return { starts: this.starts, calls: this.calls, pending: !!this.pending, vm: !!this.vm, root: this.root, closed: this.closed, sourceFiles: this.sources.size, ownedArtifacts: this.owned.size }; }
   invoke(operation: string, input: Record<string, unknown>, signal?: AbortSignal): Promise<WorkspaceReply> {
     if (this.closed || this.pending) return Promise.reject(new Error("[SANDBOX_BUSY] Workspace is closed or has an active operation"));
@@ -114,7 +126,7 @@ export class WorkspaceSandboxBackend {
     this.compiler = undefined;
     await this.remember(path.join(tools, "command.exe"));
     const mappings = [[input, "C:\\SuperPiInput", true], [tools, "C:\\SuperPiTools", true], [exchange, "C:\\SuperPiExchange", false]] as const;
-    let config = "<Configuration><Networking>Disable</Networking><ClipboardRedirection>Disable</ClipboardRedirection><AudioInput>Disable</AudioInput><VideoInput>Disable</VideoInput><PrinterRedirection>Disable</PrinterRedirection><vGPU>Disable</vGPU><MemoryInMB>2048</MemoryInMB><MappedFolders>";
+    let config = "<Configuration><Networking>" + (this.network === "enabled" ? "Enable" : "Disable") + "</Networking><ClipboardRedirection>Disable</ClipboardRedirection><AudioInput>Disable</AudioInput><VideoInput>Disable</VideoInput><PrinterRedirection>Disable</PrinterRedirection><vGPU>Disable</vGPU><MemoryInMB>2048</MemoryInMB><MappedFolders>";
     for (const [host, guest, readOnly] of mappings) config += "<MappedFolder><HostFolder>" + xml(host) + "</HostFolder><SandboxFolder>" + guest + "</SandboxFolder><ReadOnly>" + readOnly + "</ReadOnly></MappedFolder>";
     config += "</MappedFolders></Configuration>";
     config = toolchains.appendConfig(config);
@@ -128,6 +140,7 @@ export class WorkspaceSandboxBackend {
   }
   private async run(operation: string, input: Record<string, unknown>, signal?: AbortSignal): Promise<WorkspaceReply> {
     try {
+      input = workspaceInput(this.cwd, operation, input);
       signal?.throwIfAborted(); if (!this.vm) await this.start(signal); signal?.throwIfAborted();
       await this.assertWorkspaceCurrent();
       const id = randomUUID().replaceAll("-", ""), exchange = path.join(this.root!, "exchange");

@@ -57,6 +57,19 @@ elapsed milliseconds, exit code and signal.
 
 ## Consolidated coverage
 
+Workspace Sandbox path/network acceptance is opt-in on the supported Windows host.
+After `npm run build:offline`, set child `TMP`, `TEMP`, and `TMPDIR` to an owned
+`.task-tmp/<task-id>/` directory, set `SUPERPI_SANDBOX_WORKSPACE_ACCEPTANCE=1` and
+`SUPERPI_SANDBOX_USE_DIST=1`, then run
+`node --expose-gc --experimental-strip-types --test tests/windows-sandbox-workspace-live.test.mjs`.
+It checks project-relative/absolute access, offline DNS/HTTPS failure, enabled
+DNS/HTTPS access, and installs the fixed public `is-number@7.0.0` fixture inside
+the VM with scripts disabled. It closes both VMs and verifies host files remain
+unchanged. Ordinary CI skips this VM case. Path allocation sampling is separate:
+`node --expose-gc scripts/bench/sandbox-workspace-paths.mjs`; the existing
+`scripts/bench/sandbox-session-allocations.mjs` measures output and permission
+lifecycles. Neither measurement is an extra default CI step.
+
 - The parallel raw-result matrix contains 8 cases instead of 18: both renderers
   retain projection on/off with 8 concurrent calls, plus 129-call insufficient
   and sufficient budget boundaries with projection enabled. Each still checks

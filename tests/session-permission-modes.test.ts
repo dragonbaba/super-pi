@@ -238,13 +238,17 @@ test("a growing snapshot source cannot expand its admitted read buffer", async t
 test("reload replaces the disposed sandbox owner and preserves the permission mode", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "sp-workspace-reload-"));
   const settings = SettingsManager.inMemory(); settings.setPermissionModeForSession("read-only");
+  settings.setSandboxNetwork("enabled"); await settings.flush();
   const loader = new DefaultResourceLoader({ cwd: root, agentDir: root, settingsManager: settings, noExtensions: true, noContextFiles: true, noSkills: true, noPromptTemplates: true, noThemes: true });
   await loader.reload();
   const { session } = await createAgentSession({ cwd: root, agentDir: root, settingsManager: settings, resourceLoader: loader,
     sessionManager: SessionManager.inMemory(root), model: ALPHA_MODEL, modelRuntime: alphaModelRuntime() });
   const previous = (session as any)._workspaceSandbox, previousBoundary = loader.getExtensions().runtime.executionBoundary;
   try {
+    assert.equal(previous.backend.network, "enabled");
+    settings.setSandboxNetwork("disabled"); await settings.flush();
     const id = session.sessionId; await session.reload();
+    assert.equal((session as any)._workspaceSandbox.backend.network, "disabled");
     assert.equal(previous.diagnostics.closed, true); assert.equal(previousBoundary.participantCount, 0);
     assert.notEqual((session as any)._workspaceSandbox, previous);
     assert.equal((session as any)._workspaceSandbox.diagnostics.closed, false);

@@ -10,12 +10,16 @@ const WORK = 'C:\\SuperPiWorkspace';
 const EXCHANGE = 'C:\\SuperPiExchange';
 const FILE_LIMIT = 2 * 1024 * 1024;
 const OUTPUT_LIMIT = 16 * 1024 * 1024;
+const TRAILING_PATH_PATTERN = /[. ]$/;
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 function need(value, reason) { if (!value) throw new Error(reason); }
 function local(root, name) {
   need(typeof name === 'string' && name.length > 0 && name.length < 4096 && !name.includes('\0') && !name.includes(':'), 'Invalid workspace path');
   const parts = name.replaceAll('\\', '/').split('/');
-  need(parts.every(part => part && part !== '..' && !/[. ]$/.test(part) && !['.git', '.sp'].includes(part.toLowerCase())), 'Protected workspace path');
+  for (const part of parts) {
+    const lower = part.toLowerCase();
+    need(part && part !== '..' && !TRAILING_PATH_PATTERN.test(part) && lower !== '.git' && lower !== '.sp' && lower !== 'node_modules', 'Protected workspace path');
+  }
   const target = path.resolve(root, name);
   need(target.startsWith(root + path.sep), 'Workspace escape');
   let cursor = root;
@@ -38,6 +42,8 @@ function catalog(root, hashes = false) {
     const relative = pending.pop();
     for (const entry of fs.readdirSync(path.join(root, relative), { withFileTypes: true })) {
       need(!entry.isSymbolicLink(), 'Workspace contains a redirected entry');
+      // Installed dependencies stay private to the VM, including package links and binary assets.
+      if (entry.isDirectory() && entry.name.toLowerCase() === 'node_modules') continue;
       const name = relative ? relative + '/' + entry.name : entry.name;
       if (entry.isDirectory()) pending.push(name);
       else { const file = local(root, name), stat = fs.lstatSync(file); bytes += stat.size; need(stat.isFile() && bytes <= 256 * 1024 * 1024 && files.size < 20000, 'Workspace capacity exceeded'); files.set(name, hashes ? fileHash(file, scratch) : null); }
