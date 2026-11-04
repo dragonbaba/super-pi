@@ -11,7 +11,7 @@ function fixture(extra = []) {
     for (const name of ["D:\\pwsh\\pwsh.exe", "D:\\pwsh\\pwsh.dll", "D:\\pwsh\\pwsh.runtimeconfig.json", "D:\\node\\node.exe"]) put(name, "file");
     function item(name) { const value = files.get(path.win32.normalize(name).toLowerCase()); if (!value) throw Object.assign(new Error("missing: " + name), { code: "ENOENT" }); return value; }
     function stat(name) { const value = item(name); return { dev: 1n, ino: value.ino, isFile: () => value.kind === "file", isDirectory: () => value.kind === "directory", isSymbolicLink: () => value.kind === "link" }; }
-    const io = { statSync: stat, lstatSync: stat, realpathSync(name) { const value = item(name); return value.target ?? value.name; },
+    const io = { statSync: stat, lstatSync: stat, realpathSync(name) { const value = item(name); return value.target ? item(value.target).name : value.name; },
         readdirSync(name) { const rows = []; for (const value of files.values()) if (value.name.toLowerCase() !== name.toLowerCase() && path.win32.dirname(value.name).toLowerCase() === name.toLowerCase()) rows.push({ name: path.win32.basename(value.name), isSymbolicLink: () => value.kind === "link", isDirectory: () => value.kind === "directory" }); return rows; } };
     function create(settings = {}, environment = {}) { return new SandboxToolchains({ cwd: "D:\\work", home: "C:\\Users\\fixture", executable: "D:\\node\\node.exe", io, settings,
         environment: { PATH: "D:\\pwsh;D:\\node", SystemRoot: "C:\\Windows", ...environment } }); }
@@ -96,6 +96,44 @@ test("workspace junctions cannot expose the real project as a PATH installation"
     assert.doesNotMatch(plan.appendConfig(config), /real-project/);
     assert.doesNotMatch(env(plan).PATH, /real-project/);
     assert.throws(() => f.create({ include: ["D:\\real-project"] }), /Unsafe/);
+});
+
+test("configured and redirected Cargo homes expose only their executable subdirectories", async () => {
+    const f = fixture(["D:\\cargo-home", "D:\\cargo-home\\bin", "D:\\cargo-home\\registry"]);
+    f.put("D:\\cargo-home\\credentials.toml", "file"); f.put("D:\\cargo-home\\bin\\cargo.exe", "file");
+    f.put("D:\\cargo-alias", "link", "D:\\cargo-home");
+    for (const CARGO_HOME of ["D:\\cargo-home", "D:\\cargo-alias"]) {
+        const plan = f.create({}, { CARGO_HOME, PATH: "D:\\pwsh;D:\\cargo-home\\bin;D:\\cargo-home;D:\\cargo-home\\registry" });
+        await plan.validateTrees(); const xml = plan.appendConfig(config);
+        assert.ok(xml.includes("<HostFolder>D:\\cargo-home\\bin</HostFolder>"));
+        assert.ok(!xml.includes("<HostFolder>D:\\cargo-home</HostFolder>"));
+        assert.ok(!xml.includes("<HostFolder>D:\\cargo-home\\registry</HostFolder>"));
+        assert.throws(() => f.create({ include: ["D:\\cargo-home"] }, { CARGO_HOME }), /Unsafe/);
+    }
+});
+
+test("a stale WinGet alias does not suppress later valid installations", async () => {
+    const links = "C:\\Users\\fixture\\WinGet\\Links";
+    const f = fixture([links, "D:\\gh"]);
+    f.put(links + "\\removed.exe", "link", "D:\\removed\\removed.exe");
+    f.put(links + "\\gh.exe", "link", "D:\\gh\\gh.exe"); f.put("D:\\gh\\gh.exe", "file");
+    const plan = f.create({}, { PATH: "D:\\pwsh;" + links }); await plan.validateTrees();
+    assert.ok(plan.appendConfig(config).includes("<HostFolder>D:\\gh</HostFolder>"));
+    assert.ok(env(plan).PATH.includes("C:\\SuperPiToolchains\\D\\gh;"));
+    assert.ok(plan.diagnostics.some(row => row.path === links + "\\removed.exe"));
+});
+
+test("explicit PATH directories precede supplemental directories and determine the selected SDK root", async () => {
+    const f = fixture(["C:\\Python", "C:\\Python\\Scripts", "C:\\UserScripts", "D:\\GoA", "D:\\GoA\\bin", "D:\\GoB", "D:\\GoB\\bin"]);
+    f.put("C:\\Python\\Scripts\\pip.exe", "file"); f.put("C:\\UserScripts\\pip.exe", "file");
+    f.put("D:\\GoA\\bin\\go.exe", "file"); f.put("D:\\GoB\\bin\\go.exe", "file");
+    for (const suffix of ["", ";C:\\Python\\Scripts"]) {
+        const plan = f.create({}, { PATH: "D:\\pwsh;C:\\Python;C:\\UserScripts;D:\\GoA;D:\\GoB\\bin" + suffix });
+        await plan.validateTrees(); const values = env(plan), entries = values.PATH.split(";");
+        assert.ok(entries.indexOf("C:\\UserScripts") < entries.indexOf("C:\\Python\\Scripts"));
+        assert.ok(entries.indexOf("C:\\SuperPiToolchains\\D\\GoB\\bin") < entries.indexOf("C:\\SuperPiToolchains\\D\\GoA\\bin"));
+        assert.equal(values.GOROOT, "C:\\SuperPiToolchains\\D\\GoB");
+    }
 });
 
 test("missing or redirected PowerShell fails closed, and mapped directory identity is rechecked before dispatch", async () => {

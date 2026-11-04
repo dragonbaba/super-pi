@@ -29,6 +29,7 @@ function environmentValue(environment, name) {
 export class SandboxToolchains {
     #mounts = [];
     #paths = [];
+    #supplementalPaths = [];
     #environment = new Map();
     #inferredRoots = [];
     #seen = new Set();
@@ -36,6 +37,7 @@ export class SandboxToolchains {
     #workspace;
     #home;
     #cargo;
+    #cargoRoots = new Set();
     #windows;
     #io;
     #shell;
@@ -52,7 +54,9 @@ export class SandboxToolchains {
         this.#io = io;
         this.#workspace = canonical(io.realpathSync(canonical(cwd)));
         this.#home = canonical(io.realpathSync(canonical(home)));
-        this.#cargo = win.join(this.#home, ".cargo");
+        this.#cargo = this.#protectCargoHome(win.join(this.#home, ".cargo"));
+        const cargoHome = environmentValue(environment, "CARGO_HOME");
+        if (cargoHome) this.#cargo = this.#protectCargoHome(cargoHome);
         this.#windows = canonical(environmentValue(environment, "SYSTEMROOT") || "C:\\Windows");
         this.#excluded = [];
         for (const item of settings.exclude ?? []) this.#excluded.push(canonical(item));
@@ -83,6 +87,8 @@ export class SandboxToolchains {
         this.#discover(win.dirname(canonical(executable)), true);
         for (const entry of entries) this.#discover(entry, false);
         for (const entry of settings.include ?? []) this.#discover(entry, true);
+        for (const entry of this.#supplementalPaths) this.#appendPath(entry);
+        this.#supplementalPaths.length = 0;
         for (const name of ROOT_ENV) {
             const value = environmentValue(environment, name);
             if (!value) continue;
@@ -90,8 +96,8 @@ export class SandboxToolchains {
             catch { this.diagnostics.push({ path: value, reason: "unavailable dependency root: " + name }); }
         }
         // rustup proxies need toolchains/settings, never the credential-bearing .cargo root.
-        if (!this.#environment.has("RUSTUP_HOME") && this.#translate(win.join(this.#home, ".cargo", "bin"))
-            && this.#file(win.join(this.#home, ".cargo", "bin", "rustup.exe"))) {
+        if (!this.#environment.has("RUSTUP_HOME") && this.#translate(win.join(this.#cargo, "bin"))
+            && this.#file(win.join(this.#cargo, "bin", "rustup.exe"))) {
             const rustup = win.join(this.#home, ".rustup");
             this.#add(rustup, undefined, false);
             const guest = this.#translate(rustup); if (guest) this.#environment.set("RUSTUP_HOME", guest);
@@ -100,8 +106,9 @@ export class SandboxToolchains {
     }
     #finishEnvironment() {
         // First surviving PATH installation wins; explicit host root variables keep priority.
-        for (const [name, host] of this.#inferredRoots) {
+        for (const entry of this.#paths) for (const [name, host, executableDirectory] of this.#inferredRoots) {
             if (this.#environment.has(name)) continue;
+            if (this.#translate(executableDirectory)?.toLowerCase() !== entry.toLowerCase()) continue;
             const guest = this.#translate(host); if (guest) this.#environment.set(name, guest);
         }
         this.#environment.set("PATH", this.#paths.join(";") + ";" + SYSTEM_PATH);
@@ -111,9 +118,15 @@ export class SandboxToolchains {
         need(this.encodedEnvironment.length <= 24000, "Translated toolchain environment exceeds command capacity");
     }
     #file(file) { try { return this.#io.statSync(file).isFile(); } catch { return false; } }
+    #protectCargoHome(value) {
+        const root = canonical(value); this.#cargoRoots.add(root);
+        try { const real = canonical(this.#io.realpathSync(root)); this.#cargoRoots.add(real); return real; }
+        catch (error) { need(error?.code === "ENOENT", "Cannot resolve Cargo home identity"); return root; }
+    }
     #safe(root) {
         if (root.length <= 3 || within(this.#workspace, root) || within(root, this.#workspace) || within(this.#home, root)
-            || within(this.#cargo, root) || within(root, this.#windows)) return false;
+            || within(root, this.#windows)) return false;
+        for (const cargo of this.#cargoRoots) if (within(cargo, root) || within(root, cargo) && !within(root, win.join(cargo, "bin"))) return false;
         for (const reserved of RESERVED_GUEST_ROOTS) if (within(root, reserved) || within(reserved, root)) return false;
         for (const excluded of this.#excluded) if (within(root, excluded) || within(excluded, root)) return false;
         return true;
@@ -131,12 +144,16 @@ export class SandboxToolchains {
                 for (let i = this.#mounts.length - 1; i >= 0; i--) if (within(this.#mounts[i].host, root)) { required ||= this.#mounts[i].required; this.#mounts.splice(i, 1); }
                 this.#mounts.push({ host: root, guest: root[0].toUpperCase() === "C" ? root : "C:\\SuperPiToolchains\\" + root[0].toUpperCase() + root.slice(2), dev: stat.dev, ino: stat.ino, required });
             }
-            if (entry) { const guest = this.#translate(entry), key = guest.toLowerCase(); if (!this.#seen.has(key)) { this.#seen.add(key); this.#paths.push(guest); } }
+            if (entry) this.#appendPath(entry);
             return true;
         } catch (error) {
             if (required) throw error;
             this.diagnostics.push({ path: root, reason: "unavailable or excluded tool directory" }); return false;
         }
+    }
+    #appendPath(entry) {
+        const guest = this.#translate(entry); if (!guest) return;
+        const key = guest.toLowerCase(); if (!this.#seen.has(key)) { this.#seen.add(key); this.#paths.push(guest); }
     }
     #discover(value, required) {
         let entry;
@@ -155,8 +172,11 @@ export class SandboxToolchains {
             if (leaf === "links") {
                 for (const child of this.#io.readdirSync(entry, { withFileTypes: true })) {
                     if (!child.isSymbolicLink()) continue;
-                    const target = canonical(this.#io.realpathSync(win.join(entry, child.name)));
-                    if (win.basename(target).toLowerCase() === child.name.toLowerCase()) this.#discover(win.dirname(target), false);
+                    const alias = win.join(entry, child.name);
+                    try {
+                        const target = canonical(this.#io.realpathSync(alias));
+                        if (win.basename(target).toLowerCase() === child.name.toLowerCase()) this.#discover(win.dirname(target), false);
+                    } catch { this.diagnostics.push({ path: alias, reason: "invalid or missing tool alias" }); }
                 }
                 return;
             }
@@ -164,11 +184,11 @@ export class SandboxToolchains {
             // Additional executable directories inside complete installations are discovered structurally.
             if (root === entry) for (const child of ["bin", "Scripts"]) {
                 const nested = win.join(root, child);
-                try { if (this.#io.statSync(nested).isDirectory()) this.#add(root, nested, false); } catch { /* optional layout */ }
+                try { if (this.#io.statSync(nested).isDirectory()) this.#supplementalPaths.push(nested); } catch { /* optional layout */ }
             }
-            if (this.#file(win.join(root, "bin", "go.exe"))) this.#inferredRoots.push(["GOROOT", root]);
-            if (this.#file(win.join(root, "bin", "javac.exe"))) this.#inferredRoots.push(["JAVA_HOME", root]);
-            if (this.#file(win.join(root, "dotnet.exe"))) this.#inferredRoots.push(["DOTNET_ROOT", root]);
+            if (this.#file(win.join(root, "bin", "go.exe"))) this.#inferredRoots.push(["GOROOT", root, win.join(root, "bin")]);
+            if (this.#file(win.join(root, "bin", "javac.exe"))) this.#inferredRoots.push(["JAVA_HOME", root, win.join(root, "bin")]);
+            if (this.#file(win.join(root, "dotnet.exe"))) this.#inferredRoots.push(["DOTNET_ROOT", root, root]);
         } catch (error) {
             if (required) throw error;
             this.diagnostics.push({ path: value, reason: "invalid or missing PATH entry" });
