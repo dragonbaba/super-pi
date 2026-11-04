@@ -1,6 +1,6 @@
 # H07 — 内置 grep 隔离用户 ripgrep 配置
 
-状态：最小修复与本地验收完成，待独立 PR reviewer/CI。分支 `codex/h07-grep-no-config` 基于 H06 merge `c79d75bbf38f82fd1a0a777d2b47dff285e0ab3d`。任务根 `D:\RMProjects\Pi\.task-tmp\h07-c2dd92f8803c`，Node v26.13.0，子进程临时目录已验证。
+状态：已合并 [PR #206](https://github.com/dragonbaba/super-pi/pull/206)，两端任务分支和本项临时根均已删除并验证。原分支 `codex/h07-grep-no-config` 基于 H06 merge `c79d75bbf38f82fd1a0a777d2b47dff285e0ab3d`。任务根 `D:\RMProjects\Pi\.task-tmp\h07-c2dd92f8803c`，Node v26.13.0，子进程临时目录已验证。
 
 ## 路由、范围与验收
 
@@ -26,4 +26,10 @@ Node 26.13.0 / 固定依赖提供的 ripgrep 15.0.0（rev 3a612f88b8）复现基
 
 验收命令：`node --experimental-strip-types --test tests/grep-config-isolation.test.ts tests/sandbox-search-scope.test.ts tests/source-invariants.test.ts tests/stream-hot-paths.test.ts`，使用固定二进制共 **27 通过**。两个 Sandbox 模式执行完整 guest entry，共 90 次搜索/列举路由，子进程启动数 0；不是真实 VM 验收。类型检查和离线构建通过。开发依赖及平台包锁定 1.18.0，安装脚本关闭；lockfile 没有升级无关依赖或更改 workspace 元数据。
 
-H08 仍负责 context 大文件读取、行数组和流式容量/释放；本项不把该已知成本隐藏在“新增分配为零”的陈述里。最终 head reviewer 与六分片 CI 待完成。
+H08 仍负责 context 大文件读取、行数组和流式容量/释放；本项不把该已知成本隐藏在“新增分配为零”的陈述里。
+
+## 合并与资源回执
+
+最终 head `a127c502e3eeccd13aa3a6772bcead5b14b06f76`，[首次审查](https://github.com/dragonbaba/super-pi/pull/206#issuecomment-6624356830) completed/no findings、无未解决线程；[CI](https://github.com/dragonbaba/super-pi/actions/runs/41786452605) 六分片全部 success。2026-11-04 06:42:10 UTC squash merge `098cc11c3d681fda9852d3163e2e5deddc45b0ed`，main 快进同步；按精确 head 删除远端/本地 `codex/h07-grep-no-config`。
+
+全部登记子进程已退出，31 份日志及 Node/npm 两个缓存目录已删除，逐项复核不存在。缓存删除循环遇到一份已在日志阶段删除的 npm log；其余目标随后只读确认全部不存在，未凭命令退出码声称成功。最终只余四份清单/runner/PR 文本，核对根、父目录和所有权后按精确路径删除，任务根已验证不存在。[资源回执](https://github.com/dragonbaba/super-pi/pull/206#issuecomment-6624447841)。没有重新操作之前被策略拒绝的任务根。

@@ -1,0 +1,454 @@
+{
+  "task": "H08",
+  "node": "26.13.0",
+  "platform": "Windows",
+  "baselineCommit": "098cc11c3d681fda9852d3163e2e5deddc45b0ed",
+  "method": "Serial actual rg subprocess. Source instrumentation/counts separate from HeapProfiler sampling at 4096 bytes, 2 warmups and 6 iterations. Heap observations at stdout/read/settlement boundaries are not a continuous OS peak.",
+  "measurements": [
+    {
+      "side": "baseline",
+      "metadata": {
+        "phase": "counts",
+        "node": "v26.13.0",
+        "rows": 4096,
+        "contextLines": 1,
+        "fileBytes": 524312,
+        "sourceHash": "766908ad44e2879ed842085ea1b96b4059a2f49ae6c93135ef126a7d91dbb2a7",
+        "benchmarkHash": "5f0e160cacb7d7684257a40a15812793fc6c2efcdba9dab932ecee6b3fb2a46e"
+      },
+      "result": {
+        "reads": 1,
+        "readBytes": 524312,
+        "wholeFileSplits": 1,
+        "splitLines": 4100,
+        "jsonRecords": 4,
+        "jsonCharacters": 939,
+        "retainedRows": 0,
+        "retainedBytes": 0
+      }
+    },
+    {
+      "side": "baseline",
+      "metadata": {
+        "phase": "counts",
+        "node": "v26.13.0",
+        "rows": 65536,
+        "contextLines": 1,
+        "fileBytes": 8388632,
+        "sourceHash": "766908ad44e2879ed842085ea1b96b4059a2f49ae6c93135ef126a7d91dbb2a7",
+        "benchmarkHash": "5f0e160cacb7d7684257a40a15812793fc6c2efcdba9dab932ecee6b3fb2a46e"
+      },
+      "result": {
+        "reads": 1,
+        "readBytes": 8388632,
+        "wholeFileSplits": 1,
+        "splitLines": 65540,
+        "jsonRecords": 4,
+        "jsonCharacters": 945,
+        "retainedRows": 0,
+        "retainedBytes": 0
+      }
+    },
+    {
+      "side": "baseline",
+      "metadata": {
+        "phase": "profile",
+        "node": "v26.13.0",
+        "rows": 4096,
+        "contextLines": 1,
+        "fileBytes": 524312,
+        "sourceHash": "766908ad44e2879ed842085ea1b96b4059a2f49ae6c93135ef126a7d91dbb2a7",
+        "benchmarkHash": "5f0e160cacb7d7684257a40a15812793fc6c2efcdba9dab932ecee6b3fb2a46e"
+      },
+      "result": {
+        "iterations": 6,
+        "sampledBytesPerSearch": 1358253.3333333333,
+        "observedPeakHeap": 28670512,
+        "observedPeakIncrease": 8225744,
+        "top": [
+          {
+            "bytes": 3145968,
+            "fn": "replace",
+            "url": "",
+            "line": -1
+          },
+          {
+            "bytes": 3145824,
+            "fn": "write",
+            "url": "node:string_decoder",
+            "line": 75
+          },
+          {
+            "bytes": 961728,
+            "fn": "split",
+            "url": "",
+            "line": -1
+          },
+          {
+            "bytes": 180456,
+            "fn": "post",
+            "url": "node:inspector",
+            "line": 114
+          },
+          {
+            "bytes": 53168,
+            "fn": "normalizeSpawnArguments",
+            "url": "node:child_process",
+            "line": 588
+          },
+          {
+            "bytes": 48456,
+            "fn": "normalizeSpawnArguments",
+            "url": "node:child_process",
+            "line": 588
+          },
+          {
+            "bytes": 41256,
+            "fn": "dedupeWindowsEnvPairs",
+            "url": "node:child_process",
+            "line": 796
+          }
+        ]
+      }
+    },
+    {
+      "side": "baseline",
+      "metadata": {
+        "phase": "profile",
+        "node": "v26.13.0",
+        "rows": 65536,
+        "contextLines": 1,
+        "fileBytes": 8388632,
+        "sourceHash": "766908ad44e2879ed842085ea1b96b4059a2f49ae6c93135ef126a7d91dbb2a7",
+        "benchmarkHash": "5f0e160cacb7d7684257a40a15812793fc6c2efcdba9dab932ecee6b3fb2a46e"
+      },
+      "result": {
+        "iterations": 6,
+        "sampledBytesPerSearch": 19529197.333333332,
+        "observedPeakHeap": 110472160,
+        "observedPeakIncrease": 90067848,
+        "top": [
+          {
+            "bytes": 50333184,
+            "fn": "write",
+            "url": "node:string_decoder",
+            "line": 75
+          },
+          {
+            "bytes": 50331888,
+            "fn": "replace",
+            "url": "",
+            "line": -1
+          },
+          {
+            "bytes": 15601312,
+            "fn": "split",
+            "url": "",
+            "line": -1
+          },
+          {
+            "bytes": 174856,
+            "fn": "post",
+            "url": "node:inspector",
+            "line": 114
+          },
+          {
+            "bytes": 57496,
+            "fn": "normalizeSpawnArguments",
+            "url": "node:child_process",
+            "line": 588
+          },
+          {
+            "bytes": 56520,
+            "fn": "normalizeSpawnArguments",
+            "url": "node:child_process",
+            "line": 588
+          },
+          {
+            "bytes": 32640,
+            "fn": "add",
+            "url": "",
+            "line": -1
+          }
+        ]
+      }
+    },
+    {
+      "side": "baseline",
+      "metadata": {
+        "phase": "lifecycle",
+        "node": "v26.13.0",
+        "rows": 65536,
+        "contextLines": 1,
+        "fileBytes": 8388632,
+        "sourceHash": "766908ad44e2879ed842085ea1b96b4059a2f49ae6c93135ef126a7d91dbb2a7",
+        "benchmarkHash": "5f0e160cacb7d7684257a40a15812793fc6c2efcdba9dab932ecee6b3fb2a46e"
+      },
+      "result": {
+        "weakRefs": 5,
+        "retained": 5,
+        "faultsAfterMatch": 2,
+        "childrenAlive": 4,
+        "signalsAlive": 4,
+        "childPipesDestroyed": true,
+        "listeners": [
+          0,
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "side": "candidate",
+      "metadata": {
+        "phase": "counts",
+        "node": "v26.13.0",
+        "rows": 4096,
+        "contextLines": 1,
+        "fileBytes": 524312,
+        "sourceHash": "efd64db95093120bac67a27313fba3986cb2a3b1440f3c0ba677c0cface3d1b5",
+        "benchmarkHash": "5f0e160cacb7d7684257a40a15812793fc6c2efcdba9dab932ecee6b3fb2a46e"
+      },
+      "result": {
+        "reads": 0,
+        "readBytes": 0,
+        "wholeFileSplits": 0,
+        "splitLines": 0,
+        "jsonRecords": 6,
+        "jsonCharacters": 1346,
+        "retainedRows": 3,
+        "retainedBytes": 74
+      }
+    },
+    {
+      "side": "candidate",
+      "metadata": {
+        "phase": "counts",
+        "node": "v26.13.0",
+        "rows": 65536,
+        "contextLines": 1,
+        "fileBytes": 8388632,
+        "sourceHash": "efd64db95093120bac67a27313fba3986cb2a3b1440f3c0ba677c0cface3d1b5",
+        "benchmarkHash": "5f0e160cacb7d7684257a40a15812793fc6c2efcdba9dab932ecee6b3fb2a46e"
+      },
+      "result": {
+        "reads": 0,
+        "readBytes": 0,
+        "wholeFileSplits": 0,
+        "splitLines": 0,
+        "jsonRecords": 6,
+        "jsonCharacters": 1356,
+        "retainedRows": 3,
+        "retainedBytes": 77
+      }
+    },
+    {
+      "side": "candidate",
+      "metadata": {
+        "phase": "profile",
+        "node": "v26.13.0",
+        "rows": 4096,
+        "contextLines": 1,
+        "fileBytes": 524312,
+        "sourceHash": "efd64db95093120bac67a27313fba3986cb2a3b1440f3c0ba677c0cface3d1b5",
+        "benchmarkHash": "5f0e160cacb7d7684257a40a15812793fc6c2efcdba9dab932ecee6b3fb2a46e"
+      },
+      "result": {
+        "iterations": 6,
+        "sampledBytesPerSearch": 135268,
+        "observedPeakHeap": 21316816,
+        "observedPeakIncrease": 881808,
+        "top": [
+          {
+            "bytes": 75088,
+            "fn": "post",
+            "url": "node:inspector",
+            "line": 114
+          },
+          {
+            "bytes": 73352,
+            "fn": "normalizeSpawnArguments",
+            "url": "node:child_process",
+            "line": 588
+          },
+          {
+            "bytes": 57728,
+            "fn": "dedupeWindowsEnvPairs",
+            "url": "node:child_process",
+            "line": 796
+          },
+          {
+            "bytes": 44472,
+            "fn": "normalizeSpawnArguments",
+            "url": "node:child_process",
+            "line": 588
+          },
+          {
+            "bytes": 41720,
+            "fn": "add",
+            "url": "",
+            "line": -1
+          },
+          {
+            "bytes": 25640,
+            "fn": "add",
+            "url": "",
+            "line": -1
+          },
+          {
+            "bytes": 20824,
+            "fn": "pushAsyncContext",
+            "url": "node:internal/async_hooks",
+            "line": 548
+          }
+        ]
+      }
+    },
+    {
+      "side": "candidate",
+      "metadata": {
+        "phase": "profile",
+        "node": "v26.13.0",
+        "rows": 65536,
+        "contextLines": 1,
+        "fileBytes": 8388632,
+        "sourceHash": "efd64db95093120bac67a27313fba3986cb2a3b1440f3c0ba677c0cface3d1b5",
+        "benchmarkHash": "5f0e160cacb7d7684257a40a15812793fc6c2efcdba9dab932ecee6b3fb2a46e"
+      },
+      "result": {
+        "iterations": 6,
+        "sampledBytesPerSearch": 136830.66666666666,
+        "observedPeakHeap": 21309904,
+        "observedPeakIncrease": 881880,
+        "top": [
+          {
+            "bytes": 123024,
+            "fn": "post",
+            "url": "node:inspector",
+            "line": 114
+          },
+          {
+            "bytes": 73440,
+            "fn": "normalizeSpawnArguments",
+            "url": "node:child_process",
+            "line": 588
+          },
+          {
+            "bytes": 44272,
+            "fn": "normalizeSpawnArguments",
+            "url": "node:child_process",
+            "line": 588
+          },
+          {
+            "bytes": 30672,
+            "fn": "sort",
+            "url": "",
+            "line": -1
+          },
+          {
+            "bytes": 29600,
+            "fn": "add",
+            "url": "",
+            "line": -1
+          },
+          {
+            "bytes": 29136,
+            "fn": "onLine",
+            "url": "file:///D:/RMProjects/Pi/packages/coding-agent/src/core/tools/grep.ts",
+            "line": 463
+          },
+          {
+            "bytes": 27480,
+            "fn": "add",
+            "url": "",
+            "line": -1
+          }
+        ]
+      }
+    },
+    {
+      "side": "candidate",
+      "metadata": {
+        "phase": "lifecycle",
+        "node": "v26.13.0",
+        "rows": 65536,
+        "contextLines": 1,
+        "fileBytes": 8388632,
+        "sourceHash": "efd64db95093120bac67a27313fba3986cb2a3b1440f3c0ba677c0cface3d1b5",
+        "benchmarkHash": "5f0e160cacb7d7684257a40a15812793fc6c2efcdba9dab932ecee6b3fb2a46e"
+      },
+      "result": {
+        "weakRefs": 8,
+        "retained": 0,
+        "faultsAfterMatch": 2,
+        "childrenAlive": 4,
+        "signalsAlive": 4,
+        "childPipesDestroyed": true,
+        "listeners": [
+          0,
+          0,
+          0,
+          0
+        ]
+      }
+    }
+  ],
+  "wideContext": {
+    "metadata": {
+      "phase": "counts",
+      "node": "v26.13.0",
+      "rows": 65536,
+      "contextLines": 65537,
+      "fileBytes": 8388632,
+      "sourceHash": "efd64db95093120bac67a27313fba3986cb2a3b1440f3c0ba677c0cface3d1b5",
+      "benchmarkHash": "5f0e160cacb7d7684257a40a15812793fc6c2efcdba9dab932ecee6b3fb2a46e"
+    },
+    "result": {
+      "reads": 0,
+      "readBytes": 0,
+      "wholeFileSplits": 0,
+      "splitLines": 0,
+      "jsonRecords": 65542,
+      "jsonCharacters": 21411851,
+      "retainedRows": 357,
+      "retainedBytes": 51299
+    }
+  },
+  "ast": [
+    {
+      "file": "D:\\RMProjects\\Pi\\.task-tmp\\h08-ba69993a9cf9\\baseline-grep.ts",
+      "n": {
+        "closures": 27,
+        "declarations": 8,
+        "regex": 0,
+        "newPromise": 1,
+        "async": 6,
+        "strings": 118,
+        "arrays": 19,
+        "objects": 26
+      }
+    },
+    {
+      "file": "packages/coding-agent/src/core/tools/grep.ts",
+      "n": {
+        "closures": 28,
+        "declarations": 9,
+        "regex": 0,
+        "newPromise": 1,
+        "async": 6,
+        "strings": 136,
+        "arrays": 22,
+        "objects": 26
+      }
+    }
+  ],
+  "limitations": [
+    "Node heap only; rg native memory not profiled",
+    "One transient decoded JSON record scales with the largest line",
+    "Explicit custom readFile retains its existing whole-file behavior",
+    "Explicit match limit bounds match/file metadata; V02 remains open",
+    "Downstream sanitization, truncation and rendering still allocate on bounded result text",
+    "Truncation totals describe the bounded processed output prefix, not omitted context or the entire file"
+  ]
+}
