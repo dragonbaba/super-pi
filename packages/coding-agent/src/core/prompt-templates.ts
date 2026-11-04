@@ -6,6 +6,8 @@ import { resolvePath } from "../utils/paths.ts";
 import { compareCanonicalIdentifiers } from "./prefix-manifest.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
 
+const COMMAND_WHITESPACE_PATTERN = /\s/;
+
 /**
  * Represents a prompt template loaded from a markdown file
  */
@@ -26,6 +28,7 @@ export function parseCommandArgs(argsString: string): string[] {
 	const args: string[] = [];
 	let current = "";
 	let inQuote: string | null = null;
+	let hasQuotedArgument = false;
 
 	for (let i = 0; i < argsString.length; i++) {
 		const char = argsString[i];
@@ -33,22 +36,24 @@ export function parseCommandArgs(argsString: string): string[] {
 		if (inQuote) {
 			if (char === inQuote) {
 				inQuote = null;
+				hasQuotedArgument = true;
 			} else {
 				current += char;
 			}
 		} else if (char === '"' || char === "'") {
 			inQuote = char;
-		} else if (/\s/.test(char)) {
-			if (current) {
+		} else if (COMMAND_WHITESPACE_PATTERN.test(char)) {
+			if (current || hasQuotedArgument) {
 				args.push(current);
 				current = "";
+				hasQuotedArgument = false;
 			}
 		} else {
 			current += char;
 		}
 	}
 
-	if (current) {
+	if (current || hasQuotedArgument) {
 		args.push(current);
 	}
 
