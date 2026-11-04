@@ -1,0 +1,1835 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-11-05",
+  "timezone": "Asia/Tokyo",
+  "kind": "read-only production-code performance audit",
+  "commit": "fc790a0bd608298b9acdb2860eddd12ac596628a",
+  "environment": {
+    "node": "v26.13.0",
+    "platform": "win32",
+    "arch": "x64",
+    "cpu": "Intel(R) Core(TM) i7-14700KF",
+    "logicalCpus": 28,
+    "totalMemoryBytes": 34134798336,
+    "shell": "PowerShell 7; no Windows PowerShell 5.1",
+    "network": "offline fixtures only; no paid provider requests",
+    "temporaryDirectoryVerified": "D:\\RMProjects\\Pi\\.task-tmp\\performance-audit-9435ddbbe401"
+  },
+  "scope": {
+    "productionChanges": false,
+    "nativePty": false,
+    "realProviderCacheHitRateMeasured": false,
+    "sandboxBootOrShutdownMeasured": false,
+    "cli": "Existing offline build through scripts/superpi.mjs, isolated empty HOME/cwd, bundled resources and tools disabled, diagnostic preload. 1 warmup + 5 measured child processes per mode. Not full configured-user startup.",
+    "cold": "Fresh process/module graph, not OS disk-cache cold boot. Model runtime benchmark includes child process startup.",
+    "markdown": "Production Markdown component, identity theme/no syntax highlighter, synthetic growing plain/code/table content; 10 warmup + 30 timed updates; not terminal end-to-end latency.",
+    "resize": "Production RetainedContainer with real UserMessageComponent/AssistantMessageComponent and existing mixed fixture. Six timed alternating 120/96-width changes after two warmups, no terminal write.",
+    "allocation": "Sampling estimates, not exact allocation counts. Post-disposal reference counters are bounded; a single positive heap delta alone is not evidence of a leak."
+  },
+  "modelRuntime": {
+    "cold": {
+      "schemaVersion": 1,
+      "name": "model-runtime-startup-cold",
+      "commit": "fc790a0bd608298b9acdb2860eddd12ac596628a",
+      "node": "v26.13.0",
+      "platform": "win32",
+      "arch": "x64",
+      "fixture": "phase0-v1:model-runtime:cold:offline:no-auth-refresh:model-profile-v1",
+      "warmupRuns": 2,
+      "measuredRuns": 10,
+      "metrics": {
+        "minMs": 246.02340000000004,
+        "p50Ms": 261.9629,
+        "p95Ms": 277.5073,
+        "p99Ms": 277.5073,
+        "maxMs": 277.5073,
+        "meanMs": 263.24197,
+        "coefficientOfVariation": 0.029795161745055053,
+        "peakHeapBytes": 29802064,
+        "finalHeapBytes": 29814432,
+        "modelCount": 1315,
+        "providerCount": 40,
+        "profiledModelCount": 1315
+      },
+      "observations": {
+        "modelProfileFixtureSha256": "9e6f8ddda601fa4a19236f6d359173225e16f7b1357c17de805fb9d24df9eb52",
+        "startupMode": "cold",
+        "processIsolation": "child-per-sample",
+        "network": false,
+        "authRefresh": false
+      },
+      "environment": {
+        "cpu": "Intel(R) Core(TM) i7-14700KF",
+        "cpuCores": 28,
+        "totalMemoryBytes": 34134798336,
+        "terminalColumns": 0,
+        "terminalRows": 0,
+        "term": "",
+        "kittyImages": false,
+        "exposeGc": true,
+        "measuredAt": "2026-11-04T15:36:56.642Z"
+      }
+    },
+    "warm": {
+      "schemaVersion": 1,
+      "name": "model-runtime-startup-warm",
+      "commit": "fc790a0bd608298b9acdb2860eddd12ac596628a",
+      "node": "v26.13.0",
+      "platform": "win32",
+      "arch": "x64",
+      "fixture": "phase0-v1:model-runtime:warm:offline:no-auth-refresh:model-profile-v1",
+      "warmupRuns": 2,
+      "measuredRuns": 10,
+      "metrics": {
+        "minMs": 0.22810000000001196,
+        "p50Ms": 0.31690000000000396,
+        "p95Ms": 0.3558999999999912,
+        "p99Ms": 0.3558999999999912,
+        "maxMs": 0.3558999999999912,
+        "meanMs": 0.3092599999999976,
+        "coefficientOfVariation": 0.13708317908027684,
+        "peakHeapBytes": 28638488,
+        "finalHeapBytes": 28650856,
+        "modelCount": 1315,
+        "providerCount": 40,
+        "profiledModelCount": 1315
+      },
+      "observations": {
+        "modelProfileFixtureSha256": "9e6f8ddda601fa4a19236f6d359173225e16f7b1357c17de805fb9d24df9eb52",
+        "startupMode": "warm",
+        "processIsolation": "same-process",
+        "network": false,
+        "authRefresh": false
+      },
+      "environment": {
+        "cpu": "Intel(R) Core(TM) i7-14700KF",
+        "cpuCores": 28,
+        "totalMemoryBytes": 34134798336,
+        "terminalColumns": 0,
+        "terminalRows": 0,
+        "term": "",
+        "kittyImages": false,
+        "exposeGc": true,
+        "measuredAt": "2026-11-04T15:36:57.028Z"
+      }
+    }
+  },
+  "cli": {
+    "scope": "Isolated empty workspace; no tools/bundled resources/network; diagnostic preload; not native PTY or sandbox shutdown",
+    "summary": {
+      "regular": {
+        "startup": {
+          "p50Ms": 638.5971000000002,
+          "p95Ms": 692.0412000000001,
+          "samples": [
+            659.6342,
+            638.5971000000002,
+            692.0412000000001,
+            591.2747000000004,
+            600.2182000000003
+          ]
+        },
+        "shutdown": {
+          "p50Ms": 79.79009999999994,
+          "p95Ms": 92.22989999999936,
+          "samples": [
+            79.79009999999994,
+            80.71900000000005,
+            77.78129999999965,
+            92.22989999999936,
+            73.2507999999998
+          ]
+        },
+        "rows": [
+          {
+            "mode": "regular",
+            "index": 1,
+            "warmup": false,
+            "startupMs": 659.6342,
+            "shutdownMs": 79.79009999999994,
+            "phases": [
+              {
+                "phase": "init-entry-process-age",
+                "duration": 573.9151999999999
+              },
+              {
+                "phase": "init",
+                "duration": 56.44259999999997
+              },
+              {
+                "phase": "input-ready-process-age",
+                "duration": 630.5784
+              },
+              {
+                "phase": "drain-input",
+                "duration": 52.016399999999976
+              },
+              {
+                "phase": "stop-ui",
+                "duration": 2.988899999999944
+              }
+            ],
+            "rawRestored": true,
+            "shutdownEmissions": 1
+          },
+          {
+            "mode": "regular",
+            "index": 2,
+            "warmup": false,
+            "startupMs": 638.5971000000002,
+            "shutdownMs": 80.71900000000005,
+            "phases": [
+              {
+                "phase": "init-entry-process-age",
+                "duration": 594.7094000000001
+              },
+              {
+                "phase": "init",
+                "duration": 22.355199999999968
+              },
+              {
+                "phase": "input-ready-process-age",
+                "duration": 617.3068000000001
+              },
+              {
+                "phase": "drain-input",
+                "duration": 51.62729999999999
+              },
+              {
+                "phase": "stop-ui",
+                "duration": 2.7110999999999876
+              }
+            ],
+            "rawRestored": true,
+            "shutdownEmissions": 1
+          },
+          {
+            "mode": "regular",
+            "index": 3,
+            "warmup": false,
+            "startupMs": 692.0412000000001,
+            "shutdownMs": 77.78129999999965,
+            "phases": [
+              {
+                "phase": "init-entry-process-age",
+                "duration": 610.5484
+              },
+              {
+                "phase": "init",
+                "duration": 63.074499999999944
+              },
+              {
+                "phase": "input-ready-process-age",
+                "duration": 673.8305999999999
+              },
+              {
+                "phase": "drain-input",
+                "duration": 50.269300000000044
+              },
+              {
+                "phase": "stop-ui",
+                "duration": 3.266499999999951
+              }
+            ],
+            "rawRestored": true,
+            "shutdownEmissions": 1
+          },
+          {
+            "mode": "regular",
+            "index": 4,
+            "warmup": false,
+            "startupMs": 591.2747000000004,
+            "shutdownMs": 92.22989999999936,
+            "phases": [
+              {
+                "phase": "init-entry-process-age",
+                "duration": 548.8929
+              },
+              {
+                "phase": "init",
+                "duration": 24.264099999999985
+              },
+              {
+                "phase": "input-ready-process-age",
+                "duration": 573.3770000000001
+              },
+              {
+                "phase": "drain-input",
+                "duration": 63.8818
+              },
+              {
+                "phase": "stop-ui",
+                "duration": 3.504799999999932
+              }
+            ],
+            "rawRestored": true,
+            "shutdownEmissions": 1
+          },
+          {
+            "mode": "regular",
+            "index": 5,
+            "warmup": false,
+            "startupMs": 600.2182000000003,
+            "shutdownMs": 73.2507999999998,
+            "phases": [
+              {
+                "phase": "init-entry-process-age",
+                "duration": 559.836
+              },
+              {
+                "phase": "init",
+                "duration": 21.74249999999995
+              },
+              {
+                "phase": "input-ready-process-age",
+                "duration": 581.7976
+              },
+              {
+                "phase": "drain-input",
+                "duration": 50.49720000000002
+              },
+              {
+                "phase": "stop-ui",
+                "duration": 1.3980999999999995
+              }
+            ],
+            "rawRestored": true,
+            "shutdownEmissions": 1
+          }
+        ]
+      },
+      "fullscreen": {
+        "startup": {
+          "p50Ms": 603.0183999999999,
+          "p95Ms": 610.0576000000001,
+          "samples": [
+            605.0398999999998,
+            593.0050000000001,
+            603.0183999999999,
+            610.0576000000001,
+            596.1591000000008
+          ]
+        },
+        "shutdown": {
+          "p50Ms": 90.31019999999899,
+          "p95Ms": 93.80749999999989,
+          "samples": [
+            93.73320000000058,
+            93.80749999999989,
+            90.31019999999899,
+            89.82840000000033,
+            81.67979999999989
+          ]
+        },
+        "rows": [
+          {
+            "mode": "fullscreen",
+            "index": 1,
+            "warmup": false,
+            "startupMs": 605.0398999999998,
+            "shutdownMs": 93.73320000000058,
+            "phases": [
+              {
+                "phase": "init-entry-process-age",
+                "duration": 561.5286000000001
+              },
+              {
+                "phase": "init",
+                "duration": 24.682199999999966
+              },
+              {
+                "phase": "input-ready-process-age",
+                "duration": 586.419
+              },
+              {
+                "phase": "drain-input",
+                "duration": 62.44170000000008
+              },
+              {
+                "phase": "stop-ui",
+                "duration": 4.389799999999923
+              }
+            ],
+            "rawRestored": true,
+            "shutdownEmissions": 1
+          },
+          {
+            "mode": "fullscreen",
+            "index": 2,
+            "warmup": false,
+            "startupMs": 593.0050000000001,
+            "shutdownMs": 93.80749999999989,
+            "phases": [
+              {
+                "phase": "init-entry-process-age",
+                "duration": 550.1598
+              },
+              {
+                "phase": "init",
+                "duration": 23.544799999999896
+              },
+              {
+                "phase": "input-ready-process-age",
+                "duration": 573.9165
+              },
+              {
+                "phase": "drain-input",
+                "duration": 61.72079999999994
+              },
+              {
+                "phase": "stop-ui",
+                "duration": 5.100500000000011
+              }
+            ],
+            "rawRestored": true,
+            "shutdownEmissions": 1
+          },
+          {
+            "mode": "fullscreen",
+            "index": 3,
+            "warmup": false,
+            "startupMs": 603.0183999999999,
+            "shutdownMs": 90.31019999999899,
+            "phases": [
+              {
+                "phase": "init-entry-process-age",
+                "duration": 554.8853
+              },
+              {
+                "phase": "init",
+                "duration": 23.404499999999985
+              },
+              {
+                "phase": "input-ready-process-age",
+                "duration": 578.4907999999999
+              },
+              {
+                "phase": "drain-input",
+                "duration": 60.530500000000075
+              },
+              {
+                "phase": "stop-ui",
+                "duration": 2.6283999999999423
+              }
+            ],
+            "rawRestored": true,
+            "shutdownEmissions": 1
+          },
+          {
+            "mode": "fullscreen",
+            "index": 4,
+            "warmup": false,
+            "startupMs": 610.0576000000001,
+            "shutdownMs": 89.82840000000033,
+            "phases": [
+              {
+                "phase": "init-entry-process-age",
+                "duration": 564.6118
+              },
+              {
+                "phase": "init",
+                "duration": 26.230500000000006
+              },
+              {
+                "phase": "input-ready-process-age",
+                "duration": 591.0471
+              },
+              {
+                "phase": "drain-input",
+                "duration": 58.67089999999996
+              },
+              {
+                "phase": "stop-ui",
+                "duration": 3.20920000000001
+              }
+            ],
+            "rawRestored": true,
+            "shutdownEmissions": 1
+          },
+          {
+            "mode": "fullscreen",
+            "index": 5,
+            "warmup": false,
+            "startupMs": 596.1591000000008,
+            "shutdownMs": 81.67979999999989,
+            "phases": [
+              {
+                "phase": "init-entry-process-age",
+                "duration": 554.0851
+              },
+              {
+                "phase": "init",
+                "duration": 24.18979999999999
+              },
+              {
+                "phase": "input-ready-process-age",
+                "duration": 578.5889
+              },
+              {
+                "phase": "drain-input",
+                "duration": 53.745900000000006
+              },
+              {
+                "phase": "stop-ui",
+                "duration": 3.1907999999999674
+              }
+            ],
+            "rawRestored": true,
+            "shutdownEmissions": 1
+          }
+        ]
+      }
+    },
+    "validation": {
+      "completedProcesses": 12,
+      "rawRestored": 12,
+      "singleShutdownEmission": 12
+    }
+  },
+  "version": {
+    "benchmark": "source-launcher-version-no-preload",
+    "rows": [
+      {
+        "index": 0,
+        "warmup": true,
+        "durationMs": 512.7478,
+        "version": "1.0.0"
+      },
+      {
+        "index": 1,
+        "warmup": false,
+        "durationMs": 485.1594,
+        "version": "1.0.0"
+      },
+      {
+        "index": 2,
+        "warmup": false,
+        "durationMs": 479.9689000000001,
+        "version": "1.0.0"
+      },
+      {
+        "index": 3,
+        "warmup": false,
+        "durationMs": 482.87789999999995,
+        "version": "1.0.0"
+      },
+      {
+        "index": 4,
+        "warmup": false,
+        "durationMs": 487.82079999999996,
+        "version": "1.0.0"
+      },
+      {
+        "index": 5,
+        "warmup": false,
+        "durationMs": 483.5407,
+        "version": "1.0.0"
+      }
+    ],
+    "summary": {
+      "p50Ms": 483.5407,
+      "p95Ms": 487.82079999999996,
+      "samples": [
+        485.1594,
+        479.9689000000001,
+        482.87789999999995,
+        487.82079999999996,
+        483.5407
+      ]
+    }
+  },
+  "prefix": {
+    "samples": [
+      {
+        "schemaVersion": 1,
+        "name": "prefix-build",
+        "commit": "fc790a0bd608298b9acdb2860eddd12ac596628a",
+        "node": "v26.13.0",
+        "platform": "win32",
+        "arch": "x64",
+        "fixture": "phase0-v1:resource-orderings:100:128KiB:prefix-manifest-v1",
+        "warmupRuns": 2,
+        "measuredRuns": 10,
+        "metrics": {
+          "minMs": 91.27629999999999,
+          "p50Ms": 93.2192,
+          "p95Ms": 99.08720000000005,
+          "p99Ms": 99.08720000000005,
+          "maxMs": 99.08720000000005,
+          "meanMs": 94.03309999999999,
+          "coefficientOfVariation": 0.022275396096651412,
+          "peakHeapBytes": 72083784,
+          "finalHeapBytes": 62712872,
+          "prefixBytes": 137129,
+          "manifestBytes": 1238,
+          "resourceCount": 64,
+          "orderingCount": 100,
+          "manifestHashDriftCount": 0,
+          "uniqueManifestHashes": 1
+        },
+        "observations": {
+          "canonicalManifestSha256": "01823bbd41b4f2e0e2f365492c2119e341fbca463781a08541c8d775dbf75d13",
+          "manifestHashSetSha256": "0ae830023bd5b487bfd16a9f2efa0db749217459e317b2bb2498e435d7f2b8c2"
+        },
+        "environment": {
+          "cpu": "Intel(R) Core(TM) i7-14700KF",
+          "cpuCores": 28,
+          "totalMemoryBytes": 34134798336,
+          "terminalColumns": 0,
+          "terminalRows": 0,
+          "term": "",
+          "kittyImages": false,
+          "exposeGc": true,
+          "measuredAt": "2026-11-04T15:36:58.374Z"
+        }
+      },
+      {
+        "schemaVersion": 1,
+        "name": "prefix-build",
+        "commit": "fc790a0bd608298b9acdb2860eddd12ac596628a",
+        "node": "v26.13.0",
+        "platform": "win32",
+        "arch": "x64",
+        "fixture": "phase0-v1:resource-orderings:100:1024KiB:prefix-manifest-v1",
+        "warmupRuns": 2,
+        "measuredRuns": 10,
+        "metrics": {
+          "minMs": 484.92679999999973,
+          "p50Ms": 489.62609999999995,
+          "p95Ms": 494.97879999999986,
+          "p99Ms": 494.97879999999986,
+          "maxMs": 494.97879999999986,
+          "meanMs": 489.84064,
+          "coefficientOfVariation": 0.006804804890269517,
+          "peakHeapBytes": 112947904,
+          "finalHeapBytes": 72241072,
+          "prefixBytes": 1055529,
+          "manifestBytes": 1239,
+          "resourceCount": 64,
+          "orderingCount": 100,
+          "manifestHashDriftCount": 0,
+          "uniqueManifestHashes": 1
+        },
+        "observations": {
+          "canonicalManifestSha256": "590652947802e10bc2ea9f039169a0b6ffa5afdf862c3dabc8d0c47c401725e3",
+          "manifestHashSetSha256": "c2e0079361146f20a74443cb97a69d95e9a2edb0904f122b8596ff8a9513a1fb"
+        },
+        "environment": {
+          "cpu": "Intel(R) Core(TM) i7-14700KF",
+          "cpuCores": 28,
+          "totalMemoryBytes": 34134798336,
+          "terminalColumns": 0,
+          "terminalRows": 0,
+          "term": "",
+          "kittyImages": false,
+          "exposeGc": true,
+          "measuredAt": "2026-11-04T15:37:04.471Z"
+        }
+      }
+    ],
+    "interpretation": "Each timing sample contains 100 resource-order permutations/builds. Divide sample time by 100 for an average build cost; this is not a per-request latency percentile or a cloud cache-hit ratio."
+  },
+  "frames": [
+    {
+      "label": "main5k",
+      "fixture": "production-main",
+      "items": 5000,
+      "width": 120,
+      "height": 40,
+      "warmupFrames": 500,
+      "measuredFrames": 5000,
+      "metrics": {
+        "cpuP50Ms": 0.019500000000022055,
+        "cpuP95Ms": 0.02780000000001337,
+        "sampledAllocationBytesPerFrame": 7349.864,
+        "totalGcDurationMs": 3.4627999663352966,
+        "controlledGcHeapDeltaBytes": 2156368,
+        "controlledGcAfterDisposeHeapDeltaBytes": 2149928,
+        "viewportItemVisitsPerFrame": 32,
+        "completedItemRendersPerFrame": 0,
+        "fullHistoryFallbacksPerFrame": 0,
+        "frameStringsGeneratedPerFrame": 1,
+        "fullSizeFrameCopies": 0,
+        "framePromisesCreated": 0,
+        "frameAbortControllersCreated": 0,
+        "frameWrapperObjectsCreated": 0,
+        "terminalActiveWriteHighWaterMark": 1,
+        "terminalPendingFrameHighWaterMark": 0,
+        "activeFrameUtf8Bytes": 0,
+        "pendingFrameUtf8Bytes": 0,
+        "retainedReferencesAfterDispose": {
+          "components": 0,
+          "lines": 0,
+          "sources": 0,
+          "cachedRows": 0,
+          "sourceCodeUnits": 0,
+          "paintedCodeUnits": 0,
+          "maximumRowCodeUnits": 0,
+          "indexedComponents": 0,
+          "screenRows": 0,
+          "screenCodeUnits": 0
+        },
+        "compositionReferencesAfterDispose": {
+          "overlayLineReferences": 0,
+          "selectionPointReferences": 0
+        },
+        "layoutNodesVisitedPerFrame": 0,
+        "layoutBoxObjectsPerFrame": 0,
+        "layoutRectObjectsPerFrame": 0,
+        "layoutClipObjectsPerFrame": 0
+      },
+      "topAllocationSites": [
+        {
+          "bytes": 7993616,
+          "functionName": "isImageLine",
+          "url": "file:///D:/RMProjects/Pi/packages/tui/src/terminal-image.ts",
+          "line": 165,
+          "column": 28
+        },
+        {
+          "bytes": 6469640,
+          "functionName": "applyLineResets",
+          "url": "file:///D:/RMProjects/Pi/packages/tui/src/tui.ts",
+          "line": 1990,
+          "column": 27
+        },
+        {
+          "bytes": 6071440,
+          "functionName": "renderContainerInto",
+          "url": "file:///D:/RMProjects/Pi/packages/tui/src/tui.ts",
+          "line": 323,
+          "column": 29
+        },
+        {
+          "bytes": 3553272,
+          "functionName": "renderRootViewportTail",
+          "url": "file:///D:/RMProjects/Pi/packages/tui/src/tui-main-screen.ts",
+          "line": 871,
+          "column": 32
+        }
+      ]
+    },
+    {
+      "label": "main50k",
+      "fixture": "production-main",
+      "items": 50000,
+      "width": 120,
+      "height": 40,
+      "warmupFrames": 500,
+      "measuredFrames": 5000,
+      "metrics": {
+        "cpuP50Ms": 0.020600000000001728,
+        "cpuP95Ms": 0.028500000000008185,
+        "sampledAllocationBytesPerFrame": 7681.272,
+        "totalGcDurationMs": 8.56199997663498,
+        "controlledGcHeapDeltaBytes": 2251296,
+        "controlledGcAfterDisposeHeapDeltaBytes": 2245864,
+        "viewportItemVisitsPerFrame": 32,
+        "completedItemRendersPerFrame": 0,
+        "fullHistoryFallbacksPerFrame": 0,
+        "frameStringsGeneratedPerFrame": 1,
+        "fullSizeFrameCopies": 0,
+        "framePromisesCreated": 0,
+        "frameAbortControllersCreated": 0,
+        "frameWrapperObjectsCreated": 0,
+        "terminalActiveWriteHighWaterMark": 1,
+        "terminalPendingFrameHighWaterMark": 0,
+        "activeFrameUtf8Bytes": 0,
+        "pendingFrameUtf8Bytes": 0,
+        "retainedReferencesAfterDispose": {
+          "components": 0,
+          "lines": 0,
+          "sources": 0,
+          "cachedRows": 0,
+          "sourceCodeUnits": 0,
+          "paintedCodeUnits": 0,
+          "maximumRowCodeUnits": 0,
+          "indexedComponents": 0,
+          "screenRows": 0,
+          "screenCodeUnits": 0
+        },
+        "compositionReferencesAfterDispose": {
+          "overlayLineReferences": 0,
+          "selectionPointReferences": 0
+        },
+        "layoutNodesVisitedPerFrame": 0,
+        "layoutBoxObjectsPerFrame": 0,
+        "layoutRectObjectsPerFrame": 0,
+        "layoutClipObjectsPerFrame": 0
+      },
+      "topAllocationSites": [
+        {
+          "bytes": 9388368,
+          "functionName": "isImageLine",
+          "url": "file:///D:/RMProjects/Pi/packages/tui/src/terminal-image.ts",
+          "line": 165,
+          "column": 28
+        },
+        {
+          "bytes": 6506752,
+          "functionName": "applyLineResets",
+          "url": "file:///D:/RMProjects/Pi/packages/tui/src/tui.ts",
+          "line": 1990,
+          "column": 27
+        },
+        {
+          "bytes": 6072136,
+          "functionName": "renderContainerInto",
+          "url": "file:///D:/RMProjects/Pi/packages/tui/src/tui.ts",
+          "line": 323,
+          "column": 29
+        },
+        {
+          "bytes": 3535560,
+          "functionName": "renderRootViewportTail",
+          "url": "file:///D:/RMProjects/Pi/packages/tui/src/tui-main-screen.ts",
+          "line": 871,
+          "column": 32
+        }
+      ]
+    },
+    {
+      "label": "alt5k",
+      "fixture": "production-alt",
+      "items": 5000,
+      "width": 120,
+      "height": 40,
+      "warmupFrames": 500,
+      "measuredFrames": 5000,
+      "metrics": {
+        "cpuP50Ms": 0.029200000000003,
+        "cpuP95Ms": 0.04060000000001196,
+        "sampledAllocationBytesPerFrame": 11220.8192,
+        "totalGcDurationMs": 4.983999967575073,
+        "controlledGcHeapDeltaBytes": 3178800,
+        "controlledGcAfterDisposeHeapDeltaBytes": 3056704,
+        "viewportItemVisitsPerFrame": 32,
+        "completedItemRendersPerFrame": 0,
+        "fullHistoryFallbacksPerFrame": 0,
+        "frameStringsGeneratedPerFrame": 1,
+        "fullSizeFrameCopies": 0,
+        "framePromisesCreated": 0,
+        "frameAbortControllersCreated": 0,
+        "frameWrapperObjectsCreated": 0,
+        "terminalActiveWriteHighWaterMark": 1,
+        "terminalPendingFrameHighWaterMark": 0,
+        "activeFrameUtf8Bytes": 0,
+        "pendingFrameUtf8Bytes": 0,
+        "retainedReferencesAfterDispose": {
+          "components": 0,
+          "lines": 0,
+          "sources": 0,
+          "cachedRows": 0,
+          "sourceCodeUnits": 0,
+          "paintedCodeUnits": 0,
+          "maximumRowCodeUnits": 0,
+          "indexedComponents": 0,
+          "screenRows": 0,
+          "screenCodeUnits": 0
+        },
+        "compositionReferencesAfterDispose": {
+          "overlayLineReferences": 0,
+          "selectionPointReferences": 0
+        },
+        "layoutNodesVisitedPerFrame": 9,
+        "layoutBoxObjectsPerFrame": 10,
+        "layoutRectObjectsPerFrame": 21,
+        "layoutClipObjectsPerFrame": 10
+      },
+      "topAllocationSites": [
+        {
+          "bytes": 11086896,
+          "functionName": "layoutComponent",
+          "url": "file:///D:/RMProjects/Pi/packages/tui/src/layout.ts",
+          "line": 696,
+          "column": 25
+        },
+        {
+          "bytes": 9511312,
+          "functionName": "renderComponentsViewport",
+          "url": "file:///D:/RMProjects/Pi/packages/tui/src/components/viewport-container.ts",
+          "line": 87,
+          "column": 41
+        },
+        {
+          "bytes": 7443872,
+          "functionName": "renderCached",
+          "url": "file:///D:/RMProjects/Pi/packages/tui/src/layout.ts",
+          "line": 557,
+          "column": 22
+        },
+        {
+          "bytes": 3584512,
+          "functionName": "renderContainerInto",
+          "url": "file:///D:/RMProjects/Pi/packages/tui/src/tui.ts",
+          "line": 323,
+          "column": 29
+        }
+      ]
+    },
+    {
+      "label": "alt50k",
+      "fixture": "production-alt",
+      "items": 50000,
+      "width": 120,
+      "height": 40,
+      "warmupFrames": 500,
+      "measuredFrames": 5000,
+      "metrics": {
+        "cpuP50Ms": 0.029999999999972715,
+        "cpuP95Ms": 0.04219999999997981,
+        "sampledAllocationBytesPerFrame": 11204.664,
+        "totalGcDurationMs": 8.686900019645691,
+        "controlledGcHeapDeltaBytes": 3170792,
+        "controlledGcAfterDisposeHeapDeltaBytes": 3043248,
+        "viewportItemVisitsPerFrame": 32,
+        "completedItemRendersPerFrame": 0,
+        "fullHistoryFallbacksPerFrame": 0,
+        "frameStringsGeneratedPerFrame": 1,
+        "fullSizeFrameCopies": 0,
+        "framePromisesCreated": 0,
+        "frameAbortControllersCreated": 0,
+        "frameWrapperObjectsCreated": 0,
+        "terminalActiveWriteHighWaterMark": 1,
+        "terminalPendingFrameHighWaterMark": 0,
+        "activeFrameUtf8Bytes": 0,
+        "pendingFrameUtf8Bytes": 0,
+        "retainedReferencesAfterDispose": {
+          "components": 0,
+          "lines": 0,
+          "sources": 0,
+          "cachedRows": 0,
+          "sourceCodeUnits": 0,
+          "paintedCodeUnits": 0,
+          "maximumRowCodeUnits": 0,
+          "indexedComponents": 0,
+          "screenRows": 0,
+          "screenCodeUnits": 0
+        },
+        "compositionReferencesAfterDispose": {
+          "overlayLineReferences": 0,
+          "selectionPointReferences": 0
+        },
+        "layoutNodesVisitedPerFrame": 9,
+        "layoutBoxObjectsPerFrame": 10,
+        "layoutRectObjectsPerFrame": 21,
+        "layoutClipObjectsPerFrame": 10
+      },
+      "topAllocationSites": [
+        {
+          "bytes": 11266760,
+          "functionName": "layoutComponent",
+          "url": "file:///D:/RMProjects/Pi/packages/tui/src/layout.ts",
+          "line": 696,
+          "column": 25
+        },
+        {
+          "bytes": 9700920,
+          "functionName": "renderComponentsViewport",
+          "url": "file:///D:/RMProjects/Pi/packages/tui/src/components/viewport-container.ts",
+          "line": 87,
+          "column": 41
+        },
+        {
+          "bytes": 7319312,
+          "functionName": "renderCached",
+          "url": "file:///D:/RMProjects/Pi/packages/tui/src/layout.ts",
+          "line": 557,
+          "column": 22
+        },
+        {
+          "bytes": 3505120,
+          "functionName": "renderContainerInto",
+          "url": "file:///D:/RMProjects/Pi/packages/tui/src/tui.ts",
+          "line": 323,
+          "column": 29
+        }
+      ]
+    }
+  ],
+  "resize": [
+    {
+      "count": 5000,
+      "initialMs": 121.3997,
+      "resize": {
+        "p50Ms": 76.99509999999998,
+        "p95Ms": 85.72030000000007,
+        "samples": [
+          70.96690000000001,
+          76.99509999999998,
+          73.74399999999991,
+          85.72030000000007,
+          77.48929999999996,
+          76.04970000000003
+        ]
+      },
+      "index": {
+        "indexedItems": 5000,
+        "heightBlocks": 20,
+        "dirtyItems": 0,
+        "totalHeight": 12500,
+        "width": 120,
+        "preparedItems": 0
+      },
+      "referencesAfterClear": {
+        "children": 0,
+        "retainedItems": 0,
+        "retainedComponents": 0,
+        "viewportRecords": 0,
+        "viewportRecordComponentReferences": 0,
+        "viewportRecordRetainedItemReferences": 0,
+        "dirtyViewportRecords": 0,
+        "preparedViewportRecords": 0,
+        "viewportBlockHeights": 0,
+        "preparedLineReferences": 0,
+        "kittyLineReferences": 0,
+        "viewportTotalHeight": 0,
+        "viewportWidthDefined": 0
+      }
+    },
+    {
+      "count": 50000,
+      "initialMs": 798.8108,
+      "resize": {
+        "p50Ms": 765.3959000000004,
+        "p95Ms": 818.7725,
+        "samples": [
+          753.8798999999999,
+          811.9793,
+          765.1580000000004,
+          765.3959000000004,
+          759.0713999999998,
+          818.7725
+        ]
+      },
+      "index": {
+        "indexedItems": 50000,
+        "heightBlocks": 196,
+        "dirtyItems": 0,
+        "totalHeight": 125000,
+        "width": 120,
+        "preparedItems": 0
+      },
+      "referencesAfterClear": {
+        "children": 0,
+        "retainedItems": 0,
+        "retainedComponents": 0,
+        "viewportRecords": 0,
+        "viewportRecordComponentReferences": 0,
+        "viewportRecordRetainedItemReferences": 0,
+        "dirtyViewportRecords": 0,
+        "preparedViewportRecords": 0,
+        "viewportBlockHeights": 0,
+        "preparedLineReferences": 0,
+        "kittyLineReferences": 0,
+        "viewportTotalHeight": 0,
+        "viewportWidthDefined": 0
+      }
+    }
+  ],
+  "markdown": [
+    {
+      "kind": "plain",
+      "kib": 16,
+      "sourceCharacters": 16631,
+      "timing": {
+        "p50Ms": 0.02339999999998099,
+        "p95Ms": 0.056100000000014916,
+        "samples": [
+          0.02600000000001046,
+          0.02339999999998099,
+          0.02339999999998099,
+          0.056100000000014916,
+          0.018899999999973716,
+          0.016999999999995907,
+          0.01650000000000773,
+          0.017299999999977445,
+          0.019300000000043838,
+          0.020099999999956708,
+          0.018100000000004002,
+          0.02400000000000091,
+          0.03269999999997708,
+          0.031799999999975626,
+          0.02740000000000009,
+          0.01999999999998181,
+          0.03139999999996235,
+          0.02420000000000755,
+          0.0403999999999769,
+          0.024400000000014188,
+          0.02780000000001337,
+          0.03609999999997626,
+          0.0695999999999799,
+          0.021100000000046748,
+          0.020099999999956708,
+          0.03300000000001546,
+          0.017299999999977445,
+          0.017600000000015825,
+          0.017599999999958982,
+          0.020000000000038654
+        ]
+      },
+      "metrics": {
+        "incrementalEligibleUpdates": 40,
+        "incrementalUpdates": 40,
+        "fullFallbacks": 1,
+        "sourceCharactersReparsed": 16631,
+        "sourceCharactersRewrapped": 18991,
+        "parserTokensReused": 40,
+        "parserTokensRebuilt": 1,
+        "renderedPrefixLinesReused": 5873,
+        "tailLinesRebuilt": 42,
+        "cachedTokenCount": 0,
+        "cachedRenderedLines": 0,
+        "cachedSourceCharacters": 0,
+        "lastFallbackReason": "none"
+      }
+    },
+    {
+      "kind": "code",
+      "kib": 16,
+      "sourceCharacters": 17043,
+      "timing": {
+        "p50Ms": 0.552599999999984,
+        "p95Ms": 0.8250999999999635,
+        "samples": [
+          0.7116000000000327,
+          0.8250999999999635,
+          0.7257999999999925,
+          0.699100000000044,
+          0.7760000000000105,
+          0.9950000000000045,
+          0.5299999999999727,
+          0.5572999999999979,
+          0.44240000000002055,
+          0.5008000000000266,
+          0.4596000000000231,
+          0.44360000000000355,
+          0.552599999999984,
+          0.5940000000000509,
+          0.60450000000003,
+          0.5982000000000198,
+          0.5860000000000127,
+          0.6673999999999864,
+          0.6009999999999991,
+          0.7204999999999586,
+          0.4598999999999478,
+          0.4467999999999961,
+          0.4490000000000123,
+          0.44619999999997617,
+          0.4562999999999988,
+          0.45699999999999363,
+          0.45139999999997826,
+          0.4496000000000322,
+          0.4560999999999922,
+          0.45100000000002183
+        ]
+      },
+      "metrics": {
+        "incrementalEligibleUpdates": 0,
+        "incrementalUpdates": 0,
+        "fullFallbacks": 41,
+        "sourceCharactersReparsed": 685643,
+        "sourceCharactersRewrapped": 685643,
+        "parserTokensReused": 0,
+        "parserTokensRebuilt": 41,
+        "renderedPrefixLinesReused": 0,
+        "tailLinesRebuilt": 0,
+        "cachedTokenCount": 0,
+        "cachedRenderedLines": 0,
+        "cachedSourceCharacters": 0,
+        "lastFallbackReason": "unsupported-block"
+      }
+    },
+    {
+      "kind": "table",
+      "kib": 16,
+      "sourceCharacters": 16934,
+      "timing": {
+        "p50Ms": 3.1843999999999824,
+        "p95Ms": 3.9984000000000037,
+        "samples": [
+          2.834699999999998,
+          3.2361999999999966,
+          2.831800000000044,
+          3.3541999999999916,
+          2.7858000000000516,
+          2.908100000000047,
+          3.2695999999999685,
+          3.5196000000000254,
+          3.657199999999989,
+          3.7210000000000036,
+          2.8461000000000354,
+          3.2273999999999887,
+          4.153100000000052,
+          3.6947999999999865,
+          3.9774999999999636,
+          2.96550000000002,
+          2.847699999999975,
+          2.8485000000000014,
+          2.9078999999999837,
+          3.9984000000000037,
+          2.9997000000000185,
+          3.1843999999999824,
+          2.903500000000008,
+          2.9595999999999663,
+          3.8863999999999805,
+          2.9775999999999954,
+          2.987600000000043,
+          3.202200000000005,
+          3.1771999999999707,
+          3.4166999999999916
+        ]
+      },
+      "metrics": {
+        "incrementalEligibleUpdates": 0,
+        "incrementalUpdates": 0,
+        "fullFallbacks": 41,
+        "sourceCharactersReparsed": 683634,
+        "sourceCharactersRewrapped": 683634,
+        "parserTokensReused": 0,
+        "parserTokensRebuilt": 41,
+        "renderedPrefixLinesReused": 0,
+        "tailLinesRebuilt": 0,
+        "cachedTokenCount": 0,
+        "cachedRenderedLines": 0,
+        "cachedSourceCharacters": 0,
+        "lastFallbackReason": "unsupported-block"
+      }
+    },
+    {
+      "kind": "plain",
+      "kib": 64,
+      "sourceCharacters": 65783,
+      "timing": {
+        "p50Ms": 0.047100000000000364,
+        "p95Ms": 0.09649999999999181,
+        "samples": [
+          0.049100000000009913,
+          0.04670000000004393,
+          0.04750000000001364,
+          0.05069999999994934,
+          0.047100000000000364,
+          0.06569999999999254,
+          0.0544999999999618,
+          0.041400000000010095,
+          0.039600000000007185,
+          0.03989999999998872,
+          0.044699999999977535,
+          0.04070000000001528,
+          0.046699999999987085,
+          0.05459999999999354,
+          0.06059999999996535,
+          0.04919999999998481,
+          0.09649999999999181,
+          0.04599999999999227,
+          0.048699999999996635,
+          0.14740000000000464,
+          0.04959999999999809,
+          0.04630000000003065,
+          0.046499999999980446,
+          0.04599999999999227,
+          0.051999999999964075,
+          0.03910000000001901,
+          0.041800000000023374,
+          0.047200000000032105,
+          0.042899999999974625,
+          0.041200000000003456
+        ]
+      },
+      "metrics": {
+        "incrementalEligibleUpdates": 40,
+        "incrementalUpdates": 40,
+        "fullFallbacks": 1,
+        "sourceCharactersReparsed": 65783,
+        "sourceCharactersRewrapped": 68077,
+        "parserTokensReused": 40,
+        "parserTokensRebuilt": 1,
+        "renderedPrefixLinesReused": 23429,
+        "tailLinesRebuilt": 42,
+        "cachedTokenCount": 0,
+        "cachedRenderedLines": 0,
+        "cachedSourceCharacters": 0,
+        "lastFallbackReason": "none"
+      }
+    },
+    {
+      "kind": "code",
+      "kib": 64,
+      "sourceCharacters": 66196,
+      "timing": {
+        "p50Ms": 1.940400000000011,
+        "p95Ms": 2.4409999999999172,
+        "samples": [
+          2.603400000000022,
+          2.0083999999999946,
+          1.9372999999999934,
+          1.896000000000015,
+          1.930499999999995,
+          1.9021000000000186,
+          1.940400000000011,
+          2.386599999999987,
+          1.8859999999999673,
+          1.9119000000000028,
+          1.901899999999955,
+          1.8870000000000005,
+          1.923599999999965,
+          1.9348999999999705,
+          2.422800000000052,
+          1.9185999999999694,
+          1.9085999999999785,
+          1.8982000000000312,
+          1.8933000000000106,
+          1.8815000000000168,
+          1.9798000000000684,
+          2.078300000000013,
+          2.4409999999999172,
+          2.180599999999913,
+          2.033900000000017,
+          2.0092999999999392,
+          2.046600000000012,
+          2.303199999999947,
+          2.0136999999999716,
+          2.2573999999999614
+        ]
+      },
+      "metrics": {
+        "incrementalEligibleUpdates": 0,
+        "incrementalUpdates": 0,
+        "fullFallbacks": 41,
+        "sourceCharactersReparsed": 2700916,
+        "sourceCharactersRewrapped": 2700916,
+        "parserTokensReused": 0,
+        "parserTokensRebuilt": 41,
+        "renderedPrefixLinesReused": 0,
+        "tailLinesRebuilt": 0,
+        "cachedTokenCount": 0,
+        "cachedRenderedLines": 0,
+        "cachedSourceCharacters": 0,
+        "lastFallbackReason": "unsupported-block"
+      }
+    },
+    {
+      "kind": "table",
+      "kib": 64,
+      "sourceCharacters": 66086,
+      "timing": {
+        "p50Ms": 11.952499999999986,
+        "p95Ms": 14.055500000000052,
+        "samples": [
+          11.811399999999935,
+          10.931800000000067,
+          11.888699999999972,
+          11.62779999999998,
+          11.935799999999972,
+          10.875200000000063,
+          12.163499999999999,
+          12.116800000000012,
+          11.955500000000029,
+          11.952499999999986,
+          11.086900000000014,
+          12.333899999999971,
+          13.413800000000037,
+          12.455699999999979,
+          12.027299999999968,
+          12.53449999999998,
+          12.049200000000042,
+          12.256799999999998,
+          10.949999999999932,
+          11.950900000000047,
+          11.782299999999964,
+          17.53800000000001,
+          11.172300000000064,
+          12.345700000000079,
+          14.055500000000052,
+          12.05740000000003,
+          10.875999999999976,
+          11.841499999999996,
+          11.851699999999937,
+          11.59439999999995
+        ]
+      },
+      "metrics": {
+        "incrementalEligibleUpdates": 0,
+        "incrementalUpdates": 0,
+        "fullFallbacks": 41,
+        "sourceCharactersReparsed": 2698866,
+        "sourceCharactersRewrapped": 2698866,
+        "parserTokensReused": 0,
+        "parserTokensRebuilt": 41,
+        "renderedPrefixLinesReused": 0,
+        "tailLinesRebuilt": 0,
+        "cachedTokenCount": 0,
+        "cachedRenderedLines": 0,
+        "cachedSourceCharacters": 0,
+        "lastFallbackReason": "unsupported-block"
+      }
+    }
+  ],
+  "cacheScan": {
+    "rows": [
+      {
+        "count": 1000,
+        "timing": {
+          "p50Ms": 0.16429999999854772,
+          "p95Ms": 0.17159999999967113,
+          "samples": [
+            0.17159999999967113,
+            0.16429999999854772,
+            0.16439999999965949,
+            0.16450000000077125,
+            0.16389999999955762,
+            0.1643000000003667,
+            0.16419999999925494,
+            0.1632000000008702,
+            0.16409999999996217,
+            0.16380000000026484
+          ]
+        }
+      },
+      {
+        "count": 10000,
+        "timing": {
+          "p50Ms": 1.6856000000007043,
+          "p95Ms": 2.574899999999616,
+          "samples": [
+            1.6980000000003201,
+            1.6856000000007043,
+            1.7006000000001222,
+            1.683999999999287,
+            2.574899999999616,
+            1.7445999999999913,
+            1.6010999999998603,
+            1.6612999999997555,
+            1.631999999999607,
+            1.6080000000001746
+          ]
+        }
+      },
+      {
+        "count": 50000,
+        "timing": {
+          "p50Ms": 10.630400000000009,
+          "p95Ms": 11.54780000000028,
+          "samples": [
+            11.54780000000028,
+            8.681899999999587,
+            10.630699999999706,
+            8.724700000000666,
+            10.630400000000009,
+            8.97609999999986,
+            10.703099999998813,
+            11.428599999999278,
+            9.682800000000498,
+            9.894900000001144
+          ]
+        }
+      }
+    ],
+    "scope": "detectCacheMiss only, synthetic all-assistant history with misses; excludes getEntries array copy; feature disabled by default."
+  },
+  "validation": {
+    "tests": 81,
+    "passed": 81,
+    "failed": 0,
+    "command": [
+      "--expose-gc",
+      "--experimental-strip-types",
+      "--test",
+      "tests/prefix-manifest.test.ts",
+      "tests/prefix-determinism.test.ts",
+      "tests/prefix-production-assembly.test.ts",
+      "tests/prefix-production-diagnostics.test.ts",
+      "tests/alpha-startup-quit.test.ts",
+      "tests/alpha-shutdown-deferred.test.ts",
+      "tests/tui-retained-source-invariants.test.ts",
+      "tests/tui-alt-layout-allocation.test.ts",
+      "tests/tui-alt-overlay-selection-allocation.test.ts"
+    ],
+    "temporaryFixtureCorrection": "Initial plain fixture ended in a space and appended another space, intentionally unsafe after correction diagnosis. Final plain numbers use trimEnd; original double-space result is not used as normal plain-text latency.",
+    "harnessInvocationError": "One mistyped exploratory runner argument node-does-not-exist exited 1 before loading product code; excluded from all benchmark results."
+  },
+  "findings": [
+    {
+      "priority": 1,
+      "area": "resize and long-history initial layout",
+      "source": "packages/tui/src/components/retained-item.ts:914",
+      "evidence": "Width change measures every viewport record synchronously; 50k real components are roughly 10x 5k.",
+      "next": "Design viewport-first resize with bounded background measurement and stable scroll anchors; preserve exact selection/history behavior. Profile before choosing a data structure."
+    },
+    {
+      "priority": 2,
+      "area": "startup module graph and timing coverage",
+      "source": "packages/coding-agent/src/main.ts:603",
+      "evidence": "Static mode/package/export imports precede main timing and version exit. Cold model runtime much slower than warm construction; uninstrumented --version also loads the CLI graph.",
+      "next": "Move version/help and mode dispatch behind minimal entry; profile imports separately. Existing provider API lazy imports already exist and should be preserved."
+    },
+    {
+      "priority": 3,
+      "area": "growing complex Markdown",
+      "source": "packages/tui/src/components/markdown.ts:510",
+      "evidence": "Plain append is incremental; long code/table fixtures reparse and rewrap each update.",
+      "next": "Profile append-tail block handling/table layout; cache only semantically stable work with bounded owner and invalidation. Preserve fence/link/table-width behavior."
+    },
+    {
+      "priority": 4,
+      "area": "cache observability and history scan",
+      "source": "packages/coding-agent/src/core/cache-stats.ts:116",
+      "evidence": "Per-turn detectCacheMiss scans history and creates a map it discards; UI uses global five-minute idle threshold despite API adapters supporting different retention modes.",
+      "next": "Connect actual usage to effective manifest drift and provider/retention metadata; distinguish heuristic attribution from observed facts. Track incremental state by branch/history generation."
+    },
+    {
+      "priority": 5,
+      "area": "prefix diagnostic computation",
+      "source": "packages/coding-agent/src/core/sdk.ts:440",
+      "evidence": "Intent and effective manifests both normalize/hash stable context/tool schemas; intent recomputes canonical context hash within a build. 100 ordering permutations produced zero drift at both tested sizes.",
+      "next": "Memoize stable component hashes under explicit resource/tool/schema generations; preserve provider effective-dispatch hashing and transform invalidation."
+    },
+    {
+      "priority": 6,
+      "area": "shutdown diagnostics",
+      "source": "packages/coding-agent/src/modes/interactive/interactive-mode.ts:5680",
+      "evidence": "Idle pipe-backed quit is already tens of milliseconds; terminal drain uses adaptive quiet-window, not an unconditional 1000ms sleep.",
+      "next": "Measure active stream/tool/sandbox and slow extension cleanup separately before changing deadlines or hook semantics."
+    }
+  ],
+  "reproduction": {
+    "instructions": "Create a fresh task-owned .task-tmp/<id>/ directory at repository depth 2; restore harnesses below there; run recorded argument lists through run.mjs with that task path. All TMP/TEMP/TMPDIR and HOME are isolated. Run timing benchmarks sequentially. Existing production benchmark scripts are pinned by commit.",
+    "harnesses": {
+      "run.mjs": "import fs from 'node:fs';\nimport path from 'node:path';\nimport { fileURLToPath } from 'node:url';\nimport { spawn } from 'node:child_process';\nconst root=fs.realpathSync(fileURLToPath(new URL('.',import.meta.url))),file=path.join(root,'resources.json');\nconst manifest=fs.existsSync(file)?JSON.parse(fs.readFileSync(file,'utf8')):{root,processes:[],resources:[]};\nif(!fs.existsSync(file))fs.writeFileSync(file,'{}');\nconst home=path.join(root,'home');fs.mkdirSync(home,{recursive:true});\nfunction record(){const pending=[root],rows=[];while(pending.length){const name=pending.pop(),stat=fs.lstatSync(name,{bigint:true});if(stat.isSymbolicLink())throw new Error('Unexpected task link: '+name);rows.push({file:name,dev:String(stat.dev),ino:String(stat.ino),directory:stat.isDirectory()});if(stat.isDirectory())for(const child of fs.readdirSync(name))pending.push(path.join(name,child));}manifest.resources=rows;fs.writeFileSync(file,JSON.stringify(manifest,null,2));}\nconst [label,...args]=process.argv.slice(2);if(!/^[a-z0-9-]+$/.test(label)||!args.length)throw new Error('label and Node arguments required');\nconst env={PATH:process.env.PATH,SystemRoot:process.env.SystemRoot,WINDIR:process.env.WINDIR,COMSPEC:process.env.COMSPEC,PATHEXT:process.env.PATHEXT,\n TMP:root,TEMP:root,TMPDIR:root,HOME:home,USERPROFILE:home,XDG_CONFIG_HOME:home,SP_CODING_AGENT_DIR:path.join(home,'agent'),SP_CODING_AGENT_SESSION_DIR:path.join(home,'sessions'),SP_OFFLINE:'1',SP_SKIP_VERSION_CHECK:'1',SP_TUI_WRITE_LOG:''};\nconst log=fs.openSync(path.join(root,label+'.log'),'wx');\nconst child=spawn(process.execPath,args,{cwd:path.resolve(root,'../..'),env,windowsHide:true,stdio:['ignore',log,log]});\nconst owner={label,pid:child.pid,args,started:new Date().toISOString(),settled:false};manifest.processes.push(owner);record();\nchild.on('error',error=>{owner.error=error.message;});\nchild.on('close',(code,signal)=>{owner.settled=true;owner.code=code;owner.signal=signal;owner.finished=new Date().toISOString();fs.closeSync(log);record();console.log(JSON.stringify(owner));process.exitCode=code??1;});\n",
+      "cli-capture.mjs": "import assert from 'node:assert/strict';\nimport { tmpdir } from 'node:os';\nassert.equal(tmpdir(), process.env.TMPDIR);\nconst { InteractiveMode } = await import('../../packages/coding-agent/dist/modes/interactive/interactive-mode.js');\nconst { ProcessTerminal } = await import('../../packages/tui/dist/terminal.js');\nfunction record(phase, duration) { process.stderr.write('AUDIT:' + JSON.stringify({ phase, duration }) + '\\n'); }\nfunction wrap(owner, method, phase) {\n  const original = owner[method];\n  assert.equal(typeof original, 'function');\n  owner[method] = async function (...args) {\n    const start = performance.now();\n    const value = await original.apply(this, args);\n    record(phase, performance.now() - start);\n    return value;\n  };\n}\nwrap(ProcessTerminal.prototype, 'drainInput', 'drain-input');\nwrap(InteractiveMode.prototype, 'stop', 'stop-ui');\nconst originalInit = InteractiveMode.prototype.init;\nInteractiveMode.prototype.init = async function (...args) {\n  record('init-entry-process-age', process.uptime() * 1000);\n  const start = performance.now();\n  const ready = await originalInit.apply(this, args);\n  record('init', performance.now() - start);\n  if (ready) record('input-ready-process-age', process.uptime() * 1000);\n  return ready;\n};\n",
+      "cli-bench.mjs": "import assert from 'node:assert/strict';\nimport fs from 'node:fs';\nimport path from 'node:path';\nimport { spawn } from 'node:child_process';\nconst root = import.meta.dirname;\nconst repo = path.resolve(root, '../..');\nconst rows = [], owners = [];\nfunction persist() { fs.writeFileSync(path.join(root, 'cli-processes.json'), JSON.stringify(owners, null, 2)); }\nfor (const mode of ['regular', 'fullscreen']) {\n  for (let index = 0; index < 6; index++) {\n    const home = path.join(root, 'cli-' + mode + '-' + index);\n    const agent = path.join(home, 'agent');\n    fs.mkdirSync(path.join(agent, 'config'), { recursive: true });\n    fs.writeFileSync(path.join(agent, 'config/settings.json'), JSON.stringify({quietStartup:true,theme:'dark',terminal:{showTerminalProgress:false},compaction:{enabled:false,keepRecentTokens:128,reserveTokens:128}}));\n    const args = ['--import', new URL('../../tests/fixtures/alpha-cli-preload.mjs', import.meta.url).href,\n      '--import', new URL('./cli-capture.mjs', import.meta.url).href, path.join(repo, 'scripts/superpi.mjs'),\n      '--no-session','--no-extensions','--no-tools','--no-context-files','--no-skills','--no-prompt-templates','--no-themes',\n      '--tui-mode',mode,'--extension',path.join(repo,'tests/fixtures/alpha-cli-extension.mjs')];\n    const env = {...process.env, HOME:home, USERPROFILE:home, XDG_CONFIG_HOME:home, SP_CODING_AGENT_DIR:agent,\n      SP_CODING_AGENT_SESSION_DIR:path.join(home,'sessions'), ALPHA_EXIT_KIND:'quit'};\n    const start = performance.now();\n    const child = spawn(process.execPath,args,{cwd:home,env,windowsHide:true,stdio:'pipe'});\n    const owner={pid:child.pid,mode,index,started:new Date().toISOString(),settled:false}; owners.push(owner); persist();\n    let stderr='', buffer='', readyAt, quitAt, sendTimer;\n    const phases=[];\n    child.stdout.resume();\n    child.stderr.on('data', data => {\n      stderr += data.toString(); buffer += data.toString();\n      assert.ok(stderr.length < 65536);\n      for (;;) {\n        const end=buffer.indexOf('\\n'); if(end<0)break;\n        const line=buffer.slice(0,end); buffer=buffer.slice(end+1);\n        if (!line.startsWith('AUDIT:')) continue;\n        const row=JSON.parse(line.slice(6)); phases.push(row);\n        if (row.phase==='input-ready-process-age') {\n          readyAt=performance.now();\n          sendTimer=setTimeout(()=>{quitAt=performance.now();child.stdin.write('/quit\\r');},100);\n        }\n      }\n    });\n    const timeout=setTimeout(()=>child.kill(),15000);\n    const code=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('close',resolve);});\n    clearTimeout(timeout);clearTimeout(sendTimer);\n    owner.settled=true;owner.code=code;owner.finished=new Date().toISOString();persist();\n    assert.equal(code,0,stderr);\n    assert.ok(readyAt && quitAt,stderr);\n    assert.ok(stderr.includes('ALPHA_EXIT:0:RAW:false'),stderr);\n    assert.equal(stderr.split('ALPHA_SESSION_SHUTDOWN').length-1,1,stderr);\n    rows.push({mode,index,warmup:index===0,startupMs:readyAt-start,shutdownMs:performance.now()-quitAt,phases,rawRestored:true,shutdownEmissions:1});\n  }\n}\nconsole.log(JSON.stringify({benchmark:'source-launcher-pipe-backed-startup-quit',node:process.version,scope:'Isolated empty workspace; no tools/bundled resources/network; diagnostic preload; not native PTY or sandbox shutdown',rows},null,2));\n",
+      "boundaries.ts": "import assert from 'node:assert/strict';\nimport { tmpdir } from 'node:os';\nimport { RetainedContainer } from '../../packages/tui/src/components/retained-item.ts';\nimport { UserMessageComponent } from '../../packages/coding-agent/src/modes/interactive/components/user-message.ts';\nimport { AssistantMessageComponent } from '../../packages/coding-agent/src/modes/interactive/components/assistant-message.ts';\nimport { Markdown } from '../../packages/tui/src/components/markdown.ts';\nimport { initTheme } from '../../packages/coding-agent/src/modes/interactive/theme/theme.ts';\nimport { createTranscriptItems } from '../../scripts/bench/fixtures.ts';\nimport { detectCacheMiss } from '../../packages/coding-agent/src/core/cache-stats.ts';\nassert.equal(tmpdir(), process.env.TMPDIR);\ninitTheme('dark');\nconst zeroUsage={input:0,output:0,cacheRead:0,cacheWrite:0,totalTokens:0,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}};\nfunction message(text: string) {return {role:'assistant',content:[{type:'text',text}],api:'benchmark',provider:'benchmark',model:'benchmark',usage:zeroUsage,stopReason:'stop',timestamp:0} as any;}\nfunction summarize(samples:number[]){const sorted=samples.slice().sort((a,b)=>a-b);return {p50Ms:sorted[Math.floor(sorted.length*.5)],p95Ms:sorted[Math.min(sorted.length-1,Math.floor(sorted.length*.95))],samples};}\nconst resize=[];\nfor (const count of process.argv.includes('--markdown-only') ? [] : [5000,50000]) {\n  const transcript=new RetainedContainer(), source=createTranscriptItems(count);\n  for(let i=0;i<count;i++)transcript.addRetainedChild(i%2?new AssistantMessageComponent(message(source[i]!)):new UserMessageComponent(source[i]!),{id:'history-'+i,version:1,completed:true});\n  const initialStart=performance.now();transcript.renderViewportTail(120,40);const initialMs=performance.now()-initialStart;\n  const samples=[];let width=120;\n  for(let i=0;i<8;i++){width=width===120?96:120;const t=performance.now();transcript.renderViewportTail(width,40);if(i>1)samples.push(performance.now()-t);}\n  const index=transcript.getViewportIndexStats();\n  transcript.clear();globalThis.gc?.();\n  resize.push({count,initialMs,resize:summarize(samples),index,referencesAfterClear:transcript.getRetainedLifecycleReferenceCounts()});\n}\nconst style=(value:string)=>value;\nconst theme={heading:style,link:style,linkUrl:style,code:style,codeBlock:style,codeBlockBorder:style,quote:style,quoteBorder:style,hr:style,listBullet:style,bold:style,italic:style,strikethrough:style,underline:style};\nconst markdown=[];\nfor(const kib of [16,64])for(const kind of ['plain','code','table']){\n  const chunk=kind==='plain'?'ordinary words repeated ':kind==='code'?'const value = 123;\\n':'| row | value |\\n';\n  let source=(kind==='code'?'```ts\\n':kind==='table'?'| key | value |\\n| --- | --- |\\n':'')+chunk.repeat(Math.ceil(kib*1024/chunk.length));\n  if(kind==='plain') source=source.trimEnd();\n  const metrics:any={incrementalEligibleUpdates:0,incrementalUpdates:0,fullFallbacks:0,sourceCharactersReparsed:0,sourceCharactersRewrapped:0,parserTokensReused:0,parserTokensRebuilt:0,renderedPrefixLinesReused:0,tailLinesRebuilt:0,cachedTokenCount:0,cachedRenderedLines:0,cachedSourceCharacters:0,lastFallbackReason:'none'};\n  const md=new Markdown(source,1,0,theme,undefined,{incrementalRenderCache:true},metrics);\n  md.render(120);\n  const samples=[];\n  for(let i=0;i<40;i++) {source+=kind==='plain'?' extra':kind==='code'?'const next = 1;\\n':'| next | 1 |\\n';const t=performance.now();md.setText(source);md.render(120);if(i>=10)samples.push(performance.now()-t);}\n  md.invalidate();\n  markdown.push({kind,kib,sourceCharacters:source.length,timing:summarize(samples),metrics});\n}\nconst cacheScan=[];\nconst models={getModel(){return {cost:{cacheRead:0.1}};}};\nfor(const count of process.argv.includes('--markdown-only') ? [] : [1000,10000,50000]){\n  const entries:any[]=[];\n  for(let i=0;i<count;i++){const msg=message('');msg.timestamp=i*1000;msg.usage={input:50000,output:1,cacheRead:1000,cacheWrite:0,totalTokens:51001,cost:{input:.1,output:0,cacheRead:.001,cacheWrite:0,total:.101}};entries.push({type:'message',message:msg});}\n  const current=message('');current.usage=entries[count-1].message.usage;current.timestamp=count*1000;\n  const samples=[];\n  for(let i=0;i<15;i++){const t=performance.now();assert.ok(detectCacheMiss(entries,current,models));if(i>=5)samples.push(performance.now()-t);}\n  cacheScan.push({count,timing:summarize(samples)});\n}\nconsole.log(JSON.stringify({benchmark:'audit-boundaries',node:process.version,resize,markdown,cacheScan},null,2));\n",
+      "version-bench.mjs": "import assert from 'node:assert/strict';\nimport fs from 'node:fs';\nimport path from 'node:path';\nimport { spawnSync } from 'node:child_process';\nconst rows=[];\nconst owners=[];\nconst args=[path.resolve(import.meta.dirname,'../../scripts/superpi.mjs'),'--version'];\nfor(let index=0;index<6;index++) {\n  const started=new Date().toISOString(),start=performance.now();\n  const child=spawnSync(process.execPath,args,{cwd:process.env.HOME,env:process.env,encoding:'utf8',windowsHide:true,timeout:15000});\n  const durationMs=performance.now()-start;\n  owners.push({pid:child.pid,started,finished:new Date().toISOString(),settled:true,code:child.status});\n  fs.writeFileSync(path.join(import.meta.dirname,'version-processes.json'),JSON.stringify(owners,null,2));\n  assert.equal(child.status,0,child.stderr);\n  rows.push({index,warmup:index===0,durationMs,version:child.stdout.trim()});\n}\nconsole.log(JSON.stringify({benchmark:'source-launcher-version-no-preload',rows},null,2));\n"
+    },
+    "commands": [
+      {
+        "label": "cold",
+        "nodeArgs": [
+          "--expose-gc",
+          "--experimental-strip-types",
+          "scripts/bench/model-runtime-startup.ts",
+          "--mode",
+          "cold",
+          "--warmup",
+          "2",
+          "--runs",
+          "10"
+        ]
+      },
+      {
+        "label": "warm",
+        "nodeArgs": [
+          "--expose-gc",
+          "--experimental-strip-types",
+          "scripts/bench/model-runtime-startup.ts",
+          "--mode",
+          "warm",
+          "--warmup",
+          "2",
+          "--runs",
+          "10"
+        ]
+      },
+      {
+        "label": "prefix128",
+        "nodeArgs": [
+          "--expose-gc",
+          "--experimental-strip-types",
+          "scripts/bench/prefix-build.ts",
+          "--warmup",
+          "2",
+          "--runs",
+          "10"
+        ]
+      },
+      {
+        "label": "prefix1024",
+        "nodeArgs": [
+          "--expose-gc",
+          "--experimental-strip-types",
+          "scripts/bench/prefix-build.ts",
+          "--context-kib",
+          "1024",
+          "--warmup",
+          "2",
+          "--runs",
+          "10"
+        ]
+      },
+      {
+        "label": "main5k",
+        "nodeArgs": [
+          "--expose-gc",
+          "--experimental-strip-types",
+          "scripts/bench/tui-frame-allocations.ts",
+          "--fixture",
+          "production-main",
+          "--items",
+          "5000",
+          "--warmup",
+          "500",
+          "--frames",
+          "5000"
+        ]
+      },
+      {
+        "label": "main50k",
+        "nodeArgs": [
+          "--expose-gc",
+          "--experimental-strip-types",
+          "scripts/bench/tui-frame-allocations.ts",
+          "--fixture",
+          "production-main",
+          "--items",
+          "50000",
+          "--warmup",
+          "500",
+          "--frames",
+          "5000"
+        ]
+      },
+      {
+        "label": "alt5k",
+        "nodeArgs": [
+          "--expose-gc",
+          "--experimental-strip-types",
+          "scripts/bench/tui-frame-allocations.ts",
+          "--fixture",
+          "production-alt",
+          "--items",
+          "5000",
+          "--warmup",
+          "500",
+          "--frames",
+          "5000"
+        ]
+      },
+      {
+        "label": "alt50k",
+        "nodeArgs": [
+          "--expose-gc",
+          "--experimental-strip-types",
+          "scripts/bench/tui-frame-allocations.ts",
+          "--fixture",
+          "production-alt",
+          "--items",
+          "50000",
+          "--warmup",
+          "500",
+          "--frames",
+          "5000"
+        ]
+      },
+      {
+        "label": "correctness",
+        "nodeArgs": [
+          "--expose-gc",
+          "--experimental-strip-types",
+          "--test",
+          "tests/prefix-manifest.test.ts",
+          "tests/prefix-determinism.test.ts",
+          "tests/prefix-production-assembly.test.ts",
+          "tests/prefix-production-diagnostics.test.ts",
+          "tests/alpha-startup-quit.test.ts",
+          "tests/alpha-shutdown-deferred.test.ts",
+          "tests/tui-retained-source-invariants.test.ts",
+          "tests/tui-alt-layout-allocation.test.ts",
+          "tests/tui-alt-overlay-selection-allocation.test.ts"
+        ]
+      },
+      {
+        "label": "cli-startup",
+        "nodeArgs": [
+          ".task-tmp/performance-audit-9435ddbbe401/cli-bench.mjs"
+        ]
+      },
+      {
+        "label": "boundaries",
+        "nodeArgs": [
+          "--expose-gc",
+          "--experimental-strip-types",
+          ".task-tmp/performance-audit-9435ddbbe401/boundaries.ts"
+        ]
+      },
+      {
+        "label": "markdown-boundaries",
+        "nodeArgs": [
+          "--expose-gc",
+          "--experimental-strip-types",
+          ".task-tmp/performance-audit-9435ddbbe401/boundaries.ts",
+          "--markdown-only"
+        ]
+      },
+      {
+        "label": "version",
+        "nodeArgs": [
+          ".task-tmp/performance-audit-9435ddbbe401/version-bench.mjs"
+        ]
+      }
+    ],
+    "cliChildren": [
+      {
+        "pid": 31236,
+        "mode": "regular",
+        "index": 0,
+        "started": "2026-11-04T15:43:46.814Z",
+        "settled": true,
+        "code": 0,
+        "finished": "2026-11-04T15:43:47.749Z"
+      },
+      {
+        "pid": 26640,
+        "mode": "regular",
+        "index": 1,
+        "started": "2026-11-04T15:43:47.756Z",
+        "settled": true,
+        "code": 0,
+        "finished": "2026-11-04T15:43:48.589Z"
+      },
+      {
+        "pid": 5344,
+        "mode": "regular",
+        "index": 2,
+        "started": "2026-11-04T15:43:48.592Z",
+        "settled": true,
+        "code": 0,
+        "finished": "2026-11-04T15:43:49.418Z"
+      },
+      {
+        "pid": 14444,
+        "mode": "regular",
+        "index": 3,
+        "started": "2026-11-04T15:43:49.421Z",
+        "settled": true,
+        "code": 0,
+        "finished": "2026-11-04T15:43:50.301Z"
+      },
+      {
+        "pid": 32256,
+        "mode": "regular",
+        "index": 4,
+        "started": "2026-11-04T15:43:50.304Z",
+        "settled": true,
+        "code": 0,
+        "finished": "2026-11-04T15:43:51.089Z"
+      },
+      {
+        "pid": 2908,
+        "mode": "regular",
+        "index": 5,
+        "started": "2026-11-04T15:43:51.092Z",
+        "settled": true,
+        "code": 0,
+        "finished": "2026-11-04T15:43:51.875Z"
+      },
+      {
+        "pid": 2876,
+        "mode": "fullscreen",
+        "index": 0,
+        "started": "2026-11-04T15:43:51.879Z",
+        "settled": true,
+        "code": 0,
+        "finished": "2026-11-04T15:43:52.653Z"
+      },
+      {
+        "pid": 38040,
+        "mode": "fullscreen",
+        "index": 1,
+        "started": "2026-11-04T15:43:52.656Z",
+        "settled": true,
+        "code": 0,
+        "finished": "2026-11-04T15:43:53.458Z"
+      },
+      {
+        "pid": 14764,
+        "mode": "fullscreen",
+        "index": 2,
+        "started": "2026-11-04T15:43:53.460Z",
+        "settled": true,
+        "code": 0,
+        "finished": "2026-11-04T15:43:54.250Z"
+      },
+      {
+        "pid": 26576,
+        "mode": "fullscreen",
+        "index": 3,
+        "started": "2026-11-04T15:43:54.252Z",
+        "settled": true,
+        "code": 0,
+        "finished": "2026-11-04T15:43:55.047Z"
+      },
+      {
+        "pid": 39332,
+        "mode": "fullscreen",
+        "index": 4,
+        "started": "2026-11-04T15:43:55.049Z",
+        "settled": true,
+        "code": 0,
+        "finished": "2026-11-04T15:43:55.853Z"
+      },
+      {
+        "pid": 21904,
+        "mode": "fullscreen",
+        "index": 5,
+        "started": "2026-11-04T15:43:55.856Z",
+        "settled": true,
+        "code": 0,
+        "finished": "2026-11-04T15:43:56.633Z"
+      }
+    ],
+    "versionChildren": [
+      {
+        "pid": 36736,
+        "started": "2026-11-04T15:46:46.515Z",
+        "finished": "2026-11-04T15:46:47.029Z",
+        "settled": true,
+        "code": 0
+      },
+      {
+        "pid": 23652,
+        "started": "2026-11-04T15:46:47.029Z",
+        "finished": "2026-11-04T15:46:47.514Z",
+        "settled": true,
+        "code": 0
+      },
+      {
+        "pid": 21404,
+        "started": "2026-11-04T15:46:47.514Z",
+        "finished": "2026-11-04T15:46:47.994Z",
+        "settled": true,
+        "code": 0
+      },
+      {
+        "pid": 8588,
+        "started": "2026-11-04T15:46:47.995Z",
+        "finished": "2026-11-04T15:46:48.477Z",
+        "settled": true,
+        "code": 0
+      },
+      {
+        "pid": 15540,
+        "started": "2026-11-04T15:46:48.478Z",
+        "finished": "2026-11-04T15:46:48.965Z",
+        "settled": true,
+        "code": 0
+      },
+      {
+        "pid": 36456,
+        "started": "2026-11-04T15:46:48.966Z",
+        "finished": "2026-11-04T15:46:49.449Z",
+        "settled": true,
+        "code": 0
+      }
+    ]
+  },
+  "cleanup": {
+    "status": "complete",
+    "taskRoot": "D:\\RMProjects\\Pi\\.task-tmp\\performance-audit-9435ddbbe401",
+    "removedResources": 150,
+    "directRunnerProcesses": 15,
+    "cliHarnessChildren": 12,
+    "versionHarnessChildren": 6,
+    "sharedParentPreserved": true,
+    "verifiedAt": "2026-11-04T15:49:12.566Z"
+  }
+}
