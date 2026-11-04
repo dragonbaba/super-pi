@@ -1,6 +1,6 @@
 # Pi 历史修复补漏：详细任务与实施规范
 
-状态：**H00–H03（含 H02-A/B）已合并；H04 已固化失败回归并完成性能验收，H05–H10 待实施。** 用户已授权按顺序创建独立 PR，首次推送后等待 reviewer，每次后续推送单独 `@codex review`；当前最终 head 审查无未处理意见且 CI 全部通过后可合并，并按精确身份删除两端旧分支。下文待办和验收条件不代表已经实施或通过；规划阶段的历史记录保留在 §9，H00 执行记录见 §10，各实现项记录见下表。
+状态：**H00–H04（含 H02-A/B）已合并；H05 已固化失败回归，H06–H10 待实施。** 用户已授权按顺序创建独立 PR，首次推送后等待 reviewer，每次后续推送单独 `@codex review`；当前最终 head 审查无未处理意见且 CI 全部通过后可合并，并按精确身份删除两端旧分支。下文待办和验收条件不代表已经实施或通过；规划阶段的历史记录保留在 §9，H00 执行记录见 §10，各实现项记录见下表。
 
 日期：2026-11-04，Asia/Tokyo。任务前缀使用 **H**，避免与上一轮 T01–T12、F01–F06 混淆。后续每项先更新自己的设计和证据，再动生产代码。
 
@@ -44,8 +44,8 @@
 | H01 | RPC 空闲 shutdown 主动完成关闭 | 未发布 | R：隔离 CLI；[实施与合并记录](repairs/pi-history-h01-rpc-idle-shutdown.md) | 已合并 #199；缓存清理受阻 |
 | H02 | RPC/print 重复关闭共享清理完成点 | 未发布 | A/B：真实 CLI 失败基线；[RPC 记录](repairs/pi-history-h02a-rpc-overlap-shutdown.md)、[print 记录](repairs/pi-history-h02b-print-overlap-shutdown.md) | 已合并 #200/#201；临时缓存清理受阻 |
 | H03 | print 最终输出截断返回非零状态 | v1.2.0 | R：真实 CLI；[实施记录](repairs/pi-history-h03-print-length.md) | 已合并 #202；临时缓存清理受阻 |
-| H04 | 跨模型历史不把 thinking 转为正文 | v1.3.0 | R：生产函数、实际 SDK 请求、分配/释放；[实施记录](repairs/pi-history-h04-thinking-history.md) | 已实施，待审查 / P1 |
-| H05 | Anthropic 非 strict 工具保留 schema 根定义 | 未发布 | S | 待失败回归 / P1 |
+| H04 | 跨模型历史不把 thinking 转为正文 | v1.3.0 | R：生产函数、实际 SDK 请求、分配/释放；[实施记录](repairs/pi-history-h04-thinking-history.md) | 已合并 #203；缓存清理受阻 |
+| H05 | Anthropic 非 strict 工具保留 schema 根定义 | 未发布 | R：SDK、确定性分配/释放；[实施记录](repairs/pi-history-h05-anthropic-schema-definitions.md) | 已实施，待审查 / P1 |
 | H06 | split-turn 压缩接收用户指令 | v1.4.0 | S | 待失败回归 / P1 |
 | H07 | 内置 grep 隔离 RIPGREP_CONFIG_PATH | v1.4.0 | S | 待失败回归 / P1 |
 | H08 | grep 上下文避免整文件加载 | 未发布 | S | 待基线与完整链审计 / P1 |

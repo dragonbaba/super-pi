@@ -1,0 +1,650 @@
+{
+  "task": "H05",
+  "node": "v26.13.0",
+  "baselineCommit": "796bfe62b92ea73f4e5d8a7e2d62a26448853be3",
+  "benchmarkHash": "8dc38f84e0ab72ca8c63f2c41196119f3200484193d8cc9b8e5002c72e640fd4",
+  "fixtureHash": "3c2f43abc31985853ff537af5a5d9f9e6f4465dd77ac82c954588aeb23b98ae4",
+  "commands": [
+    "node --experimental-strip-types scripts/bench/anthropic-schema-definitions.ts counts",
+    "node --expose-gc --experimental-strip-types scripts/bench/anthropic-schema-definitions.ts profile",
+    "node --expose-gc --experimental-strip-types scripts/bench/anthropic-schema-definitions.ts lifecycle"
+  ],
+  "samplingInterval": 4096,
+  "baseline": {
+    "profile": [
+      {
+        "phase": "profile",
+        "node": "v26.13.0",
+        "tools": 16,
+        "definitions": 512,
+        "schemaCodeUnits": 352503,
+        "benchmarkHash": "8dc38f84e0ab72ca8c63f2c41196119f3200484193d8cc9b8e5002c72e640fd4",
+        "hashes": [
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\ai\\src\\api\\anthropic-messages.ts",
+            "sha256": "056408e64e41373b7b4cb3a15be6c04d554ba7321cf666e1582a725a4f865152"
+          },
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\ai\\src\\api\\constrained-sampling.ts",
+            "sha256": "971a77994b7ae65f8ece3446da612ea2995743829d12f5c283d13dde5a5a27bb"
+          },
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\ai\\src\\api\\anthropic-inline-tools.ts",
+            "sha256": "059a85fc22821d291651b39bb14d288931821edb5f895ee3c41a8fe57a96b17d"
+          },
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\ai\\src\\utils\\deferred-tools.ts",
+            "sha256": "cab1dbf6c0b40a64e2db3079dd3efa23786ad4cdae64abdedc04b1088a301d65"
+          },
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\ai\\src\\utils\\estimate.ts",
+            "sha256": "421cd41679595792d6bff03ed6413e73177e19a2165a32afced9cc4e53453bd7"
+          }
+        ]
+      },
+      {
+        "scene": "standard",
+        "iterations": 16,
+        "sampledBytesPerRequest": 544088.5,
+        "requests": 16,
+        "wireCodeUnits": 541328,
+        "definitionsRequests": 0,
+        "top": [
+          {
+            "bytes": 5894368,
+            "function": "safeJsonStringify",
+            "url": "file:///D:/RMProjects/Pi/packages/ai/src/utils/estimate.ts",
+            "line": 22
+          },
+          {
+            "bytes": 660288,
+            "function": "FallbackEncoder",
+            "url": "file:///D:/RMProjects/Pi/node_modules/@anthropic-ai/sdk/internal/request-options.mjs",
+            "line": 10
+          },
+          {
+            "bytes": 173200,
+            "function": "post",
+            "url": "node:inspector",
+            "line": 114
+          },
+          {
+            "bytes": 119888,
+            "function": "",
+            "url": "file:///D:/RMProjects/Pi/packages/ai/src/api/anthropic-messages.ts",
+            "line": 1453
+          },
+          {
+            "bytes": 74296,
+            "function": "next",
+            "url": "",
+            "line": -1
+          },
+          {
+            "bytes": 74080,
+            "function": "iterateHeaders",
+            "url": "file:///D:/RMProjects/Pi/node_modules/@anthropic-ai/sdk/internal/headers.mjs",
+            "line": 2
+          },
+          {
+            "bytes": 42072,
+            "function": "",
+            "url": "file:///D:/RMProjects/Pi/packages/ai/src/api/anthropic-messages.ts",
+            "line": 510
+          },
+          {
+            "bytes": 41160,
+            "function": "next",
+            "url": "",
+            "line": -1
+          },
+          {
+            "bytes": 37040,
+            "function": "next",
+            "url": "",
+            "line": -1
+          },
+          {
+            "bytes": 33032,
+            "function": "makeRequest",
+            "url": "file:///D:/RMProjects/Pi/node_modules/@anthropic-ai/sdk/client.mjs",
+            "line": 493
+          },
+          {
+            "bytes": 33000,
+            "function": "",
+            "url": "file:///D:/RMProjects/Pi/packages/ai/src/api/anthropic-messages.ts",
+            "line": 510
+          },
+          {
+            "bytes": 31896,
+            "function": "set",
+            "url": "",
+            "line": -1
+          }
+        ]
+      },
+      {
+        "scene": "inline",
+        "iterations": 16,
+        "sampledBytesPerRequest": 2165757,
+        "requests": 16,
+        "wireCodeUnits": 544448,
+        "definitionsRequests": 0,
+        "top": [
+          {
+            "bytes": 13053480,
+            "function": "structuredClone",
+            "url": "node:internal/worker/js_transferable",
+            "line": 100
+          },
+          {
+            "bytes": 6628728,
+            "function": "prepareInlineToolHistory",
+            "url": "file:///D:/RMProjects/Pi/packages/ai/src/api/anthropic-inline-tools.ts",
+            "line": 55
+          },
+          {
+            "bytes": 5953664,
+            "function": "safeJsonStringify",
+            "url": "file:///D:/RMProjects/Pi/packages/ai/src/utils/estimate.ts",
+            "line": 22
+          },
+          {
+            "bytes": 5891040,
+            "function": "snapshotText",
+            "url": "file:///D:/RMProjects/Pi/packages/ai/src/api/anthropic-inline-tools.ts",
+            "line": 30
+          },
+          {
+            "bytes": 551016,
+            "function": "buildParams",
+            "url": "file:///D:/RMProjects/Pi/packages/ai/src/api/anthropic-messages.ts",
+            "line": 1080
+          },
+          {
+            "bytes": 548896,
+            "function": "FallbackEncoder",
+            "url": "file:///D:/RMProjects/Pi/node_modules/@anthropic-ai/sdk/internal/request-options.mjs",
+            "line": 10
+          },
+          {
+            "bytes": 136200,
+            "function": "",
+            "url": "file:///D:/RMProjects/Pi/packages/ai/src/api/anthropic-messages.ts",
+            "line": 1453
+          },
+          {
+            "bytes": 86400,
+            "function": "iterateHeaders",
+            "url": "file:///D:/RMProjects/Pi/node_modules/@anthropic-ai/sdk/internal/headers.mjs",
+            "line": 2
+          },
+          {
+            "bytes": 45280,
+            "function": "entries",
+            "url": "",
+            "line": -1
+          },
+          {
+            "bytes": 41160,
+            "function": "next",
+            "url": "",
+            "line": -1
+          },
+          {
+            "bytes": 41160,
+            "function": "next",
+            "url": "",
+            "line": -1
+          },
+          {
+            "bytes": 41120,
+            "function": "append",
+            "url": "node:internal/deps/undici/undici",
+            "line": 12638
+          }
+        ]
+      }
+    ],
+    "lifecycle": [
+      {
+        "phase": "lifecycle",
+        "node": "v26.13.0",
+        "tools": 16,
+        "definitions": 512,
+        "schemaCodeUnits": 352503,
+        "benchmarkHash": "8dc38f84e0ab72ca8c63f2c41196119f3200484193d8cc9b8e5002c72e640fd4",
+        "hashes": [
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\ai\\src\\api\\anthropic-messages.ts",
+            "sha256": "056408e64e41373b7b4cb3a15be6c04d554ba7321cf666e1582a725a4f865152"
+          },
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\ai\\src\\api\\constrained-sampling.ts",
+            "sha256": "971a77994b7ae65f8ece3446da612ea2995743829d12f5c283d13dde5a5a27bb"
+          },
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\ai\\src\\api\\anthropic-inline-tools.ts",
+            "sha256": "059a85fc22821d291651b39bb14d288931821edb5f895ee3c41a8fe57a96b17d"
+          },
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\ai\\src\\utils\\deferred-tools.ts",
+            "sha256": "cab1dbf6c0b40a64e2db3079dd3efa23786ad4cdae64abdedc04b1088a301d65"
+          },
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\ai\\src\\utils\\estimate.ts",
+            "sha256": "421cd41679595792d6bff03ed6413e73177e19a2165a32afced9cc4e53453bd7"
+          }
+        ]
+      },
+      {
+        "weakReferences": 18,
+        "retained": [],
+        "abortListeners": 0,
+        "retainedStreams": 6,
+        "retainedInputTools": 16,
+        "retainedCheckpoints": 1,
+        "heapAfterGc": 16480392
+      }
+    ],
+    "counts": [
+      {
+        "phase": "counts",
+        "node": "v26.13.0",
+        "tools": 16,
+        "definitions": 512,
+        "schemaCodeUnits": 352503,
+        "benchmarkHash": "8dc38f84e0ab72ca8c63f2c41196119f3200484193d8cc9b8e5002c72e640fd4",
+        "hashes": [
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\ai\\src\\api\\anthropic-messages.ts",
+            "sha256": "056408e64e41373b7b4cb3a15be6c04d554ba7321cf666e1582a725a4f865152"
+          },
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\ai\\src\\api\\constrained-sampling.ts",
+            "sha256": "971a77994b7ae65f8ece3446da612ea2995743829d12f5c283d13dde5a5a27bb"
+          },
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\ai\\src\\api\\anthropic-inline-tools.ts",
+            "sha256": "059a85fc22821d291651b39bb14d288931821edb5f895ee3c41a8fe57a96b17d"
+          },
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\ai\\src\\utils\\deferred-tools.ts",
+            "sha256": "cab1dbf6c0b40a64e2db3079dd3efa23786ad4cdae64abdedc04b1088a301d65"
+          },
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\ai\\src\\utils\\estimate.ts",
+            "sha256": "421cd41679595792d6bff03ed6413e73177e19a2165a32afced9cc4e53453bd7"
+          }
+        ]
+      },
+      {
+        "scene": "standard",
+        "counters": {
+          "convertCalls": 2,
+          "toolVisits": 16,
+          "objects": 100,
+          "arrays": 22,
+          "closures": 5,
+          "clones": 0,
+          "serializations": 1,
+          "maps": 2,
+          "sets": 3
+        },
+        "requests": 1,
+        "wireCodeUnits": 33833,
+        "definitionsRequests": 0
+      },
+      {
+        "scene": "inline",
+        "counters": {
+          "convertCalls": 1,
+          "toolVisits": 16,
+          "objects": 117,
+          "arrays": 26,
+          "closures": 7,
+          "clones": 1,
+          "serializations": 3,
+          "maps": 4,
+          "sets": 1
+        },
+        "requests": 1,
+        "wireCodeUnits": 34028,
+        "definitionsRequests": 0
+      }
+    ]
+  },
+  "candidate": {
+    "profile": [
+      {
+        "phase": "profile",
+        "node": "v26.13.0",
+        "tools": 16,
+        "definitions": 512,
+        "schemaCodeUnits": 352503,
+        "benchmarkHash": "8dc38f84e0ab72ca8c63f2c41196119f3200484193d8cc9b8e5002c72e640fd4",
+        "hashes": [
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\ai\\src\\api\\anthropic-messages.ts",
+            "sha256": "40dcf5747d5f94ce233da616ecfa985b1ec3fe58a536486f066ea0370488474a"
+          },
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\ai\\src\\api\\constrained-sampling.ts",
+            "sha256": "971a77994b7ae65f8ece3446da612ea2995743829d12f5c283d13dde5a5a27bb"
+          },
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\ai\\src\\api\\anthropic-inline-tools.ts",
+            "sha256": "059a85fc22821d291651b39bb14d288931821edb5f895ee3c41a8fe57a96b17d"
+          },
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\ai\\src\\utils\\deferred-tools.ts",
+            "sha256": "cab1dbf6c0b40a64e2db3079dd3efa23786ad4cdae64abdedc04b1088a301d65"
+          },
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\ai\\src\\utils\\estimate.ts",
+            "sha256": "421cd41679595792d6bff03ed6413e73177e19a2165a32afced9cc4e53453bd7"
+          }
+        ]
+      },
+      {
+        "scene": "standard",
+        "iterations": 16,
+        "sampledBytesPerRequest": 882377,
+        "requests": 16,
+        "wireCodeUnits": 5653648,
+        "definitionsRequests": 16,
+        "top": [
+          {
+            "bytes": 5928096,
+            "function": "safeJsonStringify",
+            "url": "file:///D:/RMProjects/Pi/packages/ai/src/utils/estimate.ts",
+            "line": 22
+          },
+          {
+            "bytes": 5903776,
+            "function": "FallbackEncoder",
+            "url": "file:///D:/RMProjects/Pi/node_modules/@anthropic-ai/sdk/internal/request-options.mjs",
+            "line": 10
+          },
+          {
+            "bytes": 162936,
+            "function": "post",
+            "url": "node:inspector",
+            "line": 114
+          },
+          {
+            "bytes": 111472,
+            "function": "",
+            "url": "file:///D:/RMProjects/Pi/packages/ai/src/api/anthropic-messages.ts",
+            "line": 1453
+          },
+          {
+            "bytes": 86456,
+            "function": "iterateHeaders",
+            "url": "file:///D:/RMProjects/Pi/node_modules/@anthropic-ai/sdk/internal/headers.mjs",
+            "line": 2
+          },
+          {
+            "bytes": 74456,
+            "function": "next",
+            "url": "",
+            "line": -1
+          },
+          {
+            "bytes": 45336,
+            "function": "",
+            "url": "file:///D:/RMProjects/Pi/packages/ai/src/api/anthropic-messages.ts",
+            "line": 510
+          },
+          {
+            "bytes": 41160,
+            "function": "next",
+            "url": "",
+            "line": -1
+          },
+          {
+            "bytes": 38424,
+            "function": "",
+            "url": "file:///D:/RMProjects/Pi/packages/ai/src/api/anthropic-messages.ts",
+            "line": 510
+          },
+          {
+            "bytes": 37040,
+            "function": "next",
+            "url": "",
+            "line": -1
+          },
+          {
+            "bytes": 34928,
+            "function": "makeRequest",
+            "url": "file:///D:/RMProjects/Pi/node_modules/@anthropic-ai/sdk/client.mjs",
+            "line": 493
+          },
+          {
+            "bytes": 32896,
+            "function": "append",
+            "url": "node:internal/deps/undici/undici",
+            "line": 12638
+          }
+        ]
+      },
+      {
+        "scene": "inline",
+        "iterations": 16,
+        "sampledBytesPerRequest": 2835463,
+        "requests": 16,
+        "wireCodeUnits": 5656768,
+        "definitionsRequests": 16,
+        "top": [
+          {
+            "bytes": 13019992,
+            "function": "structuredClone",
+            "url": "node:internal/worker/js_transferable",
+            "line": 100
+          },
+          {
+            "bytes": 7106440,
+            "function": "prepareInlineToolHistory",
+            "url": "file:///D:/RMProjects/Pi/packages/ai/src/api/anthropic-inline-tools.ts",
+            "line": 55
+          },
+          {
+            "bytes": 5945232,
+            "function": "safeJsonStringify",
+            "url": "file:///D:/RMProjects/Pi/packages/ai/src/utils/estimate.ts",
+            "line": 22
+          },
+          {
+            "bytes": 5942048,
+            "function": "snapshotText",
+            "url": "file:///D:/RMProjects/Pi/packages/ai/src/api/anthropic-inline-tools.ts",
+            "line": 30
+          },
+          {
+            "bytes": 5659184,
+            "function": "buildParams",
+            "url": "file:///D:/RMProjects/Pi/packages/ai/src/api/anthropic-messages.ts",
+            "line": 1080
+          },
+          {
+            "bytes": 5657088,
+            "function": "FallbackEncoder",
+            "url": "file:///D:/RMProjects/Pi/node_modules/@anthropic-ai/sdk/internal/request-options.mjs",
+            "line": 10
+          },
+          {
+            "bytes": 140480,
+            "function": "",
+            "url": "file:///D:/RMProjects/Pi/packages/ai/src/api/anthropic-messages.ts",
+            "line": 1453
+          },
+          {
+            "bytes": 82368,
+            "function": "iterateHeaders",
+            "url": "file:///D:/RMProjects/Pi/node_modules/@anthropic-ai/sdk/internal/headers.mjs",
+            "line": 2
+          },
+          {
+            "bytes": 46616,
+            "function": "iterateHeaders",
+            "url": "file:///D:/RMProjects/Pi/node_modules/@anthropic-ai/sdk/internal/headers.mjs",
+            "line": 2
+          },
+          {
+            "bytes": 46056,
+            "function": "iterateAnthropicEvents",
+            "url": "file:///D:/RMProjects/Pi/packages/ai/src/api/anthropic-messages.ts",
+            "line": 462
+          },
+          {
+            "bytes": 41576,
+            "function": "",
+            "url": "file:///D:/RMProjects/Pi/packages/ai/src/api/anthropic-messages.ts",
+            "line": 510
+          },
+          {
+            "bytes": 41160,
+            "function": "next",
+            "url": "",
+            "line": -1
+          }
+        ]
+      }
+    ],
+    "lifecycle": [
+      {
+        "phase": "lifecycle",
+        "node": "v26.13.0",
+        "tools": 16,
+        "definitions": 512,
+        "schemaCodeUnits": 352503,
+        "benchmarkHash": "8dc38f84e0ab72ca8c63f2c41196119f3200484193d8cc9b8e5002c72e640fd4",
+        "hashes": [
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\ai\\src\\api\\anthropic-messages.ts",
+            "sha256": "40dcf5747d5f94ce233da616ecfa985b1ec3fe58a536486f066ea0370488474a"
+          },
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\ai\\src\\api\\constrained-sampling.ts",
+            "sha256": "971a77994b7ae65f8ece3446da612ea2995743829d12f5c283d13dde5a5a27bb"
+          },
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\ai\\src\\api\\anthropic-inline-tools.ts",
+            "sha256": "059a85fc22821d291651b39bb14d288931821edb5f895ee3c41a8fe57a96b17d"
+          },
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\ai\\src\\utils\\deferred-tools.ts",
+            "sha256": "cab1dbf6c0b40a64e2db3079dd3efa23786ad4cdae64abdedc04b1088a301d65"
+          },
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\ai\\src\\utils\\estimate.ts",
+            "sha256": "421cd41679595792d6bff03ed6413e73177e19a2165a32afced9cc4e53453bd7"
+          }
+        ]
+      },
+      {
+        "weakReferences": 18,
+        "retained": [],
+        "abortListeners": 0,
+        "retainedStreams": 6,
+        "retainedInputTools": 16,
+        "retainedCheckpoints": 1,
+        "heapAfterGc": 16481232
+      }
+    ],
+    "counts": [
+      {
+        "phase": "counts",
+        "node": "v26.13.0",
+        "tools": 16,
+        "definitions": 512,
+        "schemaCodeUnits": 352503,
+        "benchmarkHash": "8dc38f84e0ab72ca8c63f2c41196119f3200484193d8cc9b8e5002c72e640fd4",
+        "hashes": [
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\ai\\src\\api\\anthropic-messages.ts",
+            "sha256": "40dcf5747d5f94ce233da616ecfa985b1ec3fe58a536486f066ea0370488474a"
+          },
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\ai\\src\\api\\constrained-sampling.ts",
+            "sha256": "971a77994b7ae65f8ece3446da612ea2995743829d12f5c283d13dde5a5a27bb"
+          },
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\ai\\src\\api\\anthropic-inline-tools.ts",
+            "sha256": "059a85fc22821d291651b39bb14d288931821edb5f895ee3c41a8fe57a96b17d"
+          },
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\ai\\src\\utils\\deferred-tools.ts",
+            "sha256": "cab1dbf6c0b40a64e2db3079dd3efa23786ad4cdae64abdedc04b1088a301d65"
+          },
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\ai\\src\\utils\\estimate.ts",
+            "sha256": "421cd41679595792d6bff03ed6413e73177e19a2165a32afced9cc4e53453bd7"
+          }
+        ]
+      },
+      {
+        "scene": "standard",
+        "counters": {
+          "convertCalls": 2,
+          "toolVisits": 16,
+          "objects": 100,
+          "arrays": 22,
+          "closures": 5,
+          "clones": 0,
+          "serializations": 1,
+          "maps": 2,
+          "sets": 3
+        },
+        "requests": 1,
+        "wireCodeUnits": 353353,
+        "definitionsRequests": 1
+      },
+      {
+        "scene": "inline",
+        "counters": {
+          "convertCalls": 1,
+          "toolVisits": 16,
+          "objects": 117,
+          "arrays": 26,
+          "closures": 7,
+          "clones": 1,
+          "serializations": 3,
+          "maps": 4,
+          "sets": 1
+        },
+        "requests": 1,
+        "wireCodeUnits": 353548,
+        "definitionsRequests": 1
+      }
+    ]
+  },
+  "ast": [
+    {
+      "path": "packages/ai/src/api/anthropic-messages.ts",
+      "baseline": {
+        "arrows": 20,
+        "functions": 29,
+        "regex": 0,
+        "strings": 293,
+        "newPromise": 0,
+        "async": 3
+      },
+      "candidate": {
+        "arrows": 20,
+        "functions": 29,
+        "regex": 0,
+        "strings": 294,
+        "newPromise": 0,
+        "async": 3
+      }
+    }
+  ],
+  "limitations": [
+    "Counters cover selected declaration, inline/deferred and budget functions; SDK/SSE/V8 implicit allocations are not source literal counts.",
+    "Profiles include SDK, fixture Response and profiler overhead; no CPU or whole-chain zero-allocation claim.",
+    "Required root definitions increase wire size and encoding allocation; baseline bodies are semantically incomplete.",
+    "Lifecycle observes request/schema-root references; original input and one protocol checkpoint intentionally remain alive. onPayload signature serialization is lifecycle-only."
+  ]
+}

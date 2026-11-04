@@ -1,6 +1,6 @@
 # H04 — 跨模型历史省略 thinking
 
-状态：失败基线、最小修复、确定性计数、分配采样和生命周期验收已完成，等待独立 PR 审查/CI。分支 `codex/h04-thinking-history`。任务根 `D:\RMProjects\Pi\.task-tmp\h04-125da27381b4`；Node v26.13.0，runner 的 TMP/TEMP/TMPDIR 指向该根，进程/输出登记 resources.json。
+状态：[PR #203](https://github.com/dragonbaba/super-pi/pull/203) 已合并；失败基线、最小修复、确定性计数、分配采样和生命周期验收已完成。分支 `codex/h04-thinking-history` 两端已删除。任务根 `D:\RMProjects\Pi\.task-tmp\h04-125da27381b4`；Node v26.13.0，runner 的 TMP/TEMP/TMPDIR 指向该根，进程/输出登记 resources.json。
 
 ## 调用链与范围
 
@@ -53,4 +53,10 @@
 
 `node --experimental-strip-types --test tests/provider-contract/thinking-history.contract.test.ts tests/provider-contract/model-capability-authority.contract.test.ts tests/source-invariants.test.ts tests/stream-hot-paths.test.ts` **37 通过**；指定 allocation source gate **2 通过**；新增 `tests/thinking-history-allocation.test.ts` **1 通过**，把实际生产遍历/对象/数组/闭包与请求尺寸计数纳入 CI。计数子进程使用仓库内独立 task fixture，启动前校验三个临时变量和 os.tmpdir，结束后登记 PID/退出结果并验证清理。类型检查与离线构建通过。
 
-普通 provider delta/event、SDK 错误和取消传播、工具 ID 配对、同模型合法签名/redacted replay 以及原始输入/用量均保留。性能实测覆盖该固定 Anthropic 场景和公共转换；其他 provider 配置为调用链源码审计及既有 contract 覆盖，未声称全部配置有同样降幅。最终 head reviewer 与六分片 CI 尚待完成。
+普通 provider delta/event、SDK 错误和取消传播、工具 ID 配对、同模型合法签名/redacted replay 以及原始输入/用量均保留。性能实测覆盖该固定 Anthropic 场景和公共转换；其他 provider 配置为调用链源码审计及既有 contract 覆盖，未声称全部配置有同样降幅。
+
+## 合并与资源回执
+
+最终 head `cf9d6c37a32bec634532ecc430009013db9ffe37` 的[首次审查](https://github.com/dragonbaba/super-pi/pull/203#issuecomment-6623689618)无建议、无未解决线程；[CI 41781676328](https://github.com/dragonbaba/super-pi/actions/runs/41781676328) 六分片成功。2026-11-04 05:57:24 UTC 按 head 锁定合并，merge `796bfe62b92ea73f4e5d8a7e2d62a26448853be3`；main 已快进同步，两端精确旧分支已删除。
+
+52 个登记日志已删除；107 个缓存文件与 2 个目录的删除被自动审批在执行前拒绝，原文 `blocked by policy`。不重试/更换机制，资源 manifest、baseline 源码/loader、生命周期 ledger、runner/PR body 和缓存保留在上述精确任务根；没有存活的登记子进程。[清理受阻回执](https://github.com/dragonbaba/super-pi/pull/203#issuecomment-6623705089)。
