@@ -41,7 +41,9 @@ type CreateJiti = typeof import("jiti/static")["createJiti"];
 let createJitiPromise: Promise<CreateJiti> | undefined;
 
 function loadCreateJiti(): Promise<CreateJiti> {
-	createJitiPromise ??= import("jiti/static").then((module) => module.createJiti);
+	// Node can reuse transpiled files without loading Babel. Compiled Bun needs
+	// the static entry so its bundler includes the compiler in the executable.
+	createJitiPromise ??= (isBunBinary ? import("jiti/static") : import("jiti")).then((module) => module.createJiti);
 	return createJitiPromise;
 }
 
