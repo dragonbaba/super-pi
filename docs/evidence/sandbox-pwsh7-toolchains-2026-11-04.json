@@ -107,8 +107,8 @@
     "discovery": {
       "mounts": 27,
       "paths": 31,
-      "scannedEntries": 328946,
-      "scannedDirectories": 24073,
+      "scannedEntries": 423462,
+      "scannedDirectories": 42924,
       "checked": true
     },
     "excludedOldNodeLink": true,
@@ -152,7 +152,7 @@
   },
   "verification": {
     "applicableTests": {
-      "passed": 83,
+      "passed": 86,
       "failed": 0
     },
     "guardTests": 37,
@@ -160,8 +160,20 @@
     "offlineBuild": true,
     "launcherVersion": "1.0.0",
     "packagedRuntimeFiles": 41,
-    "manifestSha256": "097f6d5c0f5b1272c5bd6d6178561f5d1d6bce38a20212ec3e03e5ff38be3f72",
-    "taskWorkerSha256": "e4afd3da6bbecf7616aa6a56db2678be6abb9993861170be8429078b4b0076a0"
+    "manifestSha256": "80846e98ffcef6a5136887a43b203dc189284c8cfff1b8f4d6aae1c93f0b15da",
+    "taskWorkerSha256": "e4afd3da6bbecf7616aa6a56db2678be6abb9993861170be8429078b4b0076a0",
+    "reviewFollowup": {
+      "reproducedBeforeFix": 3,
+      "discoveryTestsAfterFix": 9,
+      "applicableTestsAfterFix": 86,
+      "liveCasesAfterFix": 2,
+      "toolchainSourceSha256": "89d68dccdc78b5fc5522730f4560b1c43645403770028d80aba10985b08ef9c6",
+      "cases": [
+        "complete profile SDK without Cargo credentials",
+        "PATH precedence and fallback after unsafe root removal",
+        "real workspace identity through junction"
+      ]
+    }
   },
   "notes": [
     "An exploratory glob incorrectly included archived manual acceptance tests excluded by scripts/test.mjs and initially omitted --expose-gc. Those runs are not counted as passing acceptance. Their historical source-loader/guard failures were not changed.",

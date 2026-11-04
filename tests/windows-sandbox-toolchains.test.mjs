@@ -7,7 +7,7 @@ import { SandboxToolchains } from "../scripts/acceptance/windows-sandbox-toolcha
 function fixture(extra = []) {
     const files = new Map(); let serial = 0;
     function put(name, kind = "directory", target) { files.set(path.win32.normalize(name).toLowerCase(), { name: path.win32.normalize(name), kind, target, ino: BigInt(++serial) }); }
-    for (const name of ["D:\\pwsh", "D:\\node", ...extra]) put(name);
+    for (const name of ["D:\\pwsh", "D:\\node", "D:\\work", "C:\\Users\\fixture", ...extra]) put(name);
     for (const name of ["D:\\pwsh\\pwsh.exe", "D:\\pwsh\\pwsh.dll", "D:\\pwsh\\pwsh.runtimeconfig.json", "D:\\node\\node.exe"]) put(name, "file");
     function item(name) { const value = files.get(path.win32.normalize(name).toLowerCase()); if (!value) throw Object.assign(new Error("missing: " + name), { code: "ENOENT" }); return value; }
     function stat(name) { const value = item(name); return { dev: 1n, ino: value.ino, isFile: () => value.kind === "file", isDirectory: () => value.kind === "directory", isSymbolicLink: () => value.kind === "link" }; }
@@ -53,6 +53,49 @@ test("global include/exclude exceptions cannot expose drive roots, home, or work
     f.put("C:\\SuperPiExchange"); f.put("C:\\Windows");
     assert.throws(() => f.create({ include: ["C:\\SuperPiExchange"] }), /Unsafe/);
     assert.throws(() => f.create({ include: ["C:\\Windows"] }, { SystemRoot: "D:\\Windows" }), /Unsafe/);
+});
+
+test("profile SDKs include their installation dependencies without promoting the Cargo credential root", async () => {
+    const root = "C:\\Users\\fixture\\sdk\\go", cargo = "C:\\Users\\fixture\\.cargo";
+    const f = fixture([root, root + "\\bin", root + "\\src", cargo, cargo + "\\bin"]);
+    f.put(root + "\\bin\\go.exe", "file"); f.put(root + "\\src\\builtin.go", "file"); f.put(cargo + "\\credentials.toml", "file");
+    const plan = f.create({}, { PATH: "D:\\pwsh;" + root + "\\bin;" + cargo + "\\bin;" + cargo });
+    await plan.validateTrees(); const xml = plan.appendConfig(config);
+    assert.ok(xml.includes("<HostFolder>" + root + "</HostFolder>"));
+    assert.equal(env(plan).GOROOT, root);
+    assert.ok(xml.includes("<HostFolder>" + cargo + "\\bin</HostFolder>"));
+    assert.ok(!xml.includes("<HostFolder>" + cargo + "</HostFolder>"));
+});
+
+test("inferred SDK roots follow PATH order, preserve explicit roots and recover after an unsafe first installation", async () => {
+    const roots = ["D:\\GoA", "D:\\GoB", "D:\\JavaA", "D:\\JavaB", "D:\\DotnetA", "D:\\DotnetB"];
+    const f = fixture(roots);
+    for (const root of roots) {
+        if (root.includes("Dotnet")) f.put(root + "\\dotnet.exe", "file");
+        else { f.put(root + "\\bin"); f.put(root + "\\bin\\" + (root.includes("Java") ? "javac.exe" : "go.exe"), "file"); }
+    }
+    const environment = { PATH: "D:\\pwsh;D:\\GoA\\bin;D:\\GoB\\bin;D:\\JavaA\\bin;D:\\JavaB\\bin;D:\\DotnetA;D:\\DotnetB" };
+    const plan = f.create({}, environment); await plan.validateTrees();
+    const values = env(plan);
+    assert.equal(values.GOROOT, "C:\\SuperPiToolchains\\D\\GoA");
+    assert.equal(values.JAVA_HOME, "C:\\SuperPiToolchains\\D\\JavaA");
+    assert.equal(values.DOTNET_ROOT, "C:\\SuperPiToolchains\\D\\DotnetA");
+    const explicit = f.create({}, { ...environment, GOROOT: "D:\\GoB" }); await explicit.validateTrees();
+    assert.equal(env(explicit).GOROOT, "C:\\SuperPiToolchains\\D\\GoB");
+    f.put("D:\\GoA\\project", "link", "D:\\work");
+    const fallback = f.create({}, environment); await fallback.validateTrees();
+    assert.equal(env(fallback).GOROOT, "C:\\SuperPiToolchains\\D\\GoB");
+    assert.doesNotMatch(env(fallback).PATH, /GoA/);
+});
+
+test("workspace junctions cannot expose the real project as a PATH installation", async () => {
+    const f = fixture(["D:\\real-project", "D:\\real-project\\bin"]);
+    f.put("D:\\work", "link", "D:\\real-project");
+    const plan = f.create({}, { PATH: "D:\\pwsh;D:\\real-project\\bin" });
+    await plan.validateTrees();
+    assert.doesNotMatch(plan.appendConfig(config), /real-project/);
+    assert.doesNotMatch(env(plan).PATH, /real-project/);
+    assert.throws(() => f.create({ include: ["D:\\real-project"] }), /Unsafe/);
 });
 
 test("missing or redirected PowerShell fails closed, and mapped directory identity is rechecked before dispatch", async () => {

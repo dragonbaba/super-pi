@@ -30,10 +30,12 @@ export class SandboxToolchains {
     #mounts = [];
     #paths = [];
     #environment = new Map();
+    #inferredRoots = [];
     #seen = new Set();
     #excluded;
     #workspace;
     #home;
+    #cargo;
     #windows;
     #io;
     #shell;
@@ -47,7 +49,10 @@ export class SandboxToolchains {
         need(settings && typeof settings === "object" && !Array.isArray(settings), "Expected toolchain settings");
         for (const key of Object.keys(settings)) need(key === "include" || key === "exclude", "Unknown toolchain setting: " + key);
         for (const key of ["include", "exclude"]) need(settings[key] === undefined || Array.isArray(settings[key]) && settings[key].length <= 64, "Invalid " + key + " list");
-        this.#io = io; this.#workspace = canonical(cwd); this.#home = canonical(home);
+        this.#io = io;
+        this.#workspace = canonical(io.realpathSync(canonical(cwd)));
+        this.#home = canonical(io.realpathSync(canonical(home)));
+        this.#cargo = win.join(this.#home, ".cargo");
         this.#windows = canonical(environmentValue(environment, "SYSTEMROOT") || "C:\\Windows");
         this.#excluded = [];
         for (const item of settings.exclude ?? []) this.#excluded.push(canonical(item));
@@ -94,6 +99,11 @@ export class SandboxToolchains {
         this.#finishEnvironment();
     }
     #finishEnvironment() {
+        // First surviving PATH installation wins; explicit host root variables keep priority.
+        for (const [name, host] of this.#inferredRoots) {
+            if (this.#environment.has(name)) continue;
+            const guest = this.#translate(host); if (guest) this.#environment.set(name, guest);
+        }
         this.#environment.set("PATH", this.#paths.join(";") + ";" + SYSTEM_PATH);
         const drives = new Set();
         for (const mount of this.#mounts) if (mount.host[0].toUpperCase() !== "C") drives.add(mount.host[0].toUpperCase());
@@ -102,7 +112,8 @@ export class SandboxToolchains {
     }
     #file(file) { try { return this.#io.statSync(file).isFile(); } catch { return false; } }
     #safe(root) {
-        if (root.length <= 3 || within(this.#workspace, root) || within(root, this.#workspace) || within(this.#home, root) || within(root, this.#windows)) return false;
+        if (root.length <= 3 || within(this.#workspace, root) || within(root, this.#workspace) || within(this.#home, root)
+            || within(this.#cargo, root) || within(root, this.#windows)) return false;
         for (const reserved of RESERVED_GUEST_ROOTS) if (within(root, reserved) || within(reserved, root)) return false;
         for (const excluded of this.#excluded) if (within(root, excluded) || within(excluded, root)) return false;
         return true;
@@ -139,7 +150,7 @@ export class SandboxToolchains {
             const stat = this.#io.statSync(entry); need(stat.isDirectory(), "PATH entry is not a directory");
             let root = entry;
             const leaf = win.basename(entry).toLowerCase(), parent = win.dirname(entry);
-            if ((leaf === "bin" || leaf === "cmd" || leaf === "scripts") && !within(parent, this.#home) && this.#safe(parent)) root = parent;
+            if ((leaf === "bin" || leaf === "cmd" || leaf === "scripts") && this.#safe(parent)) root = parent;
             // A Links directory contains aliases, not their installation dependencies.
             if (leaf === "links") {
                 for (const child of this.#io.readdirSync(entry, { withFileTypes: true })) {
@@ -155,9 +166,9 @@ export class SandboxToolchains {
                 const nested = win.join(root, child);
                 try { if (this.#io.statSync(nested).isDirectory()) this.#add(root, nested, false); } catch { /* optional layout */ }
             }
-            if (this.#file(win.join(root, "bin", "go.exe"))) this.#environment.set("GOROOT", this.#translate(root));
-            if (this.#file(win.join(root, "bin", "javac.exe"))) this.#environment.set("JAVA_HOME", this.#translate(root));
-            if (this.#file(win.join(root, "dotnet.exe"))) this.#environment.set("DOTNET_ROOT", this.#translate(root));
+            if (this.#file(win.join(root, "bin", "go.exe"))) this.#inferredRoots.push(["GOROOT", root]);
+            if (this.#file(win.join(root, "bin", "javac.exe"))) this.#inferredRoots.push(["JAVA_HOME", root]);
+            if (this.#file(win.join(root, "dotnet.exe"))) this.#inferredRoots.push(["DOTNET_ROOT", root]);
         } catch (error) {
             if (required) throw error;
             this.diagnostics.push({ path: value, reason: "invalid or missing PATH entry" });
@@ -197,7 +208,7 @@ export class SandboxToolchains {
                 for (const [name, value] of this.#environment) if (name !== "PATH" && within(value, mount.guest)) this.#environment.delete(name);
             }
         }
-        this.assertCurrent(); this.#finishEnvironment(); this.#checked = true;
+        this.assertCurrent(); this.#finishEnvironment(); this.#inferredRoots.length = 0; this.#checked = true;
     }
     get encodedEnvironment() {
         let text = this.#shell;
