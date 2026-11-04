@@ -1,6 +1,6 @@
 # Pi 历史修复补漏：详细任务与实施规范
 
-状态：**H00–H09（含 H02-A/B）已合并；H10 已实施并完成本地验收，待 reviewer/CI。** 用户已授权按顺序创建独立 PR，首次推送后等待 reviewer，每次后续推送单独 `@codex review`；当前最终 head 审查无未处理意见且 CI 全部通过后可合并，并按精确身份删除两端旧分支。下文待办和验收条件不代表已经实施或通过；规划阶段的历史记录保留在 §9，H00 执行记录见 §10，各实现项记录见下表。
+状态：**H00–H10（含 H02-A/B）已依次通过审查和六分片 CI 并合并；所有对应远端及本地任务分支已删除。部分任务临时目录清理受阻，见 §11。** 用户已授权按顺序创建独立 PR，首次推送后等待 reviewer，每次后续推送单独 `@codex review`；当前最终 head 审查无未处理意见且 CI 全部通过后可合并，并按精确身份删除两端旧分支。下文设计和验收条件保留实施前约定，实际结果以各项实施记录为准；规划阶段的历史记录保留在 §9，H00 执行记录见 §10，本轮收尾见 §11。V/F 不因 H 任务完成而自动关闭。
 
 日期：2026-11-04，Asia/Tokyo。任务前缀使用 **H**，避免与上一轮 T01–T12、F01–F06 混淆。后续每项先更新自己的设计和证据，再动生产代码。
 
@@ -50,7 +50,7 @@
 | H07 | 内置 grep 隔离 RIPGREP_CONFIG_PATH | v1.4.0 | R：真实 rg；[实施记录](repairs/pi-history-h07-grep-no-config.md) | 已合并 #206；本项临时根已清理 |
 | H08 | grep 上下文避免整文件加载 | 未发布 | R：真实 rg；[实施记录](repairs/pi-history-h08-grep-context.md) | 已合并 #207；本项临时根已清理 |
 | H09 | 提示模板保留空引号参数 | v1.3.0 | R：生产函数；[实施记录](repairs/pi-history-h09-empty-prompt-args.md) | 已合并 #208；本项临时根已清理 |
-| H10 | SDK streamProxy 工具参数增量解析 | v1.5.0 | R：实际 proxy/Agent、分配与释放；[实施记录](repairs/pi-history-h10-proxy-arguments.md) | 已实施，待审查 / P2 |
+| H10 | SDK streamProxy 工具参数增量解析 | v1.5.0 | R：实际 proxy/Agent、分配与释放；[实施记录](repairs/pi-history-h10-proxy-arguments.md) | 已合并 #209；临时目录清理受阻 |
 
 每项状态只按真实证据推进：`待验证 → 设计就绪 → 实施中 → 待审查 → 待合并 → 已交付`。另有 `已排除`，必须记录原因和覆盖边界。设计就绪的最低条件是：根因、失败输入、实际调用链、改动范围、性能性质、资源所有者及验收命令均明确。
 
@@ -367,3 +367,32 @@ H02 保持 V：RPC 的重复 shutdown 会直接退出，print 在异步 dispose 
 [PR #198](https://github.com/dragonbaba/super-pi/pull/198) 的最终 head 为 `30dc4865300ef3ca66c6ceb91cee0ea98fe23d4c`。[主动审查请求](https://github.com/dragonbaba/super-pi/pull/198#issuecomment-6621663101) 后，[Codex 回执](https://github.com/dragonbaba/super-pi/pull/198#issuecomment-6621699153) 和 summary 均确认同 head completed/no findings；正式 reviews 和行内线程为空。[CI](https://github.com/dragonbaba/super-pi/actions/runs/41766686873) 六个 Node 26.13 分片全部 success。锁定该 head 普通合并为 `3174bf87c87750213e0ccf437f23ffaa17d5bcbc`，已验证进入远端 main；本地 main 快进同步，远端和本地 `codex/history-h00-inventory` 均已删除且无其他 worktree 占用。
 
 最后两份文件和任务根的清理命令被自动审批在执行前拒绝，唯一原始原因是 `blocked by policy`。只读确认仍剩 `D:\RMProjects\Pi\.task-tmp\history-h00-f77231595ab649e0bad0021a3d5968fa\resources.json`、同目录 pr-body.md 及任务根；manifest 已登记 blocked。未切换删除机制或重新接管旧任务根，未声称全部清理成功。[清理回执](https://github.com/dragonbaba/super-pi/pull/198#issuecomment-6621681760) 已记录到同一 PR；此限制保留到整轮交付报告。
+
+## 11. 本轮执行收尾（2026-11-04）
+
+H00–H10 共 12 个独立 PR（H02 分 A/B）已完成：[#198](https://github.com/dragonbaba/super-pi/pull/198)、[#199](https://github.com/dragonbaba/super-pi/pull/199)、[#200](https://github.com/dragonbaba/super-pi/pull/200)、[#201](https://github.com/dragonbaba/super-pi/pull/201)、[#202](https://github.com/dragonbaba/super-pi/pull/202)、[#203](https://github.com/dragonbaba/super-pi/pull/203)、[#204](https://github.com/dragonbaba/super-pi/pull/204)、[#205](https://github.com/dragonbaba/super-pi/pull/205)、[#206](https://github.com/dragonbaba/super-pi/pull/206)、[#207](https://github.com/dragonbaba/super-pi/pull/207)、[#208](https://github.com/dragonbaba/super-pi/pull/208)、[#209](https://github.com/dragonbaba/super-pi/pull/209)。每项最终提交的 reviewer 结论和六分片 CI 均已在合并前核验；有新增推送的同一 PR 按约定单独请求 `@codex review`。H10 首次自动审查未启动，经一次明确手动请求后完成，并未用 CI 全绿替代审查。
+
+最终实现 merge 为 `4652be3eeaaa96d54ea02e23eac4e43d34f8a3fb`，已进入本地与远端 main。12 个任务分支均按对应 head 删除，无任务分支需要继续保留。原有 `b2c42768f` 提交和用户规划改动保留在历史中；没有 reset/clean/丢弃用户改动。后续收尾文档通过独立 PR 交付。
+
+性能任务 H04/H05/H06/H08/H10 的完整链审计、确定性计数、分配采样及释放证据分别存放于实施记录和 docs/evidence；必要协议交付、最终快照、渲染/布局的已有成本明确列出。不宣称全链零分配，不引入对象池，不用 CPU 计时或单次 heap 差代替分配证据。H07 是真实 ripgrep 行为检查，H09 是显式命令解析；没有为冷路径虚构 profile。
+
+以下是**仍保留**的精确目录，均位于 `D:\RMProjects\Pi\.task-tmp\`。本轮没有存活的登记测试进程；删除失败是自动审批在执行前返回 `blocked by policy`，不是清理成功。各根 resources.json 和对应回执保留；被拒绝后没有重试或切换机制。
+
+| 所属 | `.task-tmp` 下的目录名 | 记录 |
+| --- | --- | --- |
+| 先前规划，非本轮 owner | `history-followup-plan-20261104-cd5c62a2fbd041f89760a31e878f13ba` | §9，保留两个文件 |
+| H00 | `history-h00-f77231595ab649e0bad0021a3d5968fa` | [回执](https://github.com/dragonbaba/super-pi/pull/198#issuecomment-6621681760) |
+| H01 | `history-h01-c5b8685d5802407c80fb2109d21fa576` | [回执](https://github.com/dragonbaba/super-pi/pull/199#issuecomment-6622372318) |
+| H02-A | `h02a-77e0ce9983de` | [回执](https://github.com/dragonbaba/super-pi/pull/200#issuecomment-6622677958) |
+| H02-B | `h02b-7f52a59c960e` | [回执](https://github.com/dragonbaba/super-pi/pull/201#issuecomment-6623063328) |
+| H03 | `h03-ca0b12728305` | [回执](https://github.com/dragonbaba/super-pi/pull/202#issuecomment-6623319274) |
+| H04 | `h04-125da27381b4` | [回执](https://github.com/dragonbaba/super-pi/pull/203#issuecomment-6623705089) |
+| H05 | `h05-89535dc97a48` | [回执](https://github.com/dragonbaba/super-pi/pull/204#issuecomment-6623867359) |
+| H06 | `h06-ef451f0ce8ff` | [回执](https://github.com/dragonbaba/super-pi/pull/205#issuecomment-6624053534) |
+| H10 | `h10-7da5a16b0f09` | [回执](https://github.com/dragonbaba/super-pi/pull/209#issuecomment-6625639612)，212 文件 / 3 子目录 |
+
+H07、H08、H09 的独立任务根已全部删除并验证不存在，详见各自实施记录的最终回执。共享 `.task-tmp` 不是本轮新建且仍有其他受阻资源，保留父目录。
+
+范围仍按 H00 口径：1,150 条是来源覆盖记录，不是 1,150 个已修复缺陷；V01–V04 和清单中的其余 V 仍待独立验证，F 仍待产品取舍。不得把 H01–H10 的已合并结果批量写回成所有历史来源均已语义审计完成。
+
+收尾文档仅更新本方案和 H10 回执，无生产代码变更。原生 PowerShell 校验 27 个本地链接存在，清单计数仍为 1,150 entries / 138 coverage / 71 assessments / 63 localEvidence，`git diff --check` 通过。验证进程 PID 31576 / 启动 UTC `2026-11-04T07:56:03.9828704Z` 使用独立 `D:\RMProjects\Pi\.task-tmp\history-closeout-1e539962fa62`，TMP/TEMP/TMPDIR 和 GetTempPath 一致；只创建 resources.json 与 validation.json，没有运行新的生产测试或 profile。进程退出后核对 owner、精确路径和 reparse 边界，两个文件及空任务根已删除并验证不存在，保留共享父目录。此成功不改变上表旧任务根的 blocked 状态。
