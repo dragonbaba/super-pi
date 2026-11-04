@@ -1,7 +1,7 @@
 import { tmpdir } from "node:os";
 import { stream as responsesStream } from "../packages/ai/src/api/openai-responses.ts";
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { writeFileSync, readFileSync, existsSync, lstatSync, mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, utimesSync } from "node:fs";
 import { basename, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -278,8 +278,9 @@ function serializedResponse(model: any, context: any, expectedImage: boolean, an
  });
 }
 
-function interactive(session: any): any {
+function interactive(session: any, t: TestContext): any {
 	const mode: any = new InteractiveMode({ session, setBeforeSessionInvalidate() {}, setRebindSession() {} } as never);
+	t.after(() => mode.stop());
 	mode.setupKeyHandlers(); mode.setupEditorSubmitHandler();
 	// This method-level fixture skips init(); establish its real editor focus
 	// explicitly, as init() does before accepting clipboard gestures.
@@ -289,14 +290,14 @@ function interactive(session: any): any {
 }
 
 for (const source of ["clipboard-image-paste", "path-paste"] as const) for (const auxiliary of [false, true]) {
-	test(`${source} + ${auxiliary ? "auxiliary" : "multimodal"}: same visible draft and real submission route`, async () => {
+	test(`${source} + ${auxiliary ? "auxiliary" : "multimodal"}: same visible draft and real submission route`, async (t) => {
 		const events: string[] = [];
 		let auxCalls = 0, mainCalls = 0;
 		const configRoot = mkdtempSync(join(tmpdir(), "pi-image-config-"));
 		const configPath = join(configRoot, "vision.json");
 		writeFileSync(configPath, JSON.stringify({ model: "offline/vision", automatic: true, toolMode: "off" }));
 		const f = await fixture(false, false, auxiliary ? [(pi) => auxiliaryVision(pi, { configPath, systemTempDir: configRoot })] : []);
-		const mode = interactive(f.session);
+		const mode = interactive(f.session, t);
 		const vision = { ...f.session.model!, provider: "offline", id: "vision", input: ["text", "image"], api: "offline-vision" } as any;
 		const runtime = (f.session as any)._modelRuntime;
 		runtime.getModel = () => vision;
@@ -398,9 +399,9 @@ test("clipboard child timeout, cancellation and output limit settle asynchronous
 	await assert.rejects(run, /Clipboard helper/);
 });
 
-test("image-only submit, immutable snapshots, corrupt files and missing backend fail closed", async () => {
+test("image-only submit, immutable snapshots, corrupt files and missing backend fail closed", async (t) => {
 	const f = await fixture(false, false);
-	const mode = interactive(f.session);
+	const mode = interactive(f.session, t);
 	let calls = 0;
 	f.session.agent.streamFunction = (model) => { calls++; return response(model, []); };
 	try {
@@ -520,9 +521,9 @@ test("ask_user exposes bounded guidance and waits for a submitted text answer", 
 	} finally { f.close(); }
 });
 
-test("early Enter during clipboard preparation retains text and requires a new submit", async () => {
+test("early Enter during clipboard preparation retains text and requires a new submit", async (t) => {
 	const f = await fixture(false, false);
-	const mode = interactive(f.session);
+	const mode = interactive(f.session, t);
 	f.session.agent.state.model = { ...f.session.model!, input: ["text", "image"] };
 	let receive!: (value: any) => void, calls = 0;
 	mode.readClipboardImageForPaste = () => new Promise(resolve => { receive = resolve; });
@@ -537,10 +538,10 @@ test("early Enter during clipboard preparation retains text and requires a new s
 	} finally { mode.imageDraft.clear(); f.close(); }
 });
 
-test("blockImages does not call auxiliary vision or silently drop submitted attachments", async () => {
+test("blockImages does not call auxiliary vision or silently drop submitted attachments", async (t) => {
 	let intercepted = 0, calls = 0;
 	const f = await fixture(false, false, [pi => { pi.on("input", () => { intercepted++; return { action: "continue" }; }); }]);
-	const mode = interactive(f.session);
+	const mode = interactive(f.session, t);
 	f.settings.setBlockImages(true);
 	f.session.agent.streamFunction = model => { calls++; return response(model, []); };
 	try {

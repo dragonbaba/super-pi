@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHook } from "node:async_hooks";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -713,7 +713,11 @@ test("syntax parser resolves the pinned host dependency without a global Node-di
   console.log('pinned parser: valid accepted, malformed rejected');
  `], { cwd, encoding: "utf8", timeout: 10_000 });
  assert.equal(child.status, 0, child.stderr); assert.match(child.stdout, /valid accepted, malformed rejected/);
- // A copy outside the host dependency tree must still fail closed; never accept unchecked edits.
+ // Task temp directories can be inside the repository. Block parent resolution
+ // explicitly so the detached fixture still represents an unavailable parser.
+ const unavailableParser = join(cwd, "node_modules", "typescript");
+ mkdirSync(unavailableParser, { recursive: true });
+ writeFileSync(join(unavailableParser, "package.json"), JSON.stringify({ name: "typescript", exports: {} }));
  const detached = join(cwd, "detached.mts"); writeFileSync(detached, readFileSync(fileURLToPath(module)));
  const { pathToFileURL } = await import("node:url");
  const standalone = await import(pathToFileURL(detached).href);

@@ -721,6 +721,12 @@ test("N2 missing installed platform binary leaves reads available and explicitly
   const f = await fixture(t), isolated = join(f.root, "isolated"), dependencies = join(isolated, "node_modules");
   await mkdir(dependencies, { recursive: true });
   await cp(resolve("node_modules/koffi"), join(dependencies, "koffi"), { recursive: true });
+  // A repository-local temp root can otherwise resolve the host's optional
+  // binary through Koffi's static loader. Shadow that bare specifier inside
+  // the copied package; leave its real dynamic binary lookup empty.
+  const unavailableBinary = join(dependencies, "koffi", "node_modules", "@koromix", `koffi-${process.platform}-${process.arch}`);
+  await mkdir(unavailableBinary, { recursive: true });
+  await writeFile(join(unavailableBinary, "package.json"), JSON.stringify({ exports: {} }));
   // No @koromix platform subpackage is copied; this exercises the real loader diagnostic.
   for (const name of ["file-commit-metadata.ts", "native-file-client.ts", "native-file-worker.mjs", "native-file-regex.mjs"]) await cp(join(sourceDirectory, name), join(isolated, name));
   await writeFile(join(isolated, "package.json"), '{"type":"module"}');
