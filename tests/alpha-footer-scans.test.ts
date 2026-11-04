@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { visibleWidth } from '@super-pi/tui';
 import { alphaSession } from './helpers/alpha-session.ts';
 import { alphaMessage } from './helpers/alpha-stream.ts';
 
@@ -7,6 +8,9 @@ test('footer reuses the existing entries traversal for latest session name', asy
   const message = alphaMessage([{ type: 'text', text: 'fixture' }]);
   message.usage.cost.total = 2;
   const f = await alphaSession({ messages: [message] });
+  // These assertions measure scans, not narrow-screen truncation. Include the
+  // actual temporary path and branch so fixture session names stay visible.
+  const width = visibleWidth(f.sessionManager.getCwd()) + visibleWidth(f.internal.footerDataProvider.getGitBranch() ?? '') + 256;
   let entryCopies = 0;
   const getEntries = f.sessionManager.getEntries.bind(f.sessionManager);
   t.mock.method(f.sessionManager, 'getEntries', () => { entryCopies++; return getEntries(); });
@@ -14,7 +18,7 @@ test('footer reuses the existing entries traversal for latest session name', asy
     for (const name of ['first-name', ' latest-name ', '']) {
       f.sessionManager.appendSessionInfo(name);
       entryCopies = 0;
-      const rendered = f.internal.footer.render(120).join('\n');
+      const rendered = f.internal.footer.render(width).join('\n');
       assert.equal(entryCopies, 1, 'one existing usage traversal; no second full-history copy for name');
       assert.ok(rendered.includes('$2.000'));
       if (name.trim()) assert.ok(rendered.includes(name.trim()));
@@ -27,6 +31,7 @@ test('footer usage traversal does not request an iterator result per history ent
   const messages = Array.from({ length: 5000 }, () => alphaMessage([{ type: 'text', text: 'completed usage fixture' }]));
   messages[0]!.usage.input = 2500; messages[0]!.usage.cost.total = 1.25;
   const f = await alphaSession({ messages });
+  const width = visibleWidth(f.sessionManager.getCwd()) + visibleWidth(f.internal.footerDataProvider.getGitBranch() ?? '') + 256;
   let iteratorResults = 0; let entryCopies = 0;
   try {
     f.sessionManager.appendSessionInfo('retained usage semantics');
@@ -41,10 +46,10 @@ test('footer usage traversal does not request an iterator result per history ent
       } });
       return entries;
     });
-    const expected = f.internal.footer.render(120);
+    const expected = f.internal.footer.render(width);
     assert.ok(expected.some((line: string) => line.includes('retained usage semantics')));
     assert.equal(iteratorResults, 0, 'avoid per-entry iterator protocol work in the measured footer loop');
-    assert.deepEqual(f.internal.footer.render(120), expected);
+    assert.deepEqual(f.internal.footer.render(width), expected);
     assert.equal(entryCopies, 1, 'unchanged history reuses the footer scan instead of copying it per frame');
   } finally { t.diagnostic(JSON.stringify({ history: messages.length, iteratorResults, entryCopies })); await f.release(); }
 });

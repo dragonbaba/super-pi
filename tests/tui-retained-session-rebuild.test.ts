@@ -201,7 +201,7 @@ interface ModeFixture {
 	session: AgentSession;
 	sessionManager: SessionManager;
 	settingsManager: SettingsManager;
-	dispose(): void;
+	dispose(): Promise<void>;
 }
 
 async function createModeFixture(
@@ -270,10 +270,12 @@ async function createModeFixture(
 		session,
 		sessionManager,
 		settingsManager,
-		dispose: () => {
-			renderer.stop({ preserveScreen: true });
-			session.dispose();
-			rmSync(root, { recursive: true, force: true });
+		dispose: async () => {
+			try { await mode.stop(); }
+			finally {
+				try { await runtime.dispose(); }
+				finally { rmSync(root, { recursive: true, force: true }); }
+			}
 		},
 	};
 }
@@ -299,7 +301,7 @@ test("rebuilt grouped bounded reads use current image settings", async (t) => {
 	);
 	t.after(() => {
 		setCapabilities(previousCapabilities);
-		fixture.dispose();
+		return fixture.dispose();
 	});
 	fixture.settingsManager.setShowImages(false);
 	fixture.settingsManager.setImageWidthCells(19);
@@ -1625,7 +1627,7 @@ test("post-extension canonical V1 retained invalidation covers result shape chan
 			assert.equal(lifecycle.attached, 0);
 			assert.equal(component.getToolResultPresentationDiscovery(toolCallId), undefined);
 		} finally {
-			fixture.dispose();
+			await fixture.dispose();
 		}
 	}
 });

@@ -146,6 +146,7 @@
 - **候选方向**：简单命令轻量入口、按模式动态导入、避免已证实重复初始化。Provider API 的 lazy import 已存在，不重复增加一层；`--help` 可能依赖扩展参数，不能为了快而遗漏扩展帮助。重复 refresh 先测来源/收益和注册语义，再决定是否改。
 - **验收**：无关模块不加载的确定性证据 + 端到端时间/分配；默认捆绑资源行为和首次使用成本单独报告，不能把启动成本完整转移到第一条输入后忽略。保留 CLI 参数优先级、错误码、资源检查、信任与 hook 顺序，启动失败/取消清理通过。
 - **拆分**：简单命令与默认交互启动若属于不同根因，按 PF02-A/B 独立 PR；前者收益不能代替后者验收。
+- **验证前置 PF02-V**：[仓库内临时目录的测试隔离与释放](performance/pf02-task-temp-validation.md)。PF02-B 全套检测发现旧夹具会继承父目录依赖/Git watcher，另有固定宽度截断误报；先独立修复测试、审查合并，再恢复启动优化，不弱化断言或修改临时目录约定。
 - **现有入口**：`tests/alpha-cli.test.ts`、`tests/alpha-startup-faults.test.ts`、`tests/alpha-startup-quit.test.ts`；`bench:model-runtime`、`bench:model-runtime:warm`、`alpha:g2-capture`。capture 与正式 launcher 的路径/加载差异须先核对，不能直接套用。
 
 ### PF03 复杂 Markdown 的增量成本
