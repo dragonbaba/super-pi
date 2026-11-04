@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 let runtime, retainedSession;
 let runtimeCalls = 0, sessionCalls = 0, completed = false, networkCalls = 0, uncaught = 0;
 let unhandledRejections = 0;
+let signalObserverActive = false;
 const initialEnd = process.stdin.listeners('end');
 const initialData = process.stdin.listeners('data');
 let initialSignals = [];
@@ -27,11 +28,13 @@ process.emit = function (event) {
   if (event === 'SIGTERM') process.stderr.write('CLOSE_SIGNAL\n');
   return result;
 };
+const signalObserver = process.emit;
 function finished() {
   completed = true;
   process.stdin.off('end', onEof);
 }
 AgentSessionRuntime.prototype.dispose = function () {
+  signalObserverActive = process.emit === signalObserver;
   runtime = this; runtimeCalls++;
   return disposeRuntime.call(this).then(finished, error => { finished(); throw error; });
 };
@@ -45,7 +48,7 @@ globalThis.fetch = function () { networkCalls++; throw new Error('fixture forbid
 process.on('uncaughtExceptionMonitor', () => { uncaught++; });
 process.on('exit', code => {
   process.emit = originalEmit;
-  process.stderr.write('CLOSE_EXIT:' + JSON.stringify({ code, runtimeCalls, sessionCalls, completed, networkCalls, uncaught, unhandledRejections,
+  process.stderr.write('CLOSE_EXIT:' + JSON.stringify({ code, runtimeCalls, sessionCalls, completed, networkCalls, uncaught, unhandledRejections, signalObserverActive,
     tmpdir: tmpdir(), signalListeners: process.listeners('SIGTERM').filter(listener => !initialSignals.includes(listener)).length,
     dataListeners: process.stdin.listeners('data').filter(listener => !initialData.includes(listener)).length,
     endListeners: process.stdin.listeners('end').filter(listener => !initialEnd.includes(listener)).length,

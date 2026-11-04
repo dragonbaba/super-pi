@@ -31,7 +31,7 @@ for (const kind of ["idle", "startup", "command", "command-error", "custom-flush
     let stdout = "", stderr = "", ready = false, released = false, timedOut = false;
     // Failure containment only; this is not a product shutdown deadline.
     let watchdog = setTimeout(killOwnedChild, 20_000);
-    function killOwnedChild() { timedOut = true; child.kill(); }
+    function killOwnedChild() { timedOut = true; child.kill("SIGKILL"); }
     const closed = new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
     output.on("data", data => {
       stdout += data.toString();
@@ -57,7 +57,7 @@ for (const kind of ["idle", "startup", "command", "command-error", "custom-flush
     }
     t.after(async () => {
       clearTimeout(watchdog);
-      if (child.exitCode === null && child.signalCode === null) child.kill();
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
       await closed;
       removeOwnedFixture(root);
     });

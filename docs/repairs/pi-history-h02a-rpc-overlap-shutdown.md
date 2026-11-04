@@ -31,3 +31,7 @@ runtime 的 disposeOperation 和 teardownOperation 已在调用可重入代码�
 `npm.cmd run check` 和 `npm.cmd --offline run build:offline` 均通过。AST 对比 H01 合并基线：arrow/function expression **45 → 45**、function declaration **8 → 9**、正则 **1 → 1**、字符串字面量 **146 → 148**（仅两条低频错误提示）、new Promise **3 → 3**、async 函数 **14 → 14**。新增 performShutdown 为 owner 的稳定函数；首次关闭的 Promise.resolve/then/async 完成点有实际低频分配，new Promise 计数不覆盖这些隐式成本；重复请求返回同一操作，不另建 tail。没有增加普通事件分配或对象池。
 
 本地全量任务根隔离的已知限制已在 H01 记录，H02-A 不重复运行无相关实现变更的失败矩阵。当前完整源码与集成回归交由最终 head 六分片 CI 运行；在全部通过及 reviewer 无未解决意见前不合并。本项提交同时补记 H01 的合并、两端分支删除及受阻缓存回执，不更改 H01 的冻结基线清单。
+
+首次 [PR #200](https://github.com/dragonbaba/super-pi/pull/200) head `c23c135b3946a0271dba12d6f6f04ac63307d7e1` 的 Codex 审查 completed/no findings；CI 五分片已通过，Linux 1/2 长时间仍处于测试阶段，运行中日志 API 返回 404，尚不能确定其停留用例。检查发现夹具 watchdog/after 使用默认 SIGTERM，而本项恰好让重复 SIGTERM 等待清理，闸门异常时会妨碍测试自身收尾。因此将两个 RPC 夹具的故障 containment 改为只对自己的 ChildProcess 使用 SIGKILL，实际信号场景仍发送 SIGTERM；同时断言 dispose 时信号观测包装仍安装，防止观测失效被静默忽略。本地重新得到 **11 通过、2 POSIX 跳过**，类型检查通过；生产源码/hash 未改变。后续推送单独请求复审，旧 CI 的部分通过不替代最终 head 全绿。
+
+已按精确路径/长度/SHA-256 删除最初 16 份日志。随后缓存清理被自动审批在执行前拒绝，原始原因 `blocked by policy`；原任务根仍保留 jiti/node-compile-cache 共 107 文件、3 目录，以及 resources.json、run.ps1、pr-body.md，manifest 登记 blocked。[清理回执](https://github.com/dragonbaba/super-pi/pull/200#issuecomment-6622677958)。上述后续夹具检查生成的日志另有登记，未重试受阻的缓存删除或转移旧根所有权。

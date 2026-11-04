@@ -31,7 +31,7 @@ for (const kind of ["eof", "eof-error", "sigterm", "sigterm-first"]) {
     writeFileSync(join(root, "resources.json"), JSON.stringify({ root, childPid: child.pid, startedAt: new Date().toISOString(), purpose: kind }));
     let stdout = "", stderr = "", ready = false, overlapped = false, released = false, timedOut = false;
     let watchdog = setTimeout(killOwnedChild, 20_000);
-    function killOwnedChild() { timedOut = true; child.kill(); }
+    function killOwnedChild() { timedOut = true; child.kill("SIGKILL"); }
     const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
       child.once("error", reject); child.once("close", (code, signal) => resolve({ code, signal }));
     });
@@ -58,7 +58,7 @@ for (const kind of ["eof", "eof-error", "sigterm", "sigterm-first"]) {
     });
     t.after(async () => {
       clearTimeout(watchdog);
-      if (child.exitCode === null && child.signalCode === null) child.kill();
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
       await closed;
       removeOwnedFixture(root);
     });
@@ -71,7 +71,7 @@ for (const kind of ["eof", "eof-error", "sigterm", "sigterm-first"]) {
     const exitLine = stderr.split("\n").find(line => line.startsWith("CLOSE_EXIT:"));
     assert.ok(exitLine, stderr);
     const exit = JSON.parse(exitLine.slice("CLOSE_EXIT:".length));
-    assert.deepEqual(exit, { code: expectedCode, runtimeCalls: 1, sessionCalls: 1, completed: true, networkCalls: 0, uncaught: 0, unhandledRejections: 0,
+    assert.deepEqual(exit, { code: expectedCode, runtimeCalls: 1, sessionCalls: 1, completed: true, networkCalls: 0, uncaught: 0, unhandledRejections: 0, signalObserverActive: true,
       tmpdir: tmpdir(), signalListeners: 0, dataListeners: 0, endListeners: 0, callbacksReleased: true, idleReleased: true });
     const gate = stderr.split("\n").filter(line => line.startsWith("CLOSE_RELEASED:"));
     assert.equal(gate.length, 1, stderr);
