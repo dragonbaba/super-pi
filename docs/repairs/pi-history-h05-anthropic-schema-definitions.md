@@ -1,6 +1,6 @@
 # H05 — Anthropic 非 strict 工具根定义
 
-状态：最小修复及本地验收完成，等待独立 PR reviewer/CI。H05 分支 `codex/h05-anthropic-schema-definitions` 基于 H04 merge `796bfe62b92ea73f4e5d8a7e2d62a26448853be3`。任务根 `D:\RMProjects\Pi\.task-tmp\h05-89535dc97a48`，Node v26.13.0；子进程启动前设置并验证 TMP/TEMP/TMPDIR，资源和进程登记 resources.json。
+状态：[PR #204](https://github.com/dragonbaba/super-pi/pull/204) 已合并，分支 `codex/h05-anthropic-schema-definitions` 两端已删除。基线为 H04 merge `796bfe62b92ea73f4e5d8a7e2d62a26448853be3`。任务根 `D:\RMProjects\Pi\.task-tmp\h05-89535dc97a48`，Node v26.13.0；子进程启动前设置并验证 TMP/TEMP/TMPDIR，资源和进程登记 resources.json。
 
 ## 根因、边界与调用链
 
@@ -49,4 +49,10 @@ HeapProfiler samplingInterval=4096，包含 minor/major 已回收对象，每路
 
 生命周期六条 success/failure/abort × 普通/inline 链保持 16 个输入工具、6 个消费后 stream 和 AbortSignal 存活。基线与候选 18 个请求参数/tools/schema-root WeakRef 全部释放，abort listeners=0，取消 ready/reject 引用清空；一个成功 inline 结果按协议保留 checkpoint（独立 snapshot，非出站转换对象）。GC 后约 16.48M bytes，只作为释放背景，不推断小幅变化。没有修改生产清理；生命周期 hook 额外触发的 inline declarationSignature 只存在于该验收，counts/profile 不启用该 hook。
 
-10 项新 contract 全通过，包括完整 inline 两次请求；相关 capability/inline/thinking/source/stream 共 **58 通过**，新增 allocation regression **1 通过**。CI gate 运行实际 SDK 计数子进程，校验 TMP/TEMP/TMPDIR 与 os.tmpdir，按 PID/退出结果登记并清理独立仓库 fixture。类型检查与离线构建通过；首次测试类型检查发现 fixture 的动态索引缺少声明，已补明确类型，未改变运行时断言。完整计数、主要采样栈、生命周期、源文件/fixture 哈希和命令见 [正式证据](../evidence/pi-history-h05-schema-allocation.json)。最终 head reviewer/六分片 CI 待完成。
+10 项新 contract 全通过，包括完整 inline 两次请求；相关 capability/inline/thinking/source/stream 共 **58 通过**，新增 allocation regression **1 通过**。CI gate 运行实际 SDK 计数子进程，校验 TMP/TEMP/TMPDIR 与 os.tmpdir，按 PID/退出结果登记并清理独立仓库 fixture。类型检查与离线构建通过；首次测试类型检查发现 fixture 的动态索引缺少声明，已补明确类型，未改变运行时断言。完整计数、主要采样栈、生命周期、源文件/fixture 哈希和命令见 [正式证据](../evidence/pi-history-h05-schema-allocation.json)。
+
+## 合并与资源回执
+
+最终 head `4a4a147b1304cb55d5fe479b8b5b4fa5fe2a0d53` [首次 reviewer](https://github.com/dragonbaba/super-pi/pull/204#issuecomment-6623856959) 无建议、review threads 为空，[CI 41782907179](https://github.com/dragonbaba/super-pi/actions/runs/41782907179) 六分片通过。2026-11-04 06:09:18 UTC 按该 head 锁定合并，merge `b900f2e82dc1904811ac868cbf8af74caa9d63d9`；main 已同步，远端/本地精确旧分支已删除。
+
+34 个登记日志已删除。107 缓存文件和 2 目录的删除被自动审批在执行前拒绝，原文 `blocked by policy`；不重试/更换机制，缓存、manifest、runner、PR body 留在上述精确任务根，登记子进程均已退出。[清理受阻回执](https://github.com/dragonbaba/super-pi/pull/204#issuecomment-6623867359)。
