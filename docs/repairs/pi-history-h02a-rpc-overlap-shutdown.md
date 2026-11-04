@@ -1,6 +1,6 @@
 # H02-A — RPC 重叠关闭共享完成点
 
-状态：已固化失败并完成最小修复及本地定向验收，待 PR 审查和跨平台 CI。基线为 H01 合并提交 `2d92b18b92a070d2bd52afb32aae64a8e2ed5bf4`，分支 `codex/h02-rpc-shutdown`，Node v26.13.0。RPC 与 print 不共享关闭 owner，故按总方案拆为 H02-A/B 独立 PR。
+状态：已通过最终 head 审查和跨平台 CI，合并 PR #200，两端任务分支已删除。基线为 H01 合并提交 `2d92b18b92a070d2bd52afb32aae64a8e2ed5bf4`，原分支 `codex/h02-rpc-shutdown`，Node v26.13.0。RPC 与 print 不共享关闭 owner，故按总方案拆为 H02-A/B 独立 PR。
 
 ## 已核对链路与设计
 
@@ -43,3 +43,9 @@ runtime 的 disposeOperation 和 teardownOperation 已在调用可重入代码�
 已按 complex-debugging-protocol 建立任务根内 ci-signal-ledger.json：Windows EOF/故障对照通过，真实 POSIX 场景只由 Linux CI 驱动，当前无 WSL distro，不安装额外 Node。后来覆盖 process.emit 的假设未获 Windows 观测支持（dispose 时包装仍在）。读取当前 Node 26.13 内置 internal/process/signal 源码发现 `wrap.onsignal = FunctionPrototypeBind(process.emit, process, type, type)`；同样 runtime/session 导入后、包装前已存在 1 个 SIGTERM listener。原生 SignalWrap 因而保留旧 emitter，后加的 process.emit 包装无法收到真实信号。这个机制也解释了 sigterm-first 为何通过：它等待的是 EOF 回执。
 
 修正仅在夹具：真实信号回执改用 prependOnceListener；实际 Node EventEmitter 探针证明一次性 observer 在自身回调和既有 handler 运行时已移除，两个观察点 listenerCount 均为 1。因此不会向 signal-exit 的剩余 handler 判断虚增监听器，仍能暴露生产提前解绑；最终额外断言 signalObserverReleased。临时 signalObserverActive 诊断已移除。SIGKILL 仍只用于自有测试进程失败 containment，真实信号测试继续使用 SIGTERM。最新本地 RPC 两文件 **11 通过、2 POSIX 跳过**，类型检查通过；生产构建/hash 未改。实际 native 修正结果仍须等待新 head Linux CI，不把静态证据写成运行通过。
+
+## 最终交付回执
+
+最终 head `8d83ec61558f882636659257555f885f255f1d78` 在后续推送后单独 [请求复审](https://github.com/dragonbaba/super-pi/pull/200#issuecomment-6622886329)，[reviewer 无意见](https://github.com/dragonbaba/super-pi/pull/200#issuecomment-6622907315)，review threads 为空。[最终 CI](https://github.com/dragonbaba/super-pi/actions/runs/41775795675) 的 Linux 2 / Windows 4 分片全部 success。Linux 实际运行四个 overlap 场景全部通过，sigterm 与 sigterm-first 分别以 0/143 退出；每例 runtime/session dispose 各一次，未处理 rejection、uncaught、网络调用及新增输入/信号监听器均为 0，保留 owner 的回调/idle 引用和一次性 observer 均释放。
+
+按最终 head 锁定合并，[PR #200](https://github.com/dragonbaba/super-pi/pull/200) 的 merge commit 为 `a5528db4f55bad298b58df949de80d5d4af98e03`。已核对 origin/main 包含此提交并 fast-forward 本地 main；远端与本地 `codex/h02-rpc-shutdown` 均按精确身份删除并查询确认。任务缓存的既有自动审批 block 仍未解除，不将合并成功写成临时目录已清理。

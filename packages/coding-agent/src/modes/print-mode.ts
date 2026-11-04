@@ -36,16 +36,47 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 	let session = runtimeHost.session;
 	let unsubscribe: (() => void) | undefined;
 	let unsubscribeBackpressure: (() => void) | undefined;
-	let disposed = false;
+	let shutdownOperation: Promise<void> | undefined;
+	let shutdownExitCode = 0;
+	let shutdownSignal: NodeJS.Signals | undefined;
 	const signalCleanupHandlers: Array<() => void> = [];
 
-	const disposeRuntime = async (): Promise<void> => {
-		if (disposed) return;
-		disposed = true;
+	function shutdown(signal?: NodeJS.Signals): Promise<void> {
+		if (!shutdownOperation) {
+			shutdownExitCode = signal ? (signal === "SIGHUP" ? 129 : 143) : exitCode;
+			shutdownSignal = signal;
+			// Publish before abort or extension cleanup can reenter this owner.
+			shutdownOperation = Promise.resolve().then(performShutdown);
+		}
+		return shutdownOperation;
+	}
+
+	async function performShutdown(): Promise<void> {
 		unsubscribe?.();
+		unsubscribe = undefined;
 		unsubscribeBackpressure?.();
-		await runtimeHost.dispose();
-	};
+		unsubscribeBackpressure = undefined;
+		try {
+			await runtimeHost.dispose();
+		} catch (error) {
+			console.error("Print shutdown failed:", error);
+			shutdownExitCode = 1;
+		}
+		if (!shutdownSignal) {
+			try {
+				await flushRawStdout();
+			} catch (error) {
+				console.error("Print shutdown output failed:", error);
+				shutdownExitCode = 1;
+			}
+		}
+		// Keep handlers installed until cleanup finishes, including repeat signals.
+		for (const cleanup of signalCleanupHandlers) cleanup();
+		signalCleanupHandlers.length = 0;
+		const signal = shutdownSignal;
+		shutdownSignal = undefined;
+		if (signal) process.exit(shutdownExitCode);
+	}
 
 	const registerSignalHandlers = (): void => {
 		const signals: NodeJS.Signals[] = ["SIGTERM"];
@@ -56,9 +87,7 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 		for (const signal of signals) {
 			const handler = () => {
 				killTrackedDetachedChildren();
-				void disposeRuntime().finally(() => {
-					process.exit(signal === "SIGHUP" ? 129 : 143);
-				});
+				void shutdown(signal);
 			};
 			process.on(signal, handler);
 			signalCleanupHandlers.push(() => process.off(signal, handler));
@@ -155,15 +184,11 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 			}
 		}
 
-		return exitCode;
 	} catch (error: unknown) {
 		console.error(error instanceof Error ? error.message : String(error));
-		return 1;
+		exitCode = 1;
 	} finally {
-		for (const cleanup of signalCleanupHandlers) {
-			cleanup();
-		}
-		await disposeRuntime();
-		await flushRawStdout();
+		await shutdown();
 	}
+	return shutdownExitCode;
 }
