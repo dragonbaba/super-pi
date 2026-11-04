@@ -87,6 +87,9 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	// Shutdown request flag
 	let shutdownRequested = false;
 	let shuttingDown = false;
+	let pendingCommands = 0;
+	let pendingPromptResponses = 0;
+	let detachInput: (() => void) | undefined;
 	const signalCleanupHandlers: Array<() => void> = [];
 
 
@@ -304,6 +307,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			},
 			shutdownHandler: () => {
 				shutdownRequested = true;
+				void checkShutdownRequested();
 			},
 			onError: (err) => {
 				output(formatRpcExtensionError(err));
@@ -355,6 +359,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				// Start prompt handling immediately, but emit the authoritative response only after
 				// prompt preflight succeeds. Queued and immediately handled prompts also count as success.
 				let preflightSucceeded = false;
+				pendingPromptResponses++;
 				void session
 					.prompt(command.message, {
 						images: command.images,
@@ -364,12 +369,16 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 							if (didSucceed) {
 								preflightSucceeded = true;
 								output(success(id, "prompt"));
+								pendingPromptResponses--;
+								void checkShutdownRequested();
 							}
 						},
 					})
 					.catch((e) => {
 						if (!preflightSucceeded) {
 							output(error(id, "prompt", e.message));
+							pendingPromptResponses--;
+							void checkShutdownRequested();
 						}
 					});
 				return undefined;
@@ -675,12 +684,6 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		}
 	};
 
-	/**
-	 * Check if shutdown was requested and perform shutdown if so.
-	 * Called after handling each command when waiting for the next command.
-	 */
-	let detachInput = () => {};
-
 	async function shutdown(exitCode = 0, signal?: NodeJS.Signals): Promise<never> {
 		if (shuttingDown) {
 			process.exit(exitCode);
@@ -692,7 +695,8 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		unsubscribe?.();
 		unsubscribeBackpressure?.();
 		await runtimeHost.dispose();
-		detachInput();
+		detachInput?.();
+		detachInput = undefined;
 		process.stdin.pause();
 		if (signal !== "SIGTERM") {
 			await flushRawStdout();
@@ -700,9 +704,12 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		process.exit(exitCode);
 	}
 
-	async function checkShutdownRequested(): Promise<void> {
-		if (!shutdownRequested) return;
-		await shutdown();
+	function checkShutdownRequested(): Promise<void> | undefined {
+		// Extension commands complete outside handleCommand; publish their prompt
+		// response before disposal. Startup requests wait until RPC input is attached.
+		if (!shutdownRequested || shuttingDown || !detachInput || pendingCommands > 0 ||
+			pendingPromptResponses > 0 || session.isStreaming) return;
+		return shutdown();
 	}
 
 	const handleInputLine = async (line: string) => {
@@ -738,11 +745,16 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		}
 
 		const command = parsed as RpcCommand;
+		pendingCommands++;
 		try {
-			const response = await handleCommand(command);
-			if (response) {
-				output(response);
-				await waitForRawStdoutBackpressure();
+			try {
+				const response = await handleCommand(command);
+				if (response) {
+					output(response);
+					await waitForRawStdoutBackpressure();
+				}
+			} finally {
+				pendingCommands--;
 			}
 			await checkShutdownRequested();
 		} catch (commandError: unknown) {
@@ -754,6 +766,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				),
 			);
 			await waitForRawStdoutBackpressure();
+			await checkShutdownRequested();
 		}
 	};
 
@@ -771,6 +784,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			process.stdin.off("end", onInputEnd);
 		};
 	})();
+	void checkShutdownRequested();
 
 	// Keep process alive forever
 	return new Promise(() => {});

@@ -1,6 +1,6 @@
 # Pi 历史修复补漏：详细任务与实施规范
 
-状态：**实施已获授权；H00 清单映射本地验收完成、待审查，H01–H10 生产修复尚未开始。** 用户已授权按顺序创建独立 PR，首次推送后等待 reviewer，每次后续推送单独 `@codex review`；当前最终 head 审查无未处理意见且 CI 全部通过后可合并，并按精确身份删除两端旧分支。下文待办和验收条件不代表已经实施或通过；规划阶段的历史记录保留在 §9，当前执行记录见 §10。
+状态：**H00 清单映射已合并；H01 已固化失败回归、正在实施；H02–H10 尚未实施。** 用户已授权按顺序创建独立 PR，首次推送后等待 reviewer，每次后续推送单独 `@codex review`；当前最终 head 审查无未处理意见且 CI 全部通过后可合并，并按精确身份删除两端旧分支。下文待办和验收条件不代表已经实施或通过；规划阶段的历史记录保留在 §9，当前执行记录见 §10。
 
 日期：2026-11-04，Asia/Tokyo。任务前缀使用 **H**，避免与上一轮 T01–T12、F01–F06 混淆。后续每项先更新自己的设计和证据，再动生产代码。
 
@@ -40,8 +40,8 @@
 
 | ID | 任务 | 上游来源 | 证据 | 初始状态 / 优先级 |
 | --- | --- | --- | --- | --- |
-| H00 | 建立历史版本逐项映射与遗漏清单 | v0.84.2–v1.5.0、固定未发布快照 | [清单](evidence/pi-history-followup-inventory.json)；V 保持待验证 | 待审查 / 前置，见 §10 |
-| H01 | RPC 空闲 shutdown 主动完成关闭 | 未发布 | R：隔离 CLI | 待复现固化 / P1 |
+| H00 | 建立历史版本逐项映射与遗漏清单 | v0.84.2–v1.5.0、固定未发布快照 | [清单](evidence/pi-history-followup-inventory.json)；V 保持待验证 | 已交付 #198；清理受阻见 §10 |
+| H01 | RPC 空闲 shutdown 主动完成关闭 | 未发布 | R：隔离 CLI；[实施记录](repairs/pi-history-h01-rpc-idle-shutdown.md) | 实施中 / P1 |
 | H02 | RPC/print 重复关闭共享清理完成点 | 未发布 | S；实际时序待验证 | 待定向验证 / P1 |
 | H03 | print 最终输出截断返回非零状态 | v1.2.0 | R：生产函数夹具 | 待复现固化 / P1 |
 | H04 | 跨模型历史不把 thinking 转为正文 | v1.3.0 | R：生产函数 | 待复现固化 / P1 |
@@ -361,3 +361,9 @@ H02 保持 V：RPC 的重复 shutdown 会直接退出，print 在异步 dispose 
 提交前已检查 `.task-tmp`/任务根均无 reparse 边界、根内文件全部在清单内；按精确路径删除了六个下载文件及提取/构造/校验脚本、中间 JSON/TXT 和 validation.json，逐项确认已不存在。只保留 resources.json 与供 `gh pr create --body-file` 使用的 pr-body.md，PR 创建后删除这两个文件和空任务根。无常驻测试服务或后台下载进程。
 
 旧规划任务的 blocked 清理记录仍保留，本项不接管或删除该旧任务根。PR/当前 head 审查与 CI 尚未发生，不预写通过、合并或分支清理成功；后续结果以同 head 的 PR 回执记录。
+
+### H00 合并回执
+
+[PR #198](https://github.com/dragonbaba/super-pi/pull/198) 的最终 head 为 `30dc4865300ef3ca66c6ceb91cee0ea98fe23d4c`。[主动审查请求](https://github.com/dragonbaba/super-pi/pull/198#issuecomment-6621663101) 后，[Codex 回执](https://github.com/dragonbaba/super-pi/pull/198#issuecomment-6621699153) 和 summary 均确认同 head completed/no findings；正式 reviews 和行内线程为空。[CI](https://github.com/dragonbaba/super-pi/actions/runs/41766686873) 六个 Node 26.13 分片全部 success。锁定该 head 普通合并为 `3174bf87c87750213e0ccf437f23ffaa17d5bcbc`，已验证进入远端 main；本地 main 快进同步，远端和本地 `codex/history-h00-inventory` 均已删除且无其他 worktree 占用。
+
+最后两份文件和任务根的清理命令被自动审批在执行前拒绝，唯一原始原因是 `blocked by policy`。只读确认仍剩 `D:\RMProjects\Pi\.task-tmp\history-h00-f77231595ab649e0bad0021a3d5968fa\resources.json`、同目录 pr-body.md 及任务根；manifest 已登记 blocked。未切换删除机制或重新接管旧任务根，未声称全部清理成功。[清理回执](https://github.com/dragonbaba/super-pi/pull/198#issuecomment-6621681760) 已记录到同一 PR；此限制保留到整轮交付报告。
