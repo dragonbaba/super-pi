@@ -550,12 +550,15 @@ export function contextForModelCapabilities<TApi extends Api>(model: Model<TApi>
 			});
 			continue;
 		}
+		const isSameModel = message.provider === model.provider && message.api === model.api && message.model === model.id;
 		const content: AssistantMessage["content"] = [];
 		for (const block of message.content) {
 			if (block.type === "text") {
 				content.push({ type: "text", text: block.text });
 			} else if (block.type === "thinking") {
-				if (block.thinking) content.push({ type: "text", text: block.thinking });
+				// Preserve same-model plain-history compatibility, but never project
+				// another model's private reasoning into visible text.
+				if (isSameModel && block.thinking) content.push({ type: "text", text: block.thinking });
 			} else {
 				content.push({
 					type: "text",

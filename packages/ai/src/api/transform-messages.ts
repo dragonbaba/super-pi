@@ -37,6 +37,7 @@ type NormalizeToolCallId<TApi extends Api> = (id: string, model: Model<TApi>, so
 
 function transformContentBlock<TApi extends Api>(block: AssistantMessage["content"][number], isSameModel: boolean, replaySignatures: boolean, model: Model<TApi>, normalizeToolCallId: NormalizeToolCallId<TApi> | undefined, assistantMsg: AssistantMessage, toolCallIdMap: Map<string, string>): AssistantMessage["content"][number] | undefined {
 	if (block.type === "thinking") {
+		if (!isSameModel) return undefined;
 		// Redacted thinking is opaque encrypted content, only valid for the same model.
 		// Drop it for cross-model to avoid API errors.
 		if (block.redacted) {
@@ -45,13 +46,9 @@ function transformContentBlock<TApi extends Api>(block: AssistantMessage["conten
 		// For same model: keep thinking blocks with signatures (needed for replay)
 		// even if the thinking text is empty (OpenAI encrypted reasoning)
 		if (replaySignatures && block.thinkingSignature) return block;
-		// Skip empty thinking blocks, convert others to plain text
+		// Keep non-empty same-model thinking without an unusable signature.
 		if (!block.thinking || block.thinking.trim() === "") return undefined;
-		if (isSameModel) return { ...block, thinkingSignature: undefined };
-		return {
-			type: "text" as const,
-			text: block.thinking,
-		};
+		return { ...block, thinkingSignature: undefined };
 	}
 
 	if (block.type === "text") {

@@ -1,6 +1,6 @@
 # H03 — print 截断结果明确返回失败
 
-状态：真实 CLI 失败基线已固化，最小修复与本地验收完成，等待独立 PR 审查和 CI。基线为 H02-B 合并提交 `61bdbbac823093b93fe9ac986709c7909680ed69`，分支 `codex/h03-print-length`。
+状态：已通过最终 head 审查和六分片 CI，合并 PR #202，两端任务分支已删除。基线为 H02-B 合并提交 `61bdbbac823093b93fe9ac986709c7909680ed69`，原分支 `codex/h03-print-length`。
 
 ## 调用链与兼容性决定
 
@@ -27,3 +27,9 @@
 print-mode.ts SHA-256 `67e173ea3fe3f9f72027b46f167700a0d3e060d97fdcf3269522b1a3bd06e338`。`node --experimental-strip-types --test tests/print-result-status.test.ts tests/print-close-overlap.test.ts tests/source-invariants.test.ts tests/stream-hot-paths.test.ts` 得到 **30 通过、0 失败、3 POSIX 跳过**。H03 八项全部通过：text/length 保留两个文本块及顺序、输出明确警告、实际退出 1；其他 text 和 JSON 对照保持既有行为。每例 provider 请求/shutdown/runtime dispose/session dispose 均 1，真实网络/uncaught/unhandled rejection 为 0，保留 runtime/session 回调与 idle 引用、新增信号监听器已释放，独立 fixture root 退出后清理成功。
 
 `npm.cmd run check`、`npm.cmd --offline run build:offline` 通过。AST 基线→候选 arrow/function expression **14→14**、function declaration **3→3**、regex **0→0**、strings **24→26**（length 判定和一条固定警告）、new Promise **0→0**、async **10→10**。无新增整回答复制、扫描、容器或对象池；这仅是低频最终态分支的证据，不表示既有输出链零分配。最终 head reviewer 和完整六分片 CI 尚待完成。
+
+## 最终交付回执
+
+最终 head `5f7f4be95e54145960d46f4725a73507ee957b11` 的 [首次审查](https://github.com/dragonbaba/super-pi/pull/202#issuecomment-6623306337) completed/no findings，review threads 为空；没有后续源码推送。[最终 CI](https://github.com/dragonbaba/super-pi/actions/runs/41778885578) Linux 2 / Windows 4 分片全部 success。[PR #202](https://github.com/dragonbaba/super-pi/pull/202) 按该 head 锁定合并，merge commit `a7b239eb7e969cd3b7866b2e54df692f2c34cf02`；已验证 origin/main 包含合并并 fast-forward main，远端/本地 `codex/h03-print-length` 按精确身份删除并查询确认不存在。
+
+五个 runner 子进程全部退出，十份日志在正式证据提交后按 SHA-256/边界身份删除。随后 107 个缓存文件、3 个目录的精确删除被自动审批在执行前拒绝，原始原因 `blocked by policy`。[清理回执](https://github.com/dragonbaba/super-pi/pull/202#issuecomment-6623319274)。根 `D:\RMProjects\Pi\.task-tmp\h03-ca0b12728305` 保留缓存、resources.json、run.ps1、pr-body.md；manifest 标记阻塞，未换机制、转移所有权或重试。每个真实 CLI fixture root 已由测试 owner 清理成功，不能据此声称 runner 根已清理。
