@@ -1,6 +1,6 @@
 # PF01 长历史布局：精确宽度计算
 
-状态：本地实施和验证完成，待 PR 审查。前置 [PF00](pf00-baseline-validation.md) 已经通过 [PR #215](https://github.com/dragonbaba/super-pi/pull/215) 交付；本项基线为 `1c9f9c597f58af54abb0d7639336b0a5bf7a8f09`，适用[总方案](../super-pi-performance-followup-plan.md)及[热路径分配契约](hot-path-allocation-contract.md)。原始样本、源码/构建哈希、复现脚本和检查回执见 [PF01 证据](../evidence/performance-pf01-layout-2026-11-05.json)。
+状态：已通过 [PR #216](https://github.com/dragonbaba/super-pi/pull/216) 交付。最终审查 head 为 `244905bded1580d0b442dd59689c5f5bab9a4418`，无未处理发现；六分片 CI 成功后 squash 合并为 `49000173b677dc0ac855f45be7f83ca37764e7c8`，树一致性、主分支包含、两端分支删除和精确资源清理见[收尾回执](https://github.com/dragonbaba/super-pi/pull/216#issuecomment-6638578122)。run `41883460291` 首轮另有 Windows 2/4 的 Fake-IP Python 10 秒超时；同 head 单分片重跑该用例 917.6645 ms 通过，未放宽超时或断言。前置 [PF00](pf00-baseline-validation.md) 已经通过 [PR #215](https://github.com/dragonbaba/super-pi/pull/215) 交付；本项基线为 `1c9f9c597f58af54abb0d7639336b0a5bf7a8f09`，适用[总方案](../super-pi-performance-followup-plan.md)及[热路径分配契约](hot-path-allocation-contract.md)。原始样本、源码/构建哈希、复现脚本和检查回执见 [PF01 证据](../evidence/performance-pf01-layout-2026-11-05.json)。
 
 ## 成本、调用链与设计
 
@@ -64,4 +64,4 @@ CI 后续校验：`9ccff5bbd` 已获 reviewer 无新增建议，但 run `4187993
 
 原生终端连续输入/缩放、光标和选择的完整人工体验仍为 V；组件计算及已有终端回归不能替代该外部验收，也不能把同步布局调用耗时直接称为实际键盘输入延迟。布局仍为同步 O(历史项数)，未声称解决所有长历史/长块成本。无新增后台测量任务，故没有新的 resize 代次或取消队列；后续 PF03/PF08 继续各自范围内的复杂内容与组合验收。
 
-原任务根 `.task-tmp/pf01-layout-103e2949-7b3` 已按清单移除 1566 项资源、确认 238 个直属任务进程均结束，回执见 [PR 清理记录](https://github.com/dragonbaba/super-pi/pull/216#issuecomment-6637797283)。本次 UI 审计补充根为 `.task-tmp/pf01-ui-audit-42eddd2f-04e`，归档后同样精确清理。最终 PR/head、review、六分片 CI、merge、两端分支及精确资源清理回执写入 PR 收尾评论，并在下一任务更新本记录，避免为状态回填不断追加无关推送。
+原任务根 `.task-tmp/pf01-layout-103e2949-7b3` 已按清单移除 1566 项资源、确认 238 个直属任务进程均结束，回执见 [PR 清理记录](https://github.com/dragonbaba/super-pi/pull/216#issuecomment-6637797283)。UI 审计补充根 `.task-tmp/pf01-ui-audit-42eddd2f-04e` 也已精确移除 2496 项资源，14 个直属进程结束、15 份子进程退出回执齐全；共享 `.task-tmp` 保留。最终 PR/head、review、六分片 CI、merge、两端分支及精确资源清理已记入上方收尾回执。
