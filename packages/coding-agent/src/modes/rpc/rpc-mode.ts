@@ -87,6 +87,9 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	// Shutdown request flag
 	let shutdownRequested = false;
 	let shuttingDown = false;
+	let shutdownOperation: Promise<never> | undefined;
+	let shutdownExitCode = 0;
+	let shutdownSignal: NodeJS.Signals | undefined;
 	let pendingCommands = 0;
 	let pendingPromptResponses = 0;
 	let waitingForShutdownIdle = false;
@@ -685,24 +688,43 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		}
 	};
 
-	async function shutdown(exitCode = 0, signal?: NodeJS.Signals): Promise<never> {
-		if (shuttingDown) {
-			process.exit(exitCode);
+	function shutdown(exitCode = 0, signal?: NodeJS.Signals): Promise<never> {
+		if (!shutdownOperation) {
+			shuttingDown = true;
+			shutdownExitCode = exitCode;
+			shutdownSignal = signal;
+			// Publish before abort or extension cleanup can synchronously reenter.
+			shutdownOperation = Promise.resolve().then(performShutdown);
 		}
-		shuttingDown = true;
-		for (const cleanup of signalCleanupHandlers) {
-			cleanup();
-		}
+		return shutdownOperation;
+	}
+
+	async function performShutdown(): Promise<never> {
 		unsubscribe?.();
+		unsubscribe = undefined;
 		unsubscribeBackpressure?.();
-		await runtimeHost.dispose();
+		unsubscribeBackpressure = undefined;
+		try {
+			await runtimeHost.dispose();
+		} catch (error) {
+			console.error("RPC shutdown failed:", error);
+			shutdownExitCode = 1;
+		}
 		detachInput?.();
 		detachInput = undefined;
 		process.stdin.pause();
-		if (signal !== "SIGTERM") {
-			await flushRawStdout();
+		if (shutdownSignal !== "SIGTERM") {
+			try {
+				await flushRawStdout();
+			} catch (error) {
+				console.error("RPC shutdown output failed:", error);
+				shutdownExitCode = 1;
+			}
 		}
-		process.exit(exitCode);
+		for (const cleanup of signalCleanupHandlers) cleanup();
+		signalCleanupHandlers.length = 0;
+		shutdownSignal = undefined;
+		process.exit(shutdownExitCode);
 	}
 
 	function onShutdownIdle(): void {

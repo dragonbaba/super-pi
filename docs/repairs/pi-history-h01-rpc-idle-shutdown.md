@@ -1,6 +1,6 @@
 # H01 — RPC 空闲扩展关闭
 
-状态：[PR #199](https://github.com/dragonbaba/super-pi/pull/199) 两轮审查意见已修复，待最终 head 复审和 CI。基线 `3174bf87c87750213e0ccf437f23ffaa17d5bcbc`；分支 `codex/history-h01-rpc-idle-shutdown`；Node v26.13.0。上游依据为固定未发布快照中的 [#11599](https://github.com/earendil-works/pi/issues/11599)，不混入 H02 的 EOF/信号重复关闭问题。
+状态：[PR #199](https://github.com/dragonbaba/super-pi/pull/199) 已通过最终 head 复审和全部六分片 CI 并合并，两端旧分支已删除；任务缓存清理受阻，见末节。基线 `3174bf87c87750213e0ccf437f23ffaa17d5bcbc`；原分支 `codex/history-h01-rpc-idle-shutdown`；Node v26.13.0。上游依据为固定未发布快照中的 [#11599](https://github.com/earendil-works/pi/issues/11599)，不混入 H02 的 EOF/信号重复关闭问题。
 
 ## 根因、调用链和最小设计
 
@@ -30,7 +30,7 @@
 - preflight 失败注入保留原错误响应，再完成关闭；EOF 正常关闭对照；没有真实 provider 请求。
 - 先在基线固化失败，再运行定向回归、source/stream invariants、`npm.cmd run check`、`npm.cmd --offline run build:offline`、`npm.cmd test`。最终 head 的 PR 审查及六分片 CI 独立记录。
 
-任务根：`D:\RMProjects\Pi\.task-tmp\history-h01-c5b8685d5802407c80fb2109d21fa576`。TMP/TEMP/TMPDIR 在子进程环境设置并核验；测试各自的 mkdtemp 根由创建者登记、等待子进程 close 后使用现有 removeOwnedFixture 清理。当前没有合并结论；任务级 scratch 尚待验证完成后清理。
+任务根：`D:\RMProjects\Pi\.task-tmp\history-h01-c5b8685d5802407c80fb2109d21fa576`。TMP/TEMP/TMPDIR 在子进程环境设置并核验；测试各自的 mkdtemp 根由创建者登记、等待子进程 close 后使用现有 removeOwnedFixture 清理。任务级 scratch 的最终受阻状态见末节。
 
 基线回归：`node --experimental-strip-types --test --test-name-pattern "RPC shutdown (idle|eof):" tests/rpc-shutdown.test.ts` 得到 **1 失败 / 1 通过**。idle 已收到真实 RPC ready 输出，但保持 stdin 打开后未关闭，只能由夹具故障看门狗终止；EOF 对照退出 0，runtime/session dispose 各一次，无网络调用，RPC listener 和 runtime 回调已释放。初次夹具曾把 Node stdin 自带的 end listener 算成 RPC 泄漏；已改为记录启动时 listener 身份，只检查 RPC 新增监听器，随后重新取得上述有效失败基线，没有将夹具错误当成生产缺陷。
 
@@ -49,3 +49,9 @@
 首次 [review finding](https://github.com/dragonbaba/super-pi/pull/199#discussion_r4463408397) 指出 settlement hook 内请求关闭会丢失公开 agent_settled。新增真实 CLI settled 场景先在首次候选固化 **1 失败**（缺少公开事件），改用 isIdle 后 RPC 8 + source/stream 17 共 **25/25 通过**；最终类型检查和离线构建再次通过。fixture 的异步 settled hook 完成标记、公开事件、dispose 次数和引用释放均被断言。生产 AST 计数不因这次布尔条件修正变化。后续推送需单独 `@codex review`；本记录不预写复审或 CI 通过。
 
 第二轮 [review finding](https://github.com/dragonbaba/super-pi/pull/199#discussion_r4463436658) 指出空闲自定义消息 flush 不必发布 agent_settled。新 custom-flush 场景在第二轮候选上固化 **1 失败**：已观察到 RPC_FLUSH_DONE、命令响应已经输出，但 stdin 保持打开时不能退出。复用 waitForIdle 后，最终 RPC 9 + source/stream 17 共 **26/26 通过**，类型检查和离线构建通过；增加 retained-session idle 引用断言后 RPC 9/9 再次通过。夹具用 IPC 闸门保证异步 message_end 晚于命令响应，确认消息结束事件保留、没有伪造公开 agent_settled、无真实网络请求。该修正使用既有 session idle 通知，不加轮询、timer、第二个 idle Promise owner 或逐请求 inline 回调。
+
+## 合并与资源回执
+
+最终 head `4da744f3262e72db5655b3a2ec2ffa305b8eb5a5` 的 [复审请求](https://github.com/dragonbaba/super-pi/pull/199#issuecomment-6622278378)、[无发现回执](https://github.com/dragonbaba/super-pi/pull/199#issuecomment-6622304880) 和机器 summary 对应同一提交：completed、has_any_findings=false、has_unresolved_findings=false。两条旧线程均附修复证据并 resolved。[CI run 41771349468](https://github.com/dragonbaba/super-pi/actions/runs/41771349468) 的四个 Windows/两个 Linux 分片全部 success。重新核对 head、所有 checks 和线程后，锁定 head 合并为 `2d92b18b92a070d2bd52afb32aae64a8e2ed5bf4`；已验证进入远端 main，本地 main 快进同步，远端与本地精确旧分支均删除。没有对首次候选被取消的 CI 宣称通过。
+
+保存正式证据后，38 份任务日志经精确路径/长度/SHA-256 核验并成功删除。随后删除已登记的 jiti/node-compile-cache 共 109 文件、3 目录的命令被自动审批在执行前拒绝，唯一原始原因 `blocked by policy`。任务根仍包含这两类缓存、resources.json、pr-resources.json、run.ps1、pr-body.md、local-results.md；manifest 已登记 blocked，未重试或更换机制。[清理回执](https://github.com/dragonbaba/super-pi/pull/199#issuecomment-6622372318)。全部测试进程已正常退出或按精确身份结束，但**任务根清理未完成**。
