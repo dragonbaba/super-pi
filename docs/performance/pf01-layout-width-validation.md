@@ -1,0 +1,61 @@
+# PF01 长历史布局：精确宽度计算
+
+状态：本地实施和验证完成，待 PR 审查。前置 [PF00](pf00-baseline-validation.md) 已经通过 [PR #215](https://github.com/dragonbaba/super-pi/pull/215) 交付；本项基线为 `1c9f9c597f58af54abb0d7639336b0a5bf7a8f09`，适用[总方案](../super-pi-performance-followup-plan.md)及[热路径分配契约](hot-path-allocation-contract.md)。原始样本、源码/构建哈希、复现脚本和检查回执见 [PF01 证据](../evidence/performance-pf01-layout-2026-11-05.json)。
+
+## 成本、调用链与设计
+
+R：真实 `UserMessageComponent` / `AssistantMessageComponent` 组成的 5 万项历史在宽度变化时同步测量全部消息。基线 CPU 采样中 `visibleWidth()` 自身约占 3.00 秒，`graphemeWidth()` 约 0.57 秒；采样覆盖初始化和多次布局，不能把该比例当作单次端到端延迟。S：旧实现去除 ANSI 后仍对填充空格和普通 ASCII 逐字素分割，不同消息编号/宽度/样式又使整行宽度缓存频繁失效。
+
+审计链为 resize/input 调度 → Main/Alt render → RetainedContainer 高度索引与 viewport → 实际消息 Container/Markdown → wrap/background/padding → `visibleWidth` → Unicode/终端序列 helpers → frame composition/selection/cursor → TerminalFrameQueue → ProcessTerminal write/flush。宽度函数也影响输入框、编辑器、覆盖层和选择，因此验收包含这些消费者。索引、渲染调度、写队列和释放协议均沿用现有实现。
+
+最小实现只修改 `packages/tui/src/utils.ts`：
+
+- 纯 ASCII 和完全相同输入的缓存命中保留原有快速路径。
+- ASCII 加受支持的终端序列、tab 可直接计算精确列数，不构造去样式正文或字素结果对象。遇到 Unicode、未识别控制序列时整段回退，不能把 ANSI 两侧的组合字符错误拆开。
+- Unicode 仍使用原来的 Intl.Segmenter 和 graphemeWidth 算法；只把首尾可确定宽度的普通 ASCII 移出分割范围。两侧各保留一个边界 ASCII，覆盖后接组合标记、前接 Prepend 等情况；普通可打印 ASCII 之间存在字素边界。
+- 在同一个原有 512 项 FIFO 中保存完整输入宽度和 Unicode 核心宽度。键均为不可变字符串，边界字符参与键；宽度、样式、编号引起的外围变化可复用核心。两个键类别共享总容量，未增加第二个缓存或对象池。
+
+反例修正：第一候选只缓存核心，使重复的完整 styled/Unicode 输入失去原有快速命中。独立宽度负对照暴露该回退后，恢复完整输入命中，再重新运行候选的比较；早期候选结果保留为探索记录，不作为最终验收。
+
+## 分配、所有权与失效
+
+新增闭包、Promise、AbortController、包装对象和数组均为 0；新 helper 是模块函数。ANSI 扫描直接复用返回数字边界的 `findTerminalSequenceEnd`，不在每个控制序列创建提取结果对象。没有新正则或动态正则字符串。
+
+现有宽度缓存继续由模块持有，最多 512 个字符串键/数值，不持有组件、会话或终端 owner；FIFO 淘汰释放被替换的键。其生命周期仍为进程级，并非在每次 transcript.clear/dispose 后归零。核心 slice 和去样式正文可能保留输入相关字符串，未声称这 512 项具有新的字节上限。现有调用方允许的大输入仍需在原有容量规则内处理；本项不扩大缓存容量。
+
+ASCII 快路径只有数字局部状态。Unicode cache miss 仍可能构造去样式字符串、核心 slice、Segmenter 结果及既有 graphemeWidth 内部字符串；cache hit 不再创建这些字素对象。所有临时值均为同步调用局部，不跨 await、不新增取消任务、监听器或 timer。异常不会在 cache 中写入未完成宽度；调用方已有 clear/dispose、写失败和取消测试继续作为生命周期门禁。
+
+## 比较协议
+
+同机串行，基线/候选交替，至少五个独立进程。基线通过任务专用 loader 仅将 utils 模块替换为构建自基线的副本，其余 fixture、参数和依赖相同；候选使用实际源码/离线构建。基线的源模块和 dist 模块分别保持模块身份，不合并各自缓存。所有 child 的 TMP/TEMP/TMPDIR 指向本任务根，隔离 HOME；原始样本、脚本和哈希归档后清理临时文件。
+
+- 主指标：1 千/5 千/5 万生产消息组件，使用固定合成文本而非真实私人会话；初次布局、120↔96 往返宽度、83–88 连续新宽度分别计时。每个 resize 同步完成精确高度计算和可见输出，因此总测量完成时间与该调用结束一致，无隐藏后台总工作量。
+- 正确性：完整 Unicode 计算 oracle、确定性随机边界组合、512 项淘汰反例；复杂 Markdown/ANSI/组合字符/终端序列的完整历史与顶部/中段/底部窗口摘要对照。
+- 负对照：固定输入宽度缓存命中、普通 ASCII；Main/Alt 的 5 千和5 万项常规帧。Main 5 千沿用 PF00 稳定性修订后的 2000 预热、20000 计量配置，其余沿用 500/5000。
+- 分配/生命周期：单独 HeapProfiler 采样、生产 frame allocation 和 queue benchmark；记录测量项目数、字素调用/字符上限、队列硬计数、clear/dispose 后引用与受控 GC。计时与 probe/profile 样本分开解释。
+
+## 验收记录
+
+| 最终比较 | 基线 → 候选 | 口径 |
+| --- | --- | --- |
+| 5 万项首次布局 | 中位数 837.37 → 349.28 ms | 各 5 个独立进程，样本有限；不是 30 次启动验收 |
+| 5 万项往返缩放 | p50 754.48 → 303.17 ms；p95 792.27 → 320.03 ms | 每侧 30 个计时样本，p95 下降 59.6%，达到 PF00 的 ≥50% 目标 |
+| 5 万项连续新宽度 | p95 770.97 → 311.07 ms | 每侧 30 样本，下降 59.7%；不是命中两种历史宽度的伪收益 |
+| 1 千/5 千项往返缩放 | p95 20.11 → 6.74 / 77.83 → 39.47 ms | 保留全部慢样本；未用更多循环掩盖 5 千项的 GC 波动 |
+| 每条不同的 Unicode，5 千项 | p95 114.61 → 115.64 ms | 无明显收益，变化在门限内 |
+| 长表格/代码等混合，1 千项 | p95 515.66 → 514.41 ms | 无明显收益，不能把短消息夹具的改善推广至全部长内容 |
+| 布局分配采样 | 606,916,369 → 327,825,140 bytes/resize | 4096 字节 HeapProfiler 采样间隔、各 6 次缩放；约下降 46.0%，不是存活堆大小 |
+| Main 稳态帧，5 千/5 万项 | 进程 p95 中位数 0.0254 → 0.0257 / 0.0291 → 0.0298 ms | 各侧各 5 进程，最大变化 +2.4%，在既定门限内 |
+| Alt 稳态帧，5 千/5 万项 | 进程 p95 中位数 0.0418 → 0.0409 / 0.0426 → 0.0414 ms | 变化 −2.2% / −2.8%，不单独宣称微小提速 |
+
+50k 往返缩放基线的进程 p95 相对带约 4.53%，候选约 9.94%；最慢候选进程 p95 为 348.89 ms，仍超出噪声地改善。固定宽度帧的每帧分配中位数变化约 −0.7% 至 +0.1%。单函数缓存热命中的批次均值处于纳秒级，跨进程波动较大；只将它用于发现早期数量级回退，最终以一轮缓存查找、零分割的结构与实际 frame 门禁判断，不把纳秒差值解释为可靠单事件 p95。
+
+确定性结果：每次 50k resize 仍测量 50000 项、总高度精确；10 个宽度的完整输出及 30 个顶部/中段/底部窗口与基线逐字节摘要相同。完整 Unicode oracle 覆盖边界组合和 10000 个固定种子输入。1000 个样式化 ASCII 输入不调用 Segmenter；1000 个仅外围改变的 Unicode 输入最多分割 3 次，完整输入与核心共享 512 项容量的淘汰反例通过。
+
+40 组生产帧测量中：completed render/full-history fallback 为 0，viewport visits 保持有界；frame Promise/AbortController/wrapper/full copy 为 0，active ≤1、pending ≤1、queue ≤2，完整帧物化 ≤1。独立 queue allocation 门禁同样通过。所有布局 clear 后的组件、索引、prepared/Kitty 行引用为 0；Alt 五轮生命周期的最大 dispose 后引用为 0。受控 GC 五点堆为 47,010,280–47,153,864 bytes，拟合斜率约 +32,344 bytes/cycle；保留这一短期正斜率，不将其写成泄漏或无泄漏结论。
+
+验证完成：`npm run build:offline` 12/12 包、6896 ms、并发峰值 2；`npm run check` 通过；16 个文件共 171 项唯一的定向测试最终全部通过。初次测试命令漏传 `--expose-gc`，170 通过、1 项 GC 前置条件失败；补参数重跑该文件 6/6 通过，没有修改测试要求。其余验证包括 source/AST、精确布局、图像失效、overlay/selection/cursor、终端恢复、异常卸载和引用释放。完整六分片 CI 和当前 head reviewer 结论以本项 PR 为准；首次推送等待审查，后续推送重新 `@codex review`。
+
+原生终端连续输入/缩放、光标和选择的完整人工体验仍为 V；组件计算及已有终端回归不能替代该外部验收，也不能把同步布局调用耗时直接称为实际键盘输入延迟。布局仍为同步 O(历史项数)，未声称解决所有长历史/长块成本。无新增后台测量任务，故没有新的 resize 代次或取消队列；后续 PF03/PF08 继续各自范围内的复杂内容与组合验收。
+
+任务根为 `.task-tmp/pf01-layout-103e2949-7b3`，证据归档后按资源清单清理。最终 PR/head、review、六分片 CI、merge、两端分支及精确资源清理回执写入 PR 收尾评论，并在下一任务更新本记录，避免为状态回填不断追加无关推送。
