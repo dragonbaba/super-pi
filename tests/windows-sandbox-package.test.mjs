@@ -77,16 +77,16 @@ test("bounded data writer and reader preserve bytes and reject corrupt or aliase
 test("host-only transport check: copied project Node and fixed PowerShell preserve stdout, stderr, and nonzero exit", {
 	skip: process.platform !== "win32" || process.version !== NODE_VERSION, timeout: 30_000,
 }, async t => {
-	const root = ownedRoot(t), prepared = prepareWindowsSandboxPackage(root, "node");
+	const root = ownedRoot(t), prepared = await prepareWindowsSandboxPackage(root, "node");
 	assert.equal(prepared.lifecycle, "prepared-not-started"); assert.equal(prepared.arbitraryCommands, false);
 	assert.equal(prepared.writableShareQuota, false);
 	assert.equal(sha256(path.join(prepared.input, "node.exe")), prepared.nodeSha256);
 	assert.equal(sha256(path.join(prepared.input, "guest.mjs")), prepared.guestSha256);
-	assert.deepEqual(fs.readdirSync(prepared.input).sort(), ["guest.mjs", "node.exe", "request.json"]);
+	assert.deepEqual(fs.readdirSync(prepared.input).sort(), ["guest.mjs", "node.exe", "powershell.config.json", "powershell.json", "request.json"]);
 	for (const mode of ["node", "powershell", "overflow"]) {
 		const out = path.join(root, mode); fs.mkdirSync(out);
 		const req = request(mode);
-		const result = await runFixedProbe(req, prepared.input, out);
+		const result = await runFixedProbe(req, prepared.input, out, prepared.hostPowerShell);
 		const captured = readWindowsSandboxResult(out, req);
 		assert.deepEqual(captured.result, { protocol: PROTOCOL, taskId: req.taskId, mode, ...result });
 		if (mode === "overflow") {

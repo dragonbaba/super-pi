@@ -1,7 +1,6 @@
 // Offline-reviewed experimental glue only. No CLI entry, VHD creation or production integration.
 import { SandboxLifecycle, parseRunning } from "./windows-sandbox-lifecycle.mjs";
 import { TaskVolumeOwner } from "./windows-sandbox-volume.mjs";
-import { singleGuidVolumeConfig } from "./windows-sandbox-volume-config.mjs";
 const UUID = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/;
 const UNBOUND = Object.freeze({ state: "not-started", neverDispatched: true, callsClosed: true, owner: null });
 const DISPOSED = Object.freeze({ state: "unknown", neverDispatched: false, callsClosed: false, owner: null });
@@ -11,8 +10,7 @@ function need(value, message) { if (!value) throw Error(message); }
 
 export function experimentalGuidConfig(volume) {
     // A preview is data only. Starting still requires a ticket bound to the concrete VM owner.
-    const binding = TaskVolumeOwner.prototype.experimentalMappingPreview.call(volume);
-    return singleGuidVolumeConfig(binding.volumePath);
+    return TaskVolumeOwner.prototype.experimentalMappingConfig.call(volume);
 }
 
 export class LiveSandboxRuntime {

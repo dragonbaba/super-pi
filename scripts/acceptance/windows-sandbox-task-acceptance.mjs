@@ -18,6 +18,7 @@ import { parseSandboxTaskRequest } from "../../packages/coding-agent/src/core/sa
 import { TaskPackageBuilder } from "../../packages/coding-agent/src/core/sandbox/task-package.ts";
 import { parseTaskResult } from "./windows-sandbox-task-result.mjs";
 import { taskReport, taskFrame, taskHelpers, taskOutputPreview, produceTaskCandidates, finishInputCandidates, TASK_NORMAL_FILES } from "./windows-sandbox-task-session.mjs";
+import { SandboxToolchains } from "./windows-sandbox-toolchains.mjs";
 const DIRECTORY = fileURLToPath(new URL(".", import.meta.url)), REPOSITORY = fileURLToPath(new URL("../..", import.meta.url));
 const CSC = "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe", CSC_SHA256 = "eca02e6b15cde93009a59a3d129d5a77fb5008f2e1cf62cf573b6737c747ecc3";
 const NODE = "D:\\Nodes\\26.13.0\\node.exe", NODE_SHA256 = "14319838b3f355e0398c13569a90270bce4fc68f25189f58c59b03dadae0e6d5";
@@ -141,7 +142,9 @@ export async function runTaskAcceptance(expectedBundle) {
     const stat = fs.lstatSync(resource.root, { bigint: true }), rootId = String(stat.dev) + ":" + String(stat.ino), privateRootId = nativePrivateIdentity(stat);
     const report = taskReport(taskId, snapshotId, resource.root, rootId);
     report.sources = { ...sourceReceipt(bundle), nodeSha256: NODE_SHA256, koffiSha256: KOFFI_SHA256, typescriptSha256: TYPESCRIPT_SHA256 };
-    const controller = new AbortController(), task = taskFrame(report, controller);
+    const toolchains = new SandboxToolchains({ cwd: REPOSITORY });
+    await toolchains.validateTrees();
+    const controller = new AbortController(), task = taskFrame(report, controller, toolchains);
     const save = sessionJournal(resource, report, () => task.unsafe(), "task");
     const lifetime = new SharingLifetime({ bus: process, stream: process.stdout, report, save, task, profile: "task" });
     const launchGuard = executable => hostLaunchGuard(task, controller.signal, expectedBundle, executable,
@@ -181,7 +184,7 @@ export async function runTaskAcceptance(expectedBundle) {
         report.sources.nativeSha256 = assembly.sha256; report.sources.toolSha256 = tool.sha256; save();
         const { runInputHostFixture } = await import("./windows-sandbox-input-host-fixture.mjs");
         const host = await runInputHostFixture((capture, revision, original) => produceTaskCandidates(task, report, controller.signal, capture, revision, original, {
-            root: resource.root, rootId: privateRootId, tool, save,
+            root: resource.root, rootId: privateRootId, tool, save, environment: toolchains.encodedEnvironment,
             attachManager(declaration) {
                 need(!controller.signal.aborted, "Cancelled before input manager");
                 const driver = lifetime.launch("manager", () => launchVolumeHelper({ root: resource.root, taskId, nativeSha256: assembly.sha256,

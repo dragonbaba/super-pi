@@ -155,7 +155,7 @@ test("capacity cleanup requires the fixed profile and refuses an extra image or 
     assert.equal(f.entries.size, 0);
 });
 test("capacity bundle closes static imports and final CLI source guard runs after reservation", WINDOWS_PATH_TEST_OPTIONS, async () => {
-    const bundle = capacitySourceManifest(name => Buffer.from(name)); assert.equal(bundle.manifest.files.length, 26); assert.equal(new Set(CAPACITY_SOURCES).size, 26);
+    const bundle = capacitySourceManifest(name => Buffer.from(name)); assert.equal(bundle.manifest.files.length, 27); assert.equal(new Set(CAPACITY_SOURCES).size, 27);
     const directory = fileURLToPath(new URL("../scripts/acceptance/", import.meta.url));
     for (const name of CAPACITY_SOURCES.filter(name => name.endsWith(".mjs"))) for (const match of fs.readFileSync(path.join(directory, name), "utf8").matchAll(/^import .+ from "\.\/(.+)";/gm))
         assert.ok(CAPACITY_SOURCES.includes(match[1]), name + " -> " + match[1]);

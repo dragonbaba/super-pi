@@ -7,6 +7,7 @@ import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { SandboxLifecycle } from "./windows-sandbox-lifecycle.mjs";
 import { singleGuidVolumeConfig } from "./windows-sandbox-volume-config.mjs";
+import { SandboxToolchains } from "./windows-sandbox-toolchains.mjs";
 import { validateGuestReadReceipt } from "./windows-sandbox-volume-guest-read.mjs";
 import { validateCapacityReceipt } from "./windows-sandbox-volume-capacity-receipt.mjs";
 import { CapturedCandidateOwner } from "./windows-sandbox-volume-candidate-contract.mjs";
@@ -391,7 +392,10 @@ export class TaskVolumeOwner {
     #taskInput = false; #taskSnapshotId; #taskTimeoutMs;
     #taskResultAttempted = false; #taskResultReader; #taskResultState; #taskResultFinal;
 	#mappingAttempted = false; #mappingTicket; #mappingVm; #mappingConfig; #mappingHash; #mappingInstanceId = null; #mappingState = "none";
-	constructor({ driver, taskId, readRuntime, journal, revokeCandidates, cancelExecution }) {
+	#toolchains;
+	constructor({ driver, taskId, readRuntime, journal, revokeCandidates, cancelExecution, toolchains }) {
+		need(toolchains === undefined || toolchains instanceof SandboxToolchains, "Host-discovered toolchains required");
+		this.#toolchains = toolchains;
 		need(UUID.test(taskId) && typeof readRuntime === "function" && typeof journal === "function" && typeof revokeCandidates === "function"
 			&& typeof cancelExecution === "function", "Host owner required");
 		this.#driver = driver; this.#taskId = taskId; this.#runtime = readRuntime; this.#journal = journal; this.#revoke = revokeCandidates;
@@ -583,15 +587,23 @@ export class TaskVolumeOwner {
 		return Object.freeze({ taskId: this.#taskId, imageId: this.#baseline.imageId, diskId: this.#baseline.diskId,
 			volumePath: this.#baseline.volumePath, exchangeId: this.#baseline.exchangeId, hostFolder: this.#baseline.volumePath + "exchange" });
 	}
+	experimentalMappingConfig() {
+		return this.#currentMappingConfig();
+	}
+	#currentMappingConfig() {
+		need(this.#mappingHealthy() && this.#baseline, "Mapping configuration requires a healthy prepared volume");
+		const config = singleGuidVolumeConfig(this.#baseline.volumePath);
+		return this.#toolchains ? this.#toolchains.appendConfig(config) : config;
+	}
 	async issueExperimentalMapping(vm) {
 		need(!this.#mappingAttempted && vm instanceof SandboxLifecycle && vm.taskId === this.#taskId, "One concrete experimental VM owner required");
 		this.#mappingInstanceId = vm.id;
 		need(this.#mappingHealthy() && this.#mappingRuntime(vm), "Experimental VM must be bound and never dispatched");
 		this.#mappingAttempted = true;
 		try {
-			this.#mappingConfig = singleGuidVolumeConfig(this.#baseline.volumePath);
+			this.#mappingConfig = this.#currentMappingConfig();
 			this.#mappingHash = createHash("sha256").update(this.#mappingConfig).digest("hex");
-			need(this.#mappingConfiguration(vm), "VM configuration is not the sole bound GUID mapping");
+			need(this.#mappingConfiguration(vm), "VM configuration differs from the sole bound volume/toolchain configuration");
 			await this.verify(); this.experimentalMappingPreview();
 			this.#inputCurrent(vm);
 			need(this.#mappingHealthy() && this.#mappingRuntime(vm) && this.#mappingConfiguration(vm), "Mapping issuance changed while verifying");
@@ -600,6 +612,7 @@ export class TaskVolumeOwner {
 		} catch (error) { this.#failMapping(); throw error; }
 	}
 	#validateExperimentalDispatch = vm => {
+		this.#toolchains?.assertCurrent();
 		const runtime = this.#runtime();
 		need(this.#mappingTicket !== undefined && this.#mappingVm === vm && this.#mappingState === "dispatch-checked"
 			&& this.#mappingHealthy() && this.#mappingConfiguration(vm) && !vm.cleanupPromise && vm.state === "starting"
@@ -610,6 +623,7 @@ export class TaskVolumeOwner {
 		return true;
 	};
 	#beforeExperimentalDispatch = async vm => {
+		this.#toolchains?.assertCurrent();
 		const ticket = this.#mappingTicket;
 		need(ticket !== undefined && this.#mappingState === "consumed" && this.#mappingVm === vm, "Mapping ticket is not pending for this VM");
 		await this.verify();

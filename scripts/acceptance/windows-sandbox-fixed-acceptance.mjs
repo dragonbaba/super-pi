@@ -36,7 +36,7 @@ async function awaitResultMarker(output, signal) {
 export async function runFixedAcceptance(mode) {
 	if (!["node", "powershell"].includes(mode)) throw new Error("Only the two reviewed fixed tasks are allowed");
 	const resource = acquireAcceptanceRoot();
-	const prepared = prepareWindowsSandboxPackage(resource.root, mode);
+	const prepared = await prepareWindowsSandboxPackage(resource.root, mode);
 	const workload = { request: prepared.request, root: directoryIdentity(prepared.root), input: directoryIdentity(prepared.input), output: directoryIdentity(prepared.output),
 		nodeSha256: prepared.nodeSha256, guestSha256: prepared.guestSha256, requestSha256: sha256(path.join(prepared.input, "request.json")), arbitraryCommands: false, writableShareQuota: false };
 	const owner = new SandboxLifecycle({ cli: new FixedCli(), config: fs.readFileSync(path.join(prepared.root, "sandbox.wsb"), "utf8"),

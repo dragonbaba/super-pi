@@ -1,4 +1,4 @@
-// Windows PowerShell task profile. All guest reports remain untrusted host data.
+// PowerShell 7 task profile. All guest reports remain untrusted host data.
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
@@ -12,6 +12,57 @@ using System.Text.RegularExpressions;
 using System.Threading;
 
 internal static class TaskWorker {
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool DefineDosDeviceW(uint flags, string name, string target);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern uint QueryDosDeviceW(string name, StringBuilder target, int length);
+    static void ToolchainDrives(string value) {
+        if (value.Length == 0) return;
+        foreach (string drive in value.Split(';')) {
+            Need(drive.Length == 1 && drive[0] >= 'A' && drive[0] <= 'Z' && drive[0] != 'C', "Guest toolchain drive");
+            string name = drive + ":", target = @"C:\SuperPiToolchains\" + drive;
+            Need(Directory.Exists(target), "Guest toolchain drive directory");
+            var current = new StringBuilder(1024);
+            uint length = QueryDosDeviceW(name, current, current.Capacity);
+            if (length > 0) Need(current.ToString() == @"\??\" + target, "Guest drive already in use");
+            else Need(Marshal.GetLastWin32Error() == 2 && DefineDosDeviceW(8, name, target), "Guest toolchain drive creation");
+        }
+    }
+    internal const string VersionGuard = "if($PSVersionTable.PSEdition -cne 'Core' -or $PSVersionTable.PSVersion.Major -ne 7){throw 'Sandbox requires PowerShell 7'}; $PSStyle.OutputRendering='PlainText'; $ErrorView='NormalView'; ";
+    internal static ProcessStartInfo CommandInfo(string bootstrap, string cwd, string encodedEnvironment, string temporary) {
+        Need(encodedEnvironment.Length <= 24000, "Toolchain environment capacity");
+        string[] lines = Utf8.GetString(Convert.FromBase64String(encodedEnvironment)).Split('\n');
+        Need(lines.Length >= 3 && lines.Length <= 32 && lines[0].StartsWith(@"C:\", StringComparison.OrdinalIgnoreCase)
+            && lines[0].EndsWith(@"\pwsh.exe", StringComparison.OrdinalIgnoreCase) && File.Exists(lines[0]), "Mapped PowerShell 7 required");
+        Directory.CreateDirectory(temporary);
+        string settings = Path.Combine(temporary, "powershell.config.json");
+        File.WriteAllText(settings, "{\"DisableImplicitWinCompat\":true}", new UTF8Encoding(false));
+        var info = new ProcessStartInfo(lines[0], "-NoLogo -NoProfile -NonInteractive -SettingsFile \"" + settings + "\" -ExecutionPolicy Bypass -OutputFormat Text -EncodedCommand " + Convert.ToBase64String(Utf16.GetBytes(bootstrap))) {
+            WorkingDirectory = cwd, UseShellExecute = false, CreateNoWindow = true, RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true
+        };
+        // Only guest OS values and explicitly translated tool roots enter the command.
+        info.EnvironmentVariables.Clear();
+        info.EnvironmentVariables["SystemRoot"] = @"C:\Windows"; info.EnvironmentVariables["WINDIR"] = @"C:\Windows";
+        info.EnvironmentVariables["COMSPEC"] = @"C:\Windows\System32\cmd.exe";
+        info.EnvironmentVariables["PATHEXT"] = ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC";
+        info.EnvironmentVariables["TEMP"] = temporary; info.EnvironmentVariables["TMP"] = temporary; info.EnvironmentVariables["TMPDIR"] = temporary;
+        string home = Path.Combine(temporary, "home"); Directory.CreateDirectory(home);
+        info.EnvironmentVariables["USERPROFILE"] = home; info.EnvironmentVariables["HOME"] = home;
+        info.EnvironmentVariables["APPDATA"] = home; info.EnvironmentVariables["LOCALAPPDATA"] = home;
+        info.EnvironmentVariables["DOTNET_CLI_HOME"] = home; info.EnvironmentVariables["DOTNET_SKIP_FIRST_TIME_EXPERIENCE"] = "1";
+        info.EnvironmentVariables["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1";
+        info.EnvironmentVariables["npm_config_cache"] = Path.Combine(temporary, "npm-cache");
+        info.EnvironmentVariables["CARGO_HOME"] = Path.Combine(temporary, "cargo");
+        for (int i = 1; i < lines.Length; i++) {
+            int at = lines[i].IndexOf('='); Need(at > 0, "Guest environment record");
+            string name = lines[i].Substring(0, at), value = lines[i].Substring(at + 1);
+            if (name == "SUPERPI_TOOLCHAIN_DRIVES") { ToolchainDrives(value); continue; }
+            Need(name == "PATH" || name == "PSModulePath" || name == "JAVA_HOME" || name == "JDK_HOME" || name == "GOROOT" || name == "DOTNET_ROOT"
+                || name == "RUSTUP_HOME" || name == "ANDROID_HOME" || name == "ANDROID_SDK_ROOT" || name == "GRADLE_HOME" || name == "CUDA_PATH", "Unexpected guest variable");
+            Need(value.IndexOf('\r') < 0 && value.IndexOf('\0') < 0, "Guest environment value");
+            info.EnvironmentVariables[name] = value;
+        }
+        Need(info.EnvironmentVariables.ContainsKey("PATH") && info.EnvironmentVariables.ContainsKey("PSModulePath"), "Guest search paths required");
+        return info;
+    }
     const string Root = @"C:\SuperPiVolume", Workspace = Root + @"\workspace", Tools = Root + @"\tools";
     const int StreamLimit = 32768, PackageLimit = 49168;
     static readonly Encoding Utf8 = new UTF8Encoding(false, true), Utf16 = new UnicodeEncoding(false, false, true);
@@ -237,7 +288,7 @@ internal static class TaskWorker {
             WriteNew(Root + @"\task-result.bin", bytes, 0, bytes.Length);
         } finally { Clear(bytes); }
     }
-    static int Execute(Package p, byte[] package) {
+    static int Execute(Package p, byte[] package, string environment) {
         Process process = null; Pump stdout = null, stderr = null; Job job = new Job();
         bool started = false, stdinClosed = false, stdinCloseAttempted = false, processDisposeAttempted = false;
         bool gate = false, timedOut = false, finished = false, settlementAttempted = false;
@@ -253,17 +304,11 @@ internal static class TaskWorker {
             WriteNew(Tools + @"\task-command.bin", p.Command, 0, p.Command.Length);
             // Only this fixed bootstrap is in argv. The original command is never
             // quoted/reinterpreted by a host shell and cannot run before Job assignment.
-            const string bootstrap = GateBootstrap
+            const string bootstrap = GateBootstrap + VersionGuard
                 + "$ProgressPreference='SilentlyContinue'; $ErrorActionPreference='Stop'; [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); $OutputEncoding = [Console]::OutputEncoding; "
                 + "$b=[IO.File]::ReadAllBytes('C:\\SuperPiVolume\\tools\\task-command.bin'); "
                 + "$s=[Text.Encoding]::Unicode.GetString($b); [Array]::Clear($b,0,$b.Length); $b=$null; & ([ScriptBlock]::Create($s))";
-            byte[] bootstrapBytes = Utf16.GetBytes(bootstrap); string encoded;
-            try { encoded = Convert.ToBase64String(bootstrapBytes); } finally { Clear(bootstrapBytes); }
-            var info = new ProcessStartInfo(@"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe", "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -OutputFormat Text -EncodedCommand " + encoded) {
-                WorkingDirectory = cwd, UseShellExecute = false, CreateNoWindow = true, RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true
-            };
-            info.EnvironmentVariables.Clear(); info.EnvironmentVariables["SystemRoot"] = @"C:\Windows"; info.EnvironmentVariables["WINDIR"] = @"C:\Windows";
-            info.EnvironmentVariables["TEMP"] = Root + @"\temp"; info.EnvironmentVariables["TMP"] = Root + @"\temp";
+            var info = CommandInfo(bootstrap, cwd, environment, Root + @"\temp");
             job.Open(); process = new Process { StartInfo = info }; Need(process.Start(), "PowerShell start"); started = true;
             stdout = new Pump(process.StandardOutput); stderr = new Pump(process.StandardError);
             job.Assign(process); stdout.Start(); stderr.Start();
@@ -361,11 +406,10 @@ internal static class TaskWorker {
         int timeout; Need(Int32.TryParse(args[2], out timeout) && timeout > 0 && timeout <= 120000, "Command deadline");
         string commandFile = args[0] + @"\command.txt";
         Need(new FileInfo(commandFile).Length <= 131072, "Command capacity");
-        const string bootstrap = GateBootstrap + "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $OutputEncoding=[Console]::OutputEncoding; & ([ScriptBlock]::Create([IO.File]::ReadAllText('C:\\SuperPiExchange\\command.txt',[Text.Encoding]::UTF8)))";
-        var info = new ProcessStartInfo(@"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe", "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand " + Convert.ToBase64String(Utf16.GetBytes(bootstrap))) {
-            WorkingDirectory = args[1], UseShellExecute = false, CreateNoWindow = true, RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true
-        };
-        info.EnvironmentVariables["PATH"] = @"C:\SuperPiTools;C:\Windows\System32;C:\Windows;C:\Windows\System32\WindowsPowerShell\v1.0";
+        const string bootstrap = GateBootstrap + VersionGuard + "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $OutputEncoding=[Console]::OutputEncoding; & ([ScriptBlock]::Create([IO.File]::ReadAllText('C:\\SuperPiExchange\\command.txt',[Text.Encoding]::UTF8)))";
+        const string environmentFile = @"C:\SuperPiTools\environment.txt";
+        Need(new FileInfo(environmentFile).Length <= 24000, "Toolchain environment capacity");
+        var info = CommandInfo(bootstrap, args[1], File.ReadAllText(environmentFile, Utf8), @"C:\SuperPiCommand");
         Process process = null; Pump stdout = null, stderr = null; Job job = new Job(); Stopwatch clock = Stopwatch.StartNew();
         long deadline = timeout + 8000L; bool started = false;
         try {
@@ -398,11 +442,11 @@ internal static class TaskWorker {
         try {
             if (args.Length == 1 && args[0] == "--contract-check") return ContractCheck();
             if (args.Length == 3) return WorkspaceCommand(args);
-            Need(args.Length == 2 && Uuid.IsMatch(args[0]) && Uuid.IsMatch(args[1]), "Task arguments");
+            Need(args.Length == 4 && Uuid.IsMatch(args[0]) && Uuid.IsMatch(args[1]) && args[2] == "--toolchain", "Task arguments");
             Need(String.Equals(Environment.CurrentDirectory, Workspace, StringComparison.OrdinalIgnoreCase)
                 && String.Equals(Path.GetFullPath(typeof(TaskWorker).Assembly.Location), Tools + @"\task-runner.exe", StringComparison.OrdinalIgnoreCase), "Isolated runner location");
             bytes = ReadBounded(Tools + @"\task-package.bin", PackageLimit); package = Parse(bytes, args[0], args[1]);
-            return Execute(package, bytes);
+            return Execute(package, bytes, args[3]);
         } catch (Exception error) { Console.Error.WriteLine(error.GetType().Name); return 125; }
         finally { if (package != null) package.Clear(); Clear(bytes); }
     }

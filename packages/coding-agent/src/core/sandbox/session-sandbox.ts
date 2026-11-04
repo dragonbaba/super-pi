@@ -17,7 +17,8 @@ export interface SandboxRun {
     finish(): Promise<void>;
     diagnostics: unknown;
 }
-export type SandboxBackend = (borrow: SandboxTaskBorrow, artifactParent: string) => Promise<SandboxRun>;
+type ToolchainOptions = { settings?: { include?: string[]; exclude?: string[] }; powershellPath?: string };
+export type SandboxBackend = (borrow: SandboxTaskBorrow, artifactParent: string, toolchainOptions?: ToolchainOptions) => Promise<SandboxRun>;
 type Dispatch<State> = (state: State, name: string, args: Record<string, unknown>, allowFailure: boolean) => Promise<{ isError?: boolean; [key: string]: unknown }>;
 interface ActiveCommand {
     borrow: SandboxTaskBorrow;
@@ -47,12 +48,12 @@ function requestFor(value: unknown): SandboxTaskRequest {
     return parseSandboxTaskRequest({ version: 1, profile: "windows-powershell-foreground-v1", command: input.command,
         cwd: input.cwd ?? ".", timeoutMs: timeout * 1000, inputs: input.inputs ?? [], writes: input.writes ?? [] });
 }
-async function productionBackend(borrow: SandboxTaskBorrow, artifactParent: string): Promise<SandboxRun> {
+async function productionBackend(borrow: SandboxTaskBorrow, artifactParent: string, toolchainOptions?: ToolchainOptions): Promise<SandboxRun> {
     const packaged = new URL("./windows-runtime/windows-sandbox-task-runtime.mjs", import.meta.url);
     const source = new URL("../../../../../scripts/acceptance/windows-sandbox-task-runtime.mjs", import.meta.url);
     const location = existsSync(fileURLToPath(packaged)) ? packaged : source;
     const runtime = await import(location.href);
-    return runtime.executeWindowsTask(borrow, artifactParent);
+    return runtime.executeWindowsTask(borrow, artifactParent, toolchainOptions);
 }
 
 /** Session-owned, one foreground task at a time. This is not an authorization
@@ -66,13 +67,15 @@ export class SessionSandbox {
     private readonly runtime: () => ExtensionRuntime;
     private readonly artifactParent: string;
     private readonly backend: SandboxBackend;
-    constructor(runtime: () => ExtensionRuntime, artifactParent: string, backend: SandboxBackend = productionBackend) {
+    private readonly toolchainOptions?: ToolchainOptions;
+    constructor(runtime: () => ExtensionRuntime, artifactParent: string, backend: SandboxBackend = productionBackend, toolchainOptions?: ToolchainOptions) {
         this.runtime = runtime; this.artifactParent = artifactParent; this.backend = backend;
+        this.toolchainOptions = toolchainOptions;
     }
 
     definition(): ToolDefinition {
         return { name: "powershell", label: "PowerShell (Windows Sandbox)",
-            description: "Run Windows PowerShell 5.1 in an offline Windows Sandbox, with ErrorActionPreference=Stop and process-local script execution enabled. UTF-8 script files containing non-ASCII text need a BOM (PowerShell 5.1 decoding). Only selected read snapshots enter its workspace. Explicit output files return through file_batch authorization. No host environment, network, background jobs, or host fallback. Files are limited to 4096 bytes each, 16384 bytes total, 16 paths; command timeout is at most 30 seconds.",
+            description: "Run PowerShell 7 in an offline Windows Sandbox, with ErrorActionPreference=Stop. Tool installations are discovered from host PATH and mounted read-only at guest paths; credentials and the host user profile are not inherited. Only selected read snapshots enter its workspace. Explicit output files return through file_batch authorization. No network, background jobs, or host fallback. Files are limited to 4096 bytes each, 16384 bytes total, 16 paths; command timeout is at most 30 seconds.",
             promptSnippet: "Run offline PowerShell in Windows Sandbox with explicit snapshot inputs and output files",
             parameters: SANDBOX_POWERSHELL_PARAMETERS, executionMode: "sequential", modelExposure: "nested",
             execute: this.executeChild };
@@ -110,7 +113,7 @@ export class SessionSandbox {
         if (!slot || slot.used || !id.startsWith(slot.borrow.execution.parentToolCallId + ":nested:")
             || JSON.stringify(requestFor(input)) !== slot.serialized) throw new Error("[SANDBOX_BINDING_STALE] Original CodeMode command binding required");
         slot.borrow.assertInputsCurrent(); signal?.throwIfAborted(); slot.used = true;
-        try { slot.run = await this.backend(slot.borrow, path.resolve(this.artifactParent)); }
+        try { slot.run = await this.backend(slot.borrow, path.resolve(this.artifactParent), this.toolchainOptions); }
         catch (error) {
             const failure = error as { sandboxOwner?: unknown; sandboxDiagnostics?: unknown; cause?: { sandboxOwner?: unknown } };
             this.lastDiagnostics = failure.sandboxDiagnostics;

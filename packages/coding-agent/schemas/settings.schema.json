@@ -87,6 +87,14 @@
 		"externalEditor": { "type": "string", "description": "Ctrl+G editor command; takes precedence over VISUAL/EDITOR." },
 		"shellPath": { "type": "string", "description": "Custom bash-compatible shell executable; supports leading ~ expansion." },
 		"powershellPath": { "type": "string", "description": "Global-only PowerShell executable override. Project settings cannot redirect it." },
+		"sandboxToolchains": {
+			"type": "object", "additionalProperties": false,
+			"description": "Global-only exceptions to automatic host PATH toolchain discovery. Complete installations are mapped read-only into Windows Sandbox; no per-tool configuration is normally required.",
+			"properties": {
+				"include": { "type": "array", "maxItems": 64, "items": { "type": "string" }, "description": "Additional absolute installation or executable directories absent from PATH." },
+				"exclude": { "type": "array", "maxItems": 64, "items": { "type": "string" }, "description": "Absolute directories to exclude from toolchain mounts, including their subtrees." }
+			}
+		},
 		"powershellStatus": {
 			"type": "object",
 			"readOnly": true,

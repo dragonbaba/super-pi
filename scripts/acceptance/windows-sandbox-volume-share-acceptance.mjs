@@ -15,6 +15,7 @@ export const SHARING_ROOT = "D:\\RMProjects\\Pi\\.artifacts\\windows-sandbox-acc
 export const SHARING_SOURCES = Object.freeze([
     "windows-sandbox-clipboard.mjs", "windows-sandbox-fixed-acceptance.mjs", "windows-sandbox-guest.mjs",
     "windows-sandbox-lifecycle.mjs", "windows-sandbox-package.mjs", "windows-sandbox-powershell7.config.json",
+    "windows-sandbox-toolchains.mjs",
     "windows-sandbox-volume-capacity-protocol.mjs", "windows-sandbox-volume-capacity-receipt.mjs",
     "windows-sandbox-volume-candidate-contract.mjs", "windows-sandbox-candidates.mjs",
     "windows-sandbox-volume-config.mjs", "windows-sandbox-volume-guest-read.mjs", "windows-sandbox-volume-helper.ps1",
