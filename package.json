@@ -76,6 +76,7 @@
 		"@anthropic-ai/sdk": "0.129.0",
 		"@types/node": "22.19.19",
 		"@typescript/native-preview": "7.0.0-dev.20260120.1",
+		"@vscode/ripgrep": "1.18.0",
 		"ajv": "8.20.0",
 		"js-tiktoken": "1.0.21",
 		"shx": "0.3.4",

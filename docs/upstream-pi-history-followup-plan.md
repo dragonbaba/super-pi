@@ -1,6 +1,6 @@
 # Pi 历史修复补漏：详细任务与实施规范
 
-状态：**H00–H05（含 H02-A/B）已合并；H06 已完成本地验收，H07–H10 待实施。** 用户已授权按顺序创建独立 PR，首次推送后等待 reviewer，每次后续推送单独 `@codex review`；当前最终 head 审查无未处理意见且 CI 全部通过后可合并，并按精确身份删除两端旧分支。下文待办和验收条件不代表已经实施或通过；规划阶段的历史记录保留在 §9，H00 执行记录见 §10，各实现项记录见下表。
+状态：**H00–H06（含 H02-A/B）已合并；H07 已完成本地验收，H08–H10 待实施。** 用户已授权按顺序创建独立 PR，首次推送后等待 reviewer，每次后续推送单独 `@codex review`；当前最终 head 审查无未处理意见且 CI 全部通过后可合并，并按精确身份删除两端旧分支。下文待办和验收条件不代表已经实施或通过；规划阶段的历史记录保留在 §9，H00 执行记录见 §10，各实现项记录见下表。
 
 日期：2026-11-04，Asia/Tokyo。任务前缀使用 **H**，避免与上一轮 T01–T12、F01–F06 混淆。后续每项先更新自己的设计和证据，再动生产代码。
 
@@ -46,8 +46,8 @@
 | H03 | print 最终输出截断返回非零状态 | v1.2.0 | R：真实 CLI；[实施记录](repairs/pi-history-h03-print-length.md) | 已合并 #202；临时缓存清理受阻 |
 | H04 | 跨模型历史不把 thinking 转为正文 | v1.3.0 | R：生产函数、实际 SDK 请求、分配/释放；[实施记录](repairs/pi-history-h04-thinking-history.md) | 已合并 #203；缓存清理受阻 |
 | H05 | Anthropic 非 strict 工具保留 schema 根定义 | 未发布 | R：SDK、确定性分配/释放；[实施记录](repairs/pi-history-h05-anthropic-schema-definitions.md) | 已合并 #204；缓存清理受阻 |
-| H06 | split-turn 压缩接收用户指令 | v1.4.0 | R：SDK/AgentSession、分配/释放；[实施记录](repairs/pi-history-h06-compaction-instructions.md) | 已实施，待审查 / P1 |
-| H07 | 内置 grep 隔离 RIPGREP_CONFIG_PATH | v1.4.0 | S | 待失败回归 / P1 |
+| H06 | split-turn 压缩接收用户指令 | v1.4.0 | R：SDK/AgentSession、分配/释放；[实施记录](repairs/pi-history-h06-compaction-instructions.md) | 已合并 #205；缓存清理受阻 |
+| H07 | 内置 grep 隔离 RIPGREP_CONFIG_PATH | v1.4.0 | R：真实 rg；[实施记录](repairs/pi-history-h07-grep-no-config.md) | 已实施，待审查 / P1 |
 | H08 | grep 上下文避免整文件加载 | 未发布 | S | 待基线与完整链审计 / P1 |
 | H09 | 提示模板保留空引号参数 | v1.3.0 | R：生产函数 | 待复现固化 / P2 |
 | H10 | SDK streamProxy 工具参数增量解析 | v1.5.0 | S；上一轮明确范围外 | 待基线与完整链审计 / P2 |

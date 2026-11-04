@@ -1,6 +1,6 @@
 # H06 — split-turn 压缩接收用户指令
 
-状态：最小修复与本地验收完成，待独立 PR reviewer/CI。H06 分支 `codex/h06-compaction-instructions` 基于 H05 merge `b900f2e82dc1904811ac868cbf8af74caa9d63d9`。任务根 `D:\RMProjects\Pi\.task-tmp\h06-ef451f0ce8ff`；Node v26.13.0，子进程三个临时环境变量和 os.tmpdir 已验证，资源/进程登记 resources.json。
+状态：[PR #205](https://github.com/dragonbaba/super-pi/pull/205) 已合并；分支 `codex/h06-compaction-instructions` 两端已删除。基线 H05 merge `b900f2e82dc1904811ac868cbf8af74caa9d63d9`。任务根 `D:\RMProjects\Pi\.task-tmp\h06-ef451f0ce8ff`；Node v26.13.0，子进程三个临时环境变量和 os.tmpdir 已验证，资源/进程登记 resources.json。
 
 ## 根因与完整链
 
@@ -47,4 +47,10 @@ compaction.ts SHA-256 `c2a26c3f647d98edb6dea6dad581c322f45d247e42e06eda39e93bf42
 
 四种真实 SDK 请求 matrix 全通过，指令只在 user 请求 conversation 标签之后一次出现；systemPrompt、819/512 输出预算、cacheRetention=none/toolChoice=none、路由参数和文件列表保持。真实 Session 第二段 error/length/abort 三项通过，无新增 checkpoint；输入 session/控制器/网络 reader 与 GC 后监听器验收通过。连同真实关闭期间 compaction/tree/bash 及 source/stream 回归 **36 通过**，指定 allocation source gate **2 通过**，新确定性 allocation gate **1 通过**。类型检查与离线构建通过。
 
-所有子进程启动前设置三个临时变量；新 Session/counter 用例用仓库内 owned fixture 验证 os.tmpdir，登记 PID/退出结果并在子进程关闭后清理。正式采样/计数/AST/哈希和可重现命令见 [证据 JSON](../evidence/pi-history-h06-compaction-allocation.json)。最终 head reviewer 和六分片 CI 待完成。
+所有子进程启动前设置三个临时变量；新 Session/counter 用例用仓库内 owned fixture 验证 os.tmpdir，登记 PID/退出结果并在子进程关闭后清理。正式采样/计数/AST/哈希和可重现命令见 [证据 JSON](../evidence/pi-history-h06-compaction-allocation.json)。
+
+## 合并与资源回执
+
+最终 head `fa3c4e447f0b0f036350be9e7e7adb96d64f422e` [首次审查](https://github.com/dragonbaba/super-pi/pull/205#issuecomment-6624041435) 无建议、review threads 为空，[CI 41784207326](https://github.com/dragonbaba/super-pi/actions/runs/41784207326) 六分片全部成功。2026-11-04 06:23:09 UTC 按该 head 锁定合并，merge `c79d75bbf38f82fd1a0a777d2b47dff285e0ab3d`；main 已同步，两端精确旧分支已删除。
+
+32 个登记日志已删除。107 缓存文件和 2 目录的删除被自动审批在执行前拒绝，原文 `blocked by policy`；保留缓存、manifest、runner、PR body 于上述精确任务根，没有存活的登记子进程，不重试或换机制。[清理受阻回执](https://github.com/dragonbaba/super-pi/pull/205#issuecomment-6624053534)。
