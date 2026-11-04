@@ -315,7 +315,11 @@ export function visibleWidth(str: string): number {
 	if (end < clean.length) end++;
 	const asciiColumns = start + clean.length - end;
 	const core = clean.slice(start, end);
-	const cached = widthCache.get(core);
+	// Stripping interrupted ANSI can form a new supported sequence. Such a
+	// core's grapheme width differs from its width as raw input; do not alias
+	// the two meanings in the shared cache. Tabs have already been normalized.
+	const cacheCore = !core.includes("\x1b");
+	const cached = cacheCore ? widthCache.get(core) : undefined;
 	if (cached !== undefined) {
 		const width = asciiColumns + cached;
 		rememberWidth(str, width);
@@ -323,9 +327,9 @@ export function visibleWidth(str: string): number {
 	}
 	let width = 0;
 	for (const { segment } of graphemeSegmenter.segment(core)) width += graphemeWidth(segment);
-	rememberWidth(core, width);
+	if (cacheCore) rememberWidth(core, width);
 	const result = asciiColumns + width;
-	if (str !== core) rememberWidth(str, result);
+	if (!cacheCore || str !== core) rememberWidth(str, result);
 	return result;
 }
 

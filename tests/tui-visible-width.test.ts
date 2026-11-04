@@ -97,6 +97,21 @@ test("Unicode width cache retains at most the existing 512 cores", () => {
 	}
 });
 
+test("interrupted ANSI cores never alias raw-input widths in either call order", () => {
+	const interrupted = "\x1b[\x1b[0m31mZ\x00";
+	const normalized = "\x1b[31mZ\x00";
+	assert.equal(fullWidth(interrupted), 5);
+	assert.equal(fullWidth(normalized), 1);
+	for (const reverse of [false, true]) {
+		// Evict prior values to exercise both cold-cache insertion orders.
+		for (let index = 0; index < 600; index++) visibleWidth(String.fromCodePoint(0x10000 + index));
+		const inputs = reverse ? [normalized, interrupted] : [interrupted, normalized];
+		for (const input of inputs) assert.equal(visibleWidth(input), fullWidth(input));
+		for (const input of inputs) assert.equal(visibleWidth(input), fullWidth(input));
+		assert.equal(visibleWidth("prefix " + interrupted + " suffix"), fullWidth("prefix " + interrupted + " suffix"));
+	}
+});
+
 test("width hot chain has no closures, dynamic regexes, or per-call container/wrapper construction", () => {
 	const source = ts.createSourceFile("utils.ts", readFileSync("packages/tui/src/utils.ts", "utf8"), ts.ScriptTarget.Latest, true);
 	const names = new Set(["visibleWidth", "rememberWidth", "terminalAsciiWidth", "isPrintableAscii", "findTerminalSequenceEnd", "graphemeWidth", "couldBeEmoji"]);
