@@ -2,7 +2,7 @@
 
 An extensible terminal AI coding assistant for real engineering work, focused on controlled execution, continuing project context, and long-session terminal workflows.
 
-[简体中文](README.zh-CN.md) · [Quick start](#quick-start) · [Documentation](docs/README.md) · [Upstream assessment](docs/upstream-pi-1.5.0-diff-assessment.md) · [GPL-3.0-only](LICENSE)
+[简体中文](README.zh-CN.md) · [Quick start](#quick-start) · [Documentation](docs/README.md) · [Upstream follow-up](docs/upstream-pi-history-followup-plan.md) · [GPL-3.0-only](LICENSE)
 
 Super Pi is a source-first coding agent. It combines a model provider, project files, and local tools into a persistent working environment: inspect a project, plan a change, run checked operations, resume a session, and load only the extensions you need.
 
@@ -32,7 +32,7 @@ These capabilities still depend on the provider, model capabilities, project con
 
 ### Requirements
 
-- Node.js 22.19 or newer.
+- Node.js 22.19 or newer according to package `engines`; current [CI](.github/workflows/ci.yml) tests Node.js 26.13.x on Linux and Windows.
 - npm.
 - Default Sandbox permissions require Windows Sandbox and a supported CLI; see [execution environments](docs/execution-environments.md). Select host read/write explicitly through `/permissions`.
 - A configured model provider. The word offline in the build script describes the build step; it does not mean model inference is offline.
@@ -45,11 +45,11 @@ In PowerShell:
 git clone https://github.com/dragonbaba/super-pi.git
 Set-Location .\super-pi
 npm.cmd ci
-npm.cmd run build:offline
+npm.cmd --offline run build:offline
 npm.cmd run superpi -- --help
 ```
 
-`npm.cmd ci` installs from the lockfile. Keep the repository `.npmrc` and native dependency requirements; do not substitute `npm.cmd update`. `npm.cmd run build:offline` builds the repository runtime and resources. It does not configure a provider or prevent later model network requests. The CLI option `--offline` is separate: it disables startup network operations, but it does not turn a remote provider into a local model.
+`npm.cmd ci` installs from the lockfile and may require network access and native build prerequisites. Keep the repository `.npmrc`; do not substitute `npm.cmd update`. Once dependencies are installed, `npm.cmd --offline run build:offline` uses the checked-in model data and builds the local package runtimes and resources into `packages/*/dist/`. The build does not refresh the online model catalog or configure a provider. npm's `--offline` applies to npm; the CLI's separate `--offline` option disables startup network operations. Neither makes remote model inference local.
 
 Start the interactive application:
 
@@ -58,6 +58,18 @@ npm.cmd run superpi
 ```
 
 The supported source entry is `scripts/superpi.mjs`. It checks the built CLI and passes the repository `.sp` extensions, Skills, and prompt resources to coding-agent. Starting `packages/coding-agent/dist/cli.js` directly skips that resource assembly and is not the default path.
+
+### Rebuild an existing checkout
+
+After updating the source, rebuild from the repository root. If `package-lock.json` changed, run `npm.cmd ci` first to install the matching dependencies. With dependencies already installed:
+
+```powershell
+npm.cmd --offline run build:offline
+npm.cmd run superpi -- --offline --version
+npm.cmd run superpi -- --offline --help
+```
+
+The launcher checks that the built CLI exists; it does not rebuild it or check whether it matches newer source. The version command reports the package version, so it alone cannot establish that a particular commit was built. A successful build followed by these CLI checks verifies the local launch path; provider access is configured separately below.
 
 ### Configure authentication and a model
 
@@ -235,15 +247,17 @@ npm.cmd test
 
 `npm test` includes the unit, hot-path invariant and provider-contract suites plus the memory workspace once. `test:unit`, `test:hot` and `test:contract` select subsets for focused work; they are not extra gates before the full suite. The runner logs each file's start, exit and wall time, gives each child an isolated offline HOME/agent/session environment, and enables GC for the ownership regressions that require it. See [test execution and optional measurements](docs/testing.md) for the boundary between regression coverage and benchmarks.
 
+Development scratch files belong under `.task-tmp/<task-id>/`: logs, temporary fixtures, caches and resource manifests. Preserve acceptance evidence in `docs/` or `docs/evidence/`, then remove a task's recorded scratch files after its processes and handles have closed. Check for active tasks before emptying the shared directory. Deleting completed scratch data does not remove `packages/*/dist/`, installed dependencies in `node_modules/`, or runtime data in `~/.sp/agent/`; later tasks recreate their own temporary directories. See [AGENTS.md](AGENTS.md) for ownership and cleanup rules.
+
 For documentation, start with Markdown, links, commands, and fact checks. For production changes, select tests by impact. Read the performance contract before changing a hot path; a single timing or heap number is not lifecycle evidence.
 
 ## Upstream relationship and versions
 
 Super Pi was originally derived from [Pi](https://github.com/earendil-works/pi) v0.84.1. It is maintained independently with the `@super-pi` package scope, `superpi` command, and `.sp` data directory. It is not an official Pi distribution and does not inherit the upstream release channel. See [NOTICE.md](NOTICE.md).
 
-Super Pi core packages are currently **1.0.0**, with independent versioning. The previous [Pi 1.1.0 review and implementation](docs/upstream-pi-1.1.0-task-plan.md) completed its selected scope; that does not imply a full upstream synchronization.
+Super Pi core packages are currently **1.0.0**, with independent versioning. The selected [Pi 1.5.0 implementation](docs/upstream-pi-1.5.0-implementation-plan.md) and the subsequent [H00–H10 history follow-up](docs/upstream-pi-history-followup-plan.md) have been merged as of **2026-11-04**. The follow-up records the individual PRs, review and CI results, performance evidence, and cleanup status.
 
-As of **2026-11-03**, the latest upstream stable release is [Pi v1.5.0](https://github.com/earendil-works/pi/releases/tag/v1.5.0), published on 2026-11-02. The [latest assessment](docs/upstream-pi-1.5.0-diff-assessment.md) separates confirmed gaps, equivalent implementations, and candidates needing validation, with recommended priorities. Paid background cache warming remains off by default.
+The [Pi 1.5.0 assessment](docs/upstream-pi-1.5.0-diff-assessment.md) is a fixed historical comparison, not a continuously updated upstream release tracker. The history inventory's 1,150 source records do not represent 1,150 fixed defects or a complete semantic audit. V01–V04 and other unverified entries remain open; feature candidates require separate product decisions. Paid background cache warming remains off by default.
 
 ## License and responsible use
 

@@ -1,0 +1,126 @@
+{
+  "task": "README refresh and local offline rebuild",
+  "date": "2026-11-04",
+  "sourceBaseCommit": "07a3a95c309e0d755786cfc36ee592a34feb23e2",
+  "productionSourceChanged": false,
+  "oldScratchCleanup": {
+    "previouslyBlockedRootsVerifiedAbsent": 10,
+    "performedBy": "user",
+    "confirmation": "已清理"
+  },
+  "commands": [
+    "npm.cmd --offline run build:offline",
+    "node scripts/superpi.mjs --offline --version",
+    "node scripts/superpi.mjs --offline --help"
+  ],
+  "result": {
+    "node": "v26.13.0",
+    "startedAt": "2026-11-04T10:05:06.711Z",
+    "startedAtMs": 1793786706711,
+    "temporaryEnvironmentVerified": true,
+    "completedAt": "2026-11-04T10:06:15.605Z",
+    "builtPackageEntrypoints": "pass",
+    "sandboxRuntimeFilesVerified": 40,
+    "cliHelp": "pass",
+    "cliVersion": "1.0.0",
+    "artifacts": [
+      {
+        "path": "packages/coding-agent/dist/cli.js",
+        "bytes": 715,
+        "sha256": "1472b6ab0c0f852b93bfc04e04473bcfe8c9d019491983e1feb6b0feadf21da9"
+      },
+      {
+        "path": "packages/agent/dist/proxy.js",
+        "bytes": 13609,
+        "sha256": "dd3e63cc966c8cb1f90fb3f4e7bcde8195a6d744d486fc4acfdc0f450b8f5e76"
+      },
+      {
+        "path": "packages/ai/dist/index.js",
+        "bytes": 1353,
+        "sha256": "a0de41d09fea46fe6fd0c93fa54336cb469ed16aba5dd7ba211aef2a14e361af"
+      },
+      {
+        "path": "packages/ai/dist/models.generated.js",
+        "bytes": 4639,
+        "sha256": "571a1a7414a25f04825ad7c8d4d8a187807291c183a8946f7ea1047d4562e0ff"
+      }
+    ]
+  },
+  "sourceHashes": [
+    {
+      "path": "scripts/superpi.mjs",
+      "sha256": "bed23a1cde4e79df16940a41c97408b7909af7df1d48c3b701a529ee3735c085"
+    },
+    {
+      "path": "package.json",
+      "sha256": "bf73ac17f2bf8cdc92a457e8c9fd542f006f1ba66bd1f82d4a22774f1362714e"
+    },
+    {
+      "path": "packages/agent/src/proxy.ts",
+      "sha256": "7e8aed2af4748cd20b58e3e8e0cad9d3f78b83afb4b7409d86777f64adb299f7"
+    },
+    {
+      "path": "packages/ai/src/index.ts",
+      "sha256": "914737e4eedd6736d89fc1b04196a9e2b22e5b3668bbd14255b0375559a5c717"
+    }
+  ],
+  "documentation": {
+    "anchors": 4,
+    "matchingEnglishChinesePowerShellExamples": 10,
+    "localLinks": 109,
+    "diffCheck": "pass"
+  },
+  "ownership": {
+    "cleanup": {
+      "retryPerformed": false,
+      "activeOwnedProcesses": 0,
+      "directories": 15,
+      "files": 608,
+      "reason": "Automatic approval rejected the exact cleanup command before execution: blocked by policy",
+      "status": "blocked"
+    },
+    "temporaryEnvironment": "TMP/TEMP/TMPDIR point to task root; child os.tmpdir verified",
+    "homeAndRuntimeData": "Isolated child HOME/USERPROFILE, agent and session directories; no credential-output commands or provider requests",
+    "taskRoot": "D:\\RMProjects\\Pi\\.task-tmp\\readme-offline-674efdf45103",
+    "processes": [
+      {
+        "pid": 4376,
+        "startedAt": "2026-11-04T10:05:06.6307287Z",
+        "purpose": "environment",
+        "exitCode": 0
+      },
+      {
+        "pid": 34712,
+        "startedAt": "2026-11-04T10:05:06.7567445Z",
+        "purpose": "offline-build",
+        "exitCode": 0
+      },
+      {
+        "pid": 39776,
+        "startedAt": "2026-11-04T10:06:12.254511Z",
+        "purpose": "cli-version",
+        "exitCode": 0
+      },
+      {
+        "pid": 37380,
+        "startedAt": "2026-11-04T10:06:12.8107564Z",
+        "purpose": "cli-help",
+        "exitCode": 0
+      },
+      {
+        "pid": 22156,
+        "startedAt": "2026-11-04T10:06:15.4305325Z",
+        "purpose": "built-artifacts",
+        "exitCode": 0
+      }
+    ],
+    "recordedFiles": 608,
+    "recordedDirectories": 15
+  },
+  "scope": [
+    "Local source build with existing dependencies; npm ran with --offline and used checked-in model data.",
+    "Formal source launcher help/version checks and built Agent/streamProxy/IncrementalToolArguments exports verified; no real provider request or interactive VM session.",
+    "Four key artifacts were regenerated after the recorded start; all 40 packaged Windows Sandbox resource hashes matched their manifest.",
+    "Documentation-only source changes; no new runtime tests or allocation benchmarks required."
+  ]
+}
