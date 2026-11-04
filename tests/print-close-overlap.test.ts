@@ -1,19 +1,19 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { getConfigDir } from "../packages/coding-agent/src/config.ts";
-import { removeOwnedFixture } from "./helpers/owned-fixture-cleanup.ts";
+import { createOwnedTaskFixture } from "./helpers/owned-task-fixture.ts";
 
 for (const kind of ["normal", "normal-overlap", "normal-error", "repeat", "repeat-error", "native-repeat", "native-hup", "native-normal"]) {
   test(`print overlap ${kind}: join real shutdown before exit`, {
     timeout: 25_000,
     skip: process.platform === "win32" && kind.startsWith("native") ? "Windows kill does not deliver POSIX signals" : false,
   }, async t => {
-    const root = mkdtempSync(join(tmpdir(), "print-close-"));
+    const owned = createOwnedTaskFixture("h02b-print-close-");
+    const root = owned.root;
     const agent = join(root, "agent"); mkdirSync(agent);
     const config = getConfigDir(agent); mkdirSync(config);
     writeFileSync(join(config, "settings.json"), JSON.stringify({ compaction: { enabled: false }, retry: { enabled: false } }));
@@ -24,12 +24,14 @@ for (const kind of ["normal", "normal-overlap", "normal-error", "repeat", "repea
       "--no-prompt-templates", "--no-themes", "--extension", fileURLToPath(new URL("./fixtures/print-close-overlap-extension.mjs", import.meta.url)),
       "/fixture-wait"], {
       cwd: root, stdio: ["ignore", "pipe", "pipe", "ipc"],
-      env: { ...process.env, HOME: root, USERPROFILE: root, XDG_CONFIG_HOME: root, SP_CODING_AGENT_DIR: agent,
+      env: { ...process.env, TMP: root, TEMP: root, TMPDIR: root, HOME: root, USERPROFILE: root, XDG_CONFIG_HOME: root, SP_CODING_AGENT_DIR: agent,
         SP_CODING_AGENT_SESSION_DIR: join(root, "sessions"), SP_OFFLINE: "1", SP_TUI_WRITE_LOG: "", PRINT_CLOSE_CASE: kind },
     });
     const output = child.stdout, errors = child.stderr;
     assert.ok(output && errors);
-    writeFileSync(join(root, "resources.json"), JSON.stringify({ root, childPid: child.pid, startedAt: new Date().toISOString(), purpose: kind }));
+    const startedAt = new Date().toISOString();
+    writeFileSync(join(root, "resources.json"), JSON.stringify({ root, createdSharedParent: owned.createdSharedParent,
+      childPid: child.pid, startedAt, purpose: kind }));
     let stdout = "", stderr = "", ready = false, overlapped = false, armed = false, released = false, timedOut = false;
     let watchdog = setTimeout(killOwnedChild, 20_000);
     function killOwnedChild() { timedOut = true; child.kill("SIGKILL"); }
@@ -57,8 +59,10 @@ for (const kind of ["normal", "normal-overlap", "normal-error", "repeat", "repea
     t.after(async () => {
       clearTimeout(watchdog);
       if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-      await closed;
-      removeOwnedFixture(root);
+      const result = await closed;
+      writeFileSync(join(root, "resources.json"), JSON.stringify({ root, createdSharedParent: owned.createdSharedParent,
+        childPid: child.pid, startedAt, result, purpose: kind }));
+      owned.cleanup();
     });
     const result = await closed;
     clearTimeout(watchdog);
@@ -70,7 +74,7 @@ for (const kind of ["normal", "normal-overlap", "normal-error", "repeat", "repea
     assert.ok(exitLine, stderr);
     const exit = JSON.parse(exitLine.slice("PRINT_EXIT:".length));
     assert.deepEqual(exit, { code: expectedCode, runtimeCalls: 1, sessionCalls: 1, completed: true, networkCalls: 0, uncaught: 0,
-      unhandledRejections: 0, tmpdir: tmpdir(), signalListeners: 0, ipcReleased: true, callbacksReleased: true, idleReleased: true });
+      unhandledRejections: 0, tmpdir: root, signalListeners: 0, ipcReleased: true, callbacksReleased: true, idleReleased: true });
     const gate = stderr.split("\n").filter(line => line.startsWith("PRINT_RELEASED:"));
     assert.equal(gate.length, 1, stderr);
     assert.deepEqual(JSON.parse(gate[0]!.slice("PRINT_RELEASED:".length)), { shutdowns: 1, gateReleased: true, ipcReleased: true });

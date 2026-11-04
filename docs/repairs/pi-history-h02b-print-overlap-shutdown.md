@@ -14,7 +14,7 @@
 
 真实源 CLI 使用静态离线 provider 和扩展命令，session_shutdown 通过 IPC 闸门等待；父进程仅在第二触发已送达后释放。Windows 通过 IPC 调用真实注册的 process 信号 handler，此证据不冒充 POSIX 信号；Linux 额外发送实际 SIGTERM/SIGHUP。检查正常、重复、正常完成与信号交叠、清理错误，保留 runtime/session 引用观察回调及 idle waiter 释放，记录单次 dispose、零网络/未处理 rejection，以及 fixture 的 gate/IPC/listener 清理。SIGKILL 仅用于自有测试子进程失败 containment。
 
-任务根 `D:\RMProjects\Pi\.task-tmp\h02b-7f52a59c960e`，resources.json 登记资源和进程，子进程 TMP/TEMP/TMPDIR 仅指向该根。H02-A 的等待及修复不混入此项生产改动。
+任务根 `D:\RMProjects\Pi\.task-tmp\h02b-7f52a59c960e`，resources.json 登记资源和进程，任务 runner 的 TMP/TEMP/TMPDIR 指向该根；最终 CLI 夹具隔离边界见 reviewer 修正。H02-A 的等待及修复不混入此项生产改动。
 
 ## 有效失败基线
 
@@ -29,3 +29,13 @@
 `npm.cmd run check` 与 `npm.cmd --offline run build:offline` 通过。AST 基线→候选：arrow/function expression **16→14**、function declaration **1→3**（稳定 shutdown/performShutdown）、regex **0→0**、string literal **22→24**（两条清理错误）、new Promise **0→0**、async 函数 **10→10**。new Promise 语法计数不包括首次 Promise.resolve/then/async 的隐式成本；仅首次关闭创建共享 handoff，不再逐信号创建 finally 闭包及 tail。普通事件链无改动，不做未测量的整链零分配或性能提升声明。
 
 保留既有输入校验、provider/工具准入、输出协议和 runtime teardown，不增加内部重复校验或新的重试/兜底。新的三个槽位分别代表关闭完成点、首次退出码和首次信号规则，均有当前消费者。完整六分片 CI 和最终 head 审查是合并门禁，本地已知 TMP 路径全套测试限制沿用 H01 记录。
+
+## Reviewer 资源隔离修正
+
+[PR #201 首轮意见](https://github.com/dragonbaba/super-pi/pull/201#discussion_r4463812039) 指出直接运行测试时继承 OS tmpdir，CLI 的 cache 可能写到 fixture 的清理边界之外。原本任务 runner 确实把所有临时变量设到任务根，但这不足以保证 standalone/CI 的夹具自身边界；采纳该意见。
+
+新增 test-only `createOwnedTaskFixture`，固定在仓库 `.task-tmp` 创建独立 `h02b-print-close-*` owner；cleanup 不接受调用方路径，只使用创建时捕获的 root，核对父边界、dev/ino 和 reparse 条目，登记本根文件，child close 后删除并验证不存在。既有 `removeOwnedFixture` 的 OS tmpdir 断言不改，也没有扩展成任意目录删除器。每个 CLI 子进程显式设置 TMP/TEMP/TMPDIR 为自己的 root，退出断言检查这个 root；资源清单保存 PID/启动时间/退出结果。共享父目录仅由本 owner 创建且为空才移除。任务 runner 本身仍使用原任务根，旧受阻资源不转移所有权。
+
+修正后的 Windows 实测 **5 通过、3 POSIX 跳过**，每个 child 的 os.tmpdir 均等于新建仓库内 fixture root，cleanup 后存在性断言全部通过，类型检查通过。生产 hash 和 AST 计数未改变。该修正后推送单独请求 `@codex review`。
+
+最初五个 runner 子进程全部退出，正式证据已保存；117 文件、3 目录的精确清理被自动审批在执行前拒绝，原始原因 `blocked by policy`。[回执](https://github.com/dragonbaba/super-pi/pull/201#issuecomment-6623063328)。原任务根保留日志/cache、resources.json、run.ps1、pr-body.md，manifest 标记 blocked，未重试受阻删除。后续 reviewer 验证日志另行登记，不将 fixture 的成功清理冒充原任务根已清理。
