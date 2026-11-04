@@ -1,0 +1,839 @@
+{
+  "task": "H04",
+  "node": "v26.13.0",
+  "baselineCommit": "a7b239eb7e969cd3b7866b2e54df692f2c34cf02",
+  "benchmarkHash": "28fc0bb9506c0a3ddc9c35199d03596777ed8c34c99b5435050fb017d26da150",
+  "commands": [
+    "node --experimental-strip-types scripts/bench/thinking-history.ts counts",
+    "node --expose-gc --experimental-strip-types scripts/bench/thinking-history.ts profile",
+    "node --expose-gc --experimental-strip-types scripts/bench/thinking-history.ts lifecycle"
+  ],
+  "samplingInterval": 4096,
+  "input": {
+    "turns": 1024,
+    "thinkingCodeUnits": 8411050,
+    "messages": 2048
+  },
+  "baseline": {
+    "profile": [
+      {
+        "phase": "profile",
+        "node": "v26.13.0",
+        "hashes": [
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\ai\\src\\api\\transform-messages.ts",
+            "sha256": "11f2c571e33d012518533ab02211a7e8baa51efc68cd9593b17aafb7344b4e7c"
+          },
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\ai\\src\\model-capabilities.ts",
+            "sha256": "7c53660e03ee59cce0de9af59984dffabff52876acfc0cf8fb6456cc37d851d5"
+          }
+        ],
+        "benchmarkHash": "28fc0bb9506c0a3ddc9c35199d03596777ed8c34c99b5435050fb017d26da150",
+        "turns": 1024,
+        "messages": 2048,
+        "thinkingCodeUnits": 8411050,
+        "coverage": "Production transform and Anthropic SDK/fetch; counts instrument transform/capability projection only. Other provider configurations are source-audited and tested separately."
+      },
+      {
+        "scene": "transform",
+        "iterations": 64,
+        "sampledBytesPerRequest": 536940.5,
+        "requests": 0,
+        "wireCodeUnits": 0,
+        "allocation": {
+          "bytes": 34364192,
+          "top": [
+            {
+              "bytes": 27238640,
+              "function": "transformMessages",
+              "url": "file:///D:/RMProjects/Pi/packages/ai/src/api/transform-messages.ts",
+              "line": 154
+            },
+            {
+              "bytes": 2708000,
+              "function": "transformMessage",
+              "url": "file:///D:/RMProjects/Pi/packages/ai/src/api/transform-messages.ts",
+              "line": 92
+            },
+            {
+              "bytes": 1546200,
+              "function": "next",
+              "url": "",
+              "line": 0
+            },
+            {
+              "bytes": 1137264,
+              "function": "push",
+              "url": "",
+              "line": 0
+            },
+            {
+              "bytes": 650320,
+              "function": "transformContentBlock",
+              "url": "file:///D:/RMProjects/Pi/packages/ai/src/api/transform-messages.ts",
+              "line": 38
+            },
+            {
+              "bytes": 609160,
+              "function": "next",
+              "url": "",
+              "line": 0
+            },
+            {
+              "bytes": 420240,
+              "function": "values",
+              "url": "",
+              "line": 0
+            },
+            {
+              "bytes": 16448,
+              "function": "strictEqual",
+              "url": "node:assert",
+              "line": 355
+            },
+            {
+              "bytes": 13096,
+              "function": "post",
+              "url": "node:inspector",
+              "line": 115
+            },
+            {
+              "bytes": 12464,
+              "function": "Map",
+              "url": "",
+              "line": 0
+            },
+            {
+              "bytes": 8224,
+              "function": "Set",
+              "url": "",
+              "line": 0
+            },
+            {
+              "bytes": 4136,
+              "function": "",
+              "url": "node:inspector",
+              "line": 66
+            }
+          ]
+        }
+      },
+      {
+        "scene": "anthropic-tools",
+        "iterations": 8,
+        "sampledBytesPerRequest": 9831623,
+        "requests": 8,
+        "wireCodeUnits": 68458984,
+        "allocation": {
+          "bytes": 78652984,
+          "top": [
+            {
+              "bytes": 68459136,
+              "function": "FallbackEncoder",
+              "url": "file:///D:/RMProjects/Pi/node_modules/@anthropic-ai/sdk/internal/request-options.mjs",
+              "line": 11
+            },
+            {
+              "bytes": 4725592,
+              "function": "convertMessages",
+              "url": "file:///D:/RMProjects/Pi/packages/ai/src/api/anthropic-messages.ts",
+              "line": 1274
+            },
+            {
+              "bytes": 3972696,
+              "function": "transformMessages",
+              "url": "file:///D:/RMProjects/Pi/packages/ai/src/api/transform-messages.ts",
+              "line": 154
+            },
+            {
+              "bytes": 312800,
+              "function": "getLastAssistantUsageInfo",
+              "url": "file:///D:/RMProjects/Pi/packages/ai/src/utils/estimate.ts",
+              "line": 73
+            },
+            {
+              "bytes": 200832,
+              "function": "push",
+              "url": "",
+              "line": 0
+            },
+            {
+              "bytes": 45336,
+              "function": "iterateHeaders",
+              "url": "file:///D:/RMProjects/Pi/node_modules/@anthropic-ai/sdk/internal/headers.mjs",
+              "line": 3
+            },
+            {
+              "bytes": 25208,
+              "function": "BaseAnthropic",
+              "url": "file:///D:/RMProjects/Pi/node_modules/@anthropic-ai/sdk/client.mjs",
+              "line": 70
+            },
+            {
+              "bytes": 25176,
+              "function": "",
+              "url": "file:///D:/RMProjects/Pi/packages/ai/src/api/anthropic-messages.ts",
+              "line": 511
+            },
+            {
+              "bytes": 25080,
+              "function": "buildHeaders",
+              "url": "file:///D:/RMProjects/Pi/node_modules/@anthropic-ai/sdk/client.mjs",
+              "line": 830
+            },
+            {
+              "bytes": 24680,
+              "function": "next",
+              "url": "",
+              "line": 0
+            },
+            {
+              "bytes": 21320,
+              "function": "iterateHeaders",
+              "url": "file:///D:/RMProjects/Pi/node_modules/@anthropic-ai/sdk/internal/headers.mjs",
+              "line": 3
+            },
+            {
+              "bytes": 21088,
+              "function": "iterateAnthropicEvents",
+              "url": "file:///D:/RMProjects/Pi/packages/ai/src/api/anthropic-messages.ts",
+              "line": 463
+            }
+          ]
+        }
+      },
+      {
+        "scene": "anthropic-no-tools",
+        "iterations": 8,
+        "sampledBytesPerRequest": 10892037,
+        "requests": 8,
+        "wireCodeUnits": 68458984,
+        "allocation": {
+          "bytes": 87136296,
+          "top": [
+            {
+              "bytes": 68476576,
+              "function": "FallbackEncoder",
+              "url": "file:///D:/RMProjects/Pi/node_modules/@anthropic-ai/sdk/internal/request-options.mjs",
+              "line": 11
+            },
+            {
+              "bytes": 3741416,
+              "function": "convertMessages",
+              "url": "file:///D:/RMProjects/Pi/packages/ai/src/api/anthropic-messages.ts",
+              "line": 1274
+            },
+            {
+              "bytes": 3462744,
+              "function": "contextForModelCapabilities",
+              "url": "file:///D:/RMProjects/Pi/packages/ai/src/model-capabilities.ts",
+              "line": 534
+            },
+            {
+              "bytes": 3188528,
+              "function": "transformMessage",
+              "url": "file:///D:/RMProjects/Pi/packages/ai/src/api/transform-messages.ts",
+              "line": 92
+            },
+            {
+              "bytes": 1799544,
+              "function": "transformMessages",
+              "url": "file:///D:/RMProjects/Pi/packages/ai/src/api/transform-messages.ts",
+              "line": 154
+            },
+            {
+              "bytes": 1174448,
+              "function": "push",
+              "url": "",
+              "line": 0
+            },
+            {
+              "bytes": 1012904,
+              "function": "getLastAssistantUsageInfo",
+              "url": "file:///D:/RMProjects/Pi/packages/ai/src/utils/estimate.ts",
+              "line": 73
+            },
+            {
+              "bytes": 864360,
+              "function": "next",
+              "url": "",
+              "line": 0
+            },
+            {
+              "bytes": 625640,
+              "function": "next",
+              "url": "",
+              "line": 0
+            },
+            {
+              "bytes": 596840,
+              "function": "next",
+              "url": "",
+              "line": 0
+            },
+            {
+              "bytes": 584480,
+              "function": "transformContentBlock",
+              "url": "file:///D:/RMProjects/Pi/packages/ai/src/api/transform-messages.ts",
+              "line": 38
+            },
+            {
+              "bytes": 514488,
+              "function": "push",
+              "url": "",
+              "line": 0
+            }
+          ]
+        }
+      }
+    ],
+    "counts": [
+      {
+        "phase": "counts",
+        "node": "v26.13.0",
+        "hashes": [
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\ai\\src\\api\\transform-messages.ts",
+            "sha256": "11f2c571e33d012518533ab02211a7e8baa51efc68cd9593b17aafb7344b4e7c"
+          },
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\ai\\src\\model-capabilities.ts",
+            "sha256": "7c53660e03ee59cce0de9af59984dffabff52876acfc0cf8fb6456cc37d851d5"
+          }
+        ],
+        "benchmarkHash": "28fc0bb9506c0a3ddc9c35199d03596777ed8c34c99b5435050fb017d26da150",
+        "turns": 1024,
+        "messages": 2048,
+        "thinkingCodeUnits": 8411050,
+        "coverage": "Production transform and Anthropic SDK/fetch; counts instrument transform/capability projection only. Other provider configurations are source-audited and tested separately."
+      },
+      {
+        "scene": "transform",
+        "counters": {
+          "transformCalls": 1,
+          "capabilityCalls": 0,
+          "messageVisits": 2048,
+          "blockVisits": 2048,
+          "secondMessageVisits": 2048,
+          "secondBlockVisits": 2048,
+          "projectedMessageVisits": 0,
+          "projectedBlockVisits": 0,
+          "objects": 3072,
+          "arrays": 1027,
+          "maps": 1,
+          "sets": 1,
+          "closures": 0,
+          "thinkingTrimCalls": 1024
+        }
+      },
+      {
+        "scene": "anthropic-tools",
+        "counters": {
+          "transformCalls": 1,
+          "capabilityCalls": 1,
+          "messageVisits": 2048,
+          "blockVisits": 2048,
+          "secondMessageVisits": 2048,
+          "secondBlockVisits": 2048,
+          "projectedMessageVisits": 0,
+          "projectedBlockVisits": 0,
+          "objects": 3072,
+          "arrays": 1027,
+          "maps": 1,
+          "sets": 1,
+          "closures": 0,
+          "thinkingTrimCalls": 1024
+        },
+        "requests": 1,
+        "wireCodeUnits": 8557373,
+        "leakedRequests": 1
+      },
+      {
+        "scene": "anthropic-no-tools",
+        "counters": {
+          "transformCalls": 1,
+          "capabilityCalls": 1,
+          "messageVisits": 2048,
+          "blockVisits": 2048,
+          "secondMessageVisits": 2048,
+          "secondBlockVisits": 2048,
+          "projectedMessageVisits": 2048,
+          "projectedBlockVisits": 2048,
+          "objects": 6145,
+          "arrays": 2052,
+          "maps": 1,
+          "sets": 1,
+          "closures": 0,
+          "thinkingTrimCalls": 0
+        },
+        "requests": 1,
+        "wireCodeUnits": 8557373,
+        "leakedRequests": 1
+      }
+    ],
+    "lifecycle": [
+      {
+        "phase": "lifecycle",
+        "node": "v26.13.0",
+        "hashes": [
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\ai\\src\\api\\transform-messages.ts",
+            "sha256": "11f2c571e33d012518533ab02211a7e8baa51efc68cd9593b17aafb7344b4e7c"
+          },
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\ai\\src\\model-capabilities.ts",
+            "sha256": "7c53660e03ee59cce0de9af59984dffabff52876acfc0cf8fb6456cc37d851d5"
+          }
+        ],
+        "turns": 1024,
+        "messages": 2048,
+        "thinkingCodeUnits": 8411050,
+        "coverage": "Production transform and Anthropic SDK/fetch; counts instrument transform/capability projection only. Other provider configurations are source-audited and tested separately."
+      },
+      {
+        "weakReferences": 21,
+        "retained": [],
+        "abortListeners": 0,
+        "retainedStreams": 6,
+        "retainedInputMessages": 2048,
+        "heapAfterGc": 24374536
+      }
+    ]
+  },
+  "candidate": {
+    "profile": [
+      {
+        "phase": "profile",
+        "node": "v26.13.0",
+        "hashes": [
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\ai\\src\\api\\transform-messages.ts",
+            "sha256": "46648c06f6bc4c21818cef7011a6222a1132777b78ce30146c93d7d5f9259037"
+          },
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\ai\\src\\model-capabilities.ts",
+            "sha256": "b22901994b844dc98831bda50cc93f2f4c33cd9e64d6ad0eee00ce02e0b85906"
+          }
+        ],
+        "benchmarkHash": "28fc0bb9506c0a3ddc9c35199d03596777ed8c34c99b5435050fb017d26da150",
+        "turns": 1024,
+        "messages": 2048,
+        "thinkingCodeUnits": 8411050,
+        "coverage": "Production transform and Anthropic SDK/fetch; counts instrument transform/capability projection only. Other provider configurations are source-audited and tested separately."
+      },
+      {
+        "scene": "transform",
+        "iterations": 64,
+        "sampledBytesPerRequest": 492266,
+        "requests": 0,
+        "wireCodeUnits": 0,
+        "allocation": {
+          "bytes": 31505024,
+          "top": [
+            {
+              "bytes": 26238464,
+              "function": "transformMessages",
+              "url": "file:///D:/RMProjects/Pi/packages/ai/src/api/transform-messages.ts",
+              "line": 151
+            },
+            {
+              "bytes": 2462248,
+              "function": "transformMessage",
+              "url": "file:///D:/RMProjects/Pi/packages/ai/src/api/transform-messages.ts",
+              "line": 89
+            },
+            {
+              "bytes": 946680,
+              "function": "next",
+              "url": "",
+              "line": 0
+            },
+            {
+              "bytes": 750816,
+              "function": "push",
+              "url": "",
+              "line": 0
+            },
+            {
+              "bytes": 481560,
+              "function": "next",
+              "url": "",
+              "line": 0
+            },
+            {
+              "bytes": 309024,
+              "function": "values",
+              "url": "",
+              "line": 0
+            },
+            {
+              "bytes": 259320,
+              "function": "transformContentBlock",
+              "url": "file:///D:/RMProjects/Pi/packages/ai/src/api/transform-messages.ts",
+              "line": 38
+            },
+            {
+              "bytes": 19888,
+              "function": "insertSyntheticToolResults",
+              "url": "file:///D:/RMProjects/Pi/packages/ai/src/api/transform-messages.ts",
+              "line": 127
+            },
+            {
+              "bytes": 12464,
+              "function": "Map",
+              "url": "",
+              "line": 0
+            },
+            {
+              "bytes": 8328,
+              "function": "Set",
+              "url": "",
+              "line": 0
+            },
+            {
+              "bytes": 7984,
+              "function": "post",
+              "url": "node:inspector",
+              "line": 115
+            },
+            {
+              "bytes": 4128,
+              "function": "strictEqual",
+              "url": "node:assert",
+              "line": 355
+            }
+          ]
+        }
+      },
+      {
+        "scene": "anthropic-tools",
+        "iterations": 8,
+        "sampledBytesPerRequest": 1283859,
+        "requests": 8,
+        "wireCodeUnits": 957592,
+        "allocation": {
+          "bytes": 10270872,
+          "top": [
+            {
+              "bytes": 3624200,
+              "function": "convertMessages",
+              "url": "file:///D:/RMProjects/Pi/packages/ai/src/api/anthropic-messages.ts",
+              "line": 1274
+            },
+            {
+              "bytes": 3592072,
+              "function": "transformMessages",
+              "url": "file:///D:/RMProjects/Pi/packages/ai/src/api/transform-messages.ts",
+              "line": 151
+            },
+            {
+              "bytes": 961888,
+              "function": "FallbackEncoder",
+              "url": "file:///D:/RMProjects/Pi/node_modules/@anthropic-ai/sdk/internal/request-options.mjs",
+              "line": 11
+            },
+            {
+              "bytes": 372152,
+              "function": "push",
+              "url": "",
+              "line": 0
+            },
+            {
+              "bytes": 308720,
+              "function": "getLastAssistantUsageInfo",
+              "url": "file:///D:/RMProjects/Pi/packages/ai/src/utils/estimate.ts",
+              "line": 73
+            },
+            {
+              "bytes": 139960,
+              "function": "next",
+              "url": "",
+              "line": 0
+            },
+            {
+              "bytes": 86440,
+              "function": "next",
+              "url": "",
+              "line": 0
+            },
+            {
+              "bytes": 82488,
+              "function": "sanitizeSurrogates",
+              "url": "file:///D:/RMProjects/Pi/packages/ai/src/utils/sanitize-unicode.ts",
+              "line": 21
+            },
+            {
+              "bytes": 61752,
+              "function": "iterateHeaders",
+              "url": "file:///D:/RMProjects/Pi/node_modules/@anthropic-ai/sdk/internal/headers.mjs",
+              "line": 3
+            },
+            {
+              "bytes": 41184,
+              "function": "values",
+              "url": "",
+              "line": 0
+            },
+            {
+              "bytes": 37104,
+              "function": "values",
+              "url": "",
+              "line": 0
+            },
+            {
+              "bytes": 26696,
+              "function": "makeRequest",
+              "url": "file:///D:/RMProjects/Pi/node_modules/@anthropic-ai/sdk/client.mjs",
+              "line": 494
+            }
+          ]
+        }
+      },
+      {
+        "scene": "anthropic-no-tools",
+        "iterations": 8,
+        "sampledBytesPerRequest": 2256025,
+        "requests": 8,
+        "wireCodeUnits": 957592,
+        "allocation": {
+          "bytes": 18048200,
+          "top": [
+            {
+              "bytes": 3363152,
+              "function": "transformMessage",
+              "url": "file:///D:/RMProjects/Pi/packages/ai/src/api/transform-messages.ts",
+              "line": 89
+            },
+            {
+              "bytes": 2965520,
+              "function": "convertMessages",
+              "url": "file:///D:/RMProjects/Pi/packages/ai/src/api/anthropic-messages.ts",
+              "line": 1274
+            },
+            {
+              "bytes": 1863352,
+              "function": "contextForModelCapabilities",
+              "url": "file:///D:/RMProjects/Pi/packages/ai/src/model-capabilities.ts",
+              "line": 534
+            },
+            {
+              "bytes": 1659928,
+              "function": "transformMessages",
+              "url": "file:///D:/RMProjects/Pi/packages/ai/src/api/transform-messages.ts",
+              "line": 151
+            },
+            {
+              "bytes": 1538032,
+              "function": "push",
+              "url": "",
+              "line": 0
+            },
+            {
+              "bytes": 1259120,
+              "function": "push",
+              "url": "",
+              "line": 0
+            },
+            {
+              "bytes": 1000552,
+              "function": "getLastAssistantUsageInfo",
+              "url": "file:///D:/RMProjects/Pi/packages/ai/src/utils/estimate.ts",
+              "line": 73
+            },
+            {
+              "bytes": 966016,
+              "function": "FallbackEncoder",
+              "url": "file:///D:/RMProjects/Pi/node_modules/@anthropic-ai/sdk/internal/request-options.mjs",
+              "line": 11
+            },
+            {
+              "bytes": 600960,
+              "function": "next",
+              "url": "",
+              "line": 0
+            },
+            {
+              "bytes": 521928,
+              "function": "push",
+              "url": "",
+              "line": 0
+            },
+            {
+              "bytes": 493920,
+              "function": "next",
+              "url": "",
+              "line": 0
+            },
+            {
+              "bytes": 371808,
+              "function": "transformContentBlock",
+              "url": "file:///D:/RMProjects/Pi/packages/ai/src/api/transform-messages.ts",
+              "line": 38
+            }
+          ]
+        }
+      }
+    ],
+    "counts": [
+      {
+        "phase": "counts",
+        "node": "v26.13.0",
+        "hashes": [
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\ai\\src\\api\\transform-messages.ts",
+            "sha256": "46648c06f6bc4c21818cef7011a6222a1132777b78ce30146c93d7d5f9259037"
+          },
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\ai\\src\\model-capabilities.ts",
+            "sha256": "b22901994b844dc98831bda50cc93f2f4c33cd9e64d6ad0eee00ce02e0b85906"
+          }
+        ],
+        "benchmarkHash": "28fc0bb9506c0a3ddc9c35199d03596777ed8c34c99b5435050fb017d26da150",
+        "turns": 1024,
+        "messages": 2048,
+        "thinkingCodeUnits": 8411050,
+        "coverage": "Production transform and Anthropic SDK/fetch; counts instrument transform/capability projection only. Other provider configurations are source-audited and tested separately."
+      },
+      {
+        "scene": "transform",
+        "counters": {
+          "transformCalls": 1,
+          "capabilityCalls": 0,
+          "messageVisits": 2048,
+          "blockVisits": 2048,
+          "secondMessageVisits": 2048,
+          "secondBlockVisits": 1024,
+          "projectedMessageVisits": 0,
+          "projectedBlockVisits": 0,
+          "objects": 2048,
+          "arrays": 1027,
+          "maps": 1,
+          "sets": 1,
+          "closures": 0,
+          "thinkingTrimCalls": 0
+        }
+      },
+      {
+        "scene": "anthropic-tools",
+        "counters": {
+          "transformCalls": 1,
+          "capabilityCalls": 1,
+          "messageVisits": 2048,
+          "blockVisits": 2048,
+          "secondMessageVisits": 2048,
+          "secondBlockVisits": 1024,
+          "projectedMessageVisits": 0,
+          "projectedBlockVisits": 0,
+          "objects": 2048,
+          "arrays": 1027,
+          "maps": 1,
+          "sets": 1,
+          "closures": 0,
+          "thinkingTrimCalls": 0
+        },
+        "requests": 1,
+        "wireCodeUnits": 119699,
+        "leakedRequests": 0
+      },
+      {
+        "scene": "anthropic-no-tools",
+        "counters": {
+          "transformCalls": 1,
+          "capabilityCalls": 1,
+          "messageVisits": 2048,
+          "blockVisits": 1024,
+          "secondMessageVisits": 2048,
+          "secondBlockVisits": 1024,
+          "projectedMessageVisits": 2048,
+          "projectedBlockVisits": 2048,
+          "objects": 4097,
+          "arrays": 2052,
+          "maps": 1,
+          "sets": 1,
+          "closures": 0,
+          "thinkingTrimCalls": 0
+        },
+        "requests": 1,
+        "wireCodeUnits": 119699,
+        "leakedRequests": 0
+      }
+    ],
+    "lifecycle": [
+      {
+        "phase": "lifecycle",
+        "node": "v26.13.0",
+        "hashes": [
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\ai\\src\\api\\transform-messages.ts",
+            "sha256": "46648c06f6bc4c21818cef7011a6222a1132777b78ce30146c93d7d5f9259037"
+          },
+          {
+            "path": "D:\\RMProjects\\Pi\\packages\\ai\\src\\model-capabilities.ts",
+            "sha256": "b22901994b844dc98831bda50cc93f2f4c33cd9e64d6ad0eee00ce02e0b85906"
+          }
+        ],
+        "benchmarkHash": "28fc0bb9506c0a3ddc9c35199d03596777ed8c34c99b5435050fb017d26da150",
+        "turns": 1024,
+        "messages": 2048,
+        "thinkingCodeUnits": 8411050,
+        "coverage": "Production transform and Anthropic SDK/fetch; counts instrument transform/capability projection only. Other provider configurations are source-audited and tested separately."
+      },
+      {
+        "weakReferences": 21,
+        "retained": [],
+        "abortListeners": 0,
+        "retainedStreams": 6,
+        "retainedInputMessages": 2048,
+        "heapAfterGc": 24444256
+      }
+    ]
+  },
+  "ast": [
+    {
+      "path": "packages/ai/src/api/transform-messages.ts",
+      "baseline": {
+        "arrows": 0,
+        "functions": 5,
+        "regex": 0,
+        "strings": 33,
+        "newPromise": 0,
+        "async": 0
+      },
+      "candidate": {
+        "arrows": 0,
+        "functions": 5,
+        "regex": 0,
+        "strings": 32,
+        "newPromise": 0,
+        "async": 0
+      }
+    },
+    {
+      "path": "packages/ai/src/model-capabilities.ts",
+      "baseline": {
+        "arrows": 5,
+        "functions": 31,
+        "regex": 0,
+        "strings": 274,
+        "newPromise": 0,
+        "async": 0
+      },
+      "candidate": {
+        "arrows": 5,
+        "functions": 31,
+        "regex": 0,
+        "strings": 274,
+        "newPromise": 0,
+        "async": 0
+      }
+    }
+  ],
+  "limitations": [
+    "Counters cover selected transform and capability projection functions, not SDK/V8 implicit allocations.",
+    "Profiles include SDK, fixture Response and profiler noise; representative Anthropic configuration only.",
+    "No timing/CPU or whole-chain zero-allocation claim.",
+    "Lifecycle keeps input, six consumed streams and six AbortSignals alive. Cancellation uses default reason from an external controlled microtask; synchronous SDK-stack abort diagnostic is recorded in the repair document.",
+    "Baseline lifecycle preceded metadata-only benchmarkHash logging; its cancellation and measurement logic match the final benchmark."
+  ]
+}
