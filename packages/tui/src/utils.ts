@@ -265,12 +265,13 @@ export function visibleWidth(str: string): number {
 	const inputCached = widthCache.get(str);
 	if (inputCached !== undefined) return inputCached;
 
-	// ASCII styling and padding can be measured without materializing stripped
-	// text. Fall back as a whole when Unicode might join across ANSI boundaries.
-	const asciiWidth = terminalAsciiWidth(str);
-	if (asciiWidth >= 0) {
-		rememberWidth(str, asciiWidth);
-		return asciiWidth;
+	// ASCII and box-drawing runs can be measured without stripped text or
+	// grapheme objects. Fall back as a whole when other Unicode can join across
+	// ANSI boundaries, including marks following a box-drawing character.
+	const simpleWidth = terminalSimpleWidth(str);
+	if (simpleWidth >= 0) {
+		rememberWidth(str, simpleWidth);
+		return simpleWidth;
 	}
 
 	// Normalize: tabs to 3 spaces, strip ANSI escape codes
@@ -343,8 +344,8 @@ function rememberWidth(text: string, width: number): void {
 	widthCache.set(text, width);
 }
 
-/** Exact for printable ASCII, tabs, and supported terminal sequences only. */
-function terminalAsciiWidth(str: string): number {
+/** Exact for ASCII, single-cell box drawing, tabs, and supported terminal sequences. */
+function terminalSimpleWidth(str: string): number {
 	let width = 0;
 	for (let index = 0; index < str.length; index++) {
 		const code = str.charCodeAt(index);
@@ -356,6 +357,8 @@ function terminalAsciiWidth(str: string): number {
 			const end = findTerminalSequenceEnd(str, index);
 			if (end === 0) return -1;
 			index = end - 1;
+		} else if (code >= 0x2500 && code <= 0x257f) {
+			width++;
 		} else {
 			return -1;
 		}

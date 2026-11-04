@@ -27,7 +27,7 @@ function fullWidth(input: string): number {
 test("width matches complete grapheme measurement across ANSI and Unicode boundaries", () => {
 	const fragments = [
 		"", "a", " ", "0", "\t", "\r\n", "\x00", "\x7f", "\u0085",
-		"中", "😀", "e\u0301", "\u0301", "\u0600", "\u200d", "\ufe0f", "\u20e3",
+		"中", "😀", "e\u0301", "\u0301", "\u0600", "\u200d", "\ufe0f", "\u20e3", "│", "─", "┌", "╿",
 		"🇯🇵", "🇯", "👩🏽‍💻", "क्", "ष", "กํา", "ກຳ", "\u1100\u1161", "\ud800", "\udc00",
 		"\x1b[31m", "\x1b[0m", "\x1b]8;;https://example.test/中\x07", "\x1b]8;;\x1b\\",
 		"\x1b_pi:cursor\x07", "\x1b[", "\x1b[3\x1b[0m", "\x1b]unterminated", "\x1b[\tm",
@@ -79,6 +79,31 @@ test("styled ASCII does not segment and Unicode cache survives unrelated padding
 	}
 });
 
+test("all box-drawing characters use exact scalar widths and preserve Unicode boundaries", () => {
+	for (let code = 0x2500; code <= 0x257f; code++) {
+		const box = String.fromCodePoint(code);
+		for (const neighbor of ["", "a", "中", "\u0301", "\ufe0f", "\u200d", "\u0600", "😀", "\u20e3"]) {
+			for (const input of [box + neighbor, neighbor + box, `\x1b[31m${box}\x1b[0m${neighbor}`]) {
+				assert.equal(visibleWidth(input), fullWidth(input), JSON.stringify(input));
+			}
+		}
+	}
+	Intl.Segmenter.prototype.segment = observeSegment;
+	segmentCalls = 0;
+	segmentedCharacters = 0;
+	try {
+		for (let index = 0; index < 1200; index++) {
+			const box = String.fromCodePoint(0x2500 + index % 128);
+			const row = `\x1b[1m${box} row_${index}\t${box}\x1b[0m`;
+			assert.equal(visibleWidth(row), String(index).length + 10);
+		}
+		assert.equal(segmentCalls, 0);
+		assert.equal(segmentedCharacters, 0);
+	} finally {
+		Intl.Segmenter.prototype.segment = originalSegment;
+	}
+});
+
 test("Unicode width cache retains at most the existing 512 cores", () => {
 	Intl.Segmenter.prototype.segment = observeSegment;
 	try {
@@ -114,7 +139,7 @@ test("interrupted ANSI cores never alias raw-input widths in either call order",
 
 test("width hot chain has no closures, dynamic regexes, or per-call container/wrapper construction", () => {
 	const source = ts.createSourceFile("utils.ts", readFileSync("packages/tui/src/utils.ts", "utf8"), ts.ScriptTarget.Latest, true);
-	const names = new Set(["visibleWidth", "rememberWidth", "terminalAsciiWidth", "isPrintableAscii", "findTerminalSequenceEnd", "graphemeWidth", "couldBeEmoji"]);
+	const names = new Set(["visibleWidth", "rememberWidth", "terminalSimpleWidth", "isPrintableAscii", "findTerminalSequenceEnd", "graphemeWidth", "couldBeEmoji"]);
 	const checked = new Set<string>();
 	function visit(node: ts.Node): void {
 		assert.ok(!ts.isArrowFunction(node) && !ts.isFunctionExpression(node), "hot closure");

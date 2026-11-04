@@ -2,7 +2,7 @@
 
 日期：2026-11-05，Asia/Tokyo。任务前缀 **PF**。
 
-状态：**用户已授权 PF00 起依次执行；PF00、PF01、PF02-A、验证前置 PF02-V 已交付，PF02-B 完成主目标验证、准备独立 PR，PF03–PF08 尚未开始生产实施。** 本方案将当前性能审计转为可核对、可排除、可分批交付的任务。先复核测量和行为边界，再实施有证据支持的优化；阶段状态以对应源码、验收证据和 PR 记录推进。PF00 的实际检测与目标见[基线复核记录](performance/pf00-baseline-validation.md)，PF01 见[布局宽度测量记录](performance/pf01-layout-width-validation.md)，PF02-A 见[版本入口验证](performance/pf02-version-entry-validation.md)，PF02-B 见[默认扩展启动验证](performance/pf02-bundled-startup-validation.md)；关闭绝对计时稳定性 V 继续 PF07，未宣称整轮验收完成。
+状态：**用户已授权 PF00 起依次执行；PF00、PF01、PF02-A、验证前置 PF02-V、PF02-B 已交付，PF03 完成本地验收、准备独立 PR，PF04–PF08 尚未开始生产实施。** 本方案将当前性能审计转为可核对、可排除、可分批交付的任务。先复核测量和行为边界，再实施有证据支持的优化；阶段状态以对应源码、验收证据和 PR 记录推进。PF00 的实际检测与目标见[基线复核记录](performance/pf00-baseline-validation.md)，PF01 见[布局宽度测量记录](performance/pf01-layout-width-validation.md)，PF02-A 见[版本入口验证](performance/pf02-version-entry-validation.md)，PF02-B 见[默认扩展启动验证](performance/pf02-bundled-startup-validation.md)，PF03 见[复杂 Markdown 验证](performance/pf03-complex-markdown-validation.md)；关闭绝对计时稳定性 V 继续 PF07，未宣称整轮验收完成。
 
 沿用 [历史修复方案](upstream-pi-history-followup-plan.md) 的代码、资源管理和 PR 约束，并完整服从 [Hot-path allocation contract](performance/hot-path-allocation-contract.md)。实施时若用户已有授权，不重复申请相同步骤的许可。首次推送后等待 reviewer；同一 PR 每次后续新增推送，必须单独评论 `@codex review`，等待当前 head 的审查闭环。
 
@@ -39,8 +39,8 @@
 | --- | --- | --- | --- |
 | PF00 | 复核基线、探针与检测矩阵 | R/S；已交付，[PR #215](https://github.com/dragonbaba/super-pi/pull/215) | 固定源码/构建、补测量边界、审查各项假设和验收条件 |
 | PF01 | 长会话首次布局与缩放 | R/S；已交付，[PR #216](https://github.com/dragonbaba/super-pi/pull/216) | 50k 合成生产组件夹具缩放 p95 −60.3%；保持精确高度，同步 O(n) 和原生终端验收边界不变 |
-| PF02 | 启动入口与模块加载 | A：[PR #217](https://github.com/dragonbaba/super-pi/pull/217) 已交付；验证前置 [#218](https://github.com/dragonbaba/super-pi/pull/218) 已交付；B：主目标验证完成，准备独立 PR | 版本查询 p95 −88.3%；B 的 bundled/regular 暖缓存 ACK p95 −3.33%，首次未缓存 TS 转译约 40 ms 成本延后，关闭绝对计时 V 继续 PF07 |
-| PF03 | 增长中的复杂 Markdown | R/S；待设计验证 | 分别评估表格/代码块；保留既有纯文本与 token 复用能力 |
+| PF02 | 启动入口与模块加载 | A：[PR #217](https://github.com/dragonbaba/super-pi/pull/217) 已交付；验证前置 [#218](https://github.com/dragonbaba/super-pi/pull/218) 已交付；B：[PR #219](https://github.com/dragonbaba/super-pi/pull/219) 已交付 | 版本查询 p95 −88.3%；B 的 bundled/regular 暖缓存 ACK p95 −3.33%，首次未缓存 TS 转译约 40 ms 成本延后，关闭绝对计时 V 继续 PF07 |
+| PF03 | 增长中的复杂 Markdown | R/S；本地验收完成，准备独立 PR | 表格框线宽度扫描为已证实瓶颈；保留既有完整解析/高亮及纯文本/token 复用能力，见[验证记录](performance/pf03-complex-markdown-validation.md) |
 | PF04 | 缓存命中观测与归因 | S/V；待核对 | 实际 usage、有效前缀和 retention 的关联；不承诺云端命中率提升 |
 | PF05 | 缓存统计的历史扫描 | R/S；待设计验证 | 单轮统计增量维护；保留全量重建所需的正确扫描 |
 | PF06 | 前缀摘要的重复计算 | R/S；待设计验证 | 优先同请求去重，再评估具备可靠失效条件的跨请求缓存 |
