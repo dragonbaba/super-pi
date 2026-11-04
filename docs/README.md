@@ -6,11 +6,12 @@
 
 - [项目首页（English）](../README.md)：定位、快速开始、认证、模型选择、目标项目启动方式和边界。
 - [项目首页（简体中文）](../README.zh-CN.md)：中文对等版本。
+- [本地构建](building.md)：统一入口、依赖顺序、并发控制、失败处理和实测结果。
 - [Coding-agent 说明](../packages/coding-agent/README.md)：全屏退出、Windows PowerShell、扩展观察者和运行时细节。
 - [模型能力参考](model-capabilities.md)：模型输入模态、工具调用、推理、上下文、缓存和 provider 能力。
 - [分支摘要配置](branch-summaries.md)：输出额度、历史输入预留、推理预算和空结果处理。
 
-源码交付的最短路径是：在仓库根目录运行 `npm.cmd ci` 安装依赖、`npm.cmd --offline run build:offline` 构建本地运行时，再通过 `npm.cmd run superpi` 启动。更新源码后的重建和 `--offline --version` / `--offline --help` 检查见[中文首页](../README.zh-CN.md#更新已有源码后重新构建)。`.task-tmp` 是开发临时目录，与 `packages/*/dist/` 构建产物分开。包内 README 如果保留面向独立 npm 包或上游 Pi 的安装片段，应视为包级参考；源码 checkout 的正式入口以根 README 和 `scripts/superpi.mjs` 为准。
+源码交付的最短路径是：在仓库根目录运行 `npm.cmd ci` 安装依赖、`npm.cmd run build:offline` 构建本地运行时，再通过 `npm.cmd run superpi` 启动。更新源码后的重建和 `--offline --version` / `--offline --help` 检查见[中文首页](../README.zh-CN.md#更新已有源码后重新构建)。`.task-tmp` 是开发临时目录，与 `packages/*/dist/` 构建产物分开。包内 README 如果保留面向独立 npm 包或上游 Pi 的安装片段，应视为包级参考；源码 checkout 的正式入口以根 README 和 `scripts/superpi.mjs` 为准。
 
 ## 模型、认证和 provider
 

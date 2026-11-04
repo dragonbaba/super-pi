@@ -1,0 +1,135 @@
+{
+  "date": "2026-11-04",
+  "scope": "Unified root build with dependency ordering and bounded parallelism",
+  "sourceBaseCommit": "4211ea11f693983e18ccbfae6b19cc358519f898",
+  "node": "v26.13.0",
+  "powershell": "7.6.9 Core",
+  "runnerSourceSha256": "1d15bec50f0df313fc708495f8cd7239cdb3a0d3a8939fcf0d097ec839cd82a2",
+  "retired": [
+    "The duplicated online and offline serial cd/npm command chains in root package.json"
+  ],
+  "baselineLocalBuild": {
+    "taskId": "local-offline-build-f9b51c2080f9",
+    "completedAt": "2026-11-04T13:11:21.964Z",
+    "sourceCommit": "4211ea11f693983e18ccbfae6b19cc358519f898",
+    "node": "v26.13.0",
+    "powershell": "7.6.9 Core",
+    "command": "npm.cmd --offline run build:offline",
+    "buildExitCode": 0,
+    "buildElapsedMs": 26555,
+    "launcher": {
+      "version": "1.0.0",
+      "versionExitCode": 0,
+      "helpExitCode": 0
+    },
+    "sandboxRuntime": {
+      "files": 41,
+      "allHashesVerified": true,
+      "manifestSha256": "baa2b0598dea4e730820ea3f93619e1780d5f6ba431ece1b48c9deb06ba09212",
+      "toolchainAndWorkerMatchSource": true
+    },
+    "temporaryEnvironmentVerified": true,
+    "cleanup": {
+      "state": "removed",
+      "resources": 198,
+      "settledProcesses": 4,
+      "sharedParentPreserved": true
+    }
+  },
+  "comparison": {
+    "commands": [
+      "npm.cmd run build:offline -- --jobs 1",
+      "npm.cmd run build:offline -- --jobs 2"
+    ],
+    "sequence": [
+      1,
+      2,
+      2,
+      1,
+      1,
+      2
+    ],
+    "runs": [
+      {
+        "jobs": 1,
+        "elapsedMs": 10823,
+        "peakActivePackages": 1,
+        "completedPackages": 12,
+        "exitCode": 0,
+        "artifactsEqual": true
+      },
+      {
+        "jobs": 2,
+        "elapsedMs": 7446,
+        "peakActivePackages": 2,
+        "completedPackages": 12,
+        "exitCode": 0,
+        "artifactsEqual": true
+      },
+      {
+        "jobs": 2,
+        "elapsedMs": 7422,
+        "peakActivePackages": 2,
+        "completedPackages": 12,
+        "exitCode": 0,
+        "artifactsEqual": true
+      },
+      {
+        "jobs": 1,
+        "elapsedMs": 11122,
+        "peakActivePackages": 1,
+        "completedPackages": 12,
+        "exitCode": 0,
+        "artifactsEqual": true
+      },
+      {
+        "jobs": 1,
+        "elapsedMs": 11037,
+        "peakActivePackages": 1,
+        "completedPackages": 12,
+        "exitCode": 0,
+        "artifactsEqual": true
+      },
+      {
+        "jobs": 2,
+        "elapsedMs": 7536,
+        "peakActivePackages": 2,
+        "completedPackages": 12,
+        "exitCode": 0,
+        "artifactsEqual": true
+      }
+    ],
+    "serialMedianMs": 11037,
+    "parallelMedianMs": 7446,
+    "medianReductionPercent": 32.54,
+    "conditions": "Same host and warmed filesystem; same complete 12-package plan, no incremental skip cache; the earlier independent 26.6-second build is not used in this comparison"
+  },
+  "artifacts": {
+    "files": 2848,
+    "digest": "9583a4a994bd3ad934992472458278592258a5bf223b20d806f7e27aad57b7cb",
+    "algorithm": "SHA-256 of JSON.stringify(sorted [repository-relative POSIX file path, SHA-256 of file bytes] rows from all 12 dist trees)",
+    "allSixRunsEqual": true
+  },
+  "verification": {
+    "runnerAndFileCommandTests": 10,
+    "sourceInvariants": 13,
+    "typecheck": true,
+    "planListsPackages": 12,
+    "launcherVersion": "1.0.0",
+    "launcherHelp": true,
+    "sandboxRuntimeFiles": 41,
+    "sandboxRuntimeManifestSha256": "baa2b0598dea4e730820ea3f93619e1780d5f6ba431ece1b48c9deb06ba09212",
+    "sandboxRuntimeHashesVerified": true
+  },
+  "lifecycle": {
+    "peakActivePackages": 2,
+    "childOutput": "inherited directly without JavaScript chunk callbacks or buffering",
+    "failure": "stops new work and awaits active close events",
+    "cancellation": "stops new work and drains active builds",
+    "runtimeHotPathsChanged": false
+  },
+  "temporary": {
+    "taskRoot": ".task-tmp/build-pipeline-7ebb0e3d3044",
+    "state": "pending PR review and CI; resources.json retained"
+  }
+}

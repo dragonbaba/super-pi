@@ -3,8 +3,13 @@
 Default Linux and Windows CI runs `npm ci`, `npm run build:offline`, then
 `npm test`, within the unchanged 30-minute job limit. The shared TypeScript
 check runs once, on Linux shard 1. Both operating systems still compile and
-exercise their actual runtime paths. Use `npm.cmd` on Windows PowerShell when
+exercise their actual runtime paths. Use `npm.cmd` on PowerShell 7 when
 required by execution policy.
+
+The [build runner](building.md) uses workspace dependency ordering and at most
+two concurrent packages by default. Its `--jobs` option is separate from the
+test runner's concurrency setting below; `npm run build:offline -- --jobs 1`
+provides a serial build for diagnosis.
 
 `node scripts/test.mjs --suite all --list` lists the deterministic
 execution-unit order (of the selected shard, if any), including the memory
