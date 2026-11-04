@@ -8,8 +8,9 @@ import test from "node:test";
 import { getConfigDir } from "../packages/coding-agent/src/config.ts";
 import { removeOwnedFixture } from "./helpers/owned-fixture-cleanup.ts";
 
-for (const kind of ["idle", "startup", "command", "command-error", "preflight-error", "active", "eof"]) {
+for (const kind of ["idle", "startup", "command", "command-error", "preflight-error", "active", "settled", "eof"]) {
   test(`RPC shutdown ${kind}: real CLI, open stdin and owned cleanup`, { timeout: 25_000 }, async t => {
+    const hasStream = kind === "active" || kind === "settled";
     const root = mkdtempSync(join(tmpdir(), "rpc-shutdown-"));
     const agent = join(root, "agent"); mkdirSync(agent);
     const config = getConfigDir(agent); mkdirSync(config);
@@ -38,13 +39,13 @@ for (const kind of ["idle", "startup", "command", "command-error", "preflight-er
         ready = true;
         clearTimeout(watchdog); watchdog = setTimeout(killOwnedChild, 5_000);
         if (kind === "eof") input.end();
-        else if (kind === "active" || kind === "preflight-error" || kind.startsWith("command")) input.write(JSON.stringify({ id: "fixture-prompt", type: "prompt", message: kind.startsWith("command") ? "/fixture-shutdown" : "fixture" }) + "\n");
+        else if (hasStream || kind === "preflight-error" || kind.startsWith("command")) input.write(JSON.stringify({ id: "fixture-prompt", type: "prompt", message: kind.startsWith("command") ? "/fixture-shutdown" : "fixture" }) + "\n");
       }
     });
     errors.on("data", data => {
       stderr += data.toString();
       if (stderr.length > 1024 * 1024) killOwnedChild();
-      if (kind === "active" && !released && stderr.includes("RPC_ACTIVE\n")) { released = true; child.send("finish"); }
+      if (hasStream && !released && stderr.includes("RPC_ACTIVE\n")) { released = true; child.send("finish"); }
     });
     t.after(async () => {
       clearTimeout(watchdog);
@@ -62,17 +63,22 @@ for (const kind of ["idle", "startup", "command", "command-error", "preflight-er
     const shutdown = stderr.split("\n").filter(line => line.startsWith("RPC_SHUTDOWN:"));
     assert.equal(shutdown.length, 1, stderr);
     const releasedState = JSON.parse(shutdown[0]!.slice("RPC_SHUTDOWN:".length));
-    assert.deepEqual(releasedState, { shutdowns: 1, requests: kind === "active" ? 1 : 0, aborted: false,
+    assert.deepEqual(releasedState, { shutdowns: 1, requests: hasStream ? 1 : 0, aborted: false,
       timerReleased: true, streamReleased: true, ipcReleased: true });
     assert.deepEqual(exit, { code: 0, runtimeCalls: 1, sessionCalls: 1, disposed: true, networkCalls: 0,
       tmpdir: tmpdir(), dataListeners: 0, endListeners: 0, callbacksReleased: true });
-    if (kind.startsWith("command") || kind === "active") {
+    if (kind.startsWith("command") || hasStream) {
       assert.equal(events.filter(event => event.type === "response" && event.id === "fixture-prompt" && event.success).length, 1);
     }
     if (kind === "command-error") assert.ok(events.some(event => event.type === "extension_error" && event.error === "fixture command error"));
     if (kind === "preflight-error") assert.deepEqual(events.filter(event => event.type === "response" && event.id === "fixture-prompt"),
       [{ id: "fixture-prompt", type: "response", command: "prompt", success: false, error: "fixture preflight rejection" }]);
-    if (kind === "active") { assert.ok(released); assert.ok(events.some(event => event.type === "agent_end")); }
+    if (hasStream) {
+      assert.ok(released);
+      assert.ok(events.some(event => event.type === "agent_end"));
+      assert.ok(events.some(event => event.type === "agent_settled"), "publish idle after extension settlement completes");
+    }
+    if (kind === "settled") assert.ok(stderr.includes("RPC_SETTLED_HOOK_DONE\n"));
     t.diagnostic(JSON.stringify({ kind, childPid: child.pid, ownedRoot: root, ...exit, ...releasedState }));
   });
 }

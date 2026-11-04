@@ -43,7 +43,7 @@ export default function (pi) {
       abortSignal?.addEventListener('abort', onAbort, { once: true });
       stream.push({ type: 'start', partial: message });
       stream.push({ type: 'text_delta', contentIndex: 0, delta: 'finished fixture', partial: message });
-      requestShutdown();
+      if (kind === 'active') requestShutdown();
       process.stderr.write('RPC_ACTIVE\n');
       return stream;
     },
@@ -60,6 +60,12 @@ export default function (pi) {
     ctx.ui.notify('RPC_READY');
     if (kind === 'startup') requestShutdown();
     if (kind === 'idle') timer = setImmediate(requestShutdown);
+  });
+  pi.on('agent_settled', async () => {
+    if (kind !== 'settled') return;
+    requestShutdown();
+    await new Promise(resolve => setImmediate(resolve));
+    process.stderr.write('RPC_SETTLED_HOOK_DONE\n');
   });
   pi.on('session_shutdown', () => {
     shutdowns++;

@@ -708,7 +708,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		// Extension commands complete outside handleCommand; publish their prompt
 		// response before disposal. Startup requests wait until RPC input is attached.
 		if (!shutdownRequested || shuttingDown || !detachInput || pendingCommands > 0 ||
-			pendingPromptResponses > 0 || session.isStreaming) return;
+			pendingPromptResponses > 0 || !session.isIdle) return;
 		return shutdown();
 	}
 
