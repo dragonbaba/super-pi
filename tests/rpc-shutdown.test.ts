@@ -8,9 +8,10 @@ import test from "node:test";
 import { getConfigDir } from "../packages/coding-agent/src/config.ts";
 import { removeOwnedFixture } from "./helpers/owned-fixture-cleanup.ts";
 
-for (const kind of ["idle", "startup", "command", "command-error", "preflight-error", "active", "settled", "eof"]) {
+for (const kind of ["idle", "startup", "command", "command-error", "custom-flush", "preflight-error", "active", "settled", "eof"]) {
   test(`RPC shutdown ${kind}: real CLI, open stdin and owned cleanup`, { timeout: 25_000 }, async t => {
     const hasStream = kind === "active" || kind === "settled";
+    const hasCommand = kind.startsWith("command") || kind === "custom-flush";
     const root = mkdtempSync(join(tmpdir(), "rpc-shutdown-"));
     const agent = join(root, "agent"); mkdirSync(agent);
     const config = getConfigDir(agent); mkdirSync(config);
@@ -39,14 +40,21 @@ for (const kind of ["idle", "startup", "command", "command-error", "preflight-er
         ready = true;
         clearTimeout(watchdog); watchdog = setTimeout(killOwnedChild, 5_000);
         if (kind === "eof") input.end();
-        else if (hasStream || kind === "preflight-error" || kind.startsWith("command")) input.write(JSON.stringify({ id: "fixture-prompt", type: "prompt", message: kind.startsWith("command") ? "/fixture-shutdown" : "fixture" }) + "\n");
+        else if (hasStream || kind === "preflight-error" || hasCommand) input.write(JSON.stringify({ id: "fixture-prompt", type: "prompt", message: hasCommand ? "/fixture-shutdown" : "fixture" }) + "\n");
       }
+      releaseFlush();
     });
     errors.on("data", data => {
       stderr += data.toString();
       if (stderr.length > 1024 * 1024) killOwnedChild();
       if (hasStream && !released && stderr.includes("RPC_ACTIVE\n")) { released = true; child.send("finish"); }
+      releaseFlush();
     });
+    function releaseFlush() {
+      if (kind === "custom-flush" && !released && stdout.includes('"fixture-prompt"') && stderr.includes("RPC_FLUSH_PENDING\n")) {
+        released = true; child.send("flush");
+      }
+    }
     t.after(async () => {
       clearTimeout(watchdog);
       if (child.exitCode === null && child.signalCode === null) child.kill();
@@ -64,10 +72,11 @@ for (const kind of ["idle", "startup", "command", "command-error", "preflight-er
     assert.equal(shutdown.length, 1, stderr);
     const releasedState = JSON.parse(shutdown[0]!.slice("RPC_SHUTDOWN:".length));
     assert.deepEqual(releasedState, { shutdowns: 1, requests: hasStream ? 1 : 0, aborted: false,
-      timerReleased: true, streamReleased: true, ipcReleased: true });
+      timerReleased: true, streamReleased: true, ipcReleased: true, flushReleased: true });
     assert.deepEqual(exit, { code: 0, runtimeCalls: 1, sessionCalls: 1, disposed: true, networkCalls: 0,
-      tmpdir: tmpdir(), dataListeners: 0, endListeners: 0, callbacksReleased: true });
-    if (kind.startsWith("command") || hasStream) {
+      idleWaitCalls: hasStream || kind === "custom-flush" ? 1 : 0,
+      tmpdir: tmpdir(), dataListeners: 0, endListeners: 0, callbacksReleased: true, idleWaitReleased: true });
+    if (hasCommand || hasStream) {
       assert.equal(events.filter(event => event.type === "response" && event.id === "fixture-prompt" && event.success).length, 1);
     }
     if (kind === "command-error") assert.ok(events.some(event => event.type === "extension_error" && event.error === "fixture command error"));
@@ -79,6 +88,12 @@ for (const kind of ["idle", "startup", "command", "command-error", "preflight-er
       assert.ok(events.some(event => event.type === "agent_settled"), "publish idle after extension settlement completes");
     }
     if (kind === "settled") assert.ok(stderr.includes("RPC_SETTLED_HOOK_DONE\n"));
+    if (kind === "custom-flush") {
+      assert.ok(released);
+      assert.ok(stderr.includes("RPC_FLUSH_DONE\n"));
+      assert.ok(events.some(event => event.type === "message_end" && event.message.customType === "fixture-report"));
+      assert.ok(!events.some(event => event.type === "agent_settled"), "idle reports do not publish agent_settled");
+    }
     t.diagnostic(JSON.stringify({ kind, childPid: child.pid, ownedRoot: root, ...exit, ...releasedState }));
   });
 }

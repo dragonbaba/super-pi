@@ -6,6 +6,7 @@ export default function (pi) {
   let timer;
   let active;
   let abortSignal;
+  let finishFlush;
   let shutdowns = 0;
   let requests = 0;
   let aborted = false;
@@ -26,7 +27,10 @@ export default function (pi) {
     abortSignal = undefined;
     if (pending) { pending.message.stopReason = 'aborted'; pending.stream.push({ type: 'error', reason: 'aborted', error: pending.message }); }
   }
-  function onMessage(value) { if (value === 'finish') finish(); }
+  function onMessage(value) {
+    if (value === 'finish') finish();
+    if (value === 'flush') { const resolve = finishFlush; finishFlush = undefined; resolve?.(); }
+  }
   process.on('message', onMessage);
   pi.registerProvider('rpc-fixture', {
     baseUrl: 'https://fixture.invalid', apiKey: 'offline-fixture-key', api: 'openai-responses',
@@ -49,6 +53,7 @@ export default function (pi) {
     },
   });
   pi.registerCommand('fixture-shutdown', { description: 'isolated RPC lifecycle fixture', async handler(_args, ctx) {
+    if (kind === 'custom-flush') pi.sendMessage({ customType: 'fixture-report', content: 'fixture report', display: false }, { triggerTurn: false });
     ctx.shutdown(); ctx.shutdown();
     await new Promise(resolve => setImmediate(resolve));
     if (kind === 'command-error') throw new Error('fixture command error');
@@ -67,13 +72,19 @@ export default function (pi) {
     await new Promise(resolve => setImmediate(resolve));
     process.stderr.write('RPC_SETTLED_HOOK_DONE\n');
   });
+  pi.on('message_end', async event => {
+    if (kind !== 'custom-flush' || event.message.customType !== 'fixture-report') return;
+    await new Promise(resolve => { finishFlush = resolve; process.stderr.write('RPC_FLUSH_PENDING\n'); });
+    process.stderr.write('RPC_FLUSH_DONE\n');
+  });
   pi.on('session_shutdown', () => {
     shutdowns++;
     if (timer) clearImmediate(timer);
     timer = undefined;
     process.off('message', onMessage);
     process.stderr.write('RPC_SHUTDOWN:' + JSON.stringify({ shutdowns, requests, aborted, timerReleased: timer === undefined,
-      streamReleased: active === undefined && abortSignal === undefined, ipcReleased: !process.listeners('message').includes(onMessage) }) + '\n');
+      streamReleased: active === undefined && abortSignal === undefined, ipcReleased: !process.listeners('message').includes(onMessage),
+      flushReleased: finishFlush === undefined }) + '\n');
     context = undefined;
   });
 }

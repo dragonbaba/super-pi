@@ -89,6 +89,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	let shuttingDown = false;
 	let pendingCommands = 0;
 	let pendingPromptResponses = 0;
+	let waitingForShutdownIdle = false;
 	let detachInput: (() => void) | undefined;
 	const signalCleanupHandlers: Array<() => void> = [];
 
@@ -704,11 +705,25 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		process.exit(exitCode);
 	}
 
+	function onShutdownIdle(): void {
+		waitingForShutdownIdle = false;
+		void checkShutdownRequested();
+	}
+
 	function checkShutdownRequested(): Promise<void> | undefined {
 		// Extension commands complete outside handleCommand; publish their prompt
 		// response before disposal. Startup requests wait until RPC input is attached.
 		if (!shutdownRequested || shuttingDown || !detachInput || pendingCommands > 0 ||
-			pendingPromptResponses > 0 || !session.isIdle) return;
+			pendingPromptResponses > 0) return;
+		if (!session.isIdle) {
+			// Idle custom-message persistence need not publish agent_settled. Join the
+			// existing idle waiter once for this pending shutdown, with a stable callback.
+			if (!waitingForShutdownIdle) {
+				waitingForShutdownIdle = true;
+				void session.waitForIdle().then(onShutdownIdle);
+			}
+			return;
+		}
 		return shutdown();
 	}
 
