@@ -1,6 +1,6 @@
 # H02-B — print 重叠关闭共享完成点
 
-状态：真实 CLI 失败回归已固化，最小修复及本地定向验收完成，等待独立 PR 审查和跨平台 CI。基线 `a5528db4f55bad298b58df949de80d5d4af98e03`，分支 `codex/h02-print-shutdown`。print 与 RPC 各自持有模式订阅和退出状态，按 H02 的 owner 边界使用独立 PR。
+状态：已通过最终 head 审查及跨平台 CI，合并 PR #201，两端任务分支已删除。基线 `a5528db4f55bad298b58df949de80d5d4af98e03`，原分支 `codex/h02-print-shutdown`。print 与 RPC 各自持有模式订阅和退出状态，按 H02 的 owner 边界使用独立 PR。
 
 ## 已核对链路及先行决定
 
@@ -39,3 +39,9 @@
 修正后的 Windows 实测 **5 通过、3 POSIX 跳过**，每个 child 的 os.tmpdir 均等于新建仓库内 fixture root，cleanup 后存在性断言全部通过，类型检查通过。生产 hash 和 AST 计数未改变。该修正后推送单独请求 `@codex review`。
 
 最初五个 runner 子进程全部退出，正式证据已保存；117 文件、3 目录的精确清理被自动审批在执行前拒绝，原始原因 `blocked by policy`。[回执](https://github.com/dragonbaba/super-pi/pull/201#issuecomment-6623063328)。原任务根保留日志/cache、resources.json、run.ps1、pr-body.md，manifest 标记 blocked，未重试受阻删除。后续 reviewer 验证日志另行登记，不将 fixture 的成功清理冒充原任务根已清理。
+
+## 最终交付回执
+
+最终 head `8fe270e4cee8ff772348fc072a05d6a56aaece59` 推送后单独 [请求复审](https://github.com/dragonbaba/super-pi/pull/201#issuecomment-6623140343)，[reviewer 无新意见](https://github.com/dragonbaba/super-pi/pull/201#issuecomment-6623161622)，原线程已修复并 resolve。[最终 CI](https://github.com/dragonbaba/super-pi/actions/runs/41777669405) Linux 2 / Windows 4 分片全部 success；Linux print 八例全部通过，真实 native-repeat/native-hup/native-normal 分别以 143/129/0 退出，每例 runtime/session dispose 各一次，引用/监听器/闸门均释放，真实网络/uncaught/unhandled rejection 均为 0，CLI tmpdir 与仓库内本夹具 root 一致。
+
+[PR #201](https://github.com/dragonbaba/super-pi/pull/201) 按最终 head 锁定合并，merge commit `61bdbbac823093b93fe9ac986709c7909680ed69`。已确认 origin/main 包含该提交并 fast-forward main。首次远端删除因 TLS handshake 网络失败未执行；重新核对精确远端 head 后删除成功，本地/远端 `codex/h02-print-shutdown` 均已查询确认不存在。此网络错误与临时资源自动审批 block 分别记录，未绕过后者。
