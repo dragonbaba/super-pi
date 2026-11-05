@@ -3,14 +3,14 @@ import test from "node:test";
 import { Writable } from "node:stream";
 import { getEventListeners } from "node:events";
 import { setImmediate as tick } from "node:timers/promises";
-import { mkdtempSync, realpathSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { realpathSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { SubagentStream } from "../packages/coding-agent/src/modes/subagent-stream.ts";
 import { SubagentProcessRun, failureDisplayText } from "../packages/extensions/subagent/index.ts";
 import { StderrTail } from "../packages/extensions/subagent/stderr-tail.ts";
 import { toJsonEvent } from "../packages/coding-agent/src/modes/json-event.ts";
+import { createOwnedTaskFixture } from "./helpers/owned-task-fixture.ts";
 
 test("child output shares backpressure and releases projections, callbacks and listeners", async t => {
     for (const outcome of ["complete", "failure", "dispose"]) {
@@ -51,7 +51,9 @@ test("byte-tail stderr handles fragmented UTF-8, wraps and bounds the final fail
 });
 
 test("real child print stream completes 163 full reads while individual event limits remain active", { timeout: 20000 }, async t => {
-    const root = realpathSync.native(mkdtempSync(join(tmpdir(), "sp-child-stream-"))), previous = process.env.SP_SOURCE_LAUNCHER;
+    const fixture = createOwnedTaskFixture("sp-child-stream-"), root = fixture.root, previous = process.env.SP_SOURCE_LAUNCHER;
+    const previousTemps = [process.env.TMP, process.env.TEMP, process.env.TMPDIR];
+    process.env.TMP = root; process.env.TEMP = root; process.env.TMPDIR = root;
     process.env.SP_SOURCE_LAUNCHER = fileURLToPath(new URL("./fixtures/subagent-stream-child.mjs", import.meta.url));
     const owned: any[] = [];
     try {
@@ -72,13 +74,16 @@ test("real child print stream completes 163 full reads while individual event li
             } else assert.match(result.errorMessage, /8 MiB/);
         }
         const markers = readdirSync(root).filter(name => name.startsWith("stream-"));
-        for (const name of markers) assert.equal(realpathSync.native(JSON.parse(readFileSync(join(root, name), "utf8")).tmpdir), realpathSync.native(tmpdir()));
+        for (const name of markers) assert.equal(realpathSync.native(JSON.parse(readFileSync(join(root, name), "utf8")).tmpdir), realpathSync.native(root));
         const message = { role: "toolResult", content: [{ type: "text", text: "x".repeat(50 * 1024) }] };
         const event: any = { type: "agent_end", messages: new Array(164).fill(message), willRetry: false };
         assert.equal(toJsonEvent(event), event); assert.ok(Buffer.byteLength(JSON.stringify(toJsonEvent(event))) > 8 * 1024 * 1024, "public JSON still includes the aggregate payload");
     } finally {
         if (previous === undefined) delete process.env.SP_SOURCE_LAUNCHER; else process.env.SP_SOURCE_LAUNCHER = previous;
+        for (const [index, key] of ["TMP", "TEMP", "TMPDIR"].entries()) {
+            const value = previousTemps[index]; if (value === undefined) delete process.env[key]; else process.env[key] = value;
+        }
         writeFileSync(join(root, "resources.json"), JSON.stringify({ root, children: owned, files: readdirSync(root) }));
-        assert.ok(owned.every(child => child.exited)); assert.equal(realpathSync.native(root), root); rmSync(root, { recursive: true });
+        assert.ok(owned.every(child => child.exited)); fixture.cleanup();
     }
 });

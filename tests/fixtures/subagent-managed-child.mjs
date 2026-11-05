@@ -1,6 +1,7 @@
 // Offline child fixture: writes only a ready marker in its task-owned temporary cwd.
 import { readFileSync, writeFileSync, existsSync, watch } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 const task = process.argv.at(-1) ?? "";
 const delay = task.includes("slow") ? 800 : task.includes("hold") ? 30_000 : 10;
 const message = {
@@ -14,7 +15,7 @@ const systemPrompt = promptIndex < 0 ? "" : readFileSync(process.argv[promptInde
 const toolsIndex = process.argv.indexOf("--tools");
 const tools = toolsIndex < 0 ? undefined : process.argv[toolsIndex + 1];
 const guidanceMode = task.includes("guidance-gate");
-function markReady() { writeFileSync(join(process.cwd(), `child-${process.pid}.ready.json`), JSON.stringify({ pid: process.pid, task, systemPrompt, tools, allowBash: process.env.SP_SUBAGENT_ALLOW_BASH })); }
+function markReady() { writeFileSync(join(process.cwd(), `child-${process.pid}.ready.json`), JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString(), tmpdir: tmpdir(), task, systemPrompt, tools, allowBash: process.env.SP_SUBAGENT_ALLOW_BASH })); }
 if (!guidanceMode) markReady();
 let sequence = 0;
 async function control(kind, fields = {}) {
