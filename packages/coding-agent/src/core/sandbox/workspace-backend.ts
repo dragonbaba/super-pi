@@ -27,6 +27,8 @@ export class WorkspaceSandboxBackend {
   private vm: any;
   private compiler: any;
   private pending?: Promise<WorkspaceReply>;
+  private discardOperation?: Promise<void>;
+  private closeOperation?: Promise<void>;
   private closed = false;
   private readonly owned = new Map<string, string>();
   private readonly sources = new Map<string, { dev: bigint; ino: bigint; size: bigint; mtimeNs: bigint; ctimeNs: bigint }>();
@@ -45,7 +47,7 @@ export class WorkspaceSandboxBackend {
   }
   get diagnostics() { return { starts: this.starts, calls: this.calls, pending: !!this.pending, vm: !!this.vm, root: this.root, closed: this.closed, sourceFiles: this.sources.size, ownedArtifacts: this.owned.size }; }
   invoke(operation: string, input: Record<string, unknown>, signal?: AbortSignal): Promise<WorkspaceReply> {
-    if (this.closed || this.pending) return Promise.reject(new Error("[SANDBOX_BUSY] Workspace is closed or has an active operation"));
+    if (this.closed || this.pending || this.discardOperation) return Promise.reject(new Error("[SANDBOX_BUSY] Workspace is closed or has an active operation"));
     return this.pending = this.run(operation, input, signal).finally(this.releasePending);
   }
   private readonly releasePending = (): void => { this.pending = undefined; };
@@ -167,9 +169,13 @@ export class WorkspaceSandboxBackend {
     if (this.vm) { await this.vm.cleanup(); need(this.vm.state === "closed", "Sandbox cleanup unresolved"); this.vm = undefined; }
   }
   /** Called after a settled invocation/publication failure. A later call captures a fresh workspace. */
-  async discardSnapshot(): Promise<void> {
+  discardSnapshot(): Promise<void> {
+    return this.discardOperation ??= this.performDiscardSnapshot();
+  }
+  private async performDiscardSnapshot(): Promise<void> {
     try { await this.closeVm(); await this.releaseArtifacts(); }
     catch (error) { this.closed = true; throw error; }
+    finally { this.discardOperation = undefined; }
   }
   async drain(): Promise<void> { try { await this.pending; } catch { /* original caller owns its failure */ } }
   async assertWorkspaceCurrent(): Promise<void> {
@@ -188,11 +194,19 @@ export class WorkspaceSandboxBackend {
     if (deleted) this.sources.delete(key);
     else { const stat = await fs.lstat(path.resolve(this.sourceRoot, name), { bigint: true }); this.sources.set(key, { dev: stat.dev, ino: stat.ino, size: stat.size, mtimeNs: stat.mtimeNs, ctimeNs: stat.ctimeNs }); }
   }
-  async close(): Promise<void> {
+  close(): Promise<void> {
     this.closed = true;
+    return this.closeOperation ??= this.performClose();
+  }
+  private async performClose(): Promise<void> {
     // Callers revoke the execution boundary before joining this owner.
     try { await this.pending; } catch { /* original caller owns the failure */ }
-    await this.discardSnapshot();
+    try { await this.discardSnapshot(); }
+    catch (error) {
+      // Keep unresolved owners available to a later explicit cleanup retry.
+      this.closeOperation = undefined;
+      throw error;
+    }
   }
   private async releaseArtifacts(): Promise<void> {
     if (this.compiler) { need(await this.compiler.wait(15000) === "settled", "Compiler still active; original owner retained"); this.compiler = undefined; }
