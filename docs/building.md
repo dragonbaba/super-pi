@@ -3,23 +3,25 @@
 依赖已经安装时，在仓库根目录的 PowerShell 7 中执行：
 
 ```powershell
-npm.cmd run build:offline
-npm.cmd run superpi -- --offline --version
-npm.cmd run superpi -- --offline --help
+npm run build:offline
+npm run superpi -- --offline --version
+npm run superpi -- --offline --help
 ```
 
-首次安装或锁文件变化后先运行 `npm.cmd ci`。构建输出位于各包的 `dist/`；删除 `.task-tmp` 不会删除这些产物。
+首次安装或锁文件变化后先运行 `npm ci`。构建输出位于各包的 `dist/`；删除 `.task-tmp` 不会删除这些产物。
+
+`npm run build:offline` 就是正式本地离线构建入口。PowerShell 执行策略若拦截 npm 安装目录中的 `npm.ps1`，可以使用 npm 自带的 `npm.cmd`，不需改永久策略或另建仓库 `.cmd`/`.ps1` 构建脚本；这与在线 npm 包是否发布无关。
 
 ## 入口与行为
 
 | 命令 | 行为 |
 | --- | --- |
-| `npm.cmd run build:offline` | 使用现有模型数据，自动为 npm 子构建启用离线模式，默认最多并行两个包 |
-| `npm.cmd run build:offline -- --jobs 1` | 同一构建计划串行执行，便于诊断和对照 |
-| `npm.cmd run build:offline -- --list` | 只显示包、构建脚本和依赖，不编译或刷新数据 |
-| `npm.cmd run build` | 保留原在线构建语义，AI 包会先刷新模型数据，可能访问网络 |
+| `npm run build:offline` | 使用现有模型数据，自动为 npm 子构建启用离线模式，默认最多并行两个包 |
+| `npm run build:offline -- --jobs 1` | 同一构建计划串行执行，便于诊断和对照 |
+| `npm run build:offline -- --list` | 只显示包、构建脚本和依赖，不编译或刷新数据 |
+| `npm run build` | 保留原在线构建语义，AI 包会先刷新模型数据，可能访问网络 |
 
-`--jobs N` 接受 1–32 的整数；实际并发还受依赖关系和包数限制。默认值为 CPU 可用并行度与 2 的较小值。无需再写外层 `npm.cmd --offline`，原命令仍兼容。构建离线模式与 CLI 的 `--offline` 独立，均不意味着模型推理离线。
+`--jobs N` 接受 1–32 的整数；实际并发还受依赖关系和包数限制。默认值为 CPU 可用并行度与 2 的较小值。无需再写外层 `npm --offline`，原命令仍兼容。构建离线模式与 CLI 的 `--offline` 独立，均不意味着模型推理离线。
 
 统一入口是 `scripts/build.mjs`。构建目标仍是原来的 12 个包；执行顺序来自这些包的 `dependencies`、`devDependencies` 和 `peerDependencies`。包必须等其依赖成功结束后才能开始，循环依赖或缺失构建脚本会在启动子进程前报错。各包继续负责自己的编译、资源复制、SQLite migration 和 Windows Sandbox 打包。
 
