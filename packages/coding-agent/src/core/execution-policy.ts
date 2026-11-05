@@ -5,7 +5,8 @@ import { assertPermissionMode, type SessionPermissionMode } from "./permission-m
 import { WORKSPACE_TOOL_NAMES } from "./session-execution-profile.ts";
 import type { ExtensionContext, ExtensionRuntime, ToolCallEvent, ToolDefinition } from "./extensions/types.ts";
 import type { ReadonlySessionManager, SessionEntry, SessionEntryVisitor } from "./session-manager.ts";
-import { assessCanonicalMutationPath, canonicalizeProspectivePath } from "./files/protected-path-policy.ts";
+import { assessCanonicalMutationPath, canonicalizeProspectivePath, canonicalWorkspaceMetadata } from "./files/protected-path-policy.ts";
+import { assessHostMutations } from "./files/host-mutation-policy.ts";
 import { attachPermissionPathApproval, mutationRequestHash, type PermissionPathApproval } from "./files/file-invocation.ts";
 import { InputReadPolicyLease } from "./files/session-input-read-permission.ts";
 import { resolveReadPathAsync, resolveToCwd } from "./tools/path-utils.ts";
@@ -27,6 +28,7 @@ export interface ExecutionPermissionRule {
     path?: string;
 }
 export interface ExecutionPermissions { approval?: "interactive" | "never"; rules?: ExecutionPermissionRule[]; }
+interface ResolvedPolicyPaths { paths: string[]; workspaces: string[]; }
 export interface PermissionRefusal {
     readonly key: string;
     readonly source: "legacy" | "explicit";
@@ -154,10 +156,14 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
             if (signal) assertSignal.call(signal);
         };
     }
-    private async paths(ctx: ExtensionContext, targets: readonly string[], mutation: boolean): Promise<string[]> {
+    private refuse(ctx: ExtensionContext, code: string, message: string): never {
+        if (ctx.hasUI) ctx.ui.notify(message, "error");
+        throw new Error(code + message);
+    }
+    private async paths(ctx: ExtensionContext, targets: readonly string[], mutation: boolean, operation = "变更"): Promise<ResolvedPolicyPaths> {
         const check = this.guard(ctx), output: string[] = [];
         if (targets.length > 34) throw new Error(BLOCKED + "Too many paths");
-        if (!targets.length) return output;
+        if (!targets.length) return { paths: output, workspaces: [] };
         const workspaces = [await realpath(ctx.cwd)], unavailable: string[] = []; check();
         for (const directory of this.directories) {
             let canonical: string | undefined;
@@ -168,6 +174,7 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
                 unavailable.push(directory);
             } else workspaces.push(canonical);
         }
+        const metadata = mutation ? await canonicalWorkspaceMetadata(workspaces) : undefined; check();
         for (const target of targets) {
             if (typeof target !== "string" || target.length > 4096 || target.includes("\0")) throw new Error(BLOCKED + "Invalid path");
             const absolute = resolve(ctx.cwd, target);
@@ -176,9 +183,11 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
                 if (inside(directory, absolute) || inside(directory, canonical)) throw new Error(BLOCKED + "Additional workspace is unavailable or redirected: " + directory);
             }
             if (mutation) {
-                const result = assessCanonicalMutationPath(workspaces, canonical);
+                const result = assessCanonicalMutationPath(workspaces, canonical, metadata);
                 for (const violation of result.violations) {
-                    if (violation !== "workspace_escape" || this.mode !== "host-write") throw new Error(BLOCKED + "Protected or out-of-workspace mutation: " + target);
+                    if (violation !== "workspace_escape" || this.mode !== "host-write") {
+                        this.refuse(ctx, BLOCKED, `禁止 ${operation}：${canonical}\n受保护或工作区外目标（${violation}）。操作未执行，请明确告知用户。`);
+                    }
                 }
                 output.push(canonical);
             } else {
@@ -188,7 +197,7 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
                 output.push(canonical);
             }
         }
-        return output;
+        return { paths: output, workspaces };
     }
     private async decision(tool: string, command: unknown, paths: readonly string[], cwd: string, fallback?: PermissionDecision): Promise<PermissionDecision> {
         let selected: PermissionDecision | undefined;
@@ -305,7 +314,10 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
         const delegation = event.toolName === "subagent" || event.toolName === "structured_readonly_command"
             ? await prepareNativeDelegation(event.toolName, input, ctx.cwd, this.runtime.executionBoundary.getToolSelectionMode() === "plan") : undefined;
         check();
-        const paths = delegation?.paths ?? await this.paths(ctx, targets, mutation); check();
+        const resolved = delegation ? undefined : await this.paths(ctx, targets, mutation, event.toolName); check();
+        const paths = delegation?.paths ?? resolved!.paths;
+        const host = mutation && this.mode === "host-write" ? await assessHostMutations(resolved!.workspaces, paths, event.toolName, input) : undefined; check();
+        if (host?.forbidden) this.refuse(ctx, BLOCKED, `敏感目标禁止删除或移出：${host.forbidden}\n操作未执行，请明确告知用户。`);
         let decision = await this.decision(event.toolName, input.command, paths, ctx.cwd, explicitUserCommand ? "allow" : undefined); check();
         if (event.toolName === "file_batch") {
             let index = 0;
@@ -329,9 +341,12 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
             }
         } else keys.push(fingerprint([session, event.toolName, invocationFingerprint(event.toolName, input)]));
         if (decision === "deny" || keys.some(key => this.denied.has(key))) throw new Error(BLOCKED + "Explicitly denied operation");
+        if (host?.externalOverwrite) this.refuse(ctx, "[EXTERNAL_FILE_WRITE_BLOCKED] ",
+            `禁止覆盖或编辑工作区外已有文件：${host.externalOverwrite}\n操作未执行。请停止当前任务并告知用户，等待下一步指令。`);
+        if (host?.ask) decision = "ask";
         if (decision === "ask") {
             if (this.approval === "never" || !ctx.hasUI) throw new Error("[APPROVAL_REQUIRED] Operation was not executed: " + event.toolName);
-            const details = mutation ? paths.join("\n") : JSON.stringify(input, null, 2);
+            const details = mutation ? host?.details || paths.join("\n") : JSON.stringify(input, null, 2);
             if (details.length > 16384) throw new Error("[APPROVAL_REQUIRED] Request is too large for one interactive review; configure an explicit scoped rule");
             const signal = ctx.signal ?? this.runtime.executionBoundary.signal;
             const selected = await ctx.ui.select("允许这次操作？", APPROVAL_CHOICES,
@@ -373,12 +388,13 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
         if (mutation) attachPermissionPathApproval(input, { schemaVersion: 1, sequence: this.runtime.executionBoundary.generation,
             toolCallId: event.toolCallId, operation: event.toolName as PermissionPathApproval["operation"],
             requestHash: mutationRequestHash(event.toolName as PermissionPathApproval["operation"], input), canonicalTarget: paths[0]!,
+            canonicalPaths: paths, newExternalFiles: host?.newExternalFiles,
             protectedRoots: [resolve(ctx.cwd, ".git"), resolve(ctx.cwd, ".sp")], assertCurrent: check, revocationSignal: ctx.signal ?? this.runtime.executionBoundary.signal });
         return invocation;
     }
     async authorizeFileObservation(ctx: ExtensionContext, targets: readonly string[]) {
         const check = this.guard(ctx);
-        const paths = await this.paths(ctx, targets, false); check();
+        const { paths } = await this.paths(ctx, targets, false); check();
         const decision = await this.decision("read", undefined, paths, ctx.cwd); check();
         if (decision !== "allow") throw new Error(BLOCKED + "File observation requires an existing read grant");
         const renew = async () => { check(); await this.paths(ctx, targets, false); check(); };

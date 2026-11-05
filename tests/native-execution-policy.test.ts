@@ -78,7 +78,7 @@ test("native LSP write grants bind root, exact input and lifetime; preview remai
     input.root = ".";
     assert.throws(() => invocation.consume(input, "test-call", "lsp_fix"), /changed after authorization/);
     invocation.release();
-    await assert.rejects(f.owner.authorize(f.event("lsp_fix", { root: ".sp", path: "config.ts", write: true }), f.ctx), /Protected/);
+    await assert.rejects(f.owner.authorize(f.event("lsp_fix", { root: ".sp", path: "config.ts", write: true }), f.ctx), /workspace_sp_root/);
     f.runtime.executionBoundary.register("plan-fixture", { revoke() {}, async drain() {}, toolSelectionMode: () => "plan" });
     await assert.rejects(f.owner.authorize(f.event("lsp_fix", { ...input, root: "src" }), f.ctx), /Plan mode/);
     const preview = { ...input, root: "src", write: false };
@@ -213,7 +213,7 @@ test("all batch paths are checked before any native mutation is prepared", async
     const f = await fixture(t, { rules: [{ tool: "file_batch", decision: "allow", path: "." }] });
     await assert.rejects(f.owner.authorize(f.event("file_batch", { operations: [
         { operation: "write", path: "ok.txt", content: "x" }, { operation: "write", path: "../escape.txt", content: "x" },
-    ] }), f.ctx, f.definition("file_batch")), /out-of-workspace/);
+    ] }), f.ctx, f.definition("file_batch")), /workspace_escape/);
     assert.deepEqual(await fs.readdir(f.root), []);
 });
 
@@ -226,7 +226,7 @@ test("canonical workspace selection protects additional roots through aliases an
     await fs.writeFile(path.join(additional.root, "ordinary.txt"), "ordinary");
     await fs.symlink(additional.root, path.join(f.root, "alias"), process.platform === "win32" ? "junction" : "dir");
     for (const target of ["alias", "alias/.git/config", "alias/.sp/config"]) {
-        await assert.rejects(f.owner.authorize(f.event("delete", { path: target }), f.ctx), /Protected/);
+        await assert.rejects(f.owner.authorize(f.event("delete", { path: target }), f.ctx), /workspace_(root|git_root|sp_root)/);
     }
     const input = { path: "alias/ordinary.txt", content: "allowed" };
     const invocation = await f.owner.authorize(f.event("write", input), f.ctx);
