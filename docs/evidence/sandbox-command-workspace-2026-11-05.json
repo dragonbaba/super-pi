@@ -1,0 +1,1429 @@
+{
+  "date": "2026-11-05T10:05:37.701Z",
+  "base": "db00e12a8e46513af91254e621cba205fed47a58",
+  "session": {
+    "id": "01a1aa6e-a111-7ba4-a440-96ca81c262ca",
+    "lines": 187,
+    "sha256": "1ed7a41901e913ba055dae64c6da50e2cd7aaf748c55a00328c24b23c6a6a698",
+    "previousLines": 154,
+    "previousPrefixUnchanged": true,
+    "observations": [
+      {
+        "line": 157,
+        "kind": "bash unavailable in active Sandbox tool set"
+      },
+      {
+        "lines": [
+          163,
+          165,
+          169,
+          183,
+          185
+        ],
+        "kind": "PowerShell guest cwd and file-tool absolute workspace namespace diverge; relative read succeeds"
+      },
+      {
+        "line": 175,
+        "kind": "tool_search absent; external host directory is not mapped"
+      },
+      {
+        "line": 179,
+        "kind": "timeout 180 exceeds active schema maximum 120"
+      }
+    ]
+  },
+  "mechanism": "Guest-only junction aliases the captured read-only or writable workspace at the same absolute project path; non-C drive aliases remain confined to the guest. No host project or whole-drive mount and no command text rewriting.",
+  "tests": {
+    "files": 8,
+    "passed": 48,
+    "failed": 0,
+    "skipped": 0,
+    "summary": [
+      "ℹ tests 48",
+      "ℹ suites 0",
+      "ℹ pass 48",
+      "ℹ fail 0",
+      "ℹ cancelled 0",
+      "ℹ skipped 0",
+      "ℹ todo 0",
+      "ℹ duration_ms 1300.5269"
+    ]
+  },
+  "baseline": {
+    "expectedFailure": "PowerShell cwd was C:/SuperPiWorkspace",
+    "reports": [
+      {
+        "cwd": "C:\\SuperPiWorkspace",
+        "relative": "workspace-fixture",
+        "version": "7.6.9"
+      },
+      {
+        "diagnostics": {
+          "starts": 1,
+          "calls": 1,
+          "pending": false,
+          "vm": false,
+          "closed": true,
+          "sourceFiles": 0,
+          "ownedArtifacts": 0
+        },
+        "state": "closed",
+        "instanceId": "bbbcf709-2947-449b-8322-b1d56768cad6",
+        "calls": [
+          {
+            "kind": "list",
+            "pid": 36236,
+            "settled": true,
+            "exitCode": 0
+          },
+          {
+            "kind": "start",
+            "pid": 40944,
+            "settled": true,
+            "exitCode": 0
+          },
+          {
+            "kind": "list",
+            "pid": 3372,
+            "settled": true,
+            "exitCode": 0
+          },
+          {
+            "kind": "exec",
+            "pid": 34152,
+            "settled": true,
+            "exitCode": 0
+          },
+          {
+            "kind": "list",
+            "pid": 34636,
+            "settled": true,
+            "exitCode": 0
+          },
+          {
+            "kind": "stop",
+            "pid": 33900,
+            "settled": true,
+            "exitCode": 0
+          },
+          {
+            "kind": "list",
+            "pid": 35100,
+            "settled": true,
+            "exitCode": 0
+          }
+        ]
+      }
+    ]
+  },
+  "candidate": {
+    "reports": [
+      {
+        "cwd": "D:\\RMProjects\\Pi\\.task-tmp\\sandbox-workspace-path-bd729be642\\project",
+        "relative": "workspace-fixture",
+        "version": "7.6.9"
+      },
+      {
+        "diagnostics": {
+          "starts": 1,
+          "calls": 1,
+          "pending": false,
+          "vm": false,
+          "closed": true,
+          "sourceFiles": 0,
+          "ownedArtifacts": 0
+        },
+        "state": "closed",
+        "instanceId": "0f46ad6d-e594-41cb-adfc-090e168ca1de",
+        "calls": [
+          {
+            "kind": "list",
+            "pid": 24328,
+            "settled": true,
+            "exitCode": 0
+          },
+          {
+            "kind": "start",
+            "pid": 21644,
+            "settled": true,
+            "exitCode": 0
+          },
+          {
+            "kind": "list",
+            "pid": 20216,
+            "settled": true,
+            "exitCode": 0
+          },
+          {
+            "kind": "exec",
+            "pid": 36828,
+            "settled": true,
+            "exitCode": 0
+          },
+          {
+            "kind": "list",
+            "pid": 40516,
+            "settled": true,
+            "exitCode": 0
+          },
+          {
+            "kind": "stop",
+            "pid": 41516,
+            "settled": true,
+            "exitCode": 0
+          },
+          {
+            "kind": "list",
+            "pid": 22736,
+            "settled": true,
+            "exitCode": 0
+          }
+        ]
+      }
+    ],
+    "networkAndPaths": [
+      {
+        "kind": "WORKSPACE_NETWORK_LIVE",
+        "record": {
+          "mode": "read-only",
+          "network": "disabled",
+          "version": "7.6.9",
+          "cwd": "D:\\RMProjects\\Pi\\.task-tmp\\sandbox-workspace-path-bd729be642\\sandbox-workspace-live-kALIKk\\project",
+          "dns": false,
+          "https": false,
+          "fixture": "workspace-fixture",
+          "calls": 3
+        }
+      },
+      {
+        "kind": "WORKSPACE_NETWORK_CLOSED",
+        "record": {
+          "starts": 1,
+          "calls": 3,
+          "pending": false,
+          "vm": false,
+          "closed": true,
+          "sourceFiles": 0,
+          "ownedArtifacts": 0
+        }
+      },
+      {
+        "kind": "WORKSPACE_NETWORK_LIVE",
+        "record": {
+          "mode": "sandbox-write",
+          "network": "enabled",
+          "version": "7.6.9",
+          "cwd": "D:\\RMProjects\\Pi\\.task-tmp\\sandbox-workspace-path-bd729be642\\sandbox-workspace-live-kALIKk\\project",
+          "dns": true,
+          "https": true,
+          "fixture": "workspace-fixture",
+          "npmInstall": true,
+          "hostUnchanged": true,
+          "dependencyWritebacks": 0,
+          "calls": 4
+        }
+      },
+      {
+        "kind": "WORKSPACE_NETWORK_CLOSED",
+        "record": {
+          "starts": 1,
+          "calls": 4,
+          "pending": false,
+          "vm": false,
+          "closed": true,
+          "sourceFiles": 0,
+          "ownedArtifacts": 0
+        }
+      }
+    ],
+    "packagedModes": [
+      {
+        "mode": "read-only",
+        "cwd": "D:\\RMProjects\\Pi\\.task-tmp\\sandbox-workspace-path-bd729be642\\中文 space 'quote'",
+        "native": "D:\\RMProjects\\Pi\\.task-tmp\\sandbox-workspace-path-bd729be642\\中文 space 'quote'",
+        "relative": "fixture",
+        "absolute": "fixture",
+        "version": "7.6.9",
+        "writeBlocked": true,
+        "hostUnchanged": true,
+        "cleanup": {
+          "starts": 1,
+          "calls": [
+            {
+              "kind": "list",
+              "pid": 38268,
+              "settled": true,
+              "exitCode": 0,
+              "started": "2026-11-05T09:58:59.694Z",
+              "finished": "2026-11-05T09:59:00.068Z"
+            },
+            {
+              "kind": "start",
+              "pid": 37172,
+              "settled": true,
+              "exitCode": 0,
+              "started": "2026-11-05T09:59:00.095Z",
+              "finished": "2026-11-05T09:59:01.107Z"
+            },
+            {
+              "kind": "list",
+              "pid": 8032,
+              "settled": true,
+              "exitCode": 0,
+              "started": "2026-11-05T09:59:01.118Z",
+              "finished": "2026-11-05T09:59:01.312Z"
+            },
+            {
+              "kind": "exec",
+              "pid": 36612,
+              "settled": true,
+              "exitCode": 0,
+              "started": "2026-11-05T09:59:01.335Z",
+              "finished": "2026-11-05T09:59:04.107Z"
+            },
+            {
+              "kind": "exec",
+              "pid": 15480,
+              "settled": true,
+              "exitCode": 0,
+              "started": "2026-11-05T09:59:04.129Z",
+              "finished": "2026-11-05T09:59:04.764Z"
+            },
+            {
+              "kind": "exec",
+              "pid": 28024,
+              "settled": true,
+              "exitCode": 0,
+              "started": "2026-11-05T09:59:04.780Z",
+              "finished": "2026-11-05T09:59:06.704Z"
+            },
+            {
+              "kind": "list",
+              "pid": 3880,
+              "settled": true,
+              "exitCode": 0,
+              "started": "2026-11-05T09:59:06.720Z",
+              "finished": "2026-11-05T09:59:06.912Z"
+            },
+            {
+              "kind": "stop",
+              "pid": 36832,
+              "settled": true,
+              "exitCode": 0,
+              "started": "2026-11-05T09:59:06.933Z",
+              "finished": "2026-11-05T09:59:07.369Z"
+            },
+            {
+              "kind": "list",
+              "pid": 36904,
+              "settled": true,
+              "exitCode": 0,
+              "started": "2026-11-05T09:59:07.383Z",
+              "finished": "2026-11-05T09:59:07.570Z"
+            }
+          ],
+          "pending": false,
+          "vm": false,
+          "closed": true,
+          "sourceFiles": 0,
+          "ownedArtifacts": 0,
+          "instanceId": "79a42eae-9028-45e9-b6d1-9b142bec16d0",
+          "state": "closed"
+        }
+      },
+      {
+        "mode": "sandbox-write",
+        "cwd": "D:\\RMProjects\\Pi\\.task-tmp\\sandbox-workspace-path-bd729be642\\中文 space 'quote'",
+        "native": "D:\\RMProjects\\Pi\\.task-tmp\\sandbox-workspace-path-bd729be642\\中文 space 'quote'",
+        "relative": "fixture",
+        "absolute": "fixture",
+        "version": "7.6.9",
+        "candidatePaths": [
+          "created.txt",
+          "relative.txt"
+        ],
+        "hostUnchanged": true,
+        "cleanup": {
+          "starts": 1,
+          "calls": [
+            {
+              "kind": "list",
+              "pid": 16248,
+              "settled": true,
+              "exitCode": 0,
+              "started": "2026-11-05T09:59:10.807Z",
+              "finished": "2026-11-05T09:59:11.003Z"
+            },
+            {
+              "kind": "start",
+              "pid": 28096,
+              "settled": true,
+              "exitCode": 0,
+              "started": "2026-11-05T09:59:11.023Z",
+              "finished": "2026-11-05T09:59:11.849Z"
+            },
+            {
+              "kind": "list",
+              "pid": 40456,
+              "settled": true,
+              "exitCode": 0,
+              "started": "2026-11-05T09:59:11.861Z",
+              "finished": "2026-11-05T09:59:12.053Z"
+            },
+            {
+              "kind": "exec",
+              "pid": 27392,
+              "settled": true,
+              "exitCode": 0,
+              "started": "2026-11-05T09:59:12.070Z",
+              "finished": "2026-11-05T09:59:14.719Z"
+            },
+            {
+              "kind": "exec",
+              "pid": 41952,
+              "settled": true,
+              "exitCode": 0,
+              "started": "2026-11-05T09:59:14.749Z",
+              "finished": "2026-11-05T09:59:15.506Z"
+            },
+            {
+              "kind": "exec",
+              "pid": 40376,
+              "settled": true,
+              "exitCode": 0,
+              "started": "2026-11-05T09:59:15.523Z",
+              "finished": "2026-11-05T09:59:17.466Z"
+            },
+            {
+              "kind": "list",
+              "pid": 37772,
+              "settled": true,
+              "exitCode": 0,
+              "started": "2026-11-05T09:59:17.502Z",
+              "finished": "2026-11-05T09:59:17.691Z"
+            },
+            {
+              "kind": "stop",
+              "pid": 24536,
+              "settled": true,
+              "exitCode": 0,
+              "started": "2026-11-05T09:59:17.707Z",
+              "finished": "2026-11-05T09:59:18.150Z"
+            },
+            {
+              "kind": "list",
+              "pid": 25840,
+              "settled": true,
+              "exitCode": 0,
+              "started": "2026-11-05T09:59:18.186Z",
+              "finished": "2026-11-05T09:59:18.372Z"
+            }
+          ],
+          "pending": false,
+          "vm": false,
+          "closed": true,
+          "sourceFiles": 0,
+          "ownedArtifacts": 0,
+          "instanceId": "0f8ced9d-00a4-402a-9e66-a12e1ed4dbb8",
+          "state": "closed"
+        }
+      }
+    ],
+    "cancellation": {
+      "instanceId": "10a8f591-473e-46e8-816e-7258241a25a7",
+      "activePid": 39776,
+      "cancelToCloseMs": 917.6086999999998,
+      "scope": "Guest already warmed; physical execution CLI in flight, not a proof of guest command entry",
+      "state": "closed",
+      "diagnostics": {
+        "starts": 1,
+        "calls": 2,
+        "pending": false,
+        "vm": false,
+        "closed": true,
+        "sourceFiles": 0,
+        "ownedArtifacts": 0
+      },
+      "calls": [
+        {
+          "kind": "list",
+          "pid": 1912,
+          "requestedUtc": "2026-11-05T10:02:51.543Z",
+          "outcome": "settled",
+          "startedUtc": "2026-11-05T10:02:51.590Z",
+          "closedUtc": "2026-11-05T10:02:51.965Z",
+          "exitCode": 0,
+          "signal": null
+        },
+        {
+          "kind": "start",
+          "pid": 39508,
+          "requestedUtc": "2026-11-05T10:02:51.970Z",
+          "outcome": "settled",
+          "startedUtc": "2026-11-05T10:02:51.992Z",
+          "closedUtc": "2026-11-05T10:02:52.907Z",
+          "exitCode": 0,
+          "signal": null
+        },
+        {
+          "kind": "list",
+          "pid": 32520,
+          "requestedUtc": "2026-11-05T10:02:52.907Z",
+          "outcome": "settled",
+          "startedUtc": "2026-11-05T10:02:52.937Z",
+          "closedUtc": "2026-11-05T10:02:53.130Z",
+          "exitCode": 0,
+          "signal": null
+        },
+        {
+          "kind": "exec",
+          "pid": 29212,
+          "requestedUtc": "2026-11-05T10:02:53.131Z",
+          "outcome": "settled",
+          "startedUtc": "2026-11-05T10:02:53.147Z",
+          "closedUtc": "2026-11-05T10:02:53.853Z",
+          "exitCode": 0,
+          "signal": null
+        },
+        {
+          "kind": "exec",
+          "pid": 39776,
+          "requestedUtc": "2026-11-05T10:02:53.858Z",
+          "outcome": "cancelled/settled",
+          "startedUtc": "2026-11-05T10:02:53.869Z",
+          "closedUtc": "2026-11-05T10:02:54.445Z",
+          "exitCode": 2151088389,
+          "signal": null
+        },
+        {
+          "kind": "list",
+          "pid": 40180,
+          "requestedUtc": "2026-11-05T10:02:53.873Z",
+          "outcome": "settled",
+          "startedUtc": "2026-11-05T10:02:53.886Z",
+          "closedUtc": "2026-11-05T10:02:54.081Z",
+          "exitCode": 0,
+          "signal": null
+        },
+        {
+          "kind": "stop",
+          "pid": 40444,
+          "requestedUtc": "2026-11-05T10:02:54.081Z",
+          "outcome": "settled",
+          "startedUtc": "2026-11-05T10:02:54.096Z",
+          "closedUtc": "2026-11-05T10:02:54.572Z",
+          "exitCode": 0,
+          "signal": null
+        },
+        {
+          "kind": "list",
+          "pid": 22488,
+          "requestedUtc": "2026-11-05T10:02:54.572Z",
+          "outcome": "settled",
+          "startedUtc": "2026-11-05T10:02:54.589Z",
+          "closedUtc": "2026-11-05T10:02:54.776Z",
+          "exitCode": 0,
+          "signal": null
+        }
+      ]
+    }
+  },
+  "performance": {
+    "audit": {
+      "closures": 0,
+      "regex": 0,
+      "newExpressions": 0,
+      "awaits": 0
+    },
+    "unchangedWorkerFunctions": [
+      "need",
+      "local",
+      "read",
+      "fileHash",
+      "catalog",
+      "selected",
+      "searchScope",
+      "matchesScope",
+      "grepRows",
+      "changes",
+      "mutate"
+    ],
+    "jobPumpPrefixUnchanged": true,
+    "contract": {
+      "protocol": "super-pi-task-pump-contract-v1",
+      "seen": 131073,
+      "retained": 32768,
+      "reads": 34,
+      "allocated": 36864,
+      "cleared": 36864,
+      "liveBuffers": 0,
+      "nativeCalls": 0,
+      "packageRefusals": 9
+    },
+    "scope": "Path setup runs once per explicit command admission, not per output chunk. One bounded component array; one guest link creation per workspace VM followed by identity checks. Existing output Pump exact allocation/GC contract remains unchanged; not a startup speedup claim."
+  },
+  "build": {
+    "completion": "[build] Completed 12/12 packages in 7080ms; peak=2",
+    "exit": 0,
+    "checks": [
+      "npm run check",
+      "npm run build:offline",
+      "offline version",
+      "offline help"
+    ],
+    "sources": [
+      {
+        "source": "packages/coding-agent/src/core/sandbox/workspace-backend.ts",
+        "sourceSha256": "60174dcd144b4534a96c92b9eb0d486c58039659baf5ab544e081c9efbcbe088",
+        "dist": "packages/coding-agent/dist/core/sandbox/workspace-backend.js",
+        "distSha256": "f700b989c4110053d8389e77b550d6ce1f9315b6d432cde1a6d782cbf8d778c6"
+      },
+      {
+        "source": "packages/coding-agent/src/core/sandbox/workspace-tools.ts",
+        "sourceSha256": "50e4e4b68dd0c9bc2058e881fdd9521ec1cbd05e9f65b809a0f3fe80e4c152d2",
+        "dist": "packages/coding-agent/dist/core/sandbox/workspace-tools.js",
+        "distSha256": "5854ef029ca52da82cc3f0804a379134c1f4376de1e86f74ea99a81f24687754"
+      },
+      {
+        "source": "packages/coding-agent/src/core/sandbox/workspace-worker.mjs",
+        "sourceSha256": "8e60fc6ac6e3165492bb8d2612e341c6267e060a798a7588cca32bc8b624d905",
+        "dist": "packages/coding-agent/dist/core/sandbox/workspace-worker.mjs",
+        "distSha256": "8e60fc6ac6e3165492bb8d2612e341c6267e060a798a7588cca32bc8b624d905"
+      },
+      {
+        "source": "scripts/acceptance/windows-sandbox-task-worker.cs",
+        "sourceSha256": "3f703d9a9acbb5bab34b0f5f85672b637b8fedb69f1a9baa74461d3bc4e28d7c",
+        "dist": "packages/coding-agent/dist/core/sandbox/windows-runtime/windows-sandbox-task-worker.cs",
+        "distSha256": "3f703d9a9acbb5bab34b0f5f85672b637b8fedb69f1a9baa74461d3bc4e28d7c"
+      }
+    ]
+  },
+  "imageMagick": {
+    "executable": "D:/ImageMagick-7.1.2-Q16-HDRI/magick.exe",
+    "version": "Version: ImageMagick 7.1.2-35 Q16-HDRI x64 5d1bcc5:20261031 https://imagemagick.org",
+    "exit": 0,
+    "processPathContainsDirectory": false,
+    "machinePathContainsDirectory": true,
+    "runtimeRefreshImplemented": false
+  },
+  "fixtureCorrections": [
+    "Standalone csc probe initially used a forward-slash relative source path; corrected to the native absolute path. The first executable probe failed because that compile had produced no binary. Existing native-path C# gate test already passed."
+  ],
+  "reproduction": {
+    "baselineScript": "import fs from 'node:fs/promises';\nimport path from 'node:path';\nimport assert from 'node:assert/strict';\nimport {fileURLToPath} from 'node:url';\nimport {WorkspaceSandboxBackend} from '../../packages/coding-agent/src/core/sandbox/workspace-backend.ts';\nconst root=path.dirname(fileURLToPath(import.meta.url)), project=path.join(root,'project'), artifacts=path.join(root,'vms');\nawait fs.mkdir(project,{recursive:true});await fs.mkdir(artifacts,{recursive:true});\nawait fs.writeFile(path.join(project,'marker.txt'),'workspace-fixture\\n');\nconst backend=new WorkspaceSandboxBackend(project,artifacts,'sandbox-write',{network:'disabled'});\nlet vm;\ntry{\n const report=await backend.invoke('powershell',{command:\"[pscustomobject]@{cwd=(Get-Location).Path;relative=(Get-Content ./marker.txt -Raw).Trim();version=$PSVersionTable.PSVersion.ToString()} | ConvertTo-Json -Compress\",timeout:30});\n vm=backend.vm;console.log(report.text);\n assert.equal(JSON.parse(report.text).cwd,project);\n} finally {\n vm??=backend.vm;await backend.close();\n const record={diagnostics:backend.diagnostics,state:vm?.state,instanceId:vm?.id,calls:vm?.calls?.map(c=>({kind:c.kind,pid:c.pid,settled:!!c.result,exitCode:c.result?.exitCode}))};\n console.log(JSON.stringify(record));await fs.writeFile(path.join(root,'baseline-vm.json'),JSON.stringify(record,null,2));\n}\n",
+    "packagedScript": "import fs from 'node:fs/promises';\nimport path from 'node:path';\nimport assert from 'node:assert/strict';\nimport {fileURLToPath} from 'node:url';\nimport {WorkspaceSandboxBackend} from '../../packages/coding-agent/dist/core/sandbox/workspace-backend.js';\nconst root=path.dirname(fileURLToPath(import.meta.url)),project=path.join(root,\"中文 space 'quote'\"),artifacts=path.join(root,'dist-vms');\nawait fs.mkdir(project,{recursive:true});await fs.mkdir(artifacts,{recursive:true});\nawait fs.writeFile(path.join(project,'marker.txt'),'fixture\\n');\nconst absolute=path.join(project,'marker.txt').replaceAll(\"'\",\"''\"),literal=project.replaceAll(\"'\",\"''\"),records=[];\nfor(const mode of ['read-only','sandbox-write']){\n const backend=new WorkspaceSandboxBackend(project,artifacts,mode,{network:'disabled'});let vm;\n const record={mode};\n try{\n  const result=await backend.invoke('powershell',{command:\"[pscustomobject]@{cwd=(Get-Location).Path;native=(node -p 'process.cwd()');relative=(Get-Content ./marker.txt -Raw).Trim();absolute=(Get-Content -LiteralPath '\"+absolute+\"' -Raw).Trim();version=$PSVersionTable.PSVersion.ToString()}|ConvertTo-Json -Compress\",timeout:30});\n  vm=backend.vm;Object.assign(record,JSON.parse(result.text));\n  assert.equal(record.cwd,project);assert.equal(record.native,project);assert.equal(record.absolute,'fixture');assert.equal(record.relative,'fixture');assert.match(record.version,/^7\\./);\n  assert.match((await backend.invoke('read',{path:path.join(project,'marker.txt')})).text,/fixture/);\n  if(mode==='read-only'){\n   const output=await backend.invoke('powershell',{command:\"$blocked=$false;try{[IO.File]::WriteAllText('\"+literal+\"\\\\forbidden.txt','no')}catch{$blocked=$true};[pscustomobject]@{blocked=$blocked}|ConvertTo-Json -Compress\",timeout:30});\n   record.writeBlocked=JSON.parse(output.text).blocked;assert.equal(record.writeBlocked,true);\n  }else{\n   const output=await backend.invoke('powershell',{command:\"[IO.File]::WriteAllText('\"+literal+\"\\\\created.txt','candidate');[IO.File]::WriteAllText((Join-Path $PWD 'relative.txt'),'relative')\",timeout:30});\n   assert.deepEqual(output.changes.map(c=>c.path).sort(),['created.txt','relative.txt']);\n   assert.equal(Buffer.from(output.changes.find(c=>c.path==='created.txt').content,'base64').toString(),'candidate');\n   record.candidatePaths=output.changes.map(c=>c.path);\n  }\n  assert.deepEqual(await fs.readdir(project),['marker.txt']);assert.equal(await fs.readFile(path.join(project,'marker.txt'),'utf8'),'fixture\\n');\n  record.hostUnchanged=true;\n }finally{\n  vm??=backend.vm;await backend.close();\n  record.cleanup={...backend.diagnostics,instanceId:vm?.id,state:vm?.state,calls:vm?.calls?.map(c=>({kind:c.kind,pid:c.pid,settled:!!c.result,exitCode:c.result?.exitCode,started:c.result?.spawnObservedUtc,finished:c.result?.closedUtc}))};\n  assert.equal(record.cleanup.vm,false);assert.equal(record.cleanup.sourceFiles,0);assert.equal(record.cleanup.ownedArtifacts,0);assert.equal(record.cleanup.state,'closed');\n  records.push(record);await fs.writeFile(path.join(root,'dist-acceptance.json'),JSON.stringify(records,null,2));console.log(JSON.stringify(record));\n }\n}\n",
+    "runner": "import fs from 'node:fs';\nimport path from 'node:path';\nimport os from 'node:os';\nimport assert from 'node:assert/strict';\nimport {fileURLToPath} from 'node:url';\nimport {spawn} from 'node:child_process';\nconst root=path.dirname(fileURLToPath(import.meta.url));\nfor(const key of ['TMP','TEMP','TMPDIR'])assert.equal(path.resolve(process.env[key]),root);\nassert.equal(path.resolve(os.tmpdir()),root);\nconst manifestFile=path.join(root,'resources.json'),m=JSON.parse(fs.readFileSync(manifestFile,'utf8'));\nconst [label,exe,...args]=process.argv.slice(2);assert.ok(label&&exe);\nconst owner={pid:process.pid,role:'runner',label,started:new Date().toISOString(),settled:false};m.processes.push(owner);\nconst log=path.join(root,label+'.log');const fd=fs.openSync(log,'w');\nfunction seal(){const files=[root];for(let i=0;i<files.length;i++){const s=fs.lstatSync(files[i]);assert.ok(!s.isSymbolicLink());if(s.isDirectory())for(const name of fs.readdirSync(files[i]))files.push(path.join(files[i],name));}m.resources=files.map(file=>{const s=fs.lstatSync(file,{bigint:true});return {file,dev:String(s.dev),ino:String(s.ino),directory:s.isDirectory()};});fs.writeFileSync(manifestFile,JSON.stringify(m,null,2));}\nconst home=path.join(root,'home');fs.mkdirSync(home,{recursive:true});\nconst child=spawn(exe,args,{cwd:'D:/RMProjects/Pi',env:{...process.env,HOME:home,USERPROFILE:home,SP_CODING_AGENT_DIR:path.join(root,'agent'),SP_CODING_AGENT_SESSION_DIR:path.join(root,'sessions'),XDG_CONFIG_HOME:path.join(root,'xdg'),npm_config_cache:path.join(root,'npm-cache'),PYTHONDONTWRITEBYTECODE:'1'},windowsHide:true,stdio:['ignore',fd,fd]});\nconst record={pid:child.pid,label,executable:exe,args,started:new Date().toISOString(),settled:false};m.processes.push(record);seal();\nlet failure;\nchild.on('error',error=>{failure=String(error);});\nchild.on('close',(code,signal)=>{fs.closeSync(fd);Object.assign(record,{code,signal,failure,settled:true,finished:new Date().toISOString()});Object.assign(owner,{settled:true,finished:new Date().toISOString()});m.processes=JSON.parse(fs.readFileSync(manifestFile,'utf8')).processes;for(const update of [record,owner]){const saved=m.processes.find(p=>p.pid===update.pid&&p.started===update.started);assert.ok(saved);Object.assign(saved,update);}seal();console.log(JSON.stringify({...record,log}));process.exitCode=code??1;});\n\n\r\n",
+    "verifyEnv": "import assert from 'node:assert/strict';\nimport path from 'node:path';\nimport os from 'node:os';\nimport {fileURLToPath} from 'node:url';\nconst root=path.dirname(fileURLToPath(import.meta.url));\nfor(const key of ['TMP','TEMP','TMPDIR']) assert.equal(path.resolve(process.env[key]),root);\nassert.equal(path.resolve(os.tmpdir()),root);\n\r\n"
+  },
+  "cleanup": {
+    "root": "D:\\RMProjects\\Pi\\.task-tmp\\sandbox-workspace-path-bd729be642",
+    "pending": false,
+    "processes": [
+      {
+        "pid": 27012,
+        "role": "runner",
+        "label": "baseline",
+        "started": "2026-11-05T09:47:46.788Z",
+        "settled": true,
+        "finished": "2026-11-05T09:47:55.259Z"
+      },
+      {
+        "pid": 36732,
+        "label": "baseline",
+        "executable": "D:/Nodes/26.13.0/node.exe",
+        "args": [
+          "--import",
+          "file:///D:/RMProjects/Pi/.task-tmp/sandbox-workspace-path-bd729be642/verify-env.mjs",
+          "D:\\RMProjects\\Pi\\.task-tmp\\sandbox-workspace-path-bd729be642\\baseline.mjs"
+        ],
+        "started": "2026-11-05T09:47:46.794Z",
+        "settled": true,
+        "code": 1,
+        "signal": null,
+        "finished": "2026-11-05T09:47:55.259Z"
+      },
+      {
+        "pid": 34892,
+        "role": "runner",
+        "label": "candidate",
+        "started": "2026-11-05T09:49:02.160Z",
+        "settled": true,
+        "finished": "2026-11-05T09:49:10.203Z"
+      },
+      {
+        "pid": 36496,
+        "label": "candidate",
+        "executable": "D:/Nodes/26.13.0/node.exe",
+        "args": [
+          "--import",
+          "file:///D:/RMProjects/Pi/.task-tmp/sandbox-workspace-path-bd729be642/verify-env.mjs",
+          "D:\\RMProjects\\Pi\\.task-tmp\\sandbox-workspace-path-bd729be642\\baseline.mjs"
+        ],
+        "started": "2026-11-05T09:49:02.164Z",
+        "settled": true,
+        "code": 0,
+        "signal": null,
+        "finished": "2026-11-05T09:49:10.203Z"
+      },
+      {
+        "pid": 23384,
+        "role": "runner",
+        "label": "unit",
+        "started": "2026-11-05T09:51:47.877Z",
+        "settled": true,
+        "finished": "2026-11-05T09:51:48.709Z"
+      },
+      {
+        "pid": 28636,
+        "label": "unit",
+        "executable": "D:/Nodes/26.13.0/node.exe",
+        "args": [
+          "--import",
+          "file:///D:/RMProjects/Pi/.task-tmp/sandbox-workspace-path-bd729be642/verify-env.mjs",
+          "--test",
+          "tests/sandbox-workspace-paths.test.ts",
+          "tests/sandbox-search-scope.test.ts"
+        ],
+        "started": "2026-11-05T09:51:47.882Z",
+        "settled": true,
+        "code": 0,
+        "signal": null,
+        "finished": "2026-11-05T09:51:48.709Z"
+      },
+      {
+        "pid": 9024,
+        "role": "runner",
+        "label": "live",
+        "started": "2026-11-05T09:53:27.345Z",
+        "settled": true,
+        "finished": "2026-11-05T09:53:58.014Z"
+      },
+      {
+        "pid": 38720,
+        "label": "live",
+        "executable": "D:/Nodes/26.13.0/node.exe",
+        "args": [
+          "--import",
+          "file:///D:/RMProjects/Pi/.task-tmp/sandbox-workspace-path-bd729be642/verify-env.mjs",
+          "--test",
+          "--test-name-pattern",
+          "live workspace preserves",
+          "tests/windows-sandbox-workspace-live.test.mjs"
+        ],
+        "started": "2026-11-05T09:53:27.351Z",
+        "settled": true,
+        "code": 0,
+        "signal": null,
+        "finished": "2026-11-05T09:53:58.014Z"
+      },
+      {
+        "pid": 37732,
+        "role": "runner",
+        "label": "regression",
+        "started": "2026-11-05T09:56:10.316Z",
+        "settled": true,
+        "finished": "2026-11-05T09:56:11.657Z"
+      },
+      {
+        "pid": 23488,
+        "label": "regression",
+        "executable": "D:/Nodes/26.13.0/node.exe",
+        "args": [
+          "--import",
+          "file:///D:/RMProjects/Pi/.task-tmp/sandbox-workspace-path-bd729be642/verify-env.mjs",
+          "--test",
+          "tests/sandbox-workspace-paths.test.ts",
+          "tests/sandbox-search-scope.test.ts",
+          "tests/sandbox-workspace-shutdown.test.ts",
+          "tests/session-permission-modes.test.ts",
+          "tests/execution-environment-config.test.ts",
+          "tests/windows-sandbox-toolchains.test.mjs",
+          "tests/windows-sandbox-task-gate.test.mjs",
+          "tests/codemode-sandbox-session.test.ts"
+        ],
+        "started": "2026-11-05T09:56:10.327Z",
+        "settled": true,
+        "code": 0,
+        "signal": null,
+        "finished": "2026-11-05T09:56:11.657Z"
+      },
+      {
+        "pid": 4292,
+        "role": "runner",
+        "label": "build",
+        "started": "2026-11-05T09:57:14.416Z",
+        "settled": true,
+        "finished": "2026-11-05T09:57:27.237Z"
+      },
+      {
+        "pid": 30100,
+        "label": "build",
+        "executable": "D:/PowerShell/7/pwsh.exe",
+        "args": [
+          "-NoProfile",
+          "-File",
+          "D:\\RMProjects\\Pi\\.task-tmp\\sandbox-workspace-path-bd729be642\\build.ps1"
+        ],
+        "started": "2026-11-05T09:57:14.423Z",
+        "settled": true,
+        "code": 0,
+        "signal": null,
+        "finished": "2026-11-05T09:57:27.237Z"
+      },
+      {
+        "pid": 39880,
+        "role": "runner",
+        "label": "dist-acceptance",
+        "started": "2026-11-05T09:58:56.161Z",
+        "settled": true,
+        "finished": "2026-11-05T09:59:18.397Z"
+      },
+      {
+        "pid": 39972,
+        "label": "dist-acceptance",
+        "executable": "D:/Nodes/26.13.0/node.exe",
+        "args": [
+          "--import",
+          "file:///D:/RMProjects/Pi/.task-tmp/sandbox-workspace-path-bd729be642/verify-env.mjs",
+          "D:\\RMProjects\\Pi\\.task-tmp\\sandbox-workspace-path-bd729be642\\dist-acceptance.mjs"
+        ],
+        "started": "2026-11-05T09:58:56.166Z",
+        "settled": true,
+        "code": 0,
+        "signal": null,
+        "finished": "2026-11-05T09:59:18.397Z"
+      },
+      {
+        "pid": 38436,
+        "role": "runner",
+        "label": "compile-contract",
+        "started": "2026-11-05T10:00:55.220Z",
+        "settled": true,
+        "finished": "2026-11-05T10:00:55.244Z"
+      },
+      {
+        "pid": 38088,
+        "label": "compile-contract",
+        "executable": "C:/Windows/Microsoft.NET/Framework64/v4.0.30319/csc.exe",
+        "args": [
+          "/nologo",
+          "/target:exe",
+          "/platform:x64",
+          "/out:D:\\RMProjects\\Pi\\.task-tmp\\sandbox-workspace-path-bd729be642\\task-contract.exe",
+          "scripts/acceptance/windows-sandbox-task-worker.cs"
+        ],
+        "started": "2026-11-05T10:00:55.230Z",
+        "settled": true,
+        "code": 1,
+        "signal": null,
+        "finished": "2026-11-05T10:00:55.244Z"
+      },
+      {
+        "pid": 27016,
+        "role": "runner",
+        "label": "allocation-contract",
+        "started": "2026-11-05T10:00:55.549Z",
+        "settled": true,
+        "finished": "2026-11-05T10:00:55.561Z"
+      },
+      {
+        "label": "allocation-contract",
+        "executable": "D:\\RMProjects\\Pi\\.task-tmp\\sandbox-workspace-path-bd729be642\\task-contract.exe",
+        "args": [
+          "--contract-check"
+        ],
+        "started": "2026-11-05T10:00:55.550Z",
+        "settled": true,
+        "code": -4058,
+        "signal": null,
+        "failure": "Error: spawn D:\\RMProjects\\Pi\\.task-tmp\\sandbox-workspace-path-bd729be642\\task-contract.exe ENOENT",
+        "finished": "2026-11-05T10:00:55.561Z"
+      },
+      {
+        "pid": 26200,
+        "role": "runner",
+        "label": "magick-version",
+        "started": "2026-11-05T10:00:55.879Z",
+        "settled": true,
+        "finished": "2026-11-05T10:00:55.957Z"
+      },
+      {
+        "pid": 26208,
+        "label": "magick-version",
+        "executable": "D:/ImageMagick-7.1.2-Q16-HDRI/magick.exe",
+        "args": [
+          "-version"
+        ],
+        "started": "2026-11-05T10:00:55.944Z",
+        "settled": true,
+        "code": 0,
+        "signal": null,
+        "finished": "2026-11-05T10:00:55.957Z"
+      },
+      {
+        "pid": 25376,
+        "role": "runner",
+        "label": "compile-contract-native-path",
+        "started": "2026-11-05T10:01:22.661Z",
+        "settled": true,
+        "finished": "2026-11-05T10:01:22.757Z"
+      },
+      {
+        "pid": 36584,
+        "label": "compile-contract-native-path",
+        "executable": "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe",
+        "args": [
+          "/nologo",
+          "/target:exe",
+          "/platform:x64",
+          "/out:D:\\RMProjects\\Pi\\.task-tmp\\sandbox-workspace-path-bd729be642\\task-contract.exe",
+          "D:\\RMProjects\\Pi\\scripts\\acceptance\\windows-sandbox-task-worker.cs"
+        ],
+        "started": "2026-11-05T10:01:22.666Z",
+        "settled": true,
+        "code": 0,
+        "signal": null,
+        "finished": "2026-11-05T10:01:22.757Z"
+      },
+      {
+        "pid": 39944,
+        "role": "runner",
+        "label": "allocation-contract-native-path",
+        "started": "2026-11-05T10:01:23.081Z",
+        "settled": true,
+        "finished": "2026-11-05T10:01:23.261Z"
+      },
+      {
+        "pid": 36712,
+        "label": "allocation-contract-native-path",
+        "executable": "D:\\RMProjects\\Pi\\.task-tmp\\sandbox-workspace-path-bd729be642\\task-contract.exe",
+        "args": [
+          "--contract-check"
+        ],
+        "started": "2026-11-05T10:01:23.226Z",
+        "settled": true,
+        "code": 0,
+        "signal": null,
+        "finished": "2026-11-05T10:01:23.261Z"
+      },
+      {
+        "pid": 22124,
+        "role": "runner",
+        "label": "dist-cancel",
+        "started": "2026-11-05T10:02:48.170Z",
+        "settled": true,
+        "finished": "2026-11-05T10:02:54.829Z"
+      },
+      {
+        "pid": 5648,
+        "label": "dist-cancel",
+        "executable": "D:/Nodes/26.13.0/node.exe",
+        "args": [
+          "--import",
+          "file:///D:/RMProjects/Pi/.task-tmp/sandbox-workspace-path-bd729be642/verify-env.mjs",
+          "--test",
+          "--test-name-pattern",
+          "live active sandbox cancellation",
+          "tests/windows-sandbox-workspace-live.test.mjs"
+        ],
+        "started": "2026-11-05T10:02:48.182Z",
+        "settled": true,
+        "code": 0,
+        "signal": null,
+        "finished": "2026-11-05T10:02:54.829Z"
+      },
+      {
+        "pid": 38540,
+        "role": "runner",
+        "label": "evidence",
+        "started": "2026-11-05T10:05:37.459Z",
+        "settled": true,
+        "finished": "2026-11-05T10:05:37.711Z"
+      },
+      {
+        "pid": 1368,
+        "label": "evidence",
+        "executable": "D:/Nodes/26.13.0/node.exe",
+        "args": [
+          "D:\\RMProjects\\Pi\\.task-tmp\\sandbox-workspace-path-bd729be642\\evidence.mjs"
+        ],
+        "started": "2026-11-05T10:05:37.464Z",
+        "settled": true,
+        "code": 0,
+        "signal": null,
+        "finished": "2026-11-05T10:05:37.711Z"
+      },
+      {
+        "pid": 26124,
+        "role": "baseline-source",
+        "label": "packages/coding-agent/src/core/sandbox/workspace-worker.mjs",
+        "started": "2026-11-05T10:05:37.618Z",
+        "finished": "2026-11-05T10:05:37.649Z",
+        "settled": true,
+        "code": 0
+      },
+      {
+        "pid": 40832,
+        "role": "baseline-source",
+        "label": "scripts/acceptance/windows-sandbox-task-worker.cs",
+        "started": "2026-11-05T10:05:37.649Z",
+        "finished": "2026-11-05T10:05:37.678Z",
+        "settled": true,
+        "code": 0
+      },
+      {
+        "kind": "list",
+        "pid": 36236,
+        "settled": true,
+        "exitCode": 0,
+        "role": "vm-cli",
+        "label": "bbbcf709-2947-449b-8322-b1d56768cad6"
+      },
+      {
+        "kind": "start",
+        "pid": 40944,
+        "settled": true,
+        "exitCode": 0,
+        "role": "vm-cli",
+        "label": "bbbcf709-2947-449b-8322-b1d56768cad6"
+      },
+      {
+        "kind": "list",
+        "pid": 3372,
+        "settled": true,
+        "exitCode": 0,
+        "role": "vm-cli",
+        "label": "bbbcf709-2947-449b-8322-b1d56768cad6"
+      },
+      {
+        "kind": "exec",
+        "pid": 34152,
+        "settled": true,
+        "exitCode": 0,
+        "role": "vm-cli",
+        "label": "bbbcf709-2947-449b-8322-b1d56768cad6"
+      },
+      {
+        "kind": "list",
+        "pid": 34636,
+        "settled": true,
+        "exitCode": 0,
+        "role": "vm-cli",
+        "label": "bbbcf709-2947-449b-8322-b1d56768cad6"
+      },
+      {
+        "kind": "stop",
+        "pid": 33900,
+        "settled": true,
+        "exitCode": 0,
+        "role": "vm-cli",
+        "label": "bbbcf709-2947-449b-8322-b1d56768cad6"
+      },
+      {
+        "kind": "list",
+        "pid": 35100,
+        "settled": true,
+        "exitCode": 0,
+        "role": "vm-cli",
+        "label": "bbbcf709-2947-449b-8322-b1d56768cad6"
+      },
+      {
+        "kind": "list",
+        "pid": 24328,
+        "settled": true,
+        "exitCode": 0,
+        "role": "vm-cli",
+        "label": "0f46ad6d-e594-41cb-adfc-090e168ca1de"
+      },
+      {
+        "kind": "start",
+        "pid": 21644,
+        "settled": true,
+        "exitCode": 0,
+        "role": "vm-cli",
+        "label": "0f46ad6d-e594-41cb-adfc-090e168ca1de"
+      },
+      {
+        "kind": "list",
+        "pid": 20216,
+        "settled": true,
+        "exitCode": 0,
+        "role": "vm-cli",
+        "label": "0f46ad6d-e594-41cb-adfc-090e168ca1de"
+      },
+      {
+        "kind": "exec",
+        "pid": 36828,
+        "settled": true,
+        "exitCode": 0,
+        "role": "vm-cli",
+        "label": "0f46ad6d-e594-41cb-adfc-090e168ca1de"
+      },
+      {
+        "kind": "list",
+        "pid": 40516,
+        "settled": true,
+        "exitCode": 0,
+        "role": "vm-cli",
+        "label": "0f46ad6d-e594-41cb-adfc-090e168ca1de"
+      },
+      {
+        "kind": "stop",
+        "pid": 41516,
+        "settled": true,
+        "exitCode": 0,
+        "role": "vm-cli",
+        "label": "0f46ad6d-e594-41cb-adfc-090e168ca1de"
+      },
+      {
+        "kind": "list",
+        "pid": 22736,
+        "settled": true,
+        "exitCode": 0,
+        "role": "vm-cli",
+        "label": "0f46ad6d-e594-41cb-adfc-090e168ca1de"
+      },
+      {
+        "kind": "list",
+        "pid": 38268,
+        "settled": true,
+        "exitCode": 0,
+        "started": "2026-11-05T09:58:59.694Z",
+        "finished": "2026-11-05T09:59:00.068Z",
+        "role": "vm-cli",
+        "label": "79a42eae-9028-45e9-b6d1-9b142bec16d0",
+        "code": 0
+      },
+      {
+        "kind": "start",
+        "pid": 37172,
+        "settled": true,
+        "exitCode": 0,
+        "started": "2026-11-05T09:59:00.095Z",
+        "finished": "2026-11-05T09:59:01.107Z",
+        "role": "vm-cli",
+        "label": "79a42eae-9028-45e9-b6d1-9b142bec16d0",
+        "code": 0
+      },
+      {
+        "kind": "list",
+        "pid": 8032,
+        "settled": true,
+        "exitCode": 0,
+        "started": "2026-11-05T09:59:01.118Z",
+        "finished": "2026-11-05T09:59:01.312Z",
+        "role": "vm-cli",
+        "label": "79a42eae-9028-45e9-b6d1-9b142bec16d0",
+        "code": 0
+      },
+      {
+        "kind": "exec",
+        "pid": 36612,
+        "settled": true,
+        "exitCode": 0,
+        "started": "2026-11-05T09:59:01.335Z",
+        "finished": "2026-11-05T09:59:04.107Z",
+        "role": "vm-cli",
+        "label": "79a42eae-9028-45e9-b6d1-9b142bec16d0",
+        "code": 0
+      },
+      {
+        "kind": "exec",
+        "pid": 15480,
+        "settled": true,
+        "exitCode": 0,
+        "started": "2026-11-05T09:59:04.129Z",
+        "finished": "2026-11-05T09:59:04.764Z",
+        "role": "vm-cli",
+        "label": "79a42eae-9028-45e9-b6d1-9b142bec16d0",
+        "code": 0
+      },
+      {
+        "kind": "exec",
+        "pid": 28024,
+        "settled": true,
+        "exitCode": 0,
+        "started": "2026-11-05T09:59:04.780Z",
+        "finished": "2026-11-05T09:59:06.704Z",
+        "role": "vm-cli",
+        "label": "79a42eae-9028-45e9-b6d1-9b142bec16d0",
+        "code": 0
+      },
+      {
+        "kind": "list",
+        "pid": 3880,
+        "settled": true,
+        "exitCode": 0,
+        "started": "2026-11-05T09:59:06.720Z",
+        "finished": "2026-11-05T09:59:06.912Z",
+        "role": "vm-cli",
+        "label": "79a42eae-9028-45e9-b6d1-9b142bec16d0",
+        "code": 0
+      },
+      {
+        "kind": "stop",
+        "pid": 36832,
+        "settled": true,
+        "exitCode": 0,
+        "started": "2026-11-05T09:59:06.933Z",
+        "finished": "2026-11-05T09:59:07.369Z",
+        "role": "vm-cli",
+        "label": "79a42eae-9028-45e9-b6d1-9b142bec16d0",
+        "code": 0
+      },
+      {
+        "kind": "list",
+        "pid": 36904,
+        "settled": true,
+        "exitCode": 0,
+        "started": "2026-11-05T09:59:07.383Z",
+        "finished": "2026-11-05T09:59:07.570Z",
+        "role": "vm-cli",
+        "label": "79a42eae-9028-45e9-b6d1-9b142bec16d0",
+        "code": 0
+      },
+      {
+        "kind": "list",
+        "pid": 16248,
+        "settled": true,
+        "exitCode": 0,
+        "started": "2026-11-05T09:59:10.807Z",
+        "finished": "2026-11-05T09:59:11.003Z",
+        "role": "vm-cli",
+        "label": "0f8ced9d-00a4-402a-9e66-a12e1ed4dbb8",
+        "code": 0
+      },
+      {
+        "kind": "start",
+        "pid": 28096,
+        "settled": true,
+        "exitCode": 0,
+        "started": "2026-11-05T09:59:11.023Z",
+        "finished": "2026-11-05T09:59:11.849Z",
+        "role": "vm-cli",
+        "label": "0f8ced9d-00a4-402a-9e66-a12e1ed4dbb8",
+        "code": 0
+      },
+      {
+        "kind": "list",
+        "pid": 40456,
+        "settled": true,
+        "exitCode": 0,
+        "started": "2026-11-05T09:59:11.861Z",
+        "finished": "2026-11-05T09:59:12.053Z",
+        "role": "vm-cli",
+        "label": "0f8ced9d-00a4-402a-9e66-a12e1ed4dbb8",
+        "code": 0
+      },
+      {
+        "kind": "exec",
+        "pid": 27392,
+        "settled": true,
+        "exitCode": 0,
+        "started": "2026-11-05T09:59:12.070Z",
+        "finished": "2026-11-05T09:59:14.719Z",
+        "role": "vm-cli",
+        "label": "0f8ced9d-00a4-402a-9e66-a12e1ed4dbb8",
+        "code": 0
+      },
+      {
+        "kind": "exec",
+        "pid": 41952,
+        "settled": true,
+        "exitCode": 0,
+        "started": "2026-11-05T09:59:14.749Z",
+        "finished": "2026-11-05T09:59:15.506Z",
+        "role": "vm-cli",
+        "label": "0f8ced9d-00a4-402a-9e66-a12e1ed4dbb8",
+        "code": 0
+      },
+      {
+        "kind": "exec",
+        "pid": 40376,
+        "settled": true,
+        "exitCode": 0,
+        "started": "2026-11-05T09:59:15.523Z",
+        "finished": "2026-11-05T09:59:17.466Z",
+        "role": "vm-cli",
+        "label": "0f8ced9d-00a4-402a-9e66-a12e1ed4dbb8",
+        "code": 0
+      },
+      {
+        "kind": "list",
+        "pid": 37772,
+        "settled": true,
+        "exitCode": 0,
+        "started": "2026-11-05T09:59:17.502Z",
+        "finished": "2026-11-05T09:59:17.691Z",
+        "role": "vm-cli",
+        "label": "0f8ced9d-00a4-402a-9e66-a12e1ed4dbb8",
+        "code": 0
+      },
+      {
+        "kind": "stop",
+        "pid": 24536,
+        "settled": true,
+        "exitCode": 0,
+        "started": "2026-11-05T09:59:17.707Z",
+        "finished": "2026-11-05T09:59:18.150Z",
+        "role": "vm-cli",
+        "label": "0f8ced9d-00a4-402a-9e66-a12e1ed4dbb8",
+        "code": 0
+      },
+      {
+        "kind": "list",
+        "pid": 25840,
+        "settled": true,
+        "exitCode": 0,
+        "started": "2026-11-05T09:59:18.186Z",
+        "finished": "2026-11-05T09:59:18.372Z",
+        "role": "vm-cli",
+        "label": "0f8ced9d-00a4-402a-9e66-a12e1ed4dbb8",
+        "code": 0
+      },
+      {
+        "kind": "list",
+        "pid": 1912,
+        "requestedUtc": "2026-11-05T10:02:51.543Z",
+        "outcome": "settled",
+        "startedUtc": "2026-11-05T10:02:51.590Z",
+        "closedUtc": "2026-11-05T10:02:51.965Z",
+        "exitCode": 0,
+        "signal": null,
+        "role": "vm-cli",
+        "label": "10a8f591-473e-46e8-816e-7258241a25a7",
+        "settled": true,
+        "code": 0
+      },
+      {
+        "kind": "start",
+        "pid": 39508,
+        "requestedUtc": "2026-11-05T10:02:51.970Z",
+        "outcome": "settled",
+        "startedUtc": "2026-11-05T10:02:51.992Z",
+        "closedUtc": "2026-11-05T10:02:52.907Z",
+        "exitCode": 0,
+        "signal": null,
+        "role": "vm-cli",
+        "label": "10a8f591-473e-46e8-816e-7258241a25a7",
+        "settled": true,
+        "code": 0
+      },
+      {
+        "kind": "list",
+        "pid": 32520,
+        "requestedUtc": "2026-11-05T10:02:52.907Z",
+        "outcome": "settled",
+        "startedUtc": "2026-11-05T10:02:52.937Z",
+        "closedUtc": "2026-11-05T10:02:53.130Z",
+        "exitCode": 0,
+        "signal": null,
+        "role": "vm-cli",
+        "label": "10a8f591-473e-46e8-816e-7258241a25a7",
+        "settled": true,
+        "code": 0
+      },
+      {
+        "kind": "exec",
+        "pid": 29212,
+        "requestedUtc": "2026-11-05T10:02:53.131Z",
+        "outcome": "settled",
+        "startedUtc": "2026-11-05T10:02:53.147Z",
+        "closedUtc": "2026-11-05T10:02:53.853Z",
+        "exitCode": 0,
+        "signal": null,
+        "role": "vm-cli",
+        "label": "10a8f591-473e-46e8-816e-7258241a25a7",
+        "settled": true,
+        "code": 0
+      },
+      {
+        "kind": "exec",
+        "pid": 39776,
+        "requestedUtc": "2026-11-05T10:02:53.858Z",
+        "outcome": "cancelled/settled",
+        "startedUtc": "2026-11-05T10:02:53.869Z",
+        "closedUtc": "2026-11-05T10:02:54.445Z",
+        "exitCode": 2151088389,
+        "signal": null,
+        "role": "vm-cli",
+        "label": "10a8f591-473e-46e8-816e-7258241a25a7",
+        "settled": true,
+        "code": 2151088389
+      },
+      {
+        "kind": "list",
+        "pid": 40180,
+        "requestedUtc": "2026-11-05T10:02:53.873Z",
+        "outcome": "settled",
+        "startedUtc": "2026-11-05T10:02:53.886Z",
+        "closedUtc": "2026-11-05T10:02:54.081Z",
+        "exitCode": 0,
+        "signal": null,
+        "role": "vm-cli",
+        "label": "10a8f591-473e-46e8-816e-7258241a25a7",
+        "settled": true,
+        "code": 0
+      },
+      {
+        "kind": "stop",
+        "pid": 40444,
+        "requestedUtc": "2026-11-05T10:02:54.081Z",
+        "outcome": "settled",
+        "startedUtc": "2026-11-05T10:02:54.096Z",
+        "closedUtc": "2026-11-05T10:02:54.572Z",
+        "exitCode": 0,
+        "signal": null,
+        "role": "vm-cli",
+        "label": "10a8f591-473e-46e8-816e-7258241a25a7",
+        "settled": true,
+        "code": 0
+      },
+      {
+        "kind": "list",
+        "pid": 22488,
+        "requestedUtc": "2026-11-05T10:02:54.572Z",
+        "outcome": "settled",
+        "startedUtc": "2026-11-05T10:02:54.589Z",
+        "closedUtc": "2026-11-05T10:02:54.776Z",
+        "exitCode": 0,
+        "signal": null,
+        "role": "vm-cli",
+        "label": "10a8f591-473e-46e8-816e-7258241a25a7",
+        "settled": true,
+        "code": 0
+      },
+      {
+        "pid": 40120,
+        "role": "runner",
+        "label": "seal",
+        "started": "2026-11-05T10:09:46.426Z",
+        "settled": true,
+        "finished": "2026-11-05T10:09:46.462Z"
+      },
+      {
+        "pid": 1372,
+        "label": "seal",
+        "executable": "D:/Nodes/26.13.0/node.exe",
+        "args": [
+          "-e",
+          "0"
+        ],
+        "started": "2026-11-05T10:09:46.431Z",
+        "settled": true,
+        "code": 0,
+        "signal": null,
+        "finished": "2026-11-05T10:09:46.462Z"
+      }
+    ],
+    "receipt": {
+      "directChildren": 37,
+      "verifiedResources": 645,
+      "settledProcesses": 72,
+      "taskRootRemoved": true,
+      "cleanupPid": 38484,
+      "removedResources": 645,
+      "sharedParentRetained": true
+    }
+  }
+}

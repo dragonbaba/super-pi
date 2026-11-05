@@ -1,5 +1,7 @@
 # Session permission and resource lifecycle guard
 
+> Compatibility reference for the legacy extension only. The native interactive runtime skips this extension. Use `/permissions`, `/add-dir`, `/remove-dir`, and `/dirs`; legacy permission subcommands and `add_workspace` / `remove_workspace` are retired there. Current behavior is documented in [execution environments](../../../docs/execution-environments.md).
+
 Existing Pi 0.84.x safety extension. It owns Session filesystem permission state, Bash/script preflight, and exact cleanup of agent-owned browser resources. It does not override `edit`, `write`, or `bash`.
 
 ## Threat model and maintenance scope

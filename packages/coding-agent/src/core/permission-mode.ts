@@ -1,4 +1,4 @@
-/** Session authority. Persisted preferences may never restore host execution. */
+/** New-session defaults are separate from machine-local explicit session choices. */
 export type SessionPermissionMode = "read-only" | "sandbox-write" | "host-write";
 export const PERMISSION_MODE_LABELS: Readonly<Record<SessionPermissionMode, string>> = Object.freeze({
   "read-only": "只读（沙箱）",

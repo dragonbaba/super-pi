@@ -87,7 +87,7 @@ function retainUnprovenDirectories(created: CreatedDirectory[]): void {
 
 /** Single write and file_batch share this exclusive create core. Never removes a partially written file. */
 export async function executeFileCreation(
-  plan: FileCreationPlan, content: string, assertPathAllowed: () => Promise<string>, signal?: AbortSignal,
+  plan: FileCreationPlan, content: string | Uint8Array, assertPathAllowed: () => Promise<string>, signal?: AbortSignal,
   beforeExclusiveCreate?: (path: string) => void | Promise<void>,
   sharedDirectories?: Map<string, PathIdentity>,
   assertAuthority?: () => void,
@@ -148,7 +148,7 @@ export async function executeFileCreation(
       signal?.throwIfAborted();
       await handle.writeFile(content, "utf8");
     } finally { await handle.close(); }
-    const result: CreationResult = { createdDirectories: created, ...addedContentSummary(content) };
+    const result: CreationResult = { createdDirectories: created, ...(typeof content === "string" ? addedContentSummary(content) : { bytes: content.byteLength }) };
     if (originalIdentity) createdFileIdentities.set(result, originalIdentity);
     return result;
   } catch (error) {

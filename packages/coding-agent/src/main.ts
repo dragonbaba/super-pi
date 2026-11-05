@@ -7,6 +7,7 @@
 
 import { createInterface } from "node:readline";
 import { defaultPermissionMode } from "./core/permission-mode.ts";
+import { loadSessionExecutionProfile } from "./core/session-execution-profile.ts";
 import { type ImageContent, modelsAreEqual } from "@super-pi/ai";
 import chalk from "chalk";
 import { type Args, hasOption, type Mode, parseArgs, printHelp, validateModelSelectionArgs } from "./cli/args.ts";
@@ -751,6 +752,7 @@ export async function main(args: string[], options?: MainOptions) {
 	const extensionRunnerOptions = CLI_EXTENSION_HOST_POLICY;
 	const createRuntime: CreateAgentSessionRuntimeFactory = async ({
 		permissionMode,
+		directories,
 		cwd,
 		agentDir,
 		sessionManager,
@@ -769,9 +771,11 @@ export async function main(args: string[], options?: MainOptions) {
 				parsed.projectTrustOverride ??
 				(trustStore.get(cwd) ?? !hasTrustRequiringResources));
 		const runtimeSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted });
+		const executionProfile = appMode === "interactive" ? loadSessionExecutionProfile(agentDir, sessionManager) : undefined;
+		runtimeSettingsManager.setSessionDirectories(directories ?? executionProfile?.directories ?? []);
 		if (parsed.executionEnvironment) runtimeSettingsManager.setExecutionEnvironmentForSession(parsed.executionEnvironment);
 		if (permissionMode !== undefined || appMode === "interactive") runtimeSettingsManager.setPermissionModeForSession(
-			permissionMode ?? defaultPermissionMode(runtimeSettingsManager.getGlobalSettings().permissionMode));
+			permissionMode ?? executionProfile?.mode ?? defaultPermissionMode(runtimeSettingsManager.getGlobalSettings().permissionMode));
 		const services = await createAgentSessionServices({
 			cwd,
 			agentDir,

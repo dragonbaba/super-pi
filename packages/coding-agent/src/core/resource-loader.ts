@@ -607,7 +607,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		const settings = this.settingsManager.getGlobalSettings();
 		const environment = this.settingsManager.getExecutionEnvironment();
 		if (environment !== undefined) {
-			runtime.nativePermissions = new SessionExecutionPolicy(runtime, environment, settings.executionPermissions, this.settingsManager.getPermissionMode());
+			runtime.nativePermissions = new SessionExecutionPolicy(runtime, environment, settings.executionPermissions, this.settingsManager.getPermissionMode(), this.settingsManager.getSessionDirectories());
 			runtime.nativeFiles.setCompatibilityBoundary(runtime.nativePermissions);
 		}
 		return runtime;

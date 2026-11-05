@@ -1,0 +1,384 @@
+{
+  "schema": 1,
+  "date": "2026-11-05",
+  "base": "db00e12a8e46513af91254e621cba205fed47a58",
+  "environment": {
+    "node": "v26.13.0",
+    "platform": "win32",
+    "powershell": "7.6.9",
+    "tmpVerified": true
+  },
+  "checks": {
+    "typecheck": "passed",
+    "hot": {
+      "tests": 109,
+      "passed": 109,
+      "failed": 0,
+      "skipped": 0
+    },
+    "targetedBeforeFinalReceipts": {
+      "tests": 68,
+      "passed": 68,
+      "failed": 0,
+      "skipped": 0
+    },
+    "directBashAndProfiles": {
+      "tests": 31,
+      "passed": 31,
+      "failed": 0,
+      "skipped": 0
+    },
+    "publicationAndSource": {
+      "tests": 24,
+      "passed": 24,
+      "failed": 0,
+      "skipped": 0
+    },
+    "nativeFiles": {
+      "tests": 110,
+      "passed": 88,
+      "failed": 0,
+      "skipped": 22
+    },
+    "fullSuite": {
+      "tests": 5833,
+      "passed": 5722,
+      "failed": 1,
+      "skipped": 110,
+      "units": 452,
+      "invocation": "node scripts/test.mjs --suite all --keep-going",
+      "failure": "native-source-delivery requires npm_execpath; direct runner invocation omitted the npm parent",
+      "correctedInvocation": "npm exec --offline --call \"node --experimental-strip-types --test tests/native-source-delivery.test.ts\"",
+      "correction": {
+        "tests": 2,
+        "passed": 2,
+        "failed": 0,
+        "skipped": 0
+      },
+      "note": "Do not report the original full invocation as exit 0. Publication follow-up was verified separately."
+    },
+    "offlineBuild": {
+      "command": "npm run build:offline",
+      "packages": 12,
+      "durationMs": 7312,
+      "peak": 2
+    },
+    "liveSource": {
+      "tests": 2,
+      "passed": 2,
+      "failed": 0,
+      "skipped": 0
+    },
+    "liveDist": {
+      "tests": 2,
+      "passed": 2,
+      "failed": 0,
+      "skipped": 0
+    }
+  },
+  "live": {
+    "filesPublished": 50,
+    "binaryBytes": 2097152,
+    "secondaryRootWrite": true,
+    "mixedRootBatch": true,
+    "binaryMoveDelete": true,
+    "hostConflictPreserved": true,
+    "powershellMajor": 7,
+    "magickDiscovered": true,
+    "unicodeSpaceQuoteCwd": true,
+    "bothReadonlyRootsProtected": true,
+    "failedExit": 23,
+    "stdoutRetained": true,
+    "nonzeroExitNotObservationFailure": true,
+    "timeoutAfterBashEntry": true,
+    "ownedArtifactsAfterClose": 0
+  },
+  "allocation": {
+    "artifacts": {
+      "contract": "sandbox-byte-artifacts-v1",
+      "files": 48,
+      "payloadBytes": 2097152,
+      "counts": {
+        "validationBuffers": 48,
+        "validationBytes": 12582912,
+        "publicationBuffers": 48,
+        "publicationBytes": 100663296
+      },
+      "allocations": [
+        {
+          "function": "candidate",
+          "bytes": 33688
+        },
+        {
+          "function": "candidate",
+          "bytes": 30488
+        },
+        {
+          "function": "candidate",
+          "bytes": 52416
+        }
+      ],
+      "bounds": {
+        "validationBufferBytes": 262144,
+        "activePayloadBuffers": 1,
+        "artifactContentInJSON": 0,
+        "perChunkClosures": 0,
+        "perChunkRegexes": 0
+      },
+      "lifecycle": {
+        "buffers": 96,
+        "gcRounds": 4,
+        "live": 0,
+        "ownerReleased": true
+      }
+    },
+    "session": {
+      "contract": "sandbox-session-allocation-v1",
+      "counts": {
+        "chunks": 272,
+        "hotPromises": 0,
+        "hotControllers": 0,
+        "processes": 1,
+        "closed": 1,
+        "seen": 17825792,
+        "retained": 32768,
+        "streamBufferAllocations": 2,
+        "streamBufferBytes": 32768,
+        "policyChecks": 200000,
+        "ordinaryChecks": 200000
+      },
+      "allocations": [
+        {
+          "function": "CapturedProcess",
+          "line": 56,
+          "bytes": 5304
+        },
+        {
+          "function": "CapturedProcess",
+          "line": 29,
+          "bytes": 7752
+        },
+        {
+          "function": "",
+          "line": 68,
+          "bytes": 1064
+        },
+        {
+          "function": "SessionExecutionPolicy",
+          "line": 87,
+          "bytes": 3752
+        },
+        {
+          "function": "prepareInputWorkspaceRead",
+          "line": 303,
+          "bytes": 2408
+        },
+        {
+          "function": "authorizeFileObservation",
+          "line": 291,
+          "bytes": 3904
+        },
+        {
+          "function": "paths",
+          "line": 139,
+          "bytes": 3384
+        },
+        {
+          "function": "onOut",
+          "line": 42,
+          "bytes": 3168
+        },
+        {
+          "function": "onErr",
+          "line": 43,
+          "bytes": 1040
+        },
+        {
+          "function": "onClose",
+          "line": 46,
+          "bytes": 4184
+        },
+        {
+          "function": "revokeExecution",
+          "line": 816,
+          "bytes": 2120
+        },
+        {
+          "function": "ExtensionRunner",
+          "line": 786,
+          "bytes": 1056
+        },
+        {
+          "function": "ExtensionRunner",
+          "line": 685,
+          "bytes": 9752
+        },
+        {
+          "function": "assertCurrent",
+          "line": 113,
+          "bytes": 14376
+        },
+        {
+          "function": "assertCurrent",
+          "line": 64,
+          "bytes": 2112
+        },
+        {
+          "function": "#pure",
+          "line": 104,
+          "bytes": 1440
+        },
+        {
+          "function": "assertPolicyIdentity",
+          "line": 55,
+          "bytes": 1056
+        },
+        {
+          "function": "assertGrantIdentity",
+          "line": 127,
+          "bytes": 29192
+        },
+        {
+          "function": "dispose",
+          "line": 172,
+          "bytes": 1056
+        },
+        {
+          "function": "dispose",
+          "line": 83,
+          "bytes": 1064
+        },
+        {
+          "function": "get diagnostics",
+          "line": 173,
+          "bytes": 3240
+        },
+        {
+          "function": "consume",
+          "line": 548,
+          "bytes": 1240
+        },
+        {
+          "function": "authorizeFileObservation",
+          "line": 291,
+          "bytes": 3584
+        },
+        {
+          "function": "prepareInputWorkspaceRead",
+          "line": 303,
+          "bytes": 4488
+        },
+        {
+          "function": "InputWorkspaceGrantLease",
+          "line": 85,
+          "bytes": 4248
+        },
+        {
+          "function": "InputReadPolicyLease",
+          "line": 39,
+          "bytes": 4576
+        },
+        {
+          "function": "InputReadPolicyLease",
+          "line": 30,
+          "bytes": 1080
+        },
+        {
+          "function": "freezeInputWorkspaceBinding",
+          "line": 26,
+          "bytes": 5256
+        },
+        {
+          "function": "InputWorkspaceGrantLease",
+          "line": 66,
+          "bytes": 5296
+        },
+        {
+          "function": "assertCurrent",
+          "line": 113,
+          "bytes": 1120
+        },
+        {
+          "function": "assertWorkspace",
+          "line": 318,
+          "bytes": 1064
+        },
+        {
+          "function": "#run",
+          "line": 136,
+          "bytes": 4240
+        },
+        {
+          "function": "observeWorkspace",
+          "line": 331,
+          "bytes": 1056
+        }
+      ],
+      "workspaceCheckSampledBytes": 1064,
+      "ordinaryCheckSampledBytes": 1240,
+      "lifecycle": {
+        "targets": 9,
+        "gcRounds": 4,
+        "live": 0
+      },
+      "hotPerChunk": {
+        "closures": 0,
+        "arrays": 0,
+        "wrappers": 0,
+        "promises": 0,
+        "controllers": 0
+      },
+      "note": "Closure/array/wrapper counts also require source invariants; profiler samples include cold startup and completion."
+    }
+  },
+  "packagedSources": [
+    {
+      "source": "packages/coding-agent/src/core/sandbox/workspace-worker.mjs",
+      "built": "packages/coding-agent/dist/core/sandbox/workspace-worker.mjs",
+      "sha256": "d81ae961c32e53f46b39855708f429cac96af3bca3502390b1ba114f75e4d85e",
+      "equal": true
+    },
+    {
+      "source": "scripts/acceptance/windows-sandbox-task-worker.cs",
+      "built": "packages/coding-agent/dist/core/sandbox/windows-runtime/windows-sandbox-task-worker.cs",
+      "sha256": "da2b5e84983a22fad7960359be2222a467a430cfe81ed5e212d56f4f90b887c0",
+      "equal": true
+    },
+    {
+      "source": "scripts/acceptance/windows-sandbox-toolchains.mjs",
+      "built": "packages/coding-agent/dist/core/sandbox/windows-runtime/windows-sandbox-toolchains.mjs",
+      "sha256": "e1a673e2eee19086a230e0badf4e94b11fac435cc80006aa1e5d401b19b4bac6",
+      "equal": true
+    }
+  ],
+  "reproduction": [
+    "npm run check",
+    "npm run build:offline",
+    "npm run test:hot",
+    "npm test -- --keep-going",
+    "node --expose-gc --experimental-strip-types scripts/bench/sandbox-artifacts.mjs",
+    "node --expose-gc --experimental-strip-types scripts/bench/sandbox-session-allocations.mjs",
+    "SUPERPI_SANDBOX_WORKSPACE_ACCEPTANCE=1 SUPERPI_EXPECT_MAGICK=1 SUPERPI_SANDBOX_USE_DIST=1 node --experimental-strip-types --test --test-concurrency=1 tests/sandbox-execution-contract-live.test.ts"
+  ],
+  "constraints": {
+    "automaticCommandReplay": false,
+    "implicitHostFallback": false,
+    "powershell51": false,
+    "objectPools": false,
+    "snapshotBytes": 17179869184,
+    "snapshotFileBytes": 8589934592,
+    "artifactFiles": 1024,
+    "artifactFileBytes": 67108864,
+    "artifactTotalBytes": 268435456
+  },
+  "limitations": [
+    "Existing legacy sessions select the mode once to establish a host-local authority record.",
+    "VM direct Bash delivers bounded output at completion, without background task support.",
+    "First snapshot still performs disk I/O; arbitrary registry/service/driver dependent tools are not guaranteed."
+  ],
+  "resources": {
+    "taskRoot": ".task-tmp/execution-contract-e86910ef16d7",
+    "liveVmOwnersClosed": true,
+    "cleanup": "Only recorded task-owned resources; final cleanup receipt reported with delivery."
+  }
+}

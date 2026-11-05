@@ -13,6 +13,45 @@ import { initTheme } from "../packages/coding-agent/src/modes/interactive/theme/
 import { RELEASE_COMPONENT_RENDER_CACHE, type TUI } from "@super-pi/tui";
 import { sanitizeBinaryOutput } from "../packages/coding-agent/src/utils/shell.ts";
 
+test("direct sandbox Bash uses the workspace adapter and releases authorization on success and failure", async () => {
+  const boundary = new SessionExecutionBoundary(), controllers = new Set<AbortController>();
+  const events: any[] = [], history: unknown[] = []; let authorized = 0, released = 0, executed = 0;
+  let publicationFailure = false;
+  const definition = { async execute() {
+    executed++;
+    return { content: [{ type: "text", text: "\x1b]0;hidden\x07\x1b[31m中文😀\x1b[0m\x00" }], details: { shellExecution: {
+      version: 1, producer: "agent", started: true, executionStatus: "exited", sideEffects: "unknown", retryGuidance: "inspect_before_retry",
+      cwd: process.cwd(), exitCode: 0, signal: null, termination: "exit", observationError: publicationFailure ? "publication failed" : undefined,
+      output: { complete: true, tailTruncated: false, log: "not_needed", cleanup: "not_needed" },
+    } } };
+  } };
+  const owner: any = Object.create(AgentSession.prototype);
+  Object.assign(owner, {
+    _bashAbortControllers: controllers,
+    _workspaceSandbox: { definition(name: string) { assert.equal(name, "bash"); return definition; } },
+    _extensionRunner: { createContext() { return { cwd: process.cwd() }; } },
+    _resourceLoader: { getExtensions() { return { runtime: { executionBoundary: boundary, nativePermissions: {
+      async authorize(event: any, _ctx: any, selected: any, explicit: boolean) {
+        authorized++; assert.equal(event.toolName, "bash"); assert.equal(selected, definition); assert.equal(explicit, true);
+        return { consume(input: any, id: string, name: string, signal: AbortSignal) {
+          assert.equal(input, event.input); assert.equal(id, event.toolCallId); assert.equal(name, "bash"); assert.equal(signal.aborted, false);
+        }, release() { released++; } };
+      },
+    } } }; } },
+    _emit(event: any) { events.push(event); }, recordBashResult(_command: string, result: unknown) { history.push(result); },
+  });
+  try {
+    const result = await owner.executeBash("fixture", undefined, { id: "sandbox-direct" });
+    assert.equal(result.output, "中文😀"); assert.equal(result.exitCode, 0); assert.equal(result.processCleanup, "complete");
+    publicationFailure = true;
+    assert.equal((await owner.executeBash("fixture")).exitCode, undefined, "publication failure cannot look like command success");
+    await assert.rejects(owner.executeBash("fixture", undefined, { operations: {} }), /Custom host command operations/);
+    await assert.rejects(owner.executeBash("fixture", () => { throw new Error("observer failed"); }), /observer failed/);
+    assert.equal(authorized, 3); assert.equal(released, 3); assert.equal(executed, 3); assert.equal(controllers.size, 0);
+    assert.equal(history.length, 2); assert.equal(events[0].id, "sandbox-direct"); assert.equal(events[0].delta, "中文😀");
+  } finally { await boundary.dispose(); }
+});
+
 test("binary sanitizing preserves BMP and astral semantics without discarding valid surrogate pairs", () => {
   const input = Array.from({ length: 65536 }, (_, code) => String.fromCharCode(code)).join("") + "😀𐀀\ud800ok\udc00\t\r\n";
   let expected = "";

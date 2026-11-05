@@ -38,6 +38,12 @@ test("path translation is bounded and preserves shell source and relative path g
     assert.equal(workspaceInput(cwd,"read",relative),relative);
     const shell = Object.freeze({command:"Get-Content 'D:/project/source.txt'"});
     assert.equal(workspaceInput(cwd,"powershell",shell),shell);
+    assert.equal(workspaceInput(cwd,"bash",shell),shell);
+    assert.throws(() => workspaceInput(cwd,"read",{path:"file",workspaceIndex:1}), /assigned by the host/);
+    assert.throws(() => workspaceInput(cwd,"file_batch",{operations:[{operation:"read",path:"file",workspaceIndex:1}]}), /assigned by the host/);
+    const additional = path.resolve(cwd, "../additional");
+    assert.deepEqual(workspaceInput(cwd,"read",{path:path.join(additional,"file")},[additional]), {path:"file",workspaceIndex:1});
+    assert.throws(() => workspaceInput(cwd,"move",{path:path.join(additional,"file"),destination:"primary.txt"},[additional]), /outside/);
     for(const value of [path.resolve(cwd,"../Pi-other/file"), "\\\\server\\share\\file", "\\\\?\\C:\\file", "D:file", "a\0b"])
         assert.throws(() => workspaceInput(cwd,"read",{path:value}), /SANDBOX_PATH/);
     assert.throws(() => workspaceInput(cwd,"file_batch",{operations:new Array(17).fill({path:"file"})}), /Invalid file batch/);
@@ -54,7 +60,8 @@ test("sandbox tool descriptions expose actual workspace, guest cwd and network p
         const owner = new WorkspaceSandboxTools(process.cwd(),process.cwd(),mode,() => {throw new Error("No execution");},{network:"enabled"});
         const tools:Record<string,any>={}; owner.install(tools);
         assert.ok(tools.ls.description.includes(process.cwd()));
-        assert.ok(tools.powershell.description.includes(mode === "read-only" ? "C:\\SuperPiInput" : "C:\\SuperPiWorkspace"));
+        assert.ok(tools.powershell.description.includes("Command cwd: " + process.cwd()));
+        assert.doesNotMatch(tools.powershell.description, /C:\\SuperPiInput|C:\\SuperPiWorkspace/);
         assert.match(tools.powershell.description,/Network access: enabled/);
         assert.doesNotMatch(tools.powershell.description,/no network/);
         await owner.close();
