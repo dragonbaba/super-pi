@@ -8,6 +8,7 @@ import { WorkspaceSandboxTools } from "../packages/coding-agent/src/core/sandbox
 import { SessionExecutionPolicy } from "../packages/coding-agent/src/core/execution-policy.ts";
 import { createExtensionRuntime } from "../packages/coding-agent/src/core/extensions/loader.ts";
 import { sessionDirectories } from "../packages/coding-agent/src/core/session-execution-profile.ts";
+import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
 
 const enabled = process.platform === "win32" && process.env.SUPERPI_SANDBOX_WORKSPACE_ACCEPTANCE === "1";
 // Resolve emitted modules only for the opt-in release test; clean source checks need no dist declarations.
@@ -31,7 +32,7 @@ test("live additional workspace accepts native identity from a different case sp
   const definitions: Record<string, any> = {}; owner.install(definitions);
   for (const definition of Object.values(definitions)) policy.registerDefinition(definition);
   const ctx: any = { cwd: project, hasUI: false, signal: runtime.executionBoundary.signal,
-    sessionManager: { getSessionId: () => "directory-identity-live", getLeafEntry: () => undefined } };
+    sessionManager: SessionManager.inMemory(project) };
   try {
     for (const spelling of [assets, assets.toUpperCase()]) {
       const input = { path: path.join(spelling, "input.txt") };
@@ -63,7 +64,7 @@ test("live unified workspace: both shells, additional directory, byte artifacts,
   const definitions: Record<string, any> = {}; owner.install(definitions);
   for (const definition of Object.values(definitions)) policy.registerDefinition(definition);
   const ctx: any = { cwd: project, hasUI: false, signal: runtime.executionBoundary.signal,
-    sessionManager: { getSessionId: () => "live-contract", getLeafEntry: () => undefined } };
+    sessionManager: SessionManager.inMemory(project) };
   let call = 0;
   async function invoke(name: string, args: Record<string, unknown>) {
     const id = "live-" + ++call, authorization = await policy.authorize({ type: "tool_call", toolName: name, toolCallId: id, input: args } as any, ctx, definitions[name]);
@@ -135,7 +136,7 @@ test("live readonly workspaces and failed shell execution retain truthful outcom
   runtime.nativePermissions = new Policy(runtime, "sandbox", {}, "read-only", [additional]);
   const definitions: Record<string, any> = {}; owner.install(definitions);
   for (const definition of Object.values(definitions)) runtime.nativePermissions.registerDefinition(definition);
-  const ctx: any = { cwd: project, hasUI: false, signal: runtime.executionBoundary.signal, sessionManager: { getSessionId: () => "readonly-live", getLeafEntry: () => undefined } };
+  const ctx: any = { cwd: project, hasUI: false, signal: runtime.executionBoundary.signal, sessionManager: SessionManager.inMemory(project) };
   try {
     const script = "const fs=require('fs'),paths=" + JSON.stringify([path.join(project, "input.txt"), path.join(additional, "input.txt")])
       + ";console.log(JSON.stringify(paths.map(p=>{try{fs.writeFileSync(p,'bad');return false}catch{return true}})))";

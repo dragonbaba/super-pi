@@ -2936,6 +2936,30 @@ export class InteractiveMode {
 		}
 	}
 
+	private async showPermissionRefusals(): Promise<void> {
+		const session = this.session, generation = this.tuiLifecycleGeneration;
+		try {
+			const records = session.getPermissionRefusals();
+			if (!records.length) { this.showExtensionNotify("当前会话没有原生权限拒绝记录。", "info"); return; }
+			const choices: string[] = [];
+			for (let index = 0; index < records.length; index++) {
+				const record = records[index]!;
+				choices.push(`${index + 1} · ${record.source === "legacy" ? "历史来源不明" : "明确拒绝"} · ${record.summary.split("\n", 1)[0]!.slice(0, 120)} · ${record.key.slice(0, 12)}`);
+			}
+			const ui = this.createExtensionUIContext();
+			const selected = await ui.select("查看或撤销历史拒绝", choices, { kind: "permission",
+				details: "旧记录不区分明确拒绝、Esc 或超时，不会自动清空。\n撤销只解除选中的请求记录，之后仍按当前规则询问或拒绝。批量请求的其他拒绝项保持有效。" });
+			if (!selected || this.session !== session || this.tuiLifecycleGeneration !== generation) return;
+			const record = records[choices.indexOf(selected)];
+			if (!record) return;
+			const action = await ui.select("撤销这条拒绝记录？", ["返回", "撤销这条记录"], { kind: "permission",
+				details: `${record.summary}\n来源：${record.source === "legacy" ? "历史来源不明" : "用户明确拒绝"}\n原因：${record.reason ?? "未记录"}\n请求标识：${record.key}\n撤销不会直接批准操作。` });
+			if (action !== "撤销这条记录" || this.session !== session || this.tuiLifecycleGeneration !== generation) return;
+			const removed = session.revokePermissionRefusal(record.key);
+			this.showExtensionNotify(removed ? "拒绝记录已撤销；后续请求仍按当前规则授权。" : "这条记录已不存在。", "info");
+		} catch (error) { this.showExtensionNotify(error instanceof Error ? error.message : String(error), "error"); }
+	}
+
 	private async handleWorkingDirectoryCommand(text: string): Promise<void> {
 		const current = this.session.settingsManager.getSessionDirectories();
 		if (text === "/dirs") {
@@ -2969,7 +2993,7 @@ export class InteractiveMode {
 		return {
 			select: (title, options, opts) => this.extensionUiGeneration !== extensionUiGeneration
 				? Promise.resolve(undefined)
-				: this.showExtensionSelector(title, options, opts),
+				: this.showExtensionSelector(title, options, opts, opts?.kind),
 			confirm: (title, message, opts) => this.extensionUiGeneration !== extensionUiGeneration
 				? Promise.resolve(false)
 				: this.showExtensionConfirm(title, message, opts),
@@ -3999,9 +4023,14 @@ export class InteractiveMode {
 			if (!text) return;
 
 			// Handle commands
+			if (text === "/permissions refusals" || text === "/permission refusals") {
+				this.editor.setText("");
+				await this.showPermissionRefusals();
+				return;
+			}
 			if (text.startsWith("/permissions ") || text.startsWith("/permission ")) {
 				this.editor.setText("");
-				this.showExtensionNotify("旧权限子命令已退役。使用 /permissions 选择权限，/dirs 查看工作目录。", "warning");
+				this.showExtensionNotify("使用 /permissions 选择权限，/permissions refusals 查看和撤销历史拒绝，/dirs 查看工作目录。", "warning");
 				return;
 			}
 			if (text === "/dirs" || text === "/add-dir" || text.startsWith("/add-dir ") || text === "/remove-dir" || text.startsWith("/remove-dir ")) {

@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { WorkspaceSandboxTools } from "../packages/coding-agent/src/core/sandbox/workspace-tools.ts";
 import { SessionExecutionPolicy } from "../packages/coding-agent/src/core/execution-policy.ts";
+import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
 import { createExtensionRuntime } from "../packages/coding-agent/src/core/extensions/loader.ts";
 import { CodemodeController } from "../packages/coding-agent/src/core/codemode.ts";
 import { wrapToolDefinition } from "../packages/coding-agent/src/core/tools/tool-definition-wrapper.ts";
@@ -22,7 +23,7 @@ test("live CodeMode snapshot round-trip, stale refusal, fresh VM recovery and fi
 	const runtime=createExtensionRuntime(); runtime.appendEntry=()=>{};
 	const policy=runtime.nativePermissions=new SessionExecutionPolicy(runtime,"sandbox",{},"sandbox-write");
 	const owner=new SandboxTools(project,artifacts,"sandbox-write",()=>runtime);
-	const ctx:any={cwd:project,hasUI:false,signal:runtime.executionBoundary.signal,sessionManager:{getSessionId:()=>"snapshot-recovery",getLeafEntry:()=>undefined}};
+	const ctx:any={cwd:project,hasUI:false,signal:runtime.executionBoundary.signal,sessionManager:SessionManager.inMemory(project)};
 	const definitions:Record<string,any>={}; owner.install(definitions);
 	for(const definition of Object.values(definitions)) policy.registerDefinition(definition);
 	const tools=[wrapToolDefinition(definitions.read,()=>ctx),wrapToolDefinition(definitions.write,()=>ctx)];

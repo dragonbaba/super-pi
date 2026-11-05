@@ -38,14 +38,16 @@ test("guest writes, edits and command candidates obey the host-supplied native b
 test("permission history and Escape navigation avoid repeated branch arrays and callback creation", () => {
   const policy = ts.createSourceFile("execution-policy.ts", readFileSync("packages/coding-agent/src/core/execution-policy.ts", "utf8"), ts.ScriptTarget.Latest, true);
   const owner = policy.statements.find(node => ts.isClassDeclaration(node) && node.name?.text === "SessionExecutionPolicy") as ts.ClassDeclaration;
-  const history = owner.members.find(node => node.name?.getText(policy) === "restoreHistory") as ts.MethodDeclaration;
   function check(node: ts.Node): void {
     assert.equal(ts.isArrayLiteralExpression(node) || ts.isObjectLiteralExpression(node) || ts.isArrowFunction(node)
       || ts.isFunctionExpression(node) || ts.isAwaitExpression(node), false, node.getText());
-    if (ts.isCallExpression(node)) assert.doesNotMatch(node.expression.getText(), /\.getBranch$/);
+    if (ts.isCallExpression(node)) assert.doesNotMatch(node.expression.getText(), /\.(getBranch|getEntries)$/);
     ts.forEachChild(node, check);
   }
-  check(history.body!);
+  for (const name of ["restoreHistory", "restoreRefusals"]) {
+    const history = owner.members.find(node => node.name?.getText(policy) === name) as ts.MethodDeclaration;
+    check(history.body!);
+  }
   const source = ts.createSourceFile("interactive-mode.ts", readFileSync("packages/coding-agent/src/modes/interactive/interactive-mode.ts", "utf8"), ts.ScriptTarget.Latest, true);
   const mode = source.statements.find(node => ts.isClassDeclaration(node) && node.name?.text === "InteractiveMode") as ts.ClassDeclaration;
   for (const name of ["returnToBottomOnEscape", "onCompactionEscape", "onRetryEscape"]) {

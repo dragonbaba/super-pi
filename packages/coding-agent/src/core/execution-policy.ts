@@ -4,7 +4,7 @@ import { isAbsolute, relative, resolve } from "node:path";
 import { assertPermissionMode, type SessionPermissionMode } from "./permission-mode.ts";
 import { WORKSPACE_TOOL_NAMES } from "./session-execution-profile.ts";
 import type { ExtensionContext, ExtensionRuntime, ToolCallEvent, ToolDefinition } from "./extensions/types.ts";
-import type { SessionEntry } from "./session-manager.ts";
+import type { ReadonlySessionManager, SessionEntry, SessionEntryVisitor } from "./session-manager.ts";
 import { assessCanonicalMutationPath, canonicalizeProspectivePath } from "./files/protected-path-policy.ts";
 import { attachPermissionPathApproval, mutationRequestHash, type PermissionPathApproval } from "./files/file-invocation.ts";
 import { InputReadPolicyLease } from "./files/session-input-read-permission.ts";
@@ -27,12 +27,24 @@ export interface ExecutionPermissionRule {
     path?: string;
 }
 export interface ExecutionPermissions { approval?: "interactive" | "never"; rules?: ExecutionPermissionRule[]; }
+export interface PermissionRefusal {
+    readonly key: string;
+    readonly source: "legacy" | "explicit";
+    readonly summary: string;
+    readonly reason?: string;
+}
 const MUTATIONS = new Set(["edit", "write", "delete", "move", "file_batch"]);
 const SEARCHES = new Set(["grep", "find", "ls"]);
 const RECURSIVE_SCOPES = new Set([...SEARCHES, "subagent", "structured_readonly_command"]);
 const SAFE = new Set(["codemode", "tool_search", "tasks"]);
 const SANDBOX_TOOLS = new Set<string>([...SAFE, ...WORKSPACE_TOOL_NAMES]);
 const BLOCKED = "[POLICY_BLOCKED] ";
+const MAX_REFUSALS = 128;
+const MAX_REFUSAL_SUMMARY = 4096;
+const MAX_REFUSAL_REASON = 1024;
+const APPROVAL_TIMEOUT_MS = 60000;
+const REFUSAL_KEY = /^[a-f0-9]{64}$/;
+const APPROVAL_CHOICES = ["允许一次", "拒绝", "拒绝并说明原因"];
 const assertSignal = AbortSignal.prototype.throwIfAborted;
 function inside(root: string, target: string): boolean {
     const part = relative(root, target);
@@ -83,7 +95,7 @@ export class NativePolicyInvocation {
  * No shell parsing, command risk inference, extension grant bus, or output hooks.
  * Configuration is immutable for this runtime; reload uses the execution barrier.
  */
-export class SessionExecutionPolicy {
+export class SessionExecutionPolicy implements SessionEntryVisitor {
     readonly mode?: SessionPermissionMode;
     readonly environment: ExecutionEnvironment;
     private readonly runtime: ExtensionRuntime;
@@ -94,7 +106,10 @@ export class SessionExecutionPolicy {
     private issuance?: InputWorkspaceIssuance;
     private workspace = "";
     private sessionId = "";
-    private readonly denied = new Set<string>();
+    private readonly denied = new Map<string, PermissionRefusal>();
+    private refusalManager?: WeakRef<ReadonlySessionManager>;
+    private refusalGeneration = -1;
+    private refusalCursor = 0;
     private scannedLeaf?: WeakRef<SessionEntry>;
     private legacyHistory = false;
     private epoch = 0;
@@ -121,7 +136,10 @@ export class SessionExecutionPolicy {
     }
     private readonly revoke = (): void => { this.epoch++; this.grant = undefined; this.issuance = undefined; };
     private readonly drain = async (): Promise<void> => {};
-    dispose(): void { this.closed = true; this.revoke(); this.denied.clear(); this.scannedLeaf = undefined; this.legacyHistory = false; }
+    dispose(): void {
+        this.closed = true; this.revoke(); this.denied.clear(); this.refusalManager = undefined;
+        this.refusalGeneration = -1; this.refusalCursor = 0; this.scannedLeaf = undefined; this.legacyHistory = false;
+    }
     registerDefinition(definition: ToolDefinition): void {
         if (SANDBOX_TOOLS.has(definition.name) && (definition.name !== "bash" || this.mode !== undefined)) this.definitions.add(definition);
     }
@@ -193,17 +211,53 @@ export class SessionExecutionPolicy {
         }
         return selected ?? fallback ?? (this.mode !== undefined || SAFE.has(tool) || tool === "read" || tool === "powershell" && this.environment === "sandbox" ? "allow" : "ask");
     }
+    private restoreRefusals(manager: ReadonlySessionManager): void {
+        if (!manager.isHistoryConsistent()) throw new Error(BLOCKED + "Permission history is uncertain; reload the session before continuing");
+        const generation = manager.getHistoryGeneration();
+        if (this.refusalManager?.deref() !== manager || this.refusalGeneration !== generation) {
+            this.denied.clear(); this.refusalCursor = 0;
+            this.refusalManager = new WeakRef(manager); this.refusalGeneration = generation;
+        }
+        this.refusalCursor = manager.visitAppendedEntries(this.refusalCursor, this);
+    }
+    /** Stable append visitor; ordinary transcript entries do no allocation or branch copying. */
+    visitSessionEntry(entry: SessionEntry): void {
+        if (entry.type !== "custom") return;
+        const kind = entry.customType;
+        if (kind !== "native-permission-denial-v1" && kind !== "native-permission-denial-v2" && kind !== "native-permission-revocation-v1") return;
+        const data = entry.data as Partial<PermissionRefusal> | undefined;
+        if (!data || typeof data.key !== "string" || !REFUSAL_KEY.test(data.key)) throw new Error(BLOCKED + "Invalid permission history record");
+        if (kind === "native-permission-revocation-v1") {
+            if ((entry.data as { source?: string }).source !== "user-command") throw new Error(BLOCKED + "Invalid permission revocation source");
+            this.denied.delete(data.key); return;
+        }
+        if (this.denied.size >= MAX_REFUSALS && !this.denied.has(data.key)) throw new Error(BLOCKED + "Refusal capacity reached; use /permissions refusals or start a new session");
+        if (kind === "native-permission-denial-v1") {
+            this.denied.set(data.key, Object.freeze({ key: data.key, source: "legacy", summary: "历史拒绝记录：无法区分明确拒绝、取消或超时" }));
+        } else {
+            if (data.source !== "explicit" || typeof data.summary !== "string" || data.summary.length > MAX_REFUSAL_SUMMARY
+                || data.reason !== undefined && (typeof data.reason !== "string" || data.reason.length > MAX_REFUSAL_REASON)) throw new Error(BLOCKED + "Invalid explicit refusal record");
+            this.denied.set(data.key, Object.freeze({ key: data.key, source: "explicit", summary: data.summary, reason: data.reason }));
+        }
+    }
+    listRefusals(ctx: ExtensionContext): readonly PermissionRefusal[] {
+        this.guard(ctx)(); this.restoreRefusals(ctx.sessionManager);
+        return Array.from(this.denied.values());
+    }
+    revokeRefusal(ctx: ExtensionContext, key: string): boolean {
+        this.guard(ctx)(); this.restoreRefusals(ctx.sessionManager);
+        if (!this.denied.has(key)) return false;
+        this.runtime.appendEntry("native-permission-revocation-v1", { key, source: "user-command" });
+        this.denied.delete(key);
+        return true;
+    }
     private restoreHistory(ctx: ExtensionContext): void {
+        this.restoreRefusals(ctx.sessionManager);
         const manager = ctx.sessionManager, leaf = manager.getLeafEntry(), previous = this.scannedLeaf?.deref();
         if (leaf === previous && (leaf !== undefined || this.scannedLeaf === undefined)) return;
         let entry = leaf, legacy = false;
         while (entry && entry !== previous) {
             if (entry.type === "custom") {
-                if (entry.customType === "native-permission-denial-v1" && typeof (entry.data as { key?: unknown })?.key === "string") {
-                    const key = (entry.data as { key: string }).key;
-                    if (this.denied.size >= 128 && !this.denied.has(key)) throw new Error(BLOCKED + "Refusal capacity reached; start a new session");
-                    this.denied.add(key);
-                }
                 if (entry.customType === "session-permission-state-v1") legacy = true;
             }
             entry = entry.parentId ? manager.getEntry(entry.parentId) : undefined;
@@ -279,13 +333,31 @@ export class SessionExecutionPolicy {
             if (this.approval === "never" || !ctx.hasUI) throw new Error("[APPROVAL_REQUIRED] Operation was not executed: " + event.toolName);
             const details = mutation ? paths.join("\n") : JSON.stringify(input, null, 2);
             if (details.length > 16384) throw new Error("[APPROVAL_REQUIRED] Request is too large for one interactive review; configure an explicit scoped rule");
-            const approved = await ctx.ui.confirm("Allow this operation?", `${event.toolName} (${this.environment})\n${details}`,
-                { signal: ctx.signal ?? this.runtime.executionBoundary.signal, timeout: 60000 });
+            const signal = ctx.signal ?? this.runtime.executionBoundary.signal;
+            const selected = await ctx.ui.select("允许这次操作？", APPROVAL_CHOICES,
+                { signal, timeout: APPROVAL_TIMEOUT_MS, kind: "permission", details: `${event.toolName} (${this.environment})\ncwd: ${ctx.cwd}\n${details}` });
             check();
-            if (!approved) {
-                if (this.denied.size + keys.length > 128) throw new Error(BLOCKED + "Refusal capacity reached; start a new session");
-                for (const key of keys) { this.denied.add(key); this.runtime.appendEntry("native-permission-denial-v1", { key }); }
-                throw new Error(BLOCKED + "User declined this operation");
+            if (selected !== APPROVAL_CHOICES[0] && selected !== APPROVAL_CHOICES[1] && selected !== APPROVAL_CHOICES[2])
+                throw new Error("[APPROVAL_CANCELLED] Operation was not executed; this request may be asked again");
+            if (selected !== APPROVAL_CHOICES[0]) {
+                let reason: string | undefined;
+                if (selected === APPROVAL_CHOICES[2]) {
+                    const value = await ctx.ui.input("拒绝原因（仅记录本次明确拒绝）", undefined, { signal, timeout: APPROVAL_TIMEOUT_MS });
+                    check();
+                    if (value === undefined) throw new Error("[APPROVAL_CANCELLED] Refusal explanation was cancelled; operation was not executed");
+                    reason = value.trim().slice(0, MAX_REFUSAL_REASON) || undefined;
+                }
+                invocation.consume(event.input, event.toolCallId, event.toolName, ctx.signal);
+                if (this.denied.size + keys.length > MAX_REFUSALS) throw new Error(BLOCKED + "Refusal capacity reached; use /permissions refusals or start a new session");
+                let pathIndex = 0;
+                for (let index = 0; index < keys.length; index++) {
+                    const key = keys[index]!, item = event.toolName === "file_batch" ? input.operations[index] : undefined;
+                    const summary = item ? `${item.operation}\n${paths[pathIndex++]}${item.destination === undefined ? "" : " → " + paths[pathIndex++]}`
+                        : `${event.toolName}\ncwd: ${ctx.cwd}\n${details}`;
+                    const record: PermissionRefusal = Object.freeze({ key, source: "explicit", summary: summary.slice(0, MAX_REFUSAL_SUMMARY), reason });
+                    this.denied.set(key, record); this.runtime.appendEntry("native-permission-denial-v2", record);
+                }
+                throw new Error(BLOCKED + "User declined this operation" + (reason ? ": " + reason : ""));
             }
         }
         invocation.consume(event.input, event.toolCallId, event.toolName, ctx.signal);

@@ -9,6 +9,7 @@ import { NATIVE_FILE_REVISION } from "./files/file-host.ts";
 import type { ToolSelection } from "./tool-selection.ts";
 import { CODEMODE_NAME, CODEMODE_DESCRIPTION, CODEMODE_STORE_ENTRY, CODEMODE_CALL_ENTRY, CODEMODE_RESULT_ENTRY, DIRECT_CONTROL_NAMES } from "./codemode-constants.ts";
 import type { CodemodeReadEvent } from "./extensions/types.ts";
+import type { PermissionRefusal } from "./execution-policy.ts";
 /**
  * AgentSession - Core abstraction for agent lifecycle and session management.
  *
@@ -2527,6 +2528,15 @@ export class AgentSession {
 	getToolCatalog(): ToolCatalogSnapshot {
 		return { tools: this.getAllTools(), activeTools: this.getActiveToolNames(),
 			selectionMode: this._resourceLoader.getExtensions().runtime.executionBoundary.getToolSelectionMode() };
+	}
+
+	/** Explicit user recovery; revocation never creates an allow rule. */
+	getPermissionRefusals(): readonly PermissionRefusal[] {
+		return this._resourceLoader.getExtensions().runtime.nativePermissions?.listRefusals(this._extensionRunner.createContext()) ?? [];
+	}
+
+	revokePermissionRefusal(key: string): boolean {
+		return this._resourceLoader.getExtensions().runtime.nativePermissions?.revokeRefusal(this._extensionRunner.createContext(), key) ?? false;
 	}
 
 	async withSupplementalSummary<T>(signal: AbortSignal, callback: (stream: StreamFn) => Promise<T>): Promise<T> {

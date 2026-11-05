@@ -5,6 +5,8 @@ import type { BigIntStats, PathLike } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import { getEventListeners } from "node:events";
+import { setImmediate as tick } from "node:timers/promises";
 import { createExtensionRuntime } from "../packages/coding-agent/src/core/extensions/loader.ts";
 import { SessionExecutionPolicy } from "../packages/coding-agent/src/core/execution-policy.ts";
 import { WorkspaceSandboxTools } from "../packages/coding-agent/src/core/sandbox/workspace-tools.ts";
@@ -27,7 +29,7 @@ function mockSourceChecks(t: test.TestContext, version = true): void {
 test("readonly refuses writes even with broad allow and valid native definitions", async () => {
   const runtime = createExtensionRuntime();
   const policy = new SessionExecutionPolicy(runtime, "sandbox", { rules: [{ tool: "*", decision: "allow" }] }, "read-only");
-  const ctx: any = { cwd: process.cwd(), signal: new AbortController().signal, sessionManager: { getSessionId: () => "readonly", getLeafEntry: () => undefined } };
+  const ctx: any = { cwd: process.cwd(), signal: new AbortController().signal, sessionManager: SessionManager.inMemory(process.cwd()) };
   try {
     for (const name of ["write", "edit", "delete", "move", "file_batch"]) {
       const definition: any = { name }; policy.registerDefinition(definition);
@@ -50,7 +52,7 @@ test("guest writes retain original path and host version checks before publicati
   const policy = runtime.nativePermissions = new SessionExecutionPolicy(runtime, "sandbox", {}, "sandbox-write");
   const owner = new WorkspaceSandboxTools(root, root, "sandbox-write", () => runtime), base: any = {};
   owner.install(base); for (const definition of Object.values(base)) policy.registerDefinition(definition as any);
-  const ctx: any = { cwd: root, hasUI: false, signal: runtime.executionBoundary.signal, sessionManager: { getSessionId: () => "publication", getLeafEntry: () => undefined } };
+  const ctx: any = { cwd: root, hasUI: false, signal: runtime.executionBoundary.signal, sessionManager: SessionManager.inMemory(root) };
   let changes: any[] = [{ path: "new.txt", before: null, content: Buffer.from("中文").toString("base64") }];
   t.mock.method(WorkspaceSandboxBackend.prototype, "invoke", async () => ({ id: "fixture", ok: true, text: "done", changes }));
   try {
@@ -87,7 +89,7 @@ test("publication failure retains committed receipts when baseline bookkeeping f
   runtime.nativePermissions = new SessionExecutionPolicy(runtime, "sandbox", {}, "sandbox-write");
   const owner = new WorkspaceSandboxTools(root, root, "sandbox-write", () => runtime), base: any = {};
   owner.install(base); for (const definition of Object.values(base)) runtime.nativePermissions.registerDefinition(definition as any);
-  const ctx: any = { cwd: root, hasUI: false, signal: runtime.executionBoundary.signal, sessionManager: { getSessionId: () => "receipt", getLeafEntry: () => undefined } };
+  const ctx: any = { cwd: root, hasUI: false, signal: runtime.executionBoundary.signal, sessionManager: SessionManager.inMemory(root) };
   t.mock.method(WorkspaceSandboxBackend.prototype, "invoke", async () => ({ id: "fixture", ok: true, text: "command completed",
     execution: { exitCode: 0, timedOut: false, closed: true, stdout: "retained", stderr: "" },
     changes: [{ path: "published.txt", before: null, content: Buffer.from("written").toString("base64") }] }));
@@ -121,6 +123,67 @@ test("permissions menu exposes exactly three modes and never switches after canc
       fixture.internal.tuiLifecycleGeneration++; return values[0];
     } });
     await fixture.internal.showPermissionsSelector(); assert.equal(switched.length, 1);
+  } finally { await fixture.release(); }
+});
+
+test("native approval UI cancels on Escape and a real countdown, then asks again without retained dialog state", { timeout: 8000 }, async t => {
+  const fixture = await alphaSession({ mode: "fullscreen" });
+  const runtime = createExtensionRuntime(), manager = SessionManager.inMemory(fixture.root);
+  runtime.appendEntry = (type, data) => { manager.appendCustomEntry(type, data); };
+  const owner = new SessionExecutionPolicy(runtime, "trusted-host", { rules: [{ tool: "powershell", decision: "ask" }] }, "host-write");
+  const ui = fixture.internal.createExtensionUIContext(); let shortDeadline = false, prompts = 0, visibleFrames = 0;
+  fixture.sink.physicalMarker = text => { if (text.includes("允许这次操作")) visibleFrames++; };
+  const ctx: any = { cwd: fixture.root, hasUI: true, sessionManager: manager, signal: runtime.executionBoundary.signal,
+    ui: { select(title: string, choices: string[], opts: any) {
+      prompts++; assert.equal(opts.timeout, 60000);
+      return ui.select(title, choices, { ...opts, timeout: shortDeadline ? 1 : opts.timeout });
+    } } };
+  const event: any = { type: "tool_call", toolName: "powershell", toolCallId: "ui-approval", input: { command: "Write-Output fixture" } };
+  fixture.internal.ui.start();
+  try {
+    for (const action of ["escape", "timeout", "allow"]) {
+      shortDeadline = action === "timeout";
+      const pending = owner.authorize(event, ctx);
+      const cancelled = action === "allow" ? undefined : assert.rejects(pending, /APPROVAL_CANCELLED/);
+      await tick(); fixture.internal.ui.renderNow(true); await fixture.internal.ui.flushTerminalFrames();
+      const component = fixture.internal.extensionSelector, countdown = component.countdown;
+      assert.ok(component); assert.ok(countdown); assert.equal(getEventListeners(ctx.signal, "abort").length, 1);
+      if (action === "escape") component.handleInput("\x1b");
+      else if (action === "allow") { component.handleInput("\x1b[A"); component.handleInput("\r"); }
+      if (cancelled) await cancelled;
+      else (await pending).release();
+      assert.equal(countdown.intervalId, undefined); assert.equal(countdown.tui, undefined);
+      assert.equal(component.details, undefined); assert.equal(component.terminal, undefined);
+      assert.equal(fixture.internal.extensionSelector, undefined); assert.equal(fixture.internal.extensionSelectorOverlay, undefined);
+      assert.equal(getEventListeners(ctx.signal, "abort").length, 0);
+      assert.deepEqual(owner.listRefusals(ctx), []);
+    }
+    assert.equal(prompts, 3); assert.ok(visibleFrames > 0); assert.equal(manager.getEntryCount(), 0);
+    t.diagnostic(JSON.stringify({ prompts, escaped: 1, realCountdownExpired: 1, approved: 1, persistedRefusals: 0, dialogTimers: 0, abortListeners: 0, visibleFrames }));
+  } finally { owner.dispose(); await runtime.executionBoundary.dispose(); fixture.sink.physicalMarker = undefined; await fixture.release(); }
+});
+
+test("refusal recovery menu shows legacy provenance and only revokes the confirmed current-session record", async () => {
+  const fixture = await alphaSession({ settings: { executionEnvironment: "trusted-host" } });
+  const key = "d".repeat(64), notices: string[] = [];
+  fixture.sessionManager.appendCustomEntry("native-permission-denial-v1", { key });
+  let phase = 0, stale = false;
+  fixture.internal.createExtensionUIContext = () => ({ select: async (_title: string, choices: string[], opts: any) => {
+    assert.equal(opts.kind, "permission");
+    if (phase++ === 0) {
+      assert.match(choices[0], /历史来源不明/); assert.match(opts.details, /不会自动清空/);
+      if (stale) fixture.internal.tuiLifecycleGeneration++;
+      return choices[0];
+    }
+    assert.match(opts.details, /撤销不会直接批准/); return choices[1];
+  } });
+  fixture.internal.showExtensionNotify = (message: string) => { notices.push(message); };
+  try {
+    await fixture.internal.showPermissionRefusals();
+    assert.deepEqual(fixture.session.getPermissionRefusals(), []); assert.match(notices[0], /已撤销/);
+    fixture.sessionManager.appendCustomEntry("native-permission-denial-v1", { key });
+    phase = 0; stale = true; await fixture.internal.showPermissionRefusals();
+    assert.equal(fixture.session.getPermissionRefusals().length, 1, "stale UI cannot revoke a different permission context");
   } finally { await fixture.release(); }
 });
 
@@ -161,8 +224,8 @@ test("writeback refusals remain stable across freshly captured host revision IDs
   const owner = new WorkspaceSandboxTools(root, root, "sandbox-write", () => runtime), base: any = {};
   owner.install(base); for (const definition of Object.values(base)) policy.registerDefinition(definition as any);
   let prompts = 0;
-  const ctx: any = { cwd: root, hasUI: true, ui: { confirm: async () => { prompts++; return false; } }, signal: runtime.executionBoundary.signal,
-    sessionManager: { getSessionId: () => "denial", getLeafEntry: () => undefined } };
+  const ctx: any = { cwd: root, hasUI: true, ui: { select: async (_title: string, choices: string[]) => { prompts++; return choices[1]; } }, signal: runtime.executionBoundary.signal,
+    sessionManager: SessionManager.inMemory(root) };
   t.mock.method(WorkspaceSandboxBackend.prototype, "invoke", async () => ({ id: "fixture", ok: true, changes: [{ path: "existing.txt",
     before: createHash("sha256").update("before").digest("hex"), content: Buffer.from("after").toString("base64") }] }));
   try {
@@ -207,7 +270,7 @@ test("validate the entire candidate envelope before publishing any file", async 
   const policy = runtime.nativePermissions = new SessionExecutionPolicy(runtime, "sandbox", {}, "sandbox-write");
   const owner = new WorkspaceSandboxTools(root, root, "sandbox-write", () => runtime), base: any = {};
   owner.install(base); for (const definition of Object.values(base)) policy.registerDefinition(definition as any);
-  const ctx: any = { cwd: root, hasUI: false, signal: runtime.executionBoundary.signal, sessionManager: { getSessionId: () => "review", getLeafEntry: () => undefined } };
+  const ctx: any = { cwd: root, hasUI: false, signal: runtime.executionBoundary.signal, sessionManager: SessionManager.inMemory(root) };
   const first = { path: "first.txt", before: null, content: "eA==" };
   let changes: any[] = [];
   t.mock.method(WorkspaceSandboxBackend.prototype, "invoke", async () => ({ id: "fixture", ok: true, changes }));
