@@ -250,10 +250,10 @@ export class SandboxLifecycle {
 		if (!successful(result)) throw new Error("Clipboard probe CLI failed");
 		this.state = "clipboard-entry-returned"; this.save(); return result;
 	}
-	cleanup() {
+	cleanup(retry = false) {
 		// A failed attempt retains the same physical owners. An explicit later
 		// cleanup may re-observe them; concurrent callers still join one attempt.
-		if (!this.cleanupPromise || this.state === "blocked-cleanup") this.cleanupPromise = this.clean();
+		if (!this.cleanupPromise || (retry === true && this.state === "blocked-cleanup")) this.cleanupPromise = this.clean();
 		return this.cleanupPromise;
 	}
 	async clean() {

@@ -151,7 +151,8 @@ test("explicit cleanup retry re-observes retained owners after a failed list wit
 	const first = owner.cleanup(); assert.equal(await first, false);
 	assert.equal(owner.registered, true); assert.equal(owner.state, "blocked-cleanup");
 	cli.badList = false;
-	const second = owner.cleanup(); assert.notEqual(second, first); assert.equal(owner.cleanup(), second);
+	assert.equal(owner.cleanup(), first, "ordinary cleanup consumers retain the original result");
+	const second = owner.cleanup(true); assert.notEqual(second, first); assert.equal(owner.cleanup(true), second);
 	assert.equal(await second, true); assert.equal(owner.state, "closed"); assert.equal(owner.cleanupError, undefined);
 	assert.equal(owner.cleanup(), second);
 	assert.equal(cli.kinds.filter(kind => kind === "start").length, 1);

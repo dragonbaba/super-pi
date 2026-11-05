@@ -227,7 +227,7 @@ export class WorkspaceSandboxBackend {
   }
   private async closeVm(): Promise<void> {
     if (this.vm) {
-      await this.vm.cleanup();
+      await this.vm.cleanup(true);
       need((this.vm.state === "closed" || this.vm.state === "closed-before-start") && !this.vm.active && !this.vm.execution && !this.vm.connection,
         "Sandbox cleanup unresolved; state=" + this.vm.state + "; " + (this.vm.cleanupError ?? "physical owner still pending") + "; journal=" + this.root + path.sep + "owner.json");
       this.vm = undefined;

@@ -41,6 +41,8 @@ main, remove this task's branches and rebuild locally.
   control/execution/connection slots are empty. A pre-start failure preserves its
   original cause and allows a fresh invocation. Blocked cleanup retains the VM
   and artifact owners; the next explicit cleanup re-observes the same owner.
+  Re-observation is opt-in (`cleanup(true)`) at the workspace owner. Ordinary
+  lifecycle consumers keep the first completion, including its failure.
 - Closed admission and busy admission have separate diagnostics. Aggregate
   failures include bounded operation and cleanup reasons and the owner journal
   location, without adding transcript or environment dumps.
@@ -59,7 +61,7 @@ Observed on the baseline environment:
 | Targeted runtime, image, cleanup and lifecycle regressions | 75 passed |
 | Hot-path suite | 111 passed |
 | TypeScript check | passed |
-| Offline build | 12/12 packages, 7991 ms, peak parallelism 2 |
+| Offline build after CI correction | 12/12 packages, 7609 ms, peak parallelism 2 |
 | Packaged sandbox + real Windows VM + CodeMode | read hash → write → reject stale hash → fresh VM → read committed content → repeated close; passed in 15.7 s |
 | Live cleanup | zero owned artifacts, source-file references or active VM; test root removed after close |
 
@@ -95,3 +97,20 @@ CPU p95 ratio 0.367 and final host-heap ratio 1.006. These compare execution mod
 not before/after performance of this fix. They do not establish VM startup or
 interactive terminal latency. The live test covers isolated fixture files, not
 the user's private project or replay of completed mutations.
+
+### CI compatibility correction
+
+The first head (`d922614aa`) received a review with no findings, but full CI exposed
+three existing lifecycle regressions: fixed cancellation, timeout and the volume-sharing
+dispatch guard require ordinary repeated `cleanup()` to preserve its first
+failure. The cancellation and sharing failures reproduced locally; timeout
+showed the same assertion and mechanism in both Windows and Linux CI. Retry was narrowed to explicit
+`cleanup(true)` from the workspace owner; the existing tests remain unchanged.
+The lifecycle test also proves default callers still receive the original failed
+promise before an explicitly requested retry. All 33 lifecycle/consumer checks
+then passed, including the unchanged cancellation, timeout and sharing guards.
+The legacy compile regression created and confirmed removal of its exact
+`.artifacts/wsb-cancel-compile-*` fixtures with suffixes
+`8d07c99a-ab8e-4e8d-873e-178a0f4fc453` and
+`bf28b757-c2b1-4b42-a86e-bbe77bc170a7`. The attempted negative name filter did not
+exclude that test, so the second run also compiled; no such fixture remains.
