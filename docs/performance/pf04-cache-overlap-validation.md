@@ -1,6 +1,6 @@
 # PF04-A 缓存统计口径验证
 
-日期：2026-11-05。基线 `f1b4963d42489c6e1a59a742425f13aa5aa7b56a`，分支 `codex/perf-pf04-cache-attribution`。状态：最终本地验收通过，准备独立 PR；当前 head reviewer 无未处理发现且六分片 CI 全通过后才允许合并。遵循[总方案](../super-pi-performance-followup-plan.md)、[PF00 门禁](pf00-baseline-validation.md)和 [Hot-path allocation contract](hot-path-allocation-contract.md)。PF04 拆为两个顺序 PR：A 修正统计/界面断言；B 核对有效派发与响应身份、retry/reconnect/账号和历史边界。B 结束后才进入 PF05 增量统计。复现代码、所有正式样本、失败和进程退出记录见 [PF04-A 证据](../evidence/performance-pf04-cache-overlap-2026-11-05.json)。
+日期：2026-11-05。基线 `f1b4963d42489c6e1a59a742425f13aa5aa7b56a`，分支 `codex/perf-pf04-cache-attribution`。状态：[PR #221](https://github.com/dragonbaba/super-pi/pull/221) 已交付。审查 head `e3edf77009a83ec8351c895c37c72396780b381e` 的 reviewer 状态 completed、无发现/未解决项，CI `41919935415` 六分片均首次通过；squash `8668da9def5a41fa701cce159b718462580ba9ec` 与审查树一致并进入 main。遵循[总方案](../super-pi-performance-followup-plan.md)、[PF00 门禁](pf00-baseline-validation.md)和 [Hot-path allocation contract](hot-path-allocation-contract.md)。PF04 拆为两个顺序 PR：A 修正统计/界面断言；B 核对有效派发与响应身份、retry/reconnect/账号和历史边界。B 结束后才进入 PF05 增量统计。复现代码、所有正式样本、失败和进程退出记录见 [PF04-A 证据](../evidence/performance-pf04-cache-overlap-2026-11-05.json)。
 
 ## 复现与语义
 
@@ -38,6 +38,6 @@
 
 保留三项失败：最初 UI 夹具误向 getter-only settingsManager 赋值；随后误预期 `90.0k` 而实际格式为 `90k`；首次完整运行 442/443 通过，旧 Map 位置断言失败。前两项只修夹具，第三项核对删除位置后更新精确计数，定向及完整套件重跑通过，未删断言或放宽超时。
 
-任务根为 `.task-tmp/pf04-cache-6d02767093`，归档前 48 个直接子进程全部 settled，随后归档进程也退出。子测试由现有 runner 在任务根下建立自己的临时目录、拥有子进程句柄并等待 close；证据记录直接 PID 和环境/退出回执，不声称每个后代 PID 均已单独插桩。合并后再按最新资源清单验证边界和身份清理，回执写入 PR，后续阶段更新此状态。
+任务根为 `.task-tmp/pf04-cache-6d02767093`，归档前 48 个直接子进程全部 settled，清理时 52 个直接子进程全部退出。子测试由现有 runner 在任务根下建立自己的临时目录、拥有子进程句柄并等待 close；证据记录直接 PID 和环境/退出回执，不声称每个后代 PID 均已单独插桩。合并后已回到 main，删除该精确远端/本地分支；校验边界、无链接与 dev/ino 身份后移除任务根的 302 项资源，保留共享 `.task-tmp`。见[清理回执](https://github.com/dragonbaba/super-pi/pull/221#issuecomment-6648749560)。首次 reviewer 配额失败保留；用户重置后重新触发并完成当前 head 审查，没有跳过门禁。
 
 未进行在线 provider 请求，真实命中率/费用改善保持外部待验证；有效派发与相应响应的关联继续 PF04-B，未将当前 latest manifest 错当作每条历史消息的因果证据。

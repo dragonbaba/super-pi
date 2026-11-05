@@ -11,6 +11,7 @@ import type { ModelRuntime } from "../packages/coding-agent/src/core/model-runti
 import type { BeforeAgentStartEvent } from "../packages/coding-agent/src/core/extensions/types.ts";
 import {
 	PrefixManifestRecorder,
+	comparePrefixManifests,
 	serializePrefixManifest,
 	sha256Canonical,
 } from "../packages/coding-agent/src/core/prefix-manifest.ts";
@@ -260,21 +261,28 @@ test("production assembly diagnoses context and tool causes behind aggregate pro
 			assert.ok(session.systemPrompt.includes("<available_skills>"));
 			if (basePrompt) assert.ok(session.systemPrompt.startsWith(basePrompt));
 			assert.equal(session.sessionManager.getBranch().some(entry => entry.type === "custom_message" && entry.customType === "dynamic-instructions-v1"), false);
-			return session.prefixDriftDiagnostic;
+			assert.equal(session.prefixDriftDiagnostic, undefined, "a new live owner cannot inherit another session's request");
+			const manifest = session.prefixManifest;
+			assert.ok(manifest);
+			return manifest;
 		} finally {
 			session.dispose();
+			assert.equal(recorder.current, undefined, "disposal releases the live owner's diagnostics");
 		}
 	};
 
 	try {
-		assert.equal(await capture("project policy one", ["read"]), undefined);
-		const contextDiagnostic = await capture("project policy two", ["read"]);
+		const first = await capture("project policy one", ["read"]);
+		const context = await capture("project policy two", ["read"]);
+		const contextDiagnostic = comparePrefixManifests(first, context);
 		assert.equal(contextDiagnostic?.firstDivergentSegment, "system-prompt");
 		assert.equal(contextDiagnostic?.reasonCode, "PROJECT_CONTEXT_CHANGED");
-		const toolDiagnostic = await capture("project policy two", ["read", "write"]);
+		const tools = await capture("project policy two", ["read", "write"]);
+		const toolDiagnostic = comparePrefixManifests(context, tools);
 		assert.equal(toolDiagnostic?.firstDivergentSegment, "system-prompt");
 		assert.equal(toolDiagnostic?.reasonCode, "TOOL_ACTIVATED");
-		const basePromptDiagnostic = await capture("project policy two", ["read", "write"], "different base prompt");
+		const changed = await capture("project policy two", ["read", "write"], "different base prompt");
+		const basePromptDiagnostic = comparePrefixManifests(tools, changed);
 		assert.equal(basePromptDiagnostic?.firstDivergentSegment, "system-prompt");
 		assert.equal(basePromptDiagnostic?.reasonCode, "UNKNOWN_PREFIX_DRIFT");
 	} finally {

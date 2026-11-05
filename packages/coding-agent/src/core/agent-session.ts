@@ -148,6 +148,7 @@ import type {
 	PrefixDriftDiagnostic,
 	PrefixManifestRecorder,
 	PrefixManifestV1,
+	PrefixResponseObservation,
 } from "./prefix-manifest.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
 import type { BranchSummaryEntry, CompactionEntry, SessionEntry, SessionManager } from "./session-manager.ts";
@@ -453,6 +454,7 @@ export interface AgentSessionConfig {
 	extensionRunnerOptions?: ExtensionRunnerOptions;
 	/** Session-local prefix manifest recorder populated immediately before provider requests. */
 	prefixManifestRecorder?: PrefixManifestRecorder;
+	prefixManifestOwner?: object;
 	/** Session start event metadata emitted when extensions bind to this runtime. */
 	sessionStartEvent?: SessionStartEvent;
 	/** Optional Phase 5A metadata-only observation. Disabled unless explicitly enabled. */
@@ -865,6 +867,7 @@ export class AgentSession {
 	private _getSupplementalSummaryCustomStream: AgentSessionConfig["getSupplementalSummaryCustomStream"];
 	private _getSummarizationCodexDispatch: AgentSessionConfig["getSummarizationCodexDispatch"];
 	private _prefixManifestRecorder?: PrefixManifestRecorder;
+	private _prefixManifestOwner?: object;
 	private _toolOutputShadow: ToolOutputShadowObserver | undefined;
 	private _toolResultPresentation: ToolResultPresentationOwner | undefined;
 	private _toolBudgetGeneration = 0;
@@ -1054,6 +1057,7 @@ export class AgentSession {
 		this._getSupplementalSummaryCustomStream = config.getSupplementalSummaryCustomStream;
 		this._getSummarizationCodexDispatch = config.getSummarizationCodexDispatch;
 		this._prefixManifestRecorder = config.prefixManifestRecorder;
+		this._prefixManifestOwner = config.prefixManifestOwner;
 		this._toolOutputShadow = createToolOutputShadowObserver(config.toolOutputShadow);
 		this._toolResultPresentation =
 			config.toolResultPresentationOwner ??
@@ -1942,6 +1946,8 @@ export class AgentSession {
 	dispose(): void {
 		if (this._operationDisposed) return;
 		this._operationDisposed = true;
+		if (this._prefixManifestOwner) this._prefixManifestRecorder?.releaseOwner(this._prefixManifestOwner);
+		this._prefixManifestOwner = undefined;
 		// Publish before callbacks can reenter. Disposal is a request; the lease
 		// survives until all native execution/provider owners confirm quiescence.
 		const leaseRunner = this._extensionRunner, leaseShutdown = this._sessionLeaseShutdown;
@@ -2090,6 +2096,13 @@ export class AgentSession {
 	/** First changed prefix segment relative to the preceding provider request. */
 	get prefixDriftDiagnostic(): PrefixDriftDiagnostic | undefined {
 		return this._prefixManifestRecorder?.diagnostic;
+	}
+
+	/** Exact latest live response only; copied/resumed messages and changed scopes are unobserved. */
+	getPrefixObservation(message: AssistantMessage): PrefixResponseObservation | undefined {
+		if (!this._prefixManifestOwner) return undefined;
+		return this._prefixManifestRecorder?.forResponse(this._prefixManifestOwner, message,
+			this.sessionManager.getContextGeneration(), this._modelRuntime.getCredentialGeneration(message.provider));
 	}
 
 	/** Current retry attempt (0 if not retrying) */
