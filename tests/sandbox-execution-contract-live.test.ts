@@ -44,6 +44,28 @@ test("live unified workspace: both shells, additional directory, byte artifacts,
     const ps = await invoke("powershell", { command: "[pscustomobject]@{cwd=$PWD.Path;ps=$PSVersionTable.PSVersion.Major;magick=[bool](Get-Command magick -ErrorAction SilentlyContinue)}|ConvertTo-Json -Compress" });
     const environment = JSON.parse(ps.content[0].text); assert.equal(environment.cwd, project); assert.equal(environment.ps, 7);
     if (process.env.SUPERPI_EXPECT_MAGICK === "1") assert.equal(environment.magick, true, "Persistent PATH installation must be discoverable after refresh");
+    // Exercise the actual supervisor with a C: cwd and a guest-only extra drive
+    // absent from toolchains. All fixture data lives inside the owned VM.
+    const driveProbe = String.raw`
+$drive = @('Z','Y','W','V' | Where-Object { -not (Test-Path ($_+':\')) })[0]
+if (!$drive) { throw 'No unused guest fixture drive' }
+$extra = 'C:\SuperPiToolchains\'+$drive+'\workspace'
+New-Item -ItemType Directory -Path 'C:\SuperPiDrivePrimary',$extra -Force | Out-Null
+[IO.File]::WriteAllText(($extra+'\input.txt'),'additional-drive')
+$commands = @{powershell="[IO.File]::ReadAllText('"+$drive+":\workspace\input.txt')";bash='cat /'+$drive.ToLower()+'/workspace/input.txt'}
+$observed = @{}
+foreach ($shell in @('powershell','bash')) {
+  [IO.File]::WriteAllText('C:\SuperPiExchange\command.txt',$commands[$shell],[Text.UTF8Encoding]::new($false))
+  & 'C:\SuperPiTools\command.exe' 'C:\SuperPiExchange' 'C:\SuperPiWorkspace' '30000' 'C:\SuperPiDrivePrimary' $shell $drive
+  if ($LASTEXITCODE -ne 0) { throw 'Nested drive supervisor failed' }
+  $result = Get-Content -LiteralPath 'C:\SuperPiExchange\command-result.json' -Raw | ConvertFrom-Json
+  if (!$result.closed -or $result.exitCode -ne 0) { throw 'Additional drive shell failed' }
+  $observed[$shell] = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($result.stdoutBase64)).Trim()
+}
+$observed | ConvertTo-Json -Compress
+`;
+    const driveResult = await invoke("powershell", { command: driveProbe, timeout: 120 });
+    assert.deepEqual(JSON.parse(driveResult.content[0].text), { powershell: "additional-drive", bash: "additional-drive" });
     const source = "const fs=require('node:fs');fs.mkdirSync('export');const png=Buffer.from('89504e470d0a1a0a00000000','hex');for(let i=0;i<48;i++)fs.writeFileSync('export/'+i+'.png',png);fs.writeFileSync('large.bin',Buffer.alloc(2*1024*1024,0x93));fs.writeFileSync(" + JSON.stringify(path.join(assets, "output.bin")) + ",png);console.log(JSON.stringify({cwd:process.cwd(),input:fs.readFileSync(" + JSON.stringify(path.join(assets, "input.txt")) + ",'utf8')}))";
     const result = await invoke("bash", { command: "node -e " + bashQuote(source), timeout: 120 });
     assert.equal(JSON.parse(result.content[0].text).cwd, project);
@@ -62,7 +84,7 @@ test("live unified workspace: both shells, additional directory, byte artifacts,
     await fs.writeFile(path.join(project, "baseline.txt"), "external editor");
     await assert.rejects(invoke("bash", { command: "printf changed > baseline.txt" }), /Original source identity changed/);
     assert.equal(await fs.readFile(path.join(project, "baseline.txt"), "utf8"), "external editor");
-    console.log("EXECUTION_CONTRACT_LIVE " + JSON.stringify({ filesPublished: 50, largeBytes: 2 * 1024 * 1024, secondaryWrite: true, conflictPreserved: true, environment, journals }));
+    console.log("EXECUTION_CONTRACT_LIVE " + JSON.stringify({ filesPublished: 50, largeBytes: 2 * 1024 * 1024, secondaryWrite: true, conflictPreserved: true, additionalDriveWithoutToolchain: true, environment, journals }));
   } finally {
     await owner.close(); policy.dispose(); await runtime.executionBoundary.dispose();
     assert.equal(owner.diagnostics.ownedArtifacts, 0); assert.equal(owner.diagnostics.sourceFiles, 0);

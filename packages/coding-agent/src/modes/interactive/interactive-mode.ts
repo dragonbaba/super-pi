@@ -8626,7 +8626,7 @@ export class InteractiveMode {
 				return;
 			}
 			if (this.bashComponent === bashComponent) {
-				bashComponent.setComplete(undefined, false);
+				bashComponent.setComplete(undefined, false, undefined, undefined, true);
 				this.chatContainer.invalidateViewportChild(bashComponent);
 			}
 			this.showError(`Bash command failed: ${error instanceof Error ? error.message : "Unknown error"}`);

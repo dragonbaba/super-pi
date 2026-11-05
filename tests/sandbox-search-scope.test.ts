@@ -15,6 +15,25 @@ const guest = source.statements.filter(node => !ts.isImportDeclaration(node)
     .map(node => node.getText(source)).join("\n");
 const execute = new Function("fs", "path", "createHash", "isUtf8", "spawnSync", "process", "SOURCE", "WORK", "EXCHANGE", "commandWorkspace", guest);
 
+test("both shell requests map every workspace drive independently of toolchain drives", () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "sp-workspace-drives-")));
+    const inputRoot = path.join(root, "input"), exchange = path.join(root, "exchange");
+    for (const directory of [inputRoot, inputRoot + "-1", inputRoot + "-2", inputRoot + "-3", exchange]) fs.mkdirSync(directory);
+    try {
+        for (const operation of ["powershell", "bash"]) {
+            fs.writeFileSync(path.join(exchange, "request.json"), JSON.stringify({ id: "e".repeat(32), mode: "read-only",
+                workspace: "C:\\primary", directories: ["Z:\\first", "Z:\\second", "D:\\third"], operation,
+                maxWriteBytes: 1024 * 1024, input: { command: "fixture" } }));
+            execute(fs, path, createHash, isUtf8, (_exe: string, args: string[]) => {
+                assert.equal(args[3], "C:\\primary"); assert.equal(args[4], operation); assert.equal(args[5], "Z;D");
+                fs.writeFileSync(path.join(exchange, "command-result.json"), JSON.stringify({ closed: true, timedOut: false, exitCode: 0, stdoutBase64: "", stderrBase64: "" }));
+                return { status: 0 };
+            }, { exitCode: 0 }, inputRoot, path.join(root, "work"), exchange, (_root: string, workspace: string) => workspace);
+            assert.equal(JSON.parse(fs.readFileSync(path.join(exchange, "response.json"), "utf8")).ok, true);
+        }
+    } finally { fs.rmSync(root, { recursive: true }); }
+});
+
 test("command artifacts use metadata comparison and preserve exact collection failures", () => {
     for (const count of [48, 1025]) {
         const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "sp-artifact-contract-")));

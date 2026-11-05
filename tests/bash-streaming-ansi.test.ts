@@ -12,6 +12,19 @@ import { BashExecutionComponent } from "../packages/coding-agent/src/modes/inter
 import { initTheme } from "../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { RELEASE_COMPONENT_RENDER_CACHE, type TUI } from "@super-pi/tui";
 import { sanitizeBinaryOutput } from "../packages/coding-agent/src/utils/shell.ts";
+import { alphaSession } from "./helpers/alpha-session.ts";
+
+test("interactive direct Bash renders adapter rejection as failed without inventing an exit code", async t => {
+  const fixture = await alphaSession();
+  t.mock.method(fixture.session, "executeBash", async () => { throw new Error("[SANDBOX_COLLECTION] limit exceeded; command exit=0"); });
+  try {
+    await fixture.internal.handleBashCommand("fixture");
+    const rendered = fixture.internal.chatContainer.render(80).join("\n");
+    assert.match(rendered, /\(failed\)/); assert.doesNotMatch(rendered, /\(exit 1\)/);
+    assert.match(rendered, /SANDBOX_COLLECTION/);
+    assert.equal(fixture.session.messages.some((message: any) => message.role === "bashExecution"), false);
+  } finally { await fixture.release(); }
+});
 
 test("direct sandbox Bash uses the workspace adapter and releases authorization on success and failure", async () => {
   const boundary = new SessionExecutionBoundary(), controllers = new Set<AbortController>();
@@ -19,7 +32,7 @@ test("direct sandbox Bash uses the workspace adapter and releases authorization 
   let publicationFailure = false;
   const definition = { async execute() {
     executed++;
-    return { content: [{ type: "text", text: "\x1b]0;hidden\x07\x1b[31m中文😀\x1b[0m\x00" }], details: { shellExecution: {
+    return { isError: publicationFailure, content: [{ type: "text", text: "\x1b]0;hidden\x07\x1b[31m中文😀\x1b[0m\x00" }], details: { shellExecution: {
       version: 1, producer: "agent", started: true, executionStatus: "exited", sideEffects: "unknown", retryGuidance: "inspect_before_retry",
       cwd: process.cwd(), exitCode: 0, signal: null, termination: "exit", observationError: publicationFailure ? "publication failed" : undefined,
       output: { complete: true, tailTruncated: false, log: "not_needed", cleanup: "not_needed" },
@@ -44,11 +57,17 @@ test("direct sandbox Bash uses the workspace adapter and releases authorization 
     const result = await owner.executeBash("fixture", undefined, { id: "sandbox-direct" });
     assert.equal(result.output, "中文😀"); assert.equal(result.exitCode, 0); assert.equal(result.processCleanup, "complete");
     publicationFailure = true;
-    assert.equal((await owner.executeBash("fixture")).exitCode, undefined, "publication failure cannot look like command success");
+    await assert.rejects(owner.executeBash("fixture"), /中文😀/, "publication failure must use the direct command error path");
     await assert.rejects(owner.executeBash("fixture", undefined, { operations: {} }), /Custom host command operations/);
+    publicationFailure = false;
     await assert.rejects(owner.executeBash("fixture", () => { throw new Error("observer failed"); }), /observer failed/);
     assert.equal(authorized, 3); assert.equal(released, 3); assert.equal(executed, 3); assert.equal(controllers.size, 0);
-    assert.equal(history.length, 2); assert.equal(events[0].id, "sandbox-direct"); assert.equal(events[0].delta, "中文😀");
+    assert.equal(history.length, 1); assert.equal(events[0].id, "sandbox-direct"); assert.equal(events[0].delta, "中文😀");
+    initTheme("dark");
+    const component = new BashExecutionComponent("fixture", { requestRender() {} } as TUI);
+    component.setComplete(undefined, false, undefined, undefined, true);
+    assert.match(component.render(80).join("\n"), /\(failed\)/);
+    component[RELEASE_COMPONENT_RENDER_CACHE]();
   } finally { await boundary.dispose(); }
 });
 

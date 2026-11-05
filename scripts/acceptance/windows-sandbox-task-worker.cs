@@ -400,7 +400,7 @@ internal static class TaskWorker {
     // The persistent workspace backend shares the exact gated Job/Pump owners.
     // This entry is guest-only and never accepts a host executable or shell.
     static int WorkspaceCommand(string[] args) {
-        Need(args.Length == 5 && args[0] == @"C:\SuperPiExchange"
+        Need(args.Length == 6 && args[0] == @"C:\SuperPiExchange"
             && (args[1] == @"C:\SuperPiInput" || args[1] == @"C:\SuperPiWorkspace")
             && String.Equals(Path.GetFullPath(typeof(TaskWorker).Assembly.Location), @"C:\SuperPiTools\command.exe", StringComparison.OrdinalIgnoreCase), "Guest workspace runner location");
         int timeout; Need(Int32.TryParse(args[2], out timeout) && timeout > 0 && timeout <= 120000, "Command deadline");
@@ -408,6 +408,8 @@ internal static class TaskWorker {
         Need(cwd.Length > 3 && cwd.Length < 4096 && Char.ToUpperInvariant(cwd[0]) >= 'A' && Char.ToUpperInvariant(cwd[0]) <= 'Z'
             && cwd[1] == ':' && cwd[2] == '\\' && Path.GetFullPath(cwd) == cwd, "Command workspace path");
         if (Char.ToUpperInvariant(cwd[0]) != 'C') ToolchainDrives(Char.ToUpperInvariant(cwd[0]).ToString());
+        Need(args[5].Length <= 49, "Workspace drive capacity");
+        ToolchainDrives(args[5]);
         Need(Directory.Exists(cwd), "Command workspace unavailable");
         string commandFile = args[0] + @"\command.txt";
         Need(new FileInfo(commandFile).Length <= 131072, "Command capacity");
@@ -450,7 +452,7 @@ internal static class TaskWorker {
         byte[] bytes = null; Package package = null;
         try {
             if (args.Length == 1 && args[0] == "--contract-check") return ContractCheck();
-            if (args.Length == 5 && args[0] == @"C:\SuperPiExchange") return WorkspaceCommand(args);
+            if (args.Length == 6 && args[0] == @"C:\SuperPiExchange") return WorkspaceCommand(args);
             Need(args.Length == 4 && Uuid.IsMatch(args[0]) && Uuid.IsMatch(args[1]) && args[2] == "--toolchain", "Task arguments");
             Need(String.Equals(Environment.CurrentDirectory, Workspace, StringComparison.OrdinalIgnoreCase)
                 && String.Equals(Path.GetFullPath(typeof(TaskWorker).Assembly.Location), Tools + @"\task-runner.exe", StringComparison.OrdinalIgnoreCase), "Isolated runner location");

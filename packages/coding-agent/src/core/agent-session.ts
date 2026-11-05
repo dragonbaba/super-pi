@@ -5473,6 +5473,7 @@ export class AgentSession {
 				const facts = readShellExecution(toolResult.details); let output = "";
 				for (const block of toolResult.content) if (block.type === "text") output += block.text;
 				output = sanitizeBinaryOutput(stripAnsi(output));
+				if (toolResult.isError && (!facts || facts.observationError || facts.exitCode === 0)) throw new Error(output);
 				const result: BashResult = { output, exitCode: facts?.observationError ? undefined : facts?.exitCode ?? undefined, cancelled: controller.signal.aborted || facts?.termination === "timeout",
 					truncated: facts?.output.tailTruncated ?? false, processCleanup: "complete" };
 				onChunk?.(output); this._emit({ type: "bash_execution_update", id: options?.id, delta: output });

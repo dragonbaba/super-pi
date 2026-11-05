@@ -16,6 +16,12 @@
       "failed": 0,
       "skipped": 0
     },
+    "reviewRegressions": {
+      "tests": 51,
+      "passed": 51,
+      "failed": 0,
+      "skipped": 0
+    },
     "targetedBeforeFinalReceipts": {
       "tests": 68,
       "passed": 68,
@@ -60,7 +66,7 @@
     "offlineBuild": {
       "command": "npm run build:offline",
       "packages": 12,
-      "durationMs": 7312,
+      "durationMs": 6991,
       "peak": 2
     },
     "liveSource": {
@@ -88,6 +94,7 @@
     "unicodeSpaceQuoteCwd": true,
     "bothReadonlyRootsProtected": true,
     "failedExit": 23,
+    "additionalGuestDriveWithoutToolchain": true,
     "stdoutRetained": true,
     "nonzeroExitNotObservationFailure": true,
     "timeoutAfterBashEntry": true,
@@ -329,19 +336,91 @@
         "controllers": 0
       },
       "note": "Closure/array/wrapper counts also require source invariants; profiler samples include cold startup and completion."
+    },
+    "directCompletion": {
+      "contract": "direct-bash-failure-completion-v1",
+      "counts": {
+        "completions": 100,
+        "renderedFailures": 100,
+        "released": 100
+      },
+      "allocations": [
+        {
+          "function": "BashExecutionComponent",
+          "bytes": 70320
+        },
+        {
+          "function": "BashExecutionComponent",
+          "bytes": 6280
+        },
+        {
+          "function": "render",
+          "bytes": 1032
+        },
+        {
+          "function": "render",
+          "bytes": 2360
+        },
+        {
+          "function": "borderColor",
+          "bytes": 1040
+        },
+        {
+          "function": "",
+          "bytes": 1040
+        },
+        {
+          "function": "appendOutput",
+          "bytes": 15880
+        },
+        {
+          "function": "updateDisplay",
+          "bytes": 35440
+        },
+        {
+          "function": "BashPreviewComponent",
+          "bytes": 1120
+        },
+        {
+          "function": "BashPreviewComponent",
+          "bytes": 1040
+        },
+        {
+          "function": "setComplete",
+          "bytes": 1152
+        },
+        {
+          "function": "updateDisplay",
+          "bytes": 44280
+        }
+      ],
+      "gcRounds": 4,
+      "live": 0,
+      "scope": "Actual direct Bash component completion/render/release; cold completion allocations, not a steady-state speedup claim."
     }
+  },
+  "review": {
+    "pr": "https://github.com/dragonbaba/super-pi/pull/228",
+    "firstHead": "7754e64d0a4fca42ae43c33d7f65b5ca75ada989",
+    "firstHeadCiPassed": 6,
+    "findings": [
+      "Map all additional workspace drives, independently of toolchain drives.",
+      "Propagate direct Bash adapter failure to an explicit failed UI state."
+    ],
+    "fixesValidated": true,
+    "finalReviewAndCi": "Required on the revised commit; see the PR for current status."
   },
   "packagedSources": [
     {
       "source": "packages/coding-agent/src/core/sandbox/workspace-worker.mjs",
       "built": "packages/coding-agent/dist/core/sandbox/workspace-worker.mjs",
-      "sha256": "d81ae961c32e53f46b39855708f429cac96af3bca3502390b1ba114f75e4d85e",
+      "sha256": "40922924e69873434085c9f87ebd7d63c7a417917f3e57b9839f4c2e1f60f439",
       "equal": true
     },
     {
       "source": "scripts/acceptance/windows-sandbox-task-worker.cs",
       "built": "packages/coding-agent/dist/core/sandbox/windows-runtime/windows-sandbox-task-worker.cs",
-      "sha256": "da2b5e84983a22fad7960359be2222a467a430cfe81ed5e212d56f4f90b887c0",
+      "sha256": "7304a83a2b240745fd1df1cee219888a80644fe5d9e29b1fd51157bc11c1fb36",
       "equal": true
     },
     {
@@ -358,6 +437,7 @@
     "npm test -- --keep-going",
     "node --expose-gc --experimental-strip-types scripts/bench/sandbox-artifacts.mjs",
     "node --expose-gc --experimental-strip-types scripts/bench/sandbox-session-allocations.mjs",
+    "node --expose-gc --experimental-strip-types scripts/bench/direct-bash-completion.mjs",
     "SUPERPI_SANDBOX_WORKSPACE_ACCEPTANCE=1 SUPERPI_EXPECT_MAGICK=1 SUPERPI_SANDBOX_USE_DIST=1 node --experimental-strip-types --test --test-concurrency=1 tests/sandbox-execution-contract-live.test.ts"
   ],
   "constraints": {
