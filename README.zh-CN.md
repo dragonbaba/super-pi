@@ -43,34 +43,36 @@ Windows Sandbox 命令严格使用 **PowerShell 7**，不回退 Windows PowerShe
 
 在 PowerShell 7 中：
 
+示例使用 `npm`。如果 PowerShell 执行策略拦截已安装的 `npm.ps1`，可用 npm 自带的 `npm.cmd` 执行相同命令。这个 Windows 后缀与是否在线发布 npm 包无关，也不需要额外的仓库构建包装脚本。
+
 ```powershell
 git clone https://github.com/dragonbaba/super-pi.git
 Set-Location .\super-pi
-npm.cmd ci
-npm.cmd run build:offline
-npm.cmd run superpi -- --help
+npm ci
+npm run build:offline
+npm run superpi -- --help
 ```
 
-`npm.cmd ci` 按锁文件安装依赖，可能需要联网及原生构建环境；请保留仓库的 `.npmrc`，不要用 `npm.cmd update` 替代。依赖安装完成后，`npm.cmd run build:offline` 使用仓库内已有的模型数据，将本地各包运行时和资源构建到 `packages/*/dist/`，自动为构建子进程启用 npm 离线模式，不会在线刷新模型目录或配置 provider。CLI 的独立 `--offline` 参数禁用启动阶段的网络操作。两者都不会把远程模型推理变成本地推理。
+`npm ci` 按锁文件安装依赖，可能需要联网及原生构建环境；请保留仓库的 `.npmrc`，不要用 `npm update` 替代。依赖安装完成后，`npm run build:offline` 使用仓库内已有的模型数据，将本地各包运行时和资源构建到 `packages/*/dist/`，自动为构建子进程启用 npm 离线模式，不会在线刷新模型目录或配置 provider。CLI 的独立 `--offline` 参数禁用启动阶段的网络操作。两者都不会把远程模型推理变成本地推理。
 
-构建按工作区依赖顺序执行，默认最多同时构建两个包。需要串行执行时用 `npm.cmd run build:offline -- --jobs 1`，查看构建计划时用 `--list`。原来带 npm 外层 `--offline` 的命令仍可使用。失败处理和实测结果见[构建说明](docs/building.md)。
+构建按工作区依赖顺序执行，默认最多同时构建两个包。需要串行执行时用 `npm run build:offline -- --jobs 1`，查看构建计划时用 `--list`。原来带 npm 外层 `--offline` 的命令仍可使用。失败处理和实测结果见[构建说明](docs/building.md)。
 
 启动交互界面：
 
 ```powershell
-npm.cmd run superpi
+npm run superpi
 ```
 
 支持的源码入口是 `scripts/superpi.mjs`。它会检查构建的 CLI，并把仓库中的 `.sp` 扩展、Skills 和 prompt resources 传给 coding-agent。直接启动 `packages/coding-agent/dist/cli.js` 会跳过资源装配，不是默认路径。
 
 ### 更新已有源码后重新构建
 
-更新源码后，在仓库根目录重新构建。如果 `package-lock.json` 发生变化，先运行 `npm.cmd ci` 安装匹配的依赖。依赖已经安装时：
+更新源码后，在仓库根目录重新构建。如果 `package-lock.json` 发生变化，先运行 `npm ci` 安装匹配的依赖。依赖已经安装时：
 
 ```powershell
-npm.cmd run build:offline
-npm.cmd run superpi -- --offline --version
-npm.cmd run superpi -- --offline --help
+npm run build:offline
+npm run superpi -- --offline --version
+npm run superpi -- --offline --help
 ```
 
 launcher 只检查构建的 CLI 是否存在，不会自动重新构建，也不会判断它是否匹配更新后的源码。版本命令显示包版本，单看版本号不能确认某个提交已经构建。构建成功后运行这两个 CLI 检查可以验证本地启动入口；provider 访问需按下文另行配置。
@@ -84,15 +86,15 @@ launcher 只检查构建的 CLI 是否存在，不会自动重新构建，也不
 3. 若要列出模型并在不打印凭据的情况下检查是否就绪，可退出交互界面后运行（以下以 OpenAI 为例）：
 
 ```powershell
-npm.cmd run superpi -- --list-models
-npm.cmd run superpi -- auth check --provider openai --no-refresh
+npm run superpi -- --list-models
+npm run superpi -- auth check --provider openai --no-refresh
 ```
 
 也可以在启动时指定模型。执行下面的示例前，将 `REPLACE_WITH_MODEL_ID_FROM_THE_LIST` 替换为列表中的实际 OpenAI 模型 ID；出现在列表中不等于当前账户具有访问权限：
 
 ```powershell
 $model = "openai/REPLACE_WITH_MODEL_ID_FROM_THE_LIST"
-npm.cmd run superpi -- --model "$model"
+npm run superpi -- --model "$model"
 ```
 
 建议通过 `/login` 交互输入凭据。也支持 `OPENAI_API_KEY` 等环境变量，但不要把真实 key 放进分享的命令、截图或公开日志。
@@ -117,7 +119,7 @@ node "C:\src\super-pi\scripts\superpi.mjs"
 如需命令名，可在仓库根目录执行：
 
 ```powershell
-npm.cmd link
+npm link
 ```
 
 然后：
@@ -127,7 +129,7 @@ Set-Location "C:\work\my-project"
 superpi
 ```
 
-`npm.cmd link` 创建 `superpi`，不创建 `pi`，也不会替换 PowerShell 的 `sp` alias。链接依赖源码目录，移动或删除 checkout 会使命令失效。
+`npm link` 创建 `superpi`，不创建 `pi`，也不会替换 PowerShell 的 `sp` alias。链接依赖源码目录，移动或删除 checkout 会使命令失效。
 
 ## 核心能力
 
@@ -203,9 +205,9 @@ MCP 是显式配置的集成。需要在 `~/.sp/agent/config/mcp.json` 中配置
 资源管理命令：
 
 ```powershell
-npm.cmd run superpi -- list
-npm.cmd run superpi -- config
-npm.cmd run superpi -- config --local
+npm run superpi -- list
+npm run superpi -- config
+npm run superpi -- config --local
 ```
 
 `config --local` 编辑当前项目的资源设置；项目资源仍需要明确的信任决定。`--no-extensions`、`--no-skills`、`--no-context-files`、`--no-tools`、`--tools` 和 `--exclude-tools` 可以收紧单次运行，不会修改全局授权。
@@ -228,6 +230,8 @@ Super Pi 的性能工作围绕明确边界：
 
 页脚累计用量涵盖全部会话，普通追加只处理新增记录。可选的长度重叠估计跟随活动分支，在显式上下文变更后重建。完整汇总和 transcript 重建仍扫描所需历史；范围与测量见[增量统计验证](docs/performance/pf05-incremental-stats-validation.md)。
 
+前缀诊断会复用同次 manifest 构建中的相同计算，并继续观察每次实际 provider 派发。可变 schema 和上下文缺少可靠版本时仍重新计算，不跨请求猜测复用。终端关闭保留输入 drain、最终输出和资源清理，重复 Sandbox close 共享完成点。[性能验证方案](docs/super-pi-performance-followup-plan.md)汇总了测量和剩余限制，包括 regular 模式缩放时的历史重放，以及不能从本地微基准推断的原生终端/provider 验收。
+
 ## 安全、隐私和已知边界
 
 配置、会话和部分记忆保存在本地，但这不表示输入永远不离开本机。提示、工具 schema、文件片段、工具结果和图片可能发送给选定 provider；配置的 MCP server 会收到发给它的调用和数据。使用前请检查 provider、MCP、扩展和环境变量的信任关系。
@@ -247,10 +251,10 @@ Compaction 会减少部分旧历史的直接可见性。Memory、Project Context
 常用源码检查：
 
 ```powershell
-npm.cmd ci
-npm.cmd run check
-npm.cmd run build:offline
-npm.cmd test
+npm ci
+npm run check
+npm run build:offline
+npm test
 ```
 
 `npm test` 包含 unit、热路径不变量、provider-contract 三类测试，并运行一次 memory workspace。`test:unit`、`test:hot` 和 `test:contract` 用于定向选择子集，不需要在完整测试前额外重复运行。runner 记录各文件的启动、退出和耗时，为子进程提供隔离的离线 HOME/agent/session 环境，并为需要 GC 的所有权回归启用 GC。回归覆盖与基准测量的边界见[测试执行说明](docs/testing.md)。

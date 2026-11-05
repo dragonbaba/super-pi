@@ -43,34 +43,36 @@ Windows Sandbox commands require **PowerShell 7**, with no Windows PowerShell 5.
 
 In PowerShell 7:
 
+Examples use `npm`. If PowerShell blocks the installed `npm.ps1` under its execution policy, use npm's bundled `npm.cmd` launcher for the same command. This Windows suffix is unrelated to publishing a package online; no separate repository build wrapper is needed.
+
 ```powershell
 git clone https://github.com/dragonbaba/super-pi.git
 Set-Location .\super-pi
-npm.cmd ci
-npm.cmd run build:offline
-npm.cmd run superpi -- --help
+npm ci
+npm run build:offline
+npm run superpi -- --help
 ```
 
-`npm.cmd ci` installs from the lockfile and may require network access and native build prerequisites. Keep the repository `.npmrc`; do not substitute `npm.cmd update`. Once dependencies are installed, `npm.cmd run build:offline` uses the checked-in model data and builds the local package runtimes and resources into `packages/*/dist/`. It enables npm's offline mode for child builds and does not refresh the online model catalog or configure a provider. The CLI's separate `--offline` option disables startup network operations. Neither makes remote model inference local.
+`npm ci` installs from the lockfile and may require network access and native build prerequisites. Keep the repository `.npmrc`; do not substitute `npm update`. Once dependencies are installed, `npm run build:offline` uses the checked-in model data and builds the local package runtimes and resources into `packages/*/dist/`. It enables npm's offline mode for child builds and does not refresh the online model catalog or configure a provider. The CLI's separate `--offline` option disables startup network operations. Neither makes remote model inference local.
 
-The build respects workspace dependencies and runs at most two packages concurrently by default. Use `npm.cmd run build:offline -- --jobs 1` for serial execution or `--list` to inspect the build plan. Existing commands with npm's outer `--offline` flag still work. See the [build guide](docs/building.md) for failure handling and measured results.
+The build respects workspace dependencies and runs at most two packages concurrently by default. Use `npm run build:offline -- --jobs 1` for serial execution or `--list` to inspect the build plan. Existing commands with npm's outer `--offline` flag still work. See the [build guide](docs/building.md) for failure handling and measured results.
 
 Start the interactive application:
 
 ```powershell
-npm.cmd run superpi
+npm run superpi
 ```
 
 The supported source entry is `scripts/superpi.mjs`. It checks the built CLI and passes the repository `.sp` extensions, Skills, and prompt resources to coding-agent. Starting `packages/coding-agent/dist/cli.js` directly skips that resource assembly and is not the default path.
 
 ### Rebuild an existing checkout
 
-After updating the source, rebuild from the repository root. If `package-lock.json` changed, run `npm.cmd ci` first to install the matching dependencies. With dependencies already installed:
+After updating the source, rebuild from the repository root. If `package-lock.json` changed, run `npm ci` first to install the matching dependencies. With dependencies already installed:
 
 ```powershell
-npm.cmd run build:offline
-npm.cmd run superpi -- --offline --version
-npm.cmd run superpi -- --offline --help
+npm run build:offline
+npm run superpi -- --offline --version
+npm run superpi -- --offline --help
 ```
 
 The launcher checks that the built CLI exists; it does not rebuild it or check whether it matches newer source. The version command reports the package version, so it alone cannot establish that a particular commit was built. A successful build followed by these CLI checks verifies the local launch path; provider access is configured separately below.
@@ -84,15 +86,15 @@ After the application starts:
 3. To list models and check readiness without printing a credential, exit and run (OpenAI is the example provider):
 
 ```powershell
-npm.cmd run superpi -- --list-models
-npm.cmd run superpi -- auth check --provider openai --no-refresh
+npm run superpi -- --list-models
+npm run superpi -- auth check --provider openai --no-refresh
 ```
 
 A model can also be selected at startup. Replace `REPLACE_WITH_MODEL_ID_FROM_THE_LIST` with an actual OpenAI model ID from the list before running this example; listing a model does not establish account access to it:
 
 ```powershell
 $model = "openai/REPLACE_WITH_MODEL_ID_FROM_THE_LIST"
-npm.cmd run superpi -- --model "$model"
+npm run superpi -- --model "$model"
 ```
 
 Prefer `/login` for interactive credential entry. An environment variable such as `OPENAI_API_KEY` is also supported, but keep real keys out of shared commands, screenshots, and public logs.
@@ -117,7 +119,7 @@ Replace `C:\src\super-pi` with your checkout path. The source launcher remains t
 To expose the checkout as a command, optionally run this from the repository root:
 
 ```powershell
-npm.cmd link
+npm link
 ```
 
 Then:
@@ -127,7 +129,7 @@ Set-Location "C:\work\my-project"
 superpi
 ```
 
-`npm.cmd link` creates `superpi`. It does not create `pi` or replace PowerShell's `sp` alias. The link depends on the source directory, so moving or deleting the checkout breaks the linked command.
+`npm link` creates `superpi`. It does not create `pi` or replace PowerShell's `sp` alias. The link depends on the source directory, so moving or deleting the checkout breaks the linked command.
 
 ## Core capabilities
 
@@ -203,9 +205,9 @@ Scrolling up in fullscreen mode shows `↓ Back to bottom · Esc`. Click it or p
 Resource management commands:
 
 ```powershell
-npm.cmd run superpi -- list
-npm.cmd run superpi -- config
-npm.cmd run superpi -- config --local
+npm run superpi -- list
+npm run superpi -- config
+npm run superpi -- config --local
 ```
 
 `config --local` edits the current project's resource settings. Project-local resources still need a clear trust decision. `--no-extensions`, `--no-skills`, `--no-context-files`, `--no-tools`, `--tools`, and `--exclude-tools` can narrow one run without changing global authorization.
@@ -228,6 +230,8 @@ The footer's `CH%` uses the latest assistant response's reported cache reads div
 
 Footer usage totals cover the whole session and update from newly appended entries. Optional overlap estimates follow the active branch and rebuild after explicit context changes. Full summaries and transcript rebuilds still scan their required history; see the [incremental statistics validation](docs/performance/pf05-incremental-stats-validation.md) for scope and measurements.
 
+Prefix diagnostics reuse identical work within one manifest build while observing every actual provider dispatch. Mutable schemas and context are rebuilt rather than cached across requests without a reliable version. Terminal shutdown preserves input drain, final output and resource cleanup; repeated Sandbox close calls share their completion. The [performance validation plan](docs/super-pi-performance-followup-plan.md) links the measurements and remaining limits, including regular-mode history replay on resize and native-terminal/provider checks that cannot be inferred from local microbenchmarks.
+
 ## Security, privacy, and known boundaries
 
 Configuration, sessions, and some memory are stored locally, but that does not mean input always stays on the machine. Prompts, tool schemas, file excerpts, tool results, and images may be sent to the selected provider; configured MCP servers receive the calls and data sent to them. Review provider, MCP, extension, and environment trust before use.
@@ -247,10 +251,10 @@ Compaction reduces direct visibility of some older history. Memory, Project Cont
 Common source checks:
 
 ```powershell
-npm.cmd ci
-npm.cmd run check
-npm.cmd run build:offline
-npm.cmd test
+npm ci
+npm run check
+npm run build:offline
+npm test
 ```
 
 `npm test` includes the unit, hot-path invariant and provider-contract suites plus the memory workspace once. `test:unit`, `test:hot` and `test:contract` select subsets for focused work; they are not extra gates before the full suite. The runner logs each file's start, exit and wall time, gives each child an isolated offline HOME/agent/session environment, and enables GC for the ownership regressions that require it. See [test execution and optional measurements](docs/testing.md) for the boundary between regression coverage and benchmarks.

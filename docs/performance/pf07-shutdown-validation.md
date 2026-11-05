@@ -1,6 +1,6 @@
 # PF07 关闭阶段与活动资源验证
 
-日期：2026-11-05。基线 `a2263ca9af652234bcc89b6eb9748581d1308403`；分支 `codex/perf-pf07-shutdown`。本地验收完成，进入独立 PR 的审查/六 CI 门禁，尚未合并。遵循[总方案](../super-pi-performance-followup-plan.md)、[PF00 协议](pf00-baseline-validation.md)与[分配契约](hot-path-allocation-contract.md)。原始失败、计数、采样、进程与构建摘要、复现驱动见 [PF07 证据](../evidence/performance-pf07-shutdown-2026-11-05.json)。
+日期：2026-11-05。基线 `a2263ca9af652234bcc89b6eb9748581d1308403`。[PR #225](https://github.com/dragonbaba/super-pi/pull/225) 已合并为 `a8fc80aa5bd03ce5e33a7ac5def010b9c30f521d`；审查 head `f9c8307b07f18c6991ae0467e51e2c9d418b1744` 为 completed、无发现/无未处理项，CI run `41976974314` 的 Linux 2 + Windows 4 六项全部成功。审查/合并树均为 `293ad784c39d19d315193350c9ee7f73ab6dddd4`。遵循[总方案](../super-pi-performance-followup-plan.md)、[PF00 协议](pf00-baseline-validation.md)与[分配契约](hot-path-allocation-contract.md)。原始失败、计数、采样、进程与构建摘要、复现驱动见 [PF07 证据](../evidence/performance-pf07-shutdown-2026-11-05.json)。
 
 ## 已复现的关闭竞态
 
@@ -51,4 +51,4 @@ WorkspaceSandboxTools.execute → executionBoundary/AbortSignal 校验 → backe
 | 背压、异步物理写入、恢复与引用释放 | tui-frame-queue、tui-terminal-state 及上述 allocation/lifecycle 门禁 |
 | 实际活动 VM | opt-in workspace live 的离线取消、共享关闭、物理进程结束与资源归零 |
 
-真实 provider、原生终端延迟不由模拟 provider 或管道终端推断；PF05 纳秒计时限制仍传递 PF08。本阶段没有证据支持提前取消/调整 UI 与 runtime 次序，因此保留既有语义。任务根 `.task-tmp/pf07-shutdown-b5fc8ce401`，仅 PowerShell 7，所有测试子进程隔离 TMP/TEMP/TMPDIR 与 HOME/config；审查/CI/合并和精确分支、资源清理回执待 PR 验收。
+真实 provider、原生终端延迟不由模拟 provider 或管道终端推断；PF05 纳秒计时限制仍传递 PF08。本阶段没有证据支持提前取消/调整 UI 与 runtime 次序，因此保留既有语义。已同步 main，精确删除远端/本地 `codex/perf-pf07-shutdown`。任务根 `.task-tmp/pf07-shutdown-b5fc8ce401` 在核验 45 个直接子进程 settled、4017 个资源身份及链接边界后清理（126 个直接子项，cleanup PID 39772）；共享父目录和 dist 保留，见[收尾回执](https://github.com/dragonbaba/super-pi/pull/225#issuecomment-6651049881)。
