@@ -899,6 +899,7 @@ export class SessionManager {
 	private byId: Map<string, SessionEntry> = new Map();
 	private entryCount = 0;
 	private historyGeneration = 0;
+	private contextGeneration = 0;
 	private labelsById: Map<string, string> = new Map();
 	private labelTimestampsById: Map<string, string> = new Map();
 	private leafId: string | null = null;
@@ -932,6 +933,7 @@ export class SessionManager {
 		} catch (error) {
 			// A failed load may have replaced only part of the in-memory state.
 			this._appendOutcomeUncertain = true;
+			this.contextGeneration++;
 			throw error;
 		}
 	}
@@ -1004,6 +1006,7 @@ export class SessionManager {
 		this.flushed = false;
 		this.entryCount = 0;
 		this.historyGeneration++;
+		this.contextGeneration++;
 
 		if (this.persist) {
 			const fileTimestamp = timestamp.replace(/[:.]/g, "-");
@@ -1015,6 +1018,7 @@ export class SessionManager {
 	private _buildIndex(): void {
 		this.entryCount = 0;
 		this.historyGeneration++;
+		this.contextGeneration++;
 		this.byId.clear();
 		this.labelsById.clear();
 		this.labelTimestampsById.clear();
@@ -1148,6 +1152,7 @@ export class SessionManager {
 			this.leafId = previousLeaf;
 			throw error;
 		}
+		if (entry.type === "compaction" || entry.type === "branch_summary") this.contextGeneration++;
 	}
 
 	/** Append a message as child of current leaf, then advance leaf. Returns entry id.
@@ -1416,6 +1421,11 @@ export class SessionManager {
 		return this.historyGeneration;
 	}
 
+	/** Replaced/reloaded history, explicit branch navigation or compaction; ordinary append is stable. */
+	getContextGeneration(): number {
+		return this.contextGeneration;
+	}
+
 	/**
 	 * Get the session as a tree structure. Returns a shallow defensive copy of all entries.
 	 * A well-formed session has exactly one root (first entry with parentId === null).
@@ -1483,6 +1493,7 @@ export class SessionManager {
 		if (!this.byId.has(branchFromId)) {
 			throw new Error(`Entry ${branchFromId} not found`);
 		}
+		if (this.leafId !== branchFromId) this.contextGeneration++;
 		this.leafId = branchFromId;
 	}
 
@@ -1492,6 +1503,7 @@ export class SessionManager {
 	 * Use this when navigating to re-edit the first user message.
 	 */
 	resetLeaf(): void {
+		if (this.leafId !== null) this.contextGeneration++;
 		this.leafId = null;
 	}
 

@@ -30,10 +30,10 @@ import { findInitialModel } from "./model-resolver.ts";
 import { ModelRuntime, type ProviderRequestContext } from "./model-runtime.ts";
 import { initializePowerShellPersistence } from "./powershell-persistence.ts";
 import {
-	buildPrefixManifest,
 	createScopedContextIdentifier,
 	PrefixManifestRecorder,
 } from "./prefix-manifest.ts";
+import { PrefixRequestObservation } from "./prefix-request.ts";
 import { mergeProviderAttributionHeaders } from "./provider-attribution.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
 import { DefaultResourceLoader } from "./resource-loader.ts";
@@ -176,6 +176,8 @@ export {
 };
 
 // Helper Functions
+
+function ignoreDispatchObserverRejection(): void {}
 
 function getDefaultAgentDir(): string {
 	return getAgentDir();
@@ -418,6 +420,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 
 	const extensionRunnerRef: { current?: ExtensionRunner } = {};
 	const prefixManifestRecorder = options.prefixManifestRecorder ?? new PrefixManifestRecorder();
+	const prefixManifestOwner = {};
 
 	const streamRequest = async (model: Model<any>, context: Context, options?: SimpleStreamOptions, request?: ProviderRequestContext) => {
 		options?.signal?.throwIfAborted();
@@ -460,57 +463,61 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			cacheKey: options?.sessionId,
 			previousResponseMode: configuredTransport.startsWith("websocket") ? "websocket" as const : "none" as const,
 		};
-		try {
-			prefixManifestRecorder.recordIntent(buildPrefixManifest(manifestInput));
-		} catch {
-			// Prefix intent diagnostics are observational and must never block a provider request.
+		let prefixRequest: PrefixRequestObservation | undefined;
+		if (!request) {
+			try {
+				prefixRequest = new PrefixRequestObservation(prefixManifestRecorder, prefixManifestOwner, session, manifestInput, options?.signal);
+			} catch {
+				prefixManifestRecorder.releaseOwner(prefixManifestOwner);
+				// Unavailable diagnostics must not block a provider request or reuse stale state.
+			}
 		}
 		const recordEffectiveDispatch = (observation: Readonly<EffectiveDispatchObservation>, observedModel: Model<any>) => {
+			if (options?.signal?.aborted || (prefixRequest && !prefixRequest.isCurrent())) return;
+			try { request?.assertCurrent(); } catch { return; }
 			session.recordToolResultBudgetDispatch();
-			try {
-				prefixManifestRecorder.record(buildPrefixManifest({
-					...manifestInput,
-					provider: observedModel.provider,
-					model: observedModel.id,
-					api: observedModel.api,
-					effectiveDispatch: observation,
-				}));
-			} catch {
-				// Effective dispatch diagnostics are observational and must never block a provider request.
-			}
+			prefixRequest?.record(observation, observedModel);
 			try {
 				const result = options?.onEffectiveDispatch?.(observation, observedModel);
 				if (result && typeof result.then === "function") {
-					void Promise.resolve(result).catch(() => undefined);
+					void Promise.resolve(result).catch(ignoreDispatchObserverRejection);
 				}
 			} catch {
 				// A nested observer cannot escape the provider-owned instrumentation lane.
 			}
 		};
-		return modelRuntime.streamSimple(model, context, {
-			...options,
-			transport: configuredTransport,
-			codexRemoteCompaction,
-			timeoutMs,
-			websocketConnectTimeoutMs,
-			maxRetries: options?.maxRetries ?? providerRetrySettings.maxRetries,
-			maxRetryDelayMs: options?.maxRetryDelayMs ?? providerRetrySettings.maxRetryDelayMs,
-			onEffectiveDispatch: recordEffectiveDispatch,
-			transformHeaders: async (requestHeaders) => {
-				const headers = mergeProviderAttributionHeaders(
-					model,
-					settingsManager,
-					options?.sessionId,
-					requestHeaders,
-				);
-				const transformed = headerRunner?.hasHandlers("before_provider_headers")
-					? await headerRunner.emitBeforeProviderHeaders(headers ?? {})
-					: (headers ?? {});
-				session.assertImageRequestAllowed(model);
-				request?.assertCurrent();
-				return transformed;
-			},
-		}, request, openAIResponsesDispatch, codexDispatch, codexGeneration);
+		try {
+			const stream = modelRuntime.streamSimple(model, context, {
+				...options,
+				transport: configuredTransport,
+				codexRemoteCompaction,
+				timeoutMs,
+				websocketConnectTimeoutMs,
+				maxRetries: options?.maxRetries ?? providerRetrySettings.maxRetries,
+				maxRetryDelayMs: options?.maxRetryDelayMs ?? providerRetrySettings.maxRetryDelayMs,
+				onEffectiveDispatch: recordEffectiveDispatch,
+				transformHeaders: async (requestHeaders) => {
+					const headers = mergeProviderAttributionHeaders(
+						model,
+						settingsManager,
+						options?.sessionId,
+						requestHeaders,
+					);
+					const transformed = headerRunner?.hasHandlers("before_provider_headers")
+						? await headerRunner.emitBeforeProviderHeaders(headers ?? {})
+						: (headers ?? {});
+					session.assertImageRequestAllowed(model);
+					request?.assertCurrent();
+					return transformed;
+				},
+			}, request, openAIResponsesDispatch, codexDispatch, codexGeneration);
+			try { if (prefixRequest) stream.observeResult(prefixRequest); }
+			catch { prefixRequest?.onResult(undefined); }
+			return stream;
+		} catch (error) {
+			prefixRequest?.onResult(undefined);
+			throw error;
+		}
 	};
 
 	agent = new Agent({
@@ -584,6 +591,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		customTools: options.customTools,
 		modelRuntime,
 		prefixManifestRecorder,
+		prefixManifestOwner,
 		createSummarizationStream: (auth, assertCurrent) => {
 			if (agent.streamFunction !== streamRequest) return agent.streamFunction;
 			const request = { auth, assertCurrent };

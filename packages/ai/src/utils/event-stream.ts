@@ -1,5 +1,19 @@
 import type { AssistantMessage, AssistantMessageEvent } from "../types.ts";
 
+/** Synchronous, observational terminal notification; never invoked for deltas. */
+export interface StreamResultObserver<R> {
+	onResult(result: R | undefined): void | Promise<void>;
+}
+
+function ignoreResultObserverRejection(): void {}
+
+function notifyResultObserver<R>(observer: StreamResultObserver<R>, result: R | undefined): void {
+	try {
+		const returned = observer.onResult(result);
+		if (returned && typeof returned.then === "function") void Promise.resolve(returned).catch(ignoreResultObserverRejection);
+	} catch { /* Observers cannot affect provider delivery. */ }
+}
+
 class FifoQueue<T> {
 	private incoming: T[] = [];
 	private outgoing: T[] = [];
@@ -34,6 +48,8 @@ export class EventStream<T, R = T> implements AsyncIterable<T> {
 	private resolveFinalResult!: (result: R) => void;
 	private isComplete: (event: T) => boolean;
 	private extractResult: (event: T) => R;
+	private resultObserver: StreamResultObserver<R> | undefined;
+	private settledResult: R | undefined;
 
 	constructor(isComplete: (event: T) => boolean, extractResult: (event: T) => R) {
 		this.isComplete = isComplete;
@@ -51,6 +67,7 @@ export class EventStream<T, R = T> implements AsyncIterable<T> {
 			const original = this.extractResult(event);
 			const result = finalizeAssistantTiming(original, this.startedAt, this.startedMonotonic);
 			event = replaceAssistantTerminal(event, original, result);
+			this.notifyResult(result);
 			this.resolveFinalResult(result);
 		}
 
@@ -64,10 +81,12 @@ export class EventStream<T, R = T> implements AsyncIterable<T> {
 	}
 
 	end(result?: R): void {
+		const wasDone = this.done;
 		if (!this.done && result !== undefined) {
 			result = finalizeAssistantTiming(result, this.startedAt, this.startedMonotonic);
 		}
 		this.done = true;
+		if (!wasDone) this.notifyResult(result);
 		if (result !== undefined) {
 			this.resolveFinalResult(result);
 		}
@@ -94,6 +113,23 @@ export class EventStream<T, R = T> implements AsyncIterable<T> {
 
 	result(): Promise<R> {
 		return this.finalResultPromise;
+	}
+
+	/** One logical owner; late registration observes the exact result returned by result(). */
+	observeResult(observer: StreamResultObserver<R>): void {
+		if (this.resultObserver) throw new Error("A result observer is already registered");
+		if (this.done) {
+			notifyResultObserver(observer, this.settledResult);
+		} else {
+			this.resultObserver = observer;
+		}
+	}
+
+	private notifyResult(result: R | undefined): void {
+		this.settledResult = result;
+		const observer = this.resultObserver;
+		this.resultObserver = undefined;
+		if (observer) notifyResultObserver(observer, result);
 	}
 }
 

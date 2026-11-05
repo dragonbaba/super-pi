@@ -1,5 +1,6 @@
 import { createHash, type Hash } from "node:crypto";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import type { AssistantMessage } from "@super-pi/ai";
 
 export type PreviousResponseMode = "none" | "response-id" | "websocket";
 export type PrefixObservationState = "observed" | "unavailable";
@@ -693,10 +694,101 @@ export function comparePrefixManifests(
 	return undefined;
 }
 
+export interface PrefixResponseObservation {
+	readonly requestSequence: number;
+	/** Adapter observations, not a count of physical HTTP retries. */
+	readonly observedDispatches: number;
+	readonly comparisonState: "available" | "unavailable";
+	readonly manifest: PrefixManifestV1;
+	readonly diagnostic: PrefixDriftDiagnostic | undefined;
+}
+
+export interface PrefixRequestLifetime {
+	release(): void;
+}
+
 export class PrefixManifestRecorder {
 	private previous: PrefixManifestV1 | undefined;
 	private latestIntent: PrefixManifestV1 | undefined;
 	private latestDiagnostic: PrefixDriftDiagnostic | undefined;
+	private owner: object | undefined;
+	private active: PrefixRequestLifetime | undefined;
+	private sequence = 0;
+	private contextGeneration = -1;
+	private credentialGeneration = -1;
+	private provider = "";
+	private completed: PrefixManifestV1 | undefined;
+	private baseline: PrefixManifestV1 | undefined;
+	private observedDispatches = 0;
+	private response: WeakRef<AssistantMessage> | undefined;
+	private responseObservation: PrefixResponseObservation | undefined;
+
+	beginRequest(owner: object, request: PrefixRequestLifetime, contextGeneration: number, credentialGeneration: number, provider: string): number {
+		this.active?.release();
+		this.baseline = this.owner === owner && this.contextGeneration === contextGeneration &&
+			(this.provider !== provider || this.credentialGeneration === credentialGeneration) ? this.completed : undefined;
+		this.completed = undefined;
+		this.owner = owner;
+		this.active = request;
+		this.contextGeneration = contextGeneration;
+		this.credentialGeneration = credentialGeneration;
+		this.provider = provider;
+		this.previous = undefined;
+		this.latestIntent = undefined;
+		this.latestDiagnostic = undefined;
+		this.response = undefined;
+		this.responseObservation = undefined;
+		this.observedDispatches = 0;
+		return ++this.sequence;
+	}
+
+	isCurrentRequest(sequence: number): boolean {
+		return this.active !== undefined && this.sequence === sequence;
+	}
+
+	recordRequest(sequence: number, manifest: PrefixManifestV1): void {
+		if (!this.isCurrentRequest(sequence)) return;
+		this.observedDispatches++;
+		this.previous = manifest;
+		this.latestDiagnostic = this.baseline ? comparePrefixManifests(this.baseline, manifest) : undefined;
+	}
+
+	finishRequest(sequence: number, message: AssistantMessage | undefined): void {
+		if (!this.isCurrentRequest(sequence)) return;
+		this.active = undefined;
+		const manifest = this.previous;
+		if (message && manifest && message.stopReason !== "error" && message.stopReason !== "aborted" &&
+			message.provider === manifest.provider && message.model === manifest.model && message.api === manifest.api) {
+			this.completed = manifest;
+			this.response = new WeakRef(message);
+			this.responseObservation = Object.freeze({ requestSequence: sequence, observedDispatches: this.observedDispatches,
+				comparisonState: this.baseline ? "available" : "unavailable", manifest, diagnostic: this.latestDiagnostic });
+		} else {
+			this.latestDiagnostic = undefined;
+		}
+		this.baseline = undefined;
+	}
+
+	/** Only the latest completed response in this live owner; copies/resumed history are unknown. */
+	forResponse(owner: object, message: AssistantMessage, contextGeneration: number, credentialGeneration: number): PrefixResponseObservation | undefined {
+		return this.owner === owner && this.contextGeneration === contextGeneration &&
+			this.provider === message.provider && this.credentialGeneration === credentialGeneration &&
+			this.response?.deref() === message ? this.responseObservation : undefined;
+	}
+
+	releaseOwner(owner: object): void {
+		if (this.owner !== owner) return;
+		this.active?.release();
+		this.active = undefined;
+		this.owner = undefined;
+		this.previous = undefined;
+		this.latestIntent = undefined;
+		this.latestDiagnostic = undefined;
+		this.completed = undefined;
+		this.baseline = undefined;
+		this.response = undefined;
+		this.responseObservation = undefined;
+	}
 
 	recordIntent(manifest: PrefixManifestV1): void {
 		this.latestIntent = manifest;
