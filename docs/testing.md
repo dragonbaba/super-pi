@@ -65,7 +65,11 @@ After `npm run build:offline`, set child `TMP`, `TEMP`, and `TMPDIR` to an owned
 It checks project-relative/absolute access, offline DNS/HTTPS failure, enabled
 DNS/HTTPS access, and installs the fixed public `is-number@7.0.0` fixture inside
 the VM with scripts disabled. It closes both VMs and verifies host files remain
-unchanged. Ordinary CI skips this VM case. Path allocation sampling is separate:
+unchanged. A separate active case warms an offline VM, cancels a physically
+launched execution CLI, then joins repeated close calls. It verifies the owned VM
+is absent, every owned CLI has settled, and workspace references/artifacts are
+released. Physical CLI launch does not prove the guest command has entered.
+Ordinary CI skips these VM cases. Path allocation sampling is separate:
 `node --expose-gc scripts/bench/sandbox-workspace-paths.mjs`; the existing
 `scripts/bench/sandbox-session-allocations.mjs` measures output and permission
 lifecycles. Neither measurement is an extra default CI step.

@@ -1,6 +1,6 @@
 # PF06 同次前缀构建去重验证
 
-日期：2026-11-05。基线 `3d2ea7088d3f0b956f68eb818ded165515dbb3ba`；分支 `codex/perf-pf06-prefix-dedup`。实现与本地验收完成，进入独立 PR 的审查/六 CI 门禁，尚未合并。原始计数、采样、失败、源码/构建摘要与复现驱动见 [PF06 证据](../evidence/performance-pf06-prefix-dedup-2026-11-05.json)。遵循[总方案](../super-pi-performance-followup-plan.md)、[PF00 比较协议](pf00-baseline-validation.md)与[热路径分配契约](hot-path-allocation-contract.md)。
+日期：2026-11-05。基线 `3d2ea7088d3f0b956f68eb818ded165515dbb3ba`。[PR #224](https://github.com/dragonbaba/super-pi/pull/224) 已完成当前 head `ec17fa323f14ade1725ee81711f128bc9ea5af38` 的 Codex 审查（completed、无发现、无未处理项）及六个 CI 检查（run `41973014831`），squash 合并为 `a2263ca9af652234bcc89b6eb9748581d1308403`；合并树与审查树 `e88fa0177bfa9b414c89661b4ade26a2e6fe8e64` 一致。原始计数、采样、失败、源码/构建摘要与复现驱动见 [PF06 证据](../evidence/performance-pf06-prefix-dedup-2026-11-05.json)。遵循[总方案](../super-pi-performance-followup-plan.md)、[PF00 比较协议](pf00-baseline-validation.md)与[热路径分配契约](hot-path-allocation-contract.md)。
 
 ## 证据与最小改动
 
@@ -38,4 +38,4 @@
 
 41 项定向测试通过，包含既有 manifest/determinism/生产 assembly/diagnostics/request attribution，以及新增单遍计数、原地修改和 source invariant。第一次类型检查发现新增诊断测试的可选编码与 this 注解问题；修正后通过，失败日志保留。prefix/effective-dispatch smoke、生产 event-chain/frame-queue 门禁通过。本地 `npm run build:offline` 构建 12/12 包，7496 ms，并发峰值 2。全量 449 个测试单元均退出 0。
 
-任务根 `.task-tmp/pf06-prefix-0f9b0452a1`，子进程 TMP/TEMP/TMPDIR 与 HOME/config 隔离。review/六 CI 与合并清理回执待当前 PR 验收。PF05 孤立纳秒计时 V 继续保留到 PF08，未改写为通过。
+任务根 `.task-tmp/pf06-prefix-0f9b0452a1`，子进程 TMP/TEMP/TMPDIR 与 HOME/config 隔离。已同步 main，删除远端/本地 `codex/perf-pf06-prefix-dedup`；47 个直接子进程均 settled，核验 269 个资源的身份/链接边界后清理任务根（120 个直接子项，cleanup PID 10228），共享父目录与 dist 保留。详见[收尾回执](https://github.com/dragonbaba/super-pi/pull/224#issuecomment-6650496668)。PF05 孤立纳秒计时 V 继续保留到 PF08，未改写为通过。
