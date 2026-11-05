@@ -3,6 +3,15 @@ import { dirname, isAbsolute, parse, relative, resolve } from "node:path";
 
 const WORKSPACE_METADATA_ROOTS = [".git", ".sp"] as const;
 
+/** Resolve protection roots independently: the metadata root may itself be a junction. */
+export async function canonicalWorkspaceMetadata(workspaces: readonly string[]): Promise<string[]> {
+  const roots: string[] = [];
+  for (const workspace of workspaces) for (const name of WORKSPACE_METADATA_ROOTS) {
+    roots.push(await canonicalizeProspectivePath(resolve(workspace, name)));
+  }
+  return roots;
+}
+
 function isInside(root: string, candidate: string): boolean {
   const path = relative(root, candidate);
   return path === "" || (path !== ".." && !path.startsWith("../") && !path.startsWith("..\\") && !isAbsolute(path));
@@ -54,20 +63,22 @@ export async function assessProtectedMutationPath(cwd: string, target: string): 
     return { violations: ["unverifiable_target"] };
   }
 
-  return assessCanonicalMutationPath([workspace], canonical);
+  const workspaces = [workspace];
+  return assessCanonicalMutationPath(workspaces, canonical, await canonicalWorkspaceMetadata(workspaces));
 }
 
 /** Inputs have already been resolved against disk, including every workspace root. */
-export function assessCanonicalMutationPath(workspaces: readonly string[], canonical: string): ProtectedMutationAssessment {
+export function assessCanonicalMutationPath(workspaces: readonly string[], canonical: string, metadata?: readonly string[]): ProtectedMutationAssessment {
   const violations: string[] = [];
   if (canonical === parse(canonical).root) violations.push("filesystem_root");
   let contained = false;
-  for (const workspace of workspaces) {
+  for (let index = 0; index < workspaces.length; index++) {
+    const workspace = workspaces[index]!;
     if (canonical === workspace) violations.push("workspace_root");
-    if (!isInside(workspace, canonical)) continue;
-    contained = true;
-    for (const name of WORKSPACE_METADATA_ROOTS) {
-      const protectedRoot = resolve(workspace, name);
+    if (isInside(workspace, canonical)) contained = true;
+    for (let slot = 0; slot < WORKSPACE_METADATA_ROOTS.length; slot++) {
+      const name = WORKSPACE_METADATA_ROOTS[slot]!;
+      const protectedRoot = metadata?.[index * WORKSPACE_METADATA_ROOTS.length + slot] ?? resolve(workspace, name);
       if (canonical === protectedRoot || isInside(protectedRoot, canonical)) {
         violations.push(`workspace_${name.slice(1)}_root`);
       }

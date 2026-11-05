@@ -13,6 +13,10 @@ export interface PermissionPathApproval {
   operation: "edit" | "write" | "lsp_fix" | "delete" | "move" | "file_batch";
   requestHash: string;
   canonicalTarget: string;
+  /** Native policy binds every batch source/destination, not only the first target. */
+  canonicalPaths?: readonly string[];
+  /** An external create must not turn into an overwrite during preparation. */
+  newExternalFiles?: readonly string[];
   protectedRoots: readonly string[];
   nativePlan?: NativePlan;
   creationPlan?: FileCreationPlan;
@@ -83,7 +87,9 @@ export function attachPermissionPathApproval(input: unknown, approval: Permissio
     configurable: true,
     enumerable: false,
     writable: false,
-    value: Object.freeze({ ...approval, protectedRoots: Object.freeze([...approval.protectedRoots]) }),
+    value: Object.freeze({ ...approval, protectedRoots: Object.freeze([...approval.protectedRoots]),
+      canonicalPaths: approval.canonicalPaths && Object.freeze([...approval.canonicalPaths]),
+      newExternalFiles: approval.newExternalFiles && Object.freeze([...approval.newExternalFiles]) }),
   });
 }
 

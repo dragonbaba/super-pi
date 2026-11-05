@@ -83,6 +83,20 @@ class NativeFileInvocation implements ToolInvocationAuthorization {
       if (this.owner!.requiresPermission && !this.permission?.assertCurrent) throw new Error("[POLICY_BLOCKED] Native file operation requires the current compatibility boundary's approval.");
       const target = this.item?.target ?? this.batch?.items[0]?.target;
       if (this.permission && (!target || directoryKey(this.permission.canonicalTarget) !== directoryKey(target))) throw new Error(STALE);
+      const approvedPaths = this.permission?.canonicalPaths;
+      if (approvedPaths) {
+        let cursor = 0;
+        const count = this.batch ? this.batch.items.length : 1;
+        for (let index = 0; index < count; index++) {
+          const item = this.batch ? this.batch.items[index]! : this.item!;
+          for (const path of item.paths) {
+            if (cursor >= approvedPaths.length || directoryKey(approvedPaths[cursor++]!) !== directoryKey(path)) throw new Error(STALE);
+          }
+          if (this.permission!.newExternalFiles?.includes(item.target) && !item.creation)
+            throw new Error("[TARGET_APPEARED] An external create cannot overwrite a file that appeared after authorization.");
+        }
+        if (cursor !== approvedPaths.length) throw new Error(STALE);
+      }
       this.assertCurrent();
       const approved = {};
       Object.defineProperty(approved, EXECUTION, { value: this });
