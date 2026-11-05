@@ -7,6 +7,8 @@ The permanent [hot-path allocation contract](hot-path-allocation-contract.md) de
 The [task history audit](task-history-persistence.md) covers bounded lifecycle storage,
 zero per-chunk writes, crash observations, allocation samples and SQLite handle release.
 
+The [subagent transport evidence](subagent-transport-2026-11-06.md) covers the private completion stream, shared output backpressure, bounded stderr tail, real child regressions and reference release.
+
 Run the default corpus with Node's TypeScript stripping. `--silent` keeps redirected output valid JSON, and the explicit `npm run -- <script>` form works across the supported npm versions:
 
 ```text

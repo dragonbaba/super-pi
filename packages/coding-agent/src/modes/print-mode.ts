@@ -8,9 +8,10 @@
 
 import type { AssistantMessage, ImageContent } from "@super-pi/ai";
 import type { AgentSessionRuntime } from "../core/agent-session-runtime.ts";
-import { flushRawStdout, waitForRawStdoutBackpressure, writeRawStdout } from "../core/output-guard.ts";
+import { flushRawStdout, getRawStdoutWrite, waitForRawStdoutBackpressure, writeRawStdout } from "../core/output-guard.ts";
 import { killTrackedDetachedChildren } from "../utils/shell.ts";
 import { toJsonEvent } from "./json-event.ts";
+import { isSubagentStreamEvent, SubagentStream } from "./subagent-stream.ts";
 
 /**
  * Options for print mode.
@@ -18,6 +19,8 @@ import { toJsonEvent } from "./json-event.ts";
 export interface PrintModeOptions {
 	/** Output mode: "text" for final response only, "json" for all events */
 	mode: "text" | "json";
+	/** Private child protocol; general JSON/RPC events retain their public shape. */
+	subagentStream?: boolean;
 	/** Array of additional prompts to send after initialMessage */
 	messages?: string[];
 	/** First message to send (may contain @file content) */
@@ -32,6 +35,8 @@ export interface PrintModeOptions {
  */
 export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: PrintModeOptions): Promise<number> {
 	const { mode, messages = [], initialMessage, initialImages } = options;
+	if (options.subagentStream && mode !== "json") throw new Error("--subagent-stream requires --mode json");
+	const childOutput = options.subagentStream ? new SubagentStream(process.stdout, getRawStdoutWrite()) : undefined;
 	let exitCode = 0;
 	let session = runtimeHost.session;
 	let unsubscribe: (() => void) | undefined;
@@ -56,6 +61,7 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 		unsubscribe = undefined;
 		unsubscribeBackpressure?.();
 		unsubscribeBackpressure = undefined;
+		if (shutdownSignal) childOutput?.dispose();
 		try {
 			await runtimeHost.dispose();
 		} catch (error) {
@@ -64,12 +70,14 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 		}
 		if (!shutdownSignal) {
 			try {
-				await flushRawStdout();
+				if (childOutput) await childOutput.flush();
+				else await flushRawStdout();
 			} catch (error) {
 				console.error("Print shutdown output failed:", error);
 				shutdownExitCode = 1;
 			}
 		}
+		childOutput?.dispose();
 		// Keep handlers installed until cleanup finishes, including repeat signals.
 		for (const cleanup of signalCleanupHandlers) cleanup();
 		signalCleanupHandlers.length = 0;
@@ -134,13 +142,13 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 
 		unsubscribe?.();
 		unsubscribeBackpressure?.();
-		unsubscribe = session.subscribe((event) => {
+		unsubscribe = childOutput ? session.subscribe(childOutput.onEvent) : session.subscribe((event) => {
 			if (mode === "json") {
 				writeRawStdout(`${JSON.stringify(toJsonEvent(event))}\n`);
 			}
 		});
 		unsubscribeBackpressure =
-			mode === "json"
+			childOutput ? session.agent.subscribe(childOutput.waitForBackpressure, { filter: isSubagentStreamEvent }) : mode === "json"
 				? session.agent.subscribe(async () => {
 						await waitForRawStdoutBackpressure();
 					})
@@ -148,7 +156,8 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 	};
 
 	try {
-		if (mode === "json") {
+		if (childOutput) childOutput.start();
+		else if (mode === "json") {
 			const header = session.sessionManager.getHeader();
 			if (header) {
 				writeRawStdout(`${JSON.stringify(header)}\n`);

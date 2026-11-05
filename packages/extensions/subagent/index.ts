@@ -20,6 +20,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { StringDecoder } from "node:string_decoder";
+import { capStderrTail, StderrTail } from "./stderr-tail.ts";
 import type { Readable } from "node:stream";
 import type { AgentToolResult } from "@super-pi/agent-core";
 import type { Message } from "@super-pi/ai";
@@ -538,7 +539,7 @@ function isFailedResult(result: SingleResult): boolean {
 
 function getResultOutput(result: SingleResult): string {
 	if (isFailedResult(result)) {
-		return result.errorMessage || result.stderr || getFinalOutput(result.messages) || "(no output)";
+		return failureDisplayText(result) ?? "(no output)";
 	}
 	const output = getFinalOutput(result.messages) || "(no output)";
 	return result.handoff ? `${result.handoff}\n\n${output}` : output;
@@ -560,11 +561,11 @@ export function failureDisplayText(
 		|| result.stopReason === "aborted"
 		|| Boolean(result.errorMessage);
 	if (!failed) return undefined;
-	return capText(
-		result.errorMessage || result.stderr.trim() || getFinalOutput(result.messages)
-			|| `Subagent exited with code ${result.exitCode} before producing output.`,
-		maxBytes,
-	);
+	const stderr = result.stderr.trim();
+	const text = result.errorMessage && stderr ? `${result.errorMessage}\n${stderr}`
+		: result.errorMessage || stderr || getFinalOutput(result.messages)
+			|| `Subagent exited with code ${result.exitCode} before producing output.`;
+	return maxBytes < 256 ? capStderrTail(text, maxBytes) : capTextHeadTail(text, maxBytes);
 }
 
 export function expandPreviousPlaceholder(task: string, previousOutput: string): string {
@@ -816,6 +817,7 @@ export class SubagentProcessRun {
 	private readonly proc: ChildProcessByStdio<null, Readable, Readable>;
 	private readonly completion = new NumberCompletion();
 	private readonly stdoutDecoder = new StringDecoder("utf8");
+	private readonly stderrTail = new StderrTail(MAX_STDERR_BYTES);
 	private readonly stdoutListener = this.onStdoutData.bind(this);
 	private readonly stderrListener = this.onStderrData.bind(this);
 	private readonly closeListener = this.onClose.bind(this);
@@ -931,7 +933,7 @@ export class SubagentProcessRun {
 		catch { return true; }
 		if (!event || typeof event !== "object") return true;
 		const eventType = event.type;
-		if ((eventType === "message_end" || eventType === "tool_result_end") && event.message) {
+		if (eventType === "message_end" && event.message) {
 			this.retainedJsonEventCount++;
 			limitReason = jsonEventLimitReason(0, this.retainedJsonEventCount);
 			if (limitReason) {
@@ -957,8 +959,6 @@ export class SubagentProcessRun {
 				if (message.stopReason) this.result.stopReason = message.stopReason;
 				if (message.errorMessage) this.result.errorMessage = message.errorMessage;
 			}
-		} else if (eventType === "tool_result_end" && event.message) {
-			appendBoundedMessage(this.result.messages, event.message as Message, lineBytes);
 		}
 		return true;
 	}
@@ -984,7 +984,7 @@ export class SubagentProcessRun {
 	}
 
 	private onStderrData(data: Buffer): void {
-		if (!this.settled) this.result.stderr = capText(this.result.stderr + data.toString(), MAX_STDERR_BYTES);
+		if (!this.settled) this.stderrTail.push(data);
 	}
 
 	private onClose(code: number | null): void {
@@ -995,6 +995,7 @@ export class SubagentProcessRun {
 			catch (error) { this.cleanupError ??= `Subagent process-group cleanup failed: ${error instanceof Error ? error.message : String(error)}`; }
 		}
 		this.control?.finish();
+		this.result.stderr = this.stderrTail.take();
 		this.buffer += this.stdoutDecoder.end();
 		if (this.buffer.trim()) this.processLine(this.buffer);
 		this.settle(code ?? (this.timedOut || this.wasAborted ? 1 : 0));
@@ -1003,6 +1004,7 @@ export class SubagentProcessRun {
 	private onError(error: Error): void {
 		if (this.settled) return;
 		this.childClosed = true;
+		this.result.stderr = this.stderrTail.take();
 		this.result.errorMessage = capText(`Failed to start subagent: ${error.message}`, 4096);
 		this.settle(1);
 	}
@@ -1019,6 +1021,7 @@ export class SubagentProcessRun {
 		if (this.timeout) clearTimeout(this.timeout);
 		if (this.forceKillTimer) clearTimeout(this.forceKillTimer);
 		if (this.abortListenerAttached) this.signal?.removeEventListener("abort", this.abortListener);
+		this.timeout = undefined; this.forceKillTimer = undefined; this.abortListenerAttached = false;
 		this.proc.stdout.off("data", this.stdoutListener);
 		this.proc.stderr.off("data", this.stderrListener);
 		this.proc.off("close", this.closeListener);
@@ -1072,6 +1075,7 @@ async function runSingleAgent(
 	const args: string[] = [
 		"--mode",
 		"json",
+		"--subagent-stream",
 		"-p",
 		"--no-session",
 		"--no-extensions",
@@ -1136,9 +1140,6 @@ async function runSingleAgent(
 		currentResult.exitCode = exitCode;
 		currentResult.completedAt = Date.now();
 		currentResult.handoff = control.handoffReason;
-		if (exitCode !== 0 && !currentResult.errorMessage) {
-			currentResult.errorMessage = failureDisplayText(currentResult);
-		}
 		emitSingleResultUpdate(onUpdate, makeDetails, currentResult);
 		if (processRun.cleanupError) throw new SubagentProcessCleanupError(processRun.cleanupError);
 		if (processRun.wasAborted) throw new Error("Subagent was aborted");

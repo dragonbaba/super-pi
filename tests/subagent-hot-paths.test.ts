@@ -7,6 +7,30 @@ const source = readFileSync(new URL("../packages/extensions/subagent/index.ts", 
 const tree = ts.createSourceFile("subagent/index.ts", source, ts.ScriptTarget.Latest, true);
 const hot = new Set(["onStdoutData", "onStderrData", "processLine", "appendBoundedMessage", "boundedMessage", "boundedUsage", "finiteUsage", "boundedTextContent", "capText", "prefixEnd", "capTextHeadTail", "jsonEventLimitReason", "jsonTransportLimitReason", "renderAgentStatus", "refreshStatus", "formatAgentUsage", "formatTokens", "formatElapsedMs", "resultStateCounts"]);
 
+test("child sender and stderr chunks reuse lifecycle callbacks without event wrappers", () => {
+	const targets = [
+		["packages/coding-agent/src/modes/subagent-stream.ts", "SubagentStream", ["onEvent", "writeLine", "onWrite", "onDrain", "onError", "fail", "releaseWait", "waitForBackpressure"]],
+		["packages/extensions/subagent/stderr-tail.ts", "StderrTail", ["push"]],
+	] as const;
+	for (const [file, className, names] of targets) {
+		const tree = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
+		const owner = tree.statements.find(node => ts.isClassDeclaration(node) && node.name?.text === className) as ts.ClassDeclaration;
+		function inspect(node: ts.Node): void {
+			assert.ok(!ts.isArrowFunction(node) && !ts.isFunctionExpression(node) && !ts.isArrayLiteralExpression(node)
+				&& !ts.isObjectLiteralExpression(node) && !ts.isAwaitExpression(node), node.getText(tree));
+			if (ts.isNewExpression(node)) assert.equal(node.expression.getText(tree), "Error");
+			if (ts.isCallExpression(node)) assert.doesNotMatch(node.expression.getText(tree), /\.(then|catch|finally|bind)$/);
+			ts.forEachChild(node, inspect);
+		}
+		for (const name of names) {
+			const member = owner.members.find(node => node.name?.getText(tree) === name)!;
+			assert.ok(member, name);
+			inspect(ts.isMethodDeclaration(member) ? member.body! : ((member as ts.PropertyDeclaration).initializer as ts.ArrowFunction).body);
+		}
+	}
+	// Named cold boundaries: constructor/dispose, stderr.take after close, and wait's one shared busy-cycle deferred.
+});
+
 test("child checkpoint guidance and IPC use only named intercepting/lifecycle hooks", () => {
 	const text = readFileSync(new URL("../packages/extensions/subagent/child-control.ts", import.meta.url), "utf8");
 	const child = ts.createSourceFile("child-control.ts", text, ts.ScriptTarget.Latest, true);
@@ -100,6 +124,6 @@ test("production retention passes measured line bytes and lifecycle publication 
 		ts.forEachChild(node, visit);
 	}
 	visit(tree);
-	assert.equal(retentionCalls, 2);
+	assert.equal(retentionCalls, 1);
 	assert.equal(progressCalls, 3); // Startup, completion, and exceptional startup/cleanup failure.
 });

@@ -39,6 +39,8 @@ export interface Args {
 	extensions?: string[];
 	noExtensions?: boolean;
 	print?: boolean;
+	/** Internal subagent completion stream; not the public JSON protocol. */
+	subagentStream?: boolean;
 	export?: string;
 	noSkills?: boolean;
 	skills?: string[];
@@ -175,6 +177,8 @@ export function parseArgs(args: string[]): Args {
 					message: `Invalid thinking level "${level}". Valid values: ${VALID_THINKING_LEVELS.join(", ")}`,
 				});
 			}
+		} else if (arg === "--subagent-stream") {
+			result.subagentStream = true;
 		} else if (arg === "--print" || arg === "-p") {
 			result.print = true;
 			const next = args[i + 1];

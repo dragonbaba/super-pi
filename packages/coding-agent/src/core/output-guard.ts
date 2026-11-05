@@ -10,7 +10,7 @@ const RAW_STDOUT_RETRY_DELAY_MS = 10;
 
 let rawStdoutWriteTail: Promise<void> = Promise.resolve();
 
-function getRawStdoutWrite(): StdoutTakeoverState["rawStdoutWrite"] {
+export function getRawStdoutWrite(): StdoutTakeoverState["rawStdoutWrite"] {
 	if (stdoutTakeoverState) {
 		return stdoutTakeoverState.rawStdoutWrite;
 	}

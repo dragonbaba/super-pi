@@ -7,7 +7,8 @@ import test from "node:test";
 import { getConfigDir } from "../packages/coding-agent/src/config.ts";
 import { createOwnedTaskFixture } from "./helpers/owned-task-fixture.ts";
 
-for (const mode of ["text", "json"]) for (const reason of ["stop", "length", "error", "aborted"]) {
+for (const mode of ["text", "json", "child"]) for (const reason of ["stop", "length", "error", "aborted"]) {
+  if (mode === "child" && reason !== "stop") continue;
   test(`print ${mode}/${reason}: preserve output and report final status`, { timeout: 25_000 }, async t => {
     const owned = createOwnedTaskFixture("h03-print-result-");
     const root = owned.root;
@@ -17,7 +18,7 @@ for (const mode of ["text", "json"]) for (const reason of ["stop", "length", "er
     const child = spawn(process.execPath, ["--experimental-strip-types", "--import",
       new URL("./fixtures/print-result-preload.mjs", import.meta.url).href,
       fileURLToPath(new URL("../packages/coding-agent/src/cli.ts", import.meta.url)),
-      "--print", "--mode", mode, "--no-session", "--no-extensions", "--no-tools", "--no-context-files", "--no-skills",
+      "--print", "--mode", mode === "child" ? "json" : mode, ...(mode === "child" ? ["--subagent-stream"] : []), "--no-session", "--no-extensions", "--no-tools", "--no-context-files", "--no-skills",
       "--no-prompt-templates", "--no-themes", "--extension", fileURLToPath(new URL("./fixtures/print-result-extension.mjs", import.meta.url)),
       "fixture request"], {
       cwd: root, stdio: ["ignore", "pipe", "pipe"],
@@ -61,6 +62,8 @@ for (const mode of ["text", "json"]) for (const reason of ["stop", "length", "er
       assert.equal(endings[0].message.stopReason, reason);
       assert.deepEqual(endings[0].message.content, [{ type: "text", text: "fixture first" }, { type: "text", text: "fixture second" }]);
       assert.ok(events.some(event => event.type === "agent_end"));
+      const ending = events.find(event => event.type === "agent_end");
+      assert.equal(Array.isArray(ending.messages), mode === "json", "only the private child stream removes aggregate messages");
     }
     assert.equal(stderr.includes("Response was truncated: the model reached its output token limit."), mode === "text" && reason === "length");
     const shutdown = stderr.split("\n").filter(line => line.startsWith("RESULT_SHUTDOWN:"));

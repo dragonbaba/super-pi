@@ -19,9 +19,11 @@ for (const [name, argv, messages, fileArgs] of [
 });
 
 test("parseArgs still parses options before --", () => {
-	const result = parseArgs(["--model", "m", "-c", "--", "hello"]);
+	const result = parseArgs(["--model", "m", "-c", "--subagent-stream", "--", "hello"]);
 	assert.equal(result.model, "m");
 	assert.equal(result.continue, true);
+	assert.equal(result.subagentStream, true);
+	assert.equal(parseArgs(["--", "--subagent-stream"]).subagentStream, undefined);
 	assert.deepEqual(result.messages, ["hello"]);
 });
 

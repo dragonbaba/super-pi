@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, statSync, realpathSync, readdirSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { StringDecoder } from "node:string_decoder";
+import { StderrTail } from "../packages/extensions/subagent/stderr-tail.ts";
 import { getEventListeners } from "node:events";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { Session as InspectorSession } from "node:inspector/promises";
@@ -19,9 +19,12 @@ import { isPathInside } from "../packages/extensions/subagent/child-security.ts"
 import { formatTaskCompletion, TASK_COMPLETION_CHARS } from "../packages/extensions/managed-tasks.ts";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
 import { convertToLlm } from "../packages/coding-agent/src/core/messages.ts";
+import { createOwnedTaskFixture } from "./helpers/owned-task-fixture.ts";
 
 // Set before loading the extension's config-path constants; never inspect user configuration.
-const fixtureRoot = mkdtempSync(join(tmpdir(), "sp-managed-subagents-"));
+const ownedFixture = createOwnedTaskFixture("sp-managed-subagents-"), fixtureRoot = ownedFixture.root;
+const oldTemps = [process.env.TMP, process.env.TEMP, process.env.TMPDIR];
+process.env.TMP = fixtureRoot; process.env.TEMP = fixtureRoot; process.env.TMPDIR = fixtureRoot;
 const oldAgentDir = process.env.SP_CODING_AGENT_DIR;
 const oldLauncher = process.env.SP_SOURCE_LAUNCHER;
 const oldBundled = process.env.SP_BUNDLED_AGENTS_DIR;
@@ -39,7 +42,10 @@ test.after(() => {
 	for (const [name, value] of [["SP_CODING_AGENT_DIR", oldAgentDir], ["SP_SOURCE_LAUNCHER", oldLauncher], ["SP_BUNDLED_AGENTS_DIR", oldBundled]]) {
 		if (value === undefined) delete process.env[name!]; else process.env[name!] = value;
 	}
-	rmSync(fixtureRoot, { recursive: true, force: true });
+	for (const [index, key] of ["TMP", "TEMP", "TMPDIR"].entries()) {
+		const value = oldTemps[index]; if (value === undefined) delete process.env[key]; else process.env[key] = value;
+	}
+	ownedFixture.cleanup();
 });
 
 test("limits accept explicit capacity, reject invalid values, and bound file reads", async () => {
@@ -64,7 +70,7 @@ test("POSIX root close escalates the recorded group and preserves cleanup failur
 	let finished = false;
 	const run: any = Object.create(SubagentProcessRun.prototype);
 	Object.assign(run, { settled: false, childClosed: false, killRequested: true, proc: { pid: 321 }, buffer: "", stdoutDecoder: new StringDecoder("utf8"),
-		settle() { finished = true; } });
+		stderrTail: new StderrTail(32768), result: {}, settle() { finished = true; } });
 	run.onClose(0); assert.equal(finished, true); assert.match(run.cleanupError, /process-group cleanup failed: denied/);
 });
 test("shared FIFO handles multiple batches and releases cancelled queue entries", async () => {
@@ -233,6 +239,28 @@ function harness(t: test.TestContext, options: { persistent?: boolean; shutdownE
 	return { tools, commands, hooks, startHooks, notices, events, ctx, run, control, messages, entries, notified: () => notified, resetNotification: () => { notified = new Promise<void>(resolve => { completion = resolve; }); } };
 }
 
+test("real child stderr tail reaches the final tool result alongside an explicit error", async t => {
+	const previous = process.env.SP_SOURCE_LAUNCHER;
+	process.env.SP_SOURCE_LAUNCHER = fileURLToPath(new URL("./fixtures/subagent-stream-child.mjs", import.meta.url));
+	try {
+		const h = harness(t);
+		for (const task of ["stderr-explicit", "stderr-short"]) {
+			await assert.rejects(h.run({ agent: "scout", task, readOnly: true }), (error: Error) => {
+				const text = error.message;
+				assert.ok(Buffer.byteLength(text) <= 4096 + "Agent error: ".length);
+				if (task === "stderr-explicit") {
+					assert.match(text, /EXPLICIT_FAILURE/); assert.match(text, /尾部🙂FINAL_ERROR_MARKER/);
+					assert.match(text, /truncated/); assert.doesNotMatch(text, /�/);
+				} else assert.match(text, /short failure/);
+				return true;
+			});
+		}
+		for (const name of readdirSync(h.ctx.cwd).filter(name => name.startsWith("stream-"))) {
+			assert.equal(realpathSync.native(JSON.parse(readFileSync(join(h.ctx.cwd, name), "utf8")).tmpdir), realpathSync.native(fixtureRoot));
+		}
+	} finally { process.env.SP_SOURCE_LAUNCHER = previous; }
+});
+
 for (const source of ["user", "project"] as const) {
 	for (const readOnly of [false, true]) {
 		test(`default worker from ${source} receives ${readOnly ? "read-only" : "writable"} tools without a shell`, async t => {
@@ -249,6 +277,7 @@ for (const source of ["user", "project"] as const) {
 			const markers = readdirSync(h.ctx.cwd).filter(file => file.endsWith(".ready.json"));
 			assert.equal(markers.length, 1);
 			const started = JSON.parse(readFileSync(join(h.ctx.cwd, markers[0]), "utf8"));
+			assert.equal(realpathSync.native(started.tmpdir), realpathSync.native(fixtureRoot));
 			assert.equal(started.tools, readOnly ? "read,grep,find,ls" : "read,grep,find,ls,write,edit");
 			assert.equal(started.allowBash, "0");
 			assert.match(started.systemPrompt, /Give the parent any required verification commands and clearly mark them as not run/);
