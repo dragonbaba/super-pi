@@ -14,6 +14,7 @@ import { wrapToolDefinition } from "../packages/coding-agent/src/core/tools/tool
 import { NestedToolDispatch } from "../packages/agent/src/nested-tool-dispatch.ts";
 import { encodingFixture } from "./helpers/image-encoding-fixtures.ts";
 import { loadPhoton } from "../packages/coding-agent/src/utils/photon.ts";
+import { removeOwnedFixture } from "./helpers/owned-fixture-cleanup.ts";
 
 const source = ts.createSourceFile("worker.mjs", fs.readFileSync("packages/coding-agent/src/core/sandbox/workspace-worker.mjs", "utf8"), ts.ScriptTarget.Latest, true);
 const guest = source.statements.filter(node => !ts.isImportDeclaration(node)
@@ -23,8 +24,9 @@ const execute = new Function("fs", "path", "createHash", "isUtf8", "spawnSync", 
 const png = Buffer.from(await encodingFixture("transparent", 256, 256));
 assert.ok(png.length > 32768, "fixture must exceed shell output capacity");
 
-function fixture(t: TestContext, mode: "read-only" | "sandbox-write" = "read-only") {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "sp-image-read-")));
+function fixture(t: TestContext, mode: "read-only" | "sandbox-write" = "read-only", temporary = os.tmpdir()) {
+  // Match the backend's native async realpath, including Windows temp aliases.
+  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(temporary, "sp-image-read-")));
   const input = path.join(root, "input"), work = path.join(root, "work"), exchange = path.join(root, "exchange");
   for (const dir of [input, input + "-1", exchange]) fs.mkdirSync(dir);
   const boundary = new SessionExecutionBoundary(), runtime: any = { executionBoundary: boundary, nativePermissions: { mode }, appendEntry() {} };
@@ -38,7 +40,7 @@ function fixture(t: TestContext, mode: "read-only" | "sandbox-write" = "read-onl
     execute(fs, path, createHash, isUtf8, () => assert.fail("image read must not spawn a shell"), { exitCode: 0 }, input, work, exchange, detectSupportedImageMimeType, IMAGE_TYPE_SNIFF_BYTES);
   } };
   const ctx: any = { cwd: input, signal: boundary.signal, model: { input: ["text", "image"] }, sessionManager: { getSessionId: () => "image-read" } };
-  t.after(async () => { await owner.close(); await boundary.dispose(); assert.equal(fs.realpathSync(root), root); fs.rmSync(root, { recursive: true }); });
+  t.after(async () => { await owner.close(); await boundary.dispose(); removeOwnedFixture(root); });
   return { root, input, work, exchange, owner, backend, boundary, ctx, get discarded() { return discarded; },
     read(args: any) { return owner.definition("read")!.execute("image", args, ctx.signal, undefined, ctx); } };
 }
@@ -58,6 +60,15 @@ for (const mode of ["read-only", "sandbox-write"] as const) test(`sandbox ${mode
   const text = await f.read({ path: "notes.png", offset: 2, limit: 1 });
   assert.equal(text.content.length, 1); assert.match((text.content[0] as any).text, /^second\n\n\[Snapshot: [a-f0-9]{64}\]$/);
   assert.equal(f.discarded, 0);
+});
+
+test("Windows temporary-directory spelling agrees with the backend's canonical artifact root", { skip: process.platform !== "win32" }, async t => {
+  const f = fixture(t, "read-only", os.tmpdir().toUpperCase());
+  assert.equal(f.root, await fs.promises.realpath(f.root));
+  fs.writeFileSync(path.join(f.input, "preview.png"), png);
+  const result = await f.read({ path: "preview.png" });
+  const image = result.content.find(block => block.type === "image"); assert.ok(image);
+  assert.deepEqual(Buffer.from(image.data, "base64"), png);
 });
 
 test("UTF-8-valid GIF is classified before text; unsupported binary and image capacity have actionable errors", async t => {
@@ -93,7 +104,12 @@ test("JPEG, GIF, WebP and BMP share native image normalization", async t => {
   }
 });
 
-for (const fault of ["hash", "size", "mime", "name", "write", "hardlink", "resized", "missing", "release", "abort"] as const) test(`sandbox image rejects ${fault} and discards the failed owner`, async t => {
+const failures = {
+  hash: /Artifact changed or hash mismatch/, size: /Invalid read image envelope/, mime: /Image signature mismatch/,
+  name: /Invalid artifact envelope/, write: /Invalid read image envelope/, hardlink: /Redirected or resized artifact/,
+  resized: /Redirected or resized artifact/, missing: /ENOENT/, release: /fixture release blocked/, abort: /EXECUTION_BOUNDARY_CHANGED/,
+};
+for (const fault of Object.keys(failures) as (keyof typeof failures)[]) test(`sandbox image rejects ${fault} and discards the failed owner`, async t => {
   const f = fixture(t);
   fs.writeFileSync(path.join(f.input, "picture.png"), png);
   const original = f.backend.invoke.bind(f.backend);
@@ -116,7 +132,7 @@ for (const fault of ["hash", "size", "mime", "name", "write", "hardlink", "resiz
     const candidate = f.backend.candidate.bind(f.backend);
     t.mock.method(f.backend, "candidate", async (...args: any[]) => { const value = await candidate(...args); await f.boundary.dispose(); return value; });
   }
-  await assert.rejects(f.read({ path: "picture.png" }), /SANDBOX_IMAGE/);
+  await assert.rejects(f.read({ path: "picture.png" }), failures[fault]);
   assert.equal(f.discarded, 1);
 });
 
@@ -140,10 +156,6 @@ test("sandbox read → CodeMode show(ref) returns a complete native image block"
     assert.equal(fs.readdirSync(f.exchange).filter(name => name.endsWith(".bin")).length, 0);
   } finally {
     await codemode.close(); await dispatch.close();
-    if (savedDirectory) {
-      assert.equal(fs.realpathSync(savedDirectory), savedDirectory);
-      assert.equal(path.dirname(savedDirectory), fs.realpathSync(os.tmpdir()));
-      fs.rmSync(savedDirectory, { recursive: true });
-    }
+    if (savedDirectory) removeOwnedFixture(savedDirectory);
   }
 });
