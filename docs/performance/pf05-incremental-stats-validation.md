@@ -1,6 +1,6 @@
 # PF05 增量统计验证
 
-日期：2026-11-05。基线 `8cc7ffcf6656848cc1d14c42ce7cfc3302d33c37`；分支 `codex/perf-pf05-incremental-stats`。实现和本地验收完成，进入独立 PR 审查/六 CI 门禁；尚未合并。完整原始样本、失败、源码/构建摘要及复现驱动见 [PF05 证据](../evidence/performance-pf05-incremental-stats-2026-11-05.json)。遵循[总方案](../super-pi-performance-followup-plan.md)、[PF00 门禁](pf00-baseline-validation.md)及[分配契约](hot-path-allocation-contract.md)。
+日期：2026-11-05。基线 `8cc7ffcf6656848cc1d14c42ce7cfc3302d33c37`。[PR #223](https://github.com/dragonbaba/super-pi/pull/223) 已合并为 `3d2ea7088d3f0b956f68eb818ded165515dbb3ba`；审查 head `8e5af249ac58da9d3904d8499c942a491625b073` 无发现，CI `41970416768` 六项全部通过。审查/合并树均为 `742d4e5177c2b411ac5ee873cd58904b40e3a750`。完整原始样本、失败、源码/构建摘要及复现驱动见 [PF05 证据](../evidence/performance-pf05-incremental-stats-2026-11-05.json)。遵循[总方案](../super-pi-performance-followup-plan.md)、[PF00 门禁](pf00-baseline-validation.md)及[分配契约](hot-path-allocation-contract.md)。
 
 ## 复现、语义和调用链
 
@@ -51,4 +51,4 @@ Footer 的语义仍为**全部会话**累计用量和最后一个 session name/a
 
 三个独立生命周期进程各执行六轮跨事件循环 GC：clear/manager replacement/new session 后旧响应引用为 0，最终 clear 后旧 manager 为 0；Footer dispose 后新增 scan 引用为 0；实际构造 InteractiveMode 的 stop 清除 cursor 及其 manager/latest 槽。当前 manager 在 cursor 活跃期间有意保留，Footer 原本的 session owner 也不会因为清除派生统计而消失；不将这两项正常 ownership 误记为泄漏。
 
-任务根 `.task-tmp/pf05-stats-359ee56d86`，仅 PowerShell 7；子进程环境和 PID/退出状态由任务 runner 记录。review/六 CI、合并和精确资源清理回执在当前 PR 验收后补齐。
+任务根 `.task-tmp/pf05-stats-359ee56d86`，仅 PowerShell 7；子进程环境和 PID/退出状态由任务 runner 记录。合并后已同步 main，删除远端/本地 `codex/perf-pf05-incremental-stats`；核验 141 个直接子进程 settled 和 480 个资源身份/链接边界后清理任务根（339 个直接子项，cleanup PID 15148）。共享 `.task-tmp` 与 dist 保留，详见[收尾回执](https://github.com/dragonbaba/super-pi/pull/223#issuecomment-6650147919)。

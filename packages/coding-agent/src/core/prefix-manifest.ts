@@ -254,8 +254,10 @@ export function createScopedExtensionIdentifier(
 	return `external-extension:${hashIdentifier(extension.resolvedPath)}`;
 }
 
+const TEXT_LINE_ENDINGS = /\r\n?/g;
+
 function normalizeText(value: string): string {
-	return value.replace(/\r\n?/g, "\n");
+	return value.replace(TEXT_LINE_ENDINGS, "\n");
 }
 
 function assertGeneration(name: string, value: number): number {
@@ -346,7 +348,11 @@ export function sha256Canonical(value: unknown): string {
 }
 
 function hashText(value: string): string {
-	return createHash("sha256").update(normalizeText(value)).digest("hex");
+	return hashNormalizedText(normalizeText(value));
+}
+
+function hashNormalizedText(value: string): string {
+	return createHash("sha256").update(value).digest("hex");
 }
 
 function symmetricDifference(previous: readonly string[], current: readonly string[]): string[] {
@@ -396,7 +402,8 @@ export function buildPrefixManifest(input: PrefixManifestBuildInput): PrefixMani
 		}))
 		.sort((left, right) => left.precedence - right.precedence || compareCanonicalIdentifiers(left.identifier, right.identifier));
 	const persistentContext = new Map<string, string>();
-	for (const entry of contextEntries) persistentContext.set(entry.identifier, hashText(entry.content));
+	for (const entry of contextEntries) persistentContext.set(entry.identifier, hashNormalizedText(entry.content));
+	const persistentContextHash = sha256Canonical(contextEntries);
 	const requestTransforms = (input.requestTransformChain ?? []).map((identifier) =>
 		sanitizeManifestIdentifier(identifier, "transform"),
 	);
@@ -410,7 +417,7 @@ export function buildPrefixManifest(input: PrefixManifestBuildInput): PrefixMani
 		throw new TypeError("compaction observation requires a generation");
 	}
 	const effective = input.effectiveDispatch;
-	const systemPromptHash = effective?.instructionsHash ?? hashText(normalizedPrompt);
+	const systemPromptHash = effective?.instructionsHash ?? hashNormalizedText(normalizedPrompt);
 	const systemPromptBytes = effective?.instructionsBytes ?? Buffer.byteLength(normalizedPrompt);
 	const toolOrderHash = effective?.toolOrderHash ?? sha256Canonical(toolOrder);
 	const toolIdentifierSetHash = effective?.toolIdentifierSetHash ?? sha256Canonical([...toolOrder].sort(compareCanonicalIdentifiers));
@@ -436,7 +443,7 @@ export function buildPrefixManifest(input: PrefixManifestBuildInput): PrefixMani
 		systemPromptHash,
 		toolOrderHash,
 		toolSchemaHash,
-		persistentContextHash: sha256Canonical(contextEntries),
+		persistentContextHash,
 		cacheKeyHash: cacheKeyHash ?? null,
 		cacheRetentionHash,
 		cachePolicyHash,
@@ -459,7 +466,7 @@ export function buildPrefixManifest(input: PrefixManifestBuildInput): PrefixMani
 		toolIdentifierSetHash,
 		toolSchemaHash,
 		toolCount,
-		persistentContextHash: sha256Canonical(contextEntries),
+		persistentContextHash,
 		dynamicInstructionObservationState: dynamicInstructionObserved ? "observed" : "unavailable",
 		...(dynamicInstructionObserved
 			? {
