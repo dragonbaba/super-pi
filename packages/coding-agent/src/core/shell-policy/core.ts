@@ -1995,7 +1995,8 @@ export function staticMutationTarget(target: string, cwd: string, expansion = 0)
 		if (code === 42 || code === 63 || code === 91) {
 			if (!(expansion & 16) || index < separator) return undefined;
 			glob = true;
-		} else if (code === 36 || code === 37 || code === 123 || code === 125 || code === 126) return undefined;
+		// A nonleading tilde is literal, including Windows 8.3 path components.
+		} else if (code === 36 || code === 37 || code === 123 || code === 125 || code === 126 && index === 0) return undefined;
 	}
 	return resolve(cwd, glob ? separator < 0 ? "." : target.slice(0, separator + 1) : target);
 }

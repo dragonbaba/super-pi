@@ -71,7 +71,7 @@ export function inspectWindowsMutations(command: string, initialCwd: string, she
         while (offset + 1 < command.length && command.charCodeAt(offset + 1) !== 10) offset++;
         continue;
       }
-      if (shell === "powershell" && (code === 36 || code === 43)) expanded = true;
+      if (shell === "powershell" && (code === 36 || code === 43 || code === 64 && next === 40)) expanded = true;
       if (shell === "cmd" && (code === 37 || code === 33)) expanded = true;
     }
     const blockBoundary = shell === "powershell" && (code === 123 || code === 125);
@@ -82,8 +82,10 @@ export function inspectWindowsMutations(command: string, initialCwd: string, she
       if (started) { tokens.push(value); dynamic.push(expanded); value = ""; expanded = false; started = false; }
       if (tokens.length >= MAX_WORDS) { scan.recognized = true; scan.uncertain = true; return; }
       if (punctuation) {
-        tokens.push(code === 62 && next === 62 ? ">>" : command[offset]!); dynamic.push(false);
-        if (code === 62 && next === 62) offset++;
+        const streamCopy = (code === 62 || code === 60) && next === 38;
+        tokens.push(streamCopy ? code === 62 ? ">&" : "<&" : code === 62 && next === 62 ? ">>" : command[offset]!);
+        dynamic.push(code === 40 || code === 41);
+        if (streamCopy || code === 62 && next === 62) offset++;
       }
       if (end && tokens.length) {
         if (++segments > MAX_SHELL_SEGMENTS) { scan.recognized = true; scan.uncertain = true; return; }
@@ -104,7 +106,6 @@ function inspectSegment(tokens: readonly string[], dynamic: readonly (boolean | 
   const name = commandName(tokens[start]!);
   if (name === "rem" || name === "::") return cwd;
   if (name === "pushd" || name === "popd" || name === "push-location" || name === "pop-location") return "";
-  if (name === "git") { recordGit(tokens, start + 1, cwd, scan, dynamic); return cwd; }
   // .NET calls can occur on the right side of an assignment or inside a pipeline expression.
   for (let index = start; index < tokens.length; index++) {
     if (DOTNET_DELETE.test(tokens[index]!)) {
@@ -117,6 +118,7 @@ function inspectSegment(tokens: readonly string[], dynamic: readonly (boolean | 
         addShellEffect(scan, "write", literalTarget(operand, Boolean(dynamic?.[index + 1]), cwd, shell, true));
     }
   }
+  if (name === "git") { recordGit(tokens, start + 1, cwd, scan, dynamic); return cwd; }
   if (name === "cmd" || name === "powershell" || name === "pwsh" || BASH_WRAPPERS.has(name)) {
     for (let index = start + 1; index < tokens.length; index++) {
       const flag = tokens[index]!.toLowerCase();
@@ -197,6 +199,10 @@ function inspectSegment(tokens: readonly string[], dynamic: readonly (boolean | 
     }
   } else if (writing) {
     addShellEffect(scan, "write", literalTarget(tokens[first], Boolean(dynamic?.[first]), cwd, shell, literalPath));
+    // Content cmdlets accept a comma-separated path array. Positional values
+    // after the path are data, so walk only the contiguous path expression.
+    for (let index = first + 1; tokens[index] === ","; index += 2)
+      addShellEffect(scan, "write", literalTarget(tokens[index + 1], Boolean(dynamic?.[index + 1]), cwd, shell, literalPath));
   } else if (explicitPath >= 0) {
     addShellEffect(scan, "delete", literalTarget(tokens[first], Boolean(dynamic?.[first]), cwd, shell, literalPath));
     for (const index of operands) addShellEffect(scan, "delete", literalTarget(tokens[index], Boolean(dynamic?.[index]), cwd, shell, literalPath));

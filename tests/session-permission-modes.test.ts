@@ -145,9 +145,12 @@ test("native approval UI cancels on Escape and a real countdown, then asks again
       shortDeadline = action === "timeout";
       const pending = owner.authorize(event, ctx);
       const cancelled = action === "allow" ? undefined : assert.rejects(pending, /APPROVAL_CANCELLED/);
-      await tick(); fixture.internal.ui.renderNow(true); await fixture.internal.ui.flushTerminalFrames();
-      const component = fixture.internal.extensionSelector, countdown = component.countdown;
-      assert.ok(component); assert.ok(countdown); assert.equal(getEventListeners(ctx.signal, "abort").length, 1);
+      // Host authorization now resolves/pins cwd before opening the selector.
+      for (let index = 0; index < 1000 && !fixture.internal.extensionSelector; index++) await tick();
+      fixture.internal.ui.renderNow(true); await fixture.internal.ui.flushTerminalFrames();
+      const component = fixture.internal.extensionSelector; assert.ok(component);
+      const countdown = component.countdown;
+      assert.ok(countdown); assert.equal(getEventListeners(ctx.signal, "abort").length, 1);
       if (action === "escape") component.handleInput("\x1b");
       else if (action === "allow") { component.handleInput("\x1b[A"); component.handleInput("\r"); }
       if (cancelled) await cancelled;

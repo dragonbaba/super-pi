@@ -238,6 +238,8 @@ export function recordGit(tokens: readonly string[], start: number, cwd: string,
     let options = true;
     for (let slot = index + 1; slot < tokens.length; slot++) {
       const value = tokens[slot]!;
+      if (value === ">" || value === ">>" || value === "<" || value === ">&" || value === "<&") { slot++; continue; }
+      if ((tokens[slot + 1] === ">" || tokens[slot + 1] === ">&") && value.length === 1 && value >= "0" && value <= "9") continue;
       if (options && value === "--") { options = false; continue; }
       if (options && (value === "-e" || value === "--exclude")) { slot++; continue; }
       if (options && value.startsWith("-")) continue;
@@ -488,9 +490,11 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
   if (isBashArithmeticCommandHead(tokens, index)) { markUncertainContext(builder, "unverifiable_arithmetic_command"); return cwd; }
   if (tokens[index] !== command && command !== "command" && command !== "exec") {
     if (builder.native && inspectKnownMutation(command.endsWith(".exe") ? command.slice(0, -4) : command, tokens, index + 1, cwd, builder, depth)) return cwd;
-    markOpaque(builder, "explicit_or_cased_executable");
-    addTarget(builder, tokens[index]!, cwd);
-    return cwd;
+    if (!(builder.native && SCRIPT_WRAPPERS.has(command))) {
+      markOpaque(builder, "explicit_or_cased_executable");
+      addTarget(builder, tokens[index]!, cwd);
+      return cwd;
+    }
   }
   if (command === "command" || command === "exec" || command === "builtin") {
     if (tokens[index] !== command) {

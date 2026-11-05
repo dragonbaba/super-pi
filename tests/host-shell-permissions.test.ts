@@ -15,6 +15,7 @@ import { SessionManager } from "../packages/coding-agent/src/core/session-manage
 import { createBashToolDefinition } from "../packages/coding-agent/src/core/tools/bash.ts";
 import { createPowerShellToolDefinition } from "../packages/coding-agent/src/core/tools/powershell.ts";
 import { getShellCwdBinding } from "../packages/coding-agent/src/core/tools/shell-cwd.ts";
+import { getShellConfig } from "../packages/coding-agent/src/utils/shell.ts";
 
 const owned = createOwnedTaskFixture("host-shell-permissions-"), oldTemps = [process.env.TMP, process.env.TEMP, process.env.TMPDIR];
 process.env.TMP = owned.root; process.env.TEMP = owned.root; process.env.TMPDIR = owned.root;
@@ -110,7 +111,7 @@ test("native Bash composition keeps real operands, command option groups, git sc
     assert.equal(result.effects[0]?.path, resolve(cwd, "../outside"), command);
   }
   assert.equal(analyzeNativeShell("mv -f one two", cwd, "bash", 1).uncertain, false);
-  for (const command of ['rm -rf "$X"', 'cd "$X"; rm file', "find . -type f -exec rm '{}' \\;", "find . -exec sh -c 'rm ../outside' \\;", "find . -exec python -c 'import os; os.unlink(\"../outside\")' \\;", "printf '%s' x | xargs rm"]) {
+  for (const command of ['rm -rf "$X"', 'rm -rf ~someuser', 'cd "$X"; rm file', "find . -type f -exec rm '{}' \\;", "find . -exec sh -c 'rm ../outside' \\;", "find . -exec python -c 'import os; os.unlink(\"../outside\")' \\;", "printf '%s' x | xargs rm"]) {
     const result = analyzeNativeShell(command, cwd, "bash", 1); assert.equal(result.recognized, true, command); assert.equal(result.uncertain, true, command);
   }
   for (const shell of ["bash", "powershell"] as const) {
@@ -133,6 +134,9 @@ test("real Windows unquoted paths, cmd tails, aliases and child temporary enviro
   const temp = await f.call("powershell", { command: "[System.IO.Path]::GetTempPath()", timeout: 10 });
   const output = temp.content.map(block => block.type === "text" ? block.text : "").join("\n");
   assert.ok(output.includes(owned.root), output);
+  const array = await f.call("powershell", { command: "Set-Content -LiteralPath 'one.txt','two.txt' -Value data; Get-Content one.txt 2>&1", timeout: 10 });
+  assert.equal(array.isError, undefined);
+  for (const file of ["one.txt", "two.txt"]) assert.equal((await fs.readFile(join(f.workspace, file), "utf8")).trim(), "data");
   t.diagnostic(JSON.stringify({ windowsCommandForms: 3, childTempInsideOwnedRoot: true }));
 });
 
@@ -141,7 +145,7 @@ test("host shell policy refuses sensitive deletes and external overwrites while 
   await fs.writeFile(join(f.outside, "keep.txt"), "keep");
   for (const command of ["rm -rf .", "rm -rf .git", "git clean -fd -- .sp", `rm -rf '${homedir().replaceAll("\\", "/")}'`]) {
     const input = { command };
-    await assert.rejects(f.owner.authorize(f.event("bash", input), f.ctx), /操作未执行.*明确告知用户/s);
+    await assert.rejects(f.owner.authorize(f.event("bash", input), f.ctx), /操作未执行.*明确告知用户/s, command);
     assert.equal(getShellCwdBinding(input)!.isReleased, true);
   }
   for (const [shell, command] of [["bash", "printf changed > ../outside/keep.txt"], ["bash", "cp .git/config ../outside/keep.txt"],
@@ -154,6 +158,35 @@ test("host shell policy refuses sensitive deletes and external overwrites while 
     (await f.owner.authorize(f.event("bash", { command }), f.ctx)).release();
   }
   assert.equal(f.dialogs.length, 0); assert.equal(await fs.readFile(join(f.outside, "keep.txt"), "utf8"), "keep");
+});
+
+test("literal tilde in a HOME path stays a known critical target, including Windows short-name spellings", async t => {
+  const f = await fixture(t), home = join(f.root, "home~1"); await fs.mkdir(home);
+  const key = process.platform === "win32" ? "USERPROFILE" : "HOME", previous = process.env[key]; process.env[key] = home;
+  try {
+    const command = `rm -rf '${homedir().replaceAll("\\", "/")}'`;
+    await assert.rejects(f.owner.authorize(f.event("bash", { command }), f.ctx), /HOME.*祖先/s);
+    assert.equal(f.dialogs.length, 0); assert.equal((await fs.stat(home)).isDirectory(), true);
+  } finally { if (previous === undefined) delete process.env[key]; else process.env[key] = previous; }
+});
+
+test("review: all write operands, shell redirections and absolute wrappers reach native authorization", async t => {
+  const f = await fixture(t); await fs.mkdir(join(f.workspace, ".git")); await fs.writeFile(join(f.workspace, ".git", "config"), "keep");
+  await fs.writeFile(join(f.outside, "existing.txt"), "keep");
+  for (const [shell, command] of [
+    ["powershell", "Set-Content -LiteralPath 'safe.txt','.git/config' -Value changed"],
+    ["powershell", "Add-Content -Path 'safe.txt','../outside/existing.txt' -Value changed"],
+    ["powershell", "git diff > .git/config"],
+    ["powershell", "git status > ../outside/existing.txt"],
+    ["bash", "/bin/bash -lc 'rm -rf .git'"],
+  ] as const) await assert.rejects(f.owner.authorize(f.event(shell, { command }), f.ctx), /POLICY_BLOCKED|EXTERNAL_FILE_WRITE_BLOCKED/, command);
+  for (const command of ["Get-ChildItem 2>&1", "git diff 2>&1", "cmd /c dir 2>&1", "Get-ChildItem 3>&1"]) {
+    assert.equal(scan(command, f.workspace).recognized, false, command);
+    (await f.owner.authorize(f.event("powershell", { command }), f.ctx)).release();
+  }
+  assert.deepEqual(scan("Set-Content safe.txt value1,value2", f.workspace).effects.map(effect => effect.path), [join(f.workspace, "safe.txt")]);
+  assert.equal(scan("Write-Output x > '&1'", f.workspace).effects[0]?.path, join(f.workspace, "&1"));
+  assert.equal(f.dialogs.length, 0); assert.equal(await fs.readFile(join(f.outside, "existing.txt"), "utf8"), "keep");
 });
 
 test("real shell approval targets match effects, cancellation retries, and selector refusal leaves files intact", { timeout: 30000 }, async t => {
@@ -207,4 +240,8 @@ test("actual cwd and symlink identity stay bound until spawn and unlink does not
   await fs.writeFile(join(f.added, "owned.txt"), "owned");
   assert.equal((await f.call("bash", { command: "rm -f owned.txt", cwd: f.added, timeout: 10 })).isError, undefined);
   assert.match(f.dialogs[1]!, /执行目录:.*outside/);
+  const bash = getShellConfig().shell.replaceAll("\\", "/");
+  await fs.writeFile(join(f.workspace, "wrapper-owned.txt"), "owned");
+  assert.equal((await f.call("bash", { command: `'${bash}' -lc 'rm -f wrapper-owned.txt'`, timeout: 10 })).isError, undefined);
+  await assert.rejects(fs.stat(join(f.workspace, "wrapper-owned.txt")), { code: "ENOENT" });
 });

@@ -19,11 +19,13 @@ const substitution = "$(grep -c -E '(class|function|const|var|let) GCSystem\\b' 
 const cases = native ? [
   ["native-bash-read", "printf ok", 1],
   ["native-bash-delete", "rm -rf ../outside", 1],
-  ["native-bash-nested", "bash -lc 'rm -rf ../outside'", 2],
+  ["native-bash-nested", "/bin/bash -lc 'rm -rf ../outside'", 2],
   ["native-bash-dynamic", 'rm -rf "$X"', 1],
   ["native-bash-inline", "node -e 'require(\"fs\").rmSync(\"../outside\",{recursive:true})'", 1],
   ["native-powershell-delete", "Remove-Item -LiteralPath ../outside -Recurse -Force", 0],
   ["native-powershell-cmd", "cmd /c del /q ../outside", 0],
+  ["native-powershell-array", "Set-Content -LiteralPath 'one','two' -Value data", 0],
+  ["native-powershell-stream-copy", "git diff 2>&1", 0],
 ] as const : literalInputs ? [
   ["aliased-process-producer", "shopt -s expand_aliases\nalias echo='printf marker'\nsource <(echo ':')", 2],
   ["sort-terminal-value", "sort -o .git/config --help=x", 1],
