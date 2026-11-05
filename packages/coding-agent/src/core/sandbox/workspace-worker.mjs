@@ -4,11 +4,13 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { isUtf8 } from 'node:buffer';
 import { spawnSync } from 'node:child_process';
+import { detectSupportedImageMimeType, IMAGE_TYPE_SNIFF_BYTES } from '../../utils/image-signature.mjs';
 
 const SOURCE = 'C:\\SuperPiInput';
 const WORK = 'C:\\SuperPiWorkspace';
 const EXCHANGE = 'C:\\SuperPiExchange';
 const FILE_LIMIT = 2 * 1024 * 1024;
+const IMAGE_LIMIT = 16 * 1024 * 1024;
 const OUTPUT_LIMIT = 16 * 1024 * 1024;
 const ARTIFACT_LIMIT = 256 * 1024 * 1024;
 const ARTIFACT_FILES = 1024;
@@ -65,6 +67,20 @@ function fileHash(file, scratch) {
   const digest = createHash('sha256'), fd = fs.openSync(file, 'r');
   try { for (;;) { const count = fs.readSync(fd, scratch, 0, scratch.length, null); if (!count) break; digest.update(count === scratch.length ? scratch : scratch.subarray(0, count)); } return digest.digest('hex'); }
   finally { fs.closeSync(fd); }
+}
+function readImage(file, id) {
+  const stat = fs.lstatSync(file);
+  need(stat.isFile() && !stat.isSymbolicLink(), 'Read requires an ordinary file');
+  const header = Buffer.allocUnsafe(Math.min(stat.size, IMAGE_TYPE_SNIFF_BYTES)), fd = fs.openSync(file, 'r');
+  let count;
+  try { count = fs.readSync(fd, header, 0, header.length, 0); }
+  finally { fs.closeSync(fd); }
+  const mimeType = detectSupportedImageMimeType(header.subarray(0, count));
+  if (!mimeType) return undefined;
+  need(stat.size <= IMAGE_LIMIT, 'Image bytes=' + stat.size + '; limit=' + IMAGE_LIMIT + '. Resize the image before read; shell base64 output is capped.');
+  const artifact = { name: id + '-0.bin', bytes: stat.size, sha256: fileHash(file, Buffer.allocUnsafe(256 * 1024)) };
+  fs.copyFileSync(file, path.join(EXCHANGE, artifact.name), fs.constants.COPYFILE_EXCL);
+  return { mimeType, artifact };
 }
 function catalog(root, hashes = false) {
   const files = new Map(), pending = ['']; let bytes = 0;
@@ -191,7 +207,7 @@ try {
   const workspaceIndex = input.workspaceIndex ?? 0;
   need(Number.isSafeInteger(workspaceIndex) && workspaceIndex >= 0 && workspaceIndex < roots.length, 'Unknown workspace');
   const root = roots[workspaceIndex], command = operation === 'powershell' || operation === 'bash';
-  let text, snapshot, before, scope, batchScopes;
+  let text, snapshot, before, scope, batchScopes, image;
   if (request.mode === 'sandbox-write' && !['read', 'ls', 'find', 'grep'].includes(operation)) {
     if (command) { before = []; for (const directory of roots) before.push(catalog(directory, 'versions')); }
     else if (operation === 'file_batch') {
@@ -215,14 +231,19 @@ try {
     }
   }
   if (operation === 'read') {
-    const bytes = read(local(root, input.path)); snapshot = sha(bytes);
-    need(isUtf8(bytes), 'File is not UTF-8 text');
-    const source = bytes.toString('utf8'), offset = Math.max(0, (input.offset ?? 1) - 1), count = Math.min(2000, input.limit ?? 2000);
-    let start = 0, end = 0;
-    for (let line = 0; line < offset; line++) { const next = source.indexOf('\n', start); if (next < 0) { start = source.length; break; } start = next + 1; }
-    end = start;
-    for (let line = 0; line < count && end < source.length && end - start < 32768; line++) { const next = source.indexOf('\n', end); end = next < 0 ? source.length : next + 1; }
-    text = source.slice(start, Math.min(end, start + 32768)) + '\n[Snapshot: ' + snapshot + ']';
+    const file = local(root, input.path);
+    image = readImage(file, request.id);
+    if (image) { snapshot = image.artifact.sha256; text = 'Read image file [' + image.mimeType + ']'; }
+    else {
+      const bytes = read(file); snapshot = sha(bytes);
+      need(isUtf8(bytes) && !bytes.includes(0), 'Unsupported binary file. read supports UTF-8 text and JPEG, PNG, GIF, WebP, BMP images. Convert other formats to PNG before read; do not transport binary via capped shell output.');
+      const source = bytes.toString('utf8'), offset = Math.max(0, (input.offset ?? 1) - 1), count = Math.min(2000, input.limit ?? 2000);
+      let start = 0, end = 0;
+      for (let line = 0; line < offset; line++) { const next = source.indexOf('\n', start); if (next < 0) { start = source.length; break; } start = next + 1; }
+      end = start;
+      for (let line = 0; line < count && end < source.length && end - start < 32768; line++) { const next = source.indexOf('\n', end); end = next < 0 ? source.length : next + 1; }
+      text = source.slice(start, Math.min(end, start + 32768)) + '\n[Snapshot: ' + snapshot + ']';
+    }
   } else if (operation === 'ls' || operation === 'find' || operation === 'grep') {
     const searchRoot = searchScope(root, input.path), files = catalog(root); const rows = [];
     for (const name of files.keys()) {
@@ -275,7 +296,7 @@ try {
     for (const change of changes(before[i], roots[i], batchScopes[i], maxWriteBytes, request.id, i * 32)) { if (i) change.workspaceIndex = i; candidates.push(change); }
   }
   if (!command && workspaceIndex) for (const candidate of candidates) candidate.workspaceIndex = workspaceIndex;
-  const result = { id: request.id, ok: true, text, snapshot, execution, changes: candidates };
+  const result = { id: request.id, ok: true, text, snapshot, image, execution, changes: candidates };
   const encoded = JSON.stringify(result); need(Buffer.byteLength(encoded) <= 24 * 1024 * 1024, 'Result too large');
   fs.writeFileSync(path.join(EXCHANGE, 'response.json'), encoded);
 } catch (error) {

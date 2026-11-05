@@ -30,6 +30,8 @@ These capabilities still depend on the provider, model capabilities, project con
 
 Windows Sandbox supports **Bash and PowerShell 7**, sharing one process-family supervisor; Windows PowerShell 5.1 is never a fallback. Tool installations are discovered from the process and persistent host PATH when the VM starts or reloads. Use `/add-dir <directory>`, `/remove-dir <directory>`, and `/dirs` to manage additional working directories. Commands and file tools use the same absolute paths in isolated copies, and successful text or binary outputs publish to their respective host workspaces after authorization and version checks. Networking remains explicitly configured through global `sandboxNetwork`. See [execution environments](docs/execution-environments.md).
 
+Sandbox `read` supports text and JPEG, PNG, GIF, WebP, and BMP images, detected by file contents. Images up to 16 MiB use a separate byte attachment and the normal inline image resizing pipeline. In CodeMode, use `await show((await tools.read({path: "preview.png"})).ref)` to display one. Shell output is capped and is unsuitable for transporting base64 image data.
+
 ## Quick start
 
 ### Requirements
