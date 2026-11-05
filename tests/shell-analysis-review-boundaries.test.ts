@@ -200,11 +200,11 @@ test("Python deletion properties retain ordinary targets and opaque language bou
 });
 test("sort and find options distinguish operands, targets and terminal errors", async (t) => {
   await rules(t, [
-    ["escaped backticks are a literal target", "touch \\`pwd\\`/../escaped", "allowed"],
+    ["escaped backticks are a literal target", "touch \\`pwd\\`/escaped", "allowed"],
     ["terminal help retains only actual preceding effects", "sort --out=.git/config --he", "allowed"],
     ["terminal help retains only actual preceding effects", "sort -ro.git/config --help", "allowed"],
     ["sort unique output prefix", "sort -T tmp --outp ../outside", "ask"],
-    ["sort literal backtick", "sort --out='`pwd`/../outside'", "allowed"],
+    ["sort literal backtick", "sort --out='`pwd`/output'", "allowed"],
     ["sort compressor", "sort --comp=./codec", "opaque"],
     ["sort unknown option", "sort -T tmp --unknown-option", "opaque"],
     ["sort ambiguous prefix", "sort -o .git/config --i", "read-only"],

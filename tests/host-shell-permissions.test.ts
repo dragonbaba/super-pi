@@ -95,6 +95,10 @@ test("PowerShell emits separate copy/move operands and write destinations with b
     [{ kind: "copy", path: join(cwd, "source.txt"), destination: resolve(cwd, "../out.txt") }]);
   assert.deepEqual(scan("Move-Item source.txt ../out.txt").effects,
     [{ kind: "move", path: join(cwd, "source.txt"), destination: resolve(cwd, "../out.txt") }]);
+  assert.deepEqual(scan("Copy-Item source.txt ../out.txt 2>&1").effects,
+    [{ kind: "copy", path: join(cwd, "source.txt"), destination: resolve(cwd, "../out.txt") }]);
+  assert.deepEqual(scan("Remove-Item source.txt 2>&1").effects,
+    [{ kind: "delete", path: join(cwd, "source.txt"), destination: undefined }]);
   for (const command of ["Set-Content -LiteralPath ../out.txt -Value data", "'data' | Out-File ../out.txt", "Write-Output data > ../out.txt"]) {
     assert.equal(scan(command).effects[0]!.kind, "write"); assert.equal(scan(command).effects[0]!.path, resolve(cwd, "../out.txt"));
   }
@@ -121,6 +125,8 @@ test("native Bash composition keeps real operands, command option groups, git sc
     assert.deepEqual(clean.effects, [{ kind: "git-clean", path: resolve(cwd, "../outside"), destination: undefined }]);
     assert.equal(analyzeNativeShell("git clean -fd -- .sp", cwd, shell, 1).effects[0]!.path, join(cwd, ".sp"));
     assert.equal(analyzeNativeShell("git reset --hard", cwd, shell, 1).effects[0]!.kind, "git-reset");
+    assert.equal(analyzeNativeShell("rm -f build/../keep.txt", cwd, shell, 1).uncertain, true);
+    assert.equal(analyzeNativeShell(shell === "bash" ? "cd build/..; rm keep.txt" : "Set-Location build/..; rm keep.txt", cwd, shell, 1).uncertain, true);
   }
 });
 
@@ -134,6 +140,8 @@ test("real Windows unquoted paths, cmd tails, aliases and child temporary enviro
   const temp = await f.call("powershell", { command: "[System.IO.Path]::GetTempPath()", timeout: 10 });
   const output = temp.content.map(block => block.type === "text" ? block.text : "").join("\n");
   assert.ok(output.includes(owned.root), output);
+  const home = await f.call("powershell", { command: "Convert-Path -LiteralPath '~'", timeout: 10 });
+  assert.ok(home.content.some(block => block.type === "text" && block.text.includes(homedir())));
   const array = await f.call("powershell", { command: "Set-Content -LiteralPath 'one.txt','two.txt' -Value data; Get-Content one.txt 2>&1", timeout: 10 });
   assert.equal(array.isError, undefined);
   for (const file of ["one.txt", "two.txt"]) assert.equal((await fs.readFile(join(f.workspace, file), "utf8")).trim(), "data");
@@ -166,6 +174,10 @@ test("literal tilde in a HOME path stays a known critical target, including Wind
   try {
     const command = `rm -rf '${homedir().replaceAll("\\", "/")}'`;
     await assert.rejects(f.owner.authorize(f.event("bash", { command }), f.ctx), /HOME.*祖先/s);
+    for (const command of ["Remove-Item ~ -Recurse -Force", "Set-Location ~; Remove-Item . -Recurse"])
+      await assert.rejects(f.owner.authorize(f.event("powershell", { command }), f.ctx), /HOME.*祖先/s, command);
+    assert.equal(scan("Remove-Item -LiteralPath '~/file.txt'", f.workspace).effects[0]?.path, join(home, "file.txt"));
+    assert.equal(scan("[IO.File]::Delete('~/file.txt')", f.workspace).effects[0]?.path, join(f.workspace, "~", "file.txt"));
     assert.equal(f.dialogs.length, 0); assert.equal((await fs.stat(home)).isDirectory(), true);
   } finally { if (previous === undefined) delete process.env[key]; else process.env[key] = previous; }
 });
@@ -178,7 +190,11 @@ test("review: all write operands, shell redirections and absolute wrappers reach
     ["powershell", "Add-Content -Path 'safe.txt','../outside/existing.txt' -Value changed"],
     ["powershell", "git diff > .git/config"],
     ["powershell", "git status > ../outside/existing.txt"],
+    ["powershell", "Copy-Item safe.txt ../outside/existing.txt 2>&1"],
+    ["powershell", "Move-Item safe.txt ../outside/existing.txt *>&1"],
     ["bash", "/bin/bash -lc 'rm -rf .git'"],
+    ["bash", "/usr/bin/git clean -fd -- .sp"],
+    ["bash", "'/usr/bin/git.exe' clean -fd -- .sp"],
   ] as const) await assert.rejects(f.owner.authorize(f.event(shell, { command }), f.ctx), /POLICY_BLOCKED|EXTERNAL_FILE_WRITE_BLOCKED/, command);
   for (const command of ["Get-ChildItem 2>&1", "git diff 2>&1", "cmd /c dir 2>&1", "Get-ChildItem 3>&1"]) {
     assert.equal(scan(command, f.workspace).recognized, false, command);
@@ -244,4 +260,25 @@ test("actual cwd and symlink identity stay bound until spawn and unlink does not
   await fs.writeFile(join(f.workspace, "wrapper-owned.txt"), "owned");
   assert.equal((await f.call("bash", { command: `'${bash}' -lc 'rm -f wrapper-owned.txt'`, timeout: 10 })).isError, undefined);
   await assert.rejects(fs.stat(join(f.workspace, "wrapper-owned.txt")), { code: "ENOENT" });
+});
+
+test("parent components after a possible symlink ask before deletion and use the real POSIX target", async t => {
+  const f = await fixture(t), staging = join(f.outside, "staging"), link = join(f.workspace, "build");
+  await fs.mkdir(staging); await fs.writeFile(join(f.outside, "keep.txt"), "external");
+  await fs.writeFile(join(f.workspace, "keep.txt"), "workspace");
+  await fs.symlink(staging, link, process.platform === "win32" ? "junction" : "dir");
+  try {
+    const command = "rm -f build/../keep.txt", select = f.ctx.ui.select;
+    f.ctx.ui.select = async () => undefined;
+    await assert.rejects(f.call("bash", { command }), /APPROVAL_CANCELLED/);
+    assert.equal(await fs.readFile(join(f.outside, "keep.txt"), "utf8"), "external");
+    assert.equal(await fs.readFile(join(f.workspace, "keep.txt"), "utf8"), "workspace");
+    if (process.platform !== "win32") {
+      assert.equal(await fs.readFile(f.workspace + "/build/../keep.txt", "utf8"), "external");
+      f.ctx.ui.select = select;
+      assert.equal((await f.call("bash", { command, timeout: 10 })).isError, undefined);
+      await assert.rejects(fs.stat(join(f.outside, "keep.txt")), { code: "ENOENT" });
+      assert.equal(await fs.readFile(join(f.workspace, "keep.txt"), "utf8"), "workspace");
+    }
+  } finally { await fs.unlink(link); }
 });

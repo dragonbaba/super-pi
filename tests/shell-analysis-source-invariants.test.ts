@@ -30,7 +30,7 @@ test("authorization scanners and cache methods add no callbacks, promises or Buf
   targets.get("shell-redirection.ts")!.add("isBashCommandFlag");
   targets.set("windows-mutations.ts", new Set(["commandName", "literalTarget", "inspectWindowsMutations", "inspectWindowsArguments", "inspectSegment"]));
   targets.set("native-analysis.ts", new Set(["analyzeNativeShell"]));
-  targets.set("mutation-effects.ts", new Set(["addShellEffect"]));
+  targets.set("mutation-effects.ts", new Set(["addShellEffect", "hasUnresolvedParentPath"]));
   for (const [file, names] of targets) {
     const source = ts.createSourceFile(file, readFileSync(`packages/coding-agent/src/core/shell-policy/${file}`, "utf8"), ts.ScriptTarget.Latest, true);
     const seen = new Set<string>();

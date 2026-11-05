@@ -1,3 +1,6 @@
+/** Operators emitted by the Windows lexer; Bash removes its broader syntax before argv inspection. */
+export const WINDOWS_REDIRECTION_OPERATORS = new Set([">", ">>", "<", ">&", "<&"]);
+
 /** Called only outside quotes/escapes. Returns an operator width, never argv. */
 export function shellRedirectionLength(source: string, index: number): number {
   const first = source.charCodeAt(index);

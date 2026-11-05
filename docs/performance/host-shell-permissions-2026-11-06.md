@@ -39,23 +39,25 @@ node --experimental-strip-types --expose-gc scripts/bench/shell-authorization-an
 
 | 原生入口样本 | 预处理次数 / 512 次调用 | 采样 B/调用 | p95 ms |
 | --- | ---: | ---: | ---: |
-| Bash printf 读取对照 | 512 | 6,977 | 0.0219 |
-| Bash 外部 rm | 512 | 10,644 | 0.0248 |
-| /bin/bash -lc 嵌套 rm | 1,024 | 19,596 | 0.0530 |
-| Bash 动态删除目标 | 512 | 8,675 | 0.0241 |
-| Bash 内联 Node 删除 | 512 | 21,037 | 0.0408 |
-| PowerShell Remove-Item | 0（不使用 Bash 预处理） | 2,746 | 0.0115 |
-| PowerShell → cmd /c del | 0 | 2,782 | 0.0056 |
-| PowerShell 两目标 Set-Content | 0 | 3,725 | 0.0101 |
-| PowerShell git diff 2>&1 | 0 | 1,257 | 0.0046 |
+| Bash printf 读取对照 | 512 | 7,494 | 0.0238 |
+| Bash 外部 rm | 512 | 11,153 | 0.0272 |
+| /bin/bash -lc 嵌套 rm | 1,024 | 18,393 | 0.0522 |
+| Bash 动态删除目标 | 512 | 8,432 | 0.0233 |
+| Bash 内联 Node 删除 | 512 | 20,121 | 0.0394 |
+| PowerShell Remove-Item | 0（不使用 Bash 预处理） | 3,603 | 0.0126 |
+| PowerShell → cmd /c del | 0 | 2,696 | 0.0087 |
+| PowerShell 两目标 Set-Content | 0 | 3,989 | 0.0095 |
+| PowerShell git diff 2>&1 | 0 | 1,206 | 0.0047 |
 
-原生测量（含首轮 review 修正）中 owner created=released=5,188，liveOwners/liveEntries/liveBytes 全为 0；结果及操作数组 8 个 WeakRef 经两次 GC 后全部消失。普通 Bash 源每次仅预处理一次并缓存命中一次，嵌套样本两个不同 source 各一次；没有把相同 source 多次预处理计为“复用”。主要采样点为 parseShellSegments、inspectScript、resolve；Windows 为 inspectWindowsMutations、resolve、addShellEffect。
+原生测量（含第二轮 review 修正）中 owner created=released=5,188，liveOwners/liveEntries/liveBytes 全为 0；结果及操作数组 8 个 WeakRef 经两次 GC 后全部消失。普通 Bash 源每次仅预处理一次并缓存命中一次，嵌套样本两个不同 source 各一次；没有把相同 source 多次预处理计为“复用”。主要采样点为 parseShellSegments、inspectScript、resolve；Windows 为 inspectWindowsMutations、resolve、addShellEffect。
 
 旧组合入口对照仍验证原来的生命周期扫描+high-risk+permission 三层共享：owner created=released=2,308，liveOwners/liveEntries/liveBytes=0，正常/异常/取消/代次失效的 16 个 WeakRef 两次 GC 后全部消失。四个样本采样 7,478 / 193,077 / 194,611 / 545,222 B/调用；heredoc 大样本仍主要分配于已有 join/split/parseShellSegments，此结果不能当作已优化承诺。
 
 ## 行为与适用边界
 
-10 个新增行为测试使用自己的工作区、外部兄弟目录和追加工作区。真实生产 selector 6 个审批帧；Bash/PowerShell 均验证取消后可重新批准、批准才删除、明确拒绝保留目标。Windows 未加引号盘符路径、Set-Location+ri、cmd /c 完整参数的实际目标与展示一致。真实 rm 仅解除目录链接，其指向的文件保留；cwd 链接在审批后变更时不启动命令。敏感拒绝只到授权边界，未删除真实关键目录。
+11 个新增行为测试使用自己的工作区、外部兄弟目录和追加工作区。真实生产 selector 6 个审批帧；Bash/PowerShell 均验证取消后可重新批准、批准才删除、明确拒绝保留目标。Windows 未加引号盘符路径、Set-Location+ri、cmd /c 完整参数的实际目标与展示一致。真实 rm 仅解除目录链接，其指向的文件保留；cwd 链接在审批后变更时不启动命令。敏感拒绝只到授权边界，未删除真实关键目录。
+
+第二轮四项均有失败复现：流复制参数不得替换 copy/move 的真实目标；Git 绝对路径和 .exe 拼写同样分析；PowerShell 文件系统路径的 `~` 与 Set-Location 展开 HOME，但 .NET API 的字面参数不套用 provider 展开；含 `name/..` 的路径不能在检查链接前作词法折叠。最后一种保守标为不确定并询问，普通前导 `../outside` 仍能静态分类。其检查只使用 primitive 游标，无数组、正则或闭包分配。独占链接夹具验证取消没有副作用；POSIX 实际穿过链接再返回父目录的删除验收交由 Linux CI。Windows 本机另以只读 Convert-Path 验证真实 `~` 展开，没有对真实 HOME 执行变更。旧字面反引号对照去掉无关的 `/..`，保留转义语义验收；新用例单独覆盖父路径的不确定性。
 
 首轮 CI 的旧审批 UI 测试在 cwd 解析完成前读取 selector，随后提前清理导致 context expired。最小用例本地复现后，改为等待实际 selector；相关 14 项通过，真实倒计时与 Esc 各取消一次、第三次批准，3 个可见帧，拒绝记录/倒计时/abort listeners 均为 0。此修正仅同步测试到实际 UI 状态，不改变生产生命周期。
 

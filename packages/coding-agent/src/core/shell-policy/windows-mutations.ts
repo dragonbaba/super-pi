@@ -1,8 +1,9 @@
 import { basename, dirname, isAbsolute, resolve } from "node:path";
-import { addShellEffect, MAX_SHELL_DEPTH, MAX_SHELL_SEGMENTS, MAX_SHELL_SOURCE_CHARS, type ShellMutationScan } from "./mutation-effects.ts";
+import { homedir } from "node:os";
+import { addShellEffect, hasUnresolvedParentPath, MAX_SHELL_DEPTH, MAX_SHELL_SEGMENTS, MAX_SHELL_SOURCE_CHARS, type ShellMutationScan } from "./mutation-effects.ts";
 import { inspectEmbeddedDeletion, inspectHighRiskBashMutation } from "./core.ts";
 import { inspectBashPermissionScope, recordGit } from "./permission-bash.ts";
-import { isBashCommandFlag, bashScriptOperandIndex } from "./shell-redirection.ts";
+import { isBashCommandFlag, bashScriptOperandIndex, isShellFileDescriptor, WINDOWS_REDIRECTION_OPERATORS } from "./shell-redirection.ts";
 import { NODE_COMMAND_PATTERN, PYTHON_COMMAND_PATTERN } from "./regex.ts";
 import type { ShellAnalysisOwner } from "./shell-analysis.ts";
 
@@ -29,11 +30,14 @@ function commandName(value: string): string {
   const name = basename(value.replaceAll("\\", "/")).toLowerCase();
   return name.endsWith(".exe") ? name.slice(0, -4) : name;
 }
-function literalTarget(value: string | undefined, dynamic: boolean, cwd: string, shell: WindowsShell, literalPath = false): string | undefined {
-  if (!value || dynamic || value.includes("\0") || !literalPath && WILDCARD.test(value)) return;
+function literalTarget(value: string | undefined, dynamic: boolean, cwd: string, shell: WindowsShell, literalPath = false, providerPath = true): string | undefined {
+  if (!value || dynamic || value.includes("\0") || hasUnresolvedParentPath(value) || !literalPath && WILDCARD.test(value)) return;
   if (shell === "cmd" ? CMD_EXPANSION.test(value) : PS_PROVIDER.test(value)) return;
   // A drive path is only meaningful on a Windows host; never reinterpret it as a POSIX relative filename.
   if (process.platform !== "win32" && WINDOWS_ABSOLUTE.test(value)) return;
+  if (providerPath && shell === "powershell" && (value === "~" || value.startsWith("~/") || value.startsWith("~\\"))) {
+    cwd = homedir(); value = "." + value.slice(1);
+  }
   if (!cwd && !isAbsolute(value)) return;
   return resolve(cwd, value);
 }
@@ -110,7 +114,7 @@ function inspectSegment(tokens: readonly string[], dynamic: readonly (boolean | 
   for (let index = start; index < tokens.length; index++) {
     if (DOTNET_DELETE.test(tokens[index]!)) {
       const literal = tokens[index + 1] === "(" && (tokens[index + 3] === ")" || tokens[index + 3] === ",");
-      addShellEffect(scan, "delete", literal ? literalTarget(tokens[index + 2], Boolean(dynamic?.[index + 2]), cwd, shell, true) : undefined);
+      addShellEffect(scan, "delete", literal ? literalTarget(tokens[index + 2], Boolean(dynamic?.[index + 2]), cwd, shell, true, false) : undefined);
     }
     if (tokens[index] === ">" || tokens[index] === ">>") {
       const operand = tokens[index + 1];
@@ -164,8 +168,8 @@ function inspectSegment(tokens: readonly string[], dynamic: readonly (boolean | 
     const token = tokens[index]!, lower = token.toLowerCase();
     if (lower === "-whatif" || lower === "-whatif:$true") return cwd;
     if (robocopy && lower === "/l") return cwd;
-    if (token === ">" || token === ">>" || token === "<") { index++; continue; }
-    if ((tokens[index + 1] === ">" || tokens[index + 1] === ">>") && token.length === 1 && token >= "0" && token <= "9") continue;
+    if (WINDOWS_REDIRECTION_OPERATORS.has(token)) { index++; continue; }
+    if (WINDOWS_REDIRECTION_OPERATORS.has(tokens[index + 1] ?? "") && (isShellFileDescriptor(token) || shell === "powershell" && token === "*")) continue;
     if (PATH_OPTIONS.has(lower)) { explicitPath = ++index; literalPath = lower === "-literalpath"; continue; }
     if (DESTINATION_OPTIONS.has(lower)) { destination = ++index; continue; }
     if (VALUE_OPTIONS.has(lower)) { index++; continue; }

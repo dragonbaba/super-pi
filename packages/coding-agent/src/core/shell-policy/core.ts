@@ -44,7 +44,7 @@ import { FD_DUPLICATION_PATTERN } from "./regex.ts";
 import { isBashCommandFlag } from "./shell-redirection.ts";
 import { isCodeMethodNamePart, writeCodeMethodName, writeEscapedNodeMethodKey } from "./code-method-names.ts";
 import { diagnosticForPrimitives, policyMetadata, renderPolicyDiagnostic, type PolicyDiagnosticMetadata } from "./policy-diagnostics.ts";
-import { addShellEffect, type ShellMutationScan } from "./mutation-effects.ts";
+import { addShellEffect, hasUnresolvedParentPath, type ShellMutationScan } from "./mutation-effects.ts";
 
 const MAX_INSPECTED_COMMAND_CHARS = 128 * 1024;
 export const BLOCK_REASON = "Blocked an unmanaged long-lived process: remove '&' or the detaching launcher, set background: true with explicit cwd.";
@@ -1982,7 +1982,7 @@ function hasDynamicSyntax(value: string): boolean {
 
 /** Only a leading unquoted HOME tilde and a final-segment glob are bounded. */
 export function staticMutationTarget(target: string, cwd: string, expansion = 0): string | undefined {
-	if (expansion & ~48) return undefined;
+	if (expansion & ~48 || hasUnresolvedParentPath(target)) return undefined;
 	if (expansion & 32) {
 		if (target !== "~" && !target.startsWith("~/")) return undefined;
 		cwd = homedir();

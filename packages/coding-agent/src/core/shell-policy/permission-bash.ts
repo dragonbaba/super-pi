@@ -9,9 +9,9 @@ import { isReadOnlyFindLoop } from "./readonly-find-loop.ts";
 import { findPredicateHasOperand, isReadOnlySortTail } from "./readonly-find.ts";
 import { sortHasTerminalOption, sortLongOption, sortOptionRequiresValue } from "./sort-options.ts";
 import { NODE_COMMAND_PATTERN, PYTHON_COMMAND_PATTERN } from "./regex.ts";
-import { addShellEffect, type ShellEffectKind, type ShellMutationScan } from "./mutation-effects.ts";
+import { addShellEffect, hasUnresolvedParentPath, type ShellEffectKind, type ShellMutationScan } from "./mutation-effects.ts";
 import { inspectWindowsArguments, inspectWindowsMutations } from "./windows-mutations.ts";
-import { isBashCommandFlag } from "./shell-redirection.ts";
+import { isBashCommandFlag, WINDOWS_REDIRECTION_OPERATORS } from "./shell-redirection.ts";
 import { inspectEmbeddedDeletion } from "./core.ts";
 import { bashPipelinePrefixEnd, bashScriptOperandIndex, hasStatefulBashPrintf, isBashArithmeticCommandHead, isBashNetworkRedirectionTarget, shellExpansionRisk, hasUnsafeBashTestOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 
@@ -238,8 +238,8 @@ export function recordGit(tokens: readonly string[], start: number, cwd: string,
     let options = true;
     for (let slot = index + 1; slot < tokens.length; slot++) {
       const value = tokens[slot]!;
-      if (value === ">" || value === ">>" || value === "<" || value === ">&" || value === "<&") { slot++; continue; }
-      if ((tokens[slot + 1] === ">" || tokens[slot + 1] === ">&") && value.length === 1 && value >= "0" && value <= "9") continue;
+      if (WINDOWS_REDIRECTION_OPERATORS.has(value)) { slot++; continue; }
+      if (WINDOWS_REDIRECTION_OPERATORS.has(tokens[slot + 1] ?? "") && (isShellFileDescriptor(value) || value === "*")) continue;
       if (options && value === "--") { options = false; continue; }
       if (options && (value === "-e" || value === "--exclude")) { slot++; continue; }
       if (options && value.startsWith("-")) continue;
@@ -490,7 +490,7 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
   if (isBashArithmeticCommandHead(tokens, index)) { markUncertainContext(builder, "unverifiable_arithmetic_command"); return cwd; }
   if (tokens[index] !== command && command !== "command" && command !== "exec") {
     if (builder.native && inspectKnownMutation(command.endsWith(".exe") ? command.slice(0, -4) : command, tokens, index + 1, cwd, builder, depth)) return cwd;
-    if (!(builder.native && SCRIPT_WRAPPERS.has(command))) {
+    if (!(builder.native && (SCRIPT_WRAPPERS.has(command) || command === "git" || command === "git.exe"))) {
       markOpaque(builder, "explicit_or_cased_executable");
       addTarget(builder, tokens[index]!, cwd);
       return cwd;
@@ -542,7 +542,7 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
   if (command === "cd" && index !== start) return cwd;
   if (command === "cd") {
     const target = tokens[index + 1];
-    if (!target || hasDynamicSyntax(target)) {
+    if (!target || hasDynamicSyntax(target) || hasUnresolvedParentPath(target)) {
       markUncertainContext(builder, "dynamic_cd");
       return cwd;
     }
@@ -598,7 +598,7 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
     addResolvedTarget(builder, cwd);
     return cwd;
   }
-  if (command === "git") {
+  if (command === "git" || builder.native && command === "git.exe") {
     if (builder.native) recordGit(tokens, index + 1, cwd, builder.native, tokens.expansions);
     const subcommand = tokens[index + 1]?.toLowerCase();
     addClass(builder, `git:${safeClassToken(subcommand ?? "unknown")}`);
