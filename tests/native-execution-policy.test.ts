@@ -18,8 +18,8 @@ import { consumeDelegatedTaskPolicies } from "../packages/extensions/subagent/de
 import { consumeStructuredReadonlyWorkspacePolicy } from "../packages/extensions/structured-readonly-command/delegation.ts";
 import structuredReadonlyCommand from "../packages/extensions/structured-readonly-command/index.ts";
 
-async function fixture(t: TestContext, config = {}, environment: "sandbox" | "trusted-host" = "sandbox", mode?: SessionPermissionMode) {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "sp-native-policy-"));
+async function fixture(t: TestContext, config = {}, environment: "sandbox" | "trusted-host" = "sandbox", mode?: SessionPermissionMode, directories: readonly string[] = []) {
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "sp-native-policy-")));
     const runtime = createExtensionRuntime(), branch: any[] = [];
     runtime.appendEntry = (customType, data) => { branch.push({ type: "custom", customType, data }); };
     const getEntry = (id: string): any => {
@@ -28,7 +28,7 @@ async function fixture(t: TestContext, config = {}, environment: "sandbox" | "tr
     };
     const ctx: any = { cwd: root, hasUI: false, signal: new AbortController().signal,
         sessionManager: { getSessionId: () => "policy-test", getBranch: () => branch, getLeafEntry: () => getEntry(String(branch.length - 1)), getEntry }, ui: {} };
-    const owner = new SessionExecutionPolicy(runtime, environment, config, mode);
+    const owner = new SessionExecutionPolicy(runtime, environment, config, mode, directories);
     t.after(async () => { owner.dispose(); await runtime.executionBoundary.dispose(); await fs.rm(root, { recursive: true }); });
     function event(toolName: string, input: object) { return { type: "tool_call", toolName, input, toolCallId: "test-call" } as any; }
     function definition(name: string) { const d: any = { name }; owner.registerDefinition(d); return d; }
@@ -219,6 +219,44 @@ test("all batch paths are checked before any native mutation is prepared", async
         { operation: "write", path: "ok.txt", content: "x" }, { operation: "write", path: "../escape.txt", content: "x" },
     ] }), f.ctx, f.definition("file_batch")), /out-of-workspace/);
     assert.deepEqual(await fs.readdir(f.root), []);
+});
+
+test("canonical workspace selection protects additional roots through aliases and permits ordinary siblings", async t => {
+    const additional = await fixture(t), f = await fixture(t, { rules: [{ tool: "*", decision: "allow" }] }, "trusted-host", "host-write", [additional.root]);
+    for (const name of [".git", ".sp"]) {
+        await fs.mkdir(path.join(additional.root, name));
+        await fs.writeFile(path.join(additional.root, name, "config"), "protected");
+    }
+    await fs.writeFile(path.join(additional.root, "ordinary.txt"), "ordinary");
+    await fs.symlink(additional.root, path.join(f.root, "alias"), process.platform === "win32" ? "junction" : "dir");
+    for (const target of ["alias", "alias/.git/config", "alias/.sp/config"]) {
+        await assert.rejects(f.owner.authorize(f.event("delete", { path: target }), f.ctx), /Protected/);
+    }
+    const input = { path: "alias/ordinary.txt", content: "allowed" };
+    const invocation = await f.owner.authorize(f.event("write", input), f.ctx);
+    assert.equal(consumePermissionPathApproval(input, "test-call", "write")!.canonicalTarget, await fs.realpath(path.join(additional.root, "ordinary.txt")));
+    invocation.release();
+    await fs.mkdir(path.join(f.root, "..ordinary"));
+    const sandbox = await fixture(t, {}, "sandbox", "sandbox-write", [additional.root]);
+    await fs.symlink(additional.root, path.join(sandbox.root, "alias"), process.platform === "win32" ? "junction" : "dir");
+    (await sandbox.owner.authorize(sandbox.event("read", { path: "alias/ordinary.txt" }), sandbox.ctx, sandbox.definition("read"))).release();
+    (await f.owner.authorize(f.event("write", { path: "..ordinary/new.txt", content: "allowed" }), f.ctx)).release();
+});
+
+test("unavailable additional grants block their own paths without disabling the primary host workspace", async t => {
+    const additional = await fixture(t), directory = path.join(additional.root, "grant");
+    await fs.mkdir(directory);
+    const f = await fixture(t, {}, "trusted-host", "host-write", [directory]);
+    await fs.writeFile(path.join(f.root, "ordinary.txt"), "ordinary");
+    await fs.rmdir(directory);
+    (await f.owner.authorize(f.event("read", { path: "ordinary.txt" }), f.ctx)).release();
+    (await f.owner.authorize(f.event("write", { path: "new.txt", content: "allowed" }), f.ctx)).release();
+    await assert.rejects(f.owner.authorize(f.event("write", { path: path.join(directory, "new.txt"), content: "blocked" }), f.ctx), /unavailable|redirected/i);
+    await fs.symlink(f.root, directory, process.platform === "win32" ? "junction" : "dir");
+    (await f.owner.authorize(f.event("read", { path: "ordinary.txt" }), f.ctx)).release();
+    await assert.rejects(f.owner.authorize(f.event("read", { path: path.join(directory, "ordinary.txt") }), f.ctx), /unavailable|redirected/i);
+    const sandbox = await fixture(t, {}, "sandbox", "sandbox-write", [directory]);
+    await assert.rejects(sandbox.owner.authorize(sandbox.event("ls", { path: "." }), sandbox.ctx, sandbox.definition("ls")), /unavailable|redirected/i);
 });
 test("native workspace leases retain original directory identity and revoke on transitions", async t => {
     const f = await fixture(t);

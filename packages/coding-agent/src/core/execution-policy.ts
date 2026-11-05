@@ -2,10 +2,10 @@ import { createHash } from "node:crypto";
 import { lstat, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import { assertPermissionMode, type SessionPermissionMode } from "./permission-mode.ts";
-import { WORKSPACE_TOOL_NAMES, containsDirectory } from "./session-execution-profile.ts";
+import { WORKSPACE_TOOL_NAMES } from "./session-execution-profile.ts";
 import type { ExtensionContext, ExtensionRuntime, ToolCallEvent, ToolDefinition } from "./extensions/types.ts";
 import type { SessionEntry } from "./session-manager.ts";
-import { assessProtectedMutationPath, canonicalizeProspectivePath } from "./files/protected-path-policy.ts";
+import { assessCanonicalMutationPath, canonicalizeProspectivePath } from "./files/protected-path-policy.ts";
 import { attachPermissionPathApproval, mutationRequestHash, type PermissionPathApproval } from "./files/file-invocation.ts";
 import { InputReadPolicyLease } from "./files/session-input-read-permission.ts";
 import { resolveReadPathAsync, resolveToCwd } from "./tools/path-utils.ts";
@@ -139,18 +139,34 @@ export class SessionExecutionPolicy {
     private async paths(ctx: ExtensionContext, targets: readonly string[], mutation: boolean): Promise<string[]> {
         const check = this.guard(ctx), output: string[] = [];
         if (targets.length > 34) throw new Error(BLOCKED + "Too many paths");
+        if (!targets.length) return output;
+        const workspaces = [await realpath(ctx.cwd)], unavailable: string[] = []; check();
+        for (const directory of this.directories) {
+            let canonical: string | undefined;
+            try { canonical = await realpath(directory); } catch { /* Keep unavailable grants closed without disabling unrelated host paths. */ }
+            check();
+            if (canonical !== directory) {
+                if (this.mode !== "host-write") throw new Error(BLOCKED + "Additional workspace is unavailable or redirected: " + directory);
+                unavailable.push(directory);
+            } else workspaces.push(canonical);
+        }
         for (const target of targets) {
             if (typeof target !== "string" || target.length > 4096 || target.includes("\0")) throw new Error(BLOCKED + "Invalid path");
             const absolute = resolve(ctx.cwd, target);
-            let workspace = ctx.cwd;
-            for (const directory of this.directories) if (containsDirectory(directory, absolute)) { workspace = directory; break; }
+            const canonical = mutation ? await canonicalizeProspectivePath(absolute) : await realpath(absolute); check();
+            for (const directory of unavailable) {
+                if (inside(directory, absolute) || inside(directory, canonical)) throw new Error(BLOCKED + "Additional workspace is unavailable or redirected: " + directory);
+            }
             if (mutation) {
-                const result = await assessProtectedMutationPath(workspace, absolute); check();
-                if (!result.canonicalTarget || result.violations.some(violation => violation !== "workspace_escape" || this.mode !== "host-write")) throw new Error(BLOCKED + "Protected or out-of-workspace mutation: " + target);
-                output.push(result.canonicalTarget);
+                const result = assessCanonicalMutationPath(workspaces, canonical);
+                for (const violation of result.violations) {
+                    if (violation !== "workspace_escape" || this.mode !== "host-write") throw new Error(BLOCKED + "Protected or out-of-workspace mutation: " + target);
+                }
+                output.push(canonical);
             } else {
-                const canonical = await realpath(absolute), root = await realpath(workspace); check();
-                if (this.mode !== "host-write" && !inside(root, canonical)) throw new Error(BLOCKED + "Read is outside the workspace: " + target);
+                let contained = false;
+                for (const root of workspaces) if (inside(root, canonical)) { contained = true; break; }
+                if (this.mode !== "host-write" && !contained) throw new Error(BLOCKED + "Read is outside the workspace: " + target);
                 output.push(canonical);
             }
         }

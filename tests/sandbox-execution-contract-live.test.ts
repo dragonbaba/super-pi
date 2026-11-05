@@ -7,6 +7,7 @@ import { createHash } from "node:crypto";
 import { WorkspaceSandboxTools } from "../packages/coding-agent/src/core/sandbox/workspace-tools.ts";
 import { SessionExecutionPolicy } from "../packages/coding-agent/src/core/execution-policy.ts";
 import { createExtensionRuntime } from "../packages/coding-agent/src/core/extensions/loader.ts";
+import { sessionDirectories } from "../packages/coding-agent/src/core/session-execution-profile.ts";
 
 const enabled = process.platform === "win32" && process.env.SUPERPI_SANDBOX_WORKSPACE_ACCEPTANCE === "1";
 // Resolve emitted modules only for the opt-in release test; clean source checks need no dist declarations.
@@ -14,7 +15,40 @@ const distRoot = "../packages/coding-agent/dist/core/";
 const SandboxTools: typeof WorkspaceSandboxTools = process.env.SUPERPI_SANDBOX_USE_DIST === "1" ? (await import(distRoot + "sandbox/workspace-tools.js")).WorkspaceSandboxTools : WorkspaceSandboxTools;
 const Policy: typeof SessionExecutionPolicy = process.env.SUPERPI_SANDBOX_USE_DIST === "1" ? (await import(distRoot + "execution-policy.js")).SessionExecutionPolicy : SessionExecutionPolicy;
 const createRuntime: typeof createExtensionRuntime = process.env.SUPERPI_SANDBOX_USE_DIST === "1" ? (await import(distRoot + "extensions/loader.js")).createExtensionRuntime : createExtensionRuntime;
+const normalizeDirectories: typeof sessionDirectories = process.env.SUPERPI_SANDBOX_USE_DIST === "1" ? (await import(distRoot + "session-execution-profile.js")).sessionDirectories : sessionDirectories;
 function bashQuote(value: string): string { return "'" + value.replaceAll("'", "'\\''") + "'"; }
+
+test("live additional workspace accepts native identity from a different case spelling", { skip: !enabled, timeout: 180000 }, async () => {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "directory-identity-live-")));
+  const project = path.join(root, "project"), assets = path.join(root, "Assets Space"), artifacts = path.join(root, "owner");
+  for (const directory of [project, assets, artifacts]) await fs.mkdir(directory);
+  await fs.writeFile(path.join(assets, "input.txt"), "native identity");
+  const directories = normalizeDirectories(project, [assets.toUpperCase()]);
+  assert.deepEqual(directories, [await fs.realpath(assets)]);
+  const runtime = createRuntime(); runtime.appendEntry = () => {};
+  const policy = runtime.nativePermissions = new Policy(runtime, "sandbox", {}, "sandbox-write", directories);
+  const owner = new SandboxTools(project, artifacts, "sandbox-write", () => runtime, { directories, network: "disabled" });
+  const definitions: Record<string, any> = {}; owner.install(definitions);
+  for (const definition of Object.values(definitions)) policy.registerDefinition(definition);
+  const ctx: any = { cwd: project, hasUI: false, signal: runtime.executionBoundary.signal,
+    sessionManager: { getSessionId: () => "directory-identity-live", getLeafEntry: () => undefined } };
+  try {
+    for (const spelling of [assets, assets.toUpperCase()]) {
+      const input = { path: path.join(spelling, "input.txt") };
+      const authorization = await policy.authorize({ type: "tool_call", toolName: "read", toolCallId: "read", input }, ctx, definitions.read);
+      try {
+        authorization.consume(input, "read", "read");
+        const result = await definitions.read.execute("read", input, ctx.signal, undefined, ctx);
+        assert.notEqual(result.isError, true); assert.match(result.content[0].text, /native identity/);
+      } finally { authorization.release(); }
+    }
+    console.log("DIRECTORY_IDENTITY_LIVE " + JSON.stringify({ caseAlias: true, canonicalControl: true, reads: 2 }));
+  } finally {
+    await owner.close(); policy.dispose(); await runtime.executionBoundary.dispose();
+    assert.equal(owner.diagnostics.ownedArtifacts, 0);
+    assert.equal(await fs.realpath(root), root); await fs.rm(root, { recursive: true });
+  }
+});
 
 test("live unified workspace: both shells, additional directory, byte artifacts, conflicts and release", { skip: !enabled, timeout: 300000 }, async () => {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "execution-contract-live-")));
