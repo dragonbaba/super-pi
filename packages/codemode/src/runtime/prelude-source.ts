@@ -19,14 +19,13 @@
  * Evaluates to a function `(bridge, toolsJson, globalsJson, storeJson) => { settle, run, stalled }`.
  * `toolsJson` lists `{ name, jsName, description }`: `tools[jsName]` and `tools[name]` call the
  * tool, and `ALL_TOOLS` lists `{ name: jsName, description }`.
- * `stalled()` reports a script that has not finished while no host call is pending: with no timers
- * or I/O in the VM, nothing can ever resume it.
+ * `stalled()` reports a script that has neither pending host calls nor timers.
  * `globalsJson` lists `{ name, spread }`; `a.b` names are grouped into a frozen `a` object.
  * `bridge(kind, a, b, c)` with kind "call" or "global" (id, name, argsJson),
  * "output" ("text", text) or ("image", data, mimeType), or "done" (ok, valueJsonOrErrorJson, writesJson).
  */
 import {
-	MAX_ARGUMENT_CHARS, MAX_CALLS, MAX_ERROR_CHARS, MAX_OUTPUT_CHARS, MAX_OUTPUT_ITEMS,
+	MAX_ARGUMENT_CHARS, MAX_CALLS, MAX_TIMERS, MAX_TIMEOUT_MS, MAX_ERROR_CHARS, MAX_OUTPUT_CHARS, MAX_OUTPUT_ITEMS,
 	MAX_STORE_KEY_CHARS, MAX_STORE_KEYS, MAX_STORE_TOTAL_CHARS, MAX_STORE_VALUE_CHARS, MAX_VALUE_CHARS,
 } from "../limits.ts";
 export { MAX_STORE_TOTAL_CHARS, MAX_STORE_VALUE_CHARS } from "../limits.ts";
@@ -105,6 +104,8 @@ export const PRELUDE_SOURCE: string = `(function (bridge, toolsJson, globalsJson
 	const ErrorCtor = Error;
 	const TypeErrorCtor = TypeError;
 	const pending = new Map();
+	let timers;
+	let nextTimerId = 1;
 	let nextId = 1;
 	let finished = false;
 	let outputChars = 0;
@@ -422,14 +423,38 @@ export const PRELUDE_SOURCE: string = `(function (bridge, toolsJson, globalsJson
 	}
 	Object.freeze(console);
 
+	function setTimeout(callback, delay = 0, ...args) {
+		if (finished) return 0;
+		if (typeof callback !== "function") throw new TypeErrorCtor("setTimeout requires a function callback; string evaluation is not supported");
+		if (typeof delay !== "number" || !Number.isFinite(delay) || delay < 0 || delay > ${MAX_TIMEOUT_MS}) throw new RangeError("setTimeout delay must be 0..${MAX_TIMEOUT_MS} ms");
+		if (nextTimerId > ${MAX_TIMERS}) limit("Codemode timer limit exceeded (${MAX_TIMERS} per script)");
+		const id = nextTimerId++;
+		if (!timers) timers = new Map();
+		timers.set(id, { callback, args });
+		bridge("timer", id, delay);
+		return id;
+	}
+	function clearTimeout(id) {
+		if (timers && timers.delete(id)) bridge("clearTimer", id);
+	}
+
 	Object.defineProperty(globalThis, "tools", { value: toolsProxy, enumerable: true });
 	Object.defineProperty(globalThis, "ALL_TOOLS", { value: allTools, enumerable: true });
 	Object.defineProperty(globalThis, "console", { value: console, enumerable: true });
 	Object.defineProperty(globalThis, "text", { value: text, enumerable: true });
 	Object.defineProperty(globalThis, "image", { value: image, enumerable: true });
 	Object.defineProperty(globalThis, "exit", { value: exit, enumerable: true });
+	Object.defineProperty(globalThis, "setTimeout", { value: setTimeout, enumerable: true });
+	Object.defineProperty(globalThis, "clearTimeout", { value: clearTimeout, enumerable: true });
 
 	return {
+		fireTimer(id) {
+			const entry = timers && timers.get(id);
+			if (finished || !entry) return;
+			timers.delete(id);
+			try { Reflect.apply(entry.callback, undefined, entry.args); }
+			catch (error) { done(false, describeError(error)); }
+		},
 		settle(id, ok, payload) {
 			const entry = pending.get(id);
 			if (!entry) return;
@@ -473,13 +498,13 @@ export const PRELUDE_SOURCE: string = `(function (bridge, toolsJson, globalsJson
 			);
 		},
 		stalled() {
-			if (finished || pending.size > 0) return false;
+			if (finished || pending.size > 0 || (timers && timers.size > 0)) return false;
 			done(
 				false,
 				stringify({
 					name: "Error",
 					message:
-						"The script is waiting on a promise that can never settle: no tool call is pending, and timers do not exist here.",
+						"The script is waiting on a promise that can never settle: no tool call or timer is pending. Use await new Promise(resolve => setTimeout(resolve, ms)) for a bounded delay.",
 				}),
 			);
 			return true;

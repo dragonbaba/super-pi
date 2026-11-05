@@ -45,6 +45,7 @@ function describeException(error: JSException): string {
 async function main(data: WorkerData, port: MessagePort): Promise<void> {
 	const budget = new BridgeBudget();
 	let terminal: WorkerToHostMessage | undefined;
+	let timers: Map<number, ReturnType<typeof setTimeout>> | undefined;
 	const interrupt = new Int32Array(data.interrupt);
 	let memory: { readonly buffer: ArrayBufferLike } | undefined;
 	const captureMemory = (value: { readonly buffer: ArrayBufferLike }) => {
@@ -78,6 +79,7 @@ async function main(data: WorkerData, port: MessagePort): Promise<void> {
 		if (!terminal) return;
 		if (onMessage) port.removeListener("message", onMessage);
 		onMessage = undefined;
+		if (timers) { for (const timer of timers.values()) clearTimeout(timer); timers.clear(); timers = undefined; }
 		// Never dispose from a VM callback: wait until run/delivery and its job drain unwind.
 		if (terminal.type === "done") terminal.reusable = memory!.buffer.byteLength <= 64 * 1024 * 1024;
 		vm.dispose();
@@ -90,6 +92,14 @@ async function main(data: WorkerData, port: MessagePort): Promise<void> {
 		// Called from the prelude with primitives only.
 		const bridge = vm.newFunction("bridge", (kind, a, b, c) => {
 			switch (kind.toString()) {
+				case "timer":
+					timers ??= new Map();
+					timers.set(a.toNumber(), setTimeout(fireTimer, b.toNumber(), a.toNumber()));
+					break;
+				case "clearTimer":
+					clearTimeout(timers?.get(a.toNumber()));
+					timers?.delete(a.toNumber());
+					break;
 				case "call":
 				case "global":
 					post({
@@ -142,6 +152,7 @@ async function main(data: WorkerData, port: MessagePort): Promise<void> {
 		const settle = api.getProp("settle");
 		const run = api.getProp("run");
 		const stalled = api.getProp("stalled");
+		const fire = api.getProp("fireTimer");
 		let receivedResults = 0;
 		// One owner per VM. postMessage clones before returning, so this record is
 		// safe to reuse; no per-result callbacks, arrays or Promise boundaries.
@@ -150,11 +161,20 @@ async function main(data: WorkerData, port: MessagePort): Promise<void> {
 		const drain = () => {
 			vm.executePendingJobs();
 			vm.callFunction(stalled, api).dispose();
-			if (data.pauseTimeoutWhileWaiting && !terminal) {
+			// Timer waits consume the script budget, even alongside a host call.
+			if (data.pauseTimeoutWhileWaiting && !terminal && !timers?.size) {
 				idleMessage.received = receivedResults;
 				post(idleMessage);
 			}
 		};
+		let firingId = 0;
+		const deliverTimer = () => { vm.callFunction(fire, api, vm.newNumber(firingId)); };
+		function fireTimer(id: number): void {
+			if (terminal || !timers?.delete(id)) return;
+			try { firingId = id; vm.withScope(deliverTimer); drain(); }
+			catch (error) { crash(error); }
+			finally { firingId = 0; finish(); }
+		}
 
 		let incoming: import("./protocol.ts").HostToWorkerMessage | undefined;
 		// One scope callback per VM, not per incoming tool result. Delivery is synchronous.

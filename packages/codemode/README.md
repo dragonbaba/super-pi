@@ -8,8 +8,16 @@ The modified Super Pi package is licensed under [GPL-3.0-only](LICENSE);
 see [NOTICE.md](NOTICE.md) for the scope and upstream attribution.
 
 The coding agent loads this package on first script execution. Only injected tools
-and helpers are available; scripts have no host filesystem, network, Node globals
-or timers. Host tool policy remains the caller's responsibility.
+and helpers are available; scripts have no host filesystem, network or Node globals.
+Host tool policy remains the caller's responsibility.
+
+`setTimeout(callback, ms, ...args)` returns a numeric ID for `clearTimeout(id)`.
+Use `await new Promise(resolve => setTimeout(resolve, 1000))` to wait. Each script
+may create at most 256 timers; delays must be finite numbers from 0 to 300000 ms.
+Callbacks must be functions. Timer waits consume the execution budget, including
+in active-time mode alongside pending host calls. Script completion, `exit()`,
+failure and cancellation release pending timers. Unawaited timers do not keep a
+completed script alive; `setInterval` and string callbacks are unsupported.
 
 VM built-ins and their global bindings are read-only before scripts run. Patching
 built-in prototypes is unsupported (strict writes throw); use your own objects

@@ -5,7 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { CodemodeSandbox } from "../packages/codemode/src/runtime/host.ts";
 import { WorkerPool } from "../packages/codemode/src/runtime/worker-pool.ts";
 import { loadQuickJSWasm } from "../packages/codemode/src/wasm.ts";
-import { MAX_CALLS, MAX_CODE_CHARS, MAX_OUTPUT_ITEMS } from "../packages/codemode/src/limits.ts";
+import { MAX_CALLS, MAX_TIMERS, MAX_CODE_CHARS, MAX_OUTPUT_ITEMS } from "../packages/codemode/src/limits.ts";
 import { parseCodemodeSource } from "../packages/codemode/src/source.ts";
 import { BoundedJson } from "../packages/codemode/src/bounded-json.ts";
 import { BridgeBudget, isWorkerToHostMessage } from "../packages/codemode/src/runtime/protocol.ts";
@@ -123,7 +123,7 @@ test("Codemode shares the compiled WASM promise and runs isolated executions", a
 		assert.equal(first.calls[0]?.status, "ok");
 		const second = await sandbox.execute('return [typeof secret, typeof process, typeof require, typeof fetch, typeof setTimeout]');
 		assert.equal(second.ok, true);
-		if (second.ok) assert.deepEqual(second.value, Array(5).fill("undefined"));
+		if (second.ok) assert.deepEqual(second.value, ["undefined", "undefined", "undefined", "undefined", "function"]);
 	} finally { await sandbox.close(); }
 });
 
@@ -421,7 +421,7 @@ test("Codemode validates protocol shapes and enforces cumulative budgets indepen
 	for (const value of [{ type: "call" }, { type: "done", ok: true }, { type: "done", ok: true, writes: "[]", reusable: "yes" }, { type: "output", item: null }, { type: "idle", received: -1 }, { type: "idle", received: MAX_CALLS + 1 }]) assert.equal(isWorkerToHostMessage(value), false);
 	assert.equal(isWorkerToHostMessage({ type: "idle", received: 0 }), true);
 	const idleBudget = new BridgeBudget();
-	for (let i = 0; i <= MAX_CALLS; i++) assert.equal(idleBudget.consume({ type: "idle", received: 0 }), true);
+	for (let i = 0; i <= MAX_CALLS + MAX_TIMERS; i++) assert.equal(idleBudget.consume({ type: "idle", received: 0 }), true);
 	assert.equal(idleBudget.consume({ type: "idle", received: 0 }), false);
 	assert.equal(new BridgeBudget().consume({ type: "idle", received: 1 }), false);
 	const budget = new BridgeBudget();

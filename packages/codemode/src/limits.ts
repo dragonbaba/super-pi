@@ -6,6 +6,7 @@ export const MAX_OUTPUT_CHARS = 1024 * 1024;
 export const MAX_OUTPUT_ITEMS = 1024;
 export const MAX_BRIDGE_CHARS = 8 * 1024 * 1024;
 export const MAX_CALLS = 256;
+export const MAX_TIMERS = 256;
 export const MAX_TOOLS = 4096;
 export const MAX_CATALOG_CHARS = 2 * 1024 * 1024;
 export const MAX_STORE_VALUE_CHARS = 256 * 1024;

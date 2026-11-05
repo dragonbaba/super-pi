@@ -144,3 +144,16 @@ test("pre-existing instances and pre-start cancellation never start or stop some
 	assert.equal(d.owner.stopAttempted, false);
 	assert.equal(blankAcceptancePassed("blank", d.owner, undefined, true), false);
 });
+
+test("explicit cleanup retry re-observes retained owners after a failed list without restarting or stealing", async () => {
+	const cli = new FakeCli(), {owner} = fixture(cli);
+	await owner.start(); cli.badList = true;
+	const first = owner.cleanup(); assert.equal(await first, false);
+	assert.equal(owner.registered, true); assert.equal(owner.state, "blocked-cleanup");
+	cli.badList = false;
+	const second = owner.cleanup(); assert.notEqual(second, first); assert.equal(owner.cleanup(), second);
+	assert.equal(await second, true); assert.equal(owner.state, "closed"); assert.equal(owner.cleanupError, undefined);
+	assert.equal(owner.cleanup(), second);
+	assert.equal(cli.kinds.filter(kind => kind === "start").length, 1);
+	assert.equal(cli.kinds.filter(kind => kind === "stop").length, 1);
+});

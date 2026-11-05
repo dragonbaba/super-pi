@@ -1,6 +1,6 @@
 import type { CodemodeOutputItem } from "../types.ts";
 import type { CodemodeWasmModule } from "../wasm.ts";
-import { MAX_ARGUMENT_CHARS, MAX_BRIDGE_CHARS, MAX_CALLS, MAX_ERROR_CHARS, MAX_OUTPUT_CHARS, MAX_OUTPUT_ITEMS, MAX_VALUE_CHARS } from "../limits.ts";
+import { MAX_ARGUMENT_CHARS, MAX_BRIDGE_CHARS, MAX_CALLS, MAX_TIMERS, MAX_ERROR_CHARS, MAX_OUTPUT_CHARS, MAX_OUTPUT_ITEMS, MAX_VALUE_CHARS } from "../limits.ts";
 
 /**
  * Messages between the host (main thread) and the worker. Tool arguments,
@@ -87,7 +87,7 @@ export class BridgeBudget {
 		let chars = 0;
 		switch (message.type) {
 			case "idle":
-				if (++this.waits > MAX_CALLS + 1 || message.received > this.calls) return false;
+				if (++this.waits > MAX_CALLS + MAX_TIMERS + 1 || message.received > this.calls) return false;
 				break;
 			case "call":
 				if (++this.calls > MAX_CALLS || message.id !== this.calls || message.name.length > 1024) return false;
