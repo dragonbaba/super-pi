@@ -19,7 +19,7 @@ import { consumeStructuredReadonlyWorkspacePolicy } from "../packages/extensions
 import structuredReadonlyCommand from "../packages/extensions/structured-readonly-command/index.ts";
 
 async function fixture(t: TestContext, config = {}, environment: "sandbox" | "trusted-host" = "sandbox", mode?: SessionPermissionMode, directories: readonly string[] = []) {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "sp-native-policy-"));
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "sp-native-policy-")));
     const runtime = createExtensionRuntime(), branch: any[] = [];
     runtime.appendEntry = (customType, data) => { branch.push({ type: "custom", customType, data }); };
     const getEntry = (id: string): any => {

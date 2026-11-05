@@ -16,7 +16,7 @@ import { createAgentSession } from "../packages/coding-agent/src/core/sdk.ts";
 import { ALPHA_MODEL, alphaModelRuntime } from "./helpers/alpha-session.ts";
 
 test("directory replacement persists only applied choices and closes the old runtime", async () => {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "execution-replacement-")));
+  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "execution-replacement-")));
   const cwd = path.join(root, "project"), assets = path.join(root, "assets"), agentDir = path.join(root, "agent");
   for (const directory of [cwd, assets, agentDir]) fs.mkdirSync(directory);
   const manager = SessionManager.create(cwd, path.join(root, "sessions"));
@@ -52,12 +52,14 @@ test("directory replacement persists only applied choices and closes the old run
 });
 
 test("local execution profile restores explicit choices only for the same session, cwd and machine", () => {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "execution-profile-")));
+  const requestedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "execution-profile-"));
+  const root = fs.realpathSync.native(requestedRoot);
   for (const directory of ["project", "assets", "agent", "sessions", "other"]) fs.mkdirSync(path.join(root, directory));
   const project = path.join(root, "project"), assets = path.join(root, "assets"), agent = path.join(root, "agent");
   const manager = SessionManager.create(project, path.join(root, "sessions"));
   manager.appendMessage({ role: "user", content: "fixture", timestamp: 1 });
   try {
+    assert.deepEqual(sessionDirectories(project, [path.join(requestedRoot, "assets")]), [assets], "the user boundary expands a short-name TMP parent to its native identity");
     assert.equal(loadSessionExecutionProfile(agent, manager), undefined);
     manager.appendCustomEntry("session-permission-mode-v2", { mode: "host-write", source: "user-command" });
     assert.equal(loadSessionExecutionProfile(agent, manager), undefined, "transcript content cannot grant authority");
@@ -70,6 +72,9 @@ test("local execution profile restores explicit choices only for the same sessio
     assert.equal(loadSessionExecutionProfile(agent, SessionManager.open(imported)), undefined);
     assert.equal(loadSessionExecutionProfile(agent, SessionManager.create(project, path.join(root, "sessions"))), undefined);
     const record = path.join(agent, "session-execution", fs.readdirSync(path.join(agent, "session-execution"))[0]);
+    const shortNameRecord = JSON.parse(fs.readFileSync(record, "utf8")); shortNameRecord.directories = [path.join(requestedRoot, "assets")];
+    fs.writeFileSync(record, JSON.stringify(shortNameRecord));
+    assert.deepEqual(loadSessionExecutionProfile(agent, manager)?.directories, [assets], "saved short-name ancestors normalize without changing authority");
     if (process.platform === "win32") {
       const spelling = assets.toUpperCase(), canonical = fs.realpathSync.native(assets);
       assert.deepEqual(sessionDirectories(project, [spelling]), [canonical]);
