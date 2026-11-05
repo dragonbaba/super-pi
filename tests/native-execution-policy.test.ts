@@ -20,19 +20,15 @@ import structuredReadonlyCommand from "../packages/extensions/structured-readonl
 
 async function fixture(t: TestContext, config = {}, environment: "sandbox" | "trusted-host" = "sandbox", mode?: SessionPermissionMode, directories: readonly string[] = []) {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "sp-native-policy-")));
-    const runtime = createExtensionRuntime(), branch: any[] = [];
-    runtime.appendEntry = (customType, data) => { branch.push({ type: "custom", customType, data }); };
-    const getEntry = (id: string): any => {
-        const index = Number(id), entry = branch[index];
-        return entry && Object.assign(entry, { id, parentId: index > 0 ? String(index - 1) : null });
-    };
+    const runtime = createExtensionRuntime(), manager = SessionManager.inMemory(root);
+    runtime.appendEntry = (customType, data) => { manager.appendCustomEntry(customType, data); };
     const ctx: any = { cwd: root, hasUI: false, signal: new AbortController().signal,
-        sessionManager: { getSessionId: () => "policy-test", getBranch: () => branch, getLeafEntry: () => getEntry(String(branch.length - 1)), getEntry }, ui: {} };
+        sessionManager: manager, ui: {} };
     const owner = new SessionExecutionPolicy(runtime, environment, config, mode, directories);
     t.after(async () => { owner.dispose(); await runtime.executionBoundary.dispose(); await fs.rm(root, { recursive: true }); });
     function event(toolName: string, input: object) { return { type: "tool_call", toolName, input, toolCallId: "test-call" } as any; }
     function definition(name: string) { const d: any = { name }; owner.registerDefinition(d); return d; }
-    return { root, runtime, branch, ctx, owner, event, definition };
+    return { root, runtime, manager, get branch() { return manager.getEntries(); }, ctx, owner, event, definition };
 }
 
 test("native sandbox denies unsupported aliases and respects exact deny before broad allow", async t => {
@@ -271,15 +267,77 @@ test("native workspace leases retain original directory identity and revoke on t
     read.dispose(); workspace.dispose();
     assert.equal(read.diagnostics.weakReferences, 0); assert.equal(workspace.diagnostics.weakReferences, 0);
 });
-test("old grants are not widened, and new user refusals survive owner recreation", async t => {
+test("legacy grants are not widened after an explicit refusal", async t => {
     const f = await fixture(t, { rules: [{ tool: "powershell", decision: "ask" }] });
-    f.ctx.hasUI = true; let prompts = 0; f.ctx.ui.confirm = async () => { prompts++; return false; };
+    f.ctx.hasUI = true; let prompts = 0; f.ctx.ui.select = async (_title: string, choices: string[]) => { prompts++; return choices[1]; };
     const e = f.event("powershell", { command: "exact" }), d = f.definition("powershell");
     await assert.rejects(f.owner.authorize(e, f.ctx, d), /User declined/);
     await assert.rejects(f.owner.authorize(e, f.ctx, d), /Explicitly denied/);
-    assert.equal(prompts, 1); assert.equal(f.branch[0].customType, "native-permission-denial-v1");
-    f.branch.push({ type: "custom", customType: "session-permission-state-v1", data: { mode: "full-access", approvalPolicy: "never-ask" } });
+    assert.equal(prompts, 1); assert.equal((f.branch[0] as any).customType, "native-permission-denial-v2");
+    f.manager.appendCustomEntry("session-permission-state-v1", { mode: "full-access", approvalPolicy: "never-ask" });
     await assert.rejects(f.owner.authorize(f.event("powershell", { command: "another" }), f.ctx, d), /LEGACY_PERMISSION_MIGRATION/);
+});
+
+test("cancelled approvals never persist; explicit reasons and revocations survive disk restore", async t => {
+    const f = await fixture(t, { rules: [{ tool: "powershell", decision: "ask" }] }, "trusted-host", "host-write");
+    const manager = SessionManager.create(f.root, path.join(f.root, "history"));
+    manager.appendMessage({ role: "user", content: "permission fixture", timestamp: 1 });
+    f.ctx.sessionManager = manager; f.ctx.hasUI = true;
+    f.runtime.appendEntry = (type, data) => { manager.appendCustomEntry(type, data); };
+    let selection: number | undefined, explanation: string | undefined, prompts = 0;
+    f.ctx.ui.select = async (_title: string, choices: string[], options: any) => {
+        prompts++; assert.equal(options.timeout, 60000); assert.equal(options.kind, "permission");
+        assert.match(options.details, /cwd:/); return selection === undefined ? undefined : choices[selection];
+    };
+    f.ctx.ui.input = async () => explanation;
+    const event = f.event("powershell", { command: "Write-Output fixture" });
+    await assert.rejects(f.owner.authorize(event, f.ctx), /APPROVAL_CANCELLED/);
+    selection = 2;
+    await assert.rejects(f.owner.authorize(event, f.ctx), /APPROVAL_CANCELLED/);
+    assert.deepEqual(f.owner.listRefusals(f.ctx), []); assert.equal(manager.getEntryCount(), 1);
+    selection = 0; (await f.owner.authorize(event, f.ctx)).release();
+    selection = 2; explanation = "Keep this request blocked";
+    await assert.rejects(f.owner.authorize(event, f.ctx), /User declined.*Keep this request blocked/);
+    assert.equal(prompts, 4);
+    const refused = f.owner.listRefusals(f.ctx)[0]!;
+    assert.equal(refused.source, "explicit"); assert.equal(refused.reason, explanation);
+    f.owner.dispose();
+
+    const runtime = createExtensionRuntime(), restored = SessionManager.open(manager.getSessionFile()!);
+    runtime.appendEntry = (type, data) => { restored.appendCustomEntry(type, data); };
+    const owner = new SessionExecutionPolicy(runtime, "trusted-host", { rules: [{ tool: "powershell", decision: "ask" }] }, "host-write");
+    const ctx = { ...f.ctx, sessionManager: restored, signal: runtime.executionBoundary.signal };
+    try {
+        await assert.rejects(owner.authorize(event, ctx), /Explicitly denied/);
+        assert.equal(prompts, 4); assert.deepEqual(owner.listRefusals(ctx), [refused]);
+        assert.equal(owner.revokeRefusal(ctx, refused.key), true);
+        assert.equal(owner.revokeRefusal(ctx, refused.key), false);
+        ctx.sessionManager = SessionManager.open(manager.getSessionFile()!);
+        assert.deepEqual(owner.listRefusals(ctx), [], "disk restoration includes the explicit revocation");
+        selection = 0; (await owner.authorize(event, ctx)).release();
+        assert.equal(prompts, 5, "revocation asks again rather than granting permanent allow");
+    } finally { owner.dispose(); await runtime.executionBoundary.dispose(); }
+});
+
+test("legacy refusal recovery is explicit and a batch revocation only removes its selected operation", async t => {
+    const f = await fixture(t, { rules: [{ tool: "write", decision: "ask" }, { tool: "file_batch", decision: "ask" }] }, "trusted-host", "host-write");
+    f.ctx.hasUI = true; let prompts = 0, choice = 1;
+    f.ctx.ui.select = async (_title: string, choices: string[]) => { prompts++; return choices[choice]; };
+    f.manager.appendCustomEntry("fixture", {}); const fork = f.manager.getLeafId()!;
+    const first = { operation: "write", path: "first.txt", content: "first" }, second = { operation: "write", path: "second.txt", content: "second" };
+    const batch = f.event("file_batch", { operations: [first, second] });
+    await assert.rejects(f.owner.authorize(batch, f.ctx), /User declined/);
+    const records = f.owner.listRefusals(f.ctx); assert.equal(records.length, 2);
+    f.manager.appendCustomEntry("native-permission-denial-v1", { key: records[0]!.key });
+    assert.equal(f.owner.listRefusals(f.ctx)[0]!.source, "legacy");
+    f.manager.branch(fork);
+    await assert.rejects(f.owner.authorize(batch, f.ctx), /Explicitly denied/);
+    assert.equal(f.owner.revokeRefusal(f.ctx, records[0]!.key), true);
+    choice = 0;
+    (await f.owner.authorize(f.event("write", { path: first.path, content: first.content }), f.ctx)).release();
+    await assert.rejects(f.owner.authorize(batch, f.ctx), /Explicitly denied/);
+    await assert.rejects(f.owner.authorize(f.event("write", { path: second.path, content: second.content }), f.ctx), /Explicitly denied/);
+    assert.equal(prompts, 2); assert.deepEqual(f.owner.listRefusals(f.ctx).map(record => record.key), [records[1]!.key]);
 });
 
 test("ordinary no-policy tools share only an epoch gate; revocation still blocks every borrowed gate", async () => {
@@ -303,18 +361,25 @@ test("authorization scans only new branch entries and rechecks a different branc
     const fork = session.getLeafId()!;
     const ctx: any = { cwd: process.cwd(), sessionManager: session, hasUI: false, signal: runtime.executionBoundary.signal };
     const event: any = { type: "tool_call", toolName: "powershell", toolCallId: "review", input: { command: "exact" } };
-    let lookups = 0; const getEntry = session.getEntry.bind(session);
+    let lookups = 0, visits = 0; const getEntry = session.getEntry.bind(session), visit = owner.visitSessionEntry;
+    owner.visitSessionEntry = function(entry) { visits++; visit.call(owner, entry); };
     t.mock.method(session, "getBranch", () => { throw new Error("Unbounded branch materialization"); });
+    t.mock.method(session, "getEntries", () => { throw new Error("Unbounded session materialization"); });
     t.mock.method(session, "getEntry", (id: string) => { lookups++; return getEntry(id); });
     try {
         (await owner.authorize(event, ctx, definition)).release(); const initial = lookups;
+        assert.equal(visits, 10000);
         for (let i = 0; i < 20; i++) (await owner.authorize(event, ctx, definition)).release();
-        assert.equal(lookups, initial);
+        assert.equal(lookups, initial); assert.equal(visits, 10000);
         session.appendCustomEntry("history", {}); session.appendCustomEntry("history", {});
-        (await owner.authorize(event, ctx, definition)).release(); assert.equal(lookups - initial, 2);
+        (await owner.authorize(event, ctx, definition)).release(); assert.equal(lookups - initial, 2); assert.equal(visits, 10002);
         session.branch(fork); session.appendCustomEntry("session-permission-state-v1", {});
         await assert.rejects(owner.authorize(event, ctx, definition), /LEGACY_PERMISSION_MIGRATION/);
         session.branch(fork); (await owner.authorize(event, ctx, definition)).release();
-        t.diagnostic(JSON.stringify({ history: 10000, unchangedInvocations: 20, unchangedLookups: 0, appendedLookups: 2, branchArrays: 0 }));
-    } finally { owner.dispose(); await runtime.executionBoundary.dispose(); }
+        t.diagnostic(JSON.stringify({ history: 10000, unchangedInvocations: 20, unchangedLookups: 0, unchangedAppendVisits: 0, appendedLookups: 2, appendedVisits: 2, historyArrays: 0 }));
+    } finally {
+        owner.dispose(); await runtime.executionBoundary.dispose();
+        assert.equal((owner as any).denied.size, 0); assert.equal((owner as any).refusalManager, undefined);
+        assert.equal((owner as any).scannedLeaf, undefined); assert.equal((owner as any).refusalCursor, 0);
+    }
 });

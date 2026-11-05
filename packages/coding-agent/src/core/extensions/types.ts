@@ -114,6 +114,8 @@ export interface ExtensionUIDialogOptions {
 export interface ExtensionUISelectOptions extends ExtensionUIDialogOptions {
 	/** Full inspectable request details in a height-bounded selector viewport. */
 	details?: string;
+	/** Presentation only; authorization remains owned by the caller. */
+	kind?: "question" | "permission";
 }
 
 /** Placement for extension widgets. */

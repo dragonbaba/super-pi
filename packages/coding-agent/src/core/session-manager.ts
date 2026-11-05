@@ -223,6 +223,9 @@ export type ReadonlySessionManager = Pick<
 	| "buildContextEntries"
 	| "getHeader"
 	| "getEntries"
+	| "getHistoryGeneration"
+	| "isHistoryConsistent"
+	| "visitAppendedEntries"
 	| "getTree"
 	| "getSessionName"
 >;

@@ -16,6 +16,7 @@ import * as path from "node:path";
 import * as url from "node:url";
 import { SessionExecutionBoundary } from "../packages/coding-agent/src/core/execution-boundary.ts";
 import { SessionExecutionPolicy } from "../packages/coding-agent/src/core/execution-policy.ts";
+import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
 import { createExtensionRuntime } from "../packages/coding-agent/src/core/extensions/loader.ts";
 import { Type } from "typebox";
 
@@ -416,7 +417,7 @@ test("native host-write policy authorizes the registered LSP tool to commit its 
  const f = fixture("push-silent"), runtime = createExtensionRuntime(), registration = tools(runtime.executionBoundary);
  const policy = new SessionExecutionPolicy(runtime, "trusted-host", {}, "host-write");
  const ctx: any = { cwd: f.root, hasUI: false, isProjectTrusted() { return true; }, ui: { setStatus() {} },
-  sessionManager: { getSessionId: () => "native-lsp", getLeafEntry: () => undefined } };
+  sessionManager: SessionManager.inMemory(f.root) };
  try {
   await registration.events.get("session_start")({}, ctx);
   const input = { root: ".", path: "example.ts", write: true };
