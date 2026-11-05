@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
-import { loadSessionExecutionProfile, saveSessionExecutionProfile, sessionDirectories, WORKSPACE_TOOL_NAMES } from "../packages/coding-agent/src/core/session-execution-profile.ts";
+import { canonicalSessionDirectory, loadSessionExecutionProfile, saveSessionExecutionProfile, sessionDirectories, WORKSPACE_TOOL_NAMES } from "../packages/coding-agent/src/core/session-execution-profile.ts";
 import { mergeHostPath, refreshedHostEnvironment } from "../packages/coding-agent/src/core/sandbox/host-path.ts";
 import { WorkspaceSandboxTools } from "../packages/coding-agent/src/core/sandbox/workspace-tools.ts";
 import { createExtensionRuntime } from "../packages/coding-agent/src/core/extensions/loader.ts";
@@ -70,6 +70,14 @@ test("local execution profile restores explicit choices only for the same sessio
     assert.equal(loadSessionExecutionProfile(agent, SessionManager.open(imported)), undefined);
     assert.equal(loadSessionExecutionProfile(agent, SessionManager.create(project, path.join(root, "sessions"))), undefined);
     const record = path.join(agent, "session-execution", fs.readdirSync(path.join(agent, "session-execution"))[0]);
+    if (process.platform === "win32") {
+      const spelling = assets.toUpperCase(), canonical = fs.realpathSync.native(assets);
+      assert.deepEqual(sessionDirectories(project, [spelling]), [canonical]);
+      assert.equal(canonicalSessionDirectory(spelling), canonical);
+      const legacy = JSON.parse(fs.readFileSync(record, "utf8")); legacy.directories = [spelling];
+      fs.writeFileSync(record, JSON.stringify(legacy));
+      assert.deepEqual(loadSessionExecutionProfile(agent, manager)?.directories, [canonical], "old saved spellings use the native identity on restore");
+    }
     const value = JSON.parse(fs.readFileSync(record, "utf8")); value.machine += "-different"; fs.writeFileSync(record, JSON.stringify(value));
     assert.equal(loadSessionExecutionProfile(agent, manager), undefined);
     assert.throws(() => sessionDirectories(project, [root]), /overlap/);

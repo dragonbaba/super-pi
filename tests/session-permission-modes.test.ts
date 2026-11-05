@@ -16,6 +16,7 @@ import { SettingsManager } from "../packages/coding-agent/src/core/settings-mana
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
 import { FileService } from "../packages/coding-agent/src/core/files/file-service.ts";
 import { MAX_WRITE_BYTES } from "../packages/coding-agent/src/core/files/write-limits.ts";
+import { sessionDirectories } from "../packages/coding-agent/src/core/session-execution-profile.ts";
 
 function mockSourceChecks(t: test.TestContext, version = true): void {
   t.mock.method(WorkspaceSandboxBackend.prototype, "assertWorkspaceCurrent", async () => {});
@@ -121,6 +122,30 @@ test("permissions menu exposes exactly three modes and never switches after canc
     } });
     await fixture.internal.showPermissionsSelector(); assert.equal(switched.length, 1);
   } finally { await fixture.release(); }
+});
+
+test("directory commands accept Windows case aliases and remove missing grants", { skip: process.platform !== "win32" }, async t => {
+  const fixture = await alphaSession(), extra = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "sp-directory-Case-")));
+  const errors: string[] = []; let applied = 0;
+  fixture.internal.showExtensionNotify = (message: string, type: string) => { if (type === "error") errors.push(message); };
+  t.mock.method(fixture.runtime, "setWorkingDirectories", async (values: readonly string[]) => {
+    fixture.session.settingsManager.setSessionDirectories(sessionDirectories(fixture.root, values, false));
+    applied++; return { cancelled: false };
+  });
+  try {
+    await fixture.internal.handleWorkingDirectoryCommand('/add-dir "' + extra.toUpperCase() + '"');
+    assert.deepEqual(fixture.session.settingsManager.getSessionDirectories(), [extra]);
+    await fixture.internal.handleWorkingDirectoryCommand('/remove-dir "' + extra.toLowerCase() + '"');
+    assert.deepEqual(fixture.session.settingsManager.getSessionDirectories(), []);
+    await fixture.internal.handleWorkingDirectoryCommand('/add-dir "' + extra + '"');
+    await fs.rmdir(extra);
+    await fixture.internal.handleWorkingDirectoryCommand('/remove-dir "' + extra.toUpperCase() + '"');
+    assert.deepEqual(fixture.session.settingsManager.getSessionDirectories(), []);
+    assert.deepEqual(errors, []); assert.equal(applied, 4);
+  } finally {
+    await fixture.release();
+    await fs.rm(extra, { recursive: true, force: true });
+  }
 });
 
 test("writeback refusals remain stable across freshly captured host revision IDs", async t => {

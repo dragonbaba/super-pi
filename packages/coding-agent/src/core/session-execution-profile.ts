@@ -14,13 +14,22 @@ export function containsDirectory(root: string, target: string): boolean {
   return suffix !== ".." && !suffix.startsWith(".." + sep) && !isAbsolute(suffix);
 }
 
+/** Match the native identity used by the sandbox; missing old grants remain removable. */
+export function canonicalSessionDirectory(target: string, requireExisting = true): string {
+  try { return realpathSync.native(target); }
+  catch (error) {
+    if (!requireExisting && (error as NodeJS.ErrnoException).code === "ENOENT") return resolve(target);
+    throw error;
+  }
+}
+
 /** Invoked at the user-command/restore boundary, never inferred from shell source. */
 export function sessionDirectories(cwd: string, values: readonly string[], requireExisting = true): readonly string[] {
   if (!Array.isArray(values) || values.length > MAX_SESSION_DIRECTORIES) throw new Error("At most 16 additional working directories are supported");
-  const primary = realpathSync(cwd), directories: string[] = [];
+  const primary = realpathSync.native(cwd), directories: string[] = [];
   for (const value of values) {
     if (typeof value !== "string" || !value.trim() || value.length > 4096 || value.includes("\0")) throw new Error("Invalid working directory");
-    const target = requireExisting ? realpathSync(resolve(cwd, value)) : resolve(cwd, value);
+    const target = canonicalSessionDirectory(resolve(cwd, value), requireExisting);
     if (process.platform === "win32" && target.startsWith("\\\\")) throw new Error("Working directories must use local drive paths");
     if (requireExisting && !lstatSync(target).isDirectory() || dirname(target) === target) throw new Error("Expected a directory below a filesystem root: " + target);
     if (containsDirectory(primary, target) || containsDirectory(target, primary)) throw new Error("Working directories must not overlap: " + target);

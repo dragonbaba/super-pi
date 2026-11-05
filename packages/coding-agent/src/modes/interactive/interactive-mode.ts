@@ -6,6 +6,7 @@ import { IMAGE_ATTACHMENT_LIMITS, IMAGE_VISION_RESULT_TYPE, ImageAttachmentDraft
 
 import * as crypto from "node:crypto";
 import { PERMISSION_MODE_LABELS, type SessionPermissionMode } from "../../core/permission-mode.ts";
+import { canonicalSessionDirectory } from "../../core/session-execution-profile.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -2947,10 +2948,15 @@ export class InteractiveMode {
 		if (!target) { this.showExtensionNotify("用法：" + command + " <directory>；/dirs 查看当前工作目录", "warning"); return; }
 		try {
 			const absolute = path.resolve(this.session.sessionManager.getCwd(), target);
-			const canonical = command === "/add-dir" || fs.existsSync(absolute) ? fs.realpathSync(absolute) : absolute;
+			const canonical = canonicalSessionDirectory(absolute, command === "/add-dir");
 			const directories = [...current];
 			if (command === "/add-dir") directories.push(canonical);
-			else { const index = directories.indexOf(canonical); if (index < 0) throw new Error("该目录不在当前附加工作区中"); directories.splice(index, 1); }
+			else {
+				let index = -1;
+				for (let i = 0; i < directories.length; i++) if (path.relative(directories[i]!, canonical) === "") { index = i; break; }
+				if (index < 0) throw new Error("该目录不在当前附加工作区中");
+				directories.splice(index, 1);
+			}
 			const result = await this.runtimeHost.setWorkingDirectories(directories);
 			if (!result.cancelled) this.showExtensionNotify("工作目录已更新：\n" + [this.session.sessionManager.getCwd(), ...directories].join("\n"), "info");
 		} catch (error) { this.showExtensionNotify(error instanceof Error ? error.message : String(error), "error"); }

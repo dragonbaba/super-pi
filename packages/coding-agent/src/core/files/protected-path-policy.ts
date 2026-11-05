@@ -5,7 +5,7 @@ const WORKSPACE_METADATA_ROOTS = [".git", ".sp"] as const;
 
 function isInside(root: string, candidate: string): boolean {
   const path = relative(root, candidate);
-  return path === "" || (!path.startsWith("..") && !isAbsolute(path));
+  return path === "" || (path !== ".." && !path.startsWith("../") && !path.startsWith("..\\") && !isAbsolute(path));
 }
 
 function isCode(error: unknown, code: string): boolean {
@@ -54,11 +54,18 @@ export async function assessProtectedMutationPath(cwd: string, target: string): 
     return { violations: ["unverifiable_target"] };
   }
 
+  return assessCanonicalMutationPath([workspace], canonical);
+}
+
+/** Inputs have already been resolved against disk, including every workspace root. */
+export function assessCanonicalMutationPath(workspaces: readonly string[], canonical: string): ProtectedMutationAssessment {
   const violations: string[] = [];
   if (canonical === parse(canonical).root) violations.push("filesystem_root");
-  if (canonical === workspace) violations.push("workspace_root");
-  if (!isInside(workspace, canonical)) violations.push("workspace_escape");
-  if (isInside(workspace, canonical)) {
+  let contained = false;
+  for (const workspace of workspaces) {
+    if (canonical === workspace) violations.push("workspace_root");
+    if (!isInside(workspace, canonical)) continue;
+    contained = true;
     for (const name of WORKSPACE_METADATA_ROOTS) {
       const protectedRoot = resolve(workspace, name);
       if (canonical === protectedRoot || isInside(protectedRoot, canonical)) {
@@ -66,6 +73,7 @@ export async function assessProtectedMutationPath(cwd: string, target: string): 
       }
     }
   }
+  if (!contained) violations.push("workspace_escape");
   violations.sort();
   return { canonicalTarget: canonical, violations };
 }
