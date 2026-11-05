@@ -1,0 +1,1018 @@
+{
+  "date": "2026-11-05T08:57:45.194Z",
+  "base": "d67a30f0f0e314191e5673f2826dccc769381088",
+  "scope": "Retire speculative leading-cd/npm command preflight; retain native cwd identity, unified permissions, lifecycle checks and observed shell failures. Previous prompt changes remain separate.",
+  "reproduction": {
+    "baseline": {
+      "log": "✖ loop guard preserves shell directory resolution, recovery and actual failures (111.1065ms)\n✖ loop guard lets npm resolve a parent package from explicit child cwd (13.1146ms)\nℹ tests 2\nℹ suites 0\nℹ pass 0\nℹ fail 2\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 1435.7887\n\n✖ failing tests:\n\ntest at tests\\shell-explicit-cwd.test.ts:60:1\n✖ loop guard preserves shell directory resolution, recovery and actual failures (111.1065ms)\n  AssertionError [ERR_ASSERTION]: {\"ok\":false,\"category\":\"WORKDIR_MISMATCH\",\"operation\":\"bash\",\"retryable\":true,\"stateChanged\":false,\"cause\":\"Static leading cd target is not an existing directory: D:\\\\tmp.\",\"nextAction\":\"Inspect the verified parent directory and use an existing exact path before retrying.\"}\n  \n  true !== false\n  \n      at TestContext.<anonymous> (file:///D:/RMProjects/Pi/tests/shell-explicit-cwd.test.ts:70:12)\n      at async Test.run (node:internal/test_runner/test:1409:7)\n      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {\n    generatedMessage: false,\n    code: 'ERR_ASSERTION',\n    actual: true,\n    expected: false,\n    operator: 'strictEqual',\n    diff: 'simple'\n  }\n\ntest at tests\\shell-explicit-cwd.test.ts:81:1\n✖ loop guard lets npm resolve a parent package from explicit child cwd (13.1146ms)\n  AssertionError [ERR_ASSERTION]: {\"ok\":false,\"category\":\"WORKDIR_MISMATCH\",\"operation\":\"bash\",\"retryable\":true,\"stateChanged\":false,\"cause\":\"Package lifecycle preflight found no regular package.json file in D:\\\\RMProjects\\\\Pi\\\\.task-tmp\\\\shell-precheck-acd08140cd\\\\sp-shell-cwd-QgzL0E\\\\workspace\\\\sub.\",\"nextAction\":\"Change into the intended package directory, correct --prefix/-C, or inspect that directory before retrying.\"}\n  \n  true !== false\n  \n      at TestContext.<anonymous> (file:///D:/RMProjects/Pi/tests/shell-explicit-cwd.test.ts:89:10)\n      at async Test.run (node:internal/test_runner/test:1409:7)\n      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {\n    generatedMessage: false,\n    code: 'ERR_ASSERTION',\n    actual: true,\n    expected: false,\n    operator: 'strictEqual',\n    diff: 'simple'\n  }\n",
+      "expectedFailures": 2
+    },
+    "candidate": "✔ loop guard preserves shell directory resolution, recovery and actual failures (291.0298ms)\n✔ loop guard lets npm resolve a parent package from explicit child cwd (599.537ms)\nℹ tests 2\nℹ suites 0\nℹ pass 2\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 1635.3438\n",
+    "finalTests": {
+      "files": 8,
+      "tests": 134,
+      "passed": 132,
+      "skipped": 2,
+      "failed": 0,
+      "summary": [
+        "ℹ tests 134",
+        "ℹ suites 0",
+        "ℹ pass 132",
+        "ℹ fail 0",
+        "ℹ cancelled 0",
+        "ℹ skipped 2",
+        "ℹ todo 0",
+        "ℹ duration_ms 4053.3763"
+      ],
+      "skipReasons": [
+        "non-Windows PowerShell refusal contract",
+        "Unix uv executable link resolution"
+      ]
+    },
+    "commands": [
+      {
+        "label": "baseline-regression",
+        "executable": "D:/Nodes/26.13.0/node.exe",
+        "args": [
+          "--import",
+          "file:///D:/RMProjects/Pi/.task-tmp/shell-precheck-acd08140cd/verify-env.mjs",
+          "--test",
+          "--test-name-pattern",
+          "loop guard",
+          "tests/shell-explicit-cwd.test.ts"
+        ],
+        "code": 1,
+        "settled": true
+      },
+      {
+        "label": "baseline-bench",
+        "executable": "D:/Nodes/26.13.0/node.exe",
+        "args": [
+          "--import",
+          "file:///D:/RMProjects/Pi/.task-tmp/shell-precheck-acd08140cd/verify-env.mjs",
+          "--expose-gc",
+          "scripts/bench/tool-loop-repeat.ts"
+        ],
+        "code": 0,
+        "settled": true
+      },
+      {
+        "label": "candidate-regression",
+        "executable": "D:/Nodes/26.13.0/node.exe",
+        "args": [
+          "--import",
+          "file:///D:/RMProjects/Pi/.task-tmp/shell-precheck-acd08140cd/verify-env.mjs",
+          "--test",
+          "--test-name-pattern",
+          "loop guard",
+          "tests/shell-explicit-cwd.test.ts"
+        ],
+        "code": 0,
+        "settled": true
+      },
+      {
+        "label": "regression",
+        "executable": "D:/Nodes/26.13.0/node.exe",
+        "args": [
+          "--import",
+          "file:///D:/RMProjects/Pi/.task-tmp/shell-precheck-acd08140cd/verify-env.mjs",
+          "--test",
+          "tests/shell-explicit-cwd.test.ts",
+          "tests/shell-cd-find-compatibility.test.ts",
+          "tests/tool-reliability-recovery.test.ts",
+          "tests/tool-loop-repeat.test.ts",
+          "tests/tool-loop-repeat-hot-paths.test.ts",
+          "tests/shell-observation-hot-paths.test.ts",
+          "tests/guard-relax-1-ask.test.ts",
+          "tests/guard-relax-3-lifecycle.test.ts"
+        ],
+        "code": 0,
+        "settled": true
+      },
+      {
+        "label": "candidate-bench",
+        "executable": "D:/Nodes/26.13.0/node.exe",
+        "args": [
+          "--import",
+          "file:///D:/RMProjects/Pi/.task-tmp/shell-precheck-acd08140cd/verify-env.mjs",
+          "--expose-gc",
+          "scripts/bench/tool-loop-repeat.ts"
+        ],
+        "code": 0,
+        "settled": true
+      },
+      {
+        "label": "build",
+        "executable": "D:/PowerShell/7/pwsh.exe",
+        "args": [
+          "-NoProfile",
+          "-File",
+          ".task-tmp/shell-precheck-acd08140cd/build.ps1"
+        ],
+        "code": 0,
+        "settled": true
+      },
+      {
+        "label": "final-regression",
+        "executable": "D:/Nodes/26.13.0/node.exe",
+        "args": [
+          "--import",
+          "file:///D:/RMProjects/Pi/.task-tmp/shell-precheck-acd08140cd/verify-env.mjs",
+          "--test",
+          "tests/shell-explicit-cwd.test.ts",
+          "tests/shell-cd-find-compatibility.test.ts",
+          "tests/tool-reliability-recovery.test.ts",
+          "tests/tool-loop-repeat.test.ts",
+          "tests/tool-loop-repeat-hot-paths.test.ts",
+          "tests/shell-observation-hot-paths.test.ts",
+          "tests/guard-relax-1-ask.test.ts",
+          "tests/guard-relax-3-lifecycle.test.ts"
+        ],
+        "code": 0,
+        "settled": true
+      },
+      {
+        "label": "retirement-regression",
+        "executable": "D:/Nodes/26.13.0/node.exe",
+        "args": [
+          "--import",
+          "file:///D:/RMProjects/Pi/.task-tmp/shell-precheck-acd08140cd/verify-env.mjs",
+          "--test",
+          "tests/shell-explicit-cwd.test.ts",
+          "tests/shell-cd-find-compatibility.test.ts",
+          "tests/tool-reliability-recovery.test.ts",
+          "tests/tool-loop-repeat.test.ts",
+          "tests/tool-loop-repeat-hot-paths.test.ts",
+          "tests/shell-observation-hot-paths.test.ts",
+          "tests/guard-relax-1-ask.test.ts",
+          "tests/guard-relax-3-lifecycle.test.ts"
+        ],
+        "code": 0,
+        "settled": true
+      },
+      {
+        "label": "retirement-bench",
+        "executable": "D:/Nodes/26.13.0/node.exe",
+        "args": [
+          "--import",
+          "file:///D:/RMProjects/Pi/.task-tmp/shell-precheck-acd08140cd/verify-env.mjs",
+          "--expose-gc",
+          "scripts/bench/tool-loop-repeat.ts"
+        ],
+        "code": 0,
+        "settled": true
+      },
+      {
+        "label": "retirement-build",
+        "executable": "D:/PowerShell/7/pwsh.exe",
+        "args": [
+          "-NoProfile",
+          "-File",
+          ".task-tmp/shell-precheck-acd08140cd/build.ps1"
+        ],
+        "code": 0,
+        "settled": true
+      },
+      {
+        "label": "evidence",
+        "executable": "D:/Nodes/26.13.0/node.exe",
+        "args": [
+          ".task-tmp/shell-precheck-acd08140cd/evidence.mjs"
+        ],
+        "code": 0,
+        "settled": true
+      },
+      {
+        "label": "seal",
+        "executable": "D:/Nodes/26.13.0/node.exe",
+        "args": [
+          "-e",
+          "0"
+        ],
+        "code": 0,
+        "settled": true
+      }
+    ],
+    "runner": "import fs from 'node:fs';\nimport path from 'node:path';\nimport os from 'node:os';\nimport assert from 'node:assert/strict';\nimport {fileURLToPath} from 'node:url';\nimport {spawn} from 'node:child_process';\nconst root=path.dirname(fileURLToPath(import.meta.url));\nfor(const key of ['TMP','TEMP','TMPDIR'])assert.equal(path.resolve(process.env[key]),root);\nassert.equal(path.resolve(os.tmpdir()),root);\nconst manifestFile=path.join(root,'resources.json'),m=JSON.parse(fs.readFileSync(manifestFile,'utf8'));\nconst [label,exe,...args]=process.argv.slice(2);assert.ok(label&&exe);\nconst owner={pid:process.pid,role:'runner',label,started:new Date().toISOString(),settled:false};m.processes.push(owner);\nconst log=path.join(root,label+'.log');const fd=fs.openSync(log,'w');\nfunction seal(){const files=[root];for(let i=0;i<files.length;i++){const s=fs.lstatSync(files[i]);assert.ok(!s.isSymbolicLink());if(s.isDirectory())for(const name of fs.readdirSync(files[i]))files.push(path.join(files[i],name));}m.resources=files.map(file=>{const s=fs.lstatSync(file,{bigint:true});return {file,dev:String(s.dev),ino:String(s.ino),directory:s.isDirectory()};});fs.writeFileSync(manifestFile,JSON.stringify(m,null,2));}\nconst home=path.join(root,'home');fs.mkdirSync(home,{recursive:true});\nconst child=spawn(exe,args,{cwd:'D:/RMProjects/Pi',env:{...process.env,HOME:home,USERPROFILE:home,SP_CODING_AGENT_DIR:path.join(root,'agent'),SP_CODING_AGENT_SESSION_DIR:path.join(root,'sessions'),XDG_CONFIG_HOME:path.join(root,'xdg'),npm_config_cache:path.join(root,'npm-cache'),PYTHONDONTWRITEBYTECODE:'1'},windowsHide:true,stdio:['ignore',fd,fd]});\nconst record={pid:child.pid,label,executable:exe,args,started:new Date().toISOString(),settled:false};m.processes.push(record);seal();\nlet failure;\nchild.on('error',error=>{failure=String(error);});\nchild.on('close',(code,signal)=>{fs.closeSync(fd);Object.assign(record,{code,signal,failure,settled:true,finished:new Date().toISOString()});Object.assign(owner,{settled:true,finished:new Date().toISOString()});m.processes=JSON.parse(fs.readFileSync(manifestFile,'utf8')).processes;for(const update of [record,owner]){const saved=m.processes.find(p=>p.pid===update.pid&&p.started===update.started);assert.ok(saved);Object.assign(saved,update);}seal();console.log(JSON.stringify({...record,log}));process.exitCode=code??1;});\n\n",
+    "verifyEnvironment": "import assert from 'node:assert/strict';\nimport path from 'node:path';\nimport os from 'node:os';\nimport {fileURLToPath} from 'node:url';\nconst root=path.dirname(fileURLToPath(import.meta.url));\nfor(const key of ['TMP','TEMP','TMPDIR']) assert.equal(path.resolve(process.env[key]),root);\nassert.equal(path.resolve(os.tmpdir()),root);\n",
+    "buildScript": "$ErrorActionPreference='Stop'\nif($PSVersionTable.PSVersion.Major -lt 7){throw 'PowerShell 7 required'}\nforeach($key in @('TMP','TEMP','TMPDIR')){if([IO.Path]::GetFullPath([Environment]::GetEnvironmentVariable($key)) -ne [IO.Path]::GetFullPath($PSScriptRoot)){throw 'Unexpected temporary directory'}}\n$env:npm_config_cache=Join-Path $PSScriptRoot 'npm-cache'\n@{powershell=$PSVersionTable.PSVersion.ToString();npm=(Get-Command npm).Source;pid=$PID}|ConvertTo-Json -Compress\nnpm run check\nif($LASTEXITCODE){throw 'Typecheck failed'}\nnpm run build:offline\nif($LASTEXITCODE){throw 'Offline build failed'}\nnpm run superpi -- --offline --version\nif($LASTEXITCODE){throw 'Offline version failed'}\nnpm run superpi -- --offline --help\nif($LASTEXITCODE){throw 'Offline help failed'}\n"
+  },
+  "structural": {
+    "files": [
+      {
+        "file": "core.ts",
+        "before": {
+          "arrows": 0,
+          "functionExpressions": 0,
+          "regexLiterals": 0,
+          "promiseConstructors": 0,
+          "abortControllerConstructors": 0
+        },
+        "after": {
+          "arrows": 0,
+          "functionExpressions": 0,
+          "regexLiterals": 0,
+          "promiseConstructors": 0,
+          "abortControllerConstructors": 0
+        },
+        "baselineSha256": "e6aa192306836cceb74fcabfb023cd0a1a66ec3973ce132b8e3d979faf1662aa",
+        "sha256": "be55b0745a435176936227f053c4f242270aebe0a8f6b9498b8da37d9a748e87"
+      },
+      {
+        "file": "index.ts",
+        "before": {
+          "arrows": 9,
+          "functionExpressions": 0,
+          "regexLiterals": 0,
+          "promiseConstructors": 0,
+          "abortControllerConstructors": 0
+        },
+        "after": {
+          "arrows": 9,
+          "functionExpressions": 0,
+          "regexLiterals": 0,
+          "promiseConstructors": 0,
+          "abortControllerConstructors": 0
+        },
+        "baselineSha256": "d684958e03485ff5ffe7957398515fb18a120da878f5847c0c827b909af72428",
+        "sha256": "55dc384494a6ec0a43ea44fce9773e8c14e339acb2f6aea445fc35cfbcfddf54"
+      },
+      {
+        "file": "regex.ts",
+        "before": {
+          "arrows": 0,
+          "functionExpressions": 0,
+          "regexLiterals": 15,
+          "promiseConstructors": 0,
+          "abortControllerConstructors": 0
+        },
+        "after": {
+          "arrows": 0,
+          "functionExpressions": 0,
+          "regexLiterals": 12,
+          "promiseConstructors": 0,
+          "abortControllerConstructors": 0
+        },
+        "baselineSha256": "a012bde394aef818aa2d2202caabd965951f3fd7f3a08b006d2504a447ca8074",
+        "sha256": "0bd4bd3726fbbce5b6ff8ad788b0bc6bb4648891ae350253d0ff324b73a4cd1f"
+      }
+    ],
+    "removedFunctions": [
+      "commandPrefixTokens",
+      "staticLeadingCdDirectory",
+      "bashStaticCdFailure",
+      "npmManifestDirectory",
+      "bashWorkdirFailure"
+    ],
+    "unchangedCoreFunctions": [
+      "createGuardState",
+      "boundedToolName",
+      "guardCapacityReason",
+      "setBounded",
+      "structuredPreflightFailure",
+      "attachRepairKind",
+      "toolPath",
+      "repairReadOffsetFromError",
+      "structuredRgPathOperands",
+      "structuredRgBraceFailure",
+      "boundedEditDistance",
+      "nearestExistingPath",
+      "nearestFailurePath",
+      "isMsysRegexArgvFailure",
+      "failureRecoveryHint",
+      "inspectBatchCall",
+      "resetBatchState",
+      "classifyFailureText",
+      "observeRepeatedCall",
+      "warningText",
+      "signatureKey",
+      "inspectBeforeCall",
+      "recordResult",
+      "resetGuardState",
+      "guardStatus"
+    ],
+    "newClosures": 0,
+    "newRegex": 0,
+    "newPromiseConstructors": 0,
+    "newAbortControllers": 0,
+    "removedCommandPreflightFsCallsites": 3
+  },
+  "callChain": "tool_call -> bounded CallLedger admission -> prepareDeterministicCall -> cancellation/identity recheck -> callKey + sibling duplicate check -> retry admission -> native cwd preparation/permission/beforeSpawn -> backend -> cwd release -> tool_result consumes stored digest -> finish/end/agent_end clear",
+  "allocation": {
+    "scope": "Existing benchmark drives real guard hooks with fixture_operation (64 B success, 1 MiB success, 64 B failure); not a Bash stat latency benchmark. One sampling run per version is not proof of a speedup.",
+    "baseline": [
+      {
+        "target": "D:\\RMProjects\\Pi",
+        "scenario": "success",
+        "length": 64,
+        "iterations": 256,
+        "warmup": 32,
+        "sampledBytesPerCall": 5847.0625,
+        "p50Ms": 0.00839999999993779,
+        "p95Ms": 0.017500000000040927,
+        "counters": {
+          "admissionScannedBytes": 50688,
+          "hashUpdates": 3584,
+          "admissionDigests": 256,
+          "resultScannedBytes": 0,
+          "resultDigests": 0,
+          "advisories": 0
+        },
+        "heapBefore": 45050720,
+        "heapBeforeClear": 45128648,
+        "heapAfterClearGc": 45117904,
+        "sites": [
+          {
+            "site": "invoke file:///D:/RMProjects/Pi/scripts/bench/tool-loop-repeat.ts:41",
+            "bytes": 187008
+          },
+          {
+            "site": " D:/RMProjects/Pi/packages/extensions/tool-loop-guardrails/index.ts:210",
+            "bytes": 146000
+          },
+          {
+            "site": " D:/RMProjects/Pi/packages/extensions/tool-loop-guardrails/index.ts:271",
+            "bytes": 96104
+          },
+          {
+            "site": "delete :0",
+            "bytes": 75088
+          },
+          {
+            "site": "invoke file:///D:/RMProjects/Pi/scripts/bench/tool-loop-repeat.ts:41",
+            "bytes": 66008
+          },
+          {
+            "site": "prepareDeterministicCall D:\\RMProjects\\Pi\\packages\\extensions\\tool-loop-guardrails\\core.ts:279",
+            "bytes": 62136
+          },
+          {
+            "site": "Hash node:internal/crypto/hash:105",
+            "bytes": 54784
+          },
+          {
+            "site": "update node:internal/crypto/hash:179",
+            "bytes": 53696
+          }
+        ]
+      },
+      {
+        "target": "D:\\RMProjects\\Pi",
+        "scenario": "success",
+        "length": 1048576,
+        "iterations": 256,
+        "warmup": 32,
+        "sampledBytesPerCall": 22909.0625,
+        "p50Ms": 1.0330999999999904,
+        "p95Ms": 1.115099999999984,
+        "counters": {
+          "admissionScannedBytes": 536890112,
+          "hashUpdates": 134400,
+          "admissionDigests": 256,
+          "resultScannedBytes": 0,
+          "resultDigests": 0,
+          "advisories": 0
+        },
+        "heapBefore": 46110344,
+        "heapBeforeClear": 46349296,
+        "heapAfterClearGc": 46258488,
+        "sites": [
+          {
+            "site": "text D:/RMProjects/Pi/packages/extensions/tool-loop-guardrails/call-identity.ts:24",
+            "bytes": 3639136
+          },
+          {
+            "site": "slice :0",
+            "bytes": 697568
+          },
+          {
+            "site": "invoke file:///D:/RMProjects/Pi/scripts/bench/tool-loop-repeat.ts:41",
+            "bytes": 166640
+          },
+          {
+            "site": " D:/RMProjects/Pi/packages/extensions/tool-loop-guardrails/index.ts:210",
+            "bytes": 158712
+          },
+          {
+            "site": "wrappedFn node:internal/errors:542",
+            "bytes": 106912
+          },
+          {
+            "site": " D:/RMProjects/Pi/packages/extensions/tool-loop-guardrails/index.ts:271",
+            "bytes": 79288
+          },
+          {
+            "site": "delete :0",
+            "bytes": 70984
+          },
+          {
+            "site": "invoke file:///D:/RMProjects/Pi/scripts/bench/tool-loop-repeat.ts:41",
+            "bytes": 66008
+          }
+        ]
+      },
+      {
+        "target": "D:\\RMProjects\\Pi",
+        "scenario": "failure",
+        "length": 64,
+        "iterations": 256,
+        "warmup": 32,
+        "sampledBytesPerCall": 6304.59375,
+        "p50Ms": 0.009999999999990905,
+        "p95Ms": 0.018299999999953798,
+        "counters": {
+          "admissionScannedBytes": 50688,
+          "hashUpdates": 3584,
+          "admissionDigests": 256,
+          "resultScannedBytes": 0,
+          "resultDigests": 0,
+          "advisories": 0
+        },
+        "heapBefore": 45299840,
+        "heapBeforeClear": 45423512,
+        "heapAfterClearGc": 45315280,
+        "sites": [
+          {
+            "site": "invoke file:///D:/RMProjects/Pi/scripts/bench/tool-loop-repeat.ts:41",
+            "bytes": 189304
+          },
+          {
+            "site": " D:/RMProjects/Pi/packages/extensions/tool-loop-guardrails/index.ts:210",
+            "bytes": 141816
+          },
+          {
+            "site": " D:/RMProjects/Pi/packages/extensions/tool-loop-guardrails/index.ts:271",
+            "bytes": 116904
+          },
+          {
+            "site": "failureRecoveryHint D:\\RMProjects\\Pi\\packages\\extensions\\tool-loop-guardrails\\core.ts:367",
+            "bytes": 99784
+          },
+          {
+            "site": "delete :0",
+            "bytes": 95912
+          },
+          {
+            "site": "invoke file:///D:/RMProjects/Pi/scripts/bench/tool-loop-repeat.ts:41",
+            "bytes": 74528
+          },
+          {
+            "site": "has :0",
+            "bytes": 62096
+          },
+          {
+            "site": "now node:internal/perf/performance:137",
+            "bytes": 61928
+          }
+        ]
+      },
+      {
+        "lifecycle": {
+          "owners": 288,
+          "retainedHooks": 64,
+          "retainedRetryLedgers": 32,
+          "retainedAfterGc": 0
+        },
+        "node": "v26.13.0",
+        "v8": "14.6.202.34-node.40",
+        "platform": "win32"
+      }
+    ],
+    "candidate": [
+      {
+        "target": "D:\\RMProjects\\Pi",
+        "scenario": "success",
+        "length": 64,
+        "iterations": 256,
+        "warmup": 32,
+        "sampledBytesPerCall": 6348.46875,
+        "p50Ms": 0.008299999999962893,
+        "p95Ms": 0.01890000000003056,
+        "counters": {
+          "admissionScannedBytes": 50688,
+          "hashUpdates": 3584,
+          "admissionDigests": 256,
+          "resultScannedBytes": 0,
+          "resultDigests": 0,
+          "advisories": 0
+        },
+        "heapBefore": 45042408,
+        "heapBeforeClear": 45125064,
+        "heapAfterClearGc": 45114120,
+        "sites": [
+          {
+            "site": "invoke file:///D:/RMProjects/Pi/scripts/bench/tool-loop-repeat.ts:41",
+            "bytes": 178368
+          },
+          {
+            "site": " D:/RMProjects/Pi/packages/extensions/tool-loop-guardrails/index.ts:210",
+            "bytes": 133568
+          },
+          {
+            "site": "invoke file:///D:/RMProjects/Pi/scripts/bench/tool-loop-repeat.ts:41",
+            "bytes": 127808
+          },
+          {
+            "site": " D:/RMProjects/Pi/packages/extensions/tool-loop-guardrails/index.ts:269",
+            "bytes": 104728
+          },
+          {
+            "site": "delete :0",
+            "bytes": 62624
+          },
+          {
+            "site": "update node:internal/crypto/hash:179",
+            "bytes": 57792
+          },
+          {
+            "site": "Map :0",
+            "bytes": 54128
+          },
+          {
+            "site": "now node:internal/perf/performance:137",
+            "bytes": 53640
+          }
+        ]
+      },
+      {
+        "target": "D:\\RMProjects\\Pi",
+        "scenario": "success",
+        "length": 1048576,
+        "iterations": 256,
+        "warmup": 32,
+        "sampledBytesPerCall": 21254.375,
+        "p50Ms": 1.037300000000073,
+        "p95Ms": 1.2065999999999804,
+        "counters": {
+          "admissionScannedBytes": 536890112,
+          "hashUpdates": 134400,
+          "admissionDigests": 256,
+          "resultScannedBytes": 0,
+          "resultDigests": 0,
+          "advisories": 0
+        },
+        "heapBefore": 46103832,
+        "heapBeforeClear": 46328536,
+        "heapAfterClearGc": 46241136,
+        "sites": [
+          {
+            "site": "text D:/RMProjects/Pi/packages/extensions/tool-loop-guardrails/call-identity.ts:24",
+            "bytes": 3462336
+          },
+          {
+            "site": "slice :0",
+            "bytes": 642640
+          },
+          {
+            "site": "invoke file:///D:/RMProjects/Pi/scripts/bench/tool-loop-repeat.ts:41",
+            "bytes": 158192
+          },
+          {
+            "site": " D:/RMProjects/Pi/packages/extensions/tool-loop-guardrails/index.ts:210",
+            "bytes": 142120
+          },
+          {
+            "site": "invoke file:///D:/RMProjects/Pi/scripts/bench/tool-loop-repeat.ts:41",
+            "bytes": 115608
+          },
+          {
+            "site": "wrappedFn node:internal/errors:542",
+            "bytes": 102816
+          },
+          {
+            "site": " D:/RMProjects/Pi/packages/extensions/tool-loop-guardrails/index.ts:269",
+            "bytes": 83336
+          },
+          {
+            "site": "Map :0",
+            "bytes": 83336
+          }
+        ]
+      },
+      {
+        "target": "D:\\RMProjects\\Pi",
+        "scenario": "failure",
+        "length": 64,
+        "iterations": 256,
+        "warmup": 32,
+        "sampledBytesPerCall": 6377.625,
+        "p50Ms": 0.010499999999979082,
+        "p95Ms": 0.023500000000012733,
+        "counters": {
+          "admissionScannedBytes": 50688,
+          "hashUpdates": 3584,
+          "admissionDigests": 256,
+          "resultScannedBytes": 0,
+          "resultDigests": 0,
+          "advisories": 0
+        },
+        "heapBefore": 45283592,
+        "heapBeforeClear": 45406704,
+        "heapAfterClearGc": 45305176,
+        "sites": [
+          {
+            "site": " D:/RMProjects/Pi/packages/extensions/tool-loop-guardrails/index.ts:269",
+            "bytes": 195888
+          },
+          {
+            "site": "invoke file:///D:/RMProjects/Pi/scripts/bench/tool-loop-repeat.ts:41",
+            "bytes": 163784
+          },
+          {
+            "site": " D:/RMProjects/Pi/packages/extensions/tool-loop-guardrails/index.ts:210",
+            "bytes": 162688
+          },
+          {
+            "site": "invoke file:///D:/RMProjects/Pi/scripts/bench/tool-loop-repeat.ts:41",
+            "bytes": 91168
+          },
+          {
+            "site": "failureRecoveryHint D:\\RMProjects\\Pi\\packages\\extensions\\tool-loop-guardrails\\core.ts:246",
+            "bytes": 74632
+          },
+          {
+            "site": "Map :0",
+            "bytes": 66592
+          },
+          {
+            "site": "has :0",
+            "bytes": 66264
+          },
+          {
+            "site": "prepareDeterministicCall D:\\RMProjects\\Pi\\packages\\extensions\\tool-loop-guardrails\\core.ts:162",
+            "bytes": 63104
+          }
+        ]
+      },
+      {
+        "lifecycle": {
+          "owners": 288,
+          "retainedHooks": 64,
+          "retainedRetryLedgers": 32,
+          "retainedAfterGc": 0
+        },
+        "node": "v26.13.0",
+        "v8": "14.6.202.34-node.40",
+        "platform": "win32"
+      }
+    ]
+  },
+  "build": {
+    "environment": "{\"powershell\":\"7.6.9\",\"npm\":\"D:\\\\Nodes\\\\26.13.0\\\\npm.ps1\",\"pid\":39128}",
+    "completion": "[build] Completed 12/12 packages in 7033ms; peak=2",
+    "exit": 0,
+    "commands": [
+      "npm run check",
+      "npm run build:offline",
+      "npm run superpi -- --offline --version",
+      "npm run superpi -- --offline --help"
+    ]
+  },
+  "files": [
+    {
+      "file": "packages/extensions/tool-loop-guardrails/core.ts",
+      "sha256": "be55b0745a435176936227f053c4f242270aebe0a8f6b9498b8da37d9a748e87"
+    },
+    {
+      "file": "packages/extensions/tool-loop-guardrails/index.ts",
+      "sha256": "55dc384494a6ec0a43ea44fce9773e8c14e339acb2f6aea445fc35cfbcfddf54"
+    },
+    {
+      "file": "packages/extensions/tool-loop-guardrails/regex.ts",
+      "sha256": "0bd4bd3726fbbce5b6ff8ad788b0bc6bb4648891ae350253d0ff324b73a4cd1f"
+    },
+    {
+      "file": "packages/extensions/tool-loop-guardrails/README.md",
+      "sha256": "b8df66abb1fe936b5514036ccb73648ec8b26669dbd73b498077086f5a9b478e"
+    },
+    {
+      "file": "tests/shell-explicit-cwd.test.ts",
+      "sha256": "c1c15157e6713176ad9b57b021ad2e0ace4838217441f129761858a694e2f474"
+    },
+    {
+      "file": "tests/tool-loop-repeat-hot-paths.test.ts",
+      "sha256": "785205c2cc811419ca0ca55ad77de398ce3b6558b60c2a04c340fd820c992c38"
+    }
+  ],
+  "cleanup": {
+    "root": "D:\\RMProjects\\Pi\\.task-tmp\\shell-precheck-acd08140cd",
+    "pending": false,
+    "registeredProcesses": [
+      {
+        "pid": 40152,
+        "role": "runner",
+        "label": "baseline-regression",
+        "started": "2026-11-05T08:47:24.425Z",
+        "settled": true,
+        "finished": "2026-11-05T08:47:25.898Z"
+      },
+      {
+        "pid": 36888,
+        "label": "baseline-regression",
+        "executable": "D:/Nodes/26.13.0/node.exe",
+        "args": [
+          "--import",
+          "file:///D:/RMProjects/Pi/.task-tmp/shell-precheck-acd08140cd/verify-env.mjs",
+          "--test",
+          "--test-name-pattern",
+          "loop guard",
+          "tests/shell-explicit-cwd.test.ts"
+        ],
+        "started": "2026-11-05T08:47:24.430Z",
+        "settled": true,
+        "code": 1,
+        "signal": null,
+        "finished": "2026-11-05T08:47:25.898Z"
+      },
+      {
+        "pid": 30116,
+        "role": "runner",
+        "label": "baseline-bench",
+        "started": "2026-11-05T08:51:35.317Z",
+        "settled": true,
+        "finished": "2026-11-05T08:51:36.453Z"
+      },
+      {
+        "pid": 21568,
+        "label": "baseline-bench",
+        "executable": "D:/Nodes/26.13.0/node.exe",
+        "args": [
+          "--import",
+          "file:///D:/RMProjects/Pi/.task-tmp/shell-precheck-acd08140cd/verify-env.mjs",
+          "--expose-gc",
+          "scripts/bench/tool-loop-repeat.ts"
+        ],
+        "started": "2026-11-05T08:51:35.322Z",
+        "settled": true,
+        "code": 0,
+        "signal": null,
+        "finished": "2026-11-05T08:51:36.453Z"
+      },
+      {
+        "pid": 23360,
+        "role": "runner",
+        "label": "candidate-regression",
+        "started": "2026-11-05T08:52:28.785Z",
+        "settled": true,
+        "finished": "2026-11-05T08:52:30.456Z"
+      },
+      {
+        "pid": 34280,
+        "label": "candidate-regression",
+        "executable": "D:/Nodes/26.13.0/node.exe",
+        "args": [
+          "--import",
+          "file:///D:/RMProjects/Pi/.task-tmp/shell-precheck-acd08140cd/verify-env.mjs",
+          "--test",
+          "--test-name-pattern",
+          "loop guard",
+          "tests/shell-explicit-cwd.test.ts"
+        ],
+        "started": "2026-11-05T08:52:28.790Z",
+        "settled": true,
+        "code": 0,
+        "signal": null,
+        "finished": "2026-11-05T08:52:30.456Z"
+      },
+      {
+        "pid": 33536,
+        "role": "runner",
+        "label": "regression",
+        "started": "2026-11-05T08:52:40.399Z",
+        "settled": true,
+        "finished": "2026-11-05T08:52:44.610Z"
+      },
+      {
+        "pid": 13284,
+        "label": "regression",
+        "executable": "D:/Nodes/26.13.0/node.exe",
+        "args": [
+          "--import",
+          "file:///D:/RMProjects/Pi/.task-tmp/shell-precheck-acd08140cd/verify-env.mjs",
+          "--test",
+          "tests/shell-explicit-cwd.test.ts",
+          "tests/shell-cd-find-compatibility.test.ts",
+          "tests/tool-reliability-recovery.test.ts",
+          "tests/tool-loop-repeat.test.ts",
+          "tests/tool-loop-repeat-hot-paths.test.ts",
+          "tests/shell-observation-hot-paths.test.ts",
+          "tests/guard-relax-1-ask.test.ts",
+          "tests/guard-relax-3-lifecycle.test.ts"
+        ],
+        "started": "2026-11-05T08:52:40.404Z",
+        "settled": true,
+        "code": 0,
+        "signal": null,
+        "finished": "2026-11-05T08:52:44.610Z"
+      },
+      {
+        "pid": 39772,
+        "role": "runner",
+        "label": "candidate-bench",
+        "started": "2026-11-05T08:53:02.299Z",
+        "settled": true,
+        "finished": "2026-11-05T08:53:03.439Z"
+      },
+      {
+        "pid": 21320,
+        "label": "candidate-bench",
+        "executable": "D:/Nodes/26.13.0/node.exe",
+        "args": [
+          "--import",
+          "file:///D:/RMProjects/Pi/.task-tmp/shell-precheck-acd08140cd/verify-env.mjs",
+          "--expose-gc",
+          "scripts/bench/tool-loop-repeat.ts"
+        ],
+        "started": "2026-11-05T08:53:02.304Z",
+        "settled": true,
+        "code": 0,
+        "signal": null,
+        "finished": "2026-11-05T08:53:03.439Z"
+      },
+      {
+        "pid": 39504,
+        "role": "runner",
+        "label": "build",
+        "started": "2026-11-05T08:53:03.749Z",
+        "settled": true,
+        "finished": "2026-11-05T08:53:16.218Z"
+      },
+      {
+        "pid": 20084,
+        "label": "build",
+        "executable": "D:/PowerShell/7/pwsh.exe",
+        "args": [
+          "-NoProfile",
+          "-File",
+          ".task-tmp/shell-precheck-acd08140cd/build.ps1"
+        ],
+        "started": "2026-11-05T08:53:03.758Z",
+        "settled": true,
+        "code": 0,
+        "signal": null,
+        "finished": "2026-11-05T08:53:16.218Z"
+      },
+      {
+        "pid": 34896,
+        "role": "runner",
+        "label": "final-regression",
+        "started": "2026-11-05T08:55:19.110Z",
+        "settled": true,
+        "finished": "2026-11-05T08:55:23.217Z"
+      },
+      {
+        "pid": 41420,
+        "label": "final-regression",
+        "executable": "D:/Nodes/26.13.0/node.exe",
+        "args": [
+          "--import",
+          "file:///D:/RMProjects/Pi/.task-tmp/shell-precheck-acd08140cd/verify-env.mjs",
+          "--test",
+          "tests/shell-explicit-cwd.test.ts",
+          "tests/shell-cd-find-compatibility.test.ts",
+          "tests/tool-reliability-recovery.test.ts",
+          "tests/tool-loop-repeat.test.ts",
+          "tests/tool-loop-repeat-hot-paths.test.ts",
+          "tests/shell-observation-hot-paths.test.ts",
+          "tests/guard-relax-1-ask.test.ts",
+          "tests/guard-relax-3-lifecycle.test.ts"
+        ],
+        "started": "2026-11-05T08:55:19.115Z",
+        "settled": true,
+        "code": 0,
+        "signal": null,
+        "finished": "2026-11-05T08:55:23.217Z"
+      },
+      {
+        "pid": 37148,
+        "role": "runner",
+        "label": "retirement-regression",
+        "started": "2026-11-05T08:55:59.020Z",
+        "settled": true,
+        "finished": "2026-11-05T08:56:03.107Z"
+      },
+      {
+        "pid": 37172,
+        "label": "retirement-regression",
+        "executable": "D:/Nodes/26.13.0/node.exe",
+        "args": [
+          "--import",
+          "file:///D:/RMProjects/Pi/.task-tmp/shell-precheck-acd08140cd/verify-env.mjs",
+          "--test",
+          "tests/shell-explicit-cwd.test.ts",
+          "tests/shell-cd-find-compatibility.test.ts",
+          "tests/tool-reliability-recovery.test.ts",
+          "tests/tool-loop-repeat.test.ts",
+          "tests/tool-loop-repeat-hot-paths.test.ts",
+          "tests/shell-observation-hot-paths.test.ts",
+          "tests/guard-relax-1-ask.test.ts",
+          "tests/guard-relax-3-lifecycle.test.ts"
+        ],
+        "started": "2026-11-05T08:55:59.024Z",
+        "settled": true,
+        "code": 0,
+        "signal": null,
+        "finished": "2026-11-05T08:56:03.107Z"
+      },
+      {
+        "pid": 32412,
+        "role": "runner",
+        "label": "retirement-bench",
+        "started": "2026-11-05T08:56:11.928Z",
+        "settled": true,
+        "finished": "2026-11-05T08:56:13.069Z"
+      },
+      {
+        "pid": 15524,
+        "label": "retirement-bench",
+        "executable": "D:/Nodes/26.13.0/node.exe",
+        "args": [
+          "--import",
+          "file:///D:/RMProjects/Pi/.task-tmp/shell-precheck-acd08140cd/verify-env.mjs",
+          "--expose-gc",
+          "scripts/bench/tool-loop-repeat.ts"
+        ],
+        "started": "2026-11-05T08:56:11.932Z",
+        "settled": true,
+        "code": 0,
+        "signal": null,
+        "finished": "2026-11-05T08:56:13.069Z"
+      },
+      {
+        "pid": 39372,
+        "role": "runner",
+        "label": "retirement-build",
+        "started": "2026-11-05T08:56:13.383Z",
+        "settled": true,
+        "finished": "2026-11-05T08:56:24.413Z"
+      },
+      {
+        "pid": 39128,
+        "label": "retirement-build",
+        "executable": "D:/PowerShell/7/pwsh.exe",
+        "args": [
+          "-NoProfile",
+          "-File",
+          ".task-tmp/shell-precheck-acd08140cd/build.ps1"
+        ],
+        "started": "2026-11-05T08:56:13.390Z",
+        "settled": true,
+        "code": 0,
+        "signal": null,
+        "finished": "2026-11-05T08:56:24.413Z"
+      },
+      {
+        "pid": 41572,
+        "role": "runner",
+        "label": "evidence",
+        "started": "2026-11-05T08:57:44.956Z",
+        "settled": true,
+        "finished": "2026-11-05T08:57:45.203Z"
+      },
+      {
+        "pid": 32276,
+        "label": "evidence",
+        "executable": "D:/Nodes/26.13.0/node.exe",
+        "args": [
+          ".task-tmp/shell-precheck-acd08140cd/evidence.mjs"
+        ],
+        "started": "2026-11-05T08:57:44.960Z",
+        "settled": true,
+        "code": 0,
+        "signal": null,
+        "finished": "2026-11-05T08:57:45.203Z"
+      },
+      {
+        "pid": 29244,
+        "role": "runner",
+        "label": "seal",
+        "started": "2026-11-05T08:59:38.989Z",
+        "settled": true,
+        "finished": "2026-11-05T08:59:39.017Z"
+      },
+      {
+        "pid": 30944,
+        "label": "seal",
+        "executable": "D:/Nodes/26.13.0/node.exe",
+        "args": [
+          "-e",
+          "0"
+        ],
+        "started": "2026-11-05T08:59:38.993Z",
+        "settled": true,
+        "code": 0,
+        "signal": null,
+        "finished": "2026-11-05T08:59:39.017Z"
+      }
+    ],
+    "receipt": {
+      "removedResources": 648,
+      "taskRootRemoved": true,
+      "directChildren": 30,
+      "settledProcesses": 24,
+      "cleanupPid": 41188,
+      "sharedParentRetained": true,
+      "verifiedResources": 648
+    }
+  }
+}

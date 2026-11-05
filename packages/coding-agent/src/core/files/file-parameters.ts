@@ -163,5 +163,5 @@ export type GuardedWriteInput = Static<typeof WriteParameters>;
 export const NativeWriteParameters = Type.Object({
   ...WriteParameters.properties,
   snapshot: Type.Optional(Type.String({ pattern: SNAPSHOT_ID_PATTERN,
-    description: "Exact read snapshot for replacing an existing file; never falls back to a newer read or creates a missing target." })),
+    description: "Optional exact snap_ ID from the read annotation, not result.ref. Omit to use the latest current read of this target. An explicit ID never falls back to a newer read or creates a missing target." })),
 }, { additionalProperties: false });

@@ -214,9 +214,7 @@ export default function toolLoopGuardrails(pi: ExtensionAPI): void {
     }
     const pending = calls.remember(event.toolCallId, "", event.parentToolCallId);
     try {
-    const effectiveCwd = event.toolName === "bash" || event.toolName === "powershell"
-      ? resolveBashCallCwd(event.input, ctx.cwd) : ctx.cwd;
-    const preparation = await prepareDeterministicCall(event.toolName, event.input, effectiveCwd);
+    const preparation = await prepareDeterministicCall(event.toolName, event.input);
     if (ctx.signal?.aborted || calls.pending.get(event.toolCallId) !== pending) {
       calls.finish(event.toolCallId);
       return { block: true, reason: "Operation aborted before tool admission" };

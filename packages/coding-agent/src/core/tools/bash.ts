@@ -82,7 +82,10 @@ export const bashToolSystemPromptContribution = {
 	snippet: "Execute bash commands (ls, grep, find, etc.)",
 	guidelines: [
 		"You can inspect SP_* environment variables for current model and session details.",
+		"Discover executables quietly with command -v, then verify the resolved tool's identity and required functionality. A PATH miss does not prove absence: check known project or local installation locations before proposing installation; a downloaded installer is not an installed tool. On Windows, python and python3 may resolve differently, WindowsApps may contain nonworking execution aliases, and System32/convert.exe is not ImageMagick.",
+		"Use the tool's cwd for a verified native directory. On Windows, resolve Git Bash paths with cygpath -w before passing them as cwd or embedding them in native Python/Node source; /tmp and /d/... are not native paths. Verify exact extracted paths and expected input counts; an empty glob with exit 0 is not proof that work ran.",
 		"For Node scripts, use node -e when the one-off source can be passed reliably; for complex quoting or reusable code, an explicit file or supported stdin is optional. Script length does not decide permission, and a file does not bypass approval.",
+		"For multiline scripts, preserve actual newlines and verify the source received by the interpreter. Follow repository scratch-directory rules and reuse a task-owned script after reading its current version. For unfamiliar binary formats, prefer a verified parser or authoritative format specification; validate bounds and one known sample before processing a batch. After a failure, test the diagnosed cause instead of cycling through guessed offsets or new filenames.",
 	],
 } as const;
 

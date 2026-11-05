@@ -1,0 +1,637 @@
+{
+  "date": "2026-11-05T07:10:19.502Z",
+  "base": "d67a30f0f0e314191e5673f2826dccc769381088",
+  "scope": "Static prompt and schema descriptions only; no runtime algorithms, permission rules, installed tools or persistent environment changed.",
+  "session": {
+    "id": "01a1aa6e-a111-7ba4-a440-96ca81c262ca",
+    "sha256": "98bbb62d2ce32f8d758e0becf8795f0ce936a44f987ba364a432fe876abca67b",
+    "auditedLines": 154,
+    "childCalls": 60,
+    "explicitErrorCalls": 6,
+    "errors": [
+      {
+        "line": 26,
+        "kind": "python3 execution alias",
+        "exit": 49
+      },
+      {
+        "line": 42,
+        "kind": "WORKDIR_MISMATCH Git Bash /tmp resolved as D:/tmp by leading-cd precheck"
+      },
+      {
+        "line": 62,
+        "kind": "REVISION_REQUIRED"
+      },
+      {
+        "line": 65,
+        "kind": "TOOL_ARGS_INVALID: result.ref passed as snapshot"
+      },
+      {
+        "line": 75,
+        "kind": "REVISION_REQUIRED"
+      },
+      {
+        "line": 86,
+        "kind": "assumed extracted Frames directory missing",
+        "exit": 1
+      }
+    ],
+    "maskedTracebacks": [
+      28,
+      72,
+      95,
+      104,
+      118,
+      141
+    ],
+    "emptyOutputProbe": 30,
+    "successfulReadThenWrite": 148,
+    "limits": "Only related facts retained; no full transcript, source assets or real configuration archived. Final model task was not replayed."
+  },
+  "imageMagick": {
+    "installer": "D:/edgeDownLoad/ImageMagick-7.1.2-7-Q16-HDRI-x64-dll.exe",
+    "size": 24019144,
+    "description": "ImageMagick 7.1.2 Q16-HDRI (64-bit) Setup",
+    "version": "7.1.2.7",
+    "sha256": "97ec82d10169141c1edb572869af7a69458a562e19f4976fb90c8b951ace262e",
+    "pathExecutableFound": false,
+    "installationRegistryMatch": false,
+    "searchScope": [
+      "Program Files",
+      "Program Files (x86)",
+      "D:/ root directory names",
+      "D:/Tools",
+      "D:/edgeDownLoad",
+      "user Downloads",
+      "user Local/Programs",
+      "WinGet Packages",
+      "Chocolatey lib",
+      "agent/bin",
+      "session workspace"
+    ],
+    "limit": "Installer located; runnable magick.exe not located in checked roots. Arbitrary portable paths not exhaustively searched. Installer not executed."
+  },
+  "inputs": [
+    {
+      "file": "packages/coding-agent/src/core/tools/bash.ts",
+      "sha256": "66342705061d9b9c67ff3ae48697d60203e4593e5e1f274d3e3a522ff3c234d4",
+      "dist": "packages/coding-agent/dist/core/tools/bash.js",
+      "distSha256": "265260c232d4a84368d2ab1d19082616387c1f21434e8d73cf5a34564da4f547",
+      "countsBefore": {
+        "arrow": 26,
+        "functionExpression": 0,
+        "newPromise": 1,
+        "newAbortController": 1,
+        "regex": 0,
+        "call": 302
+      },
+      "countsAfter": {
+        "arrow": 26,
+        "functionExpression": 0,
+        "newPromise": 1,
+        "newAbortController": 1,
+        "regex": 0,
+        "call": 302
+      }
+    },
+    {
+      "file": "packages/coding-agent/src/core/codemode-constants.ts",
+      "sha256": "19bf94ccc962dbbd457c0d5cb79a0106c5ec9263d4cc437bff94358416030d77",
+      "dist": "packages/coding-agent/dist/core/codemode-constants.js",
+      "distSha256": "1cef23138be248aaf6db087b4e56d5278d174cc374e91a713b372924babcaba0",
+      "countsBefore": {
+        "arrow": 0,
+        "functionExpression": 0,
+        "newPromise": 0,
+        "newAbortController": 0,
+        "regex": 0,
+        "call": 2
+      },
+      "countsAfter": {
+        "arrow": 0,
+        "functionExpression": 0,
+        "newPromise": 0,
+        "newAbortController": 0,
+        "regex": 0,
+        "call": 2
+      }
+    },
+    {
+      "file": "packages/coding-agent/src/core/files/session-files.ts",
+      "sha256": "e7ab3966c8712304ed8c5add0e261160e68829945aed5e3910bc0082efbd4b06",
+      "dist": "packages/coding-agent/dist/core/files/session-files.js",
+      "distSha256": "2d2869d94aac51a3245e4e20703f3e0dba66c320087780079496a2a536e36357",
+      "countsBefore": {
+        "arrow": 11,
+        "functionExpression": 1,
+        "newPromise": 0,
+        "newAbortController": 0,
+        "regex": 0,
+        "call": 113
+      },
+      "countsAfter": {
+        "arrow": 11,
+        "functionExpression": 1,
+        "newPromise": 0,
+        "newAbortController": 0,
+        "regex": 0,
+        "call": 113
+      }
+    },
+    {
+      "file": "packages/coding-agent/src/core/files/file-parameters.ts",
+      "sha256": "843500684f34fc3c19d6efbdef1e06b0a406b83a5c2391cc1e6ddf70ab3bcb60",
+      "dist": "packages/coding-agent/dist/core/files/file-parameters.js",
+      "distSha256": "1337dcb8bc3827a1aa1796751568c4f442ebcb41f6097b41f3c5b4af7074345a",
+      "countsBefore": {
+        "arrow": 0,
+        "functionExpression": 0,
+        "newPromise": 0,
+        "newAbortController": 0,
+        "regex": 0,
+        "call": 73
+      },
+      "countsAfter": {
+        "arrow": 0,
+        "functionExpression": 0,
+        "newPromise": 0,
+        "newAbortController": 0,
+        "regex": 0,
+        "call": 73
+      }
+    }
+  ],
+  "acceptance": {
+    "nonStringAstUnchanged": true,
+    "counters": {
+      "packages/coding-agent/src/core/tools/bash.ts": {
+        "arrow": 26,
+        "functionExpression": 0,
+        "newPromise": 1,
+        "newAbortController": 1,
+        "regex": 0,
+        "call": 302
+      },
+      "packages/coding-agent/src/core/codemode-constants.ts": {
+        "arrow": 0,
+        "functionExpression": 0,
+        "newPromise": 0,
+        "newAbortController": 0,
+        "regex": 0,
+        "call": 2
+      },
+      "packages/coding-agent/src/core/files/session-files.ts": {
+        "arrow": 11,
+        "functionExpression": 1,
+        "newPromise": 0,
+        "newAbortController": 0,
+        "regex": 0,
+        "call": 113
+      },
+      "packages/coding-agent/src/core/files/file-parameters.ts": {
+        "arrow": 0,
+        "functionExpression": 0,
+        "newPromise": 0,
+        "newAbortController": 0,
+        "regex": 0,
+        "call": 73
+      }
+    },
+    "promptChars": 5034,
+    "codemodeDescriptionChars": 12748,
+    "rebuilds": 100,
+    "uniqueHashes": 1,
+    "hash": "17339ec8057a2c01138c70e303fdd1811c7a2f0216cb41658dbf460e454999c3",
+    "tools": [
+      "ask_user",
+      "tasks",
+      "codemode"
+    ],
+    "verified": "actual AgentSession nested Bash/native write guidance and Codemode description; no provider call"
+  },
+  "controls": [
+    {
+      "label": "masked-failure",
+      "pid": 32752,
+      "started": "2026-11-05T07:05:21.092Z",
+      "settled": true,
+      "code": 0,
+      "signal": null,
+      "finished": "2026-11-05T07:05:21.188Z",
+      "command": "python -c \"raise RuntimeError('SYNTHETIC_PIPELINE_FAILURE')\" 2>&1 | head -8",
+      "stdout": "Traceback (most recent call last):\r\n  File \"<string>\", line 1, in <module>\r\n    raise RuntimeError('SYNTHETIC_PIPELINE_FAILURE')\r\nRuntimeError: SYNTHETIC_PIPELINE_FAILURE\r\n",
+      "stderr": ""
+    },
+    {
+      "label": "preserved-failure",
+      "pid": 23972,
+      "started": "2026-11-05T07:05:21.191Z",
+      "settled": true,
+      "code": 1,
+      "signal": null,
+      "finished": "2026-11-05T07:05:21.280Z",
+      "command": "python -c \"raise RuntimeError('SYNTHETIC_PIPELINE_FAILURE')\" > producer.log 2>&1; producer_status=$?; head -8 producer.log; exit \"$producer_status\"",
+      "stdout": "Traceback (most recent call last):\r\n  File \"<string>\", line 1, in <module>\r\n    raise RuntimeError('SYNTHETIC_PIPELINE_FAILURE')\r\nRuntimeError: SYNTHETIC_PIPELINE_FAILURE\r\n",
+      "stderr": ""
+    },
+    {
+      "label": "preserved-success",
+      "pid": 41140,
+      "started": "2026-11-05T07:05:21.283Z",
+      "settled": true,
+      "code": 0,
+      "signal": null,
+      "finished": "2026-11-05T07:05:21.372Z",
+      "command": "python -c \"print('PRODUCER_OK')\" > success.log 2>&1; producer_status=$?; head -8 success.log; exit \"$producer_status\"",
+      "stdout": "PRODUCER_OK\r\n",
+      "stderr": ""
+    },
+    {
+      "label": "empty-glob-guard",
+      "pid": 38628,
+      "started": "2026-11-05T07:05:21.375Z",
+      "settled": true,
+      "code": 1,
+      "signal": null,
+      "finished": "2026-11-05T07:05:21.441Z",
+      "command": "python -c \"import glob; files=glob.glob('missing-input-*.aseprite'); assert files, 'No expected inputs'\"",
+      "stdout": "",
+      "stderr": "Traceback (most recent call last):\r\n  File \"<string>\", line 1, in <module>\r\n    import glob; files=glob.glob('missing-input-*.aseprite'); assert files, 'No expected inputs'\r\n                                                                     ^^^^^\r\nAssertionError: No expected inputs\r\n"
+    },
+    {
+      "label": "native-path",
+      "pid": 26664,
+      "started": "2026-11-05T07:05:21.444Z",
+      "settled": true,
+      "code": 0,
+      "signal": null,
+      "finished": "2026-11-05T07:05:21.508Z",
+      "command": "python -c \"import os,tempfile,json; print(json.dumps(dict(cwd=os.getcwd(),temp=tempfile.gettempdir())))\"",
+      "stdout": "{\"cwd\": \"D:\\\\RMProjects\\\\Pi\\\\.task-tmp\\\\session-shell-guidance-466a1f4f80\", \"temp\": \"D:\\\\RMProjects\\\\Pi\\\\.task-tmp\\\\session-shell-guidance-466a1f4f80\"}\r\n",
+      "stderr": ""
+    }
+  ],
+  "tests": {
+    "files": [
+      "prompt-composition",
+      "codemode-r2-description",
+      "codemode-r2-failure",
+      "native-file-service",
+      "native-file-revisions",
+      "shell-process-observation",
+      "tool-reliability-recovery",
+      "prefix-production-assembly",
+      "prefix-request-source-invariants"
+    ],
+    "passed": 105,
+    "skipped": 6,
+    "failed": 0,
+    "log": "✔ R2.5 instructions explain explicit failure handling, display limits and script-local refs (0.367ms)\n\u001b[?25h\u001b[?25h✔ R2.2 explicit handling leaves true child errors and default caught failures still fail store (92.8111ms)\n✔ R2.2 handled failure never clears a concurrent unhandled failure or masks observation failure (0.4165ms)\n✔ R2.2 invalid options fail before tools execute and never commit store (30.6127ms)\n✔ native revisions isolate owners and permit read/edit without a model turn or display (52.4094ms)\n✔ clear/dispose revoke pending captures and precommit revisions while preserving committed outcomes (51.8125ms)\n✔ native exact revisions preserve BOM/mixed endings and reject ambiguity, overlap and stale overwrite (70.9612ms)\n✔ native window and cursor reads issue bounded revisions; partial windows and forged metadata do not (280.2893ms)\nℹ {\"windowReads\":4,\"committedEdits\":2,\"references\":4,\"live\":0,\"sampledMainThreadBytes\":34782528}\n✔ revision capacity and controlled GC release bounded native source ownership (190.1578ms)\nℹ {\"captures\":133,\"commits\":2,\"receiptLimit\":128,\"byteLimit\":8388608,\"references\":275,\"live\":0,\"sampledMainThreadBytes\":18001456}\n✔ native file owner releases prepared, approved, revoked and resetting invocations (98.923ms)\nℹ {\"invocations\":8,\"completed\":2,\"readAttempts\":5,\"transitions\":1,\"records\":6,\"references\":25,\"live\":0,\"sampledMainThreadBytes\":2535248,\"pending\":0,\"inFlight\":0}\n✔ native file service uses one versioned commit path for create, exact, anchors, overwrite, move and delete (78.5398ms)\n✔ native prepared inputs, lifecycle revocation and version conflicts cannot become unplanned writes (12.7398ms)\n✔ native file service keeps confirmed effects when result recording fails (3.5014ms)\n✔ native batches preflight every independent item and share bounded previews and parent ownership (75.3166ms)\n✔ native batches keep completed effects on failure, cancellation, clear and failed recording (38.6873ms)\n✔ native service facts reconstruct standalone and partial batch history without granting replay (87.0103ms)\n✔ native file service releases invocation plans and owners after completion, rejection and disposal (86.1397ms)\nℹ {\"prepared\":22,\"completed\":8,\"revoked\":8,\"batches\":3,\"batchCompleted\":3,\"renderCalls\":48,\"renderOwners\":2,\"duplicateExecutions\":0,\"references\":98,\"live\":0,\"sampledMainThreadBytes\":6767336}\n✔ production assembly is deterministic without test-side resource sorting (234.8062ms)\n✔ production assembly diagnoses context and tool causes behind aggregate prompt drift (26.6218ms)\n✔ request attribution owns prototype callbacks and no Promise, controller or regex (7.5257ms)\n✔ result notification stays inside the terminal branch; synchronous observers have no Promise tail (4.1175ms)\n✔ response attribution stores one weak identity without a message collection (8.0667ms)\n✔ native composition preserves pre-refactor golden bytes and owns five immutable segments (1.8235ms)\n✔ runner captures provenance across awaits and invalidates every raw override (3.2471ms)\n✔ composition allocation is restricted to prompt rebuild and never progress delivery (49.8112ms)\n✔ foreground shell closes handoff on child exit before output drains and releases its listener (5.2488ms)\n✔ Windows cancellation awaits its tree killer after the shell exits: 0 (1.596ms)\n✔ Windows cancellation awaits its tree killer after the shell exits: 1 (0.8655ms)\n✔ Windows cancellation awaits its tree killer after the shell exits: spawn-error (0.8076ms)\n✔ N3 direct and Session reject exit contradictions without observation (353.728ms)\n✔ N3 direct and Session reject signal contradictions without observation (3.0469ms)\n✔ N3 direct and Session reject not_started contradictions without observation (5.134ms)\n✔ N3 concurrent abort cannot erase direct or Session inputError (2.5364ms)\n✔ N3 concurrent abort cannot erase direct or Session observationError (2.5093ms)\n✔ N3 concurrent abort cannot erase direct or Session outputDrained (2.3811ms)\n✔ N3 concurrent abort cannot erase direct or Session termination (2.2312ms)\n✔ N3 merge regression: empty input error survives direct and Session execution, cancelled=false (2.2827ms)\n✔ N3 merge regression: empty input error survives direct and Session execution, cancelled=true (2.4835ms)\n✔ N3 direct and Session custom inputError retains bounded diagnostics (4.6055ms)\n✔ N3 direct and Session custom observationError retains bounded diagnostics (4.0983ms)\n✔ N3 direct custom completion cannot contradict its observed exit (0.1592ms)\n✔ N3 direct rejected completion closes its exact spill: input, cleanupFailure=false (6.2238ms)\n✔ N3 direct rejected completion closes its exact spill: input, cleanupFailure=true (10.014ms)\n✔ N3 direct rejected completion closes its exact spill: observation, cleanupFailure=false (1.8593ms)\n✔ N3 direct rejected completion closes its exact spill: observation, cleanupFailure=true (10.7555ms)\n✔ N3 direct rejected completion closes its exact spill: termination, cleanupFailure=false (1.823ms)\n✔ N3 direct rejected completion closes its exact spill: termination, cleanupFailure=true (9.804ms)\n✔ N3 a typed progress observer failure cannot replace a completed producer result (2.2048ms)\n✔ N3 frozen/sealed failure reasons preserve the cause and actual process observation (0.8581ms)\n✔ N3 direct executor and actual Session reject incomplete stdin despite real zero exit (187.897ms)\n✔ N3 local process observes actual start/exit/drain, exit=0 (40.2433ms)\n✔ N3 local process observes actual start/exit/drain, exit=23 (40.7431ms)\n﹣ N3 native signal with null exit cannot become observed exit success (0.0943ms) # SKIP\n✔ N3 timeout retains observed process facts in its thrown error (274.2662ms)\n✔ N3 cancelled retains observed process facts in its thrown error (275.6116ms)\n﹣ N3 timeout stops active descendant output after the actual parent exits (0.1339ms) # Windows inherited socket closes at parent exit in this fixture\n﹣ N3 cancelled stops active descendant output after the actual parent exits (0.0262ms) # Windows inherited socket closes at parent exit in this fixture\n﹣ N3 spill failure stops active inherited output after the parent exited (0.0272ms) # Windows inherited socket closes at parent exit in this fixture\n✔ N3 nonexistent executable records no start and preserves OS launch error (1.2548ms)\n✔ N3 real stdin transport settles errors/close with a slow reader or early exit, early=false (390.4311ms)\n✔ N3 real stdin transport settles errors/close with a slow reader or early exit, early=true (37.857ms)\n✔ N3 inherited output pipe refreshes one idle timer and releases every wait listener, real=false (0.7322ms)\nℹ idleTimerAllocations=1; refreshes=12; pendingTimers=0; waitListeners=0\n﹣ N3 inherited output pipe refreshes one idle timer and releases every wait listener, real=true (0.0219ms) # Windows Node inherited socket reaches EOF when the parent exits; no later descendant pipe is observable in this fixture\n✔ N3 Agent retains producer result through thrown failure, observer failure=false (0.4647ms)\n✔ N3 Agent retains producer result through thrown failure, observer failure=true (0.2508ms)\n✔ new error codes retain guard classification and distinguish incomplete arguments (1.6925ms)\n✔ heredoc quoted with unsupported arguments acceptance requires permission (2.7378ms)\n✔ heredoc double quoted acceptance requires permission (0.2281ms)\n✔ heredoc tab stripped acceptance requires permission (0.1186ms)\n✔ heredoc unquoted data acceptance requires permission (0.1563ms)\n✔ unterminated heredoc is explicitly uncertain (0.0995ms)\n✔ active browser schema identifies unexpected fields without values (1.7628ms)\n✔ registered guarded write still requires a completed prior read (4.7529ms)\n✔ unrelated Windows exit with tmp spelling is not a causal path diagnosis (1.9233ms)\n✔ browser guidance preserves helper Python and states its actual scope (0.6157ms)\n✔ browser runtime resolution requires harness and rejects legacy executables and configuration (3.1687ms)\n﹣ browser resolver accepts uv Unix links only through executable regular targets (0.0747ms) # SKIP\n✔ browser version gate rejects old or unverifiable runtimes and reuses only the verified identity (10.0698ms)\n✔ browser approval failures retain actionable guidance inside the bounded model prefix (0.4515ms)\n✔ browser partial stdout survives failure and final cause survives both Codemode projections (1.099ms)\n✔ browser navigation accepts confirmed dual-stack Fake-IP without allowing private or literal benchmark addresses (74.118ms)\n✔ browser Python failure puts the actual exception before bounded traceback details (0.1536ms)\n✔ browser chained exceptions prefer the last cause and keep plain failures unchanged (0.1518ms)\n✔ browser navigation adapter extends only navigation waits and never retries a timed-out new tab (51.992ms)\n✔ browser task tabs reuse search inputs, retain failed navigation ownership and clean only recorded IDs (74.2405ms)\n✔ browser process cleanup distinguishes observed exit and retains only late-close observers (133.9562ms)\nℹ {\"scenarios\":9,\"outputUpdates\":8000,\"retainedBytesPerStream\":8192,\"references\":39,\"liveReferences\":0,\"pendingTimers\":0,\"sampledBytesIncludingVmFixtures\":5347960}\n✔ browser helper reports real normal exit and timeout cleanup without a browser connection (307.8286ms)\n✔ browser extension preserves failure details and bounds cleanup without connecting or racing an active run (98.5336ms)\nℹ {\"services\":3,\"helperCalls\":23,\"cleanupCalls\":8,\"workspacesRemoved\":4,\"failedCleanupPublished\":false,\"references\":15,\"liveAfterFixtureRelease\":0,\"sampledBytes\":885952}\n✔ heredoc literal substitutions, multiple bodies and conservative unsupported folding (0.3372ms)\n✔ cleanup must bind the actual background PID, not just mention wait (0.7168ms)\n✔ field diagnostics stay bounded under escaped-name expansion (0.9658ms)\n✔ policy recovery resolves the denial instead of changing language (0.1502ms)\n✔ Node recovery distinguishes parse failures from argv/runtime failures and keeps long -e optional (4.1244ms)\n✔ effective guarded Bash metadata gives one short optional Node carrier guideline (0.0773ms)\n✔ review: newline comments cannot consume executable lines as heredoc data (0.0808ms)\n✔ review: arithmetic shifts are not heredoc operators (0.1327ms)\n✔ review: owned job permits bounded use and exact PID cleanup (0.2168ms)\n✔ review2: nested/evaluator heredocs never hide executable input (0.2397ms)\n✔ review2: validation escapes all display controls (0.2821ms)\n✔ review3: bare arithmetic is not a heredoc but can change shell state (0.4439ms)\n✔ review3: shadowed consumers and staged execution are uncertain (0.4827ms)\n✔ review5: owned work cannot detach wget (0.0942ms)\n✔ review5: substitution comments cannot terminate executable inspection (0.1516ms)\n✔ owned use cannot replace the captured PID through printf (0.0376ms)\n✔ review6: case patterns cannot hide executable substitution suffixes (0.0603ms)\n✔ review6: wrapper options cannot bypass script identity (0.17ms)\n✔ review9: unrelated shell text does not taint another command prefix (0.1188ms)\n✔ review9: quoted case data is not case grammar (0.0877ms)\n✔ review9: case grouping and line continuation stay uncertain (0.0917ms)\n✔ review9: case inside a function cannot truncate substitution inspection (0.0504ms)\n✔ review10: coproc cannot hide a case substitution suffix (0.0879ms)\nℹ tests 111\nℹ suites 0\nℹ pass 105\nℹ fail 0\nℹ cancelled 0\nℹ skipped 6\nℹ todo 0\nℹ duration_ms 8258.7519\n"
+  },
+  "build": {
+    "packages": 12,
+    "milliseconds": 7139,
+    "peak": 2,
+    "typecheck": true,
+    "offlineVersion": true,
+    "offlineHelp": true,
+    "log": "{\"powershell\":\"7.6.9\",\"pid\":36536,\"npm\":\"D:\\\\Nodes\\\\26.13.0\\\\npm.ps1\"}\r\n\n> super-pi-monorepo@1.0.0 check\n> tsgo --noEmit\n\n\n> super-pi-monorepo@1.0.0 build:offline\n> node scripts/build.mjs --offline\n\n[build] START @super-pi/tui\n[build] START @super-pi/telemetry\n\n> @super-pi/telemetry@1.0.0 build\n> tsgo -p tsconfig.build.json\n\n\n> @super-pi/tui@1.0.0 build\n> tsgo -p tsconfig.build.json\n\n[build] END @super-pi/telemetry ms=222 exit=0\n[build] START @super-pi/ai\n[build] END @super-pi/tui ms=332 exit=0\n[build] START @super-pi/codemode\n\n> @super-pi/ai@1.0.0 build:offline\n> npm run check:model-data && tsgo -p tsconfig.build.json && shx rm -rf dist/providers/data && shx cp -r src/providers/data dist/providers/data\n\n\n> @super-pi/codemode@1.0.0 build\n> tsc -p tsconfig.build.json\n\n\n> @super-pi/ai@1.0.0 check:model-data\n> node scripts/check-model-data.ts\n\nGenerated model data is valid.\n[build] END @super-pi/codemode ms=694 exit=0\n[build] START @super-pi/protocol\n\n> @super-pi/protocol@1.0.0 build\n> tsgo -p tsconfig.build.json\n\n[build] END @super-pi/ai ms=1067 exit=0\n[build] START @super-pi/agent-core\n\n> @super-pi/agent-core@1.0.0 build\n> tsgo -p tsconfig.build.json\n\n[build] END @super-pi/protocol ms=427 exit=0\n[build] START @super-pi/client\n\n> @super-pi/client@1.0.0 build\n> tsgo -p tsconfig.build.json\n\n[build] END @super-pi/agent-core ms=632 exit=0\n[build] START @super-pi/session-backend-sqlite-node\n\n> @super-pi/session-backend-sqlite-node@1.0.0 build\n> tsgo -p tsconfig.build.json && node ./scripts/prepare-dist.mjs copy-sqlite-migrations\n\n[build] END @super-pi/client ms=686 exit=0\n[build] START @super-pi/server\n\n> @super-pi/server@1.0.0 build\n> tsgo -p tsconfig.build.json\n\n[build] END @super-pi/session-backend-sqlite-node ms=341 exit=0\n[build] START @super-pi/coding-agent\n\n> @super-pi/coding-agent@1.0.0 build\n> tsgo -p tsconfig.build.json && shx chmod +x dist/cli.js dist/rpc-entry.js && npm run copy-assets && node ../../scripts/build-windows-sandbox-runtime.mjs\n\n[build] END @super-pi/server ms=637 exit=0\n\n> @super-pi/coding-agent@1.0.0 copy-assets\n> shx mkdir -p dist/core/files && shx cp src/core/files/native-file-worker.mjs src/core/files/native-file-regex.mjs dist/core/files/ && shx mkdir -p dist/modes/interactive/theme && shx cp src/modes/interactive/theme/*.json dist/modes/interactive/theme/ && shx mkdir -p dist/modes/interactive/assets && shx cp src/modes/interactive/assets/*.png dist/modes/interactive/assets/ && shx mkdir -p dist/core/export-html/vendor && shx cp src/core/export-html/template.html src/core/export-html/template.css src/core/export-html/template.js dist/core/export-html/ && shx cp src/core/export-html/vendor/*.js dist/core/export-html/vendor/\n\nPackaged Windows Sandbox runtime: 41 files\n[build] END @super-pi/coding-agent ms=2203 exit=0\n[build] START @super-pi/memory\n[build] START @super-pi/statusline\n\n> @super-pi/memory@0.10.0-hardened.16 build\n> node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc --declaration false --sourceMap false\n\n\n> @super-pi/statusline@0.41.0-pi.9 build\n> node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc --outDir dist --rootDir src --noEmit false --declaration false --sourceMap false --target ES2023 --module NodeNext --moduleResolution NodeNext --strict --skipLibCheck --types node src/index.ts\n\n[build] END @super-pi/statusline ms=1327 exit=0\n[build] END @super-pi/memory ms=2668 exit=0\n[build] Completed 12/12 packages in 7139ms; peak=2\n\n> super-pi-monorepo@1.0.0 superpi\n> node ./scripts/superpi.mjs --offline --version\n\n1.0.0\n\n> super-pi-monorepo@1.0.0 superpi\n> node ./scripts/superpi.mjs --offline --help\n\nsuperpi - AI coding assistant with read, bash, edit, write tools\n\nUsage:\n  superpi [options] [@files...] [messages...]\n\nCommands:\n  superpi install <source> [-l]     Install extension source and add to settings\n  superpi remove <source> [-l]      Remove extension source from settings\n  superpi uninstall <source> [-l]   Alias for remove\n  superpi update [source|self]      Update Super Pi extensions or model catalogs\n  superpi list                      List installed extensions from settings\n  superpi config [-l]               Open TUI to enable/disable package resources (Tab switches scope)\n  superpi auth <command>            Print credentials or check provider readiness\n  superpi <command> --help          Show help for install/remove/uninstall/update/list/config/auth\n\nOptions:\n  --provider <name>              Provider to search for --model (requires --model)\n  --model <pattern>              Model pattern or ID (supports \"provider/id\" and optional \":<thinking>\")\n  --api-key <key>                API key (defaults to env vars)\n  --system-prompt <text>         System prompt (default: coding assistant prompt)\n  --append-system-prompt <text>  Append text or file contents to the system prompt (can be used multiple times)\n  --mode <mode>                  Output mode: text (default), json, or rpc\n  --execution-environment <env>  sandbox or trusted-host; explicit session selection, no fallback\n  --print, -p                    Non-interactive mode: process prompt and exit\n  --continue, -c                 Continue previous session\n  --resume, -r                   Select a session to resume\n  --session <path|id>            Use specific session file or partial UUID\n  --session-id <id>              Use exact project session ID, creating it if missing\n  --fork <path|id>               Fork specific session file or partial UUID into a new session\n  --session-dir <dir>            Directory for session storage and lookup\n  --no-session                   Don't save session (ephemeral)\n  --name, -n <name>              Set session display name\n  --models <patterns>            Comma-separated model patterns for Ctrl+P cycling\n                                 Supports globs (anthropic/*, *sonnet*) and fuzzy matching\n  --no-tools, -nt                Disable all tools by default (built-in and extension)\n  --no-mcp                      Disable MCP connections, discovery and tools for this session\n  --no-builtin-tools, -nbt       Disable built-in tools by default but keep extension/custom tools enabled\n  --tools, -t <tools>            Comma-separated names/patterns (*, ?); + adds, - excludes\n                                 Bare names select an allowlist; only +/- modifies defaults\n  --exclude-tools, -xt <tools>   Name/pattern exclusions applied last to all tool sources\n                                 Quote patterns in your shell; codemode cannot be excluded\n  --thinking <level>             Set thinking level: off, minimal, low, medium, high, xhigh, max\n  --extension, -e <path>         Load an extension file (can be used multiple times)\n  --no-extensions, -ne           Disable extension discovery (explicit -e paths still work)\n  --skill <path>                 Load a skill file or directory (can be used multiple times)\n  --no-skills, -ns               Disable skills discovery and loading\n  --prompt-template <path>       Load a prompt template file or directory (can be used multiple times)\n  --no-prompt-templates, -np     Disable prompt template discovery and loading\n  --theme <path>                 Load a theme file or directory (can be used multiple times)\n  --no-themes                    Disable theme discovery and loading\n  --no-context-files, -nc        Disable AGENTS.md and CLAUDE.md discovery and loading\n  --export <file>                Export session file to HTML and exit\n  --list-models [search]         List available models (with optional fuzzy search)\n  --verbose                      Force verbose startup (overrides quietStartup setting)\n  --tui-mode <mode>              TUI mode: regular (default) or fullscreen\n  --approve, -a                  Trust project-local files for this run\n  --no-approve, -na              Ignore project-local files for this run\n  --offline                      Disable startup network operations (same as SP_OFFLINE=1)\n  --                             End option parsing; treat remaining arguments as messages/files\n  --help, -h                     Show this help\n  --version, -v                  Show version number\n\nExtensions can register additional flags (e.g., --plan from plan-mode extension).\nExtension CLI Flags:\n  --plan                      Start in Codex-like Plan mode\n  --tool-transient-retry <value>JSON transient tool retry policy: maxAttempts, maxWaitMs, baseDelayMs, maxDelayMs\n\n\nExamples:\n  # Print a provider API key for an external client\n  superpi auth print-api-key --provider openai\n\n  # Print an OAuth bearer token for an external client (refreshes if expired)\n  superpi auth print-bearer-token --provider openai-codex\n\n  # Interactive mode\n  superpi\n\n  # Interactive mode with initial prompt\n  superpi \"List all .ts files in src/\"\n\n  # Include files in initial message\n  superpi @prompt.md @image.png \"What color is the sky?\"\n\n  # Non-interactive mode (process and exit)\n  superpi -p \"List all .ts files in src/\"\n\n  # Multiple messages (interactive)\n  superpi \"Read package.json\" \"What dependencies do we have?\"\n\n  # Continue previous session\n  superpi --continue \"What did we discuss?\"\n\n  # Start a named session\n  superpi --name \"Refactor auth module\"\n\n  # Use different model\n  superpi --provider openai --model gpt-4o-mini \"Help me refactor this code\"\n\n  # Use model with provider prefix (no --provider needed)\n  superpi --model openai/gpt-4o \"Help me refactor this code\"\n\n  # Use model with thinking level shorthand\n  superpi --model sonnet:high \"Solve this complex problem\"\n\n  # Limit model cycling to specific models\n  superpi --models claude-sonnet,claude-haiku,gpt-4o\n\n  # Limit to a specific provider with glob pattern\n  superpi --models \"github-copilot/*\"\n\n  # Cycle models with fixed thinking levels\n  superpi --models sonnet:high,haiku:low\n\n  # Start with a specific thinking level\n  superpi --thinking high \"Solve this complex problem\"\n\n  # Read-only mode (no file modifications possible)\n  superpi --tools read,grep,find,ls -p \"Review the code in src/\"\n\n  # Disable one tool while keeping the rest available\n  superpi --exclude-tools ask_question\n\n  # Export a session file to HTML\n  superpi --export ~/.sp/agent/sessions/--path--/session.jsonl\n  superpi --export session.jsonl output.html\n\nEnvironment Variables:\n  ANTHROPIC_AUTH_TOKEN             - Anthropic bearer auth token\n  ANTHROPIC_API_KEY                - Anthropic Claude API key\n  ANTHROPIC_OAUTH_TOKEN            - Retired subscription auth; configure an API key explicitly\n  ANT_LING_API_KEY                 - Ant Ling API key\n  OPENAI_API_KEY                   - OpenAI GPT API key\n  AZURE_OPENAI_API_KEY             - Azure OpenAI API key\n  AZURE_OPENAI_BASE_URL            - Azure OpenAI/Cognitive Services base URL (e.g. https://{resource}.openai.azure.com)\n  AZURE_OPENAI_RESOURCE_NAME       - Azure OpenAI resource name (alternative to base URL)\n  AZURE_OPENAI_API_VERSION         - Azure OpenAI API version (default: v1)\n  AZURE_OPENAI_DEPLOYMENT_NAME_MAP - Azure OpenAI model=deployment map (comma-separated)\n  DEEPSEEK_API_KEY                 - DeepSeek API key\n  NVIDIA_API_KEY                   - NVIDIA NIM API key\n  GEMINI_API_KEY                   - Google Gemini API key\n  GROQ_API_KEY                     - Groq API key\n  CEREBRAS_API_KEY                 - Cerebras API key\n  XAI_API_KEY                      - xAI Grok API key\n  FIREWORKS_API_KEY                - Fireworks API key\n  TOGETHER_API_KEY                 - Together AI API key\n  BASETEN_API_KEY                  - Baseten API key\n  OPENROUTER_API_KEY               - OpenRouter API key\n  AI_GATEWAY_API_KEY               - Vercel AI Gateway API key\n  ZAI_API_KEY                      - ZAI Coding Plan API key (Global)\n  ZAI_CODING_CN_API_KEY            - ZAI Coding Plan API key (China)\n  MISTRAL_API_KEY                  - Mistral API key\n  MINIMAX_API_KEY                  - MiniMax API key\n  MOONSHOT_API_KEY                 - Moonshot AI API key\n  OPENCODE_API_KEY                 - OpenCode Zen/OpenCode Go API key\n  KIMI_API_KEY                     - Kimi For Coding API key\n  CLOUDFLARE_API_KEY               - Cloudflare API token (Workers AI and AI Gateway)\n  CLOUDFLARE_ACCOUNT_ID            - Cloudflare account id (required for both)\n  CLOUDFLARE_GATEWAY_ID            - Cloudflare AI Gateway slug (required for AI Gateway)\n  QWEN_TOKEN_PLAN_API_KEY          - Qwen Token Plan API key (international region)\n  QWEN_TOKEN_PLAN_CN_API_KEY       - Qwen Token Plan API key (China region)\n  XIAOMI_API_KEY                   - Xiaomi MiMo API key (api.xiaomimimo.com billing)\n  XIAOMI_TOKEN_PLAN_CN_API_KEY     - Xiaomi MiMo Token Plan API key (China region)\n  XIAOMI_TOKEN_PLAN_AMS_API_KEY    - Xiaomi MiMo Token Plan API key (Amsterdam region)\n  XIAOMI_TOKEN_PLAN_SGP_API_KEY    - Xiaomi MiMo Token Plan API key (Singapore region)\n  AWS_PROFILE                      - AWS profile for Amazon Bedrock\n  AWS_ACCESS_KEY_ID                - AWS access key for Amazon Bedrock\n  AWS_SECRET_ACCESS_KEY            - AWS secret key for Amazon Bedrock\n  AWS_BEARER_TOKEN_BEDROCK         - Bedrock API key (bearer token)\n  AWS_REGION                       - AWS region for Amazon Bedrock (e.g., us-east-1)\n  SP_CODING_AGENT_DIR              - Config directory (default: ~/.sp/agent)\n  SP_CODING_AGENT_SESSION_DIR      - Session storage directory (overridden by --session-dir)\n  SP_PACKAGE_DIR                   - Override package directory (for Nix/Guix store paths)\n  SP_OFFLINE                       - Disable startup network operations when set to 1/true/yes\n  SP_TELEMETRY                     - Override install telemetry when set to 1/true/yes or 0/false/no\n  SP_SHARE_VIEWER_URL              - Base URL for /share command (default: https://pi.dev/session/)\n\nBuilt-in Tool Names:\n  read       - Read file contents\n  bash       - Execute bash commands\n  powershell - Execute PowerShell commands on Windows (enabled by default on Windows)\n  edit       - Edit files with find/replace\n  write      - Write files (creates/overwrites)\n  grep       - Search file contents (read-only, off by default)\n  find       - Find files by glob pattern (read-only, off by default)\n  ls         - List directory contents (read-only, off by default)\n\n"
+  },
+  "diagnosticCorrections": [
+    {
+      "label": "targeted",
+      "cause": "Diagnostic --import received a Windows path instead of a file URL; corrected before tests could execute.",
+      "logSha256": "33bf9467dca9542e7d071b39bec7b2c292e753757e0ba8f22a6ed1b174fb30a0",
+      "excerpt": "node:internal/modules/esm/load:191\n    throw new ERR_UNSUPPORTED_ESM_URL_SCHEME(parsed, schemes);\n          ^\n\nError [ERR_UNSUPPORTED_ESM_URL_SCHEME]: Only URLs with a scheme in: file, data, and node are supported by the default ESM loader. On Windows, absolute paths must be valid file:// URLs. Received protocol 'd:'\n    at throwIfUnsupportedURLScheme (node:internal/modules/esm/load:191:11)\n    at defaultLoadSync (node:internal/modules/esm/load:144:3)\n    at #loadAndMaybeBlockOnLoaderThread (node:internal/modules/esm/loader:809:12)\n    at #loadSync (node:internal/modules/esm/loader:841:53)\n    at ModuleLoader.load (node:internal/modules/esm/loader:790:26)\n    at ModuleLoader.loadAndTranslate (node:internal/modules/esm/loader:501:31)\n    at #getOrCreateModuleJobAfterResolve (node:internal/modules/esm/loader:567:36)\n    at afterResolve (node:internal/modules/esm/loader:614:52)\n    at ModuleLoader.getOrCreateModuleJob (node:internal/modules/esm/loader:620:12)\n    at node:internal/modules/esm/loader:639:32 {\n  code: 'ERR_UNSUPPORTED_ESM_URL_SCHEME'\n}\n\nNode.js v26.13.0\n✖ tests\\codemode-r2"
+    },
+    {
+      "label": "acceptance",
+      "cause": "AST fixture treated a container with only removed string children as a leaf and copied its source. Corrected to distinguish original children; product unchanged.",
+      "logSha256": "317131a5d0c6816427e5e8f302d808c2e1c571d304571586ebaf56c2f8851e3e",
+      "excerpt": "node:internal/modules/run_main:111\r\n    triggerUncaughtException(\r\n    ^\r\n\r\nAssertionError [ERR_ASSERTION]: non-string AST changed: packages/coding-agent/src/core/tools/bash.ts\r\n+ actual - expected\r\n... Skipped lines\r\n\r\n  [\r\n    308,\r\n    [\r\n      [\r\n        273,\r\n...\r\n                                  '\\t\\t\"You can inspect SP_* environment variables for current model and session details.\",\\n' +\r\n+                                 `\\t\\t\"Discover executables quietly with command -v, then verify the resolved tool's identity and required functionality. A PATH miss does not prove absence: check known project or local installation locations before proposing installation; a downloaded installer is not an installed tool. On Windows, python and python3 may resolve differently, WindowsApps may contain nonworking execution aliases, and System32/convert.exe is not ImageMagick.\",\\n` +\r\n+                                 `\\t\\t\"Use the tool's cwd for a verified native directory. On Windows, resolve Git Bash paths with cygpath -w before passing them as cwd or embedding them in native Python/Node sour"
+    },
+    {
+      "label": "controls",
+      "cause": "Runner finalization overwrote nested process records. Merge exact recorded identities before finalizing; repeated the controls with complete ownership records.",
+      "initialResults": [
+        {
+          "label": "masked-failure",
+          "command": "python -c \"raise RuntimeError('SYNTHETIC_PIPELINE_FAILURE')\" 2>&1 | head -8",
+          "code": 0,
+          "stdout": "Traceback (most recent call last):\r\n  File \"<string>\", line 1, in <module>\r\n    raise RuntimeError('SYNTHETIC_PIPELINE_FAILURE')\r\nRuntimeError: SYNTHETIC_PIPELINE_FAILURE\r\n",
+          "stderr": ""
+        },
+        {
+          "label": "preserved-failure",
+          "command": "python -c \"raise RuntimeError('SYNTHETIC_PIPELINE_FAILURE')\" > producer.log 2>&1; producer_status=$?; head -8 producer.log; exit \"$producer_status\"",
+          "code": 1,
+          "stdout": "Traceback (most recent call last):\r\n  File \"<string>\", line 1, in <module>\r\n    raise RuntimeError('SYNTHETIC_PIPELINE_FAILURE')\r\nRuntimeError: SYNTHETIC_PIPELINE_FAILURE\r\n",
+          "stderr": ""
+        },
+        {
+          "label": "preserved-success",
+          "command": "python -c \"print('PRODUCER_OK')\" > success.log 2>&1; producer_status=$?; head -8 success.log; exit \"$producer_status\"",
+          "code": 0,
+          "stdout": "PRODUCER_OK\r\n",
+          "stderr": ""
+        },
+        {
+          "label": "empty-glob-guard",
+          "command": "python -c \"import glob; files=glob.glob('missing-input-*.aseprite'); assert files, 'No expected inputs'\"",
+          "code": 1,
+          "stdout": "",
+          "stderr": "Traceback (most recent call last):\r\n  File \"<string>\", line 1, in <module>\r\n    import glob; files=glob.glob('missing-input-*.aseprite'); assert files, 'No expected inputs'\r\n                                                                     ^^^^^\r\nAssertionError: No expected inputs\r\n"
+        },
+        {
+          "label": "native-path",
+          "command": "python -c \"import os,tempfile,json; print(json.dumps(dict(cwd=os.getcwd(),temp=tempfile.gettempdir())))\"",
+          "code": 0,
+          "stdout": "{\"cwd\": \"D:\\\\RMProjects\\\\Pi\\\\.task-tmp\\\\session-shell-guidance-466a1f4f80\", \"temp\": \"D:\\\\RMProjects\\\\Pi\\\\.task-tmp\\\\session-shell-guidance-466a1f4f80\"}\r\n",
+          "stderr": ""
+        }
+      ]
+    }
+  ],
+  "processes": [
+    {
+      "pid": 36564,
+      "role": "runner",
+      "label": "baseline",
+      "started": "2026-11-05T07:02:02.904Z",
+      "settled": true,
+      "finished": "2026-11-05T07:02:03.097Z"
+    },
+    {
+      "pid": 36240,
+      "label": "baseline",
+      "executable": "D:/Nodes/26.13.0/node.exe",
+      "args": [
+        "D:\\RMProjects\\Pi\\.task-tmp\\session-shell-guidance-466a1f4f80\\snapshot.mjs",
+        "baseline"
+      ],
+      "started": "2026-11-05T07:02:02.909Z",
+      "settled": true,
+      "code": 0,
+      "signal": null,
+      "finished": "2026-11-05T07:02:03.097Z"
+    },
+    {
+      "pid": 11708,
+      "role": "runner",
+      "label": "candidate",
+      "started": "2026-11-05T07:02:39.415Z",
+      "settled": true,
+      "finished": "2026-11-05T07:02:39.622Z"
+    },
+    {
+      "pid": 41156,
+      "label": "candidate",
+      "executable": "D:/Nodes/26.13.0/node.exe",
+      "args": [
+        "D:\\RMProjects\\Pi\\.task-tmp\\session-shell-guidance-466a1f4f80\\snapshot.mjs",
+        "candidate"
+      ],
+      "started": "2026-11-05T07:02:39.419Z",
+      "settled": true,
+      "code": 0,
+      "signal": null,
+      "finished": "2026-11-05T07:02:39.622Z"
+    },
+    {
+      "pid": 36096,
+      "role": "runner",
+      "label": "targeted",
+      "started": "2026-11-05T07:03:19.398Z",
+      "settled": true,
+      "finished": "2026-11-05T07:03:19.770Z"
+    },
+    {
+      "pid": 38388,
+      "label": "targeted",
+      "executable": "D:/Nodes/26.13.0/node.exe",
+      "args": [
+        "--import",
+        "D:\\RMProjects\\Pi\\.task-tmp\\session-shell-guidance-466a1f4f80\\verify-env.mjs",
+        "--expose-gc",
+        "--test",
+        "--test-concurrency=1",
+        "tests/prompt-composition.test.ts",
+        "tests/codemode-r2-description.test.ts",
+        "tests/codemode-r2-failure.test.ts",
+        "tests/native-file-service.test.ts",
+        "tests/native-file-revisions.test.ts",
+        "tests/shell-process-observation.test.ts",
+        "tests/tool-reliability-recovery.test.ts",
+        "tests/prefix-production-assembly.test.ts",
+        "tests/prefix-request-source-invariants.test.ts"
+      ],
+      "started": "2026-11-05T07:03:19.402Z",
+      "settled": true,
+      "code": 1,
+      "signal": null,
+      "finished": "2026-11-05T07:03:19.770Z"
+    },
+    {
+      "pid": 38372,
+      "role": "runner",
+      "label": "targeted-file-url",
+      "started": "2026-11-05T07:03:45.073Z",
+      "settled": true,
+      "finished": "2026-11-05T07:03:53.379Z"
+    },
+    {
+      "pid": 40772,
+      "label": "targeted-file-url",
+      "executable": "D:/Nodes/26.13.0/node.exe",
+      "args": [
+        "--import",
+        "file:///D:/RMProjects/Pi/.task-tmp/session-shell-guidance-466a1f4f80/verify-env.mjs",
+        "--expose-gc",
+        "--test",
+        "--test-concurrency=1",
+        "tests/prompt-composition.test.ts",
+        "tests/codemode-r2-description.test.ts",
+        "tests/codemode-r2-failure.test.ts",
+        "tests/native-file-service.test.ts",
+        "tests/native-file-revisions.test.ts",
+        "tests/shell-process-observation.test.ts",
+        "tests/tool-reliability-recovery.test.ts",
+        "tests/prefix-production-assembly.test.ts",
+        "tests/prefix-request-source-invariants.test.ts"
+      ],
+      "started": "2026-11-05T07:03:45.077Z",
+      "settled": true,
+      "code": 0,
+      "signal": null,
+      "finished": "2026-11-05T07:03:53.379Z"
+    },
+    {
+      "pid": 25392,
+      "role": "runner",
+      "label": "controls",
+      "started": "2026-11-05T07:04:38.914Z",
+      "settled": true,
+      "finished": "2026-11-05T07:04:39.394Z"
+    },
+    {
+      "pid": 27796,
+      "label": "controls",
+      "executable": "D:/Nodes/26.13.0/node.exe",
+      "args": [
+        "D:\\RMProjects\\Pi\\.task-tmp\\session-shell-guidance-466a1f4f80\\controls.mjs"
+      ],
+      "started": "2026-11-05T07:04:38.919Z",
+      "settled": true,
+      "code": 0,
+      "signal": null,
+      "finished": "2026-11-05T07:04:39.394Z"
+    },
+    {
+      "pid": 29484,
+      "role": "runner",
+      "label": "controls-owned",
+      "started": "2026-11-05T07:05:21.053Z",
+      "settled": true,
+      "finished": "2026-11-05T07:05:21.511Z"
+    },
+    {
+      "pid": 23528,
+      "label": "controls-owned",
+      "executable": "D:/Nodes/26.13.0/node.exe",
+      "args": [
+        "D:\\RMProjects\\Pi\\.task-tmp\\session-shell-guidance-466a1f4f80\\controls.mjs"
+      ],
+      "started": "2026-11-05T07:05:21.057Z",
+      "settled": true,
+      "code": 0,
+      "signal": null,
+      "finished": "2026-11-05T07:05:21.511Z"
+    },
+    {
+      "label": "masked-failure",
+      "pid": 32752,
+      "started": "2026-11-05T07:05:21.092Z",
+      "settled": true,
+      "code": 0,
+      "signal": null,
+      "finished": "2026-11-05T07:05:21.188Z"
+    },
+    {
+      "label": "preserved-failure",
+      "pid": 23972,
+      "started": "2026-11-05T07:05:21.191Z",
+      "settled": true,
+      "code": 1,
+      "signal": null,
+      "finished": "2026-11-05T07:05:21.280Z"
+    },
+    {
+      "label": "preserved-success",
+      "pid": 41140,
+      "started": "2026-11-05T07:05:21.283Z",
+      "settled": true,
+      "code": 0,
+      "signal": null,
+      "finished": "2026-11-05T07:05:21.372Z"
+    },
+    {
+      "label": "empty-glob-guard",
+      "pid": 38628,
+      "started": "2026-11-05T07:05:21.375Z",
+      "settled": true,
+      "code": 1,
+      "signal": null,
+      "finished": "2026-11-05T07:05:21.441Z"
+    },
+    {
+      "label": "native-path",
+      "pid": 26664,
+      "started": "2026-11-05T07:05:21.444Z",
+      "settled": true,
+      "code": 0,
+      "signal": null,
+      "finished": "2026-11-05T07:05:21.508Z"
+    },
+    {
+      "pid": 39780,
+      "role": "runner",
+      "label": "acceptance",
+      "started": "2026-11-05T07:06:38.982Z",
+      "settled": true,
+      "finished": "2026-11-05T07:06:39.834Z"
+    },
+    {
+      "pid": 28520,
+      "label": "acceptance",
+      "executable": "D:/Nodes/26.13.0/node.exe",
+      "args": [
+        "--import",
+        "file:///D:/RMProjects/Pi/.task-tmp/session-shell-guidance-466a1f4f80/verify-env.mjs",
+        "D:\\RMProjects\\Pi\\.task-tmp\\session-shell-guidance-466a1f4f80\\acceptance.mjs"
+      ],
+      "started": "2026-11-05T07:06:38.986Z",
+      "settled": true,
+      "code": 1,
+      "signal": null,
+      "finished": "2026-11-05T07:06:39.834Z"
+    },
+    {
+      "pid": 29436,
+      "role": "runner",
+      "label": "acceptance-ast-fixed",
+      "started": "2026-11-05T07:07:03.379Z",
+      "settled": true,
+      "finished": "2026-11-05T07:07:04.205Z"
+    },
+    {
+      "pid": 27072,
+      "label": "acceptance-ast-fixed",
+      "executable": "D:/Nodes/26.13.0/node.exe",
+      "args": [
+        "--import",
+        "file:///D:/RMProjects/Pi/.task-tmp/session-shell-guidance-466a1f4f80/verify-env.mjs",
+        "D:\\RMProjects\\Pi\\.task-tmp\\session-shell-guidance-466a1f4f80\\acceptance.mjs"
+      ],
+      "started": "2026-11-05T07:07:03.383Z",
+      "settled": true,
+      "code": 0,
+      "signal": null,
+      "finished": "2026-11-05T07:07:04.205Z"
+    },
+    {
+      "pid": 27024,
+      "role": "runner",
+      "label": "offline-build",
+      "started": "2026-11-05T07:07:38.297Z",
+      "settled": true,
+      "finished": "2026-11-05T07:07:50.987Z"
+    },
+    {
+      "pid": 36536,
+      "label": "offline-build",
+      "executable": "D:/PowerShell/7/pwsh.exe",
+      "args": [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-File",
+        "D:\\RMProjects\\Pi\\.task-tmp\\session-shell-guidance-466a1f4f80\\build.ps1"
+      ],
+      "started": "2026-11-05T07:07:38.304Z",
+      "settled": true,
+      "code": 0,
+      "signal": null,
+      "finished": "2026-11-05T07:07:50.987Z"
+    }
+  ],
+  "reproduction": {
+    "run.mjs": "import fs from 'node:fs';\nimport path from 'node:path';\nimport os from 'node:os';\nimport assert from 'node:assert/strict';\nimport {fileURLToPath} from 'node:url';\nimport {spawn} from 'node:child_process';\nconst root=path.dirname(fileURLToPath(import.meta.url));\nfor(const key of ['TMP','TEMP','TMPDIR'])assert.equal(path.resolve(process.env[key]),root);\nassert.equal(path.resolve(os.tmpdir()),root);\nconst manifestFile=path.join(root,'resources.json'),m=JSON.parse(fs.readFileSync(manifestFile,'utf8'));\nconst [label,exe,...args]=process.argv.slice(2);assert.ok(label&&exe);\nconst owner={pid:process.pid,role:'runner',label,started:new Date().toISOString(),settled:false};m.processes.push(owner);\nconst log=path.join(root,label+'.log');const fd=fs.openSync(log,'w');\nfunction seal(){const files=[root];for(let i=0;i<files.length;i++){const s=fs.lstatSync(files[i]);assert.ok(!s.isSymbolicLink());if(s.isDirectory())for(const name of fs.readdirSync(files[i]))files.push(path.join(files[i],name));}m.resources=files.map(file=>{const s=fs.lstatSync(file,{bigint:true});return {file,dev:String(s.dev),ino:String(s.ino),directory:s.isDirectory()};});fs.writeFileSync(manifestFile,JSON.stringify(m,null,2));}\nconst home=path.join(root,'home');fs.mkdirSync(home,{recursive:true});\nconst child=spawn(exe,args,{cwd:'D:/RMProjects/Pi',env:{...process.env,HOME:home,USERPROFILE:home,SP_CODING_AGENT_DIR:path.join(root,'agent'),SP_CODING_AGENT_SESSION_DIR:path.join(root,'sessions'),XDG_CONFIG_HOME:path.join(root,'xdg'),PYTHONDONTWRITEBYTECODE:'1'},windowsHide:true,stdio:['ignore',fd,fd]});\nconst record={pid:child.pid,label,executable:exe,args,started:new Date().toISOString(),settled:false};m.processes.push(record);seal();\nlet failure;\nchild.on('error',error=>{failure=String(error);});\nchild.on('close',(code,signal)=>{fs.closeSync(fd);Object.assign(record,{code,signal,failure,settled:true,finished:new Date().toISOString()});Object.assign(owner,{settled:true,finished:new Date().toISOString()});m.processes=JSON.parse(fs.readFileSync(manifestFile,'utf8')).processes;for(const update of [record,owner]){const saved=m.processes.find(p=>p.pid===update.pid&&p.started===update.started);assert.ok(saved);Object.assign(saved,update);}seal();console.log(JSON.stringify({...record,log}));process.exitCode=code??1;});\n\n",
+    "verify-env.mjs": "import assert from 'node:assert/strict';\nimport path from 'node:path';\nimport os from 'node:os';\nimport {fileURLToPath} from 'node:url';\nconst root=path.dirname(fileURLToPath(import.meta.url));\nfor(const key of ['TMP','TEMP','TMPDIR']) assert.equal(path.resolve(process.env[key]),root);\nassert.equal(path.resolve(os.tmpdir()),root);\n",
+    "snapshot.mjs": "import fs from 'node:fs';\nimport path from 'node:path';\nimport {fileURLToPath} from 'node:url';\nimport ts from 'typescript';\nconst root=path.dirname(fileURLToPath(import.meta.url));\nconst files=['packages/coding-agent/src/core/tools/bash.ts','packages/coding-agent/src/core/codemode-constants.ts','packages/coding-agent/src/core/files/session-files.ts','packages/coding-agent/src/core/files/file-parameters.ts'];\nconst result={};\nfor(const file of files){const source=fs.readFileSync(file,'utf8');const ast=ts.createSourceFile(file,source,ts.ScriptTarget.Latest,true);const counts={arrow:0,functionExpression:0,newPromise:0,newAbortController:0,regex:0,call:0};function visit(n){if(ts.isArrowFunction(n))counts.arrow++;if(ts.isFunctionExpression(n))counts.functionExpression++;if(ts.isRegularExpressionLiteral(n))counts.regex++;if(ts.isCallExpression(n))counts.call++;if(ts.isNewExpression(n)&&n.expression.getText(ast)==='Promise')counts.newPromise++;if(ts.isNewExpression(n)&&n.expression.getText(ast)==='AbortController')counts.newAbortController++;ts.forEachChild(n,visit);}visit(ast);result[file]={source,counts};}\nfs.writeFileSync(path.join(root,process.argv[2]+'.json'),JSON.stringify(result,null,2));\nconsole.log(JSON.stringify(Object.fromEntries(Object.entries(result).map(([k,v])=>[k,v.counts]))));\n\n",
+    "controls.mjs": "import fs from 'node:fs';\nimport path from 'node:path';\nimport {fileURLToPath} from 'node:url';\nimport {spawn} from 'node:child_process';\nimport assert from 'node:assert/strict';\nconst root=path.dirname(fileURLToPath(import.meta.url)),mFile=path.join(root,'resources.json');\nconst results=[];\nasync function run(label,command,expected){\n const child=spawn('D:/Git/bin/bash.exe',['-c',command],{cwd:root,env:process.env,windowsHide:true,stdio:['ignore','pipe','pipe']});\n const row={label,pid:child.pid,started:new Date().toISOString(),settled:false};\n let m=JSON.parse(fs.readFileSync(mFile,'utf8'));m.processes.push(row);fs.writeFileSync(mFile,JSON.stringify(m,null,2));\n let stdout='',stderr='';child.stdout.on('data',b=>stdout+=b.toString('utf8'));child.stderr.on('data',b=>stderr+=b.toString('utf8'));\n const {code,signal}=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('close',(code,signal)=>resolve({code,signal}));});\n Object.assign(row,{code,signal,settled:true,finished:new Date().toISOString()});\n m=JSON.parse(fs.readFileSync(mFile,'utf8'));const item=m.processes.find(p=>p.pid===row.pid&&p.started===row.started);Object.assign(item,row);fs.writeFileSync(mFile,JSON.stringify(m,null,2));\n results.push({...row,command,stdout,stderr});assert.equal(code,expected,label);\n}\nconst fail='python -c \"raise RuntimeError(\\'SYNTHETIC_PIPELINE_FAILURE\\')\"';\nawait run('masked-failure',fail+' 2>&1 | head -8',0);\nawait run('preserved-failure',fail+' > producer.log 2>&1; producer_status=$?; head -8 producer.log; exit \"$producer_status\"',1);\nawait run('preserved-success','python -c \"print(\\'PRODUCER_OK\\')\" > success.log 2>&1; producer_status=$?; head -8 success.log; exit \"$producer_status\"',0);\nawait run('empty-glob-guard','python -c \"import glob; files=glob.glob(\\'missing-input-*.aseprite\\'); assert files, \\'No expected inputs\\'\"',1);\nawait run('native-path','python -c \"import os,tempfile,json; print(json.dumps(dict(cwd=os.getcwd(),temp=tempfile.gettempdir())))\"',0);\nfor(const r of results)console.log(JSON.stringify(r));\nconst actual=JSON.parse(results.at(-1).stdout);assert.equal(path.resolve(actual.cwd),root);assert.equal(path.resolve(actual.temp),root);\nfs.writeFileSync(path.join(root,'controls.json'),JSON.stringify(results,null,2));\n\n",
+    "acceptance.mjs": "import fs from 'node:fs';\nimport path from 'node:path';\nimport assert from 'node:assert/strict';\nimport {createHash} from 'node:crypto';\nimport {fileURLToPath} from 'node:url';\nimport ts from 'typescript';\nimport {createAgentSession} from '../../packages/coding-agent/src/core/sdk.ts';\nimport {DefaultResourceLoader} from '../../packages/coding-agent/src/core/resource-loader.ts';\nimport {SettingsManager} from '../../packages/coding-agent/src/core/settings-manager.ts';\nimport {SessionManager} from '../../packages/coding-agent/src/core/session-manager.ts';\nimport {ALPHA_MODEL,alphaModelRuntime} from '../../tests/helpers/alpha-session.ts';\nconst root=path.dirname(fileURLToPath(import.meta.url));\nconst baseline=JSON.parse(fs.readFileSync(path.join(root,'baseline.json'),'utf8')),candidate=JSON.parse(fs.readFileSync(path.join(root,'candidate.json'),'utf8'));\nconst counters={};\nfunction shape(text){const ast=ts.createSourceFile('source.ts',text,ts.ScriptTarget.Latest,true);function visit(node){if(ts.isStringLiteral(node)||ts.isNoSubstitutionTemplateLiteral(node))return undefined;const children=[];let hadChildren=false;ts.forEachChild(node,n=>{hadChildren=true;const v=visit(n);if(v!==undefined)children.push(v);});return [node.kind,hadChildren?children:node.getText(ast)];}return visit(ast);}\nfor(const file of Object.keys(baseline)){assert.deepEqual(candidate[file].counts,baseline[file].counts,file);assert.deepEqual(shape(candidate[file].source),shape(baseline[file].source),'non-string AST changed: '+file);counters[file]=candidate[file].counts;}\nconst settings=SettingsManager.inMemory({compaction:{enabled:false},retry:{enabled:false}});\nconst loader=new DefaultResourceLoader({cwd:root,agentDir:path.join(root,'agent'),settingsManager:settings,noExtensions:true,noContextFiles:true,noSkills:true,noPromptTemplates:true,noThemes:true});\nawait loader.reload();\nconst {session}=await createAgentSession({cwd:root,agentDir:path.join(root,'agent'),model:ALPHA_MODEL,modelRuntime:alphaModelRuntime(),settingsManager:settings,sessionManager:SessionManager.inMemory(root),resourceLoader:loader});\nconst prompt=session.systemPrompt,tools=session.agent.state.modelTools??session.agent.state.tools;\nassert.ok(prompt.includes('System32/convert.exe is not ImageMagick'));\nassert.ok(prompt.includes('cygpath -w'));\nassert.ok(prompt.includes('never invent a snapshot or substitute result.ref'));\nconst cm=tools.find(t=>t.name==='codemode');assert.ok(cm);assert.ok(cm.description.includes('not a file snapshot ID'));assert.ok(cm.description.includes(\"producer's exit code\"));\nconst hashes=new Set();for(let i=0;i<100;i++)hashes.add(createHash('sha256').update(session._rebuildSystemPrompt(session.getActiveToolNames())).update(cm.description).digest('hex'));assert.equal(hashes.size,1);\nconst result={nonStringAstUnchanged:true,counters,promptChars:prompt.length,codemodeDescriptionChars:cm.description.length,rebuilds:100,uniqueHashes:hashes.size,hash:[...hashes][0],tools:tools.map(t=>t.name),verified:'actual AgentSession nested Bash/native write guidance and Codemode description; no provider call'};\nsession.dispose();await session.waitForSessionLeaseRelease();\nfs.writeFileSync(path.join(root,'acceptance.json'),JSON.stringify(result,null,2));console.log(JSON.stringify(result));\n\n",
+    "build.ps1": "$ErrorActionPreference='Stop'\nif($PSVersionTable.PSVersion.Major -lt 7){throw 'PowerShell 7 required'}\nforeach($key in @('TMP','TEMP','TMPDIR')){if([IO.Path]::GetFullPath([Environment]::GetEnvironmentVariable($key)) -ne [IO.Path]::GetFullPath($PSScriptRoot)){throw 'Unexpected temporary directory'}}\n$env:npm_config_cache=Join-Path $PSScriptRoot 'npm-cache'\n@{powershell=$PSVersionTable.PSVersion.ToString();npm=(Get-Command npm).Source;pid=$PID}|ConvertTo-Json -Compress\nnpm run check\nif($LASTEXITCODE){throw 'Typecheck failed'}\nnpm run build:offline\nif($LASTEXITCODE){throw 'Offline build failed'}\nnpm run superpi -- --offline --version\nif($LASTEXITCODE){throw 'Offline version failed'}\nnpm run superpi -- --offline --help\nif($LASTEXITCODE){throw 'Offline help failed'}\n"
+  },
+  "taskRoot": "D:\\RMProjects\\Pi\\.task-tmp\\session-shell-guidance-466a1f4f80",
+  "cleanup": { "taskRootRemoved": true, "verifiedAndRemovedResources": 648, "directChildren": 35, "settledProcesses": 27, "cleanupPid": 34456, "sharedParentRetained": true }
+}

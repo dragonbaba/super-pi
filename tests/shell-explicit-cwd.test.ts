@@ -57,6 +57,41 @@ async function fixture(t: test.TestContext, auxiliary?: any, aliasedTrustedRoot 
   };
 }
 
+test("loop guard preserves shell directory resolution, recovery and actual failures", async t => {
+  const { default: loopGuard } = await createJiti(import.meta.url).import<any>("../packages/extensions/tool-loop-guardrails/index.ts");
+  const f = await fixture(t, loopGuard);
+  for (const [command, failed, marker] of [
+    ["cd /tmp && printf 'SHELL_DIRECTORY_OK'", false, "SHELL_DIRECTORY_OK"],
+    ["cd missing-directory || printf 'CD_RECOVERED'", false, "CD_RECOVERED"],
+    ["cd missing-directory && printf 'MUST_NOT_RUN'", true, "No such file or directory"],
+  ] as const) {
+    const result = await f.call("bash", command, f.cwd);
+    const output = result.content.map(block => block.type === "text" ? block.text : "").join("\n");
+    assert.equal(result.isError, failed, output);
+    assert.ok(output.includes(marker), output);
+    assert.equal((result.details as any).shellExecution.started, true);
+    assert.equal((result.details as any).shellExecution.exitCode === 0, !failed);
+    if (failed) assert.ok(!output.includes("MUST_NOT_RUN"));
+  }
+  const invalidCwd = await f.call("bash", "printf 'MUST_NOT_RUN'", join(f.cwd, "missing-cwd"));
+  assert.equal(invalidCwd.isError, true);
+  assert.ok(!invalidCwd.content.some(block => block.type === "text" && block.text.includes("MUST_NOT_RUN")));
+});
+
+test("loop guard lets npm resolve a parent package from explicit child cwd", async t => {
+  const { default: loopGuard } = await createJiti(import.meta.url).import<any>("../packages/extensions/tool-loop-guardrails/index.ts");
+  const f = await fixture(t, loopGuard), child = join(f.cwd, "sub");
+  mkdirSync(child);
+  writeFileSync(join(f.cwd, "package.json"), JSON.stringify({ private: true,
+    scripts: { verify: "node -e \"process.stdout.write('PARENT_PACKAGE_OK')\"" } }));
+  const result = await f.call("bash", "npm run verify --silent", child);
+  const output = result.content.map(block => block.type === "text" ? block.text : "").join("\n");
+  assert.equal(result.isError, false, output);
+  assert.ok(output.includes("PARENT_PACKAGE_OK"), output);
+  assert.equal((result.details as any).shellExecution.started, true);
+  assert.equal((result.details as any).shellExecution.exitCode, 0);
+});
+
 for (const name of ["bash", "powershell"]) test(`${name}: literal relative/absolute cwd, Chinese spaces and dollars reach actual local spawn`, { skip: name === "powershell" && process.platform !== "win32" ? "PowerShell backend is Windows-only" : false }, async t => {
   const f = await fixture(t); const relative = "中文 space $(literal) 'quote'"; const directory = join(f.cwd, relative); mkdirSync(directory); writeFileSync(join(directory, "marker.txt"), "correct-target");
   writeFileSync(join(f.cwd, "marker.txt"), "session-target");
