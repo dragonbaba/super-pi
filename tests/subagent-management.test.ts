@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { StringDecoder } from "node:string_decoder";
+import { StderrTail } from "../packages/extensions/subagent/stderr-tail.ts";
 import { getEventListeners } from "node:events";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { Session as InspectorSession } from "node:inspector/promises";
@@ -64,7 +65,7 @@ test("POSIX root close escalates the recorded group and preserves cleanup failur
 	let finished = false;
 	const run: any = Object.create(SubagentProcessRun.prototype);
 	Object.assign(run, { settled: false, childClosed: false, killRequested: true, proc: { pid: 321 }, buffer: "", stdoutDecoder: new StringDecoder("utf8"),
-		settle() { finished = true; } });
+		stderrTail: new StderrTail(32768), result: {}, settle() { finished = true; } });
 	run.onClose(0); assert.equal(finished, true); assert.match(run.cleanupError, /process-group cleanup failed: denied/);
 });
 test("shared FIFO handles multiple batches and releases cancelled queue entries", async () => {
@@ -232,6 +233,25 @@ function harness(t: test.TestContext, options: { persistent?: boolean; shutdownE
 	t.after(async () => { if (options.shutdownError) await assert.rejects(hooks.get("session_shutdown")(), options.shutdownError); else await hooks.get("session_shutdown")(); events.clear(); });
 	return { tools, commands, hooks, startHooks, notices, events, ctx, run, control, messages, entries, notified: () => notified, resetNotification: () => { notified = new Promise<void>(resolve => { completion = resolve; }); } };
 }
+
+test("real child stderr tail reaches the final tool result alongside an explicit error", async t => {
+	const previous = process.env.SP_SOURCE_LAUNCHER;
+	process.env.SP_SOURCE_LAUNCHER = fileURLToPath(new URL("./fixtures/subagent-stream-child.mjs", import.meta.url));
+	try {
+		const h = harness(t);
+		for (const task of ["stderr-explicit", "stderr-short"]) {
+			await assert.rejects(h.run({ agent: "scout", task, readOnly: true }), (error: Error) => {
+				const text = error.message;
+				assert.ok(Buffer.byteLength(text) <= 4096 + "Agent error: ".length);
+				if (task === "stderr-explicit") {
+					assert.match(text, /EXPLICIT_FAILURE/); assert.match(text, /尾部🙂FINAL_ERROR_MARKER/);
+					assert.match(text, /truncated/); assert.doesNotMatch(text, /�/);
+				} else assert.match(text, /short failure/);
+				return true;
+			});
+		}
+	} finally { process.env.SP_SOURCE_LAUNCHER = previous; }
+});
 
 for (const source of ["user", "project"] as const) {
 	for (const readOnly of [false, true]) {
