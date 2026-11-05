@@ -1,7 +1,7 @@
 import { RetryBudget, isTransientFailure, type RetryOperation } from "./transient-retry.ts";
 import { callKey } from "./call-identity.ts";
 export { callKey } from "./call-identity.ts";
-import { access, opendir, stat } from "node:fs/promises";
+import { access, opendir } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { UNCERTAIN_LIFECYCLE } from "../resource-lifecycle-guard/core.ts";
 import { classifyToolFailure } from "./failure-classification.ts";
@@ -16,10 +16,7 @@ import {
   NODE_MODULE_RESOLUTION_FAILURE_RE,
   NODE_SCRIPT_COMMAND_RE,
   NODE_SCRIPT_SYNTAX_FAILURE_RE,
-  MSYS_DRIVE_PATH_RE,
-  NPM_EXECUTABLE_RE,
   READ_OFFSET_ERROR_RE,
-  SHELL_DYNAMIC_PATH_RE,
   SHELL_SYNTAX_FAILURE_RE,
   UNIX_TMP_PATH_RE,
 } from "./regex.js";
@@ -33,11 +30,8 @@ const FINAL_REPEAT_REMINDER_THRESHOLD = 8;
 const MAX_WARNING_CHARS = 600;
 const MAX_ERROR_TEXT_CHARS = 8_192;
 const MAX_NEARBY_ENTRIES = 256;
-const MAX_COMMAND_TOKENS = 64;
-const MAX_COMMAND_CHARS = 4_096;
 const MAX_DISTANCE_CHARS = 96;
 const TOOL_INPUT_REPAIRS = Symbol.for("pi.toolInputRepairs");
-const NPM_MANIFEST_ACTIONS = new Set(["restart", "run", "run-script", "start", "stop", "test"]);
 const EMPTY_PATH_ARGUMENTS: readonly string[] = Object.freeze([]);
 const BATCH_DUPLICATE_CAUSE = "An identical sibling call already exists in the current assistant tool batch.";
 const BATCH_DUPLICATE_ACTION = "Reuse the first sibling result; do not issue another identical call.";
@@ -165,129 +159,14 @@ function structuredRgBraceFailure(input: Record<PropertyKey, unknown>): string |
   return undefined;
 }
 
-function commandPrefixTokens(command: string): string[] | undefined {
-  const source = command.slice(0, MAX_COMMAND_CHARS);
-  const tokens: string[] = [];
-  let token = "";
-  let quote = 0;
-  for (let index = 0; index < source.length; index++) {
-    const code = source.charCodeAt(index);
-    if (quote !== 0) {
-      if (code === quote) quote = 0;
-      else token += source[index];
-      continue;
-    }
-    if (code === 34 || code === 39) {
-      quote = code;
-      continue;
-    }
-    if (code === 38 || code === 59 || code === 124 || code === 10 || code === 13) break;
-    if (code === 32 || code === 9) {
-      if (!token) continue;
-      tokens.push(token);
-      token = "";
-      if (tokens.length >= MAX_COMMAND_TOKENS) break;
-      continue;
-    }
-    token += source[index];
-  }
-  if (quote !== 0) return undefined;
-  if (token && tokens.length < MAX_COMMAND_TOKENS) tokens.push(token);
-  return tokens;
-}
-
-function staticLeadingCdDirectory(command: string, cwd: string): string | undefined {
-  const tokens = commandPrefixTokens(command);
-  if (!tokens || tokens[0] !== "cd") return undefined;
-  const value = tokens.length === 2
-    ? tokens[1]
-    : tokens.length === 3 && tokens[1] === "--" ? tokens[2] : undefined;
-  if (!value || value === "-" || SHELL_DYNAMIC_PATH_RE.test(value)) return undefined;
-  if (process.platform === "win32") {
-    const match = MSYS_DRIVE_PATH_RE.exec(value);
-    if (match) {
-      const suffix = value.slice(match[0].length).replaceAll("/", "\\");
-      return `${match[1].toUpperCase()}:\\${suffix}`;
-    }
-  }
-  return toolPath(cwd, value);
-}
-
-async function bashStaticCdFailure(command: string, cwd: string): Promise<string | undefined> {
-  const directory = staticLeadingCdDirectory(command, cwd);
-  if (!directory) return undefined;
-  try {
-    if ((await stat(directory)).isDirectory()) return undefined;
-  } catch { /* Return one deterministic preflight failure below. */ }
-  return structuredPreflightFailure(
-    "WORKDIR_MISMATCH",
-    "bash",
-    `Static leading cd target is not an existing directory: ${directory}.`,
-    "Inspect the verified parent directory and use an existing exact path before retrying.",
-  );
-}
-
-function npmManifestDirectory(command: string, cwd: string): string | undefined {
-  const tokens = commandPrefixTokens(command);
-  if (!tokens || tokens.length < 2 || !NPM_EXECUTABLE_RE.test(tokens[0])) return undefined;
-  let packageDirectory = cwd;
-  let action: string | undefined;
-  for (let index = 1; index < tokens.length; index++) {
-    const token = tokens[index];
-    if (token === "--prefix" || token === "-C" || token === "--dir") {
-      const value = tokens[++index];
-      if (!value) return undefined;
-      packageDirectory = toolPath(cwd, value);
-      continue;
-    }
-    if (token.startsWith("--prefix=") || token.startsWith("--dir=")) {
-      const equals = token.indexOf("=");
-      const value = token.slice(equals + 1);
-      if (!value) return undefined;
-      packageDirectory = toolPath(cwd, value);
-      continue;
-    }
-    if (token.startsWith("-")) continue;
-    action ??= token.toLowerCase();
-  }
-  return action && NPM_MANIFEST_ACTIONS.has(action) ? packageDirectory : undefined;
-}
-
-async function bashWorkdirFailure(input: Record<PropertyKey, unknown>, cwd: string): Promise<string | undefined> {
-  if (typeof input.command !== "string") return undefined;
-  const cdFailure = await bashStaticCdFailure(input.command, cwd);
-  if (cdFailure) return cdFailure;
-  const packageDirectory = npmManifestDirectory(input.command, cwd);
-  if (!packageDirectory) return undefined;
-  let validManifest = false;
-  try {
-    const manifest = join(packageDirectory, "package.json");
-    await access(manifest);
-    validManifest = (await stat(manifest)).isFile();
-  } catch {
-    validManifest = false;
-  }
-  if (validManifest) return undefined;
-  return structuredPreflightFailure(
-    "WORKDIR_MISMATCH",
-    "bash",
-    `Package lifecycle preflight found no regular package.json file in ${packageDirectory}.`,
-    "Change into the intended package directory, correct --prefix/-C, or inspect that directory before retrying.",
-  );
-}
-
 export async function prepareDeterministicCall(
   toolName: string,
   input: unknown,
-  cwd: string,
 ): Promise<DeterministicCallPreparation> {
   if (!input || typeof input !== "object") return EMPTY_DETERMINISTIC_PREPARATION;
   const object = input as Record<PropertyKey, unknown>;
-  const blockReason = toolName === "bash"
-    ? await bashWorkdirFailure(object, cwd)
-    : toolName === "structured_readonly_command"
-      ? structuredRgBraceFailure(object)
-      : undefined;
+  // Shell directory and package lookup semantics belong to the runtime; explicit tool cwd is validated separately.
+  const blockReason = toolName === "structured_readonly_command" ? structuredRgBraceFailure(object) : undefined;
   return blockReason ? { blockReason } : EMPTY_DETERMINISTIC_PREPARATION;
 }
 

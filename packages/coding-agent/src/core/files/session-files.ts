@@ -289,7 +289,7 @@ export class SessionFiles implements ObservationPermissions {
           : name === "delete" ? "Irreversibly delete one file or empty directory. No recursive deletion or backup."
           : name === "move" ? "Move one file without overwriting. Exclusive link then unlink may leave both names on partial failure."
           : "Prepare then apply up to 16 independent file operations in fixed order. Write requires create or overwrite mode. Stop on failure, retain each outcome; no rollback or automatic replay.",
-        promptGuidelines: name === "edit" || name === "write" ? ["A read revision is a file-version precondition. You may read, compute and edit in one CodeMode script without a separate model turn or show(). Read again after mutation or a version conflict."] : undefined,
+        promptGuidelines: name === "edit" || name === "write" ? ["A read revision is a file-version precondition. You may read, compute and edit in one CodeMode script without a separate model turn or show(). Read again after mutation or a version conflict. On REVISION_REQUIRED, read the exact existing target; never invent a snapshot or substitute result.ref. Copy an explicit snapshot ID from the read annotation when required by the active schema."] : undefined,
         async execute(id, input, signal) {
           const invocation = (input as { [EXECUTION]?: NativeFileInvocation } | undefined)?.[EXECUTION];
           if (!invocation || invocation.id !== id || invocation.name !== name || owner.calls.get(id) !== invocation) throw new Error("Native file operation requires its prepared invocation.");
