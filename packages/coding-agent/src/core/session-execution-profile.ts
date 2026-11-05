@@ -23,13 +23,32 @@ export function canonicalSessionDirectory(target: string, requireExisting = true
   }
 }
 
+function restoreSessionDirectory(target: string): string {
+  const canonical = canonicalSessionDirectory(target, false);
+  // Native case/8.3 expansion is harmless. A new link anywhere in the saved
+  // path is a different grant, even when only its final spelling looks normal.
+  if (canonical !== target) {
+    let current = target;
+    for (;;) {
+      // Keep the original binding so execution rejects the redirect and the
+      // user can still remove the stale grant without losing the whole profile.
+      if (lstatSync(current).isSymbolicLink()) return target;
+      const parent = dirname(current);
+      if (parent === current) break;
+      current = parent;
+    }
+  }
+  return canonical;
+}
+
 /** Invoked at the user-command/restore boundary, never inferred from shell source. */
 export function sessionDirectories(cwd: string, values: readonly string[], requireExisting = true): readonly string[] {
   if (!Array.isArray(values) || values.length > MAX_SESSION_DIRECTORIES) throw new Error("At most 16 additional working directories are supported");
   const primary = realpathSync.native(cwd), directories: string[] = [];
   for (const value of values) {
     if (typeof value !== "string" || !value.trim() || value.length > 4096 || value.includes("\0")) throw new Error("Invalid working directory");
-    const target = canonicalSessionDirectory(resolve(cwd, value), requireExisting);
+    const absolute = resolve(cwd, value);
+    const target = requireExisting ? canonicalSessionDirectory(absolute) : restoreSessionDirectory(absolute);
     if (process.platform === "win32" && target.startsWith("\\\\")) throw new Error("Working directories must use local drive paths");
     if (requireExisting && !lstatSync(target).isDirectory() || dirname(target) === target) throw new Error("Expected a directory below a filesystem root: " + target);
     if (containsDirectory(primary, target) || containsDirectory(target, primary)) throw new Error("Working directories must not overlap: " + target);

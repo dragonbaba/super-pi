@@ -80,6 +80,16 @@ test("local execution profile restores explicit choices only for the same sessio
     }
     const value = JSON.parse(fs.readFileSync(record, "utf8")); value.machine += "-different"; fs.writeFileSync(record, JSON.stringify(value));
     assert.equal(loadSessionExecutionProfile(agent, manager), undefined);
+    saveSessionExecutionProfile(agent, manager, { mode: "sandbox-write", directories: [assets] });
+    fs.rmdirSync(assets);
+    fs.symlinkSync(path.join(root, "other"), assets, process.platform === "win32" ? "junction" : "dir");
+    assert.deepEqual(loadSessionExecutionProfile(agent, manager)?.directories, [assets], "retain the old binding for execution to reject, never grant the redirect destination");
+    fs.unlinkSync(assets); fs.mkdirSync(assets);
+    const nested = path.join(assets, "nested"), moved = path.join(root, "moved-assets");
+    fs.mkdirSync(nested); saveSessionExecutionProfile(agent, manager, { mode: "sandbox-write", directories: [nested] });
+    fs.renameSync(assets, moved); fs.symlinkSync(moved, assets, process.platform === "win32" ? "junction" : "dir");
+    assert.deepEqual(loadSessionExecutionProfile(agent, manager)?.directories, [nested], "an ancestor redirect must not rewrite the saved grant either");
+    fs.unlinkSync(assets); fs.renameSync(moved, assets); fs.rmdirSync(nested);
     assert.throws(() => sessionDirectories(project, [root]), /overlap/);
     assert.throws(() => sessionDirectories(project, [assets, assets]), /overlap/);
     fs.rmdirSync(assets);

@@ -141,7 +141,11 @@ test("directory commands accept Windows case aliases and remove missing grants",
     await fs.rmdir(extra);
     await fixture.internal.handleWorkingDirectoryCommand('/remove-dir "' + extra.toUpperCase() + '"');
     assert.deepEqual(fixture.session.settingsManager.getSessionDirectories(), []);
-    assert.deepEqual(errors, []); assert.equal(applied, 4);
+    fixture.session.settingsManager.setSessionDirectories([extra]);
+    await fs.symlink(fixture.root, extra, "junction");
+    await fixture.internal.handleWorkingDirectoryCommand('/remove-dir "' + extra + '"');
+    assert.deepEqual(fixture.session.settingsManager.getSessionDirectories(), [], "a redirected old grant remains removable by its saved identity");
+    assert.deepEqual(errors, []); assert.equal(applied, 5);
   } finally {
     await fixture.release();
     await fs.rm(extra, { recursive: true, force: true });

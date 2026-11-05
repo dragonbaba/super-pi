@@ -2948,12 +2948,15 @@ export class InteractiveMode {
 		if (!target) { this.showExtensionNotify("用法：" + command + " <directory>；/dirs 查看当前工作目录", "warning"); return; }
 		try {
 			const absolute = path.resolve(this.session.sessionManager.getCwd(), target);
-			const canonical = canonicalSessionDirectory(absolute, command === "/add-dir");
 			const directories = [...current];
-			if (command === "/add-dir") directories.push(canonical);
+			if (command === "/add-dir") directories.push(canonicalSessionDirectory(absolute));
 			else {
 				let index = -1;
-				for (let i = 0; i < directories.length; i++) if (path.relative(directories[i]!, canonical) === "") { index = i; break; }
+				for (let i = 0; i < directories.length; i++) if (path.relative(directories[i]!, absolute) === "") { index = i; break; }
+				if (index < 0) {
+					const canonical = canonicalSessionDirectory(absolute, false);
+					for (let i = 0; i < directories.length; i++) if (path.relative(directories[i]!, canonical) === "") { index = i; break; }
+				}
 				if (index < 0) throw new Error("该目录不在当前附加工作区中");
 				directories.splice(index, 1);
 			}

@@ -242,6 +242,22 @@ test("canonical workspace selection protects additional roots through aliases an
     (await sandbox.owner.authorize(sandbox.event("read", { path: "alias/ordinary.txt" }), sandbox.ctx, sandbox.definition("read"))).release();
     (await f.owner.authorize(f.event("write", { path: "..ordinary/new.txt", content: "allowed" }), f.ctx)).release();
 });
+
+test("unavailable additional grants block their own paths without disabling the primary host workspace", async t => {
+    const additional = await fixture(t), directory = path.join(additional.root, "grant");
+    await fs.mkdir(directory);
+    const f = await fixture(t, {}, "trusted-host", "host-write", [directory]);
+    await fs.writeFile(path.join(f.root, "ordinary.txt"), "ordinary");
+    await fs.rmdir(directory);
+    (await f.owner.authorize(f.event("read", { path: "ordinary.txt" }), f.ctx)).release();
+    (await f.owner.authorize(f.event("write", { path: "new.txt", content: "allowed" }), f.ctx)).release();
+    await assert.rejects(f.owner.authorize(f.event("write", { path: path.join(directory, "new.txt"), content: "blocked" }), f.ctx), /unavailable|redirected/i);
+    await fs.symlink(f.root, directory, process.platform === "win32" ? "junction" : "dir");
+    (await f.owner.authorize(f.event("read", { path: "ordinary.txt" }), f.ctx)).release();
+    await assert.rejects(f.owner.authorize(f.event("read", { path: path.join(directory, "ordinary.txt") }), f.ctx), /unavailable|redirected/i);
+    const sandbox = await fixture(t, {}, "sandbox", "sandbox-write", [directory]);
+    await assert.rejects(sandbox.owner.authorize(sandbox.event("ls", { path: "." }), sandbox.ctx, sandbox.definition("ls")), /unavailable|redirected/i);
+});
 test("native workspace leases retain original directory identity and revoke on transitions", async t => {
     const f = await fixture(t);
     const target = path.join(f.root, "input.txt"); await fs.writeFile(target, "input");
