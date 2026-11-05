@@ -61,7 +61,7 @@ test("Windows command grammars preserve drive paths, command tails and location 
     String.raw`Set-Location D:\outside; Remove-Item file.txt`, String.raw`cmd /c del /q D:\outside\file.txt`,
     String.raw`cmd /c "rd /s /q D:\outside\file.txt"`, String.raw`[System.IO.File]::Delete('D:\outside\file.txt')`]) {
     const result = scan(command);
-    assert.equal(result.recognized, true, command); assert.equal(result.uncertain, false, command);
+    assert.equal(result.recognized, true, command); assert.equal(result.uncertain, command.startsWith("Set-Location"), command);
     assert.deepEqual(result.effects, [{ kind: "delete", path: outside, destination: undefined }], command);
   }
   assert.deepEqual(scan(String.raw`robocopy D:\source D:\outside /MIR`).effects,
@@ -109,6 +109,7 @@ test("PowerShell emits separate copy/move operands and write destinations with b
 
 test("native Bash composition keeps real operands, command option groups, git scopes and opacity separate", () => {
   const cwd = process.cwd();
+  assert.equal(analyzeNativeShell("cp -r src/. ../outside", cwd, "bash", 1).uncertain, true);
   for (const command of ["rm -rf ../outside", "/bin/rm -rf ../outside", "bash -lc 'rm -rf ../outside'", "python -c 'import shutil; shutil.rmtree(\"../outside\")'", "node -e 'require(\"fs\").rmSync(\"../outside\",{recursive:true})'"]) {
     const result = analyzeNativeShell(command, cwd, "bash", 1);
     assert.equal(result.recognized, true, command); assert.equal(result.uncertain, false, command);
@@ -127,6 +128,7 @@ test("native Bash composition keeps real operands, command option groups, git sc
     assert.equal(analyzeNativeShell("git reset --hard", cwd, shell, 1).effects[0]!.kind, "git-reset");
     assert.equal(analyzeNativeShell("rm -f build/../keep.txt", cwd, shell, 1).uncertain, true);
     assert.equal(analyzeNativeShell(shell === "bash" ? "cd build/..; rm keep.txt" : "Set-Location build/..; rm keep.txt", cwd, shell, 1).uncertain, true);
+    assert.equal(analyzeNativeShell(shell === "bash" ? "cd nonexistent; rm keep.txt" : "Set-Location nonexistent; rm keep.txt", cwd, shell, 1).uncertain, true);
   }
 });
 
@@ -195,6 +197,8 @@ test("review: all write operands, shell redirections and absolute wrappers reach
     ["bash", "/bin/bash -lc 'rm -rf .git'"],
     ["bash", "/usr/bin/git clean -fd -- .sp"],
     ["bash", "'/usr/bin/git.exe' clean -fd -- .sp"],
+    ["bash", "find safe .git -type f -delete"],
+    ["bash", "sed -i --expression='s/a/b/' .git/config"],
   ] as const) await assert.rejects(f.owner.authorize(f.event(shell, { command }), f.ctx), /POLICY_BLOCKED|EXTERNAL_FILE_WRITE_BLOCKED/, command);
   for (const command of ["Get-ChildItem 2>&1", "git diff 2>&1", "cmd /c dir 2>&1", "Get-ChildItem 3>&1"]) {
     assert.equal(scan(command, f.workspace).recognized, false, command);
@@ -281,4 +285,31 @@ test("parent components after a possible symlink ask before deletion and use the
       assert.equal(await fs.readFile(join(f.workspace, "keep.txt"), "utf8"), "workspace");
     }
   } finally { await fs.unlink(link); }
+});
+
+test("real transfer, find, sed and failed-cd forms preserve their authorization boundary", { timeout: 20000 }, async t => {
+  const f = await fixture(t); await fs.mkdir(join(f.workspace, "src"));
+  await fs.writeFile(join(f.workspace, "src", "keep.txt"), "new"); await fs.writeFile(join(f.outside, "keep.txt"), "old");
+  const select = f.ctx.ui.select, copy = { command: "cp -r src/. ../outside", timeout: 10 };
+  f.ctx.ui.select = async () => undefined;
+  await assert.rejects(f.call("bash", copy), /APPROVAL_CANCELLED/);
+  assert.equal(await fs.readFile(join(f.outside, "keep.txt"), "utf8"), "old");
+  f.ctx.ui.select = select;
+  assert.equal((await f.call("bash", copy)).isError, undefined);
+  assert.equal(await fs.readFile(join(f.outside, "keep.txt"), "utf8"), "new"); assert.match(f.dialogs.at(-1)!, /目标无法确定/);
+  for (const path of ["one.txt", "two.txt"]) await fs.writeFile(join(f.workspace, path), "old");
+  assert.equal((await f.call("bash", { command: "sed --in-place --expression='s/old/new/' one.txt two.txt", timeout: 10 })).isError, undefined);
+  for (const path of ["one.txt", "two.txt"]) assert.equal(await fs.readFile(join(f.workspace, path), "utf8"), "new");
+  assert.equal((await f.call("bash", { command: "find one.txt two.txt -delete", timeout: 10 })).isError, undefined);
+  for (const path of ["one.txt", "two.txt"]) await assert.rejects(fs.stat(join(f.workspace, path)), { code: "ENOENT" });
+  await fs.writeFile(join(f.workspace, "marker.txt"), "keep");
+  const shell = process.platform === "win32" ? "powershell" : "bash";
+  const command = shell === "powershell" ? "Set-Location nonexistent; Remove-Item marker.txt" : "cd nonexistent; rm marker.txt";
+  f.ctx.ui.select = async () => undefined;
+  await assert.rejects(f.call(shell, { command, timeout: 10 }), /APPROVAL_CANCELLED/);
+  assert.equal(await fs.readFile(join(f.workspace, "marker.txt"), "utf8"), "keep");
+  f.ctx.ui.select = select;
+  await f.call(shell, { command, timeout: 10 });
+  await assert.rejects(fs.stat(join(f.workspace, "marker.txt")), { code: "ENOENT" });
+  assert.equal(f.dialogs.length, 2);
 });

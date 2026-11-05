@@ -26,6 +26,10 @@ const cases = native ? [
   ["native-powershell-cmd", "cmd /c del /q ../outside", 0],
   ["native-powershell-array", "Set-Content -LiteralPath 'one','two' -Value data", 0],
   ["native-powershell-stream-copy", "git diff 2>&1", 0],
+  ["native-bash-find-roots", "find one two -type f -delete", 1],
+  ["native-bash-sed-options", "sed -i --expression='s/a/b/' one two", 1],
+  ["native-bash-copy-contents", "cp -r src/. ../outside", 1],
+  ["native-powershell-cd", "Set-Location nonexistent; Remove-Item file", 0],
 ] as const : literalInputs ? [
   ["aliased-process-producer", "shopt -s expand_aliases\nalias echo='printf marker'\nsource <(echo ':')", 2],
   ["sort-terminal-value", "sort -o .git/config --help=x", 1],

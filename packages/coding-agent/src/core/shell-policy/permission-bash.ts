@@ -32,6 +32,7 @@ const COPY_COMMANDS = new Set(["cp", "copy"]);
 const MOVE_COMMANDS = new Set(["mv", "move", "rename", "ren"]);
 const GIT_READ_ONLY = new Set(["status", "diff", "log", "show", "ls-files", "rev-parse"]);
 const TRANSFER_FLAGS = new Set(["-f", "--force", "-n", "--no-clobber", "-i", "--interactive", "-v", "--verbose", "-r", "-R", "--recursive", "-a", "--archive"]);
+const DIRECTORY_CONTENTS_OPERAND = /(?:^|[/\\])\.[/\\]*$/u;
 
 export type BashPermissionKind = "read-only" | "known-mutation" | "opaque-script";
 
@@ -199,6 +200,9 @@ function recordTransfer(tokens: PermissionTokens, start: number, cwd: string, sc
       scan.uncertain = true; return;
     }
     if (operands.length >= MAX_TARGETS) { scan.uncertain = true; return; }
+    // A contents copy does not append the source basename to an existing destination.
+    // Keep it uncertain until recursive child destinations can be classified.
+    if (!moving && DIRECTORY_CONTENTS_OPERAND.test(value)) scan.uncertain = true;
     operands.push(staticMutationTarget(value, cwd, tokens.expansions?.[index]));
   }
   if (!explicitDestination) destination = operands.pop();
@@ -269,7 +273,11 @@ function inspectKnownMutation(command: string, tokens: PermissionTokens, start: 
         markMutation(builder, tokens[index] === "-delete" ? "find_delete" : "find_exec");
         const deleting = tokens[index] === "-delete";
         if (root < 0) { addResolvedTarget(builder, cwd); if (deleting && builder.native) addShellEffect(builder.native, "delete-contents", cwd); }
-        else addTarget(builder, tokens[root]!, cwd, true, tokens.expansions?.[root], false, deleting ? "delete-contents" : undefined);
+        else for (let slot = root; slot < tokens.length; slot++) {
+          const value = tokens[slot]!;
+          if (value.startsWith("-") || value === "(" || value === ")" || value === "!") break;
+          addTarget(builder, value, cwd, true, tokens.expansions?.[slot], false, deleting ? "delete-contents" : undefined);
+        }
         if (!deleting && builder.native) {
           const executable = commandName(tokens[index + 1] ?? "");
           if (SIMPLE_DELETIONS.has(executable)) addShellEffect(builder.native, "delete", undefined);
@@ -357,14 +365,41 @@ function inspectKnownMutation(command: string, tokens: PermissionTokens, start: 
     return true;
   }
   if (command === "sed") {
-    let inPlace = false;
+    let inPlace = false, scriptOption = false, options = true;
     for (let index = start; index < tokens.length; index++) {
       const token = tokens[index]!;
-      if (token === "-i" || token.startsWith("-i")) inPlace = true;
+      if (options && token === "--") { options = false; continue; }
+      if (!options || !token.startsWith("-")) continue;
+      if (token === "--in-place" || token.startsWith("--in-place=")) inPlace = true;
+      else if (token === "--expression" || token === "--file") { scriptOption = true; index++; }
+      else if (token.startsWith("--expression=") || token.startsWith("--file=")) scriptOption = true;
+      else if (!token.startsWith("--")) for (let flag = 1; flag < token.length; flag++) {
+        const code = token.charCodeAt(flag);
+        if (code === 105) { inPlace = true; break; } // -i consumes the optional suffix.
+        if (code === 101 || code === 102) { scriptOption = true; if (flag + 1 === token.length) index++; break; }
+      }
     }
     if (!inPlace) return false;
     markMutation(builder, "sed_in_place");
-    if (addPositionalTargets(tokens, start, builder, cwd, 1, false, false, "write") < 2) markOpaque(builder, "sed_target_unverifiable");
+    if (builder.native) builder.native.recognized = true;
+    options = true;
+    let scriptSeen = scriptOption, targets = 0;
+    for (let index = start; index < tokens.length; index++) {
+      const token = tokens[index]!;
+      if (options && token === "--") { options = false; continue; }
+      if (options && token.startsWith("-")) {
+        if (token === "--expression" || token === "--file") index++;
+        else if (!token.startsWith("--")) for (let flag = 1; flag < token.length; flag++) {
+          const code = token.charCodeAt(flag);
+          if (code === 105) break;
+          if (code === 101 || code === 102) { if (flag + 1 === token.length) index++; break; }
+        }
+        continue;
+      }
+      if (!scriptSeen) { scriptSeen = true; continue; }
+      addTarget(builder, token, cwd, true, tokens.expansions?.[index], false, "write"); targets++;
+    }
+    if (!targets) { builder.unverifiableMutation = true; markOpaque(builder, "sed_target_unverifiable"); }
     return true;
   }
   return false;
@@ -375,7 +410,7 @@ function findSearchRootIndex(tokens: readonly string[], start: number): number {
     const value = tokens[index]!;
     if (value === "--") return tokens[index + 1] && !tokens[index + 1]!.startsWith("-") ? index + 1 : -1;
     if (value === "-H" || value === "-L" || value === "-P") continue;
-    if (value.startsWith("-")) return -1;
+    if (value.startsWith("-") || value === "(" || value === ")" || value === "!") return -1;
     return index;
   }
   return -1;
@@ -546,6 +581,8 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
       markUncertainContext(builder, "dynamic_cd");
       return cwd;
     }
+    // Literal syntax cannot prove cd succeeds; a following list command can run in the old cwd.
+    if (builder.native) markUncertainContext(builder, "cd_success_unverified");
     return resolve(cwd, target);
   }
   if (command === "printf" && hasStatefulBashPrintf(tokens, index)) {

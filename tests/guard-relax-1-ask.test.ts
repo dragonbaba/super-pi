@@ -9,12 +9,12 @@ import { mutationFixture } from "./helpers/mutation-fixture.ts";
 test("PR1 representative allow / ask / deny acceptance", async t => {
   type Result = "allow" | "ask" | "once" | "deny";
   const rows: readonly (readonly [string, Result, Result, ("bash" | "powershell")?, string?])[] = [
-    ...["/", "~", "~/*", ".", "./*", "..", ".git", "sub/../.git", ".sp",
+    ...["/", "~", "~/*", ".", "./*", "..", ".git", "./.git", ".sp",
       JSON.stringify(realpathSync.native(homedir()).replaceAll("\\", "/")), JSON.stringify(dirname(realpathSync.native(homedir())).replaceAll("\\", "/"))]
       .map(target => [`rm -rf ${target}`, "deny", "deny"] as const),
     ...["~/.cache/foo", "/tmp/x", "./out/*", "node_modules", "dist build"]
       .map(target => [`rm -rf ${target}`, "allow", "ask"] as const),
-    ...["$BUILD_DIR", '"$TMPDIR/foo"', '"$HOME"', "*/node_modules", "~other/cache", Array.from({ length: 17 }, (_, i) => `out${i}`).join(" ")]
+    ...["$BUILD_DIR", '"$TMPDIR/foo"', '"$HOME"', "*/node_modules", "~other/cache", "sub/../.git", Array.from({ length: 17 }, (_, i) => `out${i}`).join(" ")]
       .map(target => [`rm -rf ${target}`, "once", "once"] as const),
     ["bash scripts/build.sh", "allow", "ask"], ["sh -x scripts/build.sh", "allow", "ask"], ["$CMD --version", "allow", "ask"],
     ["bash <<EOF\n$X\nEOF", "allow", "ask"], ["echo " + "x".repeat(128 * 1024), "allow", "ask"],

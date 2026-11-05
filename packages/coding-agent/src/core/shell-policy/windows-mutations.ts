@@ -181,6 +181,8 @@ function inspectSegment(tokens: readonly string[], dynamic: readonly (boolean | 
   }
   const first = explicitPath >= 0 ? explicitPath : operands[0] ?? -1;
   if (locating) {
+    // PowerShell/cmd continue after an unsuccessful location change by default.
+    scan.uncertain = true;
     const target = literalTarget(tokens[first], Boolean(dynamic?.[first]), cwd, shell, literalPath);
     return target ?? "";
   }
