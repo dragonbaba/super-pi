@@ -224,6 +224,8 @@ Super Pi 的性能工作围绕明确边界：
 
 首页不放零散微基准数字。heap delta、采样分配、token 估算和 provider 账单是不同指标，不能互相替代。
 
+页脚 `CH%` 是最近一条 assistant 响应报告的缓存读取量占归一化 prompt tokens 的比例；`/session` 使用累计 token 加权用量。provider 未报告缓存时，无法据此确定服务端实际命中率。可选的 **Cache overlap estimates**（兼容原设置键 `showCacheMissNotices`，默认关闭）只显示长度上限，并明确重复内容和缓存原因未知，不推断过期或节省金额。
+
 ## 安全、隐私和已知边界
 
 配置、会话和部分记忆保存在本地，但这不表示输入永远不离开本机。提示、工具 schema、文件片段、工具结果和图片可能发送给选定 provider；配置的 MCP server 会收到发给它的调用和数据。使用前请检查 provider、MCP、扩展和环境变量的信任关系。

@@ -515,8 +515,8 @@ export class SettingsSelectorComponent extends Container {
 			},
 			{
 				id: "cache-miss-notices",
-				label: "Cache miss notices",
-				description: "Show transcript notices for significant prompt-cache misses",
+				label: "Cache overlap estimates",
+				description: "Show length-based overlap bounds; repeated content and cache causes are unknown",
 				currentValue: config.showCacheMissNotices ? "true" : "false",
 				values: ["true", "false"],
 			},

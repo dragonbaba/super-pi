@@ -828,7 +828,7 @@ test("UI allocation source audit executes the selected production chain and lock
 	assert.equal(audit.discoveryOwnershipObjectLiterals, 6);
 	assert.equal(audit.discoveryOwnershipArrayMaterializationSites, 2);
 	assert.equal(audit.discoveryOwnershipInlineClosureSites, 1);
-	assert.equal(audit.discoveryOwnershipMapConstructors, 9);
+	assert.equal(audit.discoveryOwnershipMapConstructors, 8, "disabled cache estimates no longer allocate an empty rebuild Map");
 	assert.equal(audit.pendingRegistryMapConstructors, 1);
 	assert.equal(audit.attachedRegistryMapConstructors, 1);
 	assert.equal(audit.promotionArrayMaterializationSites, 0);
@@ -843,8 +843,8 @@ test("UI allocation source audit executes the selected production chain and lock
 	assert.equal(
 		(audit as typeof audit & { discoveryRebuildCallerMapConstructors?: number })
 			.discoveryRebuildCallerMapConstructors,
-		3,
-		"the production rebuild caller must participate in the structural audit",
+		2,
+		"the rebuild caller retains pending/discovery Maps, with no empty disabled-estimate Map",
 	);
 	assert.equal(audit.discoveryRebuildCallerArrayMaterializationSites, 1);
 	assert.equal(audit.discoveryRebuildCallerInlineClosureSites, 1);

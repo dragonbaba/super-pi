@@ -76,11 +76,10 @@ import type { ToolResultPresentation } from "../../core/tool-result-presentation
 import { type AgentSessionRuntime, SessionImportFileNotFoundError } from "../../core/agent-session-runtime.ts";
 import { DEFAULT_THINKING_LEVEL } from "../../core/defaults.ts";
 import {
-	CACHE_TTL_MS,
-	type CacheMiss,
-	collectCacheMisses,
-	computeCacheWaste,
-	detectCacheMiss,
+	type CacheOverlapEstimate,
+	collectCacheOverlapEstimates,
+	computeCacheOverlapTotals,
+	detectCacheOverlapEstimate,
 } from "../../core/cache-stats.ts";
 import type {
 	AutocompleteProviderFactory,
@@ -5422,9 +5421,9 @@ export class InteractiveMode {
 			this.completeTrackedToolIfReady(rebuildReadGroup);
 			rebuildReadGroup = undefined;
 		};
-		const cacheMisses = this.settingsManager.getShowCacheMissNotices()
-			? collectCacheMisses(this.sessionManager.getEntries(), this.session.modelRuntime)
-			: new Map<AssistantMessage, CacheMiss>();
+		const cacheEstimates = this.settingsManager.getShowCacheMissNotices()
+			? collectCacheOverlapEstimates(this.sessionManager.getEntries())
+			: undefined;
 
 		if (options.updateFooter) {
 			this.footer.invalidate();
@@ -5487,8 +5486,8 @@ export class InteractiveMode {
 					}
 				}
 				if (message.stopReason !== "aborted" && message.stopReason !== "error") {
-					const miss = cacheMisses.get(message);
-					if (miss) this.addCacheMissNotice(miss);
+					const estimate = cacheEstimates?.get(message);
+					if (estimate) this.addCacheOverlapNotice(estimate);
 				} else finalizeRebuildReadGroup();
 			} else if (message.role === "toolResult") {
 				// Match tool results to pending tool components
@@ -5543,30 +5542,21 @@ export class InteractiveMode {
 	}
 
 	/**
-	 * Show a transcript notice when a completed assistant message paid for a
-	 * significant cache miss. Only states observable facts: the miss itself,
-	 * a model switch, or an idle gap past the cache TTL.
+	 * Show an optional length-only estimate. Usage cannot prove shared prompt
+	 * content, cache eligibility, server expiry, or avoidable billing.
 	 */
 	private maybeShowCacheMissNotice(message: AssistantMessage): void {
 		if (!this.settingsManager.getShowCacheMissNotices()) return;
 
 		// Entries don't contain `message` yet: message_end fires before persistence.
-		const miss = detectCacheMiss(this.sessionManager.getEntries(), message, this.session.modelRuntime);
-		if (miss) this.addCacheMissNotice(miss);
+		const estimate = detectCacheOverlapEstimate(this.sessionManager.getEntries(), message);
+		if (estimate) this.addCacheOverlapNotice(estimate);
 	}
 
-	private addCacheMissNotice(miss: CacheMiss): void {
-		if (miss.missedTokens < 20_000 && miss.missedCost < 0.1) return;
-
-		const cost = miss.missedCost >= 0.01 ? ` (~$${miss.missedCost.toFixed(2)})` : "";
-		const reBilled = `${formatTokens(miss.missedTokens)} tokens re-billed${cost}`;
-		let label = "Cache miss";
-		if (miss.modelChanged) {
-			label = "Cache miss after model switch";
-		} else if (miss.idleMs >= CACHE_TTL_MS) {
-			label = `Cache miss after ${Math.round(miss.idleMs / 60_000)}m idle`;
-		}
-		const text = theme.fg("warning", `${label}: ${reBilled}`);
+	private addCacheOverlapNotice(estimate: CacheOverlapEstimate): void {
+		if (estimate.uncachedOverlapUpperBound < 20_000) return;
+		const text = theme.fg("dim",
+			`Cache overlap estimate: up to ${formatTokens(estimate.uncachedOverlapUpperBound)} uncached prompt tokens; repeated content and cache cause unknown.`);
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Text(text, 1, 0));
 	}
@@ -8197,7 +8187,7 @@ export class InteractiveMode {
 		const stats = this.session.getSessionStats();
 		const sessionName = this.sessionManager.getSessionName();
 		const entries = this.sessionManager.getEntries();
-		const cacheWaste = computeCacheWaste(entries, this.session.modelRuntime);
+		const cacheOverlap = computeCacheOverlapTotals(entries);
 
 		// Cost/token totals per provider/model actually used (e.g. OpenRouter `auto`
 		// resolves to a concrete responseModel). Usage without model attribution is
@@ -8232,22 +8222,18 @@ export class InteractiveMode {
 		}
 		info += `${theme.fg("dim", "Output:")} ${formatLocaleInteger(stats.tokens.output)}\n`;
 		info += `${theme.fg("dim", "Total:")} ${formatLocaleInteger(stats.tokens.total)}\n`;
+		if (cacheOverlap.uncachedOverlapUpperBound > 0) {
+			const turns = cacheOverlap.estimatedTurns === 1 ? "1 turn" : `${cacheOverlap.estimatedTurns} turns`;
+			info += `${theme.fg("dim", "Uncached overlap upper bound:")} ${formatLocaleInteger(cacheOverlap.uncachedOverlapUpperBound)} tokens (${turns}; repeated content unverified)\n`;
+		}
 
-		if (stats.cost > 0 || cacheWaste.missedTokens > 0) {
+		if (stats.cost > 0) {
 			info += `\n${theme.bold("Cost")}\n`;
 			info += `${theme.fg("dim", "Total:")} $${stats.cost.toFixed(3)}`;
 			if (usageBreakdown.length > 1) {
 				for (const entry of usageBreakdown) {
 					info += `\n  ${theme.fg("dim", `${entry.key}:`)} $${entry.cost.toFixed(3)} ${theme.fg("dim", `(${formatTokens(entry.tokens)} tokens)`)}`;
 				}
-			}
-			if (cacheWaste.missedTokens > 0) {
-				const missLabel = cacheWaste.missCount === 1 ? "1 miss" : `${cacheWaste.missCount} misses`;
-				const detail = `${formatLocaleInteger(cacheWaste.missedTokens)} tokens, ${missLabel}`;
-				info +=
-					cacheWaste.missedCost >= 0.0001
-						? `\n${theme.fg("dim", "Cache Re-billed:")} $${cacheWaste.missedCost.toFixed(3)} ${theme.fg("dim", `(${detail})`)}`
-						: `\n${theme.fg("dim", "Cache Re-billed:")} ${detail}`;
 			}
 		}
 
