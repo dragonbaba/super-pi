@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { lstat, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import { assertPermissionMode, type SessionPermissionMode } from "./permission-mode.ts";
+import { WORKSPACE_TOOL_NAMES, containsDirectory } from "./session-execution-profile.ts";
 import type { ExtensionContext, ExtensionRuntime, ToolCallEvent, ToolDefinition } from "./extensions/types.ts";
 import type { SessionEntry } from "./session-manager.ts";
 import { assessProtectedMutationPath, canonicalizeProspectivePath } from "./files/protected-path-policy.ts";
@@ -30,7 +31,7 @@ const MUTATIONS = new Set(["edit", "write", "delete", "move", "file_batch"]);
 const SEARCHES = new Set(["grep", "find", "ls"]);
 const RECURSIVE_SCOPES = new Set([...SEARCHES, "subagent", "structured_readonly_command"]);
 const SAFE = new Set(["codemode", "tool_search", "tasks"]);
-const SANDBOX_TOOLS = new Set([...SAFE, "read", "grep", "find", "ls", "powershell", ...MUTATIONS]);
+const SANDBOX_TOOLS = new Set<string>([...SAFE, ...WORKSPACE_TOOL_NAMES]);
 const BLOCKED = "[POLICY_BLOCKED] ";
 const assertSignal = AbortSignal.prototype.throwIfAborted;
 function inside(root: string, target: string): boolean {
@@ -98,7 +99,10 @@ export class SessionExecutionPolicy {
     private legacyHistory = false;
     private epoch = 0;
     private closed = false;
-    constructor(runtime: ExtensionRuntime, environment: ExecutionEnvironment, config: ExecutionPermissions = {}, mode?: SessionPermissionMode) {
+    private readonly directories: readonly string[];
+    constructor(runtime: ExtensionRuntime, environment: ExecutionEnvironment, config: ExecutionPermissions = {}, mode?: SessionPermissionMode,
+        directories: readonly string[] = []) {
+        this.directories = directories;
         this.mode = mode;
         if (mode !== undefined) { assertPermissionMode(mode); if ((mode === "host-write") !== (environment === "trusted-host")) throw new Error("Permission mode and backend disagree"); }
         if (environment !== "sandbox" && environment !== "trusted-host") throw new Error("Invalid executionEnvironment");
@@ -118,7 +122,9 @@ export class SessionExecutionPolicy {
     private readonly revoke = (): void => { this.epoch++; this.grant = undefined; this.issuance = undefined; };
     private readonly drain = async (): Promise<void> => {};
     dispose(): void { this.closed = true; this.revoke(); this.denied.clear(); this.scannedLeaf = undefined; this.legacyHistory = false; }
-    registerDefinition(definition: ToolDefinition): void { if (SANDBOX_TOOLS.has(definition.name)) this.definitions.add(definition); }
+    registerDefinition(definition: ToolDefinition): void {
+        if (SANDBOX_TOOLS.has(definition.name) && (definition.name !== "bash" || this.mode !== undefined)) this.definitions.add(definition);
+    }
     supports(definition: ToolDefinition): boolean { return this.environment !== "sandbox" || this.definitions.has(definition); }
     private guard(ctx: ExtensionContext): () => void {
         this.runtime.executionBoundary.assertCurrent();
@@ -136,12 +142,14 @@ export class SessionExecutionPolicy {
         for (const target of targets) {
             if (typeof target !== "string" || target.length > 4096 || target.includes("\0")) throw new Error(BLOCKED + "Invalid path");
             const absolute = resolve(ctx.cwd, target);
+            let workspace = ctx.cwd;
+            for (const directory of this.directories) if (containsDirectory(directory, absolute)) { workspace = directory; break; }
             if (mutation) {
-                const result = await assessProtectedMutationPath(ctx.cwd, absolute); check();
+                const result = await assessProtectedMutationPath(workspace, absolute); check();
                 if (!result.canonicalTarget || result.violations.some(violation => violation !== "workspace_escape" || this.mode !== "host-write")) throw new Error(BLOCKED + "Protected or out-of-workspace mutation: " + target);
                 output.push(result.canonicalTarget);
             } else {
-                const canonical = await realpath(absolute), root = await realpath(ctx.cwd); check();
+                const canonical = await realpath(absolute), root = await realpath(workspace); check();
                 if (this.mode !== "host-write" && !inside(root, canonical)) throw new Error(BLOCKED + "Read is outside the workspace: " + target);
                 output.push(canonical);
             }

@@ -164,9 +164,10 @@ export class BashExecutionComponent extends Container {
 		cancelled: boolean,
 		truncationResult?: TruncationResult,
 		fullOutputPath?: string,
+		failed = false,
 	): void {
 		this.exitCode = exitCode;
-		this.status = cancelled
+		this.status = failed ? "error" : cancelled
 			? "cancelled"
 			: exitCode !== 0 && exitCode !== undefined && exitCode !== null
 				? "error"
@@ -240,7 +241,7 @@ export class BashExecutionComponent extends Container {
 			if (this.status === "cancelled") {
 				statusParts.push(theme.fg("warning", "(cancelled)"));
 			} else if (this.status === "error") {
-				statusParts.push(theme.fg("error", `(exit ${this.exitCode})`));
+				statusParts.push(theme.fg("error", this.exitCode === undefined ? "(failed)" : `(exit ${this.exitCode})`));
 			}
 
 			// Add truncation warning (context truncation, not preview truncation)

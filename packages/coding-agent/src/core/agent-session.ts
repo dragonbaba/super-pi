@@ -77,10 +77,12 @@ import { ObjectPool } from "../utils/object-pool.ts";
 import { setOwnProperty } from "../utils/record.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { sleep } from "../utils/sleep.ts";
+import { stripAnsi } from "../utils/ansi.ts";
+import { sanitizeBinaryOutput } from "../utils/shell.ts";
 import { normalizeToolResultImages } from "../utils/tool-result-images.ts";
 import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.ts";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.ts";
-import { shellProcessResultFromError } from "./tools/shell-execution.ts";
+import { readShellExecution, shellProcessResultFromError } from "./tools/shell-execution.ts";
 import {
 	type CompactionResult,
 	calculateContextTokens,
@@ -1037,7 +1039,7 @@ export class AgentSession {
 			const workspaceCwd = config.cwd, workspaceParent = resolveEvidencePath(config.agentDir ?? getAgentDir(), "sandbox-workspaces");
 			this._createWorkspaceSandbox = () => new WorkspaceSandboxTools(workspaceCwd, workspaceParent, permissionMode,
 				() => this._resourceLoader.getExtensions().runtime,
-				{ settings: this.settingsManager.getSandboxToolchains(), powershellPath: this.settingsManager.getPowerShellPath(), network: this.settingsManager.getSandboxNetwork() });
+				{ settings: this.settingsManager.getSandboxToolchains(), powershellPath: this.settingsManager.getPowerShellPath(), network: this.settingsManager.getSandboxNetwork(), directories: this.settingsManager.getSessionDirectories() });
 			this._workspaceSandbox = this._createWorkspaceSandbox();
 		} else if (this.settingsManager.getExecutionEnvironment() === "sandbox") {
 			if (this._operationOptions) throw new Error("[SANDBOX_UNSUPPORTED] Experimental host operation journals require trusted-host execution");
@@ -5408,7 +5410,8 @@ export class AgentSession {
 		onChunk?: (chunk: string) => void,
 		options?: { excludeFromContext?: boolean; id?: string; operations?: BashOperations },
 	): Promise<BashResult> {
-		if (this._sandboxCommands || this._workspaceSandbox) throw new Error("[SANDBOX_UNSUPPORTED] Direct host Bash is unavailable; use CodeMode PowerShell");
+		if (this._workspaceSandbox) return this.executeWorkspaceBash(command, onChunk, options);
+		if (this._sandboxCommands) throw new Error("[SANDBOX_UNSUPPORTED] The legacy explicit-input SDK backend supports PowerShell only");
 		const policy = this._resourceLoader.getExtensions().runtime.nativePermissions;
 		if (policy) {
 			const input = { command, cwd: this._cwd };
@@ -5453,6 +5456,30 @@ export class AgentSession {
 			this._bashAbortControllers.delete(abortController);
 			boundary.endPreparation();
 		}
+	}
+
+	private async executeWorkspaceBash(command: string, onChunk?: (chunk: string) => void,
+		options?: { excludeFromContext?: boolean; id?: string; operations?: BashOperations }): Promise<BashResult> {
+		if (options?.operations) throw new Error("[SANDBOX_UNSUPPORTED] Custom host command operations cannot enter a workspace sandbox");
+		const runtime = this._resourceLoader.getExtensions().runtime, boundary = runtime.executionBoundary;
+		const definition = this._workspaceSandbox!.definition("bash")!, input = { command }, id = options?.id ?? "direct-user-command";
+		const ctx = this._extensionRunner.createContext(), controller = new AbortController();
+		boundary.assertCurrent(); boundary.beginPreparation(); this._bashAbortControllers.add(controller);
+		try {
+			const permission = await runtime.nativePermissions!.authorize({ type: "tool_call", toolName: "bash", toolCallId: id, input }, ctx, definition, true);
+			try {
+				permission.consume(input, id, "bash", controller.signal);
+				const toolResult = await definition.execute(id, input, controller.signal, undefined, ctx);
+				const facts = readShellExecution(toolResult.details); let output = "";
+				for (const block of toolResult.content) if (block.type === "text") output += block.text;
+				output = sanitizeBinaryOutput(stripAnsi(output));
+				if (toolResult.isError && (!facts || facts.observationError || facts.exitCode === 0)) throw new Error(output);
+				const result: BashResult = { output, exitCode: facts?.observationError ? undefined : facts?.exitCode ?? undefined, cancelled: controller.signal.aborted || facts?.termination === "timeout",
+					truncated: facts?.output.tailTruncated ?? false, processCleanup: "complete" };
+				onChunk?.(output); this._emit({ type: "bash_execution_update", id: options?.id, delta: output });
+				this.recordBashResult(command, result, options); return result;
+			} finally { permission.release(); }
+		} finally { this._bashAbortControllers.delete(controller); boundary.endPreparation(); }
 	}
 
 	/**

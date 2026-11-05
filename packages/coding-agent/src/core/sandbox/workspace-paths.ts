@@ -1,4 +1,5 @@
 import path from "node:path";
+import { containsDirectory } from "../session-execution-profile.ts";
 
 function relativeWorkspacePath(cwd: string, value: unknown): unknown {
     if (typeof value !== "string") return value;
@@ -23,15 +24,26 @@ function translatePaths(cwd: string, input: Record<string, unknown>): Record<str
 }
 
 /** Runs once per explicit tool invocation, preserving the original authorization arguments. */
-export function workspaceInput(cwd: string, operation: string, input: Record<string, unknown>): Record<string, unknown> {
-    if (operation === "powershell") return input; // Shell source is never rewritten as text.
+export function workspaceInput(cwd: string, operation: string, input: Record<string, unknown>, directories: readonly string[] = []): Record<string, unknown> {
+    if (Object.hasOwn(input, "workspaceIndex")) throw new Error("[SANDBOX_PATH] Workspace identity is assigned by the host, not a tool argument");
+    if (operation === "powershell" || operation === "bash") return input; // Shell source is never rewritten as text.
+    const primary = cwd; let index = 0;
+    if (typeof input.path === "string" && path.isAbsolute(input.path)) {
+        for (let i = 0; i < directories.length; i++) if (containsDirectory(directories[i], input.path)) { cwd = directories[i]; index = i + 1; break; }
+    }
+    if (operation !== "file_batch" && index) {
+        const selected = typeof input.destination === "string" && !path.isAbsolute(input.destination)
+            ? { ...input, destination: path.resolve(primary, input.destination) } : input;
+        return { ...translatePaths(cwd, selected), workspaceIndex: index };
+    }
     if (operation !== "file_batch") return translatePaths(cwd, input);
     if (!Array.isArray(input.operations) || input.operations.length < 1 || input.operations.length > 16)
         throw new Error("[SANDBOX_PATH] Invalid file batch");
     const operations = [];
     for (const item of input.operations) {
         if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("[SANDBOX_PATH] Invalid file operation");
-        operations.push(translatePaths(cwd, item));
+        const translated = workspaceInput(cwd, String(item.operation), item, directories);
+        operations.push(translated);
     }
     return { ...input, operations };
 }

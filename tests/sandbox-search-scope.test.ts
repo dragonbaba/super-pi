@@ -10,9 +10,112 @@ import ts from "typescript";
 const source = ts.createSourceFile("worker.mjs", fs.readFileSync("packages/coding-agent/src/core/sandbox/workspace-worker.mjs", "utf8"), ts.ScriptTarget.Latest, true);
 // Run the complete guest entry against owned temporary roots; no command or VM is launched.
 const guest = source.statements.filter(node => !ts.isImportDeclaration(node)
+    && !(ts.isFunctionDeclaration(node) && node.name?.text === "commandWorkspace")
     && !(ts.isVariableStatement(node) && ["SOURCE", "WORK", "EXCHANGE"].includes(node.declarationList.declarations[0]!.name.getText(source))))
     .map(node => node.getText(source)).join("\n");
-const execute = new Function("fs", "path", "createHash", "isUtf8", "spawnSync", "process", "SOURCE", "WORK", "EXCHANGE", guest);
+const execute = new Function("fs", "path", "createHash", "isUtf8", "spawnSync", "process", "SOURCE", "WORK", "EXCHANGE", "commandWorkspace", guest);
+
+test("both shell requests map every workspace drive independently of toolchain drives", () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "sp-workspace-drives-")));
+    const inputRoot = path.join(root, "input"), exchange = path.join(root, "exchange");
+    for (const directory of [inputRoot, inputRoot + "-1", inputRoot + "-2", inputRoot + "-3", exchange]) fs.mkdirSync(directory);
+    try {
+        for (const operation of ["powershell", "bash"]) {
+            fs.writeFileSync(path.join(exchange, "request.json"), JSON.stringify({ id: "e".repeat(32), mode: "read-only",
+                workspace: "C:\\primary", directories: ["Z:\\first", "Z:\\second", "D:\\third"], operation,
+                maxWriteBytes: 1024 * 1024, input: { command: "fixture" } }));
+            execute(fs, path, createHash, isUtf8, (_exe: string, args: string[]) => {
+                assert.equal(args[3], "C:\\primary"); assert.equal(args[4], operation); assert.equal(args[5], "Z;D");
+                fs.writeFileSync(path.join(exchange, "command-result.json"), JSON.stringify({ closed: true, timedOut: false, exitCode: 0, stdoutBase64: "", stderrBase64: "" }));
+                return { status: 0 };
+            }, { exitCode: 0 }, inputRoot, path.join(root, "work"), exchange, (_root: string, workspace: string) => workspace);
+            assert.equal(JSON.parse(fs.readFileSync(path.join(exchange, "response.json"), "utf8")).ok, true);
+        }
+    } finally { fs.rmSync(root, { recursive: true }); }
+});
+
+test("command artifacts use metadata comparison and preserve exact collection failures", () => {
+    for (const count of [48, 1025]) {
+        const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "sp-artifact-contract-")));
+        const inputRoot = path.join(root, "input"), work = path.join(root, "work"), exchange = path.join(root, "exchange");
+        for (const directory of [inputRoot, work, exchange]) fs.mkdirSync(directory);
+        fs.writeFileSync(path.join(work, "unchanged.bin"), Buffer.alloc(2 * 1024 * 1024, 83));
+        let unchangedOpens = 0;
+        const observed = Object.create(fs);
+        observed.openSync = (file: string, ...args: any[]) => {
+            if (file === path.join(work, "unchanged.bin")) unchangedOpens++;
+            return (fs.openSync as any)(file, ...args);
+        };
+        fs.writeFileSync(path.join(exchange, "request.json"), JSON.stringify({ id: "c".repeat(32), mode: "sandbox-write", workspace: root,
+            operation: "bash", maxWriteBytes: 1024 * 1024, input: { command: "fixture" } }));
+        try {
+            execute(observed, path, createHash, isUtf8, (_exe: string, args: string[]) => {
+                assert.equal(args[4], "bash");
+                for (let i = 0; i < count; i++) fs.writeFileSync(path.join(work, i + ".png"), Buffer.from([137, 80, 78, 71, 255, i % 256]));
+                fs.writeFileSync(path.join(exchange, "command-result.json"), JSON.stringify({ closed: true, timedOut: false, exitCode: 0,
+                    stdoutBase64: Buffer.from("generated=" + count).toString("base64"), stderrBase64: "" }));
+                return { status: 0 };
+            }, { exitCode: 0 }, inputRoot, work, exchange, (_root: string, workspace: string) => workspace);
+            const result = JSON.parse(fs.readFileSync(path.join(exchange, "response.json"), "utf8"));
+            assert.equal(unchangedOpens, 0, "unchanged asset bytes must not be hashed for each command");
+            assert.equal(result.execution.exitCode, 0); assert.equal(result.execution.stdout, "generated=" + count);
+            if (count === 48) {
+                assert.equal(result.ok, true); assert.equal(result.changes.length, count);
+                for (const change of result.changes) {
+                    assert.equal(change.content, null);
+                    const bytes = fs.readFileSync(path.join(exchange, change.artifact.name));
+                    assert.equal(bytes[0], 137); assert.equal(bytes[4], 255);
+                    assert.equal(createHash("sha256").update(bytes).digest("hex"), change.artifact.sha256);
+                }
+            } else {
+                assert.equal(result.ok, false); assert.equal(result.phase, "collection"); assert.match(result.error, /files=1025\/1024/);
+            }
+        } finally { assert.equal(fs.realpathSync(root), root); fs.rmSync(root, { recursive: true }); }
+    }
+});
+
+test("artifact enumeration and hashing introduce no nested callbacks or regular expressions", () => {
+    for (const name of ["commandChanges", "changes", "catalog", "selected", "fileHash"]) {
+        const method = source.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === name)!;
+        let callbacks = 0, regexes = 0;
+        function visit(node: ts.Node) { if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) callbacks++; if (node.kind === ts.SyntaxKind.RegularExpressionLiteral) regexes++; ts.forEachChild(node, visit); }
+        visit(method); assert.equal(callbacks, 0, name); assert.equal(regexes, 0, name);
+    }
+});
+
+test("guest command workspace aliases preserve project spelling and reject collisions or redirection", () => {
+    const helper=source.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "commandWorkspace")!;
+    const reserved=source.statements.find(node => ts.isVariableStatement(node) && node.declarationList.declarations[0]!.name.getText(source) === "RESERVED_WORKSPACE_ROOTS")!;
+    const create=new Function("fs","path","need","TRAILING_PATH_PATTERN",reserved.getText(source)+";return "+helper.getText(source));
+    for(const workspace of ["D:\\Projects\\中文 space", "C:\\Projects\\example", "C:\\project"]) {
+        const entries=new Map<string,{link?:string}>(),root="C:\\SuperPiWorkspace";
+        let links=0;
+        const io={existsSync(file:string){return entries.has(file);},mkdirSync(file:string){assert.ok(!entries.has(file));entries.set(file,{});},
+            lstatSync(file:string){const row=entries.get(file)!;return {isDirectory:()=>!row.link,isSymbolicLink:()=>!!row.link};},
+            realpathSync(file:string){return entries.get(file)?.link??file;},
+            symlinkSync(target:string,file:string,type:string){assert.equal(type,"junction");assert.ok(!entries.has(file));links++;entries.set(file,{link:target});}};
+        const prepare=create(io,path,(ok:boolean,reason:string)=>assert.ok(ok,reason),/[. ]$/);
+        assert.equal(prepare(root,workspace),workspace);assert.equal(prepare(root,workspace),workspace);assert.equal(links,1);
+        const alias=workspace[0]==="C"?workspace:"C:\\SuperPiToolchains\\D"+workspace.slice(2);
+        entries.set(alias,{link:"C:\\other"});assert.throws(()=>prepare(root,workspace),/alias changed/);
+        entries.set(alias,{});assert.throws(()=>prepare(root,workspace),/alias changed/);
+        entries.delete(alias);
+        if(path.win32.dirname(alias)!=="C:\\") {entries.set(path.win32.dirname(alias),{link:"C:\\other"});assert.throws(()=>prepare(root,workspace),/Redirected.*parent/);}
+        for(const invalid of ["D:\\", "D:relative", "\\\\server\\share\\project", "C:\\SuperPiTools\\project", "D:\\Projects\\trailing.", "D:\\Projects\\..\\other"])
+            assert.throws(()=>prepare(root,invalid));
+        assert.equal(links,1);
+    }
+});
+
+test("guest command path preparation adds no nested callbacks, regexes or asynchronous owners", () => {
+    const helper=source.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "commandWorkspace") as ts.FunctionDeclaration;
+    function inspect(node:ts.Node):void {
+        assert.equal(ts.isArrowFunction(node) || ts.isFunctionExpression(node) || ts.isRegularExpressionLiteral(node)
+            || ts.isNewExpression(node) || ts.isAwaitExpression(node),false,node.getText(source));
+        ts.forEachChild(node,inspect);
+    }
+    inspect(helper.body!);
+});
 
 test("workspace path validation has no per-component closures, regex literals or protected-name arrays", () => {
     const helper=source.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "local") as ts.FunctionDeclaration;
@@ -79,21 +182,25 @@ test("guest npm dependencies stay private without traversal or writeback candida
     const inputRoot=path.join(root,"input"),work=path.join(root,"work"),exchange=path.join(root,"exchange");
     for(const directory of [inputRoot,exchange]) fs.mkdirSync(directory);
     fs.writeFileSync(path.join(inputRoot,"fixture.txt"),"fixture\n");
-    const request = {id:"b".repeat(32),mode:"sandbox-write",operation:"powershell",maxWriteBytes:1024*1024,input:{command:"fixture only"}};
+    const request = {id:"b".repeat(32),mode:"sandbox-write",workspace:root,operation:"powershell",maxWriteBytes:1024*1024,input:{command:"fixture only"}};
     const processState={exitCode:0};let spawns=0;
     try {
         fs.writeFileSync(path.join(exchange,"request.json"),JSON.stringify(request));
-        execute(fs,path,createHash,isUtf8,() => {
+        execute(fs,path,createHash,isUtf8,(_exe:string,args:string[]) => {
+            assert.equal(args[3],root);
             spawns++;
             fs.mkdirSync(path.join(work,"node_modules"));
             fs.writeFileSync(path.join(work,"node_modules","native.bin"),Buffer.alloc(3*1024*1024));
             fs.writeFileSync(path.join(work,"package.json"),'{}\n');
             fs.writeFileSync(path.join(exchange,"command-result.json"),JSON.stringify({closed:true,timedOut:false,exitCode:0,stdoutBase64:"",stderrBase64:""}));
             return {status:0};
-        },processState,inputRoot,work,exchange);
+        },processState,inputRoot,work,exchange,(_root:string,workspace:string)=>workspace);
         const reply=JSON.parse(fs.readFileSync(path.join(exchange,"response.json"),"utf8"));
         assert.equal(reply.ok,true,JSON.stringify(reply));assert.equal(spawns,1);
         assert.deepEqual(reply.changes.map((item:any) => item.path),["package.json"]);
+        assert.equal(reply.changes[0].content, null);
+        assert.equal(fs.readFileSync(path.join(exchange, reply.changes[0].artifact.name), "utf8"), '{}\n');
+        fs.unlinkSync(path.join(exchange, reply.changes[0].artifact.name));
         let dependencyReads=0;
         const observed=Object.create(fs);
         observed.readdirSync=(directory:string,...args:any[]) => {

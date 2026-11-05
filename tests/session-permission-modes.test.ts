@@ -78,6 +78,29 @@ test("guest writes retain original path and host version checks before publicati
   } finally { await owner.close(); policy.dispose(); await runtime.executionBoundary.dispose(); await fs.rm(root, { recursive: true }); }
 });
 
+test("publication failure retains committed receipts when baseline bookkeeping fails", async t => {
+  t.mock.method(WorkspaceSandboxBackend.prototype, "assertWorkspaceCurrent", async () => {});
+  t.mock.method(WorkspaceSandboxBackend.prototype, "assertSourceVersion", () => {});
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "sp-publication-receipts-"))), runtime = createExtensionRuntime();
+  runtime.appendEntry = () => {};
+  runtime.nativePermissions = new SessionExecutionPolicy(runtime, "sandbox", {}, "sandbox-write");
+  const owner = new WorkspaceSandboxTools(root, root, "sandbox-write", () => runtime), base: any = {};
+  owner.install(base); for (const definition of Object.values(base)) runtime.nativePermissions.registerDefinition(definition as any);
+  const ctx: any = { cwd: root, hasUI: false, signal: runtime.executionBoundary.signal, sessionManager: { getSessionId: () => "receipt", getLeafEntry: () => undefined } };
+  t.mock.method(WorkspaceSandboxBackend.prototype, "invoke", async () => ({ id: "fixture", ok: true, text: "command completed",
+    execution: { exitCode: 0, timedOut: false, closed: true, stdout: "retained", stderr: "" },
+    changes: [{ path: "published.txt", before: null, content: Buffer.from("written").toString("base64") }] }));
+  t.mock.method(WorkspaceSandboxBackend.prototype, "recordPublication", async () => { throw new Error("baseline bookkeeping failed"); });
+  try {
+    const result = await base.bash.execute("publication", {}, ctx.signal, undefined, ctx);
+    assert.equal(result.isError, true); assert.equal(result.details.phase, "publication");
+    assert.equal(result.details.published, 1); assert.equal(result.details.partial, 0);
+    assert.equal(result.details.writeback.length, 1); assert.equal(result.details.writeback[0].stateChanged, true);
+    assert.equal(await fs.readFile(path.join(root, "published.txt"), "utf8"), "written");
+    assert.match(result.content[0].text, /baseline bookkeeping failed/); assert.match(result.content[0].text, /retained/);
+  } finally { await owner.close(); runtime.nativePermissions.dispose(); await runtime.executionBoundary.dispose(); await fs.rm(root, { recursive: true }); }
+});
+
 test("permissions menu exposes exactly three modes and never switches after cancellation or stale UI", async t => {
   const fixture = await alphaSession();
   let choices: string[] = [], selection = 1, confirms = 0; const switched: string[] = [];
@@ -230,7 +253,7 @@ test("a growing snapshot source cannot expand its admitted read buffer", async t
   });
   try {
     await assert.rejects(internal.capture(project, path.join(artifacts, "input")), /Source changed during capture/);
-    assert.equal(maximumBuffer, 1024 * 1024);
+    assert.equal(maximumBuffer, 256 * 1024);
     await backend.close(); assert.equal(backend.diagnostics.ownedArtifacts, 0);
   } finally { await fs.rm(root, { recursive: true }); }
 });

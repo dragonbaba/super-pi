@@ -21,9 +21,11 @@ test('live workspace preserves project paths and explicitly controls DNS/HTTPS/n
             try {
                 const listed=await backend.invoke('ls',{path:project.replaceAll('\\','/')});assert.equal(listed.text,'fixture.txt');
                 const read=await backend.invoke('read',{path:path.join(project,'fixture.txt')});assert.match(read.text,/workspace-fixture/);
-                const reply=await backend.invoke('powershell',{command:probe,timeout:30}),report=JSON.parse(reply.text);
+                const projectLiteral=project.replaceAll("'","''");
+                const command=probe+`; if((Get-Content -LiteralPath '${projectLiteral}\\fixture.txt' -Raw).Trim() -ne 'workspace-fixture'){throw 'Absolute project path mismatch'}; if((node -p 'process.cwd()') -ne '${projectLiteral}'){throw 'Native process cwd mismatch'}`;
+                const reply=await backend.invoke('powershell',{command,timeout:30}),report=JSON.parse(reply.text);
                 assert.match(report.version,/^7\./);assert.equal(report.fixture,'workspace-fixture');
-                assert.equal(report.cwd,mode==='read-only'?'C:\\SuperPiInput':'C:\\SuperPiWorkspace');
+                assert.equal(report.cwd,project);
                 assert.equal(report.dns,network==='enabled');assert.equal(report.https,network==='enabled');
                 if(network==='enabled') {
                     const install=await backend.invoke('powershell',{command:"npm install --ignore-scripts --no-audit --no-fund --save-exact is-number@7.0.0; if($LASTEXITCODE){throw 'npm install failed'}; node -e \"if(!require('is-number')(42))process.exit(1)\"; if($LASTEXITCODE){throw 'installed dependency failed'}",timeout:90});

@@ -1,5 +1,6 @@
 import { Value } from "typebox/value";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { createHash } from "node:crypto";
 import { lstat } from "node:fs/promises";
 import { withFileMutationQueue } from "../tools/file-mutation-queue.ts";
 import {
@@ -17,7 +18,8 @@ import {
   prepareNativeOperation, executeNativePlan, validateNativeInput, revalidateNativePlan, capturePathIdentity, sameIdentity,
   type NativePlan, type PathIdentity, type MutationStatus,
 } from "./native-file-core.ts";
-import { FileCommitError, commitFailure, type FileCommitReceipt } from "./file-commit.ts";
+import { FileCommitError, commitFailure, commitPreparedFile, type FileCommitReceipt, type FileCommitPlan } from "./file-commit.ts";
+import { selectCommitMetadata } from "./file-commit-metadata.ts";
 import { PreviewBudget, addedPreview, type ChangePreview } from "./change-preview.ts";
 import {
   FileRevisions, prepareSnapshotLineMutation, executePreparedSnapshotMutation, readSnapshotSource,
@@ -45,6 +47,7 @@ export interface PreparedFileItem {
   native?: NativePlan;
   snapshot?: PreparedSnapshotMutation;
   preview?: ChangePreview;
+  artifact?: { bytes: Uint8Array; sha256: string; commit?: FileCommitPlan };
 }
 export interface FileReceipt {
   mutationReceiptVersion: 2;
@@ -132,7 +135,15 @@ class FileExecution {
       if (!hooks.batch && !item.native) this.record("origin");
       if (hooks.batch || !item.snapshot) this.record("intent");
       if (hooks.batch) await this.service.revalidate(item, hooks);
-      if (item.native) receipt = { ...await executeNativePlan(item.native, this.assertCurrent, hooks.signal) };
+      if (item.artifact) {
+        if (createHash("sha256").update(item.artifact.bytes).digest("hex") !== item.artifact.sha256) throw new Error("[STALE_STATE] Artifact changed after preparation");
+        const commit = item.artifact.commit ? await commitPreparedFile(item.artifact.commit, item.artifact.bytes,
+          { assertPathAllowed: this.assertPath, assertCurrent: this.assertCurrent, signal: hooks.signal }) : undefined;
+        const creation = item.creation ? await executeFileCreation(item.creation, item.artifact.bytes, this.assertPath,
+          hooks.signal, undefined, hooks.sharedDirectories, this.assertCurrent) : undefined;
+        receipt = { mutationReceiptVersion: 2, operation: "write", target: item.target, ok: true, status: "succeeded", category: "success",
+          stateChanged: true, commit, creation, sha256: item.artifact.sha256, bytes: item.artifact.bytes.byteLength };
+      } else if (item.native) receipt = { ...await executeNativePlan(item.native, this.assertCurrent, hooks.signal) };
       else if (item.creation) {
         const creation = await executeFileCreation(item.creation, item.input.content!, this.assertPath,
           hooks.signal, undefined, hooks.sharedDirectories, this.assertCurrent);
@@ -199,6 +210,27 @@ export class FileService {
     this.prepared.delete(item);
     this.executing.delete(item);
     if (item.snapshot) item.snapshot.byteEdits.length = 0;
+    item.artifact = undefined;
+  }
+  /** Internal byte publication. The caller transfers one private bounded buffer; text tool schemas remain unchanged. */
+  async prepareArtifact(target: string, bytes: Uint8Array, expectedSha256: string, before: string | null, signal?: AbortSignal): Promise<PreparedFileItem> {
+    if (this.closed || bytes.byteLength > 64 * 1024 * 1024 || createHash("sha256").update(bytes).digest("hex") !== expectedSha256) throw new Error("[ARTIFACT_INVALID] Invalid publication bytes");
+    signal?.throwIfAborted();
+    const executionPath = resolve(this.cwd, target), assessment = await assessProtectedMutationPath(this.cwd, executionPath);
+    if (!assessment.canonicalTarget || assessment.violations.length) throw new Error("[ARTIFACT_INVALID] Protected publication path");
+    const item: PreparedFileItem = { operation: "write", input: { path: target }, target: assessment.canonicalTarget, paths: [assessment.canonicalTarget],
+      executionPath, generation: this.revisions.generation, requestHash: expectedSha256,
+      approval: { canonicalTarget: assessment.canonicalTarget, protectedRoots: [] }, artifact: { bytes, sha256: expectedSha256 } };
+    try {
+      if (before === null) item.creation = await prepareFileCreation(executionPath, true);
+      else {
+        item.identity = await capturePathIdentity(executionPath);
+        item.artifact!.commit = { target: item.identity, parent: await capturePathIdentity(dirname(executionPath)), previousSha256: before,
+          metadata: await selectCommitMetadata(item.identity) };
+      }
+      if (directoryKey(item.creation?.canonicalTarget ?? item.identity!.canonical) !== directoryKey(item.target)) throw new Error("[STALE_STATE] Artifact target changed");
+      signal?.throwIfAborted(); this.prepared.add(item); this.assertPrepared(item); return item;
+    } catch (error) { this.release(item); throw error; }
   }
   async prepare(operation: FileOperation, raw: unknown, signal?: AbortSignal, mode?: "create" | "overwrite", previewBudget = new PreviewBudget()): Promise<PreparedFileItem> {
     if (this.closed) throw new Error("File service is closed.");
@@ -303,10 +335,10 @@ export class FileService {
         catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
       }
     } else {
-      const plan = item.snapshot!;
+      const plan = item.artifact?.commit ?? item.snapshot!;
       if (!sameIdentity(plan.target, await capturePathIdentity(plan.target.path))
         || !sameIdentity(plan.parent, await capturePathIdentity(plan.parent.path), false)) throw new Error("[STALE_STATE] Prepared file or parent changed.");
-      await readSnapshotSource(plan.receipt, this.revisions);
+      if (item.snapshot) await readSnapshotSource(item.snapshot.receipt, this.revisions);
     }
     this.assertPrepared(item); hooks.signal?.throwIfAborted(); hooks.assertCurrent();
   }

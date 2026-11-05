@@ -14,6 +14,7 @@ import type { CreateAgentSessionResult } from "./sdk.ts";
 import { assertSessionCwdExists } from "./session-cwd.ts";
 import { SessionManager } from "./session-manager.ts";
 import { createSessionLease, type SessionLease } from "./session-lease.ts";
+import { saveSessionExecutionProfile, sessionDirectories } from "./session-execution-profile.ts";
 
 /**
  * Result returned by runtime creation.
@@ -35,6 +36,7 @@ export interface CreateAgentSessionRuntimeResult extends CreateAgentSessionResul
  */
 export type CreateAgentSessionRuntimeFactory = (options: {
 	permissionMode?: import("./permission-mode.ts").SessionPermissionMode;
+	directories?: readonly string[];
 	cwd: string;
 	agentDir: string;
 	sessionManager: SessionManager;
@@ -180,6 +182,15 @@ export class AgentSessionRuntime {
 		generation: number,
 	): Promise<boolean> {
 		const result = await this.createRuntime(options);
+		if (options.directories !== undefined) {
+			const actual = result.session.settingsManager.getSessionDirectories();
+			let matches = actual.length === options.directories.length;
+			for (let i = 0; matches && i < actual.length; i++) if (actual[i] !== options.directories[i]) matches = false;
+			if (!matches) {
+				result.session.dispose(); await result.session.waitForSessionLeaseRelease?.();
+				throw new Error("Runtime factory did not apply the selected working directories; execution remains stopped");
+			}
+		}
 		if (options.permissionMode !== undefined && result.session.settingsManager.getPermissionMode() !== options.permissionMode) {
 			result.session.dispose(); await result.session.waitForSessionLeaseRelease?.();
 			throw new Error("Runtime factory did not apply the selected permission mode; execution remains stopped");
@@ -374,10 +385,30 @@ export class AgentSessionRuntime {
 		if (mode !== "read-only" && mode !== "sandbox-write" && mode !== "host-write") throw new Error("Invalid session permission mode");
 		const generation = this.beginReplacement();
 		const manager = this.session.sessionManager;
-		if (!(await this.replaceCurrent("reload", { cwd: this.cwd, agentDir: this.services.agentDir, sessionManager: manager, permissionMode: mode,
+		const directories = this.session.settingsManager.getSessionDirectories();
+		if (!(await this.replaceCurrent("reload", { cwd: this.cwd, agentDir: this.services.agentDir, sessionManager: manager, permissionMode: mode, directories,
 			sessionStartEvent: { type: "session_start", reason: "reload" } }, generation))) return { cancelled: true };
 		if (!(await this.finishSessionReplacement(generation))) return { cancelled: true };
-		manager.appendCustomEntry("session-permission-mode-v2", { mode, source: "user-command" });
+		try {
+			manager.appendCustomEntry("session-permission-mode-v2", { mode, source: "user-command" });
+			saveSessionExecutionProfile(this.services.agentDir, manager, { mode, directories });
+		} catch (error) { await this.teardownCurrent("reload"); throw error; }
+		return { cancelled: false };
+	}
+
+	async setWorkingDirectories(values: readonly string[]): Promise<{ cancelled: boolean }> {
+		const current = this.session.settingsManager.getSessionDirectories(); let adding = false;
+		for (const value of values) if (!current.includes(value)) { adding = true; break; }
+		const directories = sessionDirectories(this.cwd, values, adding), mode = this.session.settingsManager.getPermissionMode();
+		if (!mode) throw new Error("Working directories require the native session permission modes");
+		const generation = this.beginReplacement(), manager = this.session.sessionManager;
+		if (!(await this.replaceCurrent("reload", { cwd: this.cwd, agentDir: this.services.agentDir, sessionManager: manager,
+			permissionMode: mode, directories, sessionStartEvent: { type: "session_start", reason: "reload" } }, generation))) return { cancelled: true };
+		if (!(await this.finishSessionReplacement(generation))) return { cancelled: true };
+		try {
+			saveSessionExecutionProfile(this.services.agentDir, manager, { mode, directories });
+			manager.appendCustomEntry("session-working-directories-v1", { directories, source: "user-command" });
+		} catch (error) { await this.teardownCurrent("reload"); throw error; }
 		return { cancelled: false };
 	}
 

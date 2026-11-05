@@ -39,6 +39,7 @@ import type { ResourceLoader } from "./resource-loader.ts";
 import { DefaultResourceLoader } from "./resource-loader.ts";
 import { getDefaultSessionDir, SessionManager } from "./session-manager.ts";
 import { SettingsManager } from "./settings-manager.ts";
+import { WORKSPACE_TOOL_NAMES } from "./session-execution-profile.ts";
 import { time } from "./timings.ts";
 import { ToolSelection, type ToolSelectionOptions } from "./tool-selection.ts";
 import {
@@ -346,7 +347,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 
 	const sandboxSelected = settingsManager.getExecutionEnvironment() === "sandbox";
 	const defaultActiveToolNames: string[] = sandboxSelected
-		? ["read", "powershell", "edit", "write", "delete", "move", "file_batch", "tasks", ...(settingsManager.getPermissionMode() ? ["ls", "find", "grep"] : [])]
+		? settingsManager.getPermissionMode() ? [...WORKSPACE_TOOL_NAMES, "tasks"] : ["read", "powershell", "edit", "write", "delete", "move", "file_batch", "tasks"]
 		: [...getDefaultToolNames(), "tasks", "delete", "move", "file_batch"];
 	const configuredDefaultToolNames = settingsManager.getDefaultTools();
 	const allowedToolNames = options.tools ?? (options.noTools === "all" && !toolSelection ? [] : undefined);

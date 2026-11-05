@@ -6,15 +6,25 @@ import { createHash, randomUUID } from "node:crypto";
 import { MAX_WRITE_BYTES } from "../files/write-limits.ts";
 import { parseSandboxNetwork, type SandboxNetwork } from "./network-policy.ts";
 import { workspaceInput } from "./workspace-paths.ts";
+import { HOST_PATH_QUERY, refreshedHostEnvironment } from "./host-path.ts";
 
 export interface WorkspaceSandboxOptions {
   settings?: { include?: string[]; exclude?: string[] };
   powershellPath?: string;
   network?: SandboxNetwork;
+  directories?: readonly string[];
 }
 
-export interface WorkspaceChange { path: string; before: string | null; content: string | null; }
-export interface WorkspaceReply { id: string; ok: boolean; text?: string; snapshot?: string; changes?: WorkspaceChange[]; error?: string; }
+export interface WorkspaceArtifact { name: string; bytes: number; sha256: string; }
+export interface WorkspaceChange { path: string; before: string | null; content: string | null; workspaceIndex?: number; artifact?: WorkspaceArtifact; }
+export interface WorkspaceReply { id: string; ok: boolean; text?: string; snapshot?: string; changes?: WorkspaceChange[]; error?: string;
+  phase?: string; execution?: { exitCode: number; timedOut: boolean; closed: boolean; stdout: string; stderr: string; truncated?: boolean }; }
+export class WorkspaceOperationError extends Error {
+  readonly reply: WorkspaceReply;
+  constructor(reply: WorkspaceReply) { super("[SANDBOX_" + (reply.phase ?? "OPERATION").toUpperCase() + "] " + reply.error
+    + (reply.execution ? "\nCommand exit=" + reply.execution.exitCode + "; timedOut=" + reply.execution.timedOut + "\n" + reply.execution.stdout + reply.execution.stderr : "")); this.reply = reply; }
+}
+const ARTIFACT_NAME = /^[a-f0-9]{32}-[0-9]{1,4}\.bin$/;
 const EXCLUDED = new Set([".git", ".sp", ".artifacts", ".codegraph", "node_modules"]);
 const hash = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
 function need(value: unknown, reason: string): asserts value { if (!value) throw new Error("[SANDBOX_WORKSPACE] " + reason); }
@@ -31,11 +41,14 @@ export class WorkspaceSandboxBackend {
   private closeOperation?: Promise<void>;
   private closed = false;
   private readonly owned = new Map<string, string>();
-  private readonly sources = new Map<string, { dev: bigint; ino: bigint; size: bigint; mtimeNs: bigint; ctimeNs: bigint }>();
+  private readonly sources = new Map<string, { dev: bigint; ino: bigint; size: bigint; mtimeNs: bigint; ctimeNs: bigint; sha256: string }>();
   private sourceRoot?: string;
   private sourceIdentity?: string;
+  private readonly directoryIdentities = new Map<string, string>();
   private starts = 0;
   private calls = 0;
+  private capturedEntries = 0;
+  private capturedBytes = 0;
   private readonly cwd: string;
   private readonly parent: string;
   private readonly mode: "read-only" | "sandbox-write";
@@ -46,6 +59,11 @@ export class WorkspaceSandboxBackend {
     this.network = parseSandboxNetwork(toolchainOptions.network);
   }
   get diagnostics() { return { starts: this.starts, calls: this.calls, pending: !!this.pending, vm: !!this.vm, root: this.root, closed: this.closed, sourceFiles: this.sources.size, ownedArtifacts: this.owned.size }; }
+  workspace(index = 0): string {
+    need(Number.isSafeInteger(index) && index >= 0 && index <= (this.toolchainOptions.directories?.length ?? 0), "Unknown workspace identity");
+    return index === 0 ? this.cwd : this.toolchainOptions.directories![index - 1];
+  }
+  private sourceKey(name: string, index = 0): string { return path.resolve(index === 0 ? this.sourceRoot ?? this.cwd : this.workspace(index), name).toLowerCase(); }
   invoke(operation: string, input: Record<string, unknown>, signal?: AbortSignal): Promise<WorkspaceReply> {
     if (this.closed || this.pending || this.discardOperation) return Promise.reject(new Error("[SANDBOX_BUSY] Workspace is closed or has an active operation"));
     return this.pending = this.run(operation, input, signal).finally(this.releasePending);
@@ -56,38 +74,47 @@ export class WorkspaceSandboxBackend {
     this.owned.set(file, stat.dev + ":" + stat.ino);
   }
   private async capture(source: string, destination: string, signal?: AbortSignal): Promise<void> {
-    const stack = [[source, destination]]; let count = 0, bytes = 0;
+    const stack = [[source, destination]]; let scratch: Buffer | undefined;
     while (stack.length) {
       signal?.throwIfAborted(); const [from, to] = stack.pop()!;
       await fs.mkdir(to); await this.remember(to);
       for (const entry of await fs.readdir(from, { withFileTypes: true })) {
         if (EXCLUDED.has(entry.name.toLowerCase())) continue;
-        need(++count <= 20000 && !entry.isSymbolicLink(), "Workspace entry limit or redirected path: " + entry.name);
+        need(++this.capturedEntries <= 20000 && !entry.isSymbolicLink(), "Workspace entry limit or redirected path: " + entry.name);
         const sourcePath = path.join(from, entry.name), target = path.join(to, entry.name);
         if (this.root && (sourcePath === this.root || this.root.startsWith(sourcePath + path.sep))) continue;
         const stat = await fs.lstat(sourcePath, { bigint: true });
         need(!stat.isSymbolicLink() && await fs.realpath(sourcePath) === sourcePath, "Redirected workspace source");
         if (stat.isDirectory()) stack.push([sourcePath, target]);
         else {
-          need(stat.isFile() && stat.size <= 64n * 1024n * 1024n, "Workspace file exceeds 64 MiB: " + entry.name);
-          bytes += Number(stat.size); need(bytes <= 256 * 1024 * 1024, "Workspace snapshot exceeds 256 MiB");
+          need(stat.isFile() && stat.size <= 8n * 1024n * 1024n * 1024n, "Workspace source exceeds 8 GiB: " + entry.name);
+          this.capturedBytes += Number(stat.size); need(this.capturedBytes <= 16 * 1024 * 1024 * 1024, "Workspace snapshot bytes=" + this.capturedBytes + "; limit=17179869184");
           const sourceFile = await fs.open(sourcePath, "r");
           try {
             const before = await sourceFile.stat({ bigint: true });
             need(before.dev === stat.dev && before.ino === stat.ino && before.size === stat.size
               && before.mtimeNs === stat.mtimeNs && before.ctimeNs === stat.ctimeNs, "Source changed before capture");
             // A growing file must not make readFile allocate beyond the admitted size.
-            const data = Buffer.allocUnsafe(Number(before.size)); let offset = 0;
-            while (offset < data.length) {
-              signal?.throwIfAborted();
-              const read = await sourceFile.read(data, offset, data.length - offset, offset);
-              need(read.bytesRead > 0, "Source shortened during capture"); offset += read.bytesRead;
-            }
+            const data = scratch ??= Buffer.allocUnsafe(256 * 1024), digest = createHash("sha256"); let offset = 0;
+            const output = await fs.open(target, "wx");
+            try {
+              await this.remember(target);
+              while (offset < Number(before.size)) {
+                signal?.throwIfAborted();
+                const read = await sourceFile.read(data, 0, Math.min(data.length, Number(before.size) - offset), offset);
+                need(read.bytesRead > 0, "Source shortened during capture");
+                digest.update(read.bytesRead === data.length ? data : data.subarray(0, read.bytesRead));
+                let written = 0;
+                while (written < read.bytesRead) {
+                  const result = await output.write(data, written, read.bytesRead - written, offset + written);
+                  need(result.bytesWritten > 0, "Snapshot write stalled"); written += result.bytesWritten;
+                }
+                offset += read.bytesRead;
+              }
+            } finally { await output.close(); }
             const after = await sourceFile.stat({ bigint: true });
             need(before.mtimeNs === after.mtimeNs && before.ctimeNs === after.ctimeNs && before.size === after.size, "Source changed during capture");
-            const output = await fs.open(target, "wx");
-            try { await this.remember(target); await output.writeFile(data); } finally { await output.close(); }
-            this.sources.set(path.relative(this.sourceRoot!, sourcePath).replaceAll("\\", "/").toLowerCase(), { dev: before.dev, ino: before.ino, size: before.size, mtimeNs: before.mtimeNs, ctimeNs: before.ctimeNs });
+            this.sources.set(sourcePath.toLowerCase(), { dev: before.dev, ino: before.ino, size: before.size, mtimeNs: before.mtimeNs, ctimeNs: before.ctimeNs, sha256: digest.digest("hex") });
           } finally { await sourceFile.close(); }
         }
       }
@@ -100,7 +127,15 @@ export class WorkspaceSandboxBackend {
     const runtimeUrl = existsSync(fileURLToPath(packaged)) ? packaged : source;
     const runtime = await import(runtimeUrl.href);
     const { SandboxToolchains } = await import(new URL("windows-sandbox-toolchains.mjs", runtimeUrl).href);
-    const toolchains = new SandboxToolchains({ cwd: this.cwd, ...this.toolchainOptions });
+    const settings = { ...this.toolchainOptions.settings, exclude: [...(this.toolchainOptions.settings?.exclude ?? []), ...(this.toolchainOptions.directories ?? [])] };
+    let toolchains = new SandboxToolchains({ cwd: this.cwd, ...this.toolchainOptions, settings });
+    const discovery = this.compiler = new runtime.CapturedProcess(toolchains.hostShell,
+      ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(HOST_PATH_QUERY, "utf16le").toString("base64")], this.cwd);
+    need(await discovery.wait(15000, signal) === "settled" && runtime.successful(discovery.result), "Host PATH refresh failed; PowerShell 7 query did not settle successfully");
+    this.compiler = undefined;
+    const persistentPath = JSON.parse(Buffer.from(discovery.result.stdout.trim(), "base64").toString("utf8"));
+    const environment = refreshedHostEnvironment(process.env, persistentPath);
+    toolchains = new SandboxToolchains({ cwd: this.cwd, ...this.toolchainOptions, settings, environment });
     await toolchains.validateTrees(signal);
     const cli = new runtime.FixedCli();
     await fs.mkdir(this.parent, { recursive: true });
@@ -113,6 +148,14 @@ export class WorkspaceSandboxBackend {
     this.sourceRoot = await fs.realpath(this.cwd);
     const sourceStat = await fs.lstat(this.sourceRoot, { bigint: true }); this.sourceIdentity = sourceStat.dev + ":" + sourceStat.ino;
     await this.capture(this.sourceRoot, input, signal);
+    const additionalMappings: [string, string, boolean][] = [];
+    for (let i = 0; i < (this.toolchainOptions.directories?.length ?? 0); i++) {
+      const directory = this.workspace(i + 1), canonical = await fs.realpath(directory), identity = await fs.lstat(canonical, { bigint: true });
+      need(canonical === directory && identity.isDirectory(), "Additional workspace identity changed");
+      this.directoryIdentities.set(directory, identity.dev + ":" + identity.ino);
+      const captured = path.join(this.root, "input-" + (i + 1)); await this.capture(directory, captured, signal);
+      additionalMappings.push([captured, "C:\\SuperPiInput-" + (i + 1), true]);
+    }
     const worker = new URL("./workspace-worker.mjs", import.meta.url);
     for (const [from, name] of [[process.execPath, "node.exe"], [fileURLToPath(worker), "worker.mjs"], [fileURLToPath(new URL("windows-sandbox-task-worker.cs", runtimeUrl)), "command.cs"]]) {
       const bytes = await fs.readFile(from); const target = path.join(tools, name); await fs.writeFile(target, bytes, { flag: "wx" }); await this.remember(target);
@@ -130,6 +173,7 @@ export class WorkspaceSandboxBackend {
     const mappings = [[input, "C:\\SuperPiInput", true], [tools, "C:\\SuperPiTools", true], [exchange, "C:\\SuperPiExchange", false]] as const;
     let config = "<Configuration><Networking>" + (this.network === "enabled" ? "Enable" : "Disable") + "</Networking><ClipboardRedirection>Disable</ClipboardRedirection><AudioInput>Disable</AudioInput><VideoInput>Disable</VideoInput><PrinterRedirection>Disable</PrinterRedirection><vGPU>Disable</vGPU><MemoryInMB>2048</MemoryInMB><MappedFolders>";
     for (const [host, guest, readOnly] of mappings) config += "<MappedFolder><HostFolder>" + xml(host) + "</HostFolder><SandboxFolder>" + guest + "</SandboxFolder><ReadOnly>" + readOnly + "</ReadOnly></MappedFolder>";
+    for (const [host, guest] of additionalMappings) config += "<MappedFolder><HostFolder>" + xml(host) + "</HostFolder><SandboxFolder>" + guest + "</SandboxFolder><ReadOnly>true</ReadOnly></MappedFolder>";
     config += "</MappedFolders></Configuration>";
     config = toolchains.appendConfig(config);
     const journal = path.join(this.root, "owner.json"); await fs.writeFile(journal, "{}"); await this.remember(journal);
@@ -142,11 +186,11 @@ export class WorkspaceSandboxBackend {
   }
   private async run(operation: string, input: Record<string, unknown>, signal?: AbortSignal): Promise<WorkspaceReply> {
     try {
-      input = workspaceInput(this.cwd, operation, input);
+      input = workspaceInput(this.cwd, operation, input, this.toolchainOptions.directories);
       signal?.throwIfAborted(); if (!this.vm) await this.start(signal); signal?.throwIfAborted();
       await this.assertWorkspaceCurrent();
       const id = randomUUID().replaceAll("-", ""), exchange = path.join(this.root!, "exchange");
-      const request = JSON.stringify({ id, mode: this.mode, operation, input, maxWriteBytes: MAX_WRITE_BYTES }); need(Buffer.byteLength(request) <= 4 * 1024 * 1024, "Request too large");
+      const request = JSON.stringify({ id, mode: this.mode, workspace: this.cwd, directories: this.toolchainOptions.directories ?? [], operation, input, maxWriteBytes: MAX_WRITE_BYTES }); need(Buffer.byteLength(request) <= 4 * 1024 * 1024, "Request too large");
       await fs.writeFile(path.join(exchange, "request.json"), request); this.calls++;
       await this.vm.invoke("exec", ["exec", "--id", this.vm.id, "-c", '"C:\\SuperPiTools\\node.exe" "C:\\SuperPiTools\\worker.mjs"', "-d", "C:\\SuperPiTools", "-r", "System", "--raw"], 150000, signal);
       // Only settled command records are compacted. Physical owners stay in the lifecycle slots.
@@ -157,7 +201,16 @@ export class WorkspaceSandboxBackend {
       const reply: WorkspaceReply = JSON.parse(await fs.readFile(resultFile, "utf8"));
       need(reply && reply.id === id && typeof reply.ok === "boolean", "Response identity mismatch");
       need(reply.text === undefined || typeof reply.text === "string", "Invalid guest output text");
-      if (!reply.ok) throw new Error(reply.error || "Guest operation failed");
+      if (reply.execution) need(Number.isSafeInteger(reply.execution.exitCode) && typeof reply.execution.timedOut === "boolean"
+        && typeof reply.execution.closed === "boolean" && typeof reply.execution.stdout === "string" && reply.execution.stdout.length <= 32768
+        && typeof reply.execution.stderr === "string" && reply.execution.stderr.length <= 32768, "Invalid command execution facts");
+      if (!reply.ok) throw new WorkspaceOperationError(reply);
+      if (reply.execution && Array.isArray(reply.changes)) for (const change of reply.changes) {
+        need(typeof change.path === "string", "Invalid candidate path");
+        const baseline = this.sources.get(this.sourceKey(change.path, change.workspaceIndex));
+        need(change.artifact || baseline, "Deletion has no captured baseline");
+        change.before = baseline?.sha256 ?? null;
+      }
       return reply;
     } catch (error) {
       try { await this.discardSnapshot(); }
@@ -182,17 +235,49 @@ export class WorkspaceSandboxBackend {
     need(this.sourceRoot, "Workspace source not captured");
     const canonical = await fs.realpath(this.cwd), stat = await fs.lstat(canonical, { bigint: true });
     need(canonical === this.sourceRoot && stat.dev + ":" + stat.ino === this.sourceIdentity, "Original workspace directory changed");
+    for (const [directory, identity] of this.directoryIdentities) {
+      const current = await fs.lstat(directory, { bigint: true });
+      need(current.dev + ":" + current.ino === identity && await fs.realpath(directory) === directory, "Additional workspace directory changed");
+    }
   }
-  assertSourceVersion(name: string, current: { dev: bigint; ino: bigint; size: bigint; mtimeNs: bigint; ctimeNs: bigint }): void {
+  assertSourceVersion(name: string, current: { dev: bigint; ino: bigint; size: bigint; mtimeNs: bigint; ctimeNs: bigint }, workspaceIndex = 0): void {
     need(this.sourceRoot, "Workspace source not captured");
-    const before = this.sources.get(name.replaceAll("\\", "/").toLowerCase());
+    const before = this.sources.get(this.sourceKey(name, workspaceIndex));
     need(before && before.dev === current.dev && before.ino === current.ino && before.size === current.size && before.mtimeNs === current.mtimeNs && before.ctimeNs === current.ctimeNs, "Original source identity changed");
   }
-  async recordPublication(name: string, deleted: boolean): Promise<void> {
+  async recordPublication(name: string, deleted: boolean, workspaceIndex = 0, publishedHash?: string): Promise<void> {
     need(this.sourceRoot, "Workspace source not captured");
-    const key = name.replaceAll("\\", "/").toLowerCase();
+    const target = path.resolve(this.workspace(workspaceIndex), name), key = this.sourceKey(name, workspaceIndex);
     if (deleted) this.sources.delete(key);
-    else { const stat = await fs.lstat(path.resolve(this.sourceRoot, name), { bigint: true }); this.sources.set(key, { dev: stat.dev, ino: stat.ino, size: stat.size, mtimeNs: stat.mtimeNs, ctimeNs: stat.ctimeNs }); }
+    else { const stat = await fs.lstat(target, { bigint: true }); need(publishedHash, "Published content hash required");
+      this.sources.set(key, { dev: stat.dev, ino: stat.ino, size: stat.size, mtimeNs: stat.mtimeNs, ctimeNs: stat.ctimeNs, sha256: publishedHash }); }
+  }
+  async candidate(artifact: WorkspaceArtifact, retain: boolean): Promise<Buffer | undefined> {
+    need(this.root && ARTIFACT_NAME.test(artifact.name) && Number.isSafeInteger(artifact.bytes) && artifact.bytes >= 0 && artifact.bytes <= 64 * 1024 * 1024, "Invalid artifact envelope");
+    const file = path.join(this.root, "exchange", artifact.name), stat = await fs.lstat(file, { bigint: true });
+    need(stat.isFile() && !stat.isSymbolicLink() && stat.nlink === 1n && stat.size === BigInt(artifact.bytes) && await fs.realpath(file) === file, "Redirected or resized artifact");
+    const handle = await fs.open(file, "r"), buffer = Buffer.allocUnsafe(retain ? artifact.bytes : Math.min(256 * 1024, artifact.bytes));
+    try {
+      const before = await handle.stat({ bigint: true }); need(before.dev === stat.dev && before.ino === stat.ino && before.size === stat.size, "Artifact identity changed");
+      const digest = createHash("sha256"); let position = 0;
+      while (position < artifact.bytes) {
+        const start = retain ? position : 0, count = Math.min(buffer.length - start, artifact.bytes - position);
+        const read = await handle.read(buffer, start, count, position); need(read.bytesRead > 0, "Artifact shortened");
+        if (!retain) digest.update(read.bytesRead === buffer.length ? buffer : buffer.subarray(0, read.bytesRead)); position += read.bytesRead;
+      }
+      if (retain) digest.update(buffer);
+      const after = await handle.stat({ bigint: true });
+      need(before.size === after.size && before.mtimeNs === after.mtimeNs && before.ctimeNs === after.ctimeNs && digest.digest("hex") === artifact.sha256, "Artifact changed or hash mismatch");
+      return retain ? buffer : undefined;
+    } finally { await handle.close(); }
+  }
+  async releaseCandidates(changes: readonly WorkspaceChange[]): Promise<void> {
+    for (const change of changes) if (change.artifact) {
+      need(this.root && ARTIFACT_NAME.test(change.artifact.name), "Invalid artifact release");
+      const file = path.join(this.root, "exchange", change.artifact.name), stat = await fs.lstat(file);
+      need(stat.isFile() && !stat.isSymbolicLink() && await fs.realpath(file) === file, "Redirected artifact release");
+      await fs.unlink(file);
+    }
   }
   close(): Promise<void> {
     this.closed = true;
@@ -216,7 +301,7 @@ export class WorkspaceSandboxBackend {
     const exchange = path.join(this.root, "exchange");
     const expected = new Set(["request.json", "response.json", "command.txt", "command-result.json"]);
     if (existsSync(exchange)) for (const name of await fs.readdir(exchange)) {
-      need(expected.has(name), "Unknown guest artifact retained: " + name);
+      need(expected.has(name) || ARTIFACT_NAME.test(name), "Unknown guest artifact retained: " + name);
       const file = path.join(exchange, name), current = await fs.lstat(file); need(current.isFile() && !current.isSymbolicLink(), "Redirected guest artifact retained"); await fs.unlink(file);
     }
     const paths = Array.from(this.owned.keys()).sort((a, b) => b.length - a.length);
@@ -225,6 +310,7 @@ export class WorkspaceSandboxBackend {
       if (current.isDirectory()) await fs.rmdir(file); else await fs.unlink(file);
       this.owned.delete(file);
     }
-    this.owned.clear(); this.sources.clear(); this.sourceRoot = undefined; this.sourceIdentity = undefined; this.root = undefined; this.identity = undefined;
+    this.owned.clear(); this.sources.clear(); this.directoryIdentities.clear(); this.capturedEntries = 0; this.capturedBytes = 0;
+    this.sourceRoot = undefined; this.sourceIdentity = undefined; this.root = undefined; this.identity = undefined;
   }
 }

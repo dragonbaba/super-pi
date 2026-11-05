@@ -119,6 +119,11 @@ export class SandboxToolchains {
         this.#finishEnvironment();
     }
     #finishEnvironment() {
+        this.#environment.delete("SUPERPI_BASH");
+        for (const mount of this.#mounts) {
+            const bash = win.join(mount.host, "bin", "bash.exe");
+            if (this.#file(bash)) { this.#environment.set("SUPERPI_BASH", this.#translate(bash)); break; }
+        }
         // First surviving PATH installation wins; explicit host root variables keep priority.
         for (const entry of this.#paths) for (const [name, host, executableDirectory] of this.#inferredRoots) {
             if (this.#environment.has(name)) continue;

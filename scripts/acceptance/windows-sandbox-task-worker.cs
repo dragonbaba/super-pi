@@ -56,7 +56,7 @@ internal static class TaskWorker {
             string name = lines[i].Substring(0, at), value = lines[i].Substring(at + 1);
             if (name == "SUPERPI_TOOLCHAIN_DRIVES") { ToolchainDrives(value); continue; }
             Need(name == "PATH" || name == "PSModulePath" || name == "JAVA_HOME" || name == "JDK_HOME" || name == "GOROOT" || name == "DOTNET_ROOT"
-                || name == "RUSTUP_HOME" || name == "ANDROID_HOME" || name == "ANDROID_SDK_ROOT" || name == "GRADLE_HOME" || name == "CUDA_PATH", "Unexpected guest variable");
+                || name == "RUSTUP_HOME" || name == "ANDROID_HOME" || name == "ANDROID_SDK_ROOT" || name == "GRADLE_HOME" || name == "CUDA_PATH" || name == "SUPERPI_BASH", "Unexpected guest variable");
             Need(value.IndexOf('\r') < 0 && value.IndexOf('\0') < 0, "Guest environment value");
             info.EnvironmentVariables[name] = value;
         }
@@ -400,16 +400,26 @@ internal static class TaskWorker {
     // The persistent workspace backend shares the exact gated Job/Pump owners.
     // This entry is guest-only and never accepts a host executable or shell.
     static int WorkspaceCommand(string[] args) {
-        Need(args.Length == 3 && args[0] == @"C:\SuperPiExchange"
+        Need(args.Length == 6 && args[0] == @"C:\SuperPiExchange"
             && (args[1] == @"C:\SuperPiInput" || args[1] == @"C:\SuperPiWorkspace")
             && String.Equals(Path.GetFullPath(typeof(TaskWorker).Assembly.Location), @"C:\SuperPiTools\command.exe", StringComparison.OrdinalIgnoreCase), "Guest workspace runner location");
         int timeout; Need(Int32.TryParse(args[2], out timeout) && timeout > 0 && timeout <= 120000, "Command deadline");
+        string cwd = args[3];
+        Need(cwd.Length > 3 && cwd.Length < 4096 && Char.ToUpperInvariant(cwd[0]) >= 'A' && Char.ToUpperInvariant(cwd[0]) <= 'Z'
+            && cwd[1] == ':' && cwd[2] == '\\' && Path.GetFullPath(cwd) == cwd, "Command workspace path");
+        if (Char.ToUpperInvariant(cwd[0]) != 'C') ToolchainDrives(Char.ToUpperInvariant(cwd[0]).ToString());
+        Need(args[5].Length <= 49, "Workspace drive capacity");
+        ToolchainDrives(args[5]);
+        Need(Directory.Exists(cwd), "Command workspace unavailable");
         string commandFile = args[0] + @"\command.txt";
         Need(new FileInfo(commandFile).Length <= 131072, "Command capacity");
-        const string bootstrap = GateBootstrap + VersionGuard + "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $OutputEncoding=[Console]::OutputEncoding; & ([ScriptBlock]::Create([IO.File]::ReadAllText('C:\\SuperPiExchange\\command.txt',[Text.Encoding]::UTF8)))";
+        Need(args[4] == "powershell" || args[4] == "bash", "Unknown workspace shell");
+        string bootstrap = GateBootstrap + VersionGuard + "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $OutputEncoding=[Console]::OutputEncoding; "
+            + (args[4] == "bash" ? "if(!$env:SUPERPI_BASH){throw 'Mapped Bash installation unavailable; inspect C:\\SuperPiTools\\toolchains.json'}; & $env:SUPERPI_BASH --noprofile --norc /c/SuperPiExchange/command.txt; exit $LASTEXITCODE"
+                : "& ([ScriptBlock]::Create([IO.File]::ReadAllText('C:\\SuperPiExchange\\command.txt',[Text.Encoding]::UTF8)))");
         const string environmentFile = @"C:\SuperPiTools\environment.txt";
         Need(new FileInfo(environmentFile).Length <= 24000, "Toolchain environment capacity");
-        var info = CommandInfo(bootstrap, args[1], File.ReadAllText(environmentFile, Utf8), @"C:\SuperPiCommand");
+        var info = CommandInfo(bootstrap, cwd, File.ReadAllText(environmentFile, Utf8), @"C:\SuperPiCommand");
         Process process = null; Pump stdout = null, stderr = null; Job job = new Job(); Stopwatch clock = Stopwatch.StartNew();
         long deadline = timeout + 8000L; bool started = false;
         try {
@@ -423,6 +433,7 @@ internal static class TaskWorker {
             Need(stdout.Closed && stderr.Closed && stdout.Failure == null && stderr.Failure == null && stdout.CloseFailure == null && stderr.CloseFailure == null, "Pipe failure");
             int exit = process.ExitCode; job.Close(); Need(job.Closed && job.Settled, "Job remains owned");
             string result = "{\"closed\":true,\"exitCode\":" + exit + ",\"timedOut\":" + (timedOut ? "true" : "false")
+                + ",\"truncated\":" + (stdout.Seen > StreamLimit || stderr.Seen > StreamLimit ? "true" : "false")
                 + ",\"stdoutBase64\":\"" + Convert.ToBase64String(stdout.Retained, 0, stdout.Kept)
                 + "\",\"stderrBase64\":\"" + Convert.ToBase64String(stderr.Retained, 0, stderr.Kept) + "\"}";
             File.WriteAllText(args[0] + @"\command-result.json", result, new UTF8Encoding(false)); return 0;
@@ -441,7 +452,7 @@ internal static class TaskWorker {
         byte[] bytes = null; Package package = null;
         try {
             if (args.Length == 1 && args[0] == "--contract-check") return ContractCheck();
-            if (args.Length == 3) return WorkspaceCommand(args);
+            if (args.Length == 6 && args[0] == @"C:\SuperPiExchange") return WorkspaceCommand(args);
             Need(args.Length == 4 && Uuid.IsMatch(args[0]) && Uuid.IsMatch(args[1]) && args[2] == "--toolchain", "Task arguments");
             Need(String.Equals(Environment.CurrentDirectory, Workspace, StringComparison.OrdinalIgnoreCase)
                 && String.Equals(Path.GetFullPath(typeof(TaskWorker).Assembly.Location), Tools + @"\task-runner.exe", StringComparison.OrdinalIgnoreCase), "Isolated runner location");

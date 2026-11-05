@@ -10,9 +10,40 @@ const WORK = 'C:\\SuperPiWorkspace';
 const EXCHANGE = 'C:\\SuperPiExchange';
 const FILE_LIMIT = 2 * 1024 * 1024;
 const OUTPUT_LIMIT = 16 * 1024 * 1024;
+const ARTIFACT_LIMIT = 256 * 1024 * 1024;
+const ARTIFACT_FILES = 1024;
 const TRAILING_PATH_PATTERN = /[. ]$/;
+const RESERVED_WORKSPACE_ROOTS = ['c:\\windows', 'c:\\superpiinput', 'c:\\superpiworkspace', 'c:\\superpiexchange', 'c:\\superpitools', 'c:\\superpitoolchains', 'c:\\superpicommand', 'c:\\superpivolume'];
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 function need(value, reason) { if (!value) throw new Error(reason); }
+// Guest-only alias of the captured workspace, never a mount of the host project.
+function commandWorkspace(root, workspace) {
+  need(typeof workspace === 'string' && workspace.length > 3 && workspace.length < 4096 && !workspace.includes('\0'), 'Invalid command workspace');
+  const drive = workspace[0].toUpperCase();
+  need(drive >= 'A' && drive <= 'Z' && workspace[1] === ':' && workspace[2] === '\\'
+    && workspace === path.win32.normalize(workspace) && !workspace.slice(2).includes(':'), 'Expected a local absolute command workspace');
+  const lower = workspace.toLowerCase();
+  for (const reserved of RESERVED_WORKSPACE_ROOTS) {
+    need(lower !== reserved && !lower.startsWith(reserved + '\\') && !reserved.startsWith(lower + '\\'), 'Command workspace overlaps guest runtime');
+  }
+  const alias = drive === 'C' ? workspace : 'C:\\SuperPiToolchains\\' + drive + workspace.slice(2);
+  const parts = path.win32.dirname(alias).slice(3).split('\\');
+  let parent = 'C:\\';
+  for (const part of parts) {
+    if (!part) continue; // A project directly under C:\ has no parent components.
+    need(!TRAILING_PATH_PATTERN.test(part), 'Invalid command workspace component');
+    parent = path.win32.join(parent, part);
+    if (fs.existsSync(parent)) {
+      const stat = fs.lstatSync(parent);
+      need(stat.isDirectory() && !stat.isSymbolicLink(), 'Redirected command workspace parent');
+    } else fs.mkdirSync(parent);
+  }
+  need(!TRAILING_PATH_PATTERN.test(path.win32.basename(alias)), 'Invalid command workspace component');
+  if (fs.existsSync(alias)) {
+    need(fs.lstatSync(alias).isSymbolicLink() && fs.realpathSync(alias) === fs.realpathSync(root), 'Command workspace alias changed');
+  } else fs.symlinkSync(root, alias, 'junction');
+  return workspace;
+}
 function local(root, name) {
   need(typeof name === 'string' && name.length > 0 && name.length < 4096 && !name.includes('\0') && !name.includes(':'), 'Invalid workspace path');
   const parts = name.replaceAll('\\', '/').split('/');
@@ -37,7 +68,7 @@ function fileHash(file, scratch) {
 }
 function catalog(root, hashes = false) {
   const files = new Map(), pending = ['']; let bytes = 0;
-  const scratch = hashes ? Buffer.allocUnsafe(256 * 1024) : undefined;
+  const scratch = hashes === true ? Buffer.allocUnsafe(256 * 1024) : undefined;
   while (pending.length) {
     const relative = pending.pop();
     for (const entry of fs.readdirSync(path.join(root, relative), { withFileTypes: true })) {
@@ -46,14 +77,15 @@ function catalog(root, hashes = false) {
       if (entry.isDirectory() && entry.name.toLowerCase() === 'node_modules') continue;
       const name = relative ? relative + '/' + entry.name : entry.name;
       if (entry.isDirectory()) pending.push(name);
-      else { const file = local(root, name), stat = fs.lstatSync(file); bytes += stat.size; need(stat.isFile() && bytes <= 256 * 1024 * 1024 && files.size < 20000, 'Workspace capacity exceeded'); files.set(name, hashes ? fileHash(file, scratch) : null); }
+      else { const file = local(root, name), stat = fs.lstatSync(file); bytes += stat.size; need(stat.isFile() && bytes <= 16 * 1024 * 1024 * 1024 && files.size < 20000, 'Workspace capacity exceeded');
+        files.set(name, hashes === 'versions' ? stat : hashes ? fileHash(file, scratch) : null); }
     }
   }
   return files;
 }
 function selected(root, scope) {
-  const output = new Map();
-  for (const name of scope) { const file = local(root, name); if (fs.existsSync(file)) output.set(name, sha(read(file))); }
+  const output = new Map(), scratch = Buffer.allocUnsafe(256 * 1024);
+  for (const name of scope) { const file = local(root, name); if (fs.existsSync(file)) output.set(name, fileHash(file, scratch)); }
   return output;
 }
 function searchScope(root, raw) {
@@ -76,15 +108,47 @@ function grepRows(source, pattern, name, rows) {
     if (match < start) match = source.indexOf(pattern, start);
   }
 }
-function changes(before, root, scope, maxWriteBytes) {
+function changes(before, root, scope, maxWriteBytes, artifactId, artifactOffset = 0) {
   const after = scope ? selected(root, scope) : catalog(root, true), output = []; let bytes = 0;
   for (const [name, hash] of after) if (before.get(name) !== hash) {
+    if (artifactId) {
+      const file = local(root, name), size = fs.statSync(file).size; bytes += size;
+      need(output.length < 32 && size <= 64 * 1024 * 1024 && bytes <= ARTIFACT_LIMIT,
+        'File-operation artifacts: files=' + (output.length + 1) + '/32; fileBytes=' + size + '/67108864; bytes=' + bytes + '/' + ARTIFACT_LIMIT);
+      const artifact = { name: artifactId + '-' + (artifactOffset + output.length) + '.bin', bytes: size, sha256: hash };
+      fs.copyFileSync(file, path.join(EXCHANGE, artifact.name), fs.constants.COPYFILE_EXCL);
+      output.push({ path: name, before: before.get(name) ?? null, content: null, artifact }); continue;
+    }
     const content = read(local(root, name)); bytes += content.length;
     need(content.length <= maxWriteBytes, 'Candidate exceeds the native write limit');
     need(output.length < 32 && bytes <= OUTPUT_LIMIT, 'Writeback capacity exceeded');
     output.push({ path: name, before: before.get(name) ?? null, content: content.toString('base64') });
   }
   for (const [name, hash] of before) if (!after.has(name)) { need(output.length < 32, 'Writeback capacity exceeded'); output.push({ path: name, before: hash, content: null }); }
+  return output;
+}
+// Metadata travels in JSON; bytes remain in independent files and are validated again by the host.
+function commandChanges(before, roots, id) {
+  const output = []; let bytes = 0;
+  const scratch = Buffer.allocUnsafe(256 * 1024);
+  for (let workspaceIndex = 0; workspaceIndex < roots.length; workspaceIndex++) {
+    const root = roots[workspaceIndex], previous = before[workspaceIndex], after = catalog(root, 'versions');
+    for (const [name, stat] of after) {
+      const old = previous.get(name);
+      if (old && old.size === stat.size && old.mtimeMs === stat.mtimeMs && old.ctimeMs === stat.ctimeMs && old.ino === stat.ino) continue;
+      const file = local(root, name), size = fs.statSync(file).size; bytes += size;
+      need(size <= 64 * 1024 * 1024, 'Artifact file bytes=' + size + '; limit=67108864; path=' + name);
+      need(output.length < ARTIFACT_FILES && bytes <= ARTIFACT_LIMIT,
+        'Artifact capacity: files=' + (output.length + 1) + '/' + ARTIFACT_FILES + '; bytes=' + bytes + '/' + ARTIFACT_LIMIT);
+      const artifact = { name: id + '-' + output.length + '.bin', bytes: size, sha256: fileHash(file, scratch) };
+      fs.copyFileSync(file, path.join(EXCHANGE, artifact.name), fs.constants.COPYFILE_EXCL);
+      output.push({ path: name, workspaceIndex, before: null, content: null, artifact });
+    }
+    for (const name of previous.keys()) if (!after.has(name)) {
+      need(output.length < ARTIFACT_FILES, 'Artifact capacity: files=' + (output.length + 1) + '/' + ARTIFACT_FILES);
+      output.push({ path: name, workspaceIndex, before: null, content: null });
+    }
+  }
   return output;
 }
 function mutate(root, operation, input, maxWriteBytes) {
@@ -108,20 +172,41 @@ function mutate(root, operation, input, maxWriteBytes) {
   else if (operation === 'move') { const destination = local(root, input.destination); need(!fs.existsSync(destination), 'Destination exists'); fs.mkdirSync(path.dirname(destination), { recursive: true }); fs.linkSync(target, destination); fs.unlinkSync(target); }
   else throw new Error('Unsupported mutation');
 }
-let request;
+let request, execution, phase = 'request';
 try {
   const requestFile = path.join(EXCHANGE, 'request.json'); need(fs.statSync(requestFile).size <= 4 * 1024 * 1024, 'Request too large');
   request = JSON.parse(fs.readFileSync(requestFile, 'utf8'));
   need(/^[a-f0-9]{32}$/.test(request.id) && ['read-only', 'sandbox-write'].includes(request.mode), 'Invalid request identity');
   const maxWriteBytes = request.maxWriteBytes;
   need(Number.isSafeInteger(maxWriteBytes) && maxWriteBytes > 0 && maxWriteBytes <= FILE_LIMIT, 'Invalid native write limit');
-  if (request.mode === 'sandbox-write' && !fs.existsSync(WORK)) fs.cpSync(SOURCE, WORK, { recursive: true, dereference: false });
-  const root = request.mode === 'read-only' ? SOURCE : WORK;
+  const directories = request.directories ?? [];
+  need(Array.isArray(directories) && directories.length <= 16, 'Invalid workspace table');
+  const roots = [], workspaces = [request.workspace, ...directories];
+  for (let i = 0; i < workspaces.length; i++) {
+    const suffix = i ? '-' + i : '', source = SOURCE + suffix, work = WORK + suffix;
+    if (request.mode === 'sandbox-write' && !fs.existsSync(work)) fs.cpSync(source, work, { recursive: true, dereference: false });
+    roots.push(request.mode === 'read-only' ? source : work);
+  }
   const input = request.input, operation = request.operation;
-  let text, snapshot, before, scope;
+  const workspaceIndex = input.workspaceIndex ?? 0;
+  need(Number.isSafeInteger(workspaceIndex) && workspaceIndex >= 0 && workspaceIndex < roots.length, 'Unknown workspace');
+  const root = roots[workspaceIndex], command = operation === 'powershell' || operation === 'bash';
+  let text, snapshot, before, scope, batchScopes;
   if (request.mode === 'sandbox-write' && !['read', 'ls', 'find', 'grep'].includes(operation)) {
-    if (operation === 'powershell') before = catalog(root, true);
-    else {
+    if (command) { before = []; for (const directory of roots) before.push(catalog(directory, 'versions')); }
+    else if (operation === 'file_batch') {
+      need(Array.isArray(input.operations) && input.operations.length > 0 && input.operations.length <= 16, 'Invalid operations');
+      batchScopes = []; before = [];
+      for (const item of input.operations) {
+        const index = item.workspaceIndex ?? 0;
+        need(Number.isSafeInteger(index) && index >= 0 && index < roots.length, 'Unknown batch workspace');
+        const selectedRoot = roots[index];
+        local(selectedRoot, item.path); if (!batchScopes[index]) batchScopes[index] = new Set();
+        batchScopes[index].add(item.path);
+        if (item.destination !== undefined) { local(selectedRoot, item.destination); batchScopes[index].add(item.destination); }
+      }
+      for (let i = 0; i < batchScopes.length; i++) if (batchScopes[i]) before[i] = selected(roots[i], batchScopes[i]);
+    } else {
       scope = new Set();
       const operations = operation === 'file_batch' ? input.operations : [input];
       need(Array.isArray(operations) && operations.length > 0 && operations.length <= 16, 'Invalid operations');
@@ -153,15 +238,25 @@ try {
       if (rows.length >= 200) break;
     }
     text = rows.join('\n');
-  } else if (operation === 'powershell') {
+  } else if (command) {
     need(typeof input.command === 'string' && input.command.length <= 32768, 'Invalid command');
+    phase = 'launch';
+    let drives = '';
+    for (let i = 0; i < roots.length; i++) {
+      commandWorkspace(roots[i], workspaces[i]);
+      const drive = workspaces[i][0].toUpperCase();
+      if (drive !== 'C' && !drives.includes(drive)) drives += (drives ? ';' : '') + drive;
+    }
+    const cwd = request.workspace;
     const timeout = Math.min(120000, Math.max(1, (input.timeout ?? 30) * 1000));
     fs.writeFileSync(path.join(EXCHANGE, 'command.txt'), input.command, 'utf8');
-    const child = spawnSync('C:\\SuperPiTools\\command.exe', [EXCHANGE, root, String(timeout)], { windowsHide: true, encoding: 'utf8', timeout: timeout + 10000, maxBuffer: 65536 });
+    const child = spawnSync('C:\\SuperPiTools\\command.exe', [EXCHANGE, root, String(timeout), cwd, operation, drives], { windowsHide: true, encoding: 'utf8', timeout: timeout + 10000, maxBuffer: 65536 });
     need(!child.error && child.status === 0, 'Command supervisor failed');
     const result = JSON.parse(fs.readFileSync(path.join(EXCHANGE, 'command-result.json'), 'utf8'));
     result.stdout = Buffer.from(result.stdoutBase64, 'base64').toString('utf8');
     result.stderr = Buffer.from(result.stderrBase64, 'base64').toString('utf8');
+    phase = 'execution';
+    execution = { exitCode: result.exitCode, timedOut: result.timedOut, closed: result.closed, stdout: result.stdout, stderr: result.stderr, truncated: result.truncated === true };
     need(result.closed === true, 'Command process family did not close');
     need(!result.timedOut && result.exitCode === 0, 'Command failed (' + result.exitCode + '): ' + result.stderr + result.stdout);
     text = result.stdout + (result.stderr ? '\n' + result.stderr : '');
@@ -169,14 +264,21 @@ try {
     need(request.mode === 'sandbox-write', 'Read-only workspace');
     if (operation === 'file_batch') {
       need(Array.isArray(input.operations) && input.operations.length > 0 && input.operations.length <= 16, 'Invalid batch');
-      for (const item of input.operations) mutate(root, item.operation, item, maxWriteBytes);
+      for (const item of input.operations) mutate(roots[item.workspaceIndex ?? 0], item.operation, item, maxWriteBytes);
     } else mutate(root, operation, input, maxWriteBytes);
     text = 'Sandbox operation completed';
   }
-  const result = { id: request.id, ok: true, text, snapshot, changes: before && request.mode === 'sandbox-write' ? changes(before, root, scope, maxWriteBytes) : [] };
+  phase = 'collection';
+  const candidates = before && request.mode === 'sandbox-write' && !batchScopes ? command ? commandChanges(before, roots, request.id)
+    : changes(before, root, scope, maxWriteBytes, operation === 'move' ? request.id : undefined) : [];
+  if (batchScopes) for (let i = 0; i < batchScopes.length; i++) if (batchScopes[i]) {
+    for (const change of changes(before[i], roots[i], batchScopes[i], maxWriteBytes, request.id, i * 32)) { if (i) change.workspaceIndex = i; candidates.push(change); }
+  }
+  if (!command && workspaceIndex) for (const candidate of candidates) candidate.workspaceIndex = workspaceIndex;
+  const result = { id: request.id, ok: true, text, snapshot, execution, changes: candidates };
   const encoded = JSON.stringify(result); need(Buffer.byteLength(encoded) <= 24 * 1024 * 1024, 'Result too large');
   fs.writeFileSync(path.join(EXCHANGE, 'response.json'), encoded);
 } catch (error) {
-  fs.writeFileSync(path.join(EXCHANGE, 'response.json'), JSON.stringify({ id: request?.id, ok: false, error: String(error.message).slice(0, 32768) }));
+  fs.writeFileSync(path.join(EXCHANGE, 'response.json'), JSON.stringify({ id: request?.id, ok: false, phase, execution, error: String(error.message).slice(0, 32768) }));
   process.exitCode = 1;
 }

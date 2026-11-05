@@ -2935,6 +2935,27 @@ export class InteractiveMode {
 		}
 	}
 
+	private async handleWorkingDirectoryCommand(text: string): Promise<void> {
+		const current = this.session.settingsManager.getSessionDirectories();
+		if (text === "/dirs") {
+			this.showExtensionNotify([this.session.sessionManager.getCwd(), ...current].join("\n"), "info");
+			return;
+		}
+		const separator = text.indexOf(" "), command = separator < 0 ? text : text.slice(0, separator);
+		let target = separator < 0 ? "" : text.slice(separator + 1).trim();
+		if (target.length > 1 && (target[0] === '"' && target.endsWith('"') || target[0] === "'" && target.endsWith("'"))) target = target.slice(1, -1);
+		if (!target) { this.showExtensionNotify("用法：" + command + " <directory>；/dirs 查看当前工作目录", "warning"); return; }
+		try {
+			const absolute = path.resolve(this.session.sessionManager.getCwd(), target);
+			const canonical = command === "/add-dir" || fs.existsSync(absolute) ? fs.realpathSync(absolute) : absolute;
+			const directories = [...current];
+			if (command === "/add-dir") directories.push(canonical);
+			else { const index = directories.indexOf(canonical); if (index < 0) throw new Error("该目录不在当前附加工作区中"); directories.splice(index, 1); }
+			const result = await this.runtimeHost.setWorkingDirectories(directories);
+			if (!result.cancelled) this.showExtensionNotify("工作目录已更新：\n" + [this.session.sessionManager.getCwd(), ...directories].join("\n"), "info");
+		} catch (error) { this.showExtensionNotify(error instanceof Error ? error.message : String(error), "error"); }
+	}
+
 	private createExtensionUIContext(extensionUiGeneration = this.extensionUiGeneration): ExtensionUIContext {
 		return {
 			select: (title, options, opts) => this.extensionUiGeneration !== extensionUiGeneration
@@ -3969,6 +3990,21 @@ export class InteractiveMode {
 			if (!text) return;
 
 			// Handle commands
+			if (text.startsWith("/permissions ") || text.startsWith("/permission ")) {
+				this.editor.setText("");
+				this.showExtensionNotify("旧权限子命令已退役。使用 /permissions 选择权限，/dirs 查看工作目录。", "warning");
+				return;
+			}
+			if (text === "/dirs" || text === "/add-dir" || text.startsWith("/add-dir ") || text === "/remove-dir" || text.startsWith("/remove-dir ")) {
+				this.editor.setText("");
+				await this.handleWorkingDirectoryCommand(text);
+				return;
+			}
+			if (text === "/add_workspace" || text.startsWith("/add_workspace ") || text === "/remove_workspace" || text.startsWith("/remove_workspace ")) {
+				this.editor.setText("");
+				this.showExtensionNotify("旧工作区指令已退役，请使用 /add-dir、/remove-dir 和 /dirs。", "warning");
+				return;
+			}
 			if (text === "/permissions" || text === "/permission") {
 				this.editor.setText("");
 				await this.showPermissionsSelector();
@@ -8590,7 +8626,7 @@ export class InteractiveMode {
 				return;
 			}
 			if (this.bashComponent === bashComponent) {
-				bashComponent.setComplete(undefined, false);
+				bashComponent.setComplete(undefined, false, undefined, undefined, true);
 				this.chatContainer.invalidateViewportChild(bashComponent);
 			}
 			this.showError(`Bash command failed: ${error instanceof Error ? error.message : "Unknown error"}`);

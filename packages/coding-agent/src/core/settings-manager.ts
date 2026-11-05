@@ -566,6 +566,9 @@ export class SettingsManager {
 
 	private executionEnvironmentOverride?: "sandbox" | "trusted-host";
 	private permissionModeOverride?: import("./permission-mode.ts").SessionPermissionMode;
+	private sessionDirectories: readonly string[] = [];
+	getSessionDirectories(): readonly string[] { return this.sessionDirectories; }
+	setSessionDirectories(directories: readonly string[]): void { this.sessionDirectories = Object.freeze([...directories]); }
 	getPermissionMode(): import("./permission-mode.ts").SessionPermissionMode | undefined { return this.permissionModeOverride; }
 	setPermissionModeForSession(mode: import("./permission-mode.ts").SessionPermissionMode): void {
 		if (mode !== "read-only" && mode !== "sandbox-write" && mode !== "host-write") throw new Error("Invalid session permission mode");
