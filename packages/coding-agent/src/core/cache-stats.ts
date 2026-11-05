@@ -1,5 +1,5 @@
 import type { AssistantMessage } from "@super-pi/ai";
-import type { SessionEntry } from "./session-manager.ts";
+import type { SessionEntry, SessionManager } from "./session-manager.ts";
 
 /** Display threshold, not a provider cache-breakpoint or retention guarantee. */
 const NOISE_FLOOR_TOKENS = 1024;
@@ -121,4 +121,65 @@ export function detectCacheOverlapEstimate(
 	message: AssistantMessage,
 ): CacheOverlapEstimate | undefined {
 	return estimateOverlap(scan(entries).prev, message);
+}
+
+/** Optional live consumer: persisted append tail plus one pre-persistence preview. */
+export class CacheOverlapCursor {
+	private manager: SessionManager | undefined;
+	private generation = -1;
+	private cursor = 0;
+	private previous: PreviousRequest | undefined;
+	private latest: WeakRef<AssistantMessage> | undefined;
+	private probing: AssistantMessage | undefined;
+	private alreadyPersisted = false;
+
+	estimate(manager: SessionManager, message: AssistantMessage): CacheOverlapEstimate | undefined {
+		if (!manager.isHistoryConsistent()) {
+			this.clear();
+			return undefined;
+		}
+		if (this.manager === manager && this.latest?.deref() === message) return undefined;
+		const generation = manager.getContextGeneration();
+		const rebuild = this.manager !== manager || this.generation !== generation;
+		this.probing = message;
+		this.alreadyPersisted = false;
+		try {
+			if (rebuild) {
+				this.previous = undefined;
+				this.manager = manager;
+				this.generation = generation;
+				// Branch navigation is explicit; never borrow the last appended response of another branch.
+				const branch = manager.getBranch();
+				for (let index = 0; index < branch.length; index++) this.visitSessionEntry(branch[index]!);
+				this.cursor = manager.getAppendCursor();
+			} else {
+				this.cursor = manager.visitAppendedEntries(this.cursor, this);
+			}
+			this.latest = new WeakRef(message);
+			return this.alreadyPersisted ? undefined : estimateOverlap(this.previous, message);
+		} catch (error) {
+			this.clear();
+			throw error;
+		} finally {
+			this.probing = undefined;
+		}
+	}
+
+	visitSessionEntry(entry: SessionEntry): void {
+		if (entry.type === "compaction" || entry.type === "branch_summary") this.previous = undefined;
+		else if (entry.type === "message" && entry.message.role === "assistant") {
+			if (entry.message === this.probing) this.alreadyPersisted = true;
+			this.previous = asPreviousRequest(entry.message, this.previous);
+		}
+	}
+
+	clear(): void {
+		this.manager = undefined;
+		this.generation = -1;
+		this.cursor = 0;
+		this.previous = undefined;
+		this.latest = undefined;
+		this.probing = undefined;
+		this.alreadyPersisted = false;
+	}
 }

@@ -226,6 +226,8 @@ The home page does not present isolated microbenchmark numbers. Heap delta, samp
 
 The footer's `CH%` uses the latest assistant response's reported cache reads divided by its normalized prompt tokens; `/session` uses cumulative token-weighted usage. Missing provider cache reports cannot establish the actual server hit rate. Optional **Cache overlap estimates** (`showCacheMissNotices`, off by default) show length-only upper bounds, with repeated content and cache causes explicitly unknown. They do not infer expiry or money saved.
 
+Footer usage totals cover the whole session and update from newly appended entries. Optional overlap estimates follow the active branch and rebuild after explicit context changes. Full summaries and transcript rebuilds still scan their required history; see the [incremental statistics validation](docs/performance/pf05-incremental-stats-validation.md) for scope and measurements.
+
 ## Security, privacy, and known boundaries
 
 Configuration, sessions, and some memory are stored locally, but that does not mean input always stays on the machine. Prompts, tool schemas, file excerpts, tool results, and images may be sent to the selected provider; configured MCP servers receive the calls and data sent to them. Review provider, MCP, extension, and environment trust before use.
