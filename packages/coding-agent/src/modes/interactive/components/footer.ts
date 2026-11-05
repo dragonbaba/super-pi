@@ -3,7 +3,7 @@ import { type Component, truncateToWidth, visibleWidth } from "@super-pi/tui";
 import type { AgentSession } from "../../../core/agent-session.ts";
 import { areExperimentalFeaturesEnabled } from "../../../core/experimental.ts";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
-import type { SessionManager } from "../../../core/session-manager.ts";
+import type { SessionEntry, SessionManager } from "../../../core/session-manager.ts";
 import { addUsageToTotals, createUsageTotals, type UsageTotals } from "../../../core/usage-totals.ts";
 import { theme } from "../theme/theme.ts";
 
@@ -56,8 +56,7 @@ export function formatCwdForFooter(cwd: string, home: string | undefined): strin
 interface SessionScan {
 	sessionManager: SessionManager;
 	sessionId: string;
-	leafId: string | null;
-	entryCount: number;
+	cursor: number;
 	historyGeneration: number;
 	usageTotals: UsageTotals;
 	latestCacheHitRate: number | undefined;
@@ -72,7 +71,7 @@ export class FooterComponent implements Component {
 	private autoCompactEnabled = true;
 	private session: AgentSession;
 	private footerData: ReadonlyFooterDataProvider;
-	/** Whole-session scan reused across frames; owned by this footer and its current session. */
+	/** Whole-session totals, updated from persisted append tails; owned by this footer. */
 	private sessionScan: SessionScan | undefined;
 	private extensionStatusRevision: number | undefined;
 	private extensionStatusLine: string | undefined;
@@ -136,53 +135,43 @@ export class FooterComponent implements Component {
 	}
 
 	/**
-	 * The footer renders every frame, but entries are append-only and every append moves the leaf,
-	 * so the whole-session scan changes with the manager, session, leaf, entry count or reload generation.
+	 * Whole-session usage is independent of the active leaf. Reload replaces history;
+	 * ordinary appends visit only the new tail and steady frames reuse the same state.
 	 */
 	private getSessionScan(): SessionScan {
 		const sessionManager = this.session.sessionManager;
 		const sessionId = sessionManager.getSessionId();
-		const leafId = sessionManager.getLeafId();
-		const entryCount = sessionManager.getEntryCount();
 		const historyGeneration = sessionManager.getHistoryGeneration();
-		const cached = this.sessionScan;
-		if (
-			cached !== undefined &&
-			cached.sessionManager === sessionManager &&
-			cached.sessionId === sessionId &&
-			cached.leafId === leafId &&
-			cached.entryCount === entryCount && cached.historyGeneration === historyGeneration
-		) {
-			return cached;
+		let cached = this.sessionScan;
+		if (cached === undefined || cached.sessionManager !== sessionManager ||
+			cached.sessionId !== sessionId || cached.historyGeneration !== historyGeneration) {
+			cached = { sessionManager, sessionId, historyGeneration, cursor: 0,
+				usageTotals: createUsageTotals(), latestCacheHitRate: undefined, sessionName: undefined };
+			this.sessionScan = cached;
 		}
-
-		// Calculate cumulative usage from ALL session entries (not just post-compaction messages)
-		const usageTotals = createUsageTotals();
-		let latestCacheHitRate: number | undefined;
-		let sessionName: string | undefined;
-
-		const entries = sessionManager.getEntries();
-		for (let index = 0; index < entries.length; index++) {
-			const entry = entries[index]!;
-			if (entry.type === "session_info") {
-				// This traversal already sees all entries in append order. Preserve
-				// the latest-name/empty-name semantics without copying history again.
-				sessionName = entry.name?.trim() || undefined;
-			} else if (entry.type === "message" && entry.message.role === "assistant") {
-				addUsageToTotals(usageTotals, entry.message.usage);
-
-				const latestPromptTokens =
-					entry.message.usage.input + entry.message.usage.cacheRead + entry.message.usage.cacheWrite;
-				latestCacheHitRate =
-					latestPromptTokens > 0 ? (entry.message.usage.cacheRead / latestPromptTokens) * 100 : undefined;
-			} else if (entry.type === "message" && entry.message.role === "toolResult" && entry.message.usage) {
-				addUsageToTotals(usageTotals, entry.message.usage);
-			} else if ((entry.type === "branch_summary" || entry.type === "compaction") && entry.usage) {
-				addUsageToTotals(usageTotals, entry.usage);
-			}
+		try {
+			cached.cursor = sessionManager.visitAppendedEntries(cached.cursor, this);
+		} catch (error) {
+			this.sessionScan = undefined;
+			throw error;
 		}
-		this.sessionScan = { sessionManager, sessionId, leafId, entryCount, historyGeneration, usageTotals, latestCacheHitRate, sessionName };
-		return this.sessionScan;
+		return cached;
+	}
+
+	/** Internal synchronous visitor, stable across frames and appends. */
+	visitSessionEntry(entry: SessionEntry): void {
+		const cached = this.sessionScan!;
+		if (entry.type === "session_info") cached.sessionName = entry.name?.trim() || undefined;
+		else if (entry.type === "message" && entry.message.role === "assistant") {
+			const usage = entry.message.usage;
+			addUsageToTotals(cached.usageTotals, usage);
+			const tokens = usage.input + usage.cacheRead + usage.cacheWrite;
+			cached.latestCacheHitRate = tokens > 0 ? (usage.cacheRead / tokens) * 100 : undefined;
+		} else if (entry.type === "message" && entry.message.role === "toolResult" && entry.message.usage) {
+			addUsageToTotals(cached.usageTotals, entry.message.usage);
+		} else if ((entry.type === "branch_summary" || entry.type === "compaction") && entry.usage) {
+			addUsageToTotals(cached.usageTotals, entry.usage);
+		}
 	}
 
 	render(width: number): string[] {

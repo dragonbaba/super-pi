@@ -4,7 +4,7 @@ import { visibleWidth } from '@super-pi/tui';
 import { alphaSession } from './helpers/alpha-session.ts';
 import { alphaMessage } from './helpers/alpha-stream.ts';
 
-test('footer reuses the existing entries traversal for latest session name', async (t) => {
+test('footer consumes appended session names without historical entry copies', async (t) => {
   const message = alphaMessage([{ type: 'text', text: 'fixture' }]);
   message.usage.cost.total = 2;
   const f = await alphaSession({ messages: [message] });
@@ -19,7 +19,7 @@ test('footer reuses the existing entries traversal for latest session name', asy
       f.sessionManager.appendSessionInfo(name);
       entryCopies = 0;
       const rendered = f.internal.footer.render(width).join('\n');
-      assert.equal(entryCopies, 1, 'one existing usage traversal; no second full-history copy for name');
+      assert.equal(entryCopies, 0, 'session names and usage share the append cursor without copying history');
       assert.ok(rendered.includes('$2.000'));
       if (name.trim()) assert.ok(rendered.includes(name.trim()));
       else assert.ok(!rendered.includes('latest-name') && !rendered.includes('first-name'));
@@ -50,7 +50,7 @@ test('footer usage traversal does not request an iterator result per history ent
     assert.ok(expected.some((line: string) => line.includes('retained usage semantics')));
     assert.equal(iteratorResults, 0, 'avoid per-entry iterator protocol work in the measured footer loop');
     assert.deepEqual(f.internal.footer.render(width), expected);
-    assert.equal(entryCopies, 1, 'unchanged history reuses the footer scan instead of copying it per frame');
+    assert.equal(entryCopies, 0, 'initial and unchanged frames use the cursor without a history copy');
   } finally { t.diagnostic(JSON.stringify({ history: messages.length, iteratorResults, entryCopies })); await f.release(); }
 });
 

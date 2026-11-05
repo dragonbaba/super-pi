@@ -173,6 +173,11 @@ export type SessionEntry =
 /** Raw file entry (includes header) */
 export type FileEntry = SessionHeader | SessionEntry;
 
+/** Internal synchronous cursor consumer. Must not mutate session storage while visiting. */
+export interface SessionEntryVisitor {
+	visitSessionEntry(entry: SessionEntry): void;
+}
+
 /** Tree node for getTree() - defensive copy of session structure */
 export interface SessionTreeNode {
 	entry: SessionEntry;
@@ -933,6 +938,7 @@ export class SessionManager {
 		} catch (error) {
 			// A failed load may have replaced only part of the in-memory state.
 			this._appendOutcomeUncertain = true;
+			this.historyGeneration++;
 			this.contextGeneration++;
 			throw error;
 		}
@@ -1416,9 +1422,30 @@ export class SessionManager {
 		return this.entryCount;
 	}
 
+	/** Opaque physical append position; valid only within the same history generation. */
+	getAppendCursor(): number {
+		return this.fileEntries.length;
+	}
+
+	/** Read an append tail without an array copy or iterator-result allocation. */
+	visitAppendedEntries(cursor: number, visitor: SessionEntryVisitor): number {
+		const end = this.fileEntries.length;
+		if (!Number.isInteger(cursor) || cursor < 0 || cursor > end) throw new RangeError("Invalid session append cursor");
+		for (let index = cursor; index < end; index++) {
+			const entry = this.fileEntries[index]!;
+			if (entry.type !== "session") visitor.visitSessionEntry(entry);
+		}
+		return end;
+	}
+
 	/** Changes only when history is replaced/reloaded, including a same-file reload. */
 	getHistoryGeneration(): number {
 		return this.historyGeneration;
+	}
+
+	/** Failed reloads or uncertain disk writes require reload/new-session before derived comparisons. */
+	isHistoryConsistent(): boolean {
+		return !this._appendOutcomeUncertain;
 	}
 
 	/** Replaced/reloaded history, explicit branch navigation or compaction; ordinary append is stable. */

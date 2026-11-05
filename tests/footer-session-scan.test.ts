@@ -8,7 +8,7 @@ import { FooterComponent } from "../packages/coding-agent/src/modes/interactive/
 import { initTheme } from "../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { FooterDataProvider } from "../packages/coding-agent/src/core/footer-data-provider.ts";
 
-// The footer renders every frame; its whole-session usage scan must only rerun when entries change.
+// The footer renders every frame; ordinary appends visit only new whole-session entries.
 initTheme("dark");
 const ANSI = /\x1b\[[0-9;]*m/g;
 const usage = (cost: number) => ({ input: 100, output: 50, cacheRead: 0, cacheWrite: 0, totalTokens: 150, cost: { input: cost, output: 0, cacheRead: 0, cacheWrite: 0, total: cost } });
@@ -28,15 +28,20 @@ function fixture() {
 		modelRuntime: { isUsingSubscription: () => false },
 	};
 	const data: any = { getGitBranch: () => undefined, getAvailableProviderCount: () => 1, getExtensionStatuses: () => new Map() };
-	return { sessionManager, session, footer: new FooterComponent(session, data), scans: () => scans };
+	const footer = new FooterComponent(session, data);
+	let visits = 0;
+	const visit = footer.visitSessionEntry.bind(footer);
+	footer.visitSessionEntry = entry => { visits++; visit(entry); };
+	return { sessionManager, session, footer, scans: () => scans, visits: () => visits };
 }
 
 const text = (footer: FooterComponent) => footer.render(200).join("\n").replace(ANSI, "");
 
 test("steady-state footer frames reuse one session scan", () => {
-	const { footer, scans } = fixture();
+	const { footer, scans, visits } = fixture();
 	for (let index = 0; index < 100; index++) text(footer);
-	assert.equal(scans(), 1);
+	assert.equal(scans(), 0);
+	assert.equal(visits(), 2, "100 frames visit the two initial entries only once");
 });
 
 test("subscription cost is explicitly an API-equivalent estimate", () => {
@@ -46,13 +51,14 @@ test("subscription cost is explicitly an API-equivalent estimate", () => {
 });
 
 test("appends, renames and session switches refresh the footer totals", () => {
-	const { sessionManager, footer, scans } = fixture();
+	const { sessionManager, footer, scans, visits } = fixture();
 	assert.match(text(footer), /\$1\.000/);
 	sessionManager.appendMessage(assistant(2));
 	assert.match(text(footer), /\$3\.000/);
 	sessionManager.appendSessionInfo("named");
 	assert.match(text(footer), /named/);
-	assert.equal(scans(), 3);
+	assert.equal(scans(), 0);
+	assert.equal(visits(), 4, "two initial plus one assistant and one rename");
 
 	const other = fixture();
 	footer.setSession(other.session);
@@ -132,15 +138,17 @@ test("legacy footer providers without a revision still reflect map mutations and
 	footer.dispose(); other.dispose();
 });
 
-test("branch and compaction invalidate the scan while history and live usage stay separate", () => {
-	const { footer, session, sessionManager, scans } = fixture();
+test("branch navigation preserves all-history totals; compaction consumes only its new entry", () => {
+	const { footer, session, sessionManager, scans, visits } = fixture();
 	const first = sessionManager.getEntries()[0]!.id;
 	text(footer);
 	sessionManager.branch(first);
 	assert.match(text(footer), /\$1\.000/);
-	assert.equal(scans(), 3); // one explicit test read plus the two renders
+	assert.equal(scans(), 1); // only the explicit test read
+	assert.equal(visits(), 2, "branch selection does not change cumulative whole-session usage");
 	sessionManager.appendCompaction("checkpoint", first, 1000);
 	assert.match(text(footer), /\$1\.000/);
+	assert.equal(visits(), 3);
 	const count = scans();
 	session.getContextUsage = () => ({ contextWindow: 1000, percent: 70, source: "provider" });
 	session.state.model = { ...session.state.model, id: "other" };

@@ -136,16 +136,21 @@ test("optional notice and session command explicitly label bounds and preserve t
 	} finally { chat.clear(); footer.dispose(); }
 });
 
-test("cache estimation adds no closures, regex, promises, controllers or caches to the scan chain", () => {
+test("cache estimation adds no closures, regex, promises or controllers; live identity is bounded", () => {
 	const source = ts.createSourceFile("cache-stats.ts", readFileSync(new URL("../packages/coding-agent/src/core/cache-stats.ts", import.meta.url), "utf8"), ts.ScriptTarget.Latest, true);
-	let maps = 0, objects = 0;
+	let maps = 0, weakRefs = 0, objects = 0;
 	function visit(node: ts.Node): void {
 		assert.equal(ts.isArrowFunction(node) || ts.isFunctionExpression(node) || node.kind === ts.SyntaxKind.RegularExpressionLiteral, false);
-		if (ts.isNewExpression(node)) { assert.equal(node.expression.getText(source), "Map"); maps++; }
+		if (ts.isNewExpression(node)) {
+			const name = node.expression.getText(source);
+			assert.ok(name === "Map" || name === "WeakRef");
+			if (name === "Map") maps++; else weakRefs++;
+		}
 		if (ts.isObjectLiteralExpression(node)) objects++;
 		ts.forEachChild(node, visit);
 	}
 	visit(source);
-	assert.equal(maps, 1, "one existing transient scan Map remains for PF05");
+	assert.equal(maps, 1, "one existing transient Map remains for explicit rebuilds");
+	assert.equal(weakRefs, 1, "only the latest preview response identity is retained weakly");
 	assert.equal(objects, 4, "estimate, previous state, totals and scan return only");
 });

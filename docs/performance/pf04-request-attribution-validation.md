@@ -1,6 +1,6 @@
 # PF04-B 有效请求与响应归因验证
 
-日期：2026-11-05。基线 `8668da9def5a41fa701cce159b718462580ba9ec`，分支 `codex/perf-pf04-dispatch`。本地验收通过，准备独立 PR；当前 head reviewer 与六分片 CI 完成后才能合并。沿用[总方案](../super-pi-performance-followup-plan.md)、[PF00 门禁](pf00-baseline-validation.md)和[分配契约](hot-path-allocation-contract.md)。[原始证据](../evidence/performance-pf04-request-attribution-2026-11-05.json)包含复现、正式样本、分配站点、生命周期、失败记录及复现驱动。
+日期：2026-11-05。基线 `8668da9def5a41fa701cce159b718462580ba9ec`，分支 `codex/perf-pf04-dispatch`。[PR #222](https://github.com/dragonbaba/super-pi/pull/222) 已交付：head `02d85a63649e41d2c4eb0a9d078f62e2e36152b3` 审查 completed、无发现/未解决项，CI `41964813591` 六分片全通过；squash `8cc7ffcf6656848cc1d14c42ce7cfc3302d33c37` 与审查树一致并已进入 main。沿用[总方案](../super-pi-performance-followup-plan.md)、[PF00 门禁](pf00-baseline-validation.md)和[分配契约](hot-path-allocation-contract.md)。[原始证据](../evidence/performance-pf04-request-attribution-2026-11-05.json)包含复现、正式样本、分配站点、生命周期、失败记录及复现驱动。
 
 ## 已复现问题和选择
 
@@ -41,6 +41,6 @@ AST 门禁覆盖 request owner 无 arrow/function expression/Promise/controller/
 
 失败完整保留：三项基线复现；第一版用了 Node strip 模式不支持的构造器参数属性，改为显式字段；旧生产装配夹具跨已 dispose session 共用 recorder 的比较断言失效，改为明确比较两份已捕获的生产摘要，同时断言 live owner 不跨 session；一次测试变量被 TypeScript assert 收窄为 never，改用真实 result 返回值核对 timing。没有削弱生产断言、扩大超时或删除失败证据。
 
-任务根 `.task-tmp/pf04-dispatch-a46e89d3cb`。直接子进程环境在启动前隔离 TMP/TEMP/TMPDIR、HOME/config/session，子进程内验证 tmpdir；原有 test runner 继续拥有并等待后代进程。记录直接 PID 和退出回执，不声称逐个后代 PID 插桩。归档后才按精确清单校验路径、链接边界及身份清理；完成状态由 PR 回执与后续阶段更新。
+任务根 `.task-tmp/pf04-dispatch-a46e89d3cb` 已删除。直接子进程环境在启动前隔离 TMP/TEMP/TMPDIR、HOME/config/session，子进程内验证 tmpdir；原有 test runner 继续拥有并等待后代进程。38 个直接 Node 子进程全部 settled，不声称逐个后代 PID 插桩。归档后校验精确清单、路径、无链接及 dev/ino 身份，清理 PID 19424 退出 0，删除 290 项资源，保留共享 `.task-tmp`。已切回 main 并删除精确远端/本地分支，见[收尾回执](https://github.com/dragonbaba/super-pi/pull/222#issuecomment-6649402338)。
 
 这是离线请求身份和本地边界验收，未访问真实账号或测量云端命中率/费用。观察次数不是物理 HTTP 重试次数；credential generation 不能识别自定义 auth header 或 OAuth 刷新背后的账号变化；configured retention 不代替服务端策略。无法识别的历史响应、服务端 cache cause、真实账号隔离和云端费用保持未知。PF04-A 的长度上限、CH% 和累计 token 比例未改成因果结论；PF05 再处理历史扫描成本。

@@ -77,9 +77,9 @@ import { type AgentSessionRuntime, SessionImportFileNotFoundError } from "../../
 import { DEFAULT_THINKING_LEVEL } from "../../core/defaults.ts";
 import {
 	type CacheOverlapEstimate,
+	CacheOverlapCursor,
 	collectCacheOverlapEstimates,
 	computeCacheOverlapTotals,
-	detectCacheOverlapEstimate,
 } from "../../core/cache-stats.ts";
 import type {
 	AutocompleteProviderFactory,
@@ -523,6 +523,7 @@ function getStreamedToolArgsGeneration(
 
 export class InteractiveMode {
 	private runtimeHost: AgentSessionRuntime;
+	private cacheOverlapCursor: CacheOverlapCursor | undefined;
 	private renderer: TuiMainScreen | TuiAltScreen;
 	private ui: TUI;
 	private tuiLifecycleGeneration = 0;
@@ -877,6 +878,7 @@ export class InteractiveMode {
 		this.options = { ...options, tuiMode };
 		this.autoTrustOnReloadCwd = options.autoTrustOnReloadCwd;
 		this.runtimeHost.setBeforeSessionInvalidate(() => {
+			this.clearCacheOverlapCursor();
 			this.resetExtensionUI();
 		});
 		let draftSessionId = this.sessionManager.getSessionId();
@@ -2449,6 +2451,7 @@ export class InteractiveMode {
 	}
 
 	private applyRuntimeSettings(): void {
+		this.clearCacheOverlapCursor();
 		configureHttpDispatcher(this.settingsManager.getHttpIdleTimeoutMs());
 		this.applyFullscreenScrollbarSetting();
 		this.footer.setSession(this.session);
@@ -5422,7 +5425,7 @@ export class InteractiveMode {
 			rebuildReadGroup = undefined;
 		};
 		const cacheEstimates = this.settingsManager.getShowCacheMissNotices()
-			? collectCacheOverlapEstimates(this.sessionManager.getEntries())
+			? collectCacheOverlapEstimates(this.sessionManager.getBranch())
 			: undefined;
 
 		if (options.updateFooter) {
@@ -5547,10 +5550,25 @@ export class InteractiveMode {
 	 */
 	private maybeShowCacheMissNotice(message: AssistantMessage): void {
 		if (!this.settingsManager.getShowCacheMissNotices()) return;
+		this.showCacheOverlapEstimate(message);
+	}
 
+	private showCacheOverlapEstimate(message: AssistantMessage): void {
 		// Entries don't contain `message` yet: message_end fires before persistence.
-		const estimate = detectCacheOverlapEstimate(this.sessionManager.getEntries(), message);
+		this.cacheOverlapCursor ??= new CacheOverlapCursor();
+		const estimate = this.cacheOverlapCursor.estimate(this.sessionManager, message);
 		if (estimate) this.addCacheOverlapNotice(estimate);
+	}
+
+	private clearCacheOverlapCursor(): void {
+		this.cacheOverlapCursor?.clear();
+		this.cacheOverlapCursor = undefined;
+	}
+
+	private setCacheOverlapNotices(shown: boolean): void {
+		this.settingsManager.setShowCacheMissNotices(shown);
+		if (!shown) this.clearCacheOverlapCursor();
+		this.rebuildChatFromMessages();
 	}
 
 	private addCacheOverlapNotice(estimate: CacheOverlapEstimate): void {
@@ -6449,8 +6467,7 @@ export class InteractiveMode {
 						this.ui.requestRender();
 					},
 					onShowCacheMissNoticesChange: (shown) => {
-						this.settingsManager.setShowCacheMissNotices(shown);
-						this.rebuildChatFromMessages();
+						this.setCacheOverlapNotices(shown);
 					},
 					onCollapseChangelogChange: (collapsed) => {
 						this.settingsManager.setCollapseChangelog(collapsed);
@@ -8616,6 +8633,7 @@ export class InteractiveMode {
 	}
 
 	private async performStop(fullscreenExitOutput: FullscreenExitOutput): Promise<void> {
+		this.clearCacheOverlapCursor();
 		this.programStatus?.dispose();
 		let cleanupError: unknown;
 		let cleanupFailed = false;
