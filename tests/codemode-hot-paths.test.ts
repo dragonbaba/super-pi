@@ -12,7 +12,7 @@ test("Worker reuse and explicit catalog reads add no callbacks or async factorie
 		["packages/tool-classification/src/index.ts", new Set(["readToolCatalog"])],
 		["packages/mcp-bridge/src/bridge.js", new Set(["searchTools"])],
 		["packages/mcp-bridge/src/index.js", new Set(["syncRemoteTools"])],
-		["packages/codemode/src/runtime/worker.ts", new Set(["post", "drain", "deliver", "onMessage"])],
+		["packages/codemode/src/runtime/worker.ts", new Set(["post", "drain", "deliver", "onMessage", "fireTimer", "deliverTimer"])],
 		["packages/codemode/src/runtime/host.ts", new Set(["post", "handleMessage", "pauseClock", "resumeClock", "onTimeout"])],
 		["packages/codemode/src/runtime/worker-pool.ts", new Set(["release", "onExit"])],
 	]);

@@ -11,6 +11,18 @@ await show(result.ref);
 
 工具返回 `{ content, details, isError, ref }`。`ref` 是宿主为本次脚本签发的引用；`show(ref)` 展示未被脚本改写的原生结果。`text(value)`、`console.log(value)` 和 `return` 用于报告计算结果，`image(...)` 用于图片，`exit()` 成功结束脚本。
 
+沙箱中覆盖已有文本文件或执行 `edit` 时，应传入本次读取返回的 SHA-256：
+
+```js
+const r = await tools.read({ path: "notes.txt" });
+await tools.write({ path: "notes.txt", content: "updated", snapshot: r.details.snapshot });
+```
+
+`r.ref` 仅用于展示，不能作为 `snapshot`。哈希过期时先重新读取并核对内容，不能忽略版本检查。
+
+需要短暂等待时可用 `await new Promise(resolve => setTimeout(resolve, 1000))`。
+`setTimeout(callback, ms, ...args)` 返回数值 ID，`clearTimeout(id)` 可取消它。每次脚本最多创建 256 个定时器，延时必须是 0～300000 ms 的有限数值；回调必须是函数。等待计入脚本 `timeout_ms`，即使同时存在待完成的工具调用。脚本返回、`exit()`、失败或取消时释放剩余定时器，未等待的回调不会延长已完成脚本的生命周期。没有 `setInterval`。对 `SANDBOX_CLOSED` 等终态错误，等待后重复工具调用不能恢复工作区。
+
 `image(...)` 和 `show(ref)` 展示的图片会在脚本结束后尝试保存为私有临时文件，结果中的 `Image files: read .../images.json` 指向清单。下一回合用普通 `read` 读取清单，按其中的绝对路径读取、复制或移动图片；文件操作仍受原有工具权限控制。清单中的 `image` 是本次结果里从 1 开始的图片序号，重复图片共用文件。
 
 每次调用最多处理前 16 张图片，单张最多 8 MiB、解码输入合计最多 16 MiB，支持 PNG/JPEG/GIF/WebP；同次调用按内容去重，不建立跨会话缓存。文件在 POSIX 上为 `0600`，Windows 上使用创建时即生效的当前用户私有 DACL。保存失败或超限时仍保留原有图片、已完成工具结果和脚本状态，并报告未保存数量；不要重跑已完成操作恢复图片。若图片文件占用的空间导致文本恢复写入失败，会回收本次图片文件并重试一次文本保存，图片附件仍保留。独立的 CodemodeSandbox API 仍只返回内容块。

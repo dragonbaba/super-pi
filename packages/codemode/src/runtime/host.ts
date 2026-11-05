@@ -51,6 +51,8 @@ const RESERVED_GLOBALS: ReadonlySet<string> = new Set([
 	"globalThis",
 	"store",
 	"load",
+	"setTimeout",
+	"clearTimeout",
 ]);
 
 function errorMessage(error: unknown): string {
@@ -401,7 +403,7 @@ class Execution {
  * Runs JavaScript in a QuickJS VM (a separate wasm instance) inside a worker
  * thread. The script sees `tools.<name>(args)` for every registered tool, `ALL_TOOLS`,
  * the output helpers `text`, `image`, `exit`, and `console.*`, `store`/`load`, and the
- * configured globals; nothing else (no timers, `fetch`, `process`, `require`, modules).
+ * bounded `setTimeout`/`clearTimeout` and configured globals; no `fetch`, `process`, `require` or modules.
  *
  * Each `execute()` gets a fresh VM. Optional Worker reuse is bounded to one
  * slot per sandbox; `close()` aborts execution and disposes the retained Worker.

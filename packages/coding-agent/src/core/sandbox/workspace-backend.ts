@@ -41,6 +41,7 @@ export class WorkspaceSandboxBackend {
   private discardOperation?: Promise<void>;
   private closeOperation?: Promise<void>;
   private closed = false;
+  private cleanupFailure?: string;
   private readonly owned = new Map<string, string>();
   private readonly sources = new Map<string, { dev: bigint; ino: bigint; size: bigint; mtimeNs: bigint; ctimeNs: bigint; sha256: string }>();
   private sourceRoot?: string;
@@ -66,7 +67,8 @@ export class WorkspaceSandboxBackend {
   }
   private sourceKey(name: string, index = 0): string { return path.resolve(index === 0 ? this.sourceRoot ?? this.cwd : this.workspace(index), name).toLowerCase(); }
   invoke(operation: string, input: Record<string, unknown>, signal?: AbortSignal): Promise<WorkspaceReply> {
-    if (this.closed || this.pending || this.discardOperation) return Promise.reject(new Error("[SANDBOX_BUSY] Workspace is closed or has an active operation"));
+    if (this.closed) return Promise.reject(new Error("[SANDBOX_CLOSED] " + (this.cleanupFailure ?? "Session workspace is closed") + ". Waiting or retrying tools cannot reopen it; retry session shutdown to release retained owners."));
+    if (this.pending || this.discardOperation) return Promise.reject(new Error("[SANDBOX_BUSY] Workspace has an active operation or cleanup; wait for that operation to settle"));
     return this.pending = this.run(operation, input, signal).finally(this.releasePending);
   }
   private readonly releasePending = (): void => { this.pending = undefined; };
@@ -219,12 +221,17 @@ export class WorkspaceSandboxBackend {
       return reply;
     } catch (error) {
       try { await this.discardSnapshot(); }
-      catch (cleanupError) { throw new AggregateError([error, cleanupError], "Sandbox operation failed and cleanup remains unresolved"); }
+      catch (cleanupError) { throw new AggregateError([error, cleanupError], "Sandbox operation failed: " + String(error).slice(0, 2048) + "\nCleanup remains unresolved: " + String(cleanupError).slice(0, 2048)); }
       throw error;
     }
   }
   private async closeVm(): Promise<void> {
-    if (this.vm) { await this.vm.cleanup(); need(this.vm.state === "closed", "Sandbox cleanup unresolved"); this.vm = undefined; }
+    if (this.vm) {
+      await this.vm.cleanup(true);
+      need((this.vm.state === "closed" || this.vm.state === "closed-before-start") && !this.vm.active && !this.vm.execution && !this.vm.connection,
+        "Sandbox cleanup unresolved; state=" + this.vm.state + "; " + (this.vm.cleanupError ?? "physical owner still pending") + "; journal=" + this.root + path.sep + "owner.json");
+      this.vm = undefined;
+    }
   }
   /** Called after a settled invocation/publication failure. A later call captures a fresh workspace. */
   discardSnapshot(): Promise<void> {
@@ -232,7 +239,7 @@ export class WorkspaceSandboxBackend {
   }
   private async performDiscardSnapshot(): Promise<void> {
     try { await this.closeVm(); await this.releaseArtifacts(); }
-    catch (error) { this.closed = true; throw error; }
+    catch (error) { this.closed = true; this.cleanupFailure = String(error).slice(0, 2048); throw error; }
     finally { this.discardOperation = undefined; }
   }
   async drain(): Promise<void> { try { await this.pending; } catch { /* original caller owns its failure */ } }

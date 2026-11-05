@@ -176,6 +176,7 @@ setFlagsFromString("--expose-gc");
 const forceGC = runInNewContext("gc");
 const refs = [];
 let created = 0, disposed = 0, cleared = 0, peakWasmBytes = 0, allocation;
+let timersCreated = 0, timersReleasedOnFinish = 0;
 async function inspect() {
   for(let i=0;i<5;i++) { await nextTask(); forceGC(); }
   if(created === 31 && allocation === undefined) {
@@ -188,13 +189,16 @@ async function inspect() {
     sampler.disconnect();
   }
   parentPort.postMessage({ diagnostic: true, created, disposed, cleared, tracked: refs.length,
-    retained: refs.filter(ref => ref.deref() !== undefined).length, memory: process.memoryUsage(), peakWasmBytes, allocation });
+    retained: refs.filter(ref => ref.deref() !== undefined).length, memory: process.memoryUsage(), peakWasmBytes, allocation,
+    timersCreated, timersReleasedOnFinish });
 }
 `;
 	insert("if (parentPort) {", 'const sampler = new Session(); sampler.connect();\nawait sampler.post("HeapProfiler.startSampling", { samplingInterval: 4096, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true });\nif (parentPort) {');
 	insert('parentPort.on("message", start)', 'parentPort.on("message", message => { if(message.inspect) void inspect(); else start(message); })');
 	insert("const budget = new BridgeBudget();", "refs.push(new WeakRef(data), new WeakRef(data.tools), new WeakRef(data.store), new WeakRef(data.interrupt), new WeakRef(port));\n    const budget = new BridgeBudget();");
 	insert("let onMessage;", "created++; refs.push(new WeakRef(vm), new WeakRef(vm.instance), new WeakRef(vm.instance.exports.memory));\n    let onMessage;");
+	insert("timers.set(a.toNumber(), setTimeout(fireTimer, b.toNumber(), a.toNumber()));", "timersCreated++; timers.set(a.toNumber(), setTimeout(fireTimer, b.toNumber(), a.toNumber()));");
+	insert("if (timers) {", "if (timers) { refs.push(new WeakRef(timers)); for (const timer of timers.values()) refs.push(new WeakRef(timer)); timersReleasedOnFinish += timers.size;");
 	insert("vm.dispose();", "peakWasmBytes = Math.max(peakWasmBytes, vm._getMemory().buffer.byteLength);\n        vm.dispose(); disposed++; if(vm.instance === null && vm.module === null && vm.hostCallbacks.size === 0 && vm._ownedHandles.size === 0) cleared++;");
 	const originalWorker = workerThreads.Worker;
 	let current: InstanceType<typeof originalWorker> | undefined;
@@ -217,18 +221,20 @@ async function inspect() {
 		worker.unref();
 		assert.equal(result.diagnostic, true); assert.equal(result.retained, 0);
 		assert.equal(result.created, result.disposed); assert.equal(result.created, result.cleared);
-		assert.equal(result.tracked, result.created * 8);
+		assert.equal(result.tracked, result.created * 8 + Math.max(0, result.created - 1) * 2);
 		return result;
 	}
 	try {
 		assert.ok((await sandbox.execute("return 1")).ok);
 		const idleAfterOne = await inspect();
 		for (let i = 0; i < 30; i++) {
-			assert.ok((await sandbox.execute('globalThis.large = new Uint8Array(8 * 1024 * 1024); store("x", 1); return large.length')).ok);
+			assert.ok((await sandbox.execute('clearTimeout(setTimeout(()=>{},300000)); await new Promise(resolve=>setTimeout(resolve,0)); globalThis.large = new Uint8Array(8 * 1024 * 1024); setTimeout(()=>text(large.length),300000); store("x", 1); return large.length')).ok);
 			await inspect();
 		}
 		const idleAfterLargeRuns = await inspect();
 		assert.equal(idleAfterLargeRuns.created, 31);
+		assert.equal(idleAfterLargeRuns.timersCreated, 90);
+		assert.equal(idleAfterLargeRuns.timersReleasedOnFinish, 30);
 		await sandbox.close(); current = undefined;
 		await collect();
 		assert.equal(workerRefs.filter(ref => ref.deref()).length, 0);

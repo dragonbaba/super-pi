@@ -171,11 +171,11 @@ function mutate(root, operation, input, maxWriteBytes) {
   const target = local(root, input.path);
   if (operation === 'write') {
     need(typeof input.content === 'string' && Buffer.byteLength(input.content) <= maxWriteBytes, 'Write exceeds the native write limit');
-    if (fs.existsSync(target)) need(input.snapshot === sha(read(target)), 'Read snapshot required or changed');
+    if (fs.existsSync(target)) need(input.snapshot === sha(read(target)), 'Read snapshot required or changed. Read the file again, reconcile changes, then pass snapshot: result.details.snapshot (SHA-256), not result.ref. This write did not modify the target.');
     else need(input.snapshot === undefined || input.snapshot === null, 'Create cannot reuse a snapshot');
     fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, input.content);
   } else if (operation === 'edit') {
-    const source = read(target); need(input.snapshot === sha(source), 'Read snapshot required or changed');
+    const source = read(target); need(input.snapshot === sha(source), 'Read snapshot required or changed. Read the file again, reconcile changes, then pass snapshot: result.details.snapshot (SHA-256), not result.ref. This edit did not modify the target.');
     need(isUtf8(source), 'File is not UTF-8 text');
     let text = source.toString('utf8'); need(Array.isArray(input.edits) && input.edits.length > 0 && input.edits.length <= 20, 'Invalid edit list');
     for (const edit of input.edits) {
