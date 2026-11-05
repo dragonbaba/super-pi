@@ -18,6 +18,7 @@ export interface WorkspaceSandboxOptions {
 export interface WorkspaceArtifact { name: string; bytes: number; sha256: string; }
 export interface WorkspaceChange { path: string; before: string | null; content: string | null; workspaceIndex?: number; artifact?: WorkspaceArtifact; }
 export interface WorkspaceReply { id: string; ok: boolean; text?: string; snapshot?: string; changes?: WorkspaceChange[]; error?: string;
+  image?: { mimeType: string; artifact: WorkspaceArtifact };
   phase?: string; execution?: { exitCode: number; timedOut: boolean; closed: boolean; stdout: string; stderr: string; truncated?: boolean }; }
 export class WorkspaceOperationError extends Error {
   readonly reply: WorkspaceReply;
@@ -157,7 +158,9 @@ export class WorkspaceSandboxBackend {
       additionalMappings.push([captured, "C:\\SuperPiInput-" + (i + 1), true]);
     }
     const worker = new URL("./workspace-worker.mjs", import.meta.url);
-    for (const [from, name] of [[process.execPath, "node.exe"], [fileURLToPath(worker), "worker.mjs"], [fileURLToPath(new URL("windows-sandbox-task-worker.cs", runtimeUrl)), "command.cs"]]) {
+    for (const name of ["core", "core/sandbox", "utils"]) { const directory = path.join(tools, name); await fs.mkdir(directory); await this.remember(directory); }
+    for (const [from, name] of [[process.execPath, "node.exe"], [fileURLToPath(worker), "core/sandbox/workspace-worker.mjs"],
+      [fileURLToPath(new URL("../../utils/image-signature.mjs", import.meta.url)), "utils/image-signature.mjs"], [fileURLToPath(new URL("windows-sandbox-task-worker.cs", runtimeUrl)), "command.cs"]]) {
       const bytes = await fs.readFile(from); const target = path.join(tools, name); await fs.writeFile(target, bytes, { flag: "wx" }); await this.remember(target);
       need(hash(await fs.readFile(target)) === hash(bytes), "Tool copy changed");
     }
@@ -192,7 +195,7 @@ export class WorkspaceSandboxBackend {
       const id = randomUUID().replaceAll("-", ""), exchange = path.join(this.root!, "exchange");
       const request = JSON.stringify({ id, mode: this.mode, workspace: this.cwd, directories: this.toolchainOptions.directories ?? [], operation, input, maxWriteBytes: MAX_WRITE_BYTES }); need(Buffer.byteLength(request) <= 4 * 1024 * 1024, "Request too large");
       await fs.writeFile(path.join(exchange, "request.json"), request); this.calls++;
-      await this.vm.invoke("exec", ["exec", "--id", this.vm.id, "-c", '"C:\\SuperPiTools\\node.exe" "C:\\SuperPiTools\\worker.mjs"', "-d", "C:\\SuperPiTools", "-r", "System", "--raw"], 150000, signal);
+      await this.vm.invoke("exec", ["exec", "--id", this.vm.id, "-c", '"C:\\SuperPiTools\\node.exe" "C:\\SuperPiTools\\core\\sandbox\\workspace-worker.mjs"', "-d", "C:\\SuperPiTools", "-r", "System", "--raw"], 150000, signal);
       // Only settled command records are compacted. Physical owners stay in the lifecycle slots.
       if (this.vm.calls.length > 16) { this.vm.calls.copyWithin(0, this.vm.calls.length - 16); this.vm.calls.length = 16; this.vm.save(); }
       signal?.throwIfAborted();
@@ -205,6 +208,8 @@ export class WorkspaceSandboxBackend {
         && typeof reply.execution.closed === "boolean" && typeof reply.execution.stdout === "string" && reply.execution.stdout.length <= 32768
         && typeof reply.execution.stderr === "string" && reply.execution.stderr.length <= 32768, "Invalid command execution facts");
       if (!reply.ok) throw new WorkspaceOperationError(reply);
+      if (reply.image !== undefined) need(operation === "read" && !reply.execution && reply.changes?.length === 0
+        && reply.image?.artifact?.name === id + "-0.bin", "Unexpected read attachment");
       if (reply.execution && Array.isArray(reply.changes)) for (const change of reply.changes) {
         need(typeof change.path === "string", "Invalid candidate path");
         const baseline = this.sources.get(this.sourceKey(change.path, change.workspaceIndex));
@@ -272,12 +277,13 @@ export class WorkspaceSandboxBackend {
     } finally { await handle.close(); }
   }
   async releaseCandidates(changes: readonly WorkspaceChange[]): Promise<void> {
-    for (const change of changes) if (change.artifact) {
-      need(this.root && ARTIFACT_NAME.test(change.artifact.name), "Invalid artifact release");
-      const file = path.join(this.root, "exchange", change.artifact.name), stat = await fs.lstat(file);
-      need(stat.isFile() && !stat.isSymbolicLink() && await fs.realpath(file) === file, "Redirected artifact release");
-      await fs.unlink(file);
-    }
+    for (const change of changes) if (change.artifact) await this.releaseArtifact(change.artifact);
+  }
+  async releaseArtifact(artifact: WorkspaceArtifact): Promise<void> {
+    need(this.root && ARTIFACT_NAME.test(artifact.name), "Invalid artifact release");
+    const file = path.join(this.root, "exchange", artifact.name), stat = await fs.lstat(file);
+    need(stat.isFile() && !stat.isSymbolicLink() && await fs.realpath(file) === file, "Redirected artifact release");
+    await fs.unlink(file);
   }
   close(): Promise<void> {
     this.closed = true;

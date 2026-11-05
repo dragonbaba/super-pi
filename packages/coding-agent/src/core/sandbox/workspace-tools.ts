@@ -11,6 +11,9 @@ import { WorkspaceSandboxBackend, WorkspaceOperationError, type WorkspaceChange,
 import type { ShellExecutionFacts } from "../tools/shell-execution.ts";
 import { parseSandboxNetwork } from "./network-policy.ts";
 import { WORKSPACE_TOOL_NAMES } from "../session-execution-profile.ts";
+import { detectSupportedImageMimeType } from "../../utils/mime.ts";
+import { IMAGE_TYPE_SNIFF_BYTES } from "../../utils/image-signature.mjs";
+import { processImage } from "../../utils/image-process.ts";
 
 const names = WORKSPACE_TOOL_NAMES;
 const BASELINE_PATTERN = /^[a-f0-9]{64}$/;
@@ -18,6 +21,7 @@ const BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/
 const TRAILING_PATH_PATTERN = /[. ]$/;
 const hash = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
 function need(value: unknown, reason: string): asserts value { if (!value) throw new Error("[SANDBOX_WRITEBACK] " + reason); }
+function needImage(value: unknown, reason: string): asserts value { if (!value) throw new Error(reason); }
 function shellFacts(reply: WorkspaceReply, cwd: string, failure?: string): ShellExecutionFacts | undefined {
   const execution = reply.execution;
   if (!execution) return undefined;
@@ -51,6 +55,7 @@ export class WorkspaceSandboxTools {
       const definition: ToolDefinition = { name, label: name + " (Sandbox)", parameters, executionMode: "sequential", modelExposure: "nested",
         description: name === "powershell" || name === "bash" ? "Run " + (name === "bash" ? "Bash" : "PowerShell 7") + " inside the session Windows Sandbox. Tool installation directories are discovered from host PATH. Command and publication outcomes are separate. No host fallback or background processes. Timeout at most 120 seconds." + workspace + commandEnvironment
           : name === "find" || name === "grep" ? "Search sandbox workspace using a literal substring; at most 200 results." + workspace
+          : name === "read" ? "Read UTF-8 text (up to 2 MiB, 2000 lines/32 KiB per call) or JPEG, PNG, GIF, WebP, BMP images (up to 16 MiB) by file signature. Images return native image attachments, resized to inline limits; offset/limit apply only to text. In CodeMode use await show(result.ref) to display the image; do not print shell base64. Returns a snapshot hash for text edits." + workspace
           : "Operate inside the session sandbox workspace. Read returns a snapshot hash required for overwriting or exact-text editing. Protected metadata and dependencies are excluded from the snapshot." + workspace,
         async execute(id, args, signal, _update, ctx) { return owner.execute(name, id, args as Record<string, unknown>, ctx, signal); },
       };
@@ -71,6 +76,7 @@ export class WorkspaceSandboxTools {
           shellExecution: shellFacts(error.reply, this.backend.workspace(), error.reply.phase === "execution" && error.reply.execution?.closed ? undefined : error.reply.error), published: 0 } };
       throw error;
     }
+    if (reply.image !== undefined) return this.readImage(name, reply, ctx, check);
     const receipts: FileReceipt[] = [];
     try {
       check();
@@ -90,6 +96,30 @@ export class WorkspaceSandboxTools {
       catch (cleanupError) { throw new AggregateError([failure, cleanupError], "Sandbox writeback failed and cleanup remains unresolved"); }
       if (reply.execution) return { isError: true, content: [{ type: "text" as const, text: failure.message }], details: { sandbox: true, phase: "publication",
         execution: reply.execution, shellExecution: shellFacts(reply, this.backend.workspace(), failure.message), published, partial, writeback: receipts } };
+      throw failure;
+    }
+  }
+  private async readImage(name: string, reply: WorkspaceReply, ctx: ExtensionContext, check: () => void) {
+    try {
+      check();
+      const image = reply.image, artifact = image?.artifact;
+      needImage(name === "read" && !reply.execution && reply.changes?.length === 0 && artifact
+        && typeof image.mimeType === "string" && typeof artifact.sha256 === "string" && BASELINE_PATTERN.test(artifact.sha256)
+        && Number.isSafeInteger(artifact.bytes) && artifact.bytes > 0 && artifact.bytes <= 16 * 1024 * 1024, "Invalid read image envelope");
+      const bytes = (await this.backend.candidate(artifact, true))!; check();
+      needImage(detectSupportedImageMimeType(bytes.subarray(0, IMAGE_TYPE_SNIFF_BYTES)) === image.mimeType, "Image signature mismatch");
+      // Reuse native read processing, only over authenticated guest bytes; never reopen a host source path.
+      const processed = await processImage(bytes, image.mimeType); check();
+      await this.backend.releaseArtifact(artifact); check();
+      const note = ctx.model && !ctx.model.input.includes("image") ? "\n[Current model does not support images. The image will be omitted from this request.]" : "";
+      const text = "Read image file [" + (processed.ok ? processed.mimeType : image.mimeType) + "]"
+        + (processed.ok ? processed.hints.length ? "\n" + processed.hints.join("\n") : "" : "\n" + processed.message) + note;
+      return { content: processed.ok ? [{ type: "text" as const, text }, { type: "image" as const, data: processed.data, mimeType: processed.mimeType }]
+        : [{ type: "text" as const, text }], details: { sandbox: true, snapshot: reply.snapshot } };
+    } catch (error) {
+      const failure = new Error("[SANDBOX_IMAGE] " + (error instanceof Error ? error.message : String(error)), { cause: error });
+      try { await this.backend.discardSnapshot(); }
+      catch (cleanupError) { throw new AggregateError([failure, cleanupError], "Sandbox image read failed and cleanup remains unresolved"); }
       throw failure;
     }
   }

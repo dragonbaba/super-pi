@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { isUtf8 } from "node:buffer";
 import test from "node:test";
 import ts from "typescript";
+import { detectSupportedImageMimeType, IMAGE_TYPE_SNIFF_BYTES } from "../packages/coding-agent/src/utils/image-signature.mjs";
 
 const source = ts.createSourceFile("worker.mjs", fs.readFileSync("packages/coding-agent/src/core/sandbox/workspace-worker.mjs", "utf8"), ts.ScriptTarget.Latest, true);
 // Run the complete guest entry against owned temporary roots; no command or VM is launched.
@@ -13,7 +14,7 @@ const guest = source.statements.filter(node => !ts.isImportDeclaration(node)
     && !(ts.isFunctionDeclaration(node) && node.name?.text === "commandWorkspace")
     && !(ts.isVariableStatement(node) && ["SOURCE", "WORK", "EXCHANGE"].includes(node.declarationList.declarations[0]!.name.getText(source))))
     .map(node => node.getText(source)).join("\n");
-const execute = new Function("fs", "path", "createHash", "isUtf8", "spawnSync", "process", "SOURCE", "WORK", "EXCHANGE", "commandWorkspace", guest);
+const execute = new Function("detectSupportedImageMimeType", "IMAGE_TYPE_SNIFF_BYTES", "fs", "path", "createHash", "isUtf8", "spawnSync", "process", "SOURCE", "WORK", "EXCHANGE", "commandWorkspace", guest).bind(undefined, detectSupportedImageMimeType, IMAGE_TYPE_SNIFF_BYTES);
 
 test("both shell requests map every workspace drive independently of toolchain drives", () => {
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "sp-workspace-drives-")));
