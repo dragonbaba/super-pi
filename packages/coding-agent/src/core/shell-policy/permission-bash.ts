@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { basename, resolve } from "node:path";
+import { basename, isAbsolute, parse, resolve } from "node:path";
 import { staticMutationTarget, uninspectableBashStateStart, heredocScriptLanguages, literalAliasSource, literalEvalScript, literalProcessSources, literalStoredScripts, unsafeBashLoopHeaderReason } from "./core.ts";
 import { commandSubstitutionEnd } from "./shell-substitution.ts";
 import { analyzeShellSource, type ShellAnalysisOwner } from "./shell-analysis.ts";
@@ -8,7 +8,7 @@ import { isLiteralReadLoop } from "./readonly-loop.ts";
 import { isReadOnlyFindLoop } from "./readonly-find-loop.ts";
 import { findPredicateHasOperand, isReadOnlySortTail } from "./readonly-find.ts";
 import { sortHasTerminalOption, sortLongOption, sortOptionRequiresValue } from "./sort-options.ts";
-import { NODE_COMMAND_PATTERN, PYTHON_COMMAND_PATTERN } from "./regex.ts";
+import { DIRECTORY_CONTENTS_OPERAND, NODE_COMMAND_PATTERN, PYTHON_COMMAND_PATTERN } from "./regex.ts";
 import { addShellEffect, hasUnresolvedParentPath, type ShellEffectKind, type ShellMutationScan } from "./mutation-effects.ts";
 import { inspectWindowsArguments, inspectWindowsMutations } from "./windows-mutations.ts";
 import { isBashCommandFlag, WINDOWS_REDIRECTION_OPERATORS } from "./shell-redirection.ts";
@@ -32,7 +32,6 @@ const COPY_COMMANDS = new Set(["cp", "copy"]);
 const MOVE_COMMANDS = new Set(["mv", "move", "rename", "ren"]);
 const GIT_READ_ONLY = new Set(["status", "diff", "log", "show", "ls-files", "rev-parse"]);
 const TRANSFER_FLAGS = new Set(["-f", "--force", "-n", "--no-clobber", "-i", "--interactive", "-v", "--verbose", "-r", "-R", "--recursive", "-a", "--archive"]);
-const DIRECTORY_CONTENTS_OPERAND = /(?:^|[/\\])\.[/\\]*$/u;
 
 export type BashPermissionKind = "read-only" | "known-mutation" | "opaque-script";
 
@@ -248,11 +247,38 @@ export function recordGit(tokens: readonly string[], start: number, cwd: string,
       if (options && (value === "-e" || value === "--exclude")) { slot++; continue; }
       if (options && value.startsWith("-")) continue;
       pathspecs = true;
-      addShellEffect(scan, "delete-contents", staticMutationTarget(value, cwd, Number(expansions?.[slot] ?? 0)));
+      // Git magic pathspecs are not filesystem operands (even when shell-quoted).
+      addShellEffect(scan, "delete-contents", value.startsWith(":") ? undefined : staticMutationTarget(value, cwd, Number(expansions?.[slot] ?? 0)));
     }
   }
   if (uncertain) scan.uncertain = true;
   if (!pathspecs) addShellEffect(scan, action === "clean" ? "git-clean" : "git-reset", cwd);
+}
+
+function recordRmdirParents(tokens: PermissionTokens, start: number, cwd: string, scan: ShellMutationScan): void {
+  let parents = false, options = true;
+  for (let index = start; index < tokens.length && tokens[index] !== "--"; index++) {
+    const token = tokens[index]!;
+    if (token === "--parents" || token.startsWith("-") && !token.startsWith("--") && token.includes("p")) parents = true;
+  }
+  if (!parents) return;
+  for (let index = start; index < tokens.length; index++) {
+    let value = tokens[index]!;
+    if (options && value === "--") { options = false; continue; }
+    if (options && value.startsWith("-")) continue;
+    if (staticMutationTarget(value, cwd, tokens.expansions?.[index]) === undefined) { addShellEffect(scan, "delete", undefined); continue; }
+    // Absolute -p walks all the way to the root. Record it before the effect cap.
+    if (isAbsolute(value)) { addShellEffect(scan, "delete", parse(value).root); continue; }
+    for (let count = 0; count < MAX_TARGETS; count++) {
+      while (value.endsWith("/") || value.endsWith("\\")) value = value.slice(0, -1);
+      const separator = Math.max(value.lastIndexOf("/"), value.lastIndexOf("\\"));
+      if (separator < 0) break;
+      value = value.slice(0, separator);
+      if (!value) break;
+      addShellEffect(scan, "delete", staticMutationTarget(value, cwd));
+      if (count + 1 === MAX_TARGETS) scan.uncertain = true;
+    }
+  }
 }
 
 function inspectKnownMutation(command: string, tokens: PermissionTokens, start: number, cwd: string, builder: ScopeBuilder, depth: number): boolean {
@@ -278,20 +304,30 @@ function inspectKnownMutation(command: string, tokens: PermissionTokens, start: 
           if (value.startsWith("-") || value === "(" || value === ")" || value === "!") break;
           addTarget(builder, value, cwd, true, tokens.expansions?.[slot], false, deleting ? "delete-contents" : undefined);
         }
-        if (!deleting && builder.native) {
-          const executable = commandName(tokens[index + 1] ?? "");
-          if (SIMPLE_DELETIONS.has(executable)) addShellEffect(builder.native, "delete", undefined);
-          else if (SCRIPT_WRAPPERS.has(executable)) { builder.native.uncertain = true; inspectSegment(tokens, cwd, depth + 1, builder, index + 1); }
-          else if (PYTHON_COMMAND_PATTERN.test(executable) || NODE_COMMAND_PATTERN.test(executable)) {
-            const language = NODE_COMMAND_PATTERN.test(executable) ? "node" : "python";
-            for (let slot = index + 2; slot + 1 < tokens.length && tokens[slot] !== ";" && tokens[slot] !== "+"; slot++) {
-              if (language === "node" ? tokens[slot] !== "-e" && tokens[slot] !== "--eval" : tokens[slot] !== "-c") continue;
-              inspectEmbeddedDeletion(tokens[slot + 1]!, language, cwd, builder.native);
-              builder.native.uncertain = true; break;
+        if (!deleting) {
+          let end = index + 1;
+          while (end < tokens.length && tokens[end] !== ";" && tokens[end] !== "+") end++;
+          if (builder.native) {
+            if (depth >= MAX_DEPTH) { builder.native.recognized = true; builder.native.uncertain = true; }
+            else {
+              // One bounded argv per -exec, released on return; later predicates are separate invocations.
+              const nested: PermissionTokens = tokens.slice(index + 1, end);
+              nested.expansions = tokens.expansions?.slice(index + 1, end);
+              const executable = commandName(nested[0] ?? "");
+              if (tokens[index] === "-execdir" || SCRIPT_WRAPPERS.has(executable)) builder.native.uncertain = true;
+              inspectSegment(nested, cwd, depth + 1, builder);
+              if (PYTHON_COMMAND_PATTERN.test(executable) || NODE_COMMAND_PATTERN.test(executable)) {
+                const language = NODE_COMMAND_PATTERN.test(executable) ? "node" : "python";
+                for (let slot = 1; slot + 1 < nested.length; slot++) {
+                  if (language === "node" ? nested[slot] !== "-e" && nested[slot] !== "--eval" : nested[slot] !== "-c") continue;
+                  inspectEmbeddedDeletion(nested[slot + 1]!, language, cwd, builder.native);
+                  builder.native.uncertain = true; break;
+                }
+              }
             }
           }
+          markOpaque(builder, "find_exec_scope"); index = end;
         }
-        if (tokens[index] !== "-delete") { markOpaque(builder, "find_exec_scope"); return true; }
         continue;
       }
     }
@@ -340,6 +376,7 @@ function inspectKnownMutation(command: string, tokens: PermissionTokens, start: 
   }
   if (SIMPLE_MUTATIONS.has(command)) {
     markMutation(builder, command);
+    if (command === "rmdir" && builder.native) recordRmdirParents(tokens, start, cwd, builder.native);
     const count = addPositionalTargets(tokens, start, builder, cwd, 0, false, SIMPLE_DELETIONS.has(command), SIMPLE_DELETIONS.has(command) ? undefined : "create");
     if (!count && builder.native && SIMPLE_DELETIONS.has(command)) addShellEffect(builder.native, "delete", undefined);
     return true;
@@ -366,16 +403,19 @@ function inspectKnownMutation(command: string, tokens: PermissionTokens, start: 
   }
   if (command === "sed") {
     let inPlace = false, scriptOption = false, options = true;
+    let backupSuffix = "", backupExpansion = 0;
     for (let index = start; index < tokens.length; index++) {
       const token = tokens[index]!;
       if (options && token === "--") { options = false; continue; }
       if (!options || !token.startsWith("-")) continue;
-      if (token === "--in-place" || token.startsWith("--in-place=")) inPlace = true;
+      if (token === "--in-place" || token.startsWith("--in-place=")) {
+        inPlace = true; backupSuffix = token === "--in-place" ? "" : token.slice(11); backupExpansion = tokens.expansions?.[index] ?? 0;
+      }
       else if (token === "--expression" || token === "--file") { scriptOption = true; index++; }
       else if (token.startsWith("--expression=") || token.startsWith("--file=")) scriptOption = true;
       else if (!token.startsWith("--")) for (let flag = 1; flag < token.length; flag++) {
         const code = token.charCodeAt(flag);
-        if (code === 105) { inPlace = true; break; } // -i consumes the optional suffix.
+        if (code === 105) { inPlace = true; backupSuffix = token.slice(flag + 1); backupExpansion = tokens.expansions?.[index] ?? 0; break; } // -i consumes the optional suffix.
         if (code === 101 || code === 102) { scriptOption = true; if (flag + 1 === token.length) index++; break; }
       }
     }
@@ -398,6 +438,10 @@ function inspectKnownMutation(command: string, tokens: PermissionTokens, start: 
       }
       if (!scriptSeen) { scriptSeen = true; continue; }
       addTarget(builder, token, cwd, true, tokens.expansions?.[index], false, "write"); targets++;
+      if (backupSuffix && builder.native) {
+        const backup = backupSuffix.includes("*") ? backupSuffix.replaceAll("*", token) : token + backupSuffix;
+        addTarget(builder, backup, cwd, true, backupExpansion | (tokens.expansions?.[index] ?? 0), false, "write");
+      }
     }
     if (!targets) { builder.unverifiableMutation = true; markOpaque(builder, "sed_target_unverifiable"); }
     return true;

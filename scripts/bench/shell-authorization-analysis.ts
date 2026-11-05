@@ -30,6 +30,9 @@ const cases = native ? [
   ["native-bash-sed-options", "sed -i --expression='s/a/b/' one two", 1],
   ["native-bash-copy-contents", "cp -r src/. ../outside", 1],
   ["native-powershell-cd", "Set-Location nonexistent; Remove-Item file", 0],
+  ["native-bash-find-exec", "find safe -exec echo '{}' \\; -exec cp '{}' .git/config \\;", 1],
+  ["native-bash-sed-backup", "sed -i'../outside/*' 's/a/b/' safe.txt", 1],
+  ["native-bash-rmdir-parents", "rmdir -p empty/child", 1],
 ] as const : literalInputs ? [
   ["aliased-process-producer", "shopt -s expand_aliases\nalias echo='printf marker'\nsource <(echo ':')", 2],
   ["sort-terminal-value", "sort -o .git/config --help=x", 1],

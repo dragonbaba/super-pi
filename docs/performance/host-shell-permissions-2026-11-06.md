@@ -57,7 +57,11 @@ node --experimental-strip-types --expose-gc scripts/bench/shell-authorization-an
 
 旧组合入口对照仍验证原来的生命周期扫描+high-risk+permission 三层共享：owner created=released=2,308，liveOwners/liveEntries/liveBytes=0，正常/异常/取消/代次失效的 16 个 WeakRef 两次 GC 后全部消失。四个样本采样 7,478 / 193,077 / 194,611 / 545,222 B/调用；heredoc 大样本仍主要分配于已有 join/split/parseShellSegments，此结果不能当作已优化承诺。
 
+第四轮补测包含全部 16 个原生样本，owner created=released=9,220、liveOwners/liveEntries/liveBytes=0、8 个 WeakRef 两次 GC 后全部释放。新增 find 多个 -exec / sed 外部备份 / rmdir 父目录样本分别为 15,359 / 11,336 / 10,467 B/调用，p95 为 0.0491 / 0.0285 / 0.0295 ms，各预处理 512 次。find 每个 -exec 借用原始 token 字符串，创建单次调用拥有的 argv/expansion 数组，受 128 Ki 字符输入和 4 层递归限制，返回后不保留；没有进度回调分配或对象池。新增 helper 纳入同一 AST 函数名单。
+
 ## 行为与适用边界
+
+第四轮修复 find -exec 的已知写操作及后续 -exec、Git magic pathspec、sed -i 备份目标和 rmdir -p 的隐含祖先。未知复制源仍检查已知目标；特殊 pathspec 保守询问；外部已有备份按 D5 阻止；绝对路径 rmdir -p 会触及根，直接拒绝，普通相对目录仍允许。原生行为、AST、TUI 门槛 32 项和旧授权兼容 29 项通过，类型检查和内部包构建通过。真实夹具验证 .bak 保存原内容、多段 find 执行复制、相对 rmdir 清理子目录，以及外部备份拒绝后两个文件内容均保留。上一头 e1c77d3c 的 Windows/Linux 两个 CI 失败均为正则未放专用模块，已移动并运行完整 9 项 TUI 门槛；其余四项 CI 通过。最终合并仍须最新头全量 CI 和复审。
 
 12 个新增行为测试使用自己的工作区、外部兄弟目录和追加工作区。真实生产 selector 6 个审批帧；Bash/PowerShell 均验证取消后可重新批准、批准才删除、明确拒绝保留目标。Windows 未加引号盘符路径、Set-Location+ri、cmd /c 完整参数的实际目标与展示一致。真实 rm 仅解除目录链接，其指向的文件保留；cwd 链接在审批后变更时不启动命令。敏感拒绝只到授权边界，未删除真实关键目录。
 

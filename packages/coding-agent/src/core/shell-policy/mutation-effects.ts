@@ -28,7 +28,12 @@ export function hasUnresolvedParentPath(path: string): boolean {
 
 export function addShellEffect(scan: ShellMutationScan, kind: ShellEffectKind, path: string | undefined, destination?: string): void {
   scan.recognized = true;
-  if (path === undefined || (kind === "copy" || kind === "move") && destination === undefined) { scan.uncertain = true; return; }
+  if (path === undefined || (kind === "copy" || kind === "move") && destination === undefined) {
+    scan.uncertain = true;
+    // Unknown source basenames do not hide a known protected/overwritten destination.
+    if ((kind === "copy" || kind === "move") && destination !== undefined) addShellEffect(scan, "write", destination);
+    return;
+  }
   for (const effect of scan.effects) if (effect.kind === kind && effect.path === path && effect.destination === destination) return;
   if (scan.effects.length >= MAX_SHELL_EFFECTS) { scan.uncertain = true; return; }
   scan.effects.push({ kind, path, destination });

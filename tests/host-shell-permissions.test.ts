@@ -110,6 +110,8 @@ test("PowerShell emits separate copy/move operands and write destinations with b
 test("native Bash composition keeps real operands, command option groups, git scopes and opacity separate", () => {
   const cwd = process.cwd();
   assert.equal(analyzeNativeShell("cp -r src/. ../outside", cwd, "bash", 1).uncertain, true);
+  assert.equal(analyzeNativeShell("git clean -fd -- ':(top).sp'", cwd, "bash", 1).uncertain, true);
+  assert.deepEqual(analyzeNativeShell("rmdir -p empty/child", cwd, "bash", 1).effects.map(effect => effect.path), [join(cwd, "empty"), join(cwd, "empty/child")]);
   for (const command of ["rm -rf ../outside", "/bin/rm -rf ../outside", "bash -lc 'rm -rf ../outside'", "python -c 'import shutil; shutil.rmtree(\"../outside\")'", "node -e 'require(\"fs\").rmSync(\"../outside\",{recursive:true})'"]) {
     const result = analyzeNativeShell(command, cwd, "bash", 1);
     assert.equal(result.recognized, true, command); assert.equal(result.uncertain, false, command);
@@ -187,6 +189,7 @@ test("literal tilde in a HOME path stays a known critical target, including Wind
 test("review: all write operands, shell redirections and absolute wrappers reach native authorization", async t => {
   const f = await fixture(t); await fs.mkdir(join(f.workspace, ".git")); await fs.writeFile(join(f.workspace, ".git", "config"), "keep");
   await fs.writeFile(join(f.outside, "existing.txt"), "keep");
+  await fs.writeFile(join(f.workspace, "safe.txt"), "keep");
   for (const [shell, command] of [
     ["powershell", "Set-Content -LiteralPath 'safe.txt','.git/config' -Value changed"],
     ["powershell", "Add-Content -Path 'safe.txt','../outside/existing.txt' -Value changed"],
@@ -199,6 +202,11 @@ test("review: all write operands, shell redirections and absolute wrappers reach
     ["bash", "'/usr/bin/git.exe' clean -fd -- .sp"],
     ["bash", "find safe .git -type f -delete"],
     ["bash", "sed -i --expression='s/a/b/' .git/config"],
+    ["bash", "find safe -maxdepth 0 -exec cp source .git/config \\;"],
+    ["bash", "find safe -exec cp '{}' .git/config \\;"],
+    ["bash", "find safe -exec echo '{}' \\; -exec sed -i 's/a/b/' .git/config \\;"],
+    ["bash", "sed -i'../outside/*' 's/a/b/' existing.txt"],
+    ["bash", `rmdir -p '${f.workspace.replaceAll("\\", "/")}/empty/child'`],
   ] as const) await assert.rejects(f.owner.authorize(f.event(shell, { command }), f.ctx), /POLICY_BLOCKED|EXTERNAL_FILE_WRITE_BLOCKED/, command);
   for (const command of ["Get-ChildItem 2>&1", "git diff 2>&1", "cmd /c dir 2>&1", "Get-ChildItem 3>&1"]) {
     assert.equal(scan(command, f.workspace).recognized, false, command);
@@ -300,6 +308,17 @@ test("real transfer, find, sed and failed-cd forms preserve their authorization 
   for (const path of ["one.txt", "two.txt"]) await fs.writeFile(join(f.workspace, path), "old");
   assert.equal((await f.call("bash", { command: "sed --in-place --expression='s/old/new/' one.txt two.txt", timeout: 10 })).isError, undefined);
   for (const path of ["one.txt", "two.txt"]) assert.equal(await fs.readFile(join(f.workspace, path), "utf8"), "new");
+  assert.equal((await f.call("bash", { command: "sed -i.bak 's/new/updated/' one.txt", timeout: 10 })).isError, undefined);
+  assert.equal(await fs.readFile(join(f.workspace, "one.txt.bak"), "utf8"), "new");
+  await fs.writeFile(join(f.outside, "one.txt"), "keep");
+  await assert.rejects(f.call("bash", { command: "sed -i'../outside/*' 's/updated/blocked/' one.txt", timeout: 10 }), /EXTERNAL_FILE_WRITE_BLOCKED/);
+  assert.equal(await fs.readFile(join(f.outside, "one.txt"), "utf8"), "keep");
+  assert.equal(await fs.readFile(join(f.workspace, "one.txt"), "utf8"), "updated");
+  assert.equal((await f.call("bash", { command: "find two.txt -exec echo '{}' \\; -exec cp '{}' copied.txt \\;", timeout: 10 })).isError, undefined);
+  assert.equal(await fs.readFile(join(f.workspace, "copied.txt"), "utf8"), "new");
+  await fs.mkdir(join(f.workspace, "empty/child"), { recursive: true });
+  assert.equal((await f.call("bash", { command: "rmdir -p empty/child", timeout: 10 })).isError, undefined);
+  await assert.rejects(fs.stat(join(f.workspace, "empty")), { code: "ENOENT" });
   assert.equal((await f.call("bash", { command: "find one.txt two.txt -delete", timeout: 10 })).isError, undefined);
   for (const path of ["one.txt", "two.txt"]) await assert.rejects(fs.stat(join(f.workspace, path)), { code: "ENOENT" });
   await fs.writeFile(join(f.workspace, "marker.txt"), "keep");
@@ -311,5 +330,5 @@ test("real transfer, find, sed and failed-cd forms preserve their authorization 
   f.ctx.ui.select = select;
   await f.call(shell, { command, timeout: 10 });
   await assert.rejects(fs.stat(join(f.workspace, "marker.txt")), { code: "ENOENT" });
-  assert.equal(f.dialogs.length, 2);
+  assert.equal(f.dialogs.length, 3); // find's placeholder source requires one bounded approval.
 });

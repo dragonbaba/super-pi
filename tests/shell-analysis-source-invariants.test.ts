@@ -25,7 +25,7 @@ test("authorization scanners and cache methods add no callbacks, promises or Buf
   targets.get("core.ts")!.add("coprocBodyIndex");
   for (const name of ["nodeIndirectCall", "nodeLiteralMethodKeyEnd", "isCodeWhitespace", "hasUninspectableEnvLauncher", "commandTokenIndex"]) targets.get("core.ts")!.add(name);
   for (const name of ["addPositionalTargets", "findSearchRootIndex", "inspectTokenBuffer"]) targets.get("permission-bash.ts")!.add(name);
-  for (const name of ["recordTransfer", "recordGit", "wrapperScript", "inspectSegment"]) targets.get("permission-bash.ts")!.add(name);
+  for (const name of ["recordTransfer", "recordGit", "recordRmdirParents", "wrapperScript", "inspectSegment"]) targets.get("permission-bash.ts")!.add(name);
   for (const name of ["createScanBuilder", "mutationScan", "inspectEmbeddedDeletion", "inspectScriptWrapper", "staticMutationTarget"]) targets.get("core.ts")!.add(name);
   targets.get("shell-redirection.ts")!.add("isBashCommandFlag");
   targets.set("windows-mutations.ts", new Set(["commandName", "literalTarget", "inspectWindowsMutations", "inspectWindowsArguments", "inspectSegment"]));
