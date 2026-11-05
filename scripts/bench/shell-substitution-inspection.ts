@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { Session } from "node:inspector/promises";
 import { setImmediate } from "node:timers/promises";
-import { inspectBashResourceLifecycle, inspectHighRiskBashMutation } from "../../packages/extensions/resource-lifecycle-guard/core.ts";
-import { inspectBashPermissionScope } from "../../packages/extensions/resource-lifecycle-guard/permission-bash.ts";
-import { extractCommandSubstitutions } from "../../packages/extensions/resource-lifecycle-guard/shell-substitution.ts";
+import { inspectBashResourceLifecycle, inspectHighRiskBashMutation } from "../../packages/coding-agent/src/core/shell-policy/core.ts";
+import { inspectBashPermissionScope } from "../../packages/coding-agent/src/core/shell-policy/permission-bash.ts";
+import { extractCommandSubstitutions } from "../../packages/coding-agent/src/core/shell-policy/shell-substitution.ts";
 
 // The synchronous production analysis lane; the Agent authorization benchmark
 // in tool-lifecycle-postmerge.test.ts covers invocation ownership and release.

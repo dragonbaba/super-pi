@@ -594,7 +594,7 @@ class PendingToolAuthorization implements ToolInvocationAuthorization {
       this.policy?.consume(args, id, name, signal);
       // An ordinary tool needs only the epoch gate; permission policy still ran
       // in tool_call. Native mutation grants retain their private value checks.
-      if (!this.authority && this.checks.length === 0) return args;
+      if (!this.authority && this.checks.length === 0) { handedOff = true; return args; }
       // Native files have one terminal authority and own a private prepared payload.
       if (name === "file_batch" || name === "edit" || name === "write" || name === "delete" || name === "move") {
         if (this.checks.length || !this.authority) throw new Error("Blocked by policy: file operation requires one terminal authority");
@@ -649,7 +649,7 @@ class PendingToolAuthorization implements ToolInvocationAuthorization {
 			this.boundary!.assertCurrent(this.generation);
 			handedOff = true;
 			return approved;
-		} finally { if (!handedOff) getShellCwdBinding(terminalValues)?.release(); this.release(); }
+		} finally { if (!handedOff) { getShellCwdBinding(terminalValues)?.release(); getShellCwdBinding(args)?.release(); } this.release(); }
 	}
 	release(): void {
 		if (!this.owners || this.releasing) return;

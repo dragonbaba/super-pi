@@ -960,7 +960,7 @@ export function createShellToolDefinition(
                 if (heredoc && config.name === "bash") throw new Error(CUSTOM_HEREDOC_REFUSAL);
             }
 			if (input.cwd !== undefined && (!isLocalShellBackend(ops) || commandPrefix || (spawnHook && spawnHook !== withMsysStdinBridge) || ops.exec !== backendExecute)) throw new Error("[SHELL_CWD_UNSUPPORTED] Explicit cwd requires the built-in local backend without commandPrefix or spawnHook.");
-			if (input.cwd === undefined && cwdBinding && !cwdBinding.isReleased) throw new Error("[SHELL_CWD_CHANGED] Bound cwd was removed before execution.");
+			if (input.cwd === undefined && cwdBinding?.explicit && !cwdBinding.isReleased) throw new Error("[SHELL_CWD_CHANGED] Bound cwd was removed before execution.");
             cwdBinding = input.cwd === undefined && !cwdBinding ? undefined : await prepareShellCwd(input, ctx?.cwd ?? cwd);
 			const resolvedCommand = commandPrefix ? `${commandPrefix}\n${command}` : command;
 			// These variables only change Bash startup and cd; PowerShell keeps them as ordinary data.

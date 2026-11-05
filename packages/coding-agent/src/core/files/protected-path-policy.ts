@@ -78,8 +78,8 @@ export function assessCanonicalMutationPath(workspaces: readonly string[], canon
     if (isInside(workspace, canonical)) contained = true;
     for (let slot = 0; slot < WORKSPACE_METADATA_ROOTS.length; slot++) {
       const name = WORKSPACE_METADATA_ROOTS[slot]!;
-      const protectedRoot = metadata?.[index * WORKSPACE_METADATA_ROOTS.length + slot] ?? resolve(workspace, name);
-      if (canonical === protectedRoot || isInside(protectedRoot, canonical)) {
+      const logicalRoot = resolve(workspace, name), protectedRoot = metadata?.[index * WORKSPACE_METADATA_ROOTS.length + slot] ?? logicalRoot;
+      if (isInside(protectedRoot, canonical) || isInside(logicalRoot, canonical)) {
         violations.push(`workspace_${name.slice(1)}_root`);
       }
     }

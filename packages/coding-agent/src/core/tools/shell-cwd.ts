@@ -26,14 +26,16 @@ export class ShellCwdBinding {
   readonly canonical: string;
   readonly sessionRequested: string;
   readonly sessionCanonical: string;
+  readonly explicit: boolean;
   readonly #sessionDevice: bigint;
   readonly #sessionInode: bigint;
   readonly #device: bigint;
   readonly #inode: bigint;
   constructor(requested: string, canonical: string, device: bigint, inode: bigint,
-    sessionRequested: string, sessionCanonical: string, sessionDevice: bigint, sessionInode: bigint) {
+    sessionRequested: string, sessionCanonical: string, sessionDevice: bigint, sessionInode: bigint, explicit = true) {
     this.requested = requested; this.canonical = canonical; this.#device = device; this.#inode = inode;
-    this.sessionRequested = sessionRequested; this.sessionCanonical = sessionCanonical; this.#sessionDevice = sessionDevice; this.#sessionInode = sessionInode; Object.freeze(this);
+    this.sessionRequested = sessionRequested; this.sessionCanonical = sessionCanonical; this.#sessionDevice = sessionDevice; this.#sessionInode = sessionInode;
+    this.explicit = explicit; Object.freeze(this);
   }
   get isReleased(): boolean { return this.#released; }
   setAuthority(authority: () => void): void { this.#authority = authority; }
@@ -60,21 +62,21 @@ export function getShellCwdBinding(input: unknown): ShellCwdBinding | undefined 
 export function attachShellCwdBinding(input: object, binding: ShellCwdBinding): void {
   Object.defineProperty(input, CWD_BINDING, { value: binding, configurable: true });
 }
-export async function prepareShellCwd(input: { cwd?: unknown }, sessionCwd: string): Promise<ShellCwdBinding | undefined> {
+export async function prepareShellCwd(input: { cwd?: unknown }, sessionCwd: string, pinDefault = false): Promise<ShellCwdBinding | undefined> {
   const existing = getShellCwdBinding(input);
-  if (input.cwd === undefined) {
+  if (input.cwd === undefined && !pinDefault && (!existing || existing.isReleased || existing.explicit)) {
     if (existing) {
       if (!existing.isReleased) throw new Error("[SHELL_CWD_CHANGED] Bound cwd was removed before execution.");
       Object.defineProperty(input, CWD_BINDING, { value: undefined, configurable: true });
     }
     return undefined;
   }
-  if (typeof input.cwd !== "string" || input.cwd.length === 0 || input.cwd.length > 4096 || input.cwd.includes("\0")) throw new Error("[SHELL_CWD_INVALID] cwd must be a nonempty literal directory path.");
+  if (input.cwd !== undefined && (typeof input.cwd !== "string" || input.cwd.length === 0 || input.cwd.length > 4096 || input.cwd.includes("\0"))) throw new Error("[SHELL_CWD_INVALID] cwd must be a nonempty literal directory path.");
   // No shell/home/MSYS expansion: filesystem paths are interpreted by the local backend.
   const sessionRequested = resolve(sessionCwd);
-  const requested = resolve(sessionRequested, input.cwd);
+  const requested = resolve(sessionRequested, input.cwd ?? ".");
   if (existing && !existing.isReleased) {
-    if (existing.requested !== requested || existing.sessionRequested !== sessionRequested) throw new Error("[SHELL_CWD_CHANGED] cwd changed after preparation.");
+    if (existing.requested !== requested || existing.sessionRequested !== sessionRequested || existing.explicit !== (input.cwd !== undefined)) throw new Error("[SHELL_CWD_CHANGED] cwd changed after preparation.");
     return existing;
   }
   const sessionCanonical = await realpath(sessionRequested);
@@ -83,7 +85,7 @@ export async function prepareShellCwd(input: { cwd?: unknown }, sessionCwd: stri
   const canonical = requested === sessionRequested ? sessionCanonical : await realpath(requested);
   const directory = canonical === sessionCanonical ? sessionDirectory : await stat(canonical, { bigint: true });
   if (!directory.isDirectory()) throw new Error("[SHELL_CWD_INVALID] cwd is not a directory.");
-  const binding = new ShellCwdBinding(requested, canonical, directory.dev, directory.ino, sessionRequested, sessionCanonical, sessionDirectory.dev, sessionDirectory.ino);
+  const binding = new ShellCwdBinding(requested, canonical, directory.dev, directory.ino, sessionRequested, sessionCanonical, sessionDirectory.dev, sessionDirectory.ino, input.cwd !== undefined);
   attachShellCwdBinding(input, binding);
   return binding;
 }

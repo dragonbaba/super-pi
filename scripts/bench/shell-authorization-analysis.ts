@@ -1,19 +1,30 @@
 import assert from "node:assert/strict";
 import { Session } from "node:inspector/promises";
 import { setImmediate } from "node:timers/promises";
-import { inspectBashResourceLifecycle, inspectHighRiskBashMutation, literalProcessSources, literalStoredScripts } from "../../packages/extensions/resource-lifecycle-guard/core.ts";
-import { inspectBashPermissionScope } from "../../packages/extensions/resource-lifecycle-guard/permission-bash.ts";
-import { ShellAnalysisOwner, shellAnalysisOwnership, MAX_ANALYSIS_BYTES, MAX_ANALYSIS_ENTRIES } from "../../packages/extensions/resource-lifecycle-guard/shell-analysis.ts";
-import { shellAnalysisCounters } from "../../packages/extensions/resource-lifecycle-guard/shell-substitution.ts";
-import { codeMethodNameCounters } from "../../packages/extensions/resource-lifecycle-guard/code-method-names.ts";
-import { aliasRiskCounters } from "../../packages/extensions/resource-lifecycle-guard/core.ts";
+import { inspectBashResourceLifecycle, inspectHighRiskBashMutation, literalProcessSources, literalStoredScripts } from "../../packages/coding-agent/src/core/shell-policy/core.ts";
+import { inspectBashPermissionScope } from "../../packages/coding-agent/src/core/shell-policy/permission-bash.ts";
+import { ShellAnalysisOwner, shellAnalysisOwnership, MAX_ANALYSIS_BYTES, MAX_ANALYSIS_ENTRIES } from "../../packages/coding-agent/src/core/shell-policy/shell-analysis.ts";
+import { shellAnalysisCounters } from "../../packages/coding-agent/src/core/shell-policy/shell-substitution.ts";
+import { codeMethodNameCounters } from "../../packages/coding-agent/src/core/shell-policy/code-method-names.ts";
+import { aliasRiskCounters } from "../../packages/coding-agent/src/core/shell-policy/core.ts";
+import { analyzeNativeShell } from "../../packages/coding-agent/src/core/shell-policy/native-analysis.ts";
 
 const gc = (globalThis as { gc?: () => void }).gc;
 assert.ok(gc, "run with --expose-gc");
 const cwd = process.cwd(), iterations = 512, warmup = 64, samplingInterval = 4096;
 const literalInputs = process.argv.includes("--literal-inputs");
+const native = process.argv.includes("--native");
+let nativeShell: "bash" | "powershell" = "bash";
 const substitution = "$(grep -c -E '(class|function|const|var|let) GCSystem\\b' pixi/pixi.js)";
-const cases = literalInputs ? [
+const cases = native ? [
+  ["native-bash-read", "printf ok", 1],
+  ["native-bash-delete", "rm -rf ../outside", 1],
+  ["native-bash-nested", "bash -lc 'rm -rf ../outside'", 2],
+  ["native-bash-dynamic", 'rm -rf "$X"', 1],
+  ["native-bash-inline", "node -e 'require(\"fs\").rmSync(\"../outside\",{recursive:true})'", 1],
+  ["native-powershell-delete", "Remove-Item -LiteralPath ../outside -Recurse -Force", 0],
+  ["native-powershell-cmd", "cmd /c del /q ../outside", 0],
+] as const : literalInputs ? [
   ["aliased-process-producer", "shopt -s expand_aliases\nalias echo='printf marker'\nsource <(echo ':')", 2],
   ["sort-terminal-value", "sort -o .git/config --help=x", 1],
   ["sort-ambiguous-output", "sort -o .git/config --i", 1],
@@ -97,6 +108,11 @@ function observeStoredSources(): void {
 }
 
 function analyze(command: string, lifecycle = "complete"): void {
+  if (native) {
+    const result = analyzeNativeShell(command, cwd, nativeShell, 1);
+    if (lifecycle !== "complete") references.push(new WeakRef(result), new WeakRef(result.effects));
+    return;
+  }
   const owner = new ShellAnalysisOwner(command, cwd, 1);
   try {
     owner.assertCurrent(command, cwd, 1);
@@ -120,6 +136,7 @@ function analyze(command: string, lifecycle = "complete"): void {
 }
 
 for (const [name, command, uniqueSources] of cases) {
+  nativeShell = name.startsWith("native-powershell") ? "powershell" : "bash";
   for (let i = 0; i < warmup; i++) analyze(command);
   gc();
   const before = { ...shellAnalysisCounters }, methodNamesBefore = { ...codeMethodNameCounters }, aliasesBefore = { ...aliasRiskCounters }, ownership = { ...shellAnalysisOwnership };
@@ -165,6 +182,6 @@ const liveReferences = references.filter(reference => reference.deref()).length;
 assert.equal(liveReferences, 0);
 assert.equal(shellAnalysisOwnership.created, shellAnalysisOwnership.released);
 console.log(JSON.stringify({ ownership: shellAnalysisOwnership, aliasRiskCounters, weakReferences: references.length, liveReferences,
-  literalInputs,
+  literalInputs, native,
   maxEntriesPerAuthorization: MAX_ANALYSIS_ENTRIES, maxRetainedReferenceBytes: MAX_ANALYSIS_BYTES,
   counterByteUnit: "UTF-16 bytes submitted at real scanner entries; not total character accesses", node: process.version, v8: process.versions.v8, platform: process.platform }));

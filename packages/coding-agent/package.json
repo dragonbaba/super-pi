@@ -32,6 +32,11 @@
 			"import": "./dist/core/tasks/*.js",
 			"require": "./dist/core/tasks/*.js"
 		},
+		"./internal/shell-policy/*": {
+			"types": "./dist/core/shell-policy/*.d.ts",
+			"import": "./dist/core/shell-policy/*.js",
+			"require": "./dist/core/shell-policy/*.js"
+		},
 		"./internal/tool-result-source": {
 			"types": "./dist/core/tool-result-source.d.ts",
 			"import": "./dist/core/tool-result-source.js",
