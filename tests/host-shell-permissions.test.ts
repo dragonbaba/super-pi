@@ -136,6 +136,9 @@ test("native authorization reads PowerShell file cmdlets and cmd /c operands lik
     "New-Item -Path ../outside -Name existing.txt -ItemType File -Force"]) {
     await assert.rejects(f.authorize("powershell",command),/EXTERNAL_FILE_WRITE_BLOCKED/,command);await f.resume();
   }
+  // Aliases follow the interpreter: a PowerShell script started from Bash still reads `ri`.
+  const nested=f.dialogs.length;await f.authorize("bash","pwsh -Command 'ri ../outside/existing.txt'");
+  assert.equal(f.dialogs.length,nested+1);assert.ok(f.dialogs.at(-1)!.includes(f.outside));
   // cmd runs `"del /q" path` as one joined command; that form is not re-split, so it asks.
   const fragment=f.dialogs.length;await f.authorize("powershell","cmd /c \"del /q\" ../outside/existing.txt");
   assert.equal(f.dialogs.length,fragment+1);

@@ -9,7 +9,7 @@ import { isReadOnlyFindLoop } from "./readonly-find-loop.ts";
 import { findPredicateHasOperand, isReadOnlySortTail } from "./readonly-find.ts";
 import { sortHasTerminalOption, sortLongOption, sortOptionRequiresValue } from "./sort-options.ts";
 import { NODE_COMMAND_PATTERN, PYTHON_COMMAND_PATTERN } from "./regex.ts";
-import { CMD_ESCAPE, respellUnquotedBackslashes } from "./windows-separators.ts";
+import { CMD_ESCAPE, POWERSHELL_ESCAPE, respellUnquotedBackslashes } from "./windows-separators.ts";
 import { bashPipelinePrefixEnd, bashScriptOperandIndex, hasStatefulBashPrintf, isBashArithmeticCommandHead, isBashNetworkRedirectionTarget, shellExpansionRisk, hasUnsafeBashTestOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 
 const MAX_COMMAND_CHARS = 128 * 1024;
@@ -20,6 +20,7 @@ const READ_ONLY_COMMANDS = new Set([
   "cat", "dir", "echo", "file", "grep", "head", "ls", "printf", "pwd", "readlink", "realpath", "rg", "stat", "tail", "tr", "type", "wc", "where", "which",
 ]);
 const SCRIPT_WRAPPERS = new Set(["bash", "bash.exe", "sh", "zsh", "cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "pwsh.exe"]);
+const POWERSHELL_WRAPPERS = new Set(["powershell", "powershell.exe", "pwsh", "pwsh.exe"]);
 const OPAQUE_RUNNERS = new Set([
   "bun", "bun.exe", "deno", "deno.exe", "npm", "npm.cmd", "npx", "npx.cmd", "pnpm", "pnpm.cmd", "yarn", "yarn.cmd",
 ]);
@@ -77,6 +78,8 @@ interface ScopeBuilder extends BashPermissionScope {
   unverifiableMutation: boolean;
   /** Inside a native `cmd /c` script, where `/x` words are options rather than paths. */
   cmdOptions: boolean;
+  /** Interpreter of the script being read: 1 = PowerShell, 2 = another shell, 0 = the native tool's own. */
+  nestedShell: number;
 }
 
 function commandName(value: string): string {
@@ -445,15 +448,15 @@ function inspectNativeCmdWrapper(tokens: PermissionTokens, start: number, cwd: s
     const flag = token.charCodeAt(1) | 0x20;
     if (flag !== 99 && flag !== 107) continue;
     if (index + 1 >= tokens.length || depth >= MAX_DEPTH) return false;
-    const previous = builder.cmdOptions;
-    builder.cmdOptions = true;
+    const previous = builder.cmdOptions, previousShell = builder.nestedShell;
+    builder.cmdOptions = true; builder.nestedShell = 2;
     try {
       if (index + 2 === tokens.length) inspectScript(respellUnquotedBackslashes(tokens[index + 1]!, CMD_ESCAPE, false), cwd, depth + 1, builder);
       // cmd strips the quotes of `"del /q" path` and runs the joined text; a quoted
       // fragment followed by more words is not re-split here, so it asks.
       else if (hasWhitespace(tokens[index + 1]!)) { markMutation(builder, "cmd"); markUnverifiableCmdletTarget(builder); }
       else inspectSegment(tokens, cwd, depth + 1, builder, index + 1);
-    } finally { builder.cmdOptions = previous; }
+    } finally { builder.cmdOptions = previous; builder.nestedShell = previousShell; }
     return true;
   }
   return false;
@@ -591,7 +594,8 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
   const nativeTool = builder.analysisOwner?.nativeTool;
   if (nativeTool !== undefined && tokens[index]!.length === command.length) {
     const cmdlet = POWERSHELL_FILE_CMDLETS.get(command);
-    if (cmdlet !== undefined && ((cmdlet & CMDLET_ALIAS) === 0 || nativeTool === "powershell")) {
+    const powerShell = builder.nestedShell === 0 ? nativeTool === "powershell" : builder.nestedShell === 1;
+    if (cmdlet !== undefined && ((cmdlet & CMDLET_ALIAS) === 0 || powerShell)) {
       inspectPowerShellFileCmdlet(command, cmdlet & ~CMDLET_ALIAS, tokens, index + 1, cwd, builder);
       return cwd;
     }
@@ -676,7 +680,13 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
       addResolvedTarget(builder, cwd);
       return cwd;
     }
-    inspectScript(source, cwd, depth + 1, builder);
+    // Aliases follow the interpreter that runs the script, not the outer tool. A PowerShell
+    // script read for native authorization uses PowerShell's separators, as at the top level.
+    const powerShell = POWERSHELL_WRAPPERS.has(command), previous = builder.nestedShell;
+    builder.nestedShell = powerShell ? 1 : 2;
+    try {
+      inspectScript(powerShell && builder.analysisOwner?.nativeTool !== undefined ? respellUnquotedBackslashes(source, POWERSHELL_ESCAPE, true) : source, cwd, depth + 1, builder);
+    } finally { builder.nestedShell = previous; }
     return cwd;
   }
   if (PYTHON_COMMAND_PATTERN.test(command) || NODE_COMMAND_PATTERN.test(command) || OPAQUE_RUNNERS.has(command)) {
@@ -1036,6 +1046,7 @@ export function inspectBashPermissionScope(input: unknown, cwd: string, analysis
     uncertainContext: false,
     unverifiableMutation: false,
     cmdOptions: false,
+    nestedShell: 0,
   };
   if (command.length > MAX_COMMAND_CHARS) {
     markOpaque(builder, "oversized_command");
