@@ -104,11 +104,12 @@ function hasBashHeredoc(command: string): boolean {
 const HASH_NONE = 0, HASH_OPERATOR = 1, HASH_VALUE = 2;
 
 /** A hashtable key word (`npm`, `npm=`, `npm=10`): pushes an attached value and returns what follows. */
-function hashtableKey(argv: string[], word: string, quoted: boolean): number {
+function hashtableKey(argv: string[], word: string, quoted: boolean, valueQuoted: boolean): number {
   const equals = quoted ? -1 : word.indexOf("=");
   if (equals < 0) return HASH_OPERATOR;
   if (equals === word.length - 1) return HASH_VALUE;
-  argv.push(word.slice(equals + 1));
+  // `@{label='npm'}`: a quoted value is a string, which matches no rule.
+  argv.push(valueQuoted ? "" : word.slice(equals + 1));
   return HASH_NONE;
 }
 
@@ -294,12 +295,16 @@ function strongerRuleVerdict(rules: ProjectRuleSet, powerShell: boolean, argv: s
   if (argv.length === 0) return verdict;
   let matched = matchCommandWords(rules, powerShell, argv);
   if (!powerShell) matched = dispatchedRuleVerdict(rules, argv, matched, true);
+  else if (matched !== RULE_DENY) { const script = scriptOperandVerdict(rules, argv); if (script > matched) matched = script; }
   return matched >= RULE_ASK && matched > verdict ? matched : verdict;
 }
 
 /** `matched` raised by the rules matching each level of Bash dispatch wrappers in `argv`. */
 function dispatchedRuleVerdict(rules: ProjectRuleSet, argv: string[], matched: number, findActions: boolean): number {
   for (let depth = 0; matched !== RULE_DENY; depth++) {
+    // `bash -c 'git push'` runs its script operand; nothing after it is another wrapper level.
+    const script = scriptOperandVerdict(rules, argv);
+    if (script >= 0) { if (script > matched) matched = script; break; }
     if (findActions && argv[0] === "find") {
       const action = findActionVerdict(rules, argv);
       if (action > matched) matched = action;
@@ -314,6 +319,60 @@ function dispatchedRuleVerdict(rules: ProjectRuleSet, argv: string[], matched: n
     if (dispatched > matched) matched = dispatched;
   }
   return matched;
+}
+
+const BASH_SHELLS: ReadonlySet<string> = new Set(["bash", "sh", "dash", "zsh", "ksh"]);
+const POWERSHELL_SHELLS: ReadonlySet<string> = new Set(["pwsh", "powershell"]);
+/** Nested script operands analyzed at once; deeper ones are matched as written only. */
+const MAX_SCRIPT_NESTING = 3;
+let scriptNesting = 0;
+
+/**
+ * The rule verdict for the literal script a shell runs (`bash -lc 'git push'`,
+ * `pwsh -Command git push`), or -1 when `argv` runs no script operand. The program name
+ * has already been reduced to its basename by `matchCommandWords`.
+ */
+function scriptOperandVerdict(rules: ProjectRuleSet, argv: readonly string[]): number {
+  const first = argv[0]!;
+  if (scriptNesting >= MAX_SCRIPT_NESTING) return -1;
+  if (BASH_SHELLS.has(first)) {
+    for (let index = 1; index < argv.length; index++) {
+      const word = argv[index]!;
+      if (word.length < 2 || word.charCodeAt(0) !== 45 && word.charCodeAt(0) !== 43) return -1; // a script file
+      if (word === "--") return -1;
+      if (word.charCodeAt(1) === 45) continue; // `--login`, `--norc`
+      if (word.indexOf("c") > 0) return index + 1 < argv.length ? nestedScriptVerdict(rules, "bash", argv[index + 1]!) : -1;
+      if (word === "-o" || word === "+o" || word === "-O" || word === "+O") index++; // `-o pipefail`
+    }
+    return -1;
+  }
+  // `pwsh` / `powershell` in any case; only those lengths are lowercased.
+  if ((first.charCodeAt(0) | 32) !== 112 || first.length !== 4 && first.length !== 10 || !POWERSHELL_SHELLS.has(first.toLowerCase())) return -1;
+  for (let index = 1; index < argv.length; index++) {
+    const word = argv[index]!;
+    if (word.length < 2 || word.charCodeAt(0) !== 45) return -1; // a script file
+    const option = word.toLowerCase();
+    // `-c`, `-Command` and its prefixes: the remaining words are the script.
+    if (option.length >= 2 && "-command".startsWith(option)) {
+      if (index + 1 >= argv.length) return -1;
+      let script = argv[index + 1]!;
+      for (let rest = index + 2; rest < argv.length; rest++) script += " " + argv[rest]!;
+      return nestedScriptVerdict(rules, "powershell", script);
+    }
+    // Options taking a value: `-ExecutionPolicy Bypass`, `-WorkingDirectory dir`.
+    if (option === "-executionpolicy" || option === "-ep" || option === "-workingdirectory" || option === "-wd" || option === "-windowstyle"
+      || option === "-w" || option === "-outputformat" || option === "-of" || option === "-inputformat" || option === "-if") index++;
+  }
+  return -1;
+}
+
+function nestedScriptVerdict(rules: ProjectRuleSet, tool: "bash" | "powershell", script: string): number {
+  scriptNesting++;
+  try {
+    return shellRuleVerdict(tool, script, rules);
+  } finally {
+    scriptNesting--;
+  }
 }
 
 const FIND_EXEC_ACTIONS: ReadonlySet<string> = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
@@ -462,7 +521,8 @@ export function shellRuleVerdict(tool: "bash" | "powershell", command: string, r
       let text = table.texts ? table.texts[index]! : windowsWordText(table, index);
       // A PowerShell string in command position (`$label = 'npm'`) is a value, not a command;
       // only `& 'npm'` or `. 'script.ps1'` invokes one. Its words then match nothing.
-      let expression = false, sliced = false;
+      // `rawLow` is where `text` starts in the source when `text` is a sliced value (`$r=@{…}`).
+      let expression = false, rawLow = table.starts[index]!;
       if (powerShell) {
         const braced = text.indexOf("{") >= 0 || text.indexOf("}") >= 0, atKey = keyPosition;
         let valued = false;
@@ -471,7 +531,7 @@ export function shellRuleVerdict(tool: "bash" | "powershell", command: string, r
           hashEntry = HASH_NONE;
           const operator = (flags & WORD_QUOTED) === 0 && !braced ? assignmentOperatorLength(text) : 0;
           if (operator === text.length) { hashEntry = HASH_VALUE; continue; }
-          if (operator > 0) { text = text.slice(operator); valued = true; }
+          if (operator > 0) { text = text.slice(operator); valued = true; rawLow += operator; }
         }
         // A hashtable key names data; the value after `=` may be a command (`@{ sha = git rev-parse HEAD }`).
         if (valued || hashEntry === HASH_VALUE) hashEntry = HASH_NONE;
@@ -479,10 +539,9 @@ export function shellRuleVerdict(tool: "bash" | "powershell", command: string, r
           const equals = (flags & WORD_QUOTED) === 0 ? text.indexOf("=") : -1;
           if (equals < 0) { hashEntry = HASH_OPERATOR; continue; }
           if (equals === text.length - 1) { hashEntry = HASH_VALUE; continue; }
-          text = text.slice(equals + 1); valued = true;
+          text = text.slice(equals + 1); valued = true; rawLow = table.source.indexOf("=", rawLow) + 1;
         } else if (atKey && argv.length === 0 && (switchKinds & 1) !== 0 && !braced) continue; // a switch label
         const start = table.starts[index]!;
-        sliced = valued;
         expression = argv.length === 0 && (valued ? rawValueQuoted(table.source, start, table.ends[index]!)
           : (flags & WORD_QUOTED) !== 0 && isQuoteCode(table.source.charCodeAt(start)) && !isInvokedWord(table.source, start));
       }
@@ -519,22 +578,22 @@ export function shellRuleVerdict(tool: "bash" | "powershell", command: string, r
             if (equals > cast + 1) {
               if (equals === text.length - 1) continue;
               expression = rawValueQuoted(table.source, table.starts[index]!, table.ends[index]!);
-              text = text.slice(equals + 1); sliced = true;
+              text = text.slice(equals + 1); rawLow = table.source.indexOf("=", rawLow) + 1;
             } else {
               const next = index + 1 < end ? windowsWordText(table, index + 1) : "", operator = assignmentOperatorLength(next);
               if (operator > 0) {
                 index++;
                 if (operator === next.length) continue;
                 expression = rawValueQuoted(table.source, table.starts[index]!, table.ends[index]!);
-                text = next.slice(operator); sliced = true;
+                text = next.slice(operator); rawLow = table.starts[index]! + operator;
               }
             }
           }
           // Every brace outside quotes is a block boundary, attached or not (`try{ git push }catch{}`);
           // a quoted one is text (`--replace="{npm}"`). The pieces between braces are words, and
           // each brace ends the command before it.
-          const rawWord = !sliced && (text.indexOf("{") >= 0 || text.indexOf("}") >= 0) && hasQuote(table.source, table.starts[index]!, table.ends[index]!);
-          const scan = rawWord ? table.source : text, low = rawWord ? table.starts[index]! : 0, high = rawWord ? table.ends[index]! : text.length;
+          const rawWord = (text.indexOf("{") >= 0 || text.indexOf("}") >= 0) && hasQuote(table.source, rawLow, table.ends[index]!);
+          const scan = rawWord ? table.source : text, low = rawWord ? rawLow : 0, high = rawWord ? table.ends[index]! : text.length;
           if (hasStructuralBrace(scan, low, high, rawWord)) {
             let from = low, quote = 0;
             for (let cursor = low; cursor <= high; cursor++) {
@@ -545,7 +604,7 @@ export function shellRuleVerdict(tool: "bash" | "powershell", command: string, r
               if (cursor > from) {
                 const word = rawWord ? unquotedText(scan, from, cursor) : scan.slice(from, cursor), atKey = keyPosition;
                 keyPosition = false;
-                if (atKey && hashEntry === HASH_NONE && argv.length === 0 && (braceKinds & 1) !== 0) hashEntry = hashtableKey(argv, word, false);
+                if (atKey && hashEntry === HASH_NONE && argv.length === 0 && (braceKinds & 1) !== 0) hashEntry = hashtableKey(argv, word, false, rawWord && rawValueQuoted(scan, from, cursor));
                 else if (expression && argv.length === 0) { hashEntry = HASH_NONE; argv.push(""); }
                 else if (atKey && argv.length === 0 && (switchKinds & 1) !== 0) hashEntry = HASH_NONE; // a switch label
                 else {
