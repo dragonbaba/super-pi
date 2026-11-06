@@ -41,7 +41,7 @@ async function fixture(t: TestContext, environment: "sandbox" | "trusted-host", 
         await fs.mkdir(path.dirname(file), { recursive: true });
         await fs.writeFile(file, JSON.stringify({ version: 1, rules }));
     }
-    return { root, store, ctx, notes, file, decide, writeRules };
+    return { root, store, ctx, notes, file, owner, decide, writeRules };
 }
 
 test("project rules match words with `*`, PowerShell without case, and rank deny over ask over allow", () => {
@@ -160,6 +160,10 @@ test("project deny and ask rules apply in every tier; allow rules do not lift ou
     assert.equal(await host.decide("bash", { command: "npm test" }), "allow");
     await fs.writeFile(path.join(host.root, "a.txt"), "a");
     assert.equal(await host.decide("read", { path: "a.txt" }), "ask");
+    // Change observation (`/changes` verification) answers to project read rules too.
+    await assert.rejects(host.owner.authorizeFileObservation(host.ctx, ["a.txt"]), /existing read grant/);
+    await host.writeRules([{ tool: "bash", decision: "deny", command: "git push *" }]);
+    await host.owner.authorizeFileObservation(host.ctx, ["a.txt"]);
     const sandbox = await fixture(t, "sandbox", "sandbox-write");
     await sandbox.writeRules([{ tool: "bash", decision: "deny", command: "git push *" }]);
     assert.equal(await sandbox.decide("bash", { command: "git push" }), "deny");

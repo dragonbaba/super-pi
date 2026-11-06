@@ -623,7 +623,10 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
         const check = this.guard(ctx);
         const { paths } = await this.paths(ctx, targets, false); check();
         const decision = await this.decision("read", undefined, paths, ctx.cwd); check();
-        if (decision !== "allow") throw new Error(BLOCKED + "File observation requires an existing read grant");
+        // A project read rule binds observation as an explicit one does; deny and ask both block it.
+        const project = this.project ? await this.project.refresh() : undefined; check();
+        if (decision !== "allow" || (project?.toolDecision("read") ?? RULE_NONE) >= RULE_ASK)
+            throw new Error(BLOCKED + "File observation requires an existing read grant");
         const renew = async () => { check(); await this.paths(ctx, targets, false); check(); };
         return Object.assign(renew, { assertCurrent: check });
     }
