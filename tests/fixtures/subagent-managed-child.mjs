@@ -15,6 +15,7 @@ const systemPrompt = promptIndex < 0 ? "" : readFileSync(process.argv[promptInde
 const toolsIndex = process.argv.indexOf("--tools");
 const tools = toolsIndex < 0 ? undefined : process.argv[toolsIndex + 1];
 const guidanceMode = task.includes("guidance-gate");
+const nativeProgress = task.includes("native-progress");
 function markReady() { writeFileSync(join(process.cwd(), `child-${process.pid}.ready.json`), JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString(), tmpdir: tmpdir(), task, systemPrompt, tools, allowBash: process.env.SP_SUBAGENT_ALLOW_BASH })); }
 if (!guidanceMode) markReady();
 let sequence = 0;
@@ -33,7 +34,7 @@ async function control(kind, fields = {}) {
 try {
 	const init = await control("ready");
 	const capacityHandoff = task.includes("capacity-handoff");
-	const turns = task.includes("two-turn") || capacityHandoff || guidanceMode ? 2 : 1;
+	const turns = task.includes("two-turn") || capacityHandoff || guidanceMode || nativeProgress ? 2 : 1;
 	let guidance;
 	for (let turn = 0; turn < turns; turn++) {
 		if (init.checkpoint) await control("begin");
@@ -46,9 +47,20 @@ try {
 				markReady(); if (existsSync(path)) finish();
 			});
 		} else await new Promise(resolve => setTimeout(resolve, delay));
-		const response = guidance ? { ...message, content: [{ type: "text", text: `fixture received: ${guidance}` }] }
+		const response = nativeProgress ? { ...message, usage: { ...message.usage, cost: { ...message.usage.cost, total: 0.01 } } }
+			: guidance ? { ...message, content: [{ type: "text", text: `fixture received: ${guidance}` }] }
 			: capacityHandoff && turn === 0 ? { ...message, content: [{ type: "text", text: "large evidence ".repeat(60_000) }] } : message;
 		process.stdout.write(`${JSON.stringify({ type: "message_end", message: response })}\n`);
+		if (nativeProgress) {
+			process.stdout.write(`${JSON.stringify({ type: "message_end", message: { role: "toolResult", toolName: turn ? "ls" : "read", content: [{ type: "text", text: "controlled tool completion" }] } })}\n`);
+			await new Promise((resolve, reject) => {
+				const file = join(process.cwd(), `child-${process.pid}.progress-${turn}.release`);
+				const watcher = watch(process.cwd(), () => { if (existsSync(file)) finish(); });
+				const timer = setTimeout(() => finish(new Error("Progress fixture gate timed out")), 15_000);
+				function finish(error) { clearTimeout(timer); watcher.close(); error ? reject(error) : resolve(); }
+				if (existsSync(file)) finish();
+			});
+		}
 		if (init.checkpoint) guidance = (await control("turn", { completed: true, message: response, results: [] })).guidance;
 		if (task.includes("checkpoint-hold")) await new Promise(resolve => setTimeout(resolve, 30_000));
 	}

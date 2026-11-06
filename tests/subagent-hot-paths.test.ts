@@ -5,7 +5,24 @@ import ts from "typescript";
 
 const source = readFileSync(new URL("../packages/extensions/subagent/index.ts", import.meta.url), "utf8");
 const tree = ts.createSourceFile("subagent/index.ts", source, ts.ScriptTarget.Latest, true);
-const hot = new Set(["onStdoutData", "onStderrData", "processLine", "appendBoundedMessage", "boundedMessage", "boundedUsage", "finiteUsage", "boundedTextContent", "capText", "prefixEnd", "capTextHeadTail", "jsonEventLimitReason", "jsonTransportLimitReason", "renderAgentStatus", "refreshStatus", "formatAgentUsage", "formatTokens", "formatElapsedMs", "resultStateCounts"]);
+const hot = new Set(["onStdoutData", "onStderrData", "processLine", "appendBoundedMessage", "boundedMessage", "boundedUsage", "finiteUsage", "boundedTextContent", "capText", "prefixEnd", "capTextHeadTail", "jsonEventLimitReason", "jsonTransportLimitReason", "renderAgentStatus", "refreshStatus", "formatAgentUsage", "formatTokens", "formatElapsedMs", "resultStateCounts", "copyNativeProgress"]);
+
+test("native status projection and timer reuse primitive slots without per-message publications", () => {
+  let bodies = 0;
+  function inspect(node: ts.Node) {
+    assert.ok(!ts.isArrowFunction(node) && !ts.isFunctionExpression(node) && !ts.isNewExpression(node)
+      && !ts.isObjectLiteralExpression(node) && !ts.isArrayLiteralExpression(node), "status projection creates no transient owners or wrappers");
+    ts.forEachChild(node, inspect);
+  }
+  function visit(node: ts.Node) {
+    if (ts.isFunctionDeclaration(node) && node.name?.text === "copyNativeProgress") { inspect(node.body!); bodies++; }
+    if (ts.isPropertyDeclaration(node) && node.name.getText(tree) === "tick" && node.initializer && ts.isArrowFunction(node.initializer)) {
+      inspect(node.initializer.body); bodies++;
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(tree); assert.equal(bodies, 2);
+});
 
 test("parent workspace relay has no command-text inspection or delta/progress subscriptions", () => {
   const file = "packages/coding-agent/src/core/files/subagent-execution.ts";

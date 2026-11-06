@@ -33,7 +33,7 @@ import {
 	type ExtensionContext,
 	withFileMutationQueue,
 } from "@super-pi/coding-agent";
-import { Text } from "@super-pi/tui";
+import { Text, RELEASE_COMPONENT_RENDER_CACHE } from "@super-pi/tui";
 import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
 import { assertProjectAgentAccess, buildChildEnvironment, canonicalWorkspace } from "./child-security.ts";
@@ -229,6 +229,7 @@ export interface SingleResult {
 	errorMessage?: string;
 	handoff?: string;
 	step?: number;
+	recentTool?: string;
 }
 
 export interface SubagentDetails {
@@ -250,6 +251,7 @@ export function snapshotSubagentDetails(mode: SubagentDetails["mode"], agentScop
 			completedAt: result.completedAt, step: result.step, stopReason: result.stopReason,
 			errorMessage: result.errorMessage ? "Subagent failed" : undefined,
 			handoff: result.handoff ? "Checkpoint handoff" : undefined,
+			recentTool: result.recentTool,
 		};
 	}
 	return { mode, agentScope, projectAgentsDir, results: snapshots };
@@ -265,6 +267,35 @@ interface ResultStateCounts {
 interface SubagentRenderState {
 	latestDetails?: SubagentDetails;
 	counts?: ResultStateCounts;
+	live?: NativeSubagentProgress;
+}
+
+/** Compact native UI facts, allocated once per admitted foreground batch, never a child transcript. */
+export class NativeSubagentProgress {
+	readonly details: SubagentDetails;
+	closed = false;
+	constructor(names: readonly string[], mode: SubagentDetails["mode"], agentScope: AgentScope, projectAgentsDir: string | null) {
+		const results: SingleResult[] = new Array(names.length);
+		for (let i = 0; i < names.length; i++) results[i] = {
+			agent: names[i], agentSource: "unknown", task: "", messages: EMPTY_MESSAGES, stderr: "", exitCode: -1,
+			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+			model: undefined, startedAt: undefined, completedAt: undefined, stopReason: undefined, errorMessage: undefined,
+			handoff: undefined, step: mode === "chain" ? i + 1 : undefined, recentTool: undefined,
+		};
+		this.details = { mode, agentScope, projectAgentsDir, results };
+	}
+	close(): void { this.closed = true; }
+}
+
+/** Completed-message boundary: mutate fixed primitive slots; no snapshot, callback or event allocation. */
+function copyNativeProgress(target: SingleResult, source: SingleResult): void {
+	target.agentSource = source.agentSource; target.exitCode = source.exitCode; target.model = source.model;
+	target.startedAt = source.startedAt; target.completedAt = source.completedAt; target.stopReason = source.stopReason;
+	target.errorMessage = source.errorMessage ? "Subagent failed" : undefined; target.handoff = source.handoff ? "Checkpoint handoff" : undefined;
+	target.recentTool = source.recentTool;
+	const to = target.usage, from = source.usage;
+	to.input = from.input; to.output = from.output; to.cacheRead = from.cacheRead; to.cacheWrite = from.cacheWrite;
+	to.cost = from.cost; to.contextTokens = from.contextTokens; to.turns = from.turns;
 }
 
 interface SubagentTheme {
@@ -279,16 +310,36 @@ class SubagentStatusText extends Text {
 	private renderedText = "";
 	private renderedSecond = -1;
 	private dirty = true;
+	private timer: ReturnType<typeof setInterval> | undefined;
+	private invalidateView: (() => void) | undefined;
+	private live: NativeSubagentProgress | undefined;
+	private renderState: SubagentRenderState | undefined;
+	private timerRefreshes = 0;
+	private readonly tick = (): void => {
+		if (!this.details) return;
+		if (this.live?.closed) this.stopTimer();
+		this.dirty = true; this.timerRefreshes++; this.invalidateView?.();
+	};
 
-	setStatus(details: SubagentDetails, counts: ResultStateCounts, theme: SubagentTheme): void {
+	setStatus(details: SubagentDetails, counts: ResultStateCounts, theme: SubagentTheme, partial: boolean,
+		invalidateView: (() => void) | undefined, state: SubagentRenderState, live?: NativeSubagentProgress): void {
+		this.renderState = state;
 		this.details = details;
 		this.counts = counts;
 		this.theme = theme;
+		const running = partial && counts.running > 0 && !live?.closed;
+		this.invalidateView = running ? invalidateView : undefined;
+		this.live = running ? live : undefined;
+		if (running && invalidateView) {
+			if (!this.timer) this.timer = setInterval(this.tick, 1000);
+		} else this.stopTimer();
 		this.dirty = true;
 		this.refreshStatus();
 	}
 
 	override setText(text: string): void {
+		this.stopTimer(); this.invalidateView = undefined; this.live = undefined;
+		if (this.renderState) { this.renderState.live = undefined; this.renderState.latestDetails = undefined; this.renderState = undefined; }
 		this.details = undefined;
 		this.counts = undefined;
 		this.theme = undefined;
@@ -322,10 +373,14 @@ class SubagentStatusText extends Text {
 	}
 
 	override render(width: number): string[] {
-		// Elapsed text advances only when another UI event requests a render.
 		this.refreshStatus();
 		return super.render(width);
 	}
+	private stopTimer(): void { if (this.timer) { clearInterval(this.timer); this.timer = undefined; } }
+	[RELEASE_COMPONENT_RENDER_CACHE](): void { this.setText(""); }
+	/** Explicit diagnostics only, never called by a frame or completed-message hook. */
+	getLifecycleCounts() { return { timers: this.timer ? 1 : 0, timerRefreshes: this.timerRefreshes, liveOwners: this.live ? 1 : 0,
+		rows: this.details?.results.length ?? 0, textChars: this.renderedText.length, invalidators: this.invalidateView ? 1 : 0 }; }
 }
 
 function prefixEnd(value: string, maxBytes: number): number {
@@ -667,7 +722,7 @@ function renderAgentStatus(
 	}
 	const step = result.step === undefined ? "" : theme.fg("muted", `#${result.step} `);
 	return `${icon} ${step}${theme.fg("toolTitle", theme.bold(result.agent))} ${theme.fg("muted", status)}\n` +
-		`  ${theme.fg("dim", `model: ${result.model ?? "—"} · ${formatAgentUsage(result.usage)}`)}`;
+		`  ${theme.fg("dim", `model: ${result.model ?? "—"} · ${formatAgentUsage(result.usage)}${result.recentTool ? " · " + result.recentTool : ""}`)}`;
 }
 
 export async function mapWithConcurrencyLimit<TIn, TOut>(
@@ -836,6 +891,7 @@ export class SubagentProcessRun {
 	private readonly signal: AbortSignal | undefined;
 	private readonly timeoutMs: number;
 	private readonly result: SingleResult;
+	private progress: SingleResult | undefined;
 	private buffer = "";
 	private jsonTransportBytes = 0;
 	private jsonTransportEventCount = 0;
@@ -860,11 +916,13 @@ export class SubagentProcessRun {
 		result: SingleResult,
 		control?: SubagentControl,
 		workspace?: SubagentExecutionServer,
+		progress?: SingleResult,
 	) {
 		this.control = control;
 		this.signal = signal;
 		this.timeoutMs = timeoutMs;
 		this.result = result;
+		this.progress = progress;
 		const invocation = getPiInvocation(args);
 		this.proc = spawn(invocation.command, invocation.args, {
 			cwd: childCwd,
@@ -970,6 +1028,10 @@ export class SubagentProcessRun {
 				if (message.stopReason) this.result.stopReason = message.stopReason;
 				if (message.errorMessage) this.result.errorMessage = message.errorMessage;
 			}
+			if (message.role === "toolResult" && typeof message.toolName === "string") this.result.recentTool = capText(message.toolName, 80);
+			else if (message.role === "assistant" && Array.isArray(message.content)) for (const block of message.content)
+				if (block.type === "toolCall" && typeof block.name === "string") this.result.recentTool = capText(block.name, 80);
+			if (this.progress) copyNativeProgress(this.progress, this.result);
 		}
 		return true;
 	}
@@ -1028,6 +1090,7 @@ export class SubagentProcessRun {
 	}
 
 	private dispose(): void {
+		this.progress = undefined;
 		this.control?.dispose();
 		if (this.timeout) clearTimeout(this.timeout);
 		if (this.forceKillTimer) clearTimeout(this.forceKillTimer);
@@ -1053,6 +1116,7 @@ async function runSingleAgent(
 	execution: ResolvedSubagentExecution | undefined,
 	timeoutMs: number,
 	control: SubagentControl,
+	progress?: SingleResult,
 ): Promise<SingleResult> {
 	const agent = findAgent(agents, agentName);
 
@@ -1113,8 +1177,10 @@ async function runSingleAgent(
 		model: execution ? `${execution.provider}/${execution.model}` : undefined,
 		startedAt: Date.now(),
 		step,
+		recentTool: undefined,
 	};
 
+	if (progress) copyNativeProgress(progress, currentResult);
 	emitSingleResultUpdate(onUpdate, makeDetails, currentResult);
 	let primaryError: unknown;
 	let executionOwner: SubagentExecution | undefined;
@@ -1156,6 +1222,7 @@ async function runSingleAgent(
 			currentResult,
 			control,
 			workspaceChannel,
+			progress,
 		);
 		const exitCode = await processRun.run();
 		await closeWorkspaceChannel(workspaceChannel);
@@ -1182,6 +1249,7 @@ async function runSingleAgent(
 		}
 		throw error;
 	} finally {
+		if (progress) copyNativeProgress(progress, currentResult);
 		control.dispose();
 		await closeWorkspaceChannel(workspaceChannel);
 		if (tmpPromptDir) {
@@ -1408,8 +1476,10 @@ export default function (pi: ExtensionAPI) {
 	const pending = new Set<Promise<unknown>>();
 	// Only live checkpoint children; bounded by scheduler capacity and removed on every exit.
 	const controls = new Map<string, SubagentControl>();
+	// Native TUI lookup only. Active reservations bound its rows; no provider/progress subscription.
+	const liveProgress = new Map<string, NativeSubagentProgress>();
 	// One entry per eligible single call, bounded by the existing task reservation.
-	const foreground = new Map<string, { owner: ForegroundTask<AgentToolResult<SubagentDetails>>; policy: DelegatedTaskPolicy; workspace: string; signal: AbortSignal; agentScope: AgentScope }>();
+	const foreground = new Map<string, { owner: ForegroundTask<AgentToolResult<SubagentDetails>>; policy: DelegatedTaskPolicy; workspace: string; signal: AbortSignal; agentScope: AgentScope; toolCallId: string; progress?: NativeSubagentProgress }>();
 	let authority = new AbortController();
 	let closed = false;
 	let cleanupFailure: string | undefined;
@@ -1443,6 +1513,8 @@ export default function (pi: ExtensionAPI) {
 		scheduler.dispose();
 		await Promise.allSettled(pending);
 		pending.clear();
+		for (const progress of liveProgress.values()) progress.close();
+		liveProgress.clear();
 		tasks.dispose();
 		if (cleanupFailure) throw new Error(cleanupFailure);
 	});
@@ -1496,6 +1568,7 @@ export default function (pi: ExtensionAPI) {
 			assertBackgroundWorkspace(entry.policy, entry.workspace);
 			entry.owner.detach({ content: [{ type: "text", text: `Subagent transferred to background without restarting: ${task.id}. Continue independent work; completion will be notified. Use tasks or subagent_tasks to inspect or cancel it.` }],
 				details: { mode: "single", agentScope: entry.agentScope, projectAgentsDir: null, results: [], backgroundCount: 1 } });
+			entry.progress?.close(); liveProgress.delete(entry.toolCallId);
 			foreground.delete(task.id);
 		},
 	});
@@ -1705,6 +1778,7 @@ export default function (pi: ExtensionAPI) {
 				for (const policy of delegatedPolicies) assertBackgroundWorkspace(policy, trustedWorkspace);
 			}
 			const reservation = scheduler.reserve(delegatedPolicies, hasChain ? "chain" : "parallel");
+			let progress: NativeSubagentProgress | undefined;
 			try {
 				const uniqueAgentNames = new Set(requestedAgentNames);
 
@@ -1739,13 +1813,17 @@ export default function (pi: ExtensionAPI) {
 					for (const record of ownedTasks) { record.controller?.abort(); tasks.finish(record, "Batch admission failed; no child was started.", true); }
 					throw error;
 				}
+				if (!params.background && ctx.mode === "tui") {
+					progress = new NativeSubagentProgress(requestedAgentNames, hasChain ? "chain" : hasTasks ? "parallel" : "single", agentScope, discovery.projectAgentsDir);
+					liveProgress.set(toolCallId, progress);
+				}
 				const foregroundOwner = !params.background && hasSingle ? new ForegroundTask<AgentToolResult<SubagentDetails>>(signal, onUpdate) : undefined;
 				const foregroundWait = foregroundOwner?.takeWait();
 				const executionSignal = params.background ? authoritySignal : foregroundOwner ? AbortSignal.any([authoritySignal, foregroundOwner.signal]) : foregroundSignal;
 				const publish = params.background ? undefined : foregroundOwner ? foregroundOwner.publish : onUpdate;
 				// Execution closures must not retain the original foreground observer after handoff.
 				onUpdate = undefined;
-				if (foregroundOwner) foreground.set(ownedTasks[0].id, { owner: foregroundOwner, policy: delegatedPolicies[0], workspace: trustedWorkspace, signal: executionSignal, agentScope });
+				if (foregroundOwner) foreground.set(ownedTasks[0].id, { owner: foregroundOwner, policy: delegatedPolicies[0], workspace: trustedWorkspace, signal: executionSignal, agentScope, toolCallId, progress });
 				const runManaged = async (index: number, task: string, step: number | undefined, update: OnUpdateCallback | undefined, details: (results: SingleResult[]) => SubagentDetails, timeoutMs: number): Promise<SingleResult> => {
 					const record = ownedTasks[index];
 					const childSignal = AbortSignal.any([executionSignal, record.controller!.signal]);
@@ -1765,7 +1843,7 @@ export default function (pi: ExtensionAPI) {
 							const control = new SubagentControl(tasks, checkpoint, continuation?.messages, continuation?.pending,
 								continuation ? { role: "user", content: `Task: ${task}`, timestamp: Date.now() } : undefined);
 							if (checkpoint) controls.set(record.id, control);
-							try { return await runSingleAgent(policy, agents, requestedAgentNames[index], task, step, childSignal, update, details, executions.get(requestedAgentNames[index]), timeoutMs, control); }
+							try { return await runSingleAgent(policy, agents, requestedAgentNames[index], task, step, childSignal, update, details, executions.get(requestedAgentNames[index]), timeoutMs, control, progress?.details.results[index]); }
 							catch (error) {
 								if (error instanceof SubagentProcessCleanupError || error instanceof Error && error.cause instanceof SubagentProcessCleanupError) {
 									// Latch before the scheduler releases this slot to queued work.
@@ -1780,6 +1858,8 @@ export default function (pi: ExtensionAPI) {
 						return result;
 					} catch (error) {
 						const message = capText(error instanceof Error ? error.message : String(error), 4096);
+						const row = progress?.details.results[index];
+						if (row) { row.exitCode = 1; row.errorMessage = "Subagent failed"; row.completedAt = Date.now(); }
 						if (childSignal.aborted) record.controller?.abort();
 						tasks.finish(record, message, true);
 						return { agent: record.agent, agentSource: "unknown", task: "", exitCode: 1, messages: EMPTY_MESSAGES, stderr: "", usage: EMPTY_USAGE, errorMessage: message, startedAt: record.startedAt, completedAt: record.completedAt, step };
@@ -1796,6 +1876,10 @@ export default function (pi: ExtensionAPI) {
 							}
 						}
 						executions.clear();
+						if (progress) {
+							for (const row of progress.details.results) if (row.exitCode === -1) { row.exitCode = 1; row.errorMessage = "Task did not complete"; row.completedAt = Date.now(); }
+							progress.close(); liveProgress.delete(toolCallId); progress = undefined;
+						}
 						if (foregroundOwner) foreground.delete(ownedTasks[0].id);
 						reservation.release();
 					}
@@ -1829,6 +1913,7 @@ export default function (pi: ExtensionAPI) {
 				try { return await operation; }
 				finally { pending.delete(operation); }
 			} catch (error) {
+				progress?.close(); liveProgress.delete(toolCallId); progress = undefined;
 				reservation.release();
 				throw error;
 			}
@@ -1863,11 +1948,15 @@ export default function (pi: ExtensionAPI) {
 			const incoming = result.details as SubagentDetails | undefined;
 			if (incoming?.backgroundCount) {
 				state.latestDetails = undefined;
+				state.live = undefined;
 				component.setText(theme.fg("muted", `${incoming.backgroundCount} background task(s) accepted · /tasks`));
 				return component;
 			}
 			if (incoming && incoming.results.length > 0) state.latestDetails = incoming;
-			const details = incoming && incoming.results.length > 0 ? incoming : state.latestDetails;
+			const live = liveProgress.get(context.toolCallId) ?? state.live;
+			if (live) state.latestDetails = live.details;
+			state.live = context.isPartial && live && !live.closed ? live : undefined;
+			const details = live?.details ?? (incoming && incoming.results.length > 0 ? incoming : state.latestDetails);
 			if (!details || details.results.length === 0) {
 				component.setText(theme.fg("error", "✗ subagent failed"));
 				return component;
@@ -1877,7 +1966,7 @@ export default function (pi: ExtensionAPI) {
 				details.results,
 				state.counts ?? (state.counts = { waiting: 0, running: 0, succeeded: 0, failed: 0 }),
 			);
-			component.setStatus(details, counts, theme);
+			component.setStatus(details, counts, theme, context.isPartial, context.refreshResult ?? context.invalidate, state, live);
 			return component;
 		},
 	}));

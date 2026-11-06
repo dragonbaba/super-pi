@@ -4,7 +4,7 @@ import { StringDecoder } from "node:string_decoder";
 import { Session } from "node:inspector/promises";
 import { setImmediate as tick } from "node:timers/promises";
 import { SubagentStream } from "../../packages/coding-agent/src/modes/subagent-stream.ts";
-import { SubagentProcessRun } from "../../packages/extensions/subagent/index.ts";
+import { NativeSubagentProgress, SubagentProcessRun } from "../../packages/extensions/subagent/index.ts";
 import { StderrTail } from "../../packages/extensions/subagent/stderr-tail.ts";
 
 const ITERATIONS = 1000;
@@ -24,13 +24,14 @@ function measure(node, totals, sites) {
 }
 function largestFirst(left, right) { return right.bytes - left.bytes; }
 async function profile() {
-    const result = { messages: [], stderr: "", usage: { turns: 0 } };
+    const result = { messages: [], stderr: "", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 } };
+    const progress = new NativeSubagentProgress(["fixture"], "single", "user", null);
     const run = Object.create(SubagentProcessRun.prototype);
-    Object.assign(run, { result, buffer: "", stdoutDecoder: new StringDecoder("utf8"), stderrTail: new StderrTail(32768),
+    Object.assign(run, { result, progress: progress.details.results[0], buffer: "", stdoutDecoder: new StringDecoder("utf8"), stderrTail: new StderrTail(32768),
         jsonTransportBytes: 0, jsonTransportEventCount: 0, retainedJsonEventCount: 0, settled: false, requestProcessTreeKill: forbidKill });
     const sink = new Receiver(run), sender = new SubagentStream(sink, sink.write.bind(sink));
-    refs.push(new WeakRef(result), new WeakRef(run), new WeakRef(sink), new WeakRef(run.stderrTail.buffer));
-    const message = { role: "toolResult", content: [{ type: "text", text: "x".repeat(4096) }] };
+    refs.push(new WeakRef(result), new WeakRef(run), new WeakRef(sink), new WeakRef(run.stderrTail.buffer), new WeakRef(progress), new WeakRef(progress.details.results[0]));
+    const message = { role: "toolResult", toolName: "read", content: [{ type: "text", text: "x".repeat(4096) }] };
     const events = [
         { type: "tool_execution_end", toolCallId: "fixture", toolName: "read", result: { content: message.content }, isError: false },
         { type: "message_start", message }, { type: "message_end", message },
@@ -64,12 +65,15 @@ async function profile() {
     const totals = { total: 0, sender: 0, receiver: 0, stderr: 0 }, sites = []; measure(sampled.head, totals, sites); sites.sort(largestFirst);
     assert.equal(payloads, ITERATIONS); assert.equal(run.retainedJsonEventCount, ITERATIONS);
     assert.equal(loopWaits, 0); assert.equal(result.messages.length, 3);
+    assert.equal(progress.details.results[0].recentTool, "read"); assert.equal(progress.details.results[0].messages.length, 0);
+    progress.close(); run.progress = undefined;
     assert.equal(sender.messageFrame.message, undefined); assert.equal(sender.output, undefined); assert.equal(sender.write, undefined);
     assert.equal(run.stderrTail.buffer.length, 32768);
     const tail = run.stderrTail.take(); assert.ok(Buffer.byteLength(tail) <= 32768);
     retainedOwners.push(sender); // A disposed owner must not retain its output or result graph.
     return { iterations: ITERATIONS, sourceEvents: ITERATIONS * events.length, lines: sink.lines,
         payloadSerializations: payloads, serializations, perUpdateDeferreds: loopWaits / ITERATIONS,
+        nativeStatusRows: 1, nativeStatusMessageReferences: 0, perMessageStatusEvents: 0,
         finalFlushDeferreds: waits - loopWaits, retainedMessages: result.messages.length, stderrBytes: Buffer.byteLength(tail),
         sampledBytes: totals, sampledBytesPerMessage: totals.total / ITERATIONS, leadingSites: sites.slice(0, 5) };
 }
