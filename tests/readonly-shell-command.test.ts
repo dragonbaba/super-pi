@@ -78,6 +78,9 @@ test("host-restricted classification: readers, listed file commands with literal
     ["powershell", "Set-Location C:/outside; Set-Content report.txt changed", HOST_SHELL_OTHER],
     ["powershell", "Set-Location C:/outside > log.txt; Set-Content report.txt changed", HOST_SHELL_OTHER], ["powershell", "Remove-Item x.txt; cd src", HOST_SHELL_FILE_COMMANDS],
     ["powershell", "New-Item -ItemType SymbolicLink -Path link -Value C:/x", HOST_SHELL_OTHER], ["powershell", "ni link -it:Junction -Target C:/x", HOST_SHELL_OTHER],
+    ["powershell", "New-Item -ty SymbolicLink -Path link -Value C:/x", HOST_SHELL_OTHER],
+    // The native scanners stop after 64 segments, so a longer command is never a file command.
+    ["bash", "touch local; " + "echo ok; ".repeat(63) + "echo changed > out.txt", HOST_SHELL_OTHER],
     ["powershell", "New-Item -ItemType Directory out", HOST_SHELL_FILE_COMMANDS],
     ["powershell", "Remove-Item env:FOO", HOST_SHELL_OTHER], ["powershell", "Set-Content x.txt $(Get-Date)", HOST_SHELL_OTHER],
   ] as const) assert.equal(classifyHostShellCommand(tool, command), expected, command);

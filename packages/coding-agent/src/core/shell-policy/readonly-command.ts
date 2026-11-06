@@ -78,6 +78,8 @@ const RELOCATING_COMMANDS: ReadonlySet<string> = new Set(["cp", "mv"]);
 const POWERSHELL_RELOCATING_COMMANDS: ReadonlySet<string> = new Set([
   "copy-item", "cpi", "cp", "copy", "move-item", "mi", "mv", "move", "rename-item", "rni", "ren",
 ]);
+/** The native mutation scanners' segment limit (`MAX_SEGMENTS`, `MAX_SCRIPT_SEGMENTS`). */
+const MAX_HOST_SEGMENTS = 64;
 /** Readers that change the PowerShell location for the segments after them. */
 const POWERSHELL_LOCATION_COMMANDS: ReadonlySet<string> = new Set(["cd", "chdir", "set-location", "sl"]);
 /** Segment classes; a file command or a reader's file redirection is a FILE segment. */
@@ -127,7 +129,8 @@ export function classifyHostShellCommand(tool: "bash" | "powershell", command: s
   readOnlyShellCounters.judgments++;
   if (!command.trim()) return HOST_SHELL_OTHER;
   const powerShell = tool === "powershell", table = commandTable(powerShell, command, analysisOwner);
-  if (table.unterminated || table.nestedCount > 0 || table.segmentCount === 0) return HOST_SHELL_OTHER;
+  // The native scanners stop after 64 segments; a file command must be scanned whole.
+  if (table.unterminated || table.nestedCount > 0 || table.segmentCount === 0 || table.segmentCount > MAX_HOST_SEGMENTS) return HOST_SHELL_OTHER;
   const argv: string[] = [];
   let result: HostShellCommandClass = HOST_SHELL_READ_ONLY, moved = false;
   for (let segment = 0; segment < table.segmentCount; segment++) {
@@ -207,7 +210,8 @@ function hasPlainItemType(name: string, argv: readonly string[]): boolean {
     if (argument.charCodeAt(0) !== HYPHEN) continue;
     const colon = argument.indexOf(":"), parameter = colon < 0 ? argument : argument.slice(0, colon);
     // `-ItemType` (prefixes from `-i`) and its alias `-Type`.
-    if (parameter.length < 2 || !"-itemtype".startsWith(parameter) && parameter !== "-type") continue;
+    // PowerShell binds prefixes of aliases too (`-ty`); `-t` is checked as well, at worst asking.
+    if (parameter.length < 2 || !"-itemtype".startsWith(parameter) && !"-type".startsWith(parameter)) continue;
     const value = colon < 0 ? argv[++index]?.toLowerCase() : argument.slice(colon + 1);
     if (value !== "file" && value !== "directory") return false;
   }
