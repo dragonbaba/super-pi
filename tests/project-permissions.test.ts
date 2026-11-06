@@ -119,7 +119,7 @@ test("host-restricted classification lifts only literal segments, and suggestion
     // A string in command position is a value; a call operator invokes it.
     for (const command of ["$label = 'npm'", "$label='npm'", "@{ label = 'npm' }", "@{label='npm'}", "$data=@{label='npm'}"]) assert.equal(shellRuleVerdict("powershell", command, npm), RULE_NONE, command);
     assert.equal(shellRuleVerdict("powershell", "& 'npm' test", npm), RULE_DENY);
-    for (const command of ["@{ result = (npm test) }", "@{ result = & npm test }", "pwsh -NoProfile -Command npm test", "@{ result =\n  npm test\n}", "npm.cmd test", "npm.ps1 test"]) assert.equal(shellRuleVerdict("powershell", command, npm), RULE_DENY, command);
+    for (const command of ["@{ result = (npm test) }", "@{ result = & npm test }", "pwsh -NoProfile -Command npm test", "@{ result =\n  npm test\n}", "npm.cmd test", "npm.ps1 test", "cmd.exe /d /c \"npm test\""]) assert.equal(shellRuleVerdict("powershell", command, npm), RULE_DENY, command);
     // Switch labels are not commands; their action blocks are matched.
     assert.equal(shellRuleVerdict("powershell", "switch ($tool) { npm { Write-Output \"npm\" }; default { Write-Output other } }", npm), RULE_NONE);
     assert.equal(shellRuleVerdict("powershell", "switch ($tool) { a { Write-Output x } b { npm test } }", npm), RULE_DENY);

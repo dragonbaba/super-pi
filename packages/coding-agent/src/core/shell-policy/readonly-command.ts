@@ -301,7 +301,7 @@ function strongerRuleVerdict(rules: ProjectRuleSet, powerShell: boolean, argv: s
   if (argv.length === 0) return verdict;
   let matched = matchCommandWords(rules, powerShell, argv);
   if (!powerShell) matched = dispatchedRuleVerdict(rules, argv, matched, true);
-  else if (matched !== RULE_DENY) { const script = scriptOperandVerdict(rules, argv); if (script > matched) matched = script; }
+  else if (matched !== RULE_DENY) { const script = scriptOperandVerdict(rules, argv, true); if (script > matched) matched = script; }
   return matched >= RULE_ASK && matched > verdict ? matched : verdict;
 }
 
@@ -309,7 +309,7 @@ function strongerRuleVerdict(rules: ProjectRuleSet, powerShell: boolean, argv: s
 function dispatchedRuleVerdict(rules: ProjectRuleSet, argv: string[], matched: number, findActions: boolean): number {
   for (let depth = 0; matched !== RULE_DENY; depth++) {
     // `bash -c 'git push'` runs its script operand; nothing after it is another wrapper level.
-    const script = scriptOperandVerdict(rules, argv);
+    const script = scriptOperandVerdict(rules, argv, false);
     if (script >= 0) { if (script > matched) matched = script; break; }
     if (findActions && argv[0] === "find") {
       const action = findActionVerdict(rules, argv);
@@ -335,12 +335,27 @@ let scriptNesting = 0;
 
 /**
  * The rule verdict for the literal script a shell runs (`bash -lc 'git push'`,
- * `pwsh -Command git push`), or -1 when `argv` runs no script operand. The program name
+ * `pwsh -Command git push`, `cmd /c git push`), or -1 when `argv` runs no script operand. The program name
  * has already been reduced to its basename by `matchCommandWords`.
  */
-function scriptOperandVerdict(rules: ProjectRuleSet, argv: readonly string[]): number {
+function scriptOperandVerdict(rules: ProjectRuleSet, argv: readonly string[], powerShell: boolean): number {
   const first = argv[0]!;
   if (scriptNesting >= MAX_SCRIPT_NESTING) return -1;
+  // `cmd /c git push` / `cmd /d /c "git push"`: the rest runs under the calling shell's rules.
+  if (first.length === 3 && (first.charCodeAt(0) | 32) === 99 && (first.charCodeAt(1) | 32) === 109 && (first.charCodeAt(2) | 32) === 100) {
+    for (let index = 1; index < argv.length; index++) {
+      const word = argv[index]!;
+      if (word.length < 2 || word.charCodeAt(0) !== 47) return -1;
+      const letter = word.charCodeAt(1) | 32;
+      if (word.length === 2 && (letter === 99 || letter === 107)) { // `/c`, `/k`
+        if (index + 1 >= argv.length) return -1;
+        let script = argv[index + 1]!;
+        for (let rest = index + 2; rest < argv.length; rest++) script += " " + argv[rest]!;
+        return nestedScriptVerdict(rules, powerShell ? "powershell" : "bash", script);
+      }
+    }
+    return -1;
+  }
   if (BASH_SHELLS.has(first)) {
     for (let index = 1; index < argv.length; index++) {
       const word = argv[index]!;
