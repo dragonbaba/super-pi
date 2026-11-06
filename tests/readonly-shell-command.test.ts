@@ -17,6 +17,10 @@ test("Bash: listed readers joined by lists and pipes are read-only; the first ot
     ["echo $(rm x)", "echo $(rm x)"], ["PAGER=less git log", "PAGER=less git log"], ["ls; (cd x && ls)", "cd x"], ["sleep 1 &", "sleep 1"],
     ["find . -name x -delete", "find . -name x -delete"], ["sort -o out.txt in.txt", "sort -o out.txt in.txt"], ["git branch topic", "git branch topic"],
     ["sed -i s/a/b/ f", "sed -i s/a/b/ f"], ["cat <<EOF\nx\nEOF", "cat <<EOF"], ["git describe", "git describe"],
+    // A brace list expands into options and operands the checks would never see.
+    ["find . -{print,delete}", "find . -{print,delete}"], ["uniq {in,out}.txt", "uniq {in,out}.txt"],
+    // A later `--no-list` turns the operand back into a new branch name.
+    ["git branch --list --no-list topic", "git branch --list --no-list topic"],
   ]) assert.equal(findNonReadOnlyShellSegment("bash", command), blocked, command);
   assert.equal(findNonReadOnlyShellSegment("bash", "echo 'open"), "echo 'open");
   assert.equal(findNonReadOnlyShellSegment("bash", "  "), "(empty command)");
@@ -35,6 +39,8 @@ test("PowerShell: file readers, formatters and listed programs are read-only; co
     ["Get-ChildItem; Remove-Item x", "Remove-Item x"], ["Get-Content $env:FILE", "Get-Content $env:FILE"], ["Get-Item (Join-Path a b)", "Get-Item"],
     ["Get-ChildItem | ForEach-Object { Remove-Item $_ }", "ForEach-Object { Remove-Item $_ }"], ["Get-Content x > out.txt", "Get-Content x > out.txt"],
     ["Get-ChildItem env:", "Get-ChildItem env:"],
+    // The native sort.exe writes its `/o` file; only the Sort-Object alias `sort` is listed.
+    ["sort.exe input.txt /o output.txt", "sort.exe input.txt /o output.txt"],
   ]) assert.equal(findNonReadOnlyShellSegment("powershell", command), blocked, command);
   // A subexpression body is a script of its own; the whole command is reported.
   assert.equal(findNonReadOnlyShellSegment("powershell", "Write-Output $(Remove-Item x)"), "Write-Output $(Remove-Item x)");

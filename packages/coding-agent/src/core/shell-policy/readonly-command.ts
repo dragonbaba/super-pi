@@ -101,18 +101,16 @@ function isReadOnlySegment(table: ShellTokenTable, segment: number, powerShell: 
       index++;
       continue;
     }
-    // Script blocks are code; a Bash brace list only expands into more words.
-    if (flags & DYNAMIC_WORD || powerShell && flags & EXPANSION_BRACE) return false;
+    // Script blocks are code; a Bash brace list expands into words the checks below never see.
+    if (flags & (DYNAMIC_WORD | EXPANSION_BRACE)) return false;
     const text = table.texts ? table.texts[index]! : windowsWordText(table, index);
     if (argv.length === 0 && !powerShell && (flags & WORD_QUOTED) === 0 && isAssignment(text)) return false;
     argv.push(text);
   }
   if (argv.length === 0) return false;
-  let name = argv[0]!.toLowerCase();
-  if (powerShell) {
-    if (name.endsWith(".exe")) name = name.slice(0, -4);
-    if (READ_ONLY_POWERSHELL_COMMANDS.has(name)) return hasFileProviderArguments(argv);
-  }
+  // An explicit `sort.exe` is the native program, not the cmdlet alias, and is not listed.
+  const name = argv[0]!.toLowerCase();
+  if (powerShell && READ_ONLY_POWERSHELL_COMMANDS.has(name)) return hasFileProviderArguments(argv);
   if (!hasSafeArguments(name, argv)) return false;
   return READ_ONLY_COMMANDS.has(name) || isReadOnlyStructuredCommand(name, argv, subcommands);
 }
@@ -315,7 +313,9 @@ function isReadOnlyGitBranch(argv: readonly string[], from: number): boolean {
   for (let index = from; index < argv.length; index++) {
     const argument = argv[index]!;
     if (argument.charCodeAt(0) !== HYPHEN) { operands = true; continue; }
+    // Options apply in order: a later `--no-list` makes the operands branch names again.
     if (argument === "-l" || matchesLongOption(argument, "--list", "--li")) { list = true; continue; }
+    if (matchesLongOption(argument, "--no-list", "--no-l")) { list = false; continue; }
     if (argument.charCodeAt(1) !== HYPHEN && hasBranchWriteFlag(argument)) return false;
     if (matchesLongOption(argument, "--delete", "--del") || matchesLongOption(argument, "--move", "--mov")
       || matchesLongOption(argument, "--copy", "--cop") || matchesLongOption(argument, "--edit-description", "--e")
