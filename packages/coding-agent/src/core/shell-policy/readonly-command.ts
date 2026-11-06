@@ -121,53 +121,57 @@ const BASH_DISPATCH_WRAPPERS: ReadonlyMap<string, ReadonlySet<string>> = new Map
 ]);
 const MAX_DISPATCH_WRAPPERS = 4;
 
-/** Where the dispatched command starts after leading wrappers, or 0 (none, or only a `command -v` lookup). */
+/** Where the command run by the leading wrapper starts, or 0 (no wrapper, or a `command -v` / `sudo -l` query). */
 function dispatchedCommandStart(argv: readonly string[]): number {
-  let index = 0;
-  for (let depth = 0; depth < MAX_DISPATCH_WRAPPERS && index < argv.length; depth++) {
-    const name = argv[index]!, valueOptions = BASH_DISPATCH_WRAPPERS.get(name);
-    if (!valueOptions) break;
-    index++;
-    while (index < argv.length) {
-      const word = argv[index]!;
-      if (word === "--") { index++; break; }
-      if (word.length > 1 && word.charCodeAt(0) === 45) {
-        // `command [-pVv]`: -v or -V anywhere in its options only looks the command up.
-        if (name === "command" && word.charCodeAt(1) !== 45 && (word.indexOf("v") > 0 || word.indexOf("V") > 0)) return 0;
-        // `sudo -l cmd` only lists whether the command is permitted.
-        if (name === "sudo" && (word === "--list" || word.charCodeAt(1) !== 45 && word.indexOf("l") > 0)) return 0;
-        index += valueOptions.has(word) ? 2 : 1;
-        continue;
-      }
-      if (name === "env" && isAssignment(word)) { index++; continue; }
-      break;
+  const name = argv[0]!, valueOptions = BASH_DISPATCH_WRAPPERS.get(name);
+  if (!valueOptions) return 0;
+  let index = 1;
+  while (index < argv.length) {
+    const word = argv[index]!;
+    if (word === "--") { index++; break; }
+    if (word.length > 1 && word.charCodeAt(0) === 45) {
+      // `command [-pVv]`: -v or -V anywhere in its options only looks the command up.
+      if (name === "command" && word.charCodeAt(1) !== 45 && (word.indexOf("v") > 0 || word.indexOf("V") > 0)) return 0;
+      // `sudo -l cmd` only lists whether the command is permitted.
+      if (name === "sudo" && (word === "--list" || word.charCodeAt(1) !== 45 && word.indexOf("l") > 0)) return 0;
+      index += valueOptions.has(word) ? 2 : 1;
+      continue;
     }
-    if (name === "timeout") index++; // the duration
+    if (name === "env" && isAssignment(word)) { index++; continue; }
+    break;
   }
+  if (name === "timeout") index++; // the duration
   return index < argv.length ? index : 0;
 }
 
-/**
- * The stronger of `verdict` and the deny/ask rule matching the words collected so far: as
- * written, and for Bash also from the command after leading dispatch wrappers. May shift `argv`.
- */
-function strongerRuleVerdict(rules: ProjectRuleSet, powerShell: boolean, argv: string[], verdict: number): number {
-  if (argv.length === 0) return verdict;
+/** The rule decision for one command's words; `git.exe push` also matches as `git push` (may rewrite `argv[0]`). */
+function matchCommandWords(rules: ProjectRuleSet, powerShell: boolean, argv: string[]): number {
   let matched = rules.matchShellWords(powerShell, argv);
-  const start = powerShell || matched === RULE_DENY ? 0 : dispatchedCommandStart(argv);
-  if (start > 0) {
-    argv.copyWithin(0, start);
-    argv.length -= start;
-    const dispatched = rules.matchShellWords(false, argv);
-    if (dispatched > matched) matched = dispatched;
-  }
-  // On Windows `git.exe push` runs the program a `git push *` rule names.
   const first = argv[0]!, length = first.length;
   if (matched !== RULE_DENY && length > 4 && first.charCodeAt(length - 4) === 46 && (first.charCodeAt(length - 3) | 32) === 101
     && (first.charCodeAt(length - 2) | 32) === 120 && (first.charCodeAt(length - 1) | 32) === 101) {
     argv[0] = first.slice(0, length - 4);
     const bare = rules.matchShellWords(powerShell, argv);
     if (bare > matched) matched = bare;
+  }
+  return matched;
+}
+
+/**
+ * The stronger of `verdict` and the deny/ask rule matching the words collected so far: as
+ * written, and for Bash at each level of leading dispatch wrappers (`env sudo git push`
+ * matches `env *`, `sudo *` and `git push *`). Shifts `argv` in place.
+ */
+function strongerRuleVerdict(rules: ProjectRuleSet, powerShell: boolean, argv: string[], verdict: number): number {
+  if (argv.length === 0) return verdict;
+  let matched = matchCommandWords(rules, powerShell, argv);
+  for (let depth = 0; !powerShell && matched !== RULE_DENY && depth < MAX_DISPATCH_WRAPPERS; depth++) {
+    const start = dispatchedCommandStart(argv);
+    if (start === 0) break;
+    argv.copyWithin(0, start);
+    argv.length -= start;
+    const dispatched = matchCommandWords(rules, false, argv);
+    if (dispatched > matched) matched = dispatched;
   }
   return matched >= RULE_ASK && matched > verdict ? matched : verdict;
 }

@@ -84,6 +84,9 @@ test("host-restricted classification lifts only literal segments, and suggestion
         "coproc publisher { git push origin main; }"])
         assert.equal(shellRuleVerdict("bash", command, rules), RULE_DENY, command);
     const lookup = new ProjectRuleSet([{ tool: "bash", decision: "deny", command: "git *" }]);
+    // A rule naming a wrapper matches it at any level.
+    const wrapper = new ProjectRuleSet([{ tool: "bash", decision: "deny", command: "sudo *" }]);
+    for (const command of ["env sudo git push origin main", "command sudo git push"]) assert.equal(shellRuleVerdict("bash", command, wrapper), RULE_DENY, command);
     for (const command of ["command -v git", "command -p -v git", "command -pv git", "sudo -l git push"])
         assert.equal(shellRuleVerdict("bash", command, lookup), RULE_NONE, command);
     const exact = new ProjectRuleSet([{ tool: "powershell", decision: "deny", command: "git push origin main" }]);
