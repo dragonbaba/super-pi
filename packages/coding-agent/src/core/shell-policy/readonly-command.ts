@@ -59,20 +59,22 @@ const FILE_COMMANDS: ReadonlySet<string> = new Set(["rm", "rmdir", "mkdir", "tou
  * model, so the segment is not a file command.
  */
 const FILE_COMMAND_SHORT_OPTIONS: Readonly<Record<string, string>> = Object.freeze({
-  rm: "rRfvd", rmdir: "v", mkdir: "pv", touch: "acm", cp: "rRfvpanu", mv: "fvnu",
+  rm: "rRfvd", rmdir: "v", mkdir: "pv", touch: "acm", cp: "rRfvpnu", mv: "fvnu",
 });
 const FILE_COMMAND_LONG_OPTIONS: Readonly<Record<string, ReadonlySet<string>>> = Object.freeze({
   rm: new Set(["--recursive", "--force", "--verbose", "--dir"]),
   rmdir: new Set(["--verbose"]),
   mkdir: new Set(["--parents", "--verbose"]),
   touch: new Set(["--no-create"]),
-  cp: new Set(["--recursive", "--force", "--verbose", "--archive", "--no-clobber", "--update"]),
+  cp: new Set(["--recursive", "--force", "--verbose", "--no-clobber", "--update"]),
   mv: new Set(["--force", "--verbose", "--no-clobber", "--update"]),
 });
 const POWERSHELL_FILE_COMMANDS: ReadonlySet<string> = new Set([
   "remove-item", "ri", "rm", "del", "erase", "rd", "rmdir", "new-item", "ni", "mkdir", "md", "set-content", "add-content", "ac",
   "clear-content", "clc", "out-file", "copy-item", "cpi", "cp", "copy", "move-item", "mi", "mv", "move", "rename-item", "rni", "ren",
 ]);
+/** Readers that change the PowerShell location for the segments after them. */
+const POWERSHELL_LOCATION_COMMANDS: ReadonlySet<string> = new Set(["cd", "chdir", "set-location", "sl"]);
 /** Segment classes; a file command or a reader's file redirection is a FILE segment. */
 const SEGMENT_REJECTED = 0, SEGMENT_READER = 1, SEGMENT_FILE = 2;
 /** `classifyHostShellCommand` results. */
@@ -122,11 +124,13 @@ export function classifyHostShellCommand(tool: "bash" | "powershell", command: s
   const powerShell = tool === "powershell", table = commandTable(powerShell, command, analysisOwner);
   if (table.unterminated || table.nestedCount > 0 || table.segmentCount === 0) return HOST_SHELL_OTHER;
   const argv: string[] = [];
-  let result: HostShellCommandClass = HOST_SHELL_READ_ONLY;
+  let result: HostShellCommandClass = HOST_SHELL_READ_ONLY, moved = false;
   for (let segment = 0; segment < table.segmentCount; segment++) {
     const kind = classifySegment(table, segment, powerShell, NO_SUBCOMMANDS, true, argv);
-    if (kind === SEGMENT_REJECTED) { result = HOST_SHELL_OTHER; break; }
+    // The mutation analysis resolves PowerShell targets against the starting location only.
+    if (kind === SEGMENT_REJECTED || kind === SEGMENT_FILE && moved) { result = HOST_SHELL_OTHER; break; }
     if (kind === SEGMENT_FILE) result = HOST_SHELL_FILE_COMMANDS;
+    else if (powerShell && POWERSHELL_LOCATION_COMMANDS.has(argv[0]!.toLowerCase())) moved = true;
   }
   argv.length = 0;
   return result;
@@ -173,12 +177,30 @@ function classifySegment(table: ShellTokenTable, segment: number, powerShell: bo
   if (argv.length === 0) return SEGMENT_REJECTED;
   const name = argv[0]!.toLowerCase(), reader = writes ? SEGMENT_FILE : SEGMENT_READER;
   if (fileCommands && (powerShell ? POWERSHELL_FILE_COMMANDS : FILE_COMMANDS).has(name))
-    return (powerShell ? hasFileProviderArguments(argv) : hasKnownFileCommandOptions(name, argv)) ? SEGMENT_FILE : SEGMENT_REJECTED;
+    return (powerShell ? hasFileProviderArguments(argv) && hasPlainItemType(name, argv) : hasKnownFileCommandOptions(name, argv)) ? SEGMENT_FILE : SEGMENT_REJECTED;
   // An explicit `sort.exe` is the native program, not the cmdlet alias, and is not listed.
   if (powerShell && READ_ONLY_POWERSHELL_COMMANDS.has(name)) return hasFileProviderArguments(argv) ? reader : SEGMENT_REJECTED;
   // A glob may expand into the second operand `uniq` writes; the count below cannot see it.
   if (globs && name === "uniq" || !hasSafeArguments(name, argv)) return SEGMENT_REJECTED;
   return READ_ONLY_COMMANDS.has(name) || isReadOnlyStructuredCommand(name, argv, subcommands) ? reader : SEGMENT_REJECTED;
+}
+
+/**
+ * `New-Item` creates only files and directories here: a link or junction would redirect a
+ * later write in the same command, before canonicalization could see it.
+ */
+function hasPlainItemType(name: string, argv: readonly string[]): boolean {
+  if (name !== "new-item" && name !== "ni") return true;
+  for (let index = 1; index < argv.length; index++) {
+    const argument = argv[index]!.toLowerCase();
+    if (argument.charCodeAt(0) !== HYPHEN) continue;
+    const colon = argument.indexOf(":"), parameter = colon < 0 ? argument : argument.slice(0, colon);
+    // `-ItemType` (prefixes from `-i`) and its alias `-Type`.
+    if (parameter.length < 2 || !"-itemtype".startsWith(parameter) && parameter !== "-type") continue;
+    const value = colon < 0 ? argv[++index]?.toLowerCase() : argument.slice(colon + 1);
+    if (value !== "file" && value !== "directory") return false;
+  }
+  return true;
 }
 
 /** Every option before `--` is a listed flag for this command (`-rf`, `--parents`). */

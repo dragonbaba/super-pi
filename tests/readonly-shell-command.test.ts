@@ -72,6 +72,10 @@ test("host-restricted classification: readers, listed file commands with literal
     // Options that move or add writes the analysis does not see (`cp -t DIR`, backups, links).
     ["bash", "cp -t /outside a.txt b.txt", HOST_SHELL_OTHER], ["bash", "cp --target-directory=/outside a.txt b.txt", HOST_SHELL_OTHER],
     ["bash", "mv -b a.txt b.txt", HOST_SHELL_OTHER], ["bash", "touch -r /outside/ref a.txt", HOST_SHELL_OTHER], ["bash", "rmdir -p a/b", HOST_SHELL_OTHER], ["bash", "rm -rf -- build", HOST_SHELL_FILE_COMMANDS],
+    // PowerShell targets resolve against the starting location; links would redirect later writes.
+    ["powershell", "Set-Location C:/outside; Set-Content report.txt changed", HOST_SHELL_OTHER], ["powershell", "Remove-Item x.txt; cd src", HOST_SHELL_FILE_COMMANDS],
+    ["powershell", "New-Item -ItemType SymbolicLink -Path link -Value C:/x", HOST_SHELL_OTHER], ["powershell", "ni link -it:Junction -Target C:/x", HOST_SHELL_OTHER],
+    ["powershell", "New-Item -ItemType Directory out", HOST_SHELL_FILE_COMMANDS],
     ["powershell", "Remove-Item env:FOO", HOST_SHELL_OTHER], ["powershell", "Set-Content x.txt $(Get-Date)", HOST_SHELL_OTHER],
   ] as const) assert.equal(classifyHostShellCommand(tool, command), expected, command);
   // Plan mode's judgment is unchanged: a file command is still not read-only there.
