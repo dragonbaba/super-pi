@@ -131,6 +131,7 @@ test("native authorization reads PowerShell file cmdlets and cmd /c operands lik
   for(const command of ["Set-Content ..\\outside\\existing.txt changed","Copy-Item a.txt -Destination ..\\outside\\existing.txt",
     "Copy-Item ..\\outside\\existing.txt -Path a.txt","Set-Content -Path \"../outside/a,b.txt\" changed",
     "Set-Content -Path a.txt, ../outside/existing.txt -Value changed","Copy-Item -Path existing.txt -Destination ../outside",
+    "Copy-Item -Path a.txt -Dest ../outside/existing.txt",
     "New-Item -Path ../outside -Name existing.txt -ItemType File -Force"]) {
     await assert.rejects(f.authorize("powershell",command),/EXTERNAL_FILE_WRITE_BLOCKED/,command);await f.resume();
   }

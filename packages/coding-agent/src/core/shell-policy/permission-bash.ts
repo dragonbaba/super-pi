@@ -43,6 +43,9 @@ const POWERSHELL_FILE_CMDLETS = new Map<string, number>([
   ["move-item", CMDLET_MOVE], ["mi", CMDLET_MOVE | CMDLET_ALIAS], ["rename-item", CMDLET_MOVE | CMDLET_RENAME], ["rni", CMDLET_MOVE | CMDLET_RENAME | CMDLET_ALIAS],
 ]);
 const POWERSHELL_PATH_PARAMETERS = new Set(["-path", "-literalpath", "-lp", "-pspath", "-filepath"]);
+// Full names for prefix matching (`-Dest`, `-Lit`); switches are matched exactly first.
+const POWERSHELL_PATH_NAMES: readonly string[] = Object.freeze(["-path", "-literalpath", "-pspath", "-filepath"]);
+const POWERSHELL_DESTINATION_NAME = "-destination";
 const POWERSHELL_SWITCH_PARAMETERS = new Set([
   "-recurse", "-r", "-force", "-fo", "-nonewline", "-append", "-passthru", "-whatif", "-confirm", "-noclobber", "-container", "-verbose", "-debug", "-asbytestream",
 ]);
@@ -322,8 +325,9 @@ function inspectPowerShellFileCmdlet(command: string, kind: number, tokens: Perm
     let valueIndex = index, offset = colon + 1;
     if (colon < 0) { valueIndex = ++index; offset = 0; }
     const end = index = cmdletListEnd(tokens, valueIndex);
-    if (POWERSHELL_PATH_PARAMETERS.has(name)) { pathIndex = valueIndex; pathOffset = offset; pathEnd = end; }
-    else if (name === "-destination") { destinationIndex = valueIndex; destinationOffset = offset; destinationEnd = end; }
+    const role = cmdletParameterRole(name);
+    if (role === 1) { pathIndex = valueIndex; pathOffset = offset; pathEnd = end; }
+    else if (role === 2) { destinationIndex = valueIndex; destinationOffset = offset; destinationEnd = end; }
     else if (takesName && name === "-name") { nameIndex = valueIndex; nameOffset = offset; }
     else if (name === "-variable") noFile = true; // Tee-Object -Variable writes no file.
   }
@@ -350,6 +354,17 @@ function inspectPowerShellFileCmdlet(command: string, kind: number, tokens: Perm
   } else if (childName) addTarget(builder, childName, cwd, true, childExpansion);
   else if (!noFile && kind !== CMDLET_COPY) markUnverifiableCmdletTarget(builder);
   if (destinationIndex >= 0) addCmdletList(builder, tokens, destinationIndex, destinationOffset, destinationEnd, cwd, 0, false, undefined, undefined);
+  else if (positionalDestination) markUnverifiableCmdletTarget(builder); // Where the copy or move writes is unknown.
+}
+
+/** 1 = Path, 2 = Destination, 0 = other. PowerShell accepts any unambiguous prefix of a parameter name. */
+function cmdletParameterRole(name: string): number {
+  if (POWERSHELL_PATH_PARAMETERS.has(name)) return 1;
+  if (name === "-destination") return 2;
+  if (name.length < 3) return 0;
+  if (POWERSHELL_DESTINATION_NAME.startsWith(name)) return 2;
+  for (let index = 0; index < POWERSHELL_PATH_NAMES.length; index++) if (POWERSHELL_PATH_NAMES[index]!.startsWith(name)) return 1;
+  return 0;
 }
 
 /** The last word of a comma list starting at `index`: a word ending, or the next word starting, with an unquoted comma continues it. */
