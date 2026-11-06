@@ -89,6 +89,11 @@ test("host-restricted classification lifts only literal segments, and suggestion
     for (const command of ["env sudo git push origin main", "command sudo git push"]) assert.equal(shellRuleVerdict("bash", command, wrapper), RULE_DENY, command);
     for (const command of ["command -v git", "command -p -v git", "command -pv git", "sudo -l git push"])
         assert.equal(shellRuleVerdict("bash", command, lookup), RULE_NONE, command);
+    // `find -exec` runs its command; `case` arm patterns are not commands, their bodies are.
+    const remove = new ProjectRuleSet([{ tool: "bash", decision: "deny", command: "rm *" }]);
+    assert.equal(shellRuleVerdict("bash", 'find . -name "*.tmp" -exec rm -f {} +', remove), RULE_DENY);
+    assert.equal(shellRuleVerdict("bash", 'case "$tool" in npm) echo npm;; git) echo git;; esac', lookup), RULE_NONE);
+    assert.equal(shellRuleVerdict("bash", "case $x in\n  a|b) echo a ;;\n  *) git push ;;\nesac", lookup), RULE_DENY);
     const exact = new ProjectRuleSet([{ tool: "powershell", decision: "deny", command: "git push origin main" }]);
     // PowerShell keeps script blocks in one segment: each block's commands are matched on their own.
     for (const command of ["if ($true) { git push origin main }", "try { git push origin main } catch { Write-Output $_ }",
@@ -98,6 +103,10 @@ test("host-restricted classification lifts only literal segments, and suggestion
         "& \"C:\\Program Files\\Git\\cmd\\git.exe\" push origin main"])
         assert.equal(shellRuleVerdict("powershell", command, exact), RULE_DENY, command);
     assert.equal(shellRuleVerdict("powershell", "try { git status } catch { }", exact), RULE_NONE);
+    // Hashtable keys are data; a hashtable value may still run a command.
+    const npm = new ProjectRuleSet([{ tool: "powershell", decision: "deny", command: "npm *" }]);
+    assert.equal(shellRuleVerdict("powershell", '$versions = @{ node = "22"; npm = "10" }', npm), RULE_NONE);
+    assert.equal(shellRuleVerdict("powershell", "@{ out = npm test }", npm), RULE_DENY);
     const blocks = new ProjectRuleSet([{ tool: "powershell", decision: "allow", command: "ForEach-Object *" }]);
     assert.equal(classifyHostShellCommand("powershell", "1..2 | ForEach-Object { npm test }", undefined, blocks), HOST_SHELL_OTHER);
     // An allow rule never lifts a segment that opens with control flow.

@@ -100,6 +100,30 @@ function hasBashHeredoc(command: string): boolean {
   return command.indexOf("<<") >= 0 && prepareShellAnalysis(command).hasHeredoc;
 }
 
+/** Where a PowerShell hashtable entry is: not in one, after its key, or after its `=`. */
+const HASH_NONE = 0, HASH_OPERATOR = 1, HASH_VALUE = 2;
+
+/** A hashtable key word (`npm`, `npm=`, `npm=10`): pushes an attached value and returns what follows. */
+function hashtableKey(argv: string[], word: string, quoted: boolean): number {
+  const equals = quoted ? -1 : word.indexOf("=");
+  if (equals < 0) return HASH_OPERATOR;
+  if (equals === word.length - 1) return HASH_VALUE;
+  argv.push(word.slice(equals + 1));
+  return HASH_NONE;
+}
+
+/** Whether the separator at `at` (after any blank lines) ends a Bash `case` arm: `;;`, `;&` or `;;&`. */
+function endsCaseArm(source: string, at: number): boolean {
+  let index = at;
+  for (; index < source.length; index++) {
+    const code = source.charCodeAt(index);
+    if (code !== 32 && code !== 9 && code !== 10 && code !== 13) break;
+  }
+  if (source.charCodeAt(index) !== 59) return false;
+  const next = source.charCodeAt(index + 1);
+  return next === 59 || next === 38;
+}
+
 /** Length of the leading PowerShell type casts (`[string]`, `[string[]]`) in `text`, or 0. */
 function castPrefixLength(text: string): number {
   let index = 0;
@@ -214,12 +238,25 @@ function matchCommandWords(rules: ProjectRuleSet, powerShell: boolean, argv: str
 /**
  * The stronger of `verdict` and the deny/ask rule matching the words collected so far: as
  * written, and for Bash at each level of leading dispatch wrappers (`env sudo git push`
- * matches `env *`, `sudo *` and `git push *`). Shifts `argv` in place.
+ * matches `env *`, `sudo *` and `git push *`), including the commands `find -exec` runs.
+ * Shifts `argv` in place.
  */
 function strongerRuleVerdict(rules: ProjectRuleSet, powerShell: boolean, argv: string[], verdict: number): number {
   if (argv.length === 0) return verdict;
   let matched = matchCommandWords(rules, powerShell, argv);
-  for (let depth = 0; !powerShell && matched !== RULE_DENY && depth < MAX_DISPATCH_WRAPPERS; depth++) {
+  if (!powerShell) matched = dispatchedRuleVerdict(rules, argv, matched, true);
+  return matched >= RULE_ASK && matched > verdict ? matched : verdict;
+}
+
+/** `matched` raised by the rules matching each level of Bash dispatch wrappers in `argv`. */
+function dispatchedRuleVerdict(rules: ProjectRuleSet, argv: string[], matched: number, findActions: boolean): number {
+  for (let depth = 0; matched !== RULE_DENY; depth++) {
+    if (findActions && argv[0] === "find") {
+      const action = findActionVerdict(rules, argv);
+      if (action > matched) matched = action;
+      if (matched === RULE_DENY) break;
+    }
+    if (depth >= MAX_DISPATCH_WRAPPERS) break;
     const start = dispatchedCommandStart(argv);
     if (start === 0) break;
     argv.copyWithin(0, start);
@@ -227,7 +264,30 @@ function strongerRuleVerdict(rules: ProjectRuleSet, powerShell: boolean, argv: s
     const dispatched = matchCommandWords(rules, false, argv);
     if (dispatched > matched) matched = dispatched;
   }
-  return matched >= RULE_ASK && matched > verdict ? matched : verdict;
+  return matched;
+}
+
+const FIND_EXEC_ACTIONS: ReadonlySet<string> = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
+/** Reused word buffer for one `find -exec` command; `shellRuleVerdict` does not nest. */
+const findActionWords: string[] = [];
+
+/** The strongest rule matching the commands of `find`'s `-exec` and `-execdir` actions (`-exec rm {} +`). */
+function findActionVerdict(rules: ProjectRuleSet, argv: readonly string[]): number {
+  let matched = RULE_NONE;
+  for (let index = 1; index < argv.length && matched !== RULE_DENY; index++) {
+    if (!FIND_EXEC_ACTIONS.has(argv[index]!)) continue;
+    findActionWords.length = 0;
+    for (index++; index < argv.length; index++) {
+      const word = argv[index]!;
+      if (word === ";" || word === "+") break;
+      findActionWords.push(word);
+    }
+    if (findActionWords.length === 0) continue;
+    const action = dispatchedRuleVerdict(rules, findActionWords, matchCommandWords(rules, false, findActionWords), false);
+    if (action > matched) matched = action;
+  }
+  findActionWords.length = 0;
+  return matched;
 }
 /** `ruleWords` results: not matchable, plain words, or words with a literal file redirection. */
 const RULE_WORDS_NONE = 0, RULE_WORDS_PLAIN = 1, RULE_WORDS_WRITES = 2;
@@ -327,24 +387,51 @@ export function shellRuleVerdict(tool: "bash" | "powershell", command: string, r
     if (view.uncertain && rules.hasRestrictiveShellRules(false)) verdict = RULE_ASK;
   }
   const table = commandTable(powerShell, source, analysisOwner), argv: string[] = [];
+  // Bash `case` arm patterns (`git)`) are not commands. PowerShell keeps one bit per open
+  // brace, set for a hashtable (`@{ npm = "10" }`), whose keys are not commands either.
+  let caseDepth = 0, casePattern = false, braceKinds = 0, braceDepth = 0, hashEntry = HASH_NONE;
   for (let segment = 0; segment < table.segmentCount && verdict !== RULE_DENY; segment++) {
     argv.length = 0;
+    hashEntry = HASH_NONE;
     const end = table.segmentEnds[segment]!;
+    if (!powerShell) {
+      const first = table.segmentStart(segment);
+      const head = first < end && (table.flags[first]! & WORD_QUOTED) === 0 ? table.texts![first]! : "";
+      // `case WORD in PATTERN)`: patterns run until a `)` ends their segment.
+      if (head === "case") { caseDepth++; casePattern = table.segmentSeparators[segment] !== SEGMENT_CLOSE; continue; }
+      if (caseDepth > 0 && head === "esac") { caseDepth--; casePattern = false; continue; }
+      if (casePattern) { if (table.segmentSeparators[segment] === SEGMENT_CLOSE) casePattern = false; continue; }
+    }
     for (let index = table.segmentStart(segment); index < end; index++) {
       const flags = table.flags[index]!;
       if (flags & WORD_REDIRECTION) { index++; continue; }
       const text = table.texts ? table.texts[index]! : windowsWordText(table, index);
+      if (powerShell) {
+        const braced = text.indexOf("{") >= 0 || text.indexOf("}") >= 0;
+        if (hashEntry === HASH_OPERATOR) {
+          hashEntry = HASH_NONE;
+          const operator = (flags & WORD_QUOTED) === 0 && !braced ? assignmentOperatorLength(text) : 0;
+          if (operator > 0) { if (operator < text.length) argv.push(text.slice(operator)); else hashEntry = HASH_VALUE; continue; }
+        }
+        // A hashtable key names data; the value after `=` may be a command (`@{ sha = git rev-parse HEAD }`).
+        if (hashEntry === HASH_VALUE) hashEntry = HASH_NONE;
+        else if (argv.length === 0 && (braceKinds & 1) !== 0 && !braced) { hashEntry = hashtableKey(argv, text, (flags & WORD_QUOTED) !== 0); continue; }
+      }
       if (powerShell && (flags & WORD_QUOTED) !== 0) {
         // `try { git push origin "main"}`: braces outside the quotes still close the block.
         const start = table.starts[index]!, stop = table.ends[index]!, raw = table.source;
         let open = 0, close = 0;
         while (start + open < stop && raw.charCodeAt(start + open) === 123) open++;
         while (stop - close > start + open && raw.charCodeAt(stop - close - 1) === 125) close++;
-        if (open > 0) { verdict = strongerRuleVerdict(rules, true, argv, verdict); argv.length = 0; }
+        if (open > 0) { verdict = strongerRuleVerdict(rules, true, argv, verdict); argv.length = 0; braceKinds = braceKinds << open; braceDepth += open; }
         if (open > 0 || close > 0) {
           const word = text.slice(open, Math.max(open, text.length - close));
           if (word) argv.push(word);
-          if (close > 0) { verdict = strongerRuleVerdict(rules, true, argv, verdict); argv.length = 0; }
+          if (close > 0) {
+            verdict = strongerRuleVerdict(rules, true, argv, verdict); argv.length = 0;
+            const closed = close < braceDepth ? close : braceDepth;
+            braceKinds >>>= closed; braceDepth -= closed;
+          }
           continue;
         }
       }
@@ -372,9 +459,15 @@ export function shellRuleVerdict(tool: "bash" | "powershell", command: string, r
               if (code !== 123 && code !== 125 && code !== -1) continue;
               if (cursor > from) {
                 const word = text.slice(from, cursor);
-                if (!(argv.length === 0 && isCommandPrefix(word, true))) argv.push(word);
+                if (hashEntry === HASH_NONE && argv.length === 0 && (braceKinds & 1) !== 0) hashEntry = hashtableKey(argv, word, false);
+                else { hashEntry = HASH_NONE; if (!(argv.length === 0 && isCommandPrefix(word, true))) argv.push(word); }
               }
-              if (code !== -1) { verdict = strongerRuleVerdict(rules, true, argv, verdict); argv.length = 0; }
+              if (code !== -1) {
+                verdict = strongerRuleVerdict(rules, true, argv, verdict); argv.length = 0; hashEntry = HASH_NONE;
+                // `@{` opens a hashtable; any other `{` a script block.
+                if (code === 123) { braceKinds = braceKinds << 1 | (cursor > 0 && text.charCodeAt(cursor - 1) === 64 ? 1 : 0); braceDepth++; }
+                else if (braceDepth > 0) { braceKinds >>>= 1; braceDepth--; }
+              }
               from = cursor + 1;
             }
             continue;
@@ -389,6 +482,7 @@ export function shellRuleVerdict(tool: "bash" | "powershell", command: string, r
       argv.push(text);
     }
     verdict = strongerRuleVerdict(rules, powerShell, argv, verdict);
+    if (caseDepth > 0 && endsCaseArm(table.source, table.segmentSourceEnds[segment]!)) casePattern = true;
   }
   argv.length = 0;
   return verdict;
