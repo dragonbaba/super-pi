@@ -93,7 +93,7 @@ test("host-restricted classification lifts only literal segments, and suggestion
     // PowerShell keeps script blocks in one segment: each block's commands are matched on their own.
     for (const command of ["if ($true) { git push origin main }", "try { git push origin main } catch { Write-Output $_ }",
         "Try { npm test } catch [System.Exception] { Write-Error x } finally { git push origin main }", "1..2 | ForEach-Object { git push origin main }",
-        "try {git push origin main} catch {}", "$null = git push origin main", "$out += git push origin main", "$r=git push origin main", "git.exe push origin main"])
+        "try {git push origin main} catch {}", "$null = git push origin main", "$out += git push origin main", "$r=git push origin main", "$null= git push origin main", "$null =git push origin main", "git.exe push origin main"])
         assert.equal(shellRuleVerdict("powershell", command, exact), RULE_DENY, command);
     assert.equal(shellRuleVerdict("powershell", "try { git status } catch { }", exact), RULE_NONE);
     const blocks = new ProjectRuleSet([{ tool: "powershell", decision: "allow", command: "ForEach-Object *" }]);

@@ -94,7 +94,13 @@ const BASH_COMMAND_PREFIXES: ReadonlySet<string> = new Set(["if", "then", "else"
 const POWERSHELL_COMMAND_PREFIXES: ReadonlySet<string> = new Set(["{", ".", "try", "catch", "finally", "if", "elseif", "else",
   "do", "while", "until", "foreach", "for", "switch", "trap"]);
 
-const POWERSHELL_ASSIGNMENT_OPERATORS: ReadonlySet<string> = new Set(["=", "+=", "-=", "*=", "/=", "%=", "??="]);
+/** Length of the PowerShell assignment operator (`=`, `+=`, `-=`, `*=`, `/=`, `%=`, `??=`) opening `word`, or 0. */
+function assignmentOperatorLength(word: string): number {
+  const first = word.charCodeAt(0), second = word.charCodeAt(1);
+  if (first === 61) return 1;
+  if (second === 61 && (first === 43 || first === 45 || first === 42 || first === 47 || first === 37)) return 2;
+  return first === 63 && second === 63 && word.charCodeAt(2) === 61 ? 3 : 0;
+}
 
 /** Whether `text` opens a command without being its program (PowerShell keywords in any case). */
 function isCommandPrefix(text: string, powerShell: boolean): boolean {
@@ -286,10 +292,12 @@ export function shellRuleVerdict(tool: "bash" | "powershell", command: string, r
         // brace may touch a word (`try {git push}`). Each brace ends the command before it.
         if (powerShell) {
           // `$null = git push` / `$out += npm test`: the command is on the assignment's right-hand side.
+          // Spacing around the operator varies: `$r = git`, `$r=git`, `$r= git`, `$r =git`.
           if (argv.length === 0 && text.charCodeAt(0) === 36) {
-            if (index + 1 < end && POWERSHELL_ASSIGNMENT_OPERATORS.has(windowsWordText(table, index + 1))) { index++; continue; }
             const equals = text.indexOf("=");
-            if (equals > 1 && equals < text.length - 1) { argv.push(text.slice(equals + 1)); continue; }
+            if (equals > 1) { if (equals < text.length - 1) argv.push(text.slice(equals + 1)); continue; }
+            const next = index + 1 < end ? windowsWordText(table, index + 1) : "", operator = assignmentOperatorLength(next);
+            if (operator > 0) { index++; if (operator < next.length) argv.push(next.slice(operator)); continue; }
           }
           let open = 0, close = text.length;
           while (open < close && text.charCodeAt(open) === 123) open++;

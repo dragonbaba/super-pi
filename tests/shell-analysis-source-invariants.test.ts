@@ -42,7 +42,7 @@ test("authorization scanners and cache methods add no callbacks, promises or Buf
     "isDescriptor", "isAssignment", "hasFileProviderArguments", "hasSafeArguments", "isOutputOption", "isReadOnlyStructuredCommand", "isPrintOnlySed",
     "isLineRangePrint", "isNoEmitTsc", "isReadOnlyGit", "isUnsafeGitArgument", "matchesLongOption", "isReadOnlyGitBranch", "hasBranchWriteFlag",
     "isReadOnlyGitRemote", "isReadOnlyGh", "classifyHostShellCommand", "commandTable", "isLiteralFileRedirection", "hasKnownFileCommandOptions", "hasPlainItemType",
-    "shellRuleVerdict", "suggestShellRules", "prefixRule", "ruleWords", "isCommandPrefix", "strongerRuleVerdict", "dispatchedCommandStart", "matchCommandWords"]));
+    "shellRuleVerdict", "suggestShellRules", "prefixRule", "ruleWords", "isCommandPrefix", "strongerRuleVerdict", "dispatchedCommandStart", "matchCommandWords", "assignmentOperatorLength"]));
   // Project rules (R4): built once per file version, matched without closures or temporary containers.
   targets.set("../project-permissions.ts", new Set(["foldCode", "foldWord", "wordMatches", "wordsMatch", "match", "hasShellRules", "hasRestrictiveShellRules", "toolDecision", "matchShellWords"]));
   for (const [file, names] of targets) {
