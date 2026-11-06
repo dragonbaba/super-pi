@@ -20,6 +20,12 @@ import { formatTaskCompletion, TASK_COMPLETION_CHARS } from "../packages/extensi
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
 import { convertToLlm } from "../packages/coding-agent/src/core/messages.ts";
 import { createOwnedTaskFixture } from "./helpers/owned-task-fixture.ts";
+import { stripVTControlCharacters } from "node:util";
+import { releaseComponentRenderCaches } from "@super-pi/tui";
+import { ToolExecutionComponent } from "../packages/coding-agent/src/modes/interactive/components/tool-execution.ts";
+import { initTheme } from "../packages/coding-agent/src/modes/interactive/theme/theme.ts";
+import { TuiMainScreen } from "../packages/tui/src/tui-main-screen.ts";
+import { FakeTerminal } from "./helpers/runtime-instrumentation.ts";
 
 // Set before loading the extension's config-path constants; never inspect user configuration.
 const ownedFixture = createOwnedTaskFixture("sp-managed-subagents-"), fixtureRoot = ownedFixture.root;
@@ -385,10 +391,18 @@ test("responsibilities are required for every item before any child starts and r
 
 test("capacity handoff reaches foreground/background results and stops dependent chain launches", async t => {
 	const h = harness(t, { persistent: true });
-	const chain = await h.run({ checkpoint: true, chain: [
+	initTheme("dark"); const ui = new TuiMainScreen(new FakeTerminal(140, 24));
+	const args = { checkpoint: true, chain: [
 		{ agent: "scout", task: "capacity-handoff", readOnly: true },
 		{ agent: "scout", task: "must-not-run", readOnly: true },
-	] });
+	] };
+	const component = new ToolExecutionComponent("subagent", "call-1", args, {}, h.tools.get("subagent"), ui, h.ctx.cwd);
+	t.after(async () => { releaseComponentRenderCaches(component); await ui.dispose(); });
+	const chain = await h.run(args, update => { component.updateResult(update, true, false); component.render(140); });
+	component.updateResult(chain, false, false);
+	const rendered = stripVTControlCharacters(component.render(140).join("\n"));
+	assert.match(rendered, /1\/1 completed/); assert.doesNotMatch(rendered, /failed|#2/);
+	assert.equal((component as any).resultRendererComponent.getLifecycleCounts().timers, 0);
 	assert.match(chain.content[0].text, /Chain paused after step 1; dependent steps were not started/);
 	assert.match(chain.content[0].text, /before the hard limit/);
 	assert.equal(chain.details.results[0].handoff, "Checkpoint handoff");
@@ -654,6 +668,57 @@ test("foreground publishes only isolated lifecycle snapshots and preserves final
 	assert.equal(updates[1].details.results[0].messages.length, 0);
 	assert.equal(updates[1].details.results[0].task, "");
 	assert.equal(h.messages.length, 0);
+});
+
+for (const outcome of ["success", "fail", "cancel"] as const) test(`real child native TUI progress advances without protocol updates and releases on ${outcome}`, { timeout: 15000 }, async t => {
+  initTheme("dark"); const h = harness(t), terminal = new FakeTerminal(140, 24), ui = new TuiMainScreen(terminal);
+  const args = { agent: "worker", task: "native-progress-" + outcome, readOnly: true };
+  const component = new ToolExecutionComponent("subagent", "call-1", args, {}, h.tools.get("subagent"), ui, h.ctx.cwd);
+  ui.addChild(component); ui.start();
+  const controller = new AbortController(); let updates = 0;
+  t.after(async () => { controller.abort(); await ui.dispose(); });
+  const operation = h.run(args, update => { updates++; component.updateResult(update, true, false); }, controller.signal);
+  const observed = operation.then((value: any) => ({ value }), (error: unknown) => ({ error }));
+  const pid = await startedChild(h.ctx.cwd, args.task);
+  const screen = () => stripVTControlCharacters(ui.captureRenderState().previousLines.join("\n"));
+  for (let i = 0; !screen().includes("1 turn ↑1 ↓2") && i < 120; i++) await delay(25);
+  assert.match(screen(), /1 turn ↑1 ↓2.*\$0\.0100.*read/); assert.equal(updates, 1);
+  const firstScreen = screen(), writes = terminal.writes.length;
+  await delay(1100);
+  assert.notEqual(screen(), firstScreen, "elapsed time advances while child is waiting and no protocol events arrive");
+  assert.ok(terminal.writes.length > writes); assert.equal(updates, 1);
+  const leaf = (component as any).resultRendererComponent;
+  const weak = new WeakRef((component as any).rendererState.live);
+  assert.equal(leaf.getLifecycleCounts().timers, 1);
+  if (outcome === "success") {
+    releaseComponentRenderCaches(component);
+    assert.equal(leaf.getLifecycleCounts().timers, 0); assert.equal(leaf.getLifecycleCounts().liveOwners, 0);
+    assert.equal((component as any).rendererState.live, undefined);
+    component.invalidate(); ui.renderNow();
+    assert.equal(leaf.getLifecycleCounts().timers, 1, "resume rebinds live compact rows");
+  }
+  writeFileSync(join(h.ctx.cwd, `child-${pid}.progress-0.release`), "release");
+  for (let i = 0; !screen().includes("2 turns ↑2 ↓4") && i < 120; i++) await delay(25);
+  assert.match(screen(), /2 turns ↑2 ↓4.*\$0\.0200.*ls/); assert.equal(updates, 1);
+  if (outcome === "cancel") controller.abort();
+  else writeFileSync(join(h.ctx.cwd, `child-${pid}.progress-1.release`), "release");
+  const finished = await observed;
+  component.updateResult("value" in finished ? finished.value : { content: [{ type: "text", text: String(finished.error) }] }, false, outcome !== "success");
+  ui.renderNow(); await ui.flushTerminalFrames();
+  assert.equal(leaf.getLifecycleCounts().timers, 0); assert.equal(leaf.getLifecycleCounts().liveOwners, 0);
+  assert.equal(leaf.getLifecycleCounts().invalidators, 0);
+  assert.match(screen(), outcome === "success" ? /completed/ : /failed/);
+  releaseComponentRenderCaches(component);
+  assert.equal(leaf.getLifecycleCounts().rows, 0); assert.equal(leaf.getLifecycleCounts().textChars, 0);
+  assert.equal((component as any).rendererState.live, undefined);
+  if (global.gc) { for (let i = 0; i < 4; i++) { await tick(); global.gc(); } assert.equal(weak.deref(), undefined); }
+  component.invalidate(); ui.renderNow(); await ui.flushTerminalFrames();
+  assert.match(screen(), /2 turns ↑2 ↓4.*\$0\.0200.*ls/, "final summary survives cache eviction without a live progress owner");
+  assert.match(screen(), outcome === "success" ? /completed/ : /failed/);
+  assert.equal(leaf.getLifecycleCounts().timers, 0);
+  releaseComponentRenderCaches(component);
+  t.diagnostic(JSON.stringify({ outcome, childPid: pid, protocolUpdates: updates, timerRefreshes: leaf.getLifecycleCounts().timerRefreshes,
+    terminalFrames: terminal.writes.length, remainingTimers: 0, retainedLiveOwners: 0, controlledGc: !!global.gc }));
 });
 
 test("real background calls share capacity and a cancelled queued child never launches", { timeout: 10_000 }, async t => {
