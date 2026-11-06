@@ -112,6 +112,26 @@ function hashtableKey(argv: string[], word: string, quoted: boolean): number {
   return HASH_NONE;
 }
 
+function isQuoteCode(code: number): boolean {
+  return code === 39 || code === 34;
+}
+
+/** Whether the raw word's first `=` is followed by a quote: `$label='npm'` assigns a string. */
+function rawValueQuoted(source: string, start: number, stop: number): boolean {
+  const equals = source.indexOf("=", start);
+  return equals >= 0 && equals + 1 < stop && isQuoteCode(source.charCodeAt(equals + 1));
+}
+
+/** Whether the PowerShell word at `start` follows a call operator: `& 'npm'` or `. 'script.ps1'`. */
+function isInvokedWord(source: string, start: number): boolean {
+  let index = start - 1;
+  while (index >= 0 && (source.charCodeAt(index) === 32 || source.charCodeAt(index) === 9)) index--;
+  if (index < 0) return false;
+  const code = source.charCodeAt(index), before = index > 0 ? source.charCodeAt(index - 1) : 32;
+  if (code === 38) return before !== 38; // `&`, not the `&&` chain operator
+  return code === 46 && (before === 32 || before === 9 || before === 10 || before === 13 || before === 59 || before === 123 || before === 40 || before === 124);
+}
+
 /** Whether the separator at `at` (after any blank lines) ends a Bash `case` arm: `;;`, `;&` or `;;&`. */
 function endsCaseArm(source: string, at: number): boolean {
   let index = at;
@@ -405,17 +425,30 @@ export function shellRuleVerdict(tool: "bash" | "powershell", command: string, r
     for (let index = table.segmentStart(segment); index < end; index++) {
       const flags = table.flags[index]!;
       if (flags & WORD_REDIRECTION) { index++; continue; }
-      const text = table.texts ? table.texts[index]! : windowsWordText(table, index);
+      let text = table.texts ? table.texts[index]! : windowsWordText(table, index);
+      // A PowerShell string in command position (`$label = 'npm'`) is a value, not a command;
+      // only `& 'npm'` or `. 'script.ps1'` invokes one. Its words then match nothing.
+      let expression = false;
       if (powerShell) {
         const braced = text.indexOf("{") >= 0 || text.indexOf("}") >= 0;
+        let valued = false;
         if (hashEntry === HASH_OPERATOR) {
           hashEntry = HASH_NONE;
           const operator = (flags & WORD_QUOTED) === 0 && !braced ? assignmentOperatorLength(text) : 0;
-          if (operator > 0) { if (operator < text.length) argv.push(text.slice(operator)); else hashEntry = HASH_VALUE; continue; }
+          if (operator === text.length) { hashEntry = HASH_VALUE; continue; }
+          if (operator > 0) { text = text.slice(operator); valued = true; }
         }
         // A hashtable key names data; the value after `=` may be a command (`@{ sha = git rev-parse HEAD }`).
-        if (hashEntry === HASH_VALUE) hashEntry = HASH_NONE;
-        else if (argv.length === 0 && (braceKinds & 1) !== 0 && !braced) { hashEntry = hashtableKey(argv, text, (flags & WORD_QUOTED) !== 0); continue; }
+        if (valued || hashEntry === HASH_VALUE) hashEntry = HASH_NONE;
+        else if (argv.length === 0 && (braceKinds & 1) !== 0 && !braced) {
+          const equals = (flags & WORD_QUOTED) === 0 ? text.indexOf("=") : -1;
+          if (equals < 0) { hashEntry = HASH_OPERATOR; continue; }
+          if (equals === text.length - 1) { hashEntry = HASH_VALUE; continue; }
+          text = text.slice(equals + 1); valued = true;
+        }
+        const start = table.starts[index]!;
+        expression = argv.length === 0 && (valued ? rawValueQuoted(table.source, start, table.ends[index]!)
+          : (flags & WORD_QUOTED) !== 0 && isQuoteCode(table.source.charCodeAt(start)) && !isInvokedWord(table.source, start));
       }
       if (powerShell && (flags & WORD_QUOTED) !== 0) {
         // `try { git push origin "main"}`: braces outside the quotes still close the block.
@@ -426,7 +459,7 @@ export function shellRuleVerdict(tool: "bash" | "powershell", command: string, r
         if (open > 0) { verdict = strongerRuleVerdict(rules, true, argv, verdict); argv.length = 0; braceKinds = braceKinds << open; braceDepth += open; }
         if (open > 0 || close > 0) {
           const word = text.slice(open, Math.max(open, text.length - close));
-          if (word) argv.push(word);
+          if (word || expression) argv.push(expression ? "" : word);
           if (close > 0) {
             verdict = strongerRuleVerdict(rules, true, argv, verdict); argv.length = 0;
             const closed = close < braceDepth ? close : braceDepth;
@@ -444,11 +477,22 @@ export function shellRuleVerdict(tool: "bash" | "powershell", command: string, r
           // target may be typed (`[string]$r = git`); a lone cast word (`[string] $r = …`) is skipped.
           const cast = argv.length === 0 ? castPrefixLength(text) : 0;
           if (cast > 0 && cast === text.length) continue;
+          // An attached right-hand side (`$r=@{ … }`, `$r='npm'`) is parsed like any other word.
           if (argv.length === 0 && text.charCodeAt(cast) === 36) {
             const equals = text.indexOf("=", cast);
-            if (equals > cast + 1) { if (equals < text.length - 1) argv.push(text.slice(equals + 1)); continue; }
-            const next = index + 1 < end ? windowsWordText(table, index + 1) : "", operator = assignmentOperatorLength(next);
-            if (operator > 0) { index++; if (operator < next.length) argv.push(next.slice(operator)); continue; }
+            if (equals > cast + 1) {
+              if (equals === text.length - 1) continue;
+              expression = rawValueQuoted(table.source, table.starts[index]!, table.ends[index]!);
+              text = text.slice(equals + 1);
+            } else {
+              const next = index + 1 < end ? windowsWordText(table, index + 1) : "", operator = assignmentOperatorLength(next);
+              if (operator > 0) {
+                index++;
+                if (operator === next.length) continue;
+                expression = rawValueQuoted(table.source, table.starts[index]!, table.ends[index]!);
+                text = next.slice(operator);
+              }
+            }
           }
           // Every brace is a block boundary, attached or not (`try{ git push }catch{}`): the
           // pieces between braces are words, and each brace ends the command before it.
@@ -460,6 +504,7 @@ export function shellRuleVerdict(tool: "bash" | "powershell", command: string, r
               if (cursor > from) {
                 const word = text.slice(from, cursor);
                 if (hashEntry === HASH_NONE && argv.length === 0 && (braceKinds & 1) !== 0) hashEntry = hashtableKey(argv, word, false);
+                else if (expression && argv.length === 0) { hashEntry = HASH_NONE; argv.push(""); }
                 else { hashEntry = HASH_NONE; if (!(argv.length === 0 && isCommandPrefix(word, true))) argv.push(word); }
               }
               if (code !== -1) {
@@ -479,7 +524,7 @@ export function shellRuleVerdict(tool: "bash" | "powershell", command: string, r
         if (argv.length === 0 && !powerShell && text === "coproc") { if (index + 2 < end && table.texts![index + 2] === "{") index++; continue; }
         if (argv.length === 0 && (isCommandPrefix(text, powerShell) || !powerShell && isAssignment(text))) continue;
       }
-      argv.push(text);
+      argv.push(expression && argv.length === 0 ? "" : text);
     }
     verdict = strongerRuleVerdict(rules, powerShell, argv, verdict);
     if (caseDepth > 0 && endsCaseArm(table.source, table.segmentSourceEnds[segment]!)) casePattern = true;

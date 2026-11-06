@@ -107,6 +107,10 @@ test("host-restricted classification lifts only literal segments, and suggestion
     const npm = new ProjectRuleSet([{ tool: "powershell", decision: "deny", command: "npm *" }]);
     assert.equal(shellRuleVerdict("powershell", '$versions = @{ node = "22"; npm = "10" }', npm), RULE_NONE);
     assert.equal(shellRuleVerdict("powershell", "@{ out = npm test }", npm), RULE_DENY);
+    assert.equal(shellRuleVerdict("powershell", "$result=@{ out = npm test }", npm), RULE_DENY);
+    // A string in command position is a value; a call operator invokes it.
+    for (const command of ["$label = 'npm'", "$label='npm'", "@{ label = 'npm' }"]) assert.equal(shellRuleVerdict("powershell", command, npm), RULE_NONE, command);
+    assert.equal(shellRuleVerdict("powershell", "& 'npm' test", npm), RULE_DENY);
     const blocks = new ProjectRuleSet([{ tool: "powershell", decision: "allow", command: "ForEach-Object *" }]);
     assert.equal(classifyHostShellCommand("powershell", "1..2 | ForEach-Object { npm test }", undefined, blocks), HOST_SHELL_OTHER);
     // An allow rule never lifts a segment that opens with control flow.
