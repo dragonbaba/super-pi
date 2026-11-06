@@ -31,7 +31,7 @@ const GIT_READ_ONLY = new Set(["status", "diff", "log", "show", "ls-files", "rev
 // Native authorization only: PowerShell file cmdlets, after Claude Code's PowerShell
 // scope checks. Kind codes keep the table allocation-free; ALIAS entries apply only to
 // the PowerShell tool because Bash may have an unrelated program of that name.
-const CMDLET_DELETE = 1, CMDLET_WRITE = 2, CMDLET_COPY = 3, CMDLET_MOVE = 4, CMDLET_KIND = 7, CMDLET_ALIAS = 8, CMDLET_NAME = 16;
+const CMDLET_DELETE = 1, CMDLET_WRITE = 2, CMDLET_COPY = 3, CMDLET_MOVE = 4, CMDLET_KIND = 7, CMDLET_ALIAS = 8, CMDLET_NAME = 16, CMDLET_RENAME = 32;
 // Per-token comma flags from the tokenizer: only unquoted commas separate list items.
 const TOKEN_QUOTED_COMMA = 1, TOKEN_UNQUOTED_COMMA = 2;
 const POWERSHELL_FILE_CMDLETS = new Map<string, number>([
@@ -40,7 +40,7 @@ const POWERSHELL_FILE_CMDLETS = new Map<string, number>([
   ["clear-content", CMDLET_WRITE], ["clc", CMDLET_WRITE | CMDLET_ALIAS], ["out-file", CMDLET_WRITE],
   ["tee-object", CMDLET_WRITE], ["new-item", CMDLET_WRITE | CMDLET_NAME], ["ni", CMDLET_WRITE | CMDLET_NAME | CMDLET_ALIAS],
   ["copy-item", CMDLET_COPY], ["cpi", CMDLET_COPY | CMDLET_ALIAS],
-  ["move-item", CMDLET_MOVE], ["mi", CMDLET_MOVE | CMDLET_ALIAS], ["rename-item", CMDLET_MOVE], ["rni", CMDLET_MOVE | CMDLET_ALIAS],
+  ["move-item", CMDLET_MOVE], ["mi", CMDLET_MOVE | CMDLET_ALIAS], ["rename-item", CMDLET_MOVE | CMDLET_RENAME], ["rni", CMDLET_MOVE | CMDLET_RENAME | CMDLET_ALIAS],
 ]);
 const POWERSHELL_PATH_PARAMETERS = new Set(["-path", "-literalpath", "-lp", "-pspath", "-filepath"]);
 const POWERSHELL_SWITCH_PARAMETERS = new Set([
@@ -301,14 +301,18 @@ function inspectKnownMutation(command: string, tokens: PermissionTokens, start: 
  * PowerShell binds every named parameter first, then fills the unbound Path and
  * Destination from positional words in order. An unknown named parameter is assumed to
  * take a value; if that leaves no Path, the mutation stays unverifiable and asks instead
- * of passing as read-only. New-Item creates `-Name` relative to Path (or the cwd).
- * Bound values are kept as (token index, value offset) pairs, so binding allocates nothing.
+ * of passing as read-only. A value is a comma list that may continue across words
+ * (`a.txt, b.txt`). New-Item creates `-Name` relative to Path (or the cwd). A copy or move
+ * into an existing directory writes `<Destination>/<source name>`, so that target is added
+ * too (Rename-Item's NewName is not a directory). Bound values are kept as token
+ * (index, offset, end) triples, so binding allocates nothing.
  */
 function inspectPowerShellFileCmdlet(command: string, kind: number, tokens: PermissionTokens, start: number, cwd: string, builder: ScopeBuilder): void {
   markMutation(builder, command);
-  const takesName = (kind & CMDLET_NAME) !== 0;
+  const takesName = (kind & CMDLET_NAME) !== 0, rename = (kind & CMDLET_RENAME) !== 0;
   kind &= CMDLET_KIND;
-  let pathIndex = -1, pathOffset = 0, destinationIndex = -1, destinationOffset = 0, nameIndex = -1, nameOffset = 0, noFile = false;
+  let pathIndex = -1, pathOffset = 0, pathEnd = -1, destinationIndex = -1, destinationOffset = 0, destinationEnd = -1;
+  let nameIndex = -1, nameOffset = 0, noFile = false;
   for (let index = start; index < tokens.length; index++) {
     const token = tokens[index]!;
     if (token.length < 2 || token.charCodeAt(0) !== 45) continue;
@@ -317,8 +321,9 @@ function inspectPowerShellFileCmdlet(command: string, kind: number, tokens: Perm
     if (POWERSHELL_SWITCH_PARAMETERS.has(name)) continue;
     let valueIndex = index, offset = colon + 1;
     if (colon < 0) { valueIndex = ++index; offset = 0; }
-    if (POWERSHELL_PATH_PARAMETERS.has(name)) { pathIndex = valueIndex; pathOffset = offset; }
-    else if (name === "-destination") { destinationIndex = valueIndex; destinationOffset = offset; }
+    const end = index = cmdletListEnd(tokens, valueIndex);
+    if (POWERSHELL_PATH_PARAMETERS.has(name)) { pathIndex = valueIndex; pathOffset = offset; pathEnd = end; }
+    else if (name === "-destination") { destinationIndex = valueIndex; destinationOffset = offset; destinationEnd = end; }
     else if (takesName && name === "-name") { nameIndex = valueIndex; nameOffset = offset; }
     else if (name === "-variable") noFile = true; // Tee-Object -Variable writes no file.
   }
@@ -326,27 +331,46 @@ function inspectPowerShellFileCmdlet(command: string, kind: number, tokens: Perm
   for (let index = start; index < tokens.length && (pathIndex < 0 || positionalDestination && destinationIndex < 0); index++) {
     const token = tokens[index]!;
     if (token.length > 1 && token.charCodeAt(0) === 45) {
-      if (token.indexOf(":") < 0 && !POWERSHELL_SWITCH_PARAMETERS.has(token.toLowerCase())) index++;
+      if (token.indexOf(":") < 0 && !POWERSHELL_SWITCH_PARAMETERS.has(token.toLowerCase())) index = cmdletListEnd(tokens, index + 1);
       continue;
     }
-    if (pathIndex < 0) pathIndex = index;
-    else destinationIndex = index;
+    if (pathIndex < 0) { pathIndex = index; pathEnd = index = cmdletListEnd(tokens, index); }
+    else { destinationIndex = index; destinationEnd = index = cmdletListEnd(tokens, index); }
   }
   const childName = nameIndex < 0 ? undefined : cmdletValue(tokens, nameIndex, nameOffset);
   const childExpansion = nameIndex < 0 ? 0 : tokens.expansions?.[nameIndex] ?? 0;
   if (childName === "") markUnverifiableCmdletTarget(builder);
+  // Destination is one path; a list there is left to the per-word checks below.
+  const into = positionalDestination && !rename && destinationIndex >= 0 && destinationEnd === destinationIndex
+    && ((tokens.commas?.[destinationIndex] ?? 0) & TOKEN_UNQUOTED_COMMA) === 0 ? cmdletValue(tokens, destinationIndex, destinationOffset) : undefined;
   if (pathIndex >= 0) {
-    const value = cmdletValue(tokens, pathIndex, pathOffset);
-    if (!value) markUnverifiableCmdletTarget(builder);
-    else if (kind !== CMDLET_COPY) { // A copy only reads its source.
-      addCmdletOperands(builder, value, cwd, (tokens.expansions?.[pathIndex] ?? 0) | childExpansion, kind === CMDLET_DELETE || kind === CMDLET_MOVE, tokens.commas?.[pathIndex], childName);
-    }
+    // A copy only reads its source.
+    if (kind !== CMDLET_COPY) addCmdletList(builder, tokens, pathIndex, pathOffset, pathEnd, cwd, childExpansion, kind === CMDLET_DELETE || kind === CMDLET_MOVE, childName, undefined);
+    if (into) addCmdletList(builder, tokens, pathIndex, pathOffset, pathEnd, cwd, tokens.expansions?.[destinationIndex] ?? 0, false, undefined, into);
   } else if (childName) addTarget(builder, childName, cwd, true, childExpansion);
   else if (!noFile && kind !== CMDLET_COPY) markUnverifiableCmdletTarget(builder);
-  if (destinationIndex >= 0) {
-    const value = cmdletValue(tokens, destinationIndex, destinationOffset);
-    if (!value) markUnverifiableCmdletTarget(builder);
-    else addCmdletOperands(builder, value, cwd, tokens.expansions?.[destinationIndex] ?? 0, false, tokens.commas?.[destinationIndex], undefined);
+  if (destinationIndex >= 0) addCmdletList(builder, tokens, destinationIndex, destinationOffset, destinationEnd, cwd, 0, false, undefined, undefined);
+}
+
+/** The last word of a comma list starting at `index`: a word ending, or the next word starting, with an unquoted comma continues it. */
+function cmdletListEnd(tokens: PermissionTokens, index: number): number {
+  const commas = tokens.commas;
+  if (!commas) return index;
+  while (index + 1 < tokens.length) {
+    const token = tokens[index]!, next = tokens[index + 1]!;
+    const trailing = ((commas[index] ?? 0) & TOKEN_UNQUOTED_COMMA) !== 0 && token.charCodeAt(token.length - 1) === 44;
+    const leading = ((commas[index + 1] ?? 0) & TOKEN_UNQUOTED_COMMA) !== 0 && next.charCodeAt(0) === 44;
+    if (!trailing && !leading) break;
+    index++;
+  }
+  return index;
+}
+
+function addCmdletList(builder: ScopeBuilder, tokens: PermissionTokens, index: number, offset: number, end: number, cwd: string, extraExpansion: number, destructive: boolean, child: string | undefined, into: string | undefined): void {
+  const first = cmdletValue(tokens, index, offset);
+  if (!first) { markUnverifiableCmdletTarget(builder); return; }
+  for (let word = index; word <= end; word++) {
+    addCmdletOperands(builder, word === index ? first : tokens[word]!, cwd, (tokens.expansions?.[word] ?? 0) | extraExpansion, destructive, tokens.commas?.[word], child, into);
   }
 }
 
@@ -366,19 +390,19 @@ function markUnverifiableCmdletTarget(builder: ScopeBuilder): void {
  * Only unquoted commas separate items. A word mixing quoted and unquoted commas is
  * unverifiable rather than guessed.
  */
-function addCmdletOperands(builder: ScopeBuilder, value: string, cwd: string, expansion: number, destructive: boolean, commas: number | undefined, child: string | undefined): void {
+function addCmdletOperands(builder: ScopeBuilder, value: string, cwd: string, expansion: number, destructive: boolean, commas: number | undefined, child: string | undefined, into: string | undefined): void {
   if (commas === (TOKEN_QUOTED_COMMA | TOKEN_UNQUOTED_COMMA)) { markUnverifiableCmdletTarget(builder); return; }
-  if (commas !== TOKEN_UNQUOTED_COMMA) { addCmdletTarget(builder, value, cwd, expansion, destructive, child); return; }
+  if (commas !== TOKEN_UNQUOTED_COMMA) { addCmdletTarget(builder, value, cwd, expansion, destructive, child, into); return; }
   let start = 0;
   for (let comma = value.indexOf(","); comma >= 0; comma = value.indexOf(",", start)) {
-    if (comma > start) addCmdletTarget(builder, value.slice(start, comma), cwd, expansion, destructive, child);
+    if (comma > start) addCmdletTarget(builder, value.slice(start, comma), cwd, expansion, destructive, child, into);
     start = comma + 1;
   }
-  if (start < value.length) addCmdletTarget(builder, value.slice(start), cwd, expansion, destructive, child);
+  if (start < value.length) addCmdletTarget(builder, value.slice(start), cwd, expansion, destructive, child, into);
 }
 
-function addCmdletTarget(builder: ScopeBuilder, value: string, cwd: string, expansion: number, destructive: boolean, child: string | undefined): void {
-  addTarget(builder, child === undefined ? value : value + "/" + child, cwd, true, expansion, destructive);
+function addCmdletTarget(builder: ScopeBuilder, value: string, cwd: string, expansion: number, destructive: boolean, child: string | undefined, into: string | undefined): void {
+  addTarget(builder, into !== undefined ? into + "/" + basename(value) : child === undefined ? value : value + "/" + child, cwd, true, expansion, destructive);
 }
 
 /**
@@ -397,10 +421,18 @@ function inspectNativeCmdWrapper(tokens: PermissionTokens, start: number, cwd: s
     builder.cmdOptions = true;
     try {
       if (index + 2 === tokens.length) inspectScript(respellUnquotedBackslashes(tokens[index + 1]!, CMD_ESCAPE, false), cwd, depth + 1, builder);
+      // cmd strips the quotes of `"del /q" path` and runs the joined text; a quoted
+      // fragment followed by more words is not re-split here, so it asks.
+      else if (hasWhitespace(tokens[index + 1]!)) { markMutation(builder, "cmd"); markUnverifiableCmdletTarget(builder); }
       else inspectSegment(tokens, cwd, depth + 1, builder, index + 1);
     } finally { builder.cmdOptions = previous; }
     return true;
   }
+  return false;
+}
+
+function hasWhitespace(value: string): boolean {
+  for (let index = 0; index < value.length; index++) { const code = value.charCodeAt(index); if (code === 32 || code === 9) return true; }
   return false;
 }
 
