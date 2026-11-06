@@ -111,6 +111,9 @@ test("host-restricted classification lifts only literal segments, and suggestion
     // A string in command position is a value; a call operator invokes it.
     for (const command of ["$label = 'npm'", "$label='npm'", "@{ label = 'npm' }"]) assert.equal(shellRuleVerdict("powershell", command, npm), RULE_NONE, command);
     assert.equal(shellRuleVerdict("powershell", "& 'npm' test", npm), RULE_DENY);
+    for (const command of ["@{ result = (npm test) }", "@{ result = & npm test }"]) assert.equal(shellRuleVerdict("powershell", command, npm), RULE_DENY, command);
+    // A quoted brace is text, not a block.
+    assert.equal(shellRuleVerdict("powershell", 'rg --replace="{npm}" pattern file', npm), RULE_NONE);
     const blocks = new ProjectRuleSet([{ tool: "powershell", decision: "allow", command: "ForEach-Object *" }]);
     assert.equal(classifyHostShellCommand("powershell", "1..2 | ForEach-Object { npm test }", undefined, blocks), HOST_SHELL_OTHER);
     // An allow rule never lifts a segment that opens with control flow.
