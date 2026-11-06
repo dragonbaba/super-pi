@@ -69,6 +69,9 @@ test("host-restricted classification: readers, listed file commands with literal
     ["powershell", "Remove-Item old.txt; Get-ChildItem | Select-Object -First 3", HOST_SHELL_FILE_COMMANDS],
     // Unknown programs, dynamic operands, provider paths and nested scripts are not file commands.
     ["bash", "rm a.txt && npm test", HOST_SHELL_OTHER], ["bash", "rm \"$TARGET\"", HOST_SHELL_OTHER], ["bash", "echo x > \"$OUT\"", HOST_SHELL_OTHER],
+    // Options that move or add writes the analysis does not see (`cp -t DIR`, backups, links).
+    ["bash", "cp -t /outside a.txt b.txt", HOST_SHELL_OTHER], ["bash", "cp --target-directory=/outside a.txt b.txt", HOST_SHELL_OTHER],
+    ["bash", "mv -b a.txt b.txt", HOST_SHELL_OTHER], ["bash", "touch -r /outside/ref a.txt", HOST_SHELL_OTHER], ["bash", "rm -rf -- build", HOST_SHELL_FILE_COMMANDS],
     ["powershell", "Remove-Item env:FOO", HOST_SHELL_OTHER], ["powershell", "Set-Content x.txt $(Get-Date)", HOST_SHELL_OTHER],
   ] as const) assert.equal(classifyHostShellCommand(tool, command), expected, command);
   // Plan mode's judgment is unchanged: a file command is still not read-only there.

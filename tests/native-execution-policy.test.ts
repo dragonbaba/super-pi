@@ -293,7 +293,7 @@ test("host-restricted runs workspace file work and read-only commands, and asks 
         ["powershell", "Remove-Item a.txt; Get-ChildItem"], ["powershell", "New-Item -ItemType Directory out"],
     ]) assert.equal(await decide(tool, { command }), "allow", command);
     for (const [tool, command] of [
-        ["bash", "npm test"], ["bash", "rm \"$TARGET\""], ["bash", `rm ${far}`], ["bash", `cat a.txt > ${path.dirname(far)}/c.txt`], ["powershell", "Remove-Item env:FOO"],
+        ["bash", "npm test"], ["bash", "rm \"$TARGET\""], ["bash", `cp -t ${path.dirname(far)} a.txt`], ["bash", `rm ${far}`], ["bash", `cat a.txt > ${path.dirname(far)}/c.txt`], ["powershell", "Remove-Item env:FOO"],
     ]) assert.equal(await decide(tool, { command }), "ask", command);
     // The class and the mutation analysis read one token table: one lex, as in host-write.
     const lexes = windowsLexerCounters.lexes;
