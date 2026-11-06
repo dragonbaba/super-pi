@@ -146,10 +146,16 @@ function unquotedText(source: string, start: number, stop: number): string {
   return text;
 }
 
-/** Whether the raw word's first `=` is followed by a quote: `$label='npm'` assigns a string. */
+/** Whether a PowerShell string opens at `at`: a quote, or a here-string's `@'`/`@"`. */
+function isStringStart(source: string, at: number): boolean {
+  const code = source.charCodeAt(at);
+  return isQuoteCode(code) || code === 64 && isQuoteCode(source.charCodeAt(at + 1));
+}
+
+/** Whether the raw word's first `=` is followed by a string: `$label='npm'` assigns one. */
 function rawValueQuoted(source: string, start: number, stop: number): boolean {
   const equals = source.indexOf("=", start);
-  return equals >= 0 && equals + 1 < stop && isQuoteCode(source.charCodeAt(equals + 1));
+  return equals >= 0 && equals + 1 < stop && isStringStart(source, equals + 1);
 }
 
 /** Whether the PowerShell word at `start` follows a call operator: `& 'npm'` or `. 'script.ps1'`. */
@@ -387,10 +393,10 @@ function scriptOperandVerdict(rules: ProjectRuleSet, argv: readonly string[], po
   return -1;
 }
 
-function nestedScriptVerdict(rules: ProjectRuleSet, tool: "bash" | "powershell", script: string): number {
+function nestedScriptVerdict(rules: ProjectRuleSet, tool: "bash" | "powershell", script: string, analysisOwner?: ShellAnalysisOwner): number {
   scriptNesting++;
   try {
-    return shellRuleVerdict(tool, script, rules);
+    return shellRuleVerdict(tool, script, rules, analysisOwner);
   } finally {
     scriptNesting--;
   }
@@ -499,8 +505,8 @@ export function classifyHostShellCommand(tool: "bash" | "powershell", command: s
 }
 
 /**
- * The strongest project deny or ask rule any segment matches (subshell segments included,
- * `$(...)` bodies and heredoc bodies not). Words are compared as written and leading Bash
+ * The strongest project deny or ask rule any segment matches (subshell segments and PowerShell
+ * `@(...)` bodies included, `$(...)` bodies and heredoc bodies not). Words are compared as written and leading Bash
  * assignments are skipped, so `git push *` also matches `FOO=1 git push $REMOTE`.
  */
 export function shellRuleVerdict(tool: "bash" | "powershell", command: string, rules: ProjectRuleSet, analysisOwner?: ShellAnalysisOwner): number {
@@ -579,7 +585,7 @@ export function shellRuleVerdict(tool: "bash" | "powershell", command: string, r
         } else if (atKey && argv.length === 0 && (switchKinds & 1) !== 0 && !braced) continue; // a switch label
         const start = table.starts[index]!;
         expression = argv.length === 0 && (valued ? rawValueQuoted(table.source, start, table.ends[index]!)
-          : (flags & WORD_QUOTED) !== 0 && isQuoteCode(table.source.charCodeAt(start)) && !isInvokedWord(table.source, start));
+          : (flags & WORD_QUOTED) !== 0 && isStringStart(table.source, start) && !isInvokedWord(table.source, start));
       }
       if (powerShell && (flags & WORD_QUOTED) !== 0) {
         // `try { git push origin "main"}`: braces outside the quotes still close the block.
@@ -694,6 +700,15 @@ export function shellRuleVerdict(tool: "bash" | "powershell", command: string, r
     }
   }
   argv.length = 0;
+  // `$out = @(git push)` collects a command's output, so the lexer's `@(...)` bodies are matched too.
+  if (powerShell && scriptNesting < MAX_SCRIPT_NESTING) {
+    for (let nested = 0; nested < table.nestedCount && verdict !== RULE_DENY; nested++) {
+      const start = table.nestedStarts[nested]!;
+      if (table.source.charCodeAt(start - 2) !== 64) continue;
+      const body = nestedScriptVerdict(rules, "powershell", table.source.slice(start, table.nestedEnds[nested]!), analysisOwner);
+      if (body > verdict) verdict = body;
+    }
+  }
   return verdict;
 }
 
