@@ -21,8 +21,8 @@ function inWorkspace(workspaces: readonly string[], target: string): boolean {
     for (const root of workspaces) if (inside(root, target)) return true;
     return false;
 }
-async function exists(target: string): Promise<boolean> {
-    try { await lstat(target); return true; }
+async function exists(target: string, filesOnly: boolean): Promise<boolean> {
+    try { const stat = await lstat(target); return !filesOnly || stat.isFile(); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
 }
 async function systemRoots(home: string): Promise<string[]> {
@@ -49,7 +49,7 @@ function deletionRefusal(target: string, workspaces: readonly string[], home: st
 }
 
 /** Cold, bounded native invocation classification; execution and approvals remain owned by SessionExecutionPolicy. */
-export async function assessHostMutations(workspaces: readonly string[], paths: readonly string[], tool: string, input: Record<string, any>): Promise<HostMutationAssessment> {
+export async function assessHostMutations(workspaces: readonly string[], paths: readonly string[], tool: string, input: Record<string, any>, existingFilesOnly = false): Promise<HostMutationAssessment> {
     const batch = tool === "file_batch", count = batch ? input.operations.length : 1;
     const assessment: HostMutationAssessment = { ask: false, details: "" };
     // A preview cannot delete or overwrite. Existing explicit rules and protected-file checks still apply.
@@ -73,7 +73,7 @@ export async function assessHostMutations(workspaces: readonly string[], paths: 
             else if (external) assessment.ask = true;
         } else if (agentPath) assessment.ask = true;
         else if (external && !(batch && operation === "write" && item.mode === "create")) {
-            if (await exists(target)) assessment.externalOverwrite ??= `${operation} ${target}`;
+            if (await exists(target, existingFilesOnly)) assessment.externalOverwrite ??= `${operation} ${target}`;
             else if (operation === "write") (assessment.newExternalFiles ??= []).push(target);
         }
         if (item.destination !== undefined) {

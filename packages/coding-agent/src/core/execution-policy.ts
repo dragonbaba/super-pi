@@ -7,6 +7,8 @@ import type { ExtensionContext, ExtensionRuntime, ToolCallEvent, ToolDefinition 
 import type { ReadonlySessionManager, SessionEntry, SessionEntryVisitor } from "./session-manager.ts";
 import { assessCanonicalMutationPath, canonicalizeProspectivePath, canonicalWorkspaceMetadata } from "./files/protected-path-policy.ts";
 import { assessHostMutations } from "./files/host-mutation-policy.ts";
+import { inspectNativeShellMutations, type NativeShellMutations } from "./shell-policy/native-mutations.ts";
+import { prepareShellCwd } from "./tools/shell-cwd.ts";
 import { attachPermissionPathApproval, mutationRequestHash, type PermissionPathApproval } from "./files/file-invocation.ts";
 import { InputReadPolicyLease } from "./files/session-input-read-permission.ts";
 import { resolveReadPathAsync, resolveToCwd } from "./tools/path-utils.ts";
@@ -94,7 +96,7 @@ export class NativePolicyInvocation {
 }
 
 /** Native operation authorization, independent of the OS execution backend.
- * No shell parsing, command risk inference, extension grant bus, or output hooks.
+ * Consumes existing recognized mutation evidence; no command grammar or risk tiers here.
  * Configuration is immutable for this runtime; reload uses the execution barrier.
  */
 export class SessionExecutionPolicy implements SessionEntryVisitor {
@@ -160,7 +162,7 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
         if (ctx.hasUI) ctx.ui.notify(message, "error");
         throw new Error(code + message);
     }
-    private async paths(ctx: ExtensionContext, targets: readonly string[], mutation: boolean, operation = "变更"): Promise<ResolvedPolicyPaths> {
+    private async paths(ctx: ExtensionContext, targets: readonly string[], mutation: boolean, operation = "变更", enforceMutationRoots = true): Promise<ResolvedPolicyPaths> {
         const check = this.guard(ctx), output: string[] = [];
         if (targets.length > 34) throw new Error(BLOCKED + "Too many paths");
         if (!targets.length) return { paths: output, workspaces: [] };
@@ -174,7 +176,7 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
                 unavailable.push(directory);
             } else workspaces.push(canonical);
         }
-        const metadata = mutation ? await canonicalWorkspaceMetadata(workspaces) : undefined; check();
+        const metadata = mutation && enforceMutationRoots ? await canonicalWorkspaceMetadata(workspaces) : undefined; check();
         for (const target of targets) {
             if (typeof target !== "string" || target.length > 4096 || target.includes("\0")) throw new Error(BLOCKED + "Invalid path");
             const absolute = resolve(ctx.cwd, target);
@@ -183,7 +185,7 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
             for (const directory of unavailable) {
                 if (inside(directory, absolute) || inside(directory, canonical)) throw new Error(BLOCKED + "Additional workspace is unavailable or redirected: " + directory);
             }
-            if (mutation) {
+            if (mutation && enforceMutationRoots) {
                 const result = assessCanonicalMutationPath(workspaces, canonical, metadata);
                 for (const violation of result.violations) {
                     if (violation !== "workspace_escape" || this.mode !== "host-write") {
@@ -199,6 +201,26 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
             }
         }
         return { paths: output, workspaces };
+    }
+    private async assessShellMutations(ctx: ExtensionContext, resolved: ResolvedPolicyPaths, shell: NativeShellMutations) {
+        const check = this.guard(ctx), operations: { operation: string }[] = [];
+        let metadata: string[] | undefined;
+        for (let index = 0; index < shell.targets.length; index++) {
+            const kind = shell.targets[index]!.kind, target = resolved.paths[index]!;
+            if (kind === "delete") {
+                metadata ??= await canonicalWorkspaceMetadata(resolved.workspaces); check();
+                const assessment = assessCanonicalMutationPath(resolved.workspaces, target, metadata);
+                for (const violation of assessment.violations) if (violation !== "workspace_escape")
+                    this.refuse(ctx, BLOCKED, `敏感目标禁止删除：${target}\n受保护目标（${violation}）。操作未执行，请明确告知用户。`);
+            }
+            operations.push({ operation: kind });
+        }
+        // Existing directory markers (e.g. git's .git) are not evidence of an existing-file overwrite.
+        const host = operations.length ? await assessHostMutations(resolved.workspaces, resolved.paths, "file_batch", { operations }, true)
+            : { ask: false, details: "" };
+        check();
+        if (shell.uncertain) { host.ask = true; host.details += "已识别变更，但既有分析结果不能确认全部目标；请核对原命令。\n"; }
+        return host;
     }
     private async decision(tool: string, command: unknown, paths: readonly string[], cwd: string, fallback?: PermissionDecision): Promise<PermissionDecision> {
         let selected: PermissionDecision | undefined;
@@ -291,6 +313,11 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
         if (this.runtime.executionBoundary.getToolSelectionMode() === "plan" && (mutation || event.toolName === "powershell" || event.toolName === "bash" || event.toolName === "browser_exec"))
             throw new Error(BLOCKED + "Plan mode does not authorize execution or mutations");
         const input = event.input as Record<string, any>, targets: string[] = [];
+        const hostShell = this.mode === "host-write" && (event.toolName === "bash" || event.toolName === "powershell");
+        const shellBinding = hostShell ? await prepareShellCwd(input, ctx.cwd) : undefined; check();
+        const shellCwd = hostShell ? shellBinding?.canonical ?? await realpath(ctx.cwd) : undefined; check();
+        const shell = hostShell ? inspectNativeShellMutations(event.toolName as "bash" | "powershell", input, shellCwd!, this.epoch) : undefined;
+        if (shell) for (const target of shell.targets) targets.push(target.target);
         if (event.toolName === "file_batch") {
             if (!Array.isArray(input.operations) || !input.operations.length || input.operations.length > 16) throw new Error(BLOCKED + "Invalid file batch");
             for (const item of input.operations) {
@@ -315,9 +342,10 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
         const delegation = event.toolName === "subagent" || event.toolName === "structured_readonly_command"
             ? await prepareNativeDelegation(event.toolName, input, ctx.cwd, this.runtime.executionBoundary.getToolSelectionMode() === "plan") : undefined;
         check();
-        const resolved = delegation ? undefined : await this.paths(ctx, targets, mutation, event.toolName); check();
+        const resolved = delegation ? undefined : await this.paths(ctx, targets, mutation || shell !== undefined, event.toolName, shell === undefined); check();
         const paths = delegation?.paths ?? resolved!.paths;
-        const host = mutation && this.mode === "host-write" ? await assessHostMutations(resolved!.workspaces, paths, event.toolName, input) : undefined; check();
+        const host = shell ? await this.assessShellMutations(ctx, resolved!, shell)
+            : mutation && this.mode === "host-write" ? await assessHostMutations(resolved!.workspaces, paths, event.toolName, input) : undefined; check();
         if (host?.forbidden) this.refuse(ctx, BLOCKED, `敏感目标禁止删除或移出：${host.forbidden}\n操作未执行，请明确告知用户。`);
         let decision = await this.decision(event.toolName, input.command, paths, ctx.cwd, explicitUserCommand ? "allow" : undefined); check();
         if (event.toolName === "file_batch") {
@@ -347,7 +375,8 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
         if (host?.ask) decision = "ask";
         if (decision === "ask") {
             if (this.approval === "never" || !ctx.hasUI) throw new Error("[APPROVAL_REQUIRED] Operation was not executed: " + event.toolName);
-            const details = mutation ? host?.details || paths.join("\n") : JSON.stringify(input, null, 2);
+            const details = shell ? `cwd: ${shellCwd}\ncommand: ${input.command}\n${host!.details}`
+                : mutation ? host?.details || paths.join("\n") : JSON.stringify(input, null, 2);
             if (details.length > 16384) throw new Error("[APPROVAL_REQUIRED] Request is too large for one interactive review; configure an explicit scoped rule");
             const signal = ctx.signal ?? this.runtime.executionBoundary.signal;
             const selected = await ctx.ui.select("允许这次操作？", APPROVAL_CHOICES,
@@ -376,6 +405,7 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
                 throw new Error(BLOCKED + "User declined this operation" + (reason ? ": " + reason : ""));
             }
         }
+        shellBinding?.setAuthority(check);
         invocation.consume(event.input, event.toolCallId, event.toolName, ctx.signal);
         if (delegation?.subagent) attachSubagentWorkspaceDelegation(input, { schemaVersion: 1, sequence: this.runtime.executionBoundary.generation,
             toolCallId: event.toolCallId, grants: delegation.subagent, assertCurrent: check, revocationSignal: ctx.signal ?? this.runtime.executionBoundary.signal });

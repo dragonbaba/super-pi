@@ -13,6 +13,11 @@
 	"main": "./dist/index.js",
 	"types": "./dist/index.d.ts",
 	"exports": {
+		"./internal/shell-policy/*": {
+			"types": "./dist/core/shell-policy/*.d.ts",
+			"import": "./dist/core/shell-policy/*.js",
+			"require": "./dist/core/shell-policy/*.js"
+		},
 		"./internal/session-lease": {
 			"types": "./dist/core/session-lease.d.ts",
 			"import": "./dist/core/session-lease.js"

@@ -36,7 +36,7 @@ test("shell data/progress/drain callbacks create no callback or Promise on deliv
 
 test("completion, retention and CDPATH helpers use module functions without nested callbacks or regexes", () => {
   const targets = new Set(["appendShellStatus", "normalizeShellProcessResult", "appendShellObservationError", "shellFailureCategory", "isTemporaryCdpathQuery", "changesBashCdSemantics", "retainedShellText", "setBounded"]), seen = new Set<string>();
-  for (const file of ["packages/coding-agent/src/core/tools/bash.ts", "packages/coding-agent/src/core/tools/shell-execution.ts", "packages/extensions/resource-lifecycle-guard/core.ts", "packages/coding-agent/src/core/tasks/background-shell.ts", "packages/extensions/false-success-guard/core.ts"]) {
+  for (const file of ["packages/coding-agent/src/core/tools/bash.ts", "packages/coding-agent/src/core/tools/shell-execution.ts", "packages/coding-agent/src/core/shell-policy/core.ts", "packages/coding-agent/src/core/tasks/background-shell.ts", "packages/extensions/false-success-guard/core.ts"]) {
     const source = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
     for (const node of source.statements) if (ts.isFunctionDeclaration(node) && node.name && targets.has(node.name.text)) {
       seen.add(node.name.text);
@@ -69,7 +69,7 @@ test("Windows job callbacks are owned by admission and never forward shell outpu
 });
 
 test("substitution boundaries use primitive offsets without per-boundary containers or callbacks", () => {
-  const file = "packages/extensions/resource-lifecycle-guard/shell-substitution.ts";
+  const file = "packages/coding-agent/src/core/shell-policy/shell-substitution.ts";
   const source = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
   const boundary = source.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "commandSubstitutionEnd") as ts.FunctionDeclaration;
   assert.ok(boundary);
@@ -80,7 +80,7 @@ test("substitution boundaries use primitive offsets without per-boundary contain
     ts.forEachChild(node, audit);
   }
   audit(boundary.body!);
-  for (const path of ["packages/extensions/resource-lifecycle-guard/core.ts", "packages/extensions/resource-lifecycle-guard/permission-bash.ts"]) {
+  for (const path of ["packages/coding-agent/src/core/shell-policy/core.ts", "packages/coding-agent/src/core/shell-policy/permission-bash.ts"]) {
     const text = readFileSync(path, "utf8");
     assert.match(text, /const end = commandSubstitutionEnd\(command, index\)/);
     assert.match(text, /value \+= command\.slice\(index, end \+ 1\)/);
