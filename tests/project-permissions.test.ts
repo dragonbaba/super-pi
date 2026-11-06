@@ -213,6 +213,10 @@ test("whole-tool shell rules, batch operations and non-ASCII PowerShell spelling
     const allow = new ProjectRuleSet([{ tool: "bash", decision: "allow", command: "cat *" }]);
     assert.equal(classifyHostShellCommand("bash", "cat <<'EOF'\n'\nEOF\nmake", undefined, allow), HOST_SHELL_OTHER);
     assert.equal(suggestShellRules("bash", "make <<EOF\nx\nEOF"), undefined);
+    // A quoted `<<` is argument data, not a heredoc.
+    const npm = new ProjectRuleSet([{ tool: "bash", decision: "allow", command: "npm test *" }]);
+    assert.equal(classifyHostShellCommand("bash", "npm test -- --grep '<<'", undefined, npm), HOST_SHELL_RULE_ALLOWED);
+    assert.deepEqual(suggestShellRules("bash", "npm test -- --grep '<<'"), ["npm test *"]);
 });
 
 test("saves from concurrent sessions are merged, and a rule the reader would reject is never written", async t => {

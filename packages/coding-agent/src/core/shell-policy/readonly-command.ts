@@ -94,6 +94,11 @@ const BASH_COMMAND_PREFIXES: ReadonlySet<string> = new Set(["if", "then", "else"
 const POWERSHELL_COMMAND_PREFIXES: ReadonlySet<string> = new Set(["{", ".", "try", "catch", "finally", "if", "elseif", "else",
   "do", "while", "until", "foreach", "for", "switch", "trap"]);
 
+/** Whether a Bash command has an unquoted heredoc (`npm test --grep '<<'` has none); the scan runs only when `<<` appears. */
+function hasBashHeredoc(command: string): boolean {
+  return command.indexOf("<<") >= 0 && prepareShellAnalysis(command).hasHeredoc;
+}
+
 /** Length of the leading PowerShell type casts (`[string]`, `[string[]]`) in `text`, or 0. */
 function castPrefixLength(text: string): number {
   let index = 0;
@@ -268,7 +273,7 @@ export function classifyHostShellCommand(tool: "bash" | "powershell", command: s
   if (table.unterminated || table.nestedCount > 0 || table.segmentCount === 0 || table.segmentCount > MAX_HOST_SEGMENTS) return HOST_SHELL_OTHER;
   const argv: string[] = [];
   // Heredoc bodies are data the raw table cannot delimit, so allow rules leave such commands alone.
-  const ruled = rules !== undefined && rules.hasShellRules(powerShell) && (powerShell || command.indexOf("<<") < 0);
+  const ruled = rules !== undefined && rules.hasShellRules(powerShell) && (powerShell || !hasBashHeredoc(command));
   let result: HostShellCommandClass = HOST_SHELL_READ_ONLY, moved = false;
   for (let segment = 0; segment < table.segmentCount; segment++) {
     const kind = classifySegment(table, segment, powerShell, NO_SUBCOMMANDS, true, argv);
@@ -367,7 +372,7 @@ export function shellRuleVerdict(tool: "bash" | "powershell", command: string, r
  */
 export function suggestShellRules(tool: "bash" | "powershell", command: string): string[] | undefined {
   const powerShell = tool === "powershell";
-  if (!powerShell && command.indexOf("<<") >= 0) return undefined;
+  if (!powerShell && hasBashHeredoc(command)) return undefined;
   const table = commandTable(powerShell, command, undefined);
   if (table.unterminated || table.nestedCount > 0 || table.segmentCount === 0 || table.segmentCount > MAX_HOST_SEGMENTS) return undefined;
   const argv: string[] = [], suggestions: string[] = [];
