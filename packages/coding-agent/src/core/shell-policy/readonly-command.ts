@@ -283,15 +283,15 @@ function isLauncherSuffix(text: string, at: number): boolean {
 }
 
 /** The rule decision for one command's words; `/usr/bin/git push`, `git.exe push` and `npm.cmd publish` also match without directory and launcher suffix (may rewrite `argv[0]`). */
-function matchCommandWords(rules: ProjectRuleSet, powerShell: boolean, argv: string[]): number {
-  let matched = rules.matchShellWords(powerShell, argv);
+function matchCommandWords(rules: ProjectRuleSet, argv: string[]): number {
+  let matched = rules.matchShellWords(rulesPowerShell, argv);
   const first = argv[0]!, length = first.length;
   // `/usr/bin/git` and `C:\Program Files\Git\cmd\git.exe` also match as `git`.
   const start = Math.max(first.lastIndexOf("/"), first.lastIndexOf("\\")) + 1;
   const stop = length - start > 4 && first.charCodeAt(length - 4) === 46 && isLauncherSuffix(first, length - 3) ? length - 4 : length;
   if (matched !== RULE_DENY && (start > 0 || stop < length) && stop > start) {
     argv[0] = first.slice(start, stop);
-    const bare = rules.matchShellWords(powerShell, argv);
+    const bare = rules.matchShellWords(rulesPowerShell, argv);
     if (bare > matched) matched = bare;
   }
   return matched;
@@ -305,7 +305,7 @@ function matchCommandWords(rules: ProjectRuleSet, powerShell: boolean, argv: str
  */
 function strongerRuleVerdict(rules: ProjectRuleSet, powerShell: boolean, argv: string[], verdict: number): number {
   if (argv.length === 0) return verdict;
-  let matched = matchCommandWords(rules, powerShell, argv);
+  let matched = matchCommandWords(rules, argv);
   if (!powerShell) matched = dispatchedRuleVerdict(rules, argv, matched, true);
   else if (matched !== RULE_DENY) { const script = scriptOperandVerdict(rules, argv, true); if (script > matched) matched = script; }
   return matched >= RULE_ASK && matched > verdict ? matched : verdict;
@@ -327,7 +327,7 @@ function dispatchedRuleVerdict(rules: ProjectRuleSet, argv: string[], matched: n
     if (start === 0) break;
     argv.copyWithin(0, start);
     argv.length -= start;
-    const dispatched = matchCommandWords(rules, false, argv);
+    const dispatched = matchCommandWords(rules, argv);
     if (dispatched > matched) matched = dispatched;
   }
   return matched;
@@ -338,6 +338,12 @@ const POWERSHELL_SHELLS: ReadonlySet<string> = new Set(["pwsh", "powershell"]);
 /** Nested script operands analyzed at once; deeper ones are matched as written only. */
 const MAX_SCRIPT_NESTING = 3;
 let scriptNesting = 0;
+/**
+ * The calling tool's rule set (true: PowerShell rules). A nested script is parsed in its own
+ * shell's dialect but still runs under that tool, so `pwsh -Command "git push"` from Bash
+ * matches the Bash rules. Set by the outermost `shellRuleVerdict` call.
+ */
+let rulesPowerShell = false;
 
 /**
  * The rule verdict for the literal script a shell runs (`bash -lc 'git push'`,
@@ -347,7 +353,7 @@ let scriptNesting = 0;
 function scriptOperandVerdict(rules: ProjectRuleSet, argv: readonly string[], powerShell: boolean): number {
   const first = argv[0]!;
   if (scriptNesting >= MAX_SCRIPT_NESTING) return -1;
-  // `cmd /c git push` / `cmd /d /c "git push"`: the rest runs under the calling shell's rules.
+  // `cmd /c git push` / `cmd /d /c "git push"`: the rest is parsed in the calling shell's dialect.
   if (first.length === 3 && (first.charCodeAt(0) | 32) === 99 && (first.charCodeAt(1) | 32) === 109 && (first.charCodeAt(2) | 32) === 100) {
     for (let index = 1; index < argv.length; index++) {
       const word = argv[index]!;
@@ -418,7 +424,7 @@ function findActionVerdict(rules: ProjectRuleSet, argv: readonly string[]): numb
       findActionWords.push(word);
     }
     if (findActionWords.length === 0) continue;
-    const action = dispatchedRuleVerdict(rules, findActionWords, matchCommandWords(rules, false, findActionWords), false);
+    const action = dispatchedRuleVerdict(rules, findActionWords, matchCommandWords(rules, findActionWords), false);
     if (action > matched) matched = action;
   }
   findActionWords.length = 0;
@@ -511,7 +517,8 @@ export function classifyHostShellCommand(tool: "bash" | "powershell", command: s
  */
 export function shellRuleVerdict(tool: "bash" | "powershell", command: string, rules: ProjectRuleSet, analysisOwner?: ShellAnalysisOwner): number {
   const powerShell = tool === "powershell";
-  if (!rules.hasShellRules(powerShell) || !command.trim()) return RULE_NONE;
+  if (scriptNesting === 0) rulesPowerShell = powerShell;
+  if (!rules.hasShellRules(rulesPowerShell) || !command.trim()) return RULE_NONE;
   let source = command, verdict = RULE_NONE;
   if (!powerShell) {
     // Match the commands around heredoc bodies, not the bodies (a stray quote in one would
@@ -519,7 +526,7 @@ export function shellRuleVerdict(tool: "bash" | "powershell", command: string, r
     // view is not used: it rewrites `node <<EOF` as `node -e ...`, which an exact rule misses.
     const view = prepareShellAnalysis(command);
     source = view.command;
-    if (view.uncertain && rules.hasRestrictiveShellRules(false)) verdict = RULE_ASK;
+    if (view.uncertain && rules.hasRestrictiveShellRules(rulesPowerShell)) verdict = RULE_ASK;
   }
   const table = commandTable(powerShell, source, analysisOwner), argv: string[] = [];
   // Bash `case` arm patterns (`git)`) are not commands. PowerShell keeps one bit per open

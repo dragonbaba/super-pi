@@ -90,7 +90,7 @@ test("host-restricted classification lifts only literal segments, and suggestion
     for (const command of ["command -v git", "command -p -v git", "command -pv git", "sudo -l git push"])
         assert.equal(shellRuleVerdict("bash", command, lookup), RULE_NONE, command);
     // A shell's literal script operand is matched as a command of its own.
-    for (const command of ["bash -c 'git push origin main'", "sudo sh -lc 'cd app && git push'"]) assert.equal(shellRuleVerdict("bash", command, rules), RULE_DENY, command);
+    for (const command of ["bash -c 'git push origin main'", "sudo sh -lc 'cd app && git push'", "pwsh -Command \"git push origin main\""]) assert.equal(shellRuleVerdict("bash", command, rules), RULE_DENY, command);
     assert.equal(shellRuleVerdict("bash", "bash -c 'git status'", rules), RULE_NONE);
     // `find -exec` runs its command; `case` arm patterns are not commands, their bodies are.
     const remove = new ProjectRuleSet([{ tool: "bash", decision: "deny", command: "rm *" }]);
@@ -119,7 +119,7 @@ test("host-restricted classification lifts only literal segments, and suggestion
     // A string in command position is a value; a call operator invokes it.
     for (const command of ["$label = 'npm'", "$label='npm'", "@{ label = 'npm' }", "@{label='npm'}", "$data=@{label='npm'}", "$label = @'\nnpm\n'@"]) assert.equal(shellRuleVerdict("powershell", command, npm), RULE_NONE, command);
     assert.equal(shellRuleVerdict("powershell", "& 'npm' test", npm), RULE_DENY);
-    for (const command of ["@{ result = (npm test) }", "@{ result = & npm test }", "pwsh -NoProfile -Command npm test", "@{ result =\n  npm test\n}", "npm.cmd test", "npm.ps1 test", "cmd.exe /d /c \"npm test\"", "$out = @(npm test)"]) assert.equal(shellRuleVerdict("powershell", command, npm), RULE_DENY, command);
+    for (const command of ["@{ result = (npm test) }", "@{ result = & npm test }", "pwsh -NoProfile -Command npm test", "@{ result =\n  npm test\n}", "npm.cmd test", "npm.ps1 test", "cmd.exe /d /c \"npm test\"", "$out = @(npm test)", "bash -c 'npm test'"]) assert.equal(shellRuleVerdict("powershell", command, npm), RULE_DENY, command);
     // Switch labels are not commands; their action blocks are matched.
     assert.equal(shellRuleVerdict("powershell", "switch ($tool) { npm { Write-Output \"npm\" }; default { Write-Output other } }", npm), RULE_NONE);
     assert.equal(shellRuleVerdict("powershell", "switch ($tool) { a { Write-Output x } b { npm test } }", npm), RULE_DENY);
