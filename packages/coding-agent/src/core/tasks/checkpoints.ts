@@ -24,7 +24,7 @@ function integer(value: unknown): value is number { return Number.isSafeInteger(
 function fileIdentity(value: unknown): value is string { return typeof value === "string" && /^[0-9]{1,30}$/.test(value); }
 
 /** Bound JSON before materialization; no second full-size string just to measure it. */
-export function assertCheckpointJson(value: unknown, maximum = CHECKPOINT_BYTES): void {
+export function assertCheckpointJson(value: unknown, maximum = CHECKPOINT_BYTES, omitUndefinedProperties = false): void {
 	let remaining = maximum, nodes = 0;
 	function visit(item: unknown, depth: number): void {
 		if (depth > 32) throw new Error("Checkpoint/control structure exceeds depth 32.");
@@ -52,6 +52,7 @@ export function assertCheckpointJson(value: unknown, maximum = CHECKPOINT_BYTES)
 			const keys = Object.keys(item);
 			if (keys.length > 20000) throw new CheckpointCapacityError("Checkpoint/control structure exceeds 20000 nodes.");
 			for (const key of keys) {
+				if (omitUndefinedProperties && (item as Record<string, unknown>)[key] === undefined) continue;
 				remaining -= first ? 1 : 2; first = false;
 				visit(key, depth + 1); visit((item as Record<string, unknown>)[key], depth + 1);
 			}

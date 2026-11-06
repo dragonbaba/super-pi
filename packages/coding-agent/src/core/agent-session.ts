@@ -6,6 +6,7 @@ import { WorkspaceSandboxTools } from "./sandbox/workspace-tools.ts";
 import { getAgentDir } from "../config.ts";
 import { createSessionLease, type SessionLease } from "./session-lease.ts";
 import { NATIVE_FILE_REVISION } from "./files/file-host.ts";
+import { SubagentExecution, type OpenSubagentExecution } from "./files/subagent-execution.ts";
 import type { ToolSelection } from "./tool-selection.ts";
 import { CODEMODE_NAME, CODEMODE_DESCRIPTION, CODEMODE_STORE_ENTRY, CODEMODE_CALL_ENTRY, CODEMODE_RESULT_ENTRY, DIRECT_CONTROL_NAMES } from "./codemode-constants.ts";
 import type { CodemodeReadEvent } from "./extensions/types.ts";
@@ -847,6 +848,8 @@ export class AgentSession {
 	private _resourceLoader: ResourceLoader;
 	private _customTools: ToolDefinition[];
 	private _baseToolDefinitions: Map<string, ToolDefinition> = new Map();
+	private readonly _openSubagentExecution: OpenSubagentExecution = options =>
+		new SubagentExecution(this.agent, this._baseToolDefinitions, this._toolRegistry, options);
 	private _cwd: string;
 	private _extensionRunnerRef?: { current?: ExtensionRunner };
 	private _extensionRunnerOptions?: ExtensionRunnerOptions;
@@ -1037,14 +1040,16 @@ export class AgentSession {
 			entry => { this.sessionManager.appendCustomEntry(CODEMODE_CALL_ENTRY, entry); },
 			entry => { this.sessionManager.appendCustomEntry(CODEMODE_RESULT_ENTRY, entry); });
 		const permissionMode = this.settingsManager.getPermissionMode();
-		if (permissionMode && permissionMode !== "host-write") {
+		const parentExecution = config.resourceLoader.getExtensions().runtime.parentExecution;
+		if (parentExecution) this.agent.toolExecution = "sequential";
+		if (!parentExecution && permissionMode && permissionMode !== "host-write") {
 			if (this._operationOptions || config.baseToolsOverride) throw new Error("[SANDBOX_UNSUPPORTED] Host tool overrides and operation journals cannot enter a sandbox");
 			const workspaceCwd = config.cwd, workspaceParent = resolveEvidencePath(config.agentDir ?? getAgentDir(), "sandbox-workspaces");
 			this._createWorkspaceSandbox = () => new WorkspaceSandboxTools(workspaceCwd, workspaceParent, permissionMode,
 				() => this._resourceLoader.getExtensions().runtime,
 				{ settings: this.settingsManager.getSandboxToolchains(), powershellPath: this.settingsManager.getPowerShellPath(), network: this.settingsManager.getSandboxNetwork(), directories: this.settingsManager.getSessionDirectories(), privateDirectories: this.settingsManager.getSandboxPrivateDirectories() });
 			this._workspaceSandbox = this._createWorkspaceSandbox();
-		} else if (this.settingsManager.getExecutionEnvironment() === "sandbox") {
+		} else if (!parentExecution && this.settingsManager.getExecutionEnvironment() === "sandbox") {
 			if (this._operationOptions) throw new Error("[SANDBOX_UNSUPPORTED] Experimental host operation journals require trusted-host execution");
 			this._sandboxCommands = new SessionSandbox(() => this._resourceLoader.getExtensions().runtime,
 				resolveEvidencePath(config.agentDir ?? getAgentDir(), "sandbox-tasks"), undefined,
@@ -1200,7 +1205,7 @@ export class AgentSession {
 	 * happens here instead of in wrappers.
 	 */
 	private _installAgentToolHooks(): void {
-		this.agent.beforeToolCall = async ({ toolCall, args, context, parentToolCallId, nestedIssuedAt }) => {
+		this.agent.beforeToolCall = async ({ toolCall, args, context, parentToolCallId, nestedIssuedAt }, signal) => {
 			await this._codemode.admitVisibleReads(this._emitCodemodeRead);
 			if (toolCall.name === "inspect_image" && this.settingsManager.getBlockImages()) {
 				return { block: true, reason: "图片读取/发送已被 blockImages 禁止" };
@@ -1217,7 +1222,7 @@ export class AgentSession {
 					nestedIssuedAt,
 					input: args as Record<string, unknown>,
 				}, context.tools?.find(tool => tool.name === toolCall.name)?.execute === this._toolRegistry.get(toolCall.name)?.execute
-					? this._toolDefinitions.get(toolCall.name)?.definition : undefined);
+					? this._toolDefinitions.get(toolCall.name)?.definition : undefined, signal);
 				try { if (!decision?.block) this._codemode.recordInvocation(parentToolCallId, toolCall.id, toolCall.name, args); }
 				catch (error) { decision?.finalAuthorization?.release(); throw error; }
 				return decision;
@@ -5030,7 +5035,7 @@ export class AgentSession {
 		const wrappedBuiltInTools = wrapRegisteredTools(registeredBuiltInTools, runner);
 		if (this._operationOptions) this._operationToolExecute = wrappedBuiltInTools.find(tool => tool.name === "write")?.execute;
 		for (const tool of wrappedBuiltInTools) {
-			const executionPath = getBuiltinExecutionPath(tool.name, this._cwd);
+			const executionPath = this._resourceLoader.getExtensions().runtime.parentExecution ? undefined : getBuiltinExecutionPath(tool.name, this._cwd);
 			if (executionPath) tool.executionPath = executionPath;
 		}
 
@@ -5123,7 +5128,10 @@ export class AgentSession {
 		const shellPath = this.settingsManager.getShellPath();
 		const powershellPath = this.settingsManager.getPowerShellPath();
 		let baseToolDefinitions: Record<string, ToolDefinition>;
-		if (this._baseToolsOverride) {
+		const parentExecution = this._resourceLoader.getExtensions().runtime.parentExecution;
+		if (parentExecution) {
+			baseToolDefinitions = parentExecution.definitions();
+		} else if (this._baseToolsOverride) {
 			baseToolDefinitions = {};
 			const overrideNames = Object.keys(this._baseToolsOverride);
 			for (let index = 0; index < overrideNames.length; index++) {
@@ -5178,6 +5186,7 @@ export class AgentSession {
 		this._baseToolDefinitions = baseToolDefinitionMap;
 
 		const extensionsResult = this._resourceLoader.getExtensions();
+		extensionsResult.runtime.openSubagentExecution = this._openSubagentExecution;
 		if (options.flagValues) {
 			for (const [name, value] of options.flagValues) {
 				extensionsResult.runtime.flagValues.set(name, value);

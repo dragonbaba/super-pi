@@ -151,12 +151,16 @@ test("native delegated tools receive exact one-call scopes and revoke with their
     const f = await fixture(t, {}, "trusted-host", "host-write"); f.ctx.signal = undefined;
     await fs.mkdir(path.join(f.root, "src"));
     const task = { agent: "worker", task: "inspect", cwd: "src" };
+    await assert.rejects(f.owner.authorize(f.event("subagent", task), f.ctx), /Parent execution channel is unavailable/);
+    f.runtime.openSubagentExecution = () => { throw new Error("This authorization-only fixture must not execute a task"); };
     for (const input of [task, { tasks: [task, { ...task, readOnly: true }] }, { chain: [task] }]) {
         const invocation = await f.owner.authorize(f.event("subagent", input), f.ctx);
         const requests = "tasks" in input ? input.tasks! : "chain" in input ? input.chain! : [input];
         const grants = consumeDelegatedTaskPolicies(input, requests.map(item => item.cwd), f.root, "test-call");
         assert.equal(grants.length, requests.length); assert.equal(grants[0].canonicalCwd, await fs.realpath(path.join(f.root, "src")));
         assert.equal(grants[0].writable, true); if (grants.length === 2) assert.equal(grants[1].writable, false);
+        assert.equal(grants[0].parentExecution?.profile.workspace, f.root);
+        assert.equal(grants[0].parentExecution?.profile.mode, "host-write");
         assert.throws(() => consumeDelegatedTaskPolicies(input, requests.map(item => item.cwd), f.root, "test-call"), /delegation is missing/);
         invocation.release();
     }
@@ -181,6 +185,7 @@ test("native delegated tools receive exact one-call scopes and revoke with their
 
 test("native delegation enforces scoped rules, exact identities and changed input", async t => {
     const f = await fixture(t, { rules: [{ tool: "*", path: "private", decision: "deny" }] }, "trusted-host", "host-write");
+    f.runtime.openSubagentExecution = () => { throw new Error("This authorization-only fixture must not execute a task"); };
     await fs.mkdir(path.join(f.root, "private")); await fs.mkdir(path.join(f.root, "public"));
     await assert.rejects(f.owner.authorize(f.event("subagent", { agent: "worker", task: "inspect" }), f.ctx), /Explicitly denied/);
     await assert.rejects(f.owner.authorize(f.event("structured_readonly_command", { command: "rg", args: ["x", "private"] }), f.ctx), /Explicitly denied/);

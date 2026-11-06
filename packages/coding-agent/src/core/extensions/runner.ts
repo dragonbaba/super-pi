@@ -1297,7 +1297,7 @@ export class ExtensionRunner {
 	 * Create an ExtensionContext for use in event handlers and tool execution.
 	 * Context values are resolved at call time, so changes via bindCore/bindUI are reflected.
 	 */
-	createContext(requestModel?: Model<any>): ExtensionContext {
+	createContext(requestModel?: Model<any>, invocationSignal?: AbortSignal): ExtensionContext {
 		const runner = this;
 		const getModel = this.getModel;
 		const getScopedModels = this.getScopedModels;
@@ -1348,7 +1348,7 @@ export class ExtensionRunner {
 			},
 			get signal() {
 				runner.assertActive();
-				return runner.getSignalFn();
+				return invocationSignal ?? runner.getSignalFn();
 			},
 			abort: () => {
 				runner.assertActive();
@@ -1880,7 +1880,7 @@ export class ExtensionRunner {
 		};
 	}
 
-	async emitToolCall(event: ToolCallEvent, definition?: ToolDefinition): Promise<ToolCallEventResult | undefined> {
+	async emitToolCall(event: ToolCallEvent, definition?: ToolDefinition, invocationSignal?: AbortSignal): Promise<ToolCallEventResult | undefined> {
 		const boundary = this.runtime.executionBoundary, generation = boundary.generation;
 		boundary.assertCurrent(generation);
 		const name = event.toolName;
@@ -1891,7 +1891,7 @@ export class ExtensionRunner {
 			return { finalAuthorization: this.ordinaryToolEpoch };
 		}
 		if ((this.finalAuthorizations?.size ?? 0) >= 128) throw new Error("Too many pending tool invocations");
-		const ctx = this.createContext();
+		const ctx = this.createContext(undefined, invocationSignal);
 		let result: ToolCallEventResult | undefined;
 		// Reserve before any producer starts. The same hook idle deferred covers
 		// actual native/hook delivery and cleanup, including a late rejected grant.

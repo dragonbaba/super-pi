@@ -1,12 +1,14 @@
 import { lstat, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { HARD_MAX_TASKS } from "../tasks/limits.ts";
+import { canonicalSessionDirectory } from "../session-execution-profile.ts";
 import { classifyStructuredReadonlyArguments } from "./structured-argv.ts";
 import type { StructuredReadonlyWorkspaceDelegation, StructuredReadonlyPathGrant, SubagentWorkspaceGrant } from "./extension-permissions.ts";
 
 type StructuredScope = Omit<StructuredReadonlyWorkspaceDelegation,
     "schemaVersion" | "sequence" | "toolCallId" | "requestHash" | "assertCurrent" | "revocationSignal">;
 export interface NativeDelegationScope {
+    workspace: string;
     paths: string[];
     subagent?: SubagentWorkspaceGrant[];
     structured?: StructuredScope;
@@ -20,7 +22,7 @@ function inside(root: string, target: string): boolean {
 }
 async function directory(cwd: string, raw: unknown) {
     need(raw === undefined || typeof raw === "string" && raw.length > 0 && raw.length <= 4096 && !raw.includes("\0"), "Invalid delegated cwd");
-    const canonical = await realpath(resolve(cwd, raw ?? ".")), identity = await lstat(canonical);
+    const canonical = canonicalSessionDirectory(resolve(cwd, raw ?? ".")), identity = await lstat(canonical);
     need(identity.isDirectory() && !identity.isSymbolicLink(), "Delegation requires an ordinary directory");
     return { canonical, identity };
 }
@@ -45,7 +47,7 @@ export async function prepareNativeDelegation(tool: string, input: Record<string
                 source: inside(primary.canonical, target.canonical) ? "primary" : "full-access-exact" });
             paths.push(target.canonical);
         }
-        return { paths, subagent: grants };
+        return { workspace: primary.canonical, paths, subagent: grants };
     }
     need((input.command === "rg" || input.command === "git") && Array.isArray(input.args), "Expected structured rg/git arguments");
     for (const argument of input.args) need(typeof argument === "string", "Expected string command arguments");
@@ -65,7 +67,7 @@ export async function prepareNativeDelegation(tool: string, input: Record<string
         additionalRoots.push({ canonicalRoot: extra.canonical, rootDevice: extra.identity.dev, rootInode: extra.identity.ino,
             source: inside(primary.canonical, extra.canonical) ? "primary" : "full-access-exact" });
     }
-    return { paths, structured: { canonicalRoot: root.canonical, rootDevice: root.identity.dev, rootInode: root.identity.ino,
+    return { workspace: primary.canonical, paths, structured: { canonicalRoot: root.canonical, rootDevice: root.identity.dev, rootInode: root.identity.ino,
         canonicalCwd: target.canonical, cwdDevice: target.identity.dev, cwdInode: target.identity.ino,
         invocationCwd: primary.canonical, source, additionalRoots } };
 }

@@ -7,6 +7,26 @@ const source = readFileSync(new URL("../packages/extensions/subagent/index.ts", 
 const tree = ts.createSourceFile("subagent/index.ts", source, ts.ScriptTarget.Latest, true);
 const hot = new Set(["onStdoutData", "onStderrData", "processLine", "appendBoundedMessage", "boundedMessage", "boundedUsage", "finiteUsage", "boundedTextContent", "capText", "prefixEnd", "capTextHeadTail", "jsonEventLimitReason", "jsonTransportLimitReason", "renderAgentStatus", "refreshStatus", "formatAgentUsage", "formatTokens", "formatElapsedMs", "resultStateCounts"]);
 
+test("parent workspace relay has no command-text inspection or delta/progress subscriptions", () => {
+  const file = "packages/coding-agent/src/core/files/subagent-execution.ts";
+  const parsed = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
+  let sink = false;
+  function inspect(node: ts.Node): void {
+    if (ts.isPropertyAccessExpression(node)) assert.notEqual(node.name.text, "command", "structured cwd only; do not inspect or rewrite shell source");
+    if (ts.isElementAccessExpression(node) && ts.isStringLiteral(node.argumentExpression)) assert.notEqual(node.argumentExpression.text, "command");
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "on") {
+      assert.ok(node.arguments[0] && ts.isStringLiteral(node.arguments[0]));
+      assert.ok(["message", "disconnect"].includes(node.arguments[0].text), "IPC has no streaming subscriptions");
+    }
+    if (ts.isFunctionDeclaration(node) && node.name?.text === "observeToolEvent") {
+      sink = true; assert.equal(node.body!.statements.length, 0, "delegated progress must not create a parent provider event");
+    }
+    ts.forEachChild(node, inspect);
+  }
+  inspect(parsed); assert.equal(sink, true);
+  // Cold exemptions: owner construction/disposal, initialize, execute/run, IPC request/handle/encode/decode.
+});
+
 test("child sender and stderr chunks reuse lifecycle callbacks without event wrappers", () => {
 	const targets = [
 		["packages/coding-agent/src/modes/subagent-stream.ts", "SubagentStream", ["onEvent", "writeLine", "onWrite", "onDrain", "onError", "fail", "releaseWait", "waitForBackpressure"]],

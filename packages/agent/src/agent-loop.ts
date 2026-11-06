@@ -1047,6 +1047,19 @@ function nestedAbandonedNotice(abandoned: number): string {
 	return `[NESTED_TOOL_ABANDONED] ${abandoned} child call(s) ignored cancellation for ${NESTED_CANCEL_GRACE_MS} ms and may still be running or changing state. Verify current state before any retry.`;
 }
 
+/** One task-owned tool request, independent of the parent's provider/run lifecycle. */
+export function createDelegatedToolDispatch(
+	parentToolCallId: string, context: AgentContext, config: AgentLoopConfig, emit: AgentEventSink, signal: AbortSignal,
+): NestedToolDispatch {
+	const assistantMessage: AssistantMessage = {
+		role: "assistant", content: [], api: "host-operation", provider: "host", model: "delegated-operation",
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		stopReason: "toolUse", timestamp: Date.now(),
+	};
+	return createNestedToolDispatch(parentToolCallId, { context, config, assistantMessage }, emit, signal);
+}
+
 /** One callback pair per orchestration invocation, never per child progress update. */
 function createNestedToolDispatch(
 	parentToolCallId: string,

@@ -16,7 +16,7 @@ import {
 	type EventDeliveryStats,
 	type EventSubscriptionOptions,
 } from "./event-delivery.ts";
-import { runAgentLoop, runAgentLoopContinue, runHostToolDispatch } from "./agent-loop.ts";
+import { createDelegatedToolDispatch, runAgentLoop, runAgentLoopContinue, runHostToolDispatch } from "./agent-loop.ts";
 import { getDefaultStreamFn } from "./stream-fn.ts";
 import { isModelToolSelection, selectModelTools } from "./tool-exposure.ts";
 import type {
@@ -647,6 +647,16 @@ export class Agent {
 			},
 			getFollowUpMessages: async () => this.followUpQueue.drain(),
 		};
+	}
+
+	/** @internal Task-owned scope; caller closes it and supplies the task's lifetime signal. */
+	createDelegatedToolDispatch(parentToolCallId: string, signal: AbortSignal, emit: (event: AgentEvent) => void | Promise<void>,
+		tools: AgentTool[] = this._state.tools) {
+		const config = this.createLoopConfig();
+		config.getCurrentTools = () => tools;
+		return createDelegatedToolDispatch(parentToolCallId,
+			{ systemPrompt: "", messages: [], tools }, config,
+			emit, signal);
 	}
 
 	/** @internal Experimental host-only dispatch; failures propagate without model retry messages. */

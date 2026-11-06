@@ -4,11 +4,14 @@ import type { SubagentLimits } from "./limits.ts";
 export interface TaskWorkspace {
 	readonly canonicalCwd: string;
 	readonly allowMutation: boolean;
+	/** Parent-routed operations retain the parent's scope regardless of assigned cwd. */
+	readonly sharedParentScope?: boolean;
 }
 
 function workspacesConflict(left: TaskWorkspace, right: TaskWorkspace): boolean {
 	return (left.allowMutation || right.allowMutation)
-		&& (isPathInside(left.canonicalCwd, right.canonicalCwd) || isPathInside(right.canonicalCwd, left.canonicalCwd));
+		&& (left.sharedParentScope || right.sharedParentScope
+			|| isPathInside(left.canonicalCwd, right.canonicalCwd) || isPathInside(right.canonicalCwd, left.canonicalCwd));
 }
 
 /** One reservation per accepted call; no credentials, prompts or results live here. */
@@ -106,7 +109,7 @@ export class SubagentScheduler {
 			for (let left = 0; left < count; left++) {
 				for (let right = left + 1; right < count; right++) {
 					if (workspacesConflict(workspaces[left], workspaces[right])) {
-						throw new Error(`Parallel tasks ${left + 1} and ${right + 1} have overlapping workspaces with write access. Use chain, readOnly: true for both tasks, or isolated workspaces; no task was started.`);
+						throw new Error(`Parallel tasks ${left + 1} and ${right + 1} have overlapping execution scopes with write access. Use chain or readOnly: true for both tasks; a different cwd does not isolate parent-routed tools; no task was started.`);
 					}
 				}
 			}
@@ -115,7 +118,7 @@ export class SubagentScheduler {
 			for (const current of reservation.workspaces) {
 				for (const requested of workspaces) {
 					if (workspacesConflict(current, requested)) {
-						throw new Error("Subagent workspace is already reserved by overlapping work with write access. Wait, use readOnly for both calls, or choose an isolated workspace.");
+						throw new Error("Subagent execution scope is already reserved by overlapping work with write access. Wait or use readOnly for both calls; a different cwd does not isolate parent-routed tools.");
 					}
 				}
 			}

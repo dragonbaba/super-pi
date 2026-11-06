@@ -238,6 +238,7 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		assertActive,
 		invalidate: (message, ownersCleanupStarted = false) => {
 			if (state.staleMessage) return;
+			runtime.openSubagentExecution = undefined;
 			runtime.nativePermissions?.dispose();
 			runtime.compactionStrategies.clear();
 			runtime.codexRemoteCompactionEnabled = false;

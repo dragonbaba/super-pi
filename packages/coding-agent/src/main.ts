@@ -8,6 +8,7 @@
 import { createInterface } from "node:readline";
 import { defaultPermissionMode } from "./core/permission-mode.ts";
 import { loadSessionExecutionProfile } from "./core/session-execution-profile.ts";
+import { SubagentParentClient } from "./core/files/subagent-execution.ts";
 import { type ImageContent, modelsAreEqual } from "@super-pi/ai";
 import chalk from "chalk";
 import { type Args, hasOption, type Mode, parseArgs, printHelp, validateModelSelectionArgs } from "./cli/args.ts";
@@ -735,6 +736,11 @@ export async function main(args: string[], options?: MainOptions) {
 		sessionManager.appendSessionInfo(name);
 	}
 	time("createSessionManager");
+	const parentExecution = process.env.SP_SUBAGENT_PARENT_EXECUTION === "1" ? new SubagentParentClient() : undefined;
+	if (parentExecution) {
+		if (!parsed.subagentStream || !process.connected) throw new Error("Parent execution requires an owned subagent IPC process");
+		await parentExecution.initialize();
+	}
 
 	const trustStore = new ProjectTrustStore(agentDir);
 	const sessionCwd = sessionManager.getCwd();
@@ -774,8 +780,8 @@ export async function main(args: string[], options?: MainOptions) {
 		const executionProfile = appMode === "interactive" ? loadSessionExecutionProfile(agentDir, sessionManager) : undefined;
 		runtimeSettingsManager.setSessionDirectories(directories ?? executionProfile?.directories ?? []);
 		if (parsed.executionEnvironment) runtimeSettingsManager.setExecutionEnvironmentForSession(parsed.executionEnvironment);
-		if (permissionMode !== undefined || appMode === "interactive") runtimeSettingsManager.setPermissionModeForSession(
-			permissionMode ?? executionProfile?.mode ?? defaultPermissionMode(runtimeSettingsManager.getGlobalSettings().permissionMode));
+		if (parentExecution || permissionMode !== undefined || appMode === "interactive") runtimeSettingsManager.setPermissionModeForSession(
+			parentExecution?.profile.mode ?? permissionMode ?? executionProfile?.mode ?? defaultPermissionMode(runtimeSettingsManager.getGlobalSettings().permissionMode));
 		const services = await createAgentSessionServices({
 			cwd,
 			agentDir,
@@ -805,6 +811,7 @@ export async function main(args: string[], options?: MainOptions) {
 					}
 				: undefined,
 			resourceLoaderOptions: {
+				parentExecution,
 				additionalExtensionPaths: resolvedExtensionPaths,
 				additionalSkillPaths: resolvedSkillPaths,
 				additionalPromptTemplatePaths: resolvedPromptTemplatePaths,
@@ -1009,6 +1016,7 @@ export async function main(args: string[], options?: MainOptions) {
 			initialMessage,
 			initialImages,
 		});
+		parentExecution?.dispose();
 		stopThemeWatcher();
 		restoreStdout();
 		if (exitCode !== 0) {

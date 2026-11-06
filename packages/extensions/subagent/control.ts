@@ -2,6 +2,7 @@ import type { ChildProcess } from "node:child_process";
 import type { Message } from "@super-pi/ai";
 import { appendCheckpointTurn, assertCheckpointJson, CheckpointCapacityError, CHECKPOINT_HANDOFF_BYTES, CHECKPOINT_HANDOFF_MESSAGES, type TaskCheckpoint } from "./checkpoints.ts";
 import type { SubagentTasks } from "./tasks.ts";
+import { WORKSPACE_MESSAGE_PREFIX } from "@super-pi/coding-agent/internal/files/subagent-execution";
 
 export const CONTROL_BYTES = 2 * 1024 * 1024;
 export const TASK_GUIDANCE_CHARS = 4096;
@@ -91,6 +92,7 @@ export class SubagentControl {
 	private stop(reason: string): void { this.failed = true; this.queuedGuidance = undefined; this.pendingPrompt = undefined; this.pendingGuidance = false; this.fail?.(reason); }
 	private onSend(error: Error | null): void { if (error) this.stop(`Subagent control delivery failed: ${error.message}`); }
 	private onMessage(raw: unknown): void {
+		if (typeof raw === "string" && raw.startsWith(WORKSPACE_MESSAGE_PREFIX)) return;
 		if (this.phase === "closed" || this.failed) return;
 		try {
 			const packet = decodeControl(raw);

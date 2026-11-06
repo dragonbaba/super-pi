@@ -161,6 +161,7 @@ export function loadProjectContextFiles(options: {
 }
 
 export interface DefaultResourceLoaderOptions {
+	parentExecution?: import("./files/subagent-execution.ts").SubagentParentClient;
 	cwd: string;
 	agentDir: string;
 	settingsManager?: SettingsManager;
@@ -198,6 +199,7 @@ export interface DefaultResourceLoaderOptions {
 }
 
 export class DefaultResourceLoader implements ResourceLoader {
+	private readonly parentExecution?: import("./files/subagent-execution.ts").SubagentParentClient;
 	private cwd: string;
 	private agentDir: string;
 	private settingsManager: SettingsManager;
@@ -257,6 +259,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private loaded: boolean;
 
 	constructor(options: DefaultResourceLoaderOptions) {
+		this.parentExecution = options.parentExecution;
 		this.cwd = resolvePath(options.cwd);
 		this.agentDir = resolvePath(options.agentDir);
 		this.settingsManager = options.settingsManager ?? SettingsManager.create(this.cwd, this.agentDir);
@@ -602,6 +605,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private createSessionRuntime(): ExtensionRuntime {
 		const runtime = createExtensionRuntime();
 		this.pendingTaskRuntime = runtime;
+		if (this.parentExecution) { runtime.parentExecution = this.parentExecution; return runtime; }
 		runtime.nativeTasks = new SessionTasks(runtime, this.eventBus);
 		runtime.nativeFiles = new SessionFiles(runtime, this.eventBus);
 		const settings = this.settingsManager.getGlobalSettings();
