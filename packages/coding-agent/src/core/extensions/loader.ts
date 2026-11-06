@@ -93,6 +93,7 @@ function getAliases(): Record<string, string> {
 		"@super-pi/coding-agent/internal/session-lease": path.resolve(__dirname, "../session-lease"),
 		"@super-pi/coding-agent/internal/files": path.resolve(__dirname, "../files"),
 		"@super-pi/coding-agent/internal/tasks": path.resolve(__dirname, "../tasks"),
+		"@super-pi/coding-agent/internal/shell-policy": path.resolve(__dirname, "../shell-policy"),
 		"@super-pi/ai/api/openai-codex-responses": resolveWorkspaceOrImport(
 			"ai/dist/api/openai-codex-responses.js", "@super-pi/ai/api/openai-codex-responses",
 		),

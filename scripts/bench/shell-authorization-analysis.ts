@@ -1,19 +1,25 @@
 import assert from "node:assert/strict";
 import { Session } from "node:inspector/promises";
 import { setImmediate } from "node:timers/promises";
-import { inspectBashResourceLifecycle, inspectHighRiskBashMutation, literalProcessSources, literalStoredScripts } from "../../packages/extensions/resource-lifecycle-guard/core.ts";
-import { inspectBashPermissionScope } from "../../packages/extensions/resource-lifecycle-guard/permission-bash.ts";
-import { ShellAnalysisOwner, shellAnalysisOwnership, MAX_ANALYSIS_BYTES, MAX_ANALYSIS_ENTRIES } from "../../packages/extensions/resource-lifecycle-guard/shell-analysis.ts";
-import { shellAnalysisCounters } from "../../packages/extensions/resource-lifecycle-guard/shell-substitution.ts";
-import { codeMethodNameCounters } from "../../packages/extensions/resource-lifecycle-guard/code-method-names.ts";
-import { aliasRiskCounters } from "../../packages/extensions/resource-lifecycle-guard/core.ts";
+import { inspectBashResourceLifecycle, inspectHighRiskBashMutation, literalProcessSources, literalStoredScripts } from "../../packages/coding-agent/src/core/shell-policy/core.ts";
+import { inspectBashPermissionScope } from "../../packages/coding-agent/src/core/shell-policy/permission-bash.ts";
+import { ShellAnalysisOwner, shellAnalysisOwnership, MAX_ANALYSIS_BYTES, MAX_ANALYSIS_ENTRIES } from "../../packages/coding-agent/src/core/shell-policy/shell-analysis.ts";
+import { shellAnalysisCounters } from "../../packages/coding-agent/src/core/shell-policy/shell-substitution.ts";
+import { codeMethodNameCounters } from "../../packages/coding-agent/src/core/shell-policy/code-method-names.ts";
+import { aliasRiskCounters } from "../../packages/coding-agent/src/core/shell-policy/core.ts";
+import { inspectNativeShellMutations } from "../../packages/coding-agent/src/core/shell-policy/native-mutations.ts";
 
 const gc = (globalThis as { gc?: () => void }).gc;
 assert.ok(gc, "run with --expose-gc");
 const cwd = process.cwd(), iterations = 512, warmup = 64, samplingInterval = 4096;
 const literalInputs = process.argv.includes("--literal-inputs");
+const native = process.argv.includes("--native");
 const substitution = "$(grep -c -E '(class|function|const|var|let) GCSystem\\b' pixi/pixi.js)";
-const cases = literalInputs ? [
+const cases = native ? [
+  ["ordinary", "printf ok", 1],
+  ["known-delete", "rm -f owned.txt", 1],
+  ["uncertain-delete", 'rm -rf "$X"', 1],
+] as const : literalInputs ? [
   ["aliased-process-producer", "shopt -s expand_aliases\nalias echo='printf marker'\nsource <(echo ':')", 2],
   ["sort-terminal-value", "sort -o .git/config --help=x", 1],
   ["sort-ambiguous-output", "sort -o .git/config --i", 1],
@@ -97,6 +103,17 @@ function observeStoredSources(): void {
 }
 
 function analyze(command: string, lifecycle = "complete"): void {
+  if (native) {
+    const result = inspectNativeShellMutations("bash", { command }, cwd, 1);
+    if (lifecycle !== "complete" && result) {
+      references.push(new WeakRef(result), new WeakRef(result.targets));
+      for (const target of result.targets) references.push(new WeakRef(target));
+    }
+    assert.equal(shellAnalysisOwnership.liveOwners, 0);
+    assert.equal(shellAnalysisOwnership.liveEntries, 0);
+    assert.equal(shellAnalysisOwnership.liveBytes, 0);
+    return;
+  }
   const owner = new ShellAnalysisOwner(command, cwd, 1);
   try {
     owner.assertCurrent(command, cwd, 1);
@@ -156,8 +173,9 @@ for (const [name, command, uniqueSources] of cases) {
     cacheHits: shellAnalysisOwnership.hits - ownership.hits, cacheMisses: shellAnalysisOwnership.misses - ownership.misses,
     sampledBytesPerAnalysis: Math.round(sampledBytes / iterations), p50Ms: times[256], p95Ms: times[486], topSites: sites.slice(0, 8) }));
 }
-for (const lifecycle of ["normal-release", "failure", "cancel", "invalidate"]) {
-  analyze("printf lifecycle", lifecycle);
+// Native adaptation is synchronous; only returned evidence survives its finally.
+for (const lifecycle of native ? ["result-release"] : ["normal-release", "failure", "cancel", "invalidate"]) {
+  analyze(native ? "rm -f owned.txt" : "printf lifecycle", lifecycle);
   if (literalInputs) observeStoredSources();
 }
 await setImmediate(); gc(); await setImmediate(); gc(); await setImmediate();
@@ -165,6 +183,6 @@ const liveReferences = references.filter(reference => reference.deref()).length;
 assert.equal(liveReferences, 0);
 assert.equal(shellAnalysisOwnership.created, shellAnalysisOwnership.released);
 console.log(JSON.stringify({ ownership: shellAnalysisOwnership, aliasRiskCounters, weakReferences: references.length, liveReferences,
-  literalInputs,
+  literalInputs, native,
   maxEntriesPerAuthorization: MAX_ANALYSIS_ENTRIES, maxRetainedReferenceBytes: MAX_ANALYSIS_BYTES,
   counterByteUnit: "UTF-16 bytes submitted at real scanner entries; not total character accesses", node: process.version, v8: process.versions.v8, platform: process.platform }));
