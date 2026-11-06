@@ -65,7 +65,9 @@ test("the PowerShell permission scope and the read-only judgment share one table
 test("host-restricted classification: readers, listed file commands with literal operands, and everything else", () => {
   for (const [tool, command, expected] of [
     ["bash", "git status && ls -la 2>/dev/null", HOST_SHELL_READ_ONLY],
-    ["bash", "mkdir -p build && cp a.txt build/ && echo ok > build/log.txt", HOST_SHELL_FILE_COMMANDS],
+    ["bash", "mkdir -p build && echo ok > build/log.txt && cp a.txt build/", HOST_SHELL_FILE_COMMANDS],
+    // A copy or move may bring a link to a new path, so no file command may follow it.
+    ["bash", "cp -r source copied; echo changed > copied/link", HOST_SHELL_OTHER], ["powershell", "Move-Item a b; Set-Content b/x y", HOST_SHELL_OTHER],
     ["powershell", "Remove-Item old.txt; Get-ChildItem | Select-Object -First 3", HOST_SHELL_FILE_COMMANDS],
     // Unknown programs, dynamic operands, provider paths and nested scripts are not file commands.
     ["bash", "rm a.txt && npm test", HOST_SHELL_OTHER], ["bash", "rm \"$TARGET\"", HOST_SHELL_OTHER], ["bash", "echo x > \"$OUT\"", HOST_SHELL_OTHER],

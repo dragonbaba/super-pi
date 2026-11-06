@@ -73,6 +73,11 @@ const POWERSHELL_FILE_COMMANDS: ReadonlySet<string> = new Set([
   "remove-item", "ri", "rm", "del", "erase", "rd", "rmdir", "new-item", "ni", "mkdir", "md", "set-content", "add-content", "ac",
   "clear-content", "clc", "out-file", "copy-item", "cpi", "cp", "copy", "move-item", "mi", "mv", "move", "rename-item", "rni", "ren",
 ]);
+/** File commands that can bring an existing link to a new path (`cp -r` keeps nested links). */
+const RELOCATING_COMMANDS: ReadonlySet<string> = new Set(["cp", "mv"]);
+const POWERSHELL_RELOCATING_COMMANDS: ReadonlySet<string> = new Set([
+  "copy-item", "cpi", "cp", "copy", "move-item", "mi", "mv", "move", "rename-item", "rni", "ren",
+]);
 /** Readers that change the PowerShell location for the segments after them. */
 const POWERSHELL_LOCATION_COMMANDS: ReadonlySet<string> = new Set(["cd", "chdir", "set-location", "sl"]);
 /** Segment classes; a file command or a reader's file redirection is a FILE segment. */
@@ -127,10 +132,14 @@ export function classifyHostShellCommand(tool: "bash" | "powershell", command: s
   let result: HostShellCommandClass = HOST_SHELL_READ_ONLY, moved = false;
   for (let segment = 0; segment < table.segmentCount; segment++) {
     const kind = classifySegment(table, segment, powerShell, NO_SUBCOMMANDS, true, argv);
-    // The mutation analysis resolves PowerShell targets against the starting location only.
+    // Targets are canonicalized before anything runs. After a PowerShell location change, or a
+    // copy/move that may bring a link to a new path, a later write may land elsewhere.
     if (kind === SEGMENT_REJECTED || kind === SEGMENT_FILE && moved) { result = HOST_SHELL_OTHER; break; }
-    if (kind === SEGMENT_FILE) result = HOST_SHELL_FILE_COMMANDS;
-    else if (powerShell && POWERSHELL_LOCATION_COMMANDS.has(argv[0]!.toLowerCase())) moved = true;
+    const name = argv[0]!.toLowerCase();
+    if (kind === SEGMENT_FILE) {
+      result = HOST_SHELL_FILE_COMMANDS;
+      if ((powerShell ? POWERSHELL_RELOCATING_COMMANDS : RELOCATING_COMMANDS).has(name)) moved = true;
+    } else if (powerShell && POWERSHELL_LOCATION_COMMANDS.has(name)) moved = true;
   }
   argv.length = 0;
   return result;
