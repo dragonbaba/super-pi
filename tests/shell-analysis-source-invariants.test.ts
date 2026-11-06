@@ -32,6 +32,11 @@ test("authorization scanners and cache methods add no callbacks, promises or Buf
   targets.get("shell-analysis.ts")!.add("windowsTable");
   targets.set("syntax/windows.ts", new Set(["lexWindowsScript", "windowsWordText", "fillWindowsSegment"]));
   targets.set("syntax/token-table.ts", new Set(["fillSegmentWords", "isNullDevice", "pushToken", "endSegment", "pushNested", "segmentStart"]));
+  // Bash: one cached table per source, read by the lifecycle, mutation and scope scanners.
+  for (const name of ["pushText", "closeSegment", "markSubshellClosed"]) targets.get("syntax/token-table.ts")!.add(name);
+  targets.set("syntax/bash.ts", new Set(["lexBash", "clearHead", "pushWord", "bashWordText", "fillBashSegment", "newBashSegment"]));
+  for (const name of ["bashTable", "table"]) targets.get("shell-analysis.ts")!.add(name);
+  targets.get("core.ts")!.add("shellSegment");
   for (const [file, names] of targets) {
     const source = ts.createSourceFile(file, readFileSync(`packages/coding-agent/src/core/shell-policy/${file}`, "utf8"), ts.ScriptTarget.Latest, true);
     const seen = new Set<string>();

@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { basename, dirname, resolve } from "node:path";
 import { staticMutationTarget, uninspectableBashStateStart, heredocScriptLanguages, literalAliasSource, literalEvalScript, literalProcessSources, literalStoredScripts, unsafeBashLoopHeaderReason } from "./core.ts";
-import { commandSubstitutionEnd } from "./shell-substitution.ts";
 import { analyzeShellSource, type ShellAnalysisOwner } from "./shell-analysis.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
 import { isLiteralReadLoop } from "./readonly-loop.ts";
@@ -10,7 +9,8 @@ import { findPredicateHasOperand, isReadOnlySortTail } from "./readonly-find.ts"
 import { sortHasTerminalOption, sortLongOption, sortOptionRequiresValue } from "./sort-options.ts";
 import { NODE_COMMAND_PATTERN, PYTHON_COMMAND_PATTERN } from "./regex.ts";
 import { DIALECT_CMD, DIALECT_POWERSHELL, fillWindowsSegment, lexWindowsScript } from "./syntax/windows.ts";
-import { bashPipelinePrefixEnd, bashScriptOperandIndex, hasStatefulBashPrintf, isBashArithmeticCommandHead, isBashNetworkRedirectionTarget, shellExpansionRisk, hasUnsafeBashTestOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
+import { fillBashSegment, lexBash } from "./syntax/bash.ts";
+import { bashPipelinePrefixEnd, bashScriptOperandIndex, hasStatefulBashPrintf, isBashArithmeticCommandHead, isBashNetworkRedirectionTarget, shellExpansionRisk, hasUnsafeBashTestOperand, hasUnsafeCommandQueryOperand, isShellDynamicDescriptor, isShellOutputFileRedirection, isStaticDescriptorCopy, stripShellRedirections } from "./shell-redirection.ts";
 
 const MAX_COMMAND_CHARS = 128 * 1024;
 const MAX_SEGMENTS = 64;
@@ -803,7 +803,7 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
   }
   const prepared = builder.analysisOwner ? builder.analysisOwner.get(command) : analyzeShellSource(command);
   const analysis = prepared.view;
-  let uncertainStateStart = uninspectableBashStateStart(analysis.command);
+  let uncertainStateStart = uninspectableBashStateStart(analysis.command, builder.analysisOwner);
   // These nested sources are visited before the outer token walk.
   if (uncertainStateStart >= 0 && (analysis.substitutions.length || prepared.substitutions.scripts.length)) uncertainStateStart = 0;
   if (uncertainStateStart === 0) {
@@ -814,10 +814,10 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
   if (prepared.stdin) markOpaque(builder, `stdin_${prepared.stdin.kind}:${prepared.stdin.consumer}`);
   if (analysis.hasHeredoc) markOpaque(builder, "heredoc_uninspectable");
   if (analysis.uncertain) markOpaque(builder, "shell_context_uninspectable");
-  const storedScripts = literalStoredScripts(analysis.command);
+  const storedScripts = literalStoredScripts(analysis.command, builder.analysisOwner);
   if (storedScripts === null) markUncertainContext(builder, "stored_source_limit");
   if (storedScripts) for (const source of storedScripts) { markUncertainContext(builder, "resolved_stored_action"); inspectScript(source, initialCwd, depth + 1, builder); }
-  const processScripts = literalProcessSources(analysis.command);
+  const processScripts = literalProcessSources(analysis.command, builder.analysisOwner);
   if (processScripts === null) markUncertainContext(builder, "process_source_limit");
   if (processScripts === false) markUncertainContext(builder, "process_source_unresolved");
   if (processScripts) for (const source of processScripts) { markUncertainContext(builder, "resolved_process_source"); inspectScript(source, initialCwd, depth + 1, builder); }
@@ -826,210 +826,26 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
   if (substitutions.uncertain) markOpaque(builder, "uninspectable_command_substitution");
   for (const nested of substitutions.scripts) inspectScript(nested, initialCwd, depth + 1, builder);
   command = analysis.command;
-  const loopReason = unsafeBashLoopHeaderReason(command);
+  const loopReason = unsafeBashLoopHeaderReason(command, builder.analysisOwner);
   if (loopReason) markUncertainContext(builder, loopReason);
-  let cwd = initialCwd;
-  const tokens: PermissionTokens = [];
-  let value = "";
-  let tokenStarted = false;
-  let quote = 0;
-  let ansiC = false;
-  let arithmeticDepth = 0;
-  let escaped = false;
-  let literalWord = true;
-  let redirectionTargetPending = false;
-  let bashDoubleBracket = false;
+  // The same table the lifecycle and mutation scanners read; one word buffer serves every segment.
+  const table = builder.analysisOwner ? builder.analysisOwner.bashTable(command) : lexBash(command);
   const classifyHeredoc = analysis.hereDocuments !== undefined && prepared.heredocLanguages === undefined;
   let heredocLanguages = prepared.heredocLanguages ?? 0;
   let heredocSegments = 0, heredocUncertainContext = false;
-  for (let index = 0; index < command.length; index++) {
-    if (uncertainStateStart >= 0 && index >= uncertainStateStart) {
+  let cwd = initialCwd;
+  const tokens: PermissionTokens = [];
+  for (let segment = 0; segment < table.segmentCount; segment++) {
+    // State changed in an earlier segment applies from the segment holding its offset on.
+    if (uncertainStateStart >= 0 && uncertainStateStart <= table.segmentSourceEnds[segment]!) {
       markUncertainContext(builder, "unverifiable_shell_state"); uncertainStateStart = -1;
     }
-    const code = command.charCodeAt(index);
-    if (escaped) {
-      literalWord = false;
-      value += command[index];
-      tokenStarted = true;
-      escaped = false;
-      continue;
-    }
-    if (code === 92 && quote !== 39) {
-      const next = command.charCodeAt(index + 1);
-      if (next === 10) { index++; continue; }
-      if (quote === 34 && next !== 36 && next !== 96 && next !== 34 && next !== 92) {
-        value += "\\"; tokenStarted = true; continue;
-      }
-      escaped = true;
-      tokenStarted = true;
-      continue;
-    }
-    if (quote === 0 && code === 36 && isSimpleBashAnsiCQuote(command, index)) {
-      quote = 39; ansiC = true; literalWord = false; tokenStarted = true; index++; continue;
-    }
-    if (quote !== 39 && (code === 36 || code === 96)) {
-      const flags = code === 96 || command.charCodeAt(index + 1) === 40 ? 4 : 1;
-      const expansions = tokens.expansions ??= [];
-      expansions[tokens.length] = (expansions[tokens.length] ?? 0) | flags;
-    }
-    // Keep the original dynamic word; nested scripts above own their effects.
-    if (quote !== 39 && code === 36 && command.charCodeAt(index + 1) === 40 && command.charCodeAt(index + 2) !== 40) {
-      const end = commandSubstitutionEnd(command, index);
-      if (end >= 0) {
-        value += command.slice(index, end + 1);
-        tokenStarted = true;
-        literalWord = false;
-        index = end;
-        continue;
-      }
-    }
-    if (quote === 0 && (code === 123 || code === 125)) {
-      const expansions = tokens.expansions ??= [];
-      expansions[tokens.length] = (expansions[tokens.length] ?? 0) | 8;
-    }
-    if (quote === 0 && (!tokenStarted && code === 126 || code === 42 || code === 63 || code === 91)) {
-      const expansions = tokens.expansions ??= [];
-      expansions[tokens.length] = (expansions[tokens.length] ?? 0) | (code === 126 ? 32 : 16);
-    }
-    if (quote !== 0) {
-      // Decode the \n, \r and \t escapes a simple $'...' quote may contain, as Bash does,
-      // so a path operand names the real file rather than its escaped spelling.
-      if (ansiC && code === 92) {
-        const escaped = command.charCodeAt(++index);
-        value += String.fromCharCode(escaped === 110 ? 10 : escaped === 114 ? 13 : 9);
-        continue;
-      }
-      if (code === quote) { quote = 0; ansiC = false; }
-      else {
-        if (code === 44) { const flags = tokens.wordFlags ??= []; flags[tokens.length] = (flags[tokens.length] ?? 0) | TOKEN_QUOTED_COMMA; }
-        value += command[index];
-      }
-      continue;
-    }
-    if (code === 36 && command.charCodeAt(index + 1) === 40 && command.charCodeAt(index + 2) === 40) {
-      value += command.slice(index, index + 3);
-      tokenStarted = true;
-      literalWord = false;
-      arithmeticDepth = 2;
-      index += 2;
-      continue;
-    }
-    if (code === 40 && command.charCodeAt(index + 1) === 40) {
-      if (arithmeticDepth === 0 && !tokenStarted && !redirectionTargetPending) tokens.bashArithmeticCommandAt = tokens.length;
-      value += "((";
-      tokenStarted = true;
-      literalWord = false;
-      arithmeticDepth = 2;
-      index++;
-      continue;
-    }
-    if (arithmeticDepth > 0) {
-      if (code === 40) arithmeticDepth++;
-      else if (code === 41) arithmeticDepth--;
-      value += command[index];
-      tokenStarted = true;
-      continue;
-    }
-    if (code === 34 || code === 39) {
-      quote = code;
-      // Only a word that begins with a quote is string data; `-Path:"x"` quotes just its value.
-      if (!tokenStarted) { const flags = tokens.wordFlags ??= []; flags[tokens.length] = (flags[tokens.length] ?? 0) | TOKEN_QUOTED; }
-      literalWord = false;
-      tokenStarted = true;
-      continue;
-    }
-    if (code === 32 || code === 9 || (bashDoubleBracket && isBashTestWhitespace(code))) {
-      if (tokenStarted) {
-        if (!literalWord && tokens.length === 0) tokens.firstWordQuoted = true;
-        if (!literalWord && tokens.length === 1) tokens.secondWordQuoted = true;
-        if (!literalWord && tokens.length === 2) tokens.thirdWordQuoted = true;
-        tokens.push(value);
-        redirectionTargetPending = false;
-        value = "";
-        tokenStarted = false;
-        literalWord = true;
-      }
-      continue;
-    }
-    if (code === 35 && !tokenStarted) {
-      while (index < command.length && command.charCodeAt(index) !== 10 && command.charCodeAt(index) !== 13) index++;
-      if (index >= command.length) break;
-      index--; continue;
-    }
-    if (!bashDoubleBracket && code === 91 && command.charCodeAt(index + 1) === 91 && !tokenStarted
-      && isBashDoubleBracketHead(tokens) && isBashTestWhitespace(command.charCodeAt(index + 2))) {
-      tokens.bashTestOpenAt = tokens.length;
-      value = "[["; tokenStarted = true; bashDoubleBracket = true; index++; continue;
-    }
-    if (bashDoubleBracket && code === 93 && command.charCodeAt(index + 1) === 93 && !tokenStarted
-      && isBashDoubleBracketCloseBoundary(command, index + 2)) {
-      tokens.bashTestClosed = true;
-      value = "]]"; tokenStarted = true; bashDoubleBracket = false; index++; continue;
-    }
-    if (bashDoubleBracket && isBashProcessSubstitutionStart(command, index)) tokens.bashTestProcessSubstitution = true;
-    const redirectionWidth = bashDoubleBracket ? 0 : shellRedirectionLength(command, index);
-    if (redirectionWidth > 0) {
-      const sourceFd = !redirectionTargetPending && literalWord && (isShellFileDescriptor(value) || isShellDynamicDescriptor(value)) ? value : undefined;
-      if (tokenStarted && !sourceFd) {
-        if (!literalWord && tokens.length === 0) tokens.firstWordQuoted = true;
-        if (!literalWord && tokens.length === 1) tokens.secondWordQuoted = true;
-        if (!literalWord && tokens.length === 2) tokens.thirdWordQuoted = true;
-        tokens.push(value);
-      }
-      (tokens.redirections ??= []).push(tokens.length);
-      (tokens.redirectionFds ??= []).push(sourceFd);
-      tokens.push(command.slice(index, index + redirectionWidth));
-      redirectionTargetPending = true;
-      index += redirectionWidth - 1;
-      value = "";
-      tokenStarted = false;
-      literalWord = true;
-      continue;
-    }
-    if (code === 10 || code === 13 || code === 59 || code === 38 || code === 124 || code === 40 || code === 41) {
-      if (bashDoubleBracket) { value += command[index]; tokenStarted = true; continue; }
-      if (tokenStarted) {
-        if (!literalWord && tokens.length === 0) tokens.firstWordQuoted = true;
-        if (!literalWord && tokens.length === 1) tokens.secondWordQuoted = true;
-        if (!literalWord && tokens.length === 2) tokens.thirdWordQuoted = true;
-        tokens.push(value);
-      }
-      if (classifyHeredoc) heredocLanguages |= heredocScriptLanguages(tokens);
-      if (analysis.hereDocuments && tokens.length && (++heredocSegments > 1 || tokens.includes("-c") || tokens.includes("eval"))) heredocUncertainContext = true;
-      cwd = inspectTokenBuffer(tokens, cwd, depth, builder);
-      tokens.length = 0;
-      if (tokens.redirections) tokens.redirections.length = 0;
-      if (tokens.redirectionFds) tokens.redirectionFds.length = 0;
-      if (tokens.expansions) tokens.expansions.length = 0;
-      if (tokens.wordFlags) tokens.wordFlags.length = 0;
-      tokens.bashTestOpenAt = undefined;
-      tokens.bashTestClosed = undefined;
-      tokens.bashTestProcessSubstitution = undefined;
-      tokens.bashArithmeticCommandAt = undefined;
-      tokens.firstWordQuoted = undefined;
-      tokens.secondWordQuoted = undefined;
-      tokens.thirdWordQuoted = undefined;
-      literalWord = true;
-      value = "";
-      tokenStarted = false;
-      redirectionTargetPending = false;
-      if ((code === 38 || code === 124) && command.charCodeAt(index + 1) === code) index += 1;
-      continue;
-    }
-    if (code === 44) { const flags = tokens.wordFlags ??= []; flags[tokens.length] = (flags[tokens.length] ?? 0) | TOKEN_UNQUOTED_COMMA; }
-    value += command[index];
-    tokenStarted = true;
+    fillBashSegment(table, segment, tokens);
+    if (classifyHeredoc) heredocLanguages |= heredocScriptLanguages(tokens);
+    if (analysis.hereDocuments && (++heredocSegments > 1 || tokens.includes("-c") || tokens.includes("eval"))) heredocUncertainContext = true;
+    cwd = inspectTokenBuffer(tokens, cwd, depth, builder);
   }
-  if (tokenStarted) {
-    if (!literalWord && tokens.length === 0) tokens.firstWordQuoted = true;
-    if (!literalWord && tokens.length === 1) tokens.secondWordQuoted = true;
-    if (!literalWord && tokens.length === 2) tokens.thirdWordQuoted = true;
-    tokens.push(value);
-  }
-  if (classifyHeredoc) heredocLanguages |= heredocScriptLanguages(tokens);
-  if (analysis.hereDocuments && tokens.length && (++heredocSegments > 1 || tokens.includes("-c") || tokens.includes("eval"))) heredocUncertainContext = true;
-  inspectTokenBuffer(tokens, cwd, depth, builder);
-  if (quote !== 0 || escaped) markOpaque(builder, "unterminated_shell_syntax");
+  if (table.unterminated) markOpaque(builder, "unterminated_shell_syntax");
   if (analysis.hereDocuments) {
     prepared.heredocLanguages = heredocLanguages;
     if (heredocLanguages & 1) for (const document of analysis.hereDocuments) {

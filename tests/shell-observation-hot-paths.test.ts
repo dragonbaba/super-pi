@@ -80,7 +80,8 @@ test("substitution boundaries use primitive offsets without per-boundary contain
     ts.forEachChild(node, audit);
   }
   audit(boundary.body!);
-  for (const path of ["packages/coding-agent/src/core/shell-policy/core.ts", "packages/coding-agent/src/core/shell-policy/permission-bash.ts"]) {
+  // Both Bash scanners read words from the one lexer, which keeps a substitution inside its word.
+  for (const path of ["packages/coding-agent/src/core/shell-policy/syntax/bash.ts"]) {
     const text = readFileSync(path, "utf8");
     assert.match(text, /const end = commandSubstitutionEnd\(command, index\)/);
     assert.match(text, /value \+= command\.slice\(index, end \+ 1\)/);
