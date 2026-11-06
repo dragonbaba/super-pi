@@ -195,13 +195,16 @@ function dispatchedCommandStart(argv: readonly string[]): number {
   return index < argv.length ? index : 0;
 }
 
-/** The rule decision for one command's words; `git.exe push` also matches as `git push` (may rewrite `argv[0]`). */
+/** The rule decision for one command's words; `/usr/bin/git push` and `git.exe push` also match as `git push` (may rewrite `argv[0]`). */
 function matchCommandWords(rules: ProjectRuleSet, powerShell: boolean, argv: string[]): number {
   let matched = rules.matchShellWords(powerShell, argv);
   const first = argv[0]!, length = first.length;
-  if (matched !== RULE_DENY && length > 4 && first.charCodeAt(length - 4) === 46 && (first.charCodeAt(length - 3) | 32) === 101
-    && (first.charCodeAt(length - 2) | 32) === 120 && (first.charCodeAt(length - 1) | 32) === 101) {
-    argv[0] = first.slice(0, length - 4);
+  // `/usr/bin/git` and `C:\Program Files\Git\cmd\git.exe` also match as `git`.
+  const start = Math.max(first.lastIndexOf("/"), first.lastIndexOf("\\")) + 1;
+  const stop = length - start > 4 && first.charCodeAt(length - 4) === 46 && (first.charCodeAt(length - 3) | 32) === 101
+    && (first.charCodeAt(length - 2) | 32) === 120 && (first.charCodeAt(length - 1) | 32) === 101 ? length - 4 : length;
+  if (matched !== RULE_DENY && (start > 0 || stop < length) && stop > start) {
+    argv[0] = first.slice(start, stop);
     const bare = rules.matchShellWords(powerShell, argv);
     if (bare > matched) matched = bare;
   }
