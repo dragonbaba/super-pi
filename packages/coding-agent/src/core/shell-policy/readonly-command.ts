@@ -94,6 +94,22 @@ const BASH_COMMAND_PREFIXES: ReadonlySet<string> = new Set(["if", "then", "else"
 const POWERSHELL_COMMAND_PREFIXES: ReadonlySet<string> = new Set(["{", ".", "try", "catch", "finally", "if", "elseif", "else",
   "do", "while", "until", "foreach", "for", "switch", "trap"]);
 
+/** Length of the leading PowerShell type casts (`[string]`, `[string[]]`) in `text`, or 0. */
+function castPrefixLength(text: string): number {
+  let index = 0;
+  while (text.charCodeAt(index) === 91) {
+    let depth = 0, cursor = index;
+    for (; cursor < text.length; cursor++) {
+      const code = text.charCodeAt(cursor);
+      if (code === 91) depth++;
+      else if (code === 93 && --depth === 0) break;
+    }
+    if (cursor >= text.length) return 0;
+    index = cursor + 1;
+  }
+  return index;
+}
+
 /** Length of the PowerShell assignment operator (`=`, `+=`, `-=`, `*=`, `/=`, `%=`, `??=`) opening `word`, or 0. */
 function assignmentOperatorLength(word: string): number {
   const first = word.charCodeAt(0), second = word.charCodeAt(1);
@@ -111,36 +127,52 @@ function isCommandPrefix(text: string, powerShell: boolean): boolean {
 }
 
 /** Bash builtins and launchers that run the command after them (`command git push`, `sudo -u x make`). */
-/** Each wrapper with the options that take the next word as their value (`sudo -u ci`, `nice -n 5`). */
-const NO_VALUE_OPTIONS: ReadonlySet<string> = new Set();
-const BASH_DISPATCH_WRAPPERS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
-  ["command", NO_VALUE_OPTIONS], ["builtin", NO_VALUE_OPTIONS], ["nohup", NO_VALUE_OPTIONS], ["time", NO_VALUE_OPTIONS],
-  ["xargs", new Set(["-a", "-d", "-E", "-I", "-L", "-n", "-P", "-s", "--arg-file", "--delimiter", "--eof", "--replace", "--max-lines",
+/** One wrapper's options: those taking a value (`sudo -u ci`, `nice -n 5`) and short query flags (`command -v`, `sudo -l`). */
+interface WrapperOptions { readonly values: ReadonlySet<string>; readonly shortValues: string; readonly queries: string; }
+function wrapperOptions(values: readonly string[], queries = ""): WrapperOptions {
+  let shortValues = "";
+  for (const value of values) if (value.length === 2) shortValues += value[1];
+  return { values: new Set(values), shortValues, queries };
+}
+const NO_WRAPPER_OPTIONS = wrapperOptions([]);
+const BASH_DISPATCH_WRAPPERS: ReadonlyMap<string, WrapperOptions> = new Map([
+  ["command", wrapperOptions([], "vV")], ["builtin", NO_WRAPPER_OPTIONS], ["nohup", NO_WRAPPER_OPTIONS], ["time", NO_WRAPPER_OPTIONS],
+  ["xargs", wrapperOptions(["-a", "-d", "-E", "-I", "-L", "-n", "-P", "-s", "--arg-file", "--delimiter", "--eof", "--replace", "--max-lines",
     "--max-args", "--max-procs", "--max-chars", "--process-slot-var"])],
-  ["exec", new Set(["-a"])],
-  ["sudo", new Set(["-u", "-g", "-h", "-p", "-C", "-D", "-r", "-t", "-T", "-U", "--user", "--group", "--host", "--prompt", "--close-from",
-    "--chdir", "--role", "--type", "--command-timeout", "--other-user"])],
-  ["doas", new Set(["-u", "-C"])],
-  ["env", new Set(["-u", "-C", "--unset", "--chdir"])],
-  ["nice", new Set(["-n", "--adjustment"])],
-  ["timeout", new Set(["-s", "-k", "--signal", "--kill-after"])],
+  ["exec", wrapperOptions(["-a"])],
+  ["sudo", wrapperOptions(["-u", "-g", "-h", "-p", "-C", "-D", "-r", "-t", "-T", "-U", "--user", "--group", "--host", "--prompt", "--close-from",
+    "--chdir", "--role", "--type", "--command-timeout", "--other-user"], "l")],
+  ["doas", wrapperOptions(["-u", "-C"])],
+  ["env", wrapperOptions(["-u", "-C", "--unset", "--chdir"])],
+  ["nice", wrapperOptions(["-n", "--adjustment"])],
+  ["timeout", wrapperOptions(["-s", "-k", "--signal", "--kill-after"])],
 ]);
 const MAX_DISPATCH_WRAPPERS = 4;
 
 /** Where the command run by the leading wrapper starts, or 0 (no wrapper, or a `command -v` / `sudo -l` query). */
 function dispatchedCommandStart(argv: readonly string[]): number {
-  const name = argv[0]!, valueOptions = BASH_DISPATCH_WRAPPERS.get(name);
-  if (!valueOptions) return 0;
+  const name = argv[0]!, options = BASH_DISPATCH_WRAPPERS.get(name);
+  if (!options) return 0;
   let index = 1;
   while (index < argv.length) {
     const word = argv[index]!;
     if (word === "--") { index++; break; }
     if (word.length > 1 && word.charCodeAt(0) === 45) {
-      // `command [-pVv]`: -v or -V anywhere in its options only looks the command up.
-      if (name === "command" && word.charCodeAt(1) !== 45 && (word.indexOf("v") > 0 || word.indexOf("V") > 0)) return 0;
-      // `sudo -l cmd` only lists whether the command is permitted.
-      if (name === "sudo" && (word === "--list" || word.charCodeAt(1) !== 45 && word.indexOf("l") > 0)) return 0;
-      index += valueOptions.has(word) ? 2 : 1;
+      if (word.charCodeAt(1) === 45) {
+        // `sudo --list cmd` only lists whether the command is permitted.
+        if (name === "sudo" && word === "--list") return 0;
+        index += options.values.has(word) ? 2 : 1;
+        continue;
+      }
+      // A short cluster (`-pv`, `-Eu ci`, `-phello`): a query flag looks the command up
+      // (`command -v`, `sudo -l`); a value-taking letter ends the cluster with its value.
+      let taken = 1;
+      for (let cursor = 1; cursor < word.length; cursor++) {
+        const letter = word[cursor]!;
+        if (options.queries.indexOf(letter) >= 0) return 0;
+        if (options.shortValues.indexOf(letter) >= 0) { if (cursor === word.length - 1) taken = 2; break; }
+      }
+      index += taken;
       continue;
     }
     // `env CI=1 cmd` and `sudo CI=1 cmd` set variables for the command they run.
@@ -292,10 +324,13 @@ export function shellRuleVerdict(tool: "bash" | "powershell", command: string, r
         // brace may touch a word (`try {git push}`). Each brace ends the command before it.
         if (powerShell) {
           // `$null = git push` / `$out += npm test`: the command is on the assignment's right-hand side.
-          // Spacing around the operator varies: `$r = git`, `$r=git`, `$r= git`, `$r =git`.
-          if (argv.length === 0 && text.charCodeAt(0) === 36) {
-            const equals = text.indexOf("=");
-            if (equals > 1) { if (equals < text.length - 1) argv.push(text.slice(equals + 1)); continue; }
+          // Spacing around the operator varies (`$r = git`, `$r=git`, `$r= git`, `$r =git`), and the
+          // target may be typed (`[string]$r = git`); a lone cast word (`[string] $r = …`) is skipped.
+          const cast = argv.length === 0 ? castPrefixLength(text) : 0;
+          if (cast > 0 && cast === text.length) continue;
+          if (argv.length === 0 && text.charCodeAt(cast) === 36) {
+            const equals = text.indexOf("=", cast);
+            if (equals > cast + 1) { if (equals < text.length - 1) argv.push(text.slice(equals + 1)); continue; }
             const next = index + 1 < end ? windowsWordText(table, index + 1) : "", operator = assignmentOperatorLength(next);
             if (operator > 0) { index++; if (operator < next.length) argv.push(next.slice(operator)); continue; }
           }
