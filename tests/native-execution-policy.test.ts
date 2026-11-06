@@ -18,6 +18,7 @@ import { consumeDelegatedTaskPolicies } from "../packages/extensions/subagent/de
 import { consumeStructuredReadonlyWorkspacePolicy } from "../packages/extensions/structured-readonly-command/delegation.ts";
 import structuredReadonlyCommand from "../packages/extensions/structured-readonly-command/index.ts";
 import { parentExecutionTool } from "../packages/coding-agent/src/core/files/subagent-execution.ts";
+import { windowsLexerCounters } from "../packages/coding-agent/src/core/shell-policy/syntax/windows.ts";
 
 async function fixture(t: TestContext, config = {}, environment: "sandbox" | "trusted-host" = "sandbox", mode?: SessionPermissionMode, directories: readonly string[] = []) {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "sp-native-policy-")));
@@ -277,6 +278,37 @@ test("host MCP calls ask for declared destructive tools and honor server-scoped 
     for (const pattern of ["mcp__GitHub", "mcp__GitHub__delete*", "mcp__github__*", "mcp__github"])
         assert.equal(await decide([{ tool: pattern, decision: "allow" }], tool, true, "GitHub", "mcp__github__"), "allow", pattern);
     assert.equal(await decide([{ tool: "mcp__GitHub*", decision: "allow" }], tool, true, "GitHub", "mcp__github__"), "ask");
+});
+
+test("host-restricted runs workspace file work and read-only commands, and asks for other commands, MCP and outside paths", async t => {
+    const f = await fixture(t, {}, "trusted-host", "host-restricted"), outside = await fixture(t);
+    await fs.writeFile(path.join(f.root, "a.txt"), "a"); await fs.writeFile(path.join(outside.root, "b.txt"), "b");
+    async function decide(name: string, input: object, definition: object = { name }): Promise<string> {
+        try { (await f.owner.authorize(f.event(name, input), f.ctx, definition as any)).release(); return "allow"; }
+        catch (error: any) { return /APPROVAL_REQUIRED/.test(error.message) ? "ask" : error.message; }
+    }
+    const far = path.join(outside.root, "b.txt").replaceAll("\\", "/");
+    for (const [tool, command] of [
+        ["bash", "git status && ls -la"], ["bash", "mkdir build && touch build/a.txt"], ["bash", "rm a.txt; echo done > log.txt"],
+        ["powershell", "Remove-Item a.txt; Get-ChildItem"], ["powershell", "New-Item -ItemType Directory out"],
+    ]) assert.equal(await decide(tool, { command }), "allow", command);
+    for (const [tool, command] of [
+        ["bash", "npm test"], ["bash", "rm \"$TARGET\""], ["bash", `rm ${far}`], ["bash", `cat a.txt > ${path.dirname(far)}/c.txt`], ["powershell", "Remove-Item env:FOO"],
+    ]) assert.equal(await decide(tool, { command }), "ask", command);
+    // The class and the mutation analysis read one token table: one lex, as in host-write.
+    const lexes = windowsLexerCounters.lexes;
+    assert.equal(await decide("powershell", { command: "Remove-Item a.txt; Get-ChildItem" }), "allow");
+    assert.equal(windowsLexerCounters.lexes - lexes, 1);
+    assert.equal(await decide("read", { path: "a.txt" }), "allow");
+    assert.equal(await decide("read", { path: far }), "ask");
+    assert.equal(await decide("write", { path: "new.txt", content: "x" }), "allow");
+    assert.equal(await decide("write", { path: path.join(outside.root, "new.txt"), content: "x" }), "ask");
+    assert.equal(await decide("mcp__docs__search", {}, { name: "mcp__docs__search", mcpServer: "docs", mcpToolPrefix: "mcp__docs__" }), "ask");
+    // The existing refusals still apply, and an explicit rule is the user's standing approval.
+    assert.match(await decide("bash", { command: "rm -rf .git" }), /敏感目标禁止删除/);
+    const g = await fixture(t, { rules: [{ tool: "bash", decision: "allow" }] }, "trusted-host", "host-restricted");
+    (await g.owner.authorize(g.event("bash", { command: "npm test" }), g.ctx, { name: "bash" } as any)).release();
+    assert.throws(() => new SessionExecutionPolicy(createExtensionRuntime(), "sandbox", {}, "host-restricted"), /disagree/);
 });
 
 test("all batch paths are checked before any native mutation is prepared", async t => {

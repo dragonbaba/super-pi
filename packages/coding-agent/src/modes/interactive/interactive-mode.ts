@@ -5,7 +5,7 @@ import { IMAGE_ATTACHMENT_LIMITS, IMAGE_VISION_RESULT_TYPE, ImageAttachmentDraft
  */
 
 import * as crypto from "node:crypto";
-import { PERMISSION_MODE_LABELS, type SessionPermissionMode } from "../../core/permission-mode.ts";
+import { PERMISSION_MODE_LABELS, PERMISSION_MODES } from "../../core/permission-mode.ts";
 import { canonicalSessionDirectory } from "../../core/session-execution-profile.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -2918,14 +2918,15 @@ export class InteractiveMode {
 	private async showPermissionsSelector(): Promise<void> {
 		const session = this.session, generation = this.tuiLifecycleGeneration;
 		const current = session.settingsManager.getPermissionMode();
-		const modes: SessionPermissionMode[] = ["read-only", "sandbox-write", "host-write"];
+		const modes = PERMISSION_MODES;
 		const choices = modes.map((mode, index) => `${index + 1} · ${PERMISSION_MODE_LABELS[mode]}${mode === current ? "（当前）" : ""}`);
 		const ui = this.createExtensionUIContext();
 		const selected = await ui.select("选择当前 Session 权限", choices);
 		if (!selected || this.session !== session || this.tuiLifecycleGeneration !== generation) return;
 		const mode = modes[choices.indexOf(selected)];
 		if (!mode) return;
-		if (mode === "host-write" && !await ui.confirm("切换到宿主机读写", "此模式退出沙箱隔离，工具将在本机执行，并可按授权修改本机文件。是否切换？")) return;
+		if (mode === "host-restricted" && !await ui.confirm("切换到宿主机受限", "此模式退出沙箱隔离，工具在本机执行。工作区内的文件操作和只读命令直接执行；其余命令、MCP 调用和工作区外的读写会先询问。是否切换？")) return;
+		if (mode === "host-write" && !await ui.confirm("切换到宿主机完全权限", "此模式退出沙箱隔离，工具在本机执行，并可按授权修改本机文件，除敏感目标外不再逐项询问。是否切换？")) return;
 		if (this.session !== session || this.tuiLifecycleGeneration !== generation) return;
 		try {
 			const result = await this.runtimeHost.setPermissionMode(mode);

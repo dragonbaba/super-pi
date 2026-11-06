@@ -37,11 +37,11 @@ test("authorization scanners and cache methods add no callbacks, promises or Buf
   targets.set("syntax/bash.ts", new Set(["lexBash", "clearHead", "pushWord", "bashWordText", "fillBashSegment", "newBashSegment"]));
   for (const name of ["bashTable", "table"]) targets.get("shell-analysis.ts")!.add(name);
   targets.get("core.ts")!.add("shellSegment");
-  // One read-only judgment for Plan mode and the PowerShell scope, read from the same tables.
-  targets.set("readonly-command.ts", new Set(["findNonReadOnlyShellSegment", "findUnsafePowerShellSegment", "isReadOnlySegment", "isReadOnlyRedirection",
+  // One read-only judgment for Plan mode, the PowerShell scope and the host-restricted class, read from the same tables.
+  targets.set("readonly-command.ts", new Set(["findNonReadOnlyShellSegment", "findUnsafePowerShellSegment", "classifySegment", "isReadOnlyRedirection",
     "isDescriptor", "isAssignment", "hasFileProviderArguments", "hasSafeArguments", "isOutputOption", "isReadOnlyStructuredCommand", "isPrintOnlySed",
     "isLineRangePrint", "isNoEmitTsc", "isReadOnlyGit", "isUnsafeGitArgument", "matchesLongOption", "isReadOnlyGitBranch", "hasBranchWriteFlag",
-    "isReadOnlyGitRemote", "isReadOnlyGh"]));
+    "isReadOnlyGitRemote", "isReadOnlyGh", "classifyHostShellCommand", "commandTable", "isLiteralFileRedirection"]));
   for (const [file, names] of targets) {
     const source = ts.createSourceFile(file, readFileSync(`packages/coding-agent/src/core/shell-policy/${file}`, "utf8"), ts.ScriptTarget.Latest, true);
     const seen = new Set<string>();

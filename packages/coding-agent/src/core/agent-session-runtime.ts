@@ -15,6 +15,7 @@ import { assertSessionCwdExists } from "./session-cwd.ts";
 import { SessionManager } from "./session-manager.ts";
 import { createSessionLease, type SessionLease } from "./session-lease.ts";
 import { saveSessionExecutionProfile, sessionDirectories } from "./session-execution-profile.ts";
+import { assertPermissionMode } from "./permission-mode.ts";
 
 /**
  * Result returned by runtime creation.
@@ -389,7 +390,7 @@ export class AgentSessionRuntime {
 	}
 
 	async setPermissionMode(mode: import("./permission-mode.ts").SessionPermissionMode): Promise<{ cancelled: boolean }> {
-		if (mode !== "read-only" && mode !== "sandbox-write" && mode !== "host-write") throw new Error("Invalid session permission mode");
+		assertPermissionMode(mode);
 		const generation = this.beginReplacement();
 		const manager = this.session.sessionManager;
 		const directories = this.session.settingsManager.getSessionDirectories();

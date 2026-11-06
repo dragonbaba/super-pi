@@ -1,14 +1,16 @@
 import { createHash } from "node:crypto";
 import { lstat, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
-import { assertPermissionMode, type SessionPermissionMode } from "./permission-mode.ts";
+import { assertPermissionMode, isHostPermissionMode, type SessionPermissionMode } from "./permission-mode.ts";
 import { WORKSPACE_TOOL_NAMES } from "./session-execution-profile.ts";
 import type { ExtensionContext, ExtensionRuntime, ToolCallEvent, ToolDefinition } from "./extensions/types.ts";
 import type { ReadonlySessionManager, SessionEntry, SessionEntryVisitor } from "./session-manager.ts";
 import { assessCanonicalMutationPath, canonicalizeProspectivePath, canonicalWorkspaceMetadata } from "./files/protected-path-policy.ts";
 import { assessHostMutations } from "./files/host-mutation-policy.ts";
 import { inspectNativeShellMutations, type NativeShellMutations } from "./shell-policy/native-mutations.ts";
-import { findNonReadOnlyShellSegment } from "./shell-policy/readonly-command.ts";
+import { classifyHostShellCommand, findNonReadOnlyShellSegment, HOST_SHELL_FILE_COMMANDS, HOST_SHELL_OTHER, HOST_SHELL_READ_ONLY,
+    type HostShellCommandClass } from "./shell-policy/readonly-command.ts";
+import { ShellAnalysisOwner } from "./shell-policy/shell-analysis.ts";
 import { prepareShellCwd } from "./tools/shell-cwd.ts";
 import { attachPermissionPathApproval, mutationRequestHash, type PermissionPathApproval } from "./files/file-invocation.ts";
 import { InputReadPolicyLease } from "./files/session-input-read-permission.ts";
@@ -32,7 +34,8 @@ export interface ExecutionPermissionRule {
     path?: string;
 }
 export interface ExecutionPermissions { approval?: "interactive" | "never"; rules?: ExecutionPermissionRule[]; }
-interface ResolvedPolicyPaths { paths: string[]; workspaces: string[]; }
+/** `outside`: a host tier accepted a path outside every workspace; host-restricted asks for it. */
+interface ResolvedPolicyPaths { paths: string[]; workspaces: string[]; outside: boolean; }
 export interface PermissionRefusal {
     readonly key: string;
     readonly source: "legacy" | "explicit";
@@ -102,6 +105,21 @@ function isMutation(name: string, input: unknown): boolean {
     return MUTATIONS.has(name) || name === "lsp_fix" && (input as { write?: unknown } | null)?.write === true;
 }
 
+/**
+ * Host-restricted defaults, below explicit rules: anything outside the workspaces asks; shell
+ * commands run when read-only, or when they are file commands whose recognized targets are
+ * all certain (and, by `outside`, inside); other shell commands and MCP tools ask.
+ */
+function restrictedFallback(tool: string, outside: boolean, shell: NativeShellMutations | undefined, shellClass: HostShellCommandClass,
+    definition: McpRuleIdentity | undefined): PermissionDecision | undefined {
+    if (outside) return "ask";
+    if (tool === "bash" || tool === "powershell") {
+        if (shellClass === HOST_SHELL_READ_ONLY) return "allow";
+        return shellClass === HOST_SHELL_FILE_COMMANDS && shell !== undefined && !shell.uncertain ? "allow" : "ask";
+    }
+    return definition?.mcpServer !== undefined ? "ask" : undefined;
+}
+
 /** One cold invocation snapshot. It is released by the existing pending tool owner. */
 export class NativePolicyInvocation {
     private original?: object;
@@ -157,7 +175,7 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
         directories: readonly string[] = []) {
         this.directories = directories;
         this.mode = mode;
-        if (mode !== undefined) { assertPermissionMode(mode); if ((mode === "host-write") !== (environment === "trusted-host")) throw new Error("Permission mode and backend disagree"); }
+        if (mode !== undefined) { assertPermissionMode(mode); if (isHostPermissionMode(mode) !== (environment === "trusted-host")) throw new Error("Permission mode and backend disagree"); }
         if (environment !== "sandbox" && environment !== "trusted-host") throw new Error("Invalid executionEnvironment");
         if (config.approval !== undefined && config.approval !== "interactive" && config.approval !== "never") throw new Error("Invalid executionPermissions.approval");
         if (config.rules !== undefined && (!Array.isArray(config.rules) || config.rules.length > 128)) throw new Error("At most 128 execution permission rules are supported");
@@ -201,16 +219,17 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
         throw new Error(code + message);
     }
     private async paths(ctx: ExtensionContext, targets: readonly string[], mutation: boolean, operation = "变更", enforceMutationRoots = true): Promise<ResolvedPolicyPaths> {
-        const check = this.guard(ctx), output: string[] = [];
+        const check = this.guard(ctx), output: string[] = [], host = isHostPermissionMode(this.mode);
         if (targets.length > 34) throw new Error(BLOCKED + "Too many paths");
-        if (!targets.length) return { paths: output, workspaces: [] };
+        if (!targets.length) return { paths: output, workspaces: [], outside: false };
         const workspaces = [await realpath(ctx.cwd)], unavailable: string[] = []; check();
+        let outside = false;
         for (const directory of this.directories) {
             let canonical: string | undefined;
             try { canonical = await realpath(directory); } catch { /* Keep unavailable grants closed without disabling unrelated host paths. */ }
             check();
             if (canonical !== directory) {
-                if (this.mode !== "host-write") throw new Error(BLOCKED + "Additional workspace is unavailable or redirected: " + directory);
+                if (!host) throw new Error(BLOCKED + "Additional workspace is unavailable or redirected: " + directory);
                 unavailable.push(directory);
             } else workspaces.push(canonical);
         }
@@ -226,19 +245,23 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
             if (mutation && enforceMutationRoots) {
                 const result = assessCanonicalMutationPath(workspaces, canonical, metadata);
                 for (const violation of result.violations) {
-                    if (violation !== "workspace_escape" || this.mode !== "host-write") {
+                    if (violation !== "workspace_escape" || !host) {
                         this.refuse(ctx, BLOCKED, `禁止 ${operation}：${canonical}\n受保护或工作区外目标（${violation}）。操作未执行，请明确告知用户。`);
                     }
+                    outside = true;
                 }
                 output.push(canonical);
             } else {
                 let contained = false;
                 for (const root of workspaces) if (inside(root, canonical)) { contained = true; break; }
-                if (this.mode !== "host-write" && !contained) throw new Error(BLOCKED + "Read is outside the workspace: " + target);
+                if (!contained) {
+                    if (!host) throw new Error(BLOCKED + "Read is outside the workspace: " + target);
+                    outside = true;
+                }
                 output.push(canonical);
             }
         }
-        return { paths: output, workspaces };
+        return { paths: output, workspaces, outside };
     }
     private async assessShellMutations(ctx: ExtensionContext, resolved: ResolvedPolicyPaths, shell: NativeShellMutations) {
         const check = this.guard(ctx), operations: { operation: string }[] = [];
@@ -379,10 +402,20 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
                 this.runtime.executionBoundary.getReadOnlyShellSubcommands());
             if (blocked !== undefined) throw new Error(BLOCKED + "Plan mode runs only read-only commands; this one is not: " + blocked);
         }
-        const hostShell = this.mode === "host-write" && (event.toolName === "bash" || event.toolName === "powershell");
+        const restricted = this.mode === "host-restricted";
+        const hostShell = isHostPermissionMode(this.mode) && (event.toolName === "bash" || event.toolName === "powershell");
         const shellBinding = hostShell ? await prepareShellCwd(input, ctx.cwd) : undefined; check();
         const shellCwd = hostShell ? shellBinding?.canonical ?? await realpath(ctx.cwd) : undefined; check();
-        const shell = hostShell ? inspectNativeShellMutations(event.toolName as "bash" | "powershell", input, shellCwd!, this.epoch) : undefined;
+        let shell: NativeShellMutations | undefined, shellClass: HostShellCommandClass = HOST_SHELL_OTHER;
+        if (hostShell) {
+            const tool = event.toolName as "bash" | "powershell";
+            // Host-restricted also classifies the command; both judgments read one token table.
+            const owner = restricted && typeof input.command === "string" ? new ShellAnalysisOwner(input.command, shellCwd!, this.epoch, tool) : undefined;
+            try {
+                shell = inspectNativeShellMutations(tool, input, shellCwd!, this.epoch, owner);
+                if (owner) shellClass = classifyHostShellCommand(tool, input.command, owner);
+            } finally { owner?.release(); }
+        }
         if (shell) for (const target of shell.targets) targets.push(target.target);
         if (event.toolName === "file_batch") {
             if (!Array.isArray(input.operations) || !input.operations.length || input.operations.length > 16) throw new Error(BLOCKED + "Invalid file batch");
@@ -408,13 +441,16 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
         const delegation = event.toolName === "subagent" || event.toolName === "structured_readonly_command"
             ? await prepareNativeDelegation(event.toolName, input, ctx.cwd, this.mode === "read-only" || plan) : undefined;
         check();
-        if (delegation && this.environment === "sandbox") { await this.paths(ctx, delegation.paths, false); check(); }
+        // A delegated workspace outside the session's is outside access too, so host-restricted checks it.
+        const delegated = delegation && (this.environment === "sandbox" || restricted) ? await this.paths(ctx, delegation.paths, false) : undefined; check();
         const resolved = delegation ? undefined : await this.paths(ctx, targets, mutation || shell !== undefined, event.toolName, shell === undefined); check();
         const paths = delegation?.paths ?? resolved!.paths;
         const host = shell ? await this.assessShellMutations(ctx, resolved!, shell)
-            : mutation && this.mode === "host-write" ? await assessHostMutations(resolved!.workspaces, paths, event.toolName, input) : undefined; check();
+            : mutation && isHostPermissionMode(this.mode) ? await assessHostMutations(resolved!.workspaces, paths, event.toolName, input) : undefined; check();
         if (host?.forbidden) this.refuse(ctx, BLOCKED, `敏感目标禁止删除或移出：${host.forbidden}\n操作未执行，请明确告知用户。`);
-        let decision = await this.decision(event.toolName, input.command, paths, ctx.cwd, explicitUserCommand ? "allow" : undefined, definition); check();
+        const fallback = explicitUserCommand ? "allow"
+            : restricted ? restrictedFallback(event.toolName, (resolved ?? delegated)?.outside === true, shell, shellClass, definition) : undefined;
+        let decision = await this.decision(event.toolName, input.command, paths, ctx.cwd, fallback, definition); check();
         if (event.toolName === "file_batch") {
             let index = 0;
             for (const item of input.operations) {

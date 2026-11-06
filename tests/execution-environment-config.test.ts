@@ -8,13 +8,13 @@ import { parseArgs } from "../packages/coding-agent/src/cli/args.ts";
 import { defaultPermissionMode } from "../packages/coding-agent/src/core/permission-mode.ts";
 
 test("interactive permission preferences cannot restore host access and overrides never persist", () => {
-    for (const legacy of [undefined, "full-access", "never-ask", "host-write"]) assert.equal(defaultPermissionMode(legacy), "sandbox-write");
+    for (const legacy of [undefined, "full-access", "never-ask", "host-write", "host-restricted"]) assert.equal(defaultPermissionMode(legacy), "sandbox-write");
     assert.equal(defaultPermissionMode("read-only"), "read-only");
     const settings = SettingsManager.inMemory({ permissionMode: "read-only" });
-    for (const mode of ["sandbox-write", "host-write", "read-only"] as const) {
+    for (const mode of ["sandbox-write", "host-write", "host-restricted", "read-only"] as const) {
         settings.setPermissionModeForSession(mode);
         assert.equal(settings.getPermissionMode(), mode);
-        assert.equal(settings.getExecutionEnvironment(), mode === "host-write" ? "trusted-host" : "sandbox");
+        assert.equal(settings.getExecutionEnvironment(), mode.startsWith("host-") ? "trusted-host" : "sandbox");
         assert.equal(settings.getGlobalSettings().permissionMode, "read-only");
     }
     assert.throws(() => settings.setPermissionModeForSession("full-access" as any));

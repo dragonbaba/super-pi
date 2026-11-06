@@ -390,6 +390,7 @@ function isExtensionObserverFlushBoundary(event: AgentEvent): boolean {
 import { operationSessionIdentity, OperationJournal, type OperationJournalOptions, type OperationWriteIntent, type OperationWriteRecovery, type OperationCompletion } from "./operation-journal.ts";
 import { SupplementalSummaryScope } from "./supplemental-summary.ts";
 import { bindOperationWrite, retireOperationWrite, type OperationWriteGate } from "./tools/write.ts";
+import { isHostPermissionMode } from "./permission-mode.ts";
 
 export interface AgentSessionConfig {
 	/** Native session lease location, independent of optional Memory indexing. */
@@ -1042,7 +1043,7 @@ export class AgentSession {
 		const permissionMode = this.settingsManager.getPermissionMode();
 		const parentExecution = config.resourceLoader.getExtensions().runtime.parentExecution;
 		if (parentExecution) this.agent.toolExecution = "sequential";
-		if (!parentExecution && permissionMode && permissionMode !== "host-write") {
+		if (!parentExecution && permissionMode && !isHostPermissionMode(permissionMode)) {
 			if (this._operationOptions || config.baseToolsOverride) throw new Error("[SANDBOX_UNSUPPORTED] Host tool overrides and operation journals cannot enter a sandbox");
 			const workspaceCwd = config.cwd, workspaceParent = resolveEvidencePath(config.agentDir ?? getAgentDir(), "sandbox-workspaces");
 			this._createWorkspaceSandbox = () => new WorkspaceSandboxTools(workspaceCwd, workspaceParent, permissionMode,

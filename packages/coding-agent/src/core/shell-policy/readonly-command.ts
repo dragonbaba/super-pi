@@ -47,6 +47,20 @@ const READ_ONLY_POWERSHELL_COMMANDS: ReadonlySet<string> = new Set([
   "measure-object", "out-string", "pwd", "resolve-path", "select", "select-object", "select-string", "set-location", "sl", "sls",
   "sort", "sort-object", "test-path", "type", "where", "where-object", "write-output",
 ]);
+/*
+ * Host-restricted: file commands whose every target the native mutation analysis records.
+ * Only names that analysis recognizes belong here; its targets decide allow or ask.
+ */
+const FILE_COMMANDS: ReadonlySet<string> = new Set(["rm", "rmdir", "mkdir", "touch", "cp", "mv"]);
+const POWERSHELL_FILE_COMMANDS: ReadonlySet<string> = new Set([
+  "remove-item", "ri", "rm", "del", "erase", "rd", "rmdir", "new-item", "ni", "mkdir", "md", "set-content", "add-content", "ac",
+  "clear-content", "clc", "out-file", "copy-item", "cpi", "cp", "copy", "move-item", "mi", "mv", "move", "rename-item", "rni", "ren",
+]);
+/** Segment classes; a file command or a reader's file redirection is a FILE segment. */
+const SEGMENT_REJECTED = 0, SEGMENT_READER = 1, SEGMENT_FILE = 2;
+/** `classifyHostShellCommand` results. */
+export const HOST_SHELL_READ_ONLY = 0, HOST_SHELL_FILE_COMMANDS = 1, HOST_SHELL_OTHER = 2;
+export type HostShellCommandClass = typeof HOST_SHELL_READ_ONLY | typeof HOST_SHELL_FILE_COMMANDS | typeof HOST_SHELL_OTHER;
 const FORBIDDEN_ARGUMENTS: ReadonlySet<string> = new Set(["--in-place", "--fix", "--write", "-delete", "--delete"]);
 const FIND_ACTIONS: ReadonlySet<string> = new Set(["-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls"]);
 const VERSION_COMMANDS: ReadonlySet<string> = new Set(["node", "python", "python3", "tsc", "biome", "ruff", "ty"]);
@@ -66,15 +80,12 @@ export function findNonReadOnlyShellSegment(
   readOnlyShellCounters.judgments++;
   const trimmed = command.trim();
   if (!trimmed) return "(empty command)";
-  const powerShell = tool === "powershell";
-  const table = powerShell
-    ? analysisOwner ? analysisOwner.windowsTable(command, DIALECT_POWERSHELL) : lexWindowsScript(command, DIALECT_POWERSHELL)
-    : analysisOwner ? analysisOwner.bashTable(command) : lexBash(command);
+  const powerShell = tool === "powershell", table = commandTable(powerShell, command, analysisOwner);
   // `$(...)`/`@(...)` bodies are scripts of their own; Plan mode does not run them.
   if (table.unterminated || table.nestedCount > 0 || table.segmentCount === 0) return trimmed;
   const argv: string[] = [];
   for (let segment = 0; segment < table.segmentCount; segment++) {
-    if (!isReadOnlySegment(table, segment, powerShell, subcommands, argv)) {
+    if (classifySegment(table, segment, powerShell, subcommands, false, argv) !== SEGMENT_READER) {
       argv.length = 0;
       return table.source.slice(table.starts[table.segmentStart(segment)]!, table.ends[table.segmentEnds[segment]! - 1]!);
     }
@@ -83,39 +94,82 @@ export function findNonReadOnlyShellSegment(
   return undefined;
 }
 
+/**
+ * The host-restricted tier's command class: every segment a reader (read-only), every
+ * segment a reader or a listed file command with literal operands (file commands), or other.
+ * File commands run without asking only when the native analysis confirms all their targets.
+ */
+export function classifyHostShellCommand(tool: "bash" | "powershell", command: string, analysisOwner?: ShellAnalysisOwner): HostShellCommandClass {
+  readOnlyShellCounters.judgments++;
+  if (!command.trim()) return HOST_SHELL_OTHER;
+  const powerShell = tool === "powershell", table = commandTable(powerShell, command, analysisOwner);
+  if (table.unterminated || table.nestedCount > 0 || table.segmentCount === 0) return HOST_SHELL_OTHER;
+  const argv: string[] = [];
+  let result: HostShellCommandClass = HOST_SHELL_READ_ONLY;
+  for (let segment = 0; segment < table.segmentCount; segment++) {
+    const kind = classifySegment(table, segment, powerShell, NO_SUBCOMMANDS, true, argv);
+    if (kind === SEGMENT_REJECTED) { result = HOST_SHELL_OTHER; break; }
+    if (kind === SEGMENT_FILE) result = HOST_SHELL_FILE_COMMANDS;
+  }
+  argv.length = 0;
+  return result;
+}
+
+function commandTable(powerShell: boolean, command: string, analysisOwner: ShellAnalysisOwner | undefined): ShellTokenTable {
+  return powerShell
+    ? analysisOwner ? analysisOwner.windowsTable(command, DIALECT_POWERSHELL) : lexWindowsScript(command, DIALECT_POWERSHELL)
+    : analysisOwner ? analysisOwner.bashTable(command) : lexBash(command);
+}
+
 /** The first PowerShell segment that is not read-only (the previous public name). */
 export function findUnsafePowerShellSegment(command: string): string | undefined {
   return findNonReadOnlyShellSegment("powershell", command);
 }
 
-function isReadOnlySegment(table: ShellTokenTable, segment: number, powerShell: boolean, subcommands: ReadOnlyShellSubcommands, argv: string[]): boolean {
+/** A reader, a file command or a reader's file redirection (only with `fileCommands`), or rejected. */
+function classifySegment(table: ShellTokenTable, segment: number, powerShell: boolean, subcommands: ReadOnlyShellSubcommands,
+  fileCommands: boolean, argv: string[]): number {
   const separator = table.segmentSeparators[segment]!;
-  if (separator === SEGMENT_BACKGROUND || separator === SEGMENT_OPEN || separator === SEGMENT_CLOSE || table.segmentDepths[segment] !== 0) return false;
-  if (table.segmentTestOpen[segment]! >= 0 || table.segmentArithmeticAt[segment]! >= 0) return false;
+  if (separator === SEGMENT_BACKGROUND || separator === SEGMENT_OPEN || separator === SEGMENT_CLOSE || table.segmentDepths[segment] !== 0) return SEGMENT_REJECTED;
+  if (table.segmentTestOpen[segment]! >= 0 || table.segmentArithmeticAt[segment]! >= 0) return SEGMENT_REJECTED;
   argv.length = 0;
-  let globs = false;
+  let globs = false, writes = false;
   const end = table.segmentEnds[segment]!;
   for (let index = table.segmentStart(segment); index < end; index++) {
     const flags = table.flags[index]!;
     if (flags & WORD_REDIRECTION) {
-      if (index + 1 >= end || !isReadOnlyRedirection(table, index, powerShell)) return false;
+      if (index + 1 >= end) return SEGMENT_REJECTED;
+      if (!isReadOnlyRedirection(table, index, powerShell)) {
+        if (!fileCommands || !isLiteralFileRedirection(table, index, powerShell)) return SEGMENT_REJECTED;
+        writes = true;
+      }
       index++;
       continue;
     }
     // Script blocks are code; a Bash brace list expands into words the checks below never see.
-    if (flags & (DYNAMIC_WORD | EXPANSION_BRACE)) return false;
+    if (flags & (DYNAMIC_WORD | EXPANSION_BRACE)) return SEGMENT_REJECTED;
     if (flags & EXPANSION_GLOB) globs = true;
     const text = table.texts ? table.texts[index]! : windowsWordText(table, index);
-    if (argv.length === 0 && !powerShell && (flags & WORD_QUOTED) === 0 && isAssignment(text)) return false;
+    if (argv.length === 0 && !powerShell && (flags & WORD_QUOTED) === 0 && isAssignment(text)) return SEGMENT_REJECTED;
     argv.push(text);
   }
-  if (argv.length === 0) return false;
+  if (argv.length === 0) return SEGMENT_REJECTED;
+  const name = argv[0]!.toLowerCase(), reader = writes ? SEGMENT_FILE : SEGMENT_READER;
+  if (fileCommands && (powerShell ? POWERSHELL_FILE_COMMANDS : FILE_COMMANDS).has(name))
+    return !powerShell || hasFileProviderArguments(argv) ? SEGMENT_FILE : SEGMENT_REJECTED;
   // An explicit `sort.exe` is the native program, not the cmdlet alias, and is not listed.
-  const name = argv[0]!.toLowerCase();
-  if (powerShell && READ_ONLY_POWERSHELL_COMMANDS.has(name)) return hasFileProviderArguments(argv);
+  if (powerShell && READ_ONLY_POWERSHELL_COMMANDS.has(name)) return hasFileProviderArguments(argv) ? reader : SEGMENT_REJECTED;
   // A glob may expand into the second operand `uniq` writes; the count below cannot see it.
-  if (globs && name === "uniq" || !hasSafeArguments(name, argv)) return false;
-  return READ_ONLY_COMMANDS.has(name) || isReadOnlyStructuredCommand(name, argv, subcommands);
+  if (globs && name === "uniq" || !hasSafeArguments(name, argv)) return SEGMENT_REJECTED;
+  return READ_ONLY_COMMANDS.has(name) || isReadOnlyStructuredCommand(name, argv, subcommands) ? reader : SEGMENT_REJECTED;
+}
+
+/** `>`/`>>` to one literal path, which the native analysis records as a write target. */
+function isLiteralFileRedirection(table: ShellTokenTable, index: number, powerShell: boolean): boolean {
+  const targetFlags = table.flags[index + 1]!;
+  if (targetFlags & (WORD_REDIRECTION | EXPANSION_MASK) || powerShell && targetFlags & WORD_DECODE) return false;
+  const operator = table.source.slice(table.starts[index]!, table.ends[index]!);
+  return operator === ">" || operator === ">>";
 }
 
 /** Descriptor duplication, discarding to the null device, and Bash input from a file. */
