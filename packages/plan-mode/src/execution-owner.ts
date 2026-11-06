@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext, ExtensionUIContext } from "@super-pi/coding-agent";
+import type { ExtensionAPI, ExtensionContext, ExtensionUIContext, ReadOnlyShellSubcommands } from "@super-pi/coding-agent";
 
 /** Owns actual UI and file operations, not the menu action that may request a switch. */
 export class PlanExecutionOwner {
@@ -8,10 +8,12 @@ export class PlanExecutionOwner {
 	private accepting = true;
 	private authority = new AbortController();
 	private readonly pi: ExtensionAPI;
-	constructor(pi: ExtensionAPI, stopMenus: () => void, resumeMenus: () => void, waitSettings: () => Promise<void>, toolSelectionMode: () => "plan" | undefined) {
+	constructor(pi: ExtensionAPI, stopMenus: () => void, resumeMenus: () => void, waitSettings: () => Promise<void>, toolSelectionMode: () => "plan" | undefined,
+		readOnlyShellSubcommands: () => ReadOnlyShellSubcommands | undefined) {
 		this.pi = pi;
 		pi.registerExecutionOwner?.("plan", {
 			toolSelectionMode,
+			readOnlyShellSubcommands,
 			revoke: () => {
 				this.accepting = false;
 				const reason = new DOMException("Plan interaction replaced", "AbortError"); reason.stack = "AbortError: Plan interaction replaced";

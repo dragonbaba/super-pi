@@ -522,7 +522,19 @@ export { convertToPng } from "./utils/image-convert.ts";
 export { formatDimensionNote, type ResizedImage, resizeImage } from "./utils/image-resize.ts";
 // Shell utilities
 export { getPowerShellCandidateConfig, getPowerShellConfig, getShellConfig } from "./utils/shell.ts";
-export { findUnsafePowerShellSegment } from "./utils/powershell-policy.ts";
+export {
+	BUILTIN_SAFE_GIT_SUBCOMMANDS,
+	type BuiltinSafeGitSubcommand,
+	CONFIGURABLE_SAFE_GIT_SUBCOMMANDS,
+	type ConfigurableSafeGitSubcommand,
+	findNonReadOnlyShellSegment,
+	findUnsafePowerShellSegment,
+	type ReadOnlyShellSubcommands,
+	SAFE_GH_SUBCOMMAND_PATHS,
+	SAFE_GIT_SUBCOMMANDS,
+	type SafeGhSubcommandPath,
+	type SafeGitSubcommand,
+} from "./core/shell-policy/readonly-command.ts";
 
 /** Experimental read-only protected-operation ownership inspection. */
 export { inspectOperationWriter } from "./core/operation-journal.ts";
