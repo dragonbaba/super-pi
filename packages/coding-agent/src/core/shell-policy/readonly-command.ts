@@ -137,7 +137,8 @@ function wrapperOptions(values: readonly string[], queries = ""): WrapperOptions
 const NO_WRAPPER_OPTIONS = wrapperOptions([]);
 const BASH_DISPATCH_WRAPPERS: ReadonlyMap<string, WrapperOptions> = new Map([
   ["command", wrapperOptions([], "vV")], ["builtin", NO_WRAPPER_OPTIONS], ["nohup", NO_WRAPPER_OPTIONS], ["time", NO_WRAPPER_OPTIONS],
-  ["xargs", wrapperOptions(["-a", "-d", "-E", "-I", "-L", "-n", "-P", "-s", "--arg-file", "--delimiter", "--eof", "--replace", "--max-lines",
+  // `--replace[=R]`, `--eof[=E]` and `--max-lines[=N]` take only an attached optional value.
+  ["xargs", wrapperOptions(["-a", "-d", "-E", "-I", "-L", "-n", "-P", "-s", "--arg-file", "--delimiter",
     "--max-args", "--max-procs", "--max-chars", "--process-slot-var"])],
   ["exec", wrapperOptions(["-a"])],
   ["sudo", wrapperOptions(["-u", "-g", "-h", "-p", "-C", "-D", "-r", "-t", "-T", "-U", "--user", "--group", "--host", "--prompt", "--close-from",

@@ -80,7 +80,7 @@ test("host-restricted classification lifts only literal segments, and suggestion
         assert.equal(shellRuleVerdict("bash", command, rules), RULE_DENY, command);
     // Dispatch wrappers run the command after them; `command -v` only looks it up.
     for (const command of ["command git push origin main", "sudo -u ci env FOO=1 git push", "timeout 60 nohup git push", "sudo -n git push",
-        "nice --adjustment 5 git push", "env --unset FOO git push", "time -p git push", "git branch | xargs -n 1 git push origin", "coproc git push", "sudo CI=1 git push origin main", "env - git push", "sudo -phello git push",
+        "nice --adjustment 5 git push", "env --unset FOO git push", "time -p git push", "git branch | xargs -n 1 git push origin", "coproc git push", "sudo CI=1 git push origin main", "env - git push", "sudo -phello git push", "xargs --replace git push origin {}",
         "coproc publisher { git push origin main; }"])
         assert.equal(shellRuleVerdict("bash", command, rules), RULE_DENY, command);
     const lookup = new ProjectRuleSet([{ tool: "bash", decision: "deny", command: "git *" }]);
