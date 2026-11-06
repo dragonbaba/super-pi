@@ -11,6 +11,7 @@ const EMPTY_CACHE_PAYLOAD = `${JSON.stringify({ version: CACHE_VERSION, entries:
 // Old keyed entries truncated tool instructions at 1,000 characters (v3) or did not
 // retain the destructive annotation that native approval uses (v3.full-description).
 const CACHE_FINGERPRINT_DOMAIN = "super-pi.mcp-schema-cache.v4.annotations\0";
+const DESTRUCTIVE_ANNOTATIONS = Object.freeze({ destructiveHint: true });
 const MAX_CACHE_BYTES = 2 * 1024 * 1024;
 const MAX_CACHE_ENTRIES = 16;
 const MAX_CACHE_AGE_MS = 30 * 24 * 60 * 60 * 1000;
@@ -101,14 +102,14 @@ function normalizeCachedTool(tool) {
   try { inputSchema = validateJsonShape(tool.inputSchema ?? { type: "object", properties: {} }, MAX_SCHEMA_BYTES); }
   catch { return null; }
   if (!inputSchema || inputSchema.type !== "object" || Array.isArray(inputSchema)) return null;
-  const normalized = {
+  return {
     name: tool.name,
     description: sanitizeText(tool.description ?? `MCP tool ${tool.name}`, MAX_TOOL_CATALOG_BYTES),
     inputSchema: canonicalJsonShape(inputSchema),
+    // Cached tools are callable before reconnection, so keep the one hint approval reads.
+    // One shared frozen value and a fixed shape; `undefined` is omitted when serialized.
+    annotations: tool.annotations?.destructiveHint === true ? DESTRUCTIVE_ANNOTATIONS : undefined,
   };
-  // Cached tools are callable before reconnection, so keep the one hint approval reads.
-  if (tool.annotations?.destructiveHint === true) normalized.annotations = { destructiveHint: true };
-  return normalized;
 }
 
 export class McpSchemaCache {

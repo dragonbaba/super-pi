@@ -70,16 +70,14 @@ function invocationFingerprint(name: string, input: unknown): string {
 /**
  * Exact names and `*` as before, plus MCP server rules: `mcp__<server>` or a trailing glob such as
  * `mcp__<server>__*` / `mcp__<server>__get_*`. An allow glob must name one server; ask/deny may use `mcp__*`.
+ * Computed once per rule at construction, so matching a tool call allocates nothing.
  */
-function ruleToolMatches(pattern: string, tool: string, decision: PermissionDecision): boolean {
-    if (pattern === "*" || pattern === tool) return true;
-    if (!pattern.startsWith("mcp__") || !tool.startsWith("mcp__")) return false;
-    if (pattern.endsWith("*")) {
-        const prefix = pattern.slice(0, -1);
-        if (prefix.includes("*") || decision === "allow" && prefix.indexOf("__", 5) < 0) return false;
-        return tool.startsWith(prefix);
-    }
-    return pattern.indexOf("__", 5) < 0 && tool.startsWith(pattern + "__");
+function ruleToolPrefix(pattern: string, decision: PermissionDecision): string | undefined {
+    if (!pattern.startsWith("mcp__")) return undefined;
+    const glob = pattern.indexOf("*");
+    if (glob < 0) return pattern.indexOf("__", 5) < 0 ? pattern + "__" : undefined;
+    if (glob !== pattern.length - 1 || decision === "allow" && pattern.indexOf("__", 5) < 0) return undefined;
+    return pattern.slice(0, -1);
 }
 
 function isMutation(name: string, input: unknown): boolean {
@@ -120,6 +118,8 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
     readonly environment: ExecutionEnvironment;
     private readonly runtime: ExtensionRuntime;
     private readonly rules: readonly ExecutionPermissionRule[];
+    /** MCP server/glob prefix per rule, index-aligned with `rules`. */
+    private readonly rulePrefixes: readonly (string | undefined)[];
     private readonly approval: "interactive" | "never";
     private readonly definitions = new WeakSet<ToolDefinition>();
     private grant?: InputWorkspaceGrant;
@@ -152,6 +152,7 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
                 throw new Error("Invalid execution permission rule");
             return Object.freeze({ ...rule });
         }));
+        this.rulePrefixes = Object.freeze(this.rules.map(rule => ruleToolPrefix(rule.tool, rule.decision)));
         runtime.executionBoundary.register("native-permissions", { revoke: this.revoke, drain: this.drain });
     }
     private readonly revoke = (): void => { this.epoch++; this.grant = undefined; this.issuance = undefined; };
@@ -243,8 +244,9 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
     }
     private async decision(tool: string, command: unknown, paths: readonly string[], cwd: string, fallback?: PermissionDecision): Promise<PermissionDecision> {
         let selected: PermissionDecision | undefined;
-        for (const rule of this.rules) {
-            if (!ruleToolMatches(rule.tool, tool, rule.decision) || rule.command !== undefined && rule.command !== command) continue;
+        for (let index = 0; index < this.rules.length; index++) {
+            const rule = this.rules[index]!;
+            if (!this.ruleMatches(index, tool) || rule.command !== undefined && rule.command !== command) continue;
             if (rule.path !== undefined) {
                 if (!paths.length) continue;
                 const root = await canonicalizeProspectivePath(resolve(cwd, rule.path));
@@ -264,9 +266,15 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
     }
     /** An allow rule that names this tool or its MCP server, not the catch-all `*`. */
     private namedAllow(tool: string): boolean {
-        for (const rule of this.rules) if (rule.decision === "allow" && rule.tool !== "*" && rule.command === undefined && rule.path === undefined
-            && ruleToolMatches(rule.tool, tool, "allow")) return true;
+        for (let index = 0; index < this.rules.length; index++) {
+            const rule = this.rules[index]!;
+            if (rule.decision === "allow" && rule.tool !== "*" && rule.command === undefined && rule.path === undefined && this.ruleMatches(index, tool)) return true;
+        }
         return false;
+    }
+    private ruleMatches(index: number, tool: string): boolean {
+        const pattern = this.rules[index]!.tool, prefix = this.rulePrefixes[index];
+        return pattern === "*" || pattern === tool || prefix !== undefined && tool.startsWith(prefix);
     }
     private restoreRefusals(manager: ReadonlySessionManager): void {
         if (!manager.isHistoryConsistent()) throw new Error(BLOCKED + "Permission history is uncertain; reload the session before continuing");
