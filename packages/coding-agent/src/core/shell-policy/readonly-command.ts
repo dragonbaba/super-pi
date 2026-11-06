@@ -163,7 +163,12 @@ function dispatchedCommandStart(argv: readonly string[]): number {
   let index = 1;
   while (index < argv.length) {
     const word = argv[index]!;
-    if (word === "--") { index++; break; }
+    if (word === "--") {
+      // `env -- CI=1 cmd`: assignments still precede the command after the terminator.
+      index++;
+      if (name === "env" || name === "sudo") while (index < argv.length && isAssignment(argv[index]!)) index++;
+      break;
+    }
     if (word.length > 1 && word.charCodeAt(0) === 45) {
       if (word.charCodeAt(1) === 45) {
         // `sudo --list cmd` only lists whether the command is permitted.
@@ -326,6 +331,20 @@ export function shellRuleVerdict(tool: "bash" | "powershell", command: string, r
       const flags = table.flags[index]!;
       if (flags & WORD_REDIRECTION) { index++; continue; }
       const text = table.texts ? table.texts[index]! : windowsWordText(table, index);
+      if (powerShell && (flags & WORD_QUOTED) !== 0) {
+        // `try { git push origin "main"}`: braces outside the quotes still close the block.
+        const start = table.starts[index]!, stop = table.ends[index]!, raw = table.source;
+        let open = 0, close = 0;
+        while (start + open < stop && raw.charCodeAt(start + open) === 123) open++;
+        while (stop - close > start + open && raw.charCodeAt(stop - close - 1) === 125) close++;
+        if (open > 0) { verdict = strongerRuleVerdict(rules, true, argv, verdict); argv.length = 0; }
+        if (open > 0 || close > 0) {
+          const word = text.slice(open, Math.max(open, text.length - close));
+          if (word) argv.push(word);
+          if (close > 0) { verdict = strongerRuleVerdict(rules, true, argv, verdict); argv.length = 0; }
+          continue;
+        }
+      }
       if ((flags & WORD_QUOTED) === 0) {
         // A PowerShell segment keeps its script blocks (`try { git push } catch { … }`), and a
         // brace may touch a word (`try {git push}`). Each brace ends the command before it.

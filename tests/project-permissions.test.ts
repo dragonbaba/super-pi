@@ -80,7 +80,7 @@ test("host-restricted classification lifts only literal segments, and suggestion
         assert.equal(shellRuleVerdict("bash", command, rules), RULE_DENY, command);
     // Dispatch wrappers run the command after them; `command -v` only looks it up.
     for (const command of ["command git push origin main", "sudo -u ci env FOO=1 git push", "timeout 60 nohup git push", "sudo -n git push",
-        "nice --adjustment 5 git push", "env --unset FOO git push", "time -p git push", "git branch | xargs -n 1 git push origin", "coproc git push", "sudo CI=1 git push origin main", "env - git push", "sudo -phello git push", "CI+=x git push", "xargs --replace git push origin {}",
+        "nice --adjustment 5 git push", "env --unset FOO git push", "time -p git push", "git branch | xargs -n 1 git push origin", "coproc git push", "sudo CI=1 git push origin main", "env - git push", "sudo -phello git push", "CI+=x git push", "xargs --replace git push origin {}", "env -- CI=1 git push origin main",
         "coproc publisher { git push origin main; }"])
         assert.equal(shellRuleVerdict("bash", command, rules), RULE_DENY, command);
     const lookup = new ProjectRuleSet([{ tool: "bash", decision: "deny", command: "git *" }]);
@@ -94,7 +94,7 @@ test("host-restricted classification lifts only literal segments, and suggestion
     for (const command of ["if ($true) { git push origin main }", "try { git push origin main } catch { Write-Output $_ }",
         "Try { npm test } catch [System.Exception] { Write-Error x } finally { git push origin main }", "1..2 | ForEach-Object { git push origin main }",
         "try {git push origin main} catch {}", "$null = git push origin main", "$out += git push origin main", "$r=git push origin main", "$null= git push origin main", "$null =git push origin main", "[string]$out = git push origin main", "git.exe push origin main",
-        "return git push origin main", "function Publish { return git push origin main }; Publish", "process { Git push origin main }"])
+        "return git push origin main", "function Publish { return git push origin main }; Publish", "process { Git push origin main }", "try { git push origin \"main\"} catch {}", "{\"git\" push origin main }"])
         assert.equal(shellRuleVerdict("powershell", command, exact), RULE_DENY, command);
     assert.equal(shellRuleVerdict("powershell", "try { git status } catch { }", exact), RULE_NONE);
     const blocks = new ProjectRuleSet([{ tool: "powershell", decision: "allow", command: "ForEach-Object *" }]);
