@@ -2546,6 +2546,11 @@ export class AgentSession {
 		return this._resourceLoader.getExtensions().runtime.nativePermissions?.listRefusals(this._extensionRunner.createContext()) ?? [];
 	}
 
+	/** The project-shared rule file (`/permissions rules`); undefined without native permissions. */
+	getProjectPermissionRules() {
+		return this._resourceLoader.getExtensions().runtime.nativePermissions?.describeProjectRules();
+	}
+
 	revokePermissionRefusal(key: string): boolean {
 		return this._resourceLoader.getExtensions().runtime.nativePermissions?.revokeRefusal(this._extensionRunner.createContext(), key) ?? false;
 	}

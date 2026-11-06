@@ -1,3 +1,4 @@
+import { MAX_REMEMBERED_RULES, type ProjectRuleSet, RULE_ALLOW, RULE_ASK, RULE_DENY, RULE_NONE } from "../project-permissions.ts";
 import type { ShellAnalysisOwner } from "./shell-analysis.ts";
 import { lexBash } from "./syntax/bash.ts";
 import {
@@ -84,9 +85,10 @@ const MAX_HOST_SEGMENTS = 64;
 const POWERSHELL_LOCATION_COMMANDS: ReadonlySet<string> = new Set(["cd", "chdir", "set-location", "sl"]);
 /** Segment classes; a file command or a reader's file redirection is a FILE segment. */
 const SEGMENT_REJECTED = 0, SEGMENT_READER = 1, SEGMENT_FILE = 2;
-/** `classifyHostShellCommand` results. */
-export const HOST_SHELL_READ_ONLY = 0, HOST_SHELL_FILE_COMMANDS = 1, HOST_SHELL_OTHER = 2;
-export type HostShellCommandClass = typeof HOST_SHELL_READ_ONLY | typeof HOST_SHELL_FILE_COMMANDS | typeof HOST_SHELL_OTHER;
+/** `classifyHostShellCommand` results. RULE_ALLOWED: every other segment matched a project allow rule. */
+export const HOST_SHELL_READ_ONLY = 0, HOST_SHELL_FILE_COMMANDS = 1, HOST_SHELL_OTHER = 2, HOST_SHELL_RULE_ALLOWED = 3;
+export type HostShellCommandClass = typeof HOST_SHELL_READ_ONLY | typeof HOST_SHELL_FILE_COMMANDS | typeof HOST_SHELL_OTHER
+  | typeof HOST_SHELL_RULE_ALLOWED;
 const FORBIDDEN_ARGUMENTS: ReadonlySet<string> = new Set(["--in-place", "--fix", "--write", "-delete", "--delete"]);
 const FIND_ACTIONS: ReadonlySet<string> = new Set(["-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls"]);
 const VERSION_COMMANDS: ReadonlySet<string> = new Set(["node", "python", "python3", "tsc", "biome", "ruff", "ty"]);
@@ -125,16 +127,24 @@ export function findNonReadOnlyShellSegment(
  * segment a reader or a listed file command with literal operands (file commands), or other.
  * File commands run without asking only when the native analysis confirms all their targets.
  */
-export function classifyHostShellCommand(tool: "bash" | "powershell", command: string, analysisOwner?: ShellAnalysisOwner): HostShellCommandClass {
+export function classifyHostShellCommand(tool: "bash" | "powershell", command: string, analysisOwner?: ShellAnalysisOwner,
+  rules?: ProjectRuleSet): HostShellCommandClass {
   readOnlyShellCounters.judgments++;
   if (!command.trim()) return HOST_SHELL_OTHER;
   const powerShell = tool === "powershell", table = commandTable(powerShell, command, analysisOwner);
   // The native scanners stop after 64 segments; a file command must be scanned whole.
   if (table.unterminated || table.nestedCount > 0 || table.segmentCount === 0 || table.segmentCount > MAX_HOST_SEGMENTS) return HOST_SHELL_OTHER;
   const argv: string[] = [];
+  const ruled = rules !== undefined && rules.hasShellRules(powerShell);
   let result: HostShellCommandClass = HOST_SHELL_READ_ONLY, moved = false;
   for (let segment = 0; segment < table.segmentCount; segment++) {
     const kind = classifySegment(table, segment, powerShell, NO_SUBCOMMANDS, true, argv);
+    if (kind === SEGMENT_REJECTED && ruled && ruleWords(table, segment, powerShell, argv)
+      && rules.matchShellWords(powerShell, argv) === RULE_ALLOW) {
+      // A command the user allowed may change files too, so a later file command asks.
+      result = HOST_SHELL_RULE_ALLOWED; moved = true;
+      continue;
+    }
     // Targets are canonicalized before anything runs. After a PowerShell location change, or a
     // copy/move that may bring a link to a new path, a later write may land elsewhere.
     if (kind === SEGMENT_REJECTED || kind === SEGMENT_FILE && moved) { result = HOST_SHELL_OTHER; break; }
@@ -148,6 +158,99 @@ export function classifyHostShellCommand(tool: "bash" | "powershell", command: s
   }
   argv.length = 0;
   return result;
+}
+
+/**
+ * The strongest project deny or ask rule any segment matches (subshell segments included,
+ * `$(...)` bodies not). Words are compared as written and leading Bash assignments are
+ * skipped, so `git push *` also matches `FOO=1 git push $REMOTE`.
+ */
+export function shellRuleVerdict(tool: "bash" | "powershell", command: string, rules: ProjectRuleSet, analysisOwner?: ShellAnalysisOwner): number {
+  const powerShell = tool === "powershell";
+  if (!rules.hasShellRules(powerShell) || !command.trim()) return RULE_NONE;
+  const table = commandTable(powerShell, command, analysisOwner), argv: string[] = [];
+  let verdict = RULE_NONE;
+  for (let segment = 0; segment < table.segmentCount && verdict !== RULE_DENY; segment++) {
+    argv.length = 0;
+    const end = table.segmentEnds[segment]!;
+    for (let index = table.segmentStart(segment); index < end; index++) {
+      const flags = table.flags[index]!;
+      if (flags & WORD_REDIRECTION) { index++; continue; }
+      const text = table.texts ? table.texts[index]! : windowsWordText(table, index);
+      if (argv.length === 0 && !powerShell && (flags & WORD_QUOTED) === 0 && isAssignment(text)) continue;
+      argv.push(text);
+    }
+    const matched = argv.length ? rules.matchShellWords(powerShell, argv) : RULE_NONE;
+    if (matched >= RULE_ASK && matched > verdict) verdict = matched;
+  }
+  argv.length = 0;
+  return verdict;
+}
+
+/**
+ * Prefix rules that would let this command run in host-restricted next time: one for each
+ * segment that is neither a reader nor a file command (`npm test *`, `make`). Undefined when
+ * the command's structure rather than its programs asks, or when more than five are needed.
+ */
+export function suggestShellRules(tool: "bash" | "powershell", command: string): string[] | undefined {
+  const powerShell = tool === "powershell", table = commandTable(powerShell, command, undefined);
+  if (table.unterminated || table.nestedCount > 0 || table.segmentCount === 0 || table.segmentCount > MAX_HOST_SEGMENTS) return undefined;
+  const argv: string[] = [], suggestions: string[] = [];
+  let moved = false;
+  for (let segment = 0; segment < table.segmentCount; segment++) {
+    const kind = classifySegment(table, segment, powerShell, NO_SUBCOMMANDS, true, argv);
+    if (kind === SEGMENT_FILE && moved) return undefined;
+    if (kind === SEGMENT_REJECTED) {
+      const rule = ruleWords(table, segment, powerShell, argv) ? prefixRule(argv) : undefined;
+      if (rule === undefined) return undefined;
+      if (!suggestions.includes(rule)) {
+        if (suggestions.length === MAX_REMEMBERED_RULES) return undefined;
+        suggestions.push(rule);
+      }
+      moved = true;
+      continue;
+    }
+    const name = argv[0]!.toLowerCase();
+    if (kind === SEGMENT_FILE && (powerShell ? POWERSHELL_RELOCATING_COMMANDS : RELOCATING_COMMANDS).has(name)) moved = true;
+    if (powerShell && POWERSHELL_LOCATION_COMMANDS.has(name)) moved = true;
+  }
+  return suggestions.length ? suggestions : undefined;
+}
+
+const RULE_UNSAFE_WORD = /[\s*]/;
+/** `npm test -x` → `npm test *`; `ls -la` → `ls *`; a lone `make` stays exact. */
+function prefixRule(argv: readonly string[]): string | undefined {
+  const name = argv[0]!;
+  if (RULE_UNSAFE_WORD.test(name)) return undefined;
+  if (argv.length === 1) return name;
+  const second = argv[1]!;
+  return second.charCodeAt(0) === HYPHEN || RULE_UNSAFE_WORD.test(second) ? name + " *" : name + " " + second + " *";
+}
+
+/**
+ * The words of a plain top-level simple command, skipping read-only and literal file
+ * redirections. False when a word is dynamic, so a project allow rule never matches
+ * text that is only known when the command runs.
+ */
+function ruleWords(table: ShellTokenTable, segment: number, powerShell: boolean, argv: string[]): boolean {
+  const separator = table.segmentSeparators[segment]!;
+  if (separator === SEGMENT_BACKGROUND || separator === SEGMENT_OPEN || separator === SEGMENT_CLOSE || table.segmentDepths[segment] !== 0) return false;
+  if (table.segmentTestOpen[segment]! >= 0 || table.segmentArithmeticAt[segment]! >= 0) return false;
+  argv.length = 0;
+  const end = table.segmentEnds[segment]!;
+  for (let index = table.segmentStart(segment); index < end; index++) {
+    const flags = table.flags[index]!;
+    if (flags & WORD_REDIRECTION) {
+      if (index + 1 >= end || !isReadOnlyRedirection(table, index, powerShell) && !isLiteralFileRedirection(table, index, powerShell)) return false;
+      index++;
+      continue;
+    }
+    if (flags & (DYNAMIC_WORD | EXPANSION_BRACE) || argv.length === 0 && flags & EXPANSION_GLOB) return false;
+    const text = table.texts ? table.texts[index]! : windowsWordText(table, index);
+    if (argv.length === 0 && (!text || !powerShell && (flags & WORD_QUOTED) === 0 && isAssignment(text))) return false;
+    argv.push(text);
+  }
+  return argv.length > 0;
 }
 
 function commandTable(powerShell: boolean, command: string, analysisOwner: ShellAnalysisOwner | undefined): ShellTokenTable {

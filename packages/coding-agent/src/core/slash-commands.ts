@@ -17,7 +17,7 @@ export interface BuiltinSlashCommand {
 }
 
 export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
-	{ name: "permissions", description: "选择权限模式；refusals 查看和撤销历史拒绝", argumentHint: "refusals" },
+	{ name: "permissions", description: "选择权限模式；rules 查看本项目规则，refusals 查看和撤销历史拒绝", argumentHint: "rules | refusals" },
 	{ name: "add-dir", description: "向当前会话添加工作目录，沿用当前权限模式", argumentHint: "<directory>" },
 	{ name: "remove-dir", description: "移除当前会话的附加工作目录", argumentHint: "<directory>" },
 	{ name: "dirs", description: "查看当前会话的工作目录" },
