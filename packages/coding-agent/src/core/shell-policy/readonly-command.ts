@@ -54,15 +54,21 @@ const READ_ONLY_POWERSHELL_COMMANDS: ReadonlySet<string> = new Set([
 const FILE_COMMANDS: ReadonlySet<string> = new Set(["rm", "rmdir", "mkdir", "touch", "cp", "mv"]);
 /*
  * The only options a Bash file command may carry: none of them changes which paths are
- * written. Others (`cp -t DIR`, `--target-directory`, `-S`, `-b`, `-l`, `-s`, `touch -r`)
- * move or add writes the analysis does not model, so the segment is not a file command.
+ * written. Others (`cp -t DIR`, `--target-directory`, `-S`, `-b`, `-l`, `-s`, `touch -r`,
+ * `rmdir -p`, which also removes ancestors) move or add writes the analysis does not
+ * model, so the segment is not a file command.
  */
 const FILE_COMMAND_SHORT_OPTIONS: Readonly<Record<string, string>> = Object.freeze({
-  rm: "rRfvd", rmdir: "pv", mkdir: "pv", touch: "acm", cp: "rRfvpanu", mv: "fvnu",
+  rm: "rRfvd", rmdir: "v", mkdir: "pv", touch: "acm", cp: "rRfvpanu", mv: "fvnu",
 });
-const FILE_COMMAND_LONG_OPTIONS: ReadonlySet<string> = new Set([
-  "--recursive", "--force", "--verbose", "--dir", "--parents", "--no-clobber", "--update", "--archive", "--no-create",
-]);
+const FILE_COMMAND_LONG_OPTIONS: Readonly<Record<string, ReadonlySet<string>>> = Object.freeze({
+  rm: new Set(["--recursive", "--force", "--verbose", "--dir"]),
+  rmdir: new Set(["--verbose"]),
+  mkdir: new Set(["--parents", "--verbose"]),
+  touch: new Set(["--no-create"]),
+  cp: new Set(["--recursive", "--force", "--verbose", "--archive", "--no-clobber", "--update"]),
+  mv: new Set(["--force", "--verbose", "--no-clobber", "--update"]),
+});
 const POWERSHELL_FILE_COMMANDS: ReadonlySet<string> = new Set([
   "remove-item", "ri", "rm", "del", "erase", "rd", "rmdir", "new-item", "ni", "mkdir", "md", "set-content", "add-content", "ac",
   "clear-content", "clc", "out-file", "copy-item", "cpi", "cp", "copy", "move-item", "mi", "mv", "move", "rename-item", "rni", "ren",
@@ -177,12 +183,12 @@ function classifySegment(table: ShellTokenTable, segment: number, powerShell: bo
 
 /** Every option before `--` is a listed flag for this command (`-rf`, `--parents`). */
 function hasKnownFileCommandOptions(name: string, argv: readonly string[]): boolean {
-  const short = FILE_COMMAND_SHORT_OPTIONS[name]!;
+  const short = FILE_COMMAND_SHORT_OPTIONS[name]!, long = FILE_COMMAND_LONG_OPTIONS[name]!;
   for (let index = 1; index < argv.length; index++) {
     const argument = argv[index]!;
     if (argument.charCodeAt(0) !== HYPHEN || argument.length === 1) continue;
     if (argument === "--") return true;
-    if (argument.charCodeAt(1) === HYPHEN) { if (!FILE_COMMAND_LONG_OPTIONS.has(argument)) return false; continue; }
+    if (argument.charCodeAt(1) === HYPHEN) { if (!long.has(argument)) return false; continue; }
     for (let cursor = 1; cursor < argument.length; cursor++) if (short.indexOf(argument[cursor]!) < 0) return false;
   }
   return true;

@@ -120,6 +120,15 @@ function restrictedFallback(tool: string, outside: boolean, shell: NativeShellMu
     return definition?.mcpServer !== undefined ? "ask" : undefined;
 }
 
+/** A recognized shell write whose canonical target is an existing directory; `paths` is index-aligned with the targets. */
+async function writesIntoDirectory(shell: NativeShellMutations, paths: readonly string[]): Promise<boolean> {
+    for (let index = 0; index < shell.targets.length; index++) {
+        if (shell.targets[index]!.kind !== "write") continue;
+        try { if ((await lstat(paths[index]!)).isDirectory()) return true; } catch { /* A new path is the target itself. */ }
+    }
+    return false;
+}
+
 /** One cold invocation snapshot. It is released by the existing pending tool owner. */
 export class NativePolicyInvocation {
     private original?: object;
@@ -448,8 +457,12 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
         const host = shell ? await this.assessShellMutations(ctx, resolved!, shell)
             : mutation && isHostPermissionMode(this.mode) ? await assessHostMutations(resolved!.workspaces, paths, event.toolName, input) : undefined; check();
         if (host?.forbidden) this.refuse(ctx, BLOCKED, `敏感目标禁止删除或移出：${host.forbidden}\n操作未执行，请明确告知用户。`);
-        const fallback = explicitUserCommand ? "allow"
+        let fallback = explicitUserCommand ? "allow"
             : restricted ? restrictedFallback(event.toolName, (resolved ?? delegated)?.outside === true, shell, shellClass, definition) : undefined;
+        // `cp a.txt dir/` writes `dir/a.txt`, which the recognized target `dir` does not show
+        // (it may be a link out of the workspace), so a write into an existing directory asks.
+        if (fallback === "allow" && restricted && shell && await writesIntoDirectory(shell, paths)) fallback = "ask";
+        check();
         let decision = await this.decision(event.toolName, input.command, paths, ctx.cwd, fallback, definition); check();
         if (event.toolName === "file_batch") {
             let index = 0;

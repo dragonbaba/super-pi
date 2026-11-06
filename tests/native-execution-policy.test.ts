@@ -283,6 +283,7 @@ test("host MCP calls ask for declared destructive tools and honor server-scoped 
 test("host-restricted runs workspace file work and read-only commands, and asks for other commands, MCP and outside paths", async t => {
     const f = await fixture(t, {}, "trusted-host", "host-restricted"), outside = await fixture(t);
     await fs.writeFile(path.join(f.root, "a.txt"), "a"); await fs.writeFile(path.join(outside.root, "b.txt"), "b");
+    await fs.mkdir(path.join(f.root, "sub"));
     async function decide(name: string, input: object, definition: object = { name }): Promise<string> {
         try { (await f.owner.authorize(f.event(name, input), f.ctx, definition as any)).release(); return "allow"; }
         catch (error: any) { return /APPROVAL_REQUIRED/.test(error.message) ? "ask" : error.message; }
@@ -293,7 +294,8 @@ test("host-restricted runs workspace file work and read-only commands, and asks 
         ["powershell", "Remove-Item a.txt; Get-ChildItem"], ["powershell", "New-Item -ItemType Directory out"],
     ]) assert.equal(await decide(tool, { command }), "allow", command);
     for (const [tool, command] of [
-        ["bash", "npm test"], ["bash", "rm \"$TARGET\""], ["bash", `cp -t ${path.dirname(far)} a.txt`], ["bash", `rm ${far}`], ["bash", `cat a.txt > ${path.dirname(far)}/c.txt`], ["powershell", "Remove-Item env:FOO"],
+        // `cp a.txt sub` writes `sub/a.txt`, which may be a link out of the workspace.
+        ["bash", "cp a.txt sub"], ["bash", "npm test"], ["bash", "rm \"$TARGET\""], ["bash", `cp -t ${path.dirname(far)} a.txt`], ["bash", `rm ${far}`], ["bash", `cat a.txt > ${path.dirname(far)}/c.txt`], ["powershell", "Remove-Item env:FOO"],
     ]) assert.equal(await decide(tool, { command }), "ask", command);
     // The class and the mutation analysis read one token table: one lex, as in host-write.
     const lexes = windowsLexerCounters.lexes;
