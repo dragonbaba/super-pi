@@ -391,10 +391,18 @@ test("responsibilities are required for every item before any child starts and r
 
 test("capacity handoff reaches foreground/background results and stops dependent chain launches", async t => {
 	const h = harness(t, { persistent: true });
-	const chain = await h.run({ checkpoint: true, chain: [
+	initTheme("dark"); const ui = new TuiMainScreen(new FakeTerminal(140, 24));
+	const args = { checkpoint: true, chain: [
 		{ agent: "scout", task: "capacity-handoff", readOnly: true },
 		{ agent: "scout", task: "must-not-run", readOnly: true },
-	] });
+	] };
+	const component = new ToolExecutionComponent("subagent", "call-1", args, {}, h.tools.get("subagent"), ui, h.ctx.cwd);
+	t.after(async () => { releaseComponentRenderCaches(component); await ui.dispose(); });
+	const chain = await h.run(args, update => { component.updateResult(update, true, false); component.render(140); });
+	component.updateResult(chain, false, false);
+	const rendered = stripVTControlCharacters(component.render(140).join("\n"));
+	assert.match(rendered, /1\/1 completed/); assert.doesNotMatch(rendered, /failed|#2/);
+	assert.equal((component as any).resultRendererComponent.getLifecycleCounts().timers, 0);
 	assert.match(chain.content[0].text, /Chain paused after step 1; dependent steps were not started/);
 	assert.match(chain.content[0].text, /before the hard limit/);
 	assert.equal(chain.details.results[0].handoff, "Checkpoint handoff");

@@ -1952,11 +1952,12 @@ export default function (pi: ExtensionAPI) {
 				component.setText(theme.fg("muted", `${incoming.backgroundCount} background task(s) accepted · /tasks`));
 				return component;
 			}
-			if (incoming && incoming.results.length > 0) state.latestDetails = incoming;
 			const live = liveProgress.get(context.toolCallId) ?? state.live;
-			if (live) state.latestDetails = live.details;
+			// Final receipts may intentionally omit unstarted chain steps after a checkpoint handoff.
+			const details = !context.isPartial && incoming ? incoming
+				: live?.details ?? (incoming && incoming.results.length > 0 ? incoming : state.latestDetails);
+			state.latestDetails = details;
 			state.live = context.isPartial && live && !live.closed ? live : undefined;
-			const details = live?.details ?? (incoming && incoming.results.length > 0 ? incoming : state.latestDetails);
 			if (!details || details.results.length === 0) {
 				component.setText(theme.fg("error", "✗ subagent failed"));
 				return component;
