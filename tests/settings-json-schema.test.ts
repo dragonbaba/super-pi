@@ -132,17 +132,19 @@ test("project schema warns on global-only settings without changing runtime trus
 		powershellPath: "C:/trusted/pwsh.exe",
 		sandboxToolchains: { include: ["C:/trusted/tools"], exclude: ["C:/obsolete"] },
 		sandboxNetwork: "disabled",
+		sandboxPrivateDirectories: ["cache", "build/private"],
 		powershellStatus: { trustVersion: 1, available: true, verified: false, source: "configured" },
 		defaultProjectTrust: "ask", httpProxy: "http://localhost:8080",
 	};
 	assert.equal(validateGlobal(globalOnly), true, ajv.errorsText(validateGlobal.errors));
 	for (const [key, value] of Object.entries(globalOnly)) assert.equal(validateProject({ [key]: value }), false, key);
 	const manager = SettingsManager.fromStorage(storage(globalOnly, {
-		powershellPath: "C:/project/pwsh.exe", sandboxToolchains: { include: ["C:/project"] }, sandboxNetwork: "enabled", defaultProjectTrust: "always", showHardwareCursor: true,
+		powershellPath: "C:/project/pwsh.exe", sandboxToolchains: { include: ["C:/project"] }, sandboxNetwork: "enabled", sandboxPrivateDirectories: [], defaultProjectTrust: "always", showHardwareCursor: true,
 	}));
 	assert.equal(manager.getPowerShellPath(), "C:/trusted/pwsh.exe");
 	assert.deepEqual(manager.getSandboxToolchains(), globalOnly.sandboxToolchains);
 	assert.equal(manager.getSandboxNetwork(), "disabled");
+	assert.deepEqual(manager.getSandboxPrivateDirectories(), globalOnly.sandboxPrivateDirectories);
 	assert.equal(manager.getDefaultProjectTrust(), "ask");
 	assert.equal(manager.getShowHardwareCursor(), true);
 	const untrusted = SettingsManager.fromStorage(storage({ showHardwareCursor: false }, { showHardwareCursor: true }), { projectTrusted: false });
@@ -162,6 +164,20 @@ test("sandbox networking defaults offline, validates values, and persists explic
 		assert.throws(() => SettingsManager.fromStorage(storage({sandboxNetwork:value})).getSandboxNetwork(), /Invalid global sandboxNetwork/);
 	}
 	assert.equal(SettingsManager.fromStorage(storage({}, {sandboxNetwork:"enabled"})).getSandboxNetwork(), "disabled");
+});
+
+test("VM-private directory settings use bounded immutable global configuration", () => {
+	const defaults = ["target", ".venv", "__pycache__"];
+	assert.deepEqual(SettingsManager.inMemory().getSandboxPrivateDirectories(), defaults);
+	assert.deepEqual(SettingsManager.fromStorage(storage({}, {sandboxPrivateDirectories:[]})).getSandboxPrivateDirectories(), defaults);
+	assert.deepEqual(SettingsManager.fromStorage(storage({sandboxPrivateDirectories:[]})).getSandboxPrivateDirectories(), []);
+	const manager = SettingsManager.fromStorage(storage({sandboxPrivateDirectories:["./Build\\Private/", "CACHE"]}));
+	const parsed = manager.getSandboxPrivateDirectories();
+	assert.deepEqual(parsed, ["build/private", "cache"]); assert.equal(Object.isFrozen(parsed), true);
+	for (const value of [null, true, "target", [""], ["../cache"], ["C:/cache"], ["/cache"], ["build/*"], Array(65).fill("cache")])
+		assert.throws(() => SettingsManager.fromStorage(storage({sandboxPrivateDirectories:value})).getSandboxPrivateDirectories(), /Invalid sandboxPrivateDirectories/);
+	assert.equal(validateGlobal({sandboxPrivateDirectories:[]}), true);
+	assert.equal(validateGlobal({sandboxPrivateDirectories:Array(65).fill("cache")}), false);
 });
 
 test("editor schema annotations and diagnostics do not enable runtime validation or mutate loaded data", () => {

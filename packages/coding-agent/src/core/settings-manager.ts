@@ -13,6 +13,7 @@ import { waitSynchronously } from "../utils/sync-wait.ts";
 import { stripBom } from "../utils/text.ts";
 import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, parseHttpIdleTimeoutMs } from "./http-dispatcher.ts";
 import { parseSandboxNetwork, type SandboxNetwork } from "./sandbox/network-policy.ts";
+import { parseSandboxPrivateDirectories } from "./sandbox/workspace-policy.mjs";
 
 export interface CompactionSettings {
 	enabled?: boolean; // default: true
@@ -143,6 +144,7 @@ export interface Settings {
 	powershellPath?: string; // Trusted global PowerShell executable path; project settings cannot override it
 	sandboxToolchains?: { include?: string[]; exclude?: string[] }; // Global-only exceptions to automatic host PATH discovery
 	sandboxNetwork?: SandboxNetwork; // Global-only workspace VM network policy; disabled by default
+	sandboxPrivateDirectories?: string[]; // Global-only directories omitted from import and publication
 	powershellStatus?: PowerShellStatusSettings; // Global persisted discovery/availability state
 	quietStartup?: boolean;
 	defaultProjectTrust?: DefaultProjectTrust; // default: "ask"; global setting only
@@ -1113,6 +1115,7 @@ export class SettingsManager {
 	}
 
 	getSandboxNetwork(): SandboxNetwork { return parseSandboxNetwork(this.globalSettings.sandboxNetwork); }
+	getSandboxPrivateDirectories(): readonly string[] { return parseSandboxPrivateDirectories(this.globalSettings.sandboxPrivateDirectories); }
 	setSandboxNetwork(value: SandboxNetwork): void {
 		this.globalSettings.sandboxNetwork = parseSandboxNetwork(value);
 		this.markModified("sandboxNetwork"); this.save();

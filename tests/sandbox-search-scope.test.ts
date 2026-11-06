@@ -7,7 +7,7 @@ import { isUtf8 } from "node:buffer";
 import test from "node:test";
 import ts from "typescript";
 import { detectSupportedImageMimeType, IMAGE_TYPE_SNIFF_BYTES } from "../packages/coding-agent/src/utils/image-signature.mjs";
-import { isVmPrivateName, isVmPrivatePath, isProtectedWorkspaceName } from "../packages/coding-agent/src/core/sandbox/workspace-policy.mjs";
+import { isVmPrivateName, isVmPrivatePath, isProtectedWorkspaceName, isVmPrivateDirectory, parseSandboxPrivateDirectories } from "../packages/coding-agent/src/core/sandbox/workspace-policy.mjs";
 import { WorkspaceSandboxTools } from "../packages/coding-agent/src/core/sandbox/workspace-tools.ts";
 import { createOwnedTaskFixture } from "./helpers/owned-task-fixture.ts";
 import { SessionExecutionBoundary } from "../packages/coding-agent/src/core/execution-boundary.ts";
@@ -18,7 +18,7 @@ const guest = source.statements.filter(node => !ts.isImportDeclaration(node)
     && !(ts.isFunctionDeclaration(node) && node.name?.text === "commandWorkspace")
     && !(ts.isVariableStatement(node) && ["SOURCE", "WORK", "EXCHANGE"].includes(node.declarationList.declarations[0]!.name.getText(source))))
     .map(node => node.getText(source)).join("\n");
-const execute = new Function("isVmPrivateName", "isVmPrivatePath", "isProtectedWorkspaceName", "detectSupportedImageMimeType", "IMAGE_TYPE_SNIFF_BYTES", "fs", "path", "createHash", "isUtf8", "spawnSync", "process", "SOURCE", "WORK", "EXCHANGE", "commandWorkspace", guest).bind(undefined, isVmPrivateName, isVmPrivatePath, isProtectedWorkspaceName, detectSupportedImageMimeType, IMAGE_TYPE_SNIFF_BYTES);
+const execute = new Function("isVmPrivateName", "isVmPrivatePath", "isProtectedWorkspaceName", "isVmPrivateDirectory", "parseSandboxPrivateDirectories", "detectSupportedImageMimeType", "IMAGE_TYPE_SNIFF_BYTES", "fs", "path", "createHash", "isUtf8", "spawnSync", "process", "SOURCE", "WORK", "EXCHANGE", "commandWorkspace", guest).bind(undefined, isVmPrivateName, isVmPrivatePath, isProtectedWorkspaceName, isVmPrivateDirectory, parseSandboxPrivateDirectories, detectSupportedImageMimeType, IMAGE_TYPE_SNIFF_BYTES);
 
 test("both shell requests map every workspace drive independently of toolchain drives", () => {
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "sp-workspace-drives-")));
@@ -179,16 +179,18 @@ test("scoped search has no per-entry callbacks, regular expressions or result wr
         inspect(helper.body!);
     }
     const policy = ts.createSourceFile("workspace-policy.mjs", fs.readFileSync("packages/coding-agent/src/core/sandbox/workspace-policy.mjs", "utf8"), ts.ScriptTarget.Latest, true);
-    for (const node of policy.statements) if (ts.isFunctionDeclaration(node)) inspect(node.body!);
+    // Explicit configuration boundary owns one bounded immutable array; never called per entry.
+    for (const node of policy.statements) if (ts.isFunctionDeclaration(node) && node.name?.text !== "parseSandboxPrivateDirectories") inspect(node.body!);
 });
 
-test("guest private metadata and dependencies stay out of command and native writeback", t => {
+test("guest private metadata, dependencies and configured directories stay out of command and native writeback", t => {
     const owned = createOwnedTaskFixture("sandbox-private-");
     const root = fs.realpathSync.native(owned.root);
     const inputRoot=path.join(root,"input"),work=path.join(root,"work"),exchange=path.join(root,"exchange");
     for(const directory of [inputRoot,exchange]) fs.mkdirSync(directory);
     fs.writeFileSync(path.join(inputRoot,"fixture.txt"),"fixture\n");
-    const request = {id:"b".repeat(32),mode:"sandbox-write",workspace:root,operation:"powershell",maxWriteBytes:1024*1024,input:{command:"fixture only"}};
+    const request = {id:"b".repeat(32),mode:"sandbox-write",workspace:root,operation:"powershell",maxWriteBytes:1024*1024,
+        privateDirectories:[...parseSandboxPrivateDirectories(undefined), "build/private"], input:{command:"fixture only"}};
     const processState={exitCode:0};let spawns=0;
     try {
         fs.writeFileSync(path.join(exchange,"request.json"),JSON.stringify(request));
@@ -197,20 +199,25 @@ test("guest private metadata and dependencies stay out of command and native wri
             spawns++;
             fs.mkdirSync(path.join(work,"node_modules"));
             fs.writeFileSync(path.join(work,"node_modules","native.bin"),Buffer.alloc(3*1024*1024));
-            for (const name of [".artifacts", ".codegraph", "nested/.git", "nested/.sp"]) {
+            for (const name of [".artifacts", ".codegraph", "nested/.git", "nested/.sp", "nested/TARGET", ".venv", "__pycache__", "build/private"]) {
                 fs.mkdirSync(path.join(work, name), { recursive: true });
                 fs.writeFileSync(path.join(work, name, "private.txt"), "VM only");
             }
             fs.writeFileSync(path.join(work,"package.json"),'{}\n');
+            fs.writeFileSync(path.join(work,"target"),'ordinary file\n');
+            fs.mkdirSync(path.join(work,"other/build/private"),{recursive:true});
+            fs.writeFileSync(path.join(work,"other/build/private/visible.txt"),'ordinary file\n');
             fs.writeFileSync(path.join(exchange,"command-result.json"),JSON.stringify({closed:true,timedOut:false,exitCode:0,stdoutBase64:"",stderrBase64:""}));
             return {status:0};
         },processState,inputRoot,work,exchange,(_root:string,workspace:string)=>workspace);
         const reply=JSON.parse(fs.readFileSync(path.join(exchange,"response.json"),"utf8"));
         assert.equal(reply.ok,true,JSON.stringify(reply));assert.equal(spawns,1);
-        assert.deepEqual(reply.changes.map((item:any) => item.path),["package.json"]);
-        assert.equal(reply.changes[0].content, null);
-        assert.equal(fs.readFileSync(path.join(exchange, reply.changes[0].artifact.name), "utf8"), '{}\n');
-        fs.unlinkSync(path.join(exchange, reply.changes[0].artifact.name));
+        assert.deepEqual(reply.changes.map((item:any) => item.path).sort(),["other/build/private/visible.txt", "package.json", "target"]);
+        for (const change of reply.changes) {
+            assert.equal(change.content, null);
+            assert.equal(fs.readFileSync(path.join(exchange, change.artifact.name), "utf8"), change.path === "package.json" ? '{}\n' : 'ordinary file\n');
+            fs.unlinkSync(path.join(exchange, change.artifact.name));
+        }
         let dependencyReads=0;
         const observed=Object.create(fs);
         observed.readdirSync=(directory:string,...args:any[]) => {
@@ -224,12 +231,14 @@ test("guest private metadata and dependencies stay out of command and native wri
         const listed=JSON.parse(fs.readFileSync(path.join(exchange,"response.json"),"utf8"));
         assert.equal(listed.ok,true);assert.doesNotMatch(listed.text,/node_modules/);
         assert.match(listed.text, /\.artifacts\//);
-        request.operation="write";request.input={path:".artifacts/new.txt",content:"private write"} as any;
-        fs.writeFileSync(path.join(exchange,"request.json"),JSON.stringify(request));
-        execute(fs,path,createHash,isUtf8,() => assert.fail("write must not spawn"),processState,inputRoot,work,exchange);
-        const written=JSON.parse(fs.readFileSync(path.join(exchange,"response.json"),"utf8"));
-        assert.equal(written.ok,true);assert.deepEqual(written.changes,[]);
-        assert.equal(fs.readFileSync(path.join(work,".artifacts/new.txt"),"utf8"),"private write");
+        for (const name of [".artifacts/new.txt", "nested/TARGET/new.txt", "build/private/new.txt"]) {
+            request.operation="write";request.input={path:name,content:"private write"} as any;
+            fs.writeFileSync(path.join(exchange,"request.json"),JSON.stringify(request));
+            execute(fs,path,createHash,isUtf8,() => assert.fail("write must not spawn"),processState,inputRoot,work,exchange);
+            const written=JSON.parse(fs.readFileSync(path.join(exchange,"response.json"),"utf8"));
+            assert.equal(written.ok,true);assert.deepEqual(written.changes,[]);
+            assert.equal(fs.readFileSync(path.join(work,name),"utf8"),"private write");
+        }
         request.operation="read";request.input={path:"node_modules/native.bin"} as any;
         fs.writeFileSync(path.join(exchange,"request.json"),JSON.stringify(request));
         execute(fs,path,createHash,isUtf8,() => assert.fail("read must not spawn"),processState,inputRoot,work,exchange);
@@ -267,18 +276,49 @@ test("scoped search avoids unrelated trees and reports only actual row overflow"
     } finally { owned.cleanup(); }
 });
 
+test("guest no-effects evidence stops at the first mutation or command launch", () => {
+    const owned=createOwnedTaskFixture("sandbox-failure-phase-"), root=fs.realpathSync.native(owned.root);
+    const input=path.join(root,"input"),work=path.join(root,"work"),exchange=path.join(root,"exchange");
+    fs.mkdirSync(input);fs.mkdirSync(exchange);fs.writeFileSync(path.join(input,"existing.txt"),"original");
+    function run(operation:string,args:Record<string,unknown>,io=fs) {
+        fs.writeFileSync(path.join(exchange,"request.json"),JSON.stringify({id:"f".repeat(32),mode:"sandbox-write",workspace:root,
+            operation,maxWriteBytes:1024*1024,input:args}));
+        execute(io,path,createHash,isUtf8,() => ({status:1}),{exitCode:0},input,work,exchange,(_root:string,workspace:string)=>workspace);
+        return JSON.parse(fs.readFileSync(path.join(exchange,"response.json"),"utf8"));
+    }
+    try {
+        const missing=run("read",{path:"missing.txt"});assert.equal(missing.ok,false);assert.equal(missing.noEffects,true);
+        const stale=run("write",{path:"existing.txt",content:"bad",snapshot:"stale"});assert.equal(stale.noEffects,true);
+        assert.equal(fs.readFileSync(path.join(work,"existing.txt"),"utf8"),"original");
+        const partial=run("file_batch",{operations:[{operation:"write",path:"created.txt",content:"partial"},{operation:"write",path:"existing.txt",content:"bad",snapshot:"stale"}]});
+        assert.equal(partial.noEffects,false);assert.equal(partial.phase,"mutation");
+        assert.equal(fs.readFileSync(path.join(work,"created.txt"),"utf8"),"partial");
+        const launched=run("bash",{command:"fixture"});assert.equal(launched.noEffects,false);assert.equal(launched.phase,"launch");
+        const redirected=Object.create(fs);
+        redirected.lstatSync=(file:string,...args:any[]) => file===path.join(work,"existing.txt")
+            ? {isSymbolicLink:()=>true} : (fs.lstatSync as any)(file,...args);
+        const identity=run("read",{path:"existing.txt"},redirected);assert.equal(identity.noEffects,false);assert.match(identity.error,/Redirected/);
+    } finally {owned.cleanup();}
+});
+
 test("host rejects a private candidate before publishing an earlier ordinary candidate", async t => {
     const owned=createOwnedTaskFixture("sandbox-candidate-"), boundary=new SessionExecutionBoundary();
     const runtime: any={executionBoundary:boundary,nativePermissions:{mode:"sandbox-write"}};
-    const owner=new WorkspaceSandboxTools(owned.root,owned.root,"sandbox-write",() => runtime);
+    const config=[...parseSandboxPrivateDirectories(undefined),"build/private"];
+    const owner=new WorkspaceSandboxTools(owned.root,owned.root,"sandbox-write",() => runtime,{privateDirectories:config});
+    config.length=0; // Caller mutation cannot replace the owner-bound classification.
     const internal=owner as any;let published=0,discarded=0;
+    let privatePath="";
     t.mock.method(internal.backend,"invoke",async () => ({id:"fixture",ok:true,execution:{exitCode:0,timedOut:false,closed:true,stdout:"",stderr:""},
-        changes:[{path:"ordinary.txt",before:null,content:"b2s="},{path:".artifacts/private.txt",before:null,content:"b2s="}]}));
+        changes:[{path:"ordinary.txt",before:null,content:"b2s="},{path:privatePath,before:null,content:"b2s="}]}));
     t.mock.method(internal,"publish",async () => {published++;});
     t.mock.method(internal.backend,"discardSnapshot",async () => {discarded++;});
     try {
-        const result:any=await owner.definition("bash")!.execute("fixture",{command:"fixture"},boundary.signal,undefined,{cwd:owned.root} as any);
-        assert.equal(result.isError,true);assert.equal(result.details.published,0);
-        assert.match(result.content[0].text,/Protected candidate path.*VM-private/);assert.equal(published,0);assert.equal(discarded,1);
+        for (privatePath of [".artifacts/private.txt","nested/TARGET/private.txt","build/private/output.txt"]) {
+            const result:any=await owner.definition("bash")!.execute("fixture",{command:"fixture"},boundary.signal,undefined,{cwd:owned.root} as any);
+            assert.equal(result.isError,true);assert.equal(result.details.published,0);
+            assert.match(result.content[0].text,/Protected candidate path.*VM-private/);assert.equal(published,0);
+        }
+        assert.equal(discarded,3);
     } finally {await owner.close();await boundary.dispose();owned.cleanup();}
 });

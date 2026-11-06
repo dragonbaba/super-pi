@@ -10,9 +10,10 @@ import { isProtectedWorkspaceName } from '../../packages/coding-agent/src/core/s
 
 assert.equal(typeof globalThis.gc, 'function', 'Run with --expose-gc');
 const source = ts.createSourceFile('worker.mjs', fs.readFileSync('packages/coding-agent/src/core/sandbox/workspace-worker.mjs', 'utf8'), ts.ScriptTarget.Latest, true);
-const helpers = new Set(['need', 'local', 'read', 'grepRows', 'search']);
+const helpers = new Set(['need', 'needInput', 'local', 'read', 'grepRows', 'search']);
 const constants = new Set(['FILE_LIMIT', 'TRAILING_PATH_PATTERN', 'SEARCH_ROWS', 'SEARCH_ENTRIES', 'DIRECTORY_ENTRIES']);
 const text = source.statements.filter(node => ts.isFunctionDeclaration(node) && helpers.has(node.name?.text)
+  || ts.isClassDeclaration(node) && node.name?.text === 'WorkspaceInputError'
   || ts.isVariableStatement(node) && constants.has(node.declarationList.declarations[0].name.getText(source)))
   .map(node => node.getText(source)).join('\n');
 const create = new Function('fs', 'path', 'isUtf8', 'isProtectedWorkspaceName', text + '\nreturn search;');
