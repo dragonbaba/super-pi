@@ -41,6 +41,7 @@ import { isReadOnlyFindLoop } from "./readonly-find-loop.ts";
 import { isLiteralReadLoop } from "./readonly-loop.ts";
 import { bashArithmeticForHeader, bashLoopVariableIndex, bashPipelinePrefixEnd, bashScriptOperandIndex, unsafeBashForHeaderReason, hasStatefulBashPrintf, shellExpansionRisk, hasUnsafeBashTestOperand, hasUnsafeBashLoopListOperand, hasUnsafeCommandQueryOperand, isBashArithmeticCommandHead, isBashDoubleBracketCloseBoundary, isBashNetworkRedirectionTarget, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isLookupSensitiveBashVariable, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 import { FD_DUPLICATION_PATTERN } from "./regex.ts";
+import { CMD_ESCAPE, respellUnquotedBackslashes } from "./windows-separators.ts";
 import { isCodeMethodNamePart, writeCodeMethodName, writeEscapedNodeMethodKey } from "./code-method-names.ts";
 import { diagnosticForPrimitives, policyMetadata, renderPolicyDiagnostic, type PolicyDiagnosticMetadata } from "./policy-diagnostics.ts";
 
@@ -624,7 +625,10 @@ function inspectScriptWrapper(
 			builder.unverifiableScope = true;
 			return;
 		}
-		inspectShellScript(script, cwd, depth + 1, builder, shellOperation);
+		// Native authorization reads a cmd script's backslashes as separators, as cmd does.
+		const source = flags === CMD_SCRIPT_FLAGS && builder.analysisOwner?.nativeTool !== undefined
+			? respellUnquotedBackslashes(script, CMD_ESCAPE, false) : script;
+		inspectShellScript(source, cwd, depth + 1, builder, shellOperation);
 		return;
 	}
 }

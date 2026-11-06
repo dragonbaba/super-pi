@@ -9,6 +9,7 @@ import { isReadOnlyFindLoop } from "./readonly-find-loop.ts";
 import { findPredicateHasOperand, isReadOnlySortTail } from "./readonly-find.ts";
 import { sortHasTerminalOption, sortLongOption, sortOptionRequiresValue } from "./sort-options.ts";
 import { NODE_COMMAND_PATTERN, PYTHON_COMMAND_PATTERN } from "./regex.ts";
+import { CMD_ESCAPE, respellUnquotedBackslashes } from "./windows-separators.ts";
 import { bashPipelinePrefixEnd, bashScriptOperandIndex, hasStatefulBashPrintf, isBashArithmeticCommandHead, isBashNetworkRedirectionTarget, shellExpansionRisk, hasUnsafeBashTestOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 
 const MAX_COMMAND_CHARS = 128 * 1024;
@@ -27,6 +28,22 @@ const SIMPLE_MUTATIONS = new Set([...SIMPLE_DELETIONS, "mkdir", "md", "touch"]);
 const COPY_COMMANDS = new Set(["cp", "copy"]);
 const MOVE_COMMANDS = new Set(["mv", "move", "rename", "ren"]);
 const GIT_READ_ONLY = new Set(["status", "diff", "log", "show", "ls-files", "rev-parse"]);
+// Native authorization only: PowerShell file cmdlets, after Claude Code's PowerShell
+// scope checks. Kind codes keep the table allocation-free; ALIAS entries apply only to
+// the PowerShell tool because Bash may have an unrelated program of that name.
+const CMDLET_DELETE = 1, CMDLET_WRITE = 2, CMDLET_COPY = 3, CMDLET_MOVE = 4, CMDLET_ALIAS = 8;
+const POWERSHELL_FILE_CMDLETS = new Map<string, number>([
+  ["remove-item", CMDLET_DELETE], ["ri", CMDLET_DELETE | CMDLET_ALIAS],
+  ["set-content", CMDLET_WRITE], ["add-content", CMDLET_WRITE], ["ac", CMDLET_WRITE | CMDLET_ALIAS],
+  ["clear-content", CMDLET_WRITE], ["clc", CMDLET_WRITE | CMDLET_ALIAS], ["out-file", CMDLET_WRITE],
+  ["tee-object", CMDLET_WRITE], ["new-item", CMDLET_WRITE], ["ni", CMDLET_WRITE | CMDLET_ALIAS],
+  ["copy-item", CMDLET_COPY], ["cpi", CMDLET_COPY | CMDLET_ALIAS],
+  ["move-item", CMDLET_MOVE], ["mi", CMDLET_MOVE | CMDLET_ALIAS], ["rename-item", CMDLET_MOVE], ["rni", CMDLET_MOVE | CMDLET_ALIAS],
+]);
+const POWERSHELL_PATH_PARAMETERS = new Set(["-path", "-literalpath", "-lp", "-pspath", "-filepath"]);
+const POWERSHELL_SWITCH_PARAMETERS = new Set([
+  "-recurse", "-r", "-force", "-fo", "-nonewline", "-append", "-passthru", "-whatif", "-confirm", "-noclobber", "-container", "-verbose", "-debug", "-asbytestream",
+]);
 
 export type BashPermissionKind = "read-only" | "known-mutation" | "opaque-script";
 
@@ -52,6 +69,8 @@ interface ScopeBuilder extends BashPermissionScope {
   mutationDetected: boolean;
   uncertainContext: boolean;
   unverifiableMutation: boolean;
+  /** Inside a native `cmd /c` script, where `/x` words are options rather than paths. */
+  cmdOptions: boolean;
 }
 
 function commandName(value: string): string {
@@ -154,7 +173,7 @@ function addPositionalTargets(
       optionsEnded = true;
       continue;
     }
-    if (!optionsEnded && token.startsWith("-")) {
+    if (!optionsEnded && (token.startsWith("-") || builder.cmdOptions && token.length === 2 && token.charCodeAt(0) === 47)) {
       if (destructive === "move") {
         unknownMoveOptions = true; builder.unverifiableMutation = true;
         markOpaque(builder, "unverifiable_move_options");
@@ -271,6 +290,76 @@ function inspectKnownMutation(command: string, tokens: PermissionTokens, start: 
     if (!inPlace) return false;
     markMutation(builder, "sed_in_place");
     if (addPositionalTargets(tokens, start, builder, cwd, 1, false) < 2) markOpaque(builder, "sed_target_unverifiable");
+    return true;
+  }
+  return false;
+}
+
+/**
+ * PowerShell binds named parameters, then fills Path and Destination from positional
+ * words. An unknown named parameter is assumed to take a value; if that leaves no Path,
+ * the mutation stays unverifiable and asks instead of passing as read-only.
+ */
+function inspectPowerShellFileCmdlet(command: string, kind: number, tokens: PermissionTokens, start: number, cwd: string, builder: ScopeBuilder): void {
+  markMutation(builder, command);
+  let path = false, destination = false, noFile = false;
+  for (let index = start; index < tokens.length; index++) {
+    const token = tokens[index]!;
+    let role: 1 | 2, value: string | undefined, valueIndex = index;
+    if (token.length > 1 && token.charCodeAt(0) === 45) {
+      const colon = token.indexOf(":");
+      const name = (colon < 0 ? token : token.slice(0, colon)).toLowerCase();
+      if (POWERSHELL_SWITCH_PARAMETERS.has(name)) continue;
+      if (colon >= 0) value = token.slice(colon + 1);
+      else { valueIndex = ++index; value = tokens[index]; }
+      if (POWERSHELL_PATH_PARAMETERS.has(name)) role = 1;
+      else if (name === "-destination") role = 2;
+      else { if (name === "-variable") noFile = true; continue; } // Tee-Object -Variable writes no file.
+    } else if (!path) { role = 1; value = token; }
+    else if (!destination && (kind === CMDLET_COPY || kind === CMDLET_MOVE)) { role = 2; value = token; }
+    else continue;
+    if (role === 1) path = true; else destination = true;
+    if (!value) { markUnverifiableCmdletTarget(builder); continue; }
+    if (role === 1 && kind === CMDLET_COPY) continue; // A copy only reads its source.
+    addCmdletOperands(builder, value, cwd, tokens.expansions?.[valueIndex], role === 1 && (kind === CMDLET_DELETE || kind === CMDLET_MOVE));
+  }
+  if (!path && !noFile && kind !== CMDLET_COPY) markUnverifiableCmdletTarget(builder);
+}
+
+function markUnverifiableCmdletTarget(builder: ScopeBuilder): void {
+  builder.dynamicScope = true;
+  builder.unverifiableMutation = true;
+  markOpaque(builder, "missing_static_target");
+}
+
+/** A PowerShell path parameter takes a comma-separated list; each item is its own operand. */
+function addCmdletOperands(builder: ScopeBuilder, value: string, cwd: string, expansion: number | undefined, destructive: boolean): void {
+  let start = 0;
+  for (let comma = value.indexOf(","); comma >= 0; comma = value.indexOf(",", start)) {
+    if (comma > start) addTarget(builder, value.slice(start, comma), cwd, true, expansion, destructive);
+    start = comma + 1;
+  }
+  if (start < value.length) addTarget(builder, start === 0 ? value : value.slice(start), cwd, true, expansion, destructive);
+}
+
+/**
+ * cmd /c and /k run the rest of the line. One remaining word is the script itself (cmd
+ * escapes with `^`, so its backslashes are separators); several remaining words are
+ * already that script's words. Inside it, two-character `/x` words are cmd options.
+ */
+function inspectNativeCmdWrapper(tokens: PermissionTokens, start: number, cwd: string, depth: number, builder: ScopeBuilder): boolean {
+  for (let index = start; index < tokens.length; index++) {
+    const token = tokens[index]!;
+    if (token.length !== 2 || token.charCodeAt(0) !== 47) continue;
+    const flag = token.charCodeAt(1) | 0x20;
+    if (flag !== 99 && flag !== 107) continue;
+    if (index + 1 >= tokens.length || depth >= MAX_DEPTH) return false;
+    const previous = builder.cmdOptions;
+    builder.cmdOptions = true;
+    try {
+      if (index + 2 === tokens.length) inspectScript(respellUnquotedBackslashes(tokens[index + 1]!, CMD_ESCAPE, false), cwd, depth + 1, builder);
+      else inspectSegment(tokens, cwd, depth + 1, builder, index + 1);
+    } finally { builder.cmdOptions = previous; }
     return true;
   }
   return false;
@@ -394,6 +483,15 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
   if (bareControl && (command === "for" || command === "done" || command === "}")) return cwd;
   if (bareControl && (command === "do" || command === "{")) return index + 1 < tokens.length ? inspectSegment(tokens, cwd, depth + 1, builder, index + 1) : cwd;
   if (isBashArithmeticCommandHead(tokens, index)) { markUncertainContext(builder, "unverifiable_arithmetic_command"); return cwd; }
+  // Equal length: only letter case differs, so this is the bare cmdlet name, not a path.
+  const nativeTool = builder.analysisOwner?.nativeTool;
+  if (nativeTool !== undefined && tokens[index]!.length === command.length) {
+    const cmdlet = POWERSHELL_FILE_CMDLETS.get(command);
+    if (cmdlet !== undefined && ((cmdlet & CMDLET_ALIAS) === 0 || nativeTool === "powershell")) {
+      inspectPowerShellFileCmdlet(command, cmdlet & ~CMDLET_ALIAS, tokens, index + 1, cwd, builder);
+      return cwd;
+    }
+  }
   if (tokens[index] !== command && command !== "command" && command !== "exec") {
     markOpaque(builder, "explicit_or_cased_executable");
     addTarget(builder, tokens[index]!, cwd);
@@ -466,6 +564,8 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
   }
   if (SCRIPT_WRAPPERS.has(command)) {
     addClass(builder, `wrapper:${command}`);
+    if ((command === "cmd" || command === "cmd.exe") && builder.analysisOwner?.nativeTool !== undefined
+      && inspectNativeCmdWrapper(tokens, index + 1, cwd, depth, builder)) return cwd;
     const source = wrapperScript(tokens, index + 1, command === "bash" || command === "bash.exe" || command === "sh" || command === "zsh");
     if (!source || depth >= MAX_DEPTH) {
       markOpaque(builder, "opaque_shell_wrapper");
@@ -825,6 +925,7 @@ export function inspectBashPermissionScope(input: unknown, cwd: string, analysis
     mutationDetected: false,
     uncertainContext: false,
     unverifiableMutation: false,
+    cmdOptions: false,
   };
   if (command.length > MAX_COMMAND_CHARS) {
     markOpaque(builder, "oversized_command");

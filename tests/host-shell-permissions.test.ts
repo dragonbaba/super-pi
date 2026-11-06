@@ -10,6 +10,7 @@ import { SessionManager } from "../packages/coding-agent/src/core/session-manage
 import { createBashTool } from "../packages/coding-agent/src/core/tools/bash.ts";
 import { createPowerShellTool } from "../packages/coding-agent/src/core/tools/powershell.ts";
 import { getShellCwdBinding } from "../packages/coding-agent/src/core/tools/shell-cwd.ts";
+import { inspectBashPermissionScope } from "../packages/coding-agent/src/core/shell-policy/permission-bash.ts";
 import { createOwnedTaskFixture } from "./helpers/owned-task-fixture.ts";
 import { createEventBus } from "../packages/coding-agent/src/core/event-bus.ts";
 import { SessionTasks } from "../packages/coding-agent/src/core/tasks/session-tasks.ts";
@@ -120,6 +121,24 @@ test("PowerShell backslash paths keep their separators before native authorizati
   // A quoted nested Bash script keeps its own backslash meaning: `.\./outside/x` is `../outside/x` there.
   await f.authorize("powershell","bash -c 'rm -rf .\\./outside/x'");
   assert.equal(f.dialogs.length,2);assert.ok(f.dialogs[1]!.includes(join(f.outside,"x")));
+});
+
+test("native authorization reads PowerShell file cmdlets and cmd /c operands like rm and redirection",{skip:process.platform!=="win32"},async t=>{
+  const f=await fixture(t);await fs.writeFile(join(f.outside,"existing.txt"),"original");
+  // After Claude Code's PowerShell scope checks: cmdlet writers and cmd deletions use the existing outside-path rules.
+  for(const command of ["Set-Content ..\\outside\\existing.txt changed","Copy-Item a.txt -Destination ..\\outside\\existing.txt"]) {
+    await assert.rejects(f.authorize("powershell",command),/EXTERNAL_FILE_WRITE_BLOCKED/,command);await f.resume();
+  }
+  for(const command of ["Move-Item ..\\outside\\existing.txt b.txt","ri ..\\outside\\x -r -fo","cmd /c rd /s /q ..\\outside\\x","cmd /c \"del /q ..\\outside\\existing.txt\""]) {
+    const before=f.dialogs.length;await f.authorize("powershell",command);
+    assert.equal(f.dialogs.length,before+1,command);assert.ok(f.dialogs.at(-1)!.includes(f.outside),command);
+  }
+  const before=f.dialogs.length;
+  await f.authorize("powershell","Set-Content .\\a.txt hi; Copy-Item a.txt b.txt; 'hi' | Tee-Object -Variable v");
+  assert.equal(f.dialogs.length,before);
+  await assert.rejects(f.authorize("powershell","cmd /c \"rd /s /q .\\.git\""),/敏感目标禁止删除/);
+  // The legacy guard's scan is unchanged; only native authorization reads cmdlet operands.
+  assert.equal(inspectBashPermissionScope({command:"Set-Content ../outside/a.txt hi"},f.cwd)?.mutationDetected,false);
 });
 
 test("only recognized uncertain mutations ask; ordinary shell paths, recovery and npm keep actual runtime semantics",async t=>{

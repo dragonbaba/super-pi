@@ -73,6 +73,9 @@ export class ShellAnalysisOwner {
     targets.push({ target, kind });
   }
 
+  /** The native tool whose operands this owner collects; undefined for legacy analysis. */
+  get nativeTool(): "bash" | "powershell" | undefined { return this.nativeTargets ? this.nativeShell : undefined; }
+
   takeNativeTargets(): NativeShellTarget[] | undefined {
     const targets = this.nativeTargets; this.nativeTargets = undefined; return targets;
   }
