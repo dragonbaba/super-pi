@@ -11,6 +11,7 @@ import { createBashTool } from "../packages/coding-agent/src/core/tools/bash.ts"
 import { createPowerShellTool } from "../packages/coding-agent/src/core/tools/powershell.ts";
 import { getShellCwdBinding } from "../packages/coding-agent/src/core/tools/shell-cwd.ts";
 import { inspectBashPermissionScope } from "../packages/coding-agent/src/core/shell-policy/permission-bash.ts";
+import { canonicalizeProspectivePath } from "../packages/coding-agent/src/core/files/protected-path-policy.ts";
 import { createOwnedTaskFixture } from "./helpers/owned-task-fixture.ts";
 import { createEventBus } from "../packages/coding-agent/src/core/event-bus.ts";
 import { SessionTasks } from "../packages/coding-agent/src/core/tasks/session-tasks.ts";
@@ -131,7 +132,7 @@ test("native authorization reads PowerShell file cmdlets and cmd /c operands lik
   for(const command of ["Set-Content ..\\outside\\existing.txt changed","Copy-Item a.txt -Destination ..\\outside\\existing.txt",
     "Copy-Item ..\\outside\\existing.txt -Path a.txt","Set-Content -Path \"../outside/a,b.txt\" changed",
     "Set-Content -Path a.txt, ../outside/existing.txt -Value changed","Copy-Item -Path existing.txt -Destination ../outside",
-    "Copy-Item -Path a.txt -Dest ../outside/existing.txt",
+    "Copy-Item -Path a.txt -Dest ../outside/existing.txt","Set-Content -Path ../outside/existing.txt '-WhatIf'",
     "New-Item -Path ../outside -Name existing.txt -ItemType File -Force"]) {
     await assert.rejects(f.authorize("powershell",command),/EXTERNAL_FILE_WRITE_BLOCKED/,command);await f.resume();
   }
@@ -150,6 +151,12 @@ test("native authorization reads PowerShell file cmdlets and cmd /c operands lik
   await assert.rejects(f.authorize("powershell","cmd /c \"rd /s /q .\\.git\""),/敏感目标禁止删除/);
   // The legacy guard's scan is unchanged; only native authorization reads cmdlet operands.
   assert.equal(inspectBashPermissionScope({command:"Set-Content ../outside/a.txt hi"},f.cwd)?.mutationDetected,false);
+});
+
+test("a prospective path beneath an existing regular file resolves instead of failing authorization",async t=>{
+  // Copy-Item a.txt b.txt also reports b.txt/a.txt for a directory destination; on Linux that is ENOTDIR.
+  const f=await fixture(t), file=join(f.cwd,"b.txt");await fs.writeFile(file,"x");
+  assert.equal(await canonicalizeProspectivePath(join(file,"a.txt")),join(await fs.realpath(file),"a.txt"));
 });
 
 test("only recognized uncertain mutations ask; ordinary shell paths, recovery and npm keep actual runtime semantics",async t=>{

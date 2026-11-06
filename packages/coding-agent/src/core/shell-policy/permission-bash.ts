@@ -32,8 +32,9 @@ const GIT_READ_ONLY = new Set(["status", "diff", "log", "show", "ls-files", "rev
 // scope checks. Kind codes keep the table allocation-free; ALIAS entries apply only to
 // the PowerShell tool because Bash may have an unrelated program of that name.
 const CMDLET_DELETE = 1, CMDLET_WRITE = 2, CMDLET_COPY = 3, CMDLET_MOVE = 4, CMDLET_KIND = 7, CMDLET_ALIAS = 8, CMDLET_NAME = 16, CMDLET_RENAME = 32;
-// Per-token comma flags from the tokenizer: only unquoted commas separate list items.
-const TOKEN_QUOTED_COMMA = 1, TOKEN_UNQUOTED_COMMA = 2;
+// Per-word flags from the tokenizer: only unquoted commas separate list items, and a
+// quoted word is data, never a PowerShell parameter.
+const TOKEN_QUOTED_COMMA = 1, TOKEN_UNQUOTED_COMMA = 2, TOKEN_QUOTED = 4, TOKEN_COMMAS = 3;
 const POWERSHELL_FILE_CMDLETS = new Map<string, number>([
   ["remove-item", CMDLET_DELETE], ["ri", CMDLET_DELETE | CMDLET_ALIAS],
   ["set-content", CMDLET_WRITE], ["add-content", CMDLET_WRITE], ["ac", CMDLET_WRITE | CMDLET_ALIAS],
@@ -319,7 +320,7 @@ function inspectPowerShellFileCmdlet(command: string, kind: number, tokens: Perm
   let nameIndex = -1, nameOffset = 0, noFile = false, whatIf = false;
   for (let index = start; index < tokens.length; index++) {
     const token = tokens[index]!;
-    if (token.length < 2 || token.charCodeAt(0) !== 45) continue;
+    if (!isCmdletParameter(tokens, index)) continue;
     const colon = token.indexOf(":");
     const name = (colon < 0 ? token : token.slice(0, colon)).toLowerCase();
     if (colon < 0 && (name === "-whatif" || name === "-wi")) { whatIf = true; continue; }
@@ -338,7 +339,7 @@ function inspectPowerShellFileCmdlet(command: string, kind: number, tokens: Perm
   const positionalDestination = kind === CMDLET_COPY || kind === CMDLET_MOVE;
   for (let index = start; index < tokens.length && (pathIndex < 0 || positionalDestination && destinationIndex < 0); index++) {
     const token = tokens[index]!;
-    if (token.length > 1 && token.charCodeAt(0) === 45) {
+    if (isCmdletParameter(tokens, index)) {
       if (token.indexOf(":") < 0 && !POWERSHELL_SWITCH_PARAMETERS.has(token.toLowerCase())) index = cmdletListEnd(tokens, index + 1);
       continue;
     }
@@ -350,7 +351,7 @@ function inspectPowerShellFileCmdlet(command: string, kind: number, tokens: Perm
   if (childName === "") markUnverifiableCmdletTarget(builder);
   // Destination is one path; a list there is left to the per-word checks below.
   const into = positionalDestination && !rename && destinationIndex >= 0 && destinationEnd === destinationIndex
-    && ((tokens.commas?.[destinationIndex] ?? 0) & TOKEN_UNQUOTED_COMMA) === 0 ? cmdletValue(tokens, destinationIndex, destinationOffset) : undefined;
+    && ((tokens.wordFlags?.[destinationIndex] ?? 0) & TOKEN_UNQUOTED_COMMA) === 0 ? cmdletValue(tokens, destinationIndex, destinationOffset) : undefined;
   if (pathIndex >= 0) {
     // A copy only reads its source.
     if (kind !== CMDLET_COPY) addCmdletList(builder, tokens, pathIndex, pathOffset, pathEnd, cwd, childExpansion, kind === CMDLET_DELETE || kind === CMDLET_MOVE, childName, undefined);
@@ -375,12 +376,12 @@ function cmdletParameterRole(name: string): number {
 
 /** The last word of a comma list starting at `index`: a word ending, or the next word starting, with an unquoted comma continues it. */
 function cmdletListEnd(tokens: PermissionTokens, index: number): number {
-  const commas = tokens.commas;
-  if (!commas) return index;
+  const flags = tokens.wordFlags;
+  if (!flags) return index;
   while (index + 1 < tokens.length) {
     const token = tokens[index]!, next = tokens[index + 1]!;
-    const trailing = ((commas[index] ?? 0) & TOKEN_UNQUOTED_COMMA) !== 0 && token.charCodeAt(token.length - 1) === 44;
-    const leading = ((commas[index + 1] ?? 0) & TOKEN_UNQUOTED_COMMA) !== 0 && next.charCodeAt(0) === 44;
+    const trailing = ((flags[index] ?? 0) & TOKEN_UNQUOTED_COMMA) !== 0 && token.charCodeAt(token.length - 1) === 44;
+    const leading = ((flags[index + 1] ?? 0) & TOKEN_UNQUOTED_COMMA) !== 0 && next.charCodeAt(0) === 44;
     if (!trailing && !leading) break;
     index++;
   }
@@ -391,8 +392,14 @@ function addCmdletList(builder: ScopeBuilder, tokens: PermissionTokens, index: n
   const first = cmdletValue(tokens, index, offset);
   if (!first) { markUnverifiableCmdletTarget(builder); return; }
   for (let word = index; word <= end; word++) {
-    addCmdletOperands(builder, word === index ? first : tokens[word]!, cwd, (tokens.expansions?.[word] ?? 0) | extraExpansion, destructive, tokens.commas?.[word], child, into);
+    addCmdletOperands(builder, word === index ? first : tokens[word]!, cwd, (tokens.expansions?.[word] ?? 0) | extraExpansion, destructive, (tokens.wordFlags?.[word] ?? 0) & TOKEN_COMMAS, child, into);
   }
+}
+
+/** `-Name` written unquoted; a quoted `'-WhatIf'` is a string argument. */
+function isCmdletParameter(tokens: PermissionTokens, index: number): boolean {
+  const token = tokens[index]!;
+  return token.length > 1 && token.charCodeAt(0) === 45 && ((tokens.wordFlags?.[index] ?? 0) & TOKEN_QUOTED) === 0;
 }
 
 function cmdletValue(tokens: PermissionTokens, index: number, offset: number): string | undefined {
@@ -706,7 +713,7 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
   return cwd;
 }
 
-type PermissionTokens = string[] & { expansions?: number[]; commas?: number[]; redirections?: number[]; redirectionFds?: (string | undefined)[]; firstWordQuoted?: boolean; secondWordQuoted?: boolean; thirdWordQuoted?: boolean; bashTestOpenAt?: number; bashTestClosed?: boolean; bashTestProcessSubstitution?: boolean; bashArithmeticCommandAt?: number };
+type PermissionTokens = string[] & { expansions?: number[]; wordFlags?: number[]; redirections?: number[]; redirectionFds?: (string | undefined)[]; firstWordQuoted?: boolean; secondWordQuoted?: boolean; thirdWordQuoted?: boolean; bashTestOpenAt?: number; bashTestClosed?: boolean; bashTestProcessSubstitution?: boolean; bashArithmeticCommandAt?: number };
 
 function inspectTokenBuffer(tokens: PermissionTokens, cwd: string, depth: number, builder: ScopeBuilder): string {
   if (tokens.length === 0) return cwd;
@@ -859,7 +866,7 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
       }
       if (code === quote) { quote = 0; ansiC = false; }
       else {
-        if (code === 44) { const commas = tokens.commas ??= []; commas[tokens.length] = (commas[tokens.length] ?? 0) | TOKEN_QUOTED_COMMA; }
+        if (code === 44) { const flags = tokens.wordFlags ??= []; flags[tokens.length] = (flags[tokens.length] ?? 0) | TOKEN_QUOTED_COMMA; }
         value += command[index];
       }
       continue;
@@ -890,6 +897,7 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
     }
     if (code === 34 || code === 39) {
       quote = code;
+      const flags = tokens.wordFlags ??= []; flags[tokens.length] = (flags[tokens.length] ?? 0) | TOKEN_QUOTED;
       literalWord = false;
       tokenStarted = true;
       continue;
@@ -957,7 +965,7 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
       if (tokens.redirections) tokens.redirections.length = 0;
       if (tokens.redirectionFds) tokens.redirectionFds.length = 0;
       if (tokens.expansions) tokens.expansions.length = 0;
-      if (tokens.commas) tokens.commas.length = 0;
+      if (tokens.wordFlags) tokens.wordFlags.length = 0;
       tokens.bashTestOpenAt = undefined;
       tokens.bashTestClosed = undefined;
       tokens.bashTestProcessSubstitution = undefined;
@@ -972,7 +980,7 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
       if ((code === 38 || code === 124) && command.charCodeAt(index + 1) === code) index += 1;
       continue;
     }
-    if (code === 44) { const commas = tokens.commas ??= []; commas[tokens.length] = (commas[tokens.length] ?? 0) | TOKEN_UNQUOTED_COMMA; }
+    if (code === 44) { const flags = tokens.wordFlags ??= []; flags[tokens.length] = (flags[tokens.length] ?? 0) | TOKEN_UNQUOTED_COMMA; }
     value += command[index];
     tokenStarted = true;
   }

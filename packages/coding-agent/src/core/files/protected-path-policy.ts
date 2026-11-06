@@ -34,7 +34,8 @@ export async function canonicalizeProspectivePath(candidate: string): Promise<st
       const canonicalParent = await realpath(probe);
       return resolve(canonicalParent, ...suffix);
     } catch (error) {
-      if (!isCode(error, "ENOENT")) throw error;
+      // A component that is a regular file (ENOTDIR) means the path cannot exist yet either.
+      if (!isCode(error, "ENOENT") && !isCode(error, "ENOTDIR")) throw error;
       const parent = dirname(probe);
       if (parent === probe) throw error;
       suffix.unshift(probe.slice(parent.length).replaceAll("/", "").replaceAll("\\", ""));
