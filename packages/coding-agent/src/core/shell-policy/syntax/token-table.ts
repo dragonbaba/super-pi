@@ -1,13 +1,16 @@
 /**
- * One dialect's tokens for one source text. Words are offsets into the single source
- * string; their text is sliced (or decoded) only when a consumer asks for it.
+ * One dialect's tokens for one source text. PowerShell and cmd words are offsets into
+ * the single source string, sliced or decoded only when a consumer fills its word
+ * buffer. Bash words are decoded once while lexing (`texts`), because their quoting,
+ * ANSI-C, arithmetic and substitution state is the lexer's own; every consumer then
+ * shares those strings instead of re-tokenizing the source.
  *
  * Ownership: a table belongs to one authorization (the ShellAnalysisOwner cache) or to
  * one call when no owner exists. Capacity starts small and doubles; a table is never
  * reused for another source, so a large script cannot pin its backing store elsewhere.
  */
 
-export const DIALECT_POWERSHELL = 1, DIALECT_CMD = 2;
+export const DIALECT_POWERSHELL = 1, DIALECT_CMD = 2, DIALECT_BASH = 3;
 
 // Expansion bits keep the values the existing scanners use per word.
 export const EXPANSION_QUOTED_VARIABLE = 1, EXPANSION_VARIABLE = 2, EXPANSION_SUBSTITUTION = 4,
@@ -17,12 +20,20 @@ export const WORD_QUOTED = 64;
 export const WORD_QUOTED_COMMA = 128, WORD_UNQUOTED_COMMA = 256;
 /** The word's text differs from its source slice (quotes or escapes removed). */
 export const WORD_DECODE = 512;
-/** A redirection operator; its text is the operator and `fds` holds the source descriptor. */
+/** A redirection operator; its text is the operator and its descriptor is in `fds`/`fdTexts`. */
 export const WORD_REDIRECTION = 1024;
+/** Quoting, escapes or a substitution made the word non-literal (the scanners' "quoted" word). */
+export const WORD_NONLITERAL = 2048;
 
 /** What ends a segment. */
 export const SEGMENT_END = 0, SEGMENT_SEQUENCE = 1, SEGMENT_PIPE = 2, SEGMENT_AND = 3, SEGMENT_OR = 4,
-  SEGMENT_BACKGROUND = 5, SEGMENT_OPEN = 6, SEGMENT_CLOSE = 7;
+  SEGMENT_BACKGROUND = 5, SEGMENT_OPEN = 6, SEGMENT_CLOSE = 7, SEGMENT_LF = 8, SEGMENT_CR = 9;
+/** The separator text the Bash scanners compare against; undefined after the last segment. */
+export const SEGMENT_SEPARATOR_TEXT: readonly (string | undefined)[] = Object.freeze([undefined, ";", "|", "&&", "||", "&", "(", ")", "\n", "\r"]);
+
+/** Bash per-segment facts. */
+export const SEGMENT_PIPELINE_MEMBER = 1, SEGMENT_CONDITIONAL_MEMBER = 2, SEGMENT_SUBSHELL_CLOSED_AFTER = 4,
+  SEGMENT_DYNAMIC = 8, SEGMENT_TEST_CLOSED = 16, SEGMENT_TEST_PROCESS_SUBSTITUTION = 32;
 
 const INITIAL_TOKENS = 16, INITIAL_SEGMENTS = 4, INITIAL_NESTED = 2;
 
@@ -35,11 +46,21 @@ export class ShellTokenTable {
   flags = new Uint16Array(INITIAL_TOKENS);
   /** Redirection source descriptor (0-9), or -1. */
   fds = new Int8Array(INITIAL_TOKENS);
+  /** Bash: decoded word text per token, and a redirection's source descriptor text. */
+  texts?: string[];
+  fdTexts?: (string | undefined)[];
   segmentCount = 0;
   /** Exclusive token end of each segment; segment n starts at segmentEnds[n - 1]. */
   segmentEnds = new Uint32Array(INITIAL_SEGMENTS);
   segmentSeparators = new Uint8Array(INITIAL_SEGMENTS);
   segmentDepths = new Uint8Array(INITIAL_SEGMENTS);
+  /** Source offset after the previous separator, and of this segment's separator. */
+  segmentSourceStarts = new Uint32Array(INITIAL_SEGMENTS);
+  segmentSourceEnds = new Uint32Array(INITIAL_SEGMENTS);
+  segmentMeta = new Uint8Array(INITIAL_SEGMENTS);
+  /** Bash `[[` and `((` command positions within the segment, or -1. */
+  segmentTestOpen = new Int32Array(INITIAL_SEGMENTS);
+  segmentArithmeticAt = new Int32Array(INITIAL_SEGMENTS);
   /** PowerShell `$(...)` and `@(...)` bodies, read as scripts of their own. */
   nestedCount = 0;
   nestedStarts = new Uint32Array(INITIAL_NESTED);
@@ -50,12 +71,18 @@ export class ShellTokenTable {
   constructor(source: string, dialect: number) {
     this.source = source;
     this.dialect = dialect;
+    if (dialect === DIALECT_BASH) { this.texts = []; this.fdTexts = []; }
   }
 
   get byteLength(): number {
-    return 2 * this.source.length + this.starts.byteLength + this.ends.byteLength + this.flags.byteLength + this.fds.byteLength
+    let bytes = 2 * this.source.length + this.starts.byteLength + this.ends.byteLength + this.flags.byteLength + this.fds.byteLength
       + this.segmentEnds.byteLength + this.segmentSeparators.byteLength + this.segmentDepths.byteLength
+      + this.segmentSourceStarts.byteLength + this.segmentSourceEnds.byteLength + this.segmentMeta.byteLength
+      + this.segmentTestOpen.byteLength + this.segmentArithmeticAt.byteLength
       + this.nestedStarts.byteLength + this.nestedEnds.byteLength;
+    const texts = this.texts;
+    if (texts) for (let index = 0; index < texts.length; index++) bytes += 2 * texts[index]!.length + 8;
+    return bytes;
   }
 
   pushToken(start: number, end: number, flags: number, fd: number): void {
@@ -68,24 +95,46 @@ export class ShellTokenTable {
     this.tokenCount = index + 1;
   }
 
+  /** Bash: a word with its decoded text, or a redirection operator with its descriptor text. */
+  pushText(start: number, end: number, flags: number, text: string, fdText: string | undefined): void {
+    this.texts![this.tokenCount] = text;
+    this.fdTexts![this.tokenCount] = fdText;
+    this.pushToken(start, end, flags, -1);
+  }
+
   /** Close the current segment; an empty segment only updates the previous separator. */
   endSegment(separator: number, depth: number): void {
+    this.closeSegment(separator, depth, 0, 0, 0, -1, -1);
+  }
+
+  /** Returns whether a segment was recorded. */
+  closeSegment(separator: number, depth: number, sourceStart: number, sourceEnd: number, meta: number, testOpen: number, arithmeticAt: number): boolean {
     const start = this.segmentCount === 0 ? 0 : this.segmentEnds[this.segmentCount - 1]!;
     if (this.tokenCount === start) {
-      if (this.segmentCount > 0 && separator !== SEGMENT_OPEN && separator !== SEGMENT_CLOSE
+      // A list operator after `)` belongs to the closed command: keep its dependency edge.
+      // The end of the script is not an operator, so `(a)` keeps its `)`.
+      if (this.segmentCount > 0 && separator !== SEGMENT_END && separator !== SEGMENT_OPEN && separator !== SEGMENT_CLOSE
         && this.segmentSeparators[this.segmentCount - 1] === SEGMENT_CLOSE) this.segmentSeparators[this.segmentCount - 1] = separator;
-      return;
+      return false;
     }
     const index = this.segmentCount;
-    if (index === this.segmentEnds.length) {
-      this.segmentEnds = grow32(this.segmentEnds);
-      this.segmentSeparators = grow8(this.segmentSeparators);
-      this.segmentDepths = grow8(this.segmentDepths);
-    }
+    if (index === this.segmentEnds.length) this.growSegments();
     this.segmentEnds[index] = this.tokenCount;
     this.segmentSeparators[index] = separator;
     this.segmentDepths[index] = depth > 255 ? 255 : depth;
+    this.segmentSourceStarts[index] = sourceStart;
+    this.segmentSourceEnds[index] = sourceEnd;
+    this.segmentMeta[index] = meta;
+    this.segmentTestOpen[index] = testOpen;
+    this.segmentArithmeticAt[index] = arithmeticAt;
     this.segmentCount = index + 1;
+    return true;
+  }
+
+  /** Bash `)`: the last recorded segment inside the closed subshell ends it. */
+  markSubshellClosed(depth: number): void {
+    const last = this.segmentCount - 1;
+    if (last >= 0 && this.segmentDepths[last]! >= depth) this.segmentMeta[last]! |= SEGMENT_SUBSHELL_CLOSED_AFTER;
   }
 
   pushNested(start: number, end: number): void {
@@ -109,6 +158,17 @@ export class ShellTokenTable {
     const flags = new Uint16Array(this.flags.length * 2); flags.set(this.flags); this.flags = flags;
     const fds = new Int8Array(this.fds.length * 2); fds.set(this.fds); this.fds = fds;
   }
+
+  private growSegments(): void {
+    this.segmentEnds = grow32(this.segmentEnds);
+    this.segmentSeparators = grow8(this.segmentSeparators);
+    this.segmentDepths = grow8(this.segmentDepths);
+    this.segmentSourceStarts = grow32(this.segmentSourceStarts);
+    this.segmentSourceEnds = grow32(this.segmentSourceEnds);
+    this.segmentMeta = grow8(this.segmentMeta);
+    const testOpen = new Int32Array(this.segmentTestOpen.length * 2); testOpen.set(this.segmentTestOpen); this.segmentTestOpen = testOpen;
+    const arithmetic = new Int32Array(this.segmentArithmeticAt.length * 2); arithmetic.set(this.segmentArithmeticAt); this.segmentArithmeticAt = arithmetic;
+  }
 }
 
 function grow32(values: Uint32Array<ArrayBuffer>): Uint32Array<ArrayBuffer> {
@@ -123,6 +183,7 @@ function grow8(values: Uint8Array<ArrayBuffer>): Uint8Array<ArrayBuffer> {
 export type SegmentWords = string[] & {
   expansions?: number[]; wordFlags?: number[]; redirections?: number[]; redirectionFds?: (string | undefined)[];
   firstWordQuoted?: boolean; secondWordQuoted?: boolean; thirdWordQuoted?: boolean;
+  bashTestOpenAt?: number; bashTestClosed?: boolean; bashTestProcessSubstitution?: boolean; bashArithmeticCommandAt?: number;
 };
 
 // permission-bash per-word flags.
@@ -130,9 +191,10 @@ const SCOPE_QUOTED_COMMA = 1, SCOPE_UNQUOTED_COMMA = 2, SCOPE_QUOTED = 4;
 const FD_TEXT: readonly string[] = Object.freeze(["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]);
 
 /**
- * Refill the caller's reusable word buffer with one segment. Word strings are the only
- * allocations; the side arrays are created once per buffer and only when needed.
- * A null-device redirection target (`$null`, `nul`) reads as `/dev/null`.
+ * Refill the caller's reusable word buffer with one segment. Windows word strings are
+ * the only allocations (Bash words are already decoded); the side arrays are created
+ * once per buffer and only when needed. A PowerShell or cmd null-device redirection
+ * target (`$null`, `nul`) reads as `/dev/null`.
  */
 export function fillSegmentWords(table: ShellTokenTable, segment: number, words: SegmentWords, decode: (table: ShellTokenTable, index: number) => string): void {
   words.length = 0;
@@ -143,28 +205,39 @@ export function fillSegmentWords(table: ShellTokenTable, segment: number, words:
   words.firstWordQuoted = undefined;
   words.secondWordQuoted = undefined;
   words.thirdWordQuoted = undefined;
-  const end = table.segmentEnds[segment]!;
+  const meta = table.segmentMeta[segment]!, testOpen = table.segmentTestOpen[segment]!, arithmeticAt = table.segmentArithmeticAt[segment]!;
+  words.bashTestOpenAt = testOpen < 0 ? undefined : testOpen;
+  words.bashTestClosed = meta & SEGMENT_TEST_CLOSED ? true : undefined;
+  words.bashTestProcessSubstitution = meta & SEGMENT_TEST_PROCESS_SUBSTITUTION ? true : undefined;
+  words.bashArithmeticCommandAt = arithmeticAt < 0 ? undefined : arithmeticAt;
+  const end = table.segmentEnds[segment]!, texts = table.texts;
   let afterRedirection = false;
   for (let index = table.segmentStart(segment); index < end; index++) {
     const flags = table.flags[index]!, position = words.length;
+    const expansion = flags & EXPANSION_MASK;
     if (flags & WORD_REDIRECTION) {
+      // A Bash `{name}` or brace-flagged descriptor word keeps its flags on the operator, as before.
+      if (expansion !== 0) (words.expansions ??= [])[position] = expansion;
       (words.redirections ??= []).push(position);
       const fd = table.fds[index]!;
-      (words.redirectionFds ??= []).push(fd < 0 ? undefined : FD_TEXT[fd]);
-      words.push(table.source.slice(table.starts[index]!, table.ends[index]!));
+      (words.redirectionFds ??= []).push(texts ? table.fdTexts![index] : fd < 0 ? undefined : FD_TEXT[fd]);
+      words.push(texts ? texts[index]! : table.source.slice(table.starts[index]!, table.ends[index]!));
       afterRedirection = true;
       continue;
     }
-    const text = flags & WORD_DECODE ? decode(table, index) : table.source.slice(table.starts[index]!, table.ends[index]!);
-    if (afterRedirection && isNullDevice(table, text, flags)) { words.push("/dev/null"); afterRedirection = false; continue; }
+    const text = texts ? texts[index]! : flags & WORD_DECODE ? decode(table, index) : table.source.slice(table.starts[index]!, table.ends[index]!);
+    if (afterRedirection && !texts && isNullDevice(table, text, flags)) {
+      words.push("/dev/null");
+      afterRedirection = false;
+      continue;
+    }
     afterRedirection = false;
     words.push(text);
-    const expansion = flags & EXPANSION_MASK;
     if (expansion !== 0) (words.expansions ??= [])[position] = expansion;
     const scope = (flags & WORD_QUOTED_COMMA ? SCOPE_QUOTED_COMMA : 0) | (flags & WORD_UNQUOTED_COMMA ? SCOPE_UNQUOTED_COMMA : 0) | (flags & WORD_QUOTED ? SCOPE_QUOTED : 0);
     if (scope !== 0) (words.wordFlags ??= [])[position] = scope;
-    // As the Bash lexers do: quotes, escapes and substitutions make a word non-literal.
-    if (flags & (WORD_DECODE | EXPANSION_SUBSTITUTION)) {
+    // Windows lexers mark decoding and substitution; Bash marks exactly what its lexer saw.
+    if (texts ? flags & WORD_NONLITERAL : flags & (WORD_DECODE | EXPANSION_SUBSTITUTION)) {
       if (position === 0) words.firstWordQuoted = true;
       else if (position === 1) words.secondWordQuoted = true;
       else if (position === 2) words.thirdWordQuoted = true;

@@ -1,5 +1,7 @@
 import { boundedShellInput } from "../tools/bounded-shell-input.ts";
 import { extractCommandSubstitutions, prepareShellAnalysis, type CommandSubstitutionScan, type ShellAnalysisView } from "./shell-substitution.ts";
+import { lexBash } from "./syntax/bash.ts";
+import { DIALECT_BASH } from "./syntax/token-table.ts";
 import { DIALECT_POWERSHELL, lexWindowsScript, type ShellTokenTable } from "./syntax/windows.ts";
 
 export const MAX_ANALYSIS_ENTRIES = 128;
@@ -35,7 +37,8 @@ export function analyzeShellSource(source: string): PreparedShellAnalysis {
  */
 export class ShellAnalysisOwner {
   private readonly entries = new Map<string, PreparedShellAnalysis>();
-  /** PowerShell and cmd token tables, one per source and dialect. */
+  /** Token tables, one per source and dialect. */
+  private readonly bashTables = new Map<string, ShellTokenTable>();
   private readonly powerShellTables = new Map<string, ShellTokenTable>();
   private readonly cmdTables = new Map<string, ShellTokenTable>();
   private command: string | undefined;
@@ -60,17 +63,26 @@ export class ShellAnalysisOwner {
     shellAnalysisOwnership.liveOwners++;
   }
 
-  get size(): number { return this.entries.size + this.powerShellTables.size + this.cmdTables.size; }
+  get size(): number { return this.entries.size + this.bashTables.size + this.powerShellTables.size + this.cmdTables.size; }
+
+  /** Tokenize a Bash source once per authorization; the lifecycle, mutation and scope scanners read the same table. */
+  bashTable(source: string): ShellTokenTable {
+    return this.table(source, DIALECT_BASH);
+  }
 
   /** Tokenize a PowerShell or cmd source once per authorization; every scanner reads the same table. */
   windowsTable(source: string, dialect: number): ShellTokenTable {
+    return this.table(source, dialect);
+  }
+
+  private table(source: string, dialect: number): ShellTokenTable {
     if (this.released) throw new Error("Shell analysis owner is released");
-    const tables = dialect === DIALECT_POWERSHELL ? this.powerShellTables : this.cmdTables;
+    const tables = dialect === DIALECT_BASH ? this.bashTables : dialect === DIALECT_POWERSHELL ? this.powerShellTables : this.cmdTables;
     const cached = tables.get(source);
     if (cached) { this.hits++; shellAnalysisOwnership.hits++; return cached; }
     this.misses++;
     shellAnalysisOwnership.misses++;
-    const table = lexWindowsScript(source, dialect);
+    const table = dialect === DIALECT_BASH ? lexBash(source) : lexWindowsScript(source, dialect);
     const bytes = table.byteLength;
     if (this.size < MAX_ANALYSIS_ENTRIES && this.retainedBytes + bytes <= MAX_ANALYSIS_BYTES) {
       tables.set(source, table);
@@ -137,6 +149,7 @@ export class ShellAnalysisOwner {
     shellAnalysisOwnership.liveEntries -= this.size;
     shellAnalysisOwnership.liveBytes -= this.retainedBytes;
     this.entries.clear();
+    this.bashTables.clear();
     this.powerShellTables.clear();
     this.cmdTables.clear();
     if (this.nativeTargets) this.nativeTargets.length = 0;
