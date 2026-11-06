@@ -102,10 +102,44 @@ function isCommandPrefix(text: string, powerShell: boolean): boolean {
   return first >= 65 && first <= 90 && text.length <= 7 && POWERSHELL_COMMAND_PREFIXES.has(text.toLowerCase());
 }
 
-/** The stronger of `verdict` and the deny/ask rule matching the words collected so far. */
-function strongerRuleVerdict(rules: ProjectRuleSet, powerShell: boolean, argv: readonly string[], verdict: number): number {
+/** Bash builtins and launchers that run the command after them (`command git push`, `sudo -u x make`). */
+const BASH_DISPATCH_WRAPPERS: ReadonlySet<string> = new Set(["command", "builtin", "exec", "sudo", "doas", "env", "nohup", "nice", "timeout"]);
+/** Wrapper options that take the next word as their value. */
+const BASH_WRAPPER_VALUE_OPTIONS: ReadonlySet<string> = new Set(["-a", "-n", "-u", "-g", "-s", "-k", "-C", "-D", "--signal", "--kill-after", "--user", "--group"]);
+const MAX_DISPATCH_WRAPPERS = 4;
+
+/** Where the dispatched command starts after leading wrappers, or 0 (none, or only a `command -v` query). */
+function dispatchedCommandStart(argv: readonly string[]): number {
+  let index = 0;
+  for (let depth = 0; depth < MAX_DISPATCH_WRAPPERS && index < argv.length && BASH_DISPATCH_WRAPPERS.has(argv[index]!); depth++) {
+    const name = argv[index++]!;
+    if (name === "command" && (argv[index] === "-v" || argv[index] === "-V")) return 0;
+    while (index < argv.length) {
+      const word = argv[index]!;
+      if (word === "--") { index++; break; }
+      if (word.length > 1 && word.charCodeAt(0) === 45) { index += BASH_WRAPPER_VALUE_OPTIONS.has(word) ? 2 : 1; continue; }
+      if (name === "env" && isAssignment(word)) { index++; continue; }
+      break;
+    }
+    if (name === "timeout") index++; // the duration
+  }
+  return index < argv.length ? index : 0;
+}
+
+/**
+ * The stronger of `verdict` and the deny/ask rule matching the words collected so far: as
+ * written, and for Bash also from the command after leading dispatch wrappers. May shift `argv`.
+ */
+function strongerRuleVerdict(rules: ProjectRuleSet, powerShell: boolean, argv: string[], verdict: number): number {
   if (argv.length === 0) return verdict;
-  const matched = rules.matchShellWords(powerShell, argv);
+  let matched = rules.matchShellWords(powerShell, argv);
+  const start = powerShell || matched === RULE_DENY ? 0 : dispatchedCommandStart(argv);
+  if (start > 0) {
+    argv.copyWithin(0, start);
+    argv.length -= start;
+    const dispatched = rules.matchShellWords(false, argv);
+    if (dispatched > matched) matched = dispatched;
+  }
   return matched >= RULE_ASK && matched > verdict ? matched : verdict;
 }
 /** `ruleWords` results: not matchable, plain words, or words with a literal file redirection. */
@@ -214,9 +248,20 @@ export function shellRuleVerdict(tool: "bash" | "powershell", command: string, r
       if (flags & WORD_REDIRECTION) { index++; continue; }
       const text = table.texts ? table.texts[index]! : windowsWordText(table, index);
       if ((flags & WORD_QUOTED) === 0) {
-        // A PowerShell segment keeps its script blocks (`try { git push } catch { … }`); each
-        // brace ends the command before it, and the block's first command is matched on its own.
-        if (powerShell && (text === "{" || text === "}")) { verdict = strongerRuleVerdict(rules, true, argv, verdict); argv.length = 0; continue; }
+        // A PowerShell segment keeps its script blocks (`try { git push } catch { … }`), and a
+        // brace may touch a word (`try {git push}`). Each brace ends the command before it.
+        if (powerShell) {
+          let open = 0, close = text.length;
+          while (open < close && text.charCodeAt(open) === 123) open++;
+          while (close > open && text.charCodeAt(close - 1) === 125) close--;
+          if (open > 0) { verdict = strongerRuleVerdict(rules, true, argv, verdict); argv.length = 0; }
+          if (open > 0 || close < text.length) {
+            const word = open === close ? "" : text.slice(open, close);
+            if (word && !(argv.length === 0 && isCommandPrefix(word, true))) argv.push(word);
+            if (close < text.length) { verdict = strongerRuleVerdict(rules, true, argv, verdict); argv.length = 0; }
+            continue;
+          }
+        }
         if (argv.length === 0 && (isCommandPrefix(text, powerShell) || !powerShell && isAssignment(text))) continue;
       }
       argv.push(text);
@@ -301,7 +346,7 @@ function ruleWords(table: ShellTokenTable, segment: number, powerShell: boolean,
     const text = table.texts ? table.texts[index]! : windowsWordText(table, index);
     // A segment that opens with control flow (`then npm test`), or a PowerShell segment holding
     // a script block (`ForEach-Object { git push }`), is not one plain command.
-    if (argv.length === 0 && !text || (flags & WORD_QUOTED) === 0 && (powerShell && (text === "{" || text === "}")
+    if (argv.length === 0 && !text || (flags & WORD_QUOTED) === 0 && (powerShell && (text.charCodeAt(0) === 123 || text.charCodeAt(text.length - 1) === 125)
       || argv.length === 0 && (isCommandPrefix(text, powerShell) || !powerShell && isAssignment(text)))) return RULE_WORDS_NONE;
     argv.push(text);
   }
