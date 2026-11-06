@@ -269,14 +269,20 @@ function dispatchedCommandStart(argv: readonly string[]): number {
   return index < argv.length ? index : 0;
 }
 
-/** The rule decision for one command's words; `/usr/bin/git push` and `git.exe push` also match as `git push` (may rewrite `argv[0]`). */
+/** Whether `text` has `exe`, `cmd`, `bat`, `com` or `ps1` (any case) at `at`: a Windows launcher suffix. */
+function isLauncherSuffix(text: string, at: number): boolean {
+  const a = text.charCodeAt(at) | 32, b = text.charCodeAt(at + 1) | 32, c = text.charCodeAt(at + 2) | 32;
+  return a === 101 && b === 120 && c === 101 || a === 99 && b === 109 && c === 100 || a === 98 && b === 97 && c === 116
+    || a === 99 && b === 111 && c === 109 || a === 112 && b === 115 && c === 49;
+}
+
+/** The rule decision for one command's words; `/usr/bin/git push`, `git.exe push` and `npm.cmd publish` also match without directory and launcher suffix (may rewrite `argv[0]`). */
 function matchCommandWords(rules: ProjectRuleSet, powerShell: boolean, argv: string[]): number {
   let matched = rules.matchShellWords(powerShell, argv);
   const first = argv[0]!, length = first.length;
   // `/usr/bin/git` and `C:\Program Files\Git\cmd\git.exe` also match as `git`.
   const start = Math.max(first.lastIndexOf("/"), first.lastIndexOf("\\")) + 1;
-  const stop = length - start > 4 && first.charCodeAt(length - 4) === 46 && (first.charCodeAt(length - 3) | 32) === 101
-    && (first.charCodeAt(length - 2) | 32) === 120 && (first.charCodeAt(length - 1) | 32) === 101 ? length - 4 : length;
+  const stop = length - start > 4 && first.charCodeAt(length - 4) === 46 && isLauncherSuffix(first, length - 3) ? length - 4 : length;
   if (matched !== RULE_DENY && (start > 0 || stop < length) && stop > start) {
     argv[0] = first.slice(start, stop);
     const bare = rules.matchShellWords(powerShell, argv);
@@ -517,7 +523,12 @@ export function shellRuleVerdict(tool: "bash" | "powershell", command: string, r
       const head = first < end && (table.flags[first]! & WORD_QUOTED) === 0 ? table.texts![first]! : "";
       // `case WORD in PATTERN)`: patterns run until a `)` ends their segment.
       if (head === "case") { caseDepth++; casePattern = table.segmentSeparators[segment] !== SEGMENT_CLOSE; continue; }
-      if (caseDepth > 0 && head === "esac") { caseDepth--; casePattern = false; continue; }
+      // A nested `esac;;` also ends the enclosing arm, so the outer patterns follow.
+      if (caseDepth > 0 && head === "esac") {
+        caseDepth--;
+        casePattern = caseDepth > 0 && endsCaseArm(table.source, table.segmentSourceEnds[segment]!);
+        continue;
+      }
       if (casePattern) { if (table.segmentSeparators[segment] === SEGMENT_CLOSE) casePattern = false; continue; }
     }
     for (let index = table.segmentStart(segment); index < end; index++) {

@@ -96,6 +96,7 @@ test("host-restricted classification lifts only literal segments, and suggestion
     const remove = new ProjectRuleSet([{ tool: "bash", decision: "deny", command: "rm *" }]);
     assert.equal(shellRuleVerdict("bash", 'find . -name "*.tmp" -exec rm -f {} +', remove), RULE_DENY);
     assert.equal(shellRuleVerdict("bash", 'case "$tool" in npm) echo npm;; git) echo git;; esac', lookup), RULE_NONE);
+    assert.equal(shellRuleVerdict("bash", 'case "$t" in build) case "$u" in dev) echo dev;; esac;; git) echo git;; esac', lookup), RULE_NONE);
     assert.equal(shellRuleVerdict("bash", "case $x in\n  a|b) echo a ;;\n  *) git push ;;\nesac", lookup), RULE_DENY);
     const exact = new ProjectRuleSet([{ tool: "powershell", decision: "deny", command: "git push origin main" }]);
     // PowerShell keeps script blocks in one segment: each block's commands are matched on their own.
@@ -114,7 +115,7 @@ test("host-restricted classification lifts only literal segments, and suggestion
     // A string in command position is a value; a call operator invokes it.
     for (const command of ["$label = 'npm'", "$label='npm'", "@{ label = 'npm' }", "@{label='npm'}", "$data=@{label='npm'}"]) assert.equal(shellRuleVerdict("powershell", command, npm), RULE_NONE, command);
     assert.equal(shellRuleVerdict("powershell", "& 'npm' test", npm), RULE_DENY);
-    for (const command of ["@{ result = (npm test) }", "@{ result = & npm test }", "pwsh -NoProfile -Command npm test", "@{ result =\n  npm test\n}"]) assert.equal(shellRuleVerdict("powershell", command, npm), RULE_DENY, command);
+    for (const command of ["@{ result = (npm test) }", "@{ result = & npm test }", "pwsh -NoProfile -Command npm test", "@{ result =\n  npm test\n}", "npm.cmd test", "npm.ps1 test"]) assert.equal(shellRuleVerdict("powershell", command, npm), RULE_DENY, command);
     // Switch labels are not commands; their action blocks are matched.
     assert.equal(shellRuleVerdict("powershell", "switch ($tool) { npm { Write-Output \"npm\" }; default { Write-Output other } }", npm), RULE_NONE);
     assert.equal(shellRuleVerdict("powershell", "switch ($tool) { a { Write-Output x } b { npm test } }", npm), RULE_DENY);
