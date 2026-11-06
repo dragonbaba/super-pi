@@ -13,12 +13,14 @@ import { SessionManager } from "../packages/coding-agent/src/core/session-manage
 import { disposeNativeFileWorker } from "../packages/coding-agent/src/core/files/native-file-client.ts";
 import { AssistantMessageEventStream } from "../packages/ai/src/utils/event-stream.ts";
 import { emitSessionShutdownEvent } from "../packages/coding-agent/src/core/extensions/runner.ts";
+import { getToolPath } from "../packages/coding-agent/src/utils/tools-manager.ts";
 
 const owned = createOwnedTaskFixture("subagent-parent-execution-"), agentDir = join(owned.root, "agent");
-const keys = ["TMP", "TEMP", "TMPDIR", "SP_CODING_AGENT_DIR", "SP_SOURCE_LAUNCHER", "SP_BUNDLED_AGENTS_DIR"];
+const keys = ["TMP", "TEMP", "TMPDIR", "SP_CODING_AGENT_DIR", "SP_SOURCE_LAUNCHER", "SP_BUNDLED_AGENTS_DIR", "SP_OFFLINE"];
 const old = keys.map(key => process.env[key]);
 for (const key of keys.slice(0, 3)) process.env[key] = owned.root;
 process.env.SP_CODING_AGENT_DIR = agentDir;
+process.env.SP_OFFLINE = "1";
 process.env.SP_SOURCE_LAUNCHER = fileURLToPath(new URL("fixtures/subagent-parent-cli.mjs", import.meta.url));
 delete process.env.SP_BUNDLED_AGENTS_DIR;
 mkdirSync(join(agentDir, "agents"), { recursive: true }); mkdirSync(join(agentDir, "config"));
@@ -75,14 +77,20 @@ test("real CLI children inherit explicit host mode across all global defaults an
   for (const environment of [undefined, "trusted-host", "sandbox"] as const) {
     await t.test(String(environment), async t => {
       const f = await fixture(t, environment);
-      const result = await f.run('console.log(await tools.read({path:"sample.txt"})); console.log(await tools.grep({pattern:"marker",path:"sample.txt"})); console.log(await tools.find({pattern:"sample.txt"})); console.log(await tools.ls({}));');
+      const available = { grep: getToolPath("rg") !== null, find: getToolPath("fd") !== null };
+      const result = await f.run('console.log(await tools.read({path:"sample.txt"})); console.log(await callTool("grep",{pattern:"marker",path:"sample.txt"},{allowFailure:true})); console.log(await callTool("find",{pattern:"sample.txt"},{allowFailure:true})); console.log(await tools.ls({}));');
       assert.equal((result as any)?.isError, false, JSON.stringify(result));
       const entries = await f.observations();
       assert.equal(entries.find(entry => entry.event === "profile").profile.mode, "host-write");
       assert.deepEqual(entries.find(entry => entry.event === "runtime"), { event: "runtime", parent: true, files: false, tasks: false, permissions: false });
       const calls = entries.filter(entry => entry.event === "result" && entry.name !== "codemode");
       assert.deepEqual(calls.map(entry => entry.name), ["read", "grep", "find", "ls"]);
-      assert.equal(calls.some(entry => entry.isError), false, JSON.stringify(calls));
+      for (const call of calls) {
+        const missing = call.name === "grep" && !available.grep ? "ripgrep (rg)" : call.name === "find" && !available.find ? "fd" : undefined;
+        assert.equal(call.isError, missing !== undefined, JSON.stringify(call));
+        if (missing) assert.ok(JSON.stringify(call.content).includes(missing + " is not available and could not be downloaded"), JSON.stringify(call));
+      }
+      t.diagnostic(JSON.stringify({ searchDependencies: available, parentToolCalls: calls.length }));
       assert.equal(f.dialogs, 0); assert.equal(f.requests, 2);
     });
   }
