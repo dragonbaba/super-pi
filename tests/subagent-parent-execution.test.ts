@@ -33,17 +33,19 @@ test.after(async () => {
   owned.cleanup();
 });
 
-async function fixture(t: test.TestContext, environment?: "trusted-host" | "sandbox", hasUI = true) {
+async function fixture(t: test.TestContext, environment?: "trusted-host" | "sandbox", hasUI = true, shellCommandPrefix?: string) {
   const root = await fs.realpath(await fs.mkdtemp(join(owned.root, "case-"))), cwd = join(root, "project 中文 space");
   await fs.mkdir(cwd); await fs.writeFile(join(cwd, "sample.txt"), "marker\n");
   await fs.writeFile(join(agentDir, "config", "settings.json"), JSON.stringify({ executionEnvironment: environment, compaction: { enabled: false } }));
-  const settings = SettingsManager.inMemory({ executionEnvironment: environment, compaction: { enabled: false }, retry: { enabled: false }, executionPermissions: { rules: [{ tool: "*", decision: "allow" }] } });
+  const settings = SettingsManager.inMemory({ executionEnvironment: environment, shellCommandPrefix, compaction: { enabled: false }, retry: { enabled: false }, executionPermissions: { rules: [{ tool: "*", decision: "allow" }] } });
   settings.setPermissionModeForSession("host-write");
-  const resources = new DefaultResourceLoader({ cwd, agentDir, settingsManager: settings, noExtensions: true,
+  // Prefix compatibility also exercises the same Windows directory with a different spelling.
+  const sessionCwd = shellCommandPrefix && process.platform === "win32" ? cwd.toUpperCase() : cwd;
+  const resources = new DefaultResourceLoader({ cwd: sessionCwd, agentDir, settingsManager: settings, noExtensions: true,
     noContextFiles: true, noSkills: true, noPromptTemplates: true, noThemes: true, extensionFactories: [subagent] });
   await resources.reload(); assert.deepEqual(resources.getExtensions().errors, []);
-  const { session } = await createAgentSession({ cwd, agentDir, resourceLoader: resources, settingsManager: settings,
-    sessionManager: SessionManager.create(cwd, join(root, "sessions")), model: ALPHA_MODEL, modelRuntime: alphaModelRuntime() });
+  const { session } = await createAgentSession({ cwd: sessionCwd, agentDir, resourceLoader: resources, settingsManager: settings,
+    sessionManager: SessionManager.create(sessionCwd, join(root, "sessions")), model: ALPHA_MODEL, modelRuntime: alphaModelRuntime() });
   const runtime = resources.getExtensions().runtime, notices: string[] = []; let dialogs = 0, requests = 0;
   await session.bindExtensions(hasUI ? { mode: "tui", uiContext: { notify: (text: string) => { notices.push(text); },
     select: async (_title: string, choices: string[]) => { dialogs++; return choices[0]; } } as any } : { mode: "print" });
@@ -53,12 +55,12 @@ async function fixture(t: test.TestContext, environment?: "trusted-host" | "sand
     session.dispose(); await runtime.executionBoundary.dispose(); await runtime.nativeFiles?.dispose(); await runtime.nativeTasks?.dispose();
     await session.waitForSessionLeaseRelease();
   });
-  async function run(code: string, agent = "reader", childCwd = cwd) {
+  async function run(code: string, agent = "reader", childCwd = cwd, extraArguments: Record<string, unknown> = {}) {
     await fs.writeFile(join(childCwd, "child-request.json"), JSON.stringify({ code, temp: owned.root }));
     let first = true;
     session.agent.streamFunction = () => {
       requests++;
-      const content = first ? [{ type: "toolCall", id: "parent-delegation", name: "subagent", arguments: { agent, task: "Run the owned fixture", scope: "Owned fixture files", deliverable: "Tool receipts", stopCondition: "Return after the fixture code", cwd: childCwd, timeoutMs: 60000 } }]
+      const content = first ? [{ type: "toolCall", id: "parent-delegation", name: "subagent", arguments: { agent, task: "Run the owned fixture", scope: "Owned fixture files", deliverable: "Tool receipts", stopCondition: "Return after the fixture code", cwd: childCwd, timeoutMs: 60000, ...extraArguments } }]
         : [{ type: "text", text: "Parent complete" }];
       const stopReason = first ? "toolUse" : "stop"; first = false;
       const message: any = { role: "assistant", api: "openai-responses", provider: "fixture", model: ALPHA_MODEL.id, content, stopReason, timestamp: Date.now(),
@@ -109,6 +111,44 @@ test("real child external delete asks parent, protected delete refuses, and D6 a
   await assert.rejects(fs.stat(outside), { code: "ENOENT" }); assert.equal(await fs.readFile(config, "utf8"), "changed");
   assert.equal(f.dialogs, 2); assert.match(f.notices.join("\n"), /操作未执行/);
   assert.equal(f.runtime.executionBoundary.requiresUserInput, false);
+});
+
+test("parent cwd preserves configured Bash prefixes without bypassing explicit cwd restrictions", { timeout: 60000 }, async t => {
+  const f = await fixture(t, undefined, true, "printf 'configured-prefix\\n';");
+  await f.run('console.log(await tools.bash({command:"printf \'ordinary-command\\n\'"})); console.log(await callTool("bash",{command:"printf \'must-not-run\\n\'",cwd:"."},{allowFailure:true}));', "writer");
+  const entries = await f.observations(), shell = entries.find(entry => entry.event === "result" && entry.name === "bash");
+  assert.equal(shell?.isError, false, JSON.stringify(entries));
+  assert.match(JSON.stringify(shell.content), /configured-prefix.*ordinary-command/);
+  assert.match(JSON.stringify(entries.find(entry => entry.event === "result" && entry.name === "codemode")?.content), /SHELL_CWD_UNSUPPORTED/);
+});
+
+test("native delegated writer admission uses parent scope instead of disjoint assigned directories", async t => {
+  const f = await fixture(t), first = join(f.root, "first"), second = join(f.root, "second");
+  await fs.mkdir(first); await fs.mkdir(second);
+  const result = await f.run('await tools.write({path:"must-not-exist.txt",content:"no"});', "writer", first, { background: true });
+  assert.match(JSON.stringify(result), /Parent-routed writers.*foreground/);
+  await assert.rejects(fs.stat(join(first, "child-observation.jsonl")), { code: "ENOENT" });
+  // The production delegation materializes scheduler scope for both native grants.
+  const call = { type: "tool_call", toolName: "subagent", toolCallId: "scoped-batch", input: {
+    tasks: [{ agent: "writer", task: "one", cwd: first }, { agent: "writer", task: "two", cwd: second }],
+  } };
+  const { assertBackgroundWorkspace, consumeDelegatedTaskPolicies } = await import("../packages/extensions/subagent/delegation.ts");
+  const { assertSubagentBatchPreflight } = await import("../packages/extensions/subagent/index.ts");
+  const { SubagentScheduler } = await import("../packages/coding-agent/src/core/tasks/scheduler.ts");
+  const ctx = f.session.extensionRunner.createContext();
+  const authorization = await f.runtime.nativePermissions!.authorize(call as any, ctx);
+  const scheduler = new SubagentScheduler({ maxConcurrent: 2, maxTasks: 4 });
+  try {
+    const policies = consumeDelegatedTaskPolicies(call.input, [first, second], f.cwd, call.toolCallId);
+    assert.equal(policies.every(policy => policy.sharedParentScope), true);
+    assert.throws(() => scheduler.reserve(policies), /overlapping/);
+    assert.equal(scheduler.reserved, 0);
+    assert.throws(() => assertBackgroundWorkspace(policies[0], f.cwd), /foreground/);
+    assertSubagentBatchPreflight([{ name: "reader", source: "user" } as any], ["reader", "reader"], policies, true);
+    assert.equal(policies.every(policy => !policy.allowMutation), true, "default read-only role tools do not become writer reservations");
+    scheduler.reserve(policies).release();
+    assertBackgroundWorkspace(policies[0], f.cwd);
+  } finally { authorization.release(); scheduler.dispose(); }
 });
 
 test("a real child stops before effects when parent approval UI is unavailable", { timeout: 60000 }, async t => {

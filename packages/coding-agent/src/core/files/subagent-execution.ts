@@ -87,8 +87,9 @@ export class SubagentExecution {
         // Only structured path fields change base. Shell source is passed through unchanged.
         if (name === "bash") {
             // Child profiles do not expose tasks controls. Preserve that existing background admission rule.
-            if (args.background === true) throw new Error("Subagent shells require foreground execution; background the owned subagent task instead");
-            args.cwd = args.cwd === undefined ? this.profile.cwd : resolve(this.profile.cwd, args.cwd);
+            if (args.background === true) throw new Error("Subagent shells require foreground execution; the child has no shell task-management tools");
+            if (args.cwd !== undefined) args.cwd = resolve(this.profile.cwd, args.cwd);
+            else if (this.profile.cwd !== this.profile.workspace) args.cwd = this.profile.cwd;
         }
         else if (name === "file_batch") {
             if (!Array.isArray(args.operations)) throw new Error("Expected file batch operations");
@@ -122,6 +123,7 @@ export class SubagentExecution {
             this.scope = undefined; this.pending = undefined;
         }
     }
+    cancelRequest(): void { void this.scope?.close(); }
     async dispose(): Promise<void> {
         this.parentSignal.removeEventListener("abort", this.revoke); this.revoke();
         const scope = this.scope; await scope?.close();
@@ -157,6 +159,11 @@ export class SubagentExecutionServer {
         const owner = this.owner, proc = this.proc;
         if (!owner || !proc) return;
         const packet = decode(raw);
+        // Cancellation belongs to the current request, including a reply already in flight.
+        if (packet.kind === "cancel" && this.ready && packet.id === this.sequence) {
+            if (this.busy) owner.cancelRequest();
+            return;
+        }
         if (this.busy || packet.id !== ++this.sequence) throw new Error("Out-of-order workspace request");
         this.busy = true;
         try {
@@ -190,17 +197,27 @@ export class SubagentParentClient {
     private timer?: ReturnType<typeof setTimeout>;
     private failure?: Error;
     private signal?: AbortSignal;
+    private cancelling = false;
     private readonly message = (raw: unknown): void => {
         if (typeof raw !== "string" || !raw.startsWith(WORKSPACE_MESSAGE_PREFIX)) return;
         try {
             const packet = decode(raw);
             if (!this.resolve || packet.id !== this.sequence || typeof packet.ok !== "boolean") throw new Error("Invalid parent workspace reply");
             const resolve = this.resolve, reject = this.reject!; this.clear();
+            // Native completion/interrupt receipts remain authoritative even after cancellation.
             if (packet.ok) resolve(packet); else reject(new Error(packet.reason));
         } catch (error) { this.stop(new Error(errorText(error))); }
     };
     private readonly disconnected = (): void => { this.stop(new Error("Parent workspace channel disconnected; local execution is unavailable")); };
-    private readonly aborted = (): void => { this.stop(new Error("Delegated tool request aborted")); };
+    private readonly aborted = (): void => {
+        if (!this.resolve || this.cancelling) return;
+        this.cancelling = true;
+        try {
+            if (!process.connected || !process.send) throw new Error("Parent workspace channel is unavailable");
+            process.send(encode({ id: this.sequence, kind: "cancel" }), this.sent);
+        } catch (error) { this.stop(new Error(errorText(error))); }
+        // Keep the pending result until the parent has joined the bounded native cleanup.
+    };
     private readonly sent = (error: Error | null): void => { if (error) this.stop(error); };
     constructor() { process.on("message", this.message); process.on("disconnect", this.disconnected); }
     async initialize(): Promise<void> {
@@ -226,7 +243,8 @@ export class SubagentParentClient {
         if (this.failure) return Promise.reject(this.failure);
         if (this.resolve) return Promise.reject(new Error("A delegated workspace request is already pending"));
         signal?.throwIfAborted();
-        const encoded = encode({ id: ++this.sequence, kind, ...fields });
+        const encoded = encode({ id: this.sequence + 1, kind, ...fields });
+        this.sequence++;
         return new Promise((resolve, reject) => {
             this.resolve = resolve; this.reject = reject; this.signal = signal;
             signal?.addEventListener("abort", this.aborted, { once: true });
@@ -242,6 +260,7 @@ export class SubagentParentClient {
     private clear(): void {
         if (this.timer) clearTimeout(this.timer); this.timer = undefined;
         this.signal?.removeEventListener("abort", this.aborted); this.signal = undefined;
+        this.cancelling = false;
         this.resolve = undefined; this.reject = undefined;
     }
     private stop(error: Error): void { this.failure ??= error; const reject = this.reject; this.clear(); reject?.(this.failure); }

@@ -5,7 +5,7 @@ import { setImmediate as tick } from "node:timers/promises";
 import { Session as InspectorSession } from "node:inspector/promises";
 import { Type } from "typebox";
 import { Agent } from "../packages/agent/src/agent.ts";
-import { SubagentExecution, SubagentExecutionServer, WORKSPACE_MESSAGE_PREFIX } from "../packages/coding-agent/src/core/files/subagent-execution.ts";
+import { SubagentExecution, SubagentExecutionServer, SubagentParentClient, WORKSPACE_MESSAGE_PREFIX } from "../packages/coding-agent/src/core/files/subagent-execution.ts";
 import type { AgentTool } from "../packages/agent/src/types.ts";
 
 function fixture(execute: AgentTool["execute"]) {
@@ -20,6 +20,53 @@ function fixture(execute: AgentTool["execute"]) {
   return { owner, signal, agent, get authorizations() { return authorizations; } };
 }
 const smallResult = { content: [{ type: "text" as const, text: "owned receipt" }], details: undefined };
+
+function channel(t: test.TestContext, execute: AgentTool["execute"]) {
+  const f = fixture(execute), proc: any = new EventEmitter(), failures: string[] = [];
+  proc.connected = true;
+  proc.send = (raw: string, done: (error: null) => void) => { queueMicrotask(() => (process as EventEmitter).emit("message", raw)); done(null); };
+  const oldConnected = Object.getOwnPropertyDescriptor(process, "connected"), oldSend = Object.getOwnPropertyDescriptor(process, "send");
+  Object.defineProperty(process, "connected", { value: true, configurable: true });
+  Object.defineProperty(process, "send", { value: (raw: string, done: (error: null) => void) => { proc.emit("message", raw); done(null); }, configurable: true });
+  const server = new SubagentExecutionServer(f.owner), client = new SubagentParentClient();
+  server.attach(proc, reason => { failures.push(reason); process.emit("disconnect"); });
+  t.after(async () => {
+    client.dispose(); await server.dispose();
+    if (oldConnected) Object.defineProperty(process, "connected", oldConnected); else delete (process as any).connected;
+    if (oldSend) Object.defineProperty(process, "send", oldSend); else delete (process as any).send;
+    assert.equal(proc.listenerCount("message"), 0);
+  });
+  return { ...f, client, failures };
+}
+
+test("child invocation cancellation reaches the parent and waits for actual cleanup", async t => {
+  let start!: () => void, release!: () => void;
+  const started = new Promise<void>(resolve => { start = resolve; }), cleanup = new Promise<void>(resolve => { release = resolve; });
+  let parentSignal: AbortSignal | undefined, completed = false;
+  const f = channel(t, async (_id, _args, signal) => {
+    parentSignal = signal; start(); await cleanup; return smallResult;
+  });
+  await f.client.initialize();
+  const abort = new AbortController();
+  const request = f.client.definitions().read.execute("owned", { path: "sample.txt" }, abort.signal, undefined, {} as any);
+  const finished = request.then(() => { completed = true; }, () => { completed = true; });
+  try {
+    await started; abort.abort(); await tick();
+    assert.equal(parentSignal?.aborted, true, "cancellation must reach the actual parent tool signal");
+    assert.equal(completed, false, "child must wait while the actual tool still owns cleanup");
+  } finally { release(); await finished; }
+  assert.deepEqual((await request).content, smallResult.content, "a completed native receipt must survive a cancellation race");
+  assert.equal((await f.client.definitions().read.execute("next", { path: "sample.txt" }, undefined, undefined, {} as any)).isError, false);
+  assert.deepEqual(f.failures, []);
+});
+
+test("a locally rejected IPC payload does not consume the next request sequence", async t => {
+  const f = channel(t, async () => smallResult); await f.client.initialize();
+  const tool = f.client.definitions().read;
+  await assert.rejects(tool.execute("oversized", { path: "sample.txt", edits: new Array(6).fill({ newLines: new Array(4000).fill("x") }) }, undefined, undefined, {} as any), /node|20000|budget|complex/i);
+  const result = await tool.execute("next", { path: "sample.txt" }, undefined, undefined, {} as any);
+  assert.equal(result.isError, false); assert.deepEqual(f.failures, []);
+});
 
 test("parent task channel has one request slot and releases cancellation ownership without touching the provider", async () => {
   let release!: () => void, entered!: () => void;

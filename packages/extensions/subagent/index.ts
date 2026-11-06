@@ -36,8 +36,8 @@ import {
 import { Text } from "@super-pi/tui";
 import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
-import { assertProjectAgentAccess, buildChildEnvironment, canonicalWorkspace, isPathInside } from "./child-security.ts";
-import { consumeDelegatedTaskPolicies, type DelegatedTaskPolicy } from "./delegation.ts";
+import { assertProjectAgentAccess, buildChildEnvironment, canonicalWorkspace } from "./child-security.ts";
+import { assertBackgroundWorkspace, consumeDelegatedTaskPolicies, type DelegatedTaskPolicy } from "./delegation.ts";
 import { DELEGATION_GUIDANCE, describeSubagentLimits, loadSubagentLimits, SUBAGENT_LIMITS_PATH, type SubagentLimits } from "./limits.ts";
 import { SubagentScheduler } from "./scheduler.ts";
 import { SubagentTasks, type ManagedSubagentTask } from "./tasks.ts";
@@ -75,6 +75,7 @@ const DEFAULT_TASK_TIMEOUT_MS = 30 * 60 * 1000;
 const MAX_TASK_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 const DEFAULT_AGENT_TOOLS = Object.freeze(["read", "grep", "find", "ls"] as const);
 const BUILTIN_AGENT_TOOLS = new Set(["read", "write", "edit", "delete", "move", "file_batch", "grep", "find", "ls", "bash", "powershell"]);
+const MUTATING_AGENT_TOOLS = new Set(["write", "edit", "delete", "move", "file_batch", "bash"]);
 const CHILD_GUARD_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "child-guard.ts");
 
 function formatTokens(count: number): string {
@@ -512,9 +513,11 @@ export function assertSubagentBatchPreflight(
 		if (agent.source === "project" && policy.source !== "primary") {
 			throw new Error(`Project-local agent "${name}" cannot use a non-primary workspace. Use the primary project cwd or a user-level agent; no subagent was started.`);
 		}
-		if (!parallel || !policy.allowMutation) continue;
-		const tools = effectiveTools(agent, true).tools;
-		if (!tools.includes("write") && !tools.includes("edit") && !tools.includes("bash")) continue;
+		let canMutate = false;
+		for (const tool of effectiveTools(agent, policy.allowMutation).tools) if (MUTATING_AGENT_TOOLS.has(tool)) { canMutate = true; break; }
+		// The parent's grant is a ceiling; read-only role tools do not reserve a writer scope.
+		if (policy.sharedParentScope && !canMutate) policy.allowMutation = false;
+		if (!parallel || !policy.allowMutation || !canMutate) continue;
 		if (writerCwds.has(policy.canonicalCwd)) {
 			throw new Error(`Parallel mutation-capable tasks share cwd "${policy.canonicalCwd}". Use chain/sequential execution, isolated workspaces, or set readOnly: true on all overlapping tasks; task text alone does not change capabilities. No subagent was started.`);
 		}
@@ -1478,7 +1481,7 @@ export default function (pi: ExtensionAPI) {
 		return `Correction queued for ${task.id} after the current complete turn; current tools are not interrupted. ${control.guidanceStatus}`;
 	};
 	const taskRegistration = registerManagedTasks(pi, "subagent", {
-		tasks, list: listTasks, guidance: `${describeSubagentLimits(limits)} A foreground single subagent can be transferred with /tasks background <id>; list IDs with /tasks. Same-workspace subagent writers and batches/chains are unsupported.`,
+		tasks, list: listTasks, guidance: `${describeSubagentLimits(limits)} A foreground single subagent can be transferred with /tasks background <id>; list IDs with /tasks. Parent-routed writers, same-workspace writers and batches/chains cannot transfer; use readOnly for background research.`,
 		steer: steerTask,
 		status: task => controls.has(task.id) ? `\n${controls.get(task.id)!.guidanceStatus}` : "",
 		background(task, ctx) {
@@ -1490,9 +1493,7 @@ export default function (pi: ExtensionAPI) {
 			if (!entry || entry.owner.background) throw new Error("Only a waiting foreground single subagent can transfer; finished/background tasks and batches/chains cannot.");
 			if (task.completedAt !== undefined || task.state === "cancelling") throw new Error("Completed or cancelling tasks cannot transfer to background.");
 			entry.signal.throwIfAborted(); task.controller?.signal.throwIfAborted();
-			if (entry.policy.allowMutation && (isPathInside(entry.policy.canonicalCwd, entry.workspace) || isPathInside(entry.workspace, entry.policy.canonicalCwd))) {
-				throw new Error("Background writers require an isolated workspace outside the parent's workspace.");
-			}
+			assertBackgroundWorkspace(entry.policy, entry.workspace);
 			entry.owner.detach({ content: [{ type: "text", text: `Subagent transferred to background without restarting: ${task.id}. Continue independent work; completion will be notified. Use tasks or subagent_tasks to inspect or cancel it.` }],
 				details: { mode: "single", agentScope: entry.agentScope, projectAgentsDir: null, results: [], backgroundCount: 1 } });
 			foreground.delete(task.id);
@@ -1701,11 +1702,7 @@ export default function (pi: ExtensionAPI) {
 				if (continuation.agent !== requestedAgentNames[0] || continuation.cwd !== policy.canonicalCwd || continuation.device !== String(identity.dev) || continuation.inode !== String(identity.ino)) throw new Error("Checkpoint role/workspace identity does not match this newly authorized task.");
 			}
 			if (params.background) {
-				for (const policy of delegatedPolicies) {
-					if (policy.allowMutation && (isPathInside(policy.canonicalCwd, trustedWorkspace) || isPathInside(trustedWorkspace, policy.canonicalCwd))) {
-						throw new Error("Background writers require an isolated workspace outside the parent's workspace. Use readOnly: true for background research here, or delegate to an authorized worktree.");
-					}
-				}
+				for (const policy of delegatedPolicies) assertBackgroundWorkspace(policy, trustedWorkspace);
 			}
 			const reservation = scheduler.reserve(delegatedPolicies, hasChain ? "chain" : "parallel");
 			try {

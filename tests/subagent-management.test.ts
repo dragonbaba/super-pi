@@ -113,6 +113,21 @@ test("writer overlap is rejected across batches, including nested paths", () => 
 	scheduler.dispose();
 });
 
+test("parent-routed tasks share write scope even when assigned cwd paths are disjoint", () => {
+  const scheduler = new SubagentScheduler({ maxConcurrent: 2, maxTasks: 4 });
+  const first = { canonicalCwd: join(fixtureRoot, "one"), allowMutation: true, sharedParentScope: true };
+  const second = { canonicalCwd: join(fixtureRoot, "two"), allowMutation: true, sharedParentScope: true };
+  try {
+    assert.throws(() => scheduler.reserve([first, second]), /overlapping/);
+    const reservation = scheduler.reserve([first]);
+    assert.throws(() => scheduler.reserve([{ ...second, allowMutation: false }]), /overlapping/);
+    reservation.release();
+    scheduler.reserve([first, second], "chain").release();
+    scheduler.reserve([{ ...first, allowMutation: false }, { ...second, allowMutation: false }]).release();
+  } finally { scheduler.dispose(); }
+  assert.equal(scheduler.reserved + scheduler.outstanding + scheduler.reservationCount, 0);
+});
+
 test("parallel admission rejects internal writer overlaps without reserving capacity", () => {
 	const scheduler = new SubagentScheduler({ maxConcurrent: 2, maxTasks: 4 });
 	const parent = { ...readonlyWorkspace, allowMutation: true };

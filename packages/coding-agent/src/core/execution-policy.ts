@@ -416,7 +416,7 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
             if (this.mode !== undefined && !open) throw new Error(BLOCKED + "Parent execution channel is unavailable");
             attachSubagentWorkspaceDelegation(input, { schemaVersion: 1, sequence: this.runtime.executionBoundary.generation,
                 toolCallId: event.toolCallId, grants: delegation.subagent, assertCurrent: this.guard(ctx, signal), revocationSignal: signal,
-                parentExecution: this.mode && open ? { profile: { mode: this.mode, workspace: ctx.cwd,
+                parentExecution: this.mode && open ? { profile: { mode: this.mode, workspace: delegation.workspace,
                     directories: this.directories, generation: this.runtime.executionBoundary.generation }, open } : undefined });
         }
         if (delegation?.structured) attachStructuredReadonlyWorkspaceDelegation(input, { ...delegation.structured, schemaVersion: 1,

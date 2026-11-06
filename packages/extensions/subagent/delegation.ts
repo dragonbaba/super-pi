@@ -11,9 +11,17 @@ import { canonicalWorkspace, isPathInside } from "./child-security.ts";
 export interface DelegatedTaskPolicy extends SubagentWorkspaceGrant {
 	parentExecution?: SubagentWorkspaceDelegation["parentExecution"];
 	parentToolCallId?: string;
+	sharedParentScope: boolean;
 	allowMutation: boolean;
 	assertCurrent(): void;
 	revocationSignal: AbortSignal;
+}
+
+export function assertBackgroundWorkspace(policy: DelegatedTaskPolicy, workspace: string): void {
+	if (!policy.allowMutation) return;
+	if (policy.sharedParentScope) throw new Error("Parent-routed writers share the parent's permission scope and require foreground execution. Use readOnly: true for background research; a different cwd does not provide an isolated workspace.");
+	if (isPathInside(policy.canonicalCwd, workspace) || isPathInside(workspace, policy.canonicalCwd))
+		throw new Error("Background writers require an isolated workspace outside the parent's workspace.");
 }
 
 function validMode(value: unknown): value is SessionPermissionMode {
@@ -63,7 +71,7 @@ export function consumeDelegatedTaskPolicies(
 			throw new Error("Subagent primary-workspace grant escapes the active project.");
 		}
 		policies.push({ ...grant, canonicalCwd: granted, allowMutation: grant.writable, assertCurrent: delegation.assertCurrent, revocationSignal: delegation.revocationSignal,
-			parentExecution: delegation.parentExecution, parentToolCallId: `${delegation.toolCallId}:task:${index}` });
+			parentExecution: delegation.parentExecution, sharedParentScope: delegation.parentExecution !== undefined, parentToolCallId: `${delegation.toolCallId}:task:${index}` });
 	}
 	return policies;
 }
