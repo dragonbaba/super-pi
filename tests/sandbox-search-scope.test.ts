@@ -279,6 +279,6 @@ test("host rejects a private candidate before publishing an earlier ordinary can
     try {
         const result:any=await owner.definition("bash")!.execute("fixture",{command:"fixture"},boundary.signal,undefined,{cwd:owned.root} as any);
         assert.equal(result.isError,true);assert.equal(result.details.published,0);
-        assert.match(result.content[0].text,/VM-private candidate/);assert.equal(published,0);assert.equal(discarded,1);
+        assert.match(result.content[0].text,/Protected candidate path.*VM-private/);assert.equal(published,0);assert.equal(discarded,1);
     } finally {await owner.close();await boundary.dispose();owned.cleanup();}
 });

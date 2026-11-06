@@ -35,6 +35,8 @@ node --expose-gc scripts/bench/sandbox-workspace-paths.mjs
 
 结果：首组 31/31、授权组 18/18、源码不变式 3/3 通过，类型检查通过。既有别名授权、大小写及短名相关路径控制保留。删除不再使用的 `matchesScope` helper，并把其失效测试替换为实际搜索循环的源码约束；扩展既有私有依赖用例，不保留两份重复测试。
 
+PR #238 首轮 CI 发现旧用例依赖 `Protected candidate` 错误前缀，新说明插入中间导致断言失败。恢复原前缀并在末尾说明 VM 私有路径，拒绝判定不变；`node --experimental-strip-types --test tests/session-permission-modes.test.ts` 14/14 通过，`sandbox-search-scope.test.ts` 中的 `host rejects a private candidate` 定向用例 1/1 通过。此轮只改文案兼容与断言，没有重复运行 VM 或分配基准。
+
 Windows Sandbox 可用时，给子进程设置 `SUPERPI_SANDBOX_WORKSPACE_ACCEPTANCE=1`，运行：
 
 ```powershell

@@ -133,7 +133,7 @@ export class WorkspaceSandboxTools {
       const components = change.path.replaceAll("\\", "/").split("/");
       for (const part of components) {
         const lower = part.toLowerCase();
-        need(part && part !== "." && part !== ".." && !TRAILING_PATH_PATTERN.test(part) && !isVmPrivateName(lower), "Protected or VM-private candidate path");
+        need(part && part !== "." && part !== ".." && !TRAILING_PATH_PATTERN.test(part) && !isVmPrivateName(lower), "Protected candidate path (including VM-private paths)");
       }
       need(change.before === null || typeof change.before === "string" && BASELINE_PATTERN.test(change.before), "Invalid baseline");
       need(change.content === null || typeof change.content === "string" && change.content.length <= 2800000 && BASE64_PATTERN.test(change.content), "Invalid candidate bytes");
