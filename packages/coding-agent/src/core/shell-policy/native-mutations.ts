@@ -16,7 +16,9 @@ export function inspectNativeShellMutations(tool: "bash" | "powershell", input: 
     const uncertain = owner.nativePathUncertain || high?.mutationDetected === true && high.unverifiableScope
       || scope?.mutationDetected === true && scope.unverifiableMutation === true;
     const targets = owner.takeNativeTargets()!;
-    for (const target of targets) if (scope?.destructiveTargets?.includes(target.target)) target.kind = "delete";
+    // Reconcile only move operands. A separate write to the same path stays a write.
+    for (const target of targets) if (target.kind === "move")
+      target.kind = scope?.destructiveTargets?.includes(target.target) ? "delete" : "write";
     return targets.length || uncertain ? { targets, uncertain } : undefined;
   } finally { owner.release(); }
 }

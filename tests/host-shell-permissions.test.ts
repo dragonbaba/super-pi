@@ -143,3 +143,19 @@ test("CodeMode children and managed background commands share the same native ap
     await assert.rejects(fs.stat(file),{code:"ENOENT"});assert.equal(f.dialogs.length,before+2);
   }
 });
+
+test("native evidence preserves independent writes and does not treat search scope as overwrite",async t=>{
+  const f=await fixture(t), file=join(f.outside,"evidence.txt");await fs.writeFile(file,"original");
+  const target=quote("bash",file);
+  await t.test("write then delete keeps the write decision",async()=>{
+    await assert.rejects(f.authorize("bash","printf changed > "+target+"; rm "+target),/EXTERNAL_FILE_WRITE_BLOCKED/);
+  });
+  await t.test("existing find scope asks without an invented overwrite",async()=>{
+    const before=f.dialogs.length;await f.authorize("bash","find "+target+" -delete");
+    assert.equal(f.dialogs.length,before+1);assert.match(f.dialogs.at(-1)!,/不能确认全部目标/);
+  });
+  const before=f.dialogs.length;
+  await f.authorize("bash","mv "+target+" "+quote("bash",join(f.cwd,"moved.txt")));
+  assert.equal(f.dialogs.length,before+1,"a move source is deletion evidence, not an invented overwrite");
+  assert.equal(await fs.readFile(file,"utf8"),"original");
+});

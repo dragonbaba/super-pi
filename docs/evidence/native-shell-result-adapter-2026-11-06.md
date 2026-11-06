@@ -4,7 +4,7 @@
 
 ## 改动边界
 
-14 个已有分析模块迁至 coding-agent，避免原生授权反向依赖可选扩展；旧扩展文件保留重导出，现有测试与守卫使用同一份编译模块。复核基线与新文件：排除 import 调整、core/permission-bash 的两处已识别目标观察，以及 PowerShell 转交已有 owner 后，13 个非 owner 模块的语句完全相同。owner 的既有分析、容量与缓存逻辑不变，只增加调用内最多 34 个目标的观察、转交及释放。
+14 个已有分析模块迁至 coding-agent，避免原生授权反向依赖可选扩展；旧扩展文件保留重导出，现有测试与守卫使用同一份编译模块。复核基线与新文件：排除 import 调整、core/permission-bash 的已识别目标观察、已有 move/find 操作数角色传递，以及 PowerShell 转交已有 owner 后，13 个非 owner 模块的语句完全相同。owner 的既有分析、容量与缓存逻辑不变，只增加调用内最多 34 个目标的观察、转交及释放。编译后 Node 别名和 Bun 虚拟模块补齐相应注册。
 
 `SessionExecutionPolicy` 在 host-write 使用已有 `inspectHighRiskBashMutation` / permission scope 结果。只有 `mutationDetected` 为真才消费目标及不确定状态。没有已识别变更的不透明脚本保持原有授权行为；不把解析器的不确定性变成通用拒绝。读取操作数、可执行文件及 cwd 标记不是覆盖证据。git 的既有目录标记也不等于已有文件覆盖。
 
@@ -21,6 +21,8 @@
 
 初次测试中子进程 TMP 登记不接受独立 fixture 根，修正任务级登记后通过；CodeMode 测试误用只允许单工具的 host dispatch，改为受控离线模型驱动实际 Agent 调度。均未为适应测试修改生产调度或 Shell 逻辑。
 
+首轮审查两项适配缺陷均先复现：同一路径写入和删除不能全局改成删除；已有 find 搜索范围不能当作文件覆盖。保留独立 write，仅把既有 move 操作数按原 destructiveTargets 结果归类；已有 find 分支传递 contents 角色。两个失败子项修复后通过，增加普通 move 对照；不增加识别分支或参数分析。修改后行为/AST 共 18/18 通过。CI 的另外两类根因是编译后加载别名漏迁移、UI 夹具假定一个 tick 足够等待异步授权；修正后原 launcher 8/8、两个真实交付入口 2/2、真实倒计时/Escape/再次允许 1/1 通过，类型检查/编译通过。UI 生产超时及授权语义不变。
+
 不声称完整 Shell 覆盖：既有分析不支持的 cmd/PowerShell 写法、间接脚本、参数语义继续是限制。已有 glob/find 搜索范围不冒充精确删除目标；Shell 内部改变 cwd、Windows Bash 绝对路径/HOME 不能使用旧 Node 路径推算，已识别变更按不确定目标询问。移动到目录的实际落点不新增 basename/参数推导。Shell 授权不是原生文件提交的逐项身份保证，也不是对抗性安全边界；这些限制不转成预检增强待办。
 
 ## 性能与生命周期
@@ -31,7 +33,7 @@
 - owner 最多 128 条、512 KiB UTF-16 引用预算；新增目标数组最多 34 项，每项目标小于 4,096 字符。它在同步分析结束转交调用者，owner 在 finally 清除 Map、源字符串和未转交目标；结果只由当前授权持有，不挂到会话或最终 token。
 - 原生授权中的异步文件身份查询、审批回调与有界路径/操作数组按一次调用持有；没有增加进度/渲染逐事件分配。没有对象池或全局对象缓存。
 - 既有基准默认四例每例预热 64 次、测量 512 次，HeapProfiler 4,096 B 采样。prepareCalls 严格为 512/1,024/1,024/512，owner created=released=2,308，liveOwners/liveEntries/liveBytes=0。完成、异常、取消、失效后 16 个 WeakRef 存活 0；这些是旧 owner 生命周期路径，不扩大语法测试。
-- 新 `--native` 只测普通输出、已知删除、不确定删除三个代表输入：prepareCalls 均为 512、每次共享一次分析，采样约 7,189 / 9,094 / 9,328 B/调用；主要仍在旧 parseShellSegments/inspectScript/path 处理。owner created=released=1,729，全部 live 计数为 0；返回结果、数组和目标的 3 个 WeakRef 在 GC 后为 0。此同步适配基准只声称返回后引用释放，不把它冒充真实取消测试；取消效果见上面的实际调度用例。采样含基准断言开销，不据此声称速度改善。
+- 新 `--native` 只测普通输出、已知删除、不确定删除三个代表输入：prepareCalls 均为 512、每次共享一次分析，修复后采样约 7,160 / 9,198 / 9,135 B/调用；主要仍在旧 parseShellSegments/inspectScript/path 处理。owner created=released=1,729，全部 live 计数为 0；返回结果、数组和目标的 3 个 WeakRef 在 GC 后为 0。此同步适配基准只声称返回后引用释放，不把它冒充真实取消测试；取消效果见上面的实际调度用例。采样含基准断言开销，不据此声称速度改善。
 
 ## 可复现检查
 

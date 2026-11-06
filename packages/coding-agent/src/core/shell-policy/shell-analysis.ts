@@ -7,7 +7,7 @@ const MAX_NATIVE_TARGETS = 34;
 const MAX_NATIVE_TARGET_CHARS = 4096;
 // Existing parseShellSegments flags; this adapter does not add token classification.
 const LEGACY_GLOB_EXPANSION = 16, LEGACY_HOME_EXPANSION = 32;
-export interface NativeShellTarget { target: string; kind: "delete" | "write"; }
+export interface NativeShellTarget { target: string; kind: "delete" | "write" | "move"; }
 export const shellAnalysisOwnership = {
   created: 0, released: 0, liveOwners: 0, liveEntries: 0, liveBytes: 0,
   hits: 0, misses: 0, overflows: 0,
@@ -59,7 +59,7 @@ export class ShellAnalysisOwner {
   get size(): number { return this.entries.size; }
 
   /** Observe only operands the existing scanners already recognized; never scan source here. */
-  observeMutationTarget(raw: string, cwd: string, expansion: number, target: string | undefined, kind: "delete" | "write" | "contents"): void {
+  observeMutationTarget(raw: string, cwd: string, expansion: number, target: string | undefined, kind: "delete" | "write" | "move" | "contents"): void {
     const targets = this.nativeTargets;
     if (!targets) return;
     // A search/glob scope is not an exact deletion operand. Shell-internal cwd and

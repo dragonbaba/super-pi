@@ -84,9 +84,9 @@ function addClass(builder: ScopeBuilder, value: string): void {
   }
 }
 
-function addTarget(builder: ScopeBuilder, value: string, cwd: string, mutation = false, expansion = 0, destructive = false): string | undefined {
+function addTarget(builder: ScopeBuilder, value: string, cwd: string, mutation = false, expansion = 0, destructive = false, nativeKind?: "move" | "contents"): string | undefined {
   const target = staticMutationTarget(value, cwd, expansion);
-  if (mutation) builder.analysisOwner?.observeMutationTarget(value, cwd, expansion, target, destructive ? "delete" : "write");
+  if (mutation) builder.analysisOwner?.observeMutationTarget(value, cwd, expansion, target, nativeKind ?? (destructive ? "delete" : "write"));
   if (target === undefined) {
     builder.dynamicScope = true;
     if (mutation) builder.unverifiableMutation = true;
@@ -165,7 +165,7 @@ function addPositionalTargets(
     if (lastOnly) last = index;
     else if (count > skip) {
       if (destructive === "move" && !unknownMoveOptions && moveTarget !== undefined) addDestructiveTarget(builder, moveTarget);
-      moveTarget = addTarget(builder, token, cwd, true, tokens.expansions?.[index], destructive === true);
+      moveTarget = addTarget(builder, token, cwd, true, tokens.expansions?.[index], destructive === true, destructive === "move" ? "move" : undefined);
     }
   }
   if (lastOnly && last >= 0 && count > skip) addTarget(builder, tokens[last]!, cwd, true, tokens.expansions?.[last], destructive === true);
@@ -194,7 +194,7 @@ function inspectKnownMutation(command: string, tokens: PermissionTokens, start: 
       if (tokens[index] === "-delete" || tokens[index] === "-exec" || tokens[index] === "-execdir") {
         markMutation(builder, tokens[index] === "-delete" ? "find_delete" : "find_exec");
         if (root < 0) addResolvedTarget(builder, cwd);
-        else addTarget(builder, tokens[root]!, cwd, true, tokens.expansions?.[root]);
+        else addTarget(builder, tokens[root]!, cwd, true, tokens.expansions?.[root], false, "contents");
         if (tokens[index] !== "-delete") { markOpaque(builder, "find_exec_scope"); return true; }
         continue;
       }
