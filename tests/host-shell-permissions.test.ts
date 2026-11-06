@@ -117,6 +117,9 @@ test("PowerShell backslash paths keep their separators before native authorizati
   await assert.rejects(f.authorize("powershell","Remove-Item -Recurse -Force .\\.git"),/敏感目标禁止删除/);
   await f.authorize("powershell","Remove-Item -Recurse -Force .\\dist");
   assert.equal(f.dialogs.length,1);
+  // A quoted nested Bash script keeps its own backslash meaning: `.\./outside/x` is `../outside/x` there.
+  await f.authorize("powershell","bash -c 'rm -rf .\\./outside/x'");
+  assert.equal(f.dialogs.length,2);assert.ok(f.dialogs[1]!.includes(join(f.outside,"x")));
 });
 
 test("only recognized uncertain mutations ask; ordinary shell paths, recovery and npm keep actual runtime semantics",async t=>{

@@ -10,9 +10,23 @@ export interface NativeShellMutations { targets: NativeShellTarget[]; uncertain:
  * escape. PowerShell escapes with a backtick, so its backslash is a path separator:
  * `..\out\x` must not become `..outx` inside the workspace. Give the scanners the
  * equivalent Windows separator; this is path spelling only, not new command grammar.
+ * Only unquoted words change: Bash already keeps a backslash literal inside single
+ * quotes and before ordinary characters in double quotes, and a quoted argument may be
+ * a nested script (`bash -c '...'`) whose backslashes keep their own meaning.
  */
 function powerShellAnalysisInput(input: Record<string, unknown>, command: string): Record<string, unknown> {
-  return command.includes("\\") ? { ...input, command: command.replaceAll("\\", "/") } : input;
+  if (!command.includes("\\")) return input;
+  let quote = 0, spelled = "", start = 0;
+  for (let index = 0; index < command.length; index++) {
+    const code = command.charCodeAt(index);
+    if (quote === 0) {
+      if (code === 96) index++; // A backtick escapes the next character.
+      else if (code === 39 || code === 34) quote = code;
+      else if (code === 92) { spelled += command.slice(start, index) + "/"; start = index + 1; }
+    } else if (quote === 34 && code === 96) index++;
+    else if (code === quote) quote = 0; // '' and "" reopen at once, with the same effect.
+  }
+  return start === 0 ? input : { ...input, command: spelled + command.slice(start) };
 }
 
 /** Adapt existing evidence. Opaque scripts, runners and parser uncertainty alone do not gate commands. */
