@@ -360,14 +360,20 @@ export function shellRuleVerdict(tool: "bash" | "powershell", command: string, r
             const next = index + 1 < end ? windowsWordText(table, index + 1) : "", operator = assignmentOperatorLength(next);
             if (operator > 0) { index++; if (operator < next.length) argv.push(next.slice(operator)); continue; }
           }
-          let open = 0, close = text.length;
-          while (open < close && text.charCodeAt(open) === 123) open++;
-          while (close > open && text.charCodeAt(close - 1) === 125) close--;
-          if (open > 0) { verdict = strongerRuleVerdict(rules, true, argv, verdict); argv.length = 0; }
-          if (open > 0 || close < text.length) {
-            const word = open === close ? "" : text.slice(open, close);
-            if (word && !(argv.length === 0 && isCommandPrefix(word, true))) argv.push(word);
-            if (close < text.length) { verdict = strongerRuleVerdict(rules, true, argv, verdict); argv.length = 0; }
+          // Every brace is a block boundary, attached or not (`try{ git push }catch{}`): the
+          // pieces between braces are words, and each brace ends the command before it.
+          if (text.indexOf("{") >= 0 || text.indexOf("}") >= 0) {
+            let from = 0;
+            for (let cursor = 0; cursor <= text.length; cursor++) {
+              const code = cursor < text.length ? text.charCodeAt(cursor) : -1;
+              if (code !== 123 && code !== 125 && code !== -1) continue;
+              if (cursor > from) {
+                const word = text.slice(from, cursor);
+                if (!(argv.length === 0 && isCommandPrefix(word, true))) argv.push(word);
+              }
+              if (code !== -1) { verdict = strongerRuleVerdict(rules, true, argv, verdict); argv.length = 0; }
+              from = cursor + 1;
+            }
             continue;
           }
         }
@@ -459,7 +465,7 @@ function ruleWords(table: ShellTokenTable, segment: number, powerShell: boolean,
     const text = table.texts ? table.texts[index]! : windowsWordText(table, index);
     // A segment that opens with control flow (`then npm test`), or a PowerShell segment holding
     // a script block (`ForEach-Object { git push }`), is not one plain command.
-    if (argv.length === 0 && !text || (flags & WORD_QUOTED) === 0 && (powerShell && (text.charCodeAt(0) === 123 || text.charCodeAt(text.length - 1) === 125)
+    if (argv.length === 0 && !text || (flags & WORD_QUOTED) === 0 && (powerShell && (text.indexOf("{") >= 0 || text.indexOf("}") >= 0)
       || argv.length === 0 && (isCommandPrefix(text, powerShell) || !powerShell && isAssignment(text)))) return RULE_WORDS_NONE;
     argv.push(text);
   }
