@@ -44,10 +44,10 @@ for (const mode of ['regular', 'fullscreen']) for (const scenario of mode === 'r
       stdout += data.toString(); assert.ok(stdout.length <= 1024 * 1024, 'bounded capture');
       // Custom host tools require the same explicit menu choice as a real user.
       if (kind === 'active-tool' && permissionStep === 1 && stdout.includes('选择当前 Session 权限')) {
-        permissionStep = 2; child.stdin.write('\x1b[B\x1b[B\r');
-      } else if (kind === 'active-tool' && permissionStep === 2 && stdout.includes('切换到宿主机读写')) {
+        permissionStep = 2; child.stdin.write('\x1b[B\x1b[B\x1b[B\r');
+      } else if (kind === 'active-tool' && permissionStep === 2 && stdout.includes('切换到宿主机完全权限')) {
         permissionStep = 3; child.stdin.write('\r');
-      } else if (kind === 'active-tool' && permissionStep === 3 && stdout.includes('当前权限：全部读写')) {
+      } else if (kind === 'active-tool' && permissionStep === 3 && stdout.includes('当前权限：宿主机完全权限')) {
         permissionStep = 4; child.stdin.write('fixture\r');
       }
       if (!ready && stdout.includes('ALPHA_CLI_READY')) {

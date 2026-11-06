@@ -730,6 +730,8 @@ function inspectTokenBuffer(tokens: PermissionTokens, cwd: string, depth: number
   if (tokens.length === 0) return cwd;
   builder.segmentCount += 1;
   if (builder.segmentCount > MAX_SEGMENTS) {
+    // Later segments are not scanned, so a recognized mutation's full target set is unknown.
+    if (builder.mutationDetected) builder.unverifiableMutation = true;
     markOpaque(builder, "too_many_segments");
     return cwd;
   }

@@ -14,6 +14,7 @@ import { stripBom } from "../utils/text.ts";
 import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, parseHttpIdleTimeoutMs } from "./http-dispatcher.ts";
 import { parseSandboxNetwork, type SandboxNetwork } from "./sandbox/network-policy.ts";
 import { parseSandboxPrivateDirectories } from "./sandbox/workspace-policy.mjs";
+import { assertPermissionMode, isHostPermissionMode } from "./permission-mode.ts";
 
 export interface CompactionSettings {
 	enabled?: boolean; // default: true
@@ -573,9 +574,9 @@ export class SettingsManager {
 	setSessionDirectories(directories: readonly string[]): void { this.sessionDirectories = Object.freeze([...directories]); }
 	getPermissionMode(): import("./permission-mode.ts").SessionPermissionMode | undefined { return this.permissionModeOverride; }
 	setPermissionModeForSession(mode: import("./permission-mode.ts").SessionPermissionMode): void {
-		if (mode !== "read-only" && mode !== "sandbox-write" && mode !== "host-write") throw new Error("Invalid session permission mode");
+		assertPermissionMode(mode);
 		this.permissionModeOverride = mode;
-		this.executionEnvironmentOverride = mode === "host-write" ? "trusted-host" : "sandbox";
+		this.executionEnvironmentOverride = isHostPermissionMode(mode) ? "trusted-host" : "sandbox";
 	}
 	getExecutionEnvironment(): "sandbox" | "trusted-host" | undefined {
 		const value = this.executionEnvironmentOverride ?? this.globalSettings.executionEnvironment;

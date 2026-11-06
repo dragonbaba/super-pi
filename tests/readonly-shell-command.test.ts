@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { inspectPowerShellPermissionScope } from "../packages/coding-agent/src/core/shell-policy/permission-powershell.ts";
-import { findNonReadOnlyShellSegment, readOnlyShellCounters } from "../packages/coding-agent/src/core/shell-policy/readonly-command.ts";
+import {
+  classifyHostShellCommand, findNonReadOnlyShellSegment, HOST_SHELL_FILE_COMMANDS, HOST_SHELL_OTHER, HOST_SHELL_READ_ONLY, readOnlyShellCounters,
+} from "../packages/coding-agent/src/core/shell-policy/readonly-command.ts";
 import { ShellAnalysisOwner } from "../packages/coding-agent/src/core/shell-policy/shell-analysis.ts";
 import { windowsLexerCounters } from "../packages/coding-agent/src/core/shell-policy/syntax/windows.ts";
 import { isSafeCommand } from "../packages/plan-mode/src/tool-policy.ts";
@@ -58,4 +60,30 @@ test("the PowerShell permission scope and the read-only judgment share one table
   assert.equal(readOnlyShellCounters.judgments - judgments, 2);
   assert.equal(windowsLexerCounters.lexes - lexes, 1);
   assert.equal(owner.size, 0);
+});
+
+test("host-restricted classification: readers, listed file commands with literal operands, and everything else", () => {
+  for (const [tool, command, expected] of [
+    ["bash", "git status && ls -la 2>/dev/null", HOST_SHELL_READ_ONLY],
+    ["bash", "mkdir -p build && echo ok > build/log.txt && cp a.txt build/", HOST_SHELL_FILE_COMMANDS],
+    // A copy or move may bring a link to a new path, so no file command may follow it.
+    ["bash", "cp -r source copied; echo changed > copied/link", HOST_SHELL_OTHER], ["powershell", "Move-Item a b; Set-Content b/x y", HOST_SHELL_OTHER],
+    ["powershell", "Remove-Item old.txt; Get-ChildItem | Select-Object -First 3", HOST_SHELL_FILE_COMMANDS],
+    // Unknown programs, dynamic operands, provider paths and nested scripts are not file commands.
+    ["bash", "rm a.txt && npm test", HOST_SHELL_OTHER], ["bash", "rm \"$TARGET\"", HOST_SHELL_OTHER], ["bash", "echo x > \"$OUT\"", HOST_SHELL_OTHER],
+    // Options that move or add writes the analysis does not see (`cp -t DIR`, backups, links).
+    ["bash", "cp -t /outside a.txt b.txt", HOST_SHELL_OTHER], ["bash", "cp --target-directory=/outside a.txt b.txt", HOST_SHELL_OTHER],
+    ["bash", "mv -b a.txt b.txt", HOST_SHELL_OTHER], ["bash", "touch -r /outside/ref a.txt", HOST_SHELL_OTHER], ["bash", "rmdir -p a/b", HOST_SHELL_OTHER], ["bash", "rm -rf -- build", HOST_SHELL_FILE_COMMANDS],
+    // PowerShell targets resolve against the starting location; links would redirect later writes.
+    ["powershell", "Set-Location C:/outside; Set-Content report.txt changed", HOST_SHELL_OTHER],
+    ["powershell", "Set-Location C:/outside > log.txt; Set-Content report.txt changed", HOST_SHELL_OTHER], ["powershell", "Remove-Item x.txt; cd src", HOST_SHELL_FILE_COMMANDS],
+    ["powershell", "New-Item -ItemType SymbolicLink -Path link -Value C:/x", HOST_SHELL_OTHER], ["powershell", "ni link -it:Junction -Target C:/x", HOST_SHELL_OTHER],
+    ["powershell", "New-Item -ty SymbolicLink -Path link -Value C:/x", HOST_SHELL_OTHER],
+    // The native scanners stop after 64 segments, so a longer command is never a file command.
+    ["bash", "touch local; " + "echo ok; ".repeat(63) + "echo changed > out.txt", HOST_SHELL_OTHER],
+    ["powershell", "New-Item -ItemType Directory out", HOST_SHELL_FILE_COMMANDS],
+    ["powershell", "Remove-Item env:FOO", HOST_SHELL_OTHER], ["powershell", "Set-Content x.txt $(Get-Date)", HOST_SHELL_OTHER],
+  ] as const) assert.equal(classifyHostShellCommand(tool, command), expected, command);
+  // Plan mode's judgment is unchanged: a file command is still not read-only there.
+  assert.equal(findNonReadOnlyShellSegment("bash", "mkdir build"), "mkdir build");
 });

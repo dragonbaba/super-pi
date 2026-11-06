@@ -7,9 +7,11 @@ export interface NativeShellMutations { targets: NativeShellTarget[]; uncertain:
 
 /** Adapt existing evidence. Opaque scripts, runners and parser uncertainty alone do not gate commands. */
 /** Both scanners share one analysis owner, so a PowerShell or cmd source is tokenized once. */
-export function inspectNativeShellMutations(tool: "bash" | "powershell", input: Record<string, unknown>, cwd: string, generation: number): NativeShellMutations | undefined {
+/** A caller-supplied owner also serves its other judgments of the same command; the caller releases it. */
+export function inspectNativeShellMutations(tool: "bash" | "powershell", input: Record<string, unknown>, cwd: string, generation: number,
+  analysisOwner?: ShellAnalysisOwner): NativeShellMutations | undefined {
   if (typeof input.command !== "string") return undefined;
-  const owner = new ShellAnalysisOwner(input.command, cwd, generation, tool);
+  const owner = analysisOwner ?? new ShellAnalysisOwner(input.command, cwd, generation, tool);
   try {
     const high = inspectHighRiskBashMutation(input, cwd, tool, owner);
     const scope = tool === "bash" ? inspectBashPermissionScope(input, cwd, owner) : inspectPowerShellPermissionScope(input, cwd, owner);
@@ -21,5 +23,5 @@ export function inspectNativeShellMutations(tool: "bash" | "powershell", input: 
     for (const target of targets) if (target.kind === "move")
       target.kind = scope?.destructiveTargets?.includes(target.target) ? "delete" : "write";
     return targets.length || uncertain ? { targets, uncertain } : undefined;
-  } finally { owner.release(); }
+  } finally { if (owner !== analysisOwner) owner.release(); }
 }
