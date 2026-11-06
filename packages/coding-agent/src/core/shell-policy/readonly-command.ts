@@ -90,7 +90,7 @@ const SEGMENT_REJECTED = 0, SEGMENT_READER = 1, SEGMENT_FILE = 2;
  * Unquoted words that open a segment without being its program: Bash keywords and prefixes
  * (`then git push`), PowerShell block braces and dot-sourcing. Deny/ask rules skip them.
  */
-const BASH_COMMAND_PREFIXES: ReadonlySet<string> = new Set(["if", "then", "else", "elif", "do", "while", "until", "!", "{", "time", "function"]);
+const BASH_COMMAND_PREFIXES: ReadonlySet<string> = new Set(["if", "then", "else", "elif", "do", "while", "until", "!", "{", "function", "coproc"]);
 const POWERSHELL_COMMAND_PREFIXES: ReadonlySet<string> = new Set(["{", ".", "try", "catch", "finally", "if", "elseif", "else",
   "do", "while", "until", "foreach", "for", "switch", "trap"]);
 
@@ -106,7 +106,9 @@ function isCommandPrefix(text: string, powerShell: boolean): boolean {
 /** Each wrapper with the options that take the next word as their value (`sudo -u ci`, `nice -n 5`). */
 const NO_VALUE_OPTIONS: ReadonlySet<string> = new Set();
 const BASH_DISPATCH_WRAPPERS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
-  ["command", NO_VALUE_OPTIONS], ["builtin", NO_VALUE_OPTIONS], ["nohup", NO_VALUE_OPTIONS],
+  ["command", NO_VALUE_OPTIONS], ["builtin", NO_VALUE_OPTIONS], ["nohup", NO_VALUE_OPTIONS], ["time", NO_VALUE_OPTIONS],
+  ["xargs", new Set(["-a", "-d", "-E", "-I", "-L", "-n", "-P", "-s", "--arg-file", "--delimiter", "--eof", "--replace", "--max-lines",
+    "--max-args", "--max-procs", "--max-chars", "--process-slot-var"])],
   ["exec", new Set(["-a"])],
   ["sudo", new Set(["-u", "-g", "-h", "-p", "-C", "-D", "-r", "-t", "-T", "-U", "--user", "--group", "--host", "--prompt", "--close-from",
     "--chdir", "--role", "--type", "--command-timeout", "--other-user"])],
