@@ -268,6 +268,8 @@ interface SubagentRenderState {
 	latestDetails?: SubagentDetails;
 	counts?: ResultStateCounts;
 	live?: NativeSubagentProgress;
+	// Final error receipts have no details. Keep their bounded facts for this history component's lifetime.
+	finalErrorDetails?: SubagentDetails;
 }
 
 /** Compact native UI facts, allocated once per admitted foreground batch, never a child transcript. */
@@ -1949,13 +1951,15 @@ export default function (pi: ExtensionAPI) {
 			if (incoming?.backgroundCount) {
 				state.latestDetails = undefined;
 				state.live = undefined;
+				state.finalErrorDetails = undefined;
 				component.setText(theme.fg("muted", `${incoming.backgroundCount} background task(s) accepted · /tasks`));
 				return component;
 			}
 			const live = liveProgress.get(context.toolCallId) ?? state.live;
 			// Final receipts may intentionally omit unstarted chain steps after a checkpoint handoff.
 			const details = !context.isPartial && incoming ? incoming
-				: live?.details ?? (incoming && incoming.results.length > 0 ? incoming : state.latestDetails);
+				: live?.details ?? (incoming && incoming.results.length > 0 ? incoming : state.latestDetails ?? state.finalErrorDetails);
+			state.finalErrorDetails = !context.isPartial && !incoming ? details : undefined;
 			state.latestDetails = details;
 			state.live = context.isPartial && live && !live.closed ? live : undefined;
 			if (!details || details.results.length === 0) {

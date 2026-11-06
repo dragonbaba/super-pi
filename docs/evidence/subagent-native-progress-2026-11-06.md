@@ -13,6 +13,8 @@
 
 普通完成、失败、取消、前台转后台停止定时器；组件 cache release 清除组件及 renderer state 的派生引用，恢复时从当前活跃 owner 重新绑定。任务结束关闭 owner、从 map 删除并清空异步闭包绑定；最终历史结果只保留有界统计。没有对象池，没有命令解析、筛选或工作区权限变化。
 
+无 details 的最终错误在该历史组件的 renderer state 保留精简最终统计（与原任务 reservation 同界限），用于 cache release 后重绘；它是错误回执缺少的最终事实，不是活动 owner 或显示缓存。不含 task/messages/stderr、没有对 owner 的反向引用，也不增加第二份行数组。组件被丢弃时随组件释放；常规成功回执直接使用其 details，不额外保存。
+
 ## 实际验证
 
 相关五个文件共 **70 通过、1 个 POSIX 平台跳过**：`subagent-management.test.ts`、`subagent-hot-paths.test.ts`、`subagent-stream.test.ts`、`tool-renderer-source-invariants.test.ts`、`tui-tool-leaf-closeout.test.ts`。`tsgo --noEmit` 通过。
@@ -27,6 +29,8 @@
 首次失败/取消用例发现：保留原始异常对象时，异步执行闭包仍保留已关闭 owner。清空结束时的 `progress` 绑定后，定向两例及最终回归通过；没有丢弃异常、放宽 GC 断言或掩盖失败。
 
 PR #244 首轮审查指出最终结果被已关闭的 owner 覆盖。复用原 checkpoint 交接测试接入生产组件后，在修改前确实显示 `1/2 completed · 1 failed`，而最终回执只有一个成功步骤。改为最终 details 优先、仅无 details 的错误回执使用保留事实，计划同步补充这一遗漏。修复后交接、三项真实进度/GC、投影 AST 共 5/5 通过，类型检查通过；复用已有效的基准，因为只有状态选择顺序变化，没有新增状态复制、回调或框架。
+
+第二轮审查指出无 details 错误在 cache release 后丢失统计。扩展现有失败例后，修改前重绘确实仅有 `subagent failed`。保留上述有界最终事实，同时继续清除活动 owner、timer、文本及 latestDetails；成功/失败/取消均验证 GC 后重绘，不靠保留活动 owner 恢复界面。
 
 ## 分配与生命周期证据
 

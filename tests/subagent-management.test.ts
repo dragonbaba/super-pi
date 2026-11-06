@@ -712,6 +712,11 @@ for (const outcome of ["success", "fail", "cancel"] as const) test(`real child n
   assert.equal(leaf.getLifecycleCounts().rows, 0); assert.equal(leaf.getLifecycleCounts().textChars, 0);
   assert.equal((component as any).rendererState.live, undefined);
   if (global.gc) { for (let i = 0; i < 4; i++) { await tick(); global.gc(); } assert.equal(weak.deref(), undefined); }
+  component.invalidate(); ui.renderNow(); await ui.flushTerminalFrames();
+  assert.match(screen(), /2 turns ↑2 ↓4.*\$0\.0200.*ls/, "final summary survives cache eviction without a live progress owner");
+  assert.match(screen(), outcome === "success" ? /completed/ : /failed/);
+  assert.equal(leaf.getLifecycleCounts().timers, 0);
+  releaseComponentRenderCaches(component);
   t.diagnostic(JSON.stringify({ outcome, childPid: pid, protocolUpdates: updates, timerRefreshes: leaf.getLifecycleCounts().timerRefreshes,
     terminalFrames: terminal.writes.length, remainingTimers: 0, retainedLiveOwners: 0, controlledGc: !!global.gc }));
 });
