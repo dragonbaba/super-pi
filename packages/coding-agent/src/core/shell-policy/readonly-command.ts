@@ -299,6 +299,8 @@ export function shellRuleVerdict(tool: "bash" | "powershell", command: string, r
         }
         // `function publish { git push; }`: the body's first command follows the name and brace.
         if (argv.length === 0 && !powerShell && text === "function") { index++; continue; }
+        // `coproc NAME { git push; }`: a name is optional and only precedes a compound command.
+        if (argv.length === 0 && !powerShell && text === "coproc") { if (index + 2 < end && table.texts![index + 2] === "{") index++; continue; }
         if (argv.length === 0 && (isCommandPrefix(text, powerShell) || !powerShell && isAssignment(text))) continue;
       }
       argv.push(text);
