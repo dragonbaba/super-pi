@@ -97,6 +97,7 @@ test("host-restricted classification lifts only literal segments, and suggestion
     assert.equal(shellRuleVerdict("bash", 'find . -name "*.tmp" -exec rm -f {} +', remove), RULE_DENY);
     assert.equal(shellRuleVerdict("bash", 'case "$tool" in npm) echo npm;; git) echo git;; esac', lookup), RULE_NONE);
     assert.equal(shellRuleVerdict("bash", 'case "$t" in build) case "$u" in dev) echo dev;; esac;; git) echo git;; esac', lookup), RULE_NONE);
+    assert.equal(shellRuleVerdict("bash", 'if true; then case "$tool" in npm) echo npm;; git) echo git;; esac; fi', lookup), RULE_NONE);
     // Array elements are data; the command after the array is not.
     assert.equal(shellRuleVerdict("bash", "declare -a packages=(git curl jq)", lookup), RULE_NONE);
     assert.equal(shellRuleVerdict("bash", "packages=(\n  git\n  jq\n)\ngit push", lookup), RULE_DENY);

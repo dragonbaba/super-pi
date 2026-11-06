@@ -522,7 +522,9 @@ export function shellRuleVerdict(tool: "bash" | "powershell", command: string, r
     const end = table.segmentEnds[segment]!;
     if (!powerShell) {
       if (arrayDepth > 0) { if (table.segmentDepths[segment]! >= arrayDepth) continue; arrayDepth = 0; }
-      const first = table.segmentStart(segment);
+      // The segment's first command word, past control-flow prefixes (`then case …`, `do case …`).
+      let first = table.segmentStart(segment);
+      while (first < end - 1 && (table.flags[first]! & WORD_QUOTED) === 0 && isCommandPrefix(table.texts![first]!, false)) first++;
       const head = first < end && (table.flags[first]! & WORD_QUOTED) === 0 ? table.texts![first]! : "";
       // `case WORD in PATTERN)`: patterns run until a `)` ends their segment.
       if (head === "case") { caseDepth++; casePattern = table.segmentSeparators[segment] !== SEGMENT_CLOSE; continue; }
