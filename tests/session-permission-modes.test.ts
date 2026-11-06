@@ -19,6 +19,7 @@ import { SessionManager } from "../packages/coding-agent/src/core/session-manage
 import { FileService } from "../packages/coding-agent/src/core/files/file-service.ts";
 import { MAX_WRITE_BYTES } from "../packages/coding-agent/src/core/files/write-limits.ts";
 import { sessionDirectories } from "../packages/coding-agent/src/core/session-execution-profile.ts";
+import { createOwnedTaskFixture } from "./helpers/owned-task-fixture.ts";
 
 function mockSourceChecks(t: test.TestContext, version = true): void {
   t.mock.method(WorkspaceSandboxBackend.prototype, "assertWorkspaceCurrent", async () => {});
@@ -235,7 +236,7 @@ test("writeback refusals remain stable across freshly captured host revision IDs
   } finally { await owner.close(); policy.dispose(); await runtime.executionBoundary.dispose(); await fs.rm(root, { recursive: true }); }
 });
 
-test("ordinary guest failure retires its snapshot and permits a fresh operation without replay", async t => {
+test("only explicit no-effects failures retain the VM; uncertain failures start fresh without replay", async t => {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "sp-review-recovery-")));
   const backend = new WorkspaceSandboxBackend(root, root, "sandbox-write"), internal = backend as any;
   let starts = 0, calls = 0, cleaned = 0;
@@ -250,15 +251,28 @@ test("ordinary guest failure retires its snapshot and permits a fresh operation 
     internal.vm = { id: "fixture", calls: [], state: "running", async cleanup() { cleaned++; this.state = "closed"; }, async invoke() {
       calls++;
       const request = JSON.parse(await fs.readFile(path.join(exchange, "request.json"), "utf8"));
-      await fs.writeFile(path.join(exchange, "response.json"), JSON.stringify({ id: request.id, ok: calls > 1, error: "Missing guest file", text: "fresh" }));
+      const outcome = calls === 1 ? {ok:false,phase:"read",noEffects:true,error:"Missing guest file"}
+        : calls === 3 ? {ok:false,phase:"mutation",noEffects:true,error:"Inconsistent outcome"}
+        : calls === 5 ? {ok:false,error:"Unclassified guest failure"} : {ok:true,text:"fresh"};
+      await fs.writeFile(path.join(exchange, "response.json"), JSON.stringify({ id: request.id, ...outcome }));
     } };
   });
   try {
     await assert.rejects(backend.invoke("read", { path: "missing" }), /Missing guest file/);
-    assert.equal(backend.diagnostics.root, undefined); assert.equal(backend.diagnostics.ownedArtifacts, 0);
+    assert.equal(backend.diagnostics.vm, true); assert.equal(cleaned, 0);
+    await assert.rejects(backend.invoke("read", { path: path.resolve(root,"../outside") }), /workspace|Workspace/);
+    assert.equal(backend.diagnostics.vm, true); assert.equal(calls, 1);
     assert.equal((await backend.invoke("read", { path: "exists" })).text, "fresh");
-    assert.equal(starts, 2); assert.equal(calls, 2); assert.equal(cleaned, 1);
-    await backend.close(); assert.equal(cleaned, 2);
+    assert.equal(starts, 1); assert.equal(calls, 2);
+    await assert.rejects(backend.invoke("read", { path: "exists" }), /Invalid no-effects outcome/);
+    assert.equal(backend.diagnostics.vm, false); assert.equal(backend.diagnostics.ownedArtifacts, 0);
+    assert.equal((await backend.invoke("read", { path: "exists" })).text, "fresh");
+    assert.equal(starts, 2); assert.equal(calls, 4); assert.equal(cleaned, 1);
+    await assert.rejects(backend.invoke("read", { path: "missing" }), /Unclassified guest failure/);
+    assert.equal(backend.diagnostics.vm, false);
+    assert.equal((await backend.invoke("read", { path: "exists" })).text, "fresh");
+    assert.equal(starts, 3); assert.equal(calls, 6);
+    await backend.close(); assert.equal(cleaned, 3);
     await assert.rejects(backend.invoke("read", {}), /closed/);
   } finally { try { await backend.close(); } finally { await fs.rm(root, { recursive: true }); } }
 });
@@ -319,6 +333,33 @@ test("partial artifact cleanup retains only remaining identities and can be retr
     assert.equal(backend.diagnostics.ownedArtifacts, 2);
     await backend.close(); assert.equal(backend.diagnostics.root, undefined); assert.equal(backend.diagnostics.ownedArtifacts, 0);
   } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test("snapshot capture excludes configured directories before accounting and explicit empty config restores import", async () => {
+  const owned=createOwnedTaskFixture("sandbox-private-capture-"), root=await fs.realpath(owned.root), project=path.join(root,"project");
+  await fs.mkdir(project);await fs.mkdir(path.join(project,"control"));
+  await fs.writeFile(path.join(project,"ordinary.txt"),"ok");await fs.writeFile(path.join(project,"control/target"),"ok");
+  const privateNames=["target",".venv","__pycache__","build/private"];
+  for (const name of [...privateNames,".git"]) {
+    await fs.mkdir(path.join(project,name),{recursive:true});await fs.writeFile(path.join(project,name,"host.txt"),"host sentinel");
+  }
+  try {
+    for (const excluded of [privateNames,[]]) {
+      const artifacts=await fs.mkdtemp(path.join(root,"owner-"));
+      const backend=new WorkspaceSandboxBackend(project,root,"sandbox-write",{privateDirectories:excluded}), internal=backend as any;
+      internal.root=artifacts;internal.sourceRoot=project;
+      const stat=await fs.lstat(artifacts,{bigint:true});internal.identity=stat.dev+":"+stat.ino;await internal.remember(artifacts);
+      try {
+        await internal.capture(project,path.join(artifacts,"input"));
+        assert.equal(backend.diagnostics.sourceFiles,excluded.length?2:6);
+        assert.equal(internal.capturedEntries,excluded.length?4:12);
+        assert.equal(internal.capturedBytes,excluded.length?4:56);
+        assert.equal(await fs.readFile(path.join(artifacts,"input/control/target"),"utf8"),"ok");
+        await assert.rejects(fs.stat(path.join(artifacts,"input/.git")),{code:"ENOENT"});
+      } finally {await backend.close();assert.equal(backend.diagnostics.ownedArtifacts,0);assert.equal(backend.diagnostics.sourceFiles,0);}
+    }
+    for (const name of privateNames) assert.equal(await fs.readFile(path.join(project,name,"host.txt"),"utf8"),"host sentinel");
+  } finally {owned.cleanup();}
 });
 
 test("a growing snapshot source cannot expand its admitted read buffer", async t => {

@@ -7,18 +7,20 @@ import { MAX_WRITE_BYTES } from "../files/write-limits.ts";
 import { parseSandboxNetwork, type SandboxNetwork } from "./network-policy.ts";
 import { workspaceInput } from "./workspace-paths.ts";
 import { HOST_PATH_QUERY, refreshedHostEnvironment } from "./host-path.ts";
-import { isVmPrivateName } from "./workspace-policy.mjs";
+import { isVmPrivateName, isVmPrivateDirectory, isVmPrivatePath, parseSandboxPrivateDirectories } from "./workspace-policy.mjs";
 
 export interface WorkspaceSandboxOptions {
   settings?: { include?: string[]; exclude?: string[] };
   powershellPath?: string;
   network?: SandboxNetwork;
   directories?: readonly string[];
+  privateDirectories?: readonly string[];
 }
 
 export interface WorkspaceArtifact { name: string; bytes: number; sha256: string; }
 export interface WorkspaceChange { path: string; before: string | null; content: string | null; workspaceIndex?: number; artifact?: WorkspaceArtifact; }
 export interface WorkspaceReply { id: string; ok: boolean; text?: string; snapshot?: string; changes?: WorkspaceChange[]; error?: string;
+  noEffects?: boolean;
   image?: { mimeType: string; artifact: WorkspaceArtifact };
   phase?: string; execution?: { exitCode: number; timedOut: boolean; closed: boolean; stdout: string; stderr: string; truncated?: boolean }; }
 export class WorkspaceOperationError extends Error {
@@ -31,7 +33,7 @@ const hash = (bytes: Uint8Array): string => createHash("sha256").update(bytes).d
 function need(value: unknown, reason: string): asserts value { if (!value) throw new Error("[SANDBOX_WORKSPACE] " + reason); }
 const xml = (value: string): string => value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
 
-/** One lazy VM at a time per permission generation. Failed snapshots are discarded, never replayed. */
+/** One lazy VM per permission generation. Only proven no-effects failures retain its snapshot. */
 export class WorkspaceSandboxBackend {
   private root?: string;
   private identity?: string;
@@ -56,11 +58,14 @@ export class WorkspaceSandboxBackend {
   private readonly mode: "read-only" | "sandbox-write";
   private readonly toolchainOptions: WorkspaceSandboxOptions;
   private readonly network: SandboxNetwork;
+  private readonly privateDirectories: readonly string[];
   constructor(cwd: string, parent: string, mode: "read-only" | "sandbox-write", toolchainOptions: WorkspaceSandboxOptions = {}) {
     this.cwd = path.resolve(cwd); this.parent = parent; this.mode = mode; this.toolchainOptions = toolchainOptions;
     this.network = parseSandboxNetwork(toolchainOptions.network);
+    this.privateDirectories = parseSandboxPrivateDirectories(toolchainOptions.privateDirectories);
   }
   get diagnostics() { return { starts: this.starts, calls: this.calls, pending: !!this.pending, vm: !!this.vm, root: this.root, closed: this.closed, sourceFiles: this.sources.size, ownedArtifacts: this.owned.size }; }
+  isPrivatePath(name: string): boolean { return isVmPrivatePath(name, this.privateDirectories); }
   workspace(index = 0): string {
     need(Number.isSafeInteger(index) && index >= 0 && index <= (this.toolchainOptions.directories?.length ?? 0), "Unknown workspace identity");
     return index === 0 ? this.cwd : this.toolchainOptions.directories![index - 1];
@@ -83,6 +88,7 @@ export class WorkspaceSandboxBackend {
       await fs.mkdir(to); await this.remember(to);
       for (const entry of await fs.readdir(from, { withFileTypes: true })) {
         if (isVmPrivateName(entry.name.toLowerCase())) continue;
+        if (entry.isDirectory() && isVmPrivateDirectory(path.relative(source, path.join(from, entry.name)), this.privateDirectories)) continue;
         need(++this.capturedEntries <= 20000 && !entry.isSymbolicLink(), "Workspace entry limit or redirected path: " + entry.name);
         const sourcePath = path.join(from, entry.name), target = path.join(to, entry.name);
         if (this.root && (sourcePath === this.root || this.root.startsWith(sourcePath + path.sep))) continue;
@@ -191,12 +197,15 @@ export class WorkspaceSandboxBackend {
     }); this.starts++;
   }
   private async run(operation: string, input: Record<string, unknown>, signal?: AbortSignal): Promise<WorkspaceReply> {
+    // Argument preparation has not touched the VM, including an already healthy snapshot.
+    input = workspaceInput(this.cwd, operation, input, this.toolchainOptions.directories);
+    const id = randomUUID().replaceAll("-", "");
+    const request = JSON.stringify({ id, mode: this.mode, workspace: this.cwd, directories: this.toolchainOptions.directories ?? [],
+      privateDirectories: this.privateDirectories, operation, input, maxWriteBytes: MAX_WRITE_BYTES }); need(Buffer.byteLength(request) <= 4 * 1024 * 1024, "Request too large");
     try {
-      input = workspaceInput(this.cwd, operation, input, this.toolchainOptions.directories);
       signal?.throwIfAborted(); if (!this.vm) await this.start(signal); signal?.throwIfAborted();
       await this.assertWorkspaceCurrent();
-      const id = randomUUID().replaceAll("-", ""), exchange = path.join(this.root!, "exchange");
-      const request = JSON.stringify({ id, mode: this.mode, workspace: this.cwd, directories: this.toolchainOptions.directories ?? [], operation, input, maxWriteBytes: MAX_WRITE_BYTES }); need(Buffer.byteLength(request) <= 4 * 1024 * 1024, "Request too large");
+      const exchange = path.join(this.root!, "exchange");
       await fs.writeFile(path.join(exchange, "request.json"), request); this.calls++;
       await this.vm.invoke("exec", ["exec", "--id", this.vm.id, "-c", '"C:\\SuperPiTools\\node.exe" "C:\\SuperPiTools\\core\\sandbox\\workspace-worker.mjs"', "-d", "C:\\SuperPiTools", "-r", "System", "--raw"], 150000, signal);
       // Only settled command records are compacted. Physical owners stay in the lifecycle slots.
@@ -210,7 +219,11 @@ export class WorkspaceSandboxBackend {
       if (reply.execution) need(Number.isSafeInteger(reply.execution.exitCode) && typeof reply.execution.timedOut === "boolean"
         && typeof reply.execution.closed === "boolean" && typeof reply.execution.stdout === "string" && reply.execution.stdout.length <= 32768
         && typeof reply.execution.stderr === "string" && reply.execution.stderr.length <= 32768, "Invalid command execution facts");
-      if (!reply.ok) throw new WorkspaceOperationError(reply);
+      if (!reply.ok) {
+        if (reply.noEffects === true) need((reply.phase === "request" || reply.phase === "read") && !reply.execution
+          && reply.changes === undefined && reply.image === undefined, "Invalid no-effects outcome");
+        throw new WorkspaceOperationError(reply);
+      }
       if (reply.image !== undefined) need(operation === "read" && !reply.execution && reply.changes?.length === 0
         && reply.image?.artifact?.name === id + "-0.bin", "Unexpected read attachment");
       if (reply.execution && Array.isArray(reply.changes)) for (const change of reply.changes) {
@@ -221,6 +234,7 @@ export class WorkspaceSandboxBackend {
       }
       return reply;
     } catch (error) {
+      if (error instanceof WorkspaceOperationError && error.reply.noEffects === true) throw error;
       try { await this.discardSnapshot(); }
       catch (cleanupError) { throw new AggregateError([error, cleanupError], "Sandbox operation failed: " + String(error).slice(0, 2048) + "\nCleanup remains unresolved: " + String(cleanupError).slice(0, 2048)); }
       throw error;

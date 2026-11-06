@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { isUtf8 } from 'node:buffer';
 import { spawnSync } from 'node:child_process';
 import { detectSupportedImageMimeType, IMAGE_TYPE_SNIFF_BYTES } from '../../utils/image-signature.mjs';
-import { isVmPrivateName, isVmPrivatePath, isProtectedWorkspaceName } from './workspace-policy.mjs';
+import { isVmPrivateName, isVmPrivatePath, isProtectedWorkspaceName, isVmPrivateDirectory, parseSandboxPrivateDirectories } from './workspace-policy.mjs';
 
 const SOURCE = 'C:\\SuperPiInput';
 const WORK = 'C:\\SuperPiWorkspace';
@@ -22,6 +22,8 @@ const TRAILING_PATH_PATTERN = /[. ]$/;
 const RESERVED_WORKSPACE_ROOTS = ['c:\\windows', 'c:\\superpiinput', 'c:\\superpiworkspace', 'c:\\superpiexchange', 'c:\\superpitools', 'c:\\superpitoolchains', 'c:\\superpicommand', 'c:\\superpivolume'];
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 function need(value, reason) { if (!value) throw new Error(reason); }
+class WorkspaceInputError extends Error {}
+function needInput(value, reason) { if (!value) throw new WorkspaceInputError(reason); }
 // Guest-only alias of the captured workspace, never a mount of the host project.
 function commandWorkspace(root, workspace) {
   need(typeof workspace === 'string' && workspace.length > 3 && workspace.length < 4096 && !workspace.includes('\0'), 'Invalid command workspace');
@@ -51,14 +53,14 @@ function commandWorkspace(root, workspace) {
   return workspace;
 }
 function local(root, name) {
-  need(typeof name === 'string' && name.length > 0 && name.length < 4096 && !name.includes('\0') && !name.includes(':'), 'Invalid workspace path');
+  needInput(typeof name === 'string' && name.length > 0 && name.length < 4096 && !name.includes('\0') && !name.includes(':'), 'Invalid workspace path');
   const parts = name.replaceAll('\\', '/').split('/');
   for (const part of parts) {
     const lower = part.toLowerCase();
-    need(part && part !== '..' && !TRAILING_PATH_PATTERN.test(part) && !isProtectedWorkspaceName(lower), 'Protected workspace path');
+    needInput(part && part !== '..' && !TRAILING_PATH_PATTERN.test(part) && !isProtectedWorkspaceName(lower), 'Protected workspace path');
   }
   const target = path.resolve(root, name);
-  need(target.startsWith(root + path.sep), 'Workspace escape');
+  needInput(target.startsWith(root + path.sep), 'Workspace escape');
   let cursor = root;
   for (const part of parts) {
     cursor = path.join(cursor, part);
@@ -66,7 +68,10 @@ function local(root, name) {
   }
   return target;
 }
-function read(file) { const stat = fs.lstatSync(file); need(stat.isFile() && !stat.isSymbolicLink() && stat.size <= FILE_LIMIT, 'File exceeds 2 MiB or is not ordinary'); return fs.readFileSync(file); }
+function read(file) {
+  const stat = fs.lstatSync(file); need(!stat.isSymbolicLink(), 'Redirected read path');
+  needInput(stat.isFile() && stat.size <= FILE_LIMIT, 'File exceeds 2 MiB or is not ordinary'); return fs.readFileSync(file);
+}
 function fileHash(file, scratch) {
   const digest = createHash('sha256'), fd = fs.openSync(file, 'r');
   try { for (;;) { const count = fs.readSync(fd, scratch, 0, scratch.length, null); if (!count) break; digest.update(count === scratch.length ? scratch : scratch.subarray(0, count)); } return digest.digest('hex'); }
@@ -74,19 +79,21 @@ function fileHash(file, scratch) {
 }
 function readImage(file, id) {
   const stat = fs.lstatSync(file);
-  need(stat.isFile() && !stat.isSymbolicLink(), 'Read requires an ordinary file');
+  need(!stat.isSymbolicLink(), 'Redirected image path');
+  needInput(stat.isFile(), 'Read requires an ordinary file');
   const header = Buffer.allocUnsafe(Math.min(stat.size, IMAGE_TYPE_SNIFF_BYTES)), fd = fs.openSync(file, 'r');
   let count;
   try { count = fs.readSync(fd, header, 0, header.length, 0); }
   finally { fs.closeSync(fd); }
   const mimeType = detectSupportedImageMimeType(header.subarray(0, count));
   if (!mimeType) return undefined;
-  need(stat.size <= IMAGE_LIMIT, 'Image bytes=' + stat.size + '; limit=' + IMAGE_LIMIT + '. Resize the image before read; shell base64 output is capped.');
+  needInput(stat.size <= IMAGE_LIMIT, 'Image bytes=' + stat.size + '; limit=' + IMAGE_LIMIT + '. Resize the image before read; shell base64 output is capped.');
   const artifact = { name: id + '-0.bin', bytes: stat.size, sha256: fileHash(file, Buffer.allocUnsafe(256 * 1024)) };
+  phase = 'attachment';
   fs.copyFileSync(file, path.join(EXCHANGE, artifact.name), fs.constants.COPYFILE_EXCL);
   return { mimeType, artifact };
 }
-function catalog(root, hashes = false) {
+function catalog(root, hashes = false, privateDirectories) {
   const files = new Map(), pending = ['']; let bytes = 0;
   const scratch = hashes === true ? Buffer.allocUnsafe(256 * 1024) : undefined;
   while (pending.length) {
@@ -94,8 +101,9 @@ function catalog(root, hashes = false) {
     for (const entry of fs.readdirSync(path.join(root, relative), DIRECTORY_ENTRIES)) {
       // Match host capture before inspecting or traversing private metadata/dependencies.
       if (isVmPrivateName(entry.name.toLowerCase())) continue;
-      need(!entry.isSymbolicLink(), 'Workspace contains a redirected entry');
       const name = relative ? relative + '/' + entry.name : entry.name;
+      if (entry.isDirectory() && isVmPrivateDirectory(name, privateDirectories)) continue;
+      need(!entry.isSymbolicLink(), 'Workspace contains a redirected entry');
       if (entry.isDirectory()) pending.push(name);
       else { const file = local(root, name), stat = fs.lstatSync(file); bytes += stat.size; need(stat.isFile() && bytes <= 16 * 1024 * 1024 * 1024 && files.size < 20000, 'Workspace capacity exceeded');
         files.set(name, hashes === 'versions' ? stat : hashes ? fileHash(file, scratch) : null); }
@@ -103,14 +111,14 @@ function catalog(root, hashes = false) {
   }
   return files;
 }
-function selected(root, scope) {
+function selected(root, scope, privateDirectories) {
   const output = new Map(), scratch = Buffer.allocUnsafe(256 * 1024);
-  for (const name of scope) { const file = local(root, name); if (!isVmPrivatePath(name) && fs.existsSync(file)) output.set(name, fileHash(file, scratch)); }
+  for (const name of scope) { const file = local(root, name); if (!isVmPrivatePath(name, privateDirectories) && fs.existsSync(file)) output.set(name, fileHash(file, scratch)); }
   return output;
 }
 function searchScope(root, raw) {
   if (raw === undefined || raw === '') return '';
-  need(typeof raw === 'string' && raw.length < 4096 && !raw.includes('\0') && !raw.includes(':') && !path.isAbsolute(raw), 'Invalid search scope');
+  needInput(typeof raw === 'string' && raw.length < 4096 && !raw.includes('\0') && !raw.includes(':') && !path.isAbsolute(raw), 'Invalid search scope');
   const normalized = path.relative(root, path.resolve(root, raw.replaceAll('\\', '/'))).replaceAll('\\', '/');
   if (!normalized) return '';
   // local rejects escapes, protected components and redirected entries before realpath.
@@ -130,7 +138,7 @@ function grepRows(source, pattern, name, rows) {
   return false;
 }
 function search(root, operation, scope, pattern) {
-  if (operation === 'grep') need(typeof pattern === 'string' && pattern.length > 0, 'Literal search pattern required');
+  if (operation === 'grep') needInput(typeof pattern === 'string' && pattern.length > 0, 'Literal search pattern required');
   const pending = [scope], rows = []; let visited = 0, truncated = false;
   try {
     while (pending.length && !truncated) {
@@ -160,8 +168,8 @@ function search(root, operation, scope, pattern) {
     return rows.join('\n') + (truncated ? '\n[Results truncated at ' + SEARCH_ROWS + ' rows; narrow the search scope.]' : '');
   } finally { pending.length = 0; rows.length = 0; }
 }
-function changes(before, root, scope, maxWriteBytes, artifactId, artifactOffset = 0) {
-  const after = scope ? selected(root, scope) : catalog(root, true), output = []; let bytes = 0;
+function changes(before, root, scope, maxWriteBytes, artifactId, artifactOffset = 0, privateDirectories) {
+  const after = scope ? selected(root, scope, privateDirectories) : catalog(root, true, privateDirectories), output = []; let bytes = 0;
   for (const [name, hash] of after) if (before.get(name) !== hash) {
     if (artifactId) {
       const file = local(root, name), size = fs.statSync(file).size; bytes += size;
@@ -180,11 +188,11 @@ function changes(before, root, scope, maxWriteBytes, artifactId, artifactOffset 
   return output;
 }
 // Metadata travels in JSON; bytes remain in independent files and are validated again by the host.
-function commandChanges(before, roots, id) {
+function commandChanges(before, roots, id, privateDirectories) {
   const output = []; let bytes = 0;
   const scratch = Buffer.allocUnsafe(256 * 1024);
   for (let workspaceIndex = 0; workspaceIndex < roots.length; workspaceIndex++) {
-    const root = roots[workspaceIndex], previous = before[workspaceIndex], after = catalog(root, 'versions');
+    const root = roots[workspaceIndex], previous = before[workspaceIndex], after = catalog(root, 'versions', privateDirectories);
     for (const [name, stat] of after) {
       const old = previous.get(name);
       if (old && old.size === stat.size && old.mtimeMs === stat.mtimeMs && old.ctimeMs === stat.ctimeMs && old.ino === stat.ino) continue;
@@ -206,22 +214,23 @@ function commandChanges(before, roots, id) {
 function mutate(root, operation, input, maxWriteBytes) {
   const target = local(root, input.path);
   if (operation === 'write') {
-    need(typeof input.content === 'string' && Buffer.byteLength(input.content) <= maxWriteBytes, 'Write exceeds the native write limit');
-    if (fs.existsSync(target)) need(input.snapshot === sha(read(target)), 'Read snapshot required or changed. Read the file again, reconcile changes, then pass snapshot: result.details.snapshot (SHA-256), not result.ref. This write did not modify the target.');
-    else need(input.snapshot === undefined || input.snapshot === null, 'Create cannot reuse a snapshot');
+    needInput(typeof input.content === 'string' && Buffer.byteLength(input.content) <= maxWriteBytes, 'Write exceeds the native write limit');
+    if (fs.existsSync(target)) needInput(input.snapshot === sha(read(target)), 'Read snapshot required or changed. Read the file again, reconcile changes, then pass snapshot: result.details.snapshot (SHA-256), not result.ref. This write did not modify the target.');
+    else needInput(input.snapshot === undefined || input.snapshot === null, 'Create cannot reuse a snapshot');
+    phase = 'mutation';
     fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, input.content);
   } else if (operation === 'edit') {
-    const source = read(target); need(input.snapshot === sha(source), 'Read snapshot required or changed. Read the file again, reconcile changes, then pass snapshot: result.details.snapshot (SHA-256), not result.ref. This edit did not modify the target.');
-    need(isUtf8(source), 'File is not UTF-8 text');
-    let text = source.toString('utf8'); need(Array.isArray(input.edits) && input.edits.length > 0 && input.edits.length <= 20, 'Invalid edit list');
+    const source = read(target); needInput(input.snapshot === sha(source), 'Read snapshot required or changed. Read the file again, reconcile changes, then pass snapshot: result.details.snapshot (SHA-256), not result.ref. This edit did not modify the target.');
+    needInput(isUtf8(source), 'File is not UTF-8 text');
+    let text = source.toString('utf8'); needInput(Array.isArray(input.edits) && input.edits.length > 0 && input.edits.length <= 20, 'Invalid edit list');
     for (const edit of input.edits) {
-      need(typeof edit.oldText === 'string' && edit.oldText.length && typeof edit.newText === 'string', 'Exact text edits required');
-      const at = text.indexOf(edit.oldText); need(at >= 0 && text.indexOf(edit.oldText, at + 1) < 0, 'Edit target is missing or ambiguous');
+      needInput(typeof edit.oldText === 'string' && edit.oldText.length && typeof edit.newText === 'string', 'Exact text edits required');
+      const at = text.indexOf(edit.oldText); needInput(at >= 0 && text.indexOf(edit.oldText, at + 1) < 0, 'Edit target is missing or ambiguous');
       text = text.slice(0, at) + edit.newText + text.slice(at + edit.oldText.length);
     }
-    need(Buffer.byteLength(text) <= maxWriteBytes, 'Edited file exceeds the native write limit'); fs.writeFileSync(target, text);
-  } else if (operation === 'delete') { need(fs.lstatSync(target).isFile(), 'Only files may be deleted'); fs.unlinkSync(target); }
-  else if (operation === 'move') { const destination = local(root, input.destination); need(!fs.existsSync(destination), 'Destination exists'); fs.mkdirSync(path.dirname(destination), { recursive: true }); fs.linkSync(target, destination); fs.unlinkSync(target); }
+    needInput(Buffer.byteLength(text) <= maxWriteBytes, 'Edited file exceeds the native write limit'); phase = 'mutation'; fs.writeFileSync(target, text);
+  } else if (operation === 'delete') { needInput(fs.lstatSync(target).isFile(), 'Only files may be deleted'); phase = 'mutation'; fs.unlinkSync(target); }
+  else if (operation === 'move') { const destination = local(root, input.destination); needInput(!fs.existsSync(destination), 'Destination exists'); phase = 'mutation'; fs.mkdirSync(path.dirname(destination), { recursive: true }); fs.linkSync(target, destination); fs.unlinkSync(target); }
   else throw new Error('Unsupported mutation');
 }
 let request, execution, phase = 'request';
@@ -233,6 +242,7 @@ try {
   need(Number.isSafeInteger(maxWriteBytes) && maxWriteBytes > 0 && maxWriteBytes <= FILE_LIMIT, 'Invalid native write limit');
   const directories = request.directories ?? [];
   need(Array.isArray(directories) && directories.length <= 16, 'Invalid workspace table');
+  const privateDirectories = parseSandboxPrivateDirectories(request.privateDirectories);
   const roots = [], workspaces = [request.workspace, ...directories];
   for (let i = 0; i < workspaces.length; i++) {
     const suffix = i ? '-' + i : '', source = SOURCE + suffix, work = WORK + suffix;
@@ -245,7 +255,7 @@ try {
   const root = roots[workspaceIndex], command = operation === 'powershell' || operation === 'bash';
   let text, snapshot, before, scope, batchScopes, image;
   if (request.mode === 'sandbox-write' && !['read', 'ls', 'find', 'grep'].includes(operation)) {
-    if (command) { before = []; for (const directory of roots) before.push(catalog(directory, 'versions')); }
+    if (command) { before = []; for (const directory of roots) before.push(catalog(directory, 'versions', privateDirectories)); }
     else if (operation === 'file_batch') {
       need(Array.isArray(input.operations) && input.operations.length > 0 && input.operations.length <= 16, 'Invalid operations');
       batchScopes = []; before = [];
@@ -257,22 +267,23 @@ try {
         batchScopes[index].add(item.path);
         if (item.destination !== undefined) { local(selectedRoot, item.destination); batchScopes[index].add(item.destination); }
       }
-      for (let i = 0; i < batchScopes.length; i++) if (batchScopes[i]) before[i] = selected(roots[i], batchScopes[i]);
+      for (let i = 0; i < batchScopes.length; i++) if (batchScopes[i]) before[i] = selected(roots[i], batchScopes[i], privateDirectories);
     } else {
       scope = new Set();
       const operations = operation === 'file_batch' ? input.operations : [input];
       need(Array.isArray(operations) && operations.length > 0 && operations.length <= 16, 'Invalid operations');
       for (const item of operations) { local(root, item.path); scope.add(item.path); if (item.destination !== undefined) { local(root, item.destination); scope.add(item.destination); } }
-      before = selected(root, scope);
+      before = selected(root, scope, privateDirectories);
     }
   }
   if (operation === 'read') {
+    phase = 'read';
     const file = local(root, input.path);
     image = readImage(file, request.id);
     if (image) { snapshot = image.artifact.sha256; text = 'Read image file [' + image.mimeType + ']'; }
     else {
       const bytes = read(file); snapshot = sha(bytes);
-      need(isUtf8(bytes) && !bytes.includes(0), 'Unsupported binary file. read supports UTF-8 text and JPEG, PNG, GIF, WebP, BMP images. Convert other formats to PNG before read; do not transport binary via capped shell output.');
+      needInput(isUtf8(bytes) && !bytes.includes(0), 'Unsupported binary file. read supports UTF-8 text and JPEG, PNG, GIF, WebP, BMP images. Convert other formats to PNG before read; do not transport binary via capped shell output.');
       const source = bytes.toString('utf8'), offset = Math.max(0, (input.offset ?? 1) - 1), count = Math.min(2000, input.limit ?? 2000);
       let start = 0, end = 0;
       for (let line = 0; line < offset; line++) { const next = source.indexOf('\n', start); if (next < 0) { start = source.length; break; } start = next + 1; }
@@ -281,9 +292,10 @@ try {
       text = source.slice(start, Math.min(end, start + 32768)) + '\n[Snapshot: ' + snapshot + ']';
     }
   } else if (operation === 'ls' || operation === 'find' || operation === 'grep') {
+    phase = 'read';
     text = search(root, operation, searchScope(root, input.path), input.pattern);
   } else if (command) {
-    need(typeof input.command === 'string' && input.command.length <= 32768, 'Invalid command');
+    needInput(typeof input.command === 'string' && input.command.length <= 32768, 'Invalid command');
     phase = 'launch';
     let drives = '';
     for (let i = 0; i < roots.length; i++) {
@@ -313,16 +325,18 @@ try {
     text = 'Sandbox operation completed';
   }
   phase = 'collection';
-  const candidates = before && request.mode === 'sandbox-write' && !batchScopes ? command ? commandChanges(before, roots, request.id)
-    : changes(before, root, scope, maxWriteBytes, operation === 'move' ? request.id : undefined) : [];
+  const candidates = before && request.mode === 'sandbox-write' && !batchScopes ? command ? commandChanges(before, roots, request.id, privateDirectories)
+    : changes(before, root, scope, maxWriteBytes, operation === 'move' ? request.id : undefined, 0, privateDirectories) : [];
   if (batchScopes) for (let i = 0; i < batchScopes.length; i++) if (batchScopes[i]) {
-    for (const change of changes(before[i], roots[i], batchScopes[i], maxWriteBytes, request.id, i * 32)) { if (i) change.workspaceIndex = i; candidates.push(change); }
+    for (const change of changes(before[i], roots[i], batchScopes[i], maxWriteBytes, request.id, i * 32, privateDirectories)) { if (i) change.workspaceIndex = i; candidates.push(change); }
   }
   if (!command && workspaceIndex) for (const candidate of candidates) candidate.workspaceIndex = workspaceIndex;
   const result = { id: request.id, ok: true, text, snapshot, image, execution, changes: candidates };
   const encoded = JSON.stringify(result); need(Buffer.byteLength(encoded) <= 24 * 1024 * 1024, 'Result too large');
   fs.writeFileSync(path.join(EXCHANGE, 'response.json'), encoded);
 } catch (error) {
-  fs.writeFileSync(path.join(EXCHANGE, 'response.json'), JSON.stringify({ id: request?.id, ok: false, phase, execution, error: String(error.message).slice(0, 32768) }));
+  const noEffects = (phase === 'request' || phase === 'read') && (error instanceof WorkspaceInputError
+    || phase === 'read' && (error.code === 'ENOENT' || error.code === 'ENOTDIR'));
+  fs.writeFileSync(path.join(EXCHANGE, 'response.json'), JSON.stringify({ id: request?.id, ok: false, phase, execution, noEffects, error: String(error.message).slice(0, 32768) }));
   process.exitCode = 1;
 }

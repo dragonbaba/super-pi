@@ -14,7 +14,6 @@ import { WORKSPACE_TOOL_NAMES } from "../session-execution-profile.ts";
 import { detectSupportedImageMimeType } from "../../utils/mime.ts";
 import { IMAGE_TYPE_SNIFF_BYTES } from "../../utils/image-signature.mjs";
 import { processImage } from "../../utils/image-process.ts";
-import { isVmPrivateName } from "./workspace-policy.mjs";
 
 const names = WORKSPACE_TOOL_NAMES;
 const BASELINE_PATTERN = /^[a-f0-9]{64}$/;
@@ -130,10 +129,10 @@ export class WorkspaceSandboxTools {
     for (const change of changes) {
       need(change && typeof change.path === "string" && change.path.length > 0 && change.path.length < 4096 && !path.isAbsolute(change.path)
         && !change.path.includes(":") && !change.path.includes("\0"), "Invalid candidate path");
+      need(!this.backend.isPrivatePath(change.path), "Protected candidate path (including VM-private paths)");
       const components = change.path.replaceAll("\\", "/").split("/");
       for (const part of components) {
-        const lower = part.toLowerCase();
-        need(part && part !== "." && part !== ".." && !TRAILING_PATH_PATTERN.test(part) && !isVmPrivateName(lower), "Protected candidate path (including VM-private paths)");
+        need(part && part !== "." && part !== ".." && !TRAILING_PATH_PATTERN.test(part), "Protected candidate path");
       }
       need(change.before === null || typeof change.before === "string" && BASELINE_PATTERN.test(change.before), "Invalid baseline");
       need(change.content === null || typeof change.content === "string" && change.content.length <= 2800000 && BASE64_PATTERN.test(change.content), "Invalid candidate bytes");

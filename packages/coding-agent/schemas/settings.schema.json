@@ -88,6 +88,11 @@
 		"shellPath": { "type": "string", "description": "Custom bash-compatible shell executable; supports leading ~ expansion." },
 		"powershellPath": { "type": "string", "description": "Global-only PowerShell executable override. Project settings cannot redirect it." },
 		"sandboxNetwork": { "enum": ["disabled", "enabled"], "default": "disabled", "description": "Global-only workspace Sandbox networking. Enabled permits guest network access including reachable LAN services; disabled removes guest networking. Restart or reload after changes. Legacy explicit-input tasks remain offline." },
+		"sandboxPrivateDirectories": {
+			"type": "array", "maxItems": 64, "items": { "type": "string", "minLength": 1, "maxLength": 4095 },
+			"default": ["target", ".venv", "__pycache__"],
+			"description": "Global-only VM-private directory names (any depth) or workspace-relative paths, case-insensitive, without wildcards or parent traversal. Replaces the default list; [] disables these optional exclusions. Contents are not imported or written back; existing host data is preserved. Fixed metadata/dependency exclusions remain. Restart or reload after changes."
+		},
 		"sandboxToolchains": {
 			"type": "object", "additionalProperties": false,
 			"description": "Global-only exceptions to automatic host PATH toolchain discovery. Complete installations are mapped read-only into Windows Sandbox; no per-tool configuration is normally required.",

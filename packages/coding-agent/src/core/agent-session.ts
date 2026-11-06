@@ -1040,7 +1040,7 @@ export class AgentSession {
 			const workspaceCwd = config.cwd, workspaceParent = resolveEvidencePath(config.agentDir ?? getAgentDir(), "sandbox-workspaces");
 			this._createWorkspaceSandbox = () => new WorkspaceSandboxTools(workspaceCwd, workspaceParent, permissionMode,
 				() => this._resourceLoader.getExtensions().runtime,
-				{ settings: this.settingsManager.getSandboxToolchains(), powershellPath: this.settingsManager.getPowerShellPath(), network: this.settingsManager.getSandboxNetwork(), directories: this.settingsManager.getSessionDirectories() });
+				{ settings: this.settingsManager.getSandboxToolchains(), powershellPath: this.settingsManager.getPowerShellPath(), network: this.settingsManager.getSandboxNetwork(), directories: this.settingsManager.getSessionDirectories(), privateDirectories: this.settingsManager.getSandboxPrivateDirectories() });
 			this._workspaceSandbox = this._createWorkspaceSandbox();
 		} else if (this.settingsManager.getExecutionEnvironment() === "sandbox") {
 			if (this._operationOptions) throw new Error("[SANDBOX_UNSUPPORTED] Experimental host operation journals require trusted-host execution");
