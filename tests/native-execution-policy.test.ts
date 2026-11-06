@@ -241,9 +241,9 @@ test("ask never silently grants, and changed arguments cannot consume an approva
     grant.release();
 });
 test("host MCP calls ask for declared destructive tools and honor server-scoped rules", async t => {
-    async function decide(rules: object[], name: string, destructive: boolean): Promise<string> {
+    async function decide(rules: object[], name: string, destructive: boolean, server = name.slice(5, name.indexOf("__", 5))): Promise<string> {
         const f = await fixture(t, { rules }, "trusted-host", "host-write");
-        try { (await f.owner.authorize(f.event(name, {}), f.ctx, { name, mcpDestructive: destructive } as any)).release(); return "allow"; }
+        try { (await f.owner.authorize(f.event(name, {}), f.ctx, { name, mcpDestructive: destructive, mcpServer: server } as any)).release(); return "allow"; }
         catch (error: any) { return /APPROVAL_REQUIRED/.test(error.message) ? "ask" : /Explicitly denied/.test(error.message) ? "deny" : error.message; }
     }
     const tool = "mcp__github__delete_repo";
@@ -257,6 +257,10 @@ test("host MCP calls ask for declared destructive tools and honor server-scoped 
     assert.equal(await decide([{ tool: "mcp__github", decision: "deny" }], "mcp__githubx__get_issue", false), "allow");
     assert.equal(await decide([{ tool: "mcp__*", decision: "ask" }], "mcp__github__get_issue", false), "ask");
     assert.equal(await decide([{ tool: "mcp__github__get_*", decision: "deny" }, { tool: "mcp__github__*", decision: "allow" }], "mcp__github__get_issue", false), "deny");
+    // Server IDs may contain `__`: rules for `github` never reach the distinct server `github__other`.
+    const other = "mcp__github__other__delete_repo";
+    for (const pattern of ["mcp__github", "mcp__github__*"]) assert.equal(await decide([{ tool: pattern, decision: "allow" }], other, true, "github__other"), "ask");
+    assert.equal(await decide([{ tool: "mcp__github__other", decision: "allow" }], other, true, "github__other"), "allow");
 });
 
 test("all batch paths are checked before any native mutation is prepared", async t => {

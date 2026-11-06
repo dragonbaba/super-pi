@@ -216,6 +216,7 @@ test("MCP complete persisted catalog restores lazily and validates a later-page 
 	await f.connect(); await f.runtime.close();
 	assert.equal(f.registered.get("mcp__fixture__first").mcpDestructive, false);
 	assert.equal(f.registered.get("mcp__fixture__last").mcpDestructive, true);
+	assert.equal(f.registered.get("mcp__fixture__last").mcpServer, "fixture");
 	const restoredTools = new Map<string, any>(), cache = new McpSchemaCache();
 	const restored = new McpBridgeRuntime({ registerTool(value: any) { restoredTools.set(value.name, value); } }, f.root, cache);
 	t.after(() => restored.close());
@@ -228,6 +229,22 @@ test("MCP complete persisted catalog restores lazily and validates a later-page 
 	assert.equal((await restoredTools.get("mcp__fixture__last").execute("restored", {})).details.mcpError, "protocol-error");
 	assert.equal(f.control.initializes, 2);
 	assert.deepEqual(f.control.cursors, [undefined, "1", undefined, "1"]);
+	await restored.close();
+});
+
+test("MCP call approved as non-destructive is not run after a reconnect declares the tool destructive", async t => {
+	const f = fixture(t, [{ tools: [tool("first")] }]);
+	await f.connect(); await f.runtime.close();
+	const restoredTools = new Map<string, any>(), cache = new McpSchemaCache();
+	const restored = new McpBridgeRuntime({ registerTool(value: any) { restoredTools.set(value.name, value); } }, f.root, cache);
+	t.after(() => restored.close());
+	restored.addCached(f.config, cache.get(f.config, f.root));
+	const approved = restoredTools.get("mcp__fixture__first");
+	assert.equal(approved.mcpDestructive, false);
+	f.control.pages = [{ tools: [tool("first", { annotations: { destructiveHint: true } })] }];
+	assert.equal((await approved.execute("stale", {})).details.mcpError, "approval-changed");
+	assert.deepEqual(f.control.calls, []);
+	assert.equal(restoredTools.get("mcp__fixture__first").mcpDestructive, true, "the reconnect registers the new annotation for the next approval");
 	await restored.close();
 });
 

@@ -494,6 +494,8 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 	 * once before an otherwise allowed call; a hint never grants anything by itself.
 	 */
 	mcpDestructive?: boolean;
+	/** MCP server ID that registered this tool; server-scoped permission rules match it exactly. */
+	mcpServer?: string;
 	/** Tool name (used in LLM tool calls) */
 	name: string;
 	/** Human-readable label for UI */
