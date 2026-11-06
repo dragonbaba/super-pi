@@ -75,7 +75,8 @@ test("host-restricted classification lifts only literal segments, and suggestion
     assert.equal(shellRuleVerdict("bash", "ls && FOO=1 git push $REMOTE", rules), RULE_DENY);
     assert.equal(shellRuleVerdict("bash", "(git push origin)", rules), RULE_DENY);
     // Control-flow keywords open a segment without being its program.
-    for (const command of ["if true; then git push origin main; fi", "for r in origin; do git push origin main; done", "! git push", "{ git push; }"])
+    for (const command of ["if true; then git push origin main; fi", "for r in origin; do git push origin main; done", "! git push", "{ git push; }",
+        "function publish { git push origin main; }; publish", "publish() { git push origin main; }; publish"])
         assert.equal(shellRuleVerdict("bash", command, rules), RULE_DENY, command);
     // Dispatch wrappers run the command after them; `command -v` only looks it up.
     for (const command of ["command git push origin main", "sudo -u ci env FOO=1 git push", "timeout 60 nohup git push", "sudo -n git push",

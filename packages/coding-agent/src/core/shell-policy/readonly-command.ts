@@ -90,7 +90,7 @@ const SEGMENT_REJECTED = 0, SEGMENT_READER = 1, SEGMENT_FILE = 2;
  * Unquoted words that open a segment without being its program: Bash keywords and prefixes
  * (`then git push`), PowerShell block braces and dot-sourcing. Deny/ask rules skip them.
  */
-const BASH_COMMAND_PREFIXES: ReadonlySet<string> = new Set(["if", "then", "else", "elif", "do", "while", "until", "!", "{", "time"]);
+const BASH_COMMAND_PREFIXES: ReadonlySet<string> = new Set(["if", "then", "else", "elif", "do", "while", "until", "!", "{", "time", "function"]);
 const POWERSHELL_COMMAND_PREFIXES: ReadonlySet<string> = new Set(["{", ".", "try", "catch", "finally", "if", "elseif", "else",
   "do", "while", "until", "foreach", "for", "switch", "trap"]);
 
@@ -277,6 +277,8 @@ export function shellRuleVerdict(tool: "bash" | "powershell", command: string, r
             continue;
           }
         }
+        // `function publish { git push; }`: the body's first command follows the name and brace.
+        if (argv.length === 0 && !powerShell && text === "function") { index++; continue; }
         if (argv.length === 0 && (isCommandPrefix(text, powerShell) || !powerShell && isAssignment(text))) continue;
       }
       argv.push(text);
