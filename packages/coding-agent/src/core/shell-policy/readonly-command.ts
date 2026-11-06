@@ -137,7 +137,8 @@ function dispatchedCommandStart(argv: readonly string[]): number {
       index += valueOptions.has(word) ? 2 : 1;
       continue;
     }
-    if (name === "env" && isAssignment(word)) { index++; continue; }
+    // `env CI=1 cmd` and `sudo CI=1 cmd` set variables for the command they run.
+    if ((name === "env" || name === "sudo") && isAssignment(word) || name === "env" && word === "-") { index++; continue; }
     break;
   }
   if (name === "timeout") index++; // the duration
