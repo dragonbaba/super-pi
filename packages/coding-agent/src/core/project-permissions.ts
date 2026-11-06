@@ -182,6 +182,8 @@ export class ProjectPermissionStore {
   private current: ProjectRuleSet = EMPTY_PROJECT_RULES;
   private failure?: string;
   private reported = true;
+  /** The reload in progress; overlapping authorizations wait for it instead of reading stale rules. */
+  private loading?: Promise<ProjectRuleSet>;
   private readonly agentDir: string;
   private readonly cwd: string;
   constructor(agentDir: string, cwd: string) { this.agentDir = agentDir; this.cwd = cwd; }
@@ -193,6 +195,13 @@ export class ProjectPermissionStore {
   }
 
   async refresh(): Promise<ProjectRuleSet> {
+    if (this.loading) return this.loading;
+    const loading = this.load();
+    this.loading = loading;
+    try { return await loading; } finally { if (this.loading === loading) this.loading = undefined; }
+  }
+
+  private async load(): Promise<ProjectRuleSet> {
     const file = await this.location();
     let stat;
     try { stat = await lstat(file); }
@@ -203,7 +212,7 @@ export class ProjectPermissionStore {
       return this.current;
     }
     if (stat.mtimeMs === this.mtime && stat.size === this.size) return this.current;
-    this.mtime = stat.mtimeMs; this.size = stat.size;
+    // The version is published together with its parsed rules, after loading finishes.
     try {
       if (!stat.isFile()) throw new Error("不是普通文件");
       if (stat.size > MAX_FILE_BYTES) throw new Error("文件超过 256 KB");
@@ -213,6 +222,7 @@ export class ProjectPermissionStore {
       this.failure = error instanceof Error ? error.message : String(error);
       this.reported = false;
     }
+    this.mtime = stat.mtimeMs; this.size = stat.size;
     return this.current;
   }
 

@@ -85,6 +85,8 @@ const MAX_HOST_SEGMENTS = 64;
 const POWERSHELL_LOCATION_COMMANDS: ReadonlySet<string> = new Set(["cd", "chdir", "set-location", "sl"]);
 /** Segment classes; a file command or a reader's file redirection is a FILE segment. */
 const SEGMENT_REJECTED = 0, SEGMENT_READER = 1, SEGMENT_FILE = 2;
+/** `ruleWords` results: not matchable, plain words, or words with a literal file redirection. */
+const RULE_WORDS_NONE = 0, RULE_WORDS_PLAIN = 1, RULE_WORDS_WRITES = 2;
 /** `classifyHostShellCommand` results. RULE_ALLOWED: every other segment matched a project allow rule. */
 export const HOST_SHELL_READ_ONLY = 0, HOST_SHELL_FILE_COMMANDS = 1, HOST_SHELL_OTHER = 2, HOST_SHELL_RULE_ALLOWED = 3;
 export type HostShellCommandClass = typeof HOST_SHELL_READ_ONLY | typeof HOST_SHELL_FILE_COMMANDS | typeof HOST_SHELL_OTHER
@@ -139,8 +141,10 @@ export function classifyHostShellCommand(tool: "bash" | "powershell", command: s
   let result: HostShellCommandClass = HOST_SHELL_READ_ONLY, moved = false;
   for (let segment = 0; segment < table.segmentCount; segment++) {
     const kind = classifySegment(table, segment, powerShell, NO_SUBCOMMANDS, true, argv);
-    if (kind === SEGMENT_REJECTED && ruled && ruleWords(table, segment, powerShell, argv)
-      && rules.matchShellWords(powerShell, argv) === RULE_ALLOW) {
+    const words = kind === SEGMENT_REJECTED && ruled ? ruleWords(table, segment, powerShell, argv) : RULE_WORDS_NONE;
+    if (words !== RULE_WORDS_NONE && rules!.matchShellWords(powerShell, argv) === RULE_ALLOW) {
+      // Its own redirection was checked before anything ran, like any later file command.
+      if (words === RULE_WORDS_WRITES && moved) { result = HOST_SHELL_OTHER; break; }
       // A command the user allowed may change files too, so a later file command asks.
       result = HOST_SHELL_RULE_ALLOWED; moved = true;
       continue;
@@ -201,7 +205,10 @@ export function suggestShellRules(tool: "bash" | "powershell", command: string):
     const kind = classifySegment(table, segment, powerShell, NO_SUBCOMMANDS, true, argv);
     if (kind === SEGMENT_FILE && moved) return undefined;
     if (kind === SEGMENT_REJECTED) {
-      const rule = ruleWords(table, segment, powerShell, argv) ? prefixRule(argv) : undefined;
+      const words = ruleWords(table, segment, powerShell, argv);
+      // A redirection after a possible file change would still ask once the rule is saved.
+      if (words === RULE_WORDS_NONE || words === RULE_WORDS_WRITES && moved) return undefined;
+      const rule = prefixRule(argv);
       if (rule === undefined) return undefined;
       if (!suggestions.includes(rule)) {
         if (suggestions.length === MAX_REMEMBERED_RULES) return undefined;
@@ -234,25 +241,30 @@ function prefixRule(argv: readonly string[]): string | undefined {
  * redirections. False when a word is dynamic, so a project allow rule never matches
  * text that is only known when the command runs.
  */
-function ruleWords(table: ShellTokenTable, segment: number, powerShell: boolean, argv: string[]): boolean {
+function ruleWords(table: ShellTokenTable, segment: number, powerShell: boolean, argv: string[]): number {
   const separator = table.segmentSeparators[segment]!;
-  if (separator === SEGMENT_BACKGROUND || separator === SEGMENT_OPEN || separator === SEGMENT_CLOSE || table.segmentDepths[segment] !== 0) return false;
-  if (table.segmentTestOpen[segment]! >= 0 || table.segmentArithmeticAt[segment]! >= 0) return false;
+  if (separator === SEGMENT_BACKGROUND || separator === SEGMENT_OPEN || separator === SEGMENT_CLOSE || table.segmentDepths[segment] !== 0) return RULE_WORDS_NONE;
+  if (table.segmentTestOpen[segment]! >= 0 || table.segmentArithmeticAt[segment]! >= 0) return RULE_WORDS_NONE;
   argv.length = 0;
+  let result = RULE_WORDS_PLAIN;
   const end = table.segmentEnds[segment]!;
   for (let index = table.segmentStart(segment); index < end; index++) {
     const flags = table.flags[index]!;
     if (flags & WORD_REDIRECTION) {
-      if (index + 1 >= end || !isReadOnlyRedirection(table, index, powerShell) && !isLiteralFileRedirection(table, index, powerShell)) return false;
+      if (index + 1 >= end) return RULE_WORDS_NONE;
+      if (!isReadOnlyRedirection(table, index, powerShell)) {
+        if (!isLiteralFileRedirection(table, index, powerShell)) return RULE_WORDS_NONE;
+        result = RULE_WORDS_WRITES;
+      }
       index++;
       continue;
     }
-    if (flags & (DYNAMIC_WORD | EXPANSION_BRACE) || argv.length === 0 && flags & EXPANSION_GLOB) return false;
+    if (flags & (DYNAMIC_WORD | EXPANSION_BRACE) || argv.length === 0 && flags & EXPANSION_GLOB) return RULE_WORDS_NONE;
     const text = table.texts ? table.texts[index]! : windowsWordText(table, index);
-    if (argv.length === 0 && (!text || !powerShell && (flags & WORD_QUOTED) === 0 && isAssignment(text))) return false;
+    if (argv.length === 0 && (!text || !powerShell && (flags & WORD_QUOTED) === 0 && isAssignment(text))) return RULE_WORDS_NONE;
     argv.push(text);
   }
-  return argv.length > 0;
+  return argv.length > 0 ? result : RULE_WORDS_NONE;
 }
 
 function commandTable(powerShell: boolean, command: string, analysisOwner: ShellAnalysisOwner | undefined): ShellTokenTable {

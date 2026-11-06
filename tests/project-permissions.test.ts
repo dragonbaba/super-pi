@@ -68,7 +68,9 @@ test("host-restricted classification lifts only literal segments, and suggestion
         ["npm test && git status", HOST_SHELL_RULE_ALLOWED], ["npm test -- --grep x > log.txt", HOST_SHELL_RULE_ALLOWED],
         // A command the user allowed may change files too, so a later file command asks.
         ["npm test && rm a.txt", HOST_SHELL_OTHER], ["npm test $FILTER", HOST_SHELL_OTHER], ["npm run build", HOST_SHELL_OTHER],
-        ["npm test &", HOST_SHELL_OTHER],
+        ["npm test &", HOST_SHELL_OTHER], ["npm test > out.txt && git status", HOST_SHELL_RULE_ALLOWED],
+        // The redirect target was checked before the first command could replace a directory with a link.
+        ["npm test && npm test > artifacts/result.txt", HOST_SHELL_OTHER],
     ] as const) assert.equal(classifyHostShellCommand("bash", command, undefined, rules), expected, command);
     assert.equal(shellRuleVerdict("bash", "ls && FOO=1 git push $REMOTE", rules), RULE_DENY);
     assert.equal(shellRuleVerdict("bash", "(git push origin)", rules), RULE_DENY);
@@ -80,6 +82,7 @@ test("host-restricted classification lifts only literal segments, and suggestion
     assert.equal(suggestShellRules("bash", "npm test $FILTER"), undefined);
     assert.equal(suggestShellRules("bash", "npm run build && cp a.txt b.txt"), undefined);
     assert.equal(suggestShellRules("bash", "a1 x; a2 x; a3 x; a4 x; a5 x; a6 x"), undefined);
+    assert.equal(suggestShellRules("bash", "make && npm test > out.txt"), undefined);
 });
 
 test("the project rule file reloads on change, keeps the last good version and saves atomically", async t => {
@@ -179,6 +182,11 @@ test("saves from concurrent sessions are merged, and a rule the reader would rej
     await assert.rejects(first.remember([{ tool: "bash", decision: "allow", command: "curl " + "x".repeat(5000) }]), /未保存/);
     assert.equal(await fs.readFile(file, "utf8"), before);
     assert.equal((await first.refresh()).rules.length, 2);
+    // Overlapping authorizations share one reload; neither sees the old rules once the file changed.
+    await fs.writeFile(file, JSON.stringify({ version: 1, rules: [{ tool: "bash", decision: "deny", command: "git push *" }] }));
+    const [a, b] = await Promise.all([second.refresh(), second.refresh()]);
+    assert.equal(a, b);
+    assert.equal(a.matchShellWords(false, ["git", "push"]), RULE_DENY);
 });
 
 test("a shell analysis owner shared with the rule check is released", async t => {
