@@ -91,7 +91,23 @@ const SEGMENT_REJECTED = 0, SEGMENT_READER = 1, SEGMENT_FILE = 2;
  * (`then git push`), PowerShell block braces and dot-sourcing. Deny/ask rules skip them.
  */
 const BASH_COMMAND_PREFIXES: ReadonlySet<string> = new Set(["if", "then", "else", "elif", "do", "while", "until", "!", "{", "time"]);
-const POWERSHELL_COMMAND_PREFIXES: ReadonlySet<string> = new Set(["{", "."]);
+const POWERSHELL_COMMAND_PREFIXES: ReadonlySet<string> = new Set(["{", ".", "try", "catch", "finally", "if", "elseif", "else",
+  "do", "while", "until", "foreach", "for", "switch", "trap"]);
+
+/** Whether `text` opens a command without being its program (PowerShell keywords in any case). */
+function isCommandPrefix(text: string, powerShell: boolean): boolean {
+  if (!powerShell) return BASH_COMMAND_PREFIXES.has(text);
+  if (POWERSHELL_COMMAND_PREFIXES.has(text)) return true;
+  const first = text.charCodeAt(0);
+  return first >= 65 && first <= 90 && text.length <= 7 && POWERSHELL_COMMAND_PREFIXES.has(text.toLowerCase());
+}
+
+/** The stronger of `verdict` and the deny/ask rule matching the words collected so far. */
+function strongerRuleVerdict(rules: ProjectRuleSet, powerShell: boolean, argv: readonly string[], verdict: number): number {
+  if (argv.length === 0) return verdict;
+  const matched = rules.matchShellWords(powerShell, argv);
+  return matched >= RULE_ASK && matched > verdict ? matched : verdict;
+}
 /** `ruleWords` results: not matchable, plain words, or words with a literal file redirection. */
 const RULE_WORDS_NONE = 0, RULE_WORDS_PLAIN = 1, RULE_WORDS_WRITES = 2;
 /** `classifyHostShellCommand` results. RULE_ALLOWED: every other segment matched a project allow rule. */
@@ -197,12 +213,15 @@ export function shellRuleVerdict(tool: "bash" | "powershell", command: string, r
       const flags = table.flags[index]!;
       if (flags & WORD_REDIRECTION) { index++; continue; }
       const text = table.texts ? table.texts[index]! : windowsWordText(table, index);
-      if ((flags & WORD_QUOTED) === 0 && (argv.length === 0 && (powerShell ? POWERSHELL_COMMAND_PREFIXES : BASH_COMMAND_PREFIXES).has(text)
-        || argv.length === 0 && !powerShell && isAssignment(text) || powerShell && text === "}")) continue;
+      if ((flags & WORD_QUOTED) === 0) {
+        // A PowerShell segment keeps its script blocks (`try { git push } catch { … }`); each
+        // brace ends the command before it, and the block's first command is matched on its own.
+        if (powerShell && (text === "{" || text === "}")) { verdict = strongerRuleVerdict(rules, true, argv, verdict); argv.length = 0; continue; }
+        if (argv.length === 0 && (isCommandPrefix(text, powerShell) || !powerShell && isAssignment(text))) continue;
+      }
       argv.push(text);
     }
-    const matched = argv.length ? rules.matchShellWords(powerShell, argv) : RULE_NONE;
-    if (matched >= RULE_ASK && matched > verdict) verdict = matched;
+    verdict = strongerRuleVerdict(rules, powerShell, argv, verdict);
   }
   argv.length = 0;
   return verdict;
@@ -280,9 +299,10 @@ function ruleWords(table: ShellTokenTable, segment: number, powerShell: boolean,
     }
     if (flags & (DYNAMIC_WORD | EXPANSION_BRACE) || argv.length === 0 && flags & EXPANSION_GLOB) return RULE_WORDS_NONE;
     const text = table.texts ? table.texts[index]! : windowsWordText(table, index);
-    // A segment that opens with control flow (`then npm test`) is not one plain command.
-    if (argv.length === 0 && (!text || (flags & WORD_QUOTED) === 0
-      && ((powerShell ? POWERSHELL_COMMAND_PREFIXES : BASH_COMMAND_PREFIXES).has(text) || !powerShell && isAssignment(text)))) return RULE_WORDS_NONE;
+    // A segment that opens with control flow (`then npm test`), or a PowerShell segment holding
+    // a script block (`ForEach-Object { git push }`), is not one plain command.
+    if (argv.length === 0 && !text || (flags & WORD_QUOTED) === 0 && (powerShell && (text === "{" || text === "}")
+      || argv.length === 0 && (isCommandPrefix(text, powerShell) || !powerShell && isAssignment(text)))) return RULE_WORDS_NONE;
     argv.push(text);
   }
   return argv.length > 0 ? result : RULE_WORDS_NONE;
