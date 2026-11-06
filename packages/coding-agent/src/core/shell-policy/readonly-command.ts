@@ -92,7 +92,8 @@ const SEGMENT_REJECTED = 0, SEGMENT_READER = 1, SEGMENT_FILE = 2;
  */
 const BASH_COMMAND_PREFIXES: ReadonlySet<string> = new Set(["if", "then", "else", "elif", "do", "while", "until", "!", "{", "function", "coproc"]);
 const POWERSHELL_COMMAND_PREFIXES: ReadonlySet<string> = new Set(["{", ".", "try", "catch", "finally", "if", "elseif", "else",
-  "do", "while", "until", "foreach", "for", "switch", "trap"]);
+  "do", "while", "until", "foreach", "for", "switch", "trap", "return", "throw", "exit", "function", "filter", "begin", "process", "end", "clean",
+  "dynamicparam"]);
 
 /** Whether a Bash command has an unquoted heredoc (`npm test --grep '<<'` has none); the scan runs only when `<<` appears. */
 function hasBashHeredoc(command: string): boolean {
@@ -128,7 +129,7 @@ function isCommandPrefix(text: string, powerShell: boolean): boolean {
   if (!powerShell) return BASH_COMMAND_PREFIXES.has(text);
   if (POWERSHELL_COMMAND_PREFIXES.has(text)) return true;
   const first = text.charCodeAt(0);
-  return first >= 65 && first <= 90 && text.length <= 7 && POWERSHELL_COMMAND_PREFIXES.has(text.toLowerCase());
+  return first >= 65 && first <= 90 && text.length <= 12 && POWERSHELL_COMMAND_PREFIXES.has(text.toLowerCase());
 }
 
 /** Bash builtins and launchers that run the command after them (`command git push`, `sudo -u x make`). */
