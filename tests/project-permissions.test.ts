@@ -97,12 +97,15 @@ test("host-restricted classification lifts only literal segments, and suggestion
     assert.equal(shellRuleVerdict("bash", 'find . -name "*.tmp" -exec rm -f {} +', remove), RULE_DENY);
     assert.equal(shellRuleVerdict("bash", 'case "$tool" in npm) echo npm;; git) echo git;; esac', lookup), RULE_NONE);
     assert.equal(shellRuleVerdict("bash", 'case "$t" in build) case "$u" in dev) echo dev;; esac;; git) echo git;; esac', lookup), RULE_NONE);
+    // Array elements are data; the command after the array is not.
+    assert.equal(shellRuleVerdict("bash", "declare -a packages=(git curl jq)", lookup), RULE_NONE);
+    assert.equal(shellRuleVerdict("bash", "packages=(\n  git\n  jq\n)\ngit push", lookup), RULE_DENY);
     assert.equal(shellRuleVerdict("bash", "case $x in\n  a|b) echo a ;;\n  *) git push ;;\nesac", lookup), RULE_DENY);
     const exact = new ProjectRuleSet([{ tool: "powershell", decision: "deny", command: "git push origin main" }]);
     // PowerShell keeps script blocks in one segment: each block's commands are matched on their own.
     for (const command of ["if ($true) { git push origin main }", "try { git push origin main } catch { Write-Output $_ }",
         "Try { npm test } catch [System.Exception] { Write-Error x } finally { git push origin main }", "1..2 | ForEach-Object { git push origin main }",
-        "try {git push origin main} catch {}", "$null = git push origin main", "$out += git push origin main", "$r=git push origin main", "$null= git push origin main", "$null =git push origin main", "[string]$out = git push origin main", "git.exe push origin main",
+        "try {git push origin main} catch {}", "$null = git push origin main", "$out += git push origin main", "$r=git push origin main", "$null= git push origin main", "$null =git push origin main", "[string]$out = git push origin main", "$first, $rest = git push origin main", "git.exe push origin main",
         "return git push origin main", "function Publish { return git push origin main }; Publish", "process { Git push origin main }", "try { git push origin \"main\"} catch {}", "{\"git\" push origin main }", "try{ git push origin main }catch{}", "try{ npm test }finally{git push origin main}",
         "& \"C:\\Program Files\\Git\\cmd\\git.exe\" push origin main"])
         assert.equal(shellRuleVerdict("powershell", command, exact), RULE_DENY, command);

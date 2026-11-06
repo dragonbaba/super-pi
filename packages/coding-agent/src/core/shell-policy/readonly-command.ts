@@ -507,6 +507,8 @@ export function shellRuleVerdict(tool: "bash" | "powershell", command: string, r
   // (`@{ out = (git push) }`, `@{ out = & git push }` run their command for the value).
   // A `switch` body (`switch ($t) { git { … } }`) is tracked the same way: its labels are not commands.
   let caseDepth = 0, casePattern = false, braceKinds = 0, switchKinds = 0, braceDepth = 0, hashEntry = HASH_NONE, keyPosition = false, switchPending = false;
+  // Bash array elements (`packages=(git curl jq)`) are data: segments at or below this depth are skipped.
+  let arrayDepth = 0;
   for (let segment = 0; segment < table.segmentCount && verdict !== RULE_DENY; segment++) {
     argv.length = 0;
     const previous = segment > 0 ? table.segmentSeparators[segment - 1]! : -1;
@@ -519,6 +521,7 @@ export function shellRuleVerdict(tool: "bash" | "powershell", command: string, r
     keyPosition = hashEntry === HASH_NONE && (previous === SEGMENT_SEQUENCE || lineBreak);
     const end = table.segmentEnds[segment]!;
     if (!powerShell) {
+      if (arrayDepth > 0) { if (table.segmentDepths[segment]! >= arrayDepth) continue; arrayDepth = 0; }
       const first = table.segmentStart(segment);
       const head = first < end && (table.flags[first]! & WORD_QUOTED) === 0 ? table.texts![first]! : "";
       // `case WORD in PATTERN)`: patterns run until a `)` ends their segment.
@@ -590,6 +593,12 @@ export function shellRuleVerdict(tool: "bash" | "powershell", command: string, r
           if (cast > 0 && cast === text.length) continue;
           // An attached right-hand side (`$r=@{ … }`, `$r='npm'`) is parsed like any other word.
           if (argv.length === 0 && text.charCodeAt(cast) === 36) {
+            // `$first, $rest = git push`: every target before the last is skipped.
+            while (index + 1 < end && (text.charCodeAt(text.length - 1) === 44 || windowsWordText(table, index + 1).charCodeAt(0) === 44)) {
+              index++;
+              text = windowsWordText(table, index);
+              rawLow = table.starts[index]!;
+            }
             const equals = text.indexOf("=", cast);
             if (equals > cast + 1) {
               if (equals === text.length - 1) continue;
@@ -661,6 +670,11 @@ export function shellRuleVerdict(tool: "bash" | "powershell", command: string, r
     }
     verdict = strongerRuleVerdict(rules, powerShell, argv, verdict);
     if (caseDepth > 0 && endsCaseArm(table.source, table.segmentSourceEnds[segment]!)) casePattern = true;
+    // `name=(` / `name+=(` opens an array: its elements are the deeper segments that follow.
+    if (!powerShell && table.segmentSeparators[segment] === SEGMENT_OPEN && (table.flags[end - 1]! & WORD_QUOTED) === 0) {
+      const last = table.texts![end - 1]!;
+      if (last.length > 1 && last.charCodeAt(last.length - 1) === 61) arrayDepth = table.segmentDepths[segment]! + 1;
+    }
   }
   argv.length = 0;
   return verdict;
