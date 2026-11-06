@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { basename, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { staticMutationTarget, uninspectableBashStateStart, heredocScriptLanguages, literalAliasSource, literalEvalScript, literalProcessSources, literalStoredScripts, unsafeBashLoopHeaderReason } from "./core.ts";
 import { commandSubstitutionEnd } from "./shell-substitution.ts";
 import { analyzeShellSource, type ShellAnalysisOwner } from "./shell-analysis.ts";
@@ -45,7 +45,7 @@ const POWERSHELL_FILE_CMDLETS = new Map<string, number>([
 const POWERSHELL_PATH_PARAMETERS = new Set(["-path", "-literalpath", "-lp", "-pspath", "-filepath"]);
 // Full names for prefix matching (`-Dest`, `-Lit`); switches are matched exactly first.
 const POWERSHELL_PATH_NAMES: readonly string[] = Object.freeze(["-path", "-literalpath", "-pspath", "-filepath"]);
-const POWERSHELL_DESTINATION_NAME = "-destination";
+const POWERSHELL_DESTINATION_NAME = "-destination", POWERSHELL_NEW_NAME = "-newname";
 const POWERSHELL_SWITCH_PARAMETERS = new Set([
   "-recurse", "-r", "-force", "-fo", "-nonewline", "-append", "-passthru", "-whatif", "-confirm", "-noclobber", "-container", "-verbose", "-debug", "-asbytestream",
 ]);
@@ -178,7 +178,8 @@ function addPositionalTargets(
       optionsEnded = true;
       continue;
     }
-    if (!optionsEnded && (token.startsWith("-") || builder.cmdOptions && token.length === 2 && token.charCodeAt(0) === 47)) {
+    if (!optionsEnded && builder.cmdOptions && isCmdOption(token)) continue; // e.g. move /y keeps operand roles.
+    if (!optionsEnded && token.startsWith("-")) {
       if (destructive === "move") {
         unknownMoveOptions = true; builder.unverifiableMutation = true;
         markOpaque(builder, "unverifiable_move_options");
@@ -307,30 +308,33 @@ function inspectKnownMutation(command: string, tokens: PermissionTokens, start: 
  * of passing as read-only. A value is a comma list that may continue across words
  * (`a.txt, b.txt`). New-Item creates `-Name` relative to Path (or the cwd). A copy or move
  * into an existing directory writes `<Destination>/<source name>`, so that target is added
- * too (Rename-Item's NewName is not a directory). Bound values are kept as token
- * (index, offset, end) triples, so binding allocates nothing.
+ * too. Rename-Item's NewName (positional or `-NewName`) is a sibling of its source. A
+ * literal `-WhatIf` means the cmdlet is not run, so it records no mutation. Bound values
+ * are kept as token (index, offset, end) triples, so binding allocates nothing.
  */
 function inspectPowerShellFileCmdlet(command: string, kind: number, tokens: PermissionTokens, start: number, cwd: string, builder: ScopeBuilder): void {
-  markMutation(builder, command);
   const takesName = (kind & CMDLET_NAME) !== 0, rename = (kind & CMDLET_RENAME) !== 0;
   kind &= CMDLET_KIND;
   let pathIndex = -1, pathOffset = 0, pathEnd = -1, destinationIndex = -1, destinationOffset = 0, destinationEnd = -1;
-  let nameIndex = -1, nameOffset = 0, noFile = false;
+  let nameIndex = -1, nameOffset = 0, noFile = false, whatIf = false;
   for (let index = start; index < tokens.length; index++) {
     const token = tokens[index]!;
     if (token.length < 2 || token.charCodeAt(0) !== 45) continue;
     const colon = token.indexOf(":");
     const name = (colon < 0 ? token : token.slice(0, colon)).toLowerCase();
+    if (colon < 0 && (name === "-whatif" || name === "-wi")) { whatIf = true; continue; }
     if (POWERSHELL_SWITCH_PARAMETERS.has(name)) continue;
     let valueIndex = index, offset = colon + 1;
     if (colon < 0) { valueIndex = ++index; offset = 0; }
     const end = index = cmdletListEnd(tokens, valueIndex);
     const role = cmdletParameterRole(name);
     if (role === 1) { pathIndex = valueIndex; pathOffset = offset; pathEnd = end; }
-    else if (role === 2) { destinationIndex = valueIndex; destinationOffset = offset; destinationEnd = end; }
+    else if (role === 2 || rename && name.length >= 5 && POWERSHELL_NEW_NAME.startsWith(name)) { destinationIndex = valueIndex; destinationOffset = offset; destinationEnd = end; }
     else if (takesName && name === "-name") { nameIndex = valueIndex; nameOffset = offset; }
     else if (name === "-variable") noFile = true; // Tee-Object -Variable writes no file.
   }
+  if (whatIf) return;
+  markMutation(builder, command);
   const positionalDestination = kind === CMDLET_COPY || kind === CMDLET_MOVE;
   for (let index = start; index < tokens.length && (pathIndex < 0 || positionalDestination && destinationIndex < 0); index++) {
     const token = tokens[index]!;
@@ -353,8 +357,10 @@ function inspectPowerShellFileCmdlet(command: string, kind: number, tokens: Perm
     if (into) addCmdletList(builder, tokens, pathIndex, pathOffset, pathEnd, cwd, tokens.expansions?.[destinationIndex] ?? 0, false, undefined, into);
   } else if (childName) addTarget(builder, childName, cwd, true, childExpansion);
   else if (!noFile && kind !== CMDLET_COPY) markUnverifiableCmdletTarget(builder);
-  if (destinationIndex >= 0) addCmdletList(builder, tokens, destinationIndex, destinationOffset, destinationEnd, cwd, 0, false, undefined, undefined);
-  else if (positionalDestination) markUnverifiableCmdletTarget(builder); // Where the copy or move writes is unknown.
+  if (destinationIndex >= 0) {
+    const parent = rename && pathIndex >= 0 && pathEnd === pathIndex ? dirname(cmdletValue(tokens, pathIndex, pathOffset) || ".") : undefined;
+    addCmdletList(builder, tokens, destinationIndex, destinationOffset, destinationEnd, cwd, parent === undefined ? 0 : tokens.expansions?.[pathIndex] ?? 0, false, undefined, parent);
+  } else if (positionalDestination) markUnverifiableCmdletTarget(builder); // Where the copy or move writes is unknown.
 }
 
 /** 1 = Path, 2 = Destination, 0 = other. PowerShell accepts any unambiguous prefix of a parameter name. */
@@ -444,6 +450,11 @@ function inspectNativeCmdWrapper(tokens: PermissionTokens, start: number, cwd: s
     return true;
   }
   return false;
+}
+
+/** A cmd switch: `/x` or `/-x`. */
+function isCmdOption(token: string): boolean {
+  return token.charCodeAt(0) === 47 && (token.length === 2 || token.length === 3 && token.charCodeAt(1) === 45);
 }
 
 function hasWhitespace(value: string): boolean {

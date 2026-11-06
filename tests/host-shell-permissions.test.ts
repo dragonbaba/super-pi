@@ -143,7 +143,9 @@ test("native authorization reads PowerShell file cmdlets and cmd /c operands lik
     assert.equal(f.dialogs.length,before+1,command);assert.ok(f.dialogs.at(-1)!.includes(f.outside),command);
   }
   const before=f.dialogs.length;
-  await f.authorize("powershell","Set-Content .\\a.txt hi; Copy-Item a.txt b.txt; 'hi' | Tee-Object -Variable v");
+  await f.authorize("powershell","Set-Content .\\a.txt hi; Copy-Item a.txt b.txt; 'hi' | Tee-Object -Variable v; Rename-Item -Path a.txt -NewName c.txt; cmd /c move /y b.txt d.txt");
+  // -WhatIf previews without running the cmdlet.
+  await f.authorize("powershell","Set-Content -Path ../outside/existing.txt -Value changed -WhatIf");
   assert.equal(f.dialogs.length,before);
   await assert.rejects(f.authorize("powershell","cmd /c \"rd /s /q .\\.git\""),/敏感目标禁止删除/);
   // The legacy guard's scan is unchanged; only native authorization reads cmdlet operands.
