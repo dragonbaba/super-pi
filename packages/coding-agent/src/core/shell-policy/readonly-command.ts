@@ -1,7 +1,7 @@
 import type { ShellAnalysisOwner } from "./shell-analysis.ts";
 import { lexBash } from "./syntax/bash.ts";
 import {
-  DIALECT_POWERSHELL, EXPANSION_BRACE, EXPANSION_MASK, EXPANSION_QUOTED_VARIABLE, EXPANSION_SUBSTITUTION, EXPANSION_VARIABLE,
+  DIALECT_POWERSHELL, EXPANSION_BRACE, EXPANSION_GLOB, EXPANSION_MASK, EXPANSION_QUOTED_VARIABLE, EXPANSION_SUBSTITUTION, EXPANSION_VARIABLE,
   SEGMENT_BACKGROUND, SEGMENT_CLOSE, SEGMENT_OPEN, type ShellTokenTable, WORD_DECODE, WORD_QUOTED, WORD_REDIRECTION,
 } from "./syntax/token-table.ts";
 import { lexWindowsScript, windowsWordText } from "./syntax/windows.ts";
@@ -93,6 +93,7 @@ function isReadOnlySegment(table: ShellTokenTable, segment: number, powerShell: 
   if (separator === SEGMENT_BACKGROUND || separator === SEGMENT_OPEN || separator === SEGMENT_CLOSE || table.segmentDepths[segment] !== 0) return false;
   if (table.segmentTestOpen[segment]! >= 0 || table.segmentArithmeticAt[segment]! >= 0) return false;
   argv.length = 0;
+  let globs = false;
   const end = table.segmentEnds[segment]!;
   for (let index = table.segmentStart(segment); index < end; index++) {
     const flags = table.flags[index]!;
@@ -103,6 +104,7 @@ function isReadOnlySegment(table: ShellTokenTable, segment: number, powerShell: 
     }
     // Script blocks are code; a Bash brace list expands into words the checks below never see.
     if (flags & (DYNAMIC_WORD | EXPANSION_BRACE)) return false;
+    if (flags & EXPANSION_GLOB) globs = true;
     const text = table.texts ? table.texts[index]! : windowsWordText(table, index);
     if (argv.length === 0 && !powerShell && (flags & WORD_QUOTED) === 0 && isAssignment(text)) return false;
     argv.push(text);
@@ -111,7 +113,8 @@ function isReadOnlySegment(table: ShellTokenTable, segment: number, powerShell: 
   // An explicit `sort.exe` is the native program, not the cmdlet alias, and is not listed.
   const name = argv[0]!.toLowerCase();
   if (powerShell && READ_ONLY_POWERSHELL_COMMANDS.has(name)) return hasFileProviderArguments(argv);
-  if (!hasSafeArguments(name, argv)) return false;
+  // A glob may expand into the second operand `uniq` writes; the count below cannot see it.
+  if (globs && name === "uniq" || !hasSafeArguments(name, argv)) return false;
   return READ_ONLY_COMMANDS.has(name) || isReadOnlyStructuredCommand(name, argv, subcommands);
 }
 
@@ -258,7 +261,7 @@ function isNoEmitTsc(argv: readonly string[]): boolean {
   if (!argv.includes("--noEmit")) return false;
   for (let index = 1; index < argv.length; index++) {
     const argument = argv[index]!;
-    if (argument === "--incremental" || argument.startsWith("--incremental=") || argument === "--tsBuildInfoFile"
+    if (argument === "-i" || argument === "--incremental" || argument.startsWith("--incremental=") || argument === "--tsBuildInfoFile"
       || argument.startsWith("--tsBuildInfoFile=") || argument === "--generateTrace" || argument.startsWith("--generateTrace=")) return false;
   }
   return true;

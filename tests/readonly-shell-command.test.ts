@@ -19,6 +19,8 @@ test("Bash: listed readers joined by lists and pipes are read-only; the first ot
     ["sed -i s/a/b/ f", "sed -i s/a/b/ f"], ["cat <<EOF\nx\nEOF", "cat <<EOF"], ["git describe", "git describe"],
     // A brace list expands into options and operands the checks would never see.
     ["find . -{print,delete}", "find . -{print,delete}"], ["uniq {in,out}.txt", "uniq {in,out}.txt"],
+    // Two matching files make `uniq *.txt` write the second; `tsc -i` is --incremental and writes .tsbuildinfo.
+    ["uniq *.txt", "uniq *.txt"], ["tsc -i --noEmit -p .", "tsc -i --noEmit -p ."],
     // A later `--no-list` turns the operand back into a new branch name.
     ["git branch --list --no-list topic", "git branch --list --no-list topic"],
   ]) assert.equal(findNonReadOnlyShellSegment("bash", command), blocked, command);
