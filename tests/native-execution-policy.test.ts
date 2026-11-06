@@ -240,6 +240,34 @@ test("ask never silently grants, and changed arguments cannot consume an approva
     assert.throws(() => grant.consume(input, "test-call", "powershell"), /changed after authorization/);
     grant.release();
 });
+test("host MCP calls ask for declared destructive tools and honor server-scoped rules", async t => {
+    async function decide(rules: object[], name: string, destructive: boolean, server = name.slice(5, name.indexOf("__", 5)), mcpToolPrefix = `mcp__${server}__`): Promise<string> {
+        const f = await fixture(t, { rules }, "trusted-host", "host-write");
+        try { (await f.owner.authorize(f.event(name, {}), f.ctx, { name, mcpDestructive: destructive, mcpServer: server, mcpToolPrefix } as any)).release(); return "allow"; }
+        catch (error: any) { return /APPROVAL_REQUIRED/.test(error.message) ? "ask" : /Explicitly denied/.test(error.message) ? "deny" : error.message; }
+    }
+    const tool = "mcp__github__delete_repo";
+    assert.equal(await decide([], "mcp__github__get_issue", false), "allow");
+    assert.equal(await decide([], tool, true), "ask");
+    // The catch-all and an unanchored MCP allow glob are not a standing approval for destructive tools.
+    assert.equal(await decide([{ tool: "*", decision: "allow" }], tool, true), "ask");
+    assert.equal(await decide([{ tool: "mcp__*", decision: "allow" }], tool, true), "ask");
+    for (const pattern of ["mcp__github__*", "mcp__github", tool]) assert.equal(await decide([{ tool: pattern, decision: "allow" }], tool, true), "allow");
+    assert.equal(await decide([{ tool: "mcp__github", decision: "deny" }], "mcp__github__get_issue", false), "deny");
+    assert.equal(await decide([{ tool: "mcp__github", decision: "deny" }], "mcp__githubx__get_issue", false), "allow");
+    assert.equal(await decide([{ tool: "mcp__*", decision: "ask" }], "mcp__github__get_issue", false), "ask");
+    assert.equal(await decide([{ tool: "mcp__github__get_*", decision: "deny" }, { tool: "mcp__github__*", decision: "allow" }], "mcp__github__get_issue", false), "deny");
+    // Server IDs may contain `__`: rules for `github` never reach the distinct server `github__other`.
+    const other = "mcp__github__other__delete_repo";
+    for (const pattern of ["mcp__github", "mcp__github__*"]) assert.equal(await decide([{ tool: pattern, decision: "allow" }], other, true, "github__other"), "ask");
+    assert.equal(await decide([{ tool: "mcp__github__other", decision: "allow" }], other, true, "github__other"), "allow");
+    // Tool names normalize the server ID; a rule may spell the server as configured or as normalized.
+    assert.equal(await decide([{ tool: "mcp__GitHub__*", decision: "deny" }], "mcp__github__get_issue", false, "GitHub", "mcp__github__"), "deny");
+    for (const pattern of ["mcp__GitHub", "mcp__GitHub__delete*", "mcp__github__*", "mcp__github"])
+        assert.equal(await decide([{ tool: pattern, decision: "allow" }], tool, true, "GitHub", "mcp__github__"), "allow", pattern);
+    assert.equal(await decide([{ tool: "mcp__GitHub*", decision: "allow" }], tool, true, "GitHub", "mcp__github__"), "ask");
+});
+
 test("all batch paths are checked before any native mutation is prepared", async t => {
     const f = await fixture(t, { rules: [{ tool: "file_batch", decision: "allow", path: "." }] });
     await assert.rejects(f.owner.authorize(f.event("file_batch", { operations: [

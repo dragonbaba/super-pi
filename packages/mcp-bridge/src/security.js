@@ -96,8 +96,13 @@ function slug(value, maxLength) {
   return text.toLowerCase().replace(UNSAFE_TOOL_NAME_PATTERN, "_").replace(EDGE_UNDERSCORE_PATTERN, "").slice(0, maxLength) || "tool";
 }
 
+/** The name prefix every tool of this server shares; truncation below never reaches it. */
+export function piToolServerPrefix(serverId) {
+  return `mcp__${slug(serverId, 20)}__`;
+}
+
 export function piToolName(serverId, remoteName) {
-  const base = `mcp__${slug(serverId, 20)}__${slug(remoteName, 32)}`;
+  const base = `${piToolServerPrefix(serverId)}${slug(remoteName, 32)}`;
   if (base.length <= 58) return base;
   const hash = createHash("sha256").update(`${serverId}\0${remoteName}`).digest("hex").slice(0, 8);
   return `${base.slice(0, 49)}_${hash}`;

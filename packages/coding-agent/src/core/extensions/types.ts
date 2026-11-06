@@ -489,6 +489,15 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 	supportsManagedBackground?: boolean;
 	/** MCP bridge/discovery tool; omitted from the host registry when MCP is disabled. */
 	requiresMcp?: boolean;
+	/**
+	 * The remote MCP tool declares `annotations.destructiveHint: true`. Native permissions ask
+	 * once before an otherwise allowed call; a hint never grants anything by itself.
+	 */
+	mcpDestructive?: boolean;
+	/** MCP server ID that registered this tool; server-scoped permission rules match it exactly. */
+	mcpServer?: string;
+	/** `mcp__<normalized server>__`, the name prefix this server's tools share; rules may spell the server either way. */
+	mcpToolPrefix?: string;
 	/** Tool name (used in LLM tool calls) */
 	name: string;
 	/** Human-readable label for UI */

@@ -67,6 +67,36 @@ function fingerprint(value: unknown): string {
 function invocationFingerprint(name: string, input: unknown): string {
     return isMutation(name, input) ? mutationRequestHash(name as PermissionPathApproval["operation"], input) : fingerprint(input);
 }
+/**
+ * Exact names and `*` as before, plus MCP server rules: `mcp__<server>` or a trailing glob such as
+ * `mcp__<server>__*` / `mcp__<server>__get_*`. The server is spelled either as its configured ID or
+ * as the normalized segment its tool names use; the rest of the pattern is matched against the tool
+ * name after that segment. Server IDs may contain `__`, so a server rule and an allow glob are checked
+ * against the definition's server identity, never inferred from the name. Ask/deny globs may be
+ * broader (`mcp__*`). Prefixes are computed once at construction, so matching allocates nothing.
+ */
+type McpRuleIdentity = Pick<ToolDefinition, "mcpServer" | "mcpToolPrefix">;
+/** The pattern before a trailing `*`, or the whole pattern when it has no glob. */
+function ruleToolPrefix(pattern: string): string | undefined {
+    if (!pattern.startsWith("mcp__")) return undefined;
+    const glob = pattern.indexOf("*");
+    if (glob < 0) return pattern;
+    return glob === pattern.length - 1 ? pattern.slice(0, -1) : undefined;
+}
+/** `prefix` = `mcp__` + this server spelling, then nothing (exact) or `__` + a tool-name prefix. */
+function serverScopedMatch(prefix: string, glob: boolean, tool: string, toolStart: number, spelling: string, start: number, length: number): boolean {
+    const end = 5 + length;
+    if (prefix.length < end || !sameChars(prefix, 5, spelling, start, length)) return false;
+    if (prefix.length === end) return !glob; // `mcp__<server>*` also covers other servers' names.
+    if (!prefix.startsWith("__", end)) return false;
+    const rest = prefix.length - end - 2, available = tool.length - toolStart;
+    return (glob ? available >= rest : available === rest) && sameChars(prefix, end + 2, tool, toolStart, rest);
+}
+function sameChars(left: string, leftStart: number, right: string, rightStart: number, length: number): boolean {
+    for (let index = 0; index < length; index++) if (left.charCodeAt(leftStart + index) !== right.charCodeAt(rightStart + index)) return false;
+    return true;
+}
+
 function isMutation(name: string, input: unknown): boolean {
     return MUTATIONS.has(name) || name === "lsp_fix" && (input as { write?: unknown } | null)?.write === true;
 }
@@ -105,6 +135,8 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
     readonly environment: ExecutionEnvironment;
     private readonly runtime: ExtensionRuntime;
     private readonly rules: readonly ExecutionPermissionRule[];
+    /** Per rule, index-aligned with `rules`: "" for an MCP name, the prefix of an MCP glob, else undefined. */
+    private readonly rulePrefixes: readonly (string | undefined)[];
     private readonly approval: "interactive" | "never";
     private readonly definitions = new WeakSet<ToolDefinition>();
     private grant?: InputWorkspaceGrant;
@@ -137,6 +169,7 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
                 throw new Error("Invalid execution permission rule");
             return Object.freeze({ ...rule });
         }));
+        this.rulePrefixes = Object.freeze(this.rules.map(rule => ruleToolPrefix(rule.tool)));
         runtime.executionBoundary.register("native-permissions", { revoke: this.revoke, drain: this.drain });
     }
     private readonly revoke = (): void => { this.epoch++; this.grant = undefined; this.issuance = undefined; };
@@ -226,10 +259,11 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
         if (shell.uncertain) { host.ask = true; host.details += "已识别变更，但既有分析结果不能确认全部目标；请核对原命令。\n"; }
         return host;
     }
-    private async decision(tool: string, command: unknown, paths: readonly string[], cwd: string, fallback?: PermissionDecision): Promise<PermissionDecision> {
+    private async decision(tool: string, command: unknown, paths: readonly string[], cwd: string, fallback?: PermissionDecision, mcp?: McpRuleIdentity): Promise<PermissionDecision> {
         let selected: PermissionDecision | undefined;
-        for (const rule of this.rules) {
-            if (rule.tool !== "*" && rule.tool !== tool || rule.command !== undefined && rule.command !== command) continue;
+        for (let index = 0; index < this.rules.length; index++) {
+            const rule = this.rules[index]!;
+            if (!this.ruleMatches(index, tool, mcp) || rule.command !== undefined && rule.command !== command) continue;
             if (rule.path !== undefined) {
                 if (!paths.length) continue;
                 const root = await canonicalizeProspectivePath(resolve(cwd, rule.path));
@@ -246,6 +280,27 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
             if (selected !== "ask") selected = rule.decision;
         }
         return selected ?? fallback ?? (this.mode !== undefined || SAFE.has(tool) || tool === "read" || tool === "powershell" && this.environment === "sandbox" ? "allow" : "ask");
+    }
+    /** An allow rule that names this tool or its MCP server, not the catch-all `*`. */
+    private namedAllow(tool: string, mcp: McpRuleIdentity | undefined): boolean {
+        for (let index = 0; index < this.rules.length; index++) {
+            const rule = this.rules[index]!;
+            if (rule.decision === "allow" && rule.tool !== "*" && rule.command === undefined && rule.path === undefined && this.ruleMatches(index, tool, mcp)) return true;
+        }
+        return false;
+    }
+    private ruleMatches(index: number, tool: string, mcp: McpRuleIdentity | undefined): boolean {
+        const rule = this.rules[index]!, pattern = rule.tool, prefix = this.rulePrefixes[index];
+        if (pattern === "*" || pattern === tool) return true;
+        if (prefix === undefined) return false;
+        const glob = prefix.length !== pattern.length, server = mcp?.mcpServer, toolPrefix = mcp?.mcpToolPrefix;
+        if (server !== undefined && toolPrefix !== undefined && tool.startsWith(toolPrefix)) {
+            const toolStart = toolPrefix.length;
+            if (serverScopedMatch(prefix, glob, tool, toolStart, server, 0, server.length)
+                || serverScopedMatch(prefix, glob, tool, toolStart, toolPrefix, 5, toolStart - 7)) return true;
+        }
+        // Any other glob may span servers, so only an ask or deny applies it.
+        return glob && rule.decision !== "allow" && tool.startsWith(prefix);
     }
     private restoreRefusals(manager: ReadonlySessionManager): void {
         if (!manager.isHistoryConsistent()) throw new Error(BLOCKED + "Permission history is uncertain; reload the session before continuing");
@@ -352,7 +407,7 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
         const host = shell ? await this.assessShellMutations(ctx, resolved!, shell)
             : mutation && this.mode === "host-write" ? await assessHostMutations(resolved!.workspaces, paths, event.toolName, input) : undefined; check();
         if (host?.forbidden) this.refuse(ctx, BLOCKED, `敏感目标禁止删除或移出：${host.forbidden}\n操作未执行，请明确告知用户。`);
-        let decision = await this.decision(event.toolName, input.command, paths, ctx.cwd, explicitUserCommand ? "allow" : undefined); check();
+        let decision = await this.decision(event.toolName, input.command, paths, ctx.cwd, explicitUserCommand ? "allow" : undefined, definition); check();
         if (event.toolName === "file_batch") {
             let index = 0;
             for (const item of input.operations) {
@@ -381,10 +436,15 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
                 `禁止覆盖或编辑工作区外已有文件：${host.externalOverwrite}\n操作未执行。当前整轮任务已暂停，请告知用户并等待下一步指令。`);
         }
         if (host?.ask) decision = "ask";
+        // Like Codex, a declared destructive MCP tool asks even when its other hints look harmless.
+        // A rule naming the tool or its server is the user's explicit standing approval.
+        const destructiveMcp = decision === "allow" && definition?.mcpDestructive === true && !explicitUserCommand && !this.namedAllow(event.toolName, definition);
+        if (destructiveMcp) decision = "ask";
         if (decision === "ask") {
             if (this.approval === "never" || !ctx.hasUI) throw new Error("[APPROVAL_REQUIRED] Operation was not executed: " + event.toolName);
             const details = shell ? `cwd: ${shellCwd}\ncommand: ${input.command}\n${host!.details}`
-                : mutation ? host?.details || paths.join("\n") : JSON.stringify(input, null, 2);
+                : mutation ? host?.details || paths.join("\n")
+                : (destructiveMcp ? "MCP 工具声明了 destructiveHint，可能产生破坏性副作用。\n" : "") + JSON.stringify(input, null, 2);
             if (details.length > 16384) throw new Error("[APPROVAL_REQUIRED] Request is too large for one interactive review; configure an explicit scoped rule");
             const signal = ctx.signal ?? this.runtime.executionBoundary.signal;
             const selected = await ctx.ui.select("允许这次操作？", APPROVAL_CHOICES,

@@ -8,8 +8,10 @@ import { MAX_SCHEMA_BYTES, MAX_TOOL_CATALOG_BYTES, canonicalJsonShape, sanitizeT
 // v2 may contain a first-page-only catalog. Keep the safe path, invalidate its contents.
 const CACHE_VERSION = 3;
 const EMPTY_CACHE_PAYLOAD = `${JSON.stringify({ version: CACHE_VERSION, entries: [] })}\n`;
-// Old keyed entries truncated tool instructions at 1,000 characters; rediscover them.
-const CACHE_FINGERPRINT_DOMAIN = "super-pi.mcp-schema-cache.v3.full-description\0";
+// Old keyed entries truncated tool instructions at 1,000 characters (v3) or did not
+// retain the destructive annotation that native approval uses (v3.full-description).
+const CACHE_FINGERPRINT_DOMAIN = "super-pi.mcp-schema-cache.v4.annotations\0";
+const DESTRUCTIVE_ANNOTATIONS = Object.freeze({ destructiveHint: true });
 const MAX_CACHE_BYTES = 2 * 1024 * 1024;
 const MAX_CACHE_ENTRIES = 16;
 const MAX_CACHE_AGE_MS = 30 * 24 * 60 * 60 * 1000;
@@ -104,6 +106,9 @@ function normalizeCachedTool(tool) {
     name: tool.name,
     description: sanitizeText(tool.description ?? `MCP tool ${tool.name}`, MAX_TOOL_CATALOG_BYTES),
     inputSchema: canonicalJsonShape(inputSchema),
+    // Cached tools are callable before reconnection, so keep the one hint approval reads.
+    // One shared frozen value and a fixed shape; `undefined` is omitted when serialized.
+    annotations: tool.annotations?.destructiveHint === true ? DESTRUCTIVE_ANNOTATIONS : undefined,
   };
 }
 

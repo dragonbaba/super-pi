@@ -17,6 +17,7 @@ import {
   MAX_TOOL_CATALOG_BYTES,
   canonicalJsonShape,
   piToolName,
+  piToolServerPrefix,
   sanitizeText,
   validateJsonShape,
 } from "./security.js";
@@ -458,7 +459,10 @@ export class McpBridgeRuntime {
     const name = piToolName(state.config.id, remoteTool.name);
     const existing = this.registeredNames.get(name);
     if (existing && existing !== `${state.config.id}\0${remoteTool.name}`) throw new Error(`MCP tool-name collision: ${name}`);
-    const signature = createHash("sha256").update(JSON.stringify(parameters)).update("\0").update(remoteTool.description ?? "").digest("hex");
+    // Destructive tools ask before execution even when every other hint is less privileged.
+    const destructive = remoteTool.annotations?.destructiveHint === true;
+    const signature = createHash("sha256").update(JSON.stringify(parameters)).update("\0").update(remoteTool.description ?? "")
+      .update(destructive ? "\0destructive" : "").digest("hex");
     if (existing && this.registeredSchemas.get(name) === signature) return;
     this.registeredSchemas.set(name, signature);
     this.registeredNames.set(name, `${state.config.id}\0${remoteTool.name}`);
@@ -473,6 +477,9 @@ export class McpBridgeRuntime {
     this.pi.registerTool({
       name,
       requiresMcp: true,
+      mcpDestructive: destructive,
+      mcpServer: state.config.id,
+      mcpToolPrefix: piToolServerPrefix(state.config.id),
       label: `MCP ${sanitizeText(state.config.id, 32)} / ${sanitizeText(remoteTool.name, 80)}`,
       description: sanitizeText(fullDescription, 1000),
       fullDescription,
@@ -480,7 +487,7 @@ export class McpBridgeRuntime {
       executionMode: "sequential",
       async execute(toolCallId, args, signal, onUpdate, ctx) {
         try {
-          const result = await runtime.callRemoteTool(state, remoteTool.name, args, signal, onUpdate);
+          const result = await runtime.callRemoteTool(state, remoteTool.name, args, signal, onUpdate, destructive);
           const configured = ctx?.mcpResultInputConfigured === true;
           const content = convertMcpResult(result, configured);
           if (signal?.aborted || runtime.closed) return mcpFailureResult("aborted", ctx, toolCallId);
@@ -495,13 +502,13 @@ export class McpBridgeRuntime {
     });
   }
 
-  async callRemoteTool(state, remoteName, args, signal, onUpdate) {
+  async callRemoteTool(state, remoteName, args, signal, onUpdate, authorizedDestructive) {
     if (this.closed || signal?.aborted) throw new McpCallError("aborted");
     this.pi.assertExecutionCurrent?.();
     if (this.pendingCalls >= 16) throw new Error("MCP has reached its limit of 16 admitted calls.");
     if (this.pendingCalls++ === 0) this.callsIdle = new Promise(resolve => { this.finishCalls = resolve; });
     const executionSignal = signal ? AbortSignal.any([signal, this.connectionController.signal]) : this.connectionController.signal;
-    try { return await this.#performRemoteCall(state, remoteName, args, executionSignal, onUpdate); }
+    try { return await this.#performRemoteCall(state, remoteName, args, executionSignal, onUpdate, authorizedDestructive); }
     finally {
       if (--this.pendingCalls === 0) {
         const finish = this.finishCalls; this.finishCalls = null; this.callsIdle = null; finish?.();
@@ -509,7 +516,7 @@ export class McpBridgeRuntime {
     }
   }
 
-  async #performRemoteCall(state, remoteName, args, signal, onUpdate) {
+  async #performRemoteCall(state, remoteName, args, signal, onUpdate, authorizedDestructive) {
     if (state.connectPromise || ((state.status === "disconnected" || state.status === "cached" || !state.client) && !this.closed)) {
       if (signal?.aborted) throw new McpCallError("aborted");
       try {
@@ -522,6 +529,9 @@ export class McpBridgeRuntime {
     if (this.closed || signal?.aborted) throw new McpCallError("aborted");
     if (state.status !== "connected" || !state.client) throw new Error(`MCP server ${state.config.id} is not connected; run /mcp-reload`);
     if (state.tools && !state.tools.has(remoteName)) throw new Error("MCP tool is no longer in the current server catalog");
+    // A reconnect can replace the catalog this call was approved against. A newly
+    // declared destructive tool is not run on the old approval; the next call asks.
+    if (authorizedDestructive === false && state.tools?.get(remoteName)?.annotations?.destructiveHint === true) throw new McpCallError("approval-changed");
     const call = new McpCall(signal, onUpdate);
     this.activeCalls.add(call);
     try {
@@ -653,11 +663,12 @@ export class McpBridgeRuntime {
 function mcpFailureResult(code, ctx, toolCallId) {
   const category = code === "budget-not-configured" || code === "budget-too-small"
     ? "budget-not-configured"
-    : code === "result-size-limit" || code === "invalid-typed-content" || code === "invalid-structured-content" || code === "aborted" || code === "server-tool-error" || code === "authorization-required"
+    : code === "result-size-limit" || code === "invalid-typed-content" || code === "invalid-structured-content" || code === "aborted" || code === "server-tool-error" || code === "authorization-required" || code === "approval-changed"
       ? code : "protocol-error";
   const text = category === "budget-not-configured"
     ? "MCP result unavailable: configure tool-result presentation with a sufficient token budget for recovery."
     : category === "authorization-required" ? "MCP authorization required. Run /mcp-login <server-id>, then explicitly retry the tool."
+      : category === "approval-changed" ? "MCP tool was not run: the server now declares it destructive. Call it again so it is approved first."
       : `MCP result unavailable (${category}).`;
   const failure = { content: [{ type: "text", text }], details: { mcpError: category } };
   try {
