@@ -183,8 +183,9 @@ export function shellRuleVerdict(tool: "bash" | "powershell", command: string, r
   let source = command, verdict = RULE_NONE;
   if (!powerShell) {
     // Match the commands around heredoc bodies, not the bodies (a stray quote in one would
-    // swallow the commands after it). A heredoc that cannot be delimited asks.
-    const view = analysisOwner ? analysisOwner.get(command).view : prepareShellAnalysis(command);
+    // swallow the commands after it). A heredoc that cannot be delimited asks. The owner's
+    // view is not used: it rewrites `node <<EOF` as `node -e ...`, which an exact rule misses.
+    const view = prepareShellAnalysis(command);
     source = view.command;
     if (view.uncertain && rules.hasRestrictiveShellRules(false)) verdict = RULE_ASK;
   }

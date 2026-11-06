@@ -187,6 +187,9 @@ test("whole-tool shell rules, batch operations and non-ASCII PowerShell spelling
     assert.equal(await sandbox.decide("bash", { command: "cat <<'EOF'\n'\nEOF\ngit push origin main" }), "deny");
     assert.equal(await sandbox.decide("bash", { command: "cat <<'EOF'\n'\ngit push" }), "ask");
     assert.equal(await sandbox.decide("bash", { command: "cat <<'EOF'\ngit push\nEOF" }), "allow");
+    // The host owner rewrites an interpreter heredoc for its own analysis; rules see the words as written.
+    await host.writeRules([{ tool: "bash", decision: "deny", command: "node" }]);
+    assert.equal(await host.decide("bash", { command: "node <<'EOF'\nconsole.log(1)\nEOF" }), "deny");
     // Allow rules and 不再询问 leave heredoc commands to the ask.
     const allow = new ProjectRuleSet([{ tool: "bash", decision: "allow", command: "cat *" }]);
     assert.equal(classifyHostShellCommand("bash", "cat <<'EOF'\n'\nEOF\nmake", undefined, allow), HOST_SHELL_OTHER);
