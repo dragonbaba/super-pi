@@ -8,6 +8,7 @@ import type { ReadonlySessionManager, SessionEntry, SessionEntryVisitor } from "
 import { assessCanonicalMutationPath, canonicalizeProspectivePath, canonicalWorkspaceMetadata } from "./files/protected-path-policy.ts";
 import { assessHostMutations } from "./files/host-mutation-policy.ts";
 import { inspectNativeShellMutations, type NativeShellMutations } from "./shell-policy/native-mutations.ts";
+import { findNonReadOnlyShellSegment } from "./shell-policy/readonly-command.ts";
 import { prepareShellCwd } from "./tools/shell-cwd.ts";
 import { attachPermissionPathApproval, mutationRequestHash, type PermissionPathApproval } from "./files/file-invocation.ts";
 import { InputReadPolicyLease } from "./files/session-input-read-permission.ts";
@@ -369,9 +370,15 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
         this.restoreHistory(ctx);
         if (this.mode === undefined && this.legacyHistory && !SAFE.has(event.toolName) && event.toolName !== "read")
             throw new Error("[LEGACY_PERMISSION_MIGRATION] Historical grants cannot be widened by a new profile. Start a new session with explicit execution rules; history remains unchanged.");
-        if (this.runtime.executionBoundary.getToolSelectionMode() === "plan" && (mutation || event.toolName === "powershell" || event.toolName === "bash" || event.toolName === "browser_exec"))
+        const plan = this.runtime.executionBoundary.getToolSelectionMode() === "plan";
+        if (plan && (mutation || event.toolName === "browser_exec"))
             throw new Error(BLOCKED + "Plan mode does not authorize execution or mutations");
         const input = event.input as Record<string, any>, targets: string[] = [];
+        if (plan && (event.toolName === "bash" || event.toolName === "powershell")) {
+            const blocked = findNonReadOnlyShellSegment(event.toolName, typeof input?.command === "string" ? input.command : "",
+                this.runtime.executionBoundary.getReadOnlyShellSubcommands());
+            if (blocked !== undefined) throw new Error(BLOCKED + "Plan mode runs only read-only commands; this one is not: " + blocked);
+        }
         const hostShell = this.mode === "host-write" && (event.toolName === "bash" || event.toolName === "powershell");
         const shellBinding = hostShell ? await prepareShellCwd(input, ctx.cwd) : undefined; check();
         const shellCwd = hostShell ? shellBinding?.canonical ?? await realpath(ctx.cwd) : undefined; check();
@@ -399,7 +406,7 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
             check();
         }
         const delegation = event.toolName === "subagent" || event.toolName === "structured_readonly_command"
-            ? await prepareNativeDelegation(event.toolName, input, ctx.cwd, this.mode === "read-only" || this.runtime.executionBoundary.getToolSelectionMode() === "plan") : undefined;
+            ? await prepareNativeDelegation(event.toolName, input, ctx.cwd, this.mode === "read-only" || plan) : undefined;
         check();
         if (delegation && this.environment === "sandbox") { await this.paths(ctx, delegation.paths, false); check(); }
         const resolved = delegation ? undefined : await this.paths(ctx, targets, mutation || shell !== undefined, event.toolName, shell === undefined); check();

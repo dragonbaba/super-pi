@@ -1,9 +1,13 @@
+import type { ReadOnlyShellSubcommands } from "./shell-policy/readonly-command.ts";
+
 /** Service owners only; individual tasks remain in their existing registries. */
 export interface ExecutionBoundaryParticipant {
   revoke(): void;
   drain(): Promise<void>;
   /** Synchronous, side-effect-free selection metadata. Reads the owner's state; grants no authority. */
   toolSelectionMode?(): "plan" | undefined;
+  /** Plan mode's opt-in read-only subcommands while it is active; same rules as toolSelectionMode. */
+  readOnlyShellSubcommands?(): ReadOnlyShellSubcommands | undefined;
 }
 
 const MAX_PARTICIPANTS = 16;
@@ -54,6 +58,16 @@ export class SessionExecutionBoundary {
       else if (declared !== undefined) throw new Error("Invalid tool selection mode declaration.");
     }
     return mode;
+  }
+
+  /** The active Plan owner's opt-in read-only subcommands; selection metadata only. */
+  getReadOnlyShellSubcommands(): ReadOnlyShellSubcommands | undefined {
+    if (this.disposed) return undefined;
+    for (const owner of this.participants.values()) {
+      const subcommands = owner.readOnlyShellSubcommands?.();
+      if (subcommands) return subcommands;
+    }
+    return undefined;
   }
 
   assertCurrent(generation = this.epoch): void {

@@ -4,7 +4,7 @@ import {
 	ExtensionAPI,
 	ExtensionCommandContext,
 	ExtensionContext,
-	findUnsafePowerShellSegment,
+	findNonReadOnlyShellSegment,
 } from "@super-pi/coding-agent";
 import { completePlanArguments } from "./command.js";
 import {
@@ -60,7 +60,6 @@ import { type PlanCompletionSource, type PlanModeState, restorePlanModeState } f
 import {
 	canSelectToolInPlanMode,
 	classifyPlanModeTool,
-	findBlockedCommandSegment,
 	readCommand,
 } from "./tool-policy.js";
 import {
@@ -138,9 +137,10 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
 	let menuController = new AbortController();
 	let readyTask: Promise<void> | undefined;
 	function toolSelectionMode(): "plan" | undefined { return state.enabled ? "plan" : undefined; }
+	function readOnlyShellSubcommands() { return state.enabled ? settings.safeSubcommands : undefined; }
 	const executionOwner = new PlanExecutionOwner(pi, () => {
 		abortMenu("Plan menu replaced");
-	}, () => { menuController = new AbortController(); }, () => awaitPlanModeSettingsWrites(dependencies.settingsPath), toolSelectionMode);
+	}, () => { menuController = new AbortController(); }, () => awaitPlanModeSettingsWrites(dependencies.settingsPath), toolSelectionMode, readOnlyShellSubcommands);
 	const implementationRetention = createImplementationRetentionCoordinator();
 	const persistState = () => pi.appendEntry<PlanModeState>(STATE_ENTRY_TYPE, state);
 	const planExports = createPlanExportController({
@@ -450,9 +450,7 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
 		if (event.toolName !== "bash" && event.toolName !== "powershell") return;
 
 		const command = readCommand(event.input);
-		const blocked = event.toolName === "powershell"
-			? findUnsafePowerShellSegment(command)
-			: findBlockedCommandSegment(command, settings.safeSubcommands);
+		const blocked = findNonReadOnlyShellSegment(event.toolName, command, settings.safeSubcommands);
 		if (blocked !== undefined) {
 			return {
 				block: true,

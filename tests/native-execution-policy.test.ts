@@ -240,6 +240,17 @@ test("ask never silently grants, and changed arguments cannot consume an approva
     assert.throws(() => grant.consume(input, "test-call", "powershell"), /changed after authorization/);
     grant.release();
 });
+test("Plan mode runs read-only shell commands, refuses the rest, and honors Plan's opt-in subcommands", async t => {
+    const f = await fixture(t);
+    let subcommands: { git?: string[] } | undefined;
+    f.runtime.executionBoundary.register("plan-fixture", { revoke() {}, async drain() {}, toolSelectionMode: () => "plan", readOnlyShellSubcommands: () => subcommands });
+    const run = (command: string) => f.owner.authorize(f.event("powershell", { command, inputs: [] }), f.ctx, f.definition("powershell"));
+    for (const command of ["git status; git log --oneline -3", "Get-ChildItem -Recurse *.ts | Select-Object -First 5"]) (await run(command)).release();
+    await assert.rejects(run("git status; Remove-Item x"), /Plan mode runs only read-only commands; this one is not: Remove-Item x/);
+    await assert.rejects(run("git describe --tags"), /this one is not: git describe --tags/);
+    subcommands = { git: ["describe"] };
+    (await run("git describe --tags")).release();
+});
 test("host MCP calls ask for declared destructive tools and honor server-scoped rules", async t => {
     async function decide(rules: object[], name: string, destructive: boolean, server = name.slice(5, name.indexOf("__", 5)), mcpToolPrefix = `mcp__${server}__`): Promise<string> {
         const f = await fixture(t, { rules }, "trusted-host", "host-write");
