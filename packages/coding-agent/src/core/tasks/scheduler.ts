@@ -84,6 +84,8 @@ export class SubagentScheduler {
 	private readonly waiters: SlotWaiter[] = [];
 	private disposed = false;
 	private readonly label: string;
+	private idle?: Promise<void>;
+	private resolveIdle?: () => void;
 	active = 0;
 	outstanding = 0;
 	reserved = 0;
@@ -163,11 +165,23 @@ export class SubagentScheduler {
 			this.takeSlot();
 			waiter.finish();
 		}
+		this.settleIdle();
+	}
+
+	/** Lifecycle join only; no deferred is created per task or progress event. */
+	waitForIdle(): Promise<void> {
+		if (this.active === 0 && this.waiters.length === 0) return Promise.resolve();
+		return this.idle ??= new Promise<void>(resolve => { this.resolveIdle = resolve; });
+	}
+	private settleIdle(): void {
+		if (this.active !== 0 || this.waiters.length !== 0) return;
+		this.resolveIdle?.(); this.resolveIdle = undefined; this.idle = undefined;
 	}
 
 	removeWaiter(waiter: SlotWaiter): void {
 		const index = this.waiters.indexOf(waiter);
 		if (index !== -1) this.waiters.splice(index, 1);
+		this.settleIdle();
 	}
 	releaseCount(count: number): void { this.outstanding -= count; }
 	releaseReservation(reservation: TaskReservation): void {
@@ -180,5 +194,6 @@ export class SubagentScheduler {
 		for (const waiter of this.waiters) waiter.finish(new Error(`${this.label} session ended before launch.`));
 		this.waiters.length = 0;
 		for (const reservation of this.reservations) reservation.release();
+		this.settleIdle();
 	}
 }

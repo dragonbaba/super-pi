@@ -25,12 +25,13 @@ test("both shell requests map every workspace drive independently of toolchain d
     const inputRoot = path.join(root, "input"), exchange = path.join(root, "exchange");
     for (const directory of [inputRoot, inputRoot + "-1", inputRoot + "-2", inputRoot + "-3", exchange]) fs.mkdirSync(directory);
     try {
-        for (const operation of ["powershell", "bash"]) {
+        for (const operation of ["powershell", "bash"]) for (const workspaceIndex of [0, 1]) {
             fs.writeFileSync(path.join(exchange, "request.json"), JSON.stringify({ id: "e".repeat(32), mode: "read-only",
                 workspace: "C:\\primary", directories: ["Z:\\first", "Z:\\second", "D:\\third"], operation,
-                maxWriteBytes: 1024 * 1024, input: { command: "fixture" } }));
+                maxWriteBytes: 1024 * 1024, input: { command: "fixture", workspaceIndex } }));
             execute(fs, path, createHash, isUtf8, (_exe: string, args: string[]) => {
-                assert.equal(args[3], "C:\\primary"); assert.equal(args[4], operation); assert.equal(args[5], "Z;D");
+                assert.equal(args[1], inputRoot, "runtime identity stays primary even with an additional cwd");
+                assert.equal(args[3], workspaceIndex ? "Z:\\first" : "C:\\primary"); assert.equal(args[4], operation); assert.equal(args[5], "Z;D");
                 fs.writeFileSync(path.join(exchange, "command-result.json"), JSON.stringify({ closed: true, timedOut: false, exitCode: 0, stdoutBase64: "", stderrBase64: "" }));
                 return { status: 0 };
             }, { exitCode: 0 }, inputRoot, path.join(root, "work"), exchange, (_root: string, workspace: string) => workspace);

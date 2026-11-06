@@ -15,6 +15,7 @@ import { resolveReadPathAsync, resolveToCwd } from "./tools/path-utils.ts";
 import { attachToolPath } from "./files/tool-path-authorization.ts";
 import { resolveToolPath } from "./files/file-path.ts";
 import { prepareNativeDelegation } from "./files/native-delegation.ts";
+import { isParentExecutionTool } from "./files/subagent-execution.ts";
 import { attachSubagentWorkspaceDelegation, attachStructuredReadonlyWorkspaceDelegation, structuredReadonlyRequestHash,
     attachBrowserExecAuthorization, browserExecRequestHash } from "./files/extension-permissions.ts";
 import { InputWorkspaceGrantLease, type InputWorkspaceGrant, type InputWorkspaceIssuance,
@@ -147,7 +148,10 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
     registerDefinition(definition: ToolDefinition): void {
         if (SANDBOX_TOOLS.has(definition.name) && (definition.name !== "bash" || this.mode !== undefined)) this.definitions.add(definition);
     }
-    supports(definition: ToolDefinition): boolean { return this.environment !== "sandbox" || this.definitions.has(definition); }
+    supports(definition: ToolDefinition): boolean {
+        return this.environment !== "sandbox" || this.definitions.has(definition)
+            || this.mode !== undefined && this.runtime.openSubagentExecution !== undefined && isParentExecutionTool(definition);
+    }
     private guard(ctx: ExtensionContext, lifetimeSignal?: AbortSignal): () => void {
         this.runtime.executionBoundary.assertCurrent();
         const owner = new WeakRef(this), generation = this.epoch, signal = lifetimeSignal ?? ctx.signal ?? this.runtime.executionBoundary.signal;
@@ -342,6 +346,7 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
         const delegation = event.toolName === "subagent" || event.toolName === "structured_readonly_command"
             ? await prepareNativeDelegation(event.toolName, input, ctx.cwd, this.mode === "read-only" || this.runtime.executionBoundary.getToolSelectionMode() === "plan") : undefined;
         check();
+        if (delegation && this.environment === "sandbox") { await this.paths(ctx, delegation.paths, false); check(); }
         const resolved = delegation ? undefined : await this.paths(ctx, targets, mutation || shell !== undefined, event.toolName, shell === undefined); check();
         const paths = delegation?.paths ?? resolved!.paths;
         const host = shell ? await this.assessShellMutations(ctx, resolved!, shell)

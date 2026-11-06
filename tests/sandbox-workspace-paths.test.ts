@@ -42,6 +42,12 @@ test("path translation is bounded and preserves shell source and relative path g
     assert.throws(() => workspaceInput(cwd,"read",{path:"file",workspaceIndex:1}), /assigned by the host/);
     assert.throws(() => workspaceInput(cwd,"file_batch",{operations:[{operation:"read",path:"file",workspaceIndex:1}]}), /assigned by the host/);
     const additional = path.resolve(cwd, "../additional");
+    const command = 'printf "$PWD"; false || printf recovered';
+    assert.deepEqual(workspaceInput(cwd, "bash", { command, cwd: "literal 中文 ' directory" }),
+        { command, cwd: "literal 中文 ' directory", workspaceIndex: 0 });
+    assert.deepEqual(workspaceInput(cwd, "powershell", { command, cwd: path.join(additional, "space") }, [additional]),
+        { command, cwd: "space", workspaceIndex: 1 });
+    assert.throws(() => workspaceInput(cwd, "bash", { command, cwd: "../outside" }), /outside/);
     assert.deepEqual(workspaceInput(cwd,"read",{path:path.join(additional,"file")},[additional]), {path:"file",workspaceIndex:1});
     assert.throws(() => workspaceInput(cwd,"move",{path:path.join(additional,"file"),destination:"primary.txt"},[additional]), /outside/);
     for(const value of [path.resolve(cwd,"../Pi-other/file"), "\\\\server\\share\\file", "\\\\?\\C:\\file", "D:file", "a\0b"])

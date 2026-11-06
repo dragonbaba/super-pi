@@ -17,6 +17,7 @@ import { consumeBrowserExecAuthorization } from "../packages/coding-agent/src/co
 import { consumeDelegatedTaskPolicies } from "../packages/extensions/subagent/delegation.ts";
 import { consumeStructuredReadonlyWorkspacePolicy } from "../packages/extensions/structured-readonly-command/delegation.ts";
 import structuredReadonlyCommand from "../packages/extensions/structured-readonly-command/index.ts";
+import { parentExecutionTool } from "../packages/coding-agent/src/core/files/subagent-execution.ts";
 
 async function fixture(t: TestContext, config = {}, environment: "sandbox" | "trusted-host" = "sandbox", mode?: SessionPermissionMode, directories: readonly string[] = []) {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "sp-native-policy-")));
@@ -36,6 +37,20 @@ test("native sandbox denies unsupported aliases and respects exact deny before b
     await assert.rejects(f.owner.authorize(f.event("powershell", { command: "blocked" }), f.ctx, f.definition("powershell")), /Explicitly denied/);
     await assert.rejects(f.owner.authorize(f.event("bash", { command: "echo x" }), f.ctx, f.definition("bash")), /SANDBOX_UNSUPPORTED/);
     await assert.rejects(f.owner.authorize(f.event("powershell", { command: "ok" }), f.ctx, { name: "powershell" } as any), /SANDBOX_UNSUPPORTED/);
+});
+
+test("sandbox delegation requires built-in parent routing and keeps cwd within granted workspaces", async t => {
+    for (const mode of ["read-only", "sandbox-write"] as const) {
+        const f = await fixture(t, {}, "sandbox", mode);
+        const definition = parentExecutionTool({ name: "subagent" } as any);
+        assert.equal(f.owner.supports(definition), false);
+        f.runtime.openSubagentExecution = () => { throw new Error("not launched"); };
+        assert.equal(f.owner.supports({ name: "subagent" } as any), false);
+        assert.equal(f.owner.supports(definition), true);
+        const input = { agent: "reader", task: "read", cwd: f.root };
+        (await f.owner.authorize(f.event("subagent", input), f.ctx, definition)).release();
+        await assert.rejects(f.owner.authorize(f.event("subagent", { ...input, cwd: path.dirname(f.root) }), f.ctx, definition), /outside the workspace/);
+    }
 });
 
 test("sandbox observation authorizes guest-only paths while preserving workspace and explicit deny", async t => {
