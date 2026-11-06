@@ -29,9 +29,11 @@ test("one authorization reuses actual scanners across preflight, mutation and pe
     assert.equal(inspectBashResourceLifecycle({ command }, false, owner), undefined);
     inspectHighRiskBashMutation({ command }, cwd, "bash", owner);
     inspectBashPermissionScope({ command }, cwd, owner);
-    assert.equal(owner.size, 2);
-    assert.equal(owner.misses, 2);
-    assert.equal(owner.hits, 4);
+    // Two sources (root and substitution body), each with one analysis and one Bash token table.
+    // Every later scanner reads both from the owner: 4 misses, the rest hits.
+    assert.equal(owner.size, 4);
+    assert.equal(owner.misses, 4);
+    assert.equal(owner.hits, 13);
     assert.equal(shellAnalysisCounters.prepareCalls - before.prepareCalls, 2);
     assert.equal(shellAnalysisCounters.substitutionCalls - before.substitutionCalls, 2);
     const bytes = 2 * (command.length + "git rev-parse HEAD".length);
