@@ -34,7 +34,7 @@ const GIT_READ_ONLY = new Set(["status", "diff", "log", "show", "ls-files", "rev
 // the PowerShell tool because Bash may have an unrelated program of that name.
 const CMDLET_DELETE = 1, CMDLET_WRITE = 2, CMDLET_COPY = 3, CMDLET_MOVE = 4, CMDLET_KIND = 7, CMDLET_ALIAS = 8, CMDLET_NAME = 16, CMDLET_RENAME = 32;
 // Per-word flags from the tokenizer: only unquoted commas separate list items, and a
-// quoted word is data, never a PowerShell parameter.
+// word that begins with a quote is data, never a PowerShell parameter.
 const TOKEN_QUOTED_COMMA = 1, TOKEN_UNQUOTED_COMMA = 2, TOKEN_QUOTED = 4, TOKEN_COMMAS = 3;
 const POWERSHELL_FILE_CMDLETS = new Map<string, number>([
   ["remove-item", CMDLET_DELETE], ["ri", CMDLET_DELETE | CMDLET_ALIAS],
@@ -907,7 +907,8 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
     }
     if (code === 34 || code === 39) {
       quote = code;
-      const flags = tokens.wordFlags ??= []; flags[tokens.length] = (flags[tokens.length] ?? 0) | TOKEN_QUOTED;
+      // Only a word that begins with a quote is string data; `-Path:"x"` quotes just its value.
+      if (!tokenStarted) { const flags = tokens.wordFlags ??= []; flags[tokens.length] = (flags[tokens.length] ?? 0) | TOKEN_QUOTED; }
       literalWord = false;
       tokenStarted = true;
       continue;
